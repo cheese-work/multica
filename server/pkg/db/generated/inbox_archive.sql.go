@@ -147,7 +147,11 @@ WITH newest AS MATERIALIZED (
     ORDER BY created_at DESC, id DESC
     LIMIT $10::int
 )
+<<<<<<< fc5981740a9c7eea2cc242ea3022d0818c9b15b0
 SELECT i.id, i.workspace_id, i.recipient_type, i.recipient_id, i.type, i.severity, i.issue_id, i.title, i.body, i.read, i.archived, i.created_at, i.actor_type, i.actor_id, i.details, i.chat_session_id, i.chat_message_id, i.dedupe_key, i.updated_at, selected.issue_status, selected.issue_priority,
+=======
+SELECT i.id, i.workspace_id, i.recipient_type, i.recipient_id, i.type, i.severity, i.issue_id, i.title, i.body, i.read, i.archived, i.created_at, i.actor_type, i.actor_id, i.details, i.section, selected.issue_status, selected.issue_priority,
+>>>>>>> 3d3db2fb7eebf2a1397620b3a324d00383ea1dda
        COALESCE(anchor.comment_id, '')::text AS comment_id
 FROM selected
 JOIN inbox_item i ON i.id = selected.id
@@ -220,10 +224,14 @@ func (q *Queries) ListArchivedInboxPage(ctx context.Context, arg ListArchivedInb
 			&i.InboxItem.ActorType,
 			&i.InboxItem.ActorID,
 			&i.InboxItem.Details,
+<<<<<<< fc5981740a9c7eea2cc242ea3022d0818c9b15b0
 			&i.InboxItem.ChatSessionID,
 			&i.InboxItem.ChatMessageID,
 			&i.InboxItem.DedupeKey,
 			&i.InboxItem.UpdatedAt,
+=======
+			&i.InboxItem.Section,
+>>>>>>> 3d3db2fb7eebf2a1397620b3a324d00383ea1dda
 			&i.IssueStatus,
 			&i.IssuePriority,
 			&i.CommentID,

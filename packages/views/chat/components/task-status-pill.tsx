@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ShimmerText } from "@multica/ui/components/common/shimmer-text";
-import { UnicodeSpinner } from "@multica/ui/components/common/unicode-spinner";
+import { MulticaIcon } from "@multica/ui/components/common/multica-icon";
 import type { AgentAvailability } from "@multica/core/agents";
 import type { ChatPendingTask, TaskMessagePayload } from "@multica/core/types";
 import { formatElapsedSecs } from "../lib/format";
@@ -224,7 +224,11 @@ export function TaskStatusPill({
       aria-live="polite"
     >
       {!stage.static && (
+<<<<<<< fc5981740a9c7eea2cc242ea3022d0818c9b15b0
         <UnicodeSpinner name="breathe" className="opacity-70" paused={reducedMotion} />
+=======
+        <MulticaIcon mode="think" size={16} />
+>>>>>>> 3d3db2fb7eebf2a1397620b3a324d00383ea1dda
       )}
       <span className="truncate">
         <ShimmerText active={!stage.static}>

@@ -2395,7 +2395,12 @@ const TaskUsageSchema = z.lazy(() => z.object({
   cache_read_tokens: z.number().default(0),
   cache_write_tokens: z.number().default(0),
   cost_usd_ticks: z.number().optional(),
+<<<<<<< fc5981740a9c7eea2cc242ea3022d0818c9b15b0
 }).loose());
+=======
+  credits_micros: z.number().optional().catch(undefined),
+}).loose();
+>>>>>>> 3d3db2fb7eebf2a1397620b3a324d00383ea1dda
 
 const NullableStringSchema = z.lazy(() => z.string().nullable().catch(null));
 
@@ -3263,6 +3268,9 @@ export const UserSchema = z.lazy(() => z.object({
   language: z.string().nullable().default(null),
   profile_description: z.string().default(""),
   timezone: z.string().nullable().default(null),
+  // No default: absence is the "server cannot track" signal. A malformed
+  // value degrades to that state instead of discarding the whole user.
+  whats_new_seen_version: z.string().nullable().optional().catch(undefined),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
 }).loose());
@@ -3302,6 +3310,7 @@ export const EMPTY_INBOX_UNREAD_SUMMARY: InboxWorkspaceUnread[] = [];
 // unread dot. `outcome` stays a string so a future kind still lights the dot;
 // on malformed JSON parseWithFallback returns the empty list, which hides it.
 
+<<<<<<< fc5981740a9c7eea2cc242ea3022d0818c9b15b0
 export const IssueUnreadPageSchema = z.lazy(() =>
   z
     .object({
@@ -3319,6 +3328,25 @@ export const IssueUnreadPageSchema = z.lazy(() =>
     })
     .loose(),
 );
+=======
+export const IssueUnreadPageSchema = z
+  .object({
+    items: z.array(
+      z
+        .object({
+          issue_id: z.string(),
+          outcome: z.string(),
+          agent_id: z.string().nullish().transform((v) => v ?? null),
+          task_id: z.string().nullish().transform((v) => v ?? null),
+          comment_id: z.string().nullish().transform((v) => v ?? null),
+          created_at: z.string(),
+        })
+        .loose(),
+    ),
+    next_cursor: z.string().nullish().transform((v) => v ?? null),
+  })
+  .loose();
+>>>>>>> 3d3db2fb7eebf2a1397620b3a324d00383ea1dda
 
 export const EMPTY_ISSUE_UNREAD_PAGE: { items: IssueUnread[]; next_cursor: string | null } = {
   items: [],

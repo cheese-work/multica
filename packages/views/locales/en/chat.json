@@ -49,6 +49,9 @@
     "interactive_login_required": "Sign in again to use Chat",
     "interactive_login_action": "Sign in",
     "title": "Chat",
+    "no_agent_title": "No agent to chat with yet",
+    "no_agent_description": "Create an agent, then talk through a request here and let it turn the request into issues.",
+    "no_agent_action": "New agent",
     "select_prompt": "Pick a conversation, or start a new one with +",
     "agent_link_no_access": "You don't have access to chat with this agent."
   },
@@ -354,12 +357,16 @@
     "undo": "Undo"
   },
   "header": {
+<<<<<<< fc5981740a9c7eea2cc242ea3022d0818c9b15b0
     "context_meter": "{{pct}}% of {{window}}",
     "context_meter_warning": "Will compact after the next reply",
     "context_meter_threshold": "Compacts at {{threshold}} (now {{now}})",
     "compact_now": "Compact now",
     "more_actions": "More actions",
     "view_profile": "View agent profile",
+=======
+    "agent_settings": "Agent settings",
+>>>>>>> 3d3db2fb7eebf2a1397620b3a324d00383ea1dda
     "rename": "Rename chat",
     "archive": "Archive chat",
     "unarchive": "Unarchive chat",

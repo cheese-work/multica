@@ -352,6 +352,7 @@ func TestPlatformSkillDescriptionNamesEveryDomain(t *testing.T) {
 	// These are task nouns, not section headings: a task arrives as "set up an
 	// autopilot", never as "Core model".
 	triggerWords := map[string]string{
+<<<<<<< fc5981740a9c7eea2cc242ea3022d0818c9b15b0
 		"references/issues.md":        "issue",
 		"references/issue-turn.md":    "issue",
 		"references/pull-requests.md": "pr",
@@ -369,6 +370,17 @@ func TestPlatformSkillDescriptionNamesEveryDomain(t *testing.T) {
 		"references/labels.md":        "labels",
 		"references/workspace.md":     "workspace",
 		"references/skill-import.md":  "skill import",
+=======
+		"references/issues.md":       "issue",
+		"references/sub-issues.md":   "sub-issue",
+		"references/mentions.md":     "mention",
+		"references/agents.md":       "agent",
+		"references/squads.md":       "squad",
+		"references/autopilots.md":   "autopilot",
+		"references/projects.md":     "project",
+		"references/runtimes.md":     "runtime",
+		"references/skill-import.md": "skill import",
+>>>>>>> 3d3db2fb7eebf2a1397620b3a324d00383ea1dda
 	}
 
 	skill, ok := findSkill(t, PlatformSkillName)
@@ -434,7 +446,11 @@ func TestPlatformSkillCoversPlatformContracts(t *testing.T) {
 				"Do not read them all",
 				// The router's whole job: name every domain and its file.
 				"references/issues.md",
+<<<<<<< fc5981740a9c7eea2cc242ea3022d0818c9b15b0
 				"references/pull-requests.md",
+=======
+				"references/sub-issues.md",
+>>>>>>> 3d3db2fb7eebf2a1397620b3a324d00383ea1dda
 				"references/mentions.md",
 				"references/agents.md",
 				"references/squads.md",
@@ -495,6 +511,7 @@ func TestPlatformSkillCoversPlatformContracts(t *testing.T) {
 				"redelivered once the receiving side is fixed",
 				"include the PR URL when a PR exists",
 				"Closes MUL-123",
+<<<<<<< fc5981740a9c7eea2cc242ea3022d0818c9b15b0
 				"--status backlog",
 				// MUL-5442: the brief's Sub-issue Creation section is a
 				// one-line map pointing here. These anchors are the demoted
@@ -503,6 +520,18 @@ func TestPlatformSkillCoversPlatformContracts(t *testing.T) {
 				"`--stage <N>`",
 				"wakes the parent assignee when a stage",
 				"multica issue status <child-id> todo",
+=======
+				// The link table is the only sanctioned source of PR state,
+				// and the guard against stale data survives MUL-6966 without
+				// naming the key it used to name: `issue get` still returns
+				// whatever an older run left on the issue, but a warning that
+				// spells out a metadata key teaches the key.
+				"stale values left on the issue by an earlier run",
+				// MUL-8441 moved the sub-issue playbook out. Daemons released
+				// before the move still point their brief here for it, so the
+				// signpost must name where it went.
+				"references/sub-issues.md",
+>>>>>>> 3d3db2fb7eebf2a1397620b3a324d00383ea1dda
 				// MUL-6966 phase 1 retired the metadata write discipline
 				// along with the brief section that pointed here. What the
 				// bans were protecting still needs a home, so the
@@ -556,6 +585,26 @@ func TestPlatformSkillCoversPlatformContracts(t *testing.T) {
 				"Start from the trigger, not from memory",
 				"multica issue comment list <issue-id> --thread <trigger-comment-id>",
 				"multica issue comment add <issue-id> --parent <trigger-comment-id>",
+			},
+		},
+		{
+			file: "references/sub-issues.md",
+			want: []string{
+				// MUL-5442: the brief's Sub-issue Creation section is a
+				// one-line map pointing here. These anchors are the demoted
+				// playbook — if they leave, the brief pointer dangles.
+				"todo starts work now, backlog parks it",
+				"--status backlog",
+				"`--stage <N>`",
+				"wakes the parent assignee when a stage",
+				"multica issue status <child-id> todo",
+				// MUL-8441: the brief's split rule is the short form of this
+				// section; the child-side half depends on the [Parent issue]
+				// block the daemon renders.
+				"Before splitting: one issue, one PR",
+				"Slice by user-visible behavior, never by layer",
+				"A PR that is large to review is not a reason to split",
+				"`[Parent issue]` block",
 			},
 		},
 		{

@@ -162,6 +162,8 @@ export interface FilterSnapshot {
   advancedFilter: AdvancedFilterGroup | null;
   /** Only issues an agent is running on right now. */
   agentRunningFilter: boolean;
+  /** Only issues with an agent result the viewer has not seen yet. */
+  unreadFilter: boolean;
 }
 
 /** Filter-bar chip dimensions. Date is excluded: `dateFilter` lives outside
@@ -352,6 +354,9 @@ export interface IssueViewState {
   // reloads: running state changes second-to-second, a persisted toggle would
   // let users return to an empty list with no obvious cause.
   agentRunningFilter: boolean;
+  // When true, the list only shows the viewer's unread issues (the sidebar's
+  // unread dot). Saved into views; resolved per viewer.
+  unreadFilter: boolean;
   sortBy: SortField;
   sortDirection: SortDirection;
   /** Last explicit direction per field, so switching fields is reversible. */
@@ -424,6 +429,7 @@ export interface IssueViewState {
    *  something simple mode cannot say (`simpleFromAdvancedFilter`). */
   exitAdvancedFilter: () => void;
   toggleAgentRunningFilter: () => void;
+  toggleUnreadFilter: () => void;
   hideStatus: (status: IssueStatus) => void;
   showStatus: (status: IssueStatus) => void;
   clearFilters: () => void;
@@ -475,6 +481,7 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
   advancedFilter: null,
   dateFilter: null,
   agentRunningFilter: false,
+  unreadFilter: false,
   sortBy: "created_at",
   sortDirection: "desc",
   sortDirections: { created_at: "desc" },
@@ -640,6 +647,8 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
     }),
   toggleAgentRunningFilter: () =>
     set((state) => ({ agentRunningFilter: !state.agentRunningFilter })),
+  toggleUnreadFilter: () =>
+    set((state) => ({ unreadFilter: !state.unreadFilter })),
   hideStatus: (status) =>
     set((state) =>
       state.hiddenStatuses.includes(status)
@@ -669,6 +678,7 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
       advancedFilter: null,
       dateFilter: null,
       agentRunningFilter: false,
+      unreadFilter: false,
     }),
   resetFiltersTo: (snapshot) => set({ ...snapshot }),
   clearFilterDimension: (dimension) =>
@@ -836,6 +846,11 @@ export const viewStorePersistOptions = (name: string) => ({
     negatedFilters: state.negatedFilters,
     propertyFilters: state.propertyFilters,
     advancedFilter: state.advancedFilter,
+<<<<<<< fc5981740a9c7eea2cc242ea3022d0818c9b15b0
+=======
+    agentRunningFilter: state.agentRunningFilter,
+    unreadFilter: state.unreadFilter,
+>>>>>>> 3d3db2fb7eebf2a1397620b3a324d00383ea1dda
     sortBy: state.sortBy,
     sortDirection: state.sortDirection,
     sortDirections: state.sortDirections,
@@ -980,6 +995,9 @@ export function mergeViewStatePersisted<T extends IssueViewState>(
     agentRunningFilter: p.agentRunningFilter === undefined
       ? current.agentRunningFilter
       : p.agentRunningFilter === true,
+    unreadFilter: p.unreadFilter === undefined
+      ? current.unreadFilter
+      : p.unreadFilter === true,
     negatedFilters: Array.isArray(p.negatedFilters)
       ? [...new Set(p.negatedFilters.filter((dimension): dimension is NegatableFilterDimension =>
           (NEGATABLE_FILTER_DIMENSIONS as readonly unknown[]).includes(dimension),

@@ -1,5 +1,6 @@
 "use client";
 
+<<<<<<< fc5981740a9c7eea2cc242ea3022d0818c9b15b0
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Archive,
@@ -14,6 +15,10 @@ import {
   Trash2,
   UserRound,
 } from "@multica/ui/icons";
+=======
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Archive, ArchiveRestore, MoreHorizontal, Pencil, Settings2, Trash2 } from "@multica/ui/icons";
+>>>>>>> 3d3db2fb7eebf2a1397620b3a324d00383ea1dda
 import { IconButton } from "@multica/ui/components/common/icon-button";
 import {
   DropdownMenu,
@@ -45,6 +50,7 @@ import { isImeComposing } from "@multica/core/utils";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { AppLink } from "../../navigation";
 import { BreadcrumbHeader } from "../../layout/breadcrumb-header";
+import { useNavigation } from "../../navigation";
 import { useT } from "../../i18n";
 import { ChatContextMeter } from "./chat-context-meter";
 import { ChatPresetPicker } from "./chat-preset-picker";
@@ -103,6 +109,7 @@ export function ChatSessionHeader({
   const { t } = useT("chat");
   const { t: tCommon } = useT("common");
   const wsPaths = useWorkspacePaths();
+  const { push } = useNavigation();
   const updateSession = useUpdateChatSession();
   const deleteSession = useDeleteChatSession();
   const setArchived = useSetChatSessionArchived();
@@ -283,6 +290,7 @@ export function ChatSessionHeader({
         }
         leaf={leaf}
         actions={
+<<<<<<< fc5981740a9c7eea2cc242ea3022d0818c9b15b0
           <>
             {isArchived ? null : (
               <ScheduledWakeupsChip sessionId={session.id} agentName={agent?.name} />
@@ -376,6 +384,39 @@ export function ChatSessionHeader({
                   >
                     <UserRound className="h-4 w-4" />
                     {t(($) => $.header.view_profile)}
+=======
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <IconButton
+                  label={tCommon(($) => $.more_actions)}
+                  tooltipSide="bottom"
+                  className="text-muted-foreground"
+                />
+              }
+            >
+              <MoreHorizontal className="h-4 w-4" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-auto">
+              <DropdownMenuItem onClick={startRename}>
+                <Pencil className="h-4 w-4" />
+                {t(($) => $.header.rename)}
+              </DropdownMenuItem>
+              {agent && (
+                <DropdownMenuItem
+                  onClick={() => push(`${wsPaths.agentDetail(agent.id)}?view=general`)}
+                >
+                  <Settings2 className="h-4 w-4" />
+                  {t(($) => $.header.agent_settings)}
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuSeparator />
+              {isArchived ? (
+                <>
+                  <DropdownMenuItem onClick={doUnarchive}>
+                    <ArchiveRestore className="h-4 w-4" />
+                    {t(($) => $.header.unarchive)}
+>>>>>>> 3d3db2fb7eebf2a1397620b3a324d00383ea1dda
                   </DropdownMenuItem>
                 )}
                 {onCompact && !isArchived ? (

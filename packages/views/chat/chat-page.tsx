@@ -1,7 +1,12 @@
 "use client";
 
+<<<<<<< fc5981740a9c7eea2cc242ea3022d0818c9b15b0
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ArrowLeft, MessageSquare } from "@multica/ui/icons";
+=======
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowLeft, Bot, MessageSquare, Plus } from "@multica/ui/icons";
+>>>>>>> 3d3db2fb7eebf2a1397620b3a324d00383ea1dda
 import { toast } from "sonner";
 import { Button } from "@multica/ui/components/ui/button";
 import { IconButton } from "@multica/ui/components/common/icon-button";
@@ -18,8 +23,14 @@ import { chatKeys, chatQuickActionsPendingOptions } from "@multica/core/chat/que
 import { useRegenerateChatQuickActions } from "@multica/core/chat/mutations";
 import { useQuickActionsPendingTimeout } from "@multica/core/chat/use-quick-actions-pending-timeout";
 import { useQuickActionsFailureToast } from "./components/use-quick-actions-failure-toast";
+<<<<<<< fc5981740a9c7eea2cc242ea3022d0818c9b15b0
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Agent, ChatSearchHit, ChatSession } from "@multica/core/types";
+=======
+import { useQuery } from "@tanstack/react-query";
+import type { Agent, ChatSession } from "@multica/core/types";
+import { CollectionPageState } from "../layout/collection-page";
+>>>>>>> 3d3db2fb7eebf2a1397620b3a324d00383ea1dda
 import { CollapsedNavTrigger, PageHeader } from "../layout/page-header";
 import { PanelHeader } from "../layout/panel-nav";
 import { useListColumnCollapsed } from "../layout/app-shell-context";
@@ -75,7 +86,10 @@ import { useRegisterCommandBarContext } from "../search/register-context";
 export function ChatPage() {
   const { t } = useT("chat");
   const { pathname, searchParams, push, replace } = useNavigation();
+<<<<<<< fc5981740a9c7eea2cc242ea3022d0818c9b15b0
   const backOrReplace = useBackOrReplace();
+=======
+>>>>>>> 3d3db2fb7eebf2a1397620b3a324d00383ea1dda
   const workspaceSlug = useRequiredWorkspaceSlug();
   const wsPaths = useWorkspacePaths();
   const workspace = useCurrentWorkspace();
@@ -409,7 +423,26 @@ export function ChatPage() {
   );
 
   const compactConversation = isCompact && (!!c.activeSessionId || composingNew);
+<<<<<<< fc5981740a9c7eea2cc242ea3022d0818c9b15b0
   // Back follows real history; the list is only the fallback.
+=======
+  // Nothing to talk to and nothing to reread: the composer would only be a
+  // disabled box, so the page explains the prerequisite instead.
+  const noAgentPage = c.noAgent && c.sessions.length === 0;
+  const noAgentState = (
+    <CollectionPageState
+      icon={Bot}
+      title={t(($) => $.page.no_agent_title)}
+      description={t(($) => $.page.no_agent_description)}
+      actions={
+        <Button size="sm" onClick={() => push(wsPaths.newAgent())}>
+          <Plus aria-hidden="true" />
+          {t(($) => $.page.no_agent_action)}
+        </Button>
+      }
+    />
+  );
+>>>>>>> 3d3db2fb7eebf2a1397620b3a324d00383ea1dda
   const backToList = () => {
     if (c.activeSessionId || urlNew) backOrReplace(wsPaths.chat());
   };
@@ -619,7 +652,11 @@ export function ChatPage() {
     return (
       <div className="flex flex-1 flex-col min-h-0">
         {listHeader}
-        <div className="flex-1 min-h-0 overflow-y-auto">{listBody}</div>
+        {noAgentPage ? (
+          noAgentState
+        ) : (
+          <div className="flex-1 min-h-0 overflow-y-auto">{listBody}</div>
+        )}
       </div>
     );
   }
@@ -631,7 +668,7 @@ export function ChatPage() {
   const hasTarget = !!c.activeSessionId || composingNew;
   return (
     <div className="flex min-h-0 flex-1">
-      <ListColumn collapsed={listCollapsed}>
+      <ListColumn collapsed={listCollapsed} width="list">
         {listHeader}
         <div className="flex-1 min-h-0 overflow-y-auto">{listBody}</div>
       </ListColumn>
@@ -639,6 +676,8 @@ export function ChatPage() {
         {listCollapsed && !c.currentSession && <PageHeader>{newChatButton}</PageHeader>}
         {hasTarget ? (
           conversation
+        ) : noAgentPage ? (
+          noAgentState
         ) : (
           <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 text-muted-foreground">
             <MessageSquare className="h-10 w-10 text-faint-foreground" />

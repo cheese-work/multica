@@ -117,6 +117,7 @@ describe("baselineFromQuery agent running", () => {
   });
 });
 
+<<<<<<< fc5981740a9c7eea2cc242ea3022d0818c9b15b0
 // A shared view's query is attacker-controlled JSON. An actor whose `type` is
 // not one of the known strings must be dropped, never reach actorFilterKey
 // (a non-string `type` throws in the template literal and breaks the directory
@@ -152,5 +153,17 @@ describe("baselineFromQuery actor filters", () => {
     expect(
       issueViewFilterCount({ assigneeFilters: [{ id, type: { toString: null } }] }),
     ).toBe(0);
+=======
+describe("baselineFromQuery unread", () => {
+  it("fixes the filter only when the view saved it as true", () => {
+    expect(baselineFromQuery({ unreadFilter: true }).unread).toBe(true);
+    expect(baselineFromQuery({ unreadFilter: true }).raw.unreadFilter).toBe(true);
+    expect(baselineFromQuery({ unreadFilter: "yes" }).unread).toBe(false);
+    expect(baselineFromQuery({}).raw.unreadFilter).toBe(false);
+  });
+
+  it("counts as one condition in the view summary", () => {
+    expect(issueViewFilterCount({ unreadFilter: true, statusFilters: ["todo"] })).toBe(2);
+>>>>>>> 3d3db2fb7eebf2a1397620b3a324d00383ea1dda
   });
 });

@@ -87,6 +87,8 @@ type Client struct {
 type cachedToken struct {
 	token  string
 	expiry time.Time
+	// permissions is what GitHub granted this token, e.g. {"checks": "read"}.
+	permissions map[string]string
 }
 
 // NewClientFromEnv builds a Client from GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY.
@@ -201,8 +203,9 @@ func (client *Client) mintInstallationToken(ctx context.Context, installationID 
 		return "", fmt.Errorf("github installation token: unexpected status %d", resp.StatusCode)
 	}
 	var parsed struct {
-		Token     string `json:"token"`
-		ExpiresAt string `json:"expires_at"`
+		Token       string            `json:"token"`
+		ExpiresAt   string            `json:"expires_at"`
+		Permissions map[string]string `json:"permissions"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return "", errors.New("github installation token: malformed response")
@@ -216,6 +219,7 @@ func (client *Client) mintInstallationToken(ctx context.Context, installationID 
 			expiry = t
 		}
 	}
+<<<<<<< fc5981740a9c7eea2cc242ea3022d0818c9b15b0
 	client.mu.Lock()
 	client.tokens[installationID] = cachedToken{token: parsed.Token, expiry: expiry}
 	client.mu.Unlock()
@@ -228,6 +232,25 @@ type StatusError struct{ Status int }
 
 func (e *StatusError) Error() string {
 	return fmt.Sprintf("github REST: unexpected status %d", e.Status)
+=======
+	c.mu.Lock()
+	c.tokens[installationID] = cachedToken{token: parsed.Token, expiry: expiry, permissions: parsed.Permissions}
+	c.mu.Unlock()
+	return parsed.Token, nil
+}
+
+// tokenCanRead reports whether the installation's cached token was granted at
+// least read access to permission. It answers false until a request on this
+// installation has minted a token, so callers ask after their first request.
+func (c *Client) tokenCanRead(installationID int64, permission string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch c.tokens[installationID].permissions[permission] {
+	case "read", "write", "admin":
+		return true
+	}
+	return false
+>>>>>>> 3d3db2fb7eebf2a1397620b3a324d00383ea1dda
 }
 
 // restGet authenticates against a fixed API path. Response bodies and tokens

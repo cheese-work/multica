@@ -28,6 +28,7 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleCheck,
+  FileQuestion,
   Milestone,
   MoreHorizontal,
   PanelRight,
@@ -102,7 +103,7 @@ import { AssigneePicker } from "./pickers/assignee-picker";
 import { LabelPicker } from "./pickers/label-picker";
 import { CustomPropertyValueEditor, CustomPropertyValueDisplay } from "./pickers/custom-property-picker";
 import { Switch } from "@multica/ui/components/ui/switch";
-import { IssueActionsDropdown, useIssueActions, IssueActionsContextMenu, IssueContextMenuProvider } from "../actions";
+import { IssueActionsDropdown, useIssueActions, useArchivedInboxItemId, IssueActionsContextMenu, IssueContextMenuProvider } from "../actions";
 import { LabelChip } from "../../labels/label-chip";
 import { IssueAgentActivityIndicator } from "./issue-agent-activity-indicator";
 import { SubIssuesAgentWorkingChip } from "./sub-issues-agent-working-chip";
@@ -130,8 +131,11 @@ import {
 import { collectThreadParticipants, collectThreadReplies, deriveThreadResolution } from "./thread-utils";
 import { IssueAgentHeaderChip } from "./issue-agent-header-chip";
 import { IssueWakeupHeaderChip } from "./issue-wakeup-header-chip";
+<<<<<<< fc5981740a9c7eea2cc242ea3022d0818c9b15b0
 import { useWakeupsFocus } from "./use-wakeups-focus";
 import { IssueInboxRestoreButton } from "./issue-inbox-restore-button";
+=======
+>>>>>>> 3d3db2fb7eebf2a1397620b3a324d00383ea1dda
 import { ExecutionLogSection } from "./execution-log-section";
 import { StatusHistoryButton } from "./status-history-button";
 import { WakeupsSection } from "./wakeups-section";
@@ -201,6 +205,7 @@ import {
 } from "../../platform";
 import { cn } from "@multica/ui/lib/utils";
 import { TruncatedTooltip } from "@multica/ui/components/common/truncated-tooltip";
+import { CollectionPageState } from "../../layout/collection-page";
 import { PAGE_GUTTER } from "../../layout/page-header";
 
 import { ProgressRing } from "./progress-ring";
@@ -1272,6 +1277,7 @@ export function IssueNotFound({
           {trailing && <div className="ml-auto flex shrink-0 items-center gap-1">{trailing}</div>}
         </div>
       )}
+<<<<<<< fc5981740a9c7eea2cc242ea3022d0818c9b15b0
       <div className="flex flex-1 min-h-0 flex-col items-center justify-center gap-3 text-body text-muted-foreground">
         {dataError && issueKey && <p className="font-medium">{issueKey}</p>}
         <p>{t(($) => (dataError ? $.detail.data_error : onRetry ? $.detail.load_failed : $.detail.not_found))}</p>
@@ -1287,6 +1293,21 @@ export function IssueNotFound({
           </Button>
         )}
       </div>
+=======
+      <CollectionPageState
+        icon={FileQuestion}
+        title={t(($) => $.detail.not_found_title)}
+        description={t(($) => $.detail.not_found)}
+        actions={
+          showBackLink ? (
+            <Button variant="outline" size="sm" onClick={() => backOrReplace(paths.issues())}>
+              <ChevronLeft aria-hidden="true" />
+              {t(($) => $.detail.back)}
+            </Button>
+          ) : undefined
+        }
+      />
+>>>>>>> 3d3db2fb7eebf2a1397620b3a324d00383ea1dda
     </div>
   );
 }
@@ -1874,6 +1895,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     return map;
   }, [timelineView.threadReplies]);
 
+<<<<<<< fc5981740a9c7eea2cc242ea3022d0818c9b15b0
   // The root whose thread contains the current deep-link/highlight request,
   // derived purely from `highlightCommentId` + `replyToRoot` — NOT from
   // `highlightedId` (only set once the target DOM node is actually found,
@@ -2331,17 +2353,38 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     }
     return null;
   }, [timelineView.groups]);
+=======
+  // Thread root of a deep-link target. A run that left no comment is addressed
+  // by its task id and sits in a slot inside the thread it answers, so it
+  // unfolds and scrolls with that thread exactly like a reply does.
+  const highlightRootId = useMemo(() => {
+    if (!highlightCommentId) return undefined;
+    const replyRoot = replyToRoot.get(highlightCommentId);
+    if (replyRoot) return replyRoot;
+    for (const [rootId, runs] of commentRuns) {
+      if (runs.some((run) => run.task.id === highlightCommentId)) return rootId;
+    }
+    return undefined;
+  }, [highlightCommentId, replyToRoot, commentRuns]);
+>>>>>>> 3d3db2fb7eebf2a1397620b3a324d00383ea1dda
 
   // Deep-link target index in the flat items array. For root comments this is
-  // a direct findIndex hit; for reply ids we look up the enclosing root.
+  // a direct findIndex hit; for replies and threaded runs we look up the
+  // enclosing root.
   const targetIdx = useMemo(() => {
     if (!highlightCommentId) return -1;
     const rootId = replyToRoot.get(highlightCommentId) ?? highlightCommentId;
     const landingId = commentLandingTarget(highlightCommentId, rootId, timelineView.threadReplies.get(rootId) ?? EMPTY_REPLIES);
     const direct = items.findIndex((it) => it.id === landingId);
     if (direct >= 0) return direct;
+<<<<<<< fc5981740a9c7eea2cc242ea3022d0818c9b15b0
     return items.findIndex((it) => it.id === rootId);
   }, [items, highlightCommentId, replyToRoot, timelineView.threadReplies]);
+=======
+    if (!highlightRootId) return -1;
+    return items.findIndex((it) => it.id === highlightRootId);
+  }, [items, highlightCommentId, highlightRootId]);
+>>>>>>> 3d3db2fb7eebf2a1397620b3a324d00383ea1dda
 
   // One entry per comment thread (folded resolved bars included), activity
   // groups skipped. Derived from the same flat `items` array Virtuoso renders
@@ -2950,9 +2993,19 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
 
   // Deep-link landing. Semantically equivalent to navigating to
   // `#comment-${id}`: find the element with that id, scrollIntoView it.
+<<<<<<< fc5981740a9c7eea2cc242ea3022d0818c9b15b0
   // For a reply inside a folded resolved thread, the reply is not in items
   // (only the resolved-bar root is). Auto-expand the thread first; the
   // effect re-runs once items re-flatten.
+=======
+  // When `highlightCommentId` is set the timeline below renders flat (no
+  // virtualization), so every comment id is in the DOM by the time this
+  // effect runs after commit.
+  //
+  // For a reply or threaded run inside a folded resolved thread, the target
+  // is not in items (only the resolved-bar root is). Auto-expand the thread
+  // first; the effect re-runs once items re-flatten.
+>>>>>>> 3d3db2fb7eebf2a1397620b3a324d00383ea1dda
   //
   // `scrollContainerEl` is in deps because the component early-returns a
   // loading skeleton while the issue query is pending. The scroll-container
@@ -2981,7 +3034,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     const mementoConsumed = consumedHighlightRef.current === highlightCommentId;
     if (mementoConsumed) didHighlightRef.current = highlightCommentId;
 
-    const rootId = replyToRoot.get(highlightCommentId);
+    const rootId = highlightRootId;
     if (rootId && rootId !== highlightCommentId) {
       // Root resolved → the whole thread is a folded bar.
       const rootItem = items[targetIdx];
@@ -3087,7 +3140,11 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     return () => {
       cancelAnimationFrame(rafId);
     };
+<<<<<<< fc5981740a9c7eea2cc242ea3022d0818c9b15b0
   }, [highlightCommentId, highlightRequestToken, id, writeViewState, items, targetIdx, scrollContainerEl, replyToRoot, expandedResolved, timelineView, toggleResolvedExpand, isDisclosureRevealCommitted, revealKey, disclosureReveal.token]);
+=======
+  }, [highlightCommentId, highlightRequestToken, id, writeViewState, items, targetIdx, scrollContainerEl, highlightRootId, expandedResolved, timelineView, toggleResolvedExpand]);
+>>>>>>> 3d3db2fb7eebf2a1397620b3a324d00383ea1dda
 
   const descEditorRef = useRef<ContentEditorRef>(null);
   const descriptionEditingRef = useRef(false);
@@ -3325,6 +3382,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // Called before the `if (!issue)` early return so hook order stays stable.
   const actions = useIssueActions(issue);
   const handleUpdateField = actions.updateField;
+  // The inbox passes `onDone` and owns archive and restore there.
+  const archivedInboxItemId = useArchivedInboxItemId(id, !onDone);
 
   // Labels live in their own query (not on the issue body) — fetch the count
   // here so seeding can decide whether the "Labels" optional row should be
@@ -3918,12 +3977,18 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
 
   // Shared row renderer for both timeline render modes (flat / virtualized).
   // The wrapper `id="comment-..."` is the deep-link target — equivalent to
-  // a native `<a href="#comment-...">` anchor.
+  // a native `<a href="#comment-...">` anchor. A run that left no comment is
+  // addressed by its task id, which the sidebar's unread link lands on.
   const renderItem = (_i: number, item: TimelineItem): React.ReactElement => {
     if (item.kind === "run") {
       const reply = item.entry;
+<<<<<<< fc5981740a9c7eea2cc242ea3022d0818c9b15b0
       return <div className={!item.row || item.row.last ? "pb-3" : undefined} id={reply ? `comment-${reply.id}` : undefined}>
         {reply?.resolved_at && !effectiveExpandedResolved.has(reply.id) ? <ResolvedThreadBar
+=======
+      return <div className="pb-3" id={`comment-${item.id}`}>
+        {reply?.resolved_at && !expandedResolved.has(reply.id) ? <ResolvedThreadBar
+>>>>>>> 3d3db2fb7eebf2a1397620b3a324d00383ea1dda
           entry={reply} replies={timelineView.threadReplies.get(reply.id) ?? EMPTY_REPLIES}
           onExpand={() => toggleResolvedExpand(reply.id, true)} /> : <AgentRunComment run={item.run} entering={enteringRunIds.has(item.run.task.id)} standalone
           highlightedId={highlightedId}
@@ -4096,8 +4161,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                 It self-hides when no agent is active. */}
             <IssueAgentHeaderChip issueId={id} onJumpToRun={jumpToRun} />
             <IssueWakeupHeaderChip issueId={id} onOpen={openWakeups} />
-            {/* The inbox passes `onDone` and owns archive and restore there. */}
-            {!onDone && <IssueInboxRestoreButton issueId={id} />}
             {onDone && !issueBehavesAsAny(issue, ["done", "closed"]) && (
               <Tooltip>
                 <TooltipTrigger
@@ -4154,6 +4217,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               // above and skip navigation. Otherwise the modal takes us back
               // to the list we came from, falling back to all issues.
               onDeletedFallbackPath={onDelete ? undefined : paths.issues()}
+              archivedInboxItemId={archivedInboxItemId}
               trigger={
                 <IconButton
                   label={tCommon(($) => $.more_actions)}

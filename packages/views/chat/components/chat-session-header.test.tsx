@@ -6,6 +6,7 @@ import enChat from "../../locales/en/chat.json";
 import enCommon from "../../locales/en/common.json";
 
 const updateMutate = vi.hoisted(() => vi.fn());
+const pushMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@multica/core/paths", () => ({
   useWorkspacePaths: () => ({ agentDetail: (id: string) => `/agents/${id}` }),
@@ -30,6 +31,7 @@ vi.mock("../../navigation", () => ({
   AppLink: ({ children, href }: { children: React.ReactNode; href: string }) => (
     <a href={href}>{children}</a>
   ),
+  useNavigation: () => ({ push: pushMock }),
 }));
 
 vi.mock("./scheduled-wakeups-chip", () => ({ ScheduledWakeupsChip: () => null }));
@@ -74,6 +76,7 @@ describe("ChatSessionHeader breadcrumb", () => {
     ).toBeTruthy();
   });
 
+<<<<<<< fc5981740a9c7eea2cc242ea3022d0818c9b15b0
   it("renders a long title in full: no fixed character cap, full text in the tooltip", async () => {
     const longTitle = "tôi muốn adopt ý tưởng này vào hệ thống chat của chúng ta để tiêu đề hiển thị đầy đủ hơn ".repeat(2).trim();
     render(
@@ -86,6 +89,33 @@ describe("ChatSessionHeader breadcrumb", () => {
     expect(button.className).toContain("truncate");
     act(() => button.focus());
     expect((await screen.findAllByText(longTitle)).length).toBeGreaterThan(1);
+=======
+  it("opens the agent's settings from the ⋯ menu", () => {
+    const agent = { id: "agent-1", name: "Lambda" } as Agent;
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <ChatSessionHeader session={session} agent={agent} />
+      </I18nProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Agent settings" }));
+    expect(pushMock).toHaveBeenCalledWith("/agents/agent-1?view=general");
+  });
+
+  it("offers no agent settings when the chat's agent is unavailable", () => {
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <ChatSessionHeader session={session} agent={null} />
+      </I18nProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+    expect(screen.getByRole("menuitem", { name: "Rename chat" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("menuitem", { name: "Agent settings" }),
+    ).not.toBeInTheDocument();
+>>>>>>> 3d3db2fb7eebf2a1397620b3a324d00383ea1dda
   });
 
   it("shows only the title when the chat's agent is unavailable", () => {
