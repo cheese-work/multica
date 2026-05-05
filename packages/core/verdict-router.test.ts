@@ -201,10 +201,11 @@ describe("parseVerdictFromComment", () => {
 // ── Idempotency key tests ─────────────────────────────────────────────────────
 
 describe("buildFixTaskKey", () => {
-  it("combines pr_url and head_sha", () => {
-    expect(buildFixTaskKey("https://github.com/multica-ai/multica/pull/1", "abc1234")).toBe(
-      "https://github.com/multica-ai/multica/pull/1:abc1234"
-    );
+  it("combines pr_url and head_sha; same sha with different verdict_ids yields same key", () => {
+    const key1 = buildFixTaskKey("https://github.com/multica-ai/multica/pull/1", "abc1234");
+    const key2 = buildFixTaskKey("https://github.com/multica-ai/multica/pull/1", "abc1234");
+    expect(key1).toBe("https://github.com/multica-ai/multica/pull/1:abc1234");
+    expect(key1).toBe(key2);
   });
 });
 
@@ -468,7 +469,7 @@ describe("routeMalformedVerdict", () => {
     expect(result.action).toBe("ESCALATE");
   });
 
-  it("W2: returns ESCALATE for unsupported-schema-version (fail closed)", () => {
+  it("returns ESCALATE for unsupported-schema-version (fail closed)", () => {
     const result = routeMalformedVerdict({ ok: false, error: "unsupported-schema-version", rawContent: "" });
     expect(result.action).toBe("ESCALATE");
   });

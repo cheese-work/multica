@@ -96,7 +96,7 @@ Project:     same project as parent
 Description:
   Parent review: {parent_issue_identifier} PR: {pr_url} @ {head_sha[:7]}
 
-  <!-- multica:fix-task-key {head_sha}:{verdict_id} -->
+  <!-- multica:fix-task-key {pr_url}:{head_sha} -->
 
   ## Findings to address
 
@@ -213,7 +213,7 @@ No `mention://agent` at any step. Assignment + status change + comment on assign
 | Verdict/severity mismatch | verdict=APPROVED but finding.severity=critical | Derived verdict=BLOCKER; `mismatch` flag set |
 | Missing required fields | Envelope without `verdict_id` | `ParseResult.error = 'incomplete-envelope'`; treated as BLOCKER |
 | Cap exceeded | 25 findings | Trimmed to 20; `cap-exceeded` info finding appended |
-| Derive idempotency key | head_sha="abc123", verdict_id="uuid-1" | `abc123:uuid-1` |
+| Build fix-task key | pr_url="https://.../pull/1", head_sha="abc123" | `https://.../pull/1:abc123` |
 
 ### 10.2 Routing tests (`packages/core/verdict-router.test.ts`)
 

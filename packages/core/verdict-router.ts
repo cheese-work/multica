@@ -262,7 +262,13 @@ export function parseVerdictFromComment(content: string): ParseResult {
 
 // ── Idempotency ───────────────────────────────────────────────────────────────
 
-/** Returns the fix-task dedup key for a PR head: `{pr_url}:{head_sha}` */
+/**
+ * Returns the fix-task dedup key for a PR head: `{pr_url}:{head_sha}`.
+ *
+ * Fix tasks are consolidated per PR head SHA: repeated reviewer emissions on
+ * the same commit reuse the existing fix task rather than spawn duplicate
+ * implementer work. `verdict_id` is the processed-event/audit identity only.
+ */
 export function buildFixTaskKey(prUrl: string, headSha: string): string {
   return `${prUrl}:${headSha}`;
 }
@@ -380,13 +386,13 @@ export function routeVerdict(
 
 /**
  * Build a routing decision for a failed parse result.
- * Malformed envelopes produce AUDIT_ONLY or ESCALATE (incomplete-envelope = fail closed).
+ * Malformed envelopes produce AUDIT_ONLY or ESCALATE (incomplete-envelope and unsupported-schema-version fail closed).
  */
 export function routeMalformedVerdict(failure: ParseFailure): RoutingDecision {
   if (failure.error === "incomplete-envelope" || failure.error === "unsupported-schema-version") {
     return {
       action: "ESCALATE",
-      reason: "Reviewer envelope missing required fields or uses unsupported schema version — failing closed. Human review needed.",
+      reason: `Reviewer envelope is not safely routable (${failure.error}) — failing closed. Human review needed.`,
       escalationReason: `Malformed reviewer envelope: ${failure.error}`,
     };
   }
