@@ -262,9 +262,16 @@ export function parseVerdictFromComment(content: string): ParseResult {
 
 // ── Idempotency ───────────────────────────────────────────────────────────────
 
-/** Returns the idempotency key for a verdict: `{head_sha}:{verdict_id}` */
-export function buildIdempotencyKey(headSha: string, verdictId: string): string {
-  return `${headSha}:${verdictId}`;
+/**
+ * Returns the idempotency key for fix-task creation.
+ *
+ * Fix tasks are consolidated per PR head SHA: repeated reviewer emissions on
+ * the same commit should reuse the existing fix task rather than spawn
+ * duplicate implementer work. `verdictId` is intentionally ignored here; it
+ * remains useful as a processed-event/audit identity outside this helper.
+ */
+export function buildIdempotencyKey(headSha: string, _verdictId: string): string {
+  return headSha;
 }
 
 /** Extracts the fix-task idempotency key tag from a task description. */
@@ -380,13 +387,13 @@ export function routeVerdict(
 
 /**
  * Build a routing decision for a failed parse result.
- * Malformed envelopes produce AUDIT_ONLY or ESCALATE (incomplete-envelope = fail closed).
+ * Malformed envelopes produce AUDIT_ONLY or ESCALATE (incomplete-envelope and unsupported-schema-version fail closed).
  */
 export function routeMalformedVerdict(failure: ParseFailure): RoutingDecision {
-  if (failure.error === "incomplete-envelope") {
+  if (failure.error === "incomplete-envelope" || failure.error === "unsupported-schema-version") {
     return {
       action: "ESCALATE",
-      reason: "Reviewer envelope missing required fields — failing closed. Human review needed.",
+      reason: `Reviewer envelope is not safely routable (${failure.error}) — failing closed. Human review needed.`,
       escalationReason: `Malformed reviewer envelope: ${failure.error}`,
     };
   }

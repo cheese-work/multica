@@ -201,15 +201,16 @@ describe("parseVerdictFromComment", () => {
 // ── Idempotency key tests ─────────────────────────────────────────────────────
 
 describe("buildIdempotencyKey", () => {
-  it("combines head_sha and verdict_id", () => {
-    expect(buildIdempotencyKey("abc1234", "uuid-1")).toBe("abc1234:uuid-1");
+  it("keys fix-task creation by PR head SHA only", () => {
+    expect(buildIdempotencyKey("abc1234", "uuid-1")).toBe("abc1234");
+    expect(buildIdempotencyKey("abc1234", "uuid-2")).toBe("abc1234");
   });
 });
 
 describe("extractFixTaskKey", () => {
   it("extracts key from description tag", () => {
-    const desc = `Some text\n${buildFixTaskKeyTag("abc1234:uuid-1")}\nMore text`;
-    expect(extractFixTaskKey(desc)).toBe("abc1234:uuid-1");
+    const desc = `Some text\n${buildFixTaskKeyTag("abc1234")}\nMore text`;
+    expect(extractFixTaskKey(desc)).toBe("abc1234");
   });
 
   it("returns null when no tag present", () => {
@@ -262,9 +263,7 @@ describe("routeVerdict", () => {
     });
     const decision = routeVerdict(env, makeContext());
     expect(decision.action).toBe("CREATE_TASK");
-    expect(decision.idempotencyKey).toBe(
-      buildIdempotencyKey(env.pr.head_sha, env.verdict_id)
-    );
+    expect(decision.idempotencyKey).toBe(env.pr.head_sha);
   });
 
   it("routes duplicate verdict (same idempotency key) to REUSE_TASK", () => {
@@ -290,7 +289,7 @@ describe("routeVerdict", () => {
   });
 
   it("creates new task when head SHA moved (new commit, same verdict struct)", () => {
-    // New head SHA = new idempotency key even if verdict_id is different
+    // New head SHA = new fix-task idempotency key even if verdict_id is different
     const env = makeEnvelope({
       verdict: "REQUEST_CHANGES",
       pr: { url: "https://...", head_sha: "newsha99", base_sha: "f0e9d8c" },
@@ -307,12 +306,40 @@ describe("routeVerdict", () => {
         },
       ],
     });
-    // Old task has old key (different sha + verdict_id)
+    // Old task has old key (different sha)
     const oldKey = buildIdempotencyKey("abc1234", "aaaaaaaa-0000-0000-0000-000000000001");
     const ctx = makeContext({ existingFixTasks: [makeFixTask(oldKey)] });
     const decision = routeVerdict(env, ctx);
     expect(decision.action).toBe("CREATE_TASK");
-    expect(decision.idempotencyKey).toBe("newsha99:bbbbbbbb-0000-0000-0000-000000000002");
+    expect(decision.idempotencyKey).toBe("newsha99");
+  });
+
+  it("reuses an existing fix task for the same head SHA even with a new verdict_id", () => {
+    const first = makeEnvelope({
+      verdict: "REQUEST_CHANGES",
+      pr: { url: "https://...", head_sha: "same-sha", base_sha: "f0e9d8c" },
+      verdict_id: "aaaaaaaa-0000-0000-0000-000000000001",
+      findings: [
+        {
+          id: "sha256:rc1",
+          severity: "high",
+          check: "missing-test",
+          rationale: "Missing test.",
+          required_action: "Add test.",
+          location: { file: "foo.ts", line: 1, range: null, commit_sha: "same-sha" },
+          tags: [],
+        },
+      ],
+    });
+    const second = { ...first, verdict_id: "bbbbbbbb-0000-0000-0000-000000000002" };
+    const key = buildIdempotencyKey(first.pr.head_sha, first.verdict_id);
+    const ctx = makeContext({ existingFixTasks: [makeFixTask(key)] });
+
+    const decision = routeVerdict(second, ctx);
+
+    expect(decision.action).toBe("REUSE_TASK");
+    expect(decision.idempotencyKey).toBe("same-sha");
+    expect(decision.fixTaskId).toBe("task-001");
   });
 
   it("routes BLOCKER with code fix to CREATE_TASK", () => {
@@ -428,6 +455,11 @@ describe("routeMalformedVerdict", () => {
 
   it("returns ESCALATE for incomplete-envelope (fail closed)", () => {
     const result = routeMalformedVerdict({ ok: false, error: "incomplete-envelope", rawContent: "" });
+    expect(result.action).toBe("ESCALATE");
+  });
+
+  it("returns ESCALATE for unsupported-schema-version (fail closed)", () => {
+    const result = routeMalformedVerdict({ ok: false, error: "unsupported-schema-version", rawContent: "" });
     expect(result.action).toBe("ESCALATE");
   });
 });

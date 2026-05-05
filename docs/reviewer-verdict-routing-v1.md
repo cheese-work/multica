@@ -47,19 +47,19 @@ ESCALATED ──(human resolves + reassigns)──▶ IMPLEMENTING
 
 ## 3. Idempotency Keys
 
-Fix tasks are keyed by `{head_sha}:{verdict_id}` to prevent duplicates.
+Fix tasks are keyed by `{head_sha}` to prevent duplicate implementer work on the same PR commit. `verdict_id` remains the processed-event / audit identity for one-review-emission bookkeeping, but it does not make a new fix task by itself.
 
 | Scenario | Driver behavior |
 |---|---|
-| Same verdict re-posted (same `verdict_id`) | Look up task by idempotency key → reuse existing; do NOT create second task |
-| Same HEAD SHA, new verdict ID | New idempotency key → create new fix task (reviewer ran again on same commit) |
-| New HEAD SHA, new verdict ID | New idempotency key → new fix task (implementer pushed; new review cycle) |
+| Same verdict re-posted (same `verdict_id`) | Look up task by head-SHA idempotency key → reuse existing; do NOT create second task |
+| Same HEAD SHA, new verdict ID | Same fix-task idempotency key → reuse existing fix task; record the new `verdict_id` only in audit/processed-event state |
+| New HEAD SHA, new verdict ID | New fix-task idempotency key → new fix task (implementer pushed; new review cycle) |
 | New HEAD SHA, stale verdict ID re-used | Should not happen; `verdict_id` is UUID per emission — treat as duplicate of old verdict |
 
 **Storage:** idempotency key is written to the fix task description as a machine-readable tag:
 
 ```
-<!-- multica:fix-task-key {head_sha}:{verdict_id} -->
+<!-- multica:fix-task-key {head_sha} -->
 ```
 
 Driver scans existing child issues for this tag before creating a new task.
@@ -97,7 +97,7 @@ Project:     same project as parent
 Description:
   Parent review: {parent_issue_identifier} PR: {pr_url} @ {head_sha[:7]}
 
-  <!-- multica:fix-task-key {head_sha}:{verdict_id} -->
+  <!-- multica:fix-task-key {head_sha} -->
 
   ## Findings to address
 
@@ -174,7 +174,7 @@ Per DRV-79 §6 — driver behavior when envelope parse fails:
 | Failure | Derived verdict | Driver action |
 |---|---|---|
 | JSON parse fails | WARNING | Log `malformed-envelope` finding; do NOT create fix task; post audit comment |
-| Unknown `schema_version` | WARNING | Log `unsupported-schema-version`; treat as prose fallback |
+| Unknown `schema_version` | ESCALATE | Fail closed with `unsupported-schema-version`; no fix task, no merge gate |
 | `verdict` inconsistent with `max(severity)` | Derived from findings | Override; log `verdict-severity-mismatch` |
 | Missing required fields | BLOCKER | Escalate; log `incomplete-envelope` |
 | Findings exceed cap | — | Trim to cap; add `cap-exceeded` info finding |
@@ -207,9 +207,9 @@ No `mention://agent` at any step. Assignment + status change + comment on assign
 | Parse valid REQUEST_CHANGES envelope | Same | verdict=REQUEST_CHANGES, findings non-empty |
 | Parse valid BLOCKER envelope | Same | verdict=BLOCKER, findings with critical severity |
 | Parse valid WARNING envelope | Same | verdict=WARNING |
-| Prose-only comment (no envelope) | Plain text "LGTM" | Returns `null` envelope; fallback WARNING decision |
+| Prose-only comment (no envelope) | Plain text "LGTM" | `ParseResult.error = 'malformed-envelope'`; route to AUDIT_ONLY, not WARNING/merge gate |
 | Malformed JSON in envelope | Garbled JSON | `ParseResult.error = 'malformed-envelope'` |
-| Unknown schema version | `schema_version: "99"` | `ParseResult.error = 'unsupported-schema-version'` |
+| Unknown schema version | `schema_version: "99"` | `ParseResult.error = 'unsupported-schema-version'`; route to ESCALATE |
 | Verdict/severity mismatch | verdict=APPROVED but finding.severity=critical | Derived verdict=BLOCKER; `mismatch` flag set |
 | Missing required fields | Envelope without `verdict_id` | `ParseResult.error = 'incomplete-envelope'`; treated as BLOCKER |
 | Cap exceeded | 25 findings | Trimmed to 20; `cap-exceeded` info finding appended |
