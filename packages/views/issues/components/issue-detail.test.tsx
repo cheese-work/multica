@@ -433,6 +433,58 @@ describe("IssueDetail (shared)", () => {
     expect(screen.getByText("Due date")).toBeInTheDocument();
   });
 
+  it("renders the issue tree graph in the properties sidebar", async () => {
+    const parentIssue: Issue = {
+      ...mockIssue,
+      id: "issue-parent",
+      number: 0,
+      identifier: "TES-0",
+      title: "Parent initiative",
+      status: "todo",
+      parent_issue_id: null,
+    };
+    const currentIssue: Issue = {
+      ...mockIssue,
+      parent_issue_id: parentIssue.id,
+    };
+    const childIssue: Issue = {
+      ...mockIssue,
+      id: "issue-child",
+      number: 2,
+      identifier: "TES-2",
+      title: "Child task",
+      status: "todo",
+      parent_issue_id: currentIssue.id,
+    };
+    const issuesById = new Map([
+      [parentIssue.id, parentIssue],
+      [currentIssue.id, currentIssue],
+      [childIssue.id, childIssue],
+    ]);
+    mockApiObj.getIssue.mockImplementation((id: string) =>
+      Promise.resolve(issuesById.get(id) ?? currentIssue),
+    );
+    mockApiObj.listIssues.mockImplementation((params?: { status?: string }) =>
+      Promise.resolve({
+        issues: [...issuesById.values()].filter((issue) => issue.status === params?.status),
+        total: [...issuesById.values()].filter((issue) => issue.status === params?.status).length,
+      }),
+    );
+    // Keep child queries empty so this proves the graph is built from the
+    // issueListOptions/allIssues flow, not the parent/child detail queries.
+    mockApiObj.listChildIssues.mockResolvedValue({ issues: [] });
+
+    renderIssueDetail();
+
+    await waitFor(() => {
+      expect(screen.getByText("Graph")).toBeInTheDocument();
+    });
+
+    expect(screen.getAllByRole("link", { name: /TES-0Parent initiative/ }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("link", { name: /TES-1Implement authentication/ }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("link", { name: /TES-2Child task/ }).length).toBeGreaterThan(0);
+  });
+
   it("uses a non-resizable layout with the sidebar sheet closed by default on mobile", async () => {
     mockViewport.isMobile = true;
 

@@ -65,6 +65,7 @@ import { timeAgo } from "@multica/core/utils";
 import { cn } from "@multica/ui/lib/utils";
 
 import { ProgressRing } from "./progress-ring";
+import { IssueTreeGraph } from "./issue-tree-graph";
 
 function shortDate(date: string | null): string {
   if (!date) return "—";
@@ -493,6 +494,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           </div>}
         </div>
       )}
+
+      <IssueTreeGraph issues={allIssues} currentIssueId={issue.id} />
 
       {/* Details */}
       <div>
