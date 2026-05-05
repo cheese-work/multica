@@ -9,17 +9,27 @@ import { AppLink } from "../../navigation";
 import { StatusIcon } from "./status-icon";
 import { buildIssueTree, type IssueTreeNode } from "../utils/issue-tree";
 
+const ROOT_INDENT_PX = 8;
+const TREE_INDENT_PX = 14;
+
+interface IssueTreeRowProps {
+  node: IssueTreeNode;
+  currentIssueId: string;
+  activePath: Set<string>;
+  depth: number;
+}
+
+interface IssueTreeGraphProps {
+  issues: Issue[];
+  currentIssueId: string;
+}
+
 function IssueTreeRow({
   node,
   currentIssueId,
   activePath,
   depth,
-}: {
-  node: IssueTreeNode;
-  currentIssueId: string;
-  activePath: Set<string>;
-  depth: number;
-}) {
+}: IssueTreeRowProps) {
   const paths = useWorkspacePaths();
   const issue = node.issue;
   const isCurrent = issue.id === currentIssueId;
@@ -36,7 +46,7 @@ function IssueTreeRow({
           !isCurrent && isInPath && "text-foreground",
           !isCurrent && !isInPath && "text-muted-foreground",
         )}
-        style={{ paddingLeft: `${8 + depth * 14}px` }}
+        style={{ paddingLeft: `${ROOT_INDENT_PX + depth * TREE_INDENT_PX}px` }}
       >
         <StatusIcon status={issue.status} className="h-3.5 w-3.5 shrink-0" />
         <span className="shrink-0 tabular-nums font-medium text-muted-foreground">
@@ -66,10 +76,7 @@ function IssueTreeRow({
 export function IssueTreeGraph({
   issues,
   currentIssueId,
-}: {
-  issues: Issue[];
-  currentIssueId: string;
-}) {
+}: IssueTreeGraphProps) {
   const tree = useMemo(
     () => buildIssueTree(issues, currentIssueId),
     [issues, currentIssueId],
@@ -79,7 +86,14 @@ export function IssueTreeGraph({
     [tree],
   );
 
-  if (!tree) return null;
+  if (!tree) {
+    if (process.env.NODE_ENV !== "production" && issues.length > 0) {
+      console.warn("IssueTreeGraph: current issue is missing from the provided issue list", {
+        currentIssueId,
+      });
+    }
+    return null;
+  }
 
   return (
     <div>

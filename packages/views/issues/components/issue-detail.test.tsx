@@ -470,11 +470,9 @@ describe("IssueDetail (shared)", () => {
         total: [...issuesById.values()].filter((issue) => issue.status === params?.status).length,
       }),
     );
-    mockApiObj.listChildIssues.mockImplementation((id: string) =>
-      Promise.resolve({
-        issues: [...issuesById.values()].filter((issue) => issue.parent_issue_id === id),
-      }),
-    );
+    // Keep child queries empty so this proves the graph is built from the
+    // issueListOptions/allIssues flow, not the parent/child detail queries.
+    mockApiObj.listChildIssues.mockResolvedValue({ issues: [] });
 
     renderIssueDetail();
 

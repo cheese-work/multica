@@ -10,6 +10,13 @@ export interface IssueTree {
   currentPath: string[];
 }
 
+function cloneNodeWithChildren(
+  node: IssueTreeNode,
+  children: IssueTreeNode[],
+): IssueTreeNode {
+  return { issue: node.issue, children };
+}
+
 function compareIssuePosition(a: Issue, b: Issue) {
   const byPosition = a.position - b.position;
   if (byPosition !== 0) return byPosition;
@@ -57,5 +64,27 @@ export function buildIssueTree(issues: Issue[], currentIssueId: string): IssueTr
     parentId = parent.issue.parent_issue_id;
   }
 
-  return { root, currentPath: path };
+  const pathSet = new Set(path);
+  const prunedById = new Map<string, IssueTreeNode>();
+  const getPrunedNode = (nodeId: string, ancestors = new Set<string>()): IssueTreeNode => {
+    const cached = prunedById.get(nodeId);
+    if (cached) return cached;
+
+    const node = nodes.get(nodeId)!;
+    const nextAncestors = new Set(ancestors);
+    nextAncestors.add(nodeId);
+    const children = node.children
+      .filter((child) => !nextAncestors.has(child.issue.id))
+      .filter((child) => pathSet.has(child.issue.id) || nodeId === currentIssueId)
+      .map((child) =>
+        pathSet.has(child.issue.id)
+          ? getPrunedNode(child.issue.id, nextAncestors)
+          : cloneNodeWithChildren(child, []),
+      );
+    const pruned = cloneNodeWithChildren(node, children);
+    prunedById.set(nodeId, pruned);
+    return pruned;
+  };
+
+  return { root: getPrunedNode(root.issue.id), currentPath: path };
 }
