@@ -31,7 +31,7 @@ function makeEnvelope(overrides: Partial<VerdictEnvelope> = {}): VerdictEnvelope
   };
 }
 
-function wrapInComment(envelope: VerdictEnvelope): string {
+function wrapInComment(envelope: unknown): string {
   return `Some prose before.\n\n<!-- multica:reviewer-verdict v1 -->\n\`\`\`json\n${JSON.stringify(envelope, null, 2)}\n\`\`\`\n\nSome prose after.`;
 }
 
@@ -175,6 +175,56 @@ describe("parseVerdictFromComment", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toBe("incomplete-envelope");
+  });
+
+  it("returns malformed-envelope instead of throwing when findings is not an array", () => {
+    const env = makeEnvelope();
+    const broken = { ...env, findings: { severity: "critical" } };
+    const result = parseVerdictFromComment(wrapInComment(broken));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe("malformed-envelope");
+  });
+
+  it("returns malformed-envelope for invalid verdict enum", () => {
+    const env = makeEnvelope();
+    const broken = { ...env, verdict: "NOT_A_VERDICT" };
+    const result = parseVerdictFromComment(wrapInComment(broken));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe("malformed-envelope");
+  });
+
+  it("returns incomplete-envelope when pr shape is invalid", () => {
+    const env = makeEnvelope();
+    const broken = { ...env, pr: "not-an-object" };
+    const result = parseVerdictFromComment(wrapInComment(broken));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe("incomplete-envelope");
+  });
+
+  it("returns malformed-envelope when a finding shape is invalid", () => {
+    const env = makeEnvelope();
+    const broken = {
+      ...env,
+      verdict: "REQUEST_CHANGES",
+      findings: [
+        {
+          id: "sha256:invalid-finding",
+          severity: "invalid-severity",
+          check: "x",
+          rationale: "bad shape",
+          required_action: "fix",
+          location: { file: "a.ts", line: 1, range: null, commit_sha: "abc1234" },
+          tags: [],
+        },
+      ],
+    };
+    const result = parseVerdictFromComment(wrapInComment(broken));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe("malformed-envelope");
   });
 
   it("trims findings to cap and adds cap-exceeded marker", () => {

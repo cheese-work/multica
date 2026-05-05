@@ -127,6 +127,8 @@ const SEVERITY_RANK: Record<FindingSeverity, number> = {
   high: 3,
   critical: 4,
 };
+const VERDICT_VALUES = new Set<VerdictValue>(["APPROVED", "WARNING", "REQUEST_CHANGES", "BLOCKER"]);
+const FINDING_SEVERITIES = new Set<FindingSeverity>(["info", "low", "medium", "high", "critical"]);
 
 /** Checks that escalate to human instead of creating a fix task. */
 const ESCALATE_CHECKS = new Set([
@@ -210,8 +212,39 @@ export function parseVerdictFromComment(content: string): ParseResult {
     return { ok: false, error: "incomplete-envelope", rawContent: content };
   }
 
-  // Findings — cap at FINDING_CAP
-  let findings = (obj["findings"] as Finding[]) ?? [];
+  // Verdict must be a known enum before routing can safely derive merge state.
+  const claimedVerdict = String(obj["verdict"]);
+  if (!VERDICT_VALUES.has(claimedVerdict as VerdictValue)) {
+    return { ok: false, error: "malformed-envelope", rawContent: content };
+  }
+
+  // Findings — validate enough shape that routing/draft helpers cannot throw.
+  if (!Array.isArray(obj["findings"])) {
+    return { ok: false, error: "malformed-envelope", rawContent: content };
+  }
+
+  let findings = obj["findings"] as Finding[];
+  for (const finding of findings) {
+    if (
+      typeof finding !== "object" ||
+      finding === null ||
+      typeof finding.id !== "string" ||
+      !FINDING_SEVERITIES.has(finding.severity) ||
+      typeof finding.check !== "string" ||
+      typeof finding.rationale !== "string" ||
+      typeof finding.required_action !== "string" ||
+      !Array.isArray(finding.tags) ||
+      finding.tags.some((tag) => typeof tag !== "string") ||
+      typeof finding.location !== "object" ||
+      finding.location === null ||
+      !(finding.location.file === null || typeof finding.location.file === "string") ||
+      !(finding.location.line === null || typeof finding.location.line === "number") ||
+      typeof finding.location.commit_sha !== "string"
+    ) {
+      return { ok: false, error: "malformed-envelope", rawContent: content };
+    }
+  }
+
   if (findings.length > FINDING_CAP) {
     const omittedCount = findings.length - (FINDING_CAP - 1);
     findings = findings.slice(0, FINDING_CAP - 1);
@@ -228,7 +261,6 @@ export function parseVerdictFromComment(content: string): ParseResult {
   }
 
   // Verdict/severity consistency
-  const claimedVerdict = String(obj["verdict"]) as VerdictValue;
   const derivedVerdict = deriveVerdictFromFindings(findings);
   const resolvedVerdict =
     claimedVerdict === derivedVerdict ? claimedVerdict : derivedVerdict;
