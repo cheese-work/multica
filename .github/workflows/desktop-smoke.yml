@@ -14,8 +14,6 @@ jobs:
         include:
           - os: ubuntu-latest
             target: linux
-          - os: windows-latest
-            target: win
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
