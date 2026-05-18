@@ -12,7 +12,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: [self-hosted, linux]
             target: linux
           - os: windows-latest
             target: win

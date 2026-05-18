@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux]
     outputs:
       tag_name: ${{ steps.release_meta.outputs.tag_name }}
       is_stable: ${{ steps.release_meta.outputs.is_stable }}
@@ -62,7 +62,7 @@ jobs:
     # tag push fails this job (401 against the upstream tap), which makes
     # downstream CI go red without affecting the actual artifact pipeline.
     if: github.repository_owner == 'multica-ai'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -95,7 +95,7 @@ jobs:
       matrix:
         include:
           - platform: linux/amd64
-            runs-on: ubuntu-latest
+            runs-on: [self-hosted, linux]
           - platform: linux/arm64
             runs-on: ubuntu-24.04-arm
     runs-on: ${{ matrix.runs-on }}
@@ -159,7 +159,7 @@ jobs:
 
   docker-backend-merge:
     needs: [verify, docker-backend-build]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux]
     concurrency:
       group: release-docker-backend-${{ github.ref }}
       cancel-in-progress: true
@@ -212,7 +212,7 @@ jobs:
       matrix:
         include:
           - platform: linux/amd64
-            runs-on: ubuntu-latest
+            runs-on: [self-hosted, linux]
           - platform: linux/arm64
             runs-on: ubuntu-24.04-arm
     runs-on: ${{ matrix.runs-on }}
@@ -276,7 +276,7 @@ jobs:
 
   docker-web-merge:
     needs: [verify, docker-web-build]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux]
     concurrency:
       group: release-docker-web-${{ github.ref }}
       cancel-in-progress: true
@@ -333,7 +333,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: [self-hosted, linux]
             target: linux
           - os: windows-latest
             target: win
