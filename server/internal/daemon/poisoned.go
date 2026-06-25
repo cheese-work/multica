@@ -34,10 +34,12 @@ import (
 // string literals here until a follow-up PR migrates them or extends
 // the taxonomy.
 const (
-	FailureReasonIterationLimit          = string(taskfailure.ReasonIterationLimit)
-	FailureReasonAgentFallbackMsg        = "agent_fallback_message"
-	FailureReasonAPIInvalidRequest       = string(taskfailure.ReasonAPIInvalidRequest)
-	FailureReasonCodexSemanticInactivity = "codex_semantic_inactivity"
+	FailureReasonIterationLimit           = string(taskfailure.ReasonIterationLimit)
+	FailureReasonAgentFallbackMsg         = "agent_fallback_message"
+	FailureReasonAPIInvalidRequest        = string(taskfailure.ReasonAPIInvalidRequest)
+	FailureReasonCodexSemanticInactivity  = "codex_semantic_inactivity"
+	FailureReasonEmptyOrUnparseableOutput = string(taskfailure.ReasonAgentEmptyOrUnparseableOutput)
+	ClaudeEmptyResponseMarker             = "(empty response)"
 )
 
 // poisonedOutputMaxLen caps how long an output can be and still be
@@ -79,6 +81,23 @@ func classifyPoisonedOutput(output string) (string, bool) {
 		if strings.Contains(lowered, m.Substring) {
 			return m.Reason, true
 		}
+	}
+	return "", false
+}
+
+// classifyClaudeEmptyOutput reports Claude Code's empty-output terminal state.
+// Claude sometimes completes with either no text or the literal SDK sentinel
+// "(empty response)". Treating that as success leaves users with a completed
+// task and no useful answer; worse, the recorded session can be resumed and
+// reproduce the same empty result. Route it through FailTask with the canonical
+// empty/unparseable reason so the server can auto-retry from a fresh session.
+func classifyClaudeEmptyOutput(provider, output string) (string, bool) {
+	if strings.ToLower(strings.TrimSpace(provider)) != "claude" {
+		return "", false
+	}
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" || strings.EqualFold(trimmed, ClaudeEmptyResponseMarker) {
+		return FailureReasonEmptyOrUnparseableOutput, true
 	}
 	return "", false
 }

@@ -24,6 +24,28 @@ import (
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
+func TestIsClaudeEmptyCompletionOutput(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider string
+		output   string
+		want     bool
+	}{
+		{name: "claude blank", provider: "claude", output: " \n\t", want: true},
+		{name: "claude marker", provider: "claude", output: "  (empty response)  ", want: true},
+		{name: "claude real output", provider: "claude", output: "fixed", want: false},
+		{name: "codex blank still allowed", provider: "codex", output: "", want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isClaudeEmptyCompletionOutput(tc.provider, tc.output); got != tc.want {
+				t.Fatalf("isClaudeEmptyCompletionOutput(%q, %q) = %v, want %v", tc.provider, tc.output, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLogClaimEndpointSlowIncludesPayloadFields(t *testing.T) {
 	var logs bytes.Buffer
 	prev := slog.Default()

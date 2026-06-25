@@ -185,10 +185,10 @@ INSERT INTO agent_task_queue (
 SELECT
     p.agent_id, p.runtime_id, p.issue_id, p.chat_session_id, p.autopilot_run_id,
     'queued', p.priority, p.trigger_comment_id, p.trigger_summary, p.context,
-    CASE WHEN p.failure_reason IS NOT DISTINCT FROM 'codex_semantic_inactivity' THEN NULL ELSE p.session_id END,
-    CASE WHEN p.failure_reason IS NOT DISTINCT FROM 'codex_semantic_inactivity' THEN NULL ELSE p.work_dir END,
+    CASE WHEN p.failure_reason IN ('codex_semantic_inactivity', 'agent_error.empty_or_unparseable_output') THEN NULL ELSE p.session_id END,
+    CASE WHEN p.failure_reason IN ('codex_semantic_inactivity', 'agent_error.empty_or_unparseable_output') THEN NULL ELSE p.work_dir END,
     p.attempt + 1, p.max_attempts, p.id,
-    p.failure_reason IS NOT DISTINCT FROM 'codex_semantic_inactivity',
+    p.failure_reason IN ('codex_semantic_inactivity', 'agent_error.empty_or_unparseable_output'),
     p.is_leader_task
 FROM agent_task_queue p
 WHERE p.id = $1
@@ -400,7 +400,8 @@ RETURNING *;
 -- agent fallback marker in the output, an upstream API 400 that means the
 -- conversation history itself is unprocessable (oversized image, malformed
 -- base64, etc.), or a Codex semantic inactivity timeout whose recorded
--- session may replay the same stuck state.
+-- session may replay the same stuck state, or Claude empty-output sessions
+-- that should retry from a clean conversation.
 --
 -- The error-text ILIKE clause is defense-in-depth for the api_invalid_request
 -- shape: a legacy row tagged 'agent_error' (pre-MUL-1921), a deploy-window
@@ -416,7 +417,7 @@ WHERE agent_id = $1 AND issue_id = $2
     status = 'completed'
     OR (
       status = 'failed'
-      AND COALESCE(failure_reason, '') NOT IN ('iteration_limit', 'agent_fallback_message', 'api_invalid_request', 'codex_semantic_inactivity')
+      AND COALESCE(failure_reason, '') NOT IN ('iteration_limit', 'agent_fallback_message', 'api_invalid_request', 'codex_semantic_inactivity', 'agent_error.empty_or_unparseable_output')
       AND NOT (COALESCE(error, '') ILIKE '%400%' AND COALESCE(error, '') ILIKE '%invalid_request_error%')
     )
   )
