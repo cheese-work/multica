@@ -1542,21 +1542,24 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 }
 
 // retryableReasons enumerates failure reasons that the auto-retry path is
-// allowed to act on. Agent-side errors (compile failures, model rejections,
-// etc.) are intentionally excluded — those are real problems that the user
-// should see, not infrastructure flakiness.
+// allowed to act on. Most agent-side errors (compile failures, model
+// rejections, auth/config problems, etc.) are intentionally excluded — those
+// are real problems that the user should see, not infrastructure flakiness.
+// Empty/unparseable Claude output is included because it is a protocol/runtime
+// terminal state, not a meaningful agent answer.
 var retryableReasons = map[string]bool{
 	"runtime_offline":           true,
 	"runtime_recovery":          true,
 	"timeout":                   true,
 	"codex_semantic_inactivity": true,
+	string(taskfailure.ReasonAgentEmptyOrUnparseableOutput): true,
 }
 
 func resumeUnsafeFailureReason(reason string) bool {
 	switch reason {
 	// Keep in sync with GetLastTaskSession / GetLastChatTaskSession and
 	// CreateRetryTask's fresh-session CASE WHEN.
-	case "iteration_limit", "agent_fallback_message", "api_invalid_request", "codex_semantic_inactivity":
+	case "iteration_limit", "agent_fallback_message", "api_invalid_request", "codex_semantic_inactivity", string(taskfailure.ReasonAgentEmptyOrUnparseableOutput):
 		return true
 	default:
 		return false

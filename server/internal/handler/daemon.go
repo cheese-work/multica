@@ -27,6 +27,7 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/redact"
+	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
 
 // ---------------------------------------------------------------------------
@@ -2152,11 +2153,26 @@ type TaskCompleteRequest struct {
 	WorkDir   string `json:"work_dir"`   // working directory used during execution
 }
 
+func isClaudeEmptyCompletionOutput(provider, output string) bool {
+	if strings.ToLower(strings.TrimSpace(provider)) != "claude" {
+		return false
+	}
+	trimmed := strings.TrimSpace(output)
+	return trimmed == "" || strings.EqualFold(trimmed, "(empty response)")
+}
+
+func claudeEmptyCompletionError(output string) string {
+	if trimmed := strings.TrimSpace(output); trimmed != "" {
+		return fmt.Sprintf("claude returned empty output marker %q", trimmed)
+	}
+	return "claude returned empty output"
+}
+
 func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
 
 	// Verify the caller owns this task's workspace.
-	_, workspaceID, ok := h.requireDaemonTaskAccessWithWorkspace(w, r, taskID)
+	taskRow, workspaceID, ok := h.requireDaemonTaskAccessWithWorkspace(w, r, taskID)
 	if !ok {
 		return
 	}
@@ -2167,15 +2183,45 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Server-side guard for older daemons: Claude Code can report a successful
+	// completion with no assistant text, or with the SDK sentinel
+	// "(empty response)". Do not persist that as a green completed task or
+	// synthesize a useless comment. Fail it with the canonical retryable reason
+	// so MaybeRetryFailedTask can enqueue a fresh-session retry.
+	if runtime, err := h.Queries.GetAgentRuntime(r.Context(), taskRow.RuntimeID); err == nil {
+		if isClaudeEmptyCompletionOutput(runtime.Provider, req.Output) {
+			failureReason := taskfailure.ReasonAgentEmptyOrUnparseableOutput.String()
+			errMsg := claudeEmptyCompletionError(req.Output)
+			failedTask, err := h.TaskService.FailTask(r.Context(), parseUUID(taskID), errMsg, req.SessionID, req.WorkDir, failureReason)
+			if err != nil {
+				slog.Warn("complete task empty-output conversion failed", "task_id", taskID, "error", err)
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			if err := h.Queries.DeleteTaskTokensByTask(r.Context(), failedTask.ID); err != nil {
+				slog.Warn("complete task empty-output conversion: failed to revoke task tokens", "task_id", uuidToString(failedTask.ID), "error", err)
+			}
+			slog.Warn("claude task completed with empty output; converted to failed retryable task",
+				"task_id", taskID,
+				"agent_id", uuidToString(failedTask.AgentID),
+				"failure_reason", failureReason,
+			)
+			writeJSON(w, http.StatusOK, taskToResponse(*failedTask, workspaceID))
+			return
+		}
+	} else {
+		slog.Warn("complete task: failed to load runtime for empty-output guard", "task_id", taskID, "runtime_id", uuidToString(taskRow.RuntimeID), "error", err)
+	}
+
 	result, _ := json.Marshal(req)
-	task, err := h.TaskService.CompleteTask(r.Context(), parseUUID(taskID), result, req.SessionID, req.WorkDir)
+	completedTask, err := h.TaskService.CompleteTask(r.Context(), parseUUID(taskID), result, req.SessionID, req.WorkDir)
 	if err != nil {
 		slog.Warn("complete task failed", "task_id", taskID, "error", err)
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	h.emitIssueExecutedOnFirstCompletion(r, task)
+	h.emitIssueExecutedOnFirstCompletion(r, completedTask)
 
 	// Best-effort revoke of any agent task token minted at claim time.
 	// The token would naturally expire at the 24h watermark and is also
@@ -2183,12 +2229,12 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	// completion shrinks the window where a compromised agent process
 	// can keep making API calls after its task finishes. Failure here is
 	// non-fatal; the expiry / cascade are the durable guards.
-	if err := h.Queries.DeleteTaskTokensByTask(r.Context(), task.ID); err != nil {
-		slog.Warn("complete task: failed to revoke task tokens", "task_id", uuidToString(task.ID), "error", err)
+	if err := h.Queries.DeleteTaskTokensByTask(r.Context(), completedTask.ID); err != nil {
+		slog.Warn("complete task: failed to revoke task tokens", "task_id", uuidToString(completedTask.ID), "error", err)
 	}
 
-	slog.Info("task completed", "task_id", taskID, "agent_id", uuidToString(task.AgentID))
-	writeJSON(w, http.StatusOK, taskToResponse(*task, workspaceID))
+	slog.Info("task completed", "task_id", taskID, "agent_id", uuidToString(completedTask.AgentID))
+	writeJSON(w, http.StatusOK, taskToResponse(*completedTask, workspaceID))
 }
 
 // emitIssueExecutedOnFirstCompletion atomically flips issue.first_executed_at

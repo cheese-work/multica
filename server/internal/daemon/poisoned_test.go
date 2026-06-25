@@ -87,6 +87,55 @@ on long outputs.`,
 	}
 }
 
+func TestClassifyClaudeEmptyOutput(t *testing.T) {
+	cases := []struct {
+		name       string
+		provider   string
+		output     string
+		wantOK     bool
+		wantReason string
+	}{
+		{
+			name:       "claude blank output",
+			provider:   "claude",
+			output:     "   \n\t",
+			wantOK:     true,
+			wantReason: FailureReasonEmptyOrUnparseableOutput,
+		},
+		{
+			name:       "claude sdk empty response marker",
+			provider:   "claude",
+			output:     "  (empty response)  ",
+			wantOK:     true,
+			wantReason: FailureReasonEmptyOrUnparseableOutput,
+		},
+		{
+			name:     "claude real output",
+			provider: "claude",
+			output:   "I fixed the issue.",
+			wantOK:   false,
+		},
+		{
+			name:     "codex empty output remains valid",
+			provider: "codex",
+			output:   "",
+			wantOK:   false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reason, ok := classifyClaudeEmptyOutput(tc.provider, tc.output)
+			if ok != tc.wantOK {
+				t.Fatalf("classifyClaudeEmptyOutput(%q, %q) ok=%v, want %v", tc.provider, tc.output, ok, tc.wantOK)
+			}
+			if ok && reason != tc.wantReason {
+				t.Fatalf("classifyClaudeEmptyOutput(%q, %q) reason=%q, want %q", tc.provider, tc.output, reason, tc.wantReason)
+			}
+		})
+	}
+}
+
 func TestClassifyPoisonedError(t *testing.T) {
 	cases := []struct {
 		name       string
