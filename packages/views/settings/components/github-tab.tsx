@@ -63,13 +63,14 @@ export function GitHubTab() {
   const configured = installationData?.configured ?? false;
   const canManage = installationData?.can_manage === true;
   const connected = installations.length > 0;
-  const primaryInstallation = installations[0] ?? null;
 
   const flags = deriveGitHubSettings(workspace);
   const [savingKey, setSavingKey] = useState<SettingsKey | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [disconnectTarget, setDisconnectTarget] = useState<string | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
+  const disconnectInstallation =
+    installations.find((installation) => installation.id === disconnectTarget) ?? null;
 
   async function persistSetting(key: SettingsKey, next: boolean) {
     if (!workspace || savingKey) return;
@@ -173,20 +174,11 @@ export function GitHubTab() {
                 <div className="space-y-1">
                   <p className="text-body font-medium">{t(($) => $.github.connection_title)}</p>
                   {connected ? (
-                    <>
-                      <p className="text-caption text-muted-foreground">
-                        {t(($) => $.github.connected_to, {
-                          login: installations.map((i) => i.account_login).join(", "),
-                        })}
-                      </p>
-                      {primaryInstallation?.connected_by && (
-                        <p className="text-caption text-muted-foreground">
-                          {t(($) => $.github.connected_by, {
-                            name: primaryInstallation.connected_by!,
-                          })}
-                        </p>
-                      )}
-                    </>
+                    <p className="text-caption text-muted-foreground">
+                      {t(($) => $.github.connected_to, {
+                        login: installations.map((i) => i.account_login).join(", "),
+                      })}
+                    </p>
                   ) : canManage ? (
                     <p className="text-caption text-muted-foreground">
                       {t(($) => $.github.connection_description_prefix)}{" "}
@@ -205,43 +197,63 @@ export function GitHubTab() {
               </div>
               {canManage && (
                 <div className="flex items-center gap-2">
-                  {connected && primaryInstallation ? (
-                    // Disconnect must stay reachable even when the master switch
-                    // is off — disconnect is a separate intent (revoke the App
-                    // grant) from hiding the feature.
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setDisconnectTarget(primaryInstallation.id)}
-                    >
-                      {t(($) => $.github.disconnect)}
-                    </Button>
-                  ) : (
-                    <Button
-                      size="sm"
-                      onClick={handleConnect}
-                      disabled={connecting || !configured}
-                      title={
-                        !configured
-                          ? t(($) => $.github.connect_disabled_tooltip)
-                          : undefined
-                      }
-                    >
-                      {connecting
-                        ? t(($) => $.github.connect_opening)
+                  <Button
+                    size="sm"
+                    onClick={handleConnect}
+                    disabled={connecting || !configured}
+                    title={
+                      !configured
+                        ? t(($) => $.github.connect_disabled_tooltip)
+                        : undefined
+                    }
+                  >
+                    {connecting
+                      ? t(($) => $.github.connect_opening)
+                      : connected
+                        ? t(($) => $.github.add_account_or_organization)
                         : t(($) => $.github.connect_github)}
-                    </Button>
-                  )}
+                  </Button>
                 </div>
               )}
             </div>
 
+            {connected ? (
+              <div className="divide-y rounded-md border">
+                {installations.map((installation) => (
+                  <div
+                    key={installation.id}
+                    className="flex items-center justify-between gap-3 px-3 py-2.5"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-body font-medium">
+                        {installation.account_login}
+                      </p>
+                      {installation.connected_by ? (
+                        <p className="text-caption text-muted-foreground">
+                          {t(($) => $.github.connected_by, {
+                            name: installation.connected_by,
+                          })}
+                        </p>
+                      ) : null}
+                    </div>
+                    {canManage ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        title={installation.account_login}
+                        onClick={() => setDisconnectTarget(installation.id)}
+                      >
+                        {t(($) => $.github.disconnect)}
+                      </Button>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
             {canManage && !configured && (
               <p className="text-caption text-muted-foreground">
-                {t(($) => $.github.not_configured)}{" "}
-                <code className="rounded bg-muted px-1 py-0.5 text-micro">GITHUB_APP_SLUG</code>{" "}
-                {t(($) => $.github.not_configured_and)}{" "}
-                <code className="rounded bg-muted px-1 py-0.5 text-micro">GITHUB_WEBHOOK_SECRET</code>.
+                {t(($) => $.github.not_configured)}
               </p>
             )}
 
@@ -338,10 +350,14 @@ export function GitHubTab() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              {t(($) => $.github.disconnect_confirm_title)}
+              {t(($) => $.github.disconnect_confirm_title, {
+                login: disconnectInstallation?.account_login ?? "",
+              })}
             </AlertDialogTitle>
             <AlertDialogDescription>
-              {t(($) => $.github.disconnect_confirm_description)}
+              {t(($) => $.github.disconnect_confirm_description, {
+                login: disconnectInstallation?.account_login ?? "",
+              })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
