@@ -254,8 +254,8 @@ func TestStateRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("signState: %v", err)
 	}
-	if parts := strings.Split(tok, "."); len(parts) != 3 {
-		t.Fatalf("default return state has %d parts, want legacy 3-part format", len(parts))
+	if parts := strings.Split(tok, "."); len(parts) != 5 {
+		t.Fatalf("default return state has %d parts, want timestamped 5-part format", len(parts))
 	}
 	got, ok := verifyState(tok)
 	if !ok {
@@ -287,8 +287,8 @@ func TestStateRoundTripWithRepositoryReturnTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("signStateForReturn: %v", err)
 	}
-	if parts := strings.Split(tok, "."); len(parts) != 4 {
-		t.Fatalf("repository return state has %d parts, want 4", len(parts))
+	if parts := strings.Split(tok, "."); len(parts) != 5 {
+		t.Fatalf("repository return state has %d parts, want timestamped 5-part format", len(parts))
 	}
 	gotWorkspaceID, gotReturnTo, ok := verifyStateWithReturn(tok)
 	if !ok {
@@ -313,6 +313,11 @@ func TestStateRoundTripWithRepositoryReturnTarget(t *testing.T) {
 func TestGitHubConnectRepositoryReturnTarget(t *testing.T) {
 	t.Setenv("GITHUB_APP_SLUG", "multica-test")
 	t.Setenv("GITHUB_WEBHOOK_SECRET", "test-secret-123")
+	t.Setenv("GITHUB_APP_CLIENT_ID", "test-client-id")
+	t.Setenv("GITHUB_APP_CLIENT_SECRET", "test-client-secret")
+	t.Setenv("GITHUB_APP_ID", "12345")
+	pemBytes, _ := generateTestRSAKeyPEM(t)
+	t.Setenv("GITHUB_APP_PRIVATE_KEY", string(pemBytes))
 	wsID := "11111111-2222-3333-4444-555555555555"
 
 	req := httptest.NewRequest(
@@ -2606,8 +2611,9 @@ func TestWebhook_InstallationCreatedRefreshesUnknownLogin(t *testing.T) {
 // race to TestWebhook_InstallationCreatedRefreshesUnknownLogin: GitHub can
 // deliver installation.created before the setup callback has created the local
 // workspace binding. The webhook cannot broadcast yet, but it must not be lost;
-// the callback consumes the pending account metadata even if its direct GitHub
-// API lookup falls back to the "unknown" placeholder.
+// after the callback independently verifies the installation and authorizing
+// organization admin, it clears the pending snapshot without letting stale
+// webhook metadata override the authoritative App lookup.
 func TestSetupCallback_ConsumesPendingInstallationCreated(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("handler test fixture not initialized (no DB?)")
@@ -2615,8 +2621,11 @@ func TestSetupCallback_ConsumesPendingInstallationCreated(t *testing.T) {
 	ctx := context.Background()
 	secret := "pending-installation-secret"
 	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
-	t.Setenv("GITHUB_APP_ID", "")
-	t.Setenv("GITHUB_APP_PRIVATE_KEY", "")
+	t.Setenv("GITHUB_APP_CLIENT_ID", "pending-client")
+	t.Setenv("GITHUB_APP_CLIENT_SECRET", "pending-client-secret")
+	t.Setenv("GITHUB_APP_ID", "268")
+	pemBytes, _ := generateTestRSAKeyPEM(t)
+	t.Setenv("GITHUB_APP_PRIVATE_KEY", string(pemBytes))
 	t.Setenv("FRONTEND_ORIGIN", "https://app.example.test")
 
 	const installationID int64 = 81818181
@@ -2625,16 +2634,32 @@ func TestSetupCallback_ConsumesPendingInstallationCreated(t *testing.T) {
 		testPool.Exec(ctx, `DELETE FROM github_pending_installation WHERE installation_id = $1`, installationID)
 	})
 
-	// Force fetchInstallationAccount to take its degraded path. This pins that
-	// the final real account name comes from the earlier webhook, not the
-	// setup callback's synchronous GitHub API lookup.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "auth required", http.StatusUnauthorized)
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/login/oauth/access_token":
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "pending-user-token"})
+		case r.Method == http.MethodGet && r.URL.Path == fmt.Sprintf("/app/installations/%d", installationID):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": installationID,
+				"account": map[string]any{
+					"id": 9191, "login": "authoritative-octocat", "type": "Organization",
+					"avatar_url": "https://example.com/authoritative.png",
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/user":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 9292, "login": "pending-admin"})
+		case r.Method == http.MethodGet && r.URL.Path == "/user/memberships/orgs/authoritative-octocat":
+			_ = json.NewEncoder(w).Encode(map[string]any{"state": "active", "role": "admin"})
+		case r.Method == http.MethodDelete && r.URL.Path == "/applications/pending-client/token":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	t.Cleanup(srv.Close)
-	oldBase := githubAPIBase
-	githubAPIBase = srv.URL
-	t.Cleanup(func() { githubAPIBase = oldBase })
+	oldAPIBase, oldOAuthBase := githubAPIBase, githubOAuthBase
+	githubAPIBase, githubOAuthBase = srv.URL, srv.URL
+	t.Cleanup(func() { githubAPIBase, githubOAuthBase = oldAPIBase, oldOAuthBase })
 
 	body, _ := json.Marshal(map[string]any{
 		"action": "created",
@@ -2674,7 +2699,7 @@ func TestSetupCallback_ConsumesPendingInstallationCreated(t *testing.T) {
 		t.Fatalf("signState: %v", err)
 	}
 	setupReq := httptest.NewRequest("GET",
-		fmt.Sprintf("/api/github/setup?installation_id=%d&state=%s", installationID, state),
+		fmt.Sprintf("/api/github/setup?installation_id=%d&code=pending-code&state=%s", installationID, state),
 		nil,
 	)
 	setupRec := httptest.NewRecorder()
@@ -2694,14 +2719,14 @@ func TestSetupCallback_ConsumesPendingInstallationCreated(t *testing.T) {
 		t.Fatalf("expected 1 installation row, got %d", len(rows))
 	}
 	got := rows[0]
-	if got.AccountLogin != "pending-octocat" {
-		t.Errorf("account_login = %q, want pending-octocat (callback left the unknown placeholder)", got.AccountLogin)
+	if got.AccountLogin != "authoritative-octocat" {
+		t.Errorf("account_login = %q, want authoritative-octocat", got.AccountLogin)
 	}
 	if got.AccountType != "Organization" {
 		t.Errorf("account_type = %q, want Organization", got.AccountType)
 	}
-	if got.AccountAvatarUrl.String != "https://example.com/pending.png" || !got.AccountAvatarUrl.Valid {
-		t.Errorf("account_avatar_url = %+v, want pending avatar", got.AccountAvatarUrl)
+	if got.AccountAvatarUrl.String != "https://example.com/authoritative.png" || !got.AccountAvatarUrl.Valid {
+		t.Errorf("account_avatar_url = %+v, want authoritative avatar", got.AccountAvatarUrl)
 	}
 
 	var pendingCount int
