@@ -113,7 +113,8 @@ GitHub의 **Developer settings → GitHub Apps**에서 App을 만들고 다음 �
 | 필드 | 값 |
 |---|---|
 | Homepage URL | Multica 프런트엔드 주소. 예: `https://multica.example.com` |
-| Callback URL | 비워 둠 |
+| Callback URL | `https://<api-host>/api/github/setup` — Setup URL과 동일한 endpoint |
+| Request user authorization (OAuth) during installation | 활성화 |
 | Setup URL | `https://<api-host>/api/github/setup`, **Redirect on update** 활성화 |
 | Webhook URL | `https://<api-host>/api/webhooks/github` |
 | Webhook secret | 장기 보관할 임의 문자열 |
@@ -125,6 +126,7 @@ Repository permissions:
 | Metadata | Read-only |
 | Contents | Read-only. PR snapshot 쿼리가 head commit과 머지 가능 여부, CI rollup을 함께 읽는 데 필요 |
 | Pull requests | Read-only |
+| Members | Read-only. 연결 사용자가 organization의 active admin인지 확인하는 데 필요 |
 | Checks | Read-only. CI 상태 표시에 사용 |
 | Commit statuses | Read-only. legacy status 형식의 CI 집계에 사용 |
 
@@ -146,33 +148,32 @@ App의 공개 주소에서 slug를 확인합니다. 예를 들어 `https://githu
 ```dotenv
 GITHUB_APP_SLUG=multica-acme
 GITHUB_WEBHOOK_SECRET=<App을 만들 때 입력한 webhook secret>
+GITHUB_APP_CLIENT_ID=<App의 Client ID>
+GITHUB_APP_CLIENT_SECRET=<App 설정 페이지에서 생성한 client secret>
 FRONTEND_ORIGIN=https://multica.example.com
 ```
 
-`GITHUB_APP_SLUG`와 `GITHUB_WEBHOOK_SECRET` 중 하나라도 없으면 연결 버튼이 비활성화되고 webhook endpoint도 이벤트 처리를 거부합니다.
-
-다음 두 변수는 PR 카드에서 CI 상태와 merge 가능 여부를 표시하기 위해 필요합니다. Multica는 이 값으로 App 신원을 인증하고 snapshot을 가져옵니다.
+다음 App 자격 증명을 사용하면 Multica가 연결 전에 installation을 App 권한으로 확인할 수 있습니다. 저장소 선택과 CI 및 merge 가능 여부 snapshot에도 사용됩니다.
 
 ```dotenv
 GITHUB_APP_ID=<GitHub App 숫자 ID>
 GITHUB_APP_PRIVATE_KEY=<BEGIN/END 줄과 줄바꿈을 유지한 전체 PEM private key>
 ```
 
-Private key는 GitHub App의 **Private keys → Generate a private key**에서 생성합니다. 설정하지 않으면 연동 기능이 자연스럽게 축소됩니다. PR은 계속 미러링되고 태스크 자동 연결과 merge 시 Done 전환도 정상적으로 작동하지만 PR 카드에 CI 또는 merge 상태가 표시되지 않습니다.
+Private key는 GitHub App의 **Private keys → Generate a private key**에서 생성합니다.
 
-### 3. 데이터베이스 업데이트 및 연결
+연결 버튼에는 GitHub 값 6개가 모두 필요합니다. 새 연결에서 Multica는 GitHub의 사용자 인증 code를 교환하고 App 권한으로 installation을 조회한 뒤, 개인 계정의 정확한 ID 및 login 일치 또는 organization의 active admin membership을 요구합니다. 사용자의 installation 목록에 표시되는 것만으로는 organization 권한을 증명할 수 없습니다. 모든 검증 오류는 연결을 거부하며 임시 user token은 확인 후 폐기합니다.
 
-기존 배포를 업그레이드할 때는 먼저 일반 데이터베이스 migration을 실행합니다.
+기존 App에 Members 권한을 추가하는 경우 새 워크스페이스에 연결하기 전에 대상 organization마다 권한 변경을 승인해야 합니다.
 
-```bash
-make migrate-up
-```
+### 3. 재시작 및 연결
 
-API 서비스를 다시 시작한 뒤 **설정 → GitHub**에서 연결을 완료합니다.
+이 변경에는 데이터베이스 migration이 필요하지 않습니다. 새 환경 변수로 API 서비스를 재시작하고 기존 installation의 권한 업데이트 요청을 승인한 뒤 **설정 → GitHub**에서 연결합니다. 같은 워크스페이스에 installation을 추가하려면 **Add account or organization**을 사용합니다.
 
 ## 자주 묻는 문제
 
-- **연결 버튼을 사용할 수 없음**: `GITHUB_APP_SLUG`와 `GITHUB_WEBHOOK_SECRET`이 API 프로세스에 전달되었는지 확인합니다.
+- **연결 버튼을 사용할 수 없음**: `GITHUB_APP_SLUG`, `GITHUB_WEBHOOK_SECRET`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`가 API 프로세스에 전달되었는지 확인합니다.
+- **설치 직후 연결이 실패함**: **Request user authorization (OAuth) during installation**을 활성화하고 callback URL과 setup URL을 모두 `/api/github/setup`으로 설정한 뒤 Members read-only를 부여합니다. 연결 사용자는 개인 계정 소유자이거나 organization의 active admin이어야 합니다.
 - **Webhook이 401을 반환함**: GitHub App과 API가 같은 Webhook secret을 사용하는지 확인하고 GitHub의 **Recent Deliveries**에서 다시 전달합니다.
 - **PR이 연결되지 않음**: 저장소가 App 승인 범위에 있는지, 자동 연결이 켜져 있는지, 번호가 현재 워크스페이스에 속하는지 확인합니다.
 - **본문에 번호를 썼지만 표시되지 않음**: `Closes MUL-123`을 사용하거나 번호를 브랜치 이름 또는 PR 제목에 넣습니다.

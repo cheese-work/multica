@@ -114,7 +114,8 @@ Multica Cloud 无需执行本节。自托管需要先创建自己的 GitHub App�
 | 字段 | 值 |
 |---|---|
 | Homepage URL | Multica 前端地址，例如 `https://multica.example.com` |
-| Callback URL | 留空 |
+| Callback URL | `https://<api-host>/api/github/setup`，与 Setup URL 相同 |
+| Request user authorization (OAuth) during installation | 勾选 |
 | Setup URL | `https://<api-host>/api/github/setup`，并启用 **Redirect on update** |
 | Webhook URL | `https://<api-host>/api/webhooks/github` |
 | Webhook secret | 一段长期保存的随机字符串 |
@@ -126,6 +127,7 @@ Repository permissions：
 | Metadata | Read-only |
 | Contents | Read-only；PR 快照查询需要它，一次读取 head commit、可合并状态与 CI 汇总 |
 | Pull requests | Read-only |
+| Members | Read-only；用于确认连接用户是 organization 的 active admin |
 | Checks | Read-only；用于显示 CI 状态 |
 | Commit statuses | Read-only；用于汇总 legacy status 形式的 CI |
 
@@ -147,33 +149,32 @@ Repository permissions：
 ```dotenv
 GITHUB_APP_SLUG=multica-acme
 GITHUB_WEBHOOK_SECRET=<创建 App 时填写的 webhook secret>
+GITHUB_APP_CLIENT_ID=<App 的 Client ID>
+GITHUB_APP_CLIENT_SECRET=<在 App 设置页生成的 client secret>
 FRONTEND_ORIGIN=https://multica.example.com
 ```
 
-`GITHUB_APP_SLUG` 和 `GITHUB_WEBHOOK_SECRET` 缺少任意一个时，连接按钮会被禁用，webhook 接口也会拒绝处理事件。
-
-下面两个变量是 PR 卡片显示 CI 状态与可合并性的必要条件——Multica 用它们以 App 身份鉴权并拉取快照：
+下面的 App 凭据让 Multica 能在绑定前以 App 身份权威查询 installation；仓库选择器以及 CI 与可合并性快照也会使用它们：
 
 ```dotenv
 GITHUB_APP_ID=<GitHub App 的数字 ID>
 GITHUB_APP_PRIVATE_KEY=<完整 PEM 私钥，保留 BEGIN/END 行和换行>
 ```
 
-私钥在 GitHub App 的 **Private keys → Generate a private key** 中生成。不配置时集成会平稳降级：PR 照常镜像，任务照常自动关联并在合并时转 Done，只是 PR 卡片不显示 CI 或合并状态。
+私钥在 GitHub App 的 **Private keys → Generate a private key** 中生成。
 
-### 3. 更新数据库并连接
+连接按钮需要全部六个 GitHub 配置值。新连接时，Multica 会交换 GitHub 的用户授权 code，以 App 身份查询 installation，然后要求个人账号的 ID 和 login 精确匹配，或要求用户是 organization 的 active admin。仅能在用户的 installation 列表中看到它不足以证明 organization 管理权限。任何验证错误都会拒绝连接，临时 user token 会在检查后撤销。
 
-升级已有部署时，先执行常规数据库迁移：
+如果为已经安装的 App 新增 Members 权限，请先在每个目标 organization 中批准权限变更，再把它连接到新工作区。
 
-```bash
-make migrate-up
-```
+### 3. 重启并连接
 
-重启 API 服务，再到 **设置 → GitHub** 完成连接。
+此变更不需要数据库迁移。使用新环境变量重启 API 服务，批准现有 installation 请求的权限更新，再到 **设置 → GitHub** 完成连接。可用 **Add account or organization** 把更多 installation 连接到同一工作区。
 
 ## 常见问题
 
-- **连接按钮不可用**：检查 `GITHUB_APP_SLUG` 和 `GITHUB_WEBHOOK_SECRET` 是否已进入 API 进程。
+- **连接按钮不可用**：检查 `GITHUB_APP_SLUG`、`GITHUB_WEBHOOK_SECRET`、`GITHUB_APP_CLIENT_ID`、`GITHUB_APP_CLIENT_SECRET`、`GITHUB_APP_ID` 和 `GITHUB_APP_PRIVATE_KEY` 是否都已进入 API 进程。
+- **安装完成后连接失败**：启用 **Request user authorization (OAuth) during installation**，把 callback URL 和 setup URL 都设为 `/api/github/setup`，并授予 Members read-only。连接用户必须是个人账号所有者或 organization 的 active admin。
 - **Webhook 返回 401**：确认 GitHub App 与 API 使用同一个 Webhook secret，然后在 GitHub 的 **Recent Deliveries** 中重新投递。
 - **PR 没有关联**：检查仓库是否在 App 授权范围内、自动关联是否开启，以及编号是否属于当前工作区。
 - **正文写了编号但没显示**：改用 `Closes MUL-123`，或把编号放到分支名、PR 标题中。
