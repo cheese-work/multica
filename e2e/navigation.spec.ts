@@ -32,8 +32,24 @@ test.describe("Navigation", () => {
     await expect(page).toHaveURL(/\/settings/, { timeout: ROUTE_CHANGE_TIMEOUT });
     await waitForPageText(page, "Settings");
 
-    await expect(page.getByRole("tab", { name: "General" })).toBeVisible();
-    await expect(page.getByRole("tab", { name: "Members" })).toBeVisible();
+    // Settings navigation renders as links inside a labelled <nav> (AppLink ->
+    // <a href>), not as a tablist. Assert the real role, the destination each
+    // link points at, and that following one actually renders that page.
+    const settingsNav = page.getByRole("navigation", { name: "Settings" });
+    const generalLink = settingsNav.getByRole("link", { name: "General" });
+    const membersLink = settingsNav.getByRole("link", { name: "Members" });
+
+    await expect(generalLink).toBeVisible();
+    await expect(membersLink).toBeVisible();
+    await expect(generalLink).toHaveAttribute("href", /tab=workspace/);
+    await expect(membersLink).toHaveAttribute("href", /tab=members/);
+
+    await membersLink.click();
+    await expect(page).toHaveURL(/tab=members/, {
+      timeout: ROUTE_CHANGE_TIMEOUT,
+    });
+    await expect(membersLink).toHaveAttribute("aria-current", "page");
+    await waitForPageText(page, "Members");
   });
 
   test("agents page shows agent list", async ({ page }) => {
