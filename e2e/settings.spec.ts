@@ -1,6 +1,28 @@
 import { test, expect } from "@playwright/test";
 import { loginAsDefault, waitForPageText } from "./helpers";
 
+async function enableComposioForTest(page: import("@playwright/test").Page) {
+  await page.route("**/api/config", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        cdn_domain: "",
+        cdn_signed: false,
+        allow_signup: true,
+        google_client_id: "",
+        daemon_server_url: "",
+        daemon_app_url: "",
+        workspace_creation_disabled: false,
+        vcs_integration_available: false,
+        local_worktree_supported: false,
+        agent_conversation_starters_supported: false,
+        feature_flags: { composio_mcp_apps: true },
+      }),
+    }),
+  );
+}
+
 test.describe("Settings", () => {
   test("updating workspace name reflects in sidebar immediately", async ({
     page,
@@ -11,7 +33,8 @@ test.describe("Settings", () => {
     const sidebarName = page.getByRole("button", { name: /E2E Workspace/ }).first();
     const originalName = (await sidebarName.innerText()).split("\n").pop()?.trim() ?? "E2E Workspace";
 
-    await page.goto(`/${workspaceSlug}/settings?tab=workspace`, { waitUntil: "domcontentloaded" });
+    await page.getByRole("link", { name: "Settings", exact: true }).click();
+    await expect(page).toHaveURL(new RegExp(`/${workspaceSlug}/settings`));
     await waitForPageText(page, "General");
 
     // Change workspace name
@@ -46,6 +69,9 @@ test.describe("Settings", () => {
   test("connecting a Composio toolkit shows a toast and refreshes the list", async ({
     page,
   }) => {
+    // Config loads during the first authenticated page. Route it before login
+    // so the default-off Composio feature flag is available at initialization.
+    await enableComposioForTest(page);
     const workspaceSlug = await loginAsDefault(page);
     const settingsUrl = `/${workspaceSlug}/settings?tab=integrations&integration=composio`;
 
