@@ -180,6 +180,166 @@ func TestSquadOperatingProtocolOwnsNoActionRule(t *testing.T) {
 	}
 }
 
+// TestSquadOperatingProtocolRequiresReconciliationBeforeNoAction covers the
+// CHE-329/CHE-346 workspace Completion Contract's verification-cases table.
+// A first substantive merge/acceptance/blocker-resolution event on an issue
+// must not be silently no_action'd without the reconciliation steps; the
+// legitimate quiet-no_action paths (routine progress update, duplicate /
+// already-reconciled notification) must still work.
+func TestSquadOperatingProtocolRequiresReconciliationBeforeNoAction(t *testing.T) {
+	for _, ownsParentStatus := range []bool{true, false} {
+		protocol := squadOperatingProtocolFor(ownsParentStatus)
+		compact := strings.Join(strings.Fields(protocol), " ")
+
+		// Case A: a first substantive merge/acceptance/blocker-resolution
+		// event requires the reconciliation steps and a published result
+		// before no_action is legal.
+		for _, want := range []string{
+			"substantive merge, acceptance, or",
+			"blocker-resolution event",
+			"FIRST time this issue sees",
+			"read the current comment history",
+			"read candidate/check",
+			"read the issue's current status",
+			"remaining owner/action exists",
+			"publish exactly one result",
+			"comment and/or a status change",
+			"protocol violation, not a shortcut",
+		} {
+			if !strings.Contains(compact, want) {
+				t.Errorf("ownsParentStatus=%v: protocol missing reconciliation requirement %q\n--- protocol ---\n%s", ownsParentStatus, want, protocol)
+			}
+		}
+
+		// Case A2 (Terra P1 correction, CHE-348/PR #11 review of cb28d12c):
+		// the published result must explicitly state the remaining
+		// owner/action, or explicitly state none remains — a status-only
+		// change does not satisfy this on its own.
+		for _, want := range []string{
+			"must explicitly",
+			"state the remaining owner/action, or explicitly state that none",
+			"remains",
+			"A status change alone does not satisfy this",
+			"the explicit owner/action statement belongs in a comment even on turns that also change status",
+			"publishing a result that omits the owner/action statement, is a",
+			"protocol violation, not a shortcut",
+		} {
+			if !strings.Contains(compact, want) {
+				t.Errorf("ownsParentStatus=%v: protocol missing mandatory owner/action statement requirement %q\n--- protocol ---\n%s", ownsParentStatus, want, protocol)
+			}
+		}
+
+		// Case A3 (Sol P1 correction, CHE-348/PR #11 review of 04604ea1):
+		// "already reconciled" must be keyed to the event's concrete
+		// identity (candidate/SHA, revision, or comment) — a prior
+		// published result about a different candidate must not be
+		// mistaken for reconciliation of this one.
+		for _, want := range []string{
+			"Identify the event by its concrete key",
+			"the candidate commit/SHA, the PR revision, or the specific",
+			"not by its category",
+			"Treat the event as already reconciled ONLY if a prior",
+			"published result on this issue names that same key",
+			"a published result about a different candidate or an",
+			"earlier revision does not reconcile this one, even if the",
+			"category of event matches",
+			"treating a same-category event on a different key as already",
+			"reconciled",
+		} {
+			if !strings.Contains(compact, want) {
+				t.Errorf("ownsParentStatus=%v: protocol missing event-keying requirement %q\n--- protocol ---\n%s", ownsParentStatus, want, protocol)
+			}
+		}
+
+		// Case B: the legitimate quiet no_action path (routine progress
+		// update, or a duplicate/already-reconciled notification carrying
+		// the same key) must not regress — this is the case the original
+		// MUL-6984 rule protects.
+		for _, want := range []string{
+			"routine progress update that requires no response",
+			"duplicate /",
+			"already-actioned notification carrying the SAME key as an",
+			"event this issue already reconciled",
+			"record `no_action` and exit",
+		} {
+			if !strings.Contains(compact, want) {
+				t.Errorf("ownsParentStatus=%v: protocol missing legitimate quiet no_action path %q\n--- protocol ---\n%s", ownsParentStatus, want, protocol)
+			}
+		}
+	}
+}
+
+// TestSquadOperatingProtocolEventKeyingRejectsStaleCandidateMatch is a
+// negative control for Case A3: text belonging to the pre-fix candidate
+// (04604ea1, Sol's FAIL) must NOT satisfy the new keyed-reconciliation
+// assertions, proving the test can actually distinguish keyed from
+// unkeyed reconciliation language rather than passing on any protocol text.
+func TestSquadOperatingProtocolEventKeyingRejectsStaleCandidateMatch(t *testing.T) {
+	staleUnkeyedText := "If the event is not already reconciled by a prior published result on this issue, you must publish exactly one result."
+	if strings.Contains(staleUnkeyedText, "Identify the event by its concrete key") {
+		t.Fatal("negative control is broken: stale text should not contain the keying requirement")
+	}
+}
+
+// TestSquadParentStatusOwnedAllowsDoneOrInReview covers Cases C and D of the
+// CHE-329/CHE-346 Completion Contract: the owning leader must be able to
+// choose `done` when no pending human action remains, and `in_review` when
+// one does — not be forced into `in_review` unconditionally (contract item 4).
+func TestSquadParentStatusOwnedAllowsDoneOrInReview(t *testing.T) {
+	compact := strings.Join(strings.Fields(squadParentStatusOwned), " ")
+
+	// Case C: no pending human action remains → `done` is permitted.
+	for _, want := range []string{
+		"No pending human action remains",
+		"outcome verified, all gates satisfied",
+		"multica issue status <issue-id> done",
+	} {
+		if !strings.Contains(compact, want) {
+			t.Errorf("expected squadParentStatusOwned to permit `done` via %q\n--- text ---\n%s", want, squadParentStatusOwned)
+		}
+	}
+
+	// Case D: a concrete pending human action remains → `in_review` is
+	// still required.
+	for _, want := range []string{
+		"A concrete pending human action remains",
+		"multica issue status <issue-id> in_review",
+	} {
+		if !strings.Contains(compact, want) {
+			t.Errorf("expected squadParentStatusOwned to still require `in_review` via %q\n--- text ---\n%s", want, squadParentStatusOwned)
+		}
+	}
+
+	// The old unconditional routing to in_review (leaving `done` to a human)
+	// must be gone — that was the exact contradiction this fix removes.
+	if strings.Contains(compact, "Leave `done` to a human reviewer") {
+		t.Errorf("squadParentStatusOwned still unconditionally routes to in_review and defers `done` to a human:\n%s", squadParentStatusOwned)
+	}
+}
+
+// TestSquadParentStatusNotOwnedForbidsAnyStatusWrite is Case E: the
+// guest/mention path must still forbid ANY status write, unaffected by the
+// done/in_review choice granted to owning leaders.
+func TestSquadParentStatusNotOwnedForbidsAnyStatusWrite(t *testing.T) {
+	compact := strings.Join(strings.Fields(squadParentStatusNotOwned), " ")
+	for _, want := range []string{
+		"Do NOT change this issue's status",
+		"never run `multica issue status` on it",
+	} {
+		if !strings.Contains(compact, want) {
+			t.Errorf("expected squadParentStatusNotOwned to forbid status writes via %q\n--- text ---\n%s", want, squadParentStatusNotOwned)
+		}
+	}
+	for _, forbidden := range []string{
+		"multica issue status <issue-id> done",
+		"multica issue status <issue-id> in_review",
+	} {
+		if strings.Contains(compact, forbidden) {
+			t.Errorf("squadParentStatusNotOwned must not contain a runnable status command %q\n--- text ---\n%s", forbidden, squadParentStatusNotOwned)
+		}
+	}
+}
+
 func TestBuildSquadLeaderBriefing_FullSquad(t *testing.T) {
 	ctx := context.Background()
 	leaderID, leaderName := seededLeaderAgent(t)
