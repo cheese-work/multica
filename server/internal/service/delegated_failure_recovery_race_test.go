@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -39,28 +40,67 @@ import (
 // comment_duplicate_enqueue_race_test.go. This test does not add a new claim
 // mechanism; it empirically proves those existing primitives also close the
 // event-vs-timer window for the delegated-failure-recovery obligation
-// specifically, by starting both dispatch calls concurrently from a synchronized
-// barrier so they contend inside the database rather than relying on goroutine
-// scheduling luck.
+// specifically.
+//
+// Merely starting both goroutines from a synchronized entry barrier is not
+// enough to prove they actually contended: one call can run start-to-finish
+// before the other's relevant scan even executes, in which case the final row
+// counts can look correct (exactly one surviving task) for the wrong reason —
+// no concurrency ever happened, only sequential no-op-then-real-work. To rule
+// that out, this test installs testHookBeforeDelegatedFailureDedupCheck, an
+// in-core probe both dispatch paths pass through immediately before their
+// shared HasTaskCoveringDelegatedFailureComment dedup read (the actual
+// point of contention — see dispatchDelegatedFailureRecovery), and uses it to
+// hold each goroutine until BOTH have reached that exact statement. That
+// proves the two calls were genuinely inside the critical section at the same
+// time, not merely started around the same time.
 func TestDelegatedFailureRecoveryEventAndTimerRaceDispatchExactlyOnce(t *testing.T) {
 	f, svc := seedDelegatedFailureFixture(t)
 	ctx := context.Background()
+	failedID := f.insertWorkerTask(t, "failed", "comment", 1, 2)
+	if _, err := f.pool.Exec(ctx, `
+		UPDATE agent_task_queue
+		SET failure_reason = 'agent_error.process_failure', error = 'worker exited', completed_at = now()
+		WHERE id = $1`, failedID); err != nil {
+		t.Fatalf("stamp failed task: %v", err)
+	}
+	failed, err := svc.Queries.GetAgentTask(ctx, failedID)
+	if err != nil {
+		t.Fatalf("load failed task: %v", err)
+	}
 
-	// seedRecoverySignal fails a worker task and runs the initial
-	// recoverDelegatedTaskFailure dispatch, returning the resulting coordinator
-	// recovery task and its recovery comment.
-	recoveryTaskID, recoveryCommentID := f.seedRecoverySignal(t, svc)
+	// recoverDelegatedTaskFailure creates the durable recovery comment and runs
+	// the initial dispatch, producing one coordinator recovery task.
+	if handled, err := svc.recoverDelegatedTaskFailure(ctx, failed); err != nil || !handled {
+		t.Fatalf("initial recovery = handled %v err %v", handled, err)
+	}
+	var recoveryTaskID, recoveryCommentID pgtype.UUID
+	if err := f.pool.QueryRow(ctx, `
+		SELECT task.id, recovery.id
+		FROM agent_task_queue task
+		JOIN comment recovery ON recovery.id = task.trigger_comment_id
+		WHERE task.trigger_evidence_kind = 'delegated_failure'
+		  AND task.trigger_evidence_ref_id = $1`, failedID).Scan(&recoveryTaskID, &recoveryCommentID); err != nil {
+		t.Fatalf("load initial recovery task/comment: %v", err)
+	}
 
 	// Cancel the sole recovery task before it ever delivers the comment. This
 	// is a genuine terminal, non-covering transition (see
-	// TestPlannedButUndeliveredRecoveryStaysPending): the obligation is left
-	// pending, not merely relabeled, so both dispatch paths below start from a
-	// state where neither has anything to observe from the other for free.
+	// TestPendingDelegatedFailureSweepRequeuesTerminalUndeliveredTask's
+	// cancelled case): the obligation is left pending, not merely relabeled,
+	// so both dispatch paths below start from a state where neither has
+	// anything to observe from the other for free.
 	if _, err := svc.CancelTask(ctx, recoveryTaskID); err != nil {
 		t.Fatalf("CancelTask: %v", err)
 	}
-	if f.settled(t, recoveryCommentID) {
-		t.Fatal("cancelling the undelivered recovery task settled it; the obligation must stay pending for this race to be real")
+	var acknowledged bool
+	if err := f.pool.QueryRow(ctx, `
+		SELECT $2::uuid = ANY(delivered_comment_ids)
+		FROM agent_task_queue WHERE id = $1`, recoveryTaskID, recoveryCommentID).Scan(&acknowledged); err != nil {
+		t.Fatalf("read cancel acknowledgement: %v", err)
+	}
+	if acknowledged {
+		t.Fatal("server-cancelling the undelivered recovery task must not acknowledge it; the obligation must stay pending for this race to be real")
 	}
 
 	comment, err := svc.Queries.GetComment(ctx, recoveryCommentID)
@@ -68,36 +108,60 @@ func TestDelegatedFailureRecoveryEventAndTimerRaceDispatchExactlyOnce(t *testing
 		t.Fatalf("load recovery comment: %v", err)
 	}
 
+	// dedupBarrier proves both goroutines are inside dispatchDelegatedFailureRecovery's
+	// critical section concurrently: each blocks in the test hook until both have
+	// arrived, so neither can complete its dedup check (let alone its write) before
+	// the other has also reached it.
+	var dedupBarrier sync.WaitGroup
+	dedupBarrier.Add(2)
+	var reachedMu sync.Mutex
+	reachedCount := 0
+	bothReached := make(chan struct{})
+	svc.testHookBeforeDelegatedFailureDedupCheck = func() {
+		reachedMu.Lock()
+		reachedCount++
+		n := reachedCount
+		reachedMu.Unlock()
+		if n == 2 {
+			close(bothReached)
+		}
+		dedupBarrier.Done()
+		dedupBarrier.Wait()
+	}
+	t.Cleanup(func() { svc.testHookBeforeDelegatedFailureDedupCheck = nil })
+
 	var wg sync.WaitGroup
-	var barrier sync.WaitGroup
-	barrier.Add(2)
+	var startBarrier sync.WaitGroup
+	startBarrier.Add(2)
 	errs := make(chan error, 2)
 
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		barrier.Done()
-		barrier.Wait()
+		startBarrier.Done()
+		startBarrier.Wait()
 		errs <- svc.DispatchDelegatedFailureRecoveryComment(ctx, comment, pgtype.UUID{})
 	}()
 	go func() {
 		defer wg.Done()
-		barrier.Done()
-		barrier.Wait()
+		startBarrier.Done()
+		startBarrier.Wait()
 		_, sweepErr := svc.RecoverPendingDelegatedFailures(ctx, 10)
 		errs <- sweepErr
 	}()
+
+	select {
+	case <-bothReached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("both event and timer dispatch paths did not reach the dedup check concurrently — no real contention was proven")
+	}
+
 	wg.Wait()
 	close(errs)
 	for err := range errs {
 		if err != nil {
 			t.Fatalf("concurrent dispatch returned error: %v", err)
 		}
-	}
-
-	var failedID pgtype.UUID
-	if err := f.pool.QueryRow(ctx, `SELECT source_task_id FROM comment WHERE id = $1`, recoveryCommentID).Scan(&failedID); err != nil {
-		t.Fatalf("load recovery comment source task id: %v", err)
 	}
 
 	// Both dispatch paths must have actually run their dispatch behavior
