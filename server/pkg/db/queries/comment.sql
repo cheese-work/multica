@@ -703,6 +703,23 @@ WHERE comment.id IN (SELECT id FROM descendants)
   AND comment.id <> @target_id
   AND comment.created_at > @since;
 
+-- name: LockCommentThread :exec
+-- Thread-scoped advisory xact lock, held by both CreateComment (a reply
+-- landing in a thread) and ResolveComment's guarded path (the
+-- CountThreadCommentsSince check plus the resolving write). A single
+-- READ COMMITTED transaction gives ResolveComment no consistent snapshot
+-- across its separate statements, and known_as_of is a client wall-clock
+-- timestamp compared against created_at (assigned at INSERT, not COMMIT) —
+-- so a reply that inserts before the guard runs but commits after it is
+-- invisible to a timestamp comparison in either direction. Taking this lock
+-- before the guard, and having a reply's create hold the same key for the
+-- thread it inserts into, orders the COMMITS themselves: whichever side
+-- commits first is the one the other observes, closing the window
+-- regardless of created_at/commit-time skew. pg_advisory_xact_lock (not
+-- pg_try_) so a concurrent reply queues behind an in-flight resolve instead
+-- of failing outright — the reply is rare and cheap to make wait briefly.
+SELECT pg_advisory_xact_lock(hashtextextended($1::uuid::text || ':comment_thread', 0));
+
 -- name: UnresolveComment :one
 -- Idempotent: a no-op clear (already unresolved) just returns the row.
 UPDATE comment SET

@@ -1886,6 +1886,29 @@ func (q *Queries) LockCommentAncestorPath(ctx context.Context, arg LockCommentAn
 	return items, nil
 }
 
+const lockCommentThread = `-- name: LockCommentThread :exec
+SELECT pg_advisory_xact_lock(hashtextextended($1::uuid::text || ':comment_thread', 0))
+`
+
+// Thread-scoped advisory xact lock, held by both CreateComment (a reply
+// landing in a thread) and ResolveComment's guarded path (the
+// CountThreadCommentsSince check plus the resolving write). A single
+// READ COMMITTED transaction gives ResolveComment no consistent snapshot
+// across its separate statements, and known_as_of is a client wall-clock
+// timestamp compared against created_at (assigned at INSERT, not COMMIT) —
+// so a reply that inserts before the guard runs but commits after it is
+// invisible to a timestamp comparison in either direction. Taking this lock
+// before the guard, and having a reply's create hold the same key for the
+// thread it inserts into, orders the COMMITS themselves: whichever side
+// commits first is the one the other observes, closing the window
+// regardless of created_at/commit-time skew. pg_advisory_xact_lock (not
+// pg_try_) so a concurrent reply queues behind an in-flight resolve instead
+// of failing outright — the reply is rare and cheap to make wait briefly.
+func (q *Queries) LockCommentThread(ctx context.Context, threadRootID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockCommentThread, threadRootID)
+	return err
+}
+
 const resolveComment = `-- name: ResolveComment :one
 UPDATE comment SET
     resolved_at = COALESCE(resolved_at, now()),
