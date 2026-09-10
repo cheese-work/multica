@@ -144,6 +144,95 @@ func (q *Queries) ClearOtherThreadResolutions(ctx context.Context, arg ClearOthe
 	return items, nil
 }
 
+const clearThreadResolutionForReply = `-- name: ClearThreadResolutionForReply :many
+WITH RECURSIVE descendants AS (
+    SELECT c.id
+    FROM comment c
+    WHERE c.id = $1 AND c.issue_id = $2 AND c.workspace_id = $3
+    UNION
+    SELECT c.id
+    FROM comment c
+    JOIN descendants d ON c.parent_id = d.id
+    WHERE c.issue_id = $2 AND c.workspace_id = $3
+)
+UPDATE comment SET
+    resolved_at = NULL,
+    resolved_by_type = NULL,
+    resolved_by_id = NULL,
+    revision = revision + 1,
+    updated_at = now()
+WHERE comment.id IN (SELECT id FROM descendants)
+  AND comment.resolved_at IS NOT NULL
+RETURNING id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at
+`
+
+type ClearThreadResolutionForReplyParams struct {
+	ThreadRootID pgtype.UUID `json:"thread_root_id"`
+	IssueID      pgtype.UUID `json:"issue_id"`
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+}
+
+// Round 5 fix: a reply landing in a resolved thread must reopen it in the SAME
+// transaction that holds LockCommentThread and inserts the reply, before
+// commit — not as a separate post-commit write through an unlocked handle.
+// The prior design (TaskService.AutoUnresolveThreadOnReply, called after the
+// reply's tx committed via a bare *db.Queries) could clear a LATER,
+// legitimate resolution that a concurrent ResolveComment committed in the gap
+// between the reply's commit and the post-commit call — violating commit
+// ordering — and it only ever looked at the thread ROOT's resolved_at, so a
+// resolved REPLY (not the root) was never reopened at all.
+//
+// @thread_root_id is the thread root id the caller already resolved via
+// GetThreadRoot (or holds directly, e.g. inside LockThreadForReplyAndLoadRoot)
+// and locked via LockCommentThread — the identical key CreateComment and
+// ResolveComment's guard already lock by, so this clear is covered by the
+// same advisory lock for its whole read-then-write window.
+//
+// By the single-resolution invariant ClearOtherThreadResolutions enforces, a
+// thread has at most one resolved comment at any time — root or reply — so
+// this walks the same recursive parent_id structure down from the root and
+// clears whichever single comment in the subtree currently has resolved_at
+// set. Returns that row (0 rows when nothing in the thread was resolved) so
+// the caller can still decide whether to publish comment:unresolved.
+func (q *Queries) ClearThreadResolutionForReply(ctx context.Context, arg ClearThreadResolutionForReplyParams) ([]Comment, error) {
+	rows, err := q.db.Query(ctx, clearThreadResolutionForReply, arg.ThreadRootID, arg.IssueID, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Comment{}
+	for rows.Next() {
+		var i Comment
+		if err := rows.Scan(
+			&i.ID,
+			&i.IssueID,
+			&i.AuthorType,
+			&i.AuthorID,
+			&i.Content,
+			&i.Type,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ParentID,
+			&i.WorkspaceID,
+			&i.ResolvedAt,
+			&i.ResolvedByType,
+			&i.ResolvedByID,
+			&i.SourceTaskID,
+			&i.QuickActionID,
+			&i.ViaPluginID,
+			&i.Revision,
+			&i.RecoverySettledAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countComments = `-- name: CountComments :one
 SELECT count(*) FROM comment
 WHERE issue_id = $1 AND workspace_id = $2

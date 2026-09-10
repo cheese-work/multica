@@ -730,6 +730,49 @@ UPDATE comment SET
     updated_at = CASE WHEN resolved_at IS NOT NULL THEN now() ELSE updated_at END
 WHERE id = $1
 RETURNING *;
+
+-- name: ClearThreadResolutionForReply :many
+-- Round 5 fix: a reply landing in a resolved thread must reopen it in the SAME
+-- transaction that holds LockCommentThread and inserts the reply, before
+-- commit — not as a separate post-commit write through an unlocked handle.
+-- The prior design (TaskService.AutoUnresolveThreadOnReply, called after the
+-- reply's tx committed via a bare *db.Queries) could clear a LATER,
+-- legitimate resolution that a concurrent ResolveComment committed in the gap
+-- between the reply's commit and the post-commit call — violating commit
+-- ordering — and it only ever looked at the thread ROOT's resolved_at, so a
+-- resolved REPLY (not the root) was never reopened at all.
+--
+-- @thread_root_id is the thread root id the caller already resolved via
+-- GetThreadRoot (or holds directly, e.g. inside LockThreadForReplyAndLoadRoot)
+-- and locked via LockCommentThread — the identical key CreateComment and
+-- ResolveComment's guard already lock by, so this clear is covered by the
+-- same advisory lock for its whole read-then-write window.
+--
+-- By the single-resolution invariant ClearOtherThreadResolutions enforces, a
+-- thread has at most one resolved comment at any time — root or reply — so
+-- this walks the same recursive parent_id structure down from the root and
+-- clears whichever single comment in the subtree currently has resolved_at
+-- set. Returns that row (0 rows when nothing in the thread was resolved) so
+-- the caller can still decide whether to publish comment:unresolved.
+WITH RECURSIVE descendants AS (
+    SELECT c.id
+    FROM comment c
+    WHERE c.id = @thread_root_id AND c.issue_id = @issue_id AND c.workspace_id = @workspace_id
+    UNION
+    SELECT c.id
+    FROM comment c
+    JOIN descendants d ON c.parent_id = d.id
+    WHERE c.issue_id = @issue_id AND c.workspace_id = @workspace_id
+)
+UPDATE comment SET
+    resolved_at = NULL,
+    resolved_by_type = NULL,
+    resolved_by_id = NULL,
+    revision = revision + 1,
+    updated_at = now()
+WHERE comment.id IN (SELECT id FROM descendants)
+  AND comment.resolved_at IS NOT NULL
+RETURNING *;
 -- name: ListCommentAncestorPath :many
 WITH RECURSIVE ancestor_path AS (
   SELECT c.*, ARRAY[c.id]::uuid[] AS visited_ids, 1::integer AS depth, false AS cycle
