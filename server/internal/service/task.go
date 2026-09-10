@@ -90,15 +90,21 @@ type TaskService struct {
 	analyticsContextCache map[string]analytics.TaskContext
 	analyticsContextOrder []string
 
-	// testHookBeforeDelegatedFailureDedupCheck, when non-nil, is invoked by
-	// dispatchDelegatedFailureRecovery immediately before its first-attempt
-	// HasTaskCoveringDelegatedFailureComment dedup read — the point both the
-	// event-triggered and timer-triggered recovery paths pass through on their
-	// way to contend for the same obligation. Test-only: nil in production, so
-	// this is a zero-cost no-op there. Exists so a race test can prove both
-	// callers actually reached and executed concurrently at the dedup check,
-	// not merely that the final row counts came out consistent.
-	testHookBeforeDelegatedFailureDedupCheck func()
+	// testHookAfterDelegatedFailureDedupCheckUncovered, when non-nil, is
+	// invoked by dispatchDelegatedFailureRecovery on its first attempt
+	// immediately after HasTaskCoveringDelegatedFailureComment has returned
+	// with covered == false — i.e. only once both the read has actually
+	// executed AND observed an uncovered obligation, and strictly before any
+	// of the following mutating calls (CountDelegatedFailureRecoveryTasks,
+	// MergeDelegatedFailureCommentIntoPendingTask, CreateAgentTask, ...).
+	// Test-only: nil in production, so this is a zero-cost no-op there.
+	// Exists so a race test can rendezvous both the event-triggered and
+	// timer-triggered dispatch paths at the point they have each
+	// independently proven they observed the same uncovered state — the only
+	// point that distinguishes genuine concurrent contention from one caller
+	// finishing before the other's read even runs (see
+	// TestDelegatedFailureRecoveryEventAndTimerRaceDispatchExactlyOnce).
+	testHookAfterDelegatedFailureDedupCheckUncovered func()
 }
 
 type SourceContextObjectStore interface {
@@ -6015,6 +6021,7 @@ func loadDelegatedFailureRecoveryTarget(ctx context.Context, q *db.Queries, fail
 // mention-notification side effects.
 func (s *TaskService) ensureDelegatedFailureRecoveryComment(ctx context.Context, failedID pgtype.UUID) (*delegatedFailureRecoveryTarget, bool, error) {
 	var target *delegatedFailureRecoveryTarget
+	var rootComment *db.Comment
 	created := false
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		failed, err := qtx.GetAgentTaskForDelegatedFailureUpdate(ctx, failedID)
@@ -6040,10 +6047,15 @@ func (s *TaskService) ensureDelegatedFailureRecoveryComment(ctx context.Context,
 		// This recovery comment replies under the source task's trigger
 		// comment, so it is subject to the same commit-ordering race as any
 		// other reply and must take the identical thread-scoped lock before
-		// its insert (see commentguard.LockThreadForReply).
-		if err := commentguard.LockThreadForReply(ctx, qtx, target.issue.WorkspaceID, target.source.TriggerCommentID); err != nil {
+		// its insert (see commentguard.LockThreadForReply). It also stashes
+		// the thread root so a reply that lands after a concurrent
+		// ResolveComment resolved the thread can reopen it below — otherwise
+		// the reply is correctly ordered but invisible via folding.
+		root, err := commentguard.LockThreadForReplyAndLoadRoot(ctx, qtx, target.issue.WorkspaceID, target.source.TriggerCommentID)
+		if err != nil {
 			return fmt.Errorf("lock comment thread for recovery comment: %w", err)
 		}
+		rootComment = root
 		createdComment, err := qtx.CreateComment(ctx, db.CreateCommentParams{
 			ID:           dbid.NewV7(),
 			IssueID:      target.issue.ID,
@@ -6079,6 +6091,9 @@ func (s *TaskService) ensureDelegatedFailureRecoveryComment(ctx context.Context,
 				"issue_status": target.issue.Status,
 			},
 		})
+	}
+	if created {
+		s.AutoUnresolveThreadOnReply(ctx, rootComment, util.UUIDToString(target.issue.WorkspaceID), "system", "")
 	}
 	return target, created, nil
 }
@@ -6117,6 +6132,7 @@ func delegatedFailureRecoveryAttribution(target *delegatedFailureRecoveryTarget)
 func (s *TaskService) exhaustDelegatedFailureRecovery(ctx context.Context, target *delegatedFailureRecoveryTarget) (bool, error) {
 	var exhaustedComment db.Comment
 	var exhaustedInbox db.InboxItem
+	var rootComment *db.Comment
 	created := false
 	inboxCreated := false
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
@@ -6152,10 +6168,14 @@ func (s *TaskService) exhaustDelegatedFailureRecovery(ctx context.Context, targe
 
 		// Same thread-scoped lock requirement as the initial recovery comment
 		// above: this exhaustion comment is also a reply under the source
-		// task's trigger comment (see commentguard.LockThreadForReply).
-		if err := commentguard.LockThreadForReply(ctx, qtx, target.issue.WorkspaceID, target.source.TriggerCommentID); err != nil {
+		// task's trigger comment (see commentguard.LockThreadForReply). Stash
+		// the root the same way so a reply landing after a concurrent resolve
+		// can reopen the thread below instead of being folded away.
+		root, err := commentguard.LockThreadForReplyAndLoadRoot(ctx, qtx, target.issue.WorkspaceID, target.source.TriggerCommentID)
+		if err != nil {
 			return fmt.Errorf("lock comment thread for exhaustion comment: %w", err)
 		}
+		rootComment = root
 		createdComment, err := qtx.CreateComment(ctx, db.CreateCommentParams{
 			ID:           dbid.NewV7(),
 			IssueID:      target.issue.ID,
@@ -6262,6 +6282,9 @@ func (s *TaskService) exhaustDelegatedFailureRecovery(ctx context.Context, targe
 			}},
 		})
 	}
+	if created {
+		s.AutoUnresolveThreadOnReply(ctx, rootComment, util.UUIDToString(target.issue.WorkspaceID), "system", "")
+	}
 	return created, nil
 }
 
@@ -6276,9 +6299,6 @@ func (s *TaskService) exhaustDelegatedFailureRecovery(ctx context.Context, targe
 func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, target *delegatedFailureRecoveryTarget, excludeTaskID pgtype.UUID) (delegatedFailureRecoveryDispatchOutcome, error) {
 	const maxAttempts = 3
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		if attempt == 0 && s.testHookBeforeDelegatedFailureDedupCheck != nil {
-			s.testHookBeforeDelegatedFailureDedupCheck()
-		}
 		covered, err := s.Queries.HasTaskCoveringDelegatedFailureComment(ctx, db.HasTaskCoveringDelegatedFailureCommentParams{
 			IssueID:       target.issue.ID,
 			AgentID:       target.agent.ID,
@@ -6290,6 +6310,9 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 		}
 		if covered {
 			return delegatedFailureRecoveryCovered, nil
+		}
+		if attempt == 0 && s.testHookAfterDelegatedFailureDedupCheckUncovered != nil {
+			s.testHookAfterDelegatedFailureDedupCheckUncovered()
 		}
 
 		recoveryTasks, err := s.Queries.CountDelegatedFailureRecoveryTasks(ctx, target.failed.ID)
@@ -7159,20 +7182,11 @@ func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID p
 	var rootComment *db.Comment
 	var created db.CreateCommentRow
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
-		if err := commentguard.LockThreadForReply(ctx, qtx, issue.WorkspaceID, parentID); err != nil {
+		root, err := commentguard.LockThreadForReplyAndLoadRoot(ctx, qtx, issue.WorkspaceID, parentID)
+		if err != nil {
 			return err
 		}
-		if parentID.Valid {
-			root, err := qtx.GetThreadRoot(ctx, db.GetThreadRootParams{
-				CommentID:   parentID,
-				WorkspaceID: issue.WorkspaceID,
-			})
-			if err != nil {
-				return fmt.Errorf("resolve thread root: %w", err)
-			}
-			rootComment = &root
-		}
-		var err error
+		rootComment = root
 		created, err = qtx.CreateComment(ctx, db.CreateCommentParams{
 			ID:           dbid.NewV7(),
 			IssueID:      issueID,

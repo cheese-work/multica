@@ -37,18 +37,32 @@ import (
 // continuing without the lock on a lookup error would reopen exactly that
 // window for a code path that never notices it happened.
 func LockThreadForReply(ctx context.Context, q *db.Queries, workspaceID, parentID pgtype.UUID) error {
+	_, err := LockThreadForReplyAndLoadRoot(ctx, q, workspaceID, parentID)
+	return err
+}
+
+// LockThreadForReplyAndLoadRoot does everything LockThreadForReply does, and
+// also returns the resolved thread root comment so callers that need it for
+// post-commit thread-level side effects (e.g. TaskService.
+// AutoUnresolveThreadOnReply, which must reopen a thread a concurrent
+// ResolveComment resolved out from under a lock-ordered reply) don't have to
+// duplicate the GetThreadRoot lookup.
+//
+// The returned root is nil for a top-level comment (invalid parentID),
+// matching LockThreadForReply's no-op semantics for that case.
+func LockThreadForReplyAndLoadRoot(ctx context.Context, q *db.Queries, workspaceID, parentID pgtype.UUID) (*db.Comment, error) {
 	if !parentID.Valid {
-		return nil
+		return nil, nil
 	}
 	root, err := q.GetThreadRoot(ctx, db.GetThreadRootParams{
 		CommentID:   parentID,
 		WorkspaceID: workspaceID,
 	})
 	if err != nil {
-		return fmt.Errorf("resolve thread root for reply lock: %w", err)
+		return nil, fmt.Errorf("resolve thread root for reply lock: %w", err)
 	}
 	if err := q.LockCommentThread(ctx, root.ID); err != nil {
-		return fmt.Errorf("lock comment thread: %w", err)
+		return nil, fmt.Errorf("lock comment thread: %w", err)
 	}
-	return nil
+	return &root, nil
 }
