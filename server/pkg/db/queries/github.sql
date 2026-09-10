@@ -91,9 +91,13 @@ SELECT * FROM github_pending_installation WHERE installation_id = $1
 -- state/merged_at follow the same "don't let a stale payload move things
 -- backward" idea: `merged` is terminal, and a redelivered or out-of-order
 -- opened/synchronize webhook (GitHub does not guarantee delivery order) must
--- never demote an already-merged PR back to open. Once the stored state is a
--- terminal state (`merged` or `closed`), an incoming non-merged state is
--- dropped and the existing state/merged_at are preserved instead.
+-- never demote an already-merged PR back to open. Only the stored `merged`
+-- state is protected this way — `closed` is NOT terminal: GitHub allows a
+-- genuine reopen (action=reopened), which derivePRState maps to state=open,
+-- and a closed PR must be able to transition back to open through that event.
+-- So the guard only fires when the CURRENT stored state is `merged` and the
+-- incoming state is not `merged`; any other combination (including closed →
+-- open) is allowed through.
 -- INSERT path always writes the incoming value (NULL acceptable for a new row).
 INSERT INTO github_pull_request (
     workspace_id, installation_id, repo_owner, repo_name, pr_number,
@@ -112,12 +116,14 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     installation_id = EXCLUDED.installation_id,
     title = EXCLUDED.title,
     -- A redelivered or out-of-order opened/synchronize webhook must not move
-    -- a terminal PR backward. Once the stored state is `merged` or `closed`,
-    -- only an incoming `merged` state is allowed to overwrite it (a genuine
-    -- reopen-then-merge race); anything else preserves the existing terminal
-    -- state instead of demoting it back to open/draft.
+    -- an already-merged PR backward. Only `merged` is protected: once the
+    -- stored state is `merged`, only an incoming `merged` state is allowed to
+    -- overwrite it; anything else preserves the existing merged state instead
+    -- of demoting it. `closed` is NOT protected here — a genuine reopen
+    -- (action=reopened → state=open) must be allowed to move a closed PR back
+    -- to open.
     state = CASE
-        WHEN github_pull_request.state IN ('merged', 'closed')
+        WHEN github_pull_request.state = 'merged'
              AND EXCLUDED.state <> 'merged'
         THEN github_pull_request.state
         ELSE EXCLUDED.state
@@ -127,7 +133,7 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     author_login = EXCLUDED.author_login,
     author_avatar_url = EXCLUDED.author_avatar_url,
     merged_at = CASE
-        WHEN github_pull_request.state IN ('merged', 'closed')
+        WHEN github_pull_request.state = 'merged'
              AND EXCLUDED.state <> 'merged'
         THEN github_pull_request.merged_at
         ELSE EXCLUDED.merged_at
@@ -241,6 +247,28 @@ LIMIT 1;
 -- name: ListIssueIDsForPullRequest :many
 SELECT issue_id FROM issue_pull_request
 WHERE pull_request_id = $1;
+
+-- name: ListIssuePullRequestLinksForPullRequest :many
+-- Returns the persisted (issue_id, close_intent) pairs currently linked to a
+-- PR, independent of how those links came to exist — a manual link with no
+-- current identifier match reads the same as an auto-link one (CHE-374 review
+-- round 2, item 1). Callers that drive the merge-announcement/advance-to-done
+-- selection off "what's actually linked right now" must read this AFTER any
+-- link/unlink writes for the same PR have been committed or are visible in
+-- the same transaction — reading it beforehand reintroduces the "announce on
+-- a just-unlinked issue" bug (A1) round 1 already fixed.
+SELECT issue_id, close_intent FROM issue_pull_request
+WHERE pull_request_id = $1;
+
+-- name: GetIssuePullRequestLink :one
+-- Existence + close_intent check for one (issue, pull_request) pair, used by
+-- MergeAnnouncementWorker.ProcessNext to revalidate that a queued
+-- announcement's link has not been removed since it was enqueued (CHE-374
+-- review round 2, item 2) — an item-1-style "unlink beat us here" race, but
+-- observed at delivery time instead of enqueue time. Returns pgx.ErrNoRows
+-- when the link no longer exists.
+SELECT issue_id, pull_request_id, close_intent FROM issue_pull_request
+WHERE issue_id = $1 AND pull_request_id = $2;
 
 -- name: GetIssuePullRequestCloseAggregate :one
 -- Aggregates the issue's linked PRs into the two counts that gate
