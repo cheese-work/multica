@@ -6021,7 +6021,7 @@ func loadDelegatedFailureRecoveryTarget(ctx context.Context, q *db.Queries, fail
 // mention-notification side effects.
 func (s *TaskService) ensureDelegatedFailureRecoveryComment(ctx context.Context, failedID pgtype.UUID) (*delegatedFailureRecoveryTarget, bool, error) {
 	var target *delegatedFailureRecoveryTarget
-	var clearedResolution *db.Comment
+	var clearedResolution []db.Comment
 	created := false
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		failed, err := qtx.GetAgentTaskForDelegatedFailureUpdate(ctx, failedID)
@@ -6132,7 +6132,7 @@ func delegatedFailureRecoveryAttribution(target *delegatedFailureRecoveryTarget)
 func (s *TaskService) exhaustDelegatedFailureRecovery(ctx context.Context, target *delegatedFailureRecoveryTarget) (bool, error) {
 	var exhaustedComment db.Comment
 	var exhaustedInbox db.InboxItem
-	var clearedResolution *db.Comment
+	var clearedResolution []db.Comment
 	created := false
 	inboxCreated := false
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
@@ -7185,7 +7185,7 @@ func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID p
 	// transaction, under the same lock, before commit — see
 	// commentguard.LockThreadForReplyAndClearResolution. Only the
 	// comment:unresolved EVENT publish waits until after commit.
-	var clearedResolution *db.Comment
+	var clearedResolution []db.Comment
 	var created db.CreateCommentRow
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		_, cleared, err := commentguard.LockThreadForReplyAndClearResolution(ctx, qtx, issue.WorkspaceID, parentID)
@@ -7227,8 +7227,8 @@ func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID p
 	s.PublishThreadUnresolvedOnReply(clearedResolution, util.UUIDToString(issue.WorkspaceID), "agent", util.UUIDToString(agentID))
 }
 
-// PublishThreadUnresolvedOnReply broadcasts comment:unresolved for a comment
-// whose resolution was already cleared, in-transaction, by
+// PublishThreadUnresolvedOnReply broadcasts one comment:unresolved event per
+// comment whose resolution was already cleared, in-transaction, by
 // commentguard.LockThreadForReplyAndClearResolution before the reply's own
 // transaction committed. This is a pure post-commit event publisher now — it
 // performs no database write. It used to be AutoUnresolveThreadOnReply, which
@@ -7240,42 +7240,47 @@ func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID p
 // stale write would incorrectly clear that later resolution. Moving the
 // clear inside the reply's own locked transaction (see
 // LockThreadForReplyAndClearResolution) closes that window structurally;
-// this function's only remaining job is telling realtime listeners about a
-// clear that has already committed as part of the reply.
+// this function's only remaining job is telling realtime listeners about
+// clears that have already committed as part of the reply.
+//
+// cleared is the full slice LockThreadForReplyAndClearResolution returned:
+// under today's single-resolution invariant it holds at most one row, but
+// this function does not assume that — it publishes one event per row so a
+// future or defensive multi-row clear is never silently under-reported to
+// realtime consumers. An empty/nil slice is a no-op (the reply landed in an
+// already-unresolved thread).
 //
 // Shared by every reply-insert call site (Handler.CreateComment,
 // Handler.CreatePluginComment, TaskService.createAgentComment,
 // ensureDelegatedFailureRecoveryComment, exhaustDelegatedFailureRecovery) so
 // the resolved-then-replied state can never desync (one of the bugs flagged
-// on PR #2300, and the commit-ordering issue flagged in round 5). cleared is
-// nil when the reply landed in an already-unresolved thread — a no-op.
-func (s *TaskService) PublishThreadUnresolvedOnReply(cleared *db.Comment, workspaceID, actorType, actorID string) {
-	if cleared == nil {
-		return
-	}
-	s.Bus.Publish(events.Event{
-		Type:        protocol.EventCommentUnresolved,
-		WorkspaceID: workspaceID,
-		ActorType:   actorType,
-		ActorID:     actorID,
-		Payload: map[string]any{
-			"comment": map[string]any{
-				"id":               util.UUIDToString(cleared.ID),
-				"issue_id":         util.UUIDToString(cleared.IssueID),
-				"author_type":      cleared.AuthorType,
-				"author_id":        util.UUIDToString(cleared.AuthorID),
-				"content":          cleared.Content,
-				"type":             cleared.Type,
-				"parent_id":        util.UUIDToPtr(cleared.ParentID),
-				"created_at":       util.TimestampToString(cleared.CreatedAt),
-				"updated_at":       util.TimestampToString(cleared.UpdatedAt),
-				"resolved_at":      util.TimestampToPtr(cleared.ResolvedAt),
-				"resolved_by_type": util.TextToPtr(cleared.ResolvedByType),
-				"resolved_by_id":   util.UUIDToPtr(cleared.ResolvedByID),
-				"revision":         cleared.Revision,
+// on PR #2300, and the commit-ordering issue flagged in round 5).
+func (s *TaskService) PublishThreadUnresolvedOnReply(cleared []db.Comment, workspaceID, actorType, actorID string) {
+	for _, c := range cleared {
+		s.Bus.Publish(events.Event{
+			Type:        protocol.EventCommentUnresolved,
+			WorkspaceID: workspaceID,
+			ActorType:   actorType,
+			ActorID:     actorID,
+			Payload: map[string]any{
+				"comment": map[string]any{
+					"id":               util.UUIDToString(c.ID),
+					"issue_id":         util.UUIDToString(c.IssueID),
+					"author_type":      c.AuthorType,
+					"author_id":        util.UUIDToString(c.AuthorID),
+					"content":          c.Content,
+					"type":             c.Type,
+					"parent_id":        util.UUIDToPtr(c.ParentID),
+					"created_at":       util.TimestampToString(c.CreatedAt),
+					"updated_at":       util.TimestampToString(c.UpdatedAt),
+					"resolved_at":      util.TimestampToPtr(c.ResolvedAt),
+					"resolved_by_type": util.TextToPtr(c.ResolvedByType),
+					"resolved_by_id":   util.UUIDToPtr(c.ResolvedByID),
+					"revision":         c.Revision,
+				},
 			},
-		},
-	})
+		})
+	}
 }
 
 // IssueToMap renders an issue row as the map shape the issue:created /

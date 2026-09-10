@@ -87,12 +87,20 @@ func LockThreadForReplyAndLoadRoot(ctx context.Context, q *db.Queries, workspace
 // resolved comment.
 //
 // Returns the thread root (nil for a top-level comment, matching
-// LockThreadForReply's no-op semantics) and the comment row that was cleared,
-// if any (nil when nothing in the thread was resolved). Callers publish
-// comment:unresolved for the cleared row AFTER their transaction commits —
+// LockThreadForReply's no-op semantics) and every comment row that was
+// cleared (empty when nothing in the thread was resolved). Callers publish
+// comment:unresolved for EACH cleared row AFTER their transaction commits —
 // event publishing after commit is fine and is the existing pattern for
 // comment:created too; only the database write had to move inside the tx.
-func LockThreadForReplyAndClearResolution(ctx context.Context, q *db.Queries, workspaceID, parentID pgtype.UUID) (root *db.Comment, cleared *db.Comment, err error) {
+//
+// ClearThreadResolutionForReply is a :many query. Under today's
+// single-resolution invariant (enforced by ClearOtherThreadResolutions) a
+// thread has at most one resolved comment at a time, so in practice this
+// slice holds at most one row — but the invariant is enforced by a separate
+// code path, not by this function's SQL, so this helper (and every caller)
+// handles the general N-row case defensively rather than assuming len(rows)
+// <= 1 and silently discarding anything beyond the first row.
+func LockThreadForReplyAndClearResolution(ctx context.Context, q *db.Queries, workspaceID, parentID pgtype.UUID) (root *db.Comment, cleared []db.Comment, err error) {
 	root, err = loadThreadRootAndLock(ctx, q, workspaceID, parentID)
 	if err != nil || root == nil {
 		return root, nil, err
@@ -105,11 +113,7 @@ func LockThreadForReplyAndClearResolution(ctx context.Context, q *db.Queries, wo
 	if err != nil {
 		return nil, nil, fmt.Errorf("clear thread resolution for reply: %w", err)
 	}
-	if len(rows) == 0 {
-		return root, nil, nil
-	}
-	clearedRow := rows[0]
-	return root, &clearedRow, nil
+	return root, rows, nil
 }
 
 // loadThreadRootAndLock resolves parentID's thread root and takes the
