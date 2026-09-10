@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -3683,6 +3684,20 @@ func (h *Handler) ResolveComment(w http.ResponseWriter, r *http.Request) {
 	}
 	wasResolved := comment.ResolvedAt.Valid
 
+	// KnownAsOf is optional so existing callers that send no body keep working
+	// unguarded. When a caller does supply it (the timestamp of the thread state
+	// it resolved against, e.g. the newest comment's created_at it had loaded),
+	// a reply that lands in this thread after that moment and before this
+	// request commits must not be silently folded away by the resolution — see
+	// the concurrent-feedback race guard below.
+	var req struct {
+		KnownAsOf *time.Time `json:"known_as_of,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
 	actorUUID, err := util.ParseUUID(actorID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid actor id")
@@ -3700,6 +3715,32 @@ func (h *Handler) ResolveComment(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
+
+	// Concurrent-feedback race guard: if the caller told us the thread state it
+	// resolved against (KnownAsOf), reject the resolve when a reply has landed in
+	// this thread since then. Without this, a reply added between "the resolver
+	// loaded the thread" and "the resolve request commits" would get folded away
+	// by ListComments' fold projection the instant this resolution lands, with no
+	// signal that feedback was ever hidden. Checked inside the same tx as the
+	// write so the count and the resolve observe one consistent snapshot.
+	if req.KnownAsOf != nil {
+		newer, err := qtx.CountThreadCommentsSince(r.Context(), db.CountThreadCommentsSinceParams{
+			TargetID:    comment.ID,
+			Since:       pgtype.Timestamptz{Time: *req.KnownAsOf, Valid: true},
+			IssueID:     comment.IssueID,
+			WorkspaceID: comment.WorkspaceID,
+		})
+		if err != nil {
+			slog.Warn("count thread comments since failed", append(logger.RequestAttrs(r), "error", err, "comment_id", uuidToString(comment.ID))...)
+			writeError(w, http.StatusInternalServerError, "failed to resolve comment")
+			return
+		}
+		if newer > 0 {
+			writeErrorCode(w, http.StatusConflict, "thread_changed",
+				"thread has new replies since it was loaded; reload the thread before resolving")
+			return
+		}
+	}
 
 	cleared, err := qtx.ClearOtherThreadResolutions(r.Context(), db.ClearOtherThreadResolutionsParams{
 		TargetID:    comment.ID,

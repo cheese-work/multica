@@ -199,6 +199,62 @@ func (q *Queries) CountNewCommentsSince(ctx context.Context, arg CountNewComment
 	return count, err
 }
 
+const countThreadCommentsSince = `-- name: CountThreadCommentsSince :one
+WITH RECURSIVE root_of AS (
+    SELECT c.id, c.parent_id
+    FROM comment c
+    WHERE c.id = $1 AND c.issue_id = $3 AND c.workspace_id = $4
+    UNION ALL
+    SELECT p.id, p.parent_id
+    FROM comment p
+    JOIN root_of r ON p.id = r.parent_id
+),
+thread_root AS (
+    SELECT id FROM root_of WHERE parent_id IS NULL LIMIT 1
+),
+descendants AS (
+    SELECT c.id
+    FROM comment c
+    JOIN thread_root tr ON c.id = tr.id
+    UNION
+    SELECT c.id
+    FROM comment c
+    JOIN descendants d ON c.parent_id = d.id
+    WHERE c.issue_id = $3 AND c.workspace_id = $4
+)
+SELECT count(*) FROM comment
+WHERE comment.id IN (SELECT id FROM descendants)
+  AND comment.id <> $1
+  AND comment.created_at > $2
+`
+
+type CountThreadCommentsSinceParams struct {
+	TargetID    pgtype.UUID        `json:"target_id"`
+	Since       pgtype.Timestamptz `json:"since"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+}
+
+// Race guard for ResolveComment (MUL concurrent-feedback coverage): counts
+// comments in @target_id's thread (its root plus every descendant, same
+// walk as ClearOtherThreadResolutions) created strictly after @since,
+// excluding @target_id itself. The resolve handler compares this against the
+// reply count the caller observed before deciding to resolve — a non-zero
+// result means a reply landed in the thread after the caller loaded it, which
+// resolving now would silently fold away, so the handler rejects the write
+// with a typed conflict instead of applying it.
+func (q *Queries) CountThreadCommentsSince(ctx context.Context, arg CountThreadCommentsSinceParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countThreadCommentsSince,
+		arg.TargetID,
+		arg.Since,
+		arg.IssueID,
+		arg.WorkspaceID,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createComment = `-- name: CreateComment :one
 WITH touched_issue AS (
     UPDATE issue SET
