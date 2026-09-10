@@ -2,9 +2,6 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -236,18 +233,56 @@ func TestSquadOperatingProtocolRequiresReconciliationBeforeNoAction(t *testing.T
 		// mistaken for reconciliation of this one.
 		for _, want := range []string{
 			"Identify the event by its concrete key",
-			"the candidate commit/SHA, the PR revision, or the specific",
-			"not by its category",
 			"Treat the event as already reconciled ONLY if a prior",
-			"published result on this issue names that same key",
+			"published result on this issue names that same durable key",
 			"a published result about a different candidate or an",
 			"earlier revision does not reconcile this one, even if the",
 			"category of event matches",
-			"treating a same-category event on a different key as already",
-			"reconciled",
+			// Restored (was dropped from this list during the CHE-359/PR #11
+			// pass, though the hard-rules block itself still states it at
+			// squad_briefing.go:117-118 equivalent) — Opus flagged it as
+			// still-present-but-unguarded on PR #12 review of 63f1e35a8.
+			"treating a same-category event on a",
+			"different key as already reconciled",
 		} {
 			if !strings.Contains(compact, want) {
 				t.Errorf("ownsParentStatus=%v: protocol missing event-keying requirement %q\n--- protocol ---\n%s", ownsParentStatus, want, protocol)
+			}
+		}
+
+		// Case A4 (Terra P1 correction, CHE-359/PR #11 review of
+		// 19c756bce, then Opus BLOCK on PR #12 review of 63f1e35a8): a
+		// durable candidate/SHA or PR revision must take precedence over
+		// the reporting comment as the event's key, so a merge webhook and
+		// a human reply reporting the SAME candidate collapse to the SAME
+		// key instead of being treated as two different events. This is no
+		// longer a hand-maintained prose duplicate of ReconciliationKey —
+		// squadOperatingProtocolFor renders it by calling
+		// reconciliationKeyingParagraph(), which derives its wording from
+		// ReconciliationKey's actual precedence on probe events. See
+		// TestSquadOperatingProtocolKeyingParagraphIsGeneratedFromReconciliationKey
+		// below for the seam proof, and
+		// TestReconciliationKey_CrossChannelReplayCollapsesToSameKey in
+		// squad_briefing_reconciliation_test.go for the replay proof
+		// exercised through squadOperatingProtocolFor.
+		for _, want := range []string{
+			"computed with this",
+			"precedence (durable identity always wins over the comment that",
+			"happened to report it): candidate/SHA present -> key is",
+			"else PR revision present -> key is",
+			"else -> key is",
+			"Use the durable",
+			"key even when this trigger arrived as a reporting comment (a human",
+			"reply, a merge webhook, a status-check notification); only fall back",
+			"to keying on the specific comment itself when no durable candidate/SHA",
+			"or revision exists for the event",
+			"a merge webhook and a human reply reporting the SAME candidate must",
+			"resolve to the SAME key and must NOT be treated as two different",
+			"events, even though they arrived through different channels and as",
+			"different comments",
+		} {
+			if !strings.Contains(compact, want) {
+				t.Errorf("ownsParentStatus=%v: protocol missing durable-key precedence requirement %q\n--- protocol ---\n%s", ownsParentStatus, want, protocol)
 			}
 		}
 
@@ -280,6 +315,47 @@ func TestSquadOperatingProtocolEventKeyingRejectsStaleCandidateMatch(t *testing.
 		t.Fatal("negative control is broken: stale text should not contain the keying requirement")
 	}
 }
+
+// TestSquadOperatingProtocolRejectsCommentEqualFootingLanguage is a negative
+// control for Case A4 (CHE-359/PR #11 review of 19c756bce, then Opus BLOCK
+// on PR #12 review of 63f1e35a8, then Sol BLOCK on PR #12 review of
+// 52d013197). Opus's finding was that the prior version of this test
+// compared two hardcoded string literals and could not fail for any
+// production reason — it never called into production code. Sol's follow-up
+// finding was that the fix for that (comparing the stale literal against the
+// marker string, rather than against productionText) still proved nothing:
+// production could ship BOTH the new precedence marker and the old
+// equal-footing wording side by side, and this test would still pass. This
+// version renders the ACTUAL production protocol text through
+// squadOperatingProtocolFor and asserts directly against it both ways: the
+// new marker must be present, and the stale equal-footing sentence must be
+// absent.
+func TestSquadOperatingProtocolRejectsCommentEqualFootingLanguage(t *testing.T) {
+	productionText := squadOperatingProtocolFor(true)
+	compact := strings.Join(strings.Fields(productionText), " ")
+
+	const durablePrecedenceMarker = "Use the durable key even when this trigger arrived as a reporting comment"
+	if !strings.Contains(compact, durablePrecedenceMarker) {
+		t.Fatalf("production protocol text (squadOperatingProtocolFor) must contain the durable-precedence marker %q\n--- protocol ---\n%s", durablePrecedenceMarker, productionText)
+	}
+
+	// The pre-fix (19c756bce) equal-footing wording, which put the reporting
+	// comment on equal footing with candidate/SHA and revision as the event
+	// key, must be ABSENT from the actual rendered production text — not
+	// merely absent from a hardcoded literal compared against another
+	// hardcoded literal. This is the assertion Sol's BLOCK required: without
+	// it, production could ship both the new marker and the stale sentence
+	// and this test would not notice.
+	const staleEqualFootingText = "the candidate commit/SHA, the PR revision, or the specific comment reporting it — not by its category"
+	if strings.Contains(compact, staleEqualFootingText) {
+		t.Fatalf("production protocol text (squadOperatingProtocolFor) still contains the stale pre-fix equal-footing wording %q — the durable-precedence marker must fully replace it, not merely coexist with it\n--- protocol ---\n%s", staleEqualFootingText, productionText)
+	}
+}
+
+// TestSquadOperatingProtocolKeyingParagraphIsGeneratedFromReconciliationKey
+// moved to squad_briefing_reconciliation_test.go, next to
+// TestSquadOperatingProtocolReplayProvenThroughProductionBriefing — same
+// executable-seam concern (CHE-359/PR #12 review of 63f1e35a8).
 
 // TestSquadParentStatusOwnedAllowsDoneOrInReview covers Cases C and D of the
 // CHE-329/CHE-346 Completion Contract: the owning leader must be able to
@@ -517,143 +593,3 @@ func TestBuildSquadLeaderBriefing_MentionsRoundTrip(t *testing.T) {
 		}
 	}
 }
-
-// claimAndDecodeAgent runs ClaimTaskByRuntime for the given runtime and
-// returns the agent block of the response. Fails the test on non-200.
-func claimAndDecodeAgent(t *testing.T, runtimeID string) *TaskAgentData {
-	t.Helper()
-	w := httptest.NewRecorder()
-	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/claim", nil, testWorkspaceID, "test-claim-squad-briefing")
-	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.ClaimTaskByRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ClaimTaskByRuntime: %d %s", w.Code, w.Body.String())
-	}
-	var resp struct {
-		Task *struct {
-			Agent *TaskAgentData `json:"agent"`
-		} `json:"task"`
-	}
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if resp.Task == nil || resp.Task.Agent == nil {
-		t.Fatalf("expected task.agent in response, got: %s", w.Body.String())
-	}
-	return resp.Task.Agent
-}
-
-// queueSquadIssueTaskFor creates an issue assigned to the squad and a queued
-// task for the given (agentID, runtimeID). Returns the issue + task IDs.
-func queueSquadIssueTaskFor(t *testing.T, squadID, agentID, runtimeID string, issueNumber int) (issueID, taskID string) {
-	t.Helper()
-	ctx := context.Background()
-	if err := testPool.QueryRow(ctx, `
-INSERT INTO issue (
-workspace_id, title, status, priority, creator_id, creator_type,
-assignee_type, assignee_id, number, position
-) VALUES ($1, 'Squad briefing claim test', 'todo', 'medium', $2, 'member',
-'squad', $3, $4, 0)
-RETURNING id
-`, testWorkspaceID, testUserID, squadID, issueNumber).Scan(&issueID); err != nil {
-		t.Fatalf("create squad-assigned issue: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID) })
-
-	if err := testPool.QueryRow(ctx, `
-INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, is_leader_task, squad_id)
-VALUES ($1, $2, $3, 'queued', 0,
-        ($1::uuid = (SELECT leader_id FROM squad WHERE id = $4::uuid)),
-        $4::uuid)
-RETURNING id
-`, agentID, runtimeID, issueID, squadID).Scan(&taskID); err != nil {
-		t.Fatalf("queue task: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
-	return
-}
-
-// TestClaimTask_LeaderGetsBriefing — when the squad leader claims a task on
-// a squad-assigned issue, the response's agent.instructions must include
-// the Operating Protocol + Roster + user instructions.
-func TestClaimTask_LeaderGetsBriefing(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	ctx := context.Background()
-
-	var leaderID, runtimeID string
-	if err := testPool.QueryRow(ctx,
-		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 ORDER BY created_at ASC LIMIT 1`,
-		testWorkspaceID,
-	).Scan(&leaderID, &runtimeID); err != nil {
-		t.Fatalf("get leader agent: %v", err)
-	}
-
-	squad := seedSquadForBriefing(t, leaderID, "Briefing Claim Squad", "Be terse.")
-
-	helper := createHandlerTestAgent(t, "Briefing Helper", []byte("[]"))
-	addAgentMember(t, squad.ID, helper, "implementer")
-
-	queueSquadIssueTaskFor(t, util.UUIDToString(squad.ID), leaderID, runtimeID, 95001)
-
-	agent := claimAndDecodeAgent(t, runtimeID)
-	for _, want := range []string{
-		"## Squad Operating Protocol",
-		"## Squad Roster",
-		"Leader (you):",
-		"## Squad Instructions (Briefing Claim Squad)",
-		"Be terse.",
-		"`[@Briefing Helper](mention://agent/" + helper + ")`",
-	} {
-		if !strings.Contains(agent.Instructions, want) {
-			t.Errorf("expected agent.instructions to contain %q\n--- instructions ---\n%s", want, agent.Instructions)
-		}
-	}
-}
-
-// TestClaimTask_NonLeaderGetsNoBriefing — when a non-leader squad member
-// claims a task on a squad-assigned issue, NO briefing is injected.
-func TestClaimTask_NonLeaderGetsNoBriefing(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	ctx := context.Background()
-
-	var leaderID string
-	if err := testPool.QueryRow(ctx,
-		`SELECT id FROM agent WHERE workspace_id = $1 ORDER BY created_at ASC LIMIT 1`,
-		testWorkspaceID,
-	).Scan(&leaderID); err != nil {
-		t.Fatalf("get leader agent: %v", err)
-	}
-
-	squad := seedSquadForBriefing(t, leaderID, "Non-Leader Squad", "Squad guidance.")
-
-	// Create a second agent (NOT the leader) with its own runtime so the
-	// claim path picks its task without ambiguity.
-	helperID := createHandlerTestAgent(t, "Non Leader Helper", []byte("[]"))
-	addAgentMember(t, squad.ID, helperID, "")
-	var helperRuntime string
-	if err := testPool.QueryRow(ctx,
-		`SELECT runtime_id FROM agent WHERE id = $1`, helperID,
-	).Scan(&helperRuntime); err != nil {
-		t.Fatalf("get helper runtime: %v", err)
-	}
-
-	queueSquadIssueTaskFor(t, util.UUIDToString(squad.ID), helperID, helperRuntime, 95002)
-
-	agent := claimAndDecodeAgent(t, helperRuntime)
-	for _, mustNot := range []string{
-		"Squad Operating Protocol",
-		"Squad Roster",
-		"Squad Instructions (Non-Leader Squad)",
-	} {
-		if strings.Contains(agent.Instructions, mustNot) {
-			t.Errorf("non-leader claim should NOT contain %q\n--- instructions ---\n%s", mustNot, agent.Instructions)
-		}
-	}
-}
-
-// Avoid "imported and not used: pgtype" if helpers above are the only users.
-var _ pgtype.UUID
