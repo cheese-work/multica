@@ -211,6 +211,24 @@ func TestSquadOperatingProtocolRequiresReconciliationBeforeNoAction(t *testing.T
 			}
 		}
 
+		// Case A2 (Terra P1 correction, CHE-348/PR #11 review of cb28d12c):
+		// the published result must explicitly state the remaining
+		// owner/action, or explicitly state none remains — a status-only
+		// change does not satisfy this on its own.
+		for _, want := range []string{
+			"must explicitly",
+			"state the remaining owner/action, or explicitly state that none",
+			"remains",
+			"A status change alone does not satisfy this",
+			"the explicit owner/action statement belongs in a comment even on turns that also change status",
+			"publishing a result that omits the owner/action statement, is a",
+			"protocol violation, not a shortcut",
+		} {
+			if !strings.Contains(compact, want) {
+				t.Errorf("ownsParentStatus=%v: protocol missing mandatory owner/action statement requirement %q\n--- protocol ---\n%s", ownsParentStatus, want, protocol)
+			}
+		}
+
 		// Case B: the legitimate quiet no_action path (routine progress
 		// update, or a duplicate/already-reconciled notification) must not
 		// regress — this is the case the original MUL-6984 rule protects.

@@ -92,8 +92,14 @@ Your responsibilities, in order:
      whether a remaining owner/action exists. If the event is not already
      reconciled by a prior published result on this issue, you must
      publish exactly one result — a comment and/or a status change —
-     before ending the turn. Going quiet on a first substantive event is
-     a protocol violation, not a shortcut.
+     before ending the turn, AND that published result must explicitly
+     state the remaining owner/action, or explicitly state that none
+     remains. A status change alone does not satisfy this: status is not
+     read as a statement of who owns what next, so the explicit
+     owner/action statement belongs in a comment even on turns that also
+     change status. Going quiet on a first substantive event, or
+     publishing a result that omits the owner/action statement, is a
+     protocol violation, not a shortcut.
    - Quiet ` + "`" + `no_action` + "`" + ` remains correct for everything else: a
      routine progress update that requires no response, or a duplicate /
      already-actioned notification of an event this issue already
