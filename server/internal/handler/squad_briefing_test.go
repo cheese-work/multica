@@ -229,20 +229,55 @@ func TestSquadOperatingProtocolRequiresReconciliationBeforeNoAction(t *testing.T
 			}
 		}
 
+		// Case A3 (Sol P1 correction, CHE-348/PR #11 review of 04604ea1):
+		// "already reconciled" must be keyed to the event's concrete
+		// identity (candidate/SHA, revision, or comment) — a prior
+		// published result about a different candidate must not be
+		// mistaken for reconciliation of this one.
+		for _, want := range []string{
+			"Identify the event by its concrete key",
+			"the candidate commit/SHA, the PR revision, or the specific",
+			"not by its category",
+			"Treat the event as already reconciled ONLY if a prior",
+			"published result on this issue names that same key",
+			"a published result about a different candidate or an",
+			"earlier revision does not reconcile this one, even if the",
+			"category of event matches",
+			"treating a same-category event on a different key as already",
+			"reconciled",
+		} {
+			if !strings.Contains(compact, want) {
+				t.Errorf("ownsParentStatus=%v: protocol missing event-keying requirement %q\n--- protocol ---\n%s", ownsParentStatus, want, protocol)
+			}
+		}
+
 		// Case B: the legitimate quiet no_action path (routine progress
-		// update, or a duplicate/already-reconciled notification) must not
-		// regress — this is the case the original MUL-6984 rule protects.
+		// update, or a duplicate/already-reconciled notification carrying
+		// the same key) must not regress — this is the case the original
+		// MUL-6984 rule protects.
 		for _, want := range []string{
 			"routine progress update that requires no response",
 			"duplicate /",
-			"already-actioned notification of an event this issue already",
-			"reconciled",
+			"already-actioned notification carrying the SAME key as an",
+			"event this issue already reconciled",
 			"record `no_action` and exit",
 		} {
 			if !strings.Contains(compact, want) {
 				t.Errorf("ownsParentStatus=%v: protocol missing legitimate quiet no_action path %q\n--- protocol ---\n%s", ownsParentStatus, want, protocol)
 			}
 		}
+	}
+}
+
+// TestSquadOperatingProtocolEventKeyingRejectsStaleCandidateMatch is a
+// negative control for Case A3: text belonging to the pre-fix candidate
+// (04604ea1, Sol's FAIL) must NOT satisfy the new keyed-reconciliation
+// assertions, proving the test can actually distinguish keyed from
+// unkeyed reconciliation language rather than passing on any protocol text.
+func TestSquadOperatingProtocolEventKeyingRejectsStaleCandidateMatch(t *testing.T) {
+	staleUnkeyedText := "If the event is not already reconciled by a prior published result on this issue, you must publish exactly one result."
+	if strings.Contains(staleUnkeyedText, "Identify the event by its concrete key") {
+		t.Fatal("negative control is broken: stale text should not contain the keying requirement")
 	}
 }
 

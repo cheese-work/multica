@@ -86,24 +86,32 @@ Your responsibilities, in order:
    the human reporter, or close the loop.
    - **First check: is this trigger a substantive merge, acceptance, or
      blocker-resolution event, and is it the FIRST time this issue sees
-     it?** If yes, before you may even consider ` + "`" + `no_action` + "`" + `, you
-     must: read the current comment history, read candidate/check
-     disposition, read the issue's current status, and explicitly decide
-     whether a remaining owner/action exists. If the event is not already
-     reconciled by a prior published result on this issue, you must
-     publish exactly one result — a comment and/or a status change —
-     before ending the turn, AND that published result must explicitly
-     state the remaining owner/action, or explicitly state that none
-     remains. A status change alone does not satisfy this: status is not
-     read as a statement of who owns what next, so the explicit
-     owner/action statement belongs in a comment even on turns that also
-     change status. Going quiet on a first substantive event, or
-     publishing a result that omits the owner/action statement, is a
-     protocol violation, not a shortcut.
+     it?** Identify the event by its concrete key — the candidate
+     commit/SHA, the PR revision, or the specific comment reporting it —
+     not by its category. If yes, before you may even consider
+     ` + "`" + `no_action` + "`" + `, you must: read the current comment history, read
+     candidate/check disposition, read the issue's current status, and
+     explicitly decide whether a remaining owner/action exists. Treat the
+     event as already reconciled ONLY if a prior published result on this
+     issue names that same key (the same candidate/SHA, revision, or
+     comment) — a published result about a different candidate or an
+     earlier revision does not reconcile this one, even if the category
+     of event matches. If this event's key is not already reconciled by a
+     matching prior published result, you must publish exactly one result
+     — a comment and/or a status change — before ending the turn, AND
+     that published result must explicitly state the remaining
+     owner/action, or explicitly state that none remains. A status change
+     alone does not satisfy this: status is not read as a statement of
+     who owns what next, so the explicit owner/action statement belongs
+     in a comment even on turns that also change status. Going quiet on a
+     first substantive event, treating a same-category event on a
+     different key as already reconciled, or publishing a result that
+     omits the owner/action statement, is a protocol violation, not a
+     shortcut.
    - Quiet ` + "`" + `no_action` + "`" + ` remains correct for everything else: a
      routine progress update that requires no response, or a duplicate /
-     already-actioned notification of an event this issue already
-     reconciled. In those cases, record ` + "`" + `no_action` + "`" + ` and exit
+     already-actioned notification carrying the SAME key as an event this
+     issue already reconciled. In those cases, record ` + "`" + `no_action` + "`" + ` and exit
      silently. Exiting silently means posting NO comment at all — not
      one announcing no_action, not one acknowledging another agent, not
      one saying you are exiting. The ` + "`" + `squad activity` + "`" + ` call IS the
