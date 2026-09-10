@@ -385,6 +385,139 @@ func TestExhaustDelegatedFailureRecoveryReopensResolvedThread(t *testing.T) {
 	}
 }
 
+// TestEnsureDelegatedFailureRecoveryCommentReopensResolvedReply is the Round 5
+// regression for the root-only limitation Sol found in Round 4's design:
+// AutoUnresolveThreadOnReply only ever cleared the thread ROOT's resolved_at,
+// so a resolved REPLY (not the root) was never reopened when a recovery
+// comment landed. commentguard.LockThreadForReplyAndClearResolution walks the
+// same recursive thread structure ClearOtherThreadResolutions enforces the
+// single-resolution invariant over, so it must find and clear a resolved
+// reply just as it would a resolved root.
+func TestEnsureDelegatedFailureRecoveryCommentReopensResolvedReply(t *testing.T) {
+	f, svc := seedDelegatedFailureFixture(t)
+	ctx := context.Background()
+	failedID := f.insertWorkerTask(t, "failed", "comment", 1, 2)
+	if _, err := f.pool.Exec(ctx, `
+		UPDATE agent_task_queue
+		SET failure_reason = 'agent_error.process_failure', error = 'worker exited', completed_at = now()
+		WHERE id = $1`, failedID); err != nil {
+		t.Fatalf("stamp failed task: %v", err)
+	}
+
+	// A reply under the source trigger — NOT the root itself — is the
+	// resolved comment. The recovery comment lands as a reply to
+	// f.sourceTrigger (the direct-parent trigger signal, per
+	// ensureDelegatedFailureRecoveryComment), which shares the same thread
+	// root as this deeper reply.
+	var replyID string
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content, parent_id)
+		VALUES ($1, $2, 'member', $3, 'a reply under the trigger', $4)
+		RETURNING id`, f.workspaceID, f.issueID, f.userID, f.sourceTrigger).Scan(&replyID); err != nil {
+		t.Fatalf("seed thread reply: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx, `
+		UPDATE comment SET resolved_at = now(), resolved_by_type = 'member', resolved_by_id = $2
+		WHERE id = $1`, replyID, f.userID); err != nil {
+		t.Fatalf("resolve thread reply: %v", err)
+	}
+	if !commentResolvedByID(t, f.pool, replyID) {
+		t.Fatalf("reply must read as resolved before the recovery reply lands")
+	}
+	if commentResolvedByID(t, f.pool, f.sourceTrigger) {
+		t.Fatalf("root must NOT be the resolved comment in this test — the reply is")
+	}
+
+	target, created, err := svc.ensureDelegatedFailureRecoveryComment(ctx, failedID)
+	if err != nil || target == nil || !created {
+		t.Fatalf("ensure recovery comment = target %v created %v err %v", target != nil, created, err)
+	}
+
+	if commentResolvedByID(t, f.pool, replyID) {
+		t.Fatalf("recovery reply landing in a thread whose RESOLVED comment is a non-root reply must still reopen it, but the reply still reads as resolved")
+	}
+}
+
+// TestExhaustDelegatedFailureRecoveryReopensResolvedReply is the exhaustion-path
+// counterpart to TestEnsureDelegatedFailureRecoveryCommentReopensResolvedReply:
+// the exhaustion comment (inserted by exhaustDelegatedFailureRecovery) must
+// also reopen a resolved non-root reply, not just a resolved root.
+func TestExhaustDelegatedFailureRecoveryReopensResolvedReply(t *testing.T) {
+	f, svc := seedDelegatedFailureFixture(t)
+	ctx := context.Background()
+	failedID := f.insertWorkerTask(t, "failed", "comment", 1, 2)
+	if _, err := f.pool.Exec(ctx, `
+		UPDATE agent_task_queue
+		SET failure_reason = 'agent_error.process_failure', error = 'worker exited', completed_at = now()
+		WHERE id = $1`, failedID); err != nil {
+		t.Fatalf("stamp failed task: %v", err)
+	}
+	failed, err := svc.Queries.GetAgentTask(ctx, failedID)
+	if err != nil {
+		t.Fatalf("load failed task: %v", err)
+	}
+	if handled, err := svc.recoverDelegatedTaskFailure(ctx, failed); err != nil || !handled {
+		t.Fatalf("initial recovery = handled %v err %v", handled, err)
+	}
+
+	var replyID string
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content, parent_id)
+		VALUES ($1, $2, 'member', $3, 'a reply under the trigger', $4)
+		RETURNING id`, f.workspaceID, f.issueID, f.userID, f.sourceTrigger).Scan(&replyID); err != nil {
+		t.Fatalf("seed thread reply: %v", err)
+	}
+
+	for attempt := 1; attempt <= delegatedFailureRecoveryMaxTaskAttempts; attempt++ {
+		var currentTaskID pgtype.UUID
+		if err := f.pool.QueryRow(ctx, `
+			SELECT id FROM agent_task_queue
+			WHERE trigger_evidence_kind = 'delegated_failure'
+			  AND trigger_evidence_ref_id = $1
+			  AND status = 'queued'
+			ORDER BY created_at DESC, id DESC
+			LIMIT 1`, failedID).Scan(&currentTaskID); err != nil {
+			t.Fatalf("load recovery attempt %d: %v", attempt, err)
+		}
+		if _, err := f.pool.Exec(ctx, `
+			UPDATE agent_task_queue
+			SET status = 'failed', completed_at = now(), failure_reason = 'queued_expired',
+			    error = 'task expired in queue', delivered_comment_ids = '{}'
+			WHERE id = $1`, currentTaskID); err != nil {
+			t.Fatalf("fail recovery attempt %d: %v", attempt, err)
+		}
+
+		if attempt == delegatedFailureRecoveryMaxTaskAttempts {
+			if _, err := f.pool.Exec(ctx, `
+				UPDATE comment SET resolved_at = now(), resolved_by_type = 'member', resolved_by_id = $2
+				WHERE id = $1`, replyID, f.userID); err != nil {
+				t.Fatalf("resolve thread reply before exhaustion: %v", err)
+			}
+			if !commentResolvedByID(t, f.pool, replyID) {
+				t.Fatalf("reply must read as resolved before the exhaustion reply lands")
+			}
+		}
+
+		result, err := svc.RecoverPendingDelegatedFailures(ctx, 100)
+		if err != nil {
+			t.Fatalf("recovery sweep after attempt %d = %+v, %v", attempt, result, err)
+		}
+		if attempt < delegatedFailureRecoveryMaxTaskAttempts {
+			if result.Replayed != 1 || result.Exhausted != 0 {
+				t.Fatalf("recovery sweep after attempt %d = %+v, want one replay", attempt, result)
+			}
+			continue
+		}
+		if result.Replayed != 0 || result.Exhausted != 1 {
+			t.Fatalf("recovery sweep after final attempt = %+v, want one exhaustion", result)
+		}
+	}
+
+	if commentResolvedByID(t, f.pool, replyID) {
+		t.Fatalf("exhaustion reply landing in a thread whose RESOLVED comment is a non-root reply must still reopen it, but the reply still reads as resolved")
+	}
+}
+
 // commentResolvedByID reports whether the given comment currently has a
 // non-null resolved_at, i.e. whether the thread it roots reads as resolved.
 func commentResolvedByID(t *testing.T, pool *pgxpool.Pool, id string) bool {
