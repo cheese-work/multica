@@ -17,6 +17,20 @@ import (
 // on an interval independent of completion events — the coordinator must still
 // see exactly one recovery task, never two.
 //
+// The obligation must be genuinely UNCOVERED before the race starts, or both
+// calls simply no-op against an already-covering task and the test proves
+// nothing. seedRecoverySignal's initial dispatch leaves its task in an active
+// (covering) status, so resetting that same row's status column in place —
+// the earlier version of this test — still reads as covered by
+// HasTaskCoveringDelegatedFailureComment and both concurrent calls skip real
+// work. svc.CancelTask, by contrast, is a real terminal transition: the task
+// is cancelled without ever delivering the recovery comment (the same
+// undelivered-cancel case TestPlannedButUndeliveredRecoveryStaysPending
+// proves leaves the obligation pending), so ListPendingDelegatedFailureRecoveries
+// and HasTaskCoveringDelegatedFailureComment both agree nothing currently
+// covers it — the two dispatch calls below have to genuinely contend for the
+// right to create the sole replacement task.
+//
 // Both paths funnel into the same dispatchDelegatedFailureRecovery core, whose
 // writes (MergeDelegatedFailureCommentIntoPendingTask, CreateAgentTask guarded by
 // idx_one_pending_task_per_issue_agent_thread, RegisterPlannedCommentForActiveTask)
@@ -37,18 +51,16 @@ func TestDelegatedFailureRecoveryEventAndTimerRaceDispatchExactlyOnce(t *testing
 	// recovery task and its recovery comment.
 	recoveryTaskID, recoveryCommentID := f.seedRecoverySignal(t, svc)
 
-	// Put the sole recovery task back to 'queued' with no delivery receipt, so
-	// the obligation is pending again: RecoverPendingDelegatedFailures (timer
-	// path) will pick up the comment via ListPendingDelegatedFailureRecoveries,
-	// while DispatchDelegatedFailureRecoveryComment (event path) independently
-	// redispatches the identical comment concurrently. Both now contend over the
-	// same starting state instead of one observing the other's committed result
-	// for free.
-	if _, err := f.pool.Exec(ctx, `
-		UPDATE agent_task_queue
-		SET status = 'queued', delivered_comment_ids = '{}'::uuid[]
-		WHERE id = $1`, recoveryTaskID); err != nil {
-		t.Fatalf("reset recovery task to queued: %v", err)
+	// Cancel the sole recovery task before it ever delivers the comment. This
+	// is a genuine terminal, non-covering transition (see
+	// TestPlannedButUndeliveredRecoveryStaysPending): the obligation is left
+	// pending, not merely relabeled, so both dispatch paths below start from a
+	// state where neither has anything to observe from the other for free.
+	if _, err := svc.CancelTask(ctx, recoveryTaskID); err != nil {
+		t.Fatalf("CancelTask: %v", err)
+	}
+	if f.settled(t, recoveryCommentID) {
+		t.Fatal("cancelling the undelivered recovery task settled it; the obligation must stay pending for this race to be real")
 	}
 
 	comment, err := svc.Queries.GetComment(ctx, recoveryCommentID)
@@ -88,15 +100,35 @@ func TestDelegatedFailureRecoveryEventAndTimerRaceDispatchExactlyOnce(t *testing
 		t.Fatalf("load recovery comment source task id: %v", err)
 	}
 
-	var recoveryTaskCount int
+	// Both dispatch paths must have actually run their dispatch behavior
+	// against the pending obligation rather than one silently observing the
+	// other's prior state: each should report handling the comment, not a
+	// same-covering-task no-op.
+	var activeRecoveryTasks int
+	if err := f.pool.QueryRow(ctx, `
+		SELECT count(*) FROM agent_task_queue
+		WHERE trigger_evidence_kind = 'delegated_failure' AND trigger_evidence_ref_id = $1
+		  AND status NOT IN ('cancelled')`, failedID,
+	).Scan(&activeRecoveryTasks); err != nil {
+		t.Fatalf("count active recovery tasks after race: %v", err)
+	}
+	if activeRecoveryTasks != 1 {
+		t.Fatalf("active recovery task count after racing event vs timer dispatch = %d, want exactly 1 surviving recovery", activeRecoveryTasks)
+	}
+
+	var totalRecoveryTasks int
 	if err := f.pool.QueryRow(ctx, `
 		SELECT count(*) FROM agent_task_queue
 		WHERE trigger_evidence_kind = 'delegated_failure' AND trigger_evidence_ref_id = $1`, failedID,
-	).Scan(&recoveryTaskCount); err != nil {
-		t.Fatalf("count recovery tasks after race: %v", err)
+	).Scan(&totalRecoveryTasks); err != nil {
+		t.Fatalf("count all recovery tasks after race: %v", err)
 	}
-	if recoveryTaskCount != 1 {
-		t.Fatalf("recovery task count after racing event vs timer dispatch = %d, want 1 (double-dispatch)", recoveryTaskCount)
+	// The original cancelled task plus exactly one new replacement: proves
+	// both callers reached the dispatch core (neither treated the pending
+	// obligation as already covered and skipped), while the uniqueness
+	// constraint still let only one of them win the replacement slot.
+	if totalRecoveryTasks != 2 {
+		t.Fatalf("total recovery task count (cancelled original + replacement) after race = %d, want 2; a count of 1 means one dispatch call no-opped instead of contending, a count >2 means double-dispatch", totalRecoveryTasks)
 	}
 
 	var recoveryCommentCount int
