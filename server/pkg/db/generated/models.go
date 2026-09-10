@@ -664,6 +664,32 @@ type GithubInstallation struct {
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 }
 
+type GithubMergeAnnouncement struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	Provider       string             `json:"provider"`
+	RepositoryID   int64              `json:"repository_id"`
+	RepoOwner      string             `json:"repo_owner"`
+	RepoName       string             `json:"repo_name"`
+	PrNumber       int32              `json:"pr_number"`
+	PullRequestID  pgtype.UUID        `json:"pull_request_id"`
+	IssueID        pgtype.UUID        `json:"issue_id"`
+	EventKind      string             `json:"event_kind"`
+	DeliveryGuid   pgtype.Text        `json:"delivery_guid"`
+	MergeCommitSha string             `json:"merge_commit_sha"`
+	MergedAt       pgtype.Timestamptz `json:"merged_at"`
+	Status         string             `json:"status"`
+	AttemptCount   int32              `json:"attempt_count"`
+	LastError      pgtype.Text        `json:"last_error"`
+	LeaseToken     pgtype.UUID        `json:"lease_token"`
+	LeaseExpiresAt pgtype.Timestamptz `json:"lease_expires_at"`
+	AvailableAt    pgtype.Timestamptz `json:"available_at"`
+	CommentID      pgtype.UUID        `json:"comment_id"`
+	DeliveredAt    pgtype.Timestamptz `json:"delivered_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
 type GithubPendingCheckSuite struct {
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
 	InstallationID int64              `json:"installation_id"`

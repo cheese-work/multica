@@ -732,6 +732,9 @@ func main() {
 	if h.WebhookDeliveryWorker != nil {
 		go h.WebhookDeliveryWorker.Run(sweepCtx)
 	}
+	if h.MergeAnnouncementWorker != nil {
+		go h.MergeAnnouncementWorker.Run(sweepCtx)
+	}
 	if h.SeatCapacityWorker != nil {
 		go h.SeatCapacityWorker.Run(sweepCtx)
 	}
@@ -854,6 +857,9 @@ func main() {
 		JoinWebhookWorker: func() {
 			if h.WebhookDeliveryWorker != nil && !h.WebhookDeliveryWorker.WaitWithTimeout(5*time.Second) {
 				slog.Warn("webhook delivery worker did not exit within shutdown timeout")
+			}
+			if h.MergeAnnouncementWorker != nil && !h.MergeAnnouncementWorker.WaitWithTimeout(5*time.Second) {
+				slog.Warn("merge announcement worker did not exit within shutdown timeout")
 			}
 		},
 		JoinTelegram: func() {

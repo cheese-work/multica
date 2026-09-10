@@ -1071,6 +1071,13 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	event := r.Header.Get("X-GitHub-Event")
+	// Audit-only: GitHub mints a new delivery GUID on every redelivery of the
+	// same logical event, so it cannot be the merge-announcement dedup key
+	// (that's the identity index on workspace/provider/repository/pr/issue/
+	// event_kind — see 467_github_merge_announcement_identity_uidx.up.sql).
+	// It's still recorded on the announcement row for tracing a specific
+	// delivery back through GitHub's own logs.
+	deliveryGUID := r.Header.Get("X-GitHub-Delivery")
 	ctx := r.Context()
 	switch event {
 	case "ping":
@@ -1079,7 +1086,7 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	case "installation":
 		h.handleInstallationEvent(ctx, body)
 	case "pull_request":
-		h.handlePullRequestEvent(ctx, body)
+		h.handlePullRequestEvent(ctx, body, deliveryGUID)
 	case "check_suite", "check_run", "status":
 		// CI events are pure triggers under Plan C (MUL-5265): their payload is
 		// never read for display. Each just asks the API pipeline to re-fetch
@@ -1233,6 +1240,7 @@ type ghPullRequestPayload struct {
 		Additions      int32  `json:"additions"`
 		Deletions      int32  `json:"deletions"`
 		ChangedFiles   int32  `json:"changed_files"`
+		MergeCommitSHA string `json:"merge_commit_sha"`
 		Head           struct {
 			Ref string `json:"ref"`
 			SHA string `json:"sha"`
@@ -1244,6 +1252,7 @@ type ghPullRequestPayload struct {
 	} `json:"pull_request"`
 	Changes    *ghPRChanges `json:"changes"`
 	Repository struct {
+		ID    int64  `json:"id"`
 		Name  string `json:"name"`
 		Owner struct {
 			Login string `json:"login"`
@@ -1254,7 +1263,7 @@ type ghPullRequestPayload struct {
 	} `json:"installation"`
 }
 
-func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) {
+func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte, deliveryGUID string) {
 	var p ghPullRequestPayload
 	if err := json.Unmarshal(body, &p); err != nil {
 		slog.Warn("github: bad pull_request payload", "err", err)
@@ -1289,7 +1298,7 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) {
 	// the mirror pass cannot re-derive a different answer. See closeIntentPolicy.
 	closePolicy := h.resolveCloseIntentPolicy(ctx, insts, &p)
 	for _, inst := range insts {
-		h.mirrorPullRequestForWorkspace(ctx, inst.WorkspaceID, inst.InstallationID, &p, closePolicy)
+		h.mirrorPullRequestForWorkspace(ctx, inst.WorkspaceID, inst.InstallationID, &p, closePolicy, deliveryGUID)
 	}
 	// The PR row(s) now carry the new head; ask the API pipeline for the
 	// authoritative CI + mergeability snapshot for that head. The webhook is
@@ -1531,7 +1540,7 @@ func (h *Handler) triggerPRRefreshFromCIEvent(ctx context.Context, body []byte) 
 // carry close_intent, so they can never advance an issue to done. This function
 // only ever narrows that verdict — it cannot grant close intent the policy
 // withheld.
-func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype.UUID, installationID int64, p *ghPullRequestPayload, closePolicy closeIntentPolicy) {
+func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype.UUID, installationID int64, p *ghPullRequestPayload, closePolicy closeIntentPolicy, deliveryGUID string) {
 	state := derivePRState(p.PullRequest.State, p.PullRequest.Draft, p.PullRequest.Merged)
 	mergeable, clearMergeable := derivePRMergeableState(p.Action, p.PullRequest.MergeableState, baseRefChanged(p.Changes))
 	pr, err := h.Queries.UpsertGitHubPullRequest(ctx, db.UpsertGitHubPullRequestParams{
@@ -1673,6 +1682,52 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 			}
 			linkedIssueIDs = append(linkedIssueIDs, uuidToString(issue.ID))
 			reevalIssues = append(reevalIssues, issue)
+		}
+
+		// Enqueue a durable merge announcement for every issue this PR is
+		// linked to, on an actual merge — independent of close_intent and
+		// of the advance-to-done gate below (CHE-374/CHE-379). A PR that
+		// merges without a closing keyword still deserves a "this PR
+		// merged" comment; the announcement is a record of the merge event,
+		// not a vote on completion, so it must never be gated on the same
+		// condition that decides whether the issue advances.
+		//
+		// Persisted here, in the same request that just committed the PR
+		// mirror and link rows, so the write survives a crash between here
+		// and the HTTP 202 response — the worker only owns delivery, not
+		// the decision to announce.
+		if p.PullRequest.Merged {
+			mergedAt := parseGHTime(p.PullRequest.MergedAt)
+			for _, issue := range reevalIssues {
+				_, err := h.Queries.CreateGitHubMergeAnnouncement(ctx, db.CreateGitHubMergeAnnouncementParams{
+					WorkspaceID:    wsID,
+					Provider:       "github",
+					RepositoryID:   p.Repository.ID,
+					RepoOwner:      p.Repository.Owner.Login,
+					RepoName:       p.Repository.Name,
+					PrNumber:       p.PullRequest.Number,
+					PullRequestID:  pr.ID,
+					IssueID:        issue.ID,
+					EventKind:      "merged",
+					DeliveryGuid:   ptrToText(strPtrOrNil(deliveryGUID)),
+					MergeCommitSha: p.PullRequest.MergeCommitSHA,
+					MergedAt:       mergedAt,
+				})
+				if err != nil {
+					if errors.Is(err, pgx.ErrNoRows) {
+						// ON CONFLICT DO NOTHING against the identity index: a
+						// prior delivery (or an earlier link in this same
+						// delivery, for a re-fired webhook) already owns this
+						// (workspace, repo, pr, issue, merged) identity. Not an
+						// error — exactly the redelivery dedup this index exists
+						// for.
+						continue
+					}
+					slog.Warn("github: enqueue merge announcement failed", "err", err, "issue_id", uuidToString(issue.ID))
+					continue
+				}
+				h.MergeAnnouncementWorker.Notify()
+			}
 		}
 
 		// A terminal PR event (`merged` or `closed`) may be the moment the
