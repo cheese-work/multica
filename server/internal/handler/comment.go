@@ -3743,6 +3743,33 @@ func (h *Handler) ResolveComment(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
 
+	// Thread-scoped advisory lock: acquired UNCONDITIONALLY, regardless of
+	// whether the caller supplied known_as_of. This is Sol's round-5 finding —
+	// an unguarded resolve (no known_as_of) used to skip lock acquisition
+	// entirely, so it could clear/write resolution state concurrently with a
+	// reply transaction that believes (via the very same lock) it has
+	// exclusive access to the thread's resolution state. Lock by the thread
+	// ROOT, not comment.ID: CountThreadCommentsSince and
+	// ClearOtherThreadResolutions both walk from comment.ID up to the thread
+	// root internally (any comment in a thread may be the resolve target),
+	// and CreateComment/commentguard lock by the same root a reply lands
+	// under — every writer must key on the identical value or they lock
+	// disjoint rows and never actually contend.
+	threadRoot, err := qtx.GetThreadRoot(r.Context(), db.GetThreadRootParams{
+		CommentID:   comment.ID,
+		WorkspaceID: comment.WorkspaceID,
+	})
+	if err != nil {
+		slog.Warn("resolve thread root failed", append(logger.RequestAttrs(r), "error", err, "comment_id", uuidToString(comment.ID))...)
+		writeError(w, http.StatusInternalServerError, "failed to resolve comment")
+		return
+	}
+	if err := qtx.LockCommentThread(r.Context(), threadRoot.ID); err != nil {
+		slog.Warn("lock comment thread failed", append(logger.RequestAttrs(r), "error", err, "comment_id", uuidToString(comment.ID))...)
+		writeError(w, http.StatusInternalServerError, "failed to resolve comment")
+		return
+	}
+
 	// Concurrent-feedback race guard: if the caller told us the thread state it
 	// resolved against (KnownAsOf), reject the resolve when a reply has landed in
 	// this thread since then. Without this, a reply added between "the resolver
@@ -3758,31 +3785,14 @@ func (h *Handler) ResolveComment(w http.ResponseWriter, r *http.Request) {
 	// known_as_of is a wall-clock timestamp compared against created_at, which
 	// is assigned at INSERT time, not commit time, so re-running the same
 	// comparison later cannot close that gap either. What actually closes it is
-	// the thread-scoped advisory lock below: CreateComment takes the identical
-	// lock before inserting a reply into this thread, so whichever side commits
-	// first is the one the other observes, and the count that follows the lock
-	// acquisition here is guaranteed current as of that ordering.
+	// the thread-scoped advisory lock acquired above: CreateComment takes the
+	// identical lock before inserting a reply into this thread, so whichever
+	// side commits first is the one the other observes, and the count that
+	// follows the lock acquisition here is guaranteed current as of that
+	// ordering. Only the presence of known_as_of gates whether this
+	// precondition check runs — that is a separate, opt-in concern from the
+	// lock acquisition itself, which now always happens above.
 	if req.KnownAsOf != nil {
-		// Lock by the thread ROOT, not comment.ID: CountThreadCommentsSince and
-		// ClearOtherThreadResolutions both walk from comment.ID up to the thread
-		// root internally (any comment in a thread may be the resolve target),
-		// and CreateComment locks by the same root a reply lands under — the two
-		// sides must key on the identical value or they lock disjoint rows and
-		// never actually contend.
-		threadRoot, err := qtx.GetThreadRoot(r.Context(), db.GetThreadRootParams{
-			CommentID:   comment.ID,
-			WorkspaceID: comment.WorkspaceID,
-		})
-		if err != nil {
-			slog.Warn("resolve thread root failed", append(logger.RequestAttrs(r), "error", err, "comment_id", uuidToString(comment.ID))...)
-			writeError(w, http.StatusInternalServerError, "failed to resolve comment")
-			return
-		}
-		if err := qtx.LockCommentThread(r.Context(), threadRoot.ID); err != nil {
-			slog.Warn("lock comment thread failed", append(logger.RequestAttrs(r), "error", err, "comment_id", uuidToString(comment.ID))...)
-			writeError(w, http.StatusInternalServerError, "failed to resolve comment")
-			return
-		}
 		newer, err := qtx.CountThreadCommentsSince(r.Context(), db.CountThreadCommentsSinceParams{
 			TargetID:    comment.ID,
 			Since:       pgtype.Timestamptz{Time: *req.KnownAsOf, Valid: true},
