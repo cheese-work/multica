@@ -318,14 +318,18 @@ func TestSquadOperatingProtocolEventKeyingRejectsStaleCandidateMatch(t *testing.
 
 // TestSquadOperatingProtocolRejectsCommentEqualFootingLanguage is a negative
 // control for Case A4 (CHE-359/PR #11 review of 19c756bce, then Opus BLOCK
-// on PR #12 review of 63f1e35a8). Opus's finding was that the prior version
-// of this test compared two hardcoded string literals and could not fail
-// for any production reason — it never called into production code. This
-// version instead renders the ACTUAL production protocol text through
-// squadOperatingProtocolFor and asserts on that, then proves the assertion
-// is meaningful by checking that pre-fix equal-footing wording (the exact
-// text 19c756bce shipped, before the durable-precedence fix) would NOT have
-// satisfied it.
+// on PR #12 review of 63f1e35a8, then Sol BLOCK on PR #12 review of
+// 52d013197). Opus's finding was that the prior version of this test
+// compared two hardcoded string literals and could not fail for any
+// production reason — it never called into production code. Sol's follow-up
+// finding was that the fix for that (comparing the stale literal against the
+// marker string, rather than against productionText) still proved nothing:
+// production could ship BOTH the new precedence marker and the old
+// equal-footing wording side by side, and this test would still pass. This
+// version renders the ACTUAL production protocol text through
+// squadOperatingProtocolFor and asserts directly against it both ways: the
+// new marker must be present, and the stale equal-footing sentence must be
+// absent.
 func TestSquadOperatingProtocolRejectsCommentEqualFootingLanguage(t *testing.T) {
 	productionText := squadOperatingProtocolFor(true)
 	compact := strings.Join(strings.Fields(productionText), " ")
@@ -335,14 +339,16 @@ func TestSquadOperatingProtocolRejectsCommentEqualFootingLanguage(t *testing.T) 
 		t.Fatalf("production protocol text (squadOperatingProtocolFor) must contain the durable-precedence marker %q\n--- protocol ---\n%s", durablePrecedenceMarker, productionText)
 	}
 
-	// Negative control: the pre-fix (19c756bce) equal-footing wording, which
-	// put the reporting comment on equal footing with candidate/SHA and
-	// revision as the event key, must NOT satisfy the marker above — proving
-	// the assertion distinguishes precedence language from mere key
-	// enumeration, rather than passing on any protocol text.
-	staleEqualFootingText := "Identify the event by its concrete key — the candidate commit/SHA, the PR revision, or the specific comment reporting it — not by its category."
-	if strings.Contains(staleEqualFootingText, durablePrecedenceMarker) {
-		t.Fatal("negative control is broken: stale equal-footing text should not contain the durable-precedence marker")
+	// The pre-fix (19c756bce) equal-footing wording, which put the reporting
+	// comment on equal footing with candidate/SHA and revision as the event
+	// key, must be ABSENT from the actual rendered production text — not
+	// merely absent from a hardcoded literal compared against another
+	// hardcoded literal. This is the assertion Sol's BLOCK required: without
+	// it, production could ship both the new marker and the stale sentence
+	// and this test would not notice.
+	const staleEqualFootingText = "the candidate commit/SHA, the PR revision, or the specific comment reporting it — not by its category"
+	if strings.Contains(compact, staleEqualFootingText) {
+		t.Fatalf("production protocol text (squadOperatingProtocolFor) still contains the stale pre-fix equal-footing wording %q — the durable-precedence marker must fully replace it, not merely coexist with it\n--- protocol ---\n%s", staleEqualFootingText, productionText)
 	}
 }
 

@@ -153,6 +153,21 @@ func TestSquadOperatingProtocolReplayProvenThroughProductionBriefing(t *testing.
 	if strings.Contains(squadOperatingProtocolHeader, "candidate/SHA present") {
 		t.Fatal("squadOperatingProtocolHeader must not contain a hand-written duplicate of the generated keying paragraph — it must come from reconciliationKeyingParagraph() via the {{RECONCILIATION_KEYING_PARAGRAPH}} substitution")
 	}
+
+	// Sol's BLOCK on 52d013197: squadOperatingProtocolFor substitutes the
+	// placeholder with strings.Replace(..., 1) — a ONE-SHOT replace. The
+	// prior containment check above (protocol contains seam) still passes
+	// even if a second, un-substituted {{RECONCILIATION_KEYING_PARAGRAPH}}
+	// placeholder ships to a leader, because strings.Contains only proves
+	// the seam text is present SOMEWHERE, not that every placeholder was
+	// replaced. Assert directly that no raw placeholder reaches the
+	// rendered briefing, for both ownsIssueStatus branches.
+	if strings.Contains(protocol, "{{RECONCILIATION_KEYING_PARAGRAPH}}") {
+		t.Fatalf("squadOperatingProtocolFor(true) leaks a raw {{RECONCILIATION_KEYING_PARAGRAPH}} placeholder into the rendered briefing — strings.Replace's one-shot count=1 only guarantees the FIRST occurrence is substituted\n--- protocol ---\n%s", protocol)
+	}
+	if notOwned := squadOperatingProtocolFor(false); strings.Contains(notOwned, "{{RECONCILIATION_KEYING_PARAGRAPH}}") {
+		t.Fatalf("squadOperatingProtocolFor(false) leaks a raw {{RECONCILIATION_KEYING_PARAGRAPH}} placeholder into the rendered briefing\n--- protocol ---\n%s", notOwned)
+	}
 }
 
 // TestSquadOperatingProtocolKeyingParagraphIsGeneratedFromReconciliationKey
