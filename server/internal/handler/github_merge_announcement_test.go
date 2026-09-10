@@ -10,9 +10,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -493,6 +495,130 @@ func TestWebhook_StalePullRequestPayloadDoesNotDemoteMergedState(t *testing.T) {
 	}
 }
 
+// TestWebhook_ReopenedPRTransitionsClosedBackToOpen is the round-2 item-4
+// regression guard: UpsertGitHubPullRequest's stale-payload guard must only
+// protect a stored `merged` state, not `closed` — a genuine GitHub reopen
+// (action=reopened) sends merged=false/state=open and must be allowed to move
+// a closed PR back to open, since derivePRState explicitly maps that action
+// to state="open".
+func TestWebhook_ReopenedPRTransitionsClosedBackToOpen(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	secret := "reopen-transition-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+
+	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":  "Reopen transition test issue",
+		"status": "in_progress",
+	})
+	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
+	var created IssueResponse
+	json.NewDecoder(w.Body).Decode(&created)
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM github_merge_announcement WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM comment WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_installation WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM activity_log WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, created.ID)
+	})
+
+	const installationID int64 = 99887788
+	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
+		WorkspaceID:    parseUUID(testWorkspaceID),
+		InstallationID: installationID,
+		AccountLogin:   "reopen-transition-acct",
+		AccountType:    "User",
+	}); err != nil {
+		t.Fatalf("CreateGitHubInstallation: %v", err)
+	}
+
+	const prNumber = 9292
+	// Close the PR without merging (merged=false, state=closed).
+	closedBody := map[string]any{
+		"action": "closed",
+		"pull_request": map[string]any{
+			"number":     prNumber,
+			"html_url":   "https://github.com/acme/sprocket/pull/9292",
+			"title":      created.Identifier + ": ship it",
+			"body":       "",
+			"state":      "closed",
+			"draft":      false,
+			"merged":     false,
+			"merged_at":  nil,
+			"closed_at":  "2026-09-10T09:00:00Z",
+			"created_at": "2026-09-10T08:00:00Z",
+			"updated_at": "2026-09-10T09:00:00Z",
+			"head":       map[string]any{"ref": "fix/ship-it"},
+			"user":       map[string]any{"login": "octocat", "avatar_url": ""},
+		},
+		"repository": map[string]any{
+			"id":    525252,
+			"name":  "sprocket",
+			"owner": map[string]any{"login": "acme"},
+		},
+		"installation": map[string]any{"id": installationID},
+	}
+	postSignedGitHubWebhook(t, secret, closedBody, "reopen-delivery-closed")
+
+	prAfterClose, err := testHandler.Queries.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{
+		WorkspaceID: parseUUID(testWorkspaceID),
+		RepoOwner:   "acme",
+		RepoName:    "sprocket",
+		PrNumber:    prNumber,
+	})
+	if err != nil {
+		t.Fatalf("GetGitHubPullRequest after close: %v", err)
+	}
+	if prAfterClose.State != "closed" {
+		t.Fatalf("expected PR state 'closed' right after the close webhook, got %q", prAfterClose.State)
+	}
+
+	// GitHub reopens the PR: action=reopened, merged=false, state=open.
+	reopenedBody := map[string]any{
+		"action": "reopened",
+		"pull_request": map[string]any{
+			"number":     prNumber,
+			"html_url":   "https://github.com/acme/sprocket/pull/9292",
+			"title":      created.Identifier + ": ship it",
+			"body":       "",
+			"state":      "open",
+			"draft":      false,
+			"merged":     false,
+			"merged_at":  nil,
+			"closed_at":  nil,
+			"created_at": "2026-09-10T08:00:00Z",
+			"updated_at": "2026-09-10T09:05:00Z",
+			"head":       map[string]any{"ref": "fix/ship-it"},
+			"user":       map[string]any{"login": "octocat", "avatar_url": ""},
+		},
+		"repository": map[string]any{
+			"id":    525252,
+			"name":  "sprocket",
+			"owner": map[string]any{"login": "acme"},
+		},
+		"installation": map[string]any{"id": installationID},
+	}
+	postSignedGitHubWebhook(t, secret, reopenedBody, "reopen-delivery-reopened")
+
+	prAfterReopen, err := testHandler.Queries.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{
+		WorkspaceID: parseUUID(testWorkspaceID),
+		RepoOwner:   "acme",
+		RepoName:    "sprocket",
+		PrNumber:    prNumber,
+	})
+	if err != nil {
+		t.Fatalf("GetGitHubPullRequest after reopen: %v", err)
+	}
+	if prAfterReopen.State != "open" {
+		t.Errorf("genuine reopen did not transition PR state back to 'open', got %q", prAfterReopen.State)
+	}
+}
+
 // TestWebhook_MergeAnnouncementSkipsJustUnlinkedIssue is the A1 regression
 // guard: a PR body edit that drops the closing claim on one issue while a
 // sibling issue remains genuinely linked must not enqueue a merge
@@ -669,5 +795,641 @@ func TestWebhook_MergeAnnouncementCommentReflectsCloseIntent(t *testing.T) {
 	}
 	if bytes.Contains([]byte(content), []byte("did not declare closing intent")) {
 		t.Errorf("close-intent merge must not render the non-close-intent wording, got %q", content)
+	}
+}
+
+// TestWebhook_MergeAnnouncementUsesPersistedLinkWhenAutoLinkDisabled is the
+// round-2 item-1 regression guard: a workspace can have github_enabled=true
+// while github_auto_link_prs_enabled=false. In that state the webhook must
+// not create new link rows from this event's identifiers, but a link row
+// persisted by an earlier event (while auto-link was still on) must still
+// drive both the merge announcement and the advance-to-done re-evaluation —
+// using the link row's already-stored close_intent, not anything re-parsed
+// from this merge event's payload.
+func TestWebhook_MergeAnnouncementUsesPersistedLinkWhenAutoLinkDisabled(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	secret := "auto-link-disabled-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+
+	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":  "Auto-link-disabled persisted-link test issue",
+		"status": "in_progress",
+	})
+	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
+	var created IssueResponse
+	json.NewDecoder(w.Body).Decode(&created)
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM github_merge_announcement WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM comment WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_installation WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM activity_log WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, created.ID)
+	})
+
+	const installationID int64 = 99887799
+	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
+		WorkspaceID:    parseUUID(testWorkspaceID),
+		InstallationID: installationID,
+		AccountLogin:   "auto-link-disabled-acct",
+		AccountType:    "User",
+	}); err != nil {
+		t.Fatalf("CreateGitHubInstallation: %v", err)
+	}
+
+	const prNumber = 6161
+	// Auto-link is still on for the "opened" event: this persists the link
+	// row (with close_intent=true from the closing keyword) that the rest of
+	// the test relies on being read back, not re-derived.
+	firePRWebhook(t, secret, installationID, prNumber, "Auto-link-disabled PR", "Closes "+created.Identifier, "fix/auto-link-disabled", "opened")
+
+	linked, err := testHandler.Queries.ListPullRequestsByIssue(ctx, parseUUID(created.ID))
+	if err != nil {
+		t.Fatalf("ListPullRequestsByIssue after open: %v", err)
+	}
+	if len(linked) != 1 {
+		t.Fatalf("expected the issue to be linked after open, got %d rows", len(linked))
+	}
+
+	// Now disable auto-link (github_enabled stays on) before the merge event
+	// fires, and restore it afterward so this test doesn't leak workspace
+	// settings into others.
+	var originalSettings []byte
+	if err := testPool.QueryRow(ctx, `SELECT settings FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&originalSettings); err != nil {
+		t.Fatalf("read original workspace settings: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `UPDATE workspace SET settings = $2 WHERE id = $1`, testWorkspaceID, originalSettings)
+	})
+	if _, err := testPool.Exec(ctx,
+		`UPDATE workspace SET settings = '{"github_enabled": true, "github_auto_link_prs_enabled": false}'::jsonb WHERE id = $1`,
+		testWorkspaceID,
+	); err != nil {
+		t.Fatalf("disable auto-link: %v", err)
+	}
+
+	firePRWebhook(t, secret, installationID, prNumber, "Auto-link-disabled PR", "Closes "+created.Identifier, "fix/auto-link-disabled", "merged")
+
+	announcements, err := testHandler.Queries.ListGitHubMergeAnnouncementsByIssue(ctx, parseUUID(created.ID))
+	if err != nil {
+		t.Fatalf("ListGitHubMergeAnnouncementsByIssue: %v", err)
+	}
+	if len(announcements) != 1 {
+		t.Fatalf("expected a merge announcement driven off the persisted link even with auto-link disabled, got %d", len(announcements))
+	}
+	if !announcements[0].CloseIntent.Valid || !announcements[0].CloseIntent.Bool {
+		t.Errorf("expected the announcement's close_intent to come from the persisted link row (true), got %+v", announcements[0].CloseIntent)
+	}
+
+	worker := NewMergeAnnouncementWorker(testHandler)
+	worked, err := worker.ProcessNext(ctx)
+	if err != nil {
+		t.Fatalf("ProcessNext: %v", err)
+	}
+	if !worked {
+		t.Fatalf("expected ProcessNext to claim and deliver the pending announcement")
+	}
+
+	// Advance-to-done must also have fired off the persisted link's
+	// close_intent, using the merge event that closed the PR (no open linked
+	// PRs remain, and the persisted link carries close_intent=true).
+	afterMerge, err := testHandler.Queries.GetIssue(ctx, parseUUID(created.ID))
+	if err != nil {
+		t.Fatalf("GetIssue after merge: %v", err)
+	}
+	if afterMerge.Status != "done" {
+		t.Errorf("expected the issue to auto-advance to done using the persisted link's close_intent, got %q", afterMerge.Status)
+	}
+}
+
+// TestWebhook_GitHubDisabledProducesNoMirrorSideEffects is the round-2
+// item-1 zero-side-effects guard: when a workspace's master GitHub switch
+// (github_enabled) is off, a merge webhook must not create a PR mirror row,
+// a link row, a merge announcement, or an advance-to-done side effect. No
+// existing test in this package exercised github_enabled=false end to end —
+// TestWebhook_PullRequest_UnreadableWorkspaceWithholdsCloseIntent covers a
+// different unreadable-settings case, not the explicit-off case.
+func TestWebhook_GitHubDisabledProducesNoMirrorSideEffects(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	secret := "github-disabled-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+
+	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":  "GitHub-disabled zero-side-effects test issue",
+		"status": "in_progress",
+	})
+	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
+	var created IssueResponse
+	json.NewDecoder(w.Body).Decode(&created)
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM github_merge_announcement WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM comment WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_installation WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM activity_log WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, created.ID)
+	})
+
+	const installationID int64 = 99887700
+	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
+		WorkspaceID:    parseUUID(testWorkspaceID),
+		InstallationID: installationID,
+		AccountLogin:   "github-disabled-acct",
+		AccountType:    "User",
+	}); err != nil {
+		t.Fatalf("CreateGitHubInstallation: %v", err)
+	}
+
+	var originalSettings []byte
+	if err := testPool.QueryRow(ctx, `SELECT settings FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&originalSettings); err != nil {
+		t.Fatalf("read original workspace settings: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `UPDATE workspace SET settings = $2 WHERE id = $1`, testWorkspaceID, originalSettings)
+	})
+	if _, err := testPool.Exec(ctx,
+		`UPDATE workspace SET settings = '{"github_enabled": false}'::jsonb WHERE id = $1`,
+		testWorkspaceID,
+	); err != nil {
+		t.Fatalf("disable github: %v", err)
+	}
+
+	const prNumber = 6262
+	firePRWebhook(t, secret, installationID, prNumber, "GitHub-disabled PR", "Closes "+created.Identifier, "fix/github-disabled", "opened")
+	firePRWebhook(t, secret, installationID, prNumber, "GitHub-disabled PR", "Closes "+created.Identifier, "fix/github-disabled", "merged")
+
+	linked, err := testHandler.Queries.ListPullRequestsByIssue(ctx, parseUUID(created.ID))
+	if err != nil {
+		t.Fatalf("ListPullRequestsByIssue: %v", err)
+	}
+	if len(linked) != 0 {
+		t.Errorf("expected no link row when github_enabled is false, got %d", len(linked))
+	}
+
+	announcements, err := testHandler.Queries.ListGitHubMergeAnnouncementsByIssue(ctx, parseUUID(created.ID))
+	if err != nil {
+		t.Fatalf("ListGitHubMergeAnnouncementsByIssue: %v", err)
+	}
+	if len(announcements) != 0 {
+		t.Errorf("expected no merge announcement when github_enabled is false, got %d", len(announcements))
+	}
+
+	afterMerge, err := testHandler.Queries.GetIssue(ctx, parseUUID(created.ID))
+	if err != nil {
+		t.Fatalf("GetIssue after merge: %v", err)
+	}
+	if afterMerge.Status != "in_progress" {
+		t.Errorf("expected issue status unchanged when github_enabled is false, got %q", afterMerge.Status)
+	}
+}
+
+// TestWebhook_MergeAnnouncementWorkerSkipsUnlinkedIssueAtDelivery is the
+// round-2 item-2 regression guard: ProcessNext must revalidate eligibility at
+// delivery time, not just trust that the row was eligible when it was
+// enqueued. Here the issue↔PR link is removed after the announcement is
+// already queued (a body edit dropping the closing claim, or a manual
+// unlink) but before the worker runs — ProcessNext must terminally skip the
+// row (status='skipped') and must not create a comment.
+func TestWebhook_MergeAnnouncementWorkerSkipsUnlinkedIssueAtDelivery(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	secret := "worker-revalidate-unlink-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+
+	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":  "Worker revalidation: unlink test issue",
+		"status": "in_progress",
+	})
+	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
+	var created IssueResponse
+	json.NewDecoder(w.Body).Decode(&created)
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM github_merge_announcement WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM comment WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_installation WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM activity_log WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, created.ID)
+	})
+
+	const installationID int64 = 99887701
+	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
+		WorkspaceID:    parseUUID(testWorkspaceID),
+		InstallationID: installationID,
+		AccountLogin:   "worker-revalidate-unlink-acct",
+		AccountType:    "User",
+	}); err != nil {
+		t.Fatalf("CreateGitHubInstallation: %v", err)
+	}
+
+	body := buildMergedPRWebhookBody(created.Identifier, 7373, "acme", "widget-unlink", installationID)
+	postSignedGitHubWebhook(t, secret, body, "worker-revalidate-unlink-delivery-1")
+
+	announcements, err := testHandler.Queries.ListGitHubMergeAnnouncementsByIssue(ctx, parseUUID(created.ID))
+	if err != nil {
+		t.Fatalf("ListGitHubMergeAnnouncementsByIssue: %v", err)
+	}
+	if len(announcements) != 1 || announcements[0].Status != "pending" {
+		t.Fatalf("expected 1 pending announcement before the worker runs, got %+v", announcements)
+	}
+	pending := announcements[0]
+
+	// Remove the issue↔PR link directly — the same end state a post-merge
+	// edit dropping the closing claim, or a manual unlink, would produce —
+	// without touching the announcement row itself.
+	if err := testHandler.Queries.UnlinkIssueFromPullRequest(ctx, db.UnlinkIssueFromPullRequestParams{
+		IssueID:       parseUUID(created.ID),
+		PullRequestID: pending.PullRequestID,
+	}); err != nil {
+		t.Fatalf("UnlinkIssueFromPullRequest: %v", err)
+	}
+
+	worker := NewMergeAnnouncementWorker(testHandler)
+	worked, err := worker.ProcessNext(ctx)
+	if err != nil {
+		t.Fatalf("ProcessNext: %v", err)
+	}
+	if !worked {
+		t.Fatalf("expected ProcessNext to claim the pending announcement (and then skip it)")
+	}
+
+	afterWorker, err := testHandler.Queries.ListGitHubMergeAnnouncementsByIssue(ctx, parseUUID(created.ID))
+	if err != nil {
+		t.Fatalf("ListGitHubMergeAnnouncementsByIssue after worker: %v", err)
+	}
+	if len(afterWorker) != 1 || afterWorker[0].Status != "skipped" {
+		t.Fatalf("expected the announcement to terminally skip after the link was removed, got %+v", afterWorker)
+	}
+
+	var commentCount int
+	if err := testPool.QueryRow(ctx,
+		`SELECT count(*) FROM comment WHERE issue_id = $1 AND author_type = 'system'`,
+		created.ID,
+	).Scan(&commentCount); err != nil {
+		t.Fatalf("count system comments: %v", err)
+	}
+	if commentCount != 0 {
+		t.Errorf("expected no system comment for a skipped (unlinked) announcement, got %d", commentCount)
+	}
+}
+
+// TestWebhook_MergeAnnouncementWorkerSkipsWhenGitHubDisabledAtDelivery
+// exercises the other item-2 required scenario: the workspace disables its
+// master GitHub switch after the announcement is queued but before the
+// worker delivers it. ProcessNext must terminally skip, not deliver a
+// comment for a workspace that has since turned GitHub off.
+func TestWebhook_MergeAnnouncementWorkerSkipsWhenGitHubDisabledAtDelivery(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	secret := "worker-revalidate-disable-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+
+	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":  "Worker revalidation: github-disabled test issue",
+		"status": "in_progress",
+	})
+	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
+	var created IssueResponse
+	json.NewDecoder(w.Body).Decode(&created)
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM github_merge_announcement WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM comment WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_installation WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM activity_log WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, created.ID)
+	})
+
+	const installationID int64 = 99887702
+	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
+		WorkspaceID:    parseUUID(testWorkspaceID),
+		InstallationID: installationID,
+		AccountLogin:   "worker-revalidate-disable-acct",
+		AccountType:    "User",
+	}); err != nil {
+		t.Fatalf("CreateGitHubInstallation: %v", err)
+	}
+
+	body := buildMergedPRWebhookBody(created.Identifier, 7474, "acme", "widget-disable", installationID)
+	postSignedGitHubWebhook(t, secret, body, "worker-revalidate-disable-delivery-1")
+
+	announcements, err := testHandler.Queries.ListGitHubMergeAnnouncementsByIssue(ctx, parseUUID(created.ID))
+	if err != nil {
+		t.Fatalf("ListGitHubMergeAnnouncementsByIssue: %v", err)
+	}
+	if len(announcements) != 1 || announcements[0].Status != "pending" {
+		t.Fatalf("expected 1 pending announcement before the worker runs, got %+v", announcements)
+	}
+
+	var originalSettings []byte
+	if err := testPool.QueryRow(ctx, `SELECT settings FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&originalSettings); err != nil {
+		t.Fatalf("read original workspace settings: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `UPDATE workspace SET settings = $2 WHERE id = $1`, testWorkspaceID, originalSettings)
+	})
+	if _, err := testPool.Exec(ctx,
+		`UPDATE workspace SET settings = '{"github_enabled": false}'::jsonb WHERE id = $1`,
+		testWorkspaceID,
+	); err != nil {
+		t.Fatalf("disable github: %v", err)
+	}
+
+	worker := NewMergeAnnouncementWorker(testHandler)
+	worked, err := worker.ProcessNext(ctx)
+	if err != nil {
+		t.Fatalf("ProcessNext: %v", err)
+	}
+	if !worked {
+		t.Fatalf("expected ProcessNext to claim the pending announcement (and then skip it)")
+	}
+
+	afterWorker, err := testHandler.Queries.ListGitHubMergeAnnouncementsByIssue(ctx, parseUUID(created.ID))
+	if err != nil {
+		t.Fatalf("ListGitHubMergeAnnouncementsByIssue after worker: %v", err)
+	}
+	if len(afterWorker) != 1 || afterWorker[0].Status != "skipped" {
+		t.Fatalf("expected the announcement to terminally skip once github_enabled is false, got %+v", afterWorker)
+	}
+
+	var commentCount int
+	if err := testPool.QueryRow(ctx,
+		`SELECT count(*) FROM comment WHERE issue_id = $1 AND author_type = 'system'`,
+		created.ID,
+	).Scan(&commentCount); err != nil {
+		t.Fatalf("count system comments: %v", err)
+	}
+	if commentCount != 0 {
+		t.Errorf("expected no system comment for a skipped (github disabled) announcement, got %d", commentCount)
+	}
+}
+
+// failCompleteDeliveryTx wraps a real pgx.Tx and fails only the
+// CompleteGitHubMergeAnnouncementDelivery UPDATE (matched by a substring
+// unique to that statement, so the comment INSERT earlier in the same
+// transaction still succeeds normally). Same shape as contextLockTestTx in
+// channel_context_lock_order_test.go: intercept QueryRow, return a Row whose
+// Scan fails, and roll back the real tx so the connection is left clean for
+// the next test.
+type failCompleteDeliveryTx struct {
+	pgx.Tx
+}
+
+func (tx failCompleteDeliveryTx) QueryRow(ctx context.Context, query string, args ...any) pgx.Row {
+	if strings.Contains(query, "SET status = 'delivered'") {
+		_ = tx.Tx.Rollback(ctx)
+		return errRow{err: errors.New("failCompleteDeliveryTx: induced CompleteGitHubMergeAnnouncementDelivery failure")}
+	}
+	return tx.Tx.QueryRow(ctx, query, args...)
+}
+
+func (tx failCompleteDeliveryTx) Commit(ctx context.Context) error {
+	// The forced QueryRow failure above already rolled back the underlying
+	// tx, so Commit must not attempt to commit an already-closed tx (pgx
+	// would error, masking the intended failure path). ProcessNext never
+	// reaches Commit for this test since it returns right after the failed
+	// QueryRow, but implementing this defensively keeps the wrapper honest.
+	return errors.New("failCompleteDeliveryTx: tx was already rolled back")
+}
+
+type failCompleteDeliveryTxStarter struct {
+	pool *pgxpool.Pool
+}
+
+func (s failCompleteDeliveryTxStarter) Begin(ctx context.Context) (pgx.Tx, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return failCompleteDeliveryTx{Tx: tx}, nil
+}
+
+// errRow (pgx.Row whose Scan always returns err) is reused from
+// claim_project_context_test.go — same package, no need to redefine it here.
+
+// TestWebhook_MergeAnnouncementWorkerRetriesOnCompleteDeliveryFailure is the
+// item-3 regression guard (CHE-374 review round 2): a non-ErrNoRows failure
+// from CompleteGitHubMergeAnnouncementDelivery must route through
+// retryOrFail — attempt_count increments and the row stays "pending" and
+// reclaimable — instead of returning a raw error that bypasses attempt
+// bookkeeping and, prior to the fix, could leave the row's completion
+// state ambiguous on every failure without ever tripping the terminal-fail
+// path.
+func TestWebhook_MergeAnnouncementWorkerRetriesOnCompleteDeliveryFailure(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	secret := "worker-retry-complete-failure-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+
+	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":  "Worker retry-on-complete-failure test issue",
+		"status": "in_progress",
+	})
+	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
+	var created IssueResponse
+	json.NewDecoder(w.Body).Decode(&created)
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM github_merge_announcement WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM comment WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_installation WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM activity_log WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, created.ID)
+	})
+
+	const installationID int64 = 99887711
+	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
+		WorkspaceID:    parseUUID(testWorkspaceID),
+		InstallationID: installationID,
+		AccountLogin:   "worker-retry-complete-failure-acct",
+		AccountType:    "User",
+	}); err != nil {
+		t.Fatalf("CreateGitHubInstallation: %v", err)
+	}
+
+	body := buildMergedPRWebhookBody(created.Identifier, 7575, "acme", "widget-retry", installationID)
+	postSignedGitHubWebhook(t, secret, body, "worker-retry-complete-failure-delivery-1")
+
+	before, err := testHandler.Queries.ListGitHubMergeAnnouncementsByIssue(ctx, parseUUID(created.ID))
+	if err != nil {
+		t.Fatalf("ListGitHubMergeAnnouncementsByIssue: %v", err)
+	}
+	if len(before) != 1 || before[0].Status != "pending" || before[0].AttemptCount != 0 {
+		t.Fatalf("expected 1 pending announcement with attempt_count 0 before the worker runs, got %+v", before)
+	}
+
+	realTxStarter := testHandler.TxStarter
+	testHandler.TxStarter = failCompleteDeliveryTxStarter{pool: testPool}
+	t.Cleanup(func() { testHandler.TxStarter = realTxStarter })
+
+	worker := NewMergeAnnouncementWorker(testHandler)
+	worked, err := worker.ProcessNext(ctx)
+	if err != nil {
+		t.Fatalf("ProcessNext: %v", err)
+	}
+	if !worked {
+		t.Fatalf("expected ProcessNext to claim the pending announcement (and then retry it after the induced failure)")
+	}
+
+	// Restore the real TxStarter before asserting DB state so the
+	// assertions themselves query normally.
+	testHandler.TxStarter = realTxStarter
+
+	after, err := testHandler.Queries.ListGitHubMergeAnnouncementsByIssue(ctx, parseUUID(created.ID))
+	if err != nil {
+		t.Fatalf("ListGitHubMergeAnnouncementsByIssue after worker: %v", err)
+	}
+	if len(after) != 1 {
+		t.Fatalf("expected exactly 1 announcement row to survive the induced failure, got %d", len(after))
+	}
+	got := after[0]
+	if got.Status != "pending" {
+		t.Fatalf("expected the row to remain pending (reclaimable) after a completion-write failure, got status %q", got.Status)
+	}
+	if got.AttemptCount != 1 {
+		t.Fatalf("expected attempt_count to increment to 1 after the induced completion-write failure, got %d", got.AttemptCount)
+	}
+	if !got.LastError.Valid || got.LastError.String == "" {
+		t.Fatalf("expected last_error to be recorded for the induced completion-write failure, got %+v", got.LastError)
+	}
+	if got.LeaseToken.Valid {
+		t.Fatalf("expected lease_token to be cleared so the row is reclaimable, got %+v", got.LeaseToken)
+	}
+
+	var commentCount int
+	if err := testPool.QueryRow(ctx,
+		`SELECT count(*) FROM comment WHERE issue_id = $1 AND author_type = 'system'`,
+		created.ID,
+	).Scan(&commentCount); err != nil {
+		t.Fatalf("count system comments: %v", err)
+	}
+	if commentCount != 0 {
+		t.Errorf("expected no system comment to be visible: the comment insert was rolled back along with the failed completion write, got %d", commentCount)
+	}
+}
+
+// failListInstallationsDBTX delegates every call to the real pool except
+// ListGitHubInstallationsByInstallationID's Query (matched by a substring
+// unique to that statement), which fails deterministically. Same shape as
+// failQueryDBTX in claim_project_context_test.go, but overrides Query
+// instead of QueryRow since ListGitHubInstallationsByInstallationID is a
+// :many query.
+type failListInstallationsDBTX struct {
+	db.DBTX
+}
+
+func (f failListInstallationsDBTX) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	if strings.Contains(sql, "FROM github_installation") && strings.Contains(sql, "WHERE installation_id = $1") {
+		return nil, errors.New("failListInstallationsDBTX: induced ListGitHubInstallationsByInstallationID failure")
+	}
+	return f.DBTX.Query(ctx, sql, args...)
+}
+
+// TestWebhook_PullRequestEventSurfacesInstallationLookupFailure is the
+// item-5 regression guard (CHE-374 review round 2): a real (non-empty-result)
+// error from ListGitHubInstallationsByInstallationID inside
+// handlePullRequestEvent must be surfaced as a non-202 response so GitHub
+// redelivers, matching every other failure branch in this path (T1). Before
+// the fix, this specific lookup failure was slog.Warn'd and swallowed,
+// returning 202 and silently dropping an event that might have fanned out to
+// a real bound workspace.
+func TestWebhook_PullRequestEventSurfacesInstallationLookupFailure(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	secret := "installation-lookup-failure-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+
+	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":  "Installation lookup failure test issue",
+		"status": "in_progress",
+	})
+	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
+	var created IssueResponse
+	json.NewDecoder(w.Body).Decode(&created)
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM github_merge_announcement WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM comment WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_installation WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM activity_log WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, created.ID)
+	})
+
+	const installationID int64 = 99887799
+	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
+		WorkspaceID:    parseUUID(testWorkspaceID),
+		InstallationID: installationID,
+		AccountLogin:   "installation-lookup-failure-acct",
+		AccountType:    "User",
+	}); err != nil {
+		t.Fatalf("CreateGitHubInstallation: %v", err)
+	}
+
+	body := buildMergedPRWebhookBody(created.Identifier, 7676, "acme", "widget-lookup-fail", installationID)
+	raw, _ := json.Marshal(body)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(raw)
+	sig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+
+	realQueries := testHandler.Queries
+	testHandler.Queries = db.New(failListInstallationsDBTX{DBTX: testPool})
+	t.Cleanup(func() { testHandler.Queries = realQueries })
+
+	postReq := httptest.NewRequest("POST", "/api/webhooks/github", bytes.NewReader(raw))
+	postReq.Header.Set("X-GitHub-Event", "pull_request")
+	postReq.Header.Set("X-Hub-Signature-256", sig)
+	postReq.Header.Set("X-GitHub-Delivery", "installation-lookup-failure-delivery-1")
+
+	// Unlike postSignedGitHubWebhook, this must NOT expect 202: a real
+	// installation-lookup failure must be surfaced as a server error so
+	// GitHub redelivers, not silently accepted and dropped.
+	rr := httptest.NewRecorder()
+	testHandler.HandleGitHubWebhook(rr, postReq)
+
+	// Restore the real Queries before asserting DB state.
+	testHandler.Queries = realQueries
+
+	if rr.Code == http.StatusAccepted {
+		t.Fatalf("expected a non-202 response when the installation lookup fails, got %d", rr.Code)
+	}
+	if rr.Code < 500 {
+		t.Fatalf("expected a 5xx response surfacing the installation lookup failure, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var prCount int
+	if err := testPool.QueryRow(ctx,
+		`SELECT count(*) FROM github_pull_request WHERE workspace_id = $1 AND pr_number = $2`,
+		testWorkspaceID, 7676,
+	).Scan(&prCount); err != nil {
+		t.Fatalf("count github_pull_request: %v", err)
+	}
+	if prCount != 0 {
+		t.Errorf("expected no PR mirror row when the installation lookup failed before fan-out, got %d", prCount)
 	}
 }
