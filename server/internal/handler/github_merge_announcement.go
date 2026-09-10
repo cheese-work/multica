@@ -136,6 +136,38 @@ func (w *MergeAnnouncementWorker) ProcessNext(ctx context.Context) (bool, error)
 		return true, w.retryOrFail(ctx, a, fmt.Errorf("load issue: %w", err))
 	}
 
+	// Revalidate eligibility at delivery time (CHE-374 review round 2, item
+	// 2): the row was found eligible when it was enqueued, but delivery can
+	// happen an arbitrary amount of time later — long enough for the
+	// workspace to turn GitHub off, for the installation to be uninstalled,
+	// or for the issue↔PR link to be removed (a post-merge body edit that
+	// drops the closing/linking claim, or a manual unlink). None of those are
+	// transient: they mean this specific announcement should never be
+	// delivered, so they terminate via skip(), not retryOrFail(). A DB error
+	// while checking is transient and goes through retryOrFail so
+	// attempt_count advances instead of silently re-claiming forever.
+	if !w.h.githubEnabledForWorkspace(ctx, a.WorkspaceID) {
+		return true, w.skip(ctx, a, "github disabled for workspace")
+	}
+
+	installations, err := w.h.Queries.ListGitHubInstallationsByWorkspace(ctx, a.WorkspaceID)
+	if err != nil {
+		return true, w.retryOrFail(ctx, a, fmt.Errorf("list installations for workspace: %w", err))
+	}
+	if len(installations) == 0 {
+		return true, w.skip(ctx, a, "no github installation bound to workspace")
+	}
+
+	if _, err := w.h.Queries.GetIssuePullRequestLink(ctx, db.GetIssuePullRequestLinkParams{
+		IssueID:       a.IssueID,
+		PullRequestID: a.PullRequestID,
+	}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return true, w.skip(ctx, a, "issue no longer linked to pull request")
+		}
+		return true, w.retryOrFail(ctx, a, fmt.Errorf("check issue-pr link: %w", err))
+	}
+
 	content := w.h.mergeAnnouncementCommentBody(ctx, a, issue)
 
 	tx, err := w.h.TxStarter.Begin(ctx)
