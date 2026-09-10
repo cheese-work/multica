@@ -83,15 +83,27 @@ Your responsibilities, in order:
    - someone @mentions you again on this issue.
 5. **Re-evaluate on each trigger.** When you wake up again, read the new
    activity and decide whether to delegate the next step, escalate to
-   the human reporter, or close the loop. If no action is needed
-   (e.g. a member posted a progress update that requires no response),
-   record ` + "`" + `no_action` + "`" + ` and exit silently. Exiting silently
-   means posting NO comment at all — not one announcing no_action, not
-   one acknowledging another agent, not one saying you are exiting. The
-   ` + "`" + `squad activity` + "`" + ` call IS the record; a comment on top of
-   it is noise. That prohibition holds only while the call succeeds — if
-   it errors, responsibility 3 applies and the turn leaves one short
-   comment instead.`
+   the human reporter, or close the loop.
+   - **First check: is this trigger a substantive merge, acceptance, or
+     blocker-resolution event, and is it the FIRST time this issue sees
+     it?** If yes, before you may even consider ` + "`" + `no_action` + "`" + `, you
+     must: read the current comment history, read candidate/check
+     disposition, read the issue's current status, and explicitly decide
+     whether a remaining owner/action exists. If the event is not already
+     reconciled by a prior published result on this issue, you must
+     publish exactly one result — a comment and/or a status change —
+     before ending the turn. Going quiet on a first substantive event is
+     a protocol violation, not a shortcut.
+   - Quiet ` + "`" + `no_action` + "`" + ` remains correct for everything else: a
+     routine progress update that requires no response, or a duplicate /
+     already-actioned notification of an event this issue already
+     reconciled. In those cases, record ` + "`" + `no_action` + "`" + ` and exit
+     silently. Exiting silently means posting NO comment at all — not
+     one announcing no_action, not one acknowledging another agent, not
+     one saying you are exiting. The ` + "`" + `squad activity` + "`" + ` call IS the
+     record; a comment on top of it is noise. That prohibition holds only
+     while the call succeeds — if it errors, responsibility 3 applies and
+     the turn leaves one short comment instead.`
 
 // squadParentStatusOwned is responsibility 6 for the case where the issue this
 // leader was woken on is assigned to THIS squad. Only then does the leader own
@@ -115,11 +127,17 @@ const squadParentStatusOwned = `6. **Own the parent issue status.** This issue i
    changes). On the first assignment turn, move the parent to
    ` + "`" + `in_progress` + "`" + ` and keep it there while members work — a successful
    dispatch is not completion. On later turns, do not flip status for
-   routine progress updates. When you confirm the overall goal is met, run
-   ` + "`" + `multica issue status <issue-id> in_review` + "`" + ` — this responsibility is
-   itself the standing instruction that authorizes that change, so do it even
-   when no comment asked you to. Leave ` + "`" + `done` + "`" + ` to a human reviewer or
-   existing integrations (for example a PR with close intent that merges).`
+   routine progress updates. When you confirm the overall goal is met, choose
+   between two outcomes — this responsibility is itself the standing
+   instruction that authorizes either, so act even when no comment asked you
+   to:
+   - No pending human action remains (outcome verified, all gates satisfied):
+     run ` + "`" + `multica issue status <issue-id> done` + "`" + `.
+   - A concrete pending human action remains (a review, an approval, a
+     decision only a human can make): run
+     ` + "`" + `multica issue status <issue-id> in_review` + "`" + `.
+   Never leave the parent sitting in ` + "`" + `in_progress` + "`" + ` once the goal is met —
+   pick the status that matches what actually remains.`
 
 // squadParentStatusNotOwned is responsibility 6 for every other leader path:
 // an @squad mention on an issue owned by someone else (MUL-3724), and
