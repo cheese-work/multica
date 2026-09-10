@@ -205,11 +205,23 @@ func (w *MergeAnnouncementWorker) ProcessNext(ctx context.Context) (bool, error)
 			slog.Debug("merge announcement worker: lease ownership changed", "id", uuidToString(a.ID))
 			return true, nil
 		}
-		return true, fmt.Errorf("complete merge announcement: %w", err)
+		// CHE-374 review round 2, item 3: a non-ErrNoRows failure here is a
+		// transient DB error (the row is still leased by us — no ownership
+		// race), not a terminal condition, so it must go through
+		// retryOrFail like every other failure branch in this function.
+		// Returning the raw error directly used to bypass attempt_count
+		// entirely, so a persistently failing completion write would be
+		// reclaimed and reattempted forever without ever tripping the
+		// mergeAnnouncementWorkerMaxAttempts terminal-fail path.
+		return true, w.retryOrFail(ctx, a, fmt.Errorf("complete merge announcement: %w", err))
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return true, fmt.Errorf("commit merge announcement delivery: %w", err)
+		// Same reasoning as the completion-write branch above: a commit
+		// failure is transient/infrastructure-level, not a reason to treat
+		// the row as ineligible, so it must count toward attempt_count via
+		// retryOrFail rather than escaping it.
+		return true, w.retryOrFail(ctx, a, fmt.Errorf("commit merge announcement delivery: %w", err))
 	}
 
 	w.h.publish(protocol.EventCommentCreated, uuidToString(issue.WorkspaceID), "system", "", map[string]any{
