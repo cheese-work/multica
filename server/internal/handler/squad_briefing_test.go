@@ -238,6 +238,12 @@ func TestSquadOperatingProtocolRequiresReconciliationBeforeNoAction(t *testing.T
 			"a published result about a different candidate or an",
 			"earlier revision does not reconcile this one, even if the",
 			"category of event matches",
+			// Restored (was dropped from this list during the CHE-359/PR #11
+			// pass, though the hard-rules block itself still states it at
+			// squad_briefing.go:117-118 equivalent) — Opus flagged it as
+			// still-present-but-unguarded on PR #12 review of 63f1e35a8.
+			"treating a same-category event on a",
+			"different key as already reconciled",
 		} {
 			if !strings.Contains(compact, want) {
 				t.Errorf("ownsParentStatus=%v: protocol missing event-keying requirement %q\n--- protocol ---\n%s", ownsParentStatus, want, protocol)
@@ -245,26 +251,35 @@ func TestSquadOperatingProtocolRequiresReconciliationBeforeNoAction(t *testing.T
 		}
 
 		// Case A4 (Terra P1 correction, CHE-359/PR #11 review of
-		// 19c756bce): a durable candidate/SHA or PR revision must take
-		// precedence over the reporting comment as the event's key, so a
-		// merge webhook and a human reply reporting the SAME candidate
-		// collapse to the SAME key instead of being treated as two
-		// different events. See ReconciliationKey in squad_briefing.go for
-		// the executable counterpart to this prose rule, and
+		// 19c756bce, then Opus BLOCK on PR #12 review of 63f1e35a8): a
+		// durable candidate/SHA or PR revision must take precedence over
+		// the reporting comment as the event's key, so a merge webhook and
+		// a human reply reporting the SAME candidate collapse to the SAME
+		// key instead of being treated as two different events. This is no
+		// longer a hand-maintained prose duplicate of ReconciliationKey —
+		// squadOperatingProtocolFor renders it by calling
+		// reconciliationKeyingParagraph(), which derives its wording from
+		// ReconciliationKey's actual precedence on probe events. See
+		// TestSquadOperatingProtocolKeyingParagraphIsGeneratedFromReconciliationKey
+		// below for the seam proof, and
 		// TestReconciliationKey_CrossChannelReplayCollapsesToSameKey in
-		// squad_briefing_reconciliation_test.go for the replay proof.
+		// squad_briefing_reconciliation_test.go for the replay proof
+		// exercised through squadOperatingProtocolFor.
 		for _, want := range []string{
-			"When a durable candidate/SHA or PR revision is available, that durable key IS the",
-			"event's identity",
-			"Only fall back to keying on the specific comment",
-			"itself when no durable candidate/SHA or revision exists for the",
-			"event",
-			"a merge webhook and a human reply reporting the",
-			"SAME candidate must resolve to the SAME key and must NOT be treated",
-			"as two different events, even though they arrived through different",
-			"channels and as different comments",
-			"a different reporting channel for the SAME",
-			"candidate does not make it a different event",
+			"computed with this",
+			"precedence (durable identity always wins over the comment that",
+			"happened to report it): candidate/SHA present -> key is",
+			"else PR revision present -> key is",
+			"else -> key is",
+			"Use the durable",
+			"key even when this trigger arrived as a reporting comment (a human",
+			"reply, a merge webhook, a status-check notification); only fall back",
+			"to keying on the specific comment itself when no durable candidate/SHA",
+			"or revision exists for the event",
+			"a merge webhook and a human reply reporting the SAME candidate must",
+			"resolve to the SAME key and must NOT be treated as two different",
+			"events, even though they arrived through different channels and as",
+			"different comments",
 		} {
 			if !strings.Contains(compact, want) {
 				t.Errorf("ownsParentStatus=%v: protocol missing durable-key precedence requirement %q\n--- protocol ---\n%s", ownsParentStatus, want, protocol)
@@ -302,17 +317,39 @@ func TestSquadOperatingProtocolEventKeyingRejectsStaleCandidateMatch(t *testing.
 }
 
 // TestSquadOperatingProtocolRejectsCommentEqualFootingLanguage is a negative
-// control for Case A4 (CHE-359/PR #11 review of 19c756bce): text belonging
-// to the pre-fix candidate, which put the reporting comment on equal
-// footing with the candidate/SHA and revision as the event key, must NOT
-// satisfy the new durable-precedence assertions — proving the test
-// distinguishes precedence language from mere key enumeration.
+// control for Case A4 (CHE-359/PR #11 review of 19c756bce, then Opus BLOCK
+// on PR #12 review of 63f1e35a8). Opus's finding was that the prior version
+// of this test compared two hardcoded string literals and could not fail
+// for any production reason — it never called into production code. This
+// version instead renders the ACTUAL production protocol text through
+// squadOperatingProtocolFor and asserts on that, then proves the assertion
+// is meaningful by checking that pre-fix equal-footing wording (the exact
+// text 19c756bce shipped, before the durable-precedence fix) would NOT have
+// satisfied it.
 func TestSquadOperatingProtocolRejectsCommentEqualFootingLanguage(t *testing.T) {
+	productionText := squadOperatingProtocolFor(true)
+	compact := strings.Join(strings.Fields(productionText), " ")
+
+	const durablePrecedenceMarker = "Use the durable key even when this trigger arrived as a reporting comment"
+	if !strings.Contains(compact, durablePrecedenceMarker) {
+		t.Fatalf("production protocol text (squadOperatingProtocolFor) must contain the durable-precedence marker %q\n--- protocol ---\n%s", durablePrecedenceMarker, productionText)
+	}
+
+	// Negative control: the pre-fix (19c756bce) equal-footing wording, which
+	// put the reporting comment on equal footing with candidate/SHA and
+	// revision as the event key, must NOT satisfy the marker above — proving
+	// the assertion distinguishes precedence language from mere key
+	// enumeration, rather than passing on any protocol text.
 	staleEqualFootingText := "Identify the event by its concrete key — the candidate commit/SHA, the PR revision, or the specific comment reporting it — not by its category."
-	if strings.Contains(staleEqualFootingText, "When a durable candidate/SHA or PR revision is available, that durable key IS the") {
-		t.Fatal("negative control is broken: stale equal-footing text should not contain the durable-precedence requirement")
+	if strings.Contains(staleEqualFootingText, durablePrecedenceMarker) {
+		t.Fatal("negative control is broken: stale equal-footing text should not contain the durable-precedence marker")
 	}
 }
+
+// TestSquadOperatingProtocolKeyingParagraphIsGeneratedFromReconciliationKey
+// moved to squad_briefing_reconciliation_test.go, next to
+// TestSquadOperatingProtocolReplayProvenThroughProductionBriefing — same
+// executable-seam concern (CHE-359/PR #12 review of 63f1e35a8).
 
 // TestSquadParentStatusOwnedAllowsDoneOrInReview covers Cases C and D of the
 // CHE-329/CHE-346 Completion Contract: the owning leader must be able to
