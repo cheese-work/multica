@@ -46,14 +46,23 @@ import (
 // enough to prove they actually contended: one call can run start-to-finish
 // before the other's relevant scan even executes, in which case the final row
 // counts can look correct (exactly one surviving task) for the wrong reason —
-// no concurrency ever happened, only sequential no-op-then-real-work. To rule
-// that out, this test installs testHookBeforeDelegatedFailureDedupCheck, an
-// in-core probe both dispatch paths pass through immediately before their
-// shared HasTaskCoveringDelegatedFailureComment dedup read (the actual
-// point of contention — see dispatchDelegatedFailureRecovery), and uses it to
-// hold each goroutine until BOTH have reached that exact statement. That
-// proves the two calls were genuinely inside the critical section at the same
-// time, not merely started around the same time.
+// no concurrency ever happened, only sequential no-op-then-real-work. Nor is a
+// rendezvous BEFORE the dedup read enough: both goroutines could pass that
+// barrier together and still run their HasTaskCoveringDelegatedFailureComment
+// reads sequentially, with caller A finishing its whole dispatch (task
+// creation included) before caller B's read even executes — B would then
+// observe covered == true from A's own write and no-op, which is sequential
+// luck, not contention, even though the barrier "synchronized" the start. To
+// rule that out, this test installs
+// testHookAfterDelegatedFailureDedupCheckUncovered, an in-core probe both
+// dispatch paths pass through immediately AFTER their shared
+// HasTaskCoveringDelegatedFailureComment dedup read has executed and
+// returned covered == false (the actual point of proven contention — see
+// dispatchDelegatedFailureRecovery), and uses it to hold each goroutine until
+// BOTH have independently observed the uncovered state. That proves the two
+// calls were genuinely inside the critical section, having each read the
+// same pre-write state, at the same time — not merely started around the
+// same time.
 func TestDelegatedFailureRecoveryEventAndTimerRaceDispatchExactlyOnce(t *testing.T) {
 	f, svc := seedDelegatedFailureFixture(t)
 	ctx := context.Background()
@@ -108,16 +117,30 @@ func TestDelegatedFailureRecoveryEventAndTimerRaceDispatchExactlyOnce(t *testing
 		t.Fatalf("load recovery comment: %v", err)
 	}
 
-	// dedupBarrier proves both goroutines are inside dispatchDelegatedFailureRecovery's
-	// critical section concurrently: each blocks in the test hook until both have
-	// arrived, so neither can complete its dedup check (let alone its write) before
-	// the other has also reached it.
+	// dedupBarrier proves both goroutines have each independently observed
+	// covered == false from HasTaskCoveringDelegatedFailureComment before
+	// either is allowed to proceed to its write (task creation / merge /
+	// exhaustion). Rendezvousing here instead of before the read is what
+	// makes this a proof of contention rather than of synchronized starts —
+	// see the comment above. A plain wg.Wait() on a 2-party barrier can leak
+	// a goroutine forever if only one party ever arrives (e.g. a bug makes
+	// one path bail out early): the test's own t.Fatal on timeout unwinds via
+	// runtime.Goexit on the test goroutine, but the second worker goroutine
+	// would stay parked in Wait() holding an open DB transaction for the rest
+	// of the test binary's life. A select with a timeout channel fails that
+	// goroutine closed instead.
+	const dedupBarrierTimeout = 5 * time.Second
 	var dedupBarrier sync.WaitGroup
 	dedupBarrier.Add(2)
+	barrierDone := make(chan struct{})
+	go func() {
+		dedupBarrier.Wait()
+		close(barrierDone)
+	}()
 	var reachedMu sync.Mutex
 	reachedCount := 0
 	bothReached := make(chan struct{})
-	svc.testHookBeforeDelegatedFailureDedupCheck = func() {
+	svc.testHookAfterDelegatedFailureDedupCheckUncovered = func() {
 		reachedMu.Lock()
 		reachedCount++
 		n := reachedCount
@@ -126,9 +149,17 @@ func TestDelegatedFailureRecoveryEventAndTimerRaceDispatchExactlyOnce(t *testing
 			close(bothReached)
 		}
 		dedupBarrier.Done()
-		dedupBarrier.Wait()
+		select {
+		case <-barrierDone:
+		case <-time.After(dedupBarrierTimeout):
+			// Do not call t.Fatal from a non-test goroutine; just stop
+			// blocking so this call proceeds (unsynchronized) rather than
+			// hanging forever. The missing-rendezvous outcome still gets
+			// caught below by the explicit bothReached timeout, which does
+			// fail the test from the test goroutine.
+		}
 	}
-	t.Cleanup(func() { svc.testHookBeforeDelegatedFailureDedupCheck = nil })
+	t.Cleanup(func() { svc.testHookAfterDelegatedFailureDedupCheckUncovered = nil })
 
 	var wg sync.WaitGroup
 	var startBarrier sync.WaitGroup
@@ -152,8 +183,8 @@ func TestDelegatedFailureRecoveryEventAndTimerRaceDispatchExactlyOnce(t *testing
 
 	select {
 	case <-bothReached:
-	case <-time.After(5 * time.Second):
-		t.Fatal("both event and timer dispatch paths did not reach the dedup check concurrently — no real contention was proven")
+	case <-time.After(dedupBarrierTimeout):
+		t.Fatal("both event and timer dispatch paths did not both observe the uncovered dedup state concurrently — no real contention was proven")
 	}
 
 	wg.Wait()
