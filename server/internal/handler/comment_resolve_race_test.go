@@ -13,17 +13,38 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// pauseResolveLockTxStarter and pauseResolveLockTx block the resolve
-// handler's in-flight transaction right after it acquires LockCommentThread
-// (the advisory lock the concurrent-feedback guard now takes before
-// CountThreadCommentsSince), so a test can deterministically try to land a
-// concurrent reply's CreateComment call — which takes the identical lock —
-// while the resolve still holds it, instead of relying on goroutine
-// scheduling luck to hit a real race.
+// lockCommentThreadSQLMarker is the substring unique to LockCommentThread's
+// generated SQL (see pkg/db/queries/comment.sql / pkg/db/generated/comment.sql.go).
+// Matching on it specifically — rather than on "pg_advisory_xact_lock" generally
+// — matters because other advisory locks exist in this codebase sharing that
+// generic substring (LockIssueDuplicateKey, for one); a wrapper that paused on
+// any advisory-lock Exec would also pause unrelated locking paths and could fire
+// more than once inside a single transaction, overflowing the size-1 "reached"
+// channel below and deadlocking the test instead of failing it cleanly.
+const lockCommentThreadSQLMarker = ":comment_thread"
+
+// countThreadCommentsSinceSQLMarker is the substring unique to
+// CountThreadCommentsSince's generated SQL, used by pausingTx.QueryRow to pause
+// AFTER that specific statement returns rather than after the lock Exec — see
+// TestResolveComment_ConcurrentReplyBlocksUntilResolveTransactionEnds below for
+// why that distinction is the point of that test.
+const countThreadCommentsSinceSQLMarker = "comment.created_at > "
+
+// pauseResolveLockTxStarter and pausingTx block the resolve handler's
+// in-flight transaction at a chosen point — either right after it acquires
+// LockCommentThread, or right after CountThreadCommentsSince returns — so a
+// test can deterministically try to land a concurrent reply's CreateComment
+// call (which takes the identical lock) while the resolve still holds it,
+// instead of relying on goroutine scheduling luck to hit a real race.
 type pauseResolveLockTxStarter struct {
-	inner   txStarter
-	reached chan<- struct{}
-	release <-chan struct{}
+	inner txStarter
+	// execMarker, if non-empty, pauses after the first Exec whose SQL contains
+	// it. queryRowMarker, if non-empty, pauses after the first QueryRow whose
+	// SQL contains it. At most one should be set per test.
+	execMarker     string
+	queryRowMarker string
+	reached        chan<- struct{}
+	release        <-chan struct{}
 }
 
 func (s pauseResolveLockTxStarter) Begin(ctx context.Context) (pgx.Tx, error) {
@@ -31,30 +52,67 @@ func (s pauseResolveLockTxStarter) Begin(ctx context.Context) (pgx.Tx, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &pauseResolveLockTx{Tx: tx, reached: s.reached, release: s.release}, nil
+	return &pausingTx{
+		Tx:             tx,
+		execMarker:     s.execMarker,
+		queryRowMarker: s.queryRowMarker,
+		reached:        s.reached,
+		release:        s.release,
+	}, nil
 }
 
-type pauseResolveLockTx struct {
+type pausingTx struct {
 	pgx.Tx
-	reached chan<- struct{}
-	release <-chan struct{}
+	execMarker     string
+	queryRowMarker string
+	reached        chan<- struct{}
+	release        <-chan struct{}
 }
 
-func (tx *pauseResolveLockTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+func (tx *pausingTx) pause(ctx context.Context) {
+	// Pause AFTER the matched statement completed, not before: the whole
+	// point of the fix is that a concurrent reply's CreateComment cannot
+	// acquire the same lock while the resolve holds it, so this is the one
+	// point in the resolve's transaction where a reply attempt is guaranteed
+	// to contend with something real instead of racing free.
+	tx.reached <- struct{}{}
+	select {
+	case <-tx.release:
+	case <-ctx.Done():
+	}
+}
+
+func (tx *pausingTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
 	res, err := tx.Tx.Exec(ctx, sql, args...)
-	if strings.Contains(sql, "pg_advisory_xact_lock") {
-		// Pause AFTER the lock is held, not before: the whole point of the fix
-		// is that a concurrent reply's CreateComment cannot acquire the same
-		// lock while the resolve holds it, so this is the one point in the
-		// resolve's transaction where a reply attempt is guaranteed to contend
-		// with something real instead of racing free.
-		tx.reached <- struct{}{}
-		select {
-		case <-tx.release:
-		case <-ctx.Done():
-		}
+	if tx.execMarker != "" && strings.Contains(sql, tx.execMarker) {
+		tx.pause(ctx)
 	}
 	return res, err
+}
+
+func (tx *pausingTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	row := tx.Tx.QueryRow(ctx, sql, args...)
+	if tx.queryRowMarker != "" && strings.Contains(sql, tx.queryRowMarker) {
+		return &pausingRow{Row: row, tx: tx, ctx: ctx}
+	}
+	return row
+}
+
+// pausingRow defers the pause until after Scan is called, so the pause point
+// is "CountThreadCommentsSince has returned its result" (the count is already
+// decoded) rather than merely "the query was issued" — matching the
+// requirement that the pause land after the zero-result guard check has been
+// observed, while the transaction (and its held lock) is still open.
+type pausingRow struct {
+	pgx.Row
+	tx  *pausingTx
+	ctx context.Context
+}
+
+func (r *pausingRow) Scan(dest ...any) error {
+	err := r.Row.Scan(dest...)
+	r.tx.pause(r.ctx)
+	return err
 }
 
 // resolveCommentWithKnownAsOf drives POST /api/comments/{id}/resolve with an
@@ -85,25 +143,30 @@ func createReplyComment(h *Handler, issueID, parentID, content string) *httptest
 	return w
 }
 
-// TestResolveComment_ConcurrentReplyRejectsStaleKnownAsOf is the core D2
-// regression: an actor who loaded a thread, then resolves it while a new reply
-// lands in that same thread from someone else before the resolve commits, must
-// not have that reply silently folded away. The resolve is expected to be
-// rejected with a typed conflict instead of succeeding over the new reply.
+// TestResolveComment_LockOrderedReplyLandsAfterResolveCommits is the core D2
+// regression, restated accurately (this test used to be named
+// TestResolveComment_ConcurrentReplyRejectsStaleKnownAsOf and its doc comment
+// claimed the resolve gets REJECTED — that was wrong: read carefully, this
+// scenario is the lock-ordered SUCCESS case, not a rejection case. The resolve
+// acquires LockCommentThread strictly before the concurrent reply can even
+// begin its own CreateComment insert, so by the time the reply is allowed to
+// proceed, the resolve's guard has already run its zero-result count and the
+// resolve is free to commit ahead of the reply. The reply then queues behind
+// the lock, and lands (as a normal 201) only once the resolve's transaction
+// has released it. This is the "whichever side commits first wins ordering"
+// half of the fix; TestResolveComment_ConcurrentReplyBeforeLockAcquisitionRejectsResolve
+// below is the other half, where the reply commits FIRST and the resolve is
+// the one that has to react to it.
 //
-// The race is made deterministic (not scheduling-dependent) by pausing the
+// The scenario is made deterministic (not scheduling-dependent) by pausing the
 // resolve's transaction right after it acquires the thread-scoped advisory
-// lock (LockCommentThread) — i.e. after the zero-result guard check has not
-// yet run — then starting a concurrent CreateComment reply against the SAME
-// thread while the resolve still holds the lock, then releasing the resolve
-// to finish inside the same transaction. CreateComment takes the identical
-// lock before its insert, so the reply cannot silently land in the window;
-// it either blocks until the resolve is done (and this test's assertions
-// below hold for the resolve's own view), or — if the fix were absent and
-// the reply raced in unguarded — the resolve would incorrectly succeed over
-// a reply it never saw. This reproduces the exact silent-discard failure
-// mode this test exists to catch.
-func TestResolveComment_ConcurrentReplyRejectsStaleKnownAsOf(t *testing.T) {
+// lock (LockCommentThread) — i.e. before the zero-result guard check has run —
+// then starting a concurrent CreateComment reply against the SAME thread while
+// the resolve still holds the lock, then releasing the resolve to finish
+// inside the same transaction. CreateComment takes the identical lock before
+// its insert, so the reply cannot silently land in the window: it blocks until
+// the resolve is done.
+func TestResolveComment_LockOrderedReplyLandsAfterResolveCommits(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -126,9 +189,10 @@ func TestResolveComment_ConcurrentReplyRejectsStaleKnownAsOf(t *testing.T) {
 
 	h := *testHandler
 	h.TxStarter = pauseResolveLockTxStarter{
-		inner:   testHandler.TxStarter,
-		reached: reached,
-		release: release,
+		inner:      testHandler.TxStarter,
+		execMarker: lockCommentThreadSQLMarker,
+		reached:    reached,
+		release:    release,
 	}
 
 	resolveDone := make(chan *httptest.ResponseRecorder, 1)
@@ -171,20 +235,163 @@ func TestResolveComment_ConcurrentReplyRejectsStaleKnownAsOf(t *testing.T) {
 	// The resolve ran its guard while holding the lock, strictly before the
 	// reply could acquire it and commit — so the guard's count is guaranteed
 	// to have seen zero new replies, and per NoKnownAsOfSkipsGuard-style
-	// semantics with an up-to-date known_as_of, the resolve must succeed.
+	// semantics with an up-to-date known_as_of, the resolve must succeed (not
+	// be rejected with a thread_changed conflict).
 	if resolveResp.Code != http.StatusOK {
 		t.Fatalf("resolve that fully precedes the reply under the lock = %d: %s, want 200", resolveResp.Code, resolveResp.Body.String())
 	}
-	if !commentResolved(t, fx.Root1) {
-		t.Fatalf("root1 should be resolved: the lock-ordered resolve committed before the reply could land")
+	var resolvedPayload struct {
+		ResolvedAt *string `json:"resolved_at"`
+	}
+	if err := json.Unmarshal(resolveResp.Body.Bytes(), &resolvedPayload); err != nil {
+		t.Fatalf("decode resolve response: %v", err)
+	}
+	if resolvedPayload.ResolvedAt == nil {
+		t.Fatalf("resolve response did not report root1 as resolved: %s", resolveResp.Body.String())
 	}
 
+	if replyResp.Code != http.StatusCreated {
+		t.Fatalf("concurrent reply = %d: %s, want 201", replyResp.Code, replyResp.Body.String())
+	}
 	var replyStillPresent bool
 	if err := testPool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM comment WHERE issue_id = $1 AND content = 'concurrent reply')`, fx.IssueID).Scan(&replyStillPresent); err != nil {
 		t.Fatalf("check concurrent reply survived: %v", err)
 	}
 	if !replyStillPresent {
 		t.Fatalf("concurrent reply must exist after the lock released it")
+	}
+
+	// The reply committing AFTER the resolve legitimately re-opens the thread
+	// (AutoUnresolveThreadOnReply — a reply in a resolved thread always
+	// reopens it, by design). That is real product behavior, not a symptom of
+	// the guard failing: the resolve response above already proved root1 was
+	// resolved at commit time, strictly before the reply could land.
+	if commentResolved(t, fx.Root1) {
+		t.Fatalf("root1 should have been auto-reopened by the reply that landed after the resolve committed")
+	}
+}
+
+// TestResolveComment_ConcurrentReplyBlocksUntilResolveTransactionEnds is the
+// mutual-exclusion regression: it proves the lock genuinely serializes
+// commits, not merely that the guard's read happens to observe zero. The
+// resolve's transaction is paused AFTER CountThreadCommentsSince has already
+// returned a zero result — the guard has passed and the resolve is about to
+// perform its resolving write — while the thread-scoped advisory lock is
+// still held (the transaction has not committed). A real concurrent reply
+// attempt is then started against the same thread: it must be UNABLE to
+// commit — its CreateComment call must not even return — until the resolve's
+// transaction finishes, proving the lock is held across the guard's entire
+// read-then-write window, not just released the instant the count comes back.
+// Once the resolve is allowed to finish and commits, the queued reply
+// proceeds and lands afterward: this is the same commit-ordering outcome as
+// TestResolveComment_LockOrderedReplyLandsAfterResolveCommits, but this test's
+// pause point proves WHY it holds — the lock spans CountThreadCommentsSince
+// through the resolve's own commit, not just the LockCommentThread call
+// itself.
+func TestResolveComment_ConcurrentReplyBlocksUntilResolveTransactionEnds(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	fx := newResolveTestFixture(t)
+	ctx := context.Background()
+
+	knownAsOf := commentCreatedAt(t, fx.B1)
+
+	reached := make(chan struct{}, 1)
+	release := make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+
+	h := *testHandler
+	h.TxStarter = pauseResolveLockTxStarter{
+		inner:          testHandler.TxStarter,
+		queryRowMarker: countThreadCommentsSinceSQLMarker,
+		reached:        reached,
+		release:        release,
+	}
+
+	resolveDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		resolveDone <- resolveCommentWithKnownAsOf(&h, fx.Root1, &knownAsOf)
+	}()
+
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("resolve did not reach the post-CountThreadCommentsSince pause point")
+	}
+
+	// The guard has already read zero new replies and the resolve has not yet
+	// committed (or even performed its resolving UPDATE) — the lock is still
+	// held. Start a real concurrent reply now.
+	replyDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		replyDone <- createReplyComment(testHandler, fx.IssueID, fx.Root1, "reply during held lock")
+	}()
+
+	// Assert non-completion repeatedly across a window, not just once: a flaky
+	// false pass (the reply happening to not have scheduled yet, rather than
+	// genuinely being blocked on the lock) is the exact failure mode a
+	// pre-lock version of this test would produce, so give it several
+	// opportunities to race ahead if the exclusion were not real.
+	for i := 0; i < 5; i++ {
+		select {
+		case resp := <-replyDone:
+			t.Fatalf("concurrent reply completed (status %d) while the resolve transaction still held the thread lock post-count; mutual exclusion is not holding", resp.Code)
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+
+	// Confirm directly against the database that the reply has not committed
+	// yet, not merely that its HTTP call hasn't returned.
+	var replyCommittedBeforeRelease bool
+	if err := testPool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM comment WHERE issue_id = $1 AND content = 'reply during held lock')`, fx.IssueID).Scan(&replyCommittedBeforeRelease); err != nil {
+		t.Fatalf("check reply not yet committed: %v", err)
+	}
+	if replyCommittedBeforeRelease {
+		t.Fatalf("reply comment is visible in the database before the resolve transaction released its lock")
+	}
+
+	close(release)
+	resolveResp := <-resolveDone
+	replyResp := <-replyDone
+
+	if resolveResp.Code != http.StatusOK {
+		t.Fatalf("resolve holding the lock through the guard = %d: %s, want 200", resolveResp.Code, resolveResp.Body.String())
+	}
+	var resolvedPayload struct {
+		ResolvedAt *string `json:"resolved_at"`
+	}
+	if err := json.Unmarshal(resolveResp.Body.Bytes(), &resolvedPayload); err != nil {
+		t.Fatalf("decode resolve response: %v", err)
+	}
+	if resolvedPayload.ResolvedAt == nil {
+		t.Fatalf("resolve response did not report root1 as resolved: %s", resolveResp.Body.String())
+	}
+	if replyResp.Code != http.StatusCreated {
+		t.Fatalf("reply queued behind the lock = %d: %s, want 201 once released", replyResp.Code, replyResp.Body.String())
+	}
+
+	var replyStillPresent bool
+	if err := testPool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM comment WHERE issue_id = $1 AND content = 'reply during held lock')`, fx.IssueID).Scan(&replyStillPresent); err != nil {
+		t.Fatalf("check concurrent reply landed: %v", err)
+	}
+	if !replyStillPresent {
+		t.Fatalf("concurrent reply must exist after the lock released it")
+	}
+
+	// As in TestResolveComment_LockOrderedReplyLandsAfterResolveCommits: the
+	// reply committing after the resolve legitimately reopens the thread via
+	// AutoUnresolveThreadOnReply. The resolve response decoded above already
+	// proved root1 was resolved at commit time, strictly before the reply
+	// (still queued behind the held lock at that point) could land.
+	if commentResolved(t, fx.Root1) {
+		t.Fatalf("root1 should have been auto-reopened by the reply that landed after the resolve committed")
 	}
 }
 
@@ -215,9 +422,10 @@ func TestResolveComment_ConcurrentReplyBeforeLockAcquisitionRejectsResolve(t *te
 
 	h := *testHandler
 	h.TxStarter = pauseResolveLockTxStarter{
-		inner:   testHandler.TxStarter,
-		reached: reached,
-		release: release,
+		inner:      testHandler.TxStarter,
+		execMarker: lockCommentThreadSQLMarker,
+		reached:    reached,
+		release:    release,
 	}
 
 	// Start the reply FIRST and let it fully commit before the resolve even
