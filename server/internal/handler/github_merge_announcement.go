@@ -146,16 +146,47 @@ func (w *MergeAnnouncementWorker) ProcessNext(ctx context.Context) (bool, error)
 	// delivered, so they terminate via skip(), not retryOrFail(). A DB error
 	// while checking is transient and goes through retryOrFail so
 	// attempt_count advances instead of silently re-claiming forever.
-	if !w.h.githubEnabledForWorkspace(ctx, a.WorkspaceID) {
+	//
+	// This must use the error-expressing check, not the fail-open
+	// h.githubEnabledForWorkspace (CHE-374 review round 3, item 2): a
+	// GetWorkspace failure or unparseable settings blob here is
+	// indeterminate, not a pass — the previous fail-open version would
+	// deliver the comment despite being unable to confirm GitHub is still on
+	// for the workspace.
+	enabled, err := w.h.githubEnabledForWorkspaceChecked(ctx, a.WorkspaceID)
+	if err != nil {
+		return true, w.retryOrFail(ctx, a, fmt.Errorf("check github enabled for workspace: %w", err))
+	}
+	if !enabled {
 		return true, w.skip(ctx, a, "github disabled for workspace")
 	}
 
+	// Revalidate against the announcement's SOURCE PR installation, not just
+	// "does the workspace have any GitHub installation at all" (CHE-374
+	// review round 3, item 3). A workspace can have several bound
+	// installations; removing the one that owns this PR while a different
+	// installation remains bound must still block delivery, since the app
+	// that originally granted access to this repository is gone.
+	pr, err := w.h.Queries.GetGitHubPullRequestByID(ctx, a.PullRequestID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return true, w.skip(ctx, a, "source pull request no longer exists")
+		}
+		return true, w.retryOrFail(ctx, a, fmt.Errorf("load source pull request: %w", err))
+	}
 	installations, err := w.h.Queries.ListGitHubInstallationsByWorkspace(ctx, a.WorkspaceID)
 	if err != nil {
 		return true, w.retryOrFail(ctx, a, fmt.Errorf("list installations for workspace: %w", err))
 	}
-	if len(installations) == 0 {
-		return true, w.skip(ctx, a, "no github installation bound to workspace")
+	boundToSourceInstallation := false
+	for _, inst := range installations {
+		if inst.InstallationID == pr.InstallationID {
+			boundToSourceInstallation = true
+			break
+		}
+	}
+	if !boundToSourceInstallation {
+		return true, w.skip(ctx, a, "source installation no longer bound to workspace")
 	}
 
 	if _, err := w.h.Queries.GetIssuePullRequestLink(ctx, db.GetIssuePullRequestLinkParams{

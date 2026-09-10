@@ -1662,6 +1662,18 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		}
 	}
 
+	// github_enabled=false is the master boundary: NO GitHub side effect may
+	// occur, including the PR mirror upsert itself (CHE-374 review round 3,
+	// item 4 — a prior round mirrored unconditionally on the theory that
+	// re-enabling GitHub later should restore history without backfill, but
+	// the reviewed decision is that master-off means zero footprint, not
+	// "everything except issue-facing effects"). Returning nil here (not an
+	// error) matches the webhook's normal 202 response for an event this
+	// workspace has opted out of.
+	if !githubEnabled {
+		return nil
+	}
+
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("github: begin mirror transaction: %w", err)
@@ -1691,6 +1703,7 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		Additions:           p.PullRequest.Additions,
 		Deletions:           p.PullRequest.Deletions,
 		ChangedFiles:        p.PullRequest.ChangedFiles,
+		IsReopen:            p.Action == "reopened",
 	})
 	if err != nil {
 		return fmt.Errorf("github: upsert pr failed: %w", err)
@@ -1703,11 +1716,11 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	// upserts the close_intent flag — see LinkIssueToPullRequest) so
 	// re-firing the webhook doesn't duplicate.
 	//
-	// RFC MUL-2414 §4.8: the PR mirror upsert above always runs (so re-enabling
-	// GitHub features restores history without backfill), but the link rows
-	// are a "new side-effect" and must be gated by the workspace's auto-link
-	// flag (which itself short-circuits when the master `github_enabled`
-	// switch is off).
+	// RFC MUL-2414 §4.8: the link rows are a "new side-effect" gated by the
+	// workspace's auto-link flag, independent of the master `github_enabled`
+	// check above — reaching this point already proves github_enabled=true
+	// (CHE-374 review round 3, item 4 changed the mirror upsert itself to be
+	// gated by github_enabled, so "mirror always runs" no longer holds).
 	linkedIssueIDs := make([]string, 0)
 	if autoLinkEnabled {
 		for _, id := range idents {
@@ -2106,6 +2119,34 @@ func (h *Handler) githubEnabledForWorkspace(ctx context.Context, workspaceID pgt
 		return true
 	}
 	return githubEnabledForWorkspace(ws)
+}
+
+// githubEnabledForWorkspaceChecked is the error-expressing counterpart to
+// githubEnabledForWorkspace, for callers that must NOT fold a lookup failure
+// into the permissive default (CHE-374 review round 3, item 2). The webhook
+// mirror path intentionally stays fail-open — an unset/unreadable setting for
+// an existing workspace must keep behaving as it always has. The worker's
+// delivery-time eligibility recheck is different: an indeterminate answer
+// there must be treated as "could not verify" and go through retryOrFail, not
+// silently pass as "enabled".
+func (h *Handler) githubEnabledForWorkspaceChecked(ctx context.Context, workspaceID pgtype.UUID) (bool, error) {
+	ws, err := h.Queries.GetWorkspace(ctx, workspaceID)
+	if err != nil {
+		return false, fmt.Errorf("get workspace: %w", err)
+	}
+	if len(ws.Settings) == 0 {
+		return true, nil
+	}
+	var s struct {
+		GitHubEnabled *bool `json:"github_enabled"`
+	}
+	if err := json.Unmarshal(ws.Settings, &s); err != nil {
+		return false, fmt.Errorf("unmarshal workspace settings: %w", err)
+	}
+	if s.GitHubEnabled == nil {
+		return true, nil
+	}
+	return *s.GitHubEnabled, nil
 }
 
 // issueNumberForPrefix returns the issue number encoded in a "PREFIX-NUMBER"

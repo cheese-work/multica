@@ -727,16 +727,17 @@ INSERT INTO github_pull_request (
 ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     installation_id = EXCLUDED.installation_id,
     title = EXCLUDED.title,
-    -- A redelivered or out-of-order opened/synchronize webhook must not move
-    -- an already-merged PR backward. Only ` + "`" + `merged` + "`" + ` is protected: once the
-    -- stored state is ` + "`" + `merged` + "`" + `, only an incoming ` + "`" + `merged` + "`" + ` state is allowed to
-    -- overwrite it; anything else preserves the existing merged state instead
-    -- of demoting it. ` + "`" + `closed` + "`" + ` is NOT protected here — a genuine reopen
-    -- (action=reopened → state=open) must be allowed to move a closed PR back
-    -- to open.
+    -- ` + "`" + `merged` + "`" + ` is always protected: once stored, only an incoming ` + "`" + `merged` + "`" + `
+    -- overwrites it. ` + "`" + `closed` + "`" + ` is protected UNLESS this delivery is a genuine
+    -- reopen (is_reopen=true), which is the only way a closed PR may move
+    -- back to open/draft.
     state = CASE
         WHEN github_pull_request.state = 'merged'
              AND EXCLUDED.state <> 'merged'
+        THEN github_pull_request.state
+        WHEN github_pull_request.state = 'closed'
+             AND EXCLUDED.state <> 'merged'
+             AND NOT COALESCE($21::boolean, FALSE)
         THEN github_pull_request.state
         ELSE EXCLUDED.state
     END,
@@ -748,13 +749,23 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
         WHEN github_pull_request.state = 'merged'
              AND EXCLUDED.state <> 'merged'
         THEN github_pull_request.merged_at
+        WHEN github_pull_request.state = 'closed'
+             AND EXCLUDED.state <> 'merged'
+             AND NOT COALESCE($21::boolean, FALSE)
+        THEN github_pull_request.merged_at
         ELSE EXCLUDED.merged_at
     END,
-    closed_at = EXCLUDED.closed_at,
+    closed_at = CASE
+        WHEN github_pull_request.state = 'closed'
+             AND EXCLUDED.state <> 'merged'
+             AND NOT COALESCE($21::boolean, FALSE)
+        THEN github_pull_request.closed_at
+        ELSE EXCLUDED.closed_at
+    END,
     pr_updated_at = EXCLUDED.pr_updated_at,
     head_sha = EXCLUDED.head_sha,
     mergeable_state = CASE
-        WHEN COALESCE($21::boolean, FALSE) THEN NULL
+        WHEN COALESCE($22::boolean, FALSE) THEN NULL
         WHEN EXCLUDED.mergeable_state IS NOT NULL THEN EXCLUDED.mergeable_state
         ELSE github_pull_request.mergeable_state
     END,
@@ -786,6 +797,7 @@ type UpsertGitHubPullRequestParams struct {
 	MergedAt            pgtype.Timestamptz `json:"merged_at"`
 	ClosedAt            pgtype.Timestamptz `json:"closed_at"`
 	MergeableState      pgtype.Text        `json:"mergeable_state"`
+	IsReopen            bool               `json:"is_reopen"`
 	ClearMergeableState pgtype.Bool        `json:"clear_mergeable_state"`
 }
 
@@ -804,13 +816,15 @@ type UpsertGitHubPullRequestParams struct {
 // state/merged_at follow the same "don't let a stale payload move things
 // backward" idea: `merged` is terminal, and a redelivered or out-of-order
 // opened/synchronize webhook (GitHub does not guarantee delivery order) must
-// never demote an already-merged PR back to open. Only the stored `merged`
-// state is protected this way — `closed` is NOT terminal: GitHub allows a
-// genuine reopen (action=reopened), which derivePRState maps to state=open,
-// and a closed PR must be able to transition back to open through that event.
-// So the guard only fires when the CURRENT stored state is `merged` and the
-// incoming state is not `merged`; any other combination (including closed →
-// open) is allowed through.
+// never demote an already-merged PR back to open. `closed` is also protected
+// against a stale non-terminal payload — a redelivered/out-of-order `opened`
+// or `synchronize` webhook must not silently reopen a closed PR. The one
+// state `closed` must still yield to is a GENUINE reopen: GitHub's
+// action=reopened event, which derivePRState maps to state=open. Since the
+// state column alone can't distinguish "stale opened payload" from "genuine
+// reopened action" (both carry EXCLUDED.state='open'), the caller passes
+// is_reopen — true only when the webhook's action field is literally
+// "reopened" — as the discriminator (CHE-374 review round 3, item 1).
 // INSERT path always writes the incoming value (NULL acceptable for a new row).
 func (q *Queries) UpsertGitHubPullRequest(ctx context.Context, arg UpsertGitHubPullRequestParams) (GithubPullRequest, error) {
 	row := q.db.QueryRow(ctx, upsertGitHubPullRequest,
@@ -834,6 +848,7 @@ func (q *Queries) UpsertGitHubPullRequest(ctx context.Context, arg UpsertGitHubP
 		arg.MergedAt,
 		arg.ClosedAt,
 		arg.MergeableState,
+		arg.IsReopen,
 		arg.ClearMergeableState,
 	)
 	var i GithubPullRequest
