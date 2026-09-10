@@ -19,6 +19,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/attribution"
 	"github.com/multica-ai/multica/server/internal/chattitle"
+	"github.com/multica-ai/multica/server/internal/commentguard"
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
@@ -88,6 +89,16 @@ type TaskService struct {
 	analyticsContextMu    sync.Mutex
 	analyticsContextCache map[string]analytics.TaskContext
 	analyticsContextOrder []string
+
+	// testHookBeforeDelegatedFailureDedupCheck, when non-nil, is invoked by
+	// dispatchDelegatedFailureRecovery immediately before its first-attempt
+	// HasTaskCoveringDelegatedFailureComment dedup read — the point both the
+	// event-triggered and timer-triggered recovery paths pass through on their
+	// way to contend for the same obligation. Test-only: nil in production, so
+	// this is a zero-cost no-op there. Exists so a race test can prove both
+	// callers actually reached and executed concurrently at the dedup check,
+	// not merely that the final row counts came out consistent.
+	testHookBeforeDelegatedFailureDedupCheck func()
 }
 
 type SourceContextObjectStore interface {
@@ -6026,6 +6037,13 @@ func (s *TaskService) ensureDelegatedFailureRecoveryComment(ctx context.Context,
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("find recovery comment: %w", err)
 		}
+		// This recovery comment replies under the source task's trigger
+		// comment, so it is subject to the same commit-ordering race as any
+		// other reply and must take the identical thread-scoped lock before
+		// its insert (see commentguard.LockThreadForReply).
+		if err := commentguard.LockThreadForReply(ctx, qtx, target.issue.WorkspaceID, target.source.TriggerCommentID); err != nil {
+			return fmt.Errorf("lock comment thread for recovery comment: %w", err)
+		}
 		createdComment, err := qtx.CreateComment(ctx, db.CreateCommentParams{
 			ID:           dbid.NewV7(),
 			IssueID:      target.issue.ID,
@@ -6132,6 +6150,12 @@ func (s *TaskService) exhaustDelegatedFailureRecovery(ctx context.Context, targe
 			return fmt.Errorf("find delegated failure exhaustion comment: %w", err)
 		}
 
+		// Same thread-scoped lock requirement as the initial recovery comment
+		// above: this exhaustion comment is also a reply under the source
+		// task's trigger comment (see commentguard.LockThreadForReply).
+		if err := commentguard.LockThreadForReply(ctx, qtx, target.issue.WorkspaceID, target.source.TriggerCommentID); err != nil {
+			return fmt.Errorf("lock comment thread for exhaustion comment: %w", err)
+		}
 		createdComment, err := qtx.CreateComment(ctx, db.CreateCommentParams{
 			ID:           dbid.NewV7(),
 			IssueID:      target.issue.ID,
@@ -6252,6 +6276,9 @@ func (s *TaskService) exhaustDelegatedFailureRecovery(ctx context.Context, targe
 func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, target *delegatedFailureRecoveryTarget, excludeTaskID pgtype.UUID) (delegatedFailureRecoveryDispatchOutcome, error) {
 	const maxAttempts = 3
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt == 0 && s.testHookBeforeDelegatedFailureDedupCheck != nil {
+			s.testHookBeforeDelegatedFailureDedupCheck()
+		}
 		covered, err := s.Queries.HasTaskCoveringDelegatedFailureComment(ctx, db.HasTaskCoveringDelegatedFailureCommentParams{
 			IssueID:       target.issue.ID,
 			AgentID:       target.agent.ID,
@@ -7121,27 +7148,45 @@ func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID p
 	// Resolve the thread root for thread-level side effects without overwriting
 	// parentID. The stored parent_id must remain the exact comment being replied
 	// to; recursive thread reads recover the root when needed.
+	//
+	// A reply takes the same thread-scoped advisory lock the handler's
+	// CreateComment path and ResolveComment's concurrent-feedback guard take
+	// (see commentguard.LockThreadForReply) — an agent-authored reply can land
+	// in the exact same commit-ordering race window as a human one, so it must
+	// serialize against the same lock. commentguard fails closed on a
+	// thread-root lookup error, so this whole write is skipped (logged, not
+	// created unlocked) rather than silently bypassing the guard.
 	var rootComment *db.Comment
-	if parentID.Valid {
-		if root, err := s.Queries.GetThreadRoot(ctx, db.GetThreadRootParams{
-			CommentID:   parentID,
-			WorkspaceID: issue.WorkspaceID,
-		}); err == nil {
+	var created db.CreateCommentRow
+	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		if err := commentguard.LockThreadForReply(ctx, qtx, issue.WorkspaceID, parentID); err != nil {
+			return err
+		}
+		if parentID.Valid {
+			root, err := qtx.GetThreadRoot(ctx, db.GetThreadRootParams{
+				CommentID:   parentID,
+				WorkspaceID: issue.WorkspaceID,
+			})
+			if err != nil {
+				return fmt.Errorf("resolve thread root: %w", err)
+			}
 			rootComment = &root
 		}
-	}
-	created, err := s.Queries.CreateComment(ctx, db.CreateCommentParams{
-		ID:           dbid.NewV7(),
-		IssueID:      issueID,
-		WorkspaceID:  issue.WorkspaceID,
-		AuthorType:   "agent",
-		AuthorID:     agentID,
-		Content:      content,
-		Type:         commentType,
-		ParentID:     parentID,
-		SourceTaskID: sourceTaskID,
-	})
-	if err != nil {
+		var err error
+		created, err = qtx.CreateComment(ctx, db.CreateCommentParams{
+			ID:           dbid.NewV7(),
+			IssueID:      issueID,
+			WorkspaceID:  issue.WorkspaceID,
+			AuthorType:   "agent",
+			AuthorID:     agentID,
+			Content:      content,
+			Type:         commentType,
+			ParentID:     parentID,
+			SourceTaskID: sourceTaskID,
+		})
+		return err
+	}); err != nil {
+		slog.Warn("create agent comment failed", "error", err, "issue_id", util.UUIDToString(issueID), "agent_id", util.UUIDToString(agentID))
 		return
 	}
 	comment := created.Comment()
