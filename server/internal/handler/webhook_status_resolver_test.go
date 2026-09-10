@@ -98,8 +98,11 @@ func TestWebhookStatusResolver(t *testing.T) {
 							p.PullRequest.State, p.PullRequest.Merged = "closed", true
 							p.PullRequest.HTMLURL = "https://github.test/fixture/resolver/pull/1"
 							p.PullRequest.CreatedAt, p.PullRequest.UpdatedAt = timestamp, timestamp
+							p.PullRequest.MergedAt = timestamp
 							mirror = func() {
-								h.mirrorPullRequestForWorkspace(ctx, wsID, int64(91000+workspace), p, closeIntentPolicy{unrestricted: true}, "")
+								if err := h.mirrorPullRequestForWorkspace(ctx, wsID, int64(91000+workspace), p, closeIntentPolicy{unrestricted: true}, ""); err != nil {
+									t.Fatalf("mirrorPullRequestForWorkspace: %v", err)
+								}
 							}
 						} else {
 							connID := fixture.Insert(t, "vcs_connection", testutil.Cols{"workspace_id": ws, "provider": provider, "instance_url": "https://forgejo.test", "account_login": "fixture", "access_token_encrypted": "unused", "webhook_secret_encrypted": "unused"})

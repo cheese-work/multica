@@ -136,7 +136,7 @@ func (w *MergeAnnouncementWorker) ProcessNext(ctx context.Context) (bool, error)
 		return true, w.retryOrFail(ctx, a, fmt.Errorf("load issue: %w", err))
 	}
 
-	content := mergeAnnouncementCommentBody(a, issue)
+	content := w.h.mergeAnnouncementCommentBody(ctx, a, issue)
 
 	tx, err := w.h.TxStarter.Begin(ctx)
 	if err != nil {
@@ -238,19 +238,94 @@ func (w *MergeAnnouncementWorker) retryOrFail(ctx context.Context, a db.GithubMe
 	return nil
 }
 
+// mergeAnnouncementOwnerName resolves the issue's assignee to an actual
+// display name for the merge-announcement comment (CHE-374 review fix T3).
+// It is deliberately separate from resolveAssigneeMentionLabel
+// (issue_child_done.go): that helper renders a `[@x](mention://…)` link and
+// its behavior is depended on by existing mention-dispatch callers, while
+// this text is plain prose (see mergeAnnouncementCommentBody's no-mention
+// rationale) and additionally needs to cover the "member" assignee type,
+// which resolveAssigneeMentionLabel does not. Returns "Unassigned" when the
+// issue has no assignee, and falls back to the raw assignee type discriminator
+// only if the referenced row can no longer be loaded (e.g. a deleted member).
+func (h *Handler) mergeAnnouncementOwnerName(ctx context.Context, workspaceID pgtype.UUID, assigneeType string, assigneeID pgtype.UUID) string {
+	switch assigneeType {
+	case "agent":
+		agent, err := h.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{
+			ID:          assigneeID,
+			WorkspaceID: workspaceID,
+		})
+		if err != nil {
+			return "agent"
+		}
+		return sanitizeMentionLabel(agent.Name)
+	case "squad":
+		squad, err := h.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{
+			ID:          assigneeID,
+			WorkspaceID: workspaceID,
+		})
+		if err != nil {
+			return "squad"
+		}
+		return sanitizeMentionLabel(squad.Name)
+	case "member":
+		member, err := h.Queries.GetMember(ctx, assigneeID)
+		if err != nil {
+			return "member"
+		}
+		user, err := h.Queries.GetUser(ctx, member.UserID)
+		if err != nil {
+			return "member"
+		}
+		return sanitizeMentionLabel(user.Name)
+	}
+	return "Unassigned"
+}
+
 // mergeAnnouncementCommentBody renders the deterministic next-action comment
 // text (01-CONTEXT.md D-04). It never interpolates PR title/body text as a
 // mention: every dynamic value here is either a system-derived identifier
-// (issue identifier, PR number/URL, commit SHA) or the issue's own persisted
-// status/assignee — none of it is attacker-controlled PR text, so no `[@x](mention://…)`
-// substring from a malicious PR title can ever reach this content.
-func mergeAnnouncementCommentBody(a db.GithubMergeAnnouncement, issue db.Issue) string {
-	owner := "Unassigned"
-	if issue.AssigneeType.Valid && issue.AssigneeType.String != "" {
-		owner = issue.AssigneeType.String
+// (issue identifier, PR number/URL, commit SHA, merge time) or the issue's
+// own persisted status/assignee — none of it is attacker-controlled PR text,
+// so no `[@x](mention://…)` substring from a malicious PR title can ever
+// reach this content.
+//
+// CHE-374 review fix T3: previously omitted the PR URL entirely, never
+// rendered merged_at even though it was already stored, printed the raw
+// assignee_type discriminator ("agent"/"member") instead of a name, and
+// always claimed the PR "does not declare completion" even when this exact
+// merge carried closing intent (in which case the issue's own advance-to-done
+// gate is the thing that will resolve it, not this comment.
+func (h *Handler) mergeAnnouncementCommentBody(ctx context.Context, a db.GithubMergeAnnouncement, issue db.Issue) string {
+	owner := h.mergeAnnouncementOwnerName(ctx, issue.WorkspaceID, issue.AssigneeType.String, issue.AssigneeID)
+
+	prRef := fmt.Sprintf("%s#%d", a.RepoOwner+"/"+a.RepoName, a.PrNumber)
+	if a.HtmlUrl.Valid && a.HtmlUrl.String != "" {
+		prRef = fmt.Sprintf("[%s](%s)", prRef, a.HtmlUrl.String)
 	}
+
+	mergedAtText := ""
+	if a.MergedAt.Valid {
+		mergedAtText = fmt.Sprintf(" at %s", a.MergedAt.Time.UTC().Format(time.RFC3339))
+	}
+
+	// close_intent is captured on the announcement row at link time (frozen
+	// to what was true for this specific merge — see migration 469), so a
+	// later edit to the link row can't change what a past merge's comment
+	// says. Pre-migration rows have no captured value (Valid=false); those
+	// fall back to the original, close-intent-agnostic wording rather than
+	// asserting something about a merge we don't have the answer for.
+	nextAction := "Next: continue the issue's remaining work; this PR does not declare completion."
+	if a.CloseIntent.Valid {
+		if a.CloseIntent.Bool {
+			nextAction = "Next: this PR declared closing intent for this issue; the issue will auto-advance once no linked PR is still open."
+		} else {
+			nextAction = "Next: this PR did not declare closing intent for this issue; continue the issue's remaining work."
+		}
+	}
+
 	return fmt.Sprintf(
-		"PR #%d merged (%s) — commit `%.12s`.\n\nStatus: %s. Owner: %s. Next: continue the issue's remaining work; this PR does not declare completion.",
-		a.PrNumber, a.RepoOwner+"/"+a.RepoName, a.MergeCommitSha, issue.Status, owner,
+		"PR %s merged%s — commit `%.12s`.\n\nStatus: %s. Owner: %s. %s",
+		prRef, mergedAtText, a.MergeCommitSha, issue.Status, owner, nextAction,
 	)
 }

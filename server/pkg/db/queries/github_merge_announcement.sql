@@ -18,12 +18,14 @@
 -- without a second round trip.
 INSERT INTO github_merge_announcement (
     workspace_id, provider, repository_id, repo_owner, repo_name, pr_number,
-    pull_request_id, issue_id, event_kind, delivery_guid, merge_commit_sha, merged_at
+    pull_request_id, issue_id, event_kind, delivery_guid, merge_commit_sha, merged_at,
+    html_url, close_intent
 ) VALUES (
     sqlc.arg('workspace_id'), sqlc.arg('provider'), sqlc.arg('repository_id'),
     sqlc.arg('repo_owner'), sqlc.arg('repo_name'), sqlc.arg('pr_number'),
     sqlc.arg('pull_request_id'), sqlc.arg('issue_id'), sqlc.arg('event_kind'),
-    sqlc.narg('delivery_guid'), sqlc.arg('merge_commit_sha'), sqlc.arg('merged_at')
+    sqlc.narg('delivery_guid'), sqlc.arg('merge_commit_sha'), sqlc.arg('merged_at'),
+    sqlc.narg('html_url'), sqlc.narg('close_intent')
 )
 ON CONFLICT (workspace_id, provider, repository_id, pr_number, issue_id, event_kind) DO NOTHING
 RETURNING *;

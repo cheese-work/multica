@@ -62,6 +62,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"dingtalk_group_route":               workspaceDelete,
 	"feedback":                           workspaceDeleteDetach,
 	"github_installation":                workspaceDelete,
+	"github_merge_announcement":          workspaceDelete,
 	"github_pending_check_suite":         workspaceDelete,
 	"github_pending_installation":        workspaceDeleteKeep,
 	"github_pull_request":                workspaceDelete,

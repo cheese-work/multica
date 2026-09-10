@@ -303,6 +303,8 @@ var concurrentIndexCleanups = map[string]string{
 	"459_chat_message_assistant_task_index":                     "idx_chat_message_assistant_task",
 	"460_agent_task_queue_autopilot_run_created_at_index":       "idx_agent_task_queue_autopilot_run_created_at",
 	"465_agent_task_queue_chat_with_session_index":              "idx_agent_task_queue_chat_with_session_created_at",
+	"467_github_merge_announcement_identity_uidx":               "uq_github_merge_announcement_identity",
+	"468_github_merge_announcement_pending_idx":                 "idx_github_merge_announcement_pending_claim",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction

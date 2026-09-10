@@ -688,6 +688,8 @@ type GithubMergeAnnouncement struct {
 	DeliveredAt    pgtype.Timestamptz `json:"delivered_at"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	HtmlUrl        pgtype.Text        `json:"html_url"`
+	CloseIntent    pgtype.Bool        `json:"close_intent"`
 }
 
 type GithubPendingCheckSuite struct {

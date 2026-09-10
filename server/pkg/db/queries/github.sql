@@ -88,6 +88,12 @@ SELECT * FROM github_pending_installation WHERE installation_id = $1
 --      column. Metadata events (labeled/assigned/etc.) ship payloads without
 --      mergeability, and silently clobbering a known clean/dirty would lose
 --      information that GitHub only re-computes lazily.
+-- state/merged_at follow the same "don't let a stale payload move things
+-- backward" idea: `merged` is terminal, and a redelivered or out-of-order
+-- opened/synchronize webhook (GitHub does not guarantee delivery order) must
+-- never demote an already-merged PR back to open. Once the stored state is a
+-- terminal state (`merged` or `closed`), an incoming non-merged state is
+-- dropped and the existing state/merged_at are preserved instead.
 -- INSERT path always writes the incoming value (NULL acceptable for a new row).
 INSERT INTO github_pull_request (
     workspace_id, installation_id, repo_owner, repo_name, pr_number,
@@ -105,12 +111,27 @@ INSERT INTO github_pull_request (
 ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     installation_id = EXCLUDED.installation_id,
     title = EXCLUDED.title,
-    state = EXCLUDED.state,
+    -- A redelivered or out-of-order opened/synchronize webhook must not move
+    -- a terminal PR backward. Once the stored state is `merged` or `closed`,
+    -- only an incoming `merged` state is allowed to overwrite it (a genuine
+    -- reopen-then-merge race); anything else preserves the existing terminal
+    -- state instead of demoting it back to open/draft.
+    state = CASE
+        WHEN github_pull_request.state IN ('merged', 'closed')
+             AND EXCLUDED.state <> 'merged'
+        THEN github_pull_request.state
+        ELSE EXCLUDED.state
+    END,
     html_url = EXCLUDED.html_url,
     branch = EXCLUDED.branch,
     author_login = EXCLUDED.author_login,
     author_avatar_url = EXCLUDED.author_avatar_url,
-    merged_at = EXCLUDED.merged_at,
+    merged_at = CASE
+        WHEN github_pull_request.state IN ('merged', 'closed')
+             AND EXCLUDED.state <> 'merged'
+        THEN github_pull_request.merged_at
+        ELSE EXCLUDED.merged_at
+    END,
     closed_at = EXCLUDED.closed_at,
     pr_updated_at = EXCLUDED.pr_updated_at,
     head_sha = EXCLUDED.head_sha,

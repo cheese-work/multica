@@ -27,7 +27,7 @@ SET lease_token = gen_random_uuid(),
     lease_expires_at = now() + interval '2 minutes'
 FROM candidate
 WHERE a.id = candidate.id
-RETURNING a.id, a.workspace_id, a.provider, a.repository_id, a.repo_owner, a.repo_name, a.pr_number, a.pull_request_id, a.issue_id, a.event_kind, a.delivery_guid, a.merge_commit_sha, a.merged_at, a.status, a.attempt_count, a.last_error, a.lease_token, a.lease_expires_at, a.available_at, a.comment_id, a.delivered_at, a.created_at, a.updated_at
+RETURNING a.id, a.workspace_id, a.provider, a.repository_id, a.repo_owner, a.repo_name, a.pr_number, a.pull_request_id, a.issue_id, a.event_kind, a.delivery_guid, a.merge_commit_sha, a.merged_at, a.status, a.attempt_count, a.last_error, a.lease_token, a.lease_expires_at, a.available_at, a.comment_id, a.delivered_at, a.created_at, a.updated_at, a.html_url, a.close_intent
 `
 
 // Claims one due pending record for delivery. SKIP LOCKED lets concurrent
@@ -62,6 +62,8 @@ func (q *Queries) ClaimPendingGitHubMergeAnnouncement(ctx context.Context) (Gith
 		&i.DeliveredAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.HtmlUrl,
+		&i.CloseIntent,
 	)
 	return i, err
 }
@@ -77,7 +79,7 @@ SET status = 'delivered',
 WHERE id = $2
   AND lease_token = $3
   AND status = 'pending'
-RETURNING id, workspace_id, provider, repository_id, repo_owner, repo_name, pr_number, pull_request_id, issue_id, event_kind, delivery_guid, merge_commit_sha, merged_at, status, attempt_count, last_error, lease_token, lease_expires_at, available_at, comment_id, delivered_at, created_at, updated_at
+RETURNING id, workspace_id, provider, repository_id, repo_owner, repo_name, pr_number, pull_request_id, issue_id, event_kind, delivery_guid, merge_commit_sha, merged_at, status, attempt_count, last_error, lease_token, lease_expires_at, available_at, comment_id, delivered_at, created_at, updated_at, html_url, close_intent
 `
 
 type CompleteGitHubMergeAnnouncementDeliveryParams struct {
@@ -117,6 +119,8 @@ func (q *Queries) CompleteGitHubMergeAnnouncementDelivery(ctx context.Context, a
 		&i.DeliveredAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.HtmlUrl,
+		&i.CloseIntent,
 	)
 	return i, err
 }
@@ -125,15 +129,17 @@ const createGitHubMergeAnnouncement = `-- name: CreateGitHubMergeAnnouncement :o
 
 INSERT INTO github_merge_announcement (
     workspace_id, provider, repository_id, repo_owner, repo_name, pr_number,
-    pull_request_id, issue_id, event_kind, delivery_guid, merge_commit_sha, merged_at
+    pull_request_id, issue_id, event_kind, delivery_guid, merge_commit_sha, merged_at,
+    html_url, close_intent
 ) VALUES (
     $1, $2, $3,
     $4, $5, $6,
     $7, $8, $9,
-    $10, $11, $12
+    $10, $11, $12,
+    $13, $14
 )
 ON CONFLICT (workspace_id, provider, repository_id, pr_number, issue_id, event_kind) DO NOTHING
-RETURNING id, workspace_id, provider, repository_id, repo_owner, repo_name, pr_number, pull_request_id, issue_id, event_kind, delivery_guid, merge_commit_sha, merged_at, status, attempt_count, last_error, lease_token, lease_expires_at, available_at, comment_id, delivered_at, created_at, updated_at
+RETURNING id, workspace_id, provider, repository_id, repo_owner, repo_name, pr_number, pull_request_id, issue_id, event_kind, delivery_guid, merge_commit_sha, merged_at, status, attempt_count, last_error, lease_token, lease_expires_at, available_at, comment_id, delivered_at, created_at, updated_at, html_url, close_intent
 `
 
 type CreateGitHubMergeAnnouncementParams struct {
@@ -149,6 +155,8 @@ type CreateGitHubMergeAnnouncementParams struct {
 	DeliveryGuid   pgtype.Text        `json:"delivery_guid"`
 	MergeCommitSha string             `json:"merge_commit_sha"`
 	MergedAt       pgtype.Timestamptz `json:"merged_at"`
+	HtmlUrl        pgtype.Text        `json:"html_url"`
+	CloseIntent    pgtype.Bool        `json:"close_intent"`
 }
 
 // =====================
@@ -181,6 +189,8 @@ func (q *Queries) CreateGitHubMergeAnnouncement(ctx context.Context, arg CreateG
 		arg.DeliveryGuid,
 		arg.MergeCommitSha,
 		arg.MergedAt,
+		arg.HtmlUrl,
+		arg.CloseIntent,
 	)
 	var i GithubMergeAnnouncement
 	err := row.Scan(
@@ -207,6 +217,8 @@ func (q *Queries) CreateGitHubMergeAnnouncement(ctx context.Context, arg CreateG
 		&i.DeliveredAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.HtmlUrl,
+		&i.CloseIntent,
 	)
 	return i, err
 }
@@ -222,7 +234,7 @@ SET status = 'failed',
 WHERE id = $2
   AND lease_token = $3
   AND status = 'pending'
-RETURNING id, workspace_id, provider, repository_id, repo_owner, repo_name, pr_number, pull_request_id, issue_id, event_kind, delivery_guid, merge_commit_sha, merged_at, status, attempt_count, last_error, lease_token, lease_expires_at, available_at, comment_id, delivered_at, created_at, updated_at
+RETURNING id, workspace_id, provider, repository_id, repo_owner, repo_name, pr_number, pull_request_id, issue_id, event_kind, delivery_guid, merge_commit_sha, merged_at, status, attempt_count, last_error, lease_token, lease_expires_at, available_at, comment_id, delivered_at, created_at, updated_at, html_url, close_intent
 `
 
 type FailGitHubMergeAnnouncementParams struct {
@@ -263,12 +275,14 @@ func (q *Queries) FailGitHubMergeAnnouncement(ctx context.Context, arg FailGitHu
 		&i.DeliveredAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.HtmlUrl,
+		&i.CloseIntent,
 	)
 	return i, err
 }
 
 const getGitHubMergeAnnouncementByIdentity = `-- name: GetGitHubMergeAnnouncementByIdentity :one
-SELECT id, workspace_id, provider, repository_id, repo_owner, repo_name, pr_number, pull_request_id, issue_id, event_kind, delivery_guid, merge_commit_sha, merged_at, status, attempt_count, last_error, lease_token, lease_expires_at, available_at, comment_id, delivered_at, created_at, updated_at FROM github_merge_announcement
+SELECT id, workspace_id, provider, repository_id, repo_owner, repo_name, pr_number, pull_request_id, issue_id, event_kind, delivery_guid, merge_commit_sha, merged_at, status, attempt_count, last_error, lease_token, lease_expires_at, available_at, comment_id, delivered_at, created_at, updated_at, html_url, close_intent FROM github_merge_announcement
 WHERE workspace_id = $1
   AND provider = $2
   AND repository_id = $3
@@ -325,12 +339,14 @@ func (q *Queries) GetGitHubMergeAnnouncementByIdentity(ctx context.Context, arg 
 		&i.DeliveredAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.HtmlUrl,
+		&i.CloseIntent,
 	)
 	return i, err
 }
 
 const listGitHubMergeAnnouncementsByIssue = `-- name: ListGitHubMergeAnnouncementsByIssue :many
-SELECT id, workspace_id, provider, repository_id, repo_owner, repo_name, pr_number, pull_request_id, issue_id, event_kind, delivery_guid, merge_commit_sha, merged_at, status, attempt_count, last_error, lease_token, lease_expires_at, available_at, comment_id, delivered_at, created_at, updated_at FROM github_merge_announcement
+SELECT id, workspace_id, provider, repository_id, repo_owner, repo_name, pr_number, pull_request_id, issue_id, event_kind, delivery_guid, merge_commit_sha, merged_at, status, attempt_count, last_error, lease_token, lease_expires_at, available_at, comment_id, delivered_at, created_at, updated_at, html_url, close_intent FROM github_merge_announcement
 WHERE issue_id = $1
 ORDER BY created_at DESC
 `
@@ -371,6 +387,8 @@ func (q *Queries) ListGitHubMergeAnnouncementsByIssue(ctx context.Context, issue
 			&i.DeliveredAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.HtmlUrl,
+			&i.CloseIntent,
 		); err != nil {
 			return nil, err
 		}
@@ -393,7 +411,7 @@ SET attempt_count = attempt_count + 1,
 WHERE id = $3
   AND lease_token = $4
   AND status = 'pending'
-RETURNING id, workspace_id, provider, repository_id, repo_owner, repo_name, pr_number, pull_request_id, issue_id, event_kind, delivery_guid, merge_commit_sha, merged_at, status, attempt_count, last_error, lease_token, lease_expires_at, available_at, comment_id, delivered_at, created_at, updated_at
+RETURNING id, workspace_id, provider, repository_id, repo_owner, repo_name, pr_number, pull_request_id, issue_id, event_kind, delivery_guid, merge_commit_sha, merged_at, status, attempt_count, last_error, lease_token, lease_expires_at, available_at, comment_id, delivered_at, created_at, updated_at, html_url, close_intent
 `
 
 type RetryGitHubMergeAnnouncementParams struct {
@@ -439,6 +457,8 @@ func (q *Queries) RetryGitHubMergeAnnouncement(ctx context.Context, arg RetryGit
 		&i.DeliveredAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.HtmlUrl,
+		&i.CloseIntent,
 	)
 	return i, err
 }
@@ -453,7 +473,7 @@ SET status = 'skipped',
 WHERE id = $2
   AND lease_token = $3
   AND status = 'pending'
-RETURNING id, workspace_id, provider, repository_id, repo_owner, repo_name, pr_number, pull_request_id, issue_id, event_kind, delivery_guid, merge_commit_sha, merged_at, status, attempt_count, last_error, lease_token, lease_expires_at, available_at, comment_id, delivered_at, created_at, updated_at
+RETURNING id, workspace_id, provider, repository_id, repo_owner, repo_name, pr_number, pull_request_id, issue_id, event_kind, delivery_guid, merge_commit_sha, merged_at, status, attempt_count, last_error, lease_token, lease_expires_at, available_at, comment_id, delivered_at, created_at, updated_at, html_url, close_intent
 `
 
 type SkipGitHubMergeAnnouncementParams struct {
@@ -493,6 +513,8 @@ func (q *Queries) SkipGitHubMergeAnnouncement(ctx context.Context, arg SkipGitHu
 		&i.DeliveredAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.HtmlUrl,
+		&i.CloseIntent,
 	)
 	return i, err
 }
