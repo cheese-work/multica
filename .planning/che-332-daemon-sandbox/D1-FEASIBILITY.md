@@ -63,18 +63,26 @@ Neither requires new protocol code; both are existing configuration surfaces the
 
 This proves generic bridge mechanics only: `curl` plus a static URL hook can reach a broker across the network boundary via a mounted Unix socket. It does **not** establish a tested Claude or Codex broker/observation path — neither CLI was invoked, and neither provider's actual HTTP client was exercised against this bridge. Whether the Claude/Codex CLIs specifically can be pointed at a Unix-socket-backed HTTP endpoint (vs. requiring a TCP `host:port` value in `ANTHROPIC_BASE_URL`/`base_url`) is **not yet tested** — both hooks are typed as URLs, so the actual bridge will most likely need a TCP listener *inside* the sandbox's own loopback (which is available even with `--unshare-net`, since `lo` inside an isolated netns is still a private loopback) forwarding to the host-side Unix socket, rather than the CLI dialing the socket directly. Provider-specific broker and observation paths remain fully unverified D5-D7 work; this packet makes no claim about D5's budget beyond "the bridge mechanism to build on exists" — no schedule certainty is implied.
 
-## Named limitations (explicit, not blocking D1's PASS)
+## Named limitations (the two D2 blockers, plus host-specific and probe-scope notes)
 
 1. **D2 entry gate — daemon cgroup ancestry and scope-management authority unconfirmed**: cgroup delegation was verified for the interactive `congvc` user-manager session only, not for the daemon process itself. D2 must confirm the daemon's own cgroup ancestry and its authority to create/manage a delegated scope before this path may be relied on for isolation admission. Not resolved by this packet — the interactive finding is a candidate mechanism, not settled guidance.
 2. **Provider base-URL hooks accept URLs, not raw Unix-socket paths** — the bridge will need an in-sandbox TCP loopback listener forwarding to the host Unix socket, not a direct CLI-to-socket connection. Untested against either CLI's actual HTTP client (whether it rejects non-http(s) schemes, follows redirects, etc.). The `curl`/static-URL-hook test proved bridge mechanics only; Claude/Codex provider-specific broker and observation paths remain unverified D5-D7 work.
 3. **Effective namespace permission was host-specific**: verified on this X99 host only; AppArmor policy differences on other hosts (if this capability is ever deployed beyond the current daemon host) are unverified.
 4. **No credentialed/live-model probe was run** — per Terra's explicit prohibition. All broker tests used fake local servers only.
 
-## Revised estimate
+## Result against the approved D1 exit
 
-D1's own exit criteria (an authorized, working namespace/cgroup path verified for the interactive host/user-manager context, plus a bridge mechanism smoke-tested for both providers' configuration hooks against fake endpoints) are **met**. Two items carry into D2+ as entry gates rather than closed questions: daemon cgroup ancestry/scope-management authority (limitation 1), and provider-specific broker/observation integration (limitation 2) — the latter is unverified D5-D7 work, not a small refinement with a known-safe budget.
+The approved plan's D1 exit requires a working, authorized namespace/cgroup path **and** a tested broker/observation path for each provider (`CHE-332-DAEMON-SANDBOX-PLAN.md:129,135`). That exit is **not met**.
 
-No schedule certainty is claimed beyond D1's own scope. D2-D10 estimate stands at 20 hours as previously stated; this packet does not assert that figure is unaffected by the two open gates above — D2 and D5 owners should re-confirm their own budgets once the gated items are checked. The recorder-reconciliation risk called out in the original plan does not apply at the exact re-pinned head `e7b2882bb8661c57071202fa11a4d8109ccaf29c` (see Re-pin result above), but D2 must re-confirm this at its own build head rather than treat it as permanently closed.
+This packet returns useful feasibility evidence, not a closed exit:
+
+- Namespace isolation (network/filesystem/PID) is verified working, unprivileged, on this host.
+- Cgroup delegation is verified working, but only for the interactive `congvc` user-manager session — the daemon's own cgroup ancestry and scope-management authority are unknown (limitation 1, D2 entry gate).
+- A generic Unix-socket-to-HTTP bridge is verified working against fake endpoints — but neither the Claude CLI nor the Codex CLI was invoked, so no provider-specific broker or observation path has been tested (limitation 2, unverified D5-D7 work).
+
+Because both prerequisites the approved exit depends on — daemon cgroup authority and provider-specific broker/observation paths — remain untested, **this packet cannot admit D2.** It records the two unresolved prerequisites and the resulting blocker; it does not redefine the approved D1 exit criteria, and no new approval is implied. Closing the exit requires either testing those two items directly, or an explicit decision from Cheese/Terra to accept a narrower exit before D2 proceeds.
+
+D2-D10 estimate stands at 20 hours as previously stated; this packet does not assert that figure is unaffected by the two open prerequisites above — D2 and D5 owners must re-confirm their own budgets once those items are checked. The recorder-reconciliation risk called out in the original plan does not apply at the exact re-pinned head `e7b2882bb8661c57071202fa11a4d8109ccaf29c` (see Re-pin result above), but D2 must re-confirm this at its own build head rather than treat it as permanently closed.
 
 ## What this packet does not do
 
