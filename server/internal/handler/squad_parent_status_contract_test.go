@@ -83,6 +83,18 @@ func TestSquadAssignedLeaderCanWrapUpOnCommentTurn(t *testing.T) {
 	if !strings.Contains(combined, "multica issue status <issue-id> in_review") {
 		t.Error("combined instructions never tell the owning leader how to wrap up")
 	}
+
+	// The owning leader's `done` grant (squadParentStatusOwned) must survive
+	// composition too: the runtime brief's "`done` stays human" sentence is a
+	// default, not an override, and must not silently cancel a grant that
+	// was authored specifically to give the owning leader a `done` path.
+	if !strings.Contains(combined, "multica issue status <issue-id> done") {
+		t.Error("combined instructions never tell the owning leader how to reach done")
+	}
+	if !strings.Contains(brief, "Squad Operating Protocol grants you status ownership") {
+		t.Error("leader runtime brief's done-stays-human default must carve out the " +
+			"Squad Operating Protocol's done grant, or the two halves contradict")
+	}
 }
 
 // TestGuestLeaderCannotChangeStatusOnCommentTurn is the other half of the
