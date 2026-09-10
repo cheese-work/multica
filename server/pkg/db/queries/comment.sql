@@ -718,7 +718,7 @@ WHERE comment.id IN (SELECT id FROM descendants)
 -- regardless of created_at/commit-time skew. pg_advisory_xact_lock (not
 -- pg_try_) so a concurrent reply queues behind an in-flight resolve instead
 -- of failing outright — the reply is rare and cheap to make wait briefly.
-SELECT pg_advisory_xact_lock(hashtextextended($1::uuid::text || ':comment_thread', 0));
+SELECT pg_advisory_xact_lock(hashtextextended(sqlc.arg(thread_root_id)::uuid::text || ':comment_thread', 0));
 
 -- name: UnresolveComment :one
 -- Idempotent: a no-op clear (already unresolved) just returns the row.
