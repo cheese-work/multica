@@ -1287,8 +1287,16 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte, deliv
 	}
 	insts, err := h.Queries.ListGitHubInstallationsByInstallationID(ctx, p.Installation.ID)
 	if err != nil {
-		slog.Warn("github: lookup installation failed", "err", err)
-		return nil
+		// CHE-374 review round 2, item 5: a real DB error here (as opposed to
+		// "no installation row exists", which is len(insts)==0 below and stays
+		// a silent drop) is transient and indistinguishable from a fan-out
+		// write failure elsewhere in this function — those already return the
+		// error so the caller surfaces 5xx and GitHub redelivers (see the T1
+		// comment at the call site). Warn-and-swallow here used to make a
+		// blip in this one lookup silently drop the whole event with a 202,
+		// which is exactly the outcome T1 exists to prevent for every other
+		// failure in this path.
+		return fmt.Errorf("list installations by installation id: %w", err)
 	}
 	if len(insts) == 0 {
 		// Webhook from an installation we never wired up — nothing we
