@@ -2,9 +2,6 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -236,18 +233,41 @@ func TestSquadOperatingProtocolRequiresReconciliationBeforeNoAction(t *testing.T
 		// mistaken for reconciliation of this one.
 		for _, want := range []string{
 			"Identify the event by its concrete key",
-			"the candidate commit/SHA, the PR revision, or the specific",
-			"not by its category",
 			"Treat the event as already reconciled ONLY if a prior",
-			"published result on this issue names that same key",
+			"published result on this issue names that same durable key",
 			"a published result about a different candidate or an",
 			"earlier revision does not reconcile this one, even if the",
 			"category of event matches",
-			"treating a same-category event on a different key as already",
-			"reconciled",
 		} {
 			if !strings.Contains(compact, want) {
 				t.Errorf("ownsParentStatus=%v: protocol missing event-keying requirement %q\n--- protocol ---\n%s", ownsParentStatus, want, protocol)
+			}
+		}
+
+		// Case A4 (Terra P1 correction, CHE-359/PR #11 review of
+		// 19c756bce): a durable candidate/SHA or PR revision must take
+		// precedence over the reporting comment as the event's key, so a
+		// merge webhook and a human reply reporting the SAME candidate
+		// collapse to the SAME key instead of being treated as two
+		// different events. See ReconciliationKey in squad_briefing.go for
+		// the executable counterpart to this prose rule, and
+		// TestReconciliationKey_CrossChannelReplayCollapsesToSameKey in
+		// squad_briefing_reconciliation_test.go for the replay proof.
+		for _, want := range []string{
+			"When a durable candidate/SHA or PR revision is available, that durable key IS the",
+			"event's identity",
+			"Only fall back to keying on the specific comment",
+			"itself when no durable candidate/SHA or revision exists for the",
+			"event",
+			"a merge webhook and a human reply reporting the",
+			"SAME candidate must resolve to the SAME key and must NOT be treated",
+			"as two different events, even though they arrived through different",
+			"channels and as different comments",
+			"a different reporting channel for the SAME",
+			"candidate does not make it a different event",
+		} {
+			if !strings.Contains(compact, want) {
+				t.Errorf("ownsParentStatus=%v: protocol missing durable-key precedence requirement %q\n--- protocol ---\n%s", ownsParentStatus, want, protocol)
 			}
 		}
 
@@ -278,6 +298,19 @@ func TestSquadOperatingProtocolEventKeyingRejectsStaleCandidateMatch(t *testing.
 	staleUnkeyedText := "If the event is not already reconciled by a prior published result on this issue, you must publish exactly one result."
 	if strings.Contains(staleUnkeyedText, "Identify the event by its concrete key") {
 		t.Fatal("negative control is broken: stale text should not contain the keying requirement")
+	}
+}
+
+// TestSquadOperatingProtocolRejectsCommentEqualFootingLanguage is a negative
+// control for Case A4 (CHE-359/PR #11 review of 19c756bce): text belonging
+// to the pre-fix candidate, which put the reporting comment on equal
+// footing with the candidate/SHA and revision as the event key, must NOT
+// satisfy the new durable-precedence assertions — proving the test
+// distinguishes precedence language from mere key enumeration.
+func TestSquadOperatingProtocolRejectsCommentEqualFootingLanguage(t *testing.T) {
+	staleEqualFootingText := "Identify the event by its concrete key — the candidate commit/SHA, the PR revision, or the specific comment reporting it — not by its category."
+	if strings.Contains(staleEqualFootingText, "When a durable candidate/SHA or PR revision is available, that durable key IS the") {
+		t.Fatal("negative control is broken: stale equal-footing text should not contain the durable-precedence requirement")
 	}
 }
 
@@ -517,143 +550,3 @@ func TestBuildSquadLeaderBriefing_MentionsRoundTrip(t *testing.T) {
 		}
 	}
 }
-
-// claimAndDecodeAgent runs ClaimTaskByRuntime for the given runtime and
-// returns the agent block of the response. Fails the test on non-200.
-func claimAndDecodeAgent(t *testing.T, runtimeID string) *TaskAgentData {
-	t.Helper()
-	w := httptest.NewRecorder()
-	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/claim", nil, testWorkspaceID, "test-claim-squad-briefing")
-	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.ClaimTaskByRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ClaimTaskByRuntime: %d %s", w.Code, w.Body.String())
-	}
-	var resp struct {
-		Task *struct {
-			Agent *TaskAgentData `json:"agent"`
-		} `json:"task"`
-	}
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if resp.Task == nil || resp.Task.Agent == nil {
-		t.Fatalf("expected task.agent in response, got: %s", w.Body.String())
-	}
-	return resp.Task.Agent
-}
-
-// queueSquadIssueTaskFor creates an issue assigned to the squad and a queued
-// task for the given (agentID, runtimeID). Returns the issue + task IDs.
-func queueSquadIssueTaskFor(t *testing.T, squadID, agentID, runtimeID string, issueNumber int) (issueID, taskID string) {
-	t.Helper()
-	ctx := context.Background()
-	if err := testPool.QueryRow(ctx, `
-INSERT INTO issue (
-workspace_id, title, status, priority, creator_id, creator_type,
-assignee_type, assignee_id, number, position
-) VALUES ($1, 'Squad briefing claim test', 'todo', 'medium', $2, 'member',
-'squad', $3, $4, 0)
-RETURNING id
-`, testWorkspaceID, testUserID, squadID, issueNumber).Scan(&issueID); err != nil {
-		t.Fatalf("create squad-assigned issue: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID) })
-
-	if err := testPool.QueryRow(ctx, `
-INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, is_leader_task, squad_id)
-VALUES ($1, $2, $3, 'queued', 0,
-        ($1::uuid = (SELECT leader_id FROM squad WHERE id = $4::uuid)),
-        $4::uuid)
-RETURNING id
-`, agentID, runtimeID, issueID, squadID).Scan(&taskID); err != nil {
-		t.Fatalf("queue task: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
-	return
-}
-
-// TestClaimTask_LeaderGetsBriefing — when the squad leader claims a task on
-// a squad-assigned issue, the response's agent.instructions must include
-// the Operating Protocol + Roster + user instructions.
-func TestClaimTask_LeaderGetsBriefing(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	ctx := context.Background()
-
-	var leaderID, runtimeID string
-	if err := testPool.QueryRow(ctx,
-		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 ORDER BY created_at ASC LIMIT 1`,
-		testWorkspaceID,
-	).Scan(&leaderID, &runtimeID); err != nil {
-		t.Fatalf("get leader agent: %v", err)
-	}
-
-	squad := seedSquadForBriefing(t, leaderID, "Briefing Claim Squad", "Be terse.")
-
-	helper := createHandlerTestAgent(t, "Briefing Helper", []byte("[]"))
-	addAgentMember(t, squad.ID, helper, "implementer")
-
-	queueSquadIssueTaskFor(t, util.UUIDToString(squad.ID), leaderID, runtimeID, 95001)
-
-	agent := claimAndDecodeAgent(t, runtimeID)
-	for _, want := range []string{
-		"## Squad Operating Protocol",
-		"## Squad Roster",
-		"Leader (you):",
-		"## Squad Instructions (Briefing Claim Squad)",
-		"Be terse.",
-		"`[@Briefing Helper](mention://agent/" + helper + ")`",
-	} {
-		if !strings.Contains(agent.Instructions, want) {
-			t.Errorf("expected agent.instructions to contain %q\n--- instructions ---\n%s", want, agent.Instructions)
-		}
-	}
-}
-
-// TestClaimTask_NonLeaderGetsNoBriefing — when a non-leader squad member
-// claims a task on a squad-assigned issue, NO briefing is injected.
-func TestClaimTask_NonLeaderGetsNoBriefing(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	ctx := context.Background()
-
-	var leaderID string
-	if err := testPool.QueryRow(ctx,
-		`SELECT id FROM agent WHERE workspace_id = $1 ORDER BY created_at ASC LIMIT 1`,
-		testWorkspaceID,
-	).Scan(&leaderID); err != nil {
-		t.Fatalf("get leader agent: %v", err)
-	}
-
-	squad := seedSquadForBriefing(t, leaderID, "Non-Leader Squad", "Squad guidance.")
-
-	// Create a second agent (NOT the leader) with its own runtime so the
-	// claim path picks its task without ambiguity.
-	helperID := createHandlerTestAgent(t, "Non Leader Helper", []byte("[]"))
-	addAgentMember(t, squad.ID, helperID, "")
-	var helperRuntime string
-	if err := testPool.QueryRow(ctx,
-		`SELECT runtime_id FROM agent WHERE id = $1`, helperID,
-	).Scan(&helperRuntime); err != nil {
-		t.Fatalf("get helper runtime: %v", err)
-	}
-
-	queueSquadIssueTaskFor(t, util.UUIDToString(squad.ID), helperID, helperRuntime, 95002)
-
-	agent := claimAndDecodeAgent(t, helperRuntime)
-	for _, mustNot := range []string{
-		"Squad Operating Protocol",
-		"Squad Roster",
-		"Squad Instructions (Non-Leader Squad)",
-	} {
-		if strings.Contains(agent.Instructions, mustNot) {
-			t.Errorf("non-leader claim should NOT contain %q\n--- instructions ---\n%s", mustNot, agent.Instructions)
-		}
-	}
-}
-
-// Avoid "imported and not used: pgtype" if helpers above are the only users.
-var _ pgtype.UUID

@@ -86,18 +86,28 @@ Your responsibilities, in order:
    the human reporter, or close the loop.
    - **First check: is this trigger a substantive merge, acceptance, or
      blocker-resolution event, and is it the FIRST time this issue sees
-     it?** Identify the event by its concrete key — the candidate
-     commit/SHA, the PR revision, or the specific comment reporting it —
-     not by its category. If yes, before you may even consider
-     ` + "`" + `no_action` + "`" + `, you must: read the current comment history, read
+     it?** Identify the event by its concrete key. When a durable
+     candidate/SHA or PR revision is available, that durable key IS the
+     event's identity — use it even when this trigger arrived as a
+     reporting comment (a human reply, a merge webhook, a status-check
+     notification). Only fall back to keying on the specific comment
+     itself when no durable candidate/SHA or revision exists for the
+     event. This means a merge webhook and a human reply reporting the
+     SAME candidate must resolve to the SAME key and must NOT be treated
+     as two different events, even though they arrived through different
+     channels and as different comments. If yes, before you may even
+     consider ` + "`" + `no_action` + "`" + `, you must: read the current comment history, read
      candidate/check disposition, read the issue's current status, and
      explicitly decide whether a remaining owner/action exists. Treat the
      event as already reconciled ONLY if a prior published result on this
-     issue names that same key (the same candidate/SHA, revision, or
+     issue names that same durable key (the same candidate/SHA or
+     revision — or, only when no durable key exists, the same reporting
      comment) — a published result about a different candidate or an
      earlier revision does not reconcile this one, even if the category
-     of event matches. If this event's key is not already reconciled by a
-     matching prior published result, you must publish exactly one result
+     of event matches, and a different reporting channel for the SAME
+     candidate does not make it a different event. If this event's key is
+     not already reconciled by a matching prior published result, you
+     must publish exactly one result
      — a comment and/or a status change — before ending the turn, AND
      that published result must explicitly state the remaining
      owner/action, or explicitly state that none remains. A status change
@@ -205,6 +215,43 @@ func squadOperatingProtocolFor(ownsIssueStatus bool) string {
 		status = squadParentStatusOwned
 	}
 	return squadOperatingProtocolHeader + "\n" + status + "\n\n" + squadOperatingProtocolHardRules
+}
+
+// ReconciliationEvent describes one trigger the squad leader protocol above
+// (responsibility 5) asks the leader to key and reconcile: a merge, an
+// acceptance, or a blocker resolution reported through some channel
+// (a webhook-originated comment, a human reply, a status check).
+type ReconciliationEvent struct {
+	// CandidateSHA is the durable commit/candidate identity for the event,
+	// when known. Takes precedence over PRRevision and ReportingCommentID.
+	CandidateSHA string
+	// PRRevision is the durable PR revision identity for the event, when
+	// known and CandidateSHA is not. Takes precedence over
+	// ReportingCommentID.
+	PRRevision string
+	// ReportingCommentID is the id of the comment that reported this event.
+	// Used as the key ONLY when neither CandidateSHA nor PRRevision is
+	// available, per decision PR #35 Case B
+	// (multica-dotfiles docs/cheese-work/INCIDENT-CHE-329-ROUTING.md).
+	ReportingCommentID string
+}
+
+// ReconciliationKey returns the identity the squad leader protocol must use
+// to decide whether an event is already reconciled (responsibility 5 above).
+// A durable candidate/SHA or PR revision always takes precedence over the
+// comment that happened to report the event — so a merge webhook and a
+// human reply describing the SAME candidate collapse to the SAME key, even
+// though they are different comments on different channels. Only when
+// neither durable identity is known does the reporting comment become the
+// key, since it is then the only identity available.
+func ReconciliationKey(ev ReconciliationEvent) string {
+	if ev.CandidateSHA != "" {
+		return "sha:" + ev.CandidateSHA
+	}
+	if ev.PRRevision != "" {
+		return "revision:" + ev.PRRevision
+	}
+	return "comment:" + ev.ReportingCommentID
 }
 
 // buildSquadLeaderBriefing composes the full system briefing appended to a
