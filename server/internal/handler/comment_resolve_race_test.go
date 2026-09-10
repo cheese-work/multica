@@ -40,11 +40,13 @@ type pauseResolveLockTxStarter struct {
 	inner txStarter
 	// execMarker, if non-empty, pauses after the first Exec whose SQL contains
 	// it. queryRowMarker, if non-empty, pauses after the first QueryRow whose
-	// SQL contains it. At most one should be set per test.
-	execMarker     string
-	queryRowMarker string
-	reached        chan<- struct{}
-	release        <-chan struct{}
+	// SQL contains it. pauseAfterCommit, if true, pauses after Commit returns
+	// instead. Exactly one of these should be set per test.
+	execMarker       string
+	queryRowMarker   string
+	pauseAfterCommit bool
+	reached          chan<- struct{}
+	release          <-chan struct{}
 }
 
 func (s pauseResolveLockTxStarter) Begin(ctx context.Context) (pgx.Tx, error) {
@@ -53,11 +55,12 @@ func (s pauseResolveLockTxStarter) Begin(ctx context.Context) (pgx.Tx, error) {
 		return nil, err
 	}
 	return &pausingTx{
-		Tx:             tx,
-		execMarker:     s.execMarker,
-		queryRowMarker: s.queryRowMarker,
-		reached:        s.reached,
-		release:        s.release,
+		Tx:               tx,
+		execMarker:       s.execMarker,
+		queryRowMarker:   s.queryRowMarker,
+		pauseAfterCommit: s.pauseAfterCommit,
+		reached:          s.reached,
+		release:          s.release,
 	}, nil
 }
 
@@ -65,8 +68,15 @@ type pausingTx struct {
 	pgx.Tx
 	execMarker     string
 	queryRowMarker string
-	reached        chan<- struct{}
-	release        <-chan struct{}
+	// pauseAfterCommit, when true, pauses right after Commit returns — i.e.
+	// once the transaction has genuinely committed and any lock it held has
+	// released, but before the caller's next line of code runs. This is the
+	// exact gap the Round 4 design left open: CreateComment's tx.Commit
+	// succeeded, but the separate post-commit AutoUnresolveThreadOnReply call
+	// had not run yet, so anything landing in that gap raced against it.
+	pauseAfterCommit bool
+	reached          chan<- struct{}
+	release          <-chan struct{}
 }
 
 func (tx *pausingTx) pause(ctx context.Context) {
@@ -88,6 +98,17 @@ func (tx *pausingTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.
 		tx.pause(ctx)
 	}
 	return res, err
+}
+
+// Commit pauses AFTER the underlying commit has actually completed, when
+// pauseAfterCommit is set — see the field doc on pausingTx for why that gap
+// specifically (post-commit, pre-next-line) is what this exists to probe.
+func (tx *pausingTx) Commit(ctx context.Context) error {
+	err := tx.Tx.Commit(ctx)
+	if tx.pauseAfterCommit && err == nil {
+		tx.pause(ctx)
+	}
+	return err
 }
 
 // signalingTxStarter/signalingTx give the OTHER side of a lock-contention
@@ -586,6 +607,307 @@ func TestResolveComment_KnownAsOfAtCurrentStateSucceeds(t *testing.T) {
 	if !commentResolved(t, fx.Root1) {
 		t.Fatalf("root1 should be resolved when known_as_of matches current thread state")
 	}
+}
+
+// TestCreateComment_ReplyResolutionClearIsAtomicWithInsert is the Round 5
+// commit-order regression for the in-transaction unresolve. The Round 4
+// design cleared a resolved thread via TaskService.AutoUnresolveThreadOnReply
+// AFTER the reply's own transaction had already committed, through a bare
+// *db.Queries handle with no lock held — creating a window where the reply
+// was visible (committed) but the thread still read as resolved, and worse,
+// a concurrent ResolveComment could acquire the lock and commit a brand new,
+// legitimate resolution inside that exact window, which the stale post-commit
+// call would then incorrectly clear.
+//
+// commentguard.LockThreadForReplyAndClearResolution closes this by moving the
+// clear into the SAME transaction that holds LockCommentThread and inserts
+// the reply, before commit. That makes the race structurally impossible: no
+// other transaction can observe the thread's resolution state while this one
+// holds the advisory lock, and the clear commits atomically with the reply
+// row itself — so there is no instant in time where the reply exists but the
+// resolution hasn't cleared yet, and no instant where a fresh resolve could be
+// wrongly clobbered by a stale post-commit write (there is no post-commit
+// write left to run).
+//
+// This test proves atomicity directly: it pauses the reply's transaction
+// AFTER CreateComment's insert has executed (so the reply row and the
+// resolution clear have both already run inside the still-open transaction,
+// pre-commit) and, while paused, confirms from a SEPARATE connection that
+// NEITHER the reply nor the clear is visible yet (correct READ COMMITTED
+// isolation — nothing commits until the transaction ends). Then it releases
+// the reply to commit and confirms BOTH become visible together in the same
+// instant a caller can first observe either — there is no window where one
+// is visible without the other, because they always commit as one write.
+func TestCreateComment_ReplyResolutionClearIsAtomicWithInsert(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	fx := newResolveTestFixture(t)
+	ctx := context.Background()
+
+	resolveCommentHTTP(t, fx.Root1)
+	if !commentResolved(t, fx.Root1) {
+		t.Fatalf("root1 must be resolved before the reply lands")
+	}
+
+	reached := make(chan struct{}, 1)
+	release := make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+
+	// createCommentInsertSQLMarker pauses AFTER CreateComment's own insert has
+	// executed — later than lockCommentThreadSQLMarker — so both the insert
+	// and the resolution clear that precedes it in the same handler code path
+	// have already run inside the transaction by the time this test inspects
+	// committed state from another connection. CreateComment is a sqlc :one
+	// query, issued via QueryRow (not Exec), so this pauses on the matching
+	// QueryRow+Scan the same way countThreadCommentsSinceSQLMarker does above.
+	const createCommentInsertSQLMarker = "INSERT INTO comment"
+	h := *testHandler
+	h.TxStarter = pauseResolveLockTxStarter{
+		inner:          testHandler.TxStarter,
+		queryRowMarker: createCommentInsertSQLMarker,
+		reached:        reached,
+		release:        release,
+	}
+
+	replyDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		replyDone <- createReplyComment(&h, fx.IssueID, fx.Root1, "atomic clear reply")
+	}()
+
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reply did not reach the post-insert pause point")
+	}
+
+	// Still inside the paused, uncommitted reply transaction: neither the new
+	// reply row nor the resolution clear may be visible to another connection
+	// yet (READ COMMITTED). If either leaked early, the two writes would not
+	// be atomic with each other.
+	var replyVisibleBeforeCommit bool
+	if err := testPool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM comment WHERE issue_id = $1 AND content = 'atomic clear reply')`, fx.IssueID).Scan(&replyVisibleBeforeCommit); err != nil {
+		t.Fatalf("check reply not yet visible: %v", err)
+	}
+	if replyVisibleBeforeCommit {
+		t.Fatalf("reply row visible to another connection before its transaction committed")
+	}
+	if !commentResolved(t, fx.Root1) {
+		t.Fatalf("root1's resolution cleared before the reply transaction committed — clear and insert are not atomic")
+	}
+
+	close(release)
+	replyResp := <-replyDone
+	if replyResp.Code != http.StatusCreated {
+		t.Fatalf("reply = %d: %s, want 201", replyResp.Code, replyResp.Body.String())
+	}
+
+	// Now that the single transaction has committed, both the reply and the
+	// clear must be visible together.
+	var replyVisibleAfterCommit bool
+	if err := testPool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM comment WHERE issue_id = $1 AND content = 'atomic clear reply')`, fx.IssueID).Scan(&replyVisibleAfterCommit); err != nil {
+		t.Fatalf("check reply visible after commit: %v", err)
+	}
+	if !replyVisibleAfterCommit {
+		t.Fatalf("reply row must be visible once its transaction committed")
+	}
+	if commentResolved(t, fx.Root1) {
+		t.Fatalf("root1 must read as unresolved the instant the reply that reopened it becomes visible — clear and insert are not atomic")
+	}
+}
+
+// TestCreateComment_NoStaleUnresolveClobbersLaterResolve reproduces the exact
+// commit-order violation Sol found in the Round 4 design and proves it is
+// structurally impossible now: the Round 4 design cleared a resolved thread
+// via a SEPARATE post-commit call (TaskService.AutoUnresolveThreadOnReply),
+// issued through an unlocked *db.Queries handle AFTER CreateComment's own
+// transaction had already committed and released the thread lock. That left
+// a real gap — after the reply's commit, before the post-commit unresolve ran
+// — during which a fresh, unrelated ResolveComment call could acquire the now
+// -free lock and commit a brand new, legitimate resolution. The stale
+// post-commit call, still holding a reference to the OLD (now superseded)
+// resolved comment, would then run and incorrectly clear that later
+// resolution — a comment the reply had nothing to do with.
+//
+// commentguard.LockThreadForReplyAndClearResolution removes the separate call
+// entirely: the clear happens inside the SAME transaction as the insert,
+// before commit, so by the time the lock is available for anyone else to
+// acquire, there is no more work left for the reply path to do — nothing can
+// land in "the gap" because the gap no longer exists.
+//
+// This test proves it by using pauseAfterCommit to stop CreateComment's own
+// goroutine in the exact gap that used to matter — right after its
+// transaction commits (and its lock releases), before the handler proceeds to
+// its post-commit publish step — then, while paused there, drives a
+// completely independent ResolveComment call against root1 itself (the SAME
+// comment id the old post-commit call had captured as "parent" before the
+// pause). That is deliberate: UnresolveComment clears a resolution
+// unconditionally BY ID, not "whatever the thread's current resolution is" —
+// so the old bug only reproduces when the later, legitimate resolution lands
+// on the exact id the stale call captured. Targeting a different comment
+// (e.g. a second reply) would never have exercised the bug at all. That
+// independent resolve must succeed and must NOT be clobbered once the first
+// reply's paused goroutine is released to finish.
+func TestCreateComment_NoStaleUnresolveClobbersLaterResolve(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	fx := newResolveTestFixture(t)
+
+	resolveCommentHTTP(t, fx.Root1)
+	if !commentResolved(t, fx.Root1) {
+		t.Fatalf("root1 must be resolved before the first reply lands")
+	}
+
+	reached := make(chan struct{}, 1)
+	release := make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+
+	h := *testHandler
+	h.TxStarter = pauseResolveLockTxStarter{
+		inner:            testHandler.TxStarter,
+		pauseAfterCommit: true,
+		reached:          reached,
+		release:          release,
+	}
+
+	replyDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		replyDone <- createReplyComment(&h, fx.IssueID, fx.Root1, "first reply reopens root1")
+	}()
+
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first reply did not reach the post-commit pause point")
+	}
+
+	// The first reply's transaction has committed (root1 is already reopened,
+	// atomically, by the in-tx clear) and released the thread lock — but the
+	// handler goroutine itself is paused before doing anything further. This
+	// is exactly the window a stale post-commit call used to run in. Land an
+	// entirely independent resolve now, against root1 — it must be free to
+	// acquire the lock (nothing is holding it) and commit a fresh resolution.
+	// known_as_of must be at least as new as the first reply's own
+	// created_at — it already committed and is the thread's true latest
+	// state — or the guard would reject this as stale for an unrelated
+	// reason (an older known_as_of), not the bug this test targets.
+	upToDateKnownAsOf := commentCreatedAt(t, replyCommentID(t, fx.IssueID, "first reply reopens root1"))
+	freshResolveResp := resolveCommentWithKnownAsOf(testHandler, fx.Root1, &upToDateKnownAsOf)
+	if freshResolveResp.Code != http.StatusOK {
+		t.Fatalf("independent resolve landing in the post-commit gap = %d: %s, want 200 (lock must already be free)",
+			freshResolveResp.Code, freshResolveResp.Body.String())
+	}
+	if !commentResolved(t, fx.Root1) {
+		t.Fatalf("root1 must be resolved by the independent resolve that landed in the gap")
+	}
+
+	// Release the first reply's paused goroutine to finish. In the Round 4
+	// design this is the moment a stale AutoUnresolveThreadOnReply call would
+	// have fired against the OLD root1 row it captured before the pause,
+	// unconditionally clearing root1 by id — clobbering the later, legitimate
+	// resolution this test just committed, even though that resolution has
+	// nothing to do with the first reply.
+	close(release)
+	replyResp := <-replyDone
+	if replyResp.Code != http.StatusCreated {
+		t.Fatalf("first reply = %d: %s, want 201", replyResp.Code, replyResp.Body.String())
+	}
+
+	if !commentResolved(t, fx.Root1) {
+		t.Fatalf("root1's later, independent resolution must survive the first reply's post-commit completion — it must never be clobbered by a stale post-commit unresolve targeting the same comment id")
+	}
+}
+
+// TestResolveComment_AfterReplyCommitsGuardSeesNoStaleResolution is the second
+// Round 5 commit-order regression: it proves that once a reply's transaction
+// has committed (inserting the reply AND clearing any resolution atomically,
+// per LockThreadForReplyAndClearResolution), a SUBSEQUENT ResolveComment call
+// using known_as_of observes the reply through
+// CountThreadCommentsSince/the guard exactly as any other post-reply resolve
+// attempt would, and finds no stale resolved_at left over from before the
+// reply landed. This is the read side of the fix: proving there is no gap
+// between "the reply committed" and "the thread reads as fully caught up,
+// with no leftover resolution artifact from the old post-commit design."
+func TestResolveComment_AfterReplyCommitsGuardSeesNoStaleResolution(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	fx := newResolveTestFixture(t)
+
+	resolveCommentHTTP(t, fx.Root1)
+	if !commentResolved(t, fx.Root1) {
+		t.Fatalf("root1 must be resolved before the reply lands")
+	}
+	preReplyKnownAsOf := commentCreatedAt(t, fx.B1)
+
+	replyResp := createReplyComment(testHandler, fx.IssueID, fx.Root1, "post-resolve reply")
+	if replyResp.Code != http.StatusCreated {
+		t.Fatalf("reply = %d: %s, want 201", replyResp.Code, replyResp.Body.String())
+	}
+	if commentResolved(t, fx.Root1) {
+		t.Fatalf("root1 must already read as unresolved immediately after the reply's transaction committed")
+	}
+
+	// A resolve using a known_as_of that predates the reply must be rejected
+	// as stale — the guard must see the reply via CountThreadCommentsSince,
+	// proving the committed reply (and its atomic clear) are fully visible to
+	// a fresh transaction with no lag and no leftover resolution state to
+	// confuse the guard's count.
+	staleResp := resolveCommentWithKnownAsOf(testHandler, fx.Root1, &preReplyKnownAsOf)
+	if staleResp.Code != http.StatusConflict {
+		t.Fatalf("resolve with known_as_of predating the committed reply = %d: %s, want %d (thread_changed conflict)",
+			staleResp.Code, staleResp.Body.String(), http.StatusConflict)
+	}
+	if commentResolved(t, fx.Root1) {
+		t.Fatalf("root1 must remain unresolved after a rejected stale resolve — no stale resolution should have survived or been reintroduced")
+	}
+
+	// A fresh resolve using an up-to-date known_as_of (as of the reply) must
+	// succeed normally and must not find any leftover resolved state to
+	// conflict with — a clean, single new resolution, not an artifact of the
+	// old resolved comment the reply reopened.
+	freshKnownAsOf := commentCreatedAt(t, fx.Root1)
+	postReplyResp := resolveCommentWithKnownAsOf(testHandler, fx.Root1, &freshKnownAsOf)
+	if postReplyResp.Code != http.StatusConflict {
+		t.Fatalf("resolve with known_as_of predating the reply = %d: %s, want %d (thread_changed conflict, reply is newer)",
+			postReplyResp.Code, postReplyResp.Body.String(), http.StatusConflict)
+	}
+
+	replyKnownAsOf := commentCreatedAt(t, replyCommentID(t, fx.IssueID, "post-resolve reply"))
+	upToDateResp := resolveCommentWithKnownAsOf(testHandler, fx.Root1, &replyKnownAsOf)
+	if upToDateResp.Code != http.StatusOK {
+		t.Fatalf("resolve with known_as_of matching the reply = %d: %s, want 200", upToDateResp.Code, upToDateResp.Body.String())
+	}
+	if !commentResolved(t, fx.Root1) {
+		t.Fatalf("root1 should be resolved by the up-to-date resolve")
+	}
+}
+
+// replyCommentID looks up a comment's id by issue and content, for tests that
+// need the id of a reply they created through the HTTP handler rather than a
+// direct insert.
+func replyCommentID(t *testing.T, issueID, content string) string {
+	t.Helper()
+	var id string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT id FROM comment WHERE issue_id = $1 AND content = $2`, issueID, content,
+	).Scan(&id); err != nil {
+		t.Fatalf("look up comment id for %q: %v", content, err)
+	}
+	return id
 }
 
 func commentCreatedAt(t *testing.T, id string) time.Time {
