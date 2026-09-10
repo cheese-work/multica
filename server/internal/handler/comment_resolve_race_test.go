@@ -90,6 +90,47 @@ func (tx *pausingTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.
 	return res, err
 }
 
+// signalingTxStarter/signalingTx give the OTHER side of a lock-contention
+// test (the reply, not the resolve) a positive "I am about to attempt this
+// Exec" signal instead of relying on a sleep to infer it. Unlike
+// pauseResolveLockTxStarter, this wrapper never blocks the statement it
+// matches — it only sends (non-blocking, via a buffered channel) right BEFORE
+// issuing the Exec, so the assertion that "the reply hasn't committed" can
+// wait on proof the reply goroutine has actually reached its lock attempt
+// rather than guessing from a fixed delay. A slow/unscheduled goroutine (GC
+// pause, CI runner contention) can otherwise still be sitting before that
+// Exec when a sleep-based assertion fires — a false pass that proves nothing
+// about lock contention.
+type signalingTxStarter struct {
+	inner      txStarter
+	execMarker string
+	ready      chan<- struct{}
+}
+
+func (s signalingTxStarter) Begin(ctx context.Context) (pgx.Tx, error) {
+	tx, err := s.inner.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &signalingTx{Tx: tx, execMarker: s.execMarker, ready: s.ready}, nil
+}
+
+type signalingTx struct {
+	pgx.Tx
+	execMarker string
+	ready      chan<- struct{}
+}
+
+func (tx *signalingTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	if tx.execMarker != "" && strings.Contains(sql, tx.execMarker) {
+		select {
+		case tx.ready <- struct{}{}:
+		default:
+		}
+	}
+	return tx.Tx.Exec(ctx, sql, args...)
+}
+
 func (tx *pausingTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	row := tx.Tx.QueryRow(ctx, sql, args...)
 	if tx.queryRowMarker != "" && strings.Contains(sql, tx.queryRowMarker) {
@@ -206,14 +247,29 @@ func TestResolveComment_LockOrderedReplyLandsAfterResolveCommits(t *testing.T) {
 		t.Fatal("resolve did not reach the LockCommentThread pause point")
 	}
 
-	// While the resolve holds the thread lock, fire the concurrent reply on the
-	// SAME handler (unwrapped: only the resolve's tx is paused) using the real
-	// CreateComment path. It must block on the identical advisory lock rather
-	// than completing before the resolve does.
+	// While the resolve holds the thread lock, fire the concurrent reply,
+	// wrapped so it signals replyReady the instant it is about to issue its
+	// own LockCommentThread Exec — a positive proof the reply goroutine
+	// actually reached its lock attempt, not an inference from a fixed
+	// sleep. It must block on the identical advisory lock rather than
+	// completing before the resolve does.
+	replyReady := make(chan struct{}, 1)
+	replyHandler := *testHandler
+	replyHandler.TxStarter = signalingTxStarter{
+		inner:      testHandler.TxStarter,
+		execMarker: lockCommentThreadSQLMarker,
+		ready:      replyReady,
+	}
 	replyDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		replyDone <- createReplyComment(testHandler, fx.IssueID, fx.Root1, "concurrent reply")
+		replyDone <- createReplyComment(&replyHandler, fx.IssueID, fx.Root1, "concurrent reply")
 	}()
+
+	select {
+	case <-replyReady:
+	case <-time.After(5 * time.Second):
+		t.Fatal("concurrent reply did not reach its own LockCommentThread attempt — no positive signal of lock contention")
+	}
 
 	// The reply cannot have completed yet: it is blocked behind the resolve's
 	// held lock. Give it a moment to (incorrectly) race ahead if the lock were
@@ -328,17 +384,39 @@ func TestResolveComment_ConcurrentReplyBlocksUntilResolveTransactionEnds(t *test
 
 	// The guard has already read zero new replies and the resolve has not yet
 	// committed (or even performed its resolving UPDATE) — the lock is still
-	// held. Start a real concurrent reply now.
+	// held. Start a real concurrent reply now, wrapped so it signals
+	// replyReady the instant it is about to issue its own LockCommentThread
+	// Exec — a positive proof the reply goroutine has actually reached its
+	// lock attempt, not an inference from a fixed sleep. Without this signal,
+	// a slow/unscheduled goroutine (GC pause, CI runner contention) could
+	// still be sitting before that Exec when the assertion below runs — a
+	// false pass that proves nothing about lock contention.
+	replyReady := make(chan struct{}, 1)
+	replyHandler := *testHandler
+	replyHandler.TxStarter = signalingTxStarter{
+		inner:      testHandler.TxStarter,
+		execMarker: lockCommentThreadSQLMarker,
+		ready:      replyReady,
+	}
 	replyDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		replyDone <- createReplyComment(testHandler, fx.IssueID, fx.Root1, "reply during held lock")
+		replyDone <- createReplyComment(&replyHandler, fx.IssueID, fx.Root1, "reply during held lock")
 	}()
 
-	// Assert non-completion repeatedly across a window, not just once: a flaky
-	// false pass (the reply happening to not have scheduled yet, rather than
-	// genuinely being blocked on the lock) is the exact failure mode a
-	// pre-lock version of this test would produce, so give it several
-	// opportunities to race ahead if the exclusion were not real.
+	select {
+	case <-replyReady:
+	case <-time.After(5 * time.Second):
+		t.Fatal("concurrent reply did not reach its own LockCommentThread attempt — no positive signal of lock contention")
+	}
+
+	// The reply has now provably reached (or is provably about to enter) its
+	// own LockCommentThread Exec while the resolve still holds the identical
+	// advisory lock. Assert non-completion repeatedly across a window, not
+	// just once: a flaky false pass (the reply happening to not have
+	// returned yet purely by scheduling luck, rather than genuinely being
+	// blocked on the lock) is the exact failure mode a pre-lock version of
+	// this test would produce, so give it several opportunities to race
+	// ahead if the exclusion were not real.
 	for i := 0; i < 5; i++ {
 		select {
 		case resp := <-replyDone:

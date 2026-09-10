@@ -66,13 +66,32 @@ func TestCreatePluginComment_ReplyTakesThreadLock(t *testing.T) {
 	}
 
 	// While the resolve holds the thread lock, fire a concurrent plugin reply
-	// against the SAME thread on the real (unwrapped) handler. If
-	// CreatePluginComment takes LockCommentThread as required, it must block
-	// behind the resolve's held lock rather than completing immediately.
+	// against the SAME thread, wrapped so it signals pluginReplyReady the
+	// instant it is about to issue its own LockCommentThread Exec — a
+	// positive proof the plugin-reply goroutine actually reached its lock
+	// attempt, not an inference from a fixed sleep. Without this signal, a
+	// slow/unscheduled goroutine (GC pause, CI runner contention) could still
+	// be sitting before that Exec when the assertion below runs — a false
+	// pass that proves nothing about lock contention. If CreatePluginComment
+	// takes LockCommentThread as required, it must block behind the
+	// resolve's held lock rather than completing immediately.
+	pluginReplyReady := make(chan struct{}, 1)
+	pluginReplyHandler := *testHandler
+	pluginReplyHandler.TxStarter = signalingTxStarter{
+		inner:      testHandler.TxStarter,
+		execMarker: lockCommentThreadSQLMarker,
+		ready:      pluginReplyReady,
+	}
 	pluginReplyDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		pluginReplyDone <- httptestRecordPluginComment(testHandler, fx.IssueID, fx.Root1, installationID, "plugin reply during held lock")
+		pluginReplyDone <- httptestRecordPluginComment(&pluginReplyHandler, fx.IssueID, fx.Root1, installationID, "plugin reply during held lock")
 	}()
+
+	select {
+	case <-pluginReplyReady:
+	case <-time.After(5 * time.Second):
+		t.Fatal("plugin reply did not reach its own LockCommentThread attempt — no positive signal of lock contention")
+	}
 
 	select {
 	case resp := <-pluginReplyDone:
