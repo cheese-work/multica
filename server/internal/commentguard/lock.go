@@ -3,8 +3,10 @@
 // resolve/reply commit-ordering guard (see LockCommentThread in
 // pkg/db/queries/comment.sql) cannot be bypassed by a call site that forgot
 // to take it. Any code path that inserts a reply comment (parent_id set)
-// should route the lock acquisition through LockThreadForReply instead of
-// calling GetThreadRoot/LockCommentThread directly.
+// should route the lock acquisition through LockThreadForReply (or
+// LockThreadForReplyAndClearResolution, when the call site also needs to
+// reopen a resolved thread in the same transaction) instead of calling
+// GetThreadRoot/LockCommentThread directly.
 package commentguard
 
 import (
@@ -37,20 +39,83 @@ import (
 // continuing without the lock on a lookup error would reopen exactly that
 // window for a code path that never notices it happened.
 func LockThreadForReply(ctx context.Context, q *db.Queries, workspaceID, parentID pgtype.UUID) error {
-	_, err := LockThreadForReplyAndLoadRoot(ctx, q, workspaceID, parentID)
+	_, _, err := LockThreadForReplyAndClearResolution(ctx, q, workspaceID, parentID)
 	return err
 }
 
 // LockThreadForReplyAndLoadRoot does everything LockThreadForReply does, and
 // also returns the resolved thread root comment so callers that need it for
-// post-commit thread-level side effects (e.g. TaskService.
-// AutoUnresolveThreadOnReply, which must reopen a thread a concurrent
-// ResolveComment resolved out from under a lock-ordered reply) don't have to
-// duplicate the GetThreadRoot lookup.
+// thread-level side effects (e.g. publishing comment:unresolved with the
+// thread's WorkspaceID) don't have to duplicate the GetThreadRoot lookup.
 //
 // The returned root is nil for a top-level comment (invalid parentID),
 // matching LockThreadForReply's no-op semantics for that case.
+//
+// Deprecated in favor of LockThreadForReplyAndClearResolution for any caller
+// that also needs the reopen-on-reply behavior — this variant does NOT clear
+// a resolved thread. Kept only as a thin wrapper so its doc comment remains a
+// stable link target; new call sites should use
+// LockThreadForReplyAndClearResolution directly.
 func LockThreadForReplyAndLoadRoot(ctx context.Context, q *db.Queries, workspaceID, parentID pgtype.UUID) (*db.Comment, error) {
+	root, err := loadThreadRootAndLock(ctx, q, workspaceID, parentID)
+	return root, err
+}
+
+// LockThreadForReplyAndClearResolution takes the thread-scoped advisory lock
+// exactly as LockThreadForReply does, and — still inside that same lock, still
+// before the caller's transaction commits — clears any resolution currently
+// held by ANY comment in the thread (the root or a reply; a thread has at
+// most one resolved comment at a time, enforced by ClearOtherThreadResolutions'
+// single-resolution invariant, so ClearThreadResolutionForReply finds at most
+// one row to clear).
+//
+// This replaces the Round 4 design where the reopen happened via
+// TaskService.AutoUnresolveThreadOnReply AFTER the reply's transaction
+// committed, through an unlocked *db.Queries handle. That post-commit write
+// was itself racy: a ResolveComment call could acquire the lock and commit a
+// fresh, legitimate resolution in the gap between the reply's commit and the
+// stale post-commit unresolve call, which would then incorrectly clear that
+// later resolution — violating commit ordering. Moving the clear inside the
+// SAME transaction that holds the lock and inserts the reply makes that
+// window structurally impossible: nothing else can observe or mutate the
+// thread's resolution state while this transaction holds the advisory lock,
+// and the clear commits atomically with the reply itself.
+//
+// It also fixes the root-only limitation of the old design: a resolved REPLY
+// (not the thread root) is now reopened too, matching the actual
+// single-resolution invariant instead of assuming the root is always the
+// resolved comment.
+//
+// Returns the thread root (nil for a top-level comment, matching
+// LockThreadForReply's no-op semantics) and the comment row that was cleared,
+// if any (nil when nothing in the thread was resolved). Callers publish
+// comment:unresolved for the cleared row AFTER their transaction commits —
+// event publishing after commit is fine and is the existing pattern for
+// comment:created too; only the database write had to move inside the tx.
+func LockThreadForReplyAndClearResolution(ctx context.Context, q *db.Queries, workspaceID, parentID pgtype.UUID) (root *db.Comment, cleared *db.Comment, err error) {
+	root, err = loadThreadRootAndLock(ctx, q, workspaceID, parentID)
+	if err != nil || root == nil {
+		return root, nil, err
+	}
+	rows, err := q.ClearThreadResolutionForReply(ctx, db.ClearThreadResolutionForReplyParams{
+		ThreadRootID: root.ID,
+		IssueID:      root.IssueID,
+		WorkspaceID:  workspaceID,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("clear thread resolution for reply: %w", err)
+	}
+	if len(rows) == 0 {
+		return root, nil, nil
+	}
+	clearedRow := rows[0]
+	return root, &clearedRow, nil
+}
+
+// loadThreadRootAndLock resolves parentID's thread root and takes the
+// thread-scoped advisory lock on it. Returns (nil, nil) for a top-level
+// comment (invalid parentID) — the shared no-op case.
+func loadThreadRootAndLock(ctx context.Context, q *db.Queries, workspaceID, parentID pgtype.UUID) (*db.Comment, error) {
 	if !parentID.Valid {
 		return nil, nil
 	}

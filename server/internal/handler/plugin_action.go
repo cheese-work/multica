@@ -592,21 +592,15 @@ func (h *Handler) CreatePluginComment(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
-	if err := commentguard.LockThreadForReply(r.Context(), qtx, caller.WorkspaceID, parentID); err != nil {
+	// LockThreadForReplyAndClearResolution takes the thread lock and, still
+	// inside this transaction, clears any resolution held by the root or any
+	// reply in the thread — so a reply landing in a resolved thread reopens it
+	// atomically with its own insert instead of via a separate post-commit
+	// write through an unlocked handle (see commentguard package doc).
+	_, cleared, err := commentguard.LockThreadForReplyAndClearResolution(r.Context(), qtx, caller.WorkspaceID, parentID)
+	if err != nil {
 		publicapiv1.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "failed to create the comment")
 		return
-	}
-	var rootComment *db.Comment
-	if parentID.Valid {
-		root, err := qtx.GetThreadRoot(r.Context(), db.GetThreadRootParams{
-			CommentID:   parentID,
-			WorkspaceID: caller.WorkspaceID,
-		})
-		if err != nil {
-			publicapiv1.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "failed to create the comment")
-			return
-		}
-		rootComment = &root
 	}
 	createdComment, err := qtx.CreateComment(r.Context(), db.CreateCommentParams{
 		ID:          dbid.NewV7(),
@@ -641,9 +635,7 @@ func (h *Handler) CreatePluginComment(w http.ResponseWriter, r *http.Request) {
 		"issue_assignee_id":   uuidToPtr(issue.AssigneeID),
 		"issue_status":        issue.Status,
 	})
-	if rootComment != nil {
-		h.TaskService.AutoUnresolveThreadOnReply(r.Context(), rootComment, uuidToString(caller.WorkspaceID), authorType, uuidToString(authorID))
-	}
+	h.TaskService.PublishThreadUnresolvedOnReply(cleared, uuidToString(caller.WorkspaceID), authorType, uuidToString(authorID))
 
 	writeJSON(w, http.StatusCreated, publicPluginComment(comment))
 }

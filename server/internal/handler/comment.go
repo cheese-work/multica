@@ -1853,26 +1853,16 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
-	if err := commentguard.LockThreadForReply(r.Context(), qtx, issue.WorkspaceID, parentID); err != nil {
+	// LockThreadForReplyAndClearResolution takes the thread lock and, still
+	// inside this transaction, clears any resolution held by the root or any
+	// reply in the thread — so a reply landing in a resolved thread reopens it
+	// atomically with its own insert instead of via a separate post-commit
+	// write through an unlocked handle (see commentguard package doc).
+	_, cleared, err := commentguard.LockThreadForReplyAndClearResolution(r.Context(), qtx, issue.WorkspaceID, parentID)
+	if err != nil {
 		slog.Warn("lock comment thread failed", append(logger.RequestAttrs(r), "error", err, "issue_id", issueID)...)
 		writeError(w, http.StatusInternalServerError, "failed to create comment")
 		return
-	}
-	// Thread-level behavior (for example auto-unresolving a resolved thread)
-	// resolves the root separately so storing a reply-to-reply does not
-	// destroy the direct-parent signal used by trigger decisions.
-	var rootComment *db.Comment
-	if parentID.Valid {
-		root, err := qtx.GetThreadRoot(r.Context(), db.GetThreadRootParams{
-			CommentID:   parentID,
-			WorkspaceID: issue.WorkspaceID,
-		})
-		if err != nil {
-			slog.Warn("resolve thread root failed", append(logger.RequestAttrs(r), "error", err, "issue_id", issueID)...)
-			writeError(w, http.StatusInternalServerError, "failed to create comment")
-			return
-		}
-		rootComment = &root
 	}
 	created, err := qtx.CreateComment(r.Context(), createParams)
 	if err != nil {
@@ -1906,11 +1896,12 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		"issue_revision":      created.IssueRevision,
 	})
 
-	// A reply in a resolved thread re-opens it. Done after CreateComment commits
-	// so the reply is visible regardless of the unresolve outcome. Shared with
-	// the agent task path (TaskService.createAgentComment) — both reply paths
-	// must keep the resolved root in sync.
-	h.TaskService.AutoUnresolveThreadOnReply(r.Context(), rootComment, uuidToString(issue.WorkspaceID), authorType, authorID)
+	// The resolution clear itself already committed inside the transaction
+	// above; this only publishes comment:unresolved for it, after commit, same
+	// as comment:created. Shared with the agent task path
+	// (TaskService.createAgentComment) — both reply paths use the same
+	// publisher.
+	h.TaskService.PublishThreadUnresolvedOnReply(cleared, uuidToString(issue.WorkspaceID), authorType, authorID)
 
 	originatorUserID := h.invokeOriginatorFromRequest(r, authorType, authorID)
 	// The comment is already saved; a blocked mention must not fail the whole
