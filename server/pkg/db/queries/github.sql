@@ -100,6 +100,20 @@ SELECT * FROM github_pending_installation WHERE installation_id = $1
 -- reopened action" (both carry EXCLUDED.state='open'), the caller passes
 -- is_reopen — true only when the webhook's action field is literally
 -- "reopened" — as the discriminator (CHE-374 review round 3, item 1).
+--
+-- is_reopen alone is not enough: GitHub does not guarantee delivery order, so
+-- a DELAYED redelivery of an earlier "reopened" webhook can arrive after a
+-- second close was already recorded (close -> reopen -> close again ->
+-- stale redelivery of the FIRST reopen). That stale payload also carries
+-- is_reopen=true and, without an ordering check, would wrongly reopen a PR
+-- that is genuinely closed again. closed_at is used as the ordering signal
+-- (deliberately not pr_updated_at, which is a general activity clock bumped
+-- by labels/comments/assignee changes too, not a state-transition clock): a
+-- genuine, fresher reopen either clears closed_at (GitHub sets it to null on
+-- reopen) or, for a same-delivery replay, carries a closed_at that is not
+-- older than what is already stored. A reopen payload whose closed_at is
+-- OLDER than the stored closed_at is describing an earlier close than the one
+-- currently on file and is rejected as stale (CHE-374 review round 4, item 1).
 -- INSERT path always writes the incoming value (NULL acceptable for a new row).
 INSERT INTO github_pull_request (
     workspace_id, installation_id, repo_owner, repo_name, pr_number,
@@ -118,16 +132,28 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     installation_id = EXCLUDED.installation_id,
     title = EXCLUDED.title,
     -- `merged` is always protected: once stored, only an incoming `merged`
-    -- overwrites it. `closed` is protected UNLESS this delivery is a genuine
-    -- reopen (is_reopen=true), which is the only way a closed PR may move
-    -- back to open/draft.
+    -- overwrites it. `closed` is protected UNLESS this delivery is a genuine,
+    -- FRESH reopen: is_reopen=true AND the payload's closed_at is not older
+    -- than the closed_at already stored (NULL closed_at in the payload also
+    -- counts as fresh — that is what a real reopen looks like once GitHub
+    -- clears the field). A stale redelivered "reopened" webhook whose
+    -- closed_at is older than the stored value describes an earlier close and
+    -- is treated the same as a non-reopen delivery: rejected (CHE-374 review
+    -- round 4, item 1).
     state = CASE
         WHEN github_pull_request.state = 'merged'
              AND EXCLUDED.state <> 'merged'
         THEN github_pull_request.state
         WHEN github_pull_request.state = 'closed'
              AND EXCLUDED.state <> 'merged'
-             AND NOT COALESCE(sqlc.arg('is_reopen')::boolean, FALSE)
+             AND (
+                 NOT COALESCE(sqlc.arg('is_reopen')::boolean, FALSE)
+                 OR (
+                     EXCLUDED.closed_at IS NOT NULL
+                     AND github_pull_request.closed_at IS NOT NULL
+                     AND EXCLUDED.closed_at < github_pull_request.closed_at
+                 )
+             )
         THEN github_pull_request.state
         ELSE EXCLUDED.state
     END,
@@ -141,14 +167,28 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
         THEN github_pull_request.merged_at
         WHEN github_pull_request.state = 'closed'
              AND EXCLUDED.state <> 'merged'
-             AND NOT COALESCE(sqlc.arg('is_reopen')::boolean, FALSE)
+             AND (
+                 NOT COALESCE(sqlc.arg('is_reopen')::boolean, FALSE)
+                 OR (
+                     EXCLUDED.closed_at IS NOT NULL
+                     AND github_pull_request.closed_at IS NOT NULL
+                     AND EXCLUDED.closed_at < github_pull_request.closed_at
+                 )
+             )
         THEN github_pull_request.merged_at
         ELSE EXCLUDED.merged_at
     END,
     closed_at = CASE
         WHEN github_pull_request.state = 'closed'
              AND EXCLUDED.state <> 'merged'
-             AND NOT COALESCE(sqlc.arg('is_reopen')::boolean, FALSE)
+             AND (
+                 NOT COALESCE(sqlc.arg('is_reopen')::boolean, FALSE)
+                 OR (
+                     EXCLUDED.closed_at IS NOT NULL
+                     AND github_pull_request.closed_at IS NOT NULL
+                     AND EXCLUDED.closed_at < github_pull_request.closed_at
+                 )
+             )
         THEN github_pull_request.closed_at
         ELSE EXCLUDED.closed_at
     END,
