@@ -1,89 +1,98 @@
 import { expect, test } from "@playwright/test";
-import { buildSurfaceDocument } from "../packages/views/plugins/surface-document";
+import { buildSurfaceFrameDocument } from "../packages/views/plugins/surface-document";
 
 /**
- * Real Chromium coverage for behavior jsdom does not implement: executing a
- * sandboxed srcdoc document, reporting errors from a dynamically inserted
- * script, and firing page lifecycle events when the host rewrites srcdoc.
+ * Chromium coverage for the hosted plugin-surface boundary. The visible host
+ * frame is trusted code; the routed page is the sandboxed plugin document.
  */
 
-test.describe("plugin surface document (real Chromium, sandboxed srcdoc)", () => {
-  test("a host-authored srcdoc reload is not reported as hostile navigation", async ({ page }) => {
-    const first = buildSurfaceDocument({
-      code: "parent.postMessage({ type: 'plugin-test-ran' }, '*');",
-      grantedScopes: [],
-      theme: {},
-    });
-    const themed = buildSurfaceDocument({
-      code: "parent.postMessage({ type: 'plugin-test-ran' }, '*');",
-      grantedScopes: [],
-      theme: { "--background": "white" },
-    });
-
-    await page.setContent("<!doctype html><body></body>");
-    await page.evaluate((srcdoc) => {
-      const state = { ran: 0, navigated: 0 };
-      (window as unknown as { __surfaceState: typeof state }).__surfaceState = state;
-      window.addEventListener("message", (event) => {
-        const type = (event.data as { type?: string } | null)?.type;
-        if (type === "plugin-test-ran") state.ran++;
-        if (type === "multica:plugin-surface-navigated") state.navigated++;
+test.describe("plugin surface document (real Chromium, hosted content)", () => {
+  test("a host-authored wrapper replacement preserves bridge lifecycle without hostile navigation", async ({ page }) => {
+    let contentRequests = 0;
+    await page.route("https://plugin-content.example.test/**", async (route) => {
+      contentRequests += 1;
+      await route.fulfill({
+        contentType: "text/html",
+        headers: { "Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'" },
+        body: `<!doctype html><script>
+          const channel = new MessageChannel();
+          parent.postMessage({
+            type: "multica:plugin-bridge-connect",
+            version: 2,
+            challenge: "replacement-proof"
+          }, "*", [channel.port1]);
+        </script>`,
       });
-      const frame = document.createElement("iframe");
-      frame.id = "surface";
-      frame.sandbox.add("allow-scripts");
-      frame.srcdoc = srcdoc;
-      document.body.appendChild(frame);
-    }, first);
+    });
 
+    const wrapper = buildSurfaceFrameDocument({
+      url: "https://plugin-content.example.test/plugin-surfaces/opaque",
+      bridgeToken: "replacement-proof",
+    });
+
+    await page.setContent(`<script>
+      window.surfaceState = { bridges: 0, navigated: 0 };
+      addEventListener("message", event => {
+        if (event.data?.type === "multica:plugin-bridge-connect" && event.ports[0]) {
+          window.surfaceState.bridges += 1;
+          event.ports[0].close();
+        }
+        if (event.data?.type === "multica:plugin-surface-navigated") {
+          window.surfaceState.navigated += 1;
+        }
+      });
+    </script><iframe id="host" sandbox="allow-scripts allow-same-origin"></iframe>`);
+
+    await page.locator("#host").evaluate((frame, srcdoc) => {
+      (frame as HTMLIFrameElement).srcdoc = srcdoc as string;
+    }, wrapper);
     await expect.poll(() => page.evaluate(() =>
-      (window as unknown as { __surfaceState: { ran: number } }).__surfaceState.ran,
+      (window as unknown as { surfaceState: { bridges: number } }).surfaceState.bridges,
     )).toBe(1);
 
-    await page.evaluate((srcdoc) => {
-      document.querySelector<HTMLIFrameElement>("#surface")!.srcdoc = srcdoc;
-    }, themed);
+    await page.locator("#host").evaluate((frame, srcdoc) => {
+      (frame as HTMLIFrameElement).srcdoc = srcdoc as string;
+    }, wrapper);
     await expect.poll(() => page.evaluate(() =>
-      (window as unknown as { __surfaceState: { ran: number } }).__surfaceState.ran,
+      (window as unknown as { surfaceState: { bridges: number } }).surfaceState.bridges,
     )).toBe(2);
-
+    expect(contentRequests).toBe(2);
     expect(await page.evaluate(() =>
-      (window as unknown as { __surfaceState: { navigated: number } }).__surfaceState.navigated,
+      (window as unknown as { surfaceState: { navigated: number } }).surfaceState.navigated,
     )).toBe(0);
   });
 
-  test("reports a synchronous plugin error even when the host listener mounts late", async ({ page }) => {
-    const documentWithError = buildSurfaceDocument({
-      code: "throw new Error('plugin failed during bootstrap');",
-      grantedScopes: [],
-      theme: {},
-    });
-
-    await page.setContent("<!doctype html><body></body>");
-    await page.evaluate((srcdoc) => {
-      const frame = document.createElement("iframe");
-      frame.id = "surface";
-      frame.sandbox.add("allow-scripts");
-      frame.srcdoc = srcdoc;
-      document.body.appendChild(frame);
-    }, documentWithError);
-
-    // The guest has already executed and failed before the host starts
-    // listening. A one-shot postMessage is lost in this ordering.
-    await page.waitForTimeout(300);
-    await page.evaluate(() => {
-      (window as unknown as { __surfaceErrors: number }).__surfaceErrors = 0;
-      window.addEventListener("message", (event) => {
-        if ((event.data as { type?: string } | null)?.type !== "multica:plugin-surface-error") return;
-        const frame = document.querySelector<HTMLIFrameElement>("#surface")!;
-        if (event.source !== frame.contentWindow) return;
-        (window as unknown as { __surfaceErrors: number }).__surfaceErrors++;
-        frame.contentWindow!.postMessage({ type: "multica:plugin-surface-error-ack" }, "*");
+  test("reports a hosted plugin error when the host listener is ready before launch", async ({ page }) => {
+    await page.route("https://plugin-content.example.test/**", async (route) => {
+      await route.fulfill({
+        contentType: "text/html",
+        headers: { "Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'" },
+        body: `<!doctype html><script>
+          parent.postMessage({ type: "multica:plugin-surface-error" }, "*");
+        </script>`,
       });
     });
+    const wrapper = buildSurfaceFrameDocument({
+      url: "https://plugin-content.example.test/plugin-surfaces/failing",
+      bridgeToken: "error-proof",
+    });
+
+    // The hosted document emits one error only. Register before srcdoc so the
+    // visible error cannot be lost to the obsolete late-listener ordering.
+    await page.setContent(`<script>
+      window.surfaceErrors = 0;
+      addEventListener("message", event => {
+        if (event.data?.type === "multica:plugin-surface-error") {
+          window.surfaceErrors += 1;
+        }
+      });
+    </script><iframe id="host" sandbox="allow-scripts allow-same-origin"></iframe>`);
+    await page.locator("#host").evaluate((frame, srcdoc) => {
+      (frame as HTMLIFrameElement).srcdoc = srcdoc as string;
+    }, wrapper);
 
     await expect.poll(() => page.evaluate(() =>
-      (window as unknown as { __surfaceErrors: number }).__surfaceErrors,
+      (window as unknown as { surfaceErrors: number }).surfaceErrors,
     )).toBe(1);
   });
 });
