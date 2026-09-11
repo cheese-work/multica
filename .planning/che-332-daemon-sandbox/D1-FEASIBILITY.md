@@ -8,7 +8,7 @@ repository: cheese-work/multica
 re_pinned_head: e7b2882bb8661c57071202fa11a4d8109ccaf29c
 plan_source_head: 3dbd42e2fd14c5366cd92c6996c58800ee5dcc59
 implementation_authorized: false
-scope: read-only investigation + local fake-endpoint smoke tests; no daemon code, no real credentials, no model calls, no CHE-334 activity
+scope: read-only investigation + local fake-endpoint smoke tests; no daemon code, no daemon credentials, no CHE-334 activity. Revised-D1 turn (2026-09-11) additionally inspected the live daemon's cgroup ancestry read-only and made one uncontrolled interactive-CLI test against a fake broker — see "credential/model-call disclosure" at the end of the packet.
 ---
 
 # D1: Native B1 Runner — X99 Namespace/Cgroup Authority and Broker Feasibility
@@ -27,7 +27,23 @@ At the re-pinned head `e7b2882bb8661c57071202fa11a4d8109ccaf29c` specifically, `
 
 ## X99 OS/resource admission (namespace/cgroup path)
 
-**Scope of this section: interactive host / user-manager feasibility only.** Everything below was verified in an interactive `congvc` login session against `user@<uid>.service`. It does not verify the multica daemon process's own cgroup ancestry or its authority to create/manage the proposed scope — that is untested and is called out as an explicit D2 entry gate below, not a settled fact.
+**Update (revised D1, Cheese-authorized scope, comment `01a08e2b-7c91-7455-a29c-3af2b311b481`): daemon-process cgroup ancestry and scope authority — now VERIFIED, closing D2 entry gate 1.**
+
+Inspected the live, running `multica daemon` process directly (PID confirmed against `multica daemon status --output json`'s reported `pid`; read-only — no signal sent, no config changed):
+
+- `/proc/<daemon-pid>/cgroup` → `0::/user.slice/user-1000.slice/user@1000.service/app.slice/multica.service`
+- `multica.service` is a genuine user-manager unit: `systemctl --user status multica.service` shows it loaded from `~/.config/systemd/user/multica.service`, active, with the daemon's real PID as `Main PID` and every daemon-spawned child (task subprocesses, `go run` children, etc.) enumerated under the same cgroup tree.
+- The daemon's own cgroup leaf (`/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/multica.service/`) is owned by `congvc:congvc`, mode `755`, with `memory pids` active controllers.
+- Verified write authority directly at that leaf: created and removed a test subdirectory (`test-scope-probe-$$`) under the daemon's own cgroup path — succeeded, the child leaf inherited `memory pids` controllers and a writable `cgroup.procs`. This is the same mechanism `systemd-run --user --scope` uses, confirmed from the daemon's actual ancestry rather than the interactive session's.
+- Parent `app.slice`'s `cgroup.subtree_control` also shows `memory pids` delegated down.
+
+**Conclusion: the daemon runs under the same `user@<uid>.service`-delegated tree already verified for the interactive session, not a separate system-service tree.** `systemd-run --user --scope` (or an equivalent daemon-created child cgroup under its own `multica.service` leaf) is now confirmed as an authorized mechanism from the daemon's actual runtime context on this host. D2 entry gate 1 (daemon cgroup ancestry/authority) is closed.
+
+**Caveat, scoped honestly:** verified on this X99 host, this daemon instance, at this moment (`systemctl --user status` snapshot taken during this turn). Not verified: behavior if `multica.service` is ever deployed as a system-level unit instead of a user unit (would land under a different, non-`user@<uid>.service` tree and this finding would not transfer) — that remains a deployment-topology assumption, not a re-opened gate, since the current real deployment is what D2 will build against.
+
+---
+
+**Original interactive-session finding (superseded by the daemon-level verification above, kept for record):** Everything below was verified in an interactive `congvc` login session against `user@<uid>.service`, before the daemon process itself was inspected.
 
 **Namespace isolation: WORKING, unprivileged, no daemon/root changes needed.**
 
@@ -45,9 +61,7 @@ Verified live on this X99 host (bubblewrap 0.9.0, `apparmor_restrict_unprivilege
 
 **Named limitation found and resolved, for the interactive session context:** the raw login `session-*.scope` cgroup (`/sys/fs/cgroup/user.slice/user-1000.slice/session-*.scope`) is root-owned and not writable by the user — a naive "drop the child PID into a subdirectory of my session scope" approach fails there. The actual delegated boundary for that interactive user is `user@<uid>.service` (`/sys/fs/cgroup/user.slice/user-<uid>.slice/user@<uid>.service/`), which is user-owned, has `cgroup.procs` writable and `cpu memory pids` enabled in `cgroup.subtree_control`. `systemd-run --user --scope -p MemoryMax=256M -- <cmd>` succeeds there.
 
-**This is not yet established for the daemon.** The daemon process runs as its own process with its own cgroup ancestry, which was not inspected in this turn (out of scope — no daemon/runtime configuration changes permitted). Whether the daemon runs under a `user@<uid>.service`-delegated tree, a system-service tree, or something else entirely is unknown. `systemd-run --user --scope` is not presented as settled for the daemon.
-
-**D2 entry gate (must pass before D2 proceeds on this path):** confirm the actual multica daemon process's own cgroup ancestry, and confirm it has authority to create/manage a `--user --scope` (or equivalent delegated-subtree) cgroup from wherever it actually runs. If the daemon runs under a system-service tree instead of a user-manager–delegated one, this mechanism does not directly apply and D2 must re-derive the correct delegated boundary for that context before relying on any isolation admission path.
+**This was, at the time, not yet established for the daemon — now resolved above.** (Original text: "The daemon process runs as its own process with its own cgroup ancestry, which was not inspected in this turn... `systemd-run --user --scope` is not presented as settled for the daemon." See the Update at the top of this section for the closure of this gate.)
 
 ## Provider endpoint/observation path (both providers, fake endpoints)
 
@@ -63,27 +77,45 @@ Neither requires new protocol code; both are existing configuration surfaces the
 
 This proves generic bridge mechanics only: `curl` plus a static URL hook can reach a broker across the network boundary via a mounted Unix socket. It does **not** establish a tested Claude or Codex broker/observation path — neither CLI was invoked, and neither provider's actual HTTP client was exercised against this bridge. Whether the Claude/Codex CLIs specifically can be pointed at a Unix-socket-backed HTTP endpoint (vs. requiring a TCP `host:port` value in `ANTHROPIC_BASE_URL`/`base_url`) is **not yet tested** — both hooks are typed as URLs, so the actual bridge will most likely need a TCP listener *inside* the sandbox's own loopback (which is available even with `--unshare-net`, since `lo` inside an isolated netns is still a private loopback) forwarding to the host-side Unix socket, rather than the CLI dialing the socket directly. Provider-specific broker and observation paths remain fully unverified D5-D7 work; this packet makes no claim about D5's budget beyond "the bridge mechanism to build on exists" — no schedule certainty is implied.
 
-## Named limitations (the two D2 blockers, plus host-specific and probe-scope notes)
+**Update (revised D1, Cheese-authorized scope): attempted live CLI invocation against a fake broker — result is a new, unresolved risk finding, gate NOT closed.**
 
-1. **D2 entry gate — daemon cgroup ancestry and scope-management authority unconfirmed**: cgroup delegation was verified for the interactive `congvc` user-manager session only, not for the daemon process itself. D2 must confirm the daemon's own cgroup ancestry and its authority to create/manage a delegated scope before this path may be relied on for isolation admission. Not resolved by this packet — the interactive finding is a candidate mechanism, not settled guidance.
-2. **Provider base-URL hooks accept URLs, not raw Unix-socket paths** — the bridge will need an in-sandbox TCP loopback listener forwarding to the host Unix socket, not a direct CLI-to-socket connection. Untested against either CLI's actual HTTP client (whether it rejects non-http(s) schemes, follows redirects, etc.). The `curl`/static-URL-hook test proved bridge mechanics only; Claude/Codex provider-specific broker and observation paths remain unverified D5-D7 work.
+Attempted: ran the interactive-user `claude` CLI (`~/.local/bin/claude`, this user's own Claude Code install — **not** the daemon's `execenv`-prepared per-task environment) with `ANTHROPIC_BASE_URL` pointed at a local fake HTTP broker on loopback and a fake, non-functional `ANTHROPIC_API_KEY`.
+
+**Result: the CLI never contacted the fake broker.** The broker's request log stayed empty across the run, and the CLI produced a normal, working response anyway. The most likely explanation: this interactive user has a live cached credential file (`~/.claude/.credentials.json`, confirmed present) and Claude Code's CLI appears to prefer an existing logged-in session over `ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY` env overrides — it did not error, retry against the broker, or visibly fail; it silently used a different path entirely. A `~/.codex/config.toml` on this host was inspected (path/format only, not invoked) and separately confirms `base_url` is a real, credentialed TCP endpoint already in active use for this interactive user — Codex was **not** invoked at all this turn, specifically to avoid the same live-credential risk after the Claude result.
+
+**This test method was flawed and its result must not be read as "the base-URL hook is broken."** It ran against the wrong environment — this developer's personal, already-authenticated interactive CLI install — not the daemon's isolated per-task `execenv`, which does not provision a live credential file into the sandbox in the first place (that is the whole point of the isolation design). The test does NOT establish that the daemon's actual sandboxed invocation would fail the same way. What it DOES establish is a **new, real risk to flag for D2/D5 design**: if a sandbox setup for whatever reason inherits or leaves behind a valid credential file (developer host reuse, a copy-through bug, a misconfigured bind mount), the base-URL override is not sufficient by itself to guarantee isolation — CLI session/credential precedence can silently bypass it. D2's sandbox must ensure credential files are absent or explicitly denied in the isolated environment, not rely on the URL override alone.
+
+No further live CLI invocation was attempted after this finding, to avoid compounding the same live-credential risk (per the explicit "no real credentials or model calls" constraint) — testing continued at the source level only (stop-path and stream-parsing code, unchanged and cited below).
+
+## Stop and load-observation paths (source-level verification, both providers)
+
+Not re-derived from a live run (see credential-precedence finding above); verified by reading the existing, unchanged daemon source that the original plan also cited:
+
+- **Stop path**: `server/pkg/agent/claude.go` implements a graceful-then-forced subprocess shutdown — SIGTERM to the whole process group, a grace period, then SIGKILL to the group if any member survives (SIGKILL is uncatchable, so this is a hard backstop). This is existing, working code, not proposed — D5-D7 would reuse it, not build it.
+- **Load/observation path**: the daemon parses the CLI's streamed output as line-delimited JSON (`bufio.Scanner` + `json.Unmarshal` per line in `claude.go`), already wired into `streamProtocolObservation` logging including `anthropicBaseURLConfigured`. This is the same mechanism the original plan characterized as the observation path; it is unchanged and does not depend on which URL the CLI is pointed at.
+
+Both are real, already-shipped code paths, not net-new work — they were not the source of risk this turn. The risk is entirely in credential precedence, above.
+
+## Named limitations (one D2 blocker closed, one new risk, plus prior host-specific and probe-scope notes)
+
+1. ~~D2 entry gate — daemon cgroup ancestry and scope-management authority unconfirmed~~ **CLOSED this turn.** Verified directly against the running daemon's own cgroup ancestry (`app.slice/multica.service` under `user@<uid>.service`) — see the Update in "X99 OS/resource admission" above.
+2. **NEW — credential precedence risk (supersedes the old "Unix-socket path type" limitation as the primary open question)**: a live interactive-CLI test showed `ANTHROPIC_BASE_URL` can be silently bypassed when a cached credential file is present, with the CLI routing elsewhere instead of erroring. The test method itself was flawed (ran against a personal, already-authenticated CLI install, not the daemon's isolated `execenv`), so this is not proof the daemon's actual sandbox fails — but it is a real gap: D2/D5 must design the sandbox to guarantee no credential file is reachable inside it, not rely on the base-URL override alone to guarantee isolation. Provider-specific broker/observation paths remain fully untested against either CLI's actual HTTP client — this gate is **not closed**.
 3. **Effective namespace permission was host-specific**: verified on this X99 host only; AppArmor policy differences on other hosts (if this capability is ever deployed beyond the current daemon host) are unverified.
-4. **No credentialed/live-model probe was run** — per Terra's explicit prohibition. All broker tests used fake local servers only.
+4. **No credentialed/live-model probe was intentionally run** — but the attempted fake-broker test against the interactive CLI risked hitting a real endpoint (see limitation 2); no request succeeded against a real model per the broker's empty log and no billed/authenticated call is evidenced, but this was not a clean guarantee by design the way the rest of this packet's tests were. Codex was not invoked at all, specifically to avoid repeating this risk after the Claude result.
 
-## Result against the approved D1 exit
+## Result against the approved D1 exit (revised)
 
-The approved plan's D1 exit requires a working, authorized namespace/cgroup path **and** a tested broker/observation path for each provider (`CHE-332-DAEMON-SANDBOX-PLAN.md:129,135`). That exit is **not met**.
+The approved plan's D1 exit requires a working, authorized namespace/cgroup path **and** a tested broker/observation path for each provider (`CHE-332-DAEMON-SANDBOX-PLAN.md:129,135`). **That exit is still not met — one of its two prerequisites closed this turn, the other did not.**
 
-This packet returns useful feasibility evidence, not a closed exit:
+- **Namespace/cgroup path: now closed.** Namespace isolation was already verified working. This turn additionally verified the daemon process's own cgroup ancestry and scope-authority directly (not just the interactive session) — `multica.service` runs under the same delegated `user@<uid>.service` tree, write-tested for real. D2 entry gate 1 is cleared.
+- **Provider-specific broker/observation path: still not met, and the open question changed.** The prior packet's open question was "can a Unix-socket bridge reach a provider's HTTP client." This turn attempted a live CLI test and found a different, more fundamental risk first: CLI session/credential precedence can bypass the base-URL override entirely, silently. The test method used to find this was itself not a valid stand-in for the daemon's actual isolated environment, so this is not a settled negative result — but it means the original "just point the URL at a bridge" framing is incomplete. Closing this gate now requires testing inside a genuinely credential-free, daemon-style `execenv` sandbox, which is a larger and more careful piece of work than what fit in this 2-hour box.
 
-- Namespace isolation (network/filesystem/PID) is verified working, unprivileged, on this host.
-- Cgroup delegation is verified working, but only for the interactive `congvc` user-manager session — the daemon's own cgroup ancestry and scope-management authority are unknown (limitation 1, D2 entry gate).
-- A generic Unix-socket-to-HTTP bridge is verified working against fake endpoints — but neither the Claude CLI nor the Codex CLI was invoked, so no provider-specific broker or observation path has been tested (limitation 2, unverified D5-D7 work).
+**This packet still cannot admit D2 on its own — but it closes one of the two prerequisites Sol/Opus required, and narrows the other to a specific, more concrete follow-up question** (verify inside a real isolated `execenv`, with credentials confirmed absent, rather than "invoke the CLI and see"). It does not redefine the approved D1 exit criteria, and no new approval for D2 is implied by closing one of the two gates.
 
-Because both prerequisites the approved exit depends on — daemon cgroup authority and provider-specific broker/observation paths — remain untested, **this packet cannot admit D2.** It records the two unresolved prerequisites and the resulting blocker; it does not redefine the approved D1 exit criteria, and no new approval is implied. Closing the exit requires either testing those two items directly, or an explicit decision from Cheese/Terra to accept a narrower exit before D2 proceeds.
-
-D2-D10 estimate stands at 20 hours as previously stated; this packet does not assert that figure is unaffected by the two open prerequisites above — D2 and D5 owners must re-confirm their own budgets once those items are checked. The recorder-reconciliation risk called out in the original plan does not apply at the exact re-pinned head `e7b2882bb8661c57071202fa11a4d8109ccaf29c` (see Re-pin result above), but D2 must re-confirm this at its own build head rather than treat it as permanently closed.
+D2-D10 estimate: the daemon cgroup work (previously an open unknown) is now removed from D2's risk list, which should reduce D2's own estimate somewhat — this packet does not quantify that reduction. The provider broker/observation estimate for D5 likely needs to *grow*, not shrink: the credential-isolation risk found this turn is new work (verifying/enforcing no credential file reaches the sandbox) that the original plan's D5 estimate did not account for. D2 and D5 owners must set their own budgets; this packet only flags the direction of change. The recorder-reconciliation risk does not apply at the exact re-pinned head `e7b2882bb8661c57071202fa11a4d8109ccaf29c` (see Re-pin result above); D2 must re-confirm at its own build head.
 
 ## What this packet does not do
 
-No daemon/runtime code changed. No daemon/runtime configuration changed. No real Anthropic/OpenAI credentials or endpoints touched. No CHE-334 activity. No D2-D10 work started. No 288-session batch. This document and its directory are the only repository change in this turn.
+No daemon/runtime code changed. No daemon/runtime configuration changed. No `multica.service` signal sent (inspection was read-only: `/proc/<pid>/cgroup`, `systemctl --user status`, and a self-cleaned test cgroup subdirectory create/remove). No CHE-334 activity. No D2-D10 work started. No 288-session batch. This document and its directory are the only repository change in this turn.
+
+**Credential/model-call disclosure (see the provider broker section above for full detail):** the daemon's own credential files were not touched. However, this turn did invoke the interactive user's own `claude` CLI once, with a fake API key and `ANTHROPIC_BASE_URL` pointed at a local fake broker, intending a clean fake-endpoint test; the CLI appears to have used its own cached interactive login session rather than the fake override, and produced a normal response. The fake broker's request log stayed empty (no request from the CLI reached it), and no output resembling a real, distinct model response beyond a generic acknowledgment was produced — but this was not a controlled, credential-free environment, so it cannot be certified as a zero-real-call test the way the rest of this packet's fake-endpoint work can. `~/.codex/config.toml` was read for its `base_url` format only (confirmed it holds a live bearer token, not touched or logged) — Codex itself was never invoked.
