@@ -619,6 +619,202 @@ func TestWebhook_ReopenedPRTransitionsClosedBackToOpen(t *testing.T) {
 	}
 }
 
+// TestWebhook_StaleReopenRedeliveryDoesNotReopenSecondClose is the round-4
+// item-1 regression guard: GitHub does not guarantee webhook delivery order,
+// so a DELAYED redelivery of an earlier "reopened" webhook can arrive after
+// the PR has since been reopened and closed again. That stale payload still
+// carries action="reopened" (is_reopen=true) but its closed_at describes the
+// FIRST close, which is chronologically older than the closed_at already
+// stored from the SECOND close. Without an ordering check on top of
+// is_reopen, that stale redelivery would wrongly reopen a PR that is
+// genuinely closed. This exercises the full sequence: close (T1) -> reopen ->
+// close again (T2 > T1) -> delayed redelivery of the first "reopened"
+// webhook (closed_at=T1) -> PR must stay closed with closed_at still T2.
+func TestWebhook_StaleReopenRedeliveryDoesNotReopenSecondClose(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	secret := "stale-reopen-redelivery-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+
+	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":  "Stale reopen redelivery test issue",
+		"status": "in_progress",
+	})
+	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
+	var created IssueResponse
+	json.NewDecoder(w.Body).Decode(&created)
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM github_merge_announcement WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM comment WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_installation WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM activity_log WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, created.ID)
+	})
+
+	const installationID int64 = 99887799
+	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
+		WorkspaceID:    parseUUID(testWorkspaceID),
+		InstallationID: installationID,
+		AccountLogin:   "stale-reopen-redelivery-acct",
+		AccountType:    "User",
+	}); err != nil {
+		t.Fatalf("CreateGitHubInstallation: %v", err)
+	}
+
+	const prNumber = 7171
+	const repoOwner, repoName = "acme", "widget"
+	prURL := "https://github.com/" + repoOwner + "/" + repoName + "/pull/7171"
+
+	// 1. First close: closed_at = T1.
+	firstClosedBody := map[string]any{
+		"action": "closed",
+		"pull_request": map[string]any{
+			"number":     prNumber,
+			"html_url":   prURL,
+			"title":      created.Identifier + ": ship it",
+			"body":       "",
+			"state":      "closed",
+			"draft":      false,
+			"merged":     false,
+			"merged_at":  nil,
+			"closed_at":  "2026-09-10T09:00:00Z", // T1
+			"created_at": "2026-09-10T08:00:00Z",
+			"updated_at": "2026-09-10T09:00:00Z",
+			"head":       map[string]any{"ref": "fix/ship-it"},
+			"user":       map[string]any{"login": "octocat", "avatar_url": ""},
+		},
+		"repository": map[string]any{
+			"id":    717171,
+			"name":  repoName,
+			"owner": map[string]any{"login": repoOwner},
+		},
+		"installation": map[string]any{"id": installationID},
+	}
+	postSignedGitHubWebhook(t, secret, firstClosedBody, "stale-reopen-redelivery-close-1")
+
+	// 2. Genuine reopen: closed_at cleared.
+	reopenedBody := map[string]any{
+		"action": "reopened",
+		"pull_request": map[string]any{
+			"number":     prNumber,
+			"html_url":   prURL,
+			"title":      created.Identifier + ": ship it",
+			"body":       "",
+			"state":      "open",
+			"draft":      false,
+			"merged":     false,
+			"merged_at":  nil,
+			"closed_at":  nil,
+			"created_at": "2026-09-10T08:00:00Z",
+			"updated_at": "2026-09-10T09:05:00Z",
+			"head":       map[string]any{"ref": "fix/ship-it"},
+			"user":       map[string]any{"login": "octocat", "avatar_url": ""},
+		},
+		"repository": map[string]any{
+			"id":    717171,
+			"name":  repoName,
+			"owner": map[string]any{"login": repoOwner},
+		},
+		"installation": map[string]any{"id": installationID},
+	}
+	postSignedGitHubWebhook(t, secret, reopenedBody, "stale-reopen-redelivery-reopen")
+
+	// 3. Second close: closed_at = T2, T2 > T1.
+	secondClosedBody := map[string]any{
+		"action": "closed",
+		"pull_request": map[string]any{
+			"number":     prNumber,
+			"html_url":   prURL,
+			"title":      created.Identifier + ": ship it",
+			"body":       "",
+			"state":      "closed",
+			"draft":      false,
+			"merged":     false,
+			"merged_at":  nil,
+			"closed_at":  "2026-09-10T10:00:00Z", // T2 > T1
+			"created_at": "2026-09-10T08:00:00Z",
+			"updated_at": "2026-09-10T10:00:00Z",
+			"head":       map[string]any{"ref": "fix/ship-it"},
+			"user":       map[string]any{"login": "octocat", "avatar_url": ""},
+		},
+		"repository": map[string]any{
+			"id":    717171,
+			"name":  repoName,
+			"owner": map[string]any{"login": repoOwner},
+		},
+		"installation": map[string]any{"id": installationID},
+	}
+	postSignedGitHubWebhook(t, secret, secondClosedBody, "stale-reopen-redelivery-close-2")
+
+	prAfterSecondClose, err := testHandler.Queries.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{
+		WorkspaceID: parseUUID(testWorkspaceID),
+		RepoOwner:   repoOwner,
+		RepoName:    repoName,
+		PrNumber:    prNumber,
+	})
+	if err != nil {
+		t.Fatalf("GetGitHubPullRequest after second close: %v", err)
+	}
+	if prAfterSecondClose.State != "closed" {
+		t.Fatalf("expected PR state 'closed' right after the second close webhook, got %q", prAfterSecondClose.State)
+	}
+	if !prAfterSecondClose.ClosedAt.Valid || prAfterSecondClose.ClosedAt.Time.UTC().Format("2006-01-02T15:04:05Z") != "2026-09-10T10:00:00Z" {
+		t.Fatalf("expected closed_at = T2 (2026-09-10T10:00:00Z) after second close, got %v", prAfterSecondClose.ClosedAt)
+	}
+
+	// 4. A delayed redelivery of the FIRST "reopened" webhook arrives late
+	// (same delivery GUID scenario as GitHub's at-least-once redelivery, but
+	// modeled here as an independent delivery carrying the stale payload). Its
+	// closed_at is T1 — older than the currently stored T2 — so it must be
+	// rejected: the PR must stay closed with closed_at still T2, not reopened.
+	staleReopenedRedeliveryBody := map[string]any{
+		"action": "reopened",
+		"pull_request": map[string]any{
+			"number":     prNumber,
+			"html_url":   prURL,
+			"title":      created.Identifier + ": ship it",
+			"body":       "",
+			"state":      "open",
+			"draft":      false,
+			"merged":     false,
+			"merged_at":  nil,
+			"closed_at":  "2026-09-10T09:00:00Z", // stale T1, older than stored T2
+			"created_at": "2026-09-10T08:00:00Z",
+			"updated_at": "2026-09-10T09:05:00Z",
+			"head":       map[string]any{"ref": "fix/ship-it"},
+			"user":       map[string]any{"login": "octocat", "avatar_url": ""},
+		},
+		"repository": map[string]any{
+			"id":    717171,
+			"name":  repoName,
+			"owner": map[string]any{"login": repoOwner},
+		},
+		"installation": map[string]any{"id": installationID},
+	}
+	postSignedGitHubWebhook(t, secret, staleReopenedRedeliveryBody, "stale-reopen-redelivery-stale-reopen")
+
+	prAfterStaleRedelivery, err := testHandler.Queries.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{
+		WorkspaceID: parseUUID(testWorkspaceID),
+		RepoOwner:   repoOwner,
+		RepoName:    repoName,
+		PrNumber:    prNumber,
+	})
+	if err != nil {
+		t.Fatalf("GetGitHubPullRequest after stale reopen redelivery: %v", err)
+	}
+	if prAfterStaleRedelivery.State != "closed" {
+		t.Errorf("stale delayed 'reopened' redelivery reopened a PR that was closed again, got state %q, want it to remain 'closed'", prAfterStaleRedelivery.State)
+	}
+	if !prAfterStaleRedelivery.ClosedAt.Valid || prAfterStaleRedelivery.ClosedAt.Time.UTC().Format("2006-01-02T15:04:05Z") != "2026-09-10T10:00:00Z" {
+		t.Errorf("stale delayed 'reopened' redelivery moved closed_at, want it to remain T2 (2026-09-10T10:00:00Z), got %v", prAfterStaleRedelivery.ClosedAt)
+	}
+}
+
 // TestWebhook_MergeAnnouncementSkipsJustUnlinkedIssue is the A1 regression
 // guard: a PR body edit that drops the closing claim on one issue while a
 // sibling issue remains genuinely linked must not enqueue a merge
