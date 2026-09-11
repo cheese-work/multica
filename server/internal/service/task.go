@@ -19,6 +19,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/attribution"
 	"github.com/multica-ai/multica/server/internal/chattitle"
+	"github.com/multica-ai/multica/server/internal/commentguard"
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
@@ -88,6 +89,22 @@ type TaskService struct {
 	analyticsContextMu    sync.Mutex
 	analyticsContextCache map[string]analytics.TaskContext
 	analyticsContextOrder []string
+
+	// testHookAfterDelegatedFailureDedupCheckUncovered, when non-nil, is
+	// invoked by dispatchDelegatedFailureRecovery on its first attempt
+	// immediately after HasTaskCoveringDelegatedFailureComment has returned
+	// with covered == false — i.e. only once both the read has actually
+	// executed AND observed an uncovered obligation, and strictly before any
+	// of the following mutating calls (CountDelegatedFailureRecoveryTasks,
+	// MergeDelegatedFailureCommentIntoPendingTask, CreateAgentTask, ...).
+	// Test-only: nil in production, so this is a zero-cost no-op there.
+	// Exists so a race test can rendezvous both the event-triggered and
+	// timer-triggered dispatch paths at the point they have each
+	// independently proven they observed the same uncovered state — the only
+	// point that distinguishes genuine concurrent contention from one caller
+	// finishing before the other's read even runs (see
+	// TestDelegatedFailureRecoveryEventAndTimerRaceDispatchExactlyOnce).
+	testHookAfterDelegatedFailureDedupCheckUncovered func()
 }
 
 type SourceContextObjectStore interface {
@@ -6004,6 +6021,7 @@ func loadDelegatedFailureRecoveryTarget(ctx context.Context, q *db.Queries, fail
 // mention-notification side effects.
 func (s *TaskService) ensureDelegatedFailureRecoveryComment(ctx context.Context, failedID pgtype.UUID) (*delegatedFailureRecoveryTarget, bool, error) {
 	var target *delegatedFailureRecoveryTarget
+	var clearedResolution []db.Comment
 	created := false
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		failed, err := qtx.GetAgentTaskForDelegatedFailureUpdate(ctx, failedID)
@@ -6026,6 +6044,18 @@ func (s *TaskService) ensureDelegatedFailureRecoveryComment(ctx context.Context,
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("find recovery comment: %w", err)
 		}
+		// This recovery comment replies under the source task's trigger
+		// comment, so it is subject to the same commit-ordering race as any
+		// other reply and must take the identical thread-scoped lock before
+		// its insert (see commentguard.LockThreadForReply). Reopening a
+		// resolved thread (root OR reply) happens in this same transaction,
+		// under the same lock, before commit — see
+		// commentguard.LockThreadForReplyAndClearResolution.
+		_, cleared, err := commentguard.LockThreadForReplyAndClearResolution(ctx, qtx, target.issue.WorkspaceID, target.source.TriggerCommentID)
+		if err != nil {
+			return fmt.Errorf("lock comment thread for recovery comment: %w", err)
+		}
+		clearedResolution = cleared
 		createdComment, err := qtx.CreateComment(ctx, db.CreateCommentParams{
 			ID:           dbid.NewV7(),
 			IssueID:      target.issue.ID,
@@ -6061,6 +6091,9 @@ func (s *TaskService) ensureDelegatedFailureRecoveryComment(ctx context.Context,
 				"issue_status": target.issue.Status,
 			},
 		})
+	}
+	if created && s.Bus != nil {
+		s.PublishThreadUnresolvedOnReply(clearedResolution, util.UUIDToString(target.issue.WorkspaceID), "system", "")
 	}
 	return target, created, nil
 }
@@ -6099,6 +6132,7 @@ func delegatedFailureRecoveryAttribution(target *delegatedFailureRecoveryTarget)
 func (s *TaskService) exhaustDelegatedFailureRecovery(ctx context.Context, target *delegatedFailureRecoveryTarget) (bool, error) {
 	var exhaustedComment db.Comment
 	var exhaustedInbox db.InboxItem
+	var clearedResolution []db.Comment
 	created := false
 	inboxCreated := false
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
@@ -6132,6 +6166,17 @@ func (s *TaskService) exhaustDelegatedFailureRecovery(ctx context.Context, targe
 			return fmt.Errorf("find delegated failure exhaustion comment: %w", err)
 		}
 
+		// Same thread-scoped lock requirement as the initial recovery comment
+		// above: this exhaustion comment is also a reply under the source
+		// task's trigger comment (see commentguard.LockThreadForReply).
+		// Reopening a resolved thread (root OR reply) happens in this same
+		// transaction, under the same lock, before commit — see
+		// commentguard.LockThreadForReplyAndClearResolution.
+		_, cleared, err := commentguard.LockThreadForReplyAndClearResolution(ctx, qtx, target.issue.WorkspaceID, target.source.TriggerCommentID)
+		if err != nil {
+			return fmt.Errorf("lock comment thread for exhaustion comment: %w", err)
+		}
+		clearedResolution = cleared
 		createdComment, err := qtx.CreateComment(ctx, db.CreateCommentParams{
 			ID:           dbid.NewV7(),
 			IssueID:      target.issue.ID,
@@ -6238,6 +6283,9 @@ func (s *TaskService) exhaustDelegatedFailureRecovery(ctx context.Context, targe
 			}},
 		})
 	}
+	if created && s.Bus != nil {
+		s.PublishThreadUnresolvedOnReply(clearedResolution, util.UUIDToString(target.issue.WorkspaceID), "system", "")
+	}
 	return created, nil
 }
 
@@ -6263,6 +6311,9 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 		}
 		if covered {
 			return delegatedFailureRecoveryCovered, nil
+		}
+		if attempt == 0 && s.testHookAfterDelegatedFailureDedupCheckUncovered != nil {
+			s.testHookAfterDelegatedFailureDedupCheckUncovered()
 		}
 
 		recoveryTasks, err := s.Queries.CountDelegatedFailureRecoveryTasks(ctx, target.failed.ID)
@@ -7121,27 +7172,41 @@ func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID p
 	// Resolve the thread root for thread-level side effects without overwriting
 	// parentID. The stored parent_id must remain the exact comment being replied
 	// to; recursive thread reads recover the root when needed.
-	var rootComment *db.Comment
-	if parentID.Valid {
-		if root, err := s.Queries.GetThreadRoot(ctx, db.GetThreadRootParams{
-			CommentID:   parentID,
-			WorkspaceID: issue.WorkspaceID,
-		}); err == nil {
-			rootComment = &root
+	//
+	// A reply takes the same thread-scoped advisory lock the handler's
+	// CreateComment path and ResolveComment's concurrent-feedback guard take
+	// (see commentguard.LockThreadForReply) — an agent-authored reply can land
+	// in the exact same commit-ordering race window as a human one, so it must
+	// serialize against the same lock. commentguard fails closed on a
+	// thread-root lookup error, so this whole write is skipped (logged, not
+	// created unlocked) rather than silently bypassing the guard.
+	//
+	// Reopening a resolved thread (root OR reply) happens INSIDE this same
+	// transaction, under the same lock, before commit — see
+	// commentguard.LockThreadForReplyAndClearResolution. Only the
+	// comment:unresolved EVENT publish waits until after commit.
+	var clearedResolution []db.Comment
+	var created db.CreateCommentRow
+	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		_, cleared, err := commentguard.LockThreadForReplyAndClearResolution(ctx, qtx, issue.WorkspaceID, parentID)
+		if err != nil {
+			return err
 		}
-	}
-	created, err := s.Queries.CreateComment(ctx, db.CreateCommentParams{
-		ID:           dbid.NewV7(),
-		IssueID:      issueID,
-		WorkspaceID:  issue.WorkspaceID,
-		AuthorType:   "agent",
-		AuthorID:     agentID,
-		Content:      content,
-		Type:         commentType,
-		ParentID:     parentID,
-		SourceTaskID: sourceTaskID,
-	})
-	if err != nil {
+		clearedResolution = cleared
+		created, err = qtx.CreateComment(ctx, db.CreateCommentParams{
+			ID:           dbid.NewV7(),
+			IssueID:      issueID,
+			WorkspaceID:  issue.WorkspaceID,
+			AuthorType:   "agent",
+			AuthorID:     agentID,
+			Content:      content,
+			Type:         commentType,
+			ParentID:     parentID,
+			SourceTaskID: sourceTaskID,
+		})
+		return err
+	}); err != nil {
+		slog.Warn("create agent comment failed", "error", err, "issue_id", util.UUIDToString(issueID), "agent_id", util.UUIDToString(agentID))
 		return
 	}
 	comment := created.Comment()
@@ -7159,47 +7224,63 @@ func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID p
 			"issue_revision": created.IssueRevision,
 		},
 	})
-	s.AutoUnresolveThreadOnReply(ctx, rootComment, util.UUIDToString(issue.WorkspaceID), "agent", util.UUIDToString(agentID))
+	s.PublishThreadUnresolvedOnReply(clearedResolution, util.UUIDToString(issue.WorkspaceID), "agent", util.UUIDToString(agentID))
 }
 
-// AutoUnresolveThreadOnReply clears resolved_at on the thread root when a
-// reply lands in a resolved thread, and broadcasts comment:unresolved. Shared
-// between the user-facing Handler.CreateComment path and the agent-facing
-// TaskService.createAgentComment path so the resolved-then-replied state can
-// never desync (one of the bugs Emacs flagged on PR #2300). Errors are logged
-// — the reply itself already committed, the desync is recoverable on next read.
-func (s *TaskService) AutoUnresolveThreadOnReply(ctx context.Context, parent *db.Comment, workspaceID, actorType, actorID string) {
-	if parent == nil || !parent.ResolvedAt.Valid {
-		return
-	}
-	updated, err := s.Queries.UnresolveComment(ctx, parent.ID)
-	if err != nil {
-		slog.Warn("auto-unresolve on reply failed", "error", err, "comment_id", util.UUIDToString(parent.ID))
-		return
-	}
-	s.Bus.Publish(events.Event{
-		Type:        protocol.EventCommentUnresolved,
-		WorkspaceID: workspaceID,
-		ActorType:   actorType,
-		ActorID:     actorID,
-		Payload: map[string]any{
-			"comment": map[string]any{
-				"id":               util.UUIDToString(updated.ID),
-				"issue_id":         util.UUIDToString(updated.IssueID),
-				"author_type":      updated.AuthorType,
-				"author_id":        util.UUIDToString(updated.AuthorID),
-				"content":          updated.Content,
-				"type":             updated.Type,
-				"parent_id":        util.UUIDToPtr(updated.ParentID),
-				"created_at":       util.TimestampToString(updated.CreatedAt),
-				"updated_at":       util.TimestampToString(updated.UpdatedAt),
-				"resolved_at":      util.TimestampToPtr(updated.ResolvedAt),
-				"resolved_by_type": util.TextToPtr(updated.ResolvedByType),
-				"resolved_by_id":   util.UUIDToPtr(updated.ResolvedByID),
-				"revision":         updated.Revision,
+// PublishThreadUnresolvedOnReply broadcasts one comment:unresolved event per
+// comment whose resolution was already cleared, in-transaction, by
+// commentguard.LockThreadForReplyAndClearResolution before the reply's own
+// transaction committed. This is a pure post-commit event publisher now — it
+// performs no database write. It used to be AutoUnresolveThreadOnReply, which
+// both cleared resolved_at (via an unlocked, non-transactional s.Queries
+// handle called AFTER the reply's own transaction had already committed) and
+// published the event; that post-commit database write was itself racy: a
+// ResolveComment call could acquire the lock and commit a fresh, legitimate
+// resolution in the gap between the reply's commit and this call, and the
+// stale write would incorrectly clear that later resolution. Moving the
+// clear inside the reply's own locked transaction (see
+// LockThreadForReplyAndClearResolution) closes that window structurally;
+// this function's only remaining job is telling realtime listeners about
+// clears that have already committed as part of the reply.
+//
+// cleared is the full slice LockThreadForReplyAndClearResolution returned:
+// under today's single-resolution invariant it holds at most one row, but
+// this function does not assume that — it publishes one event per row so a
+// future or defensive multi-row clear is never silently under-reported to
+// realtime consumers. An empty/nil slice is a no-op (the reply landed in an
+// already-unresolved thread).
+//
+// Shared by every reply-insert call site (Handler.CreateComment,
+// Handler.CreatePluginComment, TaskService.createAgentComment,
+// ensureDelegatedFailureRecoveryComment, exhaustDelegatedFailureRecovery) so
+// the resolved-then-replied state can never desync (one of the bugs flagged
+// on PR #2300, and the commit-ordering issue flagged in round 5).
+func (s *TaskService) PublishThreadUnresolvedOnReply(cleared []db.Comment, workspaceID, actorType, actorID string) {
+	for _, c := range cleared {
+		s.Bus.Publish(events.Event{
+			Type:        protocol.EventCommentUnresolved,
+			WorkspaceID: workspaceID,
+			ActorType:   actorType,
+			ActorID:     actorID,
+			Payload: map[string]any{
+				"comment": map[string]any{
+					"id":               util.UUIDToString(c.ID),
+					"issue_id":         util.UUIDToString(c.IssueID),
+					"author_type":      c.AuthorType,
+					"author_id":        util.UUIDToString(c.AuthorID),
+					"content":          c.Content,
+					"type":             c.Type,
+					"parent_id":        util.UUIDToPtr(c.ParentID),
+					"created_at":       util.TimestampToString(c.CreatedAt),
+					"updated_at":       util.TimestampToString(c.UpdatedAt),
+					"resolved_at":      util.TimestampToPtr(c.ResolvedAt),
+					"resolved_by_type": util.TextToPtr(c.ResolvedByType),
+					"resolved_by_id":   util.UUIDToPtr(c.ResolvedByID),
+					"revision":         c.Revision,
+				},
 			},
-		},
-	})
+		})
+	}
 }
 
 // IssueToMap renders an issue row as the map shape the issue:created /

@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/commentguard"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -553,7 +554,6 @@ func (h *Handler) CreatePluginComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var parentID pgtype.UUID
-	var rootComment *db.Comment
 	if req.ParentID != nil && *req.ParentID != "" {
 		parsed, err := util.ParseUUID(*req.ParentID)
 		if err != nil {
@@ -566,7 +566,6 @@ func (h *Handler) CreatePluginComment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		parentID = parsed
-		rootComment = &parent
 	}
 
 	// Authorship follows the actor, and the actor was decided by how the caller
@@ -581,7 +580,29 @@ func (h *Handler) CreatePluginComment(w http.ResponseWriter, r *http.Request) {
 		authorID = caller.Installation.ID
 	}
 
-	createdComment, err := h.Queries.CreateComment(r.Context(), db.CreateCommentParams{
+	// A plugin-authored reply takes the same thread-scoped advisory lock every
+	// other reply path takes (see commentguard.LockThreadForReply) — this
+	// endpoint is a fourth writer into the same comment threads the handler's
+	// CreateComment and ResolveComment guard, so it must serialize identically
+	// or it reopens the exact commit-ordering race those close.
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		publicapiv1.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "failed to create the comment")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	// LockThreadForReplyAndClearResolution takes the thread lock and, still
+	// inside this transaction, clears any resolution held by the root or any
+	// reply in the thread — so a reply landing in a resolved thread reopens it
+	// atomically with its own insert instead of via a separate post-commit
+	// write through an unlocked handle (see commentguard package doc).
+	_, cleared, err := commentguard.LockThreadForReplyAndClearResolution(r.Context(), qtx, caller.WorkspaceID, parentID)
+	if err != nil {
+		publicapiv1.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "failed to create the comment")
+		return
+	}
+	createdComment, err := qtx.CreateComment(r.Context(), db.CreateCommentParams{
 		ID:          dbid.NewV7(),
 		IssueID:     issue.ID,
 		WorkspaceID: caller.WorkspaceID,
@@ -593,6 +614,10 @@ func (h *Handler) CreatePluginComment(w http.ResponseWriter, r *http.Request) {
 		ViaPluginID: caller.Installation.ID,
 	})
 	if err != nil {
+		publicapiv1.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "failed to create the comment")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		publicapiv1.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "failed to create the comment")
 		return
 	}
@@ -610,9 +635,7 @@ func (h *Handler) CreatePluginComment(w http.ResponseWriter, r *http.Request) {
 		"issue_assignee_id":   uuidToPtr(issue.AssigneeID),
 		"issue_status":        issue.Status,
 	})
-	if rootComment != nil {
-		h.TaskService.AutoUnresolveThreadOnReply(r.Context(), rootComment, uuidToString(caller.WorkspaceID), authorType, uuidToString(authorID))
-	}
+	h.TaskService.PublishThreadUnresolvedOnReply(cleared, uuidToString(caller.WorkspaceID), authorType, uuidToString(authorID))
 
 	writeJSON(w, http.StatusCreated, publicPluginComment(comment))
 }

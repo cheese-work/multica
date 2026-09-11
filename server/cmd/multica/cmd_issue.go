@@ -574,6 +574,7 @@ func init() {
 	issueUpdateCmd.Flags().Float64("position", 0, "Ordering position within the board column (lower sorts first); prefer `issue reorder` for relative moves")
 	issueUpdateCmd.Flags().Bool("no-start", false, "Apply the update without starting an agent run")
 	issueUpdateCmd.Flags().String("output", "json", "Output format: table or json")
+	issueUpdateCmd.Flags().Int64("expected-revision", 0, "Reject the update with a conflict error if the issue's revision on the server no longer matches this value (optimistic concurrency; re-read the issue and retry on conflict)")
 
 	// issue status
 	issueStatusCmd.Flags().Bool("no-start", false, "Change status without starting an agent run")
@@ -1453,6 +1454,35 @@ func activeDuplicateIssueCreateMessage(err error) (string, bool) {
 	return payload.Error, true
 }
 
+// revisionConflictMessage decodes a 409 revision_conflict body (see
+// writeRevisionConflict in internal/handler/handler.go) into an actionable CLI
+// error, rather than surfacing the raw JSON. It matches the decode pattern
+// activeDuplicateIssueCreateMessage uses for the other typed 409 the issue API
+// returns, so both stale-write conflicts read the same way from the CLI.
+func revisionConflictMessage(err error) (string, bool) {
+	var httpErr *cli.HTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusConflict {
+		return "", false
+	}
+	var payload struct {
+		Code             string `json:"code"`
+		Error            string `json:"error"`
+		ResourceType     string `json:"resource_type"`
+		ExpectedRevision int64  `json:"expected_revision"`
+		ActualRevision   int64  `json:"actual_revision"`
+	}
+	if json.Unmarshal([]byte(httpErr.Body), &payload) != nil {
+		return "", false
+	}
+	if payload.Code != "revision_conflict" {
+		return "", false
+	}
+	return fmt.Sprintf(
+		"update rejected: %s changed since it was loaded (expected revision %d, server is at %d) — re-read the issue and retry your update with --expected-revision %d",
+		payload.ResourceType, payload.ExpectedRevision, payload.ActualRevision, payload.ActualRevision,
+	), true
+}
+
 func runIssueUpdate(cmd *cobra.Command, args []string) error {
 	noStart, _ := cmd.Flags().GetBool("no-start")
 	statusChanged := cmd.Flags().Changed("status")
@@ -1561,6 +1591,10 @@ func runIssueUpdate(cmd *cobra.Command, args []string) error {
 		v, _ := cmd.Flags().GetFloat64("position")
 		body["position"] = v
 	}
+	if cmd.Flags().Changed("expected-revision") {
+		v, _ := cmd.Flags().GetInt64("expected-revision")
+		body["expected_revision"] = v
+	}
 
 	if len(body) == 0 {
 		return fmt.Errorf("no fields to update; use flags like --title, --status, --priority, --assignee, etc.")
@@ -1571,6 +1605,9 @@ func runIssueUpdate(cmd *cobra.Command, args []string) error {
 
 	var result map[string]any
 	if err := client.PutJSON(ctx, "/api/issues/"+issueRef.ID, body, &result); err != nil {
+		if msg, ok := revisionConflictMessage(err); ok {
+			return errors.New(msg)
+		}
 		return fmt.Errorf("update issue: %w", err)
 	}
 

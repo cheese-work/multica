@@ -144,6 +144,95 @@ func (q *Queries) ClearOtherThreadResolutions(ctx context.Context, arg ClearOthe
 	return items, nil
 }
 
+const clearThreadResolutionForReply = `-- name: ClearThreadResolutionForReply :many
+WITH RECURSIVE descendants AS (
+    SELECT c.id
+    FROM comment c
+    WHERE c.id = $1 AND c.issue_id = $2 AND c.workspace_id = $3
+    UNION
+    SELECT c.id
+    FROM comment c
+    JOIN descendants d ON c.parent_id = d.id
+    WHERE c.issue_id = $2 AND c.workspace_id = $3
+)
+UPDATE comment SET
+    resolved_at = NULL,
+    resolved_by_type = NULL,
+    resolved_by_id = NULL,
+    revision = revision + 1,
+    updated_at = now()
+WHERE comment.id IN (SELECT id FROM descendants)
+  AND comment.resolved_at IS NOT NULL
+RETURNING id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at
+`
+
+type ClearThreadResolutionForReplyParams struct {
+	ThreadRootID pgtype.UUID `json:"thread_root_id"`
+	IssueID      pgtype.UUID `json:"issue_id"`
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+}
+
+// Round 5 fix: a reply landing in a resolved thread must reopen it in the SAME
+// transaction that holds LockCommentThread and inserts the reply, before
+// commit — not as a separate post-commit write through an unlocked handle.
+// The prior design (TaskService.AutoUnresolveThreadOnReply, called after the
+// reply's tx committed via a bare *db.Queries) could clear a LATER,
+// legitimate resolution that a concurrent ResolveComment committed in the gap
+// between the reply's commit and the post-commit call — violating commit
+// ordering — and it only ever looked at the thread ROOT's resolved_at, so a
+// resolved REPLY (not the root) was never reopened at all.
+//
+// @thread_root_id is the thread root id the caller already resolved via
+// GetThreadRoot (or holds directly, e.g. inside LockThreadForReplyAndLoadRoot)
+// and locked via LockCommentThread — the identical key CreateComment and
+// ResolveComment's guard already lock by, so this clear is covered by the
+// same advisory lock for its whole read-then-write window.
+//
+// By the single-resolution invariant ClearOtherThreadResolutions enforces, a
+// thread has at most one resolved comment at any time — root or reply — so
+// this walks the same recursive parent_id structure down from the root and
+// clears whichever single comment in the subtree currently has resolved_at
+// set. Returns that row (0 rows when nothing in the thread was resolved) so
+// the caller can still decide whether to publish comment:unresolved.
+func (q *Queries) ClearThreadResolutionForReply(ctx context.Context, arg ClearThreadResolutionForReplyParams) ([]Comment, error) {
+	rows, err := q.db.Query(ctx, clearThreadResolutionForReply, arg.ThreadRootID, arg.IssueID, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Comment{}
+	for rows.Next() {
+		var i Comment
+		if err := rows.Scan(
+			&i.ID,
+			&i.IssueID,
+			&i.AuthorType,
+			&i.AuthorID,
+			&i.Content,
+			&i.Type,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ParentID,
+			&i.WorkspaceID,
+			&i.ResolvedAt,
+			&i.ResolvedByType,
+			&i.ResolvedByID,
+			&i.SourceTaskID,
+			&i.QuickActionID,
+			&i.ViaPluginID,
+			&i.Revision,
+			&i.RecoverySettledAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countComments = `-- name: CountComments :one
 SELECT count(*) FROM comment
 WHERE issue_id = $1 AND workspace_id = $2
@@ -193,6 +282,62 @@ func (q *Queries) CountNewCommentsSince(ctx context.Context, arg CountNewComment
 		arg.Since,
 		arg.AnchorID,
 		arg.AuthorID,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countThreadCommentsSince = `-- name: CountThreadCommentsSince :one
+WITH RECURSIVE root_of AS (
+    SELECT c.id, c.parent_id
+    FROM comment c
+    WHERE c.id = $1 AND c.issue_id = $3 AND c.workspace_id = $4
+    UNION ALL
+    SELECT p.id, p.parent_id
+    FROM comment p
+    JOIN root_of r ON p.id = r.parent_id
+),
+thread_root AS (
+    SELECT id FROM root_of WHERE parent_id IS NULL LIMIT 1
+),
+descendants AS (
+    SELECT c.id
+    FROM comment c
+    JOIN thread_root tr ON c.id = tr.id
+    UNION
+    SELECT c.id
+    FROM comment c
+    JOIN descendants d ON c.parent_id = d.id
+    WHERE c.issue_id = $3 AND c.workspace_id = $4
+)
+SELECT count(*) FROM comment
+WHERE comment.id IN (SELECT id FROM descendants)
+  AND comment.id <> $1
+  AND comment.created_at > $2
+`
+
+type CountThreadCommentsSinceParams struct {
+	TargetID    pgtype.UUID        `json:"target_id"`
+	Since       pgtype.Timestamptz `json:"since"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+}
+
+// Race guard for ResolveComment (MUL concurrent-feedback coverage): counts
+// comments in @target_id's thread (its root plus every descendant, same
+// walk as ClearOtherThreadResolutions) created strictly after @since,
+// excluding @target_id itself. The resolve handler compares this against the
+// reply count the caller observed before deciding to resolve — a non-zero
+// result means a reply landed in the thread after the caller loaded it, which
+// resolving now would silently fold away, so the handler rejects the write
+// with a typed conflict instead of applying it.
+func (q *Queries) CountThreadCommentsSince(ctx context.Context, arg CountThreadCommentsSinceParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countThreadCommentsSince,
+		arg.TargetID,
+		arg.Since,
+		arg.IssueID,
+		arg.WorkspaceID,
 	)
 	var count int64
 	err := row.Scan(&count)
@@ -1828,6 +1973,29 @@ func (q *Queries) LockCommentAncestorPath(ctx context.Context, arg LockCommentAn
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockCommentThread = `-- name: LockCommentThread :exec
+SELECT pg_advisory_xact_lock(hashtextextended($1::uuid::text || ':comment_thread', 0))
+`
+
+// Thread-scoped advisory xact lock, held by both CreateComment (a reply
+// landing in a thread) and ResolveComment's guarded path (the
+// CountThreadCommentsSince check plus the resolving write). A single
+// READ COMMITTED transaction gives ResolveComment no consistent snapshot
+// across its separate statements, and known_as_of is a client wall-clock
+// timestamp compared against created_at (assigned at INSERT, not COMMIT) —
+// so a reply that inserts before the guard runs but commits after it is
+// invisible to a timestamp comparison in either direction. Taking this lock
+// before the guard, and having a reply's create hold the same key for the
+// thread it inserts into, orders the COMMITS themselves: whichever side
+// commits first is the one the other observes, closing the window
+// regardless of created_at/commit-time skew. pg_advisory_xact_lock (not
+// pg_try_) so a concurrent reply queues behind an in-flight resolve instead
+// of failing outright — the reply is rare and cheap to make wait briefly.
+func (q *Queries) LockCommentThread(ctx context.Context, threadRootID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockCommentThread, threadRootID)
+	return err
 }
 
 const resolveComment = `-- name: ResolveComment :one
