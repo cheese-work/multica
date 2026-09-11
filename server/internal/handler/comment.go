@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -16,6 +17,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/commentguard"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -1818,21 +1820,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// entity-encode Markdown syntax characters (>, ", &, <) and corrupt the
 	// source. See issue #1303 / discussion in MUL-1119, MUL-1125.
 
-	// parent_id stores the exact comment being replied to. Thread-level behavior
-	// (for example auto-unresolving a resolved thread) resolves the root
-	// separately so storing a reply-to-reply does not destroy the direct-parent
-	// signal used by trigger decisions.
-	var rootComment *db.Comment
-	if parentID.Valid {
-		if root, err := h.Queries.GetThreadRoot(r.Context(), db.GetThreadRootParams{
-			CommentID:   parentID,
-			WorkspaceID: issue.WorkspaceID,
-		}); err == nil {
-			rootComment = &root
-		}
-	}
-
-	created, err := h.Queries.CreateComment(r.Context(), db.CreateCommentParams{
+	createParams := db.CreateCommentParams{
 		ID:           dbid.NewV7(),
 		IssueID:      issue.ID,
 		WorkspaceID:  issue.WorkspaceID,
@@ -1842,10 +1830,49 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		Type:         req.Type,
 		ParentID:     parentID,
 		SourceTaskID: sourceTaskID,
-	})
+	}
+
+	// A reply takes the same thread-scoped advisory lock ResolveComment's
+	// concurrent-feedback guard takes before it counts/resolves (see
+	// ResolveComment). Ordering the insert's commit against the guard's lock
+	// acquisition is what actually closes that race — a plain re-check of
+	// created_at cannot, since created_at is assigned at INSERT time and the
+	// guard's tx runs at READ COMMITTED with no cross-statement snapshot.
+	// Top-level comments skip this: they cannot be "the reply that lands
+	// after a guard checked" for any thread that already existed.
+	//
+	// commentguard.LockThreadForReply fails closed on a thread-root lookup
+	// error: this transaction must not commit a reply without the lock held,
+	// so a lookup failure aborts the request rather than silently creating an
+	// unlocked reply (that used to be the behavior here, which reopened the
+	// exact race this lock exists to close).
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create comment")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	// LockThreadForReplyAndClearResolution takes the thread lock and, still
+	// inside this transaction, clears any resolution held by the root or any
+	// reply in the thread — so a reply landing in a resolved thread reopens it
+	// atomically with its own insert instead of via a separate post-commit
+	// write through an unlocked handle (see commentguard package doc).
+	_, cleared, err := commentguard.LockThreadForReplyAndClearResolution(r.Context(), qtx, issue.WorkspaceID, parentID)
+	if err != nil {
+		slog.Warn("lock comment thread failed", append(logger.RequestAttrs(r), "error", err, "issue_id", issueID)...)
+		writeError(w, http.StatusInternalServerError, "failed to create comment")
+		return
+	}
+	created, err := qtx.CreateComment(r.Context(), createParams)
 	if err != nil {
 		slog.Warn("create comment failed", append(logger.RequestAttrs(r), "error", err, "issue_id", issueID)...)
 		writeError(w, http.StatusInternalServerError, "failed to create comment: "+err.Error())
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		slog.Warn("create comment commit failed", append(logger.RequestAttrs(r), "error", err, "issue_id", issueID)...)
+		writeError(w, http.StatusInternalServerError, "failed to create comment")
 		return
 	}
 	comment := created.Comment()
@@ -1869,11 +1896,12 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		"issue_revision":      created.IssueRevision,
 	})
 
-	// A reply in a resolved thread re-opens it. Done after CreateComment commits
-	// so the reply is visible regardless of the unresolve outcome. Shared with
-	// the agent task path (TaskService.createAgentComment) — both reply paths
-	// must keep the resolved root in sync.
-	h.TaskService.AutoUnresolveThreadOnReply(r.Context(), rootComment, uuidToString(issue.WorkspaceID), authorType, authorID)
+	// The resolution clear itself already committed inside the transaction
+	// above; this only publishes comment:unresolved for it, after commit, same
+	// as comment:created. Shared with the agent task path
+	// (TaskService.createAgentComment) — both reply paths use the same
+	// publisher.
+	h.TaskService.PublishThreadUnresolvedOnReply(cleared, uuidToString(issue.WorkspaceID), authorType, authorID)
 
 	originatorUserID := h.invokeOriginatorFromRequest(r, authorType, authorID)
 	// The comment is already saved; a blocked mention must not fail the whole
@@ -3683,6 +3711,20 @@ func (h *Handler) ResolveComment(w http.ResponseWriter, r *http.Request) {
 	}
 	wasResolved := comment.ResolvedAt.Valid
 
+	// KnownAsOf is optional so existing callers that send no body keep working
+	// unguarded. When a caller does supply it (the timestamp of the thread state
+	// it resolved against, e.g. the newest comment's created_at it had loaded),
+	// a reply that lands in this thread after that moment and before this
+	// request commits must not be silently folded away by the resolution — see
+	// the concurrent-feedback race guard below.
+	var req struct {
+		KnownAsOf *time.Time `json:"known_as_of,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
 	actorUUID, err := util.ParseUUID(actorID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid actor id")
@@ -3700,6 +3742,74 @@ func (h *Handler) ResolveComment(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
+
+	// Thread-scoped advisory lock: acquired UNCONDITIONALLY, regardless of
+	// whether the caller supplied known_as_of. This is Sol's round-5 finding —
+	// an unguarded resolve (no known_as_of) used to skip lock acquisition
+	// entirely, so it could clear/write resolution state concurrently with a
+	// reply transaction that believes (via the very same lock) it has
+	// exclusive access to the thread's resolution state. Lock by the thread
+	// ROOT, not comment.ID: CountThreadCommentsSince and
+	// ClearOtherThreadResolutions both walk from comment.ID up to the thread
+	// root internally (any comment in a thread may be the resolve target),
+	// and CreateComment/commentguard lock by the same root a reply lands
+	// under — every writer must key on the identical value or they lock
+	// disjoint rows and never actually contend.
+	threadRoot, err := qtx.GetThreadRoot(r.Context(), db.GetThreadRootParams{
+		CommentID:   comment.ID,
+		WorkspaceID: comment.WorkspaceID,
+	})
+	if err != nil {
+		slog.Warn("resolve thread root failed", append(logger.RequestAttrs(r), "error", err, "comment_id", uuidToString(comment.ID))...)
+		writeError(w, http.StatusInternalServerError, "failed to resolve comment")
+		return
+	}
+	if err := qtx.LockCommentThread(r.Context(), threadRoot.ID); err != nil {
+		slog.Warn("lock comment thread failed", append(logger.RequestAttrs(r), "error", err, "comment_id", uuidToString(comment.ID))...)
+		writeError(w, http.StatusInternalServerError, "failed to resolve comment")
+		return
+	}
+
+	// Concurrent-feedback race guard: if the caller told us the thread state it
+	// resolved against (KnownAsOf), reject the resolve when a reply has landed in
+	// this thread since then. Without this, a reply added between "the resolver
+	// loaded the thread" and "the resolve request commits" would get folded away
+	// by ListComments' fold projection the instant this resolution lands, with no
+	// signal that feedback was ever hidden.
+	//
+	// Running the count inside the same tx as the write does NOT by itself give
+	// a consistent snapshot: this tx runs at PostgreSQL's default READ COMMITTED
+	// (h.TxStarter.Begin takes no pgx.TxOptions), where each statement takes its
+	// own fresh snapshot. A reply whose INSERT commits after the count but
+	// before this tx commits is invisible to the count either way — and
+	// known_as_of is a wall-clock timestamp compared against created_at, which
+	// is assigned at INSERT time, not commit time, so re-running the same
+	// comparison later cannot close that gap either. What actually closes it is
+	// the thread-scoped advisory lock acquired above: CreateComment takes the
+	// identical lock before inserting a reply into this thread, so whichever
+	// side commits first is the one the other observes, and the count that
+	// follows the lock acquisition here is guaranteed current as of that
+	// ordering. Only the presence of known_as_of gates whether this
+	// precondition check runs — that is a separate, opt-in concern from the
+	// lock acquisition itself, which now always happens above.
+	if req.KnownAsOf != nil {
+		newer, err := qtx.CountThreadCommentsSince(r.Context(), db.CountThreadCommentsSinceParams{
+			TargetID:    comment.ID,
+			Since:       pgtype.Timestamptz{Time: *req.KnownAsOf, Valid: true},
+			IssueID:     comment.IssueID,
+			WorkspaceID: comment.WorkspaceID,
+		})
+		if err != nil {
+			slog.Warn("count thread comments since failed", append(logger.RequestAttrs(r), "error", err, "comment_id", uuidToString(comment.ID))...)
+			writeError(w, http.StatusInternalServerError, "failed to resolve comment")
+			return
+		}
+		if newer > 0 {
+			writeErrorCode(w, http.StatusConflict, "thread_changed",
+				"thread has new replies since it was loaded; reload the thread before resolving")
+			return
+		}
+	}
 
 	cleared, err := qtx.ClearOtherThreadResolutions(r.Context(), db.ClearOtherThreadResolutionsParams{
 		TargetID:    comment.ID,

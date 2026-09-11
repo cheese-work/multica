@@ -667,6 +667,59 @@ WHERE comment.id IN (SELECT id FROM descendants)
   AND comment.resolved_at IS NOT NULL
 RETURNING *;
 
+-- name: CountThreadCommentsSince :one
+-- Race guard for ResolveComment (MUL concurrent-feedback coverage): counts
+-- comments in @target_id's thread (its root plus every descendant, same
+-- walk as ClearOtherThreadResolutions) created strictly after @since,
+-- excluding @target_id itself. The resolve handler compares this against the
+-- reply count the caller observed before deciding to resolve — a non-zero
+-- result means a reply landed in the thread after the caller loaded it, which
+-- resolving now would silently fold away, so the handler rejects the write
+-- with a typed conflict instead of applying it.
+WITH RECURSIVE root_of AS (
+    SELECT c.id, c.parent_id
+    FROM comment c
+    WHERE c.id = @target_id AND c.issue_id = @issue_id AND c.workspace_id = @workspace_id
+    UNION ALL
+    SELECT p.id, p.parent_id
+    FROM comment p
+    JOIN root_of r ON p.id = r.parent_id
+),
+thread_root AS (
+    SELECT id FROM root_of WHERE parent_id IS NULL LIMIT 1
+),
+descendants AS (
+    SELECT c.id
+    FROM comment c
+    JOIN thread_root tr ON c.id = tr.id
+    UNION
+    SELECT c.id
+    FROM comment c
+    JOIN descendants d ON c.parent_id = d.id
+    WHERE c.issue_id = @issue_id AND c.workspace_id = @workspace_id
+)
+SELECT count(*) FROM comment
+WHERE comment.id IN (SELECT id FROM descendants)
+  AND comment.id <> @target_id
+  AND comment.created_at > @since;
+
+-- name: LockCommentThread :exec
+-- Thread-scoped advisory xact lock, held by both CreateComment (a reply
+-- landing in a thread) and ResolveComment's guarded path (the
+-- CountThreadCommentsSince check plus the resolving write). A single
+-- READ COMMITTED transaction gives ResolveComment no consistent snapshot
+-- across its separate statements, and known_as_of is a client wall-clock
+-- timestamp compared against created_at (assigned at INSERT, not COMMIT) —
+-- so a reply that inserts before the guard runs but commits after it is
+-- invisible to a timestamp comparison in either direction. Taking this lock
+-- before the guard, and having a reply's create hold the same key for the
+-- thread it inserts into, orders the COMMITS themselves: whichever side
+-- commits first is the one the other observes, closing the window
+-- regardless of created_at/commit-time skew. pg_advisory_xact_lock (not
+-- pg_try_) so a concurrent reply queues behind an in-flight resolve instead
+-- of failing outright — the reply is rare and cheap to make wait briefly.
+SELECT pg_advisory_xact_lock(hashtextextended(sqlc.arg(thread_root_id)::uuid::text || ':comment_thread', 0));
+
 -- name: UnresolveComment :one
 -- Idempotent: a no-op clear (already unresolved) just returns the row.
 UPDATE comment SET
@@ -676,6 +729,49 @@ UPDATE comment SET
     revision = revision + CASE WHEN resolved_at IS NOT NULL THEN 1 ELSE 0 END,
     updated_at = CASE WHEN resolved_at IS NOT NULL THEN now() ELSE updated_at END
 WHERE id = $1
+RETURNING *;
+
+-- name: ClearThreadResolutionForReply :many
+-- Round 5 fix: a reply landing in a resolved thread must reopen it in the SAME
+-- transaction that holds LockCommentThread and inserts the reply, before
+-- commit — not as a separate post-commit write through an unlocked handle.
+-- The prior design (TaskService.AutoUnresolveThreadOnReply, called after the
+-- reply's tx committed via a bare *db.Queries) could clear a LATER,
+-- legitimate resolution that a concurrent ResolveComment committed in the gap
+-- between the reply's commit and the post-commit call — violating commit
+-- ordering — and it only ever looked at the thread ROOT's resolved_at, so a
+-- resolved REPLY (not the root) was never reopened at all.
+--
+-- @thread_root_id is the thread root id the caller already resolved via
+-- GetThreadRoot (or holds directly, e.g. inside LockThreadForReplyAndLoadRoot)
+-- and locked via LockCommentThread — the identical key CreateComment and
+-- ResolveComment's guard already lock by, so this clear is covered by the
+-- same advisory lock for its whole read-then-write window.
+--
+-- By the single-resolution invariant ClearOtherThreadResolutions enforces, a
+-- thread has at most one resolved comment at any time — root or reply — so
+-- this walks the same recursive parent_id structure down from the root and
+-- clears whichever single comment in the subtree currently has resolved_at
+-- set. Returns that row (0 rows when nothing in the thread was resolved) so
+-- the caller can still decide whether to publish comment:unresolved.
+WITH RECURSIVE descendants AS (
+    SELECT c.id
+    FROM comment c
+    WHERE c.id = @thread_root_id AND c.issue_id = @issue_id AND c.workspace_id = @workspace_id
+    UNION
+    SELECT c.id
+    FROM comment c
+    JOIN descendants d ON c.parent_id = d.id
+    WHERE c.issue_id = @issue_id AND c.workspace_id = @workspace_id
+)
+UPDATE comment SET
+    resolved_at = NULL,
+    resolved_by_type = NULL,
+    resolved_by_id = NULL,
+    revision = revision + 1,
+    updated_at = now()
+WHERE comment.id IN (SELECT id FROM descendants)
+  AND comment.resolved_at IS NOT NULL
 RETURNING *;
 -- name: ListCommentAncestorPath :many
 WITH RECURSIVE ancestor_path AS (

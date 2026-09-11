@@ -3009,6 +3009,7 @@ func newIssueUpdateTestCmd() *cobra.Command {
 	cmd.Flags().Float64("position", 0, "")
 	cmd.Flags().Bool("no-start", false, "")
 	cmd.Flags().String("output", "json", "")
+	cmd.Flags().Int64("expected-revision", 0, "")
 	return cmd
 }
 
@@ -3087,6 +3088,118 @@ func TestRunIssueUpdateSendsPosition(t *testing.T) {
 	}
 	if got := body["position"]; got != float64(7.5) {
 		t.Fatalf("position = %#v, want 7.5 in request body", got)
+	}
+}
+
+// clearAmbientDaemonTaskEnv blanks the daemon-task identity signals
+// (inAgentExecutionContext / inDaemonManagedExecutionContext in cmd_agent.go)
+// so a test asserting on a plain member token is not accidentally routed
+// through the "agent execution context requires a mat_ token" gate because
+// the process this test binary runs in happens to itself be a daemon-managed
+// agent task (as it is for an agent CLI running this suite inside its own
+// task workdir). CI runners have none of these set; this only matters when
+// the test binary's own ambient environment carries them.
+func clearAmbientDaemonTaskEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("MULTICA_AGENT_ID", "")
+	t.Setenv("MULTICA_TASK_ID", "")
+	t.Setenv("MULTICA_DAEMON_PORT", "")
+	t.Setenv("MULTICA_TASK_CONFIG_ROOT", t.TempDir())
+	// hasDaemonTaskContextMarker walks up from the CWD looking for a
+	// daemon_task_context.json marker file, independent of env vars — so a
+	// leftover marker anywhere above the real repo checkout (as in an agent
+	// runtime's own workdir tree) still trips the gate unless the test also
+	// moves off that tree.
+	t.Chdir(t.TempDir())
+}
+
+// TestRunIssueUpdateSendsExpectedRevision proves the CLI wires
+// --expected-revision through to the request body as expected_revision, the
+// field the handler's optimistic-concurrency check reads
+// (internal/handler/issue.go UpdateIssueRequest.ExpectedRevision).
+func TestRunIssueUpdateSendsExpectedRevision(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/MUL-1":
+			json.NewEncoder(w).Encode(map[string]any{
+				"id": "issue-1", "identifier": "MUL-1", "status": "todo",
+			})
+		case r.Method == http.MethodPut && r.URL.Path == "/api/issues/issue-1":
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode body: %v", err)
+			}
+			json.NewEncoder(w).Encode(map[string]any{
+				"id": "issue-1", "identifier": "MUL-1", "status": "todo", "revision": float64(6),
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	setCLITestServerEnv(t, srv.URL)
+	clearAmbientDaemonTaskEnv(t)
+
+	cmd := newIssueUpdateTestCmd()
+	_ = cmd.Flags().Set("title", "revised title")
+	_ = cmd.Flags().Set("expected-revision", "5")
+	if err := runIssueUpdate(cmd, []string{"MUL-1"}); err != nil {
+		t.Fatalf("runIssueUpdate: %v", err)
+	}
+	if got := body["expected_revision"]; got != float64(5) {
+		t.Fatalf("expected_revision = %#v, want 5 in request body", got)
+	}
+}
+
+// TestRunIssueUpdateStaleRevisionReturnsActionableConflictMessage proves the
+// CLI path specifically catches a stale write raced against a concurrent
+// writer: the server's 409 revision_conflict body (writeRevisionConflict in
+// internal/handler/handler.go, the same shape
+// TestRevisionConflictsPreserveLatestIssueAndComment proves the handler
+// returns for a real stale PUT) is decoded into a clear CLI error rather than
+// surfaced as a raw JSON dump, and tells the caller the actual revision to
+// retry with.
+func TestRunIssueUpdateStaleRevisionReturnsActionableConflictMessage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/MUL-1":
+			json.NewEncoder(w).Encode(map[string]any{
+				"id": "issue-1", "identifier": "MUL-1", "status": "todo",
+			})
+		case r.Method == http.MethodPut && r.URL.Path == "/api/issues/issue-1":
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]any{
+				"error":             "resource changed since it was loaded",
+				"code":              "revision_conflict",
+				"resource_type":     "issue",
+				"resource_id":       "issue-1",
+				"expected_revision": 5,
+				"actual_revision":   7,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	setCLITestServerEnv(t, srv.URL)
+	clearAmbientDaemonTaskEnv(t)
+
+	cmd := newIssueUpdateTestCmd()
+	_ = cmd.Flags().Set("title", "stale overwrite")
+	_ = cmd.Flags().Set("expected-revision", "5")
+	err := runIssueUpdate(cmd, []string{"MUL-1"})
+	if err == nil {
+		t.Fatal("runIssueUpdate: expected a revision conflict error")
+	}
+	if strings.Contains(err.Error(), "{") {
+		t.Fatalf("error should be a human message, not a raw JSON dump: %v", err)
+	}
+	for _, want := range []string{"issue", "expected revision 5", "server is at 7", "--expected-revision 7"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want it to mention %q", err.Error(), want)
+		}
 	}
 }
 
