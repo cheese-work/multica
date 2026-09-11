@@ -67,6 +67,12 @@ type Manager struct {
 	// fetch is the snapshot fetcher, a seam so tests can drive the queue /
 	// backoff without a live GitHub. Defaults to FetchPRSnapshot.
 	fetch func(ctx context.Context, c *Client, installationID int64, owner, repo string, number int32) (*PRSnapshot, error)
+	// listRows is the row-selection seam used both to gate the outbound fetch
+	// (CHE-374 review round 4, item 2) and to select rows for the write.
+	// Defaults to listGitHubPRRowsByAddress. Tests that only exercise the
+	// rate-limit/backoff machinery around process() (and do not wire a DB)
+	// stub this directly, the same way they stub fetch.
+	listRows func(ctx context.Context, params db.ListGitHubPRRowsByAddressParams) ([]db.ListGitHubPRRowsByAddressRow, error)
 
 	queue chan address
 
@@ -91,7 +97,7 @@ type Manager struct {
 // snapshot was actually written (guard passed), so the handler can broadcast a
 // realtime PR update. Passing a nil client yields a disabled (no-op) manager.
 func NewManager(client *Client, queries *db.Queries, pool TxBeginner, onApplied func(ctx context.Context, prID pgtype.UUID)) *Manager {
-	return &Manager{
+	m := &Manager{
 		client:        client,
 		queries:       queries,
 		readSelector:  dbreader.NewPrimaryOnly(queries),
@@ -113,6 +119,8 @@ func NewManager(client *Client, queries *db.Queries, pool TxBeginner, onApplied 
 		attempts:      map[address]int{},
 		rateUntil:     map[int64]time.Time{},
 	}
+	m.listRows = m.listGitHubPRRowsByAddress
+	return m
 }
 
 // SetReadSelector opts the refresh worker into the API server's configured
@@ -229,6 +237,34 @@ func (m *Manager) process(ctx context.Context, addr address) {
 		}
 	}
 
+	// CHE-374 review round 4, item 2: check row eligibility BEFORE the outbound
+	// GitHub API call. ListGitHubPRRowsByAddress already excludes rows whose
+	// workspace has explicitly turned GitHub off (github_enabled=false); if
+	// every fan-out workspace sharing this address is disabled, there is
+	// nothing to write, so the authenticated fetch — which every trigger path
+	// (pull_request webhook, CI-event webhook, page-view, TTL sweep) funnels
+	// into this one pipeline — must never be justified in the first place. A
+	// workspace that re-enables GitHub between this check and the fetch simply
+	// waits for the next trigger or the TTL sweep, same as any other missed
+	// refresh window.
+	preRows, err := m.listRows(ctx, db.ListGitHubPRRowsByAddressParams{
+		InstallationID: addr.InstallationID,
+		RepoOwner:      addr.Owner,
+		RepoName:       addr.Repo,
+		PrNumber:       addr.Number,
+	})
+	if err != nil {
+		slog.Warn("ghsnapshot: eligibility check failed", "err", err.Error())
+		return
+	}
+	if len(preRows) == 0 {
+		// No enabled workspace currently mirrors this address — either no row
+		// exists at all, or every fan-out workspace has GitHub disabled. Either
+		// way, skip the fetch: master-off must have zero footprint, including
+		// zero outbound calls.
+		return
+	}
+
 	snap, err := m.fetch(ctx, m.client, addr.InstallationID, addr.Owner, addr.Repo, addr.Number)
 	if err != nil {
 		var rl *RateLimitError
@@ -246,7 +282,13 @@ func (m *Manager) process(ctx context.Context, addr address) {
 		return
 	}
 
-	rows, err := m.listGitHubPRRowsByAddress(ctx, db.ListGitHubPRRowsByAddressParams{
+	// CHE-374 review round 4, item 2: re-select rows for the write, rather than
+	// reusing preRows. This closes the flip-race window between the eligibility
+	// check above and this write: a workspace whose github_enabled flipped to
+	// false while the fetch was in flight is excluded here even though it
+	// justified (or shared the address with a row that justified) the fetch
+	// above.
+	rows, err := m.listRows(ctx, db.ListGitHubPRRowsByAddressParams{
 		InstallationID: addr.InstallationID,
 		RepoOwner:      addr.Owner,
 		RepoName:       addr.Repo,
