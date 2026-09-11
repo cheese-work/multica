@@ -139,10 +139,18 @@ func TestProcessRateLimitedSetsPause(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	m.ctx = ctx
+	// CHE-374 review round 4, item 2: process() now checks row eligibility
+	// (github_enabled) before the outbound fetch, so this pure-unit test (no
+	// real DB wired) stubs that seam directly to report one eligible row —
+	// exercising the rate-limit path in isolation from row selection, which is
+	// covered by its own DB-backed regression tests in refresh_db_test.go.
+	m.listRows = func(context.Context, db.ListGitHubPRRowsByAddressParams) ([]db.ListGitHubPRRowsByAddressRow, error) {
+		return []db.ListGitHubPRRowsByAddressRow{{State: "open"}}, nil
+	}
 	m.fetch = func(context.Context, *Client, int64, string, string, int32) (*PRSnapshot, error) {
 		return nil, &RateLimitError{RetryAfter: 90 * time.Second}
 	}
-	// queries/pool are nil; the fetch errors before any DB access, proving the
+	// queries/pool are nil; the fetch errors before any DB write, proving the
 	// rate-limit path never touches storage.
 	m.process(ctx, address{InstallationID: 1, Owner: "o", Repo: "r", Number: 1})
 
@@ -156,6 +164,12 @@ func TestRateLimitedInstallationDoesNotOccupyWorkers(t *testing.T) {
 	m.concurrency = 12
 	m.sweepInterval = time.Hour
 	m.jitter = func() time.Duration { return 0 }
+	// CHE-374 review round 4, item 2: stub the pre-fetch row-eligibility seam
+	// (no real DB wired in this pure-unit test) so process() proceeds to fetch
+	// exactly as before the eligibility check was introduced.
+	m.listRows = func(context.Context, db.ListGitHubPRRowsByAddressParams) ([]db.ListGitHubPRRowsByAddressRow, error) {
+		return []db.ListGitHubPRRowsByAddressRow{{State: "open"}}, nil
+	}
 	m.extendRateLimit(1, 2*time.Second)
 
 	limitedFetched := make(chan struct{}, 1)
@@ -215,6 +229,11 @@ func TestRateLimitIsolatedByInstallation(t *testing.T) {
 	now := time.Unix(22000, 0)
 	m.now = func() time.Time { return now }
 	m.jitter = func() time.Duration { return 0 }
+	// CHE-374 review round 4, item 2: stub the pre-fetch row-eligibility seam
+	// (no real DB wired in this pure-unit test) so process() proceeds to fetch.
+	m.listRows = func(context.Context, db.ListGitHubPRRowsByAddressParams) ([]db.ListGitHubPRRowsByAddressRow, error) {
+		return []db.ListGitHubPRRowsByAddressRow{{State: "open"}}, nil
+	}
 	m.extendRateLimit(1, time.Hour)
 
 	called := false
@@ -235,6 +254,11 @@ func TestPersistentRateLimitReturnsToTTLSweep(t *testing.T) {
 	m := NewManager(enabledClient(t), nil, nil, nil)
 	m.jitter = func() time.Duration { return 0 }
 	m.ctx = context.Background()
+	// CHE-374 review round 4, item 2: stub the pre-fetch row-eligibility seam
+	// (no real DB wired in this pure-unit test) so process() proceeds to fetch.
+	m.listRows = func(context.Context, db.ListGitHubPRRowsByAddressParams) ([]db.ListGitHubPRRowsByAddressRow, error) {
+		return []db.ListGitHubPRRowsByAddressRow{{State: "open"}}, nil
+	}
 	m.fetch = func(context.Context, *Client, int64, string, string, int32) (*PRSnapshot, error) {
 		return nil, &RateLimitError{RetryAfter: time.Millisecond}
 	}
