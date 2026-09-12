@@ -165,8 +165,8 @@ type CreateGitHubMergeAnnouncementParams struct {
 //
 // Durable per-merge record so every linked GitHub PR merge produces exactly
 // one platform comment on its owning issue, independent of completion
-// (CHE-374/CHE-379). See 466_github_merge_announcement.up.sql for the schema
-// rationale and 467_github_merge_announcement_identity_uidx.up.sql for the
+// (CHE-374/CHE-379). See 470_github_merge_announcement.up.sql for the schema
+// rationale and 471_github_merge_announcement_identity_uidx.up.sql for the
 // identity/dedup key.
 // Persisted in the same request as the merge/link write (github.go's
 // mirrorPullRequestForWorkspace), before HTTP 202 is returned, so no

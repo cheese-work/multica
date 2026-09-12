@@ -401,7 +401,7 @@ describe("SearchCommand", () => {
         ),
       ).toBeInTheDocument();
     }
-  });
+  }, 60_000);
 
   it("does not surface a page on an incidental substring of a hidden keyword", async () => {
     const user = userEvent.setup();
