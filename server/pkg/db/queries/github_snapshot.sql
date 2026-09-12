@@ -36,14 +36,30 @@ WHERE gpr.installation_id = $1
 -- fetched for. If the head advanced (a newer push landed while this request was
 -- in flight, mirrored by the pull_request webhook), 0 rows are updated and the
 -- caller discards the whole response — the per-check replace is skipped too.
-UPDATE github_pull_request
+--
+-- CHE-374 review round 5, item 2: the write also re-checks the workspace's
+-- current github_enabled state, not just the head_sha. Manager.process
+-- re-selects eligible rows once before this per-row loop (closing the
+-- fetch-vs-write flip race), but a workspace can still flip to disabled
+-- between that re-select and this specific row's write. Selection filters
+-- eligibility; without this predicate the write did not. Uses the same
+-- `IS DISTINCT FROM 'false'` form as ListGitHubPRRowsByAddress /
+-- ListStaleUndecidedGitHubPRs (absent/unparseable = enabled, only explicit
+-- false disables) so selection and write semantics stay identical.
+UPDATE github_pull_request AS gpr
 SET api_mergeable          = sqlc.narg('api_mergeable'),
     api_merge_state_status = sqlc.narg('api_merge_state_status'),
     checks_rollup_state    = sqlc.narg('checks_rollup_state'),
     snapshot_head_sha      = sqlc.arg('head_sha'),
     snapshot_fetched_at    = sqlc.arg('fetched_at'),
     updated_at             = now()
-WHERE id = sqlc.arg('pr_id') AND head_sha = sqlc.arg('head_sha');
+WHERE gpr.id = sqlc.arg('pr_id')
+  AND gpr.head_sha = sqlc.arg('head_sha')
+  AND EXISTS (
+      SELECT 1 FROM workspace w
+      WHERE w.id = gpr.workspace_id
+        AND (w.settings ->> 'github_enabled') IS DISTINCT FROM 'false'
+  );
 
 -- name: DeleteGitHubPRCheckRuns :exec
 -- First half of the atomic per-check replace. Runs inside the same transaction

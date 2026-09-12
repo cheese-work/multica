@@ -329,6 +329,57 @@ func TestApplySnapshotHeadSHAGuard(t *testing.T) {
 	}
 }
 
+// TestApplySnapshotDiscardsWriteWhenDisabledBetweenSelectionAndWrite is the
+// CHE-374 review round 5, item 2 regression: Manager.process re-selects
+// eligible rows once before its per-row apply loop, but a workspace can still
+// flip github_enabled to false in the window between that re-select and this
+// specific row's applySnapshot call (e.g. another row in the same fan-out
+// batch is slow, or the flip lands mid-loop). Row selection filtering
+// eligibility is not enough — the write itself must re-check it. This drives
+// applySnapshot directly (the actual UPDATE ... EXISTS guard added to
+// UpdateGitHubPRSnapshot), bypassing process()'s own pre-fetch eligibility
+// check entirely, so it isolates the write-time guard from the two
+// process()-level regressions already covered by
+// TestProcessSkipsFetchWhenAllFanOutWorkspacesDisabled and
+// TestProcessAppliesOnlyToEnabledWorkspaceInSharedInstallation.
+func TestApplySnapshotDiscardsWriteWhenDisabledBetweenSelectionAndWrite(t *testing.T) {
+	pool := testDBPool(t)
+	q := db.New(pool)
+	ctx := context.Background()
+
+	ws := seedWorkspaceWithSettings(t, pool, `{}`) // enabled at selection time
+	pr := seedPRForWorkspace(t, q, ws, 555333, "toctou-repo", 12, "A")
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM github_pull_request_check_run WHERE pr_id=$1`, pr.ID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM github_pull_request WHERE id=$1`, pr.ID)
+	})
+
+	m := &Manager{queries: q, pool: pool, now: func() time.Time { return time.Unix(1_700_000_200, 0) }}
+
+	// Row selection (ListGitHubPRRowsByAddress) would have returned this row
+	// here — the workspace is still enabled. Now simulate the flip landing in
+	// the window between that selection and this row's write.
+	if _, err := pool.Exec(ctx, `UPDATE workspace SET settings = '{"github_enabled": false}' WHERE id=$1`, ws); err != nil {
+		t.Fatal(err)
+	}
+
+	applied, err := m.applySnapshot(ctx, pr.ID, &PRSnapshot{HeadSHA: "A", Mergeable: "MERGEABLE", MergeStateStatus: "CLEAN"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied {
+		t.Fatal("write must be discarded once the workspace disabled GitHub, even though the row was eligible at selection time")
+	}
+
+	got, err := q.GetGitHubPullRequestByID(ctx, pr.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SnapshotHeadSha != "" || got.ApiMergeable.Valid {
+		t.Fatalf("snapshot was written despite the workspace disabling GitHub before the write: %+v", got)
+	}
+}
+
 // TestInFlightOldHeadKeepsTrailingRefresh covers the synchronize race from the
 // PR review: while head A is fetching, a webhook advances the mirrored row to B
 // and enqueues again. A is discarded by the head guard, but the coalesced
