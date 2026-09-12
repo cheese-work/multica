@@ -110,10 +110,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
-  # Multi-arch images are built natively per platform on dedicated runners
-  # (amd64 on ubuntu-latest, arm64 on ubuntu-24.04-arm) and merged into a
-  # manifest list. This avoids QEMU emulation, which was making the Next.js
-  # arm64 build run for 30+ minutes per release.
+  # The fork builds images on isolated X99 runners. Upstream keeps its native
+  # hosted arm64 path because these repo-scoped runners only serve this fork.
   docker-backend-build:
     needs: verify
     strategy:
@@ -121,9 +119,9 @@ jobs:
       matrix:
         include:
           - platform: linux/amd64
-            runs-on: ubuntu-latest
+            runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
           - platform: linux/arm64
-            runs-on: ubuntu-24.04-arm
+            runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-24.04-arm"]') }}
     runs-on: ${{ matrix.runs-on }}
     steps:
       - name: Prepare
@@ -185,7 +183,7 @@ jobs:
 
   docker-backend-merge:
     needs: [verify, docker-backend-build]
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     concurrency:
       group: release-docker-backend-${{ github.ref }}
       cancel-in-progress: true
@@ -238,9 +236,9 @@ jobs:
       matrix:
         include:
           - platform: linux/amd64
-            runs-on: ubuntu-latest
+            runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
           - platform: linux/arm64
-            runs-on: ubuntu-24.04-arm
+            runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-24.04-arm"]') }}
     runs-on: ${{ matrix.runs-on }}
     steps:
       - name: Prepare
@@ -302,7 +300,7 @@ jobs:
 
   docker-web-merge:
     needs: [verify, docker-web-build]
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     concurrency:
       group: release-docker-web-${{ github.ref }}
       cancel-in-progress: true
