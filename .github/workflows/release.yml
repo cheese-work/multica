@@ -12,6 +12,9 @@ permissions:
   contents: write
   packages: write
 
+env:
+  X99_MIN_FREE_GB: "50"
+
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -124,6 +127,17 @@ jobs:
             runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-24.04-arm"]') }}
     runs-on: ${{ matrix.runs-on }}
     steps:
+      - name: Enforce X99 free-space floor
+        if: github.repository_owner == 'cheese-work'
+        shell: bash
+        run: |
+          available_kb=$(df -Pk / | awk 'NR == 2 { print $4 }')
+          minimum_kb=$((X99_MIN_FREE_GB * 1024 * 1024))
+          if (( available_kb < minimum_kb )); then
+            echo "::error::X99 has $((available_kb / 1024 / 1024)) GiB free; build floor is ${X99_MIN_FREE_GB} GiB."
+            exit 1
+          fi
+
       - name: Prepare
         run: |
           platform=${{ matrix.platform }}
@@ -241,6 +255,17 @@ jobs:
             runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-24.04-arm"]') }}
     runs-on: ${{ matrix.runs-on }}
     steps:
+      - name: Enforce X99 free-space floor
+        if: github.repository_owner == 'cheese-work'
+        shell: bash
+        run: |
+          available_kb=$(df -Pk / | awk 'NR == 2 { print $4 }')
+          minimum_kb=$((X99_MIN_FREE_GB * 1024 * 1024))
+          if (( available_kb < minimum_kb )); then
+            echo "::error::X99 has $((available_kb / 1024 / 1024)) GiB free; build floor is ${X99_MIN_FREE_GB} GiB."
+            exit 1
+          fi
+
       - name: Prepare
         run: |
           platform=${{ matrix.platform }}
