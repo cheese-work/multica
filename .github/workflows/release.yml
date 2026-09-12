@@ -12,6 +12,9 @@ permissions:
   contents: write
   packages: write
 
+env:
+  X99_MIN_FREE_GB: "50"
+
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -110,10 +113,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
-  # Multi-arch images are built natively per platform on dedicated runners
-  # (amd64 on ubuntu-latest, arm64 on ubuntu-24.04-arm) and merged into a
-  # manifest list. This avoids QEMU emulation, which was making the Next.js
-  # arm64 build run for 30+ minutes per release.
+  # The fork builds images on isolated X99 runners. Upstream keeps its native
+  # hosted arm64 path because these repo-scoped runners only serve this fork.
   docker-backend-build:
     needs: verify
     strategy:
@@ -121,11 +122,22 @@ jobs:
       matrix:
         include:
           - platform: linux/amd64
-            runs-on: ubuntu-latest
+            runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
           - platform: linux/arm64
-            runs-on: ubuntu-24.04-arm
+            runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-24.04-arm"]') }}
     runs-on: ${{ matrix.runs-on }}
     steps:
+      - name: Enforce X99 free-space floor
+        if: github.repository_owner == 'cheese-work'
+        shell: bash
+        run: |
+          available_kb=$(df -Pk / | awk 'NR == 2 { print $4 }')
+          minimum_kb=$((X99_MIN_FREE_GB * 1024 * 1024))
+          if (( available_kb < minimum_kb )); then
+            echo "::error::X99 has $((available_kb / 1024 / 1024)) GiB free; build floor is ${X99_MIN_FREE_GB} GiB."
+            exit 1
+          fi
+
       - name: Prepare
         run: |
           platform=${{ matrix.platform }}
@@ -185,11 +197,22 @@ jobs:
 
   docker-backend-merge:
     needs: [verify, docker-backend-build]
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     concurrency:
       group: release-docker-backend-${{ github.ref }}
       cancel-in-progress: true
     steps:
+      - name: Enforce X99 free-space floor
+        if: github.repository_owner == 'cheese-work'
+        shell: bash
+        run: |
+          available_kb=$(df -Pk / | awk 'NR == 2 { print $4 }')
+          minimum_kb=$((X99_MIN_FREE_GB * 1024 * 1024))
+          if (( available_kb < minimum_kb )); then
+            echo "::error::X99 has $((available_kb / 1024 / 1024)) GiB free; build floor is ${X99_MIN_FREE_GB} GiB."
+            exit 1
+          fi
+
       - name: Download digests
         uses: actions/download-artifact@v4
         with:
@@ -238,11 +261,22 @@ jobs:
       matrix:
         include:
           - platform: linux/amd64
-            runs-on: ubuntu-latest
+            runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
           - platform: linux/arm64
-            runs-on: ubuntu-24.04-arm
+            runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-24.04-arm"]') }}
     runs-on: ${{ matrix.runs-on }}
     steps:
+      - name: Enforce X99 free-space floor
+        if: github.repository_owner == 'cheese-work'
+        shell: bash
+        run: |
+          available_kb=$(df -Pk / | awk 'NR == 2 { print $4 }')
+          minimum_kb=$((X99_MIN_FREE_GB * 1024 * 1024))
+          if (( available_kb < minimum_kb )); then
+            echo "::error::X99 has $((available_kb / 1024 / 1024)) GiB free; build floor is ${X99_MIN_FREE_GB} GiB."
+            exit 1
+          fi
+
       - name: Prepare
         run: |
           platform=${{ matrix.platform }}
@@ -302,11 +336,22 @@ jobs:
 
   docker-web-merge:
     needs: [verify, docker-web-build]
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     concurrency:
       group: release-docker-web-${{ github.ref }}
       cancel-in-progress: true
     steps:
+      - name: Enforce X99 free-space floor
+        if: github.repository_owner == 'cheese-work'
+        shell: bash
+        run: |
+          available_kb=$(df -Pk / | awk 'NR == 2 { print $4 }')
+          minimum_kb=$((X99_MIN_FREE_GB * 1024 * 1024))
+          if (( available_kb < minimum_kb )); then
+            echo "::error::X99 has $((available_kb / 1024 / 1024)) GiB free; build floor is ${X99_MIN_FREE_GB} GiB."
+            exit 1
+          fi
+
       - name: Download digests
         uses: actions/download-artifact@v4
         with:
