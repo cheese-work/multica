@@ -9,8 +9,14 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/multica-ai/multica/server/internal/testutil"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
+
+// parseUUID converts a testutil.Fixture row id (a trusted round-trip from a
+// fixture insert, never request input) into pgtype.UUID.
+func parseUUID(s string) pgtype.UUID { return util.MustParseUUID(s) }
 
 func testDBPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
@@ -342,28 +348,39 @@ func TestApplySnapshotHeadSHAGuard(t *testing.T) {
 // process()-level regressions already covered by
 // TestProcessSkipsFetchWhenAllFanOutWorkspacesDisabled and
 // TestProcessAppliesOnlyToEnabledWorkspaceInSharedInstallation.
+//
+// Rows are built through testutil.Fixture (CLAUDE.md's DB-backed test rule)
+// rather than a file-local INSERT with a matching manual t.Cleanup DELETE.
 func TestApplySnapshotDiscardsWriteWhenDisabledBetweenSelectionAndWrite(t *testing.T) {
 	pool := testDBPool(t)
 	q := db.New(pool)
 	ctx := context.Background()
 
-	ws := seedWorkspaceWithSettings(t, pool, `{}`) // enabled at selection time
-	pr := seedPRForWorkspace(t, q, ws, 555333, "toctou-repo", 12, "A")
-	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `DELETE FROM github_pull_request_check_run WHERE pr_id=$1`, pr.ID)
-		_, _ = pool.Exec(context.Background(), `DELETE FROM github_pull_request WHERE id=$1`, pr.ID)
+	fx := testutil.New(pool, "", "")
+	wsID := fx.Workspace(t, "ghsnap toctou", "ghsnap-toctou-"+randHex(t))
+	prID := fx.Insert(t, "github_pull_request", testutil.Cols{
+		"workspace_id":    wsID,
+		"installation_id": 555333,
+		"repo_owner":      "o",
+		"repo_name":       "toctou-repo",
+		"pr_number":       12,
+		"title":           "t",
+		"state":           "open",
+		"html_url":        "http://x",
+		"head_sha":        "A",
+		"pr_created_at":   testutil.Raw("to_timestamp(1700000000)"),
+		"pr_updated_at":   testutil.Raw("to_timestamp(1700000000)"),
 	})
+	fx.Cleanup(t, `DELETE FROM github_pull_request_check_run WHERE pr_id=$1`, parseUUID(prID))
 
 	m := &Manager{queries: q, pool: pool, now: func() time.Time { return time.Unix(1_700_000_200, 0) }}
 
 	// Row selection (ListGitHubPRRowsByAddress) would have returned this row
 	// here — the workspace is still enabled. Now simulate the flip landing in
 	// the window between that selection and this row's write.
-	if _, err := pool.Exec(ctx, `UPDATE workspace SET settings = '{"github_enabled": false}' WHERE id=$1`, ws); err != nil {
-		t.Fatal(err)
-	}
+	fx.Exec(t, `UPDATE workspace SET settings = '{"github_enabled": false}' WHERE id=$1`, wsID)
 
-	applied, err := m.applySnapshot(ctx, pr.ID, &PRSnapshot{HeadSHA: "A", Mergeable: "MERGEABLE", MergeStateStatus: "CLEAN"})
+	applied, err := m.applySnapshot(ctx, parseUUID(prID), &PRSnapshot{HeadSHA: "A", Mergeable: "MERGEABLE", MergeStateStatus: "CLEAN"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -371,7 +388,7 @@ func TestApplySnapshotDiscardsWriteWhenDisabledBetweenSelectionAndWrite(t *testi
 		t.Fatal("write must be discarded once the workspace disabled GitHub, even though the row was eligible at selection time")
 	}
 
-	got, err := q.GetGitHubPullRequestByID(ctx, pr.ID)
+	got, err := q.GetGitHubPullRequestByID(ctx, parseUUID(prID))
 	if err != nil {
 		t.Fatal(err)
 	}
