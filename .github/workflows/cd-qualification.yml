@@ -19,7 +19,7 @@ jobs:
   cd-qualification:
     # This label is reserved for the separate cheese-work runner set on X99;
     # it cannot match the unrelated tevo-web runners labeled tevo-cicd.
-    runs-on: [self-hosted, linux, x64, x99-multica-cd]
+    runs-on: [self-hosted, linux, x64, cheese-x99]
     timeout-minutes: 45
     env:
       REGISTRY: ghcr.io
