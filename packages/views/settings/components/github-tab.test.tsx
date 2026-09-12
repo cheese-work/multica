@@ -197,19 +197,25 @@ describe("GitHubTab", () => {
     });
   });
 
-  it("clicking Disconnect opens the confirmation and only fires on confirm", async () => {
+  it("disconnects only the selected installation row after confirmation", async () => {
     const user = userEvent.setup();
     installationsRef.current = {
       configured: true,
       can_manage: true,
-      installations: [{ id: "inst-42", account_login: "acme", installation_id: 42 }],
+      installations: [
+        { id: "inst-41", account_login: "personal", installation_id: 41 },
+        { id: "inst-42", account_login: "acme-org", installation_id: 42 },
+      ],
     };
     mockDeleteInstallation.mockResolvedValue(undefined);
 
     render(<GitHubTab />, { wrapper: I18nWrapper });
 
-    await user.click(screen.getByRole("button", { name: /^Disconnect$/ }));
-    expect(screen.getByText(/Multica will stop receiving webhooks/i)).toBeTruthy();
+    await user.click(screen.getByTitle("acme-org"));
+    expect(screen.getByText("Disconnect acme-org?")).toBeTruthy();
+    expect(
+      screen.getByText(/Multica will stop receiving webhooks for acme-org/i),
+    ).toBeTruthy();
     expect(mockDeleteInstallation).not.toHaveBeenCalled();
 
     const dialogConfirm = screen
@@ -219,6 +225,10 @@ describe("GitHubTab", () => {
 
     await waitFor(() => {
       expect(mockDeleteInstallation).toHaveBeenCalledWith("workspace-1", "inst-42");
+      expect(mockDeleteInstallation).not.toHaveBeenCalledWith(
+        "workspace-1",
+        "inst-41",
+      );
     });
   });
 
@@ -231,6 +241,34 @@ describe("GitHubTab", () => {
     };
     render(<GitHubTab />, { wrapper: I18nWrapper });
     expect(screen.getByRole("button", { name: /^Disconnect$/ })).toBeTruthy();
+  });
+
+  it("can connect another account or organization without disconnecting the first", async () => {
+    installationsRef.current = {
+      configured: true,
+      can_manage: true,
+      installations: [{ id: "inst-1", account_login: "personal", installation_id: 1 }],
+    };
+    mockGetConnectURL.mockResolvedValue({
+      configured: true,
+      url: "https://github.com/apps/multica/installations/new",
+    });
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    const user = userEvent.setup();
+    render(<GitHubTab />, { wrapper: I18nWrapper });
+
+    await user.click(
+      screen.getByRole("button", { name: "Add account or organization" }),
+    );
+
+    expect(mockGetConnectURL).toHaveBeenCalledWith("workspace-1");
+    expect(open).toHaveBeenCalledWith(
+      "https://github.com/apps/multica/installations/new",
+      "_blank",
+      "noopener",
+    );
+    expect(screen.getByRole("button", { name: /^Disconnect$/ })).toBeTruthy();
+    open.mockRestore();
   });
 
   it("non-admin sees the existing connection but no Connect/Disconnect controls", () => {
