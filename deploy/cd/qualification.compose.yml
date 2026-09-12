@@ -1,0 +1,62 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: multica
+      POSTGRES_PASSWORD: synthetic-only
+      POSTGRES_USER: multica
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U multica -d multica"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    volumes:
+      - qualification-db:/var/lib/postgresql/data
+
+  old-backend:
+    image: ${D1_OLD_BACKEND_IMAGE:?immutable old backend image is required}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment: &backend-environment
+      DATABASE_URL: postgres://multica:synthetic-only@postgres:5432/multica?sslmode=disable
+      JWT_SECRET: qualification-synthetic-only
+      MULTICA_PUBLIC_URL: http://127.0.0.1:${D1_OLD_BACKEND_PORT:-18881}
+    ports:
+      - "127.0.0.1:${D1_OLD_BACKEND_PORT:-18881}:8080"
+    profiles: [old]
+
+  candidate-backend:
+    image: ${D1_CANDIDATE_BACKEND_IMAGE:?immutable candidate backend image is required}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *backend-environment
+      MULTICA_PUBLIC_URL: http://127.0.0.1:${D1_CANDIDATE_BACKEND_PORT:-18882}
+    ports:
+      - "127.0.0.1:${D1_CANDIDATE_BACKEND_PORT:-18882}:8080"
+    profiles: [candidate]
+
+  old-web:
+    image: ${D1_OLD_WEB_IMAGE:?immutable old web image is required}
+    depends_on:
+      - old-backend
+    environment:
+      REMOTE_API_URL: http://old-backend:8080
+    ports:
+      - "127.0.0.1:${D1_OLD_WEB_PORT:-18891}:3000"
+    profiles: [old]
+
+  candidate-web:
+    image: ${D1_CANDIDATE_WEB_IMAGE:?immutable candidate web image is required}
+    depends_on:
+      - candidate-backend
+    environment:
+      REMOTE_API_URL: http://candidate-backend:8080
+    ports:
+      - "127.0.0.1:${D1_CANDIDATE_WEB_PORT:-18892}:3000"
+    profiles: [candidate]
+
+volumes:
+  qualification-db:

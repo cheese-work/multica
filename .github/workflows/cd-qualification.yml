@@ -1,0 +1,137 @@
+name: CD qualification build
+
+on:
+  push:
+    branches: [main]
+
+# This workflow deliberately has no deployment environment, C00 endpoint,
+# deployment token, SSH material, recovery key, or configuration secret. D2
+# owns C00 mutation after D1 produces a current-tuple candidate.
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: cd-qualification-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  cd-qualification:
+    # This label is reserved for the separate cheese-work runner set on X99;
+    # it cannot match the unrelated tevo-web runners labeled tevo-cicd.
+    runs-on: [self-hosted, linux, x64, x99-multica-cd]
+    timeout-minutes: 45
+    env:
+      REGISTRY: ghcr.io
+      BACKEND_IMAGE: ghcr.io/${{ github.repository_owner }}/multica-backend
+      WEB_IMAGE: ghcr.io/${{ github.repository_owner }}/multica-web
+    steps:
+      - name: Assert trusted main push on X99 amd64
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_REF" = refs/heads/main
+          test "$(uname -m)" = x86_64
+          test "${GITHUB_REPOSITORY}" = cheese-work/multica
+          docker version --format '{{.Server.Arch}}' | grep -Ex 'amd64|x86_64'
+
+      - name: Checkout exact source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Run D1 fixture checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash deploy/cd/test-release-manifest.sh
+          bash deploy/cd/test-admission.sh
+          bash deploy/cd/test-isolated-qualification.sh
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish immutable amd64 backend
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform linux/amd64 \
+            --provenance=mode=max \
+            --sbom=true \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --build-arg "VERSION=sha-${GITHUB_SHA}" \
+            --build-arg "COMMIT=${GITHUB_SHA}" \
+            --metadata-file backend-metadata.json \
+            --push \
+            --tag "${BACKEND_IMAGE}:sha-${GITHUB_SHA}" \
+            --file Dockerfile .
+          node -e 'const m=require("./backend-metadata.json"); const d=m["containerimage.digest"]; if (!/^sha256:[a-f0-9]{64}$/.test(d ?? "")) process.exit(1); process.stdout.write(d)' > backend.digest
+
+      - name: Build and publish immutable amd64 web
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform linux/amd64 \
+            --provenance=mode=max \
+            --sbom=true \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --build-arg "NEXT_PUBLIC_APP_VERSION=sha-${GITHUB_SHA}" \
+            --metadata-file web-metadata.json \
+            --push \
+            --tag "${WEB_IMAGE}:sha-${GITHUB_SHA}" \
+            --file Dockerfile.web .
+          node -e 'const m=require("./web-metadata.json"); const d=m["containerimage.digest"]; if (!/^sha256:[a-f0-9]{64}$/.test(d ?? "")) process.exit(1); process.stdout.write(d)' > web.digest
+
+      - name: Write immutable build-evidence manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          config_sha="sha256:$(sha256sum deploy/cd/fixtures/isolated-config.env | awk '{print $1}')"
+          migration_sha="$(node deploy/cd/migration-inventory.mjs)"
+          backend_ref="${BACKEND_IMAGE}@$(cat backend.digest)"
+          web_ref="${WEB_IMAGE}@$(cat web.digest)"
+          node deploy/cd/release-manifest.mjs create \
+            --kind build-evidence \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-sha "$GITHUB_SHA" \
+            --architecture linux/amd64 \
+            --configuration-sha256 "$config_sha" \
+            --migration-inventory-sha256 "$migration_sha" \
+            --backend-image "$backend_ref" \
+            --web-image "$web_ref" \
+            --output cd-build-evidence.json
+          node deploy/cd/release-manifest.mjs verify \
+            --manifest cd-build-evidence.json \
+            --expected-repository "$GITHUB_REPOSITORY" \
+            --expected-source-sha "$GITHUB_SHA" \
+            --expected-configuration-sha256 "$config_sha" \
+            --expected-migration-inventory-sha256 "$migration_sha"
+          docker buildx imagetools inspect "$backend_ref" | tee backend-inspect.txt
+          docker buildx imagetools inspect "$web_ref" | tee web-inspect.txt
+          cat > cd-image-provenance.json <<EOF
+          {"images":{"backend":{"digest":"$(cat backend.digest)","architecture":"linux/amd64","repository":"${GITHUB_REPOSITORY}","source_sha":"${GITHUB_SHA}"},"web":{"digest":"$(cat web.digest)","architecture":"linux/amd64","repository":"${GITHUB_REPOSITORY}","source_sha":"${GITHUB_SHA}"}}}
+          EOF
+
+      - name: Upload D1 build evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: cd-build-evidence-${{ github.sha }}
+          path: |
+            cd-build-evidence.json
+            cd-image-provenance.json
+            backend-metadata.json
+            web-metadata.json
+            backend-inspect.txt
+            web-inspect.txt
+          if-no-files-found: error
+          retention-days: 30

@@ -9,6 +9,12 @@ It does not deploy, contact C00, receive C00 deployment credentials, receive
 recovery private keys, or use restored production data. The D2 controller is
 the only component allowed to mutate C00.
 
+The main-push workflow produces a `build-evidence` manifest. Its configuration
+digest is for the synthetic fixture only, so `admission.mjs` refuses it for a
+deployment. A `release-candidate` manifest requires the fresh Hermes
+configuration and migration snapshot and is the only manifest class that can
+pass admission.
+
 `PR #20` (`CHE-392`) is an explicit prerequisite for running this workflow on
 the dedicated X99 GitHub Actions runner. This change does not extend or
 replace that pull request.
