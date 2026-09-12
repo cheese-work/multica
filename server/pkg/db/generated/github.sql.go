@@ -736,6 +736,20 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     -- closed_at is older than the stored value describes an earlier close and
     -- is treated the same as a non-reopen delivery: rejected (CHE-374 review
     -- round 4, item 1).
+    --
+    -- Accepted limitation (CHE-374 review round 5, item 1): a genuine reopen
+    -- payload always carries closed_at=NULL, so the ordering check above
+    -- (which requires both sides non-null) cannot compare two null-bearing
+    -- reopens. A close -> reopen -> close sequence followed by an
+    -- out-of-order redelivery of the FIRST reopen can therefore transiently
+    -- reopen a PR that is genuinely closed again — closed_at cannot order
+    -- two null-bearing events; that is a property of the signal, not this
+    -- expression. A real fix needs a monotonic per-PR transition-ordering
+    -- key (the delivery GUID is freshly minted per redelivery by GitHub, so
+    -- it cannot serve as one) and is deliberately deferred: the next
+    -- authoritative refresh (webhook, snapshot fetch, or TTL sweep)
+    -- self-heals the mirror, so this is scoped out of this delivery rather
+    -- than spending the remaining review ceiling on a narrow race.
     state = CASE
         WHEN github_pull_request.state = 'merged'
              AND EXCLUDED.state <> 'merged'
