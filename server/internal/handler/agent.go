@@ -1372,16 +1372,20 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 
 	// CHE-455: requireUserID above does not reject agent actors — X-User-ID
 	// is stamped from the agent's owning human even for mat_-authenticated
-	// requests — so an explicit resolveActor check is required here. Reject
-	// whenever req.Instructions is non-empty — the decoded struct field
-	// that line 1552 below unconditionally copies into CreateAgentParams —
-	// not a raw JSON key lookup, which a case-varied key ("Instructions")
-	// bypasses (encoding/json matches keys to struct fields
-	// case-insensitively; a map lookup on the raw keys does not). An agent
-	// actor creating its own agent should not be able to seed governed
-	// instruction content.
+	// requests — so an explicit resolveActor check is required here.
+	// CreateAgentParams.Instructions is written unconditionally below
+	// (line ~1556: `Instructions: req.Instructions`, a plain string with no
+	// nil/presence distinction), so a `req.Instructions != ""` guard misses
+	// an explicit `"Instructions":""` or `"Instructions":null` body — both
+	// decode to "" but the key WAS sent, and this site's contract (like
+	// UpdateProject's) is "reject if the field key is present at all,
+	// regardless of value" (PR #29 review, x99-codex-5.6-sol). Gated on
+	// rawFieldsHasKeyFold instead: a case-insensitive key scan, matching
+	// how encoding/json itself matches object keys to struct fields when
+	// decoding — a plain rawFields[...] map lookup here would reintroduce
+	// the exact case-variant bypass this file's other fix already closed.
 	actorType, _ := h.resolveActor(r, ownerID, workspaceID)
-	if rejectGovernedFieldForAgentActor(w, r, actorType, req.Instructions != "", "instructions") {
+	if rejectGovernedFieldForAgentActor(w, r, actorType, rawFieldsHasKeyFold(rawFields, "instructions"), "instructions") {
 		return
 	}
 

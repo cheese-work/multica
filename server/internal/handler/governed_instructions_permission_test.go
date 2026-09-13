@@ -583,6 +583,86 @@ func TestCreateAgent_AgentActorForbiddenFromInstructions_CaseVariant(t *testing.
 	}
 }
 
+// TestCreateAgent_AgentActorForbiddenFromInstructions_EmptyValueCaseVariant
+// pins the x99-codex-5.6-sol review finding on 79aecd84e: CreateAgentParams
+// writes req.Instructions UNCONDITIONALLY (there is no *string / presence
+// distinction on create, unlike the update sites), so a guard keyed on
+// `req.Instructions != ""` let an agent actor through whenever the smuggled
+// value decoded to empty — "Instructions":"" or "Instructions":null both
+// do, and both were still field keys the agent actor sent. The guard must
+// reject on key presence (rawFieldsHasKeyFold), not on the decoded value
+// being non-empty — matching the contract this site actually promises:
+// "an agent actor may not send this key with any value, empty included".
+func TestCreateAgent_AgentActorForbiddenFromInstructions_EmptyValueCaseVariant(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	cases := []struct {
+		name       string
+		agentName  string
+		instrValue any
+		instrKey   string
+	}{
+		{name: "empty string, canonical key", agentName: "che455-create-agent-empty-canonical", instrValue: "", instrKey: "instructions"},
+		{name: "empty string, case-variant key", agentName: "che455-create-agent-empty-case", instrValue: "", instrKey: "Instructions"},
+		{name: "explicit null, canonical key", agentName: "che455-create-agent-null-canonical", instrValue: nil, instrKey: "instructions"},
+		{name: "explicit null, case-variant key", agentName: "che455-create-agent-null-case", instrValue: nil, instrKey: "INSTRUCTIONS"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ownerUserID, hostAgentID, hostTaskID := governedInstructionActorFixture(t, "che455-create-agent-empty-"+tc.agentName+"@multica.test", "che455-create-agent-empty-host-"+tc.agentName)
+
+			req := newRequestAs(ownerUserID, http.MethodPost, "/api/agents", map[string]any{
+				"name":       tc.agentName,
+				"runtime_id": handlerTestRuntimeID(t),
+				tc.instrKey:  tc.instrValue,
+			})
+			req = asAgentActor(req, hostAgentID, hostTaskID)
+
+			w := httptest.NewRecorder()
+			testHandler.CreateAgent(w, req)
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("CreateAgent as agent actor with %q=%v: expected 403, got %d: %s", tc.instrKey, tc.instrValue, w.Code, w.Body.String())
+			}
+
+			var count int
+			dbfx.QueryRow(t, `SELECT count(*) FROM agent WHERE name = $1`, tc.agentName).Scan(&count)
+			if count != 0 {
+				t.Errorf("expected no agent to be created for %q=%v, found %d", tc.instrKey, tc.instrValue, count)
+			}
+		})
+	}
+}
+
+// TestCreateAgent_AgentActorCanCreateWithEmptyInstructionsOmitted confirms
+// the guard stays field-scoped: an agent actor that never sends the
+// instructions key at all (the normal case) can still create an agent.
+func TestCreateAgent_AgentActorCanCreateWithEmptyInstructionsOmitted(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	hostAgentID := createHandlerTestAgent(t, "che455-create-agent-omitted-host", nil)
+	dbfx.Exec(t, `UPDATE agent SET owner_id = $1 WHERE id = $2`, testUserID, hostAgentID)
+	hostTaskID := createHandlerTestTaskForAgent(t, hostAgentID)
+
+	req := newRequestAs(testUserID, http.MethodPost, "/api/agents", map[string]any{
+		"name":       "che455-create-agent-omitted-key",
+		"runtime_id": handlerTestRuntimeID(t),
+	})
+	req = asAgentActor(req, hostAgentID, hostTaskID)
+
+	w := httptest.NewRecorder()
+	testHandler.CreateAgent(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateAgent as agent actor with instructions key omitted: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent WHERE name = 'che455-create-agent-omitted-key'`)
+	})
+}
+
 func TestUpdateSquad_AgentActorForbiddenFromInstructions_CaseVariant(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
