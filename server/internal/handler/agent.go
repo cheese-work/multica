@@ -1370,6 +1370,25 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// CHE-455: requireUserID above does not reject agent actors — X-User-ID
+	// is stamped from the agent's owning human even for mat_-authenticated
+	// requests — so an explicit resolveActor check is required here.
+	// CreateAgentParams.Instructions is written unconditionally below
+	// (line ~1556: `Instructions: req.Instructions`, a plain string with no
+	// nil/presence distinction), so a `req.Instructions != ""` guard misses
+	// an explicit `"Instructions":""` or `"Instructions":null` body — both
+	// decode to "" but the key WAS sent, and this site's contract (like
+	// UpdateProject's) is "reject if the field key is present at all,
+	// regardless of value" (PR #29 review, x99-codex-5.6-sol). Gated on
+	// rawFieldsHasKeyFold instead: a case-insensitive key scan, matching
+	// how encoding/json itself matches object keys to struct fields when
+	// decoding — a plain rawFields[...] map lookup here would reintroduce
+	// the exact case-variant bypass this file's other fix already closed.
+	actorType, _ := h.resolveActor(r, ownerID, workspaceID)
+	if rejectGovernedFieldForAgentActor(w, r, actorType, rawFieldsHasKeyFold(rawFields, "instructions"), "instructions") {
+		return
+	}
+
 	if req.Name == "" {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
@@ -1872,6 +1891,21 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	// audit row.
 	if _, ok := rawFields["custom_env"]; ok {
 		writeError(w, http.StatusBadRequest, "custom_env is no longer accepted on this endpoint; use PUT /api/agents/{id}/env (or `multica agent env set`)")
+		return
+	}
+
+	// CHE-455: agent actors may never persist a change to an agent's
+	// instructions, even when the acting agent's owning human is a
+	// workspace owner/admin or this very agent's owner. Field-scoped, not
+	// route-scoped — an agent actor can still update status,
+	// max_concurrent_tasks, etc. through this same endpoint. Gated on
+	// req.Instructions != nil — the decoded struct field the write below
+	// actually branches on — not a raw JSON key lookup, which a
+	// case-varied key ("Instructions") bypasses because encoding/json
+	// matches object keys to struct fields case-insensitively.
+	workspaceID := uuidToString(existing.WorkspaceID)
+	actorType, _ := h.resolveActor(r, requestUserID(r), workspaceID)
+	if rejectGovernedFieldForAgentActor(w, r, actorType, req.Instructions != nil, "instructions") {
 		return
 	}
 
