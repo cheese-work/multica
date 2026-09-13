@@ -82,6 +82,7 @@ func TestWebhookStatusResolver(t *testing.T) {
 							closing = append(closing, fmt.Sprintf("Closes RSL-%d", i+1))
 						}
 						// Mirroring creates rows outside the fixture builders.
+						fixture.Cleanup(t, `DELETE FROM github_merge_announcement WHERE issue_id = ANY($1)`, ids)
 						for _, table := range []string{"issue_pull_request", "issue_vcs_pull_request"} {
 							fixture.Cleanup(t, "DELETE FROM "+table+" WHERE issue_id IN (SELECT id FROM issue WHERE workspace_id = $1)", ws)
 						}
