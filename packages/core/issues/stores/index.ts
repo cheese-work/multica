@@ -26,6 +26,11 @@ export {
   useResolvedExpandStore,
   selectExpandedResolved,
 } from "./resolved-expand-store";
+export {
+  useIssueDisclosureStore,
+  selectDescriptionExpanded,
+  selectExpandedThreads,
+} from "./issue-disclosure-store";
 export { useCommentComposerStore } from "./comment-composer-store";
 export { useCommentDraftStore, type CommentDraftKey } from "./comment-draft-store";
 export {
