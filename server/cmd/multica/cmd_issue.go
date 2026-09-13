@@ -189,6 +189,21 @@ var issuePullRequestsCmd = &cobra.Command{
 	RunE:    runIssuePullRequests,
 }
 
+var issueAnnounceMergeCmd = &cobra.Command{
+	Use:   "announce-merge <id>",
+	Short: "Recover a missing merge announcement for one already-merged linked pull request",
+	Long: "Explicit, narrow recovery for a single already-merged GitHub pull request that\n" +
+		"never produced its merge-announcement comment (e.g. merged before the feature\n" +
+		"existed, or before this workspace enabled GitHub). Fetches the pull request's\n" +
+		"current authoritative merge identity from GitHub — never trusts locally\n" +
+		"supplied merge evidence — and delivers exactly one comment, identical to what\n" +
+		"a live webhook delivery would have produced. Idempotent: retrying with the\n" +
+		"same issue and PR URL returns the existing outcome rather than duplicating it.\n" +
+		"This is a write; `multica issue pull-requests` stays read-only.",
+	Args: exactArgs(1),
+	RunE: runIssueAnnounceMerge,
+}
+
 var issueChildrenCmd = &cobra.Command{
 	Use:     "children <id>",
 	Aliases: []string{"subissues"},
@@ -484,6 +499,7 @@ func init() {
 	issueCmd.AddCommand(issueListCmd)
 	issueCmd.AddCommand(issueGetCmd)
 	issueCmd.AddCommand(issuePullRequestsCmd)
+	issueCmd.AddCommand(issueAnnounceMergeCmd)
 	issueCmd.AddCommand(issueChildrenCmd)
 	issueCmd.AddCommand(issueCreateCmd)
 	issueCmd.AddCommand(issueUpdateCmd)
@@ -532,6 +548,10 @@ func init() {
 
 	// issue pull-requests
 	issuePullRequestsCmd.Flags().String("output", "table", "Output format: table or json")
+
+	// issue announce-merge
+	issueAnnounceMergeCmd.Flags().String("pr-url", "", "GitHub pull request URL to recover the merge announcement for (required)")
+	issueAnnounceMergeCmd.Flags().String("output", "json", "Output format: table or json")
 
 	issueChildrenCmd.Flags().String("output", "table", "Output format: table or json")
 	issueChildrenCmd.Flags().Bool("full-id", false, "Show full UUIDs in table output")
@@ -993,6 +1013,50 @@ func pullRequestURL(pr map[string]any) string {
 		return url
 	}
 	return strVal(pr, "html_url")
+}
+
+func runIssueAnnounceMerge(cmd *cobra.Command, args []string) error {
+	prURL, _ := cmd.Flags().GetString("pr-url")
+	if strings.TrimSpace(prURL) == "" {
+		return fmt.Errorf("--pr-url is required")
+	}
+
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+
+	issueRef, err := resolveIssueRef(ctx, client, args[0])
+	if err != nil {
+		return fmt.Errorf("resolve issue: %w", err)
+	}
+
+	var result map[string]any
+	err = client.PostJSON(ctx, "/api/issues/"+url.PathEscape(issueRef.ID)+"/pull-requests/merge-announcements",
+		map[string]any{"pr_url": prURL}, &result)
+	if err != nil {
+		return fmt.Errorf("announce merge: %w", err)
+	}
+
+	output, _ := cmd.Flags().GetString("output")
+	if output == "json" {
+		return cli.PrintJSON(os.Stdout, result)
+	}
+
+	cli.PrintTable(os.Stdout,
+		[]string{"STATUS", "ANNOUNCEMENT ID", "COMMENT ID", "MERGED AT", "MERGE COMMIT"},
+		[][]string{{
+			strVal(result, "status"),
+			strVal(result, "announcement_id"),
+			strVal(result, "comment_id"),
+			strVal(result, "merged_at"),
+			strVal(result, "merge_commit_sha"),
+		}},
+	)
+	return nil
 }
 
 func runIssueGet(cmd *cobra.Command, args []string) error {

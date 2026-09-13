@@ -67,6 +67,33 @@ FROM candidate
 WHERE a.id = candidate.id
 RETURNING a.*;
 
+-- name: ClaimPendingGitHubMergeAnnouncementByID :one
+-- Targeted counterpart to ClaimPendingGitHubMergeAnnouncement, for the
+-- selected-recovery path (CHE-384/01-02 review fix): the durable worker's
+-- global claim is an unfiltered "oldest pending, anywhere in the deployment"
+-- pick, which is correct for its own sweep but wrong for a caller that just
+-- created (or looked up) one specific row and wants THAT one delivered now.
+-- Scoping the WHERE to id=... makes the claim structural rather than
+-- probabilistic — this can only ever claim the named row, never an
+-- unrelated workspace's older backlog entry. FOR UPDATE SKIP LOCKED still
+-- applies so a concurrent sweep pass claiming the same row loses the race
+-- cleanly (0 rows) instead of blocking.
+WITH candidate AS (
+    SELECT g.id
+    FROM github_merge_announcement g
+    WHERE g.id = sqlc.arg('announcement_id')
+      AND g.status = 'pending'
+      AND g.available_at <= now()
+      AND (g.lease_expires_at IS NULL OR g.lease_expires_at <= now())
+    FOR UPDATE SKIP LOCKED
+)
+UPDATE github_merge_announcement AS a
+SET lease_token = gen_random_uuid(),
+    lease_expires_at = now() + interval '2 minutes'
+FROM candidate
+WHERE a.id = candidate.id
+RETURNING a.*;
+
 -- name: CompleteGitHubMergeAnnouncementDelivery :one
 -- Marks the record delivered and records the created comment's id in the
 -- same statement. Scoped by lease_token so a worker that outlived its lease
@@ -141,4 +168,15 @@ RETURNING *;
 -- operator can see terminal retry state without a new admin surface.
 SELECT * FROM github_merge_announcement
 WHERE issue_id = sqlc.arg('issue_id')
+ORDER BY created_at DESC;
+
+-- name: ListGitHubMergeAnnouncementsByIssueAndPullRequest :many
+-- Same diagnostics as ListGitHubMergeAnnouncementsByIssue, narrowed to one
+-- (issue, pull_request) pair so ListPullRequestsForIssue (CHE-384/01-02) can
+-- attach each PR card its own announcement state without cross-matching PR
+-- identity by hand. Ordered newest-first so the caller's [0] is the current
+-- record when one exists (identity is unique per issue+pr+event_kind, so in
+-- practice this returns at most one row per event_kind today).
+SELECT * FROM github_merge_announcement
+WHERE issue_id = sqlc.arg('issue_id') AND pull_request_id = sqlc.arg('pull_request_id')
 ORDER BY created_at DESC;

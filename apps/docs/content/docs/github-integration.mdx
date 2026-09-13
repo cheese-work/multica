@@ -91,6 +91,24 @@ So writing `MUL-123` only in the branch name or title establishes the link but d
 
 The status change is written to the timeline as a system action, and members subscribed to the issue are notified.
 
+## Merge announcements
+
+When a linked PR merges, Multica posts exactly one system comment on the issue: the PR link, the merge commit, the merge time, and the issue's current owner/status — independent of whether the merge also declared close intent. This is a durable record of "this PR merged", not a vote on completion; the Done rules above decide status separately.
+
+Delivery is asynchronous and retried automatically. `multica issue pull-requests` exposes per-PR diagnostics in `merge_announcement` (state, attempt count, sanitized last error, next retry time, and the delivered comment id) so a caller can see whether a specific merge is pending, delivered, or has exhausted retries — without a new admin surface.
+
+### Recovering a missed announcement
+
+If a PR merged without producing this comment — most commonly a PR that merged before the announcement feature existed, or before this workspace had GitHub enabled — recover it explicitly:
+
+```bash
+multica issue announce-merge <issue-id> --pr-url https://github.com/<owner>/<repo>/pull/<number>
+```
+
+This is a narrow, explicit action, not a bulk backfill: it targets one issue and one already-linked, already-merged PR. It re-fetches the PR's current merge identity directly from GitHub (never trusting locally supplied evidence), so the resulting comment always states the PR's actual original merge time, not the time recovery ran. Retrying is safe — recovering the same issue+PR twice returns the existing outcome rather than duplicating the comment.
+
+Recovery requires: GitHub still enabled for the workspace, the PR still mirrored, the issue still linked to it, and the source installation still bound to the workspace. It refuses to run for a PR that isn't actually merged.
+
 ## Multiple workspaces
 
 The same GitHub App installation can be connected to multiple Multica workspaces. GitHub events flow into each workspace separately and are matched against each workspace's own issue prefix.

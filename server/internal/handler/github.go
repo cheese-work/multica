@@ -141,6 +141,58 @@ type GitHubPullRequestResponse struct {
 	Additions    int32 `json:"additions"`
 	Deletions    int32 `json:"deletions"`
 	ChangedFiles int32 `json:"changed_files"`
+	// MergeAnnouncement is the merge-announcement diagnostics for this PR on
+	// this issue (CHE-374/CHE-384), omitted when no announcement was ever
+	// enqueued (PR never merged while linked, or merged before the announcement
+	// feature existed). Optional field — older clients ignore it.
+	MergeAnnouncement *GitHubMergeAnnouncementResponse `json:"merge_announcement,omitempty"`
+}
+
+// GitHubMergeAnnouncementResponse is sanitized delivery diagnostics for one
+// merge-announcement record (CHE-384/01-02 task 1). It never carries
+// last_error's raw cause chain beyond what retryOrFail already sanitizes
+// (message-only, no stack/query text — see github_merge_announcement.go), and
+// never exposes lease_token, which is an internal delivery-worker handle with
+// no diagnostic value to a caller.
+type GitHubMergeAnnouncementResponse struct {
+	// Status is one of "pending", "delivered", "failed", "skipped" — the
+	// same values github_merge_announcement.status stores.
+	Status string `json:"status"`
+	// DeliveryGUID is the GitHub delivery id that first enqueued this record,
+	// when known — an audit trail back to GitHub's own delivery log, not the
+	// dedup identity (see 471_github_merge_announcement_identity_uidx.up.sql).
+	DeliveryGUID *string `json:"delivery_guid,omitempty"`
+	AttemptCount int32   `json:"attempt_count"`
+	// LastError is the sanitized reason from the most recent attempt, present
+	// for "failed" and "skipped" and for a "pending" record that has already
+	// retried at least once.
+	LastError *string `json:"last_error,omitempty"`
+	// NextRetryAt is when a "pending" record becomes claimable again; absent
+	// once the record leaves pending (delivered/failed/skipped are terminal).
+	NextRetryAt *string `json:"next_retry_at,omitempty"`
+	// SentAt is when the announcement comment was actually created —
+	// github_merge_announcement.delivered_at — present only once delivered.
+	SentAt *string `json:"sent_at,omitempty"`
+	// CommentID is the id of the system comment this announcement produced,
+	// present only once delivered.
+	CommentID *string `json:"comment_id,omitempty"`
+}
+
+func githubMergeAnnouncementToResponse(a db.GithubMergeAnnouncement) GitHubMergeAnnouncementResponse {
+	resp := GitHubMergeAnnouncementResponse{
+		Status:       a.Status,
+		DeliveryGUID: textToPtr(a.DeliveryGuid),
+		AttemptCount: a.AttemptCount,
+		LastError:    textToPtr(a.LastError),
+	}
+	if a.Status == "pending" {
+		resp.NextRetryAt = timestampToPtr(a.AvailableAt)
+	}
+	if a.Status == "delivered" {
+		resp.SentAt = timestampToPtr(a.DeliveredAt)
+		resp.CommentID = uuidToPtr(a.CommentID)
+	}
+	return resp
 }
 
 type GitHubConnectResponse struct {
@@ -1298,7 +1350,21 @@ func (h *Handler) ListPullRequestsForIssue(w http.ResponseWriter, r *http.Reques
 	}
 	out := make([]GitHubPullRequestResponse, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, issuePullRequestRowToResponse(row, h.PRRefresh.Enabled()))
+		resp := issuePullRequestRowToResponse(row, h.PRRefresh.Enabled())
+		// Diagnostics are best-effort (CHE-384/01-02 task 1): a lookup failure
+		// here must not fail the whole PR list, so it's logged and the field
+		// is simply omitted rather than propagated as a request error.
+		if announcements, err := h.Queries.ListGitHubMergeAnnouncementsByIssueAndPullRequest(r.Context(), db.ListGitHubMergeAnnouncementsByIssueAndPullRequestParams{
+			IssueID:       issue.ID,
+			PullRequestID: row.ID,
+		}); err != nil {
+			slog.Error("github: list merge announcement diagnostics", "error", err, "pr_id", uuidToString(row.ID))
+		} else if len(announcements) > 0 {
+			// Newest first (see query comment); [0] is the current record.
+			ma := githubMergeAnnouncementToResponse(announcements[0])
+			resp.MergeAnnouncement = &ma
+		}
+		out = append(out, resp)
 		// Page-visit trigger (MUL-5265): if this card's snapshot is missing or
 		// older than the view TTL, kick an async refresh. Non-blocking — the
 		// current (possibly stale) response is returned immediately and the
