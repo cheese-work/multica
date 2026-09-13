@@ -156,7 +156,7 @@ test.describe("Description editor lifecycle through folding", () => {
     });
     await paragraph.dispatchEvent("mouseup");
 
-    const addAnnotation = page.getByRole("button", { name: /Add|Comment/ });
+    const addAnnotation = page.getByRole("button", { name: "Add annotation" });
     await expect(addAnnotation).toBeVisible();
   });
 
@@ -178,7 +178,7 @@ test.describe("Description editor lifecycle through folding", () => {
     });
     await preview.dispatchEvent("mouseup");
 
-    await expect(page.getByRole("button", { name: /Add|Comment/ })).not.toBeVisible();
+    await expect(page.getByRole("button", { name: "Add annotation" })).not.toBeVisible();
   });
 
   test("paste-then-immediate-close persists the image markdown across reload", async ({ page }) => {
@@ -255,8 +255,12 @@ test.describe("Description editor lifecycle through folding", () => {
     const editor = page.locator("[data-description-editor] .ProseMirror");
     await editor.click();
 
+    // "Attach file" also exists on the page's own comment composer — scope to
+    // the wrapper containing the description's disclosure section so this
+    // clicks the description's attach button, not the comment composer's.
+    const descriptionWrapper = page.locator("div:has(> [data-description-disclosure])").first();
     const fileChooserPromise = page.waitForEvent("filechooser");
-    await page.getByLabel("Attach file").click();
+    await descriptionWrapper.getByLabel("Attach file").click();
     const fileChooser = await fileChooserPromise;
     // A large buffer keeps the upload in flight long enough to observe the
     // disabled Show less before it settles.
@@ -391,7 +395,7 @@ test.describe("Durable thread fold state through row unmount/remount", () => {
     // Open the command palette and run Fold All Comments.
     await page.keyboard.press("ControlOrMeta+K");
     await page.getByPlaceholder("Type a command or search...").fill("fold all");
-    await page.getByText("Fold All Comments").click();
+    await page.getByText("Fold All Comments", { exact: true }).click();
 
     // The whole thread collapses to its manual-collapse summary — the
     // length-expanded reply is no longer visible because the manual collapse
@@ -402,7 +406,7 @@ test.describe("Durable thread fold state through row unmount/remount", () => {
     // length-disclosure store's "all replies" state for this thread.
     await page.keyboard.press("ControlOrMeta+K");
     await page.getByPlaceholder("Type a command or search...").fill("unfold all");
-    await page.getByText("Unfold All Comments").click();
+    await page.getByText("Unfold All Comments", { exact: true }).click();
 
     await expect(page.getByText("Reply number 1")).toBeVisible({ timeout: 10000 });
   });
