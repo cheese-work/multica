@@ -73,6 +73,7 @@ import {
   EMPTY_LIST_ISSUE_STATUSES_RESPONSE,
   EMPTY_ISSUE_STATUS_ENTRY,
 } from "./schemas";
+import { GitHubMergeAnnouncementSchema, IssuePullRequestsResponseSchema } from "./schemas";
 import { parseWithFallback } from "./schema";
 
 const baseIssue = {
@@ -2210,5 +2211,66 @@ describe("TaskMessageListSchema", () => {
   it("downgrades an unknown message type instead of dropping the transcript", () => {
     const parsed = TaskMessageListSchema.parse([{ ...row, type: "video" }]);
     expect(parsed[0]?.type).toBe("text");
+  });
+});
+
+describe("IssuePullRequestsResponseSchema merge_announcement diagnostics (CHE-384)", () => {
+  const basePR = {
+    id: "pr-1",
+    workspace_id: "ws-1",
+    repo_owner: "cheese-work",
+    repo_name: "multica",
+    number: 17,
+    title: "Test PR",
+    state: "merged",
+    html_url: "https://github.com/cheese-work/multica/pull/17",
+    branch: "feature",
+    author_login: "someone",
+    author_avatar_url: null,
+    merged_at: "2026-09-10T09:54:34Z",
+    closed_at: null,
+    pr_created_at: "2026-09-01T00:00:00Z",
+    pr_updated_at: "2026-09-10T09:54:34Z",
+  };
+
+  it("parses a delivered announcement attached to a PR", () => {
+    const parsed = IssuePullRequestsResponseSchema.parse({
+      pull_requests: [
+        {
+          ...basePR,
+          merge_announcement: {
+            status: "delivered",
+            attempt_count: 0,
+            sent_at: "2026-09-10T09:55:00Z",
+            comment_id: "comment-1",
+          },
+        },
+      ],
+    });
+    expect(parsed.pull_requests[0]?.merge_announcement?.status).toBe("delivered");
+    expect(parsed.pull_requests[0]?.merge_announcement?.comment_id).toBe("comment-1");
+  });
+
+  it("defaults merge_announcement to undefined for an older backend that omits it", () => {
+    const parsed = IssuePullRequestsResponseSchema.parse({
+      pull_requests: [basePR],
+    });
+    expect(parsed.pull_requests[0]?.merge_announcement).toBeUndefined();
+  });
+
+  it("keeps the PR while dropping via fallback when the whole response is malformed", () => {
+    const parsed = parseWithFallback(
+      { pull_requests: "nope" },
+      IssuePullRequestsResponseSchema,
+      { pull_requests: [] },
+      { endpoint: "GET /api/issues/:id/pull-requests" },
+    );
+    expect(parsed.pull_requests).toEqual([]);
+  });
+
+  it("rejects a merge_announcement with a non-string status", () => {
+    expect(() =>
+      GitHubMergeAnnouncementSchema.parse({ status: 42, attempt_count: 0 }),
+    ).toThrow();
   });
 });

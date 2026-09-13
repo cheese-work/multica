@@ -135,6 +135,18 @@ func (m *Manager) SetReadSelector(selector *dbreader.Selector) {
 // Enabled reports whether the pipeline will actually do anything.
 func (m *Manager) Enabled() bool { return m != nil && m.client.Enabled() }
 
+// Client exposes the underlying App-authenticated client for callers outside
+// this package that need a one-off authoritative fetch the sweep/refresh
+// pipeline doesn't do — currently just FetchPRMergeIdentity for selected merge
+// recovery (CHE-384/01-02 task 1). Returns nil when the manager itself is nil;
+// FetchPRMergeIdentity/Client.Enabled both tolerate a nil *Client.
+func (m *Manager) Client() *Client {
+	if m == nil {
+		return nil
+	}
+	return m.client
+}
+
 // Start launches the worker pool and the TTL sweeper under ctx. No-op (and
 // safe) when the manager is disabled.
 func (m *Manager) Start(ctx context.Context) {

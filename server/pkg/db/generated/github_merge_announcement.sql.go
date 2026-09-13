@@ -400,6 +400,69 @@ func (q *Queries) ListGitHubMergeAnnouncementsByIssue(ctx context.Context, issue
 	return items, nil
 }
 
+const listGitHubMergeAnnouncementsByIssueAndPullRequest = `-- name: ListGitHubMergeAnnouncementsByIssueAndPullRequest :many
+SELECT id, workspace_id, provider, repository_id, repo_owner, repo_name, pr_number, pull_request_id, issue_id, event_kind, delivery_guid, merge_commit_sha, merged_at, status, attempt_count, last_error, lease_token, lease_expires_at, available_at, comment_id, delivered_at, created_at, updated_at, html_url, close_intent FROM github_merge_announcement
+WHERE issue_id = $1 AND pull_request_id = $2
+ORDER BY created_at DESC
+`
+
+type ListGitHubMergeAnnouncementsByIssueAndPullRequestParams struct {
+	IssueID       pgtype.UUID `json:"issue_id"`
+	PullRequestID pgtype.UUID `json:"pull_request_id"`
+}
+
+// Same diagnostics as ListGitHubMergeAnnouncementsByIssue, narrowed to one
+// (issue, pull_request) pair so ListPullRequestsForIssue (CHE-384/01-02) can
+// attach each PR card its own announcement state without cross-matching PR
+// identity by hand. Ordered newest-first so the caller's [0] is the current
+// record when one exists (identity is unique per issue+pr+event_kind, so in
+// practice this returns at most one row per event_kind today).
+func (q *Queries) ListGitHubMergeAnnouncementsByIssueAndPullRequest(ctx context.Context, arg ListGitHubMergeAnnouncementsByIssueAndPullRequestParams) ([]GithubMergeAnnouncement, error) {
+	rows, err := q.db.Query(ctx, listGitHubMergeAnnouncementsByIssueAndPullRequest, arg.IssueID, arg.PullRequestID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GithubMergeAnnouncement{}
+	for rows.Next() {
+		var i GithubMergeAnnouncement
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Provider,
+			&i.RepositoryID,
+			&i.RepoOwner,
+			&i.RepoName,
+			&i.PrNumber,
+			&i.PullRequestID,
+			&i.IssueID,
+			&i.EventKind,
+			&i.DeliveryGuid,
+			&i.MergeCommitSha,
+			&i.MergedAt,
+			&i.Status,
+			&i.AttemptCount,
+			&i.LastError,
+			&i.LeaseToken,
+			&i.LeaseExpiresAt,
+			&i.AvailableAt,
+			&i.CommentID,
+			&i.DeliveredAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.HtmlUrl,
+			&i.CloseIntent,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const retryGitHubMergeAnnouncement = `-- name: RetryGitHubMergeAnnouncement :one
 UPDATE github_merge_announcement
 SET attempt_count = attempt_count + 1,

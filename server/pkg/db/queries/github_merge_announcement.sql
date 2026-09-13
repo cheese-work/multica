@@ -142,3 +142,14 @@ RETURNING *;
 SELECT * FROM github_merge_announcement
 WHERE issue_id = sqlc.arg('issue_id')
 ORDER BY created_at DESC;
+
+-- name: ListGitHubMergeAnnouncementsByIssueAndPullRequest :many
+-- Same diagnostics as ListGitHubMergeAnnouncementsByIssue, narrowed to one
+-- (issue, pull_request) pair so ListPullRequestsForIssue (CHE-384/01-02) can
+-- attach each PR card its own announcement state without cross-matching PR
+-- identity by hand. Ordered newest-first so the caller's [0] is the current
+-- record when one exists (identity is unique per issue+pr+event_kind, so in
+-- practice this returns at most one row per event_kind today).
+SELECT * FROM github_merge_announcement
+WHERE issue_id = sqlc.arg('issue_id') AND pull_request_id = sqlc.arg('pull_request_id')
+ORDER BY created_at DESC;

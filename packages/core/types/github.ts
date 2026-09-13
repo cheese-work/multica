@@ -115,6 +115,34 @@ export interface GitHubPullRequest {
   additions?: number;
   deletions?: number;
   changed_files?: number;
+  /** Merge-announcement delivery diagnostics for this PR on this issue
+   * (CHE-374/CHE-384). Absent when no announcement was ever enqueued (PR
+   * never merged while linked, or merged before the feature existed).
+   * Older backends omit it entirely. */
+  merge_announcement?: GitHubMergeAnnouncement | null;
+}
+
+/** Sanitized delivery diagnostics for one merge-announcement record. Never
+ * carries more than a message-only sanitized error — see the backend's
+ * retryOrFail — and never a lease token or other internal delivery handle. */
+export interface GitHubMergeAnnouncement {
+  status: "pending" | "delivered" | "failed" | "skipped";
+  /** GitHub delivery id that first enqueued this record, when known. Audit
+   * trail only — not the dedup identity. */
+  delivery_guid?: string | null;
+  attempt_count: number;
+  /** Sanitized reason from the most recent attempt. Present for `failed` /
+   * `skipped`, and for a `pending` record that has already retried once. */
+  last_error?: string | null;
+  /** When a `pending` record becomes claimable again. Absent once the record
+   * leaves `pending`. */
+  next_retry_at?: string | null;
+  /** When the announcement comment was actually created. Present only once
+   * `status` is `delivered`. */
+  sent_at?: string | null;
+  /** The system comment id this announcement produced. Present only once
+   * `status` is `delivered`. */
+  comment_id?: string | null;
 }
 
 export interface ListGitHubInstallationsResponse {

@@ -8,13 +8,18 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -2159,5 +2164,459 @@ func TestWebhook_MergeAnnouncementWorkerRetriesOnCommitFailure(t *testing.T) {
 	}
 	if commentCount != 0 {
 		t.Errorf("expected no system comment to survive: the comment insert was rolled back along with the failed Commit, got %d", commentCount)
+	}
+}
+
+// ── Diagnostics + selected recovery (CHE-384/01-02 task 1) ──────────────────
+
+// fakeGitHubAppServer stands in for GitHub's App-authenticated API for the
+// recovery path: it mints an installation token and answers the merge
+// identity GraphQL query with mergeFn's response for the given variables.
+func fakeGitHubAppServer(t *testing.T, mergeFn func(vars map[string]any) string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/access_tokens") {
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"token":"ghs_secret","expires_at":"` +
+				timeNowPlusHourRFC3339() + `"}`))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/graphql") {
+			body, _ := io.ReadAll(r.Body)
+			var req struct {
+				Variables map[string]any `json:"variables"`
+			}
+			_ = json.Unmarshal(body, &req)
+			_, _ = w.Write([]byte(`{"data":` + mergeFn(req.Variables) + `}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func timeNowPlusHourRFC3339() string {
+	return time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+}
+
+// withTestPRRefresh swaps testHandler.PRRefresh for a Manager backed by a
+// ghsnapshot.Client pointed at srv, restoring the original afterward — the
+// same seam MaybeEnqueueOnView/etc already use in production, just aimed at
+// a fake GitHub App API instead of a live one.
+func withTestPRRefresh(t *testing.T, srv *httptest.Server) {
+	t.Helper()
+	original := testHandler.PRRefresh
+	testHandler.PRRefresh = ghsnapshot.NewManager(
+		ghsnapshot.NewClientForTest(srv.URL),
+		testHandler.Queries,
+		testHandler.TxStarter,
+		testHandler.broadcastPRSnapshotApplied,
+	)
+	t.Cleanup(func() { testHandler.PRRefresh = original })
+}
+
+// seedMergedGitHubPRLink inserts an installation, a merged github_pull_request
+// row, and an issue_pull_request link — the state that would exist if a
+// merged PR was correctly mirrored/linked by an earlier webhook, but never
+// produced an announcement (e.g. it merged before the feature existed).
+// Returns the PR row's UUID.
+func seedMergedGitHubPRLink(t *testing.T, ctx context.Context, issueID, owner, repo string, prNumber int32, installationID int64, closeIntent bool) string {
+	t.Helper()
+	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
+		WorkspaceID:    parseUUID(testWorkspaceID),
+		InstallationID: installationID,
+		AccountLogin:   "recovery-test-acct",
+		AccountType:    "User",
+	}); err != nil {
+		t.Fatalf("CreateGitHubInstallation: %v", err)
+	}
+
+	pr, err := testHandler.Queries.UpsertGitHubPullRequest(ctx, db.UpsertGitHubPullRequestParams{
+		WorkspaceID:         parseUUID(testWorkspaceID),
+		InstallationID:      installationID,
+		RepoOwner:           owner,
+		RepoName:            repo,
+		PrNumber:            prNumber,
+		Title:               "Recovered PR",
+		State:               "merged",
+		HtmlUrl:             fmt.Sprintf("https://github.com/%s/%s/pull/%d", owner, repo, prNumber),
+		PrCreatedAt:         pgtype.Timestamptz{Time: time.Now().Add(-time.Hour), Valid: true},
+		PrUpdatedAt:         pgtype.Timestamptz{Time: time.Now(), Valid: true},
+		ClearMergeableState: pgtype.Bool{Bool: true, Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("UpsertGitHubPullRequest: %v", err)
+	}
+
+	if err := testHandler.Queries.LinkIssueToPullRequest(ctx, db.LinkIssueToPullRequestParams{
+		IssueID:       parseUUID(issueID),
+		PullRequestID: pr.ID,
+		CloseIntent:   closeIntent,
+		LinkedByType:  pgtype.Text{String: "system", Valid: true},
+	}); err != nil {
+		t.Fatalf("LinkIssueToPullRequest: %v", err)
+	}
+	return uuidToString(pr.ID)
+}
+
+func createTestIssueForMergeAnnouncement(t *testing.T, title string) IssueResponse {
+	t.Helper()
+	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":  title,
+		"status": "in_progress",
+	})
+	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
+	var created IssueResponse
+	json.NewDecoder(w.Body).Decode(&created)
+	return created
+}
+
+func cleanupMergeAnnouncementFixture(t *testing.T, issueID string) {
+	t.Helper()
+	ctx := context.Background()
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM github_merge_announcement WHERE issue_id = $1`, issueID)
+		testPool.Exec(ctx, `DELETE FROM comment WHERE issue_id = $1`, issueID)
+		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id = $1`, issueID)
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_installation WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM activity_log WHERE issue_id = $1`, issueID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
+	})
+}
+
+// TestListPullRequestsForIssue_ExposesMergeAnnouncementDiagnostics is the
+// primary test for task 1's read side: a delivered announcement must be
+// visible through the existing `issue pull-requests` read path, in the shape
+// the CLI/docs promise (01-RESEARCH.md's "Access Gap" / review condition A).
+func TestListPullRequestsForIssue_ExposesMergeAnnouncementDiagnostics(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	secret := "merge-diag-test-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+
+	created := createTestIssueForMergeAnnouncement(t, "Diagnostics test issue")
+	cleanupMergeAnnouncementFixture(t, created.ID)
+
+	const installationID int64 = 99887722
+	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
+		WorkspaceID:    parseUUID(testWorkspaceID),
+		InstallationID: installationID,
+		AccountLogin:   "merge-diag-acct",
+		AccountType:    "User",
+	}); err != nil {
+		t.Fatalf("CreateGitHubInstallation: %v", err)
+	}
+
+	body := buildMergedPRWebhookBody(created.Identifier, 5252, "acme", "diag", installationID)
+	postSignedGitHubWebhook(t, secret, body, "diag-delivery-1")
+
+	worker := NewMergeAnnouncementWorker(testHandler)
+	if _, err := worker.ProcessNext(ctx); err != nil {
+		t.Fatalf("ProcessNext: %v", err)
+	}
+
+	req := withURLParam(newRequest("GET", "/api/issues/"+created.ID+"/pull-requests", nil), "id", created.ID)
+	w := testutil.Call(t, testHandler.ListPullRequestsForIssue, req).Want(http.StatusOK)
+	var out struct {
+		PullRequests []GitHubPullRequestResponse `json:"pull_requests"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(out.PullRequests) != 1 {
+		t.Fatalf("expected 1 PR in response, got %d", len(out.PullRequests))
+	}
+	ma := out.PullRequests[0].MergeAnnouncement
+	if ma == nil {
+		t.Fatalf("expected merge_announcement to be populated after delivery")
+	}
+	if ma.Status != "delivered" {
+		t.Errorf("expected status 'delivered', got %q", ma.Status)
+	}
+	if ma.CommentID == nil || *ma.CommentID == "" {
+		t.Errorf("expected comment_id to be populated once delivered")
+	}
+	if ma.SentAt == nil {
+		t.Errorf("expected sent_at to be populated once delivered")
+	}
+	if ma.LastError != nil {
+		t.Errorf("expected no last_error on a clean delivery, got %v", *ma.LastError)
+	}
+}
+
+// TestListPullRequestsForIssue_OmitsMergeAnnouncementWhenNoneEnqueued covers
+// the "never merged while linked" / "merged before the feature existed" case:
+// a PR with no announcement record must simply omit the field, not error.
+func TestListPullRequestsForIssue_OmitsMergeAnnouncementWhenNoneEnqueued(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	created := createTestIssueForMergeAnnouncement(t, "No announcement issue")
+	cleanupMergeAnnouncementFixture(t, created.ID)
+
+	seedMergedGitHubPRLink(t, ctx, created.ID, "acme", "noannounce", 6161, 99887733, false)
+
+	req := withURLParam(newRequest("GET", "/api/issues/"+created.ID+"/pull-requests", nil), "id", created.ID)
+	w := testutil.Call(t, testHandler.ListPullRequestsForIssue, req).Want(http.StatusOK)
+	var out struct {
+		PullRequests []GitHubPullRequestResponse `json:"pull_requests"`
+	}
+	json.NewDecoder(w.Body).Decode(&out)
+	if len(out.PullRequests) != 1 {
+		t.Fatalf("expected 1 PR, got %d", len(out.PullRequests))
+	}
+	if out.PullRequests[0].MergeAnnouncement != nil {
+		t.Errorf("expected no merge_announcement for a PR with no enqueued record, got %+v", out.PullRequests[0].MergeAnnouncement)
+	}
+}
+
+// TestAnnounceMergeForIssue_RecoversHistoricalMerge is the primary recovery
+// test: an issue linked to a merged PR that never got an announcement row
+// recovers exactly one correctly attributed comment, sourced from a fake
+// GitHub App API standing in for the real one (01-VALIDATION.md MERGE-05/06 —
+// no production write, no caller-supplied merge evidence trusted).
+func TestAnnounceMergeForIssue_RecoversHistoricalMerge(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	created := createTestIssueForMergeAnnouncement(t, "Recovery test issue")
+	cleanupMergeAnnouncementFixture(t, created.ID)
+
+	const installationID int64 = 99887744
+	prID := seedMergedGitHubPRLink(t, ctx, created.ID, "acme", "recover", 7171, installationID, true)
+	_ = prID
+
+	const wantMergedAt = "2026-08-01T12:00:00Z"
+	const wantMergeSHA = "deadbeefcafefeed0000111122223333deadbeef"
+	srv := fakeGitHubAppServer(t, func(vars map[string]any) string {
+		return fmt.Sprintf(`{"repository":{"databaseId":424242,"pullRequest":{
+			"merged":true,"mergedAt":%q,
+			"mergeCommit":{"oid":%q},
+			"url":"https://github.com/acme/recover/pull/7171"
+		}}}`, wantMergedAt, wantMergeSHA)
+	})
+	withTestPRRefresh(t, srv)
+
+	req := withURLParam(newRequest("POST", "/api/issues/"+created.ID+"/pull-requests/merge-announcements", map[string]any{
+		"pr_url": "https://github.com/acme/recover/pull/7171",
+	}), "id", created.ID)
+	w := testutil.Call(t, testHandler.AnnounceMergeForIssue, req)
+	if w.Code != http.StatusOK && w.Code != http.StatusAccepted {
+		t.Fatalf("expected 200 or 202, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp AnnounceMergeResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp.Status != "delivered" {
+		t.Fatalf("expected recovery to deliver synchronously, got status %q (full response: %+v)", resp.Status, resp)
+	}
+	if resp.CommentID == nil || *resp.CommentID == "" {
+		t.Fatalf("expected comment_id in the response once delivered")
+	}
+	if resp.MergedAt == nil {
+		t.Errorf("expected recovered merged_at to be populated, got nil")
+	} else {
+		got, err := time.Parse(time.RFC3339, *resp.MergedAt)
+		if err != nil {
+			t.Fatalf("recovered merged_at %q is not RFC3339: %v", *resp.MergedAt, err)
+		}
+		want, _ := time.Parse(time.RFC3339, wantMergedAt)
+		if !got.Equal(want) {
+			t.Errorf("expected recovered merged_at to be the original merge time %q, got %q", wantMergedAt, *resp.MergedAt)
+		}
+	}
+	if resp.MergeCommitSHA == nil || *resp.MergeCommitSHA != wantMergeSHA {
+		t.Errorf("expected recovered merge_commit_sha to be %q, got %v", wantMergeSHA, resp.MergeCommitSHA)
+	}
+
+	var commentCount int
+	if err := testPool.QueryRow(ctx,
+		`SELECT count(*) FROM comment WHERE issue_id = $1 AND author_type = 'system'`,
+		created.ID,
+	).Scan(&commentCount); err != nil {
+		t.Fatalf("count system comments: %v", err)
+	}
+	if commentCount != 1 {
+		t.Fatalf("expected exactly 1 system comment after recovery, got %d", commentCount)
+	}
+
+	var content string
+	testPool.QueryRow(ctx, `SELECT content FROM comment WHERE issue_id = $1 AND author_type = 'system' LIMIT 1`, created.ID).Scan(&content)
+	if !strings.Contains(content, "#7171") {
+		t.Errorf("expected recovered comment to name the PR, got %q", content)
+	}
+	if !strings.Contains(content, "2026-08-01T12:00:00Z") {
+		t.Errorf("expected recovered comment to state the true original merge time, got %q", content)
+	}
+
+	// Issue status must be untouched by recovery alone.
+	afterIssue, err := testHandler.Queries.GetIssue(ctx, parseUUID(created.ID))
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if afterIssue.Status != "in_progress" {
+		t.Errorf("expected issue status unchanged by recovery, got %q", afterIssue.Status)
+	}
+}
+
+// TestAnnounceMergeForIssue_RetryIsIdempotent proves recovering the same
+// issue+PR twice returns the first call's outcome instead of a second
+// comment (01-02-PLAN.md task 1: "Retry is idempotent").
+func TestAnnounceMergeForIssue_RetryIsIdempotent(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	created := createTestIssueForMergeAnnouncement(t, "Idempotent recovery issue")
+	cleanupMergeAnnouncementFixture(t, created.ID)
+
+	const installationID int64 = 99887755
+	seedMergedGitHubPRLink(t, ctx, created.ID, "acme", "idempotent", 8181, installationID, false)
+
+	srv := fakeGitHubAppServer(t, func(vars map[string]any) string {
+		return `{"repository":{"databaseId":424243,"pullRequest":{
+			"merged":true,"mergedAt":"2026-07-01T00:00:00Z",
+			"mergeCommit":{"oid":"1111111111111111111111111111111111111111"},
+			"url":"https://github.com/acme/idempotent/pull/8181"
+		}}}`
+	})
+	withTestPRRefresh(t, srv)
+
+	callOnce := func() AnnounceMergeResponse {
+		req := withURLParam(newRequest("POST", "/api/issues/"+created.ID+"/pull-requests/merge-announcements", map[string]any{
+			"pr_url": "https://github.com/acme/idempotent/pull/8181",
+		}), "id", created.ID)
+		w := testutil.Call(t, testHandler.AnnounceMergeForIssue, req)
+		if w.Code != http.StatusOK && w.Code != http.StatusAccepted {
+			t.Fatalf("expected 200 or 202, got %d: %s", w.Code, w.Body.String())
+		}
+		var resp AnnounceMergeResponse
+		json.NewDecoder(w.Body).Decode(&resp)
+		return resp
+	}
+
+	first := callOnce()
+	second := callOnce()
+
+	if first.AnnouncementID == nil || second.AnnouncementID == nil || *first.AnnouncementID != *second.AnnouncementID {
+		t.Fatalf("expected retry to resolve to the same announcement identity, got %+v vs %+v", first, second)
+	}
+	if second.Status != "delivered" {
+		t.Errorf("expected second call to observe 'delivered' status, got %q", second.Status)
+	}
+
+	var commentCount int
+	if err := testPool.QueryRow(ctx,
+		`SELECT count(*) FROM comment WHERE issue_id = $1 AND author_type = 'system'`,
+		created.ID,
+	).Scan(&commentCount); err != nil {
+		t.Fatalf("count system comments: %v", err)
+	}
+	if commentCount != 1 {
+		t.Fatalf("expected exactly 1 system comment despite two recovery calls, got %d", commentCount)
+	}
+}
+
+// TestAnnounceMergeForIssue_RejectsUnmergedPR covers MERGE-05's negative
+// case: recovery must refuse to fabricate an announcement for a PR GitHub
+// itself reports as not merged.
+func TestAnnounceMergeForIssue_RejectsUnmergedPR(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	created := createTestIssueForMergeAnnouncement(t, "Unmerged recovery issue")
+	cleanupMergeAnnouncementFixture(t, created.ID)
+
+	const installationID int64 = 99887766
+	// Seed the link as though the PR were merged in our own mirror (state
+	// drift scenario) — the recovery path must trust GitHub's live answer,
+	// not the locally mirrored state.
+	seedMergedGitHubPRLink(t, ctx, created.ID, "acme", "notmerged", 9191, installationID, false)
+
+	srv := fakeGitHubAppServer(t, func(vars map[string]any) string {
+		return `{"repository":{"databaseId":424244,"pullRequest":{
+			"merged":false,"mergedAt":"","mergeCommit":null,
+			"url":"https://github.com/acme/notmerged/pull/9191"
+		}}}`
+	})
+	withTestPRRefresh(t, srv)
+
+	req := withURLParam(newRequest("POST", "/api/issues/"+created.ID+"/pull-requests/merge-announcements", map[string]any{
+		"pr_url": "https://github.com/acme/notmerged/pull/9191",
+	}), "id", created.ID)
+	testutil.Call(t, testHandler.AnnounceMergeForIssue, req).Want(http.StatusConflict)
+
+	var count int
+	testPool.QueryRow(ctx, `SELECT count(*) FROM github_merge_announcement WHERE issue_id = $1`, created.ID).Scan(&count)
+	if count != 0 {
+		t.Errorf("expected no announcement record created for an unmerged PR, got %d", count)
+	}
+}
+
+// TestAnnounceMergeForIssue_RejectsUnlinkedIssue covers the "no working link"
+// guard: recovery must refuse when the issue was never linked to the PR.
+func TestAnnounceMergeForIssue_RejectsUnlinkedIssue(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	created := createTestIssueForMergeAnnouncement(t, "Unlinked recovery issue")
+	cleanupMergeAnnouncementFixture(t, created.ID)
+
+	req := withURLParam(newRequest("POST", "/api/issues/"+created.ID+"/pull-requests/merge-announcements", map[string]any{
+		"pr_url": "https://github.com/acme/never-linked/pull/1",
+	}), "id", created.ID)
+	testutil.Call(t, testHandler.AnnounceMergeForIssue, req).Want(http.StatusNotFound)
+}
+
+// TestAnnounceMergeForIssue_RejectsWhenGitHubDisabled covers the master
+// github_enabled switch: recovery must refuse rather than fail open.
+func TestAnnounceMergeForIssue_RejectsWhenGitHubDisabled(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	created := createTestIssueForMergeAnnouncement(t, "Disabled github recovery issue")
+	cleanupMergeAnnouncementFixture(t, created.ID)
+
+	const installationID int64 = 99887777
+	seedMergedGitHubPRLink(t, ctx, created.ID, "acme", "disabled", 1010, installationID, false)
+
+	var previousSettings []byte
+	testPool.QueryRow(ctx, `SELECT settings FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&previousSettings)
+	testPool.Exec(ctx, `UPDATE workspace SET settings = jsonb_set(coalesce(settings, '{}'::jsonb), '{github_enabled}', 'false') WHERE id = $1`, testWorkspaceID)
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `UPDATE workspace SET settings = $1 WHERE id = $2`, previousSettings, testWorkspaceID)
+	})
+
+	req := withURLParam(newRequest("POST", "/api/issues/"+created.ID+"/pull-requests/merge-announcements", map[string]any{
+		"pr_url": "https://github.com/acme/disabled/pull/1010",
+	}), "id", created.ID)
+	testutil.Call(t, testHandler.AnnounceMergeForIssue, req).Want(http.StatusConflict)
+}
+
+// TestAnnounceMergeForIssue_RejectsMalformedPRURL covers input validation:
+// a non-github.com URL or non-PR path must be rejected before any lookup.
+func TestAnnounceMergeForIssue_RejectsMalformedPRURL(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	created := createTestIssueForMergeAnnouncement(t, "Malformed URL recovery issue")
+	cleanupMergeAnnouncementFixture(t, created.ID)
+
+	for _, badURL := range []string{
+		"not-a-url",
+		"https://gitlab.com/acme/repo/-/merge_requests/1",
+		"https://github.com/acme/repo/issues/1",
+	} {
+		req := withURLParam(newRequest("POST", "/api/issues/"+created.ID+"/pull-requests/merge-announcements", map[string]any{
+			"pr_url": badURL,
+		}), "id", created.ID)
+		testutil.Call(t, testHandler.AnnounceMergeForIssue, req).Want(http.StatusBadRequest)
 	}
 }
