@@ -303,3 +303,107 @@ test.describe("Description editor lifecycle through folding", () => {
     await expect(page.locator("text=Line 1 of the description.")).not.toBeVisible();
   });
 });
+
+// Durable thread-fold state (CHE-435): the length-disclosure store must
+// survive a real CommentCard/Virtuoso row unmount+remount, not just a store
+// unit test — 01-04-PLAN.md's Task 2 acceptance criterion is explicit that
+// this must be OBSERVED via an actual browser scroll-away-and-back, not
+// inferred from scroll distance.
+test.describe("Durable thread fold state through row unmount/remount", () => {
+  let api: TestApiClient;
+  let issueId: string;
+  let issueTitle: string;
+  let workspaceSlug: string;
+
+  test.beforeEach(async ({ page }) => {
+    api = await createTestApi();
+    issueTitle = "E2E Thread Fold Test " + Date.now();
+    const issue = await api.createIssue(issueTitle, { description: "Thread fold fixture" });
+    issueId = issue.id;
+    const root = await api.createComment(issueId, "Root comment for thread fold test");
+    // Five replies so the thread's compact window truncates ("latest three")
+    // and Show more/Show less actually has something to prove.
+    for (let i = 1; i <= 5; i++) {
+      await api.createComment(issueId, `Reply number ${i}`, root.id);
+    }
+    // Padding so the thread scrolls far enough out of the viewport to
+    // actually unmount its Virtuoso row, not just scroll within view.
+    for (let i = 1; i <= 40; i++) {
+      await api.createComment(issueId, `Padding comment ${i}`);
+    }
+    workspaceSlug = await loginAsDefault(page);
+  });
+
+  test.afterEach(async () => {
+    if (api) await api.cleanup();
+  });
+
+  test("Show more expansion survives scrolling the thread's row out of view and back", async ({ page }) => {
+    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await waitForPageText(page, issueTitle);
+    await waitForPageText(page, "Root comment for thread fold test");
+
+    const showMore = page.getByRole("button", { name: /Show \d+ more repl/ });
+    await expect(showMore).toBeVisible();
+    await showMore.click();
+    await waitForPageText(page, "Reply number 1");
+    const showLess = page.getByRole("button", { name: "Show less" });
+    await expect(showLess).toBeVisible();
+
+    // Scroll the timeline far past the thread so its row genuinely unmounts
+    // from the virtualized list (not just off-screen within a mounted DOM).
+    const scrollContainer = page.locator("[data-issue-timeline-scroll]").first();
+    const hasScrollContainer = await scrollContainer.count() > 0;
+    if (hasScrollContainer) {
+      await scrollContainer.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+    } else {
+      await page.mouse.wheel(0, 20000);
+    }
+    await expect(page.getByText("Padding comment 40")).toBeVisible({ timeout: 10000 });
+    // Confirm the original thread's content actually left the DOM (proof of
+    // unmount, not merely scrolled out of the viewport).
+    await expect(page.getByText("Reply number 1")).not.toBeAttached();
+
+    // Scroll back up to remount the thread's row.
+    if (hasScrollContainer) {
+      await scrollContainer.evaluate((el) => { el.scrollTop = 0; });
+    } else {
+      await page.mouse.wheel(0, -20000);
+    }
+    await waitForPageText(page, "Root comment for thread fold test");
+
+    // The durable length-disclosure store (not row-local useState) must have
+    // kept this thread expanded across the unmount — Reply number 1 (a
+    // compact-window-hidden reply pre-expansion) is visible again without
+    // clicking Show more a second time.
+    await expect(page.getByText("Reply number 1")).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole("button", { name: "Show less" })).toBeVisible();
+  });
+
+  test("fold-all and unfold-all commands drive the length-disclosure store together with manual collapse and resolved-expand", async ({ page }) => {
+    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await waitForPageText(page, issueTitle);
+    await waitForPageText(page, "Root comment for thread fold test");
+
+    await page.getByRole("button", { name: /Show \d+ more repl/ }).click();
+    await waitForPageText(page, "Reply number 1");
+
+    // Open the command palette and run Fold All Comments.
+    await page.keyboard.press("ControlOrMeta+K");
+    await page.getByPlaceholder("Type a command or search...").fill("fold all");
+    await page.getByText("Fold All Comments").click();
+
+    // The whole thread collapses to its manual-collapse summary — the
+    // length-expanded reply is no longer visible because the manual collapse
+    // gate (higher priority in the 01-DESIGN "Effective order") now applies.
+    await expect(page.getByText("Reply number 1")).not.toBeVisible();
+
+    // Unfold All Comments restores full disclosure, including the
+    // length-disclosure store's "all replies" state for this thread.
+    await page.keyboard.press("ControlOrMeta+K");
+    await page.getByPlaceholder("Type a command or search...").fill("unfold all");
+    await page.getByText("Unfold All Comments").click();
+
+    await expect(page.getByText("Reply number 1")).toBeVisible({ timeout: 10000 });
+  });
+});

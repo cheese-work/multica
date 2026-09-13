@@ -525,6 +525,8 @@
     "send_reply_failed": "发送回复失败",
     "delete_failed": "删除评论失败",
     "reply_count_other": "{{count}} 条回复",
+    "thread_show_more_other": "显示另外 {{count}} 条回复",
+    "thread_show_less": "收起",
     "leave_comment_placeholder": "留下评论...",
     "send_tooltip": "发送",
     "trigger_source_issue_assignee": "assignee",

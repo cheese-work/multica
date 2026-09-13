@@ -85,6 +85,8 @@ const {
   mockCommentExpandAll,
   mockResolvedCollapseAll,
   mockResolvedExpandAll,
+  mockThreadCollapseAll,
+  mockThreadExpandAll,
 } = vi.hoisted(() => ({
   mockPush: vi.fn(),
   mockSearchIssues: vi.fn(),
@@ -129,6 +131,8 @@ const {
   mockCommentExpandAll: vi.fn(),
   mockResolvedCollapseAll: vi.fn(),
   mockResolvedExpandAll: vi.fn(),
+  mockThreadCollapseAll: vi.fn(),
+  mockThreadExpandAll: vi.fn(),
 }));
 
 vi.mock("@multica/core/api", () => ({
@@ -191,6 +195,12 @@ vi.mock("@multica/core/issues/stores", () => {
       getState: () => ({
         collapseAll: mockResolvedCollapseAll,
         expandAll: mockResolvedExpandAll,
+      }),
+    }),
+    useIssueDisclosureStore: Object.assign(vi.fn(), {
+      getState: () => ({
+        collapseAllThreads: mockThreadCollapseAll,
+        expandAllThreads: mockThreadExpandAll,
       }),
     }),
   };
@@ -325,6 +335,8 @@ describe("SearchCommand", () => {
     mockCommentExpandAll.mockReset();
     mockResolvedCollapseAll.mockReset();
     mockResolvedExpandAll.mockReset();
+    mockThreadCollapseAll.mockReset();
+    mockThreadExpandAll.mockReset();
 
     // cmdk calls scrollIntoView on the first selected item, which jsdom doesn't implement
     Element.prototype.scrollIntoView = vi.fn();
@@ -696,7 +708,10 @@ describe("SearchCommand", () => {
       expect(mockCommentCollapseAll).toHaveBeenCalledWith("issue-1", ["root-1", "root-2"]);
     });
     expect(mockResolvedCollapseAll).toHaveBeenCalledWith("issue-1");
+    // All three fold systems reset together on fold-all.
+    expect(mockThreadCollapseAll).toHaveBeenCalledWith("issue-1");
     expect(mockCommentExpandAll).not.toHaveBeenCalled();
+    expect(mockThreadExpandAll).not.toHaveBeenCalled();
     expect(useSearchStore.getState().open).toBe(false);
   });
 
@@ -728,7 +743,11 @@ describe("SearchCommand", () => {
     });
     // Only threads carrying a resolution get seeded into the expand set.
     expect(mockResolvedExpandAll).toHaveBeenCalledWith("issue-1", ["root-2", "root-3"]);
+    // Length-disclosure store unfolds every root comment thread, not just the
+    // resolved ones — an unresolved long thread must reach "all replies" too.
+    expect(mockThreadExpandAll).toHaveBeenCalledWith("issue-1", ["root-1", "root-2", "root-3"]);
     expect(mockCommentCollapseAll).not.toHaveBeenCalled();
+    expect(mockThreadCollapseAll).not.toHaveBeenCalled();
     expect(useSearchStore.getState().open).toBe(false);
   });
 

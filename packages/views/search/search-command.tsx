@@ -33,6 +33,7 @@ import {
   openCreateIssueWithPreference,
   selectRecentIssues,
   useCommentCollapseStore,
+  useIssueDisclosureStore,
   useRecentIssuesStore,
   useResolvedExpandStore,
 } from "@multica/core/issues/stores";
@@ -464,10 +465,14 @@ export function SearchCommand() {
             void queryClient
               .ensureQueryData(issueTimelineOptions(currentIssueId))
               .then((entries) => {
-                useCommentCollapseStore
-                  .getState()
-                  .collapseAll(currentIssueId, rootCommentIds(entries));
+                const roots = rootCommentIds(entries);
+                // All three fold systems reset together (manual collapse,
+                // resolved-bar expansion, and unresolved-thread length
+                // preference) — description expansion is a separate concern
+                // and is intentionally untouched here.
+                useCommentCollapseStore.getState().collapseAll(currentIssueId, roots);
                 useResolvedExpandStore.getState().collapseAll(currentIssueId);
+                useIssueDisclosureStore.getState().collapseAllThreads(currentIssueId);
               })
               .catch(() => {});
             setOpen(false);
@@ -482,10 +487,12 @@ export function SearchCommand() {
             void queryClient
               .ensureQueryData(issueTimelineOptions(currentIssueId))
               .then((entries) => {
+                const roots = rootCommentIds(entries);
                 useCommentCollapseStore.getState().expandAll(currentIssueId);
                 useResolvedExpandStore
                   .getState()
                   .expandAll(currentIssueId, resolvedThreadRootIds(entries));
+                useIssueDisclosureStore.getState().expandAllThreads(currentIssueId, roots);
               })
               .catch(() => {});
             setOpen(false);

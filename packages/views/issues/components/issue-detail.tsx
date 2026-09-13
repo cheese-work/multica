@@ -81,7 +81,7 @@ import { ProjectPicker } from "../../projects/components/project-picker";
 import { LocalDirectoryHint } from "../../projects/components/local-directory-hint";
 import { useNewRunIds } from "./use-run-comment-motion";
 import { AgentRunComment, CommentCard } from "./comment-card";
-import { EMPTY_COMMENT_RUNS, buildCommentRunView, orderTimelineWithRuns, type CommentRun } from "./comment-runs";
+import { EMPTY_COMMENT_RUNS, buildCommentRunView, isActiveCommentRun, orderTimelineWithRuns, type CommentRun } from "./comment-runs";
 import { issueTasksOptions } from "@multica/core/issues/queries";
 import { SourceContextBadge } from "./source-context-viewer";
 import { RevisionConflictCompare } from "./revision-conflict-compare";
@@ -112,6 +112,7 @@ import { propertyListOptions } from "@multica/core/properties";
 import { memberListOptions, agentListOptions } from "@multica/core/workspace/queries";
 import {
   selectExpandedResolved,
+  selectExpandedThreads,
   selectDescriptionExpanded,
   useIssueDisclosureStore,
   useRecentIssuesStore,
@@ -1303,6 +1304,18 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     setResolvedExpanded(id, commentId, false);
   }, [id, setResolvedExpanded]);
 
+  // Per-session, per-root "all replies" length preference (01-DESIGN "Durable
+  // state and transition matrix") — unresolved threads over three replies
+  // default to compact (latest three); Show more/less remembers the choice
+  // for the rest of the session and survives row unmount/remount because it
+  // lives in this store, not row-local useState. Also driven from outside
+  // this page by the command palette's fold/unfold-all-comments commands.
+  const expandedThreadLengths = useIssueDisclosureStore(selectExpandedThreads(id));
+  const setThreadExpanded = useIssueDisclosureStore((s) => s.setThreadExpanded);
+  const toggleThreadLengthExpand = useCallback((rootId: string, expand: boolean) => {
+    setThreadExpanded(id, rootId, expand);
+  }, [id, setThreadExpanded]);
+
   // Per-session activity-block expansion overrides. The default rule is
   // "only the trailing block is expanded" (computed from timelineView.groups
   // below); these two sets capture user clicks that diverge from the default.
@@ -1571,6 +1584,25 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
 
     return { threadReplies, groups };
   }, [displayTimeline, standaloneRuns]);
+
+  // Whether `rootId`'s thread must be forced fully open regardless of the
+  // durable length preference: the current find/target highlight sits among
+  // its replies (01-DESIGN "Effective order" priority 1 — find/target pin),
+  // or one of its replies has an active (queued/running) run still attached.
+  // This does not persist a length choice — it only lifts the ceiling for the
+  // duration of the reason, per the transition matrix's "New reply / edit /
+  // active run" and "Target reveal" rows.
+  const forceThreadOpen = useCallback((rootId: string): boolean => {
+    const threadReplies = timelineView.threadReplies.get(rootId) ?? EMPTY_REPLIES;
+    if (highlightedId && (highlightedId === rootId || threadReplies.some((r) => r.id === highlightedId))) {
+      return true;
+    }
+    for (const reply of threadReplies) {
+      const replyRuns = commentRuns.get(reply.id) ?? EMPTY_COMMENT_RUNS;
+      if (replyRuns.some((run) => !run.hasReply && isActiveCommentRun(run.task))) return true;
+    }
+    return false;
+  }, [timelineView.threadReplies, highlightedId, commentRuns]);
 
   // Flat array consumed by <Virtuoso>. Recomputed when timelineView.groups
   // changes (timeline events) or expandedResolved flips (user toggles a
@@ -2694,6 +2726,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             expandedResolvedIds: expandedResolved, onResolvedExpandChange: toggleResolvedExpand,
             highlightedCommentId: highlightedId,
             runs: commentRuns.get(reply.id) ?? EMPTY_COMMENT_RUNS, enteringRunIds,
+            threadLengthExpanded: expandedThreadLengths.has(reply.id),
+            onThreadLengthExpandChange: toggleThreadLengthExpand,
+            forceThreadExpanded: forceThreadOpen(reply.id),
           } : undefined} />}
       </div>;
     }
@@ -2731,6 +2766,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             expandedResolvedIds={expandedResolved}
             onResolvedExpandChange={toggleResolvedExpand}
             highlightedCommentId={highlightedId}
+            threadLengthExpanded={expandedThreadLengths.has(item.id)}
+            onThreadLengthExpandChange={toggleThreadLengthExpand}
+            forceThreadExpanded={forceThreadOpen(item.id)}
           />
         </div>
       );

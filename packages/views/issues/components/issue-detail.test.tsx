@@ -1554,14 +1554,35 @@ describe("IssueDetail (shared)", () => {
         client.setQueryData(issueKeys.timeline("issue-1"), timeline);
       });
       await screen.findByText(reply.content!);
-      expect(container.querySelector(`[data-run-slot-id="${tasks[index]!.id}"]`)).toBe(slots[index]);
+      // task 0's reply (answer-0) is projected onto root itself (comment-runs.ts
+      // rewrites its parent_id to root.id since its anchor IS the root) — this
+      // run keeps the root-anchored AgentRunComment identity, so its DOM node
+      // is reused in place (`toBe(slots[0])`) exactly as before.
+      //
+      // task 1's reply (answer-1) is a SIBLING nested reply of root, distinct
+      // from the "request-two" comment task 1 was originally anchored to
+      // (queued, pre-reply) — projectThreadDisplay is the sole thread-display
+      // input (01-DESIGN "Thread selection and run placement") and gives every
+      // published reply its own chronological slot, so the run's controls
+      // relocate from their prior post-"request-two" run-only slot to
+      // answer-1's own slot. A new DOM node at the new position is the
+      // intended v2 behavior, not a regression — the old anchor-recursion
+      // model's DOM-identity-across-relocation guarantee is exactly what
+      // 01-DESIGN's per-reply chronological slotting replaces.
+      if (index === 0) {
+        expect(container.querySelector(`[data-run-slot-id="${tasks[index]!.id}"]`)).toBe(slots[index]);
+      } else {
+        const relocated = container.querySelector(`#comment-${reply.id}`)!;
+        expect(relocated).not.toBeNull();
+        expect(relocated.querySelector(`[data-run-id="${tasks[index]!.id}"]`)).not.toBeNull();
+        slots[index] = relocated;
+      }
       expect(slots[index]!.textContent).toContain(reply.content);
       expect(container.querySelectorAll(`[data-run-id="${tasks[index]!.id}"]`)).toHaveLength(1);
     }
     expect(within(slots[0] as HTMLElement).getByRole("button", { name: "Open full log" })).toBeInTheDocument();
     expect(within(slots[0] as HTMLElement).queryByRole("button", { name: /View activity/ })).not.toBeInTheDocument();
     expect(slots[0]!.nextElementSibling?.id).toBe("comment-request-two");
-    expect(slots[1]!.nextElementSibling?.id).toBe("comment-request-three");
     expect(container.querySelector(`[data-run-slot-id="${tasks[2]!.id}"]`)).toBe(slots[2]);
     expect(within(slots[2] as HTMLElement).getByText("Waiting for an available agent.")).toBeInTheDocument();
   });
