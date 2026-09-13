@@ -266,8 +266,6 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	var rawFields map[string]json.RawMessage
-	json.Unmarshal(bodyBytes, &rawFields)
 
 	if req.Title == "" {
 		writeError(w, http.StatusBadRequest, "title is required")
@@ -279,11 +277,13 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// CHE-455: requireUserID does not reject agent actors. Reject when the
-	// "description" key was sent at all, regardless of value — consistent
-	// with the "field key present" semantics used on UpdateProject/UpdateAgent.
+	// CHE-455: requireUserID does not reject agent actors. Gated on
+	// req.Description != nil — the decoded struct field the write below
+	// (`ptrToText(req.Description)`) actually branches on — not a raw JSON
+	// key lookup, which a case-varied key ("Description") bypasses
+	// (encoding/json matches keys to struct fields case-insensitively).
 	actorType, _ := h.resolveActor(r, userID, workspaceID)
-	if rejectGovernedFieldForAgentActor(w, actorType, rawFieldsHasKey(rawFields, "description"), "description") {
+	if rejectGovernedFieldForAgentActor(w, r, actorType, req.Description != nil, "description") {
 		return
 	}
 
@@ -519,10 +519,19 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	}
 	var rawFields map[string]json.RawMessage
 	json.Unmarshal(bodyBytes, &rawFields)
+	descriptionKeyPresent := rawFieldsHasKeyFold(rawFields, "description")
 
-	// CHE-455: requireUserID does not reject agent actors.
+	// CHE-455: requireUserID does not reject agent actors. This endpoint
+	// needs the raw-key presence check (not a `req.Description != nil`
+	// struct check like the other 5 sites) because it distinguishes
+	// "description omitted" (leave unchanged) from "description explicitly
+	// null" (clear it) — both decode req.Description to nil. Gated on
+	// rawFieldsHasKeyFold, which matches case-insensitively like
+	// encoding/json's own struct decoding does; a plain rawFields[...] map
+	// lookup here previously let a case-varied key ("Description") through
+	// both this guard and the identically-keyed write condition below.
 	actorType, _ := h.resolveActor(r, userID, workspaceID)
-	if rejectGovernedFieldForAgentActor(w, actorType, rawFieldsHasKey(rawFields, "description"), "description") {
+	if rejectGovernedFieldForAgentActor(w, r, actorType, descriptionKeyPresent, "description") {
 		return
 	}
 
@@ -550,7 +559,7 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 		}
 		params.Priority = pgtype.Text{String: *req.Priority, Valid: true}
 	}
-	if _, ok := rawFields["description"]; ok {
+	if descriptionKeyPresent {
 		if req.Description != nil {
 			params.Description = pgtype.Text{String: *req.Description, Valid: true}
 		} else {

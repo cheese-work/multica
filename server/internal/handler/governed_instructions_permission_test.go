@@ -25,6 +25,19 @@ func asAgentActor(req *http.Request, hostAgentID, hostTaskID string) *http.Reque
 	return req
 }
 
+// asCloudNodeActor decorates a human-authored request so it carries the
+// server-set X-Actor-Source stamp middleware/auth.go's mcn_ branch applies
+// for a Cloud Node PAT. resolveActor still classifies this request as
+// "member" (see resolveActor's doc comment — cloud nodes are deliberately
+// out of scope for its agent/member authorship classification), so
+// rejectGovernedFieldForAgentActor must reach this via
+// isGovernedFieldMachineActor's isMachineCredentialActor check, not via
+// actorType.
+func asCloudNodeActor(req *http.Request) *http.Request {
+	req.Header.Set("X-Actor-Source", "cloud_pat")
+	return req
+}
+
 // governedInstructionActorFixture creates a plain member and a task-bound
 // agent owned by that member, giving tests both a human identity to
 // authenticate as and an agent identity to project onto the request.
@@ -501,5 +514,274 @@ func TestCreateProject_HumanActorCanCreateWithDescription(t *testing.T) {
 	dbfx.QueryRow(t, `SELECT description FROM project WHERE title = 'CHE-455 Create Project Human'`).Scan(&stored)
 	if stored == nil || *stored != "approved at create time" {
 		t.Errorf("expected description to persist for human actor, got %v", stored)
+	}
+}
+
+// ── Case-variant key regression (PR #29 review finding) ─────────────────
+//
+// encoding/json matches JSON object keys to Go struct fields
+// case-insensitively. A body of {"Instructions": "..."} decodes into
+// req.Instructions exactly like {"instructions": "..."}, but a
+// map[string]json.RawMessage built from the same bytes keys on the literal
+// bytes sent — "Instructions" != "instructions" as a Go map key. The first
+// version of this guard checked rawFields[fieldName] (case-sensitive) while
+// every write path copies from the case-insensitively decoded struct field,
+// so a single case-varied key defeated the guard at 5 of 6 sites outright
+// while still writing the governed value. These tests pin the fix: every
+// site must reject the field regardless of key casing.
+
+func TestUpdateAgent_AgentActorForbiddenFromInstructions_CaseVariant(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ownerUserID, hostAgentID, hostTaskID := governedInstructionActorFixture(t, "che455-update-agent-case-host@multica.test", "che455-update-agent-case-host")
+
+	targetAgentID := createHandlerTestAgent(t, "che455-update-agent-case-target", nil)
+	dbfx.Exec(t, `UPDATE agent SET owner_id = $1 WHERE id = $2`, ownerUserID, targetAgentID)
+
+	req := withURLParam(newRequestAs(ownerUserID, http.MethodPut, "/api/agents/"+targetAgentID, map[string]any{
+		"Instructions": "case-variant bypass attempt",
+	}), "id", targetAgentID)
+	req = asAgentActor(req, hostAgentID, hostTaskID)
+
+	w := httptest.NewRecorder()
+	testHandler.UpdateAgent(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("UpdateAgent as agent actor with \"Instructions\" (case variant): expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var stored string
+	dbfx.QueryRow(t, `SELECT instructions FROM agent WHERE id = $1`, targetAgentID).Scan(&stored)
+	if stored != "" {
+		t.Errorf("instructions must remain untouched, got %q", stored)
+	}
+}
+
+func TestCreateAgent_AgentActorForbiddenFromInstructions_CaseVariant(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ownerUserID, hostAgentID, hostTaskID := governedInstructionActorFixture(t, "che455-create-agent-case-host@multica.test", "che455-create-agent-case-host")
+
+	req := newRequestAs(ownerUserID, http.MethodPost, "/api/agents", map[string]any{
+		"name":         "che455-create-agent-case-blocked",
+		"runtime_id":   handlerTestRuntimeID(t),
+		"Instructions": "case-variant smuggled instructions",
+	})
+	req = asAgentActor(req, hostAgentID, hostTaskID)
+
+	w := httptest.NewRecorder()
+	testHandler.CreateAgent(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("CreateAgent as agent actor with \"Instructions\" (case variant): expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var count int
+	dbfx.QueryRow(t, `SELECT count(*) FROM agent WHERE name = 'che455-create-agent-case-blocked'`).Scan(&count)
+	if count != 0 {
+		t.Errorf("expected no agent to be created, found %d", count)
+	}
+}
+
+func TestUpdateSquad_AgentActorForbiddenFromInstructions_CaseVariant(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ownerUserID, hostAgentID, hostTaskID := governedInstructionActorFixture(t, "che455-update-squad-case-host@multica.test", "che455-update-squad-case-host-agent")
+	leaderID := createHandlerTestAgent(t, "che455-update-squad-case-leader", nil)
+	squad := createSquadAs(t, ownerUserID, "CHE-455 Squad Case Variant", leaderID)
+
+	req := squadReqWithParams(ownerUserID, "PATCH", "/api/squads", map[string]any{
+		"Instructions": "case-variant smuggled squad instructions",
+	}, map[string]string{"id": squad.ID})
+	req = asAgentActor(req, hostAgentID, hostTaskID)
+
+	w := httptest.NewRecorder()
+	testHandler.UpdateSquad(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("UpdateSquad as agent actor with \"Instructions\" (case variant): expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var stored string
+	dbfx.QueryRow(t, `SELECT instructions FROM squad WHERE id = $1`, squad.ID).Scan(&stored)
+	if stored != "" {
+		t.Errorf("squad instructions must remain untouched, got %q", stored)
+	}
+}
+
+func TestUpdateWorkspace_AgentActorForbiddenFromContext_CaseVariant(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	hostAgentID := createHandlerTestAgent(t, "che455-update-workspace-case-host", nil)
+	hostTaskID := createHandlerTestTaskForAgent(t, hostAgentID)
+
+	var previousContext *string
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&previousContext)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `UPDATE workspace SET context = $1 WHERE id = $2`, previousContext, testWorkspaceID)
+	})
+
+	req := withURLParam(newRequest(http.MethodPatch, "/api/workspaces/"+testWorkspaceID, map[string]any{
+		"Context": "PWNED-BY-AGENT-ACTOR-case-variant",
+	}), "id", testWorkspaceID)
+	req = asAgentActor(req, hostAgentID, hostTaskID)
+
+	w := httptest.NewRecorder()
+	testHandler.UpdateWorkspace(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("UpdateWorkspace as agent actor with \"Context\" (case variant): expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var stored *string
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&stored)
+	if stored != nil && previousContext == nil {
+		t.Errorf("workspace context must remain untouched, got %v", stored)
+	} else if stored != nil && previousContext != nil && *stored != *previousContext {
+		t.Errorf("workspace context must remain untouched, got %v want %v", *stored, *previousContext)
+	}
+}
+
+func TestUpdateProject_AgentActorForbiddenFromDescription_CaseVariant(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	hostAgentID := createHandlerTestAgent(t, "che455-update-project-case-host", nil)
+	hostTaskID := createHandlerTestTaskForAgent(t, hostAgentID)
+
+	projectID := dbfx.Project(t, "CHE-455 Update Project Case Variant")
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM project WHERE id = $1`, projectID)
+	})
+
+	req := withURLParam(newRequest(http.MethodPut, "/api/projects/"+projectID, map[string]any{
+		"Description": "case-variant smuggled project description",
+	}), "id", projectID)
+	req = asAgentActor(req, hostAgentID, hostTaskID)
+
+	w := httptest.NewRecorder()
+	testHandler.UpdateProject(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("UpdateProject as agent actor with \"Description\" (case variant): expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var stored *string
+	dbfx.QueryRow(t, `SELECT description FROM project WHERE id = $1`, projectID).Scan(&stored)
+	if stored != nil {
+		t.Errorf("project description must remain untouched, got %v", *stored)
+	}
+}
+
+func TestCreateProject_AgentActorForbiddenFromDescription_CaseVariant(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	hostAgentID := createHandlerTestAgent(t, "che455-create-project-case-host", nil)
+	hostTaskID := createHandlerTestTaskForAgent(t, hostAgentID)
+
+	req := newRequest(http.MethodPost, "/api/projects", map[string]any{
+		"title":       "CHE-455 Create Project Case Variant Blocked",
+		"Description": "case-variant smuggled description",
+	})
+	req = asAgentActor(req, hostAgentID, hostTaskID)
+
+	w := httptest.NewRecorder()
+	testHandler.CreateProject(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("CreateProject as agent actor with \"Description\" (case variant): expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var count int
+	dbfx.QueryRow(t, `SELECT count(*) FROM project WHERE title = 'CHE-455 Create Project Case Variant Blocked'`).Scan(&count)
+	if count != 0 {
+		t.Errorf("expected no project to be created, found %d", count)
+	}
+}
+
+// ── Cloud-node PAT (mcn_) regression (PR #29 review finding, non-blocking) ──
+//
+// resolveActor deliberately does not classify an mcn_ Cloud Node PAT as
+// "agent" (see resolveActor's doc comment and actor_guards.go's
+// RequireHumanActor comment: cloud nodes don't author workspace-scoped
+// resources, so folding cloud_pat into that classifier would be the wrong
+// coupling). But a cloud-node PAT authenticates a machine acting as its
+// owning human with no human review of this specific write — the same
+// threat CHE-455 names for mat_ tokens. rejectGovernedFieldForAgentActor
+// reaches this via isGovernedFieldMachineActor's isMachineCredentialActor
+// check (X-Actor-Source: cloud_pat), independent of actorType. One
+// representative site (UpdateWorkspace) plus one create site (CreateAgent)
+// pin this; the mechanism is identical across all 6 sites.
+
+func TestUpdateWorkspace_CloudNodeActorForbiddenFromContext(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	var previousContext *string
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&previousContext)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `UPDATE workspace SET context = $1 WHERE id = $2`, previousContext, testWorkspaceID)
+	})
+
+	req := withURLParam(newRequest(http.MethodPatch, "/api/workspaces/"+testWorkspaceID, map[string]any{
+		"context": "PWNED-BY-CLOUD-NODE",
+	}), "id", testWorkspaceID)
+	req = asCloudNodeActor(req)
+
+	w := httptest.NewRecorder()
+	testHandler.UpdateWorkspace(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("UpdateWorkspace as cloud-node actor with context: expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var stored *string
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&stored)
+	if stored != nil && (previousContext == nil || *stored != *previousContext) {
+		t.Errorf("workspace context must remain untouched, got %v want %v", stored, previousContext)
+	}
+}
+
+func TestUpdateWorkspace_CloudNodeActorCanWriteOtherFields(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	var previousDescription *string
+	dbfx.QueryRow(t, `SELECT description FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&previousDescription)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `UPDATE workspace SET description = $1 WHERE id = $2`, previousDescription, testWorkspaceID)
+	})
+
+	req := withURLParam(newRequest(http.MethodPatch, "/api/workspaces/"+testWorkspaceID, map[string]any{
+		"description": "che-455 cloud-node-writable description",
+	}), "id", testWorkspaceID)
+	req = asCloudNodeActor(req)
+
+	w := httptest.NewRecorder()
+	testHandler.UpdateWorkspace(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateWorkspace as cloud-node actor without context: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateAgent_CloudNodeActorForbiddenFromInstructions(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	req := newRequest(http.MethodPost, "/api/agents", map[string]any{
+		"name":         "che455-create-agent-cloud-node-blocked",
+		"runtime_id":   handlerTestRuntimeID(t),
+		"instructions": "smuggled via cloud node PAT",
+	})
+	req = asCloudNodeActor(req)
+
+	w := httptest.NewRecorder()
+	testHandler.CreateAgent(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("CreateAgent as cloud-node actor with instructions: expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var count int
+	dbfx.QueryRow(t, `SELECT count(*) FROM agent WHERE name = 'che455-create-agent-cloud-node-blocked'`).Scan(&count)
+	if count != 0 {
+		t.Errorf("expected no agent to be created, found %d", count)
 	}
 }

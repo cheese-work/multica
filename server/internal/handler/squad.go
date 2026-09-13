@@ -373,15 +373,17 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	var rawFields map[string]json.RawMessage
-	json.Unmarshal(bodyBytes, &rawFields)
 
 	// CHE-455: requireWorkspaceMember above does not reject agent actors —
 	// an explicit resolveActor check is required. Field-scoped: an agent
 	// actor can still rename a squad, change its leader, or update its
-	// avatar through this same endpoint.
+	// avatar through this same endpoint. Gated on req.Instructions != nil
+	// — the decoded struct field the write below actually branches on —
+	// not a raw JSON key lookup, which a case-varied key ("Instructions")
+	// bypasses (encoding/json matches keys to struct fields
+	// case-insensitively).
 	actorType, _ := h.resolveActor(r, uuidToString(member.UserID), workspaceID)
-	if rejectGovernedFieldForAgentActor(w, actorType, rawFieldsHasKey(rawFields, "instructions"), "instructions") {
+	if rejectGovernedFieldForAgentActor(w, r, actorType, req.Instructions != nil, "instructions") {
 		return
 	}
 
