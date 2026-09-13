@@ -27,6 +27,11 @@ printf '1\n' >"$tmp_dir/D1_ISOLATED_SYNTHETIC_FIXTURE"
 printf ':\n' >"$tmp_dir/candidate-write.sh"
 printf ':\n' >"$tmp_dir/old-assert.sh"
 
+printf 'preserved archive bytes\n' >"$tmp_dir/old-image.tar.zst"
+printf '{"source_ref":"example/old:1","source_image_id":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","architecture":"amd64","os":"linux","rootfs_diff_ids":["sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]}\n' >"$tmp_dir/old-image.metadata.json"
+archive_sha="sha256:$(sha256sum "$tmp_dir/old-image.tar.zst" | awk '{print $1}')"
+metadata_sha="sha256:$(sha256sum "$tmp_dir/old-image.metadata.json" | awk '{print $1}')"
+
 bash deploy/cd/qualification.sh \
   --manifest "$tmp_dir/manifest.json" \
   --baseline-tuple "$baseline_tuple" \
@@ -36,6 +41,38 @@ bash deploy/cd/qualification.sh \
   --candidate-write-file "$tmp_dir/candidate-write.sh" \
   --old-assert-file "$tmp_dir/old-assert.sh" \
   --dry-run >/dev/null
+
+bash deploy/cd/qualification.sh \
+  --manifest "$tmp_dir/manifest.json" \
+  --baseline-tuple "$baseline_tuple" \
+  --fixture-dir "$tmp_dir" \
+  --old-backend-archive "$tmp_dir/old-image.tar.zst" \
+  --old-backend-archive-sha256 "$archive_sha" \
+  --old-backend-metadata "$tmp_dir/old-image.metadata.json" \
+  --old-backend-metadata-sha256 "$metadata_sha" \
+  --old-web-archive "$tmp_dir/old-image.tar.zst" \
+  --old-web-archive-sha256 "$archive_sha" \
+  --old-web-metadata "$tmp_dir/old-image.metadata.json" \
+  --old-web-metadata-sha256 "$metadata_sha" \
+  --candidate-write-file "$tmp_dir/candidate-write.sh" \
+  --old-assert-file "$tmp_dir/old-assert.sh" \
+  --dry-run >/dev/null
+
+if bash deploy/cd/qualification.sh \
+  --manifest "$tmp_dir/manifest.json" \
+  --baseline-tuple "$baseline_tuple" \
+  --fixture-dir "$tmp_dir" \
+  --old-backend "ghcr.io/cheese-work/multica-backend@$digest" \
+  --old-web-archive "$tmp_dir/old-image.tar.zst" \
+  --old-web-archive-sha256 "$archive_sha" \
+  --old-web-metadata "$tmp_dir/old-image.metadata.json" \
+  --old-web-metadata-sha256 "$metadata_sha" \
+  --candidate-write-file "$tmp_dir/candidate-write.sh" \
+  --old-assert-file "$tmp_dir/old-assert.sh" \
+  --dry-run >/dev/null 2>&1; then
+  echo "mixed registry/archive previous-image inputs were accepted" >&2
+  exit 1
+fi
 
 rm "$tmp_dir/D1_ISOLATED_SYNTHETIC_FIXTURE"
 if bash deploy/cd/qualification.sh \
