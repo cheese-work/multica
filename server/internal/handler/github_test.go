@@ -2985,6 +2985,8 @@ func TestWebhook_PullRequest_AmbiguousCloseAcrossWorkspaces(t *testing.T) {
 
 	t.Cleanup(func() {
 		bg := context.Background()
+		testPool.Exec(bg, `DELETE FROM github_merge_announcement WHERE workspace_id = ANY($1)`,
+			[]string{testWorkspaceID, uuidToString(wsA.ID)})
 		testPool.Exec(bg, `DELETE FROM issue_pull_request WHERE issue_id = ANY($1)`,
 			[]string{issueB.ID, uuidToString(issueA.ID)})
 		testPool.Exec(bg, `DELETE FROM github_pull_request WHERE repo_owner = 'acme' AND repo_name = $1`, repo)
@@ -3242,6 +3244,7 @@ func bindSecondWorkspaceForTest(t *testing.T, slug, prefix string, installationI
 	}
 	t.Cleanup(func() {
 		bg := context.Background()
+		testPool.Exec(bg, `DELETE FROM github_merge_announcement WHERE workspace_id = $1`, ws.ID)
 		testPool.Exec(bg, `DELETE FROM github_installation WHERE installation_id = $1`, installationID)
 		testPool.Exec(bg, `DELETE FROM workspace WHERE id = $1`, ws.ID)
 	})

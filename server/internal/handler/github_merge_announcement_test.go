@@ -2269,6 +2269,7 @@ func createTestIssueForMergeAnnouncement(t *testing.T, title string) IssueRespon
 	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
 	var created IssueResponse
 	json.NewDecoder(w.Body).Decode(&created)
+	cleanupMergeAnnouncementFixture(t, created.ID)
 	return created
 }
 
@@ -2299,7 +2300,6 @@ func TestListPullRequestsForIssue_ExposesMergeAnnouncementDiagnostics(t *testing
 	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
 
 	created := createTestIssueForMergeAnnouncement(t, "Diagnostics test issue")
-	cleanupMergeAnnouncementFixture(t, created.ID)
 
 	const installationID int64 = 99887722
 	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
@@ -2357,7 +2357,6 @@ func TestListPullRequestsForIssue_OmitsMergeAnnouncementWhenNoneEnqueued(t *test
 	}
 	ctx := context.Background()
 	created := createTestIssueForMergeAnnouncement(t, "No announcement issue")
-	cleanupMergeAnnouncementFixture(t, created.ID)
 
 	seedMergedGitHubPRLink(t, ctx, created.ID, "acme", "noannounce", 6161, 99887733, false)
 
@@ -2386,7 +2385,6 @@ func TestAnnounceMergeForIssue_RecoversHistoricalMerge(t *testing.T) {
 	}
 	ctx := context.Background()
 	created := createTestIssueForMergeAnnouncement(t, "Recovery test issue")
-	cleanupMergeAnnouncementFixture(t, created.ID)
 
 	const installationID int64 = 99887744
 	prID := seedMergedGitHubPRLink(t, ctx, created.ID, "acme", "recover", 7171, installationID, true)
@@ -2473,7 +2471,6 @@ func TestAnnounceMergeForIssue_RetryIsIdempotent(t *testing.T) {
 	}
 	ctx := context.Background()
 	created := createTestIssueForMergeAnnouncement(t, "Idempotent recovery issue")
-	cleanupMergeAnnouncementFixture(t, created.ID)
 
 	const installationID int64 = 99887755
 	seedMergedGitHubPRLink(t, ctx, created.ID, "acme", "idempotent", 8181, installationID, false)
@@ -2531,7 +2528,6 @@ func TestAnnounceMergeForIssue_RejectsUnmergedPR(t *testing.T) {
 	}
 	ctx := context.Background()
 	created := createTestIssueForMergeAnnouncement(t, "Unmerged recovery issue")
-	cleanupMergeAnnouncementFixture(t, created.ID)
 
 	const installationID int64 = 99887766
 	// Seed the link as though the PR were merged in our own mirror (state
@@ -2566,7 +2562,6 @@ func TestAnnounceMergeForIssue_RejectsUnlinkedIssue(t *testing.T) {
 		t.Skip("handler test fixture not initialized (no DB?)")
 	}
 	created := createTestIssueForMergeAnnouncement(t, "Unlinked recovery issue")
-	cleanupMergeAnnouncementFixture(t, created.ID)
 
 	req := withURLParam(newRequest("POST", "/api/issues/"+created.ID+"/pull-requests/merge-announcements", map[string]any{
 		"pr_url": "https://github.com/acme/never-linked/pull/1",
@@ -2582,7 +2577,6 @@ func TestAnnounceMergeForIssue_RejectsWhenGitHubDisabled(t *testing.T) {
 	}
 	ctx := context.Background()
 	created := createTestIssueForMergeAnnouncement(t, "Disabled github recovery issue")
-	cleanupMergeAnnouncementFixture(t, created.ID)
 
 	const installationID int64 = 99887777
 	seedMergedGitHubPRLink(t, ctx, created.ID, "acme", "disabled", 1010, installationID, false)
@@ -2607,7 +2601,6 @@ func TestAnnounceMergeForIssue_RejectsMalformedPRURL(t *testing.T) {
 		t.Skip("handler test fixture not initialized (no DB?)")
 	}
 	created := createTestIssueForMergeAnnouncement(t, "Malformed URL recovery issue")
-	cleanupMergeAnnouncementFixture(t, created.ID)
 
 	for _, badURL := range []string{
 		"not-a-url",
@@ -2644,7 +2637,6 @@ func TestAnnounceMergeForIssue_DoesNotCrossClaimUnrelatedPendingRow(t *testing.T
 	// announcement, enqueued first so it sorts ahead of the target under
 	// the worker's global (available_at, created_at) ordering.
 	decoyIssue := createTestIssueForMergeAnnouncement(t, "Decoy issue for cross-claim regression")
-	cleanupMergeAnnouncementFixture(t, decoyIssue.ID)
 	const decoyInstallationID int64 = 99887788
 	decoyPRID := seedMergedGitHubPRLink(t, ctx, decoyIssue.ID, "acme", "decoy", 5050, decoyInstallationID, false)
 	decoyAnnouncement, err := testHandler.Queries.CreateGitHubMergeAnnouncement(ctx, db.CreateGitHubMergeAnnouncementParams{
@@ -2670,7 +2662,6 @@ func TestAnnounceMergeForIssue_DoesNotCrossClaimUnrelatedPendingRow(t *testing.T
 	// The actual recovery target, created afterward — its available_at/
 	// created_at sort strictly after the decoy's.
 	created := createTestIssueForMergeAnnouncement(t, "Cross-claim regression target issue")
-	cleanupMergeAnnouncementFixture(t, created.ID)
 	const installationID int64 = 99887799
 	seedMergedGitHubPRLink(t, ctx, created.ID, "acme", "crossclaim", 6060, installationID, false)
 
