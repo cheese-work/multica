@@ -256,11 +256,19 @@ func (h *Handler) writeProjectWriteError(w http.ResponseWriter, r *http.Request,
 }
 
 func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to read request body")
+		return
+	}
 	var req CreateProjectRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	var rawFields map[string]json.RawMessage
+	json.Unmarshal(bodyBytes, &rawFields)
+
 	if req.Title == "" {
 		writeError(w, http.StatusBadRequest, "title is required")
 		return
@@ -270,6 +278,15 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+
+	// CHE-455: requireUserID does not reject agent actors. Reject when the
+	// "description" key was sent at all, regardless of value — consistent
+	// with the "field key present" semantics used on UpdateProject/UpdateAgent.
+	actorType, _ := h.resolveActor(r, userID, workspaceID)
+	if rejectGovernedFieldForAgentActor(w, actorType, rawFieldsHasKey(rawFields, "description"), "description") {
+		return
+	}
+
 	status := req.Status
 	if status == "" {
 		status = "planned"
@@ -502,6 +519,12 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	}
 	var rawFields map[string]json.RawMessage
 	json.Unmarshal(bodyBytes, &rawFields)
+
+	// CHE-455: requireUserID does not reject agent actors.
+	actorType, _ := h.resolveActor(r, userID, workspaceID)
+	if rejectGovernedFieldForAgentActor(w, actorType, rawFieldsHasKey(rawFields, "description"), "description") {
+		return
+	}
 
 	params := db.UpdateProjectParams{
 		ID:          prevProject.ID,

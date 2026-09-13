@@ -1370,6 +1370,17 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// CHE-455: requireUserID above does not reject agent actors — X-User-ID
+	// is stamped from the agent's owning human even for mat_-authenticated
+	// requests — so an explicit resolveActor check is required here. Reject
+	// when the "instructions" key was sent at all, regardless of value
+	// (mirrors the custom_env precedent below): an agent actor creating its
+	// own agent should not be able to seed governed instruction content.
+	actorType, _ := h.resolveActor(r, ownerID, workspaceID)
+	if rejectGovernedFieldForAgentActor(w, actorType, rawFieldsHasKey(rawFields, "instructions"), "instructions") {
+		return
+	}
+
 	if req.Name == "" {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
@@ -1872,6 +1883,17 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	// audit row.
 	if _, ok := rawFields["custom_env"]; ok {
 		writeError(w, http.StatusBadRequest, "custom_env is no longer accepted on this endpoint; use PUT /api/agents/{id}/env (or `multica agent env set`)")
+		return
+	}
+
+	// CHE-455: agent actors may never persist a change to an agent's
+	// instructions, even when the acting agent's owning human is a
+	// workspace owner/admin or this very agent's owner. Field-scoped, not
+	// route-scoped — an agent actor can still update status,
+	// max_concurrent_tasks, etc. through this same endpoint.
+	workspaceID := uuidToString(existing.WorkspaceID)
+	actorType, _ := h.resolveActor(r, requestUserID(r), workspaceID)
+	if rejectGovernedFieldForAgentActor(w, actorType, rawFieldsHasKey(rawFields, "instructions"), "instructions") {
 		return
 	}
 

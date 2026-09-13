@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -363,8 +364,24 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 		LeaderID     *string `json:"leader_id"`
 		AvatarURL    *string `json:"avatar_url"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to read request body")
+		return
+	}
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	var rawFields map[string]json.RawMessage
+	json.Unmarshal(bodyBytes, &rawFields)
+
+	// CHE-455: requireWorkspaceMember above does not reject agent actors —
+	// an explicit resolveActor check is required. Field-scoped: an agent
+	// actor can still rename a squad, change its leader, or update its
+	// avatar through this same endpoint.
+	actorType, _ := h.resolveActor(r, uuidToString(member.UserID), workspaceID)
+	if rejectGovernedFieldForAgentActor(w, actorType, rawFieldsHasKey(rawFields, "instructions"), "instructions") {
 		return
 	}
 
