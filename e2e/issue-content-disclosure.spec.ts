@@ -181,7 +181,7 @@ test.describe("Description editor lifecycle through folding", () => {
     await expect(page.getByRole("button", { name: /Add|Comment/ })).not.toBeVisible();
   });
 
-  test("paste-then-immediate-close persists the image markdown and its attachment bind", async ({ page }) => {
+  test("paste-then-immediate-close persists the image markdown across reload", async ({ page }) => {
     await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
     await waitForPageText(page, issueTitle);
 
@@ -235,7 +235,16 @@ test.describe("Description editor lifecycle through folding", () => {
     await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
     await waitForPageText(page, issueTitle);
     await page.getByRole("button", { name: /Show more/ }).click();
-    await expect(page.locator("[data-description-editor] img, [data-description-editor] [data-attachment-id]")).toBeVisible({ timeout: 10000 });
+    // A bare `img` locator is satisfied by an unsettled blob preview too, so
+    // this would pass even if the flush lost the bind and only a transient
+    // client-side node survived. After a full navigate-away-and-back the blob
+    // URL is gone from memory regardless; requiring the SAME durable,
+    // non-blob src that settlement produced is what actually proves this
+    // reload re-fetched persisted markdown rather than showing left-over
+    // client state.
+    const reopenedImage = page.locator("[data-description-editor] img.image-content:not(.image-uploading)");
+    await expect(reopenedImage).toBeVisible({ timeout: 10000 });
+    await expect(reopenedImage).not.toHaveAttribute("src", /^blob:/);
   });
 
   test("Show less is refused while an upload is pending, independent of editor focus", async ({ page }) => {
