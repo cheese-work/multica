@@ -2,12 +2,17 @@ import { forwardRef, useEffect, useRef, useState, useImperativeHandle } from "re
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { AgentTask, Issue, IssueStatusEntry, Label, TimelineEntry } from "@multica/core/types";
+import type { Attachment, AgentTask, Issue, IssueStatusEntry, Label, TimelineEntry } from "@multica/core/types";
 import { issueKeys } from "@multica/core/issues/queries";
 import { issueStatusKeys } from "@multica/core/issue-statuses";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { toast } from "sonner";
 import { useResolvedExpandStore } from "@multica/core/issues/stores/resolved-expand-store";
+// Imported from the barrel (not the submodule path) so this is the exact
+// same module instance issue-detail.tsx reads through the barrel mock below
+// — the submodule path resolves to a second, disconnected instance under
+// Vitest's mock graph once the barrel is mocked.
+import { useIssueDisclosureStore } from "@multica/core/issues/stores";
 import {
   DEFAULT_SUB_ISSUE_ROW_PROPERTIES,
   useSubIssueDisplayStore,
@@ -47,6 +52,21 @@ vi.mock("./description-measurement", () => ({
   DESCRIPTION_PREVIEW_LINES: 12,
   measureDescription: () => descriptionMeasurement.current,
 }));
+
+// Controllable per-test: the description upload path's uploadWithToast.
+const mockUploadWithToast = vi.hoisted(() => vi.fn());
+// Controllable per-test: the description drop zone's captured onDrop, so a
+// test can simulate a file drop without a real DataTransfer/DOM drop event.
+const descDropZoneOnDrop = vi.hoisted(() => ({ current: null as ((files: File[]) => void) | null }));
+// Spy on the description editor's imperative uploadFile so tests can assert
+// call order against the disclosure store's expand call.
+const descEditorUploadFile = vi.hoisted(() => vi.fn());
+// Captured onUploadFile prop passed to the description's ContentEditor. The
+// mocked editor's imperative uploadFile() is a bare spy (it has no document to
+// insert a placeholder into), so tests that need the actual
+// handleDescriptionUpload → uploadWithToast → bind path invoke this directly,
+// exactly as the real editor would internally on a paste/drop/select.
+const descOnUploadFile = vi.hoisted(() => ({ current: null as ((file: File) => Promise<unknown>) | null }));
 
 vi.mock("@multica/ui/hooks/use-mobile", () => ({
   useIsMobile: () => mockViewport.isMobile,
@@ -164,11 +184,19 @@ vi.mock("../../editor", async () => ({
     "../../editor/use-composer-submit",
   )),
   useEditorUpload: () => ({
-    uploadWithToast: vi.fn(),
+    uploadWithToast: mockUploadWithToast,
     upload: vi.fn(),
     uploading: false,
   }),
-  useFileDropZone: () => ({ isDragOver: false, dropZoneProps: {} }),
+  // issue-detail.tsx's description is the only unconditional useFileDropZone
+  // caller that renders before any comment/reply composer in the tree (those
+  // gate their own onDrop behind `enabled`, but a real per-instance ref is
+  // still registered on every mount). Capture the first registration per
+  // test/render pass so a later comment-card mount doesn't clobber it.
+  useFileDropZone: ({ onDrop }: { onDrop: (files: File[]) => void }) => {
+    if (!descDropZoneOnDrop.current) descDropZoneOnDrop.current = onDrop;
+    return { isDragOver: false, dropZoneProps: {} };
+  },
   FileDropOverlay: () => null,
   // No-op so comment-card's AttachmentList can render without hitting the
   // real API singleton; tests that care about download wiring should write
@@ -199,11 +227,15 @@ vi.mock("../../editor", async () => ({
       flushPendingOnUnmount,
       onReady,
       selectionAction,
+      onUploadFile,
     }: any,
     ref: any,
   ) {
     const initialValue = syncedValue ?? defaultValue ?? "";
-    if (syncedValue !== undefined) descriptionSelectionAction.current = selectionAction;
+    if (syncedValue !== undefined) {
+      descriptionSelectionAction.current = selectionAction;
+      descOnUploadFile.current = onUploadFile ?? null;
+    }
     const valueRef = useRef(initialValue);
     const baseRef = useRef(initialValue);
     const [editorValue, setEditorValue] = useState(initialValue);
@@ -248,7 +280,7 @@ vi.mock("../../editor", async () => ({
       // Mocks track ids only — no document to draw into.
       insertUploadPlaceholder: () => true,
       settleUploadPlaceholder: () => false,
-      uploadFile: () => {},
+      uploadFile: descEditorUploadFile,
     }));
     return (
       <textarea
@@ -526,6 +558,11 @@ beforeEach(() => {
   // The resolved-expand store is module-global (not per-mount like the old
   // useState); reset so one test's expansions can't leak into the next.
   useResolvedExpandStore.setState({ expandedByIssue: {} });
+  // Same module-global concern for the description/thread disclosure store.
+  useIssueDisclosureStore.setState({
+    descriptionExpandedIssueIds: new Set(),
+    expandedThreadIdsByIssue: {},
+  });
 });
 
 // Mock modals
@@ -654,6 +691,35 @@ function renderIssueDetail(issueId = "issue-1") {
 }
 
 /**
+ * The description's own Attach-file hidden input, disambiguated from every
+ * other FileUploadButton on the page (comment composer, reply composer): it
+ * is the one whose nearest ancestor containing the description editor is
+ * closest (smallest depth) — every other input's nearest such ancestor is
+ * the shared page root.
+ */
+function descriptionFileInput(): HTMLInputElement {
+  const descriptionEditor = document.querySelector("[data-description-editor]");
+  if (!descriptionEditor) throw new Error("description editor not found");
+  const inputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="file"]'));
+  let closest: HTMLInputElement | null = null;
+  let closestDepth = Number.POSITIVE_INFINITY;
+  for (const input of inputs) {
+    let depth = 0;
+    for (let ancestor: HTMLElement | null = input.parentElement; ancestor; ancestor = ancestor.parentElement, depth++) {
+      if (ancestor.contains(descriptionEditor)) {
+        if (depth < closestDepth) {
+          closest = input;
+          closestDepth = depth;
+        }
+        break;
+      }
+    }
+  }
+  if (!closest) throw new Error("description Attach-file input not found");
+  return closest;
+}
+
+/**
  * Renders with the workspace status catalog already in cache, so custom
  * statuses resolve to their real name, category and color. Seeding the query
  * (rather than stubbing the hook) keeps the shipped resolvers in the path; the
@@ -723,6 +789,17 @@ describe("IssueDetail (shared)", () => {
     vi.clearAllMocks();
     contentEditorMounts.count = 0;
     descriptionSelectionAction.current = undefined;
+    descriptionMeasurement.current = {
+      totalRows: 1,
+      hiddenRows: 0,
+      hasOverflow: false,
+      lineHeight: 20,
+      previewText: "",
+    };
+    mockUploadWithToast.mockReset();
+    descDropZoneOnDrop.current = null;
+    descEditorUploadFile.mockClear();
+    descOnUploadFile.current = null;
     mockViewport.isMobile = false;
     // Default: issue loads successfully
     mockApiObj.getIssue.mockResolvedValue(mockIssue);
@@ -2379,6 +2456,128 @@ describe("IssueDetail (shared)", () => {
 
     expect(mockApiObj.updateIssue).toHaveBeenCalledTimes(2);
     expect(screen.getByDisplayValue("Issue two draft")).toBeVisible();
+  });
+
+  it("expands a collapsed description before a dropped file inserts", async () => {
+    descriptionMeasurement.current = {
+      totalRows: 13,
+      hiddenRows: 1,
+      hasOverflow: true,
+      lineHeight: 20,
+      previewText: "Add JWT auth to the backend",
+    };
+    mockUploadWithToast.mockResolvedValue(undefined);
+    renderIssueDetail();
+
+    await screen.findByDisplayValue("Add JWT auth to the backend");
+    const editor = document.querySelector("[data-description-editor]")!;
+    expect(editor).toHaveAttribute("aria-hidden", "true");
+    expect(descDropZoneOnDrop.current).toBeTruthy();
+
+    const droppedFile = new File(["x"], "dropped.png", { type: "image/png" });
+    await act(async () => {
+      descDropZoneOnDrop.current!([droppedFile]);
+    });
+
+    // The disclosure store expands synchronously; uploadFile is invoked right
+    // after in the same handler. Order matters: an upload that lands before
+    // expansion would insert its placeholder into the still-inert editor.
+    expect(editor).not.toHaveAttribute("aria-hidden");
+    expect(descEditorUploadFile).toHaveBeenCalledWith(droppedFile);
+  });
+
+  it("expands a collapsed description before an Attach-file selection inserts", async () => {
+    descriptionMeasurement.current = {
+      totalRows: 13,
+      hiddenRows: 1,
+      hasOverflow: true,
+      lineHeight: 20,
+      previewText: "Add JWT auth to the backend",
+    };
+    mockUploadWithToast.mockResolvedValue(undefined);
+    renderIssueDetail();
+
+    await screen.findByDisplayValue("Add JWT auth to the backend");
+    const editor = document.querySelector("[data-description-editor]")!;
+    expect(editor).toHaveAttribute("aria-hidden", "true");
+
+    const selectedFile = new File(["x"], "selected.png", { type: "image/png" });
+    const fileInput = descriptionFileInput();
+    expect(fileInput).toBeTruthy();
+    await act(async () => {
+      Object.defineProperty(fileInput, "files", { value: [selectedFile], configurable: true });
+      fireEvent.change(fileInput);
+    });
+
+    expect(editor).not.toHaveAttribute("aria-hidden");
+    expect(descEditorUploadFile).toHaveBeenCalledWith(selectedFile);
+  });
+
+  it("re-enables Show less once a pending upload's attachment ids are bound", async () => {
+    descriptionMeasurement.current = {
+      totalRows: 13,
+      hiddenRows: 1,
+      hasOverflow: true,
+      lineHeight: 20,
+      previewText: "Add JWT auth to the backend",
+    };
+    const attachment: Attachment = {
+      id: "attach-1",
+      workspace_id: "ws-1",
+      issue_id: "issue-1",
+      comment_id: null,
+      chat_session_id: null,
+      chat_message_id: null,
+      uploader_type: "member",
+      uploader_id: "user-1",
+      filename: "pasted.png",
+      url: "https://files.example.com/attach-1",
+      download_url: "https://files.example.com/attach-1",
+      markdown_url: "/api/attachments/attach-1/download",
+      content_type: "image/png",
+      size_bytes: 100,
+      created_at: "2026-01-20T00:00:00Z",
+    };
+    mockUploadWithToast.mockResolvedValue(attachment);
+    mockApiObj.updateIssue.mockResolvedValue({
+      ...mockIssue,
+      description: "Add JWT auth to the backend ![pasted](/api/attachments/attach-1/download)",
+      revision: 4,
+    });
+    renderIssueDetail();
+
+    await screen.findByDisplayValue("Add JWT auth to the backend");
+    fireEvent.click(screen.getByRole("button", { name: /Show more/ }));
+    await screen.findByRole("button", { name: "Show less" });
+
+    // handleDescriptionUpload is passed as ContentEditor's onUploadFile prop;
+    // the real editor invokes it internally on paste/drop/insert. The mocked
+    // editor's imperative uploadFile() has no document to insert into, so
+    // this is the one path that actually exercises
+    // handleDescriptionUpload → uploadWithToast → descPendingAttachments.
+    expect(descOnUploadFile.current).toBeTruthy();
+    const file = new File(["x"], "pasted.png", { type: "image/png" });
+    await act(async () => {
+      await descOnUploadFile.current!(file);
+    });
+    expect(mockUploadWithToast).toHaveBeenCalledWith(file);
+
+    const showLess = await screen.findByRole("button", { name: "Show less" });
+    expect(showLess).toBeDisabled();
+
+    // Reference the pasted attachment from the markdown so it binds on save.
+    const editor = screen.getByTestId("rich-text-editor");
+    fireEvent.change(editor, {
+      target: { value: "Add JWT auth to the backend ![pasted](/api/attachments/attach-1/download)" },
+    });
+    await waitFor(() =>
+      expect(mockApiObj.updateIssue).toHaveBeenCalledWith(
+        "issue-1",
+        expect.objectContaining({ attachment_ids: ["attach-1"] }),
+      ),
+    );
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Show less" })).not.toBeDisabled());
   });
 
   it("keeps a title draft visible when its captured content conflicts", async () => {

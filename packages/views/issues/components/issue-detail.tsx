@@ -2020,8 +2020,18 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     setDescriptionFocused(false);
   }, [id]);
   const titleLazy = useLazyEditor({ editorRef: titleEditorRef, resetKey: id });
+  // A drop/insert into a collapsed description must land in the real,
+  // visible editor — never insert into the inert clipped one — per
+  // 01-DESIGN.md's expand-before-insert contract.
+  const uploadIntoExpandedDescription = useCallback(
+    (file: File) => {
+      setDescriptionExpanded(id, true);
+      descEditorRef.current?.uploadFile(file);
+    },
+    [id, setDescriptionExpanded],
+  );
   const { isDragOver: descDragOver, dropZoneProps: descDropZoneProps } = useFileDropZone({
-    onDrop: (files) => files.forEach((file) => descEditorRef.current?.uploadFile(file)),
+    onDrop: (files) => files.forEach((file) => uploadIntoExpandedDescription(file)),
   });
   // Pending uploads in the description editor. We don't pass `issueId` on
   // upload (to avoid orphaning attachments when the user deletes the file
@@ -2268,6 +2278,18 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         onSuccess: (serverIssue) => {
           if (descriptionSaveIssueIdRef.current !== id) return;
           descriptionSaveInFlightRef.current = false;
+          // These ids are now bound server-side (attachment_ids above landed).
+          // Drop them from the locally-tracked pending set so collapse only
+          // stays refused while a bind is actually outstanding, not for the
+          // rest of the issue visit (the design permits refusal while
+          // upload/bind is pending, not forever).
+          if (draft.attachmentIds.length > 0) {
+            const bound = new Set(draft.attachmentIds);
+            descPendingAttachmentsRef.current = descPendingAttachmentsRef.current.filter(
+              (a) => !bound.has(a.id),
+            );
+            setDescPendingAttachments(descPendingAttachmentsRef.current);
+          }
           const pending = pendingDescriptionSaveRef.current;
           pendingDescriptionSaveRef.current = null;
           if (pending) {
@@ -3125,7 +3147,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               <FileUploadButton
                 size="sm"
                 multiple
-                onSelect={(file) => descEditorRef.current?.uploadFile(file)}
+                onSelect={uploadIntoExpandedDescription}
               />
             </div>
             {descDragOver && <FileDropOverlay />}
