@@ -190,22 +190,34 @@ test.describe("Description editor lifecycle through folding", () => {
     await editor.click();
     await editor.press("End");
 
-    const fileChooserPromise = page.waitForEvent("filechooser");
-    await page.getByLabel("Attach file").click();
-    const fileChooser = await fileChooserPromise;
-    await fileChooser.setFiles({
-      name: "e2e-paste.png",
-      mimeType: "image/png",
-      buffer: Buffer.from(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
-        "base64",
-      ),
-    });
+    // A real clipboard `paste` with an image File on the DataTransfer — the
+    // same shape the file-upload ProseMirror plugin's `handlePaste` reads
+    // (`event.clipboardData.files`) — not the Attach-file chooser, so this
+    // actually exercises the paste path rather than the upload-button path.
+    const pngBase64 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+    await editor.evaluate((node, base64) => {
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const file = new File([bytes], "e2e-paste.png", { type: "image/png" });
+      const dataTransfer = new DataTransfer();
+      dataTransfer.items.add(file);
+      const pasteEvent = new ClipboardEvent("paste", {
+        bubbles: true,
+        cancelable: true,
+        clipboardData: dataTransfer,
+      });
+      node.dispatchEvent(pasteEvent);
+    }, pngBase64);
 
-    // Immediate navigation away simulates paste-followed-by-quick-close: the
-    // debounce (1500ms) has not fired, so only flushPendingOnUnmount can save
-    // the image markdown and its attachment_ids bind (MUL-3254).
-    await expect(page.locator("[data-description-editor] img, [data-description-editor] [data-attachment-id]")).toBeVisible({ timeout: 10000 });
+    // Navigate away immediately — before the 1500ms debounce can fire — so
+    // only `flushPendingOnUnmount` can save the image markdown and its
+    // attachment_ids bind (MUL-3254). Waiting on the upload to visibly land
+    // first would let the debounce window elapse during that wait and make
+    // this pass regardless of flushPendingOnUnmount; navigate as soon as the
+    // paste has been queued for upload instead.
+    await expect(page.locator("[data-description-editor] [data-uploading]")).toBeVisible();
     await page.goto(`/${workspaceSlug}/issues`, { waitUntil: "domcontentloaded" });
 
     await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
@@ -214,7 +226,7 @@ test.describe("Description editor lifecycle through folding", () => {
     await expect(page.locator("[data-description-editor] img, [data-description-editor] [data-attachment-id]")).toBeVisible({ timeout: 10000 });
   });
 
-  test("Show less is refused while an upload is pending", async ({ page }) => {
+  test("Show less is refused while an upload is pending, independent of editor focus", async ({ page }) => {
     await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
     await waitForPageText(page, issueTitle);
 
@@ -232,6 +244,11 @@ test.describe("Description editor lifecycle through folding", () => {
       mimeType: "image/png",
       buffer: Buffer.alloc(3 * 1024 * 1024, 1),
     });
+
+    // Blur the editor so `descriptionFocused` is false and the assertion
+    // below can only pass because of the pending-attachment/upload state,
+    // not because the editor still has focus.
+    await editor.blur();
 
     const showLess = page.getByRole("button", { name: "Show less" });
     await expect(showLess).toBeDisabled();
