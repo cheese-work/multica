@@ -28,6 +28,7 @@ function useSettledMeasurement(
   contentVersion: string | number | undefined,
 ) {
   const [measurement, setMeasurement] = useState<DescriptionMeasurement | null>(null);
+  const [refreshing, setRefreshing] = useState(true);
 
   useLayoutEffect(() => {
     const root = rootRef.current;
@@ -36,9 +37,12 @@ function useSettledMeasurement(
     let disposed = false;
     const schedule = () => {
       cancelAnimationFrame(frame);
-      setMeasurement(null);
+      setRefreshing(true);
       frame = requestAnimationFrame(() => {
-        if (!disposed) setMeasurement(measureDescription(root));
+        if (!disposed) {
+          setMeasurement(measureDescription(root));
+          setRefreshing(false);
+        }
       });
     };
     const resizeObserver = new ResizeObserver(schedule);
@@ -52,6 +56,7 @@ function useSettledMeasurement(
     // This layout-effect read lands before paint. It avoids briefly exposing a
     // full long editor while the asynchronous observers settle subsequent work.
     setMeasurement(measureDescription(root));
+    setRefreshing(false);
 
     return () => {
       disposed = true;
@@ -64,7 +69,7 @@ function useSettledMeasurement(
     };
   }, [contentVersion, rootRef]);
 
-  return measurement;
+  return { measurement, refreshing };
 }
 
 /**
@@ -81,25 +86,26 @@ export function DescriptionDisclosure({
   collapseDisabled = false,
 }: DescriptionDisclosureProps) {
   const editorRef = useRef<HTMLDivElement>(null);
-  const measurement = useSettledMeasurement(editorRef, contentVersion);
+  const { measurement, refreshing } = useSettledMeasurement(editorRef, contentVersion);
   const canDisclose = measurement?.hasOverflow === true;
-  // During invalidation, keep the editor clipped and expose only the loading
-  // label. A fresh exact count arrives on the next animation frame.
+  // Initial measurement is a layout-effect read. Later invalidations retain
+  // the last geometry so short descriptions never flicker into a collapsed UI.
   const collapsed = !expanded && (measurement === null || canDisclose);
-  const controlsId = `${id}-description`;
+  const editorId = `${id}-description-editor`;
   const previewText = measurement?.previewText;
   const buttonLabel =
-    measurement && measurement.hiddenRows > 0
+    measurement && !refreshing && measurement.hiddenRows > 0
       ? `${labels.showMore} ${labels.moreLines(measurement.hiddenRows)}`
       : labels.showMore;
 
   return (
-    <section id={controlsId} data-description-disclosure>
+    <section data-description-disclosure>
       <div
         ref={editorRef}
         aria-hidden={collapsed || undefined}
         data-description-editor
         data-find-ignore={collapsed ? "true" : undefined}
+        id={editorId}
         inert={collapsed || undefined}
         onPointerDownCapture={(event) => {
           if (!collapsed) return;
@@ -129,7 +135,7 @@ export function DescriptionDisclosure({
       {canDisclose ? (
         <div className="mt-2 flex justify-center">
           <button
-            aria-controls={controlsId}
+            aria-controls={editorId}
             aria-expanded={expanded}
             disabled={expanded && collapseDisabled}
             onClick={() => onExpandedChange(!expanded)}
@@ -140,7 +146,7 @@ export function DescriptionDisclosure({
         </div>
       ) : measurement === null ? (
         <div className="mt-2 flex justify-center">
-          <button aria-controls={controlsId} aria-expanded={expanded} onClick={() => onExpandedChange(!expanded)} type="button">
+          <button aria-controls={editorId} aria-expanded={expanded} onClick={() => onExpandedChange(!expanded)} type="button">
             {expanded ? labels.showLess : labels.showMore}
           </button>
         </div>

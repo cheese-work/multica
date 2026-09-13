@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { useState } from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const measurement = vi.hoisted(() => ({
@@ -30,6 +30,10 @@ const labels = {
 };
 
 class TestResizeObserver {
+  static callback: ResizeObserverCallback | null = null;
+  constructor(callback: ResizeObserverCallback) {
+    TestResizeObserver.callback = callback;
+  }
   observe() {}
   disconnect() {}
 }
@@ -76,7 +80,9 @@ describe("DescriptionDisclosure", () => {
     expect(editor).toHaveAttribute("inert");
     expect(screen.getByText("Visible description only", { selector: "[data-description-accessible-preview] span" })).toBeInTheDocument();
     expect(screen.queryByText("Hidden suffix", { selector: "[data-description-accessible-preview]" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Show more 1 more line" })).toHaveAttribute("aria-expanded", "false");
+    const showMore = screen.getByRole("button", { name: "Show more 1 more line" });
+    expect(showMore).toHaveAttribute("aria-expanded", "false");
+    expect(showMore).toHaveAttribute("aria-controls", editor.id);
 
     const child = screen.getByTestId("real-editor");
     fireEvent.click(screen.getByRole("button", { name: "Show more 1 more line" }));
@@ -101,5 +107,29 @@ describe("DescriptionDisclosure", () => {
     expect(screen.queryByRole("button", { name: /Show more|Show less/ })).not.toBeInTheDocument();
     expect(document.querySelector("[data-description-accessible-preview]")).toBeNull();
     expect(screen.getByTestId("real-editor").parentElement).not.toHaveAttribute("aria-hidden");
+  });
+
+  it("keeps a known short description visible while its measurement refreshes", () => {
+    measurement.current = {
+      totalRows: 12,
+      hiddenRows: 0,
+      hasOverflow: false,
+      lineHeight: 20,
+      previewText: "Complete description",
+    };
+    let queuedFrame: FrameRequestCallback | null = null;
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      queuedFrame = callback;
+      return 1;
+    });
+
+    render(<DisclosureHarness />);
+    act(() => TestResizeObserver.callback?.([], {} as ResizeObserver));
+
+    expect(screen.queryByRole("button", { name: /Show more|Show less/ })).not.toBeInTheDocument();
+    expect(screen.getByTestId("real-editor").parentElement).not.toHaveAttribute("aria-hidden");
+
+    act(() => queuedFrame?.(0));
+    expect(screen.queryByRole("button", { name: /Show more|Show less/ })).not.toBeInTheDocument();
   });
 });

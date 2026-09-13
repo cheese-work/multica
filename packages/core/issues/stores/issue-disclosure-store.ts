@@ -75,10 +75,8 @@ export const useIssueDisclosureStore = create<IssueDisclosureStore>()((set) => (
       const hasDescription = state.descriptionExpandedIssueIds.has(issueId);
       const hasThreads = issueId in state.expandedThreadIdsByIssue;
       if (!hasDescription && !hasThreads) return state;
-      const descriptions: Set<string> = hasDescription
-        ? new Set(state.descriptionExpandedIssueIds)
-        : new Set(state.descriptionExpandedIssueIds);
-      if (hasDescription) descriptions.delete(issueId);
+      const descriptions = new Set(state.descriptionExpandedIssueIds);
+      descriptions.delete(issueId);
       return {
         descriptionExpandedIssueIds: descriptions.size === 0 ? EMPTY_IDS : descriptions,
         expandedThreadIdsByIssue: hasThreads

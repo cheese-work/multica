@@ -24,6 +24,10 @@ function rectsForRange(range: Range): DOMRect[] {
   return Array.from(range.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0);
 }
 
+function isAtOrBelowContentTop(rect: DOMRect, contentTop: number): boolean {
+  return rect.top >= contentTop - ROW_OVERLAP_EPSILON && rect.bottom > contentTop + ROW_OVERLAP_EPSILON;
+}
+
 function isIgnored(node: Text, root: HTMLElement): boolean {
   const parent = node.parentElement;
   if (!parent) return true;
@@ -47,7 +51,7 @@ function nearestBlock(node: Text, root: HTMLElement): Element | null {
   return null;
 }
 
-function collectTextFragments(root: HTMLElement): TextFragment[] {
+function collectTextFragments(root: HTMLElement, contentTop: number): TextFragment[] {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const fragments: TextFragment[] = [];
   let node = walker.nextNode();
@@ -56,7 +60,7 @@ function collectTextFragments(root: HTMLElement): TextFragment[] {
     if (text.data.trim().length > 0 && !isIgnored(text, root)) {
       const range = document.createRange();
       range.selectNodeContents(text);
-      const rects = rectsForRange(range);
+      const rects = rectsForRange(range).filter((rect) => isAtOrBelowContentTop(rect, contentTop));
       if (rects.length > 0) fragments.push({ node: text, rects, block: nearestBlock(text, root) });
     }
     node = walker.nextNode();
@@ -80,7 +84,7 @@ function mergeRows(intervals: VerticalInterval[]): VerticalInterval[] {
   return rows;
 }
 
-function visibleOffset(node: Text, cutoff: number): number {
+function visibleOffset(node: Text, contentTop: number, cutoff: number): number {
   let low = 0;
   let high = node.data.length;
   while (low < high) {
@@ -88,18 +92,29 @@ function visibleOffset(node: Text, cutoff: number): number {
     const range = document.createRange();
     range.setStart(node, 0);
     range.setEnd(node, middle);
-    const fits = rectsForRange(range).every((rect) => rect.bottom <= cutoff + ROW_OVERLAP_EPSILON);
+    const rects = rectsForRange(range);
+    const fits =
+      rects.length > 0 &&
+      rects.every(
+        (rect) =>
+          isAtOrBelowContentTop(rect, contentTop) &&
+          rect.bottom <= cutoff + ROW_OVERLAP_EPSILON,
+      );
     if (fits) low = middle;
     else high = middle - 1;
   }
   return low;
 }
 
-function visibleText(fragments: readonly TextFragment[], cutoff: number): string {
+function visibleText(
+  fragments: readonly TextFragment[],
+  contentTop: number,
+  cutoff: number,
+): string {
   const pieces: string[] = [];
   let previousBlock: Element | null | undefined;
   for (const fragment of fragments) {
-    const end = visibleOffset(fragment.node, cutoff);
+    const end = visibleOffset(fragment.node, contentTop, cutoff);
     if (end === 0) continue;
     if (pieces.length > 0 && previousBlock !== fragment.block) pieces.push(" ");
     pieces.push(fragment.node.data.slice(0, end));
@@ -108,11 +123,16 @@ function visibleText(fragments: readonly TextFragment[], cutoff: number): string
   return pieces.join("").replace(/\s+/g, " ").trim();
 }
 
-function visibleImageAlt(root: HTMLElement, cutoff: number): string[] {
+function visibleImageAlt(root: HTMLElement, contentTop: number, cutoff: number): string[] {
   return Array.from(root.querySelectorAll("img"))
     .filter((image) => {
       const rect = image.getBoundingClientRect();
-      return rect.width > 0 && rect.height > 0 && rect.bottom <= cutoff + ROW_OVERLAP_EPSILON;
+      return (
+        rect.width > 0 &&
+        rect.height > 0 &&
+        rect.top >= contentTop - ROW_OVERLAP_EPSILON &&
+        rect.bottom <= cutoff + ROW_OVERLAP_EPSILON
+      );
     })
     .map((image) => image.alt.trim())
     .filter(Boolean);
@@ -130,7 +150,7 @@ export function measureDescription(root: HTMLElement): DescriptionMeasurement {
     ? parsedLineHeight
     : Number.parseFloat(computed.fontSize) * 1.2;
   const cutoff = rootRect.top + lineHeight * DESCRIPTION_PREVIEW_LINES;
-  const fragments = collectTextFragments(root);
+  const fragments = collectTextFragments(root, rootRect.top);
   const rows = mergeRows(
     fragments.flatMap((fragment) =>
       fragment.rects.map((rect) => ({ top: rect.top, bottom: rect.bottom })),
@@ -139,9 +159,15 @@ export function measureDescription(root: HTMLElement): DescriptionMeasurement {
   const textOverflow = rows.some((row) => row.bottom > cutoff + ROW_OVERLAP_EPSILON);
   const nonTextOverflow = Array.from(root.querySelectorAll("img, video, canvas, svg"))
     .map((element) => element.getBoundingClientRect())
-    .some((rect) => rect.width > 0 && rect.height > 0 && rect.bottom > cutoff + ROW_OVERLAP_EPSILON);
-  const prefix = visibleText(fragments, cutoff);
-  const imageAlt = visibleImageAlt(root, cutoff);
+    .some(
+      (rect) =>
+        rect.width > 0 &&
+        rect.height > 0 &&
+        isAtOrBelowContentTop(rect, rootRect.top) &&
+        rect.bottom > cutoff + ROW_OVERLAP_EPSILON,
+    );
+  const prefix = visibleText(fragments, rootRect.top, cutoff);
+  const imageAlt = visibleImageAlt(root, rootRect.top, cutoff);
 
   return {
     totalRows: rows.length,

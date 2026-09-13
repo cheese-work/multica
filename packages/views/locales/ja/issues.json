@@ -357,7 +357,6 @@
     "description_preview_loading": "説明のプレビューを読み込んでいます",
     "description_show_more": "もっと見る",
     "description_show_less": "閉じる",
-    "description_more_lines_one": "あと {{count}} 行",
     "description_more_lines_other": "あと {{count}} 行",
     "current_issue": "現在のタスク",
     "sub_issues_label": "サブタスク",

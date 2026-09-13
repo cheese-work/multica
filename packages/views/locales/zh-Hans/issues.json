@@ -357,7 +357,6 @@
     "description_preview_loading": "正在加载任务描述预览",
     "description_show_more": "展开",
     "description_show_less": "收起",
-    "description_more_lines_one": "还有 {{count}} 行",
     "description_more_lines_other": "还有 {{count}} 行",
     "current_issue": "当前任务",
     "sub_issues_label": "子任务",
