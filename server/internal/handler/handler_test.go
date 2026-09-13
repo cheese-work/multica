@@ -41,11 +41,32 @@ const (
 	handlerTestWorkspaceSlug = "handler-tests"
 )
 
+// isHandlerTestDatabase permits destructive suite setup only for an explicitly
+// named test database. A reachable host, loopback address, or test credential
+// is not evidence that the database is safe to truncate.
+func isHandlerTestDatabase(databaseName string) bool {
+	return strings.HasSuffix(strings.ToLower(databaseName), "_test")
+}
+
+func truncateMergeAnnouncementsForHandlerTests(ctx context.Context, pool *pgxpool.Pool) error {
+	var databaseName string
+	if err := pool.QueryRow(ctx, `SELECT current_database()`).Scan(&databaseName); err != nil {
+		return fmt.Errorf("read database name: %w", err)
+	}
+	if !isHandlerTestDatabase(databaseName) {
+		return fmt.Errorf("refusing to truncate github_merge_announcement: database %q is not explicitly a test database", databaseName)
+	}
+	if _, err := pool.Exec(ctx, `TRUNCATE TABLE github_merge_announcement`); err != nil {
+		return fmt.Errorf("truncate github_merge_announcement: %w", err)
+	}
+	return nil
+}
+
 func TestMain(m *testing.M) {
 	ctx := context.Background()
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		dbURL = "postgres://multica:multica@localhost:5432/multica?sslmode=disable"
+		dbURL = "postgres://multica:multica@localhost:5432/multica_test?sslmode=disable"
 	}
 
 	pool, err := pgxpool.New(ctx, dbURL)
@@ -57,6 +78,9 @@ func TestMain(m *testing.M) {
 		fmt.Printf("Skipping tests: database not reachable: %v\n", err)
 		pool.Close()
 		os.Exit(0)
+	}
+	if err := truncateMergeAnnouncementsForHandlerTests(ctx, pool); err != nil {
+		fmt.Printf("Skipping merge-announcement truncate: %v\n", err)
 	}
 
 	queries := db.New(pool)
@@ -91,6 +115,9 @@ func TestMain(m *testing.M) {
 	dbfx = testutil.New(pool, testWorkspaceID, testUserID)
 
 	code := m.Run()
+	if err := truncateMergeAnnouncementsForHandlerTests(context.Background(), pool); err != nil {
+		fmt.Printf("Skipping merge-announcement teardown truncate: %v\n", err)
+	}
 	if err := cleanupHandlerTestFixture(context.Background(), pool); err != nil {
 		fmt.Printf("Failed to clean up handler test fixture: %v\n", err)
 		if code == 0 {
@@ -168,6 +195,12 @@ func setupHandlerTestFixture(ctx context.Context, pool *pgxpool.Pool) (string, s
 }
 
 func cleanupHandlerTestFixture(ctx context.Context, pool *pgxpool.Pool) error {
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM github_merge_announcement
+		WHERE workspace_id IN (SELECT id FROM workspace WHERE slug = $1)
+	`, handlerTestWorkspaceSlug); err != nil {
+		return err
+	}
 	var hasClientUsageTable bool
 	if err := pool.QueryRow(ctx, `SELECT to_regclass('client_usage_daily') IS NOT NULL`).Scan(&hasClientUsageTable); err != nil {
 		return err
@@ -184,6 +217,26 @@ func cleanupHandlerTestFixture(ctx context.Context, pool *pgxpool.Pool) error {
 		return err
 	}
 	return nil
+}
+
+func TestIsHandlerTestDatabase(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		database string
+		want     bool
+	}{
+		{name: "test suffix", database: "multica_handler_test", want: true},
+		{name: "case insensitive", database: "MULTICA_TEST", want: true},
+		{name: "production name", database: "multica", want: false},
+		{name: "test prefix is not enough", database: "test_multica", want: false},
+		{name: "embedded test is not enough", database: "multica_testing", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isHandlerTestDatabase(tc.database); got != tc.want {
+				t.Errorf("isHandlerTestDatabase(%q) = %t, want %t", tc.database, got, tc.want)
+			}
+		})
+	}
 }
 
 func newRequest(method, path string, body any) *http.Request {
