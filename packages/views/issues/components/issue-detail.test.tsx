@@ -2474,14 +2474,20 @@ describe("IssueDetail (shared)", () => {
     expect(editor).toHaveAttribute("aria-hidden", "true");
     expect(descDropZoneOnDrop.current).toBeTruthy();
 
+    // Assert the ordering at the moment uploadFile is actually invoked, not
+    // after `act` flushes: the expansion must have already committed to the
+    // DOM (no aria-hidden/inert) by the time this fires.
+    let editorWasInertAtInsert: boolean | null = null;
+    descEditorUploadFile.mockImplementationOnce(() => {
+      editorWasInertAtInsert = editor.hasAttribute("aria-hidden") || editor.hasAttribute("inert");
+    });
+
     const droppedFile = new File(["x"], "dropped.png", { type: "image/png" });
     await act(async () => {
       descDropZoneOnDrop.current!([droppedFile]);
     });
 
-    // The disclosure store expands synchronously; uploadFile is invoked right
-    // after in the same handler. Order matters: an upload that lands before
-    // expansion would insert its placeholder into the still-inert editor.
+    expect(editorWasInertAtInsert).toBe(false);
     expect(editor).not.toHaveAttribute("aria-hidden");
     expect(descEditorUploadFile).toHaveBeenCalledWith(droppedFile);
   });
@@ -2501,6 +2507,11 @@ describe("IssueDetail (shared)", () => {
     const editor = document.querySelector("[data-description-editor]")!;
     expect(editor).toHaveAttribute("aria-hidden", "true");
 
+    let editorWasInertAtInsert: boolean | null = null;
+    descEditorUploadFile.mockImplementationOnce(() => {
+      editorWasInertAtInsert = editor.hasAttribute("aria-hidden") || editor.hasAttribute("inert");
+    });
+
     const selectedFile = new File(["x"], "selected.png", { type: "image/png" });
     const fileInput = descriptionFileInput();
     expect(fileInput).toBeTruthy();
@@ -2509,6 +2520,7 @@ describe("IssueDetail (shared)", () => {
       fireEvent.change(fileInput);
     });
 
+    expect(editorWasInertAtInsert).toBe(false);
     expect(editor).not.toHaveAttribute("aria-hidden");
     expect(descEditorUploadFile).toHaveBeenCalledWith(selectedFile);
   });

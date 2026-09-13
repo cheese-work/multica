@@ -2010,6 +2010,15 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // text from `defaultValue` at mount and exposes no imperative setter, so
   // remounting is the only way to put the server's title back in the editor.
   const [titleResetToken, setTitleResetToken] = useState(0);
+  // A drop/insert into a collapsed description must land in the real,
+  // visible editor — never insert into the inert clipped one — per
+  // 01-DESIGN.md's expand-before-insert contract. Setting the store flag and
+  // calling `uploadFile` in the same handler is not enough: the state change
+  // is synchronous but the subscribed DOM update (clearing `aria-hidden`/
+  // `inert`) is batched until this handler returns, so the real editor can
+  // still be inert at the moment of insert. Queue the file and drain it from
+  // an effect that runs after the expanded render commits instead.
+  const descPendingUploadsRef = useRef<File[]>([]);
   useEffect(() => {
     setTitleConflictDraft(null);
     titleBaseRef.current = undefined;
@@ -2017,19 +2026,28 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     descriptionSaveIssueIdRef.current = id;
     pendingDescriptionSaveRef.current = null;
     descriptionEditingRef.current = false;
+    descPendingUploadsRef.current = [];
     setDescriptionFocused(false);
   }, [id]);
   const titleLazy = useLazyEditor({ editorRef: titleEditorRef, resetKey: id });
-  // A drop/insert into a collapsed description must land in the real,
-  // visible editor — never insert into the inert clipped one — per
-  // 01-DESIGN.md's expand-before-insert contract.
   const uploadIntoExpandedDescription = useCallback(
     (file: File) => {
+      if (descriptionExpanded) {
+        descEditorRef.current?.uploadFile(file);
+        return;
+      }
+      descPendingUploadsRef.current.push(file);
       setDescriptionExpanded(id, true);
-      descEditorRef.current?.uploadFile(file);
     },
-    [id, setDescriptionExpanded],
+    [id, descriptionExpanded, setDescriptionExpanded],
   );
+  useEffect(() => {
+    if (!descriptionExpanded) return;
+    const pending = descPendingUploadsRef.current;
+    if (pending.length === 0) return;
+    descPendingUploadsRef.current = [];
+    for (const file of pending) descEditorRef.current?.uploadFile(file);
+  }, [descriptionExpanded]);
   const { isDragOver: descDragOver, dropZoneProps: descDropZoneProps } = useFileDropZone({
     onDrop: (files) => files.forEach((file) => uploadIntoExpandedDescription(file)),
   });
