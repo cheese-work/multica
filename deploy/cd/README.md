@@ -43,6 +43,16 @@ The isolated qualification test uses only synthetic, throwaway data. Its
 upgrade/rollback command is intentionally disabled until the caller supplies
 an admitted tuple and a non-production fixture location.
 
+## Previous-image identity
+
+The harness accepts either immutable GHCR digest references or a complete pair
+of verified off-host OCI archives. Archive mode requires the compressed
+archive's SHA-256 and a separately checksummed metadata file containing the
+source reference, source image identity, platform, and ordered RootFS diff IDs.
+It verifies the OCI index, config, and RootFS list before importing under a
+unique local-only tag, then removes that tag during cleanup. Archive names and
+Docker image IDs alone are not accepted as identity evidence.
+
 To exercise the pre-merge gate without building or contacting a registry, use
 the current Hermes tuple snapshot:
 
