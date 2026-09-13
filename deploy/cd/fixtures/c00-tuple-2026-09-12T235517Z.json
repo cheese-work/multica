@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "role": "c00-deployment-baseline-read-only-metadata",
+  "captured_at": "2026-09-12T23:55:17Z",
+  "application_sha": "504078f8ea7fa31f342f195659e93a7f6c3e5a91",
+  "images": {
+    "backend": {
+      "reference": "cheese-work/multica-backend:504078f8",
+      "digest": "sha256:a5dbed3abe0d8b80659e97b4c26b8257d96d1e73af5ca817a9cbb309c34fdca4"
+    },
+    "web": {
+      "reference": "cheese-work/multica-web:504078f8",
+      "digest": "sha256:fb6784f5672a4dc516732bd3134378a4b811f74de8164ae0ef88dce0c1d644df"
+    }
+  },
+  "compose": {
+    "file": "docker-compose.selfhost.yml",
+    "sha256": "sha256:0ccd8559d6f9e3cd1e3223749fa96de658ca704d5ce9a869aa42d7dec6ce330c",
+    "service_config_sha256": {
+      "backend": { "prefix": "cefeb52d", "suffix": "f775" },
+      "web": { "prefix": "0ef65b1c", "suffix": "abc5" }
+    }
+  },
+  "migration_ledger": {
+    "row_count": 496,
+    "latest": {
+      "version": "467_autopilot_trigger_creator_from_autopilot",
+      "applied_at": "2026-09-12T08:58:23.324992Z"
+    },
+    "ordered_sha256": "sha256:2697999e5fecab48f06743498eb93ada92b5ad168af90c587cfdf51e5b27128b"
+  }
+}
