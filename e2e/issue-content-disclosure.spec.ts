@@ -211,15 +211,19 @@ test.describe("Description editor lifecycle through folding", () => {
       node.dispatchEvent(pasteEvent);
     }, pngBase64);
 
-    // Wait for the upload to SETTLE — the placeholder's `uploading` attribute
-    // clears and a real (non-blob) src lands — before navigating. An
-    // in-flight placeholder serializes to no markdown at all
+    // Wait for the upload to SETTLE — the NodeView drops its `image-uploading`
+    // class and a real (non-blob) src lands — before navigating. The image
+    // NodeView (`attachment.tsx`) never renders `data-uploading` on the `img`
+    // itself; that attribute exists only on the ProseMirror node's HTML
+    // serialization, not this React NodeView's DOM, so `img:not([data-uploading])`
+    // matches even the in-flight blob preview and asserts nothing about upload
+    // state. An in-flight placeholder also serializes to no markdown at all
     // (`extensions/index.ts` `renderMarkdown`: `uploading === true` -> `""`),
-    // so flushing while `[data-uploading]` is still present writes back
-    // content unchanged by the paste; it does not prove persistence. Settling
-    // starts a FRESH 1500ms debounce for the now-real image markdown, which
-    // is the actual flush boundary this test needs to race.
-    const insertedImage = page.locator("[data-description-editor] img:not([data-uploading])");
+    // so flushing before settlement writes back content unchanged by the
+    // paste; it does not prove persistence. Settling starts a FRESH 1500ms
+    // debounce for the now-real image markdown, which is the actual flush
+    // boundary this test needs to race.
+    const insertedImage = page.locator("[data-description-editor] img.image-content:not(.image-uploading)");
     await expect(insertedImage).toBeVisible({ timeout: 10000 });
     await expect(insertedImage).not.toHaveAttribute("src", /^blob:/);
 
