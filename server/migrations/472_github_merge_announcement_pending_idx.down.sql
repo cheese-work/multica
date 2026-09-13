@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_github_merge_announcement_pending_claim;

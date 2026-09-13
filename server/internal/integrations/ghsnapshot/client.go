@@ -20,6 +20,7 @@ package ghsnapshot
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
 	"errors"
@@ -103,6 +104,28 @@ func NewClientFromEnv() (*Client, error) {
 		now:        time.Now,
 		tokens:     map[int64]cachedToken{},
 	}, nil
+}
+
+// NewClientForTest builds an Enabled client that talks to apiBase (an
+// httptest server) instead of GitHub, using a throwaway in-memory key. For
+// tests in other packages that need to drive a handler through
+// h.PRRefresh.Client() / FetchPRMergeIdentity against a fake GitHub App API —
+// mirrors client_test.go's unexported newTestClient, exported because that
+// helper lives in this package's own _test.go and isn't visible to callers
+// like server/internal/handler's tests (CHE-384/01-02 task 2).
+func NewClientForTest(apiBase string) *Client {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		panic(fmt.Sprintf("ghsnapshot: generate test key: %v", err))
+	}
+	return &Client{
+		appID:      "test-app",
+		privateKey: key,
+		apiBase:    apiBase,
+		httpClient: &http.Client{Timeout: 5 * time.Second},
+		now:        time.Now,
+		tokens:     map[int64]cachedToken{},
+	}
 }
 
 // Enabled reports whether the App API is configured. A nil client is disabled.

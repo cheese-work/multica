@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS uq_github_merge_announcement_identity;

@@ -560,10 +560,18 @@ const deleteWorkspacePullRequests = `-- name: DeleteWorkspacePullRequests :exec
 WITH deleted_github_prs AS (
     DELETE FROM github_pull_request
     WHERE github_pull_request.workspace_id = $1
+),
+deleted_github_merge_announcements AS (
+    DELETE FROM github_merge_announcement
+    WHERE github_merge_announcement.workspace_id = $1
 )
 DELETE FROM vcs_pull_request WHERE vcs_pull_request.workspace_id = $1
 `
 
+// github_merge_announcement has no FK to github_pull_request (no cascades
+// allowed, per repo convention) so it's deleted here directly by
+// workspace_id, alongside its sibling github_* mirror tables (CHE-374 review
+// fix N2 — a new public-schema table must be covered by workspace deletion).
 func (q *Queries) DeleteWorkspacePullRequests(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteWorkspacePullRequests, workspaceID)
 	return err

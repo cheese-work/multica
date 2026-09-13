@@ -288,3 +288,90 @@ func normalizeStatusState(s string) (status, conclusion string) {
 		return "queued", ""
 	}
 }
+
+// prMergeIdentityQuery fetches ONLY the authoritative merge identity — not the
+// CI/mergeability snapshot prSnapshotQuery already covers. Used solely by the
+// selected-recovery path (CHE-384/01-02 task 1): recovering an already-merged
+// PR that never produced a durable announcement row requires re-asking GitHub
+// what actually happened, rather than trusting caller-supplied merge evidence
+// (01-CONTEXT.md D-02/D-03 — no fabricated historical delivery).
+const prMergeIdentityQuery = `query($owner:String!,$repo:String!,$number:Int!){
+  repository(owner:$owner,name:$repo){
+    databaseId
+    pullRequest(number:$number){
+      merged
+      mergedAt
+      mergeCommit{oid}
+      url
+    }
+  }
+}`
+
+// PRMergeIdentity is the authoritative merge record for one PR, as GitHub
+// itself reports it right now — never derived from anything the caller
+// supplied.
+type PRMergeIdentity struct {
+	// RepositoryID is GitHub's numeric (REST-compatible) repository id —
+	// github_merge_announcement.repository_id's identity component, from
+	// GraphQL's `databaseId` rather than the non-numeric global node `id`.
+	RepositoryID   int64
+	Merged         bool
+	MergedAt       string // RFC3339, empty if not merged
+	MergeCommitSHA string
+	HTMLURL        string
+}
+
+type graphqlMergeIdentityPR struct {
+	Merged      bool   `json:"merged"`
+	MergedAt    string `json:"mergedAt"`
+	MergeCommit *struct {
+		Oid string `json:"oid"`
+	} `json:"mergeCommit"`
+	URL string `json:"url"`
+}
+
+type graphqlMergeIdentityData struct {
+	Repository struct {
+		DatabaseID  int64                   `json:"databaseId"`
+		PullRequest *graphqlMergeIdentityPR `json:"pullRequest"`
+	} `json:"repository"`
+}
+
+// FetchPRMergeIdentity asks GitHub for a PR's current, authoritative merge
+// state via the existing App installation-token auth. It never trusts a
+// caller-supplied merge SHA/time (01-CONTEXT.md D-02/D-03): the returned
+// MergedAt/MergeCommitSHA are exactly what GitHub reports for this PR right
+// now, so a selected-recovery caller can only ever announce a merge that
+// actually happened, with its actual original time.
+func FetchPRMergeIdentity(ctx context.Context, c *Client, installationID int64, owner, repo string, number int32) (*PRMergeIdentity, error) {
+	if !c.Enabled() {
+		return nil, errors.New("ghsnapshot: client not configured")
+	}
+	data, err := c.graphQL(ctx, installationID, prMergeIdentityQuery, map[string]any{
+		"owner": owner, "repo": repo, "number": number,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var parsed graphqlMergeIdentityData
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return nil, errors.New("ghsnapshot: malformed pull request data")
+	}
+	pr := parsed.Repository.PullRequest
+	if pr == nil {
+		return nil, errors.New("ghsnapshot: pull request not found")
+	}
+	if !pr.Merged {
+		return &PRMergeIdentity{RepositoryID: parsed.Repository.DatabaseID, Merged: false}, nil
+	}
+	if pr.MergeCommit == nil || pr.MergeCommit.Oid == "" {
+		return nil, errors.New("ghsnapshot: merged pull request missing merge commit")
+	}
+	return &PRMergeIdentity{
+		RepositoryID:   parsed.Repository.DatabaseID,
+		Merged:         true,
+		MergedAt:       pr.MergedAt,
+		MergeCommitSHA: pr.MergeCommit.Oid,
+		HTMLURL:        pr.URL,
+	}, nil
+}

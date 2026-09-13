@@ -191,3 +191,93 @@ func TestSnapshotDecided(t *testing.T) {
 		})
 	}
 }
+
+// TestFetchPRMergeIdentityReturnsAuthoritativeMergeData is the primary test
+// for the selected-recovery fetcher (CHE-384/01-02 task 1): it must return
+// exactly what GitHub reports — never anything a caller could have supplied.
+func TestFetchPRMergeIdentityReturnsAuthoritativeMergeData(t *testing.T) {
+	srv := graphqlServer(t, func(vars map[string]any) string {
+		return `{"repository":{"databaseId":123456,"pullRequest":{
+			"merged":true,"mergedAt":"2026-08-01T12:00:00Z",
+			"mergeCommit":{"oid":"abc123def456abc123def456abc123def456abc1"},
+			"url":"https://github.com/o/r/pull/5"
+		}}}`
+	})
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL)
+	identity, err := FetchPRMergeIdentity(context.Background(), c, 1, "o", "r", 5)
+	if err != nil {
+		t.Fatalf("FetchPRMergeIdentity: %v", err)
+	}
+	if !identity.Merged {
+		t.Fatal("expected Merged=true")
+	}
+	if identity.RepositoryID != 123456 {
+		t.Errorf("expected RepositoryID 123456, got %d", identity.RepositoryID)
+	}
+	if identity.MergedAt != "2026-08-01T12:00:00Z" {
+		t.Errorf("expected MergedAt to be the authoritative value, got %q", identity.MergedAt)
+	}
+	if identity.MergeCommitSHA != "abc123def456abc123def456abc123def456abc1" {
+		t.Errorf("expected MergeCommitSHA to be the authoritative value, got %q", identity.MergeCommitSHA)
+	}
+	if identity.HTMLURL != "https://github.com/o/r/pull/5" {
+		t.Errorf("expected HTMLURL to be the authoritative value, got %q", identity.HTMLURL)
+	}
+}
+
+// TestFetchPRMergeIdentityReportsUnmerged covers the negative case a
+// recovery caller relies on to refuse fabricating an announcement.
+func TestFetchPRMergeIdentityReportsUnmerged(t *testing.T) {
+	srv := graphqlServer(t, func(vars map[string]any) string {
+		return `{"repository":{"databaseId":1,"pullRequest":{
+			"merged":false,"mergedAt":"","mergeCommit":null,"url":"https://github.com/o/r/pull/9"
+		}}}`
+	})
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL)
+	identity, err := FetchPRMergeIdentity(context.Background(), c, 1, "o", "r", 9)
+	if err != nil {
+		t.Fatalf("FetchPRMergeIdentity: %v", err)
+	}
+	if identity.Merged {
+		t.Fatal("expected Merged=false")
+	}
+	if identity.MergeCommitSHA != "" {
+		t.Errorf("expected no merge commit for an unmerged PR, got %q", identity.MergeCommitSHA)
+	}
+}
+
+// TestFetchPRMergeIdentityRejectsMergedWithoutCommit guards against a
+// malformed/partial GitHub response being silently treated as a valid merge —
+// if GitHub says merged=true but omits the merge commit, that's an error, not
+// a mergeable-but-commitless identity to hand a caller.
+func TestFetchPRMergeIdentityRejectsMergedWithoutCommit(t *testing.T) {
+	srv := graphqlServer(t, func(vars map[string]any) string {
+		return `{"repository":{"databaseId":1,"pullRequest":{
+			"merged":true,"mergedAt":"2026-08-01T12:00:00Z","mergeCommit":null,"url":"https://github.com/o/r/pull/9"
+		}}}`
+	})
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL)
+	if _, err := FetchPRMergeIdentity(context.Background(), c, 1, "o", "r", 9); err == nil {
+		t.Fatal("expected an error for merged=true with no merge commit")
+	}
+}
+
+// TestFetchPRMergeIdentityRejectsMissingPullRequest covers GitHub reporting
+// no such PR (deleted, wrong number, or the caller lacks visibility).
+func TestFetchPRMergeIdentityRejectsMissingPullRequest(t *testing.T) {
+	srv := graphqlServer(t, func(vars map[string]any) string {
+		return `{"repository":{"databaseId":1,"pullRequest":null}}`
+	})
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL)
+	if _, err := FetchPRMergeIdentity(context.Background(), c, 1, "o", "r", 404); err == nil {
+		t.Fatal("expected an error when GitHub reports no such pull request")
+	}
+}
