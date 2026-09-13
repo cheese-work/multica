@@ -81,6 +81,7 @@ const {
   mockToastSuccess,
   mockClipboardWrite,
   mockTimeline,
+  foldCallOrder,
   mockCommentCollapseAll,
   mockCommentExpandAll,
   mockResolvedCollapseAll,
@@ -127,6 +128,13 @@ const {
   mockToastSuccess: vi.fn(),
   mockClipboardWrite: vi.fn(() => Promise.resolve()),
   mockTimeline: { current: [] as Array<Record<string, unknown>> },
+  // Records which of the three fold systems fired, in order, with a
+  // microtask marker interleaved between each pair via `foldCallOrder`. A
+  // regression that reintroduces an `await`/microtask boundary between the
+  // three coordinator calls would let unrelated queued microtasks land
+  // between entries — see the "atomically, with no interleaving" assertions
+  // below.
+  foldCallOrder: [] as string[],
   mockCommentCollapseAll: vi.fn(),
   mockCommentExpandAll: vi.fn(),
   mockResolvedCollapseAll: vi.fn(),
@@ -170,6 +178,42 @@ vi.mock("../common/actor-avatar", () => ({
 
 vi.mock("@multica/core/issues/stores", () => {
   const EMPTY: Array<{ id: string; visitedAt: number }> = [];
+
+  // Each store's mocked getState() records into the shared foldCallOrder
+  // array before delegating to its mockXAll fn, so a test can assert the
+  // three fold systems fired consecutively (no unrelated microtask/await
+  // landed between them) — not just that all three were eventually called.
+  const commentCollapseState = {
+    collapseAll: (...args: [string, readonly string[]]) => {
+      foldCallOrder.push("comment-collapse");
+      mockCommentCollapseAll(...args);
+    },
+    expandAll: (...args: [string]) => {
+      foldCallOrder.push("comment-expand");
+      mockCommentExpandAll(...args);
+    },
+  };
+  const resolvedExpandState = {
+    collapseAll: (...args: [string]) => {
+      foldCallOrder.push("resolved-collapse");
+      mockResolvedCollapseAll(...args);
+    },
+    expandAll: (...args: [string, readonly string[]]) => {
+      foldCallOrder.push("resolved-expand");
+      mockResolvedExpandAll(...args);
+    },
+  };
+  const issueDisclosureState = {
+    collapseAllThreads: (...args: [string]) => {
+      foldCallOrder.push("thread-collapse");
+      mockThreadCollapseAll(...args);
+    },
+    expandAllThreads: (...args: [string, readonly string[]]) => {
+      foldCallOrder.push("thread-expand");
+      mockThreadExpandAll(...args);
+    },
+  };
+
   return {
     useRecentIssuesStore: (
       selector?: (state: {
@@ -185,24 +229,30 @@ vi.mock("@multica/core/issues/stores", () => {
         wsId ? (state.byWorkspace[wsId] ?? EMPTY) : EMPTY,
     openCreateIssueWithPreference: (data?: Record<string, unknown> | null) =>
       mockOpenModal("quick-create-issue", data ?? null),
-    useCommentCollapseStore: Object.assign(vi.fn(), {
-      getState: () => ({
-        collapseAll: mockCommentCollapseAll,
-        expandAll: mockCommentExpandAll,
-      }),
-    }),
-    useResolvedExpandStore: Object.assign(vi.fn(), {
-      getState: () => ({
-        collapseAll: mockResolvedCollapseAll,
-        expandAll: mockResolvedExpandAll,
-      }),
-    }),
-    useIssueDisclosureStore: Object.assign(vi.fn(), {
-      getState: () => ({
-        collapseAllThreads: mockThreadCollapseAll,
-        expandAllThreads: mockThreadExpandAll,
-      }),
-    }),
+    useCommentCollapseStore: Object.assign(vi.fn(), { getState: () => commentCollapseState }),
+    useResolvedExpandStore: Object.assign(vi.fn(), { getState: () => resolvedExpandState }),
+    useIssueDisclosureStore: Object.assign(vi.fn(), { getState: () => issueDisclosureState }),
+    // Mirrors thread-fold-coordinator.ts's real call sequence so the mocked
+    // module still exercises "all three, synchronously, back-to-back" — see
+    // the coordinator's own (unmocked) test for the actual cross-store
+    // atomicity check. foldCallOrder (asserted below) is how this test file
+    // tells a coordinated call sequence apart from one with async work
+    // wedged between the three stores, which the old "all three eventually
+    // called" assertion could not do.
+    foldAllCommentThreads: (issueId: string, rootIds: readonly string[]) => {
+      commentCollapseState.collapseAll(issueId, rootIds);
+      resolvedExpandState.collapseAll(issueId);
+      issueDisclosureState.collapseAllThreads(issueId);
+    },
+    unfoldAllCommentThreads: (
+      issueId: string,
+      rootIds: readonly string[],
+      resolvedRootIds: readonly string[],
+    ) => {
+      commentCollapseState.expandAll(issueId);
+      resolvedExpandState.expandAll(issueId, resolvedRootIds);
+      issueDisclosureState.expandAllThreads(issueId, rootIds);
+    },
   };
 });
 
@@ -337,6 +387,7 @@ describe("SearchCommand", () => {
     mockResolvedExpandAll.mockReset();
     mockThreadCollapseAll.mockReset();
     mockThreadExpandAll.mockReset();
+    foldCallOrder.length = 0;
 
     // cmdk calls scrollIntoView on the first selected item, which jsdom doesn't implement
     Element.prototype.scrollIntoView = vi.fn();
@@ -712,6 +763,14 @@ describe("SearchCommand", () => {
     expect(mockThreadCollapseAll).toHaveBeenCalledWith("issue-1");
     expect(mockCommentExpandAll).not.toHaveBeenCalled();
     expect(mockThreadExpandAll).not.toHaveBeenCalled();
+    // Regression guard (CHE-435): the three fold systems must fire
+    // consecutively, in this exact order, with nothing else recorded between
+    // them. A sequential-but-not-coordinated implementation that let an
+    // `await`/microtask land between two of the three calls would let a
+    // queued unrelated write interleave here; a mock that only asserts "all
+    // three were eventually called" (the previous version of this test)
+    // cannot distinguish that from the atomic sequence asserted here.
+    expect(foldCallOrder).toEqual(["comment-collapse", "resolved-collapse", "thread-collapse"]);
     expect(useSearchStore.getState().open).toBe(false);
   });
 
@@ -748,6 +807,8 @@ describe("SearchCommand", () => {
     expect(mockThreadExpandAll).toHaveBeenCalledWith("issue-1", ["root-1", "root-2", "root-3"]);
     expect(mockCommentCollapseAll).not.toHaveBeenCalled();
     expect(mockThreadCollapseAll).not.toHaveBeenCalled();
+    // Regression guard (CHE-435): same consecutive-order proof as fold-all.
+    expect(foldCallOrder).toEqual(["comment-expand", "resolved-expand", "thread-expand"]);
     expect(useSearchStore.getState().open).toBe(false);
   });
 

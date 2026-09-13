@@ -30,12 +30,11 @@ import type {
 import { api } from "@multica/core/api";
 import { partitionAggregatedSearchResults } from "@multica/core/search/cancelled-rank";
 import {
+  foldAllCommentThreads,
   openCreateIssueWithPreference,
   selectRecentIssues,
-  useCommentCollapseStore,
-  useIssueDisclosureStore,
+  unfoldAllCommentThreads,
   useRecentIssuesStore,
-  useResolvedExpandStore,
 } from "@multica/core/issues/stores";
 import { issueDetailOptions, issueTimelineOptions } from "@multica/core/issues/queries";
 import { useWorkspaceId } from "@multica/core";
@@ -469,10 +468,11 @@ export function SearchCommand() {
                 // All three fold systems reset together (manual collapse,
                 // resolved-bar expansion, and unresolved-thread length
                 // preference) — description expansion is a separate concern
-                // and is intentionally untouched here.
-                useCommentCollapseStore.getState().collapseAll(currentIssueId, roots);
-                useResolvedExpandStore.getState().collapseAll(currentIssueId);
-                useIssueDisclosureStore.getState().collapseAllThreads(currentIssueId);
+                // and is intentionally untouched here. foldAllCommentThreads
+                // applies all three synchronously, back-to-back, in this same
+                // tick — see thread-fold-coordinator.ts for why that ordering
+                // matters and must not gain an `await` between the calls.
+                foldAllCommentThreads(currentIssueId, roots);
               })
               .catch(() => {});
             setOpen(false);
@@ -488,11 +488,7 @@ export function SearchCommand() {
               .ensureQueryData(issueTimelineOptions(currentIssueId))
               .then((entries) => {
                 const roots = rootCommentIds(entries);
-                useCommentCollapseStore.getState().expandAll(currentIssueId);
-                useResolvedExpandStore
-                  .getState()
-                  .expandAll(currentIssueId, resolvedThreadRootIds(entries));
-                useIssueDisclosureStore.getState().expandAllThreads(currentIssueId, roots);
+                unfoldAllCommentThreads(currentIssueId, roots, resolvedThreadRootIds(entries));
               })
               .catch(() => {});
             setOpen(false);

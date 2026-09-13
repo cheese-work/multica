@@ -155,11 +155,15 @@ interface CommentCardProps {
   onThreadLengthExpandChange?: (rootId: string, expand: boolean) => void;
   /**
    * Caller-owned override that forces the full reply list open regardless of
-   * `threadLengthExpanded` — find/target reveal, active reply drafts and
-   * active no-reply runs anchored to an otherwise-hidden reply. Does not
-   * itself persist a length choice; ending the reason simply stops passing
-   * `true` here (see 01-DESIGN "Effective order" and the transition matrix's
-   * "New reply / edit / active run" row).
+   * `threadLengthExpanded` AND regardless of manual collapse (`isCollapsed`)
+   * — find/target reveal, active reply drafts and active no-reply runs
+   * anchored to an otherwise-hidden reply. 01-DESIGN "Effective order" ranks
+   * find/target pins (priority 1) above manual collapse (priority 3): a
+   * manually-collapsed root must still open for a deep link into one of its
+   * replies, or that reply's DOM node never mounts and the link can never
+   * land. Does not itself persist a length or collapse choice; ending the
+   * reason simply stops passing `true` here (see 01-DESIGN "Effective order"
+   * and the transition matrix's "New reply / edit / active run" row).
    */
   forceThreadExpanded?: boolean;
 }
@@ -977,7 +981,16 @@ function CommentCardImpl({
   });
   const isCollapsed = useCommentCollapseStore((s) => s.isCollapsed(issueId, entry.id));
   const toggleCollapse = useCommentCollapseStore((s) => s.toggle);
-  const open = !isCollapsed;
+  // `forceThreadExpanded` (caller's find/target/active-interaction pin,
+  // 01-DESIGN "Effective order" priority 1) must beat manual collapse
+  // (priority 3): without this, a find/target pin that successfully forces
+  // `lengthExpanded` still rendered nothing, because the whole replies
+  // section below (including the reply input and every reply's DOM node) is
+  // gated on `open` alone. This is a transient override, exactly like
+  // `lengthExpanded`'s handling below — it is never written to
+  // useCommentCollapseStore, so ending the pin's reason simply stops passing
+  // `true` here without mutating the persisted manual-collapse preference.
+  const open = !isCollapsed || forceThreadExpanded;
   const handleToggle = useCallback(
     () => toggleCollapse(issueId, entry.id),
     [toggleCollapse, issueId, entry.id],
@@ -1481,8 +1494,15 @@ function CommentCardImpl({
                 ),
               )}
               {/* Show less — remembers the compact length choice per root for
-                  the rest of the session; refused while active interaction
-                  (edit/upload/draft/pending run) would be stranded hidden. */}
+                  the rest of the session. `forceThreadExpanded` (set by
+                  issue-detail.tsx's forceThreadOpen) refuses it while this
+                  thread has: a pending agent run with no reply yet; an
+                  in-progress reply draft/upload on this thread's own
+                  composer; or an active inline edit session (with unsaved
+                  content or a pending upload) on the root or any reply. It
+                  does NOT detect bare focus/selection with no unsaved change
+                  yet — that produces no signal issue-detail.tsx can read
+                  today (see its rootIdsWithActiveReplyDraft comment). */}
               {lengthExpanded && canShowLess && !forceThreadExpanded && (
                 <button
                   type="button"
