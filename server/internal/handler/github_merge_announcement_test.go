@@ -2620,3 +2620,119 @@ func TestAnnounceMergeForIssue_RejectsMalformedPRURL(t *testing.T) {
 		testutil.Call(t, testHandler.AnnounceMergeForIssue, req).Want(http.StatusBadRequest)
 	}
 }
+
+// TestAnnounceMergeForIssue_DoesNotCrossClaimUnrelatedPendingRow is the
+// regression test both the independent code review and QA required
+// (CHE-384/01-02 review fix): with an OLDER pending announcement already
+// queued for a completely unrelated issue, recovering a different issue's
+// merge must still deliver THAT issue's own announcement — never the
+// decoy's — and must report "delivered" with a real comment_id, not
+// "pending" while a stranger's row silently gets consumed instead.
+//
+// Before the fix, AnnounceMergeForIssue delivered via the durable worker's
+// ProcessNext, whose claim is `ORDER BY available_at, created_at LIMIT 1`
+// with no filter on which row the caller actually wants. Since a decoy
+// created first always sorts ahead of a target created afterward, the old
+// code deterministically cross-claimed here.
+func TestAnnounceMergeForIssue_DoesNotCrossClaimUnrelatedPendingRow(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+
+	// The decoy: a fully independent issue/PR with its own pending
+	// announcement, enqueued first so it sorts ahead of the target under
+	// the worker's global (available_at, created_at) ordering.
+	decoyIssue := createTestIssueForMergeAnnouncement(t, "Decoy issue for cross-claim regression")
+	cleanupMergeAnnouncementFixture(t, decoyIssue.ID)
+	const decoyInstallationID int64 = 99887788
+	decoyPRID := seedMergedGitHubPRLink(t, ctx, decoyIssue.ID, "acme", "decoy", 5050, decoyInstallationID, false)
+	decoyAnnouncement, err := testHandler.Queries.CreateGitHubMergeAnnouncement(ctx, db.CreateGitHubMergeAnnouncementParams{
+		WorkspaceID:    parseUUID(testWorkspaceID),
+		Provider:       "github",
+		RepositoryID:   999001,
+		RepoOwner:      "acme",
+		RepoName:       "decoy",
+		PrNumber:       5050,
+		PullRequestID:  parseUUID(decoyPRID),
+		IssueID:        parseUUID(decoyIssue.ID),
+		EventKind:      "merged",
+		MergeCommitSha: "decoy0000000000000000000000000000000000",
+		MergedAt:       pgtype.Timestamptz{Time: time.Now().Add(-time.Hour), Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("seed decoy CreateGitHubMergeAnnouncement: %v", err)
+	}
+	if decoyAnnouncement.Status != "pending" {
+		t.Fatalf("expected decoy announcement to start pending, got %q", decoyAnnouncement.Status)
+	}
+
+	// The actual recovery target, created afterward — its available_at/
+	// created_at sort strictly after the decoy's.
+	created := createTestIssueForMergeAnnouncement(t, "Cross-claim regression target issue")
+	cleanupMergeAnnouncementFixture(t, created.ID)
+	const installationID int64 = 99887799
+	seedMergedGitHubPRLink(t, ctx, created.ID, "acme", "crossclaim", 6060, installationID, false)
+
+	srv := fakeGitHubAppServer(t, func(vars map[string]any) string {
+		return `{"repository":{"databaseId":424245,"pullRequest":{
+			"merged":true,"mergedAt":"2026-08-15T00:00:00Z",
+			"mergeCommit":{"oid":"target00000000000000000000000000000000"},
+			"url":"https://github.com/acme/crossclaim/pull/6060"
+		}}}`
+	})
+	withTestPRRefresh(t, srv)
+
+	req := withURLParam(newRequest("POST", "/api/issues/"+created.ID+"/pull-requests/merge-announcements", map[string]any{
+		"pr_url": "https://github.com/acme/crossclaim/pull/6060",
+	}), "id", created.ID)
+	w := testutil.Call(t, testHandler.AnnounceMergeForIssue, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (delivered synchronously), got %d: %s", w.Code, w.Body.String())
+	}
+	var resp AnnounceMergeResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp.Status != "delivered" {
+		t.Fatalf("expected the target's own announcement to be delivered, got status %q (cross-claim regression)", resp.Status)
+	}
+	if resp.CommentID == nil || *resp.CommentID == "" {
+		t.Fatalf("expected a real comment_id for the target's own delivery, got %+v", resp)
+	}
+
+	// The target issue must have its own system comment naming ITS PR.
+	var targetContent string
+	if err := testPool.QueryRow(ctx,
+		`SELECT content FROM comment WHERE issue_id = $1 AND author_type = 'system' LIMIT 1`,
+		created.ID,
+	).Scan(&targetContent); err != nil {
+		t.Fatalf("expected target issue to have its own system comment: %v", err)
+	}
+	if !strings.Contains(targetContent, "#6060") {
+		t.Errorf("expected target's comment to name its own PR #6060, got %q", targetContent)
+	}
+
+	// The decoy must NOT have been silently consumed by the target's
+	// recovery call: it is untouched (still pending) since only the
+	// background worker or its own recovery call may deliver it.
+	decoyAfter, err := testHandler.Queries.ListGitHubMergeAnnouncementsByIssue(ctx, parseUUID(decoyIssue.ID))
+	if err != nil {
+		t.Fatalf("ListGitHubMergeAnnouncementsByIssue(decoy): %v", err)
+	}
+	if len(decoyAfter) != 1 {
+		t.Fatalf("expected exactly 1 decoy announcement row, got %d", len(decoyAfter))
+	}
+	if decoyAfter[0].Status != "pending" {
+		t.Errorf("expected decoy announcement to remain pending (untouched by the target's recovery call), got %q", decoyAfter[0].Status)
+	}
+
+	var decoyCommentCount int
+	if err := testPool.QueryRow(ctx,
+		`SELECT count(*) FROM comment WHERE issue_id = $1 AND author_type = 'system'`,
+		decoyIssue.ID,
+	).Scan(&decoyCommentCount); err != nil {
+		t.Fatalf("count decoy system comments: %v", err)
+	}
+	if decoyCommentCount != 0 {
+		t.Errorf("expected the decoy issue to have NO system comment from the target's recovery call, got %d", decoyCommentCount)
+	}
+}

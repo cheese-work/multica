@@ -68,6 +68,67 @@ func (q *Queries) ClaimPendingGitHubMergeAnnouncement(ctx context.Context) (Gith
 	return i, err
 }
 
+const claimPendingGitHubMergeAnnouncementByID = `-- name: ClaimPendingGitHubMergeAnnouncementByID :one
+WITH candidate AS (
+    SELECT g.id
+    FROM github_merge_announcement g
+    WHERE g.id = $1
+      AND g.status = 'pending'
+      AND g.available_at <= now()
+      AND (g.lease_expires_at IS NULL OR g.lease_expires_at <= now())
+    FOR UPDATE SKIP LOCKED
+)
+UPDATE github_merge_announcement AS a
+SET lease_token = gen_random_uuid(),
+    lease_expires_at = now() + interval '2 minutes'
+FROM candidate
+WHERE a.id = candidate.id
+RETURNING a.id, a.workspace_id, a.provider, a.repository_id, a.repo_owner, a.repo_name, a.pr_number, a.pull_request_id, a.issue_id, a.event_kind, a.delivery_guid, a.merge_commit_sha, a.merged_at, a.status, a.attempt_count, a.last_error, a.lease_token, a.lease_expires_at, a.available_at, a.comment_id, a.delivered_at, a.created_at, a.updated_at, a.html_url, a.close_intent
+`
+
+// Targeted counterpart to ClaimPendingGitHubMergeAnnouncement, for the
+// selected-recovery path (CHE-384/01-02 review fix): the durable worker's
+// global claim is an unfiltered "oldest pending, anywhere in the deployment"
+// pick, which is correct for its own sweep but wrong for a caller that just
+// created (or looked up) one specific row and wants THAT one delivered now.
+// Scoping the WHERE to id=... makes the claim structural rather than
+// probabilistic — this can only ever claim the named row, never an
+// unrelated workspace's older backlog entry. FOR UPDATE SKIP LOCKED still
+// applies so a concurrent sweep pass claiming the same row loses the race
+// cleanly (0 rows) instead of blocking.
+func (q *Queries) ClaimPendingGitHubMergeAnnouncementByID(ctx context.Context, announcementID pgtype.UUID) (GithubMergeAnnouncement, error) {
+	row := q.db.QueryRow(ctx, claimPendingGitHubMergeAnnouncementByID, announcementID)
+	var i GithubMergeAnnouncement
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Provider,
+		&i.RepositoryID,
+		&i.RepoOwner,
+		&i.RepoName,
+		&i.PrNumber,
+		&i.PullRequestID,
+		&i.IssueID,
+		&i.EventKind,
+		&i.DeliveryGuid,
+		&i.MergeCommitSha,
+		&i.MergedAt,
+		&i.Status,
+		&i.AttemptCount,
+		&i.LastError,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.AvailableAt,
+		&i.CommentID,
+		&i.DeliveredAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.HtmlUrl,
+		&i.CloseIntent,
+	)
+	return i, err
+}
+
 const completeGitHubMergeAnnouncementDelivery = `-- name: CompleteGitHubMergeAnnouncementDelivery :one
 UPDATE github_merge_announcement
 SET status = 'delivered',

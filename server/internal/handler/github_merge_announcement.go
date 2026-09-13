@@ -122,7 +122,10 @@ func (w *MergeAnnouncementWorker) WaitWithTimeout(timeout time.Duration) bool {
 
 // ProcessNext claims and delivers one due announcement. Public so tests can
 // drive the durable queue synchronously without starting a goroutine (same
-// shape as WebhookDeliveryWorker.ProcessNext).
+// shape as WebhookDeliveryWorker.ProcessNext). The claim is an unfiltered
+// "oldest pending, anywhere in the deployment" pick — the correct behavior
+// for a background sweep, but NOT for a caller that wants one specific row
+// delivered (see DeliverByID).
 func (w *MergeAnnouncementWorker) ProcessNext(ctx context.Context) (bool, error) {
 	a, err := w.h.Queries.ClaimPendingGitHubMergeAnnouncement(ctx)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -131,15 +134,45 @@ func (w *MergeAnnouncementWorker) ProcessNext(ctx context.Context) (bool, error)
 	if err != nil {
 		return false, fmt.Errorf("claim pending merge announcement: %w", err)
 	}
+	return true, w.deliverClaimed(ctx, a)
+}
 
+// DeliverByID claims and delivers exactly the named pending announcement —
+// never an unrelated row (CHE-384/01-02 review fix). AnnounceMergeForIssue
+// calls this instead of ProcessNext: the global claim in ProcessNext has no
+// way to prefer the row a specific request just created/looked up, so under
+// deployment-wide backlog it can (and does) deliver a different workspace's
+// older pending row while reporting the caller's own target as still
+// "pending" — correct-but-misreported from the worker's point of view, but a
+// synchronous recovery caller needs "did MY row get delivered" answered
+// truthfully. Returns (false, nil) when the row is no longer claimable
+// (already delivered/failed/skipped by a concurrent claimant, or its lease
+// hasn't expired yet) — the caller re-reads the row's current state rather
+// than treating that as an error.
+func (w *MergeAnnouncementWorker) DeliverByID(ctx context.Context, id pgtype.UUID) (bool, error) {
+	a, err := w.h.Queries.ClaimPendingGitHubMergeAnnouncementByID(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("claim merge announcement %s: %w", uuidToString(id), err)
+	}
+	return true, w.deliverClaimed(ctx, a)
+}
+
+// deliverClaimed runs delivery/revalidation for an already-claimed row —
+// shared by ProcessNext's global claim and DeliverByID's targeted claim, so
+// the two claim strategies produce identical eligibility checks and delivery
+// semantics.
+func (w *MergeAnnouncementWorker) deliverClaimed(ctx context.Context, a db.GithubMergeAnnouncement) error {
 	issue, err := w.h.Queries.GetIssue(ctx, a.IssueID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			// The issue this announcement targeted is gone. Nothing to
 			// attach a comment to and nothing to retry toward.
-			return true, w.skip(ctx, a, "issue not found")
+			return w.skip(ctx, a, "issue not found")
 		}
-		return true, w.retryOrFail(ctx, a, fmt.Errorf("load issue: %w", err))
+		return w.retryOrFail(ctx, a, fmt.Errorf("load issue: %w", err))
 	}
 
 	// Revalidate eligibility at delivery time (CHE-374 review round 2, item
@@ -161,10 +194,10 @@ func (w *MergeAnnouncementWorker) ProcessNext(ctx context.Context) (bool, error)
 	// for the workspace.
 	enabled, err := w.h.githubEnabledForWorkspaceChecked(ctx, a.WorkspaceID)
 	if err != nil {
-		return true, w.retryOrFail(ctx, a, fmt.Errorf("check github enabled for workspace: %w", err))
+		return w.retryOrFail(ctx, a, fmt.Errorf("check github enabled for workspace: %w", err))
 	}
 	if !enabled {
-		return true, w.skip(ctx, a, "github disabled for workspace")
+		return w.skip(ctx, a, "github disabled for workspace")
 	}
 
 	// Revalidate against the announcement's SOURCE PR installation, not just
@@ -176,13 +209,13 @@ func (w *MergeAnnouncementWorker) ProcessNext(ctx context.Context) (bool, error)
 	pr, err := w.h.Queries.GetGitHubPullRequestByID(ctx, a.PullRequestID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return true, w.skip(ctx, a, "source pull request no longer exists")
+			return w.skip(ctx, a, "source pull request no longer exists")
 		}
-		return true, w.retryOrFail(ctx, a, fmt.Errorf("load source pull request: %w", err))
+		return w.retryOrFail(ctx, a, fmt.Errorf("load source pull request: %w", err))
 	}
 	installations, err := w.h.Queries.ListGitHubInstallationsByWorkspace(ctx, a.WorkspaceID)
 	if err != nil {
-		return true, w.retryOrFail(ctx, a, fmt.Errorf("list installations for workspace: %w", err))
+		return w.retryOrFail(ctx, a, fmt.Errorf("list installations for workspace: %w", err))
 	}
 	boundToSourceInstallation := false
 	for _, inst := range installations {
@@ -192,7 +225,7 @@ func (w *MergeAnnouncementWorker) ProcessNext(ctx context.Context) (bool, error)
 		}
 	}
 	if !boundToSourceInstallation {
-		return true, w.skip(ctx, a, "source installation no longer bound to workspace")
+		return w.skip(ctx, a, "source installation no longer bound to workspace")
 	}
 
 	if _, err := w.h.Queries.GetIssuePullRequestLink(ctx, db.GetIssuePullRequestLinkParams{
@@ -200,16 +233,16 @@ func (w *MergeAnnouncementWorker) ProcessNext(ctx context.Context) (bool, error)
 		PullRequestID: a.PullRequestID,
 	}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return true, w.skip(ctx, a, "issue no longer linked to pull request")
+			return w.skip(ctx, a, "issue no longer linked to pull request")
 		}
-		return true, w.retryOrFail(ctx, a, fmt.Errorf("check issue-pr link: %w", err))
+		return w.retryOrFail(ctx, a, fmt.Errorf("check issue-pr link: %w", err))
 	}
 
 	content := w.h.mergeAnnouncementCommentBody(ctx, a, issue)
 
 	tx, err := w.h.TxStarter.Begin(ctx)
 	if err != nil {
-		return true, w.retryOrFail(ctx, a, fmt.Errorf("begin tx: %w", err))
+		return w.retryOrFail(ctx, a, fmt.Errorf("begin tx: %w", err))
 	}
 	defer tx.Rollback(ctx)
 	qtx := w.h.Queries.WithTx(tx)
@@ -225,7 +258,7 @@ func (w *MergeAnnouncementWorker) ProcessNext(ctx context.Context) (bool, error)
 		ParentID:    pgtype.UUID{Valid: false},
 	})
 	if err != nil {
-		return true, w.retryOrFail(ctx, a, fmt.Errorf("create comment: %w", err))
+		return w.retryOrFail(ctx, a, fmt.Errorf("create comment: %w", err))
 	}
 	comment := created.Comment()
 
@@ -240,7 +273,7 @@ func (w *MergeAnnouncementWorker) ProcessNext(ctx context.Context) (bool, error)
 			// error; rolling back the transaction also undoes the comment
 			// insert above, so no duplicate is left behind.
 			slog.Debug("merge announcement worker: lease ownership changed", "id", uuidToString(a.ID))
-			return true, nil
+			return nil
 		}
 		// CHE-374 review round 2, item 3: a non-ErrNoRows failure here is a
 		// transient DB error (the row is still leased by us — no ownership
@@ -250,7 +283,7 @@ func (w *MergeAnnouncementWorker) ProcessNext(ctx context.Context) (bool, error)
 		// entirely, so a persistently failing completion write would be
 		// reclaimed and reattempted forever without ever tripping the
 		// mergeAnnouncementWorkerMaxAttempts terminal-fail path.
-		return true, w.retryOrFail(ctx, a, fmt.Errorf("complete merge announcement: %w", err))
+		return w.retryOrFail(ctx, a, fmt.Errorf("complete merge announcement: %w", err))
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -258,7 +291,7 @@ func (w *MergeAnnouncementWorker) ProcessNext(ctx context.Context) (bool, error)
 		// failure is transient/infrastructure-level, not a reason to treat
 		// the row as ineligible, so it must count toward attempt_count via
 		// retryOrFail rather than escaping it.
-		return true, w.retryOrFail(ctx, a, fmt.Errorf("commit merge announcement delivery: %w", err))
+		return w.retryOrFail(ctx, a, fmt.Errorf("commit merge announcement delivery: %w", err))
 	}
 
 	w.h.publish(protocol.EventCommentCreated, uuidToString(issue.WorkspaceID), "system", "", map[string]any{
@@ -269,7 +302,7 @@ func (w *MergeAnnouncementWorker) ProcessNext(ctx context.Context) (bool, error)
 		"issue_status":        issue.Status,
 		"issue_revision":      created.IssueRevision,
 	})
-	return true, nil
+	return nil
 }
 
 func (w *MergeAnnouncementWorker) skip(ctx context.Context, a db.GithubMergeAnnouncement, reason string) error {
@@ -617,15 +650,17 @@ func (h *Handler) AnnounceMergeForIssue(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Newly created (or a pre-existing pending/failed/skipped record):
-	// deliver it now via the same ProcessNext the durable worker uses, so
-	// recovery does not wait on the worker's poll interval and produces
-	// identical delivery semantics (one comment, atomic completion).
-	h.MergeAnnouncementWorker.Notify()
-	worked, procErr := h.MergeAnnouncementWorker.ProcessNext(ctx)
-	if procErr != nil {
+	// deliver it now via DeliverByID — never ProcessNext's unfiltered global
+	// claim (CHE-384/01-02 review fix). ProcessNext claims the OLDEST pending
+	// row anywhere in the deployment; under any deployment-wide backlog it
+	// would deliver an unrelated workspace's announcement while leaving this
+	// exact record untouched, and this handler would then read that
+	// unrelated delivery back as if it were the caller's own outcome.
+	// DeliverByID's WHERE id = ... makes "deliver THIS record" structural
+	// rather than a race against the rest of the queue.
+	if _, procErr := h.MergeAnnouncementWorker.DeliverByID(ctx, record.ID); procErr != nil {
 		slog.Error("announce-merge: deliver", "error", procErr, "announcement_id", uuidToString(record.ID))
 	}
-	_ = worked
 
 	final, err := h.Queries.GetGitHubMergeAnnouncementByIdentity(ctx, db.GetGitHubMergeAnnouncementByIdentityParams{
 		WorkspaceID:  issue.WorkspaceID,
