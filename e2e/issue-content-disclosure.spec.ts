@@ -211,13 +211,21 @@ test.describe("Description editor lifecycle through folding", () => {
       node.dispatchEvent(pasteEvent);
     }, pngBase64);
 
-    // Navigate away immediately — before the 1500ms debounce can fire — so
-    // only `flushPendingOnUnmount` can save the image markdown and its
-    // attachment_ids bind (MUL-3254). Waiting on the upload to visibly land
-    // first would let the debounce window elapse during that wait and make
-    // this pass regardless of flushPendingOnUnmount; navigate as soon as the
-    // paste has been queued for upload instead.
-    await expect(page.locator("[data-description-editor] [data-uploading]")).toBeVisible();
+    // Wait for the upload to SETTLE — the placeholder's `uploading` attribute
+    // clears and a real (non-blob) src lands — before navigating. An
+    // in-flight placeholder serializes to no markdown at all
+    // (`extensions/index.ts` `renderMarkdown`: `uploading === true` -> `""`),
+    // so flushing while `[data-uploading]` is still present writes back
+    // content unchanged by the paste; it does not prove persistence. Settling
+    // starts a FRESH 1500ms debounce for the now-real image markdown, which
+    // is the actual flush boundary this test needs to race.
+    const insertedImage = page.locator("[data-description-editor] img:not([data-uploading])");
+    await expect(insertedImage).toBeVisible({ timeout: 10000 });
+    await expect(insertedImage).not.toHaveAttribute("src", /^blob:/);
+
+    // Navigate away immediately after settlement — before the freshly-started
+    // 1500ms debounce can fire — so only `flushPendingOnUnmount` can save the
+    // image markdown and its attachment_ids bind (MUL-3254).
     await page.goto(`/${workspaceSlug}/issues`, { waitUntil: "domcontentloaded" });
 
     await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
@@ -245,10 +253,23 @@ test.describe("Description editor lifecycle through folding", () => {
       buffer: Buffer.alloc(3 * 1024 * 1024, 1),
     });
 
-    // Blur the editor so `descriptionFocused` is false and the assertion
-    // below can only pass because of the pending-attachment/upload state,
-    // not because the editor still has focus.
-    await editor.blur();
+    // Move focus OUT of the description wrapper entirely, not just off the
+    // editor. `onFocusCapture`/`onBlurCapture` live on the wrapper `<div>`
+    // that contains both the ProseMirror editor AND the Attach-file button
+    // (`issue-detail.tsx`); `onBlurCapture` only clears `descriptionFocused`
+    // when `relatedTarget` is outside that wrapper's `contains()` check.
+    // Blurring the editor locator alone doesn't prove that: the file chooser
+    // interaction above can leave focus on the Attach-file button instead,
+    // which sits in the SAME wrapper as the editor, so blurring the
+    // (already-unfocused) editor element is a no-op and the wrapper's
+    // captured focus state never changes. Explicitly blur whatever currently
+    // has focus and move it to `document.body` — unambiguously outside the
+    // wrapper — then confirm that landed before asserting on Show less.
+    await page.evaluate(() => {
+      (document.activeElement as HTMLElement | null)?.blur();
+      document.body.focus();
+    });
+    await expect.poll(() => page.evaluate(() => document.activeElement === document.body)).toBe(true);
 
     const showLess = page.getByRole("button", { name: "Show less" });
     await expect(showLess).toBeDisabled();
