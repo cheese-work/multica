@@ -33,9 +33,22 @@ function manifestFor(args) {
     option("--configuration-sha256", args),
     "--expected-migration-inventory-sha256",
     option("--migration-inventory-sha256", args),
+    "--expected-baseline-tuple-sha256",
+    tupleDigest(option("--baseline-tuple", args)),
   ], { encoding: "utf8" });
   if (result.status !== 0) fail(result.stderr.trim() || "manifest verification failed");
   return JSON.parse(result.stdout);
+}
+
+function tupleDigest(path) {
+  const result = spawnSync(process.execPath, [
+    "deploy/cd/tuple-snapshot.mjs",
+    "digest",
+    "--snapshot",
+    path,
+  ], { encoding: "utf8" });
+  if (result.status !== 0) fail(result.stderr.trim() || "tuple snapshot verification failed");
+  return result.stdout.trim();
 }
 
 function verify(args) {

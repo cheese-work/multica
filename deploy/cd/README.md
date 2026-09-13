@@ -22,8 +22,11 @@ replace that pull request.
 ## Tuple rule
 
 The manifest binds one source SHA, one configuration digest, one migration
-inventory digest, and the backend/web linux/amd64 image digests. Changing any
-member invalidates the affected qualification evidence. A later D2/D4 stage
+inventory digest, the backend/web linux/amd64 image digests, and the SHA-256
+of the read-only C00 tuple snapshot. Changing any member invalidates the
+affected qualification evidence. The tuple is deployment-baseline metadata,
+not a local configuration fixture: its Compose checksum and migration-ledger
+checksum are never loaded as synthetic configuration. A later D2/D4 stage
 must supply a fresh C00 configuration, live image, and migration snapshot
 before it runs an upgrade or rollback rehearsal.
 
@@ -33,8 +36,20 @@ before it runs an upgrade or rollback rehearsal.
 bash deploy/cd/test-release-manifest.sh
 bash deploy/cd/test-admission.sh
 bash deploy/cd/test-isolated-qualification.sh
+bash deploy/cd/test-tuple-snapshot.sh
 ```
 
 The isolated qualification test uses only synthetic, throwaway data. Its
 upgrade/rollback command is intentionally disabled until the caller supplies
 an admitted tuple and a non-production fixture location.
+
+To exercise the pre-merge gate without building or contacting a registry, use
+the current Hermes tuple snapshot:
+
+```bash
+bash deploy/cd/premerge-synthetic-qualification.sh \
+  --baseline-tuple deploy/cd/fixtures/c00-tuple-2026-09-12T235517Z.json
+```
+
+This creates a non-deployable `build-evidence` manifest in a temporary
+directory. It is not a trusted-main image build and cannot qualify a release.

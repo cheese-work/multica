@@ -13,6 +13,8 @@ migration_sha="sha256:2222222222222222222222222222222222222222222222222222222222
 backend_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 web_digest="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 manifest="$tmp_dir/manifest.json"
+baseline_tuple="deploy/cd/fixtures/c00-tuple-2026-09-12T235517Z.json"
+baseline_tuple_sha="$(node deploy/cd/tuple-snapshot.mjs digest --snapshot "$baseline_tuple")"
 event="$tmp_dir/event.json"
 checks="$tmp_dir/checks.json"
 provenance="$tmp_dir/provenance.json"
@@ -24,6 +26,7 @@ node deploy/cd/release-manifest.mjs create \
   --architecture linux/amd64 \
   --configuration-sha256 "$config_sha" \
   --migration-inventory-sha256 "$migration_sha" \
+  --baseline-tuple-sha256 "$baseline_tuple_sha" \
   --backend-image "ghcr.io/cheese-work/multica-backend@$backend_digest" \
   --web-image "ghcr.io/cheese-work/multica-web@$web_digest" \
   --output "$manifest"
@@ -41,6 +44,7 @@ EOF
 admit() {
   node deploy/cd/admission.mjs verify \
     --manifest "$manifest" \
+    --baseline-tuple "$baseline_tuple" \
     --event "$event" \
     --checks "$checks" \
     --provenance "$provenance" \

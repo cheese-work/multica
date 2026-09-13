@@ -6,7 +6,7 @@ cd "$root_dir"
 
 usage() {
   cat <<'EOF'
-usage: qualification.sh --manifest PATH --fixture-dir PATH \
+usage: qualification.sh --manifest PATH --baseline-tuple PATH --fixture-dir PATH \
   --old-backend IMAGE@sha256:... --old-web IMAGE@sha256:... \
   --candidate-write-file PATH --old-assert-file PATH [--dry-run]
 
@@ -17,6 +17,7 @@ EOF
 }
 
 manifest=""
+baseline_tuple=""
 fixture_dir=""
 old_backend=""
 old_web=""
@@ -27,6 +28,7 @@ dry_run=false
 while (($#)); do
   case "$1" in
     --manifest) manifest=${2:?}; shift 2 ;;
+    --baseline-tuple) baseline_tuple=${2:?}; shift 2 ;;
     --fixture-dir) fixture_dir=${2:?}; shift 2 ;;
     --old-backend) old_backend=${2:?}; shift 2 ;;
     --old-web) old_web=${2:?}; shift 2 ;;
@@ -47,6 +49,7 @@ require() {
 }
 
 require --manifest "$manifest"
+require --baseline-tuple "$baseline_tuple"
 require --fixture-dir "$fixture_dir"
 require --old-backend "$old_backend"
 require --old-web "$old_web"
@@ -75,10 +78,14 @@ done
 
 candidate_backend="$(node -e 'const m=require(process.argv[1]); console.log(m.images.backend)' "$manifest")"
 candidate_web="$(node -e 'const m=require(process.argv[1]); console.log(m.images.web)' "$manifest")"
-node deploy/cd/release-manifest.mjs verify --manifest "$manifest" >/dev/null
+baseline_tuple_sha="$(node deploy/cd/tuple-snapshot.mjs digest --snapshot "$baseline_tuple")"
+node deploy/cd/release-manifest.mjs verify \
+  --manifest "$manifest" \
+  --expected-baseline-tuple-sha256 "$baseline_tuple_sha" >/dev/null
 
 if [ "$dry_run" = true ]; then
-  printf 'isolated qualification admitted for synthetic fixture %s\n' "$(realpath "$fixture_dir")"
+  printf 'isolated qualification admitted for synthetic fixture %s against tuple %s\n' \
+    "$(realpath "$fixture_dir")" "$baseline_tuple_sha"
   exit 0
 fi
 

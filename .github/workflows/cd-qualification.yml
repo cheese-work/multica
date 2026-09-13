@@ -49,6 +49,7 @@ jobs:
           bash deploy/cd/test-release-manifest.sh
           bash deploy/cd/test-admission.sh
           bash deploy/cd/test-isolated-qualification.sh
+          bash deploy/cd/test-tuple-snapshot.sh
 
       - name: Log in to GHCR
         uses: docker/login-action@v3

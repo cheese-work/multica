@@ -35,6 +35,12 @@ function validate(manifest) {
   if (manifest.architecture !== "linux/amd64") fail("architecture must be linux/amd64");
   assertDigest("configuration_sha256", manifest.configuration_sha256);
   assertDigest("migration_inventory_sha256", manifest.migration_inventory_sha256);
+  if (manifest.baseline_tuple_sha256 !== undefined) {
+    assertDigest("baseline_tuple_sha256", manifest.baseline_tuple_sha256);
+  }
+  if (manifest.kind === "release-candidate" && manifest.baseline_tuple_sha256 === undefined) {
+    fail("release-candidate manifests must bind a baseline_tuple_sha256");
+  }
   assertImage("images.backend", manifest.images?.backend);
   assertImage("images.web", manifest.images?.web);
 
@@ -47,6 +53,7 @@ function validate(manifest) {
 function create(args) {
   const manifest = {
     architecture: option("--architecture", args),
+    baseline_tuple_sha256: optional("--baseline-tuple-sha256", args),
     configuration_sha256: option("--configuration-sha256", args),
     image_digests: {},
     images: {
@@ -67,6 +74,11 @@ function create(args) {
   writeFileSync(option("--output", args), `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
+function optional(name, args) {
+  const index = args.indexOf(name);
+  return index === -1 ? undefined : args[index + 1] || fail(`missing value for ${name}`);
+}
+
 function verify(args) {
   const manifest = JSON.parse(readFileSync(option("--manifest", args), "utf8"));
   validate(manifest);
@@ -75,6 +87,7 @@ function verify(args) {
     ["--expected-source-sha", "source_sha"],
     ["--expected-configuration-sha256", "configuration_sha256"],
     ["--expected-migration-inventory-sha256", "migration_inventory_sha256"],
+    ["--expected-baseline-tuple-sha256", "baseline_tuple_sha256"],
   ];
   for (const [flag, property] of expected) {
     const index = args.indexOf(flag);
