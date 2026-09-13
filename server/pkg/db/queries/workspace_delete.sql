@@ -577,9 +577,17 @@ WHERE autopilot_rule_version.workspace_id = $1;
 DELETE FROM autopilot WHERE autopilot.workspace_id = $1;
 
 -- name: DeleteWorkspacePullRequests :exec
+-- github_merge_announcement has no FK to github_pull_request (no cascades
+-- allowed, per repo convention) so it's deleted here directly by
+-- workspace_id, alongside its sibling github_* mirror tables (CHE-374 review
+-- fix N2 — a new public-schema table must be covered by workspace deletion).
 WITH deleted_github_prs AS (
     DELETE FROM github_pull_request
     WHERE github_pull_request.workspace_id = $1
+),
+deleted_github_merge_announcements AS (
+    DELETE FROM github_merge_announcement
+    WHERE github_merge_announcement.workspace_id = $1
 )
 DELETE FROM vcs_pull_request WHERE vcs_pull_request.workspace_id = $1;
 

@@ -141,6 +141,58 @@ type GitHubPullRequestResponse struct {
 	Additions    int32 `json:"additions"`
 	Deletions    int32 `json:"deletions"`
 	ChangedFiles int32 `json:"changed_files"`
+	// MergeAnnouncement is the merge-announcement diagnostics for this PR on
+	// this issue (CHE-374/CHE-384), omitted when no announcement was ever
+	// enqueued (PR never merged while linked, or merged before the announcement
+	// feature existed). Optional field — older clients ignore it.
+	MergeAnnouncement *GitHubMergeAnnouncementResponse `json:"merge_announcement,omitempty"`
+}
+
+// GitHubMergeAnnouncementResponse is sanitized delivery diagnostics for one
+// merge-announcement record (CHE-384/01-02 task 1). It never carries
+// last_error's raw cause chain beyond what retryOrFail already sanitizes
+// (message-only, no stack/query text — see github_merge_announcement.go), and
+// never exposes lease_token, which is an internal delivery-worker handle with
+// no diagnostic value to a caller.
+type GitHubMergeAnnouncementResponse struct {
+	// Status is one of "pending", "delivered", "failed", "skipped" — the
+	// same values github_merge_announcement.status stores.
+	Status string `json:"status"`
+	// DeliveryGUID is the GitHub delivery id that first enqueued this record,
+	// when known — an audit trail back to GitHub's own delivery log, not the
+	// dedup identity (see 471_github_merge_announcement_identity_uidx.up.sql).
+	DeliveryGUID *string `json:"delivery_guid,omitempty"`
+	AttemptCount int32   `json:"attempt_count"`
+	// LastError is the sanitized reason from the most recent attempt, present
+	// for "failed" and "skipped" and for a "pending" record that has already
+	// retried at least once.
+	LastError *string `json:"last_error,omitempty"`
+	// NextRetryAt is when a "pending" record becomes claimable again; absent
+	// once the record leaves pending (delivered/failed/skipped are terminal).
+	NextRetryAt *string `json:"next_retry_at,omitempty"`
+	// SentAt is when the announcement comment was actually created —
+	// github_merge_announcement.delivered_at — present only once delivered.
+	SentAt *string `json:"sent_at,omitempty"`
+	// CommentID is the id of the system comment this announcement produced,
+	// present only once delivered.
+	CommentID *string `json:"comment_id,omitempty"`
+}
+
+func githubMergeAnnouncementToResponse(a db.GithubMergeAnnouncement) GitHubMergeAnnouncementResponse {
+	resp := GitHubMergeAnnouncementResponse{
+		Status:       a.Status,
+		DeliveryGUID: textToPtr(a.DeliveryGuid),
+		AttemptCount: a.AttemptCount,
+		LastError:    textToPtr(a.LastError),
+	}
+	if a.Status == "pending" {
+		resp.NextRetryAt = timestampToPtr(a.AvailableAt)
+	}
+	if a.Status == "delivered" {
+		resp.SentAt = timestampToPtr(a.DeliveredAt)
+		resp.CommentID = uuidToPtr(a.CommentID)
+	}
+	return resp
 }
 
 type GitHubConnectResponse struct {
@@ -1298,7 +1350,21 @@ func (h *Handler) ListPullRequestsForIssue(w http.ResponseWriter, r *http.Reques
 	}
 	out := make([]GitHubPullRequestResponse, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, issuePullRequestRowToResponse(row, h.PRRefresh.Enabled()))
+		resp := issuePullRequestRowToResponse(row, h.PRRefresh.Enabled())
+		// Diagnostics are best-effort (CHE-384/01-02 task 1): a lookup failure
+		// here must not fail the whole PR list, so it's logged and the field
+		// is simply omitted rather than propagated as a request error.
+		if announcements, err := h.Queries.ListGitHubMergeAnnouncementsByIssueAndPullRequest(r.Context(), db.ListGitHubMergeAnnouncementsByIssueAndPullRequestParams{
+			IssueID:       issue.ID,
+			PullRequestID: row.ID,
+		}); err != nil {
+			slog.Error("github: list merge announcement diagnostics", "error", err, "pr_id", uuidToString(row.ID))
+		} else if len(announcements) > 0 {
+			// Newest first (see query comment); [0] is the current record.
+			ma := githubMergeAnnouncementToResponse(announcements[0])
+			resp.MergeAnnouncement = &ma
+		}
+		out = append(out, resp)
 		// Page-visit trigger (MUL-5265): if this card's snapshot is missing or
 		// older than the view TTL, kick an async refresh. Non-blocking — the
 		// current (possibly stale) response is returned immediately and the
@@ -1397,6 +1463,13 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	event := r.Header.Get("X-GitHub-Event")
+	// Audit-only: GitHub mints a new delivery GUID on every redelivery of the
+	// same logical event, so it cannot be the merge-announcement dedup key
+	// (that's the identity index on workspace/provider/repository/pr/issue/
+	// event_kind — see 471_github_merge_announcement_identity_uidx.up.sql).
+	// It's still recorded on the announcement row for tracing a specific
+	// delivery back through GitHub's own logs.
+	deliveryGUID := r.Header.Get("X-GitHub-Delivery")
 	ctx := r.Context()
 	switch event {
 	case "ping":
@@ -1405,7 +1478,16 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	case "installation":
 		h.handleInstallationEvent(ctx, body)
 	case "pull_request":
-		h.handlePullRequestEvent(ctx, body)
+		if err := h.handlePullRequestEvent(ctx, body, deliveryGUID); err != nil {
+			// A transactional write failed (PR mirror / link / merge
+			// announcement) — logging and still returning 202 would tell
+			// GitHub the delivery succeeded when the write never committed,
+			// silently dropping the merge announcement forever (CHE-374
+			// review fix T1). Returning 5xx makes GitHub redeliver instead.
+			slog.Error("github: pull_request event failed", "err", err, "delivery_guid", deliveryGUID)
+			writeError(w, http.StatusInternalServerError, "failed to process pull_request event")
+			return
+		}
 	case "check_suite", "check_run", "status":
 		// CI events are pure triggers under Plan C (MUL-5265): their payload is
 		// never read for display. Each just asks the API pipeline to re-fetch
@@ -1559,6 +1641,7 @@ type ghPullRequestPayload struct {
 		Additions      int32  `json:"additions"`
 		Deletions      int32  `json:"deletions"`
 		ChangedFiles   int32  `json:"changed_files"`
+		MergeCommitSHA string `json:"merge_commit_sha"`
 		Head           struct {
 			Ref string `json:"ref"`
 			SHA string `json:"sha"`
@@ -1570,6 +1653,7 @@ type ghPullRequestPayload struct {
 	} `json:"pull_request"`
 	Changes    *ghPRChanges `json:"changes"`
 	Repository struct {
+		ID    int64  `json:"id"`
 		Name  string `json:"name"`
 		Owner struct {
 			Login string `json:"login"`
@@ -1580,24 +1664,36 @@ type ghPullRequestPayload struct {
 	} `json:"installation"`
 }
 
-func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) {
+func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte, deliveryGUID string) error {
 	var p ghPullRequestPayload
 	if err := json.Unmarshal(body, &p); err != nil {
+		// A malformed payload is not something redelivery would fix, so this
+		// is intentionally not surfaced as a failure to the caller (which
+		// would make HandleGitHubWebhook ask GitHub to redeliver the same
+		// bad body forever) — log and drop, same as before this fix.
 		slog.Warn("github: bad pull_request payload", "err", err)
-		return
+		return nil
 	}
 	if p.Installation.ID == 0 {
-		return
+		return nil
 	}
 	insts, err := h.Queries.ListGitHubInstallationsByInstallationID(ctx, p.Installation.ID)
 	if err != nil {
-		slog.Warn("github: lookup installation failed", "err", err)
-		return
+		// CHE-374 review round 2, item 5: a real DB error here (as opposed to
+		// "no installation row exists", which is len(insts)==0 below and stays
+		// a silent drop) is transient and indistinguishable from a fan-out
+		// write failure elsewhere in this function — those already return the
+		// error so the caller surfaces 5xx and GitHub redelivers (see the T1
+		// comment at the call site). Warn-and-swallow here used to make a
+		// blip in this one lookup silently drop the whole event with a 202,
+		// which is exactly the outcome T1 exists to prevent for every other
+		// failure in this path.
+		return fmt.Errorf("list installations by installation id: %w", err)
 	}
 	if len(insts) == 0 {
 		// Webhook from an installation we never wired up — nothing we
 		// can attribute to a workspace, so drop it silently.
-		return
+		return nil
 	}
 	// #4855 lets one GitHub App installation bind to several workspaces. A
 	// repo's events belong to every bound workspace, so fan the delivery out:
@@ -1614,14 +1710,28 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) {
 	// links, and treat that verdict as authoritative for the whole delivery, so
 	// the mirror pass cannot re-derive a different answer. See closeIntentPolicy.
 	closePolicy := h.resolveCloseIntentPolicy(ctx, insts, &p)
+	// Fan out to every bound workspace and keep going on a per-workspace
+	// failure — one workspace's transaction failing must not stop another
+	// bound workspace's mirror from being attempted. All failures are
+	// aggregated and returned so the caller can still ask GitHub to
+	// redeliver the whole event (CHE-374 review fix T1); a partial success
+	// is safe to redeliver because every write below is upsert/ON CONFLICT
+	// idempotent.
+	var errs []error
 	for _, inst := range insts {
-		h.mirrorPullRequestForWorkspace(ctx, inst.WorkspaceID, inst.InstallationID, &p, closePolicy)
+		if err := h.mirrorPullRequestForWorkspace(ctx, inst.WorkspaceID, inst.InstallationID, &p, closePolicy, deliveryGUID); err != nil {
+			errs = append(errs, fmt.Errorf("workspace %s: %w", uuidToString(inst.WorkspaceID), err))
+		}
 	}
 	// The PR row(s) now carry the new head; ask the API pipeline for the
 	// authoritative CI + mergeability snapshot for that head. The webhook is
 	// only the doorbell — its own mergeable/checks payload is not used for
 	// display anymore (MUL-5265).
 	h.PRRefresh.Enqueue(p.Installation.ID, p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number)
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
 }
 
 // closeIntentPolicy decides which (closing identifier, workspace) pairs this
@@ -1857,10 +1967,113 @@ func (h *Handler) triggerPRRefreshFromCIEvent(ctx context.Context, body []byte) 
 // carry close_intent, so they can never advance an issue to done. This function
 // only ever narrows that verdict — it cannot grant close intent the policy
 // withheld.
-func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype.UUID, installationID int64, p *ghPullRequestPayload, closePolicy closeIntentPolicy) {
+// mirrorPullRequestForWorkspace persists everything one workspace's view of a
+// pull_request webhook changes: the PR mirror row, the issue link/unlink
+// rows, and any merge-announcement intent. Returns an error when the write
+// could not be committed, so the caller can surface it instead of the
+// pre-fix behavior of logging and returning 202 regardless (CHE-374 review
+// fix T1) — an enqueue failure here must not look like success to GitHub.
+//
+// The PR upsert, every link/unlink row, and the merge-announcement insert(s)
+// all happen in one DB transaction (h.TxStarter.Begin / qtx, mirroring
+// MergeAnnouncementWorker.deliver's shape below in this file). Before this
+// fix each was a separate autocommit call: a crash between the link writes
+// and the announcement insert silently dropped the "this PR merged" comment
+// forever, because the worker only ever scans existing rows and has no
+// reconciliation pass to notice a merge that never got an announcement row.
+func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype.UUID, installationID int64, p *ghPullRequestPayload, closePolicy closeIntentPolicy, deliveryGUID string) error {
 	state := derivePRState(p.PullRequest.State, p.PullRequest.Draft, p.PullRequest.Merged)
 	mergeable, clearMergeable := derivePRMergeableState(p.Action, p.PullRequest.MergeableState, baseRefChanged(p.Changes))
-	pr, err := h.Queries.UpsertGitHubPullRequest(ctx, db.UpsertGitHubPullRequestParams{
+	workspaceID := uuidToString(wsID)
+
+	// Reads that only need the pre-write snapshot (workspace settings, issue
+	// lookups by identifier) run before the transaction opens, exactly as
+	// before — none of them observe or depend on the writes below, so they
+	// don't need to run inside the transaction, and keeping them out of it
+	// keeps the write transaction short.
+	autoLinkEnabled := h.workspaceAutoLinkPRsEnabled(ctx, wsID)
+	// githubEnabled gates GitHub side effects even when auto-link (creating
+	// NEW link rows from this webhook's identifiers) is off (CHE-374 review
+	// round 2, item 1): a workspace can have github_enabled=true and
+	// github_auto_link_prs_enabled=false, in which case existing persisted
+	// links must still drive the merge announcement and advance-to-done
+	// re-evaluation. Only github_enabled=false turns GitHub effects off
+	// entirely.
+	githubEnabled := h.githubEnabledForWorkspace(ctx, wsID)
+	var (
+		idents              []string
+		closingIdents       map[string]struct{}
+		claimedIdents       map[string]struct{}
+		preserveCloseIntent bool
+		issuesByIdent       = map[string]db.Issue{}
+	)
+	if autoLinkEnabled {
+		idents = extractIdentifiers(p.PullRequest.Title, p.PullRequest.Body, p.PullRequest.Head.Ref)
+		// closingIdents is the subset of identifiers that this PR explicitly
+		// declared via a closing keyword ("Closes/Fixes/Resolves MUL-X"). The
+		// link row's close_intent column — and therefore whether the
+		// auto-advance gate eventually fires — is only set for keyword-
+		// declared identifiers. Bare title prefixes and branch-name
+		// references are link-only.
+		closingIdents = map[string]struct{}{}
+		for _, c := range extractClosingIdentifiers(p.PullRequest.Title, p.PullRequest.Body) {
+			closingIdents[c] = struct{}{}
+		}
+		// claimedIdents are the identifiers this PR actually claims: a title
+		// prefix, a branch-name reference, or a body closing keyword. An
+		// identifier matched only by a bare mention in the body ("Related
+		// MUL-1", "Follow up in MUL-1") is not a claim — a passing mention must
+		// not surface the PR as a working PR for that issue (MUL-3739) — so it
+		// gets no link row at all, and drops one an earlier claim had created.
+		//
+		// MUL-3739 used to write that row anyway and flag it reference_only,
+		// hidden from every read path. A hidden row had no reader, and once the
+		// PR went terminal the preserve gate froze the flag, so adding a closing
+		// keyword to a merged PR's body could never surface it — the one
+		// recovery action a user can take was the one that could not work
+		// (MUL-7072).
+		claimedIdents = map[string]struct{}{}
+		for _, id := range extractIdentifiers(p.PullRequest.Title, p.PullRequest.Head.Ref) {
+			claimedIdents[id] = struct{}{}
+		}
+		for c := range closingIdents {
+			claimedIdents[c] = struct{}{}
+		}
+		// close_intent should follow the PR title/body while the PR is still
+		// editable before its terminal close event. Once GitHub has delivered
+		// a terminal event, later edit/synchronize webhooks must not rewrite
+		// the merge-time close decision.
+		preserveCloseIntent = p.Action != "closed" && (state == "merged" || state == "closed")
+		prefix := h.getIssuePrefix(ctx, wsID)
+		for _, id := range idents {
+			issue, ok := h.lookupIssueByIdentifier(ctx, wsID, prefix, id)
+			if !ok {
+				continue
+			}
+			issuesByIdent[id] = issue
+		}
+	}
+
+	// github_enabled=false is the master boundary: NO GitHub side effect may
+	// occur, including the PR mirror upsert itself (CHE-374 review round 3,
+	// item 4 — a prior round mirrored unconditionally on the theory that
+	// re-enabling GitHub later should restore history without backfill, but
+	// the reviewed decision is that master-off means zero footprint, not
+	// "everything except issue-facing effects"). Returning nil here (not an
+	// error) matches the webhook's normal 202 response for an event this
+	// workspace has opted out of.
+	if !githubEnabled {
+		return nil
+	}
+
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("github: begin mirror transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	qtx := h.Queries.WithTx(tx)
+
+	pr, err := qtx.UpsertGitHubPullRequest(ctx, db.UpsertGitHubPullRequestParams{
 		WorkspaceID:         wsID,
 		InstallationID:      installationID,
 		RepoOwner:           p.Repository.Owner.Login,
@@ -1882,13 +2095,12 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		Additions:           p.PullRequest.Additions,
 		Deletions:           p.PullRequest.Deletions,
 		ChangedFiles:        p.PullRequest.ChangedFiles,
+		IsReopen:            p.Action == "reopened",
 	})
 	if err != nil {
-		slog.Warn("github: upsert pr failed", "err", err)
-		return
+		return fmt.Errorf("github: upsert pr failed: %w", err)
 	}
 
-	workspaceID := uuidToString(wsID)
 	resp := githubPullRequestToResponse(pr, h.PRRefresh.Enabled())
 
 	// Auto-link: scan title/body/branch for issue identifiers, look them
@@ -1896,62 +2108,15 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	// upserts the close_intent flag — see LinkIssueToPullRequest) so
 	// re-firing the webhook doesn't duplicate.
 	//
-	// RFC MUL-2414 §4.8: the PR mirror upsert above always runs (so re-enabling
-	// GitHub features restores history without backfill), but the link rows
-	// are a "new side-effect" and must be gated by the workspace's auto-link
-	// flag (which itself short-circuits when the master `github_enabled`
-	// switch is off).
+	// RFC MUL-2414 §4.8: the link rows are a "new side-effect" gated by the
+	// workspace's auto-link flag, independent of the master `github_enabled`
+	// check above — reaching this point already proves github_enabled=true
+	// (CHE-374 review round 3, item 4 changed the mirror upsert itself to be
+	// gated by github_enabled, so "mirror always runs" no longer holds).
 	linkedIssueIDs := make([]string, 0)
-	if h.workspaceAutoLinkPRsEnabled(ctx, wsID) {
-		idents := extractIdentifiers(p.PullRequest.Title, p.PullRequest.Body, p.PullRequest.Head.Ref)
-		// closingIdents is the subset of identifiers that this PR explicitly
-		// declared via a closing keyword ("Closes/Fixes/Resolves MUL-X"). The
-		// link row's close_intent column — and therefore whether the
-		// auto-advance gate eventually fires — is only set for keyword-
-		// declared identifiers. Bare title prefixes and branch-name
-		// references are link-only.
-		closingIdents := map[string]struct{}{}
-		for _, c := range extractClosingIdentifiers(p.PullRequest.Title, p.PullRequest.Body) {
-			closingIdents[c] = struct{}{}
-		}
-		// claimedIdents are the identifiers this PR actually claims: a title
-		// prefix, a branch-name reference, or a body closing keyword. An
-		// identifier matched only by a bare mention in the body ("Related
-		// MUL-1", "Follow up in MUL-1") is not a claim — a passing mention must
-		// not surface the PR as a working PR for that issue (MUL-3739) — so it
-		// gets no link row at all, and drops one an earlier claim had created.
-		//
-		// MUL-3739 used to write that row anyway and flag it reference_only,
-		// hidden from every read path. A hidden row had no reader, and once the
-		// PR went terminal the preserve gate froze the flag, so adding a closing
-		// keyword to a merged PR's body could never surface it — the one
-		// recovery action a user can take was the one that could not work
-		// (MUL-7072).
-		claimedIdents := map[string]struct{}{}
-		for _, id := range extractIdentifiers(p.PullRequest.Title, p.PullRequest.Head.Ref) {
-			claimedIdents[id] = struct{}{}
-		}
-		for c := range closingIdents {
-			claimedIdents[c] = struct{}{}
-		}
-		// close_intent should follow the PR title/body while the PR is still
-		// editable before its terminal close event. Once GitHub has delivered
-		// a terminal event, later edit/synchronize webhooks must not rewrite
-		// the merge-time close decision.
-		preserveCloseIntent := p.Action != "closed" && (state == "merged" || state == "closed")
-		prefix := h.getIssuePrefix(ctx, wsID)
-		// reevalIssues collects each issue whose link row we just touched so
-		// we can re-run the auto-advance gate against the persisted aggregate
-		// after every link upsert in this event. Driving the gate off
-		// persisted state (instead of "did *this* webhook declare closing
-		// intent?") is what fixes the multi-PR sibling case: a PR with
-		// `Closes MUL-1` merges first while a link-only sibling is still
-		// open, then the sibling closes later — its webhook has no closing
-		// keyword, but the earlier link row carries close_intent=true, so
-		// MUL-1 still advances.
-		reevalIssues := make([]db.Issue, 0, len(idents))
+	if autoLinkEnabled {
 		for _, id := range idents {
-			issue, ok := h.lookupIssueByIdentifier(ctx, wsID, prefix, id)
+			issue, ok := issuesByIdent[id]
 			if !ok {
 				continue
 			}
@@ -1964,16 +2129,12 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 				if preserveCloseIntent {
 					continue
 				}
-				if err := h.Queries.UnlinkIssueFromPullRequest(ctx, db.UnlinkIssueFromPullRequestParams{
+				if err := qtx.UnlinkIssueFromPullRequest(ctx, db.UnlinkIssueFromPullRequestParams{
 					IssueID:       issue.ID,
 					PullRequestID: pr.ID,
 				}); err != nil {
-					slog.Warn("github: unlink failed", "err", err)
-					continue
+					return fmt.Errorf("github: unlink issue %s from pr: %w", uuidToString(issue.ID), err)
 				}
-				// Dropping a link can be what lets the issue advance, so the
-				// gate below still re-evaluates it.
-				reevalIssues = append(reevalIssues, issue)
 				continue
 			}
 			_, declared := closingIdents[id]
@@ -1986,7 +2147,7 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 				declared = false
 			}
 			closeIntent := declared && !preserveCloseIntent
-			if err := h.Queries.LinkIssueToPullRequest(ctx, db.LinkIssueToPullRequestParams{
+			if err := qtx.LinkIssueToPullRequest(ctx, db.LinkIssueToPullRequestParams{
 				IssueID:             issue.ID,
 				PullRequestID:       pr.ID,
 				CloseIntent:         closeIntent,
@@ -1994,47 +2155,156 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 				LinkedByType:        strToText("system"),
 				LinkedByID:          pgtype.UUID{},
 			}); err != nil {
-				slog.Warn("github: link failed", "err", err)
-				continue
+				return fmt.Errorf("github: link issue %s to pr: %w", uuidToString(issue.ID), err)
 			}
 			linkedIssueIDs = append(linkedIssueIDs, uuidToString(issue.ID))
-			reevalIssues = append(reevalIssues, issue)
 		}
+	}
 
-		// A terminal PR event (`merged` or `closed`) may be the moment the
-		// last in-flight sibling resolves. We re-evaluate every issue we
-		// just linked once both the PR row and the link row are persisted,
-		// so the aggregate query sees the freshest state. We advance the
-		// issue to done when:
-		//   1. the issue isn't already terminal (`done` / `cancelled`);
-		//   2. no linked PR is still `open` / `draft`;
-		//   3. at least one merged linked PR declared close_intent (a
-		//      "Closes/Fixes/Resolves" keyword on its link row).
-		// Rule (3) is what prevents "Follow up in MUL-2" / "Unblocks MUL-3"
-		// references from being treated the same as "Closes MUL-1", and
-		// also prevents an "all closed-without-merge" sequence from
-		// silently auto-closing the issue — if nothing carrying closing
-		// intent was ever delivered, the user should decide manually.
-		if state == "merged" || state == "closed" {
-			// All linked issues belong to this workspace. Resolve custom statuses
-			// once per delivery; built-in statuses still need no catalog read.
-			resolver := issuestatus.NewResolver(wsID)
-			for _, issue := range reevalIssues {
-				// A custom terminal status counts as terminal here. (MUL-6243)
-				if s := resolver.Effective(ctx, h.issueStatusCatalog(), issue.Status); s == "done" || s == "cancelled" {
+	// reevalIssues/mergeAnnounceIssues are both driven off the PERSISTED link
+	// state for this PR, read AFTER the link/unlink writes above (CHE-374
+	// review round 2, item 1). This unifies what used to be two divergent
+	// selections (an in-memory "this webhook's parse" set, only ever computed
+	// when autoLinkEnabled) into one source of truth that is correct whether
+	// or not auto-link is on:
+	//   - autoLinkEnabled=true: the writes above just updated the link rows
+	//     for this event's identifiers, so the persisted read reflects them.
+	//   - autoLinkEnabled=false (but github_enabled=true): no new link rows
+	//     are written this event, but any link row persisted by an earlier
+	//     event (while auto-link was on, or — future-proofing — a manual
+	//     link) still exists and must still drive the announcement and the
+	//     advance-to-done re-evaluation.
+	// Reading it inside qtx, after the writes, is what avoids reintroducing
+	// A1 (announcing on an issue this same webhook just unlinked): an issue
+	// just unlinked above is already gone from this read.
+	var reevalIssues []db.Issue
+	type mergeAnnounceIssue struct {
+		issue       db.Issue
+		closeIntent bool
+	}
+	var mergeAnnounceIssues []mergeAnnounceIssue
+	if githubEnabled {
+		links, err := qtx.ListIssuePullRequestLinksForPullRequest(ctx, pr.ID)
+		if err != nil {
+			return fmt.Errorf("github: list persisted issue links for pr: %w", err)
+		}
+		reevalIssues = make([]db.Issue, 0, len(links))
+		mergeAnnounceIssues = make([]mergeAnnounceIssue, 0, len(links))
+		for _, link := range links {
+			issue, err := qtx.GetIssue(ctx, link.IssueID)
+			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					// The issue was deleted after the link was written.
+					// Nothing to re-evaluate or announce on.
 					continue
 				}
-				// Combined across providers: an issue may also carry a still-open
-				// self-hosted VCS PR, which must block auto-advance here just as
-				// an open GitHub PR blocks it on the VCS webhook path.
-				counts, err := h.Queries.GetIssueCombinedPullRequestCloseAggregate(ctx, issue.ID)
-				if err != nil {
-					slog.Warn("github: count linked pr states failed", "err", err, "issue_id", uuidToString(issue.ID))
+				return fmt.Errorf("github: load linked issue %s: %w", uuidToString(link.IssueID), err)
+			}
+			reevalIssues = append(reevalIssues, issue)
+			mergeAnnounceIssues = append(mergeAnnounceIssues, mergeAnnounceIssue{issue: issue, closeIntent: link.CloseIntent})
+		}
+	}
+
+	// Enqueue a durable merge announcement for every issue currently linked
+	// to this PR, on an actual merge — independent of close_intent and of the
+	// advance-to-done gate below (CHE-374/CHE-379). A PR that merges without a
+	// closing keyword still deserves a "this PR merged" comment; the
+	// announcement is a record of the merge event, not a vote on completion,
+	// so it must never be gated on the same condition that decides whether
+	// the issue advances, and it must never fire for an issue this same
+	// webhook just unlinked from (A1) — guaranteed here because
+	// mergeAnnounceIssues is read from the post-write persisted state.
+	//
+	// Persisted here, in the same transaction that writes the PR mirror
+	// and link rows, so the write survives a crash between here and the
+	// HTTP 202 response — the worker only owns delivery, not the decision
+	// to announce.
+	if githubEnabled && p.PullRequest.Merged {
+		mergedAt := parseGHTime(p.PullRequest.MergedAt)
+		for _, ma := range mergeAnnounceIssues {
+			_, err := qtx.CreateGitHubMergeAnnouncement(ctx, db.CreateGitHubMergeAnnouncementParams{
+				WorkspaceID:    wsID,
+				Provider:       "github",
+				RepositoryID:   p.Repository.ID,
+				RepoOwner:      p.Repository.Owner.Login,
+				RepoName:       p.Repository.Name,
+				PrNumber:       p.PullRequest.Number,
+				PullRequestID:  pr.ID,
+				IssueID:        ma.issue.ID,
+				EventKind:      "merged",
+				DeliveryGuid:   ptrToText(strPtrOrNil(deliveryGUID)),
+				MergeCommitSha: p.PullRequest.MergeCommitSHA,
+				MergedAt:       mergedAt,
+				HtmlUrl:        ptrToText(strPtrOrNil(p.PullRequest.HTMLURL)),
+				CloseIntent:    pgtype.Bool{Bool: ma.closeIntent, Valid: true},
+			})
+			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					// ON CONFLICT DO NOTHING against the identity index: a
+					// prior delivery (or an earlier link in this same
+					// delivery, for a re-fired webhook) already owns this
+					// (workspace, repo, pr, issue, merged) identity. Not an
+					// error — exactly the redelivery dedup this index exists
+					// for.
 					continue
 				}
-				if counts.OpenCount == 0 && counts.MergedWithCloseIntentCount > 0 {
-					h.advanceIssueToDone(ctx, issue, workspaceID)
-				}
+				return fmt.Errorf("github: enqueue merge announcement for issue %s: %w", uuidToString(ma.issue.ID), err)
+			}
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("github: commit mirror transaction: %w", err)
+	}
+
+	// Wake the worker only after the announcement rows are durably
+	// committed — waking it earlier could have it scan before the row
+	// it's meant to find exists.
+	if githubEnabled && p.PullRequest.Merged {
+		for range mergeAnnounceIssues {
+			h.MergeAnnouncementWorker.Notify()
+		}
+	}
+
+	// A terminal PR event (`merged` or `closed`) may be the moment the
+	// last in-flight sibling resolves. We re-evaluate every currently-linked
+	// issue once both the PR row and the link rows are persisted, so the
+	// aggregate query sees the freshest state. We advance the issue to done
+	// when:
+	//   1. the issue isn't already terminal (`done` / `cancelled`);
+	//   2. no linked PR is still `open` / `draft`;
+	//   3. at least one merged linked PR declared close_intent (a
+	//      "Closes/Fixes/Resolves" keyword on its link row).
+	// Rule (3) is what prevents "Follow up in MUL-2" / "Unblocks MUL-3"
+	// references from being treated the same as "Closes MUL-1", and
+	// also prevents an "all closed-without-merge" sequence from
+	// silently auto-closing the issue — if nothing carrying closing
+	// intent was ever delivered, the user should decide manually.
+	//
+	// This runs against h.Queries (post-commit, not qtx) deliberately:
+	// it depends on the mirror/link writes above already being visible,
+	// and it drives its own side effects (status update, parent
+	// notification, broadcast) that are out of scope for this write's
+	// atomicity guarantee.
+	if githubEnabled && (state == "merged" || state == "closed") {
+		// All linked issues belong to this workspace. Resolve custom statuses
+		// once per delivery; built-in statuses still need no catalog read.
+		resolver := issuestatus.NewResolver(wsID)
+		for _, issue := range reevalIssues {
+			// A custom terminal status counts as terminal here. (MUL-6243)
+			if s := resolver.Effective(ctx, h.issueStatusCatalog(), issue.Status); s == "done" || s == "cancelled" {
+				continue
+			}
+			// Combined across providers: an issue may also carry a still-open
+			// self-hosted VCS PR, which must block auto-advance here just as
+			// an open GitHub PR blocks it on the VCS webhook path.
+			counts, err := h.Queries.GetIssueCombinedPullRequestCloseAggregate(ctx, issue.ID)
+			if err != nil {
+				slog.Warn("github: count linked pr states failed", "err", err, "issue_id", uuidToString(issue.ID))
+				continue
+			}
+			if counts.OpenCount == 0 && counts.MergedWithCloseIntentCount > 0 {
+				h.advanceIssueToDone(ctx, issue, workspaceID)
 			}
 		}
 	}
@@ -2045,6 +2315,7 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		"pull_request":     resp,
 		"linked_issue_ids": linkedIssueIDs,
 	})
+	return nil
 }
 
 // derivePRMergeableState resolves the upsert behaviour for the PR row's
@@ -2204,6 +2475,70 @@ func (h *Handler) workspaceAutoLinkPRsEnabled(ctx context.Context, workspaceID p
 	}
 	enabled, _ := autoLinkPRsEnabledForWorkspace(ws)
 	return enabled
+}
+
+// githubEnabledForWorkspace reports whether the workspace's master GitHub
+// switch (`github_enabled`) is on, independent of the auto-link toggle
+// (CHE-374 review round 2, item 1). autoLinkPRsEnabledForWorkspace conflates
+// the two: it returns false both when github_enabled is explicitly off AND
+// when github_auto_link_prs_enabled is off, so it cannot answer "is GitHub
+// itself still on for this workspace". This helper answers only that
+// narrower question, so callers can still drive GitHub side effects (merge
+// announcements, advance-to-done re-evaluation) off a PERSISTED link row even
+// when auto-linking new identifiers is disabled.
+//
+// Defaults to true when unset/unparseable, matching the same permissive
+// default autoLinkPRsEnabledForWorkspace uses.
+func githubEnabledForWorkspace(ws db.Workspace) bool {
+	if len(ws.Settings) == 0 {
+		return true
+	}
+	var s struct {
+		GitHubEnabled *bool `json:"github_enabled"`
+	}
+	if err := json.Unmarshal(ws.Settings, &s); err != nil {
+		return true
+	}
+	if s.GitHubEnabled == nil {
+		return true
+	}
+	return *s.GitHubEnabled
+}
+
+func (h *Handler) githubEnabledForWorkspace(ctx context.Context, workspaceID pgtype.UUID) bool {
+	ws, err := h.Queries.GetWorkspace(ctx, workspaceID)
+	if err != nil {
+		return true
+	}
+	return githubEnabledForWorkspace(ws)
+}
+
+// githubEnabledForWorkspaceChecked is the error-expressing counterpart to
+// githubEnabledForWorkspace, for callers that must NOT fold a lookup failure
+// into the permissive default (CHE-374 review round 3, item 2). The webhook
+// mirror path intentionally stays fail-open — an unset/unreadable setting for
+// an existing workspace must keep behaving as it always has. The worker's
+// delivery-time eligibility recheck is different: an indeterminate answer
+// there must be treated as "could not verify" and go through retryOrFail, not
+// silently pass as "enabled".
+func (h *Handler) githubEnabledForWorkspaceChecked(ctx context.Context, workspaceID pgtype.UUID) (bool, error) {
+	ws, err := h.Queries.GetWorkspace(ctx, workspaceID)
+	if err != nil {
+		return false, fmt.Errorf("get workspace: %w", err)
+	}
+	if len(ws.Settings) == 0 {
+		return true, nil
+	}
+	var s struct {
+		GitHubEnabled *bool `json:"github_enabled"`
+	}
+	if err := json.Unmarshal(ws.Settings, &s); err != nil {
+		return false, fmt.Errorf("unmarshal workspace settings: %w", err)
+	}
+	if s.GitHubEnabled == nil {
+		return true, nil
+	}
+	return *s.GitHubEnabled, nil
 }
 
 // issueNumberForPrefix returns the issue number encoded in a "PREFIX-NUMBER"

@@ -127,6 +127,37 @@ Returns `{"pull_requests": [...]}`. Each element exposes:
 So "is it merged?" is `state == "merged"` (or `merged_at != null`); "is it still
 a draft?" is `state == "draft"`; coarse CI status is `checks_conclusion`.
 
+- `merge_announcement` — present only for a GitHub PR that has an enqueued
+  merge-announcement record; absent means none was ever enqueued (never
+  merged while linked, or merged before the feature existed). Fields:
+  `status` (`pending` / `delivered` / `failed` / `skipped`), `attempt_count`,
+  `last_error` (sanitized, no secrets), `next_retry_at` (while `pending`),
+  and `sent_at` / `comment_id` (once `delivered`). Read this instead of
+  scanning comments by hand to check whether a merge's announcement landed.
+
+## Recovering a missed merge announcement
+
+A merged, linked GitHub PR is expected to produce exactly one system comment
+on its issue (see `merge_announcement` above). If one merged without ever
+producing that comment — most commonly because it merged before the
+announcement feature existed, or before the workspace had GitHub enabled —
+recover it explicitly:
+
+```bash
+multica issue announce-merge <issue-id> --pr-url <github-pr-url> --output json
+```
+
+This is a narrow, explicit action, never a bulk scan: it targets exactly one
+issue and one already-linked, already-merged PR. It re-fetches the PR's
+current merge identity directly from GitHub — it does not trust any
+merge SHA/time supplied on the command line — so the resulting comment always
+states the PR's real original merge time. Retrying with the same issue and PR
+URL is safe; it returns the existing outcome rather than duplicating the
+comment. It fails closed if GitHub is disabled for the workspace, the PR
+isn't mirrored/linked, the source installation is no longer bound, or the PR
+isn't actually merged. Never fabricate this comment by hand — always go
+through this command so the recorded merge time and commit are authoritative.
+
 If the command returns no linked PRs after a PR was opened, check the syntax
 first: the scanner needs a routable issue key in the PR title or branch, or one
 right after a closing keyword in the body — a bare body mention does not count

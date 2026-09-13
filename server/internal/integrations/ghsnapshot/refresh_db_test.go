@@ -9,8 +9,14 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/multica-ai/multica/server/internal/testutil"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
+
+// parseUUID converts a testutil.Fixture row id (a trusted round-trip from a
+// fixture insert, never request input) into pgtype.UUID.
+func parseUUID(s string) pgtype.UUID { return util.MustParseUUID(s) }
 
 func testDBPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
@@ -59,6 +65,52 @@ func seedWorkspace(t *testing.T, pool *pgxpool.Pool) pgtype.UUID {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM workspace WHERE id=$1`, wsID)
 	})
 	return wsID
+}
+
+// seedWorkspaceWithSettings inserts a minimal workspace with an explicit
+// settings JSON payload (e.g. `{"github_enabled": false}`) and registers its
+// cleanup. Used by the CHE-374 review round 4, item 2 regression tests below
+// to exercise the workspace-enablement gate on the ghsnapshot pipeline.
+func seedWorkspaceWithSettings(t *testing.T, pool *pgxpool.Pool, settingsJSON string) pgtype.UUID {
+	t.Helper()
+	slug := "ghsnap-" + randHex(t)
+	var wsID pgtype.UUID
+	if err := pool.QueryRow(context.Background(),
+		`INSERT INTO workspace (name, slug, description, issue_prefix, settings) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+		"ghsnap test", slug, "ghsnap test workspace", "GHS", settingsJSON).Scan(&wsID); err != nil {
+		t.Fatalf("seed workspace: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM workspace WHERE id=$1`, wsID)
+	})
+	return wsID
+}
+
+// seedPRForWorkspace inserts a github_pull_request row bound to an explicit,
+// caller-supplied workspace — unlike seedPRAt, which always creates its own
+// fresh workspace. This lets a test put two PR rows that share the same
+// (installation, owner, repo, number) address (the ghsnapshot fan-out key)
+// across two DIFFERENT workspaces with different github_enabled settings.
+func seedPRForWorkspace(t *testing.T, q *db.Queries, wsID pgtype.UUID, installationID int64, repoName string, prNumber int32, headSHA string) db.GithubPullRequest {
+	t.Helper()
+	ts := pgtype.Timestamptz{Time: time.Unix(1_700_000_000, 0), Valid: true}
+	pr, err := q.UpsertGitHubPullRequest(context.Background(), db.UpsertGitHubPullRequestParams{
+		WorkspaceID:    wsID,
+		InstallationID: installationID,
+		RepoOwner:      "o",
+		RepoName:       repoName,
+		PrNumber:       prNumber,
+		Title:          "t",
+		State:          "open",
+		HtmlUrl:        "http://x",
+		HeadSha:        headSHA,
+		PrCreatedAt:    ts,
+		PrUpdatedAt:    ts,
+	})
+	if err != nil {
+		t.Fatalf("seed PR: %v", err)
+	}
+	return pr
 }
 
 func randHex(t *testing.T) string {
@@ -283,6 +335,68 @@ func TestApplySnapshotHeadSHAGuard(t *testing.T) {
 	}
 }
 
+// TestApplySnapshotDiscardsWriteWhenDisabledBetweenSelectionAndWrite is the
+// CHE-374 review round 5, item 2 regression: Manager.process re-selects
+// eligible rows once before its per-row apply loop, but a workspace can still
+// flip github_enabled to false in the window between that re-select and this
+// specific row's applySnapshot call (e.g. another row in the same fan-out
+// batch is slow, or the flip lands mid-loop). Row selection filtering
+// eligibility is not enough — the write itself must re-check it. This drives
+// applySnapshot directly (the actual UPDATE ... EXISTS guard added to
+// UpdateGitHubPRSnapshot), bypassing process()'s own pre-fetch eligibility
+// check entirely, so it isolates the write-time guard from the two
+// process()-level regressions already covered by
+// TestProcessSkipsFetchWhenAllFanOutWorkspacesDisabled and
+// TestProcessAppliesOnlyToEnabledWorkspaceInSharedInstallation.
+//
+// Rows are built through testutil.Fixture (CLAUDE.md's DB-backed test rule)
+// rather than a file-local INSERT with a matching manual t.Cleanup DELETE.
+func TestApplySnapshotDiscardsWriteWhenDisabledBetweenSelectionAndWrite(t *testing.T) {
+	pool := testDBPool(t)
+	q := db.New(pool)
+	ctx := context.Background()
+
+	fx := testutil.New(pool, "", "")
+	wsID := fx.Workspace(t, "ghsnap toctou", "ghsnap-toctou-"+randHex(t))
+	prID := fx.Insert(t, "github_pull_request", testutil.Cols{
+		"workspace_id":    wsID,
+		"installation_id": 555333,
+		"repo_owner":      "o",
+		"repo_name":       "toctou-repo",
+		"pr_number":       12,
+		"title":           "t",
+		"state":           "open",
+		"html_url":        "http://x",
+		"head_sha":        "A",
+		"pr_created_at":   testutil.Raw("to_timestamp(1700000000)"),
+		"pr_updated_at":   testutil.Raw("to_timestamp(1700000000)"),
+	})
+	fx.Cleanup(t, `DELETE FROM github_pull_request_check_run WHERE pr_id=$1`, parseUUID(prID))
+
+	m := &Manager{queries: q, pool: pool, now: func() time.Time { return time.Unix(1_700_000_200, 0) }}
+
+	// Row selection (ListGitHubPRRowsByAddress) would have returned this row
+	// here — the workspace is still enabled. Now simulate the flip landing in
+	// the window between that selection and this row's write.
+	fx.Exec(t, `UPDATE workspace SET settings = '{"github_enabled": false}' WHERE id=$1`, wsID)
+
+	applied, err := m.applySnapshot(ctx, parseUUID(prID), &PRSnapshot{HeadSHA: "A", Mergeable: "MERGEABLE", MergeStateStatus: "CLEAN"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied {
+		t.Fatal("write must be discarded once the workspace disabled GitHub, even though the row was eligible at selection time")
+	}
+
+	got, err := q.GetGitHubPullRequestByID(ctx, parseUUID(prID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SnapshotHeadSha != "" || got.ApiMergeable.Valid {
+		t.Fatalf("snapshot was written despite the workspace disabling GitHub before the write: %+v", got)
+	}
+}
+
 // TestInFlightOldHeadKeepsTrailingRefresh covers the synchronize race from the
 // PR review: while head A is fetching, a webhook advances the mirrored row to B
 // and enqueues again. A is discarded by the head guard, but the coalesced
@@ -405,5 +519,153 @@ func TestApplySnapshotReplacesRuns(t *testing.T) {
 	}
 	if n := checkRunCount(t, pool, pr.ID); n != 1 {
 		t.Fatalf("after replace: %d runs, want 1 (old runs deleted)", n)
+	}
+}
+
+// TestProcessSkipsFetchWhenAllFanOutWorkspacesDisabled is the CHE-374 review
+// round 4, item 2 regression: master-off (github_enabled=false) must give the
+// ghsnapshot pipeline zero footprint, including zero outbound GitHub API
+// calls, not just a discarded write. A single workspace with GitHub disabled
+// mirrors the address; process() must never call fetch.
+func TestProcessSkipsFetchWhenAllFanOutWorkspacesDisabled(t *testing.T) {
+	pool := testDBPool(t)
+	q := db.New(pool)
+	ctx := context.Background()
+
+	ws := seedWorkspaceWithSettings(t, pool, `{"github_enabled": false}`)
+	pr := seedPRForWorkspace(t, q, ws, 555111, "off-repo", 91, "A")
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM github_pull_request_check_run WHERE pr_id=$1`, pr.ID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM github_pull_request WHERE id=$1`, pr.ID)
+	})
+
+	m := NewManager(enabledClient(t), q, pool, nil)
+	m.jitter = func() time.Duration { return 0 }
+	m.ctx = ctx
+	fetchCalled := false
+	m.fetch = func(context.Context, *Client, int64, string, string, int32) (*PRSnapshot, error) {
+		fetchCalled = true
+		return &PRSnapshot{HeadSHA: "A", Mergeable: "MERGEABLE", MergeStateStatus: "CLEAN"}, nil
+	}
+
+	m.process(ctx, address{InstallationID: 555111, Owner: "o", Repo: "off-repo", Number: 91})
+
+	if fetchCalled {
+		t.Fatal("outbound fetch was called even though every fan-out workspace has github_enabled=false")
+	}
+	got, err := q.GetGitHubPullRequestByID(ctx, pr.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SnapshotHeadSha != "" || got.ApiMergeable.Valid {
+		t.Fatalf("row was written despite the workspace being disabled: %+v", got)
+	}
+}
+
+// TestProcessAppliesOnlyToEnabledWorkspaceInSharedInstallation covers the
+// mixed shared-installation case (CHE-374 review round 4, item 2): one GitHub
+// installation fans out to two workspaces mirroring the SAME (installation,
+// owner, repo, number) address (#4823/#4855 fan-out). One workspace still has
+// GitHub enabled, the other explicitly disabled. The fetch is justified by the
+// enabled workspace, but the disabled workspace's row must never receive the
+// snapshot write — even though it shares the fetched address.
+func TestProcessAppliesOnlyToEnabledWorkspaceInSharedInstallation(t *testing.T) {
+	pool := testDBPool(t)
+	q := db.New(pool)
+	ctx := context.Background()
+
+	const installationID = 555222
+	const repoName = "shared-repo"
+	const prNumber = int32(77)
+
+	enabledWS := seedWorkspaceWithSettings(t, pool, `{}`)
+	disabledWS := seedWorkspaceWithSettings(t, pool, `{"github_enabled": false}`)
+	enabledPR := seedPRForWorkspace(t, q, enabledWS, installationID, repoName, prNumber, "A")
+	disabledPR := seedPRForWorkspace(t, q, disabledWS, installationID, repoName, prNumber, "A")
+	t.Cleanup(func() {
+		for _, pr := range []db.GithubPullRequest{enabledPR, disabledPR} {
+			_, _ = pool.Exec(context.Background(), `DELETE FROM github_pull_request_check_run WHERE pr_id=$1`, pr.ID)
+			_, _ = pool.Exec(context.Background(), `DELETE FROM github_pull_request WHERE id=$1`, pr.ID)
+		}
+	})
+
+	m := NewManager(enabledClient(t), q, pool, nil)
+	m.jitter = func() time.Duration { return 0 }
+	m.ctx = ctx
+	fetchCalls := 0
+	m.fetch = func(context.Context, *Client, int64, string, string, int32) (*PRSnapshot, error) {
+		fetchCalls++
+		return &PRSnapshot{HeadSHA: "A", Mergeable: "MERGEABLE", MergeStateStatus: "CLEAN"}, nil
+	}
+
+	m.process(ctx, address{InstallationID: installationID, Owner: "o", Repo: repoName, Number: prNumber})
+
+	if fetchCalls != 1 {
+		t.Fatalf("fetch calls = %d, want 1 (justified by the enabled workspace's row)", fetchCalls)
+	}
+
+	gotEnabled, err := q.GetGitHubPullRequestByID(ctx, enabledPR.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotEnabled.SnapshotHeadSha != "A" || !gotEnabled.ApiMergeable.Valid {
+		t.Fatalf("enabled workspace's row was not written: %+v", gotEnabled)
+	}
+
+	gotDisabled, err := q.GetGitHubPullRequestByID(ctx, disabledPR.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotDisabled.SnapshotHeadSha != "" || gotDisabled.ApiMergeable.Valid {
+		t.Fatalf("disabled workspace's row was written despite github_enabled=false: %+v", gotDisabled)
+	}
+}
+
+// TestSweepExcludesAddressWhenAllFanOutWorkspacesDisabled covers the 4th
+// trigger path (CHE-374 review round 4, item 2): the TTL/safety-net sweep
+// (ListStaleUndecidedGitHubPRs) must never surface an address whose only
+// fan-out workspace has GitHub disabled, so a master-off PR never even enters
+// the refresh queue via the periodic sweep — independent of the per-process
+// eligibility check exercised by the two tests above.
+func TestSweepExcludesAddressWhenAllFanOutWorkspacesDisabled(t *testing.T) {
+	pool := testDBPool(t)
+	q := db.New(pool)
+	ctx := context.Background()
+	now := time.Unix(1_700_020_000, 0)
+
+	disabledWS := seedWorkspaceWithSettings(t, pool, `{"github_enabled": false}`)
+	enabledWS := seedWorkspaceWithSettings(t, pool, `{}`)
+	offPR := seedPRForWorkspace(t, q, disabledWS, 555333, "off-sweep", 5, "S")
+	onPR := seedPRForWorkspace(t, q, enabledWS, 555333, "on-sweep", 6, "S")
+	prs := []db.GithubPullRequest{offPR, onPR}
+	t.Cleanup(func() {
+		for _, pr := range prs {
+			_, _ = pool.Exec(context.Background(), `DELETE FROM github_pull_request_check_run WHERE pr_id=$1`, pr.ID)
+			_, _ = pool.Exec(context.Background(), `DELETE FROM github_pull_request WHERE id=$1`, pr.ID)
+		}
+	})
+
+	rows, err := q.ListStaleUndecidedGitHubPRs(ctx, db.ListStaleUndecidedGitHubPRsParams{
+		OlderThan:           tsFromTime(now),
+		AfterInstallationID: 0,
+		AfterRepoOwner:      "",
+		AfterRepoName:       "",
+		AfterPrNumber:       0,
+		MaxRows:             50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotRepos := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		if row.InstallationID == 555333 {
+			gotRepos[row.RepoName] = true
+		}
+	}
+	if gotRepos["off-sweep"] {
+		t.Fatal("sweep surfaced an address whose only fan-out workspace has github_enabled=false")
+	}
+	if !gotRepos["on-sweep"] {
+		t.Fatal("sweep must still surface an address backed by an enabled workspace")
 	}
 }

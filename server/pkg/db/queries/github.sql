@@ -88,6 +88,32 @@ SELECT * FROM github_pending_installation WHERE installation_id = $1
 --      column. Metadata events (labeled/assigned/etc.) ship payloads without
 --      mergeability, and silently clobbering a known clean/dirty would lose
 --      information that GitHub only re-computes lazily.
+-- state/merged_at follow the same "don't let a stale payload move things
+-- backward" idea: `merged` is terminal, and a redelivered or out-of-order
+-- opened/synchronize webhook (GitHub does not guarantee delivery order) must
+-- never demote an already-merged PR back to open. `closed` is also protected
+-- against a stale non-terminal payload — a redelivered/out-of-order `opened`
+-- or `synchronize` webhook must not silently reopen a closed PR. The one
+-- state `closed` must still yield to is a GENUINE reopen: GitHub's
+-- action=reopened event, which derivePRState maps to state=open. Since the
+-- state column alone can't distinguish "stale opened payload" from "genuine
+-- reopened action" (both carry EXCLUDED.state='open'), the caller passes
+-- is_reopen — true only when the webhook's action field is literally
+-- "reopened" — as the discriminator (CHE-374 review round 3, item 1).
+--
+-- is_reopen alone is not enough: GitHub does not guarantee delivery order, so
+-- a DELAYED redelivery of an earlier "reopened" webhook can arrive after a
+-- second close was already recorded (close -> reopen -> close again ->
+-- stale redelivery of the FIRST reopen). That stale payload also carries
+-- is_reopen=true and, without an ordering check, would wrongly reopen a PR
+-- that is genuinely closed again. closed_at is used as the ordering signal
+-- (deliberately not pr_updated_at, which is a general activity clock bumped
+-- by labels/comments/assignee changes too, not a state-transition clock): a
+-- genuine, fresher reopen either clears closed_at (GitHub sets it to null on
+-- reopen) or, for a same-delivery replay, carries a closed_at that is not
+-- older than what is already stored. A reopen payload whose closed_at is
+-- OLDER than the stored closed_at is describing an earlier close than the one
+-- currently on file and is rejected as stale (CHE-374 review round 4, item 1).
 -- INSERT path always writes the incoming value (NULL acceptable for a new row).
 INSERT INTO github_pull_request (
     workspace_id, installation_id, repo_owner, repo_name, pr_number,
@@ -105,13 +131,81 @@ INSERT INTO github_pull_request (
 ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     installation_id = EXCLUDED.installation_id,
     title = EXCLUDED.title,
-    state = EXCLUDED.state,
+    -- `merged` is always protected: once stored, only an incoming `merged`
+    -- overwrites it. `closed` is protected UNLESS this delivery is a genuine,
+    -- FRESH reopen: is_reopen=true AND the payload's closed_at is not older
+    -- than the closed_at already stored (NULL closed_at in the payload also
+    -- counts as fresh — that is what a real reopen looks like once GitHub
+    -- clears the field). A stale redelivered "reopened" webhook whose
+    -- closed_at is older than the stored value describes an earlier close and
+    -- is treated the same as a non-reopen delivery: rejected (CHE-374 review
+    -- round 4, item 1).
+    --
+    -- Accepted limitation (CHE-374 review round 5, item 1): a genuine reopen
+    -- payload always carries closed_at=NULL, so the ordering check above
+    -- (which requires both sides non-null) cannot compare two null-bearing
+    -- reopens. A close -> reopen -> close sequence followed by an
+    -- out-of-order redelivery of the FIRST reopen can therefore transiently
+    -- reopen a PR that is genuinely closed again — closed_at cannot order
+    -- two null-bearing events; that is a property of the signal, not this
+    -- expression. A real fix needs a monotonic per-PR transition-ordering
+    -- key (the delivery GUID is freshly minted per redelivery by GitHub, so
+    -- it cannot serve as one) and is deliberately deferred: the next
+    -- authoritative refresh (webhook, snapshot fetch, or TTL sweep)
+    -- self-heals the mirror, so this is scoped out of this delivery rather
+    -- than spending the remaining review ceiling on a narrow race.
+    state = CASE
+        WHEN github_pull_request.state = 'merged'
+             AND EXCLUDED.state <> 'merged'
+        THEN github_pull_request.state
+        WHEN github_pull_request.state = 'closed'
+             AND EXCLUDED.state <> 'merged'
+             AND (
+                 NOT COALESCE(sqlc.arg('is_reopen')::boolean, FALSE)
+                 OR (
+                     EXCLUDED.closed_at IS NOT NULL
+                     AND github_pull_request.closed_at IS NOT NULL
+                     AND EXCLUDED.closed_at < github_pull_request.closed_at
+                 )
+             )
+        THEN github_pull_request.state
+        ELSE EXCLUDED.state
+    END,
     html_url = EXCLUDED.html_url,
     branch = EXCLUDED.branch,
     author_login = EXCLUDED.author_login,
     author_avatar_url = EXCLUDED.author_avatar_url,
-    merged_at = EXCLUDED.merged_at,
-    closed_at = EXCLUDED.closed_at,
+    merged_at = CASE
+        WHEN github_pull_request.state = 'merged'
+             AND EXCLUDED.state <> 'merged'
+        THEN github_pull_request.merged_at
+        WHEN github_pull_request.state = 'closed'
+             AND EXCLUDED.state <> 'merged'
+             AND (
+                 NOT COALESCE(sqlc.arg('is_reopen')::boolean, FALSE)
+                 OR (
+                     EXCLUDED.closed_at IS NOT NULL
+                     AND github_pull_request.closed_at IS NOT NULL
+                     AND EXCLUDED.closed_at < github_pull_request.closed_at
+                 )
+             )
+        THEN github_pull_request.merged_at
+        ELSE EXCLUDED.merged_at
+    END,
+    closed_at = CASE
+        WHEN github_pull_request.state = 'closed'
+             AND EXCLUDED.state <> 'merged'
+             AND (
+                 NOT COALESCE(sqlc.arg('is_reopen')::boolean, FALSE)
+                 OR (
+                     EXCLUDED.closed_at IS NOT NULL
+                     AND github_pull_request.closed_at IS NOT NULL
+                     AND EXCLUDED.closed_at < github_pull_request.closed_at
+                 )
+             )
+        THEN github_pull_request.closed_at
+        ELSE EXCLUDED.closed_at
+    END,
     pr_updated_at = EXCLUDED.pr_updated_at,
     head_sha = EXCLUDED.head_sha,
     mergeable_state = CASE
@@ -220,6 +314,28 @@ LIMIT 1;
 -- name: ListIssueIDsForPullRequest :many
 SELECT issue_id FROM issue_pull_request
 WHERE pull_request_id = $1;
+
+-- name: ListIssuePullRequestLinksForPullRequest :many
+-- Returns the persisted (issue_id, close_intent) pairs currently linked to a
+-- PR, independent of how those links came to exist — a manual link with no
+-- current identifier match reads the same as an auto-link one (CHE-374 review
+-- round 2, item 1). Callers that drive the merge-announcement/advance-to-done
+-- selection off "what's actually linked right now" must read this AFTER any
+-- link/unlink writes for the same PR have been committed or are visible in
+-- the same transaction — reading it beforehand reintroduces the "announce on
+-- a just-unlinked issue" bug (A1) round 1 already fixed.
+SELECT issue_id, close_intent FROM issue_pull_request
+WHERE pull_request_id = $1;
+
+-- name: GetIssuePullRequestLink :one
+-- Existence + close_intent check for one (issue, pull_request) pair, used by
+-- MergeAnnouncementWorker.ProcessNext to revalidate that a queued
+-- announcement's link has not been removed since it was enqueued (CHE-374
+-- review round 2, item 2) — an item-1-style "unlink beat us here" race, but
+-- observed at delivery time instead of enqueue time. Returns pgx.ErrNoRows
+-- when the link no longer exists.
+SELECT issue_id, pull_request_id, close_intent FROM issue_pull_request
+WHERE issue_id = $1 AND pull_request_id = $2;
 
 -- name: GetIssuePullRequestCloseAggregate :one
 -- Aggregates the issue's linked PRs into the two counts that gate
