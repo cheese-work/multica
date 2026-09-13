@@ -28,6 +28,26 @@ const descriptionSelectionAction = vi.hoisted(() => ({ current: undefined as { l
 // stable identity. A fresh `[]` per call would loop useSyncExternalStore.
 const emptyDraftAttachments = vi.hoisted(() => [] as unknown[]);
 
+// jsdom has no Range.getClientRects, and this file exercises description
+// lifecycle/integration, not disclosure geometry (canonical coverage for the
+// measurement math lives in description-measurement.test.ts and the
+// disclosure primitive's own test in description-disclosure.test.tsx). Report
+// no overflow by default so the description renders exactly as before these
+// tests were written.
+const descriptionMeasurement = vi.hoisted(() => ({
+  current: {
+    totalRows: 1,
+    hiddenRows: 0,
+    hasOverflow: false,
+    lineHeight: 20,
+    previewText: "",
+  },
+}));
+vi.mock("./description-measurement", () => ({
+  DESCRIPTION_PREVIEW_LINES: 12,
+  measureDescription: () => descriptionMeasurement.current,
+}));
+
 vi.mock("@multica/ui/hooks/use-mobile", () => ({
   useIsMobile: () => mockViewport.isMobile,
 }));
@@ -382,6 +402,11 @@ vi.mock("@multica/core/issues/stores", async () => ({
   ...(await vi.importActual<
     typeof import("@multica/core/issues/stores/sub-issues-collapse-store")
   >("@multica/core/issues/stores/sub-issues-collapse-store")),
+  // Real store, non-persisted: backs description show-more/show-less across
+  // this file's issue-switch and remount assertions.
+  ...(await vi.importActual<
+    typeof import("@multica/core/issues/stores/issue-disclosure-store")
+  >("@multica/core/issues/stores/issue-disclosure-store")),
   useRecentIssuesStore: Object.assign(
     (selector?: any) => {
       const state = { byWorkspace: {}, recordVisit: mockRecordVisit, pruneWorkspaces: vi.fn() };

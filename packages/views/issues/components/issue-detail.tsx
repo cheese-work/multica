@@ -39,7 +39,8 @@ import { Button } from "@multica/ui/components/ui/button";
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@multica/ui/components/ui/resizable";
 import { Sheet, SheetContent } from "@multica/ui/components/ui/sheet";
 import { useIsMobile } from "@multica/ui/hooks/use-mobile";
-import { ContentEditor, type ContentEditorRef, TitleEditor, type TitleEditorRef, useFileDropZone, FileDropOverlay, useLazyEditor, useEditorUpload, ImageSequenceProvider } from "../../editor";
+import { ContentEditor, type ContentEditorRef, TitleEditor, type TitleEditorRef, useFileDropZone, FileDropOverlay, useLazyEditor, useEditorUpload, useUploadGate, ImageSequenceProvider } from "../../editor";
+import { DescriptionDisclosure } from "./description-disclosure";
 import { collectImageSequence, type ImageSequenceBlock } from "@multica/core/attachments/image-sequence";
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
 import {
@@ -111,6 +112,8 @@ import { propertyListOptions } from "@multica/core/properties";
 import { memberListOptions, agentListOptions } from "@multica/core/workspace/queries";
 import {
   selectExpandedResolved,
+  selectDescriptionExpanded,
+  useIssueDisclosureStore,
   useRecentIssuesStore,
   useResolvedExpandStore,
   useSubIssuesCollapseStore,
@@ -1980,6 +1983,14 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
 
   const descEditorRef = useRef<ContentEditorRef>(null);
   const descriptionEditingRef = useRef(false);
+  // Reactive twin of descriptionEditingRef: collapse-disable state must
+  // re-render when focus enters/leaves the description, which a ref alone
+  // cannot trigger.
+  const [descriptionFocused, setDescriptionFocused] = useState(false);
+  const { uploading: descUploading, onUploadingChange: onDescUploadingChange } =
+    useUploadGate(descEditorRef);
+  const descriptionExpanded = useIssueDisclosureStore(selectDescriptionExpanded(id));
+  const setDescriptionExpanded = useIssueDisclosureStore((s) => s.setDescriptionExpanded);
   const descriptionSaveInFlightRef = useRef(false);
   const descriptionSaveIssueIdRef = useRef(id);
   const pendingDescriptionSaveRef = useRef<{
@@ -2005,6 +2016,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     descriptionSaveInFlightRef.current = false;
     descriptionSaveIssueIdRef.current = id;
     pendingDescriptionSaveRef.current = null;
+    descriptionEditingRef.current = false;
+    setDescriptionFocused(false);
   }, [id]);
   const titleLazy = useLazyEditor({ editorRef: titleEditorRef, resetKey: id });
   const { isDragOver: descDragOver, dropZoneProps: descDropZoneProps } = useFileDropZone({
@@ -3030,59 +3043,77 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             onFocusCapture={() => {
               if (!descriptionEditingRef.current) {
                 descriptionEditingRef.current = true;
+                setDescriptionFocused(true);
               }
             }}
             onBlurCapture={(event) => {
               if (!event.currentTarget.contains(event.relatedTarget)) {
                 descriptionEditingRef.current = false;
+                setDescriptionFocused(false);
               }
             }}
           >
             {descriptionAnnotations.popup}
-            <div data-comment-content={descriptionSourceId}>
-              <ContentEditor
-                ref={descEditorRef}
-                key={id}
-                value={issue.description ?? ""}
-                placeholder={t(($) => $.detail.desc_placeholder)}
-                onUpdate={(md, baseMarkdown) => {
-                  // Bind any pending uploads still referenced in the markdown
-                  // so they appear in `issueAttachments` after refresh and the
-                  // editor's text/code preview keeps working past reload.
-                  //
-                  // Match with `contentReferencesAttachment`, NOT `md.includes(a.url)`:
-                  // the editor persists the durable `markdownLink`
-                  // (`/api/attachments/<id>/download` / `markdown_url`) into the
-                  // body, never the raw storage `a.url`. A bare `md.includes(a.url)`
-                  // therefore never matches, so the upload is never linked via
-                  // `attachment_ids`. After reload it's absent from
-                  // `issueAttachments`, the renderer can't resolve it to a
-                  // freshly-signed `download_url`, and the persisted auth-gated
-                  // download endpoint fails to load as a native <img> on clients
-                  // whose origin isn't the API host (Desktop/Electron, mobile
-                  // webview) — while still working on web via the cookie/proxy.
-                  // This mirrors the comment/reply/chat composers, which already
-                  // bind via `contentReferencesAttachment` (MUL-3130 / MUL-3192).
-                  const ids = descPendingAttachmentsRef.current
-                    .filter((a) => contentReferencesAttachment(md, a))
-                    .map((a) => a.id);
-                  queueDescriptionSave({
-                    markdown: md,
-                    baseMarkdown,
-                    attachmentIds: ids,
-                  });
-                }}
-                onUploadFile={handleDescriptionUpload}
-                debounceMs={1500}
-                // Closing the issue modal must save what the user last saw —
-                // without the flush, a paste followed by a quick close loses
-                // the image markdown and its attachment_ids bind (MUL-3254).
-                flushPendingOnUnmount
-                currentIssueId={id}
-                selectionAction={descriptionSelectionAction}
-                attachments={descEditorAttachments}
-              />
-            </div>
+            <DescriptionDisclosure
+              collapseDisabled={descriptionFocused || descUploading || descPendingAttachments.length > 0}
+              contentVersion={issue.revision}
+              expanded={descriptionExpanded}
+              id={id}
+              labels={{
+                loading: t(($) => $.detail.description_preview_loading),
+                moreLines: (count) => t(($) => $.detail.description_more_lines, { count }),
+                preview: t(($) => $.detail.description_preview),
+                showLess: t(($) => $.detail.description_show_less),
+                showMore: t(($) => $.detail.description_show_more),
+              }}
+              onExpandedChange={(expanded) => setDescriptionExpanded(id, expanded)}
+            >
+              <div data-comment-content={descriptionSourceId}>
+                <ContentEditor
+                  ref={descEditorRef}
+                  key={id}
+                  value={issue.description ?? ""}
+                  placeholder={t(($) => $.detail.desc_placeholder)}
+                  onUpdate={(md, baseMarkdown) => {
+                    // Bind any pending uploads still referenced in the markdown
+                    // so they appear in `issueAttachments` after refresh and the
+                    // editor's text/code preview keeps working past reload.
+                    //
+                    // Match with `contentReferencesAttachment`, NOT `md.includes(a.url)`:
+                    // the editor persists the durable `markdownLink`
+                    // (`/api/attachments/<id>/download` / `markdown_url`) into the
+                    // body, never the raw storage `a.url`. A bare `md.includes(a.url)`
+                    // therefore never matches, so the upload is never linked via
+                    // `attachment_ids`. After reload it's absent from
+                    // `issueAttachments`, the renderer can't resolve it to a
+                    // freshly-signed `download_url`, and the persisted auth-gated
+                    // download endpoint fails to load as a native <img> on clients
+                    // whose origin isn't the API host (Desktop/Electron, mobile
+                    // webview) — while still working on web via the cookie/proxy.
+                    // This mirrors the comment/reply/chat composers, which already
+                    // bind via `contentReferencesAttachment` (MUL-3130 / MUL-3192).
+                    const ids = descPendingAttachmentsRef.current
+                      .filter((a) => contentReferencesAttachment(md, a))
+                      .map((a) => a.id);
+                    queueDescriptionSave({
+                      markdown: md,
+                      baseMarkdown,
+                      attachmentIds: ids,
+                    });
+                  }}
+                  onUploadFile={handleDescriptionUpload}
+                  onUploadingChange={onDescUploadingChange}
+                  debounceMs={1500}
+                  // Closing the issue modal must save what the user last saw —
+                  // without the flush, a paste followed by a quick close loses
+                  // the image markdown and its attachment_ids bind (MUL-3254).
+                  flushPendingOnUnmount
+                  currentIssueId={id}
+                  selectionAction={descriptionSelectionAction}
+                  attachments={descEditorAttachments}
+                />
+              </div>
+            </DescriptionDisclosure>
 
             <div className="flex items-center gap-1 mt-3">
               <ReactionBar
