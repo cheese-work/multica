@@ -2322,6 +2322,7 @@ func newIssueCommentListTestCmd() *cobra.Command {
 func newIssueCommentResolutionTestCmd(use string) *cobra.Command {
 	cmd := &cobra.Command{Use: use}
 	cmd.Flags().String("output", "json", "")
+	cmd.Flags().String("known-as-of", "", "")
 	return cmd
 }
 
@@ -2393,6 +2394,137 @@ func TestRunIssueCommentResolution(t *testing.T) {
 				t.Fatalf("stdout id = %v, want %s", got["id"], commentID)
 			}
 		})
+	}
+}
+
+// TestRunIssueCommentResolveForwardsKnownAsOf locks the exact request-body
+// contract: --known-as-of must be forwarded verbatim as RFC3339Nano
+// known_as_of so ResolveComment's guard (internal/handler/comment.go) can
+// compare it against reply created_at timestamps. Omitting the flag must
+// send no body at all, not an empty/null known_as_of — that is what keeps
+// existing unguarded callers on the pre-guard code path server-side.
+func TestRunIssueCommentResolveForwardsKnownAsOf(t *testing.T) {
+	commentID := "comment-456"
+	tests := []struct {
+		name          string
+		knownAsOf     string
+		wantBodyEmpty bool
+	}{
+		{
+			name:      "known-as-of forwarded verbatim",
+			knownAsOf: "2026-06-22T08:00:00.123456789Z",
+		},
+		{
+			name:          "omitted known-as-of sends no body",
+			wantBodyEmpty: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotBody []byte
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotBody, _ = io.ReadAll(r.Body)
+				json.NewEncoder(w).Encode(map[string]any{"id": commentID})
+			}))
+			defer srv.Close()
+
+			t.Setenv("MULTICA_SERVER_URL", srv.URL)
+			t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+			t.Setenv("MULTICA_TOKEN", "test-token")
+
+			cmd := newIssueCommentResolutionTestCmd("resolve")
+			if tt.knownAsOf != "" {
+				if err := cmd.Flags().Set("known-as-of", tt.knownAsOf); err != nil {
+					t.Fatalf("set known-as-of: %v", err)
+				}
+			}
+
+			if _, err := captureStdout(t, func() error {
+				return runIssueCommentResolve(cmd, []string{commentID})
+			}); err != nil {
+				t.Fatalf("run command: %v", err)
+			}
+
+			gotBodyStr := strings.TrimSpace(string(gotBody))
+			if tt.wantBodyEmpty {
+				if gotBodyStr != "null" && gotBodyStr != "" {
+					t.Fatalf("body = %q, want empty/null (no known_as_of)", gotBodyStr)
+				}
+				return
+			}
+
+			var payload struct {
+				KnownAsOf string `json:"known_as_of"`
+			}
+			if err := json.Unmarshal(gotBody, &payload); err != nil {
+				t.Fatalf("decode request body: %v\nbody: %s", err, gotBody)
+			}
+			if payload.KnownAsOf != tt.knownAsOf {
+				t.Fatalf("known_as_of = %q, want %q", payload.KnownAsOf, tt.knownAsOf)
+			}
+		})
+	}
+}
+
+// TestRunIssueCommentResolveRejectsInvalidKnownAsOf verifies strict
+// client-side timestamp validation: a malformed --known-as-of must fail
+// before any HTTP round-trip, not be forwarded as a garbage string the
+// server then rejects with a less actionable 400.
+func TestRunIssueCommentResolveRejectsInvalidKnownAsOf(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("server should not be contacted when --known-as-of fails to parse")
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	cmd := newIssueCommentResolutionTestCmd("resolve")
+	if err := cmd.Flags().Set("known-as-of", "not-a-timestamp"); err != nil {
+		t.Fatalf("set known-as-of: %v", err)
+	}
+
+	err := runIssueCommentResolve(cmd, []string{"comment-789"})
+	if err == nil {
+		t.Fatal("expected an error for an invalid --known-as-of value")
+	}
+	if !strings.Contains(err.Error(), "--known-as-of") {
+		t.Fatalf("error = %q, want it to name --known-as-of", err.Error())
+	}
+}
+
+// TestRunIssueCommentResolveThreadChangedConflict verifies a 409
+// thread_changed response (ResolveComment's concurrent-feedback race guard)
+// surfaces as an actionable CLI error via threadChangedMessage, mirroring how
+// revisionConflictMessage translates the issue API's revision_conflict 409.
+func TestRunIssueCommentResolveThreadChangedConflict(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "thread has new replies since it was loaded; reload the thread before resolving",
+			"code":  "thread_changed",
+		})
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	cmd := newIssueCommentResolutionTestCmd("resolve")
+	if err := cmd.Flags().Set("known-as-of", "2026-06-22T08:00:00Z"); err != nil {
+		t.Fatalf("set known-as-of: %v", err)
+	}
+
+	err := runIssueCommentResolve(cmd, []string{"comment-conflict"})
+	if err == nil {
+		t.Fatal("expected a thread_changed conflict error")
+	}
+	if !strings.Contains(err.Error(), "resolve rejected") || !strings.Contains(err.Error(), "--known-as-of") {
+		t.Fatalf("error = %q, want an actionable thread_changed message naming --known-as-of", err.Error())
 	}
 }
 

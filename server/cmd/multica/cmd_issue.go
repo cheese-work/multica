@@ -653,6 +653,7 @@ func init() {
 
 	// issue comment resolve/unresolve
 	issueCommentResolveCmd.Flags().String("output", "json", "Output format: table or json")
+	issueCommentResolveCmd.Flags().String("known-as-of", "", "Timestamp (RFC3339Nano) of the thread state this resolve was decided against — e.g. the newest comment's created_at you had loaded. When set, the server rejects the resolve with a thread_changed conflict if a reply has landed in this thread since then, instead of silently folding it away.")
 	issueCommentUnresolveCmd.Flags().String("output", "json", "Output format: table or json")
 
 	// issue search
@@ -2375,14 +2376,45 @@ func runIssueCommentDelete(cmd *cobra.Command, args []string) error {
 }
 
 func runIssueCommentResolve(cmd *cobra.Command, args []string) error {
-	return runIssueCommentResolution(cmd, args[0], true)
+	knownAsOfRaw, _ := cmd.Flags().GetString("known-as-of")
+	var knownAsOf *time.Time
+	if knownAsOfRaw != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, knownAsOfRaw)
+		if err != nil {
+			return fmt.Errorf("--known-as-of: invalid RFC3339Nano timestamp %q: %w", knownAsOfRaw, err)
+		}
+		knownAsOf = &parsed
+	}
+	return runIssueCommentResolution(cmd, args[0], true, knownAsOf)
 }
 
 func runIssueCommentUnresolve(cmd *cobra.Command, args []string) error {
-	return runIssueCommentResolution(cmd, args[0], false)
+	return runIssueCommentResolution(cmd, args[0], false, nil)
 }
 
-func runIssueCommentResolution(cmd *cobra.Command, commentID string, resolve bool) error {
+// threadChangedMessage decodes a 409 thread_changed body (see ResolveComment
+// in internal/handler/comment.go) into an actionable CLI error. Mirrors
+// revisionConflictMessage's decode pattern for the issue API's other typed
+// 409s, so every stale-write conflict reads the same way from the CLI.
+func threadChangedMessage(err error) (string, bool) {
+	var httpErr *cli.HTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusConflict {
+		return "", false
+	}
+	var payload struct {
+		Code  string `json:"code"`
+		Error string `json:"error"`
+	}
+	if json.Unmarshal([]byte(httpErr.Body), &payload) != nil {
+		return "", false
+	}
+	if payload.Code != "thread_changed" || payload.Error == "" {
+		return "", false
+	}
+	return fmt.Sprintf("resolve rejected: %s — reload the thread and retry with an updated --known-as-of", payload.Error), true
+}
+
+func runIssueCommentResolution(cmd *cobra.Command, commentID string, resolve bool, knownAsOf *time.Time) error {
 	client, err := newAPIClient(cmd)
 	if err != nil {
 		return err
@@ -2394,7 +2426,14 @@ func runIssueCommentResolution(cmd *cobra.Command, commentID string, resolve boo
 	path := "/api/comments/" + url.PathEscape(commentID) + "/resolve"
 	var result map[string]any
 	if resolve {
-		if err := client.PostJSON(ctx, path, nil, &result); err != nil {
+		var body any
+		if knownAsOf != nil {
+			body = map[string]any{"known_as_of": knownAsOf.Format(time.RFC3339Nano)}
+		}
+		if err := client.PostJSON(ctx, path, body, &result); err != nil {
+			if msg, ok := threadChangedMessage(err); ok {
+				return errors.New(msg)
+			}
 			return fmt.Errorf("resolve comment: %w", err)
 		}
 		fmt.Fprintf(os.Stderr, "Comment %s resolved.\n", commentID)
