@@ -1810,6 +1810,27 @@ WHERE issue_id = @issue_id
   )
   AND comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id(sqlc.narg('thread_comment_id')::uuid);
 
+-- name: FindLiveRerunOfTask :one
+-- CHE-485: replay guard for RerunIssue. A rerun request is identified by the
+-- exact source task being rerun plus the acting member — a double-click, a
+-- retried HTTP request, or a duplicate webhook delivery of the SAME rerun
+-- action must not cancel-and-recreate a second time. If a still-live task
+-- (not yet terminal) already exists whose rerun_of_task_id points at this
+-- source task and whose originator_user_id is this same actor, that row IS
+-- the admitted outcome of this rerun request — return it so the caller can
+-- skip straight to it instead of mutating anything again.
+--
+-- Scoped to non-terminal status so a rerun that already finished (or failed/
+-- cancelled) is NOT treated as covering a fresh request: a failed or
+-- cancelled attempt is not a fulfilled obligation, and the caller must be
+-- free to rerun again for a genuinely new attempt.
+SELECT * FROM agent_task_queue
+WHERE rerun_of_task_id = sqlc.arg(source_task_id)
+  AND originator_user_id = sqlc.arg(actor_user_id)
+  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+ORDER BY created_at DESC
+LIMIT 1;
+
 -- name: MergeCommentIntoPendingTask :one
 -- MUL-4195: fold a newly-arrived comment into an existing task for (issue,
 -- agent) that has NOT yet been claimed, instead of letting the

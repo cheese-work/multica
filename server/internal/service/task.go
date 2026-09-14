@@ -5550,6 +5550,34 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourc
 		}
 	}
 
+	// Replay guard (CHE-485): a rerun request is identified by the exact source
+	// task plus the acting member. sourceTaskID.Valid means this is a task_id
+	// rerun (a click on a specific row's retry button, or its HTTP replay) —
+	// the only shape a duplicate delivery can repeat verbatim, since the
+	// assignee-driven zero-arg rerun has no request identity to replay against.
+	// If that exact rerun already produced a still-live task, this delivery is
+	// a duplicate of an already-admitted obligation: return the existing task
+	// rather than cancelling and re-enqueueing again. A terminal (failed/
+	// cancelled/completed) prior rerun does NOT match here, so a genuinely new
+	// rerun attempt after a failure is never suppressed.
+	if sourceTaskID.Valid && actorUserID.Valid {
+		existing, err := s.Queries.FindLiveRerunOfTask(ctx, db.FindLiveRerunOfTaskParams{
+			SourceTaskID: sourceTaskID,
+			ActorUserID:  actorUserID,
+		})
+		if err == nil {
+			slog.Info("issue rerun: replay of already-admitted rerun, returning existing task",
+				"issue_id", util.UUIDToString(issueID),
+				"source_task_id", util.UUIDToString(sourceTaskID),
+				"existing_task_id", util.UUIDToString(existing.ID),
+			)
+			return &existing, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("check rerun replay: %w", err)
+		}
+	}
+
 	// Clear only the tasks that have not begun executing. Those are the rows the
 	// fresh enqueue would collide with under
 	// idx_one_pending_task_per_issue_agent_v2, and replacing them costs no work
