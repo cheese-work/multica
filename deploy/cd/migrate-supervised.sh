@@ -352,16 +352,33 @@ while [ "$(date +%s)" -lt "$cancel_deadline_epoch" ]; do
   sleep 0.1
 done
 
+# From here on, the absolute `deadline_epoch` is a HARD boundary on
+# WAITING/CONFIRMING: no further poll loop or absence probe may START
+# once it has passed. This closes the exact gap Sol found: the SIGKILL
+# confirmation loop (up to five 100ms checks) and the one extra absence
+# probe below previously ran unconditionally after the cancellation loop
+# timed out, letting real wall-clock work continue past the approved
+# envelope while the comments claimed the whole path was bounded by it.
+#
+# Sending SIGKILL itself is different: it is a single, effectively
+# instantaneous syscall, not wall-clock work, and it is also the last
+# safety action available — skipping it because the clock already reads
+# deadline_epoch would leave a still-running process with no further
+# attempt to stop it, which is strictly worse than a late confirmation.
+# So the kill is unconditional (bounded only by whether it is still
+# needed at all); only the loop that waits to CONFIRM it worked is
+# deadline-gated, and confirmation is denied rather than assumed if that
+# window is already gone.
 if ! $os_confirmed && kill -0 "$migrator_os_pid" 2>/dev/null; then
   echo "che372-d2: graceful cancel unconfirmed for os_pid=$migrator_os_pid; escalating to SIGKILL on recorded pid" >&2
   kill -KILL "$migrator_os_pid" 2>/dev/null || true
-  for _ in 1 2 3 4 5; do
+  while [ "$(date +%s)" -lt "$deadline_epoch" ]; do
     kill -0 "$migrator_os_pid" 2>/dev/null || { os_confirmed=true; wait "$migrator_os_pid" 2>/dev/null || true; break; }
     sleep 0.1
   done
 fi
 
-if [ -n "$migrator_pg_pid" ] && ! $pg_confirmed; then
+if [ "$(date +%s)" -lt "$deadline_epoch" ] && [ -n "$migrator_pg_pid" ] && ! $pg_confirmed; then
   if confirm_no_live_session_for_pid "$migrator_pg_pid" "$migrator_pg_backend_start"; then
     pg_confirmed=true
   fi
@@ -371,9 +388,12 @@ fi
 # — this is the fail-closed default for "we don't know," not a special
 # case: pg_confirmed only becomes true via an actual observed absence
 # above, and starts and stays false here when migrator_pg_pid is empty.
+# Reaching the deadline with anything unconfirmed is itself the
+# deterministic non-success outcome — this script never waits past
+# deadline_epoch hoping for a late confirmation.
 if $os_confirmed && $pg_confirmed; then
   echo "che372-d2: os_pid=$migrator_os_pid and Postgres pid=$migrator_pg_pid both confirmed terminated after ${final_state} — needs_operator (state uncertain: hooks or earlier statements may have committed)" >&2
 else
-  echo "che372-d2: termination UNCONFIRMED (os_confirmed=$os_confirmed pg_confirmed=$pg_confirmed pg_pid=${migrator_pg_pid:-never-identified}) — needs_operator, fence must stay up" >&2
+  echo "che372-d2: termination UNCONFIRMED at or after the absolute deadline (os_confirmed=$os_confirmed pg_confirmed=$pg_confirmed pg_pid=${migrator_pg_pid:-never-identified}) — needs_operator, fence must stay up" >&2
 fi
 exit 3

@@ -116,12 +116,24 @@ deadline-exceeded or unconfirmed run always exits `3` (`needs_operator`)
 and never claims success; it does not attempt to repair or roll back the
 database itself.
 
-The absolute deadline covers cancellation too: the cancel-confirmation
-window is bounded by the same `deadline_epoch` computed once at the top of
-the script, never by a fresh `now + reserve_seconds` clock started at
-cancellation time (which would silently re-grant the reserve every time
-cancellation itself took any time to notice the deadline had passed). A
-nonzero migrator exit is captured explicitly (`set +e` / `set -e` bracket
+The absolute deadline covers cancellation too, and is a **hard boundary on
+waiting/confirming**: the cancel-confirmation loop, the SIGKILL-confirmation
+loop, and the final absence probe are all bounded by the same
+`deadline_epoch` computed once at the top of the script, never by a fresh
+`now + reserve_seconds` clock started at cancellation time (which would
+silently re-grant the reserve every time cancellation itself took any time
+to notice the deadline had passed) — and none of them may even *start*
+once the deadline has passed; reaching the deadline with anything
+unconfirmed goes straight to the deterministic `needs_operator` report
+rather than attempting more work there is no time budget left for.
+Sending the escalation SIGKILL itself is the one exception and is never
+deadline-gated: it is a single, effectively instantaneous syscall, not
+wall-clock work, and it is also the last safety action available — skipping
+it because the clock already reads `deadline_epoch` would leave a
+still-running process with nothing further attempting to stop it, which is
+strictly worse than a late confirmation of that same kill.
+
+A nonzero migrator exit is captured explicitly (`set +e` / `set -e` bracket
 the one `wait` call that reads it) rather than being read via a bare `wait`
 under the script's own `set -e`, which would otherwise abort the wrapper
 script itself on the child's exit code before any of its own success/
