@@ -1616,6 +1616,153 @@ describe("IssueDetail (shared)", () => {
     await waitFor(() => expect(screen.queryByText("Reply 0")).toBeInTheDocument());
     expect(screen.getByRole("button", { name: "Show less" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Show \d+ more repl/ })).not.toBeInTheDocument();
+    // Assert the durable store entry itself, not just rendered rows — the
+    // rows alone can't distinguish "still latched" from "some other pin
+    // happens to still be active."
+    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true);
+  });
+
+  it("latches a thread's length-expanded preference when an active run forces it open, surviving after the run completes", async () => {
+    const root = mockTimeline[0]!;
+    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+      ...mockTimeline[1]!,
+      id: `latch-run-reply-${i}`,
+      parent_id: root.id,
+      content: `Run reply ${i}`,
+      created_at: `2026-01-16T00:0${i}:00Z`,
+    }));
+    // An active (queued) run anchored to the newest reply, with no published
+    // reply of its own yet — the exact shape `rootIdsWithActiveRun` looks for.
+    const task: AgentTask = {
+      id: "ba2e8d1c-7f9b-4e2a-9c1d-latchrun001", agent_id: "agent-1", runtime_id: "runtime-1", issue_id: "issue-1",
+      status: "queued", priority: 0, created_at: "2026-01-16T00:05:00Z",
+      started_at: null, dispatched_at: null, completed_at: null, result: null, error: null,
+      trigger_comment_id: replies[3]!.id, delivered_comment_ids: [],
+    };
+    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+    mockApiObj.listTasksByIssue.mockResolvedValue([task]);
+    const client = createTestQueryClient();
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={client}><IssueDetail issueId="issue-1" /></QueryClientProvider>
+      </I18nProvider>,
+    );
+
+    // The active run is present from the first render (it's in the initial
+    // `listTasksByIssue` mock, unlike the draft scenario above where the
+    // draft starts mid-test), so the pin is already active by the time
+    // anything mounts — the compact-window reply is visible immediately, and
+    // the latch effect has already persisted the expansion.
+    await screen.findByText("Run reply 3");
+    await screen.findByText("Run reply 0");
+    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true);
+
+    // The run completes — the pin's reason ends.
+    const completed: AgentTask = { ...task, status: "completed", completed_at: "2026-01-16T00:06:00Z" };
+    mockApiObj.listTasksByIssue.mockResolvedValue([completed]);
+    act(() => {
+      client.setQueryData(issueKeys.tasks("issue-1"), [completed]);
+    });
+
+    // 01-DESIGN line 56 requires the latch to survive run completion exactly
+    // as it does draft-clearing: the reply stays visible and the store entry
+    // is not removed.
+    await waitFor(() => expect(screen.queryByText("Run reply 0")).toBeInTheDocument());
+    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true);
+  });
+
+  it("latches a thread's length-expanded preference when a target reveal forces it open, surviving after the target releases", async () => {
+    const root = mockTimeline[0]!;
+    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+      ...mockTimeline[1]!,
+      id: `latch-target-reply-${i}`,
+      parent_id: root.id,
+      content: `Target reply ${i}`,
+      created_at: `2026-01-16T00:0${i}:00Z`,
+    }));
+    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+    const queryClient = createTestQueryClient();
+    // Built directly (not via renderIssueDetailWithHighlight) so the target
+    // reveal can actually "release" by rerendering with highlightCommentId
+    // cleared — 01-DESIGN "Target reveal" row: "replacement/cancellation/view
+    // exit releases it." targetRootId is purely a function of this prop; it
+    // has no internal timeout, so releasing it means the caller (here, the
+    // rerender) stops passing it, exactly like a consumed deep link.
+    const { rerender } = render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail issueId="issue-1" highlightCommentId={replies[0]!.id} />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+
+    // The target (the oldest, compact-window-hidden reply) is revealed.
+    await screen.findByText("Target reply 0");
+    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true);
+
+    // The deep link is consumed — the caller stops passing highlightCommentId,
+    // releasing the pin (targetRootId becomes null).
+    rerender(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail issueId="issue-1" />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+
+    // This is finding 1's regression: without the fix, targetRootId's pin
+    // drops with nothing having latched it, and the thread silently refolds,
+    // hiding the reply the user was just shown.
+    await waitFor(() => expect(screen.queryByText("Target reply 0")).toBeInTheDocument());
+    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true);
+  });
+
+  it("does not latch a thread's length preference merely because in-page find opened and closed", async () => {
+    // find.open must force a compact thread open (so its content is
+    // searchable) WITHOUT writing anything durable — 01-DESIGN "Find open /
+    // close" row: "no write to any fold preference." This is the negative
+    // control that keeps the target-reveal latch from over-latching.
+    const root = mockTimeline[0]!;
+    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+      ...mockTimeline[1]!,
+      id: `latch-find-reply-${i}`,
+      parent_id: root.id,
+      content: `Find reply ${i}`,
+      created_at: `2026-01-16T00:0${i}:00Z`,
+    }));
+    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+    // useInPageFind's Cmd/Ctrl+F handler gates on the container having a
+    // non-empty getClientRects() — real in a browser, always empty in jsdom.
+    // Scoped to this test only: no other test in this file drives find.open,
+    // and stubbing it globally risks masking an unrelated visibility bug in
+    // a future test.
+    const originalGetClientRects = Element.prototype.getClientRects;
+    Element.prototype.getClientRects = function (this: Element) {
+      return [{ width: 1, height: 1 }] as unknown as DOMRectList;
+    };
+    try {
+      renderIssueDetail();
+      await screen.findByText("Find reply 3");
+      expect(screen.queryByText("Find reply 0")).not.toBeInTheDocument();
+
+      fireEvent.keyDown(document, { key: "f", ctrlKey: true });
+      // find.open forces the thread flat/open for searchability.
+      await screen.findByText("Find reply 0");
+      // The pin is doing the work here — nothing has latched yet.
+      expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy();
+
+      // Escape is handled by FindBar's own input, not a global listener.
+      const findInput = screen.getByPlaceholderText("Find in issue...");
+      fireEvent.keyDown(findInput, { key: "Escape" });
+
+      // Closing find drops the pin. Per row 58, no durable entry was ever
+      // written for this root, so it refolds — this is the correct, intended
+      // behavior for find (unlike the draft/run/target latches above).
+      await waitFor(() => expect(screen.queryByText("Find reply 0")).not.toBeInTheDocument());
+      expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy();
+    } finally {
+      Element.prototype.getClientRects = originalGetClientRects;
+    }
   });
 
   it("replaces each queued run in place without moving replies behind later requests", async () => {

@@ -1696,15 +1696,25 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // it — the two need the exact same "active run" definition, and
   // `rootIdsWithActiveReplyDraft` already established the pattern of
   // precomputing a root-id set for this kind of reason.
+  //
+  // `commentRuns` is keyed by THREAD ROOT id, not by reply id (see
+  // comment-runs.ts's `buildCommentRunView`: every run's group walks
+  // `anchorCommentId` up through `parent_id` to the thread root before being
+  // stored) — the same key `runs={commentRuns.get(item.id)}` uses below when
+  // rendering a root's CommentCard. A run anchored to one of a root's
+  // replies is filed under the ROOT's id, so this reads `commentRuns.get(rootId)`
+  // once per root and checks every run's `anchorCommentId` against that
+  // root's replies, rather than incorrectly looking up `commentRuns` by each
+  // reply's own id (which only holds runs for a reply that is itself a
+  // thread root, e.g. a standalone assignment answer).
   const rootIdsWithActiveRun = useMemo(() => {
     const ids = new Set<string>();
     for (const [rootId, replies] of timelineView.threadReplies) {
-      for (const reply of replies) {
-        const replyRuns = commentRuns.get(reply.id) ?? EMPTY_COMMENT_RUNS;
-        if (replyRuns.some((run) => !run.hasReply && isActiveCommentRun(run.task))) {
-          ids.add(rootId);
-          break;
-        }
+      const rootRuns = commentRuns.get(rootId) ?? EMPTY_COMMENT_RUNS;
+      const replyIds = new Set(replies.map((reply) => reply.id));
+      if (rootRuns.some((run) => !run.hasReply && isActiveCommentRun(run.task)
+        && run.anchorCommentId && replyIds.has(run.anchorCommentId))) {
+        ids.add(rootId);
       }
     }
     return ids;
@@ -1731,12 +1741,15 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   //     (`rootIdsWithActiveReplyDraft` above — see its comment for exactly
   //     what is and is not covered).
   // This does not persist a length or collapse choice by itself — it only
-  // lifts the ceiling for the duration of the reason. The "New reply / edit /
-  // active run" transition-matrix row additionally requires LATCHING the
-  // length preference when one of the two interaction reasons (active
-  // reply/edit, active run — NOT find/target, which is a different matrix
-  // row with no latch requirement) starts on a not-yet-expanded root, so the
-  // expansion survives after the reason ends; see the effect below.
+  // lifts the ceiling for the duration of the reason. Two transition-matrix
+  // rows additionally require LATCHING the length preference on a
+  // not-yet-expanded root so the expansion survives after the reason ends
+  // (see the effect below): "New reply / edit / active run" (active
+  // reply/edit, active run) and "Target reveal / notification replay"
+  // (`targetRootId`, latch its length-expanded choice). "Find open / close"
+  // is the one reason here that does NOT latch — row 58 is explicit that
+  // find writes no fold preference; `find.open` still forces threads open
+  // for the duration of the search, it just never persists it.
   const forceThreadOpen = useCallback((rootId: string): boolean => {
     if (find.open) return true;
     if (targetRootId === rootId) return true;
@@ -1749,14 +1762,19 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     return false;
   }, [find.open, targetRootId, rootIdsWithActiveReplyDraft, rootIdsWithActiveRun, timelineView.threadReplies, highlightedId]);
 
-  // Latch: 01-DESIGN line 56 requires that when an active-reply/edit-draft or
-  // active-run reason forces a thread open, the length-expanded preference is
-  // PERSISTED for that root — "ending the reason releases its temporary pin
-  // but does not clear the latched length expansion. Idle updates cannot
-  // refold a user-expanded thread." Without this, `forceThreadOpen` above is
-  // a temporary pin only: the moment the draft is sent/cleared or the run
-  // finishes, the pin drops and a previously-compact root refolds, silently
-  // discarding content the user was just looking at because of that reason.
+  // Latch: 01-DESIGN line 56 ("New reply / edit / active run") and line 57
+  // ("Target reveal / notification replay") both require that when their
+  // reason forces a thread open, the length-expanded preference is PERSISTED
+  // for that root — "ending the reason releases its temporary pin but does
+  // not clear the latched length expansion." Line 58 ("Find open / close")
+  // is explicit that find does the opposite — "no write to any fold
+  // preference" — so `find.open` is deliberately absent from this effect;
+  // it still forces threads open via `forceThreadOpen` above, it just never
+  // latches. Without this effect, `forceThreadOpen`'s draft/run/target pins
+  // are temporary only: the moment the draft is sent, the run finishes, or
+  // the target reveal releases, the pin drops and a previously-compact root
+  // refolds, silently discarding content the user was just looking at
+  // because of that reason.
   //
   // Effect (not a write inside `forceThreadOpen` itself) so this fires once
   // per root per reason-start rather than on every render while the reason
@@ -1785,7 +1803,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     for (const rootId of rootIdsWithActiveRun) {
       if (!expandedThreadLengths.has(rootId)) setThreadExpanded(id, rootId, true);
     }
-  }, [rootIdsWithActiveReplyDraft, rootIdsWithActiveRun, expandedThreadLengths, id, setThreadExpanded]);
+    if (targetRootId && !expandedThreadLengths.has(targetRootId)) setThreadExpanded(id, targetRootId, true);
+  }, [rootIdsWithActiveReplyDraft, rootIdsWithActiveRun, targetRootId, expandedThreadLengths, id, setThreadExpanded]);
 
   // ID of the trailing activity block — the only one expanded by default.
   const lastActivityGroupId = useMemo(() => {
