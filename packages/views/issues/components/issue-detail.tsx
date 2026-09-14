@@ -3282,7 +3282,15 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             {...descriptionAnnotations.captureProps}
             ref={descriptionAnnotations.cardRef}
             className="relative mt-5 rounded-lg"
-            onFocusCapture={() => {
+            onFocusCapture={(event) => {
+              // Only focus landing IN the editor counts as "editing" for the
+              // collapse-disable guard — not the Show more/less button
+              // itself. Without this, pressing Enter on "Show more" expands
+              // the description, its own button becomes "Show less" on the
+              // next render, `descriptionFocused` flips true from this same
+              // focus event, and `collapseDisabled` immediately disables the
+              // button the user's focus is still on — dropping focus.
+              if (!event.target.closest("[data-description-editor]")) return;
               if (!descriptionEditingRef.current) {
                 descriptionEditingRef.current = true;
                 setDescriptionFocused(true);

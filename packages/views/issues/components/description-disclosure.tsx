@@ -99,7 +99,19 @@ export function DescriptionDisclosure({
       : labels.showMore;
 
   return (
-    <section data-description-disclosure>
+    <section
+      data-description-disclosure
+      onPointerDownCapture={(event) => {
+        // `inert` blocks real browsers from ever dispatching a pointer event
+        // to the editor div below (or its descendants) while collapsed, so
+        // this handler must live on a non-inert ancestor. This section is
+        // the closest one.
+        if (!collapsed) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onExpandedChange(true);
+      }}
+    >
       <div
         ref={editorRef}
         aria-hidden={collapsed || undefined}
@@ -107,12 +119,6 @@ export function DescriptionDisclosure({
         data-find-ignore={collapsed ? "true" : undefined}
         id={editorId}
         inert={collapsed || undefined}
-        onPointerDownCapture={(event) => {
-          if (!collapsed) return;
-          event.preventDefault();
-          event.stopPropagation();
-          onExpandedChange(true);
-        }}
         style={
           collapsed
             ? {

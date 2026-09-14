@@ -94,6 +94,26 @@ describe("DescriptionDisclosure", () => {
     expect(screen.getByRole("button", { name: "Show less" })).toHaveAttribute("aria-expanded", "true");
   });
 
+  it("expands from a pointerdown on the non-inert section, not the inert editor div itself", () => {
+    // Regression: `inert` blocks a real browser from ever dispatching a
+    // pointer event to the element it's set on (or descendants) — a handler
+    // placed there is unreachable by any real click while collapsed. The
+    // capture handler must live on a non-inert ancestor; this is that
+    // section, one level up from the editor div.
+    render(<DisclosureHarness />);
+
+    const editor = screen.getByTestId("real-editor").parentElement!;
+    expect(editor).toHaveAttribute("inert");
+    const section = editor.parentElement!;
+    expect(section).toHaveAttribute("data-description-disclosure");
+    expect(section).not.toHaveAttribute("inert");
+
+    fireEvent.pointerDown(section);
+
+    expect(editor).not.toHaveAttribute("inert");
+    expect(screen.getByRole("button", { name: "Show less" })).toBeInTheDocument();
+  });
+
   it("does not hide or duplicate a short description", () => {
     measurement.current = {
       totalRows: 12,

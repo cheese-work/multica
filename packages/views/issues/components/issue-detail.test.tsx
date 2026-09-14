@@ -2791,6 +2791,35 @@ describe("IssueDetail (shared)", () => {
     expect(descEditorUploadFile).toHaveBeenCalledWith(selectedFile);
   });
 
+  it("keeps focus on Show less after expanding, instead of dropping it via collapseDisabled", async () => {
+    // Regression: `onFocusCapture` on the wrapper around DescriptionDisclosure
+    // fired for ANY focus inside it, including the Show more/less button
+    // itself. Focusing "Show more" then expanding flipped `descriptionFocused`
+    // true from that same focus event; on the next render the button (now
+    // "Show less") read `disabled={expanded && collapseDisabled}` and became
+    // disabled while the browser's focus was still on it — a disabled element
+    // cannot hold focus, so focus silently dropped to <body>. The guard must
+    // only count focus landing inside the actual editor as "editing."
+    descriptionMeasurement.current = {
+      totalRows: 13,
+      hiddenRows: 1,
+      hasOverflow: true,
+      lineHeight: 20,
+      previewText: "Add JWT auth to the backend",
+    };
+    renderIssueDetail();
+
+    await screen.findByDisplayValue("Add JWT auth to the backend");
+    const showMore = screen.getByRole("button", { name: /Show more/ });
+    act(() => showMore.focus());
+    fireEvent.keyDown(showMore, { key: "Enter" });
+    fireEvent.click(showMore);
+
+    const showLess = await screen.findByRole("button", { name: "Show less" });
+    expect(showLess).not.toBeDisabled();
+    expect(document.activeElement).toBe(showLess);
+  });
+
   it("re-enables Show less once a pending upload's attachment ids are bound", async () => {
     descriptionMeasurement.current = {
       totalRows: 13,
