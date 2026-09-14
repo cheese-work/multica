@@ -98,13 +98,34 @@ consume the whole allocation before the deadline was ever checked).
 
 On cancellation, the watchdog requires **both**: the OS process confirmed
 exited (not merely signalled), *and* the migrator's identified Postgres
-backend confirmed absent from `pg_stat_activity` — a client that has exited
-does not prove the server-side session has finished rolling back or
-releasing locks, especially mid-statement. A migrator session that was never
-positively identified can never count as "confirmed absent" (fail-closed: a
-session this script never observed is not proof of anything). A deadline-exceeded
-or unconfirmed run always exits `3` (`needs_operator`) and never claims
-success; it does not attempt to repair or roll back the database itself.
+backend confirmed absent — a client that has exited does not prove the
+server-side session has finished rolling back or releasing locks,
+especially mid-statement. Server-side absence is proven by
+`quiescence.mjs`'s `verify-live-session-is-absent`, which checks the
+*exact* recorded `(pid, backend_start)` pair against a fresh
+`pg_stat_activity` read and also accounts for any *other* live session
+still authenticated as the same role/database (the migrator's own hook
+connections, or an ambiguous same-role session) — not a `LIMIT 1` query
+compared loosely against a remembered PID, which can be satisfied by an
+unrelated session while the real one is still live. An observation
+*failure* (connection error, timeout) is UNKNOWN state and is never
+treated as proof of absence; a migrator session that was never positively
+identified can also never count as "confirmed absent" — both are
+fail-closed, not a special case skipped by an `if` guard. A
+deadline-exceeded or unconfirmed run always exits `3` (`needs_operator`)
+and never claims success; it does not attempt to repair or roll back the
+database itself.
+
+The absolute deadline covers cancellation too: the cancel-confirmation
+window is bounded by the same `deadline_epoch` computed once at the top of
+the script, never by a fresh `now + reserve_seconds` clock started at
+cancellation time (which would silently re-grant the reserve every time
+cancellation itself took any time to notice the deadline had passed). A
+nonzero migrator exit is captured explicitly (`set +e` / `set -e` bracket
+the one `wait` call that reads it) rather than being read via a bare `wait`
+under the script's own `set -e`, which would otherwise abort the wrapper
+script itself on the child's exit code before any of its own success/
+failure/needs_operator logic ever ran.
 
 ### The CD entrypoint and its Compose wiring
 

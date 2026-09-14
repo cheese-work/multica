@@ -165,22 +165,36 @@ if [ -n "$psql_via_docker_network" ]; then
   quiescence_args_common+=(--psql-via-docker-network "$psql_via_docker_network")
 fi
 
-# confirm_no_live_session_for_pid queries pg_stat_activity for the given
-# Postgres backend pid and returns 0 only if that backend is genuinely
-# absent server-side. This is the server-side proof the previous version
-# of this script never obtained — it only ever checked `kill -0` on the OS
-# process, which proves nothing about whether Postgres itself has finished
-# rolling back or releasing the session (a long statement, or a client
-# that has already exited while the server-side backend is still
-# unwinding, both leave real server-side state this must observe).
+# confirm_no_live_session_for_pid proves — or fails to prove — that the
+# EXACT recorded (pid, backend_start) session is gone AND that no other
+# migrator-attributable (same role/database) session remains, via
+# deploy/cd/quiescence.mjs's verify-live-session-is-absent, which queries
+# pg_stat_activity directly for that identity rather than comparing
+# against whatever a separate, unrelated LIMIT-1 query happens to return.
+#
+# Exit code contract (matches quiescence.mjs's own three-way CLI
+# contract): 0 = confirmed absent, 1 = confirmed still live (a real,
+# known negative), 2 = observation failed (unknown state). This function
+# returns 0 ONLY on a confirmed absence (exit 0 from quiescence.mjs);
+# every other case — a real "still live" AND an observation failure
+# alike — returns non-zero, so a bare `if confirm_no_live_session_for_pid`
+# check can never mistake "we don't know" for "it's gone." This is the
+# fix for the exact defect Sol found: the previous version returned
+# success (`|| return 0`) on ANY observer command failure, meaning a
+# broken connection or a query error was silently treated as proof of
+# termination.
 confirm_no_live_session_for_pid() {
   local pg_pid="$1"
-  local probe
-  probe="$(node deploy/cd/quiescence.mjs find-live-session-by-role "${quiescence_args_common[@]}" \
-    --role-name "$role_name" --database-name "$database_name" --query-timeout-ms 500 2>/dev/null)" || return 0
-  local found_pid
-  found_pid="$(node -e 'try{process.stdout.write(String(JSON.parse(process.argv[1]).pid))}catch(e){process.stdout.write("")}' "$probe" 2>/dev/null || true)"
-  [ "$found_pid" != "$pg_pid" ]
+  local pg_backend_start="$2"
+  local absent_result
+  absent_result="$(node deploy/cd/quiescence.mjs verify-live-session-is-absent "${quiescence_args_common[@]}" \
+    --pid "$pg_pid" --backend-start "$pg_backend_start" \
+    --role-name "$role_name" --database-name "$database_name" --query-timeout-ms 500 2>&1)"
+  local status=$?
+  if [ "$status" -ne 0 ]; then
+    echo "che372-d2: absence check for pid=$pg_pid did not confirm absence (exit $status): $absent_result" >&2
+  fi
+  return "$status"
 }
 
 # --- launch the migrator immediately; the watchdog loop below governs the
@@ -207,8 +221,18 @@ while :; do
     # does not by itself prove the Postgres session is gone (a crashed
     # client can leave server-side work in flight), so still discover and
     # confirm the Postgres session below before declaring success.
+    #
+    # `wait` is a shell builtin whose own exit status IS the child's exit
+    # status, so under `set -e` a nonzero migrator exit would abort this
+    # script right here — before migrate_status is captured, before
+    # final_state is set to failed_nonzero, before any backend-disappearance
+    # confirmation runs. `set +e`/`set -e` bracket exactly this one command
+    # so a nonzero child exit is captured as data, not treated as this
+    # script's own failure.
+    set +e
     wait "$migrator_os_pid" 2>/dev/null
     migrate_status=$?
+    set -e
     if [ "$migrate_status" -ne 0 ]; then
       final_state="failed_nonzero"
       break
@@ -243,15 +267,26 @@ while :; do
 done
 
 if [ "$final_state" = "success" ]; then
-  # Confirmed OS exit zero within budget. Still require server-side proof:
-  # if we never located the migrator's Postgres session at all (e.g. it
-  # finished so fast between poll iterations that this script never
-  # observed it live), that is an UNCERTAIN outcome, not a clean success —
-  # this script only claims success when it has independently confirmed
-  # both the client exit code AND that no live migrator-identified
-  # Postgres session remains attributable to a still-running attempt.
-  if [ -n "$migrator_pg_pid" ] && ! confirm_no_live_session_for_pid "$migrator_pg_pid"; then
-    echo "che372-d2: migrator os_pid=$migrator_os_pid exited 0 but its Postgres session pid=$migrator_pg_pid is still observed live — treating as UNCERTAIN, not success" >&2
+  # Confirmed OS exit zero within budget. Still require server-side proof
+  # before claiming success — this block must resolve to success ONLY on
+  # an actual confirmed absence, and to needs_operator for every other
+  # case, with no path that silently falls through and leaves
+  # final_state untouched:
+  #   - never discovered a Postgres session at all (e.g. it finished so
+  #     fast between poll iterations that this script never observed it
+  #     live) — UNCERTAIN, not success, because there is nothing to have
+  #     confirmed absent;
+  #   - discovered a session but the absence check FAILED (observer
+  #     error/timeout, unknown state) — UNCERTAIN, never treated as "no
+  #     news is good news";
+  #   - discovered a session and it is confirmed still live, or another
+  #     migrator-attributable session remains — UNCERTAIN.
+  # Only "discovered, and confirmed absent" keeps final_state=success.
+  if [ -z "$migrator_pg_pid" ]; then
+    echo "che372-d2: migrator os_pid=$migrator_os_pid exited 0 but no Postgres session was ever positively identified for it — cannot confirm server-side completion, treating as UNCERTAIN, not success" >&2
+    final_state="needs_operator"
+  elif ! confirm_no_live_session_for_pid "$migrator_pg_pid" "$migrator_pg_backend_start"; then
+    echo "che372-d2: migrator os_pid=$migrator_os_pid exited 0 but its Postgres session pid=$migrator_pg_pid could not be confirmed absent — treating as UNCERTAIN, not success" >&2
     final_state="needs_operator"
   fi
 fi
@@ -275,17 +310,24 @@ fi
 # check above: cancel the OS process if still running, and — this is the
 # server-side proof the previous version never obtained — poll
 # pg_stat_activity until the migrator's identified Postgres backend is
-# actually gone, not merely until the OS process disappears. The
-# cancellation attempt itself is still bounded (it does not get an
-# unbounded wait): give it up to reserve_seconds, then declare
-# needs_operator either way — reserve expiry never manufactures a
-# successful cancellation.
+# actually gone, not merely until the OS process disappears.
+#
+# The cancellation attempt is bounded by the ORIGINAL absolute
+# `deadline_epoch` computed at the top of this script, never by a fresh
+# `now + reserve_seconds` clock. work_deadline_epoch = deadline_epoch -
+# reserve_seconds specifically carves the reserve out of the same
+# envelope; by the time this path runs, `now` is typically already past
+# work_deadline_epoch (that is why we are here), so restarting a
+# reserve_seconds-long countdown from "now" would silently extend the
+# approved envelope every time cancellation itself takes any time to
+# notice the deadline passed. Clamping to the pre-existing deadline_epoch
+# means the reserve is spent once, not re-granted.
 echo "che372-d2: entering cancellation path (${final_state}) for os_pid=$migrator_os_pid pg_pid=${migrator_pg_pid:-unknown}" >&2
 if kill -0 "$migrator_os_pid" 2>/dev/null; then
   kill -TERM "$migrator_os_pid" 2>/dev/null || true
 fi
 
-cancel_deadline_epoch=$(( $(date +%s) + reserve_seconds ))
+cancel_deadline_epoch="$deadline_epoch"
 os_confirmed=false
 pg_confirmed=false
 while [ "$(date +%s)" -lt "$cancel_deadline_epoch" ]; do
@@ -294,7 +336,7 @@ while [ "$(date +%s)" -lt "$cancel_deadline_epoch" ]; do
     os_confirmed=true
   fi
   if [ -n "$migrator_pg_pid" ]; then
-    if ! $pg_confirmed && confirm_no_live_session_for_pid "$migrator_pg_pid"; then
+    if ! $pg_confirmed && confirm_no_live_session_for_pid "$migrator_pg_pid" "$migrator_pg_backend_start"; then
       pg_confirmed=true
     fi
   else
@@ -320,7 +362,7 @@ if ! $os_confirmed && kill -0 "$migrator_os_pid" 2>/dev/null; then
 fi
 
 if [ -n "$migrator_pg_pid" ] && ! $pg_confirmed; then
-  if confirm_no_live_session_for_pid "$migrator_pg_pid"; then
+  if confirm_no_live_session_for_pid "$migrator_pg_pid" "$migrator_pg_backend_start"; then
     pg_confirmed=true
   fi
 fi

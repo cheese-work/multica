@@ -473,6 +473,17 @@ export function verifyLiveSessionIsCovered({ connInfo, pid, backendStart, expect
 // unforgeable identity to verifyLiveSessionIsCovered rather than
 // confusing an OS-level child process ID (which is not a Postgres
 // backend PID) with the number pg_stat_activity actually reports.
+//
+// This finds ONE session — the first one to discover the migrator's
+// identity when nothing has been recorded yet. It is not the right tool
+// for checking whether a SPECIFIC, already-recorded session has ended:
+// with more than one same-role/database session live (the migrator's own
+// hook connections, or an unrelated session), LIMIT 1 can return a
+// different PID than the one the caller is asking about, wrongly implying
+// the recorded one is gone. Use findLiveSessionsForRole (plural) plus an
+// exact pid+backend_start membership check for that — see
+// verifyLiveSessionIsAbsent below, which is what the D2 watchdog's
+// termination-confirmation path must use instead.
 export function findLiveSessionByRole({ connInfo, roleName, databaseName, queryTimeoutMs = DEFAULT_QUERY_TIMEOUT_MS }) {
   const sql = `
     SELECT pid::text, backend_start::text
@@ -492,6 +503,60 @@ export function findLiveSessionByRole({ connInfo, roleName, databaseName, queryT
   }
   const [pid, backendStart] = result.rows[0];
   return { ok: true, pid, backendStart };
+}
+
+// findLiveSessionsForRole returns every live session (pid + backend_start)
+// authenticated as the given role/database, excluding this observation's
+// own connection. Used to account for ALL of the migrator's attributable
+// connections during termination confirmation — the pinned advisory-lock
+// connection plus any separately-opened hook connections its pool may
+// still hold — not just the single PID first discovered at launch.
+export function findLiveSessionsForRole({ connInfo, roleName, databaseName, queryTimeoutMs = DEFAULT_QUERY_TIMEOUT_MS }) {
+  const sql = `
+    SELECT pid::text, backend_start::text
+    FROM pg_stat_activity
+    WHERE usename = '${roleName.replace(/'/g, "''")}'
+      AND datname = '${databaseName.replace(/'/g, "''")}'
+      AND pid <> pg_backend_pid();
+  `;
+  const result = runPsql({ connInfo, sql, queryTimeoutMs });
+  if (!result.ok) {
+    return { ok: false, reason: `could not search pg_stat_activity: ${result.reason}` };
+  }
+  return { ok: true, sessions: result.rows.map(([pid, backendStart]) => ({ pid, backendStart })) };
+}
+
+// verifyLiveSessionIsAbsent proves — or fails to prove — that a SPECIFIC,
+// previously-recorded session (identified by its unforgeable pid +
+// backend_start, never by a fresh unrelated query result) is no longer
+// live, while also accounting for every other session still authenticated
+// as the same role/database (migrator-attributable hook connections, or
+// an ambiguous same-role session this script must not silently ignore).
+//
+// This is the fail-closed contract the D2 watchdog's cancellation
+// confirmation requires: an observation FAILURE (query error, connection
+// refused, timeout) is UNKNOWN state, not "absent" — it must never be
+// treated as proof of termination. A caller must check `result.ok` before
+// trusting `result.absent`; there is no default that makes ok:false imply
+// anything about absence.
+export function verifyLiveSessionIsAbsent({ connInfo, pid, backendStart, roleName, databaseName, queryTimeoutMs = DEFAULT_QUERY_TIMEOUT_MS }) {
+  const found = findLiveSessionsForRole({ connInfo, roleName, databaseName, queryTimeoutMs });
+  if (!found.ok) {
+    return { ok: false, reason: `could not confirm absence (observation failed, unknown state fails closed): ${found.reason}` };
+  }
+  const recordedStillLive = found.sessions.some((s) => s.pid === String(pid) && s.backendStart === backendStart);
+  const otherSessions = found.sessions.filter((s) => !(s.pid === String(pid) && s.backendStart === backendStart));
+  if (recordedStillLive) {
+    return { ok: true, absent: false, reason: `recorded session pid=${pid} backend_start=${backendStart} is still live`, otherSessions };
+  }
+  if (otherSessions.length > 0) {
+    return {
+      ok: true, absent: false,
+      reason: `recorded session pid=${pid} is gone, but ${otherSessions.length} other role=${roleName}/db=${databaseName} session(s) remain — cannot confirm all migrator-attributable connections have ended`,
+      otherSessions,
+    };
+  }
+  return { ok: true, absent: true, otherSessions: [] };
 }
 
 // buildConnInfo resolves how observation queries reach Postgres.
@@ -574,6 +639,31 @@ function cliVerifyLiveSessionIsCovered(args) {
   process.exitCode = result.ok ? 0 : 1;
 }
 
+// cliVerifyLiveSessionIsAbsent exit codes distinguish three states a
+// shell caller must never conflate: 0 = confirmed absent (both the
+// recorded session and every other same-role/database session are gone),
+// 1 = confirmed NOT absent (the recorded session or another
+// migrator-attributable session is still live — a known, real negative),
+// 2 = observation failed (unknown state; the caller must treat this the
+// same as "not absent," i.e. fail closed, never as success).
+function cliVerifyLiveSessionIsAbsent(args) {
+  const { databaseUrl, dockerNetwork, queryTimeoutMs } = connOptsFromArgs(args);
+  const pid = option("--pid", args);
+  const backendStart = option("--backend-start", args);
+  const roleName = option("--role-name", args);
+  const databaseName = option("--database-name", args);
+  const result = verifyLiveSessionIsAbsent({
+    connInfo: buildConnInfo(databaseUrl, { dockerNetwork }), pid, backendStart,
+    roleName, databaseName, queryTimeoutMs,
+  });
+  process.stdout.write(`${JSON.stringify(result)}\n`);
+  if (!result.ok) {
+    process.exitCode = 2;
+  } else {
+    process.exitCode = result.absent ? 0 : 1;
+  }
+}
+
 const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
 if (isMain) {
   try {
@@ -582,7 +672,8 @@ if (isMain) {
     else if (command === "final-gate") cliFinalGate(args);
     else if (command === "find-live-session-by-role") cliFindLiveSessionByRole(args);
     else if (command === "verify-live-session-is-covered") cliVerifyLiveSessionIsCovered(args);
-    else fail("usage: quiescence.mjs <preflight|final-gate|find-live-session-by-role|verify-live-session-is-covered> --database-url postgres://... [--query-timeout-ms N] [--fenced-pids p1,p2] [--role-name R --database-name D [--pid P --backend-start TS]]");
+    else if (command === "verify-live-session-is-absent") cliVerifyLiveSessionIsAbsent(args);
+    else fail("usage: quiescence.mjs <preflight|final-gate|find-live-session-by-role|verify-live-session-is-covered|verify-live-session-is-absent> --database-url postgres://... [--query-timeout-ms N] [--fenced-pids p1,p2] [--role-name R --database-name D [--pid P --backend-start TS]]");
   } catch (error) {
     process.stderr.write(`quiescence: ${error.message}\n`);
     process.exitCode = 2;
