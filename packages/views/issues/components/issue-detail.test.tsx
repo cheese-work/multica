@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useRef, useState, useImperativeHandle } from "react";
+import { forwardRef, useEffect, useRef, useState, useImperativeHandle, useSyncExternalStore } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -32,6 +32,39 @@ const descriptionSelectionAction = vi.hoisted(() => ({ current: undefined as { l
 // so the `useCommentDraftStore(s => s.getAttachments(key))` selector keeps a
 // stable identity. A fresh `[]` per call would loop useSyncExternalStore.
 const emptyDraftAttachments = vi.hoisted(() => [] as unknown[]);
+
+// Minimal real subscription backing for the useCommentDraftStore mock below,
+// used only by the "latch survives reason ending" regression — every other
+// test in this file needs `drafts: {}` and nothing more, so this stays
+// separate from that fixed default rather than replacing it. Unlike
+// `descriptionMeasurement.current` (set once before render, read on the next
+// natural re-render), the latch test mutates `drafts` mid-test and needs
+// React to actually re-render in response — a bare mutable ref does not do
+// that on its own, so this backs the mock hook with a genuine
+// useSyncExternalStore subscription, matching what real Zustand provides.
+const mockDraftStoreState = vi.hoisted(() => {
+  type Draft = { content: string; attachments: { status: string }[]; updatedAt: number };
+  let drafts: Record<string, Draft> = {};
+  const listeners = new Set<() => void>();
+  return {
+    getDrafts: () => drafts,
+    setDraft: (key: string, draft: Draft | undefined) => {
+      const next = { ...drafts };
+      if (draft) next[key] = draft;
+      else delete next[key];
+      drafts = next;
+      for (const listener of listeners) listener();
+    },
+    reset: () => {
+      drafts = {};
+      for (const listener of listeners) listener();
+    },
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+});
 
 // jsdom has no Range.getClientRects, and this file exercises description
 // lifecycle/integration, not disclosure geometry (canonical coverage for the
@@ -463,8 +496,14 @@ vi.mock("@multica/core/issues/stores", async () => ({
   },
   useCommentDraftStore: Object.assign(
     (selector?: any) => {
+      // Real subscription (not a bare re-invoked function): `drafts` is read
+      // through useSyncExternalStore against `mockDraftStoreState`, so a
+      // mid-test `setDraft`/`reset` call actually schedules a re-render —
+      // every other test's `drafts: {}` default behaves identically to
+      // before, since the backing store starts (and is reset) empty.
+      const drafts = useSyncExternalStore(mockDraftStoreState.subscribe, mockDraftStoreState.getDrafts);
       const state = {
-        drafts: {} as Record<string, { content: string; attachments: unknown[]; updatedAt: number }>,
+        drafts,
         getDraft: () => undefined,
         getAnnotations: () => emptyDraftAttachments,
         getAttachments: () => emptyDraftAttachments,
@@ -481,7 +520,7 @@ vi.mock("@multica/core/issues/stores", async () => ({
     },
     {
       getState: () => ({
-        drafts: {} as Record<string, { content: string; attachments: unknown[]; updatedAt: number }>,
+        drafts: mockDraftStoreState.getDrafts(),
         getDraft: () => undefined,
         getAnnotations: () => emptyDraftAttachments,
         getAttachments: () => emptyDraftAttachments,
@@ -563,6 +602,8 @@ beforeEach(() => {
     descriptionExpandedIssueIds: new Set(),
     expandedThreadIdsByIssue: {},
   });
+  // Same concern for the useCommentDraftStore mock's backing state.
+  mockDraftStoreState.reset();
 });
 
 // Mock modals
@@ -1518,6 +1559,63 @@ describe("IssueDetail (shared)", () => {
     act(() => queryClient.setQueryData(issueKeys.tasks("issue-1"), [completed]));
     await waitFor(() => expect(within(replyBlock as HTMLElement).queryByRole("button", { name: "Stop" })).not.toBeInTheDocument());
     expect(within(replyBlock as HTMLElement).getByRole("button", { name: "Open full log" })).toBe(headerLog);
+  });
+
+  // Canonical coverage for the latch itself (01-DESIGN "Durable state and
+  // transition matrix", "New reply / edit / active run" row): an active
+  // interaction must not just force a compact thread open for its duration —
+  // it must LATCH the length-expanded preference so the thread stays open
+  // after the interaction ends. `issue-disclosure-store.test.ts` only proves
+  // `setThreadExpanded` is a correct setter; it cannot prove anything about
+  // when the component calls it. This is that proof.
+  it("latches a thread's length-expanded preference when an active reply draft forces it open, surviving after the draft clears", async () => {
+    const root = mockTimeline[0]!;
+    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+      ...mockTimeline[1]!,
+      id: `latch-reply-${i}`,
+      parent_id: root.id,
+      content: `Reply ${i}`,
+      created_at: `2026-01-16T00:0${i}:00Z`,
+    }));
+    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+    renderIssueDetail();
+
+    await screen.findByText("Reply 3");
+    // Compact window: latest three visible (1, 2, 3), oldest (0) hidden.
+    expect(screen.queryByText("Reply 0")).not.toBeInTheDocument();
+    await screen.findByRole("button", { name: /Show \d+ more repl/ });
+
+    // Introduce an active reply draft on the root — the same draft-store key
+    // (`reply:${issueId}:${rootId}`) `rootIdsWithActiveReplyDraft` reads.
+    act(() => {
+      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, {
+        content: "typing a reply...",
+        attachments: [],
+        updatedAt: Date.now(),
+      });
+    });
+
+    // forceThreadOpen's pin fires: the thread opens fully, including the
+    // reply the compact window was hiding, and the latch effect persists
+    // that expansion into useIssueDisclosureStore. Show less itself is
+    // withheld while the pin is active (comment-card.tsx: `!forceThreadExpanded`
+    // gates it) — that's a different, already-covered rule — so this only
+    // asserts the reply is visible and the pin is what's showing it.
+    await screen.findByText("Reply 0");
+    expect(screen.queryByRole("button", { name: /Show \d+ more repl/ })).not.toBeInTheDocument();
+
+    // Clear the draft — the interaction ends (reply sent), exactly like
+    // useCommentDraftStore's clearDraft on a successful submit.
+    act(() => {
+      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, undefined);
+    });
+
+    // The temporary pin is gone (no active draft), but 01-DESIGN line 56
+    // requires the latch to survive: the previously-compact reply must
+    // REMAIN visible, not refold now that the reason has cleared.
+    await waitFor(() => expect(screen.queryByText("Reply 0")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Show less" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Show \d+ more repl/ })).not.toBeInTheDocument();
   });
 
   it("replaces each queued run in place without moving replies behind later requests", async () => {
