@@ -137,9 +137,14 @@ test.describe("Description editor lifecycle through folding", () => {
     const showMore = page.getByRole("button", { name: /Show more/ });
     await expect(showMore).toBeVisible();
 
-    // Click lands on the clipped, inert editor surface itself — not the Show
-    // more button — to prove the wrapper's own pointer handler expands first.
-    await editor.click({ position: { x: 10, y: 10 } });
+    // The editor itself is `inert` while collapsed, so real Chromium never
+    // hit-tests it — the enclosing, non-inert section is what actually
+    // receives the pointer event at that point (and owns the capture
+    // handler). Click the section, not the inert div: Playwright's
+    // actionability check refuses to click an element real hit-testing
+    // would never deliver the event to.
+    const section = page.locator("[data-description-disclosure]");
+    await section.click({ position: { x: 10, y: 10 } });
 
     await expect(editor).not.toHaveAttribute("aria-hidden");
     await expect(editor).not.toHaveAttribute("inert");
@@ -179,7 +184,11 @@ test.describe("Description editor lifecycle through folding", () => {
       selection?.addRange(range);
       document.dispatchEvent(new Event("selectionchange"));
     });
-    await paragraph.dispatchEvent("mouseup");
+    // The annotation capture handler is wired to `onPointerUp` (see
+    // use-comment-annotations.tsx's captureProps), which listens for native
+    // `pointerup` events specifically — a plain `mouseup` dispatch never
+    // reaches it, since the two are distinct DOM event types.
+    await paragraph.dispatchEvent("pointerup");
 
     const addAnnotation = page.getByRole("button", { name: "Add annotation" });
     await expect(addAnnotation).toBeVisible();
