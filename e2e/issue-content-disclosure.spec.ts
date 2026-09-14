@@ -174,21 +174,53 @@ test.describe("Description editor lifecycle through folding", () => {
     const paragraph = editor.locator(".ProseMirror p").last();
     await expect(paragraph).toBeVisible();
 
-    // Select the visible text via a real text-node Range, then dispatch the
-    // selectionchange the annotation capture listens for.
-    await paragraph.evaluate((node) => {
-      const range = document.createRange();
-      range.selectNodeContents(node);
-      const selection = window.getSelection();
-      selection?.removeAllRanges();
-      selection?.addRange(range);
-      document.dispatchEvent(new Event("selectionchange"));
-    });
-    // The annotation capture handler is wired to `onPointerUp` (see
-    // use-comment-annotations.tsx's captureProps), which listens for native
-    // `pointerup` events specifically — a plain `mouseup` dispatch never
-    // reaches it, since the two are distinct DOM event types.
-    await paragraph.dispatchEvent("pointerup");
+    // The description editor is `editable: true` in useCommentAnnotations, so
+    // the generic onPointerUp/onKeyUp `capture()` path is deliberately a
+    // no-op for it (see use-comment-annotations.tsx's `!editable` guards on
+    // captureProps) — a programmatic DOM Selection + synthetic pointerup
+    // never reaches it. Editable sources trigger annotation via the editor's
+    // own bubble menu (`selectionAction`, wired in issue-detail.tsx), which
+    // only appears on a real ProseMirror `selectionUpdate` transaction — a
+    // plain DOM Range/selectionchange dispatch does not produce one. Drive a
+    // real mouse-drag text selection so tiptap emits that transaction.
+    //
+    // The fixture description is 30 lines, so this last paragraph sits well
+    // below the fold — `boundingBox()` succeeds even when scrolled out of
+    // view (it only requires non-zero size), but `page.mouse` dispatches at
+    // raw viewport coordinates and does not auto-scroll like locator actions
+    // do. Scroll it into view first or the drag lands on nothing.
+    //
+    // The editor's `value` sync effect (content-editor.tsx) can still replace
+    // the ProseMirror DOM out from under us shortly after mount — e.g. a
+    // background issue refetch landing right after `Show more` — which
+    // detaches this exact paragraph node mid-scroll. Retry the whole
+    // locate-scroll-measure sequence against a freshly-resolved locator until
+    // it survives one full pass without the node disappearing underneath it.
+    let box: { x: number; y: number; width: number; height: number } | null = null;
+    await expect(async () => {
+      await paragraph.scrollIntoViewIfNeeded();
+      box = await paragraph.boundingBox();
+      if (!box) throw new Error("paragraph has no bounding box");
+    }).toPass({ timeout: 10000 });
+    if (!box) throw new Error("paragraph has no bounding box");
+    await page.mouse.move(box.x + 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width - 2, box.y + box.height / 2, { steps: 5 });
+    await page.mouse.up();
+
+    // Selecting text opens the bubble menu with the editable-source action
+    // labeled "Add to comment" (issues.json reply.annotations.add_comment) —
+    // "Add annotation" is the *confirm* button inside the note popup that
+    // opens after clicking it (reply.annotations.confirm_add).
+    const addToComment = page.getByRole("button", { name: "Add to comment" });
+    await expect(addToComment).toBeVisible();
+    // `force: true`: the click's own onClick handler hides the bubble menu
+    // synchronously (`setVisible(false)` in bubble-menu.tsx) to keep later
+    // editor transactions from reopening it over the note field. Playwright's
+    // default actionability retry loop sees the button detach mid-interaction
+    // and retries the whole click forever — this is the menu closing exactly
+    // as designed, not a real instability, so skip the actionability wait.
+    await addToComment.click({ force: true });
 
     const addAnnotation = page.getByRole("button", { name: "Add annotation" });
     await expect(addAnnotation).toBeVisible();
@@ -263,8 +295,16 @@ test.describe("Description editor lifecycle through folding", () => {
 
     // Navigate away immediately after settlement — before the freshly-started
     // 1500ms debounce can fire — so only `flushPendingOnUnmount` can save the
-    // image markdown and its attachment_ids bind (MUL-3254).
-    await page.goto(`/${workspaceSlug}/issues`, { waitUntil: "domcontentloaded" });
+    // image markdown and its attachment_ids bind (MUL-3254). This must be a
+    // real in-app client-side transition (sidebar link click), not
+    // `page.goto()`: `flushPendingOnUnmount`'s fire-and-forget save fires from
+    // a React unmount cleanup with nothing to await it, which is exactly what
+    // a client-side route swap survives — the tab stays alive under the
+    // in-flight request. A `page.goto()` is a real browser navigation that
+    // discards the document (and any in-flight fetch) the instant it starts,
+    // which this flush was never built to survive, so it's not this feature's
+    // failure mode to test.
+    await page.getByRole("link", { name: "Issues", exact: true }).click();
 
     await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
     await waitForPageText(page, issueTitle);
