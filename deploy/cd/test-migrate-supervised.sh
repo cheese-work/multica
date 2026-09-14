@@ -176,12 +176,12 @@ absent_result="$(node deploy/cd/quiescence.mjs verify-live-session-is-absent --d
   --pid 999999 --backend-start "2001-01-01 00:00:00+00" --role-name "$db_user" --database-name "$db_name" 2>&1)"
 absent_status=$?
 set -e
-if [ "$absent_status" -eq 0 ]; then
-  echo "FAIL: verify-live-session-is-absent reported absence while an unrelated same-role session is still live — ambiguity not closed"
-  fail=$((fail + 1))
-else
-  echo "PASS: verify-live-session-is-absent correctly refuses absence while any same-role/database session remains (exit $absent_status): $absent_result"
+if [ "$absent_status" -eq 1 ]; then
+  echo "PASS: verify-live-session-is-absent correctly reports confirmed-still-live (exit 1) while an unrelated same-role/database session remains: $absent_result"
   pass=$((pass + 1))
+else
+  echo "FAIL: expected exit 1 (confirmed still live/ambiguous) while an unrelated same-role session is present, got $absent_status — any other status (0=wrongly absent, 2=observer failure) is the wrong failure class: $absent_result"
+  fail=$((fail + 1))
 fi
 docker exec "$container" psql -U "$db_user" -d "$db_name" -At -c \
   "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE '%pg_sleep(8)%';" >/dev/null 2>&1 || true
@@ -229,13 +229,13 @@ bash deploy/cd/migrate-supervised.sh \
   --psql-via-docker-network "$network" >"$work_dir/no-discovery.log" 2>&1
 no_discovery_status=$?
 set -e
-if [ "$no_discovery_status" -eq 0 ]; then
-  echo "FAIL: migrate-supervised.sh exited 0 despite never being able to discover/confirm the migrator's Postgres session — unconfirmed backend became success"
+if [ "$no_discovery_status" -eq 3 ]; then
+  echo "PASS: migrate-supervised.sh exits exactly 3 (needs_operator) when the migrator's Postgres session could never be discovered/confirmed"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected exit 3 (needs_operator) when the migrator's Postgres session could never be discovered/confirmed, got $no_discovery_status — any other status (0=wrongly success, 1/2=wrong failure class) does not match the claimed contract"
   cat "$work_dir/no-discovery.log"
   fail=$((fail + 1))
-else
-  echo "PASS: migrate-supervised.sh does not report success when the migrator's Postgres session could never be discovered/confirmed (exit $no_discovery_status)"
-  pass=$((pass + 1))
 fi
 
 echo "==> reset to blank schema for the negative case"
@@ -243,13 +243,21 @@ docker exec "$container" psql -U "$db_user" -d "$db_name" -c \
   "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" >/dev/null
 
 echo "==> negative: deadline exceeded mid-migration must cancel, confirm SERVER-SIDE absence, and never report success"
+# allocation must exceed reserve with real margin (work_deadline =
+# deadline - reserve must stay positive at the moment the script starts,
+# or it denies entry outright before ever launching the migrator) while
+# still giving a genuinely SIGTERM-responsive migrator (an ordinary Go
+# process, unlike the SIGTERM-resistant fake used in the hard-deadline
+# test below) enough real time after cancellation to actually exit and
+# for one absence probe to complete. 2s/1s previously left this racing
+# the hard deadline enforcement added for Sol's overrun finding.
 set +e
 bash deploy/cd/migrate-supervised.sh \
   --database-url "$host_db_url" \
   --observer-database-url "$observer_db_url" \
   --migrate-binary "$work_dir/migrate" \
   --role-name "$db_user" --database-name "$db_name" \
-  --migration-allocation-seconds 2 \
+  --migration-allocation-seconds 3 \
   --reserve-seconds 1 \
   --psql-via-docker-network "$network" >"$work_dir/negative.log" 2>&1
 negative_status=$?
@@ -292,6 +300,87 @@ fi
 partial_ledger_count="$(docker exec "$container" psql -U "$db_user" -d "$db_name" -At -c \
   "SELECT count(*) FROM schema_migrations;" 2>/dev/null || echo "0")"
 echo "INFO: ledger has $partial_ledger_count row(s) after cancellation (0 is a legitimate outcome if the deadline hit before the first commit)"
+
+echo "==> negative control: the absolute deadline is a hard wall-clock boundary on cancellation itself"
+# This is Sol's remaining P1: after the main cancellation loop times out,
+# the SIGKILL escalation (up to five 100ms checks) and one more absence
+# probe previously ran unconditionally, letting real wall-clock work
+# continue past deadline_epoch. Use a fake migrate binary that ignores
+# SIGTERM so the wrapper is FORCED down the SIGKILL escalation path, then
+# measure the wrapper's actual wall-clock exit time against the expected
+# deadline plus a small fixed tolerance for process-scheduling/docker
+# overhead -- it must never run meaningfully past deadline_epoch.
+fake_migrate_ignores_term="$work_dir/fake-migrate-ignores-term"
+cat > "$fake_migrate_ignores_term" <<'FAKE_EOF'
+#!/bin/sh
+trap '' TERM
+echo "fake migrate: ignoring SIGTERM, spinning in-process" >&2
+# A real migrate binary is one Go process with no exec'd children; use a
+# self-contained busy-wait rather than `sleep 30` so SIGKILL on THIS
+# process's own PID actually ends the work being simulated. `sleep` would
+# run as a separate child process that neither SIGTERM nor SIGKILL sent to
+# this script's PID would reach (signals do not propagate to children),
+# which would test process-tree management this design was never meant to
+# require, not the deadline-boundary behavior this control targets.
+i=0
+while [ "$i" -lt 300 ]; do
+  i=$((i + 1))
+  sleep 0.1
+done
+FAKE_EOF
+chmod +x "$fake_migrate_ignores_term"
+
+deadline_test_allocation_seconds=2
+deadline_test_reserve_seconds=1
+deadline_test_started_epoch="$(date +%s)"
+expected_deadline_epoch=$((deadline_test_started_epoch + deadline_test_allocation_seconds))
+# Generous tolerance for process scheduling, docker exec latency, and the
+# script's own 0.1-0.2s poll intervals -- this is checking for "did the
+# script keep working for seconds past the deadline," not asserting
+# millisecond precision.
+deadline_test_tolerance_seconds=5
+
+set +e
+bash deploy/cd/migrate-supervised.sh \
+  --database-url "$host_db_url" \
+  --observer-database-url "$observer_db_url" \
+  --migrate-binary "$fake_migrate_ignores_term" \
+  --role-name "$db_user" --database-name "$db_name" \
+  --migration-allocation-seconds "$deadline_test_allocation_seconds" \
+  --reserve-seconds "$deadline_test_reserve_seconds" \
+  --psql-via-docker-network "$network" >"$work_dir/hard-deadline.log" 2>&1
+hard_deadline_status=$?
+set -e
+hard_deadline_finished_epoch="$(date +%s)"
+
+if [ "$hard_deadline_status" -eq 3 ]; then
+  echo "PASS: SIGTERM-resistant migrator still resolves to exit 3 (needs_operator), never success"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected exit 3 (needs_operator) against a SIGTERM-resistant migrator, got $hard_deadline_status — see $work_dir/hard-deadline.log"
+  cat "$work_dir/hard-deadline.log"
+  fail=$((fail + 1))
+fi
+
+overrun_seconds=$((hard_deadline_finished_epoch - expected_deadline_epoch))
+if [ "$overrun_seconds" -le "$deadline_test_tolerance_seconds" ]; then
+  echo "PASS: wrapper exited within ${overrun_seconds}s of the absolute deadline (tolerance ${deadline_test_tolerance_seconds}s) despite the SIGKILL escalation and final probe both being forced"
+  pass=$((pass + 1))
+else
+  echo "FAIL: wrapper exited ${overrun_seconds}s after the absolute deadline (tolerance ${deadline_test_tolerance_seconds}s) — cancellation continued past the approved envelope"
+  fail=$((fail + 1))
+fi
+
+# The migrator process itself must actually be gone (SIGKILL took effect)
+# even though it ignored SIGTERM -- this proves the escalation ran for
+# real, not that the test merely tolerated a lucky timing window.
+if pgrep -f "$fake_migrate_ignores_term" >/dev/null 2>&1; then
+  echo "FAIL: fake SIGTERM-resistant migrator process is still running after the wrapper exited — SIGKILL escalation did not take effect"
+  fail=$((fail + 1))
+else
+  echo "PASS: fake SIGTERM-resistant migrator process is confirmed gone (SIGKILL escalation took effect)"
+  pass=$((pass + 1))
+fi
 
 echo "==> negative control: a nonzero migrator exit must be captured, not abort the script under set -e"
 # This is Sol's third finding: `wait "$migrator_os_pid"` under top-level
