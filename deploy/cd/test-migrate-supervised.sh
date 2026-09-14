@@ -8,11 +8,11 @@ set -euo pipefail
 # skips with a clear message if unavailable, rather than faking a result.
 #
 # Covers: a full successful migration run against the complete current
-# migration set (positive control), and a deadline-exceeded run that must
-# cancel the migrator, confirm termination, and leave the ledger at the
-# last cleanly committed migration rather than claiming success
-# (acceptance group 3's whole-phase-limit case, and part of group 5's
-# "crash/interrupted mid-phase" case for the single-process form).
+# migration set (positive control) with Go-level enforced timeouts proven
+# to defeat a connection-string bypass attempt, a deadline-exceeded run
+# that must cancel the migrator, confirm SERVER-SIDE session termination
+# (not just OS process exit), and never report success, plus the
+# observer-name-spoofing negative control from the quiescence gates.
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root_dir"
@@ -64,7 +64,22 @@ observer_db_url="postgres://$db_user:$db_pass@$container:5432/$db_name"
 pass=0
 fail=0
 
-echo "==> positive control: full migration set completes within a generous deadline"
+echo "==> unit: Go-level enforced timeouts defeat a connection-string bypass attempt"
+# This is Astra's P1 finding directly: a client-supplied connection-string
+# "options=" parameter is applied by pgx AFTER role/database defaults and
+# therefore overrides them completely — a role/database default (this
+# repo's earlier, since-removed approach) or PGOPTIONS alone is
+# bypassable. The fix moved enforcement into the migrator's own Go
+# process (server/internal/dbstartup.NewPoolWithEnforcedTimeouts), which
+# runs a SET on every connection strictly after pgx applies the
+# connection string, so it is always the LAST setting applied. Prove it
+# directly against a URL that tries exactly this bypass.
+bypass_url="postgres://$db_user:$db_pass@localhost:${host_port}/$db_name?sslmode=disable&options=-c%20statement_timeout%3D0%20-c%20lock_timeout%3D0"
+(cd server && MULTICA_TEST_D2_BYPASS_DATABASE_URL="$bypass_url" "$go_bin" test ./internal/dbstartup/... -run TestEnforcedTimeoutsDefeatConnectionStringBypass -v) \
+  && { echo "PASS: Go-level enforcement defeats the connection-string options= bypass"; pass=$((pass + 1)); } \
+  || { echo "FAIL: Go-level enforcement did not defeat the connection-string bypass"; fail=$((fail + 1)); }
+
+echo "==> positive control: full migration set completes within a generous deadline, real enforced timeouts"
 if bash deploy/cd/migrate-supervised.sh \
   --database-url "$host_db_url" \
   --observer-database-url "$observer_db_url" \
@@ -80,34 +95,32 @@ else
   fail=$((fail + 1))
 fi
 
-if grep -q "verified pre-launch role/database timeout defaults" "$work_dir/positive.log" && \
-   grep -q "confirmed live migrator Postgres session" "$work_dir/positive.log"; then
-  echo "PASS: positive run proved the role/database timeout default AND the live migrator session identity, not just a side-channel probe"
+if grep -q "confirmed live migrator Postgres session" "$work_dir/positive.log"; then
+  echo "PASS: positive run confirmed the live migrator session's identity (pid+backend_start), not just an OS-level check"
   pass=$((pass + 1))
 else
-  echo "FAIL: positive run log is missing the role/database default proof or the live-session identity confirmation — see $work_dir/positive.log"
+  echo "FAIL: positive run log is missing the live-session identity confirmation — see $work_dir/positive.log"
   fail=$((fail + 1))
 fi
 
-# The positive run above left a 1000ms role/database default in place
-# (migrate-supervised.sh's whole point is that this default persists past
-# the migrator's own process exit, since it is server-side metadata, not
-# a client-session setting). Reset it before the tests below, which use
-# multi-second held sessions on the SAME role/database and would
-# otherwise be spuriously cancelled by that leftover default — a
-# test-harness artifact from reusing one container across sections, not
-# a real-world concern (a real deployment sets this default immediately
-# before each attempt's own migrator launch).
-docker exec "$container" psql -U "$db_user" -d "$db_name" -c \
-  "ALTER ROLE $db_user IN DATABASE $db_name RESET statement_timeout; ALTER ROLE $db_user IN DATABASE $db_name RESET lock_timeout;" >/dev/null
+ledger_head="$(docker exec "$container" psql -U "$db_user" -d "$db_name" -At -c \
+  "SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1;")"
+if [ -n "$ledger_head" ]; then
+  echo "PASS: ledger head after positive run is $ledger_head"
+  pass=$((pass + 1))
+else
+  echo "FAIL: ledger is empty after a claimed-successful migration run"
+  fail=$((fail + 1))
+fi
 
 echo "==> negative control: observer-name spoofing must not hide a foreign session from the final gate"
 # A foreign session claiming the removed hardcoded observer application_name
 # prefix must still be visible to quiescence.mjs's checks — this is the
-# exact hole BLOCK found: a prior version excluded any row whose
-# client-controlled application_name matched a fixed prefix, so a foreign
-# client could claim that name and hide an open transaction from the final
-# gate. There must be no such client-controlled exclusion left anywhere.
+# exact hole an earlier review found: a prior version excluded any row
+# whose client-controlled application_name matched a fixed prefix, so a
+# foreign client could claim that name and hide an open transaction from
+# the final gate. There must be no such client-controlled exclusion left
+# anywhere.
 docker exec -d "$container" bash -c \
   "PGAPPNAME='che372-d2-quiescence-observer-fake' psql -U $db_user -d $db_name -c 'BEGIN; SELECT pg_sleep(20);'"
 sleep 1
@@ -121,23 +134,6 @@ fi
 docker exec "$container" psql -U "$db_user" -d "$db_name" -At -c \
   "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name LIKE '%fake%';" >/dev/null 2>&1 || true
 sleep 1
-
-echo "==> negative control: timeout-proof bypass must fail closed rather than silently approve"
-# verify-role-timeout-defaults must deny when no default has ever been set
-# for a given role/database pair (the pre-launch state for a fresh
-# database), never treat "no rows" as "any timeout is fine."
-bare_role="che372_bare_role_$$"
-docker exec "$container" psql -U "$db_user" -d "$db_name" -At -c \
-  "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '$bare_role') THEN CREATE ROLE $bare_role LOGIN; END IF; END \$\$;" >/dev/null 2>&1
-if node deploy/cd/quiescence.mjs verify-role-timeout-defaults --database-url "$observer_db_url" --psql-via-docker-network "$network" \
-  --role-name "$bare_role" --database-name "$db_name" >/dev/null 2>&1; then
-  echo "FAIL: verify-role-timeout-defaults reported ok for a role with no configured default — timeout-proof bypass is possible"
-  fail=$((fail + 1))
-else
-  echo "PASS: verify-role-timeout-defaults correctly denies when no role/database default has been set (fails closed, not open)"
-  pass=$((pass + 1))
-fi
-docker exec "$container" psql -U "$db_user" -d "$db_name" -c "DROP ROLE IF EXISTS $bare_role;" >/dev/null 2>&1 || true
 
 echo "==> negative control: live-session identity check must reject a mismatched pid/backend_start/role"
 docker exec -d "$container" psql -U "$db_user" -d "$db_name" -c "SELECT pg_sleep(10);"
@@ -166,36 +162,19 @@ docker exec "$container" psql -U "$db_user" -d "$db_name" -At -c \
   "SELECT pg_terminate_backend($live_pid);" >/dev/null 2>&1 || true
 sleep 1
 
-# Reset the role/database default set by the positive run above so it does
-# not leak into the negative-control run below (a real deployment always
-# targets a fresh role/database pair per attempt; this test reuses one
-# container across both runs for speed).
-docker exec "$container" psql -U "$db_user" -d "$db_name" -c \
-  "ALTER ROLE $db_user IN DATABASE $db_name RESET statement_timeout; ALTER ROLE $db_user IN DATABASE $db_name RESET lock_timeout;" >/dev/null 2>&1
-
-ledger_head="$(docker exec "$container" psql -U "$db_user" -d "$db_name" -At -c \
-  "SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1;")"
-if [ -n "$ledger_head" ]; then
-  echo "PASS: ledger head after positive run is $ledger_head"
-  pass=$((pass + 1))
-else
-  echo "FAIL: ledger is empty after a claimed-successful migration run"
-  fail=$((fail + 1))
-fi
-
 echo "==> reset to blank schema for the negative case"
 docker exec "$container" psql -U "$db_user" -d "$db_name" -c \
   "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" >/dev/null
 
-echo "==> negative: deadline exceeded mid-migration must cancel, confirm, and never report success"
+echo "==> negative: deadline exceeded mid-migration must cancel, confirm SERVER-SIDE absence, and never report success"
 set +e
 bash deploy/cd/migrate-supervised.sh \
   --database-url "$host_db_url" \
   --observer-database-url "$observer_db_url" \
   --migrate-binary "$work_dir/migrate" \
   --role-name "$db_user" --database-name "$db_name" \
-  --migration-allocation-seconds 1 \
-  --reserve-seconds 0 \
+  --migration-allocation-seconds 2 \
+  --reserve-seconds 1 \
   --psql-via-docker-network "$network" >"$work_dir/negative.log" 2>&1
 negative_status=$?
 set -e
@@ -210,20 +189,20 @@ else
 fi
 
 if grep -q "confirmed terminated" "$work_dir/negative.log"; then
-  echo "PASS: negative run recorded confirmed termination, not a bare signal-sent claim"
+  echo "PASS: negative run recorded confirmed termination (both OS process and server-side Postgres session), not a bare signal-sent claim"
   pass=$((pass + 1))
 else
   echo "FAIL: negative run log does not show confirmed termination — see $work_dir/negative.log"
+  cat "$work_dir/negative.log"
   fail=$((fail + 1))
 fi
 
-# A 1-second deadline may or may not let the first migration's advisory
-# lock + connection setup complete before cancellation — that race is
-# real and not something this test should assert a fixed side of. What
-# must hold regardless: no migrator session is left running afterward
-# (the watchdog's cancellation must actually have taken effect), and
-# whatever the ledger contains is a set of real committed migrations
-# applied in order, never a gap or a forged/duplicated entry.
+# A short deadline may or may not let the first migration's advisory lock
+# + connection setup complete before cancellation — that race is real and
+# not something this test should assert a fixed side of. What must hold
+# regardless: no migrator session is left running afterward (the
+# watchdog's cancellation must actually have taken effect, confirmed
+# server-side via pg_stat_activity, not just via the OS-level PID).
 lingering_backends="$(docker exec "$container" psql -U "$db_user" -d "$db_name" -At -c \
   "SELECT count(*) FROM pg_stat_activity WHERE datname='$db_name' AND pid<>pg_backend_pid();" 2>/dev/null || echo "?")"
 if [ "$lingering_backends" = "0" ]; then

@@ -7,8 +7,10 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -753,7 +755,7 @@ func main() {
 	}
 
 	startupSettings := dbstartup.SettingsFromEnv()
-	pool, err := dbstartup.NewPool(context.Background(), dbURL, startupSettings.ConnectTimeout)
+	pool, err := newMigratorPool(context.Background(), dbURL, startupSettings.ConnectTimeout)
 	if err != nil {
 		slog.Error("unable to connect to database", "error", err)
 		os.Exit(1)
@@ -814,6 +816,41 @@ func main() {
 	}
 
 	fmt.Println("Done.")
+}
+
+// migrateEnforcedStatementTimeoutEnv and migrateEnforcedLockTimeoutEnv are
+// D2 CD-supervision-only inputs (CHE-372). They are unset by default, so
+// newMigratorPool behaves exactly like dbstartup.NewPool for every existing
+// caller. When both are set to positive millisecond values, every physical
+// connection this migrator's pool opens — the pinned advisory-lock
+// connection and every hook connection its pool opens afterward alike — has
+// statement_timeout/lock_timeout enforced and read back after connecting,
+// regardless of any conflicting "options=" the DATABASE_URL itself carries.
+// See dbstartup.NewPoolWithEnforcedTimeouts for why this must run inside
+// the pool's own connection lifecycle rather than as an external probe.
+const (
+	migrateEnforcedStatementTimeoutEnv = "MULTICA_INTERNAL_D2_ENFORCED_STATEMENT_TIMEOUT_MS"
+	migrateEnforcedLockTimeoutEnv      = "MULTICA_INTERNAL_D2_ENFORCED_LOCK_TIMEOUT_MS"
+)
+
+func newMigratorPool(ctx context.Context, dbURL string, connectTimeout time.Duration) (*pgxpool.Pool, error) {
+	statementTimeoutRaw := os.Getenv(migrateEnforcedStatementTimeoutEnv)
+	lockTimeoutRaw := os.Getenv(migrateEnforcedLockTimeoutEnv)
+	if statementTimeoutRaw == "" && lockTimeoutRaw == "" {
+		return dbstartup.NewPool(ctx, dbURL, connectTimeout)
+	}
+	statementTimeoutMs, err := strconv.ParseInt(statementTimeoutRaw, 10, 64)
+	if err != nil || statementTimeoutMs <= 0 {
+		return nil, fmt.Errorf("%s must be a positive integer of milliseconds, got %q", migrateEnforcedStatementTimeoutEnv, statementTimeoutRaw)
+	}
+	lockTimeoutMs, err := strconv.ParseInt(lockTimeoutRaw, 10, 64)
+	if err != nil || lockTimeoutMs <= 0 {
+		return nil, fmt.Errorf("%s must be a positive integer of milliseconds, got %q", migrateEnforcedLockTimeoutEnv, lockTimeoutRaw)
+	}
+	return dbstartup.NewPoolWithEnforcedTimeouts(ctx, dbURL, connectTimeout, dbstartup.EnforcedTimeouts{
+		StatementTimeout: time.Duration(statementTimeoutMs) * time.Millisecond,
+		LockTimeout:      time.Duration(lockTimeoutMs) * time.Millisecond,
+	})
 }
 
 // runMigrations applies (direction="up") or rolls back (direction="down")

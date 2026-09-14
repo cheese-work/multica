@@ -176,43 +176,15 @@ terminate_all_client_backends
 sleep 1
 expect_admit "final gate admits again once the spoofing session is gone" final_gate
 
-echo "==> role/database timeout defaults"
-if node deploy/cd/quiescence.mjs set-role-timeout-defaults --database-url "$db_url" --psql-via-docker-network "$network" \
-  --role-name "$db_user" --database-name "$db_name" --statement-timeout-ms 1000 --lock-timeout-ms 1000 >/dev/null 2>&1; then
-  echo "PASS: set-role-timeout-defaults applies a role/database-scoped default"
-  pass=$((pass + 1))
-else
-  echo "FAIL: set-role-timeout-defaults did not succeed against a reachable database"
-  fail=$((fail + 1))
-fi
-result="$(node deploy/cd/quiescence.mjs verify-role-timeout-defaults --database-url "$db_url" --psql-via-docker-network "$network" \
-  --role-name "$db_user" --database-name "$db_name")"
-echo "$result" | grep -q '"ok":true' && { echo "PASS: verify-role-timeout-defaults reads the set default back from pg_db_role_setting"; pass=$((pass + 1)); } \
-  || { echo "FAIL: verify-role-timeout-defaults :: $result"; fail=$((fail + 1)); }
-
-echo "==> negative control: timeout-proof bypass — no default set must deny, never silently pass"
-bare_role="che372_qtest_bare_role"
-docker exec "$container" psql -U "$db_user" -d "$db_name" -At -c \
-  "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '$bare_role') THEN CREATE ROLE $bare_role LOGIN; END IF; END \$\$;" >/dev/null
-if node deploy/cd/quiescence.mjs verify-role-timeout-defaults --database-url "$db_url" --psql-via-docker-network "$network" \
-  --role-name "$bare_role" --database-name "$db_name" >/dev/null 2>&1; then
-  echo "FAIL: verify-role-timeout-defaults reported ok for a role with no default set — bypass possible"
-  fail=$((fail + 1))
-else
-  echo "PASS: verify-role-timeout-defaults fails closed when no role/database default exists"
-  pass=$((pass + 1))
-fi
-docker exec "$container" psql -U "$db_user" -d "$db_name" -c "DROP ROLE IF EXISTS $bare_role;" >/dev/null 2>&1 || true
-
-# Reset the role/database default set above before the sessions below —
-# they use pg_sleep() to stay open long enough to observe, and the 1000ms
-# default set-role-timeout-defaults just applied would otherwise cancel
-# them almost immediately, which is a test-harness artifact, not a
-# real-world constraint (a real deployment sets this default once,
-# immediately before launching the migrator it is meant to cover, not
-# hours before an unrelated diagnostic session).
-docker exec "$container" psql -U "$db_user" -d "$db_name" -c \
-  "ALTER ROLE $db_user IN DATABASE $db_name RESET statement_timeout; ALTER ROLE $db_user IN DATABASE $db_name RESET lock_timeout;" >/dev/null
+# A role/database-scoped timeout default (ALTER ROLE ... IN DATABASE ...
+# SET) was tried here previously and removed: a client-supplied
+# connection-string "options=" parameter is applied by pgx AFTER
+# role/database defaults and therefore overrides them completely (see
+# server/internal/dbstartup.NewPoolWithEnforcedTimeouts's doc comment).
+# Timeout enforcement now lives inside the migrator's own Go process, so
+# there is nothing to set/verify from this shell-level observer module —
+# see deploy/cd/test-migrate-supervised.sh's
+# TestEnforcedTimeoutsDefeatConnectionStringBypass for that coverage.
 
 echo "==> live session identity coverage"
 docker exec -d "$container" psql -U "$db_user" -d "$db_name" -c "SELECT pg_sleep(10);"
@@ -243,8 +215,6 @@ else
   pass=$((pass + 1))
 fi
 terminate_all_client_backends
-docker exec "$container" psql -U "$db_user" -d "$db_name" -c \
-  "ALTER ROLE $db_user IN DATABASE $db_name RESET statement_timeout; ALTER ROLE $db_user IN DATABASE $db_name RESET lock_timeout;" >/dev/null 2>&1 || true
 
 echo
 echo "==> $pass passed, $fail failed"

@@ -36,8 +36,8 @@ COPY --from=builder /src/server/bin/backfill_task_usage_hourly .
 COPY --from=builder /src/server/bin/backfill_codex_usage_cache .
 COPY server/migrations/ ./migrations/
 COPY LICENSE NOTICE ./
-COPY docker/entrypoint.sh .
-RUN sed -i 's/\r$//' entrypoint.sh && chmod +x entrypoint.sh
+COPY docker/entrypoint.sh docker/entrypoint.cd.sh .
+RUN sed -i 's/\r$//' entrypoint.sh entrypoint.cd.sh && chmod +x entrypoint.sh entrypoint.cd.sh
 
 EXPOSE 8080
 
