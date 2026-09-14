@@ -1,0 +1,500 @@
+#!/usr/bin/env node
+//
+// D2 quiescence controller: passive preflight + final admission gate for the
+// migration-safety cutover controller (CHE-372). See deploy/cd/README.md.
+//
+// This module never mutates the target database. It only runs short,
+// autocommit, metadata-only observation queries against pg_stat_activity,
+// pg_locks, pg_prepared_xacts, and pg_stat_progress_create_index, then
+// applies the fail-closed admission rules from the approved design.
+//
+// Connection: every observation query runs through a fresh `psql` invocation
+// (autocommit by construction — psql issues one statement per invocation
+// here, no BEGIN) so no long-lived snapshot or idle-in-transaction session is
+// ever held by the observer itself. Each invocation carries its own
+// statement_timeout via PGOPTIONS and an outer wall-clock timeout via the
+// `timeout` coreutil, so a hung server-side query cannot stall the caller
+// past --query-timeout-ms.
+//
+// Exit codes: 0 = admitted. 1 = denied (see JSON `reason`/`evidence`). 2 =
+// usage error. Denial is always the fail-closed default: any query failure,
+// missing field, short read, or ambiguous state is treated as NOT quiescent.
+
+import { spawnSync } from "node:child_process";
+
+export const YOUNG_TRANSACTION_THRESHOLD_MS = 15000;
+export const DEFAULT_QUERY_TIMEOUT_MS = 500;
+export const DEFAULT_LOCK_TIMEOUT_MS = 1000;
+
+function fail(message) {
+  throw new Error(message);
+}
+
+function option(name, args, { required = true, fallback } = {}) {
+  const index = args.indexOf(name);
+  if (index === -1 || args[index + 1] === undefined) {
+    if (required && fallback === undefined) fail(`missing ${name}`);
+    return fallback;
+  }
+  return args[index + 1];
+}
+
+// runPsql executes exactly one SQL statement over a fresh psql process:
+// autocommit, tuples-only, one row per line, fields pipe-separated, NULL
+// rendered as the literal token <NULL> so it is distinguishable from an
+// empty string. The whole invocation is wall-clock bounded by
+// queryTimeoutMs via the `timeout` coreutil (SIGKILL escalation) in
+// addition to the server-side statement_timeout, so a psql process that
+// itself hangs (e.g. on connection) cannot outlive the caller's budget.
+//
+// Returns { ok: true, rows } on success, or { ok: false, reason } on any
+// failure — including timeout, non-zero exit, or malformed output. This
+// function never throws for a server/connection failure; the caller
+// interprets ok:false as "unknown state," which the fail-closed rules
+// above always resolve to denial.
+export function runPsql({ connInfo, sql, queryTimeoutMs = DEFAULT_QUERY_TIMEOUT_MS }) {
+  const statementTimeoutMs = Math.max(1, Math.min(queryTimeoutMs, 500));
+  const pgoptions = `-c statement_timeout=${statementTimeoutMs} -c lock_timeout=${statementTimeoutMs} -c idle_in_transaction_session_timeout=${statementTimeoutMs}`;
+  const wallClockTimeoutSeconds = Math.max(1, Math.ceil((queryTimeoutMs + 500) / 1000));
+  const fieldSep = "\x01";
+  const recordSep = "\x02";
+  const appName = connInfo.applicationName ?? "che372-d2-quiescence-observer";
+
+  // --dbname accepts a full libpq connection URI, so the target is always
+  // explicit on the command line rather than depending on an environment
+  // variable psql may or may not read (DATABASE_URL is this repo's
+  // convention, not a libpq-recognized one).
+  const psqlFlags = [
+    "--no-psqlrc",
+    "--quiet",
+    "--tuples-only",
+    "--no-align",
+    `--field-separator=${fieldSep}`,
+    `--record-separator=${recordSep}`,
+    "--set=ON_ERROR_STOP=1",
+    `--dbname=${connInfo.databaseUrl}`,
+    "--command",
+    sql,
+  ];
+
+  const runEnv = {
+    PGOPTIONS: pgoptions,
+    PGCONNECT_TIMEOUT: String(Math.max(1, Math.ceil(queryTimeoutMs / 1000))),
+    PGAPPNAME: appName,
+  };
+
+  // connInfo.command lets the caller substitute how `psql` itself is
+  // invoked (e.g. inside a short-lived Docker container attached to the
+  // isolated test network) without this function knowing about Docker.
+  // The default runs `psql` directly off PATH. Either way the returned
+  // prefix's last element must resolve to the `psql` entrypoint; this
+  // function always appends psqlFlags itself.
+  const commandPrefix = connInfo.command ? connInfo.command(runEnv) : ["psql"];
+  const fullArgs = [`${wallClockTimeoutSeconds}s`, ...commandPrefix, ...psqlFlags];
+
+  const result = spawnSync("timeout", fullArgs, {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      ...(connInfo.command ? {} : runEnv),
+      ...connInfo.env,
+    },
+  });
+
+  if (result.error) {
+    return { ok: false, reason: `psql spawn failed: ${result.error.message}` };
+  }
+  if (result.status === 124 || result.status === 137) {
+    return { ok: false, reason: "observation query exceeded wall-clock timeout" };
+  }
+  if (result.status !== 0) {
+    return { ok: false, reason: `observation query failed (exit ${result.status}): ${(result.stderr || "").trim()}` };
+  }
+
+  const raw = result.stdout.endsWith(recordSep) ? result.stdout.slice(0, -recordSep.length) : result.stdout;
+  const rows = raw.length === 0
+    ? []
+    : raw.split(recordSep).filter((r) => r.length > 0).map((record) => record.split(fieldSep));
+  return { ok: true, rows };
+}
+
+// nowMs is injectable so tests can control sample-age arithmetic without
+// wall-clock sleeps.
+export function observeQuiescenceState({ connInfo, queryTimeoutMs = DEFAULT_QUERY_TIMEOUT_MS, now = () => Date.now() }) {
+  const observedAtMs = now();
+
+  // One combined query per observation to bound total query count and
+  // therefore total time; each sub-query gets tagged with a `kind` column
+  // so the caller can distinguish sources without needing five round
+  // trips. `application_name` lets us exclude only this observer's own
+  // statements (never a broader class of "controller" connections).
+  const sql = `
+    SELECT 'activity' AS kind,
+      pid::text, backend_start::text, datname, usename, backend_type,
+      COALESCE(xact_start::text, '<NULL>') AS xact_start,
+      state, COALESCE(backend_xid::text, '<NULL>') AS backend_xid,
+      COALESCE(backend_xmin::text, '<NULL>') AS backend_xmin,
+      COALESCE(wait_event_type, '<NULL>') AS wait_event_type,
+      COALESCE(wait_event, '<NULL>') AS wait_event,
+      COALESCE(query, '') AS query,
+      application_name
+    FROM pg_stat_activity
+    WHERE datname = current_database()
+      AND pid <> pg_backend_pid()
+    UNION ALL
+    SELECT 'lock', l.pid::text, '<NULL>', d.datname, '<NULL>', '<NULL>',
+      '<NULL>', l.mode, '<NULL>', '<NULL>', '<NULL>', '<NULL>',
+      l.locktype || ':' || COALESCE(l.relation::text, '') || ':' || l.granted::text,
+      '<NULL>'
+    FROM pg_locks l
+    JOIN pg_database d ON d.oid = l.database
+    WHERE d.datname = current_database() AND l.pid <> pg_backend_pid()
+    UNION ALL
+    SELECT 'prepared', '<NULL>', '<NULL>', database, gid, '<NULL>',
+      transaction::text, '<NULL>', '<NULL>', '<NULL>', '<NULL>', '<NULL>',
+      '<NULL>', '<NULL>'
+    FROM pg_prepared_xacts
+    WHERE database = current_database()
+    UNION ALL
+    SELECT 'create_index', p.pid::text, '<NULL>', d.datname, '<NULL>', '<NULL>',
+      '<NULL>', p.phase, '<NULL>', '<NULL>', '<NULL>', '<NULL>',
+      COALESCE(p.current_locker_pid::text, ''), '<NULL>'
+    FROM pg_stat_progress_create_index p
+    JOIN pg_database d ON d.oid = p.datid
+    WHERE d.datname = current_database();
+  `;
+
+  const result = runPsql({ connInfo, sql, queryTimeoutMs });
+  const observationEndMs = now();
+  if (!result.ok) {
+    return { ok: false, reason: result.reason, observedAtMs, observationEndMs };
+  }
+
+  const activity = [];
+  const locks = [];
+  const prepared = [];
+  const createIndex = [];
+  for (const row of result.rows) {
+    const kind = row[0];
+    if (kind === "activity") {
+      activity.push({
+        pid: row[1], backendStart: row[2], datname: row[3], usename: row[4],
+        backendType: row[5], xactStart: row[6] === "<NULL>" ? null : row[6],
+        state: row[7], backendXid: row[8] === "<NULL>" ? null : row[8],
+        backendXmin: row[9] === "<NULL>" ? null : row[9],
+        waitEventType: row[10] === "<NULL>" ? null : row[10],
+        waitEvent: row[11] === "<NULL>" ? null : row[11],
+        query: row[12], applicationName: row[13],
+      });
+    } else if (kind === "lock") {
+      locks.push({ pid: row[1], datname: row[3], mode: row[7], detail: row[12] });
+    } else if (kind === "prepared") {
+      prepared.push({ datname: row[3], gid: row[4], transaction: row[6] });
+    } else if (kind === "create_index") {
+      createIndex.push({ pid: row[1], phase: row[7], currentLockerPid: row[12] });
+    }
+  }
+
+  return { ok: true, observedAtMs, observationEndMs, activity, locks, prepared, createIndex };
+}
+
+// isControllerOwnSession identifies only the observer's own short
+// metadata-only statements, matched narrowly by application_name AND pid
+// equal to pg_backend_pid() is already excluded server-side. We also
+// exclude by an explicit, narrowly-scoped application_name so a second
+// observation connection issued by this same controller run (e.g. the
+// final-gate recheck) does not see the passive-preflight connection as a
+// foreign session, since each runPsql call is a brand-new connection that
+// closes immediately after.
+const CONTROLLER_APPLICATION_NAME_PREFIX = "che372-d2-quiescence-observer";
+
+function isExcludedSelfSession(row, { excludeApplicationNamePrefix }) {
+  return typeof row.applicationName === "string" &&
+    row.applicationName.startsWith(excludeApplicationNamePrefix);
+}
+
+// evaluatePassivePreflight implements the design's gate 1: a coarse, cheap
+// check performed while the healthy release still serves. It never denies
+// because of a young transaction (that only means "keep going"); it denies
+// on anything already known to be a hard blocker so the caller does not
+// start an outage to wait out a problem it can already see.
+export function evaluatePassivePreflight(state, opts = {}) {
+  const excludeApplicationNamePrefix = opts.excludeApplicationNamePrefix ?? CONTROLLER_APPLICATION_NAME_PREFIX;
+  const thresholdMs = opts.youngTransactionThresholdMs ?? YOUNG_TRANSACTION_THRESHOLD_MS;
+
+  if (!state.ok) {
+    return { admit: false, decision: "deferred_contention", reason: `observation failed: ${state.reason}`, evidence: {} };
+  }
+
+  const foreignActivity = state.activity.filter((row) => !isExcludedSelfSession(row, { excludeApplicationNamePrefix }));
+
+  const oldTransactions = foreignActivity.filter((row) => {
+    if (!row.xactStart) return false;
+    const ageMs = state.observedAtMs - Date.parse(row.xactStart);
+    return Number.isFinite(ageMs) && ageMs >= thresholdMs;
+  });
+  if (oldTransactions.length > 0) {
+    return {
+      admit: false, decision: "deferred_contention",
+      reason: "at least one transaction is already at or past the 15000ms age threshold",
+      evidence: { oldTransactions },
+    };
+  }
+
+  if (state.prepared.length > 0) {
+    return { admit: false, decision: "deferred_contention", reason: "prepared transaction present", evidence: { prepared: state.prepared } };
+  }
+
+  const advisoryLockHolders = state.locks.filter((l) => l.detail.startsWith("advisory:"));
+  if (advisoryLockHolders.length > 0) {
+    return { admit: false, decision: "deferred_contention", reason: "a foreign advisory-lock holder is present", evidence: { advisoryLockHolders } };
+  }
+
+  const unknownBackendTypes = foreignActivity.filter((row) =>
+    row.backendType !== "client backend" && row.backendType !== "background worker" &&
+    row.backendType !== "walsender" && row.backendType !== "autovacuum worker",
+  );
+  if (unknownBackendTypes.length > 0) {
+    return { admit: false, decision: "deferred_contention", reason: "unknown/unfenceable consumer backend type present", evidence: { unknownBackendTypes } };
+  }
+
+  if (state.createIndex.length > 0) {
+    return { admit: false, decision: "deferred_contention", reason: "a concurrent index build is already in progress", evidence: { createIndex: state.createIndex } };
+  }
+
+  return { admit: true, decision: "preflight_admitted", reason: "no known blockers; young transactions if any may attempt to quiesce", evidence: { foreignActivityCount: foreignActivity.length } };
+}
+
+// evaluateFinalGate implements the design's gate 2: the strict, zero-
+// tolerance check run immediately before the first candidate mutation and
+// re-run immediately before migrator launch. Unknown state (a failed
+// observation) always denies; it is never treated as "empty set."
+export function evaluateFinalGate(state, opts = {}) {
+  const excludeApplicationNamePrefix = opts.excludeApplicationNamePrefix ?? CONTROLLER_APPLICATION_NAME_PREFIX;
+
+  if (!state.ok) {
+    return { admit: false, decision: "final_gate_denied", reason: `observation failed (unknown state fails closed): ${state.reason}`, evidence: {} };
+  }
+
+  const foreignActivity = state.activity.filter((row) => !isExcludedSelfSession(row, { excludeApplicationNamePrefix }));
+
+  // Zero non-operation transactions/retained snapshots: any foreign
+  // session with an open xact_start, OR any foreign session holding a
+  // backend_xmin/backend_xid (a retained snapshot even without an open
+  // xact_start, e.g. a REPEATABLE READ/SERIALIZABLE read-only
+  // transaction or a long-running cursor), denies.
+  const openTransactionsOrSnapshots = foreignActivity.filter((row) =>
+    row.xactStart !== null || row.backendXid !== null || row.backendXmin !== null,
+  );
+  if (openTransactionsOrSnapshots.length > 0) {
+    return {
+      admit: false, decision: "final_gate_denied",
+      reason: "non-operation transaction or retained snapshot present",
+      evidence: { openTransactionsOrSnapshots },
+    };
+  }
+
+  if (state.prepared.length > 0) {
+    return { admit: false, decision: "final_gate_denied", reason: "prepared transaction present", evidence: { prepared: state.prepared } };
+  }
+
+  const advisoryLockHolders = state.locks.filter((l) => l.detail.startsWith("advisory:"));
+  if (advisoryLockHolders.length > 0) {
+    return { admit: false, decision: "final_gate_denied", reason: "a foreign advisory-lock holder is present", evidence: { advisoryLockHolders } };
+  }
+
+  // No unaccounted conflicting session-level locks/index ops. Idle
+  // sessions with no open transaction/snapshot are OK only if fenced
+  // (opts.fencedPids names the pid allowlist of sessions the caller has
+  // already confirmed cannot issue new work, e.g. because write
+  // admission is already restricted at the application layer). Any lock
+  // held by a pid not in that allowlist denies.
+  const fencedPids = new Set((opts.fencedPids ?? []).map(String));
+  const unaccountedLocks = state.locks.filter((l) => !fencedPids.has(String(l.pid)));
+  if (unaccountedLocks.length > 0) {
+    return {
+      admit: false, decision: "final_gate_denied",
+      reason: "unaccounted conflicting session-level lock present",
+      evidence: { unaccountedLocks },
+    };
+  }
+
+  if (state.createIndex.length > 0) {
+    return { admit: false, decision: "final_gate_denied", reason: "a concurrent index build is in progress", evidence: { createIndex: state.createIndex } };
+  }
+
+  // Any remaining foreign backend at all — even idle, with no
+  // transaction/snapshot/lock — must be in the fenced allowlist. This is
+  // the "idle sessions OK only if fenced" rule; an unfenced idle session
+  // is an unknown/unaccounted consumer and denies.
+  const unfencedIdle = foreignActivity.filter((row) => !fencedPids.has(String(row.pid)));
+  if (unfencedIdle.length > 0) {
+    return {
+      admit: false, decision: "final_gate_denied",
+      reason: "unfenced foreign session present (idle sessions require explicit fencing)",
+      evidence: { unfencedIdle },
+    };
+  }
+
+  return { admit: true, decision: "final_gate_admitted", reason: "zero non-operation transactions, snapshots, prepared xacts, foreign locks, or unfenced sessions", evidence: {} };
+}
+
+// SampleTracker enforces the sampling/coverage rule during quiesce/migration:
+// samples every <=250ms, and two consecutive missing samples OR a sample
+// older than 1000ms is a hard failure. It never substitutes an assumed-
+// healthy value for a missing sample.
+export class SampleTracker {
+  constructor({ intervalMs = 250, maxSampleAgeMs = 1000 } = {}) {
+    this.intervalMs = intervalMs;
+    this.maxSampleAgeMs = maxSampleAgeMs;
+    this.consecutiveMisses = 0;
+    this.lastSampleAtMs = null;
+    this.samples = [];
+  }
+
+  record(state, nowMs) {
+    if (!state.ok) {
+      this.consecutiveMisses += 1;
+      this.samples.push({ ok: false, atMs: nowMs, reason: state.reason });
+      if (this.consecutiveMisses >= 2) {
+        return { coverageOk: false, reason: "two consecutive missing samples" };
+      }
+      return { coverageOk: true, reason: null };
+    }
+    if (this.lastSampleAtMs !== null) {
+      const age = nowMs - this.lastSampleAtMs;
+      if (age > this.maxSampleAgeMs) {
+        this.consecutiveMisses += 1;
+        this.samples.push({ ok: false, atMs: nowMs, reason: `sample age ${age}ms exceeds ${this.maxSampleAgeMs}ms` });
+        return { coverageOk: false, reason: `sample age ${age}ms exceeds ${this.maxSampleAgeMs}ms` };
+      }
+    }
+    this.consecutiveMisses = 0;
+    this.lastSampleAtMs = nowMs;
+    this.samples.push({ ok: true, atMs: nowMs });
+    return { coverageOk: true, reason: null };
+  }
+
+  coverageReport() {
+    return {
+      totalSamples: this.samples.length,
+      missedSamples: this.samples.filter((s) => !s.ok).length,
+      consecutiveMisses: this.consecutiveMisses,
+    };
+  }
+}
+
+// verifyConnectionTimeouts reads back statement_timeout/lock_timeout from
+// the live session (never trusts the setter). A value that renders as "0"
+// means disabled in Postgres and must be treated as a hard failure, not a
+// silently-accepted "no timeout."
+export function verifyConnectionTimeouts({ connInfo, queryTimeoutMs = DEFAULT_QUERY_TIMEOUT_MS }) {
+  const result = runPsql({
+    connInfo,
+    sql: "SELECT current_setting('statement_timeout'), current_setting('lock_timeout')",
+    queryTimeoutMs,
+  });
+  if (!result.ok || result.rows.length !== 1) {
+    return { ok: false, reason: result.ok ? "unexpected row count reading back timeouts" : result.reason };
+  }
+  const [statementTimeoutRaw, lockTimeoutRaw] = result.rows[0];
+  const parseSetting = (raw) => {
+    if (raw === "0") return 0;
+    const match = /^(\d+)(ms|s|min|h|d)?$/.exec(raw.trim());
+    if (!match) return null;
+    const value = Number(match[1]);
+    const unit = match[2] ?? "ms";
+    const multipliers = { ms: 1, s: 1000, min: 60000, h: 3600000, d: 86400000 };
+    return value * multipliers[unit];
+  };
+  const statementTimeoutMs = parseSetting(statementTimeoutRaw);
+  const lockTimeoutMs = parseSetting(lockTimeoutRaw);
+  if (statementTimeoutMs === null || lockTimeoutMs === null) {
+    return { ok: false, reason: `could not parse timeout settings: statement_timeout=${statementTimeoutRaw} lock_timeout=${lockTimeoutRaw}` };
+  }
+  if (statementTimeoutMs === 0 || lockTimeoutMs === 0) {
+    return { ok: false, reason: "a timeout rounded down to 0 (disabled) on the session; must deny", statementTimeoutMs, lockTimeoutMs };
+  }
+  if (lockTimeoutMs > DEFAULT_LOCK_TIMEOUT_MS) {
+    return { ok: false, reason: `lock_timeout ${lockTimeoutMs}ms exceeds the ${DEFAULT_LOCK_TIMEOUT_MS}ms ceiling`, statementTimeoutMs, lockTimeoutMs };
+  }
+  return { ok: true, statementTimeoutMs, lockTimeoutMs };
+}
+
+// buildConnInfo resolves how observation queries reach Postgres.
+//
+// Default: invoke the `psql` binary directly on PATH with DATABASE_URL.
+// This is what a CD runner host with postgresql-client installed uses.
+//
+// --psql-via-docker-network <network>: this host's `psql` client is not
+// guaranteed to be present (it is not part of this repo's runtime image),
+// but Docker always is on the X99 CD runners (see docker/entrypoint.sh /
+// deploy/cd/qualification.sh, which already assume Docker). In this mode
+// every observation query runs inside a short-lived, immediately-removed
+// `postgres:16-alpine` container attached to the given Docker network, so
+// no extra host dependency is required and the mechanism matches D1's
+// existing synthetic-fixture convention.
+function buildConnInfo(databaseUrl, opts = {}) {
+  if (opts.dockerNetwork) {
+    return {
+      databaseUrl,
+      command: (extraEnv) => {
+        const envArgs = Object.entries(extraEnv).flatMap(([k, v]) => ["--env", `${k}=${v}`]);
+        return [
+          "docker", "run", "--rm", "--network", opts.dockerNetwork,
+          ...envArgs,
+          "postgres:16-alpine",
+          "psql",
+        ];
+      },
+      env: {},
+    };
+  }
+  return { databaseUrl, command: null, env: {} };
+}
+
+function connOptsFromArgs(args) {
+  const databaseUrl = option("--database-url", args, { required: false, fallback: process.env.DATABASE_URL }) || fail("missing --database-url");
+  const dockerNetwork = option("--psql-via-docker-network", args, { required: false, fallback: undefined });
+  const queryTimeoutMs = Number(option("--query-timeout-ms", args, { required: false, fallback: String(DEFAULT_QUERY_TIMEOUT_MS) }));
+  return { databaseUrl, dockerNetwork, queryTimeoutMs };
+}
+
+function cliPreflight(args) {
+  const { databaseUrl, dockerNetwork, queryTimeoutMs } = connOptsFromArgs(args);
+  const state = observeQuiescenceState({ connInfo: buildConnInfo(databaseUrl, { dockerNetwork }), queryTimeoutMs });
+  const result = evaluatePassivePreflight(state);
+  process.stdout.write(`${JSON.stringify(result)}\n`);
+  process.exitCode = result.admit ? 0 : 1;
+}
+
+function cliFinalGate(args) {
+  const { databaseUrl, dockerNetwork, queryTimeoutMs } = connOptsFromArgs(args);
+  const fencedPidsRaw = option("--fenced-pids", args, { required: false, fallback: "" });
+  const fencedPids = fencedPidsRaw ? fencedPidsRaw.split(",").filter(Boolean) : [];
+  const state = observeQuiescenceState({ connInfo: buildConnInfo(databaseUrl, { dockerNetwork }), queryTimeoutMs });
+  const result = evaluateFinalGate(state, { fencedPids });
+  process.stdout.write(`${JSON.stringify(result)}\n`);
+  process.exitCode = result.admit ? 0 : 1;
+}
+
+function cliVerifyTimeouts(args) {
+  const { databaseUrl, dockerNetwork, queryTimeoutMs } = connOptsFromArgs(args);
+  const result = verifyConnectionTimeouts({ connInfo: buildConnInfo(databaseUrl, { dockerNetwork }), queryTimeoutMs });
+  process.stdout.write(`${JSON.stringify(result)}\n`);
+  process.exitCode = result.ok ? 0 : 1;
+}
+
+const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
+if (isMain) {
+  try {
+    const [command, ...args] = process.argv.slice(2);
+    if (command === "preflight") cliPreflight(args);
+    else if (command === "final-gate") cliFinalGate(args);
+    else if (command === "verify-timeouts") cliVerifyTimeouts(args);
+    else fail("usage: quiescence.mjs <preflight|final-gate|verify-timeouts> --database-url postgres://... [--query-timeout-ms N] [--fenced-pids p1,p2]");
+  } catch (error) {
+    process.stderr.write(`quiescence: ${error.message}\n`);
+    process.exitCode = 2;
+  }
+}
