@@ -94,6 +94,28 @@ describe("DescriptionDisclosure", () => {
     expect(screen.getByRole("button", { name: "Show less" })).toHaveAttribute("aria-expanded", "true");
   });
 
+  it("keeps the expand pointer handler off the inert node", () => {
+    render(<DisclosureHarness />);
+
+    const editor = screen.getByTestId("real-editor").parentElement!;
+    const wrapper = editor.closest("[data-description-disclosure]")!;
+
+    // jsdom does not implement inert hit-testing: a real browser retargets a
+    // pointer event on an inert subtree to its nearest non-inert ancestor and
+    // never dispatches it on the inert node itself, but fireEvent dispatches
+    // straight at whatever target it is given regardless of inertness, so a
+    // click-simulation test would pass even if the handler regressed back
+    // onto the inert element. Assert the DOM structure a real browser's
+    // retargeting depends on instead: the expand handler must live on a
+    // non-inert ancestor, never on the inert node.
+    expect(editor).toHaveAttribute("inert");
+    expect(wrapper).not.toHaveAttribute("inert");
+    expect(wrapper).toBe(editor.parentElement);
+
+    fireEvent.pointerDown(wrapper);
+    expect(screen.getByRole("button", { name: "Show less" })).toHaveAttribute("aria-expanded", "true");
+  });
+
   it("does not hide or duplicate a short description", () => {
     measurement.current = {
       totalRows: 12,
