@@ -1769,18 +1769,34 @@ describe("IssueDetail (shared)", () => {
     expect(container.querySelector(`[data-run-id="${taskId}"]`)).not.toBeNull();
     expect(mockCollapseStoreState.isCollapsed(root.id)).toBe(true);
 
-    // The run completes — the pin's reason ends. The run's own summary node
-    // persists (same identity, same as the reply-anchored case elsewhere in
-    // this file: completion drops the "Stop" affordance, not the node), and
-    // manual collapse is never mutated by the pin, so the persisted
-    // preference is unchanged — not a latched expansion.
-    const completed: AgentTask = { ...task, status: "completed", completed_at: "2026-01-16T00:06:00Z" };
+    // The run completes — `isActiveCommentRun` no longer matches it, so
+    // `rootIdsWithActiveRun` drops the root and `forceThreadOpen`'s pin
+    // releases. Manual collapse was never mutated by the pin, so with
+    // `isCollapsed` still true the root's `open` gate closes again and the
+    // root-anchored run's slot — including its "Completed" summary, which
+    // only rendered because the pin forced `open` true — leaves the DOM.
+    // `delivered_comment_ids` is set to the root here because that is what a
+    // real completion does (comment-runs.ts's anchor resolution reads
+    // `delivered_comment_ids` once a task is no longer queued/dispatched,
+    // per buildCommentRunView's `usesPlannedCoverage`); leaving it `[]` (as
+    // it correctly is at `queued`, before delivery is known) would make the
+    // run resolve with no anchor and fall out to the standalone-run render
+    // path (issue-detail.tsx's `item.kind === "run"` timeline branch, gated
+    // by nothing but timeline order) instead of the root-anchored path this
+    // test exists to exercise (comment-card.tsx's `{open && ...}` block) —
+    // an unanchored completed run would trivially "pass" a bare
+    // Stop-button-gone assertion while proving nothing about the collapse
+    // pin. Assert the node's absence directly (not just the Stop button) so
+    // a stale intermediate render, where completion has landed but the
+    // collapse re-close hasn't yet, can't pass this assertion.
+    const completed: AgentTask = {
+      ...task, status: "completed", completed_at: "2026-01-16T00:06:00Z", delivered_comment_ids: [root.id],
+    };
     mockApiObj.listTasksByIssue.mockResolvedValue([completed]);
     act(() => {
       client.setQueryData(issueKeys.tasks("issue-1"), [completed]);
     });
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument());
-    expect(container.querySelector(`[data-run-id="${taskId}"]`)).not.toBeNull();
+    await waitFor(() => expect(container.querySelector(`[data-run-id="${taskId}"]`)).toBeNull());
     expect(mockCollapseStoreState.isCollapsed(root.id)).toBe(true);
   });
 
