@@ -69,6 +69,7 @@ if bash deploy/cd/migrate-supervised.sh \
   --database-url "$host_db_url" \
   --observer-database-url "$observer_db_url" \
   --migrate-binary "$work_dir/migrate" \
+  --role-name "$db_user" --database-name "$db_name" \
   --migration-allocation-seconds 60 \
   --psql-via-docker-network "$network" >"$work_dir/positive.log" 2>&1; then
   echo "PASS: full migration set completed and confirmed within deadline"
@@ -78,6 +79,99 @@ else
   cat "$work_dir/positive.log"
   fail=$((fail + 1))
 fi
+
+if grep -q "verified pre-launch role/database timeout defaults" "$work_dir/positive.log" && \
+   grep -q "confirmed live migrator Postgres session" "$work_dir/positive.log"; then
+  echo "PASS: positive run proved the role/database timeout default AND the live migrator session identity, not just a side-channel probe"
+  pass=$((pass + 1))
+else
+  echo "FAIL: positive run log is missing the role/database default proof or the live-session identity confirmation — see $work_dir/positive.log"
+  fail=$((fail + 1))
+fi
+
+# The positive run above left a 1000ms role/database default in place
+# (migrate-supervised.sh's whole point is that this default persists past
+# the migrator's own process exit, since it is server-side metadata, not
+# a client-session setting). Reset it before the tests below, which use
+# multi-second held sessions on the SAME role/database and would
+# otherwise be spuriously cancelled by that leftover default — a
+# test-harness artifact from reusing one container across sections, not
+# a real-world concern (a real deployment sets this default immediately
+# before each attempt's own migrator launch).
+docker exec "$container" psql -U "$db_user" -d "$db_name" -c \
+  "ALTER ROLE $db_user IN DATABASE $db_name RESET statement_timeout; ALTER ROLE $db_user IN DATABASE $db_name RESET lock_timeout;" >/dev/null
+
+echo "==> negative control: observer-name spoofing must not hide a foreign session from the final gate"
+# A foreign session claiming the removed hardcoded observer application_name
+# prefix must still be visible to quiescence.mjs's checks — this is the
+# exact hole BLOCK found: a prior version excluded any row whose
+# client-controlled application_name matched a fixed prefix, so a foreign
+# client could claim that name and hide an open transaction from the final
+# gate. There must be no such client-controlled exclusion left anywhere.
+docker exec -d "$container" bash -c \
+  "PGAPPNAME='che372-d2-quiescence-observer-fake' psql -U $db_user -d $db_name -c 'BEGIN; SELECT pg_sleep(20);'"
+sleep 1
+if node deploy/cd/quiescence.mjs final-gate --database-url "$observer_db_url" --psql-via-docker-network "$network" >/dev/null 2>&1; then
+  echo "FAIL: final gate ADMITTED while a session spoofing the old observer application_name prefix held an open transaction — spoofing hole is NOT closed"
+  fail=$((fail + 1))
+else
+  echo "PASS: final gate correctly denied despite the foreign session spoofing the old observer application_name prefix"
+  pass=$((pass + 1))
+fi
+docker exec "$container" psql -U "$db_user" -d "$db_name" -At -c \
+  "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name LIKE '%fake%';" >/dev/null 2>&1 || true
+sleep 1
+
+echo "==> negative control: timeout-proof bypass must fail closed rather than silently approve"
+# verify-role-timeout-defaults must deny when no default has ever been set
+# for a given role/database pair (the pre-launch state for a fresh
+# database), never treat "no rows" as "any timeout is fine."
+bare_role="che372_bare_role_$$"
+docker exec "$container" psql -U "$db_user" -d "$db_name" -At -c \
+  "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '$bare_role') THEN CREATE ROLE $bare_role LOGIN; END IF; END \$\$;" >/dev/null 2>&1
+if node deploy/cd/quiescence.mjs verify-role-timeout-defaults --database-url "$observer_db_url" --psql-via-docker-network "$network" \
+  --role-name "$bare_role" --database-name "$db_name" >/dev/null 2>&1; then
+  echo "FAIL: verify-role-timeout-defaults reported ok for a role with no configured default — timeout-proof bypass is possible"
+  fail=$((fail + 1))
+else
+  echo "PASS: verify-role-timeout-defaults correctly denies when no role/database default has been set (fails closed, not open)"
+  pass=$((pass + 1))
+fi
+docker exec "$container" psql -U "$db_user" -d "$db_name" -c "DROP ROLE IF EXISTS $bare_role;" >/dev/null 2>&1 || true
+
+echo "==> negative control: live-session identity check must reject a mismatched pid/backend_start/role"
+docker exec -d "$container" psql -U "$db_user" -d "$db_name" -c "SELECT pg_sleep(10);"
+sleep 1
+live="$(node deploy/cd/quiescence.mjs find-live-session-by-role --database-url "$observer_db_url" --psql-via-docker-network "$network" \
+  --role-name "$db_user" --database-name "$db_name" --query-timeout-ms 3000)"
+live_pid="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).pid))' "$live")"
+live_backend_start="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).backendStart))' "$live")"
+if node deploy/cd/quiescence.mjs verify-live-session-is-covered --database-url "$observer_db_url" --psql-via-docker-network "$network" \
+  --pid "$live_pid" --backend-start "2001-01-01 00:00:00+00" --role-name "$db_user" --database-name "$db_name" >/dev/null 2>&1; then
+  echo "FAIL: verify-live-session-is-covered admitted a backend_start mismatch — PID-reuse spoofing is possible"
+  fail=$((fail + 1))
+else
+  echo "PASS: verify-live-session-is-covered correctly rejects a backend_start mismatch (guards against PID reuse)"
+  pass=$((pass + 1))
+fi
+if node deploy/cd/quiescence.mjs verify-live-session-is-covered --database-url "$observer_db_url" --psql-via-docker-network "$network" \
+  --pid "$live_pid" --backend-start "$live_backend_start" --role-name "wrong_role_name" --database-name "$db_name" >/dev/null 2>&1; then
+  echo "FAIL: verify-live-session-is-covered admitted a role-name mismatch"
+  fail=$((fail + 1))
+else
+  echo "PASS: verify-live-session-is-covered correctly rejects a role-name mismatch"
+  pass=$((pass + 1))
+fi
+docker exec "$container" psql -U "$db_user" -d "$db_name" -At -c \
+  "SELECT pg_terminate_backend($live_pid);" >/dev/null 2>&1 || true
+sleep 1
+
+# Reset the role/database default set by the positive run above so it does
+# not leak into the negative-control run below (a real deployment always
+# targets a fresh role/database pair per attempt; this test reuses one
+# container across both runs for speed).
+docker exec "$container" psql -U "$db_user" -d "$db_name" -c \
+  "ALTER ROLE $db_user IN DATABASE $db_name RESET statement_timeout; ALTER ROLE $db_user IN DATABASE $db_name RESET lock_timeout;" >/dev/null 2>&1
 
 ledger_head="$(docker exec "$container" psql -U "$db_user" -d "$db_name" -At -c \
   "SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1;")"
@@ -99,6 +193,7 @@ bash deploy/cd/migrate-supervised.sh \
   --database-url "$host_db_url" \
   --observer-database-url "$observer_db_url" \
   --migrate-binary "$work_dir/migrate" \
+  --role-name "$db_user" --database-name "$db_name" \
   --migration-allocation-seconds 1 \
   --reserve-seconds 0 \
   --psql-via-docker-network "$network" >"$work_dir/negative.log" 2>&1

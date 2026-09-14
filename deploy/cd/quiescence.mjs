@@ -112,9 +112,16 @@ export function runPsql({ connInfo, sql, queryTimeoutMs = DEFAULT_QUERY_TIMEOUT_
   }
 
   const raw = result.stdout.endsWith(recordSep) ? result.stdout.slice(0, -recordSep.length) : result.stdout;
+  // psql's --no-align terminates every record with its own newline
+  // regardless of --record-separator, so each record's last field carries
+  // a trailing "\n" that is not part of the SQL value. Strip exactly one
+  // trailing newline per record (never trim broader whitespace, which
+  // could silently eat meaningful trailing spaces in a query/text field).
   const rows = raw.length === 0
     ? []
-    : raw.split(recordSep).filter((r) => r.length > 0).map((record) => record.split(fieldSep));
+    : raw.split(recordSep).filter((r) => r.length > 0)
+        .map((record) => (record.endsWith("\n") ? record.slice(0, -1) : record))
+        .map((record) => record.split(fieldSep));
   return { ok: true, rows };
 }
 
@@ -198,20 +205,29 @@ export function observeQuiescenceState({ connInfo, queryTimeoutMs = DEFAULT_QUER
   return { ok: true, observedAtMs, observationEndMs, activity, locks, prepared, createIndex };
 }
 
-// isControllerOwnSession identifies only the observer's own short
-// metadata-only statements, matched narrowly by application_name AND pid
-// equal to pg_backend_pid() is already excluded server-side. We also
-// exclude by an explicit, narrowly-scoped application_name so a second
-// observation connection issued by this same controller run (e.g. the
-// final-gate recheck) does not see the passive-preflight connection as a
-// foreign session, since each runPsql call is a brand-new connection that
-// closes immediately after.
-const CONTROLLER_APPLICATION_NAME_PREFIX = "che372-d2-quiescence-observer";
-
-function isExcludedSelfSession(row, { excludeApplicationNamePrefix }) {
-  return typeof row.applicationName === "string" &&
-    row.applicationName.startsWith(excludeApplicationNamePrefix);
-}
+// Self-exclusion is handled entirely server-side by the observation SQL's
+// `pid <> pg_backend_pid()` clause (observeQuiescenceState above): a
+// session can never see or filter out its own current backend PID by
+// claiming a name, because pg_backend_pid() is assigned by the server at
+// connection time and is not client-settable.
+//
+// A previous version of this module additionally excluded any row whose
+// client-controlled application_name matched a fixed observer prefix.
+// That was a real admission hole: application_name is a session GUC any
+// client can set to an arbitrary string (`PGAPPNAME`, `SET
+// application_name`, or a connection-string parameter), so a foreign
+// session could claim the same prefix and make its own open transaction
+// or retained snapshot invisible to the final gate. It was also
+// unnecessary — runPsql uses child_process.spawnSync, which blocks until
+// the single psql process it launches exits, so no two observation
+// connections from this module are ever open at the same time; each
+// query's own connection is excluded from its own results purely by
+// being the query's own backend, which pg_backend_pid() already covers.
+// Do not reintroduce a name/label-based exclusion here; if a future
+// caller genuinely needs to exclude an additional session, it must do so
+// by an unforgeable identity (recorded PID + backend_start, as
+// migrate-supervised.sh's watchdog already requires for termination),
+// never by a string the excluded session controls.
 
 // evaluatePassivePreflight implements the design's gate 1: a coarse, cheap
 // check performed while the healthy release still serves. It never denies
@@ -219,14 +235,17 @@ function isExcludedSelfSession(row, { excludeApplicationNamePrefix }) {
 // on anything already known to be a hard blocker so the caller does not
 // start an outage to wait out a problem it can already see.
 export function evaluatePassivePreflight(state, opts = {}) {
-  const excludeApplicationNamePrefix = opts.excludeApplicationNamePrefix ?? CONTROLLER_APPLICATION_NAME_PREFIX;
   const thresholdMs = opts.youngTransactionThresholdMs ?? YOUNG_TRANSACTION_THRESHOLD_MS;
 
   if (!state.ok) {
     return { admit: false, decision: "deferred_contention", reason: `observation failed: ${state.reason}`, evidence: {} };
   }
 
-  const foreignActivity = state.activity.filter((row) => !isExcludedSelfSession(row, { excludeApplicationNamePrefix }));
+  // state.activity already excludes this observation's own connection via
+  // the query's server-side `pid <> pg_backend_pid()` clause — an
+  // unforgeable exclusion. No client-controlled field (application_name
+  // or otherwise) is used to hide any row here.
+  const foreignActivity = state.activity;
 
   const oldTransactions = foreignActivity.filter((row) => {
     if (!row.xactStart) return false;
@@ -270,13 +289,14 @@ export function evaluatePassivePreflight(state, opts = {}) {
 // re-run immediately before migrator launch. Unknown state (a failed
 // observation) always denies; it is never treated as "empty set."
 export function evaluateFinalGate(state, opts = {}) {
-  const excludeApplicationNamePrefix = opts.excludeApplicationNamePrefix ?? CONTROLLER_APPLICATION_NAME_PREFIX;
-
   if (!state.ok) {
     return { admit: false, decision: "final_gate_denied", reason: `observation failed (unknown state fails closed): ${state.reason}`, evidence: {} };
   }
 
-  const foreignActivity = state.activity.filter((row) => !isExcludedSelfSession(row, { excludeApplicationNamePrefix }));
+  // See evaluatePassivePreflight: self-exclusion is server-side and
+  // unforgeable (pg_backend_pid()); no client-controlled field is used
+  // to exclude any row here.
+  const foreignActivity = state.activity;
 
   // Zero non-operation transactions/retained snapshots: any foreign
   // session with an open xact_start, OR any foreign session holding a
@@ -384,41 +404,167 @@ export class SampleTracker {
   }
 }
 
-// verifyConnectionTimeouts reads back statement_timeout/lock_timeout from
-// the live session (never trusts the setter). A value that renders as "0"
-// means disabled in Postgres and must be treated as a hard failure, not a
-// silently-accepted "no timeout."
-export function verifyConnectionTimeouts({ connInfo, queryTimeoutMs = DEFAULT_QUERY_TIMEOUT_MS }) {
-  const result = runPsql({
-    connInfo,
-    sql: "SELECT current_setting('statement_timeout'), current_setting('lock_timeout')",
-    queryTimeoutMs,
-  });
-  if (!result.ok || result.rows.length !== 1) {
-    return { ok: false, reason: result.ok ? "unexpected row count reading back timeouts" : result.reason };
+function parsePgIntervalSetting(raw) {
+  if (raw === "0") return 0;
+  const match = /^(\d+)(ms|s|min|h|d)?$/.exec(String(raw).trim());
+  if (!match) return null;
+  const value = Number(match[1]);
+  const unit = match[2] ?? "ms";
+  const multipliers = { ms: 1, s: 1000, min: 60000, h: 3600000, d: 86400000 };
+  return value * multipliers[unit];
+}
+
+// verifyConnectionTimeouts previously read back statement_timeout/
+// lock_timeout from a brand-new psql session opened by the observer
+// itself, using PGOPTIONS the caller supplied. That proved only that
+// runPsql's OWN throwaway connection had the requested PGOPTIONS —
+// runPsql (see above) unconditionally overwrites PGOPTIONS with its own
+// fixed 500ms defaults before every query, so the caller's requested
+// values were never actually exercised, and even a correct probe would
+// only ever inspect a side connection, never the migrator's own pinned
+// connection or its separately-opened hook connections
+// (server/cmd/migrate/main.go: preMigrationHook takes *pgxpool.Pool, a
+// different connection than the loop's pinned advisory-lock conn).
+//
+// PostgreSQL does not expose another live backend's session-level GUC
+// values (there is no view for "read session X's current statement_timeout
+// from outside that session" — pg_stat_activity carries no such column,
+// and pg_settings/current_setting() only ever report the caller's own
+// session). So an external process cannot, even in principle, connect to
+// Postgres and read back what timeout is active on a *different*,
+// already-open connection made by the migrator.
+//
+// The verifiable alternative is a role/database-scoped default set via
+// ALTER ROLE ... IN DATABASE ... SET, recorded in the world-readable
+// pg_db_role_setting catalog. This is not a live-session probe — it is a
+// server-side default that PostgreSQL applies to every NEW connection
+// opened by that role in that database from the moment it is set,
+// including the migrator's own pinned connection and every hook
+// connection its pool opens afterward, regardless of what PGOPTIONS (if
+// any) the client process supplies. A client can still override its own
+// session with SET/SET LOCAL after connecting, so this is a default, not
+// an unbypassable ceiling — the caller must set it BEFORE launching the
+// migrator and must not treat it as a substitute for the migrator's own
+// code cooperating (it does: migrate-supervised.sh also passes PGOPTIONS
+// to the migrator's environment as defence in depth, and the migrator
+// performs no session-level override of these settings).
+export function setRoleTimeoutDefaults({ connInfo, roleName, databaseName, statementTimeoutMs, lockTimeoutMs, queryTimeoutMs = DEFAULT_QUERY_TIMEOUT_MS }) {
+  const identRe = /^[A-Za-z_][A-Za-z0-9_]*$/;
+  if (!identRe.test(roleName) || !identRe.test(databaseName)) {
+    return { ok: false, reason: "roleName/databaseName must be a plain unquoted identifier" };
   }
-  const [statementTimeoutRaw, lockTimeoutRaw] = result.rows[0];
-  const parseSetting = (raw) => {
-    if (raw === "0") return 0;
-    const match = /^(\d+)(ms|s|min|h|d)?$/.exec(raw.trim());
-    if (!match) return null;
-    const value = Number(match[1]);
-    const unit = match[2] ?? "ms";
-    const multipliers = { ms: 1, s: 1000, min: 60000, h: 3600000, d: 86400000 };
-    return value * multipliers[unit];
-  };
-  const statementTimeoutMs = parseSetting(statementTimeoutRaw);
-  const lockTimeoutMs = parseSetting(lockTimeoutRaw);
+  if (!(statementTimeoutMs > 0) || !(lockTimeoutMs > 0)) {
+    return { ok: false, reason: "statementTimeoutMs/lockTimeoutMs must be positive; a value that rounds to 0 means disabled in Postgres" };
+  }
+  const sql = `ALTER ROLE ${roleName} IN DATABASE ${databaseName} SET statement_timeout = '${Math.trunc(statementTimeoutMs)}ms'; ` +
+    `ALTER ROLE ${roleName} IN DATABASE ${databaseName} SET lock_timeout = '${Math.trunc(lockTimeoutMs)}ms';`;
+  const result = runPsql({ connInfo, sql, queryTimeoutMs });
+  if (!result.ok) {
+    return { ok: false, reason: `failed to set role/database timeout defaults: ${result.reason}` };
+  }
+  return { ok: true };
+}
+
+// verifyRoleTimeoutDefaults reads the role/database default back from the
+// pg_db_role_setting catalog (server-side, world-readable metadata — not
+// a claim any client session can spoof) and confirms it matches what the
+// caller intended to set, denying on any mismatch, missing entry, or a
+// value that would round to <=0.
+export function verifyRoleTimeoutDefaults({ connInfo, roleName, databaseName, queryTimeoutMs = DEFAULT_QUERY_TIMEOUT_MS }) {
+  const identRe = /^[A-Za-z_][A-Za-z0-9_]*$/;
+  if (!identRe.test(roleName) || !identRe.test(databaseName)) {
+    return { ok: false, reason: "roleName/databaseName must be a plain unquoted identifier" };
+  }
+  const sql = `
+    SELECT unnest(setconfig)
+    FROM pg_db_role_setting drs
+    JOIN pg_roles r ON r.oid = drs.setrole
+    JOIN pg_database d ON d.oid = drs.setdatabase
+    WHERE r.rolname = '${roleName}' AND d.datname = '${databaseName}';
+  `;
+  const result = runPsql({ connInfo, sql, queryTimeoutMs });
+  if (!result.ok) {
+    return { ok: false, reason: `could not read pg_db_role_setting: ${result.reason}` };
+  }
+  let statementTimeoutMs = null;
+  let lockTimeoutMs = null;
+  for (const [entry] of result.rows) {
+    const [key, value] = entry.split("=");
+    if (key === "statement_timeout") statementTimeoutMs = parsePgIntervalSetting(value);
+    if (key === "lock_timeout") lockTimeoutMs = parsePgIntervalSetting(value);
+  }
   if (statementTimeoutMs === null || lockTimeoutMs === null) {
-    return { ok: false, reason: `could not parse timeout settings: statement_timeout=${statementTimeoutRaw} lock_timeout=${lockTimeoutRaw}` };
+    return { ok: false, reason: "role/database default for statement_timeout and/or lock_timeout is not set (unknown state fails closed)" };
   }
-  if (statementTimeoutMs === 0 || lockTimeoutMs === 0) {
-    return { ok: false, reason: "a timeout rounded down to 0 (disabled) on the session; must deny", statementTimeoutMs, lockTimeoutMs };
+  if (statementTimeoutMs <= 0 || lockTimeoutMs <= 0) {
+    return { ok: false, reason: "a role/database default timeout rounds to <=0ms (disabled) — must deny", statementTimeoutMs, lockTimeoutMs };
   }
   if (lockTimeoutMs > DEFAULT_LOCK_TIMEOUT_MS) {
-    return { ok: false, reason: `lock_timeout ${lockTimeoutMs}ms exceeds the ${DEFAULT_LOCK_TIMEOUT_MS}ms ceiling`, statementTimeoutMs, lockTimeoutMs };
+    return { ok: false, reason: `role/database default lock_timeout ${lockTimeoutMs}ms exceeds the ${DEFAULT_LOCK_TIMEOUT_MS}ms ceiling`, statementTimeoutMs, lockTimeoutMs };
   }
   return { ok: true, statementTimeoutMs, lockTimeoutMs };
+}
+
+// verifyLiveSessionIsCovered confirms that a specific, already-connected
+// backend (identified by the unforgeable pid + backend_start pair the
+// watchdog itself recorded when it observed the session — never by a
+// client-supplied application_name or label) is running as the expected
+// role/database, so the role-level default verified above actually
+// applies to THIS session and not some differently-authenticated
+// process that merely happens to share a PID after reuse. It does not
+// and cannot read that session's live GUC value (Postgres does not
+// expose that); it establishes that the identity precondition for the
+// role-level default to apply is met for this exact recorded connection.
+export function verifyLiveSessionIsCovered({ connInfo, pid, backendStart, expectedRoleName, expectedDatabaseName, queryTimeoutMs = DEFAULT_QUERY_TIMEOUT_MS }) {
+  const sql = `
+    SELECT usename, datname, backend_start::text
+    FROM pg_stat_activity
+    WHERE pid = ${Number(pid)};
+  `;
+  const result = runPsql({ connInfo, sql, queryTimeoutMs });
+  if (!result.ok) {
+    return { ok: false, reason: `could not read pg_stat_activity for pid ${pid}: ${result.reason}` };
+  }
+  if (result.rows.length !== 1) {
+    return { ok: false, reason: `expected exactly one live session for pid ${pid}, found ${result.rows.length} (unknown state fails closed)` };
+  }
+  const [usename, datname, actualBackendStart] = result.rows[0];
+  if (actualBackendStart !== backendStart) {
+    return { ok: false, reason: `pid ${pid} backend_start mismatch (expected ${backendStart}, observed ${actualBackendStart}) — PID likely reused by a different session` };
+  }
+  if (usename !== expectedRoleName || datname !== expectedDatabaseName) {
+    return { ok: false, reason: `pid ${pid} is role=${usename} db=${datname}, expected role=${expectedRoleName} db=${expectedDatabaseName}` };
+  }
+  return { ok: true };
+}
+
+// findLiveSessionByRole locates the oldest live session authenticated as
+// the given role/database, excluding this observation's own connection
+// (server-side, via pg_backend_pid() — see the note on runPsql above).
+// It is used to discover the migrator's actual Postgres backend PID and
+// backend_start after launch, so the caller can then pass that
+// unforgeable identity to verifyLiveSessionIsCovered rather than
+// confusing an OS-level child process ID (which is not a Postgres
+// backend PID) with the number pg_stat_activity actually reports.
+export function findLiveSessionByRole({ connInfo, roleName, databaseName, queryTimeoutMs = DEFAULT_QUERY_TIMEOUT_MS }) {
+  const sql = `
+    SELECT pid::text, backend_start::text
+    FROM pg_stat_activity
+    WHERE usename = '${roleName.replace(/'/g, "''")}'
+      AND datname = '${databaseName.replace(/'/g, "''")}'
+      AND pid <> pg_backend_pid()
+    ORDER BY backend_start ASC
+    LIMIT 1;
+  `;
+  const result = runPsql({ connInfo, sql, queryTimeoutMs });
+  if (!result.ok) {
+    return { ok: false, reason: `could not search pg_stat_activity: ${result.reason}` };
+  }
+  if (result.rows.length !== 1) {
+    return { ok: false, reason: `no live session found for role=${roleName} db=${databaseName} (unknown state fails closed)` };
+  }
+  const [pid, backendStart] = result.rows[0];
+  return { ok: true, pid, backendStart };
 }
 
 // buildConnInfo resolves how observation queries reach Postgres.
@@ -478,9 +624,48 @@ function cliFinalGate(args) {
   process.exitCode = result.admit ? 0 : 1;
 }
 
-function cliVerifyTimeouts(args) {
+function cliSetRoleTimeoutDefaults(args) {
   const { databaseUrl, dockerNetwork, queryTimeoutMs } = connOptsFromArgs(args);
-  const result = verifyConnectionTimeouts({ connInfo: buildConnInfo(databaseUrl, { dockerNetwork }), queryTimeoutMs });
+  const roleName = option("--role-name", args);
+  const databaseName = option("--database-name", args);
+  const statementTimeoutMs = Number(option("--statement-timeout-ms", args));
+  const lockTimeoutMs = Number(option("--lock-timeout-ms", args));
+  const result = setRoleTimeoutDefaults({
+    connInfo: buildConnInfo(databaseUrl, { dockerNetwork }), roleName, databaseName,
+    statementTimeoutMs, lockTimeoutMs, queryTimeoutMs,
+  });
+  process.stdout.write(`${JSON.stringify(result)}\n`);
+  process.exitCode = result.ok ? 0 : 1;
+}
+
+function cliVerifyRoleTimeoutDefaults(args) {
+  const { databaseUrl, dockerNetwork, queryTimeoutMs } = connOptsFromArgs(args);
+  const roleName = option("--role-name", args);
+  const databaseName = option("--database-name", args);
+  const result = verifyRoleTimeoutDefaults({ connInfo: buildConnInfo(databaseUrl, { dockerNetwork }), roleName, databaseName, queryTimeoutMs });
+  process.stdout.write(`${JSON.stringify(result)}\n`);
+  process.exitCode = result.ok ? 0 : 1;
+}
+
+function cliFindLiveSessionByRole(args) {
+  const { databaseUrl, dockerNetwork, queryTimeoutMs } = connOptsFromArgs(args);
+  const roleName = option("--role-name", args);
+  const databaseName = option("--database-name", args);
+  const result = findLiveSessionByRole({ connInfo: buildConnInfo(databaseUrl, { dockerNetwork }), roleName, databaseName, queryTimeoutMs });
+  process.stdout.write(`${JSON.stringify(result)}\n`);
+  process.exitCode = result.ok ? 0 : 1;
+}
+
+function cliVerifyLiveSessionIsCovered(args) {
+  const { databaseUrl, dockerNetwork, queryTimeoutMs } = connOptsFromArgs(args);
+  const pid = option("--pid", args);
+  const backendStart = option("--backend-start", args);
+  const expectedRoleName = option("--role-name", args);
+  const expectedDatabaseName = option("--database-name", args);
+  const result = verifyLiveSessionIsCovered({
+    connInfo: buildConnInfo(databaseUrl, { dockerNetwork }), pid, backendStart,
+    expectedRoleName, expectedDatabaseName, queryTimeoutMs,
+  });
   process.stdout.write(`${JSON.stringify(result)}\n`);
   process.exitCode = result.ok ? 0 : 1;
 }
@@ -491,8 +676,11 @@ if (isMain) {
     const [command, ...args] = process.argv.slice(2);
     if (command === "preflight") cliPreflight(args);
     else if (command === "final-gate") cliFinalGate(args);
-    else if (command === "verify-timeouts") cliVerifyTimeouts(args);
-    else fail("usage: quiescence.mjs <preflight|final-gate|verify-timeouts> --database-url postgres://... [--query-timeout-ms N] [--fenced-pids p1,p2]");
+    else if (command === "set-role-timeout-defaults") cliSetRoleTimeoutDefaults(args);
+    else if (command === "verify-role-timeout-defaults") cliVerifyRoleTimeoutDefaults(args);
+    else if (command === "find-live-session-by-role") cliFindLiveSessionByRole(args);
+    else if (command === "verify-live-session-is-covered") cliVerifyLiveSessionIsCovered(args);
+    else fail("usage: quiescence.mjs <preflight|final-gate|set-role-timeout-defaults|verify-role-timeout-defaults|verify-live-session-is-covered> --database-url postgres://... [--query-timeout-ms N] [--fenced-pids p1,p2] [--role-name R --database-name D [--statement-timeout-ms N --lock-timeout-ms N | --pid P --backend-start TS]]");
   } catch (error) {
     process.stderr.write(`quiescence: ${error.message}\n`);
     process.exitCode = 2;

@@ -32,9 +32,38 @@ design (`CHE-372` addendum, reviewed digest
   advisory lock, unaccounted lock, or unfenced foreign session denies.
   Unknown state (a failed observation) always denies — it is never treated
   as an empty/healthy result.
-- `verify-timeouts` — reads back `statement_timeout`/`lock_timeout` from the
-  live session rather than trusting the values that were set; a value that
-  rounds to 0 (Postgres's "disabled" sentinel) is treated as a hard failure.
+
+Self-exclusion (never seeing the observer's own current query as a foreign
+session) is handled entirely server-side, via the observation SQL's own
+`pid <> pg_backend_pid()` clause. No client-controlled field —
+`application_name` in particular — is ever used to exclude a row from either
+gate. An earlier version of this module excluded rows by a fixed
+`application_name` prefix, which was a real admission hole: `application_name`
+is a session GUC any client can set to an arbitrary string, so a foreign
+session could claim that prefix and hide an open transaction from the final
+gate. `test-quiescence.sh` and `test-migrate-supervised.sh` both include a
+negative control that spoofs the old prefix and asserts it is still denied.
+
+Timeout proof (`set-role-timeout-defaults` / `verify-role-timeout-defaults` /
+`find-live-session-by-role` / `verify-live-session-is-covered`) does not
+attempt to read back another live backend's session-level GUC value —
+PostgreSQL provides no view for that; `pg_stat_activity` carries no such
+column, and `pg_settings`/`current_setting()` only ever report the caller's
+own session. Instead it sets and verifies a role/database-scoped default via
+`ALTER ROLE ... IN DATABASE ... SET`, recorded in the world-readable
+`pg_db_role_setting` catalog, which PostgreSQL applies to every **new**
+connection that role opens against that database from the moment it is set —
+covering the migrator's pinned advisory-lock connection and every
+separately-opened hook connection its pool opens afterward alike, not just
+whichever one connection a client-side probe happened to inspect. A value
+that rounds to 0 (Postgres's "disabled" sentinel) is treated as a hard
+failure, and a role/database with no default configured at all denies rather
+than being treated as "no timeout configured is fine." After launch,
+`verify-live-session-is-covered` confirms the live migrator session's
+identity (Postgres backend PID + `backend_start`, not the OS-level child
+process ID) actually matches the role/database the default was verified for,
+closing the gap where the default could be proven for the wrong session
+entirely (wrong role, wrong database, or a stale/reused backend PID).
 
 Every observation query is a fresh, autocommit `psql` invocation (no
 persistent connection, no long-lived snapshot from the observer itself),
@@ -46,13 +75,15 @@ target, mirroring D1's existing synthetic-fixture convention.
 
 `migrate-supervised.sh` wraps `server/cmd/migrate` with the absolute
 `migration_deadline`/`work_deadline` arithmetic from the design
-(`min(migration_started+15s, cutover_started+40s) - 2s` reserve), applies and
-verifies connection-level timeouts, and runs an external watchdog that can
-terminate only its own recorded migrator PID — confirmed via `/proc`
-liveness, never trusted from a signal's return code alone — and never a
-foreign session or anything matched by executable name. A deadline-exceeded
-run always exits `3` (`needs_operator`) and never claims success; it does not
-attempt to repair or roll back the database itself.
+(`min(migration_started+15s, cutover_started+40s) - 2s` reserve), sets and
+verifies the role/database timeout default described above before launch,
+confirms the live migrator session's identity immediately after launch, and
+runs an external watchdog that can terminate only its own recorded migrator
+PID — confirmed via process liveness, never trusted from a signal's return
+code alone — and never a foreign session or anything matched by executable
+name. A deadline-exceeded run always exits `3` (`needs_operator`) and never
+claims success; it does not attempt to repair or roll back the database
+itself.
 
 `docker/entrypoint.cd.sh` is a new, explicit deployment-mode entrypoint that
 gates `exec ./server` behind an external decision file the D2 controller
