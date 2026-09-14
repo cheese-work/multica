@@ -40,11 +40,19 @@ for _ in $(seq 1 30); do
 done
 docker exec "$container" pg_isready -U "$db_user" -d "$db_name" >/dev/null
 
+# --query-timeout-ms 4000 is generous on purpose: this test suite drives
+# many docker-networked observation calls in close succession, sometimes
+# against sessions this same suite is holding open concurrently, and
+# measured real Docker daemon overhead on a busy shared host exceeded the
+# module's own 2000ms default often enough to make this suite flaky. This
+# is a test-only convenience value; the deadline-safety-critical caller
+# (migrate-supervised.sh) always computes and passes its own precise
+# remaining-time budget and never depends on any default here.
 preflight() {
-  node deploy/cd/quiescence.mjs preflight --database-url "$db_url" --psql-via-docker-network "$network"
+  node deploy/cd/quiescence.mjs preflight --database-url "$db_url" --psql-via-docker-network "$network" --query-timeout-ms 4000
 }
 final_gate() {
-  node deploy/cd/quiescence.mjs final-gate --database-url "$db_url" --psql-via-docker-network "$network"
+  node deploy/cd/quiescence.mjs final-gate --database-url "$db_url" --psql-via-docker-network "$network" --query-timeout-ms 4000
 }
 
 hold_txn() {
@@ -197,7 +205,7 @@ live_pid="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).pid
 live_backend_start="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).backendStart))' "$live")"
 
 if node deploy/cd/quiescence.mjs verify-live-session-is-covered --database-url "$db_url" --psql-via-docker-network "$network" \
-  --pid "$live_pid" --backend-start "$live_backend_start" --role-name "$db_user" --database-name "$db_name" >/dev/null 2>&1; then
+  --pid "$live_pid" --backend-start "$live_backend_start" --role-name "$db_user" --database-name "$db_name" --query-timeout-ms 4000 >/dev/null 2>&1; then
   echo "PASS: verify-live-session-is-covered confirms the correct live identity"
   pass=$((pass + 1))
 else

@@ -23,7 +23,36 @@
 import { spawnSync } from "node:child_process";
 
 export const YOUNG_TRANSACTION_THRESHOLD_MS = 15000;
+// DEFAULT_QUERY_TIMEOUT_MS is the design's <=500ms ceiling for the actual
+// SQL statement (server-side statement_timeout/lock_timeout/
+// idle_in_transaction_session_timeout, applied in runPsql below) — it is
+// a policy input from the approved D2 addendum, not a knob to widen for
+// convenience.
+//
+// DEFAULT_WALL_CLOCK_TIMEOUT_MS is a SEPARATE, CLI-only default for the
+// outer `timeout` wrapper around the whole observer invocation, used only
+// when a caller does not supply --query-timeout-ms explicitly (e.g. an
+// interactive/manual preflight or final-gate check run outside
+// migrate-supervised.sh's own precise deadline arithmetic). It must
+// additionally cover real process-spawn overhead beyond the SQL statement
+// itself — --psql-via-docker-network mode's `docker run --rm
+// postgres:16-alpine psql ...` measured consistently around 450ms of
+// client+container overhead on X99 with a warm image cache, independent
+// of query complexity, so a wall-clock ceiling equal to the 500ms
+// statement budget alone was frequently and flakily too tight. Callers
+// that know their own precise remaining time budget (migrate-supervised.sh)
+// pass --query-timeout-ms explicitly and this default is never consulted.
 export const DEFAULT_QUERY_TIMEOUT_MS = 500;
+// 2000ms: measured --psql-via-docker-network overhead is ~450-550ms
+// under light load, but the same host running several observation calls
+// in close succession (as this repo's own test suites do, deliberately,
+// to exercise concurrent contention scenarios) pushed that past 1000ms
+// under real measurement -- Docker daemon API latency is not a fixed
+// constant. This default only governs callers that never supply their
+// own --query-timeout-ms; migrate-supervised.sh always does, computed
+// from its own precise remaining-time budget, so this generous default
+// never weakens that deadline-critical path.
+export const DEFAULT_WALL_CLOCK_TIMEOUT_MS = 2000;
 export const DEFAULT_LOCK_TIMEOUT_MS = 1000;
 
 function fail(message) {
@@ -52,10 +81,22 @@ function option(name, args, { required = true, fallback } = {}) {
 // function never throws for a server/connection failure; the caller
 // interprets ok:false as "unknown state," which the fail-closed rules
 // above always resolve to denial.
-export function runPsql({ connInfo, sql, queryTimeoutMs = DEFAULT_QUERY_TIMEOUT_MS }) {
+export function runPsql({ connInfo, sql, queryTimeoutMs = DEFAULT_WALL_CLOCK_TIMEOUT_MS }) {
   const statementTimeoutMs = Math.max(1, Math.min(queryTimeoutMs, 500));
   const pgoptions = `-c statement_timeout=${statementTimeoutMs} -c lock_timeout=${statementTimeoutMs} -c idle_in_transaction_session_timeout=${statementTimeoutMs}`;
-  const wallClockTimeoutSeconds = Math.max(1, Math.ceil((queryTimeoutMs + 500) / 1000));
+  // The outer wall-clock bound must never exceed what the caller actually
+  // asked for. A previous version computed
+  // `Math.ceil((queryTimeoutMs + 500) / 1000)` here, which always padded
+  // by up to 500ms AND rounded up to a whole second — so a caller passing
+  // even a very small queryTimeoutMs (deliberately, because its own
+  // remaining time budget was small) still got a full 1-second `timeout`
+  // wrapper, silently letting this call run far longer than the caller's
+  // actual remaining time. GNU `timeout` accepts fractional seconds
+  // directly, so this now passes the caller's real budget with no padding
+  // and no rounding up — only a floor to guarantee `timeout` receives a
+  // positive, non-zero duration.
+  const wallClockTimeoutMs = Math.max(1, queryTimeoutMs);
+  const wallClockTimeoutSeconds = wallClockTimeoutMs / 1000;
   const fieldSep = "\x01";
   const recordSep = "\x02";
   const appName = connInfo.applicationName ?? "che372-d2-quiescence-observer";
@@ -90,7 +131,16 @@ export function runPsql({ connInfo, sql, queryTimeoutMs = DEFAULT_QUERY_TIMEOUT_
   // prefix's last element must resolve to the `psql` entrypoint; this
   // function always appends psqlFlags itself.
   const commandPrefix = connInfo.command ? connInfo.command(runEnv) : ["psql"];
-  const fullArgs = [`${wallClockTimeoutSeconds}s`, ...commandPrefix, ...psqlFlags];
+  // -s KILL: send SIGKILL immediately at the deadline rather than
+  // `timeout`'s default SIGTERM. This matters specifically for the
+  // --psql-via-docker-network path, where the wrapped command is `docker
+  // run --rm ... psql`: SIGTERM lets the `docker` CLI attempt a graceful
+  // container stop/detach with the daemon, which was observed taking over
+  // 2 seconds in practice against an unreachable target — more than
+  // 40x the requested budget. SIGKILL ends the `docker` client process
+  // immediately; this observer never needs graceful shutdown semantics,
+  // only a hard ceiling on its own wall-clock footprint.
+  const fullArgs = ["-s", "KILL", `${wallClockTimeoutSeconds}s`, ...commandPrefix, ...psqlFlags];
 
   const result = spawnSync("timeout", fullArgs, {
     encoding: "utf8",
@@ -104,11 +154,20 @@ export function runPsql({ connInfo, sql, queryTimeoutMs = DEFAULT_QUERY_TIMEOUT_
   if (result.error) {
     return { ok: false, reason: `psql spawn failed: ${result.error.message}` };
   }
-  if (result.status === 124 || result.status === 137) {
+  // `timeout -s KILL` (see above) can report completion either as exit
+  // code 124/137 (the traditional `timeout` convention) OR, depending on
+  // how the signal propagated through the wrapped process (notably
+  // `docker run`, whose own client process may itself be the one that
+  // receives and forwards SIGKILL), as spawnSync's status:null with
+  // signal:'SIGKILL' — Node reports a process terminated directly by an
+  // uncaught signal this way, never falling back to a synthesized exit
+  // code. Both must be treated identically: a real wall-clock timeout,
+  // not a generic "unexpected null status" failure.
+  if (result.status === 124 || result.status === 137 || result.signal === "SIGKILL" || result.signal === "SIGTERM") {
     return { ok: false, reason: "observation query exceeded wall-clock timeout" };
   }
   if (result.status !== 0) {
-    return { ok: false, reason: `observation query failed (exit ${result.status}): ${(result.stderr || "").trim()}` };
+    return { ok: false, reason: `observation query failed (exit ${result.status}${result.signal ? `, signal ${result.signal}` : ""}): ${(result.stderr || "").trim()}` };
   }
 
   const raw = result.stdout.endsWith(recordSep) ? result.stdout.slice(0, -recordSep.length) : result.stdout;
@@ -127,7 +186,7 @@ export function runPsql({ connInfo, sql, queryTimeoutMs = DEFAULT_QUERY_TIMEOUT_
 
 // nowMs is injectable so tests can control sample-age arithmetic without
 // wall-clock sleeps.
-export function observeQuiescenceState({ connInfo, queryTimeoutMs = DEFAULT_QUERY_TIMEOUT_MS, now = () => Date.now() }) {
+export function observeQuiescenceState({ connInfo, queryTimeoutMs = DEFAULT_WALL_CLOCK_TIMEOUT_MS, now = () => Date.now() }) {
   const observedAtMs = now();
 
   // One combined query per observation to bound total query count and
@@ -442,7 +501,7 @@ export class SampleTracker {
 // and cannot read that session's live GUC value (Postgres does not
 // expose that); it establishes that the identity precondition for the
 // role-level default to apply is met for this exact recorded connection.
-export function verifyLiveSessionIsCovered({ connInfo, pid, backendStart, expectedRoleName, expectedDatabaseName, queryTimeoutMs = DEFAULT_QUERY_TIMEOUT_MS }) {
+export function verifyLiveSessionIsCovered({ connInfo, pid, backendStart, expectedRoleName, expectedDatabaseName, queryTimeoutMs = DEFAULT_WALL_CLOCK_TIMEOUT_MS }) {
   const sql = `
     SELECT usename, datname, backend_start::text
     FROM pg_stat_activity
@@ -484,7 +543,7 @@ export function verifyLiveSessionIsCovered({ connInfo, pid, backendStart, expect
 // exact pid+backend_start membership check for that — see
 // verifyLiveSessionIsAbsent below, which is what the D2 watchdog's
 // termination-confirmation path must use instead.
-export function findLiveSessionByRole({ connInfo, roleName, databaseName, queryTimeoutMs = DEFAULT_QUERY_TIMEOUT_MS }) {
+export function findLiveSessionByRole({ connInfo, roleName, databaseName, queryTimeoutMs = DEFAULT_WALL_CLOCK_TIMEOUT_MS }) {
   const sql = `
     SELECT pid::text, backend_start::text
     FROM pg_stat_activity
@@ -511,7 +570,7 @@ export function findLiveSessionByRole({ connInfo, roleName, databaseName, queryT
 // connections during termination confirmation — the pinned advisory-lock
 // connection plus any separately-opened hook connections its pool may
 // still hold — not just the single PID first discovered at launch.
-export function findLiveSessionsForRole({ connInfo, roleName, databaseName, queryTimeoutMs = DEFAULT_QUERY_TIMEOUT_MS }) {
+export function findLiveSessionsForRole({ connInfo, roleName, databaseName, queryTimeoutMs = DEFAULT_WALL_CLOCK_TIMEOUT_MS }) {
   const sql = `
     SELECT pid::text, backend_start::text
     FROM pg_stat_activity
@@ -539,7 +598,7 @@ export function findLiveSessionsForRole({ connInfo, roleName, databaseName, quer
 // treated as proof of termination. A caller must check `result.ok` before
 // trusting `result.absent`; there is no default that makes ok:false imply
 // anything about absence.
-export function verifyLiveSessionIsAbsent({ connInfo, pid, backendStart, roleName, databaseName, queryTimeoutMs = DEFAULT_QUERY_TIMEOUT_MS }) {
+export function verifyLiveSessionIsAbsent({ connInfo, pid, backendStart, roleName, databaseName, queryTimeoutMs = DEFAULT_WALL_CLOCK_TIMEOUT_MS }) {
   const found = findLiveSessionsForRole({ connInfo, roleName, databaseName, queryTimeoutMs });
   if (!found.ok) {
     return { ok: false, reason: `could not confirm absence (observation failed, unknown state fails closed): ${found.reason}` };

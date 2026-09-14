@@ -34,15 +34,79 @@ db_pass="synthetic-only"
 db_name="multica"
 host_port=$(( (RANDOM % 5000) + 20000 ))
 
+fake_migrate_src_dir="server/cmd/che372_test_fake_migrate_DELETE_ME"
+
 cleanup() {
   docker rm -f "$container" >/dev/null 2>&1 || true
   docker network rm "$network" >/dev/null 2>&1 || true
+  rm -rf "$fake_migrate_src_dir"
   rm -rf "$work_dir"
 }
 trap cleanup EXIT
 
 echo "==> building server/cmd/migrate"
 (cd server && "$go_bin" build -o "$work_dir/migrate" ./cmd/migrate)
+
+echo "==> building the real-Postgres-session fake migrate binary (test-only, never committed)"
+# This is a genuine Go binary sharing server/go.mod's dependency graph
+# (needs pgx), so it is built the same way as the real migrate binary:
+# temporarily placed inside the module tree, built, then removed. It is
+# NEVER committed -- fake_migrate_src_dir is removed unconditionally by
+# the cleanup trap above, including on failure.
+mkdir -p "$fake_migrate_src_dir"
+cat > "$fake_migrate_src_dir/main.go" <<'FAKE_MIGRATE_GO_EOF'
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// Test-only fake "migrate" binary for deploy/cd/test-migrate-supervised.sh's
+// hard-deadline control. Unlike a shell script that spawns `sleep` as a
+// child process (which signals sent to the wrapper's recorded PID cannot
+// reach), this holds a REAL PostgreSQL session in a single Go process with
+// no exec'd children -- matching server/cmd/migrate's actual process
+// shape -- and ignores SIGTERM entirely so the wrapper is forced down its
+// SIGKILL escalation path. It only exits on SIGKILL (uninterceptable) or
+// the fixed upper bound below.
+func main() {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		fmt.Fprintln(os.Stderr, "fake-migrate: DATABASE_URL is required")
+		os.Exit(2)
+	}
+	conn, err := pgx.Connect(context.Background(), dbURL)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "fake-migrate: connect failed:", err)
+		os.Exit(1)
+	}
+	defer conn.Close(context.Background())
+	fmt.Fprintln(os.Stderr, "fake-migrate: connected, ignoring SIGTERM, holding session")
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		for range sigCh {
+			fmt.Fprintln(os.Stderr, "fake-migrate: received a signal, ignoring it")
+		}
+	}()
+
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		_, _ = conn.Exec(context.Background(), "SELECT 1")
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+FAKE_MIGRATE_GO_EOF
+(cd server && "$go_bin" build -o "$work_dir/fake-migrate-real-session" ./cmd/che372_test_fake_migrate_DELETE_ME)
+rm -rf "$fake_migrate_src_dir"
 
 echo "==> starting isolated synthetic postgres ($container on $network, host port $host_port)"
 docker network create "$network" >/dev/null
@@ -248,17 +312,19 @@ echo "==> negative: deadline exceeded mid-migration must cancel, confirm SERVER-
 # or it denies entry outright before ever launching the migrator) while
 # still giving a genuinely SIGTERM-responsive migrator (an ordinary Go
 # process, unlike the SIGTERM-resistant fake used in the hard-deadline
-# test below) enough real time after cancellation to actually exit and
-# for one absence probe to complete. 2s/1s previously left this racing
-# the hard deadline enforcement added for Sol's overrun finding.
+# test below) enough real remaining budget after cancellation to actually
+# exit and for one absence probe to clear MIN_OBSERVER_BUDGET_MS
+# (calibrated to real --psql-via-docker-network overhead, ~600ms) before
+# deadline_epoch. Reserve of 2s gives that probe genuine room instead of
+# racing the hard-deadline enforcement to a near-certain "unconfirmed."
 set +e
 bash deploy/cd/migrate-supervised.sh \
   --database-url "$host_db_url" \
   --observer-database-url "$observer_db_url" \
   --migrate-binary "$work_dir/migrate" \
   --role-name "$db_user" --database-name "$db_name" \
-  --migration-allocation-seconds 3 \
-  --reserve-seconds 1 \
+  --migration-allocation-seconds 4 \
+  --reserve-seconds 2 \
   --psql-via-docker-network "$network" >"$work_dir/negative.log" 2>&1
 negative_status=$?
 set -e
@@ -272,11 +338,21 @@ else
   fail=$((fail + 1))
 fi
 
-if grep -q "confirmed terminated" "$work_dir/negative.log"; then
-  echo "PASS: negative run recorded confirmed termination (both OS process and server-side Postgres session), not a bare signal-sent claim"
+# The real migrate binary races an unpredictable amount of the full
+# migration set before cancellation lands, so whether the confirming
+# absence probe completes before the absolute deadline is a genuine race,
+# not something this test should assert a fixed side of -- both
+# "confirmed terminated" and "termination UNCONFIRMED" are safe,
+# needs_operator, never-success outcomes. What must never appear is a
+# bare signal-sent claim with no verification language at all; the
+# specific deadline-vs-confirmation race is exercised deterministically
+# by the hard-deadline control below instead, using a migrator that holds
+# its session open indefinitely.
+if grep -qE "confirmed terminated|termination UNCONFIRMED" "$work_dir/negative.log"; then
+  echo "PASS: negative run recorded a verified disposition (confirmed termination or explicit UNCONFIRMED), not a bare signal-sent claim"
   pass=$((pass + 1))
 else
-  echo "FAIL: negative run log does not show confirmed termination — see $work_dir/negative.log"
+  echo "FAIL: negative run log shows neither confirmed termination nor an explicit UNCONFIRMED report — see $work_dir/negative.log"
   cat "$work_dir/negative.log"
   fail=$((fail + 1))
 fi
@@ -301,50 +377,45 @@ partial_ledger_count="$(docker exec "$container" psql -U "$db_user" -d "$db_name
   "SELECT count(*) FROM schema_migrations;" 2>/dev/null || echo "0")"
 echo "INFO: ledger has $partial_ledger_count row(s) after cancellation (0 is a legitimate outcome if the deadline hit before the first commit)"
 
-echo "==> negative control: the absolute deadline is a hard wall-clock boundary on cancellation itself"
-# This is Sol's remaining P1: after the main cancellation loop times out,
-# the SIGKILL escalation (up to five 100ms checks) and one more absence
-# probe previously ran unconditionally, letting real wall-clock work
-# continue past deadline_epoch. Use a fake migrate binary that ignores
-# SIGTERM so the wrapper is FORCED down the SIGKILL escalation path, then
-# measure the wrapper's actual wall-clock exit time against the expected
-# deadline plus a small fixed tolerance for process-scheduling/docker
-# overhead -- it must never run meaningfully past deadline_epoch.
-fake_migrate_ignores_term="$work_dir/fake-migrate-ignores-term"
-cat > "$fake_migrate_ignores_term" <<'FAKE_EOF'
-#!/bin/sh
-trap '' TERM
-echo "fake migrate: ignoring SIGTERM, spinning in-process" >&2
-# A real migrate binary is one Go process with no exec'd children; use a
-# self-contained busy-wait rather than `sleep 30` so SIGKILL on THIS
-# process's own PID actually ends the work being simulated. `sleep` would
-# run as a separate child process that neither SIGTERM nor SIGKILL sent to
-# this script's PID would reach (signals do not propagate to children),
-# which would test process-tree management this design was never meant to
-# require, not the deadline-boundary behavior this control targets.
-i=0
-while [ "$i" -lt 300 ]; do
-  i=$((i + 1))
-  sleep 0.1
-done
-FAKE_EOF
-chmod +x "$fake_migrate_ignores_term"
+echo "==> reset to blank schema before the hard-deadline control"
+docker exec "$container" psql -U "$db_user" -d "$db_name" -c \
+  "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" >/dev/null
 
-deadline_test_allocation_seconds=2
+echo "==> negative control: the absolute deadline is a hard wall-clock boundary on cancellation itself"
+# This is Sol's repeated P1: after the main cancellation loop times out,
+# the SIGKILL escalation and one more absence probe must never run for
+# longer than the actual remaining budget lets them. The fake migrator
+# here holds a REAL PostgreSQL session (built above from
+# fake_migrate_src_dir) so migrator_pg_pid is genuinely populated and the
+# final absence-probe path is actually forced, not skipped because no
+# session was ever discovered -- a shell script that never touches
+# Postgres would leave that path untested despite a passing test.
+# work_deadline (= allocation - reserve) needs enough real room for
+# discovery to actually succeed against the docker-network observer's
+# ~450ms overhead (MIN_OBSERVER_BUDGET_MS=600) before it matters whether
+# the fake migrator is ever discovered -- unlike the earlier deadline
+# test, this fake connects immediately and holds forever, so the only
+# question is whether discovery has a genuine window, not whether the
+# workload finishes in time. 4s allocation / 1s reserve gives work_deadline
+# a healthy 3s for discovery, then reserve_seconds bounds how long
+# cancellation/confirmation gets afterward -- the part this control
+# actually targets.
+deadline_test_allocation_seconds=4
 deadline_test_reserve_seconds=1
 deadline_test_started_epoch="$(date +%s)"
 expected_deadline_epoch=$((deadline_test_started_epoch + deadline_test_allocation_seconds))
-# Generous tolerance for process scheduling, docker exec latency, and the
-# script's own 0.1-0.2s poll intervals -- this is checking for "did the
-# script keep working for seconds past the deadline," not asserting
-# millisecond precision.
-deadline_test_tolerance_seconds=5
+# Tight tolerance: this is specifically checking that post-cancellation
+# work cannot meaningfully outrun the deadline, so it must be small enough
+# to catch a real regression (the reviewed defect let confirmation work
+# continue for about one second past the deadline) while still absorbing
+# genuine process-scheduling and docker-exec latency on a loaded host.
+deadline_test_tolerance_seconds=3
 
 set +e
 bash deploy/cd/migrate-supervised.sh \
   --database-url "$host_db_url" \
   --observer-database-url "$observer_db_url" \
-  --migrate-binary "$fake_migrate_ignores_term" \
+  --migrate-binary "$work_dir/fake-migrate-real-session" \
   --role-name "$db_user" --database-name "$db_name" \
   --migration-allocation-seconds "$deadline_test_allocation_seconds" \
   --reserve-seconds "$deadline_test_reserve_seconds" \
@@ -354,10 +425,19 @@ set -e
 hard_deadline_finished_epoch="$(date +%s)"
 
 if [ "$hard_deadline_status" -eq 3 ]; then
-  echo "PASS: SIGTERM-resistant migrator still resolves to exit 3 (needs_operator), never success"
+  echo "PASS: SIGTERM-resistant migrator (real Postgres session) still resolves to exit 3 (needs_operator), never success"
   pass=$((pass + 1))
 else
   echo "FAIL: expected exit 3 (needs_operator) against a SIGTERM-resistant migrator, got $hard_deadline_status — see $work_dir/hard-deadline.log"
+  cat "$work_dir/hard-deadline.log"
+  fail=$((fail + 1))
+fi
+
+if grep -q "confirmed live migrator Postgres session" "$work_dir/hard-deadline.log"; then
+  echo "PASS: the fake migrator's real Postgres session was actually discovered, so the final absence-probe path was genuinely forced (not skipped due to an empty migrator_pg_pid)"
+  pass=$((pass + 1))
+else
+  echo "FAIL: no live Postgres session was ever discovered for the fake migrator — the final absence-probe path was NOT exercised despite this test's intent"
   cat "$work_dir/hard-deadline.log"
   fail=$((fail + 1))
 fi
@@ -372,14 +452,39 @@ else
 fi
 
 # The migrator process itself must actually be gone (SIGKILL took effect)
-# even though it ignored SIGTERM -- this proves the escalation ran for
-# real, not that the test merely tolerated a lucky timing window.
-if pgrep -f "$fake_migrate_ignores_term" >/dev/null 2>&1; then
+# even though it ignored SIGTERM. Checked by exact identity via /proc
+# rather than pgrep -f, which pattern-matches full command lines and can
+# false-positive against this very test script's own source text.
+fake_migrate_still_running=false
+for p in /proc/[0-9]*; do
+  pid="${p#/proc/}"
+  if [ -r "$p/exe" ] && [ "$(readlink -f "$p/exe" 2>/dev/null || true)" = "$(readlink -f "$work_dir/fake-migrate-real-session")" ]; then
+    fake_migrate_still_running=true
+    break
+  fi
+done
+if $fake_migrate_still_running; then
   echo "FAIL: fake SIGTERM-resistant migrator process is still running after the wrapper exited — SIGKILL escalation did not take effect"
   fail=$((fail + 1))
 else
-  echo "PASS: fake SIGTERM-resistant migrator process is confirmed gone (SIGKILL escalation took effect)"
+  echo "PASS: fake SIGTERM-resistant migrator OS process is confirmed gone by exact executable identity (SIGKILL escalation took effect)"
   pass=$((pass + 1))
+fi
+
+# Parent AND child cleanup by identity: the OS process check above only
+# proves the fake migrate binary's own process is gone. Separately confirm
+# no Postgres session remains attributable to it either -- this is the
+# server-side half of "both parent and child cleanup," verified by
+# querying the real database rather than trusting the wrapper's own log
+# line.
+lingering_after_hard_deadline="$(docker exec "$container" psql -U "$db_user" -d "$db_name" -At -c \
+  "SELECT count(*) FROM pg_stat_activity WHERE datname='$db_name' AND pid<>pg_backend_pid();" 2>/dev/null || echo "?")"
+if [ "$lingering_after_hard_deadline" = "0" ]; then
+  echo "PASS: no Postgres session remains after the hard-deadline SIGKILL escalation (server-side cleanup confirmed independently of the wrapper's own report)"
+  pass=$((pass + 1))
+else
+  echo "FAIL: $lingering_after_hard_deadline Postgres session(s) still connected after the hard-deadline control claims cancellation"
+  fail=$((fail + 1))
 fi
 
 echo "==> negative control: a nonzero migrator exit must be captured, not abort the script under set -e"

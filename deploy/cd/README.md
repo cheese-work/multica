@@ -133,6 +133,31 @@ it because the clock already reads `deadline_epoch` would leave a
 still-running process with nothing further attempting to stop it, which is
 strictly worse than a late confirmation of that same kill.
 
+**Gating on start is not enough — every observer call is itself budgeted
+from actual remaining time.** A coarse "is it past deadline yet" check
+before starting an iteration cannot bound an iteration that is already
+running: `confirm_no_live_session_for_pid` computes exact remaining
+milliseconds against the relevant deadline immediately before each call
+(`remaining_ms_before`), denies outright without spawning anything below
+`MIN_OBSERVER_BUDGET_MS`, and passes the real remaining budget — never a
+fixed constant — as `quiescence.mjs`'s own `--query-timeout-ms`, whose
+`timeout` wrapper enforces that exact ceiling on the underlying process.
+`MIN_OBSERVER_BUDGET_MS` is calibrated to real `--psql-via-docker-network`
+overhead (`docker run --rm postgres:16-alpine psql ...` measured ~450ms on
+X99 with a warm image cache, independent of query complexity), not an
+arbitrary small number — a floor below that makes success structurally
+implausible, so attempting the call anyway would burn the last of the
+remaining time on something that was never going to finish.
+
+`quiescence.mjs`'s `timeout` wrapper itself sends `SIGKILL` (`-s KILL`)
+rather than the default `SIGTERM`: against the `--psql-via-docker-network`
+path specifically, `SIGTERM` lets the `docker` CLI attempt a graceful
+container stop/detach with the daemon, measured taking over 2 seconds
+against an unreachable target — more than 40x the requested budget.
+`SIGKILL` ends the wrapped process immediately; this observer never needs
+graceful shutdown semantics, only a hard ceiling on its own wall-clock
+footprint.
+
 A nonzero migrator exit is captured explicitly (`set +e` / `set -e` bracket
 the one `wait` call that reads it) rather than being read via a bare `wait`
 under the script's own `set -e`, which would otherwise abort the wrapper
