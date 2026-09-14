@@ -406,10 +406,31 @@ test.describe("Durable thread fold state through row unmount/remount", () => {
 
     // Scroll the timeline far past the thread so its row genuinely unmounts
     // from the virtualized list (not just off-screen within a mounted DOM).
+    // A single `scrollTop = scrollHeight` assignment is not enough: Virtuoso
+    // starts with an estimated `scrollHeight` for rows it hasn't measured
+    // yet, so that first assignment lands short of the true bottom, and as
+    // real row heights arrive `scrollHeight` keeps growing out from under a
+    // scrollTop that was only set once — landing the viewport in a dead zone
+    // past "Reply number 1" but short of "Padding comment 40". Re-apply the
+    // assignment until scrollHeight (and therefore scrollTop) stops moving.
     const scrollContainer = page.locator("[data-issue-timeline-scroll]").first();
     const hasScrollContainer = await scrollContainer.count() > 0;
     if (hasScrollContainer) {
-      await scrollContainer.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+      let previousHeight = -1;
+      await expect
+        .poll(
+          async () => {
+            const height = await scrollContainer.evaluate((el) => {
+              el.scrollTop = el.scrollHeight;
+              return el.scrollHeight;
+            });
+            const stable = height === previousHeight;
+            previousHeight = height;
+            return stable;
+          },
+          { timeout: 10000 },
+        )
+        .toBe(true);
     } else {
       await page.mouse.wheel(0, 20000);
     }
