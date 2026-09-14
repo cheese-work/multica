@@ -154,18 +154,97 @@ terminate_all_client_backends
 sleep 1
 expect_admit "final gate admits once the advisory lock is released" final_gate
 
-# Short metadata-only observer sessions (i.e. this tool's own connections)
-# must not block the positive control — already implicit in every
-# "expect_admit" case above, since each call is itself a fresh psql
-# connection with application_name che372-d2-quiescence-observer, and the
-# module must exclude its own concurrent/adjacent calls.
+# Short metadata-only observation queries never overlap in time (runPsql
+# uses spawnSync, which blocks until its single psql process exits before
+# the next observation query runs), so this observer never needs to
+# exclude a "second observer connection" — self-exclusion is handled
+# entirely server-side via pg_backend_pid(), which a client cannot spoof.
 expect_admit "controller's own observation connections never self-block" preflight
 expect_admit "controller's own observation connections never self-block (final gate)" final_gate
 
-echo "==> verify-timeouts"
-result="$(node deploy/cd/quiescence.mjs verify-timeouts --database-url "$db_url" --psql-via-docker-network "$network")"
-echo "$result" | grep -q '"ok":true' && { echo "PASS: verify-timeouts reads back positive session timeouts"; pass=$((pass + 1)); } \
-  || { echo "FAIL: verify-timeouts :: $result"; fail=$((fail + 1)); }
+echo "==> negative control: application_name spoofing must not hide a foreign session"
+# A previous version of quiescence.mjs excluded any row whose
+# client-controlled application_name matched a fixed observer prefix —
+# a real admission hole, since application_name is a session GUC any
+# client can set to an arbitrary string. A foreign session claiming that
+# exact former prefix must still be caught by the final gate.
+docker exec -d "$container" bash -c \
+  "PGAPPNAME='che372-d2-quiescence-observer-fake' psql -U $db_user -d $db_name -c 'BEGIN; SELECT pg_sleep(20);'"
+sleep 1
+expect_deny "foreign session spoofing the old observer application_name prefix still denies final gate" final_gate
+terminate_all_client_backends
+sleep 1
+expect_admit "final gate admits again once the spoofing session is gone" final_gate
+
+echo "==> role/database timeout defaults"
+if node deploy/cd/quiescence.mjs set-role-timeout-defaults --database-url "$db_url" --psql-via-docker-network "$network" \
+  --role-name "$db_user" --database-name "$db_name" --statement-timeout-ms 1000 --lock-timeout-ms 1000 >/dev/null 2>&1; then
+  echo "PASS: set-role-timeout-defaults applies a role/database-scoped default"
+  pass=$((pass + 1))
+else
+  echo "FAIL: set-role-timeout-defaults did not succeed against a reachable database"
+  fail=$((fail + 1))
+fi
+result="$(node deploy/cd/quiescence.mjs verify-role-timeout-defaults --database-url "$db_url" --psql-via-docker-network "$network" \
+  --role-name "$db_user" --database-name "$db_name")"
+echo "$result" | grep -q '"ok":true' && { echo "PASS: verify-role-timeout-defaults reads the set default back from pg_db_role_setting"; pass=$((pass + 1)); } \
+  || { echo "FAIL: verify-role-timeout-defaults :: $result"; fail=$((fail + 1)); }
+
+echo "==> negative control: timeout-proof bypass — no default set must deny, never silently pass"
+bare_role="che372_qtest_bare_role"
+docker exec "$container" psql -U "$db_user" -d "$db_name" -At -c \
+  "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '$bare_role') THEN CREATE ROLE $bare_role LOGIN; END IF; END \$\$;" >/dev/null
+if node deploy/cd/quiescence.mjs verify-role-timeout-defaults --database-url "$db_url" --psql-via-docker-network "$network" \
+  --role-name "$bare_role" --database-name "$db_name" >/dev/null 2>&1; then
+  echo "FAIL: verify-role-timeout-defaults reported ok for a role with no default set — bypass possible"
+  fail=$((fail + 1))
+else
+  echo "PASS: verify-role-timeout-defaults fails closed when no role/database default exists"
+  pass=$((pass + 1))
+fi
+docker exec "$container" psql -U "$db_user" -d "$db_name" -c "DROP ROLE IF EXISTS $bare_role;" >/dev/null 2>&1 || true
+
+# Reset the role/database default set above before the sessions below —
+# they use pg_sleep() to stay open long enough to observe, and the 1000ms
+# default set-role-timeout-defaults just applied would otherwise cancel
+# them almost immediately, which is a test-harness artifact, not a
+# real-world constraint (a real deployment sets this default once,
+# immediately before launching the migrator it is meant to cover, not
+# hours before an unrelated diagnostic session).
+docker exec "$container" psql -U "$db_user" -d "$db_name" -c \
+  "ALTER ROLE $db_user IN DATABASE $db_name RESET statement_timeout; ALTER ROLE $db_user IN DATABASE $db_name RESET lock_timeout;" >/dev/null
+
+echo "==> live session identity coverage"
+docker exec -d "$container" psql -U "$db_user" -d "$db_name" -c "SELECT pg_sleep(10);"
+sleep 1
+live="$(node deploy/cd/quiescence.mjs find-live-session-by-role --database-url "$db_url" --psql-via-docker-network "$network" \
+  --role-name "$db_user" --database-name "$db_name" --query-timeout-ms 3000)"
+echo "$live" | grep -q '"ok":true' && { echo "PASS: find-live-session-by-role locates the live session"; pass=$((pass + 1)); } \
+  || { echo "FAIL: find-live-session-by-role :: $live"; fail=$((fail + 1)); }
+live_pid="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).pid))' "$live")"
+live_backend_start="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).backendStart))' "$live")"
+
+if node deploy/cd/quiescence.mjs verify-live-session-is-covered --database-url "$db_url" --psql-via-docker-network "$network" \
+  --pid "$live_pid" --backend-start "$live_backend_start" --role-name "$db_user" --database-name "$db_name" >/dev/null 2>&1; then
+  echo "PASS: verify-live-session-is-covered confirms the correct live identity"
+  pass=$((pass + 1))
+else
+  echo "FAIL: verify-live-session-is-covered rejected a genuinely correct identity"
+  fail=$((fail + 1))
+fi
+
+echo "==> negative control: live-session identity check rejects a mismatched backend_start (PID reuse guard)"
+if node deploy/cd/quiescence.mjs verify-live-session-is-covered --database-url "$db_url" --psql-via-docker-network "$network" \
+  --pid "$live_pid" --backend-start "2001-01-01 00:00:00+00" --role-name "$db_user" --database-name "$db_name" >/dev/null 2>&1; then
+  echo "FAIL: verify-live-session-is-covered admitted a backend_start mismatch — PID-reuse spoofing possible"
+  fail=$((fail + 1))
+else
+  echo "PASS: verify-live-session-is-covered rejects a backend_start mismatch"
+  pass=$((pass + 1))
+fi
+terminate_all_client_backends
+docker exec "$container" psql -U "$db_user" -d "$db_name" -c \
+  "ALTER ROLE $db_user IN DATABASE $db_name RESET statement_timeout; ALTER ROLE $db_user IN DATABASE $db_name RESET lock_timeout;" >/dev/null 2>&1 || true
 
 echo
 echo "==> $pass passed, $fail failed"
