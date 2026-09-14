@@ -357,13 +357,25 @@ export function evaluateFinalGate(state, opts = {}) {
   // to exclude any row here.
   const foreignActivity = state.activity;
 
+  // opts.fencedPids names the pid allowlist of sessions the caller has
+  // already independently confirmed (e.g. the migrator's own verified
+  // pg_backend_pid) — every check below must apply this exemption
+  // consistently, not just the lock checks. Otherwise a fenced pid's own
+  // legitimate in-flight transaction/prepared-xact/index-build/advisory
+  // lock would deny the gate even though the caller has already vouched
+  // for exactly that pid, which defeats continuous fencing (final-gate
+  // re-checked with --fenced-pids <pid> while that pid is still running).
+  // Any row attributable to a pid NOT in the allowlist still denies.
+  const fencedPids = new Set((opts.fencedPids ?? []).map(String));
+
   // Zero non-operation transactions/retained snapshots: any foreign
   // session with an open xact_start, OR any foreign session holding a
   // backend_xmin/backend_xid (a retained snapshot even without an open
   // xact_start, e.g. a REPEATABLE READ/SERIALIZABLE read-only
   // transaction or a long-running cursor), denies.
   const openTransactionsOrSnapshots = foreignActivity.filter((row) =>
-    row.xactStart !== null || row.backendXid !== null || row.backendXmin !== null,
+    !fencedPids.has(String(row.pid)) &&
+    (row.xactStart !== null || row.backendXid !== null || row.backendXmin !== null),
   );
   if (openTransactionsOrSnapshots.length > 0) {
     return {
@@ -373,22 +385,19 @@ export function evaluateFinalGate(state, opts = {}) {
     };
   }
 
-  if (state.prepared.length > 0) {
-    return { admit: false, decision: "final_gate_denied", reason: "prepared transaction present", evidence: { prepared: state.prepared } };
+  const unfencedPrepared = state.prepared.filter((p) => !fencedPids.has(String(p.pid)));
+  if (unfencedPrepared.length > 0) {
+    return { admit: false, decision: "final_gate_denied", reason: "prepared transaction present", evidence: { prepared: unfencedPrepared } };
   }
 
-  const advisoryLockHolders = state.locks.filter((l) => l.detail.startsWith("advisory:"));
+  const advisoryLockHolders = state.locks.filter((l) => l.detail.startsWith("advisory:") && !fencedPids.has(String(l.pid)));
   if (advisoryLockHolders.length > 0) {
     return { admit: false, decision: "final_gate_denied", reason: "a foreign advisory-lock holder is present", evidence: { advisoryLockHolders } };
   }
 
   // No unaccounted conflicting session-level locks/index ops. Idle
-  // sessions with no open transaction/snapshot are OK only if fenced
-  // (opts.fencedPids names the pid allowlist of sessions the caller has
-  // already confirmed cannot issue new work, e.g. because write
-  // admission is already restricted at the application layer). Any lock
-  // held by a pid not in that allowlist denies.
-  const fencedPids = new Set((opts.fencedPids ?? []).map(String));
+  // sessions with no open transaction/snapshot are OK only if fenced.
+  // Any lock held by a pid not in that allowlist denies.
   const unaccountedLocks = state.locks.filter((l) => !fencedPids.has(String(l.pid)));
   if (unaccountedLocks.length > 0) {
     return {
@@ -398,8 +407,9 @@ export function evaluateFinalGate(state, opts = {}) {
     };
   }
 
-  if (state.createIndex.length > 0) {
-    return { admit: false, decision: "final_gate_denied", reason: "a concurrent index build is in progress", evidence: { createIndex: state.createIndex } };
+  const unfencedCreateIndex = state.createIndex.filter((c) => !fencedPids.has(String(c.pid)));
+  if (unfencedCreateIndex.length > 0) {
+    return { admit: false, decision: "final_gate_denied", reason: "a concurrent index build is in progress", evidence: { createIndex: unfencedCreateIndex } };
   }
 
   // Any remaining foreign backend at all — even idle, with no
@@ -669,7 +679,31 @@ function cliFinalGate(args) {
   const { databaseUrl, dockerNetwork, queryTimeoutMs } = connOptsFromArgs(args);
   const fencedPidsRaw = option("--fenced-pids", args, { required: false, fallback: "" });
   const fencedPids = fencedPidsRaw ? fencedPidsRaw.split(",").filter(Boolean) : [];
-  const state = observeQuiescenceState({ connInfo: buildConnInfo(databaseUrl, { dockerNetwork }), queryTimeoutMs });
+  const fencedRole = option("--fenced-role", args, { required: false, fallback: "" });
+  const fencedDatabase = option("--fenced-database", args, { required: false, fallback: "" });
+  const connInfo = buildConnInfo(databaseUrl, { dockerNetwork });
+
+  // A single previously-discovered pid is not enough to fence a live
+  // migrator: the same OS process/role can legitimately hold more than
+  // one Postgres backend at once (its main migration connection plus a
+  // separately-opened metadata/hook connection), and those extra
+  // connections come and go over the run. --fenced-role/--fenced-database
+  // re-resolves every live session for that role, right now, the same way
+  // findLiveSessionsForRole already does for termination confirmation —
+  // so continuous fencing tolerates the migrator's own current
+  // connections without ever widening to a foreign session that merely
+  // shares the role name from an earlier or later point in time.
+  if (fencedRole && fencedDatabase) {
+    const roleSessions = findLiveSessionsForRole({ connInfo, roleName: fencedRole, databaseName: fencedDatabase, queryTimeoutMs });
+    if (!roleSessions.ok) {
+      process.stdout.write(`${JSON.stringify({ admit: false, decision: "final_gate_denied", reason: `could not resolve fenced role sessions (unknown state fails closed): ${roleSessions.reason}`, evidence: {} })}\n`);
+      process.exitCode = 1;
+      return;
+    }
+    for (const s of roleSessions.sessions) fencedPids.push(s.pid);
+  }
+
+  const state = observeQuiescenceState({ connInfo, queryTimeoutMs });
   const result = evaluateFinalGate(state, { fencedPids });
   process.stdout.write(`${JSON.stringify(result)}\n`);
   process.exitCode = result.admit ? 0 : 1;
@@ -732,7 +766,7 @@ if (isMain) {
     else if (command === "find-live-session-by-role") cliFindLiveSessionByRole(args);
     else if (command === "verify-live-session-is-covered") cliVerifyLiveSessionIsCovered(args);
     else if (command === "verify-live-session-is-absent") cliVerifyLiveSessionIsAbsent(args);
-    else fail("usage: quiescence.mjs <preflight|final-gate|find-live-session-by-role|verify-live-session-is-covered|verify-live-session-is-absent> --database-url postgres://... [--query-timeout-ms N] [--fenced-pids p1,p2] [--role-name R --database-name D [--pid P --backend-start TS]]");
+    else fail("usage: quiescence.mjs <preflight|final-gate|find-live-session-by-role|verify-live-session-is-covered|verify-live-session-is-absent> --database-url postgres://... [--query-timeout-ms N] [--fenced-pids p1,p2] [--fenced-role R --fenced-database D] [--role-name R --database-name D [--pid P --backend-start TS]]");
   } catch (error) {
     process.stderr.write(`quiescence: ${error.message}\n`);
     process.exitCode = 2;

@@ -35,11 +35,13 @@ db_name="multica"
 host_port=$(( (RANDOM % 5000) + 20000 ))
 
 fake_migrate_src_dir="server/cmd/che372_test_fake_migrate_DELETE_ME"
+real_session_nonzero_src_dir="server/cmd/che372_test_fake_migrate_nonzero_DELETE_ME"
 
 cleanup() {
   docker rm -f "$container" >/dev/null 2>&1 || true
   docker network rm "$network" >/dev/null 2>&1 || true
   rm -rf "$fake_migrate_src_dir"
+  rm -rf "$real_session_nonzero_src_dir"
   rm -rf "$work_dir"
 }
 trap cleanup EXIT
@@ -235,16 +237,41 @@ echo "==> negative control: verify-live-session-is-absent same-role session ambi
 # recorded one could be mistaken for proof the recorded one is gone.
 docker exec -d "$container" psql -U "$db_user" -d "$db_name" -c "SELECT pg_sleep(8);"
 sleep 1
-set +e
-absent_result="$(node deploy/cd/quiescence.mjs verify-live-session-is-absent --database-url "$observer_db_url" --psql-via-docker-network "$network" \
-  --pid 999999 --backend-start "2001-01-01 00:00:00+00" --role-name "$db_user" --database-name "$db_name" 2>&1)"
-absent_status=$?
-set -e
+# This probe uses the CLI's default --query-timeout-ms (2000ms,
+# DEFAULT_WALL_CLOCK_TIMEOUT_MS) against a real docker-exec'd psql round
+# trip, which under CI/runner load can genuinely exceed 2s with nothing
+# wrong in the code under test -- that shows up as exit 2 (observer
+# failure/unknown), not the exit 1 this control expects, and is exactly
+# the class of flake Astra flagged as needing a real fix, not a wider
+# timeout or a "known flaky" comment. A single bounded retry ONLY on exit
+# 2 distinguishes that from an actual wrong-answer regression: exit 0
+# (wrongly reported absent) or any code other than 1/2 fails immediately,
+# no retry, on either attempt -- only "the observer genuinely could not
+# complete in time" gets a second try within the same test budget.
+absent_attempt=1
+absent_status=""
+absent_result=""
+while [ "$absent_attempt" -le 2 ]; do
+  set +e
+  absent_result="$(node deploy/cd/quiescence.mjs verify-live-session-is-absent --database-url "$observer_db_url" --psql-via-docker-network "$network" \
+    --pid 999999 --backend-start "2001-01-01 00:00:00+00" --role-name "$db_user" --database-name "$db_name" 2>&1)"
+  absent_status=$?
+  set -e
+  if [ "$absent_status" -eq 1 ]; then
+    break
+  fi
+  if [ "$absent_status" -eq 2 ] && [ "$absent_attempt" -eq 1 ]; then
+    echo "RETRY: verify-live-session-is-absent returned exit 2 (observer failure/unknown) on attempt 1 — retrying once before treating this as a real result: $absent_result"
+    absent_attempt=$((absent_attempt + 1))
+    continue
+  fi
+  break
+done
 if [ "$absent_status" -eq 1 ]; then
   echo "PASS: verify-live-session-is-absent correctly reports confirmed-still-live (exit 1) while an unrelated same-role/database session remains: $absent_result"
   pass=$((pass + 1))
 else
-  echo "FAIL: expected exit 1 (confirmed still live/ambiguous) while an unrelated same-role session is present, got $absent_status — any other status (0=wrongly absent, 2=observer failure) is the wrong failure class: $absent_result"
+  echo "FAIL: expected exit 1 (confirmed still live/ambiguous) while an unrelated same-role session is present, got $absent_status after $absent_attempt attempt(s) — any other status (0=wrongly absent, 2=observer failure on retry too) is the wrong failure class: $absent_result"
   fail=$((fail + 1))
 fi
 docker exec "$container" psql -U "$db_user" -d "$db_name" -At -c \
@@ -536,6 +563,15 @@ echo "==> negative control: a nonzero migrator exit must be captured, not abort 
 # binary that exits nonzero immediately (no real migration attempted, no
 # real connection needed) to prove the wrapper script itself survives and
 # reports correctly rather than silently propagating the child's exit code.
+#
+# This fake NEVER opens a Postgres session, so migrate-supervised.sh's
+# own migrator_pg_pid is never discovered for this attempt -- per Astra's
+# nonzero-exit fix, an UNCONFIRMED Postgres session after a nonzero exit
+# is exactly as dangerous as one after a deadline/cancellation (a crashed
+# client can leave server-side work in flight), so the fail-closed
+# default applies and this now expects exit 3 (needs_operator), not exit
+# 1. The separate real-session control below proves exit 1 is still
+# reachable when a session WAS discovered and confirmed absent.
 fake_migrate_binary="$work_dir/fake-migrate-nonzero"
 cat > "$fake_migrate_binary" <<'FAKE_EOF'
 #!/bin/sh
@@ -553,11 +589,11 @@ bash deploy/cd/migrate-supervised.sh \
   --psql-via-docker-network "$network" >"$work_dir/nonzero-exit.log" 2>&1
 nonzero_exit_status=$?
 set -e
-if [ "$nonzero_exit_status" -eq 1 ]; then
-  echo "PASS: migrate-supervised.sh itself exited 1 (its own defined contract for a nonzero migrator exit), not the child's raw exit code or a set -e crash"
+if [ "$nonzero_exit_status" -eq 3 ]; then
+  echo "PASS: migrate-supervised.sh exited 3 (needs_operator, fail-closed) on a nonzero migrator exit whose Postgres session was never discovered/confirmed"
   pass=$((pass + 1))
 else
-  echo "FAIL: expected migrate-supervised.sh to exit 1 on a nonzero migrator exit, got $nonzero_exit_status — see $work_dir/nonzero-exit.log"
+  echo "FAIL: expected migrate-supervised.sh to exit 3 (fail-closed, session never confirmed) on this nonzero migrator exit, got $nonzero_exit_status — see $work_dir/nonzero-exit.log"
   cat "$work_dir/nonzero-exit.log"
   fail=$((fail + 1))
 fi
@@ -567,6 +603,79 @@ if grep -q "migrator exited non-zero before deadline" "$work_dir/nonzero-exit.lo
 else
   echo "FAIL: expected non-zero-exit diagnostic missing — see $work_dir/nonzero-exit.log"
   cat "$work_dir/nonzero-exit.log"
+  fail=$((fail + 1))
+fi
+
+echo "==> negative control: a nonzero migrator exit WITH a confirmed-absent Postgres session must exit 1"
+# Astra's explicit new-coverage requirement: prove the confirmation path
+# actually runs (not just that it fails closed when no session was ever
+# seen). This fake opens a real Postgres session first, so
+# migrate-supervised.sh's discovery loop can find and record it, then
+# exits nonzero itself and closes its own connection -- matching a real
+# migrator that fails after connecting. Once the wrapper's own
+# confirm_no_live_session_for_pid proves that exact session is gone, this
+# is the one case where exit 1 (failed, not needs_operator) is correct.
+mkdir -p "$real_session_nonzero_src_dir"
+cat > "$real_session_nonzero_src_dir/main.go" <<'FAKE_NONZERO_GO_EOF'
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// Test-only fake "migrate" binary: opens one real Postgres connection (so
+// migrate-supervised.sh's discovery loop finds a real backend to track),
+// holds it briefly so discovery has a window to observe it, then closes
+// the connection cleanly and exits nonzero -- simulating a migrator that
+// connects, fails partway through its work, and disconnects normally
+// (not a crash that leaves the session dangling).
+func main() {
+	dbURL := os.Getenv("DATABASE_URL")
+	conn, err := pgx.Connect(context.Background(), dbURL)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "fake migrate: connect failed:", err)
+		os.Exit(7)
+	}
+	// Hold the connection open long enough for the supervisor's discovery
+	// poll (200ms cadence) to observe it at least once before we exit.
+	var one int
+	_ = conn.QueryRow(context.Background(), "SELECT pg_sleep(1.5), 1").Scan(&one, &one)
+	conn.Close(context.Background())
+	fmt.Fprintln(os.Stderr, "fake migrate: simulating a post-connect nonzero exit")
+	os.Exit(7)
+}
+FAKE_NONZERO_GO_EOF
+(cd server && "$go_bin" build -o "$work_dir/fake-migrate-nonzero-real-session" ./cmd/che372_test_fake_migrate_nonzero_DELETE_ME)
+rm -rf "$real_session_nonzero_src_dir"
+
+set +e
+bash deploy/cd/migrate-supervised.sh \
+  --database-url "$host_db_url" \
+  --observer-database-url "$observer_db_url" \
+  --migrate-binary "$work_dir/fake-migrate-nonzero-real-session" \
+  --role-name "$db_user" --database-name "$db_name" \
+  --migration-allocation-seconds 30 \
+  --psql-via-docker-network "$network" >"$work_dir/nonzero-exit-real-session.log" 2>&1
+nonzero_real_session_status=$?
+set -e
+if [ "$nonzero_real_session_status" -eq 1 ]; then
+  echo "PASS: migrate-supervised.sh exited 1 on a nonzero migrator exit whose Postgres session was discovered and confirmed absent"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected exit 1 (confirmed terminated, failed not needs_operator) once a session was actually discovered and confirmed absent, got $nonzero_real_session_status — see $work_dir/nonzero-exit-real-session.log"
+  cat "$work_dir/nonzero-exit-real-session.log"
+  fail=$((fail + 1))
+fi
+if grep -q "is confirmed terminated — exit 1" "$work_dir/nonzero-exit-real-session.log"; then
+  echo "PASS: migrate-supervised.sh logged the confirmed-terminated exit-1 diagnostic, proving the confirmation path (not the fail-closed default) actually ran"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected confirmed-terminated exit-1 diagnostic missing — see $work_dir/nonzero-exit-real-session.log"
+  cat "$work_dir/nonzero-exit-real-session.log"
   fail=$((fail + 1))
 fi
 
