@@ -165,6 +165,40 @@ if [ -n "$psql_via_docker_network" ]; then
   quiescence_args_common+=(--psql-via-docker-network "$psql_via_docker_network")
 fi
 
+# remaining_ms_before returns how many whole milliseconds remain before
+# the given absolute epoch-seconds deadline, floored at 0 — never
+# negative, so callers can compare directly against a minimum floor
+# without a separate sign check.
+remaining_ms_before() {
+  local deadline="$1"
+  local now_ms
+  now_ms="$(($(date +%s%3N)))"
+  local deadline_ms=$((deadline * 1000))
+  local remaining=$((deadline_ms - now_ms))
+  if [ "$remaining" -lt 0 ]; then remaining=0; fi
+  echo "$remaining"
+}
+
+# MIN_OBSERVER_BUDGET_MS is the smallest query-timeout budget this script
+# will ever hand to an observer call. Below this floor, an observer
+# invocation's own overhead makes success structurally implausible, so
+# attempting it anyway would burn the last of the remaining time on a call
+# that was never going to finish -- the correct action is to treat the
+# remaining window as already exhausted for observation purposes and
+# report unconfirmed immediately, not to launch a doomed probe.
+#
+# Calibrated against --psql-via-docker-network mode specifically, since
+# that is what X99 CD runners use (no host psql; see quiescence.mjs):
+# `docker run --rm postgres:16-alpine psql ...` alone (client startup +
+# container create/start/teardown, before any SQL executes) measured
+# consistently around 450ms on X99 with a warm image cache, independent
+# of query complexity. A floor below that would make nearly every real
+# call under this mode look like a "budget exhausted, skip" even when the
+# actual deadline still has meaningful time left. Direct-psql mode (no
+# Docker) has no such floor requirement and will simply succeed faster
+# whenever this floor is met.
+MIN_OBSERVER_BUDGET_MS=600
+
 # confirm_no_live_session_for_pid proves — or fails to prove — that the
 # EXACT recorded (pid, backend_start) session is gone AND that no other
 # migrator-attributable (same role/database) session remains, via
@@ -172,24 +206,43 @@ fi
 # pg_stat_activity directly for that identity rather than comparing
 # against whatever a separate, unrelated LIMIT-1 query happens to return.
 #
+# The caller-supplied deadline_arg bounds this call's ENTIRE wall-clock
+# footprint, not just the value handed to --query-timeout-ms: this
+# function computes actual remaining milliseconds against that deadline
+# right before launching, denies immediately without spawning anything if
+# less than MIN_OBSERVER_BUDGET_MS remains (a call that cannot structurally
+# finish in time is exactly as informative as never having asked), and
+# passes the real remaining budget — not a fixed constant — to
+# quiescence.mjs, whose own `timeout` wrapper (see runPsql in
+# quiescence.mjs) enforces that exact ceiling on the underlying psql
+# process. This is the fix for the defect Sol found twice: a fixed
+# --query-timeout-ms 500 could let a single call run for up to ~1s of
+# wall-clock time regardless of how little of the absolute deadline
+# actually remained, so an iteration that started just before the
+# deadline could still finish after it.
+#
 # Exit code contract (matches quiescence.mjs's own three-way CLI
 # contract): 0 = confirmed absent, 1 = confirmed still live (a real,
-# known negative), 2 = observation failed (unknown state). This function
-# returns 0 ONLY on a confirmed absence (exit 0 from quiescence.mjs);
-# every other case — a real "still live" AND an observation failure
-# alike — returns non-zero, so a bare `if confirm_no_live_session_for_pid`
-# check can never mistake "we don't know" for "it's gone." This is the
-# fix for the exact defect Sol found: the previous version returned
-# success (`|| return 0`) on ANY observer command failure, meaning a
-# broken connection or a query error was silently treated as proof of
-# termination.
+# known negative), 2 = observation failed or budget exhausted (unknown
+# state). This function returns 0 ONLY on a confirmed absence; every
+# other case — a real "still live," an observation failure, and a
+# denied-before-launch budget exhaustion alike — returns non-zero, so a
+# bare `if confirm_no_live_session_for_pid` check can never mistake "we
+# don't know" for "it's gone."
 confirm_no_live_session_for_pid() {
   local pg_pid="$1"
   local pg_backend_start="$2"
+  local deadline_arg="$3"
+  local budget_ms
+  budget_ms="$(remaining_ms_before "$deadline_arg")"
+  if [ "$budget_ms" -lt "$MIN_OBSERVER_BUDGET_MS" ]; then
+    echo "che372-d2: absence check for pid=$pg_pid skipped — only ${budget_ms}ms remain before the absolute deadline, below the ${MIN_OBSERVER_BUDGET_MS}ms floor a probe needs to structurally complete; treating as unconfirmed" >&2
+    return 2
+  fi
   local absent_result
   absent_result="$(node deploy/cd/quiescence.mjs verify-live-session-is-absent "${quiescence_args_common[@]}" \
     --pid "$pg_pid" --backend-start "$pg_backend_start" \
-    --role-name "$role_name" --database-name "$database_name" --query-timeout-ms 500 2>&1)"
+    --role-name "$role_name" --database-name "$database_name" --query-timeout-ms "$budget_ms" 2>&1)"
   local status=$?
   if [ "$status" -ne 0 ]; then
     echo "che372-d2: absence check for pid=$pg_pid did not confirm absence (exit $status): $absent_result" >&2
@@ -245,20 +298,31 @@ while :; do
   # deadline-governed loop — no separate 25-attempt sub-loop with its own
   # budget. A single bounded probe per iteration; missing this iteration
   # just means we check again next iteration, still under the same clock.
+  # Both the discovery probe and the identity-covering check are budgeted
+  # off the ACTUAL remaining time before work_deadline_epoch, never a
+  # fixed constant, and are skipped outright (this iteration contributes
+  # nothing, not a doomed attempt) once less than MIN_OBSERVER_BUDGET_MS
+  # remains.
   if [ -z "$migrator_pg_pid" ]; then
-    probe="$(node deploy/cd/quiescence.mjs find-live-session-by-role "${quiescence_args_common[@]}" \
-      --role-name "$role_name" --database-name "$database_name" --query-timeout-ms 500 2>/dev/null)" || probe=""
-    if [ -n "$probe" ]; then
-      candidate_pid="$(node -e 'try{process.stdout.write(String(JSON.parse(process.argv[1]).pid))}catch(e){process.stdout.write("")}' "$probe" 2>/dev/null || true)"
-      candidate_backend_start="$(node -e 'try{process.stdout.write(String(JSON.parse(process.argv[1]).backendStart))}catch(e){process.stdout.write("")}' "$probe" 2>/dev/null || true)"
-      if [ -n "$candidate_pid" ]; then
-        covered="$(node deploy/cd/quiescence.mjs verify-live-session-is-covered "${quiescence_args_common[@]}" \
-          --pid "$candidate_pid" --backend-start "$candidate_backend_start" \
-          --role-name "$role_name" --database-name "$database_name" 2>&1)" && {
-          migrator_pg_pid="$candidate_pid"
-          migrator_pg_backend_start="$candidate_backend_start"
-          echo "che372-d2: confirmed live migrator Postgres session pid=$migrator_pg_pid identity: $covered" >&2
-        }
+    discovery_budget_ms="$(remaining_ms_before "$work_deadline_epoch")"
+    if [ "$discovery_budget_ms" -ge "$MIN_OBSERVER_BUDGET_MS" ]; then
+      probe="$(node deploy/cd/quiescence.mjs find-live-session-by-role "${quiescence_args_common[@]}" \
+        --role-name "$role_name" --database-name "$database_name" --query-timeout-ms "$discovery_budget_ms" 2>/dev/null)" || probe=""
+      if [ -n "$probe" ]; then
+        candidate_pid="$(node -e 'try{process.stdout.write(String(JSON.parse(process.argv[1]).pid))}catch(e){process.stdout.write("")}' "$probe" 2>/dev/null || true)"
+        candidate_backend_start="$(node -e 'try{process.stdout.write(String(JSON.parse(process.argv[1]).backendStart))}catch(e){process.stdout.write("")}' "$probe" 2>/dev/null || true)"
+        if [ -n "$candidate_pid" ]; then
+          cover_budget_ms="$(remaining_ms_before "$work_deadline_epoch")"
+          if [ "$cover_budget_ms" -ge "$MIN_OBSERVER_BUDGET_MS" ]; then
+            covered="$(node deploy/cd/quiescence.mjs verify-live-session-is-covered "${quiescence_args_common[@]}" \
+              --pid "$candidate_pid" --backend-start "$candidate_backend_start" \
+              --role-name "$role_name" --database-name "$database_name" --query-timeout-ms "$cover_budget_ms" 2>&1)" && {
+              migrator_pg_pid="$candidate_pid"
+              migrator_pg_backend_start="$candidate_backend_start"
+              echo "che372-d2: confirmed live migrator Postgres session pid=$migrator_pg_pid identity: $covered" >&2
+            }
+          fi
+        fi
       fi
     fi
   fi
@@ -285,7 +349,7 @@ if [ "$final_state" = "success" ]; then
   if [ -z "$migrator_pg_pid" ]; then
     echo "che372-d2: migrator os_pid=$migrator_os_pid exited 0 but no Postgres session was ever positively identified for it — cannot confirm server-side completion, treating as UNCERTAIN, not success" >&2
     final_state="needs_operator"
-  elif ! confirm_no_live_session_for_pid "$migrator_pg_pid" "$migrator_pg_backend_start"; then
+  elif ! confirm_no_live_session_for_pid "$migrator_pg_pid" "$migrator_pg_backend_start" "$work_deadline_epoch"; then
     echo "che372-d2: migrator os_pid=$migrator_os_pid exited 0 but its Postgres session pid=$migrator_pg_pid could not be confirmed absent — treating as UNCERTAIN, not success" >&2
     final_state="needs_operator"
   fi
@@ -336,7 +400,7 @@ while [ "$(date +%s)" -lt "$cancel_deadline_epoch" ]; do
     os_confirmed=true
   fi
   if [ -n "$migrator_pg_pid" ]; then
-    if ! $pg_confirmed && confirm_no_live_session_for_pid "$migrator_pg_pid" "$migrator_pg_backend_start"; then
+    if ! $pg_confirmed && confirm_no_live_session_for_pid "$migrator_pg_pid" "$migrator_pg_backend_start" "$cancel_deadline_epoch"; then
       pg_confirmed=true
     fi
   else
@@ -378,8 +442,13 @@ if ! $os_confirmed && kill -0 "$migrator_os_pid" 2>/dev/null; then
   done
 fi
 
-if [ "$(date +%s)" -lt "$deadline_epoch" ] && [ -n "$migrator_pg_pid" ] && ! $pg_confirmed; then
-  if confirm_no_live_session_for_pid "$migrator_pg_pid" "$migrator_pg_backend_start"; then
+# confirm_no_live_session_for_pid checks its own remaining-time budget
+# against deadline_epoch internally (see MIN_OBSERVER_BUDGET_MS above) and
+# denies without spawning anything if too little time remains, so no
+# separate outer clock check is needed here to keep this call from
+# starting a doomed probe.
+if [ -n "$migrator_pg_pid" ] && ! $pg_confirmed; then
+  if confirm_no_live_session_for_pid "$migrator_pg_pid" "$migrator_pg_backend_start" "$deadline_epoch"; then
     pg_confirmed=true
   fi
 fi
