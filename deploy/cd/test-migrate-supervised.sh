@@ -402,14 +402,20 @@ echo "==> negative control: the absolute deadline is a hard wall-clock boundary 
 # actually targets.
 deadline_test_allocation_seconds=4
 deadline_test_reserve_seconds=1
-deadline_test_started_epoch="$(date +%s)"
-expected_deadline_epoch=$((deadline_test_started_epoch + deadline_test_allocation_seconds))
-# Tight tolerance: this is specifically checking that post-cancellation
-# work cannot meaningfully outrun the deadline, so it must be small enough
-# to catch a real regression (the reviewed defect let confirmation work
-# continue for about one second past the deadline) while still absorbing
-# genuine process-scheduling and docker-exec latency on a loaded host.
-deadline_test_tolerance_seconds=3
+deadline_test_started_ms="$(date +%s%3N)"
+expected_deadline_ms=$((deadline_test_started_ms + deadline_test_allocation_seconds * 1000))
+# Sub-second, millisecond-precision tolerance -- this is the fix for
+# Sol's finding that a whole-second measurement plus a multi-second
+# tolerance could not distinguish the reviewed regression (which let
+# confirmation work continue for roughly ONE second past the deadline)
+# from correct behavior: a 1-3 second overrun would satisfy a 3-second
+# tolerance either way. 900ms is chosen from actually measuring this
+# exact control on this host after the fix (typical overrun 0-250ms,
+# dominated by the SIGKILL-confirmation loop's own <=100ms poll interval
+# plus shell/date/awk overhead) -- comfortably below the ~1000ms
+# regression this control exists to catch, while still absorbing real
+# process-scheduling jitter under load.
+deadline_test_tolerance_ms=900
 
 set +e
 bash deploy/cd/migrate-supervised.sh \
@@ -422,7 +428,7 @@ bash deploy/cd/migrate-supervised.sh \
   --psql-via-docker-network "$network" >"$work_dir/hard-deadline.log" 2>&1
 hard_deadline_status=$?
 set -e
-hard_deadline_finished_epoch="$(date +%s)"
+hard_deadline_finished_ms="$(date +%s%3N)"
 
 if [ "$hard_deadline_status" -eq 3 ]; then
   echo "PASS: SIGTERM-resistant migrator (real Postgres session) still resolves to exit 3 (needs_operator), never success"
@@ -442,12 +448,12 @@ else
   fail=$((fail + 1))
 fi
 
-overrun_seconds=$((hard_deadline_finished_epoch - expected_deadline_epoch))
-if [ "$overrun_seconds" -le "$deadline_test_tolerance_seconds" ]; then
-  echo "PASS: wrapper exited within ${overrun_seconds}s of the absolute deadline (tolerance ${deadline_test_tolerance_seconds}s) despite the SIGKILL escalation and final probe both being forced"
+overrun_ms=$((hard_deadline_finished_ms - expected_deadline_ms))
+if [ "$overrun_ms" -le "$deadline_test_tolerance_ms" ]; then
+  echo "PASS: wrapper exited within ${overrun_ms}ms of the absolute deadline (tolerance ${deadline_test_tolerance_ms}ms) despite the SIGKILL escalation and final probe both being forced"
   pass=$((pass + 1))
 else
-  echo "FAIL: wrapper exited ${overrun_seconds}s after the absolute deadline (tolerance ${deadline_test_tolerance_seconds}s) — cancellation continued past the approved envelope"
+  echo "FAIL: wrapper exited ${overrun_ms}ms after the absolute deadline (tolerance ${deadline_test_tolerance_ms}ms) — cancellation continued past the approved envelope"
   fail=$((fail + 1))
 fi
 

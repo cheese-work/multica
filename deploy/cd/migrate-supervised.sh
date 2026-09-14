@@ -179,6 +179,26 @@ remaining_ms_before() {
   echo "$remaining"
 }
 
+# sleep_clamped_to sleeps for at most requested_ms, but never past the
+# given absolute deadline — a fixed poll-interval sleep (e.g. `sleep 0.2`
+# at the bottom of a watchdog loop) that ignores how close the deadline
+# already is can itself carry the loop past that deadline before it is
+# ever re-checked. If no time remains at all, this returns immediately
+# rather than sleeping zero seconds through a shell arithmetic edge case.
+sleep_clamped_to() {
+  local requested_ms="$1"
+  local deadline_arg="$2"
+  local remaining_ms
+  remaining_ms="$(remaining_ms_before "$deadline_arg")"
+  if [ "$remaining_ms" -le 0 ]; then
+    return 0
+  fi
+  local sleep_ms=$(( remaining_ms < requested_ms ? remaining_ms : requested_ms ))
+  local sleep_seconds
+  sleep_seconds="$(awk -v ms="$sleep_ms" 'BEGIN { printf "%.3f", ms / 1000 }')"
+  sleep "$sleep_seconds"
+}
+
 # MIN_OBSERVER_BUDGET_MS is the smallest query-timeout budget this script
 # will ever hand to an observer call. Below this floor, an observer
 # invocation's own overhead makes success structurally implausible, so
@@ -199,6 +219,46 @@ remaining_ms_before() {
 # whenever this floor is met.
 MIN_OBSERVER_BUDGET_MS=600
 
+# run_node_bounded wraps an ENTIRE `node ...` invocation — including Node's
+# own process startup and CLI-argument parsing, not just the SQL/timeout
+# logic quiescence.mjs installs once it starts running — in an external
+# `timeout -s KILL`, computed from ACTUAL remaining milliseconds against
+# the given absolute deadline at the moment this function is called.
+#
+# This closes the exact gap Sol found: quiescence.mjs's own internal
+# `timeout -s KILL` wrapper (in runPsql) is only installed after `node`
+# has already started, loaded modules, and parsed argv — none of which is
+# free, and none of which was previously inside any clamp at all. A single
+# fixed budget handed to --query-timeout-ms bounded only the time *after*
+# Node was already running, so the true wall-clock cost of a call could
+# exceed the sampled remaining time by Node's own startup latency.
+#
+# Usage: run_node_bounded <deadline_epoch> -- <node args...>
+# Exit codes: whatever the wrapped `node` invocation would normally
+# return, OR 2 if there is not enough budget left even to attempt the
+# call (mirroring quiescence.mjs's own "observation failed/unknown" exit
+# code), OR 124/137 if the external timeout itself had to intervene
+# (Node started but did not finish in time) -- callers must treat any
+# non-zero exit here identically to a quiescence.mjs-reported failure,
+# never as a special "the wrapper, not the tool, timed out" case.
+run_node_bounded() {
+  local deadline_arg="$1"; shift
+  if [ "$1" != "--" ]; then
+    echo "che372-d2: run_node_bounded internal usage error (missing --)" >&2
+    return 2
+  fi
+  shift
+  local budget_ms
+  budget_ms="$(remaining_ms_before "$deadline_arg")"
+  if [ "$budget_ms" -lt "$MIN_OBSERVER_BUDGET_MS" ]; then
+    echo "che372-d2: skipped node invocation — only ${budget_ms}ms remain before the absolute deadline, below the ${MIN_OBSERVER_BUDGET_MS}ms floor Node startup plus a probe needs to structurally complete" >&2
+    return 2
+  fi
+  local budget_seconds
+  budget_seconds="$(awk -v ms="$budget_ms" 'BEGIN { printf "%.3f", ms / 1000 }')"
+  timeout -s KILL "${budget_seconds}s" node "$@"
+}
+
 # confirm_no_live_session_for_pid proves — or fails to prove — that the
 # EXACT recorded (pid, backend_start) session is gone AND that no other
 # migrator-attributable (same role/database) session remains, via
@@ -206,43 +266,46 @@ MIN_OBSERVER_BUDGET_MS=600
 # pg_stat_activity directly for that identity rather than comparing
 # against whatever a separate, unrelated LIMIT-1 query happens to return.
 #
-# The caller-supplied deadline_arg bounds this call's ENTIRE wall-clock
-# footprint, not just the value handed to --query-timeout-ms: this
-# function computes actual remaining milliseconds against that deadline
-# right before launching, denies immediately without spawning anything if
-# less than MIN_OBSERVER_BUDGET_MS remains (a call that cannot structurally
-# finish in time is exactly as informative as never having asked), and
-# passes the real remaining budget — not a fixed constant — to
-# quiescence.mjs, whose own `timeout` wrapper (see runPsql in
-# quiescence.mjs) enforces that exact ceiling on the underlying psql
-# process. This is the fix for the defect Sol found twice: a fixed
-# --query-timeout-ms 500 could let a single call run for up to ~1s of
-# wall-clock time regardless of how little of the absolute deadline
-# actually remained, so an iteration that started just before the
-# deadline could still finish after it.
+# The ENTIRE `node ...` invocation — Node's own startup and CLI parsing
+# included, not just quiescence.mjs's internal SQL/timeout logic — runs
+# through run_node_bounded, which computes actual remaining milliseconds
+# against deadline_arg immediately before launching and wraps the whole
+# call in an external `timeout -s KILL`. This is the fix for the defect
+# Sol found across two rounds: a fixed --query-timeout-ms bounded only
+# quiescence.mjs's own internal work, which starts running only after
+# Node has already paid its startup cost — that cost sat entirely outside
+# any previous clamp.
+#
+# --query-timeout-ms is still passed to quiescence.mjs, deliberately
+# smaller than the outer run_node_bounded budget: quiescence.mjs's own
+# internal timeout should fire first under normal conditions (producing a
+# clean, attributable "observation query exceeded wall-clock timeout"
+# error), with the outer timeout -s KILL only as the backstop that also
+# catches anomalously slow Node startup itself.
 #
 # Exit code contract (matches quiescence.mjs's own three-way CLI
-# contract): 0 = confirmed absent, 1 = confirmed still live (a real,
-# known negative), 2 = observation failed or budget exhausted (unknown
-# state). This function returns 0 ONLY on a confirmed absence; every
-# other case — a real "still live," an observation failure, and a
-# denied-before-launch budget exhaustion alike — returns non-zero, so a
-# bare `if confirm_no_live_session_for_pid` check can never mistake "we
-# don't know" for "it's gone."
+# contract, extended by run_node_bounded's pre-launch denial and the
+# outer timeout's own escalation): 0 = confirmed absent; any non-zero —
+# confirmed still live, an observation failure, a denied-before-launch
+# budget exhaustion, or the outer timeout itself firing — is treated
+# identically as "not confirmed," so a bare
+# `if confirm_no_live_session_for_pid` check can never mistake "we don't
+# know" for "it's gone."
 confirm_no_live_session_for_pid() {
   local pg_pid="$1"
   local pg_backend_start="$2"
   local deadline_arg="$3"
   local budget_ms
   budget_ms="$(remaining_ms_before "$deadline_arg")"
-  if [ "$budget_ms" -lt "$MIN_OBSERVER_BUDGET_MS" ]; then
-    echo "che372-d2: absence check for pid=$pg_pid skipped — only ${budget_ms}ms remain before the absolute deadline, below the ${MIN_OBSERVER_BUDGET_MS}ms floor a probe needs to structurally complete; treating as unconfirmed" >&2
-    return 2
-  fi
+  # inner_budget_ms is deliberately a bit smaller than the outer
+  # run_node_bounded wrapper's own budget (recomputed fresh inside that
+  # function from the same deadline_arg) so quiescence.mjs's own timeout
+  # has room to fire and report cleanly before the outer KILL would.
+  local inner_budget_ms=$((budget_ms > 200 ? budget_ms - 100 : budget_ms))
   local absent_result
-  absent_result="$(node deploy/cd/quiescence.mjs verify-live-session-is-absent "${quiescence_args_common[@]}" \
+  absent_result="$(run_node_bounded "$deadline_arg" -- deploy/cd/quiescence.mjs verify-live-session-is-absent "${quiescence_args_common[@]}" \
     --pid "$pg_pid" --backend-start "$pg_backend_start" \
-    --role-name "$role_name" --database-name "$database_name" --query-timeout-ms "$budget_ms" 2>&1)"
+    --role-name "$role_name" --database-name "$database_name" --query-timeout-ms "$inner_budget_ms" 2>&1)"
   local status=$?
   if [ "$status" -ne 0 ]; then
     echo "che372-d2: absence check for pid=$pg_pid did not confirm absence (exit $status): $absent_result" >&2
@@ -298,25 +361,25 @@ while :; do
   # deadline-governed loop — no separate 25-attempt sub-loop with its own
   # budget. A single bounded probe per iteration; missing this iteration
   # just means we check again next iteration, still under the same clock.
-  # Both the discovery probe and the identity-covering check are budgeted
-  # off the ACTUAL remaining time before work_deadline_epoch, never a
-  # fixed constant, and are skipped outright (this iteration contributes
-  # nothing, not a doomed attempt) once less than MIN_OBSERVER_BUDGET_MS
-  # remains.
+  # Every node invocation here — including the tiny JSON-field-extraction
+  # ones — goes through run_node_bounded, so Node's own startup is inside
+  # the clamp for every one of them, not just the SQL-facing calls.
   if [ -z "$migrator_pg_pid" ]; then
     discovery_budget_ms="$(remaining_ms_before "$work_deadline_epoch")"
     if [ "$discovery_budget_ms" -ge "$MIN_OBSERVER_BUDGET_MS" ]; then
-      probe="$(node deploy/cd/quiescence.mjs find-live-session-by-role "${quiescence_args_common[@]}" \
-        --role-name "$role_name" --database-name "$database_name" --query-timeout-ms "$discovery_budget_ms" 2>/dev/null)" || probe=""
+      inner_discovery_budget_ms=$((discovery_budget_ms > 200 ? discovery_budget_ms - 100 : discovery_budget_ms))
+      probe="$(run_node_bounded "$work_deadline_epoch" -- deploy/cd/quiescence.mjs find-live-session-by-role "${quiescence_args_common[@]}" \
+        --role-name "$role_name" --database-name "$database_name" --query-timeout-ms "$inner_discovery_budget_ms" 2>/dev/null)" || probe=""
       if [ -n "$probe" ]; then
-        candidate_pid="$(node -e 'try{process.stdout.write(String(JSON.parse(process.argv[1]).pid))}catch(e){process.stdout.write("")}' "$probe" 2>/dev/null || true)"
-        candidate_backend_start="$(node -e 'try{process.stdout.write(String(JSON.parse(process.argv[1]).backendStart))}catch(e){process.stdout.write("")}' "$probe" 2>/dev/null || true)"
+        candidate_pid="$(run_node_bounded "$work_deadline_epoch" -- -e 'try{process.stdout.write(String(JSON.parse(process.argv[1]).pid))}catch(e){process.stdout.write("")}' "$probe" 2>/dev/null || true)"
+        candidate_backend_start="$(run_node_bounded "$work_deadline_epoch" -- -e 'try{process.stdout.write(String(JSON.parse(process.argv[1]).backendStart))}catch(e){process.stdout.write("")}' "$probe" 2>/dev/null || true)"
         if [ -n "$candidate_pid" ]; then
           cover_budget_ms="$(remaining_ms_before "$work_deadline_epoch")"
           if [ "$cover_budget_ms" -ge "$MIN_OBSERVER_BUDGET_MS" ]; then
-            covered="$(node deploy/cd/quiescence.mjs verify-live-session-is-covered "${quiescence_args_common[@]}" \
+            inner_cover_budget_ms=$((cover_budget_ms > 200 ? cover_budget_ms - 100 : cover_budget_ms))
+            covered="$(run_node_bounded "$work_deadline_epoch" -- deploy/cd/quiescence.mjs verify-live-session-is-covered "${quiescence_args_common[@]}" \
               --pid "$candidate_pid" --backend-start "$candidate_backend_start" \
-              --role-name "$role_name" --database-name "$database_name" --query-timeout-ms "$cover_budget_ms" 2>&1)" && {
+              --role-name "$role_name" --database-name "$database_name" --query-timeout-ms "$inner_cover_budget_ms" 2>&1)" && {
               migrator_pg_pid="$candidate_pid"
               migrator_pg_backend_start="$candidate_backend_start"
               echo "che372-d2: confirmed live migrator Postgres session pid=$migrator_pg_pid identity: $covered" >&2
@@ -327,7 +390,7 @@ while :; do
     fi
   fi
 
-  sleep 0.2
+  sleep_clamped_to 200 "$work_deadline_epoch"
 done
 
 if [ "$final_state" = "success" ]; then
@@ -413,7 +476,7 @@ while [ "$(date +%s)" -lt "$cancel_deadline_epoch" ]; do
   if $os_confirmed && $pg_confirmed; then
     break
   fi
-  sleep 0.1
+  sleep_clamped_to 100 "$cancel_deadline_epoch"
 done
 
 # From here on, the absolute `deadline_epoch` is a HARD boundary on
@@ -438,7 +501,7 @@ if ! $os_confirmed && kill -0 "$migrator_os_pid" 2>/dev/null; then
   kill -KILL "$migrator_os_pid" 2>/dev/null || true
   while [ "$(date +%s)" -lt "$deadline_epoch" ]; do
     kill -0 "$migrator_os_pid" 2>/dev/null || { os_confirmed=true; wait "$migrator_os_pid" 2>/dev/null || true; break; }
-    sleep 0.1
+    sleep_clamped_to 100 "$deadline_epoch"
   done
 fi
 

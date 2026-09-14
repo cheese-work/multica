@@ -133,21 +133,38 @@ it because the clock already reads `deadline_epoch` would leave a
 still-running process with nothing further attempting to stop it, which is
 strictly worse than a late confirmation of that same kill.
 
-**Gating on start is not enough — every observer call is itself budgeted
-from actual remaining time.** A coarse "is it past deadline yet" check
-before starting an iteration cannot bound an iteration that is already
-running: `confirm_no_live_session_for_pid` computes exact remaining
-milliseconds against the relevant deadline immediately before each call
-(`remaining_ms_before`), denies outright without spawning anything below
-`MIN_OBSERVER_BUDGET_MS`, and passes the real remaining budget — never a
-fixed constant — as `quiescence.mjs`'s own `--query-timeout-ms`, whose
-`timeout` wrapper enforces that exact ceiling on the underlying process.
+**Gating on start is not enough — the clamp must cover the entire
+observer invocation, including launcher overhead, not just the SQL/timeout
+logic that runs after the tool has already started.** `quiescence.mjs`'s
+own internal `timeout -s KILL` wrapper (inside `runPsql`) is only installed
+after `node` has already started, loaded its modules, and parsed `argv` —
+none of that is free, and none of it was covered by any clamp on its own.
+`migrate-supervised.sh`'s `run_node_bounded` closes this: it computes exact
+remaining milliseconds against the relevant deadline immediately before
+launching, denies outright without spawning anything below
+`MIN_OBSERVER_BUDGET_MS`, and wraps the **entire `node ...` invocation** —
+Node's own startup and CLI parsing included — in an external
+`timeout -s KILL <exact-remaining-seconds>s`. `quiescence.mjs` still
+receives its own, slightly smaller `--query-timeout-ms` so its internal
+timeout fires first under normal conditions with a clean, attributable
+error message; the outer `run_node_bounded` wrapper is the true backstop
+that also catches anomalously slow Node startup or a script that never
+reaches its own internal timeout logic at all (verified directly: a
+`node -e 'setInterval(() => {}, 1000)'` that never installs any timeout of
+its own is still killed by the outer wrapper at the requested boundary).
 `MIN_OBSERVER_BUDGET_MS` is calibrated to real `--psql-via-docker-network`
 overhead (`docker run --rm postgres:16-alpine psql ...` measured ~450ms on
 X99 with a warm image cache, independent of query complexity), not an
 arbitrary small number — a floor below that makes success structurally
 implausible, so attempting the call anyway would burn the last of the
 remaining time on something that was never going to finish.
+
+Every fixed-interval `sleep` in the watchdog and cancellation loops
+(`sleep_clamped_to`) is likewise capped at the actual remaining time
+before its own deadline, never a bare constant — a `sleep 0.2` at the
+bottom of a loop that ignores how close the deadline already is can carry
+that loop past the deadline before it is ever re-checked, on its own,
+independent of any observer call.
 
 `quiescence.mjs`'s `timeout` wrapper itself sends `SIGKILL` (`-s KILL`)
 rather than the default `SIGTERM`: against the `--psql-via-docker-network`
