@@ -1977,6 +1977,50 @@ describe("IssueDetail (shared)", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Show less" })).toBeInTheDocument());
   });
 
+  it("refuses Show less for a cross-boundary selection anchored inside the collapsing thread but extending outside it", async () => {
+    // Terra review (CHE-476 PR #36): commonAncestorContainer is the wrong
+    // containment test — a selection that starts in-thread and ends outside
+    // it has a common ancestor ABOVE both roots, so the old check missed it
+    // and Show less would hide the anchored text. anchorNode containment
+    // (01-DESIGN-v3.md:51: refusal keys off the Selection's anchor) fixes it.
+    const root = mockTimeline[0]!;
+    const otherRoot: TimelineEntry = { ...mockTimeline[1]!, id: "boundary-other-root", parent_id: null, content: "Other root", created_at: "2026-01-16T00:10:00Z" };
+    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+      ...mockTimeline[1]!,
+      id: `boundary-reply-${i}`,
+      parent_id: root.id,
+      content: `Boundary reply ${i}`,
+      created_at: `2026-01-16T00:0${i}:00Z`,
+    }));
+    mockApiObj.listTimeline.mockResolvedValue([root, ...replies, otherRoot]);
+    const { container } = renderIssueDetail();
+    await screen.findByText("Boundary reply 3");
+    await screen.findByText("Other root");
+    fireEvent.click(await screen.findByRole("button", { name: /Show \d+ more repl/ }));
+    await screen.findByRole("button", { name: "Show less" });
+
+    const threadWrapper = container.querySelector(`#comment-${root.id}`) as HTMLElement;
+    const otherWrapper = container.querySelector(`#comment-${otherRoot.id}`) as HTMLElement;
+    const anchorNode = within(threadWrapper).getByText("Boundary reply 3").firstChild as Node;
+    const focusNode = within(otherWrapper).getByText("Other root").firstChild as Node;
+    const sel = window.getSelection()!;
+    act(() => {
+      sel.removeAllRanges();
+      sel.setBaseAndExtent(anchorNode, 0, focusNode, 1);
+      fireEvent(document, new Event("selectionchange"));
+    });
+
+    // The selection's commonAncestorContainer sits above both roots, but its
+    // anchor is still inside root's subtree — Show less must stay withheld.
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Show less" })).not.toBeInTheDocument());
+
+    act(() => {
+      sel.removeAllRanges();
+      fireEvent(document, new Event("selectionchange"));
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Show less" })).toBeInTheDocument());
+  });
+
   it("does not block Show less on a thread when focus is inside a different thread that is not being collapsed", async () => {
     const root = mockTimeline[0]!;
     const otherRoot: TimelineEntry = { ...mockTimeline[1]!, id: "other-root", parent_id: null, content: "Other root", created_at: "2026-01-16T00:10:00Z" };

@@ -1756,7 +1756,13 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       const sel = document.getSelection();
       // A collapsed (caret-only) selection is not a "selection" for this
       // purpose — AC 4 requires a real range before it can block Show less.
-      const selRange = sel && !sel.isCollapsed && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+      // Anchor (not the range's commonAncestorContainer) is the containment
+      // test: 01-DESIGN-v3.md:51 blocks collapse when the SELECTION's anchor
+      // sits in the collapsing subtree, not when the range's nearest common
+      // DOM ancestor does. A cross-boundary selection that starts in-thread
+      // and ends outside it has a commonAncestorContainer outside the
+      // thread, which would wrongly let Show less hide the anchored text.
+      const selAnchor = sel && !sel.isCollapsed && sel.rangeCount > 0 ? sel.anchorNode : null;
       const ids = new Set<string>();
       for (const rootId of threadReplies.keys()) {
         const root = document.getElementById(`comment-${rootId}`);
@@ -1765,7 +1771,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           ids.add(rootId);
           continue;
         }
-        if (selRange && root.contains(selRange.commonAncestorContainer)) {
+        if (selAnchor && root.contains(selAnchor)) {
           ids.add(rootId);
         }
       }
