@@ -402,8 +402,6 @@ echo "==> negative control: the absolute deadline is a hard wall-clock boundary 
 # actually targets.
 deadline_test_allocation_seconds=4
 deadline_test_reserve_seconds=1
-deadline_test_started_ms="$(date +%s%3N)"
-expected_deadline_ms=$((deadline_test_started_ms + deadline_test_allocation_seconds * 1000))
 # Sub-second, millisecond-precision tolerance -- this is the fix for
 # Sol's finding that a whole-second measurement plus a multi-second
 # tolerance could not distinguish the reviewed regression (which let
@@ -430,6 +428,36 @@ hard_deadline_status=$?
 set -e
 hard_deadline_finished_ms="$(date +%s%3N)"
 
+# Sol's finding on the previous round: expected_deadline_ms was computed by
+# duplicating the supervisor's own whole-second-rounding arithmetic
+# (test_started_ms + allocation*1000) from a timestamp captured on the
+# TEST's clock, before the supervisor process even started. The
+# supervisor independently floors ITS OWN start to whole seconds
+# (migrate-supervised.sh's migration_started_epoch="$(date +%s)"), at
+# whatever moment that line executes -- after bash/exec/argument-parsing
+# overhead from this test's invocation. Depending on where in the current
+# second each clock read landed, the real deadline_epoch could be up to
+# 999ms earlier than the test's independently-duplicated estimate, which
+# let the reviewed ~1000ms regression masquerade as a 1-999ms overrun and
+# pass the 900ms tolerance for most start phases. Fix: read the
+# supervisor's own logged work_deadline_epoch (its real, whole-second
+# absolute deadline) instead of recomputing an estimate, then add back
+# reserve_seconds to get its real deadline_epoch -- the actual hard-kill
+# boundary this control is checking. The comparison is then between the
+# supervisor's own integer-second value (converted to ms only at the
+# boundary) and this test's millisecond-precision finish time, so no
+# independent rounding is duplicated on the test side at all.
+real_work_deadline_epoch="$(grep -o 'work_deadline=[0-9]\+' "$work_dir/hard-deadline.log" | head -1 | cut -d= -f2)"
+if [ -z "$real_work_deadline_epoch" ]; then
+  echo "FAIL: could not find the supervisor's logged work_deadline in $work_dir/hard-deadline.log -- cannot bind this control to the supervisor's real deadline"
+  cat "$work_dir/hard-deadline.log"
+  fail=$((fail + 1))
+  real_deadline_epoch_ms=0
+else
+  real_deadline_epoch=$((real_work_deadline_epoch + deadline_test_reserve_seconds))
+  real_deadline_epoch_ms=$((real_deadline_epoch * 1000))
+fi
+
 if [ "$hard_deadline_status" -eq 3 ]; then
   echo "PASS: SIGTERM-resistant migrator (real Postgres session) still resolves to exit 3 (needs_operator), never success"
   pass=$((pass + 1))
@@ -448,13 +476,18 @@ else
   fail=$((fail + 1))
 fi
 
-overrun_ms=$((hard_deadline_finished_ms - expected_deadline_ms))
-if [ "$overrun_ms" -le "$deadline_test_tolerance_ms" ]; then
-  echo "PASS: wrapper exited within ${overrun_ms}ms of the absolute deadline (tolerance ${deadline_test_tolerance_ms}ms) despite the SIGKILL escalation and final probe both being forced"
-  pass=$((pass + 1))
-else
-  echo "FAIL: wrapper exited ${overrun_ms}ms after the absolute deadline (tolerance ${deadline_test_tolerance_ms}ms) — cancellation continued past the approved envelope"
+if [ "$real_deadline_epoch_ms" -eq 0 ]; then
+  echo "FAIL: skipping the overrun check -- no real deadline was captured from the supervisor's own log"
   fail=$((fail + 1))
+else
+  overrun_ms=$((hard_deadline_finished_ms - real_deadline_epoch_ms))
+  if [ "$overrun_ms" -le "$deadline_test_tolerance_ms" ]; then
+    echo "PASS: wrapper exited within ${overrun_ms}ms of its own real absolute deadline (work_deadline=$real_work_deadline_epoch + reserve=${deadline_test_reserve_seconds}s, tolerance ${deadline_test_tolerance_ms}ms) despite the SIGKILL escalation and final probe both being forced"
+    pass=$((pass + 1))
+  else
+    echo "FAIL: wrapper exited ${overrun_ms}ms after its own real absolute deadline (work_deadline=$real_work_deadline_epoch + reserve=${deadline_test_reserve_seconds}s, tolerance ${deadline_test_tolerance_ms}ms) — cancellation continued past the approved envelope"
+    fail=$((fail + 1))
+  fi
 fi
 
 # The migrator process itself must actually be gone (SIGKILL took effect)
