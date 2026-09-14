@@ -321,6 +321,72 @@ test.describe("Description editor lifecycle through folding", () => {
     await expect(reopenedImage).not.toHaveAttribute("src", /^blob:/);
   });
 
+  // CHE-502 — the previous test proves the flush-after-settlement path.
+  // This one proves the path that PR #31's evidence actually hit: the
+  // client-side close happens WHILE `POST /api/upload-file` is still in
+  // flight, so there is no debounced markdown containing the image yet
+  // (`uploading === true` nodes always serialize to "") and the response
+  // only lands after the editor has already unmounted. Gate the upload
+  // deterministically (same mechanism as "Show less is refused while an
+  // upload is pending") instead of racing a real network delay against the
+  // navigation.
+  test("close while the upload is still in flight persists the image markdown across reload", async ({ page }) => {
+    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await waitForPageText(page, issueTitle);
+
+    await page.getByRole("button", { name: /Show more/ }).click();
+    const editor = page.locator("[data-description-editor] .ProseMirror");
+    await editor.click();
+    await editor.press("End");
+
+    let releaseUpload: () => void = () => {};
+    const uploadGate = new Promise<void>((resolve) => {
+      releaseUpload = resolve;
+    });
+    await page.route("**/api/upload-file", async (route) => {
+      await uploadGate;
+      await route.continue();
+    });
+
+    const pngBase64 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+    await editor.evaluate((node, base64) => {
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const file = new File([bytes], "e2e-inflight.png", { type: "image/png" });
+      const dataTransfer = new DataTransfer();
+      dataTransfer.items.add(file);
+      const pasteEvent = new ClipboardEvent("paste", {
+        bubbles: true,
+        cancelable: true,
+        clipboardData: dataTransfer,
+      });
+      node.dispatchEvent(pasteEvent);
+    }, pngBase64);
+
+    // The placeholder is in the doc (blob preview) but the upload response
+    // is held by the gate — this is the exact "no description-save request
+    // yet" window the issue's evidence describes.
+    const uploadingPlaceholder = page.locator("[data-description-editor] img.image-uploading");
+    await expect(uploadingPlaceholder).toBeVisible({ timeout: 10000 });
+
+    // Client-side navigation away while the upload is still gated — this
+    // unmounts ContentEditor before `settleUploadNode` ever runs.
+    await page.getByRole("link", { name: "Issues", exact: true }).click();
+    await expect(page.getByRole("button", { name: /Show more/ })).not.toBeVisible();
+
+    // Now let the response land, after the editor is gone.
+    releaseUpload();
+
+    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await waitForPageText(page, issueTitle);
+    await page.getByRole("button", { name: /Show more/ }).click();
+    const reopenedImage = page.locator("[data-description-editor] img.image-content:not(.image-uploading)");
+    await expect(reopenedImage).toBeVisible({ timeout: 10000 });
+    await expect(reopenedImage).not.toHaveAttribute("src", /^blob:/);
+  });
+
   test("Show less is refused while an upload is pending, independent of editor focus", async ({ page }) => {
     await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
     await waitForPageText(page, issueTitle);
