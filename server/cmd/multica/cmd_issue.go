@@ -2377,19 +2377,16 @@ func runIssueCommentDelete(cmd *cobra.Command, args []string) error {
 
 func runIssueCommentResolve(cmd *cobra.Command, args []string) error {
 	knownAsOfRaw, _ := cmd.Flags().GetString("known-as-of")
-	var knownAsOf *time.Time
 	if knownAsOfRaw != "" {
-		parsed, err := time.Parse(time.RFC3339Nano, knownAsOfRaw)
-		if err != nil {
+		if _, err := time.Parse(time.RFC3339Nano, knownAsOfRaw); err != nil {
 			return fmt.Errorf("--known-as-of: invalid RFC3339Nano timestamp %q: %w", knownAsOfRaw, err)
 		}
-		knownAsOf = &parsed
 	}
-	return runIssueCommentResolution(cmd, args[0], true, knownAsOf)
+	return runIssueCommentResolution(cmd, args[0], true, knownAsOfRaw)
 }
 
 func runIssueCommentUnresolve(cmd *cobra.Command, args []string) error {
-	return runIssueCommentResolution(cmd, args[0], false, nil)
+	return runIssueCommentResolution(cmd, args[0], false, "")
 }
 
 // threadChangedMessage decodes a 409 thread_changed body (see ResolveComment
@@ -2414,7 +2411,7 @@ func threadChangedMessage(err error) (string, bool) {
 	return fmt.Sprintf("resolve rejected: %s — reload the thread and retry with an updated --known-as-of", payload.Error), true
 }
 
-func runIssueCommentResolution(cmd *cobra.Command, commentID string, resolve bool, knownAsOf *time.Time) error {
+func runIssueCommentResolution(cmd *cobra.Command, commentID string, resolve bool, knownAsOfRaw string) error {
 	client, err := newAPIClient(cmd)
 	if err != nil {
 		return err
@@ -2427,8 +2424,8 @@ func runIssueCommentResolution(cmd *cobra.Command, commentID string, resolve boo
 	var result map[string]any
 	if resolve {
 		var body any
-		if knownAsOf != nil {
-			body = map[string]any{"known_as_of": knownAsOf.Format(time.RFC3339Nano)}
+		if knownAsOfRaw != "" {
+			body = map[string]any{"known_as_of": knownAsOfRaw}
 		}
 		if err := client.PostJSON(ctx, path, body, &result); err != nil {
 			if msg, ok := threadChangedMessage(err); ok {

@@ -2415,6 +2415,10 @@ func TestRunIssueCommentResolveForwardsKnownAsOf(t *testing.T) {
 			knownAsOf: "2026-06-22T08:00:00.123456789Z",
 		},
 		{
+			name:      "known-as-of with trailing fractional zeros forwarded verbatim",
+			knownAsOf: "2026-06-22T08:00:00.120000000Z",
+		},
+		{
 			name:          "omitted known-as-of sends no body",
 			wantBodyEmpty: true,
 		},
