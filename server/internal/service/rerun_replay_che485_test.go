@@ -266,6 +266,26 @@ func TestRerunIssueConcurrentFirstAdmissionSettlesOnce(t *testing.T) {
 	actorUUID := util.MustParseUUID(actorID)
 
 	const concurrency = 25
+	// Each call gets its own trigger comment so every goroutine owns a
+	// distinct idx_one_pending_task_per_issue_agent_thread slot (issue_id,
+	// agent_id, comment_thread_id) — the pending-slot reclaim is a separate,
+	// already-covered race (TestRerunIssueReplayConcurrentSubmissionsAdmitOnce)
+	// with its own bounded single-retry contract. Sharing one thread slot
+	// across 25 goroutines would additionally contend that unrelated index
+	// and mask the first-admission race this test exists to isolate:
+	// idx_one_live_rerun_per_source_task_actor.
+	triggerCommentIDs := make([]pgtype.UUID, concurrency)
+	for i := 0; i < concurrency; i++ {
+		var commentID string
+		if err := pool.QueryRow(ctx, `
+			INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content)
+			VALUES ($1, $2, 'member', $3, 'concurrent rerun trigger') RETURNING id`,
+			issueID, workspaceID, actorID).Scan(&commentID); err != nil {
+			t.Fatalf("seed trigger comment %d: %v", i, err)
+		}
+		triggerCommentIDs[i] = util.MustParseUUID(commentID)
+	}
+
 	var wg sync.WaitGroup
 	results := make([]string, concurrency)
 	errs := make([]error, concurrency)
@@ -273,7 +293,7 @@ func TestRerunIssueConcurrentFirstAdmissionSettlesOnce(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			task, err := svc.RerunIssue(ctx, util.MustParseUUID(issueID), orig.ID, pgtype.UUID{}, actorUUID, allow)
+			task, err := svc.RerunIssue(ctx, util.MustParseUUID(issueID), orig.ID, triggerCommentIDs[idx], actorUUID, allow)
 			if err != nil {
 				errs[idx] = err
 				return
