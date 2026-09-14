@@ -1,0 +1,42 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: multica
+      POSTGRES_PASSWORD: synthetic-only
+      POSTGRES_USER: multica
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U multica -d multica"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    volumes:
+      - d2-controller-db:/var/lib/postgresql/data
+
+  # candidate is the D2-supervised container: its stock entrypoint.sh
+  # (migrate-then-exec-server, no gate) is overridden so server startup
+  # waits on the external controller's decision file instead of running
+  # its own unsupervised migration. deploy/cd/migrate-supervised.sh runs
+  # OUTSIDE this container, against the same postgres service, and writes
+  # ./decision/decision.txt (bind-mounted below) once it has independently
+  # confirmed a successful, deadline-bounded migration.
+  candidate:
+    image: ${D2_CANDIDATE_IMAGE:?immutable candidate image is required}
+    entrypoint: ["./entrypoint.cd.sh"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://multica:synthetic-only@postgres:5432/multica?sslmode=disable
+      JWT_SECRET: qualification-synthetic-only
+      MULTICA_PUBLIC_URL: http://127.0.0.1:${D2_CANDIDATE_PORT:-18990}
+      CHE372_D2_MIGRATION_DECISION_FILE: /d2-decision/decision.txt
+      CHE372_D2_ATTEMPT_ID: ${D2_ATTEMPT_ID:?a unique attempt id is required so a stale decision file can never be misread as current}
+      CHE372_D2_DECISION_WAIT_SECONDS: ${D2_DECISION_WAIT_SECONDS:-90}
+    volumes:
+      - ./d2-decision:/d2-decision:ro
+    ports:
+      - "127.0.0.1:${D2_CANDIDATE_PORT:-18990}:8080"
+
+volumes:
+  d2-controller-db:

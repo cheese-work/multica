@@ -44,26 +44,38 @@ session could claim that prefix and hide an open transaction from the final
 gate. `test-quiescence.sh` and `test-migrate-supervised.sh` both include a
 negative control that spoofs the old prefix and asserts it is still denied.
 
-Timeout proof (`set-role-timeout-defaults` / `verify-role-timeout-defaults` /
-`find-live-session-by-role` / `verify-live-session-is-covered`) does not
-attempt to read back another live backend's session-level GUC value —
-PostgreSQL provides no view for that; `pg_stat_activity` carries no such
-column, and `pg_settings`/`current_setting()` only ever report the caller's
-own session. Instead it sets and verifies a role/database-scoped default via
-`ALTER ROLE ... IN DATABASE ... SET`, recorded in the world-readable
-`pg_db_role_setting` catalog, which PostgreSQL applies to every **new**
-connection that role opens against that database from the moment it is set —
-covering the migrator's pinned advisory-lock connection and every
-separately-opened hook connection its pool opens afterward alike, not just
-whichever one connection a client-side probe happened to inspect. A value
-that rounds to 0 (Postgres's "disabled" sentinel) is treated as a hard
-failure, and a role/database with no default configured at all denies rather
-than being treated as "no timeout configured is fine." After launch,
-`verify-live-session-is-covered` confirms the live migrator session's
-identity (Postgres backend PID + `backend_start`, not the OS-level child
-process ID) actually matches the role/database the default was verified for,
-closing the gap where the default could be proven for the wrong session
-entirely (wrong role, wrong database, or a stale/reused backend PID).
+### Timeout enforcement: Go-level, not an external probe
+
+Timeout proof does not attempt to read back another live backend's
+session-level GUC value from outside — PostgreSQL provides no view for that
+(`pg_stat_activity` carries no such column, and `pg_settings`/
+`current_setting()` only ever report the caller's own session), and a
+client-supplied connection-string `options=` parameter is applied by pgx
+*above* both PGOPTIONS and any role/database default (verified against
+pgx v5's `pgconn/config.go` precedence and PostgreSQL's own GUC precedence
+order), so any client-side setting — PGOPTIONS or a role/database default —
+can be silently defeated by the connection string itself.
+
+Enforcement instead lives inside the migrator's own Go process:
+`server/internal/dbstartup.NewPoolWithEnforcedTimeouts` installs a pgx
+`AfterConnect` hook that runs a `SET` on every physical connection the pool
+opens — strictly *after* pgx has finished applying the connection string —
+covering the pinned advisory-lock connection and every separately-opened
+hook connection alike, then reads the values back on that same connection
+and rejects the connection outright if they don't match exactly (including
+rendering as 0, Postgres's "disabled" sentinel). Being the *last* setting
+applied is what makes this immune to a connection-string bypass a
+role/database default could not resist. `server/cmd/migrate` opts into this
+via `MULTICA_INTERNAL_D2_ENFORCED_STATEMENT_TIMEOUT_MS`/
+`MULTICA_INTERNAL_D2_ENFORCED_LOCK_TIMEOUT_MS` (unset by default — zero
+effect on non-CD migrator invocations); `migrate-supervised.sh` sets both
+before launching the migrator.
+
+`find-live-session-by-role`/`verify-live-session-is-covered` in
+`quiescence.mjs` exist for a different purpose: after launch, the watchdog
+needs to locate the migrator's actual Postgres backend (PID + `backend_start`,
+not the OS-level child process ID) to confirm *server-side* absence during
+cancellation — they never attempt to read or verify a GUC value.
 
 Every observation query is a fresh, autocommit `psql` invocation (no
 persistent connection, no long-lived snapshot from the observer itself),
@@ -73,29 +85,50 @@ pass `--psql-via-docker-network <network>` to run each observation through a
 short-lived `postgres:16-alpine` container on the same Docker network as the
 target, mirroring D1's existing synthetic-fixture convention.
 
-`migrate-supervised.sh` wraps `server/cmd/migrate` with the absolute
-`migration_deadline`/`work_deadline` arithmetic from the design
-(`min(migration_started+15s, cutover_started+40s) - 2s` reserve), sets and
-verifies the role/database timeout default described above before launch,
-confirms the live migrator session's identity immediately after launch, and
-runs an external watchdog that can terminate only its own recorded migrator
-PID — confirmed via process liveness, never trusted from a signal's return
-code alone — and never a foreign session or anything matched by executable
-name. A deadline-exceeded run always exits `3` (`needs_operator`) and never
-claims success; it does not attempt to repair or roll back the database
-itself.
+### The supervised migration runner
+
+`migrate-supervised.sh` wraps `server/cmd/migrate` under **one absolute
+deadline that governs the entire sequence** — settings enforcement, launch,
+live-session discovery, the run itself, and any cancellation/confirmation —
+computed as `migration_deadline = min(migration_started+15s,
+cutover_started+40s)`, `work_deadline = migration_deadline - 2s`. There is no
+separate, unbounded sub-phase (an earlier version had a 25-attempt discovery
+loop with its own budget before the watchdog even started, which could
+consume the whole allocation before the deadline was ever checked).
+
+On cancellation, the watchdog requires **both**: the OS process confirmed
+exited (not merely signalled), *and* the migrator's identified Postgres
+backend confirmed absent from `pg_stat_activity` — a client that has exited
+does not prove the server-side session has finished rolling back or
+releasing locks, especially mid-statement. A migrator session that was never
+positively identified can never count as "confirmed absent" (fail-closed: a
+session this script never observed is not proof of anything). A deadline-exceeded
+or unconfirmed run always exits `3` (`needs_operator`) and never claims
+success; it does not attempt to repair or roll back the database itself.
+
+### The CD entrypoint and its Compose wiring
 
 `docker/entrypoint.cd.sh` is a new, explicit deployment-mode entrypoint that
 gates `exec ./server` behind an external decision file the D2 controller
 writes, instead of the stock `entrypoint.sh` unconditional migrate-then-serve
-chain. `entrypoint.sh` itself is unchanged and remains the default for
-non-CD use.
+chain. The decision file's second line must be an attempt id matching
+`CHE372_D2_ATTEMPT_ID` exactly — this is a freshness check: a decision file
+left over from an earlier attempt must never be readable as current just
+because a file with `starting_candidate` on its first line happens to exist
+at that path. `entrypoint.sh` itself is unchanged and remains the default for
+non-CD use; the `Dockerfile` now copies both entrypoints into the image, and
+`deploy/cd/d2-controller.compose.yml` is the actual Compose override that
+exercises `entrypoint.cd.sh` against a real built image —
+`test-entrypoint-compose.sh` is the integration receipt proving the override
+genuinely takes effect rather than being merely written and unit-tested in
+isolation.
 
 ### What D2 does not yet cover
 
 This is a partial CHE-372 delivery. Not implemented here: the full six-phase
-cutover state machine (quiesce/stop-old-app/recovery-capture/migrate/
-readiness/reconnect timing across the whole 60s envelope), the direct-
+cutover state machine's remaining phases (quiesce/stop-old-app/
+recovery-capture/readiness/reconnect timing across the whole 60s envelope —
+only the migration phase's own deadline is implemented), the direct-
 database-consumer fence beyond HTTP, the sampling loop (`SampleTracker` is
 implemented in `quiescence.mjs` but not yet wired into a continuous
 migration-phase sampler), interrupted-concurrent-index-build recovery
@@ -133,6 +166,8 @@ bash deploy/cd/test-isolated-qualification.sh
 bash deploy/cd/test-tuple-snapshot.sh
 bash deploy/cd/test-quiescence.sh
 bash deploy/cd/test-migrate-supervised.sh
+bash deploy/cd/test-entrypoint-compose.sh
+(cd server && go test ./internal/dbstartup/...)
 ```
 
 The isolated qualification test uses only synthetic, throwaway data. Its
@@ -142,10 +177,14 @@ an admitted tuple and a non-production fixture location.
 `test-quiescence.sh` and `test-migrate-supervised.sh` each start their own
 throwaway `postgres:16-alpine` container on a dedicated Docker network and
 tear it down on exit; `test-migrate-supervised.sh` additionally builds
-`server/cmd/migrate` with Go and runs the complete current migration set
-against it, so it takes longer than the other checks. Both require Docker;
-`test-migrate-supervised.sh` skips (rather than failing) if no Go toolchain
-is found.
+`server/cmd/migrate` with Go, runs the complete current migration set
+against it, and runs the Go-level connection-string-bypass unit test via
+`MULTICA_TEST_D2_BYPASS_DATABASE_URL`, so it takes longer than the other
+checks. `test-entrypoint-compose.sh` builds the actual repository image
+with the real `Dockerfile` and brings up `deploy/cd/d2-controller.compose.yml`
+against it — the slowest of the D2 checks, since it does a full Docker
+build. All three require Docker; `test-migrate-supervised.sh` skips
+(rather than failing) its Go-dependent parts if no Go toolchain is found.
 
 ## Previous-image identity
 

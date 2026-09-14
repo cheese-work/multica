@@ -404,106 +404,33 @@ export class SampleTracker {
   }
 }
 
-function parsePgIntervalSetting(raw) {
-  if (raw === "0") return 0;
-  const match = /^(\d+)(ms|s|min|h|d)?$/.exec(String(raw).trim());
-  if (!match) return null;
-  const value = Number(match[1]);
-  const unit = match[2] ?? "ms";
-  const multipliers = { ms: 1, s: 1000, min: 60000, h: 3600000, d: 86400000 };
-  return value * multipliers[unit];
-}
-
-// verifyConnectionTimeouts previously read back statement_timeout/
-// lock_timeout from a brand-new psql session opened by the observer
-// itself, using PGOPTIONS the caller supplied. That proved only that
-// runPsql's OWN throwaway connection had the requested PGOPTIONS —
-// runPsql (see above) unconditionally overwrites PGOPTIONS with its own
-// fixed 500ms defaults before every query, so the caller's requested
-// values were never actually exercised, and even a correct probe would
-// only ever inspect a side connection, never the migrator's own pinned
-// connection or its separately-opened hook connections
-// (server/cmd/migrate/main.go: preMigrationHook takes *pgxpool.Pool, a
-// different connection than the loop's pinned advisory-lock conn).
+// A role/database-scoped default (ALTER ROLE ... IN DATABASE ... SET) was
+// tried here previously and removed. It looked unbypassable because
+// PostgreSQL applies it to every new connection from that role/database —
+// true, but only as a DEFAULT: a client-supplied connection-string
+// "options=" parameter (or PGOPTIONS) is applied by pgx AFTER role/database
+// defaults and therefore overrides it completely (verified against pgx
+// v5's pgconn/config.go precedence and PostgreSQL's own GUC precedence
+// rules), so a malicious or merely misconfigured DATABASE_URL could
+// silently disable the "enforced" timeout. It also persisted past the
+// migrator's own process exit, since it is server-side database metadata,
+// not a client-session setting — leaking into unrelated later connections
+// from the same role/database until explicitly reset.
 //
-// PostgreSQL does not expose another live backend's session-level GUC
-// values (there is no view for "read session X's current statement_timeout
-// from outside that session" — pg_stat_activity carries no such column,
-// and pg_settings/current_setting() only ever report the caller's own
-// session). So an external process cannot, even in principle, connect to
-// Postgres and read back what timeout is active on a *different*,
-// already-open connection made by the migrator.
-//
-// The verifiable alternative is a role/database-scoped default set via
-// ALTER ROLE ... IN DATABASE ... SET, recorded in the world-readable
-// pg_db_role_setting catalog. This is not a live-session probe — it is a
-// server-side default that PostgreSQL applies to every NEW connection
-// opened by that role in that database from the moment it is set,
-// including the migrator's own pinned connection and every hook
-// connection its pool opens afterward, regardless of what PGOPTIONS (if
-// any) the client process supplies. A client can still override its own
-// session with SET/SET LOCAL after connecting, so this is a default, not
-// an unbypassable ceiling — the caller must set it BEFORE launching the
-// migrator and must not treat it as a substitute for the migrator's own
-// code cooperating (it does: migrate-supervised.sh also passes PGOPTIONS
-// to the migrator's environment as defence in depth, and the migrator
-// performs no session-level override of these settings).
-export function setRoleTimeoutDefaults({ connInfo, roleName, databaseName, statementTimeoutMs, lockTimeoutMs, queryTimeoutMs = DEFAULT_QUERY_TIMEOUT_MS }) {
-  const identRe = /^[A-Za-z_][A-Za-z0-9_]*$/;
-  if (!identRe.test(roleName) || !identRe.test(databaseName)) {
-    return { ok: false, reason: "roleName/databaseName must be a plain unquoted identifier" };
-  }
-  if (!(statementTimeoutMs > 0) || !(lockTimeoutMs > 0)) {
-    return { ok: false, reason: "statementTimeoutMs/lockTimeoutMs must be positive; a value that rounds to 0 means disabled in Postgres" };
-  }
-  const sql = `ALTER ROLE ${roleName} IN DATABASE ${databaseName} SET statement_timeout = '${Math.trunc(statementTimeoutMs)}ms'; ` +
-    `ALTER ROLE ${roleName} IN DATABASE ${databaseName} SET lock_timeout = '${Math.trunc(lockTimeoutMs)}ms';`;
-  const result = runPsql({ connInfo, sql, queryTimeoutMs });
-  if (!result.ok) {
-    return { ok: false, reason: `failed to set role/database timeout defaults: ${result.reason}` };
-  }
-  return { ok: true };
-}
-
-// verifyRoleTimeoutDefaults reads the role/database default back from the
-// pg_db_role_setting catalog (server-side, world-readable metadata — not
-// a claim any client session can spoof) and confirms it matches what the
-// caller intended to set, denying on any mismatch, missing entry, or a
-// value that would round to <=0.
-export function verifyRoleTimeoutDefaults({ connInfo, roleName, databaseName, queryTimeoutMs = DEFAULT_QUERY_TIMEOUT_MS }) {
-  const identRe = /^[A-Za-z_][A-Za-z0-9_]*$/;
-  if (!identRe.test(roleName) || !identRe.test(databaseName)) {
-    return { ok: false, reason: "roleName/databaseName must be a plain unquoted identifier" };
-  }
-  const sql = `
-    SELECT unnest(setconfig)
-    FROM pg_db_role_setting drs
-    JOIN pg_roles r ON r.oid = drs.setrole
-    JOIN pg_database d ON d.oid = drs.setdatabase
-    WHERE r.rolname = '${roleName}' AND d.datname = '${databaseName}';
-  `;
-  const result = runPsql({ connInfo, sql, queryTimeoutMs });
-  if (!result.ok) {
-    return { ok: false, reason: `could not read pg_db_role_setting: ${result.reason}` };
-  }
-  let statementTimeoutMs = null;
-  let lockTimeoutMs = null;
-  for (const [entry] of result.rows) {
-    const [key, value] = entry.split("=");
-    if (key === "statement_timeout") statementTimeoutMs = parsePgIntervalSetting(value);
-    if (key === "lock_timeout") lockTimeoutMs = parsePgIntervalSetting(value);
-  }
-  if (statementTimeoutMs === null || lockTimeoutMs === null) {
-    return { ok: false, reason: "role/database default for statement_timeout and/or lock_timeout is not set (unknown state fails closed)" };
-  }
-  if (statementTimeoutMs <= 0 || lockTimeoutMs <= 0) {
-    return { ok: false, reason: "a role/database default timeout rounds to <=0ms (disabled) — must deny", statementTimeoutMs, lockTimeoutMs };
-  }
-  if (lockTimeoutMs > DEFAULT_LOCK_TIMEOUT_MS) {
-    return { ok: false, reason: `role/database default lock_timeout ${lockTimeoutMs}ms exceeds the ${DEFAULT_LOCK_TIMEOUT_MS}ms ceiling`, statementTimeoutMs, lockTimeoutMs };
-  }
-  return { ok: true, statementTimeoutMs, lockTimeoutMs };
-}
+// Timeout enforcement now lives inside the migrator's own Go process:
+// server/internal/dbstartup.NewPoolWithEnforcedTimeouts sets and reads
+// back statement_timeout/lock_timeout via an AfterConnect hook that runs
+// strictly after pgx has finished applying the connection string, on
+// every physical connection the pool opens — the pinned advisory-lock
+// connection and every hook connection alike — so it is the LAST setting
+// applied and cannot be overridden by anything in the connection string.
+// See deploy/cd/migrate-supervised.sh, which sets
+// MULTICA_INTERNAL_D2_ENFORCED_STATEMENT_TIMEOUT_MS/
+// MULTICA_INTERNAL_D2_ENFORCED_LOCK_TIMEOUT_MS in the migrator's
+// environment. This module intentionally does not attempt to verify that
+// enforcement from outside — PostgreSQL provides no view for reading back
+// another live backend's session-level GUC value at all, so any such
+// probe would necessarily inspect the wrong connection.
 
 // verifyLiveSessionIsCovered confirms that a specific, already-connected
 // backend (identified by the unforgeable pid + backend_start pair the
@@ -624,29 +551,6 @@ function cliFinalGate(args) {
   process.exitCode = result.admit ? 0 : 1;
 }
 
-function cliSetRoleTimeoutDefaults(args) {
-  const { databaseUrl, dockerNetwork, queryTimeoutMs } = connOptsFromArgs(args);
-  const roleName = option("--role-name", args);
-  const databaseName = option("--database-name", args);
-  const statementTimeoutMs = Number(option("--statement-timeout-ms", args));
-  const lockTimeoutMs = Number(option("--lock-timeout-ms", args));
-  const result = setRoleTimeoutDefaults({
-    connInfo: buildConnInfo(databaseUrl, { dockerNetwork }), roleName, databaseName,
-    statementTimeoutMs, lockTimeoutMs, queryTimeoutMs,
-  });
-  process.stdout.write(`${JSON.stringify(result)}\n`);
-  process.exitCode = result.ok ? 0 : 1;
-}
-
-function cliVerifyRoleTimeoutDefaults(args) {
-  const { databaseUrl, dockerNetwork, queryTimeoutMs } = connOptsFromArgs(args);
-  const roleName = option("--role-name", args);
-  const databaseName = option("--database-name", args);
-  const result = verifyRoleTimeoutDefaults({ connInfo: buildConnInfo(databaseUrl, { dockerNetwork }), roleName, databaseName, queryTimeoutMs });
-  process.stdout.write(`${JSON.stringify(result)}\n`);
-  process.exitCode = result.ok ? 0 : 1;
-}
-
 function cliFindLiveSessionByRole(args) {
   const { databaseUrl, dockerNetwork, queryTimeoutMs } = connOptsFromArgs(args);
   const roleName = option("--role-name", args);
@@ -676,11 +580,9 @@ if (isMain) {
     const [command, ...args] = process.argv.slice(2);
     if (command === "preflight") cliPreflight(args);
     else if (command === "final-gate") cliFinalGate(args);
-    else if (command === "set-role-timeout-defaults") cliSetRoleTimeoutDefaults(args);
-    else if (command === "verify-role-timeout-defaults") cliVerifyRoleTimeoutDefaults(args);
     else if (command === "find-live-session-by-role") cliFindLiveSessionByRole(args);
     else if (command === "verify-live-session-is-covered") cliVerifyLiveSessionIsCovered(args);
-    else fail("usage: quiescence.mjs <preflight|final-gate|set-role-timeout-defaults|verify-role-timeout-defaults|verify-live-session-is-covered> --database-url postgres://... [--query-timeout-ms N] [--fenced-pids p1,p2] [--role-name R --database-name D [--statement-timeout-ms N --lock-timeout-ms N | --pid P --backend-start TS]]");
+    else fail("usage: quiescence.mjs <preflight|final-gate|find-live-session-by-role|verify-live-session-is-covered> --database-url postgres://... [--query-timeout-ms N] [--fenced-pids p1,p2] [--role-name R --database-name D [--pid P --backend-start TS]]");
   } catch (error) {
     process.stderr.write(`quiescence: ${error.message}\n`);
     process.exitCode = 2;

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -125,6 +126,127 @@ func NewPool(ctx context.Context, databaseURL string, connectTimeout time.Durati
 	}
 	return pgxpool.NewWithConfig(ctx, cfg)
 }
+
+// EnforcedTimeouts bounds every physical connection a pool opens, including
+// connections opened later for pool "hooks" that use a *pgxpool.Pool rather
+// than a single pinned connection (see cmd/migrate/main.go's
+// preMigrationHook). It exists because pgx applies connection-string
+// settings (including a client-supplied "options=-c statement_timeout=..."
+// query parameter) before any Go-side default, so a value set only via
+// PGOPTIONS or a role/database default can be silently overridden by
+// whatever DATABASE_URL itself carries — pgconn/config.go's precedence
+// puts the connection string's own settings above both. Enforcing here
+// instead runs a SET on every connection strictly after pgx has finished
+// applying the connection string, so this value is always the last one
+// applied and therefore wins regardless of what the URL requested.
+type EnforcedTimeouts struct {
+	// StatementTimeout and LockTimeout must both be positive; a value that
+	// would render as 0 in Postgres means "disabled," so callers must
+	// reject that before constructing this struct rather than silently
+	// proceeding with no timeout.
+	StatementTimeout time.Duration
+	LockTimeout      time.Duration
+	// OnNotice, when set, is attached to the resulting pool's ConnConfig
+	// exactly like the plain NewPool path — this enforced-timeout pool
+	// still goes through ParsePoolConfig internally, so the same
+	// pgconn.NoticeHandler applies. nil preserves prior behavior (no
+	// notice forwarding) for every existing caller.
+	OnNotice pgconn.NoticeHandler
+}
+
+// NewPoolWithEnforcedTimeouts builds a pool exactly like NewPool, then adds
+// an AfterConnect hook that sets and reads back statement_timeout/
+// lock_timeout on every connection the pool opens for the lifetime of the
+// pool — the pinned advisory-lock connection the migration loop acquires
+// and every separate connection its hooks open on the shared pool alike.
+// If either read-back value does not match what was requested (including
+// rendering as 0, Postgres's "disabled" sentinel, which would mean some
+// other setting source won), the connection is rejected outright rather
+// than silently used with a weaker or absent timeout.
+func NewPoolWithEnforcedTimeouts(ctx context.Context, databaseURL string, connectTimeout time.Duration, enforced EnforcedTimeouts) (*pgxpool.Pool, error) {
+	if enforced.StatementTimeout <= 0 || enforced.LockTimeout <= 0 {
+		return nil, errors.New("enforced statement/lock timeout must be positive; a value that renders as 0 in Postgres means disabled")
+	}
+	cfg, err := ParsePoolConfig(databaseURL, connectTimeout)
+	if err != nil {
+		return nil, err
+	}
+	if enforced.OnNotice != nil {
+		cfg.ConnConfig.OnNotice = enforced.OnNotice
+	}
+	statementTimeoutMs := enforced.StatementTimeout.Milliseconds()
+	lockTimeoutMs := enforced.LockTimeout.Milliseconds()
+	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		if _, err := conn.Exec(ctx, fmt.Sprintf("SET statement_timeout = %d", statementTimeoutMs)); err != nil {
+			return fmt.Errorf("enforce statement_timeout: %w", err)
+		}
+		if _, err := conn.Exec(ctx, fmt.Sprintf("SET lock_timeout = %d", lockTimeoutMs)); err != nil {
+			return fmt.Errorf("enforce lock_timeout: %w", err)
+		}
+		var observedStatementTimeoutRaw, observedLockTimeoutRaw string
+		if err := conn.QueryRow(ctx, "SHOW statement_timeout").Scan(&observedStatementTimeoutRaw); err != nil {
+			return fmt.Errorf("read back statement_timeout: %w", err)
+		}
+		if err := conn.QueryRow(ctx, "SHOW lock_timeout").Scan(&observedLockTimeoutRaw); err != nil {
+			return fmt.Errorf("read back lock_timeout: %w", err)
+		}
+		observedStatementTimeoutMs, err := parseGUCDurationMs(observedStatementTimeoutRaw)
+		if err != nil {
+			return fmt.Errorf("parse read-back statement_timeout %q: %w", observedStatementTimeoutRaw, err)
+		}
+		observedLockTimeoutMs, err := parseGUCDurationMs(observedLockTimeoutRaw)
+		if err != nil {
+			return fmt.Errorf("parse read-back lock_timeout %q: %w", observedLockTimeoutRaw, err)
+		}
+		if observedStatementTimeoutMs <= 0 {
+			return fmt.Errorf("statement_timeout reads back as %dms (0 means disabled) after enforcing %dms — a different setting source won", observedStatementTimeoutMs, statementTimeoutMs)
+		}
+		if observedLockTimeoutMs <= 0 {
+			return fmt.Errorf("lock_timeout reads back as %dms (0 means disabled) after enforcing %dms — a different setting source won", observedLockTimeoutMs, lockTimeoutMs)
+		}
+		if observedStatementTimeoutMs != statementTimeoutMs {
+			return fmt.Errorf("statement_timeout reads back as %dms, expected exactly %dms", observedStatementTimeoutMs, statementTimeoutMs)
+		}
+		if observedLockTimeoutMs != lockTimeoutMs {
+			return fmt.Errorf("lock_timeout reads back as %dms, expected exactly %dms", observedLockTimeoutMs, lockTimeoutMs)
+		}
+		return nil
+	}
+	return pgxpool.NewWithConfig(ctx, cfg)
+}
+
+// parseGUCDurationMs parses a PostgreSQL GUC duration setting's text
+// representation (e.g. "0", "1000ms", "1s", "2min") into milliseconds. This
+// is deliberately independent from any shell/psql-based parsing elsewhere
+// in this codebase (see deploy/cd/quiescence.mjs's parsePgIntervalSetting)
+// since this one runs inside the Go process that set the value, over the
+// pgconn wire protocol, not by shelling out.
+func parseGUCDurationMs(raw string) (int64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "0" {
+		return 0, nil
+	}
+	match := gucDurationPattern.FindStringSubmatch(raw)
+	if match == nil {
+		return 0, fmt.Errorf("unrecognized duration setting %q", raw)
+	}
+	value, err := strconv.ParseInt(match[1], 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("unrecognized duration setting %q: %w", raw, err)
+	}
+	unit := match[2]
+	if unit == "" {
+		unit = "ms"
+	}
+	multipliers := map[string]int64{"ms": 1, "s": 1000, "min": 60000, "h": 3600000, "d": 86400000}
+	multiplier, ok := multipliers[unit]
+	if !ok {
+		return 0, fmt.Errorf("unrecognized duration unit in %q", raw)
+	}
+	return value * multiplier, nil
+}
+
+var gucDurationPattern = regexp.MustCompile(`^(\d+)(ms|s|min|h|d)?$`)
 
 // RetryEvent describes a failed attempt before the next backoff begins.
 type RetryEvent struct {

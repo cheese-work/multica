@@ -7,8 +7,10 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -767,13 +769,7 @@ func main() {
 	}
 
 	startupSettings := dbstartup.SettingsFromEnv()
-	poolConfig, err := dbstartup.ParsePoolConfig(dbURL, startupSettings.ConnectTimeout)
-	if err != nil {
-		slog.Error("unable to connect to database", "error", err)
-		os.Exit(1)
-	}
-	poolConfig.ConnConfig.OnNotice = logMigrationNotice
-	pool, err := pgxpool.NewWithConfig(context.Background(), poolConfig)
+	pool, err := newMigratorPool(context.Background(), dbURL, startupSettings.ConnectTimeout)
 	if err != nil {
 		slog.Error("unable to connect to database", "error", err)
 		os.Exit(1)
@@ -861,6 +857,55 @@ func logMigrationNotice(_ *pgconn.PgConn, notice *pgconn.Notice) {
 	if report, ok := migrationReport(notice); ok {
 		slog.Info("migration report", "message", report)
 	}
+}
+
+// migrateEnforcedStatementTimeoutEnv and migrateEnforcedLockTimeoutEnv are
+// D2 CD-supervision-only inputs (CHE-372). They are unset by default, so
+// newMigratorPool behaves exactly like dbstartup.NewPool for every existing
+// caller. When both are set to positive millisecond values, every physical
+// connection this migrator's pool opens — the pinned advisory-lock
+// connection and every hook connection its pool opens afterward alike — has
+// statement_timeout/lock_timeout enforced and read back after connecting,
+// regardless of any conflicting "options=" the DATABASE_URL itself carries.
+// See dbstartup.NewPoolWithEnforcedTimeouts for why this must run inside
+// the pool's own connection lifecycle rather than as an external probe.
+//
+// Both the plain and enforced-timeout paths route through
+// dbstartup.ParsePoolConfig, which is exactly where logMigrationNotice
+// (added by the upstream v0.4.44 sync, CHE-548) attaches OnNotice — so the
+// migration-report log forwarding applies identically whether or not D2's
+// enforced timeouts are active. See newMigratorPool below, which sets
+// OnNotice on the parsed config before handing it to either NewPool or
+// NewPoolWithEnforcedTimeouts.
+const (
+	migrateEnforcedStatementTimeoutEnv = "MULTICA_INTERNAL_D2_ENFORCED_STATEMENT_TIMEOUT_MS"
+	migrateEnforcedLockTimeoutEnv      = "MULTICA_INTERNAL_D2_ENFORCED_LOCK_TIMEOUT_MS"
+)
+
+func newMigratorPool(ctx context.Context, dbURL string, connectTimeout time.Duration) (*pgxpool.Pool, error) {
+	statementTimeoutRaw := os.Getenv(migrateEnforcedStatementTimeoutEnv)
+	lockTimeoutRaw := os.Getenv(migrateEnforcedLockTimeoutEnv)
+	if statementTimeoutRaw == "" && lockTimeoutRaw == "" {
+		poolConfig, err := dbstartup.ParsePoolConfig(dbURL, connectTimeout)
+		if err != nil {
+			return nil, err
+		}
+		poolConfig.ConnConfig.OnNotice = logMigrationNotice
+		return pgxpool.NewWithConfig(ctx, poolConfig)
+	}
+	statementTimeoutMs, err := strconv.ParseInt(statementTimeoutRaw, 10, 64)
+	if err != nil || statementTimeoutMs <= 0 {
+		return nil, fmt.Errorf("%s must be a positive integer of milliseconds, got %q", migrateEnforcedStatementTimeoutEnv, statementTimeoutRaw)
+	}
+	lockTimeoutMs, err := strconv.ParseInt(lockTimeoutRaw, 10, 64)
+	if err != nil || lockTimeoutMs <= 0 {
+		return nil, fmt.Errorf("%s must be a positive integer of milliseconds, got %q", migrateEnforcedLockTimeoutEnv, lockTimeoutRaw)
+	}
+	return dbstartup.NewPoolWithEnforcedTimeouts(ctx, dbURL, connectTimeout, dbstartup.EnforcedTimeouts{
+		StatementTimeout: time.Duration(statementTimeoutMs) * time.Millisecond,
+		LockTimeout:      time.Duration(lockTimeoutMs) * time.Millisecond,
+		OnNotice:         logMigrationNotice,
+	})
 }
 
 // runMigrations applies (direction="up") or rolls back (direction="down")
