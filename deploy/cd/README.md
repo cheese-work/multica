@@ -1,13 +1,76 @@
-# D1 image qualification
+# D1 image qualification, D2 migration quiescence controller
 
-This directory contains the build-side half of CHE-372's deployment design.
-It builds a linux/amd64 backend and web image pair from a trusted `main` push,
-records their immutable registry digests in a release manifest, and validates
-the tuple before a later controller can consider it for deployment.
+This directory contains the build-side (D1) and deployment-time (D2) halves
+of CHE-372's deployment design. D1 builds a linux/amd64 backend and web image
+pair from a trusted `main` push, records their immutable registry digests in
+a release manifest, and validates the tuple before a later controller can
+consider it for deployment. D2 is the cutover controller that actually
+migrates the database and switches traffic; it is the only component
+authorized to mutate C00.
 
-It does not deploy, contact C00, receive C00 deployment credentials, receive
-recovery private keys, or use restored production data. The D2 controller is
-the only component allowed to mutate C00.
+Neither D1 nor D2 as implemented here contact C00, receive C00 deployment
+credentials, receive recovery private keys, or use restored production data.
+D4 (full C00 rehearsal, not yet implemented) is what actually activates
+against C00, gated on its own separate approval.
+
+## D2: quiescence and supervised migration
+
+`quiescence.mjs` implements the two admission gates from the approved D2
+design (`CHE-372` addendum, reviewed digest
+`cb44055dce9e3c587c93cb7e777a0f635e82d80bd3fde24397fef163b88d1873`):
+
+- `preflight` — coarse, cheap check while the healthy release still serves.
+  Denies on anything already known to be a hard blocker (an old transaction,
+  a prepared transaction, a foreign advisory-lock holder, an unknown backend
+  type, a concurrent index build already in progress) so the caller never
+  starts an outage to wait out a problem it can already see. A young
+  transaction is not itself a blocker here — only a note that quiescence
+  still needs to be reached.
+- `final-gate` — the strict, zero-tolerance check run immediately before the
+  first candidate mutation and again immediately before migrator launch.
+  Any open transaction, retained snapshot, prepared transaction, foreign
+  advisory lock, unaccounted lock, or unfenced foreign session denies.
+  Unknown state (a failed observation) always denies — it is never treated
+  as an empty/healthy result.
+- `verify-timeouts` — reads back `statement_timeout`/`lock_timeout` from the
+  live session rather than trusting the values that were set; a value that
+  rounds to 0 (Postgres's "disabled" sentinel) is treated as a hard failure.
+
+Every observation query is a fresh, autocommit `psql` invocation (no
+persistent connection, no long-lived snapshot from the observer itself),
+bounded by both a server-side `statement_timeout` and a wall-clock `timeout`
+wrapper. On a host without `psql` on `PATH` (the case on X99 CD runners),
+pass `--psql-via-docker-network <network>` to run each observation through a
+short-lived `postgres:16-alpine` container on the same Docker network as the
+target, mirroring D1's existing synthetic-fixture convention.
+
+`migrate-supervised.sh` wraps `server/cmd/migrate` with the absolute
+`migration_deadline`/`work_deadline` arithmetic from the design
+(`min(migration_started+15s, cutover_started+40s) - 2s` reserve), applies and
+verifies connection-level timeouts, and runs an external watchdog that can
+terminate only its own recorded migrator PID — confirmed via `/proc`
+liveness, never trusted from a signal's return code alone — and never a
+foreign session or anything matched by executable name. A deadline-exceeded
+run always exits `3` (`needs_operator`) and never claims success; it does not
+attempt to repair or roll back the database itself.
+
+`docker/entrypoint.cd.sh` is a new, explicit deployment-mode entrypoint that
+gates `exec ./server` behind an external decision file the D2 controller
+writes, instead of the stock `entrypoint.sh` unconditional migrate-then-serve
+chain. `entrypoint.sh` itself is unchanged and remains the default for
+non-CD use.
+
+### What D2 does not yet cover
+
+This is a partial CHE-372 delivery. Not implemented here: the full six-phase
+cutover state machine (quiesce/stop-old-app/recovery-capture/migrate/
+readiness/reconnect timing across the whole 60s envelope), the direct-
+database-consumer fence beyond HTTP, the sampling loop (`SampleTracker` is
+implemented in `quiescence.mjs` but not yet wired into a continuous
+migration-phase sampler), interrupted-concurrent-index-build recovery
+decisions, and crash/restart recovery of controller state. These are
+explicitly D4 rehearsal and further D2 hardening work, not silently dropped
+scope — see the CHE-372 issue thread for the acceptance-group breakdown.
 
 The main-push workflow produces a `build-evidence` manifest. Its configuration
 digest is for the synthetic fixture only, so `admission.mjs` refuses it for a
@@ -37,11 +100,21 @@ bash deploy/cd/test-release-manifest.sh
 bash deploy/cd/test-admission.sh
 bash deploy/cd/test-isolated-qualification.sh
 bash deploy/cd/test-tuple-snapshot.sh
+bash deploy/cd/test-quiescence.sh
+bash deploy/cd/test-migrate-supervised.sh
 ```
 
 The isolated qualification test uses only synthetic, throwaway data. Its
 upgrade/rollback command is intentionally disabled until the caller supplies
 an admitted tuple and a non-production fixture location.
+
+`test-quiescence.sh` and `test-migrate-supervised.sh` each start their own
+throwaway `postgres:16-alpine` container on a dedicated Docker network and
+tear it down on exit; `test-migrate-supervised.sh` additionally builds
+`server/cmd/migrate` with Go and runs the complete current migration set
+against it, so it takes longer than the other checks. Both require Docker;
+`test-migrate-supervised.sh` skips (rather than failing) if no Go toolchain
+is found.
 
 ## Previous-image identity
 
