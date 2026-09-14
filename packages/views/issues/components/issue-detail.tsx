@@ -1691,9 +1691,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   }, [draftsByKey, id, timelineView.threadReplies]);
 
   // Root ids with an active (queued/running) run that has no published reply
-  // yet, anchored to one of the root's replies. Split out from
-  // `forceThreadOpen` below so it can also feed the latch effect after
-  // it — the two need the exact same "active run" definition, and
+  // yet, anchored to the root itself or to one of the root's replies. Split
+  // out from `forceThreadOpen` below so it can also feed the latch effect
+  // after it — the two need the exact same "active run" definition, and
   // `rootIdsWithActiveReplyDraft` already established the pattern of
   // precomputing a root-id set for this kind of reason.
   //
@@ -1707,13 +1707,20 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // root's replies, rather than incorrectly looking up `commentRuns` by each
   // reply's own id (which only holds runs for a reply that is itself a
   // thread root, e.g. a standalone assignment answer).
+  //
+  // `anchorCommentId === rootId` is included alongside the replies check: a
+  // root-anchored run renders inside CommentCard's own `open` gate
+  // (comment-card.tsx's root-anchored AgentRunComment path), so without this
+  // a manually collapsed root could hide a newly active run anchored to the
+  // root itself instead of one of its replies.
   const rootIdsWithActiveRun = useMemo(() => {
     const ids = new Set<string>();
     for (const [rootId, replies] of timelineView.threadReplies) {
       const rootRuns = commentRuns.get(rootId) ?? EMPTY_COMMENT_RUNS;
       const replyIds = new Set(replies.map((reply) => reply.id));
       if (rootRuns.some((run) => !run.hasReply && isActiveCommentRun(run.task)
-        && run.anchorCommentId && replyIds.has(run.anchorCommentId))) {
+        && run.anchorCommentId
+        && (run.anchorCommentId === rootId || replyIds.has(run.anchorCommentId)))) {
         ids.add(rootId);
       }
     }

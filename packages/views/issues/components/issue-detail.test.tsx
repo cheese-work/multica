@@ -66,6 +66,31 @@ const mockDraftStoreState = vi.hoisted(() => {
   };
 });
 
+// Minimal real subscription backing for the useCommentCollapseStore mock
+// below, used only by the collapsed-root/active-run regression — every other
+// test needs "nothing manually collapsed" and nothing more, so this mirrors
+// mockDraftStoreState's shape rather than replacing that fixed default.
+const mockCollapseStoreState = vi.hoisted(() => {
+  const collapsed = new Set<string>();
+  const listeners = new Set<() => void>();
+  return {
+    isCollapsed: (id: string) => collapsed.has(id),
+    setCollapsed: (id: string, value: boolean) => {
+      if (value) collapsed.add(id);
+      else collapsed.delete(id);
+      for (const listener of listeners) listener();
+    },
+    reset: () => {
+      collapsed.clear();
+      for (const listener of listeners) listener();
+    },
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+});
+
 // jsdom has no Range.getClientRects, and this file exercises description
 // lifecycle/integration, not disclosure geometry (canonical coverage for the
 // measurement math lives in description-measurement.test.ts and the
@@ -487,9 +512,14 @@ vi.mock("@multica/core/issues/stores", async () => ({
   ),
   selectRecentIssues: () => () => [],
   useCommentCollapseStore: (selector?: any) => {
+    // Real subscription (not a bare re-invoked function): a mid-test
+    // `setCollapsed` call actually schedules a re-render — every other
+    // test's "nothing collapsed" default behaves identically to before,
+    // since the backing store starts (and is reset) empty.
+    useSyncExternalStore(mockCollapseStoreState.subscribe, () => mockCollapseStoreState);
     const state = {
       collapsedByIssue: {},
-      isCollapsed: () => false,
+      isCollapsed: (_issueId: string, commentId: string) => mockCollapseStoreState.isCollapsed(commentId),
       toggle: () => {},
     };
     return selector ? selector(state) : state;
@@ -604,6 +634,8 @@ beforeEach(() => {
   });
   // Same concern for the useCommentDraftStore mock's backing state.
   mockDraftStoreState.reset();
+  // Same concern for the useCommentCollapseStore mock's backing state.
+  mockCollapseStoreState.reset();
 });
 
 // Mock modals
@@ -1669,6 +1701,53 @@ describe("IssueDetail (shared)", () => {
     // is not removed.
     await waitFor(() => expect(screen.queryByText("Run reply 0")).toBeInTheDocument());
     expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true);
+  });
+
+  // Regression for the gap Sol's review caught in PR #31 (CHE-380 stage 6):
+  // `rootIdsWithActiveRun` originally only matched a run's `anchorCommentId`
+  // against the thread's REPLIES, so a run anchored directly to the root
+  // comment itself (no reply on it yet) never entered the set. Because
+  // root-anchored runs render inside comment-card.tsx's own `open` gate
+  // (`!isCollapsed || forceThreadExpanded`), a manually collapsed root could
+  // hide a newly active run with no way to reveal it short of manually
+  // un-collapsing. `anchorCommentId === rootId` closes that gap.
+  it("force-opens a manually collapsed root when an active run anchors directly to the root, not just to one of its replies", async () => {
+    const root = mockTimeline[0]!;
+    const task: AgentTask = {
+      id: "ba2e8d1c-7f9b-4e2a-9c1d-rootanchor01", agent_id: "agent-1", runtime_id: "runtime-1", issue_id: "issue-1",
+      status: "queued", priority: 0, created_at: "2026-01-16T00:05:00Z",
+      started_at: null, dispatched_at: null, completed_at: null, result: null, error: null,
+      trigger_comment_id: root.id, delivered_comment_ids: [],
+    };
+    // The root is manually collapsed BEFORE the active run exists — exactly
+    // the "collapsed root, then a run anchors to it" ordering Sol's finding
+    // describes, as opposed to a root that starts open.
+    mockCollapseStoreState.setCollapsed(root.id, true);
+    mockApiObj.listTimeline.mockResolvedValue([root]);
+    mockApiObj.listTasksByIssue.mockResolvedValue([task]);
+    const client = createTestQueryClient();
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={client}><IssueDetail issueId="issue-1" /></QueryClientProvider>
+      </I18nProvider>,
+    );
+
+    // `forceThreadOpen`'s pin must beat manual collapse: the root-anchored
+    // run's in-progress indicator has to be visible despite `isCollapsed`
+    // being true, or the active output is invisible with no affordance to
+    // reveal it.
+    await screen.findByRole("button", { name: "Stop" });
+
+    // The run completes — the pin's reason ends. Manual collapse is never
+    // mutated by the pin (same contract as the reply-anchored case above),
+    // so once the transient reason clears the root goes back to reflecting
+    // the persisted manual-collapse preference, not a latched expansion.
+    const completed: AgentTask = { ...task, status: "completed", completed_at: "2026-01-16T00:06:00Z" };
+    mockApiObj.listTasksByIssue.mockResolvedValue([completed]);
+    act(() => {
+      client.setQueryData(issueKeys.tasks("issue-1"), [completed]);
+    });
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument());
   });
 
   it("latches a thread's length-expanded preference when a target reveal forces it open, surviving after the target releases", async () => {
