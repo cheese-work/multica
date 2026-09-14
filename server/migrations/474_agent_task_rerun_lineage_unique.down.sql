@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_one_live_rerun_per_source_task_actor;

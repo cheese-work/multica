@@ -766,6 +766,21 @@ func pendingSlotTakenErr(err error) bool {
 	return isDuplicatePendingTaskErr(err) || errors.Is(err, ErrDuplicatePendingTask)
 }
 
+// duplicateRerunLineageErr reports whether err is
+// idx_one_live_rerun_per_source_task_actor's unique-violation (CHE-485): a
+// concurrent first admission for the same (rerun_of_task_id,
+// originator_user_id) won the insert race. The FindLiveRerunOfTask preflight
+// in RerunIssue only catches a replay that lands AFTER a live rerun already
+// exists; two requests that both read "no live rerun yet" reach the insert
+// together, and only the DB constraint can decide the winner.
+func duplicateRerunLineageErr(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+		return false
+	}
+	return pgErr.ConstraintName == "idx_one_live_rerun_per_source_task_actor"
+}
+
 // applyAttributionFallback applies the workspace's degraded-attribution policy to a
 // resolved attribution whose source came back unattributed (no precise human). A
 // PRECISE attribution passes through untouched (no policy read at all). For an
@@ -5647,6 +5662,28 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourc
 		)
 		cancelledCount += clearPendingSlot()
 		task, err = s.enqueueRerunTask(ctx, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, actorUserID, sourceTaskID)
+	}
+	if duplicateRerunLineageErr(err) && sourceTaskID.Valid && actorUserID.Valid {
+		// idx_one_live_rerun_per_source_task_actor (migration 474) closes the
+		// race the read-only replay guard above can't: two concurrent first
+		// admissions for the same (source task, actor) can both miss that read
+		// and both reach this insert, but only one wins the unique index. The
+		// loser did not fail — its obligation was already fulfilled by the
+		// winner — so fetch and return that row exactly like an ordinary
+		// replay, instead of surfacing the raw constraint violation.
+		existing, findErr := s.Queries.FindLiveRerunOfTask(ctx, db.FindLiveRerunOfTaskParams{
+			SourceTaskID: sourceTaskID,
+			ActorUserID:  actorUserID,
+		})
+		if findErr != nil {
+			return nil, fmt.Errorf("resolve concurrent rerun lineage winner: %w", findErr)
+		}
+		slog.Info("issue rerun: lost concurrent first-admission race, returning winner",
+			"issue_id", util.UUIDToString(issueID),
+			"source_task_id", util.UUIDToString(sourceTaskID),
+			"existing_task_id", util.UUIDToString(existing.ID),
+		)
+		return &existing, nil
 	}
 	if err != nil {
 		return nil, err
