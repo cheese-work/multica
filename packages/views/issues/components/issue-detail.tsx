@@ -377,6 +377,10 @@ function formatActivity(
 // new array on every render and bust React.memo on CommentCard / ResolvedThreadBar.
 const EMPTY_REPLIES: TimelineEntry[] = [];
 
+// Stable initial value for rootIdsWithActiveFocusOrSelection — avoids a
+// needless first setState when nothing is focused/selected on mount.
+const EMPTY_ID_SET: Set<string> = new Set();
+
 // ---------------------------------------------------------------------------
 // Sidebar progressive disclosure
 // ---------------------------------------------------------------------------
@@ -1727,6 +1731,60 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     return ids;
   }, [timelineView.threadReplies, commentRuns]);
 
+  // Root ids whose DOM subtree (the `id="comment-${rootId}"` wrapper
+  // `renderItem` renders below, which contains the root AND every nested
+  // reply — see comment-card.tsx's `id="comment-${slot.comment.id}"` for
+  // replies) currently contains either the focused element or a
+  // non-collapsed text selection, with NO unsaved draft/edit present. This
+  // is CHE-476's restoration of 01-DESIGN line 51's original scope, which
+  // `rootIdsWithActiveReplyDraft` above deliberately does not cover (see its
+  // "Genuinely NOT covered" note) — a focused composer with no typed content
+  // yet, or a caret/selection with no edit in progress, produces no
+  // draft-store entry.
+  //
+  // Recomputed from `focusin`/`focusout`/`selectionchange` rather than React
+  // focus-capture props: unlike `descriptionFocused` above (one fixed
+  // element), this needs to test an arbitrary focus/selection target against
+  // an arbitrary number of root subtrees, so a single document-level
+  // listener plus `Element.contains` is the direct check — no per-row prop
+  // plumbing needed.
+  const [rootIdsWithActiveFocusOrSelection, setRootIdsWithActiveFocusOrSelection] = useState<Set<string>>(EMPTY_ID_SET);
+  const threadReplies = timelineView.threadReplies;
+  useEffect(() => {
+    const recompute = () => {
+      const active = document.activeElement;
+      const sel = document.getSelection();
+      // A collapsed (caret-only) selection is not a "selection" for this
+      // purpose — AC 4 requires a real range before it can block Show less.
+      const selRange = sel && !sel.isCollapsed && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+      const ids = new Set<string>();
+      for (const rootId of threadReplies.keys()) {
+        const root = document.getElementById(`comment-${rootId}`);
+        if (!root) continue;
+        if (active && active !== document.body && root.contains(active)) {
+          ids.add(rootId);
+          continue;
+        }
+        if (selRange && root.contains(selRange.commonAncestorContainer)) {
+          ids.add(rootId);
+        }
+      }
+      setRootIdsWithActiveFocusOrSelection((prev) => {
+        if (prev.size === ids.size && [...prev].every((id) => ids.has(id))) return prev;
+        return ids;
+      });
+    };
+    recompute();
+    document.addEventListener("focusin", recompute);
+    document.addEventListener("focusout", recompute);
+    document.addEventListener("selectionchange", recompute);
+    return () => {
+      document.removeEventListener("focusin", recompute);
+      document.removeEventListener("focusout", recompute);
+      document.removeEventListener("selectionchange", recompute);
+    };
+  }, [threadReplies]);
+
   // Whether `rootId`'s thread must be forced fully open regardless of the
   // durable length preference AND regardless of manual collapse (01-DESIGN
   // "Effective order" priority 1 — find/target pin outranks priority 3,
@@ -1762,12 +1820,13 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     if (targetRootId === rootId) return true;
     if (rootIdsWithActiveReplyDraft.has(rootId)) return true;
     if (rootIdsWithActiveRun.has(rootId)) return true;
-    const threadReplies = timelineView.threadReplies.get(rootId) ?? EMPTY_REPLIES;
-    if (highlightedId && (highlightedId === rootId || threadReplies.some((r) => r.id === highlightedId))) {
+    if (rootIdsWithActiveFocusOrSelection.has(rootId)) return true;
+    const threadRepliesForRoot = timelineView.threadReplies.get(rootId) ?? EMPTY_REPLIES;
+    if (highlightedId && (highlightedId === rootId || threadRepliesForRoot.some((r) => r.id === highlightedId))) {
       return true;
     }
     return false;
-  }, [find.open, targetRootId, rootIdsWithActiveReplyDraft, rootIdsWithActiveRun, timelineView.threadReplies, highlightedId]);
+  }, [find.open, targetRootId, rootIdsWithActiveReplyDraft, rootIdsWithActiveRun, rootIdsWithActiveFocusOrSelection, timelineView.threadReplies, highlightedId]);
 
   // Latch: 01-DESIGN line 56 ("New reply / edit / active run") and line 57
   // ("Target reveal / notification replay") both require that when their

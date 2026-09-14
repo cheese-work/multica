@@ -1894,6 +1894,152 @@ describe("IssueDetail (shared)", () => {
     }
   });
 
+  // CHE-476 (CHE-380 Gap A): restores 01-DESIGN line 51's original scope,
+  // narrowed out of PR #31/CHE-435 because bare focus/selection with no
+  // unsaved change produces no useCommentDraftStore entry —
+  // `rootIdsWithActiveReplyDraft` above genuinely cannot see it (see its
+  // comment). `rootIdsWithActiveFocusOrSelection` closes that gap by reading
+  // `document.activeElement` / `document.getSelection()` directly against
+  // each thread root's DOM subtree.
+  it("refuses Show less while the thread being collapsed contains the focused element, with no unsaved draft", async () => {
+    const root = mockTimeline[0]!;
+    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+      ...mockTimeline[1]!,
+      id: `focus-reply-${i}`,
+      parent_id: root.id,
+      content: `Focus reply ${i}`,
+      created_at: `2026-01-16T00:0${i}:00Z`,
+    }));
+    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+    const { container } = renderIssueDetail();
+    await screen.findByText("Focus reply 3");
+    // Expand past the compact window — Show less only renders once expanded.
+    fireEvent.click(await screen.findByRole("button", { name: /Show \d+ more repl/ }));
+    await screen.findByRole("button", { name: "Show less" });
+
+    // Focus something inside this thread's subtree that carries no draft —
+    // the reply composer's placeholder input itself, before any typing.
+    // The composer starts as a lazy shell; activate it first so the real
+    // editor mounts.
+    const threadWrapper = container.querySelector(`#comment-${root.id}`) as HTMLElement;
+    fireEvent.click(within(threadWrapper).getByTestId("reply-composer-shell"));
+    const replyBox = await within(threadWrapper).findByPlaceholderText("Leave a reply...");
+    act(() => {
+      (replyBox as HTMLElement).focus();
+      fireEvent.focusIn(replyBox);
+    });
+
+    // No draft content was typed, so rootIdsWithActiveReplyDraft does not
+    // cover this — only the focus signal does. Show less must be withheld.
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Show less" })).not.toBeInTheDocument());
+
+    // Blurring releases the pin — Show less returns.
+    act(() => {
+      (replyBox as HTMLElement).blur();
+      fireEvent.focusOut(replyBox);
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Show less" })).toBeInTheDocument());
+  });
+
+  it("refuses Show less while the thread being collapsed contains a non-collapsed text selection, with no unsaved draft", async () => {
+    const root = mockTimeline[0]!;
+    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+      ...mockTimeline[1]!,
+      id: `sel-reply-${i}`,
+      parent_id: root.id,
+      content: `Sel reply ${i}`,
+      created_at: `2026-01-16T00:0${i}:00Z`,
+    }));
+    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+    const { container } = renderIssueDetail();
+    await screen.findByText("Sel reply 3");
+    fireEvent.click(await screen.findByRole("button", { name: /Show \d+ more repl/ }));
+    await screen.findByRole("button", { name: "Show less" });
+
+    const threadWrapper = container.querySelector(`#comment-${root.id}`) as HTMLElement;
+    const textNode = within(threadWrapper).getByText("Sel reply 3").firstChild as Node;
+    const range = document.createRange();
+    range.selectNodeContents(textNode);
+    const sel = window.getSelection()!;
+    act(() => {
+      sel.removeAllRanges();
+      sel.addRange(range);
+      fireEvent(document, new Event("selectionchange"));
+    });
+
+    // AC 2: a real range with no unsaved change still blocks Show less.
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Show less" })).not.toBeInTheDocument());
+
+    act(() => {
+      sel.removeAllRanges();
+      fireEvent(document, new Event("selectionchange"));
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Show less" })).toBeInTheDocument());
+  });
+
+  it("does not block Show less on a thread when focus is inside a different thread that is not being collapsed", async () => {
+    const root = mockTimeline[0]!;
+    const otherRoot: TimelineEntry = { ...mockTimeline[1]!, id: "other-root", parent_id: null, content: "Other root", created_at: "2026-01-16T00:10:00Z" };
+    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+      ...mockTimeline[1]!,
+      id: `scope-reply-${i}`,
+      parent_id: root.id,
+      content: `Scope reply ${i}`,
+      created_at: `2026-01-16T00:0${i}:00Z`,
+    }));
+    mockApiObj.listTimeline.mockResolvedValue([root, ...replies, otherRoot]);
+    const { container } = renderIssueDetail();
+    await screen.findByText("Scope reply 3");
+    await screen.findByText("Other root");
+    fireEvent.click(await screen.findByRole("button", { name: /Show \d+ more repl/ }));
+    const showLess = await screen.findByRole("button", { name: "Show less" });
+
+    // Focus lands in the OTHER thread's own reply composer — AC 3 requires
+    // the refusal to stay scoped to the subtree actually being collapsed.
+    const otherWrapper = container.querySelector(`#comment-${otherRoot.id}`) as HTMLElement;
+    fireEvent.click(within(otherWrapper).getByTestId("reply-composer-shell"));
+    const otherReplyBox = await within(otherWrapper).findByPlaceholderText("Leave a reply...");
+    act(() => {
+      (otherReplyBox as HTMLElement).focus();
+      fireEvent.focusIn(otherReplyBox);
+    });
+
+    // root's own Show less must remain available throughout.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Show less" })).toBe(showLess));
+  });
+
+  it("does not block Show less for a collapsed caret-only selection with no unsaved draft", async () => {
+    const root = mockTimeline[0]!;
+    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+      ...mockTimeline[1]!,
+      id: `caret-reply-${i}`,
+      parent_id: root.id,
+      content: `Caret reply ${i}`,
+      created_at: `2026-01-16T00:0${i}:00Z`,
+    }));
+    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+    const { container } = renderIssueDetail();
+    await screen.findByText("Caret reply 3");
+    fireEvent.click(await screen.findByRole("button", { name: /Show \d+ more repl/ }));
+    const showLess = await screen.findByRole("button", { name: "Show less" });
+
+    const threadWrapper = container.querySelector(`#comment-${root.id}`) as HTMLElement;
+    const textNode = within(threadWrapper).getByText("Caret reply 3").firstChild as Node;
+    const range = document.createRange();
+    range.setStart(textNode, 0);
+    range.collapse(true);
+    const sel = window.getSelection()!;
+    act(() => {
+      sel.removeAllRanges();
+      sel.addRange(range);
+      fireEvent(document, new Event("selectionchange"));
+    });
+
+    // AC 4: a caret (isCollapsed === true) is not a "selection" for this
+    // purpose — Show less must remain available.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Show less" })).toBe(showLess));
+  });
+
   it("replaces each queued run in place without moving replies behind later requests", async () => {
     const root = mockTimeline[0]!;
     const second = { ...root, id: "request-two", parent_id: root.id, content: "Second request", created_at: "2026-01-16T00:00:02Z" };
