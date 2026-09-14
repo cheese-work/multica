@@ -426,6 +426,16 @@ export function SearchCommand() {
 
     if (currentIssueId && currentIssue) {
       const identifier = currentIssue.identifier;
+      // `currentIssueId` is the raw route segment, which `useCanonicalIssueUrl`
+      // rewrites to the human-readable identifier (e.g. `MUL-123`) once the
+      // issue resolves — the normal steady state, not an edge case. Every
+      // cache key IssueDetail itself reads/writes (timeline query, disclosure
+      // stores) is keyed by `currentIssue.id`, the canonical UUID
+      // (issue-detail-route.tsx). Keying these commands by the route segment
+      // instead silently writes into a cache/store entry nothing renders
+      // from, so Fold All / Unfold All become no-ops as soon as the address
+      // bar shows the identifier form.
+      const canonicalIssueId = currentIssue.id;
       items.push(
         {
           key: "copy-issue-link",
@@ -462,7 +472,7 @@ export function SearchCommand() {
             // still can't load, no comments are on screen — dropping the
             // action matches the visible state.
             void queryClient
-              .ensureQueryData(issueTimelineOptions(currentIssueId))
+              .ensureQueryData(issueTimelineOptions(canonicalIssueId))
               .then((entries) => {
                 const roots = rootCommentIds(entries);
                 // All three fold systems reset together (manual collapse,
@@ -472,7 +482,7 @@ export function SearchCommand() {
                 // applies all three synchronously, back-to-back, in this same
                 // tick — see thread-fold-coordinator.ts for why that ordering
                 // matters and must not gain an `await` between the calls.
-                foldAllCommentThreads(currentIssueId, roots);
+                foldAllCommentThreads(canonicalIssueId, roots);
               })
               .catch(() => {});
             setOpen(false);
@@ -485,10 +495,10 @@ export function SearchCommand() {
           keywords: ["unfold", "expand", "comments", "展开", "评论"],
           onSelect: () => {
             void queryClient
-              .ensureQueryData(issueTimelineOptions(currentIssueId))
+              .ensureQueryData(issueTimelineOptions(canonicalIssueId))
               .then((entries) => {
                 const roots = rootCommentIds(entries);
-                unfoldAllCommentThreads(currentIssueId, roots, resolvedThreadRootIds(entries));
+                unfoldAllCommentThreads(canonicalIssueId, roots, resolvedThreadRootIds(entries));
               })
               .catch(() => {});
             setOpen(false);

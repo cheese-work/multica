@@ -93,6 +93,29 @@ test.describe("Description editor lifecycle through folding", () => {
   let issueTitle: string;
   let workspaceSlug: string;
 
+  // Warm up the `/issues/[id]` route's dev-server compile once before this
+  // suite. `/issues` (hit inside loginAsDefault) is a different route and
+  // compiles separately, so its warm cache doesn't cover this one — the
+  // first real navigation below was seen failing with ERR_ABORTED /
+  // waitForPageText timeouts consistent with Next.js's first-request
+  // compile trap in dev mode.
+  test.beforeAll(async ({ browser }) => {
+    const warmupApi = await createTestApi();
+    try {
+      const warmupIssue = await warmupApi.createIssue("E2E Warmup " + Date.now());
+      const page = await browser.newPage();
+      try {
+        const slug = await loginAsDefault(page);
+        await page.goto(`/${slug}/issues/${warmupIssue.id}`, { waitUntil: "domcontentloaded" });
+        await waitForPageText(page, "E2E Warmup");
+      } finally {
+        await page.close();
+      }
+    } finally {
+      await warmupApi.cleanup();
+    }
+  });
+
   test.beforeEach(async ({ page }) => {
     api = await createTestApi();
     issueTitle = "E2E Disclosure Test " + Date.now();
@@ -141,7 +164,9 @@ test.describe("Description editor lifecycle through folding", () => {
     await waitForPageText(page, issueTitle);
 
     await page.getByRole("button", { name: /Show more/ }).click();
-    const paragraph = page.locator("[data-description-editor] .ProseMirror p").last();
+    const editor = page.locator("[data-description-editor]");
+    await expect(editor).not.toHaveAttribute("inert");
+    const paragraph = editor.locator(".ProseMirror p").last();
     await expect(paragraph).toBeVisible();
 
     // Select the visible text via a real text-node Range, then dispatch the
@@ -255,6 +280,22 @@ test.describe("Description editor lifecycle through folding", () => {
     const editor = page.locator("[data-description-editor] .ProseMirror");
     await editor.click();
 
+    // Gate the upload deterministically instead of racing a large buffer
+    // against the assertion window: against a local API a multi-MB body
+    // settles well inside any fixed wait, so the only reliable way to
+    // observe "upload pending" is to hold the response until the test says
+    // so. Intercept the exact endpoint the description editor's upload path
+    // calls (`api.uploadFile` -> `POST /api/upload-file`, client.ts:3187)
+    // and park it on a promise this test resolves after asserting.
+    let releaseUpload: () => void = () => {};
+    const uploadGate = new Promise<void>((resolve) => {
+      releaseUpload = resolve;
+    });
+    await page.route("**/api/upload-file", async (route) => {
+      await uploadGate;
+      await route.continue();
+    });
+
     // "Attach file" also exists on the page's own comment composer — scope to
     // the wrapper containing the description's disclosure section so this
     // clicks the description's attach button, not the comment composer's.
@@ -262,12 +303,16 @@ test.describe("Description editor lifecycle through folding", () => {
     const fileChooserPromise = page.waitForEvent("filechooser");
     await descriptionWrapper.getByLabel("Attach file").click();
     const fileChooser = await fileChooserPromise;
-    // A large buffer keeps the upload in flight long enough to observe the
-    // disabled Show less before it settles.
+    // A real (tiny) PNG — the point of the gate above is to hold the
+    // in-flight request open, not to rely on payload size, and an invalid
+    // PNG body risks a content-type rejection producing the same "pending"
+    // symptom as a genuine in-flight upload.
+    const pngBase64 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
     await fileChooser.setFiles({
       name: "e2e-pending.png",
       mimeType: "image/png",
-      buffer: Buffer.alloc(3 * 1024 * 1024, 1),
+      buffer: Buffer.from(pngBase64, "base64"),
     });
 
     // Move focus OUT of the description wrapper entirely, not just off the
@@ -290,6 +335,11 @@ test.describe("Description editor lifecycle through folding", () => {
 
     const showLess = page.getByRole("button", { name: "Show less" });
     await expect(showLess).toBeDisabled();
+
+    // Release the gated response so the upload settles and doesn't leak a
+    // pending request into the next test.
+    releaseUpload();
+    await expect(showLess).toBeEnabled({ timeout: 10000 });
   });
 
   test("issue switch remounts the description with one mounted editor, no stale content", async ({ page }) => {
@@ -392,21 +442,31 @@ test.describe("Durable thread fold state through row unmount/remount", () => {
     await page.getByRole("button", { name: /Show \d+ more repl/ }).click();
     await waitForPageText(page, "Reply number 1");
 
-    // Open the command palette and run Fold All Comments.
+    // Open the command palette and run Fold All Comments. The command's
+    // handler resolves `ensureQueryData(...).then(...)` after the palette
+    // has already closed (`setOpen(false)` fires synchronously on click,
+    // .catch(() => {}) swallows rejections silently), so the palette
+    // dismissing is not proof the fold effect landed — only the DOM
+    // reflecting the fold is.
     await page.keyboard.press("ControlOrMeta+K");
-    await page.getByPlaceholder("Type a command or search...").fill("fold all");
+    const commandPalette = page.getByPlaceholder("Type a command or search...");
+    await expect(commandPalette).toBeVisible();
+    await commandPalette.fill("fold all");
     await page.getByText("Fold All Comments", { exact: true }).click();
+    await expect(commandPalette).not.toBeVisible();
 
     // The whole thread collapses to its manual-collapse summary — the
     // length-expanded reply is no longer visible because the manual collapse
     // gate (higher priority in the 01-DESIGN "Effective order") now applies.
-    await expect(page.getByText("Reply number 1")).not.toBeVisible();
+    await expect(page.getByText("Reply number 1")).not.toBeVisible({ timeout: 10000 });
 
     // Unfold All Comments restores full disclosure, including the
     // length-disclosure store's "all replies" state for this thread.
     await page.keyboard.press("ControlOrMeta+K");
-    await page.getByPlaceholder("Type a command or search...").fill("unfold all");
+    await expect(commandPalette).toBeVisible();
+    await commandPalette.fill("unfold all");
     await page.getByText("Unfold All Comments", { exact: true }).click();
+    await expect(commandPalette).not.toBeVisible();
 
     await expect(page.getByText("Reply number 1")).toBeVisible({ timeout: 10000 });
   });
