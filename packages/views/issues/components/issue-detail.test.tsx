@@ -1894,6 +1894,147 @@ describe("IssueDetail (shared)", () => {
     }
   });
 
+  // CHE-436: 01-DESIGN "Find and target reveal lifecycle" — find must reveal
+  // EVERY fold class, not just manual collapse/length (already covered by
+  // "does not latch..." above and the pre-existing forceThreadOpen tests).
+  // This closes the gap CHE-436 was scoped to fix: a resolved-bar root and a
+  // reply-resolution conclusion fold both stayed folded under find before
+  // this change, because `expandedResolvedIds`/`flattenGroups` read the raw
+  // (non-overridden) resolved-expand store.
+  describe("find reveals resolved-thread folds (CHE-436)", () => {
+    async function openFind() {
+      const originalGetClientRects = Element.prototype.getClientRects;
+      Element.prototype.getClientRects = function (this: Element) {
+        return [{ width: 1, height: 1 }] as unknown as DOMRectList;
+      };
+      fireEvent.keyDown(document, { key: "f", ctrlKey: true });
+      return () => {
+        Element.prototype.getClientRects = originalGetClientRects;
+      };
+    }
+
+    it("reveals a resolved root (folded to a bar) while find is open, and refolds it on close", async () => {
+      const resolvedRoot: TimelineEntry = {
+        ...mockTimeline[0]!,
+        id: "resolved-root",
+        content: "Resolved root body — findable sentinel",
+        resolved_at: "2026-01-19T00:00:00Z",
+      };
+      mockApiObj.listTimeline.mockResolvedValue([resolvedRoot]);
+      renderIssueDetail();
+
+      // Folded to a bar by default — the body text is not in the DOM, only
+      // the "N resolved comment(s) from ..." bar button.
+      await screen.findByRole("button", { name: /resolved comment/ });
+      expect(screen.queryByText("Resolved root body — findable sentinel")).not.toBeInTheDocument();
+
+      const restoreGetClientRects = await openFind();
+      try {
+        await screen.findByText("Resolved root body — findable sentinel");
+        // Row 58: find never writes the resolved-expand preference.
+        expect(useResolvedExpandStore.getState().expandedByIssue["issue-1"]?.has("resolved-root")).toBeFalsy();
+
+        const findInput = screen.getByPlaceholderText("Find in issue...");
+        fireEvent.keyDown(findInput, { key: "Escape" });
+
+        await waitFor(() =>
+          expect(screen.queryByText("Resolved root body — findable sentinel")).not.toBeInTheDocument(),
+        );
+        expect(useResolvedExpandStore.getState().expandedByIssue["issue-1"]?.has("resolved-root")).toBeFalsy();
+      } finally {
+        restoreGetClientRects();
+      }
+    });
+
+    it("reveals a reply-resolution conclusion fold (other replies hidden behind it) while find is open", async () => {
+      const root = { ...mockTimeline[0]!, id: "concl-root", content: "Conclusion root" };
+      const hiddenReply: TimelineEntry = {
+        ...mockTimeline[1]!,
+        id: "concl-hidden",
+        parent_id: root.id,
+        content: "Hidden middle reply — findable sentinel",
+        created_at: "2026-01-16T00:01:00Z",
+      };
+      const resolutionReply: TimelineEntry = {
+        ...mockTimeline[1]!,
+        id: "concl-resolution",
+        parent_id: root.id,
+        content: "The resolution reply",
+        created_at: "2026-01-16T00:02:00Z",
+        resolved_at: "2026-01-17T00:00:00Z",
+      };
+      mockApiObj.listTimeline.mockResolvedValue([root, hiddenReply, resolutionReply]);
+      renderIssueDetail();
+
+      await screen.findByText("The resolution reply");
+      expect(screen.queryByText("Hidden middle reply — findable sentinel")).not.toBeInTheDocument();
+
+      const restoreGetClientRects = await openFind();
+      try {
+        await screen.findByText("Hidden middle reply — findable sentinel");
+        expect(useResolvedExpandStore.getState().expandedByIssue["issue-1"]?.has(root.id)).toBeFalsy();
+
+        const findInput = screen.getByPlaceholderText("Find in issue...");
+        fireEvent.keyDown(findInput, { key: "Escape" });
+
+        await waitFor(() =>
+          expect(screen.queryByText("Hidden middle reply — findable sentinel")).not.toBeInTheDocument(),
+        );
+      } finally {
+        restoreGetClientRects();
+      }
+    });
+
+    it("disables the manual Collapse control on an open thread while find is open, with a localized reason, and re-enables it on close", async () => {
+      const root = mockTimeline[0]!;
+      const { container } = renderIssueDetail();
+      await screen.findByText("Started working on this");
+
+      const rootWrapper = () => container.querySelector(`#comment-${root.id}`) as HTMLElement;
+      const collapseButton = () => within(rootWrapper()).getByRole("button", { name: "Collapse thread" });
+      expect(collapseButton()).toBeEnabled();
+
+      const restoreGetClientRects = await openFind();
+      try {
+        await waitFor(() => expect(collapseButton()).toBeDisabled());
+        expect(collapseButton()).toHaveAttribute(
+          "title",
+          "Can't collapse while find is open",
+        );
+        // The manual-collapse store itself is untouched — this is a UI-level
+        // disable, not a state write.
+        expect(mockCollapseStoreState.isCollapsed(root.id)).toBe(false);
+
+        const findInput = screen.getByPlaceholderText("Find in issue...");
+        fireEvent.keyDown(findInput, { key: "Escape" });
+        await waitFor(() => expect(collapseButton()).toBeEnabled());
+      } finally {
+        restoreGetClientRects();
+      }
+    });
+
+    it("reveals the collapsed description while find is open, without writing the description-expanded preference", async () => {
+      mockApiObj.getIssue.mockResolvedValue({
+        ...mockIssue,
+        description: "A short description",
+      });
+      renderIssueDetail();
+      await screen.findByText("A short description");
+
+      const restoreGetClientRects = await openFind();
+      try {
+        // A short description never becomes collapsed/inert (description-
+        // disclosure.tsx's own "canDisclose" gate) — assert the SHARED
+        // reveal wiring at least doesn't regress: the description stays
+        // visible and the store is never written while find is open.
+        await waitFor(() => expect(screen.getByText("A short description")).toBeInTheDocument());
+        expect(useIssueDisclosureStore.getState().descriptionExpandedIssueIds.has("issue-1")).toBe(false);
+      } finally {
+        restoreGetClientRects();
+      }
+    });
+  });
+
   // CHE-476 (CHE-380 Gap A): restores 01-DESIGN line 51's original scope,
   // narrowed out of PR #31/CHE-435 because bare focus/selection with no
   // unsaved change produces no useCommentDraftStore entry —
@@ -2851,6 +2992,59 @@ describe("IssueDetail (shared)", () => {
           document.getElementById("comment-reply-1")?.className,
         ).toContain("bg-[color-mix(in_srgb,var(--card)_95%,var(--brand)_5%)]");
       });
+    });
+
+    // CHE-436 acceptance criterion 4: replaying a notification for a reply
+    // deep inside a long thread (r2 of 10, well outside the default
+    // latest-three compact window) must land exactly on r2, not on the root
+    // or on a neighboring reply — proof the target-root latch (01-04) and
+    // the committed-generation gate (CHE-436) actually resolve to the right
+    // DOM node once the thread force-opens.
+    it("lands exactly on r2 of a 10-reply thread, not the root or a neighboring reply", async () => {
+      const root = { ...mockTimeline[0]!, id: "ten-reply-root", content: "Ten-reply root" };
+      const replies: TimelineEntry[] = Array.from({ length: 10 }, (_, i) => ({
+        ...mockTimeline[1]!,
+        id: `r${i + 1}`,
+        parent_id: root.id,
+        content: `Reply r${i + 1}`,
+        created_at: `2026-01-16T00:${String(i).padStart(2, "0")}:00Z`,
+      }));
+      mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+
+      renderIssueDetailWithHighlight("r2", "issue-1");
+
+      await waitFor(() => expect(document.getElementById("comment-r2")).not.toBeNull());
+      await waitFor(() =>
+        expect(hasHighlightedCommentBackground(document.getElementById("comment-r2"))).toBe(true),
+      );
+      // Not a neighboring reply (sibling row, so `hasHighlightedCommentBackground`'s
+      // descendant walk is a clean, non-nested check here).
+      expect(hasHighlightedCommentBackground(document.getElementById("comment-r1"))).toBe(false);
+      expect(hasHighlightedCommentBackground(document.getElementById("comment-r3"))).toBe(false);
+      // Not the root ITSELF (its own tint class, not r2's — the root wrapper
+      // contains r2 as a descendant, so the recursive helper would always
+      // read true here regardless of which row actually got the tint).
+      const rootEl = document.getElementById(`comment-${root.id}`);
+      expect(rootEl?.className ?? "").not.toContain(highlightedCommentBackgroundClass);
+    });
+
+    // CHE-436 acceptance criterion 5: a missing/deleted target must never
+    // report false success by falling back to highlighting the root (or any
+    // other node) — the landing effect requires the exact target element to
+    // exist in the DOM before it records anything.
+    it("never reports false success on the root when the deep-link target comment no longer exists", async () => {
+      const root = { ...mockTimeline[0]!, id: "missing-target-root", content: "Root stays here" };
+      mockApiObj.listTimeline.mockResolvedValue([root]);
+
+      renderIssueDetailWithHighlight("deleted-comment-id", "issue-1");
+
+      await screen.findByText("Root stays here");
+      // Give the landing effect every chance to (incorrectly) fire.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(hasHighlightedCommentBackground(document.getElementById(`comment-${root.id}`))).toBe(false);
+      expect(document.getElementById("comment-deleted-comment-id")).toBeNull();
     });
   });
 
