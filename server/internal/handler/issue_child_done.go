@@ -737,6 +737,11 @@ func (h *Handler) dispatchParentAssigneeTrigger(ctx context.Context, parent db.I
 // stranded those parents (MUL-2808). Runaway re-triggering is prevented by
 // the HasPendingTaskForIssueAndAgent dedup below, exactly as the @mention
 // self-trigger path relies on it (see computeMentionedAgentCommentTriggers).
+// A race that slips past that dedup check still lands on the same
+// ErrDuplicatePendingTask sentinel as every other admission boundary
+// (C1 issue_trigger.go, C2 comment.go, C3 task_lifecycle.go) and is
+// classified the same way via logCommentEnqueueFailure — debug-level
+// coalesce, not a warning (CHE-526).
 func (h *Handler) triggerChildDoneAgent(ctx context.Context, parent db.Issue, triggerCommentID pgtype.UUID) {
 	agent, err := h.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{
 		ID:          parent.AssigneeID,
@@ -757,8 +762,7 @@ func (h *Handler) triggerChildDoneAgent(ctx context.Context, parent db.Issue, tr
 	}
 
 	if _, err := h.TaskService.EnqueueTaskForMention(ctx, parent, parent.AssigneeID, triggerCommentID); err != nil {
-		slog.Warn("child done: enqueue parent agent task failed",
-			"error", err,
+		logCommentEnqueueFailure("child done: enqueue parent agent task failed", err,
 			"parent_id", uuidToString(parent.ID),
 			"agent_id", uuidToString(parent.AssigneeID))
 	}
@@ -788,7 +792,10 @@ func (h *Handler) triggerChildDoneAgent(ctx context.Context, parent db.Issue, tr
 //     it must be added to BOTH paths together.
 //
 // Re-triggering is bounded by the HasPendingTaskForIssueAndAgent idempotency
-// check below, exactly as the agent path relies on it.
+// check below, exactly as the agent path relies on it. The same
+// ErrDuplicatePendingTask classification as the agent path applies here too
+// (CHE-526) — a race that slips past the dedup check coalesces at debug
+// level via logCommentEnqueueFailure instead of surfacing a warning.
 func (h *Handler) triggerChildDoneSquad(ctx context.Context, parent db.Issue, triggerCommentID pgtype.UUID) {
 	squad, err := h.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{
 		ID:          parent.AssigneeID,
@@ -814,8 +821,7 @@ func (h *Handler) triggerChildDoneSquad(ctx context.Context, parent db.Issue, tr
 	}
 
 	if _, err := h.TaskService.EnqueueTaskForSquadLeader(ctx, parent, squad.LeaderID, squad.ID, triggerCommentID); err != nil {
-		slog.Warn("child done: enqueue parent squad leader task failed",
-			"error", err,
+		logCommentEnqueueFailure("child done: enqueue parent squad leader task failed", err,
 			"parent_id", uuidToString(parent.ID),
 			"squad_id", uuidToString(squad.ID),
 			"leader_id", uuidToString(squad.LeaderID))
