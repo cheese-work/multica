@@ -7,8 +7,10 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -754,7 +756,7 @@ func main() {
 	}
 
 	startupSettings := dbstartup.SettingsFromEnv()
-	pool, err := dbstartup.NewPool(context.Background(), dbURL, startupSettings.ConnectTimeout)
+	pool, err := newMigratorPool(context.Background(), dbURL, startupSettings.ConnectTimeout)
 	if err != nil {
 		slog.Error("unable to connect to database", "error", err)
 		os.Exit(1)
@@ -815,6 +817,61 @@ func main() {
 	}
 
 	fmt.Println("Done.")
+}
+
+// migrateEnforcedStatementTimeoutEnv, migrateEnforcedLockTimeoutEnv, and
+// migrateAttemptLockKeyEnv are D2 CD-supervision-only inputs (CHE-372). They
+// are unset by default, so newMigratorPool behaves exactly like
+// dbstartup.NewPool for every existing caller. When both timeout vars are
+// set to positive millisecond values, every physical connection this
+// migrator's pool opens — the pinned advisory-lock connection and every
+// hook connection its pool opens afterward alike — has statement_timeout/
+// lock_timeout enforced and read back after connecting, regardless of any
+// conflicting "options=" the DATABASE_URL itself carries. See
+// dbstartup.NewPoolWithEnforcedTimeouts for why this must run inside the
+// pool's own connection lifecycle rather than as an external probe.
+//
+// migrateAttemptLockKeyEnv, when set to a nonzero int64, is a fresh,
+// cryptographically random secret the CD supervisor generates once per
+// attempt and passes ONLY through this environment variable — never logged,
+// never written to any file, never part of a connection string. It is
+// acquired in shared advisory-lock mode on every connection this pool
+// opens, marking each one as attempt-bound so the supervisor's fencing
+// checks can distinguish "a session this attempt actually opened" from "a
+// foreign session merely authenticated as the same database role."
+const (
+	migrateEnforcedStatementTimeoutEnv = "MULTICA_INTERNAL_D2_ENFORCED_STATEMENT_TIMEOUT_MS"
+	migrateEnforcedLockTimeoutEnv      = "MULTICA_INTERNAL_D2_ENFORCED_LOCK_TIMEOUT_MS"
+	migrateAttemptLockKeyEnv           = "MULTICA_INTERNAL_D2_ATTEMPT_LOCK_KEY"
+)
+
+func newMigratorPool(ctx context.Context, dbURL string, connectTimeout time.Duration) (*pgxpool.Pool, error) {
+	statementTimeoutRaw := os.Getenv(migrateEnforcedStatementTimeoutEnv)
+	lockTimeoutRaw := os.Getenv(migrateEnforcedLockTimeoutEnv)
+	attemptLockKeyRaw := os.Getenv(migrateAttemptLockKeyEnv)
+	if statementTimeoutRaw == "" && lockTimeoutRaw == "" && attemptLockKeyRaw == "" {
+		return dbstartup.NewPool(ctx, dbURL, connectTimeout)
+	}
+	statementTimeoutMs, err := strconv.ParseInt(statementTimeoutRaw, 10, 64)
+	if err != nil || statementTimeoutMs <= 0 {
+		return nil, fmt.Errorf("%s must be a positive integer of milliseconds, got %q", migrateEnforcedStatementTimeoutEnv, statementTimeoutRaw)
+	}
+	lockTimeoutMs, err := strconv.ParseInt(lockTimeoutRaw, 10, 64)
+	if err != nil || lockTimeoutMs <= 0 {
+		return nil, fmt.Errorf("%s must be a positive integer of milliseconds, got %q", migrateEnforcedLockTimeoutEnv, lockTimeoutRaw)
+	}
+	var attemptLockKey int64
+	if attemptLockKeyRaw != "" {
+		attemptLockKey, err = strconv.ParseInt(attemptLockKeyRaw, 10, 64)
+		if err != nil || attemptLockKey == 0 {
+			return nil, fmt.Errorf("%s must be a nonzero int64, got %q", migrateAttemptLockKeyEnv, attemptLockKeyRaw)
+		}
+	}
+	return dbstartup.NewPoolWithEnforcedTimeouts(ctx, dbURL, connectTimeout, dbstartup.EnforcedTimeouts{
+		StatementTimeout: time.Duration(statementTimeoutMs) * time.Millisecond,
+		LockTimeout:      time.Duration(lockTimeoutMs) * time.Millisecond,
+		AttemptLockKey:   attemptLockKey,
+	})
 }
 
 // runMigrations applies (direction="up") or rolls back (direction="down")

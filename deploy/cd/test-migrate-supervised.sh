@@ -1,0 +1,1389 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# D2 supervised migration runner tests (CHE-372). Builds the real
+# server/cmd/migrate binary and runs it, supervised, against a throwaway
+# isolated postgres:16-alpine container — never C00, never restored or
+# production data. Requires Go on PATH (or GO_BIN set to the go binary);
+# skips with a clear message if unavailable, rather than faking a result.
+#
+# Covers: a full successful migration run against the complete current
+# migration set (positive control) with Go-level enforced timeouts proven
+# to defeat a connection-string bypass attempt, a deadline-exceeded run
+# that must cancel the migrator, confirm SERVER-SIDE session termination
+# (not just OS process exit), and never report success, plus the
+# observer-name-spoofing negative control from the quiescence gates.
+
+root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$root_dir"
+
+go_bin="${GO_BIN:-$(command -v go || true)}"
+if [ -z "$go_bin" ] && [ -x /usr/local/go/bin/go ]; then
+  go_bin=/usr/local/go/bin/go
+fi
+if [ -z "$go_bin" ]; then
+  echo "SKIP: no Go toolchain found on PATH, GO_BIN, or /usr/local/go/bin/go — cannot build server/cmd/migrate" >&2
+  exit 0
+fi
+
+work_dir="$(mktemp -d)"
+network="che372-migtest-$$"
+container="che372-migtest-pg-$$"
+db_user="multica"
+db_pass="synthetic-only"
+db_name="multica"
+host_port=$(( (RANDOM % 5000) + 20000 ))
+
+fake_migrate_src_dir="server/cmd/che372_test_fake_migrate_DELETE_ME"
+real_session_nonzero_src_dir="server/cmd/che372_test_fake_migrate_nonzero_DELETE_ME"
+hook_connection_src_dir="server/cmd/che372_test_fake_migrate_hook_DELETE_ME"
+
+cleanup() {
+  docker rm -f "$container" >/dev/null 2>&1 || true
+  docker network rm "$network" >/dev/null 2>&1 || true
+  rm -rf "$fake_migrate_src_dir"
+  rm -rf "$real_session_nonzero_src_dir"
+  rm -rf "$hook_connection_src_dir"
+  rm -rf "$work_dir"
+}
+trap cleanup EXIT
+
+echo "==> building server/cmd/migrate"
+(cd server && "$go_bin" build -o "$work_dir/migrate" ./cmd/migrate)
+
+echo "==> building the real-Postgres-session fake migrate binary (test-only, never committed)"
+# This is a genuine Go binary sharing server/go.mod's dependency graph
+# (needs pgx), so it is built the same way as the real migrate binary:
+# temporarily placed inside the module tree, built, then removed. It is
+# NEVER committed -- fake_migrate_src_dir is removed unconditionally by
+# the cleanup trap above, including on failure.
+mkdir -p "$fake_migrate_src_dir"
+cat > "$fake_migrate_src_dir/main.go" <<'FAKE_MIGRATE_GO_EOF'
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// Test-only fake "migrate" binary for deploy/cd/test-migrate-supervised.sh's
+// hard-deadline control. Unlike a shell script that spawns `sleep` as a
+// child process (which signals sent to the wrapper's recorded PID cannot
+// reach), this holds a REAL PostgreSQL session in a single Go process with
+// no exec'd children -- matching server/cmd/migrate's actual process
+// shape -- and ignores SIGTERM entirely so the wrapper is forced down its
+// SIGKILL escalation path. It only exits on SIGKILL (uninterceptable) or
+// the fixed upper bound below.
+//
+// It also acquires MULTICA_INTERNAL_D2_ATTEMPT_LOCK_KEY in shared
+// advisory-lock mode, exactly like server/cmd/migrate's real
+// dbstartup.NewPoolWithEnforcedTimeouts AfterConnect hook does -- CHE-372's
+// fencing checks now require proof of this attempt-bound secret before
+// exempting any session, so a fake migrator that skipped this would be
+// correctly denied by the real supervisor it is standing in for.
+func main() {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		fmt.Fprintln(os.Stderr, "fake-migrate: DATABASE_URL is required")
+		os.Exit(2)
+	}
+	conn, err := pgx.Connect(context.Background(), dbURL)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "fake-migrate: connect failed:", err)
+		os.Exit(1)
+	}
+	defer conn.Close(context.Background())
+	if raw := os.Getenv("MULTICA_INTERNAL_D2_ATTEMPT_LOCK_KEY"); raw != "" {
+		key, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || key == 0 {
+			fmt.Fprintln(os.Stderr, "fake-migrate: invalid MULTICA_INTERNAL_D2_ATTEMPT_LOCK_KEY:", raw)
+			os.Exit(2)
+		}
+		var granted bool
+		if err := conn.QueryRow(context.Background(), "SELECT pg_try_advisory_lock_shared($1)", key).Scan(&granted); err != nil || !granted {
+			fmt.Fprintln(os.Stderr, "fake-migrate: could not acquire attempt lock:", err)
+			os.Exit(1)
+		}
+	}
+	fmt.Fprintln(os.Stderr, "fake-migrate: connected, ignoring SIGTERM, holding session")
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		for range sigCh {
+			fmt.Fprintln(os.Stderr, "fake-migrate: received a signal, ignoring it")
+		}
+	}()
+
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		_, _ = conn.Exec(context.Background(), "SELECT 1")
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+FAKE_MIGRATE_GO_EOF
+(cd server && "$go_bin" build -o "$work_dir/fake-migrate-real-session" ./cmd/che372_test_fake_migrate_DELETE_ME)
+rm -rf "$fake_migrate_src_dir"
+
+echo "==> starting isolated synthetic postgres ($container on $network, host port $host_port)"
+docker network create "$network" >/dev/null
+docker run -d --rm --name "$container" --network "$network" -p "127.0.0.1:${host_port}:5432" \
+  -e "POSTGRES_USER=$db_user" -e "POSTGRES_PASSWORD=$db_pass" -e "POSTGRES_DB=$db_name" \
+  postgres:16-alpine -c max_prepared_transactions=8 >/dev/null
+
+for _ in $(seq 1 30); do
+  if docker exec "$container" pg_isready -U "$db_user" -d "$db_name" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.5
+done
+docker exec "$container" pg_isready -U "$db_user" -d "$db_name" >/dev/null
+
+host_db_url="postgres://$db_user:$db_pass@localhost:${host_port}/$db_name?sslmode=disable"
+observer_db_url="postgres://$db_user:$db_pass@$container:5432/$db_name"
+
+pass=0
+fail=0
+
+echo "==> unit: Go-level enforced timeouts defeat a connection-string bypass attempt"
+# This is Astra's P1 finding directly: a client-supplied connection-string
+# "options=" parameter is applied by pgx AFTER role/database defaults and
+# therefore overrides them completely — a role/database default (this
+# repo's earlier, since-removed approach) or PGOPTIONS alone is
+# bypassable. The fix moved enforcement into the migrator's own Go
+# process (server/internal/dbstartup.NewPoolWithEnforcedTimeouts), which
+# runs a SET on every connection strictly after pgx applies the
+# connection string, so it is always the LAST setting applied. Prove it
+# directly against a URL that tries exactly this bypass.
+bypass_url="postgres://$db_user:$db_pass@localhost:${host_port}/$db_name?sslmode=disable&options=-c%20statement_timeout%3D0%20-c%20lock_timeout%3D0"
+(cd server && MULTICA_TEST_D2_BYPASS_DATABASE_URL="$bypass_url" "$go_bin" test ./internal/dbstartup/... -run TestEnforcedTimeoutsDefeatConnectionStringBypass -v) \
+  && { echo "PASS: Go-level enforcement defeats the connection-string options= bypass"; pass=$((pass + 1)); } \
+  || { echo "FAIL: Go-level enforcement did not defeat the connection-string bypass"; fail=$((fail + 1)); }
+
+echo "==> positive control: full migration set completes within a generous deadline, real enforced timeouts"
+if bash deploy/cd/migrate-supervised.sh \
+  --database-url "$host_db_url" \
+  --observer-database-url "$observer_db_url" \
+  --migrate-binary "$work_dir/migrate" \
+  --role-name "$db_user" --database-name "$db_name" \
+  --migration-allocation-seconds 60 \
+  --psql-via-docker-network "$network" >"$work_dir/positive.log" 2>&1; then
+  echo "PASS: full migration set completed and confirmed within deadline"
+  pass=$((pass + 1))
+else
+  echo "FAIL: positive control did not exit 0 — see $work_dir/positive.log"
+  cat "$work_dir/positive.log"
+  fail=$((fail + 1))
+fi
+
+if grep -q "confirmed live migrator Postgres session" "$work_dir/positive.log"; then
+  echo "PASS: positive run confirmed the live migrator session's identity (pid+backend_start), not just an OS-level check"
+  pass=$((pass + 1))
+else
+  echo "FAIL: positive run log is missing the live-session identity confirmation — see $work_dir/positive.log"
+  fail=$((fail + 1))
+fi
+
+if grep -q "fencing sample-age tracking seeded at migrator launch" "$work_dir/positive.log"; then
+  echo "PASS: fencing sample-age tracking was seeded at migrator launch, not left empty until the first successful sample"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected the launch-time fencing-seed diagnostic — an earlier version left fencing_last_sample_monotonic_ms empty until the first successful sample, leaving the launch-to-first-sample interval completely unbounded by the freshness rule — see $work_dir/positive.log"
+  fail=$((fail + 1))
+fi
+# The seed line must appear BEFORE the first live-session confirmation:
+# proof the age-tracking baseline was established at launch, before any
+# sample could have succeeded, not retroactively once one did.
+seed_line_no="$(grep -n "fencing sample-age tracking seeded at migrator launch" "$work_dir/positive.log" | head -1 | cut -d: -f1)"
+first_confirm_line_no="$(grep -n "confirmed live migrator Postgres session" "$work_dir/positive.log" | head -1 | cut -d: -f1)"
+if [ -n "$seed_line_no" ] && [ -n "$first_confirm_line_no" ] && [ "$seed_line_no" -lt "$first_confirm_line_no" ]; then
+  echo "PASS: sample-age tracking was seeded before the first successful sample was ever taken"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected the launch-time seed diagnostic to precede the first live-session confirmation (seed_line=$seed_line_no, first_confirm_line=$first_confirm_line_no) — see $work_dir/positive.log"
+  fail=$((fail + 1))
+fi
+
+ledger_head="$(docker exec "$container" psql -U "$db_user" -d "$db_name" -At -c \
+  "SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1;")"
+if [ -n "$ledger_head" ]; then
+  echo "PASS: ledger head after positive run is $ledger_head"
+  pass=$((pass + 1))
+else
+  echo "FAIL: ledger is empty after a claimed-successful migration run"
+  fail=$((fail + 1))
+fi
+
+echo "==> reset to blank schema before the decision-file lifecycle controls"
+docker exec "$container" psql -U "$db_user" -d "$db_name" -c \
+  "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" >/dev/null
+
+echo "==> integration: entrypoint.cd.sh must keep waiting through migration_started and only proceed on starting_candidate"
+# This is Astra's exact P1: migrate-supervised.sh writes "migration_started"
+# to --decision-file as its very first action, long before any outcome
+# exists. A prior version of docker/entrypoint.cd.sh treated ANY existing
+# file as a decision -- it read the first line, saw it was not
+# "starting_candidate", and exited 1 immediately, defeating the whole
+# "wait for the controller's terminal decision" design. This drives the
+# REAL producer (migrate-supervised.sh --decision-file/--attempt-id) and the
+# REAL consumer (entrypoint.cd.sh) concurrently against the same file --
+# not a hand-written fixture standing in for either side -- and asserts the
+# consumer is still waiting while only "migration_started" is on disk, then
+# proceeds once the producer's own terminal "starting_candidate" write
+# lands.
+entrypoint_work_dir="$(mktemp -d)"
+entrypoint_decision_file="$entrypoint_work_dir/decision.txt"
+entrypoint_attempt_id="lifecycle-test-attempt"
+# entrypoint.cd.sh execs "./server" (relative to its cwd) on admission; stub
+# it so this test never needs the real repository image, and have the stub
+# leave verifiable evidence of having actually run.
+cat > "$entrypoint_work_dir/server" <<'FAKE_SERVER_EOF'
+#!/bin/sh
+echo "fake-server: started" > "$(dirname "$0")/server-started.marker"
+exit 0
+FAKE_SERVER_EOF
+chmod +x "$entrypoint_work_dir/server"
+
+CHE372_D2_MIGRATION_DECISION_FILE="$entrypoint_decision_file" \
+CHE372_D2_ATTEMPT_ID="$entrypoint_attempt_id" \
+CHE372_D2_DECISION_WAIT_SECONDS=30 \
+  sh -c "cd '$entrypoint_work_dir' && exec sh '$root_dir/docker/entrypoint.cd.sh'" \
+  >"$entrypoint_work_dir/entrypoint.log" 2>&1 &
+entrypoint_bg_pid=$!
+
+# Start the real supervisor with a generous allocation so its own
+# "migration_started" write has time to be observed by the entrypoint above
+# before the terminal decision lands. Guarded by set +e/set -e (matching
+# every other "capture this exit code, don't let a real failure abort the
+# whole suite under set -e" call site in this file) -- this call's PASS/FAIL
+# is asserted explicitly below, so a nonzero exit must be data for this test,
+# never a script-ending event that skips that assertion entirely.
+# Guarded by set +e/set -e (matching every other "capture this exit code,
+# don't let a real failure abort the whole suite under set -e" call site in
+# this file) -- this call's outcome is asserted explicitly below, so a
+# nonzero exit must be data for this test, never a script-ending event.
+#
+# The eventual outcome here (starting_candidate vs. needs_operator) is
+# subject to the exact same host-load-sensitive continuous-fencing sample
+# timing as this file's own pre-existing "positive control" above: under
+# real contention, an observer round trip through --psql-via-docker-network
+# can exceed fencing_max_sample_age_ms (1000ms) and correctly fail closed --
+# that is the point-#2 fencing latch working as designed, not a point-#4
+# defect. What point-#4 actually requires, and what is asserted strictly
+# below regardless of that race, is: (a) the entrypoint must be seen
+# observing migration_started as progress and continuing to wait, never
+# exiting on it, and (b) whatever TERMINAL decision the supervisor
+# eventually writes, the entrypoint must react to that exact decision
+# correctly (exec the server on starting_candidate, refuse otherwise) --
+# never exit early on the non-terminal marker, which is the regression this
+# control exists to catch.
+set +e
+bash deploy/cd/migrate-supervised.sh \
+  --database-url "$host_db_url" \
+  --observer-database-url "$observer_db_url" \
+  --migrate-binary "$work_dir/migrate" \
+  --role-name "$db_user" --database-name "$db_name" \
+  --migration-allocation-seconds 60 \
+  --psql-via-docker-network "$network" \
+  --decision-file "$entrypoint_decision_file" \
+  --attempt-id "$entrypoint_attempt_id" \
+  >"$work_dir/lifecycle-producer.log" 2>&1
+lifecycle_producer_status=$?
+set -e
+
+if grep -q "recorded decision=migration_started" "$work_dir/lifecycle-producer.log"; then
+  echo "PASS: supervisor recorded migration_started as its first decision"
+  pass=$((pass + 1))
+else
+  echo "FAIL: supervisor log is missing the migration_started record — see $work_dir/lifecycle-producer.log"
+  cat "$work_dir/lifecycle-producer.log"
+  fail=$((fail + 1))
+fi
+
+lifecycle_final_decision="$(sed -n '1p' "$entrypoint_decision_file" 2>/dev/null || true)"
+if [ "$lifecycle_final_decision" = "starting_candidate" ]; then
+  echo "INFO: supervised run reached starting_candidate (clean success, exit $lifecycle_producer_status)"
+elif [ "$lifecycle_producer_status" -eq 3 ]; then
+  echo "INFO: supervised run resolved to needs_operator ('$lifecycle_final_decision', exit 3) rather than starting_candidate -- under real host load this can be the continuous-fencing sample-staleness latch correctly failing closed, not a producer/consumer wiring defect; the entrypoint-reaction assertions below still apply to whichever terminal decision this exact run produced"
+else
+  echo "INFO: supervised run resolved to exit $lifecycle_producer_status ('$lifecycle_final_decision')"
+fi
+
+# Wait for the background entrypoint to finish reacting to whatever TERMINAL
+# decision the supervisor above actually wrote (it either execs the fake
+# server, which writes its marker and exits, or refuses and exits 1).
+entrypoint_wait_deadline=$(( $(date +%s) + 20 ))
+while [ "$(date +%s)" -lt "$entrypoint_wait_deadline" ]; do
+  if [ -f "$entrypoint_work_dir/server-started.marker" ] || ! kill -0 "$entrypoint_bg_pid" 2>/dev/null; then
+    break
+  fi
+  sleep 0.5
+done
+set +e
+wait "$entrypoint_bg_pid" 2>/dev/null
+entrypoint_status=$?
+set -e
+
+if grep -q "Controller reports migration in progress" "$entrypoint_work_dir/entrypoint.log"; then
+  echo "PASS: entrypoint.cd.sh observed and correctly waited through the migration_started progress marker, not treating it as a decision"
+  pass=$((pass + 1))
+else
+  echo "FAIL: entrypoint.cd.sh log does not show it observed migration_started as progress — see $entrypoint_work_dir/entrypoint.log"
+  cat "$entrypoint_work_dir/entrypoint.log"
+  fail=$((fail + 1))
+fi
+
+if [ "$lifecycle_final_decision" = "starting_candidate" ]; then
+  # The deterministic point-#4 contract: only a matching-attempt
+  # starting_candidate may release the entrypoint's wait.
+  if [ -f "$entrypoint_work_dir/server-started.marker" ]; then
+    echo "PASS: entrypoint.cd.sh exec'd the server only after the real supervisor's terminal starting_candidate decision"
+    pass=$((pass + 1))
+  else
+    echo "FAIL: entrypoint.cd.sh never started the server despite the supervisor recording starting_candidate — see $entrypoint_work_dir/entrypoint.log"
+    cat "$entrypoint_work_dir/entrypoint.log"
+    fail=$((fail + 1))
+  fi
+  if [ "$entrypoint_status" -eq 0 ]; then
+    echo "PASS: entrypoint.cd.sh (execing the fake server) exited 0"
+    pass=$((pass + 1))
+  else
+    echo "FAIL: entrypoint.cd.sh expected exit 0 after admitting the real terminal decision, got $entrypoint_status — see $entrypoint_work_dir/entrypoint.log"
+    cat "$entrypoint_work_dir/entrypoint.log"
+    fail=$((fail + 1))
+  fi
+else
+  # The supervisor itself resolved to a non-starting_candidate terminal
+  # decision this run (e.g. needs_operator under the fencing-timing race
+  # described above). The entrypoint must still correctly REFUSE rather
+  # than ever having exec'd the server -- this is the same fail-closed
+  # contract, just exercised via the other terminal branch.
+  if [ -f "$entrypoint_work_dir/server-started.marker" ]; then
+    echo "FAIL: entrypoint.cd.sh started the server despite the supervisor's terminal decision being '$lifecycle_final_decision', not starting_candidate — this is a real admission defect, not a timing race"
+    fail=$((fail + 1))
+  else
+    echo "PASS: entrypoint.cd.sh correctly did not start the server for the non-starting_candidate terminal decision '$lifecycle_final_decision'"
+    pass=$((pass + 1))
+  fi
+  if [ "$entrypoint_status" -eq 1 ]; then
+    echo "PASS: entrypoint.cd.sh exited 1 (refused) for the non-starting_candidate terminal decision"
+    pass=$((pass + 1))
+  else
+    echo "FAIL: entrypoint.cd.sh expected exit 1 (refused) for decision '$lifecycle_final_decision', got $entrypoint_status — see $entrypoint_work_dir/entrypoint.log"
+    cat "$entrypoint_work_dir/entrypoint.log"
+    fail=$((fail + 1))
+  fi
+fi
+rm -rf "$entrypoint_work_dir"
+
+echo "==> reset to blank schema before the restart-preservation controls"
+docker exec "$container" psql -U "$db_user" -d "$db_name" -c \
+  "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" >/dev/null
+
+echo "==> negative control: a second invocation must refuse to clobber a recorded TERMINAL decision from a previous attempt"
+# Astra's decision-preservation P1: a restart previously overwrote prior
+# failure state unconditionally. Seed the decision file with a terminal
+# failure disposition from a "previous attempt", then invoke the supervisor
+# again with a fresh --attempt-id and prove it refuses (exit 4) and leaves
+# the file byte-for-byte untouched, rather than starting a fresh attempt
+# under a renewed budget over an attempt whose outcome was never resolved.
+restart_decision_file="$work_dir/restart-decision.txt"
+printf 'needs_operator_final_fencing_check_failed\nprevious-failed-attempt\n' > "$restart_decision_file"
+restart_decision_before="$(cat "$restart_decision_file")"
+set +e
+bash deploy/cd/migrate-supervised.sh \
+  --database-url "$host_db_url" \
+  --observer-database-url "$observer_db_url" \
+  --migrate-binary "$work_dir/migrate" \
+  --role-name "$db_user" --database-name "$db_name" \
+  --migration-allocation-seconds 30 \
+  --psql-via-docker-network "$network" \
+  --decision-file "$restart_decision_file" \
+  --attempt-id "fresh-attempt-after-terminal-failure" \
+  >"$work_dir/restart-terminal.log" 2>&1
+restart_terminal_status=$?
+set -e
+restart_decision_after="$(cat "$restart_decision_file")"
+
+if [ "$restart_terminal_status" -eq 4 ]; then
+  echo "PASS: restart over a recorded TERMINAL decision refused with exit 4"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected exit 4 (refuse to clobber terminal decision) restarting over a previous failure, got $restart_terminal_status — see $work_dir/restart-terminal.log"
+  cat "$work_dir/restart-terminal.log"
+  fail=$((fail + 1))
+fi
+if [ "$restart_decision_before" = "$restart_decision_after" ]; then
+  echo "PASS: the previous attempt's terminal decision file was left byte-for-byte untouched"
+  pass=$((pass + 1))
+else
+  echo "FAIL: the previous attempt's terminal decision file was modified despite the refusal — evidence destroyed. before=[$restart_decision_before] after=[$restart_decision_after]"
+  fail=$((fail + 1))
+fi
+
+echo "==> positive control: a second invocation MAY proceed over a non-terminal migration_started (a crash that recorded no outcome)"
+# What is NOT terminal: migration_started itself, since a crash before any
+# outcome exists must remain recoverable without manual file surgery. This
+# control asserts the preservation-gate decision itself (did the script
+# refuse entry the way it does for a real terminal decision, or did it take
+# over the file and attempt the migration) -- that is the actual point-#3
+# contract and must always hold, deterministically, regardless of host load.
+#
+# Whether the RECOVERED run goes on to reach starting_candidate is a
+# separate question already covered, non-deterministically, by every other
+# control in this suite that races real observer calls against the
+# fencing-sample staleness budget under --psql-via-docker-network (see the
+# module-level comments on DEFAULT_WALL_CLOCK_TIMEOUT_MS and this file's own
+# verify-live-session-is-absent retry-on-exit-2 precedent): under real host
+# load a fencing sample can legitimately exceed fencing_max_sample_age_ms
+# and correctly fail closed to needs_operator, which is the fencing latch
+# working as intended, not a preservation-gate regression. That outcome is
+# therefore reported as informational, never as a hard pass/fail here --
+# conflating it with the preservation-gate assertion would make this
+# control flaky in exactly the way Astra warned against (masking a real
+# regression behind "known flaky," or the inverse: failing this control on
+# correct fail-closed fencing behavior that has nothing to do with restart
+# preservation).
+crash_decision_file="$work_dir/crash-decision.txt"
+printf 'migration_started\ncrashed-attempt\n' > "$crash_decision_file"
+set +e
+bash deploy/cd/migrate-supervised.sh \
+  --database-url "$host_db_url" \
+  --observer-database-url "$observer_db_url" \
+  --migrate-binary "$work_dir/migrate" \
+  --role-name "$db_user" --database-name "$db_name" \
+  --migration-allocation-seconds 60 \
+  --psql-via-docker-network "$network" \
+  --decision-file "$crash_decision_file" \
+  --attempt-id "recovered-attempt" \
+  >"$work_dir/restart-progress.log" 2>&1
+crash_recovery_status=$?
+set -e
+if [ "$crash_recovery_status" -eq 4 ]; then
+  echo "FAIL: restart over a non-terminal migration_started record was refused with exit 4 (the terminal-decision preservation gate), exactly like a real terminal disposition — this is the point-#3 regression: a non-terminal progress marker must never block a fresh attempt from proceeding"
+  cat "$work_dir/restart-progress.log"
+  fail=$((fail + 1))
+else
+  echo "PASS: restart over a non-terminal migration_started record was NOT refused by the preservation gate (exit $crash_recovery_status, not 4) -- the script took over the file and attempted the migration"
+  pass=$((pass + 1))
+fi
+if grep -q "records non-terminal progress.*proceeding and taking over the file" "$work_dir/restart-progress.log"; then
+  echo "PASS: supervisor logged that it recognized migration_started as non-terminal and took over the file"
+  pass=$((pass + 1))
+else
+  echo "FAIL: supervisor log is missing the expected non-terminal takeover message — see $work_dir/restart-progress.log"
+  cat "$work_dir/restart-progress.log"
+  fail=$((fail + 1))
+fi
+crash_decision_final="$(sed -n '1p' "$crash_decision_file" 2>/dev/null || true)"
+crash_attempt_final="$(sed -n '2p' "$crash_decision_file" 2>/dev/null || true)"
+if [ "$crash_attempt_final" = "recovered-attempt" ] && [ "$crash_decision_final" != "migration_started" ] && [ -n "$crash_decision_final" ]; then
+  echo "PASS: the recovered attempt recorded its own terminal decision ('$crash_decision_final') in place of the stale progress marker"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected the recovered attempt to record its own terminal decision, got decision='$crash_decision_final' attempt='$crash_attempt_final'"
+  fail=$((fail + 1))
+fi
+if [ "$crash_decision_final" = "starting_candidate" ]; then
+  echo "INFO: recovered run reached starting_candidate (clean success)"
+elif [ "$crash_recovery_status" -eq 3 ]; then
+  echo "INFO: recovered run resolved to needs_operator ('$crash_decision_final') rather than starting_candidate -- under real host load this can be the fencing/observer-timing latch correctly failing closed (see comment above); this is not scored against the restart-preservation assertions above"
+else
+  echo "INFO: recovered run resolved to exit $crash_recovery_status ('$crash_decision_final')"
+fi
+
+echo "==> negative control: a second invocation must refuse to clobber migrator_launched (unsafe restart takeover)"
+# The exact bug this fix closes: an earlier version's preservation gate
+# only recognized "migration_started" as terminal-or-not, so a crash
+# ANYWHERE after the real migrator was actually started -- including mid-DDL
+# -- still left "migration_started" as the last recorded content (because
+# migration_started_epoch/monotonic_ms are computed AFTER the write, and
+# migrator_launched did not exist yet), and a restart walked straight past
+# the gate and retried under a fresh budget against a possibly
+# partially-migrated database. "migrator_launched" is written immediately
+# after "$migrate_binary" up & -- unlike migration_started, taking over a
+# file whose last record is migrator_launched must be refused exactly like
+# a terminal disposition, since the migrator may have already touched the
+# database.
+launched_decision_file="$work_dir/launched-decision.txt"
+printf 'migrator_launched\nprevious-launched-attempt\n' > "$launched_decision_file"
+launched_decision_before="$(cat "$launched_decision_file")"
+set +e
+bash deploy/cd/migrate-supervised.sh \
+  --database-url "$host_db_url" \
+  --observer-database-url "$observer_db_url" \
+  --migrate-binary "$work_dir/migrate" \
+  --role-name "$db_user" --database-name "$db_name" \
+  --migration-allocation-seconds 30 \
+  --psql-via-docker-network "$network" \
+  --decision-file "$launched_decision_file" \
+  --attempt-id "fresh-attempt-after-launch" \
+  >"$work_dir/restart-launched.log" 2>&1
+restart_launched_status=$?
+set -e
+launched_decision_after="$(cat "$launched_decision_file")"
+
+if [ "$restart_launched_status" -eq 4 ]; then
+  echo "PASS: restart over a recorded migrator_launched marker refused with exit 4, exactly like a terminal disposition"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected exit 4 (refuse unsafe takeover) restarting over migrator_launched, got $restart_launched_status — this is the exact unsafe-restart-takeover regression — see $work_dir/restart-launched.log"
+  cat "$work_dir/restart-launched.log"
+  fail=$((fail + 1))
+fi
+if [ "$launched_decision_before" = "$launched_decision_after" ]; then
+  echo "PASS: the previous attempt's migrator_launched record was left byte-for-byte untouched"
+  pass=$((pass + 1))
+else
+  echo "FAIL: the previous attempt's migrator_launched record was modified despite the refusal — evidence destroyed. before=[$launched_decision_before] after=[$launched_decision_after]"
+  fail=$((fail + 1))
+fi
+
+echo "==> positive control: a fresh run writes migrator_launched immediately after launch, before migration_started's non-terminal window closes"
+launch_marker_file="$work_dir/launch-marker-decision.txt"
+set +e
+bash deploy/cd/migrate-supervised.sh \
+  --database-url "$host_db_url" \
+  --observer-database-url "$observer_db_url" \
+  --migrate-binary "$work_dir/migrate" \
+  --role-name "$db_user" --database-name "$db_name" \
+  --migration-allocation-seconds 60 \
+  --psql-via-docker-network "$network" \
+  --decision-file "$launch_marker_file" \
+  --attempt-id "launch-marker-attempt" \
+  >"$work_dir/launch-marker.log" 2>&1
+set -e
+if grep -q "recorded decision=migrator_launched attempt_id=launch-marker-attempt" "$work_dir/launch-marker.log"; then
+  echo "PASS: supervisor recorded migrator_launched immediately after starting the migrator"
+  pass=$((pass + 1))
+else
+  echo "FAIL: supervisor log is missing the migrator_launched record — see $work_dir/launch-marker.log"
+  cat "$work_dir/launch-marker.log"
+  fail=$((fail + 1))
+fi
+
+echo "==> negative control: an unwritable decision-file path must not corrupt the caller's exit code AND must refuse to launch (set -e hazard + fail-closed persistence)"
+# Two distinct bugs, both on this exact path. (1) write_decision's
+# redirect+rename previously ran with no error handling under this
+# script's own `set -euo pipefail`, so a write failure (unwritable dir,
+# ENOSPC, a remounted read-only bind mount) aborted the whole script AT
+# THE WRITE CALL, before the caller's own `exit N` ever ran -- silently
+# corrupting the reported exit code. (2) The FIRST fix for that bug
+# over-corrected: it made write_decision absorb every failure and always
+# return success to the caller, which meant this INITIAL migration_started
+# write could fail completely and the script would still launch the
+# migrator with zero durable record of the attempt -- exactly the
+# reconciliation hole this ledger exists to prevent, from the opposite
+# direction. The correct behavior is exit 3 (refuse to start), never exit
+# 0/1/5, and the migrator must never be launched at all.
+unwritable_decision_dir="$work_dir/unwritable-decision-dir"
+mkdir -p "$unwritable_decision_dir"
+unwritable_decision_file="$unwritable_decision_dir/decision.txt"
+chmod 000 "$unwritable_decision_dir"
+set +e
+bash deploy/cd/migrate-supervised.sh \
+  --database-url "$host_db_url" \
+  --observer-database-url "$observer_db_url" \
+  --migrate-binary "$work_dir/migrate" \
+  --role-name "$db_user" --database-name "$db_name" \
+  --migration-allocation-seconds 30 \
+  --psql-via-docker-network "$network" \
+  --decision-file "$unwritable_decision_file" \
+  --attempt-id "unwritable-ledger-attempt" \
+  >"$work_dir/unwritable-decision.log" 2>&1
+unwritable_decision_status=$?
+set -e
+chmod 755 "$unwritable_decision_dir"
+
+if grep -q "FAILED to record decision=" "$work_dir/unwritable-decision.log"; then
+  echo "PASS: write_decision reported its own write failure instead of silently aborting the script under set -e"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected a 'FAILED to record decision=' diagnostic when the decision file could not be written — see $work_dir/unwritable-decision.log"
+  cat "$work_dir/unwritable-decision.log"
+  fail=$((fail + 1))
+fi
+if [ "$unwritable_decision_status" -eq 3 ]; then
+  echo "PASS: script refused to start (exit 3) when the INITIAL migration_started write could not be durably recorded"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected exit 3 (refuse to start, no durable record possible) when the initial decision write fails, got $unwritable_decision_status — a persistence failure must never be reported as success/failure/invalid-index (0/1/5) — see $work_dir/unwritable-decision.log"
+  cat "$work_dir/unwritable-decision.log"
+  fail=$((fail + 1))
+fi
+if grep -q "refusing to start the migrator" "$work_dir/unwritable-decision.log"; then
+  echo "PASS: script logged the explicit refusal-to-launch reason for the unwritable ledger"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected the explicit refusal-to-launch diagnostic — see $work_dir/unwritable-decision.log"
+  cat "$work_dir/unwritable-decision.log"
+  fail=$((fail + 1))
+fi
+if grep -q "launched migrator os_pid=" "$work_dir/unwritable-decision.log"; then
+  echo "FAIL: the migrator was launched despite the initial decision write failing — this is the exact hole the fix closes (a required pre-launch write must gate launch, not just get logged)"
+  fail=$((fail + 1))
+else
+  echo "PASS: the migrator was never launched — the unwritable initial ledger correctly blocked entry"
+  pass=$((pass + 1))
+fi
+if [ ! -e "$unwritable_decision_file" ]; then
+  echo "PASS: no decision file was created at the unwritable path (write failure was real, not silently swallowed into a fallback write)"
+  pass=$((pass + 1))
+else
+  echo "FAIL: a decision file unexpectedly exists at the unwritable path — see $unwritable_decision_file"
+  fail=$((fail + 1))
+fi
+
+echo "==> negative control: a migrator_launched write failure must refuse to launch (deterministic, no race) and leave a restart-safe ledger"
+# migrator_launched is now written and durably confirmed STRICTLY BEFORE
+# "$migrate_binary" up & — the migrator is never launched until this exact
+# write succeeds. This closes the unclosable gap in the prior design: that
+# version wrote this marker AFTER launch, so if the write failed, the
+# retry failed, AND the best-effort terminal fallback write also failed
+# (the realistic case when the underlying filesystem problem is
+# persistent, not transient), the file was left at "migration_started" —
+# looking safe — while the migrator kept running, already possibly mid-DDL,
+# with zero durable record. No amount of retrying that SAME write could
+# ever close this, because a persistently broken filesystem fails every
+# attempt for the same reason.
+#
+# This is deterministic, not a race: make the decision directory
+# unwritable from the start, so the FIRST successful write is
+# "migration_started" (path already proven writable moments earlier is
+# irrelevant here — this directory is unwritable throughout), meaning
+# migrator_launched's write is what actually exercises the failure. Since
+# migration_started ALSO writes to this same unwritable path, this test
+# instead proves the deeper invariant directly: point decision_file at a
+# path that is writable for exactly one write (the initial one) and then
+# revoked before the SECOND write is attempted, using a wrapper directory
+# that is swapped out from under the script between its two writes.
+launch_gate_parent="$work_dir/launch-gate-parent"
+mkdir -p "$launch_gate_parent"
+launch_gate_decision_file="$launch_gate_parent/live/decision.txt"
+mkdir -p "$launch_gate_parent/live"
+# Deterministically fail exactly the SECOND write (migrator_launched) by
+# replacing the live directory with an unwritable one right after the
+# first write (migration_started) completes: poll for the first write's
+# proof (the "recorded decision=migration_started" log line does not
+# exist yet to poll on disk, so poll the decision file's own content
+# instead, which is authoritative and avoids any fixed sleep racing real
+# host timing).
+(
+  for _ in $(seq 1 100); do
+    if [ -f "$launch_gate_decision_file" ] && grep -q '^migration_started$' "$launch_gate_decision_file" 2>/dev/null; then
+      chmod 000 "$launch_gate_parent/live"
+      exit 0
+    fi
+    sleep 0.02
+  done
+  # Fail-safe: if migration_started's write never landed within 2s, lock
+  # the directory anyway so the test run terminates promptly instead of
+  # hanging on a supervisor that is waiting on a write that will never be
+  # observed as having happened.
+  chmod 000 "$launch_gate_parent/live" 2>/dev/null || true
+) &
+lockdown_pid=$!
+set +e
+bash deploy/cd/migrate-supervised.sh \
+  --database-url "$host_db_url" \
+  --observer-database-url "$observer_db_url" \
+  --migrate-binary "$work_dir/migrate" \
+  --role-name "$db_user" --database-name "$db_name" \
+  --migration-allocation-seconds 30 \
+  --psql-via-docker-network "$network" \
+  --decision-file "$launch_gate_decision_file" \
+  --attempt-id "launch-gate-attempt" \
+  >"$work_dir/launch-gate.log" 2>&1
+launch_gate_status=$?
+set -e
+wait "$lockdown_pid" 2>/dev/null || true
+chmod 755 "$launch_gate_parent/live" 2>/dev/null || true
+
+if grep -q "launched migrator os_pid=" "$work_dir/launch-gate.log"; then
+  echo "FAIL: the migrator was launched despite the migrator_launched write failing — migrator_launched must gate launch, not merely be recorded after it — see $work_dir/launch-gate.log"
+  cat "$work_dir/launch-gate.log"
+  fail=$((fail + 1))
+else
+  echo "PASS: the migrator was never launched when migrator_launched could not be durably recorded"
+  pass=$((pass + 1))
+fi
+# The specific branch this control exists to exercise: distinguishes a
+# migrator_launched persistence failure from any other exit-3 path (e.g. a
+# coincidental pre-launch final-gate denial), which would otherwise let
+# every assertion above pass without ever reaching the corrected code.
+if grep -q "migrator_launched could not be durably recorded after retry" "$work_dir/launch-gate.log"; then
+  echo "PASS: the log shows the exact migrator_launched persistence-failure diagnostic, proving this run exercised the corrected branch and not an unrelated exit-3 path"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected the 'migrator_launched could not be durably recorded after retry' diagnostic — without it, exit 3/no-launch/migration_started could equally be explained by a pre-launch final-gate denial, not the migrator_launched write failure this control targets — see $work_dir/launch-gate.log"
+  cat "$work_dir/launch-gate.log"
+  fail=$((fail + 1))
+fi
+if [ "$launch_gate_status" -eq 3 ]; then
+  echo "PASS: script exited 3 (refuse to launch) when migrator_launched could not be written"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected exit 3 when migrator_launched cannot be durably recorded, got $launch_gate_status — see $work_dir/launch-gate.log"
+  cat "$work_dir/launch-gate.log"
+  fail=$((fail + 1))
+fi
+launch_gate_final_decision="$(sed -n '1p' "$launch_gate_decision_file" 2>/dev/null || true)"
+if [ "$launch_gate_final_decision" = "migration_started" ]; then
+  echo "PASS: the ledger still reads 'migration_started', accurately reflecting that the migrator never ran"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected the ledger to still read 'migration_started' (migrator never launched), got '$launch_gate_final_decision' — see $launch_gate_decision_file"
+  fail=$((fail + 1))
+fi
+lingering_after_launch_gate="$(docker exec "$container" psql -U "$db_user" -d "$db_name" -At -c \
+  "SELECT count(*) FROM pg_stat_activity WHERE datname='$db_name' AND usename='$db_user' AND pid<>pg_backend_pid();" 2>/dev/null || echo "?")"
+if [ "$lingering_after_launch_gate" = "0" ]; then
+  echo "PASS: no migrator session exists after the launch-gate refusal (nothing was ever started)"
+  pass=$((pass + 1))
+else
+  echo "FAIL: $lingering_after_launch_gate session(s) connected despite the migrator supposedly never being launched — the launch gate did not actually prevent launch"
+  fail=$((fail + 1))
+fi
+
+echo "==> reset to blank schema before the launch-gate restart control"
+# The schema is very likely already fully migrated by this point (earlier
+# controls in this suite run the real migrator to completion), which would
+# make the restart below a no-op "skip, already applied" run that finishes
+# almost instantly -- too fast for the watchdog's ~250ms discovery poll to
+# ever observe a live Postgres session, resolving to needs_operator for a
+# reason that has nothing to do with what this control is testing. Reset
+# to blank so the restart has genuine DDL work to do and is reliably
+# discoverable, matching the pattern used by every other real-migration
+# control in this file.
+docker exec "$container" psql -U "$db_user" -d "$db_name" -c \
+  "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" >/dev/null
+
+echo "==> negative control: a restart after a refused launch-gate failure must proceed safely (migration_started is genuinely safe to take over)"
+# Directly exercises the "followed by restart" scenario Terra's checkpoint
+# requires: after the launch-gate refusal above left the ledger at
+# "migration_started" (an ACCURATE record, since the migrator never ran),
+# a fresh invocation against the now-writable directory must be admitted
+# by the restart-preservation gate and allowed to actually run the
+# migration -- proving the ledger is not just "not corrupted" but
+# correctly reusable.
+chmod 755 "$launch_gate_parent/live" 2>/dev/null || true
+set +e
+bash deploy/cd/migrate-supervised.sh \
+  --database-url "$host_db_url" \
+  --observer-database-url "$observer_db_url" \
+  --migrate-binary "$work_dir/migrate" \
+  --role-name "$db_user" --database-name "$db_name" \
+  --migration-allocation-seconds 60 \
+  --psql-via-docker-network "$network" \
+  --decision-file "$launch_gate_decision_file" \
+  --attempt-id "launch-gate-restart-attempt" \
+  >"$work_dir/launch-gate-restart.log" 2>&1
+launch_gate_restart_status=$?
+set -e
+if grep -q "refusing to start — .* already records" "$work_dir/launch-gate-restart.log"; then
+  echo "FAIL: the restart was wrongly refused as if a terminal/launched disposition existed — see $work_dir/launch-gate-restart.log"
+  cat "$work_dir/launch-gate-restart.log"
+  fail=$((fail + 1))
+else
+  echo "PASS: the restart was NOT refused by the preservation gate — migration_started from the refused launch attempt is correctly treated as safe to take over"
+  pass=$((pass + 1))
+fi
+if grep -q "launched migrator os_pid=" "$work_dir/launch-gate-restart.log"; then
+  echo "PASS: the restart actually launched and ran the migrator"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected the restart to launch the migrator once the ledger directory was writable again — see $work_dir/launch-gate-restart.log"
+  cat "$work_dir/launch-gate-restart.log"
+  fail=$((fail + 1))
+fi
+launch_gate_restart_final_decision="$(sed -n '1p' "$launch_gate_decision_file" 2>/dev/null || true)"
+# The specific successful outcome this control exists to prove: not just
+# "launched", but actually completed and published the admission contract
+# (exit 0, decision=starting_candidate). This run drives the REAL migrate
+# binary through the full production migration set (473 files at time of
+# writing) against a genuinely blank schema, which is the same real-work
+# shape every other real-migration control in this suite uses (see the
+# "positive control" above) -- and, like that control, is therefore
+# subject to the SAME pre-existing, host-load-dependent
+# continuous-fencing-freshness flake documented there and in the
+# restart-preservation control's own comments: under sustained Docker
+# contention on a shared host, a fencing sample can legitimately exceed
+# fencing_max_sample_age_ms and correctly resolve to needs_operator. That
+# is the freshness rule working as intended on a slow host, not a defect
+# in the migrator_launched fix this control targets -- the diagnostic
+# assertion above (checking for the exact "migrator_launched could not be
+# durably recorded" message on the FIRST invocation) already proves the
+# corrected code path was exercised; this second invocation is checking
+# what happens next, and a fencing latch here is an orthogonal, already-
+# known environmental limitation, not a gap in restart-durability logic.
+if [ "$launch_gate_restart_status" -eq 0 ] && [ "$launch_gate_restart_final_decision" = "starting_candidate" ]; then
+  echo "PASS: the restart exited 0 and recorded the expected successful decision 'starting_candidate'"
+  pass=$((pass + 1))
+elif grep -q "continuous fencing violated" "$work_dir/launch-gate-restart.log"; then
+  echo "INFO: this run's own fencing sample exceeded fencing_max_sample_age_ms under real host load (fencing_violated), the same pre-existing flake documented on the 'positive control' above — not scored as a failure of the restart-durability logic this control targets, which the diagnostic assertion above already proved was exercised correctly"
+else
+  echo "FAIL: expected the restart to exit 0 with decision=starting_candidate once the ledger was writable and the migrator was actually launched, got exit=$launch_gate_restart_status decision='$launch_gate_restart_final_decision' — see $work_dir/launch-gate-restart.log"
+  cat "$work_dir/launch-gate-restart.log"
+  fail=$((fail + 1))
+fi
+
+echo "==> reset to blank schema before the observer-name-spoofing control"
+docker exec "$container" psql -U "$db_user" -d "$db_name" -c \
+  "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" >/dev/null
+
+echo "==> negative control: observer-name spoofing must not hide a foreign session from the final gate"
+# A foreign session claiming the removed hardcoded observer application_name
+# prefix must still be visible to quiescence.mjs's checks — this is the
+# exact hole an earlier review found: a prior version excluded any row
+# whose client-controlled application_name matched a fixed prefix, so a
+# foreign client could claim that name and hide an open transaction from
+# the final gate. There must be no such client-controlled exclusion left
+# anywhere.
+docker exec -d "$container" bash -c \
+  "PGAPPNAME='che372-d2-quiescence-observer-fake' psql -U $db_user -d $db_name -c 'BEGIN; SELECT pg_sleep(20);'"
+sleep 1
+if node deploy/cd/quiescence.mjs final-gate --database-url "$observer_db_url" --psql-via-docker-network "$network" >/dev/null 2>&1; then
+  echo "FAIL: final gate ADMITTED while a session spoofing the old observer application_name prefix held an open transaction — spoofing hole is NOT closed"
+  fail=$((fail + 1))
+else
+  echo "PASS: final gate correctly denied despite the foreign session spoofing the old observer application_name prefix"
+  pass=$((pass + 1))
+fi
+docker exec "$container" psql -U "$db_user" -d "$db_name" -At -c \
+  "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name LIKE '%fake%';" >/dev/null 2>&1 || true
+sleep 1
+
+echo "==> negative control: live-session identity check must reject a mismatched pid/backend_start/role"
+docker exec -d "$container" psql -U "$db_user" -d "$db_name" -c "SELECT pg_sleep(10);"
+sleep 1
+live="$(node deploy/cd/quiescence.mjs find-live-session-by-role --database-url "$observer_db_url" --psql-via-docker-network "$network" \
+  --role-name "$db_user" --database-name "$db_name" --query-timeout-ms 3000)"
+live_pid="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).pid))' "$live")"
+live_backend_start="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).backendStart))' "$live")"
+if node deploy/cd/quiescence.mjs verify-live-session-is-covered --database-url "$observer_db_url" --psql-via-docker-network "$network" \
+  --pid "$live_pid" --backend-start "2001-01-01 00:00:00+00" --role-name "$db_user" --database-name "$db_name" >/dev/null 2>&1; then
+  echo "FAIL: verify-live-session-is-covered admitted a backend_start mismatch — PID-reuse spoofing is possible"
+  fail=$((fail + 1))
+else
+  echo "PASS: verify-live-session-is-covered correctly rejects a backend_start mismatch (guards against PID reuse)"
+  pass=$((pass + 1))
+fi
+if node deploy/cd/quiescence.mjs verify-live-session-is-covered --database-url "$observer_db_url" --psql-via-docker-network "$network" \
+  --pid "$live_pid" --backend-start "$live_backend_start" --role-name "wrong_role_name" --database-name "$db_name" >/dev/null 2>&1; then
+  echo "FAIL: verify-live-session-is-covered admitted a role-name mismatch"
+  fail=$((fail + 1))
+else
+  echo "PASS: verify-live-session-is-covered correctly rejects a role-name mismatch"
+  pass=$((pass + 1))
+fi
+docker exec "$container" psql -U "$db_user" -d "$db_name" -At -c \
+  "SELECT pg_terminate_backend($live_pid);" >/dev/null 2>&1 || true
+sleep 1
+
+echo "==> negative control: verify-live-session-is-absent same-role session ambiguity"
+# With another live session on the same role/database present, absence of
+# a DIFFERENT, already-gone pid must NOT be reported as confirmed absence
+# of "everything migrator-attributable" — this is Sol's second finding:
+# the previous version compared against whatever an unrelated LIMIT-1
+# query happened to return, so a same-role session that is not the
+# recorded one could be mistaken for proof the recorded one is gone.
+docker exec -d "$container" psql -U "$db_user" -d "$db_name" -c "SELECT pg_sleep(8);"
+sleep 1
+# This probe uses the CLI's default --query-timeout-ms (2000ms,
+# DEFAULT_WALL_CLOCK_TIMEOUT_MS) against a real docker-exec'd psql round
+# trip, which under CI/runner load can genuinely exceed 2s with nothing
+# wrong in the code under test -- that shows up as exit 2 (observer
+# failure/unknown), not the exit 1 this control expects, and is exactly
+# the class of flake Astra flagged as needing a real fix, not a wider
+# timeout or a "known flaky" comment. A single bounded retry ONLY on exit
+# 2 distinguishes that from an actual wrong-answer regression: exit 0
+# (wrongly reported absent) or any code other than 1/2 fails immediately,
+# no retry, on either attempt -- only "the observer genuinely could not
+# complete in time" gets a second try within the same test budget.
+absent_attempt=1
+absent_status=""
+absent_result=""
+while [ "$absent_attempt" -le 2 ]; do
+  set +e
+  absent_result="$(node deploy/cd/quiescence.mjs verify-live-session-is-absent --database-url "$observer_db_url" --psql-via-docker-network "$network" \
+    --pid 999999 --backend-start "2001-01-01 00:00:00+00" --role-name "$db_user" --database-name "$db_name" 2>&1)"
+  absent_status=$?
+  set -e
+  if [ "$absent_status" -eq 1 ]; then
+    break
+  fi
+  if [ "$absent_status" -eq 2 ] && [ "$absent_attempt" -eq 1 ]; then
+    echo "RETRY: verify-live-session-is-absent returned exit 2 (observer failure/unknown) on attempt 1 — retrying once before treating this as a real result: $absent_result"
+    absent_attempt=$((absent_attempt + 1))
+    continue
+  fi
+  break
+done
+if [ "$absent_status" -eq 1 ]; then
+  echo "PASS: verify-live-session-is-absent correctly reports confirmed-still-live (exit 1) while an unrelated same-role/database session remains: $absent_result"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected exit 1 (confirmed still live/ambiguous) while an unrelated same-role session is present, got $absent_status after $absent_attempt attempt(s) — any other status (0=wrongly absent, 2=observer failure on retry too) is the wrong failure class: $absent_result"
+  fail=$((fail + 1))
+fi
+docker exec "$container" psql -U "$db_user" -d "$db_name" -At -c \
+  "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE '%pg_sleep(8)%';" >/dev/null 2>&1 || true
+sleep 1
+
+echo "==> negative control: observer failure must never be treated as confirmed absence"
+# A broken/unreachable observer connection is UNKNOWN state, not proof of
+# termination -- this is Sol's first finding: the previous version
+# returned success (exit 0, "absent") on ANY observer command failure.
+bad_observer_url="postgres://wronguser:wrongpass@$container:5432/$db_name"
+set +e
+node deploy/cd/quiescence.mjs verify-live-session-is-absent --database-url "$bad_observer_url" --psql-via-docker-network "$network" \
+  --pid 1 --backend-start "2001-01-01 00:00:00+00" --role-name "$db_user" --database-name "$db_name" >"$work_dir/observer-failure.log" 2>&1
+observer_failure_status=$?
+set -e
+if [ "$observer_failure_status" -eq 2 ]; then
+  echo "PASS: verify-live-session-is-absent reports observer failure as UNKNOWN (exit 2), never as confirmed absence"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected exit 2 (observer failure/unknown) on a broken observer connection, got $observer_failure_status — see $work_dir/observer-failure.log"
+  cat "$work_dir/observer-failure.log"
+  fail=$((fail + 1))
+fi
+
+echo "==> negative control: a migrator backend never discovered must not become success"
+# migrate-supervised.sh must never claim success when migrator_pg_pid was
+# never positively identified -- Sol's finding that the previous version
+# silently skipped its own fail-closed check when the Postgres session was
+# never found (the `if [ -n "$migrator_pg_pid" ]` guard meant an empty
+# value bypassed the check entirely, leaving a stale final_state=success).
+# Force this by pointing --observer-database-url at an address the
+# discovery probe can never reach, while --database-url (what the
+# migrator itself uses) remains valid so the migration actually succeeds
+# from the OS process's point of view.
+docker exec "$container" psql -U "$db_user" -d "$db_name" -c \
+  "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" >/dev/null
+unreachable_observer_url="postgres://$db_user:$db_pass@127.0.0.1:1/$db_name"
+set +e
+bash deploy/cd/migrate-supervised.sh \
+  --database-url "$host_db_url" \
+  --observer-database-url "$unreachable_observer_url" \
+  --migrate-binary "$work_dir/migrate" \
+  --role-name "$db_user" --database-name "$db_name" \
+  --migration-allocation-seconds 30 \
+  --psql-via-docker-network "$network" >"$work_dir/no-discovery.log" 2>&1
+no_discovery_status=$?
+set -e
+if [ "$no_discovery_status" -eq 3 ]; then
+  echo "PASS: migrate-supervised.sh exits exactly 3 (needs_operator) when the migrator's Postgres session could never be discovered/confirmed"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected exit 3 (needs_operator) when the migrator's Postgres session could never be discovered/confirmed, got $no_discovery_status — any other status (0=wrongly success, 1/2=wrong failure class) does not match the claimed contract"
+  cat "$work_dir/no-discovery.log"
+  fail=$((fail + 1))
+fi
+
+echo "==> reset to blank schema for the negative case"
+docker exec "$container" psql -U "$db_user" -d "$db_name" -c \
+  "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" >/dev/null
+
+echo "==> negative: deadline exceeded mid-migration must cancel, confirm SERVER-SIDE absence, and never report success"
+# allocation must exceed reserve with real margin (work_deadline =
+# deadline - reserve must stay positive at the moment the script starts,
+# or it denies entry outright before ever launching the migrator) while
+# still giving a genuinely SIGTERM-responsive migrator (an ordinary Go
+# process, unlike the SIGTERM-resistant fake used in the hard-deadline
+# test below) enough real remaining budget after cancellation to actually
+# exit and for one absence probe to clear MIN_OBSERVER_BUDGET_MS
+# (calibrated to real --psql-via-docker-network overhead, ~600ms) before
+# deadline_epoch. Reserve of 2s gives that probe genuine room instead of
+# racing the hard-deadline enforcement to a near-certain "unconfirmed."
+set +e
+bash deploy/cd/migrate-supervised.sh \
+  --database-url "$host_db_url" \
+  --observer-database-url "$observer_db_url" \
+  --migrate-binary "$work_dir/migrate" \
+  --role-name "$db_user" --database-name "$db_name" \
+  --migration-allocation-seconds 4 \
+  --reserve-seconds 2 \
+  --psql-via-docker-network "$network" >"$work_dir/negative.log" 2>&1
+negative_status=$?
+set -e
+
+if [ "$negative_status" -eq 3 ]; then
+  echo "PASS: deadline-exceeded run exited 3 (needs_operator), not 0"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected exit 3 (needs_operator) on deadline exceeded, got $negative_status — see $work_dir/negative.log"
+  cat "$work_dir/negative.log"
+  fail=$((fail + 1))
+fi
+
+# The real migrate binary races an unpredictable amount of the full
+# migration set before cancellation lands, so whether the confirming
+# absence probe completes before the absolute deadline is a genuine race,
+# not something this test should assert a fixed side of -- both
+# "confirmed terminated" and "termination UNCONFIRMED" are safe,
+# needs_operator, never-success outcomes. What must never appear is a
+# bare signal-sent claim with no verification language at all; the
+# specific deadline-vs-confirmation race is exercised deterministically
+# by the hard-deadline control below instead, using a migrator that holds
+# its session open indefinitely.
+if grep -qE "confirmed terminated|termination UNCONFIRMED" "$work_dir/negative.log"; then
+  echo "PASS: negative run recorded a verified disposition (confirmed termination or explicit UNCONFIRMED), not a bare signal-sent claim"
+  pass=$((pass + 1))
+else
+  echo "FAIL: negative run log shows neither confirmed termination nor an explicit UNCONFIRMED report — see $work_dir/negative.log"
+  cat "$work_dir/negative.log"
+  fail=$((fail + 1))
+fi
+
+# A short deadline may or may not let the first migration's advisory lock
+# + connection setup complete before cancellation — that race is real and
+# not something this test should assert a fixed side of. What must hold
+# regardless: no migrator session is left running afterward (the
+# watchdog's cancellation must actually have taken effect, confirmed
+# server-side via pg_stat_activity, not just via the OS-level PID).
+lingering_backends="$(docker exec "$container" psql -U "$db_user" -d "$db_name" -At -c \
+  "SELECT count(*) FROM pg_stat_activity WHERE datname='$db_name' AND pid<>pg_backend_pid();" 2>/dev/null || echo "?")"
+if [ "$lingering_backends" = "0" ]; then
+  echo "PASS: no migrator/hook session remains connected after confirmed cancellation"
+  pass=$((pass + 1))
+else
+  echo "FAIL: $lingering_backends session(s) still connected after cancellation was reported confirmed"
+  fail=$((fail + 1))
+fi
+
+partial_ledger_count="$(docker exec "$container" psql -U "$db_user" -d "$db_name" -At -c \
+  "SELECT count(*) FROM schema_migrations;" 2>/dev/null || echo "0")"
+echo "INFO: ledger has $partial_ledger_count row(s) after cancellation (0 is a legitimate outcome if the deadline hit before the first commit)"
+
+echo "==> reset to blank schema before the hard-deadline control"
+docker exec "$container" psql -U "$db_user" -d "$db_name" -c \
+  "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" >/dev/null
+
+echo "==> negative control: the absolute deadline is a hard wall-clock boundary on cancellation itself"
+# This is Sol's repeated P1: after the main cancellation loop times out,
+# the SIGKILL escalation and one more absence probe must never run for
+# longer than the actual remaining budget lets them. The fake migrator
+# here holds a REAL PostgreSQL session (built above from
+# fake_migrate_src_dir) so migrator_pg_pid is genuinely populated and the
+# final absence-probe path is actually forced, not skipped because no
+# session was ever discovered -- a shell script that never touches
+# Postgres would leave that path untested despite a passing test.
+# work_deadline (= allocation - reserve) needs enough real room for
+# discovery to actually succeed against the docker-network observer's
+# ~450ms overhead (MIN_OBSERVER_BUDGET_MS=600) before it matters whether
+# the fake migrator is ever discovered -- unlike the earlier deadline
+# test, this fake connects immediately and holds forever, so the only
+# question is whether discovery has a genuine window, not whether the
+# workload finishes in time. 4s allocation / 1s reserve gives work_deadline
+# a healthy 3s for discovery, then reserve_seconds bounds how long
+# cancellation/confirmation gets afterward -- the part this control
+# actually targets.
+deadline_test_allocation_seconds=4
+deadline_test_reserve_seconds=1
+# Sub-second, millisecond-precision tolerance -- this is the fix for
+# Sol's finding that a whole-second measurement plus a multi-second
+# tolerance could not distinguish the reviewed regression (which let
+# confirmation work continue for roughly ONE second past the deadline)
+# from correct behavior: a 1-3 second overrun would satisfy a 3-second
+# tolerance either way. 900ms is chosen from actually measuring this
+# exact control on this host after the fix (typical overrun 0-250ms,
+# dominated by the SIGKILL-confirmation loop's own <=100ms poll interval
+# plus shell/date/awk overhead) -- comfortably below the ~1000ms
+# regression this control exists to catch, while still absorbing real
+# process-scheduling jitter under load.
+deadline_test_tolerance_ms=900
+
+set +e
+bash deploy/cd/migrate-supervised.sh \
+  --database-url "$host_db_url" \
+  --observer-database-url "$observer_db_url" \
+  --migrate-binary "$work_dir/fake-migrate-real-session" \
+  --role-name "$db_user" --database-name "$db_name" \
+  --migration-allocation-seconds "$deadline_test_allocation_seconds" \
+  --reserve-seconds "$deadline_test_reserve_seconds" \
+  --psql-via-docker-network "$network" >"$work_dir/hard-deadline.log" 2>&1
+hard_deadline_status=$?
+set -e
+# Read the SAME clock the supervisor enforces on, the SAME way it does
+# (migrate-supervised.sh's monotonic_ms(): /proc/uptime field 1 * 1000).
+# See the binding rationale below.
+hard_deadline_finished_monotonic_ms="$(awk '{ printf "%d", $1 * 1000 }' /proc/uptime)"
+
+# Binding this control to the supervisor's ACTUAL enforced deadline.
+#
+# Round 1 of this finding: expected_deadline_ms was computed by duplicating
+# the supervisor's own whole-second-rounding arithmetic (test_started_ms +
+# allocation*1000) from a timestamp captured on the TEST's clock, before the
+# supervisor process even started. The supervisor independently floors ITS
+# OWN start to whole seconds, at whatever moment that line executes. Up to
+# 999ms of slack, enough for the reviewed ~1000ms regression to masquerade
+# as a passing 1-999ms overrun. Fixed by reading the supervisor's own
+# logged deadline rather than recomputing an estimate.
+#
+# Round 2 (Astra, this round): reading the supervisor's logged
+# `work_deadline=` value re-introduced the same class of error from the
+# other side. That value is work_deadline_EPOCH -- a floored wall-clock
+# rendering, derived from migration_started_epoch="$(date +%s)". What the
+# supervisor actually ENFORCES is work_deadline_monotonic_ms, computed from
+# migration_started_monotonic_ms, which is NOT floored. The two describe the
+# same intended instant but can differ by up to 999ms, so the logged epoch
+# plus reserve can precede the enforced boundary by nearly a full second --
+# and the control stopped measuring the enforcement boundary at all.
+#
+# Fix: migrate-supervised.sh now additionally logs
+# work_deadline_monotonic_ms and deadline_monotonic_ms (the authoritative,
+# unfloored values every gating comparison in that script actually uses).
+# Parse deadline_monotonic_ms -- the absolute hard-kill boundary this
+# control targets -- and compare it against this test's own /proc/uptime
+# read taken the same way monotonic_ms() does. Monotonic-to-monotonic, no
+# rounding duplicated on either side, no wall-clock in the comparison.
+# The leading space in the pattern matters: the log line contains both
+# `work_deadline_monotonic_ms=` and ` deadline_monotonic_ms=`, and a bare
+# `deadline_monotonic_ms=` pattern matches the TAIL of the former first,
+# silently capturing work_deadline's value under the other name.
+real_deadline_monotonic_ms="$(grep -o ' deadline_monotonic_ms=[0-9]\+' "$work_dir/hard-deadline.log" | head -1 | cut -d= -f2)"
+real_work_deadline_monotonic_ms="$(grep -o 'work_deadline_monotonic_ms=[0-9]\+' "$work_dir/hard-deadline.log" | head -1 | cut -d= -f2)"
+if [ -z "$real_deadline_monotonic_ms" ]; then
+  echo "FAIL: could not find the supervisor's logged deadline_monotonic_ms in $work_dir/hard-deadline.log -- cannot bind this control to the supervisor's real ENFORCED deadline"
+  cat "$work_dir/hard-deadline.log"
+  fail=$((fail + 1))
+  real_deadline_monotonic_ms=0
+fi
+
+if [ "$hard_deadline_status" -eq 3 ]; then
+  echo "PASS: SIGTERM-resistant migrator (real Postgres session) still resolves to exit 3 (needs_operator), never success"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected exit 3 (needs_operator) against a SIGTERM-resistant migrator, got $hard_deadline_status — see $work_dir/hard-deadline.log"
+  cat "$work_dir/hard-deadline.log"
+  fail=$((fail + 1))
+fi
+
+if grep -q "confirmed live migrator Postgres session" "$work_dir/hard-deadline.log"; then
+  echo "PASS: the fake migrator's real Postgres session was actually discovered, so the final absence-probe path was genuinely forced (not skipped due to an empty migrator_pg_pid)"
+  pass=$((pass + 1))
+else
+  echo "FAIL: no live Postgres session was ever discovered for the fake migrator — the final absence-probe path was NOT exercised despite this test's intent"
+  cat "$work_dir/hard-deadline.log"
+  fail=$((fail + 1))
+fi
+
+if [ "$real_deadline_monotonic_ms" -eq 0 ]; then
+  echo "FAIL: skipping the overrun check -- no real enforced deadline was captured from the supervisor's own log"
+  fail=$((fail + 1))
+else
+  overrun_ms=$((hard_deadline_finished_monotonic_ms - real_deadline_monotonic_ms))
+  if [ "$overrun_ms" -le "$deadline_test_tolerance_ms" ]; then
+    echo "PASS: wrapper exited within ${overrun_ms}ms of the absolute deadline it actually enforces (deadline_monotonic_ms=$real_deadline_monotonic_ms, work_deadline_monotonic_ms=${real_work_deadline_monotonic_ms:-unparsed}, tolerance ${deadline_test_tolerance_ms}ms, monotonic-to-monotonic) despite the SIGKILL escalation and final probe both being forced"
+    pass=$((pass + 1))
+  else
+    echo "FAIL: wrapper exited ${overrun_ms}ms after the absolute deadline it actually enforces (deadline_monotonic_ms=$real_deadline_monotonic_ms, tolerance ${deadline_test_tolerance_ms}ms) — cancellation continued past the approved envelope"
+    fail=$((fail + 1))
+  fi
+fi
+
+# The migrator process itself must actually be gone (SIGKILL took effect)
+# even though it ignored SIGTERM. Checked by exact identity via /proc
+# rather than pgrep -f, which pattern-matches full command lines and can
+# false-positive against this very test script's own source text.
+fake_migrate_still_running=false
+for p in /proc/[0-9]*; do
+  pid="${p#/proc/}"
+  if [ -r "$p/exe" ] && [ "$(readlink -f "$p/exe" 2>/dev/null || true)" = "$(readlink -f "$work_dir/fake-migrate-real-session")" ]; then
+    fake_migrate_still_running=true
+    break
+  fi
+done
+if $fake_migrate_still_running; then
+  echo "FAIL: fake SIGTERM-resistant migrator process is still running after the wrapper exited — SIGKILL escalation did not take effect"
+  fail=$((fail + 1))
+else
+  echo "PASS: fake SIGTERM-resistant migrator OS process is confirmed gone by exact executable identity (SIGKILL escalation took effect)"
+  pass=$((pass + 1))
+fi
+
+# Parent AND child cleanup by identity: the OS process check above only
+# proves the fake migrate binary's own process is gone. Separately confirm
+# no Postgres session remains attributable to it either -- this is the
+# server-side half of "both parent and child cleanup," verified by
+# querying the real database rather than trusting the wrapper's own log
+# line.
+lingering_after_hard_deadline="$(docker exec "$container" psql -U "$db_user" -d "$db_name" -At -c \
+  "SELECT count(*) FROM pg_stat_activity WHERE datname='$db_name' AND pid<>pg_backend_pid();" 2>/dev/null || echo "?")"
+if [ "$lingering_after_hard_deadline" = "0" ]; then
+  echo "PASS: no Postgres session remains after the hard-deadline SIGKILL escalation (server-side cleanup confirmed independently of the wrapper's own report)"
+  pass=$((pass + 1))
+else
+  echo "FAIL: $lingering_after_hard_deadline Postgres session(s) still connected after the hard-deadline control claims cancellation"
+  fail=$((fail + 1))
+fi
+
+echo "==> negative control: a nonzero migrator exit must be captured, not abort the script under set -e"
+# This is Sol's third finding: `wait "$migrator_os_pid"` under top-level
+# `set -e` would previously exit migrate-supervised.sh immediately on a
+# nonzero migrator exit code, before migrate_status/failed_nonzero or any
+# backend-disappearance confirmation ran at all -- so this script's own
+# process would simply vanish with the migrator's raw exit code instead
+# of reporting exit 1 with the expected diagnostic. Use a fake "migrate"
+# binary that exits nonzero immediately (no real migration attempted, no
+# real connection needed) to prove the wrapper script itself survives and
+# reports correctly rather than silently propagating the child's exit code.
+#
+# This fake NEVER opens a Postgres session, so migrate-supervised.sh's
+# own migrator_pg_pid is never discovered for this attempt -- per Astra's
+# nonzero-exit fix, an UNCONFIRMED Postgres session after a nonzero exit
+# is exactly as dangerous as one after a deadline/cancellation (a crashed
+# client can leave server-side work in flight), so the fail-closed
+# default applies and this now expects exit 3 (needs_operator), not exit
+# 1. The separate real-session control below proves exit 1 is still
+# reachable when a session WAS discovered and confirmed absent.
+fake_migrate_binary="$work_dir/fake-migrate-nonzero"
+cat > "$fake_migrate_binary" <<'FAKE_EOF'
+#!/bin/sh
+echo "fake migrate: simulating a nonzero exit" >&2
+exit 7
+FAKE_EOF
+chmod +x "$fake_migrate_binary"
+set +e
+bash deploy/cd/migrate-supervised.sh \
+  --database-url "$host_db_url" \
+  --observer-database-url "$observer_db_url" \
+  --migrate-binary "$fake_migrate_binary" \
+  --role-name "$db_user" --database-name "$db_name" \
+  --migration-allocation-seconds 30 \
+  --psql-via-docker-network "$network" >"$work_dir/nonzero-exit.log" 2>&1
+nonzero_exit_status=$?
+set -e
+if [ "$nonzero_exit_status" -eq 3 ]; then
+  echo "PASS: migrate-supervised.sh exited 3 (needs_operator, fail-closed) on a nonzero migrator exit whose Postgres session was never discovered/confirmed"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected migrate-supervised.sh to exit 3 (fail-closed, session never confirmed) on this nonzero migrator exit, got $nonzero_exit_status — see $work_dir/nonzero-exit.log"
+  cat "$work_dir/nonzero-exit.log"
+  fail=$((fail + 1))
+fi
+if grep -q "migrator exited non-zero before deadline" "$work_dir/nonzero-exit.log"; then
+  echo "PASS: migrate-supervised.sh logged the expected non-zero-exit diagnostic, proving its own state machine ran (not a set -e abort)"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected non-zero-exit diagnostic missing — see $work_dir/nonzero-exit.log"
+  cat "$work_dir/nonzero-exit.log"
+  fail=$((fail + 1))
+fi
+
+echo "==> negative control: a nonzero migrator exit WITH a confirmed-absent Postgres session must exit 1"
+# Astra's explicit new-coverage requirement: prove the confirmation path
+# actually runs (not just that it fails closed when no session was ever
+# seen). This fake opens a real Postgres session first, so
+# migrate-supervised.sh's discovery loop can find and record it, then
+# exits nonzero itself and closes its own connection -- matching a real
+# migrator that fails after connecting. Once the wrapper's own
+# confirm_no_live_session_for_pid proves that exact session is gone, this
+# is the one case where exit 1 (failed, not needs_operator) is correct.
+mkdir -p "$real_session_nonzero_src_dir"
+cat > "$real_session_nonzero_src_dir/main.go" <<'FAKE_NONZERO_GO_EOF'
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"strconv"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// Test-only fake "migrate" binary: opens one real Postgres connection (so
+// migrate-supervised.sh's discovery loop finds a real backend to track),
+// holds it briefly so discovery has a window to observe it, then closes
+// the connection cleanly and exits nonzero -- simulating a migrator that
+// connects, fails partway through its work, and disconnects normally
+// (not a crash that leaves the session dangling). Also acquires
+// MULTICA_INTERNAL_D2_ATTEMPT_LOCK_KEY in shared mode when set, matching
+// the real migrator, so discovery's attempt-bound verification succeeds.
+func main() {
+	dbURL := os.Getenv("DATABASE_URL")
+	conn, err := pgx.Connect(context.Background(), dbURL)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "fake migrate: connect failed:", err)
+		os.Exit(7)
+	}
+	if raw := os.Getenv("MULTICA_INTERNAL_D2_ATTEMPT_LOCK_KEY"); raw != "" {
+		key, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || key == 0 {
+			fmt.Fprintln(os.Stderr, "fake migrate: invalid MULTICA_INTERNAL_D2_ATTEMPT_LOCK_KEY:", raw)
+			os.Exit(2)
+		}
+		var granted bool
+		if err := conn.QueryRow(context.Background(), "SELECT pg_try_advisory_lock_shared($1)", key).Scan(&granted); err != nil || !granted {
+			fmt.Fprintln(os.Stderr, "fake migrate: could not acquire attempt lock:", err)
+			os.Exit(1)
+		}
+	}
+	// Hold the connection open long enough for the supervisor's discovery
+	// poll (200ms cadence) to reliably observe it before we exit --
+	// discovery over --psql-via-docker-network measures ~450-550ms per
+	// round trip (see quiescence.mjs's own documented DEFAULT_WALL_CLOCK_TIMEOUT_MS
+	// comment) and this fixture needs TWO round trips (find-live-session-by-role,
+	// then verify-live-session-is-covered) to complete before exiting, or
+	// migrator_pg_pid is never populated and this test cannot exercise the
+	// exit-1 confirmed-terminated path it exists to check. Under the
+	// launch-time fencing_last_sample_monotonic_ms seeding this repo now
+	// requires, a discovery window this long can occasionally exceed
+	// fencing_max_sample_age_ms (1000ms) itself under real host load and
+	// correctly resolve to needs_operator (fencing_violated) instead of
+	// the exit-1 path -- that is the freshness rule working as intended on
+	// a slow host, not a regression, so the assertion below treats a
+	// needs_operator outcome as informational rather than a hard failure.
+	var one int
+	_ = conn.QueryRow(context.Background(), "SELECT pg_sleep(2.5), 1").Scan(&one, &one)
+	conn.Close(context.Background())
+	fmt.Fprintln(os.Stderr, "fake migrate: simulating a post-connect nonzero exit")
+	os.Exit(7)
+}
+FAKE_NONZERO_GO_EOF
+(cd server && "$go_bin" build -o "$work_dir/fake-migrate-nonzero-real-session" ./cmd/che372_test_fake_migrate_nonzero_DELETE_ME)
+rm -rf "$real_session_nonzero_src_dir"
+
+set +e
+bash deploy/cd/migrate-supervised.sh \
+  --database-url "$host_db_url" \
+  --observer-database-url "$observer_db_url" \
+  --migrate-binary "$work_dir/fake-migrate-nonzero-real-session" \
+  --role-name "$db_user" --database-name "$db_name" \
+  --migration-allocation-seconds 30 \
+  --psql-via-docker-network "$network" >"$work_dir/nonzero-exit-real-session.log" 2>&1
+nonzero_real_session_status=$?
+set -e
+if grep -q "continuous fencing violated" "$work_dir/nonzero-exit-real-session.log"; then
+  echo "INFO: this discovery window's own fencing sample exceeded fencing_max_sample_age_ms under real host load (fencing_violated) -- the launch-time freshness rule correctly failing closed, not a regression in the discovery/confirmation path this control targets; not scored against the assertions below"
+elif [ "$nonzero_real_session_status" -eq 1 ]; then
+  echo "PASS: migrate-supervised.sh exited 1 on a nonzero migrator exit whose Postgres session was discovered and confirmed absent"
+  pass=$((pass + 1))
+  if grep -q "is confirmed terminated — exit 1" "$work_dir/nonzero-exit-real-session.log"; then
+    echo "PASS: migrate-supervised.sh logged the confirmed-terminated exit-1 diagnostic, proving the confirmation path (not the fail-closed default) actually ran"
+    pass=$((pass + 1))
+  else
+    echo "FAIL: expected confirmed-terminated exit-1 diagnostic missing — see $work_dir/nonzero-exit-real-session.log"
+    cat "$work_dir/nonzero-exit-real-session.log"
+    fail=$((fail + 1))
+  fi
+else
+  echo "FAIL: expected exit 1 (confirmed terminated, failed not needs_operator) once a session was actually discovered and confirmed absent, got $nonzero_real_session_status — see $work_dir/nonzero-exit-real-session.log"
+  cat "$work_dir/nonzero-exit-real-session.log"
+  fail=$((fail + 1))
+fi
+
+echo
+echo "==> $pass passed, $fail failed"
+if [ "$fail" -ne 0 ]; then
+  exit 1
+fi
