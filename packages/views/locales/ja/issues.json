@@ -525,6 +525,8 @@
     "send_reply_failed": "返信を送信できませんでした",
     "delete_failed": "コメントを削除できませんでした",
     "reply_count_other": "返信 {{count}} 件",
+    "thread_show_more_other": "他{{count}}件の返信を表示",
+    "thread_show_less": "表示を減らす",
     "leave_comment_placeholder": "コメントを残す...",
     "send_tooltip": "送信",
     "trigger_source_issue_assignee": "担当",

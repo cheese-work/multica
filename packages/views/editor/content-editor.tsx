@@ -63,6 +63,7 @@ import {
   insertUploadPlaceholder,
   settleUploadNode,
 } from "./extensions/file-upload";
+import { attachmentMarkdown } from "./use-coordinated-uploads";
 import { configStore } from "@multica/core/config";
 import { preprocessMarkdown } from "./utils/preprocess";
 import { repairEmptyListItems } from "./utils/repair-list-items";
@@ -392,6 +393,15 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     // assume the editor instance is still readable.
     const pendingFlushRef = useRef<string | null>(null);
     const pendingBaseRef = useRef<string | null>(null);
+    // Uploads started through this editor that haven't resolved yet. Keyed by
+    // uploadId so a settle/fail only clears its own entry. The unmount flush
+    // reads this: an upload still in flight when the editor tears down would
+    // otherwise vanish — its placeholder always serializes to "" (see
+    // `hasUploadingNode` doc), so the pre-settle flush has no image markdown
+    // to emit, and `uploadAndInsertFile`'s `editor.isDestroyed` guard drops
+    // the settle once the response lands, because there's no live doc left to
+    // dispatch a transaction against (CHE-502).
+    const inFlightUploadsRef = useRef<Map<string, Promise<UploadResult | null>>>(new Map());
     const onUpdateRef = useRef(onUpdate);
     const onSubmitRef = useRef(onSubmit);
     const onBlurRef = useRef(onBlur);
@@ -442,19 +452,30 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     const wrappedOnUploadFile = useMemo(() => {
       if (!onUploadFile) return undefined;
       return async (file: File, uploadId: string): Promise<UploadResult | null> => {
-        const result = await onUploadFile(file, uploadId);
-        // Only track attachments that carry a persisted id — the no-workspace
-        // avatar branch returns an id-less record that the resolver can't key
-        // off of, and tracking it would just bloat memory without helping
-        // anyone. See useFileUpload's `markdownLink` docstring for why.
-        if (result?.id) {
-          setSessionUploads((prev) =>
-            // Deduplicate on id so a re-upload (or a paste-then-drop of the
-            // same blob) doesn't create a parallel record.
-            prev.some((a) => a.id === result.id) ? prev : [...prev, result],
-          );
+        const promise = onUploadFile(file, uploadId);
+        inFlightUploadsRef.current.set(uploadId, promise);
+        try {
+          const result = await promise;
+          // Only track attachments that carry a persisted id — the no-workspace
+          // avatar branch returns an id-less record that the resolver can't key
+          // off of, and tracking it would just bloat memory without helping
+          // anyone. See useFileUpload's `markdownLink` docstring for why.
+          if (result?.id) {
+            setSessionUploads((prev) =>
+              // Deduplicate on id so a re-upload (or a paste-then-drop of the
+              // same blob) doesn't create a parallel record.
+              prev.some((a) => a.id === result.id) ? prev : [...prev, result],
+            );
+          }
+          return result;
+        } finally {
+          // Only delete if we're still the tracked promise for this id — a
+          // caller that re-runs the same uploadId (shouldn't happen, but
+          // don't let a stale finally clobber a newer registration).
+          if (inFlightUploadsRef.current.get(uploadId) === promise) {
+            inFlightUploadsRef.current.delete(uploadId);
+          }
         }
-        return result;
       };
     }, [onUploadFile]);
 
@@ -741,17 +762,50 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     // debounce can't swallow the last edit when the surrounding modal closes.
     useEffect(() => {
       return () => {
-        if (!debounceRef.current) return;
-        clearTimeout(debounceRef.current);
-        debounceRef.current = undefined;
+        const hadDebounce = !!debounceRef.current;
+        if (hadDebounce) {
+          clearTimeout(debounceRef.current);
+          debounceRef.current = undefined;
+        }
         if (!flushPendingOnUnmountRef.current) return;
-        const pending = pendingFlushRef.current;
-        const base = pendingBaseRef.current ?? documentBaseRef.current;
-        pendingFlushRef.current = null;
-        pendingBaseRef.current = null;
-        if (pending === null || pending === lastEmittedRef.current) return;
-        lastEmittedRef.current = pending;
-        onUpdateRef.current?.(pending, base);
+
+        let flushed: string | null = null;
+        if (hadDebounce) {
+          const pending = pendingFlushRef.current;
+          const base = pendingBaseRef.current ?? documentBaseRef.current;
+          pendingFlushRef.current = null;
+          pendingBaseRef.current = null;
+          if (pending !== null && pending !== lastEmittedRef.current) {
+            lastEmittedRef.current = pending;
+            onUpdateRef.current?.(pending, base);
+            flushed = pending;
+          }
+        }
+
+        // An upload started through this editor may still be in flight — its
+        // placeholder always serializes to "" (see `hasUploadingNode` doc),
+        // so neither the live document nor the flush above can contain its
+        // image/file markdown yet. Wait for it outside the synchronous
+        // cleanup and re-emit once it settles: `uploadAndInsertFile` already
+        // no-ops its own transaction dispatch once `editor.isDestroyed`, so
+        // this is the only remaining path that can still deliver the
+        // attachment link and id (CHE-502).
+        const pending = Array.from(inFlightUploadsRef.current.values());
+        if (pending.length === 0) return;
+        const baseline = flushed ?? lastEmittedRef.current ?? documentBaseRef.current;
+        void Promise.allSettled(pending).then((settled) => {
+          const links = settled
+            .filter(
+              (r): r is PromiseFulfilledResult<UploadResult | null> =>
+                r.status === "fulfilled" && r.value !== null,
+            )
+            .map((r) => attachmentMarkdown(r.value as UploadResult));
+          if (links.length === 0) return;
+          const md = normalizeMarkdown(`${baseline}\n\n${links.join("\n\n")}`);
+          if (md === lastEmittedRef.current) return;
+          lastEmittedRef.current = md;
+          onUpdateRef.current?.(md, baseline);
+        });
       };
     }, []);
 

@@ -30,7 +30,12 @@ export {
   useIssueDisclosureStore,
   selectDescriptionExpanded,
   selectExpandedThreads,
+  selectJustFoldedRoots,
 } from "./issue-disclosure-store";
+export {
+  foldAllCommentThreads,
+  unfoldAllCommentThreads,
+} from "./thread-fold-coordinator";
 export { useCommentComposerStore } from "./comment-composer-store";
 export { useCommentDraftStore, type CommentDraftKey } from "./comment-draft-store";
 export {

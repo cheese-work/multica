@@ -592,6 +592,202 @@ describe("ContentEditor", () => {
     expect(onUpdate).toHaveBeenCalledTimes(1);
   });
 
+  // CHE-502 — a client-side close (issue modal navigation) unmounts the
+  // description editor while an upload it started is still in flight. The
+  // placeholder node always serializes to "" (see `hasUploadingNode` doc), so
+  // neither the live document nor the debounce flush above can contain the
+  // image yet, and `uploadAndInsertFile`'s `editor.isDestroyed` guard drops
+  // the settle once the response lands — before this fix, the upload
+  // succeeded server-side but no save ever reached the issue.
+  describe("in-flight upload survives unmount (CHE-502)", () => {
+    it("re-emits onUpdate with the settled attachment markdown once an in-flight upload resolves after unmount", async () => {
+      let resolveUpload: ((result: UploadResult | null) => void) | undefined;
+      const onUploadFile = vi.fn(
+        () =>
+          new Promise<UploadResult | null>((resolve) => {
+            resolveUpload = resolve;
+          }),
+      );
+      uploadAndInsertFileMock.mockImplementation(
+        async (
+          _editor: unknown,
+          file: File,
+          handler: (f: File, uploadId: string) => Promise<UploadResult | null>,
+        ) => {
+          await handler(file, "upload-1");
+        },
+      );
+
+      const onUpdate = vi.fn();
+      editorState.markdown = "caption text";
+      let imperativeRef: { uploadFile: (file: File) => void } | null = null;
+      const { unmount } = render(
+        <ContentEditor
+          defaultValue="caption text"
+          onUpdate={onUpdate}
+          onUploadFile={onUploadFile}
+          debounceMs={1500}
+          flushPendingOnUnmount
+          ref={(r) => {
+            imperativeRef = r;
+          }}
+        />,
+      );
+
+      // Paste starts the upload; nothing else edits the document, so no
+      // debounce is armed by the time the modal closes.
+      act(() => {
+        imperativeRef?.uploadFile(new File(["x"], "shot.png", { type: "image/png" }));
+      });
+      expect(onUploadFile).toHaveBeenCalledTimes(1);
+
+      editorState.isDestroyed = true;
+      unmount();
+
+      // Unmount alone must not fabricate a save — the upload hasn't settled.
+      expect(onUpdate).not.toHaveBeenCalled();
+
+      await act(async () => {
+        resolveUpload?.(asUploadResult(makeAttachment("shot-1")));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(onUpdate).toHaveBeenCalledTimes(1);
+      expect(onUpdate).toHaveBeenCalledWith(
+        "caption text\n\n![shot-1.png](https://api.multica.test/api/attachments/shot-1/download)",
+        "caption text",
+      );
+    });
+
+    it("appends settled upload markdown after the debounce-cached flush, without duplicating it", async () => {
+      let resolveUpload: ((result: UploadResult | null) => void) | undefined;
+      const onUploadFile = vi.fn(
+        () =>
+          new Promise<UploadResult | null>((resolve) => {
+            resolveUpload = resolve;
+          }),
+      );
+      uploadAndInsertFileMock.mockImplementation(
+        async (
+          _editor: unknown,
+          file: File,
+          handler: (f: File, uploadId: string) => Promise<UploadResult | null>,
+        ) => {
+          await handler(file, "upload-2");
+        },
+      );
+
+      vi.useFakeTimers();
+      const onUpdate = vi.fn();
+      editorState.markdown = "old content";
+      let imperativeRef: { uploadFile: (file: File) => void } | null = null;
+      const { unmount } = render(
+        <ContentEditor
+          defaultValue="old content"
+          onUpdate={onUpdate}
+          onUploadFile={onUploadFile}
+          debounceMs={1500}
+          flushPendingOnUnmount
+          ref={(r) => {
+            imperativeRef = r;
+          }}
+        />,
+      );
+
+      // Paste inserts a placeholder (still uploading) and edits the doc —
+      // onUpdate fires and arms the debounce, but the placeholder serializes
+      // to "" so the cached markdown has no image in it yet.
+      editorState.markdown = "old content\n\ntyped after paste";
+      act(() => {
+        latestEditorOptions.current?.onUpdate?.({ editor: editorRef.current });
+        imperativeRef?.uploadFile(new File(["x"], "shot.png", { type: "image/png" }));
+      });
+
+      editorState.isDestroyed = true;
+      unmount();
+
+      // The debounce-cached copy flushes immediately, same as the existing
+      // flushPendingOnUnmount contract.
+      expect(onUpdate).toHaveBeenCalledTimes(1);
+      expect(onUpdate).toHaveBeenCalledWith(
+        "old content\n\ntyped after paste",
+        "old content",
+      );
+
+      await act(async () => {
+        resolveUpload?.(asUploadResult(makeAttachment("shot-2")));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // The settled attachment lands in a follow-up emission appended to the
+      // just-flushed text, not folded silently into the first call.
+      expect(onUpdate).toHaveBeenCalledTimes(2);
+      expect(onUpdate).toHaveBeenLastCalledWith(
+        "old content\n\ntyped after paste\n\n![shot-2.png](https://api.multica.test/api/attachments/shot-2/download)",
+        "old content\n\ntyped after paste",
+      );
+    });
+
+    it("does not re-emit when the upload fails (placeholder removed, nothing to append)", async () => {
+      let rejectUpload: ((err: Error) => void) | undefined;
+      const onUploadFile = vi.fn(
+        () =>
+          new Promise<UploadResult | null>((_resolve, reject) => {
+            rejectUpload = reject;
+          }),
+      );
+      uploadAndInsertFileMock.mockImplementation(
+        async (
+          _editor: unknown,
+          file: File,
+          handler: (f: File, uploadId: string) => Promise<UploadResult | null>,
+        ) => {
+          try {
+            await handler(file, "upload-3");
+          } catch {
+            // uploadAndInsertFile swallows the rejection itself in production;
+            // the wrapper under test must not need it re-thrown to clear the
+            // in-flight tracking entry.
+          }
+        },
+      );
+
+      const onUpdate = vi.fn();
+      editorState.markdown = "caption text";
+      let imperativeRef: { uploadFile: (file: File) => void } | null = null;
+      const { unmount } = render(
+        <ContentEditor
+          defaultValue="caption text"
+          onUpdate={onUpdate}
+          onUploadFile={onUploadFile}
+          debounceMs={1500}
+          flushPendingOnUnmount
+          ref={(r) => {
+            imperativeRef = r;
+          }}
+        />,
+      );
+
+      act(() => {
+        imperativeRef?.uploadFile(new File(["x"], "shot.png", { type: "image/png" }));
+      });
+
+      editorState.isDestroyed = true;
+      unmount();
+      expect(onUpdate).not.toHaveBeenCalled();
+
+      await act(async () => {
+        rejectUpload?.(new Error("network error"));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(onUpdate).not.toHaveBeenCalled();
+    });
+  });
+
   it("refreshes the live placeholder getter and repaints when the placeholder prop changes", () => {
     // Repro for MUL-4276: Tiptap's Placeholder snapshots a *string* option at
     // mount, so switching between an archived and an active chat session under

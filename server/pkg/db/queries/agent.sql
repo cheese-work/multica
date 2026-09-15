@@ -641,12 +641,36 @@ RETURNING *;
 -- name: CancelPendingTasksByIssueAndAgentInThread :many
 -- Cancel only the not-yet-started plan in the selected thread. Other threads
 -- retain their queues; running tasks are stopped explicitly through CancelTask.
+--
+-- CHE-485: excludes a row that is already the live rerun for the caller's own
+-- (source task, actor) lineage. Without this, a caller that lost the
+-- idx_one_live_rerun_per_source_task_actor race on a PRIOR attempt but is
+-- retrying the pending-slot reclaim would cancel the very winner it is about
+-- to look up and return — the clear and the lineage check are separate
+-- statements, so excluding the winner here is what makes the clear safe to
+-- run before that check, instead of racing it.
+--
+-- The lineage columns compare with IS NOT DISTINCT FROM, not "=": an
+-- original (non-rerun) task has rerun_of_task_id NULL, and "=" against a
+-- NULL column yields SQL NULL rather than FALSE, which propagates through
+-- the AND chain and makes the outer NOT(...) NULL too — a NULL WHERE
+-- predicate drops the row from the result just like FALSE would, so the
+-- ordinary pending original task was being silently excluded from its own
+-- cancellation. IS NOT DISTINCT FROM treats NULL = NULL as true equality
+-- instead of unknown, so a non-rerun row never matches a non-NULL protect
+-- param and stays eligible for cancellation as before.
 UPDATE agent_task_queue
 SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
     cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL
 WHERE issue_id = $1 AND agent_id = $2
   AND status IN ('queued', 'dispatched', 'deferred')
   AND comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id(sqlc.narg('thread_comment_id')::uuid)
+  AND NOT (
+    sqlc.narg('protect_source_task_id')::uuid IS NOT NULL
+    AND sqlc.narg('protect_actor_user_id')::uuid IS NOT NULL
+    AND rerun_of_task_id IS NOT DISTINCT FROM sqlc.narg('protect_source_task_id')::uuid
+    AND originator_user_id IS NOT DISTINCT FROM sqlc.narg('protect_actor_user_id')::uuid
+  )
 RETURNING *;
 
 -- name: CancelAgentTasksByAgent :many
@@ -1809,6 +1833,27 @@ WHERE issue_id = @issue_id
     OR context->>'head_sha' = sqlc.narg('head_sha')::text
   )
   AND comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id(sqlc.narg('thread_comment_id')::uuid);
+
+-- name: FindLiveRerunOfTask :one
+-- CHE-485: replay guard for RerunIssue. A rerun request is identified by the
+-- exact source task being rerun plus the acting member — a double-click, a
+-- retried HTTP request, or a duplicate webhook delivery of the SAME rerun
+-- action must not cancel-and-recreate a second time. If a still-live task
+-- (not yet terminal) already exists whose rerun_of_task_id points at this
+-- source task and whose originator_user_id is this same actor, that row IS
+-- the admitted outcome of this rerun request — return it so the caller can
+-- skip straight to it instead of mutating anything again.
+--
+-- Scoped to non-terminal status so a rerun that already finished (or failed/
+-- cancelled) is NOT treated as covering a fresh request: a failed or
+-- cancelled attempt is not a fulfilled obligation, and the caller must be
+-- free to rerun again for a genuinely new attempt.
+SELECT * FROM agent_task_queue
+WHERE rerun_of_task_id = sqlc.arg(source_task_id)
+  AND originator_user_id = sqlc.arg(actor_user_id)
+  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+ORDER BY created_at DESC
+LIMIT 1;
 
 -- name: MergeCommentIntoPendingTask :one
 -- MUL-4195: fold a newly-arrived comment into an existing task for (issue,

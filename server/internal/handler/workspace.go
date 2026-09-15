@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -377,9 +378,29 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to read request body")
+		return
+	}
 	var req UpdateWorkspaceRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	// CHE-455: this route sits behind RequireWorkspaceRoleFromURL(owner,
+	// admin), which trusts X-User-ID — stamped from the agent's owning
+	// human even for mat_-authenticated requests — so it does not reject
+	// agent actors. Field-scoped on purpose: this endpoint also carries
+	// name, settings, repos, issue_prefix, avatar_url, which agent actors
+	// may legitimately write; only `context` is governed. Gated on
+	// req.Context != nil — the decoded struct field the write below
+	// actually branches on — not a raw JSON key lookup, which a
+	// case-varied key ("Context") bypasses (encoding/json matches keys to
+	// struct fields case-insensitively).
+	actorType, _ := h.resolveActor(r, requestUserID(r), id)
+	if rejectGovernedFieldForAgentActor(w, r, actorType, req.Context != nil, "context") {
 		return
 	}
 
