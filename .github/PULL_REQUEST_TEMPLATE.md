@@ -6,7 +6,12 @@
 
 ## Related Issue
 
-<!-- Link the issue this PR addresses. If no issue exists, consider creating one first. -->
+<!-- Link the issue this PR addresses. If no issue exists, consider creating one first.
+     State disposition explicitly — pick exactly one:
+     - Full delivery of the issue's acceptance criteria: `Closes #`
+     - Partial delivery, a stack layer, or a broader parent: `Refs #` + note the
+       remaining scope and which PR is intended to actually close it.
+     Do not leave this section without one of the two keywords filled in. -->
 
 Closes #
 

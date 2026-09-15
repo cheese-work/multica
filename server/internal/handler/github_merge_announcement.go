@@ -434,7 +434,7 @@ func (h *Handler) mergeAnnouncementCommentBody(ctx context.Context, a db.GithubM
 		if a.CloseIntent.Bool {
 			nextAction = "Next: this PR declared closing intent for this issue; the issue will auto-advance once no linked PR is still open."
 		} else {
-			nextAction = "Next: this PR did not declare closing intent for this issue; continue the issue's remaining work."
+			nextAction = "Next: this PR did not declare closing intent for this issue; continue the issue's remaining work. No agent run was created by this system announcement — post an explicit @agent or @squad mention to dispatch one."
 		}
 	}
 
