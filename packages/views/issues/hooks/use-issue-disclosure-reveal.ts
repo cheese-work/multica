@@ -1,6 +1,6 @@
 "use client";
 
-import { useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 
 // ---------------------------------------------------------------------------
 // Reveal-before-DOM-walk generation token (01-DESIGN.md "Find and target
@@ -118,8 +118,17 @@ export function useIssueDisclosureReveal(
     return () => setToken(null);
   }, [issueId, revealAll, revealKey, contentKey]);
 
-  const isCommitted = (candidateIssueId: string, candidateRevealKey: string): boolean =>
-    !!token && token.issueId === candidateIssueId && token.revealKey === candidateRevealKey;
+  // Stable identity across renders (only the `token` it closes over changes,
+  // and that's already a dep consumers list explicitly) — a fresh function
+  // reference here would re-trigger every consumer effect that lists this
+  // callback in its deps on every render of THIS hook's owner, tearing down
+  // and re-running that consumer's own effect body (e.g. cancelling a just-
+  // started rAF/timeout) independent of whether the token actually changed.
+  const isCommitted = useCallback(
+    (candidateIssueId: string, candidateRevealKey: string): boolean =>
+      !!token && token.issueId === candidateIssueId && token.revealKey === candidateRevealKey,
+    [token],
+  );
 
   return { token, isCommitted };
 }

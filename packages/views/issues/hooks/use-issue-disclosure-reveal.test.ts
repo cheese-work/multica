@@ -121,4 +121,50 @@ describe("useIssueDisclosureReveal", () => {
     expect(result.current.isCommitted("issue-1", "find:1")).toBe(false);
     expect(result.current.isCommitted("issue-2", "find:1")).toBe(true);
   });
+
+  // Sol's CHE-436 PR #43 review, blocking finding 3: `isCommitted` must keep
+  // a stable function identity across renders that do not actually change
+  // the underlying token, or every consumer effect that lists it in a
+  // dependency array re-runs (tearing down its own cleanup) on every
+  // unrelated render of the component calling this hook — including a
+  // render the CONSUMER's own effect triggers via its own state update,
+  // which cancels work that effect just started before it can complete.
+  it("keeps a stable isCommitted identity across renders that do not change the token", () => {
+    const { result, rerender } = renderHook(
+      () =>
+        useIssueDisclosureReveal({
+          issueId: "issue-1",
+          revealAll: true,
+          revealKey: "find:1",
+          contentKey: 0,
+        }),
+      { initialProps: { unrelated: 0 } },
+    );
+
+    const first = result.current.isCommitted;
+    // A render triggered by something this hook's own options do not depend
+    // on (mirrors a consumer's own unrelated state changing, e.g.
+    // `setHighlightedId` in issue-detail.tsx's landing effect).
+    rerender({ unrelated: 1 });
+
+    expect(result.current.isCommitted).toBe(first);
+  });
+
+  it("changes isCommitted identity only when the token itself actually changes", () => {
+    const { result, rerender } = renderHook(
+      (props: { contentKey: number }) =>
+        useIssueDisclosureReveal({
+          issueId: "issue-1",
+          revealAll: true,
+          revealKey: "find:1",
+          contentKey: props.contentKey,
+        }),
+      { initialProps: { contentKey: 0 } },
+    );
+
+    const first = result.current.isCommitted;
+    rerender({ contentKey: 1 });
+
+    expect(result.current.isCommitted).not.toBe(first);
+  });
 });

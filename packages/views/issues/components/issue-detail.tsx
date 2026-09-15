@@ -9,7 +9,7 @@ import {
 import { useStatusLabel } from "../utils/status-label";
 import { priorityLabel } from "../utils/priority-label";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
-import { useState, useEffect, useCallback, useMemo, useRef, Fragment, type ReactNode } from "react";
+import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, Fragment, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { AppLink, useBackOrReplace } from "../../navigation";
@@ -2019,42 +2019,60 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // 01-DESIGN "On close, clear highlights and pending collectors first.
   // Capture nearest comment/root ID and screen offset around the current
   // match (or current viewport) and restore a valid visible anchor after
-  // folds and Virtuoso return... No-match open/close uses the entry viewport
-  // anchor." Tracked continuously (not just at close time) while find is
-  // open, since the active match — and therefore "current" — moves as the
-  // user steps through results; reading it lazily at close would only ever
-  // see the LAST recorded value anyway, so a ref updated on every relevant
-  // change is equivalent to, and simpler than, snapshotting on close.
+  // folds and Virtuoso return... preserve offset where possible... No-match
+  // open/close uses the entry viewport anchor."
+  //
+  // This must be the PRE-open viewport, not a value read after find.open has
+  // already flipped true: `find.open` becoming true and `items`/
+  // `effectiveExpandedResolved` re-flattening to the fully-revealed shape
+  // happen in the same render (see effectiveExpandedResolved above), so an
+  // effect keyed on `[find.open]` only ever sees the DOM AFTER every fold
+  // already force-opened — it can no longer tell which row the user was
+  // actually looking at before the reveal. Capturing continuously on every
+  // render WHILE FIND IS CLOSED instead means the ref already holds the last
+  // pre-open snapshot the instant `find.open` flips, without racing the
+  // commit that reveals everything. (Once find is open, `findActiveAnchorRef`
+  // below supersedes this as "the current match" — this ref is frozen the
+  // moment find opens and only read back on close as the no-match fallback.)
   const findEntryAnchorRef = useRef<{ rootId: string; offset: number } | null>(null);
-  useEffect(() => {
-    if (!find.open) return;
-    // Entry anchor: whatever top-level row is nearest the container's top
-    // edge the moment find opens — the "current viewport" 01-DESIGN calls
-    // for when there is no match (yet, or ever, for this query).
+  // Tracks whether find was open on the PREVIOUS commit — distinct from
+  // `wasFindOpenForCloseRef` below (that one gates the restore effect and
+  // updates on every close-transition render; this one must specifically
+  // suppress capture on the true→false transition render itself, since by
+  // then the DOM this layout effect would read already reflects whatever
+  // closing find just changed, e.g. a scroll the user made or a fold that
+  // resettled — capturing here would silently overwrite the correct
+  // already-frozen pre-open snapshot with that post-close state instead of
+  // ever handing it to the restore effect that reads it next.
+  const wasFindOpenForCaptureRef = useRef(false);
+  useLayoutEffect(() => {
+    const wasOpenLastCommit = wasFindOpenForCaptureRef.current;
+    wasFindOpenForCaptureRef.current = find.open;
+    // Freeze the snapshot the instant find opens, and again exactly once on
+    // the transition back to closed (the transition render's own DOM read
+    // would race the restore that immediately follows) — recapture only in
+    // the closed steady state that precedes an OPEN.
+    if (find.open || wasOpenLastCommit) return;
     const container = scrollContainerEl;
     if (!container) return;
-    const containerTop = container.getBoundingClientRect().top;
+    const containerRect = container.getBoundingClientRect();
     let nearestId: string | null = null;
+    let nearestOffset = 0;
     let nearestDelta = Number.POSITIVE_INFINITY;
     for (const item of items) {
       if (item.kind === "activity-group") continue;
       const el = document.getElementById(`comment-${item.id}`);
       if (!el) continue;
-      const delta = Math.abs(el.getBoundingClientRect().top - containerTop);
+      const top = el.getBoundingClientRect().top - containerRect.top;
+      const delta = Math.abs(top);
       if (delta < nearestDelta) {
         nearestDelta = delta;
         nearestId = item.id;
+        nearestOffset = top;
       }
     }
-    if (nearestId) {
-      findEntryAnchorRef.current = { rootId: nearestId, offset: 0 };
-    }
-    // Deliberately only the open-transition and content-shape deps: this
-    // captures the ENTRY anchor once per session, not on every scroll — a
-    // continuous scroll-following anchor would fight the user's own
-    // scrolling while find is open.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- entry anchor captured once per find-open transition, not on every scroll.
-  }, [find.open]);
+    if (nearestId) findEntryAnchorRef.current = { rootId: nearestId, offset: nearestOffset };
+  });
 
   // The active match's containing root/bar id, updated every time the active
   // match changes — this supersedes the entry anchor as "the current match"
@@ -2110,7 +2128,16 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     wasFindOpenForCloseRef.current = find.open;
     if (!wasOpen || find.open) return;
 
-    const anchorId = findActiveAnchorRef.current ?? findEntryAnchorRef.current?.rootId ?? null;
+    // No-match (or never-searched) close falls back to the pre-open entry
+    // anchor and its captured offset — 01-DESIGN: "preserve offset where
+    // possible". A live active match instead re-centers on itself: the user
+    // was just LOOKING at that match, so centering it is the correct
+    // restoration, not a regression from the entry anchor's offset (which
+    // describes a different row's original position, not the match's).
+    const activeAnchorId = findActiveAnchorRef.current;
+    const entryAnchor = findEntryAnchorRef.current;
+    const anchorId = activeAnchorId ?? entryAnchor?.rootId ?? null;
+    const entryOffset = activeAnchorId ? null : (entryAnchor?.offset ?? null);
     findActiveAnchorRef.current = null;
     findEntryAnchorRef.current = null;
     if (!anchorId) return;
@@ -2139,19 +2166,33 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       // (thread stayed expanded via a latch or manual preference); otherwise
       // fall back to its root/bar, which is always present once folds
       // resettle.
+      const restoredExactRow = !!document.getElementById(`comment-${anchorId}`);
       const el =
         document.getElementById(`comment-${anchorId}`) ??
         document.getElementById(`comment-${rootId}`);
       if (!el) return;
       const containerRect = container.getBoundingClientRect();
       const elRect = el.getBoundingClientRect();
-      const pad = 80;
-      const above = elRect.top < containerRect.top + pad;
-      const below = elRect.bottom > containerRect.bottom - pad;
-      if (above || below) {
-        const offsetWithin = elRect.top - containerRect.top + container.scrollTop;
-        const target = offsetWithin - container.clientHeight / 2 + elRect.height / 2;
-        container.scrollTop = Math.max(0, target);
+      if (entryOffset !== null && restoredExactRow) {
+        // No-match/no-query close on the exact pre-open row: put it back at
+        // the offset it held before find opened, clamped to the container,
+        // rather than re-centering it — re-centering would move content the
+        // user never asked to move just because find happened to open.
+        const currentOffset = elRect.top - containerRect.top;
+        const target = Math.max(0, container.scrollTop + (currentOffset - entryOffset));
+        container.scrollTop = target;
+      } else {
+        // A live active match, or the exact entry row no longer exists
+        // (folds resettled to a different shape) — center on whatever
+        // anchor/root DOM node is actually available now.
+        const pad = 80;
+        const above = elRect.top < containerRect.top + pad;
+        const below = elRect.bottom > containerRect.bottom - pad;
+        if (above || below) {
+          const offsetWithin = elRect.top - containerRect.top + container.scrollTop;
+          const target = offsetWithin - container.clientHeight / 2 + elRect.height / 2;
+          container.scrollTop = Math.max(0, target);
+        }
       }
       // Move focus from the (now unmounted) find bar to a stable issue
       // control — never leave focus stranded on a removed element.
@@ -2403,12 +2444,16 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     if (didHighlightRef.current === highlightCommentId) return;
     // The deep link already landed before this mount (memento entry — a tab
     // switch back or an in-tab return). The restored scroll offset is the
-    // state the user left, and the jump must not fight it. A fresh selection
-    // clears the entry, so this only ever suppresses a *repeat* landing.
-    if (consumedHighlightRef.current === highlightCommentId) {
-      didHighlightRef.current = highlightCommentId;
-      return;
-    }
+    // state the user left, and the jump must not fight it — but 01-DESIGN is
+    // explicit that "memento restoration may suppress scrolling but must not
+    // suppress revealing the target": a memento only proves THIS component
+    // previously landed on the target, not that the target's containing
+    // fold is still open now (a fresh mount may start fully collapsed, or an
+    // intervening resolve/collapse may have refolded it since). So a
+    // consumed memento skips the scroll/highlight/re-write below, but still
+    // falls through to the same auto-expand branches a fresh landing uses.
+    const mementoConsumed = consumedHighlightRef.current === highlightCommentId;
+    if (mementoConsumed) didHighlightRef.current = highlightCommentId;
 
     const rootId = replyToRoot.get(highlightCommentId);
     if (rootId && rootId !== highlightCommentId) {
@@ -2431,6 +2476,14 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         }
       }
     }
+
+    // A consumed memento only ever suppresses the scroll/highlight/rewrite
+    // below (01-DESIGN: "memento may suppress scrolling but never suppress
+    // revealing the target") — the auto-expand branches above already ran
+    // unconditionally, on every render, including this one, so the target's
+    // fold gets (re-)opened even when this specific landing is a memento
+    // replay rather than a fresh jump.
+    if (mementoConsumed) return;
 
     // 01-DESIGN "Navigation resolves a loaded comment to its root and nested
     // fold ancestors, establishes a target pin, waits for the same committed

@@ -17,6 +17,7 @@ import {
   DEFAULT_SUB_ISSUE_ROW_PROPERTIES,
   useSubIssueDisplayStore,
 } from "@multica/core/issues/stores/sub-issue-display-store";
+import { ScrollRestorationProvider, type ScrollRestorationAdapter } from "../../platform";
 import enCommon from "../../locales/en/common.json";
 import enIssues from "../../locales/en/issues.json";
 
@@ -2035,6 +2036,88 @@ describe("IssueDetail (shared)", () => {
     });
   });
 
+  // Sol's CHE-436 PR #43 review, blocking finding 2: closing find with no
+  // active match (no query, or a query with zero matches) must restore the
+  // PRE-open row to its pre-open offset within the scroll container, not
+  // re-center it — 01-DESIGN.md:74 "preserve offset where possible". Before
+  // the fix, the entry anchor was captured in an effect keyed on
+  // `[find.open]`, which only runs AFTER the same render already flattened
+  // every fold open — so the "pre-open" snapshot was actually a post-reveal
+  // one, and the restore always re-centered regardless.
+  it("restores the pre-open row to its original offset (not centered) when find closes with no active match", async () => {
+    const root = mockTimeline[0]!;
+    mockApiObj.listTimeline.mockResolvedValue([root]);
+
+    // Every element reports the same fixed size; only the root row's THIS
+    // test cares about, and it is deliberately NOT at the position centering
+    // would produce (which depends on container height/2), so a passing
+    // "top === originalTop - scrollDelta" assertion below could not be
+    // satisfied by the old centering math except by coincidence.
+    const originalGetClientRects = Element.prototype.getClientRects;
+    const originalGetBoundingClientRect = Element.prototype.getBoundingClientRect;
+    Element.prototype.getClientRects = function (this: Element) {
+      return [{ width: 1, height: 1 }] as unknown as DOMRectList;
+    };
+    // Container top pinned at 0, height 400. Root row starts 130px from the
+    // container's top edge before find opens, and (since nothing in the
+    // timeline changes shape here) stays there for the rest of the test —
+    // scrollTop deltas are what the restore effect must apply on top of this
+    // fixed layout to reproduce the original 130px offset after any
+    // intervening scroll.
+    let containerScrollTop = 0;
+    Element.prototype.getBoundingClientRect = function (this: Element) {
+      if (this.hasAttribute("data-issue-timeline-scroll")) {
+        return { top: 0, bottom: 400, height: 400, left: 0, right: 800, width: 800 } as DOMRect;
+      }
+      if (this.id === `comment-${root.id}`) {
+        return { top: 130 - containerScrollTop, bottom: 160 - containerScrollTop, height: 30, left: 0, right: 800, width: 800 } as DOMRect;
+      }
+      return originalGetBoundingClientRect.call(this);
+    };
+
+    try {
+      renderIssueDetail();
+      await screen.findByText("Started working on this");
+
+      const container = document.querySelector("[data-issue-timeline-scroll]") as HTMLElement;
+      Object.defineProperty(container, "scrollTop", {
+        get: () => containerScrollTop,
+        set: (v: number) => { containerScrollTop = v; },
+        configurable: true,
+      });
+
+      fireEvent.keyDown(document, { key: "f", ctrlKey: true });
+      await screen.findByPlaceholderText("Find in issue...");
+
+      // Simulate the user scrolling away from the entry row WHILE find is
+      // open (no query typed — the no-match/never-searched path 01-DESIGN
+      // calls out explicitly). The entry anchor was captured before this
+      // scroll happened (pre-open), so its target offset (130) predates it.
+      containerScrollTop = 500;
+
+      const findInput = screen.getByPlaceholderText("Find in issue...");
+      fireEvent.keyDown(findInput, { key: "Escape" });
+      await waitFor(() => expect(screen.queryByPlaceholderText("Find in issue...")).not.toBeInTheDocument());
+      await act(async () => {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      });
+
+      // Restore must move scrollTop back toward 0 so the root row's offset
+      // returns to its captured pre-open value (130px from the container
+      // top) — NOT leave it at the scrolled-away 500, and NOT center it
+      // (centering in a 400px container against a 30px-tall row targets
+      // scrollTop ≈ 500 + 130 - 185 = 445, a value this assertion also
+      // rules out).
+      await waitFor(() => {
+        expect(containerScrollTop).toBeCloseTo(0, 0);
+      });
+    } finally {
+      Element.prototype.getClientRects = originalGetClientRects;
+      Element.prototype.getBoundingClientRect = originalGetBoundingClientRect;
+    }
+  });
+
   // CHE-476 (CHE-380 Gap A): restores 01-DESIGN line 51's original scope,
   // narrowed out of PR #31/CHE-435 because bare focus/selection with no
   // unsaved change produces no useCommentDraftStore entry —
@@ -3028,6 +3111,34 @@ describe("IssueDetail (shared)", () => {
       expect(rootEl?.className ?? "").not.toContain(highlightedCommentBackgroundClass);
     });
 
+    // Sol's CHE-436 PR #43 review, blocking finding 3: the landing effect's
+    // own re-render (triggered by its OWN `setHighlightedId` call, since
+    // `highlightedId` is component state) must not tear down its own
+    // just-scheduled fade timeout/centering rAF. Before the fix,
+    // `disclosureReveal.isCommitted` was a fresh function on every render, so
+    // it was a fresh value in this effect's dependency array on every render
+    // — including the one this same effect's `setHighlightedId` call causes —
+    // which re-ran the effect's cleanup (cancelling the fade timer) the
+    // instant after it started, then bailed out of a fresh landing because
+    // `didHighlightRef` was already set. The visible symptom: the highlight
+    // never fades, because the timer that would clear it was cancelled
+    // before it could fire.
+    it("fades the landed highlight after its own state update triggers a rerender", async () => {
+      renderIssueDetailWithHighlight("comment-2");
+
+      await waitFor(() =>
+        expect(hasHighlightedCommentBackground(document.getElementById("comment-comment-2"))).toBe(true),
+      );
+
+      // The fade timeout is 2500ms; poll well past it with real timers. If
+      // the landing effect's cleanup fired prematurely (cancelling the
+      // timeout), this never becomes false and the test times out.
+      await waitFor(
+        () => expect(hasHighlightedCommentBackground(document.getElementById("comment-comment-2"))).toBe(false),
+        { timeout: 4000, interval: 100 },
+      );
+    }, 6000);
+
     // CHE-436 acceptance criterion 5: a missing/deleted target must never
     // report false success by falling back to highlighting the root (or any
     // other node) — the landing effect requires the exact target element to
@@ -3045,6 +3156,74 @@ describe("IssueDetail (shared)", () => {
       });
       expect(hasHighlightedCommentBackground(document.getElementById(`comment-${root.id}`))).toBe(false);
       expect(document.getElementById("comment-deleted-comment-id")).toBeNull();
+    });
+
+    // Sol's CHE-436 PR #43 review, blocking finding 1: a consumed memento
+    // (this exact target already landed once, in an earlier mount — e.g. a
+    // tab switch back) must still reveal the target's fold, even though it
+    // correctly skips the scroll/highlight/re-write. 01-DESIGN.md:76 —
+    // "Memento restoration may suppress scrolling but must not suppress
+    // revealing the target." Before the fix, the memento-consumed branch
+    // returned before ever reaching the resolved-thread auto-expand logic,
+    // so a target inside a still-collapsed resolved thread stayed hidden
+    // forever on a memento-restored mount.
+    it("still reveals a resolved-thread target on mount even when its memento was already consumed", async () => {
+      const timelineWithResolvedThread: TimelineEntry[] = [
+        ...mockTimeline,
+        {
+          type: "comment",
+          id: "comment-3",
+          actor_type: "member",
+          actor_id: "user-1",
+          content: "Resolved root",
+          parent_id: null,
+          created_at: "2026-01-18T00:00:00Z",
+          updated_at: "2026-01-18T00:00:00Z",
+          comment_type: "comment",
+          resolved_at: "2026-01-19T00:00:00Z",
+        } as TimelineEntry,
+        {
+          type: "comment",
+          id: "reply-1",
+          actor_type: "member",
+          actor_id: "user-1",
+          content: "Reply inside resolved thread",
+          parent_id: "comment-3",
+          created_at: "2026-01-18T01:00:00Z",
+          updated_at: "2026-01-18T01:00:00Z",
+          comment_type: "comment",
+        } as TimelineEntry,
+      ];
+      mockApiObj.listTimeline.mockResolvedValue(timelineWithResolvedThread);
+
+      // Fake adapter reporting the memento as already consumed for this exact
+      // target — the scenario a real remount-after-tab-switch produces.
+      const adapter: ScrollRestorationAdapter = {
+        get: () => undefined,
+        getViewState: (key) => (key === "highlight:issue-1" ? "reply-1" : undefined),
+        setViewState: vi.fn(),
+      };
+
+      const queryClient = createTestQueryClient();
+      render(
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <QueryClientProvider client={queryClient}>
+            <ScrollRestorationProvider adapter={adapter}>
+              <IssueDetail issueId="issue-1" highlightCommentId="reply-1" />
+            </ScrollRestorationProvider>
+          </QueryClientProvider>
+        </I18nProvider>,
+      );
+
+      // The thread must still auto-expand and reveal the reply, exactly like
+      // a fresh (non-memento) landing — the memento only suppresses the
+      // scroll/highlight/re-write that follows, never the reveal itself.
+      await waitFor(() => {
+        expect(document.getElementById("comment-reply-1")).not.toBeNull();
+      });
+      // The memento was already consumed for this target, so the effect must
+      // not write it again.
+      expect(adapter.setViewState).not.toHaveBeenCalled();
     });
   });
 
