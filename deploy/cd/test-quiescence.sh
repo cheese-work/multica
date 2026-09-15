@@ -195,7 +195,15 @@ expect_admit "final gate admits again once the spoofing session is gone" final_g
 # TestEnforcedTimeoutsDefeatConnectionStringBypass for that coverage.
 
 echo "==> live session identity coverage"
-docker exec -d "$container" psql -U "$db_user" -d "$db_name" -c "SELECT pg_sleep(10);"
+# ATTEMPT_LOCK_KEY simulates the fresh per-attempt secret
+# migrate-supervised.sh generates and passes to the real migrator via
+# MULTICA_INTERNAL_D2_ATTEMPT_LOCK_KEY. Here the test session acquires it
+# itself (pg_advisory_lock_shared), exactly mirroring what
+# dbstartup.NewPoolWithEnforcedTimeouts's AfterConnect hook does for every
+# connection the real migrator's pool opens.
+ATTEMPT_LOCK_KEY=424242424242
+docker exec -d "$container" psql -U "$db_user" -d "$db_name" -c \
+  "SELECT pg_advisory_lock_shared(${ATTEMPT_LOCK_KEY}); SELECT pg_sleep(10);"
 sleep 1
 live="$(node deploy/cd/quiescence.mjs find-live-session-by-role --database-url "$db_url" --psql-via-docker-network "$network" \
   --role-name "$db_user" --database-name "$db_name" --query-timeout-ms 3000)"
@@ -205,21 +213,41 @@ live_pid="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).pid
 live_backend_start="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).backendStart))' "$live")"
 
 if node deploy/cd/quiescence.mjs verify-live-session-is-covered --database-url "$db_url" --psql-via-docker-network "$network" \
-  --pid "$live_pid" --backend-start "$live_backend_start" --role-name "$db_user" --database-name "$db_name" --query-timeout-ms 4000 >/dev/null 2>&1; then
-  echo "PASS: verify-live-session-is-covered confirms the correct live identity"
+  --pid "$live_pid" --backend-start "$live_backend_start" --role-name "$db_user" --database-name "$db_name" \
+  --attempt-lock-key "$ATTEMPT_LOCK_KEY" --query-timeout-ms 4000 >/dev/null 2>&1; then
+  echo "PASS: verify-live-session-is-covered confirms the correct live identity holding the attempt lock"
   pass=$((pass + 1))
 else
-  echo "FAIL: verify-live-session-is-covered rejected a genuinely correct identity"
+  echo "FAIL: verify-live-session-is-covered rejected a genuinely correct identity holding the attempt lock"
   fail=$((fail + 1))
 fi
 
 echo "==> negative control: live-session identity check rejects a mismatched backend_start (PID reuse guard)"
 if node deploy/cd/quiescence.mjs verify-live-session-is-covered --database-url "$db_url" --psql-via-docker-network "$network" \
-  --pid "$live_pid" --backend-start "2001-01-01 00:00:00+00" --role-name "$db_user" --database-name "$db_name" >/dev/null 2>&1; then
+  --pid "$live_pid" --backend-start "2001-01-01 00:00:00+00" --role-name "$db_user" --database-name "$db_name" \
+  --attempt-lock-key "$ATTEMPT_LOCK_KEY" >/dev/null 2>&1; then
   echo "FAIL: verify-live-session-is-covered admitted a backend_start mismatch — PID-reuse spoofing possible"
   fail=$((fail + 1))
 else
   echo "PASS: verify-live-session-is-covered rejects a backend_start mismatch"
+  pass=$((pass + 1))
+fi
+
+echo "==> negative control: live-session identity check rejects a session NOT holding this attempt's lock (foreign-client guard)"
+# Same live, correctly-authenticated pid|backend_start as above — the ONLY
+# difference from the passing case is that this session never acquired
+# ATTEMPT_LOCK_KEY. This is exactly the admission hole CHE-372 review
+# found: a foreign client sharing the migration role's credentials passes
+# every role/database/pid/backend_start check, but cannot know (and here,
+# deliberately does not present) the per-attempt secret, so it must still
+# be rejected.
+if node deploy/cd/quiescence.mjs verify-live-session-is-covered --database-url "$db_url" --psql-via-docker-network "$network" \
+  --pid "$live_pid" --backend-start "$live_backend_start" --role-name "$db_user" --database-name "$db_name" \
+  --attempt-lock-key 999999999999 >/dev/null 2>&1; then
+  echo "FAIL: verify-live-session-is-covered admitted a session not holding this attempt's lock — foreign-client spoofing possible"
+  fail=$((fail + 1))
+else
+  echo "PASS: verify-live-session-is-covered rejects a session not holding this attempt's lock"
   pass=$((pass + 1))
 fi
 terminate_all_client_backends
@@ -231,42 +259,50 @@ echo "==> --fenced-sessions: verified identity is fenced, a fabricated one is no
 # backend_start entirely -- so any foreign client holding those credentials
 # was exempted from every quiescence check. --fenced-sessions instead takes
 # explicit "<pid>|<backend_start>" pairs and RE-VERIFIES each one against
-# pg_stat_activity before exempting it.
+# pg_stat_activity AND this attempt's advisory-lock marker before exempting
+# it.
 #
-# Two directions must hold, and the second is what proves verification
+# Directions that must hold, and (b)/(e) are what prove verification
 # actually runs rather than the flag merely being parsed:
-#   (a) a genuine, currently-live pid|backend_start IS fenced;
-#   (b) a fabricated pair (right pid, wrong backend_start) is NOT fenced.
+#   (a) a genuine, currently-live pid|backend_start holding the attempt
+#       lock IS fenced;
+#   (b) a fabricated pair (right pid, wrong backend_start) is NOT fenced;
+#   (e) the SAME genuine pid|backend_start, but checked against a
+#       DIFFERENT attempt-lock-key than the one it actually holds, is NOT
+#       fenced — proving the fence is bound to this specific attempt's
+#       secret, not merely to role/database/pid/backend_start.
 # Case (b) uses the same live session as (a) with only backend_start
 # falsified, so the ONLY thing that can distinguish them is real
 # verification -- a parse-only implementation would fence both identically.
-docker exec -d "$container" psql -U "$db_user" -d "$db_name" -c "SELECT pg_sleep(20);"
+docker exec -d "$container" psql -U "$db_user" -d "$db_name" -c \
+  "SELECT pg_advisory_lock_shared(${ATTEMPT_LOCK_KEY}); SELECT pg_sleep(20);"
 sleep 1
 fenced_live="$(node deploy/cd/quiescence.mjs find-live-session-by-role --database-url "$db_url" --psql-via-docker-network "$network" \
   --role-name "$db_user" --database-name "$db_name" --query-timeout-ms 4000)"
 fenced_pid="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).pid))' "$fenced_live")"
 fenced_backend_start="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).backendStart))' "$fenced_live")"
 
-# (a) The real, verifiable pair. This session is idle with no open
-# transaction, so fencing it is the ONLY thing that can let the gate admit
-# (evaluateFinalGate's "idle sessions require explicit fencing" rule).
-expect_admit "final-gate --fenced-sessions admits a verified live pid|backend_start" \
+# (a) The real, verifiable pair, holding the attempt lock. This session is
+# idle with no open transaction, so fencing it is the ONLY thing that can
+# let the gate admit (evaluateFinalGate's "idle sessions require explicit
+# fencing" rule).
+expect_admit "final-gate --fenced-sessions admits a verified live pid|backend_start holding the attempt lock" \
   node deploy/cd/quiescence.mjs final-gate --database-url "$db_url" --psql-via-docker-network "$network" \
   --query-timeout-ms 4000 --fenced-sessions "${fenced_pid}|${fenced_backend_start}" \
-  --role-name "$db_user" --database-name "$db_name"
+  --role-name "$db_user" --database-name "$db_name" --attempt-lock-key "$ATTEMPT_LOCK_KEY"
 
 # (b) Same pid, falsified backend_start -- the PID-reuse case. Must NOT be
 # fenced, so the still-present idle session denies.
 expect_deny "final-gate --fenced-sessions refuses a fabricated backend_start (verification really runs)" \
   node deploy/cd/quiescence.mjs final-gate --database-url "$db_url" --psql-via-docker-network "$network" \
   --query-timeout-ms 4000 --fenced-sessions "${fenced_pid}|2001-01-01 00:00:00+00" \
-  --role-name "$db_user" --database-name "$db_name"
+  --role-name "$db_user" --database-name "$db_name" --attempt-lock-key "$ATTEMPT_LOCK_KEY"
 
 # (c) A wholly fabricated pid is likewise not fenced.
 expect_deny "final-gate --fenced-sessions refuses a wholly fabricated pid" \
   node deploy/cd/quiescence.mjs final-gate --database-url "$db_url" --psql-via-docker-network "$network" \
   --query-timeout-ms 4000 --fenced-sessions "999999|${fenced_backend_start}" \
-  --role-name "$db_user" --database-name "$db_name"
+  --role-name "$db_user" --database-name "$db_name" --attempt-lock-key "$ATTEMPT_LOCK_KEY"
 
 # (d) The removed flags must not still work. A caller that passes the old
 # --fenced-role/--fenced-database gets no fencing at all now (they are
@@ -275,6 +311,17 @@ expect_deny "final-gate --fenced-sessions refuses a wholly fabricated pid" \
 expect_deny "removed --fenced-role/--fenced-database no longer fence anything" \
   node deploy/cd/quiescence.mjs final-gate --database-url "$db_url" --psql-via-docker-network "$network" \
   --query-timeout-ms 4000 --fenced-role "$db_user" --fenced-database "$db_name"
+
+# (e) A real, verifiable, currently-fenceable pid|backend_start, but
+# verified against the WRONG attempt-lock-key -- simulating a foreign
+# client authenticated as the same role/database, discovered by a
+# DIFFERENT attempt's supervisor. Must NOT be fenced: the whole point of
+# the attempt-lock secret is that only the supervisor that actually
+# launched this session's migrator knows the right key.
+expect_deny "final-gate --fenced-sessions refuses a genuine session verified against the wrong attempt-lock-key" \
+  node deploy/cd/quiescence.mjs final-gate --database-url "$db_url" --psql-via-docker-network "$network" \
+  --query-timeout-ms 4000 --fenced-sessions "${fenced_pid}|${fenced_backend_start}" \
+  --role-name "$db_user" --database-name "$db_name" --attempt-lock-key 999999999999
 
 terminate_all_client_backends
 sleep 1

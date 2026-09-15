@@ -175,17 +175,44 @@ fi
 # --decision-file/--attempt-id were not supplied (e.g. standalone/test
 # invocations) this is a deliberate no-op — nothing to write to and no
 # entrypoint is waiting on this contract in that mode.
+# write_decision must NEVER abort the script via set -e: every call site
+# immediately follows with its own `exit N` carrying this script's
+# documented exit-code contract (3 = fence must stay up, 4 = refuse to
+# start, 5 = object-validity failure, etc. — see the usage/contract
+# comments elsewhere in this file). An earlier version let the `>` redirect
+# or `mv` fail straight through set -e, which aborted the script AT THE
+# WRITE CALL — before that following `exit N` ever ran — so the process's
+# own exit code silently became whatever the shell reports for an
+# unhandled command failure (typically 1), not the caller's intended code.
+# Two compounding harms, both on exactly the failure path this durability
+# guarantee is supposed to protect: (1) the caller's real exit code is
+# corrupted, so anything branching on it (e.g. "3 means keep the fence up")
+# takes the wrong action; (2) the decision file is left holding whatever it
+# held before this call — if that was "migration_started" or
+# "migrator_launched", the NEXT restart's preservation gate sees a
+# non-terminal marker and takes over the file as if this attempt recorded
+# no outcome, even though it may have failed with a real disposition that
+# was simply never persisted.
+#
+# The fix: make the write non-fatal and loud. `|| true` absorbs any
+# failure from the redirect+rename pipeline so set -e cannot act on it;
+# the caller's own `exit N` immediately after this call always runs
+# unchanged, preserving the documented exit-code contract regardless of
+# whether the write itself succeeded. A write failure is reported to
+# stderr so it is not silently swallowed, but it is data for an operator,
+# not a reason to change this process's own control flow.
 write_decision() {
   local decision="$1"
   [ -n "$decision_file" ] || return 0
   local tmp_file
   tmp_file="${decision_file}.tmp.$$"
-  {
-    printf '%s\n' "$decision"
-    printf '%s\n' "$attempt_id"
-  } >"$tmp_file"
-  mv -f "$tmp_file" "$decision_file"
-  echo "che372-d2: recorded decision=$decision attempt_id=$attempt_id at $decision_file" >&2
+  if { printf '%s\n' "$decision"; printf '%s\n' "$attempt_id"; } >"$tmp_file" 2>/dev/null && mv -f "$tmp_file" "$decision_file" 2>/dev/null; then
+    echo "che372-d2: recorded decision=$decision attempt_id=$attempt_id at $decision_file" >&2
+  else
+    rm -f "$tmp_file" 2>/dev/null || true
+    echo "che372-d2: FAILED to record decision=$decision attempt_id=$attempt_id at $decision_file (write or rename error) — the caller's own exit code still reflects the real outcome, but this durability record was NOT updated; an operator must reconcile $decision_file manually" >&2
+  fi
+  return 0
 }
 
 # Decision-file preservation gate. write_decision "migration_started"
@@ -205,11 +232,27 @@ write_decision() {
 # Refuse to proceed and exit 4, leaving the file byte-for-byte untouched
 # for an operator to inspect.
 #
-# What is NOT terminal: "migration_started" itself. That is a progress
-# marker, not a disposition — a crashed previous run that got no further
-# than writing it recorded no outcome to preserve, and blocking on it would
-# make any crash permanently unrecoverable without manual file surgery. An
-# absent file is likewise a clean slate. Everything else is terminal,
+# What is safe to TAKE OVER: only "migration_started" — written below
+# before the migrator has been launched at all. A crashed previous run
+# that got no further than writing it touched no database state, so
+# retrying under a fresh budget is genuinely safe.
+#
+# What is NOT safe to take over, and was the exact hole here: a PRIOR
+# invocation's "migrator_launched" marker (written immediately after
+# "$migrate_binary" up & below, once the migrator process has actually
+# been started and may be mid-DDL). An earlier version of this gate only
+# ever checked for "migration_started", so a crash/kill anywhere between
+# that first write and a terminal write_decision call — including the
+# entire migration run itself — still left "migration_started" as the
+# file's last recorded content, and a restart walked straight past this
+# gate and retried against a possibly partially-migrated database. That
+# collapsed exactly the failure mode a database migration reconciliation
+# gate exists to prevent, and it compounds with any failure that prevents
+# a terminal write_decision call from landing (see the write_decision
+# retry loop below) — both funnel into this same unsafe-looking-safe state.
+#
+# Everything else (a terminal disposition, or "migrator_launched" from
+# a run that crashed after actually starting the migrator) is terminal,
 # including a terminal SUCCESS (starting_candidate): re-running a migration
 # whose success was already published to the entrypoint is its own hazard,
 # and the attempt id being the same or different does not change that — a
@@ -224,10 +267,10 @@ if [ -n "$decision_file" ] && [ -f "$decision_file" ]; then
   existing_decision="$(sed -n '1p' "$decision_file" 2>/dev/null || true)"
   existing_attempt_id="$(sed -n '2p' "$decision_file" 2>/dev/null || true)"
   if [ "$existing_decision" != "migration_started" ]; then
-    echo "che372-d2: refusing to start — $decision_file already records a terminal disposition from a previous attempt (decision='$existing_decision' attempt_id='$existing_attempt_id'). Overwriting it would destroy the only durable evidence of that attempt's outcome and allow a partially migrated database to be retried under a fresh budget. An operator must inspect and remove/rotate this file before another attempt." >&2
+    echo "che372-d2: refusing to start — $decision_file already records '$existing_decision' from a previous attempt (attempt_id='$existing_attempt_id'), which is either a terminal disposition or proof the migrator was actually launched and may have left the database partially migrated. Overwriting it would destroy the only durable evidence of that attempt's outcome and allow an uncertain database state to be retried under a fresh budget. An operator must inspect and remove/rotate this file before another attempt." >&2
     exit 4
   fi
-  echo "che372-d2: $decision_file records non-terminal progress (decision='$existing_decision' attempt_id='$existing_attempt_id') from an attempt that recorded no outcome — proceeding and taking over the file" >&2
+  echo "che372-d2: $decision_file records non-terminal progress (decision='$existing_decision' attempt_id='$existing_attempt_id') from an attempt that never reached migrator launch — proceeding and taking over the file" >&2
 fi
 
 write_decision "migration_started"
@@ -312,6 +355,32 @@ fi
 export DATABASE_URL="$database_url"
 export MULTICA_INTERNAL_D2_ENFORCED_STATEMENT_TIMEOUT_MS="$statement_timeout_ms_capped"
 export MULTICA_INTERNAL_D2_ENFORCED_LOCK_TIMEOUT_MS="$lock_timeout_ms"
+
+# attempt_lock_key is a fresh, cryptographically random secret generated
+# ONCE per invocation of this script and passed to the migrator ONLY via
+# its environment (MULTICA_INTERNAL_D2_ATTEMPT_LOCK_KEY, never logged,
+# never written to $decision_file, never part of any connection string).
+# The migrator acquires it in shared advisory-lock mode on every connection
+# it opens (dbstartup.NewPoolWithEnforcedTimeouts's AfterConnect hook), and
+# this script later demands proof of that same key via
+# verify-live-session-is-covered / final-gate --attempt-lock-key before
+# fencing any session. A foreign client authenticated as the same
+# role/database cannot know this secret and therefore cannot be mistaken
+# for a session this attempt actually opened — see quiescence.mjs's
+# verifyLiveSessionHoldsAttemptLock for the exact admission hole this
+# closes (role/database/pid/backend_start alone proves identity
+# continuity, not attempt ownership).
+#
+# Range: a positive int64 (pg_advisory_lock's key is bigint; this script
+# only ever generates a positive value so it never collides with the
+# negative half of the space by construction, though Postgres accepts
+# either). /dev/urandom via od avoids depending on bash's $RANDOM (only
+# 15 bits) or any external RNG binary beyond coreutils already required
+# elsewhere in this script.
+attempt_lock_key="$(od -An -N8 -tu8 /dev/urandom | tr -d ' ')"
+attempt_lock_key=$(( attempt_lock_key < 0 ? -attempt_lock_key : attempt_lock_key ))
+[ "$attempt_lock_key" -gt 0 ] || attempt_lock_key=1
+export MULTICA_INTERNAL_D2_ATTEMPT_LOCK_KEY="$attempt_lock_key"
 
 quiescence_args_common=(--database-url "$observer_database_url")
 if [ -n "$psql_via_docker_network" ]; then
@@ -516,7 +585,7 @@ run_final_gate() {
     gate_args+=(--fenced-pids "$fenced_pids")
   fi
   if [ -n "$fenced_sessions" ]; then
-    gate_args+=(--fenced-sessions "$fenced_sessions" --role-name "$role_name" --database-name "$database_name")
+    gate_args+=(--fenced-sessions "$fenced_sessions" --role-name "$role_name" --database-name "$database_name" --attempt-lock-key "$attempt_lock_key")
   fi
   local gate_result
   gate_result="$(run_node_bounded "$deadline_arg" -- "${gate_args[@]}" 2>&1)"
@@ -663,7 +732,7 @@ discover_additional_verified_sessions() {
     local covered
     if covered="$(run_node_bounded "$deadline_arg" -- deploy/cd/quiescence.mjs verify-live-session-is-covered "${quiescence_args_common[@]}" \
       --pid "$candidate_pid" --backend-start "$candidate_backend_start" \
-      --role-name "$role_name" --database-name "$database_name" --query-timeout-ms "$inner_verify_budget_ms" 2>&1)"; then
+      --role-name "$role_name" --database-name "$database_name" --attempt-lock-key "$attempt_lock_key" --query-timeout-ms "$inner_verify_budget_ms" 2>&1)"; then
       migrator_verified_sessions="${migrator_verified_sessions},${candidate}"
       echo "che372-d2: verified an additional migrator-attributable session pid=$candidate_pid backend_start=$candidate_backend_start: $covered" >&2
     else
@@ -695,9 +764,18 @@ echo "che372-d2: pre-launch final-gate admitted — database quiescent, starting
 # ENTIRE remaining sequence (live-session discovery, running, cancellation,
 # confirmation) under the one absolute deadline. No sub-step here has its
 # own separate, unbounded budget. ---
+migrator_launch_monotonic_ms="$(monotonic_ms)"
 "$migrate_binary" up &
 migrator_os_pid=$!
 echo "che372-d2: launched migrator os_pid=$migrator_os_pid" >&2
+# Written immediately after launch, before anything else — see the
+# preservation-gate comment above write_decision "migration_started" for
+# why this exact marker, at this exact point, is what closes the
+# unsafe-restart-takeover gap. Still a progress marker, not a terminal
+# disposition: the waiting entrypoint (docker/entrypoint.cd.sh) treats it
+# identically to "migration_started" (keep waiting), and this script's own
+# restart-preservation gate is the only place the distinction matters.
+write_decision "migrator_launched"
 
 migrator_pg_pid=""
 migrator_pg_backend_start=""
@@ -746,7 +824,22 @@ migrator_verified_sessions=""
 # sample's timestamp and evaluated BEFORE that timestamp is overwritten, so
 # a single slow observation whose own duration exceeds the budget is caught
 # rather than laundered into "age zero, I just succeeded."
-fencing_last_sample_monotonic_ms=""
+#
+# Seeded to the migrator's LAUNCH instant, not left empty. An earlier
+# version left this unset until the first successful sample, which meant
+# the age check never ran at all for that first sample — the gap between
+# launch (line "$migrate_binary" up &) and the very first successful
+# fencing sample was completely unbounded by the 1000ms freshness rule the
+# design requires for every other pair of successive samples. A migrator
+# that took an arbitrarily long time to open its first Postgres connection
+# (or a watchdog that was slow to discover it) could leave the database
+# unobserved for that entire window with no coverage-failure signal.
+# Seeding to launch time closes that gap: the first successful sample's age
+# is judged against how long it has actually been since the migrator was
+# started, exactly like every later sample is judged against the previous
+# one.
+fencing_last_sample_monotonic_ms="$migrator_launch_monotonic_ms"
+echo "che372-d2: fencing sample-age tracking seeded at migrator launch (fencing_last_sample_monotonic_ms=$fencing_last_sample_monotonic_ms) — the launch-to-first-sample interval is bounded by fencing_max_sample_age_ms like every later interval" >&2
 fencing_max_sample_age_ms=1000
 # fencing_interval_ms is the target LOOP PERIOD, not a post-iteration sleep
 # duration. The addendum budgets a sample every <=250ms; sleeping a flat
@@ -811,7 +904,7 @@ while :; do
             inner_cover_budget_ms=$((cover_budget_ms > 200 ? cover_budget_ms - 100 : cover_budget_ms))
             covered="$(run_node_bounded "$work_deadline_monotonic_ms" -- deploy/cd/quiescence.mjs verify-live-session-is-covered "${quiescence_args_common[@]}" \
               --pid "$candidate_pid" --backend-start "$candidate_backend_start" \
-              --role-name "$role_name" --database-name "$database_name" --query-timeout-ms "$inner_cover_budget_ms" 2>&1)" && {
+              --role-name "$role_name" --database-name "$database_name" --attempt-lock-key "$attempt_lock_key" --query-timeout-ms "$inner_cover_budget_ms" 2>&1)" && {
               migrator_pg_pid="$candidate_pid"
               migrator_pg_backend_start="$candidate_backend_start"
               # Seed the verified-session registry with this confirmed
