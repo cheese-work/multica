@@ -14,9 +14,11 @@ jobs:
   # Linux stays on GitHub-hosted ubuntu-latest: Blacksmith's Firecracker
   # microVM rejects the process-group syscall this suite exercises
   # ("retain Cursor shell process group: invalid argument"), a compatibility
-  # gap confirmed on blacksmith-2vcpu-ubuntu-2404 (CHE-522). macOS stays on
-  # Blacksmith. Windows leg removed org-wide per CHE-522 (Cheese: Linux CI
-  # only, no Windows jobs or artifacts).
+  # gap confirmed on blacksmith-2vcpu-ubuntu-2404 (CHE-522, re-confirmed after
+  # a review-suggestion revert reproduced the identical failure — do not
+  # replace this label without new evidence the underlying syscall gap is
+  # fixed). macOS stays on Blacksmith. Windows leg removed org-wide per
+  # CHE-522 (Cheese: Linux CI only, no Windows jobs or artifacts).
   cursor-background-lifecycle:
     needs: changes
     if: ${{ needs.changes.outputs.backend == 'true' }}
@@ -24,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [blacksmith-2vcpu-ubuntu-2404, blacksmith-6vcpu-macos-latest]
+        os: [ubuntu-latest, blacksmith-6vcpu-macos-latest]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v5
