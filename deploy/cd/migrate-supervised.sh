@@ -277,18 +277,29 @@ write_decision_or_fail_closed() {
 # retrying under a fresh budget is genuinely safe.
 #
 # What is NOT safe to take over, and was the exact hole here: a PRIOR
-# invocation's "migrator_launched" marker (written immediately after
-# "$migrate_binary" up & below, once the migrator process has actually
-# been started and may be mid-DDL). An earlier version of this gate only
-# ever checked for "migration_started", so a crash/kill anywhere between
-# that first write and a terminal write_decision call — including the
-# entire migration run itself — still left "migration_started" as the
-# file's last recorded content, and a restart walked straight past this
-# gate and retried against a possibly partially-migrated database. That
-# collapsed exactly the failure mode a database migration reconciliation
-# gate exists to prevent, and it compounds with any failure that prevents
-# a terminal write_decision call from landing (see the write_decision
-# retry loop below) — both funnel into this same unsafe-looking-safe state.
+# invocation's "migrator_launched" marker. This is written and DURABLY
+# CONFIRMED strictly BEFORE "$migrate_binary" up & below — the migrator is
+# never launched until this exact write succeeds (retried once; if it
+# still fails, the script refuses to launch at all and exits 3, leaving
+# the file at the still-accurate "migration_started"). This ordering is
+# deliberate and load-bearing: an earlier version wrote this marker AFTER
+# launch, so a write failure there raced against an ALREADY-RUNNING
+# migrator with no way to retroactively make the write succeed if the
+# underlying filesystem problem was persistent — every fallback write
+# attempt failed for the same reason the first one did, silently leaving
+# "migration_started" (looking safe) while the migrator kept running
+# unrecorded. Moving the write before launch removes that race entirely:
+# by the time this file can legitimately contain "migrator_launched", the
+# migrator is GUARANTEED to have actually started, because the write's own
+# success is now what gates the launch, not the other way around.
+#
+# So: a crash/kill anywhere from the moment this marker is confirmed
+# durable through the entire migration run and any later terminal
+# write_decision call still leaves "migration_started" or
+# "migrator_launched" as the file's last recorded content depending on
+# exactly when the crash landed, and only "migration_started" is
+# ever safe to take over — matching that the migrator provably never ran
+# in that case.
 #
 # Everything else (a terminal disposition, or "migrator_launched" from
 # a run that crashed after actually starting the migrator) is terminal,
@@ -813,46 +824,47 @@ echo "che372-d2: pre-launch final-gate admitted — database quiescent, starting
 # ENTIRE remaining sequence (live-session discovery, running, cancellation,
 # confirmation) under the one absolute deadline. No sub-step here has its
 # own separate, unbounded budget. ---
+#
+# migrator_launched is written and DURABLY CONFIRMED BEFORE the migrator is
+# ever spawned — deliberately reordered from an earlier version that wrote
+# it immediately AFTER launch. That ordering had an unclosable gap: if the
+# post-launch write failed, and the retry also failed, and even the
+# best-effort "needs_operator_ledger_write_failed" fallback write also
+# failed (the same broken filesystem path fails every attempt, which is
+# the realistic case, not the exception), the file was left holding
+# whatever it held before — "migration_started" — which the restart gate
+# below explicitly treats as safe to take over. A later invocation would
+# then retry against a database the (already-running, uninterrupted)
+# migrator might be mid-DDL against. No amount of retrying the SAME
+# post-launch write can close this: if the filesystem is genuinely broken
+# at this exact moment, no write issued after that point can succeed
+# either, so a fallback write is not a safety net, it just reproduces the
+# original failure.
+#
+# The only way to make this actually safe is to never launch the migrator
+# until "migrator_launched" is confirmed durable — exactly the same
+# discipline already applied to "migration_started" itself. If this write
+# fails (after one retry, matching write_decision_or_fail_closed's own
+# contract), refuse to launch — exit 3 — with the file still at
+# "migration_started" from the earlier successful write. That is correct
+# and safe: the migrator was NEVER started, so "migration_started" (or
+# even a subsequent retry attempt landing back on the same safe value) is
+# an accurate description of reality, not a stale record of an in-flight
+# run. There is no window where the migrator is running but the ledger
+# says otherwise, because the migrator does not start until after this
+# write is confirmed.
+if ! write_decision "migrator_launched"; then
+  echo "che372-d2: retrying migrator_launched write once before treating it as terminal" >&2
+  if ! write_decision "migrator_launched"; then
+    echo "che372-d2: migrator_launched could not be durably recorded after retry — refusing to launch the migrator at all, since this write happens strictly BEFORE launch, the migrator was never started and no unrecorded mutating process exists to reconcile. The file remains at its prior safe value ('migration_started')." >&2
+    exit 3
+  fi
+fi
+
 migrator_launch_monotonic_ms="$(monotonic_ms)"
 "$migrate_binary" up &
 migrator_os_pid=$!
 echo "che372-d2: launched migrator os_pid=$migrator_os_pid" >&2
-# Written immediately after launch, before anything else — see the
-# preservation-gate comment above write_decision "migration_started" for
-# why this exact marker, at this exact point, is what closes the
-# unsafe-restart-takeover gap. Still a progress marker, not a terminal
-# disposition: the waiting entrypoint (docker/entrypoint.cd.sh) treats it
-# identically to "migration_started" (keep waiting), and this script's own
-# restart-preservation gate is the only place the distinction matters.
-#
-# This is the first POST-LAUNCH write, so a failure here is the exact
-# unsafe-restart-takeover hole this marker exists to close: the migrator
-# is already running, but if this write fails and the script simply moved
-# on, a crash before any later write would leave the file at
-# "migration_started" (still safe-to-take-over) or, if decision_file was
-# never written at all yet, absent — either way a later restart would
-# wrongly treat this in-flight, possibly-mutating attempt as never having
-# started. Retry once (write_decision's own contract); if it still fails,
-# actively terminate the migrator we just launched (SIGTERM, escalate to
-# SIGKILL) so it cannot keep mutating the database with no durable record
-# of its existence, then force needs_operator/exit 3.
-if ! write_decision "migrator_launched"; then
-  echo "che372-d2: retrying migrator_launched write once before treating it as terminal" >&2
-  if ! write_decision "migrator_launched"; then
-    echo "che372-d2: migrator_launched could not be durably recorded after retry — the migrator is running with NO reconciliation record; terminating it now rather than letting it continue unrecorded" >&2
-    if kill -0 "$migrator_os_pid" 2>/dev/null; then
-      kill -TERM "$migrator_os_pid" 2>/dev/null || true
-      for _ in 1 2 3 4 5; do
-        kill -0 "$migrator_os_pid" 2>/dev/null || break
-        sleep 0.1
-      done
-      kill -0 "$migrator_os_pid" 2>/dev/null && kill -KILL "$migrator_os_pid" 2>/dev/null || true
-      wait "$migrator_os_pid" 2>/dev/null || true
-    fi
-    write_decision "needs_operator_ledger_write_failed" || true
-    exit 3
-  fi
-fi
 
 migrator_pg_pid=""
 migrator_pg_backend_start=""

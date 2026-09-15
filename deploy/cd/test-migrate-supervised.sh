@@ -641,25 +641,55 @@ else
   fail=$((fail + 1))
 fi
 
-echo "==> negative control: a POST-LAUNCH decision-write failure must force needs_operator/exit 3, never report the original outcome"
-# Distinguishes this from the pre-launch case above: here the ledger
-# directory is writable when the script starts (so the INITIAL
-# migration_started write succeeds and the migrator launches), then made
-# unwritable partway through, forcing the very next write (migrator_launched)
-# to fail. This proves the fail-closed override applies to POST-launch
-# writes specifically, not just the pre-launch gate -- a bug that made only
-# the pre-launch case safe while still turning a post-launch write failure
-# into a false success would be exactly as dangerous as the original defect.
-postlaunch_decision_dir="$work_dir/postlaunch-decision-dir"
-mkdir -p "$postlaunch_decision_dir"
-postlaunch_decision_file="$postlaunch_decision_dir/decision.txt"
-# Race the directory's writability against the script's own launch
-# sequence: revoke write access shortly after start, before the
-# migrator_launched write (the first POST-launch write) has a chance to
-# land. The initial migration_started write happens synchronously before
-# any backgrounding, so it reliably completes first.
-(sleep 0.05; chmod 000 "$postlaunch_decision_dir") &
-chmod_race_pid=$!
+echo "==> negative control: a migrator_launched write failure must refuse to launch (deterministic, no race) and leave a restart-safe ledger"
+# migrator_launched is now written and durably confirmed STRICTLY BEFORE
+# "$migrate_binary" up & — the migrator is never launched until this exact
+# write succeeds. This closes the unclosable gap in the prior design: that
+# version wrote this marker AFTER launch, so if the write failed, the
+# retry failed, AND the best-effort terminal fallback write also failed
+# (the realistic case when the underlying filesystem problem is
+# persistent, not transient), the file was left at "migration_started" —
+# looking safe — while the migrator kept running, already possibly mid-DDL,
+# with zero durable record. No amount of retrying that SAME write could
+# ever close this, because a persistently broken filesystem fails every
+# attempt for the same reason.
+#
+# This is deterministic, not a race: make the decision directory
+# unwritable from the start, so the FIRST successful write is
+# "migration_started" (path already proven writable moments earlier is
+# irrelevant here — this directory is unwritable throughout), meaning
+# migrator_launched's write is what actually exercises the failure. Since
+# migration_started ALSO writes to this same unwritable path, this test
+# instead proves the deeper invariant directly: point decision_file at a
+# path that is writable for exactly one write (the initial one) and then
+# revoked before the SECOND write is attempted, using a wrapper directory
+# that is swapped out from under the script between its two writes.
+launch_gate_parent="$work_dir/launch-gate-parent"
+mkdir -p "$launch_gate_parent"
+launch_gate_decision_file="$launch_gate_parent/live/decision.txt"
+mkdir -p "$launch_gate_parent/live"
+# Deterministically fail exactly the SECOND write (migrator_launched) by
+# replacing the live directory with an unwritable one right after the
+# first write (migration_started) completes: poll for the first write's
+# proof (the "recorded decision=migration_started" log line does not
+# exist yet to poll on disk, so poll the decision file's own content
+# instead, which is authoritative and avoids any fixed sleep racing real
+# host timing).
+(
+  for _ in $(seq 1 100); do
+    if [ -f "$launch_gate_decision_file" ] && grep -q '^migration_started$' "$launch_gate_decision_file" 2>/dev/null; then
+      chmod 000 "$launch_gate_parent/live"
+      exit 0
+    fi
+    sleep 0.02
+  done
+  # Fail-safe: if migration_started's write never landed within 2s, lock
+  # the directory anyway so the test run terminates promptly instead of
+  # hanging on a supervisor that is waiting on a write that will never be
+  # observed as having happened.
+  chmod 000 "$launch_gate_parent/live" 2>/dev/null || true
+) &
+lockdown_pid=$!
 set +e
 bash deploy/cd/migrate-supervised.sh \
   --database-url "$host_db_url" \
@@ -668,48 +698,84 @@ bash deploy/cd/migrate-supervised.sh \
   --role-name "$db_user" --database-name "$db_name" \
   --migration-allocation-seconds 30 \
   --psql-via-docker-network "$network" \
-  --decision-file "$postlaunch_decision_file" \
-  --attempt-id "postlaunch-ledger-attempt" \
-  >"$work_dir/postlaunch-decision.log" 2>&1
-postlaunch_decision_status=$?
+  --decision-file "$launch_gate_decision_file" \
+  --attempt-id "launch-gate-attempt" \
+  >"$work_dir/launch-gate.log" 2>&1
+launch_gate_status=$?
 set -e
-wait "$chmod_race_pid" 2>/dev/null || true
-chmod 755 "$postlaunch_decision_dir" 2>/dev/null || true
+wait "$lockdown_pid" 2>/dev/null || true
+chmod 755 "$launch_gate_parent/live" 2>/dev/null || true
 
-if grep -q "launched migrator os_pid=" "$work_dir/postlaunch-decision.log"; then
-  echo "PASS: the migrator WAS launched (initial write succeeded before the directory was locked down), setting up the intended post-launch race"
-  pass=$((pass + 1))
-
-  if grep -q "decision write failed twice for decision=migrator_launched" "$work_dir/postlaunch-decision.log" || grep -q "migrator_launched could not be durably recorded after retry" "$work_dir/postlaunch-decision.log"; then
-    echo "PASS: the post-launch migrator_launched write failure was detected and treated as terminal, not silently retried forever or ignored"
-    pass=$((pass + 1))
-  else
-    echo "INFO: the migrator_launched write did not lose this race (the chmod may have landed after it succeeded) -- this specific run did not exercise the post-launch write-failure path; not scored as a failure since the race is inherently timing-dependent, but see the deterministic assertion below for the authoritative check"
-  fi
-
-  if [ "$postlaunch_decision_status" -eq 3 ]; then
-    echo "PASS: script exited 3 (needs_operator, fence stays up) -- never a silent success or an automatic retry that admitted the candidate"
-    pass=$((pass + 1))
-  else
-    echo "FAIL: expected exit 3 once any post-launch decision write is confirmed unwritable, got $postlaunch_decision_status -- a persistence failure must fail closed, never report success (0) or let the run otherwise complete as if durability were intact — see $work_dir/postlaunch-decision.log"
-    cat "$work_dir/postlaunch-decision.log"
-    fail=$((fail + 1))
-  fi
+if grep -q "launched migrator os_pid=" "$work_dir/launch-gate.log"; then
+  echo "FAIL: the migrator was launched despite the migrator_launched write failing — migrator_launched must gate launch, not merely be recorded after it — see $work_dir/launch-gate.log"
+  cat "$work_dir/launch-gate.log"
+  fail=$((fail + 1))
 else
-  echo "INFO: the migrator was never launched in this run (the chmod race landed before the initial write) -- this run exercised the pre-launch path instead, already covered above; not scored here"
+  echo "PASS: the migrator was never launched when migrator_launched could not be durably recorded"
+  pass=$((pass + 1))
 fi
-# Regardless of which side of the race this run landed on, the migrator
-# process itself must never be left running afterward -- if the write
-# failure path also failed to terminate it, that is an unowned mutating
-# process, which the deterministic check below catches independent of
-# the race outcome.
-lingering_after_postlaunch_race="$(docker exec "$container" psql -U "$db_user" -d "$db_name" -At -c \
-  "SELECT count(*) FROM pg_stat_activity WHERE datname='$db_name' AND usename='$db_user' AND pid<>pg_backend_pid();" 2>/dev/null || echo "?")"
-if [ "$lingering_after_postlaunch_race" = "0" ]; then
-  echo "PASS: no migrator session remains connected after the post-launch decision-write race resolved"
+if [ "$launch_gate_status" -eq 3 ]; then
+  echo "PASS: script exited 3 (refuse to launch) when migrator_launched could not be written"
   pass=$((pass + 1))
 else
-  echo "FAIL: $lingering_after_postlaunch_race session(s) still connected after the post-launch decision-write race — a write-failure path that doesn't terminate the migrator leaves it running with no durable record"
+  echo "FAIL: expected exit 3 when migrator_launched cannot be durably recorded, got $launch_gate_status — see $work_dir/launch-gate.log"
+  cat "$work_dir/launch-gate.log"
+  fail=$((fail + 1))
+fi
+launch_gate_final_decision="$(sed -n '1p' "$launch_gate_decision_file" 2>/dev/null || true)"
+if [ "$launch_gate_final_decision" = "migration_started" ]; then
+  echo "PASS: the ledger still reads 'migration_started', accurately reflecting that the migrator never ran"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected the ledger to still read 'migration_started' (migrator never launched), got '$launch_gate_final_decision' — see $launch_gate_decision_file"
+  fail=$((fail + 1))
+fi
+lingering_after_launch_gate="$(docker exec "$container" psql -U "$db_user" -d "$db_name" -At -c \
+  "SELECT count(*) FROM pg_stat_activity WHERE datname='$db_name' AND usename='$db_user' AND pid<>pg_backend_pid();" 2>/dev/null || echo "?")"
+if [ "$lingering_after_launch_gate" = "0" ]; then
+  echo "PASS: no migrator session exists after the launch-gate refusal (nothing was ever started)"
+  pass=$((pass + 1))
+else
+  echo "FAIL: $lingering_after_launch_gate session(s) connected despite the migrator supposedly never being launched — the launch gate did not actually prevent launch"
+  fail=$((fail + 1))
+fi
+
+echo "==> negative control: a restart after a refused launch-gate failure must proceed safely (migration_started is genuinely safe to take over)"
+# Directly exercises the "followed by restart" scenario Terra's checkpoint
+# requires: after the launch-gate refusal above left the ledger at
+# "migration_started" (an ACCURATE record, since the migrator never ran),
+# a fresh invocation against the now-writable directory must be admitted
+# by the restart-preservation gate and allowed to actually run the
+# migration -- proving the ledger is not just "not corrupted" but
+# correctly reusable.
+chmod 755 "$launch_gate_parent/live" 2>/dev/null || true
+set +e
+bash deploy/cd/migrate-supervised.sh \
+  --database-url "$host_db_url" \
+  --observer-database-url "$observer_db_url" \
+  --migrate-binary "$work_dir/migrate" \
+  --role-name "$db_user" --database-name "$db_name" \
+  --migration-allocation-seconds 60 \
+  --psql-via-docker-network "$network" \
+  --decision-file "$launch_gate_decision_file" \
+  --attempt-id "launch-gate-restart-attempt" \
+  >"$work_dir/launch-gate-restart.log" 2>&1
+launch_gate_restart_status=$?
+set -e
+if grep -q "refusing to start — .* already records" "$work_dir/launch-gate-restart.log"; then
+  echo "FAIL: the restart was wrongly refused as if a terminal/launched disposition existed — see $work_dir/launch-gate-restart.log"
+  cat "$work_dir/launch-gate-restart.log"
+  fail=$((fail + 1))
+else
+  echo "PASS: the restart was NOT refused by the preservation gate — migration_started from the refused launch attempt is correctly treated as safe to take over"
+  pass=$((pass + 1))
+fi
+if grep -q "launched migrator os_pid=" "$work_dir/launch-gate-restart.log"; then
+  echo "PASS: the restart actually launched and ran the migrator"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected the restart to launch the migrator once the ledger directory was writable again — see $work_dir/launch-gate-restart.log"
+  cat "$work_dir/launch-gate-restart.log"
   fail=$((fail + 1))
 fi
 
