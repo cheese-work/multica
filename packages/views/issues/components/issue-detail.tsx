@@ -9,7 +9,7 @@ import {
 import { useStatusLabel } from "../utils/status-label";
 import { priorityLabel } from "../utils/priority-label";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
-import { useState, useEffect, useCallback, useMemo, useRef, Fragment, type ReactNode } from "react";
+import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, Fragment, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { AppLink, useBackOrReplace } from "../../navigation";
@@ -90,7 +90,7 @@ import { useCommentAnnotations } from "./use-comment-annotations";
 import { CurrentIssueRenderContextProvider } from "../current-issue-render-context";
 import { ResolvedThreadBar } from "./resolved-thread-bar";
 import { ThreadMinimap, type ThreadMinimapThread } from "./thread-minimap";
-import { collectThreadParticipants, collectThreadReplies, deriveThreadResolution } from "./thread-utils";
+import { collectThreadParticipants, collectThreadReplies, deriveThreadResolution, resolvedThreadRootIds } from "./thread-utils";
 import { IssueAgentHeaderChip } from "./issue-agent-header-chip";
 import { ExecutionLogSection } from "./execution-log-section";
 import { QuickActionsSection } from "./quick-actions-section";
@@ -146,6 +146,7 @@ import { matchesPinyin } from "../../editor/extensions/pinyin-match";
 import { useT } from "../../i18n";
 import { useIssueDetailScrollRestore } from "../hooks/use-issue-detail-scroll-restore";
 import { useInPageFind } from "../hooks/use-in-page-find";
+import { useIssueDisclosureReveal } from "../hooks/use-issue-disclosure-reveal";
 import { useStickyComposer } from "../hooks/use-sticky-composer";
 import { FindBar } from "./find-bar";
 import {
@@ -1650,23 +1651,33 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     return replyToRoot.get(highlightCommentId) ?? null;
   }, [highlightCommentId, replyToRoot, timelineView.threadReplies]);
 
-  // Flat array consumed by <Virtuoso>. Recomputed when timelineView.groups
-  // changes (timeline events) or expandedResolved flips (user toggles a
-  // resolved thread). Kept in a useMemo so Virtuoso's data identity is stable
-  // across unrelated re-renders.
-  const items = useMemo<TimelineItem[]>(
-    () => flattenGroups(timelineView.groups, expandedResolved),
-    [timelineView.groups, expandedResolved],
-  );
+  // Readiness predicate handed to `useInPageFind` below (01-DESIGN "no query
+  // effect or MutationObserver callback can walk pre-reveal DOM"). Declared
+  // as a ref-backed stable callback because `find` (below) is created BEFORE
+  // `disclosureReveal`/`revealKey` can be computed — both need `find.open`
+  // itself. The callback's identity stays stable across renders; only its
+  // ref target is refreshed once `isDisclosureRevealCommitted` exists a few
+  // lines down, so `useInPageFind`'s internal `isReadyRef.current = isReady`
+  // always reads whatever this render's real readiness check is by the time
+  // any effect actually invokes it.
+  const findIsReadyRef = useRef<() => boolean>(() => true);
+  const findIsReady = useCallback(() => findIsReadyRef.current(), []);
 
-  // In-page find (Cmd/Ctrl+F). `items.length` is the content signal that
-  // triggers a match recompute when comments are added/removed; text edits
-  // are caught by the hook's own MutationObserver. Opening find forces the
-  // timeline to render flat below so every comment is in the DOM to match.
+  // In-page find (Cmd/Ctrl+F). Declared ahead of `effectiveExpandedResolved`/
+  // `items` below so `find.open` is available to derive the reveal-all set.
   const find = useInPageFind({
     container: scrollContainerEl,
-    contentKey: items.length,
+    // `timelineView.groups.length` + `expandedResolved.size` rather than
+    // `items.length` directly — `items` is computed a few lines down FROM
+    // `effectiveExpandedResolved`, which itself reads `find.open`, so using
+    // `items.length` here would read a value from before this very call.
+    // Both counts change in lockstep with `items.length` for every case that
+    // matters (comments added/removed, a resolved thread expanding/
+    // collapsing); find's own reveal-all toggle is covered separately by
+    // `isReady` below reacting to `find.open` directly.
+    contentKey: `${timelineView.groups.length}:${expandedResolved.size}`,
     enabled: !!issue,
+    isReady: findIsReady,
   });
   // Close the bar (and drop highlights) when navigating to another issue —
   // the web route reuses this component instead of remounting.
@@ -1674,6 +1685,83 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   useEffect(() => {
     closeFind();
   }, [id, closeFind]);
+
+  // Bumped on every false→true find.open transition (a new find "session",
+  // 01-DESIGN "find session" token) and reset on issue switch. This — not
+  // `find.open` itself — is the identity `useIssueDisclosureReveal` uses to
+  // recognize "the same open session" vs. "find closed and reopened": a
+  // close-then-reopen with no intervening content change must still get a
+  // fresh committed generation rather than reusing a stale one from before
+  // the timeline flattened back to virtualized in between.
+  const findSessionIdRef = useRef(0);
+  const wasFindOpenRef = useRef(false);
+  if (find.open && !wasFindOpenRef.current) findSessionIdRef.current += 1;
+  wasFindOpenRef.current = find.open;
+  useEffect(() => {
+    findSessionIdRef.current = 0;
+    wasFindOpenRef.current = false;
+  }, [id]);
+
+  // All thread roots that carry a resolution, regardless of current expand
+  // state — the population `find.open` must add to `expandedResolved` so
+  // every resolved-bar AND every reply-resolution conclusion fold opens for
+  // the duration of the search (01-DESIGN "every nested CommentCard manual
+  // gate is bypassed... length folds are bypassed" — resolution folding is
+  // the remaining gate class those two don't cover). Never written back to
+  // `useResolvedExpandStore`: this is find's transient reveal-all overlay,
+  // row 58's "no write to any fold preference".
+  const resolvedRootIdsAll = useMemo(
+    () => resolvedThreadRootIds(displayTimeline),
+    [displayTimeline],
+  );
+  const effectiveExpandedResolved = useMemo(() => {
+    if (!find.open) return expandedResolved;
+    if (resolvedRootIdsAll.every((rootId) => expandedResolved.has(rootId))) {
+      return expandedResolved;
+    }
+    const next = new Set(expandedResolved);
+    for (const rootId of resolvedRootIdsAll) next.add(rootId);
+    return next;
+  }, [find.open, expandedResolved, resolvedRootIdsAll]);
+
+  // Flat array consumed by <Virtuoso>. Recomputed when timelineView.groups
+  // changes (timeline events) or effectiveExpandedResolved flips (user
+  // toggles a resolved thread, or find opens/closes). Kept in a useMemo so
+  // Virtuoso's data identity is stable across unrelated re-renders.
+  const items = useMemo<TimelineItem[]>(
+    () => flattenGroups(timelineView.groups, effectiveExpandedResolved),
+    [timelineView.groups, effectiveExpandedResolved],
+  );
+
+  // Committed reveal-before-DOM-walk generation (01-DESIGN "Find and target
+  // reveal lifecycle"). `revealAll` covers BOTH forcing reasons that require
+  // waiting for a committed generation before collecting/landing: find.open
+  // (every fold opens for search) and an active target/notification pin
+  // (targetRootId; forceThreadOpen below already opens its thread, this is
+  // what tells the landing effect the opened DOM has actually committed).
+  // `revealKey` changes identity whenever either reason starts a NEW request
+  // — a fresh find session, or a fresh/replayed highlight request — so a
+  // stale commit from the previous request can never be mistaken for the
+  // current one. `contentKey` mirrors what actually changes the shape of the
+  // revealed DOM: item count and how many resolved roots are currently shown.
+  const revealAll = find.open || !!targetRootId;
+  const revealKey = find.open
+    ? `find:${findSessionIdRef.current}`
+    : targetRootId
+      ? `target:${highlightCommentId}:${highlightRequestToken ?? 0}`
+      : "none";
+  const disclosureReveal = useIssueDisclosureReveal({
+    issueId: id,
+    revealAll,
+    revealKey,
+    contentKey: `${items.length}:${effectiveExpandedResolved.size}`,
+  });
+  const isDisclosureRevealCommitted = disclosureReveal.isCommitted;
+  // Find's own readiness: while find is closed there is nothing to gate (the
+  // hook's default `isReady` behavior — see the `enabled: !!issue` case for
+  // the shortcut itself), so only assert the committed-generation check while
+  // find is actually open. This is the ref `findIsReady` above reads.
+  findIsReadyRef.current = () => !find.open || isDisclosureRevealCommitted(id, revealKey);
 
   // Root ids whose thread currently carries an in-progress reply draft/
   // upload, OR an active inline edit session on the root or one of its
@@ -2024,6 +2112,192 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // Virtuoso instance — minimap jumps drive the scroll container directly.
   const isFlatTimeline = !!highlightCommentId || find.open;
   const virtuosoRef = useRef<VirtuosoHandle>(null);
+
+  // 01-DESIGN "On close, clear highlights and pending collectors first.
+  // Capture nearest comment/root ID and screen offset around the current
+  // match (or current viewport) and restore a valid visible anchor after
+  // folds and Virtuoso return... preserve offset where possible... No-match
+  // open/close uses the entry viewport anchor."
+  //
+  // This must be the PRE-open viewport, not a value read after find.open has
+  // already flipped true: `find.open` becoming true and `items`/
+  // `effectiveExpandedResolved` re-flattening to the fully-revealed shape
+  // happen in the same render (see effectiveExpandedResolved above), so an
+  // effect keyed on `[find.open]` only ever sees the DOM AFTER every fold
+  // already force-opened — it can no longer tell which row the user was
+  // actually looking at before the reveal. Capturing continuously on every
+  // render WHILE FIND IS CLOSED instead means the ref already holds the last
+  // pre-open snapshot the instant `find.open` flips, without racing the
+  // commit that reveals everything. (Once find is open, `findActiveAnchorRef`
+  // below supersedes this as "the current match" — this ref is frozen the
+  // moment find opens and only read back on close as the no-match fallback.)
+  const findEntryAnchorRef = useRef<{ rootId: string; offset: number } | null>(null);
+  // Tracks whether find was open on the PREVIOUS commit — distinct from
+  // `wasFindOpenForCloseRef` below (that one gates the restore effect and
+  // updates on every close-transition render; this one must specifically
+  // suppress capture on the true→false transition render itself, since by
+  // then the DOM this layout effect would read already reflects whatever
+  // closing find just changed, e.g. a scroll the user made or a fold that
+  // resettled — capturing here would silently overwrite the correct
+  // already-frozen pre-open snapshot with that post-close state instead of
+  // ever handing it to the restore effect that reads it next.
+  const wasFindOpenForCaptureRef = useRef(false);
+  useLayoutEffect(() => {
+    const wasOpenLastCommit = wasFindOpenForCaptureRef.current;
+    wasFindOpenForCaptureRef.current = find.open;
+    // Freeze the snapshot the instant find opens, and again exactly once on
+    // the transition back to closed (the transition render's own DOM read
+    // would race the restore that immediately follows) — recapture only in
+    // the closed steady state that precedes an OPEN.
+    if (find.open || wasOpenLastCommit) return;
+    const container = scrollContainerEl;
+    if (!container) return;
+    const containerRect = container.getBoundingClientRect();
+    let nearestId: string | null = null;
+    let nearestOffset = 0;
+    let nearestDelta = Number.POSITIVE_INFINITY;
+    for (const item of items) {
+      if (item.kind === "activity-group") continue;
+      const el = document.getElementById(`comment-${item.id}`);
+      if (!el) continue;
+      const top = el.getBoundingClientRect().top - containerRect.top;
+      const delta = Math.abs(top);
+      if (delta < nearestDelta) {
+        nearestDelta = delta;
+        nearestId = item.id;
+        nearestOffset = top;
+      }
+    }
+    if (nearestId) findEntryAnchorRef.current = { rootId: nearestId, offset: nearestOffset };
+  });
+
+  // The active match's containing root/bar id, updated every time the active
+  // match changes — this supersedes the entry anchor as "the current match"
+  // once the user has a query with results, per 01-DESIGN "around the
+  // current match (or current viewport)".
+  const findActiveAnchorRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!find.open || find.activeIndex < 0) return;
+    const container = scrollContainerEl;
+    if (!container) return;
+    // Walk up from whatever element currently holds the active highlight's
+    // DOM position to the nearest `comment-${id}` wrapper. The CSS Custom
+    // Highlight API paints Ranges, not elements, so there is no direct
+    // "active match element" — instead, use the currently-focused/active
+    // region already tracked for scroll purposes: the nearest top-level row
+    // whose id attribute starts with "comment-" and contains document focus
+    // is unavailable here (find doesn't move focus), so fall back to
+    // re-deriving nearest-to-viewport the same way the entry anchor does.
+    // This intentionally reuses the same "nearest row to container top"
+    // measurement — after `goNext`/`goPrev` scrolls the match into view,
+    // that row IS the one containing the active match.
+    const containerTop = container.getBoundingClientRect().top;
+    let nearestId: string | null = null;
+    let nearestDelta = Number.POSITIVE_INFINITY;
+    for (const item of items) {
+      if (item.kind === "activity-group") continue;
+      const el = document.getElementById(`comment-${item.id}`);
+      if (!el) continue;
+      const delta = Math.abs(el.getBoundingClientRect().top - containerTop);
+      if (delta < nearestDelta) {
+        nearestDelta = delta;
+        nearestId = item.id;
+      }
+    }
+    if (nearestId) findActiveAnchorRef.current = nearestId;
+  }, [find.open, find.activeIndex, items, scrollContainerEl]);
+
+  // 01-DESIGN "On close... restore a valid visible anchor after folds and
+  // Virtuoso return: same comment if visible, otherwise its root/bar;
+  // preserve offset where possible, clamp within the issue scroll container.
+  // If focus is in content that would hide, keep an interaction pin until
+  // blur; otherwise move focus from the closing bar to a stable issue
+  // control. No stale snapshot writes: restore by removing the overlay,
+  // honoring any fold/unfold changes made while find was open."
+  //
+  // Runs on the true→false find.open transition. The anchor id resolves to
+  // its ROOT for the lookup (`replyToRoot`) because closing find drops
+  // `forceThreadOpen`'s pin — a reply-level anchor may no longer have its own
+  // DOM node once manual/length folds re-apply, but its root/bar always does.
+  const wasFindOpenForCloseRef = useRef(false);
+  useEffect(() => {
+    const wasOpen = wasFindOpenForCloseRef.current;
+    wasFindOpenForCloseRef.current = find.open;
+    if (!wasOpen || find.open) return;
+
+    // No-match (or never-searched) close falls back to the pre-open entry
+    // anchor and its captured offset — 01-DESIGN: "preserve offset where
+    // possible". A live active match instead re-centers on itself: the user
+    // was just LOOKING at that match, so centering it is the correct
+    // restoration, not a regression from the entry anchor's offset (which
+    // describes a different row's original position, not the match's).
+    const activeAnchorId = findActiveAnchorRef.current;
+    const entryAnchor = findEntryAnchorRef.current;
+    const anchorId = activeAnchorId ?? entryAnchor?.rootId ?? null;
+    const entryOffset = activeAnchorId ? null : (entryAnchor?.offset ?? null);
+    findActiveAnchorRef.current = null;
+    findEntryAnchorRef.current = null;
+    if (!anchorId) return;
+
+    const rootId = replyToRoot.get(anchorId) ?? anchorId;
+
+    // An active interaction (focus/selection with no unsaved change — the
+    // same signal `forceThreadOpen` above reads) inside the anchor's thread
+    // keeps its own pin alive independent of find, so the content this
+    // effect would otherwise need to "restore into view" is already staying
+    // visible via that pin. Moving focus away here would fight that: leave
+    // it alone and let the interaction's own blur handling (already wired
+    // where that pin is read) govern when the pin releases.
+    if (rootIdsWithActiveFocusOrSelection.has(rootId)) return;
+
+    // Defer one frame: closing find flips several fold-affecting values in
+    // the same tick (forceThreadOpen's pin drops, effectiveExpandedResolved
+    // recomputes, isFlatTimeline may flip back to virtualized) — the restore
+    // target's DOM needs that commit to land first, exactly like every other
+    // scroll-driving effect in this component (see the deep-link landing
+    // effect's own rAF centering).
+    const raf = requestAnimationFrame(() => {
+      const container = scrollContainerEl;
+      if (!container) return;
+      // Prefer the exact anchor comment if it's still directly visible
+      // (thread stayed expanded via a latch or manual preference); otherwise
+      // fall back to its root/bar, which is always present once folds
+      // resettle.
+      const restoredExactRow = !!document.getElementById(`comment-${anchorId}`);
+      const el =
+        document.getElementById(`comment-${anchorId}`) ??
+        document.getElementById(`comment-${rootId}`);
+      if (!el) return;
+      const containerRect = container.getBoundingClientRect();
+      const elRect = el.getBoundingClientRect();
+      if (entryOffset !== null && restoredExactRow) {
+        // No-match/no-query close on the exact pre-open row: put it back at
+        // the offset it held before find opened, clamped to the container,
+        // rather than re-centering it — re-centering would move content the
+        // user never asked to move just because find happened to open.
+        const currentOffset = elRect.top - containerRect.top;
+        const target = Math.max(0, container.scrollTop + (currentOffset - entryOffset));
+        container.scrollTop = target;
+      } else {
+        // A live active match, or the exact entry row no longer exists
+        // (folds resettled to a different shape) — center on whatever
+        // anchor/root DOM node is actually available now.
+        const pad = 80;
+        const above = elRect.top < containerRect.top + pad;
+        const below = elRect.bottom > containerRect.bottom - pad;
+        if (above || below) {
+          const offsetWithin = elRect.top - containerRect.top + container.scrollTop;
+          const target = offsetWithin - container.clientHeight / 2 + elRect.height / 2;
+          container.scrollTop = Math.max(0, target);
+        }
+      }
+      // Move focus from the (now unmounted) find bar to a stable issue
+      // control — never leave focus stranded on a removed element.
+      rightSidebarShortcutTargetRef.current?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [find.open, replyToRoot, scrollContainerEl, rootIdsWithActiveFocusOrSelection]);
+
   // Scroll a freshly posted comment into view, aligned so its bottom sits just
   // above the sticky composer (never behind it). A reply lives inside its root
   // CommentCard, so the containing top-level row is the scroll target. Flat and
@@ -2267,12 +2541,16 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     if (didHighlightRef.current === highlightCommentId) return;
     // The deep link already landed before this mount (memento entry — a tab
     // switch back or an in-tab return). The restored scroll offset is the
-    // state the user left, and the jump must not fight it. A fresh selection
-    // clears the entry, so this only ever suppresses a *repeat* landing.
-    if (consumedHighlightRef.current === highlightCommentId) {
-      didHighlightRef.current = highlightCommentId;
-      return;
-    }
+    // state the user left, and the jump must not fight it — but 01-DESIGN is
+    // explicit that "memento restoration may suppress scrolling but must not
+    // suppress revealing the target": a memento only proves THIS component
+    // previously landed on the target, not that the target's containing
+    // fold is still open now (a fresh mount may start fully collapsed, or an
+    // intervening resolve/collapse may have refolded it since). So a
+    // consumed memento skips the scroll/highlight/re-write below, but still
+    // falls through to the same auto-expand branches a fresh landing uses.
+    const mementoConsumed = consumedHighlightRef.current === highlightCommentId;
+    if (mementoConsumed) didHighlightRef.current = highlightCommentId;
 
     const rootId = replyToRoot.get(highlightCommentId);
     if (rootId && rootId !== highlightCommentId) {
@@ -2295,6 +2573,26 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         }
       }
     }
+
+    // A consumed memento only ever suppresses the scroll/highlight/rewrite
+    // below (01-DESIGN: "memento may suppress scrolling but never suppress
+    // revealing the target") — the auto-expand branches above already ran
+    // unconditionally, on every render, including this one, so the target's
+    // fold gets (re-)opened even when this specific landing is a memento
+    // replay rather than a fresh jump.
+    if (mementoConsumed) return;
+
+    // 01-DESIGN "Navigation resolves a loaded comment to its root and nested
+    // fold ancestors, establishes a target pin, waits for the same committed
+    // visibility signal, then scrolls/highlights. Only record didHighlight/
+    // memento after the correct target DOM exists." The auto-expand branches
+    // above already establish the pin (targetRootId/forceThreadOpen) and
+    // request the resolved-thread expand; this is the gate that stops the
+    // landing itself from running before that request's DOM has actually
+    // committed. A resolved-thread expand just requested above hasn't
+    // committed by definition, so this also naturally waits out that case
+    // without a separate branch.
+    if (!isDisclosureRevealCommitted(id, revealKey)) return;
 
     const el = document.getElementById(`comment-${highlightCommentId}`);
     const container = scrollContainerEl;
@@ -2343,7 +2641,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       cancelAnimationFrame(rafId);
       clearTimeout(fade);
     };
-  }, [highlightCommentId, highlightRequestToken, id, writeViewState, items, targetIdx, scrollContainerEl, replyToRoot, expandedResolved, timelineView, toggleResolvedExpand]);
+  }, [highlightCommentId, highlightRequestToken, id, writeViewState, items, targetIdx, scrollContainerEl, replyToRoot, expandedResolved, timelineView, toggleResolvedExpand, isDisclosureRevealCommitted, revealKey, disclosureReveal.token]);
 
   const descEditorRef = useRef<ContentEditorRef>(null);
   const descriptionEditingRef = useRef(false);
@@ -2355,6 +2653,17 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     useUploadGate(descEditorRef);
   const descriptionExpanded = useIssueDisclosureStore(selectDescriptionExpanded(id));
   const setDescriptionExpanded = useIssueDisclosureStore((s) => s.setDescriptionExpanded);
+  // 01-DESIGN "On open, the issue view derives forceRevealAll from find.open
+  // in the same render: description expands...". This is display-only —
+  // never fed back into `setDescriptionExpanded` (row 58: "no write to any
+  // fold preference"). Every OTHER read of `descriptionExpanded` in this
+  // component (upload-gate routing above, focus bookkeeping below) stays on
+  // the raw preference on purpose: those decide where an upload lands or
+  // whether editing is in progress, not whether the reader can currently see
+  // the content, so find forcing the collapsed preview open must not also
+  // reroute an upload into an editor the user's own preference still says is
+  // collapsed.
+  const effectiveDescriptionExpanded = descriptionExpanded || find.open;
   const descriptionSaveInFlightRef = useRef(false);
   const descriptionSaveIssueIdRef = useRef(id);
   const pendingDescriptionSaveRef = useRef<{
@@ -3038,6 +3347,11 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     </div>
   );
 
+  // Shared localized explanation for every disclosure toggle find disables
+  // (comment thread Collapse chevron here, the description Show-less button
+  // below) — 01-DESIGN "disabled with a localized explanation".
+  const findCollapseDisabledReason = t(($) => $.detail.find.collapse_disabled);
+
   // Shared row renderer for both timeline render modes (flat / virtualized).
   // The wrapper `id="comment-..."` is the deep-link target — equivalent to
   // a native `<a href="#comment-...">` anchor.
@@ -3045,7 +3359,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     if (item.kind === "run") {
       const reply = item.entry;
       return <div className="pb-3" id={reply ? `comment-${reply.id}` : undefined}>
-        {reply?.resolved_at && !expandedResolved.has(reply.id) ? <ResolvedThreadBar
+        {reply?.resolved_at && !effectiveExpandedResolved.has(reply.id) ? <ResolvedThreadBar
           entry={reply} replies={timelineView.threadReplies.get(reply.id) ?? EMPTY_REPLIES}
           onExpand={() => toggleResolvedExpand(reply.id, true)} /> : <AgentRunComment run={item.run} entering={enteringRunIds.has(item.run.task.id)} standalone
           commentProps={reply ? {
@@ -3055,12 +3369,14 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             onToggleReaction: handleToggleReaction, onCreateSubIssue: openCommentSubIssue,
             onResolveToggle: handleResolveToggle,
             onCollapseResolved: reply.resolved_at ? () => toggleResolvedExpand(reply.id, false) : undefined,
-            expandedResolvedIds: expandedResolved, onResolvedExpandChange: toggleResolvedExpand,
+            expandedResolvedIds: effectiveExpandedResolved, onResolvedExpandChange: toggleResolvedExpand,
             highlightedCommentId: highlightedId,
             runs: commentRuns.get(reply.id) ?? EMPTY_COMMENT_RUNS, enteringRunIds,
             threadLengthExpanded: expandedThreadLengths.has(reply.id),
             onThreadLengthExpandChange: toggleThreadLengthExpand,
             forceThreadExpanded: forceThreadOpen(reply.id),
+            findManualCollapseDisabled: find.open,
+            findManualCollapseDisabledReason: findCollapseDisabledReason,
           } : undefined} />}
       </div>;
     }
@@ -3095,12 +3411,14 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             onCreateSubIssue={openCommentSubIssue}
             onResolveToggle={handleResolveToggle}
             onCollapseResolved={isResolved ? () => toggleResolvedExpand(item.id, false) : undefined}
-            expandedResolvedIds={expandedResolved}
+            expandedResolvedIds={effectiveExpandedResolved}
             onResolvedExpandChange={toggleResolvedExpand}
             highlightedCommentId={highlightedId}
             threadLengthExpanded={expandedThreadLengths.has(item.id)}
             onThreadLengthExpandChange={toggleThreadLengthExpand}
             forceThreadExpanded={forceThreadOpen(item.id)}
+            findManualCollapseDisabled={find.open}
+            findManualCollapseDisabledReason={findCollapseDisabledReason}
           />
         </div>
       );
@@ -3287,7 +3605,13 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           ref={attachScrollContainer}
           data-tab-scroll-root={scrollContainerKey}
           data-issue-timeline-scroll
-          className="relative flex-1 overflow-y-auto [scrollbar-gutter:stable_both-edges]"
+          // `tabIndex={-1}`: programmatic-focus-only. Closing find moves
+          // focus here (01-DESIGN "move focus from the closing bar to a
+          // stable issue control") — without a tab index, `.focus()` on a
+          // plain <div> is a no-op in every real browser, silently stranding
+          // focus on the just-unmounted find bar's DOM node.
+          tabIndex={-1}
+          className="relative flex-1 overflow-y-auto [scrollbar-gutter:stable_both-edges] focus:outline-none"
         >
         {/* Gutters: 32px is a comfortable reading margin on a desktop column
             but eats 16% of a 393px phone, so below `md` they drop to 12px.
@@ -3474,9 +3798,15 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           >
             {descriptionAnnotations.popup}
             <DescriptionDisclosure
-              collapseDisabled={descriptionFocused || descUploading || descPendingAttachments.length > 0}
+              // Find forces the description open for the duration of the
+              // search (`effectiveDescriptionExpanded`); disabling collapse
+              // while find.open keeps the reader from hiding a match out from
+              // under the search — 01-DESIGN "disclosure toggles that would
+              // hide a match are disabled with a localized explanation".
+              collapseDisabled={find.open || descriptionFocused || descUploading || descPendingAttachments.length > 0}
+              collapseDisabledReason={find.open ? findCollapseDisabledReason : undefined}
               contentVersion={issue.revision}
-              expanded={descriptionExpanded}
+              expanded={effectiveDescriptionExpanded}
               id={id}
               labels={{
                 loading: t(($) => $.detail.description_preview_loading),
@@ -3485,7 +3815,14 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                 showLess: t(($) => $.detail.description_show_less),
                 showMore: t(($) => $.detail.description_show_more),
               }}
-              onExpandedChange={(expanded) => setDescriptionExpanded(id, expanded)}
+              // While find is open the toggle must not write the base
+              // preference (row 58: "no write to any fold preference") — the
+              // button itself is disabled above, but this guards direct
+              // invocation defensively (e.g. a future caller of onExpandedChange).
+              onExpandedChange={(expanded) => {
+                if (find.open) return;
+                setDescriptionExpanded(id, expanded);
+              }}
             >
               <div data-comment-content={descriptionSourceId}>
                 <ContentEditor
