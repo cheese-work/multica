@@ -15,6 +15,7 @@ function resetStores() {
   useIssueDisclosureStore.setState({
     descriptionExpandedIssueIds: new Set(),
     expandedThreadIdsByIssue: {},
+    justFoldedRootIdsByIssue: {},
   });
 }
 
@@ -92,5 +93,23 @@ describe("thread fold coordinator", () => {
     // At the moment comment-collapse's listener fires, resolved-expand has not
     // folded yet — demonstrating the gap this test documents.
     expect(seen).toEqual([true]);
+  });
+
+  // CHE-479: foldAllCommentThreads's call into collapseAllThreads must leave
+  // a short-lived record of exactly which roots it just cleared, so
+  // issue-detail.tsx's latch effect can skip re-latching them on the same
+  // tick. This is the coordinator-level proof that the signal is actually
+  // produced by the real fold-all entry point, not just by calling the
+  // store method directly (already covered in issue-disclosure-store.test.ts).
+  it("records the folded roots as just-folded so a consumer can suppress re-latching them", () => {
+    act(() => {
+      foldAllCommentThreads(ISSUE, ROOTS);
+    });
+
+    const justFolded = useIssueDisclosureStore.getState().justFoldedRootIdsByIssue[ISSUE];
+    expect(justFolded).toBeDefined();
+    // Only root-1 had been in expandedThreadIdsByIssue (from beforeEach);
+    // collapseAllThreads only ever records what it actually had to clear.
+    expect([...justFolded!]).toEqual(["root-1"]);
   });
 });

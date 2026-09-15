@@ -3,6 +3,18 @@ import { create } from "zustand";
 interface IssueDisclosureStore {
   readonly descriptionExpandedIssueIds: ReadonlySet<string>;
   readonly expandedThreadIdsByIssue: Record<string, ReadonlySet<string>>;
+  /**
+   * Root ids that `collapseAllThreads` most recently removed from
+   * `expandedThreadIdsByIssue`, keyed by issue, as a NEW Set instance every
+   * call — a short-lived, non-persisted signal (CHE-479) so a consumer can
+   * tell "this root just lost its membership because of Fold All" apart
+   * from "this root was never expanded." The Set's object identity IS the
+   * "which Fold All occurrence" token: a consumer distinguishes a later,
+   * distinct Fold All from the same one by comparing identity, so this
+   * value is intentionally never cleared back to empty — the next
+   * `collapseAllThreads` (or `clearIssue`) call is what supersedes it.
+   */
+  readonly justFoldedRootIdsByIssue: Record<string, ReadonlySet<string>>;
   setDescriptionExpanded: (issueId: string, expanded: boolean) => void;
   setThreadExpanded: (issueId: string, rootId: string, expanded: boolean) => void;
   expandAllThreads: (issueId: string, rootIds: readonly string[]) => void;
@@ -29,6 +41,7 @@ function withoutIssue(
 export const useIssueDisclosureStore = create<IssueDisclosureStore>()((set) => ({
   descriptionExpandedIssueIds: EMPTY_IDS,
   expandedThreadIdsByIssue: EMPTY_THREADS,
+  justFoldedRootIdsByIssue: EMPTY_THREADS,
   setDescriptionExpanded: (issueId, expanded) =>
     set((state) => {
       if (state.descriptionExpandedIssueIds.has(issueId) === expanded) return state;
@@ -67,14 +80,24 @@ export const useIssueDisclosureStore = create<IssueDisclosureStore>()((set) => (
     }),
   collapseAllThreads: (issueId) =>
     set((state) => {
-      if (!(issueId in state.expandedThreadIdsByIssue)) return state;
-      return { expandedThreadIdsByIssue: withoutIssue(state.expandedThreadIdsByIssue, issueId) };
+      const current = state.expandedThreadIdsByIssue[issueId];
+      if (!current || current.size === 0) return state;
+      // Record exactly the roots this call is about to un-expand so the
+      // latch effect in issue-detail.tsx can tell "just fold-all'd, still
+      // mid-tick" apart from "never expanded" (CHE-479) — see the field doc
+      // above. This is intentionally overwritten (not merged/appended) on
+      // every call: only the most recent Fold All's roots matter.
+      return {
+        expandedThreadIdsByIssue: withoutIssue(state.expandedThreadIdsByIssue, issueId),
+        justFoldedRootIdsByIssue: { ...state.justFoldedRootIdsByIssue, [issueId]: current },
+      };
     }),
   clearIssue: (issueId) =>
     set((state) => {
       const hasDescription = state.descriptionExpandedIssueIds.has(issueId);
       const hasThreads = issueId in state.expandedThreadIdsByIssue;
-      if (!hasDescription && !hasThreads) return state;
+      const hasJustFolded = issueId in state.justFoldedRootIdsByIssue;
+      if (!hasDescription && !hasThreads && !hasJustFolded) return state;
       const descriptions = new Set(state.descriptionExpandedIssueIds);
       descriptions.delete(issueId);
       return {
@@ -82,6 +105,9 @@ export const useIssueDisclosureStore = create<IssueDisclosureStore>()((set) => (
         expandedThreadIdsByIssue: hasThreads
           ? withoutIssue(state.expandedThreadIdsByIssue, issueId)
           : state.expandedThreadIdsByIssue,
+        justFoldedRootIdsByIssue: hasJustFolded
+          ? withoutIssue(state.justFoldedRootIdsByIssue, issueId)
+          : state.justFoldedRootIdsByIssue,
       };
     }),
 }));
@@ -93,4 +119,9 @@ export function selectDescriptionExpanded(issueId: string) {
 export function selectExpandedThreads(issueId: string) {
   return (state: IssueDisclosureStore): ReadonlySet<string> =>
     state.expandedThreadIdsByIssue[issueId] ?? EMPTY_IDS;
+}
+
+export function selectJustFoldedRoots(issueId: string) {
+  return (state: IssueDisclosureStore): ReadonlySet<string> =>
+    state.justFoldedRootIdsByIssue[issueId] ?? EMPTY_IDS;
 }
