@@ -2560,7 +2560,9 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 			return nil
 		}
 		if _, err := h.TaskService.EnqueueTaskForIssue(ctx, issue, triggerCommentID); err != nil {
-			slog.Warn("enqueue agent task on comment failed", "issue_id", uuidToString(issue.ID), "error", err)
+			logCommentEnqueueFailure("enqueue agent task on comment failed", err,
+				"issue_id", uuidToString(issue.ID),
+				"agent_id", uuidToString(trigger.Agent.ID))
 			return err
 		}
 	case commentTriggerSourceMentionSquadLeader:
