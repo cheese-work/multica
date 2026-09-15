@@ -81,7 +81,7 @@ import { ProjectPicker } from "../../projects/components/project-picker";
 import { LocalDirectoryHint } from "../../projects/components/local-directory-hint";
 import { useNewRunIds } from "./use-run-comment-motion";
 import { AgentRunComment, CommentCard } from "./comment-card";
-import { EMPTY_COMMENT_RUNS, buildCommentRunView, orderTimelineWithRuns, type CommentRun } from "./comment-runs";
+import { EMPTY_COMMENT_RUNS, buildCommentRunView, isActiveCommentRun, orderTimelineWithRuns, type CommentRun } from "./comment-runs";
 import { issueTasksOptions } from "@multica/core/issues/queries";
 import { SourceContextBadge } from "./source-context-viewer";
 import { RevisionConflictCompare } from "./revision-conflict-compare";
@@ -112,7 +112,9 @@ import { propertyListOptions } from "@multica/core/properties";
 import { memberListOptions, agentListOptions } from "@multica/core/workspace/queries";
 import {
   selectExpandedResolved,
+  selectExpandedThreads,
   selectDescriptionExpanded,
+  useCommentDraftStore,
   useIssueDisclosureStore,
   useRecentIssuesStore,
   useResolvedExpandStore,
@@ -1303,6 +1305,18 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     setResolvedExpanded(id, commentId, false);
   }, [id, setResolvedExpanded]);
 
+  // Per-session, per-root "all replies" length preference (01-DESIGN "Durable
+  // state and transition matrix") — unresolved threads over three replies
+  // default to compact (latest three); Show more/less remembers the choice
+  // for the rest of the session and survives row unmount/remount because it
+  // lives in this store, not row-local useState. Also driven from outside
+  // this page by the command palette's fold/unfold-all-comments commands.
+  const expandedThreadLengths = useIssueDisclosureStore(selectExpandedThreads(id));
+  const setThreadExpanded = useIssueDisclosureStore((s) => s.setThreadExpanded);
+  const toggleThreadLengthExpand = useCallback((rootId: string, expand: boolean) => {
+    setThreadExpanded(id, rootId, expand);
+  }, [id, setThreadExpanded]);
+
   // Per-session activity-block expansion overrides. The default rule is
   // "only the trailing block is expanded" (computed from timelineView.groups
   // below); these two sets capture user clicks that diverge from the default.
@@ -1572,6 +1586,39 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     return { threadReplies, groups };
   }, [displayTimeline, standaloneRuns]);
 
+  // Map of reply-comment id → root-comment id, so a deep-link to a reply
+  // (which lives inside a CommentCard, not in the flat items array) can fall
+  // back to scrolling the root thread into view. Without this, an inbox
+  // notification on a reply would land at items[-1] and short-circuit.
+  //
+  // Computed here (ahead of `forceThreadOpen` below) because the pin must be
+  // derivable from the *requested* target (`highlightCommentId`) alone, never
+  // from whether the DOM node was actually found — see that callback's
+  // comment for why.
+  const replyToRoot = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const [rootId, replies] of timelineView.threadReplies) {
+      for (const reply of replies) {
+        map.set(reply.id, rootId);
+      }
+    }
+    return map;
+  }, [timelineView.threadReplies]);
+
+  // The root whose thread contains the current deep-link/highlight request,
+  // derived purely from `highlightCommentId` + `replyToRoot` — NOT from
+  // `highlightedId` (only set once the target DOM node is actually found,
+  // see the landing effect below) and NOT from a DOM query. A target inside a
+  // currently-collapsed/compact thread has no DOM node yet; gating the pin on
+  // its own landing result is circular (the thread never opens because the
+  // node isn't there, and the node never mounts because the thread never
+  // opens). Deriving the pin from the request itself breaks that cycle.
+  const targetRootId = useMemo(() => {
+    if (!highlightCommentId) return null;
+    if (timelineView.threadReplies.has(highlightCommentId)) return highlightCommentId;
+    return replyToRoot.get(highlightCommentId) ?? null;
+  }, [highlightCommentId, replyToRoot, timelineView.threadReplies]);
+
   // Flat array consumed by <Virtuoso>. Recomputed when timelineView.groups
   // changes (timeline events) or expandedResolved flips (user toggles a
   // resolved thread). Kept in a useMemo so Virtuoso's data identity is stable
@@ -1597,6 +1644,175 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     closeFind();
   }, [id, closeFind]);
 
+  // Root ids whose thread currently carries an in-progress reply draft/
+  // upload, OR an active inline edit session on the root or one of its
+  // replies. Feeds `forceThreadOpen` below so Show-less-driven hiding can't
+  // strand an in-progress interaction out of view (01-DESIGN "New reply /
+  // edit / active run": "if active interaction/output would be hidden, latch
+  // length-expanded... and pin containing gates").
+  //
+  // Reply drafts/uploads live under `reply:${issueId}:${rootId}` in
+  // useCommentDraftStore. Inline edit sessions are component-local
+  // (useEditAttachmentState's `editing` boolean) and NOT directly observable
+  // from here — but that hook mirrors its live content into the SAME draft
+  // store under `edit:${issueId}:${commentId}` on every edit
+  // (comment-card.tsx's ContentEditor onUpdate), and clears that entry the
+  // moment the edit session ends (resetState → clearDraft, on both cancel and
+  // successful save — see useEditAttachmentState). So "an `edit:` draft
+  // exists for this comment id" is a reliable, already-available proxy for
+  // "this comment has an active edit session with unsaved content or a
+  // pending upload right now" — reachable without lifting `editing` itself to
+  // page level.
+  //
+  // Genuinely NOT covered: focus/selection with no unsaved change yet (e.g.
+  // the editor is focused but the user hasn't typed anything, or a caret is
+  // placed but no upload started) — that produces no draft-store entry and
+  // has no page-level signal today. Lifting bare focus/selection state would
+  // need new plumbing (a per-row "focused" callback bubbling to the page);
+  // that is out of scope for this fix.
+  const draftsByKey = useCommentDraftStore((s) => s.drafts);
+  const rootIdsWithActiveReplyDraft = useMemo(() => {
+    const ids = new Set<string>();
+    const hasDraftContentOrUpload = (key: string) => {
+      const draft = draftsByKey[key];
+      if (!draft) return false;
+      return draft.content.trim().length > 0 || draft.attachments.some((u) => u.status === "uploading");
+    };
+    for (const [rootId, replies] of timelineView.threadReplies) {
+      if (
+        hasDraftContentOrUpload(`reply:${id}:${rootId}`) ||
+        hasDraftContentOrUpload(`edit:${id}:${rootId}`) ||
+        replies.some((reply) => hasDraftContentOrUpload(`edit:${id}:${reply.id}`))
+      ) {
+        ids.add(rootId);
+      }
+    }
+    return ids;
+  }, [draftsByKey, id, timelineView.threadReplies]);
+
+  // Root ids with an active (queued/running) run that has no published reply
+  // yet, anchored to the root itself or to one of the root's replies. Split
+  // out from `forceThreadOpen` below so it can also feed the latch effect
+  // after it — the two need the exact same "active run" definition, and
+  // `rootIdsWithActiveReplyDraft` already established the pattern of
+  // precomputing a root-id set for this kind of reason.
+  //
+  // `commentRuns` is keyed by THREAD ROOT id, not by reply id (see
+  // comment-runs.ts's `buildCommentRunView`: every run's group walks
+  // `anchorCommentId` up through `parent_id` to the thread root before being
+  // stored) — the same key `runs={commentRuns.get(item.id)}` uses below when
+  // rendering a root's CommentCard. A run anchored to one of a root's
+  // replies is filed under the ROOT's id, so this reads `commentRuns.get(rootId)`
+  // once per root and checks every run's `anchorCommentId` against that
+  // root's replies, rather than incorrectly looking up `commentRuns` by each
+  // reply's own id (which only holds runs for a reply that is itself a
+  // thread root, e.g. a standalone assignment answer).
+  //
+  // `anchorCommentId === rootId` is included alongside the replies check: a
+  // root-anchored run renders inside CommentCard's own `open` gate
+  // (comment-card.tsx's root-anchored AgentRunComment path), so without this
+  // a manually collapsed root could hide a newly active run anchored to the
+  // root itself instead of one of its replies.
+  const rootIdsWithActiveRun = useMemo(() => {
+    const ids = new Set<string>();
+    for (const [rootId, replies] of timelineView.threadReplies) {
+      const rootRuns = commentRuns.get(rootId) ?? EMPTY_COMMENT_RUNS;
+      const replyIds = new Set(replies.map((reply) => reply.id));
+      if (rootRuns.some((run) => !run.hasReply && isActiveCommentRun(run.task)
+        && run.anchorCommentId
+        && (run.anchorCommentId === rootId || replyIds.has(run.anchorCommentId)))) {
+        ids.add(rootId);
+      }
+    }
+    return ids;
+  }, [timelineView.threadReplies, commentRuns]);
+
+  // Whether `rootId`'s thread must be forced fully open regardless of the
+  // durable length preference AND regardless of manual collapse (01-DESIGN
+  // "Effective order" priority 1 — find/target pin outranks priority 3,
+  // manual collapse). Reasons that can force a thread open:
+  //   - `targetRootId` — a deep-link/highlight request targets this thread,
+  //     computed from the request itself (see above), so it fires the moment
+  //     the request is known, before any DOM lookup.
+  //   - `find.open` — in-page find is active; every thread must be open so
+  //     every comment body is in the DOM to match against (01-DESIGN "Find
+  //     open / close"). find.open already forces the whole timeline flat
+  //     (isFlatTimeline below), which solves virtualization visibility, but
+  //     a manually-collapsed thread's replies are still gated on `open` in
+  //     CommentCard independent of virtualization — so this pin is still
+  //     needed even under find.open to override manual collapse.
+  //   - `rootIdsWithActiveRun` — an active (queued/running) run with no
+  //     reply yet, anchored to one of this thread's replies.
+  //   - an in-progress reply draft/upload, or an active inline edit session
+  //     on the root or a reply, anywhere in this thread
+  //     (`rootIdsWithActiveReplyDraft` above — see its comment for exactly
+  //     what is and is not covered).
+  // This does not persist a length or collapse choice by itself — it only
+  // lifts the ceiling for the duration of the reason. Two transition-matrix
+  // rows additionally require LATCHING the length preference on a
+  // not-yet-expanded root so the expansion survives after the reason ends
+  // (see the effect below): "New reply / edit / active run" (active
+  // reply/edit, active run) and "Target reveal / notification replay"
+  // (`targetRootId`, latch its length-expanded choice). "Find open / close"
+  // is the one reason here that does NOT latch — row 58 is explicit that
+  // find writes no fold preference; `find.open` still forces threads open
+  // for the duration of the search, it just never persists it.
+  const forceThreadOpen = useCallback((rootId: string): boolean => {
+    if (find.open) return true;
+    if (targetRootId === rootId) return true;
+    if (rootIdsWithActiveReplyDraft.has(rootId)) return true;
+    if (rootIdsWithActiveRun.has(rootId)) return true;
+    const threadReplies = timelineView.threadReplies.get(rootId) ?? EMPTY_REPLIES;
+    if (highlightedId && (highlightedId === rootId || threadReplies.some((r) => r.id === highlightedId))) {
+      return true;
+    }
+    return false;
+  }, [find.open, targetRootId, rootIdsWithActiveReplyDraft, rootIdsWithActiveRun, timelineView.threadReplies, highlightedId]);
+
+  // Latch: 01-DESIGN line 56 ("New reply / edit / active run") and line 57
+  // ("Target reveal / notification replay") both require that when their
+  // reason forces a thread open, the length-expanded preference is PERSISTED
+  // for that root — "ending the reason releases its temporary pin but does
+  // not clear the latched length expansion." Line 58 ("Find open / close")
+  // is explicit that find does the opposite — "no write to any fold
+  // preference" — so `find.open` is deliberately absent from this effect;
+  // it still forces threads open via `forceThreadOpen` above, it just never
+  // latches. Without this effect, `forceThreadOpen`'s draft/run/target pins
+  // are temporary only: the moment the draft is sent, the run finishes, or
+  // the target reveal releases, the pin drops and a previously-compact root
+  // refolds, silently discarding content the user was just looking at
+  // because of that reason.
+  //
+  // Effect (not a write inside `forceThreadOpen` itself) so this fires once
+  // per root per reason-start rather than on every render while the reason
+  // is still active — `setThreadExpanded` is idempotent (issue-disclosure-
+  // store.ts already no-ops when the value is unchanged), but an effect
+  // keyed on the reason-set's membership is the correct place for a reason
+  // "starting" rather than "continuing", and avoids calling a store setter
+  // during render.
+  //
+  // Known tension, not resolved here: the store only records current
+  // membership, not *why* a root is at its current expansion state. If a
+  // user explicitly clicks Show less on a root and then, in the same
+  // session, starts a reply draft on that same still-compact root, this
+  // effect cannot distinguish "never expanded" from "the user just chose
+  // compact" — both read as `!expandedThreadLengths.has(rootId)` — and will
+  // latch it open again. 01-DESIGN line 56 reads as unconditional ("Idle
+  // updates cannot refold a user-expanded thread" is about idle updates, not
+  // about this case), so this implements the literal requirement; closing
+  // the gap for real would need the store to also record *why* a root is
+  // compact (e.g. an explicit-collapse marker distinct from "default"),
+  // which is new store surface beyond what this fix was scoped to add.
+  useEffect(() => {
+    for (const rootId of rootIdsWithActiveReplyDraft) {
+      if (!expandedThreadLengths.has(rootId)) setThreadExpanded(id, rootId, true);
+    }
+    for (const rootId of rootIdsWithActiveRun) {
+      if (!expandedThreadLengths.has(rootId)) setThreadExpanded(id, rootId, true);
+    }
+    if (targetRootId && !expandedThreadLengths.has(targetRootId)) setThreadExpanded(id, targetRootId, true);
+  }, [rootIdsWithActiveReplyDraft, rootIdsWithActiveRun, targetRootId, expandedThreadLengths, id, setThreadExpanded]);
+
   // ID of the trailing activity block — the only one expanded by default.
   const lastActivityGroupId = useMemo(() => {
     for (let i = timelineView.groups.length - 1; i >= 0; i--) {
@@ -1605,20 +1821,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     }
     return null;
   }, [timelineView.groups]);
-
-  // Map of reply-comment id → root-comment id, so a deep-link to a reply
-  // (which lives inside a CommentCard, not in the flat items array) can fall
-  // back to scrolling the root thread into view. Without this, an inbox
-  // notification on a reply would land at items[-1] and short-circuit.
-  const replyToRoot = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const [rootId, replies] of timelineView.threadReplies) {
-      for (const reply of replies) {
-        map.set(reply.id, rootId);
-      }
-    }
-    return map;
-  }, [timelineView.threadReplies]);
 
   // Deep-link target index in the flat items array. For root comments this is
   // a direct findIndex hit; for reply ids we look up the enclosing root.
@@ -2694,6 +2896,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             expandedResolvedIds: expandedResolved, onResolvedExpandChange: toggleResolvedExpand,
             highlightedCommentId: highlightedId,
             runs: commentRuns.get(reply.id) ?? EMPTY_COMMENT_RUNS, enteringRunIds,
+            threadLengthExpanded: expandedThreadLengths.has(reply.id),
+            onThreadLengthExpandChange: toggleThreadLengthExpand,
+            forceThreadExpanded: forceThreadOpen(reply.id),
           } : undefined} />}
       </div>;
     }
@@ -2731,6 +2936,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             expandedResolvedIds={expandedResolved}
             onResolvedExpandChange={toggleResolvedExpand}
             highlightedCommentId={highlightedId}
+            threadLengthExpanded={expandedThreadLengths.has(item.id)}
+            onThreadLengthExpandChange={toggleThreadLengthExpand}
+            forceThreadExpanded={forceThreadOpen(item.id)}
           />
         </div>
       );
@@ -2916,6 +3124,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         <div
           ref={attachScrollContainer}
           data-tab-scroll-root={scrollContainerKey}
+          data-issue-timeline-scroll
           className="relative flex-1 overflow-y-auto [scrollbar-gutter:stable_both-edges]"
         >
         {/* Gutters: 32px is a comfortable reading margin on a desktop column
@@ -3080,7 +3289,15 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             {...descriptionAnnotations.captureProps}
             ref={descriptionAnnotations.cardRef}
             className="relative mt-5 rounded-lg"
-            onFocusCapture={() => {
+            onFocusCapture={(event) => {
+              // Only focus landing IN the editor counts as "editing" for the
+              // collapse-disable guard — not the Show more/less button
+              // itself. Without this, pressing Enter on "Show more" expands
+              // the description, its own button becomes "Show less" on the
+              // next render, `descriptionFocused` flips true from this same
+              // focus event, and `collapseDisabled` immediately disables the
+              // button the user's focus is still on — dropping focus.
+              if (!event.target.closest("[data-description-editor]")) return;
               if (!descriptionEditingRef.current) {
                 descriptionEditingRef.current = true;
                 setDescriptionFocused(true);

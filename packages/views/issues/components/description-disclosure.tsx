@@ -98,8 +98,36 @@ export function DescriptionDisclosure({
       ? `${labels.showMore} ${labels.moreLines(measurement.hiddenRows)}`
       : labels.showMore;
 
+  // The editor sits BEFORE this button in DOM order (content, then its own
+  // disclosure control), so a native forward Tab from the button would never
+  // reach it — Tab only ever moves to what follows in the DOM. 01-DESIGN's
+  // keyboard contract ("Show more expands while retaining focus on the
+  // button; Tab enters the real editor") requires the opposite, so redirect
+  // Tab explicitly to the first focusable element inside the now-expanded
+  // editor. Only applies once expanded — collapsed, the editor is `inert`
+  // and unfocusable anyway.
+  const handleDisclosureButtonTab = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key !== "Tab" || event.shiftKey || !expanded) return;
+    const target = editorRef.current?.querySelector<HTMLElement>("[contenteditable], input, textarea, button, a[href], [tabindex]");
+    if (!target) return;
+    event.preventDefault();
+    target.focus();
+  };
+
   return (
-    <section data-description-disclosure>
+    <section
+      data-description-disclosure
+      onPointerDownCapture={(event) => {
+        // `inert` blocks real browsers from ever dispatching a pointer event
+        // to the editor div below (or its descendants) while collapsed, so
+        // this handler must live on a non-inert ancestor. This section is
+        // the closest one.
+        if (!collapsed) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onExpandedChange(true);
+      }}
+    >
       <div
         ref={editorRef}
         aria-hidden={collapsed || undefined}
@@ -107,12 +135,6 @@ export function DescriptionDisclosure({
         data-find-ignore={collapsed ? "true" : undefined}
         id={editorId}
         inert={collapsed || undefined}
-        onPointerDownCapture={(event) => {
-          if (!collapsed) return;
-          event.preventDefault();
-          event.stopPropagation();
-          onExpandedChange(true);
-        }}
         style={
           collapsed
             ? {
@@ -139,6 +161,7 @@ export function DescriptionDisclosure({
             aria-expanded={expanded}
             disabled={expanded && collapseDisabled}
             onClick={() => onExpandedChange(!expanded)}
+            onKeyDown={handleDisclosureButtonTab}
             type="button"
           >
             {expanded ? labels.showLess : buttonLabel}
@@ -146,7 +169,7 @@ export function DescriptionDisclosure({
         </div>
       ) : measurement === null ? (
         <div className="mt-2 flex justify-center">
-          <button aria-controls={editorId} aria-expanded={expanded} onClick={() => onExpandedChange(!expanded)} type="button">
+          <button aria-controls={editorId} aria-expanded={expanded} onClick={() => onExpandedChange(!expanded)} onKeyDown={handleDisclosureButtonTab} type="button">
             {expanded ? labels.showLess : labels.showMore}
           </button>
         </div>

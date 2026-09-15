@@ -185,4 +185,45 @@ describe("projectThreadDisplay", () => {
     const projection = projectThreadDisplay([r1, r2, nested], [], true);
     expect(commentIds(projection.slots)).toEqual(["r1", "r2", "d"]);
   });
+
+  describe("excludeFromVisible", () => {
+    it("drops an excluded reply's own comment slot and keeps it out of hiddenCount", () => {
+      const a = reply("a", "2026-09-07T00:01:00Z");
+      const b = reply("b", "2026-09-07T00:02:00Z");
+      const projection = projectThreadDisplay([a, b], [], false, new Set(["a"]));
+      expect(commentIds(projection.slots)).toEqual(["b"]);
+      expect(projection.hiddenCount).toBe(0);
+    });
+
+    it("does not let an excluded reply consume a compact-window slot, so a fourth ordinary reply becomes visible instead", () => {
+      const replies = Array.from({ length: 4 }, (_, i) =>
+        reply(`r${i + 1}`, `2026-09-07T00:0${i + 1}:00Z`));
+      // Without exclusion this would be r2,r3,r4 hidden=1; excluding r1 must
+      // not change which of the remaining three are chosen — r1 was never a
+      // window candidate to begin with once excluded.
+      const projection = projectThreadDisplay(replies, [], false, new Set(["r1"]));
+      expect(commentIds(projection.slots)).toEqual(["r2", "r3", "r4"]);
+      expect(projection.hiddenCount).toBe(0);
+    });
+
+    it("still resolves a downstream run-only slot anchored to an excluded reply", () => {
+      const a = reply("a", "2026-09-07T00:01:00Z");
+      const b = reply("b", "2026-09-07T00:02:00Z");
+      // A queued follow-up run anchors to excluded reply "a" (comment-card.tsx's
+      // root-anchored-run case: "a" is rendered elsewhere by the caller, but a
+      // later run still targets it as its most recent covered input).
+      const runs = [runOnly("t-follow", "a")];
+      const projection = projectThreadDisplay([a, b], runs, false, new Set(["a"]));
+      expect(commentIds(projection.slots)).toEqual(["b"]);
+      const runSlots = projection.slots.filter((s) => s.kind === "run");
+      expect(runSlots).toHaveLength(1);
+      expect((runSlots[0] as { run: CommentRun }).run.task.id).toBe("t-follow");
+    });
+
+    it("with no excludeFromVisible argument, behaves exactly as before (empty-set default)", () => {
+      const a = reply("a", "2026-09-07T00:01:00Z");
+      const projection = projectThreadDisplay([a], [], true);
+      expect(commentIds(projection.slots)).toEqual(["a"]);
+    });
+  });
 });

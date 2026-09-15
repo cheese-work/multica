@@ -93,6 +93,29 @@ test.describe("Description editor lifecycle through folding", () => {
   let issueTitle: string;
   let workspaceSlug: string;
 
+  // Warm up the `/issues/[id]` route's dev-server compile once before this
+  // suite. `/issues` (hit inside loginAsDefault) is a different route and
+  // compiles separately, so its warm cache doesn't cover this one — the
+  // first real navigation below was seen failing with ERR_ABORTED /
+  // waitForPageText timeouts consistent with Next.js's first-request
+  // compile trap in dev mode.
+  test.beforeAll(async ({ browser }) => {
+    const warmupApi = await createTestApi();
+    try {
+      const warmupIssue = await warmupApi.createIssue("E2E Warmup " + Date.now());
+      const page = await browser.newPage();
+      try {
+        const slug = await loginAsDefault(page);
+        await page.goto(`/${slug}/issues/${warmupIssue.id}`, { waitUntil: "domcontentloaded" });
+        await waitForPageText(page, "E2E Warmup");
+      } finally {
+        await page.close();
+      }
+    } finally {
+      await warmupApi.cleanup();
+    }
+  });
+
   test.beforeEach(async ({ page }) => {
     api = await createTestApi();
     issueTitle = "E2E Disclosure Test " + Date.now();
@@ -114,9 +137,14 @@ test.describe("Description editor lifecycle through folding", () => {
     const showMore = page.getByRole("button", { name: /Show more/ });
     await expect(showMore).toBeVisible();
 
-    // Click lands on the clipped, inert editor surface itself — not the Show
-    // more button — to prove the wrapper's own pointer handler expands first.
-    await editor.click({ position: { x: 10, y: 10 } });
+    // The editor itself is `inert` while collapsed, so real Chromium never
+    // hit-tests it — the enclosing, non-inert section is what actually
+    // receives the pointer event at that point (and owns the capture
+    // handler). Click the section, not the inert div: Playwright's
+    // actionability check refuses to click an element real hit-testing
+    // would never deliver the event to.
+    const section = page.locator("[data-description-disclosure]");
+    await section.click({ position: { x: 10, y: 10 } });
 
     await expect(editor).not.toHaveAttribute("aria-hidden");
     await expect(editor).not.toHaveAttribute("inert");
@@ -141,22 +169,60 @@ test.describe("Description editor lifecycle through folding", () => {
     await waitForPageText(page, issueTitle);
 
     await page.getByRole("button", { name: /Show more/ }).click();
-    const paragraph = page.locator("[data-description-editor] .ProseMirror p").last();
+    const editor = page.locator("[data-description-editor]");
+    await expect(editor).not.toHaveAttribute("inert");
+    const paragraph = editor.locator(".ProseMirror p").last();
     await expect(paragraph).toBeVisible();
 
-    // Select the visible text via a real text-node Range, then dispatch the
-    // selectionchange the annotation capture listens for.
-    await paragraph.evaluate((node) => {
-      const range = document.createRange();
-      range.selectNodeContents(node);
-      const selection = window.getSelection();
-      selection?.removeAllRanges();
-      selection?.addRange(range);
-      document.dispatchEvent(new Event("selectionchange"));
-    });
-    await paragraph.dispatchEvent("mouseup");
+    // The description editor is `editable: true` in useCommentAnnotations, so
+    // the generic onPointerUp/onKeyUp `capture()` path is deliberately a
+    // no-op for it (see use-comment-annotations.tsx's `!editable` guards on
+    // captureProps) — a programmatic DOM Selection + synthetic pointerup
+    // never reaches it. Editable sources trigger annotation via the editor's
+    // own bubble menu (`selectionAction`, wired in issue-detail.tsx), which
+    // only appears on a real ProseMirror `selectionUpdate` transaction — a
+    // plain DOM Range/selectionchange dispatch does not produce one. Drive a
+    // real mouse-drag text selection so tiptap emits that transaction.
+    //
+    // The fixture description is 30 lines, so this last paragraph sits well
+    // below the fold — `boundingBox()` succeeds even when scrolled out of
+    // view (it only requires non-zero size), but `page.mouse` dispatches at
+    // raw viewport coordinates and does not auto-scroll like locator actions
+    // do. Scroll it into view first or the drag lands on nothing.
+    //
+    // The editor's `value` sync effect (content-editor.tsx) can still replace
+    // the ProseMirror DOM out from under us shortly after mount — e.g. a
+    // background issue refetch landing right after `Show more` — which
+    // detaches this exact paragraph node mid-scroll. Retry the whole
+    // locate-scroll-measure sequence against a freshly-resolved locator until
+    // it survives one full pass without the node disappearing underneath it.
+    let box: { x: number; y: number; width: number; height: number } | null = null;
+    await expect(async () => {
+      await paragraph.scrollIntoViewIfNeeded();
+      box = await paragraph.boundingBox();
+      if (!box) throw new Error("paragraph has no bounding box");
+    }).toPass({ timeout: 10000 });
+    if (!box) throw new Error("paragraph has no bounding box");
+    await page.mouse.move(box.x + 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width - 2, box.y + box.height / 2, { steps: 5 });
+    await page.mouse.up();
 
-    const addAnnotation = page.getByRole("button", { name: /Add|Comment/ });
+    // Selecting text opens the bubble menu with the editable-source action
+    // labeled "Add to comment" (issues.json reply.annotations.add_comment) —
+    // "Add annotation" is the *confirm* button inside the note popup that
+    // opens after clicking it (reply.annotations.confirm_add).
+    const addToComment = page.getByRole("button", { name: "Add to comment" });
+    await expect(addToComment).toBeVisible();
+    // `force: true`: the click's own onClick handler hides the bubble menu
+    // synchronously (`setVisible(false)` in bubble-menu.tsx) to keep later
+    // editor transactions from reopening it over the note field. Playwright's
+    // default actionability retry loop sees the button detach mid-interaction
+    // and retries the whole click forever — this is the menu closing exactly
+    // as designed, not a real instability, so skip the actionability wait.
+    await addToComment.click({ force: true });
+
+    const addAnnotation = page.getByRole("button", { name: "Add annotation" });
     await expect(addAnnotation).toBeVisible();
   });
 
@@ -178,7 +244,7 @@ test.describe("Description editor lifecycle through folding", () => {
     });
     await preview.dispatchEvent("mouseup");
 
-    await expect(page.getByRole("button", { name: /Add|Comment/ })).not.toBeVisible();
+    await expect(page.getByRole("button", { name: "Add annotation" })).not.toBeVisible();
   });
 
   test("paste-then-immediate-close persists the image markdown across reload", async ({ page }) => {
@@ -229,8 +295,16 @@ test.describe("Description editor lifecycle through folding", () => {
 
     // Navigate away immediately after settlement — before the freshly-started
     // 1500ms debounce can fire — so only `flushPendingOnUnmount` can save the
-    // image markdown and its attachment_ids bind (MUL-3254).
-    await page.goto(`/${workspaceSlug}/issues`, { waitUntil: "domcontentloaded" });
+    // image markdown and its attachment_ids bind (MUL-3254). This must be a
+    // real in-app client-side transition (sidebar link click), not
+    // `page.goto()`: `flushPendingOnUnmount`'s fire-and-forget save fires from
+    // a React unmount cleanup with nothing to await it, which is exactly what
+    // a client-side route swap survives — the tab stays alive under the
+    // in-flight request. A `page.goto()` is a real browser navigation that
+    // discards the document (and any in-flight fetch) the instant it starts,
+    // which this flush was never built to survive, so it's not this feature's
+    // failure mode to test.
+    await page.getByRole("link", { name: "Issues", exact: true }).click();
 
     await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
     await waitForPageText(page, issueTitle);
@@ -247,6 +321,72 @@ test.describe("Description editor lifecycle through folding", () => {
     await expect(reopenedImage).not.toHaveAttribute("src", /^blob:/);
   });
 
+  // CHE-502 — the previous test proves the flush-after-settlement path.
+  // This one proves the path that PR #31's evidence actually hit: the
+  // client-side close happens WHILE `POST /api/upload-file` is still in
+  // flight, so there is no debounced markdown containing the image yet
+  // (`uploading === true` nodes always serialize to "") and the response
+  // only lands after the editor has already unmounted. Gate the upload
+  // deterministically (same mechanism as "Show less is refused while an
+  // upload is pending") instead of racing a real network delay against the
+  // navigation.
+  test("close while the upload is still in flight persists the image markdown across reload", async ({ page }) => {
+    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await waitForPageText(page, issueTitle);
+
+    await page.getByRole("button", { name: /Show more/ }).click();
+    const editor = page.locator("[data-description-editor] .ProseMirror");
+    await editor.click();
+    await editor.press("End");
+
+    let releaseUpload: () => void = () => {};
+    const uploadGate = new Promise<void>((resolve) => {
+      releaseUpload = resolve;
+    });
+    await page.route("**/api/upload-file", async (route) => {
+      await uploadGate;
+      await route.continue();
+    });
+
+    const pngBase64 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+    await editor.evaluate((node, base64) => {
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const file = new File([bytes], "e2e-inflight.png", { type: "image/png" });
+      const dataTransfer = new DataTransfer();
+      dataTransfer.items.add(file);
+      const pasteEvent = new ClipboardEvent("paste", {
+        bubbles: true,
+        cancelable: true,
+        clipboardData: dataTransfer,
+      });
+      node.dispatchEvent(pasteEvent);
+    }, pngBase64);
+
+    // The placeholder is in the doc (blob preview) but the upload response
+    // is held by the gate — this is the exact "no description-save request
+    // yet" window the issue's evidence describes.
+    const uploadingPlaceholder = page.locator("[data-description-editor] img.image-uploading");
+    await expect(uploadingPlaceholder).toBeVisible({ timeout: 10000 });
+
+    // Client-side navigation away while the upload is still gated — this
+    // unmounts ContentEditor before `settleUploadNode` ever runs.
+    await page.getByRole("link", { name: "Issues", exact: true }).click();
+    await expect(page.getByRole("button", { name: /Show more/ })).not.toBeVisible();
+
+    // Now let the response land, after the editor is gone.
+    releaseUpload();
+
+    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await waitForPageText(page, issueTitle);
+    await page.getByRole("button", { name: /Show more/ }).click();
+    const reopenedImage = page.locator("[data-description-editor] img.image-content:not(.image-uploading)");
+    await expect(reopenedImage).toBeVisible({ timeout: 10000 });
+    await expect(reopenedImage).not.toHaveAttribute("src", /^blob:/);
+  });
+
   test("Show less is refused while an upload is pending, independent of editor focus", async ({ page }) => {
     await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
     await waitForPageText(page, issueTitle);
@@ -255,15 +395,39 @@ test.describe("Description editor lifecycle through folding", () => {
     const editor = page.locator("[data-description-editor] .ProseMirror");
     await editor.click();
 
+    // Gate the upload deterministically instead of racing a large buffer
+    // against the assertion window: against a local API a multi-MB body
+    // settles well inside any fixed wait, so the only reliable way to
+    // observe "upload pending" is to hold the response until the test says
+    // so. Intercept the exact endpoint the description editor's upload path
+    // calls (`api.uploadFile` -> `POST /api/upload-file`, client.ts:3187)
+    // and park it on a promise this test resolves after asserting.
+    let releaseUpload: () => void = () => {};
+    const uploadGate = new Promise<void>((resolve) => {
+      releaseUpload = resolve;
+    });
+    await page.route("**/api/upload-file", async (route) => {
+      await uploadGate;
+      await route.continue();
+    });
+
+    // "Attach file" also exists on the page's own comment composer — scope to
+    // the wrapper containing the description's disclosure section so this
+    // clicks the description's attach button, not the comment composer's.
+    const descriptionWrapper = page.locator("div:has(> [data-description-disclosure])").first();
     const fileChooserPromise = page.waitForEvent("filechooser");
-    await page.getByLabel("Attach file").click();
+    await descriptionWrapper.getByLabel("Attach file").click();
     const fileChooser = await fileChooserPromise;
-    // A large buffer keeps the upload in flight long enough to observe the
-    // disabled Show less before it settles.
+    // A real (tiny) PNG — the point of the gate above is to hold the
+    // in-flight request open, not to rely on payload size, and an invalid
+    // PNG body risks a content-type rejection producing the same "pending"
+    // symptom as a genuine in-flight upload.
+    const pngBase64 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
     await fileChooser.setFiles({
       name: "e2e-pending.png",
       mimeType: "image/png",
-      buffer: Buffer.alloc(3 * 1024 * 1024, 1),
+      buffer: Buffer.from(pngBase64, "base64"),
     });
 
     // Move focus OUT of the description wrapper entirely, not just off the
@@ -286,6 +450,11 @@ test.describe("Description editor lifecycle through folding", () => {
 
     const showLess = page.getByRole("button", { name: "Show less" });
     await expect(showLess).toBeDisabled();
+
+    // Release the gated response so the upload settles and doesn't leak a
+    // pending request into the next test.
+    releaseUpload();
+    await expect(showLess).toBeEnabled({ timeout: 10000 });
   });
 
   test("issue switch remounts the description with one mounted editor, no stale content", async ({ page }) => {
@@ -301,5 +470,140 @@ test.describe("Description editor lifecycle through folding", () => {
     await waitForPageText(page, "Second issue description");
     await expect(page.locator("[data-description-editor] .ProseMirror")).toHaveCount(1);
     await expect(page.locator("text=Line 1 of the description.")).not.toBeVisible();
+  });
+});
+
+// Durable thread-fold state (CHE-435): the length-disclosure store must
+// survive a real CommentCard/Virtuoso row unmount+remount, not just a store
+// unit test — 01-04-PLAN.md's Task 2 acceptance criterion is explicit that
+// this must be OBSERVED via an actual browser scroll-away-and-back, not
+// inferred from scroll distance.
+test.describe("Durable thread fold state through row unmount/remount", () => {
+  let api: TestApiClient;
+  let issueId: string;
+  let issueTitle: string;
+  let workspaceSlug: string;
+
+  test.beforeEach(async ({ page }) => {
+    api = await createTestApi();
+    issueTitle = "E2E Thread Fold Test " + Date.now();
+    const issue = await api.createIssue(issueTitle, { description: "Thread fold fixture" });
+    issueId = issue.id;
+    const root = await api.createComment(issueId, "Root comment for thread fold test");
+    // Five replies so the thread's compact window truncates ("latest three")
+    // and Show more/Show less actually has something to prove.
+    for (let i = 1; i <= 5; i++) {
+      await api.createComment(issueId, `Reply number ${i}`, root.id);
+    }
+    // Padding so the thread scrolls far enough out of the viewport to
+    // actually unmount its Virtuoso row, not just scroll within view.
+    for (let i = 1; i <= 40; i++) {
+      await api.createComment(issueId, `Padding comment ${i}`);
+    }
+    workspaceSlug = await loginAsDefault(page);
+  });
+
+  test.afterEach(async () => {
+    if (api) await api.cleanup();
+  });
+
+  test("Show more expansion survives scrolling the thread's row out of view and back", async ({ page }) => {
+    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await waitForPageText(page, issueTitle);
+    await waitForPageText(page, "Root comment for thread fold test");
+
+    const showMore = page.getByRole("button", { name: /Show \d+ more repl/ });
+    await expect(showMore).toBeVisible();
+    await showMore.click();
+    await waitForPageText(page, "Reply number 1");
+    const showLess = page.getByRole("button", { name: "Show less" });
+    await expect(showLess).toBeVisible();
+
+    // Scroll the timeline far past the thread so its row genuinely unmounts
+    // from the virtualized list (not just off-screen within a mounted DOM).
+    // A single `scrollTop = scrollHeight` assignment is not enough: Virtuoso
+    // starts with an estimated `scrollHeight` for rows it hasn't measured
+    // yet, so that first assignment lands short of the true bottom, and as
+    // real row heights arrive `scrollHeight` keeps growing out from under a
+    // scrollTop that was only set once — landing the viewport in a dead zone
+    // past "Reply number 1" but short of "Padding comment 40". Re-apply the
+    // assignment until scrollHeight (and therefore scrollTop) stops moving.
+    const scrollContainer = page.locator("[data-issue-timeline-scroll]").first();
+    const hasScrollContainer = await scrollContainer.count() > 0;
+    if (hasScrollContainer) {
+      let previousHeight = -1;
+      await expect
+        .poll(
+          async () => {
+            const height = await scrollContainer.evaluate((el) => {
+              el.scrollTop = el.scrollHeight;
+              return el.scrollHeight;
+            });
+            const stable = height === previousHeight;
+            previousHeight = height;
+            return stable;
+          },
+          { timeout: 10000 },
+        )
+        .toBe(true);
+    } else {
+      await page.mouse.wheel(0, 20000);
+    }
+    await expect(page.getByText("Padding comment 40")).toBeVisible({ timeout: 10000 });
+    // Confirm the original thread's content actually left the DOM (proof of
+    // unmount, not merely scrolled out of the viewport).
+    await expect(page.getByText("Reply number 1")).not.toBeAttached();
+
+    // Scroll back up to remount the thread's row.
+    if (hasScrollContainer) {
+      await scrollContainer.evaluate((el) => { el.scrollTop = 0; });
+    } else {
+      await page.mouse.wheel(0, -20000);
+    }
+    await waitForPageText(page, "Root comment for thread fold test");
+
+    // The durable length-disclosure store (not row-local useState) must have
+    // kept this thread expanded across the unmount — Reply number 1 (a
+    // compact-window-hidden reply pre-expansion) is visible again without
+    // clicking Show more a second time.
+    await expect(page.getByText("Reply number 1")).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole("button", { name: "Show less" })).toBeVisible();
+  });
+
+  test("fold-all and unfold-all commands drive the length-disclosure store together with manual collapse and resolved-expand", async ({ page }) => {
+    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await waitForPageText(page, issueTitle);
+    await waitForPageText(page, "Root comment for thread fold test");
+
+    await page.getByRole("button", { name: /Show \d+ more repl/ }).click();
+    await waitForPageText(page, "Reply number 1");
+
+    // Open the command palette and run Fold All Comments. The command's
+    // handler resolves `ensureQueryData(...).then(...)` after the palette
+    // has already closed (`setOpen(false)` fires synchronously on click,
+    // .catch(() => {}) swallows rejections silently), so the palette
+    // dismissing is not proof the fold effect landed — only the DOM
+    // reflecting the fold is.
+    await page.keyboard.press("ControlOrMeta+K");
+    const commandPalette = page.getByPlaceholder("Type a command or search...");
+    await expect(commandPalette).toBeVisible();
+    await commandPalette.fill("fold all");
+    await page.getByText("Fold All Comments", { exact: true }).click();
+    await expect(commandPalette).not.toBeVisible();
+
+    // The whole thread collapses to its manual-collapse summary — the
+    // length-expanded reply is no longer visible because the manual collapse
+    // gate (higher priority in the 01-DESIGN "Effective order") now applies.
+    await expect(page.getByText("Reply number 1")).not.toBeVisible({ timeout: 10000 });
+
+    // Unfold All Comments restores full disclosure, including the
+    // length-disclosure store's "all replies" state for this thread.
+    await page.keyboard.press("ControlOrMeta+K");
+    await expect(commandPalette).toBeVisible();
+    await commandPalette.fill("unfold all");
+    await page.getByText("Unfold All Comments", { exact: true }).click();
+    await expect(commandPalette).not.toBeVisible();
+
+    await expect(page.getByText("Reply number 1")).toBeVisible({ timeout: 10000 });
   });
 });
