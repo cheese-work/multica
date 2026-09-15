@@ -223,6 +223,95 @@ else
   pass=$((pass + 1))
 fi
 terminate_all_client_backends
+sleep 1
+
+echo "==> --fenced-sessions: verified identity is fenced, a fabricated one is not"
+# Fix for the replaced --fenced-role/--fenced-database mechanism, which
+# fenced EVERY session authenticated as a role/database and discarded
+# backend_start entirely -- so any foreign client holding those credentials
+# was exempted from every quiescence check. --fenced-sessions instead takes
+# explicit "<pid>|<backend_start>" pairs and RE-VERIFIES each one against
+# pg_stat_activity before exempting it.
+#
+# Two directions must hold, and the second is what proves verification
+# actually runs rather than the flag merely being parsed:
+#   (a) a genuine, currently-live pid|backend_start IS fenced;
+#   (b) a fabricated pair (right pid, wrong backend_start) is NOT fenced.
+# Case (b) uses the same live session as (a) with only backend_start
+# falsified, so the ONLY thing that can distinguish them is real
+# verification -- a parse-only implementation would fence both identically.
+docker exec -d "$container" psql -U "$db_user" -d "$db_name" -c "SELECT pg_sleep(20);"
+sleep 1
+fenced_live="$(node deploy/cd/quiescence.mjs find-live-session-by-role --database-url "$db_url" --psql-via-docker-network "$network" \
+  --role-name "$db_user" --database-name "$db_name" --query-timeout-ms 4000)"
+fenced_pid="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).pid))' "$fenced_live")"
+fenced_backend_start="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).backendStart))' "$fenced_live")"
+
+# (a) The real, verifiable pair. This session is idle with no open
+# transaction, so fencing it is the ONLY thing that can let the gate admit
+# (evaluateFinalGate's "idle sessions require explicit fencing" rule).
+expect_admit "final-gate --fenced-sessions admits a verified live pid|backend_start" \
+  node deploy/cd/quiescence.mjs final-gate --database-url "$db_url" --psql-via-docker-network "$network" \
+  --query-timeout-ms 4000 --fenced-sessions "${fenced_pid}|${fenced_backend_start}" \
+  --role-name "$db_user" --database-name "$db_name"
+
+# (b) Same pid, falsified backend_start -- the PID-reuse case. Must NOT be
+# fenced, so the still-present idle session denies.
+expect_deny "final-gate --fenced-sessions refuses a fabricated backend_start (verification really runs)" \
+  node deploy/cd/quiescence.mjs final-gate --database-url "$db_url" --psql-via-docker-network "$network" \
+  --query-timeout-ms 4000 --fenced-sessions "${fenced_pid}|2001-01-01 00:00:00+00" \
+  --role-name "$db_user" --database-name "$db_name"
+
+# (c) A wholly fabricated pid is likewise not fenced.
+expect_deny "final-gate --fenced-sessions refuses a wholly fabricated pid" \
+  node deploy/cd/quiescence.mjs final-gate --database-url "$db_url" --psql-via-docker-network "$network" \
+  --query-timeout-ms 4000 --fenced-sessions "999999|${fenced_backend_start}" \
+  --role-name "$db_user" --database-name "$db_name"
+
+# (d) The removed flags must not still work. A caller that passes the old
+# --fenced-role/--fenced-database gets no fencing at all now (they are
+# simply unrecognized options), so the live idle session denies -- the
+# public contract no longer offers fence-by-role-alone.
+expect_deny "removed --fenced-role/--fenced-database no longer fence anything" \
+  node deploy/cd/quiescence.mjs final-gate --database-url "$db_url" --psql-via-docker-network "$network" \
+  --query-timeout-ms 4000 --fenced-role "$db_user" --fenced-database "$db_name"
+
+terminate_all_client_backends
+sleep 1
+
+echo "==> list-invalid-indexes reports an INVALID index left by a failed concurrent build"
+# A clean database has none.
+if node deploy/cd/quiescence.mjs list-invalid-indexes --database-url "$db_url" --psql-via-docker-network "$network" \
+  --query-timeout-ms 4000 >/dev/null 2>&1; then
+  echo "PASS: list-invalid-indexes reports a clean database as having no invalid indexes"
+  pass=$((pass + 1))
+else
+  echo "FAIL: list-invalid-indexes did not report a clean database as clean"
+  fail=$((fail + 1))
+fi
+
+# Synthesize the exact catalog state a failed CREATE INDEX CONCURRENTLY
+# leaves behind. Flipping pg_index.indisvalid directly is deliberate: it
+# reproduces the end state deterministically in one statement, whereas
+# racing two concurrent builds to force a real failure is timing-dependent
+# and would make this control flaky. This is a throwaway synthetic
+# container; the row is never read by anything but this check.
+docker exec "$container" psql -U "$db_user" -d "$db_name" -c \
+  "CREATE TABLE che372_invalid_index_test(id int); CREATE INDEX che372_invalid_idx ON che372_invalid_index_test(id);" >/dev/null
+docker exec "$container" psql -U "$db_user" -d "$db_name" -c \
+  "UPDATE pg_index SET indisvalid = false WHERE indexrelid = 'che372_invalid_idx'::regclass;" >/dev/null
+invalid_out="$(node deploy/cd/quiescence.mjs list-invalid-indexes --database-url "$db_url" --psql-via-docker-network "$network" \
+  --query-timeout-ms 4000 2>&1 || true)"
+if echo "$invalid_out" | grep -q "che372_invalid_idx"; then
+  echo "PASS: list-invalid-indexes detects an INVALID index (exit-zero migrations cannot hide a failed concurrent build) :: $invalid_out"
+  pass=$((pass + 1))
+else
+  echo "FAIL: list-invalid-indexes missed an INVALID index :: $invalid_out"
+  fail=$((fail + 1))
+fi
+docker exec "$container" psql -U "$db_user" -d "$db_name" -c \
+  "UPDATE pg_index SET indisvalid = true WHERE indexrelid = 'che372_invalid_idx'::regclass; DROP TABLE che372_invalid_index_test;" >/dev/null 2>&1 || true
+terminate_all_client_backends
 
 echo
 echo "==> $pass passed, $fail failed"
