@@ -452,7 +452,8 @@
       "no_matches": "一致なし",
       "previous": "前の一致",
       "next": "次の一致",
-      "close": "検索を閉じる"
+      "close": "検索を閉じる",
+      "collapse_disabled": "検索中は折りたたみできません"
     },
     "update_failed": "タスクを更新できませんでした",
     "link_copied": "リンクをコピーしました",

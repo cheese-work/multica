@@ -452,7 +452,8 @@
       "no_matches": "일치 항목 없음",
       "previous": "이전 일치",
       "next": "다음 일치",
-      "close": "찾기 닫기"
+      "close": "찾기 닫기",
+      "collapse_disabled": "찾기가 열려 있는 동안에는 접을 수 없습니다"
     },
     "update_failed": "태스크를 업데이트하지 못했습니다",
     "link_copied": "링크를 복사했습니다",

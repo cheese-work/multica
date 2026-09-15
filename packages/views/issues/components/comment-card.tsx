@@ -168,6 +168,21 @@ interface CommentCardProps {
    * and the transition matrix's "New reply / edit / active run" row).
    */
   forceThreadExpanded?: boolean;
+  /**
+   * True while in-page find owns this thread's forced-open reveal
+   * specifically (never for a target/draft/run pin — those aren't "would
+   * hide a match" per 01-DESIGN). Disables the manual Collapse chevron with a
+   * localized explanation instead of hiding it: 01-DESIGN "disclosure
+   * toggles that would hide a match are disabled with a localized
+   * explanation." `forceThreadExpanded` already keeps the card visually
+   * open even if the underlying manual-collapse preference is clicked, but
+   * leaving the control live would still let find silently mutate a durable
+   * preference the reader never intended to change (row 58's overlay is
+   * meant to be a non-destructive, transient view, not a side door to write
+   * `useCommentCollapseStore`).
+   */
+  findManualCollapseDisabled?: boolean;
+  findManualCollapseDisabledReason?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -988,6 +1003,8 @@ function CommentCardImpl({
   threadLengthExpanded = false,
   onThreadLengthExpandChange,
   forceThreadExpanded = false,
+  findManualCollapseDisabled = false,
+  findManualCollapseDisabledReason,
 }: CommentCardProps) {
   const { t } = useT("issues");
   const locale = useLocale();
@@ -1202,9 +1219,14 @@ function CommentCardImpl({
                   variant="ghost"
                   size="icon-sm"
                   aria-label={open ? t(($) => $.comment.collapse_thread) : t(($) => $.comment.expand_thread)}
-                  title={open ? t(($) => $.comment.collapse_thread) : t(($) => $.comment.expand_thread)}
+                  aria-description={open && findManualCollapseDisabled ? findManualCollapseDisabledReason : undefined}
+                  title={open && findManualCollapseDisabled ? findManualCollapseDisabledReason : (open ? t(($) => $.comment.collapse_thread) : t(($) => $.comment.expand_thread))}
                   aria-expanded={open}
                   aria-controls={open ? `comment-body-${entry.id}` : undefined}
+                  // Only collapsing (from `open`) can hide a match — expanding
+                  // never does, so the control stays live in that direction
+                  // even while find owns this thread's reveal.
+                  disabled={open && findManualCollapseDisabled}
                   onClick={handleToggle}
                   className={commentActionClassName}
                 >
