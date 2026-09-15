@@ -40,9 +40,14 @@ set -eu
 # PROGRESS vs TERMINAL decisions. The file's existence is NOT itself a
 # decision. deploy/cd/migrate-supervised.sh writes "migration_started" as
 # its very FIRST action, long before any outcome exists, precisely so a
-# crash mid-run leaves something to reconcile against. That value is a
-# PROGRESS marker: the migration is underway and this script must keep
-# waiting.
+# crash mid-run leaves something to reconcile against; it then writes
+# "migrator_launched" once the migrator process has actually been started.
+# Both values are PROGRESS markers from this script's point of view: the
+# migration is underway and this script must keep waiting. The distinction
+# between the two only matters to migrate-supervised.sh's OWN
+# restart-preservation gate (only "migration_started" is safe to silently
+# take over on a restart; "migrator_launched" means the migrator may have
+# already touched the database and requires operator reconciliation).
 #
 # An earlier version of this loop treated any existing file as decided — it
 # read the first line, found it was not "starting_candidate", and exited 1
@@ -88,7 +93,7 @@ while [ "$elapsed" -lt "$wait_seconds" ]; do
     # list — anything unrecognized falls through to the terminal handling
     # below rather than being silently waited on.
     case "$decision" in
-      migration_started)
+      migration_started | migrator_launched)
         if [ "$progress_reported" != "$decision" ]; then
           echo "Controller reports migration in progress (decision='$decision', attempt='$decision_attempt_id'); continuing to wait for a terminal decision."
           progress_reported="$decision"

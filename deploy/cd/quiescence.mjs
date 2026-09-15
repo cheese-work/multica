@@ -510,17 +510,84 @@ export class SampleTracker {
 // another live backend's session-level GUC value at all, so any such
 // probe would necessarily inspect the wrong connection.
 
+// verifyLiveSessionHoldsAttemptLock confirms that the specific pid holds a
+// GRANTED shared advisory lock at attemptLockKey — a fresh,
+// cryptographically random secret the CD supervisor generates once per
+// migration attempt and passes to the migrator ONLY via
+// MULTICA_INTERNAL_D2_ATTEMPT_LOCK_KEY (see server/cmd/migrate/main.go and
+// dbstartup.NewPoolWithEnforcedTimeouts's AfterConnect hook, which acquires
+// it on every connection the migrator's pool opens, main and hook
+// connections alike). The key is never logged, never written to any file,
+// never part of a connection string, and never sent to this observer's own
+// connection — so a foreign client, which by construction cannot know this
+// run's secret, cannot acquire the same key and cannot be mistaken for a
+// session this attempt actually opened.
+//
+// This is the load-bearing difference from role/database/pid/backend_start
+// alone: those only prove "authenticated as the migration role right now",
+// which a foreign client sharing that role's credentials can trivially also
+// be. Holding a secret this observer only knows because the SAME shell
+// invocation that launched the migrator also generated it is proof the
+// session traces back to this exact attempt.
+//
+// Shared lock mode (not exclusive) is required because the migrator opens
+// more than one connection over a run (its pinned migration connection plus
+// hook connections); all of them must be able to hold this marker
+// concurrently without blocking each other.
+export function verifyLiveSessionHoldsAttemptLock({ connInfo, pid, attemptLockKey, queryTimeoutMs = DEFAULT_WALL_CLOCK_TIMEOUT_MS }) {
+  const sql = `
+    SELECT count(*)::text
+    FROM pg_locks
+    WHERE locktype = 'advisory'
+      AND objsubid = 1
+      AND classid = ${attemptLockClassid(attemptLockKey)}
+      AND objid = ${attemptLockObjid(attemptLockKey)}
+      AND mode = 'ShareLock'
+      AND granted = true
+      AND pid = ${Number(pid)};
+  `;
+  const result = runPsql({ connInfo, sql, queryTimeoutMs });
+  if (!result.ok) {
+    return { ok: false, reason: `could not read pg_locks for pid ${pid}: ${result.reason}` };
+  }
+  if (result.rows.length !== 1) {
+    return { ok: false, reason: `expected exactly one count row, found ${result.rows.length} (unknown state fails closed)` };
+  }
+  const count = Number(result.rows[0][0]);
+  if (count !== 1) {
+    return { ok: false, reason: `pid ${pid} does not currently hold this attempt's advisory-lock marker (found ${count} matching grants, expected 1) — not attempt-bound, cannot be treated as ours` };
+  }
+  return { ok: true };
+}
+
+// attemptLockClassid/attemptLockObjid split a bigint advisory-lock key into
+// the two int4 halves PostgreSQL stores in pg_locks.classid/objid for the
+// single-key pg_advisory_lock*(bigint) form (LOCKTAG_ADVISORY encoding).
+function attemptLockClassid(attemptLockKey) {
+  return Number(BigInt.asIntN(32, BigInt(attemptLockKey) >> 32n));
+}
+function attemptLockObjid(attemptLockKey) {
+  return Number(BigInt.asIntN(32, BigInt(attemptLockKey) & 0xffffffffn));
+}
+
 // verifyLiveSessionIsCovered confirms that a specific, already-connected
 // backend (identified by the unforgeable pid + backend_start pair the
 // watchdog itself recorded when it observed the session — never by a
 // client-supplied application_name or label) is running as the expected
-// role/database, so the role-level default verified above actually
-// applies to THIS session and not some differently-authenticated
-// process that merely happens to share a PID after reuse. It does not
-// and cannot read that session's live GUC value (Postgres does not
-// expose that); it establishes that the identity precondition for the
-// role-level default to apply is met for this exact recorded connection.
-export function verifyLiveSessionIsCovered({ connInfo, pid, backendStart, expectedRoleName, expectedDatabaseName, queryTimeoutMs = DEFAULT_WALL_CLOCK_TIMEOUT_MS }) {
+// role/database AND holds this attempt's secret advisory-lock marker, so
+// this exact recorded connection is attempt-bound to THIS migration run
+// and not merely "some session authenticated as the migration role" —
+// which a foreign client sharing that role's credentials could also be.
+// Role/database/pid/backend_start alone proves identity continuity (no PID
+// reuse); the attempt-lock check proves this connection was opened by THIS
+// attempt's own migrator process, since only it was ever told the secret
+// key. attemptLockKey is required — there is no "skip the ownership proof"
+// mode, since that is exactly the admission hole this function exists to
+// close.
+export function verifyLiveSessionIsCovered({ connInfo, pid, backendStart, expectedRoleName, expectedDatabaseName, attemptLockKey, queryTimeoutMs = DEFAULT_WALL_CLOCK_TIMEOUT_MS }) {
+  if (!attemptLockKey) {
+    return { ok: false, reason: "no attemptLockKey supplied — cannot prove attempt-bound ownership, unknown state fails closed" };
+  }
   const sql = `
     SELECT usename, datname, backend_start::text
     FROM pg_stat_activity
@@ -539,6 +606,10 @@ export function verifyLiveSessionIsCovered({ connInfo, pid, backendStart, expect
   }
   if (usename !== expectedRoleName || datname !== expectedDatabaseName) {
     return { ok: false, reason: `pid ${pid} is role=${usename} db=${datname}, expected role=${expectedRoleName} db=${expectedDatabaseName}` };
+  }
+  const lockCheck = verifyLiveSessionHoldsAttemptLock({ connInfo, pid, attemptLockKey, queryTimeoutMs });
+  if (!lockCheck.ok) {
+    return { ok: false, reason: `role/database/backend_start match but attempt-bound ownership check failed: ${lockCheck.reason}` };
   }
   return { ok: true };
 }
@@ -752,6 +823,7 @@ function cliFinalGate(args) {
   const fencedSessionsRaw = option("--fenced-sessions", args, { required: false, fallback: "" });
   const roleName = option("--role-name", args, { required: false, fallback: "" });
   const databaseName = option("--database-name", args, { required: false, fallback: "" });
+  const attemptLockKey = option("--attempt-lock-key", args, { required: false, fallback: "" });
   const connInfo = buildConnInfo(databaseUrl, { dockerNetwork });
 
   // A single previously-discovered pid is not enough to fence a live
@@ -797,8 +869,8 @@ function cliFinalGate(args) {
     : [];
   const droppedSessions = [];
   if (fencedSessionEntries.length > 0) {
-    if (!roleName || !databaseName) {
-      process.stdout.write(`${JSON.stringify({ admit: false, decision: "final_gate_denied", reason: "--fenced-sessions requires --role-name and --database-name so each claimed session can be verified against an expected identity (unknown state fails closed)", evidence: {} })}\n`);
+    if (!roleName || !databaseName || !attemptLockKey) {
+      process.stdout.write(`${JSON.stringify({ admit: false, decision: "final_gate_denied", reason: "--fenced-sessions requires --role-name, --database-name, and --attempt-lock-key so each claimed session can be verified against an expected identity and proven attempt-bound (unknown state fails closed)", evidence: {} })}\n`);
       process.exitCode = 1;
       return;
     }
@@ -816,7 +888,7 @@ function cliFinalGate(args) {
       }
       const covered = verifyLiveSessionIsCovered({
         connInfo, pid, backendStart,
-        expectedRoleName: roleName, expectedDatabaseName: databaseName, queryTimeoutMs,
+        expectedRoleName: roleName, expectedDatabaseName: databaseName, attemptLockKey, queryTimeoutMs,
       });
       if (!covered.ok) {
         droppedSessions.push({ entry, reason: covered.reason });
@@ -877,9 +949,10 @@ function cliVerifyLiveSessionIsCovered(args) {
   const backendStart = option("--backend-start", args);
   const expectedRoleName = option("--role-name", args);
   const expectedDatabaseName = option("--database-name", args);
+  const attemptLockKey = option("--attempt-lock-key", args);
   const result = verifyLiveSessionIsCovered({
     connInfo: buildConnInfo(databaseUrl, { dockerNetwork }), pid, backendStart,
-    expectedRoleName, expectedDatabaseName, queryTimeoutMs,
+    expectedRoleName, expectedDatabaseName, attemptLockKey, queryTimeoutMs,
   });
   process.stdout.write(`${JSON.stringify(result)}\n`);
   process.exitCode = result.ok ? 0 : 1;
@@ -921,7 +994,7 @@ if (isMain) {
     else if (command === "verify-live-session-is-covered") cliVerifyLiveSessionIsCovered(args);
     else if (command === "verify-live-session-is-absent") cliVerifyLiveSessionIsAbsent(args);
     else if (command === "list-invalid-indexes") cliListInvalidIndexes(args);
-    else fail("usage: quiescence.mjs <preflight|final-gate|find-live-session-by-role|find-live-sessions-for-role|verify-live-session-is-covered|verify-live-session-is-absent|list-invalid-indexes> --database-url postgres://... [--query-timeout-ms N] [--fenced-pids p1,p2] [--fenced-sessions 'pid|backend_start,pid|backend_start' --role-name R --database-name D] [--role-name R --database-name D [--pid P --backend-start TS]]");
+    else fail("usage: quiescence.mjs <preflight|final-gate|find-live-session-by-role|find-live-sessions-for-role|verify-live-session-is-covered|verify-live-session-is-absent|list-invalid-indexes> --database-url postgres://... [--query-timeout-ms N] [--fenced-pids p1,p2] [--fenced-sessions 'pid|backend_start,pid|backend_start' --role-name R --database-name D --attempt-lock-key K] [--role-name R --database-name D --attempt-lock-key K [--pid P --backend-start TS]]");
   } catch (error) {
     process.stderr.write(`quiescence: ${error.message}\n`);
     process.exitCode = 2;
