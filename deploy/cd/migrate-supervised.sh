@@ -105,6 +105,16 @@ Exit codes:
   3   work deadline exceeded, setup could not complete in time, or
       termination could not be confirmed server-side; entered
       needs_operator (fence must stay up)
+  4   refused to start: --decision-file already records a TERMINAL
+      disposition from a previous attempt. Overwriting it would destroy the
+      only durable evidence of that attempt's outcome and let a partially
+      migrated database be retried under a fresh budget. An operator must
+      inspect and remove/rotate the file before another attempt.
+  5   migration ran and the migrator exited zero, but a post-migration
+      object-validity check failed (an INVALID index left behind by a
+      concurrent index build that silently no-op'd or failed). Exit zero
+      alone does not prove the intended objects exist and are usable, so
+      this is needs_operator, never starting_candidate.
 EOF
 }
 
@@ -178,6 +188,48 @@ write_decision() {
   echo "che372-d2: recorded decision=$decision attempt_id=$attempt_id at $decision_file" >&2
 }
 
+# Decision-file preservation gate. write_decision "migration_started"
+# below is the FIRST thing this script records, and it used to run
+# unconditionally — silently clobbering whatever was already at
+# $decision_file, including a TERMINAL failure disposition
+# (needs_operator_*, denied_*, failed_confirmed_terminated) recorded by an
+# earlier attempt at the same path. That is exactly the reconciliation hole
+# Astra named: a second invocation could erase the proof that a previous
+# attempt left the database in an uncertain, partially-migrated state, then
+# retry it under a renewed 15s/40s budget as if nothing had happened.
+#
+# This script is deliberately conservative everywhere else (it "does not
+# talk to C00 and accepts no production credentials"; every unknown state
+# fails closed), so the same discipline applies here: a recorded terminal
+# disposition is evidence, and evidence is not this script's to destroy.
+# Refuse to proceed and exit 4, leaving the file byte-for-byte untouched
+# for an operator to inspect.
+#
+# What is NOT terminal: "migration_started" itself. That is a progress
+# marker, not a disposition — a crashed previous run that got no further
+# than writing it recorded no outcome to preserve, and blocking on it would
+# make any crash permanently unrecoverable without manual file surgery. An
+# absent file is likewise a clean slate. Everything else is terminal,
+# including a terminal SUCCESS (starting_candidate): re-running a migration
+# whose success was already published to the entrypoint is its own hazard,
+# and the attempt id being the same or different does not change that — a
+# same-id rerun is a duplicate attempt and a different-id rerun is a fresh
+# attempt reusing a dirty path. Both need an operator, not a silent
+# overwrite.
+#
+# The decision value is read from the file's FIRST line, matching
+# write_decision's own two-line ("<decision>\n<attempt id>") contract and
+# docker/entrypoint.cd.sh's own parse of the same file.
+if [ -n "$decision_file" ] && [ -f "$decision_file" ]; then
+  existing_decision="$(sed -n '1p' "$decision_file" 2>/dev/null || true)"
+  existing_attempt_id="$(sed -n '2p' "$decision_file" 2>/dev/null || true)"
+  if [ "$existing_decision" != "migration_started" ]; then
+    echo "che372-d2: refusing to start — $decision_file already records a terminal disposition from a previous attempt (decision='$existing_decision' attempt_id='$existing_attempt_id'). Overwriting it would destroy the only durable evidence of that attempt's outcome and allow a partially migrated database to be retried under a fresh budget. An operator must inspect and remove/rotate this file before another attempt." >&2
+    exit 4
+  fi
+  echo "che372-d2: $decision_file records non-terminal progress (decision='$existing_decision' attempt_id='$existing_attempt_id') from an attempt that recorded no outcome — proceeding and taking over the file" >&2
+fi
+
 write_decision "migration_started"
 
 migration_started_epoch="$(date +%s)"       # wall-clock, log/correlation only
@@ -229,7 +281,21 @@ if [ "$(remaining_seconds)" -le 0 ]; then
   exit 3
 fi
 
-echo "che372-d2: migration_started=$migration_started_epoch work_deadline=$work_deadline_epoch remaining=$(remaining_seconds)s (monotonic clock governs enforcement; wall-clock values are for correlation only)" >&2
+# work_deadline_monotonic_ms is the AUTHORITATIVE enforced boundary — it is
+# what remaining_seconds(), remaining_ms_before() and every loop condition
+# in this script actually compare against. work_deadline (epoch seconds) is
+# a floored wall-clock rendering of the same instant and can sit up to 999ms
+# earlier than the real boundary, because migration_started_epoch floors
+# `date +%s` while migration_started_monotonic_ms does not.
+#
+# Both are logged in a machine-parseable form deliberately: a test that
+# wants to assert this script exited by its real deadline must bind to
+# work_deadline_monotonic_ms and read /proc/uptime itself the same way
+# monotonic_ms() does (monotonic-to-monotonic, no rounding on either side).
+# Binding such an assertion to the floored epoch value instead re-introduces
+# up to a full second of slack and stops measuring the enforcement boundary
+# at all.
+echo "che372-d2: migration_started=$migration_started_epoch work_deadline=$work_deadline_epoch work_deadline_monotonic_ms=$work_deadline_monotonic_ms deadline_monotonic_ms=$deadline_monotonic_ms remaining=$(remaining_seconds)s (monotonic clock governs enforcement; wall-clock values are for correlation only)" >&2
 
 statement_timeout_ms_capped=$(( statement_timeout_ms < ($(remaining_seconds) * 1000) ? statement_timeout_ms : ($(remaining_seconds) * 1000) ))
 if [ "$statement_timeout_ms_capped" -le 0 ]; then
@@ -406,10 +472,31 @@ confirm_no_live_session_for_pid() {
 # run_final_gate calls quiescence.mjs's `final-gate` subcommand — the
 # zero-tolerance check (open transactions/snapshots, prepared xacts,
 # advisory locks, unaccounted locks, unfenced idle sessions) — through the
-# same run_node_bounded clamp as every other observer call. fenced_pids is
-# a comma-separated allowlist (may be empty) of PIDs that are OK to see
-# holding state; pass the migrator's own confirmed pg_pid here once known
-# so its own legitimate session does not trip the gate on itself.
+# same run_node_bounded clamp as every other observer call.
+#
+# fenced_pids is a comma-separated RAW pid allowlist (may be empty), used
+# only where verification is structurally impossible — i.e. the pre-launch
+# gate, where the migrator has not started and owns no session to verify.
+#
+# fenced_sessions is the allowlist that matters once the migrator is live:
+# a comma-separated list of "<pid>|<backend_start>" pairs drawn from
+# $migrator_verified_sessions, the registry of sessions THIS script
+# discovered and independently confirmed via
+# quiescence.mjs verify-live-session-is-covered. quiescence.mjs re-verifies
+# every pair against pg_stat_activity at gate time before exempting it, so
+# a recycled PID or a pair that no longer matches the expected
+# role/database is simply not fenced.
+#
+# A previous version instead passed --fenced-role/--fenced-database, which
+# told the gate to exempt EVERY session currently authenticated as this
+# role on this database. That is not ownership — it is "whoever holds these
+# credentials right now" — so an unrelated foreign client on the migration
+# role was exempted from every quiescence check and could transact
+# undetected for the entire migration window, with backend_start discarded
+# so not even PID reuse was guarded. Session identity in this controller is
+# always the unforgeable (pid, backend_start) pair, established by
+# discovery + verification, never inferred from a shared role name. Do not
+# reintroduce a role-shaped fence here.
 #
 # Exit code contract: 0 = admitted (gate passed); any non-zero — denied,
 # an observation failure, or a pre-launch budget denial from
@@ -419,18 +506,7 @@ confirm_no_live_session_for_pid() {
 run_final_gate() {
   local deadline_arg="$1"
   local fenced_pids="$2"
-  # fence_by_role: when "1", also exempt every OTHER live session
-  # currently authenticated as role_name/database_name — not just
-  # fenced_pids. The migrator's OS process/role can legitimately hold
-  # more than one Postgres backend at once (its main connection plus a
-  # separately-opened metadata/hook connection that opens and closes
-  # over the run), and a single pid discovered once at launch cannot
-  # track that. Role-based fencing re-resolves the migrator's live
-  # sessions on every call, the same way findLiveSessionsForRole already
-  # does for termination confirmation, so a second legitimate migrator
-  # connection is tolerated without ever admitting an unrelated foreign
-  # session that happens to share the role name.
-  local fence_by_role="${3:-}"
+  local fenced_sessions="${3:-}"
   local budget_ms
   budget_ms="$(remaining_ms_before "$deadline_arg")"
   local inner_budget_ms=$((budget_ms > 200 ? budget_ms - 100 : budget_ms))
@@ -439,16 +515,167 @@ run_final_gate() {
   if [ -n "$fenced_pids" ]; then
     gate_args+=(--fenced-pids "$fenced_pids")
   fi
-  if [ "$fence_by_role" = "1" ]; then
-    gate_args+=(--fenced-role "$role_name" --fenced-database "$database_name")
+  if [ -n "$fenced_sessions" ]; then
+    gate_args+=(--fenced-sessions "$fenced_sessions" --role-name "$role_name" --database-name "$database_name")
   fi
   local gate_result
   gate_result="$(run_node_bounded "$deadline_arg" -- "${gate_args[@]}" 2>&1)"
   local status=$?
   if [ "$status" -ne 0 ]; then
-    echo "che372-d2: final-gate denied (fenced-pids=${fenced_pids:-none}, fence-by-role=${fence_by_role:-0}, exit $status): $gate_result" >&2
+    echo "che372-d2: final-gate denied (fenced-pids=${fenced_pids:-none}, fenced-sessions=${fenced_sessions:-none}, exit $status): $gate_result" >&2
   fi
   return "$status"
+}
+
+# find_invalid_indexes reports any index left INVALID in the target
+# database, via quiescence.mjs's existing observer plumbing (same bounded,
+# autocommit, metadata-only psql path as every other check here — no new
+# connection mechanism, and nothing that mutates).
+#
+# Why exit zero from the migrator is not enough: PostgreSQL's CREATE INDEX
+# CONCURRENTLY builds in multiple passes and, on failure, leaves the index
+# behind with pg_index.indisvalid = false — present in the catalog, named,
+# and useless to the planner. This repo REQUIRES every migration index to
+# be built concurrently and, because a conditionally skipped migration is
+# still recorded in schema_migrations, requires later migrations to use
+# IF NOT EXISTS (see CLAUDE.md's migration rules). Together those mean an
+# invalid index is silently tolerated end-to-end: the concurrent build
+# fails, the ledger records the migration as applied, a later IF NOT EXISTS
+# sees the invalid index as "already there" and skips, and the migrator
+# exits zero. The candidate would then be admitted onto a schema whose
+# indexes do not exist for query planning purposes.
+#
+# Echoes the offending index names on stdout (one per line) and returns 0
+# only when the check RAN and found nothing. A non-zero return means either
+# "found invalid indexes" or "could not tell" — the caller must treat both
+# as failure, matching this script's fail-closed contract everywhere else.
+# Status is distinguished on stdout so the caller can log precisely.
+find_invalid_indexes() {
+  local deadline_arg="$1"
+  local budget_ms
+  budget_ms="$(remaining_ms_before "$deadline_arg")"
+  if [ "$budget_ms" -lt "$MIN_OBSERVER_BUDGET_MS" ]; then
+    echo "unknown: only ${budget_ms}ms remain, below the ${MIN_OBSERVER_BUDGET_MS}ms observer floor"
+    return 1
+  fi
+  local inner_budget_ms=$((budget_ms > 200 ? budget_ms - 100 : budget_ms))
+  # list-invalid-indexes exits 1 BOTH when it found invalid indexes and
+  # when the observation failed, so the exit code alone cannot distinguish
+  # them — the JSON body can. Capture the output either way (`|| true`) and
+  # let the parse below decide; an unparseable/ok:false body falls through
+  # to the "unknown" branch, which the caller treats as failure just the
+  # same.
+  local result
+  result="$(run_node_bounded "$deadline_arg" -- deploy/cd/quiescence.mjs list-invalid-indexes "${quiescence_args_common[@]}" \
+    --query-timeout-ms "$inner_budget_ms" 2>&1)" || true
+  if [ -z "$result" ]; then
+    echo "unknown: list-invalid-indexes produced no output (observer failed or was killed before writing a result)"
+    return 1
+  fi
+  local invalid
+  # Emits "NONE" for a clean ok:true result, the comma-joined index names
+  # for an ok:true result with findings, and "UNKNOWN" for ok:false or any
+  # unparseable body. An empty/ambiguous result never renders as "clean".
+  invalid="$(run_node_bounded "$deadline_arg" -- -e 'try{const r=JSON.parse(process.argv[1]);if(r&&r.ok===true&&Array.isArray(r.invalidIndexes)){process.stdout.write(r.invalidIndexes.length?r.invalidIndexes.join(","):"NONE")}else{process.stdout.write("UNKNOWN")}}catch(e){process.stdout.write("UNKNOWN")}' "$result" 2>/dev/null)" || {
+    echo "unknown: could not parse invalid-index result: $result"
+    return 1
+  }
+  if [ "$invalid" = "NONE" ]; then
+    return 0
+  fi
+  if [ "$invalid" = "UNKNOWN" ] || [ -z "$invalid" ]; then
+    echo "unknown: could not parse invalid-index result: $result"
+    return 1
+  fi
+  if [ -n "$invalid" ]; then
+    echo "invalid: $invalid"
+    return 1
+  fi
+  return 0
+}
+
+# discover_additional_verified_sessions extends $migrator_verified_sessions
+# with any NEW same-role/database session that this script can independently
+# verify, so the migrator's legitimate additional connections (a
+# metadata/hook connection opened mid-run by its pgx pool) are fenced
+# without ever fencing "whoever is on this role".
+#
+# The discipline is deliberately identical to the first session's: the role
+# query only PROPOSES candidates; each candidate that is not already in the
+# registry is then confirmed by verify-live-session-is-covered against its
+# exact (pid, backend_start) pair before it is appended. A candidate that
+# fails verification is left out — and, being unfenced, will make the very
+# next final-gate sample deny if it is in fact touching the database. That
+# is the correct direction to fail: a foreign session on the migration role
+# does not become ours by appearing while we are running.
+#
+# Bounded work only: one role query plus at most one verification per
+# iteration. There is no inner retry loop, and every node invocation runs
+# through run_node_bounded against the same work deadline, so this cannot
+# outlive the per-iteration budget. If more than one new candidate appears
+# in the same iteration, the extras are simply picked up by later
+# iterations (or, if they are genuinely foreign, denied by the gate) —
+# draining an unbounded queue inside one iteration is exactly the kind of
+# sub-loop with its own budget this script does not allow.
+discover_additional_verified_sessions() {
+  local deadline_arg="$1"
+  local budget_ms
+  budget_ms="$(remaining_ms_before "$deadline_arg")"
+  if [ "$budget_ms" -lt "$MIN_OBSERVER_BUDGET_MS" ]; then
+    return 0
+  fi
+  local inner_budget_ms=$((budget_ms > 200 ? budget_ms - 100 : budget_ms))
+  local sessions_json
+  sessions_json="$(run_node_bounded "$deadline_arg" -- deploy/cd/quiescence.mjs find-live-sessions-for-role "${quiescence_args_common[@]}" \
+    --role-name "$role_name" --database-name "$database_name" --query-timeout-ms "$inner_budget_ms" 2>/dev/null)" || return 0
+  [ -n "$sessions_json" ] || return 0
+
+  # Render the role query's result as newline-separated "pid|backend_start"
+  # candidate pairs. This is a pure text transform of data already fetched;
+  # it decides nothing about trust.
+  local candidate_budget_ms
+  candidate_budget_ms="$(remaining_ms_before "$deadline_arg")"
+  if [ "$candidate_budget_ms" -lt "$MIN_OBSERVER_BUDGET_MS" ]; then
+    return 0
+  fi
+  local candidates
+  candidates="$(run_node_bounded "$deadline_arg" -- -e 'try{const r=JSON.parse(process.argv[1]);if(r&&r.ok&&Array.isArray(r.sessions))process.stdout.write(r.sessions.map((s)=>`${s.pid}|${s.backendStart}`).join("\n"))}catch(e){}' "$sessions_json" 2>/dev/null)" || return 0
+  [ -n "$candidates" ] || return 0
+
+  local candidate
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    # Already-registered pairs need no re-verification here: the final gate
+    # itself re-verifies every registry entry on every sample, so a pair
+    # that has gone stale stops being fenced there, not here.
+    case ",${migrator_verified_sessions}," in
+      *",${candidate},"*) continue ;;
+    esac
+    local candidate_pid="${candidate%%|*}"
+    local candidate_backend_start="${candidate#*|}"
+    [ -n "$candidate_pid" ] && [ -n "$candidate_backend_start" ] || continue
+    local verify_budget_ms
+    verify_budget_ms="$(remaining_ms_before "$deadline_arg")"
+    if [ "$verify_budget_ms" -lt "$MIN_OBSERVER_BUDGET_MS" ]; then
+      return 0
+    fi
+    local inner_verify_budget_ms=$((verify_budget_ms > 200 ? verify_budget_ms - 100 : verify_budget_ms))
+    local covered
+    if covered="$(run_node_bounded "$deadline_arg" -- deploy/cd/quiescence.mjs verify-live-session-is-covered "${quiescence_args_common[@]}" \
+      --pid "$candidate_pid" --backend-start "$candidate_backend_start" \
+      --role-name "$role_name" --database-name "$database_name" --query-timeout-ms "$inner_verify_budget_ms" 2>&1)"; then
+      migrator_verified_sessions="${migrator_verified_sessions},${candidate}"
+      echo "che372-d2: verified an additional migrator-attributable session pid=$candidate_pid backend_start=$candidate_backend_start: $covered" >&2
+    else
+      echo "che372-d2: candidate same-role session pid=$candidate_pid backend_start=$candidate_backend_start did NOT verify and is therefore NOT fenced: $covered" >&2
+    fi
+    # One verification attempt per iteration keeps this inside the
+    # per-iteration budget; remaining candidates are handled next
+    # iteration, or denied by the gate if they are not ours.
+    return 0
+  done <<EOF
+$candidates
+EOF
 }
 
 # Pre-launch final gate: refuse to start the migrator at all unless the
@@ -476,22 +703,61 @@ migrator_pg_pid=""
 migrator_pg_backend_start=""
 final_state=""   # "success" | "failed_nonzero" | "deadline_exceeded" | "needs_operator" | "fencing_violated"
 
-# Continuous-fencing state — a bash port of quiescence.mjs's SampleTracker
-# (intervalMs=250, maxSampleAgeMs=1000): once the migrator's own Postgres
-# session is known, every loop iteration re-checks that NOTHING else is
-# touching the database (final-gate --fenced-pids <migrator_pg_pid> denies
-# on any unaccounted session/lock/transaction other than the migrator's
-# own fenced one). Two consecutive missed/denied samples, or a sample
-# gap wider than fencing_max_sample_age_ms, is a hard failure — mirrors
-# SampleTracker.record() exactly, just driven by this loop's own poll
-# cadence instead of a long-lived Node process, since every node
-# invocation here is independently bounded via run_node_bounded rather
-# than one persistent process holding tracker state across iterations.
-fencing_consecutive_misses=0
+# migrator_verified_sessions is the registry of Postgres sessions this
+# script has DISCOVERED and INDEPENDENTLY VERIFIED as belonging to this
+# migration attempt. Format: comma-separated "<pid>|<backend_start>"
+# entries, exactly what quiescence.mjs final-gate --fenced-sessions parses.
+#
+# Every entry earns its place the same way, with no shortcut for the second
+# and later ones: find-live-session-by-role (or findLiveSessionsForRole)
+# proposes a CANDIDATE, and verify-live-session-is-covered confirms that
+# exact (pid, backend_start) pair is live and running as the expected
+# role/database before the pair is appended here. "It is on our role right
+# now" is never sufficient — that is the admission hole the previous
+# role-based fence had, and it is what the unforgeable-identity discipline
+# documented in quiescence.mjs exists to prevent. The migrator legitimately
+# opens more than one backend (its pinned migration connection plus
+# metadata/hook connections that come and go), so this list grows over the
+# run; it is a registry of proven identities, not a role query cached.
+migrator_verified_sessions=""
+
+# Continuous-fencing state. Once the migrator's own Postgres session is
+# known, every loop iteration re-checks that NOTHING else is touching the
+# database: final-gate --fenced-sessions <verified pairs> denies on any
+# unaccounted session/lock/transaction other than this attempt's own
+# verified ones.
+#
+# Latching, not tolerance: ANY denied/stale/unknown sample is immediately
+# TERMINAL for the run. An earlier version allowed two consecutive misses
+# before failing AND reset the counter to zero on the next successful
+# sample — so a foreign transaction observed once could be forgotten
+# entirely by the very next sample, and the run would go on to report
+# success. A fencing violation is a statement about what was true at a
+# moment in time; a later clean observation does not un-observe it. There
+# is deliberately no transient-retry grace here: the denial path already
+# covers observer failures, and treating "we could not tell" as a reason to
+# keep going is the same fail-open this whole controller refuses elsewhere.
+#
+# fencing_max_sample_age_ms (1000ms) mirrors quiescence.mjs's SampleTracker
+# maxSampleAgeMs: a gap wider than that between successive SUCCESSFUL
+# samples means the database was unobserved for longer than the design
+# allows, which is itself a coverage failure regardless of what the samples
+# on either side said. The age is measured against the PREVIOUS successful
+# sample's timestamp and evaluated BEFORE that timestamp is overwritten, so
+# a single slow observation whose own duration exceeds the budget is caught
+# rather than laundered into "age zero, I just succeeded."
 fencing_last_sample_monotonic_ms=""
 fencing_max_sample_age_ms=1000
+# fencing_interval_ms is the target LOOP PERIOD, not a post-iteration sleep
+# duration. The addendum budgets a sample every <=250ms; sleeping a flat
+# 200ms AFTER an iteration that already spent time on bounded observer calls
+# makes the real period 200ms + iteration duration, which can exceed 250ms
+# on its own. The sleep at the bottom of the loop is therefore computed as
+# max(0, fencing_interval_ms - iteration_duration_ms).
+fencing_interval_ms=250
 
 while :; do
+  iteration_start_monotonic_ms="$(monotonic_ms)"
   remaining="$(remaining_seconds)"
   if [ "$remaining" -le 0 ]; then
     final_state="deadline_exceeded"
@@ -548,6 +814,12 @@ while :; do
               --role-name "$role_name" --database-name "$database_name" --query-timeout-ms "$inner_cover_budget_ms" 2>&1)" && {
               migrator_pg_pid="$candidate_pid"
               migrator_pg_backend_start="$candidate_backend_start"
+              # Seed the verified-session registry with this confirmed
+              # pair. Reuse exactly the values verify-live-session-is-covered
+              # just vouched for — never re-derive them from a fresh
+              # role query, which would reintroduce the "shares a role
+              # name" assumption this registry exists to avoid.
+              migrator_verified_sessions="${migrator_pg_pid}|${migrator_pg_backend_start}"
               echo "che372-d2: confirmed live migrator Postgres session pid=$migrator_pg_pid identity: $covered" >&2
             }
           fi
@@ -561,35 +833,66 @@ while :; do
   # every iteration — not just once at discovery time. This is the
   # direct-database-consumer fence the HTTP-only front door cannot see.
   if [ -n "$migrator_pg_pid" ]; then
-    fencing_now_ms="$(monotonic_ms)"
+    # Pick up any NEW migrator-attributable connection before sampling, so
+    # a hook connection the pool just opened is verified and fenced on the
+    # same iteration rather than denying the gate for one cycle first.
+    # Unverifiable candidates are deliberately left unfenced — see this
+    # function's comment.
+    discover_additional_verified_sessions "$work_deadline_monotonic_ms"
+
     fencing_budget_ms="$(remaining_ms_before "$work_deadline_monotonic_ms")"
     if [ "$fencing_budget_ms" -ge "$MIN_OBSERVER_BUDGET_MS" ]; then
-      if run_final_gate "$work_deadline_monotonic_ms" "$migrator_pg_pid" "1"; then
-        fencing_consecutive_misses=0
-        fencing_last_sample_monotonic_ms="$fencing_now_ms"
-      else
-        fencing_consecutive_misses=$((fencing_consecutive_misses + 1))
-        echo "che372-d2: fencing sample missed (consecutive=$fencing_consecutive_misses) for fenced migrator pid=$migrator_pg_pid" >&2
-        if [ "$fencing_consecutive_misses" -ge 2 ]; then
-          echo "che372-d2: continuous fencing violated — two consecutive missed/denied samples while migrator pid=$migrator_pg_pid was running" >&2
-          final_state="fencing_violated"
-          break
+      if run_final_gate "$work_deadline_monotonic_ms" "" "$migrator_verified_sessions"; then
+        # The sample SUCCEEDED. Its age must be judged before its
+        # timestamp is recorded, and against the time the observation
+        # actually FINISHED — not against the timestamp captured before the
+        # (possibly slow) gate call ran.
+        #
+        # An earlier version did both of these backwards: it stamped
+        # fencing_last_sample_monotonic_ms with a value read BEFORE the
+        # call, then compared "now" against that freshly-written value, so
+        # the computed age on a successful iteration was always ~zero. A
+        # gate call that itself took longer than fencing_max_sample_age_ms
+        # — leaving the database unobserved for that whole span — was
+        # laundered into a clean sample. Comparing the completion instant
+        # against the PREVIOUS successful sample catches exactly that.
+        fencing_sample_done_ms="$(monotonic_ms)"
+        if [ -n "$fencing_last_sample_monotonic_ms" ]; then
+          fencing_sample_age_ms=$((fencing_sample_done_ms - fencing_last_sample_monotonic_ms))
+          if [ "$fencing_sample_age_ms" -gt "$fencing_max_sample_age_ms" ]; then
+            echo "che372-d2: continuous fencing violated — ${fencing_sample_age_ms}ms elapsed between successful fencing samples (max ${fencing_max_sample_age_ms}ms) while migrator pid=$migrator_pg_pid was running; the database was unobserved for longer than the design allows, so this sample's own success does not restore coverage" >&2
+            final_state="fencing_violated"
+            break
+          fi
         fi
+        fencing_last_sample_monotonic_ms="$fencing_sample_done_ms"
+      else
+        # LATCHING: one denied/stale/unknown sample is terminal. Not "two
+        # consecutive", and no later successful sample can clear it —
+        # run_final_gate already collapses "denied" and "could not tell"
+        # into the same fail-closed non-zero, and neither is something a
+        # subsequent clean observation retracts.
+        echo "che372-d2: continuous fencing violated — a fencing sample was denied or could not be taken while migrator pid=$migrator_pg_pid was running (verified sessions: ${migrator_verified_sessions:-none}); this is terminal for the run, not retried" >&2
+        final_state="fencing_violated"
+        break
       fi
     else
       echo "che372-d2: skipped fencing sample — insufficient budget (${fencing_budget_ms}ms) this iteration" >&2
     fi
-    if [ -n "$fencing_last_sample_monotonic_ms" ]; then
-      fencing_sample_age_ms=$((fencing_now_ms - fencing_last_sample_monotonic_ms))
-      if [ "$fencing_sample_age_ms" -gt "$fencing_max_sample_age_ms" ]; then
-        echo "che372-d2: continuous fencing violated — sample age ${fencing_sample_age_ms}ms exceeds ${fencing_max_sample_age_ms}ms while migrator pid=$migrator_pg_pid was running" >&2
-        final_state="fencing_violated"
-        break
-      fi
-    fi
   fi
 
-  sleep_clamped_to 200 "$work_deadline_monotonic_ms"
+  # Maintain the <=250ms sampling PERIOD rather than adding a flat sleep on
+  # top of however long this iteration's observer calls took. A fixed
+  # `sleep 0.2` after a 300ms iteration yields a 500ms period, silently
+  # exceeding the addendum's sampling budget; subtracting the iteration's
+  # own duration keeps the period at the target whenever the work fits, and
+  # yields a zero-length sleep (immediate next iteration) when it does not.
+  # Still clamped to the absolute deadline by sleep_clamped_to.
+  iteration_elapsed_ms=$(( $(monotonic_ms) - iteration_start_monotonic_ms ))
+  iteration_sleep_ms=$(( fencing_interval_ms - iteration_elapsed_ms ))
+  if [ "$iteration_sleep_ms" -gt 0 ]; then
+    sleep_clamped_to "$iteration_sleep_ms" "$work_deadline_monotonic_ms"
+  fi
 done
 
 if [ "$final_state" = "success" ]; then
@@ -626,6 +929,49 @@ if [ "$final_state" = "success" ]; then
     exit 3
   fi
   echo "che372-d2: migration completed successfully within work_deadline (finished at $final_now_epoch, deadline $work_deadline_epoch)" >&2
+
+  # LAST LINE OF DEFENSE #1 — final fencing check.
+  #
+  # The continuous-fencing samples above stop the moment the watchdog loop
+  # breaks on the migrator's OS exit, but this script keeps doing real work
+  # afterwards (the absence confirmation, this block). A foreign session
+  # that appears in that window would never be seen by any sample, yet the
+  # candidate would be admitted onto a database it was touching. Re-run the
+  # gate once, right here, against the same verified-session registry.
+  #
+  # The migrator's own sessions are expected to be GONE by now (that is what
+  # confirm_no_live_session_for_pid just proved), so this normally runs
+  # against a fully empty database and the registry contributes nothing —
+  # stale entries are dropped by quiescence.mjs's own re-verification rather
+  # than fencing anything. Passing the registry anyway is deliberate: if a
+  # migrator connection somehow outlived its process, it is still OURS and
+  # should be reported as such by the absence check, not misattributed here.
+  #
+  # Failure routes to needs_operator, never to a silent success — consistent
+  # with every other "we cannot prove it" path in this script.
+  if ! run_final_gate "$work_deadline_monotonic_ms" "" "$migrator_verified_sessions"; then
+    echo "che372-d2: final fencing check before admission did NOT pass — a session/lock/transaction unaccounted for by this attempt was present (or could not be observed) after the migrator exited; refusing to write starting_candidate" >&2
+    write_decision "needs_operator_final_fencing_check_failed"
+    exit 3
+  fi
+
+  # LAST LINE OF DEFENSE #2 — object validity.
+  #
+  # Exit zero from the migrator proves the process finished, not that the
+  # objects it was supposed to create exist and are usable. The concrete
+  # case (Astra's) is a concurrent index build that failed or was skipped by
+  # IF NOT EXISTS: PostgreSQL leaves the index in the catalog with
+  # indisvalid = false, the ledger records the migration as applied, and the
+  # migrator exits zero. Admitting the candidate there puts it on a schema
+  # whose indexes the planner will not use and whose unique constraints are
+  # not enforced. See find_invalid_indexes for why this repo's own migration
+  # rules make that outcome specifically easy to reach.
+  if ! invalid_index_report="$(find_invalid_indexes "$work_deadline_monotonic_ms")"; then
+    echo "che372-d2: post-migration object-validity check did not pass ($invalid_index_report) — an INVALID index (or an unobservable catalog) means exit zero does not prove the intended schema exists; refusing to write starting_candidate" >&2
+    write_decision "needs_operator_invalid_index"
+    exit 5
+  fi
+
   # This is the exact "starting_candidate\n<attempt-id>" contract
   # docker/entrypoint.cd.sh polls for and freshness-checks against
   # CHE372_D2_ATTEMPT_ID before it will exec the server — the one point in

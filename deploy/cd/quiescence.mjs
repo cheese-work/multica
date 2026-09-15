@@ -364,8 +364,17 @@ export function evaluateFinalGate(state, opts = {}) {
   // legitimate in-flight transaction/prepared-xact/index-build/advisory
   // lock would deny the gate even though the caller has already vouched
   // for exactly that pid, which defeats continuous fencing (final-gate
-  // re-checked with --fenced-pids <pid> while that pid is still running).
-  // Any row attributable to a pid NOT in the allowlist still denies.
+  // re-checked with --fenced-sessions <pid>|<backend_start> while that pid
+  // is still running). Any row attributable to a pid NOT in the allowlist
+  // still denies.
+  //
+  // This function does not and cannot judge WHETHER a pid deserves to be
+  // fenced — that is the caller's burden, and cliFinalGate discharges it by
+  // re-verifying each claimed (pid, backend_start) pair against
+  // pg_stat_activity before it ever reaches this allowlist. Never populate
+  // this set from a role/database match alone: "currently authenticated as
+  // role R" is not ownership, and a set built that way exempts every
+  // foreign client holding that role's credentials from every check below.
   const fencedPids = new Set((opts.fencedPids ?? []).map(String));
 
   // Zero non-operation transactions/retained snapshots: any foreign
@@ -580,6 +589,16 @@ export function findLiveSessionByRole({ connInfo, roleName, databaseName, queryT
 // connections during termination confirmation — the pinned advisory-lock
 // connection plus any separately-opened hook connections its pool may
 // still hold — not just the single PID first discovered at launch.
+//
+// This establishes "who is currently authenticated as this role", nothing
+// more. It is a discovery/accounting primitive, NOT an ownership proof: its
+// output must never be fed directly into a fence (evaluateFinalGate's
+// fencedPids), because that would exempt any foreign client holding the
+// same role credentials from every quiescence check. Legitimate use is the
+// conservative direction only — treating an extra same-role session as a
+// reason to DENY confirmation (verifyLiveSessionIsAbsent), or as a
+// CANDIDATE to be independently verified via verifyLiveSessionIsCovered
+// before the caller records it as its own.
 export function findLiveSessionsForRole({ connInfo, roleName, databaseName, queryTimeoutMs = DEFAULT_WALL_CLOCK_TIMEOUT_MS }) {
   const sql = `
     SELECT pid::text, backend_start::text
@@ -626,6 +645,40 @@ export function verifyLiveSessionIsAbsent({ connInfo, pid, backendStart, roleNam
     };
   }
   return { ok: true, absent: true, otherSessions: [] };
+}
+
+// findInvalidIndexes reports every index in the target database left
+// INVALID (pg_index.indisvalid = false). This is a post-migration OBJECT
+// VALIDITY check, not a quiescence check, but it belongs in this module
+// because it needs exactly the same bounded, autocommit, metadata-only
+// observation path and must never mutate anything.
+//
+// A failed CREATE INDEX CONCURRENTLY leaves its index in the catalog with
+// indisvalid = false: present and named, but ignored by the planner and
+// not enforcing a unique constraint. Nothing about the migrator's exit code
+// reveals this — and this repo's own migration rules (concurrent builds
+// mandatory, conditionally-skipped migrations still recorded in
+// schema_migrations, later migrations therefore using IF NOT EXISTS) make
+// it specifically likely to pass unnoticed: the IF NOT EXISTS retry sees
+// the invalid index as already present and skips. Excludes system catalogs
+// so only application-visible objects are reported.
+//
+// Fail-closed like everything else here: an observation failure returns
+// ok:false with a reason, never an empty list.
+export function findInvalidIndexes({ connInfo, queryTimeoutMs = DEFAULT_WALL_CLOCK_TIMEOUT_MS }) {
+  const sql = `
+    SELECT c.relname::text
+    FROM pg_index i
+    JOIN pg_class c ON c.oid = i.indexrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE i.indisvalid = false
+      AND n.nspname NOT IN ('pg_catalog', 'pg_toast', 'information_schema');
+  `;
+  const result = runPsql({ connInfo, sql, queryTimeoutMs });
+  if (!result.ok) {
+    return { ok: false, reason: `could not read pg_index (unknown state fails closed): ${result.reason}` };
+  }
+  return { ok: true, invalidIndexes: result.rows.map((row) => row[0]) };
 }
 
 // buildConnInfo resolves how observation queries reach Postgres.
@@ -675,36 +728,109 @@ function cliPreflight(args) {
   process.exitCode = result.admit ? 0 : 1;
 }
 
+// FENCED_SESSION_FIELD_SEPARATOR separates a pid from its backend_start
+// inside one --fenced-sessions entry. It must NOT be ":" — Postgres
+// renders backend_start as e.g. "2026-09-14 10:30:00.123456+00", which
+// already contains colons, so a ":"-separated pair could not be split
+// unambiguously. "," is already this file's established separator BETWEEN
+// multi-value entries (see --fenced-pids), so it is kept for that role
+// and "|" is used within an entry. Neither character can appear in a pid
+// (digits only) or in a Postgres timestamptz rendering.
+const FENCED_SESSION_FIELD_SEPARATOR = "|";
+const FENCED_SESSION_ENTRY_SEPARATOR = ",";
+
 function cliFinalGate(args) {
   const { databaseUrl, dockerNetwork, queryTimeoutMs } = connOptsFromArgs(args);
+  // --fenced-pids is the RAW, unverified pid allowlist. It exists for the
+  // one call site where verification is structurally impossible: the
+  // pre-launch gate, when the migrator has not started and owns no live
+  // session yet. It is never used to exempt a session that is already
+  // live, because at that point an unforgeable identity IS available and
+  // must be demanded instead (--fenced-sessions below).
   const fencedPidsRaw = option("--fenced-pids", args, { required: false, fallback: "" });
-  const fencedPids = fencedPidsRaw ? fencedPidsRaw.split(",").filter(Boolean) : [];
-  const fencedRole = option("--fenced-role", args, { required: false, fallback: "" });
-  const fencedDatabase = option("--fenced-database", args, { required: false, fallback: "" });
+  const fencedPids = fencedPidsRaw ? fencedPidsRaw.split(FENCED_SESSION_ENTRY_SEPARATOR).filter(Boolean) : [];
+  const fencedSessionsRaw = option("--fenced-sessions", args, { required: false, fallback: "" });
+  const roleName = option("--role-name", args, { required: false, fallback: "" });
+  const databaseName = option("--database-name", args, { required: false, fallback: "" });
   const connInfo = buildConnInfo(databaseUrl, { dockerNetwork });
 
   // A single previously-discovered pid is not enough to fence a live
-  // migrator: the same OS process/role can legitimately hold more than
-  // one Postgres backend at once (its main migration connection plus a
+  // migrator: the same OS process/role can legitimately hold more than one
+  // Postgres backend at once (its main migration connection plus a
   // separately-opened metadata/hook connection), and those extra
-  // connections come and go over the run. --fenced-role/--fenced-database
-  // re-resolves every live session for that role, right now, the same way
-  // findLiveSessionsForRole already does for termination confirmation —
-  // so continuous fencing tolerates the migrator's own current
-  // connections without ever widening to a foreign session that merely
-  // shares the role name from an earlier or later point in time.
-  if (fencedRole && fencedDatabase) {
-    const roleSessions = findLiveSessionsForRole({ connInfo, roleName: fencedRole, databaseName: fencedDatabase, queryTimeoutMs });
-    if (!roleSessions.ok) {
-      process.stdout.write(`${JSON.stringify({ admit: false, decision: "final_gate_denied", reason: `could not resolve fenced role sessions (unknown state fails closed): ${roleSessions.reason}`, evidence: {} })}\n`);
+  // connections come and go over the run.
+  //
+  // A previous version of this CLI solved that with
+  // --fenced-role/--fenced-database, which re-resolved every live session
+  // for that role at gate time and fenced all of them. That was a real
+  // admission hole, and precisely the one the design principle documented
+  // above (see the note before evaluatePassivePreflight) forbids: "who is
+  // currently authenticated as role R on database D" is not ownership. Any
+  // foreign client holding that role's credentials — an operator's psql, a
+  // stray application instance, an attacker with the migration role — was
+  // exempted from EVERY quiescence check and could transact undetected
+  // through the whole migration window. The backend_start of each resolved
+  // session was discarded outright, so not even PID reuse was guarded.
+  //
+  // --fenced-sessions replaces it with an explicit, caller-maintained
+  // registry of sessions the caller has ALREADY discovered and verified for
+  // itself, each named by the unforgeable (pid, backend_start) pair.
+  // Membership is never re-derived here from role/database alone. Each
+  // listed pair is re-verified RIGHT NOW, against this exact moment's
+  // pg_stat_activity, via the same verifyLiveSessionIsCovered primitive the
+  // watchdog uses — so a pair that has since been recycled onto a different
+  // session (PID reuse), or that never matched the expected role/database,
+  // is not fenced no matter what the caller claims.
+  //
+  // Failure handling follows this file's "fail closed on ambiguity, but a
+  // confirmed-gone session is not ambiguous" philosophy (cf.
+  // verifyLiveSessionIsAbsent): a pair that no longer verifies is simply
+  // dropped from the allowlist rather than failing the whole gate. Dropping
+  // it is the CONSERVATIVE action — an unfenced pid can only ever cause a
+  // denial, never an admission, so a stale entry costs the caller nothing
+  // but honesty. If that pid is in fact still holding state under a
+  // different identity, it is now unfenced and the gate denies, which is
+  // exactly right. What must never happen is the inverse: trusting an
+  // unverified claim.
+  const fencedSessionEntries = fencedSessionsRaw
+    ? fencedSessionsRaw.split(FENCED_SESSION_ENTRY_SEPARATOR).filter(Boolean)
+    : [];
+  const droppedSessions = [];
+  if (fencedSessionEntries.length > 0) {
+    if (!roleName || !databaseName) {
+      process.stdout.write(`${JSON.stringify({ admit: false, decision: "final_gate_denied", reason: "--fenced-sessions requires --role-name and --database-name so each claimed session can be verified against an expected identity (unknown state fails closed)", evidence: {} })}\n`);
       process.exitCode = 1;
       return;
     }
-    for (const s of roleSessions.sessions) fencedPids.push(s.pid);
+    for (const entry of fencedSessionEntries) {
+      const separatorIndex = entry.indexOf(FENCED_SESSION_FIELD_SEPARATOR);
+      if (separatorIndex === -1) {
+        droppedSessions.push({ entry, reason: `malformed entry (expected pid${FENCED_SESSION_FIELD_SEPARATOR}backend_start)` });
+        continue;
+      }
+      const pid = entry.slice(0, separatorIndex);
+      const backendStart = entry.slice(separatorIndex + FENCED_SESSION_FIELD_SEPARATOR.length);
+      if (!/^\d+$/.test(pid) || backendStart.length === 0) {
+        droppedSessions.push({ entry, reason: "malformed entry (pid must be numeric and backend_start non-empty)" });
+        continue;
+      }
+      const covered = verifyLiveSessionIsCovered({
+        connInfo, pid, backendStart,
+        expectedRoleName: roleName, expectedDatabaseName: databaseName, queryTimeoutMs,
+      });
+      if (!covered.ok) {
+        droppedSessions.push({ entry, reason: covered.reason });
+        continue;
+      }
+      fencedPids.push(pid);
+    }
   }
 
   const state = observeQuiescenceState({ connInfo, queryTimeoutMs });
   const result = evaluateFinalGate(state, { fencedPids });
+  if (droppedSessions.length > 0) {
+    result.evidence = { ...result.evidence, droppedFencedSessions: droppedSessions };
+  }
   process.stdout.write(`${JSON.stringify(result)}\n`);
   process.exitCode = result.admit ? 0 : 1;
 }
@@ -716,6 +842,33 @@ function cliFindLiveSessionByRole(args) {
   const result = findLiveSessionByRole({ connInfo: buildConnInfo(databaseUrl, { dockerNetwork }), roleName, databaseName, queryTimeoutMs });
   process.stdout.write(`${JSON.stringify(result)}\n`);
   process.exitCode = result.ok ? 0 : 1;
+}
+
+// cliFindLiveSessionsForRole exposes findLiveSessionsForRole (plural) so a
+// shell caller can enumerate CANDIDATE same-role sessions. Its output is
+// explicitly not an ownership claim about any of them — see the function's
+// own doc comment. The only correct use of this listing is to feed each
+// candidate through verify-live-session-is-covered before recording it;
+// handing this output straight to final-gate as a fence is the exact
+// admission hole --fenced-role/--fenced-database was removed for.
+function cliFindLiveSessionsForRole(args) {
+  const { databaseUrl, dockerNetwork, queryTimeoutMs } = connOptsFromArgs(args);
+  const roleName = option("--role-name", args);
+  const databaseName = option("--database-name", args);
+  const result = findLiveSessionsForRole({ connInfo: buildConnInfo(databaseUrl, { dockerNetwork }), roleName, databaseName, queryTimeoutMs });
+  process.stdout.write(`${JSON.stringify(result)}\n`);
+  process.exitCode = result.ok ? 0 : 1;
+}
+
+// cliListInvalidIndexes exit codes: 0 = the check ran and found none; 1 =
+// the check ran and found at least one, OR the observation failed. Both
+// non-zero cases are "do not proceed" for the caller; the JSON on stdout
+// distinguishes them for logging.
+function cliListInvalidIndexes(args) {
+  const { databaseUrl, dockerNetwork, queryTimeoutMs } = connOptsFromArgs(args);
+  const result = findInvalidIndexes({ connInfo: buildConnInfo(databaseUrl, { dockerNetwork }), queryTimeoutMs });
+  process.stdout.write(`${JSON.stringify(result)}\n`);
+  process.exitCode = result.ok && result.invalidIndexes.length === 0 ? 0 : 1;
 }
 
 function cliVerifyLiveSessionIsCovered(args) {
@@ -764,9 +917,11 @@ if (isMain) {
     if (command === "preflight") cliPreflight(args);
     else if (command === "final-gate") cliFinalGate(args);
     else if (command === "find-live-session-by-role") cliFindLiveSessionByRole(args);
+    else if (command === "find-live-sessions-for-role") cliFindLiveSessionsForRole(args);
     else if (command === "verify-live-session-is-covered") cliVerifyLiveSessionIsCovered(args);
     else if (command === "verify-live-session-is-absent") cliVerifyLiveSessionIsAbsent(args);
-    else fail("usage: quiescence.mjs <preflight|final-gate|find-live-session-by-role|verify-live-session-is-covered|verify-live-session-is-absent> --database-url postgres://... [--query-timeout-ms N] [--fenced-pids p1,p2] [--fenced-role R --fenced-database D] [--role-name R --database-name D [--pid P --backend-start TS]]");
+    else if (command === "list-invalid-indexes") cliListInvalidIndexes(args);
+    else fail("usage: quiescence.mjs <preflight|final-gate|find-live-session-by-role|find-live-sessions-for-role|verify-live-session-is-covered|verify-live-session-is-absent|list-invalid-indexes> --database-url postgres://... [--query-timeout-ms N] [--fenced-pids p1,p2] [--fenced-sessions 'pid|backend_start,pid|backend_start' --role-name R --database-name D] [--role-name R --database-name D [--pid P --backend-start TS]]");
   } catch (error) {
     process.stderr.write(`quiescence: ${error.message}\n`);
     process.exitCode = 2;

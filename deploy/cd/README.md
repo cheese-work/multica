@@ -203,13 +203,36 @@ isolation.
 This is a partial CHE-372 delivery. Not implemented here: the full six-phase
 cutover state machine's remaining phases (quiesce/stop-old-app/
 recovery-capture/readiness/reconnect timing across the whole 60s envelope —
-only the migration phase's own deadline is implemented), the direct-
-database-consumer fence beyond HTTP, the sampling loop (`SampleTracker` is
-implemented in `quiescence.mjs` but not yet wired into a continuous
-migration-phase sampler), interrupted-concurrent-index-build recovery
-decisions, and crash/restart recovery of controller state. These are
-explicitly D4 rehearsal and further D2 hardening work, not silently dropped
-scope — see the CHE-372 issue thread for the acceptance-group breakdown.
+only the migration phase's own deadline is implemented), and
+interrupted-concurrent-index-build recovery decisions. These are explicitly
+D4 rehearsal and further D2 hardening work, not silently dropped scope — see
+the CHE-372 issue thread for the acceptance-group breakdown.
+
+The direct-database-consumer fence and the continuous sampling loop ARE
+implemented: `migrate-supervised.sh`'s watchdog re-runs `final-gate` against
+the verified-session registry (`--fenced-sessions`) on every iteration of its
+own bounded loop (target period `fencing_interval_ms=250ms`, coverage
+enforced by `fencing_max_sample_age_ms=1000ms`), with latching — any single
+denied, stale, or unknown sample is immediately terminal for the run and is
+never cleared by a later successful sample. `quiescence.mjs`'s exported
+`SampleTracker` class predates that loop and is not used by it (or by
+anything else in this tree); it also still implements the older
+two-consecutive-miss/reset semantics the watchdog loop deliberately does NOT
+use. Treat it as superseded/dead code, not as documentation of the current
+sampling contract — the watchdog loop in `migrate-supervised.sh` is the
+source of truth.
+
+Decision-file preservation and startup validation across a restart are also
+implemented: `migrate-supervised.sh` refuses to overwrite an existing
+`--decision-file` unless its recorded decision is the non-terminal
+`migration_started` progress marker (see the "Decision-file preservation
+gate" comment block in that script), and only writes the terminal
+`starting_candidate` contract `docker/entrypoint.cd.sh` waits on after the
+final fencing re-check and the post-migration object-validity check both
+pass. `entrypoint.cd.sh` itself treats `migration_started` as a pure progress
+marker (continue waiting), never as a reason to exit — only a recognized
+terminal decision (`starting_candidate` for the attempt it was given, or any
+other terminal value as failure) ends its wait loop.
 
 The main-push workflow produces a `build-evidence` manifest. Its configuration
 digest is for the synthetic fixture only, so `admission.mjs` refuses it for a

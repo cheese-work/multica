@@ -36,12 +36,14 @@ host_port=$(( (RANDOM % 5000) + 20000 ))
 
 fake_migrate_src_dir="server/cmd/che372_test_fake_migrate_DELETE_ME"
 real_session_nonzero_src_dir="server/cmd/che372_test_fake_migrate_nonzero_DELETE_ME"
+hook_connection_src_dir="server/cmd/che372_test_fake_migrate_hook_DELETE_ME"
 
 cleanup() {
   docker rm -f "$container" >/dev/null 2>&1 || true
   docker network rm "$network" >/dev/null 2>&1 || true
   rm -rf "$fake_migrate_src_dir"
   rm -rf "$real_session_nonzero_src_dir"
+  rm -rf "$hook_connection_src_dir"
   rm -rf "$work_dir"
 }
 trap cleanup EXIT
@@ -178,6 +180,288 @@ else
   echo "FAIL: ledger is empty after a claimed-successful migration run"
   fail=$((fail + 1))
 fi
+
+echo "==> reset to blank schema before the decision-file lifecycle controls"
+docker exec "$container" psql -U "$db_user" -d "$db_name" -c \
+  "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" >/dev/null
+
+echo "==> integration: entrypoint.cd.sh must keep waiting through migration_started and only proceed on starting_candidate"
+# This is Astra's exact P1: migrate-supervised.sh writes "migration_started"
+# to --decision-file as its very first action, long before any outcome
+# exists. A prior version of docker/entrypoint.cd.sh treated ANY existing
+# file as a decision -- it read the first line, saw it was not
+# "starting_candidate", and exited 1 immediately, defeating the whole
+# "wait for the controller's terminal decision" design. This drives the
+# REAL producer (migrate-supervised.sh --decision-file/--attempt-id) and the
+# REAL consumer (entrypoint.cd.sh) concurrently against the same file --
+# not a hand-written fixture standing in for either side -- and asserts the
+# consumer is still waiting while only "migration_started" is on disk, then
+# proceeds once the producer's own terminal "starting_candidate" write
+# lands.
+entrypoint_work_dir="$(mktemp -d)"
+entrypoint_decision_file="$entrypoint_work_dir/decision.txt"
+entrypoint_attempt_id="lifecycle-test-attempt"
+# entrypoint.cd.sh execs "./server" (relative to its cwd) on admission; stub
+# it so this test never needs the real repository image, and have the stub
+# leave verifiable evidence of having actually run.
+cat > "$entrypoint_work_dir/server" <<'FAKE_SERVER_EOF'
+#!/bin/sh
+echo "fake-server: started" > "$(dirname "$0")/server-started.marker"
+exit 0
+FAKE_SERVER_EOF
+chmod +x "$entrypoint_work_dir/server"
+
+CHE372_D2_MIGRATION_DECISION_FILE="$entrypoint_decision_file" \
+CHE372_D2_ATTEMPT_ID="$entrypoint_attempt_id" \
+CHE372_D2_DECISION_WAIT_SECONDS=30 \
+  sh -c "cd '$entrypoint_work_dir' && exec sh '$root_dir/docker/entrypoint.cd.sh'" \
+  >"$entrypoint_work_dir/entrypoint.log" 2>&1 &
+entrypoint_bg_pid=$!
+
+# Start the real supervisor with a generous allocation so its own
+# "migration_started" write has time to be observed by the entrypoint above
+# before the terminal decision lands. Guarded by set +e/set -e (matching
+# every other "capture this exit code, don't let a real failure abort the
+# whole suite under set -e" call site in this file) -- this call's PASS/FAIL
+# is asserted explicitly below, so a nonzero exit must be data for this test,
+# never a script-ending event that skips that assertion entirely.
+# Guarded by set +e/set -e (matching every other "capture this exit code,
+# don't let a real failure abort the whole suite under set -e" call site in
+# this file) -- this call's outcome is asserted explicitly below, so a
+# nonzero exit must be data for this test, never a script-ending event.
+#
+# The eventual outcome here (starting_candidate vs. needs_operator) is
+# subject to the exact same host-load-sensitive continuous-fencing sample
+# timing as this file's own pre-existing "positive control" above: under
+# real contention, an observer round trip through --psql-via-docker-network
+# can exceed fencing_max_sample_age_ms (1000ms) and correctly fail closed --
+# that is the point-#2 fencing latch working as designed, not a point-#4
+# defect. What point-#4 actually requires, and what is asserted strictly
+# below regardless of that race, is: (a) the entrypoint must be seen
+# observing migration_started as progress and continuing to wait, never
+# exiting on it, and (b) whatever TERMINAL decision the supervisor
+# eventually writes, the entrypoint must react to that exact decision
+# correctly (exec the server on starting_candidate, refuse otherwise) --
+# never exit early on the non-terminal marker, which is the regression this
+# control exists to catch.
+set +e
+bash deploy/cd/migrate-supervised.sh \
+  --database-url "$host_db_url" \
+  --observer-database-url "$observer_db_url" \
+  --migrate-binary "$work_dir/migrate" \
+  --role-name "$db_user" --database-name "$db_name" \
+  --migration-allocation-seconds 60 \
+  --psql-via-docker-network "$network" \
+  --decision-file "$entrypoint_decision_file" \
+  --attempt-id "$entrypoint_attempt_id" \
+  >"$work_dir/lifecycle-producer.log" 2>&1
+lifecycle_producer_status=$?
+set -e
+
+if grep -q "recorded decision=migration_started" "$work_dir/lifecycle-producer.log"; then
+  echo "PASS: supervisor recorded migration_started as its first decision"
+  pass=$((pass + 1))
+else
+  echo "FAIL: supervisor log is missing the migration_started record — see $work_dir/lifecycle-producer.log"
+  cat "$work_dir/lifecycle-producer.log"
+  fail=$((fail + 1))
+fi
+
+lifecycle_final_decision="$(sed -n '1p' "$entrypoint_decision_file" 2>/dev/null || true)"
+if [ "$lifecycle_final_decision" = "starting_candidate" ]; then
+  echo "INFO: supervised run reached starting_candidate (clean success, exit $lifecycle_producer_status)"
+elif [ "$lifecycle_producer_status" -eq 3 ]; then
+  echo "INFO: supervised run resolved to needs_operator ('$lifecycle_final_decision', exit 3) rather than starting_candidate -- under real host load this can be the continuous-fencing sample-staleness latch correctly failing closed, not a producer/consumer wiring defect; the entrypoint-reaction assertions below still apply to whichever terminal decision this exact run produced"
+else
+  echo "INFO: supervised run resolved to exit $lifecycle_producer_status ('$lifecycle_final_decision')"
+fi
+
+# Wait for the background entrypoint to finish reacting to whatever TERMINAL
+# decision the supervisor above actually wrote (it either execs the fake
+# server, which writes its marker and exits, or refuses and exits 1).
+entrypoint_wait_deadline=$(( $(date +%s) + 20 ))
+while [ "$(date +%s)" -lt "$entrypoint_wait_deadline" ]; do
+  if [ -f "$entrypoint_work_dir/server-started.marker" ] || ! kill -0 "$entrypoint_bg_pid" 2>/dev/null; then
+    break
+  fi
+  sleep 0.5
+done
+set +e
+wait "$entrypoint_bg_pid" 2>/dev/null
+entrypoint_status=$?
+set -e
+
+if grep -q "Controller reports migration in progress" "$entrypoint_work_dir/entrypoint.log"; then
+  echo "PASS: entrypoint.cd.sh observed and correctly waited through the migration_started progress marker, not treating it as a decision"
+  pass=$((pass + 1))
+else
+  echo "FAIL: entrypoint.cd.sh log does not show it observed migration_started as progress — see $entrypoint_work_dir/entrypoint.log"
+  cat "$entrypoint_work_dir/entrypoint.log"
+  fail=$((fail + 1))
+fi
+
+if [ "$lifecycle_final_decision" = "starting_candidate" ]; then
+  # The deterministic point-#4 contract: only a matching-attempt
+  # starting_candidate may release the entrypoint's wait.
+  if [ -f "$entrypoint_work_dir/server-started.marker" ]; then
+    echo "PASS: entrypoint.cd.sh exec'd the server only after the real supervisor's terminal starting_candidate decision"
+    pass=$((pass + 1))
+  else
+    echo "FAIL: entrypoint.cd.sh never started the server despite the supervisor recording starting_candidate — see $entrypoint_work_dir/entrypoint.log"
+    cat "$entrypoint_work_dir/entrypoint.log"
+    fail=$((fail + 1))
+  fi
+  if [ "$entrypoint_status" -eq 0 ]; then
+    echo "PASS: entrypoint.cd.sh (execing the fake server) exited 0"
+    pass=$((pass + 1))
+  else
+    echo "FAIL: entrypoint.cd.sh expected exit 0 after admitting the real terminal decision, got $entrypoint_status — see $entrypoint_work_dir/entrypoint.log"
+    cat "$entrypoint_work_dir/entrypoint.log"
+    fail=$((fail + 1))
+  fi
+else
+  # The supervisor itself resolved to a non-starting_candidate terminal
+  # decision this run (e.g. needs_operator under the fencing-timing race
+  # described above). The entrypoint must still correctly REFUSE rather
+  # than ever having exec'd the server -- this is the same fail-closed
+  # contract, just exercised via the other terminal branch.
+  if [ -f "$entrypoint_work_dir/server-started.marker" ]; then
+    echo "FAIL: entrypoint.cd.sh started the server despite the supervisor's terminal decision being '$lifecycle_final_decision', not starting_candidate — this is a real admission defect, not a timing race"
+    fail=$((fail + 1))
+  else
+    echo "PASS: entrypoint.cd.sh correctly did not start the server for the non-starting_candidate terminal decision '$lifecycle_final_decision'"
+    pass=$((pass + 1))
+  fi
+  if [ "$entrypoint_status" -eq 1 ]; then
+    echo "PASS: entrypoint.cd.sh exited 1 (refused) for the non-starting_candidate terminal decision"
+    pass=$((pass + 1))
+  else
+    echo "FAIL: entrypoint.cd.sh expected exit 1 (refused) for decision '$lifecycle_final_decision', got $entrypoint_status — see $entrypoint_work_dir/entrypoint.log"
+    cat "$entrypoint_work_dir/entrypoint.log"
+    fail=$((fail + 1))
+  fi
+fi
+rm -rf "$entrypoint_work_dir"
+
+echo "==> reset to blank schema before the restart-preservation controls"
+docker exec "$container" psql -U "$db_user" -d "$db_name" -c \
+  "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" >/dev/null
+
+echo "==> negative control: a second invocation must refuse to clobber a recorded TERMINAL decision from a previous attempt"
+# Astra's decision-preservation P1: a restart previously overwrote prior
+# failure state unconditionally. Seed the decision file with a terminal
+# failure disposition from a "previous attempt", then invoke the supervisor
+# again with a fresh --attempt-id and prove it refuses (exit 4) and leaves
+# the file byte-for-byte untouched, rather than starting a fresh attempt
+# under a renewed budget over an attempt whose outcome was never resolved.
+restart_decision_file="$work_dir/restart-decision.txt"
+printf 'needs_operator_final_fencing_check_failed\nprevious-failed-attempt\n' > "$restart_decision_file"
+restart_decision_before="$(cat "$restart_decision_file")"
+set +e
+bash deploy/cd/migrate-supervised.sh \
+  --database-url "$host_db_url" \
+  --observer-database-url "$observer_db_url" \
+  --migrate-binary "$work_dir/migrate" \
+  --role-name "$db_user" --database-name "$db_name" \
+  --migration-allocation-seconds 30 \
+  --psql-via-docker-network "$network" \
+  --decision-file "$restart_decision_file" \
+  --attempt-id "fresh-attempt-after-terminal-failure" \
+  >"$work_dir/restart-terminal.log" 2>&1
+restart_terminal_status=$?
+set -e
+restart_decision_after="$(cat "$restart_decision_file")"
+
+if [ "$restart_terminal_status" -eq 4 ]; then
+  echo "PASS: restart over a recorded TERMINAL decision refused with exit 4"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected exit 4 (refuse to clobber terminal decision) restarting over a previous failure, got $restart_terminal_status — see $work_dir/restart-terminal.log"
+  cat "$work_dir/restart-terminal.log"
+  fail=$((fail + 1))
+fi
+if [ "$restart_decision_before" = "$restart_decision_after" ]; then
+  echo "PASS: the previous attempt's terminal decision file was left byte-for-byte untouched"
+  pass=$((pass + 1))
+else
+  echo "FAIL: the previous attempt's terminal decision file was modified despite the refusal — evidence destroyed. before=[$restart_decision_before] after=[$restart_decision_after]"
+  fail=$((fail + 1))
+fi
+
+echo "==> positive control: a second invocation MAY proceed over a non-terminal migration_started (a crash that recorded no outcome)"
+# What is NOT terminal: migration_started itself, since a crash before any
+# outcome exists must remain recoverable without manual file surgery. This
+# control asserts the preservation-gate decision itself (did the script
+# refuse entry the way it does for a real terminal decision, or did it take
+# over the file and attempt the migration) -- that is the actual point-#3
+# contract and must always hold, deterministically, regardless of host load.
+#
+# Whether the RECOVERED run goes on to reach starting_candidate is a
+# separate question already covered, non-deterministically, by every other
+# control in this suite that races real observer calls against the
+# fencing-sample staleness budget under --psql-via-docker-network (see the
+# module-level comments on DEFAULT_WALL_CLOCK_TIMEOUT_MS and this file's own
+# verify-live-session-is-absent retry-on-exit-2 precedent): under real host
+# load a fencing sample can legitimately exceed fencing_max_sample_age_ms
+# and correctly fail closed to needs_operator, which is the fencing latch
+# working as intended, not a preservation-gate regression. That outcome is
+# therefore reported as informational, never as a hard pass/fail here --
+# conflating it with the preservation-gate assertion would make this
+# control flaky in exactly the way Astra warned against (masking a real
+# regression behind "known flaky," or the inverse: failing this control on
+# correct fail-closed fencing behavior that has nothing to do with restart
+# preservation).
+crash_decision_file="$work_dir/crash-decision.txt"
+printf 'migration_started\ncrashed-attempt\n' > "$crash_decision_file"
+set +e
+bash deploy/cd/migrate-supervised.sh \
+  --database-url "$host_db_url" \
+  --observer-database-url "$observer_db_url" \
+  --migrate-binary "$work_dir/migrate" \
+  --role-name "$db_user" --database-name "$db_name" \
+  --migration-allocation-seconds 60 \
+  --psql-via-docker-network "$network" \
+  --decision-file "$crash_decision_file" \
+  --attempt-id "recovered-attempt" \
+  >"$work_dir/restart-progress.log" 2>&1
+crash_recovery_status=$?
+set -e
+if [ "$crash_recovery_status" -eq 4 ]; then
+  echo "FAIL: restart over a non-terminal migration_started record was refused with exit 4 (the terminal-decision preservation gate), exactly like a real terminal disposition — this is the point-#3 regression: a non-terminal progress marker must never block a fresh attempt from proceeding"
+  cat "$work_dir/restart-progress.log"
+  fail=$((fail + 1))
+else
+  echo "PASS: restart over a non-terminal migration_started record was NOT refused by the preservation gate (exit $crash_recovery_status, not 4) -- the script took over the file and attempted the migration"
+  pass=$((pass + 1))
+fi
+if grep -q "records non-terminal progress.*proceeding and taking over the file" "$work_dir/restart-progress.log"; then
+  echo "PASS: supervisor logged that it recognized migration_started as non-terminal and took over the file"
+  pass=$((pass + 1))
+else
+  echo "FAIL: supervisor log is missing the expected non-terminal takeover message — see $work_dir/restart-progress.log"
+  cat "$work_dir/restart-progress.log"
+  fail=$((fail + 1))
+fi
+crash_decision_final="$(sed -n '1p' "$crash_decision_file" 2>/dev/null || true)"
+crash_attempt_final="$(sed -n '2p' "$crash_decision_file" 2>/dev/null || true)"
+if [ "$crash_attempt_final" = "recovered-attempt" ] && [ "$crash_decision_final" != "migration_started" ] && [ -n "$crash_decision_final" ]; then
+  echo "PASS: the recovered attempt recorded its own terminal decision ('$crash_decision_final') in place of the stale progress marker"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected the recovered attempt to record its own terminal decision, got decision='$crash_decision_final' attempt='$crash_attempt_final'"
+  fail=$((fail + 1))
+fi
+if [ "$crash_decision_final" = "starting_candidate" ]; then
+  echo "INFO: recovered run reached starting_candidate (clean success)"
+elif [ "$crash_recovery_status" -eq 3 ]; then
+  echo "INFO: recovered run resolved to needs_operator ('$crash_decision_final') rather than starting_candidate -- under real host load this can be the fencing/observer-timing latch correctly failing closed (see comment above); this is not scored against the restart-preservation assertions above"
+else
+  echo "INFO: recovered run resolved to exit $crash_recovery_status ('$crash_decision_final')"
+fi
+
+echo "==> reset to blank schema before the observer-name-spoofing control"
+docker exec "$container" psql -U "$db_user" -d "$db_name" -c \
+  "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" >/dev/null
 
 echo "==> negative control: observer-name spoofing must not hide a foreign session from the final gate"
 # A foreign session claiming the removed hardcoded observer application_name
@@ -453,36 +737,50 @@ bash deploy/cd/migrate-supervised.sh \
   --psql-via-docker-network "$network" >"$work_dir/hard-deadline.log" 2>&1
 hard_deadline_status=$?
 set -e
-hard_deadline_finished_ms="$(date +%s%3N)"
+# Read the SAME clock the supervisor enforces on, the SAME way it does
+# (migrate-supervised.sh's monotonic_ms(): /proc/uptime field 1 * 1000).
+# See the binding rationale below.
+hard_deadline_finished_monotonic_ms="$(awk '{ printf "%d", $1 * 1000 }' /proc/uptime)"
 
-# Sol's finding on the previous round: expected_deadline_ms was computed by
-# duplicating the supervisor's own whole-second-rounding arithmetic
-# (test_started_ms + allocation*1000) from a timestamp captured on the
-# TEST's clock, before the supervisor process even started. The
-# supervisor independently floors ITS OWN start to whole seconds
-# (migrate-supervised.sh's migration_started_epoch="$(date +%s)"), at
-# whatever moment that line executes -- after bash/exec/argument-parsing
-# overhead from this test's invocation. Depending on where in the current
-# second each clock read landed, the real deadline_epoch could be up to
-# 999ms earlier than the test's independently-duplicated estimate, which
-# let the reviewed ~1000ms regression masquerade as a 1-999ms overrun and
-# pass the 900ms tolerance for most start phases. Fix: read the
-# supervisor's own logged work_deadline_epoch (its real, whole-second
-# absolute deadline) instead of recomputing an estimate, then add back
-# reserve_seconds to get its real deadline_epoch -- the actual hard-kill
-# boundary this control is checking. The comparison is then between the
-# supervisor's own integer-second value (converted to ms only at the
-# boundary) and this test's millisecond-precision finish time, so no
-# independent rounding is duplicated on the test side at all.
-real_work_deadline_epoch="$(grep -o 'work_deadline=[0-9]\+' "$work_dir/hard-deadline.log" | head -1 | cut -d= -f2)"
-if [ -z "$real_work_deadline_epoch" ]; then
-  echo "FAIL: could not find the supervisor's logged work_deadline in $work_dir/hard-deadline.log -- cannot bind this control to the supervisor's real deadline"
+# Binding this control to the supervisor's ACTUAL enforced deadline.
+#
+# Round 1 of this finding: expected_deadline_ms was computed by duplicating
+# the supervisor's own whole-second-rounding arithmetic (test_started_ms +
+# allocation*1000) from a timestamp captured on the TEST's clock, before the
+# supervisor process even started. The supervisor independently floors ITS
+# OWN start to whole seconds, at whatever moment that line executes. Up to
+# 999ms of slack, enough for the reviewed ~1000ms regression to masquerade
+# as a passing 1-999ms overrun. Fixed by reading the supervisor's own
+# logged deadline rather than recomputing an estimate.
+#
+# Round 2 (Astra, this round): reading the supervisor's logged
+# `work_deadline=` value re-introduced the same class of error from the
+# other side. That value is work_deadline_EPOCH -- a floored wall-clock
+# rendering, derived from migration_started_epoch="$(date +%s)". What the
+# supervisor actually ENFORCES is work_deadline_monotonic_ms, computed from
+# migration_started_monotonic_ms, which is NOT floored. The two describe the
+# same intended instant but can differ by up to 999ms, so the logged epoch
+# plus reserve can precede the enforced boundary by nearly a full second --
+# and the control stopped measuring the enforcement boundary at all.
+#
+# Fix: migrate-supervised.sh now additionally logs
+# work_deadline_monotonic_ms and deadline_monotonic_ms (the authoritative,
+# unfloored values every gating comparison in that script actually uses).
+# Parse deadline_monotonic_ms -- the absolute hard-kill boundary this
+# control targets -- and compare it against this test's own /proc/uptime
+# read taken the same way monotonic_ms() does. Monotonic-to-monotonic, no
+# rounding duplicated on either side, no wall-clock in the comparison.
+# The leading space in the pattern matters: the log line contains both
+# `work_deadline_monotonic_ms=` and ` deadline_monotonic_ms=`, and a bare
+# `deadline_monotonic_ms=` pattern matches the TAIL of the former first,
+# silently capturing work_deadline's value under the other name.
+real_deadline_monotonic_ms="$(grep -o ' deadline_monotonic_ms=[0-9]\+' "$work_dir/hard-deadline.log" | head -1 | cut -d= -f2)"
+real_work_deadline_monotonic_ms="$(grep -o 'work_deadline_monotonic_ms=[0-9]\+' "$work_dir/hard-deadline.log" | head -1 | cut -d= -f2)"
+if [ -z "$real_deadline_monotonic_ms" ]; then
+  echo "FAIL: could not find the supervisor's logged deadline_monotonic_ms in $work_dir/hard-deadline.log -- cannot bind this control to the supervisor's real ENFORCED deadline"
   cat "$work_dir/hard-deadline.log"
   fail=$((fail + 1))
-  real_deadline_epoch_ms=0
-else
-  real_deadline_epoch=$((real_work_deadline_epoch + deadline_test_reserve_seconds))
-  real_deadline_epoch_ms=$((real_deadline_epoch * 1000))
+  real_deadline_monotonic_ms=0
 fi
 
 if [ "$hard_deadline_status" -eq 3 ]; then
@@ -503,16 +801,16 @@ else
   fail=$((fail + 1))
 fi
 
-if [ "$real_deadline_epoch_ms" -eq 0 ]; then
-  echo "FAIL: skipping the overrun check -- no real deadline was captured from the supervisor's own log"
+if [ "$real_deadline_monotonic_ms" -eq 0 ]; then
+  echo "FAIL: skipping the overrun check -- no real enforced deadline was captured from the supervisor's own log"
   fail=$((fail + 1))
 else
-  overrun_ms=$((hard_deadline_finished_ms - real_deadline_epoch_ms))
+  overrun_ms=$((hard_deadline_finished_monotonic_ms - real_deadline_monotonic_ms))
   if [ "$overrun_ms" -le "$deadline_test_tolerance_ms" ]; then
-    echo "PASS: wrapper exited within ${overrun_ms}ms of its own real absolute deadline (work_deadline=$real_work_deadline_epoch + reserve=${deadline_test_reserve_seconds}s, tolerance ${deadline_test_tolerance_ms}ms) despite the SIGKILL escalation and final probe both being forced"
+    echo "PASS: wrapper exited within ${overrun_ms}ms of the absolute deadline it actually enforces (deadline_monotonic_ms=$real_deadline_monotonic_ms, work_deadline_monotonic_ms=${real_work_deadline_monotonic_ms:-unparsed}, tolerance ${deadline_test_tolerance_ms}ms, monotonic-to-monotonic) despite the SIGKILL escalation and final probe both being forced"
     pass=$((pass + 1))
   else
-    echo "FAIL: wrapper exited ${overrun_ms}ms after its own real absolute deadline (work_deadline=$real_work_deadline_epoch + reserve=${deadline_test_reserve_seconds}s, tolerance ${deadline_test_tolerance_ms}ms) — cancellation continued past the approved envelope"
+    echo "FAIL: wrapper exited ${overrun_ms}ms after the absolute deadline it actually enforces (deadline_monotonic_ms=$real_deadline_monotonic_ms, tolerance ${deadline_test_tolerance_ms}ms) — cancellation continued past the approved envelope"
     fail=$((fail + 1))
   fi
 fi
