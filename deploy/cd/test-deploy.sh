@@ -113,16 +113,41 @@ if [ "$1" = "compose" ]; then
       ;;
     run)
       # run --rm --no-deps --entrypoint ./migrate backend up|down --to <v>
+      # MULTICA_BACKEND_IMAGE / MULTICA_IMAGE_TAG are exported by
+      # run_migration_step's caller (deploy.sh), not passed as argv, so log
+      # them separately — this is what lets a test assert *which* image the
+      # down-migration ran against (CHE-549 finding 5 regression coverage).
       args=("$@")
       direction=""
+      to_target=""
+      next_is_to=""
       for a in "${args[@]}"; do
+        if [ -n "$next_is_to" ]; then
+          to_target="$a"
+          next_is_to=""
+          continue
+        fi
         case "$a" in
           up) direction="up" ;;
           down) direction="down" ;;
+          --to) next_is_to=1 ;;
         esac
       done
+      printf 'migrate %s image=%s tag=%s to=%s\n' \
+        "$direction" "${MULTICA_BACKEND_IMAGE:-}" "${MULTICA_IMAGE_TAG:-}" "$to_target" \
+        >>"$control_dir/migrate-calls.log"
       if [ "$direction" = "down" ]; then
         fail_if_flagged fail-migrate-down
+        if [ -f "$control_dir/migrate-down-noop" ]; then
+          # Simulates CHE-549 finding 6: the down step exits 0 having
+          # reversed nothing (e.g. the target image lacks the needed
+          # down-migration files), so the ledger stays wherever it already
+          # was instead of landing on the --to target.
+          exit 0
+        fi
+        if [ -f "$control_dir/ledger-version-after-rollback" ]; then
+          cp "$control_dir/ledger-version-after-rollback" "$control_dir/ledger-version"
+        fi
       else
         fail_if_flagged fail-migrate-up
       fi
@@ -157,10 +182,24 @@ if [ "$1" = "compose" ]; then
       else
         version="467_autopilot_trigger_creator_from_autopilot"
       fi
-      # Both call sites (capture_tuple's count/version/applied_at query and
-      # rollback's version-only query) parse a single line; emit a shape
-      # that satisfies either awk -F'|' split or the bare psql -tA output.
-      printf '1|%s|2026-09-12T08:58:23.324992Z\n' "$version"
+      # deploy.sh has two distinct query shapes against this same mock:
+      # capture_tuple's "count|version|applied_at" query (-F'|', three
+      # columns) and the rollback path's bare "coalesce(max(version), '')"
+      # query (-tA, single column, no pipe). Emitting the three-column shape
+      # unconditionally made every rollback-path version comparison compare
+      # against "1|<version>|<timestamp>", which never equals a bare version
+      # string — silently forcing the schema-rollback branch to fire on
+      # every scenario regardless of the fixture's actual ledger state.
+      # Detect which query this call is by its final "-c <sql>" argument.
+      sql="${*: -1}"
+      case "$sql" in
+        *"coalesce(max(version)"*)
+          printf '%s\n' "$version"
+          ;;
+        *)
+          printf '1|%s|2026-09-12T08:58:23.324992Z\n' "$version"
+          ;;
+      esac
       exit 0
       ;;
     images)
@@ -350,6 +389,11 @@ cp "$previous_tuple_fixture" "$state_dir/deployed-tuple.json"
 control_dir="$state_dir/control"
 mkdir -p "$control_dir"
 touch "$control_dir/inspect-resolves" "$control_dir/fail-migrate-up"
+# The default pre-rollback ledger (467_...) sits past this fixture's
+# previous_good_version (440_seed), so the bounded down-migration fires;
+# tell the mock it actually lands on target, matching a real bounded
+# rollback (finding 5/6 regressions get their own dedicated scenarios below).
+printf '440_seed\n' >"$control_dir/ledger-version-after-rollback"
 set +e
 output="$(run_deploy "$state_dir" 2>&1)"
 status=$?
@@ -369,6 +413,7 @@ cp "$previous_tuple_fixture" "$state_dir/deployed-tuple.json"
 control_dir="$state_dir/control"
 mkdir -p "$control_dir"
 touch "$control_dir/inspect-resolves" "$control_dir/health-never-ready"
+printf '440_seed\n' >"$control_dir/ledger-version-after-rollback"
 set +e
 output="$(run_deploy "$state_dir" 2>&1)"
 status=$?
@@ -394,6 +439,7 @@ cp "$previous_tuple_fixture" "$state_dir/deployed-tuple.json"
 control_dir="$state_dir/control"
 mkdir -p "$control_dir"
 touch "$control_dir/inspect-resolves" "$control_dir/fail-container-start" "$control_dir/fail-rollback-restart"
+printf '440_seed\n' >"$control_dir/ledger-version-after-rollback"
 set +e
 output="$(run_deploy "$state_dir" 2>&1)"
 status=$?
@@ -423,6 +469,7 @@ node -e '
 control_dir="$state_dir/control"
 mkdir -p "$control_dir"
 touch "$control_dir/inspect-resolves" "$control_dir/fail-migrate-up"
+printf '440_seed\n' >"$control_dir/ledger-version-after-rollback"
 set +e
 output="$(run_deploy "$state_dir" 2>&1)"
 status=$?
@@ -497,6 +544,69 @@ else
     echo "scenario skip-migrations-declared: backend service environment block does not declare MULTICA_SKIP_MIGRATIONS" >&2
     exit 1
   fi
+fi
+
+# ---------------------------------------------------------------------------
+# Scenario 9 (regression for CHE-549 finding 5): the bounded down-migration
+# must run against the FAILED (new) backend image's repo/tag, never the
+# previous tuple's — an older migrate binary silently ignores an unknown
+# --to flag and tears down everything back to 001. Force the ledger to sit
+# past the previous tuple's recorded version so the rollback path's schema
+# branch actually fires, then assert the migrate-calls.log entry for the
+# down step names the new image (backend_digest-qualified manifest image,
+# tagged sha-<source_sha>) and the previous tuple's target version — never
+# the previous tuple's own image reference.
+# ---------------------------------------------------------------------------
+state_dir="$(fresh_scenario_dir rollback-uses-failed-image-for-down)"
+mkdir -p "$state_dir"
+cp "$previous_tuple_fixture" "$state_dir/deployed-tuple.json"
+control_dir="$state_dir/control"
+mkdir -p "$control_dir"
+touch "$control_dir/inspect-resolves"
+# capture_tuple never runs on this failure path, so this is the ledger the
+# rollback's own pre-check reads: ahead of the fixture's previous_good_version
+# (440_seed), which is what makes the down step actually fire.
+printf '467_autopilot_trigger_creator_from_autopilot\n' >"$control_dir/ledger-version"
+printf '440_seed\n' >"$control_dir/ledger-version-after-rollback"
+touch "$control_dir/fail-container-start"
+set +e
+output="$(run_deploy "$state_dir" 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" rollback-uses-failed-image-for-down
+expect_contains "$output" "rolling back schema to 440_seed" rollback-uses-failed-image-for-down
+migrate_log="$(cat "$control_dir/migrate-calls.log")"
+expect_contains "$migrate_log" "migrate down image=ghcr.io/cheese-work/multica-backend tag=sha-$source_sha to=440_seed" rollback-uses-failed-image-for-down
+expect_not_contains "$migrate_log" "image=ghcr.io/cheese-work/multica-backend tag=sha-$previous_sha" rollback-uses-failed-image-for-down
+
+# ---------------------------------------------------------------------------
+# Scenario 10 (regression for CHE-549 finding 6): the down step can exit 0
+# having reversed nothing (missing/no-op down-migrations against the new
+# image). deploy.sh must re-read the ledger after the down step and refuse
+# to report a successful rollback unless it actually landed on the target —
+# never restart old services against a schema still ahead of what they
+# expect, and never write a deployed-tuple.json recording a version that was
+# never true.
+# ---------------------------------------------------------------------------
+state_dir="$(fresh_scenario_dir rollback-down-noop-fails-loud)"
+mkdir -p "$state_dir"
+cp "$previous_tuple_fixture" "$state_dir/deployed-tuple.json"
+control_dir="$state_dir/control"
+mkdir -p "$control_dir"
+touch "$control_dir/inspect-resolves"
+printf '467_autopilot_trigger_creator_from_autopilot\n' >"$control_dir/ledger-version"
+touch "$control_dir/fail-container-start" "$control_dir/migrate-down-noop"
+set +e
+output="$(run_deploy "$state_dir" 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" rollback-down-noop-fails-loud
+expect_contains "$output" "bounded rollback reported success but ledger is at '467_autopilot_trigger_creator_from_autopilot', not the target '440_seed'" rollback-down-noop-fails-loud
+expect_contains "$output" "MANUAL INTERVENTION REQUIRED" rollback-down-noop-fails-loud
+expect_not_contains "$output" "rollback complete: previous tuple restored and healthy" rollback-down-noop-fails-loud
+if [ -f "$state_dir/deployed-tuple.json.new" ]; then
+  echo "scenario rollback-down-noop-fails-loud: deployed-tuple.json was updated despite the failed post-rollback verification" >&2
+  exit 1
 fi
 
 echo "deploy.sh control-flow fixtures passed"

@@ -36,10 +36,20 @@ set -euo pipefail
 # `docker compose up -d` fails, this script restarts the previous image
 # tuple and, only if the failed deploy's migrations moved the ledger past
 # the previous good version, runs a single bounded
-# `migrate down --to <previous-good-version>` one-shot container (built from
-# the OLD backend image, since the new image's migrate binary may not know
-# how to build the old schema) before bringing the old services back up —
-# never two migration runners touching the database at once.
+# `migrate down --to <previous-good-version>` one-shot container — built from
+# the FAILED (new) backend image, not the previous one. Only that image's
+# migrate binary is guaranteed to contain the down-migration files and any
+# down-direction hooks/conditions for the versions being reversed; the
+# previous image predates them and cannot reverse schema it has never heard
+# of (a real deploy hit exactly this: the old binary silently ignored `--to`
+# entirely and tore down ~100 unrelated migrations instead of one — see
+# CHE-549 findings 5/6). Only the *target version* comes from the previous
+# tuple. After the down step, the ledger is re-read and compared against
+# that target before anything is reported successful — a rollback that
+# leaves the schema short of (or past) the target fails loudly into MANUAL
+# INTERVENTION REQUIRED rather than restarting old services against a
+# schema they were never built to serve. Never two migration runners
+# touching the database at once.
 #
 # ## What this script does NOT do
 #
@@ -322,9 +332,10 @@ capture_tuple() {
 # bring up application containers at all.
 #
 # MULTICA_BACKEND_IMAGE/MULTICA_IMAGE_TAG must be set from the *given* image,
-# not whatever the caller's ambient environment happens to hold — this is
-# what lets the rollback path run the OLD image's migrate binary while a
-# forward deploy runs the NEW one, from the exact same function.
+# not whatever the caller's ambient environment happens to hold. Both the
+# forward deploy and the rollback's bounded down-migration run this same
+# function against the same (new/failed) backend image — only the migrate
+# direction and --to target differ.
 run_migration_step() {
   local repo=$1
   local tag=$2
@@ -416,13 +427,35 @@ rollback() {
       "SELECT coalesce(max(version), '') FROM schema_migrations" | tr -d '[:space:]')"
     if [ "$current_version" != "$previous_good_version" ]; then
       echo "==> failed deploy's migrations moved the ledger past the previous good version; rolling back schema to $previous_good_version"
-      # Use the OLD backend image's migrate binary for the down migrations:
-      # it is the binary that shipped alongside those down-migration files
-      # and is guaranteed to know how to reverse them. The new (failed)
-      # image's migrate may contain hooks/conditions for versions the old
-      # schema never reaches.
-      if ! run_migration_step "$(bare_repo "$previous_backend_image")" "$previous_good_tag" down --to "$previous_good_version"; then
+      # Use the FAILED (new) backend image's migrate binary for the down
+      # migrations, not the previous one: it is the binary that shipped
+      # alongside these down-migration files and any down-direction
+      # hooks/conditions they need. The previous image predates the
+      # versions being reversed and cannot know how to reverse schema it
+      # has never heard of — an older `migrate` binary silently ignores an
+      # unrecognized `--to` flag and falls back to a full unbounded `down`,
+      # tearing down every migration back to 001 instead of stopping at the
+      # target (CHE-549 finding 5). Only the target version comes from the
+      # previous tuple; the image and migration files come from the image
+      # actually being rolled back.
+      if ! run_migration_step "$backend_repo" "$image_tag" down --to "$previous_good_version"; then
         echo "!! bounded rollback migration failed — database schema is in an indeterminate state between $current_version and $previous_good_version" >&2
+        echo "!! MANUAL INTERVENTION REQUIRED before restarting any application container" >&2
+        exit 1
+      fi
+
+      # A down step that exits 0 is not sufficient evidence of a correct
+      # rollback: if the down-migration files needed to reach
+      # previous_good_version are missing or no-op against this schema, the
+      # migrate binary can still exit 0 having reversed nothing (CHE-549
+      # finding 6). Re-read the ledger and refuse to proceed unless it
+      # landed exactly on target — reporting success with the schema ahead
+      # of (or behind) where the restarted old services expect it is worse
+      # than failing loudly here.
+      post_rollback_version="$(compose exec -T postgres psql -U "${POSTGRES_USER:-multica}" -d "${POSTGRES_DB:-multica}" -tA -c \
+        "SELECT coalesce(max(version), '') FROM schema_migrations" | tr -d '[:space:]')"
+      if [ "$post_rollback_version" != "$previous_good_version" ]; then
+        echo "!! bounded rollback reported success but ledger is at '$post_rollback_version', not the target '$previous_good_version' — database schema is in an indeterminate state" >&2
         echo "!! MANUAL INTERVENTION REQUIRED before restarting any application container" >&2
         exit 1
       fi
