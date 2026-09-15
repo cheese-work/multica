@@ -21,15 +21,16 @@ set -euo pipefail
 # same DATABASE_URL, but with its entrypoint overridden straight to the
 # migrate binary — it never reaches docker/entrypoint.sh's own migration
 # step. Only after this step exits 0 does the script bring up the real
-# `backend` / `web` services via `docker compose up -d`, and those services
-# start with MULTICA_SKIP_MIGRATIONS=1 so entrypoint.sh's own "run migrations
-# then exec server" path is skipped — the migration step that already ran is
-# not repeated, and a scale-up or restart of the backend service can never
-# race a second `migrate up` against the one this script already completed.
-# This is provable, not just asserted: the one-shot container's exit code
-# gates whether `docker compose up -d` runs at all (see run_migration_step
-# and its call site below), and MULTICA_SKIP_MIGRATIONS=1 is the literal
-# environment the backend/web services are started with.
+# `backend` / `frontend` services via `docker compose up -d`, and those
+# services start with MULTICA_SKIP_MIGRATIONS=1 so entrypoint.sh's own "run
+# migrations then exec server" path is skipped — the migration step that
+# already ran is not repeated, and a scale-up or restart of the backend
+# service can never race a second `migrate up` against the one this script
+# already completed. This is provable, not just asserted: the one-shot
+# container's exit code gates whether `docker compose up -d` runs at all
+# (see run_migration_step and its call site below), and
+# MULTICA_SKIP_MIGRATIONS=1 is the literal environment the backend/frontend
+# services are started with.
 #
 # Rollback reverses the same way in one step: if the health check after
 # `docker compose up -d` fails, this script restarts the previous image
@@ -403,7 +404,7 @@ rollback() {
 
   # Stop the failed new containers before touching the schema, so nothing
   # holds connections against a database mid-rollback.
-  compose stop backend web >/dev/null 2>&1 || true
+  compose stop backend frontend >/dev/null 2>&1 || true
 
   # previous_good_tag reuses whatever tag the previous tuple's application
   # SHA implies (D1's "sha-<commit>" convention) — the same convention this
@@ -441,7 +442,7 @@ rollback() {
   if ! MULTICA_BACKEND_IMAGE="$(bare_repo "$previous_backend_image")" \
     MULTICA_WEB_IMAGE="$(bare_repo "$previous_web_image")" \
     MULTICA_IMAGE_TAG="$previous_good_tag" \
-    compose up -d --no-deps backend web; then
+    compose up -d --no-deps backend frontend; then
     echo "!! rollback restart failed to launch — MANUAL INTERVENTION REQUIRED" >&2
     exit 1
   fi
@@ -458,7 +459,7 @@ echo "==> pulling qualified image pair (tag ${image_tag})"
 MULTICA_BACKEND_IMAGE="$backend_repo" \
 MULTICA_WEB_IMAGE="$web_repo" \
 MULTICA_IMAGE_TAG="$image_tag" \
-  compose pull backend web || rollback "image pull failed"
+  compose pull backend frontend || rollback "image pull failed"
 
 echo "==> verifying pulled images match the admitted manifest's digests"
 if ! verify_pulled_digest "$backend_repo" "$image_tag" "$backend_digest" \
@@ -476,7 +477,7 @@ MULTICA_BACKEND_IMAGE="$backend_repo" \
 MULTICA_WEB_IMAGE="$web_repo" \
 MULTICA_IMAGE_TAG="$image_tag" \
 MULTICA_SKIP_MIGRATIONS=1 \
-  compose up -d --no-deps backend web || rollback "container start failed"
+  compose up -d --no-deps backend frontend || rollback "container start failed"
 
 echo "==> health-checking new deployment"
 if ! wait_ready 180; then
