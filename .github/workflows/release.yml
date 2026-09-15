@@ -434,11 +434,13 @@ jobs:
       - name: Verify published chart
         run: helm show chart "$OCI_REGISTRY/multica" --version "$CHART_VERSION"
 
-  # Build the Desktop installers for Linux and Windows and upload them to
-  # the GitHub Release that the `release` job above just published. macOS
-  # Desktop continues to ship via the manual `release-desktop` skill so it
-  # can be signed + notarized with Apple Developer credentials that are
-  # not (yet) wired into CI.
+  # Build the Desktop installer for Linux and upload it to the GitHub
+  # Release that the `release` job above just published. macOS Desktop
+  # continues to ship via the manual `release-desktop` skill so it can be
+  # signed + notarized with Apple Developer credentials that are not (yet)
+  # wired into CI. Windows Desktop build removed org-wide per CHE-522
+  # (Cheese: Linux CI only, no Windows jobs or artifacts) — the Windows
+  # installer is no longer published by this workflow.
   desktop:
     needs: release
     strategy:
@@ -447,8 +449,6 @@ jobs:
         include:
           - os: blacksmith-2vcpu-ubuntu-2404
             target: linux
-          - os: blacksmith-2vcpu-windows-2025
-            target: win
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -490,9 +490,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # electron-builder's GitHub publisher reads this:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Disable code signing on Linux/Windows for now — the public
-          # release is unsigned for these platforms, the CLI carries the
-          # trust boundary. Set CSC_LINK in repo secrets to enable
-          # Windows signing later.
+          # Disable code signing on Linux for now — the public release is
+          # unsigned for this platform, the CLI carries the trust boundary.
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: node scripts/package.mjs --${{ matrix.target }} --x64 --arm64 --publish always
