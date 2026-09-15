@@ -148,6 +148,18 @@ image_digest() {
   printf '%s' "${1##*@}"
 }
 
+# is_valid_digest reports (via exit status) whether its argument is a
+# well-formed "sha256:<64 lowercase hex>" digest. capture_tuple falls back to
+# a placeholder all-zero digest when `docker inspect` cannot resolve one (see
+# its own comment); that placeholder is syntactically well-formed but does
+# not identify any real image, so rollback must not trust it as-is — this
+# helper is how rollback tells a real digest apart from that placeholder (and
+# from any other malformed value) before composing a "repo@digest" reference.
+is_valid_digest() {
+  [[ "$1" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+  [[ "$1" != "sha256:0000000000000000000000000000000000000000000000000000000000000" ]]
+}
+
 # bare_repo strips BOTH a possible "@sha256:digest" suffix and a possible
 # ":tag" suffix, leaving just the repository — the reference stored in a
 # tuple snapshot's images.*.reference field is tag-form ("repo:tag", see
@@ -353,8 +365,27 @@ if [ -n "$previous_tuple" ]; then
   previous_web_ref="$(json_field "$previous_tuple" images.web.reference)"
   previous_web_digest="$(json_field "$previous_tuple" images.web.digest)"
   previous_good_version="$(json_field "$previous_tuple" migration_ledger.latest.version)"
-  previous_backend_image="$(bare_repo "$previous_backend_ref")@${previous_backend_digest}"
-  previous_web_image="$(bare_repo "$previous_web_ref")@${previous_web_digest}"
+
+  # capture_tuple can have recorded a placeholder all-zero digest when
+  # `docker inspect` could not resolve a real RepoDigest at capture time (see
+  # capture_tuple's own comment). Composing "repo@sha256:0000...0000" here
+  # would produce a reference that can never resolve, poisoning rollback
+  # exactly when it is needed most. Fall back to the tag-based "repo:tag"
+  # reference (previous_backend_ref / previous_web_ref are already in that
+  # form — see capture_tuple) instead of silently proceeding with an
+  # unresolvable digest reference.
+  if is_valid_digest "$previous_backend_digest"; then
+    previous_backend_image="$(bare_repo "$previous_backend_ref")@${previous_backend_digest}"
+  else
+    echo "==> previous backend digest is missing or a placeholder; falling back to tag reference $previous_backend_ref for rollback" >&2
+    previous_backend_image="$previous_backend_ref"
+  fi
+  if is_valid_digest "$previous_web_digest"; then
+    previous_web_image="$(bare_repo "$previous_web_ref")@${previous_web_digest}"
+  else
+    echo "==> previous web digest is missing or a placeholder; falling back to tag reference $previous_web_ref for rollback" >&2
+    previous_web_image="$previous_web_ref"
+  fi
   echo "==> previous good migration version: ${previous_good_version:-<unknown>}"
 fi
 
@@ -389,7 +420,7 @@ rollback() {
       # and is guaranteed to know how to reverse them. The new (failed)
       # image's migrate may contain hooks/conditions for versions the old
       # schema never reaches.
-      if ! run_migration_step "$(image_repo "$previous_backend_image")" "$previous_good_tag" down --to "$previous_good_version"; then
+      if ! run_migration_step "$(bare_repo "$previous_backend_image")" "$previous_good_tag" down --to "$previous_good_version"; then
         echo "!! bounded rollback migration failed — database schema is in an indeterminate state between $current_version and $previous_good_version" >&2
         echo "!! MANUAL INTERVENTION REQUIRED before restarting any application container" >&2
         exit 1
@@ -401,10 +432,19 @@ rollback() {
     echo "==> previous tuple has no recorded migration version; skipping schema rollback (assuming no migrations ran since it was deployed)"
   fi
 
-  MULTICA_BACKEND_IMAGE="$(image_repo "$previous_backend_image")" \
-  MULTICA_WEB_IMAGE="$(image_repo "$previous_web_image")" \
-  MULTICA_IMAGE_TAG="$previous_good_tag" \
-    compose up -d --no-deps backend web
+  # Guarded (not a bare statement): under `set -euo pipefail`, an unguarded
+  # failure here would abort the script on the spot — skipping wait_ready
+  # below and skipping the "MANUAL INTERVENTION REQUIRED" diagnostic this
+  # function's other failure paths already give the operator. A failure to
+  # even launch the rollback restart is exactly the kind of failure that
+  # diagnostic exists for.
+  if ! MULTICA_BACKEND_IMAGE="$(bare_repo "$previous_backend_image")" \
+    MULTICA_WEB_IMAGE="$(bare_repo "$previous_web_image")" \
+    MULTICA_IMAGE_TAG="$previous_good_tag" \
+    compose up -d --no-deps backend web; then
+    echo "!! rollback restart failed to launch — MANUAL INTERVENTION REQUIRED" >&2
+    exit 1
+  fi
 
   if wait_ready 120; then
     echo "==> rollback complete: previous tuple restored and healthy"
