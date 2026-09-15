@@ -1,0 +1,181 @@
+name: CD deploy to C00
+
+# D2 (CHE-530): deploys an already-admitted release-candidate tuple to the
+# live C00 self-host stack. This workflow is the ONLY place in the repo that
+# holds C00 credentials (SSH key, host, deploy user) — D1's
+# cd-qualification.yml is read-only and deliberately carries none of them
+# (see the comment at the top of that file and deploy/cd/README.md).
+#
+# It is intentionally workflow_dispatch-only, not triggered automatically off
+# cd-qualification.yml: a release-candidate manifest requires the fresh
+# Hermes configuration digest and migration snapshot that only a dedicated
+# admission stage can produce (see deploy/cd/README.md's "Tuple rule" and the
+# build-evidence vs release-candidate distinction) — D1's automatic
+# main-push build only ever produces a non-deployable build-evidence
+# manifest. Whoever/whatever runs that admission stage triggers this
+# workflow by hand (or via `gh workflow run`) with its output files as
+# inputs, so this workflow never has to fabricate admission evidence itself.
+on:
+  workflow_dispatch:
+    inputs:
+      manifest_path:
+        description: "Path (relative to repo root, at the checked-out ref) to the release-candidate manifest JSON"
+        required: true
+      baseline_tuple_path:
+        description: "Path to the C00 tuple snapshot the manifest was qualified against"
+        required: true
+      event_path:
+        description: "Path to the recorded {event_name, ref, repository, sha} JSON for the qualifying push"
+        required: true
+      checks_path:
+        description: "Path to the recorded {sha, contexts} required-checks JSON"
+        required: true
+      provenance_path:
+        description: "Path to the recorded image provenance JSON (backend/web digest + architecture + repository + source_sha)"
+        required: true
+      ref:
+        description: "Git ref to check out (must match the manifest's source_sha)"
+        required: true
+        default: main
+
+# This workflow deliberately has no build step and never touches the
+# registry beyond a pull performed on C00 itself over the deploy SSH
+# session — it only reads already-published, already-admitted evidence and
+# mutates C00.
+permissions:
+  contents: read
+
+concurrency:
+  # One deploy at a time, repo-wide: a second dispatch while one is running
+  # queues instead of racing a second SSH session against the same compose
+  # stack. deploy.sh's own flock on C00 is the second, host-local layer of
+  # the same guarantee for anyone who runs it by hand outside this workflow.
+  group: cd-deploy-c00
+  cancel-in-progress: false
+
+jobs:
+  admission:
+    # Admission is a read-only evidence check — it never touches C00 — so it
+    # can run on a regular GitHub-hosted runner. Only the deploy job below
+    # needs the dedicated C00-reachable runner and secrets.
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.verify_admission.outputs.source_sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 1
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Verify admission
+        id: verify_admission
+        shell: bash
+        run: |
+          set -euo pipefail
+          config_sha="$(node -e 'const fs=require("node:fs");const m=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));process.stdout.write(m.configuration_sha256)' "${{ inputs.manifest_path }}")"
+          migration_sha="$(node -e 'const fs=require("node:fs");const m=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));process.stdout.write(m.migration_inventory_sha256)' "${{ inputs.manifest_path }}")"
+          source_sha="$(node -e 'const fs=require("node:fs");const m=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));process.stdout.write(m.source_sha)' "${{ inputs.manifest_path }}")"
+          node deploy/cd/admission.mjs verify \
+            --manifest "${{ inputs.manifest_path }}" \
+            --baseline-tuple "${{ inputs.baseline_tuple_path }}" \
+            --event "${{ inputs.event_path }}" \
+            --checks "${{ inputs.checks_path }}" \
+            --provenance "${{ inputs.provenance_path }}" \
+            --repository "${{ github.repository }}" \
+            --source-sha "$source_sha" \
+            --configuration-sha256 "$config_sha" \
+            --migration-inventory-sha256 "$migration_sha"
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Upload admitted manifest for the deploy job
+        uses: actions/upload-artifact@v4
+        with:
+          name: cd-deploy-admitted-manifest
+          path: ${{ inputs.manifest_path }}
+          retention-days: 7
+          if-no-files-found: error
+
+  deploy:
+    needs: admission
+    # Reserved for the C00-reachable deploy runner, distinct from D1's
+    # cheese-x99 build runner label. See multica-cheese-work-runtimes for the
+    # current host/runner-label mapping; this label is a placeholder for
+    # whichever self-hosted runner has network access to C00.
+    runs-on: [self-hosted, linux, x64, cheese-c00-deploy]
+    timeout-minutes: 30
+    environment: c00-production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 1
+
+      - name: Download admitted manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: cd-deploy-admitted-manifest
+          path: cd-deploy-manifest
+
+      - name: Deploy to C00 over SSH
+        shell: bash
+        env:
+          # The only C00 credentials in this repository. Scoped to this
+          # workflow/job only — cd-qualification.yml (D1) has none of these
+          # and must stay that way (see its own header comment).
+          C00_SSH_HOST: ${{ secrets.C00_SSH_HOST }}
+          C00_SSH_USER: ${{ secrets.C00_SSH_USER }}
+          C00_SSH_KEY: ${{ secrets.C00_SSH_KEY }}
+          C00_COMPOSE_DIR: ${{ secrets.C00_COMPOSE_DIR }}
+          C00_STATE_DIR: ${{ secrets.C00_STATE_DIR }}
+        run: |
+          set -euo pipefail
+          manifest_basename="$(basename "${{ inputs.manifest_path }}")"
+          local_manifest="cd-deploy-manifest/${manifest_basename}"
+
+          mkdir -p ~/.ssh
+          printf '%s\n' "$C00_SSH_KEY" > ~/.ssh/c00_deploy_key
+          chmod 600 ~/.ssh/c00_deploy_key
+          ssh-keyscan -H "$C00_SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          ssh_cmd=(ssh -i ~/.ssh/c00_deploy_key -o BatchMode=yes "${C00_SSH_USER}@${C00_SSH_HOST}")
+          remote_dir="${C00_STATE_DIR%/}/cd-deploy-$(date +%s)"
+
+          "${ssh_cmd[@]}" "mkdir -p '$remote_dir'"
+          scp -i ~/.ssh/c00_deploy_key -o BatchMode=yes \
+            deploy/cd/deploy.sh "$local_manifest" \
+            "${C00_SSH_USER}@${C00_SSH_HOST}:${remote_dir}/"
+
+          # set -e would otherwise abort this script the instant the SSH
+          # deploy command returns nonzero — before deploy_status could be
+          # captured and before the remote cleanup below ever ran. Disable
+          # it for exactly this one command, then restore it immediately.
+          set +e
+          "${ssh_cmd[@]}" "bash '${remote_dir}/deploy.sh' \
+            --manifest '${remote_dir}/${manifest_basename}' \
+            --compose-dir '${C00_COMPOSE_DIR}' \
+            --state-dir '${C00_STATE_DIR}'"
+          deploy_status=$?
+          set -e
+
+          # Best-effort cleanup of the transferred copy; failure here must
+          # never mask the deploy's own exit status.
+          "${ssh_cmd[@]}" "rm -rf '$remote_dir'" || true
+
+          exit "$deploy_status"
+
+      - name: Record outcome
+        if: always()
+        shell: bash
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "Deployed ${{ needs.admission.outputs.source_sha }} to C00."
+          else
+            echo "::error::Deploy of ${{ needs.admission.outputs.source_sha }} to C00 failed or required manual intervention — see deploy.sh output above for rollback status."
+          fi

@@ -20,21 +20,33 @@ stop_migration() {
   exit "$exit_code"
 }
 
-trap 'stop_migration TERM 143' TERM
-trap 'stop_migration INT 130' INT
-
-echo "Running database migrations..."
-./migrate up &
-migrate_pid=$!
-if wait "$migrate_pid"; then
-  migrate_status=0
+# MULTICA_SKIP_MIGRATIONS lets a deploy step that already ran the migration
+# step out-of-band (e.g. its own "migrate up" or bounded "migrate down --to"
+# job run once before starting any new container) start this container
+# straight into the server, without a second container's own `migrate up`
+# racing the first one's already-migrated schema. Unset (the default) or any
+# value other than exactly "1" keeps today's behavior byte-for-byte: run
+# migrations here, then start the server. This is additive — it does not
+# change what happens when the variable is absent.
+if [ "${MULTICA_SKIP_MIGRATIONS:-}" = "1" ]; then
+  echo "MULTICA_SKIP_MIGRATIONS=1: skipping database migrations"
 else
-  migrate_status=$?
-fi
-migrate_pid=""
-trap - TERM INT
-if [ "$migrate_status" -ne 0 ]; then
-  exit "$migrate_status"
+  trap 'stop_migration TERM 143' TERM
+  trap 'stop_migration INT 130' INT
+
+  echo "Running database migrations..."
+  ./migrate up &
+  migrate_pid=$!
+  if wait "$migrate_pid"; then
+    migrate_status=0
+  else
+    migrate_status=$?
+  fi
+  migrate_pid=""
+  trap - TERM INT
+  if [ "$migrate_status" -ne 0 ]; then
+    exit "$migrate_status"
+  fi
 fi
 
 echo "Starting server..."
