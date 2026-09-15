@@ -10,30 +10,81 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 )
 
-// TestRerunIssue_DuplicatePendingTaskCoalescesWithoutLeakingRawError is the C3
-// acceptance test: when the CLI's authorized-force rerun (POST
-// /api/issues/{id}/rerun, zero-arg assignee path) loses every reclaim attempt
-// to a relentless concurrent competitor for the same (issue, agent) pending
-// slot, the handler must classify the resulting service.ErrDuplicatePendingTask
-// the same way C1 (issue_trigger.go) and C2 (comment.go) already classify it at
-// their own admission boundaries: a benign coalesce, never a raw constraint
-// name or an opaque 400 indistinguishable from a real failure.
+// TestWriteRerunIssueError_DuplicatePendingTaskCoalescesWithoutLeakingRawError
+// is the C3 acceptance test for the admission-boundary classification:
+// writeRerunIssueError must treat service.ErrDuplicatePendingTask as the same
+// benign coalesce outcome C1 (issue_trigger.go, CHE-486) and C2 (comment.go,
+// CHE-524) already classify at their own admission boundaries — a 409 with a
+// stable message, never a raw sentinel/constraint string, and never the
+// warn-level treatment reserved for a genuine failure.
 //
-// The zero-arg assignee-rerun path is the one that exercises this: it carries
-// no sourceTaskID, so TaskService.RerunIssue's lineage reconciliation
-// (findLiveRerun) never fires for it, and an exhausted reclaim loop returns the
-// duplicate error to the handler unreconciled — exactly the shape a genuine
-// "something is enqueueing on this slot in a tight loop" contention produces.
-func TestRerunIssue_DuplicatePendingTaskCoalescesWithoutLeakingRawError(t *testing.T) {
+// This drives the classifier directly with the exact typed error
+// TaskService.RerunIssue returns bare (unreconciled) when the zero-arg
+// assignee-rerun path exhausts its bounded reclaim loop under sustained
+// pending-slot contention (see TestRerunIssue_DuplicatePendingTaskCoalesces
+// below for a real-contention probe of that path) — deterministic, no
+// flakiness, and it cannot silently skip the assertion in CI.
+func TestWriteRerunIssueError_DuplicatePendingTaskCoalescesWithoutLeakingRawError(t *testing.T) {
+	w := httptest.NewRecorder()
+	writeRerunIssueError(w, "issue-1", service.ErrDuplicatePendingTask)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusConflict)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode conflict body: %v (body=%s)", err, w.Body.String())
+	}
+	if body["error"] != "a rerun for this issue and agent is already in progress" {
+		t.Errorf("error = %q, want the stable coalesce message", body["error"])
+	}
+	lower := strings.ToLower(body["error"])
+	if strings.Contains(lower, "idx_one_pending_task") || strings.Contains(lower, "constraint") ||
+		strings.Contains(lower, service.ErrDuplicatePendingTask.Error()) {
+		t.Errorf("duplicate-coalesce response leaked raw sentinel/constraint detail: %q", body["error"])
+	}
+}
+
+// TestWriteRerunIssueError_GenuineFailureKeepsRawMessage proves the
+// classifier does not over-broaden: a real failure (not the typed duplicate
+// sentinel) still surfaces as a 400 with its own message, so genuine errors
+// stay visible instead of being folded into the coalesce path.
+func TestWriteRerunIssueError_GenuineFailureKeepsRawMessage(t *testing.T) {
+	w := httptest.NewRecorder()
+	writeRerunIssueError(w, "issue-1", context.DeadlineExceeded)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v (body=%s)", err, w.Body.String())
+	}
+	if body["error"] != context.DeadlineExceeded.Error() {
+		t.Errorf("error = %q, want %q", body["error"], context.DeadlineExceeded.Error())
+	}
+}
+
+// TestRerunIssue_DuplicatePendingTaskCoalesces is a real-contention probe of
+// the full handler path (not just the classifier): under sustained
+// concurrent writers hammering the same (issue, agent) pending slot, the
+// zero-arg assignee-rerun call must end up either winning admission (202) or
+// hitting the coalesce classification (409) — never any other status, and
+// never a raw constraint leak on the 409 path. Contention timing means this
+// run may or may not exhaust RerunIssue's reclaim budget, so it only asserts
+// the invariant that holds on EITHER outcome; the deterministic classifier
+// coverage above is what CI relies on for the 409 behavior itself.
+func TestRerunIssue_DuplicatePendingTaskCoalesces(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
 	ctx := context.Background()
-	runtimeID := createClaimReclaimRuntime(t, ctx, "CHE-525 rerun admission runtime")
-	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "CHE-525 rerun admission agent")
+	runtimeID := createClaimReclaimRuntime(t, ctx, "CHE-525 rerun contention runtime")
+	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "CHE-525 rerun contention agent")
 	if _, err := testPool.Exec(ctx, `UPDATE issue SET assignee_type = 'agent', assignee_id = $2 WHERE id = $1`, issueID, agentID); err != nil {
 		t.Fatalf("assign issue: %v", err)
 	}
@@ -50,12 +101,6 @@ func TestRerunIssue_DuplicatePendingTaskCoalescesWithoutLeakingRawError(t *testi
 	}
 	insertCompetingPendingTask()
 
-	// Keep re-occupying the pending slot faster than RerunIssue's bounded
-	// reclaim loop (maxRerunAttempts) can win it, so every attempt inside this
-	// single handler call collides — the deterministic stand-in for "something
-	// enqueueing in a loop" that the service comment calls the genuinely
-	// pathological case. Many tight-loop writers (no sleep) maximize the odds
-	// the slot is re-occupied the instant a reclaim's cancel commits.
 	const competingWriters = 12
 	stop := make(chan struct{})
 	var contending atomic.Bool
@@ -88,13 +133,10 @@ func TestRerunIssue_DuplicatePendingTaskCoalescesWithoutLeakingRawError(t *testi
 	testHandler.RerunIssue(w, req)
 	contending.Store(false)
 
-	switch w.Code {
-	case http.StatusAccepted:
-		// The reclaim loop won inside its attempt budget — a legitimate
-		// outcome under this adversarial contention; the coalesce path this
-		// test targets did not trigger on this run. Nothing to assert.
-		t.Skip("reclaim loop won under contention; duplicate-coalesce path not exercised this run")
-	case http.StatusConflict:
+	if w.Code != http.StatusAccepted && w.Code != http.StatusConflict {
+		t.Fatalf("RerunIssue under slot contention: expected 202 or 409, got %d: %s", w.Code, w.Body.String())
+	}
+	if w.Code == http.StatusConflict {
 		var body map[string]string
 		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 			t.Fatalf("decode conflict body: %v (body=%s)", err, w.Body.String())
@@ -103,8 +145,6 @@ func TestRerunIssue_DuplicatePendingTaskCoalescesWithoutLeakingRawError(t *testi
 			strings.Contains(strings.ToLower(body["error"]), "constraint") {
 			t.Errorf("duplicate-coalesce response leaked raw constraint detail: %q", body["error"])
 		}
-	default:
-		t.Fatalf("RerunIssue under slot contention: expected 202 or 409, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
