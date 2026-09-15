@@ -109,10 +109,12 @@ before running its own `migrate up` step (see the comment at its top): when
 set to exactly `1`, it skips straight to `exec ./server`. Unset — the default
 for every other environment, including a plain `docker compose up` a
 self-hoster runs by hand — the entrypoint's own migration step runs exactly
-as it always has; this is unit-tested behaviorally (stub `migrate`/`server`
-executables, asserting the default/`0`/other-value cases all still run
-migrations and only `=1` skips) as part of `cmd/migrate`'s test coverage for
-CHE-530.
+as it always has; this is unit-tested behaviorally in `scripts/entrypoint.test.sh`
+(stub `migrate`/`server` executables under the real `docker/entrypoint.sh`,
+asserting the guard unset still runs migrations then starts the server, and
+`MULTICA_SKIP_MIGRATIONS=1` skips migrate but still starts the server) —
+run it with `bash scripts/entrypoint.test.sh`. This is a shell test alongside
+`docker/entrypoint.sh` itself, not part of `cmd/migrate`'s Go test suite.
 
 This is what makes "migrations never run twice or race a second container"
 provable rather than asserted:
