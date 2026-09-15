@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, blacksmith-6vcpu-macos-latest]
+        os: [blacksmith-2vcpu-ubuntu-2404, blacksmith-6vcpu-macos-latest]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v5
