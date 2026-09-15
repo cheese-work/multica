@@ -1781,10 +1781,31 @@ func TestPerTurnContextBlocksOmittedWhenEmpty(t *testing.T) {
 		"## Session Continuity Notice",
 		"## Task Initiator",
 		"## Connected Apps",
+		"## Checkpoint from a prior run",
 	} {
 		if strings.Contains(prompt, banned) {
 			t.Errorf("per-turn prompt must not emit %q with no data\n---\n%s", banned, prompt)
 		}
+	}
+}
+
+// CHE-489: the checkpoint block is server-rendered Markdown appended verbatim
+// after the cached prefix, the same seam as the other per-turn blocks — never
+// re-derived, never prepended.
+func TestPerTurnContextBlocksCarryCheckpoint(t *testing.T) {
+	t.Parallel()
+
+	task := Task{
+		IssueID:         "issue-1",
+		CheckpointBlock: "## Checkpoint from a prior run\n\nNext permitted action: ship it.\n\n",
+	}
+
+	prompt := BuildPrompt(task, "claude")
+	if !strings.Contains(prompt, "## Checkpoint from a prior run") {
+		t.Fatalf("expected checkpoint block in per-turn prompt, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Next permitted action: ship it.") {
+		t.Fatalf("expected checkpoint block content appended verbatim, got:\n%s", prompt)
 	}
 }
 

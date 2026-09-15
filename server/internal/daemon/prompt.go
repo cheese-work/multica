@@ -69,6 +69,13 @@ func perTurnContextBlocks(task Task, opts promptOpts) string {
 	}
 	b.WriteString(execenv.BuildTaskInitiatorBlock(task.InitiatorType, task.InitiatorName, task.InitiatorEmail))
 	b.WriteString(execenv.BuildConnectedAppsBlock(task.ConnectedApps))
+	// CHE-489: the checkpoint block is already-rendered Markdown from the
+	// server (internal/checkpoint.Render), appended verbatim. Nothing here
+	// re-derives or re-summarizes it — that would defeat the zero-model-call
+	// requirement the checkpoint was built under.
+	if task.CheckpointBlock != "" {
+		b.WriteString(task.CheckpointBlock)
+	}
 	return b.String()
 }
 
