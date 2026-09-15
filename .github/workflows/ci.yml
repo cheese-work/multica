@@ -685,9 +685,13 @@ jobs:
   # but never saved here: backend-tests owns publishing (see its comment), and
   # this job's only unique output is the pkg/agent test binary, which is cheap
   # to relink.
+  # Linux stays on GitHub-hosted ubuntu-latest for the same reason as
+  # cursor-background-lifecycle above: `--only agent` runs the whole
+  # pkg/agent package, which includes the Cursor process-group tests hitting
+  # the Linux 6.9 PIDFD_SIGNAL_PROCESS_GROUP gap (CHE-522).
   backend-agent-tests:
     needs: changes
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     env:
       # Same policy as backend-tests: CI always executes the tests it reports.
       GOFLAGS: -count=1
@@ -777,6 +781,60 @@ jobs:
             echo "::error::backend validation failed"
             exit 1
           fi
+
+  # DIAGNOSTIC (CHE-522, to be removed): isolates the exact shell script
+  # buildLoginShellResolveScript (server/internal/daemon/config.go) runs, on
+  # both runner images, to compare its output directly instead of guessing
+  # why TestLoadConfig_SkipsMulticaHooksFromLoginShellFallback only fails on
+  # blacksmith-2vcpu-ubuntu-2404. No Go build, no services — cheap and fast.
+  login-shell-resolve-diagnostic:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, blacksmith-2vcpu-ubuntu-2404]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Probe shell identity
+        run: |
+          readlink -f /bin/sh
+          /bin/sh -c 'echo dash-or-posix-sh-check' || true
+      - name: Reproduce the login-shell resolver in isolation
+        run: |
+          set -x
+          WORK=$(mktemp -d)
+          HOME_DIR="$WORK/home"
+          mkdir -p "$HOME_DIR/.multica/hooks"
+          REAL_BIN="$WORK/realbin"
+          mkdir -p "$REAL_BIN"
+          printf '#!/bin/sh\nexec codex "$@"\n' > "$HOME_DIR/.multica/hooks/codex"
+          chmod +x "$HOME_DIR/.multica/hooks/codex"
+          printf '#!/bin/sh\nexit 0\n' > "$REAL_BIN/codex"
+          chmod +x "$REAL_BIN/codex"
+          RC="$WORK/sh.rc"
+          echo "export PATH=\"$HOME_DIR/.multica/hooks:$REAL_BIN:\$PATH\"" > "$RC"
+          SCRIPT='for n in codex; do
+            unalias "$n" 2>/dev/null
+            unset -f "$n" 2>/dev/null
+            p=$(command -v "$n" 2>/dev/null) || continue
+            [ -n "$p" ] || continue
+            case "$p" in /*) ;; *) continue ;; esac
+            d=$(dirname "$p") && f=$(basename "$p") && c=$(cd "$d" 2>/dev/null && pwd -P) || continue
+            hc=""
+            if [ -n "${HOME:-}" ]; then hd="$HOME/.multica/hooks"; hc=$(cd "$hd" 2>/dev/null && pwd -P) || hc=""; fi
+            echo "DEBUG resolved p=$p c=$c hc=$hc" >&2
+            if [ -n "$hc" ] && [ "$c" = "$hc" ]; then
+              oldIFS=$IFS; IFS=:
+              for d2 in $PATH; do
+                [ -n "$d2" ] || d2=.
+                c2=$(cd "$d2" 2>/dev/null && pwd -P) || continue
+                [ "$c2" = "$hc" ] && continue
+                if [ -f "$c2/$n" ] && [ -x "$c2/$n" ]; then c="$c2"; f="$n"; break; fi
+              done
+              IFS=$oldIFS
+            fi
+            printf "%s\t%s\n" "$n" "$c/$f"
+          done'
+          HOME="$HOME_DIR" SHELL=/bin/sh ENV="$RC" PATH=/usr/bin:/bin /bin/sh -ilc "$SCRIPT"
 
   image-budget:
     # Soft gate against the 21.7MB of raw PNG/JPG that MUL-6352 cleared out:

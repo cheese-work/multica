@@ -235,7 +235,13 @@ describe("IssueLimitUpgradeDialog", () => {
 
     await user.keyboard("{Escape}");
 
-    await waitFor(() => expect(queryRecoveryDialog()).not.toBeInTheDocument());
+    // Exit-animation teardown can clear waitFor's 1000ms default under CI
+    // runner jitter (CHE-522, observed 1054ms on a Blacksmith Linux runner,
+    // ~550ms locally on 5/5 reruns) — widen the timeout, not the assertion.
+    await waitFor(
+      () => expect(queryRecoveryDialog()).not.toBeInTheDocument(),
+      { timeout: 3000 },
+    );
     expect(
       screen.getByRole("dialog", { name: "Create an issue" }),
     ).toBeInTheDocument();
