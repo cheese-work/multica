@@ -632,6 +632,102 @@ func TestWebhook_MergedPR_OpenChildBlocksAutoClose(t *testing.T) {
 	}
 }
 
+// TestWebhook_MergedPR_MixedStagedUnstagedTerminalChildrenAdvance guards
+// CHE-520's second review round: advanceIssueToDone must not reuse
+// resolveTerminalChildren (the stage-BARRIER helper) to decide auto-done.
+// That helper skips any unstaged sibling once one sibling in the set carries
+// a stage — correct for "did this stage just close", wrong for "is every
+// direct child terminal". A parent with one staged done child and one
+// unstaged done child is all-terminal and must still auto-advance; reusing
+// the stage-aware helper would silently drop the unstaged child from the
+// terminal set and block auto-completion forever.
+func TestWebhook_MergedPR_MixedStagedUnstagedTerminalChildrenAdvance(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	secret := "mixed-staged-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+
+	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":  "parent with mixed staged/unstaged terminal children",
+		"status": "in_progress",
+	})
+	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
+	var parent IssueResponse
+	json.NewDecoder(w.Body).Decode(&parent)
+
+	stage := int32(1)
+	stagedChildReq := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":           "staged done child",
+		"status":          "done",
+		"parent_issue_id": parent.ID,
+		"stage":           stage,
+	})
+	w = testutil.Call(t, testHandler.CreateIssue, stagedChildReq).Want(http.StatusCreated)
+	var stagedChild IssueResponse
+	json.NewDecoder(w.Body).Decode(&stagedChild)
+
+	unstagedChildReq := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":           "unstaged done child",
+		"status":          "done",
+		"parent_issue_id": parent.ID,
+	})
+	w = testutil.Call(t, testHandler.CreateIssue, unstagedChildReq).Want(http.StatusCreated)
+	var unstagedChild IssueResponse
+	json.NewDecoder(w.Body).Decode(&unstagedChild)
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id = $1`, parent.ID)
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_installation WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM activity_log WHERE issue_id = $1`, parent.ID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, stagedChild.ID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, unstagedChild.ID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, parent.ID)
+	})
+
+	const installationID int64 = 66332200
+	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
+		WorkspaceID:    parseUUID(testWorkspaceID),
+		InstallationID: installationID,
+		AccountLogin:   "mixed-staged-acct",
+		AccountType:    "User",
+	}); err != nil {
+		t.Fatalf("CreateGitHubInstallation: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"action": "closed",
+		"pull_request": map[string]any{
+			"number": 43, "html_url": "https://github.com/acme/widget/pull/43",
+			"title": "Fix parent", "body": "Closes " + parent.Identifier,
+			"state": "closed", "merged": true, "draft": false,
+			"merged_at": "2026-04-29T00:00:00Z", "closed_at": "2026-04-29T00:00:00Z",
+			"created_at": "2026-04-28T00:00:00Z", "updated_at": "2026-04-29T00:00:00Z",
+			"head": map[string]any{"ref": "fix/parent2"}, "user": map[string]any{"login": "octocat"},
+		},
+		"repository":   map[string]any{"name": "widget", "owner": map[string]any{"login": "acme"}},
+		"installation": map[string]any{"id": installationID},
+	})
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	sig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+
+	req2 := httptest.NewRequest("POST", "/api/webhooks/github", bytes.NewReader(body))
+	req2.Header.Set("X-GitHub-Event", "pull_request")
+	req2.Header.Set("X-Hub-Signature-256", sig)
+	testutil.Call(t, testHandler.HandleGitHubWebhook, req2).Want(http.StatusAccepted)
+
+	updated, err := testHandler.Queries.GetIssue(ctx, parseUUID(parent.ID))
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if updated.Status != "done" {
+		t.Errorf("expected parent to auto-advance to done with all-terminal mixed staged/unstaged children, got %q", updated.Status)
+	}
+}
+
 // TestWebhook_MergedPR_PreservesCancelled guards the "do not stomp cancelled"
 // rule: cancelling an issue then merging a linked PR must leave the issue
 // cancelled.

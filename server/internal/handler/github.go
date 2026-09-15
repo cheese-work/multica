@@ -2697,6 +2697,16 @@ func (h *Handler) lookupIssueByIdentifier(ctx context.Context, workspaceID pgtyp
 // hiding unfinished work (CHE-520). Children already in a terminal status
 // category (done/cancelled, including custom statuses that resolve to
 // either) do not block the parent.
+//
+// This deliberately does NOT reuse resolveTerminalChildren: that helper
+// skips unstaged siblings whenever any sibling in the set is staged (it
+// implements the stage-BARRIER rule for the parent-notification path, where
+// an unstaged sibling is genuinely irrelevant to closing a specific stage).
+// The auto-done gate here has no stage concept — it is "every direct child
+// must be terminal, full stop" — so skipping any child would let a mixed
+// staged/unstaged, all-terminal child set wrongly block auto-completion
+// forever, or (worse) let a skipped non-terminal unstaged child through.
+// Every direct child's effective status is resolved and checked here.
 func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, workspaceID string) {
 	children, err := h.Queries.ListChildIssues(ctx, issue.ID)
 	if err != nil {
@@ -2705,13 +2715,13 @@ func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, worksp
 	}
 	if len(children) > 0 {
 		effective := h.childStatusResolver(ctx)
-		isTerminal, err := resolveTerminalChildren(children, effective)
-		if err != nil {
-			slog.Warn("github: advance issue to done: resolve child statuses failed", "err", err, "issue_id", uuidToString(issue.ID))
-			return
-		}
 		for _, child := range children {
-			if !isTerminal(child) {
+			status, err := effective(child)
+			if err != nil {
+				slog.Warn("github: advance issue to done: resolve child status failed", "err", err, "issue_id", uuidToString(issue.ID), "child_id", uuidToString(child.ID))
+				return
+			}
+			if !isTerminalChildStatus(status) {
 				return
 			}
 		}
