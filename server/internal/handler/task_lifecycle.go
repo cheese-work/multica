@@ -150,6 +150,10 @@ type RerunIssueRequest struct {
 	// assignee — so clicking retry on row that belonged to a now-displaced
 	// agent re-fires that same agent, not the new assignee.
 	TaskID string `json:"task_id,omitempty"`
+	// Reason is an optional caller-supplied explanation for the rerun (CLI
+	// `--reason`), carried into the log line so an authorized force can be
+	// audited after the fact. It is not persisted on the task row.
+	Reason string `json:"reason,omitempty"`
 }
 
 // RerunIssue manually re-enqueues an agent run for the issue. By default it
@@ -221,10 +225,22 @@ func (h *Handler) RerunIssue(w http.ResponseWriter, r *http.Request) {
 	// source is ineligible. It falls through to the 400 below with the
 	// sentinel's own sentence, like the sibling "does not belong to this issue".
 	if err != nil {
+		// ErrDuplicatePendingTask is the same benign coalesce outcome C1/C2
+		// classify at their admission boundaries (CHE-486, CHE-524): a
+		// concurrent rerun of this authorized force already covers the
+		// target, not a genuine failure. Route it through the same
+		// debug-level, non-warning treatment instead of surfacing it as a
+		// 400 with the raw sentinel text.
+		if errors.Is(err, service.ErrDuplicatePendingTask) {
+			slog.Debug("issue rerun coalesced: duplicate pending task", "issue_id", id)
+			writeError(w, http.StatusConflict, "a rerun for this issue and agent is already in progress")
+			return
+		}
 		slog.Warn("issue rerun failed", "issue_id", id, "error", err)
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	slog.Info("issue rerun accepted", "issue_id", id, "task_id", uuidToString(task.ID), "reason", req.Reason)
 	resp := taskToResponse(*task, uuidToString(issue.WorkspaceID))
 	h.hydrateTaskAttributions(r.Context(), []*TaskAttribution{resp.Attribution})
 	writeJSON(w, http.StatusAccepted, resp)
