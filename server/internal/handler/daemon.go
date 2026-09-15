@@ -4073,10 +4073,12 @@ const protocolLintCommentLimit = 500
 // server persists elsewhere in this codebase (see the CHE-529 PR description
 // for the full investigation):
 //   - Reply-parent linkage (protocollint assertion 2) is checked from the
-//     comments this run actually posted, which is complete and reliable: the
-//     server's own CreateComment handler already rejects a mismatched parent
-//     at write time (taskCoversReplyParent in comment.go), so a persisted
-//     mismatch here would mean that write-time gate regressed.
+//     comments this run actually posted against both TriggerCommentID and
+//     CoalescedCommentIds, which is complete and reliable: the server's own
+//     CreateComment handler already rejects a mismatched parent at write time
+//     (taskCoversReplyParent in comment.go, which accepts the same two
+//     sources), so a persisted mismatch here would mean that write-time gate
+//     regressed.
 //   - Completion-evidence well-formedness (assertion 4, syntactic slice) is
 //     checked from the same pr_url this handler already persists into
 //     task.Result.
@@ -4135,8 +4137,9 @@ func (h *Handler) runProtocolLint(ctx context.Context, task db.AgentTaskQueue, w
 		// uuidToString renders an invalid/NULL UUID as "", which is exactly
 		// how protocollint.Input represents "this run has no trigger
 		// comment" (assignment/autopilot/chat-input triggered tasks).
-		TriggerCommentID:   uuidToString(task.TriggerCommentID),
-		ClaimedEvidenceURL: claimedEvidenceURL,
+		TriggerCommentID:    uuidToString(task.TriggerCommentID),
+		CoalescedCommentIDs: uuidsToStrings(task.CoalescedCommentIds),
+		ClaimedEvidenceURL:  claimedEvidenceURL,
 	}
 	for _, c := range comments {
 		if c.SourceTaskID.Valid && uuidToString(c.SourceTaskID) == uuidToString(task.ID) {

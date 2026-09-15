@@ -20,6 +20,7 @@ package protocollint
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -63,6 +64,18 @@ type Input struct {
 	// "" for an assignment-triggered / autopilot / chat run that has no
 	// triggering comment (server: agent_task_queue.trigger_comment_id).
 	TriggerCommentID string
+
+	// CoalescedCommentIDs are additional comment ids this run's completion
+	// covers alongside TriggerCommentID (server:
+	// agent_task_queue.coalesced_comment_ids, MUL-4195's at-least-once
+	// processing: a member comment that arrives mid-run is merged into the
+	// same completing task instead of spawning a second one). A reply parented
+	// under any of these is exactly as valid as one parented under
+	// TriggerCommentID — this mirrors taskCoversReplyParent's own check
+	// server-side (comment.go), which accepts both. Omitting this field would
+	// make checkReplyParent flag every legitimate coalesced-reply completion
+	// as a violation.
+	CoalescedCommentIDs []string
 
 	// PostedComments are the comments this run authored on the issue
 	// (comment.source_task_id == this run's task id), in any order.
@@ -170,10 +183,12 @@ func Check(in Input) []Violation {
 }
 
 // checkReplyParent is assertion 2: every comment this run posted must be
-// covered by the run's trigger comment when the run has one. A run with no
-// TriggerCommentID (assignment/autopilot/chat trigger) has no parent
-// constraint to enforce here — the same "no trigger, nothing to check" shape
-// taskCoversReplyParent itself uses server-side.
+// covered by the run's trigger comment, or one of its coalesced comments,
+// when the run has one. A run with no TriggerCommentID (assignment/autopilot/
+// chat trigger) has no parent constraint to enforce here — the same "no
+// trigger, nothing to check" shape taskCoversReplyParent itself uses
+// server-side. This mirrors taskCoversReplyParent (comment.go) exactly: both
+// TriggerCommentID and every id in CoalescedCommentIDs are valid parents.
 func checkReplyParent(in Input) (Violation, bool) {
 	if in.TriggerCommentID == "" {
 		return Violation{}, true
@@ -188,15 +203,19 @@ func checkReplyParent(in Input) (Violation, bool) {
 				),
 			}, false
 		}
-		if c.ParentID != in.TriggerCommentID {
-			return Violation{
-				Code: CodeReplyParentMismatch,
-				Message: fmt.Sprintf(
-					"protocol violation: run %s posted comment %s with parent %s, but its trigger comment was %s",
-					label(in.RunID), c.ID, c.ParentID, in.TriggerCommentID,
-				),
-			}, false
+		if c.ParentID == in.TriggerCommentID {
+			continue
 		}
+		if slices.Contains(in.CoalescedCommentIDs, c.ParentID) {
+			continue
+		}
+		return Violation{
+			Code: CodeReplyParentMismatch,
+			Message: fmt.Sprintf(
+				"protocol violation: run %s posted comment %s with parent %s, but its trigger comment was %s (coalesced: %v)",
+				label(in.RunID), c.ID, c.ParentID, in.TriggerCommentID, in.CoalescedCommentIDs,
+			),
+		}, false
 	}
 	return Violation{}, true
 }

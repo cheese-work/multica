@@ -122,6 +122,47 @@ func TestCheckFailsOnTopLevelReplyUnderTrigger(t *testing.T) {
 	}
 }
 
+// TestCheckAllowsReplyUnderCoalescedComment covers MUL-4195: a run whose
+// completion covers multiple triggering comments (agent_task_queue's
+// coalesced_comment_ids) may legitimately reply under any of them, not just
+// TriggerCommentID — mirroring taskCoversReplyParent server-side
+// (comment.go), which accepts both sources as valid parents.
+func TestCheckAllowsReplyUnderCoalescedComment(t *testing.T) {
+	t.Parallel()
+
+	in := Input{
+		RunID:               "run-3b",
+		TriggerCommentID:    "trigger-1",
+		CoalescedCommentIDs: []string{"trigger-2", "trigger-3"},
+		PostedComments: []PostedComment{
+			{ID: "reply-1", ParentID: "trigger-2", Content: "Addressing both threads."},
+		},
+	}
+	if violations := Check(in); len(violations) != 0 {
+		t.Fatalf("Check() = %v, want no violations for a reply parented under a coalesced comment", violations)
+	}
+}
+
+// TestCheckFailsOnReplyParentNotInTriggerOrCoalesced ensures a coalesced list
+// narrows, rather than widens, what still counts as a mismatch: a parent
+// outside both TriggerCommentID and CoalescedCommentIDs must still fail.
+func TestCheckFailsOnReplyParentNotInTriggerOrCoalesced(t *testing.T) {
+	t.Parallel()
+
+	in := Input{
+		RunID:               "run-3c",
+		TriggerCommentID:    "trigger-1",
+		CoalescedCommentIDs: []string{"trigger-2"},
+		PostedComments: []PostedComment{
+			{ID: "reply-1", ParentID: "some-unrelated-comment", Content: "Done."},
+		},
+	}
+	violations := Check(in)
+	if len(violations) != 1 || violations[0].Code != CodeReplyParentMismatch {
+		t.Fatalf("Check() = %v, want exactly 1 %q violation", violations, CodeReplyParentMismatch)
+	}
+}
+
 // TestCheckAllowsCoalescedOrUnrelatedIssueReplies: a run with no trigger
 // comment (assignment-triggered) is free to post top-level comments — there is
 // no parent to enforce.
