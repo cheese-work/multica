@@ -129,3 +129,135 @@ describe("useInPageFind without the CSS Custom Highlight API", () => {
     expect(result.current.activeIndex).toBe(-1);
   });
 });
+
+// 01-DESIGN "Find and target reveal lifecycle": the readiness predicate is
+// the ONLY allowed signal that pre-reveal/stale-generation DOM is safe to
+// walk. These tests exercise the gate independently of any particular host
+// (issue-detail.tsx wires `isReady` to useIssueDisclosureReveal's committed
+// token; here it's a plain flag the test flips directly).
+describe("useInPageFind readiness gate (reveal-before-DOM-walk)", () => {
+  let container: HTMLElement;
+
+  beforeEach(() => {
+    (Range.prototype as { getClientRects: () => DOMRectList }).getClientRects =
+      () =>
+        [
+          { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0 },
+        ] as unknown as DOMRectList;
+    container = document.createElement("div");
+    container.innerHTML = "<p>needle here</p>";
+    document.body.appendChild(container);
+  });
+
+  afterEach(() => {
+    delete (Range.prototype as { getClientRects?: unknown }).getClientRects;
+    container.remove();
+  });
+
+  async function flushFrames(count = 3): Promise<void> {
+    for (let i = 0; i < count; i++) {
+      await act(
+        () =>
+          new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
+      );
+    }
+  }
+
+  it("rejects every collector call while not ready — no match reported for pre-reveal DOM", async () => {
+    const ready = false;
+    const { result } = renderHook(() =>
+      useInPageFind({ container, contentKey: 0, isReady: () => ready }),
+    );
+
+    act(() => {
+      result.current.openFind();
+      result.current.setQuery("needle");
+    });
+    await flushFrames();
+
+    // The DOM already has "needle" in it, but readiness has not committed —
+    // the collector must reject the call rather than report a false match.
+    expect(result.current.matchCount).toBe(0);
+    expect(result.current.activeIndex).toBe(-1);
+  });
+
+  it("re-arms and collects once readiness flips to true", async () => {
+    let ready = false;
+    const { result, rerender } = renderHook(() =>
+      useInPageFind({ container, contentKey: 0, isReady: () => ready }),
+    );
+
+    act(() => {
+      result.current.openFind();
+      result.current.setQuery("needle");
+    });
+    await flushFrames();
+    expect(result.current.matchCount).toBe(0);
+
+    // The host's reveal generation commits — flip the predicate and force a
+    // fresh render so the hook sees a new `isReady` closure identity.
+    ready = true;
+    rerender();
+    await flushFrames();
+
+    expect(result.current.matchCount).toBe(1);
+    expect(result.current.activeIndex).toBe(0);
+  });
+
+  it("does not fabricate a match from a MutationObserver callback firing before the generation commits", async () => {
+    const ready = false;
+    const { result } = renderHook(() =>
+      useInPageFind({ container, contentKey: 0, isReady: () => ready }),
+    );
+
+    act(() => {
+      result.current.openFind();
+      result.current.setQuery("needle");
+    });
+    await flushFrames();
+    expect(result.current.matchCount).toBe(0);
+
+    // Simulate async DOM churn (e.g. markdown settling) while still
+    // pre-reveal: the MutationObserver-driven recompute must also reject.
+    act(() => {
+      container.innerHTML = "<p>needle here</p><p>needle twice</p>";
+    });
+    await flushFrames();
+    expect(result.current.matchCount).toBe(0);
+  });
+
+  it("drops held ranges when readiness drops while still open, never leaving a stale match count", async () => {
+    let ready = true;
+    const { result, rerender } = renderHook(() =>
+      useInPageFind({ container, contentKey: 0, isReady: () => ready }),
+    );
+
+    act(() => {
+      result.current.openFind();
+      result.current.setQuery("needle");
+    });
+    await flushFrames();
+    expect(result.current.matchCount).toBe(1);
+
+    // The reveal generation invalidates mid-session (e.g. issue switch while
+    // find stayed open) — matches must be cleared immediately, not left
+    // pointing at DOM that is about to be replaced.
+    ready = false;
+    rerender();
+
+    expect(result.current.matchCount).toBe(0);
+    expect(result.current.activeIndex).toBe(-1);
+  });
+
+  it("defaults to always-ready when no predicate is supplied, preserving prior behavior", async () => {
+    const { result } = renderHook(() => useInPageFind({ container, contentKey: 0 }));
+
+    act(() => {
+      result.current.openFind();
+      result.current.setQuery("needle");
+    });
+    await flushFrames();
+
+    expect(result.current.matchCount).toBe(1);
+  });
+});
