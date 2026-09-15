@@ -999,7 +999,7 @@ func normalizePullRequestList(raw []any) []map[string]any {
 }
 
 func printIssuePullRequestsTable(prs []map[string]any) {
-	headers := []string{"NUMBER", "STATE", "TITLE", "URL"}
+	headers := []string{"NUMBER", "STATE", "TITLE", "URL", "HEAD", "CI", "SNAPSHOT"}
 	rows := make([][]string, 0, len(prs))
 	for _, pr := range prs {
 		rows = append(rows, []string{
@@ -1007,6 +1007,9 @@ func printIssuePullRequestsTable(prs []map[string]any) {
 			strVal(pr, "state"),
 			strVal(pr, "title"),
 			pullRequestURL(pr),
+			pullRequestHead(pr),
+			pullRequestCI(pr),
+			pullRequestSnapshotAge(pr),
 		})
 	}
 	cli.PrintTable(os.Stdout, headers, rows)
@@ -1017,6 +1020,110 @@ func pullRequestURL(pr map[string]any) string {
 		return url
 	}
 	return strVal(pr, "html_url")
+}
+
+// pullRequestSnapshotAvailable mirrors the server's snapshot_available
+// semantics (GitHubPullRequestResponse.SnapshotAvailable): only true means a
+// current API snapshot exists for this PR's head. Missing/false/absent all
+// collapse to "no current snapshot" for rendering purposes.
+func pullRequestSnapshotAvailable(pr map[string]any) bool {
+	v, ok := pr["snapshot_available"]
+	if !ok || v == nil {
+		return false
+	}
+	b, ok := v.(bool)
+	return ok && b
+}
+
+// pullRequestHead renders the PR's head identity (D4, CHE-487).
+//
+// GAP: GitHubPullRequestResponse (server/internal/handler/github.go) does not
+// expose a head-sha JSON field — HeadSha/SnapshotHeadSha are populated
+// server-side (issuePullRequestRowToResponse) purely to compute
+// snapshot_available/snapshot_stale and are never serialized. Only `branch`
+// is exposed. Per the approved scope, this reports that gap rather than
+// inventing a head-sha field or adding a new integration: it renders the
+// branch when present, and "unavailable" otherwise — never a fabricated sha.
+func pullRequestHead(pr map[string]any) string {
+	if branch := strVal(pr, "branch"); branch != "" {
+		return branch
+	}
+	return "unavailable"
+}
+
+// pullRequestCI renders CI status per the D4 contract: no snapshot ->
+// "unavailable"; snapshot present but checks_rollup null -> "no checks"
+// (never "passed" — a null rollup means CI has not reported yet, which is
+// materially different from a passing rollup); otherwise the raw rollup
+// value (success|failure|pending|error|expected).
+func pullRequestCI(pr map[string]any) string {
+	if !pullRequestSnapshotAvailable(pr) {
+		return "unavailable"
+	}
+	v, ok := pr["checks_rollup"]
+	if !ok || v == nil {
+		return "no checks"
+	}
+	if s, ok := v.(string); ok && s != "" {
+		return s
+	}
+	return "no checks"
+}
+
+// pullRequestSnapshotAge renders the snapshot freshness column: no snapshot
+// -> "unavailable"; snapshot_stale true -> "stale" plus age when computable;
+// otherwise the age since snapshot_fetched_at, or "unknown age" when the
+// server didn't send a fetch time despite claiming an available snapshot.
+func pullRequestSnapshotAge(pr map[string]any) string {
+	if !pullRequestSnapshotAvailable(pr) {
+		return "unavailable"
+	}
+	stale, _ := pr["snapshot_stale"].(bool)
+	age, ok := pullRequestSnapshotAgeDuration(pr)
+	switch {
+	case stale && ok:
+		return fmt.Sprintf("stale (%s old)", formatDurationRounded(age))
+	case stale:
+		return "stale"
+	case ok:
+		return formatDurationRounded(age) + " old"
+	default:
+		return "unknown age"
+	}
+}
+
+// pullRequestSnapshotAgeDuration computes now - snapshot_fetched_at. The
+// second return is false when snapshot_fetched_at is absent/null/unparseable,
+// which the caller renders as "unknown age" rather than a zero duration.
+func pullRequestSnapshotAgeDuration(pr map[string]any) (time.Duration, bool) {
+	fetchedAt := strVal(pr, "snapshot_fetched_at")
+	if fetchedAt == "" {
+		return 0, false
+	}
+	t, err := time.Parse(time.RFC3339, fetchedAt)
+	if err != nil {
+		return 0, false
+	}
+	return time.Since(t), true
+}
+
+// formatDurationRounded renders a duration at the coarsest unit that keeps it
+// readable in a table cell (matching the terse style of other CLI columns
+// such as truncated timestamps).
+func formatDurationRounded(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
 }
 
 func runIssueAnnounceMerge(cmd *cobra.Command, args []string) error {
@@ -1082,6 +1189,11 @@ func runIssueGet(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("get issue: %w", err)
 	}
 
+	// observedAt is when THIS CLI read happened, not a server-recorded
+	// timestamp — it lets a reader judge how fresh the (currently absent) ETA
+	// projection below is without a second round trip.
+	observedAt := time.Now().UTC().Format(time.RFC3339)
+
 	output, _ := cmd.Flags().GetString("output")
 	if output == "table" {
 		actors := loadActorDisplayLookup(ctx, client)
@@ -1094,7 +1206,7 @@ func runIssueGet(cmd *cobra.Command, args []string) error {
 		if dueDate != "" && len(dueDate) >= 10 {
 			dueDate = dueDate[:10]
 		}
-		headers := []string{"KEY", "TITLE", "STATUS", "PRIORITY", "ASSIGNEE", "START DATE", "DUE DATE", "DESCRIPTION"}
+		headers := []string{"KEY", "TITLE", "STATUS", "PRIORITY", "ASSIGNEE", "START DATE", "DUE DATE", "ETA", "DESCRIPTION"}
 		rows := [][]string{{
 			issueDisplayKey(issue),
 			strVal(issue, "title"),
@@ -1103,9 +1215,11 @@ func runIssueGet(cmd *cobra.Command, args []string) error {
 			assignee,
 			startDate,
 			dueDate,
+			issueETAUnknown,
 			strVal(issue, "description"),
 		}}
 		cli.PrintTable(os.Stdout, headers, rows)
+		fmt.Fprintf(os.Stderr, "Observed at %s. ETA is unknown: no structured ETA field exists on an issue; due date is a separate, unrelated field and is never used as an ETA.\n", observedAt)
 		return nil
 	}
 
@@ -1114,8 +1228,30 @@ func runIssueGet(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	}
+
+	// status_read is a client-derived read projection, not a server-sent
+	// field: there is no structured ETA anywhere in the issue model (only
+	// start_date/due_date), so this never claims the server reported an eta.
+	// It is a sibling object precisely so it can't be mistaken for part of
+	// the server's issue response shape.
+	issue["status_read"] = map[string]any{
+		"eta":         issueETAUnknown,
+		"eta_source":  issueETASourceNone,
+		"observed_at": observedAt,
+	}
 	return cli.PrintJSON(os.Stdout, issue)
 }
+
+// issueETAUnknown is the literal rendered value for D2 (CHE-487): no
+// structured ETA field exists on an issue anywhere in this codebase (only
+// start_date/due_date), so the CLI must never derive one from due_date or
+// from parsing description prose. It always renders unknown.
+const issueETAUnknown = "unknown"
+
+// issueETASourceNone documents why the ETA above is unknown, so a reader
+// does not have to guess whether the field was simply empty vs. genuinely
+// unsupported by the platform.
+const issueETASourceNone = "none recorded"
 
 // childStage extracts the integer stage from a child issue response map.
 // Returns ok=false when the child is unstaged (stage null/absent).
@@ -2505,6 +2641,10 @@ func runIssueRuns(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("list runs: %w", err)
 	}
+	// observedAt is when THIS CLI read happened. Active-run status is
+	// inherently a moving target (D3, CHE-487) — a reader needs to know how
+	// stale "here's what's running" is without re-running the command.
+	observedAt := time.Now().UTC().Format(time.RFC3339)
 	// A truncated coordination read and a complete one look identical in the
 	// body, and reading the first as the second is exactly the wrong
 	// conclusion: "no run on that sibling" when the answer was simply cut off.
@@ -2514,6 +2654,7 @@ func runIssueRuns(cmd *cobra.Command, args []string) error {
 			"warning: active runs truncated by the server cap: more runs are in flight than this read returns. "+
 				"\"No run on that issue\" cannot be concluded from this read.")
 	}
+	fmt.Fprintf(os.Stderr, "Observed at %s.\n", observedAt)
 
 	output, _ := cmd.Flags().GetString("output")
 	if output == "json" {

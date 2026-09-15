@@ -4,6 +4,7 @@ Product contracts the runtime brief does not fully encode.
 
 - [PR linking and close intent are two distinct contracts](#pr-linking-and-close-intent-are-two-distinct-contracts)
 - [Reading a linked PR's real state](#reading-a-linked-prs-real-state)
+- [`issue get` has no structured ETA](#issue-get-has-no-structured-eta)
 - [Custom properties: typed workflow state](#custom-properties-typed-workflow-state)
 - [Status changes have server side effects](#status-changes-have-server-side-effects)
 - [Claim ownership without duplicating a run](#claim-ownership-without-duplicating-a-run)
@@ -135,6 +136,19 @@ a draft?" is `state == "draft"`; coarse CI status is `checks_conclusion`.
   and `sent_at` / `comment_id` (once `delivered`). Read this instead of
   scanning comments by hand to check whether a merge's announcement landed.
 
+`--output table` (the default) adds three derived columns on top of `NUMBER` /
+`STATE` / `TITLE` / `URL`:
+
+- `HEAD` — the PR's `branch`, or `unavailable` when absent. The response does
+  not expose a head commit SHA (only branch), so this column identifies the
+  head by branch name, not by commit.
+- `CI` — `unavailable` when no current snapshot exists (`snapshot_available`
+  is not `true`); `no checks` when a snapshot exists but `checks_rollup` is
+  `null` (checks have not reported yet — **never** rendered as `passed`);
+  otherwise the raw `checks_rollup` value.
+- `SNAPSHOT` — `unavailable` with no snapshot; `stale` (with an age) when
+  `snapshot_stale` is `true`; otherwise the age since `snapshot_fetched_at`.
+
 ## Recovering a missed merge announcement
 
 A merged, linked GitHub PR is expected to produce exactly one system comment
@@ -188,6 +202,18 @@ page, it reads through an empty page. A failed request, malformed page, or
 duplicate issue stops the operation before any position write. This protects
 against truncated or repeated pages, but does not promise a snapshot across
 concurrent edits. There is no CLI bulk-export or `--all` mode.
+
+## `issue get` has no structured ETA
+
+`multica issue get <issue-id>` never returns a structured ETA — the issue
+model only has `start_date` and `due_date`; there is no server-side ETA field
+to read, and the CLI does not invent one by parsing `due_date` or the
+description. In `--output table`, the `ETA` column always reads `unknown`,
+distinct from the separate `DUE DATE` column. In JSON, the top-level issue
+object is unchanged; a sibling `status_read` object is added —
+`{"eta": "unknown", "eta_source": "none recorded", "observed_at": <RFC3339>}`
+— so it is clearly a client-side read projection, not a claim that the server
+sent an `eta` field. Do not read `due_date` as if it were an ETA.
 
 ## Custom properties: typed workflow state
 
@@ -356,6 +382,12 @@ Rows come back running-first, newest-first within a status, and the family read
 is capped at 20. When the cap truncates the answer the CLI prints a warning on
 stderr — read it. Without that warning a short list means "nobody else is
 there"; with it, the list proves nothing about the runs it did not return.
+
+The CLI also prints an `Observed at <RFC3339 timestamp>` note to stderr on
+every read: "who's running right now" is a moving target, and this is when
+your read happened, not a server-recorded field. `--active` is read-only —
+it always reaches the server with `GET`, never a write, so asking never
+enqueues or affects a run.
 
 Both are advisory reads. Nothing here reserves an issue or serialises anything:
 a run you see may finish a second later, and one you don't see may start a
