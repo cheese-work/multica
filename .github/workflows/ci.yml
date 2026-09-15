@@ -26,9 +26,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, blacksmith-6vcpu-macos-latest]
+        os: [ubuntu-latest, blacksmith-2vcpu-ubuntu-2404, blacksmith-6vcpu-macos-latest]
     steps:
       - uses: actions/checkout@v6
+      - name: DIAGNOSTIC - kernel version (CHE-522 root-cause probe, to be removed)
+        if: runner.os == 'Linux'
+        run: uname -a
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.x"
