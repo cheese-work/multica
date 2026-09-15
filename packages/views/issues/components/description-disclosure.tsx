@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { Button } from "@multica/ui/components/ui/button";
 import {
   DESCRIPTION_PREVIEW_LINES,
   measureDescription,
@@ -135,6 +136,7 @@ export function DescriptionDisclosure({
         data-find-ignore={collapsed ? "true" : undefined}
         id={editorId}
         inert={collapsed || undefined}
+        className="transition-[max-height] duration-200 ease-out"
         style={
           collapsed
             ? {
@@ -143,7 +145,7 @@ export function DescriptionDisclosure({
                   : `${DESCRIPTION_PREVIEW_LINES}lh`,
                 overflow: "hidden",
               }
-            : undefined
+            : { maxHeight: "none", overflow: "visible" }
         }
       >
         {children}
@@ -156,22 +158,24 @@ export function DescriptionDisclosure({
       )}
       {canDisclose ? (
         <div className="mt-2 flex justify-center">
-          <button
+          <Button
             aria-controls={editorId}
             aria-expanded={expanded}
             disabled={expanded && collapseDisabled}
             onClick={() => onExpandedChange(!expanded)}
             onKeyDown={handleDisclosureButtonTab}
+            size="xs"
             type="button"
+            variant="secondary"
           >
             {expanded ? labels.showLess : buttonLabel}
-          </button>
+          </Button>
         </div>
       ) : measurement === null ? (
         <div className="mt-2 flex justify-center">
-          <button aria-controls={editorId} aria-expanded={expanded} onClick={() => onExpandedChange(!expanded)} onKeyDown={handleDisclosureButtonTab} type="button">
+          <Button aria-controls={editorId} aria-expanded={expanded} onClick={() => onExpandedChange(!expanded)} onKeyDown={handleDisclosureButtonTab} size="xs" type="button" variant="secondary">
             {expanded ? labels.showLess : labels.showMore}
-          </button>
+          </Button>
         </div>
       ) : null}
     </section>
