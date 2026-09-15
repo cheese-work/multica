@@ -157,10 +157,11 @@ export function DescriptionDisclosure({
         </div>
       )}
       {canDisclose ? (
-        <div className="mt-2 flex justify-center">
+        <div className="mt-2">
           <Button
             aria-controls={editorId}
             aria-expanded={expanded}
+            className="w-full"
             disabled={expanded && collapseDisabled}
             onClick={() => onExpandedChange(!expanded)}
             onKeyDown={handleDisclosureButtonTab}
@@ -172,8 +173,8 @@ export function DescriptionDisclosure({
           </Button>
         </div>
       ) : measurement === null ? (
-        <div className="mt-2 flex justify-center">
-          <Button aria-controls={editorId} aria-expanded={expanded} onClick={() => onExpandedChange(!expanded)} onKeyDown={handleDisclosureButtonTab} size="xs" type="button" variant="secondary">
+        <div className="mt-2">
+          <Button aria-controls={editorId} aria-expanded={expanded} className="w-full" onClick={() => onExpandedChange(!expanded)} onKeyDown={handleDisclosureButtonTab} size="xs" type="button" variant="secondary">
             {expanded ? labels.showLess : labels.showMore}
           </Button>
         </div>
