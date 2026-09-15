@@ -151,6 +151,35 @@ test.describe("Description editor lifecycle through folding", () => {
     await expect(page.getByRole("button", { name: "Show less" })).toBeVisible();
   });
 
+  // CHE-463: the test above deliberately clicks the section locator, which
+  // only proves the capture handler fires when Playwright targets the
+  // section directly — it never proves real Chromium retargets a pointer
+  // event landing on the INERT editor's own rendered pixels up to that
+  // section. That distinction is exactly the bug this issue reported (the
+  // handler used to sit on the inert div itself, and `inert` hit-testing
+  // silently drops such events, so no real click on the collapsed preview's
+  // visible text ever reached it). Use raw viewport coordinates inside the
+  // inert editor's bounding box — bypassing locator actionability checks
+  // entirely — so this exercises the same hit-test path a real user's click
+  // on the visible collapsed text would.
+  test("a raw pointer hit inside the inert editor's own rendered area still expands it", async ({ page }) => {
+    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await waitForPageText(page, issueTitle);
+
+    const editor = page.locator("[data-description-editor]");
+    await expect(editor).toHaveAttribute("inert");
+    const box = await editor.boundingBox();
+    if (!box) throw new Error("collapsed editor has no bounding box");
+
+    // A point well inside the collapsed preview's visible text, not on any
+    // sibling (the Show more button sits below this box).
+    await page.mouse.click(box.x + Math.min(20, box.width / 2), box.y + Math.min(10, box.height / 2));
+
+    await expect(editor).not.toHaveAttribute("aria-hidden");
+    await expect(editor).not.toHaveAttribute("inert");
+    await expect(page.getByRole("button", { name: "Show less" })).toBeVisible();
+  });
+
   test("keyboard Show more expands and Tab enters the real editor", async ({ page }) => {
     await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
     await waitForPageText(page, issueTitle);
