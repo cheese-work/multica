@@ -107,3 +107,44 @@ case "$started_at" in
 esac
 
 echo "entrypoint startup and signal forwarding ok"
+
+# --- MULTICA_SKIP_MIGRATIONS guard (CHE-530) ---
+#
+# The successful-migration run above already covers the guard's default
+# (unset) path: migrate ran and its started-at marker was written. These two
+# runs cover the rest of the matrix the guard's own header comment promises:
+# unset/absent still runs migrations (repeated explicitly here for the
+# guard's own docstring-adjacent coverage), and exactly "1" skips migrate
+# while the server still starts.
+
+rm -f "$MIGRATE_STARTED_AT_FILE" "$SERVER_STARTED_FILE" "$SERVER_STARTED_AT_FILE"
+(
+  cd "$TEST_DIR"
+  unset MULTICA_SKIP_MIGRATIONS
+  ./entrypoint.sh
+)
+if [ ! -s "$MIGRATE_STARTED_AT_FILE" ]; then
+  echo "MULTICA_SKIP_MIGRATIONS unset: migrate did not run"
+  exit 1
+fi
+if [ "$(cat "$SERVER_STARTED_FILE" 2>/dev/null || true)" != "started" ]; then
+  echo "MULTICA_SKIP_MIGRATIONS unset: server did not start"
+  exit 1
+fi
+
+rm -f "$MIGRATE_STARTED_AT_FILE" "$SERVER_STARTED_FILE" "$SERVER_STARTED_AT_FILE"
+(
+  cd "$TEST_DIR"
+  export MULTICA_SKIP_MIGRATIONS=1
+  ./entrypoint.sh
+)
+if [ -s "$MIGRATE_STARTED_AT_FILE" ]; then
+  echo "MULTICA_SKIP_MIGRATIONS=1: migrate ran but should have been skipped"
+  exit 1
+fi
+if [ "$(cat "$SERVER_STARTED_FILE" 2>/dev/null || true)" != "started" ]; then
+  echo "MULTICA_SKIP_MIGRATIONS=1: server did not start"
+  exit 1
+fi
+
+echo "MULTICA_SKIP_MIGRATIONS guard ok"
