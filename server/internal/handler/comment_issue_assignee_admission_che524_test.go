@@ -142,9 +142,11 @@ func TestCommentIssueAssigneeEditExcludedFromOwnTrigger(t *testing.T) {
 
 // TestCommentIssueAssigneeCancellationRequeuesSurvivor proves deleting the
 // non-squad issue-assignee trigger comment cancels the task it solely covered
-// and requeues coverage for the issue's assignee, mirroring the
+// and requeues coverage for the surviving coalesced comment, mirroring the
 // mention-source cancellation behavior already covered by
-// TestDeleteComment_RequeuesSurvivingCoalescedBatch.
+// TestDeleteComment_RequeuesSurvivingCoalescedBatch. A regression that leaves
+// the cancelled task in place, or drops the survivor instead of requeuing it,
+// must fail this test.
 func TestCommentIssueAssigneeCancellationRequeuesSurvivor(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
@@ -152,26 +154,46 @@ func TestCommentIssueAssigneeCancellationRequeuesSurvivor(t *testing.T) {
 	assigneeID := createHandlerTestAgent(t, "Issue Assignee Cancellation", nil)
 	issueID := createCommentTriggerPreviewIssue(t, "issue-assignee cancellation", "agent", assigneeID)
 
-	commentID := postCommentForTriggerPreviewTest(t, issueID, map[string]any{
+	survivorCommentID := postCommentForTriggerPreviewTest(t, issueID, map[string]any{
 		"content": "first instruction",
 	})
 	if got := countQueuedCommentTriggerTasks(t, issueID, assigneeID); got != 1 {
 		t.Fatalf("initial comment queued tasks = %d, want 1", got)
 	}
 
+	// A second comment on the same thread coalesces into the same pending
+	// slot, becoming the new trigger while the first survives as coalesced.
+	triggerCommentID := postCommentForTriggerPreviewTest(t, issueID, map[string]any{
+		"content":   "second instruction",
+		"parent_id": survivorCommentID,
+	})
+	if n := pendingTaskCountForAgentIssue(t, issueID, assigneeID); n != 1 {
+		t.Fatalf("pending tasks after coalescing comment = %d, want exactly 1", n)
+	}
+	if !commentCovered(t, issueID, assigneeID, triggerCommentID, "queued") {
+		t.Fatal("second comment must become the trigger of the queued task")
+	}
+
 	w := httptest.NewRecorder()
-	req := newRequest(http.MethodDelete, "/api/comments/"+commentID, nil)
-	req = withURLParam(req, "commentId", commentID)
+	req := newRequest(http.MethodDelete, "/api/comments/"+triggerCommentID, nil)
+	req = withURLParam(req, "commentId", triggerCommentID)
 	testHandler.DeleteComment(w, req)
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("DeleteComment: expected 204, got %d: %s", w.Code, w.Body.String())
 	}
 
 	var deletedCount int
-	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM comment WHERE id = $1`, commentID).Scan(&deletedCount); err != nil {
+	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM comment WHERE id = $1`, triggerCommentID).Scan(&deletedCount); err != nil {
 		t.Fatalf("check deleted comment: %v", err)
 	}
 	if deletedCount != 0 {
 		t.Fatalf("deleted trigger comment still exists")
+	}
+
+	if n := pendingTaskCountForAgentIssue(t, issueID, assigneeID); n != 1 {
+		t.Fatalf("pending tasks after cancelling trigger = %d, want exactly 1 (survivor requeued)", n)
+	}
+	if !commentCovered(t, issueID, assigneeID, survivorCommentID, "queued") {
+		t.Fatal("surviving coalesced comment was not requeued as the new trigger — coverage dropped")
 	}
 }
