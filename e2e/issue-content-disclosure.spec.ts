@@ -606,4 +606,80 @@ test.describe("Durable thread fold state through row unmount/remount", () => {
 
     await expect(page.getByText("Reply number 1")).toBeVisible({ timeout: 10000 });
   });
+
+  // CHE-479 regression: issue-detail.tsx's latch effect used to re-expand any
+  // root carrying an active reply draft the instant Fold All cleared its
+  // length-disclosure entry, because the effect only checked current
+  // membership in the store, not whether Fold All itself was the reason that
+  // membership just disappeared. `forceThreadOpen`'s temporary pin correctly
+  // keeps an active draft's thread reachable through Fold All (01-DESIGN
+  // "Fold all comments": "Active edit pins prevent focus loss") — this test
+  // proves the separate, PERSISTED length-expansion choice does not silently
+  // get re-latched to "expanded" by that same pin.
+  test("an active reply draft on a root does not defeat Fold All's length-disclosure reset (CHE-479)", async ({ page }) => {
+    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await waitForPageText(page, issueTitle);
+    await waitForPageText(page, "Root comment for thread fold test");
+
+    await page.getByRole("button", { name: /Show \d+ more repl/ }).click();
+    await waitForPageText(page, "Reply number 1");
+    await expect(page.getByRole("button", { name: "Show less" })).toBeVisible();
+
+    // Start (but do not send) a reply draft on the root thread, so
+    // `rootIdsWithActiveReplyDraft` is active for it when Fold All runs.
+    await page.getByTestId("reply-composer-shell").first().click();
+    const editor = page
+      .locator('.ProseMirror[data-placeholder="Leave a reply..."], .ProseMirror:has([data-placeholder="Leave a reply..."])')
+      .first();
+    await editor.fill("A reply I'm still typing when Fold All runs.");
+    await expect(editor).toHaveText("A reply I'm still typing when Fold All runs.");
+
+    await page.keyboard.press("ControlOrMeta+K");
+    const commandPalette = page.getByPlaceholder("Type a command or search...");
+    await expect(commandPalette).toBeVisible();
+    await commandPalette.fill("fold all");
+    await page.getByText("Fold All Comments", { exact: true }).click();
+    await expect(commandPalette).not.toBeVisible();
+
+    // The draft itself must still be reachable — Fold All's pin keeps the
+    // thread's composer/content from being ripped out from under active
+    // typing (the part of the spec this test is NOT regressing on).
+    await expect(editor).toHaveText("A reply I'm still typing when Fold All runs.");
+
+    // The bug: the latch effect used to see the length-disclosure entry
+    // Fold All just cleared as "never expanded" and immediately re-persist
+    // it as expanded. Prove it did NOT by reloading — the pin (a render-time
+    // `forceThreadOpen` check) cannot survive a reload with no live draft in
+    // a fresh store, but a wrongly re-latched PERSISTED length-expansion
+    // shares the same session-only store and also would not survive reload
+    // on its own; the real proof is state immediately after Fold All, before
+    // any reload, via the manual-collapse summary Fold All also applies.
+    // Manual collapse (`useCommentCollapseStore.collapseAll`) is a HIGHER
+    // priority gate than length-expansion (01-DESIGN "Effective order"), so
+    // the thread's compact summary state after Fold All is driven by manual
+    // collapse regardless of the length-disclosure bug — the length bug is
+    // only observable once manual collapse for this root is separately
+    // lifted without going through Unfold All. Sending the draft removes the
+    // active-draft reason and drops the pin, then reload re-fetches with no
+    // draft and no live pin, isolating exactly what got PERSISTED.
+    const posted = page.waitForResponse(
+      (response) => response.request().method() === "POST" && response.url().endsWith(`/api/issues/${issueId}/comments`),
+    );
+    await page.keyboard.press("ControlOrMeta+Enter");
+    await posted;
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await waitForPageText(page, issueTitle);
+    await waitForPageText(page, "Root comment for thread fold test");
+
+    // Manual collapse does not persist across reload for this store (it is
+    // the workspace-aware persisted one, keyed differently) — the thread
+    // reloads using its length preference. If CHE-479 were still present,
+    // Fold All would have wrongly re-latched this root's length preference
+    // to "expanded" while the draft was active, and every reply would show
+    // immediately on reload with no "Show more" click needed. With the fix,
+    // Fold All's reset stuck: the thread reloads compact.
+    await expect(page.getByRole("button", { name: /Show \d+ more repl/ })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText("Reply number 1")).not.toBeVisible();
+  });
 });

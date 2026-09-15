@@ -114,6 +114,7 @@ import {
   selectExpandedResolved,
   selectExpandedThreads,
   selectDescriptionExpanded,
+  selectJustFoldedRoots,
   useCommentDraftStore,
   useIssueDisclosureStore,
   useRecentIssuesStore,
@@ -1320,6 +1321,32 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const toggleThreadLengthExpand = useCallback((rootId: string, expand: boolean) => {
     setThreadExpanded(id, rootId, expand);
   }, [id, setThreadExpanded]);
+  // Roots Fold All just cleared from `expandedThreadLengths`, read by the
+  // latch effect below to distinguish "just fold-all'd, still mid-tick" from
+  // "never expanded" (CHE-479) — see issue-disclosure-store.ts's field doc.
+  // `justFoldedRoots` is a NEW Set instance every time `collapseAllThreads`
+  // runs (it is never mutated in place), so its object identity itself is
+  // the "which fold occurrence" token — the latch effect below tracks which
+  // Set instance it has already responded to per root, rather than clearing
+  // the store's copy, so this component never needs a second render just to
+  // consume/reset the signal.
+  const justFoldedRoots = useIssueDisclosureStore(selectJustFoldedRoots(id));
+  // The `justFoldedRoots` instance the latch effect below last saw — reset
+  // trigger for the two refs beneath it: a NEW instance (a distinct Fold All
+  // occurrence) means both start over from scratch, with no memory of what
+  // an earlier occurrence suppressed or voided.
+  const lastSeenJustFoldedRootsRef = useRef<ReadonlySet<string>>(EMPTY_ID_SET);
+  // Root ids still suppressed (skipped by the latch) under the CURRENT
+  // `justFoldedRoots` occurrence. Seeded from `justFoldedRoots` itself when
+  // that occurrence starts; shrinks only via `voidedFoldRootsRef` below.
+  const suppressedFoldRootsRef = useRef<Set<string>>(new Set());
+  // Root ids whose suppression has been permanently released for the
+  // CURRENT `justFoldedRoots` occurrence because their own latch reason
+  // stopped being active at least once since that occurrence started — this
+  // is what lets a reply draft that is cleared and then restarted on the
+  // same root latch normally again, without waiting for a distinct new Fold
+  // All to reset `suppressedFoldRootsRef` wholesale.
+  const voidedFoldRootsRef = useRef<Set<string>>(new Set());
 
   // Per-session activity-block expansion overrides. The default rule is
   // "only the trailing block is expanded" (computed from timelineView.groups
@@ -1856,27 +1883,97 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // "starting" rather than "continuing", and avoids calling a store setter
   // during render.
   //
+  // CHE-479 fix — Fold All vs. the latch: this effect's membership check
+  // (`!expandedThreadLengths.has(rootId)`) cannot by itself tell "never
+  // expanded" apart from "Fold All (search-command.tsx's
+  // foldAllCommentThreads -> collapseAllThreads) just cleared every root's
+  // membership a moment ago." Fold All clears `expandedThreadIdsByIssue`
+  // wholesale, which changes this effect's `expandedThreadLengths`
+  // dependency and re-fires it — so if a draft/run/target reason was already
+  // active before Fold All ran, a membership-only check would immediately
+  // re-latch that root open, undermining the fold.
+  //
+  // `justFoldedRoots` (from `useIssueDisclosureStore`'s
+  // `justFoldedRootIdsByIssue`, written by `collapseAllThreads`) records
+  // exactly which roots the most recent Fold All cleared, as a fresh Set
+  // instance per Fold All call. Its identity is "which fold occurrence";
+  // `suppressedFoldRootsRef` (seeded from it) tracks which of those roots
+  // are still suppressed for THIS occurrence. A suppressed root is released
+  // the moment EITHER:
+  //   (a) a later Fold All produces a genuinely new `justFoldedRoots`
+  //       instance — `lastSeenJustFoldedRootsRef` detects this and resets
+  //       both `suppressedFoldRootsRef` and `voidedFoldRootsRef` from
+  //       scratch for the new occurrence, or
+  //   (b) this exact root's own latch reason genuinely ENDS (drops out of
+  //       `rootIdsWithActiveReplyDraft` / `rootIdsWithActiveRun`, or stops
+  //       being `targetRootId`) for at least one render — recorded in
+  //       `voidedFoldRootsRef` so the release persists even though
+  //       `justFoldedRoots` itself hasn't changed identity, e.g. the user
+  //       clears a reply draft and starts a brand new one on the same root
+  //       with no further Fold All in between. 01-DESIGN calls this a fresh
+  //       "reason-start", which must always take priority over a stale fold
+  //       suppression.
+  // Neither condition depends on `expandedThreadLengths` catching up to the
+  // fold, and neither needs a second store write just to expire itself.
+  //
   // Known tension, not resolved here: the store only records current
-  // membership, not *why* a root is at its current expansion state. If a
-  // user explicitly clicks Show less on a root and then, in the same
+  // membership, not *why* a root is at its current expansion state, beyond
+  // the one specific "just fold-all'd" case above. If a user explicitly
+  // clicks Show less on a root (no Fold All involved) and then, in the same
   // session, starts a reply draft on that same still-compact root, this
   // effect cannot distinguish "never expanded" from "the user just chose
   // compact" — both read as `!expandedThreadLengths.has(rootId)` — and will
   // latch it open again. 01-DESIGN line 56 reads as unconditional ("Idle
   // updates cannot refold a user-expanded thread" is about idle updates, not
   // about this case), so this implements the literal requirement; closing
-  // the gap for real would need the store to also record *why* a root is
-  // compact (e.g. an explicit-collapse marker distinct from "default"),
-  // which is new store surface beyond what this fix was scoped to add.
+  // that remaining gap for real would need the store to also record *why* a
+  // root is compact in general (e.g. an explicit-collapse marker distinct
+  // from "default"), which is new store surface beyond what this fix was
+  // scoped to add.
   useEffect(() => {
+    // Reset both refs the moment `justFoldedRoots` becomes a new instance —
+    // a distinct Fold All occurrence starts with a clean slate, regardless
+    // of what the previous occurrence had suppressed or voided.
+    if (lastSeenJustFoldedRootsRef.current !== justFoldedRoots) {
+      lastSeenJustFoldedRootsRef.current = justFoldedRoots;
+      suppressedFoldRootsRef.current = new Set(justFoldedRoots);
+      voidedFoldRootsRef.current = new Set();
+    }
+    const suppressed = suppressedFoldRootsRef.current;
+    const voided = voidedFoldRootsRef.current;
+
+    // A suppressed root whose OWN reason is not active right now has had
+    // that reason end — release it from suppression for good (until the
+    // NEXT distinct Fold All resets the refs above), so a later fresh
+    // reason-start on the same root latches normally even though
+    // `justFoldedRoots` itself hasn't changed identity.
+    for (const rootId of suppressed) {
+      const isActive =
+        rootIdsWithActiveReplyDraft.has(rootId) || rootIdsWithActiveRun.has(rootId) || rootId === targetRootId;
+      if (!isActive) voided.add(rootId);
+    }
+    for (const rootId of voided) suppressed.delete(rootId);
+
     for (const rootId of rootIdsWithActiveReplyDraft) {
+      if (suppressed.has(rootId)) continue;
       if (!expandedThreadLengths.has(rootId)) setThreadExpanded(id, rootId, true);
     }
     for (const rootId of rootIdsWithActiveRun) {
+      if (suppressed.has(rootId)) continue;
       if (!expandedThreadLengths.has(rootId)) setThreadExpanded(id, rootId, true);
     }
-    if (targetRootId && !expandedThreadLengths.has(targetRootId)) setThreadExpanded(id, targetRootId, true);
-  }, [rootIdsWithActiveReplyDraft, rootIdsWithActiveRun, targetRootId, expandedThreadLengths, id, setThreadExpanded]);
+    if (targetRootId && !suppressed.has(targetRootId) && !expandedThreadLengths.has(targetRootId)) {
+      setThreadExpanded(id, targetRootId, true);
+    }
+  }, [
+    rootIdsWithActiveReplyDraft,
+    rootIdsWithActiveRun,
+    targetRootId,
+    expandedThreadLengths,
+    justFoldedRoots,
+    id,
+    setThreadExpanded,
+  ]);
 
   // ID of the trailing activity block — the only one expanded by default.
   const lastActivityGroupId = useMemo(() => {

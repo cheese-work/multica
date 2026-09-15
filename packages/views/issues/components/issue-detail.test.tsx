@@ -1665,6 +1665,146 @@ describe("IssueDetail (shared)", () => {
     expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true);
   });
 
+  // CHE-479 regression: Fold All (search-command.tsx's foldAllCommentThreads
+  // -> useIssueDisclosureStore.collapseAllThreads) must not have its
+  // full-collapse intent immediately undone by the latch effect above for a
+  // root whose only reason for compact-window absence is that Fold All
+  // itself just cleared it. Before the fix, `collapseAllThreads` clearing
+  // `expandedThreadIdsByIssue` changed the latch effect's
+  // `expandedThreadLengths` dependency and re-fired it on the same tick;
+  // with an active reply draft already present, `!expandedThreadLengths.has(rootId)`
+  // read true again and the effect immediately re-latched the root open,
+  // silently undoing the fold.
+  it("does not let Fold All be immediately undone by the latch when a reply draft is already active on a folded root (CHE-479)", async () => {
+    const root = mockTimeline[0]!;
+    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+      ...mockTimeline[1]!,
+      id: `foldall-latch-reply-${i}`,
+      parent_id: root.id,
+      content: `Foldall reply ${i}`,
+      created_at: `2026-01-16T00:0${i}:00Z`,
+    }));
+    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+    renderIssueDetail();
+
+    await screen.findByText("Foldall reply 3");
+    await screen.findByRole("button", { name: /Show \d+ more repl/ });
+
+    // Start an active reply draft on the root — same latch reason as the
+    // test above — so forceThreadOpen's pin is active and the latch effect
+    // has already persisted the length-expansion for this root.
+    act(() => {
+      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, {
+        content: "typing a reply...",
+        attachments: [],
+        updatedAt: Date.now(),
+      });
+    });
+    await screen.findByText("Foldall reply 0");
+    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true);
+
+    // Fold All: the same store call search-command.tsx's
+    // foldAllCommentThreads makes on useIssueDisclosureStore.
+    act(() => {
+      useIssueDisclosureStore.getState().collapseAllThreads("issue-1");
+    });
+
+    // The fold must stick: the length-expanded entry stays cleared, even
+    // though the reply draft is still active on this exact root. Continued
+    // typing on this SAME still-active draft must not re-latch it either —
+    // per 01-DESIGN line 56 the latch fires on a reason *starting*, not on
+    // every keystroke of a reason that is already accounted for, and Fold
+    // All's own row explicitly only promises the temporary pin ("Active
+    // edit pins prevent focus loss") keeps the draft reachable, not that the
+    // length preference stays expanded.
+    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy();
+    act(() => {
+      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, {
+        content: "typing a reply... continued",
+        attachments: [],
+        updatedAt: Date.now(),
+      });
+    });
+    await screen.findByText("Foldall reply 0");
+    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy();
+
+    // A genuinely NEW reason after the fold — this draft ending and a fresh
+    // one starting on the same root — must still latch normally: Fold All's
+    // suppression must not permanently block future latching.
+    act(() => {
+      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, { content: "", attachments: [], updatedAt: Date.now() });
+    });
+    await waitFor(() => expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy());
+    act(() => {
+      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, {
+        content: "a brand new reply draft",
+        attachments: [],
+        updatedAt: Date.now(),
+      });
+    });
+    await waitFor(() =>
+      expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true),
+    );
+  });
+
+  // CHE-479: a second Fold All must not resurrect suppression for a root
+  // that the FIRST Fold All folded but that has since organically re-latched
+  // (its draft ended and a new one started, per the test above), if that
+  // second Fold All did not itself re-fold this root. `justFoldedRootIdsByIssue`
+  // is overwritten wholesale by each `collapseAllThreads` call — this proves
+  // a stale suppression entry from an earlier fold occurrence cannot leak
+  // into a later, unrelated one.
+  it("does not let a stale fold suppression from an earlier Fold All block a later, unrelated latch (CHE-479)", async () => {
+    const root = mockTimeline[0]!;
+    const other = { ...mockTimeline[1]!, id: "foldall-stale-other-root", content: "Other root" };
+    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+      ...mockTimeline[1]!,
+      id: `foldall-stale-reply-${i}`,
+      parent_id: root.id,
+      content: `Stale fold reply ${i}`,
+      created_at: `2026-01-16T00:0${i}:00Z`,
+    }));
+    mockApiObj.listTimeline.mockResolvedValue([root, other, ...replies]);
+    renderIssueDetail();
+    await screen.findByRole("button", { name: /Show \d+ more repl/ });
+
+    // Expand root, then fold everything (first Fold All folds `root`).
+    act(() => {
+      useIssueDisclosureStore.getState().expandAllThreads("issue-1", [root.id]);
+    });
+    act(() => {
+      useIssueDisclosureStore.getState().collapseAllThreads("issue-1");
+    });
+    expect(useIssueDisclosureStore.getState().justFoldedRootIdsByIssue["issue-1"]?.has(root.id)).toBe(true);
+
+    // A second Fold All happens with nothing expanded (e.g. the user ran the
+    // command again with everything already compact) — it no-ops and does
+    // NOT produce a new justFoldedRootIdsByIssue entry naming `root`, so the
+    // original suppression should no longer apply to `root` once superseded
+    // by any later, distinct justFoldedRoots state.
+    act(() => {
+      useIssueDisclosureStore.getState().expandAllThreads("issue-1", [other.id]);
+    });
+    act(() => {
+      useIssueDisclosureStore.getState().collapseAllThreads("issue-1");
+    });
+    expect(useIssueDisclosureStore.getState().justFoldedRootIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy();
+
+    // Now start a fresh reply draft on `root` — this must latch normally:
+    // the second, unrelated Fold All's justFoldedRoots (naming only `other`)
+    // must not carry forward suppression for `root`.
+    act(() => {
+      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, {
+        content: "a fresh reply after an unrelated fold",
+        attachments: [],
+        updatedAt: Date.now(),
+      });
+    });
+    await waitFor(() =>
+      expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true),
+    );
+  });
+
   it("latches a thread's length-expanded preference when an active run forces it open, surviving after the run completes", async () => {
     const root = mockTimeline[0]!;
     const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
