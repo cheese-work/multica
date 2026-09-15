@@ -11,13 +11,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Linux stays on GitHub-hosted ubuntu-latest: Blacksmith's Firecracker
-  # microVM rejects the process-group syscall this suite exercises
-  # ("retain Cursor shell process group: invalid argument"), a compatibility
-  # gap confirmed on blacksmith-2vcpu-ubuntu-2404 (CHE-522, re-confirmed after
-  # a review-suggestion revert reproduced the identical failure — do not
-  # replace this label without new evidence the underlying syscall gap is
-  # fixed). macOS stays on Blacksmith. Windows leg removed org-wide per
+  # Linux stays on GitHub-hosted ubuntu-latest: root cause confirmed (CHE-522)
+  # via a live kernel-version probe, not inference — blacksmith-2vcpu-ubuntu-2404
+  # runs Linux 6.6.141, GitHub-hosted ubuntu-latest runs 6.17.0. The
+  # process-group retain code (cursor_background_process_linux.go) requires
+  # PIDFD_SIGNAL_PROCESS_GROUP, added in Linux 6.9 with no earlier equivalent;
+  # on a pre-6.9 kernel PidfdSendSignal returns EINVAL ("invalid argument"),
+  # which is the exact failure reproduced 3x on this label. There is no
+  # config-level fix: raising Blacksmith's guest kernel to 6.9+ (Blacksmith's
+  # call) or accepting a weaker kill(-pgid) fallback that reintroduces the
+  # PGID-reuse race this code was written to close (see the "Older kernels
+  # fail closed" comment in captureCursorUnixGroup) are the only two real
+  # options. macOS stays on Blacksmith. Windows leg removed org-wide per
   # CHE-522 (Cheese: Linux CI only, no Windows jobs or artifacts).
   cursor-background-lifecycle:
     needs: changes
@@ -26,12 +31,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, blacksmith-2vcpu-ubuntu-2404, blacksmith-6vcpu-macos-latest]
+        os: [ubuntu-latest, blacksmith-6vcpu-macos-latest]
     steps:
       - uses: actions/checkout@v6
-      - name: DIAGNOSTIC - kernel version (CHE-522 root-cause probe, to be removed)
-        if: runner.os == 'Linux'
-        run: uname -a
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.x"
