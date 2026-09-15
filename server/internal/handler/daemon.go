@@ -33,6 +33,7 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
+	"github.com/multica-ai/multica/server/pkg/protocollint"
 	"github.com/multica-ai/multica/server/pkg/redact"
 	"github.com/multica-ai/multica/server/pkg/skillbundle"
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
@@ -4012,6 +4013,13 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 
 	h.emitIssueExecutedOnFirstCompletion(r, task)
 
+	// CHE-529: mechanical pre-exit protocol lint. Runs after the completion
+	// transaction has already committed, purely to observe and log — a
+	// violation here never blocks or unwinds the completion the daemon is
+	// waiting on. See runProtocolLint's doc for exactly which assertions are
+	// checked and which are not.
+	h.runProtocolLint(r.Context(), *task, workspaceID, req.PRURL)
+
 	// MUL-4195: guarantee at-least-once processing. If a member posted a
 	// deliberate comment while this run was executing (or one was merged into
 	// it after its context was built), schedule a single follow-up so the
@@ -4035,6 +4043,135 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("task completed", "task_id", taskID, "agent_id", uuidToString(task.AgentID))
 	writeJSON(w, http.StatusOK, taskToResponse(*task, workspaceID))
+}
+
+// protocolLintCommentLimit bounds how many comments runProtocolLint reads back
+// for one completing run. The lint only ever needs the comments created
+// during this run's own lifetime (task.StartedAt onward) on its own issue, so
+// this is a generous safety cap against a pathological thread, not a real
+// limit in practice.
+const protocolLintCommentLimit = 500
+
+// runProtocolLint is CHE-529's deterministic, mechanical replacement for the
+// CLAUDE.md/AGENTS.md prose pre-exit protocol: it runs on the one normal
+// pre-exit path every issue-linked agent turn's completion goes through
+// (CompleteTask, above) and checks the run's own persisted comments against
+// facts the server already recorded, instead of trusting the agent's own
+// narration that it followed the workflow.
+//
+// A violation is logged loudly, naming exactly which assertion failed
+// (protocollint.Violation.Code / Message) — never a silent boolean — but does
+// NOT fail or unwind the request: CompleteTask's transaction already
+// committed, and the daemon is blocked on this HTTP response for a run that
+// has already ended. There is nothing left to roll back, and refusing the
+// callback would just make the daemon retry an already-terminal completion.
+// This is deliberately an observability gate today; promoting a specific
+// violation to something that blocks a LATER action (e.g. refusing to move an
+// issue to in_review) is a follow-up, not attempted here.
+//
+// Scope, matched to what CompleteTask's request actually carries and what the
+// server persists elsewhere in this codebase (see the CHE-529 PR description
+// for the full investigation):
+//   - Reply-parent linkage (protocollint assertion 2) is checked from the
+//     comments this run actually posted against both TriggerCommentID and
+//     CoalescedCommentIds, which is complete and reliable: the server's own
+//     CreateComment handler already rejects a mismatched parent at write time
+//     (taskCoversReplyParent in comment.go, which accepts the same two
+//     sources), so a persisted mismatch here would mean that write-time gate
+//     regressed.
+//   - Completion-evidence well-formedness (assertion 4, syntactic slice) is
+//     checked from the same pr_url this handler already persists into
+//     task.Result.
+//   - Unsupported human-waiver claims (assertion 5) are checked by scanning
+//     this run's own comments against every OTHER comment on the issue in the
+//     same window for an actual member grant.
+//   - Comment-authoring-mechanism (assertion 1: --content-file vs inline
+//     --content) and status-change readback (assertion 3) are NOT checked
+//     here: the CLI collapses --content/--content-stdin/--content-file into a
+//     single `content` string before the API ever sees it (cmd_issue.go:
+//     resolveTextFlag), and issue.status has no change-history table, so
+//     neither has a persisted fact for this function to check against. See
+//     protocollint's package doc and Input.StatusReadBack's doc for the full
+//     rationale; inventing a proxy signal for either would be exactly the
+//     "approximate compliance from something else" this task explicitly
+//     forbids.
+func (h *Handler) runProtocolLint(ctx context.Context, task db.AgentTaskQueue, workspaceID string, claimedEvidenceURL string) {
+	if !task.IssueID.Valid {
+		// Chat / non-issue tasks have no issue thread for reply-parent or
+		// waiver checks to run against. Evidence-URL well-formedness is the
+		// only assertion that could still apply, and it needs no issue
+		// context, so run it directly rather than skipping the run outright.
+		in := protocollint.Input{RunID: uuidToString(task.ID), ClaimedEvidenceURL: claimedEvidenceURL}
+		logProtocolLintViolations(task, protocollint.Check(in))
+		return
+	}
+
+	// task.StartedAt is set by StartTask before a task can ever reach
+	// 'running', and CompleteAgentTask's own WHERE status = 'running' guard
+	// (task.go:CompleteTask) means only a task that passed through that
+	// transition can reach this handler at all — so StartedAt is expected to
+	// always be valid here. Guard it anyway: created_at > $3 against an
+	// invalid/NULL timestamptz parameter matches no rows in Postgres, which
+	// would silently skip every check below instead of failing loudly, so an
+	// unexpectedly-unset StartedAt falls back to the task's own CreatedAt
+	// (always valid) rather than a NULL comparison.
+	since := task.StartedAt
+	if !since.Valid {
+		since = task.CreatedAt
+	}
+
+	comments, err := h.Queries.ListCommentsSinceForIssue(ctx, db.ListCommentsSinceForIssueParams{
+		IssueID:     task.IssueID,
+		WorkspaceID: parseUUID(workspaceID),
+		CreatedAt:   since,
+		Limit:       protocolLintCommentLimit,
+	})
+	if err != nil {
+		slog.Warn("protocol lint: failed to load comments for issue; skipping",
+			"task_id", uuidToString(task.ID), "issue_id", uuidToString(task.IssueID), "error", err)
+		return
+	}
+
+	in := protocollint.Input{
+		RunID: uuidToString(task.ID),
+		// uuidToString renders an invalid/NULL UUID as "", which is exactly
+		// how protocollint.Input represents "this run has no trigger
+		// comment" (assignment/autopilot/chat-input triggered tasks).
+		TriggerCommentID:    uuidToString(task.TriggerCommentID),
+		CoalescedCommentIDs: uuidsToStrings(task.CoalescedCommentIds),
+		ClaimedEvidenceURL:  claimedEvidenceURL,
+	}
+	for _, c := range comments {
+		if c.SourceTaskID.Valid && uuidToString(c.SourceTaskID) == uuidToString(task.ID) {
+			in.PostedComments = append(in.PostedComments, protocollint.PostedComment{
+				ID:       uuidToString(c.ID),
+				ParentID: uuidToString(c.ParentID),
+				Content:  c.Content,
+			})
+			continue
+		}
+		in.OtherComments = append(in.OtherComments, protocollint.OtherComment{
+			AuthorType: c.AuthorType,
+			Content:    c.Content,
+		})
+	}
+
+	logProtocolLintViolations(task, protocollint.Check(in))
+}
+
+// logProtocolLintViolations is the "fail loudly" half of runProtocolLint: each
+// violation is logged at Error level, individually, naming its code and full
+// message, rather than folded into one bulk boolean-style log line.
+func logProtocolLintViolations(task db.AgentTaskQueue, violations []protocollint.Violation) {
+	for _, v := range violations {
+		slog.Error("protocol lint violation",
+			"task_id", uuidToString(task.ID),
+			"issue_id", uuidToString(task.IssueID),
+			"agent_id", uuidToString(task.AgentID),
+			"code", v.Code,
+			"message", v.Message,
+		)
+	}
 }
 
 // emitIssueExecutedOnFirstCompletion atomically flips issue.first_executed_at
