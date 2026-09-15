@@ -140,6 +140,25 @@ func TestExtractClosingIdentifiers(t *testing.T) {
 			in:   []string{"Disclosed MUL-1 in foreclose MUL-2", ""},
 			want: []string{},
 		},
+		{
+			name: "inline_code_span_does_not_close",
+			// CHE-520 repro: PR multica-dotfiles#78 quoted `Closes CHE-380`
+			// as documentation describing what another PR had written. A
+			// closing keyword inside an inline code span is not a live
+			// closing declaration.
+			in:   []string{"", "PR #36 wrote `Closes CHE-380`"},
+			want: []string{},
+		},
+		{
+			name: "fenced_code_block_does_not_close",
+			in:   []string{"", "See what it did:\n```\nCloses CHE-380\n```\nNo further action."},
+			want: []string{},
+		},
+		{
+			name: "plain_closes_outside_code_span_still_closes",
+			in:   []string{"", "Plain Closes CHE-380 in prose"},
+			want: []string{"CHE-380"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -493,6 +512,88 @@ func TestWebhook_MergedPR_AdvancesLinkedIssueToDone(t *testing.T) {
 	}
 	if updated.Status != "done" {
 		t.Errorf("expected issue status 'done', got %q", updated.Status)
+	}
+}
+
+// TestWebhook_MergedPR_OpenChildBlocksAutoClose guards CHE-520: a merged,
+// closing-intent PR must not auto-advance a parent issue to `done` while one
+// of its own sub-issues is still open. Aggregating only linked-PR state let
+// this happen silently — the parent looked "done" while real work remained.
+func TestWebhook_MergedPR_OpenChildBlocksAutoClose(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	secret := "open-child-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+
+	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":  "parent with open child",
+		"status": "in_progress",
+	})
+	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
+	var parent IssueResponse
+	json.NewDecoder(w.Body).Decode(&parent)
+
+	childReq := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":           "still open child",
+		"status":          "in_progress",
+		"parent_issue_id": parent.ID,
+	})
+	w = testutil.Call(t, testHandler.CreateIssue, childReq).Want(http.StatusCreated)
+	var child IssueResponse
+	json.NewDecoder(w.Body).Decode(&child)
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id = $1`, parent.ID)
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_installation WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM activity_log WHERE issue_id = $1`, parent.ID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, child.ID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, parent.ID)
+	})
+
+	const installationID int64 = 55221199
+	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
+		WorkspaceID:    parseUUID(testWorkspaceID),
+		InstallationID: installationID,
+		AccountLogin:   "open-child-acct",
+		AccountType:    "User",
+	}); err != nil {
+		t.Fatalf("CreateGitHubInstallation: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"action": "closed",
+		"pull_request": map[string]any{
+			"number": 42, "html_url": "https://github.com/acme/widget/pull/42",
+			"title": "Fix parent", "body": "Closes " + parent.Identifier,
+			"state": "closed", "merged": true, "draft": false,
+			"merged_at": "2026-04-29T00:00:00Z", "closed_at": "2026-04-29T00:00:00Z",
+			"created_at": "2026-04-28T00:00:00Z", "updated_at": "2026-04-29T00:00:00Z",
+			"head": map[string]any{"ref": "fix/parent"}, "user": map[string]any{"login": "octocat"},
+		},
+		"repository":   map[string]any{"name": "widget", "owner": map[string]any{"login": "acme"}},
+		"installation": map[string]any{"id": installationID},
+	})
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	sig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+
+	req2 := httptest.NewRequest("POST", "/api/webhooks/github", bytes.NewReader(body))
+	req2.Header.Set("X-GitHub-Event", "pull_request")
+	req2.Header.Set("X-Hub-Signature-256", sig)
+	testutil.Call(t, testHandler.HandleGitHubWebhook, req2).Want(http.StatusAccepted)
+
+	updated, err := testHandler.Queries.GetIssue(ctx, parseUUID(parent.ID))
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if updated.Status == "done" {
+		t.Errorf("parent auto-advanced to done while child %s was still open", child.ID)
+	}
+	if updated.Status != "in_progress" {
+		t.Errorf("expected parent status to stay 'in_progress', got %q", updated.Status)
 	}
 }
 

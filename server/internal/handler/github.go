@@ -2415,17 +2415,35 @@ func extractIdentifiers(parts ...string) []string {
 	return out
 }
 
+// mdCodeSpanRe matches Markdown fenced code blocks (``` ... ```) and inline
+// code spans (`...`) so their contents can be stripped before scanning prose
+// for closing keywords. Fenced blocks are matched first (DOTALL via (?s)) so
+// a fence's own backticks are never mistaken for inline-span delimiters.
+var mdCodeSpanRe = regexp.MustCompile("(?s)```.*?```|`[^`\n]*`")
+
+// stripMarkdownCodeSpans blanks out fenced and inline code spans, replacing
+// each with a single space so surrounding word boundaries and adjacency
+// checks still behave as if the span were absent. This keeps a PR body that
+// merely quotes a closing keyword as documentation — e.g. a body describing
+// what another PR wrote in an inline code span reading "Closes CHE-380" —
+// from being treated as a live closing declaration (CHE-520).
+func stripMarkdownCodeSpans(s string) string {
+	return mdCodeSpanRe.ReplaceAllString(s, " ")
+}
+
 // extractClosingIdentifiers pulls every "PREFIX-NUMBER" identifier that
 // appears immediately after a GitHub-style closing keyword in the supplied
 // fields, deduplicating in input order. Identifiers in branch names are
 // intentionally excluded — callers should pass only title and body — because
 // branch names are not natural-language fields and treating "mul-1/fix-login"
 // as a close declaration would silently re-open the bug this gate is meant
-// to fix.
+// to fix. Markdown code spans are stripped first so a quoted closing keyword
+// in documentation prose is never mistaken for a live closing declaration.
 func extractClosingIdentifiers(parts ...string) []string {
 	seen := map[string]struct{}{}
 	out := []string{}
 	for _, src := range parts {
+		src = stripMarkdownCodeSpans(src)
 		for _, m := range closingIdentifierRe.FindAllStringSubmatch(src, -1) {
 			ident := strings.ToUpper(m[1]) + "-" + m[2]
 			if _, dup := seen[ident]; dup {
@@ -2579,7 +2597,33 @@ func (h *Handler) lookupIssueByIdentifier(ctx context.Context, workspaceID pgtyp
 	return issue, true
 }
 
+// advanceIssueToDone auto-completes an issue whose linked PR(s) merged with
+// closing intent. It refuses the transition when the issue still has an
+// open child: aggregating only linked-PR state let a parent flip to `done`
+// while its own sub-issues were still `in_progress` or `todo`, silently
+// hiding unfinished work (CHE-520). Children already in a terminal status
+// category (done/cancelled, including custom statuses that resolve to
+// either) do not block the parent.
 func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, workspaceID string) {
+	children, err := h.Queries.ListChildIssues(ctx, issue.ID)
+	if err != nil {
+		slog.Warn("github: advance issue to done: list children failed", "err", err, "issue_id", uuidToString(issue.ID))
+		return
+	}
+	if len(children) > 0 {
+		effective := h.childStatusResolver(ctx)
+		isTerminal, err := resolveTerminalChildren(children, effective)
+		if err != nil {
+			slog.Warn("github: advance issue to done: resolve child statuses failed", "err", err, "issue_id", uuidToString(issue.ID))
+			return
+		}
+		for _, child := range children {
+			if !isTerminal(child) {
+				return
+			}
+		}
+	}
+
 	updated, err := h.Queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
 		ID:          issue.ID,
 		Status:      "done",
