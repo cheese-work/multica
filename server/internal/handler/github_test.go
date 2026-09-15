@@ -175,6 +175,18 @@ func TestExtractClosingIdentifiers(t *testing.T) {
 			want: []string{},
 		},
 		{
+			name: "tilde_fence_with_backtick_info_does_not_close",
+			// CommonMark forbids a backtick in a *backtick* fence's info
+			// string (ambiguous with an inline code span) but allows one in
+			// a *tilde* fence's info string. A fence-line pattern that
+			// applies the backtick-exclusion class to both delimiters
+			// rejects this valid tilde fence as a fence opener at all,
+			// leaving its body's "Closes CHE-380" exposed to the close
+			// parser (caught in independent review of the initial fix).
+			in:   []string{"", "~~~ lang`example\nCloses CHE-380\n~~~"},
+			want: []string{},
+		},
+		{
 			name: "unterminated_inline_run_is_not_stripped",
 			// A stray unmatched inline backtick run (not at line-start, so
 			// not a fence opener) is not a valid code span under CommonMark

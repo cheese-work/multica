@@ -2417,9 +2417,17 @@ func extractIdentifiers(parts ...string) []string {
 
 // mdFenceLineRe matches a line consisting solely (aside from up to 3 leading
 // spaces of indent, per CommonMark) of a fence delimiter run of 3+ backticks
-// or 3+ tildes, capturing the delimiter character and run length so the
+// or 3+ tildes, capturing the delimiter character and run length, so the
 // scanner in stripMarkdownCodeSpans can find the matching close fence.
-var mdFenceLineRe = regexp.MustCompile("(?m)^ {0,3}(`{3,}|~{3,})[^`\n]*$")
+//
+// The info string (anything after the delimiter run) is validated
+// delimiter-specifically, not with one shared class: CommonMark forbids a
+// backtick anywhere in a backtick fence's info string (it would be
+// ambiguous with an inline code span), but a tilde fence's info string may
+// contain backticks freely. A shared `[^`\n]*` class rejected valid tilde
+// fences such as `~~~ lang`example` and left their body's closing keyword
+// exposed to the close parser — caught in independent review (CHE-520).
+var mdFenceLineRe = regexp.MustCompile("(?m)^ {0,3}(?:(`{3,})[^`\n]*|(~{3,})[^\n]*)$")
 
 // stripMarkdownCodeSpans blanks out fenced code blocks and inline code spans,
 // replacing each with a single space so surrounding word boundaries and
@@ -2455,7 +2463,12 @@ func stripMarkdownCodeSpans(s string) string {
 			break
 		}
 		openStart, openEnd := loc[0], loc[1]
-		delim := rest[loc[2]:loc[3]]
+		var delim string
+		if loc[2] != -1 {
+			delim = rest[loc[2]:loc[3]] // backtick fence
+		} else {
+			delim = rest[loc[4]:loc[5]] // tilde fence
+		}
 		out.WriteString(rest[:openStart])
 		out.WriteString(" ")
 
