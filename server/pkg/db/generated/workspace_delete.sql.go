@@ -324,6 +324,12 @@ deleted_comment_reactions AS (
 deleted_issue_reactions AS (
     DELETE FROM issue_reaction WHERE workspace_id = $1
 ),
+deleted_stage_completion_wakes AS (
+    DELETE FROM stage_completion_wake WHERE workspace_id = $1
+),
+deleted_stage_generations AS (
+    DELETE FROM stage_generation WHERE workspace_id = $1
+),
 deleted_activity AS (
     DELETE FROM activity_log WHERE workspace_id = $1
 ),
@@ -491,6 +497,9 @@ WHERE channel_media_pending_object.workspace_id = $1
 // Same no-FK chore as chat_draft_restore above. Matched on workspace_id rather
 // than the session set because that column exists precisely so this statement
 // does not have to join through chat_session, which it deletes in this same CTE.
+// CHE-488 durable stage-completion-wake bookkeeping (stage_generation,
+// stage_completion_wake). Deleted before the parent issues below so neither
+// statement depends on FK cascade ordering.
 // Keep the two-system cleanup ledger until object storage has been settled.
 // Moving every row out of pending also prevents a concurrent media bind from
 // attaching an object after the workspace teardown commits. The reconciler
