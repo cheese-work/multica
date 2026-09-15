@@ -92,8 +92,10 @@ func allowAllAgents(db.Agent) bool { return true }
 //   - assign source (create / assignee change) skips the check: a create
 //     targets a fresh issue with no prior task, and a reassignment no longer
 //     cancels existing tasks (#4963 / MUL-4113) — in the rare case the new
-//     assignee already holds a pending task the insert simply no-ops on the
-//     same unique index, so the assignee still ends up with one pending run.
+//     assignee already holds a pending task the insert is rejected by the
+//     same unique index and mapped to the typed ErrDuplicatePendingTask
+//     sentinel (CHE-486), so the assignee still ends up with one pending run
+//     instead of a swallowed error.
 func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput, probe IssueTriggerProbe) (IssueRunTrigger, bool) {
 	issue := in.Issue
 	if !issue.AssigneeType.Valid || !issue.AssigneeID.Valid {
