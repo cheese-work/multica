@@ -569,25 +569,20 @@ else
   fail=$((fail + 1))
 fi
 
-echo "==> negative control: a decision-file write failure must not corrupt the caller's exit code (set -e hazard)"
-# The exact bug: write_decision's redirect+rename previously ran with no
-# error handling under this script's own `set -euo pipefail`. If the
-# decision-file write itself failed (unwritable dir, ENOSPC, a remounted
-# read-only bind mount -- all ordinary operational events for a ledger
-# living on a mount shared with the entrypoint), set -e aborted the whole
-# script AT THE WRITE CALL, before the caller's own `exit N` ever ran --
-# silently corrupting the reported exit code and leaving the file holding
-# whatever it held before (a non-terminal marker, wrongly making the next
-# restart's preservation gate treat this attempt as safe to take over).
-#
-# Point $decision_file at a path inside a directory this process cannot
-# write to, forcing every write_decision call (including the initial
-# migration_started write) to fail, then assert the script's own exit code
-# still reflects a real, deliberate control-flow decision (this run's
-# pre-launch/allocation validation exits 2 on a missing --attempt-id
-# pairing before ever reaching write_decision, so instead force the
-# failure at the point write_decision is actually called by using a
-# decision file under a directory made unwritable after creation).
+echo "==> negative control: an unwritable decision-file path must not corrupt the caller's exit code AND must refuse to launch (set -e hazard + fail-closed persistence)"
+# Two distinct bugs, both on this exact path. (1) write_decision's
+# redirect+rename previously ran with no error handling under this
+# script's own `set -euo pipefail`, so a write failure (unwritable dir,
+# ENOSPC, a remounted read-only bind mount) aborted the whole script AT
+# THE WRITE CALL, before the caller's own `exit N` ever ran -- silently
+# corrupting the reported exit code. (2) The FIRST fix for that bug
+# over-corrected: it made write_decision absorb every failure and always
+# return success to the caller, which meant this INITIAL migration_started
+# write could fail completely and the script would still launch the
+# migrator with zero durable record of the attempt -- exactly the
+# reconciliation hole this ledger exists to prevent, from the opposite
+# direction. The correct behavior is exit 3 (refuse to start), never exit
+# 0/1/5, and the migrator must never be launched at all.
 unwritable_decision_dir="$work_dir/unwritable-decision-dir"
 mkdir -p "$unwritable_decision_dir"
 unwritable_decision_file="$unwritable_decision_dir/decision.txt"
@@ -607,13 +602,6 @@ unwritable_decision_status=$?
 set -e
 chmod 755 "$unwritable_decision_dir"
 
-# The script must still run its full state machine and exit with ONE OF
-# its documented codes (0 success, 1 failed, 3 needs_operator, 5 invalid
-# index) -- never the shell's generic "command failed under set -e" code,
-# and never hang. What matters here is that it did NOT abort silently at
-# the write call: the FAILED-to-record diagnostic must be present, proving
-# write_decision's own non-fatal handling ran and reported the failure
-# instead of letting set -e swallow it.
 if grep -q "FAILED to record decision=" "$work_dir/unwritable-decision.log"; then
   echo "PASS: write_decision reported its own write failure instead of silently aborting the script under set -e"
   pass=$((pass + 1))
@@ -622,19 +610,106 @@ else
   cat "$work_dir/unwritable-decision.log"
   fail=$((fail + 1))
 fi
-if [ "$unwritable_decision_status" -eq 0 ] || [ "$unwritable_decision_status" -eq 1 ] || [ "$unwritable_decision_status" -eq 3 ] || [ "$unwritable_decision_status" -eq 5 ]; then
-  echo "PASS: script exited with one of its documented state-machine codes ($unwritable_decision_status) despite the decision-file write failing, not a generic set -e abort"
+if [ "$unwritable_decision_status" -eq 3 ]; then
+  echo "PASS: script refused to start (exit 3) when the INITIAL migration_started write could not be durably recorded"
   pass=$((pass + 1))
 else
-  echo "FAIL: expected a documented exit code (0/1/3/5) despite the write failure, got $unwritable_decision_status — indicates set -e still aborted control flow at the write call — see $work_dir/unwritable-decision.log"
+  echo "FAIL: expected exit 3 (refuse to start, no durable record possible) when the initial decision write fails, got $unwritable_decision_status — a persistence failure must never be reported as success/failure/invalid-index (0/1/5) — see $work_dir/unwritable-decision.log"
   cat "$work_dir/unwritable-decision.log"
   fail=$((fail + 1))
+fi
+if grep -q "refusing to start the migrator" "$work_dir/unwritable-decision.log"; then
+  echo "PASS: script logged the explicit refusal-to-launch reason for the unwritable ledger"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected the explicit refusal-to-launch diagnostic — see $work_dir/unwritable-decision.log"
+  cat "$work_dir/unwritable-decision.log"
+  fail=$((fail + 1))
+fi
+if grep -q "launched migrator os_pid=" "$work_dir/unwritable-decision.log"; then
+  echo "FAIL: the migrator was launched despite the initial decision write failing — this is the exact hole the fix closes (a required pre-launch write must gate launch, not just get logged)"
+  fail=$((fail + 1))
+else
+  echo "PASS: the migrator was never launched — the unwritable initial ledger correctly blocked entry"
+  pass=$((pass + 1))
 fi
 if [ ! -e "$unwritable_decision_file" ]; then
   echo "PASS: no decision file was created at the unwritable path (write failure was real, not silently swallowed into a fallback write)"
   pass=$((pass + 1))
 else
   echo "FAIL: a decision file unexpectedly exists at the unwritable path — see $unwritable_decision_file"
+  fail=$((fail + 1))
+fi
+
+echo "==> negative control: a POST-LAUNCH decision-write failure must force needs_operator/exit 3, never report the original outcome"
+# Distinguishes this from the pre-launch case above: here the ledger
+# directory is writable when the script starts (so the INITIAL
+# migration_started write succeeds and the migrator launches), then made
+# unwritable partway through, forcing the very next write (migrator_launched)
+# to fail. This proves the fail-closed override applies to POST-launch
+# writes specifically, not just the pre-launch gate -- a bug that made only
+# the pre-launch case safe while still turning a post-launch write failure
+# into a false success would be exactly as dangerous as the original defect.
+postlaunch_decision_dir="$work_dir/postlaunch-decision-dir"
+mkdir -p "$postlaunch_decision_dir"
+postlaunch_decision_file="$postlaunch_decision_dir/decision.txt"
+# Race the directory's writability against the script's own launch
+# sequence: revoke write access shortly after start, before the
+# migrator_launched write (the first POST-launch write) has a chance to
+# land. The initial migration_started write happens synchronously before
+# any backgrounding, so it reliably completes first.
+(sleep 0.05; chmod 000 "$postlaunch_decision_dir") &
+chmod_race_pid=$!
+set +e
+bash deploy/cd/migrate-supervised.sh \
+  --database-url "$host_db_url" \
+  --observer-database-url "$observer_db_url" \
+  --migrate-binary "$work_dir/migrate" \
+  --role-name "$db_user" --database-name "$db_name" \
+  --migration-allocation-seconds 30 \
+  --psql-via-docker-network "$network" \
+  --decision-file "$postlaunch_decision_file" \
+  --attempt-id "postlaunch-ledger-attempt" \
+  >"$work_dir/postlaunch-decision.log" 2>&1
+postlaunch_decision_status=$?
+set -e
+wait "$chmod_race_pid" 2>/dev/null || true
+chmod 755 "$postlaunch_decision_dir" 2>/dev/null || true
+
+if grep -q "launched migrator os_pid=" "$work_dir/postlaunch-decision.log"; then
+  echo "PASS: the migrator WAS launched (initial write succeeded before the directory was locked down), setting up the intended post-launch race"
+  pass=$((pass + 1))
+
+  if grep -q "decision write failed twice for decision=migrator_launched" "$work_dir/postlaunch-decision.log" || grep -q "migrator_launched could not be durably recorded after retry" "$work_dir/postlaunch-decision.log"; then
+    echo "PASS: the post-launch migrator_launched write failure was detected and treated as terminal, not silently retried forever or ignored"
+    pass=$((pass + 1))
+  else
+    echo "INFO: the migrator_launched write did not lose this race (the chmod may have landed after it succeeded) -- this specific run did not exercise the post-launch write-failure path; not scored as a failure since the race is inherently timing-dependent, but see the deterministic assertion below for the authoritative check"
+  fi
+
+  if [ "$postlaunch_decision_status" -eq 3 ]; then
+    echo "PASS: script exited 3 (needs_operator, fence stays up) -- never a silent success or an automatic retry that admitted the candidate"
+    pass=$((pass + 1))
+  else
+    echo "FAIL: expected exit 3 once any post-launch decision write is confirmed unwritable, got $postlaunch_decision_status -- a persistence failure must fail closed, never report success (0) or let the run otherwise complete as if durability were intact — see $work_dir/postlaunch-decision.log"
+    cat "$work_dir/postlaunch-decision.log"
+    fail=$((fail + 1))
+  fi
+else
+  echo "INFO: the migrator was never launched in this run (the chmod race landed before the initial write) -- this run exercised the pre-launch path instead, already covered above; not scored here"
+fi
+# Regardless of which side of the race this run landed on, the migrator
+# process itself must never be left running afterward -- if the write
+# failure path also failed to terminate it, that is an unowned mutating
+# process, which the deterministic check below catches independent of
+# the race outcome.
+lingering_after_postlaunch_race="$(docker exec "$container" psql -U "$db_user" -d "$db_name" -At -c \
+  "SELECT count(*) FROM pg_stat_activity WHERE datname='$db_name' AND usename='$db_user' AND pid<>pg_backend_pid();" 2>/dev/null || echo "?")"
+if [ "$lingering_after_postlaunch_race" = "0" ]; then
+  echo "PASS: no migrator session remains connected after the post-launch decision-write race resolved"
+  pass=$((pass + 1))
+else
+  echo "FAIL: $lingering_after_postlaunch_race session(s) still connected after the post-launch decision-write race — a write-failure path that doesn't terminate the migrator leaves it running with no durable record"
   fail=$((fail + 1))
 fi
 

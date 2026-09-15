@@ -175,32 +175,43 @@ fi
 # --decision-file/--attempt-id were not supplied (e.g. standalone/test
 # invocations) this is a deliberate no-op — nothing to write to and no
 # entrypoint is waiting on this contract in that mode.
-# write_decision must NEVER abort the script via set -e: every call site
-# immediately follows with its own `exit N` carrying this script's
-# documented exit-code contract (3 = fence must stay up, 4 = refuse to
-# start, 5 = object-validity failure, etc. — see the usage/contract
-# comments elsewhere in this file). An earlier version let the `>` redirect
-# or `mv` fail straight through set -e, which aborted the script AT THE
-# WRITE CALL — before that following `exit N` ever ran — so the process's
-# own exit code silently became whatever the shell reports for an
-# unhandled command failure (typically 1), not the caller's intended code.
-# Two compounding harms, both on exactly the failure path this durability
-# guarantee is supposed to protect: (1) the caller's real exit code is
-# corrupted, so anything branching on it (e.g. "3 means keep the fence up")
-# takes the wrong action; (2) the decision file is left holding whatever it
-# held before this call — if that was "migration_started" or
-# "migrator_launched", the NEXT restart's preservation gate sees a
-# non-terminal marker and takes over the file as if this attempt recorded
-# no outcome, even though it may have failed with a real disposition that
-# was simply never persisted.
+# write_decision must NEVER abort the script via set -e (a bare redirect/mv
+# failure must not exit the process at the WRITE CALL, before this file's
+# own exit-code contract runs) — but neither may it silently turn a
+# required persistence failure into success. An earlier version of this
+# fix over-corrected: it absorbed every write failure with `return 0`
+# unconditionally, which meant NEITHER the pre-launch "migration_started"
+# write NOR any post-launch write (including "migrator_launched",
+# "starting_candidate", or any terminal disposition) could ever block or
+# redirect this script's control flow — a required ledger write could fail
+# completely and the script would proceed exactly as if it had succeeded.
+# That reopened the same reconciliation hole from the opposite direction:
+# a restart with no durable evidence at all (because the write never
+# landed) is exactly as dangerous as a restart that finds a stale
+# non-terminal marker.
 #
-# The fix: make the write non-fatal and loud. `|| true` absorbs any
-# failure from the redirect+rename pipeline so set -e cannot act on it;
-# the caller's own `exit N` immediately after this call always runs
-# unchanged, preserving the documented exit-code contract regardless of
-# whether the write itself succeeded. A write failure is reported to
-# stderr so it is not silently swallowed, but it is data for an operator,
-# not a reason to change this process's own control flow.
+# write_decision now returns real status (0 wrote, 1 failed) instead of
+# always 0. It is still non-fatal to the CALLING shell's own set -e (the
+# redirect/mv pipeline itself is guarded so a raw write error cannot abort
+# mid-call), but the return code is real and every call site below is
+# responsible for checking it:
+#   - the pre-launch call (decision="migration_started"): a write failure
+#     here means this attempt has NO durable record at all before the
+#     migrator is ever started. Refuse to launch — exit 3 — exactly as if
+#     the pre-launch quiescence gate itself had denied entry. Nothing has
+#     touched the database yet, so refusing is free and safe.
+#   - every call from "migrator_launched" onward (post-launch): a write
+#     failure here means whatever disposition this attempt was about to
+#     record cannot be durably reconciled by a future restart. The
+#     required response is a fail-closed override to needs_operator/exit 3
+#     — NEVER exit 0/1, regardless of what final_state or the confirmation
+#     path otherwise determined — via write_decision_or_fail_closed below,
+#     which retries once (transient errors are common — ENOSPC clearing,
+#     a remount completing) and, if the retry also fails, force-writes a
+#     dedicated "needs_operator_ledger_write_failed" disposition and exits
+#     3. If even that forced write fails, the process still exits 3: the
+#     exit code itself is the fence-stays-up signal even when the file
+#     could not be updated to say so.
 write_decision() {
   local decision="$1"
   [ -n "$decision_file" ] || return 0
@@ -208,11 +219,39 @@ write_decision() {
   tmp_file="${decision_file}.tmp.$$"
   if { printf '%s\n' "$decision"; printf '%s\n' "$attempt_id"; } >"$tmp_file" 2>/dev/null && mv -f "$tmp_file" "$decision_file" 2>/dev/null; then
     echo "che372-d2: recorded decision=$decision attempt_id=$attempt_id at $decision_file" >&2
-  else
-    rm -f "$tmp_file" 2>/dev/null || true
-    echo "che372-d2: FAILED to record decision=$decision attempt_id=$attempt_id at $decision_file (write or rename error) — the caller's own exit code still reflects the real outcome, but this durability record was NOT updated; an operator must reconcile $decision_file manually" >&2
+    return 0
   fi
-  return 0
+  rm -f "$tmp_file" 2>/dev/null || true
+  echo "che372-d2: FAILED to record decision=$decision attempt_id=$attempt_id at $decision_file (write or rename error) — this durability record was NOT updated" >&2
+  return 1
+}
+
+# write_decision_or_fail_closed is the required call form for every
+# POST-LAUNCH decision (anything from "migrator_launched" onward). It
+# retries the write once — a single transient blip (ENOSPC momentarily,
+# a remount mid-flight) should not by itself force an operator page if the
+# very next attempt succeeds — and if both attempts fail, forces the
+# process to the fail-closed needs_operator/exit 3 outcome regardless of
+# what the caller originally intended to record. This function never
+# returns when the write ultimately fails: it exits the whole script
+# directly, since there is no safe disposition-dependent action left to
+# take once durability itself is broken.
+write_decision_or_fail_closed() {
+  local decision="$1"
+  if write_decision "$decision"; then
+    return 0
+  fi
+  echo "che372-d2: retrying decision write once before treating it as terminal" >&2
+  if write_decision "$decision"; then
+    return 0
+  fi
+  echo "che372-d2: decision write failed twice for decision=$decision — this is a POST-LAUNCH write, so persistence failure itself must fail closed rather than let the script report an outcome it cannot durably record. Forcing needs_operator regardless of the original disposition." >&2
+  # Best-effort: try to record a dedicated marker naming this exact
+  # failure mode, but do not let a further failure here change the exit
+  # path — the exit code alone is the authoritative fence-stays-up signal
+  # once the ledger itself is confirmed unwritable.
+  write_decision "needs_operator_ledger_write_failed" || true
+  exit 3
 }
 
 # Decision-file preservation gate. write_decision "migration_started"
@@ -273,7 +312,17 @@ if [ -n "$decision_file" ] && [ -f "$decision_file" ]; then
   echo "che372-d2: $decision_file records non-terminal progress (decision='$existing_decision' attempt_id='$existing_attempt_id') from an attempt that never reached migrator launch — proceeding and taking over the file" >&2
 fi
 
-write_decision "migration_started"
+# PRE-LAUNCH write: if a decision file is required (decision_file set) and
+# this initial write fails, this attempt would have NO durable record at
+# all before the migrator is ever started. Refuse to launch — the migrator
+# has not touched the database yet, so refusing here is free and safe, and
+# is the only way to guarantee a crash immediately after this point still
+# has a reconciliation record ("migration_started" itself, from a retry
+# that succeeded) or an operator-visible reason there is none (this exit).
+if ! write_decision "migration_started"; then
+  echo "che372-d2: refusing to start the migrator — the initial migration_started decision could not be durably recorded at $decision_file, and this attempt must not proceed with no reconciliation record at all" >&2
+  exit 3
+fi
 
 migration_started_epoch="$(date +%s)"       # wall-clock, log/correlation only
 migration_started_monotonic_ms="$(monotonic_ms)"
@@ -775,7 +824,35 @@ echo "che372-d2: launched migrator os_pid=$migrator_os_pid" >&2
 # disposition: the waiting entrypoint (docker/entrypoint.cd.sh) treats it
 # identically to "migration_started" (keep waiting), and this script's own
 # restart-preservation gate is the only place the distinction matters.
-write_decision "migrator_launched"
+#
+# This is the first POST-LAUNCH write, so a failure here is the exact
+# unsafe-restart-takeover hole this marker exists to close: the migrator
+# is already running, but if this write fails and the script simply moved
+# on, a crash before any later write would leave the file at
+# "migration_started" (still safe-to-take-over) or, if decision_file was
+# never written at all yet, absent — either way a later restart would
+# wrongly treat this in-flight, possibly-mutating attempt as never having
+# started. Retry once (write_decision's own contract); if it still fails,
+# actively terminate the migrator we just launched (SIGTERM, escalate to
+# SIGKILL) so it cannot keep mutating the database with no durable record
+# of its existence, then force needs_operator/exit 3.
+if ! write_decision "migrator_launched"; then
+  echo "che372-d2: retrying migrator_launched write once before treating it as terminal" >&2
+  if ! write_decision "migrator_launched"; then
+    echo "che372-d2: migrator_launched could not be durably recorded after retry — the migrator is running with NO reconciliation record; terminating it now rather than letting it continue unrecorded" >&2
+    if kill -0 "$migrator_os_pid" 2>/dev/null; then
+      kill -TERM "$migrator_os_pid" 2>/dev/null || true
+      for _ in 1 2 3 4 5; do
+        kill -0 "$migrator_os_pid" 2>/dev/null || break
+        sleep 0.1
+      done
+      kill -0 "$migrator_os_pid" 2>/dev/null && kill -KILL "$migrator_os_pid" 2>/dev/null || true
+      wait "$migrator_os_pid" 2>/dev/null || true
+    fi
+    write_decision "needs_operator_ledger_write_failed" || true
+    exit 3
+  fi
+fi
 
 migrator_pg_pid=""
 migrator_pg_backend_start=""
@@ -1018,7 +1095,7 @@ if [ "$final_state" = "success" ]; then
   final_now_monotonic_ms="$(monotonic_ms)"
   if [ "$final_now_monotonic_ms" -gt "$work_deadline_monotonic_ms" ]; then
     echo "che372-d2: migrator completed but confirmation observed after work_deadline — treat as UNCERTAIN per spec, not a clean success" >&2
-    write_decision "denied_late_confirmation"
+    write_decision_or_fail_closed "denied_late_confirmation"
     exit 3
   fi
   echo "che372-d2: migration completed successfully within work_deadline (finished at $final_now_epoch, deadline $work_deadline_epoch)" >&2
@@ -1044,7 +1121,7 @@ if [ "$final_state" = "success" ]; then
   # with every other "we cannot prove it" path in this script.
   if ! run_final_gate "$work_deadline_monotonic_ms" "" "$migrator_verified_sessions"; then
     echo "che372-d2: final fencing check before admission did NOT pass — a session/lock/transaction unaccounted for by this attempt was present (or could not be observed) after the migrator exited; refusing to write starting_candidate" >&2
-    write_decision "needs_operator_final_fencing_check_failed"
+    write_decision_or_fail_closed "needs_operator_final_fencing_check_failed"
     exit 3
   fi
 
@@ -1061,7 +1138,14 @@ if [ "$final_state" = "success" ]; then
   # rules make that outcome specifically easy to reach.
   if ! invalid_index_report="$(find_invalid_indexes "$work_deadline_monotonic_ms")"; then
     echo "che372-d2: post-migration object-validity check did not pass ($invalid_index_report) — an INVALID index (or an unobservable catalog) means exit zero does not prove the intended schema exists; refusing to write starting_candidate" >&2
-    write_decision "needs_operator_invalid_index"
+    # A ledger-write failure on this path forces exit 3 (needs_operator,
+    # fence stays up) rather than this branch's own documented exit 5 —
+    # both are non-admission outcomes, and 3 is the one write_decision_or_fail_closed
+    # always uses once persistence itself is confirmed broken, since at
+    # that point the more specific "which check failed" distinction is
+    # moot: the fence must stay up either way and there is no durable
+    # record to tell 3 from 5 apart on a later restart.
+    write_decision_or_fail_closed "needs_operator_invalid_index"
     exit 5
   fi
 
@@ -1069,7 +1153,16 @@ if [ "$final_state" = "success" ]; then
   # docker/entrypoint.cd.sh polls for and freshness-checks against
   # CHE372_D2_ATTEMPT_ID before it will exec the server — the one point in
   # this script where the entrypoint's wait is actually released.
-  write_decision "starting_candidate"
+  #
+  # This write is the single most important one to get right: if it fails,
+  # this script must NOT exit 0. A migration that genuinely succeeded but
+  # whose success cannot be durably recorded is indistinguishable, to a
+  # future restart, from one that is still in flight or failed silently —
+  # exiting 0 anyway would let the caller treat this as done while leaving
+  # no record an entrypoint or operator could ever find. write_decision_or_fail_closed
+  # forces needs_operator/exit 3 (fence stays up) if this write cannot be
+  # made durable even after one retry.
+  write_decision_or_fail_closed "starting_candidate"
   exit 0
 fi
 
@@ -1182,13 +1275,21 @@ fi
 if $os_confirmed && $pg_confirmed; then
   if [ "$final_state" = "failed_nonzero" ]; then
     echo "che372-d2: migrator os_pid=$migrator_os_pid exited non-zero and its Postgres session pid=${migrator_pg_pid:-never-identified} is confirmed terminated — exit 1 (failed, not needs_operator)" >&2
-    write_decision "failed_confirmed_terminated"
+    # This is exit 1, not exit 3 like every other terminal path below —
+    # a ledger-write failure here specifically must NOT let this script
+    # exit 1 without a durable record, since exit 1 is this script's
+    # documented "safe to treat as a clean failure" signal and a caller
+    # observing it without a matching ledger entry would have no way to
+    # tell it apart from a lost/corrupted report. write_decision_or_fail_closed
+    # always forces exit 3 (fence stays up) on write failure regardless of
+    # the disposition string, which is the strictly safer direction here.
+    write_decision_or_fail_closed "failed_confirmed_terminated"
     exit 1
   fi
   echo "che372-d2: os_pid=$migrator_os_pid and Postgres pid=$migrator_pg_pid both confirmed terminated after ${final_state} — needs_operator (state uncertain: hooks or earlier statements may have committed)" >&2
-  write_decision "needs_operator_confirmed_terminated_${final_state}"
+  write_decision_or_fail_closed "needs_operator_confirmed_terminated_${final_state}"
 else
   echo "che372-d2: termination UNCONFIRMED at or after the absolute deadline (os_confirmed=$os_confirmed pg_confirmed=$pg_confirmed pg_pid=${migrator_pg_pid:-never-identified}) — needs_operator, fence must stay up" >&2
-  write_decision "needs_operator_unconfirmed_${final_state}"
+  write_decision_or_fail_closed "needs_operator_unconfirmed_${final_state}"
 fi
 exit 3
