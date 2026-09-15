@@ -532,6 +532,89 @@ func TestRunIssueCreateSendsExistingAttachmentIDs(t *testing.T) {
 	}
 }
 
+// newIssueRerunTestCmd builds a throwaway cobra.Command carrying the flags
+// issueRerunCmd registers, so runIssueRerun can be exercised directly without
+// going through the full command tree (mirrors newIssueCreateTestCmd).
+func newIssueRerunTestCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "rerun"}
+	cmd.Flags().String("output", "json", "")
+	cmd.Flags().String("reason", "", "")
+	return cmd
+}
+
+// TestRunIssueRerunSendsReason is the CHE-525 CLI acceptance test: --reason
+// must reach the server as the "reason" field on the rerun POST body, so an
+// authorized force triggered from the CLI carries the audit trail
+// RerunIssueRequest.Reason exists to receive. Before this test the flag did
+// not exist on issueRerunCmd, so --reason was silently rejected by cobra and
+// the body only ever carried {}.
+func TestRunIssueRerunSendsReason(t *testing.T) {
+	var body map[string]any
+	issueID := "11111111-1111-1111-1111-111111111111"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/issues/"+issueID+"/rerun" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":       "task-1",
+			"agent_id": "agent-1",
+		})
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	// mat_ prefix clears the daemon-managed execution-context guard both in CI
+	// and when the suite runs inside an agent task (leftover daemon marker).
+	t.Setenv("MULTICA_TOKEN", "mat_test-token")
+
+	cmd := newIssueRerunTestCmd()
+	_ = cmd.Flags().Set("reason", "authorized force: prior run misclassified")
+	if err := runIssueRerun(cmd, []string{issueID}); err != nil {
+		t.Fatalf("runIssueRerun: %v", err)
+	}
+	if got := body["reason"]; got != "authorized force: prior run misclassified" {
+		t.Fatalf("reason = %#v, want %q in request body", got, "authorized force: prior run misclassified")
+	}
+}
+
+// TestRunIssueRerunOmitsReasonWhenUnset preserves the legacy zero-arg CLI
+// contract (task_lifecycle.go RerunIssueRequest doc: "an empty body keeps the
+// legacy ... behaviour used by the CLI") when --reason is not passed.
+func TestRunIssueRerunOmitsReasonWhenUnset(t *testing.T) {
+	var body map[string]any
+	issueID := "22222222-2222-2222-2222-222222222222"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":       "task-1",
+			"agent_id": "agent-1",
+		})
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "mat_test-token")
+
+	cmd := newIssueRerunTestCmd()
+	if err := runIssueRerun(cmd, []string{issueID}); err != nil {
+		t.Fatalf("runIssueRerun: %v", err)
+	}
+	if _, present := body["reason"]; present {
+		t.Fatalf("body = %#v, want no \"reason\" key when --reason is unset", body)
+	}
+}
+
 func TestRunIssueCreateShowsDuplicateMessage(t *testing.T) {
 	want := "Active duplicate issue exists: YUA-36 SH-PM-SYNTH-01 Synthesize recommendation-to-shortlist planning outputs (status: in_progress). Set allow_duplicate=true or use --allow-duplicate to create another."
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

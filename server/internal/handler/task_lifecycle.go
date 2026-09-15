@@ -225,25 +225,34 @@ func (h *Handler) RerunIssue(w http.ResponseWriter, r *http.Request) {
 	// source is ineligible. It falls through to the 400 below with the
 	// sentinel's own sentence, like the sibling "does not belong to this issue".
 	if err != nil {
-		// ErrDuplicatePendingTask is the same benign coalesce outcome C1/C2
-		// classify at their admission boundaries (CHE-486, CHE-524): a
-		// concurrent rerun of this authorized force already covers the
-		// target, not a genuine failure. Route it through the same
-		// debug-level, non-warning treatment instead of surfacing it as a
-		// 400 with the raw sentinel text.
-		if errors.Is(err, service.ErrDuplicatePendingTask) {
-			slog.Debug("issue rerun coalesced: duplicate pending task", "issue_id", id)
-			writeError(w, http.StatusConflict, "a rerun for this issue and agent is already in progress")
-			return
-		}
-		slog.Warn("issue rerun failed", "issue_id", id, "error", err)
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeRerunIssueError(w, id, err)
 		return
 	}
 	slog.Info("issue rerun accepted", "issue_id", id, "task_id", uuidToString(task.ID), "reason", req.Reason)
 	resp := taskToResponse(*task, uuidToString(issue.WorkspaceID))
 	h.hydrateTaskAttributions(r.Context(), []*TaskAttribution{resp.Attribution})
 	writeJSON(w, http.StatusAccepted, resp)
+}
+
+// writeRerunIssueError classifies a non-permission error from
+// TaskService.RerunIssue and writes the corresponding HTTP response.
+// ErrDuplicatePendingTask is the same benign coalesce outcome C1
+// (issue_trigger.go, CHE-486) and C2 (comment.go, CHE-524) already classify
+// at their own admission boundaries: a concurrent rerun of this authorized
+// force already covers the target, not a genuine failure. TaskService.RerunIssue
+// returns it bare (unreconciled) when the zero-arg assignee-rerun path — which
+// carries no sourceTaskID, so the service's lineage reconciliation never runs
+// for it — exhausts its bounded reclaim loop under sustained pending-slot
+// contention. Route it through the same debug-level, non-warning treatment
+// instead of surfacing it as a 400 with the raw sentinel text.
+func writeRerunIssueError(w http.ResponseWriter, issueID string, err error) {
+	if errors.Is(err, service.ErrDuplicatePendingTask) {
+		slog.Debug("issue rerun coalesced: duplicate pending task", "issue_id", issueID)
+		writeError(w, http.StatusConflict, "a rerun for this issue and agent is already in progress")
+		return
+	}
+	slog.Warn("issue rerun failed", "issue_id", issueID, "error", err)
+	writeError(w, http.StatusBadRequest, err.Error())
 }
 
 // RetrySourceContextQuickCreate manually re-enqueues a failed issue-less
