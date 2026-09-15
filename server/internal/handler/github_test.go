@@ -159,6 +159,29 @@ func TestExtractClosingIdentifiers(t *testing.T) {
 			in:   []string{"", "Plain Closes CHE-380 in prose"},
 			want: []string{"CHE-380"},
 		},
+		{
+			name: "double_backtick_span_does_not_close",
+			// A code span whose content itself contains a backtick must be
+			// delimited by a longer backtick run per CommonMark, e.g.
+			// ``Closes CHE-380` contains a backtick``. The delimiter-run
+			// scanner must still recognize this as a span, not just the
+			// fixed single-backtick / triple-backtick forms.
+			in:   []string{"", "PR #36 wrote ``Closes CHE-380` contains a backtick``"},
+			want: []string{},
+		},
+		{
+			name: "tilde_fence_does_not_close",
+			in:   []string{"", "See what it did:\n~~~\nCloses CHE-380\n~~~\nNo further action."},
+			want: []string{},
+		},
+		{
+			name: "unterminated_inline_run_is_not_stripped",
+			// A stray unmatched inline backtick run (not at line-start, so
+			// not a fence opener) is not a valid code span under CommonMark
+			// and must not swallow a real closing keyword that follows it.
+			in:   []string{"", "stray `` marker with no close, then Closes CHE-380"},
+			want: []string{"CHE-380"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

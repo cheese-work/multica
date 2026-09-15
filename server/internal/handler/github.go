@@ -2415,20 +2415,100 @@ func extractIdentifiers(parts ...string) []string {
 	return out
 }
 
-// mdCodeSpanRe matches Markdown fenced code blocks (``` ... ```) and inline
-// code spans (`...`) so their contents can be stripped before scanning prose
-// for closing keywords. Fenced blocks are matched first (DOTALL via (?s)) so
-// a fence's own backticks are never mistaken for inline-span delimiters.
-var mdCodeSpanRe = regexp.MustCompile("(?s)```.*?```|`[^`\n]*`")
+// mdFenceLineRe matches a line consisting solely (aside from up to 3 leading
+// spaces of indent, per CommonMark) of a fence delimiter run of 3+ backticks
+// or 3+ tildes, capturing the delimiter character and run length so the
+// scanner in stripMarkdownCodeSpans can find the matching close fence.
+var mdFenceLineRe = regexp.MustCompile("(?m)^ {0,3}(`{3,}|~{3,})[^`\n]*$")
 
-// stripMarkdownCodeSpans blanks out fenced and inline code spans, replacing
-// each with a single space so surrounding word boundaries and adjacency
-// checks still behave as if the span were absent. This keeps a PR body that
-// merely quotes a closing keyword as documentation — e.g. a body describing
-// what another PR wrote in an inline code span reading "Closes CHE-380" —
-// from being treated as a live closing declaration (CHE-520).
+// stripMarkdownCodeSpans blanks out fenced code blocks and inline code spans,
+// replacing each with a single space so surrounding word boundaries and
+// adjacency checks still behave as if the span were absent. This keeps a PR
+// body that merely quotes a closing keyword as documentation — e.g. a body
+// describing what another PR wrote in a code span reading "Closes CHE-380"
+// — from being treated as a live closing declaration (CHE-520).
+//
+// Both fence and inline-span matching follow CommonMark's actual delimiter
+// rules rather than a fixed-width regex, because a naive “ `...` “ /
+// ```` ```...``` ```` pattern misses two valid forms a PR author can use to
+// quote text containing a backtick: a longer backtick run as the inline-span
+// delimiter (“ “Closes CHE-380“ “), and a tilde fence (`~~~`). Both left
+// a live closing keyword unstripped and re-triggered the CHE-520 false
+// auto-close (caught in independent review of the initial fixed-width fix).
+//
+//   - Fenced blocks: a line of 3+ backticks or 3+ tildes opens a fence; it is
+//     closed by the next line consisting of a run of the same character at
+//     least as long (CommonMark fenced-code-block rule). An unterminated
+//     fence extends to end of input.
+//   - Inline spans: a run of N backticks opens a span; it is closed by the
+//     next run of exactly N backticks (CommonMark code-span rule). A run
+//     with no matching close of the same length is left as plain text.
 func stripMarkdownCodeSpans(s string) string {
-	return mdCodeSpanRe.ReplaceAllString(s, " ")
+	// Pass 1: fenced code blocks, since a fence's own delimiter run must
+	// never be mistaken for inline-span backticks.
+	var out strings.Builder
+	rest := s
+	for {
+		loc := mdFenceLineRe.FindStringSubmatchIndex(rest)
+		if loc == nil {
+			out.WriteString(rest)
+			break
+		}
+		openStart, openEnd := loc[0], loc[1]
+		delim := rest[loc[2]:loc[3]]
+		out.WriteString(rest[:openStart])
+		out.WriteString(" ")
+
+		afterOpen := rest[openEnd:]
+		closeRe := regexp.MustCompile("(?m)^ {0,3}" + regexp.QuoteMeta(string(delim[0])) + "{" + strconv.Itoa(len(delim)) + ",}[ \t]*$")
+		if cLoc := closeRe.FindStringIndex(afterOpen); cLoc != nil {
+			rest = afterOpen[cLoc[1]:]
+		} else {
+			rest = ""
+		}
+	}
+	s = out.String()
+
+	// Pass 2: inline code spans via CommonMark's equal-length-run rule.
+	out.Reset()
+	i := 0
+	for i < len(s) {
+		if s[i] != '`' {
+			out.WriteByte(s[i])
+			i++
+			continue
+		}
+		start := i
+		for i < len(s) && s[i] == '`' {
+			i++
+		}
+		runLen := i - start
+		closeIdx := -1
+		closeEnd := -1
+		j := i
+		for j < len(s) {
+			if s[j] != '`' {
+				j++
+				continue
+			}
+			k := j
+			for k < len(s) && s[k] == '`' {
+				k++
+			}
+			if k-j == runLen {
+				closeIdx, closeEnd = j, k
+				break
+			}
+			j = k
+		}
+		if closeIdx == -1 {
+			out.WriteString(s[start:i])
+			continue
+		}
+		out.WriteString(" ")
+		i = closeEnd
+	}
+	return out.String()
 }
 
 // extractClosingIdentifiers pulls every "PREFIX-NUMBER" identifier that
