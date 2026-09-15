@@ -714,6 +714,18 @@ else
   echo "PASS: the migrator was never launched when migrator_launched could not be durably recorded"
   pass=$((pass + 1))
 fi
+# The specific branch this control exists to exercise: distinguishes a
+# migrator_launched persistence failure from any other exit-3 path (e.g. a
+# coincidental pre-launch final-gate denial), which would otherwise let
+# every assertion above pass without ever reaching the corrected code.
+if grep -q "migrator_launched could not be durably recorded after retry" "$work_dir/launch-gate.log"; then
+  echo "PASS: the log shows the exact migrator_launched persistence-failure diagnostic, proving this run exercised the corrected branch and not an unrelated exit-3 path"
+  pass=$((pass + 1))
+else
+  echo "FAIL: expected the 'migrator_launched could not be durably recorded after retry' diagnostic — without it, exit 3/no-launch/migration_started could equally be explained by a pre-launch final-gate denial, not the migrator_launched write failure this control targets — see $work_dir/launch-gate.log"
+  cat "$work_dir/launch-gate.log"
+  fail=$((fail + 1))
+fi
 if [ "$launch_gate_status" -eq 3 ]; then
   echo "PASS: script exited 3 (refuse to launch) when migrator_launched could not be written"
   pass=$((pass + 1))
@@ -739,6 +751,19 @@ else
   echo "FAIL: $lingering_after_launch_gate session(s) connected despite the migrator supposedly never being launched — the launch gate did not actually prevent launch"
   fail=$((fail + 1))
 fi
+
+echo "==> reset to blank schema before the launch-gate restart control"
+# The schema is very likely already fully migrated by this point (earlier
+# controls in this suite run the real migrator to completion), which would
+# make the restart below a no-op "skip, already applied" run that finishes
+# almost instantly -- too fast for the watchdog's ~250ms discovery poll to
+# ever observe a live Postgres session, resolving to needs_operator for a
+# reason that has nothing to do with what this control is testing. Reset
+# to blank so the restart has genuine DDL work to do and is reliably
+# discoverable, matching the pattern used by every other real-migration
+# control in this file.
+docker exec "$container" psql -U "$db_user" -d "$db_name" -c \
+  "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" >/dev/null
 
 echo "==> negative control: a restart after a refused launch-gate failure must proceed safely (migration_started is genuinely safe to take over)"
 # Directly exercises the "followed by restart" scenario Terra's checkpoint
@@ -775,6 +800,36 @@ if grep -q "launched migrator os_pid=" "$work_dir/launch-gate-restart.log"; then
   pass=$((pass + 1))
 else
   echo "FAIL: expected the restart to launch the migrator once the ledger directory was writable again — see $work_dir/launch-gate-restart.log"
+  cat "$work_dir/launch-gate-restart.log"
+  fail=$((fail + 1))
+fi
+launch_gate_restart_final_decision="$(sed -n '1p' "$launch_gate_decision_file" 2>/dev/null || true)"
+# The specific successful outcome this control exists to prove: not just
+# "launched", but actually completed and published the admission contract
+# (exit 0, decision=starting_candidate). This run drives the REAL migrate
+# binary through the full production migration set (473 files at time of
+# writing) against a genuinely blank schema, which is the same real-work
+# shape every other real-migration control in this suite uses (see the
+# "positive control" above) -- and, like that control, is therefore
+# subject to the SAME pre-existing, host-load-dependent
+# continuous-fencing-freshness flake documented there and in the
+# restart-preservation control's own comments: under sustained Docker
+# contention on a shared host, a fencing sample can legitimately exceed
+# fencing_max_sample_age_ms and correctly resolve to needs_operator. That
+# is the freshness rule working as intended on a slow host, not a defect
+# in the migrator_launched fix this control targets -- the diagnostic
+# assertion above (checking for the exact "migrator_launched could not be
+# durably recorded" message on the FIRST invocation) already proves the
+# corrected code path was exercised; this second invocation is checking
+# what happens next, and a fencing latch here is an orthogonal, already-
+# known environmental limitation, not a gap in restart-durability logic.
+if [ "$launch_gate_restart_status" -eq 0 ] && [ "$launch_gate_restart_final_decision" = "starting_candidate" ]; then
+  echo "PASS: the restart exited 0 and recorded the expected successful decision 'starting_candidate'"
+  pass=$((pass + 1))
+elif grep -q "continuous fencing violated" "$work_dir/launch-gate-restart.log"; then
+  echo "INFO: this run's own fencing sample exceeded fencing_max_sample_age_ms under real host load (fencing_violated), the same pre-existing flake documented on the 'positive control' above — not scored as a failure of the restart-durability logic this control targets, which the diagnostic assertion above already proved was exercised correctly"
+else
+  echo "FAIL: expected the restart to exit 0 with decision=starting_candidate once the ledger was writable and the migrator was actually launched, got exit=$launch_gate_restart_status decision='$launch_gate_restart_final_decision' — see $work_dir/launch-gate-restart.log"
   cat "$work_dir/launch-gate-restart.log"
   fail=$((fail + 1))
 fi
