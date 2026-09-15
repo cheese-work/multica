@@ -12,9 +12,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: blacksmith-2vcpu-ubuntu-2404
             target: linux
-          - os: windows-latest
+          - os: blacksmith-2vcpu-windows-2025
             target: win
     runs-on: ${{ matrix.os }}
     steps:
