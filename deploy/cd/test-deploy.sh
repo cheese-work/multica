@@ -68,6 +68,38 @@ if [ "$1" = "inspect" ]; then
   exit 0
 fi
 
+# known_services lists the real docker-compose.selfhost.yml service names
+# (postgres, backend, frontend — verified against `docker compose config
+# --services` on both C00 and this branch's own compose file). Any argument
+# that looks like a bare service name (no leading "-", not a flag value we
+# already consumed) must be one of these; a future rename back to the wrong
+# name (e.g. "web", which is NOT a compose service — it is only the image
+# name / manifest JSON key) must fail this mock the same way real Compose
+# fails with "no such service: web", so the regression cannot silently come
+# back.
+known_services=(postgres backend frontend)
+is_known_service() {
+  local svc=$1 s
+  for s in "${known_services[@]}"; do
+    [ "$svc" = "$s" ] && return 0
+  done
+  return 1
+}
+check_service_args() {
+  # Validates only bare trailing positional args (the service name list at
+  # the end of pull/up/stop), not flags or their values.
+  local a
+  for a in "$@"; do
+    case "$a" in
+      -*) continue ;;
+    esac
+    if ! is_known_service "$a"; then
+      echo "mock docker compose: no such service: $a" >&2
+      exit 1
+    fi
+  done
+}
+
 if [ "$1" = "compose" ]; then
   shift
   # shift off "-f docker-compose.selfhost.yml"
@@ -75,6 +107,7 @@ if [ "$1" = "compose" ]; then
   sub="$1"; shift
   case "$sub" in
     pull)
+      check_service_args "$@"
       fail_if_flagged fail-pull
       exit 0
       ;;
@@ -96,9 +129,10 @@ if [ "$1" = "compose" ]; then
       exit 0
       ;;
     up)
-      # up -d --no-deps backend web — used both for the forward deploy and
-      # for rollback's restart of the previous tuple. Distinguish which one
-      # via separate flags so a test can fail just one of the two.
+      # up -d --no-deps backend frontend — used both for the forward deploy
+      # and for rollback's restart of the previous tuple. Distinguish which
+      # one via separate flags so a test can fail just one of the two.
+      check_service_args "$@"
       if [ -f "$control_dir/rollback-in-progress" ]; then
         fail_if_flagged fail-rollback-restart
       else
@@ -108,6 +142,7 @@ if [ "$1" = "compose" ]; then
       exit 0
       ;;
     stop)
+      check_service_args "$@"
       touch "$control_dir/rollback-in-progress"
       exit 0
       ;;
@@ -395,5 +430,73 @@ set -e
 expect_exit 1 "$status" placeholder-digest-fallback
 expect_contains "$output" "falling back to tag reference" placeholder-digest-fallback
 expect_not_contains "$output" "@$placeholder_digest" placeholder-digest-fallback
+
+# ---------------------------------------------------------------------------
+# Scenario 7 (regression for Defect 1 — CHE-530 live C00 inspection): the
+# real compose service is "frontend", not "web". "web" is legitimately the
+# image name (multica-web) and the manifest/tuple JSON key, but it is not a
+# compose service — `docker compose pull backend web` fails with "no such
+# service: web" on the real stack. Simulate a regression back to the wrong
+# service name and confirm the mock (and therefore a real Compose) rejects
+# it, so deploy.sh's actual service-name arguments are what is under test,
+# not just its control flow.
+# ---------------------------------------------------------------------------
+state_dir="$(fresh_scenario_dir wrong-service-name-rejected)"
+control_dir="$state_dir/control"
+mkdir -p "$control_dir"
+touch "$control_dir/inspect-resolves"
+set +e
+output="$(env DEPLOY_TEST_CONTROL_DIR="$control_dir" "$mock_bin/docker" compose -f docker-compose.selfhost.yml pull backend web 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" wrong-service-name-rejected
+expect_contains "$output" "no such service: web" wrong-service-name-rejected
+
+# Confirm deploy.sh itself only ever asks Compose for real service names —
+# i.e. that Defect 1's fix actually landed in deploy.sh, not just in this
+# mock's allowlist.
+if grep -qE '\b(pull|stop)\s+backend\s+web\b|up\s+-d\s+--no-deps\s+backend\s+web\b' "$root_dir/deploy/cd/deploy.sh"; then
+  echo "scenario wrong-service-name-rejected: deploy.sh still invokes compose with the nonexistent 'web' service" >&2
+  exit 1
+fi
+if ! grep -qE '\b(pull|stop)\s+backend\s+frontend\b|up\s+-d\s+--no-deps\s+backend\s+frontend\b' "$root_dir/deploy/cd/deploy.sh"; then
+  echo "scenario wrong-service-name-rejected: deploy.sh does not invoke compose with the real 'frontend' service" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Scenario 8 (regression for Defect 2 — CHE-530 live C00 inspection):
+# MULTICA_SKIP_MIGRATIONS must be declared in the backend service's
+# environment block of docker-compose.selfhost.yml, or Compose never
+# forwards deploy.sh's ambient export into the container and the guard in
+# docker/entrypoint.sh silently does nothing. Prefer a real
+# `docker compose config` render when docker is available (proves the
+# variable actually resolves end to end); fall back to a pure-bash grep
+# scoped to the backend service block otherwise so this test still runs
+# without docker.
+# ---------------------------------------------------------------------------
+compose_file="$root_dir/docker-compose.selfhost.yml"
+if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+  rendered="$(JWT_SECRET=test-jwt-secret-not-a-real-secret-0000 MULTICA_SKIP_MIGRATIONS=1 \
+    docker compose -f "$compose_file" config 2>/dev/null)"
+  if ! printf '%s' "$rendered" | grep -qE '^\s*MULTICA_SKIP_MIGRATIONS:\s*"1"\s*$'; then
+    echo "scenario skip-migrations-declared: docker compose config did not forward MULTICA_SKIP_MIGRATIONS=1 into the rendered config" >&2
+    exit 1
+  fi
+else
+  # Pure-bash fallback: extract the backend service's block (from "  backend:"
+  # up to the next top-level "  <name>:" service key) and grep within it,
+  # so a MULTICA_SKIP_MIGRATIONS line elsewhere in the file (e.g. a comment)
+  # cannot produce a false pass.
+  backend_block="$(awk '
+    /^  backend:/ { capture=1 }
+    capture && /^  [a-zA-Z_-]+:/ && !/^  backend:/ { capture=0 }
+    capture { print }
+  ' "$compose_file")"
+  if ! printf '%s' "$backend_block" | grep -qE 'MULTICA_SKIP_MIGRATIONS:\s*\$\{MULTICA_SKIP_MIGRATIONS:-'; then
+    echo "scenario skip-migrations-declared: backend service environment block does not declare MULTICA_SKIP_MIGRATIONS" >&2
+    exit 1
+  fi
+fi
 
 echo "deploy.sh control-flow fixtures passed"
