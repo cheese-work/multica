@@ -1249,6 +1249,15 @@ type ProjectResource struct {
 	CreatedBy    pgtype.UUID        `json:"created_by"`
 }
 
+type ProtocolLintRun struct {
+	ID             pgtype.UUID        `json:"id"`
+	TaskID         pgtype.UUID        `json:"task_id"`
+	IssueID        pgtype.UUID        `json:"issue_id"`
+	CheckedAt      pgtype.Timestamptz `json:"checked_at"`
+	ViolationCount int32              `json:"violation_count"`
+	ViolationCodes []string           `json:"violation_codes"`
+}
+
 type QuickAction struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`

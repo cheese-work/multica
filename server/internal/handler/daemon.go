@@ -4124,7 +4124,7 @@ func (h *Handler) runProtocolLint(ctx context.Context, task db.AgentTaskQueue, w
 		// only assertion that could still apply, and it needs no issue
 		// context, so run it directly rather than skipping the run outright.
 		in := protocollint.Input{RunID: uuidToString(task.ID), ClaimedEvidenceURL: claimedEvidenceURL}
-		logProtocolLintViolations(task, protocollint.Check(in))
+		h.recordProtocolLintRun(ctx, task, protocollint.Check(in))
 		return
 	}
 
@@ -4178,7 +4178,36 @@ func (h *Handler) runProtocolLint(ctx context.Context, task db.AgentTaskQueue, w
 		})
 	}
 
-	logProtocolLintViolations(task, protocollint.Check(in))
+	h.recordProtocolLintRun(ctx, task, protocollint.Check(in))
+}
+
+// recordProtocolLintRun is the "fail loudly, then persist the denominator"
+// tail shared by both runProtocolLint call sites (the chat/non-issue
+// early-return path and the normal issue path), so every completing turn
+// that reaches protocollint.Check produces exactly one persisted
+// protocol_lint_run row alongside the existing per-violation log lines
+// (CHE-552).
+//
+// The insert is best-effort, matching runProtocolLint's own contract: by the
+// time this runs, CompleteTask's transaction has already committed and the
+// daemon is blocked on the HTTP response for an already-terminal task, so a
+// persistence failure here must never propagate — log a warning and move on.
+func (h *Handler) recordProtocolLintRun(ctx context.Context, task db.AgentTaskQueue, violations []protocollint.Violation) {
+	logProtocolLintViolations(task, violations)
+
+	codes := make([]string, len(violations))
+	for i, v := range violations {
+		codes[i] = v.Code
+	}
+	if _, err := h.Queries.CreateProtocolLintRun(ctx, db.CreateProtocolLintRunParams{
+		TaskID:         task.ID,
+		IssueID:        task.IssueID,
+		ViolationCount: int32(len(violations)),
+		ViolationCodes: codes,
+	}); err != nil {
+		slog.Warn("protocol lint: failed to persist protocol_lint_run row",
+			"task_id", uuidToString(task.ID), "issue_id", uuidToString(task.IssueID), "error", err)
+	}
 }
 
 // logProtocolLintViolations is the "fail loudly" half of runProtocolLint: each
