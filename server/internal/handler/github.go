@@ -2708,6 +2708,16 @@ func (h *Handler) lookupIssueByIdentifier(ctx context.Context, workspaceID pgtyp
 // forever, or (worse) let a skipped non-terminal unstaged child through.
 // Every direct child's effective status is resolved and checked here.
 func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, workspaceID string) {
+	// An issue leaves Triage only by being accepted; a merged "Closes" PR
+	// links to it but must not move it out. (MUL-7189 §2.2)
+	//
+	// Checked before the child scan below: this is a field read on an issue
+	// already in hand, so a triaged issue short-circuits without spending a
+	// ListChildIssues round-trip.
+	if issue.TriageState.Valid {
+		return
+	}
+
 	children, err := h.Queries.ListChildIssues(ctx, issue.ID)
 	if err != nil {
 		slog.Warn("github: advance issue to done: list children failed", "err", err, "issue_id", uuidToString(issue.ID))

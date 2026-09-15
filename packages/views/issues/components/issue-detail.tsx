@@ -4,7 +4,6 @@ import {
   issueBehavesAs,
   issueBehavesAsAny,
   issueStatusCategory,
-  statusCategoryOfKey,
 } from "@multica/core/issues";
 import { useStatusLabel } from "../utils/status-label";
 import { priorityLabel } from "../utils/priority-label";
@@ -64,7 +63,8 @@ import { PropRow } from "../../common/prop-row";
 import { PropertyIcon } from "../../common/property-icon";
 import type { Attachment, Issue, IssueProperty, IssueStatus, IssueStatusCategory, IssuePriority, TimelineEntry, UpdateIssueRequest } from "@multica/core/types";
 import { contentReferencesAttachment } from "@multica/core/types";
-import { STATUS_CONFIG } from "@multica/core/issues/config";
+import { isBuiltInIssueStatus } from "@multica/core/issue-statuses";
+import { commentLandingTarget } from "@multica/core/issues/comment-deletion";
 import { formatDateOnly, isPastDateOnly } from "@multica/core/issues/date";
 import { useUpdateIssue } from "@multica/core/issues/mutations";
 import { toast } from "sonner";
@@ -287,8 +287,8 @@ function statusLabel(
   resolveLabel?: (statusKey: string) => string,
 ): string {
   if (resolveLabel) return resolveLabel(status);
-  if (status in STATUS_CONFIG) {
-    return t(($) => $.status[statusCategoryOfKey(status)]);
+  if (isBuiltInIssueStatus(status)) {
+    return t(($) => $.status[status]);
   }
   return status;
 }
@@ -545,6 +545,7 @@ function ActivityBlock({
   resolveStatusLabel,
   resolveStatusCategory,
   resolveStatusColor,
+  resolveStatusIcon,
   t,
   timeAgo,
   locale,
@@ -563,6 +564,7 @@ function ActivityBlock({
   resolveStatusCategory: (statusKey: string) => IssueStatusCategory;
   /** A custom status's own `#rrggbb`; null for built-ins and unknown keys. */
   resolveStatusColor: (statusKey: string) => string | null;
+  resolveStatusIcon: (statusKey: string) => string | null;
   t: ActivityT;
   timeAgo: (dateStr: string) => string;
   locale: string;
@@ -631,6 +633,7 @@ function ActivityBlock({
               status={details.to as IssueStatus}
               category={resolveStatusCategory(details.to ?? "")}
               color={resolveStatusColor(details.to ?? "")}
+              icon={resolveStatusIcon(details.to ?? "")}
               className="h-4 w-4 shrink-0"
             />
           );
@@ -713,10 +716,11 @@ function SubIssueRow({
   const paths = useWorkspacePaths();
   const updateIssue = useUpdateIssue();
   const selected = useIssueSelectionStore((s) => s.selectedIds.has(child.id));
+  const childStatusCatalog = useIssueStatuses(useWorkspaceId());
   const toggleSelected = useIssueSelectionStore((s) => s.toggle);
   // Category, not key: a custom status in the done/cancelled categories is
   // finished work and has to strike through like any other. (MUL-6243)
-  const isDone = issueBehavesAsAny(child, ["done", "cancelled"]);
+  const isDone = issueBehavesAsAny(child, ["done", "closed"]);
   const labels = rowProps.labels ? (child.labels ?? []) : [];
   const customPropsWithValue = customProperties.filter(
     (p) => child.properties?.[p.id] !== undefined,
@@ -792,6 +796,9 @@ function SubIssueRow({
           trigger={
             <StatusIcon
               status={child.status}
+              category={childStatusCatalog.categoryOf(child.status)}
+              color={childStatusCatalog.colorOf(child.status)}
+              icon={childStatusCatalog.iconOf(child.status)}
               className="h-[15px] w-[15px] shrink-0"
             />
           }
@@ -1168,13 +1175,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const { data: allIssues = [] } = useQuery(issueListOptions(wsId));
   const { getActorName } = useActorName();
   const resolveStatusLabel = useStatusLabel(wsId);
-  // The glyph set is per CATEGORY (MUL-6243), so a status-change entry for a
-  // custom status drew the same icon as the built-in it sits beside — an
-  // "In Review → Awaiting Response" line looked like nothing had moved. Colour
-  // is what carries a custom status's own identity, as the inbox row and the
-  // status-changed detail label already render it. `colorOf` is what keeps a
-  // built-in on its semantic token instead of the catalog's seed hex.
-  const { categoryOf: resolveStatusCategory, colorOf: resolveStatusColor } =
+  // Activity and issue visuals share the catalog's custom geometry and color;
+  // built-ins keep their fixed glyph and semantic token.
+  const { categoryOf: resolveStatusCategory, colorOf: resolveStatusColor, iconOf: resolveStatusIcon } =
     useIssueStatuses(wsId);
   // Description autosave is deliberately NOT gated (no explicit submit; the
   // editor already strips `blob:` before serializing and binds ids on the
@@ -2296,7 +2299,17 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       }
     }
 
-    const el = document.getElementById(`comment-${highlightCommentId}`);
+    // A deleted reply renders nothing, so the id a notification or share link
+    // carries has no anchor to scroll to and no row to flash. Land on the
+    // comment above where it was; the id itself stays this landing's identity
+    // for the guards and the memento below.
+    const threadRootId = rootId ?? highlightCommentId;
+    const landingId = commentLandingTarget(
+      highlightCommentId,
+      threadRootId,
+      timelineView.threadReplies.get(threadRootId) ?? EMPTY_REPLIES,
+    );
+    const el = document.getElementById(`comment-${landingId}`);
     const container = scrollContainerEl;
     if (!el || !container) return;
 
@@ -2337,7 +2350,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     };
     rafId = requestAnimationFrame(center);
 
-    setHighlightedId(highlightCommentId);
+    setHighlightedId(landingId);
     const fade = window.setTimeout(() => setHighlightedId(null), 2500);
     return () => {
       cancelAnimationFrame(rafId);
@@ -2928,6 +2941,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               >
                 <StatusIcon
                   status={parentIssue.status}
+                  color={resolveStatusColor(parentIssue.status)}
+                  icon={resolveStatusIcon(parentIssue.status)}
                   category={issueStatusCategory(parentIssue) ?? undefined}
                   className="h-3.5 w-3.5 shrink-0"
                 />
@@ -3125,6 +3140,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         resolveStatusLabel={resolveStatusLabel}
         resolveStatusCategory={resolveStatusCategory}
         resolveStatusColor={resolveStatusColor}
+        resolveStatusIcon={resolveStatusIcon}
         t={t}
         timeAgo={timeAgo}
         locale={locale}
@@ -3196,7 +3212,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                 it never overlaps the title (which truncates to make room).
                 It self-hides when no agent is active. */}
             <IssueAgentHeaderChip issueId={id} />
-            {onDone && !issueBehavesAsAny(issue, ["done", "cancelled"]) && (
+            {onDone && !issueBehavesAsAny(issue, ["done", "closed"]) && (
               <Tooltip>
                 <TooltipTrigger
                   render={
@@ -3408,6 +3424,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               <span className="font-medium shrink-0">{t(($) => $.detail.sub_issue_of)}</span>
               <StatusIcon
                   status={parentIssue.status}
+                  color={resolveStatusColor(parentIssue.status)}
+                  icon={resolveStatusIcon(parentIssue.status)}
                   category={issueStatusCategory(parentIssue) ?? undefined}
                   className="h-3.5 w-3.5 shrink-0"
                 />
