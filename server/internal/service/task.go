@@ -5614,10 +5614,19 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourc
 		// that failed after this committed.
 		cerr := s.runInTx(ctx, func(qtx *db.Queries) error {
 			var err error
+			// protect_source_task_id/protect_actor_user_id (CHE-485) exclude a
+			// row that is already the live rerun for THIS lineage from the
+			// cancel. Without that exclusion, a caller reclaiming the pending
+			// slot after losing idx_one_live_rerun_per_source_task_actor once
+			// could cancel the very winner it is about to look up and return —
+			// this statement and the lineage lookup are not atomic with each
+			// other, so the exclusion is what makes the clear safe on its own.
 			cancelled, err = qtx.CancelPendingTasksByIssueAndAgentInThread(ctx, db.CancelPendingTasksByIssueAndAgentInThreadParams{
-				ThreadCommentID: triggerCommentID,
-				IssueID:         issueID,
-				AgentID:         agentID,
+				ThreadCommentID:     triggerCommentID,
+				IssueID:             issueID,
+				AgentID:             agentID,
+				ProtectSourceTaskID: sourceTaskID,
+				ProtectActorUserID:  actorUserID,
 			})
 			if err != nil {
 				return err
@@ -5638,6 +5647,43 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourc
 		}
 		return len(cancelled)
 	}
+
+	// findLiveRerun re-runs the CHE-485 replay-guard read on demand. It backs
+	// every reclaim below (including the first, pre-loop one): clearPendingSlot
+	// cancels any not-yet-started row in this thread's slot, which would
+	// cancel a rival caller's already-admitted winner if one now exists for
+	// this exact lineage — the preflight read further up only proves no
+	// winner existed at THIS call's start, not at the moment we are about to
+	// cancel. Re-checking immediately before every clear is what keeps a
+	// reclaim from ever destroying a fulfilled obligation instead of merely
+	// declining to duplicate it.
+	findLiveRerun := func() (*db.AgentTaskQueue, error) {
+		if !sourceTaskID.Valid || !actorUserID.Valid {
+			return nil, nil
+		}
+		existing, findErr := s.Queries.FindLiveRerunOfTask(ctx, db.FindLiveRerunOfTaskParams{
+			SourceTaskID: sourceTaskID,
+			ActorUserID:  actorUserID,
+		})
+		if findErr == nil {
+			return &existing, nil
+		}
+		if errors.Is(findErr, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("resolve concurrent rerun lineage winner: %w", findErr)
+	}
+
+	if existing, findErr := findLiveRerun(); findErr != nil {
+		return nil, findErr
+	} else if existing != nil {
+		slog.Info("issue rerun: lost concurrent admission race, returning winner",
+			"issue_id", util.UUIDToString(issueID),
+			"source_task_id", util.UUIDToString(sourceTaskID),
+			"existing_task_id", util.UUIDToString(existing.ID),
+		)
+		return existing, nil
+	}
 	cancelledCount := clearPendingSlot()
 
 	// A manual rerun is a NEW direct_human trigger attributed to the rerunning
@@ -5645,45 +5691,78 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourc
 	// sourceTaskID is the rerun lineage: it rides the CreateAgentTask insert
 	// (rerun_of_task_id) so the queued event / daemon claim never sees a NULL
 	// lineage, and it stays distinct from system-retry's retry_of_task_id (§5).
-	task, err := s.enqueueRerunTask(ctx, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, actorUserID, sourceTaskID)
-	if pendingSlotTakenErr(err) {
-		// The clear above and this enqueue are separate commits, so a system
-		// retry created by a concurrent FailTask can take the pending slot in
-		// between. CreateRetryTask yields the slot when it is already occupied,
-		// but it cannot yield to a row that does not exist yet, so a retry
-		// committing inside this window gets there first. Clear once more and
-		// retry: the deliberate human action is the one that should hold the
-		// slot. Bounded to a single extra attempt — a second collision would mean
-		// something is enqueueing in a loop, which is worth surfacing rather than
-		// spinning on.
+	//
+	// The single INSERT below is covered by TWO unique indexes at once —
+	// idx_one_pending_task_per_issue_agent_thread (migration 452) and, for a
+	// lineage-tracked rerun, idx_one_live_rerun_per_source_task_actor
+	// (migration 474) — so Postgres can report either constraint name
+	// depending on which one it evaluates first. On the SAME thread, N
+	// callers can collide on the pending slot at once (not just two): the
+	// clear-then-enqueue pair below is two separate commits, so every
+	// collision only proves one competitor got there first, not that all
+	// competitors are now accounted for. A single extra attempt is enough for
+	// two-way contention but not N-way, so loop a small, bounded number of
+	// times, reclaiming and re-enqueueing on every pendingSlotTakenErr — but
+	// only after findLiveRerun (above the loop and again before each reclaim)
+	// confirms no rival has already won this lineage in the meantime.
+	const maxRerunAttempts = 4
+	var task db.AgentTaskQueue
+	for attempt := 1; attempt <= maxRerunAttempts; attempt++ {
+		task, err = s.enqueueRerunTask(ctx, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, actorUserID, sourceTaskID)
+		if err == nil {
+			break
+		}
+		if !duplicateRerunLineageErr(err) && !pendingSlotTakenErr(err) {
+			break
+		}
+		// Whichever unique index the error names, check first whether this
+		// lineage's obligation is already fulfilled — a duplicateRerunLineageErr
+		// always means it is, and a pendingSlotTakenErr often does too, since
+		// the single INSERT is checked against both indexes atomically.
+		// Resolving here, before any further reclaim, is what keeps a reclaim
+		// from ever cancelling a rival attempt's already-admitted winner.
+		existing, findErr := findLiveRerun()
+		if findErr != nil {
+			return nil, findErr
+		}
+		if existing != nil {
+			slog.Info("issue rerun: lost concurrent admission race, returning winner",
+				"issue_id", util.UUIDToString(issueID),
+				"source_task_id", util.UUIDToString(sourceTaskID),
+				"existing_task_id", util.UUIDToString(existing.ID),
+			)
+			return existing, nil
+		}
+		// No live rerun yet: a duplicateRerunLineageErr with no row found here
+		// means the winner's task just went terminal between the constraint
+		// violation and this lookup (a vanishingly narrow window); a
+		// pendingSlotTakenErr means it's purely a thread-slot collision with
+		// no lineage winner at all. Either way it is safe to reclaim and
+		// retry below.
+		if !pendingSlotTakenErr(err) || attempt == maxRerunAttempts {
+			// A duplicateRerunLineageErr that reaches here (no live row found
+			// above) cannot be fixed by reclaiming the pending slot — the
+			// lineage index, not the thread slot, rejected the insert — so
+			// stop and surface it. A pendingSlotTakenErr that has exhausted
+			// every attempt is the genuinely pathological case (e.g.
+			// something enqueueing in a loop): worth surfacing rather than
+			// spinning on.
+			break
+		}
+		// The clear above (or the previous iteration's clear) and this
+		// enqueue are separate commits, so a system retry created by a
+		// concurrent FailTask, or another rerun caller on this same thread,
+		// can take the pending slot in between. CreateRetryTask yields the
+		// slot when it is already occupied, but it cannot yield to a row that
+		// does not exist yet, so whoever commits inside this window gets
+		// there first. Clear once more and retry: the deliberate human action
+		// is the one that should hold the slot.
 		slog.Info("issue rerun: pending slot taken concurrently, reclaiming",
 			"issue_id", util.UUIDToString(issueID),
 			"agent_id", util.UUIDToString(agentID),
+			"attempt", attempt,
 		)
 		cancelledCount += clearPendingSlot()
-		task, err = s.enqueueRerunTask(ctx, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, actorUserID, sourceTaskID)
-	}
-	if duplicateRerunLineageErr(err) && sourceTaskID.Valid && actorUserID.Valid {
-		// idx_one_live_rerun_per_source_task_actor (migration 474) closes the
-		// race the read-only replay guard above can't: two concurrent first
-		// admissions for the same (source task, actor) can both miss that read
-		// and both reach this insert, but only one wins the unique index. The
-		// loser did not fail — its obligation was already fulfilled by the
-		// winner — so fetch and return that row exactly like an ordinary
-		// replay, instead of surfacing the raw constraint violation.
-		existing, findErr := s.Queries.FindLiveRerunOfTask(ctx, db.FindLiveRerunOfTaskParams{
-			SourceTaskID: sourceTaskID,
-			ActorUserID:  actorUserID,
-		})
-		if findErr != nil {
-			return nil, fmt.Errorf("resolve concurrent rerun lineage winner: %w", findErr)
-		}
-		slog.Info("issue rerun: lost concurrent first-admission race, returning winner",
-			"issue_id", util.UUIDToString(issueID),
-			"source_task_id", util.UUIDToString(sourceTaskID),
-			"existing_task_id", util.UUIDToString(existing.ID),
-		)
-		return &existing, nil
 	}
 	if err != nil {
 		return nil, err

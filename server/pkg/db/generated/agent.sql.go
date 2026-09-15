@@ -1099,19 +1099,51 @@ SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
 WHERE issue_id = $1 AND agent_id = $2
   AND status IN ('queued', 'dispatched', 'deferred')
   AND comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id($3::uuid)
+  AND NOT (
+    $4::uuid IS NOT NULL
+    AND $5::uuid IS NOT NULL
+    AND rerun_of_task_id IS NOT DISTINCT FROM $4::uuid
+    AND originator_user_id IS NOT DISTINCT FROM $5::uuid
+  )
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name
 `
 
 type CancelPendingTasksByIssueAndAgentInThreadParams struct {
-	IssueID         pgtype.UUID `json:"issue_id"`
-	AgentID         pgtype.UUID `json:"agent_id"`
-	ThreadCommentID pgtype.UUID `json:"thread_comment_id"`
+	IssueID             pgtype.UUID `json:"issue_id"`
+	AgentID             pgtype.UUID `json:"agent_id"`
+	ThreadCommentID     pgtype.UUID `json:"thread_comment_id"`
+	ProtectSourceTaskID pgtype.UUID `json:"protect_source_task_id"`
+	ProtectActorUserID  pgtype.UUID `json:"protect_actor_user_id"`
 }
 
 // Cancel only the not-yet-started plan in the selected thread. Other threads
 // retain their queues; running tasks are stopped explicitly through CancelTask.
+//
+// CHE-485: excludes a row that is already the live rerun for the caller's own
+// (source task, actor) lineage. Without this, a caller that lost the
+// idx_one_live_rerun_per_source_task_actor race on a PRIOR attempt but is
+// retrying the pending-slot reclaim would cancel the very winner it is about
+// to look up and return — the clear and the lineage check are separate
+// statements, so excluding the winner here is what makes the clear safe to
+// run before that check, instead of racing it.
+//
+// The lineage columns compare with IS NOT DISTINCT FROM, not "=": an
+// original (non-rerun) task has rerun_of_task_id NULL, and "=" against a
+// NULL column yields SQL NULL rather than FALSE, which propagates through
+// the AND chain and makes the outer NOT(...) NULL too — a NULL WHERE
+// predicate drops the row from the result just like FALSE would, so the
+// ordinary pending original task was being silently excluded from its own
+// cancellation. IS NOT DISTINCT FROM treats NULL = NULL as true equality
+// instead of unknown, so a non-rerun row never matches a non-NULL protect
+// param and stays eligible for cancellation as before.
 func (q *Queries) CancelPendingTasksByIssueAndAgentInThread(ctx context.Context, arg CancelPendingTasksByIssueAndAgentInThreadParams) ([]AgentTaskQueue, error) {
-	rows, err := q.db.Query(ctx, cancelPendingTasksByIssueAndAgentInThread, arg.IssueID, arg.AgentID, arg.ThreadCommentID)
+	rows, err := q.db.Query(ctx, cancelPendingTasksByIssueAndAgentInThread,
+		arg.IssueID,
+		arg.AgentID,
+		arg.ThreadCommentID,
+		arg.ProtectSourceTaskID,
+		arg.ProtectActorUserID,
+	)
 	if err != nil {
 		return nil, err
 	}

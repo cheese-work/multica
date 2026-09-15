@@ -236,11 +236,15 @@ func TestRerunIssueReplayConcurrentSubmissionsAdmitOnce(t *testing.T) {
 // TestRerunIssueReplayConcurrentSubmissionsAdmitOnce, no rerun is seeded
 // before the goroutines start, so every caller races
 // FindLiveRerunOfTask's read against an EMPTY lineage — the exact window
-// where two callers can both see "no live rerun yet" and both reach the
-// insert. idx_one_live_rerun_per_source_task_actor (migration 474) must
-// reject every insert but one, and duplicateRerunLineageErr must resolve the
-// losers to the winner's task instead of erroring or leaving the winner
-// cancelled.
+// where multiple callers can both see "no live rerun yet" and both reach the
+// insert. All goroutines share ONE trigger comment (pgtype.UUID{}, matching
+// what real duplicate-rerun HTTP replays share), so they also all contend the
+// SAME idx_one_pending_task_per_issue_agent_thread slot at once — exercising
+// N-way contention on both unique indexes together, exactly as production
+// duplicate submissions do. idx_one_live_rerun_per_source_task_actor
+// (migration 474) must reject every insert but one, and the retry/resolution
+// logic in RerunIssue must settle every caller — winners and losers alike —
+// on the single admitted task instead of erroring or leaving it cancelled.
 func TestRerunIssueConcurrentFirstAdmissionSettlesOnce(t *testing.T) {
 	pool := newResolveOriginatorPool(t)
 	ctx := context.Background()
@@ -266,26 +270,6 @@ func TestRerunIssueConcurrentFirstAdmissionSettlesOnce(t *testing.T) {
 	actorUUID := util.MustParseUUID(actorID)
 
 	const concurrency = 25
-	// Each call gets its own trigger comment so every goroutine owns a
-	// distinct idx_one_pending_task_per_issue_agent_thread slot (issue_id,
-	// agent_id, comment_thread_id) — the pending-slot reclaim is a separate,
-	// already-covered race (TestRerunIssueReplayConcurrentSubmissionsAdmitOnce)
-	// with its own bounded single-retry contract. Sharing one thread slot
-	// across 25 goroutines would additionally contend that unrelated index
-	// and mask the first-admission race this test exists to isolate:
-	// idx_one_live_rerun_per_source_task_actor.
-	triggerCommentIDs := make([]pgtype.UUID, concurrency)
-	for i := 0; i < concurrency; i++ {
-		var commentID string
-		if err := pool.QueryRow(ctx, `
-			INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content)
-			VALUES ($1, $2, 'member', $3, 'concurrent rerun trigger') RETURNING id`,
-			issueID, workspaceID, actorID).Scan(&commentID); err != nil {
-			t.Fatalf("seed trigger comment %d: %v", i, err)
-		}
-		triggerCommentIDs[i] = util.MustParseUUID(commentID)
-	}
-
 	var wg sync.WaitGroup
 	results := make([]string, concurrency)
 	errs := make([]error, concurrency)
@@ -293,7 +277,7 @@ func TestRerunIssueConcurrentFirstAdmissionSettlesOnce(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			task, err := svc.RerunIssue(ctx, util.MustParseUUID(issueID), orig.ID, triggerCommentIDs[idx], actorUUID, allow)
+			task, err := svc.RerunIssue(ctx, util.MustParseUUID(issueID), orig.ID, pgtype.UUID{}, actorUUID, allow)
 			if err != nil {
 				errs[idx] = err
 				return
