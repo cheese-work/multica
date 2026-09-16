@@ -576,6 +576,16 @@ func TestLoadConfig_SkipsMulticaHooksFromLoginShellFallback(t *testing.T) {
 	if _, err := os.Stat(sh); err != nil {
 		t.Skipf("no /bin/sh available: %v", err)
 	}
+	// CHE-522: on the blacksmith-2vcpu-ubuntu-2404 image, `/bin/sh -ilc` does
+	// not inherit the process's HOME env var into the login shell (it reverts
+	// to the passwd-entry home instead of the t.Setenv override), so the
+	// hooks-dir shadow check never matches and this test's assumption about
+	// login-shell env propagation does not hold. Confirmed via the
+	// login-shell-resolve-diagnostic CI job comparing ubuntu-latest and
+	// blacksmith-2vcpu-ubuntu-2404 side by side. Root cause not yet fixed.
+	if os.Getenv("BLACKSMITH_RUNNER_MESSAGE_WAIT_MS") != "" {
+		t.Skip("blacksmith-2vcpu-ubuntu-2404: login shell does not propagate HOME (CHE-522)")
+	}
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
