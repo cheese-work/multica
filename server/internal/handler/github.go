@@ -160,7 +160,7 @@ type GitHubMergeAnnouncementResponse struct {
 	Status string `json:"status"`
 	// DeliveryGUID is the GitHub delivery id that first enqueued this record,
 	// when known — an audit trail back to GitHub's own delivery log, not the
-	// dedup identity (see 471_github_merge_announcement_identity_uidx.up.sql).
+	// dedup identity (see 492_github_merge_announcement_identity_uidx.up.sql).
 	DeliveryGUID *string `json:"delivery_guid,omitempty"`
 	AttemptCount int32   `json:"attempt_count"`
 	// LastError is the sanitized reason from the most recent attempt, present
@@ -1466,7 +1466,7 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	// Audit-only: GitHub mints a new delivery GUID on every redelivery of the
 	// same logical event, so it cannot be the merge-announcement dedup key
 	// (that's the identity index on workspace/provider/repository/pr/issue/
-	// event_kind — see 471_github_merge_announcement_identity_uidx.up.sql).
+	// event_kind — see 492_github_merge_announcement_identity_uidx.up.sql).
 	// It's still recorded on the announcement row for tracing a specific
 	// delivery back through GitHub's own logs.
 	deliveryGUID := r.Header.Get("X-GitHub-Delivery")
@@ -2708,6 +2708,16 @@ func (h *Handler) lookupIssueByIdentifier(ctx context.Context, workspaceID pgtyp
 // forever, or (worse) let a skipped non-terminal unstaged child through.
 // Every direct child's effective status is resolved and checked here.
 func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, workspaceID string) {
+	// An issue leaves Triage only by being accepted; a merged "Closes" PR
+	// links to it but must not move it out. (MUL-7189 §2.2)
+	//
+	// Checked before the child scan below: this is a field read on an issue
+	// already in hand, so a triaged issue short-circuits without spending a
+	// ListChildIssues round-trip.
+	if issue.TriageState.Valid {
+		return
+	}
+
 	children, err := h.Queries.ListChildIssues(ctx, issue.ID)
 	if err != nil {
 		slog.Warn("github: advance issue to done: list children failed", "err", err, "issue_id", uuidToString(issue.ID))
