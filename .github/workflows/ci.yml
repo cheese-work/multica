@@ -798,6 +798,12 @@ jobs:
         run: |
           readlink -f /bin/sh
           /bin/sh -c 'echo dash-or-posix-sh-check' || true
+          echo "id: $(id)"
+          echo "outer PPID=$$ parent-of-shell-check"
+          # dash refuses to trust ENV (or drops privileges) when the real and
+          # effective uid/gid differ — this checks whether that's the cause
+          # of the empty $HOME/$hc seen only on Blacksmith.
+          python3 -c "import os; print('ruid', os.getuid(), 'euid', os.geteuid(), 'rgid', os.getgid(), 'egid', os.getegid())" || true
       - name: Reproduce the login-shell resolver in isolation
         run: |
           set -x
@@ -812,7 +818,9 @@ jobs:
           chmod +x "$REAL_BIN/codex"
           RC="$WORK/sh.rc"
           echo "export PATH=\"$HOME_DIR/.multica/hooks:$REAL_BIN:\$PATH\"" > "$RC"
-          SCRIPT='for n in codex; do
+          echo "DEBUG outer id=$(id) HOME_DIR=$HOME_DIR"
+          SCRIPT='echo "DEBUG inner id=$(id) HOME=${HOME:-<unset>} ENV=${ENV:-<unset>}" >&2
+          for n in codex; do
             unalias "$n" 2>/dev/null
             unset -f "$n" 2>/dev/null
             p=$(command -v "$n" 2>/dev/null) || continue
