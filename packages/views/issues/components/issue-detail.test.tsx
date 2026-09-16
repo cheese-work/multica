@@ -2427,6 +2427,99 @@ describe("IssueDetail (shared)", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Show less" })).toBe(showLess));
   });
 
+  // CHE-554: pressing "Show N more replies" moves focus onto the button
+  // itself before the click completes — `mousedown` focuses the button,
+  // which fires `focusin` and joins the root in
+  // `rootIdsWithActiveFocusOrSelection`, which forces `lengthExpanded` via
+  // `forceThreadOpen`/`forceThreadExpanded`. That flips `hiddenCount` to 0
+  // and the button's render guard (comment-card.tsx: `!lengthExpanded &&
+  // threadProjection.hiddenCount > 0`) unmounts it mid-gesture, so the
+  // `mouseup`/`click` that should call `onThreadLengthExpandChange` lands on
+  // a detached node and never fires. Mirrors the real event order: focusin
+  // fires (mousedown's default focus action) BEFORE the click completes.
+  it("expands and persists on Show more even though the button's own mousedown focuses it mid-gesture", async () => {
+    const root = mockTimeline[0]!;
+    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+      ...mockTimeline[1]!,
+      id: `showmore-reply-${i}`,
+      parent_id: root.id,
+      content: `Showmore reply ${i}`,
+      created_at: `2026-01-16T00:0${i}:00Z`,
+    }));
+    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+    renderIssueDetail();
+    await screen.findByText("Showmore reply 3");
+    expect(screen.queryByText("Showmore reply 0")).not.toBeInTheDocument();
+
+    const showMore = await screen.findByRole("button", { name: /Show \d+ more repl/ });
+
+    // Real browsers focus the pressed button as part of `mousedown`'s
+    // default action, and that focus change fires `focusin` synchronously
+    // — before `mouseup`/`click` are dispatched. Reproduce that exact
+    // ordering rather than relying on Testing Library's `click()` helper,
+    // which never dispatches a `mousedown`-driven focus transition.
+    act(() => {
+      fireEvent.mouseDown(showMore);
+      showMore.focus();
+      fireEvent.focusIn(showMore);
+    });
+    act(() => {
+      fireEvent.mouseUp(showMore);
+      fireEvent.click(showMore);
+    });
+
+    // The click must still land: replies become visible and the expansion
+    // is written to the durable store, surviving the button's own unmount.
+    await waitFor(() => expect(screen.queryByText("Showmore reply 0")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: /Show \d+ more repl/ })).not.toBeInTheDocument();
+    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true);
+  });
+
+  // CHE-554 keyboard path: Tab focuses the button BEFORE any activation key
+  // is pressed, so `rootIdsWithActiveFocusOrSelection` already contains the
+  // root by the time Enter/Space fires the `click` — an even earlier version
+  // of the same race than the mouse path above. Confirms the fix covers
+  // keyboard activation too, per the task's explicit requirement.
+  it("expands and persists on Show more when activated by keyboard while already focused", async () => {
+    const root = mockTimeline[0]!;
+    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+      ...mockTimeline[1]!,
+      id: `showmore-kb-reply-${i}`,
+      parent_id: root.id,
+      content: `Showmore kb reply ${i}`,
+      created_at: `2026-01-16T00:0${i}:00Z`,
+    }));
+    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+    renderIssueDetail();
+    await screen.findByText("Showmore kb reply 3");
+
+    const showMore = await screen.findByRole("button", { name: /Show \d+ more repl/ });
+
+    // Focus lands on the button first (as Tab would produce), well before
+    // any key is pressed — this is what makes the keyboard path a stricter
+    // reproduction than the mouse path: the root already carries the
+    // focus-only pin at the moment activation begins.
+    act(() => {
+      showMore.focus();
+      fireEvent.focusIn(showMore);
+    });
+    expect(document.activeElement).toBe(showMore);
+
+    // Enter/Space activation on a <button type="button"> dispatches `click`
+    // directly (jsdom and real browsers both do this as part of the
+    // button's default keydown handling) — there is no separate
+    // `mousedown`/`mouseup` pair on the keyboard path.
+    act(() => {
+      fireEvent.keyDown(showMore, { key: "Enter", code: "Enter" });
+      fireEvent.click(showMore);
+      fireEvent.keyUp(showMore, { key: "Enter", code: "Enter" });
+    });
+
+    await waitFor(() => expect(screen.queryByText("Showmore kb reply 0")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: /Show \d+ more repl/ })).not.toBeInTheDocument();
+    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true);
+  });
+
   it("replaces each queued run in place without moving replies behind later requests", async () => {
     const root = mockTimeline[0]!;
     const second = { ...root, id: "request-two", parent_id: root.id, content: "Second request", created_at: "2026-01-16T00:00:02Z" };
