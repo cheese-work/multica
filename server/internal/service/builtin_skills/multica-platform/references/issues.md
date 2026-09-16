@@ -9,6 +9,7 @@ Product contracts the runtime brief does not fully encode.
 - [Claim ownership without duplicating a run](#claim-ownership-without-duplicating-a-run)
 - [Who else is running right now](#who-else-is-running-right-now)
 - [Sub-issues: todo starts work now, backlog parks it](#sub-issues-todo-starts-work-now-backlog-parks-it)
+- [Per-issue token usage](#per-issue-token-usage)
 - [Incorrect to correct](#incorrect-to-correct)
 
 ## PR linking and close intent are two distinct contracts
@@ -175,12 +176,24 @@ comment rather than repeating the edit.
 
 ## Listing and ordering issues
 
-`issue list` reads one page at a time, with a server maximum of 100 issues.
-Advance `--offset` by the number of issues actually returned. If the server
-cannot count matching issues, it returns `failed to count issues` as an error;
-do not treat that failure as an empty or complete list. Older servers can
-substitute the page length for a failed count, so that value alone is not proof
-that all matching issues have been read.
+`issue list` reads one page at a time, with a server maximum of 100 issues per
+`--limit` (default 50). Advance `--offset` by the number of issues actually
+returned in that same response, not by the requested `--limit` — a final
+partial page returns fewer rows than asked for. In `--output json`, the
+response wraps the page as `{"issues": [...], "total": N, "limit": N,
+"offset": N, "has_more": bool}`; check `has_more` rather than comparing
+returned-count to `--limit` to decide whether to fetch another page. If the
+server cannot count matching issues, it returns `failed to count issues` as an
+error; do not treat that failure as an empty or complete list. Older servers
+can substitute the page length for a failed count, so that value alone is not
+proof that all matching issues have been read.
+
+`--fields <name,name,...>` (JSON output only) trims each returned issue to the
+named top-level fields instead of the full object — filtering happens
+client-side after the full response is fetched, so it shrinks CLI output size
+and agent context cost, not network or server-side cost. Use it when scanning
+many issues for a few fields (e.g. `--fields id,title,status,priority`); omit
+it for the full object. Has no effect on `--output table`.
 
 `issue reorder` reads the issue's project-scoped status column before writing
 its new position. When a legacy total is unavailable or no larger than its
@@ -426,6 +439,20 @@ terminal children.
 Read each sub-issue's description before promoting and only promote items whose
 stated dependencies are met; if a description conflicts with the parent's
 breakdown, leave it `backlog` and comment to confirm first.
+
+## Per-issue token usage
+
+```bash
+multica issue usage <issue-id> --output json
+```
+
+Returns aggregated token usage across the issue's runs. In table output, `RUNS`
+counts terminal runs only — a run still in flight is not yet reflected. A
+token total prefixed with `>=` is a lower bound, not the real total: one or
+more terminal runs did not report usage (e.g. an aborted or infra-failed run),
+so the true figure is at least that number but unknown above it. Do not read
+an unprefixed total and a `>=`-prefixed total as comparable without checking
+which one you have.
 
 ## Incorrect to correct
 
