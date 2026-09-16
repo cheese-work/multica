@@ -113,6 +113,12 @@
     "blocked": "Blocked",
     "cancelled": "Cancelled"
   },
+  "status_category": {
+    "unstarted": "Unstarted",
+    "started": "Started",
+    "done": "Done",
+    "closed": "Closed"
+  },
   "priority": {
     "urgent": "Urgent",
     "high": "High",
@@ -452,7 +458,8 @@
       "no_matches": "No matches",
       "previous": "Previous match",
       "next": "Next match",
-      "close": "Close find"
+      "close": "Close find",
+      "collapse_disabled": "Can't collapse while find is open"
     },
     "update_failed": "Failed to update issue",
     "link_copied": "Link copied",
@@ -504,6 +511,8 @@
     "delete_title": "Delete comment",
     "delete_desc": "This comment will be permanently deleted. This cannot be undone.",
     "delete_desc_with_replies": "This comment and all its replies will be permanently deleted. This cannot be undone.",
+    "delete_desc_replies_kept": "This comment will be permanently deleted. Its replies stay in the thread. This cannot be undone.",
+    "deleted_placeholder": "This comment was deleted",
     "delete_action": "Delete",
     "cancel_action": "Cancel",
     "edit_placeholder": "Edit comment...",

@@ -127,8 +127,23 @@ export function useInPageFind(options: {
   contentKey: unknown;
   /** When false, the Cmd/Ctrl+F shortcut is inert (e.g. issue still loading). */
   enabled?: boolean;
+  /**
+   * Readiness predicate (01-DESIGN "Find and target reveal lifecycle"):
+   * returns false until the host has committed the fully force-revealed DOM
+   * (every fold this find session needs open has actually landed). While
+   * false, every collector — the query-effect recompute AND the
+   * MutationObserver callback — is rejected outright: no Range is built, no
+   * highlight is painted, no match count is reported. This replaces a bare
+   * one-frame `requestAnimationFrame` guess with the host's own committed-
+   * generation evidence, so a query effect or async DOM churn can never walk
+   * pre-reveal DOM. Defaults to always-ready so callers that don't force any
+   * reveal (no fold gates to wait on) keep today's behavior unchanged.
+   */
+  isReady?: () => boolean;
 }): UseInPageFindResult {
-  const { container, contentKey, enabled = true } = options;
+  const { container, contentKey, enabled = true, isReady = () => true } = options;
+  const isReadyRef = useRef(isReady);
+  isReadyRef.current = isReady;
 
   const [open, setOpen] = useState(false);
   const [query, setQueryState] = useState("");
@@ -178,6 +193,14 @@ export function useInPageFind(options: {
   // Rebuild the match set from the live DOM. `resetActive` starts navigation
   // over at the first match (query changed); otherwise the active index is
   // preserved as content shifts underneath (streaming comment, re-highlight).
+  //
+  // Rejects outright (no Range built, no state touched beyond the standard
+  // "nothing to search" reset) when the host's readiness predicate reports
+  // the current reveal generation has not committed yet — 01-DESIGN "no
+  // query effect or MutationObserver callback can walk pre-reveal DOM". This
+  // check runs on EVERY call site (query effect, content-key effect, and the
+  // MutationObserver callback below), not just the initial open, because any
+  // of the three can fire while a fold is mid-transition.
   const recompute = useCallback(
     (resetActive: boolean) => {
       const root = containerRef.current;
@@ -186,6 +209,15 @@ export function useInPageFind(options: {
         clearHighlights();
         setMatchCount(0);
         setActiveIndex(-1);
+        return;
+      }
+      if (!isReadyRef.current()) {
+        // Pre-reveal or stale-generation: leave prior matches/highlights
+        // exactly as they are rather than clearing them, so a transient
+        // "not committed yet" tick (e.g. a fold gate mid-transition while
+        // the query is unchanged) never flashes "no matches" — the next
+        // ready recompute (query/content-key effect, or the readiness-edge
+        // effect below) supersedes this one.
         return;
       }
 
@@ -225,7 +257,9 @@ export function useInPageFind(options: {
 
   // Recompute when the query changes or the bar opens/closes → restart at the
   // first match. Deferred a frame so the flat (non-virtualized) render the host
-  // switches to on open has committed before we walk the DOM.
+  // switches to on open has committed before we walk the DOM — recompute's own
+  // readiness check above is the authoritative gate; this rAF is only a
+  // scheduling courtesy so the effect doesn't fire mid-commit.
   useEffect(() => {
     const raf = requestAnimationFrame(() => recomputeRef.current(true));
     return () => cancelAnimationFrame(raf);
@@ -237,6 +271,41 @@ export function useInPageFind(options: {
     const raf = requestAnimationFrame(() => recomputeRef.current(false));
     return () => cancelAnimationFrame(raf);
   }, [contentKey, open]);
+
+  // Re-arm the moment the host's readiness predicate flips to ready. Without
+  // this, a recompute rejected above (query/content-key effect fired before
+  // the committed generation landed) would never be retried — nothing else
+  // re-invokes it once the token commits, since the host's own re-render that
+  // publishes the token does not by itself change `query`/`contentKey`/`open`.
+  // `isReady` is a fresh closure identity from the caller on every render (it
+  // closes over the caller's committed-token state), so its identity itself
+  // is the change signal this effect needs — not a value it reads once.
+  useEffect(() => {
+    if (!open || !isReady()) return;
+    const raf = requestAnimationFrame(() => recomputeRef.current(false));
+    return () => cancelAnimationFrame(raf);
+  }, [open, isReady]);
+
+  // The moment readiness drops WHILE still open (a fold gate mid-transition,
+  // or the reveal generation invalidated because the issue/session changed
+  // underneath an already-open bar), drop every held Range immediately.
+  // Ranges live-track their text nodes, but a fold transition can REMOVE and
+  // replace those nodes outright (React unmount/remount, not just resize) —
+  // holding on to a Range across that boundary risks operating on a detached
+  // Range whose text node no longer exists. The next ready recompute rebuilds
+  // fresh Ranges once the new generation's DOM has actually committed; this
+  // effect only ever narrows the window where stale Ranges could be read, it
+  // never substitutes for the readiness gate in `recompute` itself.
+  const readyNowRef = useRef(isReady());
+  readyNowRef.current = isReady();
+  useEffect(() => {
+    if (!open) return;
+    if (readyNowRef.current) return;
+    rangesRef.current = [];
+    clearHighlights();
+    setMatchCount(0);
+    setActiveIndex(-1);
+  }, [open, isReady, clearHighlights]);
 
   // Async DOM churn (markdown/code highlight settling, streamed replies)
   // invalidates the ranges; re-derive them, coalescing bursts into one frame.

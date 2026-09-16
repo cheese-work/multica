@@ -160,7 +160,7 @@ type GitHubMergeAnnouncementResponse struct {
 	Status string `json:"status"`
 	// DeliveryGUID is the GitHub delivery id that first enqueued this record,
 	// when known — an audit trail back to GitHub's own delivery log, not the
-	// dedup identity (see 471_github_merge_announcement_identity_uidx.up.sql).
+	// dedup identity (see 492_github_merge_announcement_identity_uidx.up.sql).
 	DeliveryGUID *string `json:"delivery_guid,omitempty"`
 	AttemptCount int32   `json:"attempt_count"`
 	// LastError is the sanitized reason from the most recent attempt, present
@@ -1466,7 +1466,7 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	// Audit-only: GitHub mints a new delivery GUID on every redelivery of the
 	// same logical event, so it cannot be the merge-announcement dedup key
 	// (that's the identity index on workspace/provider/repository/pr/issue/
-	// event_kind — see 471_github_merge_announcement_identity_uidx.up.sql).
+	// event_kind — see 492_github_merge_announcement_identity_uidx.up.sql).
 	// It's still recorded on the announcement row for tracing a specific
 	// delivery back through GitHub's own logs.
 	deliveryGUID := r.Header.Get("X-GitHub-Delivery")
@@ -2415,17 +2415,128 @@ func extractIdentifiers(parts ...string) []string {
 	return out
 }
 
+// mdFenceLineRe matches a line consisting solely (aside from up to 3 leading
+// spaces of indent, per CommonMark) of a fence delimiter run of 3+ backticks
+// or 3+ tildes, capturing the delimiter character and run length, so the
+// scanner in stripMarkdownCodeSpans can find the matching close fence.
+//
+// The info string (anything after the delimiter run) is validated
+// delimiter-specifically, not with one shared class: CommonMark forbids a
+// backtick anywhere in a backtick fence's info string (it would be
+// ambiguous with an inline code span), but a tilde fence's info string may
+// contain backticks freely. A shared `[^`\n]*` class rejected valid tilde
+// fences such as `~~~ lang`example` and left their body's closing keyword
+// exposed to the close parser — caught in independent review (CHE-520).
+var mdFenceLineRe = regexp.MustCompile("(?m)^ {0,3}(?:(`{3,})[^`\n]*|(~{3,})[^\n]*)$")
+
+// stripMarkdownCodeSpans blanks out fenced code blocks and inline code spans,
+// replacing each with a single space so surrounding word boundaries and
+// adjacency checks still behave as if the span were absent. This keeps a PR
+// body that merely quotes a closing keyword as documentation — e.g. a body
+// describing what another PR wrote in a code span reading "Closes CHE-380"
+// — from being treated as a live closing declaration (CHE-520).
+//
+// Both fence and inline-span matching follow CommonMark's actual delimiter
+// rules rather than a fixed-width regex, because a naive “ `...` “ /
+// ```` ```...``` ```` pattern misses two valid forms a PR author can use to
+// quote text containing a backtick: a longer backtick run as the inline-span
+// delimiter (“ “Closes CHE-380“ “), and a tilde fence (`~~~`). Both left
+// a live closing keyword unstripped and re-triggered the CHE-520 false
+// auto-close (caught in independent review of the initial fixed-width fix).
+//
+//   - Fenced blocks: a line of 3+ backticks or 3+ tildes opens a fence; it is
+//     closed by the next line consisting of a run of the same character at
+//     least as long (CommonMark fenced-code-block rule). An unterminated
+//     fence extends to end of input.
+//   - Inline spans: a run of N backticks opens a span; it is closed by the
+//     next run of exactly N backticks (CommonMark code-span rule). A run
+//     with no matching close of the same length is left as plain text.
+func stripMarkdownCodeSpans(s string) string {
+	// Pass 1: fenced code blocks, since a fence's own delimiter run must
+	// never be mistaken for inline-span backticks.
+	var out strings.Builder
+	rest := s
+	for {
+		loc := mdFenceLineRe.FindStringSubmatchIndex(rest)
+		if loc == nil {
+			out.WriteString(rest)
+			break
+		}
+		openStart, openEnd := loc[0], loc[1]
+		var delim string
+		if loc[2] != -1 {
+			delim = rest[loc[2]:loc[3]] // backtick fence
+		} else {
+			delim = rest[loc[4]:loc[5]] // tilde fence
+		}
+		out.WriteString(rest[:openStart])
+		out.WriteString(" ")
+
+		afterOpen := rest[openEnd:]
+		closeRe := regexp.MustCompile("(?m)^ {0,3}" + regexp.QuoteMeta(string(delim[0])) + "{" + strconv.Itoa(len(delim)) + ",}[ \t]*$")
+		if cLoc := closeRe.FindStringIndex(afterOpen); cLoc != nil {
+			rest = afterOpen[cLoc[1]:]
+		} else {
+			rest = ""
+		}
+	}
+	s = out.String()
+
+	// Pass 2: inline code spans via CommonMark's equal-length-run rule.
+	out.Reset()
+	i := 0
+	for i < len(s) {
+		if s[i] != '`' {
+			out.WriteByte(s[i])
+			i++
+			continue
+		}
+		start := i
+		for i < len(s) && s[i] == '`' {
+			i++
+		}
+		runLen := i - start
+		closeIdx := -1
+		closeEnd := -1
+		j := i
+		for j < len(s) {
+			if s[j] != '`' {
+				j++
+				continue
+			}
+			k := j
+			for k < len(s) && s[k] == '`' {
+				k++
+			}
+			if k-j == runLen {
+				closeIdx, closeEnd = j, k
+				break
+			}
+			j = k
+		}
+		if closeIdx == -1 {
+			out.WriteString(s[start:i])
+			continue
+		}
+		out.WriteString(" ")
+		i = closeEnd
+	}
+	return out.String()
+}
+
 // extractClosingIdentifiers pulls every "PREFIX-NUMBER" identifier that
 // appears immediately after a GitHub-style closing keyword in the supplied
 // fields, deduplicating in input order. Identifiers in branch names are
 // intentionally excluded — callers should pass only title and body — because
 // branch names are not natural-language fields and treating "mul-1/fix-login"
 // as a close declaration would silently re-open the bug this gate is meant
-// to fix.
+// to fix. Markdown code spans are stripped first so a quoted closing keyword
+// in documentation prose is never mistaken for a live closing declaration.
 func extractClosingIdentifiers(parts ...string) []string {
 	seen := map[string]struct{}{}
 	out := []string{}
 	for _, src := range parts {
+		src = stripMarkdownCodeSpans(src)
 		for _, m := range closingIdentifierRe.FindAllStringSubmatch(src, -1) {
 			ident := strings.ToUpper(m[1]) + "-" + m[2]
 			if _, dup := seen[ident]; dup {
@@ -2579,7 +2690,53 @@ func (h *Handler) lookupIssueByIdentifier(ctx context.Context, workspaceID pgtyp
 	return issue, true
 }
 
+// advanceIssueToDone auto-completes an issue whose linked PR(s) merged with
+// closing intent. It refuses the transition when the issue still has an
+// open child: aggregating only linked-PR state let a parent flip to `done`
+// while its own sub-issues were still `in_progress` or `todo`, silently
+// hiding unfinished work (CHE-520). Children already in a terminal status
+// category (done/cancelled, including custom statuses that resolve to
+// either) do not block the parent.
+//
+// This deliberately does NOT reuse resolveTerminalChildren: that helper
+// skips unstaged siblings whenever any sibling in the set is staged (it
+// implements the stage-BARRIER rule for the parent-notification path, where
+// an unstaged sibling is genuinely irrelevant to closing a specific stage).
+// The auto-done gate here has no stage concept — it is "every direct child
+// must be terminal, full stop" — so skipping any child would let a mixed
+// staged/unstaged, all-terminal child set wrongly block auto-completion
+// forever, or (worse) let a skipped non-terminal unstaged child through.
+// Every direct child's effective status is resolved and checked here.
 func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, workspaceID string) {
+	// An issue leaves Triage only by being accepted; a merged "Closes" PR
+	// links to it but must not move it out. (MUL-7189 §2.2)
+	//
+	// Checked before the child scan below: this is a field read on an issue
+	// already in hand, so a triaged issue short-circuits without spending a
+	// ListChildIssues round-trip.
+	if issue.TriageState.Valid {
+		return
+	}
+
+	children, err := h.Queries.ListChildIssues(ctx, issue.ID)
+	if err != nil {
+		slog.Warn("github: advance issue to done: list children failed", "err", err, "issue_id", uuidToString(issue.ID))
+		return
+	}
+	if len(children) > 0 {
+		effective := h.childStatusResolver(ctx)
+		for _, child := range children {
+			status, err := effective(child)
+			if err != nil {
+				slog.Warn("github: advance issue to done: resolve child status failed", "err", err, "issue_id", uuidToString(issue.ID), "child_id", uuidToString(child.ID))
+				return
+			}
+			if !isTerminalChildStatus(status) {
+				return
+			}
+		}
+	}
+
 	updated, err := h.Queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
 		ID:          issue.ID,
 		Status:      "done",

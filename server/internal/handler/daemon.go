@@ -33,6 +33,7 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
+	"github.com/multica-ai/multica/server/pkg/protocollint"
 	"github.com/multica-ai/multica/server/pkg/redact"
 	"github.com/multica-ai/multica/server/pkg/skillbundle"
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
@@ -1034,7 +1035,9 @@ type DaemonHeartbeatRequest struct {
 // cleanly un-run from the client side if the context expires mid-script. We
 // therefore only invoke PopPending after HasPending confirms there is work
 // to claim, so we never start a claim we might have to abort.
-const heartbeatHasPendingTimeout = 1 * time.Second
+// Kept as a variable so the slow-probe test can preserve this relationship
+// without paying the production timeout; production never reassigns it.
+var heartbeatHasPendingTimeout = 1 * time.Second
 
 // maxLocalSkillImportBatch is how many pending import requests the heartbeat
 // handler pops per cycle. Higher values let the daemon process more imports
@@ -1633,10 +1636,11 @@ func parseRuntimeConnectedAppsForClaim(raw []byte, taskID pgtype.UUID) []runtime
 }
 
 // repairStaleCommentPlanIfNeeded handles the edit/delete race where a claimed
-// task's trigger_comment_id was cleared but coalesced_comment_ids survive: such
-// a task must never be dispatched as a generic assignment — its user-scoped MCP
-// overlay still belongs to the deleted author, and the prompt would read issue
-// history exposing that stale user's capabilities. When it applies, the task is
+// task's trigger was deleted (trigger_comment_id cleared, or pointing at a
+// tombstone) but coalesced_comment_ids survive: such a task must never be
+// dispatched as a generic assignment — its user-scoped MCP overlay still
+// belongs to the deleted author, and the prompt would read issue history
+// exposing that stale user's capabilities. When it applies, the task is
 // cancelled and its surviving comments are replayed through normal routing
 // (which recomputes originator + connected-app context).
 //
@@ -1646,8 +1650,16 @@ func parseRuntimeConnectedAppsForClaim(raw []byte, taskID pgtype.UUID) []runtime
 // proceed with a normal claim. Shared by the per-runtime and batch claim
 // handlers so the batch path can't silently drop surviving comments (MUL-4257).
 func (h *Handler) repairStaleCommentPlanIfNeeded(ctx context.Context, task *db.AgentTaskQueue, runtimeWorkspaceID string) (handled bool, failure *claimBuildFailure) {
-	if task.TriggerCommentID.Valid || len(task.CoalescedCommentIds) == 0 {
+	if len(task.CoalescedCommentIds) == 0 {
 		return false, nil
+	}
+	if task.TriggerCommentID.Valid {
+		// A trigger deleted while it had replies stays as a tombstone instead of
+		// clearing trigger_comment_id (#8296); repair it like a removed one.
+		trigger, err := h.Queries.GetComment(ctx, task.TriggerCommentID)
+		if err != nil || !trigger.DeletedAt.Valid {
+			return false, nil
+		}
 	}
 	if !task.IssueID.Valid {
 		return true, &claimBuildFailure{outcome: "error_stale_comment_plan", status: http.StatusInternalServerError, message: "comment task has no issue"}
@@ -2137,6 +2149,15 @@ func chatSessionResumeFallbackNeeded(priorSessionID, priorWorkDir string) bool {
 
 func rerunSourceMatchesTaskScope(task, source db.AgentTaskQueue) bool {
 	if task.AgentID != source.AgentID {
+		return false
+	}
+	// A triage run is never a source to continue from (MUL-7189 §5.6). The
+	// exclusion GetLastTaskSession applies cannot reach this branch, which
+	// resolves the session from the task the user named rather than from the
+	// (agent, issue) lookup. RerunIssue already refuses a triage source, so this
+	// is the second lock on the same door — and the one that still holds for a
+	// row written by an older server mid rolling-deploy.
+	if service.IsTriageTask(source) {
 		return false
 	}
 	if task.IssueID.Valid {
@@ -2629,10 +2650,11 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			// comment UUID can never pull another workspace's comment text into
 			// this agent's prompt. The task's issue workspace is asserted equal
 			// to runtime.WorkspaceID below, so this is the right tenant (MUL-4252).
+			// A deleted trigger's tombstone is treated like a removed row.
 			if comment, err := h.Queries.GetCommentInWorkspace(r.Context(), db.GetCommentInWorkspaceParams{
 				ID:          effectiveTriggerUUID,
 				WorkspaceID: runtime.WorkspaceID,
-			}); err == nil {
+			}); err == nil && !comment.DeletedAt.Valid {
 				resp.TriggerCommentContent = comment.Content
 				resp.TriggerThreadID = uuidToString(comment.ID)
 				if comment.ParentID.Valid {
@@ -3330,10 +3352,11 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				resp.IssueStatusesOmitted++
 				continue
 			}
+			// Older daemons only render the seven legacy category values.
 			resp.IssueStatuses = append(resp.IssueStatuses, TaskIssueStatusData{
 				Key:         entry.Key,
 				Name:        entry.Name,
-				Category:    entry.Category,
+				Category:    issuestatus.WireCategory(entry.Key, entry.Category),
 				Description: entry.Description,
 			})
 		}
@@ -3497,7 +3520,7 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 		outcome = "no_task"
 		return
 	}
-	if !task.TriggerCommentID.Valid && len(task.CoalescedCommentIds) > 0 {
+	if len(task.CoalescedCommentIds) > 0 {
 		handled, failure := h.repairStaleCommentPlanIfNeeded(r.Context(), task, runtimeWorkspaceID)
 		if handled {
 			if failure != nil {
@@ -4012,6 +4035,13 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 
 	h.emitIssueExecutedOnFirstCompletion(r, task)
 
+	// CHE-529: mechanical pre-exit protocol lint. Runs after the completion
+	// transaction has already committed, purely to observe and log — a
+	// violation here never blocks or unwinds the completion the daemon is
+	// waiting on. See runProtocolLint's doc for exactly which assertions are
+	// checked and which are not.
+	h.runProtocolLint(r.Context(), *task, workspaceID, req.PRURL)
+
 	// MUL-4195: guarantee at-least-once processing. If a member posted a
 	// deliberate comment while this run was executing (or one was merged into
 	// it after its context was built), schedule a single follow-up so the
@@ -4035,6 +4065,135 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("task completed", "task_id", taskID, "agent_id", uuidToString(task.AgentID))
 	writeJSON(w, http.StatusOK, taskToResponse(*task, workspaceID))
+}
+
+// protocolLintCommentLimit bounds how many comments runProtocolLint reads back
+// for one completing run. The lint only ever needs the comments created
+// during this run's own lifetime (task.StartedAt onward) on its own issue, so
+// this is a generous safety cap against a pathological thread, not a real
+// limit in practice.
+const protocolLintCommentLimit = 500
+
+// runProtocolLint is CHE-529's deterministic, mechanical replacement for the
+// CLAUDE.md/AGENTS.md prose pre-exit protocol: it runs on the one normal
+// pre-exit path every issue-linked agent turn's completion goes through
+// (CompleteTask, above) and checks the run's own persisted comments against
+// facts the server already recorded, instead of trusting the agent's own
+// narration that it followed the workflow.
+//
+// A violation is logged loudly, naming exactly which assertion failed
+// (protocollint.Violation.Code / Message) — never a silent boolean — but does
+// NOT fail or unwind the request: CompleteTask's transaction already
+// committed, and the daemon is blocked on this HTTP response for a run that
+// has already ended. There is nothing left to roll back, and refusing the
+// callback would just make the daemon retry an already-terminal completion.
+// This is deliberately an observability gate today; promoting a specific
+// violation to something that blocks a LATER action (e.g. refusing to move an
+// issue to in_review) is a follow-up, not attempted here.
+//
+// Scope, matched to what CompleteTask's request actually carries and what the
+// server persists elsewhere in this codebase (see the CHE-529 PR description
+// for the full investigation):
+//   - Reply-parent linkage (protocollint assertion 2) is checked from the
+//     comments this run actually posted against both TriggerCommentID and
+//     CoalescedCommentIds, which is complete and reliable: the server's own
+//     CreateComment handler already rejects a mismatched parent at write time
+//     (taskCoversReplyParent in comment.go, which accepts the same two
+//     sources), so a persisted mismatch here would mean that write-time gate
+//     regressed.
+//   - Completion-evidence well-formedness (assertion 4, syntactic slice) is
+//     checked from the same pr_url this handler already persists into
+//     task.Result.
+//   - Unsupported human-waiver claims (assertion 5) are checked by scanning
+//     this run's own comments against every OTHER comment on the issue in the
+//     same window for an actual member grant.
+//   - Comment-authoring-mechanism (assertion 1: --content-file vs inline
+//     --content) and status-change readback (assertion 3) are NOT checked
+//     here: the CLI collapses --content/--content-stdin/--content-file into a
+//     single `content` string before the API ever sees it (cmd_issue.go:
+//     resolveTextFlag), and issue.status has no change-history table, so
+//     neither has a persisted fact for this function to check against. See
+//     protocollint's package doc and Input.StatusReadBack's doc for the full
+//     rationale; inventing a proxy signal for either would be exactly the
+//     "approximate compliance from something else" this task explicitly
+//     forbids.
+func (h *Handler) runProtocolLint(ctx context.Context, task db.AgentTaskQueue, workspaceID string, claimedEvidenceURL string) {
+	if !task.IssueID.Valid {
+		// Chat / non-issue tasks have no issue thread for reply-parent or
+		// waiver checks to run against. Evidence-URL well-formedness is the
+		// only assertion that could still apply, and it needs no issue
+		// context, so run it directly rather than skipping the run outright.
+		in := protocollint.Input{RunID: uuidToString(task.ID), ClaimedEvidenceURL: claimedEvidenceURL}
+		logProtocolLintViolations(task, protocollint.Check(in))
+		return
+	}
+
+	// task.StartedAt is set by StartTask before a task can ever reach
+	// 'running', and CompleteAgentTask's own WHERE status = 'running' guard
+	// (task.go:CompleteTask) means only a task that passed through that
+	// transition can reach this handler at all — so StartedAt is expected to
+	// always be valid here. Guard it anyway: created_at > $3 against an
+	// invalid/NULL timestamptz parameter matches no rows in Postgres, which
+	// would silently skip every check below instead of failing loudly, so an
+	// unexpectedly-unset StartedAt falls back to the task's own CreatedAt
+	// (always valid) rather than a NULL comparison.
+	since := task.StartedAt
+	if !since.Valid {
+		since = task.CreatedAt
+	}
+
+	comments, err := h.Queries.ListCommentsSinceForIssue(ctx, db.ListCommentsSinceForIssueParams{
+		IssueID:     task.IssueID,
+		WorkspaceID: parseUUID(workspaceID),
+		CreatedAt:   since,
+		Limit:       protocolLintCommentLimit,
+	})
+	if err != nil {
+		slog.Warn("protocol lint: failed to load comments for issue; skipping",
+			"task_id", uuidToString(task.ID), "issue_id", uuidToString(task.IssueID), "error", err)
+		return
+	}
+
+	in := protocollint.Input{
+		RunID: uuidToString(task.ID),
+		// uuidToString renders an invalid/NULL UUID as "", which is exactly
+		// how protocollint.Input represents "this run has no trigger
+		// comment" (assignment/autopilot/chat-input triggered tasks).
+		TriggerCommentID:    uuidToString(task.TriggerCommentID),
+		CoalescedCommentIDs: uuidsToStrings(task.CoalescedCommentIds),
+		ClaimedEvidenceURL:  claimedEvidenceURL,
+	}
+	for _, c := range comments {
+		if c.SourceTaskID.Valid && uuidToString(c.SourceTaskID) == uuidToString(task.ID) {
+			in.PostedComments = append(in.PostedComments, protocollint.PostedComment{
+				ID:       uuidToString(c.ID),
+				ParentID: uuidToString(c.ParentID),
+				Content:  c.Content,
+			})
+			continue
+		}
+		in.OtherComments = append(in.OtherComments, protocollint.OtherComment{
+			AuthorType: c.AuthorType,
+			Content:    c.Content,
+		})
+	}
+
+	logProtocolLintViolations(task, protocollint.Check(in))
+}
+
+// logProtocolLintViolations is the "fail loudly" half of runProtocolLint: each
+// violation is logged at Error level, individually, naming its code and full
+// message, rather than folded into one bulk boolean-style log line.
+func logProtocolLintViolations(task db.AgentTaskQueue, violations []protocollint.Violation) {
+	for _, v := range violations {
+		slog.Error("protocol lint violation",
+			"task_id", uuidToString(task.ID),
+			"issue_id", uuidToString(task.IssueID),
+			"agent_id", uuidToString(task.AgentID),
+			"code", v.Code,
+			"message", v.Message,
+		)
+	}
 }
 
 // emitIssueExecutedOnFirstCompletion atomically flips issue.first_executed_at
@@ -4320,7 +4479,9 @@ func (h *Handler) buildCoalescedCommentData(ctx context.Context, workspaceID pgt
 			ID:          id,
 			WorkspaceID: workspaceID,
 		})
-		if err != nil {
+		// A tombstone (deleted while it still had replies) is as missing as a
+		// removed row: there is no body left to deliver.
+		if err != nil || comment.DeletedAt.Valid {
 			continue
 		}
 		data := CoalescedCommentData{
@@ -5527,7 +5688,34 @@ type batchIssueGCCheckItem struct {
 	ID        string     `json:"id"`
 	Found     bool       `json:"found"`
 	Status    string     `json:"status,omitempty"`
+	Category  string     `json:"category,omitempty"`
 	UpdatedAt *time.Time `json:"updated_at,omitempty"`
+}
+
+// issueGCWire encodes an issue's lifecycle for both GC check endpoints: the
+// four-value `category` a current daemon decides on, and the legacy
+// seven-value `status` enum installed daemons still match literally.
+//
+// `status` predates custom statuses — the daemon tests it against the 7
+// built-in keys and fails closed on anything else (isKnownIssueStatus in
+// daemon/gc.go) — so the stored key cannot be handed back raw. A nonterminal
+// custom key silently disables the GCCompletedTaskTTL full-cleanup path, and a
+// four-value category is not in that vocabulary either. GC consumes exactly one
+// lifecycle fact ("is this issue terminal?"), which is why projecting a custom
+// status onto a built-in key here grants it no built-in behavior anywhere else.
+//
+// A status with no lifecycle category — an unresolvable key after a failed
+// catalog read, or a status created since the resolver's snapshot — is returned
+// raw with no category, so every daemon fails closed and reclaims artifacts
+// only. (MUL-7364)
+//
+// Triage does not reach this: it is not a status, and a Triage entry carries an
+// ordinary non-terminal one, which already reclaims artifacts only.
+func issueGCWire(status, category string) (wireStatus, wireCategory string) {
+	if !issuestatus.IsCategory(category) {
+		return status, ""
+	}
+	return issuestatus.WireCategory(status, category), category
 }
 
 // BatchIssueGCCheck returns one explicit result for every requested issue ID.
@@ -5585,8 +5773,8 @@ func (h *Handler) BatchIssueGCCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ONE resolver for the whole batch, not a point lookup per row. The
-	// package-level Effective issues a GetIssueStatusEntryByKey for every custom
-	// key it sees, so resolving inside this loop cost up to maxIssueGCBatchSize
+	// package-level helpers issue a GetIssueStatusEntryByKey for every custom
+	// key they see, so resolving inside this loop cost up to maxIssueGCBatchSize
 	// catalog queries per request — on an endpoint whose entire purpose is to
 	// replace per-issue requests, and which every installed daemon runs on a
 	// timer. The resolver reads the catalog lazily and at most once, so an
@@ -5599,10 +5787,11 @@ func (h *Handler) BatchIssueGCCheck(w http.ResponseWriter, r *http.Request) {
 		if found {
 			// The daemon consumes this purely as a machine signal ("is this
 			// issue terminal, so its workdir can be reclaimed?") and has no
-			// database of its own, so the canonical status is resolved here.
+			// database of its own, so the lifecycle is resolved here.
 			// Normalizing server-side also means daemons that predate custom
 			// statuses keep making correct GC decisions. (MUL-6243)
-			item.Status = resolver.Effective(r.Context(), h.issueStatusCatalog(), row.Status)
+			item.Status, item.Category = issueGCWire(row.Status,
+				resolver.Category(r.Context(), h.issueStatusCatalog(), row.Status))
 			updatedAt := row.UpdatedAt.Time
 			item.UpdatedAt = &updatedAt
 		}
@@ -5628,10 +5817,13 @@ func (h *Handler) GetIssueGCCheck(w http.ResponseWriter, r *http.Request) {
 	if !h.requireDaemonWorkspaceAccess(w, r, uuidToString(issue.WorkspaceID)) {
 		return
 	}
+	// Same reasoning as BatchIssueGCCheck: normalize server-side so the
+	// daemon's terminal-status test stays correct. (MUL-6243)
+	status, category := issueGCWire(issue.Status,
+		issuestatus.Category(r.Context(), h.issueStatusCatalog(), issue.WorkspaceID, issue.Status))
 	writeJSON(w, http.StatusOK, map[string]any{
-		// Same reasoning as BatchIssueGCCheck: normalize server-side so the
-		// daemon's terminal-status test stays correct. (MUL-6243)
-		"status":     issuestatus.Effective(r.Context(), h.issueStatusCatalog(), issue.WorkspaceID, issue.Status),
+		"status":     status,
+		"category":   category,
 		"updated_at": issue.UpdatedAt.Time,
 	})
 }

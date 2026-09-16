@@ -6,9 +6,15 @@
 
 ## Related Issue
 
-<!-- Link the issue this PR addresses. If no issue exists, consider creating one first. -->
+<!-- Link the issue this PR addresses. If no issue exists, consider creating one first.
+     Replace the line below with exactly one disposition, using the issue's full
+     key (e.g. CHE-123), not a bare `#number`:
+     - Full delivery of the issue's acceptance criteria: Closes CHE-123
+     - Partial delivery, a stack layer, or a broader parent: Refs CHE-123, plus a
+       note on the remaining scope and which PR is intended to actually close it.
+     This section must contain no other line starting with Closes/Fixes/Resolves/Refs. -->
 
-Closes #
+REPLACE-THIS-LINE-WITH-YOUR-DISPOSITION
 
 ## Type of Change
 

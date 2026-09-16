@@ -111,6 +111,12 @@
     "blocked": "已阻塞",
     "cancelled": "已取消"
   },
+  "status_category": {
+    "unstarted": "未开始",
+    "started": "已开始",
+    "done": "已完成",
+    "closed": "已关闭"
+  },
   "priority": {
     "urgent": "紧急",
     "high": "高",
@@ -444,7 +450,8 @@
       "no_matches": "无匹配结果",
       "previous": "上一个",
       "next": "下一个",
-      "close": "关闭查找"
+      "close": "关闭查找",
+      "collapse_disabled": "查找已打开时无法收起"
     },
     "update_failed": "更新任务失败",
     "link_copied": "已复制链接",
@@ -494,6 +501,8 @@
     "delete_title": "删除评论",
     "delete_desc": "这条评论会被永久删除，无法撤销。",
     "delete_desc_with_replies": "这条评论及其全部回复会被永久删除，无法撤销。",
+    "delete_desc_replies_kept": "这条评论会被永久删除，它的回复会保留在讨论中，无法撤销。",
+    "deleted_placeholder": "评论已删除",
     "delete_action": "删除",
     "cancel_action": "取消",
     "edit_placeholder": "编辑评论...",

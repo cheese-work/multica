@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
@@ -139,6 +138,60 @@ func TestExtractClosingIdentifiers(t *testing.T) {
 			// in larger words ("Disclosed MUL-1", "Foreclose MUL-1").
 			in:   []string{"Disclosed MUL-1 in foreclose MUL-2", ""},
 			want: []string{},
+		},
+		{
+			name: "inline_code_span_does_not_close",
+			// CHE-520 repro: PR multica-dotfiles#78 quoted `Closes CHE-380`
+			// as documentation describing what another PR had written. A
+			// closing keyword inside an inline code span is not a live
+			// closing declaration.
+			in:   []string{"", "PR #36 wrote `Closes CHE-380`"},
+			want: []string{},
+		},
+		{
+			name: "fenced_code_block_does_not_close",
+			in:   []string{"", "See what it did:\n```\nCloses CHE-380\n```\nNo further action."},
+			want: []string{},
+		},
+		{
+			name: "plain_closes_outside_code_span_still_closes",
+			in:   []string{"", "Plain Closes CHE-380 in prose"},
+			want: []string{"CHE-380"},
+		},
+		{
+			name: "double_backtick_span_does_not_close",
+			// A code span whose content itself contains a backtick must be
+			// delimited by a longer backtick run per CommonMark, e.g.
+			// ``Closes CHE-380` contains a backtick``. The delimiter-run
+			// scanner must still recognize this as a span, not just the
+			// fixed single-backtick / triple-backtick forms.
+			in:   []string{"", "PR #36 wrote ``Closes CHE-380` contains a backtick``"},
+			want: []string{},
+		},
+		{
+			name: "tilde_fence_does_not_close",
+			in:   []string{"", "See what it did:\n~~~\nCloses CHE-380\n~~~\nNo further action."},
+			want: []string{},
+		},
+		{
+			name: "tilde_fence_with_backtick_info_does_not_close",
+			// CommonMark forbids a backtick in a *backtick* fence's info
+			// string (ambiguous with an inline code span) but allows one in
+			// a *tilde* fence's info string. A fence-line pattern that
+			// applies the backtick-exclusion class to both delimiters
+			// rejects this valid tilde fence as a fence opener at all,
+			// leaving its body's "Closes CHE-380" exposed to the close
+			// parser (caught in independent review of the initial fix).
+			in:   []string{"", "~~~ lang`example\nCloses CHE-380\n~~~"},
+			want: []string{},
+		},
+		{
+			name: "unterminated_inline_run_is_not_stripped",
+			// A stray unmatched inline backtick run (not at line-start, so
+			// not a fence opener) is not a valid code span under CommonMark
+			// and must not swallow a real closing keyword that follows it.
+			in:   []string{"", "stray `` marker with no close, then Closes CHE-380"},
+			want: []string{"CHE-380"},
 		},
 	}
 	for _, tc := range cases {
@@ -493,6 +546,184 @@ func TestWebhook_MergedPR_AdvancesLinkedIssueToDone(t *testing.T) {
 	}
 	if updated.Status != "done" {
 		t.Errorf("expected issue status 'done', got %q", updated.Status)
+	}
+}
+
+// TestWebhook_MergedPR_OpenChildBlocksAutoClose guards CHE-520: a merged,
+// closing-intent PR must not auto-advance a parent issue to `done` while one
+// of its own sub-issues is still open. Aggregating only linked-PR state let
+// this happen silently — the parent looked "done" while real work remained.
+func TestWebhook_MergedPR_OpenChildBlocksAutoClose(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	secret := "open-child-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+
+	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":  "parent with open child",
+		"status": "in_progress",
+	})
+	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
+	var parent IssueResponse
+	json.NewDecoder(w.Body).Decode(&parent)
+
+	childReq := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":           "still open child",
+		"status":          "in_progress",
+		"parent_issue_id": parent.ID,
+	})
+	w = testutil.Call(t, testHandler.CreateIssue, childReq).Want(http.StatusCreated)
+	var child IssueResponse
+	json.NewDecoder(w.Body).Decode(&child)
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id = $1`, parent.ID)
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_installation WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM activity_log WHERE issue_id = $1`, parent.ID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, child.ID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, parent.ID)
+	})
+
+	const installationID int64 = 55221199
+	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
+		WorkspaceID:    parseUUID(testWorkspaceID),
+		InstallationID: installationID,
+		AccountLogin:   "open-child-acct",
+		AccountType:    "User",
+	}); err != nil {
+		t.Fatalf("CreateGitHubInstallation: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"action": "closed",
+		"pull_request": map[string]any{
+			"number": 42, "html_url": "https://github.com/acme/widget/pull/42",
+			"title": "Fix parent", "body": "Closes " + parent.Identifier,
+			"state": "closed", "merged": true, "draft": false,
+			"merged_at": "2026-04-29T00:00:00Z", "closed_at": "2026-04-29T00:00:00Z",
+			"created_at": "2026-04-28T00:00:00Z", "updated_at": "2026-04-29T00:00:00Z",
+			"head": map[string]any{"ref": "fix/parent"}, "user": map[string]any{"login": "octocat"},
+		},
+		"repository":   map[string]any{"name": "widget", "owner": map[string]any{"login": "acme"}},
+		"installation": map[string]any{"id": installationID},
+	})
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	sig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+
+	req2 := httptest.NewRequest("POST", "/api/webhooks/github", bytes.NewReader(body))
+	req2.Header.Set("X-GitHub-Event", "pull_request")
+	req2.Header.Set("X-Hub-Signature-256", sig)
+	testutil.Call(t, testHandler.HandleGitHubWebhook, req2).Want(http.StatusAccepted)
+
+	updated, err := testHandler.Queries.GetIssue(ctx, parseUUID(parent.ID))
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if updated.Status == "done" {
+		t.Errorf("parent auto-advanced to done while child %s was still open", child.ID)
+	}
+	if updated.Status != "in_progress" {
+		t.Errorf("expected parent status to stay 'in_progress', got %q", updated.Status)
+	}
+}
+
+// TestWebhook_MergedPR_MixedStagedUnstagedTerminalChildrenAdvance guards
+// CHE-520's second review round: advanceIssueToDone must not reuse
+// resolveTerminalChildren (the stage-BARRIER helper) to decide auto-done.
+// That helper skips any unstaged sibling once one sibling in the set carries
+// a stage — correct for "did this stage just close", wrong for "is every
+// direct child terminal". A parent with one staged done child and one
+// unstaged done child is all-terminal and must still auto-advance; reusing
+// the stage-aware helper would silently drop the unstaged child from the
+// terminal set and block auto-completion forever.
+func TestWebhook_MergedPR_MixedStagedUnstagedTerminalChildrenAdvance(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	secret := "mixed-staged-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+
+	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":  "parent with mixed staged/unstaged terminal children",
+		"status": "in_progress",
+	})
+	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
+	var parent IssueResponse
+	json.NewDecoder(w.Body).Decode(&parent)
+
+	stage := int32(1)
+	stagedChildReq := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":           "staged done child",
+		"status":          "done",
+		"parent_issue_id": parent.ID,
+		"stage":           stage,
+	})
+	w = testutil.Call(t, testHandler.CreateIssue, stagedChildReq).Want(http.StatusCreated)
+	var stagedChild IssueResponse
+	json.NewDecoder(w.Body).Decode(&stagedChild)
+
+	unstagedChildReq := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":           "unstaged done child",
+		"status":          "done",
+		"parent_issue_id": parent.ID,
+	})
+	w = testutil.Call(t, testHandler.CreateIssue, unstagedChildReq).Want(http.StatusCreated)
+	var unstagedChild IssueResponse
+	json.NewDecoder(w.Body).Decode(&unstagedChild)
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id = $1`, parent.ID)
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_installation WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM activity_log WHERE issue_id = $1`, parent.ID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, stagedChild.ID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, unstagedChild.ID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, parent.ID)
+	})
+
+	const installationID int64 = 66332200
+	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
+		WorkspaceID:    parseUUID(testWorkspaceID),
+		InstallationID: installationID,
+		AccountLogin:   "mixed-staged-acct",
+		AccountType:    "User",
+	}); err != nil {
+		t.Fatalf("CreateGitHubInstallation: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"action": "closed",
+		"pull_request": map[string]any{
+			"number": 43, "html_url": "https://github.com/acme/widget/pull/43",
+			"title": "Fix parent", "body": "Closes " + parent.Identifier,
+			"state": "closed", "merged": true, "draft": false,
+			"merged_at": "2026-04-29T00:00:00Z", "closed_at": "2026-04-29T00:00:00Z",
+			"created_at": "2026-04-28T00:00:00Z", "updated_at": "2026-04-29T00:00:00Z",
+			"head": map[string]any{"ref": "fix/parent2"}, "user": map[string]any{"login": "octocat"},
+		},
+		"repository":   map[string]any{"name": "widget", "owner": map[string]any{"login": "acme"}},
+		"installation": map[string]any{"id": installationID},
+	})
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	sig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+
+	req2 := httptest.NewRequest("POST", "/api/webhooks/github", bytes.NewReader(body))
+	req2.Header.Set("X-GitHub-Event", "pull_request")
+	req2.Header.Set("X-Hub-Signature-256", sig)
+	testutil.Call(t, testHandler.HandleGitHubWebhook, req2).Want(http.StatusAccepted)
+
+	updated, err := testHandler.Queries.GetIssue(ctx, parseUUID(parent.ID))
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if updated.Status != "done" {
+		t.Errorf("expected parent to auto-advance to done with all-terminal mixed staged/unstaged children, got %q", updated.Status)
 	}
 }
 
@@ -2227,15 +2458,12 @@ func TestWebhook_MergedPR_ChildWithParent_NotifiesParent(t *testing.T) {
 	}
 }
 
-// generateTestRSAKeyPEM mints an RSA-2048 key, returns its PKCS#1 PEM
+// generateTestRSAKeyPEM returns the shared RSA-2048 test key's PKCS#1 PEM
 // encoding (the format GitHub hands operators when they create the App)
 // and the parsed *rsa.PrivateKey for verification.
 func generateTestRSAKeyPEM(t *testing.T) (pemBytes []byte, key *rsa.PrivateKey) {
 	t.Helper()
-	k, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate RSA key: %v", err)
-	}
+	k := sharedTestRSAKey(t)
 	der := x509.MarshalPKCS1PrivateKey(k)
 	return pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: der}), k
 }
