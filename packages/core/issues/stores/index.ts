@@ -30,6 +30,7 @@ export {
   useIssueDisclosureStore,
   selectDescriptionExpanded,
   selectExpandedThreads,
+  selectJustFoldedRoots,
 } from "./issue-disclosure-store";
 export {
   foldAllCommentThreads,

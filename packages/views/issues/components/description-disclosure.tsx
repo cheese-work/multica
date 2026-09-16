@@ -22,6 +22,15 @@ interface DescriptionDisclosureProps {
   readonly labels: DescriptionDisclosureLabels;
   readonly contentVersion?: string | number;
   readonly collapseDisabled?: boolean;
+  /**
+   * Localized explanation surfaced (as `title`/`aria-description`) when
+   * `collapseDisabled` is true — 01-DESIGN "disclosure toggles that would
+   * hide a match are disabled with a localized explanation". Optional: other
+   * `collapseDisabled` reasons (active edit, pending upload) already read as
+   * self-explanatory from the disabled Show less button's context and don't
+   * currently supply one.
+   */
+  readonly collapseDisabledReason?: string;
 }
 
 function useSettledMeasurement(
@@ -85,6 +94,7 @@ export function DescriptionDisclosure({
   labels,
   contentVersion,
   collapseDisabled = false,
+  collapseDisabledReason,
 }: DescriptionDisclosureProps) {
   const editorRef = useRef<HTMLDivElement>(null);
   const { measurement, refreshing } = useSettledMeasurement(editorRef, contentVersion);
@@ -160,12 +170,14 @@ export function DescriptionDisclosure({
         <div className="mt-2">
           <Button
             aria-controls={editorId}
+            aria-description={expanded && collapseDisabled ? collapseDisabledReason : undefined}
             aria-expanded={expanded}
             className="w-full"
             disabled={expanded && collapseDisabled}
             onClick={() => onExpandedChange(!expanded)}
             onKeyDown={handleDisclosureButtonTab}
             size="xs"
+            title={expanded && collapseDisabled ? collapseDisabledReason : undefined}
             type="button"
             variant="secondary"
           >

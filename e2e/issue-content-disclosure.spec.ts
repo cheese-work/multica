@@ -151,6 +151,35 @@ test.describe("Description editor lifecycle through folding", () => {
     await expect(page.getByRole("button", { name: "Show less" })).toBeVisible();
   });
 
+  // CHE-463: the test above deliberately clicks the section locator, which
+  // only proves the capture handler fires when Playwright targets the
+  // section directly — it never proves real Chromium retargets a pointer
+  // event landing on the INERT editor's own rendered pixels up to that
+  // section. That distinction is exactly the bug this issue reported (the
+  // handler used to sit on the inert div itself, and `inert` hit-testing
+  // silently drops such events, so no real click on the collapsed preview's
+  // visible text ever reached it). Use raw viewport coordinates inside the
+  // inert editor's bounding box — bypassing locator actionability checks
+  // entirely — so this exercises the same hit-test path a real user's click
+  // on the visible collapsed text would.
+  test("a raw pointer hit inside the inert editor's own rendered area still expands it", async ({ page }) => {
+    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await waitForPageText(page, issueTitle);
+
+    const editor = page.locator("[data-description-editor]");
+    await expect(editor).toHaveAttribute("inert");
+    const box = await editor.boundingBox();
+    if (!box) throw new Error("collapsed editor has no bounding box");
+
+    // A point well inside the collapsed preview's visible text, not on any
+    // sibling (the Show more button sits below this box).
+    await page.mouse.click(box.x + Math.min(20, box.width / 2), box.y + Math.min(10, box.height / 2));
+
+    await expect(editor).not.toHaveAttribute("aria-hidden");
+    await expect(editor).not.toHaveAttribute("inert");
+    await expect(page.getByRole("button", { name: "Show less" })).toBeVisible();
+  });
+
   test("keyboard Show more expands and Tab enters the real editor", async ({ page }) => {
     await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
     await waitForPageText(page, issueTitle);
@@ -605,5 +634,189 @@ test.describe("Durable thread fold state through row unmount/remount", () => {
     await expect(commandPalette).not.toBeVisible();
 
     await expect(page.getByText("Reply number 1")).toBeVisible({ timeout: 10000 });
+  });
+
+  // CHE-479 regression: issue-detail.tsx's latch effect used to re-expand any
+  // root carrying an active reply draft the instant Fold All cleared its
+  // length-disclosure entry, because the effect only checked current
+  // membership in the store, not whether Fold All itself was the reason that
+  // membership just disappeared. `forceThreadOpen`'s temporary pin correctly
+  // keeps an active draft's thread reachable through Fold All (01-DESIGN
+  // "Fold all comments": "Active edit pins prevent focus loss") — this test
+  // proves the separate, PERSISTED length-expansion choice does not silently
+  // get re-latched to "expanded" by that same pin.
+  test("an active reply draft on a root does not defeat Fold All's length-disclosure reset (CHE-479)", async ({ page }) => {
+    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await waitForPageText(page, issueTitle);
+    await waitForPageText(page, "Root comment for thread fold test");
+
+    await page.getByRole("button", { name: /Show \d+ more repl/ }).click();
+    await waitForPageText(page, "Reply number 1");
+    await expect(page.getByRole("button", { name: "Show less" })).toBeVisible();
+
+    // Start (but do not send) a reply draft on the root thread, so
+    // `rootIdsWithActiveReplyDraft` is active for it when Fold All runs.
+    await page.getByTestId("reply-composer-shell").first().click();
+    const editor = page
+      .locator('.ProseMirror[data-placeholder="Leave a reply..."], .ProseMirror:has([data-placeholder="Leave a reply..."])')
+      .first();
+    await editor.fill("A reply I'm still typing when Fold All runs.");
+    await expect(editor).toHaveText("A reply I'm still typing when Fold All runs.");
+
+    await page.keyboard.press("ControlOrMeta+K");
+    const commandPalette = page.getByPlaceholder("Type a command or search...");
+    await expect(commandPalette).toBeVisible();
+    await commandPalette.fill("fold all");
+    await page.getByText("Fold All Comments", { exact: true }).click();
+    await expect(commandPalette).not.toBeVisible();
+
+    // The draft itself must still be reachable — Fold All's pin keeps the
+    // thread's composer/content from being ripped out from under active
+    // typing (the part of the spec this test is NOT regressing on).
+    await expect(editor).toHaveText("A reply I'm still typing when Fold All runs.");
+
+    // The bug: the latch effect used to see the length-disclosure entry
+    // Fold All just cleared as "never expanded" and immediately re-persist
+    // it as expanded. Prove it did NOT by reloading — the pin (a render-time
+    // `forceThreadOpen` check) cannot survive a reload with no live draft in
+    // a fresh store, but a wrongly re-latched PERSISTED length-expansion
+    // shares the same session-only store and also would not survive reload
+    // on its own; the real proof is state immediately after Fold All, before
+    // any reload, via the manual-collapse summary Fold All also applies.
+    // Manual collapse (`useCommentCollapseStore.collapseAll`) is a HIGHER
+    // priority gate than length-expansion (01-DESIGN "Effective order"), so
+    // the thread's compact summary state after Fold All is driven by manual
+    // collapse regardless of the length-disclosure bug — the length bug is
+    // only observable once manual collapse for this root is separately
+    // lifted without going through Unfold All. Sending the draft removes the
+    // active-draft reason and drops the pin, then reload re-fetches with no
+    // draft and no live pin, isolating exactly what got PERSISTED.
+    const posted = page.waitForResponse(
+      (response) => response.request().method() === "POST" && response.url().endsWith(`/api/issues/${issueId}/comments`),
+    );
+    await page.keyboard.press("ControlOrMeta+Enter");
+    await posted;
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await waitForPageText(page, issueTitle);
+    await waitForPageText(page, "Root comment for thread fold test");
+
+    // Manual collapse does not persist across reload for this store (it is
+    // the workspace-aware persisted one, keyed differently) — the thread
+    // reloads using its length preference. If CHE-479 were still present,
+    // Fold All would have wrongly re-latched this root's length preference
+    // to "expanded" while the draft was active, and every reply would show
+    // immediately on reload with no "Show more" click needed. With the fix,
+    // Fold All's reset stuck: the thread reloads compact.
+    await expect(page.getByRole("button", { name: /Show \d+ more repl/ })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText("Reply number 1")).not.toBeVisible();
+  });
+});
+
+// CHE-436 "Find and target reveal lifecycle": in-page find (Cmd/Ctrl+F) must
+// force every fold open (manual collapse, description preview, length
+// folds) before its own DOM walk, and restore the prior state on close —
+// this is the layer that actually proves the committed-reveal-token wiring
+// against real Chromium layout/paint, not the mocked matrix in
+// issue-detail.test.tsx.
+test.describe("In-page find reveals folded content (CHE-436)", () => {
+  let api: TestApiClient;
+  let issueId: string;
+  let issueTitle: string;
+  let workspaceSlug: string;
+
+  test.beforeEach(async ({ page }) => {
+    api = await createTestApi();
+    issueTitle = "E2E Find Reveal Test " + Date.now();
+    const issue = await api.createIssue(issueTitle, { description: LONG_DESCRIPTION });
+    issueId = issue.id;
+    const root = await api.createComment(issueId, "Findable root comment");
+    for (let i = 1; i <= 5; i++) {
+      await api.createComment(issueId, `Findable reply sentinel ${i}`, root.id);
+    }
+    workspaceSlug = await loginAsDefault(page);
+  });
+
+  test.afterEach(async () => {
+    if (api) await api.cleanup();
+  });
+
+  test("reveals a manually-collapsed thread's replies and the collapsed description while open, then restores both on close", async ({ page }) => {
+    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await waitForPageText(page, issueTitle);
+    await waitForPageText(page, "Findable root comment");
+
+    // Manually collapse the whole thread card (the chevron toggle, not
+    // Show less) so its replies leave the DOM entirely.
+    await page.getByRole("button", { name: "Collapse thread" }).click();
+    await expect(page.getByText("Findable reply sentinel 1")).not.toBeAttached();
+
+    // The description also starts collapsed (LONG_DESCRIPTION overflows the
+    // 12-line preview).
+    const descEditor = page.locator("[data-description-editor]");
+    await expect(descEditor).toHaveAttribute("aria-hidden", "true");
+
+    await page.keyboard.press("ControlOrMeta+F");
+    const findInput = page.getByPlaceholder("Find in issue...");
+    await expect(findInput).toBeVisible();
+
+    // Every reply is back in the DOM, and the description is no longer
+    // clipped/inert — both fold classes forced open by the same find.open
+    // reveal, per 01-DESIGN.
+    await expect(page.getByText("Findable reply sentinel 1")).toBeAttached();
+    await expect(page.getByText("Findable reply sentinel 5")).toBeAttached();
+    await expect(descEditor).not.toHaveAttribute("aria-hidden");
+
+    // The manual-collapse chevron itself is disabled while find owns the
+    // reveal, with the localized explanation — a real click must not be
+    // able to write the durable preference out from under find's overlay.
+    const collapseButton = page.getByRole("button", { name: "Collapse thread" });
+    await expect(collapseButton).toBeDisabled();
+    await expect(collapseButton).toHaveAttribute("title", "Can't collapse while find is open");
+
+    // The find bar itself can actually locate the sentinel text now that
+    // it's in the DOM — proof the reveal-before-DOM-walk token gated the
+    // collector correctly rather than it racing ahead of the reveal.
+    await findInput.fill("sentinel");
+    await expect(page.getByText(/\d+\/\d+/)).toBeVisible();
+    await expect(page.getByText("No matches")).not.toBeVisible();
+
+    // Close find (Escape) — the thread refolds (no durable write happened)
+    // and the description returns to its collapsed preview.
+    await findInput.press("Escape");
+    await expect(findInput).not.toBeVisible();
+    await expect(page.getByText("Findable reply sentinel 1")).not.toBeAttached();
+    await expect(descEditor).toHaveAttribute("aria-hidden", "true");
+    // The manual-collapse control is live again.
+    await expect(page.getByRole("button", { name: "Expand thread" })).toBeEnabled();
+  });
+
+  test("fold-all/unfold-all commands issued while find is open still change the base preference, taking visible effect after close", async ({ page }) => {
+    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await waitForPageText(page, issueTitle);
+    await waitForPageText(page, "Findable root comment");
+
+    await page.keyboard.press("ControlOrMeta+F");
+    const findInput = page.getByPlaceholder("Find in issue...");
+    await expect(findInput).toBeVisible();
+    await expect(page.getByText("Findable reply sentinel 1")).toBeAttached();
+
+    // Fold All Comments while find is open — row 58: "Fold/unfold-all can
+    // still change base stores; the overlay keeps content visible until
+    // close."
+    await page.keyboard.press("ControlOrMeta+K");
+    const commandPalette = page.getByPlaceholder("Type a command or search...");
+    await expect(commandPalette).toBeVisible();
+    await commandPalette.fill("fold all");
+    await page.getByText("Fold All Comments", { exact: true }).click();
+    await expect(commandPalette).not.toBeVisible();
+
+    // Content stays visible — find's overlay still owns the reveal.
+    await expect(page.getByText("Findable reply sentinel 1")).toBeAttached();
+
+    // Close find: the base write from Fold All now takes visible effect.
+    await findInput.press("Escape");
+    await expect(findInput).not.toBeVisible();
+    await expect(page.getByText("Findable reply sentinel 1")).not.toBeAttached();
   });
 });
