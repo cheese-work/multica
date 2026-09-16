@@ -54,7 +54,20 @@ fail_if_flagged() {
 }
 
 if [ "$1" = "inspect" ]; then
-  # docker inspect --format '{{index .RepoDigests 0}}' repo:tag
+  # deploy.sh and capture-tuple.sh ask `docker inspect` four different
+  # questions, distinguished by their --format string:
+  #   {{index .RepoDigests 0}}        -> the registry digest (digest verify)
+  #   {{.Id}}                         -> the local image id (digest fallback)
+  #   ...image.revision label         -> the commit the image was built from
+  #   ...compose.config-hash label    -> Compose's own service config hash
+  fmt=""
+  prev_arg=""
+  for a in "$@"; do
+    case "$prev_arg" in
+      --format) fmt="$a" ;;
+    esac
+    prev_arg="$a"
+  done
   ref="${*: -1}"
   repo="${ref%%:*}"
   digest=""
@@ -62,9 +75,25 @@ if [ "$1" = "inspect" ]; then
     *multica-backend) digest="${MOCK_BACKEND_DIGEST:-}" ;;
     *multica-web) digest="${MOCK_WEB_DIGEST:-}" ;;
   esac
-  if [ -n "$digest" ] && [ -f "$control_dir/inspect-resolves" ]; then
-    printf '%s@%s\n' "$repo" "$digest"
-  fi
+
+  case "$fmt" in
+    *config-hash*)
+      # A real 64-character Compose config hash; capture-tuple.sh redacts it
+      # to the 8-char prefix / 4-char suffix the tuple schema requires.
+      printf '%s\n' "aaaabbbbccccddddeeeeffff00001111222233334444555566667777888899990"
+      ;;
+    *image.revision*)
+      printf '%s\n' "${MOCK_IMAGE_REVISION:-}"
+      ;;
+    *.Id*)
+      if [ -n "$digest" ]; then printf '%s\n' "$digest"; fi
+      ;;
+    *)
+      if [ -n "$digest" ] && [ -f "$control_dir/inspect-resolves" ]; then
+        printf '%s@%s\n' "$repo" "$digest"
+      fi
+      ;;
+  esac
   exit 0
 fi
 
@@ -192,7 +221,24 @@ if [ "$1" = "compose" ]; then
       # every scenario regardless of the fixture's actual ledger state.
       # Detect which query this call is by its final "-c <sql>" argument.
       sql="${*: -1}"
+      # Order matters: capture-tuple.sh's summary query contains BOTH
+      # "count(*)" and "coalesce(max(version)", so the count case must be
+      # tested first or the single-column branch swallows it and returns a
+      # bare version where three fields were expected.
       case "$sql" in
+        *"count(*)"*)
+          # capture-tuple.sh's three-column summary: count|version|applied_at,
+          # with applied_at already formatted RFC3339 by to_char in the
+          # query itself. row_count must be a positive integer or
+          # tuple-snapshot.mjs rejects the tuple.
+          printf '%s|%s|%s\n' "${MOCK_LEDGER_COUNT:-529}" "$version" "2026-09-12T08:58:23Z"
+          ;;
+        *"ORDER BY version"*)
+          # capture-tuple.sh's ordered-ledger query: it hashes this output
+          # into migration_ledger.ordered_sha256, so any stable set of
+          # version rows is a valid answer.
+          printf '%s\n' "$version"
+          ;;
         *"coalesce(max(version)"*)
           printf '%s\n' "$version"
           ;;
@@ -203,9 +249,23 @@ if [ "$1" = "compose" ]; then
       exit 0
       ;;
     images)
-      # images backend --format json — empty is fine: capture_tuple falls
-      # back to "${backend_repo}:${image_tag}" when this resolves nothing.
-      printf '[]\n'
+      # images <service> --format json. capture-tuple.sh (which deploy.sh
+      # delegates its tuple recording to) resolves the RUNNING service's
+      # image reference from this, so it must answer with the tuple the
+      # scenario is deploying rather than an empty list — a real host always
+      # has a running service here by the time the tuple is captured.
+      svc="${1:-backend}"
+      case "$svc" in
+        backend) printf '[{"Repository":"ghcr.io/cheese-work/multica-backend","Tag":"%s"}]\n' "${MOCK_IMAGE_TAG:-latest}" ;;
+        frontend) printf '[{"Repository":"ghcr.io/cheese-work/multica-web","Tag":"%s"}]\n' "${MOCK_IMAGE_TAG:-latest}" ;;
+        *) printf '[]\n' ;;
+      esac
+      exit 0
+      ;;
+    ps)
+      # ps -q <service> — capture-tuple.sh reads the container id to fetch
+      # Compose's own config-hash label for that service.
+      printf 'mock-container-%s\n' "${*: -1}"
       exit 0
       ;;
     *)
@@ -608,5 +668,45 @@ if [ -f "$state_dir/deployed-tuple.json.new" ]; then
   echo "scenario rollback-down-noop-fails-loud: deployed-tuple.json was updated despite the failed post-rollback verification" >&2
   exit 1
 fi
+
+# ---------------------------------------------------------------------------
+# Scenario 11 (regression for CHE-530 acceptance item 1): the tuple a
+# successful deploy records must itself be admissible as the NEXT deploy's
+# baseline.
+#
+# This is what makes the automatic chain repeatable rather than one-shot.
+# deploy.sh used to build this JSON inline with placeholder digests that
+# tuple-snapshot.mjs rejects outright (61 hex characters where it requires
+# 64), so the second automatic deploy's admission stage would have failed on
+# a tuple the first deploy wrote itself. Assert the written state file passes
+# the same validator admission.mjs runs, and that its digests are the real
+# ones rather than placeholders.
+# ---------------------------------------------------------------------------
+state_dir="$(fresh_scenario_dir deployed-tuple-is-admissible)"
+control_dir="$state_dir/control"
+mkdir -p "$control_dir"
+touch "$control_dir/inspect-resolves"
+output="$(run_deploy "$state_dir" 2>&1)"
+status=$?
+expect_exit 0 "$status" deployed-tuple-is-admissible
+
+tuple="$state_dir/deployed-tuple.json"
+if ! node deploy/cd/tuple-snapshot.mjs verify --snapshot "$tuple" >/dev/null 2>&1; then
+  echo "scenario deployed-tuple-is-admissible: the tuple deploy.sh wrote is not a valid baseline snapshot" >&2
+  node deploy/cd/tuple-snapshot.mjs verify --snapshot "$tuple" >&2 || true
+  exit 1
+fi
+
+# admission.mjs binds a manifest to the SHA-256 of the tuple file, so the
+# digest subcommand must also succeed on it.
+if ! node deploy/cd/tuple-snapshot.mjs digest --snapshot "$tuple" >/dev/null 2>&1; then
+  echo "scenario deployed-tuple-is-admissible: could not digest the written tuple for manifest binding" >&2
+  exit 1
+fi
+
+tuple_json="$(cat "$tuple")"
+expect_not_contains "$tuple_json" "0000000000000000000000000000000000000000000000000000000000000" deployed-tuple-is-admissible
+expect_contains "$tuple_json" "$backend_digest" deployed-tuple-is-admissible
+expect_contains "$tuple_json" "\"application_sha\": \"$source_sha\"" deployed-tuple-is-admissible
 
 echo "deploy.sh control-flow fixtures passed"

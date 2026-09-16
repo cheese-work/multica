@@ -73,14 +73,43 @@ carries none of the secrets `cd-deploy.yml` uses — verify this after any
 change to either workflow by diffing `cd-qualification.yml`; it should never
 change as part of D2 work.
 
-`cd-deploy.yml` is `workflow_dispatch`-only, not chained automatically off
-`cd-qualification.yml`. A deployable `release-candidate` manifest needs the
-fresh Hermes configuration digest and migration snapshot described above,
-which only a dedicated admission stage produces — D1's automatic main-push
-build only ever emits a `build-evidence` manifest, which `admission.mjs`
-refuses. Whoever runs that admission stage (D4, or a human operator) triggers
-`cd-deploy.yml` by hand with the resulting manifest, baseline tuple, event,
-checks, and provenance files as inputs.
+`cd-deploy.yml` runs automatically after a successful `cd-qualification` run
+for a `main` commit, and can still be dispatched by hand. The automatic path
+adds one job the manual path does not: `prepare-release-candidate`.
+
+D1's automatic main-push build only ever emits a `build-evidence` manifest,
+which `admission.mjs` refuses. A deployable `release-candidate` additionally
+binds the baseline tuple of the host being deployed to — the fresh Hermes
+configuration digest and migration snapshot described above — which only a
+stage with C00 access can read. `prepare-release-candidate` runs on the
+C00-reachable runner under the same `c00-production` environment as the
+deploy job, reads that baseline over SSH with `capture-tuple.sh`, re-issues
+D1's evidence (carrying D1's own image digests forward unchanged) as a
+release-candidate bound to it, records the qualifying event and the commit's
+required-check results, and hands the set to the unchanged `admission` and
+`deploy` jobs.
+
+`admission.mjs` is not weakened to make this fit: it still refuses
+build-evidence, still requires the manifest to bind the exact tuple it is
+verified against, and still requires `backend`, `frontend`, `mobile` and
+`cd-qualification` to be `success` for that SHA. Verified against the real
+qualified artifacts of `main` commit `abe17e2b` and C00's live baseline:
+admission returns `{"admitted":true}`, while raw D1 build-evidence, a
+manifest bound to a different tuple, and a failing required check are each
+refused.
+
+### The deployed tuple is the next deploy's baseline
+
+`deploy.sh` records the deployed tuple through the same `capture-tuple.sh`
+the preparation job uses, so "what C00 is running" has exactly one
+implementation and the tuple a deploy writes is admissible as the next
+deploy's baseline. This matters more than it looks: `capture_tuple` used to
+build that JSON inline with placeholder digests that `tuple-snapshot.mjs`
+rejects (61 hex characters where it requires 64), which would have made the
+automatic chain work exactly once and then fail admission on a tuple it
+wrote itself. `deploy/cd/test-deploy.sh`'s `deployed-tuple-is-admissible`
+scenario asserts the written state file passes the validator and carries
+real digests.
 
 ### Where and when migrations run (acceptance item 5)
 
@@ -172,13 +201,33 @@ same way.
 
 ### What is NOT verified by CI or local testing
 
-`deploy.sh` and `cd-deploy.yml` have not been run against the real C00 host.
-Local verification covers: the bounded-rollback Go tests and CLI runs above
-against a real throwaway Postgres, and `deploy.sh`'s own control flow (pull →
-digest-verify → one-shot migrate → `up -d` → health-check → rollback-on-
-failure, including which image tag each step uses) exercised against a
-scripted mock of `docker`/`docker compose`/`curl`. Neither exercises a real
-Docker Compose stack, a real backend image, or real SSH/C00 credentials. The
-first live run against C00 needs a human to supply and verify the runner
-label, SSH secrets, and compose/state directory paths referenced in
-`cd-deploy.yml`.
+`deploy.sh` and `cd-deploy.yml` have not been run end-to-end against the real
+C00 host by a real workflow run. What HAS been verified against real systems:
+
+- The `prepare-release-candidate` → `admission` chain, run by hand with the
+  same commands the job runs: real D1 artifacts downloaded from the
+  `cd-qualification` run for `main` commit `abe17e2b`, a real baseline tuple
+  captured from the live C00 stack, real check-run results from the API.
+  Admission returned `{"admitted":true}`; the three negative cases above were
+  each refused.
+- `capture-tuple.sh` against the live C00 stack, read-only, producing a tuple
+  that passes `tuple-snapshot.mjs` with real image, compose and ledger
+  digests.
+- The bounded-rollback Go tests and CLI runs against a real throwaway
+  Postgres, and `deploy.sh`'s full control flow (pull → digest-verify →
+  one-shot migrate → `up -d` → health-check → rollback-on-failure, including
+  which image tag each step uses and that the recorded tuple is admissible)
+  against a scripted mock of `docker`/`docker compose`/`curl`.
+
+Still unverified, and both are blocked rather than untested:
+
+- **A real deploy run.** The `cheese-c00-deploy` runner that
+  `prepare-release-candidate` and `deploy` require is not currently
+  registered — the repository's runner list is empty. Until a runner carrying
+  that label is online, the automatic path cannot execute regardless of the
+  workflow being correct.
+- **Pulling the qualified pair on C00.** GHCR read is denied to every
+  credential available to this host, so no stage can pull
+  `ghcr.io/cheese-work/multica-*:sha-<commit>` yet. Fixing it needs either
+  `packages: read` added to the `congvc-bot` App installation or a PAT with
+  `read:packages`.

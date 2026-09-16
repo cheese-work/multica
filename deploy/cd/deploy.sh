@@ -118,6 +118,15 @@ mkdir -p "$state_dir"
 state_file="$state_dir/deployed-tuple.json"
 readonly_lock="$state_dir/deploy.lock"
 
+# capture-tuple.sh is a sibling in deploy/cd/ both in the repo and in the
+# directory cd-deploy.yml copies to C00 — the workflow ships the pair, not
+# deploy.sh alone, precisely so this resolves the same way in both places.
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ ! -f "$script_dir/capture-tuple.sh" ]; then
+  echo "capture-tuple.sh is missing from $script_dir — deploy.sh cannot record the deployed tuple without it" >&2
+  exit 1
+fi
+
 # A second deploy invocation while one is already in flight must not
 # interleave migration steps or container restarts with this one. flock
 # blocks (rather than failing) so a manually re-triggered workflow run
@@ -261,67 +270,27 @@ wait_ready() {
   return 1
 }
 
-# capture_tuple reads the currently-running stack's identity into the shape
+# capture_tuple records the currently-running stack's identity in the shape
 # admission.mjs / tuple-snapshot.mjs already validate (see
-# deploy/cd/fixtures/c00-tuple-*.json), so the state file this script writes
-# is the same format a future D1/D2 admission step can consume as a
-# baseline, not a one-off ad hoc record.
+# deploy/cd/fixtures/c00-tuple-*.json), so the state file this script writes is
+# the same format the NEXT deploy's admission stage consumes as its baseline.
+#
+# That round trip is the whole point, and it is why this delegates to
+# capture-tuple.sh rather than building the JSON inline: the inline version
+# emitted placeholder digests that tuple-snapshot.mjs rejects outright (61 hex
+# characters where it requires 64), so every tuple this script wrote was
+# unusable as the next deploy's baseline — the automatic chain would have
+# worked exactly once. capture-tuple.sh computes real digests from the live
+# host and self-validates before returning, and is the same script
+# cd-deploy.yml's prepare-release-candidate job runs over SSH to read the
+# baseline, so the two can never drift into disagreeing about what "the
+# deployed tuple" means.
 capture_tuple() {
   local out=$1
-  local captured_backend_ref captured_web_ref captured_backend_digest captured_web_digest
-  local ledger_version ledger_applied_at ledger_count
-  captured_backend_ref="$(compose images backend --format json 2>/dev/null | node -e '
-    let d=""; process.stdin.on("data",c=>d+=c); process.stdin.on("end",()=>{
-      const rows = JSON.parse(d || "[]");
-      const row = Array.isArray(rows) ? rows[0] : rows;
-      process.stdout.write(row ? `${row.Repository}:${row.Tag}` : "");
-    });
-  ')"
-  # Inspect by the "repo:tag" reference that was just pulled, not the
-  # manifest's "repo@sha256:digest" form: a tag reference is guaranteed to
-  # resolve to a local image right after `compose pull`, while the digest
-  # form only resolves if the daemon happened to record that exact
-  # RepoDigest, which is not guaranteed on every Docker version/config.
-  captured_backend_digest="$(docker inspect --format '{{index .RepoDigests 0}}' "${backend_repo}:${image_tag}" 2>/dev/null | sed -E 's#^.*@##')"
-  captured_web_digest="$(docker inspect --format '{{index .RepoDigests 0}}' "${web_repo}:${image_tag}" 2>/dev/null | sed -E 's#^.*@##')"
-  captured_web_ref="${web_repo}:${image_tag}"
-  captured_backend_ref="${captured_backend_ref:-${backend_repo}:${image_tag}}"
-
-  read -r ledger_count ledger_version ledger_applied_at < <(
-    compose exec -T postgres psql -U "${POSTGRES_USER:-multica}" -d "${POSTGRES_DB:-multica}" -tA -F'|' -c \
-      "SELECT count(*), coalesce(max(version), ''), coalesce(max(applied_at)::text, '') FROM schema_migrations" \
-      | awk -F'|' '{print $1" "$2" "$3}'
-  )
-
-  node -e '
-    const fs = require("node:fs");
-    const [outPath, backendRef, backendDigest, webRef, webDigest, sourceSha, ledgerCount, ledgerVersion, ledgerAppliedAt] = process.argv.slice(1);
-    const snapshot = {
-      schema_version: 1,
-      role: "c00-deployment-baseline-read-only-metadata",
-      captured_at: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
-      application_sha: sourceSha,
-      images: {
-        backend: { reference: backendRef, digest: backendDigest || "sha256:0000000000000000000000000000000000000000000000000000000000000" },
-        web: { reference: webRef, digest: webDigest || "sha256:0000000000000000000000000000000000000000000000000000000000000" },
-      },
-      compose: {
-        file: "docker-compose.selfhost.yml",
-        sha256: "sha256:0000000000000000000000000000000000000000000000000000000000000",
-        service_config_sha256: {
-          backend: { prefix: "00000000", suffix: "0000" },
-          web: { prefix: "00000000", suffix: "0000" },
-        },
-      },
-      migration_ledger: {
-        row_count: Number(ledgerCount) || 0,
-        latest: { version: ledgerVersion || "", applied_at: ledgerAppliedAt || new Date().toISOString() },
-        ordered_sha256: "sha256:0000000000000000000000000000000000000000000000000000000000000",
-      },
-    };
-    fs.writeFileSync(outPath, `${JSON.stringify(snapshot, null, 2)}\n`);
-  ' "$out" "$captured_backend_ref" "$captured_backend_digest" "$captured_web_ref" "$captured_web_digest" \
-    "$source_sha" "$ledger_count" "$ledger_version" "$ledger_applied_at"
+  bash "$script_dir/capture-tuple.sh" \
+    --compose-dir "$compose_dir" \
+    --output "$out" \
+    --application-sha "$source_sha"
 }
 
 # run_migration_step launches exactly one throwaway container from the given
