@@ -417,19 +417,28 @@ export MULTICA_INTERNAL_D2_ENFORCED_STATEMENT_TIMEOUT_MS="$statement_timeout_ms_
 export MULTICA_INTERNAL_D2_ENFORCED_LOCK_TIMEOUT_MS="$lock_timeout_ms"
 
 # attempt_lock_key is a fresh, cryptographically random secret generated
-# ONCE per invocation of this script and passed to the migrator ONLY via
-# its environment (MULTICA_INTERNAL_D2_ATTEMPT_LOCK_KEY, never logged,
-# never written to $decision_file, never part of any connection string).
+# ONCE per invocation of this script and passed to the migrator AND to
+# this script's own quiescence.mjs observer calls ONLY via the
+# MULTICA_INTERNAL_D2_ATTEMPT_LOCK_KEY environment variable — never logged,
+# never written to $decision_file, never part of any connection string,
+# and deliberately never passed as a --attempt-lock-key command-line
+# argument to quiescence.mjs (a review finding: argv is world-readable via
+# /proc/<pid>/cmdline on any host that mounts /proc without hidepid, which
+# would let a local user recover the secret and defeat the whole scheme).
+# Exporting it here means every subprocess this script spawns afterward —
+# the migrator via "$migrate_binary" up &, and every `node
+# deploy/cd/quiescence.mjs ...` observer call via run_node_bounded —
+# inherits it from the environment alone.
+#
 # The migrator acquires it in shared advisory-lock mode on every connection
 # it opens (dbstartup.NewPoolWithEnforcedTimeouts's AfterConnect hook), and
-# this script later demands proof of that same key via
-# verify-live-session-is-covered / final-gate --attempt-lock-key before
-# fencing any session. A foreign client authenticated as the same
-# role/database cannot know this secret and therefore cannot be mistaken
-# for a session this attempt actually opened — see quiescence.mjs's
-# verifyLiveSessionHoldsAttemptLock for the exact admission hole this
-# closes (role/database/pid/backend_start alone proves identity
-# continuity, not attempt ownership).
+# quiescence.mjs (via its own attemptLockKeyFromEnv, reading this exact
+# variable) demands proof of that same key before fencing any session. A
+# foreign client authenticated as the same role/database cannot know this
+# secret and therefore cannot be mistaken for a session this attempt
+# actually opened — see quiescence.mjs's verifyLiveSessionHoldsAttemptLock
+# for the exact admission hole this closes (role/database/pid/backend_start
+# alone proves identity continuity, not attempt ownership).
 #
 # Range: a positive int64 (pg_advisory_lock's key is bigint; this script
 # only ever generates a positive value so it never collides with the
@@ -645,7 +654,12 @@ run_final_gate() {
     gate_args+=(--fenced-pids "$fenced_pids")
   fi
   if [ -n "$fenced_sessions" ]; then
-    gate_args+=(--fenced-sessions "$fenced_sessions" --role-name "$role_name" --database-name "$database_name" --attempt-lock-key "$attempt_lock_key")
+    # attempt_lock_key is deliberately NOT passed here as an argument —
+    # quiescence.mjs reads MULTICA_INTERNAL_D2_ATTEMPT_LOCK_KEY from its own
+    # environment (already exported above), inherited automatically by
+    # run_node_bounded's child process. See the export site's comment for
+    # why argv would leak the secret via /proc/<pid>/cmdline.
+    gate_args+=(--fenced-sessions "$fenced_sessions" --role-name "$role_name" --database-name "$database_name")
   fi
   local gate_result
   gate_result="$(run_node_bounded "$deadline_arg" -- "${gate_args[@]}" 2>&1)"
@@ -792,7 +806,7 @@ discover_additional_verified_sessions() {
     local covered
     if covered="$(run_node_bounded "$deadline_arg" -- deploy/cd/quiescence.mjs verify-live-session-is-covered "${quiescence_args_common[@]}" \
       --pid "$candidate_pid" --backend-start "$candidate_backend_start" \
-      --role-name "$role_name" --database-name "$database_name" --attempt-lock-key "$attempt_lock_key" --query-timeout-ms "$inner_verify_budget_ms" 2>&1)"; then
+      --role-name "$role_name" --database-name "$database_name" --query-timeout-ms "$inner_verify_budget_ms" 2>&1)"; then
       migrator_verified_sessions="${migrator_verified_sessions},${candidate}"
       echo "che372-d2: verified an additional migrator-attributable session pid=$candidate_pid backend_start=$candidate_backend_start: $covered" >&2
     else
@@ -993,7 +1007,7 @@ while :; do
             inner_cover_budget_ms=$((cover_budget_ms > 200 ? cover_budget_ms - 100 : cover_budget_ms))
             covered="$(run_node_bounded "$work_deadline_monotonic_ms" -- deploy/cd/quiescence.mjs verify-live-session-is-covered "${quiescence_args_common[@]}" \
               --pid "$candidate_pid" --backend-start "$candidate_backend_start" \
-              --role-name "$role_name" --database-name "$database_name" --attempt-lock-key "$attempt_lock_key" --query-timeout-ms "$inner_cover_budget_ms" 2>&1)" && {
+              --role-name "$role_name" --database-name "$database_name" --query-timeout-ms "$inner_cover_budget_ms" 2>&1)" && {
               migrator_pg_pid="$candidate_pid"
               migrator_pg_backend_start="$candidate_backend_start"
               # Seed the verified-session registry with this confirmed

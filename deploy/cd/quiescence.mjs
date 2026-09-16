@@ -513,12 +513,16 @@ export class SampleTracker {
 // verifyLiveSessionHoldsAttemptLock confirms that the specific pid holds a
 // GRANTED shared advisory lock at attemptLockKey — a fresh,
 // cryptographically random secret the CD supervisor generates once per
-// migration attempt and passes to the migrator ONLY via
-// MULTICA_INTERNAL_D2_ATTEMPT_LOCK_KEY (see server/cmd/migrate/main.go and
-// dbstartup.NewPoolWithEnforcedTimeouts's AfterConnect hook, which acquires
-// it on every connection the migrator's pool opens, main and hook
-// connections alike). The key is never logged, never written to any file,
-// never part of a connection string, and never sent to this observer's own
+// migration attempt and passes to both the migrator and this observer ONLY
+// via the MULTICA_INTERNAL_D2_ATTEMPT_LOCK_KEY environment variable (see
+// server/cmd/migrate/main.go and dbstartup.NewPoolWithEnforcedTimeouts's
+// AfterConnect hook, which acquires it on every connection the migrator's
+// pool opens, main and hook connections alike; this file reads the same
+// variable via attemptLockKeyFromEnv rather than a --attempt-lock-key CLI
+// flag, specifically so the secret never appears in this process's own
+// argv/cmdline, which is world-readable via /proc on hosts without
+// hidepid). The key is never logged, never written to any file, never part
+// of a connection string, and never sent to this observer's own
 // connection — so a foreign client, which by construction cannot know this
 // run's secret, cannot acquire the same key and cannot be mistaken for a
 // session this attempt actually opened.
@@ -568,6 +572,26 @@ function attemptLockClassid(attemptLockKey) {
 }
 function attemptLockObjid(attemptLockKey) {
   return Number(BigInt.asIntN(32, BigInt(attemptLockKey) & 0xffffffffn));
+}
+
+// ATTEMPT_LOCK_KEY_ENV is the exact same environment variable name
+// migrate-supervised.sh exports for the migrator process itself
+// (server/cmd/migrate/main.go's migrateAttemptLockKeyEnv). This module
+// reads the same variable rather than accepting a --attempt-lock-key CLI
+// flag: an argv value is visible to any local user via /proc/<pid>/cmdline
+// on hosts mounting /proc without hidepid, which would let a foreign
+// client sharing the migration role's credentials read this attempt's
+// secret and be wrongly admitted as attempt-bound — precisely the
+// admission hole this secret exists to close. An environment variable is
+// still visible to a user with the same or greater privilege (e.g. via
+// /proc/<pid>/environ or ptrace), but that is the same trust boundary
+// every other secret in this deployment already lives behind, and it does
+// not appear in the routinely-logged/observed process command line the
+// way argv does.
+const ATTEMPT_LOCK_KEY_ENV = "MULTICA_INTERNAL_D2_ATTEMPT_LOCK_KEY";
+
+function attemptLockKeyFromEnv() {
+  return process.env[ATTEMPT_LOCK_KEY_ENV] || "";
 }
 
 // verifyLiveSessionIsCovered confirms that a specific, already-connected
@@ -823,7 +847,7 @@ function cliFinalGate(args) {
   const fencedSessionsRaw = option("--fenced-sessions", args, { required: false, fallback: "" });
   const roleName = option("--role-name", args, { required: false, fallback: "" });
   const databaseName = option("--database-name", args, { required: false, fallback: "" });
-  const attemptLockKey = option("--attempt-lock-key", args, { required: false, fallback: "" });
+  const attemptLockKey = attemptLockKeyFromEnv();
   const connInfo = buildConnInfo(databaseUrl, { dockerNetwork });
 
   // A single previously-discovered pid is not enough to fence a live
@@ -870,7 +894,7 @@ function cliFinalGate(args) {
   const droppedSessions = [];
   if (fencedSessionEntries.length > 0) {
     if (!roleName || !databaseName || !attemptLockKey) {
-      process.stdout.write(`${JSON.stringify({ admit: false, decision: "final_gate_denied", reason: "--fenced-sessions requires --role-name, --database-name, and --attempt-lock-key so each claimed session can be verified against an expected identity and proven attempt-bound (unknown state fails closed)", evidence: {} })}\n`);
+      process.stdout.write(`${JSON.stringify({ admit: false, decision: "final_gate_denied", reason: `--fenced-sessions requires --role-name, --database-name, and a nonempty ${ATTEMPT_LOCK_KEY_ENV} environment variable so each claimed session can be verified against an expected identity and proven attempt-bound (unknown state fails closed)`, evidence: {} })}\n`);
       process.exitCode = 1;
       return;
     }
@@ -949,7 +973,7 @@ function cliVerifyLiveSessionIsCovered(args) {
   const backendStart = option("--backend-start", args);
   const expectedRoleName = option("--role-name", args);
   const expectedDatabaseName = option("--database-name", args);
-  const attemptLockKey = option("--attempt-lock-key", args);
+  const attemptLockKey = attemptLockKeyFromEnv();
   const result = verifyLiveSessionIsCovered({
     connInfo: buildConnInfo(databaseUrl, { dockerNetwork }), pid, backendStart,
     expectedRoleName, expectedDatabaseName, attemptLockKey, queryTimeoutMs,
@@ -994,7 +1018,7 @@ if (isMain) {
     else if (command === "verify-live-session-is-covered") cliVerifyLiveSessionIsCovered(args);
     else if (command === "verify-live-session-is-absent") cliVerifyLiveSessionIsAbsent(args);
     else if (command === "list-invalid-indexes") cliListInvalidIndexes(args);
-    else fail("usage: quiescence.mjs <preflight|final-gate|find-live-session-by-role|find-live-sessions-for-role|verify-live-session-is-covered|verify-live-session-is-absent|list-invalid-indexes> --database-url postgres://... [--query-timeout-ms N] [--fenced-pids p1,p2] [--fenced-sessions 'pid|backend_start,pid|backend_start' --role-name R --database-name D --attempt-lock-key K] [--role-name R --database-name D --attempt-lock-key K [--pid P --backend-start TS]]");
+    else fail(`usage: quiescence.mjs <preflight|final-gate|find-live-session-by-role|find-live-sessions-for-role|verify-live-session-is-covered|verify-live-session-is-absent|list-invalid-indexes> --database-url postgres://... [--query-timeout-ms N] [--fenced-pids p1,p2] [--fenced-sessions 'pid|backend_start,pid|backend_start' --role-name R --database-name D] [--role-name R --database-name D [--pid P --backend-start TS]] (attempt-bound fencing additionally requires ${ATTEMPT_LOCK_KEY_ENV} set in the environment, never passed as a flag)`);
   } catch (error) {
     process.stderr.write(`quiescence: ${error.message}\n`);
     process.exitCode = 2;

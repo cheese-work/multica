@@ -578,3 +578,67 @@ func TestEnforcedTimeoutsDefeatConnectionStringBypass(t *testing.T) {
 	}
 	t.Logf("bypass defeated: statement_timeout=%s lock_timeout=%s despite a connection-string options= bypass attempt", statementTimeout, lockTimeout)
 }
+
+// TestEnforcedTimeoutsOnNoticeFires proves EnforcedTimeouts.OnNotice
+// actually reaches the pool's ConnConfig on the enforced-timeout path —
+// this is the exact seam CHE-372's rebase onto the CHE-548 upstream sync
+// depends on: cmd/migrate's newMigratorPool composes upstream's
+// logMigrationNotice (a pgconn.NoticeHandler forwarding "migration report:"
+// notices to the log) with D2's enforced statement/lock timeouts by setting
+// EnforcedTimeouts.OnNotice, and NewPoolWithEnforcedTimeouts is expected to
+// carry it onto the real connection config. Asserting this here, against a
+// real Postgres NOTICE, is what makes that composition verified rather than
+// assumed — both features route through ParsePoolConfig, but only a live
+// notice actually proves OnNotice was not silently dropped by the
+// AfterConnect wiring NewPoolWithEnforcedTimeouts adds on top.
+//
+// Requires a real reachable Postgres via MULTICA_TEST_D2_BYPASS_DATABASE_URL
+// (same fixture as TestEnforcedTimeoutsDefeatConnectionStringBypass) and
+// skips, not fails, when unset.
+func TestEnforcedTimeoutsOnNoticeFires(t *testing.T) {
+	dbURL := os.Getenv("MULTICA_TEST_D2_BYPASS_DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("MULTICA_TEST_D2_BYPASS_DATABASE_URL not set; skipping (requires a real reachable Postgres)")
+	}
+
+	var mu sync.Mutex
+	var notices []string
+	pool, err := NewPoolWithEnforcedTimeouts(context.Background(), dbURL, 5*time.Second, EnforcedTimeouts{
+		StatementTimeout: time.Second,
+		LockTimeout:      time.Second,
+		OnNotice: func(_ *pgconn.PgConn, notice *pgconn.Notice) {
+			mu.Lock()
+			defer mu.Unlock()
+			notices = append(notices, notice.Message)
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewPoolWithEnforcedTimeouts: %v", err)
+	}
+	defer pool.Close()
+
+	conn, err := pool.Acquire(context.Background())
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	defer conn.Release()
+
+	const noticeText = "che372-onnotice-enforced-timeouts-probe"
+	if _, err := conn.Exec(context.Background(), fmt.Sprintf("DO $$ BEGIN RAISE NOTICE '%s'; END $$;", noticeText)); err != nil {
+		t.Fatalf("raise notice: %v", err)
+	}
+
+	mu.Lock()
+	got := append([]string(nil), notices...)
+	mu.Unlock()
+	found := false
+	for _, n := range got {
+		if n == noticeText {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("OnNotice did not fire on the enforced-timeout path: got notices %v, want %q among them — EnforcedTimeouts.OnNotice was not carried onto the real ConnConfig", got, noticeText)
+	}
+}

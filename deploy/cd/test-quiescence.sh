@@ -212,9 +212,15 @@ echo "$live" | grep -q '"ok":true' && { echo "PASS: find-live-session-by-role lo
 live_pid="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).pid))' "$live")"
 live_backend_start="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).backendStart))' "$live")"
 
-if node deploy/cd/quiescence.mjs verify-live-session-is-covered --database-url "$db_url" --psql-via-docker-network "$network" \
+# The attempt-lock key is passed via MULTICA_INTERNAL_D2_ATTEMPT_LOCK_KEY
+# in the environment, never as a --attempt-lock-key argument — a real CHE-372
+# review finding: argv is world-readable via /proc/<pid>/cmdline on hosts
+# mounting /proc without hidepid, which would let a local user recover the
+# secret. `env VAR=value node ...` sets it for exactly this one child
+# process without exporting it into this test script's own environment.
+if env MULTICA_INTERNAL_D2_ATTEMPT_LOCK_KEY="$ATTEMPT_LOCK_KEY" node deploy/cd/quiescence.mjs verify-live-session-is-covered --database-url "$db_url" --psql-via-docker-network "$network" \
   --pid "$live_pid" --backend-start "$live_backend_start" --role-name "$db_user" --database-name "$db_name" \
-  --attempt-lock-key "$ATTEMPT_LOCK_KEY" --query-timeout-ms 4000 >/dev/null 2>&1; then
+  --query-timeout-ms 4000 >/dev/null 2>&1; then
   echo "PASS: verify-live-session-is-covered confirms the correct live identity holding the attempt lock"
   pass=$((pass + 1))
 else
@@ -223,9 +229,9 @@ else
 fi
 
 echo "==> negative control: live-session identity check rejects a mismatched backend_start (PID reuse guard)"
-if node deploy/cd/quiescence.mjs verify-live-session-is-covered --database-url "$db_url" --psql-via-docker-network "$network" \
+if env MULTICA_INTERNAL_D2_ATTEMPT_LOCK_KEY="$ATTEMPT_LOCK_KEY" node deploy/cd/quiescence.mjs verify-live-session-is-covered --database-url "$db_url" --psql-via-docker-network "$network" \
   --pid "$live_pid" --backend-start "2001-01-01 00:00:00+00" --role-name "$db_user" --database-name "$db_name" \
-  --attempt-lock-key "$ATTEMPT_LOCK_KEY" >/dev/null 2>&1; then
+  >/dev/null 2>&1; then
   echo "FAIL: verify-live-session-is-covered admitted a backend_start mismatch — PID-reuse spoofing possible"
   fail=$((fail + 1))
 else
@@ -241,9 +247,9 @@ echo "==> negative control: live-session identity check rejects a session NOT ho
 # every role/database/pid/backend_start check, but cannot know (and here,
 # deliberately does not present) the per-attempt secret, so it must still
 # be rejected.
-if node deploy/cd/quiescence.mjs verify-live-session-is-covered --database-url "$db_url" --psql-via-docker-network "$network" \
+if env MULTICA_INTERNAL_D2_ATTEMPT_LOCK_KEY=999999999999 node deploy/cd/quiescence.mjs verify-live-session-is-covered --database-url "$db_url" --psql-via-docker-network "$network" \
   --pid "$live_pid" --backend-start "$live_backend_start" --role-name "$db_user" --database-name "$db_name" \
-  --attempt-lock-key 999999999999 >/dev/null 2>&1; then
+  >/dev/null 2>&1; then
   echo "FAIL: verify-live-session-is-covered admitted a session not holding this attempt's lock — foreign-client spoofing possible"
   fail=$((fail + 1))
 else
@@ -287,22 +293,25 @@ fenced_backend_start="$(node -e 'process.stdout.write(String(JSON.parse(process.
 # let the gate admit (evaluateFinalGate's "idle sessions require explicit
 # fencing" rule).
 expect_admit "final-gate --fenced-sessions admits a verified live pid|backend_start holding the attempt lock" \
+  env MULTICA_INTERNAL_D2_ATTEMPT_LOCK_KEY="$ATTEMPT_LOCK_KEY" \
   node deploy/cd/quiescence.mjs final-gate --database-url "$db_url" --psql-via-docker-network "$network" \
   --query-timeout-ms 4000 --fenced-sessions "${fenced_pid}|${fenced_backend_start}" \
-  --role-name "$db_user" --database-name "$db_name" --attempt-lock-key "$ATTEMPT_LOCK_KEY"
+  --role-name "$db_user" --database-name "$db_name"
 
 # (b) Same pid, falsified backend_start -- the PID-reuse case. Must NOT be
 # fenced, so the still-present idle session denies.
 expect_deny "final-gate --fenced-sessions refuses a fabricated backend_start (verification really runs)" \
+  env MULTICA_INTERNAL_D2_ATTEMPT_LOCK_KEY="$ATTEMPT_LOCK_KEY" \
   node deploy/cd/quiescence.mjs final-gate --database-url "$db_url" --psql-via-docker-network "$network" \
   --query-timeout-ms 4000 --fenced-sessions "${fenced_pid}|2001-01-01 00:00:00+00" \
-  --role-name "$db_user" --database-name "$db_name" --attempt-lock-key "$ATTEMPT_LOCK_KEY"
+  --role-name "$db_user" --database-name "$db_name"
 
 # (c) A wholly fabricated pid is likewise not fenced.
 expect_deny "final-gate --fenced-sessions refuses a wholly fabricated pid" \
+  env MULTICA_INTERNAL_D2_ATTEMPT_LOCK_KEY="$ATTEMPT_LOCK_KEY" \
   node deploy/cd/quiescence.mjs final-gate --database-url "$db_url" --psql-via-docker-network "$network" \
   --query-timeout-ms 4000 --fenced-sessions "999999|${fenced_backend_start}" \
-  --role-name "$db_user" --database-name "$db_name" --attempt-lock-key "$ATTEMPT_LOCK_KEY"
+  --role-name "$db_user" --database-name "$db_name"
 
 # (d) The removed flags must not still work. A caller that passes the old
 # --fenced-role/--fenced-database gets no fencing at all now (they are
@@ -319,9 +328,10 @@ expect_deny "removed --fenced-role/--fenced-database no longer fence anything" \
 # the attempt-lock secret is that only the supervisor that actually
 # launched this session's migrator knows the right key.
 expect_deny "final-gate --fenced-sessions refuses a genuine session verified against the wrong attempt-lock-key" \
+  env MULTICA_INTERNAL_D2_ATTEMPT_LOCK_KEY=999999999999 \
   node deploy/cd/quiescence.mjs final-gate --database-url "$db_url" --psql-via-docker-network "$network" \
   --query-timeout-ms 4000 --fenced-sessions "${fenced_pid}|${fenced_backend_start}" \
-  --role-name "$db_user" --database-name "$db_name" --attempt-lock-key 999999999999
+  --role-name "$db_user" --database-name "$db_name"
 
 terminate_all_client_backends
 sleep 1
