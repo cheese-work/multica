@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { CheckCircle2, ChevronRight, ListChevronsDownUp, Copy, Loader2, MessageSquarePlus, MoreHorizontal, Pencil, RotateCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Card } from "@multica/ui/components/ui/card";
@@ -39,6 +39,8 @@ import { CommentTriggerChips } from "./comment-trigger-chips";
 import { useCommentTriggerPreview } from "../hooks/use-comment-trigger-preview";
 import type { TimelineEntry, Attachment } from "@multica/core/types";
 import { contentReferencesAttachment } from "@multica/core/types";
+import { isDeletedComment } from "@multica/core/issues/comment-deletion";
+import { useConfigStore } from "@multica/core/config";
 import { selectStandaloneAttachments } from "@multica/core/attachments/image-sequence";
 import { useCommentCollapseStore, useCommentDraftStore } from "@multica/core/issues/stores";
 import { useT } from "../../i18n";
@@ -49,6 +51,7 @@ import { InlineCommentRun, useInlineCommentRunState, type InlineCommentRunState 
 import { EMPTY_COMMENT_RUNS, showCommentRunInHeader, type CommentRun } from "./comment-runs";
 import { useCommentAnnotations } from "./use-comment-annotations";
 import { useRunCommentMotion } from "./use-run-comment-motion";
+import { projectThreadDisplay, type ThreadDisplaySlot } from "./thread-disclosure";
 
 const commentActionClassName =
   "text-muted-foreground aria-expanded:bg-transparent aria-expanded:hover:bg-muted dark:aria-expanded:hover:bg-muted/50";
@@ -141,6 +144,45 @@ interface CommentCardProps {
   onResolvedExpandChange?: (rootId: string, expand: boolean) => void;
   /** ID of the comment to highlight (flash animation). */
   highlightedCommentId?: string | null;
+  /**
+   * Session-durable "all replies" length preference for this thread root
+   * (`useIssueDisclosureStore`'s length-expanded set). Unresolved threads
+   * over three replies default to compact (latest three); this — plus any
+   * caller-forced reveal, see `forceThreadExpanded` — drives full disclosure.
+   * Lowest-priority signal in the 01-DESIGN "Effective order": find/target
+   * pins, resolved-bar state, manual collapse and reply-resolution folding
+   * all sit above it and are resolved by the caller/this component already.
+   */
+  threadLengthExpanded?: boolean;
+  onThreadLengthExpandChange?: (rootId: string, expand: boolean) => void;
+  /**
+   * Caller-owned override that forces the full reply list open regardless of
+   * `threadLengthExpanded` AND regardless of manual collapse (`isCollapsed`)
+   * — find/target reveal, active reply drafts and active no-reply runs
+   * anchored to an otherwise-hidden reply. 01-DESIGN "Effective order" ranks
+   * find/target pins (priority 1) above manual collapse (priority 3): a
+   * manually-collapsed root must still open for a deep link into one of its
+   * replies, or that reply's DOM node never mounts and the link can never
+   * land. Does not itself persist a length or collapse choice; ending the
+   * reason simply stops passing `true` here (see 01-DESIGN "Effective order"
+   * and the transition matrix's "New reply / edit / active run" row).
+   */
+  forceThreadExpanded?: boolean;
+  /**
+   * True while in-page find owns this thread's forced-open reveal
+   * specifically (never for a target/draft/run pin — those aren't "would
+   * hide a match" per 01-DESIGN). Disables the manual Collapse chevron with a
+   * localized explanation instead of hiding it: 01-DESIGN "disclosure
+   * toggles that would hide a match are disabled with a localized
+   * explanation." `forceThreadExpanded` already keeps the card visually
+   * open even if the underlying manual-collapse preference is clicked, but
+   * leaving the control live would still let find silently mutate a durable
+   * preference the reader never intended to change (row 58's overlay is
+   * meant to be a non-destructive, transient view, not a side door to write
+   * `useCommentCollapseStore`).
+   */
+  findManualCollapseDisabled?: boolean;
+  findManualCollapseDisabledReason?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -159,15 +201,20 @@ function DeleteCommentDialog({
   hasReplies?: boolean;
 }) {
   const { t } = useT("issues");
+  // Only a server that declares it keeps the replies (#8296); an older one
+  // deletes them with the comment, and the copy must say so.
+  const keepsReplies = useConfigStore((s) => s.commentDeleteKeepRepliesSupported);
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>{t(($) => $.comment.delete_title)}</AlertDialogTitle>
           <AlertDialogDescription>
-            {hasReplies
-              ? t(($) => $.comment.delete_desc_with_replies)
-              : t(($) => $.comment.delete_desc)}
+            {!hasReplies
+              ? t(($) => $.comment.delete_desc)
+              : keepsReplies
+                ? t(($) => $.comment.delete_desc_replies_kept)
+                : t(($) => $.comment.delete_desc_with_replies)}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
@@ -605,6 +652,7 @@ function CommentRow({
   canModerate = false,
   isResolution = false,
   isHighlighted = false,
+  hasReplies = false,
   onEdit,
   onDelete,
   onToggleReaction,
@@ -619,6 +667,8 @@ function CommentRow({
   canModerate?: boolean;
   /** True when this reply is the thread's resolution (shows the green badge). */
   isResolution?: boolean;
+  /** True when other replies answer this one; they are kept when it is deleted. */
+  hasReplies?: boolean;
   /** True when this row is the deep-link target currently being highlighted. */
   isHighlighted?: boolean;
   onEdit: (commentId: string, content: string, attachmentIds: string[], suppressAgentIds?: string[], contentBase?: string) => Promise<void>;
@@ -640,6 +690,13 @@ function CommentRow({
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const reactions = entry.reactions ?? [];
+
+  // A deleted reply renders nothing at all. Its row is kept only so the
+  // replies to it keep a direct parent (#8296), and the thread renders those
+  // replies flat, in its place — a placeholder row would say nothing they do
+  // not already say. Callers drop this row's chrome too, so the thread shows
+  // no empty divider where it was.
+  if (isDeletedComment(entry)) return null;
 
   return (
     <div data-comment-block className="pb-3">
@@ -761,6 +818,7 @@ function CommentRow({
             open={confirmDelete}
             onOpenChange={setConfirmDelete}
             onConfirm={() => onDelete(entry.id)}
+            hasReplies={hasReplies}
           />
         </div>
       </StickyHeaderShell>
@@ -881,14 +939,20 @@ export function AgentRunComment({ run, standalone = false, commentProps, enterin
   commentProps?: CommentCardProps;
 }) {
   const viewState = useInlineCommentRunState();
-  const reply = commentProps?.entry;
+  const replyEntry = commentProps?.entry;
+  // A deleted reply renders nothing in a run slot either (see CommentRow), so
+  // the slot falls back to the run's own activity block: the run happened, and
+  // it still carries `hasReply`, so it never prints the deleted body as its
+  // output. A deleted thread ROOT keeps rendering — it heads its own thread.
+  const replyHidden = !standalone && !!replyEntry && isDeletedComment(replyEntry);
+  const reply = replyHidden ? undefined : replyEntry;
   const motionRef = useRunCommentMotion(entering, reply?.id, run.task.status);
   return (
     <div ref={motionRef} data-run-slot-id={run.task.id}
       data-run-comment-id={!reply ? run.task.id : undefined}
       id={!standalone && reply ? `comment-${reply.id}` : undefined}
       className={cn(standalone ? !reply && "rounded-xl border bg-card" : "border-t border-border/50", !reply && "py-1.5", reply && commentProps?.highlightedCommentId === reply.id && highlightedCommentBackgroundClass)}>
-      {commentProps ? standalone ? (
+      {commentProps && reply ? standalone ? (
         <CommentCard {...commentProps} runs={commentProps.runs ?? [run]} runViewState={viewState} />
       ) : (
         <CommentRow {...commentProps}
@@ -936,6 +1000,11 @@ function CommentCardImpl({
   expandedResolvedIds,
   onResolvedExpandChange,
   highlightedCommentId,
+  threadLengthExpanded = false,
+  onThreadLengthExpandChange,
+  forceThreadExpanded = false,
+  findManualCollapseDisabled = false,
+  findManualCollapseDisabledReason,
 }: CommentCardProps) {
   const { t } = useT("issues");
   const locale = useLocale();
@@ -943,7 +1012,9 @@ function CommentCardImpl({
   const { getActorName } = useActorName();
   const replyTarget = useCommentDraftStore((s) => s.drafts[`reply:${issueId}:${entry.id}`]?.replyTarget);
   const replyTargetId = replyTarget?.commentId ?? entry.id;
-  const replyTargetMissing = !!replyTarget && replyTargetId !== entry.id && !replies.some((r) => r.id === replyTargetId);
+  // A deleted target's tombstone is as gone as a removed row.
+  const replyTargetMissing = !!replyTarget && replyTargetId !== entry.id
+    && !replies.some((r) => r.id === replyTargetId && !isDeletedComment(r));
   const annotation = useCommentAnnotations({
     draftKey: `reply:${issueId}:${entry.id}`,
     sources: [entry, ...replies].filter((e) => e.type === "comment")
@@ -953,7 +1024,16 @@ function CommentCardImpl({
   });
   const isCollapsed = useCommentCollapseStore((s) => s.isCollapsed(issueId, entry.id));
   const toggleCollapse = useCommentCollapseStore((s) => s.toggle);
-  const open = !isCollapsed;
+  // `forceThreadExpanded` (caller's find/target/active-interaction pin,
+  // 01-DESIGN "Effective order" priority 1) must beat manual collapse
+  // (priority 3): without this, a find/target pin that successfully forces
+  // `lengthExpanded` still rendered nothing, because the whole replies
+  // section below (including the reply input and every reply's DOM node) is
+  // gated on `open` alone. This is a transient override, exactly like
+  // `lengthExpanded`'s handling below — it is never written to
+  // useCommentCollapseStore, so ending the pin's reason simply stops passing
+  // `true` here without mutating the persisted manual-collapse preference.
+  const open = !isCollapsed || forceThreadExpanded;
   const handleToggle = useCallback(
     () => toggleCollapse(issueId, entry.id),
     [toggleCollapse, issueId, entry.id],
@@ -967,24 +1047,19 @@ function CommentCardImpl({
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const allNestedReplies = replies;
-  const slottedReplyIds = new Set(runs.filter((run) => run.hasReply && run.anchorCommentId && run.commentId !== entry.id)
-    .map((run) => run.commentId));
+  // What the thread shows. Tombstones are excluded from display and counts but
+  // stay in `allNestedReplies`, which run anchoring and "has replies" reason
+  // over. Every tombstone has at least one live descendant (the server prunes
+  // one that loses its last reply), so no content hides behind this.
+  const visibleReplies = allNestedReplies.filter((reply) => !isDeletedComment(reply));
   const renderRuns = (commentId: string, presentation: "inline" | "header" = "inline") => runs.filter((run) => run.commentId === commentId && run.hasReply
     && showCommentRunInHeader(run) === (presentation === "header")
     && (!run.anchorCommentId || run.anchorCommentId === commentId || replyFolded))
     .map((run) => <InlineCommentRun key={run.task.id} run={run} presentation={presentation} viewState={run.commentId === entry.id ? runViewState : undefined} />);
 
-  const renderAnchoredRuns = (commentId: string) => runs.filter((run) => run.anchorCommentId === commentId
-    && !(replyFolded && run.hasReply))
-    .map((run) => {
-      const reply = run.hasReply ? allNestedReplies.find((entry) => entry.id === run.commentId) : undefined;
-      return <Fragment key={run.task.id}><AgentRunComment run={run} entering={enteringRunIds?.has(run.task.id)} commentProps={reply ? {
-        issueId, entry: reply, replies: [], currentUserId, canModerate, onReply, onEdit, onDelete,
-        onToggleReaction, onCreateSubIssue, onResolveToggle, highlightedCommentId, enteringRunIds,
-      } : undefined} />{reply && reply.id !== commentId && renderAnchoredRuns(reply.id)}</Fragment>;
-    });
-
-  const replyCount = allNestedReplies.length;
+  const replyCount = visibleReplies.length;
+  const repliedToIds = new Set(allNestedReplies.map((reply) => reply.parent_id));
+  const deleted = isDeletedComment(entry);
   const contentPreview = (entry.content ?? "").replace(/\n/g, " ").slice(0, 80);
   const reactions = entry.reactions ?? [];
 
@@ -999,11 +1074,52 @@ function CommentCardImpl({
   const threadExpanded = !!expandedResolvedIds?.has(entry.id);
   const replyFolded = replyResolutionId != null && !threadExpanded;
   const foldedReplies = replyResolutionId
-    ? allNestedReplies.filter((r) => r.id !== replyResolutionId)
-    : allNestedReplies;
+    ? visibleReplies.filter((r) => r.id !== replyResolutionId)
+    : visibleReplies;
   const resolutionReply = replyResolutionId
     ? allNestedReplies.find((r) => r.id === replyResolutionId) ?? null
     : null;
+
+  // Effective order (01-DESIGN "Effective order"): reply-resolution folding
+  // (priority 4, `replyFolded` above) fully owns display when active — the
+  // projection below only applies to the normal, non-reply-folded branch
+  // (priority 6, unresolved length preference). `forceThreadExpanded` is the
+  // caller's find/target/active-interaction pin (priority 1); it opens the
+  // full list regardless of the durable length choice, without writing it.
+  const lengthExpanded = forceThreadExpanded || threadLengthExpanded;
+  // Runs anchored directly to the ROOT keep the pre-existing AgentRunComment
+  // rendering identity (below) so a run's DOM node survives the "queued, no
+  // reply yet" -> "reply landed" transition without remounting — including
+  // when its reply publishes as an out-of-thread top-level comment that
+  // comment-runs.ts projects onto this root ("root-reply runs stay with the
+  // root", 01-DESIGN). projectThreadDisplay only owns genuinely nested
+  // (non-root-anchored) reply chains, which is its actual acceptance-tested
+  // domain (the r1..r10 anchor matrices).
+  const nestedRuns = runs.filter((run) => run.anchorCommentId !== entry.id);
+  // A reply already embedded under a root-anchored run above (rendered via
+  // AgentRunComment) must not ALSO consume a slot in this thread's own
+  // compact/expanded window or its hiddenCount — but a downstream run
+  // anchored to it (e.g. a follow-up queued run triggered by this very
+  // reply) must still resolve, so it stays in the replies list and is only
+  // excluded from the visible-window selection via `excludeFromVisible`.
+  const rootRunReplyIds = new Set(
+    runs.filter((run): run is CommentRun & { commentId: string } =>
+      run.anchorCommentId === entry.id && run.hasReply && !!run.commentId)
+      .map((run) => run.commentId),
+  );
+  // Tombstones are excluded from the projection's visible window on exactly the
+  // same terms as a root-anchored reply: no row, no place in the compact/
+  // expanded window, no hiddenCount — but still resolvable as an anchor target,
+  // so a run anchored to a deleted reply keeps its run-only slot instead of
+  // silently vanishing with the body. `excludeFromVisible` is the projection's
+  // own name for that distinction, so tombstone suppression rides it rather
+  // than filtering the input list (which would break anchor resolution).
+  const hiddenFromThreadWindow = new Set(rootRunReplyIds);
+  for (const reply of allNestedReplies) {
+    if (isDeletedComment(reply)) hiddenFromThreadWindow.add(reply.id);
+  }
+  const threadProjection = projectThreadDisplay(allNestedReplies, nestedRuns, lengthExpanded, hiddenFromThreadWindow);
+  const canShowLess = allNestedReplies.length - hiddenFromThreadWindow.size > 3;
 
   // Pin the root comment's header to the timeline's scroll parent while the
   // thread is open, so a LONG root comment keeps its author + actions visible
@@ -1049,33 +1165,42 @@ function CommentCardImpl({
             className={cn("px-4 max-md:px-3", open ? "pt-3 pb-2" : "py-3")}
           >
             <div className="flex items-center gap-2.5">
-              <ActorAvatar
-                actorType={entry.actor_type}
-                actorId={entry.actor_id}
-                name={entry.actor_name}
-                avatarUrl={entry.actor_avatar_url}
-                profileRequiresDirectoryEntry
-                size="md"
-                enableHoverCard
-                showStatusDot
-              />
-              <span className="shrink-0 cursor-pointer text-body font-medium">
-                {entry.actor_name || getActorName(entry.actor_type, entry.actor_id)}
-              </span>
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <span className="shrink-0 text-caption text-muted-foreground cursor-default">
-                      {timeAgo(entry.created_at)}
-                    </span>
-                  }
-                />
-                <TooltipContent side="top">
-                  {new Date(entry.created_at).toLocaleString(locale)}
-                </TooltipContent>
-              </Tooltip>
+              {deleted ? (
+                // The thread's root was deleted; its replies still hang off it.
+                <span className="min-w-0 truncate text-body italic text-muted-foreground">
+                  {t(($) => $.comment.deleted_placeholder)}
+                </span>
+              ) : (
+                <>
+                  <ActorAvatar
+                    actorType={entry.actor_type}
+                    actorId={entry.actor_id}
+                    name={entry.actor_name}
+                    avatarUrl={entry.actor_avatar_url}
+                    profileRequiresDirectoryEntry
+                    size="md"
+                    enableHoverCard
+                    showStatusDot
+                  />
+                  <span className="shrink-0 cursor-pointer text-body font-medium">
+                    {entry.actor_name || getActorName(entry.actor_type, entry.actor_id)}
+                  </span>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <span className="shrink-0 text-caption text-muted-foreground cursor-default">
+                          {timeAgo(entry.created_at)}
+                        </span>
+                      }
+                    />
+                    <TooltipContent side="top">
+                      {new Date(entry.created_at).toLocaleString(locale)}
+                    </TooltipContent>
+                  </Tooltip>
 
-              {renderRuns(entry.id, "header")}
+                  {renderRuns(entry.id, "header")}
+                </>
+              )}
 
               {!open && contentPreview && (
                 <span className="min-w-0 flex-1 truncate text-caption text-muted-foreground">
@@ -1094,15 +1219,20 @@ function CommentCardImpl({
                   variant="ghost"
                   size="icon-sm"
                   aria-label={open ? t(($) => $.comment.collapse_thread) : t(($) => $.comment.expand_thread)}
-                  title={open ? t(($) => $.comment.collapse_thread) : t(($) => $.comment.expand_thread)}
+                  aria-description={open && findManualCollapseDisabled ? findManualCollapseDisabledReason : undefined}
+                  title={open && findManualCollapseDisabled ? findManualCollapseDisabledReason : (open ? t(($) => $.comment.collapse_thread) : t(($) => $.comment.expand_thread))}
                   aria-expanded={open}
                   aria-controls={open ? `comment-body-${entry.id}` : undefined}
+                  // Only collapsing (from `open`) can hide a match — expanding
+                  // never does, so the control stays live in that direction
+                  // even while find owns this thread's reveal.
+                  disabled={open && findManualCollapseDisabled}
                   onClick={handleToggle}
                   className={commentActionClassName}
                 >
                   <ChevronRight aria-hidden className={cn("h-3.5 w-3.5 transition-transform motion-reduce:transition-none", open && "rotate-90")} />
                 </Button>
-                {open && <>
+                {open && !deleted && <>
                   {!edit.editing && <QuickEmojiPicker
                     onSelect={(emoji) => onToggleReaction(entry.id, emoji)}
                     ariaLabel={t(($) => $.comment.add_reaction)}
@@ -1179,7 +1309,7 @@ function CommentCardImpl({
                     open={confirmDelete}
                     onOpenChange={setConfirmDelete}
                     onConfirm={() => onDelete(entry.id)}
-                    hasReplies
+                    hasReplies={replyCount > 0}
                   />
                 </>}
               </div>
@@ -1189,7 +1319,7 @@ function CommentCardImpl({
         {/* Root comment body. Avoid Base UI's Panel here: every mounted panel
             probes computed styles to detect animations, forcing a style
             recalculation across long issue-detail documents. */}
-        {open && (
+        {open && !deleted && (
           <div id={`comment-body-${entry.id}`} className="px-4 max-md:px-3 pb-3">
             {edit.editing ? (
               <div
@@ -1304,7 +1434,31 @@ function CommentCardImpl({
             to mirror the body Panel's collapse visibility. */}
         {open && (
           <>
-          {renderAnchoredRuns(entry.id)}
+          {/* Runs anchored directly to the root — outside projectThreadDisplay's
+              domain (root is never one of its slots). Rendered via the same
+              AgentRunComment identity regardless of whether the run has
+              published a reply yet, so the DOM node persists across that
+              transition instead of remounting (comment-card.test.tsx /
+              issue-detail.test.tsx pin this). When the reply IS one of this
+              thread's own nested replies, AgentRunComment embeds it via
+              CommentRow; otherwise (root-level publish target, or no reply
+              yet) it renders a run-only summary. */}
+          {runs.filter((run) => run.anchorCommentId === entry.id
+            && !(replyFolded && run.hasReply))
+            .map((run) => {
+              const reply = run.hasReply ? allNestedReplies.find((r) => r.id === run.commentId) : undefined;
+              return (
+                <AgentRunComment
+                  key={run.task.id}
+                  run={run}
+                  entering={enteringRunIds?.has(run.task.id)}
+                  commentProps={reply ? {
+                    issueId, entry: reply, replies: [], currentUserId, canModerate, onReply, onEdit, onDelete,
+                    onToggleReaction, onCreateSubIssue, onResolveToggle, highlightedCommentId, enteringRunIds,
+                  } : undefined}
+                />
+              );
+            })}
           {replyFolded ? (
             <>
               {/* reply-mode folded: other replies behind a bar, resolution pinned below */}
@@ -1334,6 +1488,7 @@ function CommentCardImpl({
                       canModerate={canModerate}
                       isResolution
                       isHighlighted={highlightedCommentId === resolutionReply.id}
+                      hasReplies={repliedToIds.has(resolutionReply.id)}
                       onEdit={onEdit}
                       onDelete={onDelete}
                       onToggleReaction={onToggleReaction}
@@ -1341,7 +1496,6 @@ function CommentCardImpl({
                       onResolveToggle={onResolveToggle}
                     />
                   </div>
-                  {renderAnchoredRuns(resolutionReply.id)}
                 </>
               )}
             </>
@@ -1359,25 +1513,51 @@ function CommentCardImpl({
                   {t(($) => $.comment.resolve.collapse)}
                 </button>
               )}
-              {/* Replies — chronological; the resolution keeps its place with a badge */}
-              {allNestedReplies.filter((reply) => !slottedReplyIds.has(reply.id)).map((reply) => (
-                <Fragment key={reply.id}>
+              {/* Show more — the compact window hides the oldest replies behind
+                  a count; length-expand only touches this thread's root, never
+                  description or another thread's preference. */}
+              {!lengthExpanded && threadProjection.hiddenCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => onThreadLengthExpandChange?.(entry.id, true)}
+                  className="block w-full border-t border-border/50 px-4 max-md:px-3 py-2 text-left text-caption text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+                >
+                  {t(($) => $.comment.thread_show_more, { count: threadProjection.hiddenCount })}
+                </button>
+              )}
+              {/* Replies — projectThreadDisplay is the sole thread-display
+                  input in both compact and expanded states (01-DESIGN "Thread
+                  selection and run placement"): every visible reply owns
+                  exactly one chronological slot, and a run without a
+                  published reply attaches a run-only slot after its own
+                  visible anchor — never recursively under an unrelated body. */}
+              {threadProjection.slots.map((slot: ThreadDisplaySlot) =>
+                slot.kind === "comment" ? (
                   <div
-                    id={`comment-${reply.id}`}
+                    key={slot.comment.id}
+                    id={`comment-${slot.comment.id}`}
+                    data-run-slot-id={slot.runs[0]?.task.id}
                     className={cn(
                       "border-t border-border/50 transition-colors duration-700",
-                      highlightedCommentId === reply.id && highlightedCommentBackgroundClass,
+                      highlightedCommentId === slot.comment.id && highlightedCommentBackgroundClass,
                     )}
                   >
                     <CommentRow
                       issueId={issueId}
-                      entry={reply}
-                      runHeader={renderRuns(reply.id, "header")}
-                      runMetadata={renderRuns(reply.id)}
+                      entry={slot.comment}
+                      // A published reply's runs are deduplicated onto its own
+                      // slot (01-DESIGN "Multiple runs referring to the same
+                      // visible comment": one body, deduplicated controls,
+                      // ordered by task created_at/id) — never re-render the
+                      // body per run the way anchor-recursion used to.
+                      runHeader={slot.runs.filter((run) => showCommentRunInHeader(run))
+                        .map((run) => <InlineCommentRun key={run.task.id} run={run} presentation="header" />)}
+                      runMetadata={slot.runs.filter((run) => !showCommentRunInHeader(run))
+                        .map((run) => <InlineCommentRun key={run.task.id} run={run} />)}
                       currentUserId={currentUserId}
                       canModerate={canModerate}
-                      isResolution={reply.id === replyResolutionId}
-                      isHighlighted={highlightedCommentId === reply.id}
+                      isResolution={slot.comment.id === replyResolutionId}
+                      isHighlighted={highlightedCommentId === slot.comment.id}
                       onEdit={onEdit}
                       onDelete={onDelete}
                       onToggleReaction={onToggleReaction}
@@ -1385,9 +1565,29 @@ function CommentCardImpl({
                       onResolveToggle={onResolveToggle}
                     />
                   </div>
-                  {renderAnchoredRuns(reply.id)}
-                </Fragment>
-              ))}
+                ) : (
+                  <AgentRunComment key={slot.run.task.id} run={slot.run} entering={enteringRunIds?.has(slot.run.task.id)} />
+                ),
+              )}
+              {/* Show less — remembers the compact length choice per root for
+                  the rest of the session. `forceThreadExpanded` (set by
+                  issue-detail.tsx's forceThreadOpen) refuses it while this
+                  thread has: a pending agent run with no reply yet; an
+                  in-progress reply draft/upload on this thread's own
+                  composer; or an active inline edit session (with unsaved
+                  content or a pending upload) on the root or any reply. It
+                  does NOT detect bare focus/selection with no unsaved change
+                  yet — that produces no signal issue-detail.tsx can read
+                  today (see its rootIdsWithActiveReplyDraft comment). */}
+              {lengthExpanded && canShowLess && !forceThreadExpanded && (
+                <button
+                  type="button"
+                  onClick={() => onThreadLengthExpandChange?.(entry.id, false)}
+                  className="block w-full border-t border-border/50 px-4 max-md:px-3 py-2 text-left text-caption text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+                >
+                  {t(($) => $.comment.thread_show_less)}
+                </button>
+              )}
 
               {/* Reply input */}
               <div className="border-t border-border/50 px-4 max-md:px-3 py-2.5">

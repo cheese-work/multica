@@ -111,6 +111,12 @@
     "blocked": "막힘",
     "cancelled": "취소됨"
   },
+  "status_category": {
+    "unstarted": "시작 전",
+    "started": "시작됨",
+    "done": "완료",
+    "closed": "종료"
+  },
   "priority": {
     "urgent": "긴급",
     "high": "높음",
@@ -446,7 +452,8 @@
       "no_matches": "일치 항목 없음",
       "previous": "이전 일치",
       "next": "다음 일치",
-      "close": "찾기 닫기"
+      "close": "찾기 닫기",
+      "collapse_disabled": "찾기가 열려 있는 동안에는 접을 수 없습니다"
     },
     "update_failed": "태스크를 업데이트하지 못했습니다",
     "link_copied": "링크를 복사했습니다",
@@ -494,6 +501,8 @@
     "delete_title": "댓글 삭제",
     "delete_desc": "이 댓글이 영구 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
     "delete_desc_with_replies": "이 댓글과 모든 답글이 영구 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
+    "delete_desc_replies_kept": "이 댓글이 영구 삭제됩니다. 답글은 스레드에 남습니다. 이 작업은 되돌릴 수 없습니다.",
+    "deleted_placeholder": "삭제된 댓글입니다",
     "delete_action": "삭제",
     "cancel_action": "취소",
     "edit_placeholder": "댓글 수정...",
@@ -525,6 +534,8 @@
     "send_reply_failed": "답글을 보내지 못했습니다",
     "delete_failed": "댓글을 삭제하지 못했습니다",
     "reply_count_other": "답글 {{count}}개",
+    "thread_show_more_other": "답글 {{count}}개 더 보기",
+    "thread_show_less": "간략히 보기",
     "leave_comment_placeholder": "댓글 남기기...",
     "send_tooltip": "보내기",
     "trigger_source_issue_assignee": "담당자",

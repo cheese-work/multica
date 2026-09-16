@@ -28,6 +28,8 @@ function runTaskOrder(a: CommentRun, b: CommentRun): number {
   return a.task.created_at.localeCompare(b.task.created_at) || a.task.id.localeCompare(b.task.id);
 }
 
+const EMPTY_EXCLUDE: ReadonlySet<string> = new Set();
+
 /**
  * Canonical, pure thread projection. Replaces recursive anchor placement
  * (`renderAnchoredRuns`/`slottedReplyIds`) with a single forward pass: every
@@ -40,11 +42,20 @@ function runTaskOrder(a: CommentRun, b: CommentRun): number {
  *
  * `expanded` selects "all replies" vs D-04's "latest three logical replies";
  * the root itself is never part of the returned slots or hiddenCount.
+ *
+ * `excludeFromVisible` (default empty) removes reply ids from the returned
+ * comment slots AND the visible/hidden-count window, while still resolving
+ * them as anchor targets for other runs' run-only slots. This is for a reply
+ * a caller renders through a separate identity-preserving path (comment-
+ * card.tsx's root-anchored AgentRunComment — "root-reply runs stay with the
+ * root", 01-DESIGN): it must not double-count into this thread's own compact/
+ * expanded window, but a downstream run anchored to it must still resolve.
  */
 export function projectThreadDisplay(
   replies: readonly TimelineEntry[],
   runs: readonly CommentRun[],
   expanded: boolean,
+  excludeFromVisible: ReadonlySet<string> = EMPTY_EXCLUDE,
 ): ThreadDisplayProjection {
   const repliesById = new Map(replies.map((reply) => [reply.id, reply]));
 
@@ -77,26 +88,44 @@ export function projectThreadDisplay(
 
   // Deduplicate logical comment IDs before selecting the visible window —
   // the same reply must never appear twice regardless of how many runs
-  // reference it.
-  const uniqueReplies: TimelineEntry[] = [];
+  // reference it. `excludeFromVisible` entries stay in this deduplicated list
+  // (they can still anchor a downstream run's run-only slot below) but are
+  // dropped before the "latest three" window is chosen, so a caller-owned
+  // reply never consumes a window slot or counts toward hiddenCount.
+  const dedupedReplies: TimelineEntry[] = [];
   const seen = new Set<string>();
   for (const reply of replies) {
     if (seen.has(reply.id)) continue;
     seen.add(reply.id);
-    uniqueReplies.push(reply);
+    dedupedReplies.push(reply);
   }
+  const windowEligible = excludeFromVisible.size === 0
+    ? dedupedReplies
+    : dedupedReplies.filter((r) => !excludeFromVisible.has(r.id));
 
-  const visibleReplies = expanded || uniqueReplies.length <= 3
-    ? uniqueReplies
-    : uniqueReplies.slice(-3);
-  const hiddenCount = uniqueReplies.length - visibleReplies.length;
+  const visibleReplies = expanded || windowEligible.length <= 3
+    ? windowEligible
+    : windowEligible.slice(-3);
+  const hiddenCount = windowEligible.length - visibleReplies.length;
+
+  // Excluded-from-visible replies never occupy a window slot, but a
+  // downstream run can still anchor to one — merge them back in below,
+  // chronological-order-only, so that anchor's run-only slot has somewhere
+  // to attach; only replies actually selected into `visibleReplies` get a
+  // rendered comment slot.
+  const visibleIds = new Set(visibleReplies.map((r) => r.id));
+  const anchorEligible = excludeFromVisible.size === 0
+    ? visibleReplies
+    : dedupedReplies.filter((r) => visibleIds.has(r.id) || excludeFromVisible.has(r.id));
 
   // A hidden anchor's run-only slot is dropped with its region (never emitted
   // below) — surfacing it would leak the hidden reply's presence outside its
   // logical slot.
   const slots: ThreadDisplaySlot[] = [];
-  for (const reply of visibleReplies) {
-    slots.push({ kind: "comment", comment: reply, runs: runsByReplyId.get(reply.id) ?? [] });
+  for (const reply of anchorEligible) {
+    if (visibleIds.has(reply.id)) {
+      slots.push({ kind: "comment", comment: reply, runs: runsByReplyId.get(reply.id) ?? [] });
+    }
     for (const run of runOnlySlotsByAnchor.get(reply.id) ?? []) {
       slots.push({ kind: "run", run });
     }

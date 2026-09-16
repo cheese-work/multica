@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -2405,6 +2406,7 @@ func newIssueCommentListTestCmd() *cobra.Command {
 func newIssueCommentResolutionTestCmd(use string) *cobra.Command {
 	cmd := &cobra.Command{Use: use}
 	cmd.Flags().String("output", "json", "")
+	cmd.Flags().String("known-as-of", "", "")
 	return cmd
 }
 
@@ -2476,6 +2478,141 @@ func TestRunIssueCommentResolution(t *testing.T) {
 				t.Fatalf("stdout id = %v, want %s", got["id"], commentID)
 			}
 		})
+	}
+}
+
+// TestRunIssueCommentResolveForwardsKnownAsOf locks the exact request-body
+// contract: --known-as-of must be forwarded verbatim as RFC3339Nano
+// known_as_of so ResolveComment's guard (internal/handler/comment.go) can
+// compare it against reply created_at timestamps. Omitting the flag must
+// send no body at all, not an empty/null known_as_of — that is what keeps
+// existing unguarded callers on the pre-guard code path server-side.
+func TestRunIssueCommentResolveForwardsKnownAsOf(t *testing.T) {
+	commentID := "comment-456"
+	tests := []struct {
+		name          string
+		knownAsOf     string
+		wantBodyEmpty bool
+	}{
+		{
+			name:      "known-as-of forwarded verbatim",
+			knownAsOf: "2026-06-22T08:00:00.123456789Z",
+		},
+		{
+			name:      "known-as-of with trailing fractional zeros forwarded verbatim",
+			knownAsOf: "2026-06-22T08:00:00.120000000Z",
+		},
+		{
+			name:          "omitted known-as-of sends no body",
+			wantBodyEmpty: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotBody []byte
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotBody, _ = io.ReadAll(r.Body)
+				json.NewEncoder(w).Encode(map[string]any{"id": commentID})
+			}))
+			defer srv.Close()
+
+			t.Setenv("MULTICA_SERVER_URL", srv.URL)
+			t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+			t.Setenv("MULTICA_TOKEN", "test-token")
+
+			cmd := newIssueCommentResolutionTestCmd("resolve")
+			if tt.knownAsOf != "" {
+				if err := cmd.Flags().Set("known-as-of", tt.knownAsOf); err != nil {
+					t.Fatalf("set known-as-of: %v", err)
+				}
+			}
+
+			if _, err := captureStdout(t, func() error {
+				return runIssueCommentResolve(cmd, []string{commentID})
+			}); err != nil {
+				t.Fatalf("run command: %v", err)
+			}
+
+			gotBodyStr := strings.TrimSpace(string(gotBody))
+			if tt.wantBodyEmpty {
+				if gotBodyStr != "null" && gotBodyStr != "" {
+					t.Fatalf("body = %q, want empty/null (no known_as_of)", gotBodyStr)
+				}
+				return
+			}
+
+			var payload struct {
+				KnownAsOf string `json:"known_as_of"`
+			}
+			if err := json.Unmarshal(gotBody, &payload); err != nil {
+				t.Fatalf("decode request body: %v\nbody: %s", err, gotBody)
+			}
+			if payload.KnownAsOf != tt.knownAsOf {
+				t.Fatalf("known_as_of = %q, want %q", payload.KnownAsOf, tt.knownAsOf)
+			}
+		})
+	}
+}
+
+// TestRunIssueCommentResolveRejectsInvalidKnownAsOf verifies strict
+// client-side timestamp validation: a malformed --known-as-of must fail
+// before any HTTP round-trip, not be forwarded as a garbage string the
+// server then rejects with a less actionable 400.
+func TestRunIssueCommentResolveRejectsInvalidKnownAsOf(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("server should not be contacted when --known-as-of fails to parse")
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	cmd := newIssueCommentResolutionTestCmd("resolve")
+	if err := cmd.Flags().Set("known-as-of", "not-a-timestamp"); err != nil {
+		t.Fatalf("set known-as-of: %v", err)
+	}
+
+	err := runIssueCommentResolve(cmd, []string{"comment-789"})
+	if err == nil {
+		t.Fatal("expected an error for an invalid --known-as-of value")
+	}
+	if !strings.Contains(err.Error(), "--known-as-of") {
+		t.Fatalf("error = %q, want it to name --known-as-of", err.Error())
+	}
+}
+
+// TestRunIssueCommentResolveThreadChangedConflict verifies a 409
+// thread_changed response (ResolveComment's concurrent-feedback race guard)
+// surfaces as an actionable CLI error via threadChangedMessage, mirroring how
+// revisionConflictMessage translates the issue API's revision_conflict 409.
+func TestRunIssueCommentResolveThreadChangedConflict(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "thread has new replies since it was loaded; reload the thread before resolving",
+			"code":  "thread_changed",
+		})
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	cmd := newIssueCommentResolutionTestCmd("resolve")
+	if err := cmd.Flags().Set("known-as-of", "2026-06-22T08:00:00Z"); err != nil {
+		t.Fatalf("set known-as-of: %v", err)
+	}
+
+	err := runIssueCommentResolve(cmd, []string{"comment-conflict"})
+	if err == nil {
+		t.Fatal("expected a thread_changed conflict error")
+	}
+	if !strings.Contains(err.Error(), "resolve rejected") || !strings.Contains(err.Error(), "--known-as-of") {
+		t.Fatalf("error = %q, want an actionable thread_changed message naming --known-as-of", err.Error())
 	}
 }
 
@@ -5016,6 +5153,67 @@ func TestRunIssueListTableFooterReportsPage(t *testing.T) {
 			}
 			if got := strings.TrimSpace(stderr.read()); got != tc.wantStderr {
 				t.Errorf("stderr = %q, want %q", got, tc.wantStderr)
+			}
+		})
+	}
+}
+
+// #8296: the CLI deletes through the keep-replies route, which only servers
+// that keep a deleted comment's replies expose. An older server does not route
+// it, and the CLI refuses rather than falling back to a delete that would
+// remove the replies too.
+func TestRunIssueCommentDeleteKeepsReplies(t *testing.T) {
+	commentID := "comment-123"
+	tests := []struct {
+		name    string
+		respond func(http.ResponseWriter)
+		wantErr string
+	}{
+		{
+			name:    "server keeps replies",
+			respond: func(w http.ResponseWriter) { w.WriteHeader(http.StatusNoContent) },
+		},
+		{
+			name:    "older server without the route",
+			respond: func(w http.ResponseWriter) { http.Error(w, "404 page not found", http.StatusNotFound) },
+			wantErr: "would delete the comment's replies too",
+		},
+		{
+			name: "comment not found",
+			respond: func(w http.ResponseWriter) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusNotFound)
+				json.NewEncoder(w).Encode(map[string]string{"error": "comment not found"})
+			},
+			wantErr: "comment not found",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var paths []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodDelete {
+					t.Errorf("method = %s, want DELETE", r.Method)
+				}
+				paths = append(paths, r.URL.Path)
+				tt.respond(w)
+			}))
+			defer srv.Close()
+
+			t.Setenv("MULTICA_SERVER_URL", srv.URL)
+			t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+			t.Setenv("MULTICA_TOKEN", "test-token")
+
+			err := runIssueCommentDelete(newIssueCommentResolutionTestCmd("delete"), []string{commentID})
+			if tt.wantErr == "" && err != nil {
+				t.Fatalf("run command: %v", err)
+			}
+			if tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)) {
+				t.Fatalf("error = %v, want it to mention %q", err, tt.wantErr)
+			}
+			if want := []string{"/api/comments/" + commentID + "/keep-replies"}; !slices.Equal(paths, want) {
+				t.Fatalf("requests = %v, want only %v", paths, want)
 			}
 		})
 	}

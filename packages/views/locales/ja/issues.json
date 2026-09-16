@@ -111,6 +111,12 @@
     "blocked": "ブロック中",
     "cancelled": "キャンセル済み"
   },
+  "status_category": {
+    "unstarted": "未着手",
+    "started": "開始済み",
+    "done": "完了",
+    "closed": "終了"
+  },
   "priority": {
     "urgent": "緊急",
     "high": "高",
@@ -446,7 +452,8 @@
       "no_matches": "一致なし",
       "previous": "前の一致",
       "next": "次の一致",
-      "close": "検索を閉じる"
+      "close": "検索を閉じる",
+      "collapse_disabled": "検索中は折りたたみできません"
     },
     "update_failed": "タスクを更新できませんでした",
     "link_copied": "リンクをコピーしました",
@@ -494,6 +501,8 @@
     "delete_title": "コメントを削除",
     "delete_desc": "このコメントは完全に削除されます。この操作は元に戻せません。",
     "delete_desc_with_replies": "このコメントとすべての返信が完全に削除されます。この操作は元に戻せません。",
+    "delete_desc_replies_kept": "このコメントは完全に削除されます。返信はスレッドに残ります。この操作は元に戻せません。",
+    "deleted_placeholder": "このコメントは削除されました",
     "delete_action": "削除",
     "cancel_action": "キャンセル",
     "edit_placeholder": "コメントを編集...",
@@ -525,6 +534,8 @@
     "send_reply_failed": "返信を送信できませんでした",
     "delete_failed": "コメントを削除できませんでした",
     "reply_count_other": "返信 {{count}} 件",
+    "thread_show_more_other": "他{{count}}件の返信を表示",
+    "thread_show_less": "表示を減らす",
     "leave_comment_placeholder": "コメントを残す...",
     "send_tooltip": "送信",
     "trigger_source_issue_assignee": "担当",

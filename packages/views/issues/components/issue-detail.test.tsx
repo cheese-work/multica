@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useRef, useState, useImperativeHandle } from "react";
+import { forwardRef, useEffect, useRef, useState, useImperativeHandle, useSyncExternalStore } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -17,6 +17,7 @@ import {
   DEFAULT_SUB_ISSUE_ROW_PROPERTIES,
   useSubIssueDisplayStore,
 } from "@multica/core/issues/stores/sub-issue-display-store";
+import { ScrollRestorationProvider, type ScrollRestorationAdapter } from "../../platform";
 import enCommon from "../../locales/en/common.json";
 import enIssues from "../../locales/en/issues.json";
 
@@ -32,6 +33,72 @@ const descriptionSelectionAction = vi.hoisted(() => ({ current: undefined as { l
 // so the `useCommentDraftStore(s => s.getAttachments(key))` selector keeps a
 // stable identity. A fresh `[]` per call would loop useSyncExternalStore.
 const emptyDraftAttachments = vi.hoisted(() => [] as unknown[]);
+
+// Minimal real subscription backing for the useCommentDraftStore mock below,
+// used only by the "latch survives reason ending" regression — every other
+// test in this file needs `drafts: {}` and nothing more, so this stays
+// separate from that fixed default rather than replacing it. Unlike
+// `descriptionMeasurement.current` (set once before render, read on the next
+// natural re-render), the latch test mutates `drafts` mid-test and needs
+// React to actually re-render in response — a bare mutable ref does not do
+// that on its own, so this backs the mock hook with a genuine
+// useSyncExternalStore subscription, matching what real Zustand provides.
+const mockDraftStoreState = vi.hoisted(() => {
+  type Draft = { content: string; attachments: { status: string }[]; updatedAt: number };
+  let drafts: Record<string, Draft> = {};
+  const listeners = new Set<() => void>();
+  return {
+    getDrafts: () => drafts,
+    setDraft: (key: string, draft: Draft | undefined) => {
+      const next = { ...drafts };
+      if (draft) next[key] = draft;
+      else delete next[key];
+      drafts = next;
+      for (const listener of listeners) listener();
+    },
+    reset: () => {
+      drafts = {};
+      for (const listener of listeners) listener();
+    },
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+});
+
+// Minimal real subscription backing for the useCommentCollapseStore mock
+// below, used only by the collapsed-root/active-run regression — every other
+// test needs "nothing manually collapsed" and nothing more, so this mirrors
+// mockDraftStoreState's shape rather than replacing that fixed default.
+// `getSnapshot` returns a fresh Set on every call (not the backing store
+// object itself) so useSyncExternalStore's Object.is comparison actually
+// detects a `setCollapsed` mutation — a snapshot getter that always returns
+// the same object reference, with only its internal Set mutated in place,
+// never signals React to re-render on its own.
+const mockCollapseStoreState = vi.hoisted(() => {
+  let collapsed = new Set<string>();
+  const listeners = new Set<() => void>();
+  return {
+    isCollapsed: (id: string) => collapsed.has(id),
+    getSnapshot: () => collapsed,
+    setCollapsed: (id: string, value: boolean) => {
+      const next = new Set(collapsed);
+      if (value) next.add(id);
+      else next.delete(id);
+      collapsed = next;
+      for (const listener of listeners) listener();
+    },
+    reset: () => {
+      collapsed = new Set();
+      for (const listener of listeners) listener();
+    },
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+});
 
 // jsdom has no Range.getClientRects, and this file exercises description
 // lifecycle/integration, not disclosure geometry (canonical coverage for the
@@ -392,28 +459,7 @@ vi.mock("@multica/core/api", () => ({
 }));
 
 // Mock issue config
-vi.mock("@multica/core/issues/config", () => ({
-  ALL_STATUSES: ["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"],
-  STATUS_ORDER: ["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"],
-  STATUS_CONFIG: {
-    backlog: { label: "Backlog", iconColor: "text-muted-foreground", hoverBg: "hover:bg-accent" },
-    todo: { label: "Todo", iconColor: "text-muted-foreground", hoverBg: "hover:bg-accent" },
-    in_progress: { label: "In Progress", iconColor: "text-warning", hoverBg: "hover:bg-warning/10" },
-    in_review: { label: "In Review", iconColor: "text-success", hoverBg: "hover:bg-success/10" },
-    done: { label: "Done", iconColor: "text-info", hoverBg: "hover:bg-info/10" },
-    blocked: { label: "Blocked", iconColor: "text-destructive", hoverBg: "hover:bg-destructive/10" },
-    cancelled: { label: "Cancelled", iconColor: "text-muted-foreground", hoverBg: "hover:bg-accent" },
-  },
-  PRIORITY_ORDER: ["urgent", "high", "medium", "low", "none"],
-  PRIORITY_DISPLAY_ORDER: ["none", "urgent", "high", "medium", "low"],
-  PRIORITY_CONFIG: {
-    urgent: { label: "Urgent", bars: 4, color: "text-destructive", badgeBg: "bg-destructive/10", badgeText: "text-destructive" },
-    high: { label: "High", bars: 3, color: "text-warning", badgeBg: "bg-warning/10", badgeText: "text-warning" },
-    medium: { label: "Medium", bars: 2, color: "text-warning", badgeBg: "bg-warning/10", badgeText: "text-warning" },
-    low: { label: "Low", bars: 1, color: "text-info", badgeBg: "bg-info/10", badgeText: "text-info" },
-    none: { label: "No priority", bars: 0, color: "text-muted-foreground", badgeBg: "bg-muted", badgeText: "text-muted-foreground" },
-  },
-}));
+// Use the real status configuration so category fixtures cannot drift.
 
 // Mock recent issues store
 const mockRecordVisit = vi.fn();
@@ -454,17 +500,31 @@ vi.mock("@multica/core/issues/stores", async () => ({
   ),
   selectRecentIssues: () => () => [],
   useCommentCollapseStore: (selector?: any) => {
+    // Real subscription (not a bare re-invoked function): a mid-test
+    // `setCollapsed` call actually schedules a re-render — every other
+    // test's "nothing collapsed" default behaves identically to before,
+    // since the backing store starts (and is reset) empty. The snapshot
+    // getter must be `getSnapshot`, not a constant `() => mockCollapseStoreState`
+    // — the latter returns the same object identity forever, so
+    // useSyncExternalStore's Object.is check never observes a `setCollapsed`.
+    useSyncExternalStore(mockCollapseStoreState.subscribe, mockCollapseStoreState.getSnapshot);
     const state = {
       collapsedByIssue: {},
-      isCollapsed: () => false,
+      isCollapsed: (_issueId: string, commentId: string) => mockCollapseStoreState.isCollapsed(commentId),
       toggle: () => {},
     };
     return selector ? selector(state) : state;
   },
   useCommentDraftStore: Object.assign(
     (selector?: any) => {
+      // Real subscription (not a bare re-invoked function): `drafts` is read
+      // through useSyncExternalStore against `mockDraftStoreState`, so a
+      // mid-test `setDraft`/`reset` call actually schedules a re-render —
+      // every other test's `drafts: {}` default behaves identically to
+      // before, since the backing store starts (and is reset) empty.
+      const drafts = useSyncExternalStore(mockDraftStoreState.subscribe, mockDraftStoreState.getDrafts);
       const state = {
-        drafts: {} as Record<string, { content: string; attachments: unknown[]; updatedAt: number }>,
+        drafts,
         getDraft: () => undefined,
         getAnnotations: () => emptyDraftAttachments,
         getAttachments: () => emptyDraftAttachments,
@@ -481,7 +541,7 @@ vi.mock("@multica/core/issues/stores", async () => ({
     },
     {
       getState: () => ({
-        drafts: {} as Record<string, { content: string; attachments: unknown[]; updatedAt: number }>,
+        drafts: mockDraftStoreState.getDrafts(),
         getDraft: () => undefined,
         getAnnotations: () => emptyDraftAttachments,
         getAttachments: () => emptyDraftAttachments,
@@ -563,6 +623,10 @@ beforeEach(() => {
     descriptionExpandedIssueIds: new Set(),
     expandedThreadIdsByIssue: {},
   });
+  // Same concern for the useCommentDraftStore mock's backing state.
+  mockDraftStoreState.reset();
+  // Same concern for the useCommentCollapseStore mock's backing state.
+  mockCollapseStoreState.reset();
 });
 
 // Mock modals
@@ -1520,6 +1584,849 @@ describe("IssueDetail (shared)", () => {
     expect(within(replyBlock as HTMLElement).getByRole("button", { name: "Open full log" })).toBe(headerLog);
   });
 
+  // Canonical coverage for the latch itself (01-DESIGN "Durable state and
+  // transition matrix", "New reply / edit / active run" row): an active
+  // interaction must not just force a compact thread open for its duration —
+  // it must LATCH the length-expanded preference so the thread stays open
+  // after the interaction ends. `issue-disclosure-store.test.ts` only proves
+  // `setThreadExpanded` is a correct setter; it cannot prove anything about
+  // when the component calls it. This is that proof.
+  it("latches a thread's length-expanded preference when an active reply draft forces it open, surviving after the draft clears", async () => {
+    const root = mockTimeline[0]!;
+    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+      ...mockTimeline[1]!,
+      id: `latch-reply-${i}`,
+      parent_id: root.id,
+      content: `Reply ${i}`,
+      created_at: `2026-01-16T00:0${i}:00Z`,
+    }));
+    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+    renderIssueDetail();
+
+    await screen.findByText("Reply 3");
+    // Compact window: latest three visible (1, 2, 3), oldest (0) hidden.
+    expect(screen.queryByText("Reply 0")).not.toBeInTheDocument();
+    await screen.findByRole("button", { name: /Show \d+ more repl/ });
+
+    // Introduce an active reply draft on the root — the same draft-store key
+    // (`reply:${issueId}:${rootId}`) `rootIdsWithActiveReplyDraft` reads.
+    act(() => {
+      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, {
+        content: "typing a reply...",
+        attachments: [],
+        updatedAt: Date.now(),
+      });
+    });
+
+    // forceThreadOpen's pin fires: the thread opens fully, including the
+    // reply the compact window was hiding, and the latch effect persists
+    // that expansion into useIssueDisclosureStore. Show less itself is
+    // withheld while the pin is active (comment-card.tsx: `!forceThreadExpanded`
+    // gates it) — that's a different, already-covered rule — so this only
+    // asserts the reply is visible and the pin is what's showing it.
+    await screen.findByText("Reply 0");
+    expect(screen.queryByRole("button", { name: /Show \d+ more repl/ })).not.toBeInTheDocument();
+
+    // Clear the draft — the interaction ends (reply sent), exactly like
+    // useCommentDraftStore's clearDraft on a successful submit.
+    act(() => {
+      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, undefined);
+    });
+
+    // The temporary pin is gone (no active draft), but 01-DESIGN line 56
+    // requires the latch to survive: the previously-compact reply must
+    // REMAIN visible, not refold now that the reason has cleared.
+    await waitFor(() => expect(screen.queryByText("Reply 0")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Show less" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Show \d+ more repl/ })).not.toBeInTheDocument();
+    // Assert the durable store entry itself, not just rendered rows — the
+    // rows alone can't distinguish "still latched" from "some other pin
+    // happens to still be active."
+    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true);
+  });
+
+  // CHE-479 regression: Fold All (search-command.tsx's foldAllCommentThreads
+  // -> useIssueDisclosureStore.collapseAllThreads) must not have its
+  // full-collapse intent immediately undone by the latch effect above for a
+  // root whose only reason for compact-window absence is that Fold All
+  // itself just cleared it. Before the fix, `collapseAllThreads` clearing
+  // `expandedThreadIdsByIssue` changed the latch effect's
+  // `expandedThreadLengths` dependency and re-fired it on the same tick;
+  // with an active reply draft already present, `!expandedThreadLengths.has(rootId)`
+  // read true again and the effect immediately re-latched the root open,
+  // silently undoing the fold.
+  it("does not let Fold All be immediately undone by the latch when a reply draft is already active on a folded root (CHE-479)", async () => {
+    const root = mockTimeline[0]!;
+    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+      ...mockTimeline[1]!,
+      id: `foldall-latch-reply-${i}`,
+      parent_id: root.id,
+      content: `Foldall reply ${i}`,
+      created_at: `2026-01-16T00:0${i}:00Z`,
+    }));
+    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+    renderIssueDetail();
+
+    await screen.findByText("Foldall reply 3");
+    await screen.findByRole("button", { name: /Show \d+ more repl/ });
+
+    // Start an active reply draft on the root — same latch reason as the
+    // test above — so forceThreadOpen's pin is active and the latch effect
+    // has already persisted the length-expansion for this root.
+    act(() => {
+      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, {
+        content: "typing a reply...",
+        attachments: [],
+        updatedAt: Date.now(),
+      });
+    });
+    await screen.findByText("Foldall reply 0");
+    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true);
+
+    // Fold All: the same store call search-command.tsx's
+    // foldAllCommentThreads makes on useIssueDisclosureStore.
+    act(() => {
+      useIssueDisclosureStore.getState().collapseAllThreads("issue-1");
+    });
+
+    // The fold must stick: the length-expanded entry stays cleared, even
+    // though the reply draft is still active on this exact root. Continued
+    // typing on this SAME still-active draft must not re-latch it either —
+    // per 01-DESIGN line 56 the latch fires on a reason *starting*, not on
+    // every keystroke of a reason that is already accounted for, and Fold
+    // All's own row explicitly only promises the temporary pin ("Active
+    // edit pins prevent focus loss") keeps the draft reachable, not that the
+    // length preference stays expanded.
+    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy();
+    act(() => {
+      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, {
+        content: "typing a reply... continued",
+        attachments: [],
+        updatedAt: Date.now(),
+      });
+    });
+    await screen.findByText("Foldall reply 0");
+    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy();
+
+    // A genuinely NEW reason after the fold — this draft ending and a fresh
+    // one starting on the same root — must still latch normally: Fold All's
+    // suppression must not permanently block future latching.
+    act(() => {
+      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, { content: "", attachments: [], updatedAt: Date.now() });
+    });
+    await waitFor(() => expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy());
+    act(() => {
+      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, {
+        content: "a brand new reply draft",
+        attachments: [],
+        updatedAt: Date.now(),
+      });
+    });
+    await waitFor(() =>
+      expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true),
+    );
+  });
+
+  // CHE-479: a second Fold All must not resurrect suppression for a root
+  // that the FIRST Fold All folded but that has since organically re-latched
+  // (its draft ended and a new one started, per the test above), if that
+  // second Fold All did not itself re-fold this root. `justFoldedRootIdsByIssue`
+  // is overwritten wholesale by each `collapseAllThreads` call — this proves
+  // a stale suppression entry from an earlier fold occurrence cannot leak
+  // into a later, unrelated one.
+  it("does not let a stale fold suppression from an earlier Fold All block a later, unrelated latch (CHE-479)", async () => {
+    const root = mockTimeline[0]!;
+    const other = { ...mockTimeline[1]!, id: "foldall-stale-other-root", content: "Other root" };
+    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+      ...mockTimeline[1]!,
+      id: `foldall-stale-reply-${i}`,
+      parent_id: root.id,
+      content: `Stale fold reply ${i}`,
+      created_at: `2026-01-16T00:0${i}:00Z`,
+    }));
+    mockApiObj.listTimeline.mockResolvedValue([root, other, ...replies]);
+    renderIssueDetail();
+    await screen.findByRole("button", { name: /Show \d+ more repl/ });
+
+    // Expand root, then fold everything (first Fold All folds `root`).
+    act(() => {
+      useIssueDisclosureStore.getState().expandAllThreads("issue-1", [root.id]);
+    });
+    act(() => {
+      useIssueDisclosureStore.getState().collapseAllThreads("issue-1");
+    });
+    expect(useIssueDisclosureStore.getState().justFoldedRootIdsByIssue["issue-1"]?.has(root.id)).toBe(true);
+
+    // A second Fold All happens with nothing expanded (e.g. the user ran the
+    // command again with everything already compact) — it no-ops and does
+    // NOT produce a new justFoldedRootIdsByIssue entry naming `root`, so the
+    // original suppression should no longer apply to `root` once superseded
+    // by any later, distinct justFoldedRoots state.
+    act(() => {
+      useIssueDisclosureStore.getState().expandAllThreads("issue-1", [other.id]);
+    });
+    act(() => {
+      useIssueDisclosureStore.getState().collapseAllThreads("issue-1");
+    });
+    expect(useIssueDisclosureStore.getState().justFoldedRootIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy();
+
+    // Now start a fresh reply draft on `root` — this must latch normally:
+    // the second, unrelated Fold All's justFoldedRoots (naming only `other`)
+    // must not carry forward suppression for `root`.
+    act(() => {
+      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, {
+        content: "a fresh reply after an unrelated fold",
+        attachments: [],
+        updatedAt: Date.now(),
+      });
+    });
+    await waitFor(() =>
+      expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true),
+    );
+  });
+
+  it("latches a thread's length-expanded preference when an active run forces it open, surviving after the run completes", async () => {
+    const root = mockTimeline[0]!;
+    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+      ...mockTimeline[1]!,
+      id: `latch-run-reply-${i}`,
+      parent_id: root.id,
+      content: `Run reply ${i}`,
+      created_at: `2026-01-16T00:0${i}:00Z`,
+    }));
+    // An active (queued) run anchored to the newest reply, with no published
+    // reply of its own yet — the exact shape `rootIdsWithActiveRun` looks for.
+    const task: AgentTask = {
+      id: "ba2e8d1c-7f9b-4e2a-9c1d-latchrun001", agent_id: "agent-1", runtime_id: "runtime-1", issue_id: "issue-1",
+      status: "queued", priority: 0, created_at: "2026-01-16T00:05:00Z",
+      started_at: null, dispatched_at: null, completed_at: null, result: null, error: null,
+      trigger_comment_id: replies[3]!.id, delivered_comment_ids: [],
+    };
+    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+    mockApiObj.listTasksByIssue.mockResolvedValue([task]);
+    const client = createTestQueryClient();
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={client}><IssueDetail issueId="issue-1" /></QueryClientProvider>
+      </I18nProvider>,
+    );
+
+    // The active run is present from the first render (it's in the initial
+    // `listTasksByIssue` mock, unlike the draft scenario above where the
+    // draft starts mid-test), so the pin is already active by the time
+    // anything mounts — the compact-window reply is visible immediately, and
+    // the latch effect has already persisted the expansion.
+    await screen.findByText("Run reply 3");
+    await screen.findByText("Run reply 0");
+    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true);
+
+    // The run completes — the pin's reason ends.
+    const completed: AgentTask = { ...task, status: "completed", completed_at: "2026-01-16T00:06:00Z" };
+    mockApiObj.listTasksByIssue.mockResolvedValue([completed]);
+    act(() => {
+      client.setQueryData(issueKeys.tasks("issue-1"), [completed]);
+    });
+
+    // 01-DESIGN line 56 requires the latch to survive run completion exactly
+    // as it does draft-clearing: the reply stays visible and the store entry
+    // is not removed.
+    await waitFor(() => expect(screen.queryByText("Run reply 0")).toBeInTheDocument());
+    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true);
+  });
+
+  // Regression for the gap Sol's review caught in PR #31 (CHE-380 stage 6):
+  // `rootIdsWithActiveRun` originally only matched a run's `anchorCommentId`
+  // against the thread's REPLIES, so a run anchored directly to the root
+  // comment itself (no reply on it yet) never entered the set. Because
+  // root-anchored runs render inside comment-card.tsx's own `open` gate
+  // (`!isCollapsed || forceThreadExpanded`), a manually collapsed root could
+  // hide a newly active run with no way to reveal it short of manually
+  // un-collapsing. `anchorCommentId === rootId` closes that gap.
+  //
+  // Sol's follow-up review required the lifecycle to be observed, not
+  // assumed: render collapsed with no run present, THEN inject the
+  // root-anchored run so its slot's appearance is an actual assertion
+  // rather than baked into the initial mock data, and check the manual
+  // collapse preference itself (not just the Stop button) both while the
+  // run is active and after it completes.
+  it("force-opens a manually collapsed root when an active run anchors directly to the root, not just to one of its replies", async () => {
+    const root = mockTimeline[0]!;
+    const taskId = "ba2e8d1c-7f9b-4e2a-9c1d-rootanchor01";
+    // Root is manually collapsed with no run in play yet — the starting
+    // state Sol's review requires observing before any run is injected.
+    mockCollapseStoreState.setCollapsed(root.id, true);
+    mockApiObj.listTimeline.mockResolvedValue([root]);
+    mockApiObj.listTasksByIssue.mockResolvedValue([]);
+    const client = createTestQueryClient();
+    const { container } = render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={client}><IssueDetail issueId="issue-1" /></QueryClientProvider>
+      </I18nProvider>,
+    );
+    await waitFor(() => expect(client.getQueryData(issueKeys.tasks("issue-1"))).toEqual([]));
+    expect(container.querySelector(`[data-run-id="${taskId}"]`)).toBeNull();
+    expect(mockCollapseStoreState.isCollapsed(root.id)).toBe(true);
+
+    // Inject the root-anchored queued run after the collapsed/no-run state
+    // has already rendered, mirroring how a run actually arrives mid-session.
+    const task: AgentTask = {
+      id: taskId, agent_id: "agent-1", runtime_id: "runtime-1", issue_id: "issue-1",
+      status: "queued", priority: 0, created_at: "2026-01-16T00:05:00Z",
+      started_at: null, dispatched_at: null, completed_at: null, result: null, error: null,
+      trigger_comment_id: root.id, delivered_comment_ids: [],
+    };
+    mockApiObj.listTasksByIssue.mockResolvedValue([task]);
+    act(() => {
+      client.setQueryData(issueKeys.tasks("issue-1"), [task]);
+    });
+
+    // `forceThreadOpen`'s pin must beat manual collapse: the root-anchored
+    // run's slot has to become visible despite `isCollapsed` being true, or
+    // the active output is invisible with no affordance to reveal it. Check
+    // both the DOM slot and the underlying collapse preference itself — the
+    // pin must override the gate without mutating the preference it overrides.
+    await screen.findByRole("button", { name: "Stop" });
+    expect(container.querySelector(`[data-run-id="${taskId}"]`)).not.toBeNull();
+    expect(mockCollapseStoreState.isCollapsed(root.id)).toBe(true);
+
+    // The run completes — `isActiveCommentRun` no longer matches it, so
+    // `rootIdsWithActiveRun` drops the root and `forceThreadOpen`'s pin
+    // releases. Manual collapse was never mutated by the pin, so with
+    // `isCollapsed` still true the root's `open` gate closes again and the
+    // root-anchored run's slot — including its "Completed" summary, which
+    // only rendered because the pin forced `open` true — leaves the DOM.
+    // `delivered_comment_ids` is set to the root here because that is what a
+    // real completion does (comment-runs.ts's anchor resolution reads
+    // `delivered_comment_ids` once a task is no longer queued/dispatched,
+    // per buildCommentRunView's `usesPlannedCoverage`); leaving it `[]` (as
+    // it correctly is at `queued`, before delivery is known) would make the
+    // run resolve with no anchor and fall out to the standalone-run render
+    // path (issue-detail.tsx's `item.kind === "run"` timeline branch, gated
+    // by nothing but timeline order) instead of the root-anchored path this
+    // test exists to exercise (comment-card.tsx's `{open && ...}` block) —
+    // an unanchored completed run would trivially "pass" a bare
+    // Stop-button-gone assertion while proving nothing about the collapse
+    // pin. Assert the node's absence directly (not just the Stop button) so
+    // a stale intermediate render, where completion has landed but the
+    // collapse re-close hasn't yet, can't pass this assertion.
+    const completed: AgentTask = {
+      ...task, status: "completed", completed_at: "2026-01-16T00:06:00Z", delivered_comment_ids: [root.id],
+    };
+    mockApiObj.listTasksByIssue.mockResolvedValue([completed]);
+    act(() => {
+      client.setQueryData(issueKeys.tasks("issue-1"), [completed]);
+    });
+    await waitFor(() => expect(container.querySelector(`[data-run-id="${taskId}"]`)).toBeNull());
+    expect(mockCollapseStoreState.isCollapsed(root.id)).toBe(true);
+  });
+
+  it("latches a thread's length-expanded preference when a target reveal forces it open, surviving after the target releases", async () => {
+    const root = mockTimeline[0]!;
+    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+      ...mockTimeline[1]!,
+      id: `latch-target-reply-${i}`,
+      parent_id: root.id,
+      content: `Target reply ${i}`,
+      created_at: `2026-01-16T00:0${i}:00Z`,
+    }));
+    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+    const queryClient = createTestQueryClient();
+    // Built directly (not via renderIssueDetailWithHighlight) so the target
+    // reveal can actually "release" by rerendering with highlightCommentId
+    // cleared — 01-DESIGN "Target reveal" row: "replacement/cancellation/view
+    // exit releases it." targetRootId is purely a function of this prop; it
+    // has no internal timeout, so releasing it means the caller (here, the
+    // rerender) stops passing it, exactly like a consumed deep link.
+    const { rerender } = render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail issueId="issue-1" highlightCommentId={replies[0]!.id} />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+
+    // The target (the oldest, compact-window-hidden reply) is revealed.
+    await screen.findByText("Target reply 0");
+    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true);
+
+    // The deep link is consumed — the caller stops passing highlightCommentId,
+    // releasing the pin (targetRootId becomes null).
+    rerender(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail issueId="issue-1" />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+
+    // This is finding 1's regression: without the fix, targetRootId's pin
+    // drops with nothing having latched it, and the thread silently refolds,
+    // hiding the reply the user was just shown.
+    await waitFor(() => expect(screen.queryByText("Target reply 0")).toBeInTheDocument());
+    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true);
+  });
+
+  it("does not latch a thread's length preference merely because in-page find opened and closed", async () => {
+    // find.open must force a compact thread open (so its content is
+    // searchable) WITHOUT writing anything durable — 01-DESIGN "Find open /
+    // close" row: "no write to any fold preference." This is the negative
+    // control that keeps the target-reveal latch from over-latching.
+    const root = mockTimeline[0]!;
+    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+      ...mockTimeline[1]!,
+      id: `latch-find-reply-${i}`,
+      parent_id: root.id,
+      content: `Find reply ${i}`,
+      created_at: `2026-01-16T00:0${i}:00Z`,
+    }));
+    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+    // useInPageFind's Cmd/Ctrl+F handler gates on the container having a
+    // non-empty getClientRects() — real in a browser, always empty in jsdom.
+    // Scoped to this test only: no other test in this file drives find.open,
+    // and stubbing it globally risks masking an unrelated visibility bug in
+    // a future test.
+    const originalGetClientRects = Element.prototype.getClientRects;
+    Element.prototype.getClientRects = function (this: Element) {
+      return [{ width: 1, height: 1 }] as unknown as DOMRectList;
+    };
+    try {
+      renderIssueDetail();
+      await screen.findByText("Find reply 3");
+      expect(screen.queryByText("Find reply 0")).not.toBeInTheDocument();
+
+      fireEvent.keyDown(document, { key: "f", ctrlKey: true });
+      // find.open forces the thread flat/open for searchability.
+      await screen.findByText("Find reply 0");
+      // The pin is doing the work here — nothing has latched yet.
+      expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy();
+
+      // Escape is handled by FindBar's own input, not a global listener.
+      const findInput = screen.getByPlaceholderText("Find in issue...");
+      fireEvent.keyDown(findInput, { key: "Escape" });
+
+      // Closing find drops the pin. Per row 58, no durable entry was ever
+      // written for this root, so it refolds — this is the correct, intended
+      // behavior for find (unlike the draft/run/target latches above).
+      await waitFor(() => expect(screen.queryByText("Find reply 0")).not.toBeInTheDocument());
+      expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy();
+    } finally {
+      Element.prototype.getClientRects = originalGetClientRects;
+    }
+  });
+
+  // CHE-436: 01-DESIGN "Find and target reveal lifecycle" — find must reveal
+  // EVERY fold class, not just manual collapse/length (already covered by
+  // "does not latch..." above and the pre-existing forceThreadOpen tests).
+  // This closes the gap CHE-436 was scoped to fix: a resolved-bar root and a
+  // reply-resolution conclusion fold both stayed folded under find before
+  // this change, because `expandedResolvedIds`/`flattenGroups` read the raw
+  // (non-overridden) resolved-expand store.
+  describe("find reveals resolved-thread folds (CHE-436)", () => {
+    async function openFind() {
+      const originalGetClientRects = Element.prototype.getClientRects;
+      Element.prototype.getClientRects = function (this: Element) {
+        return [{ width: 1, height: 1 }] as unknown as DOMRectList;
+      };
+      fireEvent.keyDown(document, { key: "f", ctrlKey: true });
+      return () => {
+        Element.prototype.getClientRects = originalGetClientRects;
+      };
+    }
+
+    it("reveals a resolved root (folded to a bar) while find is open, and refolds it on close", async () => {
+      const resolvedRoot: TimelineEntry = {
+        ...mockTimeline[0]!,
+        id: "resolved-root",
+        content: "Resolved root body — findable sentinel",
+        resolved_at: "2026-01-19T00:00:00Z",
+      };
+      mockApiObj.listTimeline.mockResolvedValue([resolvedRoot]);
+      renderIssueDetail();
+
+      // Folded to a bar by default — the body text is not in the DOM, only
+      // the "N resolved comment(s) from ..." bar button.
+      await screen.findByRole("button", { name: /resolved comment/ });
+      expect(screen.queryByText("Resolved root body — findable sentinel")).not.toBeInTheDocument();
+
+      const restoreGetClientRects = await openFind();
+      try {
+        await screen.findByText("Resolved root body — findable sentinel");
+        // Row 58: find never writes the resolved-expand preference.
+        expect(useResolvedExpandStore.getState().expandedByIssue["issue-1"]?.has("resolved-root")).toBeFalsy();
+
+        const findInput = screen.getByPlaceholderText("Find in issue...");
+        fireEvent.keyDown(findInput, { key: "Escape" });
+
+        await waitFor(() =>
+          expect(screen.queryByText("Resolved root body — findable sentinel")).not.toBeInTheDocument(),
+        );
+        expect(useResolvedExpandStore.getState().expandedByIssue["issue-1"]?.has("resolved-root")).toBeFalsy();
+      } finally {
+        restoreGetClientRects();
+      }
+    });
+
+    it("reveals a reply-resolution conclusion fold (other replies hidden behind it) while find is open", async () => {
+      const root = { ...mockTimeline[0]!, id: "concl-root", content: "Conclusion root" };
+      const hiddenReply: TimelineEntry = {
+        ...mockTimeline[1]!,
+        id: "concl-hidden",
+        parent_id: root.id,
+        content: "Hidden middle reply — findable sentinel",
+        created_at: "2026-01-16T00:01:00Z",
+      };
+      const resolutionReply: TimelineEntry = {
+        ...mockTimeline[1]!,
+        id: "concl-resolution",
+        parent_id: root.id,
+        content: "The resolution reply",
+        created_at: "2026-01-16T00:02:00Z",
+        resolved_at: "2026-01-17T00:00:00Z",
+      };
+      mockApiObj.listTimeline.mockResolvedValue([root, hiddenReply, resolutionReply]);
+      renderIssueDetail();
+
+      await screen.findByText("The resolution reply");
+      expect(screen.queryByText("Hidden middle reply — findable sentinel")).not.toBeInTheDocument();
+
+      const restoreGetClientRects = await openFind();
+      try {
+        await screen.findByText("Hidden middle reply — findable sentinel");
+        expect(useResolvedExpandStore.getState().expandedByIssue["issue-1"]?.has(root.id)).toBeFalsy();
+
+        const findInput = screen.getByPlaceholderText("Find in issue...");
+        fireEvent.keyDown(findInput, { key: "Escape" });
+
+        await waitFor(() =>
+          expect(screen.queryByText("Hidden middle reply — findable sentinel")).not.toBeInTheDocument(),
+        );
+      } finally {
+        restoreGetClientRects();
+      }
+    });
+
+    it("disables the manual Collapse control on an open thread while find is open, with a localized reason, and re-enables it on close", async () => {
+      const root = mockTimeline[0]!;
+      const { container } = renderIssueDetail();
+      await screen.findByText("Started working on this");
+
+      const rootWrapper = () => container.querySelector(`#comment-${root.id}`) as HTMLElement;
+      const collapseButton = () => within(rootWrapper()).getByRole("button", { name: "Collapse thread" });
+      expect(collapseButton()).toBeEnabled();
+
+      const restoreGetClientRects = await openFind();
+      try {
+        await waitFor(() => expect(collapseButton()).toBeDisabled());
+        expect(collapseButton()).toHaveAttribute(
+          "title",
+          "Can't collapse while find is open",
+        );
+        // The manual-collapse store itself is untouched — this is a UI-level
+        // disable, not a state write.
+        expect(mockCollapseStoreState.isCollapsed(root.id)).toBe(false);
+
+        const findInput = screen.getByPlaceholderText("Find in issue...");
+        fireEvent.keyDown(findInput, { key: "Escape" });
+        await waitFor(() => expect(collapseButton()).toBeEnabled());
+      } finally {
+        restoreGetClientRects();
+      }
+    });
+
+    it("reveals the collapsed description while find is open, without writing the description-expanded preference", async () => {
+      mockApiObj.getIssue.mockResolvedValue({
+        ...mockIssue,
+        description: "A short description",
+      });
+      renderIssueDetail();
+      await screen.findByText("A short description");
+
+      const restoreGetClientRects = await openFind();
+      try {
+        // A short description never becomes collapsed/inert (description-
+        // disclosure.tsx's own "canDisclose" gate) — assert the SHARED
+        // reveal wiring at least doesn't regress: the description stays
+        // visible and the store is never written while find is open.
+        await waitFor(() => expect(screen.getByText("A short description")).toBeInTheDocument());
+        expect(useIssueDisclosureStore.getState().descriptionExpandedIssueIds.has("issue-1")).toBe(false);
+      } finally {
+        restoreGetClientRects();
+      }
+    });
+  });
+
+  // Sol's CHE-436 PR #43 review, blocking finding 2: closing find with no
+  // active match (no query, or a query with zero matches) must restore the
+  // PRE-open row to its pre-open offset within the scroll container, not
+  // re-center it — 01-DESIGN.md:74 "preserve offset where possible". Before
+  // the fix, the entry anchor was captured in an effect keyed on
+  // `[find.open]`, which only runs AFTER the same render already flattened
+  // every fold open — so the "pre-open" snapshot was actually a post-reveal
+  // one, and the restore always re-centered regardless.
+  it("restores the pre-open row to its original offset (not centered) when find closes with no active match", async () => {
+    const root = mockTimeline[0]!;
+    mockApiObj.listTimeline.mockResolvedValue([root]);
+
+    // Every element reports the same fixed size; only the root row's THIS
+    // test cares about, and it is deliberately NOT at the position centering
+    // would produce (which depends on container height/2), so a passing
+    // "top === originalTop - scrollDelta" assertion below could not be
+    // satisfied by the old centering math except by coincidence.
+    const originalGetClientRects = Element.prototype.getClientRects;
+    const originalGetBoundingClientRect = Element.prototype.getBoundingClientRect;
+    Element.prototype.getClientRects = function (this: Element) {
+      return [{ width: 1, height: 1 }] as unknown as DOMRectList;
+    };
+    // Container top pinned at 0, height 400. Root row starts 130px from the
+    // container's top edge before find opens, and (since nothing in the
+    // timeline changes shape here) stays there for the rest of the test —
+    // scrollTop deltas are what the restore effect must apply on top of this
+    // fixed layout to reproduce the original 130px offset after any
+    // intervening scroll.
+    let containerScrollTop = 0;
+    Element.prototype.getBoundingClientRect = function (this: Element) {
+      if (this.hasAttribute("data-issue-timeline-scroll")) {
+        return { top: 0, bottom: 400, height: 400, left: 0, right: 800, width: 800 } as DOMRect;
+      }
+      if (this.id === `comment-${root.id}`) {
+        return { top: 130 - containerScrollTop, bottom: 160 - containerScrollTop, height: 30, left: 0, right: 800, width: 800 } as DOMRect;
+      }
+      return originalGetBoundingClientRect.call(this);
+    };
+
+    try {
+      renderIssueDetail();
+      await screen.findByText("Started working on this");
+
+      const container = document.querySelector("[data-issue-timeline-scroll]") as HTMLElement;
+      Object.defineProperty(container, "scrollTop", {
+        get: () => containerScrollTop,
+        set: (v: number) => { containerScrollTop = v; },
+        configurable: true,
+      });
+
+      fireEvent.keyDown(document, { key: "f", ctrlKey: true });
+      await screen.findByPlaceholderText("Find in issue...");
+
+      // Simulate the user scrolling away from the entry row WHILE find is
+      // open (no query typed — the no-match/never-searched path 01-DESIGN
+      // calls out explicitly). The entry anchor was captured before this
+      // scroll happened (pre-open), so its target offset (130) predates it.
+      containerScrollTop = 500;
+
+      const findInput = screen.getByPlaceholderText("Find in issue...");
+      fireEvent.keyDown(findInput, { key: "Escape" });
+      await waitFor(() => expect(screen.queryByPlaceholderText("Find in issue...")).not.toBeInTheDocument());
+      await act(async () => {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      });
+
+      // Restore must move scrollTop back toward 0 so the root row's offset
+      // returns to its captured pre-open value (130px from the container
+      // top) — NOT leave it at the scrolled-away 500, and NOT center it
+      // (centering in a 400px container against a 30px-tall row targets
+      // scrollTop ≈ 500 + 130 - 185 = 445, a value this assertion also
+      // rules out).
+      await waitFor(() => {
+        expect(containerScrollTop).toBeCloseTo(0, 0);
+      });
+    } finally {
+      Element.prototype.getClientRects = originalGetClientRects;
+      Element.prototype.getBoundingClientRect = originalGetBoundingClientRect;
+    }
+  });
+
+  // CHE-476 (CHE-380 Gap A): restores 01-DESIGN line 51's original scope,
+  // narrowed out of PR #31/CHE-435 because bare focus/selection with no
+  // unsaved change produces no useCommentDraftStore entry —
+  // `rootIdsWithActiveReplyDraft` above genuinely cannot see it (see its
+  // comment). `rootIdsWithActiveFocusOrSelection` closes that gap by reading
+  // `document.activeElement` / `document.getSelection()` directly against
+  // each thread root's DOM subtree.
+  it("refuses Show less while the thread being collapsed contains the focused element, with no unsaved draft", async () => {
+    const root = mockTimeline[0]!;
+    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+      ...mockTimeline[1]!,
+      id: `focus-reply-${i}`,
+      parent_id: root.id,
+      content: `Focus reply ${i}`,
+      created_at: `2026-01-16T00:0${i}:00Z`,
+    }));
+    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+    const { container } = renderIssueDetail();
+    await screen.findByText("Focus reply 3");
+    // Expand past the compact window — Show less only renders once expanded.
+    fireEvent.click(await screen.findByRole("button", { name: /Show \d+ more repl/ }));
+    await screen.findByRole("button", { name: "Show less" });
+
+    // Focus something inside this thread's subtree that carries no draft —
+    // the reply composer's placeholder input itself, before any typing.
+    // The composer starts as a lazy shell; activate it first so the real
+    // editor mounts.
+    const threadWrapper = container.querySelector(`#comment-${root.id}`) as HTMLElement;
+    fireEvent.click(within(threadWrapper).getByTestId("reply-composer-shell"));
+    const replyBox = await within(threadWrapper).findByPlaceholderText("Leave a reply...");
+    act(() => {
+      (replyBox as HTMLElement).focus();
+      fireEvent.focusIn(replyBox);
+    });
+
+    // No draft content was typed, so rootIdsWithActiveReplyDraft does not
+    // cover this — only the focus signal does. Show less must be withheld.
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Show less" })).not.toBeInTheDocument());
+
+    // Blurring releases the pin — Show less returns.
+    act(() => {
+      (replyBox as HTMLElement).blur();
+      fireEvent.focusOut(replyBox);
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Show less" })).toBeInTheDocument());
+  });
+
+  it("refuses Show less while the thread being collapsed contains a non-collapsed text selection, with no unsaved draft", async () => {
+    const root = mockTimeline[0]!;
+    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+      ...mockTimeline[1]!,
+      id: `sel-reply-${i}`,
+      parent_id: root.id,
+      content: `Sel reply ${i}`,
+      created_at: `2026-01-16T00:0${i}:00Z`,
+    }));
+    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+    const { container } = renderIssueDetail();
+    await screen.findByText("Sel reply 3");
+    fireEvent.click(await screen.findByRole("button", { name: /Show \d+ more repl/ }));
+    await screen.findByRole("button", { name: "Show less" });
+
+    const threadWrapper = container.querySelector(`#comment-${root.id}`) as HTMLElement;
+    const textNode = within(threadWrapper).getByText("Sel reply 3").firstChild as Node;
+    const range = document.createRange();
+    range.selectNodeContents(textNode);
+    const sel = window.getSelection()!;
+    act(() => {
+      sel.removeAllRanges();
+      sel.addRange(range);
+      fireEvent(document, new Event("selectionchange"));
+    });
+
+    // AC 2: a real range with no unsaved change still blocks Show less.
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Show less" })).not.toBeInTheDocument());
+
+    act(() => {
+      sel.removeAllRanges();
+      fireEvent(document, new Event("selectionchange"));
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Show less" })).toBeInTheDocument());
+  });
+
+  it("refuses Show less for a cross-boundary selection anchored inside the collapsing thread but extending outside it", async () => {
+    // Terra review (CHE-476 PR #36): commonAncestorContainer is the wrong
+    // containment test — a selection that starts in-thread and ends outside
+    // it has a common ancestor ABOVE both roots, so the old check missed it
+    // and Show less would hide the anchored text. anchorNode containment
+    // (01-DESIGN-v3.md:51: refusal keys off the Selection's anchor) fixes it.
+    const root = mockTimeline[0]!;
+    const otherRoot: TimelineEntry = { ...mockTimeline[1]!, id: "boundary-other-root", parent_id: null, content: "Other root", created_at: "2026-01-16T00:10:00Z" };
+    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+      ...mockTimeline[1]!,
+      id: `boundary-reply-${i}`,
+      parent_id: root.id,
+      content: `Boundary reply ${i}`,
+      created_at: `2026-01-16T00:0${i}:00Z`,
+    }));
+    mockApiObj.listTimeline.mockResolvedValue([root, ...replies, otherRoot]);
+    const { container } = renderIssueDetail();
+    await screen.findByText("Boundary reply 3");
+    await screen.findByText("Other root");
+    fireEvent.click(await screen.findByRole("button", { name: /Show \d+ more repl/ }));
+    await screen.findByRole("button", { name: "Show less" });
+
+    const threadWrapper = container.querySelector(`#comment-${root.id}`) as HTMLElement;
+    const otherWrapper = container.querySelector(`#comment-${otherRoot.id}`) as HTMLElement;
+    const anchorNode = within(threadWrapper).getByText("Boundary reply 3").firstChild as Node;
+    const focusNode = within(otherWrapper).getByText("Other root").firstChild as Node;
+    const sel = window.getSelection()!;
+    act(() => {
+      sel.removeAllRanges();
+      sel.setBaseAndExtent(anchorNode, 0, focusNode, 1);
+      fireEvent(document, new Event("selectionchange"));
+    });
+
+    // The selection's commonAncestorContainer sits above both roots, but its
+    // anchor is still inside root's subtree — Show less must stay withheld.
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Show less" })).not.toBeInTheDocument());
+
+    act(() => {
+      sel.removeAllRanges();
+      fireEvent(document, new Event("selectionchange"));
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Show less" })).toBeInTheDocument());
+  });
+
+  it("does not block Show less on a thread when focus is inside a different thread that is not being collapsed", async () => {
+    const root = mockTimeline[0]!;
+    const otherRoot: TimelineEntry = { ...mockTimeline[1]!, id: "other-root", parent_id: null, content: "Other root", created_at: "2026-01-16T00:10:00Z" };
+    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+      ...mockTimeline[1]!,
+      id: `scope-reply-${i}`,
+      parent_id: root.id,
+      content: `Scope reply ${i}`,
+      created_at: `2026-01-16T00:0${i}:00Z`,
+    }));
+    mockApiObj.listTimeline.mockResolvedValue([root, ...replies, otherRoot]);
+    const { container } = renderIssueDetail();
+    await screen.findByText("Scope reply 3");
+    await screen.findByText("Other root");
+    fireEvent.click(await screen.findByRole("button", { name: /Show \d+ more repl/ }));
+    const showLess = await screen.findByRole("button", { name: "Show less" });
+
+    // Focus lands in the OTHER thread's own reply composer — AC 3 requires
+    // the refusal to stay scoped to the subtree actually being collapsed.
+    const otherWrapper = container.querySelector(`#comment-${otherRoot.id}`) as HTMLElement;
+    fireEvent.click(within(otherWrapper).getByTestId("reply-composer-shell"));
+    const otherReplyBox = await within(otherWrapper).findByPlaceholderText("Leave a reply...");
+    act(() => {
+      (otherReplyBox as HTMLElement).focus();
+      fireEvent.focusIn(otherReplyBox);
+    });
+
+    // root's own Show less must remain available throughout.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Show less" })).toBe(showLess));
+  });
+
+  it("does not block Show less for a collapsed caret-only selection with no unsaved draft", async () => {
+    const root = mockTimeline[0]!;
+    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+      ...mockTimeline[1]!,
+      id: `caret-reply-${i}`,
+      parent_id: root.id,
+      content: `Caret reply ${i}`,
+      created_at: `2026-01-16T00:0${i}:00Z`,
+    }));
+    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+    const { container } = renderIssueDetail();
+    await screen.findByText("Caret reply 3");
+    fireEvent.click(await screen.findByRole("button", { name: /Show \d+ more repl/ }));
+    const showLess = await screen.findByRole("button", { name: "Show less" });
+
+    const threadWrapper = container.querySelector(`#comment-${root.id}`) as HTMLElement;
+    const textNode = within(threadWrapper).getByText("Caret reply 3").firstChild as Node;
+    const range = document.createRange();
+    range.setStart(textNode, 0);
+    range.collapse(true);
+    const sel = window.getSelection()!;
+    act(() => {
+      sel.removeAllRanges();
+      sel.addRange(range);
+      fireEvent(document, new Event("selectionchange"));
+    });
+
+    // AC 4: a caret (isCollapsed === true) is not a "selection" for this
+    // purpose — Show less must remain available.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Show less" })).toBe(showLess));
+  });
+
   it("replaces each queued run in place without moving replies behind later requests", async () => {
     const root = mockTimeline[0]!;
     const second = { ...root, id: "request-two", parent_id: root.id, content: "Second request", created_at: "2026-01-16T00:00:02Z" };
@@ -1554,14 +2461,35 @@ describe("IssueDetail (shared)", () => {
         client.setQueryData(issueKeys.timeline("issue-1"), timeline);
       });
       await screen.findByText(reply.content!);
-      expect(container.querySelector(`[data-run-slot-id="${tasks[index]!.id}"]`)).toBe(slots[index]);
+      // task 0's reply (answer-0) is projected onto root itself (comment-runs.ts
+      // rewrites its parent_id to root.id since its anchor IS the root) — this
+      // run keeps the root-anchored AgentRunComment identity, so its DOM node
+      // is reused in place (`toBe(slots[0])`) exactly as before.
+      //
+      // task 1's reply (answer-1) is a SIBLING nested reply of root, distinct
+      // from the "request-two" comment task 1 was originally anchored to
+      // (queued, pre-reply) — projectThreadDisplay is the sole thread-display
+      // input (01-DESIGN "Thread selection and run placement") and gives every
+      // published reply its own chronological slot, so the run's controls
+      // relocate from their prior post-"request-two" run-only slot to
+      // answer-1's own slot. A new DOM node at the new position is the
+      // intended v2 behavior, not a regression — the old anchor-recursion
+      // model's DOM-identity-across-relocation guarantee is exactly what
+      // 01-DESIGN's per-reply chronological slotting replaces.
+      if (index === 0) {
+        expect(container.querySelector(`[data-run-slot-id="${tasks[index]!.id}"]`)).toBe(slots[index]);
+      } else {
+        const relocated = container.querySelector(`#comment-${reply.id}`)!;
+        expect(relocated).not.toBeNull();
+        expect(relocated.querySelector(`[data-run-id="${tasks[index]!.id}"]`)).not.toBeNull();
+        slots[index] = relocated;
+      }
       expect(slots[index]!.textContent).toContain(reply.content);
       expect(container.querySelectorAll(`[data-run-id="${tasks[index]!.id}"]`)).toHaveLength(1);
     }
     expect(within(slots[0] as HTMLElement).getByRole("button", { name: "Open full log" })).toBeInTheDocument();
     expect(within(slots[0] as HTMLElement).queryByRole("button", { name: /View activity/ })).not.toBeInTheDocument();
     expect(slots[0]!.nextElementSibling?.id).toBe("comment-request-two");
-    expect(slots[1]!.nextElementSibling?.id).toBe("comment-request-three");
     expect(container.querySelector(`[data-run-slot-id="${tasks[2]!.id}"]`)).toBe(slots[2]);
     expect(within(slots[2] as HTMLElement).getByText("Waiting for an available agent.")).toBeInTheDocument();
   });
@@ -1885,7 +2813,7 @@ describe("IssueDetail (shared)", () => {
     key: "in_review",
     name: "In Review",
     description: "",
-    category: "in_review",
+    category: "started",
     color: "#8b5cf6",
     is_system: true,
     position: 0,
@@ -2109,6 +3037,29 @@ describe("IssueDetail (shared)", () => {
       await waitFor(() => expect(document.getElementById(`comment-${target.id}`)).not.toBeNull());
       await waitFor(() => expect(document.getElementById(`comment-${target.id}`)).toHaveClass(highlightedCommentBackgroundClass));
     });
+    it("lands on the reply above a deleted one when a notification targets it", async () => {
+      // A deleted reply renders nothing (#8296 keeps its row only so its own
+      // replies keep a parent), so the id the notification carries has no
+      // anchor left. The landing rule's matrix lives in
+      // packages/core/issues/comment-deletion.test.ts.
+      const root = { ...mockTimeline[0]!, id: "thread-root", parent_id: null };
+      const previous = { ...mockTimeline[1]!, id: "reply-before", parent_id: root.id,
+        content: "Still here", created_at: "2026-01-18T00:00:00Z" };
+      const target = { ...mockTimeline[1]!, id: "deleted-reply", parent_id: root.id,
+        content: "", deleted_at: "2026-01-19T00:00:00Z", created_at: "2026-01-19T00:00:00Z" };
+      const kept = { ...mockTimeline[1]!, id: "reply-under-deleted", parent_id: target.id,
+        content: "Kept below it", created_at: "2026-01-20T00:00:00Z" };
+      mockApiObj.listTimeline.mockResolvedValue([root, previous, target, kept]);
+      mockApiObj.listTasksByIssue.mockResolvedValue([]);
+      renderIssueDetailWithHighlight(target.id);
+
+      await waitFor(() => expect(
+        hasHighlightedCommentBackground(document.getElementById(`comment-${previous.id}`)),
+      ).toBe(true));
+      // The tombstone itself never renders, so nothing waits on its anchor.
+      expect(document.getElementById(`comment-${target.id}`)).toBeNull();
+    });
+
     it("scrolls to the highlighted comment after both issue and timeline finish loading", async () => {
       renderIssueDetailWithHighlight("comment-2");
 
@@ -2266,6 +3217,155 @@ describe("IssueDetail (shared)", () => {
           document.getElementById("comment-reply-1")?.className,
         ).toContain("bg-[color-mix(in_srgb,var(--card)_95%,var(--brand)_5%)]");
       });
+    });
+
+    // CHE-436 acceptance criterion 4: replaying a notification for a reply
+    // deep inside a long thread (r2 of 10, well outside the default
+    // latest-three compact window) must land exactly on r2, not on the root
+    // or on a neighboring reply — proof the target-root latch (01-04) and
+    // the committed-generation gate (CHE-436) actually resolve to the right
+    // DOM node once the thread force-opens.
+    it("lands exactly on r2 of a 10-reply thread, not the root or a neighboring reply", async () => {
+      const root = { ...mockTimeline[0]!, id: "ten-reply-root", content: "Ten-reply root" };
+      const replies: TimelineEntry[] = Array.from({ length: 10 }, (_, i) => ({
+        ...mockTimeline[1]!,
+        id: `r${i + 1}`,
+        parent_id: root.id,
+        content: `Reply r${i + 1}`,
+        created_at: `2026-01-16T00:${String(i).padStart(2, "0")}:00Z`,
+      }));
+      mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+
+      renderIssueDetailWithHighlight("r2", "issue-1");
+
+      await waitFor(() => expect(document.getElementById("comment-r2")).not.toBeNull());
+      await waitFor(() =>
+        expect(hasHighlightedCommentBackground(document.getElementById("comment-r2"))).toBe(true),
+      );
+      // Not a neighboring reply (sibling row, so `hasHighlightedCommentBackground`'s
+      // descendant walk is a clean, non-nested check here).
+      expect(hasHighlightedCommentBackground(document.getElementById("comment-r1"))).toBe(false);
+      expect(hasHighlightedCommentBackground(document.getElementById("comment-r3"))).toBe(false);
+      // Not the root ITSELF (its own tint class, not r2's — the root wrapper
+      // contains r2 as a descendant, so the recursive helper would always
+      // read true here regardless of which row actually got the tint).
+      const rootEl = document.getElementById(`comment-${root.id}`);
+      expect(rootEl?.className ?? "").not.toContain(highlightedCommentBackgroundClass);
+    });
+
+    // Sol's CHE-436 PR #43 review, blocking finding 3: the landing effect's
+    // own re-render (triggered by its OWN `setHighlightedId` call, since
+    // `highlightedId` is component state) must not tear down its own
+    // just-scheduled fade timeout/centering rAF. Before the fix,
+    // `disclosureReveal.isCommitted` was a fresh function on every render, so
+    // it was a fresh value in this effect's dependency array on every render
+    // — including the one this same effect's `setHighlightedId` call causes —
+    // which re-ran the effect's cleanup (cancelling the fade timer) the
+    // instant after it started, then bailed out of a fresh landing because
+    // `didHighlightRef` was already set. The visible symptom: the highlight
+    // never fades, because the timer that would clear it was cancelled
+    // before it could fire.
+    it("fades the landed highlight after its own state update triggers a rerender", async () => {
+      renderIssueDetailWithHighlight("comment-2");
+
+      await waitFor(() =>
+        expect(hasHighlightedCommentBackground(document.getElementById("comment-comment-2"))).toBe(true),
+      );
+
+      // The fade timeout is 2500ms; poll well past it with real timers. If
+      // the landing effect's cleanup fired prematurely (cancelling the
+      // timeout), this never becomes false and the test times out.
+      await waitFor(
+        () => expect(hasHighlightedCommentBackground(document.getElementById("comment-comment-2"))).toBe(false),
+        { timeout: 4000, interval: 100 },
+      );
+    }, 6000);
+
+    // CHE-436 acceptance criterion 5: a missing/deleted target must never
+    // report false success by falling back to highlighting the root (or any
+    // other node) — the landing effect requires the exact target element to
+    // exist in the DOM before it records anything.
+    it("never reports false success on the root when the deep-link target comment no longer exists", async () => {
+      const root = { ...mockTimeline[0]!, id: "missing-target-root", content: "Root stays here" };
+      mockApiObj.listTimeline.mockResolvedValue([root]);
+
+      renderIssueDetailWithHighlight("deleted-comment-id", "issue-1");
+
+      await screen.findByText("Root stays here");
+      // Give the landing effect every chance to (incorrectly) fire.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(hasHighlightedCommentBackground(document.getElementById(`comment-${root.id}`))).toBe(false);
+      expect(document.getElementById("comment-deleted-comment-id")).toBeNull();
+    });
+
+    // Sol's CHE-436 PR #43 review, blocking finding 1: a consumed memento
+    // (this exact target already landed once, in an earlier mount — e.g. a
+    // tab switch back) must still reveal the target's fold, even though it
+    // correctly skips the scroll/highlight/re-write. 01-DESIGN.md:76 —
+    // "Memento restoration may suppress scrolling but must not suppress
+    // revealing the target." Before the fix, the memento-consumed branch
+    // returned before ever reaching the resolved-thread auto-expand logic,
+    // so a target inside a still-collapsed resolved thread stayed hidden
+    // forever on a memento-restored mount.
+    it("still reveals a resolved-thread target on mount even when its memento was already consumed", async () => {
+      const timelineWithResolvedThread: TimelineEntry[] = [
+        ...mockTimeline,
+        {
+          type: "comment",
+          id: "comment-3",
+          actor_type: "member",
+          actor_id: "user-1",
+          content: "Resolved root",
+          parent_id: null,
+          created_at: "2026-01-18T00:00:00Z",
+          updated_at: "2026-01-18T00:00:00Z",
+          comment_type: "comment",
+          resolved_at: "2026-01-19T00:00:00Z",
+        } as TimelineEntry,
+        {
+          type: "comment",
+          id: "reply-1",
+          actor_type: "member",
+          actor_id: "user-1",
+          content: "Reply inside resolved thread",
+          parent_id: "comment-3",
+          created_at: "2026-01-18T01:00:00Z",
+          updated_at: "2026-01-18T01:00:00Z",
+          comment_type: "comment",
+        } as TimelineEntry,
+      ];
+      mockApiObj.listTimeline.mockResolvedValue(timelineWithResolvedThread);
+
+      // Fake adapter reporting the memento as already consumed for this exact
+      // target — the scenario a real remount-after-tab-switch produces.
+      const adapter: ScrollRestorationAdapter = {
+        get: () => undefined,
+        getViewState: (key) => (key === "highlight:issue-1" ? "reply-1" : undefined),
+        setViewState: vi.fn(),
+      };
+
+      const queryClient = createTestQueryClient();
+      render(
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <QueryClientProvider client={queryClient}>
+            <ScrollRestorationProvider adapter={adapter}>
+              <IssueDetail issueId="issue-1" highlightCommentId="reply-1" />
+            </ScrollRestorationProvider>
+          </QueryClientProvider>
+        </I18nProvider>,
+      );
+
+      // The thread must still auto-expand and reveal the reply, exactly like
+      // a fresh (non-memento) landing — the memento only suppresses the
+      // scroll/highlight/re-write that follows, never the reveal itself.
+      await waitFor(() => {
+        expect(document.getElementById("comment-reply-1")).not.toBeNull();
+      });
+      // The memento was already consumed for this target, so the effect must
+      // not write it again.
+      expect(adapter.setViewState).not.toHaveBeenCalled();
     });
   });
 
@@ -2523,6 +3623,35 @@ describe("IssueDetail (shared)", () => {
     expect(editorWasInertAtInsert).toBe(false);
     expect(editor).not.toHaveAttribute("aria-hidden");
     expect(descEditorUploadFile).toHaveBeenCalledWith(selectedFile);
+  });
+
+  it("keeps focus on Show less after expanding, instead of dropping it via collapseDisabled", async () => {
+    // Regression: `onFocusCapture` on the wrapper around DescriptionDisclosure
+    // fired for ANY focus inside it, including the Show more/less button
+    // itself. Focusing "Show more" then expanding flipped `descriptionFocused`
+    // true from that same focus event; on the next render the button (now
+    // "Show less") read `disabled={expanded && collapseDisabled}` and became
+    // disabled while the browser's focus was still on it — a disabled element
+    // cannot hold focus, so focus silently dropped to <body>. The guard must
+    // only count focus landing inside the actual editor as "editing."
+    descriptionMeasurement.current = {
+      totalRows: 13,
+      hiddenRows: 1,
+      hasOverflow: true,
+      lineHeight: 20,
+      previewText: "Add JWT auth to the backend",
+    };
+    renderIssueDetail();
+
+    await screen.findByDisplayValue("Add JWT auth to the backend");
+    const showMore = screen.getByRole("button", { name: /Show more/ });
+    act(() => showMore.focus());
+    fireEvent.keyDown(showMore, { key: "Enter" });
+    fireEvent.click(showMore);
+
+    const showLess = await screen.findByRole("button", { name: "Show less" });
+    expect(showLess).not.toBeDisabled();
+    expect(document.activeElement).toBe(showLess);
   });
 
   it("re-enables Show less once a pending upload's attachment ids are bound", async () => {

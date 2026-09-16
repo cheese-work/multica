@@ -285,8 +285,10 @@ var issueCommentAddCmd = &cobra.Command{
 var issueCommentDeleteCmd = &cobra.Command{
 	Use:   "delete <comment-id>",
 	Short: "Delete a comment",
-	Args:  exactArgs(1),
-	RunE:  runIssueCommentDelete,
+	Long: "Delete a single comment. Its replies are kept: a comment that has replies stays in the thread " +
+		"as an empty placeholder (deleted_at set) so they keep their place.",
+	Args: exactArgs(1),
+	RunE: runIssueCommentDelete,
 }
 
 var issueCommentResolveCmd = &cobra.Command{
@@ -654,6 +656,7 @@ func init() {
 
 	// issue comment resolve/unresolve
 	issueCommentResolveCmd.Flags().String("output", "json", "Output format: table or json")
+	issueCommentResolveCmd.Flags().String("known-as-of", "", "Timestamp (RFC3339Nano) of the thread state this resolve was decided against — e.g. the newest comment's created_at you had loaded. When set, the server rejects the resolve with a thread_changed conflict if a reply has landed in this thread since then, instead of silently folding it away.")
 	issueCommentUnresolveCmd.Flags().String("output", "json", "Output format: table or json")
 
 	// issue search
@@ -2259,6 +2262,10 @@ func runIssueCommentList(cmd *cobra.Command, args []string) error {
 	rows := make([][]string, 0, len(comments))
 	for _, c := range comments {
 		content := strVal(c, "content")
+		if strVal(c, "deleted_at") != "" {
+			// A deleted comment kept only so its replies stay attached.
+			content = "(deleted)"
+		}
 		if utf8.RuneCountInString(content) > 80 {
 			runes := []rune(content)
 			content = string(runes[:77]) + "..."
@@ -2367,7 +2374,16 @@ func runIssueCommentDelete(cmd *cobra.Command, args []string) error {
 	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 
-	if err := client.DeleteJSON(ctx, "/api/comments/"+args[0]); err != nil {
+	// The keep-replies route exists only on servers that keep a deleted
+	// comment's replies. An older server does not route it — a plain-text 404,
+	// unlike the JSON "comment not found" — and would delete the replies too,
+	// so refuse there rather than fall back.
+	err = client.DeleteJSON(ctx, "/api/comments/"+args[0]+"/keep-replies")
+	var httpErr *cli.HTTPError
+	if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound && !strings.HasPrefix(httpErr.Body, "{") {
+		return fmt.Errorf("delete comment: this server would delete the comment's replies too; upgrade the server first")
+	}
+	if err != nil {
 		return fmt.Errorf("delete comment: %w", err)
 	}
 
@@ -2376,14 +2392,42 @@ func runIssueCommentDelete(cmd *cobra.Command, args []string) error {
 }
 
 func runIssueCommentResolve(cmd *cobra.Command, args []string) error {
-	return runIssueCommentResolution(cmd, args[0], true)
+	knownAsOfRaw, _ := cmd.Flags().GetString("known-as-of")
+	if knownAsOfRaw != "" {
+		if _, err := time.Parse(time.RFC3339Nano, knownAsOfRaw); err != nil {
+			return fmt.Errorf("--known-as-of: invalid RFC3339Nano timestamp %q: %w", knownAsOfRaw, err)
+		}
+	}
+	return runIssueCommentResolution(cmd, args[0], true, knownAsOfRaw)
 }
 
 func runIssueCommentUnresolve(cmd *cobra.Command, args []string) error {
-	return runIssueCommentResolution(cmd, args[0], false)
+	return runIssueCommentResolution(cmd, args[0], false, "")
 }
 
-func runIssueCommentResolution(cmd *cobra.Command, commentID string, resolve bool) error {
+// threadChangedMessage decodes a 409 thread_changed body (see ResolveComment
+// in internal/handler/comment.go) into an actionable CLI error. Mirrors
+// revisionConflictMessage's decode pattern for the issue API's other typed
+// 409s, so every stale-write conflict reads the same way from the CLI.
+func threadChangedMessage(err error) (string, bool) {
+	var httpErr *cli.HTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusConflict {
+		return "", false
+	}
+	var payload struct {
+		Code  string `json:"code"`
+		Error string `json:"error"`
+	}
+	if json.Unmarshal([]byte(httpErr.Body), &payload) != nil {
+		return "", false
+	}
+	if payload.Code != "thread_changed" || payload.Error == "" {
+		return "", false
+	}
+	return fmt.Sprintf("resolve rejected: %s — reload the thread and retry with an updated --known-as-of", payload.Error), true
+}
+
+func runIssueCommentResolution(cmd *cobra.Command, commentID string, resolve bool, knownAsOfRaw string) error {
 	client, err := newAPIClient(cmd)
 	if err != nil {
 		return err
@@ -2395,7 +2439,14 @@ func runIssueCommentResolution(cmd *cobra.Command, commentID string, resolve boo
 	path := "/api/comments/" + url.PathEscape(commentID) + "/resolve"
 	var result map[string]any
 	if resolve {
-		if err := client.PostJSON(ctx, path, nil, &result); err != nil {
+		var body any
+		if knownAsOfRaw != "" {
+			body = map[string]any{"known_as_of": knownAsOfRaw}
+		}
+		if err := client.PostJSON(ctx, path, body, &result); err != nil {
+			if msg, ok := threadChangedMessage(err); ok {
+				return errors.New(msg)
+			}
 			return fmt.Errorf("resolve comment: %w", err)
 		}
 		fmt.Fprintf(os.Stderr, "Comment %s resolved.\n", commentID)
