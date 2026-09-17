@@ -1,0 +1,407 @@
+name: CD deploy to C00
+
+# D2 (CHE-530): deploys an already-admitted release-candidate tuple to the
+# live C00 self-host stack. This workflow is the ONLY place in the repo that
+# holds C00 credentials (SSH key, host, deploy user) — D1's
+# cd-qualification.yml is read-only and deliberately carries none of them
+# (see the comment at the top of that file and deploy/cd/README.md).
+#
+# It runs automatically after a SUCCESSFUL cd-qualification run for a `main`
+# commit (acceptance item 1: a merge to main reaches C00 with no human step),
+# and can still be dispatched by hand for a re-deploy or a manual admission.
+#
+# The automatic path needs one job the manual path does not:
+# prepare-release-candidate. D1 publishes a `build-evidence` manifest, and
+# admission.mjs REFUSES build-evidence for deployment — a deployable
+# `release-candidate` manifest additionally binds the baseline tuple of the
+# host being deployed to, which only a stage with C00 access can read. That
+# job reads the live baseline over the same SSH credentials the deploy job
+# uses, re-issues D1's evidence as a release-candidate bound to it, and hands
+# the result to the unchanged admission and deploy jobs. admission.mjs is not
+# weakened to make this fit: it still verifies the manifest, the event, the
+# provenance digests and the required checks, and still refuses
+# build-evidence.
+on:
+  workflow_run:
+    workflows: ["CD qualification build"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      manifest_path:
+        description: "Path (relative to repo root, at the checked-out ref) to the release-candidate manifest JSON"
+        required: true
+      baseline_tuple_path:
+        description: "Path to the C00 tuple snapshot the manifest was qualified against"
+        required: true
+      event_path:
+        description: "Path to the recorded {event_name, ref, repository, sha} JSON for the qualifying push"
+        required: true
+      checks_path:
+        description: "Path to the recorded {sha, contexts} required-checks JSON"
+        required: true
+      provenance_path:
+        description: "Path to the recorded image provenance JSON (backend/web digest + architecture + repository + source_sha)"
+        required: true
+      ref:
+        description: "Git ref to check out (must match the manifest's source_sha)"
+        required: true
+        default: main
+
+# This workflow deliberately has no build step and never touches the
+# registry beyond a pull performed on C00 itself over the deploy SSH
+# session — it only reads already-published, already-admitted evidence and
+# mutates C00.
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  # One deploy at a time, repo-wide: a second dispatch while one is running
+  # queues instead of racing a second SSH session against the same compose
+  # stack. deploy.sh's own flock on C00 is the second, host-local layer of
+  # the same guarantee for anyone who runs it by hand outside this workflow.
+  group: cd-deploy-c00
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Automatic path only. Turns D1's build-evidence into a deployable
+  # release-candidate by binding it to C00's CURRENT baseline tuple.
+  #
+  # This job needs C00 SSH access to read that baseline, so it runs on the
+  # same C00-reachable runner and the same protected environment as the
+  # deploy job. It reads and writes nothing on C00 beyond a temp file it
+  # removes: capture-tuple.sh inspects containers and runs one SELECT.
+  # ---------------------------------------------------------------------------
+  prepare-release-candidate:
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, linux, x64, cheese-c00-deploy]
+    timeout-minutes: 15
+    environment: c00-production
+    outputs:
+      source_sha: ${{ steps.evidence.outputs.source_sha }}
+    steps:
+      - name: Checkout the qualified commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 1
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Download D1 build evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: cd-build-evidence-${{ github.event.workflow_run.head_sha }}
+          path: d1-evidence
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Read C00's current baseline tuple
+        env:
+          C00_SSH_HOST: ${{ secrets.C00_SSH_HOST }}
+          C00_SSH_USER: ${{ secrets.C00_SSH_USER }}
+          C00_SSH_KEY: ${{ secrets.C00_SSH_KEY }}
+          C00_COMPOSE_DIR: ${{ secrets.C00_COMPOSE_DIR }}
+          C00_STATE_DIR: ${{ secrets.C00_STATE_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$C00_SSH_KEY" > ~/.ssh/c00_deploy_key
+          chmod 600 ~/.ssh/c00_deploy_key
+          ssh-keyscan -H "$C00_SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          ssh_cmd=(ssh -i ~/.ssh/c00_deploy_key -o BatchMode=yes "${C00_SSH_USER}@${C00_SSH_HOST}")
+          remote_dir="${C00_STATE_DIR%/}/cd-baseline-$(date +%s)"
+
+          "${ssh_cmd[@]}" "mkdir -p '$remote_dir'"
+          scp -i ~/.ssh/c00_deploy_key -o BatchMode=yes \
+            deploy/cd/capture-tuple.sh deploy/cd/tuple-snapshot.mjs \
+            "${C00_SSH_USER}@${C00_SSH_HOST}:${remote_dir}/"
+
+          set +e
+          "${ssh_cmd[@]}" "bash '${remote_dir}/capture-tuple.sh' \
+            --compose-dir '${C00_COMPOSE_DIR}' \
+            --output '${remote_dir}/baseline-tuple.json'"
+          capture_status=$?
+          set -e
+
+          if [ "$capture_status" -eq 0 ]; then
+            scp -i ~/.ssh/c00_deploy_key -o BatchMode=yes \
+              "${C00_SSH_USER}@${C00_SSH_HOST}:${remote_dir}/baseline-tuple.json" \
+              baseline-tuple.json
+          fi
+          "${ssh_cmd[@]}" "rm -rf '$remote_dir'" || true
+          exit "$capture_status"
+
+      - name: Issue the release-candidate manifest
+        id: evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha="${{ github.event.workflow_run.head_sha }}"
+
+          # The release-candidate carries D1's own digests unchanged — this
+          # stage re-binds evidence, it never re-qualifies an image. Reading
+          # them back out of D1's manifest (rather than accepting them as
+          # inputs) is what keeps "the exact pair D1 qualified" true by
+          # construction for acceptance item 2.
+          read_field() {
+            node -e 'const m=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(process.argv[2].split(".").reduce((a,k)=>a?.[k],m)))' \
+              d1-evidence/cd-build-evidence.json "$1"
+          }
+          d1_source_sha="$(read_field source_sha)"
+          if [ "$d1_source_sha" != "$source_sha" ]; then
+            echo "::error::D1 evidence is for $d1_source_sha but this run qualified $source_sha"
+            exit 1
+          fi
+
+          node deploy/cd/release-manifest.mjs create \
+            --kind release-candidate \
+            --repository "$(read_field repository)" \
+            --source-sha "$source_sha" \
+            --architecture "$(read_field architecture)" \
+            --configuration-sha256 "$(read_field configuration_sha256)" \
+            --migration-inventory-sha256 "$(read_field migration_inventory_sha256)" \
+            --backend-image "$(read_field images.backend)" \
+            --web-image "$(read_field images.web)" \
+            --baseline-tuple-sha256 "$(node deploy/cd/tuple-snapshot.mjs digest --snapshot baseline-tuple.json)" \
+            --output cd-release-candidate.json
+
+          # admission.mjs checks the qualifying event and the required check
+          # contexts. Record both from the API rather than asserting them:
+          # the event comes from the workflow_run payload this job was
+          # triggered by, the checks from the commit's own check runs.
+          node -e '
+            const fs = require("node:fs");
+            fs.writeFileSync("cd-event.json", `${JSON.stringify({
+              event_name: process.env.RUN_EVENT,
+              ref: `refs/heads/${process.env.RUN_BRANCH}`,
+              repository: process.env.GITHUB_REPOSITORY,
+              sha: process.env.SOURCE_SHA,
+            }, null, 2)}\n`);
+          '
+          cp d1-evidence/cd-image-provenance.json cd-provenance.json
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+        env:
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Record the required-check results for this commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          # admission.mjs requires backend, frontend, mobile and
+          # cd-qualification to all be "success" for this exact SHA. Take
+          # them from the commit's check runs — the same source a human
+          # reading the PR would use — rather than asserting them here.
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${SOURCE_SHA}/check-runs?per_page=100" \
+            --paginate --jq '.check_runs[] | {name, conclusion}' > check-runs.jsonl
+          node -e '
+            const fs = require("node:fs");
+            const contexts = {};
+            for (const line of fs.readFileSync("check-runs.jsonl", "utf8").split("\n")) {
+              if (!line.trim()) continue;
+              const run = JSON.parse(line);
+              contexts[run.name] = run.conclusion;
+            }
+            fs.writeFileSync("cd-checks.json", `${JSON.stringify({ sha: process.env.SOURCE_SHA, contexts }, null, 2)}\n`);
+          '
+
+      - name: Upload the release-candidate evidence set
+        uses: actions/upload-artifact@v4
+        with:
+          name: cd-release-candidate-${{ github.event.workflow_run.head_sha }}
+          path: |
+            cd-release-candidate.json
+            baseline-tuple.json
+            cd-event.json
+            cd-checks.json
+            cd-provenance.json
+          retention-days: 30
+          if-no-files-found: error
+
+  admission:
+    # Admission is a read-only evidence check — it never touches C00 — so it
+    # can run on a regular GitHub-hosted runner. Only the deploy job below
+    # needs the dedicated C00-reachable runner and secrets.
+    needs: prepare-release-candidate
+    # The manual path skips prepare-release-candidate entirely (its caller
+    # supplies an already-issued manifest), so this must not be skipped just
+    # because that job did not run.
+    if: always() && (github.event_name == 'workflow_dispatch' || needs.prepare-release-candidate.result == 'success')
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.verify_admission.outputs.source_sha }}
+      ref: ${{ steps.paths.outputs.ref }}
+      manifest_path: ${{ steps.paths.outputs.manifest_path }}
+    steps:
+      - name: Resolve the evidence set for this trigger
+        id: paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            {
+              echo "ref=${{ inputs.ref }}"
+              echo "manifest_path=${{ inputs.manifest_path }}"
+              echo "baseline_tuple_path=${{ inputs.baseline_tuple_path }}"
+              echo "event_path=${{ inputs.event_path }}"
+              echo "checks_path=${{ inputs.checks_path }}"
+              echo "provenance_path=${{ inputs.provenance_path }}"
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "ref=${{ github.event.workflow_run.head_sha }}"
+              echo "manifest_path=cd-evidence/cd-release-candidate.json"
+              echo "baseline_tuple_path=cd-evidence/baseline-tuple.json"
+              echo "event_path=cd-evidence/cd-event.json"
+              echo "checks_path=cd-evidence/cd-checks.json"
+              echo "provenance_path=cd-evidence/cd-provenance.json"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.paths.outputs.ref }}
+          fetch-depth: 1
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Download the prepared evidence set
+        if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@v4
+        with:
+          name: cd-release-candidate-${{ github.event.workflow_run.head_sha }}
+          path: cd-evidence
+
+      - name: Verify admission
+        id: verify_admission
+        shell: bash
+        env:
+          MANIFEST_PATH: ${{ steps.paths.outputs.manifest_path }}
+          BASELINE_TUPLE_PATH: ${{ steps.paths.outputs.baseline_tuple_path }}
+          EVENT_PATH: ${{ steps.paths.outputs.event_path }}
+          CHECKS_PATH: ${{ steps.paths.outputs.checks_path }}
+          PROVENANCE_PATH: ${{ steps.paths.outputs.provenance_path }}
+        run: |
+          set -euo pipefail
+          config_sha="$(node -e 'const fs=require("node:fs");const m=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));process.stdout.write(m.configuration_sha256)' "$MANIFEST_PATH")"
+          migration_sha="$(node -e 'const fs=require("node:fs");const m=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));process.stdout.write(m.migration_inventory_sha256)' "$MANIFEST_PATH")"
+          source_sha="$(node -e 'const fs=require("node:fs");const m=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));process.stdout.write(m.source_sha)' "$MANIFEST_PATH")"
+          node deploy/cd/admission.mjs verify \
+            --manifest "$MANIFEST_PATH" \
+            --baseline-tuple "$BASELINE_TUPLE_PATH" \
+            --event "$EVENT_PATH" \
+            --checks "$CHECKS_PATH" \
+            --provenance "$PROVENANCE_PATH" \
+            --repository "${{ github.repository }}" \
+            --source-sha "$source_sha" \
+            --configuration-sha256 "$config_sha" \
+            --migration-inventory-sha256 "$migration_sha"
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Upload admitted manifest for the deploy job
+        uses: actions/upload-artifact@v4
+        with:
+          name: cd-deploy-admitted-manifest
+          path: ${{ steps.paths.outputs.manifest_path }}
+          retention-days: 7
+          if-no-files-found: error
+
+  deploy:
+    needs: admission
+    # Reserved for the C00-reachable deploy runner, distinct from D1's
+    # cheese-x99 build runner label. See multica-cheese-work-runtimes for the
+    # current host/runner-label mapping; this label is a placeholder for
+    # whichever self-hosted runner has network access to C00.
+    runs-on: [self-hosted, linux, x64, cheese-c00-deploy]
+    timeout-minutes: 30
+    environment: c00-production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.admission.outputs.ref }}
+          fetch-depth: 1
+
+      - name: Download admitted manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: cd-deploy-admitted-manifest
+          path: cd-deploy-manifest
+
+      - name: Deploy to C00 over SSH
+        shell: bash
+        env:
+          # The only C00 credentials in this repository. Scoped to this
+          # workflow/job only — cd-qualification.yml (D1) has none of these
+          # and must stay that way (see its own header comment).
+          C00_SSH_HOST: ${{ secrets.C00_SSH_HOST }}
+          C00_SSH_USER: ${{ secrets.C00_SSH_USER }}
+          C00_SSH_KEY: ${{ secrets.C00_SSH_KEY }}
+          C00_COMPOSE_DIR: ${{ secrets.C00_COMPOSE_DIR }}
+          C00_STATE_DIR: ${{ secrets.C00_STATE_DIR }}
+          MANIFEST_PATH: ${{ needs.admission.outputs.manifest_path }}
+        run: |
+          set -euo pipefail
+          manifest_basename="$(basename "$MANIFEST_PATH")"
+          local_manifest="cd-deploy-manifest/${manifest_basename}"
+
+          mkdir -p ~/.ssh
+          printf '%s\n' "$C00_SSH_KEY" > ~/.ssh/c00_deploy_key
+          chmod 600 ~/.ssh/c00_deploy_key
+          ssh-keyscan -H "$C00_SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          ssh_cmd=(ssh -i ~/.ssh/c00_deploy_key -o BatchMode=yes "${C00_SSH_USER}@${C00_SSH_HOST}")
+          remote_dir="${C00_STATE_DIR%/}/cd-deploy-$(date +%s)"
+
+          "${ssh_cmd[@]}" "mkdir -p '$remote_dir'"
+          # capture-tuple.sh and tuple-snapshot.mjs travel with deploy.sh:
+          # deploy.sh delegates its post-deploy tuple recording to them and
+          # refuses to start if they are absent (see its script_dir check).
+          scp -i ~/.ssh/c00_deploy_key -o BatchMode=yes \
+            deploy/cd/deploy.sh deploy/cd/capture-tuple.sh deploy/cd/tuple-snapshot.mjs \
+            "$local_manifest" \
+            "${C00_SSH_USER}@${C00_SSH_HOST}:${remote_dir}/"
+
+          # set -e would otherwise abort this script the instant the SSH
+          # deploy command returns nonzero — before deploy_status could be
+          # captured and before the remote cleanup below ever ran. Disable
+          # it for exactly this one command, then restore it immediately.
+          set +e
+          "${ssh_cmd[@]}" "bash '${remote_dir}/deploy.sh' \
+            --manifest '${remote_dir}/${manifest_basename}' \
+            --compose-dir '${C00_COMPOSE_DIR}' \
+            --state-dir '${C00_STATE_DIR}'"
+          deploy_status=$?
+          set -e
+
+          # Best-effort cleanup of the transferred copy; failure here must
+          # never mask the deploy's own exit status.
+          "${ssh_cmd[@]}" "rm -rf '$remote_dir'" || true
+
+          exit "$deploy_status"
+
+      - name: Record outcome
+        if: always()
+        shell: bash
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "Deployed ${{ needs.admission.outputs.source_sha }} to C00."
+          else
+            echo "::error::Deploy of ${{ needs.admission.outputs.source_sha }} to C00 failed or required manual intervention — see deploy.sh output above for rollback status."
+          fi

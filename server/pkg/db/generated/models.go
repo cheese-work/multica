@@ -1363,6 +1363,24 @@ type SquadMember struct {
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 }
 
+type StageCompletionWake struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	ParentIssueID pgtype.UUID        `json:"parent_issue_id"`
+	Stage         int32              `json:"stage"`
+	Generation    int32              `json:"generation"`
+	WakeCommentID pgtype.UUID        `json:"wake_comment_id"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
+type StageGeneration struct {
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	ParentIssueID pgtype.UUID        `json:"parent_issue_id"`
+	Stage         int32              `json:"stage"`
+	Generation    int32              `json:"generation"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
 type SysCronExecution struct {
 	ID           pgtype.UUID        `json:"id"`
 	JobName      string             `json:"job_name"`

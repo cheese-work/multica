@@ -169,6 +169,26 @@ interface CommentCardProps {
    */
   forceThreadExpanded?: boolean;
   /**
+   * CHE-554: a strict SUBSET of `forceThreadExpanded`'s reasons — every
+   * reason that pin has EXCEPT a bare focus/selection pin with no other
+   * reason active. `forceThreadExpanded` alone cannot gate the Show-more
+   * button's render guard below, because focus/selection is itself the
+   * trigger for the button's own press: `mousedown` on the button moves
+   * focus onto it before `click` fires, which — if the button's mount were
+   * gated on plain `forceThreadExpanded` — would force `lengthExpanded`
+   * true, drop `hiddenCount` to 0, and unmount the button between
+   * `mousedown` and `click`, so the `click` that should call
+   * `onThreadLengthExpandChange` lands on a detached node and never fires
+   * (see issue-detail.tsx's `rootIdsWithActiveFocusOrSelection`). This prop
+   * carries the caller's SAME force-open reasons minus that one, so the
+   * button stays mounted through its own focus-driven gesture while every
+   * other force-open reason (find, target/deep-link, active reply draft,
+   * active run, highlighted reply) still fully expands the length exactly
+   * as `forceThreadExpanded` does. Defaults to `forceThreadExpanded` so
+   * callers that don't pass it keep identical behavior.
+   */
+  forceThreadLengthExpanded?: boolean;
+  /**
    * True while in-page find owns this thread's forced-open reveal
    * specifically (never for a target/draft/run pin — those aren't "would
    * hide a match" per 01-DESIGN). Disables the manual Collapse chevron with a
@@ -1003,6 +1023,7 @@ function CommentCardImpl({
   threadLengthExpanded = false,
   onThreadLengthExpandChange,
   forceThreadExpanded = false,
+  forceThreadLengthExpanded = forceThreadExpanded,
   findManualCollapseDisabled = false,
   findManualCollapseDisabledReason,
 }: CommentCardProps) {
@@ -1083,10 +1104,12 @@ function CommentCardImpl({
   // Effective order (01-DESIGN "Effective order"): reply-resolution folding
   // (priority 4, `replyFolded` above) fully owns display when active — the
   // projection below only applies to the normal, non-reply-folded branch
-  // (priority 6, unresolved length preference). `forceThreadExpanded` is the
-  // caller's find/target/active-interaction pin (priority 1); it opens the
-  // full list regardless of the durable length choice, without writing it.
-  const lengthExpanded = forceThreadExpanded || threadLengthExpanded;
+  // (priority 6, unresolved length preference). `forceThreadLengthExpanded`
+  // is the caller's find/target/active-interaction pin (priority 1), MINUS a
+  // bare focus/selection-only reason (CHE-554, see its doc comment on
+  // `CommentCardProps`) — it opens the full list regardless of the durable
+  // length choice, without writing it.
+  const lengthExpanded = forceThreadLengthExpanded || threadLengthExpanded;
   // Runs anchored directly to the ROOT keep the pre-existing AgentRunComment
   // rendering identity (below) so a run's DOM node survives the "queued, no
   // reply yet" -> "reply landed" transition without remounting — including
@@ -1515,7 +1538,12 @@ function CommentCardImpl({
               )}
               {/* Show more — the compact window hides the oldest replies behind
                   a count; length-expand only touches this thread's root, never
-                  description or another thread's preference. */}
+                  description or another thread's preference.
+                  CHE-554: gated on `lengthExpanded` (which reads
+                  `forceThreadLengthExpanded`, not `forceThreadExpanded`) so
+                  that pressing this exact button doesn't unmount it out from
+                  under its own gesture — see `forceThreadLengthExpanded`'s
+                  doc comment on `CommentCardProps`. */}
               {!lengthExpanded && threadProjection.hiddenCount > 0 && (
                 <button
                   type="button"

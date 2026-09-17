@@ -366,12 +366,16 @@ func (s *AutopilotService) ensureWebhookCreateIssueTask(ctx context.Context, aut
 		if err != nil {
 			return fmt.Errorf("dispatch for webhook delivery: resolve squad leader: %w", err)
 		}
-		if _, err := s.TaskSvc.EnqueueTaskForSquadLeader(ctx, issue, leader.ID, autopilot.AssigneeID, pgtype.UUID{}, OriginDerived); err != nil {
+		if _, err := s.TaskSvc.EnqueueTaskForSquadLeader(ctx, issue, leader.ID, autopilot.AssigneeID, pgtype.UUID{}, OriginDerived); err != nil && !errors.Is(err, ErrDuplicatePendingTask) {
 			return fmt.Errorf("dispatch for webhook delivery: repair squad task: %w", err)
 		}
 		return nil
 	}
-	if _, err := s.TaskSvc.EnqueueTaskForIssue(ctx, issue); err != nil {
+	// ErrDuplicatePendingTask means a concurrent repair attempt (or the
+	// original dispatch) already won the enqueue race for this issue/agent —
+	// the same benign coalesce outcome C1-C4 classify, not a repair failure
+	// (CHE-561).
+	if _, err := s.TaskSvc.EnqueueTaskForIssue(ctx, issue); err != nil && !errors.Is(err, ErrDuplicatePendingTask) {
 		return fmt.Errorf("dispatch for webhook delivery: repair issue task: %w", err)
 	}
 	return nil
@@ -846,19 +850,24 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 			return fmt.Errorf("not allowed to invoke private squad leader")
 		}
 		if actorUserID.Valid {
-			if _, err := s.TaskSvc.EnqueueTaskForSquadLeaderByActor(ctx, issue, leader.ID, ap.AssigneeID, actorUserID); err != nil {
+			if _, err := s.TaskSvc.EnqueueTaskForSquadLeaderByActor(ctx, issue, leader.ID, ap.AssigneeID, actorUserID); err != nil && !errors.Is(err, ErrDuplicatePendingTask) {
 				return fmt.Errorf("enqueue squad leader task: %w", err)
 			}
-		} else if _, err := s.TaskSvc.EnqueueTaskForSquadLeader(ctx, issue, leader.ID, ap.AssigneeID, pgtype.UUID{}, OriginDerived); err != nil {
+		} else if _, err := s.TaskSvc.EnqueueTaskForSquadLeader(ctx, issue, leader.ID, ap.AssigneeID, pgtype.UUID{}, OriginDerived); err != nil && !errors.Is(err, ErrDuplicatePendingTask) {
 			return fmt.Errorf("enqueue squad leader task: %w", err)
 		}
 	} else if actorUserID.Valid {
-		if _, err := s.TaskSvc.EnqueueTaskForIssueByActor(ctx, issue, actorUserID); err != nil {
+		if _, err := s.TaskSvc.EnqueueTaskForIssueByActor(ctx, issue, actorUserID); err != nil && !errors.Is(err, ErrDuplicatePendingTask) {
 			return fmt.Errorf("enqueue task for issue: %w", err)
 		}
-	} else if _, err := s.TaskSvc.EnqueueTaskForIssue(ctx, issue); err != nil {
+	} else if _, err := s.TaskSvc.EnqueueTaskForIssue(ctx, issue); err != nil && !errors.Is(err, ErrDuplicatePendingTask) {
 		return fmt.Errorf("enqueue task for issue: %w", err)
 	}
+	// ErrDuplicatePendingTask here means a sibling task already covers this
+	// issue/agent (the redelivery/recovery race, CHE-561): the issue and run
+	// are already committed above, so this is the same benign coalesce
+	// outcome C1-C4 classify at their own admission boundaries, not a dispatch
+	// failure — falling through leaves the run to be recorded as succeeded.
 
 	slog.Info("autopilot dispatched (create_issue)",
 		"autopilot_id", util.UUIDToString(ap.ID),

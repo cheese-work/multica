@@ -2,12 +2,14 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -95,6 +97,16 @@ func (h *Handler) notifyParentOfChildDone(ctx context.Context, prev, issue db.Is
 	}
 	prevTerminal := isTerminalChildStatus(prevStatus)
 	nowTerminal := isTerminalChildStatus(nowStatus)
+	if prevTerminal && !nowTerminal {
+		// Reopen: a child left its terminal status. This invalidates any wake
+		// already recorded for the stage it belongs to (stage 0 for an
+		// unstaged sibling set, its own issue.Stage otherwise) — see
+		// bumpStageGenerationOnReopen (CHE-488) — so the legitimate
+		// re-closure after a real correction wakes once more instead of
+		// being silently absorbed as a duplicate of the earlier (now-stale)
+		// completion.
+		h.bumpStageGenerationOnReopen(ctx, issue)
+	}
 	if prevTerminal || !nowTerminal {
 		return
 	}
@@ -163,7 +175,7 @@ func (h *Handler) notifyParentOfChildDone(ctx context.Context, prev, issue db.Is
 	if staged {
 		closedStage = issue.Stage.Int32
 	}
-	h.postChildDoneComment(ctx, parent, issue, children, staged, closedStage, false, isTerminal)
+	h.postChildDoneComment(ctx, parent, issue, children, staged, closedStage, false, isTerminal, effective)
 }
 
 // notifyParentsOfBatchChildDone emits child-done parent notifications for a
@@ -252,7 +264,7 @@ func (h *Handler) notifyParentsOfBatchChildDone(ctx context.Context, completed [
 			if !stageBarrierClosed(children, g.children[0], isTerminal) {
 				continue
 			}
-			h.postChildDoneComment(ctx, parent, g.children[0], children, false, 0, batch, isTerminal)
+			h.postChildDoneComment(ctx, parent, g.children[0], children, false, 0, batch, isTerminal, effective)
 			continue
 		}
 
@@ -268,7 +280,7 @@ func (h *Handler) notifyParentsOfBatchChildDone(ctx context.Context, completed [
 		if !found {
 			continue
 		}
-		h.postChildDoneComment(ctx, parent, rep, children, true, rep.Stage.Int32, batch, isTerminal)
+		h.postChildDoneComment(ctx, parent, rep, children, true, rep.Stage.Int32, batch, isTerminal, effective)
 	}
 }
 
@@ -315,6 +327,203 @@ func highestClosedBatchStage(children, completed []db.Issue, isTerminal func(db.
 	return rep, found
 }
 
+// stageGenerationKey returns the stage value stage_generation and
+// stage_completion_wake key on for issue's stage grouping: the issue's own
+// stage when staged, or 0 for an unstaged sibling set treated as one implicit
+// stage. Mirrors the closedStage convention used by postChildDoneComment.
+func stageGenerationKey(issue db.Issue) int32 {
+	if issue.Stage.Valid {
+		return issue.Stage.Int32
+	}
+	return 0
+}
+
+// withTx runs fn inside a fresh transaction, committing on success and
+// rolling back on any error (including a panic, via the deferred Rollback —
+// pgx no-ops Rollback after Commit). Mirrors the Begin/defer Rollback/WithTx/
+// Commit shape used throughout this package (e.g. agent_env.go), factored out
+// here because bumpStageGenerationOnReopen and claimStageCompletionWake both
+// need it for their LockStageCompletion-guarded read-then-write window.
+func (h *Handler) withTx(ctx context.Context, fn func(qtx *db.Queries) error) error {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if err := fn(h.Queries.WithTx(tx)); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit tx: %w", err)
+	}
+	return nil
+}
+
+// bumpStageGenerationOnReopen records that issue (a child under
+// issue.ParentIssueID) left a terminal status, invalidating any stage
+// completion wake previously recorded for its stage. Runs inside a
+// transaction holding LockStageCompletion for (parent, stage) — the same key
+// claimStageCompletionWake locks — so a concurrent completion's read-then-
+// claim window (see that function) cannot straddle this bump. Best-effort:
+// a failure here is logged and swallowed, matching every other guard in this
+// file — it must not block the status update that is already committed by
+// the time this runs. A failure here is fail-open (a rare missed
+// invalidation could theoretically let one duplicate wake through under
+// extreme concurrency) not fail-closed, because the alternative — refusing
+// to reopen an issue because an internal bookkeeping table is unreachable —
+// is a worse product outcome.
+func (h *Handler) bumpStageGenerationOnReopen(ctx context.Context, issue db.Issue) {
+	if !issue.ParentIssueID.Valid {
+		return
+	}
+	stage := stageGenerationKey(issue)
+	err := h.withTx(ctx, func(qtx *db.Queries) error {
+		if err := qtx.LockStageCompletion(ctx, db.LockStageCompletionParams{
+			ParentIssueID: issue.ParentIssueID,
+			Stage:         stage,
+		}); err != nil {
+			return fmt.Errorf("lock stage completion: %w", err)
+		}
+		if _, err := qtx.BumpStageGeneration(ctx, db.BumpStageGenerationParams{
+			WorkspaceID:   issue.WorkspaceID,
+			ParentIssueID: issue.ParentIssueID,
+			Stage:         stage,
+		}); err != nil {
+			return fmt.Errorf("bump stage generation: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		slog.Warn("child done: bump stage generation on reopen failed",
+			"error", err,
+			"child_id", uuidToString(issue.ID),
+			"parent_id", uuidToString(issue.ParentIssueID),
+			"stage", stage)
+	}
+}
+
+// errStageWakeAlreadyClaimed is returned from inside claimStageCompletionWake's
+// withTx closure when RecordStageCompletionWake hits
+// idx_one_wake_per_parent_stage_generation's unique violation — see the
+// comment at that call site for why this must propagate as an error (forcing
+// withTx's Rollback) rather than being swallowed with a nil return.
+var errStageWakeAlreadyClaimed = errors.New("stage completion wake already claimed for this generation")
+
+// duplicateStageWakeErr reports whether err is
+// idx_one_wake_per_parent_stage_generation's unique-violation (CHE-488): a
+// concurrent completion of the same (parent, stage, generation) already
+// claimed the wake. Mirrors duplicateRerunLineageErr (CHE-485) exactly — same
+// shape, different index — see server/internal/service/task.go.
+func duplicateStageWakeErr(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+		return false
+	}
+	return pgErr.ConstraintName == "idx_one_wake_per_parent_stage_generation"
+}
+
+// claimStageCompletionWake atomically claims the durable completion wake for
+// (parent, stage) at its CURRENT generation, re-verifying the stage barrier
+// is STILL closed first — both inside one transaction holding
+// LockStageCompletion for (parent.ID, stage) (CHE-488 / CHE-482: "a stale
+// event must not advance a now-incomplete stage").
+//
+// Without the lock, a concurrent reopen's BumpStageGeneration could commit
+// between "the caller observed the barrier closed at generation N" (in
+// notifyParentOfChildDone / notifyParentsOfBatchChildDone, before this is
+// called) and "claim the wake for generation N" here — the insert would
+// still succeed (nothing had claimed generation N yet) but the stage is no
+// longer actually complete, and worse, it would consume generation N's wake
+// slot for a stale observation while the real completion at generation N+1
+// (after the reopen is fixed) still needs its own wake.
+// LockStageCompletion (held by both this function and
+// bumpStageGenerationOnReopen for the identical key) orders the two
+// operations' commits, so whichever acquires the lock first is the one the
+// other observes — same pattern as LockCommentThread (pkg/db/queries/comment.sql).
+// The barrier is re-read with a fresh ListChildIssues under the lock rather
+// than trusting the caller's now-possibly-stale `children`/`isTerminal`, so a
+// reopen that landed and committed just before this function acquired the
+// lock is still caught here, not just a reopen that loses the lock race.
+//
+// The unique index on stage_completion_wake remains the enforcement backstop
+// (a concurrent claim for the same generation still loses at the database,
+// 23505), so this is defense in depth, not the sole guard.
+func (h *Handler) claimStageCompletionWake(ctx context.Context, parent, completed db.Issue, stage int32, effective func(db.Issue) (string, error)) (wakeID pgtype.UUID, claimed bool, err error) {
+	err = h.withTx(ctx, func(qtx *db.Queries) error {
+		if err := qtx.LockStageCompletion(ctx, db.LockStageCompletionParams{
+			ParentIssueID: parent.ID,
+			Stage:         stage,
+		}); err != nil {
+			return fmt.Errorf("lock stage completion: %w", err)
+		}
+
+		children, err := qtx.ListChildIssues(ctx, parent.ID)
+		if err != nil {
+			return fmt.Errorf("re-list siblings under lock: %w", err)
+		}
+		// Reuse the caller's resolver (same one notifyParentOfChildDone /
+		// notifyParentsOfBatchChildDone already built) rather than calling
+		// h.childStatusResolver(ctx) again here: a second Resolver would issue
+		// its own catalog read per workspace even for a status already
+		// resolved a moment ago, doubling reads for every completion
+		// (TestChildDoneStatusResolver pins this at exactly one read per
+		// workspace per notification pass, MUL-6243).
+		isTerminal, err := resolveTerminalChildren(children, effective)
+		if err != nil {
+			return fmt.Errorf("re-resolve sibling statuses under lock: %w", err)
+		}
+		if !stageBarrierClosed(children, completed, isTerminal) {
+			// A concurrent reopen committed between the caller's observation and
+			// this lock acquisition: the stage is no longer complete. Not an
+			// error — exactly the stale-event case this lock exists to catch.
+			return nil
+		}
+
+		generation, err := qtx.CurrentStageGeneration(ctx, db.CurrentStageGenerationParams{
+			ParentIssueID: parent.ID,
+			Stage:         stage,
+		})
+		if err != nil {
+			return fmt.Errorf("read current stage generation: %w", err)
+		}
+		claimID := dbid.NewV7()
+		if _, err := qtx.RecordStageCompletionWake(ctx, db.RecordStageCompletionWakeParams{
+			ID:            claimID,
+			WorkspaceID:   parent.WorkspaceID,
+			ParentIssueID: parent.ID,
+			Stage:         stage,
+			Generation:    generation,
+		}); err != nil {
+			if duplicateStageWakeErr(err) {
+				// A concurrent claim for the same (parent, stage, generation)
+				// already committed and won. This statement error has already
+				// put the surrounding Postgres transaction into an aborted
+				// state, so it must propagate out of fn as an error (rolling
+				// back via withTx's deferred Rollback) rather than being
+				// swallowed here — swallowing it and returning nil would let
+				// withTx call Commit() on an already-aborted transaction,
+				// which fails with "commit unexpectedly resulted in
+				// rollback" and gets misreported as a real failure by the
+				// caller below. errStageWakeAlreadyClaimed lets the caller
+				// distinguish this expected, race-losing outcome from an
+				// actual error once withTx returns.
+				return errStageWakeAlreadyClaimed
+			}
+			return fmt.Errorf("record stage completion wake: %w", err)
+		}
+		wakeID, claimed = claimID, true
+		return nil
+	})
+	if errors.Is(err, errStageWakeAlreadyClaimed) {
+		return pgtype.UUID{}, false, nil
+	}
+	if err != nil {
+		return pgtype.UUID{}, false, err
+	}
+	return wakeID, claimed, nil
+}
+
 // postChildDoneComment builds and posts the parent's child-done system comment
 // for a closed stage barrier, then dispatches the parent-assignee trigger. It
 // assumes every guard in notifyParentOfChildDone / notifyParentsOfBatchChildDone
@@ -326,7 +535,30 @@ func highestClosedBatchStage(children, completed []db.Issue, isTerminal func(db.
 // an unstaged set). `batch` selects batch-aware wording: a single update keeps
 // its historical byte-identical copy, while a batch that finished several
 // children at once must not claim "the last sub-issue just finished".
-func (h *Handler) postChildDoneComment(ctx context.Context, parent, completed db.Issue, children []db.Issue, staged bool, closedStage int32, batch bool, isTerminal func(db.Issue) bool) {
+//
+// Claims the durable stage-completion wake for (parent, stage, current
+// generation) FIRST (CHE-488). A claim miss (this generation already woke —
+// e.g. the duplicate stage-2 wake reproduced in production, two system
+// comments 15h44m apart for the same parent/stage/child) is a silent no-op:
+// no comment, no dispatch, no log spam for the expected-common case of a
+// second caller losing the race. Unlike HasPendingTaskForIssueAndAgent (which
+// only dedupes while an earlier task is still pending), this check is durable
+// across restarts and survives the earlier task having long since finished.
+func (h *Handler) postChildDoneComment(ctx context.Context, parent, completed db.Issue, children []db.Issue, staged bool, closedStage int32, batch bool, isTerminal func(db.Issue) bool, effective func(db.Issue) (string, error)) {
+	wakeStage := closedStage // 0 for an unstaged set, matching stage_generation's sentinel (migration 496).
+	wakeID, claimed, err := h.claimStageCompletionWake(ctx, parent, completed, wakeStage, effective)
+	if err != nil {
+		slog.Warn("child done: claim stage completion wake failed",
+			"error", err,
+			"child_id", uuidToString(completed.ID),
+			"parent_id", uuidToString(parent.ID),
+			"stage", wakeStage)
+		return
+	}
+	if !claimed {
+		return
+	}
+
 	prefix := h.getIssuePrefix(ctx, completed.WorkspaceID)
 	identifier := prefix + "-" + strconv.Itoa(int(completed.Number))
 	childID := uuidToString(completed.ID)
@@ -388,6 +620,17 @@ func (h *Handler) postChildDoneComment(ctx context.Context, parent, completed db
 		return
 	}
 	comment := created.Comment()
+
+	// Best-effort observability backfill onto the already-claimed wake row
+	// (see claimStageCompletionWake) — never gates the notification, which has
+	// already been decided by the claim above.
+	if err := h.Queries.SetStageCompletionWakeComment(ctx, db.SetStageCompletionWakeCommentParams{
+		ID:            wakeID,
+		WakeCommentID: comment.ID,
+	}); err != nil {
+		slog.Warn("child done: set stage completion wake comment failed",
+			"error", err, "wake_id", uuidToString(wakeID), "comment_id", uuidToString(comment.ID))
+	}
 
 	h.publish(protocol.EventCommentCreated, uuidToString(parent.WorkspaceID), "system", "", map[string]any{
 		"comment":             commentToResponse(comment, nil, nil),
@@ -737,6 +980,11 @@ func (h *Handler) dispatchParentAssigneeTrigger(ctx context.Context, parent db.I
 // stranded those parents (MUL-2808). Runaway re-triggering is prevented by
 // the HasPendingTaskForIssueAndAgent dedup below, exactly as the @mention
 // self-trigger path relies on it (see computeMentionedAgentCommentTriggers).
+// A race that slips past that dedup check still lands on the same
+// ErrDuplicatePendingTask sentinel as every other admission boundary
+// (C1 issue_trigger.go, C2 comment.go, C3 task_lifecycle.go) and is
+// classified the same way via logCommentEnqueueFailure — debug-level
+// coalesce, not a warning (CHE-526).
 func (h *Handler) triggerChildDoneAgent(ctx context.Context, parent db.Issue, triggerCommentID pgtype.UUID) {
 	agent, err := h.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{
 		ID:          parent.AssigneeID,
@@ -757,8 +1005,7 @@ func (h *Handler) triggerChildDoneAgent(ctx context.Context, parent db.Issue, tr
 	}
 
 	if _, err := h.TaskService.EnqueueTaskForMention(ctx, parent, parent.AssigneeID, triggerCommentID, service.OriginDerived); err != nil {
-		slog.Warn("child done: enqueue parent agent task failed",
-			"error", err,
+		logCommentEnqueueFailure("child done: enqueue parent agent task failed", err,
 			"parent_id", uuidToString(parent.ID),
 			"agent_id", uuidToString(parent.AssigneeID))
 	}
@@ -788,7 +1035,10 @@ func (h *Handler) triggerChildDoneAgent(ctx context.Context, parent db.Issue, tr
 //     it must be added to BOTH paths together.
 //
 // Re-triggering is bounded by the HasPendingTaskForIssueAndAgent idempotency
-// check below, exactly as the agent path relies on it.
+// check below, exactly as the agent path relies on it. The same
+// ErrDuplicatePendingTask classification as the agent path applies here too
+// (CHE-526) — a race that slips past the dedup check coalesces at debug
+// level via logCommentEnqueueFailure instead of surfacing a warning.
 func (h *Handler) triggerChildDoneSquad(ctx context.Context, parent db.Issue, triggerCommentID pgtype.UUID) {
 	squad, err := h.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{
 		ID:          parent.AssigneeID,
@@ -814,8 +1064,7 @@ func (h *Handler) triggerChildDoneSquad(ctx context.Context, parent db.Issue, tr
 	}
 
 	if _, err := h.TaskService.EnqueueTaskForSquadLeader(ctx, parent, squad.LeaderID, squad.ID, triggerCommentID, service.OriginDerived); err != nil {
-		slog.Warn("child done: enqueue parent squad leader task failed",
-			"error", err,
+		logCommentEnqueueFailure("child done: enqueue parent squad leader task failed", err,
 			"parent_id", uuidToString(parent.ID),
 			"squad_id", uuidToString(squad.ID),
 			"leader_id", uuidToString(squad.LeaderID))

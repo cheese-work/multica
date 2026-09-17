@@ -4068,10 +4068,11 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 }
 
 // protocolLintCommentLimit bounds how many comments runProtocolLint reads back
-// for one completing run. The lint only ever needs the comments created
-// during this run's own lifetime (task.StartedAt onward) on its own issue, so
-// this is a generous safety cap against a pathological thread, not a real
-// limit in practice.
+// for one completing run, for both the since-StartedAt window (PostedComments
+// / reply-parent) and the full-history read (the waiver-grant scan, CHE-551).
+// Issue p99 is ~30 comments (see ListCommentsForIssue's query doc), so this is
+// a generous safety cap against a pathological thread, not a real limit in
+// practice.
 const protocolLintCommentLimit = 500
 
 // runProtocolLint is CHE-529's deterministic, mechanical replacement for the
@@ -4105,8 +4106,16 @@ const protocolLintCommentLimit = 500
 //     checked from the same pr_url this handler already persists into
 //     task.Result.
 //   - Unsupported human-waiver claims (assertion 5) are checked by scanning
-//     this run's own comments against every OTHER comment on the issue in the
-//     same window for an actual member grant.
+//     this run's own comments against every OTHER comment on the issue across
+//     the issue's FULL history (not just this run's since-StartedAt window):
+//     the normal way an agent would know to cite a waiver is a grant a human
+//     posted before the run ever started, so narrowing the grant-lookup to
+//     the run's own window would make checkUnsupportedWaivers blind to the
+//     one shape of grant it exists to recognize (CHE-551). Reply-parent
+//     linkage and evidence-URL well-formedness stay scoped to this run's own
+//     PostedComments, which the since-window query already covers
+//     completely — only the OtherComments feeding the waiver-grant scan need
+//     the wider read.
 //   - Comment-authoring-mechanism (assertion 1: --content-file vs inline
 //     --content) and status-change readback (assertion 3) are NOT checked
 //     here: the CLI collapses --content/--content-stdin/--content-file into a
@@ -4142,7 +4151,7 @@ func (h *Handler) runProtocolLint(ctx context.Context, task db.AgentTaskQueue, w
 		since = task.CreatedAt
 	}
 
-	comments, err := h.Queries.ListCommentsSinceForIssue(ctx, db.ListCommentsSinceForIssueParams{
+	windowComments, err := h.Queries.ListCommentsSinceForIssue(ctx, db.ListCommentsSinceForIssueParams{
 		IssueID:     task.IssueID,
 		WorkspaceID: parseUUID(workspaceID),
 		CreatedAt:   since,
@@ -4154,6 +4163,37 @@ func (h *Handler) runProtocolLint(ctx context.Context, task db.AgentTaskQueue, w
 		return
 	}
 
+	// CHE-551: the waiver-grant scan (assertion 5) needs the issue's full
+	// comment history, not just this run's since-StartedAt window — see the
+	// doc comment above for why a since-window read makes
+	// checkUnsupportedWaivers blind to the normal case it exists to check.
+	// ListCommentsForIssue has no time filter; it returns the newest
+	// protocolLintCommentLimit comments on the issue, which is a superset of
+	// windowComments and is capped the same way for the same reason (see its
+	// query doc: issue p99 is ~30 comments).
+	allComments, err := h.Queries.ListCommentsForIssue(ctx, db.ListCommentsForIssueParams{
+		IssueID:     task.IssueID,
+		WorkspaceID: parseUUID(workspaceID),
+		Limit:       protocolLintCommentLimit,
+	})
+	if err != nil {
+		slog.Warn("protocol lint: failed to load full comment history for issue; skipping",
+			"task_id", uuidToString(task.ID), "issue_id", uuidToString(task.IssueID), "error", err)
+		return
+	}
+
+	in := buildProtocolLintInput(task, claimedEvidenceURL, windowComments, allComments)
+	h.recordProtocolLintRun(ctx, task, protocollint.Check(in))
+}
+
+// buildProtocolLintInput assembles protocollint.Input from two comment reads:
+// windowComments (this run's own since-StartedAt window, complete for
+// PostedComments/reply-parent purposes) and allComments (the issue's full
+// history, used only to find a member's waiver grant — see runProtocolLint's
+// doc for why assertion 5 needs the wider read). Pulled out of runProtocolLint
+// as a pure function so the CHE-551 regression — a waiver grant posted before
+// task.StartedAt must still be found — is directly unit-testable without a DB.
+func buildProtocolLintInput(task db.AgentTaskQueue, claimedEvidenceURL string, windowComments, allComments []db.Comment) protocollint.Input {
 	in := protocollint.Input{
 		RunID: uuidToString(task.ID),
 		// uuidToString renders an invalid/NULL UUID as "", which is exactly
@@ -4163,13 +4203,17 @@ func (h *Handler) runProtocolLint(ctx context.Context, task db.AgentTaskQueue, w
 		CoalescedCommentIDs: uuidsToStrings(task.CoalescedCommentIds),
 		ClaimedEvidenceURL:  claimedEvidenceURL,
 	}
-	for _, c := range comments {
+	for _, c := range windowComments {
 		if c.SourceTaskID.Valid && uuidToString(c.SourceTaskID) == uuidToString(task.ID) {
 			in.PostedComments = append(in.PostedComments, protocollint.PostedComment{
 				ID:       uuidToString(c.ID),
 				ParentID: uuidToString(c.ParentID),
 				Content:  c.Content,
 			})
+		}
+	}
+	for _, c := range allComments {
+		if c.SourceTaskID.Valid && uuidToString(c.SourceTaskID) == uuidToString(task.ID) {
 			continue
 		}
 		in.OtherComments = append(in.OtherComments, protocollint.OtherComment{
@@ -4177,8 +4221,7 @@ func (h *Handler) runProtocolLint(ctx context.Context, task db.AgentTaskQueue, w
 			Content:    c.Content,
 		})
 	}
-
-	h.recordProtocolLintRun(ctx, task, protocollint.Check(in))
+	return in
 }
 
 // recordProtocolLintRun is the "fail loudly, then persist the denominator"

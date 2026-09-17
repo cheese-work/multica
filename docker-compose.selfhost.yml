@@ -101,6 +101,15 @@ services:
       CLOUDFRONT_PRIVATE_KEY: ${CLOUDFRONT_PRIVATE_KEY:-}
       COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
       APP_ENV: ${APP_ENV:-production}
+      # docker/entrypoint.sh's migration guard (CHE-530 D2). Compose does not
+      # forward ambient env vars into a container unless the service declares
+      # them here, so this pass-through is required for deploy.sh's one-shot
+      # pre-migration step to actually suppress entrypoint.sh's own "migrate
+      # up" on container start. Empty/unset (the default for a plain
+      # `docker compose up` a self-hoster runs by hand) preserves today's
+      # behavior byte-for-byte: entrypoint.sh runs its own migrations. Only
+      # deploy.sh sets this to exactly "1".
+      MULTICA_SKIP_MIGRATIONS: ${MULTICA_SKIP_MIGRATIONS:-}
       MULTICA_DEV_VERIFICATION_CODE: ${MULTICA_DEV_VERIFICATION_CODE:-}
       MULTICA_APP_URL: ${MULTICA_APP_URL:-http://localhost:3000}
       MULTICA_DATABASE_STARTUP_TIMEOUT: ${MULTICA_DATABASE_STARTUP_TIMEOUT:-3m}

@@ -3,12 +3,16 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -315,6 +319,9 @@ var concurrentIndexCleanups = map[string]string{
 	"492_github_merge_announcement_identity_uidx":               "uq_github_merge_announcement_identity",
 	"493_github_merge_announcement_pending_idx":                 "idx_github_merge_announcement_pending_claim",
 	"495_agent_task_rerun_lineage_unique":                       "idx_one_live_rerun_per_source_task_actor",
+	"497_stage_completion_wake_unique":                          "idx_one_wake_per_parent_stage_generation",
+	"498_stage_generation_workspace_index":                      "idx_stage_generation_workspace_id",
+	"499_stage_completion_wake_workspace_index":                 "idx_stage_completion_wake_workspace_id",
 	"501_protocol_lint_run_checked_at_idx":                      "idx_protocol_lint_run_checked_at",
 }
 
@@ -748,17 +755,97 @@ type runOptions struct {
 	Conditions map[string]migrationCondition
 }
 
+// usage is printed on any argument error. Kept as a single literal so the
+// "up|down" line and the "--to" line always describe the same two commands.
+const usage = "Usage: go run ./cmd/migrate <up|down> [--to <version>]"
+
+// parseToFlag reads an optional "--to <version>" flag from the arguments
+// that follow the up/down positional argument. It returns "" when the flag
+// is absent, which callers treat as "no bound" — i.e. the existing
+// unbounded behavior for both up and down. version is the migration's
+// filename stem exactly as migrations.ExtractVersion returns it (e.g.
+// "460_agent_task_queue_autopilot_run_created_at_index"), not a bare
+// integer: numeric prefixes are not globally unique (e.g. two files both
+// start "020_"), so only the full stem identifies one migration.
+func parseToFlag(direction string, args []string) (string, error) {
+	fs := flag.NewFlagSet("migrate "+direction, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	toVersion := fs.String("to", "", "roll back down to (and including) this version, stopping before any earlier migration")
+	if err := fs.Parse(args); err != nil {
+		return "", err
+	}
+	if fs.NArg() > 0 {
+		return "", fmt.Errorf("unexpected argument(s): %v", fs.Args())
+	}
+	if *toVersion == "" {
+		return "", nil
+	}
+	if direction != "down" {
+		return "", fmt.Errorf("--to is only valid with \"down\"")
+	}
+	return *toVersion, nil
+}
+
+// boundDownFiles trims an already-direction-sorted "down" file list (as
+// produced by migrations.Files("down"), i.e. reverse-lexicographic — the
+// same order runMigrations walks) so it stops as soon as it reaches
+// toVersion, without rolling that migration itself back. The bound is
+// inclusive of every migration strictly newer than toVersion and excludes
+// toVersion and everything older: rolling "back to" a version means the
+// database ends up AT that version, still applied.
+//
+// This never removes files from the middle or reorders them — it only cuts
+// the tail once the target version is found — so every hook/condition
+// lookup keyed by version in hooksForDirection/conditionsForDirection still
+// sees the exact same version strings it always would for the migrations
+// that do run.
+//
+// An unknown toVersion (no down migration file matches it) is a hard error:
+// silently running the full unbounded rollback when the caller asked for a
+// specific stop point would be exactly the overshoot this flag exists to
+// prevent.
+func boundDownFiles(downFiles []string, toVersion string) ([]string, error) {
+	for i, file := range downFiles {
+		if migrations.ExtractVersion(file) == toVersion {
+			return downFiles[:i], nil
+		}
+	}
+	return nil, fmt.Errorf("version %q not found among known down migrations (check the exact filename stem, e.g. %q)", toVersion, migrations.ExtractVersion(firstOrEmpty(downFiles)))
+}
+
+// firstOrEmpty returns files[0] or "" for an empty slice, so the error
+// message in boundDownFiles has a concrete example to show without a
+// separate nil-check at every call site.
+func firstOrEmpty(files []string) string {
+	if len(files) == 0 {
+		return ""
+	}
+	return files[0]
+}
+
 func main() {
 	logger.Init()
 
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: go run ./cmd/migrate <up|down>")
+		fmt.Println(usage)
 		os.Exit(1)
 	}
 
 	direction := os.Args[1]
 	if direction != "up" && direction != "down" {
-		fmt.Println("Usage: go run ./cmd/migrate <up|down>")
+		fmt.Println(usage)
+		os.Exit(1)
+	}
+
+	// --to is a bounded-rollback mode: only valid for "down". Bare "up" and
+	// bare "down" (no flag) keep their existing, unbounded behavior exactly
+	// as before — "down" with no --to still walks every applied migration
+	// back to 001, same as it always has. This is additive: it does not
+	// repurpose os.Args[1] or change what happens when --to is absent.
+	toVersion, err := parseToFlag(direction, os.Args[2:])
+	if err != nil {
+		fmt.Println(usage)
+		fmt.Println(err)
 		os.Exit(1)
 	}
 
@@ -768,13 +855,7 @@ func main() {
 	}
 
 	startupSettings := dbstartup.SettingsFromEnv()
-	poolConfig, err := dbstartup.ParsePoolConfig(dbURL, startupSettings.ConnectTimeout)
-	if err != nil {
-		slog.Error("unable to connect to database", "error", err)
-		os.Exit(1)
-	}
-	poolConfig.ConnConfig.OnNotice = logMigrationNotice
-	pool, err := pgxpool.NewWithConfig(context.Background(), poolConfig)
+	pool, err := newMigratorPool(context.Background(), dbURL, startupSettings.ConnectTimeout)
 	if err != nil {
 		slog.Error("unable to connect to database", "error", err)
 		os.Exit(1)
@@ -785,6 +866,14 @@ func main() {
 	if err != nil {
 		slog.Error("failed to find migration files", "error", err)
 		os.Exit(1)
+	}
+
+	if toVersion != "" {
+		files, err = boundDownFiles(files, toVersion)
+		if err != nil {
+			slog.Error("invalid --to target", "error", err)
+			os.Exit(1)
+		}
 	}
 
 	options := runOptions{
@@ -862,6 +951,74 @@ func logMigrationNotice(_ *pgconn.PgConn, notice *pgconn.Notice) {
 	if report, ok := migrationReport(notice); ok {
 		slog.Info("migration report", "message", report)
 	}
+}
+
+// migrateEnforcedStatementTimeoutEnv, migrateEnforcedLockTimeoutEnv, and
+// migrateAttemptLockKeyEnv are D2 CD-supervision-only inputs (CHE-372). They
+// are unset by default, so newMigratorPool behaves exactly like
+// dbstartup.NewPool for every existing caller. When both timeout vars are
+// set to positive millisecond values, every physical connection this
+// migrator's pool opens — the pinned advisory-lock connection and every
+// hook connection its pool opens afterward alike — has statement_timeout/
+// lock_timeout enforced and read back after connecting, regardless of any
+// conflicting "options=" the DATABASE_URL itself carries. See
+// dbstartup.NewPoolWithEnforcedTimeouts for why this must run inside the
+// pool's own connection lifecycle rather than as an external probe.
+//
+// migrateAttemptLockKeyEnv, when set to a nonzero int64, is a fresh,
+// cryptographically random secret the CD supervisor generates once per
+// attempt and passes ONLY through this environment variable — never logged,
+// never written to any file, never part of a connection string. It is
+// acquired in shared advisory-lock mode on every connection this pool
+// opens, marking each one as attempt-bound so the supervisor's fencing
+// checks can distinguish "a session this attempt actually opened" from "a
+// foreign session merely authenticated as the same database role."
+//
+// Every path below routes through dbstartup.ParsePoolConfig internally
+// (NewPool directly, NewPoolWithEnforcedTimeouts via its own call to it),
+// which is exactly where logMigrationNotice (added by the upstream v0.4.44
+// sync, CHE-548) attaches OnNotice — so migration-report log forwarding
+// applies identically whether or not D2's enforced timeouts/attempt-lock
+// are active.
+const (
+	migrateEnforcedStatementTimeoutEnv = "MULTICA_INTERNAL_D2_ENFORCED_STATEMENT_TIMEOUT_MS"
+	migrateEnforcedLockTimeoutEnv      = "MULTICA_INTERNAL_D2_ENFORCED_LOCK_TIMEOUT_MS"
+	migrateAttemptLockKeyEnv           = "MULTICA_INTERNAL_D2_ATTEMPT_LOCK_KEY"
+)
+
+func newMigratorPool(ctx context.Context, dbURL string, connectTimeout time.Duration) (*pgxpool.Pool, error) {
+	statementTimeoutRaw := os.Getenv(migrateEnforcedStatementTimeoutEnv)
+	lockTimeoutRaw := os.Getenv(migrateEnforcedLockTimeoutEnv)
+	attemptLockKeyRaw := os.Getenv(migrateAttemptLockKeyEnv)
+	if statementTimeoutRaw == "" && lockTimeoutRaw == "" && attemptLockKeyRaw == "" {
+		poolConfig, err := dbstartup.ParsePoolConfig(dbURL, connectTimeout)
+		if err != nil {
+			return nil, err
+		}
+		poolConfig.ConnConfig.OnNotice = logMigrationNotice
+		return pgxpool.NewWithConfig(ctx, poolConfig)
+	}
+	statementTimeoutMs, err := strconv.ParseInt(statementTimeoutRaw, 10, 64)
+	if err != nil || statementTimeoutMs <= 0 {
+		return nil, fmt.Errorf("%s must be a positive integer of milliseconds, got %q", migrateEnforcedStatementTimeoutEnv, statementTimeoutRaw)
+	}
+	lockTimeoutMs, err := strconv.ParseInt(lockTimeoutRaw, 10, 64)
+	if err != nil || lockTimeoutMs <= 0 {
+		return nil, fmt.Errorf("%s must be a positive integer of milliseconds, got %q", migrateEnforcedLockTimeoutEnv, lockTimeoutRaw)
+	}
+	var attemptLockKey int64
+	if attemptLockKeyRaw != "" {
+		attemptLockKey, err = strconv.ParseInt(attemptLockKeyRaw, 10, 64)
+		if err != nil || attemptLockKey == 0 {
+			return nil, fmt.Errorf("%s must be a nonzero int64, got %q", migrateAttemptLockKeyEnv, attemptLockKeyRaw)
+		}
+	}
+	return dbstartup.NewPoolWithEnforcedTimeouts(ctx, dbURL, connectTimeout, dbstartup.EnforcedTimeouts{
+		StatementTimeout: time.Duration(statementTimeoutMs) * time.Millisecond,
+		LockTimeout:      time.Duration(lockTimeoutMs) * time.Millisecond,
+		OnNotice:         logMigrationNotice,
+		AttemptLockKey:   attemptLockKey,
+	})
 }
 
 // runMigrations applies (direction="up") or rolls back (direction="down")

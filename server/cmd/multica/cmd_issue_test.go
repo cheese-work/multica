@@ -532,6 +532,89 @@ func TestRunIssueCreateSendsExistingAttachmentIDs(t *testing.T) {
 	}
 }
 
+// newIssueRerunTestCmd builds a throwaway cobra.Command carrying the flags
+// issueRerunCmd registers, so runIssueRerun can be exercised directly without
+// going through the full command tree (mirrors newIssueCreateTestCmd).
+func newIssueRerunTestCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "rerun"}
+	cmd.Flags().String("output", "json", "")
+	cmd.Flags().String("reason", "", "")
+	return cmd
+}
+
+// TestRunIssueRerunSendsReason is the CHE-525 CLI acceptance test: --reason
+// must reach the server as the "reason" field on the rerun POST body, so an
+// authorized force triggered from the CLI carries the audit trail
+// RerunIssueRequest.Reason exists to receive. Before this test the flag did
+// not exist on issueRerunCmd, so --reason was silently rejected by cobra and
+// the body only ever carried {}.
+func TestRunIssueRerunSendsReason(t *testing.T) {
+	var body map[string]any
+	issueID := "11111111-1111-1111-1111-111111111111"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/issues/"+issueID+"/rerun" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":       "task-1",
+			"agent_id": "agent-1",
+		})
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	// mat_ prefix clears the daemon-managed execution-context guard both in CI
+	// and when the suite runs inside an agent task (leftover daemon marker).
+	t.Setenv("MULTICA_TOKEN", "mat_test-token")
+
+	cmd := newIssueRerunTestCmd()
+	_ = cmd.Flags().Set("reason", "authorized force: prior run misclassified")
+	if err := runIssueRerun(cmd, []string{issueID}); err != nil {
+		t.Fatalf("runIssueRerun: %v", err)
+	}
+	if got := body["reason"]; got != "authorized force: prior run misclassified" {
+		t.Fatalf("reason = %#v, want %q in request body", got, "authorized force: prior run misclassified")
+	}
+}
+
+// TestRunIssueRerunOmitsReasonWhenUnset preserves the legacy zero-arg CLI
+// contract (task_lifecycle.go RerunIssueRequest doc: "an empty body keeps the
+// legacy ... behaviour used by the CLI") when --reason is not passed.
+func TestRunIssueRerunOmitsReasonWhenUnset(t *testing.T) {
+	var body map[string]any
+	issueID := "22222222-2222-2222-2222-222222222222"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":       "task-1",
+			"agent_id": "agent-1",
+		})
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "mat_test-token")
+
+	cmd := newIssueRerunTestCmd()
+	if err := runIssueRerun(cmd, []string{issueID}); err != nil {
+		t.Fatalf("runIssueRerun: %v", err)
+	}
+	if _, present := body["reason"]; present {
+		t.Fatalf("body = %#v, want no \"reason\" key when --reason is unset", body)
+	}
+}
+
 func TestRunIssueCreateShowsDuplicateMessage(t *testing.T) {
 	want := "Active duplicate issue exists: YUA-36 SH-PM-SYNTH-01 Synthesize recommendation-to-shortlist planning outputs (status: in_progress). Set allow_duplicate=true or use --allow-duplicate to create another."
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -5133,5 +5216,408 @@ func TestRunIssueCommentDeleteKeepsReplies(t *testing.T) {
 				t.Fatalf("requests = %v, want only %v", paths, want)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CHE-487 D2 — `multica issue get` surfaces status/ETA with observation time
+// ---------------------------------------------------------------------------
+
+// TestRunIssueGetETAIsUnknownAcrossStatusesAndDueDates covers the five-type ×
+// state matrix required for D2: whatever status the issue is in, and whether
+// or not due_date is set, ETA always renders "unknown" — there is no
+// structured ETA field on an issue anywhere in the codebase, and due_date
+// must never be surfaced as if it were one.
+func TestRunIssueGetETAIsUnknownAcrossStatusesAndDueDates(t *testing.T) {
+	issueID := "1881a167-4bb6-4602-944b-f40ce4192fe6"
+
+	for _, tc := range []struct {
+		name    string
+		status  string
+		dueDate string
+	}{
+		{"backlog without due date", "backlog", ""},
+		{"todo with due date", "todo", "2026-12-31T00:00:00Z"},
+		{"in_progress with due date", "in_progress", "2026-10-01T00:00:00Z"},
+		{"in_review without due date", "in_review", ""},
+		{"done with due date", "done", "2026-09-01T00:00:00Z"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/issues/" + issueID:
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"id":         issueID,
+						"identifier": "MUL-1",
+						"title":      "ETA matrix",
+						"status":     tc.status,
+						"priority":   "none",
+						"due_date":   tc.dueDate,
+					})
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+
+			t.Setenv("MULTICA_SERVER_URL", srv.URL)
+			t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+			t.Setenv("MULTICA_TOKEN", "mat_test-token")
+
+			// JSON output: assert the status_read projection, not a mutated
+			// top-level "eta" pretending to come from the server.
+			jsonCmd := &cobra.Command{Use: "get"}
+			jsonCmd.Flags().String("output", "json", "")
+			jsonCmd.Flags().Bool("resolve-properties", false, "")
+			out, err := captureStdout(t, func() error { return runIssueGet(jsonCmd, []string{issueID}) })
+			if err != nil {
+				t.Fatalf("runIssueGet json: %v", err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(out), &payload); err != nil {
+				t.Fatalf("decode JSON output: %v\n%s", err, out)
+			}
+			statusRead, ok := payload["status_read"].(map[string]any)
+			if !ok {
+				t.Fatalf("payload missing status_read object: %#v", payload)
+			}
+			if got := statusRead["eta"]; got != "unknown" {
+				t.Fatalf("status_read.eta = %#v, want \"unknown\"", got)
+			}
+			if statusRead["observed_at"] == nil || statusRead["observed_at"] == "" {
+				t.Fatalf("status_read.observed_at missing: %#v", statusRead)
+			}
+			if _, err := time.Parse(time.RFC3339, fmt.Sprint(statusRead["observed_at"])); err != nil {
+				t.Fatalf("status_read.observed_at not RFC3339: %v", statusRead["observed_at"])
+			}
+			// due_date must remain untouched and separate from eta.
+			if tc.dueDate != "" && payload["due_date"] != tc.dueDate {
+				t.Fatalf("due_date = %#v, want %q preserved", payload["due_date"], tc.dueDate)
+			}
+			if fmt.Sprint(statusRead["eta"]) == tc.dueDate {
+				t.Fatalf("eta must never equal due_date, both were %q", tc.dueDate)
+			}
+
+			// Table output: assert the ETA column renders "unknown", never the
+			// due date string, and an observation-time note goes to stderr.
+			tableCmd := &cobra.Command{Use: "get"}
+			tableCmd.Flags().String("output", "table", "")
+			tableCmd.Flags().Bool("resolve-properties", false, "")
+			stderr := captureStderr(t)
+			tableOut, err := captureStdout(t, func() error { return runIssueGet(tableCmd, []string{issueID}) })
+			stderrText := stderr.read()
+			if err != nil {
+				t.Fatalf("runIssueGet table: %v", err)
+			}
+			if !strings.Contains(tableOut, "ETA") {
+				t.Fatalf("table missing ETA column header:\n%s", tableOut)
+			}
+			if !strings.Contains(tableOut, "unknown") {
+				t.Fatalf("table missing unknown ETA value:\n%s", tableOut)
+			}
+			if tc.dueDate != "" {
+				dateOnly := tc.dueDate[:10]
+				// The due date value legitimately appears once (DUE DATE
+				// column); it must not appear a second time as if it were ETA.
+				if strings.Count(tableOut, dateOnly) > 1 {
+					t.Fatalf("due date %q appears more than once, suggesting it leaked into ETA:\n%s", dateOnly, tableOut)
+				}
+			}
+			if !strings.Contains(stderrText, "Observed at") {
+				t.Fatalf("stderr missing observation timestamp note: %q", stderrText)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CHE-487 D3 — `multica issue runs --active` stays read-only, with observation time
+// ---------------------------------------------------------------------------
+
+// TestRunIssueRunsActiveIsReadOnlyGet asserts the --active path never
+// enqueues a run: only a GET reaches the server, and no POST is issued.
+func TestRunIssueRunsActiveIsReadOnlyGet(t *testing.T) {
+	issueID := "1881a167-4bb6-4602-944b-f40ce4192fe6"
+	var methods []string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method)
+		switch r.URL.Path {
+		case "/api/issues/" + issueID + "/task-runs":
+			if r.Method != http.MethodGet {
+				t.Errorf("method = %s, want GET (must never enqueue a run)", r.Method)
+			}
+			if got := r.URL.Query().Get("active"); got != "true" {
+				t.Errorf("active query param = %q, want \"true\"", got)
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"id": "run-1", "agent_id": "agent-1", "status": "running", "started_at": "2026-09-16T10:00:00Z"},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "mat_test-token")
+
+	cmd := newIssueRunsTestCmd(t, "json")
+	if err := cmd.Flags().Set("active", "true"); err != nil {
+		t.Fatalf("set --active: %v", err)
+	}
+
+	stderr := captureStderr(t)
+	_, err := captureStdout(t, func() error { return runIssueRuns(cmd, []string{issueID}) })
+	stderrText := stderr.read()
+	if err != nil {
+		t.Fatalf("runIssueRuns: %v", err)
+	}
+
+	if len(methods) != 1 || methods[0] != http.MethodGet {
+		t.Fatalf("methods = %v, want exactly one GET and no POST", methods)
+	}
+	if !strings.Contains(stderrText, "Observed at") {
+		t.Fatalf("stderr missing observation timestamp note: %q", stderrText)
+	}
+}
+
+// TestRunIssueRunsTruncationWarningSurvivesObservationTimeAddition pins the
+// D3 requirement that the pre-existing truncation warning still fires
+// alongside the new observation-time note, and that a truncated read is
+// never rendered indistinguishably from "no active runs".
+func TestRunIssueRunsTruncationWarningSurvivesObservationTimeAddition(t *testing.T) {
+	issueID := "1881a167-4bb6-4602-944b-f40ce4192fe6"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/issues/" + issueID + "/task-runs":
+			w.Header().Set(headerActiveRunsTruncated, "true")
+			// Truncated to zero rows on the wire — the exact case that must
+			// never be read as "no active runs" once truncated.
+			_ = json.NewEncoder(w).Encode([]map[string]any{})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "mat_test-token")
+
+	cmd := newIssueRunsTestCmd(t, "json")
+	if err := cmd.Flags().Set("active", "true"); err != nil {
+		t.Fatalf("set --active: %v", err)
+	}
+
+	stderr := captureStderr(t)
+	out, err := captureStdout(t, func() error { return runIssueRuns(cmd, []string{issueID}) })
+	stderrText := stderr.read()
+	if err != nil {
+		t.Fatalf("runIssueRuns: %v", err)
+	}
+
+	if strings.TrimSpace(out) != "[]" {
+		t.Fatalf("stdout = %q, want empty JSON array", out)
+	}
+	if !strings.Contains(stderrText, "truncated") || !strings.Contains(stderrText, "cannot be concluded") {
+		t.Fatalf("stderr missing truncation warning: %q", stderrText)
+	}
+	if !strings.Contains(stderrText, "Observed at") {
+		t.Fatalf("stderr missing observation timestamp note: %q", stderrText)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CHE-487 D4 — `multica issue pull-requests` surfaces HEAD/CI/snapshot age
+// ---------------------------------------------------------------------------
+
+// TestPullRequestCIRendering pins the required rendering matrix: no
+// snapshot -> unavailable; a null checks_rollup on a current snapshot ->
+// "no checks" and NEVER "passed"; a real rollup value passes through.
+func TestPullRequestCIRendering(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pr   map[string]any
+		want string
+	}{
+		{
+			name: "no snapshot at all",
+			pr:   map[string]any{"number": float64(1)},
+			want: "unavailable",
+		},
+		{
+			name: "snapshot_available false",
+			pr:   map[string]any{"snapshot_available": false, "checks_rollup": "success"},
+			want: "unavailable",
+		},
+		{
+			name: "snapshot available, checks_rollup null (no checks yet)",
+			pr:   map[string]any{"snapshot_available": true, "checks_rollup": nil},
+			want: "no checks",
+		},
+		{
+			name: "snapshot available, checks_rollup success",
+			pr:   map[string]any{"snapshot_available": true, "checks_rollup": "success"},
+			want: "success",
+		},
+		{
+			name: "snapshot available, checks_rollup failure",
+			pr:   map[string]any{"snapshot_available": true, "checks_rollup": "failure"},
+			want: "failure",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := pullRequestCI(tc.pr)
+			if got != tc.want {
+				t.Fatalf("pullRequestCI = %q, want %q", got, tc.want)
+			}
+			if tc.name == "snapshot available, checks_rollup null (no checks yet)" && got == "passed" {
+				t.Fatalf("null checks_rollup must never render as passed")
+			}
+		})
+	}
+}
+
+// TestPullRequestSnapshotAgeRendering pins the snapshot-age/staleness
+// rendering matrix: no snapshot -> unavailable; snapshot_stale true ->
+// "stale" (with age when computable); a fresh snapshot renders its age from
+// snapshot_fetched_at.
+func TestPullRequestSnapshotAgeRendering(t *testing.T) {
+	now := time.Now().UTC()
+	for _, tc := range []struct {
+		name       string
+		pr         map[string]any
+		wantPrefix string
+	}{
+		{
+			name:       "no snapshot",
+			pr:         map[string]any{},
+			wantPrefix: "unavailable",
+		},
+		{
+			name: "stale snapshot with fetched_at",
+			pr: map[string]any{
+				"snapshot_available":  true,
+				"snapshot_stale":      true,
+				"snapshot_fetched_at": now.Add(-2 * time.Hour).Format(time.RFC3339),
+			},
+			wantPrefix: "stale",
+		},
+		{
+			name: "fresh snapshot renders age",
+			pr: map[string]any{
+				"snapshot_available":  true,
+				"snapshot_stale":      false,
+				"snapshot_fetched_at": now.Add(-5 * time.Minute).Format(time.RFC3339),
+			},
+			wantPrefix: "5m",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := pullRequestSnapshotAge(tc.pr)
+			if !strings.HasPrefix(got, tc.wantPrefix) && !strings.Contains(got, tc.wantPrefix) {
+				t.Fatalf("pullRequestSnapshotAge = %q, want prefix/contains %q", got, tc.wantPrefix)
+			}
+		})
+	}
+}
+
+// TestRunIssuePullRequestsTableRendersHeadCISnapshot exercises the full
+// runIssuePullRequests -> printIssuePullRequestsTable path against the
+// five-type × state matrix: current snapshot with head+CI, stale snapshot,
+// missing snapshot, and a null checks_rollup that must render as no-checks.
+func TestRunIssuePullRequestsTableRendersHeadCISnapshot(t *testing.T) {
+	issueID := "1881a167-4bb6-4602-944b-f40ce4192fe6"
+	now := time.Now().UTC()
+
+	prs := []map[string]any{
+		{
+			// current snapshot: head + CI visible
+			"number":              float64(1),
+			"state":               "open",
+			"title":               "current snapshot",
+			"url":                 "https://example.invalid/pull/1",
+			"branch":              "feature/current",
+			"snapshot_available":  true,
+			"snapshot_stale":      false,
+			"checks_rollup":       "success",
+			"snapshot_fetched_at": now.Add(-1 * time.Minute).Format(time.RFC3339),
+		},
+		{
+			// stale snapshot
+			"number":              float64(2),
+			"state":               "open",
+			"title":               "stale snapshot",
+			"url":                 "https://example.invalid/pull/2",
+			"branch":              "feature/stale",
+			"snapshot_available":  true,
+			"snapshot_stale":      true,
+			"checks_rollup":       "failure",
+			"snapshot_fetched_at": now.Add(-2 * time.Hour).Format(time.RFC3339),
+		},
+		{
+			// missing snapshot entirely
+			"number": float64(3),
+			"state":  "draft",
+			"title":  "no snapshot",
+			"url":    "https://example.invalid/pull/3",
+		},
+		{
+			// snapshot available but checks_rollup null: no checks yet
+			"number":              float64(4),
+			"state":               "open",
+			"title":               "null rollup",
+			"url":                 "https://example.invalid/pull/4",
+			"branch":              "feature/null-rollup",
+			"snapshot_available":  true,
+			"snapshot_stale":      false,
+			"checks_rollup":       nil,
+			"snapshot_fetched_at": now.Add(-30 * time.Second).Format(time.RFC3339),
+		},
+		{
+			// merged PR, snapshot no longer current
+			"number": float64(5),
+			"state":  "merged",
+			"title":  "merged, no snapshot",
+			"url":    "https://example.invalid/pull/5",
+			"branch": "feature/merged",
+		},
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/issues/" + issueID + "/pull-requests":
+			_ = json.NewEncoder(w).Encode(map[string]any{"pull_requests": prs})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "mat_test-token")
+
+	cmd := newIssuePullRequestsTestCmd()
+	out, err := captureStdout(t, func() error { return runIssuePullRequests(cmd, []string{issueID}) })
+	if err != nil {
+		t.Fatalf("runIssuePullRequests: %v", err)
+	}
+
+	for _, want := range []string{"HEAD", "CI", "SNAPSHOT", "feature/current", "success", "feature/stale", "stale", "unavailable", "no checks"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("table output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "null rollup") {
+		lines := strings.Split(out, "\n")
+		for _, line := range lines {
+			if strings.Contains(line, "null rollup") && strings.Contains(line, "passed") {
+				t.Fatalf("null checks_rollup row must never render \"passed\":\n%s", line)
+			}
+		}
 	}
 }
