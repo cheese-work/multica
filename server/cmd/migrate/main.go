@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -752,17 +754,97 @@ type runOptions struct {
 	Conditions map[string]migrationCondition
 }
 
+// usage is printed on any argument error. Kept as a single literal so the
+// "up|down" line and the "--to" line always describe the same two commands.
+const usage = "Usage: go run ./cmd/migrate <up|down> [--to <version>]"
+
+// parseToFlag reads an optional "--to <version>" flag from the arguments
+// that follow the up/down positional argument. It returns "" when the flag
+// is absent, which callers treat as "no bound" — i.e. the existing
+// unbounded behavior for both up and down. version is the migration's
+// filename stem exactly as migrations.ExtractVersion returns it (e.g.
+// "460_agent_task_queue_autopilot_run_created_at_index"), not a bare
+// integer: numeric prefixes are not globally unique (e.g. two files both
+// start "020_"), so only the full stem identifies one migration.
+func parseToFlag(direction string, args []string) (string, error) {
+	fs := flag.NewFlagSet("migrate "+direction, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	toVersion := fs.String("to", "", "roll back down to (and including) this version, stopping before any earlier migration")
+	if err := fs.Parse(args); err != nil {
+		return "", err
+	}
+	if fs.NArg() > 0 {
+		return "", fmt.Errorf("unexpected argument(s): %v", fs.Args())
+	}
+	if *toVersion == "" {
+		return "", nil
+	}
+	if direction != "down" {
+		return "", fmt.Errorf("--to is only valid with \"down\"")
+	}
+	return *toVersion, nil
+}
+
+// boundDownFiles trims an already-direction-sorted "down" file list (as
+// produced by migrations.Files("down"), i.e. reverse-lexicographic — the
+// same order runMigrations walks) so it stops as soon as it reaches
+// toVersion, without rolling that migration itself back. The bound is
+// inclusive of every migration strictly newer than toVersion and excludes
+// toVersion and everything older: rolling "back to" a version means the
+// database ends up AT that version, still applied.
+//
+// This never removes files from the middle or reorders them — it only cuts
+// the tail once the target version is found — so every hook/condition
+// lookup keyed by version in hooksForDirection/conditionsForDirection still
+// sees the exact same version strings it always would for the migrations
+// that do run.
+//
+// An unknown toVersion (no down migration file matches it) is a hard error:
+// silently running the full unbounded rollback when the caller asked for a
+// specific stop point would be exactly the overshoot this flag exists to
+// prevent.
+func boundDownFiles(downFiles []string, toVersion string) ([]string, error) {
+	for i, file := range downFiles {
+		if migrations.ExtractVersion(file) == toVersion {
+			return downFiles[:i], nil
+		}
+	}
+	return nil, fmt.Errorf("version %q not found among known down migrations (check the exact filename stem, e.g. %q)", toVersion, migrations.ExtractVersion(firstOrEmpty(downFiles)))
+}
+
+// firstOrEmpty returns files[0] or "" for an empty slice, so the error
+// message in boundDownFiles has a concrete example to show without a
+// separate nil-check at every call site.
+func firstOrEmpty(files []string) string {
+	if len(files) == 0 {
+		return ""
+	}
+	return files[0]
+}
+
 func main() {
 	logger.Init()
 
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: go run ./cmd/migrate <up|down>")
+		fmt.Println(usage)
 		os.Exit(1)
 	}
 
 	direction := os.Args[1]
 	if direction != "up" && direction != "down" {
-		fmt.Println("Usage: go run ./cmd/migrate <up|down>")
+		fmt.Println(usage)
+		os.Exit(1)
+	}
+
+	// --to is a bounded-rollback mode: only valid for "down". Bare "up" and
+	// bare "down" (no flag) keep their existing, unbounded behavior exactly
+	// as before — "down" with no --to still walks every applied migration
+	// back to 001, same as it always has. This is additive: it does not
+	// repurpose os.Args[1] or change what happens when --to is absent.
+	toVersion, err := parseToFlag(direction, os.Args[2:])
+	if err != nil {
+		fmt.Println(usage)
+		fmt.Println(err)
 		os.Exit(1)
 	}
 
@@ -783,6 +865,14 @@ func main() {
 	if err != nil {
 		slog.Error("failed to find migration files", "error", err)
 		os.Exit(1)
+	}
+
+	if toVersion != "" {
+		files, err = boundDownFiles(files, toVersion)
+		if err != nil {
+			slog.Error("invalid --to target", "error", err)
+			os.Exit(1)
+		}
 	}
 
 	options := runOptions{
