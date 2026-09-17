@@ -3,8 +3,11 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/multica-ai/multica/server/internal/dispatch"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -123,12 +126,13 @@ func RuntimeBlockedNeedsNotice(code dispatch.ReasonCode) bool {
 // plumbing, and no signature change at any of this function's 12+ call
 // sites, all of which already construct a RuntimeLookup with Queries set.
 //
-// err is non-nil only on DB lookup failure for the runtime row (or, for the
-// same "could not read the source of truth" reason, the workspace row the
-// provider-hold check needs). Callers that treat a transient DB error as "do
-// not skip" (the autopilot admission gate) should swallow it; callers that
-// need a hard yes/no (the squad-leader pre-enqueue check in the handler)
-// should fail closed. A malformed (as opposed to unreadable) hold
+// err is non-nil only on DB lookup failure for the runtime row, or, for the
+// same "could not read the source of truth" reason, a GetWorkspace error
+// other than pgx.ErrNoRows for the workspace row the provider-hold check
+// needs (see providerHoldVerdict below). Callers that treat a transient DB
+// error as "do not skip" (the autopilot admission gate) should swallow it;
+// callers that need a hard yes/no (the squad-leader pre-enqueue check in the
+// handler) should fail closed. A malformed (as opposed to unreadable) hold
 // configuration is NOT surfaced as err — see providerHoldVerdict below — so
 // it cannot be swallowed by a caller that treats DB errors as "proceed
 // anyway".
@@ -144,6 +148,17 @@ func RuntimeBlockedNeedsNotice(code dispatch.ReasonCode) bool {
 // one starts allowing "starting" runtimes while another doesn't, and the bug
 // only surfaces when a user assigns the same agent through two different entry
 // points. Touch this function, all of them move together.
+//
+// Scope: this gates every TRIGGER admission path — assignment, @mention,
+// comment-trigger, chat, autopilot dispatch. It does NOT run on the retry or
+// claim paths (server/internal/service/task.go has no call to this
+// function): a task already admitted before a hold was configured, which
+// then fails with a transient provider error, is re-queued by
+// retryableReasons without a fresh readiness consult, and the same is true of
+// already-queued work a daemon claims. A provider hold configured after
+// in-flight work exists therefore does not retroactively stop that work from
+// reaching the held provider again on retry — a known gap, deferred to a
+// follow-up (CHE-588).
 func AgentReadiness(ctx context.Context, lookup RuntimeLookup, agent db.Agent) (AgentVerdict, error) {
 	if agent.ArchivedAt.Valid {
 		return AgentVerdict{
@@ -160,7 +175,26 @@ func AgentReadiness(ctx context.Context, lookup RuntimeLookup, agent db.Agent) (
 	// lookup.Get(ctx, agent.RuntimeID), is that the network path to the
 	// held provider is never reached at all, not merely reached and then
 	// aborted.
-	if verdict, blocked := providerHoldVerdict(ctx, lookup, agent); blocked {
+	//
+	// A non-nil err here is a real GetWorkspace failure (not the "no row"
+	// case, which providerHoldVerdict already resolves to a plain fall-
+	// through) and is propagated rather than swallowed into ALLOW: a
+	// transient Postgres hiccup must not be silently treated as "no hold
+	// applies", because that is indistinguishable, at the call site, from
+	// the hold genuinely not existing — the exact silent-passthrough defect
+	// CHE-588 was filed to eliminate, just moved one layer down from
+	// malformed settings to an unreadable workspace row. This function's own
+	// contract (see the doc comment above) already delegates the choice of
+	// what to do with that error to each caller: the autopilot admission
+	// gate swallows it and proceeds, the handler's hard-gate pre-enqueue
+	// check fails closed. Blanket fail-closed HERE would instead refuse
+	// every dispatch workspace-wide on one flaky read, which is a worse
+	// outage than the one this feature exists to prevent.
+	verdict, blocked, err := providerHoldVerdict(ctx, lookup, agent)
+	if err != nil {
+		return AgentVerdict{}, err
+	}
+	if blocked {
 		return verdict, nil
 	}
 	if !agent.RuntimeID.Valid {
@@ -183,25 +217,48 @@ func AgentReadiness(ctx context.Context, lookup RuntimeLookup, agent db.Agent) (
 //
 // blocked is false whenever the agent may proceed to the runtime checks:
 // no Queries to read a workspace with (test callers passing RuntimeLookup{}
-// for the agent-only cases in TestAgentReadinessVerdict), no workspace row,
-// no configured holds, the agent's model not resolving to a known provider
-// (ResolveModelProvider's ok=false — see its doc comment on why an unresolved
-// model must never block), or the resolved provider simply not being held.
-// Every one of those is "cannot evaluate a hold" or "no hold applies", and
-// both must fall through to the ordinary runtime checks, not fail closed —
-// fail-closed in this feature is reserved for a settings blob that IS present
-// and IS malformed, handled below.
-func providerHoldVerdict(ctx context.Context, lookup RuntimeLookup, agent db.Agent) (AgentVerdict, bool) {
+// for the agent-only cases in TestAgentReadinessVerdict), no workspace row
+// (pgx.ErrNoRows — see below), no configured holds, the agent's model not
+// resolving to a known provider (ResolveModelProvider's ok=false — see its
+// doc comment on why an unresolved model must never block), or the resolved
+// provider simply not being held. Every one of those is "cannot evaluate a
+// hold" or "no hold applies", and all must fall through to the ordinary
+// runtime checks, not fail closed — fail-closed in this feature is reserved
+// for a settings blob that IS present and IS malformed, handled below, and
+// (via the returned error) for a GetWorkspace failure that is NOT "no row".
+//
+// err is non-nil only for a GetWorkspace failure other than pgx.ErrNoRows —
+// see the fall-through below for why "no row" is not folded into it.
+func providerHoldVerdict(ctx context.Context, lookup RuntimeLookup, agent db.Agent) (AgentVerdict, bool, error) {
 	if lookup.Queries == nil {
-		return AgentVerdict{}, false
+		return AgentVerdict{}, false, nil
 	}
 	ws, err := lookup.Queries.GetWorkspace(ctx, agent.WorkspaceID)
 	if err != nil {
-		// No workspace row to read a hold from (deleted workspace, or — far
-		// more likely in tests — a fixture that never inserted one). This is
-		// not the fail-closed case: fail-closed is for settings that exist
-		// and do not parse, not for "there is nothing to read yet".
-		return AgentVerdict{}, false
+		if errors.Is(err, pgx.ErrNoRows) {
+			// No workspace row to read a hold from (deleted workspace, or —
+			// far more likely in tests — a fixture that never inserted one).
+			// This is not the fail-closed case: fail-closed is for settings
+			// that exist and do not parse, not for "there is nothing to read
+			// yet", so fall through to the ordinary runtime checks exactly
+			// as if no hold were configured.
+			return AgentVerdict{}, false, nil
+		}
+		// Any other error is a real "could not read the source of truth"
+		// failure (a Postgres hiccup, a dropped connection) — not "there is
+		// nothing to read". Propagate it out of AgentReadiness as err rather
+		// than falling through to ALLOW: this function's doc comment already
+		// promises err covers the workspace row this check needs, and
+		// falling through here would make a transient DB error
+		// indistinguishable from "no hold applies", which is exactly the
+		// silent-passthrough defect CHE-588 exists to eliminate — just moved
+		// from malformed settings to an unreadable row. This is NOT blanket
+		// fail-closed, though: a Postgres blip must not refuse every
+		// dispatch workspace-wide, so the decision is left to each caller of
+		// AgentReadiness, which already has its own policy for a DB error
+		// (autopilot swallows it and proceeds; the handler's hard-gate fails
+		// closed).
+		return AgentVerdict{}, false, err
 	}
 	holds, err := ProviderHoldsFromSettings(ws.Settings)
 	if err != nil {
@@ -209,29 +266,31 @@ func providerHoldVerdict(ctx context.Context, lookup RuntimeLookup, agent db.Age
 		// silently behave as if no hold were configured. See
 		// ProviderHoldsFromSettings's doc comment for why this codebase's
 		// usual fail-open-on-malformed-settings convention is wrong here.
+		// This is a BLOCKED verdict, not a Go error, on purpose — see this
+		// function's doc comment above.
 		return AgentVerdict{
 			Availability: AgentBlocked,
 			Reason:       dispatch.ReasonProviderHold,
 			Detail:       fmt.Sprintf("workspace provider-hold settings could not be parsed: %v", err),
-		}, true
+		}, true, nil
 	}
 	if len(holds) == 0 {
-		return AgentVerdict{}, false
+		return AgentVerdict{}, false, nil
 	}
 	provider, ok := ResolveModelProvider(agent.Model.String)
 	if !ok {
-		return AgentVerdict{}, false
+		return AgentVerdict{}, false, nil
 	}
 	hold, held := findProviderHold(holds, provider)
 	if !held {
-		return AgentVerdict{}, false
+		return AgentVerdict{}, false, nil
 	}
 	notice := ProviderHoldNotice(agent.Name, provider, hold, providerHoldSubstitutes(ctx, lookup, agent, holds))
 	return AgentVerdict{
 		Availability: AgentBlocked,
 		Reason:       dispatch.ReasonProviderHold,
 		Detail:       notice,
-	}, true
+	}, true, nil
 }
 
 // providerHoldSubstitutes lists other agents in the same workspace whose

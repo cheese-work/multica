@@ -12,6 +12,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -36,6 +37,12 @@ type workspaceAgentsDBTX struct {
 	settings   []byte
 	settingsOK bool
 	agents     []db.Agent
+	// workspaceErr, when set, is returned by GetWorkspace's QueryRow instead
+	// of the default pgx.ErrNoRows used when settingsOK is false — lets
+	// tests distinguish "no workspace row" (falls through to ALLOW) from a
+	// real DB failure (must propagate as an AgentReadiness error). Only
+	// consulted when settingsOK is false.
+	workspaceErr error
 }
 
 func (d workspaceAgentsDBTX) Exec(context.Context, string, ...interface{}) (pgconn.CommandTag, error) {
@@ -48,6 +55,9 @@ func (d workspaceAgentsDBTX) Query(context.Context, string, ...interface{}) (pgx
 
 func (d workspaceAgentsDBTX) QueryRow(context.Context, string, ...interface{}) pgx.Row {
 	if !d.settingsOK {
+		if d.workspaceErr != nil {
+			return errRow{err: d.workspaceErr}
+		}
 		return errRow{err: pgx.ErrNoRows}
 	}
 	return workspaceRow{settings: d.settings}
@@ -346,5 +356,88 @@ func TestAgentReadinessProviderHoldListsSubstitutes(t *testing.T) {
 	// The held agent itself must never list itself as its own substitute.
 	if strings.Count(got.Detail, "Nova") != 1 {
 		t.Errorf("notice should name Nova once (as the blocked agent), not also as a substitute: %q", got.Detail)
+	}
+}
+
+// --- GetWorkspace error handling (finding: pgx.ErrNoRows vs a real DB error) ---
+
+// TestAgentReadinessWorkspaceNoRowsFallsThroughToAllow pins the "no row" half
+// of the fix: pgx.ErrNoRows from GetWorkspace is not a real failure — it is
+// the overwhelmingly common shape in tests (a fixture that never inserted a
+// workspace row) and, in production, a deleted workspace. Either way there is
+// nothing to fail closed on, so providerHoldVerdict must fall through to the
+// ordinary runtime checks with no error, exactly as before this fix.
+func TestAgentReadinessWorkspaceNoRowsFallsThroughToAllow(t *testing.T) {
+	agent := db.Agent{
+		ID:          uuidFromByte(10),
+		WorkspaceID: uuidFromByte(9),
+		Name:        "NoRow",
+		Model:       pgtype.Text{String: "gpt-5.6-sol", Valid: true},
+	}
+	lookup := RuntimeLookup{Queries: db.New(workspaceAgentsDBTX{settingsOK: false, workspaceErr: pgx.ErrNoRows})}
+
+	got, err := AgentReadiness(t.Context(), lookup, agent)
+	if err != nil {
+		t.Fatalf("AgentReadiness: unexpected error for pgx.ErrNoRows: %v", err)
+	}
+	if got.Reason == dispatch.ReasonProviderHold {
+		t.Fatalf("pgx.ErrNoRows from GetWorkspace: got %+v, want unaffected by the hold check (fall through to ALLOW)", got)
+	}
+	if got.Reason != dispatch.ReasonAgentRuntimeRequired {
+		t.Errorf("got %+v, want the ordinary agent_runtime_required verdict", got)
+	}
+}
+
+// TestAgentReadinessWorkspaceOtherErrorPropagates is the regression for the
+// finding this fix addresses: providerHoldVerdict used to swallow EVERY
+// GetWorkspace error (not just pgx.ErrNoRows) and fall through to ALLOW. A
+// transient DB error (connection reset, timeout, anything that is not "no
+// row") must now come back out of AgentReadiness as a real, non-nil error so
+// each caller applies its own existing policy (autopilot swallows it and
+// proceeds; the handler's hard pre-enqueue gate fails closed) instead of
+// every caller silently treating a DB hiccup as "no hold applies".
+func TestAgentReadinessWorkspaceOtherErrorPropagates(t *testing.T) {
+	dbErr := errors.New("connection reset by peer")
+	agent := db.Agent{
+		ID:          uuidFromByte(11),
+		WorkspaceID: uuidFromByte(9),
+		Name:        "Flaky",
+		Model:       pgtype.Text{String: "gpt-5.6-sol", Valid: true},
+	}
+	lookup := RuntimeLookup{Queries: db.New(workspaceAgentsDBTX{settingsOK: false, workspaceErr: dbErr})}
+
+	got, err := AgentReadiness(t.Context(), lookup, agent)
+	if err == nil {
+		t.Fatalf("AgentReadiness: got nil error for a non-ErrNoRows GetWorkspace failure, want it propagated (got verdict %+v)", got)
+	}
+	if !errors.Is(err, dbErr) {
+		t.Errorf("AgentReadiness error = %v, want it to wrap/be %v", err, dbErr)
+	}
+}
+
+// --- Case-insensitive provider matching (finding: human-authored hold text) ---
+
+// TestAgentReadinessProviderHoldCaseInsensitiveMatch pins the misconfiguration
+// trap this fix closes: a hold written the way a human naturally types a
+// provider name — "OpenAI", matching this very workspace's own announcement
+// text — must still match the catalog's lowercase "openai" and block. Before
+// this fix, findProviderHold compared case-sensitively and this exact hold
+// silently matched nothing.
+func TestAgentReadinessProviderHoldCaseInsensitiveMatch(t *testing.T) {
+	settings := []byte(`{"provider_holds":[{"provider":"OpenAI","text":"Stop all routing to OpenAI based agents. This constraint has no set end date."}]}`)
+	agent := db.Agent{
+		ID:          uuidFromByte(12),
+		WorkspaceID: uuidFromByte(9),
+		Name:        "Nova",
+		Model:       pgtype.Text{String: "gpt-5.6-sol", Valid: true},
+	}
+	lookup := RuntimeLookup{Queries: db.New(workspaceAgentsDBTX{settings: settings, settingsOK: true})}
+
+	got, err := AgentReadiness(t.Context(), lookup, agent)
+	if err != nil {
+		t.Fatalf("AgentReadiness: unexpected error: %v", err)
+	}
+	if !got.Blocked() || got.Reason != dispatch.ReasonProviderHold {
+		t.Fatalf(`hold written "OpenAI" against resolved provider "openai": got %+v, want Blocked/provider_hold`, got)
 	}
 }

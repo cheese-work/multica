@@ -107,10 +107,18 @@ func ResolveModelProvider(model string) (provider string, ok bool) {
 // e.g. "stop routing to OpenAI-based agents" — read from
 // workspace.settings.provider_holds.
 type ProviderHold struct {
-	// Provider is matched against ResolveModelProvider's return value,
-	// case-sensitively — both sides are written by this codebase (the
-	// catalog's Provider field and whatever wrote the hold), so no normalizer
-	// is warranted here the way model ids need one.
+	// Provider is matched against ResolveModelProvider's return value
+	// case-insensitively (findProviderHold uses strings.EqualFold). The two
+	// sides are NOT symmetric the way model ids and the catalog are: the
+	// catalog's Provider field is written by this codebase and is always
+	// lowercase ("openai", "anthropic", "xai"), but Provider here is
+	// human-authored JSON in workspace settings — someone typing a hold by
+	// hand writes the provider name the natural way, and this workspace's
+	// own announcement is proof: it reads "Stop all routing to OpenAI based
+	// agents", not "openai". A case-sensitive comparison would make that
+	// exact, naturally-typed hold silently match nothing, which is worse
+	// than a rejected hold — it is a hold that LOOKS configured and does
+	// nothing.
 	Provider string `json:"provider"`
 	// Text is the human-authored policy statement, surfaced verbatim in the
 	// notice so the person reading a refusal sees the actual decision, not a
@@ -164,9 +172,14 @@ func ProviderHoldsFromSettings(settings []byte) ([]ProviderHold, error) {
 // findProviderHold returns the first configured hold matching provider, if
 // any. Linear scan: holds are a handful of manually-authored policy entries
 // per workspace, not a set worth indexing.
+//
+// strings.EqualFold, not ==: provider is always lowercase (ResolveModelProvider
+// resolves off the catalog's own Provider field), but ProviderHold.Provider is
+// human-authored — see its doc comment — so the comparison must tolerate
+// whatever case a human typed rather than silently matching nothing.
 func findProviderHold(holds []ProviderHold, provider string) (ProviderHold, bool) {
 	for _, h := range holds {
-		if h.Provider == provider {
+		if strings.EqualFold(h.Provider, provider) {
 			return h, true
 		}
 	}

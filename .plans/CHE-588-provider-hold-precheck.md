@@ -77,3 +77,38 @@ Three net-new pieces:
 
 - Hold config is settings-only in this PR (no UI/CLI writer). Platform-first
   per filer's stated default; an admin surface is a separate follow-up.
+
+## Known coverage limits
+
+Two gaps a reviewer found, both deliberate for now and both now written down
+where the person who needs them — whoever configures a hold, then sees a
+dispatch happen anyway — can find them, not just in Go source.
+
+- **Unknown models bypass the hold (fail-open, deliberate).** A model absent
+  from the static catalog resolves to unknown (`ResolveModelProvider`'s
+  `ok=false`) and is never evaluated against a hold, so it dispatches even
+  under an active hold on the provider it would actually resolve to once the
+  catalog catches up. This is the same tradeoff the acceptance criteria call
+  for: blocking on "I don't recognise this model" would turn ordinary catalog
+  lag into an outage for every provider that was never held, not just the
+  held one. No fix planned — this is the accepted shape of the feature, not a
+  bug.
+- **Case sensitivity — resolved.** Earlier drafts of this file, and the code
+  before this fix, matched `ProviderHold.Provider` against the resolved
+  provider case-sensitively. Catalog values are always lowercase, but the
+  hold side is human-authored JSON in workspace settings, and this
+  workspace's own announcement writes "OpenAI" — so a hold typed the natural
+  way silently matched nothing. `findProviderHold` now compares with
+  `strings.EqualFold`; no case-sensitivity limit remains.
+- **Gate covers trigger admission only — NOT retry or claim.** `AgentReadiness`
+  runs on every trigger admission path (assignment, @mention, comment-trigger,
+  chat, autopilot dispatch) but is never called from `server/internal/service/task.go`
+  — confirmed zero call sites there. `retryableReasons` (task.go, around line
+  5133) includes `ReasonAgentProviderNetwork` and `ReasonRuntimeOffline` —
+  exactly the failure shape a held provider produces before this change. So a
+  task admitted before a hold was configured, which then fails on a provider
+  error, is re-queued under the hold with no readiness consult at all; the
+  same is true of already-queued work a daemon picks up via the claim path. A
+  hold configured after in-flight work exists does not retroactively stop
+  that work from reaching the held provider again. Deferred to a follow-up —
+  not fixed in this PR.
