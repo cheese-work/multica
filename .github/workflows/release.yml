@@ -17,7 +17,7 @@ env:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     outputs:
       tag_name: ${{ steps.release_meta.outputs.tag_name }}
       is_stable: ${{ steps.release_meta.outputs.is_stable }}
@@ -85,7 +85,7 @@ jobs:
     # tag push fails this job (401 against the upstream tap), which makes
     # downstream CI go red without affecting the actual artifact pipeline.
     if: github.repository_owner == 'multica-ai'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -122,9 +122,9 @@ jobs:
       matrix:
         include:
           - platform: linux/amd64
-            runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+            runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
           - platform: linux/arm64
-            runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-24.04-arm"]') }}
+            runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404-arm"]') }}
     runs-on: ${{ matrix.runs-on }}
     steps:
       - name: Enforce X99 free-space floor
@@ -197,7 +197,7 @@ jobs:
 
   docker-backend-merge:
     needs: [verify, docker-backend-build]
-    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
     concurrency:
       group: release-docker-backend-${{ github.ref }}
       cancel-in-progress: true
@@ -261,9 +261,9 @@ jobs:
       matrix:
         include:
           - platform: linux/amd64
-            runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+            runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
           - platform: linux/arm64
-            runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-24.04-arm"]') }}
+            runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404-arm"]') }}
     runs-on: ${{ matrix.runs-on }}
     steps:
       - name: Enforce X99 free-space floor
@@ -336,7 +336,7 @@ jobs:
 
   docker-web-merge:
     needs: [verify, docker-web-build]
-    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
     concurrency:
       group: release-docker-web-${{ github.ref }}
       cancel-in-progress: true
@@ -396,7 +396,7 @@ jobs:
   helm-chart:
     needs: [verify, docker-backend-merge, docker-web-merge]
     if: github.repository_owner == 'multica-ai'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     concurrency:
       group: release-helm-chart-${{ github.ref }}
       cancel-in-progress: true
@@ -434,21 +434,21 @@ jobs:
       - name: Verify published chart
         run: helm show chart "$OCI_REGISTRY/multica" --version "$CHART_VERSION"
 
-  # Build the Desktop installers for Linux and Windows and upload them to
-  # the GitHub Release that the `release` job above just published. macOS
-  # Desktop continues to ship via the manual `release-desktop` skill so it
-  # can be signed + notarized with Apple Developer credentials that are
-  # not (yet) wired into CI.
+  # Build the Desktop installer for Linux and upload it to the GitHub
+  # Release that the `release` job above just published. macOS Desktop
+  # continues to ship via the manual `release-desktop` skill so it can be
+  # signed + notarized with Apple Developer credentials that are not (yet)
+  # wired into CI. Windows Desktop build removed org-wide per CHE-522
+  # (Cheese: Linux CI only, no Windows jobs or artifacts) — the Windows
+  # installer is no longer published by this workflow.
   desktop:
     needs: release
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: blacksmith-2vcpu-ubuntu-2404
             target: linux
-          - os: windows-latest
-            target: win
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -490,9 +490,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # electron-builder's GitHub publisher reads this:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Disable code signing on Linux/Windows for now — the public
-          # release is unsigned for these platforms, the CLI carries the
-          # trust boundary. Set CSC_LINK in repo secrets to enable
-          # Windows signing later.
+          # Disable code signing on Linux for now — the public release is
+          # unsigned for this platform, the CLI carries the trust boundary.
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: node scripts/package.mjs --${{ matrix.target }} --x64 --arm64 --publish always

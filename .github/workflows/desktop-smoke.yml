@@ -7,15 +7,15 @@ permissions:
   contents: read
 
 jobs:
+  # Windows leg removed org-wide per CHE-522 (Cheese: Linux CI only, no
+  # Windows jobs or artifacts).
   desktop:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: blacksmith-2vcpu-ubuntu-2404
             target: linux
-          - os: windows-latest
-            target: win
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
