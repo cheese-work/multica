@@ -344,6 +344,15 @@ deleted_comment_reactions AS (
 deleted_issue_reactions AS (
     DELETE FROM issue_reaction WHERE workspace_id = $1
 ),
+-- CHE-488 durable stage-completion-wake bookkeeping (stage_generation,
+-- stage_completion_wake). Deleted before the parent issues below so neither
+-- statement depends on FK cascade ordering.
+deleted_stage_completion_wakes AS (
+    DELETE FROM stage_completion_wake WHERE workspace_id = $1
+),
+deleted_stage_generations AS (
+    DELETE FROM stage_generation WHERE workspace_id = $1
+),
 deleted_activity AS (
     DELETE FROM activity_log WHERE workspace_id = $1
 ),

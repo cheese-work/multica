@@ -599,6 +599,74 @@ test.describe("Durable thread fold state through row unmount/remount", () => {
     await expect(page.getByRole("button", { name: "Show less" })).toBeVisible();
   });
 
+  // CHE-554: a mouse press on "Show more" focuses the button (it lives inside
+  // `comment-${rootId}`) before `mouseup`, which issue-detail.tsx's focusin
+  // listener reads as "active focus in this root" and used to force-expand
+  // the thread (forceThreadOpen) — dropping hiddenCount to 0 and unmounting
+  // this exact button between mousedown and mouseup, so a plain `click` never
+  // fired and the durable length preference was never written. The fix
+  // (`forceThreadLengthExpanded`, a copy of `forceThreadOpen` minus a bare
+  // focus/selection-only reason) keeps the button mounted through its own
+  // press. A human-paced press (down, wait, up) reproduces the race that a
+  // Playwright `.click()` (down+up back to back, same tick) can mask.
+  test("a human-paced mouse press on Show more still commits the expansion (CHE-554)", async ({ page }) => {
+    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await waitForPageText(page, issueTitle);
+    await waitForPageText(page, "Root comment for thread fold test");
+
+    const showMore = page.getByRole("button", { name: /Show \d+ more repl/ });
+    await expect(showMore).toBeVisible();
+    const box = await showMore.boundingBox();
+    if (!box) throw new Error("Show more button has no layout box");
+    const x = box.x + box.width / 2;
+    const y = box.y + box.height / 2;
+
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    // Give focusin time to fire and issue-detail.tsx's forceThreadOpen to
+    // react before the button is released — this is exactly the window the
+    // bug loses.
+    await page.waitForTimeout(120);
+    await page.mouse.up();
+
+    await waitForPageText(page, "Reply number 1");
+    await expect(page.getByRole("button", { name: "Show less" })).toBeVisible();
+
+    // Not just visually forced open by the transient focus pin — the durable
+    // store must have the write, so it survives focus leaving the thread.
+    await page.locator("body").click({ position: { x: 5, y: 5 } });
+    await expect(page.getByText("Reply number 1")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Show less" })).toBeVisible();
+  });
+
+  // CHE-554: focusing the button by keyboard hits the same race as the mouse
+  // press above — focus lands on the button first, `focusin` bubbles to
+  // issue-detail.tsx and used to force-expand the thread before Enter was
+  // even pressed, unmounting the button out from under the pending keypress.
+  test("keyboard activation of Show more commits the expansion (CHE-554)", async ({ page }) => {
+    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await waitForPageText(page, issueTitle);
+    await waitForPageText(page, "Root comment for thread fold test");
+
+    const showMore = page.getByRole("button", { name: /Show \d+ more repl/ });
+    await expect(showMore).toBeVisible();
+    await showMore.focus();
+    await page.keyboard.press("Enter");
+
+    await waitForPageText(page, "Reply number 1");
+    await expect(page.getByRole("button", { name: "Show less" })).toBeVisible();
+
+    // Not just visually forced open by the transient focus pin — the durable
+    // (session-lifetime) length-disclosure store must have the write, so it
+    // survives focus leaving the thread. `useIssueDisclosureStore` is
+    // intentionally session-only (no page reload persistence, see its own
+    // comment), so leaving-and-returning focus — not a reload — is the
+    // correct durability check here (mirrors the mouse-press test above).
+    await page.locator("body").click({ position: { x: 5, y: 5 } });
+    await expect(page.getByText("Reply number 1")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Show less" })).toBeVisible();
+  });
+
   test("fold-all and unfold-all commands drive the length-disclosure store together with manual collapse and resolved-expand", async ({ page }) => {
     await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
     await waitForPageText(page, issueTitle);

@@ -315,6 +315,9 @@ var concurrentIndexCleanups = map[string]string{
 	"492_github_merge_announcement_identity_uidx":               "uq_github_merge_announcement_identity",
 	"493_github_merge_announcement_pending_idx":                 "idx_github_merge_announcement_pending_claim",
 	"495_agent_task_rerun_lineage_unique":                       "idx_one_live_rerun_per_source_task_actor",
+	"497_stage_completion_wake_unique":                          "idx_one_wake_per_parent_stage_generation",
+	"498_stage_generation_workspace_index":                      "idx_stage_generation_workspace_id",
+	"499_stage_completion_wake_workspace_index":                 "idx_stage_completion_wake_workspace_id",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction

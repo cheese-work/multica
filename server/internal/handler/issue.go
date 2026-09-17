@@ -4239,6 +4239,11 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	// the parent/stage notification is evaluated once against the final state
 	// after the loop (MUL-4155) rather than per-child mid-batch.
 	var childDoneCompleted []db.Issue
+	// Children that transitioned OUT of a terminal status this batch (reopen).
+	// Bumping their stage generation must happen even when the batch does not
+	// close a stage, so a later re-closure is never confused with a duplicate
+	// of a completion this reopen invalidated (CHE-488).
+	var childDoneReopened []db.Issue
 	for _, issueID := range req.IssueIDs {
 		issueUUID, err := util.ParseUUID(issueID)
 		if err != nil {
@@ -4480,10 +4485,20 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 				issuestatus.Effective(r.Context(), h.Queries, issue.WorkspaceID, issue.Status))
 			if !prevTerminal && nowTerminal {
 				childDoneCompleted = append(childDoneCompleted, issue)
+			} else if prevTerminal && !nowTerminal {
+				childDoneReopened = append(childDoneReopened, issue)
 			}
 		}
 
 		updated++
+	}
+
+	// Bump the stage generation for every reopened child BEFORE evaluating
+	// completions below, so a batch that both reopens one stage's child and
+	// closes another (or re-closes the same stage) always claims the wake
+	// against the post-reopen generation, never a stale one (CHE-488).
+	for _, reopened := range childDoneReopened {
+		h.bumpStageGenerationOnReopen(r.Context(), reopened)
 	}
 
 	// Aggregate parent/stage notification over the whole batch's final state so

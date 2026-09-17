@@ -1952,6 +1952,36 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     return false;
   }, [find.open, targetRootId, rootIdsWithActiveReplyDraft, rootIdsWithActiveRun, rootIdsWithActiveFocusOrSelection, timelineView.threadReplies, highlightedId]);
 
+  // CHE-554: same reasons as `forceThreadOpen` above, MINUS a bare
+  // focus/selection-only pin. `forceThreadOpen` correctly forces `open` (the
+  // whole replies section mounts) for a focus/selection pin — that's what
+  // lets a deep-linked/focused reply's own DOM node exist at all. But
+  // CommentCard's Show-more button unmounts the instant `lengthExpanded`
+  // flips true (its render guard is `!lengthExpanded && hiddenCount > 0`),
+  // and the button's own `mousedown` is exactly what puts it inside
+  // `rootIdsWithActiveFocusOrSelection` in the first place (mousedown's
+  // default action focuses the pressed button, firing `focusin` before
+  // `click` completes) — so gating the button's mount on `forceThreadOpen`
+  // directly would make the control unmount out from under its own press,
+  // and the `click` that should call `onThreadLengthExpandChange` would land
+  // on a detached node. Passed to CommentCard as `forceThreadLengthExpanded`
+  // (see its doc comment); `forceThreadExpanded` is still passed unchanged
+  // for `open` and for gating Show less. Every other force-open reason here
+  // (find, target/deep-link, active reply draft, active run, highlighted
+  // reply) still forces the length open exactly as before — only a pin
+  // caused SOLELY by focus/selection is excluded.
+  const forceThreadLengthExpand = useCallback((rootId: string): boolean => {
+    if (find.open) return true;
+    if (targetRootId === rootId) return true;
+    if (rootIdsWithActiveReplyDraft.has(rootId)) return true;
+    if (rootIdsWithActiveRun.has(rootId)) return true;
+    const threadRepliesForRoot = timelineView.threadReplies.get(rootId) ?? EMPTY_REPLIES;
+    if (highlightedId && (highlightedId === rootId || threadRepliesForRoot.some((r) => r.id === highlightedId))) {
+      return true;
+    }
+    return false;
+  }, [find.open, targetRootId, rootIdsWithActiveReplyDraft, rootIdsWithActiveRun, timelineView.threadReplies, highlightedId]);
+
   // Latch: 01-DESIGN line 56 ("New reply / edit / active run") and line 57
   // ("Target reveal / notification replay") both require that when their
   // reason forces a thread open, the length-expanded preference is PERSISTED
@@ -3390,6 +3420,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             threadLengthExpanded: expandedThreadLengths.has(reply.id),
             onThreadLengthExpandChange: toggleThreadLengthExpand,
             forceThreadExpanded: forceThreadOpen(reply.id),
+            forceThreadLengthExpanded: forceThreadLengthExpand(reply.id),
             findManualCollapseDisabled: find.open,
             findManualCollapseDisabledReason: findCollapseDisabledReason,
           } : undefined} />}
@@ -3432,6 +3463,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             threadLengthExpanded={expandedThreadLengths.has(item.id)}
             onThreadLengthExpandChange={toggleThreadLengthExpand}
             forceThreadExpanded={forceThreadOpen(item.id)}
+            forceThreadLengthExpanded={forceThreadLengthExpand(item.id)}
             findManualCollapseDisabled={find.open}
             findManualCollapseDisabledReason={findCollapseDisabledReason}
           />

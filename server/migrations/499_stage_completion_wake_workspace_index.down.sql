@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_stage_completion_wake_workspace_id;
