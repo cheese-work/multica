@@ -16,7 +16,7 @@
 -- non-terminal). generation 0 is the initial/never-reopened generation.
 --
 -- stage_completion_wake records that a wake was already emitted for a given
--- (parent_issue_id, stage, generation). Its UNIQUE index (migration 476) makes
+-- (parent_issue_id, stage, generation). Its UNIQUE index (migration 497) makes
 -- "at most one wake per generation" a DB-enforced invariant instead of a
 -- best-effort read-then-write check, so two concurrent closes of the same
 -- stage race at the database and only one wins — the same pattern as

@@ -545,7 +545,7 @@ func (h *Handler) claimStageCompletionWake(ctx context.Context, parent, complete
 // only dedupes while an earlier task is still pending), this check is durable
 // across restarts and survives the earlier task having long since finished.
 func (h *Handler) postChildDoneComment(ctx context.Context, parent, completed db.Issue, children []db.Issue, staged bool, closedStage int32, batch bool, isTerminal func(db.Issue) bool, effective func(db.Issue) (string, error)) {
-	wakeStage := closedStage // 0 for an unstaged set, matching stage_generation's sentinel (migration 475).
+	wakeStage := closedStage // 0 for an unstaged set, matching stage_generation's sentinel (migration 496).
 	wakeID, claimed, err := h.claimStageCompletionWake(ctx, parent, completed, wakeStage, effective)
 	if err != nil {
 		slog.Warn("child done: claim stage completion wake failed",
