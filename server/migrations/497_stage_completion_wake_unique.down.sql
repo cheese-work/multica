@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_one_wake_per_parent_stage_generation;
