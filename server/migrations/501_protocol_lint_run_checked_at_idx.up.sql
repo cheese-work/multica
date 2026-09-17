@@ -1,4 +1,4 @@
--- CHE-552: the omission-rate report (ReportProtocolLintRate /
+-- CHE-552: the omission-rate report (ReportProtocolLintOmissionRate /
 -- ReportProtocolLintViolationBreakdown, server/pkg/db/queries/protocol_lint.sql)
 -- always filters protocol_lint_run by a checked_at date range. Built
 -- CONCURRENTLY and in its own migration file per repo convention (see

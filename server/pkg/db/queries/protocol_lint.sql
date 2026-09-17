@@ -5,7 +5,7 @@
 -- CHE-552: persists one row per protocollint.Check invocation
 -- (server/internal/handler/daemon.go's runProtocolLint, CHE-529) so the real
 -- protocol-omission base rate can be measured instead of only logged. See
--- 496_protocol_lint_run.up.sql for the schema rationale.
+-- 500_protocol_lint_run.up.sql for the schema rationale.
 
 -- name: CreateProtocolLintRun :one
 -- Best-effort write from runProtocolLint's logProtocolLintViolations, called
@@ -25,8 +25,8 @@ RETURNING *;
 -- Base-rate summary over [since, until): total turns checked, how many had
 -- zero violations, and the zero-violation percentage. Percentage is computed
 -- in Go from the two counts (avoids a division-by-zero / rounding footgun in
--- SQL for the zero-rows case) — see ReportProtocolLintOmissionRate in
--- server/internal/handler or wherever the Go wrapper lives.
+-- SQL for the zero-rows case) — see BuildProtocolLintOmissionReport in
+-- server/internal/handler/protocol_lint_report.go.
 SELECT
     count(*)::bigint AS total_checked,
     count(*) FILTER (WHERE violation_count = 0)::bigint AS zero_violation_count
