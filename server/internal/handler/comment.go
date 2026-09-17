@@ -85,6 +85,14 @@ type CommentResponse struct {
 	// reports that here instead of silently dropping the trigger, so the client
 	// can show "comment posted, but N targets were not triggered".
 	TriggerOutcomes []CommentTriggerOutcome `json:"trigger_outcomes,omitempty"`
+	// StatusAnswer is populated only when this comment's content exactly
+	// matched one of the five reserved status-query phrases (CHE-487 Unit
+	// D1): "status", "eta", "active runs", "ci", "pr head". When set, agent
+	// admission was skipped entirely for this comment — TriggerOutcomes is
+	// nil/empty in that case. Any comment carrying additional text alongside
+	// a status word is NOT a match and goes through the normal trigger path,
+	// leaving this field nil.
+	StatusAnswer *StatusAnswer `json:"status_answer,omitempty"`
 }
 
 // CommentTriggerOutcome is the per-target result of an explicit @agent / @squad
@@ -1956,6 +1964,21 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// (TaskService.createAgentComment) — both reply paths use the same
 	// publisher.
 	h.TaskService.PublishThreadUnresolvedOnReply(cleared, uuidToString(issue.WorkspaceID), authorType, authorID)
+
+	// A comment whose content is EXACTLY one of the five reserved status-query
+	// phrases (CHE-487 Unit D1) skips agent admission entirely and gets a
+	// deterministic, timestamped answer instead. This check runs before
+	// triggerTasksForComment (which independently short-circuits on /note) so
+	// the two skip-trigger paths never fight: a /note comment can never equal
+	// one of the five phrases, but if it somehow did, isNoteComment inside
+	// triggerTasksForComment would still be moot here because we already
+	// return without calling it.
+	if kind, ok := parseStatusQuery(comment.Content); ok {
+		answer := h.buildStatusAnswer(r.Context(), issue, kind)
+		resp.StatusAnswer = &answer
+		writeJSON(w, http.StatusCreated, resp)
+		return
+	}
 
 	originatorUserID := h.invokeOriginatorFromRequest(r, authorType, authorID)
 	// The comment is already saved; a blocked mention must not fail the whole
