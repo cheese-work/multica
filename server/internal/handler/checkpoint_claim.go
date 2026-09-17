@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -25,18 +26,36 @@ import (
 // checkpoint (via the same upsert path) with that obligation removed; this
 // function's job is coverage tracking, not obligation resolution.
 //
-// Best-effort: any read/write failure is logged and returns an empty block
-// rather than failing the claim. A missing checkpoint block degrades the run
-// to a full comment re-scan, which is correct behavior, not a broken one.
+// Best-effort: this function's load-bearing safety property is that it
+// never fails the claim — it returns string, not (string, error). What a
+// failure actually returns varies by stage: a failed live scan or a
+// truncated/incomplete one returns empty rather than risk laundering a
+// degraded read into durable coverage; a failed prior-checkpoint decode
+// falls back to cold start; a failed next-checkpoint encode returns the
+// PRIOR block (not empty) since the render already succeeded and only the
+// write failed. In every case the claim itself proceeds.
 func (h *Handler) loadIssueCheckpointBlock(ctx context.Context, issue db.Issue, agentID pgtype.UUID) string {
 	if !agentID.Valid {
 		return ""
 	}
 
-	live, err := h.scanRootCoverageForIssue(ctx, issue)
+	live, truncated, err := h.scanRootCoverageForIssue(ctx, issue)
 	if err != nil {
 		slog.Warn("checkpoint: live comment scan failed; skipping checkpoint block",
 			"issue_id", uuidToString(issue.ID), "agent_id", uuidToString(agentID), "error", err)
+		return ""
+	}
+	if truncated {
+		// A checkpoint's coverage cursor asserts it has seen every thread. A
+		// truncated scan (commentHardCap) cannot back that assertion — the
+		// oldest root(s) past the cap are invisible to this read — so
+		// persisting it would silently drop them from future coverage
+		// instead of leaving them correctly "uncovered". Skip the write
+		// entirely rather than launder a partial read into durable state;
+		// the existing prior checkpoint (if any) is left untouched for the
+		// next claim to retry against.
+		slog.Warn("checkpoint: live comment scan truncated; skipping checkpoint refresh this claim",
+			"issue_id", uuidToString(issue.ID), "agent_id", uuidToString(agentID))
 		return ""
 	}
 
@@ -48,7 +67,7 @@ func (h *Handler) loadIssueCheckpointBlock(ctx context.Context, issue db.Issue, 
 		WorkspaceID: issue.WorkspaceID,
 	})
 	hadPrior := err == nil
-	if err != nil && err != pgx.ErrNoRows {
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		slog.Warn("checkpoint: load prior checkpoint failed; treating as cold start",
 			"issue_id", uuidToString(issue.ID), "agent_id", uuidToString(agentID), "error", err)
 	}
@@ -116,15 +135,20 @@ func (h *Handler) loadIssueCheckpointBlock(ctx context.Context, issue db.Issue, 
 // (root id, reply_count, last_activity_at, resolved) tuple a checkpoint
 // diffs against. No new traversal — this is the reuse point CHE-489
 // documented.
-func (h *Handler) scanRootCoverageForIssue(ctx context.Context, issue db.Issue) ([]checkpoint.ThreadCoverage, error) {
+//
+// truncated mirrors fetchCommentsResult.CommentsTruncated: true when
+// commentHardCap dropped the oldest root(s) from this read. The caller must
+// not persist a checkpoint built from a truncated scan — see the guard in
+// loadIssueCheckpointBlock.
+func (h *Handler) scanRootCoverageForIssue(ctx context.Context, issue db.Issue) (live []checkpoint.ThreadCoverage, truncated bool, err error) {
 	result, err := h.fetchCommentsForList(ctx, fetchCommentsArgs{
 		Issue:     issue,
 		RootsOnly: true,
 	})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	live := make([]checkpoint.ThreadCoverage, 0, len(result.Comments))
+	live = make([]checkpoint.ThreadCoverage, 0, len(result.Comments))
 	for _, c := range result.Comments {
 		stat := result.RootStats[uuidToString(c.ID)]
 		live = append(live, checkpoint.ThreadCoverage{
@@ -134,7 +158,7 @@ func (h *Handler) scanRootCoverageForIssue(ctx context.Context, issue db.Issue) 
 			Resolved:       c.ResolvedAt.Valid,
 		})
 	}
-	return live, nil
+	return live, result.CommentsTruncated, nil
 }
 
 // rowFromDB converts a sqlc-generated IssueCheckpoint row into the

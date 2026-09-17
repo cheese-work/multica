@@ -127,6 +127,66 @@ func TestClaimTaskByRuntime_CheckpointBlock_EndToEnd(t *testing.T) {
 	}
 }
 
+// TestClaimTaskByRuntime_CheckpointDecodeFailure_DoesNotFailClaim covers the
+// decode-failure branch the CHE-593 review flagged as untested: store_test.go
+// proves FromRow errors on malformed JSON, but nothing proved
+// loadIssueCheckpointBlock actually swallows that error rather than blanking
+// the claim. This seeds a persisted checkpoint row with malformed
+// obligations JSON directly (bypassing the handler, which never writes
+// invalid JSON itself — this simulates a hand-edited or cross-version row)
+// and asserts the claim still succeeds and degrades to a fresh checkpoint
+// rather than failing.
+func TestClaimTaskByRuntime_CheckpointDecodeFailure_DoesNotFailClaim(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+
+	ctx := context.Background()
+	runtimeID := createClaimReclaimRuntime(t, ctx, "Checkpoint decode-failure claim runtime")
+	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "Checkpoint decode-failure claim agent")
+
+	// "not an array" is valid JSON (a bare JSON string), so Postgres accepts
+	// it into the jsonb column; it is invalid input for []Obligation, so
+	// json.Unmarshal fails when FromRow decodes it — the failure mode this
+	// test targets.
+	dbfx.Exec(t, `
+		INSERT INTO issue_checkpoint (workspace_id, issue_id, agent_id, issue_revision, candidate_id, obligations)
+		VALUES ($1, $2, $3, 1, '', '"not an array"'::jsonb)
+	`, testWorkspaceID, issueID, agentID)
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM issue_checkpoint WHERE issue_id = $1 AND agent_id = $2`, issueID, agentID)
+	})
+
+	taskID := createDispatchedClaimFixtureTask(t, ctx, agentID, runtimeID, issueID, "120 seconds", false)
+	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil,
+		testWorkspaceID, "checkpoint-decode-failure-claim")
+	req = withURLParam(req, "runtimeId", runtimeID)
+	w := testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusOK)
+
+	var resp struct {
+		Task *struct {
+			ID              string `json:"id"`
+			CheckpointBlock string `json:"checkpoint_block"`
+		} `json:"task"`
+	}
+	w.JSON(&resp)
+	if resp.Task == nil || resp.Task.ID != taskID {
+		t.Fatalf("expected claim to succeed despite a malformed prior checkpoint row, got %+v (body=%s)", resp.Task, w.Body.String())
+	}
+	if resp.Task.CheckpointBlock != "" {
+		t.Errorf("expected a malformed prior checkpoint to degrade to cold start (empty block), got %q", resp.Task.CheckpointBlock)
+	}
+
+	// The claim must still refresh the coverage cursor from live state even
+	// though the prior row was unusable — cold start, not a stuck row.
+	var obligations string
+	dbfx.QueryRow(t, `SELECT obligations::text FROM issue_checkpoint WHERE issue_id = $1 AND agent_id = $2`,
+		issueID, agentID).Scan(&obligations)
+	if obligations != "[]" {
+		t.Errorf("expected the refreshed checkpoint to reset obligations to [] on decode failure, got %q", obligations)
+	}
+}
+
 func containsAll(haystack string, needles ...string) bool {
 	for _, n := range needles {
 		if !strings.Contains(haystack, n) {

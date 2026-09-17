@@ -6,7 +6,7 @@ import (
 )
 
 // Row is the plain-data shape a Checkpoint marshals to/from for storage in
-// issue_checkpoint (migration 475). It exists so this package stays free of
+// issue_checkpoint (migration 502). It exists so this package stays free of
 // any db/pgtype import — the handler package converts between Row and its
 // sqlc-generated params/row types, keeping the storage schema and the
 // content-contract type independent of each other.
