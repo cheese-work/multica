@@ -139,66 +139,26 @@ if ! flock -w 600 9; then
   exit 1
 fi
 
-# json_field reads one dotted field path out of a JSON file with
-# JSON.parse(readFileSync(...)) rather than Node's require() cache: require()
-# resolves extensionless files (a GitHub Actions runner temp path, a mktemp
-# file with no ".json" suffix) as CommonJS source and throws a SyntaxError on
-# a bare JSON document instead of parsing it. JSON.parse never cares about
-# the filename.
-json_field() {
-  node -e '
-    const fs = require("node:fs");
-    const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-    const value = process.argv[2].split(".").reduce((acc, key) => acc?.[key], data);
-    process.stdout.write(value === undefined || value === null ? "" : String(value));
-  ' "$1" "$2"
-}
+# deploy-lib.sh is the shared library both this script and cutover.sh (the
+# A/B slot cutover controller, CHE-397 unit 2) source for JSON field reads,
+# image reference parsing/verification, the migration one-shot runner and
+# tuple capture — one implementation of each, not two that can drift the
+# way CHE-549's finding 5 happened when a second migration-invocation path
+# grew up independently. See deploy-lib.sh's own header for the full
+# rationale.
+if [ ! -f "$script_dir/deploy-lib.sh" ]; then
+  echo "deploy-lib.sh is missing from $script_dir — deploy.sh cannot run without its shared helpers" >&2
+  exit 1
+fi
+# shellcheck source=deploy-lib.sh
+source "$script_dir/deploy-lib.sh"
 
-# image_repo strips the "@sha256:..." suffix off a "repo@sha256:digest"
-# reference, leaving just "repo". Splitting on ":" instead would be wrong —
-# "repo@sha256:digest" contains a colon *inside* the digest itself, so a
-# naive ${ref%%:*} truncates at "repo@sha256" instead of "repo".
-image_repo() {
-  printf '%s' "${1%%@*}"
-}
-
-# image_digest strips everything up to and including "@", leaving
-# "sha256:digest" — the counterpart to image_repo.
-image_digest() {
-  printf '%s' "${1##*@}"
-}
-
-# is_valid_digest reports (via exit status) whether its argument is a
-# well-formed "sha256:<64 lowercase hex>" digest. capture_tuple falls back to
-# a placeholder all-zero digest when `docker inspect` cannot resolve one (see
-# its own comment); that placeholder is syntactically well-formed but does
-# not identify any real image, so rollback must not trust it as-is — this
-# helper is how rollback tells a real digest apart from that placeholder (and
-# from any other malformed value) before composing a "repo@digest" reference.
-is_valid_digest() {
-  [[ "$1" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
-  [[ "$1" != "sha256:0000000000000000000000000000000000000000000000000000000000000" ]]
-}
-
-# bare_repo strips BOTH a possible "@sha256:digest" suffix and a possible
-# ":tag" suffix, leaving just the repository — the reference stored in a
-# tuple snapshot's images.*.reference field is tag-form ("repo:tag", see
-# deploy/cd/fixtures/c00-tuple-*.json and capture_tuple below), so combining
-# it with a separately-tracked digest requires stripping the tag first.
-# image_repo alone is not enough here: it only strips an "@..." suffix, so
-# feeding it a "repo:tag" reference with no "@" leaves the ":tag" in place
-# and produces the invalid double-locator "repo:tag@sha256:digest".
-#
-# This assumes the registry host has no port number (true for every
-# reference this script handles — ghcr.io never uses one); a
-# "host:port/repo:tag" reference would have its tag-strip fire on the port's
-# colon instead. If a port-bearing registry is ever introduced here, this
-# needs a smarter split (rightmost ":" before the first "/" after it).
-bare_repo() {
-  local ref=$1
-  ref="${ref%%@*}"
-  printf '%s' "${ref%%:*}"
-}
+# compose_files/migration_service_name are deploy-lib.sh's extension points:
+# this script's single-slot deploy always targets the base compose file's
+# own "backend" service, so both are fixed here once rather than threaded
+# through every call site.
+compose_files=("docker-compose.selfhost.yml")
+migration_service_name="backend"
 
 backend_image="$(json_field "$manifest" images.backend)"
 web_image="$(json_field "$manifest" images.web)"
@@ -224,97 +184,6 @@ backend_digest="$(image_digest "$backend_image")"
 web_repo="$(image_repo "$web_image")"
 web_digest="$(image_digest "$web_image")"
 image_tag="sha-${source_sha}"
-
-verify_pulled_digest() {
-  local repo=$1
-  local tag=$2
-  local expected_digest=$3
-  local actual
-  actual="$(docker inspect --format '{{index .RepoDigests 0}}' "${repo}:${tag}" 2>/dev/null | sed -E 's#^.*@##')"
-  if [ "$actual" != "$expected_digest" ]; then
-    echo "pulled image ${repo}:${tag} digest ${actual:-<none>} does not match manifest digest ${expected_digest}" >&2
-    return 1
-  fi
-}
-
-compose() {
-  (cd "$compose_dir" && docker compose -f docker-compose.selfhost.yml "$@")
-}
-
-# backend_published_port asks Compose what host port it actually published
-# for the backend's container port 8080, the same way the repo's own
-# selfhost installers and `make selfhost` (scripts/selfhost-wait.sh) already
-# do — see the port-alias comment at the top of docker-compose.selfhost.yml.
-# Resolving the BACKEND_PORT/API_PORT/SERVER_PORT/PORT alias chain by hand
-# here would just be a second, driftable copy of that same fallback logic.
-backend_published_port() {
-  compose port backend 8080 2>/dev/null | sed -E 's#^.*:##'
-}
-
-wait_ready() {
-  local timeout_s=$1
-  local waited=0
-  local port
-  port="$(backend_published_port)"
-  if [ -z "$port" ]; then
-    echo "could not resolve the backend's published port via 'docker compose port'" >&2
-    return 1
-  fi
-  while [ "$waited" -lt "$timeout_s" ]; do
-    if curl --fail --silent --show-error "http://127.0.0.1:${port}/readyz" >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep 2
-    waited=$((waited + 2))
-  done
-  return 1
-}
-
-# capture_tuple records the currently-running stack's identity in the shape
-# admission.mjs / tuple-snapshot.mjs already validate (see
-# deploy/cd/fixtures/c00-tuple-*.json), so the state file this script writes is
-# the same format the NEXT deploy's admission stage consumes as its baseline.
-#
-# That round trip is the whole point, and it is why this delegates to
-# capture-tuple.sh rather than building the JSON inline: the inline version
-# emitted placeholder digests that tuple-snapshot.mjs rejects outright (61 hex
-# characters where it requires 64), so every tuple this script wrote was
-# unusable as the next deploy's baseline — the automatic chain would have
-# worked exactly once. capture-tuple.sh computes real digests from the live
-# host and self-validates before returning, and is the same script
-# cd-deploy.yml's prepare-release-candidate job runs over SSH to read the
-# baseline, so the two can never drift into disagreeing about what "the
-# deployed tuple" means.
-capture_tuple() {
-  local out=$1
-  bash "$script_dir/capture-tuple.sh" \
-    --compose-dir "$compose_dir" \
-    --output "$out" \
-    --application-sha "$source_sha"
-}
-
-# run_migration_step launches exactly one throwaway container from the given
-# "repo:tag" backend image, entrypoint overridden to the migrate binary,
-# joined to the already-running compose network so it shares DATABASE_URL
-# with the rest of the stack. --no-deps means it does not also (re)start
-# postgres. Its exit code is the caller's signal for whether it is safe to
-# bring up application containers at all.
-#
-# MULTICA_BACKEND_IMAGE/MULTICA_IMAGE_TAG must be set from the *given* image,
-# not whatever the caller's ambient environment happens to hold. Both the
-# forward deploy and the rollback's bounded down-migration run this same
-# function against the same (new/failed) backend image — only the migrate
-# direction and --to target differ.
-run_migration_step() {
-  local repo=$1
-  local tag=$2
-  shift 2
-  MULTICA_BACKEND_IMAGE="$repo" \
-  MULTICA_IMAGE_TAG="$tag" \
-    compose run --rm --no-deps \
-    --entrypoint ./migrate \
-    backend "$@"
-}
 
 echo "==> deploy plan"
 echo "    source_sha:    $source_sha"
@@ -449,7 +318,7 @@ rollback() {
     exit 1
   fi
 
-  if wait_ready 120; then
+  if wait_ready backend 120; then
     echo "==> rollback complete: previous tuple restored and healthy"
     exit 1 # deploy still failed overall — this is a successful rollback of a failed deploy
   fi
@@ -482,12 +351,12 @@ MULTICA_SKIP_MIGRATIONS=1 \
   compose up -d --no-deps backend frontend || rollback "container start failed"
 
 echo "==> health-checking new deployment"
-if ! wait_ready 180; then
+if ! wait_ready backend 180; then
   rollback "new deployment did not become ready within 180s"
 fi
 
 echo "==> deploy succeeded; recording deployed tuple"
-capture_tuple "$state_file"
+capture_tuple "$state_file" "$source_sha"
 cat "$state_file"
 
 echo "==> deploy of $source_sha complete"
