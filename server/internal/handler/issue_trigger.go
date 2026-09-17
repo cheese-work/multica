@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -87,7 +88,15 @@ func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger 
 		// The member who performed this assign/promote is the accountable human
 		// for the run (MUL-4302 §4). An agent actor is not a human, so only a
 		// member actor is threaded; otherwise attribution falls back to the chain.
-		_, _ = h.TaskService.EnqueueTaskForIssueWithHandoff(ctx, issue, handoffNote, memberActorUserID(actorType, actorID))
+		if _, err := h.TaskService.EnqueueTaskForIssueWithHandoff(ctx, issue, handoffNote, memberActorUserID(actorType, actorID)); err != nil {
+			// ErrDuplicatePendingTask is the expected coalesce outcome (a
+			// sibling run already covers this target); anything else is a
+			// real enqueue failure that was previously discarded silently
+			// (CHE-486).
+			if !errors.Is(err, service.ErrDuplicatePendingTask) {
+				slog.Error("dispatch issue run failed", "issue_id", uuidToString(issue.ID), "agent_id", uuidToString(trigger.AgentID), "error", err)
+			}
+		}
 	case "squad":
 		h.enqueueSquadLeaderTask(ctx, issue, pgtype.UUID{}, actorType, actorID, handoffNote)
 	}
