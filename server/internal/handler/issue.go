@@ -3104,6 +3104,26 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		return out
 	}
 
+	// CHE-408: refuse an agent-authored description that does not cite the
+	// required source declared on the PARENT issue. A brand-new issue has no
+	// properties of its own yet, so inheriting the parent's declaration is the
+	// only way a create can carry an obligation at all.
+	//
+	// This must run BEFORE IssueService.Create rather than inside it: that call
+	// enqueues the assignee's agent task (maybeEnqueueOnAssign) in the SAME
+	// transaction as the insert, so there is no point after the row exists at
+	// which the dispatch has not already been arranged.
+	if req.Description != nil && parentIssueID.Valid {
+		if parent, perr := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
+			ID:          parentIssueID,
+			WorkspaceID: wsUUID,
+		}); perr == nil {
+			if h.rejectMissingRequiredSourceLink(w, r, creatorType, true, parent, *req.Description, "description") {
+				return
+			}
+		}
+	}
+
 	res, err := h.IssueService.Create(r.Context(), service.IssueCreateParams{
 		WorkspaceID:    wsUUID,
 		Title:          req.Title,
@@ -3482,6 +3502,20 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if req.Title != nil {
 		params.Title = pgtype.Text{String: *req.Title, Valid: true}
 	}
+	// CHE-408: refuse an agent-authored description that does not cite this
+	// issue's declared required source.
+	//
+	// This resolves the actor itself rather than reusing UpdateIssue's existing
+	// resolveActor call: that one sits ~200 lines below, AFTER
+	// updateIssueAtomically/UpdateIssue have already written the row. Hooking
+	// there would validate a change that had already happened.
+	if req.Description != nil {
+		updateActorType, _ := h.resolveActor(r, userID, workspaceID)
+		if h.rejectMissingRequiredSourceLink(w, r, updateActorType, true, prevIssue, *req.Description, "description") {
+			return
+		}
+	}
+
 	if req.Description != nil {
 		params.Description = pgtype.Text{String: *req.Description, Valid: true}
 	}
