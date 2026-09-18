@@ -785,11 +785,43 @@ export function findInvalidIndexes({ connInfo, queryTimeoutMs = DEFAULT_WALL_CLO
 // guaranteed to be present (it is not part of this repo's runtime image),
 // but Docker always is on the X99 CD runners (see docker/entrypoint.sh /
 // deploy/cd/qualification.sh, which already assume Docker). In this mode
-// every observation query runs inside a short-lived, immediately-removed
-// `postgres:16-alpine` container attached to the given Docker network, so
-// no extra host dependency is required and the mechanism matches D1's
-// existing synthetic-fixture convention.
+// every observation query runs inside a FRESH, short-lived,
+// immediately-removed `postgres:16-alpine` container attached to the given
+// Docker network — `docker run --rm ...` — so no extra host dependency is
+// required and the mechanism matches D1's existing synthetic-fixture
+// convention. Measured overhead is ~450-550ms per call (image already
+// cached; a fresh container start plus client connect), which is fine for
+// test suites but leaves no margin against this module's own <=500ms
+// DEFAULT_QUERY_TIMEOUT_MS statement budget for a caller on a host that
+// already has a running Postgres container of its own (see
+// --psql-via-docker-exec below).
+//
+// --psql-via-docker-exec <container>: runs `docker exec <container> psql
+// ...` against an ALREADY-RUNNING postgres container instead of starting a
+// new one — the same "one running container, one exec" shape
+// deploy-lib.sh's `compose exec -T postgres psql ...` already uses
+// elsewhere in this repo for the exact same reason (current_ledger_version,
+// deploy.sh's version reads). Measured overhead is ~100-150ms, comfortably
+// inside the statement budget. This is the correct mode for cutover.sh /
+// deploy.sh on a host (C00) that has no host `psql` binary but does have
+// the compose stack's own postgres container already running — unlike
+// --psql-via-docker-network, it never pulls or starts a second,
+// independent postgres:16-alpine container, so it also does not require
+// the caller's Docker network name, only the running container's name/ID.
 function buildConnInfo(databaseUrl, opts = {}) {
+  if (opts.dockerNetwork && opts.dockerExecContainer) {
+    fail("--psql-via-docker-network and --psql-via-docker-exec are mutually exclusive");
+  }
+  if (opts.dockerExecContainer) {
+    return {
+      databaseUrl,
+      command: (extraEnv) => {
+        const envArgs = Object.entries(extraEnv).flatMap(([k, v]) => ["--env", `${k}=${v}`]);
+        return ["docker", "exec", ...envArgs, opts.dockerExecContainer, "psql"];
+      },
+      env: {},
+    };
+  }
   if (opts.dockerNetwork) {
     return {
       databaseUrl,
@@ -811,13 +843,14 @@ function buildConnInfo(databaseUrl, opts = {}) {
 function connOptsFromArgs(args) {
   const databaseUrl = option("--database-url", args, { required: false, fallback: process.env.DATABASE_URL }) || fail("missing --database-url");
   const dockerNetwork = option("--psql-via-docker-network", args, { required: false, fallback: undefined });
+  const dockerExecContainer = option("--psql-via-docker-exec", args, { required: false, fallback: undefined });
   const queryTimeoutMs = Number(option("--query-timeout-ms", args, { required: false, fallback: String(DEFAULT_QUERY_TIMEOUT_MS) }));
-  return { databaseUrl, dockerNetwork, queryTimeoutMs };
+  return { databaseUrl, dockerNetwork, dockerExecContainer, queryTimeoutMs };
 }
 
 function cliPreflight(args) {
-  const { databaseUrl, dockerNetwork, queryTimeoutMs } = connOptsFromArgs(args);
-  const state = observeQuiescenceState({ connInfo: buildConnInfo(databaseUrl, { dockerNetwork }), queryTimeoutMs });
+  const { databaseUrl, dockerNetwork, dockerExecContainer, queryTimeoutMs } = connOptsFromArgs(args);
+  const state = observeQuiescenceState({ connInfo: buildConnInfo(databaseUrl, { dockerNetwork, dockerExecContainer }), queryTimeoutMs });
   const result = evaluatePassivePreflight(state);
   process.stdout.write(`${JSON.stringify(result)}\n`);
   process.exitCode = result.admit ? 0 : 1;
@@ -835,7 +868,7 @@ const FENCED_SESSION_FIELD_SEPARATOR = "|";
 const FENCED_SESSION_ENTRY_SEPARATOR = ",";
 
 function cliFinalGate(args) {
-  const { databaseUrl, dockerNetwork, queryTimeoutMs } = connOptsFromArgs(args);
+  const { databaseUrl, dockerNetwork, dockerExecContainer, queryTimeoutMs } = connOptsFromArgs(args);
   // --fenced-pids is the RAW, unverified pid allowlist. It exists for the
   // one call site where verification is structurally impossible: the
   // pre-launch gate, when the migrator has not started and owns no live
@@ -848,7 +881,7 @@ function cliFinalGate(args) {
   const roleName = option("--role-name", args, { required: false, fallback: "" });
   const databaseName = option("--database-name", args, { required: false, fallback: "" });
   const attemptLockKey = attemptLockKeyFromEnv();
-  const connInfo = buildConnInfo(databaseUrl, { dockerNetwork });
+  const connInfo = buildConnInfo(databaseUrl, { dockerNetwork, dockerExecContainer });
 
   // A single previously-discovered pid is not enough to fence a live
   // migrator: the same OS process/role can legitimately hold more than one
@@ -932,10 +965,10 @@ function cliFinalGate(args) {
 }
 
 function cliFindLiveSessionByRole(args) {
-  const { databaseUrl, dockerNetwork, queryTimeoutMs } = connOptsFromArgs(args);
+  const { databaseUrl, dockerNetwork, dockerExecContainer, queryTimeoutMs } = connOptsFromArgs(args);
   const roleName = option("--role-name", args);
   const databaseName = option("--database-name", args);
-  const result = findLiveSessionByRole({ connInfo: buildConnInfo(databaseUrl, { dockerNetwork }), roleName, databaseName, queryTimeoutMs });
+  const result = findLiveSessionByRole({ connInfo: buildConnInfo(databaseUrl, { dockerNetwork, dockerExecContainer }), roleName, databaseName, queryTimeoutMs });
   process.stdout.write(`${JSON.stringify(result)}\n`);
   process.exitCode = result.ok ? 0 : 1;
 }
@@ -948,10 +981,10 @@ function cliFindLiveSessionByRole(args) {
 // handing this output straight to final-gate as a fence is the exact
 // admission hole --fenced-role/--fenced-database was removed for.
 function cliFindLiveSessionsForRole(args) {
-  const { databaseUrl, dockerNetwork, queryTimeoutMs } = connOptsFromArgs(args);
+  const { databaseUrl, dockerNetwork, dockerExecContainer, queryTimeoutMs } = connOptsFromArgs(args);
   const roleName = option("--role-name", args);
   const databaseName = option("--database-name", args);
-  const result = findLiveSessionsForRole({ connInfo: buildConnInfo(databaseUrl, { dockerNetwork }), roleName, databaseName, queryTimeoutMs });
+  const result = findLiveSessionsForRole({ connInfo: buildConnInfo(databaseUrl, { dockerNetwork, dockerExecContainer }), roleName, databaseName, queryTimeoutMs });
   process.stdout.write(`${JSON.stringify(result)}\n`);
   process.exitCode = result.ok ? 0 : 1;
 }
@@ -961,21 +994,21 @@ function cliFindLiveSessionsForRole(args) {
 // non-zero cases are "do not proceed" for the caller; the JSON on stdout
 // distinguishes them for logging.
 function cliListInvalidIndexes(args) {
-  const { databaseUrl, dockerNetwork, queryTimeoutMs } = connOptsFromArgs(args);
-  const result = findInvalidIndexes({ connInfo: buildConnInfo(databaseUrl, { dockerNetwork }), queryTimeoutMs });
+  const { databaseUrl, dockerNetwork, dockerExecContainer, queryTimeoutMs } = connOptsFromArgs(args);
+  const result = findInvalidIndexes({ connInfo: buildConnInfo(databaseUrl, { dockerNetwork, dockerExecContainer }), queryTimeoutMs });
   process.stdout.write(`${JSON.stringify(result)}\n`);
   process.exitCode = result.ok && result.invalidIndexes.length === 0 ? 0 : 1;
 }
 
 function cliVerifyLiveSessionIsCovered(args) {
-  const { databaseUrl, dockerNetwork, queryTimeoutMs } = connOptsFromArgs(args);
+  const { databaseUrl, dockerNetwork, dockerExecContainer, queryTimeoutMs } = connOptsFromArgs(args);
   const pid = option("--pid", args);
   const backendStart = option("--backend-start", args);
   const expectedRoleName = option("--role-name", args);
   const expectedDatabaseName = option("--database-name", args);
   const attemptLockKey = attemptLockKeyFromEnv();
   const result = verifyLiveSessionIsCovered({
-    connInfo: buildConnInfo(databaseUrl, { dockerNetwork }), pid, backendStart,
+    connInfo: buildConnInfo(databaseUrl, { dockerNetwork, dockerExecContainer }), pid, backendStart,
     expectedRoleName, expectedDatabaseName, attemptLockKey, queryTimeoutMs,
   });
   process.stdout.write(`${JSON.stringify(result)}\n`);
@@ -990,13 +1023,13 @@ function cliVerifyLiveSessionIsCovered(args) {
 // 2 = observation failed (unknown state; the caller must treat this the
 // same as "not absent," i.e. fail closed, never as success).
 function cliVerifyLiveSessionIsAbsent(args) {
-  const { databaseUrl, dockerNetwork, queryTimeoutMs } = connOptsFromArgs(args);
+  const { databaseUrl, dockerNetwork, dockerExecContainer, queryTimeoutMs } = connOptsFromArgs(args);
   const pid = option("--pid", args);
   const backendStart = option("--backend-start", args);
   const roleName = option("--role-name", args);
   const databaseName = option("--database-name", args);
   const result = verifyLiveSessionIsAbsent({
-    connInfo: buildConnInfo(databaseUrl, { dockerNetwork }), pid, backendStart,
+    connInfo: buildConnInfo(databaseUrl, { dockerNetwork, dockerExecContainer }), pid, backendStart,
     roleName, databaseName, queryTimeoutMs,
   });
   process.stdout.write(`${JSON.stringify(result)}\n`);
@@ -1018,7 +1051,7 @@ if (isMain) {
     else if (command === "verify-live-session-is-covered") cliVerifyLiveSessionIsCovered(args);
     else if (command === "verify-live-session-is-absent") cliVerifyLiveSessionIsAbsent(args);
     else if (command === "list-invalid-indexes") cliListInvalidIndexes(args);
-    else fail(`usage: quiescence.mjs <preflight|final-gate|find-live-session-by-role|find-live-sessions-for-role|verify-live-session-is-covered|verify-live-session-is-absent|list-invalid-indexes> --database-url postgres://... [--query-timeout-ms N] [--fenced-pids p1,p2] [--fenced-sessions 'pid|backend_start,pid|backend_start' --role-name R --database-name D] [--role-name R --database-name D [--pid P --backend-start TS]] (attempt-bound fencing additionally requires ${ATTEMPT_LOCK_KEY_ENV} set in the environment, never passed as a flag)`);
+    else fail(`usage: quiescence.mjs <preflight|final-gate|find-live-session-by-role|find-live-sessions-for-role|verify-live-session-is-covered|verify-live-session-is-absent|list-invalid-indexes> --database-url postgres://... [--psql-via-docker-network NAME | --psql-via-docker-exec CONTAINER] [--query-timeout-ms N] [--fenced-pids p1,p2] [--fenced-sessions 'pid|backend_start,pid|backend_start' --role-name R --database-name D] [--role-name R --database-name D [--pid P --backend-start TS]] (attempt-bound fencing additionally requires ${ATTEMPT_LOCK_KEY_ENV} set in the environment, never passed as a flag)`);
   } catch (error) {
     process.stderr.write(`quiescence: ${error.message}\n`);
     process.exitCode = 2;

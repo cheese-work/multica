@@ -202,6 +202,24 @@ current_ledger_version() {
     "SELECT coalesce(max(version), '') FROM schema_migrations" | tr -d '[:space:]'
 }
 
+# postgres_container_id resolves the ALREADY-RUNNING postgres service
+# container's ID via Compose, for callers that need to `docker exec` into it
+# directly (quiescence.mjs's --psql-via-docker-exec — see cutover.sh, which
+# has no host `psql` binary to fall back to on C00). This is the same
+# "one running container, one exec" shape current_ledger_version above
+# already uses via `compose exec -T postgres psql`; a caller invoking a
+# separate process (node, not this shell) needs the raw container id/name
+# rather than a `compose exec` shell built-in.
+postgres_container_id() {
+  local id
+  id="$(compose ps -q postgres 2>/dev/null)"
+  if [ -z "$id" ]; then
+    echo "could not resolve a running postgres container id via 'docker compose ps -q postgres'" >&2
+    return 1
+  fi
+  printf '%s' "$id"
+}
+
 # ledger_at_or_after reports (via exit status) whether $current is at or
 # after $floor in the REAL on-disk applied-migration order
 # (server/migrations/*.up.sql, sorted by filename — the same ordering
