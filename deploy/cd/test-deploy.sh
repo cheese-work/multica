@@ -129,6 +129,28 @@ check_service_args() {
   done
 }
 
+if [ "$1" = "login" ]; then
+  # login ghcr.io -u token --password-stdin — deploy.sh's GHCR_PULL_TOKEN
+  # gate (CHE-549). Consume stdin so the real password-stdin protocol is
+  # exercised. Check the forced-failure flag BEFORE logging the password: a
+  # real failed login is exactly the case where the caller must not be able
+  # to prove the registry ever saw the token, so a passing "login failed"
+  # scenario must not find its password in this log either.
+  password="$(cat)"
+  if [ -f "$control_dir/fail-ghcr-login" ]; then
+    printf 'login %s <rejected>\n' "$2" >>"$control_dir/registry-auth.log"
+    echo "mock docker: forced failure (fail-ghcr-login)" >&2
+    exit 1
+  fi
+  printf 'login %s password=%s\n' "$2" "$password" >>"$control_dir/registry-auth.log"
+  exit 0
+fi
+
+if [ "$1" = "logout" ]; then
+  printf 'logout %s\n' "$2" >>"$control_dir/registry-auth.log"
+  exit 0
+fi
+
 if [ "$1" = "compose" ]; then
   shift
   # shift off "-f docker-compose.selfhost.yml"
@@ -708,5 +730,51 @@ tuple_json="$(cat "$tuple")"
 expect_not_contains "$tuple_json" "0000000000000000000000000000000000000000000000000000000000000" deployed-tuple-is-admissible
 expect_contains "$tuple_json" "$backend_digest" deployed-tuple-is-admissible
 expect_contains "$tuple_json" "\"application_sha\": \"$source_sha\"" deployed-tuple-is-admissible
+
+
+# ---------------------------------------------------------------------------
+# Scenario 12 (CHE-549): GHCR_PULL_TOKEN set -> deploy.sh logs in to
+# ghcr.io with the real token before pulling, and logs out on the normal
+# success exit path.
+# ---------------------------------------------------------------------------
+state_dir="$(fresh_scenario_dir ghcr-login-happy-path)"
+control_dir="$state_dir/control"
+mkdir -p "$control_dir"
+touch "$control_dir/inspect-resolves"
+export GHCR_PULL_TOKEN=super-secret-pat
+output="$(run_deploy "$state_dir" 2>&1)"
+status=$?
+unset GHCR_PULL_TOKEN
+expect_exit 0 "$status" ghcr-login-happy-path
+expect_contains "$output" "logging in to ghcr.io" ghcr-login-happy-path
+
+auth_log="$(cat "$control_dir/registry-auth.log")"
+expect_contains "$auth_log" "login ghcr.io password=super-secret-pat" ghcr-login-happy-path
+expect_contains "$auth_log" "logout ghcr.io" ghcr-login-happy-path
+expect_not_contains "$output" "super-secret-pat" ghcr-login-happy-path
+
+# ---------------------------------------------------------------------------
+# Scenario 13 (CHE-549): GHCR login itself fails -> treated as a deploy
+# failure (rollback path), and the EXIT trap still logs out even though the
+# failure happened before the pull step ever ran.
+# ---------------------------------------------------------------------------
+state_dir="$(fresh_scenario_dir ghcr-login-fails)"
+control_dir="$state_dir/control"
+mkdir -p "$control_dir"
+touch "$control_dir/inspect-resolves"
+touch "$control_dir/fail-ghcr-login"
+export GHCR_PULL_TOKEN=super-secret-pat
+set +e
+output="$(run_deploy "$state_dir" 2>&1)"
+status=$?
+set -e
+unset GHCR_PULL_TOKEN
+expect_exit 1 "$status" ghcr-login-fails
+expect_contains "$output" "ghcr.io login failed" ghcr-login-fails
+expect_contains "$output" "no previous tuple to roll back to" ghcr-login-fails
+
+auth_log="$(cat "$control_dir/registry-auth.log")"
+expect_not_contains "$auth_log" "login ghcr.io password=" ghcr-login-fails
+expect_contains "$auth_log" "logout ghcr.io" ghcr-login-fails
 
 echo "deploy.sh control-flow fixtures passed"

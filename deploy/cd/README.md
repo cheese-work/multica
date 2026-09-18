@@ -540,15 +540,31 @@ C00 host by a real workflow run. What HAS been verified against real systems:
   which image tag each step uses and that the recorded tuple is admissible)
   against a scripted mock of `docker`/`docker compose`/`curl`.
 
-Still unverified, and both are blocked rather than untested:
+Still unverified, and blocked rather than untested:
 
 - **A real deploy run.** The `cheese-c00-deploy` runner that
   `prepare-release-candidate` and `deploy` require is not currently
   registered — the repository's runner list is empty. Until a runner carrying
   that label is online, the automatic path cannot execute regardless of the
   workflow being correct.
-- **Pulling the qualified pair on C00.** GHCR read is denied to every
-  credential available to this host, so no stage can pull
-  `ghcr.io/cheese-work/multica-*:sha-<commit>` yet. Fixing it needs either
-  `packages: read` added to the `congvc-bot` App installation or a PAT with
-  `read:packages`.
+
+**Pulling the qualified pair on C00 (CHE-549) is fixed, not blocked.** GHCR
+read was denied to every credential available on C00 — the org/App
+`packages: read` permission governs the GitHub API, not an unauthenticated
+`docker pull`, and there is no per-package "add an App" control for a
+private container package (only repositories can be added to that list).
+The fix is a dedicated registry credential rather than any App/org
+permission change: a `read:packages`-only classic PAT, stored as the
+`GHCR_PULL_TOKEN` environment secret on `c00-production` (scoped there, not
+as a repo secret, so D1's `cd-qualification.yml` stays credential-free).
+`deploy.sh` logs in to `ghcr.io` with it immediately before the pull step
+and logs out unconditionally on exit — success, rollback, or an early
+argument/file-check failure — via a single EXIT trap; unset, both steps are
+skipped (local `--dry-run` runs, or a host with its own credential store).
+`cd-deploy.yml`'s `deploy` job forwards the secret to the remote SSH session
+by exporting it inside a script piped over the session's stdin, never as a
+command-line argument or a file written to C00, so it is not visible to
+`ps` or left behind by the `remote_dir` cleanup. Covered by
+`deploy/cd/test-deploy.sh`'s `ghcr-login-happy-path` and `ghcr-login-fails`
+scenarios (mocked `docker login`/`logout`; a real end-to-end pull against
+GHCR is still pending the runner above).
