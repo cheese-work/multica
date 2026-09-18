@@ -186,3 +186,89 @@ func TestRuntimeUnusableNotice(t *testing.T) {
 		t.Errorf("notice must still say what to do:\n%s", withoutRepair)
 	}
 }
+
+// TestRuntimeBlockedNeedsNotice is the CHE-588 regression: a provider hold
+// must join the two runtime codes that already leave a durable trace, not
+// silently vanish on the three admission paths that have no other response
+// for the user to read. Also pins that the two original MUL-6164 codes keep
+// working (a "just add mine" edit that broke the OR would be caught here) and
+// that an ordinary non-notice blocked/waitable code — one whose wait resolves
+// on its own, or whose refusal is explained elsewhere — still returns false.
+func TestRuntimeBlockedNeedsNotice(t *testing.T) {
+	cases := []struct {
+		name string
+		code dispatch.ReasonCode
+		want bool
+	}{
+		{"runtime unusable: MUL-6164's original case", dispatch.ReasonRuntimeUnusable, true},
+		{"runtime profile missing: MUL-6164's second case", dispatch.ReasonRuntimeProfileMissing, true},
+		{"provider hold: CHE-588's case, the gap this test closes", dispatch.ReasonProviderHold, true},
+		{"runtime offline: the sleeping-laptop wait needs no notice", dispatch.ReasonRuntimeOffline, false},
+		{"target unavailable: not a runtime-repair or policy-hold cause", dispatch.ReasonTargetUnavailable, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RuntimeBlockedNeedsNotice(tc.code); got != tc.want {
+				t.Errorf("RuntimeBlockedNeedsNotice(%q) = %v, want %v", tc.code, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRuntimeUnusableNoticeProviderHoldRoutesToHoldText is the misdiagnosis
+// regression this task exists to close: a provider-hold verdict rendered
+// through the same RuntimeUnusableNotice callers use for a broken runtime
+// must produce the provider-hold text (naming the provider and the policy),
+// and must NOT contain any of the runtime-repair phrasing meant for a broken
+// CLI. Telling a user to reinstall a healthy CLI when the real cause is a
+// workspace policy hold reproduces MUL-6164's original defect one layer up —
+// exactly what CHE-588 was supposed to prevent, not recreate.
+func TestRuntimeUnusableNoticeProviderHoldRoutesToHoldText(t *testing.T) {
+	hold := ProviderHold{Provider: "openai", Text: "Stop all routing to OpenAI based agents."}
+	notice := ProviderHoldNotice("Nova", "openai", hold, []string{"Kit"})
+	verdict := AgentVerdict{
+		Availability: AgentBlocked,
+		Reason:       dispatch.ReasonProviderHold,
+		Detail:       notice,
+	}
+	got := RuntimeUnusableNotice("Nova", verdict)
+	if got != notice {
+		t.Errorf("RuntimeUnusableNotice for a provider hold must pass verdict.Detail through unchanged:\ngot:  %q\nwant: %q", got, notice)
+	}
+	for _, want := range []string{"Nova", "openai", "Stop all routing to OpenAI based agents"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("provider-hold notice missing %q:\n%s", want, got)
+		}
+	}
+	// The regression: none of the runtime-repair vocabulary may leak into a
+	// provider-hold notice. Any of these appearing means a caller is telling
+	// the user to reinstall a CLI that was never the problem.
+	for _, wrong := range []string{"reinstall", "Reinstall", "postinstall", "cannot be executed", "runtime profile"} {
+		if strings.Contains(got, wrong) {
+			t.Errorf("provider-hold notice contains %q, which belongs to the runtime-repair text: %q", wrong, got)
+		}
+	}
+}
+
+// TestRuntimeUnusableNoticeProviderHoldFailClosedDetailPassesThrough pins the
+// other providerHoldVerdict branch: malformed workspace settings fail closed
+// with a Detail that already names the real cause (unparseable settings), not
+// the ProviderHoldNotice builder's output. RuntimeUnusableNotice must still
+// pass it through rather than falling into runtime-repair text, and it must
+// not contain the runtime-repair vocabulary either.
+func TestRuntimeUnusableNoticeProviderHoldFailClosedDetailPassesThrough(t *testing.T) {
+	verdict := AgentVerdict{
+		Availability: AgentBlocked,
+		Reason:       dispatch.ReasonProviderHold,
+		Detail:       "workspace provider-hold settings could not be parsed: unexpected end of JSON input",
+	}
+	got := RuntimeUnusableNotice("Nova", verdict)
+	if got != verdict.Detail {
+		t.Errorf("fail-closed provider-hold notice must pass Detail through unchanged:\ngot:  %q\nwant: %q", got, verdict.Detail)
+	}
+	for _, wrong := range []string{"reinstall", "Reinstall", "postinstall", "cannot be executed", "runtime profile"} {
+		if strings.Contains(got, wrong) {
+			t.Errorf("fail-closed provider-hold notice contains %q, which belongs to the runtime-repair text: %q", wrong, got)
+		}
+	}
+}
