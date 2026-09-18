@@ -35,11 +35,21 @@ usage: capture-tuple.sh --compose-dir PATH --output PATH [--application-sha SHA]
                           the running backend container's
                           org.opencontainers.image.revision label, then to the
                           image tag resolved against --git-dir.
-  --git-dir PATH          A checkout of this repository used to expand a short
-                          image tag into a full 40-character commit. Defaults
+  --git-dir PATH          A checkout of this repository used to verify, and to
+                          expand, a commit taken from the image tag. Defaults
                           to this script's own repository when it is run from
-                          one. Ignored when the image carries a revision label
-                          or --application-sha is passed.
+                          one. Ignored when --application-sha is passed.
+
+Resolution order for the recorded application_sha, highest priority first:
+  1. --application-sha, when given
+  2. the image's org.opencontainers.image.revision label
+  3. the image tag (`sha-<40>` or a short SHA), verified against --git-dir
+
+Note for readers tracing production behaviour: cd-deploy.yml and deploy.sh
+both determine the commit themselves and pass --application-sha, so step 3
+normally runs only when this script is invoked directly. cd-deploy.yml
+deliberately passes nothing when the image carries a revision label, so that
+step 2 — the image's own statement about itself — stays authoritative.
 EOF
 }
 
@@ -47,13 +57,14 @@ compose_dir=""
 output=""
 application_sha=""
 git_dir=""
+git_dir_set=0
 
 while (($#)); do
   case "$1" in
     --compose-dir) compose_dir=${2:?}; shift 2 ;;
     --output) output=${2:?}; shift 2 ;;
     --application-sha) application_sha=${2:?}; shift 2 ;;
-    --git-dir) git_dir=${2:?}; shift 2 ;;
+    --git-dir) git_dir=${2-}; git_dir_set=1; shift 2 ;;
     --help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -78,8 +89,9 @@ compose() {
 # Default --git-dir to this script's own checkout when it is running from one.
 # On C00 the script is scp'd to a bare temp directory and this stays empty,
 # which is correct — the caller passes --git-dir (or --application-sha) when
-# tag resolution is needed.
-if [ -z "$git_dir" ]; then
+# tag resolution is needed. An explicit `--git-dir ""` opts out of the default
+# and models that bare-directory invocation.
+if [ -z "$git_dir" ] && [ "$git_dir_set" -eq 0 ]; then
   self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   if git -C "$self_dir" rev-parse --git-dir >/dev/null 2>&1; then
     git_dir="$self_dir"
@@ -177,19 +189,30 @@ application_sha_from_tag() {
     printf ''
     return 0
   fi
-  if [ ${#candidate} -eq 40 ]; then
-    printf '%s' "$candidate"
-    return 0
-  fi
+  # Verify against the repository whenever one is available, for BOTH the
+  # abbreviated and the full-length case. A syntactically valid `sha-<40 hex>`
+  # tag is not proof the commit exists — a mis-tag, a corrupted publish or
+  # manual drift can produce one — and recording it unchecked would contradict
+  # this function's own rule of never resolving to a guess.
   if [ -n "$git_dir" ]; then
     # ^{commit} forces a commit (not a tag object), and the trailing check
     # keeps an ambiguous or unknown abbreviation from silently becoming a
     # different commit.
-    candidate="$(git -C "$git_dir" rev-parse --verify --quiet "${candidate}^{commit}" 2>/dev/null || true)"
-    if [[ "$candidate" =~ ^[a-f0-9]{40}$ ]]; then
-      printf '%s' "$candidate"
+    verified="$(git -C "$git_dir" rev-parse --verify --quiet "${candidate}^{commit}" 2>/dev/null || true)"
+    if [[ "$verified" =~ ^[a-f0-9]{40}$ ]]; then
+      printf '%s' "$verified"
       return 0
     fi
+    # A repository was available and disagreed: refuse rather than fall back to
+    # the unverified spelling.
+    printf ''
+    return 0
+  fi
+  # No repository to check against. Only a full-length SHA is self-describing
+  # enough to use unverified; an abbreviation cannot be expanded at all.
+  if [ ${#candidate} -eq 40 ]; then
+    printf '%s' "$candidate"
+    return 0
   fi
   printf ''
 }
