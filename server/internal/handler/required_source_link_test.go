@@ -1,10 +1,17 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -487,5 +494,254 @@ func TestRequireHumanActor_ClosesSubIssueCreationToMachineActors(t *testing.T) {
 				t.Errorf("%s actor reached the handler; this path would need its own source-link guard", source)
 			}
 		})
+	}
+}
+
+// ── Fail-closed on "cannot tell" (CHE-408 review follow-up) ──────────────
+//
+// The guard's whole premise is that "cannot determine" resolves to enforce, the
+// same way a malformed settings blob does. Three lookups sit between "policy is
+// ON" and "this write is fine": decoding issue.Properties, ListIssueProperties,
+// and the two handler re-fetches of the issue. Each one originally returned
+// ""/skipped on error, which means a transient DB fault silently waived the
+// requirement — CHE-153 reopened by a connection blip rather than by a bug in
+// the check itself.
+//
+// These tests pin the failure direction. A cancelled request context produces a
+// real query error on the live pool, which is the closest faithful stand-in for
+// the connection fault being guarded against; the malformed-properties case is
+// produced by writing bytes the column accepts but json.Unmarshal rejects.
+
+// che408WantUndetermined asserts a fail-closed refusal rather than a pass.
+func che408WantUndetermined(t *testing.T, body []byte, field string) {
+	t.Helper()
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if decoded["code"] != "required_source_link_undetermined" {
+		t.Errorf("code = %v, want required_source_link_undetermined", decoded["code"])
+	}
+	if decoded["field"] != field {
+		t.Errorf("field = %v, want %q", decoded["field"], field)
+	}
+}
+
+// TestDeclaredRequiredSource_UndecodablePropertiesIsAnError covers the
+// json.Unmarshal(issue.Properties) branch.
+//
+// This one is asserted at the function rather than through a request, because
+// the issue table carries a CHECK constraint (issue_properties_is_object) that
+// makes the branch unreachable from a stored row: anything the column will
+// accept decodes into map[string]json.RawMessage. The branch is therefore
+// defense in depth against that invariant changing, and what matters is its
+// DIRECTION — "cannot decode" must surface as an error the caller fails closed
+// on, never as the "" that means "nothing declared". Writing it as a live
+// request test would require fabricating a row the database refuses to store.
+func TestDeclaredRequiredSource_UndecodablePropertiesIsAnError(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	source, err := testHandler.declaredRequiredSource(context.Background(), db.Issue{
+		WorkspaceID: parseUUID(testWorkspaceID),
+		Properties:  []byte(`["not an object"]`),
+	})
+	if err == nil {
+		t.Fatal("undecodable properties must return an error, not a silent empty requirement")
+	}
+	if source != "" {
+		t.Errorf("source = %q, want empty alongside the error", source)
+	}
+}
+
+// TestUpdateIssue_PropertyLookupErrorFailsClosed covers the
+// ListIssueProperties error path: the issue carries property values, so the
+// definitions must be read to find out whether one of them is the required
+// source, and that read is what fails.
+func TestUpdateIssue_PropertyLookupErrorFailsClosed(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	che408EnableWorkspacePolicy(t)
+	userID, agentID, taskID := che408AgentActor(t, "che408-prop-lookup@multica.test", "che408-prop-lookup")
+
+	issueID := dbfx.Issue(t, "che408 property lookup failure")
+	che408DeclareSource(t, issueID, che408Plan)
+
+	before := issueDescription(t, issueID)
+
+	req := withURLParam(newRequestAs(userID, http.MethodPut, "/api/issues/"+issueID, map[string]any{
+		"description": che408Disposable,
+	}), "id", issueID)
+	req = asAgentActor(req, agentID, taskID)
+
+	handler := che408HandlerFailingQuery(t, "FROM issue_property")
+	w := testutil.Call(t, handler.UpdateIssue, req).Want(http.StatusServiceUnavailable)
+	che408WantUndetermined(t, w.Body.Bytes(), "description")
+
+	if after := issueDescription(t, issueID); after != before {
+		t.Errorf("description must be unchanged when the requirement cannot be determined, got %q", after)
+	}
+}
+
+// che408FailingDBTX passes every statement through to the real pool except the
+// ones whose SQL contains a marker, which fail instead.
+//
+// Injecting at the DBTX seam rather than cancelling the request context is
+// deliberate: a cancelled context fails the handler's own earlier lookups too,
+// so the request would never reach the guard and the test would pass without
+// exercising the line it names. Targeting one statement keeps the rest of the
+// handler on the live database, so the write really does get as far as the
+// check before the fault lands.
+type che408FailingDBTX struct {
+	inner  db.DBTX
+	marker string
+	// skip lets a marker that matches several statements fail only the Nth
+	// one. The guard re-fetches the issue with the same SQL the handler
+	// already used to load it, so failing every match would break the earlier
+	// load and the request would never reach the check under test.
+	skip  int
+	seen  *int
+	guard *sync.Mutex
+}
+
+var errChe408InjectedQueryFailure = errors.New("che408: injected query failure")
+
+func (f che408FailingDBTX) shouldFail(sql string) bool {
+	if !strings.Contains(sql, f.marker) {
+		return false
+	}
+	if f.seen == nil {
+		return true
+	}
+	f.guard.Lock()
+	defer f.guard.Unlock()
+	*f.seen++
+	return *f.seen > f.skip
+}
+
+func (f che408FailingDBTX) Exec(ctx context.Context, sql string, args ...interface{}) (pgconn.CommandTag, error) {
+	if f.shouldFail(sql) {
+		return pgconn.CommandTag{}, errChe408InjectedQueryFailure
+	}
+	return f.inner.Exec(ctx, sql, args...)
+}
+
+func (f che408FailingDBTX) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+	if f.shouldFail(sql) {
+		return nil, errChe408InjectedQueryFailure
+	}
+	return f.inner.Query(ctx, sql, args...)
+}
+
+func (f che408FailingDBTX) QueryRow(ctx context.Context, sql string, args ...interface{}) pgx.Row {
+	if f.shouldFail(sql) {
+		return che408FailingRow{}
+	}
+	return f.inner.QueryRow(ctx, sql, args...)
+}
+
+type che408FailingRow struct{}
+
+func (che408FailingRow) Scan(...any) error { return errChe408InjectedQueryFailure }
+
+// che408HandlerFailingQuery copies the suite handler and swaps in a Queries
+// whose statements matching marker fail. The copy is per-test, so no other test
+// sees the fault.
+func che408HandlerFailingQuery(t *testing.T, marker string) *Handler {
+	t.Helper()
+	faulty := *testHandler
+	faulty.Queries = db.New(che408FailingDBTX{inner: testPool, marker: marker})
+	return &faulty
+}
+
+// che408HandlerFailingAfter fails matching statements only after the first
+// skip of them have been allowed through.
+func che408HandlerFailingAfter(t *testing.T, marker string, skip int) *Handler {
+	t.Helper()
+	seen := 0
+	faulty := *testHandler
+	faulty.Queries = db.New(che408FailingDBTX{
+		inner:  testPool,
+		marker: marker,
+		skip:   skip,
+		seen:   &seen,
+		guard:  &sync.Mutex{},
+	})
+	return &faulty
+}
+
+// che408IssueSelect is the column list unique to the issue-row SELECTs. The
+// guard's re-fetch uses it, and so does the handler's own earlier load, which
+// is why the counting variant above exists.
+const che408IssueSelect = "triage_state FROM issue"
+
+// TestCreateIssue_ParentLookupErrorFailsClosed covers issue.go's re-fetch of
+// the PARENT issue. That lookup is what tells the guard whether the parent
+// declares a required source; on error the create used to fall straight through
+// to IssueService.Create, persisting an uncited description AND enqueueing the
+// assignee's agent task in the same transaction.
+func TestCreateIssue_ParentLookupErrorFailsClosed(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	che408EnableWorkspacePolicy(t)
+	userID, agentID, taskID := che408AgentActor(t, "che408-parent-lookup@multica.test", "che408-parent-lookup")
+
+	parentID := dbfx.Issue(t, "che408 parent lookup failure")
+	che408DeclareSource(t, parentID, che408Plan)
+
+	req := newRequestAs(userID, http.MethodPost, "/api/issues", map[string]any{
+		"title":           "che408 uncited child",
+		"description":     che408Disposable,
+		"parent_issue_id": parentID,
+	})
+	req = asAgentActor(req, agentID, taskID)
+
+	handler := che408HandlerFailingQuery(t, che408IssueSelect)
+	w := testutil.Call(t, handler.CreateIssue, req).Want(http.StatusServiceUnavailable)
+	che408WantUndetermined(t, w.Body.Bytes(), "description")
+
+	// The refusal has to leave no row behind: a 503 that still created the
+	// issue would have dispatched its agent run too.
+	var created int
+	dbfx.QueryRow(t, `SELECT count(*) FROM issue WHERE parent_issue_id = $1`, parentID).Scan(&created)
+	if created != 0 {
+		t.Errorf("child issue count = %d, want 0 — the create must not persist when the requirement cannot be determined", created)
+	}
+}
+
+// TestUpdateComment_IssueLookupErrorFailsClosed covers comment.go's re-fetch of
+// the issue the comment belongs to. The comment already exists, so this lookup
+// cannot legitimately return "no rows" — any error is a fault, and skipping the
+// check on it let an edit strip a citation unchecked.
+func TestUpdateComment_IssueLookupErrorFailsClosed(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	che408EnableWorkspacePolicy(t)
+	userID, agentID, taskID := che408AgentActor(t, "che408-comment-lookup@multica.test", "che408-comment-lookup")
+
+	issueID := dbfx.Issue(t, "che408 comment lookup failure")
+	che408DeclareSource(t, issueID, che408Plan)
+	commentID := dbfx.Comment(t, issueID, che408Linked, testutil.Cols{
+		"author_type": "agent",
+		"author_id":   agentID,
+	})
+
+	req := withURLParam(newRequestAs(userID, http.MethodPut, "/api/comments/"+commentID, map[string]any{
+		"content": che408Disposable,
+	}), "commentId", commentID)
+	req = asAgentActor(req, agentID, taskID)
+
+	handler := che408HandlerFailingQuery(t, che408IssueSelect)
+	w := testutil.Call(t, handler.UpdateComment, req).Want(http.StatusServiceUnavailable)
+	che408WantUndetermined(t, w.Body.Bytes(), "content")
+
+	var content string
+	dbfx.QueryRow(t, `SELECT content FROM comment WHERE id = $1`, commentID).Scan(&content)
+	if content != che408Linked {
+		t.Errorf("comment content = %q, want the original citing text — the edit must not land", content)
 	}
 }
