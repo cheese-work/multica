@@ -181,6 +181,15 @@ if [ "\$1" = "compose" ]; then
       exit 0
       ;;
     ps)
+      # ps -q postgres — deploy-lib.sh's postgres_container_id, resolving
+      # the running postgres container for quiescence.mjs's
+      # --psql-via-docker-exec (CHE-655). A fixed fake id is enough: this
+      # suite's mock node intercepts */quiescence.mjs entirely (see above)
+      # and never actually execs into it.
+      if [ "\$1" = "-q" ] && [ "\$2" = "postgres" ]; then
+        printf 'mock-postgres-container-id\n'
+        exit 0
+      fi
       # ps --status running --format '{{.Service}}' backend frontend — the
       # base-service port-collision preflight. Empty (nothing running) by
       # default; a scenario touches base-services-running to model the
@@ -474,8 +483,12 @@ if [ -f "$state_dir/control/quiescence-calls.log" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Scenario 5 (negative control): migration step fails -> candidate never
-# starts, incumbent colour is untouched (no stop calls against blue).
+# Scenario 5 (negative control, CHE-655): migration step fails -> candidate
+# never starts. The incumbent was ALREADY drained/stopped before the
+# migration step ran (the fix: drain happens before the quiescence
+# final-gate and migration, not after — see cutover.sh's own comment), so
+# this is now an actual outage requiring manual intervention, not "blue
+# remains active".
 # ---------------------------------------------------------------------------
 state_dir="$(fresh_scenario_dir migrate-fails)"
 mkdir -p "$state_dir/control"
@@ -486,15 +499,17 @@ status=$?
 set -e
 expect_exit 1 "$status" migrate-fails
 expect_contains "$output" "migration step failed" migrate-fails
-expect_contains "$output" "blue remains active" migrate-fails
-if grep -q "backend-blue" "$state_dir/control/stop-calls.log" 2>/dev/null; then
-  echo "scenario migrate-fails: incumbent colour blue was stopped despite the candidate never starting" >&2
+expect_contains "$output" "MANUAL INTERVENTION REQUIRED" migrate-fails
+if ! grep -q "backend-blue" "$state_dir/control/stop-calls.log" 2>/dev/null; then
+  echo "scenario migrate-fails: incumbent colour blue was NOT drained before the migration step ran — this is the CHE-655 ordering bug (quiescence final-gate/migration must never run before the incumbent is drained)" >&2
   exit 1
 fi
 
 # ---------------------------------------------------------------------------
-# Scenario 6 (negative control): candidate health check never becomes ready
-# -> candidate stopped, incumbent remains active, router never switched.
+# Scenario 6 (negative control, CHE-655): candidate health check never
+# becomes ready -> candidate stopped. The incumbent was already drained
+# before the migration step ran, so the API is down and needs manual
+# intervention, not "leaving blue active".
 # ---------------------------------------------------------------------------
 state_dir="$(fresh_scenario_dir candidate-never-ready)"
 mkdir -p "$state_dir/control"
@@ -505,7 +520,7 @@ status=$?
 set -e
 expect_exit 1 "$status" candidate-never-ready
 expect_contains "$output" "did not become ready within 180s" candidate-never-ready
-expect_contains "$output" "leaving blue active" candidate-never-ready
+expect_contains "$output" "MANUAL INTERVENTION REQUIRED" candidate-never-ready
 
 # ---------------------------------------------------------------------------
 # Scenario 7 (negative control): candidate /health reports the wrong commit
@@ -528,8 +543,11 @@ expect_contains "$output" "health identity mismatch" wrong-health-identity
 # running Nginx process never picked it up — e.g. the container was killed
 # or lost its connection at exactly that moment). cutover.sh must report
 # this distinctly (candidate running but not receiving traffic) rather than
-# claiming success, and must NOT stop the incumbent colour — an interrupted
-# switch leaves the previous colour as the only one actually serving.
+# claiming success. The incumbent was already drained before the quiescence
+# final-gate/migration step ran (CHE-655 fix), so — unlike before that fix —
+# it is expected to already be stopped by this point; what must never happen
+# is claiming success (writing cutover-state.json) when the router never
+# actually moved.
 # ---------------------------------------------------------------------------
 state_dir="$(fresh_scenario_dir interrupted-switch)"
 mkdir -p "$state_dir/control"
@@ -541,10 +559,6 @@ set -e
 expect_exit 1 "$status" interrupted-switch
 expect_contains "$output" "router generation switch failed" interrupted-switch
 expect_contains "$output" "NOT receiving traffic" interrupted-switch
-if grep -q "backend-blue" "$state_dir/control/stop-calls.log" 2>/dev/null; then
-  echo "scenario interrupted-switch: incumbent colour blue was stopped despite the router switch never completing" >&2
-  exit 1
-fi
 if [ -f "$state_dir/cutover-state.json" ]; then
   echo "scenario interrupted-switch: cutover-state.json was written despite the switch never completing — this would claim green is active when the router never moved" >&2
   exit 1
