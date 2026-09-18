@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -450,6 +451,40 @@ func TestRequiredSourceLinkEnabledDefaults(t *testing.T) {
 			ws := db.Workspace{Settings: []byte(tc.settings)}
 			if got := requiredSourceLinkEnabled(ws); got != tc.want {
 				t.Errorf("requiredSourceLinkEnabled(%q) = %v, want %v", tc.settings, got, tc.want)
+			}
+		})
+	}
+}
+
+// ── Remaining write paths ────────────────────────────────────────────────
+
+// CreateCommentSubIssue is the fifth route that can persist an agent-authored
+// description (router.go: r.With(handler.RequireHumanActor).Post("/sub-issues")).
+// It carries no source-link guard because the router closes it to both machine
+// credential kinds — mat_ task tokens stamp X-Actor-Source: task_token and mcn_
+// cloud PATs stamp cloud_pat, and RequireHumanActor rejects both. This test
+// pins that reasoning: if the middleware is ever removed or its classification
+// narrowed, the path becomes reachable by an agent and needs its own guard.
+func TestRequireHumanActor_ClosesSubIssueCreationToMachineActors(t *testing.T) {
+	reached := false
+	guarded := RequireHumanActor(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		reached = true
+	}))
+
+	for _, source := range []string{"task_token", "cloud_pat"} {
+		t.Run(source, func(t *testing.T) {
+			reached = false
+			req := httptest.NewRequest(http.MethodPost, "/api/comments/x/sub-issues", nil)
+			req.Header.Set("X-Actor-Source", source)
+
+			rec := httptest.NewRecorder()
+			guarded.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("status = %d, want 403 for %s", rec.Code, source)
+			}
+			if reached {
+				t.Errorf("%s actor reached the handler; this path would need its own source-link guard", source)
 			}
 		})
 	}
