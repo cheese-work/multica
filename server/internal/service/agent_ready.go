@@ -113,7 +113,8 @@ const runtimeOfflineCodeDshProfile = "dsh_profile"
 func RuntimeBlockedNeedsNotice(code dispatch.ReasonCode) bool {
 	return code == dispatch.ReasonRuntimeUnusable ||
 		code == dispatch.ReasonRuntimeProfileMissing ||
-		code == dispatch.ReasonProviderHold
+		code == dispatch.ReasonProviderHold ||
+		code == dispatch.ReasonRuntimeAccessDenied
 }
 
 // AgentReadiness reports whether an agent can accept new work right now, and
@@ -208,7 +209,7 @@ func AgentReadiness(ctx context.Context, lookup RuntimeLookup, agent db.Agent) (
 	if err != nil {
 		return AgentVerdict{}, err
 	}
-	return runtimeVerdict(rt), nil
+	return runtimeVerdict(rt, agent), nil
 }
 
 // providerHoldVerdict is the provider-hold half of AgentReadiness, split out
@@ -323,9 +324,16 @@ func providerHoldSubstitutes(ctx context.Context, lookup RuntimeLookup, agent db
 	return names
 }
 
-// runtimeVerdict is the half of the decision that depends only on the runtime
-// row, split out so every branch is testable without a database.
-func runtimeVerdict(rt db.AgentRuntime) AgentVerdict {
+// runtimeVerdict combines runtime health with the ownership binding that
+// determines whether this agent can execute there.
+func runtimeVerdict(rt db.AgentRuntime, agent db.Agent) AgentVerdict {
+	if rt.Visibility == "private" && rt.OwnerID.Valid && (!agent.OwnerID.Valid || agent.OwnerID != rt.OwnerID) {
+		return AgentVerdict{
+			Availability: AgentBlocked,
+			Reason:       dispatch.ReasonRuntimeAccessDenied,
+			Detail:       "agent owner does not match private runtime owner",
+		}
+	}
 	if rt.Status == "online" {
 		return AgentVerdict{Availability: AgentAvailable}
 	}
@@ -447,6 +455,12 @@ func RuntimeUnusableNotice(agentName string, verdict AgentVerdict) string {
 	// pass-through, not a second renderer to keep in sync with the first.
 	if verdict.Reason == dispatch.ReasonProviderHold {
 		return verdict.Detail
+	}
+	if verdict.Reason == dispatch.ReasonRuntimeAccessDenied {
+		return fmt.Sprintf(
+			"%s cannot run on this private runtime, so this trigger was not queued. Make the runtime's machine public, or rebind/copy the agent to a runtime its owner can use.",
+			name,
+		)
 	}
 	if verdict.Reason == dispatch.ReasonRuntimeProfileMissing {
 		return runtimeProfileMissingNotice(name)

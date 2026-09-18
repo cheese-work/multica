@@ -5,65 +5,17 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # Linux stays on GitHub-hosted ubuntu-latest: root cause confirmed (CHE-522)
-  # via a live kernel-version probe, not inference — blacksmith-2vcpu-ubuntu-2404
-  # runs Linux 6.6.141, GitHub-hosted ubuntu-latest runs 6.17.0. The
-  # process-group retain code (cursor_background_process_linux.go) requires
-  # PIDFD_SIGNAL_PROCESS_GROUP, added in Linux 6.9 with no earlier equivalent;
-  # on a pre-6.9 kernel PidfdSendSignal returns EINVAL ("invalid argument"),
-  # which is the exact failure reproduced 3x on this label. There is no
-  # config-level fix: raising Blacksmith's guest kernel to 6.9+ (Blacksmith's
-  # call) or accepting a weaker kill(-pgid) fallback that reintroduces the
-  # PGID-reuse race this code was written to close (see the "Older kernels
-  # fail closed" comment in captureCursorUnixGroup) are the only two real
-  # options. macOS stays on Blacksmith. Windows leg removed org-wide per
-  # CHE-522 (Cheese: Linux CI only, no Windows jobs or artifacts).
-  cursor-background-lifecycle:
-    needs: changes
-    if: ${{ needs.changes.outputs.backend == 'true' }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, blacksmith-6vcpu-macos-latest]
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.x"
-          cache-dependency-path: server/go.sum
-      - name: Verify Cursor background lifecycle and watchdog races
-        shell: bash
-        working-directory: server
-        # Explicit, verbose selection prevents the Unix regression from silently
-        # disappearing behind a build tag or the ordinary Windows test subset.
-        run: |
-          go test -race ./pkg/agent -v -run 'TestCursorBackground|TestCaptureCursorBackground' -count=1
-          go test -race ./internal/daemon -v -run 'Test.*Background.*Watchdog|Test.*IdleWatchdog' -count=1
-      - name: Repeat macOS finalization and verify cgo-free ownership
-        if: runner.os == 'macOS'
-        shell: bash
-        working-directory: server
-        run: |
-          go test ./pkg/agent -run '^TestCursorBackgroundLifecycle/finish$' -count=5
-          go test -race ./pkg/agent -run '^TestCursorBackgroundLifecycle/finish$' -count=5
-          CGO_ENABLED=0 go test ./pkg/agent -run '^TestCaptureCursorBackground(KernelRejectsStaleIdentity|DetachedSession|LateDescendant)$' -count=1
-
-  # Decides whether the heavy frontend validation jobs, the backend Go jobs
-  # and sqlc verification have anything to do.
-  # The frontend jobs validate the web/desktop apps, the shared packages,
-  # the install graph, and the selfhost / reserved-slugs scripts it runs;
-  # a pure backend-only or docs-only PR touches none of those and gains
-  # nothing from a full web build. Symmetrically, the backend jobs compile
-  # and test server/, so a frontend-only or docs-only PR gains nothing from
-  # a `go test -race` run. The outputs are consumed by the focused jobs
-  # below.
+  # PRs and main pushes use the same paths. Scheduled/manual runs validate all
+  # scopes, including platform stress tests, without charging every merge for them.
   changes:
     runs-on: blacksmith-2vcpu-ubuntu-2404
     permissions:
@@ -73,155 +25,51 @@ jobs:
       frontend: ${{ steps.decide.outputs.frontend }}
       backend: ${{ steps.decide.outputs.backend }}
       sqlc: ${{ steps.decide.outputs.sqlc }}
-      images: ${{ steps.filter.outputs.images }}
+      runtime: ${{ steps.decide.outputs.runtime }}
+      quality_only: ${{ steps.decide.outputs.quality_only }}
+      scripts: ${{ steps.decide.outputs.scripts }}
+      installer: ${{ steps.decide.outputs.installer }}
+      images: ${{ steps.decide.outputs.images }}
+      full: ${{ steps.decide.outputs.full }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Test CI selection and gates
+        run: node --test scripts/ci-scope.test.mjs scripts/check-image-budget.test.mjs
 
       - name: Filter paths
         id: filter
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
         uses: dorny/paths-filter@v3
         with:
-          # apps/docs is excluded from the frontend turbo run, but knip does
-          # analyze it, so a docs-only change still needs this job.
-          # apps/mobile has its own mobile-verify workflow. Everything else
-          # the frontend job touches is listed here; bias toward
-          # over-matching since a missed path silently skips validation.
-          filters: |
-            frontend:
-              - 'apps/web/**'
-              - 'apps/desktop/**'
-              - 'apps/docs/**'
-              - 'packages/**'
-              - 'package.json'
-              - '.npmrc'
-              - 'pnpm-lock.yaml'
-              - 'pnpm-workspace.yaml'
-              - 'turbo.json'
-              - 'knip.jsonc'
-              - '.github/workflows/ci.yml'
-              - 'scripts/generate-reserved-slugs.mjs'
-              - 'server/internal/handler/reserved_slugs.json'
-              - 'scripts/check-ui-wildcard-exports.mjs'
-              - 'scripts/check-ui-wildcard-exports.test.sh'
-              - 'scripts/check-ui-radius-tokens.mjs'
-              - 'scripts/check-ui-radius-tokens.test.mjs'
-              - 'scripts/selfhost-config.test.sh'
-              - 'scripts/drop-database.sh'
-              - 'scripts/remove-worktree.sh'
-              - 'scripts/worktree-db.test.sh'
-              - 'scripts/dev-env.sh'
-              - 'scripts/dev-env.test.sh'
-              - 'scripts/perf-compare.mjs'
-              - 'scripts/perf-compare.test.sh'
-              - 'scripts/selfhost-wait.sh'
-              # selfhost-config.test.sh asserts on the installers' side of
-              # the port contract, so a change to either must run it.
-              - 'scripts/install.sh'
-              - 'scripts/install.ps1'
-              - 'scripts/check.sh'
-              - 'scripts/dev.sh'
-              - 'scripts/local-env.sh'
-              - '.env.example'
-              - 'docker-compose.selfhost.yml'
-              - 'docker-compose.selfhost.build.yml'
-              - 'Makefile'
-            # Everything the backend jobs (backend-tests, backend-agent-tests,
-            # go-vulnerability-scan) read, which is NOT the
-            # same thing as server/**: three Go tests reach out of the module
-            # to pin a contract against a file the other side owns, across
-            # three cross-module file dependencies. Each of those files has
-            # to be listed here or the PR that breaks the contract is exactly
-            # the PR that skips the test. Same bias as the frontend filter:
-            # over-match rather than silently skip validation.
-            backend:
-              - 'server/**'
-              - 'deploy/helm/**'
-              # pkg/agent/worktree_capability_contract_test.go reads this file
-              # and compares LOCAL_WORKTREE_CAPABILITY against the daemon's
-              # protocol constant. A typo on either side disables worktree
-              # mode for everyone with no error anywhere, so a change to the
-              # frontend half must run the backend suite.
-              - 'packages/core/runtimes/cli-version.ts'
-              # internal/daemon/agent_command_names_test.go exercises the
-              # guard script; scripts/test-go.sh also uses it as the backend
-              # test entry point, and the script reads the command names file.
-              - 'scripts/agent-cli-command-names.txt'
-              - 'scripts/go-test-with-agent-cli-guard.sh'
-              - 'scripts/helm-config.test.sh'
-              - 'scripts/entrypoint.test.sh'
-              - 'docker/entrypoint.sh'
-              - 'scripts/test-go.sh'
-              - 'scripts/test-go.test.sh'
-              # makefile-build.test.sh asserts how `make build` names its
-              # output binaries, so a change to either side must run it.
-              - 'scripts/makefile-build.test.sh'
-              - 'Makefile'
-              - '.github/workflows/ci.yml'
-            sqlc:
-              - 'server/pkg/db/queries/**'
-              - 'server/pkg/db/generated/**'
-              - 'server/migrations/**'
-              - 'server/sqlc.yaml'
-              - 'Makefile'
-              - '.github/workflows/ci.yml'
-            # Gates the image-budget job so the full-history checkout it
-            # needs is only paid for on PRs that actually touch a bitmap.
-            images:
-              - '**/*.png'
-              - '**/*.jpg'
-              - '**/*.jpeg'
-              - '**/*.gif'
-              - '**/*.bmp'
-              - '**/*.tif'
-              - '**/*.tiff'
-              - '**/*.webp'
-              - '**/*.avif'
-              - 'scripts/check-image-budget.mjs'
+          # Pushes compare before/head SHAs. PRs use the pull-request file API;
+          # paths-filter ignores base/ref for pull_request events.
+          base: ${{ github.event_name == 'push' && github.event.before || github.base_ref }}
+          ref: ${{ github.sha }}
+          filters: .github/ci-paths.json
 
       - name: Decide
         id: decide
-        # Always run everything on push to main (full validation); on
-        # pull_request, run only the areas whose paths changed.
-        # The gated jobs themselves always run and report success — their
-        # steps are gated on these outputs rather than the job being skipped
-        # — so the required "frontend" / "backend" status checks are
-        # satisfied with a genuine green instead of being left pending on
-        # filtered PRs. It also keeps the aggregate gates strict: a job that
-        # goes missing for any OTHER reason (a failed `changes`, a cancelled
-        # run) still reports non-success and fails the gate.
         env:
           EVENT_NAME: ${{ github.event_name }}
-          FRONTEND_CHANGED: ${{ steps.filter.outputs.frontend }}
-          BACKEND_CHANGED: ${{ steps.filter.outputs.backend }}
-          SQLC_CHANGED: ${{ steps.filter.outputs.sqlc }}
-        run: |
-          if [ "$EVENT_NAME" != "pull_request" ] || [ "$FRONTEND_CHANGED" = "true" ]; then
-            echo "frontend=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "frontend=false" >> "$GITHUB_OUTPUT"
-          fi
-          if [ "$EVENT_NAME" != "pull_request" ] || [ "$BACKEND_CHANGED" = "true" ]; then
-            echo "backend=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "backend=false" >> "$GITHUB_OUTPUT"
-          fi
-          if [ "$EVENT_NAME" != "pull_request" ] || [ "$SQLC_CHANGED" = "true" ]; then
-            echo "sqlc=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "sqlc=false" >> "$GITHUB_OUTPUT"
-          fi
+          FILTER_RESULTS: ${{ toJSON(steps.filter.outputs) }}
+        run: node scripts/ci-scope.mjs decide
 
   sqlc-check:
     needs: changes
+    if: ${{ needs.changes.outputs.sqlc == 'true' }}
     runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - name: Checkout
-        if: ${{ needs.changes.outputs.sqlc == 'true' }}
         uses: actions/checkout@v6
 
       - name: Setup Go
-        if: ${{ needs.changes.outputs.sqlc == 'true' }}
         uses: actions/setup-go@v5
         with:
           go-version: "1.26.x"
@@ -229,7 +77,6 @@ jobs:
           cache-dependency-path: server/go.sum
 
       - name: Verify generated SQL is up to date
-        if: ${{ needs.changes.outputs.sqlc == 'true' }}
         run: |
           make sqlc
           git diff --exit-code -- server/pkg/db/generated
@@ -249,28 +96,25 @@ jobs:
   # increases total runner-minutes but reduces wall-clock feedback time.
   frontend-build:
     needs: changes
+    if: ${{ needs.changes.outputs.frontend == 'true' }}
     runs-on: blacksmith-2vcpu-ubuntu-2404
     env:
       # Pin turbo's filesystem cache somewhere actions/cache can address.
       TURBO_CACHE_DIR: .turbo/cache
     steps:
       - name: Checkout
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
         uses: pnpm/action-setup@v4
 
       - name: Setup Node.js
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
         uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
 
       - name: Install dependencies
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
         run: pnpm install
 
       # `node-version: 22` above floats across patch releases, and turbo's
@@ -280,7 +124,6 @@ jobs:
       # the old interpreter and report green without executing anything.
       - name: Resolve runtime for cache key
         id: runtime
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
         run: echo "node=$(node --version)" >> "$GITHUB_OUTPUT"
 
       # Cache entries are immutable, so the key carries the commit SHA to make
@@ -290,7 +133,6 @@ jobs:
       # GitHub scopes caches by branch: a PR reads main's entries (so unchanged
       # tasks hit on the first push) and writes its own (so re-pushes hit too).
       - name: Restore turbo cache
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
         uses: actions/cache@v6
         with:
           path: .turbo/cache
@@ -298,37 +140,7 @@ jobs:
           restore-keys: |
             turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-
 
-      - name: Test self-host env derivation
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
-        run: bash scripts/selfhost-config.test.sh
-
-      - name: Test worktree database cleanup
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
-        run: bash scripts/worktree-db.test.sh
-
-      - name: Test development environment registry
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
-        run: bash scripts/dev-env.test.sh
-
-      # The browser comparison runs only on demand, but its verdict and its
-      # cleanup are cheap to prove on every change: a fake pnpm, no build and
-      # no browser, a few seconds.
-      - name: Test UI performance comparison runner
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
-        run: bash scripts/perf-compare.test.sh
-
-      - name: Verify reserved-slugs.ts is up to date
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
-        # Re-runs the generator and fails on any drift from the
-        # checked-in TypeScript output. The Go side embeds the JSON
-        # source directly, so a passing diff here proves both sides
-        # share one source of truth.
-        run: |
-          pnpm generate:reserved-slugs
-          git diff --exit-code -- packages/core/paths/reserved-slugs.ts
-
       - name: Build, type check, and lint
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
         # Mobile lives in a parallel mobile-verify workflow (path-filtered
         # to apps/mobile/** + packages/core/**) so it doesn't add
         # ~50s of expo-lint + tsc to every web/desktop PR. Keep this
@@ -336,69 +148,33 @@ jobs:
         # exclude @multica/mobile.
         run: pnpm exec turbo build typecheck lint --filter='!@multica/docs' --filter='!@multica/mobile'
 
-      # Blocking from the start: it reports nothing today, and it covers the
-      # one regression knip structurally cannot see. packages/ui exports four
-      # wildcards, which knip expands into entry-point globs over every file
-      # in those directories — so a newly stranded component there always
-      # reads as "used". See the script header for the options ruled out.
-      - name: Check packages/ui wildcard exports
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
-        run: |
-          bash scripts/check-ui-wildcard-exports.test.sh
-          node scripts/check-ui-wildcard-exports.mjs
-
-      - name: Check UI radius tokens
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
-        run: |
-          node --test scripts/check-ui-radius-tokens.test.mjs
-          node scripts/check-ui-radius-tokens.mjs
-
-      # WARN PHASE — reports, never blocks. `shamefully-hoist=true` in .npmrc
-      # hides both halves of the drift this catches: an undeclared import still
-      # resolves, and an obsolete declaration still installs. Neither shows up
-      # in build, typecheck, or lint.
-      #
-      # `continue-on-error` alone, with no `|| true`: the real exit code has to
-      # reach Actions for the step to show as a warning rather than a silent
-      # pass, and it is what makes the promotion below a one-line change.
-      #
-      # TO PROMOTE TO BLOCKING: once this step has run clean for a full cycle
-      # on main, drop `continue-on-error`. The findings it reports today are
-      # pre-existing dead code left out of the cleanup that introduced it
-      # (MUL-6353) — clear those first, or the flip turns them into a red main.
-      - name: Check for dead code and phantom dependencies (knip)
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
-        continue-on-error: true
-        run: pnpm knip
+      - name: Check frontend quality
+        uses: ./.github/actions/frontend-quality
 
   frontend-test:
     needs: changes
+    if: ${{ needs.changes.outputs.frontend == 'true' }}
     runs-on: blacksmith-2vcpu-ubuntu-2404
     env:
       TURBO_CACHE_DIR: .turbo/cache
     steps:
       - name: Checkout
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
         uses: pnpm/action-setup@v4
 
       - name: Setup Node.js
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
         uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
 
       - name: Install dependencies
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
         run: pnpm install
 
       - name: Resolve runtime for cache key
         id: runtime
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
         run: echo "node=$(node --version)" >> "$GITHUB_OUTPUT"
 
       # See frontend-build for the key strategy. These entries are tiny (~60KB
@@ -406,7 +182,6 @@ jobs:
       # logs rather than artifacts -- yet a hit still skips the whole suite,
       # which is the single most expensive task in the graph.
       - name: Restore turbo cache
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
         uses: actions/cache@v6
         with:
           path: .turbo/cache
@@ -415,7 +190,6 @@ jobs:
             turbo-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-
 
       - name: Test web, core, and desktop
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
         # Same filter rationale as frontend-build. Type errors are not this
         # job's responsibility -- frontend-build owns the `typecheck` task.
         # `test` reaches dependency sources through the hash-only
@@ -427,6 +201,7 @@ jobs:
   frontend-views-test:
     name: frontend-views-test (${{ matrix.index }}/${{ matrix.total }})
     needs: changes
+    if: ${{ needs.changes.outputs.frontend == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -440,27 +215,22 @@ jobs:
       TURBO_CACHE_DIR: .turbo/cache
     steps:
       - name: Checkout
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
         uses: pnpm/action-setup@v4
 
       - name: Setup Node.js
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
         uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
 
       - name: Install dependencies
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
         run: pnpm install
 
       - name: Resolve runtime for cache key
         id: runtime
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
         run: echo "node=$(node --version)" >> "$GITHUB_OUTPUT"
 
       # Each shard has its own prefix so concurrent jobs never race to save the
@@ -468,7 +238,6 @@ jobs:
       # argument in the task hash, while dependency sources still flow through
       # turbo.json's hash-only `^cache-inputs` edge.
       - name: Restore turbo cache
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
         uses: actions/cache@v6
         with:
           path: .turbo/cache
@@ -477,36 +246,20 @@ jobs:
             turbo-views-test-${{ matrix.index }}-of-${{ matrix.total }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-
 
       - name: Test views shard ${{ matrix.index }}/${{ matrix.total }}
-        if: ${{ needs.changes.outputs.frontend == 'true' }}
         run: pnpm exec turbo test --filter='@multica/views' -- --shard=${{ matrix.index }}/${{ matrix.total }}
 
-  # Aggregate gate. `frontend` is the status-check name the repository's
-  # branch rules refer to, so it has to survive the split above: this job
-  # keeps reporting under that name and simply fails when any worker fails.
-  # It also inherits the old contract that the check goes green (rather than
-  # staying pending) on PRs the path filter excluded — all workers succeed
-  # trivially in that case because every step is gated off.
+  # Preserve the aggregate check names while validating intentional skips.
   frontend:
-    needs: [frontend-build, frontend-test, frontend-views-test]
-    # `!cancelled()` rather than `always()`: a run superseded by a newer push
-    # is cancelled by the concurrency group above, and there is no reason to
-    # spend a runner reporting a verdict nobody will read.
+    needs: [changes, frontend-build, frontend-test, frontend-views-test, frontend-quality]
     if: ${{ !cancelled() }}
     runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
+      - uses: actions/checkout@v6
       - name: Check frontend job results
         env:
-          BUILD_RESULT: ${{ needs.frontend-build.result }}
-          TEST_RESULT: ${{ needs.frontend-test.result }}
-          VIEWS_TEST_RESULT: ${{ needs.frontend-views-test.result }}
-        run: |
-          echo "frontend-build: $BUILD_RESULT"
-          echo "frontend-test:  $TEST_RESULT"
-          echo "frontend-views-test: $VIEWS_TEST_RESULT"
-          if [ "$BUILD_RESULT" != "success" ] || [ "$TEST_RESULT" != "success" ] || [ "$VIEWS_TEST_RESULT" != "success" ]; then
-            echo "::error::frontend validation failed"
-            exit 1
-          fi
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          JOB_SCOPES: '{"frontend-build":"frontend","frontend-test":"frontend","frontend-views-test":"frontend","frontend-quality":"quality_only"}'
+        run: node scripts/ci-scope.mjs gate
 
   # The Go caches are handled explicitly here rather than through setup-go's
   # `cache: true`. setup-go keys its entry on go.sum alone and shares that key
@@ -545,13 +298,9 @@ jobs:
   # a cached "ok" from an untouched package could mask a real failure.
   backend-tests:
     needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' }}
     runs-on: blacksmith-2vcpu-ubuntu-2404
-    # `services` cannot be conditional, so the Postgres and Redis containers
-    # still start on a filtered PR. That is ~1 minute of runner time against
-    # the several minutes the gated steps below cost; job-level `if` would
-    # save it but report `skipped` to the aggregate gate, which then has to
-    # accept `skipped` as success and stops catching jobs that go missing for
-    # reasons other than the path filter.
+    # Job-level filtering skips both services on unrelated changes.
     services:
       postgres:
         image: pgvector/pgvector:pg17
@@ -585,12 +334,10 @@ jobs:
       GOFLAGS: -count=1
     steps:
       - name: Checkout
-        if: ${{ needs.changes.outputs.backend == 'true' }}
         uses: actions/checkout@v6
 
       - name: Setup Go
         id: go
-        if: ${{ needs.changes.outputs.backend == 'true' }}
         uses: actions/setup-go@v5
         with:
           # Deliberately independent from the minimum patch in server/go.mod:
@@ -600,7 +347,6 @@ jobs:
           cache: false
 
       - name: Restore Go module cache
-        if: ${{ needs.changes.outputs.backend == 'true' }}
         uses: actions/cache@v6
         with:
           path: ~/go/pkg/mod
@@ -610,35 +356,16 @@ jobs:
       # shell step spells the build-cache key prefix once for restore and save.
       - name: Resolve Go build cache key
         id: gocache
-        if: ${{ needs.changes.outputs.backend == 'true' }}
         run: echo "prefix=go-build-race-${{ runner.os }}-${{ runner.arch }}-$ImageOS-${{ steps.go.outputs.go-version }}-" >> "$GITHUB_OUTPUT"
 
       - name: Restore Go build cache
-        if: ${{ needs.changes.outputs.backend == 'true' }}
         uses: actions/cache/restore@v6
         with:
           path: ~/.cache/go-build
           key: ${{ steps.gocache.outputs.prefix }}${{ github.sha }}
           restore-keys: ${{ steps.gocache.outputs.prefix }}
 
-      - name: Setup Helm
-        if: ${{ needs.changes.outputs.backend == 'true' }}
-        uses: azure/setup-helm@v4
-
-      - name: Test Helm chart
-        if: ${{ needs.changes.outputs.backend == 'true' }}
-        run: bash scripts/helm-config.test.sh
-
-      - name: Test backend entrypoint signals
-        if: ${{ needs.changes.outputs.backend == 'true' }}
-        run: bash scripts/entrypoint.test.sh
-
-      - name: Test build output naming
-        if: ${{ needs.changes.outputs.backend == 'true' }}
-        run: bash scripts/makefile-build.test.sh
-
       - name: Build
-        if: ${{ needs.changes.outputs.backend == 'true' }}
         run: cd server && go build -race ./...
 
       # The `agentintegration` files execute real agent CLIs, so no CI job runs
@@ -648,19 +375,15 @@ jobs:
       # untagged job still green. vet type-checks test files, so this is the
       # cheapest gate that keeps them honest without needing an agent CLI.
       - name: Vet tag-gated agent integration tests
-        if: ${{ needs.changes.outputs.backend == 'true' }}
         run: cd server && go vet -race -tags agentintegration ./...
 
       - name: Run migrations
-        if: ${{ needs.changes.outputs.backend == 'true' }}
         run: cd server && go run ./cmd/migrate up
 
       - name: Verify Go test wrapper
-        if: ${{ needs.changes.outputs.backend == 'true' }}
         run: bash scripts/test-go.test.sh
 
       - name: Test
-        if: ${{ needs.changes.outputs.backend == 'true' }}
         # pkg/agent runs on its own runner: backend-agent-tests below.
         run: bash scripts/test-go.sh --race --only regular
 
@@ -685,24 +408,24 @@ jobs:
   # but never saved here: backend-tests owns publishing (see its comment), and
   # this job's only unique output is the pkg/agent test binary, which is cheap
   # to relink.
-  # Linux stays on GitHub-hosted ubuntu-latest for the same reason as
-  # cursor-background-lifecycle above: `--only agent` runs the whole
-  # pkg/agent package, which includes the Cursor process-group tests hitting
-  # the Linux 6.9 PIDFD_SIGNAL_PROCESS_GROUP gap (CHE-522).
+  # Linux stays on GitHub-hosted ubuntu-latest rather than Blacksmith: `--only
+  # agent` runs the whole pkg/agent package, which includes the Cursor
+  # process-group tests. They need PIDFD_SIGNAL_PROCESS_GROUP (Linux 6.9+);
+  # blacksmith-2vcpu-ubuntu-2404 runs 6.6.141 and fails them with EINVAL,
+  # confirmed by a live kernel probe in CHE-522.
   backend-agent-tests:
     needs: changes
-    runs-on: ubuntu-latest
+    if: ${{ needs.changes.outputs.backend == 'true' }}
+    runs-on: ubuntu-latest  # CHE-522: do NOT move to Blacksmith.
     env:
       # Same policy as backend-tests: CI always executes the tests it reports.
       GOFLAGS: -count=1
     steps:
       - name: Checkout
-        if: ${{ needs.changes.outputs.backend == 'true' }}
         uses: actions/checkout@v6
 
       - name: Setup Go
         id: go
-        if: ${{ needs.changes.outputs.backend == 'true' }}
         uses: actions/setup-go@v5
         with:
           go-version: "1.26.x"
@@ -710,7 +433,6 @@ jobs:
           cache: false
 
       - name: Restore Go module cache
-        if: ${{ needs.changes.outputs.backend == 'true' }}
         uses: actions/cache/restore@v6
         with:
           path: ~/go/pkg/mod
@@ -719,11 +441,9 @@ jobs:
       # Must match backend-tests' key step exactly.
       - name: Resolve Go build cache key
         id: gocache
-        if: ${{ needs.changes.outputs.backend == 'true' }}
         run: echo "prefix=go-build-race-${{ runner.os }}-${{ runner.arch }}-$ImageOS-${{ steps.go.outputs.go-version }}-" >> "$GITHUB_OUTPUT"
 
       - name: Restore Go build cache
-        if: ${{ needs.changes.outputs.backend == 'true' }}
         uses: actions/cache/restore@v6
         with:
           path: ~/.cache/go-build
@@ -731,21 +451,19 @@ jobs:
           restore-keys: ${{ steps.gocache.outputs.prefix }}
 
       - name: Test agent package
-        if: ${{ needs.changes.outputs.backend == 'true' }}
         run: bash scripts/test-go.sh --race --only agent
 
   # Keep the live vulnerability database from hiding build and test results.
   # The aggregate backend job below still treats both jobs as one merge gate.
   go-vulnerability-scan:
     needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' }}
     runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - name: Checkout
-        if: ${{ needs.changes.outputs.backend == 'true' }}
         uses: actions/checkout@v6
 
       - name: Setup Go
-        if: ${{ needs.changes.outputs.backend == 'true' }}
         uses: actions/setup-go@v5
         with:
           # Deliberately independent from the minimum patch in server/go.mod:
@@ -755,32 +473,65 @@ jobs:
           cache-dependency-path: server/go.sum
 
       - name: Scan Go vulnerabilities
-        if: ${{ needs.changes.outputs.backend == 'true' }}
         working-directory: server
         run: go tool govulncheck ./...
 
   # Preserve the existing required-check name while allowing tests, generated
   # SQL verification, and the vulnerability scan to run independently.
   backend:
-    needs: [backend-tests, backend-agent-tests, sqlc-check, go-vulnerability-scan]
+    needs: [changes, backend-tests, backend-agent-tests, sqlc-check, go-vulnerability-scan, macos-runtime, script-checks, installer]
     if: ${{ !cancelled() }}
     runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
+      - uses: actions/checkout@v6
       - name: Check backend job results
         env:
-          TEST_RESULT: ${{ needs.backend-tests.result }}
-          AGENT_TEST_RESULT: ${{ needs.backend-agent-tests.result }}
-          SQLC_RESULT: ${{ needs.sqlc-check.result }}
-          VULNERABILITY_RESULT: ${{ needs.go-vulnerability-scan.result }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          JOB_SCOPES: '{"backend-tests":"backend","backend-agent-tests":"backend","sqlc-check":"sqlc","go-vulnerability-scan":"backend","macos-runtime":"full","script-checks":"scripts","installer":"installer"}'
+        run: node scripts/ci-scope.mjs gate
+
+  # The only macOS runner here, and the only place cursor_background_process_darwin.go
+  # is ever built: it signals a process group through XNU's per-process unique
+  # identity so a recycled PID cannot redirect a kill, and the two tests pinning
+  # that are `//go:build darwin`. This covers one integration's background
+  # shell rather than the shared launch path every agent uses, so the daily
+  # full run carries it instead of charging every backend merge for a macOS
+  # runner; `full` also means the stress counts below are now the only
+  # finalization pass, replacing the single-count merge variant. Upstream's
+  # Windows arm of the same concern lived in windows-execenv, which this fork
+  # does not run (CHE-522: Linux CI only, no Windows jobs or artifacts).
+  # Blacksmith, not GitHub-hosted macOS: only the Linux Cursor tests hit the
+  # 6.9 PIDFD gap that keeps backend-agent-tests on ubuntu-latest.
+  macos-runtime:
+    needs: changes
+    if: ${{ needs.changes.outputs.full == 'true' }}
+    runs-on: blacksmith-6vcpu-macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache-dependency-path: server/go.sum
+      - name: Verify Cursor background lifecycle and watchdog races
+        shell: bash
+        working-directory: server
+        # Explicit, verbose selection prevents the Unix regression from silently
+        # disappearing behind a build tag.
         run: |
-          echo "backend-tests:         $TEST_RESULT"
-          echo "backend-agent-tests:   $AGENT_TEST_RESULT"
-          echo "sqlc-check:            $SQLC_RESULT"
-          echo "go-vulnerability-scan: $VULNERABILITY_RESULT"
-          if [ "$TEST_RESULT" != "success" ] || [ "$AGENT_TEST_RESULT" != "success" ] || [ "$SQLC_RESULT" != "success" ] || [ "$VULNERABILITY_RESULT" != "success" ]; then
-            echo "::error::backend validation failed"
-            exit 1
-          fi
+          go test -race ./pkg/agent -v -run 'TestCursorBackground|TestCaptureCursorBackground' -count=1
+          go test -race ./internal/daemon -v -run 'Test.*Background.*Watchdog|Test.*IdleWatchdog' -count=1
+
+      - name: Stress macOS finalization
+        shell: bash
+        working-directory: server
+        run: |
+          go test ./pkg/agent -run '^TestCursorBackgroundLifecycle/finish$' -count=5
+          go test -race ./pkg/agent -run '^TestCursorBackgroundLifecycle/finish$' -count=5
+
+      - name: Verify cgo-free macOS ownership
+        shell: bash
+        working-directory: server
+        run: CGO_ENABLED=0 go test ./pkg/agent -run '^TestCaptureCursorBackground(KernelRejectsStaleIdentity|DetachedSession|LateDescendant)$' -count=1
 
   image-budget:
     # Soft gate against the 21.7MB of raw PNG/JPG that MUL-6352 cleared out:
@@ -794,14 +545,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          # The check diffs against the base branch, which a shallow
-          # clone does not contain.
-          fetch-depth: 0
+          fetch-depth: 1
+
+      - name: Fetch comparison base
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: git fetch --no-tags --depth=1 origin "$BASE_SHA"
 
       - name: Check image budget
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
-        run: node scripts/check-image-budget.mjs --base "origin/${{ github.base_ref }}"
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node scripts/check-image-budget.mjs --base "$BASE_SHA"
 
   installer:
     # Stub-driven shell tests for scripts/install.sh. Kept off the heavy
@@ -812,6 +567,8 @@ jobs:
     # Windows jobs removed org-wide per CHE-522 (Cheese: Linux CI only, no
     # Windows jobs or artifacts). install.ps1 itself is unchanged and still
     # shipped; only its CI coverage is gone.
+    needs: changes
+    if: ${{ needs.changes.outputs.installer == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -823,3 +580,63 @@ jobs:
 
       - name: Test shell installers
         run: bash scripts/install.test.sh
+
+  script-checks:
+    needs: changes
+    if: ${{ needs.changes.outputs.scripts == 'true' }}
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Test self-host env derivation
+        run: bash scripts/selfhost-config.test.sh
+
+      - name: Test worktree database cleanup
+        run: bash scripts/worktree-db.test.sh
+
+      - name: Test development environment registry
+        run: bash scripts/dev-env.test.sh
+
+      - name: Test UI performance comparison runner
+        run: bash scripts/perf-compare.test.sh
+
+      - name: Verify reserved-slugs.ts is up to date
+        # Re-runs the generator and fails on any drift from the
+        # checked-in TypeScript output. The Go side embeds the JSON
+        # source directly, so a passing diff here proves both sides
+        # share one source of truth.
+        run: |
+          node scripts/generate-reserved-slugs.mjs
+          git diff --exit-code -- packages/core/paths/reserved-slugs.ts
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+
+      - name: Test Helm chart
+        run: bash scripts/helm-config.test.sh
+
+      - name: Test backend entrypoint signals
+        run: bash scripts/entrypoint.test.sh
+
+      - name: Test build output naming
+        run: bash scripts/makefile-build.test.sh
+
+  frontend-quality:
+    needs: changes
+    if: ${{ needs.changes.outputs.quality_only == 'true' }}
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check frontend quality
+        uses: ./.github/actions/frontend-quality
