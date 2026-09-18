@@ -777,4 +777,68 @@ auth_log="$(cat "$control_dir/registry-auth.log")"
 expect_not_contains "$auth_log" "login ghcr.io password=" ghcr-login-fails
 expect_contains "$auth_log" "logout ghcr.io" ghcr-login-fails
 
+# ---------------------------------------------------------------------------
+# Scenario 14 (CHE-397 unit 2 independent review): cd-deploy.yml's deploy job
+# does not check out the repo on C00 — it scp's an explicit file list into a
+# fresh remote_dir and runs deploy.sh from there. Every file deploy.sh
+# sources or shells out to by relative path (deploy-lib.sh, capture-tuple.sh,
+# tuple-snapshot.mjs) must be in that list, or deploy.sh's own
+# file-existence checks refuse to start — a failure this repo's own CI
+# cannot see, since nothing else here reproduces the C00 transfer. deploy-lib.sh
+# was genuinely missing from that list for one revision of this PR: deploy.sh
+# ran fine in every mocked test here (which always runs from the full repo
+# checkout) while failing outright on the exact file set C00 actually
+# receives.
+#
+# This scenario parses the REAL scp file list out of cd-deploy.yml (not a
+# hand-copied fixture that could silently drift from it), copies exactly
+# those files into an isolated directory — reproducing scp's flat layout —
+# and runs deploy.sh from there, same as C00 would. A --dry-run manifest
+# reaching "not touching Docker" proves deploy.sh's own file-existence
+# checks were satisfied; deploy.sh exits 1 with "is missing" before that
+# point otherwise (reproduced directly while diagnosing this).
+# ---------------------------------------------------------------------------
+scp_block="$(awk '
+  /remote_dir="\$\{C00_STATE_DIR%\/\}\/cd-deploy-/ { found=1 }
+  found { print }
+  found && /C00_SSH_HOST\}:\$\{remote_dir\}\/"/ { exit }
+' "$root_dir/.github/workflows/cd-deploy.yml")"
+mapfile -t scp_files < <(printf '%s\n' "$scp_block" | grep -oE 'deploy/cd/[A-Za-z0-9_.-]+\.(sh|mjs)' | sort -u)
+if [ "${#scp_files[@]}" -eq 0 ]; then
+  echo "scenario workflow-deploy-transfer-set: could not locate cd-deploy.yml's deploy-job scp file list — the anchors this scenario parses may have drifted from the workflow file" >&2
+  exit 1
+fi
+if ! printf '%s\n' "${scp_files[@]}" | grep -qx "deploy/cd/deploy-lib.sh"; then
+  echo "scenario workflow-deploy-transfer-set: cd-deploy.yml's deploy job scp list is missing deploy/cd/deploy-lib.sh — deploy.sh sources it and refuses to start without it on C00" >&2
+  exit 1
+fi
+
+transfer_dir="$(mktemp -d)"
+for f in "${scp_files[@]}"; do
+  cp "$root_dir/$f" "$transfer_dir/"
+done
+transfer_manifest="$transfer_dir/manifest.json"
+cat >"$transfer_manifest" <<JSON
+{
+  "images": {
+    "backend": "ghcr.io/cheese-work/multica-backend@sha256:$(printf 'a%.0s' $(seq 1 64))",
+    "web": "ghcr.io/cheese-work/multica-web@sha256:$(printf 'b%.0s' $(seq 1 64))"
+  },
+  "source_sha": "$(printf '0%.0s' $(seq 1 40))"
+}
+JSON
+transfer_compose_dir="$transfer_dir/compose-dir"
+transfer_state_dir="$transfer_dir/state-dir"
+mkdir -p "$transfer_compose_dir" "$transfer_state_dir"
+touch "$transfer_compose_dir/docker-compose.selfhost.yml"
+
+set +e
+transfer_output="$(bash "$transfer_dir/deploy.sh" --manifest "$transfer_manifest" --compose-dir "$transfer_compose_dir" --state-dir "$transfer_state_dir" --dry-run 2>&1)"
+transfer_status=$?
+set -e
+rm -rf "$transfer_dir"
+expect_exit 0 "$transfer_status" workflow-deploy-transfer-set
+expect_contains "$transfer_output" "--dry-run: not touching Docker" workflow-deploy-transfer-set
+expect_not_contains "$transfer_output" "is missing" workflow-deploy-transfer-set
+
 echo "deploy.sh control-flow fixtures passed"

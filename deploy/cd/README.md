@@ -398,6 +398,18 @@ change as part of D2 work.
 for a `main` commit, and can still be dispatched by hand. The automatic path
 adds one job the manual path does not: `prepare-release-candidate`.
 
+The `deploy` job does not check out the repository on C00 — it `scp`'s an
+explicit file allowlist into a fresh `remote_dir` and runs `deploy.sh` from
+there. Every file `deploy.sh` sources or shells out to by relative path must
+be in that list, or `deploy.sh`'s own file-existence checks refuse to start
+(see its `script_dir` checks immediately after `usage()`): `deploy-lib.sh`
+(the shared JSON/image/migration helper library it `source`s directly, CHE-397
+unit 2), `capture-tuple.sh` and `tuple-snapshot.mjs` (post-deploy tuple
+recording). Adding a new file `deploy.sh` depends on means adding it to
+`cd-deploy.yml`'s `scp` line too — a dependency that exists only in the repo
+checkout, not in what actually reaches C00, fails silently until the next
+real deploy run, not in CI.
+
 D1's automatic main-push build only ever emits a `build-evidence` manifest,
 which `admission.mjs` refuses. A deployable `release-candidate` additionally
 binds the baseline tuple of the host being deployed to — the fresh Hermes
