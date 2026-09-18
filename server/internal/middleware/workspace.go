@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/featureflag"
 )
 
 // Context keys for workspace-scoped request data.
@@ -33,10 +34,20 @@ func WorkspaceIDFromContext(ctx context.Context) string {
 // SetMemberContext injects workspace ID and member into the context.
 // This is useful for handlers that resolve the workspace from an entity lookup
 // and want to share the member with downstream code.
+//
+// It also installs the feature-flag targeting context (CHE-621), so a flag
+// evaluated anywhere downstream of a resolved member can target that member's
+// workspace, user, membership or role. Before this, nothing in the server
+// populated featureflag.EvalContext at all: every flag evaluated against the
+// zero value, which matches no targeting rule and buckets percent rollouts to
+// 0. That is why triage_v1 had to ship as a global switch.
+//
+// Request-scoped callers should prefer withRequestEvalContext, which adds the
+// actor attributes that only a *http.Request can supply.
 func SetMemberContext(ctx context.Context, workspaceID string, member db.Member) context.Context {
 	ctx = context.WithValue(ctx, ctxKeyWorkspaceID, workspaceID)
 	ctx = context.WithValue(ctx, ctxKeyMember, member)
-	return ctx
+	return featureflag.WithEvalContext(ctx, evalContextFor(workspaceID, member))
 }
 
 // errWorkspaceNotFound is returned when a slug was provided but doesn't match
@@ -259,6 +270,7 @@ func buildMiddleware(queries *db.Queries, resolve workspaceResolver, roles []str
 			}
 
 			ctx := SetMemberContext(r.Context(), workspaceID, member)
+			ctx = withRequestEvalContext(ctx, r, workspaceID, member)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
