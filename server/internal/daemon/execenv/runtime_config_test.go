@@ -209,7 +209,13 @@ func TestStatusRuleIsFactJudgmentAtBothMoments(t *testing.T) {
 		"whoever the assignee is",
 		// Delivery lands in in_review; the ceiling keeps `done` human on a
 		// root or parent issue only — children close themselves (below).
-		"On a root or parent issue `done` stays human",
+		"On an issue with no parent of its own `done` stays human",
+		// The two bullets must partition on the SAME axis the server uses:
+		// notifyParentOfChildDone keys on ParentIssueID.Valid alone
+		// (issue_child_done.go:74) and never asks whether the issue has
+		// children. A mid-tree issue (has a parent AND dispatched its own
+		// sub-issues) must match the child bullet, not the root one.
+		"having children does not exempt it",
 		// A child parked at `in_review` is never terminal, so it holds its
 		// stage open forever and the parent is never woken
 		// (isTerminalChildStatus: done/cancelled only). CHE-605.
