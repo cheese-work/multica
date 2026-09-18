@@ -240,6 +240,10 @@ jobs:
           RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
           SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
 
+      - name: Install the YAML parser the path-filter reader needs
+        shell: bash
+        run: bash deploy/cd/ensure-pyyaml.sh
+
       - name: Record the required-check results for this commit
         shell: bash
         env:
