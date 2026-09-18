@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -76,16 +77,25 @@ func (h *Handler) requiredSourceLinkEnabled(ctx context.Context, workspaceID pgt
 // The declaration is a url-typed property whose value the property endpoint has
 // already validated as an http(s) URL with a host, so this reads a value that
 // is well-formed by construction rather than re-deriving trust in it.
-func (h *Handler) declaredRequiredSource(ctx context.Context, issue db.Issue) string {
+//
+// The error return distinguishes "this issue declares nothing" from "we could
+// not find out". Collapsing those two into "" is how a transient DB error
+// silently becomes a waived requirement: the caller sees no declared source and
+// lets the write through uncited — the CHE-153 defect this guard exists to
+// close, reopened by a connection blip. Callers must fail closed on a non-nil
+// error, matching what a malformed settings blob already does.
+func (h *Handler) declaredRequiredSource(ctx context.Context, issue db.Issue) (string, error) {
 	if len(issue.Properties) == 0 {
-		return ""
+		return "", nil
 	}
 	var values map[string]json.RawMessage
 	if err := json.Unmarshal(issue.Properties, &values); err != nil {
-		return ""
+		// Unreadable properties are "cannot tell", not "nothing declared": the
+		// obligation may be sitting in the bytes we just failed to parse.
+		return "", fmt.Errorf("decode issue properties: %w", err)
 	}
 	if len(values) == 0 {
-		return ""
+		return "", nil
 	}
 
 	defs, err := h.Queries.ListIssueProperties(ctx, db.ListIssuePropertiesParams{
@@ -97,7 +107,7 @@ func (h *Handler) declaredRequiredSource(ctx context.Context, issue db.Issue) st
 		IncludeArchived: true,
 	})
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("list issue properties: %w", err)
 	}
 
 	for _, def := range defs {
@@ -113,10 +123,10 @@ func (h *Handler) declaredRequiredSource(ctx context.Context, issue db.Issue) st
 			continue
 		}
 		if s := strings.TrimSpace(source); s != "" {
-			return s
+			return s, nil
 		}
 	}
-	return ""
+	return "", nil
 }
 
 // rejectMissingRequiredSourceLink writes the error response and returns true
@@ -143,7 +153,20 @@ func (h *Handler) rejectMissingRequiredSourceLink(
 	if !h.requiredSourceLinkEnabled(r.Context(), issue.WorkspaceID) {
 		return false
 	}
-	required := h.declaredRequiredSource(r.Context(), issue)
+	required, err := h.declaredRequiredSource(r.Context(), issue)
+	if err != nil {
+		// Fail closed, exactly as a malformed settings blob does. We know the
+		// policy is ON and cannot determine whether this issue declares a
+		// source; passing the write through would waive a requirement that may
+		// well exist.
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error": "cannot determine whether this issue declares a required source, " +
+				"so this write is refused rather than allowed through uncited; retry shortly",
+			"code":  "required_source_link_undetermined",
+			"field": field,
+		})
+		return true
+	}
 	if required == "" {
 		return false
 	}

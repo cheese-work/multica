@@ -3114,13 +3114,30 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	// transaction as the insert, so there is no point after the row exists at
 	// which the dispatch has not already been arranged.
 	if req.Description != nil && parentIssueID.Valid {
-		if parent, perr := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
+		parent, perr := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
 			ID:          parentIssueID,
 			WorkspaceID: wsUUID,
-		}); perr == nil {
+		})
+		switch {
+		case perr == nil:
 			if h.rejectMissingRequiredSourceLink(w, r, creatorType, true, parent, *req.Description, "description") {
 				return
 			}
+		case errors.Is(perr, pgx.ErrNoRows):
+			// A parent that does not exist declares nothing, and IssueService.Create
+			// re-validates parent existence atomically and rejects it there. Failing
+			// closed here would turn that 400 into a misleading 503.
+		default:
+			// Any other error is "cannot tell whether the parent declares a required
+			// source". Skipping the check would let an uncited description through on
+			// a transient DB fault, so refuse the create instead.
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"error": "cannot determine whether the parent issue declares a required source, " +
+					"so this write is refused rather than allowed through uncited; retry shortly",
+				"code":  "required_source_link_undetermined",
+				"field": "description",
+			})
+			return
 		}
 	}
 
