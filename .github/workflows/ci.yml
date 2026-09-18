@@ -759,10 +759,46 @@ jobs:
         working-directory: server
         run: go tool govulncheck ./...
 
+  # Gates only on findings a change introduces. `only-new-issues` compares
+  # against the pull request's merge base, which is what makes this job
+  # useful on day one: server/.golangci.yml landed against a module carrying
+  # ~500 pre-existing findings, and a whole-module gate would have been red
+  # before anyone wrote a line. `make lint-go` lints everything locally so
+  # that backlog stays visible. Pull requests only — a push to main has no
+  # merge base to diff against, and its branch was already checked.
+  go-lint:
+    needs: changes
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    steps:
+      - name: Checkout
+        if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' }}
+        uses: actions/checkout@v6
+        with:
+          # only-new-issues needs the merge base, not just the tip commit.
+          fetch-depth: 0
+
+      - name: Setup Go
+        if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+          cache-dependency-path: server/go.sum
+
+      - name: Run golangci-lint
+        if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' }}
+        uses: golangci/golangci-lint-action@v8
+        with:
+          # Pinned: a floating version turns an upstream release into a
+          # surprise red build on an unrelated pull request.
+          version: v2.13.2
+          working-directory: server
+          only-new-issues: true
+
   # Preserve the existing required-check name while allowing tests, generated
   # SQL verification, and the vulnerability scan to run independently.
   backend:
-    needs: [backend-tests, backend-agent-tests, sqlc-check, go-vulnerability-scan]
+    needs: [backend-tests, backend-agent-tests, sqlc-check, go-vulnerability-scan, go-lint]
     if: ${{ !cancelled() }}
     runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
@@ -772,12 +808,14 @@ jobs:
           AGENT_TEST_RESULT: ${{ needs.backend-agent-tests.result }}
           SQLC_RESULT: ${{ needs.sqlc-check.result }}
           VULNERABILITY_RESULT: ${{ needs.go-vulnerability-scan.result }}
+          LINT_RESULT: ${{ needs.go-lint.result }}
         run: |
           echo "backend-tests:         $TEST_RESULT"
           echo "backend-agent-tests:   $AGENT_TEST_RESULT"
           echo "sqlc-check:            $SQLC_RESULT"
           echo "go-vulnerability-scan: $VULNERABILITY_RESULT"
-          if [ "$TEST_RESULT" != "success" ] || [ "$AGENT_TEST_RESULT" != "success" ] || [ "$SQLC_RESULT" != "success" ] || [ "$VULNERABILITY_RESULT" != "success" ]; then
+          echo "go-lint:               $LINT_RESULT"
+          if [ "$TEST_RESULT" != "success" ] || [ "$AGENT_TEST_RESULT" != "success" ] || [ "$SQLC_RESULT" != "success" ] || [ "$VULNERABILITY_RESULT" != "success" ] || [ "$LINT_RESULT" != "success" ]; then
             echo "::error::backend validation failed"
             exit 1
           fi
