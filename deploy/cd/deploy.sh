@@ -57,8 +57,22 @@ set -euo pipefail
 # GHCR), does not decide whether a manifest is admitted (that is
 # admission.mjs, run by the calling workflow before this script is invoked),
 # and does not hold or read any secret beyond DATABASE-adjacent compose env
-# already present in C00's .env — SSH transport and target host are the
-# calling workflow's concern, scoped to secrets on cd-deploy.yml only.
+# already present in C00's .env, plus the one registry credential described
+# next — SSH transport and target host are the calling workflow's concern,
+# scoped to secrets on cd-deploy.yml only.
+#
+# ## Registry authentication (CHE-549)
+#
+# C00 has no ambient GHCR credential — `multica-backend` and `multica-web`
+# are private packages, so an anonymous `docker compose pull` on C00 fails
+# with 403 regardless of any org/App-level permission grant (those govern
+# the GitHub API, not an unauthenticated `docker pull`). If
+# GHCR_PULL_TOKEN is set, this script logs in to ghcr.io immediately before
+# the pull step and logs out unconditionally afterwards via an EXIT trap —
+# covering every exit path (success, rollback, an early `exit` from a
+# require/file-existence check) without duplicating the logout call at each
+# one. Unset (e.g. local `--dry-run` runs, or a host with its own
+# already-configured Docker credential store) skips both silently.
 
 usage() {
   cat <<'EOF'
@@ -71,6 +85,12 @@ usage: deploy.sh --manifest PATH --compose-dir PATH --state-dir PATH [--dry-run]
   --state-dir PATH    Directory to read/write the deployed-tuple state file
                        (deployed-tuple.json) and rollback bookkeeping.
   --dry-run           Print the plan and exit 0 without touching Docker.
+
+Environment:
+  GHCR_PULL_TOKEN     Optional read:packages GHCR PAT. When set, logs in to
+                      ghcr.io before pulling and logs out on exit. Unset
+                      skips both (see the "Registry authentication" comment
+                      at the top of this file).
 
 Exit code is nonzero if the deploy failed AND the automatic rollback also
 failed to restore the previous tuple — that combination needs a human.
@@ -138,6 +158,19 @@ if ! flock -w 600 9; then
   echo "could not acquire deploy lock within 600s — another deploy is running" >&2
   exit 1
 fi
+
+# ghcr_logout is idempotent (a `docker logout` against a registry with no
+# active login just no-ops) and registered on EXIT before login ever runs,
+# so it fires whether the script exits via the normal end-of-script success
+# path, a `rollback` call's `exit`, or an earlier `require`/file-check
+# `exit` — no logout is skipped, and there is nothing to log out of if login
+# itself never ran (GHCR_PULL_TOKEN unset).
+ghcr_logout() {
+  if [ -n "${GHCR_PULL_TOKEN:-}" ]; then
+    docker logout ghcr.io >/dev/null 2>&1 || true
+  fi
+}
+trap ghcr_logout EXIT
 
 # json_field reads one dotted field path out of a JSON file with
 # JSON.parse(readFileSync(...)) rather than Node's require() cache: require()
@@ -456,6 +489,13 @@ rollback() {
   echo "!! rollback restart did not become healthy within 120s — MANUAL INTERVENTION REQUIRED" >&2
   exit 1
 }
+
+if [ -n "${GHCR_PULL_TOKEN:-}" ]; then
+  echo "==> logging in to ghcr.io"
+  if ! printf '%s' "$GHCR_PULL_TOKEN" | docker login ghcr.io -u token --password-stdin >/dev/null; then
+    rollback "ghcr.io login failed"
+  fi
+fi
 
 echo "==> pulling qualified image pair (tag ${image_tag})"
 MULTICA_BACKEND_IMAGE="$backend_repo" \

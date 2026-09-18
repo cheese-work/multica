@@ -90,5 +90,67 @@ sed -i 's#other-workspace/multica#cheese-work/multica#' "$provenance"
 # and check payloads claim success.
 sed -i 's/504078f8ea7fa31f342f195659e93a7f6c3e5a91/cccccccccccccccccccccccccccccccccccccccc/' "$manifest"
 reject source-mismatch
+sed -i 's/cccccccccccccccccccccccccccccccccccccccc/504078f8ea7fa31f342f195659e93a7f6c3e5a91/' "$manifest"
+
+# --- path-filtered required checks -----------------------------------------
+#
+# `mobile` only runs when a commit touches mobile-relevant paths, so a
+# docs-only commit produces no `mobile` check at all. Admission must tell that
+# apart from a check that is missing for any other reason: absence is excused
+# only when the commit provably matches none of the filter's paths, and the
+# proof is re-derived here from the raw file list, never asserted by the
+# recorder.
+
+write_checks() {
+  # $1 = mobile conclusion as a JSON fragment (`null` omits the key entirely)
+  # $2 = changed_files JSON array
+  # $3 = extra top-level JSON fields, may be empty
+  local mobile_entry=""
+  [ "$1" != "omit" ] && mobile_entry="\"mobile\":$1,"
+  cat >"$checks" <<EOF
+{
+  "sha": "$source_sha",
+  "contexts": {$mobile_entry "backend":"success","frontend":"success","cd-qualification":"success"},
+  "changed_files": $2,
+  "changed_files_truncated": false,
+  "path_filters": {"mobile": ["apps/mobile/**", "packages/core/**", "package.json"]}
+  $3
+}
+EOF
+}
+
+# Absent + no matching file -> admitted. This is the real 3afcfb94 case: a
+# docs-only commit under server/.
+write_checks omit '["server/internal/service/builtin_skills/multica-platform/references/issues.md"]' ""
+admit >/dev/null
+
+# Absent + a file the filter DOES cover -> refused. The check should have run;
+# its absence is a real gap, not an exclusion.
+write_checks omit '["apps/mobile/app/index.tsx"]' ""
+reject path-filtered-check-absent-but-required
+
+# A `**` filter must match at any depth, and a bare filename must not match a
+# same-named file in a subdirectory.
+write_checks omit '["packages/core/api/schema.ts"]' ""
+reject path-filter-doublestar-matches-nested
+write_checks omit '["apps/mobile/package.json"]' ""
+reject path-filter-matches-nested-package-json
+
+# Having RUN and failed is never excusable, whatever the commit touched.
+write_checks '"failure"' '["server/only.md"]' ""
+reject path-filtered-check-actually-failed
+write_checks '"cancelled"' '["server/only.md"]' ""
+reject path-filtered-check-cancelled
+
+# A truncated file list cannot prove absence of a match, so it must not excuse.
+write_checks omit '["server/only.md"]' ',"changed_files_truncated": true'
+reject truncated-file-list-cannot-excuse
+
+# Without the recorded evidence the check stays unconditionally required —
+# an older evidence set must not be admitted by the new code path.
+cat >"$checks" <<EOF
+{"sha":"$source_sha","contexts":{"backend":"success","frontend":"success","cd-qualification":"success"}}
+EOF
+reject legacy-checks-without-path-filter-evidence
 
 echo "admission positive and negative fixtures passed"
