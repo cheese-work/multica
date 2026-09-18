@@ -1328,6 +1328,70 @@ func (q *Queries) ListCommentsSinceForIssue(ctx context.Context, arg ListComment
 	return items, nil
 }
 
+const listMemberCommentsForIssue = `-- name: ListMemberCommentsForIssue :many
+SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at FROM comment
+WHERE issue_id = $1 AND workspace_id = $2 AND author_type = 'member'
+ORDER BY created_at ASC, id ASC
+LIMIT $3
+`
+
+type ListMemberCommentsForIssueParams struct {
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Limit       int32       `json:"limit"`
+}
+
+// The OLDEST $3 member-authored comments for an issue, in chronological order.
+//
+// Powers protocollint's waiver-grant scan (checkUnsupportedWaivers, CHE-551,
+// CHE-556): a waiver grant predates the run that cites it and only a human
+// ("member") can post one, so a newest-N cap is exactly backwards here — it is
+// the OLD rows that must survive, not the recent chatter. This is deliberately
+// the mirror image of ListCommentsForIssue's newest-N window, not a reuse of it.
+//
+// author_type is filtered in SQL rather than in Go so the row cap applies to
+// the candidate grant rows themselves, not to a mixed page that could still
+// push a real grant out before the Go filter ever sees it.
+func (q *Queries) ListMemberCommentsForIssue(ctx context.Context, arg ListMemberCommentsForIssueParams) ([]Comment, error) {
+	rows, err := q.db.Query(ctx, listMemberCommentsForIssue, arg.IssueID, arg.WorkspaceID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Comment{}
+	for rows.Next() {
+		var i Comment
+		if err := rows.Scan(
+			&i.ID,
+			&i.IssueID,
+			&i.AuthorType,
+			&i.AuthorID,
+			&i.Content,
+			&i.Type,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ParentID,
+			&i.WorkspaceID,
+			&i.ResolvedAt,
+			&i.ResolvedByType,
+			&i.ResolvedByID,
+			&i.SourceTaskID,
+			&i.QuickActionID,
+			&i.ViaPluginID,
+			&i.Revision,
+			&i.RecoverySettledAt,
+			&i.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRecentThreadCommentsForIssue = `-- name: ListRecentThreadCommentsForIssue :many
 WITH RECURSIVE membership(id, root_id, comment_created_at) AS (
     -- Each root maps to itself.
