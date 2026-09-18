@@ -17,16 +17,17 @@ concurrency:
 
 jobs:
   cd-qualification:
-    # This label is reserved for the separate cheese-work runner set on X99;
-    # it cannot match the unrelated tevo-web runners labeled tevo-cicd.
-    runs-on: [self-hosted, linux, x64, cheese-x99]
+    # CHE-504: cheese-x99 self-hosted runners decommissioned (Cheese,
+    # 2026-09-18) — Blacksmith is the sole CI path until a future decision
+    # reinstates self-hosted x99 runners.
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 45
     env:
       REGISTRY: ghcr.io
       BACKEND_IMAGE: ghcr.io/${{ github.repository_owner }}/multica-backend
       WEB_IMAGE: ghcr.io/${{ github.repository_owner }}/multica-web
     steps:
-      - name: Assert trusted main push on X99 amd64
+      - name: Assert trusted main push on amd64
         shell: bash
         run: |
           set -euo pipefail
