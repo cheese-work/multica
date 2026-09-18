@@ -51,9 +51,14 @@ Commands:
       exit 0. Never touches Docker or the router.
 
 State file: --state-dir/cutover-state.json records {active_colour,
-image_tuple, migration_ledger_version, router_generation, updated_at} —
-the A/B counterpart to deploy.sh's deployed-tuple.json. cutover.sh reads and
-writes this file under the SAME flock deploy.sh uses (--state-dir is shared),
+image_tuple, migration_ledger_version, predecessor_ledger_version,
+router_generation, updated_at}. migration_ledger_version is the ACTIVE
+colour's own (post-migration) ledger; predecessor_ledger_version is the
+ledger version recorded immediately BEFORE this cutover's migration step —
+the exact schema the now-inactive colour last served, and the anchor a
+future rollback verifies the current ledger against before restarting it.
+This is the A/B counterpart to deploy.sh's deployed-tuple.json. cutover.sh
+reads and writes this file under the SAME flock deploy.sh uses (--state-dir is shared),
 so a cutover.sh run and a deploy.sh run can never interleave.
 EOF
 }
@@ -99,7 +104,21 @@ fi
 
 mkdir -p "$state_dir"
 cutover_state_file="$state_dir/cutover-state.json"
-router_state_dir="$state_dir/router"
+
+# router_state_dir MUST be the exact directory router/docker-compose.router.yml
+# bind-mounts into the running router container (./state relative to that
+# compose file, i.e. deploy/cd/router/state) — NOT a path derived from this
+# invocation's own --state-dir, which is caller-supplied and arbitrary (a
+# test's mktemp dir, an operator's chosen state root, ...). router.sh
+# defaults to exactly this same canonical location when no --state-dir is
+# given it; pointing cutover.sh's own call at a different, cutover-scoped
+# directory (the original bug an independent review caught) would make
+# `select` render and validate a generation the running container's bind
+# mount can never see, so a cutover would report success while the router
+# kept serving the previous generation. ROUTER_STATE_DIR exists solely for
+# test-cutover.sh to point at an isolated scratch directory instead of the
+# real repo-relative path.
+router_state_dir="${ROUTER_STATE_DIR:-$root_dir/deploy/cd/router/state}"
 deploy_lock="$state_dir/deploy.lock"
 
 # shellcheck source=deploy-lib.sh
@@ -128,12 +147,13 @@ backend_port_for() {
 }
 
 write_cutover_state() {
-  local colour=$1 backend_image=$2 web_image=$3 ledger_version=$4
+  local colour=$1 backend_image=$2 web_image=$3 ledger_version=$4 predecessor_ledger_version=$5
   cat >"$cutover_state_file" <<JSON
 {
   "active_colour": "$colour",
   "image_tuple": { "backend": "$backend_image", "web": "$web_image" },
   "migration_ledger_version": "$ledger_version",
+  "predecessor_ledger_version": "$predecessor_ledger_version",
   "router_generation_colour": "$colour",
   "updated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
@@ -145,9 +165,16 @@ JSON
 # this one — and must not race a concurrent deploy.sh single-slot run either,
 # which is exactly why this uses the SAME lock file deploy.sh takes when
 # --state-dir points at the same directory.
+#
+# CUTOVER_LOCK_WAIT_SECONDS defaults to 600s (matching deploy.sh's own
+# bound) — overridable solely so test-cutover.sh's "lost controller
+# connection" scenario can prove the actual refusal path (message + no
+# Docker calls) in a few seconds instead of waiting out the real 600s
+# production bound.
+lock_wait_seconds="${CUTOVER_LOCK_WAIT_SECONDS:-600}"
 exec 9>"$deploy_lock"
-if ! flock -w 600 9; then
-  echo "could not acquire deploy lock within 600s — another deploy/cutover is running" >&2
+if ! flock -w "$lock_wait_seconds" 9; then
+  echo "could not acquire deploy lock within ${lock_wait_seconds}s — another deploy/cutover is running" >&2
   exit 1
 fi
 
@@ -184,6 +211,22 @@ case "$command" in
     echo "==> verifying release packet contract"
     if ! node "$script_dir/release-packet.mjs" verify --packet "$packet"; then
       echo "!! release packet failed contract checks; refusing to cut over" >&2
+      exit 1
+    fi
+
+    # Port-collision preflight: the base (un-scaled) "frontend" service
+    # publishes 127.0.0.1:${FRONTEND_PORT:-3000}, the same host port the
+    # router's own frontend listener binds (docker-compose.router.yml,
+    # network_mode: host). docker-compose.ab.yml's own comment says the
+    # base backend/frontend services must be scaled to zero once A/B is
+    # adopted, but nothing enforced that — this is the documented
+    # prerequisite from an independent review finding made into an actual
+    # preflight check rather than an assumption. Refuse loudly here rather
+    # than let the router container fail to bind at reload time, deep into
+    # the cutover.
+    base_running="$(compose ps --status running --format '{{.Service}}' backend frontend 2>/dev/null || true)"
+    if [ -n "$base_running" ]; then
+      echo "!! base (pre-A/B) service(s) still running: $base_running — these must be scaled to zero before an A/B cutover (docker compose ... up -d --scale backend=0 --scale frontend=0 <router-adopting compose invocation>), or the router's own 127.0.0.1:3000 listener collides with the un-scaled frontend service's published port" >&2
       exit 1
     fi
 
@@ -226,6 +269,18 @@ case "$command" in
       echo "!! pulled image digest mismatch for colour=$to_colour; $from_colour remains active" >&2
       exit 1
     fi
+
+    # Record the ledger version BEFORE the migration step runs — this is
+    # what $from_colour (the predecessor once this cutover completes) has
+    # actually been serving against, and is the correct rollback
+    # compatibility anchor for THIS cutover's own rollback later. Capturing
+    # it any later (e.g. after the migration step, or from the eventual
+    # active colour's post-migration ledger) would record the CANDIDATE's
+    # version instead of the predecessor's — the bug the independent review
+    # caught: that made the rollback guard compare a value against itself
+    # and pass unconditionally, letting rollback start the predecessor
+    # against a schema it never served.
+    predecessor_ledger_version="$(current_ledger_version)"
 
     # Run the standalone migrator exactly once, from the candidate image,
     # against the inactive colour's (stopped) service identity — never the
@@ -287,8 +342,8 @@ case "$command" in
     compose stop "backend-${from_colour}" "frontend-${from_colour}" >/dev/null 2>&1 || true
 
     ledger_version="$(current_ledger_version)"
-    write_cutover_state "$to_colour" "$backend_image" "$web_image" "$ledger_version"
-    echo "==> cutover complete: $to_colour is now active (ledger version: $ledger_version)"
+    write_cutover_state "$to_colour" "$backend_image" "$web_image" "$ledger_version" "$predecessor_ledger_version"
+    echo "==> cutover complete: $to_colour is now active (ledger version: $ledger_version; predecessor $from_colour last served: $predecessor_ledger_version)"
     ;;
 
   rollback)
@@ -313,13 +368,29 @@ case "$command" in
     # the ledger. Never run a down migration or restore from backup here;
     # that is the separately authorized recovery path (accepted
     # architecture, step 4).
+    #
+    # The comparison anchor is predecessor_ledger_version — the ledger
+    # version recorded IMMEDIATELY BEFORE the cutover that made $from_colour
+    # active ran its migration step (see the "cutover)" branch above). That
+    # is what $to_colour (the predecessor being restored) actually served
+    # against. migration_ledger_version is deliberately NOT used here: it
+    # is the ledger AFTER that migration — the candidate's own version, not
+    # the predecessor's — and comparing against it would always match
+    # (a value trivially equals itself), making this guard pass
+    # unconditionally and start the predecessor against a schema it never
+    # served. That was CHE-608's independent-review finding 1.
     current_version="$(current_ledger_version)"
-    previous_recorded_version=""
+    predecessor_recorded_version=""
     if [ -f "$cutover_state_file" ]; then
-      previous_recorded_version="$(json_field "$cutover_state_file" migration_ledger_version)"
+      predecessor_recorded_version="$(json_field "$cutover_state_file" predecessor_ledger_version)"
     fi
-    if [ -n "$previous_recorded_version" ] && [ "$current_version" != "$previous_recorded_version" ]; then
-      echo "!! current ledger version ($current_version) does not match the predecessor's last-known-good version ($previous_recorded_version) — the retained predecessor image cannot be assumed compatible with a schema it has never served" >&2
+    if [ -z "$predecessor_recorded_version" ]; then
+      echo "!! no predecessor_ledger_version recorded in $cutover_state_file — cannot verify $to_colour is compatible with the current schema" >&2
+      echo "!! this is NOT a routine rollback case; refusing to start $to_colour blind" >&2
+      exit 1
+    fi
+    if [ "$current_version" != "$predecessor_recorded_version" ]; then
+      echo "!! current ledger version ($current_version) does not match the predecessor's last-known-good version ($predecessor_recorded_version) — the retained predecessor image cannot be assumed compatible with a schema it has never served" >&2
       echo "!! this is NOT a routine rollback case; a down migration or backup restore requires separate authorization — refusing to start $to_colour blind" >&2
       exit 1
     fi
@@ -347,7 +418,11 @@ case "$command" in
 
     backend_image="$(json_field "$cutover_state_file" image_tuple.backend 2>/dev/null || echo "")"
     web_image="$(json_field "$cutover_state_file" image_tuple.web 2>/dev/null || echo "")"
-    write_cutover_state "$to_colour" "$backend_image" "$web_image" "$current_version"
+    # current_version is unchanged by this rollback (no migration ran — see
+    # the guard above), so it is still the correct predecessor anchor for a
+    # FUTURE rollback landing back on $from_colour: nothing has moved the
+    # schema since $to_colour was verified against it above.
+    write_cutover_state "$to_colour" "$backend_image" "$web_image" "$current_version" "$current_version"
     echo "==> rollback complete: $to_colour restored and healthy (all acknowledged data/uploads on shared Postgres/volume preserved — no restore performed)"
     ;;
 

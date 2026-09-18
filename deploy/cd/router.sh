@@ -232,9 +232,17 @@ JSON
     # target — reading it off the (about-to-be-replaced) active.conf
     # symlink itself, not off history.log, so a `revert` is correct even if
     # history.log was pruned or lost.
+    #
+    # Plain `readlink` (not `-f`/`-e`), and stored as the RAW relative
+    # target ("generations/<file>") — matching the relative form `ln -sfn`
+    # now writes below. Resolving to an absolute path here (readlink -f)
+    # would reintroduce the same host-path-dangles-in-the-container defect
+    # this fix addresses, just one step removed: `revert` would read an
+    # absolute path back out of previous.conf.path and hand it straight to
+    # `ln -sfn` again.
     previous_target=""
     if [ -L "$state_dir/active.conf" ]; then
-      previous_target="$(readlink -f "$state_dir/active.conf")"
+      previous_target="$(readlink "$state_dir/active.conf")"
     fi
 
     # The symlink swap itself: `ln -sfn` unlinks the old symlink and creates
@@ -242,8 +250,20 @@ JSON
     # concurrent reader (this script's own `probe`, or a human `readlink`)
     # never observes a half-updated or missing symlink, only the old target
     # or the new one.
-    ln -sfn "$candidate_conf" "$state_dir/active.conf"
-    ln -sfn "$candidate_json" "$state_dir/active.json"
+    #
+    # The link target is RELATIVE (generations/<file>, not the absolute
+    # $candidate_conf) — the router container bind-mounts this state
+    # directory read-only at a different path than its host location
+    # (docker-compose.router.yml mounts ./state at
+    # /etc/nginx/router-state), so an absolute host path baked into the
+    # symlink dangles inside the container: `nginx -t` inside the container
+    # reproduced this exactly as `open() "/etc/nginx/router-state/active.conf"
+    # failed (2: No such file or directory)` when the link target was the
+    # absolute host path. A relative target resolves correctly under
+    # whatever directory the symlink itself lives in, host or container
+    # alike.
+    ln -sfn "generations/$(basename "$candidate_conf")" "$state_dir/active.conf"
+    ln -sfn "generations/$(basename "$candidate_json")" "$state_dir/active.json"
     if [ -n "$previous_target" ]; then
       printf '%s\n' "$previous_target" >"$state_dir/previous.conf.path"
     fi
@@ -259,7 +279,14 @@ JSON
       echo "no previous generation recorded in $state_dir; cannot revert" >&2
       exit 1
     fi
-    previous_conf="$(cat "$state_dir/previous.conf.path")"
+    # previous_relative is the raw relative target ("generations/<file>"),
+    # as written by `select` above. previous_conf resolves it against
+    # $state_dir for THIS script's own filesystem checks/validation (which
+    # run on the host, not inside the container); the symlink itself is
+    # still written with the relative form so it resolves correctly under
+    # both the host state dir and the container's differently-pathed mount.
+    previous_relative="$(cat "$state_dir/previous.conf.path")"
+    previous_conf="$state_dir/$previous_relative"
     if [ ! -f "$previous_conf" ]; then
       echo "recorded previous generation no longer exists: $previous_conf" >&2
       exit 1
@@ -268,9 +295,10 @@ JSON
       echo "!! previous generation failed nginx -t on revert; refusing to activate a config that is now invalid" >&2
       exit 1
     fi
-    previous_json="${previous_conf%.conf}.json"
-    ln -sfn "$previous_conf" "$state_dir/active.conf"
-    [ -f "$previous_json" ] && ln -sfn "$previous_json" "$state_dir/active.json"
+    previous_relative_json="${previous_relative%.conf}.json"
+    previous_json="$state_dir/$previous_relative_json"
+    ln -sfn "$previous_relative" "$state_dir/active.conf"
+    [ -f "$previous_json" ] && ln -sfn "$previous_relative_json" "$state_dir/active.json"
     reload_router "$state_dir"
     colour_reverted="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).colour)' "$previous_json" 2>/dev/null || echo unknown)"
     record_history "$colour_reverted" "$previous_conf"

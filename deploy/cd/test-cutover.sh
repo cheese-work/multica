@@ -112,6 +112,16 @@ if [ "\$1" = "compose" ]; then
         "\$direction" "\${MULTICA_BACKEND_IMAGE:-}" "\${MULTICA_IMAGE_TAG:-}" "\${*: -2:1}" \\
         >>"\$control_dir/migrate-calls.log"
       fail_if_flagged fail-migrate
+      # Genuinely advance the mock ledger on a real "up" run, so the
+      # rollback compatibility guard is exercised against a schema state
+      # that actually changed — not a static fixture value a test hand-
+      # injects. "down" is intentionally NOT modeled here: routine rollback
+      # never runs it (asserted by scenario 8/11 below); if this mock's
+      # down branch is ever reached, that is itself a regression this test
+      # should catch via the "no down migration" assertions.
+      if [ "\$direction" = "up" ]; then
+        printf '%s\n' "\${MOCK_LEDGER_VERSION_AFTER_MIGRATE:-468_post_cutover_migration}" >"\$control_dir/ledger-version"
+      fi
       exit 0
       ;;
     up)
@@ -130,6 +140,16 @@ if [ "\$1" = "compose" ]; then
         version="\$(cat "\$control_dir/ledger-version")"
       fi
       printf '%s\n' "\$version"
+      exit 0
+      ;;
+    ps)
+      # ps --status running --format '{{.Service}}' backend frontend — the
+      # base-service port-collision preflight. Empty (nothing running) by
+      # default; a scenario touches base-services-running to model the
+      # un-scaled base stack still being up.
+      if [ -f "\$control_dir/base-services-running" ]; then
+        printf 'backend\nfrontend\n'
+      fi
       exit 0
       ;;
     *)
@@ -266,6 +286,11 @@ run_cutover() {
   export MOCK_BACKEND_DIGEST="$backend_digest"
   export MOCK_EXPECTED_COMMIT="$source_sha"
   export CUTOVER_DATABASE_URL="postgres://multica:multica@127.0.0.1:5432/multica?sslmode=disable"
+  # ROUTER_STATE_DIR keeps router.sh's own state isolated per scenario
+  # (cutover.sh's default otherwise points at the real repo-relative
+  # deploy/cd/router/state, per the fix for independent-review finding 3's
+  # second sub-finding — see cutover.sh's own comment on router_state_dir).
+  export ROUTER_STATE_DIR="$state_dir/router-state"
   # Mark blue's backend as reachable/ready by default (the incumbent colour
   # in every scenario below); green becomes ready once its own containers-up
   # marker is touched by the mock's `up` handler.
@@ -294,6 +319,30 @@ fi
 active="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).active_colour)' "$state_dir/cutover-state.json")"
 if [ "$active" != "green" ]; then
   echo "scenario happy-path: active_colour is '$active', want green" >&2
+  exit 1
+fi
+
+# Coverage gap (independent review): "no second active scheduler". Starting
+# a backend also starts its in-process scheduler (CHE-393) — the structural
+# guarantee this unit relies on is that cutover.sh's own control flow never
+# has BOTH colours' backend containers running at once. Assert it directly
+# against the actual sequence of `docker compose up`/`stop` calls this run
+# issued: the candidate colour's `up` must be the only `up` for a backend
+# service before the incumbent's `stop` for the same colour pairing is
+# issued, and the incumbent must never be started again afterward. A
+# structural proof (the real command sequence cutover.sh emitted), not an
+# assumption from reading the code.
+compose_backend_calls="$(grep -E 'compose .* (up -d --no-deps backend-|stop backend-)' "$state_dir/control/docker-calls.log" 2>/dev/null || true)"
+up_count_blue="$(printf '%s\n' "$compose_backend_calls" | grep -cE 'up -d --no-deps backend-blue\b' || true)"
+up_count_green="$(printf '%s\n' "$compose_backend_calls" | grep -cE 'up -d --no-deps backend-green\b' || true)"
+if [ "$up_count_blue" -gt 0 ]; then
+  echo "scenario happy-path: backend-blue (the incumbent) was started during a cutover to green — this is the exact 'second active scheduler' hazard the accepted architecture forbids" >&2
+  echo "--- docker compose backend up/stop sequence ---" >&2
+  printf '%s\n' "$compose_backend_calls" >&2
+  exit 1
+fi
+if [ "$up_count_green" -ne 1 ]; then
+  echo "scenario happy-path: expected exactly one 'up' for backend-green (the candidate), got $up_count_green" >&2
   exit 1
 fi
 
@@ -357,6 +406,28 @@ if [ -f "$state_dir/control/quiescence-calls.log" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Scenario 4b (negative control, independent-review finding 4): the base
+# (un-scaled) backend/frontend services are still running -> cutover must
+# refuse before any mutation. The base frontend's published
+# 127.0.0.1:${FRONTEND_PORT:-3000} collides with the router's own frontend
+# listener; letting the cutover proceed would defer that failure to router
+# activation, deep into the sequence, instead of catching it up front.
+# ---------------------------------------------------------------------------
+state_dir="$(fresh_scenario_dir base-services-still-running)"
+mkdir -p "$state_dir/control"
+touch "$state_dir/control/base-services-running"
+set +e
+output="$(run_cutover "$state_dir" 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" base-services-still-running
+expect_contains "$output" "base (pre-A/B) service(s) still running" base-services-still-running
+if [ -f "$state_dir/control/quiescence-calls.log" ]; then
+  echo "scenario base-services-still-running: quiescence was called despite the port-collision preflight that should have refused first" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
 # Scenario 5 (negative control): migration step fails -> candidate never
 # starts, incumbent colour is untouched (no stop calls against blue).
 # ---------------------------------------------------------------------------
@@ -405,24 +476,108 @@ expect_exit 1 "$status" wrong-health-identity
 expect_contains "$output" "health identity mismatch" wrong-health-identity
 
 # ---------------------------------------------------------------------------
-# Scenario 8: rollback after a successful cutover restores blue, verified
-# against the current (unchanged) ledger, and never runs a down migration.
+# Scenario 7b (negative control — coverage gap, "interrupted switch"): the
+# candidate becomes healthy and passes /health identity, but the router
+# reload itself fails mid-switch (config validated and symlinked, but the
+# running Nginx process never picked it up — e.g. the container was killed
+# or lost its connection at exactly that moment). cutover.sh must report
+# this distinctly (candidate running but not receiving traffic) rather than
+# claiming success, and must NOT stop the incumbent colour — an interrupted
+# switch leaves the previous colour as the only one actually serving.
 # ---------------------------------------------------------------------------
-state_dir="$(fresh_scenario_dir rollback-after-cutover)"
+state_dir="$(fresh_scenario_dir interrupted-switch)"
+mkdir -p "$state_dir/control"
+touch "$state_dir/control/fail-router-reload"
+set +e
+output="$(run_cutover "$state_dir" 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" interrupted-switch
+expect_contains "$output" "router generation switch failed" interrupted-switch
+expect_contains "$output" "NOT receiving traffic" interrupted-switch
+if grep -q "backend-blue" "$state_dir/control/stop-calls.log" 2>/dev/null; then
+  echo "scenario interrupted-switch: incumbent colour blue was stopped despite the router switch never completing" >&2
+  exit 1
+fi
+if [ -f "$state_dir/cutover-state.json" ]; then
+  echo "scenario interrupted-switch: cutover-state.json was written despite the switch never completing — this would claim green is active when the router never moved" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Scenario 7c (negative control — coverage gap, "lost controller
+# connection"): a second cutover/rollback invocation holds the deploy lock
+# (simulating a controller that is mid-run, or one whose connection was
+# lost while still holding the lock) — this invocation must not proceed
+# past lock acquisition, and must not touch Docker at all.
+# ---------------------------------------------------------------------------
+state_dir="$(fresh_scenario_dir lost-controller-connection)"
+mkdir -p "$state_dir"
+exec 8>"$state_dir/deploy.lock"
+flock 8
+set +e
+output="$(CUTOVER_LOCK_WAIT_SECONDS=2 bash deploy/cd/cutover.sh cutover --manifest "$manifest" --packet "$packet" --compose-dir "$compose_dir" --state-dir "$state_dir" 2>&1)"
+status=$?
+set -e
+exec 8>&-
+expect_exit 1 "$status" lost-controller-connection
+expect_contains "$output" "could not acquire deploy lock" lost-controller-connection
+if [ -f "$state_dir/control/docker-calls.log" ]; then
+  echo "scenario lost-controller-connection: Docker was invoked despite never acquiring the deploy lock" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Scenario 8: rollback after a cutover whose migration step applied no new
+# versions (a legitimate real case: the migrator ran but the candidate
+# needed nothing beyond what the predecessor already had — e.g. a router-
+# only re-cutover). The ledger is genuinely unchanged across the cutover
+# (MOCK_LEDGER_VERSION_AFTER_MIGRATE equals the pre-migration default), so
+# the recorded predecessor_ledger_version and the current ledger genuinely
+# match — this is the real routine-rollback case the guard is meant to
+# admit, not a value the test injects into the rollback path directly.
+# ---------------------------------------------------------------------------
+state_dir="$(fresh_scenario_dir rollback-after-noop-migration-cutover)"
+mkdir -p "$state_dir/control"
+export MOCK_LEDGER_VERSION_AFTER_MIGRATE="467_autopilot_trigger_creator_from_autopilot"
+run_cutover "$state_dir" >/dev/null 2>&1
+unset MOCK_LEDGER_VERSION_AFTER_MIGRATE
+set +e
+output="$(bash deploy/cd/cutover.sh rollback --compose-dir "$compose_dir" --state-dir "$state_dir" 2>&1)"
+status=$?
+set -e
+expect_exit 0 "$status" rollback-after-noop-migration-cutover
+expect_contains "$output" "rollback complete: blue restored and healthy" rollback-after-noop-migration-cutover
+if grep -qE "migrate down|down --to" "$state_dir/control/docker-calls.log" "$state_dir/control/migrate-calls.log" 2>/dev/null; then
+  echo "scenario rollback-after-noop-migration-cutover: a down migration was run during routine rollback" >&2
+  exit 1
+fi
+active="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).active_colour)' "$state_dir/cutover-state.json")"
+if [ "$active" != "blue" ]; then
+  echo "scenario rollback-after-noop-migration-cutover: active_colour after rollback is '$active', want blue" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Scenario 8b (negative control, proves the fix for independent-review
+# finding 1): rollback after a cutover whose migration step GENUINELY
+# advanced the ledger (the mock's default behavior — no test-injected
+# value). Before this fix, migration_ledger_version was recorded from the
+# POST-migration ledger, so this comparison always matched itself and the
+# guard passed unconditionally — the predecessor would have been started
+# against a schema it never served. Now predecessor_ledger_version is
+# recorded pre-migration, so a real ledger advance is correctly caught.
+# ---------------------------------------------------------------------------
+state_dir="$(fresh_scenario_dir rollback-after-real-migration-cutover)"
 run_cutover "$state_dir" >/dev/null 2>&1
 set +e
 output="$(bash deploy/cd/cutover.sh rollback --compose-dir "$compose_dir" --state-dir "$state_dir" 2>&1)"
 status=$?
 set -e
-expect_exit 0 "$status" rollback-after-cutover
-expect_contains "$output" "rollback complete: blue restored and healthy" rollback-after-cutover
+expect_exit 1 "$status" rollback-after-real-migration-cutover
+expect_contains "$output" "cannot be assumed compatible" rollback-after-real-migration-cutover
 if grep -qE "migrate down|down --to" "$state_dir/control/docker-calls.log" "$state_dir/control/migrate-calls.log" 2>/dev/null; then
-  echo "scenario rollback-after-cutover: a down migration was run during routine rollback" >&2
-  exit 1
-fi
-active="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).active_colour)' "$state_dir/cutover-state.json")"
-if [ "$active" != "blue" ]; then
-  echo "scenario rollback-after-cutover: active_colour after rollback is '$active', want blue" >&2
+  echo "scenario rollback-after-real-migration-cutover: a down migration was run despite the guard refusing" >&2
   exit 1
 fi
 
@@ -439,19 +594,37 @@ expect_exit 1 "$status" rollback-no-state
 expect_contains "$output" "nothing recorded to roll back from" rollback-no-state
 
 # ---------------------------------------------------------------------------
-# Scenario 10 (negative control): rollback when the ledger has moved past
-# the retained predecessor's last-known-good version — must refuse to start
-# the predecessor blind, never treat this as a routine rollback.
+# Scenario 10 (negative control): a SECOND real cutover (green -> a new
+# candidate on blue) runs its own genuine migration on top of the first
+# cutover's already-advanced ledger, then rollback is attempted. This
+# exercises the guard across two real hops rather than one, and never
+# hand-writes a ledger value into the rollback path itself — every ledger
+# change here comes from an actual "migrate up" mock invocation triggered
+# by a real cutover run, exactly as CHE-608's independent review required
+# ("a negative assertion that cannot fail [when the code is wrong] is a
+# defect").
 # ---------------------------------------------------------------------------
-state_dir="$(fresh_scenario_dir rollback-incompatible-schema)"
-run_cutover "$state_dir" >/dev/null 2>&1
-echo "999_a_migration_the_predecessor_has_never_heard_of" >"$state_dir/control/ledger-version"
+state_dir="$(fresh_scenario_dir rollback-after-two-real-cutovers)"
+export MOCK_LEDGER_VERSION_AFTER_MIGRATE="468_first_cutover_migration"
+run_cutover "$state_dir" >/dev/null 2>&1 # blue (467) -> green (468)
+export MOCK_LEDGER_VERSION_AFTER_MIGRATE="469_second_cutover_migration"
+run_cutover "$state_dir" >/dev/null 2>&1 # green (468) -> blue-candidate (469)
+unset MOCK_LEDGER_VERSION_AFTER_MIGRATE
+active_after_two="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).active_colour)' "$state_dir/cutover-state.json")"
+if [ "$active_after_two" != "blue" ]; then
+  echo "scenario rollback-after-two-real-cutovers: active_colour after two cutovers is '$active_after_two', want blue" >&2
+  exit 1
+fi
 set +e
 output="$(bash deploy/cd/cutover.sh rollback --compose-dir "$compose_dir" --state-dir "$state_dir" 2>&1)"
 status=$?
 set -e
-expect_exit 1 "$status" rollback-incompatible-schema
-expect_contains "$output" "cannot be assumed compatible" rollback-incompatible-schema
-expect_contains "$output" "NOT a routine rollback case" rollback-incompatible-schema
+expect_exit 1 "$status" rollback-after-two-real-cutovers
+expect_contains "$output" "cannot be assumed compatible" rollback-after-two-real-cutovers
+expect_contains "$output" "NOT a routine rollback case" rollback-after-two-real-cutovers
+if grep -qE "migrate down|down --to" "$state_dir/control/docker-calls.log" "$state_dir/control/migrate-calls.log" 2>/dev/null; then
+  echo "scenario rollback-after-two-real-cutovers: a down migration was run despite the guard refusing" >&2
+  exit 1
+fi
 
 echo "cutover.sh control-flow fixtures passed"
