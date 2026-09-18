@@ -90,7 +90,7 @@ type UpsertIssueCheckpointParams struct {
 }
 
 // Idempotent on (issue_id, agent_id) via uq_issue_checkpoint_owner (migration
-// 501): only the most recent coverage per issue+agent is ever a useful
+// 503): only the most recent coverage per issue+agent is ever a useful
 // checkpoint, so a later claim's write replaces the earlier one rather than
 // accumulating history rows.
 //
