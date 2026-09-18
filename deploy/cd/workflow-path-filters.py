@@ -12,10 +12,13 @@ Output: {"<check name>": ["<glob>", ...], ...} on stdout.
 
 Parsed with PyYAML rather than regexes on purpose. GitHub's `on:` blocks vary
 enough in formatting that pattern-matching silently misses filters, and a
-filter missed here reads downstream as an unexplained absence. When PyYAML is
-unavailable this prints an empty object, which leaves every required check
-unconditionally required in admission.mjs — that can only refuse a deploy,
-never admit one.
+filter missed here reads downstream as an unexplained absence. PyYAML is
+therefore a hard dependency: without it this exits non-zero rather than
+printing an empty object. An empty object is fail-closed at admission — it
+leaves every required check unconditionally required — but it surfaces there
+as "required check mobile is not success" on a commit that never touched
+mobile, which reads as a check problem rather than the missing dependency it
+is. deploy/cd/ensure-pyyaml.sh installs it; run that first.
 """
 
 import json
@@ -25,8 +28,12 @@ import sys
 try:
     import yaml
 except ImportError:
-    print("{}")
-    sys.exit(0)
+    print(
+        "workflow-path-filters.py requires PyYAML. Run deploy/cd/ensure-pyyaml.sh "
+        "before this script.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 def main() -> int:
