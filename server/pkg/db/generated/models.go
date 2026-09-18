@@ -833,6 +833,25 @@ type Issue struct {
 	TriageState        pgtype.Text        `json:"triage_state"`
 }
 
+type IssueCheckpoint struct {
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	IssueID             pgtype.UUID        `json:"issue_id"`
+	AgentID             pgtype.UUID        `json:"agent_id"`
+	IssueRevision       int64              `json:"issue_revision"`
+	CandidateID         string             `json:"candidate_id"`
+	Coverage            []byte             `json:"coverage"`
+	AcceptedDecisions   []byte             `json:"accepted_decisions"`
+	Obligations         []byte             `json:"obligations"`
+	Blockers            []byte             `json:"blockers"`
+	NextPermittedAction string             `json:"next_permitted_action"`
+	Evidence            []byte             `json:"evidence"`
+	ResolvedThreads     []byte             `json:"resolved_threads"`
+	BuiltAt             pgtype.Timestamptz `json:"built_at"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
+}
+
 type IssueDependency struct {
 	ID               pgtype.UUID `json:"id"`
 	IssueID          pgtype.UUID `json:"issue_id"`
