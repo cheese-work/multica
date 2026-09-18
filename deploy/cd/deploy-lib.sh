@@ -201,3 +201,79 @@ current_ledger_version() {
   compose exec -T postgres psql -U "${POSTGRES_USER:-multica}" -d "${POSTGRES_DB:-multica}" -tA -c \
     "SELECT coalesce(max(version), '') FROM schema_migrations" | tr -d '[:space:]'
 }
+
+# ledger_at_or_after reports (via exit status) whether $current is at or
+# after $floor in the REAL on-disk applied-migration order
+# (server/migrations/*.up.sql, sorted by filename — the same ordering
+# server/internal/migrations.AllVersions() and release-packet.mjs's own
+# on-disk ordering check use; a bare string/lexicographic MAX(), which is
+# what Postgres's MAX(version) gives current_ledger_version, is NOT
+# guaranteed to agree with this once version numbers cross a digit-count
+# boundary, e.g. "999_x" vs "1000_y").
+#
+# This is the compatibility check cutover.sh's rollback path uses (CHE-608
+# independent review, second pass): under expand/contract, a retained
+# predecessor image is REQUIRED to serve the expanded (post-migration)
+# schema — that is the normal, expected rollback condition, not an unsafe
+# one. What is unsafe is the schema having moved BEHIND the floor a release
+# packet's minimum_rollback_version asserted (e.g. an out-of-band down
+# migration) — this helper is order-aware specifically so that check can
+# tell "moved forward since" (fine) apart from "moved backward past the
+# floor" (not fine), rather than the strict equality this replaced, which
+# refused every migration-inclusive cutover's own rollback unconditionally.
+#
+# Fails closed (returns 1, via `process.exit(1)`) if either version cannot
+# be located on disk — an unrecognized version is never treated as
+# "at or after" anything.
+ledger_at_or_after() {
+  local current=$1
+  local floor=$2
+  local migrations_dir="${3:-$root_dir/server/migrations}"
+  node -e '
+    const fs = require("node:fs");
+    const dir = process.argv[1];
+    const current = process.argv[2];
+    const floor = process.argv[3];
+    const versions = fs.readdirSync(dir)
+      .filter((f) => f.endsWith(".up.sql"))
+      .sort()
+      .map((f) => f.replace(/\.up\.sql$/, ""));
+    const currentIdx = versions.indexOf(current);
+    const floorIdx = versions.indexOf(floor);
+    if (currentIdx === -1 || floorIdx === -1) process.exit(1);
+    process.exit(currentIdx >= floorIdx ? 0 : 1);
+  ' "$migrations_dir" "$current" "$floor"
+}
+
+# ghcr_login/ghcr_logout (CHE-549): C00 has no ambient GHCR credential —
+# multica-backend and multica-web are private packages, so an anonymous
+# `docker compose pull` on C00 fails with 403 regardless of any org/App-level
+# permission grant (those govern the GitHub API, not an unauthenticated
+# `docker pull`). Shared here (not duplicated per caller) because BOTH
+# deploy.sh's single-slot pull and cutover.sh's per-colour candidate pull hit
+# the exact same registry under the exact same constraint — a second,
+# independently-written login/logout pair is exactly the kind of drift
+# CHE-549's own finding 5 warned about for the migration-invocation path.
+#
+# ghcr_login is a no-op success (return 0) when GHCR_PULL_TOKEN is unset —
+# e.g. local --dry-run runs, or a host with its own already-configured Docker
+# credential store — so every caller can unconditionally call it before a
+# pull without an extra existence check of its own.
+ghcr_login() {
+  if [ -z "${GHCR_PULL_TOKEN:-}" ]; then
+    return 0
+  fi
+  echo "==> logging in to ghcr.io"
+  printf '%s' "$GHCR_PULL_TOKEN" | docker login ghcr.io -u token --password-stdin >/dev/null
+}
+
+# ghcr_logout is idempotent (a `docker logout` against a registry with no
+# active login just no-ops). Callers register it on their own EXIT trap
+# (`trap ghcr_logout EXIT`) immediately after sourcing this file, before
+# ghcr_login ever runs, so it fires on every exit path — success, an early
+# `require`/file-check `exit`, or a failure branch — not just the happy path.
+ghcr_logout() {
+  if [ -n "${GHCR_PULL_TOKEN:-}" ]; then
+    docker logout ghcr.io >/dev/null 2>&1 || true
+  fi
+}

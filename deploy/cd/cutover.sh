@@ -51,15 +51,29 @@ Commands:
       exit 0. Never touches Docker or the router.
 
 State file: --state-dir/cutover-state.json records {active_colour,
-image_tuple, migration_ledger_version, predecessor_ledger_version,
+image_tuple, migration_ledger_version, minimum_rollback_version,
 router_generation, updated_at}. migration_ledger_version is the ACTIVE
-colour's own (post-migration) ledger; predecessor_ledger_version is the
-ledger version recorded immediately BEFORE this cutover's migration step —
-the exact schema the now-inactive colour last served, and the anchor a
-future rollback verifies the current ledger against before restarting it.
-This is the A/B counterpart to deploy.sh's deployed-tuple.json. cutover.sh
+colour's own (post-migration) ledger; minimum_rollback_version is copied
+straight from the admitted release packet's own field — the compatibility
+floor a future rollback verifies the current ledger sits AT OR AFTER
+(order-aware, not strict equality — see cutover.sh's rollback branch) before
+restarting the retained predecessor. This is the A/B counterpart to
+deploy.sh's deployed-tuple.json. cutover.sh
 reads and writes this file under the SAME flock deploy.sh uses (--state-dir is shared),
 so a cutover.sh run and a deploy.sh run can never interleave.
+
+Environment:
+  GHCR_PULL_TOKEN     Optional read:packages GHCR PAT (CHE-549). When set,
+                      the `cutover` command logs in to ghcr.io immediately
+                      before pulling the candidate colour's image pair and
+                      logs out on exit. Unset skips both silently — same
+                      contract as deploy.sh's own GHCR_PULL_TOKEN.
+  CUTOVER_DATABASE_URL   Required by `cutover`/`rollback`: the DATABASE_URL
+                      the compose stack's postgres service uses.
+  ROUTER_STATE_DIR    Overrides router.sh's state directory (test isolation
+                      only — production uses the canonical repo-relative path).
+  CUTOVER_LOCK_WAIT_SECONDS   Overrides the 600s deploy-lock wait bound
+                      (test isolation only).
 EOF
 }
 
@@ -125,6 +139,15 @@ deploy_lock="$state_dir/deploy.lock"
 source "$script_dir/deploy-lib.sh"
 compose_files=("docker-compose.selfhost.yml" "deploy/cd/docker-compose.ab.yml")
 
+# ghcr_login/ghcr_logout (deploy-lib.sh, CHE-549) — C00 has no ambient GHCR
+# credential, so an unauthenticated pull of the private multica-backend/
+# multica-web packages fails with 403 the same way deploy.sh's single-slot
+# pull did before CHE-549. Registered on EXIT immediately after sourcing
+# deploy-lib.sh, before login ever runs, so logout fires on every exit path
+# of every command (cutover, rollback, status, or an early require/usage
+# exit) — not just the cutover pull's own success path.
+trap ghcr_logout EXIT
+
 other_colour() {
   case "$1" in
     blue) echo green ;;
@@ -147,13 +170,13 @@ backend_port_for() {
 }
 
 write_cutover_state() {
-  local colour=$1 backend_image=$2 web_image=$3 ledger_version=$4 predecessor_ledger_version=$5
+  local colour=$1 backend_image=$2 web_image=$3 ledger_version=$4 minimum_rollback_version=$5
   cat >"$cutover_state_file" <<JSON
 {
   "active_colour": "$colour",
   "image_tuple": { "backend": "$backend_image", "web": "$web_image" },
   "migration_ledger_version": "$ledger_version",
-  "predecessor_ledger_version": "$predecessor_ledger_version",
+  "minimum_rollback_version": "$minimum_rollback_version",
   "router_generation_colour": "$colour",
   "updated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
@@ -259,6 +282,11 @@ case "$command" in
       exit 1
     fi
 
+    if ! ghcr_login; then
+      echo "!! ghcr.io login failed; $from_colour remains active" >&2
+      exit 1
+    fi
+
     echo "==> pulling candidate image pair (tag ${image_tag}) for colour=$to_colour"
     if ! MULTICA_BACKEND_IMAGE="$backend_repo" MULTICA_IMAGE_TAG="$image_tag" \
       compose pull "backend-${to_colour}" "frontend-${to_colour}"; then
@@ -270,17 +298,19 @@ case "$command" in
       exit 1
     fi
 
-    # Record the ledger version BEFORE the migration step runs — this is
-    # what $from_colour (the predecessor once this cutover completes) has
-    # actually been serving against, and is the correct rollback
-    # compatibility anchor for THIS cutover's own rollback later. Capturing
-    # it any later (e.g. after the migration step, or from the eventual
-    # active colour's post-migration ledger) would record the CANDIDATE's
-    # version instead of the predecessor's — the bug the independent review
-    # caught: that made the rollback guard compare a value against itself
-    # and pass unconditionally, letting rollback start the predecessor
-    # against a schema it never served.
-    predecessor_ledger_version="$(current_ledger_version)"
+    # The release packet's OWN minimum_rollback_version is the rollback
+    # compatibility anchor for THIS cutover — not a value cutover.sh derives
+    # itself from the ledger. release-packet.mjs already validated it is a
+    # real, known migration version (see that file's own checks), so
+    # reading it straight from the admitted packet is the source of truth,
+    # not a second, independently-computed guess. Read it now, before the
+    # migration step runs, so a migration failure below never lands a
+    # partially-written cutover-state.json.
+    packet_minimum_rollback_version="$(json_field "$packet" minimum_rollback_version)"
+    if [ -z "$packet_minimum_rollback_version" ]; then
+      echo "!! release packet is missing minimum_rollback_version; refusing to cut over without a rollback compatibility anchor" >&2
+      exit 1
+    fi
 
     # Run the standalone migrator exactly once, from the candidate image,
     # against the inactive colour's (stopped) service identity — never the
@@ -342,8 +372,8 @@ case "$command" in
     compose stop "backend-${from_colour}" "frontend-${from_colour}" >/dev/null 2>&1 || true
 
     ledger_version="$(current_ledger_version)"
-    write_cutover_state "$to_colour" "$backend_image" "$web_image" "$ledger_version" "$predecessor_ledger_version"
-    echo "==> cutover complete: $to_colour is now active (ledger version: $ledger_version; predecessor $from_colour last served: $predecessor_ledger_version)"
+    write_cutover_state "$to_colour" "$backend_image" "$web_image" "$ledger_version" "$packet_minimum_rollback_version"
+    echo "==> cutover complete: $to_colour is now active (ledger version: $ledger_version; rollback compatibility floor: $packet_minimum_rollback_version)"
     ;;
 
   rollback)
@@ -369,28 +399,35 @@ case "$command" in
     # that is the separately authorized recovery path (accepted
     # architecture, step 4).
     #
-    # The comparison anchor is predecessor_ledger_version — the ledger
-    # version recorded IMMEDIATELY BEFORE the cutover that made $from_colour
-    # active ran its migration step (see the "cutover)" branch above). That
-    # is what $to_colour (the predecessor being restored) actually served
-    # against. migration_ledger_version is deliberately NOT used here: it
-    # is the ledger AFTER that migration — the candidate's own version, not
-    # the predecessor's — and comparing against it would always match
-    # (a value trivially equals itself), making this guard pass
-    # unconditionally and start the predecessor against a schema it never
-    # served. That was CHE-608's independent-review finding 1.
+    # The comparison anchor is minimum_rollback_version, straight from the
+    # release packet admitted for the cutover that made $from_colour active
+    # (see the "cutover)" branch above) — the actual proof mechanism the
+    # accepted architecture and release-packet.mjs already define, not a
+    # value cutover.sh derives on its own. The check is ORDER-AWARE
+    # (ledger_at_or_after, deploy-lib.sh), not strict equality: under
+    # expand/contract a retained predecessor is REQUIRED to serve the
+    # expanded (post-migration) schema — that is the normal, expected
+    # rollback condition, not an unsafe one, so the live ledger sitting AT
+    # OR AFTER the floor is exactly the case this guard must admit. What it
+    # refuses is the ledger sitting BEHIND that floor — e.g. an out-of-band
+    # down migration — which is genuinely incompatible and not routine.
+    # (Strict equality against the pre-migration ledger was CHE-608's
+    # independent-review finding 1's first fix attempt; the reviewer's
+    # follow-up correctly flagged that as over-corrected: it refused every
+    # migration-inclusive cutover's own rollback unconditionally, which is
+    # exactly the case A/B rollback exists for.)
     current_version="$(current_ledger_version)"
-    predecessor_recorded_version=""
+    minimum_rollback_version=""
     if [ -f "$cutover_state_file" ]; then
-      predecessor_recorded_version="$(json_field "$cutover_state_file" predecessor_ledger_version)"
+      minimum_rollback_version="$(json_field "$cutover_state_file" minimum_rollback_version)"
     fi
-    if [ -z "$predecessor_recorded_version" ]; then
-      echo "!! no predecessor_ledger_version recorded in $cutover_state_file — cannot verify $to_colour is compatible with the current schema" >&2
+    if [ -z "$minimum_rollback_version" ]; then
+      echo "!! no minimum_rollback_version recorded in $cutover_state_file — cannot verify $to_colour is compatible with the current schema" >&2
       echo "!! this is NOT a routine rollback case; refusing to start $to_colour blind" >&2
       exit 1
     fi
-    if [ "$current_version" != "$predecessor_recorded_version" ]; then
-      echo "!! current ledger version ($current_version) does not match the predecessor's last-known-good version ($predecessor_recorded_version) — the retained predecessor image cannot be assumed compatible with a schema it has never served" >&2
+    if ! ledger_at_or_after "$current_version" "$minimum_rollback_version"; then
+      echo "!! current ledger version ($current_version) is not at or after the rollback compatibility floor ($minimum_rollback_version) — the retained predecessor image cannot be assumed compatible with this schema" >&2
       echo "!! this is NOT a routine rollback case; a down migration or backup restore requires separate authorization — refusing to start $to_colour blind" >&2
       exit 1
     fi
@@ -418,11 +455,12 @@ case "$command" in
 
     backend_image="$(json_field "$cutover_state_file" image_tuple.backend 2>/dev/null || echo "")"
     web_image="$(json_field "$cutover_state_file" image_tuple.web 2>/dev/null || echo "")"
-    # current_version is unchanged by this rollback (no migration ran — see
-    # the guard above), so it is still the correct predecessor anchor for a
-    # FUTURE rollback landing back on $from_colour: nothing has moved the
-    # schema since $to_colour was verified against it above.
-    write_cutover_state "$to_colour" "$backend_image" "$web_image" "$current_version" "$current_version"
+    # minimum_rollback_version carries forward unchanged: no migration ran
+    # during this rollback (see the guard above), so the same compatibility
+    # floor a future rollback attempt would need to verify against is still
+    # exactly right — nothing has moved the schema since it was last
+    # recorded and just re-verified.
+    write_cutover_state "$to_colour" "$backend_image" "$web_image" "$current_version" "$minimum_rollback_version"
     echo "==> rollback complete: $to_colour restored and healthy (all acknowledged data/uploads on shared Postgres/volume preserved — no restore performed)"
     ;;
 

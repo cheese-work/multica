@@ -28,6 +28,25 @@ source_sha="504078f8ea7fa31f342f195659e93a7f6c3e5a91"
 backend_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 web_digest="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
+# The mock ledger uses REAL server/migrations version strings throughout —
+# never fabricated placeholders — so ledger_at_or_after (deploy-lib.sh),
+# which resolves version order against the real on-disk file list, can
+# actually locate them. real_migration_tail is the same "last 3" slice
+# build_packet's own node script selects below; packet_minimum_rollback
+# and packet_final_version are its first/last entries, used as the mock's
+# default pre/post-migration ledger values so every scenario's ledger
+# state is consistent with the packet it actually admitted.
+read -r -a real_migration_tail <<<"$(node -e '
+  const fs = require("fs");
+  const files = fs.readdirSync("server/migrations").filter((f) => f.endsWith(".up.sql")).sort().slice(-3);
+  console.log(files.map((f) => f.replace(/\.up\.sql$/, "")).join(" "));
+')"
+packet_minimum_rollback="${real_migration_tail[0]}"
+packet_final_version="${real_migration_tail[2]}"
+# A real version well before packet_minimum_rollback — the ledger state
+# any scenario starts from before its first cutover has run.
+pre_cutover_baseline="467_autopilot_trigger_creator_from_autopilot"
+
 cat >"$mock_bin/node" <<MOCK
 #!/usr/bin/env bash
 set -euo pipefail
@@ -84,6 +103,25 @@ if [ "\$1" = "run" ]; then
   exit 0
 fi
 
+if [ "\$1" = "login" ]; then
+  # login ghcr.io -u token --password-stdin — deploy-lib.sh's shared
+  # ghcr_login (CHE-549), mirroring test-deploy.sh's own mock exactly so
+  # both suites exercise the identical login/logout contract.
+  password="\$(cat)"
+  if [ -f "\$control_dir/fail-ghcr-login" ]; then
+    printf 'login %s <rejected>\n' "\$2" >>"\$control_dir/registry-auth.log"
+    echo "mock docker: forced failure (fail-ghcr-login)" >&2
+    exit 1
+  fi
+  printf 'login %s password=%s\n' "\$2" "\$password" >>"\$control_dir/registry-auth.log"
+  exit 0
+fi
+
+if [ "\$1" = "logout" ]; then
+  printf 'logout %s\n' "\$2" >>"\$control_dir/registry-auth.log"
+  exit 0
+fi
+
 if [ "\$1" = "exec" ] && [ "\$2" = "multica-ab-router" ]; then
   fail_if_flagged fail-router-reload
   exit 0
@@ -120,7 +158,7 @@ if [ "\$1" = "compose" ]; then
       # down branch is ever reached, that is itself a regression this test
       # should catch via the "no down migration" assertions.
       if [ "\$direction" = "up" ]; then
-        printf '%s\n' "\${MOCK_LEDGER_VERSION_AFTER_MIGRATE:-468_post_cutover_migration}" >"\$control_dir/ledger-version"
+        printf '%s\n' "\${MOCK_LEDGER_VERSION_AFTER_MIGRATE:-$packet_final_version}" >"\$control_dir/ledger-version"
       fi
       exit 0
       ;;
@@ -135,7 +173,7 @@ if [ "\$1" = "compose" ]; then
       ;;
     exec)
       # exec -T postgres psql ... ledger query
-      version="\${MOCK_LEDGER_VERSION:-467_autopilot_trigger_creator_from_autopilot}"
+      version="\${MOCK_LEDGER_VERSION:-$pre_cutover_baseline}"
       if [ -f "\$control_dir/ledger-version" ]; then
         version="\$(cat "\$control_dir/ledger-version")"
       fi
@@ -266,6 +304,14 @@ expect_contains() {
     echo "scenario $name: output missing expected text: $needle" >&2
     echo "--- captured output ---" >&2
     echo "$haystack" >&2
+    exit 1
+  fi
+}
+
+expect_not_contains() {
+  local haystack=$1 needle=$2 name=$3
+  if [[ "$haystack" == *"$needle"* ]]; then
+    echo "scenario $name: output unexpectedly contains: $needle" >&2
     exit 1
   fi
 }
@@ -528,45 +574,22 @@ if [ -f "$state_dir/control/docker-calls.log" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Scenario 8: rollback after a cutover whose migration step applied no new
-# versions (a legitimate real case: the migrator ran but the candidate
-# needed nothing beyond what the predecessor already had — e.g. a router-
-# only re-cutover). The ledger is genuinely unchanged across the cutover
-# (MOCK_LEDGER_VERSION_AFTER_MIGRATE equals the pre-migration default), so
-# the recorded predecessor_ledger_version and the current ledger genuinely
-# match — this is the real routine-rollback case the guard is meant to
-# admit, not a value the test injects into the rollback path directly.
-# ---------------------------------------------------------------------------
-state_dir="$(fresh_scenario_dir rollback-after-noop-migration-cutover)"
-mkdir -p "$state_dir/control"
-export MOCK_LEDGER_VERSION_AFTER_MIGRATE="467_autopilot_trigger_creator_from_autopilot"
-run_cutover "$state_dir" >/dev/null 2>&1
-unset MOCK_LEDGER_VERSION_AFTER_MIGRATE
-set +e
-output="$(bash deploy/cd/cutover.sh rollback --compose-dir "$compose_dir" --state-dir "$state_dir" 2>&1)"
-status=$?
-set -e
-expect_exit 0 "$status" rollback-after-noop-migration-cutover
-expect_contains "$output" "rollback complete: blue restored and healthy" rollback-after-noop-migration-cutover
-if grep -qE "migrate down|down --to" "$state_dir/control/docker-calls.log" "$state_dir/control/migrate-calls.log" 2>/dev/null; then
-  echo "scenario rollback-after-noop-migration-cutover: a down migration was run during routine rollback" >&2
-  exit 1
-fi
-active="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).active_colour)' "$state_dir/cutover-state.json")"
-if [ "$active" != "blue" ]; then
-  echo "scenario rollback-after-noop-migration-cutover: active_colour after rollback is '$active', want blue" >&2
-  exit 1
-fi
-
-# ---------------------------------------------------------------------------
-# Scenario 8b (negative control, proves the fix for independent-review
-# finding 1): rollback after a cutover whose migration step GENUINELY
-# advanced the ledger (the mock's default behavior — no test-injected
-# value). Before this fix, migration_ledger_version was recorded from the
-# POST-migration ledger, so this comparison always matched itself and the
-# guard passed unconditionally — the predecessor would have been started
-# against a schema it never served. Now predecessor_ledger_version is
-# recorded pre-migration, so a real ledger advance is correctly caught.
+# Scenario 8 (proves the fix for independent-review finding 1, SECOND pass):
+# rollback right after a cutover whose migration step GENUINELY advanced the
+# ledger (the mock's default behavior — no test-injected value; ledger moves
+# from pre_cutover_baseline to packet_final_version via a real "migrate up"
+# mock invocation). Under expand/contract this is the NORMAL, routine
+# rollback case — the retained predecessor is required to serve the
+# expanded schema — so it must SUCCEED, not refuse.
+#
+# The independent review's first-pass fix compared the live ledger against
+# the ledger recorded BEFORE the migration ran, which made this exact case
+# refuse unconditionally — blocking rollback in precisely the situation A/B
+# rollback exists for. The corrected guard compares the live ledger against
+# the release packet's own minimum_rollback_version (order-aware, via
+# ledger_at_or_after), which packet_final_version sits at or after by
+# construction, so this now asserts SUCCESS — the inversion the review
+# asked for.
 # ---------------------------------------------------------------------------
 state_dir="$(fresh_scenario_dir rollback-after-real-migration-cutover)"
 run_cutover "$state_dir" >/dev/null 2>&1
@@ -574,10 +597,15 @@ set +e
 output="$(bash deploy/cd/cutover.sh rollback --compose-dir "$compose_dir" --state-dir "$state_dir" 2>&1)"
 status=$?
 set -e
-expect_exit 1 "$status" rollback-after-real-migration-cutover
-expect_contains "$output" "cannot be assumed compatible" rollback-after-real-migration-cutover
+expect_exit 0 "$status" rollback-after-real-migration-cutover
+expect_contains "$output" "rollback complete: blue restored and healthy" rollback-after-real-migration-cutover
 if grep -qE "migrate down|down --to" "$state_dir/control/docker-calls.log" "$state_dir/control/migrate-calls.log" 2>/dev/null; then
-  echo "scenario rollback-after-real-migration-cutover: a down migration was run despite the guard refusing" >&2
+  echo "scenario rollback-after-real-migration-cutover: a down migration was run during routine rollback" >&2
+  exit 1
+fi
+active="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).active_colour)' "$state_dir/cutover-state.json")"
+if [ "$active" != "blue" ]; then
+  echo "scenario rollback-after-real-migration-cutover: active_colour after rollback is '$active', want blue" >&2
   exit 1
 fi
 
@@ -594,22 +622,21 @@ expect_exit 1 "$status" rollback-no-state
 expect_contains "$output" "nothing recorded to roll back from" rollback-no-state
 
 # ---------------------------------------------------------------------------
-# Scenario 10 (negative control): a SECOND real cutover (green -> a new
-# candidate on blue) runs its own genuine migration on top of the first
-# cutover's already-advanced ledger, then rollback is attempted. This
-# exercises the guard across two real hops rather than one, and never
-# hand-writes a ledger value into the rollback path itself — every ledger
-# change here comes from an actual "migrate up" mock invocation triggered
-# by a real cutover run, exactly as CHE-608's independent review required
-# ("a negative assertion that cannot fail [when the code is wrong] is a
-# defect").
+# Scenario 10: a SECOND real cutover (green -> a new candidate on blue) runs
+# its own genuine migration on top of the first cutover's already-advanced
+# ledger, then rollback is attempted. Exercises the guard across two real
+# hops rather than one — every ledger change here comes from an actual
+# "migrate up" mock invocation triggered by a real cutover run, never a
+# value hand-written into the rollback path. Each cutover records ITS OWN
+# packet's minimum_rollback_version and advances the ledger to that same
+# packet's final version, so the guard must still admit rollback after two
+# hops, not just one — a real regression here (e.g. comparing against a
+# stale floor from the first cutover instead of the second) would show up
+# as this scenario failing.
 # ---------------------------------------------------------------------------
 state_dir="$(fresh_scenario_dir rollback-after-two-real-cutovers)"
-export MOCK_LEDGER_VERSION_AFTER_MIGRATE="468_first_cutover_migration"
-run_cutover "$state_dir" >/dev/null 2>&1 # blue (467) -> green (468)
-export MOCK_LEDGER_VERSION_AFTER_MIGRATE="469_second_cutover_migration"
-run_cutover "$state_dir" >/dev/null 2>&1 # green (468) -> blue-candidate (469)
-unset MOCK_LEDGER_VERSION_AFTER_MIGRATE
+run_cutover "$state_dir" >/dev/null 2>&1 # blue ($pre_cutover_baseline) -> green ($packet_final_version)
+run_cutover "$state_dir" >/dev/null 2>&1 # green ($packet_final_version) -> blue-candidate ($packet_final_version)
 active_after_two="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).active_colour)' "$state_dir/cutover-state.json")"
 if [ "$active_after_two" != "blue" ]; then
   echo "scenario rollback-after-two-real-cutovers: active_colour after two cutovers is '$active_after_two', want blue" >&2
@@ -619,11 +646,83 @@ set +e
 output="$(bash deploy/cd/cutover.sh rollback --compose-dir "$compose_dir" --state-dir "$state_dir" 2>&1)"
 status=$?
 set -e
-expect_exit 1 "$status" rollback-after-two-real-cutovers
-expect_contains "$output" "cannot be assumed compatible" rollback-after-two-real-cutovers
-expect_contains "$output" "NOT a routine rollback case" rollback-after-two-real-cutovers
+expect_exit 0 "$status" rollback-after-two-real-cutovers
+expect_contains "$output" "rollback complete: green restored and healthy" rollback-after-two-real-cutovers
 if grep -qE "migrate down|down --to" "$state_dir/control/docker-calls.log" "$state_dir/control/migrate-calls.log" 2>/dev/null; then
-  echo "scenario rollback-after-two-real-cutovers: a down migration was run despite the guard refusing" >&2
+  echo "scenario rollback-after-two-real-cutovers: a down migration was run during routine rollback" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Scenario 11 (negative control): the ledger sits BEHIND the recorded
+# minimum_rollback_version floor — modeling an out-of-band down migration,
+# backup restore, or corruption between the cutover and this rollback
+# attempt. This state cannot arise from the mock's routine "migrate up"
+# flow (mirroring production: routine cutover/rollback never runs a down
+# migration either), so it is legitimately the one place this test writes
+# the ledger-version control file directly — it is testing the fail-closed
+# behavior for a state that is, by construction, only reachable out of
+# band, not standing in for a real code path the mock could otherwise
+# exercise (the distinction CHE-608's independent review drew for finding
+# 2's original fake negative control).
+# ---------------------------------------------------------------------------
+state_dir="$(fresh_scenario_dir rollback-ledger-behind-floor)"
+run_cutover "$state_dir" >/dev/null 2>&1
+echo "$pre_cutover_baseline" >"$state_dir/control/ledger-version"
+set +e
+output="$(bash deploy/cd/cutover.sh rollback --compose-dir "$compose_dir" --state-dir "$state_dir" 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" rollback-ledger-behind-floor
+expect_contains "$output" "not at or after the rollback compatibility floor" rollback-ledger-behind-floor
+expect_contains "$output" "NOT a routine rollback case" rollback-ledger-behind-floor
+if grep -qE "migrate down|down --to" "$state_dir/control/docker-calls.log" "$state_dir/control/migrate-calls.log" 2>/dev/null; then
+  echo "scenario rollback-ledger-behind-floor: a down migration was run despite the guard refusing" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Scenario 12 (CHE-549, carried from deploy.sh into the cutover pull path):
+# GHCR_PULL_TOKEN set -> cutover.sh logs in to ghcr.io with the real token
+# before pulling the candidate colour's images, and logs out on the normal
+# success exit path.
+# ---------------------------------------------------------------------------
+state_dir="$(fresh_scenario_dir ghcr-login-happy-path)"
+export GHCR_PULL_TOKEN=super-secret-pat
+output="$(run_cutover "$state_dir" 2>&1)"
+status=$?
+unset GHCR_PULL_TOKEN
+expect_exit 0 "$status" ghcr-login-happy-path
+expect_contains "$output" "logging in to ghcr.io" ghcr-login-happy-path
+
+auth_log="$(cat "$state_dir/control/registry-auth.log")"
+expect_contains "$auth_log" "login ghcr.io password=super-secret-pat" ghcr-login-happy-path
+expect_contains "$auth_log" "logout ghcr.io" ghcr-login-happy-path
+expect_not_contains "$output" "super-secret-pat" ghcr-login-happy-path
+
+# ---------------------------------------------------------------------------
+# Scenario 13 (CHE-549): GHCR login itself fails -> cutover refuses before
+# any pull, incumbent colour remains active, and the EXIT trap still logs
+# out even though the failure happened before the pull step ever ran.
+# ---------------------------------------------------------------------------
+state_dir="$(fresh_scenario_dir ghcr-login-fails)"
+mkdir -p "$state_dir/control"
+touch "$state_dir/control/fail-ghcr-login"
+export GHCR_PULL_TOKEN=super-secret-pat
+set +e
+output="$(run_cutover "$state_dir" 2>&1)"
+status=$?
+set -e
+unset GHCR_PULL_TOKEN
+expect_exit 1 "$status" ghcr-login-fails
+expect_contains "$output" "ghcr.io login failed" ghcr-login-fails
+expect_contains "$output" "blue remains active" ghcr-login-fails
+
+auth_log="$(cat "$state_dir/control/registry-auth.log")"
+expect_not_contains "$auth_log" "login ghcr.io password=" ghcr-login-fails
+expect_contains "$auth_log" "logout ghcr.io" ghcr-login-fails
+if [ -f "$state_dir/control/docker-calls.log" ] && grep -q "^compose pull" "$state_dir/control/docker-calls.log"; then
+  echo "scenario ghcr-login-fails: docker compose pull was invoked despite the ghcr.io login failing" >&2
   exit 1
 fi
 

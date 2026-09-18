@@ -173,17 +173,12 @@ fi
 # shellcheck source=deploy-lib.sh
 source "$script_dir/deploy-lib.sh"
 
-# ghcr_logout is idempotent (a `docker logout` against a registry with no
-# active login just no-ops) and registered on EXIT before login ever runs,
-# so it fires whether the script exits via the normal end-of-script success
-# path, a `rollback` call's `exit`, or an earlier `require`/file-check
-# `exit` — no logout is skipped, and there is nothing to log out of if login
-# itself never ran (GHCR_PULL_TOKEN unset).
-ghcr_logout() {
-  if [ -n "${GHCR_PULL_TOKEN:-}" ]; then
-    docker logout ghcr.io >/dev/null 2>&1 || true
-  fi
-}
+# ghcr_login/ghcr_logout are shared with cutover.sh (deploy-lib.sh, CHE-549).
+# Registered on EXIT before login ever runs, so logout fires whether the
+# script exits via the normal end-of-script success path, a `rollback`
+# call's `exit`, or an earlier `require`/file-check `exit` — no logout is
+# skipped, and there is nothing to log out of if login itself never ran
+# (GHCR_PULL_TOKEN unset).
 trap ghcr_logout EXIT
 
 # compose_files/migration_service_name are deploy-lib.sh's extension points:
@@ -359,11 +354,8 @@ rollback() {
   exit 1
 }
 
-if [ -n "${GHCR_PULL_TOKEN:-}" ]; then
-  echo "==> logging in to ghcr.io"
-  if ! printf '%s' "$GHCR_PULL_TOKEN" | docker login ghcr.io -u token --password-stdin >/dev/null; then
-    rollback "ghcr.io login failed"
-  fi
+if ! ghcr_login; then
+  rollback "ghcr.io login failed"
 fi
 
 echo "==> pulling qualified image pair (tag ${image_tag})"
