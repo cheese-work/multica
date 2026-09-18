@@ -129,33 +129,48 @@ jobs:
             deploy/cd/capture-tuple.sh deploy/cd/tuple-snapshot.mjs \
             "${C00_SSH_USER}@${C00_SSH_HOST}:${remote_dir}/"
 
-          # Resolve the deployed commit HERE, on the runner, and pass it in.
-          # capture-tuple.sh prefers the image's own
-          # org.opencontainers.image.revision label, but C00's currently
-          # running images were not built by D1 and carry no such label — only
-          # a short-SHA tag. Expanding that tag needs a git checkout, and the
-          # script runs on C00 from a bare scp'd temp directory with no
-          # repository. The runner has the checkout, so it does the lookup.
+          # Resolve the deployed commit HERE, on the runner, and pass it in —
+          # but ONLY when the image cannot speak for itself.
           #
-          # This is best-effort: an empty result simply omits the flag and lets
-          # capture-tuple.sh fall back to the label (the normal case once C00
-          # runs D1-built images) and then fail loudly with its own diagnostic.
+          # Precedence, highest first:
+          #   1. the image's own org.opencontainers.image.revision label
+          #   2. this workflow's tag-based git resolution
+          #
+          # The label is authoritative: it is what the image was actually built
+          # from, recorded at build time by D1. A tag is a name someone chose
+          # and can be wrong or reused. So when the label is present we pass
+          # nothing and let capture-tuple.sh read it directly; passing
+          # --application-sha would unconditionally override the label, which
+          # inverts this precedence and lets a tag-guess beat the truth.
+          #
+          # The tag path exists because C00 may still be running images not
+          # built by D1, which carry no label — only a short SHA tag. Expanding
+          # that needs a git checkout, and the script runs on C00 from a bare
+          # scp'd temp directory with no repository, so the runner (which has
+          # the checkout) does the lookup.
+          #
           # Never substitute this workflow's own commit — that would record a
           # baseline claiming C00 runs something it does not.
           baseline_sha=""
-          deployed_tag="$("${ssh_cmd[@]}" "cd '${C00_COMPOSE_DIR}' && docker compose -f docker-compose.selfhost.yml images backend --format json" 2>/dev/null \
-            | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{try{const r=JSON.parse(d||"[]");const x=Array.isArray(r)?r[0]:r;process.stdout.write(x&&x.Tag?String(x.Tag):"")}catch{process.stdout.write("")}})' || true)"
-          candidate="${deployed_tag#sha-}"
-          if [[ "$candidate" =~ ^[a-f0-9]{7,40}$ ]]; then
-            baseline_sha="$(git rev-parse --verify --quiet "${candidate}^{commit}" 2>/dev/null || true)"
+          deployed_label="$("${ssh_cmd[@]}" "docker inspect --format '{{index .Config.Labels \"org.opencontainers.image.revision\"}}' \"\$(cd '${C00_COMPOSE_DIR}' && docker compose -f docker-compose.selfhost.yml ps -q backend)\"" 2>/dev/null | tr -d '[:space:]' || true)"
+
+          if [[ "$deployed_label" =~ ^[a-f0-9]{40}$ ]]; then
+            echo "C00's backend image carries revision label ${deployed_label}; deferring to it (no --application-sha)"
+          else
+            deployed_tag="$("${ssh_cmd[@]}" "cd '${C00_COMPOSE_DIR}' && docker compose -f docker-compose.selfhost.yml images backend --format json" 2>/dev/null \
+              | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{try{const r=JSON.parse(d||"[]");const x=Array.isArray(r)?r[0]:r;process.stdout.write(x&&x.Tag?String(x.Tag):"")}catch{process.stdout.write("")}})' || true)"
+            candidate="${deployed_tag#sha-}"
+            if [[ "$candidate" =~ ^[a-f0-9]{7,40}$ ]]; then
+              baseline_sha="$(git rev-parse --verify --quiet "${candidate}^{commit}" 2>/dev/null || true)"
+            fi
           fi
 
           capture_args=(--compose-dir "'${C00_COMPOSE_DIR}'" --output "'${remote_dir}/baseline-tuple.json'")
           if [[ "$baseline_sha" =~ ^[a-f0-9]{40}$ ]]; then
-            echo "resolved C00's deployed image tag '${deployed_tag}' to commit ${baseline_sha}"
+            echo "no usable revision label; resolved C00's deployed image tag '${deployed_tag}' to commit ${baseline_sha}"
             capture_args+=(--application-sha "'${baseline_sha}'")
-          else
-            echo "could not resolve C00's deployed tag '${deployed_tag:-<none>}' to a commit; letting capture-tuple.sh use the image's own revision label"
+          elif ! [[ "$deployed_label" =~ ^[a-f0-9]{40}$ ]]; then
+            echo "could not resolve C00's deployed tag '${deployed_tag:-<none>}' to a commit; capture-tuple.sh will fail loudly with its own diagnostic"
           fi
 
           set +e

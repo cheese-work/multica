@@ -102,14 +102,29 @@ label_sha="$(printf 'b%.0s' {1..40})"
 MOCK_IMAGE_REVISION="$label_sha" MOCK_IMAGE_TAG="$short_sha" capture --git-dir "$repo" >/dev/null
 [ "$(sha_of)" = "$label_sha" ] || fail "revision label should win over the tag"
 
-# --- 2. a D1-style sha-<40> tag is used directly ---------------------------
-MOCK_IMAGE_REVISION="" MOCK_IMAGE_TAG="sha-$full_sha" capture >/dev/null
+# --- 2. a D1-style sha-<40> tag is used directly when there is no repo ------
+# --git-dir "" disables the default self-repository lookup, modelling the real
+# C00 invocation: the script runs from a bare scp'd temp directory with no git.
+MOCK_IMAGE_REVISION="" MOCK_IMAGE_TAG="sha-$full_sha" capture --git-dir "" >/dev/null
 [ "$(sha_of)" = "$full_sha" ] || fail "sha-<40> tag should resolve without a git dir"
 
 # --- 3. a short tag expands against the repository -------------------------
 # This is the case that broke the first real deploy.
 MOCK_IMAGE_REVISION="" MOCK_IMAGE_TAG="$short_sha" capture --git-dir "$repo" >/dev/null
 [ "$(sha_of)" = "$full_sha" ] || fail "short tag should expand to the full commit"
+
+# --- 3b. a full-length tag is VERIFIED when a repository is available -------
+# Review finding: a syntactically valid sha-<40 hex> tag is not proof the
+# commit exists. When we have a repository to check against, a tag naming a
+# commit that is not in it must be refused, not recorded.
+absent_sha="$(printf 'c%.0s' {1..40})"
+if MOCK_IMAGE_REVISION="" MOCK_IMAGE_TAG="sha-$absent_sha" capture --git-dir "$repo" >/dev/null 2>&1; then
+  fail "a sha-<40> tag absent from the repository must be refused when --git-dir is given"
+fi
+# ...and the same tag is still accepted when there is no repository to consult,
+# since a full SHA is self-describing and refusing would break the D1 path.
+MOCK_IMAGE_REVISION="" MOCK_IMAGE_TAG="sha-$absent_sha" capture --git-dir "" >/dev/null
+[ "$(sha_of)" = "$absent_sha" ] || fail "sha-<40> tag should still be used when no repository is available"
 
 # --- 4. an unresolvable tag fails loudly -----------------------------------
 # "latest" is not a commit; recording anything here would be a fabricated
@@ -119,7 +134,7 @@ if MOCK_IMAGE_REVISION="" MOCK_IMAGE_TAG="latest" capture --git-dir "$repo" >/de
 fi
 
 # A short tag with no git dir to resolve it must also refuse, not guess.
-if MOCK_IMAGE_REVISION="" MOCK_IMAGE_TAG="$short_sha" capture >/dev/null 2>&1; then
+if MOCK_IMAGE_REVISION="" MOCK_IMAGE_TAG="$short_sha" capture --git-dir "" >/dev/null 2>&1; then
   fail "a short tag with no repository must not produce a tuple"
 fi
 
