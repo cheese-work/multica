@@ -1781,6 +1781,15 @@ func (s *TaskService) RetrySourceContextQuickCreate(ctx context.Context, workspa
 	if canInvoke != nil && !canInvoke(agent) {
 		return nil, ErrRerunInvokeNotAllowed
 	}
+	// CHE-607: this is a manual-retry admission path AgentReadiness never
+	// covered (task.go has no call to it) — refuse the same way a trigger
+	// would rather than let the click reach the held provider and surface as
+	// agent_error.provider_server_error.
+	if _, held, herr := providerHoldBlocksAgent(ctx, s.runtimeLookup(), agent); herr != nil {
+		return nil, fmt.Errorf("check provider hold for manual retry: %w", herr)
+	} else if held {
+		return nil, ErrSourceContextRetryProviderHeld
+	}
 	if err := CheckIssueCreateCapacity(ctx, s.Queries, s.Entitlements, workspaceID); err != nil {
 		return nil, fmt.Errorf("preflight quick-create issue capacity: %w", err)
 	}
@@ -3499,6 +3508,44 @@ func (s *TaskService) ClaimTask(ctx context.Context, agentID pgtype.UUID) (*db.A
 	return s.claimTask(ctx, agentID, pgtype.UUID{})
 }
 
+// refuseClaimForProviderHold checks the just-claimed task's agent against
+// workspace provider holds and, if held, cancels that exact task in the SAME
+// transaction as the claim — so it never leaves this commit as 'dispatched'
+// and the daemon polling for it sees no_tasks instead (CHE-607).
+//
+// This is claimTask's half of the same gap MaybeRetryFailedTask/FailTask close
+// on the retry side: a task can sit 'queued' for any reason (not only a
+// retry — the original enqueue may simply have predated the hold), and
+// AgentReadiness's trigger-time check has no way to reach back and refuse
+// something already admitted. The claim moment is the last point before the
+// provider is actually contacted, so it is where this gate has to live.
+//
+// qerr is non-nil only for a real GetWorkspace failure, propagated exactly as
+// AgentReadiness's own callers already propagate it — never silently treated
+// as "no hold applies".
+func refuseClaimForProviderHold(ctx context.Context, qtx *db.Queries, metrics *obsmetrics.BusinessMetrics, task db.AgentTaskQueue, agent db.Agent) (refused bool, qerr error) {
+	lookup := RuntimeLookup{Queries: qtx, Metrics: metrics, Source: obsmetrics.RuntimeLookupSourceTask}
+	notice, held, err := providerHoldBlocksAgent(ctx, lookup, agent)
+	if err != nil {
+		return false, fmt.Errorf("check provider hold for claim: %w", err)
+	}
+	if !held {
+		return false, nil
+	}
+	if _, err := qtx.CancelAgentTaskWithReason(ctx, db.CancelAgentTaskWithReasonParams{
+		ID:            task.ID,
+		Error:         pgtype.Text{String: notice, Valid: true},
+		FailureReason: pgtype.Text{String: taskfailure.ReasonDispatchBlockedProviderHold.String(), Valid: true},
+	}); err != nil {
+		return false, fmt.Errorf("cancel claimed task for provider hold: %w", err)
+	}
+	slog.Info("task claim refused: provider hold",
+		"task_id", util.UUIDToString(task.ID),
+		"agent_id", util.UUIDToString(agent.ID),
+	)
+	return true, nil
+}
+
 // claimTask is the runtime-scoped claim primitive used by daemon poll paths.
 // The exported ClaimTask wrapper omits runtimeID and therefore resolves the
 // agent's currently bound runtime. Scoping the SQL claim itself prevents an
@@ -3570,6 +3617,23 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			}
 			outcome = "error_claim"
 			return fmt.Errorf("claim task: %w", err)
+		}
+
+		// CHE-607: a task queued before a hold was configured (or created by
+		// the retry path before its own hold check landed — belt and braces)
+		// must not reach the held provider just because a daemon happened to
+		// poll after the hold went into effect. AgentReadiness never runs on
+		// this path (claim has no admission concept — see its doc comment),
+		// so check the SAME agent row this claim already loaded and, if held,
+		// cancel the just-claimed task with the distinguishable reason instead
+		// of handing it to the daemon. Same transaction as the claim itself, so
+		// nothing outside this commit ever observes the task as 'dispatched'.
+		if refused, herr := refuseClaimForProviderHold(ctx, qtx, s.Metrics, task, agent); herr != nil {
+			outcome = "error_provider_hold_check"
+			return fmt.Errorf("check provider hold for claim: %w", herr)
+		} else if refused {
+			outcome = "provider_hold"
+			return nil
 		}
 
 		// An idle task-owned direct-chat row may already be visible as the
@@ -4750,6 +4814,13 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 		retryOverlay     runtimeMCPOverlayData
 		retryFireAt      pgtype.Timestamptz
 		retryMaxAttempts pgtype.Int4
+		// retryAgent/retryAgentLoaded: the agent resolved for the overlay above,
+		// kept in outer scope so the provider-hold check inside the transaction
+		// below (CHE-607) can reuse it instead of a second GetAgent round trip.
+		// Loaded is false exactly when aerr != nil below — same "cannot evaluate,
+		// so don't block" fail-open providerHoldVerdict documents.
+		retryAgent       db.Agent
+		retryAgentLoaded bool
 	)
 	if retryableReasons[failureReason] {
 		if parent, perr := s.Queries.GetAgentTask(ctx, taskID); perr != nil {
@@ -4775,6 +4846,8 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 					"agent_id", util.UUIDToString(parent.AgentID), "error", aerr)
 			} else {
 				retryOverlay = s.buildRuntimeMCPOverlay(ctx, parent.OriginatorUserID, agent)
+				retryAgent = agent
+				retryAgentLoaded = true
 			}
 		}
 	}
@@ -4928,6 +5001,21 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 			})
 			switch {
 			case cerr == nil:
+				// CHE-607: same gap and same fix as MaybeRetryFailedTask — this
+				// child was minted by CreateRetryTask directly, with no
+				// AgentReadiness consult, so catch a held provider here and
+				// cancel the child in the same transaction as the fail before
+				// it can ever be claimed. Skipped when the agent failed to load
+				// above (fail open on "cannot evaluate").
+				if retryAgentLoaded {
+					refused, herr := refuseRetryForProviderHold(ctx, qtx, s.Metrics, child, retryAgent)
+					if herr != nil {
+						return herr
+					}
+					if refused {
+						break
+					}
+				}
 				transferErr := transferPendingSourceContextToRetry(ctx, qtx, t, child)
 				if errors.Is(transferErr, pgx.ErrNoRows) {
 					deleted, deleteErr := qtx.DeleteUnstartedQuickCreateRetryTask(ctx, child.ID)
@@ -5274,6 +5362,55 @@ func retryEligible(failureReason string, t db.AgentTaskQueue) bool {
 		(t.IssueID.Valid || t.ChatSessionID.Valid || isSourceContextQuickCreateTask(t))
 }
 
+// refuseRetryForProviderHold checks the just-created retry child's agent
+// against workspace provider holds and, if held, immediately cancels the
+// child in the SAME transaction that created it — so nothing outside this
+// commit ever observes it as 'queued' or 'deferred' (CHE-607).
+//
+// This is the retry-path half of the gap CHE-588 left open: AgentReadiness
+// gates every TRIGGER admission path, but a retry successor is minted by
+// CreateRetryTask directly, with no readiness consult at all. Before this
+// fix, a retryableReasons failure (agent_error.provider_network,
+// runtime_offline — exactly the shape a held provider produces) re-queued the
+// child under the hold unconditionally, so a policy hold configured after a
+// task was already in flight generated retry attempts that failed on the
+// provider again and again, indistinguishable from real transport flakiness.
+//
+// Cancel, not a second FailAgentTask: FailAgentTask's UPDATE only matches
+// status IN ('dispatched','running','waiting_local_directory') — a fresh
+// retry child is 'queued' or 'deferred' and would match neither, so this
+// reuses CancelAgentTaskWithReason (task.go's existing "server-initiated
+// refusal" primitive, already used by CancelTaskWithReason) instead of
+// widening that UPDATE's WHERE clause for one caller.
+//
+// qerr is non-nil only for a real "could not read the source of truth"
+// failure (GetWorkspace); callers must treat that as retry-undecided and
+// propagate it, exactly as AgentReadiness's own callers do — not silently let
+// a held provider through because the settings read hiccupped.
+func refuseRetryForProviderHold(ctx context.Context, qtx *db.Queries, metrics *obsmetrics.BusinessMetrics, child db.AgentTaskQueue, agent db.Agent) (refused bool, qerr error) {
+	lookup := RuntimeLookup{Queries: qtx, Metrics: metrics, Source: obsmetrics.RuntimeLookupSourceTask}
+	notice, held, err := providerHoldBlocksAgent(ctx, lookup, agent)
+	if err != nil {
+		return false, fmt.Errorf("check provider hold for retry: %w", err)
+	}
+	if !held {
+		return false, nil
+	}
+	if _, err := qtx.CancelAgentTaskWithReason(ctx, db.CancelAgentTaskWithReasonParams{
+		ID:            child.ID,
+		Error:         pgtype.Text{String: notice, Valid: true},
+		FailureReason: pgtype.Text{String: taskfailure.ReasonDispatchBlockedProviderHold.String(), Valid: true},
+	}); err != nil {
+		return false, fmt.Errorf("cancel retry child for provider hold: %w", err)
+	}
+	slog.Info("task auto-retry refused: provider hold",
+		"parent_task_id", util.UUIDToString(child.ParentTaskID),
+		"child_task_id", util.UUIDToString(child.ID),
+		"agent_id", util.UUIDToString(agent.ID),
+	)
+	return true, nil
+}
+
 func isSourceContextQuickCreateTask(task db.AgentTaskQueue) bool {
 	if len(task.Context) == 0 || task.IssueID.Valid || task.ChatSessionID.Valid || task.AutopilotRunID.Valid {
 		return false
@@ -5431,6 +5568,22 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 			"error", err,
 		)
 		return nil, err
+	}
+	// CHE-607: AgentReadiness never ran for this admission — CreateRetryTask
+	// mints the child directly. Catch a held provider here, before the child
+	// can be claimed, and cancel it in the same transaction rather than
+	// leaving it queued under the hold. Skipped when the agent failed to load
+	// above (agentErr != nil): same "cannot evaluate, so don't block" fail-open
+	// providerHoldVerdict itself documents for an unresolved model.
+	if agentErr == nil {
+		if refused, herr := refuseRetryForProviderHold(ctx, qtx, s.Metrics, child, agent); herr != nil {
+			return nil, herr
+		} else if refused {
+			if err := tx.Commit(ctx); err != nil {
+				return nil, fmt.Errorf("task auto-retry: commit provider-hold refusal: %w", err)
+			}
+			return nil, nil
+		}
 	}
 	if err := transferPendingSourceContextToRetry(ctx, qtx, parent, child); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
