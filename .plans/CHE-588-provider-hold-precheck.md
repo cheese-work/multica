@@ -100,15 +100,22 @@ dispatch happen anyway — can find them, not just in Go source.
   workspace's own announcement writes "OpenAI" — so a hold typed the natural
   way silently matched nothing. `findProviderHold` now compares with
   `strings.EqualFold`; no case-sensitivity limit remains.
-- **Gate covers trigger admission only — NOT retry or claim.** `AgentReadiness`
-  runs on every trigger admission path (assignment, @mention, comment-trigger,
-  chat, autopilot dispatch) but is never called from `server/internal/service/task.go`
-  — confirmed zero call sites there. `retryableReasons` (task.go, around line
-  5133) includes `ReasonAgentProviderNetwork` and `ReasonRuntimeOffline` —
-  exactly the failure shape a held provider produces before this change. So a
-  task admitted before a hold was configured, which then fails on a provider
-  error, is re-queued under the hold with no readiness consult at all; the
-  same is true of already-queued work a daemon picks up via the claim path. A
-  hold configured after in-flight work exists does not retroactively stop
-  that work from reaching the held provider again. Deferred to a follow-up —
-  not fixed in this PR.
+- **Gate covers trigger admission only — NOT retry or claim — resolved in
+  CHE-607.** `AgentReadiness` runs on every trigger admission path
+  (assignment, @mention, comment-trigger, chat, autopilot dispatch) but was
+  never called from `server/internal/service/task.go`. CHE-607 closed this
+  without routing retry/claim through `AgentReadiness` itself (that would
+  re-run the runtime lookup both paths have already done) — instead
+  `providerHoldBlocksAgent` (agent_ready.go) exposes just the provider-hold
+  half, and task.go calls it from three points: `FailTask`'s in-transaction
+  retry and `MaybeRetryFailedTask` (both share `refuseRetryForProviderHold`,
+  which cancels the just-created retry child in the same transaction with
+  `failure_reason = dispatch_blocked.provider_hold` rather than leaving it
+  queued), `claimTask` (`refuseClaimForProviderHold`, same pattern on the
+  just-claimed task), and `RetrySourceContextQuickCreate` (the manual
+  quick-create retry button, refused before any row is created via the new
+  `ErrSourceContextRetryProviderHeld` sentinel). `RerunIssue`/
+  `enqueueRerunTask` — the general manual "rerun" button, a materially larger
+  and separately-scoped surface — remains ungated; not named in CHE-607's
+  acceptance criteria, left for a further follow-up if it proves to matter in
+  practice.

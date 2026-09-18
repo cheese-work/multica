@@ -287,6 +287,10 @@ func (h *Handler) RetrySourceContextQuickCreate(w http.ResponseWriter, r *http.R
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
 		return
 	}
+	if errors.Is(err, service.ErrSourceContextRetryProviderHeld) {
+		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonProviderHold)
+		return
+	}
 	if errors.Is(err, service.ErrSourceContextRetryUnavailable) {
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"code":  "source_context_retry_unavailable",
