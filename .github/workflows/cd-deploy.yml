@@ -387,6 +387,13 @@ jobs:
           C00_SSH_KEY: ${{ secrets.C00_SSH_KEY }}
           C00_COMPOSE_DIR: ${{ secrets.C00_COMPOSE_DIR }}
           C00_STATE_DIR: ${{ secrets.C00_STATE_DIR }}
+          # read:packages-only PAT (CHE-549) — C00 has no ambient registry
+          # credential, so deploy.sh logs in to ghcr.io with this immediately
+          # before its pull step and logs out unconditionally afterwards (see
+          # deploy.sh's own comment). Forwarded to the remote shell as an
+          # exported var, never interpolated into the command line, so it
+          # never appears in a process listing or shell history on C00.
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
           MANIFEST_PATH: ${{ needs.admission.outputs.manifest_path }}
         run: |
           set -euo pipefail
@@ -414,11 +421,23 @@ jobs:
           # deploy command returns nonzero — before deploy_status could be
           # captured and before the remote cleanup below ever ran. Disable
           # it for exactly this one command, then restore it immediately.
+          #
+          # GHCR_PULL_TOKEN is exported inside a script piped over the SSH
+          # session's stdin, not appended to the remote command line (a
+          # `VAR=value command` prefix on the ssh argument itself would put
+          # the secret directly on C00's process list, visible to `ps` from
+          # any other account on the host) and not written to a file on C00
+          # (nothing left behind for `remote_dir`'s cleanup below to miss).
+          # `set -a` exports every var assigned afterwards, including the one
+          # `deploy.sh` reads by name, without listing it a second time.
           set +e
-          "${ssh_cmd[@]}" "bash '${remote_dir}/deploy.sh' \
-            --manifest '${remote_dir}/${manifest_basename}' \
-            --compose-dir '${C00_COMPOSE_DIR}' \
-            --state-dir '${C00_STATE_DIR}'"
+          {
+            printf 'set -a\n'
+            printf 'GHCR_PULL_TOKEN=%q\n' "$GHCR_PULL_TOKEN"
+            printf 'set +a\n'
+            printf "bash '%s/deploy.sh' --manifest '%s/%s' --compose-dir '%s' --state-dir '%s'\n" \
+              "$remote_dir" "$remote_dir" "$manifest_basename" "$C00_COMPOSE_DIR" "$C00_STATE_DIR"
+          } | "${ssh_cmd[@]}" bash -s
           deploy_status=$?
           set -e
 
