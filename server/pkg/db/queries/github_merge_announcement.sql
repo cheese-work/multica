@@ -4,8 +4,8 @@
 --
 -- Durable per-merge record so every linked GitHub PR merge produces exactly
 -- one platform comment on its owning issue, independent of completion
--- (CHE-374/CHE-379). See 491_github_merge_announcement.up.sql for the schema
--- rationale and 492_github_merge_announcement_identity_uidx.up.sql for the
+-- (CHE-374/CHE-379). See 500_github_merge_announcement.up.sql for the schema
+-- rationale and 501_github_merge_announcement_identity_uidx.up.sql for the
 -- identity/dedup key.
 
 -- name: CreateGitHubMergeAnnouncement :one

@@ -132,7 +132,6 @@ export function GitHubTab() {
   return (
     <SettingsTab
       title={t(($) => $.page.tabs.github)}
-      description={t(($) => $.github.page_description)}
     >
       <section className="space-y-3">
         <Card>
@@ -179,20 +178,11 @@ export function GitHubTab() {
                         login: installations.map((i) => i.account_login).join(", "),
                       })}
                     </p>
-                  ) : canManage ? (
-                    <p className="text-caption text-muted-foreground">
-                      {t(($) => $.github.connection_description_prefix)}{" "}
-                      <code className="rounded-xs bg-muted px-1 py-0.5 text-micro">
-                        {t(($) => $.github.connection_identifier_example)}
-                      </code>{" "}
-                      {t(($) => $.github.connection_description_suffix)}{" "}
-                      <strong>{t(($) => $.github.connection_description_done)}</strong>.
-                    </p>
-                  ) : (
+                  ) : !canManage ? (
                     <p className="text-caption text-muted-foreground">
                       {t(($) => $.github.contact_admin_to_connect)}
                     </p>
-                  )}
+                  ) : null}
                 </div>
               </div>
               {canManage && (
@@ -310,8 +300,13 @@ export function GitHubTab() {
               icon={<Link2 className="h-4 w-4" />}
               label={t(($) => $.github.feature_auto_link_label)}
               description={
-                <p className="text-body text-muted-foreground">
-                  {t(($) => $.github.feature_auto_link_description)}
+                <p className="text-caption text-muted-foreground">
+                  {t(($) => $.github.connection_description_prefix)}{" "}
+                  <code className="rounded-xs bg-muted px-1 py-0.5 text-micro">
+                    {t(($) => $.github.connection_identifier_example)}
+                  </code>{" "}
+                  {t(($) => $.github.connection_description_suffix)}{" "}
+                  <strong>{t(($) => $.github.connection_description_done)}</strong>.
                 </p>
               }
               checked={flags.autoLinkPRs}

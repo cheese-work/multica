@@ -242,7 +242,7 @@ func TestRerunIssueReplayConcurrentSubmissionsAdmitOnce(t *testing.T) {
 // SAME idx_one_pending_task_per_issue_agent_thread slot at once — exercising
 // N-way contention on both unique indexes together, exactly as production
 // duplicate submissions do. idx_one_live_rerun_per_source_task_actor
-// (migration 474) must reject every insert but one, and the retry/resolution
+// (migration 504) must reject every insert but one, and the retry/resolution
 // logic in RerunIssue must settle every caller — winners and losers alike —
 // on the single admitted task instead of erroring or leaving it cancelled.
 func TestRerunIssueConcurrentFirstAdmissionSettlesOnce(t *testing.T) {

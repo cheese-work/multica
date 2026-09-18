@@ -144,6 +144,10 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
+	"495_issue_to_label_label_id_index":                         "issue_to_label_label_idx",
+	"496_chat_session_agent_id_index":                           "idx_chat_session_agent_id",
+	"497_agent_task_queue_delegated_failure_evidence_index":     "idx_agent_task_queue_delegated_failure_evidence",
+	"498_chat_session_runtime_id_index":                         "idx_chat_session_runtime_id",
 	"486_maintenance_job_id_index":                              "idx_maintenance_job_id",
 	"487_maintenance_job_idempotency_index":                     "idx_maintenance_job_idempotency",
 	"488_maintenance_job_active_index":                          "idx_maintenance_job_active",
@@ -316,13 +320,13 @@ var concurrentIndexCleanups = map[string]string{
 	"480_instance_telemetry_state_singleton_index":              "instance_telemetry_state_singleton_uidx",
 	"482_agent_task_queue_telemetry_started_index":              "idx_agent_task_queue_telemetry_started",
 	"484_issue_triage_state_index":                              "idx_issue_triage_state",
-	"492_github_merge_announcement_identity_uidx":               "uq_github_merge_announcement_identity",
-	"493_github_merge_announcement_pending_idx":                 "idx_github_merge_announcement_pending_claim",
-	"495_agent_task_rerun_lineage_unique":                       "idx_one_live_rerun_per_source_task_actor",
-	"497_stage_completion_wake_unique":                          "idx_one_wake_per_parent_stage_generation",
-	"498_stage_generation_workspace_index":                      "idx_stage_generation_workspace_id",
-	"499_stage_completion_wake_workspace_index":                 "idx_stage_completion_wake_workspace_id",
-	"501_protocol_lint_run_checked_at_idx":                      "idx_protocol_lint_run_checked_at",
+	"501_github_merge_announcement_identity_uidx":               "uq_github_merge_announcement_identity",
+	"502_github_merge_announcement_pending_idx":                 "idx_github_merge_announcement_pending_claim",
+	"504_agent_task_rerun_lineage_unique":                       "idx_one_live_rerun_per_source_task_actor",
+	"506_stage_completion_wake_unique":                          "idx_one_wake_per_parent_stage_generation",
+	"507_stage_generation_workspace_index":                      "idx_stage_generation_workspace_id",
+	"508_stage_completion_wake_workspace_index":                 "idx_stage_completion_wake_workspace_id",
+	"510_protocol_lint_run_checked_at_idx":                      "idx_protocol_lint_run_checked_at",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction
@@ -427,8 +431,8 @@ func refuseChannelChatRouteHistoryRollbackWith(ctx context.Context, query rowQue
 
 var upMigrationConditions = map[string]migrationCondition{
 	// Preserve applied history; pending 469 is superseded by the bounded expand
-	// migration. Backfill is an independent operator job, never startup work.
-	"469_issue_status_lifecycle_categories": skipMigration("superseded by 478 compatibility expansion; backfill runs separately (MUL-7365)"),
+	// migration. SaaS backfills separately; self-host converges in 491.
+	"469_issue_status_lifecycle_categories": skipMigration("superseded by 478 expansion and 491 convergence (MUL-7365)"),
 	// Current search no longer consumes an issue-description GIN. Fresh installs
 	// should not build the historical fallback only to retire it at migration 464.
 	"139_issue_description_trgm_index": skipMigration("issue description search indexes are retired by migration 464"),

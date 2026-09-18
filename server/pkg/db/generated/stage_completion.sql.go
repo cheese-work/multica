@@ -71,8 +71,8 @@ type LockStageCompletionParams struct {
 	Stage         int32       `json:"stage"`
 }
 
-// CHE-488: durable stage-completion-wake identity. See migration 496/497 for
-// the full rationale (server/migrations/496_stage_completion_wake.up.sql).
+// CHE-488: durable stage-completion-wake identity. See migration 505/506 for
+// the full rationale (server/migrations/505_stage_completion_wake.up.sql).
 // Stage-scoped advisory xact lock, held for the whole read-then-write window
 // of a stage-completion decision: reading the sibling set, evaluating the
 // stage barrier, reading stage_generation, and claiming
