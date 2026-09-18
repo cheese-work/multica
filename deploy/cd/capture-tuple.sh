@@ -26,27 +26,34 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-usage: capture-tuple.sh --compose-dir PATH --output PATH [--application-sha SHA]
+usage: capture-tuple.sh --compose-dir PATH --output PATH [--application-sha SHA] [--git-dir PATH]
 
   --compose-dir PATH      Directory holding docker-compose.selfhost.yml (the
                           live self-host stack root on C00).
   --output PATH           Where to write the tuple snapshot JSON.
   --application-sha SHA   Override the recorded application_sha. Defaults to
                           the running backend container's
-                          org.opencontainers.image.revision label, which is
-                          what the image was actually built from.
+                          org.opencontainers.image.revision label, then to the
+                          image tag resolved against --git-dir.
+  --git-dir PATH          A checkout of this repository used to expand a short
+                          image tag into a full 40-character commit. Defaults
+                          to this script's own repository when it is run from
+                          one. Ignored when the image carries a revision label
+                          or --application-sha is passed.
 EOF
 }
 
 compose_dir=""
 output=""
 application_sha=""
+git_dir=""
 
 while (($#)); do
   case "$1" in
     --compose-dir) compose_dir=${2:?}; shift 2 ;;
     --output) output=${2:?}; shift 2 ;;
     --application-sha) application_sha=${2:?}; shift 2 ;;
+    --git-dir) git_dir=${2:?}; shift 2 ;;
     --help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -67,6 +74,17 @@ fi
 compose() {
   (cd "$compose_dir" && docker compose -f docker-compose.selfhost.yml "$@")
 }
+
+# Default --git-dir to this script's own checkout when it is running from one.
+# On C00 the script is scp'd to a bare temp directory and this stays empty,
+# which is correct — the caller passes --git-dir (or --application-sha) when
+# tag resolution is needed.
+if [ -z "$git_dir" ]; then
+  self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if git -C "$self_dir" rev-parse --git-dir >/dev/null 2>&1; then
+    git_dir="$self_dir"
+  fi
+fi
 
 # service_image reports the "repo:tag" reference a running compose service was
 # started from. `compose images --format json` is the documented way to ask
@@ -129,11 +147,63 @@ if [ -z "$backend_digest" ] || [ -z "$web_digest" ]; then
   exit 1
 fi
 
+# application_sha_from_tag recovers the deployed commit from the image TAG when
+# the image carries no org.opencontainers.image.revision label. D1 tags every
+# image it publishes `sha-<40-char-commit>`, and C00's current locally-built
+# images are tagged with the 8-character short SHA (`…:ff152610`) — neither
+# form is a full SHA on its own, so resolve the tag against the repository's
+# git history to get the 40-character commit the tuple schema requires.
+#
+# This exists because the label is not guaranteed: an image built outside D1
+# (a `make selfhost` build, or any path that does not pass the
+# --label org.opencontainers.image.revision docker/buildx flag) has an empty
+# label, and the first real D2 run failed exactly there — "could not determine
+# a 40-character application_sha (got '<empty>')" — even though the tag named
+# the commit unambiguously. Prefer the label when present; it is the image's
+# own statement about itself. Fall back to the tag only when it resolves to a
+# real commit, never to a guess.
+application_sha_from_tag() {
+  local ref=$1 tag candidate
+  tag="${ref##*:}"
+  case "$tag" in
+    sha-*) candidate="${tag#sha-}" ;;
+    *) candidate="$tag" ;;
+  esac
+  # Only hex-looking tags can be a commit; anything else (`latest`, a version
+  # tag) must not be fed to rev-parse, which would happily resolve a branch or
+  # tag name of the same spelling and record something that is not the
+  # deployed commit.
+  if ! [[ "$candidate" =~ ^[a-f0-9]{7,40}$ ]]; then
+    printf ''
+    return 0
+  fi
+  if [ ${#candidate} -eq 40 ]; then
+    printf '%s' "$candidate"
+    return 0
+  fi
+  if [ -n "$git_dir" ]; then
+    # ^{commit} forces a commit (not a tag object), and the trailing check
+    # keeps an ambiguous or unknown abbreviation from silently becoming a
+    # different commit.
+    candidate="$(git -C "$git_dir" rev-parse --verify --quiet "${candidate}^{commit}" 2>/dev/null || true)"
+    if [[ "$candidate" =~ ^[a-f0-9]{40}$ ]]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  fi
+  printf ''
+}
+
 if [ -z "$application_sha" ]; then
   application_sha="$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$backend_ref" 2>/dev/null)"
 fi
 if ! [[ "$application_sha" =~ ^[a-f0-9]{40}$ ]]; then
-  echo "could not determine a 40-character application_sha (got '${application_sha:-<empty>}'); pass --application-sha" >&2
+  application_sha="$(application_sha_from_tag "$backend_ref")"
+fi
+if ! [[ "$application_sha" =~ ^[a-f0-9]{40}$ ]]; then
+  echo "could not determine a 40-character application_sha for $backend_ref" >&2
+  echo "  the image carries no org.opencontainers.image.revision label and its tag did not resolve to a commit" >&2
+  echo "  pass --application-sha explicitly" >&2
   exit 1
 fi
 
