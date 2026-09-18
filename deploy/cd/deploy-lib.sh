@@ -225,10 +225,19 @@ current_ledger_version() {
 # Fails closed (returns 1, via `process.exit(1)`) if either version cannot
 # be located on disk — an unrecognized version is never treated as
 # "at or after" anything.
+#
+# The default migrations_dir is derived from THIS file's own location
+# (deploy/cd/deploy-lib.sh -> ../../server/migrations), not a caller-set
+# $root_dir global — deploy-lib.sh is sourced by both deploy.sh and
+# cutover.sh, and only cutover.sh happens to define root_dir today; a
+# caller-global default would read as unset (and silently resolve to
+# "/server/migrations") for any future sourcer that does not.
 ledger_at_or_after() {
   local current=$1
   local floor=$2
-  local migrations_dir="${3:-$root_dir/server/migrations}"
+  local default_migrations_dir
+  default_migrations_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/server/migrations"
+  local migrations_dir="${3:-$default_migrations_dir}"
   node -e '
     const fs = require("node:fs");
     const dir = process.argv[1];
