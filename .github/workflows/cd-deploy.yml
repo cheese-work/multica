@@ -253,15 +253,76 @@ jobs:
           # reading the PR would use — rather than asserting them here.
           gh api "repos/${GITHUB_REPOSITORY}/commits/${SOURCE_SHA}/check-runs?per_page=100" \
             --paginate --jq '.check_runs[] | {name, conclusion}' > check-runs.jsonl
+
+          # Some required checks are path-filtered and legitimately do not run
+          # on a commit that touches none of their paths (`mobile` is one).
+          # Admission must be able to tell "excluded" from "missing", so record
+          # the raw evidence for that decision rather than the decision itself:
+          # the commit's changed files, and each check's declared path filter
+          # read out of the workflow that defines it. admission.mjs re-derives
+          # the match; nothing here asserts a check may be skipped.
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${SOURCE_SHA}" \
+            --jq '{files: [.files[]?.filename], truncated: ((.files | length) >= 300)}' > commit-files.json
+
+          # Parse the workflows with a real YAML parser (python3 is present on
+          # GitHub-hosted runners) rather than regexes — `on:` blocks vary in
+          # formatting enough that pattern-matching them silently misses
+          # filters, and a missed filter here would be read as "check absent
+          # for no reason" downstream.
+          python3 - <<'PY' > path-filters.json
+          import json, pathlib, sys
+          try:
+              import yaml
+          except ImportError:
+              # No PyYAML: emit nothing. admission.mjs then treats every
+              # required check as unconditionally required, which is the safe
+              # direction — it can only refuse a deploy, never admit one.
+              print("{}")
+              sys.exit(0)
+
+          filters = {}
+          for path in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
+              try:
+                  doc = yaml.safe_load(path.read_text()) or {}
+              except Exception:
+                  continue
+              # PyYAML parses a bare `on:` key as the boolean True.
+              triggers = doc.get("on", doc.get(True)) or {}
+              push = triggers.get("push") if isinstance(triggers, dict) else None
+              if not isinstance(push, dict):
+                  continue
+              paths = push.get("paths")
+              if not isinstance(paths, list) or not paths:
+                  continue
+              for job_id, job in (doc.get("jobs") or {}).items():
+                  name = job.get("name") if isinstance(job, dict) else None
+                  # A templated name cannot be matched to a check name here.
+                  if isinstance(name, str) and "${{" not in name:
+                      filters[name] = paths
+                  filters[job_id] = paths
+          print(json.dumps(filters, indent=2))
+          PY
+
           node -e '
             const fs = require("node:fs");
+
             const contexts = {};
             for (const line of fs.readFileSync("check-runs.jsonl", "utf8").split("\n")) {
               if (!line.trim()) continue;
               const run = JSON.parse(line);
               contexts[run.name] = run.conclusion;
             }
-            fs.writeFileSync("cd-checks.json", `${JSON.stringify({ sha: process.env.SOURCE_SHA, contexts }, null, 2)}\n`);
+
+            const commit = JSON.parse(fs.readFileSync("commit-files.json", "utf8"));
+            const pathFilters = JSON.parse(fs.readFileSync("path-filters.json", "utf8"));
+
+            fs.writeFileSync("cd-checks.json", `${JSON.stringify({
+              sha: process.env.SOURCE_SHA,
+              contexts,
+              changed_files: commit.files ?? [],
+              changed_files_truncated: Boolean(commit.truncated),
+              path_filters: pathFilters,
+            }, null, 2)}\n`);
           '
 
       - name: Upload the release-candidate evidence set
