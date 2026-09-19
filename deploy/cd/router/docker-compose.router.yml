@@ -1,0 +1,31 @@
+# The long-running A/B router container (CHE-397 unit 2). Brought up ONCE
+# per host as part of adopting the A/B topology — cutover.sh's `select`/
+# `revert` calls (via router.sh) only ever change which generation this
+# already-running container reads; they never start, stop or recreate it.
+#
+# `active.conf` (a symlink router.sh maintains under ../router/state/,
+# bind-mounted below) is the file this container's nginx.conf actually
+# `include`s — see nginx.conf below, the container-facing entrypoint config,
+# distinct from ../nginx.conf.template which router.sh renders FROM.
+#
+# Binds 127.0.0.1:8081 and 127.0.0.1:3000 — the same private upstream
+# addresses Tailscale Serve's existing :19444/:19443 already forward to.
+# This container does not publish 19444/19443 itself and never will; those
+# stay exactly where Tailscale Serve terminates TLS today. It also never
+# publishes or references 20243 (GitHub narrow ingress) or 31344 (sub2api) —
+# both stay completely outside this compose file.
+
+services:
+  router:
+    image: ${ROUTER_NGINX_IMAGE:-nginx:1.27-alpine}
+    container_name: multica-ab-router
+    network_mode: host
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./state:/etc/nginx/router-state:ro
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped

@@ -1,0 +1,78 @@
+# Blue/green slot overlay for C00 A/B deployment (CHE-397 unit 2).
+#
+# Layered on top of docker-compose.selfhost.yml with
+# `-f docker-compose.selfhost.yml -f deploy/cd/docker-compose.ab.yml`, invoked
+# with the repository/compose root as the working directory (the same
+# convention deploy.sh's compose() helper already uses via `cd
+# "$compose_dir"`) — this file's own `extends.file` path below is resolved
+# relative to that root, not relative to this file's own directory
+# (verified: Compose resolves a later `-f` file's `extends.file` against the
+# CWD/first-file's directory, not the declaring file's own path). It does
+# NOT replace the base file's `postgres` service, `pgdata` volume or
+# `backend_uploads` volume — both colours below explicitly reuse those same
+# names, per the accepted architecture ("both slots refer explicitly to
+# those volumes; no new empty per-colour volume, database clone, replica
+# routing or database replacement").
+#
+# What this overlay adds: two versioned backend/frontend pairs
+# (backend-blue/frontend-blue, backend-green/frontend-green), each bound to
+# 127.0.0.1 on distinct PRIVATE ports so nothing but the local router in
+# front of them is ever addressed directly. The base compose file's own
+# `backend`/`frontend` service definitions are left completely alone —
+# scale them to zero once this overlay is adopted (`docker compose ... up -d
+# --scale backend=0 --scale frontend=0 backend-blue frontend-blue`, see
+# cutover.sh) rather than deleting them, so a rollback to the pre-A/B
+# topology never needs to reconstruct a service definition from memory.
+#
+# Both colours are declared here at all times; only one is ever started.
+# Starting a backend also starts its in-process scheduler (CHE-393) and its
+# realtime hub is in-memory (REDIS_URL unset on C00) — running both
+# concurrently would let the inactive colour mutate shared state and split
+# realtime delivery across two unsynchronized hubs. cutover.sh is the only
+# thing that starts/stops these services; it never brings both up at once.
+#
+# Ports: BACKEND_BLUE_PORT/BACKEND_GREEN_PORT default to 18081/18082 for the
+# API, FRONTEND_BLUE_PORT/FRONTEND_GREEN_PORT to 13001/13002 for the
+# frontend — all private, non-overlapping with the base file's public-facing
+# 8080/3000 aliases and with router.sh's own upstream ports (19444/19443,
+# reserved for Tailscale Serve per the accepted architecture; this overlay
+# never binds those).
+
+services:
+  backend-blue:
+    extends:
+      file: docker-compose.selfhost.yml
+      service: backend
+    # !override, not a plain list: `extends` concatenates list-type keys
+    # (Compose spec merge rules for ports/volumes/etc.) rather than replacing
+    # them, so a plain override here would publish BOTH the base service's
+    # inherited 127.0.0.1:8080 binding and this one, and two containers
+    # cannot both bind the same host port. Verified against a real `docker
+    # compose config` render.
+    ports: !override
+      - "127.0.0.1:${BACKEND_BLUE_PORT:-18081}:8080"
+
+  frontend-blue:
+    extends:
+      file: docker-compose.selfhost.yml
+      service: frontend
+    ports: !override
+      - "127.0.0.1:${FRONTEND_BLUE_PORT:-13001}:3000"
+    environment:
+      REMOTE_API_URL: ${REMOTE_API_URL_BLUE:-http://backend-blue:8080}
+
+  backend-green:
+    extends:
+      file: docker-compose.selfhost.yml
+      service: backend
+    ports: !override
+      - "127.0.0.1:${BACKEND_GREEN_PORT:-18082}:8080"
+
+  frontend-green:
+    extends:
+      file: docker-compose.selfhost.yml
+      service: frontend
+    ports: !override
+      - "127.0.0.1:${FRONTEND_GREEN_PORT:-13002}:3000"
+    environment:
+      REMOTE_API_URL: ${REMOTE_API_URL_GREEN:-http://backend-green:8080}
