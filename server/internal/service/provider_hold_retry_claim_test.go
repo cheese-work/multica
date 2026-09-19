@@ -102,11 +102,13 @@ func TestMaybeRetryFailedTaskRefusesHeldProvider(t *testing.T) {
 	if status != "cancelled" {
 		t.Errorf("retry child status = %q, want cancelled (never claimable)", status)
 	}
+	// The prior assert already pins the exact wanted value; a value equal to
+	// it cannot also equal agent_error.provider_server_error (the two reasons
+	// are distinct string constants), so a separate check for that would be
+	// unreachable. TestProviderHoldReasonIsNotAnAgentError is where the two
+	// codes are pinned apart at the constant level.
 	if failureReason != taskfailure.ReasonDispatchBlockedProviderHold.String() {
 		t.Errorf("retry child failure_reason = %q, want %q", failureReason, taskfailure.ReasonDispatchBlockedProviderHold.String())
-	}
-	if failureReason == taskfailure.ReasonAgentProviderServerError.String() {
-		t.Fatal("retry child failure_reason must not collapse into agent_error.provider_server_error")
 	}
 }
 

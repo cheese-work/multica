@@ -3520,8 +3520,13 @@ func (s *TaskService) ClaimTask(ctx context.Context, agentID pgtype.UUID) (*db.A
 // task when the hold lifts, and its trigger/coalesced comments never get a
 // reply), so this only ever refuses the ATTEMPT, the same way an offline
 // runtime already does — the row is untouched and eligible again the moment
-// either the hold lifts or, failing that, forever, until the ordinary
-// queued_expired TTL sweeper reclaims it like any other stale queued task.
+// the hold lifts. Unlike an offline-runtime skip, there is no TTL backstop
+// here on a still-healthy runtime: ExpireStaleQueuedTasks only reclaims a
+// queued row whose RUNTIME can no longer prove it is alive (see that query's
+// own doc comment), and a held agent's runtime is otherwise perfectly
+// healthy — so a hold with no end date leaves the row queued indefinitely,
+// on purpose, since the alternative (cancelling) is the regression this
+// function exists to avoid.
 //
 // qerr is non-nil only for a real GetWorkspace failure, propagated exactly as
 // AgentReadiness's own callers already propagate it — never silently treated
@@ -3588,6 +3593,13 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			outcome = "error_provider_hold_check"
 			return fmt.Errorf("check provider hold for claim: %w", herr)
 		} else if held {
+			// No DB state changes here by design (see agentBlockedByProviderHold),
+			// so this log line is the only trace a skipped claim leaves — without
+			// it an operator asking "why is this still queued" has nothing to go
+			// on, unlike the retry path, which has both a log line and an issue
+			// comment. maybeLogClaimSlow only fires above 300ms, and a skip is
+			// fast, so it would otherwise say nothing at all.
+			slog.Debug("task claim skipped: provider hold", "agent_id", util.UUIDToString(agentID))
 			outcome = "provider_hold"
 			return nil
 		}
