@@ -5718,13 +5718,10 @@ func transferPendingSourceContextToRetry(ctx context.Context, q *db.Queries, par
 // to a structured 403 (no task was cancelled or created).
 var ErrRerunInvokeNotAllowed = errors.New("rerun: operator not allowed to invoke target agent")
 
-// ErrRerunProviderHeld signals that RerunIssue refused to rerun because the
-// resolved target agent's model provider is on an active workspace hold
-// (CHE-675). Same shape and same handler treatment as
-// ErrSourceContextRetryProviderHeld's quick-create sibling — a distinct
-// sentinel rather than reusing that one because the two retry buttons are
-// different admission paths with different callers to keep independently
-// traceable, even though the underlying policy check is identical.
+// ErrRerunProviderHeld signals that RerunIssue refused because the resolved
+// target agent's model provider is on an active workspace hold (CHE-675).
+// Kept distinct from ErrSourceContextRetryProviderHeld so the two manual
+// buttons stay independently traceable, though the policy check is identical.
 var ErrRerunProviderHeld = errors.New("rerun: target agent's model provider is on hold")
 
 // Only tasks belonging to the target agent on this issue are cancelled.
@@ -5854,14 +5851,12 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourc
 	if canInvoke != nil && !canInvoke(targetAgent) {
 		return nil, ErrRerunInvokeNotAllowed
 	}
-	// CHE-675: RerunIssue is another manual admission path AgentReadiness
-	// never covers — task.go has no call to it here, same gap CHE-607 closed
-	// for the quick-create retry button (RetrySourceContextQuickCreate). This
-	// is the one choke point common to every rerun shape (task_id rerun,
-	// assignee rerun, squad-leader rerun): agentID above is already resolved
-	// for all three, so gating here covers them without a second check per
-	// branch. Checked here, before anything is cancelled, so a blocked rerun
-	// fails closed exactly like the canInvoke gate immediately above it.
+	// CHE-675: the rerun button is a manual admission path AgentReadiness
+	// never covers, the same gap CHE-607 closed for the quick-create retry.
+	// agentID is already resolved for every rerun shape (task_id, assignee,
+	// squad-leader) by this point, so one check here covers all three, and
+	// placing it before any cancellation makes a refusal fail closed exactly
+	// like the canInvoke gate above it.
 	if _, held, herr := providerHoldBlocksAgent(ctx, s.runtimeLookup(), targetAgent); herr != nil {
 		return nil, fmt.Errorf("check provider hold for rerun: %w", herr)
 	} else if held {
