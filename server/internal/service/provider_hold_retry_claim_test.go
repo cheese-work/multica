@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -210,9 +211,125 @@ func TestFailTaskInTxRetryRefusesHeldProvider(t *testing.T) {
 	}
 }
 
-// TestClaimTaskRefusesHeldProvider is AC2's regression: a task already queued
-// when a hold is configured must not reach the provider on claim. Simulates
-// exactly that ordering — enqueue first, hold second, claim third.
+// TestFailTaskInTxRetryClaudeUnaffectedByHold is AC4 for FailTask's own
+// in-transaction retry — the review that found the claim-path defect also
+// flagged this as the one AC4 case the original suite never pinned
+// (MaybeRetryFailedTask and claimTask both had one; FailTask's primary retry
+// path did not).
+func TestFailTaskInTxRetryClaudeUnaffectedByHold(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	workspaceID, _, agentID, issueID := seedAttributionFixture(t, pool)
+	setWorkspaceProviderHold(t, pool, workspaceID, agentID, "claude-sonnet-5[1m]", "openai")
+
+	var runtimeID string
+	if err := pool.QueryRow(ctx, `SELECT runtime_id::text FROM agent WHERE id = $1`, agentID).Scan(&runtimeID); err != nil {
+		t.Fatalf("read agent runtime: %v", err)
+	}
+
+	var taskID pgtype.UUID
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, attempt, max_attempts)
+		VALUES ($1, $2, $3, 'running', 0, 1, 3)
+		RETURNING id
+	`, agentID, runtimeID, issueID).Scan(&taskID); err != nil {
+		t.Fatalf("insert running task: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE parent_task_id = $1 OR id = $1`, taskID)
+	})
+
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	failed, err := svc.FailTask(ctx, taskID, "stream disconnected", "", "", "", "agent_error.provider_network", false, "", "")
+	if err != nil {
+		t.Fatalf("FailTask: %v", err)
+	}
+	if failed.Status != "failed" {
+		t.Fatalf("parent status = %q, want failed", failed.Status)
+	}
+
+	var childCount int
+	var childStatus string
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*), coalesce(max(status), '') FROM agent_task_queue WHERE parent_task_id = $1
+	`, taskID).Scan(&childCount, &childStatus); err != nil {
+		t.Fatalf("count retry children: %v", err)
+	}
+	if childCount != 1 || childStatus != "queued" {
+		t.Fatalf("retry child count/status = %d/%q, want 1/queued — a Claude-backed retry must proceed despite the openai hold", childCount, childStatus)
+	}
+}
+
+// TestFailTaskInTxRetryRefusalPostsIssueNotice covers review finding (a): a
+// provider-hold refusal on the retry path must be visible to the human who
+// owns the issue, not just recorded in a DB column nobody reads. Without
+// this, ProviderHoldNotice's carefully-built agent/provider/policy text is
+// computed and immediately discarded, and the user sees only the ORIGINAL
+// failure's error text with no explanation of why no retry followed it.
+func TestFailTaskInTxRetryRefusalPostsIssueNotice(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	workspaceID, _, agentID, issueID := seedAttributionFixture(t, pool)
+	setWorkspaceProviderHold(t, pool, workspaceID, agentID, "gpt-5.6-sol", "openai")
+
+	var runtimeID string
+	if err := pool.QueryRow(ctx, `SELECT runtime_id::text FROM agent WHERE id = $1`, agentID).Scan(&runtimeID); err != nil {
+		t.Fatalf("read agent runtime: %v", err)
+	}
+	var taskID pgtype.UUID
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, attempt, max_attempts)
+		VALUES ($1, $2, $3, 'running', 0, 1, 3)
+		RETURNING id
+	`, agentID, runtimeID, issueID).Scan(&taskID); err != nil {
+		t.Fatalf("insert running task: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM comment WHERE issue_id = $1`, issueID)
+		pool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE parent_task_id = $1 OR id = $1`, taskID)
+	})
+
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	if _, err := svc.FailTask(ctx, taskID, "stream disconnected", "", "", "", "agent_error.provider_network", false, "", ""); err != nil {
+		t.Fatalf("FailTask: %v", err)
+	}
+
+	rows, err := pool.Query(ctx, `SELECT content FROM comment WHERE issue_id = $1 ORDER BY created_at`, issueID)
+	if err != nil {
+		t.Fatalf("list issue comments: %v", err)
+	}
+	defer rows.Close()
+	var contents []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			t.Fatalf("scan comment: %v", err)
+		}
+		contents = append(contents, c)
+	}
+	var foundNotice bool
+	for _, c := range contents {
+		if strings.Contains(c, "policy hold") || strings.Contains(c, "openai") {
+			foundNotice = true
+		}
+	}
+	if !foundNotice {
+		t.Fatalf("no issue comment mentions the provider hold; comments = %#v", contents)
+	}
+}
+
+// TestClaimTaskRefusesHeldProvider is AC2's regression, revised after review:
+// a task already queued when a hold is configured must not reach the
+// provider on claim — but staying queued, not being cancelled, is the fix.
+// Cancelling destroys real admitted work with no way back once the hold
+// lifts (nothing re-queues a cancelled task, and its trigger/coalesced
+// comments die undelivered), and AC2's letter only requires the task not
+// reach the provider — leaving it queued satisfies that and keeps the work.
+// Simulates the exact ordering CHE-607 describes: enqueue first (provider
+// healthy), hold second, claim third — then proves the task is still fully
+// alive by clearing the hold and claiming it for real.
 func TestClaimTaskRefusesHeldProvider(t *testing.T) {
 	pool := newResolveOriginatorPool(t)
 	ctx := context.Background()
@@ -250,15 +367,31 @@ func TestClaimTaskRefusesHeldProvider(t *testing.T) {
 		t.Fatalf("expected no task claimed under an active provider hold, got %+v", claimed)
 	}
 
-	var status, failureReason string
+	var status string
+	var failureReason pgtype.Text
 	if err := pool.QueryRow(ctx, `SELECT status, failure_reason FROM agent_task_queue WHERE id = $1`, taskID).Scan(&status, &failureReason); err != nil {
 		t.Fatalf("load task row: %v", err)
 	}
-	if status != "cancelled" {
-		t.Errorf("task status = %q, want cancelled (never dispatched to the held provider)", status)
+	if status != "queued" {
+		t.Fatalf("task status = %q, want queued (untouched, not cancelled — the row must survive the hold)", status)
 	}
-	if failureReason != taskfailure.ReasonDispatchBlockedProviderHold.String() {
-		t.Errorf("task failure_reason = %q, want %q", failureReason, taskfailure.ReasonDispatchBlockedProviderHold.String())
+	if failureReason.Valid {
+		t.Errorf("task failure_reason = %q, want NULL — a skipped claim attempt is not a terminal outcome", failureReason.String)
+	}
+
+	// Prove the task is genuinely still claimable: lift the hold and claim it
+	// for real. A cancel-based fix would fail this — there would be nothing
+	// left to claim.
+	setWorkspaceProviderHold(t, pool, workspaceID, agentID, "gpt-5.6-sol", "")
+	claimedAfterLift, err := svc.ClaimTask(ctx, util.MustParseUUID(agentID))
+	if err != nil {
+		t.Fatalf("ClaimTask after hold lifted: %v", err)
+	}
+	if claimedAfterLift == nil {
+		t.Fatal("expected the same task to be claimable once the hold lifted")
+	}
+	if claimedAfterLift.ID != taskID {
+		t.Errorf("claimed task id = %s, want %s", util.UUIDToString(claimedAfterLift.ID), util.UUIDToString(taskID))
 	}
 }
 
