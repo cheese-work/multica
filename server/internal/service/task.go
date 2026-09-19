@@ -5718,6 +5718,15 @@ func transferPendingSourceContextToRetry(ctx context.Context, q *db.Queries, par
 // to a structured 403 (no task was cancelled or created).
 var ErrRerunInvokeNotAllowed = errors.New("rerun: operator not allowed to invoke target agent")
 
+// ErrRerunProviderHeld signals that RerunIssue refused to rerun because the
+// resolved target agent's model provider is on an active workspace hold
+// (CHE-675). Same shape and same handler treatment as
+// ErrSourceContextRetryProviderHeld's quick-create sibling — a distinct
+// sentinel rather than reusing that one because the two retry buttons are
+// different admission paths with different callers to keep independently
+// traceable, even though the underlying policy check is identical.
+var ErrRerunProviderHeld = errors.New("rerun: target agent's model provider is on hold")
+
 // Only tasks belonging to the target agent on this issue are cancelled.
 // Tasks owned by other agents on the same issue (e.g. a parallel
 // @-mention agent) are left alone — rerun must not collateral-cancel
@@ -5833,14 +5842,30 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourc
 	// so a since-reassigned issue can't be used to re-fire a private agent the
 	// operator may only view. A block fails closed: no prior task is cancelled,
 	// no new task is created.
-	if canInvoke != nil {
-		targetAgent, err := s.Queries.GetAgent(ctx, agentID)
-		if err != nil {
-			return nil, fmt.Errorf("load target agent: %w", err)
-		}
-		if !canInvoke(targetAgent) {
-			return nil, ErrRerunInvokeNotAllowed
-		}
+	//
+	// The agent is loaded unconditionally, not only when canInvoke != nil,
+	// because the provider-hold check right below needs it too — a trusted
+	// internal caller that passes a nil canInvoke (tests, backfill) still
+	// must not have its rerun dispatched straight into a held provider.
+	targetAgent, err := s.Queries.GetAgent(ctx, agentID)
+	if err != nil {
+		return nil, fmt.Errorf("load target agent: %w", err)
+	}
+	if canInvoke != nil && !canInvoke(targetAgent) {
+		return nil, ErrRerunInvokeNotAllowed
+	}
+	// CHE-675: RerunIssue is another manual admission path AgentReadiness
+	// never covers — task.go has no call to it here, same gap CHE-607 closed
+	// for the quick-create retry button (RetrySourceContextQuickCreate). This
+	// is the one choke point common to every rerun shape (task_id rerun,
+	// assignee rerun, squad-leader rerun): agentID above is already resolved
+	// for all three, so gating here covers them without a second check per
+	// branch. Checked here, before anything is cancelled, so a blocked rerun
+	// fails closed exactly like the canInvoke gate immediately above it.
+	if _, held, herr := providerHoldBlocksAgent(ctx, s.runtimeLookup(), targetAgent); herr != nil {
+		return nil, fmt.Errorf("check provider hold for rerun: %w", herr)
+	} else if held {
+		return nil, ErrRerunProviderHeld
 	}
 
 	// Replay guard (CHE-485): a rerun request is identified by the exact source

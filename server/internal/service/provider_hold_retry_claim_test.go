@@ -9,7 +9,9 @@ package service
 // exactly the shape a held provider produces). These tests pin the fix the
 // same way agent_ready_provider_hold_test.go pins the trigger-side gate:
 // held agent refused with dispatch_blocked.provider_hold, unheld (Claude)
-// agent unaffected.
+// agent unaffected. TestRerunIssue* below extend the same coverage to
+// RerunIssue (CHE-675), the last manual admission path the CHE-607 review
+// left ungated.
 
 import (
 	"context"
@@ -502,5 +504,59 @@ func TestRetrySourceContextQuickCreateRefusesHeldProvider(t *testing.T) {
 	})
 	if err != nil || stored.OriginTaskID != parentID || stored.State != "pending" {
 		t.Fatalf("context after refused retry = %+v, err=%v, want unchanged pending/origin=%s", stored, err, util.UUIDToString(parentID))
+	}
+}
+
+// TestRerunIssueRefusesHeldProvider covers CHE-675: the manual "rerun" button
+// (TaskService.RerunIssue / enqueueRerunTask) is another manual admission path
+// AgentReadiness never covers — the same gap CHE-607 closed for the
+// quick-create retry button above. A rerun of a held-provider agent must be
+// refused up front, with nothing cancelled and nothing created (RerunIssue's
+// own canInvoke gate documents the same fail-closed contract this mirrors).
+func TestRerunIssueRefusesHeldProvider(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	workspaceID, actorID, agentID, issueID := seedAttributionFixture(t, pool)
+	setWorkspaceProviderHold(t, pool, workspaceID, agentID, "gpt-5.6-sol", "openai")
+
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	task, err := svc.RerunIssue(ctx, util.MustParseUUID(issueID), pgtype.UUID{}, pgtype.UUID{}, util.MustParseUUID(actorID), nil)
+	if !errors.Is(err, ErrRerunProviderHeld) {
+		t.Fatalf("RerunIssue error = %v, want ErrRerunProviderHeld", err)
+	}
+	if task != nil {
+		t.Fatalf("expected no task under an active provider hold, got %+v", task)
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1`, issueID).Scan(&count); err != nil {
+		t.Fatalf("count tasks: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("a refused rerun must not create or cancel any task, found %d rows", count)
+	}
+}
+
+// TestRerunIssueClaudeUnaffectedByHold is AC4 for the manual rerun path: an
+// openai hold must never touch a Claude-backed agent's rerun.
+func TestRerunIssueClaudeUnaffectedByHold(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	workspaceID, actorID, agentID, issueID := seedAttributionFixture(t, pool)
+	setWorkspaceProviderHold(t, pool, workspaceID, agentID, "claude-sonnet-5[1m]", "openai")
+
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	task, err := svc.RerunIssue(ctx, util.MustParseUUID(issueID), pgtype.UUID{}, pgtype.UUID{}, util.MustParseUUID(actorID), nil)
+	if err != nil {
+		t.Fatalf("RerunIssue: %v", err)
+	}
+	if task == nil {
+		t.Fatal("expected a rerun task for a Claude-backed agent despite the openai hold")
+	}
+	t.Cleanup(func() { pool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, task.ID) })
+	if task.Status != "queued" {
+		t.Errorf("task status = %q, want queued", task.Status)
 	}
 }
