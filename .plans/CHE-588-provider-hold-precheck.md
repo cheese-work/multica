@@ -107,15 +107,27 @@ dispatch happen anyway — can find them, not just in Go source.
   without routing retry/claim through `AgentReadiness` itself (that would
   re-run the runtime lookup both paths have already done) — instead
   `providerHoldBlocksAgent` (agent_ready.go) exposes just the provider-hold
-  half, and task.go calls it from three points: `FailTask`'s in-transaction
-  retry and `MaybeRetryFailedTask` (both share `refuseRetryForProviderHold`,
-  which cancels the just-created retry child in the same transaction with
-  `failure_reason = dispatch_blocked.provider_hold` rather than leaving it
-  queued), `claimTask` (`refuseClaimForProviderHold`, same pattern on the
-  just-claimed task), and `RetrySourceContextQuickCreate` (the manual
-  quick-create retry button, refused before any row is created via the new
-  `ErrSourceContextRetryProviderHeld` sentinel). `RerunIssue`/
-  `enqueueRerunTask` — the general manual "rerun" button, a materially larger
-  and separately-scoped surface — remains ungated; not named in CHE-607's
-  acceptance criteria, left for a further follow-up if it proves to matter in
-  practice.
+  half, called from four points, with two DIFFERENT refusal shapes chosen
+  deliberately per independent review (an initial claim-path draft cancelled
+  the claimed task and was rejected — see below):
+  - `FailTask`'s in-transaction retry and `MaybeRetryFailedTask` (both share
+    `refuseRetryForProviderHold`) CANCEL the just-minted retry child in the
+    same transaction that created it, with
+    `failure_reason = dispatch_blocked.provider_hold`, and post
+    `ProviderHoldNotice` as a visible issue comment after commit. Cancelling
+    is correct here: the child never existed before this call, so nothing is
+    lost.
+  - `claimTask` (`agentBlockedByProviderHold`) instead SKIPS the claim
+    entirely, checked BEFORE `ClaimAgentTask` runs — the task stays `queued`,
+    completely untouched. A task already sitting `queued` predates the check
+    by definition and is real wanted work; cancelling it (the initial design)
+    was a one-way door with no re-queue on hold-lift and undelivered
+    trigger/coalesced comments, which review correctly called a regression
+    worse than the bug being fixed. `queued_expired`'s ordinary TTL sweep is
+    the eventual backstop if a hold never lifts.
+  - `RetrySourceContextQuickCreate` (the manual quick-create retry button)
+    refuses before any row is created, via `ErrSourceContextRetryProviderHeld`.
+
+  `RerunIssue`/`enqueueRerunTask` — the general manual "rerun" button, a
+  materially larger and separately-scoped surface — remains ungated; tracked
+  as CHE-675 rather than folded into CHE-607, per the same review.
