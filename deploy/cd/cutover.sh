@@ -263,22 +263,24 @@ case "$command" in
 
     migration_service_name="backend-${to_colour}"
 
+    # quiescence.mjs has no host `psql` binary to fall back to on C00 —
+    # docker exec into the already-running postgres service container
+    # (deploy-lib.sh's postgres_container_id) rather than quiescence.mjs's
+    # own --psql-via-docker-network mode, which starts a SECOND, independent
+    # postgres:16-alpine container per query: ~450-550ms of container-start
+    # overhead against quiescence.mjs's own <=500ms DEFAULT_QUERY_TIMEOUT_MS
+    # statement budget, which made every gate check below fail closed on a
+    # timeout indistinguishable from real contention (CHE-655). `docker exec`
+    # into the container already running measures ~100-150ms.
+    postgres_container="$(postgres_container_id)" || exit 1
+
     # Step 1: admission gate + quiescence preflight against the CURRENTLY
     # ACTIVE colour's database connection — coarse, cheap, denies on any
     # already-visible hard blocker before an outage is even started.
     database_url="${CUTOVER_DATABASE_URL:?CUTOVER_DATABASE_URL is required, the same DATABASE_URL the compose stacks postgres service uses}"
     echo "==> quiescence preflight"
-    if ! node "$script_dir/quiescence.mjs" preflight --database-url "$database_url"; then
+    if ! node "$script_dir/quiescence.mjs" preflight --database-url "$database_url" --psql-via-docker-exec "$postgres_container"; then
       echo "!! quiescence preflight denied cutover; $from_colour remains active" >&2
-      exit 1
-    fi
-
-    # Step 2: final gate immediately before the first candidate mutation —
-    # strict, zero-tolerance. A denial here leaves $from_colour serving,
-    # untouched.
-    echo "==> quiescence final-gate (pre-migration)"
-    if ! node "$script_dir/quiescence.mjs" final-gate --database-url "$database_url"; then
-      echo "!! quiescence final-gate denied cutover; $from_colour remains active" >&2
       exit 1
     fi
 
@@ -312,18 +314,48 @@ case "$command" in
       exit 1
     fi
 
+    # Step 2: drain and stop the incumbent colour BEFORE the strict
+    # quiescence final-gate runs and before the migrator touches the schema
+    # — matching the accepted architecture's own step 2 ("drain and shut
+    # down the old backend before verifying quiescence and running the
+    # migrator") and this file's own header comment ("Gate/drain/quiesce/
+    # migrate"). The final-gate demands ZERO foreign sessions/locks
+    # (evaluateFinalGate, quiescence.mjs); the incumbent backend's own
+    # connection pool holds idle sessions for as long as it keeps running,
+    # so the gate could never admit while $from_colour still serves
+    # (CHE-655, found live on C00: every cutover and rollback refused here,
+    # unconditionally, purely because of this ordering bug — nothing was
+    # ever actually contending). Everything from this point on runs with
+    # NEITHER colour serving until the candidate is up and the router
+    # switches — an unavoidable outage window for the quiesce+migrate phase,
+    # not a regression: a live schema migration cannot safely run against a
+    # schema a serving backend still holds connections against.
+    echo "==> draining and stopping current colour=$from_colour (required before the quiescence final-gate can ever admit)"
+    compose stop "backend-${from_colour}" "frontend-${from_colour}" >/dev/null 2>&1 || true
+
+    # Step 3: final gate immediately before the first candidate mutation —
+    # strict, zero-tolerance. A denial here means $from_colour is ALREADY
+    # stopped (see above): the API is down and needs manual intervention to
+    # restart it, not the "colour remains active" framing that was true
+    # before this ordering fix.
+    echo "==> quiescence final-gate (pre-migration)"
+    if ! node "$script_dir/quiescence.mjs" final-gate --database-url "$database_url" --psql-via-docker-exec "$postgres_container"; then
+      echo "!! quiescence final-gate denied cutover after draining $from_colour — the API is DOWN; MANUAL INTERVENTION REQUIRED to restart $from_colour" >&2
+      exit 1
+    fi
+
     # Run the standalone migrator exactly once, from the candidate image,
     # against the inactive colour's (stopped) service identity — never the
     # currently-serving colour's, so the one-shot container's --no-deps
     # never risks touching a live serving container's dependency graph.
     echo "==> running migration step (one-shot, candidate image, before candidate starts)"
     if ! run_migration_step "$backend_repo" "$image_tag" up; then
-      echo "!! migration step failed; $from_colour remains active, candidate not started" >&2
+      echo "!! migration step failed after draining $from_colour — the API is DOWN; candidate not started; MANUAL INTERVENTION REQUIRED to restart $from_colour" >&2
       echo "!! quiescent gate must be re-run before retrying — do not restart the candidate against a partially migrated schema" >&2
       exit 1
     fi
 
-    # Step 3: start the candidate through the migration-free authorized
+    # Step 4: start the candidate through the migration-free authorized
     # path — MULTICA_SKIP_MIGRATIONS=1, the same guard deploy.sh's
     # single-slot forward path uses, so the just-applied migration step is
     # never repeated.
@@ -331,14 +363,14 @@ case "$command" in
     if ! MULTICA_BACKEND_IMAGE="$backend_repo" MULTICA_WEB_IMAGE="$(image_repo "$web_image")" \
       MULTICA_IMAGE_TAG="$image_tag" MULTICA_SKIP_MIGRATIONS=1 \
       compose up -d --no-deps "backend-${to_colour}" "frontend-${to_colour}"; then
-      echo "!! candidate colour=$to_colour failed to start; $from_colour remains active" >&2
+      echo "!! candidate colour=$to_colour failed to start after draining $from_colour — the API is DOWN; MANUAL INTERVENTION REQUIRED" >&2
       exit 1
     fi
 
     candidate_port="$(backend_port_for "$to_colour")"
     echo "==> health-checking candidate colour=$to_colour on port $candidate_port"
     if ! wait_ready_on_port "$candidate_port" 180; then
-      echo "!! candidate colour=$to_colour did not become ready within 180s; stopping it and leaving $from_colour active" >&2
+      echo "!! candidate colour=$to_colour did not become ready within 180s; stopping it — the API is DOWN ($from_colour already drained); MANUAL INTERVENTION REQUIRED" >&2
       compose stop "backend-${to_colour}" "frontend-${to_colour}" >/dev/null 2>&1 || true
       exit 1
     fi
@@ -348,7 +380,7 @@ case "$command" in
     # migrated and started (see deploy-lib.sh's verify_health_identity).
     echo "==> verifying candidate /health identity"
     if ! verify_health_identity "$candidate_port" "$source_sha"; then
-      echo "!! candidate colour=$to_colour /health identity mismatch; stopping it and leaving $from_colour active" >&2
+      echo "!! candidate colour=$to_colour /health identity mismatch; stopping it — the API is DOWN ($from_colour already drained); MANUAL INTERVENTION REQUIRED" >&2
       compose stop "backend-${to_colour}" "frontend-${to_colour}" >/dev/null 2>&1 || true
       exit 1
     fi
@@ -360,16 +392,9 @@ case "$command" in
     # reimplemented here.
     echo "==> activating router generation for colour=$to_colour"
     if ! bash "$script_dir/router.sh" select --colour "$to_colour" --state-dir "$router_state_dir"; then
-      echo "!! router generation switch failed; candidate colour=$to_colour is running but NOT receiving traffic — $from_colour's router generation is still active" >&2
+      echo "!! router generation switch failed; candidate colour=$to_colour is running but NOT receiving traffic — the API is DOWN ($from_colour already drained and the router still is not pointed at $to_colour); MANUAL INTERVENTION REQUIRED" >&2
       exit 1
     fi
-
-    # Quiesce and stop the now-inactive colour AFTER traffic has moved off
-    # it — draining it before the router switch would have caused an outage
-    # for no benefit, since the switch itself is what stops new requests
-    # from reaching it.
-    echo "==> stopping now-inactive colour=$from_colour"
-    compose stop "backend-${from_colour}" "frontend-${from_colour}" >/dev/null 2>&1 || true
 
     ledger_version="$(current_ledger_version)"
     write_cutover_state "$to_colour" "$backend_image" "$web_image" "$ledger_version" "$packet_minimum_rollback_version"
@@ -386,9 +411,27 @@ case "$command" in
     echo "==> rollback plan: $from_colour (active, failing) -> $to_colour (retained predecessor)"
 
     database_url="${CUTOVER_DATABASE_URL:?CUTOVER_DATABASE_URL is required}"
+    # quiescence.mjs has no host `psql` binary to fall back to on C00 —
+    # docker exec into the already-running postgres service container
+    # rather than quiescence.mjs's own --psql-via-docker-network mode (see
+    # the matching comment in the `cutover)` branch above for the measured
+    # overhead difference, CHE-655).
+    postgres_container="$(postgres_container_id)" || exit 1
+
+    # Drain and stop the failing candidate BEFORE the strict quiescence
+    # final-gate runs — same root cause and same fix as the `cutover)`
+    # branch above (CHE-655): $from_colour is the failing candidate here,
+    # and its own connection pool holds idle sessions for as long as it
+    # keeps running, so the gate could never admit while it still serves.
+    # Without this, the automated rollback refuses unconditionally and
+    # leaves the ALREADY-FAILING candidate as the only thing "active" —
+    # exactly the outage rollback exists to end.
+    echo "==> draining and stopping failing candidate colour=$from_colour (required before the quiescence final-gate can ever admit)"
+    compose stop "backend-${from_colour}" "frontend-${from_colour}" >/dev/null 2>&1 || true
+
     echo "==> quiescence final-gate (pre-rollback)"
-    if ! node "$script_dir/quiescence.mjs" final-gate --database-url "$database_url"; then
-      echo "!! quiescence final-gate denied rollback — gating admission but NOT restarting $to_colour blind" >&2
+    if ! node "$script_dir/quiescence.mjs" final-gate --database-url "$database_url" --psql-via-docker-exec "$postgres_container"; then
+      echo "!! quiescence final-gate denied rollback after draining $from_colour — the API is DOWN; MANUAL INTERVENTION REQUIRED" >&2
       exit 1
     fi
 
@@ -423,12 +466,12 @@ case "$command" in
     fi
     if [ -z "$minimum_rollback_version" ]; then
       echo "!! no minimum_rollback_version recorded in $cutover_state_file — cannot verify $to_colour is compatible with the current schema" >&2
-      echo "!! this is NOT a routine rollback case; refusing to start $to_colour blind" >&2
+      echo "!! this is NOT a routine rollback case; refusing to start $to_colour blind — $from_colour is already drained, so the API is DOWN; MANUAL INTERVENTION REQUIRED" >&2
       exit 1
     fi
     if ! ledger_at_or_after "$current_version" "$minimum_rollback_version"; then
       echo "!! current ledger version ($current_version) is not at or after the rollback compatibility floor ($minimum_rollback_version) — the retained predecessor image cannot be assumed compatible with this schema" >&2
-      echo "!! this is NOT a routine rollback case; a down migration or backup restore requires separate authorization — refusing to start $to_colour blind" >&2
+      echo "!! this is NOT a routine rollback case; a down migration or backup restore requires separate authorization — refusing to start $to_colour blind — $from_colour is already drained, so the API is DOWN; MANUAL INTERVENTION REQUIRED" >&2
       exit 1
     fi
 
@@ -449,9 +492,6 @@ case "$command" in
       echo "!! router restore failed — retained predecessor colour=$to_colour is healthy but NOT receiving traffic; MANUAL INTERVENTION REQUIRED" >&2
       exit 1
     fi
-
-    echo "==> stopping failed candidate colour=$from_colour"
-    compose stop "backend-${from_colour}" "frontend-${from_colour}" >/dev/null 2>&1 || true
 
     backend_image="$(json_field "$cutover_state_file" image_tuple.backend 2>/dev/null || echo "")"
     web_image="$(json_field "$cutover_state_file" image_tuple.web 2>/dev/null || echo "")"
