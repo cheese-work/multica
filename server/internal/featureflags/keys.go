@@ -30,6 +30,16 @@ const (
 	// either way. Turning it off stops new intake and triage runs but leaves
 	// existing Triage issues workable.
 	TriageV1 = "triage_v1"
+	// Jev is the master kill switch for TypeSafe System One evaluation
+	// (CHE-621). It gates every outbound Jev call, so turning it off stops
+	// all spend and all Jev-derived behavior in one write. Individual use
+	// cases get their own narrower keys as they land; this one is the floor
+	// they all sit on, and it is off by default.
+	//
+	// Unlike TriageV1 this key is per-workspace targetable: the request's
+	// EvalContext is now populated, so an allow list on workspace_id, or a
+	// deny list on agent_id, reaches real requests.
+	Jev = "jev_enabled"
 	// agentBuilderCompat is no longer a release flag. Keep publishing the key
 	// as enabled so installed desktop clients that still gate the AI creation
 	// entry on this config decision receive the permanently enabled behavior.

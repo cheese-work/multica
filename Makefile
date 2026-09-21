@@ -1,4 +1,4 @@
-.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev
+.PHONY: help makehelp dev server daemon cli multica build test lint-go lint-go-diff migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev
 
 MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
@@ -346,6 +346,24 @@ test: ## Run Go tests after ensuring the target DB exists and migrations are app
 	@bash scripts/ensure-postgres.sh "$(ENV_FILE)"
 	cd server && go run ./cmd/migrate up
 	bash scripts/test-go.sh --race
+
+# Whole-module lint. CI gates only on findings a change introduces
+# (--new-from-merge-base), because the module carried ~500 pre-existing
+# findings when server/.golangci.yml was added. This target lints everything
+# so that backlog stays visible and can be paid down deliberately.
+lint-go: ## Lint the whole Go module with golangci-lint (see server/.golangci.yml)
+	@command -v golangci-lint >/dev/null 2>&1 || { \
+		echo "golangci-lint not found. Install: https://golangci-lint.run/welcome/install/"; \
+		exit 1; \
+	}
+	cd server && golangci-lint run ./...
+
+lint-go-diff: ## Lint only what this branch changes, the way CI does
+	@command -v golangci-lint >/dev/null 2>&1 || { \
+		echo "golangci-lint not found. Install: https://golangci-lint.run/welcome/install/"; \
+		exit 1; \
+	}
+	cd server && golangci-lint run ./... --new-from-merge-base=origin/main
 
 # Database
 ##@ Database
