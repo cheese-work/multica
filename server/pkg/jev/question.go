@@ -1,8 +1,11 @@
 package jev
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 )
 
 // QuestionType is the discriminator shared by a question and its answer.
@@ -130,6 +133,40 @@ type Answer struct {
 	// Confidence is derived from Probabilities and is present on choice and
 	// score answers only.
 	Confidence float64 `json:"confidence,omitempty"`
+
+	// confidencePresent and probabilitiesPresent record whether the wire
+	// payload actually carried these keys, as opposed to the field simply
+	// decoding to its Go zero value. AsStrictChoice needs this distinction:
+	// an omitted confidence must be rejected, not silently read as zero.
+	confidencePresent    bool
+	probabilitiesPresent bool
+}
+
+// UnmarshalJSON decodes an Answer normally, then separately records which
+// optional keys were present in the payload so [Answer.AsStrictChoice] can
+// tell an omitted field from a present-but-zero one.
+func (a *Answer) UnmarshalJSON(data []byte) error {
+	type alias Answer
+	aux := struct{ *alias }{alias: (*alias)(a)}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	var presence map[string]json.RawMessage
+	if err := json.Unmarshal(data, &presence); err != nil {
+		return err
+	}
+	a.confidencePresent = jsonKeyPresent(presence, "confidence")
+	a.probabilitiesPresent = jsonKeyPresent(presence, "probabilities")
+	return nil
+}
+
+func jsonKeyPresent(fields map[string]json.RawMessage, key string) bool {
+	raw, ok := fields[key]
+	if !ok {
+		return false
+	}
+	return !bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
 }
 
 // AsNoul returns the yes probability.
@@ -146,10 +183,96 @@ func (a Answer) AsNoul() (float64, error) {
 }
 
 // AsChoice returns the winning option and the answer's confidence.
+//
+// It performs no further validation: a legacy call site gets exactly the
+// type and value, even when confidence was silently omitted (decoding to
+// zero) or the distribution is malformed. New call sites should use
+// [Answer.AsStrictChoice] instead.
 func (a Answer) AsChoice() (choice string, confidence float64, err error) {
 	if a.Type != TypeChoice {
 		return "", 0, fmt.Errorf("jev: answer is %q, not choice", a.Type)
 	}
+	return a.Choice, a.Confidence, nil
+}
+
+// strictChoiceEpsilon bounds how far a probability distribution may drift
+// from summing to exactly 1 before [Answer.AsStrictChoice] rejects it.
+const strictChoiceEpsilon = 1e-6
+
+// AsStrictChoice returns the winning option and confidence for a choice
+// answer, validated against offered, the exact set of labels the question
+// presented to the model.
+//
+// Unlike [Answer.AsChoice], it rejects an answer that:
+//   - is not type choice;
+//   - has no offered labels to validate against;
+//   - omits confidence from the wire payload (a present-but-zero confidence
+//     is accepted; an absent one is not — see [Answer.UnmarshalJSON]);
+//   - has a confidence outside [0,1], or non-finite;
+//   - omits probabilities, or does not carry exactly one entry per offered
+//     label (no missing label, no extra label);
+//   - has any non-finite probability or one outside [0,1];
+//   - has probabilities summing further than [strictChoiceEpsilon] from 1;
+//   - names a winning choice that is not one of the offered labels;
+//   - names a winning choice whose probability is not the maximum of the
+//     distribution (within [strictChoiceEpsilon], so ties resolve to
+//     whichever label the model actually named).
+//
+// A caller needing a confidence gate on a plain probability should ask a
+// choice, per [Answer.AsNoul]; this helper does not derive one from a Noul.
+func (a Answer) AsStrictChoice(offered []string) (choice string, confidence float64, err error) {
+	if a.Type != TypeChoice {
+		return "", 0, fmt.Errorf("jev: answer is %q, not choice", a.Type)
+	}
+	if len(offered) == 0 {
+		return "", 0, errors.New("jev: AsStrictChoice requires at least one offered label")
+	}
+	if !a.confidencePresent {
+		return "", 0, errors.New("jev: choice answer omits confidence")
+	}
+	if math.IsNaN(a.Confidence) || math.IsInf(a.Confidence, 0) || a.Confidence < 0 || a.Confidence > 1 {
+		return "", 0, fmt.Errorf("jev: choice confidence %v is not finite in [0,1]", a.Confidence)
+	}
+	if !a.probabilitiesPresent || len(a.Probabilities) == 0 {
+		return "", 0, errors.New("jev: choice answer omits probabilities")
+	}
+
+	offeredSet := make(map[string]struct{}, len(offered))
+	for _, label := range offered {
+		offeredSet[label] = struct{}{}
+	}
+	if len(a.Probabilities) != len(offeredSet) {
+		return "", 0, fmt.Errorf("jev: choice probabilities has %d label(s), want exactly the %d offered", len(a.Probabilities), len(offeredSet))
+	}
+
+	var sum float64
+	maxProbability := -1.0
+	for label, p := range a.Probabilities {
+		if _, ok := offeredSet[label]; !ok {
+			return "", 0, fmt.Errorf("jev: choice probabilities names %q, which was not offered", label)
+		}
+		if math.IsNaN(p) || math.IsInf(p, 0) || p < 0 || p > 1 {
+			return "", 0, fmt.Errorf("jev: choice probability for %q is %v, not finite in [0,1]", label, p)
+		}
+		sum += p
+		if p > maxProbability {
+			maxProbability = p
+		}
+	}
+	if math.Abs(sum-1) > strictChoiceEpsilon {
+		return "", 0, fmt.Errorf("jev: choice probabilities sum to %v, want 1±%v", sum, strictChoiceEpsilon)
+	}
+
+	if _, ok := offeredSet[a.Choice]; !ok {
+		return "", 0, fmt.Errorf("jev: choice %q was not offered", a.Choice)
+	}
+	// a.Choice is a member of offeredSet, and Probabilities carries exactly
+	// one entry per offered label, so this lookup always succeeds.
+	winnerProbability := a.Probabilities[a.Choice]
+	if math.Abs(winnerProbability-maxProbability) > strictChoiceEpsilon {
+		return "", 0, fmt.Errorf("jev: choice %q (p=%v) is not the maximum-probability label (max=%v)", a.Choice, winnerProbability, maxProbability)
+	}
+
 	return a.Choice, a.Confidence, nil
 }
 
