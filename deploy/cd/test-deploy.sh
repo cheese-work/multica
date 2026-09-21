@@ -841,4 +841,11 @@ expect_exit 0 "$transfer_status" workflow-deploy-transfer-set
 expect_contains "$transfer_output" "--dry-run: not touching Docker" workflow-deploy-transfer-set
 expect_not_contains "$transfer_output" "is missing" workflow-deploy-transfer-set
 
+# The automatic release-candidate path receives C00_STATE_DIR as cutover.sh's
+# state root. Its canonical active colour is cutover-state.json's
+# active_colour, not a router/state directory nested under that state root.
+workflow_text="$(cat "$root_dir/.github/workflows/cd-deploy.yml")"
+expect_contains "$workflow_text" '${C00_STATE_DIR%/}/cutover-state.json' workflow-active-colour-path
+expect_not_contains "$workflow_text" '/deploy/cd/router/state/active.json' workflow-active-colour-path
+
 echo "deploy.sh control-flow fixtures passed"

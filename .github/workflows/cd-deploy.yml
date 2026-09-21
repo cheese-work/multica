@@ -156,7 +156,7 @@ jobs:
           # the router's active generation and ask capture-tuple.sh for that
           # exact Compose service pair; inspecting the stopped base service
           # yields no container id and therefore no config-hash.
-          active_colour="$("${ssh_cmd[@]}" "node -e 'const fs=require(\"node:fs\"); const p=\"${C00_STATE_DIR%/}/deploy/cd/router/state/active.json\"; const c=JSON.parse(fs.readFileSync(p,\"utf8\")).colour; if(!/^(blue|green)\$/.test(c)) process.exit(1); process.stdout.write(c)'" 2>/dev/null | tr -d '[:space:]')"
+          active_colour="$("${ssh_cmd[@]}" "node -e 'const fs=require(\"node:fs\"); const p=\"${C00_STATE_DIR%/}/cutover-state.json\"; const c=JSON.parse(fs.readFileSync(p,\"utf8\")).active_colour; if(!/^(blue|green)\$/.test(c)) process.exit(1); process.stdout.write(c)'" 2>/dev/null | tr -d '[:space:]')"
           echo "C00 router reports active colour ${active_colour}; capturing backend-${active_colour}/frontend-${active_colour}"
 
           baseline_sha=""
