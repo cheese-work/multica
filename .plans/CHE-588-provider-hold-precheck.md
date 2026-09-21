@@ -100,15 +100,39 @@ dispatch happen anyway — can find them, not just in Go source.
   workspace's own announcement writes "OpenAI" — so a hold typed the natural
   way silently matched nothing. `findProviderHold` now compares with
   `strings.EqualFold`; no case-sensitivity limit remains.
-- **Gate covers trigger admission only — NOT retry or claim.** `AgentReadiness`
-  runs on every trigger admission path (assignment, @mention, comment-trigger,
-  chat, autopilot dispatch) but is never called from `server/internal/service/task.go`
-  — confirmed zero call sites there. `retryableReasons` (task.go, around line
-  5133) includes `ReasonAgentProviderNetwork` and `ReasonRuntimeOffline` —
-  exactly the failure shape a held provider produces before this change. So a
-  task admitted before a hold was configured, which then fails on a provider
-  error, is re-queued under the hold with no readiness consult at all; the
-  same is true of already-queued work a daemon picks up via the claim path. A
-  hold configured after in-flight work exists does not retroactively stop
-  that work from reaching the held provider again. Deferred to a follow-up —
-  not fixed in this PR.
+- **Gate covers trigger admission only — NOT retry or claim — resolved in
+  CHE-607.** `AgentReadiness` runs on every trigger admission path
+  (assignment, @mention, comment-trigger, chat, autopilot dispatch) but was
+  never called from `server/internal/service/task.go`. CHE-607 closed this
+  without routing retry/claim through `AgentReadiness` itself (that would
+  re-run the runtime lookup both paths have already done) — instead
+  `providerHoldBlocksAgent` (agent_ready.go) exposes just the provider-hold
+  half, called from four points, with two DIFFERENT refusal shapes chosen
+  deliberately per independent review (an initial claim-path draft cancelled
+  the claimed task and was rejected — see below):
+  - `FailTask`'s in-transaction retry and `MaybeRetryFailedTask` (both share
+    `refuseRetryForProviderHold`) CANCEL the just-minted retry child in the
+    same transaction that created it, with
+    `failure_reason = dispatch_blocked.provider_hold`, and post
+    `ProviderHoldNotice` as a visible issue comment after commit. Cancelling
+    is correct here: the child never existed before this call, so nothing is
+    lost.
+  - `claimTask` (`agentBlockedByProviderHold`) instead SKIPS the claim
+    entirely, checked BEFORE `ClaimAgentTask` runs — the task stays `queued`,
+    completely untouched. A task already sitting `queued` predates the check
+    by definition and is real wanted work; cancelling it (the initial design)
+    was a one-way door with no re-queue on hold-lift and undelivered
+    trigger/coalesced comments, which review correctly called a regression
+    worse than the bug being fixed. `queued_expired`'s ordinary TTL sweep is
+    the eventual backstop if a hold never lifts.
+  - `RetrySourceContextQuickCreate` (the manual quick-create retry button)
+    refuses before any row is created, via `ErrSourceContextRetryProviderHeld`.
+  - `RerunIssue` (the general manual "rerun" button) — resolved in CHE-675.
+    Gated at the one choke point common to every rerun shape (task_id rerun,
+    assignee rerun, squad-leader rerun): right after the target agent is
+    resolved and before any prior task is cancelled, alongside the existing
+    canInvoke re-validation. Refuses via `ErrRerunProviderHeld`, mapped to the
+    same `dispatch_blocked.provider_hold` HTTP response as the quick-create
+    button.
+
+  No known gaps remain in this list.
