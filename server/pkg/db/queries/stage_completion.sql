@@ -1,5 +1,5 @@
--- CHE-488: durable stage-completion-wake identity. See migration 505/506 for
--- the full rationale (server/migrations/505_stage_completion_wake.up.sql).
+-- CHE-488: durable stage-completion-wake identity. See migration 509/510 for
+-- the full rationale (server/migrations/509_stage_completion_wake.up.sql).
 
 -- name: LockStageCompletion :exec
 -- Stage-scoped advisory xact lock, held for the whole read-then-write window

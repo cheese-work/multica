@@ -26,7 +26,7 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-usage: capture-tuple.sh --compose-dir PATH --output PATH [--application-sha SHA] [--git-dir PATH]
+usage: capture-tuple.sh --compose-dir PATH --output PATH [--application-sha SHA] [--git-dir PATH] [--compose-service-suffix SUFFIX]
 
   --compose-dir PATH      Directory holding docker-compose.selfhost.yml (the
                           live self-host stack root on C00).
@@ -39,6 +39,9 @@ usage: capture-tuple.sh --compose-dir PATH --output PATH [--application-sha SHA]
                           expand, a commit taken from the image tag. Defaults
                           to this script's own repository when it is run from
                           one. Ignored when --application-sha is passed.
+  --compose-service-suffix SUFFIX
+                          Resolve backend-SUFFIX/frontend-SUFFIX from the A/B
+                          Compose overlay instead of backend/frontend.
 
 Resolution order for the recorded application_sha, highest priority first:
   1. --application-sha, when given
@@ -58,6 +61,7 @@ output=""
 application_sha=""
 git_dir=""
 git_dir_set=0
+compose_service_suffix=""
 
 while (($#)); do
   case "$1" in
@@ -65,6 +69,7 @@ while (($#)); do
     --output) output=${2:?}; shift 2 ;;
     --application-sha) application_sha=${2:?}; shift 2 ;;
     --git-dir) git_dir=${2-}; git_dir_set=1; shift 2 ;;
+    --compose-service-suffix) compose_service_suffix=${2:?}; shift 2 ;;
     --help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -82,8 +87,23 @@ if [ ! -f "$compose_file" ]; then
   exit 1
 fi
 
+backend_service="backend"
+web_service="frontend"
+if [ -n "$compose_service_suffix" ]; then
+  if ! [[ "$compose_service_suffix" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    echo "invalid --compose-service-suffix: $compose_service_suffix" >&2
+    exit 2
+  fi
+  backend_service="backend-${compose_service_suffix}"
+  web_service="frontend-${compose_service_suffix}"
+fi
+
 compose() {
-  (cd "$compose_dir" && docker compose -f docker-compose.selfhost.yml "$@")
+  local args=( -f "docker-compose.selfhost.yml" )
+  if [ -n "$compose_service_suffix" ]; then
+    args+=( -f "deploy/cd/docker-compose.ab.yml" )
+  fi
+  (cd "$compose_dir" && docker compose "${args[@]}" "$@")
 }
 
 # Default --git-dir to this script's own checkout when it is running from one.
@@ -145,8 +165,8 @@ service_config_hash() {
   docker inspect --format '{{index .Config.Labels "com.docker.compose.config-hash"}}' "$container" 2>/dev/null
 }
 
-backend_ref="$(service_image backend)"
-web_ref="$(service_image frontend)"
+backend_ref="$(service_image "$backend_service")"
+web_ref="$(service_image "$web_service")"
 if [ -z "$backend_ref" ] || [ -z "$web_ref" ]; then
   echo "could not resolve the running backend/frontend image references — is the stack up?" >&2
   exit 1
@@ -231,8 +251,8 @@ if ! [[ "$application_sha" =~ ^[a-f0-9]{40}$ ]]; then
 fi
 
 compose_sha="sha256:$(sha256sum "$compose_file" | awk '{print $1}')"
-backend_config_hash="$(service_config_hash backend)"
-web_config_hash="$(service_config_hash frontend)"
+backend_config_hash="$(service_config_hash "$backend_service")"
+web_config_hash="$(service_config_hash "$web_service")"
 
 # One statement, two facts: the ledger's size and its ordered content digest.
 # The ordered digest is what makes "the schema this tuple describes" verifiable

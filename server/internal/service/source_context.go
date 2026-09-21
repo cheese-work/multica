@@ -59,6 +59,16 @@ var (
 	ErrSourceContextInvalid          = errors.New("source context invalid comment thread")
 	ErrSourceContextTooLarge         = errors.New("source context too large")
 	ErrSourceContextRetryUnavailable = errors.New("source context retry unavailable")
+	// ErrSourceContextRetryProviderHeld: RetrySourceContextQuickCreate refused
+	// a manual retry because the target agent's model provider is under an
+	// active workspace hold (CHE-607) — the same policy AgentReadiness applies
+	// to every trigger admission path, extended to this one manual-retry entry
+	// point named in the issue. Kept separate from
+	// ErrSourceContextRetryUnavailable: that sentinel means "this context can
+	// no longer be retried at all, start again from the branch point", which is
+	// the wrong message for a hold — the context is fine, and the same retry
+	// click will work once the hold lifts.
+	ErrSourceContextRetryProviderHeld = errors.New("source context retry: provider held")
 )
 
 func validateSourceContextAgentBytes(snapshotBytes int, prompt string) error {

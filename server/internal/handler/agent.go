@@ -383,6 +383,13 @@ type AgentTaskResponse struct {
 	// regardless of issue / chat / autopilot / quick-create — sees the same
 	// shared context. Empty when the workspace owner hasn't set it.
 	WorkspaceContext string `json:"workspace_context,omitempty"`
+	// CheckpointBlock is a pre-rendered checkpoint-briefing block
+	// (CHE-489/CHE-593): computed and diffed against the live comment scan
+	// at claim time by loadIssueCheckpointBlock, then sent as finished
+	// Markdown so the daemon only appends it (daemon.Task.CheckpointBlock /
+	// perTurnContextBlocks). Empty when no usable checkpoint exists yet
+	// (cold start).
+	CheckpointBlock string `json:"checkpoint_block,omitempty"`
 	// IssueStatuses is the workspace's ACTIVE CUSTOM status catalog (MUL-6460),
 	// injected into the agent brief so agents can see and use statuses beyond
 	// the seven built-ins. Built-ins are omitted: their keys, names, and

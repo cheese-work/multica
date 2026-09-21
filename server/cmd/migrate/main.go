@@ -320,13 +320,15 @@ var concurrentIndexCleanups = map[string]string{
 	"480_instance_telemetry_state_singleton_index":              "instance_telemetry_state_singleton_uidx",
 	"482_agent_task_queue_telemetry_started_index":              "idx_agent_task_queue_telemetry_started",
 	"484_issue_triage_state_index":                              "idx_issue_triage_state",
-	"501_github_merge_announcement_identity_uidx":               "uq_github_merge_announcement_identity",
-	"502_github_merge_announcement_pending_idx":                 "idx_github_merge_announcement_pending_claim",
-	"504_agent_task_rerun_lineage_unique":                       "idx_one_live_rerun_per_source_task_actor",
-	"506_stage_completion_wake_unique":                          "idx_one_wake_per_parent_stage_generation",
-	"507_stage_generation_workspace_index":                      "idx_stage_generation_workspace_id",
-	"508_stage_completion_wake_workspace_index":                 "idx_stage_completion_wake_workspace_id",
-	"510_protocol_lint_run_checked_at_idx":                      "idx_protocol_lint_run_checked_at",
+	"501_protocol_lint_run_checked_at_idx":                      "idx_protocol_lint_run_checked_at",
+	"503_issue_checkpoint_owner_uidx":                           "uq_issue_checkpoint_owner",
+	"505_github_merge_announcement_identity_uidx":               "uq_github_merge_announcement_identity",
+	"506_github_merge_announcement_pending_idx":                 "idx_github_merge_announcement_pending_claim",
+	"508_agent_task_rerun_lineage_unique":                       "idx_one_live_rerun_per_source_task_actor",
+	"510_stage_completion_wake_unique":                          "idx_one_wake_per_parent_stage_generation",
+	"511_stage_generation_workspace_index":                      "idx_stage_generation_workspace_id",
+	"512_stage_completion_wake_workspace_index":                 "idx_stage_completion_wake_workspace_id",
+	"514_protocol_lint_run_checked_at_idx":                      "idx_protocol_lint_run_checked_at",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction

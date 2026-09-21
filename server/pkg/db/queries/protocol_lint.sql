@@ -5,7 +5,7 @@
 -- CHE-552: persists one row per protocollint.Check invocation
 -- (server/internal/handler/daemon.go's runProtocolLint, CHE-529) so the real
 -- protocol-omission base rate can be measured instead of only logged. See
--- 509_protocol_lint_run.up.sql for the schema rationale.
+-- 513_protocol_lint_run.up.sql for the schema rationale.
 
 -- name: CreateProtocolLintRun :one
 -- Best-effort write from runProtocolLint's logProtocolLintViolations, called

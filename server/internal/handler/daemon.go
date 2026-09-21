@@ -2655,6 +2655,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		var commentDeltaScope *commentCountScope
 		var resumeAnchor *resumedRunAnchor
 
+		// Claim-time checkpoint (CHE-489/CHE-593): builds/persists a
+		// Checkpoint from live DB state and renders it into
+		// Task.CheckpointBlock, appended in perTurnContextBlocks after the
+		// cached prompt prefix (MUL-5377 seam). Best-effort — see
+		// loadIssueCheckpointBlock's doc comment for the degrade path.
+		resp.CheckpointBlock = h.loadIssueCheckpointBlock(r.Context(), issue, task.AgentID)
+
 		// Squad-leader briefing injection: keyed off the task being a
 		// leader-task (is_leader_task) carrying a squad_id — NOT off the
 		// issue being assigned to a squad. The task flag is stamped at

@@ -1761,6 +1761,15 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// Determine author identity: agent (via X-Agent-ID header) or member.
 	authorType, authorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
 
+	// CHE-408: refuse agent-authored content that does not cite this issue's
+	// declared required source. Must stay ahead of the insert transaction below
+	// AND of triggerTasksForComment, which fires after the commit — rejecting
+	// here is what makes "no comment, no dispatch" true rather than "no comment,
+	// but the mention already woke someone".
+	if h.rejectMissingRequiredSourceLink(w, r, authorType, true, issue, req.Content, "content") {
+		return
+	}
+
 	// sourceTaskID captures the agent's currently-executing task when it posts
 	// via the CLI (X-Task-ID header). Stamping it on the comment row keeps the
 	// originator inheritance chain (resolveOriginatorFromTriggerComment →
@@ -3374,6 +3383,28 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Content == "" {
 		writeError(w, http.StatusBadRequest, "content is required")
+		return
+	}
+	// CHE-408: an edit can strip the citation out of a comment that had one, so
+	// the update path needs the same check as create. Placed before the revision
+	// check and the write below.
+	issueForSource, issueErr := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
+		ID:          existing.IssueID,
+		WorkspaceID: wsUUID,
+	})
+	if issueErr != nil {
+		// The comment exists, so its issue must too — any error here is a fault,
+		// not a missing row, and it leaves us unable to tell whether a citation is
+		// required. Refuse rather than let the edit strip a citation unchecked.
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error": "cannot determine whether this issue declares a required source, " +
+				"so this edit is refused rather than allowed through uncited; retry shortly",
+			"code":  "required_source_link_undetermined",
+			"field": "content",
+		})
+		return
+	}
+	if h.rejectMissingRequiredSourceLink(w, r, actorType, true, issueForSource, req.Content, "content") {
 		return
 	}
 	if req.ExpectedRevision != nil {

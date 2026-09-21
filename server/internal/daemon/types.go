@@ -144,6 +144,15 @@ type Task struct {
 	QuickCreateAttachmentIDs      []string               `json:"quick_create_attachment_ids,omitempty"`      // attachments uploaded in the quick-create prompt and bound by issue create
 	QuickCreateSourceContext      json.RawMessage        `json:"quick_create_source_context,omitempty"`      // immutable historical context, separate from the new instruction
 	HandoffNote                   string                 `json:"handoff_note,omitempty"`                     // legacy assignment handoff instruction; rendered only in the per-turn prompt
+	// CheckpointBlock is a pre-rendered checkpoint-briefing block (CHE-489):
+	// the server computes and diffs the prior checkpoint against the live
+	// comment scan, then sends the finished Markdown so the daemon only has
+	// to append it, the same pattern WorkspaceContext uses. Empty when no
+	// usable checkpoint exists yet (cold start) or the server predates the
+	// feature. Rendered by daemon.perTurnContextBlocks, never the cached
+	// prefix, so a changing checkpoint costs only this turn's tokens
+	// (MUL-5377).
+	CheckpointBlock string `json:"checkpoint_block,omitempty"`
 
 	SquadID               string `json:"squad_id,omitempty"`                // when the picker was a squad, the squad's UUID; Agent is still the resolved leader
 	SquadName             string `json:"squad_name,omitempty"`              // display name for the picker squad, used in prompt text

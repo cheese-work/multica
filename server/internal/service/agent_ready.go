@@ -152,14 +152,12 @@ func RuntimeBlockedNeedsNotice(code dispatch.ReasonCode) bool {
 //
 // Scope: this gates every TRIGGER admission path — assignment, @mention,
 // comment-trigger, chat, autopilot dispatch. It does NOT run on the retry or
-// claim paths (server/internal/service/task.go has no call to this
-// function): a task already admitted before a hold was configured, which
-// then fails with a transient provider error, is re-queued by
-// retryableReasons without a fresh readiness consult, and the same is true of
-// already-queued work a daemon claims. A provider hold configured after
-// in-flight work exists therefore does not retroactively stop that work from
-// reaching the held provider again on retry — a known gap, deferred to a
-// follow-up (CHE-588).
+// claim paths in server/internal/service/task.go — those go through
+// providerHoldVerdict directly (see retryProviderHoldRefusal and claimTask's
+// own pre-claim check), not through the full AgentReadiness (retry/claim
+// already know the runtime is fine; re-running the runtime-lookup half would
+// be redundant work, not a correctness gap). CHE-588 shipped this trigger-side
+// gate alone and deliberately deferred retry/claim; CHE-607 closed that gap.
 func AgentReadiness(ctx context.Context, lookup RuntimeLookup, agent db.Agent) (AgentVerdict, error) {
 	if agent.ArchivedAt.Valid {
 		return AgentVerdict{
@@ -292,6 +290,28 @@ func providerHoldVerdict(ctx context.Context, lookup RuntimeLookup, agent db.Age
 		Reason:       dispatch.ReasonProviderHold,
 		Detail:       notice,
 	}, true, nil
+}
+
+// providerHoldBlocksAgent is providerHoldVerdict's result narrowed to the one
+// question task.go's retry and claim paths need: is this agent's model
+// currently under a workspace provider hold, and if so, what is the
+// human-readable notice. It never returns AgentReadiness's runtime-availability
+// verdicts (AgentWaitable / the runtime-offline AgentBlocked cases) — callers
+// here already know the runtime side is fine (retry inherits a runtime that
+// was working moments ago; claim only reaches this check once a runtime IS
+// claiming), so re-deriving that half of AgentReadiness would be redundant
+// work, not a second opinion worth having.
+//
+// err is non-nil only for the same "could not read the source of truth"
+// GetWorkspace failure providerHoldVerdict documents — propagate it and treat
+// the caller's own retry/claim attempt as not yet decided, exactly as
+// AgentReadiness's callers already do for the trigger paths (CHE-588).
+func providerHoldBlocksAgent(ctx context.Context, lookup RuntimeLookup, agent db.Agent) (notice string, held bool, err error) {
+	verdict, blocked, err := providerHoldVerdict(ctx, lookup, agent)
+	if err != nil || !blocked {
+		return "", false, err
+	}
+	return verdict.Detail, true, nil
 }
 
 // providerHoldSubstitutes lists other agents in the same workspace whose

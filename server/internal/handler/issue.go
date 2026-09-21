@@ -3104,6 +3104,43 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		return out
 	}
 
+	// CHE-408: refuse an agent-authored description that does not cite the
+	// required source declared on the PARENT issue. A brand-new issue has no
+	// properties of its own yet, so inheriting the parent's declaration is the
+	// only way a create can carry an obligation at all.
+	//
+	// This must run BEFORE IssueService.Create rather than inside it: that call
+	// enqueues the assignee's agent task (maybeEnqueueOnAssign) in the SAME
+	// transaction as the insert, so there is no point after the row exists at
+	// which the dispatch has not already been arranged.
+	if req.Description != nil && parentIssueID.Valid {
+		parent, perr := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
+			ID:          parentIssueID,
+			WorkspaceID: wsUUID,
+		})
+		switch {
+		case perr == nil:
+			if h.rejectMissingRequiredSourceLink(w, r, creatorType, true, parent, *req.Description, "description") {
+				return
+			}
+		case errors.Is(perr, pgx.ErrNoRows):
+			// A parent that does not exist declares nothing, and IssueService.Create
+			// re-validates parent existence atomically and rejects it there. Failing
+			// closed here would turn that 400 into a misleading 503.
+		default:
+			// Any other error is "cannot tell whether the parent declares a required
+			// source". Skipping the check would let an uncited description through on
+			// a transient DB fault, so refuse the create instead.
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"error": "cannot determine whether the parent issue declares a required source, " +
+					"so this write is refused rather than allowed through uncited; retry shortly",
+				"code":  "required_source_link_undetermined",
+				"field": "description",
+			})
+			return
+		}
+	}
+
 	res, err := h.IssueService.Create(r.Context(), service.IssueCreateParams{
 		WorkspaceID:    wsUUID,
 		Title:          req.Title,
@@ -3482,6 +3519,20 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if req.Title != nil {
 		params.Title = pgtype.Text{String: *req.Title, Valid: true}
 	}
+	// CHE-408: refuse an agent-authored description that does not cite this
+	// issue's declared required source.
+	//
+	// This resolves the actor itself rather than reusing UpdateIssue's existing
+	// resolveActor call: that one sits ~200 lines below, AFTER
+	// updateIssueAtomically/UpdateIssue have already written the row. Hooking
+	// there would validate a change that had already happened.
+	if req.Description != nil {
+		updateActorType, _ := h.resolveActor(r, userID, workspaceID)
+		if h.rejectMissingRequiredSourceLink(w, r, updateActorType, true, prevIssue, *req.Description, "description") {
+			return
+		}
+	}
+
 	if req.Description != nil {
 		params.Description = pgtype.Text{String: *req.Description, Valid: true}
 	}

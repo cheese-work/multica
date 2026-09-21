@@ -313,6 +313,88 @@ func TestEvaluateAbstainsOnProviderError(t *testing.T) {
 	}
 }
 
+func TestEvaluateAbstainsOnNilProviderResponse(t *testing.T) {
+	in := baseInput()
+
+	decision, err := Evaluate(context.Background(), &fakeProvider{}, in)
+	if err == nil {
+		t.Fatal("Evaluate accepted a nil provider response")
+	}
+	if decision.Action != nil {
+		t.Fatal("Action is set despite a nil provider response")
+	}
+	if decision.AbstainReason != ReasonInvalidResponse {
+		t.Errorf("AbstainReason = %q, want %q", decision.AbstainReason, ReasonInvalidResponse)
+	}
+}
+
+func TestEvaluateHandoffCorrectionPairs(t *testing.T) {
+	type want struct {
+		reason AbstainReason
+		action ActionKind
+	}
+	consistent := map[string]want{
+		handoffAgentWork + "/" + correctionMentionOwner:                {action: ActionMentionOwner},
+		handoffAgentPreparation + "/" + correctionReturnMechanicalStep: {action: ActionReturnMechanicalStep},
+		handoffNoFollowup + "/" + correctionNoCorrection:               {reason: ReasonNoFollowup},
+		handoffHumanDecision + "/" + correctionNoCorrection:            {reason: ReasonHumanDecision},
+		handoffUnclear + "/" + correctionUnclear:                       {reason: ReasonUnclear},
+	}
+	handoffs := []string{
+		handoffAgentWork,
+		handoffAgentPreparation,
+		handoffNoFollowup,
+		handoffHumanDecision,
+		handoffUnclear,
+	}
+	corrections := []string{
+		correctionMentionOwner,
+		correctionReturnMechanicalStep,
+		correctionNoCorrection,
+		correctionUnclear,
+	}
+
+	for _, handoff := range handoffs {
+		for _, correction := range corrections {
+			t.Run(handoff+"/"+correction, func(t *testing.T) {
+				in := baseInput()
+				in.MechanicalPreparationEligible = true
+				nextOwner := optionNone
+				evidence := optionNone
+				if handoff == handoffAgentWork || handoff == handoffAgentPreparation {
+					nextOwner = candidateLabel(0)
+					evidence = spanLabel(0)
+				}
+				if handoff == handoffHumanDecision {
+					evidence = spanLabel(0)
+				}
+
+				resp := respondingWith(t, in, handoff, nextOwner, evidence, correction, 0.99)
+				decision, err := Evaluate(context.Background(), &fakeProvider{resp: resp}, in)
+				if err != nil {
+					t.Fatalf("Evaluate: %v", err)
+				}
+
+				key := handoff + "/" + correction
+				expected, ok := consistent[key]
+				if !ok {
+					expected.reason = ReasonContradictoryAnswers
+				}
+				if decision.AbstainReason != expected.reason {
+					t.Errorf("AbstainReason = %q, want %q", decision.AbstainReason, expected.reason)
+				}
+				if expected.action == "" {
+					if decision.Action != nil {
+						t.Errorf("Action = %+v, want nil", decision.Action)
+					}
+				} else if decision.Action == nil || decision.Action.Kind != expected.action {
+					t.Errorf("Action = %+v, want kind %q", decision.Action, expected.action)
+				}
+			})
+		}
+	}
+}
+
 func TestEvaluateAbstainsOnModelMismatch(t *testing.T) {
 	in := baseInput()
 	resp := respondingWith(t, in, handoffAgentWork, candidateLabel(0), spanLabel(0), correctionMentionOwner, 0.99)

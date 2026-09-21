@@ -7,9 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/yuin/goldmark"
-	"github.com/yuin/goldmark/ast"
-	"github.com/yuin/goldmark/text"
+	"github.com/multica-ai/multica/server/internal/markdownlinks"
 )
 
 // Agent deliverables must never carry a link to the runtime's own filesystem
@@ -23,8 +21,7 @@ import (
 //  1. Agent task context only. A human running the CLI with a PAT is not
 //     linting-eligible: their links are their own business, and they may well
 //     have a shared path the reader really can open.
-//  2. Real markdown link/image destinations only. The body is parsed as
-//     CommonMark and only Link / Image / AutoLink destinations are examined, so
+//  2. Real markdown link/image destinations only (see markdownlinks.Find), so
 //     a path inside a code span or fenced block — the normal way an agent quotes
 //     a path it is *discussing* — is structurally invisible here. A full-text
 //     scan cannot make that distinction and would fail exactly the comments that
@@ -39,47 +36,24 @@ type localPathLinkFinding struct {
 	Reason string
 }
 
-// findLocalPathLinks parses body as CommonMark and returns every link, image, or
-// autolink destination that is high-confidence a runtime-local path.
+// findLocalPathLinks returns every link, image, or autolink destination in
+// body that is high-confidence a runtime-local path.
 //
-// Only the destination is inspected — never the link text, and never the
-// surrounding prose. Findings are de-duplicated by target so a path linked five
-// times reports once.
+// Extraction is markdownlinks.Find, shared with the CHE-408 source-link guard;
+// only the classification below is specific to this lint. Findings are
+// de-duplicated by target so a path linked five times reports once.
+//
+// Quoted destinations are deliberately NOT exempt: a file:// URL no reader can
+// open is just as dead inside a blockquote as outside one.
 func findLocalPathLinks(body string) []localPathLinkFinding {
-	source := []byte(body)
-	doc := goldmark.New().Parser().Parse(text.NewReader(source))
-
 	var findings []localPathLinkFinding
-	seen := make(map[string]struct{})
-	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
-		if !entering {
-			return ast.WalkContinue, nil
-		}
-		var target string
-		switch node := n.(type) {
-		case *ast.Link:
-			target = string(node.Destination)
-		case *ast.Image:
-			target = string(node.Destination)
-		case *ast.AutoLink:
-			// `<file:///Users/me/shot.png>` renders as a clickable link just like
-			// an inline one, so it is the same defect and belongs in scope.
-			target = string(node.URL(source))
-		default:
-			return ast.WalkContinue, nil
-		}
-
-		reason := classifyLocalPathTarget(target)
+	for _, ref := range markdownlinks.Find(body) {
+		reason := classifyLocalPathTarget(ref.Destination)
 		if reason == "" {
-			return ast.WalkContinue, nil
+			continue
 		}
-		if _, dup := seen[target]; dup {
-			return ast.WalkContinue, nil
-		}
-		seen[target] = struct{}{}
-		findings = append(findings, localPathLinkFinding{Target: target, Reason: reason})
-		return ast.WalkContinue, nil
-	})
+		findings = append(findings, localPathLinkFinding{Target: ref.Destination, Reason: reason})
+	}
 	return findings
 }
 

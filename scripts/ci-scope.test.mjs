@@ -163,16 +163,16 @@ for (const gate of ["frontend", "backend"]) {
 }
 
 // Upstream pins a three-platform matrix here. This fork runs no Windows jobs
-// at all (CHE-522: Linux CI only, no Windows jobs or artifacts) and uses
-// Blacksmith runners for both remaining legs, so the assertion is pinned to
-// the fork's matrix instead of relaxed — a silently dropped macOS leg would
-// still fail this test.
+// at all (CHE-522: Linux CI only, no Windows jobs or artifacts). The Linux
+// leg uses the Cheese Work X99 runner while macOS remains on Blacksmith, so
+// both entries stay explicit — a silently dropped macOS leg would still fail.
 test("the backend gate owns the two-platform installer matrix", () => {
   assert.equal(productionMapping("backend").installer, "installer");
   assert.match(
     jobs.installer,
-    /^        os: \[blacksmith-2vcpu-ubuntu-2404, blacksmith-6vcpu-macos-latest\]$/m,
+    /self-hosted","Linux","X64","cheese-x99/,
   );
+  assert.match(jobs.installer, /blacksmith-6vcpu-macos-latest/);
   assert.doesNotMatch(jobs.installer, /continue-on-error:/);
 });
 
