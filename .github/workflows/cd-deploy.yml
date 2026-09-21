@@ -151,13 +151,21 @@ jobs:
           #
           # Never substitute this workflow's own commit — that would record a
           # baseline claiming C00 runs something it does not.
+          # The live C00 stack is A/B: the base backend/frontend services are
+          # stopped and the router points at one colour-specific pair. Read
+          # the router's active generation and ask capture-tuple.sh for that
+          # exact Compose service pair; inspecting the stopped base service
+          # yields no container id and therefore no config-hash.
+          active_colour="$("${ssh_cmd[@]}" "node -e 'const fs=require(\"node:fs\"); const p=\"${C00_STATE_DIR%/}/deploy/cd/router/state/active.json\"; const c=JSON.parse(fs.readFileSync(p,\"utf8\")).colour; if(!/^(blue|green)\$/.test(c)) process.exit(1); process.stdout.write(c)'" 2>/dev/null | tr -d '[:space:]')"
+          echo "C00 router reports active colour ${active_colour}; capturing backend-${active_colour}/frontend-${active_colour}"
+
           baseline_sha=""
-          deployed_label="$("${ssh_cmd[@]}" "docker inspect --format '{{index .Config.Labels \"org.opencontainers.image.revision\"}}' \"\$(cd '${C00_COMPOSE_DIR}' && docker compose -f docker-compose.selfhost.yml ps -q backend)\"" 2>/dev/null | tr -d '[:space:]' || true)"
+          deployed_label="$("${ssh_cmd[@]}" "docker inspect --format '{{index .Config.Labels \"org.opencontainers.image.revision\"}}' \"\$(cd '${C00_COMPOSE_DIR}' && docker compose -f docker-compose.selfhost.yml -f deploy/cd/docker-compose.ab.yml ps -q backend-${active_colour})\"" 2>/dev/null | tr -d '[:space:]' || true)"
 
           if [[ "$deployed_label" =~ ^[a-f0-9]{40}$ ]]; then
             echo "C00's backend image carries revision label ${deployed_label}; deferring to it (no --application-sha)"
           else
-            deployed_tag="$("${ssh_cmd[@]}" "cd '${C00_COMPOSE_DIR}' && docker compose -f docker-compose.selfhost.yml images backend --format json" 2>/dev/null \
+            deployed_tag="$("${ssh_cmd[@]}" "cd '${C00_COMPOSE_DIR}' && docker compose -f docker-compose.selfhost.yml -f deploy/cd/docker-compose.ab.yml images backend-${active_colour} --format json" 2>/dev/null \
               | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{try{const r=JSON.parse(d||"[]");const x=Array.isArray(r)?r[0]:r;process.stdout.write(x&&x.Tag?String(x.Tag):"")}catch{process.stdout.write("")}})' || true)"
             candidate="${deployed_tag#sha-}"
             if [[ "$candidate" =~ ^[a-f0-9]{7,40}$ ]]; then
@@ -165,7 +173,7 @@ jobs:
             fi
           fi
 
-          capture_args=(--compose-dir "'${C00_COMPOSE_DIR}'" --output "'${remote_dir}/baseline-tuple.json'")
+          capture_args=(--compose-dir "'${C00_COMPOSE_DIR}'" --output "'${remote_dir}/baseline-tuple.json'" --compose-service-suffix "'${active_colour}'")
           if [[ "$baseline_sha" =~ ^[a-f0-9]{40}$ ]]; then
             echo "no usable revision label; resolved C00's deployed image tag '${deployed_tag}' to commit ${baseline_sha}"
             capture_args+=(--application-sha "'${baseline_sha}'")

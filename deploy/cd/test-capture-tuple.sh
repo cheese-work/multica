@@ -39,7 +39,10 @@ if [ "$1" = "inspect" ]; then
     prev="$a"
   done
   case "$fmt" in
-    *config-hash*) printf '%s\n' "aaaabbbbccccddddeeeeffff00001111222233334444555566667777888899990" ;;
+    *config-hash*)
+      printf '%s\n' "aaaabbbbccccddddeeeeffff00001111222233334444555566667777888899990"
+      printf '%s\n' "$*" >>"${MOCK_INSPECT_LOG:?}"
+      ;;
     *image.revision*) printf '%s\n' "${MOCK_IMAGE_REVISION:-}" ;;
     *RepoDigests*) printf 'repo@%s\n' "${MOCK_DIGEST:?}" ;;
     *.Id*) printf '%s\n' "${MOCK_DIGEST:?}" ;;
@@ -49,17 +52,22 @@ fi
 
 if [ "$1" = "compose" ]; then
   shift
-  [ "$1" = "-f" ] && shift 2
+  if [ "$1" = "-f" ]; then
+    while [ "${1:-}" = "-f" ]; do shift 2; done
+  fi
   sub="$1"; shift
   case "$sub" in
     images)
       case "${1:-backend}" in
-        backend) printf '[{"Repository":"cheese-work/multica-backend","Tag":"%s"}]\n' "${MOCK_IMAGE_TAG:?}" ;;
-        frontend) printf '[{"Repository":"cheese-work/multica-web","Tag":"%s"}]\n' "${MOCK_IMAGE_TAG:?}" ;;
+        backend|backend-blue) printf '[{"Repository":"cheese-work/multica-backend","Tag":"%s"}]\n' "${MOCK_IMAGE_TAG:?}" ;;
+        frontend|frontend-blue) printf '[{"Repository":"cheese-work/multica-web","Tag":"%s"}]\n' "${MOCK_IMAGE_TAG:?}" ;;
         *) printf '[]\n' ;;
       esac
       exit 0 ;;
-    ps) printf 'mock-container\n'; exit 0 ;;
+    ps)
+      printf 'mock-container-%s\n' "${*: -1}" >>"${MOCK_COMPOSE_LOG:?}"
+      printf 'mock-container-%s\n' "${*: -1}"
+      exit 0 ;;
     exec)
       sql="${*: -1}"
       case "$sql" in
@@ -75,6 +83,10 @@ MOCK
 chmod +x "$mock_bin/docker"
 export PATH="$mock_bin:$PATH"
 export MOCK_DIGEST="sha256:$(printf 'a%.0s' {1..64})"
+export MOCK_INSPECT_LOG="$work_dir/inspect.log"
+export MOCK_COMPOSE_LOG="$work_dir/compose.log"
+: >"$MOCK_INSPECT_LOG"
+: >"$MOCK_COMPOSE_LOG"
 
 compose_dir="$work_dir/compose"
 mkdir -p "$compose_dir"
@@ -125,6 +137,16 @@ fi
 # since a full SHA is self-describing and refusing would break the D1 path.
 MOCK_IMAGE_REVISION="" MOCK_IMAGE_TAG="sha-$absent_sha" capture --git-dir "" >/dev/null
 [ "$(sha_of)" = "$absent_sha" ] || fail "sha-<40> tag should still be used when no repository is available"
+
+# --- 3c. an A/B suffix resolves the live colour-specific services ------------
+: >"$MOCK_COMPOSE_LOG"
+MOCK_IMAGE_REVISION="$label_sha" MOCK_IMAGE_TAG="$short_sha" capture --compose-service-suffix blue >/dev/null
+if ! grep -q 'mock-container-backend-blue' "$MOCK_COMPOSE_LOG"; then
+  fail "A/B capture should inspect backend-blue's config hash"
+fi
+if ! grep -q 'mock-container-frontend-blue' "$MOCK_COMPOSE_LOG"; then
+  fail "A/B capture should inspect frontend-blue's config hash"
+fi
 
 # --- 4. an unresolvable tag fails loudly -----------------------------------
 # "latest" is not a commit; recording anything here would be a fabricated
