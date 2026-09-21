@@ -24,6 +24,23 @@ SELECT * FROM (
 ) AS recent
 ORDER BY created_at ASC, id ASC;
 
+-- name: ListMemberCommentsForIssue :many
+-- The OLDEST $3 member-authored comments for an issue, in chronological order.
+--
+-- Powers protocollint's waiver-grant scan (checkUnsupportedWaivers, CHE-551,
+-- CHE-556): a waiver grant predates the run that cites it and only a human
+-- ("member") can post one, so a newest-N cap is exactly backwards here — it is
+-- the OLD rows that must survive, not the recent chatter. This is deliberately
+-- the mirror image of ListCommentsForIssue's newest-N window, not a reuse of it.
+--
+-- author_type is filtered in SQL rather than in Go so the row cap applies to
+-- the candidate grant rows themselves, not to a mixed page that could still
+-- push a real grant out before the Go filter ever sees it.
+SELECT * FROM comment
+WHERE issue_id = $1 AND workspace_id = $2 AND author_type = 'member'
+ORDER BY created_at ASC, id ASC
+LIMIT $3;
+
 -- name: ListCommentsByIDsForIssue :many
 -- The subset of @ids that exists within this issue and workspace.
 --

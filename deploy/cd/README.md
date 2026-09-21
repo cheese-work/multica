@@ -265,12 +265,92 @@ bash deploy/cd/test-tuple-snapshot.sh
 bash deploy/cd/test-quiescence.sh
 bash deploy/cd/test-migrate-supervised.sh
 bash deploy/cd/test-entrypoint-compose.sh
+bash deploy/cd/test-deploy.sh
+bash deploy/cd/test-router.sh
+bash deploy/cd/test-release-packet.sh
+bash deploy/cd/test-cutover.sh
 (cd server && go test ./internal/dbstartup/...)
 ```
 
 The isolated qualification test uses only synthetic, throwaway data. Its
 upgrade/rollback command is intentionally disabled until the caller supplies
 an admitted tuple and a non-production fixture location.
+
+## A/B application slots, router and cutover (CHE-397 unit 2)
+
+Builds on D2 (above) to add the actual blue/green switch layer the accepted
+CHE-397 architecture calls "controlled application replacement with
+compatible image rollback" — two application slots with one active backend,
+shared Postgres, shared uploads, never simultaneous serving.
+
+- `docker-compose.ab.yml` — the slot overlay. Adds `backend-blue`/
+  `frontend-blue`/`backend-green`/`frontend-green` on private
+  `127.0.0.1` ports (`BACKEND_BLUE_PORT`/`BACKEND_GREEN_PORT`/
+  `FRONTEND_BLUE_PORT`/`FRONTEND_GREEN_PORT`, defaulting to
+  18081/18082/13001/13002), layered on the base `docker-compose.selfhost.yml`
+  via Compose `extends` — invoke with the repository root as the working
+  directory (`-f docker-compose.selfhost.yml -f deploy/cd/docker-compose.ab.yml`),
+  never the other order or from `deploy/cd/` itself, or the `extends.file`
+  path will not resolve (verified against a real `docker compose config`
+  render). Each colour's `ports:` key uses the `!override` YAML merge tag,
+  not a plain list — `extends` concatenates list-type keys by default, and a
+  plain override would publish both the inherited base port AND the private
+  one, which cannot both bind. Both colours share the base file's `pgdata`
+  and `backend_uploads` volumes unchanged; there is no per-colour volume,
+  database clone, or replica.
+- `router/` — the local Nginx A/B router. `nginx.conf.template` is the
+  per-generation config router.sh renders (a complete, independently
+  `nginx -t`-validatable file); `docker-compose.router.yml`/`nginx.conf` are
+  the long-running router container brought up once per host, whose own
+  config never changes — only the generation file it `include`s does.
+- `router.sh` — `select`/`revert`/`probe`/`validate`. Renders a complete
+  config for a colour, validates it with `nginx -t` (via the same
+  `nginx:1.27-alpine` image in dev and CI), atomically repoints the
+  `active.conf` symlink (`ln -sfn`, a single `rename(2)`), reloads the
+  running router (`nginx -s reload`, which drains old workers rather than
+  dropping connections), and retains prior generations for `revert`. Never
+  starts, stops, or recreates the router container itself.
+- `deploy-lib.sh` — helpers `deploy.sh` (D2, single-slot) and `cutover.sh`
+  (this unit) both source: JSON field reads, image reference parsing/
+  digest verification, the migration one-shot runner, tuple capture. One
+  implementation, not two that can independently drift the way CHE-549's
+  finding 5 happened.
+- `cutover.sh` — `cutover`/`rollback`/`status`. Extends deploy.sh's
+  machinery (same lock file, same migration-ownership guarantees) rather
+  than forking a second controller: quiesce via `quiescence.mjs`'s existing
+  `preflight`/`final-gate`, verify the release packet via
+  `release-packet.mjs`, run the standalone migrator against the INACTIVE
+  colour's image, start that colour through the migration-free
+  `MULTICA_SKIP_MIGRATIONS=1` path, require its exact `/health` commit and
+  `/readyz`, activate the router generation via `router.sh select`, then
+  stop the now-inactive colour. Rollback verifies the retained predecessor
+  against the CURRENT schema ledger before starting it — never a down
+  migration or backup restore as routine rollback; a ledger past the
+  predecessor's last-known-good version is refused outright as
+  MANUAL INTERVENTION / separately authorized recovery, not silently
+  attempted.
+- `release-packet.mjs` — the expand/contract release-packet contract check:
+  ordered migration versions/checksums (verified against real files under
+  `server/migrations/*.up.sql`, matching `server/internal/migrations.
+  AllVersions()`'s own version-extraction exactly), ledger cleanliness
+  (every ledger row must be in the packet's own ordered list and applied by
+  an allowlisted writer), zero invalid indexes, all hooks/backfills
+  `completed`, and a compatible previous image pair with digests plus a
+  known `minimum_rollback_version`. This is an explicit extension of D2's
+  contract, not a change to `release-manifest.mjs`/`tuple-snapshot.mjs` —
+  D2 does not verify migration checksums today (see "What D2 does not yet
+  cover" above); this module does, and only for the A/B cutover path.
+
+### What this unit does NOT cover
+
+Real C00 execution (real forward switch, real rollback, controlled
+connection-loss during a transition, in-flight agent task reconnect across
+a cutover) is unit 3's job, under Hermes's C00 ownership — this unit is
+build/test on X99 only, per its own scope. `router/docker-compose.router.yml`
+bringing the router container up for the first time on C00, and the initial
+Tailscale Serve upstream port handover (colour listeners moving off
+8080/3000 onto the private ports this overlay defines) are also C00-side,
+one-time adoption steps this unit does not perform.
 
 `test-quiescence.sh` and `test-migrate-supervised.sh` each start their own
 throwaway `postgres:16-alpine` container on a dedicated Docker network and
@@ -317,6 +397,18 @@ change as part of D2 work.
 `cd-deploy.yml` runs automatically after a successful `cd-qualification` run
 for a `main` commit, and can still be dispatched by hand. The automatic path
 adds one job the manual path does not: `prepare-release-candidate`.
+
+The `deploy` job does not check out the repository on C00 — it `scp`'s an
+explicit file allowlist into a fresh `remote_dir` and runs `deploy.sh` from
+there. Every file `deploy.sh` sources or shells out to by relative path must
+be in that list, or `deploy.sh`'s own file-existence checks refuse to start
+(see its `script_dir` checks immediately after `usage()`): `deploy-lib.sh`
+(the shared JSON/image/migration helper library it `source`s directly, CHE-397
+unit 2), `capture-tuple.sh` and `tuple-snapshot.mjs` (post-deploy tuple
+recording). Adding a new file `deploy.sh` depends on means adding it to
+`cd-deploy.yml`'s `scp` line too — a dependency that exists only in the repo
+checkout, not in what actually reaches C00, fails silently until the next
+real deploy run, not in CI.
 
 D1's automatic main-push build only ever emits a `build-evidence` manifest,
 which `admission.mjs` refuses. A deployable `release-candidate` additionally

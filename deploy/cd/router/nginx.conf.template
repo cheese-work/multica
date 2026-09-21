@@ -1,0 +1,96 @@
+# Base Nginx config for the C00 local A/B router (CHE-397 unit 2). Not
+# rendered directly — router.sh substitutes the ACTIVE_BACKEND_PORT and
+# ACTIVE_FRONTEND_PORT placeholders below into a per-generation file under
+# deploy/cd/router/generations/ and atomically symlinks the active one into
+# place (see router.sh's "Atomic" comment for why a symlink swap, not an
+# in-place edit, is what makes generation selection atomic).
+#
+# Topology (accepted architecture, "Routing and TLS switch"):
+#   Tailscale Serve HTTPS :19444 -> 127.0.0.1:8081 (API)   -> this router's api  server
+#   Tailscale Serve HTTPS :19443 -> 127.0.0.1:3000 (web)   -> this router's web  server
+#   Cloudflare tunnel     -> 127.0.0.1:20243 (existing narrow GitHub ingress, untouched)
+#
+# This router owns the stable 8081/3000 upstream addresses that Tailscale
+# Serve already points at; it does NOT touch Tailscale Serve's own config,
+# TLS, or certificates, and it does NOT listen on 19444/19443 itself — those
+# stay exactly where Tailscale Serve already terminates them. Colour
+# listeners (backend-blue/green, frontend-blue/green) move to the private
+# alternate ports defined in docker-compose.ab.yml; this router selects
+# which one 8081/3000 forward to.
+#
+# sub2api (Hermes model endpoint, port 31344) is not proxied, referenced, or
+# reachable through any server block below — it stays entirely outside this
+# router, on its own port, per the accepted architecture's explicit fence.
+
+worker_processes 1;
+pid /tmp/router-nginx.pid;
+
+events {
+  worker_connections 1024;
+}
+
+http {
+  # Ambiguous non-idempotent writes are never retried by this proxy: no
+  # proxy_next_upstream beyond connection-establishment failures, and only
+  # one upstream server is ever listed per generation (the active colour) —
+  # there is no second upstream for Nginx to silently fail over to mid
+  # write, which is exactly the "do not auto-retry ambiguous non-idempotent
+  # writes at the proxy" requirement from the accepted architecture.
+  proxy_next_upstream off;
+  proxy_connect_timeout 5s;
+
+  # WebSocket upgrade support for /ws and /api/daemon/ws (both live under
+  # the API's 8081 listener) and Host/proto/cookie forwarding, applied via
+  # the map + proxy_set_header directives below rather than repeated per
+  # location — a single map covers both path prefixes and any endpoint that
+  # itself expects the Upgrade header rather than encoding the location
+  # match twice and risking the two definitions drifting apart.
+  map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+  }
+
+  # Old connections drain within the shutdown budget rather than being held
+  # open indefinitely across a generation switch — this bounds how long a
+  # streaming/WebSocket connection on the OLD colour can keep serving after
+  # `nginx -s reload` starts draining old worker processes; it does not
+  # affect how quickly a *new* connection is proxied.
+  proxy_read_timeout 60s;
+  proxy_send_timeout 60s;
+
+  server {
+    listen 127.0.0.1:8081;
+    server_name _;
+
+    location / {
+      proxy_pass http://ACTIVE_BACKEND_UPSTREAM;
+      proxy_http_version 1.1;
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_set_header Cookie $http_cookie;
+      proxy_pass_header Set-Cookie;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $connection_upgrade;
+    }
+  }
+
+  server {
+    listen 127.0.0.1:3000;
+    server_name _;
+
+    location / {
+      proxy_pass http://ACTIVE_FRONTEND_UPSTREAM;
+      proxy_http_version 1.1;
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_set_header Cookie $http_cookie;
+      proxy_pass_header Set-Cookie;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $connection_upgrade;
+    }
+  }
+}

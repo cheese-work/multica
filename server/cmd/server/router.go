@@ -1189,6 +1189,23 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		slog.Info("composio integration disabled (COMPOSIO_API_KEY not set)")
 	}
 
+	// Jev integration (CHE-683): TypeSafe System One evaluation. Gated by
+	// JEV_API_KEY; the jev_enabled feature flag and per-workspace targeting
+	// are enforced per call by featureflags.JevProductionGate, not here — an
+	// unset key disables the client outright with no error, since this is a
+	// paid optional dependency and startup must succeed without it.
+	if jevAPIKey := strings.TrimSpace(os.Getenv("JEV_API_KEY")); jevAPIKey != "" {
+		jevClient, jerr := newJevClient(jevAPIKey, h.FeatureFlags)
+		if jerr != nil {
+			slog.Error("jev: client init failed; jev integration disabled", "error", jerr)
+		} else {
+			h.Jev = jevClient
+			slog.Info("jev integration enabled")
+		}
+	} else {
+		slog.Info("jev integration disabled (JEV_API_KEY not set)")
+	}
+
 	// VCS at-rest encryption: the box encrypts per-workspace access tokens and
 	// webhook secrets for token-based providers (Forgejo / Gitea / GitLab).
 	// Without it, connect/webhook handlers return 503 (so a misconfigured

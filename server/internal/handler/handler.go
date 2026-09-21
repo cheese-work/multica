@@ -44,6 +44,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
+	"github.com/multica-ai/multica/server/pkg/jev"
 	"github.com/multica-ai/multica/server/pkg/llm"
 )
 
@@ -281,6 +282,13 @@ type Handler struct {
 	// the composio HTTP handlers return 403 in that case. Wired in
 	// cmd/server/router.go after handler.New.
 	Composio *composio.Service
+	// Jev is the TypeSafe System One evaluation client (CHE-683). Nil when
+	// JEV_API_KEY is unset; every call also goes through the jev_enabled
+	// flag and per-workspace targeting via its attached
+	// featureflags.JevProductionGate, so a non-nil Jev does not by itself
+	// mean calls are permitted. Wired in cmd/server/router.go after
+	// handler.New.
+	Jev *jev.Client
 	// ChannelSupervisor owns the per-installation supervisor goroutines
 	// that hold the §4.4 WS lease and drive each channel.Channel
 	// (MUL-3620 generalized the Feishu-only Hub into this channel-agnostic
