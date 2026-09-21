@@ -65,7 +65,7 @@ jobs:
   # a `go test -race` run. The outputs are consumed by the focused jobs
   # below.
   changes:
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
     permissions:
       contents: read
       pull-requests: read
@@ -214,7 +214,7 @@ jobs:
 
   sqlc-check:
     needs: changes
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
     steps:
       - name: Checkout
         if: ${{ needs.changes.outputs.sqlc == 'true' }}
@@ -249,7 +249,7 @@ jobs:
   # increases total runner-minutes but reduces wall-clock feedback time.
   frontend-build:
     needs: changes
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
     env:
       # Pin turbo's filesystem cache somewhere actions/cache can address.
       TURBO_CACHE_DIR: .turbo/cache
@@ -373,7 +373,7 @@ jobs:
 
   frontend-test:
     needs: changes
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
     env:
       TURBO_CACHE_DIR: .turbo/cache
     steps:
@@ -435,7 +435,7 @@ jobs:
             total: 2
           - index: 2
             total: 2
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
     env:
       TURBO_CACHE_DIR: .turbo/cache
     steps:
@@ -492,7 +492,7 @@ jobs:
     # is cancelled by the concurrency group above, and there is no reason to
     # spend a runner reporting a verdict nobody will read.
     if: ${{ !cancelled() }}
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
     steps:
       - name: Check frontend job results
         env:
@@ -545,6 +545,20 @@ jobs:
   # a cached "ok" from an untouched package could mask a real failure.
   backend-tests:
     needs: changes
+    # Stays on a GitHub-hosted runner even where the rest of Linux CI moves to
+    # cheese-x99 (CHE-700): this is the only job in the repo that uses
+    # `services`, and the self-hosted runners talk to a nested Docker daemon
+    # (`DOCKER_HOST=tcp://dind-N:2376`) living in a *different* network
+    # namespace from the runner itself. Service-container ports are published
+    # by that nested daemon, so they bind inside the dind container's
+    # namespace and never appear on the runner's 127.0.0.1 — the job's
+    # `postgres://...@localhost:5432` is unreachable by construction, not
+    # merely slow to come up. Docker's own health check still reports
+    # `healthy` (it runs inside the dind namespace), so the job proceeds and
+    # then burns its whole migration retry window on `connection refused`.
+    # Routing this one job back is the small carve-out; making it work on
+    # cheese-x99 needs the runner and dind to share a namespace, which is a
+    # runner-fleet change, not a workflow change.
     runs-on: blacksmith-2vcpu-ubuntu-2404
     # `services` cannot be conditional, so the Postgres and Redis containers
     # still start on a filtered PR. That is ~1 minute of runner time against
@@ -738,7 +752,7 @@ jobs:
   # The aggregate backend job below still treats both jobs as one merge gate.
   go-vulnerability-scan:
     needs: changes
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
     steps:
       - name: Checkout
         if: ${{ needs.changes.outputs.backend == 'true' }}
@@ -800,7 +814,7 @@ jobs:
   backend:
     needs: [backend-tests, backend-agent-tests, sqlc-check, go-vulnerability-scan, go-lint]
     if: ${{ !cancelled() }}
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
     steps:
       - name: Check backend job results
         env:
@@ -827,7 +841,7 @@ jobs:
     # and the branch it came from was already checked.
     needs: changes
     if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.images == 'true' }}
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -853,7 +867,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [blacksmith-2vcpu-ubuntu-2404, blacksmith-6vcpu-macos-latest]
+        os:
+          - ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
+          - blacksmith-6vcpu-macos-latest
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
