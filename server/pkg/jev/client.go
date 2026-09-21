@@ -75,8 +75,13 @@ type Options struct {
 	Timeout time.Duration
 
 	// Gate is the kill switch consulted before every call. A nil Gate
-	// permits every call, which is the right default for tests and wrong
-	// for production wiring.
+	// FAILS OPEN — it permits every call — which is the right default for
+	// tests but wrong for production. The Multica-side adapter
+	// (featureflags.JevGate / featureflags.JevProductionGate) deliberately
+	// has the OPPOSITE polarity: a nil *featureflag.Service inside that
+	// adapter fails closed. So production wiring must always set a
+	// non-nil Gate here — relying on this field's own nil behavior would
+	// permit every call instead of denying it.
 	Gate Gate
 
 	// HTTPClient is adopted in full when non-nil, so a caller's Transport
