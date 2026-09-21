@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"text/tabwriter"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -171,6 +173,11 @@ var squadUpdateCmd = &cobra.Command{
 }
 
 func runSquadUpdate(cmd *cobra.Command, args []string) error {
+	instructions, hasInstructions, err := resolveSquadInstructions(cmd)
+	if err != nil {
+		return err
+	}
+
 	client, err := newAPIClient(cmd)
 	if err != nil {
 		return err
@@ -187,9 +194,8 @@ func runSquadUpdate(cmd *cobra.Command, args []string) error {
 		v, _ := cmd.Flags().GetString("description")
 		body["description"] = v
 	}
-	if cmd.Flags().Changed("instructions") {
-		v, _ := cmd.Flags().GetString("instructions")
-		body["instructions"] = v
+	if hasInstructions {
+		body["instructions"] = instructions
 	}
 	if cmd.Flags().Changed("leader") {
 		v, _ := cmd.Flags().GetString("leader")
@@ -219,6 +225,56 @@ func runSquadUpdate(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("Squad updated: %s (%s)\n", strVal(result, "name"), strVal(result, "id"))
 	return nil
+}
+
+// resolveSquadInstructions keeps instruction input byte-for-byte intact.
+// The API body is JSON, so invalid UTF-8 is rejected instead of being silently
+// replaced during JSON encoding.
+func resolveSquadInstructions(cmd *cobra.Command) (string, bool, error) {
+	inline, _ := cmd.Flags().GetString("instructions")
+	fromStdin, _ := cmd.Flags().GetBool("instructions-stdin")
+	filePath, _ := cmd.Flags().GetString("instructions-file")
+	inlineSet := cmd.Flags().Changed("instructions")
+	fileSet := cmd.Flags().Changed("instructions-file")
+
+	sources := 0
+	if inlineSet {
+		sources++
+	}
+	if fromStdin {
+		sources++
+	}
+	if fileSet {
+		sources++
+	}
+	if sources > 1 {
+		return "", false, fmt.Errorf("--instructions, --instructions-stdin, and --instructions-file are mutually exclusive")
+	}
+	if inlineSet {
+		return inline, true, nil
+	}
+
+	var data []byte
+	var err error
+	switch {
+	case fromStdin:
+		data, err = io.ReadAll(cmd.InOrStdin())
+	case fileSet:
+		if filePath == "" {
+			return "", false, fmt.Errorf("--instructions-file: path must not be empty")
+		}
+		data, err = os.ReadFile(filePath)
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("read squad instructions: %w", err)
+	}
+	if sources == 0 {
+		return "", false, nil
+	}
+	if !utf8.Valid(data) {
+		return "", false, fmt.Errorf("squad instructions must be valid UTF-8")
+	}
+	return string(data), true, nil
 }
 
 // ── Delete ──────────────────────────────────────────────────────────────────
@@ -521,6 +577,8 @@ func init() {
 	squadUpdateCmd.Flags().String("name", "", "New name")
 	squadUpdateCmd.Flags().String("description", "", "New description")
 	squadUpdateCmd.Flags().String("instructions", "", "New instructions")
+	squadUpdateCmd.Flags().Bool("instructions-stdin", false, "Read instructions from stdin")
+	squadUpdateCmd.Flags().String("instructions-file", "", "Read instructions from a file")
 	squadUpdateCmd.Flags().String("leader", "", "New leader agent (name or ID)")
 	squadUpdateCmd.Flags().String("avatar-url", "", "New avatar URL")
 	squadUpdateCmd.Flags().String("output", "json", "Output format: table or json")
