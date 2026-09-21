@@ -173,6 +173,52 @@ capture_tuple() {
     --application-sha "$application_sha"
 }
 
+# running_service_image reports the "repo:tag" reference a running compose
+# service's container was actually started from — the same question
+# capture-tuple.sh's own service_image asks, factored out here so a caller
+# can ask it about a colour-specific service name (backend-blue,
+# frontend-green, ...) that capture-tuple.sh's hardcoded "backend"/
+# "frontend" service names cannot express. `compose images --format json`
+# is the documented way to ask Compose this; it returns an array (one row
+# per container) on modern versions and a bare object on some older ones,
+# so handle both.
+running_service_image() {
+  compose images "$1" --format json 2>/dev/null | node -e '
+    let d = "";
+    process.stdin.on("data", (c) => (d += c));
+    process.stdin.on("end", () => {
+      const rows = JSON.parse(d || "[]");
+      const row = Array.isArray(rows) ? rows[0] : rows;
+      process.stdout.write(row && row.Repository ? `${row.Repository}:${row.Tag}` : "");
+    });
+  '
+}
+
+# running_image_ref resolves a compose service's ACTUAL running image to the
+# same "repo@sha256:digest" form the "cutover)" branch's own image_tuple
+# values already use (there, straight from the admitted manifest) —
+# falling back to a bare "repo:tag" reference when no digest can be
+# resolved, per is_valid_digest's own contract: never poison the record
+# with an unresolvable placeholder. Returns nonzero when the service itself
+# cannot be resolved (not running, or Compose has no record of it); callers
+# must treat that as a hard failure, never as an empty-string image.
+running_image_ref() {
+  local service=$1 ref digest
+  ref="$(running_service_image "$service")"
+  if [ -z "$ref" ]; then
+    return 1
+  fi
+  digest="$(docker inspect --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' "$ref" 2>/dev/null | sed -E 's#^.*@##')"
+  if ! is_valid_digest "$digest"; then
+    digest="$(docker inspect --format '{{.Id}}' "$ref" 2>/dev/null)"
+  fi
+  if is_valid_digest "$digest"; then
+    printf '%s@%s' "$(bare_repo "$ref")" "$digest"
+  else
+    printf '%s' "$ref"
+  fi
+}
+
 # run_migration_step launches exactly one throwaway container from the given
 # "repo:tag" backend image, entrypoint overridden to the migrate binary,
 # joined to the already-running compose network so it shares DATABASE_URL
