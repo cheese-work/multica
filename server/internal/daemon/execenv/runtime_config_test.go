@@ -207,12 +207,25 @@ func TestStatusRuleIsFactJudgmentAtBothMoments(t *testing.T) {
 		"the board should show the issue being worked while you work, not only after",
 		// No assignee gate: the judgment applies to whoever is running.
 		"whoever the assignee is",
-		// Delivery lands in in_review and the ceiling keeps `done` human.
-		"`done` stays human",
-		// Assigned deliverables must not be misread as status-neutral
-		// research: stage barriers and parent notifications key off the
-		// delivery write.
-		"stage barriers and parent notifications depend on that signal",
+		// Delivery lands in in_review; the ceiling keeps `done` human on a
+		// root or parent issue only — children close themselves (below).
+		"On an issue with no parent of its own `done` stays human",
+		// The two bullets must partition on the SAME axis the server uses:
+		// notifyParentOfChildDone keys on ParentIssueID.Valid alone
+		// (issue_child_done.go:74) and never asks whether the issue has
+		// children. A mid-tree issue (has a parent AND dispatched its own
+		// sub-issues) must match the child bullet, not the root one.
+		"having children does not exempt it",
+		// A child parked at `in_review` is never terminal, so it holds its
+		// stage open forever and the parent is never woken
+		// (isTerminalChildStatus: done/cancelled only). CHE-605.
+		"A sub-issue closes itself",
+		"holds its stage open and its parent is never woken",
+		// Self-resolution is no-human-in-the-loop, NOT no-reviewer: the
+		// author still never reviews its own work (CHE-517).
+		"an independent reviewer other than the author",
+		// The one escalation a child may still make.
+		"a blocker needs a person the agents cannot route around",
 		// Invariant 1: conversation does not move the board. Ancillary is
 		// defined by OUTPUT (no part of the issue's own deliverable), not by
 		// activity words like "research" that also describe real work.
