@@ -35,7 +35,7 @@ type CreateProtocolLintRunParams struct {
 // CHE-552: persists one row per protocollint.Check invocation
 // (server/internal/handler/daemon.go's runProtocolLint, CHE-529) so the real
 // protocol-omission base rate can be measured instead of only logged. See
-// 513_protocol_lint_run.up.sql for the schema rationale.
+// 500_protocol_lint_run.up.sql for the schema rationale.
 // Best-effort write from runProtocolLint's logProtocolLintViolations, called
 // after CompleteTask's own transaction has already committed — see that
 // function's doc for why this insert must never block or fail the request
