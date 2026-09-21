@@ -493,8 +493,20 @@ case "$command" in
       exit 1
     fi
 
-    backend_image="$(json_field "$cutover_state_file" image_tuple.backend 2>/dev/null || echo "")"
-    web_image="$(json_field "$cutover_state_file" image_tuple.web 2>/dev/null || echo "")"
+    # The retained predecessor's ACTUAL running image — never the pre-
+    # rollback state file's own image_tuple, which still holds the
+    # candidate's tuple: cutover-state.json only ever records the ONE
+    # active colour's image_tuple at a time, and $from_colour (the failing
+    # candidate) was still active when it was last written. Reading it
+    # here would just copy the candidate's own record onto the colour that
+    # replaced it, instead of what $to_colour actually started from
+    # (CHE-678). Ask Docker what $to_colour is actually running.
+    backend_image="$(running_image_ref "backend-${to_colour}")" || backend_image=""
+    web_image="$(running_image_ref "frontend-${to_colour}")" || web_image=""
+    if [ -z "$backend_image" ] || [ -z "$web_image" ]; then
+      echo "!! could not resolve the running image for retained predecessor colour=$to_colour after starting it — refusing to record an unverified image tuple in $cutover_state_file; $to_colour is healthy and serving, but $cutover_state_file needs manual correction; MANUAL INTERVENTION REQUIRED" >&2
+      exit 1
+    fi
     # minimum_rollback_version carries forward unchanged: no migration ran
     # during this rollback (see the guard above), so the same compatibility
     # floor a future rollback attempt would need to verify against is still

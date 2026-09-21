@@ -27,6 +27,12 @@ mkdir -p "$mock_bin"
 source_sha="504078f8ea7fa31f342f195659e93a7f6c3e5a91"
 backend_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 web_digest="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+# Distinct from backend_digest/web_digest on purpose: these stand in for
+# whatever the retained predecessor colour is ACTUALLY running, which a
+# correct rollback must resolve independently of the candidate's own
+# manifest-pinned digests above (CHE-678).
+incumbent_backend_digest="sha256:$(printf 'c%.0s' {1..64})"
+incumbent_web_digest="sha256:$(printf 'd%.0s' {1..64})"
 
 # The mock ledger uses REAL server/migrations version strings throughout —
 # never fabricated placeholders — so ledger_at_or_after (deploy-lib.sh),
@@ -88,8 +94,17 @@ if [ "\$1" = "inspect" ]; then
   ref="\${*: -1}"
   repo="\${ref%%:*}"
   digest=""
-  case "\$repo" in
-    *multica-backend) digest="\${MOCK_BACKEND_DIGEST:-}" ;;
+  case "\$ref" in
+    # sha-incumbent is running_image_ref's own mock tag (see the "images"
+    # compose subcommand below) for the retained-predecessor colour's
+    # ACTUAL running container — deliberately a different digest than the
+    # candidate's own MOCK_BACKEND_DIGEST/MOCK_WEB_DIGEST, so a rollback
+    # scenario copying the pre-rollback candidate tuple (CHE-678) instead
+    # of resolving the real one is distinguishable in the written state.
+    *multica-backend:sha-incumbent) digest="\${MOCK_INCUMBENT_BACKEND_DIGEST:-}" ;;
+    *multica-web:sha-incumbent) digest="\${MOCK_INCUMBENT_WEB_DIGEST:-}" ;;
+    *multica-backend:*) digest="\${MOCK_BACKEND_DIGEST:-}" ;;
+    *multica-web:*) digest="\${MOCK_WEB_DIGEST:-}" ;;
   esac
   printf '%s@%s\n' "\$repo" "\$digest"
   exit 0
@@ -169,6 +184,21 @@ if [ "\$1" = "compose" ]; then
       ;;
     stop)
       printf '%s\n' "\$*" >>"\$control_dir/stop-calls.log"
+      exit 0
+      ;;
+    images)
+      # images <service> --format json — deploy-lib.sh's running_service_image,
+      # asking what backend-<colour>/frontend-<colour> is ACTUALLY running.
+      # Every colour reports the SAME fixed "sha-incumbent" tag here — this
+      # mock never tracks per-colour state — which is enough to prove
+      # rollback resolves the running container (via this + the inspect
+      # mock's sha-incumbent digest above) rather than copying the
+      # pre-rollback state file's own candidate tuple (CHE-678).
+      case "\$1" in
+        backend-*) printf '[{"Repository":"ghcr.io/cheese-work/multica-backend","Tag":"sha-incumbent"}]\n' ;;
+        frontend-*) printf '[{"Repository":"ghcr.io/cheese-work/multica-web","Tag":"sha-incumbent"}]\n' ;;
+        *) printf '[]\n' ;;
+      esac
       exit 0
       ;;
     exec)
@@ -339,6 +369,9 @@ run_cutover() {
   export CUTOVER_TEST_CONTROL_DIR="$state_dir/control"
   mkdir -p "$CUTOVER_TEST_CONTROL_DIR"
   export MOCK_BACKEND_DIGEST="$backend_digest"
+  export MOCK_WEB_DIGEST="$web_digest"
+  export MOCK_INCUMBENT_BACKEND_DIGEST="$incumbent_backend_digest"
+  export MOCK_INCUMBENT_WEB_DIGEST="$incumbent_web_digest"
   export MOCK_EXPECTED_COMMIT="$source_sha"
   export CUTOVER_DATABASE_URL="postgres://multica:multica@127.0.0.1:5432/multica?sslmode=disable"
   # ROUTER_STATE_DIR keeps router.sh's own state isolated per scenario
@@ -620,6 +653,28 @@ fi
 active="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).active_colour)' "$state_dir/cutover-state.json")"
 if [ "$active" != "blue" ]; then
   echo "scenario rollback-after-real-migration-cutover: active_colour after rollback is '$active', want blue" >&2
+  exit 1
+fi
+
+# Regression for CHE-678: cutover-state.json's image_tuple after this
+# rollback must record what blue (the retained predecessor) is ACTUALLY
+# running (the mock's "sha-incumbent" tag/incumbent_*_digest pair) — never
+# the pre-rollback state file's own image_tuple, which still held green's
+# (the failing candidate's) manifest-pinned digests. The bug this issue
+# fixed copied the latter verbatim; assert both the correct value is
+# present and the stale candidate value is not.
+recorded_backend="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).image_tuple.backend)' "$state_dir/cutover-state.json")"
+recorded_web="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).image_tuple.web)' "$state_dir/cutover-state.json")"
+if [ "$recorded_backend" != "ghcr.io/cheese-work/multica-backend@$incumbent_backend_digest" ]; then
+  echo "scenario rollback-after-real-migration-cutover: image_tuple.backend after rollback is '$recorded_backend', want the retained predecessor's actual running image (incumbent digest)" >&2
+  exit 1
+fi
+if [ "$recorded_web" != "ghcr.io/cheese-work/multica-web@$incumbent_web_digest" ]; then
+  echo "scenario rollback-after-real-migration-cutover: image_tuple.web after rollback is '$recorded_web', want the retained predecessor's actual running image (incumbent digest)" >&2
+  exit 1
+fi
+if [[ "$recorded_backend" == *"$backend_digest"* ]] || [[ "$recorded_web" == *"$web_digest"* ]]; then
+  echo "scenario rollback-after-real-migration-cutover: image_tuple still carries the failing candidate's own digest — rollback copied the pre-rollback state file instead of resolving what blue actually started from" >&2
   exit 1
 fi
 
