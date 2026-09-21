@@ -215,6 +215,9 @@ func Evaluate(ctx context.Context, provider Provider, in Input) (Decision, error
 	if err != nil {
 		return abstain(ReasonProviderError, nil), fmt.Errorf("governance: evaluate: %w", err)
 	}
+	if resp == nil {
+		return abstain(ReasonInvalidResponse, nil), errors.New("governance: provider returned a nil response")
+	}
 
 	expectedModel := in.ExpectedModel
 	if expectedModel == "" {
@@ -290,6 +293,15 @@ func decide(in Input, spec questionSpec, parsed []parsedAnswer, answers []Record
 	correction := answerFor(parsed, questionCorrection)
 	nextOwner := answerFor(parsed, questionNextOwner)
 	evidence := answerFor(parsed, questionEvidence)
+	consistentPair :=
+		(handoffKind == handoffAgentWork && correction == correctionMentionOwner) ||
+			(handoffKind == handoffAgentPreparation && correction == correctionReturnMechanicalStep) ||
+			(handoffKind == handoffNoFollowup && correction == correctionNoCorrection) ||
+			(handoffKind == handoffHumanDecision && correction == correctionNoCorrection) ||
+			(handoffKind == handoffUnclear && correction == correctionUnclear)
+	if !consistentPair {
+		return abstain(ReasonContradictoryAnswers, answers), nil
+	}
 
 	switch handoffKind {
 	case handoffNoFollowup:
@@ -299,9 +311,6 @@ func decide(in Input, spec questionSpec, parsed []parsedAnswer, answers []Record
 	case handoffUnclear:
 		return abstain(ReasonUnclear, answers), nil
 	case handoffAgentWork:
-		if correction != correctionMentionOwner {
-			return abstain(ReasonContradictoryAnswers, answers), nil
-		}
 		candidateIdx, reason := resolveCandidate(spec, nextOwner)
 		if reason != ReasonNone {
 			return abstain(reason, answers), nil
@@ -319,9 +328,6 @@ func decide(in Input, spec questionSpec, parsed []parsedAnswer, answers []Record
 			Answers: answers,
 		}, nil
 	case handoffAgentPreparation:
-		if correction != correctionReturnMechanicalStep {
-			return abstain(ReasonContradictoryAnswers, answers), nil
-		}
 		if !in.MechanicalPreparationEligible {
 			return abstain(ReasonMechanicalPreparationIneligible, answers), nil
 		}
