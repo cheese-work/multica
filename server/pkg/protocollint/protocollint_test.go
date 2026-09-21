@@ -271,12 +271,29 @@ func TestCheckUnsupportedWaiver(t *testing.T) {
 		}
 	})
 
+	t.Run("unrelated member grant does not suppress a protocol claim", func(t *testing.T) {
+		t.Parallel()
+		in := Input{
+			RunID: "run-9b",
+			PostedComments: []PostedComment{
+				{ID: "c1", Content: "The protocol review was waived."},
+			},
+			OtherComments: []OtherComment{
+				{AuthorType: "member", Content: "ABI waiver granted by release policy."},
+			},
+		}
+		violations := Check(in)
+		if len(violations) != 1 || violations[0].Code != CodeUnsupportedWaiver {
+			t.Fatalf("Check() = %v, want exactly 1 %q violation", violations, CodeUnsupportedWaiver)
+		}
+	})
+
 	t.Run("an agent's own claim does not count as a grant", func(t *testing.T) {
 		t.Parallel()
 		in := Input{
 			RunID: "run-10",
 			PostedComments: []PostedComment{
-				{ID: "c1", Content: "This step was waived per approval."},
+				{ID: "c1", Content: "This protocol review was waived per approval."},
 			},
 			OtherComments: []OtherComment{
 				// Another agent (e.g. a squad leader) echoing the same claim
@@ -329,6 +346,10 @@ func TestCheckIgnoresUnrelatedWaiverVocabulary(t *testing.T) {
 			name:    "self-referential discussion of this check",
 			content: "This is about checkUnsupportedWaivers's own waiver-grant lookup bug, not a real claim.",
 		},
+		{
+			name:    "ABI waiver with a later status reference",
+			content: "The ABI check was waived by release policy. Status reporting remains unchanged.",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -352,8 +373,8 @@ func TestCheckReportsEveryUnsupportedWaiverClaim(t *testing.T) {
 	in := Input{
 		RunID: "run-12",
 		PostedComments: []PostedComment{
-			{ID: "c1", Content: "Step A was explicitly waived."},
-			{ID: "c2", Content: "Step B was also explicitly waived."},
+			{ID: "c1", Content: "Protocol review A was explicitly waived."},
+			{ID: "c2", Content: "Verification B was also explicitly waived."},
 		},
 	}
 	violations := Check(in)
@@ -374,7 +395,7 @@ func TestCheckAggregatesMultipleIndependentViolations(t *testing.T) {
 		StatusReadBack:     false,
 		ClaimedEvidenceURL: "not-a-url",
 		PostedComments: []PostedComment{
-			{ID: "reply-1", ParentID: "wrong-parent", Content: "Done, waived the rest."},
+			{ID: "reply-1", ParentID: "wrong-parent", Content: "Done, the remaining protocol review was waived."},
 		},
 	}
 	violations := Check(in)
