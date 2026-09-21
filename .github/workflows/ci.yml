@@ -476,7 +476,7 @@ jobs:
         working-directory: server
         run: go tool govulncheck ./...
 
-  # Gates only on findings a change introduces. `only-new-issues` compares
+  # Gates only on findings a change introduces. golangci-lint compares
   # against the pull request's merge base, which is what makes this job
   # useful on day one: server/.golangci.yml landed against a module carrying
   # ~500 pre-existing findings, and a whole-module gate would have been red
@@ -492,7 +492,7 @@ jobs:
         if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' }}
         uses: actions/checkout@v6
         with:
-          # only-new-issues needs the merge base, not just the tip commit.
+          # The diff-only lint mode needs the merge base, not just the tip commit.
           fetch-depth: 0
 
       - name: Setup Go
@@ -511,7 +511,10 @@ jobs:
           # surprise red build on an unrelated pull request.
           version: v2.13.2
           working-directory: server
-          only-new-issues: true
+          # golangci-lint-action's only-new-issues fetches the PR diff through
+          # GitHub's API, which rejects this upstream-sync PR at 300 files.
+          # Use the already-fetched local merge base instead.
+          args: --new-from-merge-base=origin/${{ github.base_ref }}
 
   # Preserve the existing required-check name while allowing tests, generated
   # SQL verification, and the vulnerability scan to run independently.

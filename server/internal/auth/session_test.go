@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -258,14 +259,14 @@ func TestRenewSessionToken_RejectsDisabledUser(t *testing.T) {
 	claims["sub"] = disabledID
 
 	_, _, err := RenewSessionToken(claims)
-	if err != ErrTemporarilyDisabledUser {
+	if !errors.Is(err, ErrTemporarilyDisabledUser) {
 		t.Fatalf("err = %v, want ErrTemporarilyDisabledUser", err)
 	}
 }
 
 func TestRenewSessionToken_RejectsClaimsWithoutSubject(t *testing.T) {
 	_, _, err := RenewSessionToken(jwt.MapClaims{"email": "nobody@multica.ai"})
-	if err != ErrNotSessionToken {
+	if !errors.Is(err, ErrNotSessionToken) {
 		t.Fatalf("err = %v, want ErrNotSessionToken", err)
 	}
 }
@@ -289,7 +290,7 @@ func TestParseSessionToken_RejectsNonSessionCredentials(t *testing.T) {
 	}
 	for name, token := range cases {
 		t.Run(name, func(t *testing.T) {
-			if _, err := ParseSessionToken(token); err != ErrNotSessionToken {
+			if _, err := ParseSessionToken(token); !errors.Is(err, ErrNotSessionToken) {
 				t.Errorf("err = %v, want ErrNotSessionToken", err)
 			}
 		})
@@ -301,7 +302,7 @@ func TestParseSessionToken_RejectsNonSessionCredentials(t *testing.T) {
 // the clock.
 func TestParseSessionToken_RejectsExpiredToken(t *testing.T) {
 	expired := signSession(t, sessionClaims(t, time.Now().Add(-time.Minute), "sid-1"))
-	if _, err := ParseSessionToken(expired); err != ErrNotSessionToken {
+	if _, err := ParseSessionToken(expired); !errors.Is(err, ErrNotSessionToken) {
 		t.Errorf("err = %v, want ErrNotSessionToken", err)
 	}
 }
@@ -410,7 +411,7 @@ func TestSessionIDFromToken_ReadsExpiredTokens(t *testing.T) {
 func TestParseSessionToken_StillEnforcesExpiryAfterTheSplit(t *testing.T) {
 	expired := signSession(t, sessionClaims(t, time.Now().Add(-time.Minute), "sid-x"))
 
-	if _, err := ParseSessionToken(expired); err != ErrNotSessionToken {
+	if _, err := ParseSessionToken(expired); !errors.Is(err, ErrNotSessionToken) {
 		t.Errorf("ParseSessionToken(expired) err = %v, want ErrNotSessionToken", err)
 	}
 	if SessionIDFromToken(expired) == "" {

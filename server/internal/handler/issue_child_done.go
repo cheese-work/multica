@@ -590,12 +590,12 @@ func (h *Handler) postChildDoneComment(ctx context.Context, parent, completed db
 			// the dependency warning through advanceHasCancelled above.
 			if batch {
 				content = fmt.Sprintf(
-					"%sStage %d of this issue is complete — its sub-issues just finished together in a batch update, most recently [%s](mention://issue/%s) — \"%s\". Stage progress — %s.%s",
+					"%sStage %d of this issue is complete — its sub-issues just finished together in a batch update, most recently [%s](mention://issue/%s) — %q. Stage progress — %s.%s",
 					mentionPrefix, closedStage, identifier, childID, title, summary, advance,
 				)
 			} else {
 				content = fmt.Sprintf(
-					"%sStage %d of this issue is complete — its last sub-issue [%s](mention://issue/%s) — \"%s\" — just finished. Stage progress — %s.%s",
+					"%sStage %d of this issue is complete — its last sub-issue [%s](mention://issue/%s) — %q — just finished. Stage progress — %s.%s",
 					mentionPrefix, closedStage, identifier, childID, title, summary, advance,
 				)
 			}
@@ -605,7 +605,7 @@ func (h *Handler) postChildDoneComment(ctx context.Context, parent, completed db
 				lastAction = "was cancelled"
 			}
 			content = fmt.Sprintf(
-				"%sStage %d of this issue is closed — its sub-issues reached terminal states together in a batch update; most recently, [%s](mention://issue/%s) — \"%s\" — %s. Stage progress — %s.%s",
+				"%sStage %d of this issue is closed — its sub-issues reached terminal states together in a batch update; most recently, [%s](mention://issue/%s) — %q — %s. Stage progress — %s.%s",
 				mentionPrefix, closedStage, identifier, childID, title, lastAction, summary, advance,
 			)
 		} else {
@@ -614,7 +614,7 @@ func (h *Handler) postChildDoneComment(ctx context.Context, parent, completed db
 				lastAction = "was just cancelled"
 			}
 			content = fmt.Sprintf(
-				"%sStage %d of this issue is closed — its last sub-issue [%s](mention://issue/%s) — \"%s\" — %s. Stage progress — %s.%s",
+				"%sStage %d of this issue is closed — its last sub-issue [%s](mention://issue/%s) — %q — %s. Stage progress — %s.%s",
 				mentionPrefix, closedStage, identifier, childID, title, lastAction, summary, advance,
 			)
 		}
@@ -624,12 +624,12 @@ func (h *Handler) postChildDoneComment(ctx context.Context, parent, completed db
 			// Keep the historical no-cancellation wording byte-identical.
 			if batch {
 				content = fmt.Sprintf(
-					"%sAll sub-issues are complete — they just finished together in a batch update, most recently [%s](mention://issue/%s) — \"%s\". Continue the parent: synthesize the children's results and move it forward, or — if nothing remains — run `multica issue status %s in_review` to mark the parent ready for review.",
+					"%sAll sub-issues are complete — they just finished together in a batch update, most recently [%s](mention://issue/%s) — %q. Continue the parent: synthesize the children's results and move it forward, or — if nothing remains — run `multica issue status %s in_review` to mark the parent ready for review.",
 					mentionPrefix, identifier, childID, title, parentID,
 				)
 			} else {
 				content = fmt.Sprintf(
-					"%sAll sub-issues are complete — the last one, [%s](mention://issue/%s) — \"%s\", just finished. Continue the parent: synthesize the children's results and move it forward, or — if nothing remains — run `multica issue status %s in_review` to mark the parent ready for review.",
+					"%sAll sub-issues are complete — the last one, [%s](mention://issue/%s) — %q, just finished. Continue the parent: synthesize the children's results and move it forward, or — if nothing remains — run `multica issue status %s in_review` to mark the parent ready for review.",
 					mentionPrefix, identifier, childID, title, parentID,
 				)
 			}
@@ -645,12 +645,12 @@ func (h *Handler) postChildDoneComment(ctx context.Context, parent, completed db
 					lastAction = "was just cancelled"
 				}
 				content = fmt.Sprintf(
-					"%sAll sub-issues are closed — the last one, [%s](mention://issue/%s) — \"%s\", %s.%s Continue the parent: synthesize the children's results and move it forward, or — if nothing remains — run `multica issue status %s in_review` to mark the parent ready for review.",
+					"%sAll sub-issues are closed — the last one, [%s](mention://issue/%s) — %q, %s.%s Continue the parent: synthesize the children's results and move it forward, or — if nothing remains — run `multica issue status %s in_review` to mark the parent ready for review.",
 					mentionPrefix, identifier, childID, title, lastAction, warning, parentID,
 				)
 			} else {
 				content = fmt.Sprintf(
-					"%sAll sub-issues are closed — they reached terminal states together in a batch update; most recently, [%s](mention://issue/%s) — \"%s\" — %s.%s Continue the parent: synthesize the children's results and move it forward, or — if nothing remains — run `multica issue status %s in_review` to mark the parent ready for review.",
+					"%sAll sub-issues are closed — they reached terminal states together in a batch update; most recently, [%s](mention://issue/%s) — %q — %s.%s Continue the parent: synthesize the children's results and move it forward, or — if nothing remains — run `multica issue status %s in_review` to mark the parent ready for review.",
 					mentionPrefix, identifier, childID, title, lastAction, warning, parentID,
 				)
 			}

@@ -176,6 +176,11 @@ test("the backend gate owns the two-platform installer matrix", () => {
   assert.doesNotMatch(jobs.installer, /continue-on-error:/);
 });
 
+test("go-lint filters findings from the locally fetched merge base", () => {
+  assert.match(jobs["go-lint"], /args: --new-from-merge-base=origin\/\$\{\{ github\.base_ref \}\}/);
+  assert.doesNotMatch(jobs["go-lint"], /only-new-issues:/);
+});
+
 test("quality checks have exactly one runner and reuse the product build install", () => {
   const invocation = "uses: ./.github/actions/frontend-quality";
   const owners = Object.entries(jobs).filter(([, source]) => source.includes(invocation)).map(([job]) => job);

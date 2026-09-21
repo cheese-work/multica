@@ -737,6 +737,7 @@ func TestRunSkillLabelCommands(t *testing.T) {
 	}))
 	defer srv.Close()
 	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_TOKEN", "mat_test-token")
 
 	// 1. List labels on skill
 	listCmd := newSkillLabelTestCmd("list")
@@ -756,7 +757,7 @@ func TestRunSkillLabelCommands(t *testing.T) {
 
 	// 2. Add label to skill
 	addCmd := newSkillLabelTestCmd("add")
-	out, err = captureStdout(t, func() error {
+	_, err = captureStdout(t, func() error {
 		return runSkillLabelAdd(addCmd, []string{"skill-1", testLabelUUID})
 	})
 	if err != nil {
@@ -779,7 +780,7 @@ func TestRunSkillLabelCommands(t *testing.T) {
 
 	// 3. Remove label from skill
 	removeCmd := newSkillLabelTestCmd("remove")
-	out, err = captureStdout(t, func() error {
+	_, err = captureStdout(t, func() error {
 		return runSkillLabelRemove(removeCmd, []string{"skill-1", testLabelUUID})
 	})
 	if err != nil {
