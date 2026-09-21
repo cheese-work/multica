@@ -353,6 +353,9 @@ deleted_stage_completion_wakes AS (
 deleted_stage_generations AS (
     DELETE FROM stage_generation WHERE workspace_id = $1
 ),
+deleted_issue_checkpoints AS (
+    DELETE FROM issue_checkpoint WHERE workspace_id = $1
+),
 deleted_activity AS (
     DELETE FROM activity_log WHERE workspace_id = $1
 ),
