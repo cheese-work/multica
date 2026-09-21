@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
 )
@@ -50,11 +51,11 @@ func TestSetMemberContextInstallsEvalContext(t *testing.T) {
 	if ec.WorkspaceID != testWsID {
 		t.Errorf("WorkspaceID = %q, want %q", ec.WorkspaceID, testWsID)
 	}
-	if got := ec.Attributes[FlagAttrMemberID]; got != testMemberID {
-		t.Errorf("%s = %q, want %q", FlagAttrMemberID, got, testMemberID)
+	if got := ec.Attributes[featureflags.FlagAttrMemberID]; got != testMemberID {
+		t.Errorf("%s = %q, want %q", featureflags.FlagAttrMemberID, got, testMemberID)
 	}
-	if got := ec.Attributes[FlagAttrMemberRole]; got != "admin" {
-		t.Errorf("%s = %q, want admin", FlagAttrMemberRole, got)
+	if got := ec.Attributes[featureflags.FlagAttrMemberRole]; got != "admin" {
+		t.Errorf("%s = %q, want admin", featureflags.FlagAttrMemberRole, got)
 	}
 }
 
@@ -67,8 +68,8 @@ func TestEvalContextLookupResolvesTargetingNames(t *testing.T) {
 	for _, tc := range []struct{ name, want string }{
 		{"user_id", testUserID},
 		{"workspace_id", testWsID},
-		{FlagAttrMemberID, testMemberID},
-		{FlagAttrMemberRole, "admin"},
+		{featureflags.FlagAttrMemberID, testMemberID},
+		{featureflags.FlagAttrMemberRole, "admin"},
 	} {
 		got, ok := ec.Lookup(tc.name)
 		if !ok || got != tc.want {
@@ -84,10 +85,10 @@ func TestWithAgentEvalAttributesHumanRequestUnchanged(t *testing.T) {
 
 	ec := withAgentEvalAttributes(base, r)
 
-	if _, ok := ec.Attributes[FlagAttrAgentID]; ok {
+	if _, ok := ec.Attributes[featureflags.FlagAttrAgentID]; ok {
 		t.Error("human request gained an agent_id attribute")
 	}
-	if _, ok := ec.Attributes[FlagAttrActorSource]; ok {
+	if _, ok := ec.Attributes[featureflags.FlagAttrActorSource]; ok {
 		t.Error("human request gained an actor_source attribute")
 	}
 }
@@ -99,14 +100,14 @@ func TestWithAgentEvalAttributesTaskToken(t *testing.T) {
 
 	ec := withAgentEvalAttributes(evalContextFor(testWsID, testMember(t)), r)
 
-	if got := ec.Attributes[FlagAttrAgentID]; got != testAgentID {
-		t.Errorf("%s = %q, want %q", FlagAttrAgentID, got, testAgentID)
+	if got := ec.Attributes[featureflags.FlagAttrAgentID]; got != testAgentID {
+		t.Errorf("%s = %q, want %q", featureflags.FlagAttrAgentID, got, testAgentID)
 	}
-	if got := ec.Attributes[FlagAttrActorSource]; got != "task_token" {
-		t.Errorf("%s = %q, want task_token", FlagAttrActorSource, got)
+	if got := ec.Attributes[featureflags.FlagAttrActorSource]; got != "task_token" {
+		t.Errorf("%s = %q, want task_token", featureflags.FlagAttrActorSource, got)
 	}
 	// Member attributes must survive the copy.
-	if got := ec.Attributes[FlagAttrMemberRole]; got != "admin" {
+	if got := ec.Attributes[featureflags.FlagAttrMemberRole]; got != "admin" {
 		t.Errorf("member role lost during enrichment: %q", got)
 	}
 }
@@ -119,7 +120,7 @@ func TestWithAgentEvalAttributesDoesNotMutateInput(t *testing.T) {
 	base := evalContextFor(testWsID, testMember(t))
 	_ = withAgentEvalAttributes(base, r)
 
-	if _, ok := base.Attributes[FlagAttrAgentID]; ok {
+	if _, ok := base.Attributes[featureflags.FlagAttrAgentID]; ok {
 		t.Error("withAgentEvalAttributes mutated the input EvalContext")
 	}
 }
@@ -157,7 +158,7 @@ func TestAgentDenyListCanTargetAgent(t *testing.T) {
 	svc := serviceWithRule(t, featureflag.Rule{
 		Default: true,
 		Deny:    []string{testAgentID},
-		DenyBy:  FlagAttrAgentID,
+		DenyBy:  featureflags.FlagAttrAgentID,
 	})
 
 	human := httptest.NewRequest(http.MethodGet, "/", nil)

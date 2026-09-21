@@ -4,44 +4,10 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
-)
-
-// Feature-flag targeting attributes (CHE-621).
-//
-// featureflag.EvalContext carries UserID and WorkspaceID as dedicated fields;
-// everything else a rule can target on arrives through Attributes. These are
-// the attribute names this codebase populates, and therefore the complete set
-// a Rule's AllowBy / DenyBy may name today.
-//
-// Every value here is derived from server-established request state: the
-// member row the workspace middleware already loaded, or a header the Auth
-// middleware strips from client input before re-setting it itself
-// (see middleware/auth.go and handler/actor_guards.go). A client cannot
-// choose which flag cohort it lands in by setting a header.
-const (
-	// FlagAttrMemberID targets the workspace membership row rather than the
-	// user, so a rule can enable a flag for one person in one workspace
-	// without following them into another.
-	FlagAttrMemberID = "member_id"
-
-	// FlagAttrMemberRole targets the member's workspace role (owner, admin,
-	// member, ...), for rollouts that should reach admins first.
-	FlagAttrMemberRole = "member_role"
-
-	// FlagAttrAgentID targets the agent a task-token request is running as.
-	// Empty for human requests. Set only from the server-stamped X-Agent-ID
-	// header, which middleware/auth.go deletes from client input (MUL-3428)
-	// and re-sets only on the mat_ task-token branch.
-	FlagAttrAgentID = "agent_id"
-
-	// FlagAttrActorSource distinguishes machine credentials from humans:
-	// "task_token" (agent run), "cloud_pat" (cloud node), or empty (human).
-	// Server-set only; see handler/actor_guards.go for why this header is
-	// the single source of truth for "is this a machine credential?".
-	FlagAttrActorSource = "actor_source"
 )
 
 // evalContextFor builds the targeting context for a resolved workspace member.
@@ -50,13 +16,17 @@ const (
 // part of the context that every caller of SetMemberContext can supply,
 // including handlers that resolve a workspace by entity lookup instead of
 // going through the workspace middleware.
+//
+// The attribute names (featureflags.FlagAttr*) are defined once in
+// internal/featureflags/eval_attrs.go; see that file for the full set a
+// Rule's AllowBy / DenyBy may name.
 func evalContextFor(workspaceID string, member db.Member) featureflag.EvalContext {
 	return featureflag.EvalContext{
 		UserID:      util.UUIDToString(member.UserID),
 		WorkspaceID: workspaceID,
 		Attributes: map[string]string{
-			FlagAttrMemberID:   util.UUIDToString(member.ID),
-			FlagAttrMemberRole: member.Role,
+			featureflags.FlagAttrMemberID:   util.UUIDToString(member.ID),
+			featureflags.FlagAttrMemberRole: member.Role,
 		},
 	}
 }
@@ -68,6 +38,10 @@ func evalContextFor(workspaceID string, member db.Member) featureflag.EvalContex
 // This is separate from evalContextFor because agent identity lives on
 // headers rather than on the member row, so only request-scoped callers can
 // supply it. Copying rather than mutating keeps the input safe to reuse.
+//
+// X-Actor-Source and X-Agent-ID are server-stamped: middleware/auth.go strips
+// any client-supplied value before re-setting it itself, so a client cannot
+// choose its own flag cohort by setting these headers.
 func withAgentEvalAttributes(ec featureflag.EvalContext, r *http.Request) featureflag.EvalContext {
 	actorSource := r.Header.Get("X-Actor-Source")
 	agentID := r.Header.Get("X-Agent-ID")
@@ -80,10 +54,10 @@ func withAgentEvalAttributes(ec featureflag.EvalContext, r *http.Request) featur
 		attrs[k] = v
 	}
 	if actorSource != "" {
-		attrs[FlagAttrActorSource] = actorSource
+		attrs[featureflags.FlagAttrActorSource] = actorSource
 	}
 	if agentID != "" {
-		attrs[FlagAttrAgentID] = agentID
+		attrs[featureflags.FlagAttrAgentID] = agentID
 	}
 	ec.Attributes = attrs
 	return ec
