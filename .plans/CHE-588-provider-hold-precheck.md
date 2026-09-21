@@ -127,7 +127,12 @@ dispatch happen anyway — can find them, not just in Go source.
     the eventual backstop if a hold never lifts.
   - `RetrySourceContextQuickCreate` (the manual quick-create retry button)
     refuses before any row is created, via `ErrSourceContextRetryProviderHeld`.
+  - `RerunIssue` (the general manual "rerun" button) — resolved in CHE-675.
+    Gated at the one choke point common to every rerun shape (task_id rerun,
+    assignee rerun, squad-leader rerun): right after the target agent is
+    resolved and before any prior task is cancelled, alongside the existing
+    canInvoke re-validation. Refuses via `ErrRerunProviderHeld`, mapped to the
+    same `dispatch_blocked.provider_hold` HTTP response as the quick-create
+    button.
 
-  `RerunIssue`/`enqueueRerunTask` — the general manual "rerun" button, a
-  materially larger and separately-scoped surface — remains ungated; tracked
-  as CHE-675 rather than folded into CHE-607, per the same review.
+  No known gaps remain in this list.

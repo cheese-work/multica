@@ -217,6 +217,10 @@ func (h *Handler) RerunIssue(w http.ResponseWriter, r *http.Request) {
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
 		return
 	}
+	if errors.Is(err, service.ErrRerunProviderHeld) {
+		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonProviderHold)
+		return
+	}
 	if errors.Is(err, service.ErrIssueInTriage) {
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonIssueInTriage)
 		return
