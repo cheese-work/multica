@@ -304,6 +304,46 @@ func TestCheckUnsupportedWaiver(t *testing.T) {
 	})
 }
 
+// TestCheckIgnoresUnrelatedWaiverVocabulary is CHE-681's regression coverage:
+// waiverClaimRe must not fire on real engineering text that merely mentions
+// the word "waiver" outside a fabricated-authorization claim. Cases are
+// seeded verbatim from the false positives found in production data
+// (protocol_lint_run, 2026-09-18..21): CI/ABI governance language and
+// self-referential discussion of this very check.
+func TestCheckIgnoresUnrelatedWaiverVocabulary(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{
+			name:    "CD/ABI waiver governance language",
+			content: "This needs a scoped waiver for this stack before the gate reopens.",
+		},
+		{
+			name:    "ABI check waiver reference",
+			content: "Filed a waiver on `checkLegacyAbi` for the RevenueCat SDK bump.",
+		},
+		{
+			name:    "self-referential discussion of this check",
+			content: "This is about checkUnsupportedWaivers's own waiver-grant lookup bug, not a real claim.",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			in := Input{
+				RunID:          "run-che681",
+				PostedComments: []PostedComment{{ID: "c1", Content: tc.content}},
+			}
+			if violations := Check(in); len(violations) != 0 {
+				t.Fatalf("Check() with unrelated waiver text %q = %v, want no violations", tc.content, violations)
+			}
+		})
+	}
+}
+
 // TestCheckReportsEveryUnsupportedWaiverClaim: each fabricated claim is an
 // independent violation, not just the first one found.
 func TestCheckReportsEveryUnsupportedWaiverClaim(t *testing.T) {

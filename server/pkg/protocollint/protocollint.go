@@ -277,10 +277,18 @@ func checkEvidenceURL(in Input) (Violation, bool) {
 
 // waiverClaimRe matches this run's own comment text claiming a human waived a
 // step, in the specific vocabulary the CLAUDE.md brief warns against
-// fabricating ("waived", "waiver granted", "explicitly waived", etc.).
-// Deliberately narrow: it exists to catch the fabrication pattern the task
-// names, not to police every mention of the word "waive".
-var waiverClaimRe = regexp.MustCompile(`(?i)\b(waiv(?:ed|er)|skip(?:ped|ping) (?:with|per) (?:approval|waiver))\b`)
+// fabricating ("waived", "explicitly waived", "skipped with/per waiver",
+// etc.). Deliberately narrow: it exists to catch the fabrication pattern the
+// task names, not to police every mention of the word "waiver".
+//
+// CHE-681: the bare noun "waiver" was previously matched on its own, which
+// fired on any unrelated engineering use of the word — CI/ABI/deploy
+// governance ("scoped waiver for this stack", "waiver on `checkLegacyAbi`")
+// and self-referential discussion of this very check ("...own waiver-grant
+// lookup bug"). A real fabricated-waiver claim always asserts something WAS
+// waived (past tense), so the noun form is dropped; only the verb form and
+// the explicit "skip ... with/per waiver" phrasing remain.
+var waiverClaimRe = regexp.MustCompile(`(?i)\b(waived|skip(?:ped|ping) (?:with|per) (?:approval|waiver))\b`)
 
 // waiverGrantRe matches a human actually granting one, in a comment authored
 // by a workspace member (never an agent or system narration). Intentionally
