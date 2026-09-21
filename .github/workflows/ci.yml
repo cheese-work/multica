@@ -545,21 +545,10 @@ jobs:
   # a cached "ok" from an untouched package could mask a real failure.
   backend-tests:
     needs: changes
-    # Stays on a GitHub-hosted runner even where the rest of Linux CI moves to
-    # cheese-x99 (CHE-700): this is the only job in the repo that uses
-    # `services`, and the self-hosted runners talk to a nested Docker daemon
-    # (`DOCKER_HOST=tcp://dind-N:2376`) living in a *different* network
-    # namespace from the runner itself. Service-container ports are published
-    # by that nested daemon, so they bind inside the dind container's
-    # namespace and never appear on the runner's 127.0.0.1 — the job's
-    # `postgres://...@localhost:5432` is unreachable by construction, not
-    # merely slow to come up. Docker's own health check still reports
-    # `healthy` (it runs inside the dind namespace), so the job proceeds and
-    # then burns its whole migration retry window on `connection refused`.
-    # Routing this one job back is the small carve-out; making it work on
-    # cheese-x99 needs the runner and dind to share a namespace, which is a
-    # runner-fleet change, not a workflow change.
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    # CHE-731: cheese-x99's runner and nested dind daemon share a network
+    # namespace, so service-container ports published by dind are reachable
+    # from the job process at localhost.
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
     # `services` cannot be conditional, so the Postgres and Redis containers
     # still start on a filtered PR. That is ~1 minute of runner time against
     # the several minutes the gated steps below cost; job-level `if` would
