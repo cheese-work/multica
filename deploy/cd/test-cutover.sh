@@ -292,6 +292,8 @@ cat >"$manifest" <<JSON
     "web": "ghcr.io/cheese-work/multica-web@$web_digest"
   },
   "source_sha": "$source_sha"
+  ,"migration_inventory_sha256": "sha256:$(printf 'e%.0s' {1..64})"
+  ,"baseline_tuple_sha256": "sha256:$(printf 'f%.0s' {1..64})"
 }
 JSON
 
@@ -310,11 +312,20 @@ build_packet() {
     });
     const packet = {
       schema_version: 1,
+      candidate: {
+        source_sha: "504078f8ea7fa31f342f195659e93a7f6c3e5a91",
+        backend_image: "ghcr.io/cheese-work/multica-backend@sha256:" + "a".repeat(64),
+        web_image: "ghcr.io/cheese-work/multica-web@sha256:" + "b".repeat(64),
+        migration_inventory_sha256: "sha256:" + "e".repeat(64),
+        baseline_tuple_sha256: "sha256:" + "f".repeat(64),
+      },
       ordered_migrations: ordered,
-      ledger_rows: ordered.map((o) => ({ version: o.version, applied_by: "cutover-controller" })),
-      allowed_writers: ["cutover-controller"],
-      indexes: [{ name: "idx_example", valid: true }],
-      hooks: [{ name: "backfill_example", status: "completed" }],
+      observed_state: {
+        schema_version: 1,
+        ledger: { status: "complete", versions: ordered.map((o) => o.version) },
+        indexes: { status: "complete", invalid: [] },
+        hooks: { status: "complete", observations: [{ name: "backfill_example", status: "completed" }] },
+      },
       previous_image_pair: {
         backend: "ghcr.io/cheese-work/multica-backend:sha-abc123",
         web: "ghcr.io/cheese-work/multica-web:sha-abc123",
@@ -433,6 +444,36 @@ if [ "$up_count_green" -ne 1 ]; then
   echo "scenario happy-path: expected exactly one 'up' for backend-green (the candidate), got $up_count_green" >&2
   exit 1
 fi
+
+# The controller must verify both immutable image digests before draining.
+# Exercise each mismatch independently and assert no incumbent stop occurred.
+for role in backend web; do
+  state_dir="$(fresh_scenario_dir ${role}-digest-mismatch)"
+  mkdir -p "$state_dir/control"
+  export CUTOVER_TEST_CONTROL_DIR="$state_dir/control"
+  export MOCK_BACKEND_DIGEST="$backend_digest"
+  export MOCK_WEB_DIGEST="$web_digest"
+  export MOCK_INCUMBENT_BACKEND_DIGEST="$incumbent_backend_digest"
+  export MOCK_INCUMBENT_WEB_DIGEST="$incumbent_web_digest"
+  export MOCK_EXPECTED_COMMIT="$source_sha"
+  export CUTOVER_DATABASE_URL="postgres://multica:***@127.0.0.1:5432/multica?sslmode=disable"
+  export ROUTER_STATE_DIR="$state_dir/router-state"
+  if [ "$role" = backend ]; then
+    export MOCK_BACKEND_DIGEST="sha256:$(printf 'e%.0s' {1..64})"
+  else
+    export MOCK_WEB_DIGEST="sha256:$(printf 'e%.0s' {1..64})"
+  fi
+  set +e
+  output="$(bash deploy/cd/cutover.sh cutover --manifest "$manifest" --packet "$packet" --compose-dir "$compose_dir" --state-dir "$state_dir" 2>&1)"
+  status=$?
+  set -e
+  expect_exit 1 "$status" "${role}-digest-mismatch"
+  expect_contains "$output" "pulled ${role} image digest mismatch" "${role}-digest-mismatch"
+  if [ -f "$state_dir/control/stop-calls.log" ]; then
+    echo "scenario ${role}-digest-mismatch: incumbent was drained before both image digests were verified" >&2
+    exit 1
+  fi
+done
 
 # ---------------------------------------------------------------------------
 # Scenario 2 (negative control): quiescence preflight denies -> cutover must
@@ -794,5 +835,73 @@ if [ -f "$state_dir/control/docker-calls.log" ] && grep -q "^compose pull" "$sta
   echo "scenario ghcr-login-fails: docker compose pull was invoked despite the ghcr.io login failing" >&2
   exit 1
 fi
+
+# ---------------------------------------------------------------------------
+# Scenario 14: the reviewed controller runs from a disposable relocated
+# bundle, but router activation must land in the durable directory mounted
+# by the already-running router. Removing the bundle afterwards must neither
+# remove nor invalidate the selected generation.
+# ---------------------------------------------------------------------------
+relocated_root="$work_dir/relocated-controller"
+mkdir -p "$relocated_root/deploy/cd/router" "$relocated_root/server"
+cp deploy/cd/{cutover.sh,deploy-lib.sh,docker-compose.ab.yml,quiescence.mjs,release-packet.mjs,router.sh} "$relocated_root/deploy/cd/"
+cp deploy/cd/router/nginx.conf.template "$relocated_root/deploy/cd/router/"
+cp -a server/migrations "$relocated_root/server/migrations"
+
+state_dir="$(fresh_scenario_dir relocated-controller-live-router-state)"
+export CUTOVER_TEST_CONTROL_DIR="$state_dir/control"
+mkdir -p "$CUTOVER_TEST_CONTROL_DIR"
+export MOCK_BACKEND_DIGEST="$backend_digest"
+export MOCK_WEB_DIGEST="$web_digest"
+export MOCK_INCUMBENT_BACKEND_DIGEST="$incumbent_backend_digest"
+export MOCK_INCUMBENT_WEB_DIGEST="$incumbent_web_digest"
+export MOCK_EXPECTED_COMMIT="$source_sha"
+export CUTOVER_DATABASE_URL="postgres://multica:***@127.0.0.1:5432/multica?sslmode=disable"
+durable_router_state="$work_dir/live-router-mount"
+touch "$CUTOVER_TEST_CONTROL_DIR/backend-ready-${BACKEND_BLUE_PORT:-18081}"
+touch "$CUTOVER_TEST_CONTROL_DIR/backend-ready-${BACKEND_GREEN_PORT:-18082}"
+
+remote_parent_script="$work_dir/remote-parent.sh"
+GHCR_PULL_TOKEN='' bash deploy/cd/render-cutover-remote-script.sh \
+  --router-state-dir "$durable_router_state" \
+  -- bash "$relocated_root/deploy/cd/cutover.sh" cutover \
+    --manifest "$manifest" --packet "$packet" --compose-dir "$compose_dir" --state-dir "$state_dir" \
+  >"$remote_parent_script"
+
+# A fresh shell is load-bearing: this must prove inheritance across the
+# generated remote parent -> bundled child boundary, not reuse this test's
+# own environment. Preserve only the mock controls the child genuinely needs.
+output="$(env -i \
+  HOME="$HOME" PATH="$PATH" \
+  CUTOVER_TEST_CONTROL_DIR="$CUTOVER_TEST_CONTROL_DIR" \
+  MOCK_BACKEND_DIGEST="$MOCK_BACKEND_DIGEST" MOCK_WEB_DIGEST="$MOCK_WEB_DIGEST" \
+  MOCK_INCUMBENT_BACKEND_DIGEST="$MOCK_INCUMBENT_BACKEND_DIGEST" \
+  MOCK_INCUMBENT_WEB_DIGEST="$MOCK_INCUMBENT_WEB_DIGEST" \
+  MOCK_EXPECTED_COMMIT="$MOCK_EXPECTED_COMMIT" CUTOVER_DATABASE_URL="$CUTOVER_DATABASE_URL" \
+  bash "$remote_parent_script" 2>&1)"
+status=$?
+expect_exit 0 "$status" relocated-controller-live-router-state
+expect_contains "$output" "cutover complete: green is now active" relocated-controller-live-router-state
+if [ ! -L "$durable_router_state/active.conf" ] || [ ! -L "$durable_router_state/active.json" ]; then
+  echo "scenario relocated-controller-live-router-state: activation did not update the durable router mount" >&2
+  exit 1
+fi
+if [ -e "$relocated_root/deploy/cd/router/state/active.conf" ]; then
+  echo "scenario relocated-controller-live-router-state: activation leaked into disposable bundle-local router state" >&2
+  exit 1
+fi
+route_colour="$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).colour)' "$durable_router_state/active.json")"
+[ "$route_colour" = green ] || { echo "scenario relocated-controller-live-router-state: live router still selects $route_colour" >&2; exit 1; }
+grep -q '127.0.0.1:18082' "$durable_router_state/active.conf" || {
+  echo "scenario relocated-controller-live-router-state: live route does not target green backend" >&2
+  exit 1
+}
+rm -rf "$relocated_root"
+route_colour="$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).colour)' "$durable_router_state/active.json")"
+[ "$route_colour" = green ] || { echo "scenario relocated-controller-live-router-state: bundle cleanup lost durable route" >&2; exit 1; }
+grep -q '127.0.0.1:18082' "$durable_router_state/active.conf" || {
+  echo "scenario relocated-controller-live-router-state: bundle cleanup invalidated durable route" >&2
+  exit 1
+}
 
 echo "cutover.sh control-flow fixtures passed"

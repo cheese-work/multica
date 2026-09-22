@@ -335,6 +335,7 @@ jobs:
       source_sha: ${{ steps.verify_admission.outputs.source_sha }}
       ref: ${{ steps.paths.outputs.ref }}
       manifest_path: ${{ steps.paths.outputs.manifest_path }}
+      baseline_tuple_path: ${{ steps.paths.outputs.baseline_tuple_path }}
     steps:
       - name: Resolve the evidence set for this trigger
         id: paths
@@ -405,11 +406,22 @@ jobs:
             --migration-inventory-sha256 "$migration_sha"
           echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
 
-      - name: Upload admitted manifest for the deploy job
+      - name: Stage exact cutover input layout
+        shell: bash
+        env:
+          MANIFEST_PATH: ${{ steps.paths.outputs.manifest_path }}
+          BASELINE_TUPLE_PATH: ${{ steps.paths.outputs.baseline_tuple_path }}
+        run: |
+          set -euo pipefail
+          mkdir -p cutover-input
+          cp "$MANIFEST_PATH" cutover-input/manifest.json
+          cp "$BASELINE_TUPLE_PATH" cutover-input/baseline-tuple.json
+
+      - name: Upload exact cutover input layout
         uses: actions/upload-artifact@v4
         with:
-          name: cd-deploy-admitted-manifest
-          path: ${{ steps.paths.outputs.manifest_path }}
+          name: cd-deploy-admitted-input
+          path: cutover-input
           retention-days: 7
           if-no-files-found: error
 
@@ -429,11 +441,11 @@ jobs:
           ref: ${{ needs.admission.outputs.ref }}
           fetch-depth: 1
 
-      - name: Download admitted manifest
+      - name: Download exact cutover input layout
         uses: actions/download-artifact@v4
         with:
-          name: cd-deploy-admitted-manifest
-          path: cd-deploy-manifest
+          name: cd-deploy-admitted-input
+          path: cutover-input
 
       - name: Deploy to C00 over SSH
         shell: bash
@@ -446,6 +458,7 @@ jobs:
           C00_SSH_KEY: ${{ secrets.C00_SSH_KEY }}
           C00_COMPOSE_DIR: ${{ secrets.C00_COMPOSE_DIR }}
           C00_STATE_DIR: ${{ secrets.C00_STATE_DIR }}
+          C00_CUTOVER_STATE_DIR: ${{ secrets.C00_CUTOVER_STATE_DIR }}
           # read:packages-only PAT (CHE-549) — C00 has no ambient registry
           # credential, so deploy.sh logs in to ghcr.io with this immediately
           # before its pull step and logs out unconditionally afterwards (see
@@ -453,11 +466,12 @@ jobs:
           # exported var, never interpolated into the command line, so it
           # never appears in a process listing or shell history on C00.
           GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
-          MANIFEST_PATH: ${{ needs.admission.outputs.manifest_path }}
         run: |
           set -euo pipefail
-          manifest_basename="$(basename "$MANIFEST_PATH")"
-          local_manifest="cd-deploy-manifest/${manifest_basename}"
+          manifest_path="cutover-input/manifest.json"
+          baseline_path="cutover-input/baseline-tuple.json"
+          test -f "$manifest_path"
+          test -f "$baseline_path"
 
           mkdir -p ~/.ssh
           printf '%s\n' "$C00_SSH_KEY" > ~/.ssh/c00_deploy_key
@@ -466,22 +480,36 @@ jobs:
 
           ssh_cmd=(ssh -i ~/.ssh/c00_deploy_key -o BatchMode=yes "${C00_SSH_USER}@${C00_SSH_HOST}")
           remote_dir="${C00_STATE_DIR%/}/cd-deploy-$(date +%s)"
+          router_state_dir="${C00_COMPOSE_DIR%/}/deploy/cd/router/state"
+
+          # Observe the real database immediately before building the packet.
+          # The capture is read-only and fails closed on any unknown ledger,
+          # invalid-index or hook state.
+          observe_dir="${remote_dir}-observe"
+          "${ssh_cmd[@]}" "mkdir -p '$observe_dir'"
+          scp -i ~/.ssh/c00_deploy_key -o BatchMode=yes deploy/cd/capture-release-state.sh \
+            "${C00_SSH_USER}@${C00_SSH_HOST}:${observe_dir}/"
+          "${ssh_cmd[@]}" "bash '$observe_dir/capture-release-state.sh' --compose-dir '$C00_COMPOSE_DIR' --output '$observe_dir/observed-state.json'"
+          scp -i ~/.ssh/c00_deploy_key -o BatchMode=yes \
+            "${C00_SSH_USER}@${C00_SSH_HOST}:${observe_dir}/observed-state.json" observed-state.json
+          "${ssh_cmd[@]}" "rm -rf '$observe_dir'" || true
+
+          bash deploy/cd/build-cutover-bundle.sh \
+            --manifest "$manifest_path" \
+            --baseline-tuple "$baseline_path" \
+            --observed-state observed-state.json \
+            --output cutover-controller.tar \
+            --checksum-output cutover-controller.tar.sha256
+          local_bundle="cutover-controller.tar"
+          local_checksum="cutover-controller.tar.sha256"
+          sha256sum -c "$local_checksum"
 
           "${ssh_cmd[@]}" "mkdir -p '$remote_dir'"
-          # capture-tuple.sh, tuple-snapshot.mjs and deploy-lib.sh all travel
-          # with deploy.sh: deploy.sh delegates its post-deploy tuple
-          # recording to the first two and sources deploy-lib.sh directly
-          # for its own JSON/image/migration helpers (CHE-397 unit 2's
-          # shared-library extraction) — it refuses to start if any of the
-          # three are absent from its own script_dir (see deploy.sh's
-          # file-existence checks immediately after usage()). A transfer
-          # set missing any one of them fails deploy.sh before it does
-          # anything, on C00, not in CI — this exact omission for
-          # deploy-lib.sh was caught only by reproducing this scp's file
-          # list locally (independent review of CHE-608).
+          # Transfer the exact reviewed controller tree, its matching
+          # migrations, manifest and packet as one content-addressed bundle.
           scp -i ~/.ssh/c00_deploy_key -o BatchMode=yes \
-            deploy/cd/deploy.sh deploy/cd/deploy-lib.sh deploy/cd/capture-tuple.sh deploy/cd/tuple-snapshot.mjs \
-            "$local_manifest" \
+            "$local_bundle" \
+            "$local_checksum" \
             "${C00_SSH_USER}@${C00_SSH_HOST}:${remote_dir}/"
 
           # set -e would otherwise abort this script the instant the SSH
@@ -496,15 +524,12 @@ jobs:
           # any other account on the host) and not written to a file on C00
           # (nothing left behind for `remote_dir`'s cleanup below to miss).
           # `set -a` exports every var assigned afterwards, including the one
-          # `deploy.sh` reads by name, without listing it a second time.
+          # `cutover.sh` reads by name, without listing it a second time.
           set +e
-          {
-            printf 'set -a\n'
-            printf 'GHCR_PULL_TOKEN=%q\n' "$GHCR_PULL_TOKEN"
-            printf 'set +a\n'
-            printf "bash '%s/deploy.sh' --manifest '%s/%s' --compose-dir '%s' --state-dir '%s'\n" \
-              "$remote_dir" "$remote_dir" "$manifest_basename" "$C00_COMPOSE_DIR" "$C00_STATE_DIR"
-          } | "${ssh_cmd[@]}" bash -s
+          bash deploy/cd/render-cutover-remote-script.sh \
+            --router-state-dir "$router_state_dir" \
+            -- bash -c "cd '$remote_dir' && sha256sum -c cutover-controller.tar.sha256 && tar -xf cutover-controller.tar && bash cutover-controller/deploy/cd/verify-cutover-bundle.sh cutover-controller && cd '$C00_COMPOSE_DIR' && . ./.env && export CUTOVER_DATABASE_URL=\"postgres://\${POSTGRES_USER:***@postgres:5432/\${POSTGRES_DB:-multica}?sslmode=disable\" && bash '$remote_dir/cutover-controller/deploy/cd/cutover.sh' cutover --manifest '$remote_dir/cutover-controller/evidence/manifest.json' --packet '$remote_dir/cutover-controller/evidence/release-packet.json' --compose-dir '$C00_COMPOSE_DIR' --state-dir '$C00_CUTOVER_STATE_DIR'" \
+            | "${ssh_cmd[@]}" bash -s
           deploy_status=$?
           set -e
 
