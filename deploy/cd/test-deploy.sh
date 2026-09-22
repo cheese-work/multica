@@ -800,6 +800,8 @@ expect_contains "$workflow_text" 'path: cutover-input' workflow-release-packet
 expect_contains "$workflow_text" 'build-cutover-bundle.sh' workflow-release-packet
 expect_contains "$workflow_text" 'verify-cutover-bundle.sh' workflow-release-packet
 expect_contains "$workflow_text" 'sha256sum -c cutover-controller.tar.sha256' workflow-release-packet
+expect_contains "$workflow_text" 'router_state_dir="${C00_COMPOSE_DIR%/}/deploy/cd/router/state"' workflow-router-state
+expect_contains "$workflow_text" "printf 'ROUTER_STATE_DIR=%q\\n' \"\$router_state_dir\"" workflow-router-state
 expect_not_contains "$workflow_text" 'local_packet="cd-deploy-manifest/release-packet.json"' workflow-release-packet
 expect_contains "$workflow_text" 'CUTOVER_DATABASE_URL=' workflow-ab-deploy-route
 expect_not_contains "$workflow_text" "bash '%s/deploy.sh' --manifest" workflow-ab-deploy-route

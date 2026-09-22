@@ -836,4 +836,57 @@ if [ -f "$state_dir/control/docker-calls.log" ] && grep -q "^compose pull" "$sta
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# Scenario 14: the reviewed controller runs from a disposable relocated
+# bundle, but router activation must land in the durable directory mounted
+# by the already-running router. Removing the bundle afterwards must neither
+# remove nor invalidate the selected generation.
+# ---------------------------------------------------------------------------
+relocated_root="$work_dir/relocated-controller"
+mkdir -p "$relocated_root/deploy/cd/router" "$relocated_root/server"
+cp deploy/cd/{cutover.sh,deploy-lib.sh,docker-compose.ab.yml,quiescence.mjs,release-packet.mjs,router.sh} "$relocated_root/deploy/cd/"
+cp deploy/cd/router/nginx.conf.template "$relocated_root/deploy/cd/router/"
+cp -a server/migrations "$relocated_root/server/migrations"
+
+state_dir="$(fresh_scenario_dir relocated-controller-live-router-state)"
+export CUTOVER_TEST_CONTROL_DIR="$state_dir/control"
+mkdir -p "$CUTOVER_TEST_CONTROL_DIR"
+export MOCK_BACKEND_DIGEST="$backend_digest"
+export MOCK_WEB_DIGEST="$web_digest"
+export MOCK_INCUMBENT_BACKEND_DIGEST="$incumbent_backend_digest"
+export MOCK_INCUMBENT_WEB_DIGEST="$incumbent_web_digest"
+export MOCK_EXPECTED_COMMIT="$source_sha"
+export CUTOVER_DATABASE_URL="postgres://multica:***@127.0.0.1:5432/multica?sslmode=disable"
+durable_router_state="$work_dir/live-router-mount"
+export ROUTER_STATE_DIR="$durable_router_state"
+touch "$CUTOVER_TEST_CONTROL_DIR/backend-ready-${BACKEND_BLUE_PORT:-18081}"
+touch "$CUTOVER_TEST_CONTROL_DIR/backend-ready-${BACKEND_GREEN_PORT:-18082}"
+
+output="$(bash "$relocated_root/deploy/cd/cutover.sh" cutover \
+  --manifest "$manifest" --packet "$packet" --compose-dir "$compose_dir" --state-dir "$state_dir" 2>&1)"
+status=$?
+expect_exit 0 "$status" relocated-controller-live-router-state
+expect_contains "$output" "cutover complete: green is now active" relocated-controller-live-router-state
+if [ ! -L "$durable_router_state/active.conf" ] || [ ! -L "$durable_router_state/active.json" ]; then
+  echo "scenario relocated-controller-live-router-state: activation did not update the durable router mount" >&2
+  exit 1
+fi
+if [ -e "$relocated_root/deploy/cd/router/state/active.conf" ]; then
+  echo "scenario relocated-controller-live-router-state: activation leaked into disposable bundle-local router state" >&2
+  exit 1
+fi
+route_colour="$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).colour)' "$durable_router_state/active.json")"
+[ "$route_colour" = green ] || { echo "scenario relocated-controller-live-router-state: live router still selects $route_colour" >&2; exit 1; }
+grep -q '127.0.0.1:18082' "$durable_router_state/active.conf" || {
+  echo "scenario relocated-controller-live-router-state: live route does not target green backend" >&2
+  exit 1
+}
+rm -rf "$relocated_root"
+route_colour="$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).colour)' "$durable_router_state/active.json")"
+[ "$route_colour" = green ] || { echo "scenario relocated-controller-live-router-state: bundle cleanup lost durable route" >&2; exit 1; }
+grep -q '127.0.0.1:18082' "$durable_router_state/active.conf" || {
+  echo "scenario relocated-controller-live-router-state: bundle cleanup invalidated durable route" >&2
+  exit 1
+}
+
 echo "cutover.sh control-flow fixtures passed"
