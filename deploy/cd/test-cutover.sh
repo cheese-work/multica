@@ -320,10 +320,12 @@ build_packet() {
         baseline_tuple_sha256: "sha256:" + "f".repeat(64),
       },
       ordered_migrations: ordered,
-      ledger_rows: ordered.map((o) => ({ version: o.version, applied_by: "cutover-controller" })),
-      allowed_writers: ["cutover-controller"],
-      indexes: [{ name: "idx_example", valid: true }],
-      hooks: [{ name: "backfill_example", status: "completed" }],
+      observed_state: {
+        schema_version: 1,
+        ledger: { status: "complete", versions: ordered.map((o) => o.version) },
+        indexes: { status: "complete", invalid: [] },
+        hooks: { status: "complete", observations: [{ name: "backfill_example", status: "completed" }] },
+      },
       previous_image_pair: {
         backend: "ghcr.io/cheese-work/multica-backend:sha-abc123",
         web: "ghcr.io/cheese-work/multica-web:sha-abc123",

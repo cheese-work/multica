@@ -137,7 +137,7 @@ deploy_lock="$state_dir/deploy.lock"
 
 # shellcheck source=deploy-lib.sh
 source "$script_dir/deploy-lib.sh"
-compose_files=("docker-compose.selfhost.yml" "deploy/cd/docker-compose.ab.yml")
+compose_files=("docker-compose.selfhost.yml" "$script_dir/docker-compose.ab.yml")
 
 # ghcr_login/ghcr_logout (deploy-lib.sh, CHE-549) — C00 has no ambient GHCR
 # credential, so an unauthenticated pull of the private multica-backend/
@@ -234,7 +234,8 @@ case "$command" in
     # any mutation — the packet is the release's admission proof, not an
     # advisory document.
     echo "==> verifying release packet contract"
-    if ! node "$script_dir/release-packet.mjs" verify --packet "$packet" --manifest "$manifest"; then
+    if ! node "$script_dir/release-packet.mjs" verify --packet "$packet" --manifest "$manifest" \
+      --migrations-dir "$root_dir/server/migrations"; then
       echo "!! release packet failed contract checks; refusing to cut over" >&2
       exit 1
     fi

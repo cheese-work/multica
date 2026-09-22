@@ -107,20 +107,25 @@ function validatePacket(packet, { migrationsDir, manifest }) {
     }
   }
 
-  // Dirty ledger / unknown writer: every reported ledger row must be one of
-  // the packet's own ordered_migrations, and applied_by must be a role this
-  // packet explicitly allowlists — an unrecognized writer (a manual psql
-  // session, an out-of-band tool) invalidates the packet rather than being
-  // silently accepted as "some migration ran".
-  if (!Array.isArray(packet.ledger_rows)) fail("ledger_rows must be an array (even if empty)");
-  const allowedWriters = new Set(packet.allowed_writers ?? []);
-  if (allowedWriters.size === 0) fail("allowed_writers must name at least one recognized migration-writer role");
-  for (const row of packet.ledger_rows) {
-    if (!packetVersions.includes(row.version)) {
-      fail(`ledger contains version ${row.version} not present in ordered_migrations — dirty ledger state`);
-    }
-    if (!allowedWriters.has(row.applied_by)) {
-      fail(`ledger row for ${row.version} was applied_by unknown writer '${row.applied_by}'`);
+  const observed = packet.observed_state;
+  if (!observed || typeof observed !== "object") fail("observed_state is required");
+  if (observed.ledger?.status !== "complete" || !Array.isArray(observed.ledger?.versions)) {
+    fail("observed ledger state is unknown or incomplete");
+  }
+  if (observed.indexes?.status !== "complete" || !Array.isArray(observed.indexes?.invalid)) {
+    fail("observed index state is unknown or incomplete");
+  }
+  if (observed.hooks?.status !== "complete" || !Array.isArray(observed.hooks?.observations)) {
+    fail("observed hook/backfill state is unknown or incomplete");
+  }
+
+  // schema_migrations stores version and applied_at, not an ownership field.
+  // Do not synthesize applied_by rows or allowlists. Ownership is proven by
+  // the supervised one-shot migrator; this packet records only what the
+  // database can actually report.
+  for (const version of observed.ledger.versions) {
+    if (!packetVersions.includes(version)) {
+      fail(`ledger contains version ${version} not present in ordered_migrations — dirty ledger state`);
     }
   }
 
@@ -128,17 +133,15 @@ function validatePacket(packet, { migrationsDir, manifest }) {
   // build that failed or was interrupted, per AGENTS.md's CONCURRENTLY
   // migration rule) is an outright rejection — an invalid index cannot be
   // trusted for either the forward or rollback direction.
-  if (!Array.isArray(packet.indexes)) fail("indexes must be an array (even if empty)");
-  const invalidIndexes = packet.indexes.filter((i) => i.valid !== true);
+  const invalidIndexes = observed.indexes.invalid;
   if (invalidIndexes.length > 0) {
-    fail(`invalid indexes present: ${invalidIndexes.map((i) => i.name).join(", ")}`);
+    fail(`invalid indexes present: ${invalidIndexes.join(", ")}`);
   }
 
   // Hooks/backfills: every hook the packet declares must report completed,
   // never partial/pending/failed — a partially-run backfill leaves rows in
   // a shape neither the old nor the new binary was written to expect.
-  if (!Array.isArray(packet.hooks)) fail("hooks must be an array (even if empty)");
-  const incompleteHooks = packet.hooks.filter((h) => h.status !== "completed");
+  const incompleteHooks = observed.hooks.observations.filter((h) => h.status !== "completed");
   if (incompleteHooks.length > 0) {
     fail(`incomplete hooks/backfills present: ${incompleteHooks.map((h) => `${h.name}=${h.status}`).join(", ")}`);
   }
@@ -174,6 +177,7 @@ function imageRepository(reference) {
 function create(args) {
   const manifest = readJSON(option("--manifest", args));
   const baselinePath = option("--baseline-tuple", args);
+  const observed = readJSON(option("--observed-state", args));
   const baselineBytes = readFileSync(baselinePath);
   const baseline = JSON.parse(baselineBytes);
   const baselineDigest = `sha256:${createHash("sha256").update(baselineBytes).digest("hex")}`;
@@ -196,6 +200,16 @@ function create(args) {
   const minimumRollbackVersion = baseline.migration_ledger?.latest?.version;
   const baselineIndex = ordered.findIndex((entry) => entry.version === minimumRollbackVersion);
   if (baselineIndex < 0) fail(`baseline migration ${minimumRollbackVersion ?? "<missing>"} is not present in the candidate migration inventory`);
+  if (observed.schema_version !== 1) fail("unsupported observed-state schema_version");
+  if (observed.ledger?.status !== "complete" || !Array.isArray(observed.ledger?.versions)) {
+    fail("observed ledger state is unknown or incomplete");
+  }
+  const observedLedgerBytes = Buffer.from(`${observed.ledger.versions.join("\n")}\n`);
+  const observedLedgerDigest = `sha256:${createHash("sha256").update(observedLedgerBytes).digest("hex")}`;
+  if (observed.ledger.versions.length !== baseline.migration_ledger?.row_count ||
+      observedLedgerDigest !== baseline.migration_ledger?.ordered_sha256) {
+    fail("observed ledger does not match the admitted baseline tuple");
+  }
 
   const packet = {
     schema_version: 1,
@@ -207,13 +221,7 @@ function create(args) {
       baseline_tuple_sha256: manifest.baseline_tuple_sha256,
     },
     ordered_migrations: ordered,
-    ledger_rows: ordered.slice(0, baselineIndex + 1).map(({ version }) => ({
-      version,
-      applied_by: "admitted-baseline-tuple",
-    })),
-    allowed_writers: ["admitted-baseline-tuple"],
-    indexes: [],
-    hooks: [],
+    observed_state: observed,
     previous_image_pair: {
       backend: `${imageRepository(manifest.images.backend)}@${baseline.images?.backend?.digest}`,
       web: `${imageRepository(manifest.images.web)}@${baseline.images?.web?.digest}`,

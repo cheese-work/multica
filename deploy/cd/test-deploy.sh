@@ -792,11 +792,15 @@ expect_not_contains "$workflow_text" '/deploy/cd/router/state/active.json' workf
 # refuses while either is running and only starts colour-suffixed services.
 expect_contains "$workflow_text" 'deploy/cd/cutover.sh' workflow-ab-deploy-route
 expect_contains "$workflow_text" 'C00_CUTOVER_STATE_DIR: ${{ secrets.C00_CUTOVER_STATE_DIR }}' workflow-ab-deploy-route
-expect_contains "$workflow_text" "--packet '%s/release-packet.json'" workflow-ab-deploy-route
-expect_contains "$workflow_text" 'release-packet.mjs create' workflow-release-packet
-expect_contains "$workflow_text" 'name: cd-deploy-admitted-evidence' workflow-release-packet
-expect_contains "$workflow_text" 'local_packet="cd-deploy-manifest/release-packet.json"' workflow-release-packet
-expect_not_contains "$workflow_text" '"$C00_CUTOVER_STATE_DIR" "$C00_COMPOSE_DIR" "$C00_CUTOVER_STATE_DIR"' workflow-release-packet
+expect_contains "$workflow_text" "cutover-controller/evidence/release-packet.json" workflow-ab-deploy-route
+expect_contains "$workflow_text" 'capture-release-state.sh' workflow-release-packet
+expect_contains "$workflow_text" 'cp "$MANIFEST_PATH" cutover-input/manifest.json' workflow-release-packet
+expect_contains "$workflow_text" 'cp "$BASELINE_TUPLE_PATH" cutover-input/baseline-tuple.json' workflow-release-packet
+expect_contains "$workflow_text" 'path: cutover-input' workflow-release-packet
+expect_contains "$workflow_text" 'build-cutover-bundle.sh' workflow-release-packet
+expect_contains "$workflow_text" 'verify-cutover-bundle.sh' workflow-release-packet
+expect_contains "$workflow_text" 'sha256sum -c cutover-controller.tar.sha256' workflow-release-packet
+expect_not_contains "$workflow_text" 'local_packet="cd-deploy-manifest/release-packet.json"' workflow-release-packet
 expect_contains "$workflow_text" 'CUTOVER_DATABASE_URL=' workflow-ab-deploy-route
 expect_not_contains "$workflow_text" "bash '%s/deploy.sh' --manifest" workflow-ab-deploy-route
 expect_not_contains "$workflow_text" 'deploy/cd/deploy.sh deploy/cd/deploy-lib.sh' workflow-ab-deploy-route

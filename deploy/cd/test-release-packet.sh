@@ -58,10 +58,12 @@ build_base_packet() {
         baseline_tuple_sha256: "sha256:" + "f".repeat(64),
       },
       ordered_migrations: ordered,
-      ledger_rows: ordered.map((o) => ({ version: o.version, applied_by: "cutover-controller" })),
-      allowed_writers: ["cutover-controller"],
-      indexes: [{ name: "idx_example", valid: true }],
-      hooks: [{ name: "backfill_example", status: "completed" }],
+      observed_state: {
+        schema_version: 1,
+        ledger: { status: "complete", versions: ordered.map((o) => o.version) },
+        indexes: { status: "complete", invalid: [] },
+        hooks: { status: "complete", observations: [{ name: "backfill_example", status: "completed" }] },
+      },
       previous_image_pair: {
         backend: "ghcr.io/cheese-work/multica-backend:sha-abc123",
         web: "ghcr.io/cheese-work/multica-web:sha-abc123",
@@ -159,7 +161,33 @@ node -e '
   }));
 ' "$create_manifest" "$create_baseline_digest" "$create_migration_digest"
 created_packet="$work_dir/created-packet.json"
-node deploy/cd/release-packet.mjs create --manifest "$create_manifest" --baseline-tuple "$create_baseline" --output "$created_packet"
+create_observed="$work_dir/create-observed.json"
+node -e '
+  const fs = require("fs");
+  const versions = fs.readdirSync("server/migrations").filter((f) => f.endsWith(".up.sql")).sort().map((f) => f.replace(/\.up\.sql$/, ""));
+  fs.writeFileSync(process.argv[1], JSON.stringify({
+    schema_version: 1,
+    ledger: { status: "complete", versions: versions.slice(0, versions.indexOf(process.argv[2]) + 1) },
+    indexes: { status: "complete", invalid: [] },
+    hooks: { status: "complete", observations: [
+      { name: "task_usage_hourly_rollup", status: "completed" },
+      { name: "attribution_strict_backfill", status: "completed" },
+      { name: "chat_explicit_origin_backfill", status: "completed" },
+    ] },
+  }));
+' "$create_observed" "$(node -e 'const fs=require("fs");console.log(fs.readdirSync("server/migrations").filter(f=>f.endsWith(".up.sql")).sort().slice(-5)[0].replace(/\.up\.sql$/, ""))')"
+node -e '
+  const fs=require("fs"),c=require("crypto");
+  const p=process.argv[1], o=process.argv[2];
+  const x=JSON.parse(fs.readFileSync(p)); const s=JSON.parse(fs.readFileSync(o));
+  x.migration_ledger.row_count=s.ledger.versions.length;
+  x.migration_ledger.ordered_sha256="sha256:"+c.createHash("sha256").update(s.ledger.versions.join("\n")+"\n").digest("hex");
+  fs.writeFileSync(p,JSON.stringify(x));
+' "$create_baseline" "$create_observed"
+# Refresh the manifest binding after adding the real observed ledger digest.
+create_baseline_digest="$(node -e 'const fs=require("fs"),c=require("crypto");process.stdout.write("sha256:"+c.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"))' "$create_baseline")"
+node -e 'const fs=require("fs");const p=process.argv[1];const x=JSON.parse(fs.readFileSync(p));x.baseline_tuple_sha256=process.argv[2];fs.writeFileSync(p,JSON.stringify(x))' "$create_manifest" "$create_baseline_digest"
+node deploy/cd/release-packet.mjs create --manifest "$create_manifest" --baseline-tuple "$create_baseline" --observed-state "$create_observed" --output "$created_packet"
 output="$(node deploy/cd/release-packet.mjs verify --packet "$created_packet" --manifest "$create_manifest" 2>&1)"
 expect_contains "$output" '"ok":true' create-bound-packet
 
@@ -180,7 +208,7 @@ expect_contains "$output" "checksum drift" checksum-drift
 # ordered_migrations is dirty state and must fail.
 # ---------------------------------------------------------------------------
 dirty="$work_dir/dirty.json"
-mutate "$base_packet" "$dirty" 'p.ledger_rows.push({ version: "999_unknown", applied_by: "cutover-controller" });'
+mutate "$base_packet" "$dirty" 'p.observed_state.ledger.versions.push("999_unknown");'
 set +e
 output="$(node deploy/cd/release-packet.mjs verify --packet "$dirty" --manifest "$manifest" 2>&1)"
 status=$?
@@ -189,22 +217,22 @@ expect_exit 1 "$status" dirty-ledger
 expect_contains "$output" "dirty ledger state" dirty-ledger
 
 # ---------------------------------------------------------------------------
-# Scenario 4 (negative control): an unrecognized writer must fail.
+# Scenario 4 (negative control): incomplete observed ledger state must fail.
 # ---------------------------------------------------------------------------
 writer="$work_dir/writer.json"
-mutate "$base_packet" "$writer" 'p.ledger_rows[0].applied_by = "manual-psql-session";'
+mutate "$base_packet" "$writer" 'delete p.observed_state.ledger.status;'
 set +e
 output="$(node deploy/cd/release-packet.mjs verify --packet "$writer" --manifest "$manifest" 2>&1)"
 status=$?
 set -e
-expect_exit 1 "$status" unknown-writer
-expect_contains "$output" "unknown writer" unknown-writer
+expect_exit 1 "$status" unknown-ledger-state
+expect_contains "$output" "observed ledger state is unknown or incomplete" unknown-ledger-state
 
 # ---------------------------------------------------------------------------
 # Scenario 5 (negative control): an invalid index must fail.
 # ---------------------------------------------------------------------------
 idx="$work_dir/idx.json"
-mutate "$base_packet" "$idx" 'p.indexes[0].valid = false;'
+mutate "$base_packet" "$idx" 'p.observed_state.indexes.invalid = ["public.idx_example"];'
 set +e
 output="$(node deploy/cd/release-packet.mjs verify --packet "$idx" --manifest "$manifest" 2>&1)"
 status=$?
@@ -216,7 +244,7 @@ expect_contains "$output" "invalid indexes present" invalid-index
 # Scenario 6 (negative control): an incomplete hook/backfill must fail.
 # ---------------------------------------------------------------------------
 hook="$work_dir/hook.json"
-mutate "$base_packet" "$hook" 'p.hooks[0].status = "pending";'
+mutate "$base_packet" "$hook" 'p.observed_state.hooks.observations[0].status = "pending";'
 set +e
 output="$(node deploy/cd/release-packet.mjs verify --packet "$hook" --manifest "$manifest" 2>&1)"
 status=$?
