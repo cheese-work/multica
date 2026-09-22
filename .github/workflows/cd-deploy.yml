@@ -526,14 +526,10 @@ jobs:
           # `set -a` exports every var assigned afterwards, including the one
           # `cutover.sh` reads by name, without listing it a second time.
           set +e
-          {
-            printf 'set -a\n'
-            printf 'GHCR_PULL_TOKEN=%q\n' "$GHCR_PULL_TOKEN"
-            printf 'set +a\n'
-            printf 'ROUTER_STATE_DIR=%q\n' "$router_state_dir"
-            printf "cd '%s' && sha256sum -c cutover-controller.tar.sha256 && tar -xf cutover-controller.tar && bash cutover-controller/deploy/cd/verify-cutover-bundle.sh cutover-controller && cd '%s' && . ./.env && export CUTOVER_DATABASE_URL=\"postgres://\${POSTGRES_USER:***@postgres:5432/\${POSTGRES_DB:-multica}?sslmode=disable\" && bash '%s/cutover-controller/deploy/cd/cutover.sh' cutover --manifest '%s/cutover-controller/evidence/manifest.json' --packet '%s/cutover-controller/evidence/release-packet.json' --compose-dir '%s' --state-dir '%s'\n" \
-              "$remote_dir" "$C00_COMPOSE_DIR" "$remote_dir" "$remote_dir" "$remote_dir" "$C00_COMPOSE_DIR" "$C00_CUTOVER_STATE_DIR"
-          } | "${ssh_cmd[@]}" bash -s
+          bash deploy/cd/render-cutover-remote-script.sh \
+            --router-state-dir "$router_state_dir" \
+            -- bash -c "cd '$remote_dir' && sha256sum -c cutover-controller.tar.sha256 && tar -xf cutover-controller.tar && bash cutover-controller/deploy/cd/verify-cutover-bundle.sh cutover-controller && cd '$C00_COMPOSE_DIR' && . ./.env && export CUTOVER_DATABASE_URL=\"postgres://\${POSTGRES_USER:***@postgres:5432/\${POSTGRES_DB:-multica}?sslmode=disable\" && bash '$remote_dir/cutover-controller/deploy/cd/cutover.sh' cutover --manifest '$remote_dir/cutover-controller/evidence/manifest.json' --packet '$remote_dir/cutover-controller/evidence/release-packet.json' --compose-dir '$C00_COMPOSE_DIR' --state-dir '$C00_CUTOVER_STATE_DIR'" \
+            | "${ssh_cmd[@]}" bash -s
           deploy_status=$?
           set -e
 

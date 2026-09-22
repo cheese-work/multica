@@ -858,12 +858,27 @@ export MOCK_INCUMBENT_WEB_DIGEST="$incumbent_web_digest"
 export MOCK_EXPECTED_COMMIT="$source_sha"
 export CUTOVER_DATABASE_URL="postgres://multica:***@127.0.0.1:5432/multica?sslmode=disable"
 durable_router_state="$work_dir/live-router-mount"
-export ROUTER_STATE_DIR="$durable_router_state"
 touch "$CUTOVER_TEST_CONTROL_DIR/backend-ready-${BACKEND_BLUE_PORT:-18081}"
 touch "$CUTOVER_TEST_CONTROL_DIR/backend-ready-${BACKEND_GREEN_PORT:-18082}"
 
-output="$(bash "$relocated_root/deploy/cd/cutover.sh" cutover \
-  --manifest "$manifest" --packet "$packet" --compose-dir "$compose_dir" --state-dir "$state_dir" 2>&1)"
+remote_parent_script="$work_dir/remote-parent.sh"
+GHCR_PULL_TOKEN='' bash deploy/cd/render-cutover-remote-script.sh \
+  --router-state-dir "$durable_router_state" \
+  -- bash "$relocated_root/deploy/cd/cutover.sh" cutover \
+    --manifest "$manifest" --packet "$packet" --compose-dir "$compose_dir" --state-dir "$state_dir" \
+  >"$remote_parent_script"
+
+# A fresh shell is load-bearing: this must prove inheritance across the
+# generated remote parent -> bundled child boundary, not reuse this test's
+# own environment. Preserve only the mock controls the child genuinely needs.
+output="$(env -i \
+  HOME="$HOME" PATH="$PATH" \
+  CUTOVER_TEST_CONTROL_DIR="$CUTOVER_TEST_CONTROL_DIR" \
+  MOCK_BACKEND_DIGEST="$MOCK_BACKEND_DIGEST" MOCK_WEB_DIGEST="$MOCK_WEB_DIGEST" \
+  MOCK_INCUMBENT_BACKEND_DIGEST="$MOCK_INCUMBENT_BACKEND_DIGEST" \
+  MOCK_INCUMBENT_WEB_DIGEST="$MOCK_INCUMBENT_WEB_DIGEST" \
+  MOCK_EXPECTED_COMMIT="$MOCK_EXPECTED_COMMIT" CUTOVER_DATABASE_URL="$CUTOVER_DATABASE_URL" \
+  bash "$remote_parent_script" 2>&1)"
 status=$?
 expect_exit 0 "$status" relocated-controller-live-router-state
 expect_contains "$output" "cutover complete: green is now active" relocated-controller-live-router-state
