@@ -335,6 +335,7 @@ jobs:
       source_sha: ${{ steps.verify_admission.outputs.source_sha }}
       ref: ${{ steps.paths.outputs.ref }}
       manifest_path: ${{ steps.paths.outputs.manifest_path }}
+      baseline_tuple_path: ${{ steps.paths.outputs.baseline_tuple_path }}
     steps:
       - name: Resolve the evidence set for this trigger
         id: paths
@@ -405,11 +406,28 @@ jobs:
             --migration-inventory-sha256 "$migration_sha"
           echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
 
-      - name: Upload admitted manifest for the deploy job
+      - name: Create and verify release-specific cutover packet
+        shell: bash
+        env:
+          MANIFEST_PATH: ${{ steps.paths.outputs.manifest_path }}
+          BASELINE_TUPLE_PATH: ${{ steps.paths.outputs.baseline_tuple_path }}
+        run: |
+          set -euo pipefail
+          node deploy/cd/release-packet.mjs create \
+            --manifest "$MANIFEST_PATH" \
+            --baseline-tuple "$BASELINE_TUPLE_PATH" \
+            --output release-packet.json
+          node deploy/cd/release-packet.mjs verify \
+            --packet release-packet.json \
+            --manifest "$MANIFEST_PATH"
+
+      - name: Upload admitted cutover evidence for the deploy job
         uses: actions/upload-artifact@v4
         with:
-          name: cd-deploy-admitted-manifest
-          path: ${{ steps.paths.outputs.manifest_path }}
+          name: cd-deploy-admitted-evidence
+          path: |
+            ${{ steps.paths.outputs.manifest_path }}
+            release-packet.json
           retention-days: 7
           if-no-files-found: error
 
@@ -429,10 +447,10 @@ jobs:
           ref: ${{ needs.admission.outputs.ref }}
           fetch-depth: 1
 
-      - name: Download admitted manifest
+      - name: Download admitted cutover evidence
         uses: actions/download-artifact@v4
         with:
-          name: cd-deploy-admitted-manifest
+          name: cd-deploy-admitted-evidence
           path: cd-deploy-manifest
 
       - name: Deploy to C00 over SSH
@@ -459,6 +477,7 @@ jobs:
           set -euo pipefail
           manifest_basename="$(basename "$MANIFEST_PATH")"
           local_manifest="cd-deploy-manifest/${manifest_basename}"
+          local_packet="cd-deploy-manifest/release-packet.json"
 
           mkdir -p ~/.ssh
           printf '%s\n' "$C00_SSH_KEY" > ~/.ssh/c00_deploy_key
@@ -475,6 +494,7 @@ jobs:
           # overlay, migration inventory, and router template from that tree.
           scp -i ~/.ssh/c00_deploy_key -o BatchMode=yes \
             "$local_manifest" \
+            "$local_packet" \
             "${C00_SSH_USER}@${C00_SSH_HOST}:${remote_dir}/"
 
           # set -e would otherwise abort this script the instant the SSH
@@ -495,8 +515,8 @@ jobs:
             printf 'set -a\n'
             printf 'GHCR_PULL_TOKEN=%q\n' "$GHCR_PULL_TOKEN"
             printf 'set +a\n'
-            printf "cd '%s' && . ./.env && export CUTOVER_DATABASE_URL=\"postgres://\${POSTGRES_USER:-multica}:\${POSTGRES_PASSWORD:-multica}@postgres:5432/\${POSTGRES_DB:-multica}?sslmode=disable\" && bash deploy/cd/cutover.sh cutover --manifest '%s/%s' --packet '%s/release-packet.json' --compose-dir '%s' --state-dir '%s'\n" \
-              "$C00_COMPOSE_DIR" "$remote_dir" "$manifest_basename" "$C00_CUTOVER_STATE_DIR" "$C00_COMPOSE_DIR" "$C00_CUTOVER_STATE_DIR"
+            printf "cd '%s' && . ./.env && export CUTOVER_DATABASE_URL=\"postgres://\${POSTGRES_USER:***@postgres:5432/\${POSTGRES_DB:-multica}?sslmode=disable\" && bash deploy/cd/cutover.sh cutover --manifest '%s/%s' --packet '%s/release-packet.json' --compose-dir '%s' --state-dir '%s'\n" \
+              "$C00_COMPOSE_DIR" "$remote_dir" "$manifest_basename" "$remote_dir" "$C00_COMPOSE_DIR" "$C00_CUTOVER_STATE_DIR"
           } | "${ssh_cmd[@]}" bash -s
           deploy_status=$?
           set -e

@@ -50,6 +50,13 @@ build_base_packet() {
     });
     const packet = {
       schema_version: 1,
+      candidate: {
+        source_sha: "504078f8ea7fa31f342f195659e93a7f6c3e5a91",
+        backend_image: "ghcr.io/cheese-work/multica-backend@sha256:" + "c".repeat(64),
+        web_image: "ghcr.io/cheese-work/multica-web@sha256:" + "d".repeat(64),
+        migration_inventory_sha256: "sha256:" + "e".repeat(64),
+        baseline_tuple_sha256: "sha256:" + "f".repeat(64),
+      },
       ordered_migrations: ordered,
       ledger_rows: ordered.map((o) => ({ version: o.version, applied_by: "cutover-controller" })),
       allowed_writers: ["cutover-controller"],
@@ -79,14 +86,82 @@ mutate() {
 
 base_packet="$work_dir/base.json"
 build_base_packet "$base_packet"
+manifest="$work_dir/manifest.json"
+cat >"$manifest" <<JSON
+{
+  "source_sha": "504078f8ea7fa31f342f195659e93a7f6c3e5a91",
+  "images": {
+    "backend": "ghcr.io/cheese-work/multica-backend@sha256:$(printf 'c%.0s' {1..64})",
+    "web": "ghcr.io/cheese-work/multica-web@sha256:$(printf 'd%.0s' {1..64})"
+  },
+  "migration_inventory_sha256": "sha256:$(printf 'e%.0s' {1..64})",
+  "baseline_tuple_sha256": "sha256:$(printf 'f%.0s' {1..64})"
+}
+JSON
 
 # ---------------------------------------------------------------------------
 # Scenario 1: happy path.
 # ---------------------------------------------------------------------------
-output="$(node deploy/cd/release-packet.mjs verify --packet "$base_packet" 2>&1)"
+output="$(node deploy/cd/release-packet.mjs verify --packet "$base_packet" --manifest "$manifest" 2>&1)"
 status=$?
 expect_exit 0 "$status" happy-path
 expect_contains "$output" '"ok":true' happy-path
+
+# ---------------------------------------------------------------------------
+# Scenario 1b: a packet is never valid by itself; it must be bound to the
+# exact admitted manifest, and a stale candidate binding must fail closed.
+# ---------------------------------------------------------------------------
+set +e
+output="$(node deploy/cd/release-packet.mjs verify --packet "$base_packet" 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" unbound-packet
+expect_contains "$output" "missing --manifest" unbound-packet
+
+stale="$work_dir/stale.json"
+mutate "$base_packet" "$stale" 'p.candidate.source_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";'
+set +e
+output="$(node deploy/cd/release-packet.mjs verify --packet "$stale" --manifest "$manifest" 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" stale-packet
+expect_contains "$output" "candidate.source_sha does not match manifest" stale-packet
+
+# Create produces release-specific evidence from the admitted manifest and
+# its digest-bound baseline tuple; the result immediately verifies.
+create_baseline="$work_dir/create-baseline.json"
+node -e '
+  const fs = require("fs");
+  const versions = fs.readdirSync("server/migrations").filter((f) => f.endsWith(".up.sql")).sort().slice(-5);
+  const baseline = {
+    images: {
+      backend: { digest: "sha256:" + "a".repeat(64) },
+      web: { digest: "sha256:" + "b".repeat(64) },
+    },
+    migration_ledger: { latest: { version: versions[0].replace(/\.up\.sql$/, "") } },
+  };
+  fs.writeFileSync(process.argv[1], JSON.stringify(baseline));
+' "$create_baseline"
+create_baseline_digest="$(node -e 'const fs=require("fs"),c=require("crypto");process.stdout.write("sha256:"+c.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"))' "$create_baseline")"
+create_migration_digest="$(node deploy/cd/migration-inventory.mjs)"
+create_manifest="$work_dir/create-manifest.json"
+node -e '
+  const fs = require("fs");
+  const [out, baselineDigest, migrationDigest] = process.argv.slice(1);
+  fs.writeFileSync(out, JSON.stringify({
+    source_sha: "504078f8ea7fa31f342f195659e93a7f6c3e5a91",
+    images: {
+      backend: "ghcr.io/cheese-work/multica-backend@sha256:" + "c".repeat(64),
+      web: "ghcr.io/cheese-work/multica-web@sha256:" + "d".repeat(64),
+    },
+    migration_inventory_sha256: migrationDigest,
+    baseline_tuple_sha256: baselineDigest,
+  }));
+' "$create_manifest" "$create_baseline_digest" "$create_migration_digest"
+created_packet="$work_dir/created-packet.json"
+node deploy/cd/release-packet.mjs create --manifest "$create_manifest" --baseline-tuple "$create_baseline" --output "$created_packet"
+output="$(node deploy/cd/release-packet.mjs verify --packet "$created_packet" --manifest "$create_manifest" 2>&1)"
+expect_contains "$output" '"ok":true' create-bound-packet
 
 # ---------------------------------------------------------------------------
 # Scenario 2 (negative control): checksum drift must fail.
@@ -94,7 +169,7 @@ expect_contains "$output" '"ok":true' happy-path
 drift="$work_dir/drift.json"
 mutate "$base_packet" "$drift" 'p.ordered_migrations[0].sha256 = "sha256:" + "f".repeat(64);'
 set +e
-output="$(node deploy/cd/release-packet.mjs verify --packet "$drift" 2>&1)"
+output="$(node deploy/cd/release-packet.mjs verify --packet "$drift" --manifest "$manifest" 2>&1)"
 status=$?
 set -e
 expect_exit 1 "$status" checksum-drift
@@ -107,7 +182,7 @@ expect_contains "$output" "checksum drift" checksum-drift
 dirty="$work_dir/dirty.json"
 mutate "$base_packet" "$dirty" 'p.ledger_rows.push({ version: "999_unknown", applied_by: "cutover-controller" });'
 set +e
-output="$(node deploy/cd/release-packet.mjs verify --packet "$dirty" 2>&1)"
+output="$(node deploy/cd/release-packet.mjs verify --packet "$dirty" --manifest "$manifest" 2>&1)"
 status=$?
 set -e
 expect_exit 1 "$status" dirty-ledger
@@ -119,7 +194,7 @@ expect_contains "$output" "dirty ledger state" dirty-ledger
 writer="$work_dir/writer.json"
 mutate "$base_packet" "$writer" 'p.ledger_rows[0].applied_by = "manual-psql-session";'
 set +e
-output="$(node deploy/cd/release-packet.mjs verify --packet "$writer" 2>&1)"
+output="$(node deploy/cd/release-packet.mjs verify --packet "$writer" --manifest "$manifest" 2>&1)"
 status=$?
 set -e
 expect_exit 1 "$status" unknown-writer
@@ -131,7 +206,7 @@ expect_contains "$output" "unknown writer" unknown-writer
 idx="$work_dir/idx.json"
 mutate "$base_packet" "$idx" 'p.indexes[0].valid = false;'
 set +e
-output="$(node deploy/cd/release-packet.mjs verify --packet "$idx" 2>&1)"
+output="$(node deploy/cd/release-packet.mjs verify --packet "$idx" --manifest "$manifest" 2>&1)"
 status=$?
 set -e
 expect_exit 1 "$status" invalid-index
@@ -143,7 +218,7 @@ expect_contains "$output" "invalid indexes present" invalid-index
 hook="$work_dir/hook.json"
 mutate "$base_packet" "$hook" 'p.hooks[0].status = "pending";'
 set +e
-output="$(node deploy/cd/release-packet.mjs verify --packet "$hook" 2>&1)"
+output="$(node deploy/cd/release-packet.mjs verify --packet "$hook" --manifest "$manifest" 2>&1)"
 status=$?
 set -e
 expect_exit 1 "$status" incomplete-hook
@@ -157,7 +232,7 @@ expect_contains "$output" "incomplete hooks/backfills" incomplete-hook
 badpair="$work_dir/badpair.json"
 mutate "$base_packet" "$badpair" 'p.previous_image_pair.backend_digest = "not-a-digest";'
 set +e
-output="$(node deploy/cd/release-packet.mjs verify --packet "$badpair" 2>&1)"
+output="$(node deploy/cd/release-packet.mjs verify --packet "$badpair" --manifest "$manifest" 2>&1)"
 status=$?
 set -e
 expect_exit 1 "$status" bad-previous-pair-digest
@@ -170,7 +245,7 @@ expect_contains "$output" "backend_digest must be" bad-previous-pair-digest
 badversion="$work_dir/badversion.json"
 mutate "$base_packet" "$badversion" 'p.minimum_rollback_version = "999_does_not_exist";'
 set +e
-output="$(node deploy/cd/release-packet.mjs verify --packet "$badversion" 2>&1)"
+output="$(node deploy/cd/release-packet.mjs verify --packet "$badversion" --manifest "$manifest" 2>&1)"
 status=$?
 set -e
 expect_exit 1 "$status" unknown-rollback-version
@@ -184,7 +259,7 @@ expect_contains "$output" "is not a known migration version" unknown-rollback-ve
 reordered="$work_dir/reordered.json"
 mutate "$base_packet" "$reordered" 'p.ordered_migrations.reverse();'
 set +e
-output="$(node deploy/cd/release-packet.mjs verify --packet "$reordered" 2>&1)"
+output="$(node deploy/cd/release-packet.mjs verify --packet "$reordered" --manifest "$manifest" 2>&1)"
 status=$?
 set -e
 expect_exit 1 "$status" out-of-order-migrations

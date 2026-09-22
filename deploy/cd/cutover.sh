@@ -225,6 +225,8 @@ case "$command" in
     fi
     backend_repo="$(image_repo "$backend_image")"
     backend_digest="$(image_digest "$backend_image")"
+    web_repo="$(image_repo "$web_image")"
+    web_digest="$(image_digest "$web_image")"
     image_tag="sha-${source_sha}"
 
     # Step 4 (contract): reject a packet with checksum drift, dirty ledger,
@@ -232,7 +234,7 @@ case "$command" in
     # any mutation — the packet is the release's admission proof, not an
     # advisory document.
     echo "==> verifying release packet contract"
-    if ! node "$script_dir/release-packet.mjs" verify --packet "$packet"; then
+    if ! node "$script_dir/release-packet.mjs" verify --packet "$packet" --manifest "$manifest"; then
       echo "!! release packet failed contract checks; refusing to cut over" >&2
       exit 1
     fi
@@ -290,13 +292,17 @@ case "$command" in
     fi
 
     echo "==> pulling candidate image pair (tag ${image_tag}) for colour=$to_colour"
-    if ! MULTICA_BACKEND_IMAGE="$backend_repo" MULTICA_IMAGE_TAG="$image_tag" \
+    if ! MULTICA_BACKEND_IMAGE="$backend_repo" MULTICA_WEB_IMAGE="$web_repo" MULTICA_IMAGE_TAG="$image_tag" \
       compose pull "backend-${to_colour}" "frontend-${to_colour}"; then
       echo "!! image pull failed for colour=$to_colour; $from_colour remains active" >&2
       exit 1
     fi
     if ! verify_pulled_digest "$backend_repo" "$image_tag" "$backend_digest"; then
-      echo "!! pulled image digest mismatch for colour=$to_colour; $from_colour remains active" >&2
+      echo "!! pulled backend image digest mismatch for colour=$to_colour; $from_colour remains active" >&2
+      exit 1
+    fi
+    if ! verify_pulled_digest "$web_repo" "$image_tag" "$web_digest"; then
+      echo "!! pulled web image digest mismatch for colour=$to_colour; $from_colour remains active" >&2
       exit 1
     fi
 

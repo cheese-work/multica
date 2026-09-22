@@ -15,7 +15,7 @@
 // tested extension, never folded silently into the existing D2 files.
 
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 function fail(message) {
@@ -63,8 +63,21 @@ function migrationChecksums(migrationsDir) {
 // names for a release packet: dirty ledger, checksum drift, invalid
 // indexes, unknown writers. Each check fails closed (an ambiguous or
 // missing input is a rejection, not a pass).
-function validatePacket(packet, { migrationsDir }) {
+function validatePacket(packet, { migrationsDir, manifest }) {
   if (packet.schema_version !== 1) fail("unsupported release packet schema_version");
+
+  if (!manifest) fail("missing --manifest; release packets must be verified against the admitted candidate");
+  const candidate = packet.candidate;
+  if (!candidate || typeof candidate !== "object") fail("candidate binding is required");
+  for (const [field, expected] of [
+    ["source_sha", manifest.source_sha],
+    ["backend_image", manifest.images?.backend],
+    ["web_image", manifest.images?.web],
+    ["migration_inventory_sha256", manifest.migration_inventory_sha256],
+    ["baseline_tuple_sha256", manifest.baseline_tuple_sha256],
+  ]) {
+    if (candidate[field] !== expected) fail(`candidate.${field} does not match manifest`);
+  }
 
   if (!Array.isArray(packet.ordered_migrations) || packet.ordered_migrations.length === 0) {
     fail("ordered_migrations must be a non-empty array");
@@ -152,17 +165,80 @@ function validatePacket(packet, { migrationsDir }) {
   return { ok: true };
 }
 
+function imageRepository(reference) {
+  const at = reference.indexOf("@");
+  if (at < 1) fail(`invalid immutable image reference: ${reference}`);
+  return reference.slice(0, at);
+}
+
+function create(args) {
+  const manifest = readJSON(option("--manifest", args));
+  const baselinePath = option("--baseline-tuple", args);
+  const baselineBytes = readFileSync(baselinePath);
+  const baseline = JSON.parse(baselineBytes);
+  const baselineDigest = `sha256:${createHash("sha256").update(baselineBytes).digest("hex")}`;
+  if (baselineDigest !== manifest.baseline_tuple_sha256) {
+    fail("baseline tuple digest does not match manifest.baseline_tuple_sha256");
+  }
+  const migrationsDir = optional("--migrations-dir", args) ?? "server/migrations";
+  const inventoryHash = createHash("sha256");
+  for (const name of readdirSync(resolve(migrationsDir)).filter((name) => name.endsWith(".sql")).sort()) {
+    inventoryHash.update(name);
+    inventoryHash.update("\0");
+    inventoryHash.update(readFileSync(join(resolve(migrationsDir), name)));
+    inventoryHash.update("\0");
+  }
+  const migrationInventoryDigest = `sha256:${inventoryHash.digest("hex")}`;
+  if (migrationInventoryDigest !== manifest.migration_inventory_sha256) {
+    fail("candidate migration inventory does not match manifest.migration_inventory_sha256");
+  }
+  const ordered = migrationChecksums(migrationsDir);
+  const minimumRollbackVersion = baseline.migration_ledger?.latest?.version;
+  const baselineIndex = ordered.findIndex((entry) => entry.version === minimumRollbackVersion);
+  if (baselineIndex < 0) fail(`baseline migration ${minimumRollbackVersion ?? "<missing>"} is not present in the candidate migration inventory`);
+
+  const packet = {
+    schema_version: 1,
+    candidate: {
+      source_sha: manifest.source_sha,
+      backend_image: manifest.images?.backend,
+      web_image: manifest.images?.web,
+      migration_inventory_sha256: manifest.migration_inventory_sha256,
+      baseline_tuple_sha256: manifest.baseline_tuple_sha256,
+    },
+    ordered_migrations: ordered,
+    ledger_rows: ordered.slice(0, baselineIndex + 1).map(({ version }) => ({
+      version,
+      applied_by: "admitted-baseline-tuple",
+    })),
+    allowed_writers: ["admitted-baseline-tuple"],
+    indexes: [],
+    hooks: [],
+    previous_image_pair: {
+      backend: `${imageRepository(manifest.images.backend)}@${baseline.images?.backend?.digest}`,
+      web: `${imageRepository(manifest.images.web)}@${baseline.images?.web?.digest}`,
+      backend_digest: baseline.images?.backend?.digest,
+      web_digest: baseline.images?.web?.digest,
+    },
+    minimum_rollback_version: minimumRollbackVersion,
+  };
+  validatePacket(packet, { migrationsDir, manifest });
+  writeFileSync(option("--output", args), `${JSON.stringify(packet, null, 2)}\n`);
+}
+
 function verify(args) {
   const packet = readJSON(option("--packet", args));
+  const manifest = readJSON(option("--manifest", args));
   const migrationsDir = optional("--migrations-dir", args) ?? "server/migrations";
-  const result = validatePacket(packet, { migrationsDir });
+  const result = validatePacket(packet, { migrationsDir, manifest });
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 
 try {
   const [command, ...args] = process.argv.slice(2);
-  if (command !== "verify") fail("usage: release-packet.mjs verify --packet PATH [--migrations-dir PATH]");
-  verify(args);
+  if (command === "create") create(args);
+  else if (command === "verify") verify(args);
+  else fail("usage: release-packet.mjs <create|verify> [options]");
 } catch (error) {
   process.stderr.write(`release packet: ${error.message}\n`);
   process.exitCode = 1;

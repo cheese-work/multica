@@ -292,6 +292,8 @@ cat >"$manifest" <<JSON
     "web": "ghcr.io/cheese-work/multica-web@$web_digest"
   },
   "source_sha": "$source_sha"
+  ,"migration_inventory_sha256": "sha256:$(printf 'e%.0s' {1..64})"
+  ,"baseline_tuple_sha256": "sha256:$(printf 'f%.0s' {1..64})"
 }
 JSON
 
@@ -310,6 +312,13 @@ build_packet() {
     });
     const packet = {
       schema_version: 1,
+      candidate: {
+        source_sha: "504078f8ea7fa31f342f195659e93a7f6c3e5a91",
+        backend_image: "ghcr.io/cheese-work/multica-backend@sha256:" + "a".repeat(64),
+        web_image: "ghcr.io/cheese-work/multica-web@sha256:" + "b".repeat(64),
+        migration_inventory_sha256: "sha256:" + "e".repeat(64),
+        baseline_tuple_sha256: "sha256:" + "f".repeat(64),
+      },
       ordered_migrations: ordered,
       ledger_rows: ordered.map((o) => ({ version: o.version, applied_by: "cutover-controller" })),
       allowed_writers: ["cutover-controller"],
@@ -433,6 +442,36 @@ if [ "$up_count_green" -ne 1 ]; then
   echo "scenario happy-path: expected exactly one 'up' for backend-green (the candidate), got $up_count_green" >&2
   exit 1
 fi
+
+# The controller must verify both immutable image digests before draining.
+# Exercise each mismatch independently and assert no incumbent stop occurred.
+for role in backend web; do
+  state_dir="$(fresh_scenario_dir ${role}-digest-mismatch)"
+  mkdir -p "$state_dir/control"
+  export CUTOVER_TEST_CONTROL_DIR="$state_dir/control"
+  export MOCK_BACKEND_DIGEST="$backend_digest"
+  export MOCK_WEB_DIGEST="$web_digest"
+  export MOCK_INCUMBENT_BACKEND_DIGEST="$incumbent_backend_digest"
+  export MOCK_INCUMBENT_WEB_DIGEST="$incumbent_web_digest"
+  export MOCK_EXPECTED_COMMIT="$source_sha"
+  export CUTOVER_DATABASE_URL="postgres://multica:***@127.0.0.1:5432/multica?sslmode=disable"
+  export ROUTER_STATE_DIR="$state_dir/router-state"
+  if [ "$role" = backend ]; then
+    export MOCK_BACKEND_DIGEST="sha256:$(printf 'e%.0s' {1..64})"
+  else
+    export MOCK_WEB_DIGEST="sha256:$(printf 'e%.0s' {1..64})"
+  fi
+  set +e
+  output="$(bash deploy/cd/cutover.sh cutover --manifest "$manifest" --packet "$packet" --compose-dir "$compose_dir" --state-dir "$state_dir" 2>&1)"
+  status=$?
+  set -e
+  expect_exit 1 "$status" "${role}-digest-mismatch"
+  expect_contains "$output" "pulled ${role} image digest mismatch" "${role}-digest-mismatch"
+  if [ -f "$state_dir/control/stop-calls.log" ]; then
+    echo "scenario ${role}-digest-mismatch: incumbent was drained before both image digests were verified" >&2
+    exit 1
+  fi
+done
 
 # ---------------------------------------------------------------------------
 # Scenario 2 (negative control): quiescence preflight denies -> cutover must
