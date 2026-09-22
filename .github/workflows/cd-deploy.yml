@@ -446,6 +446,7 @@ jobs:
           C00_SSH_KEY: ${{ secrets.C00_SSH_KEY }}
           C00_COMPOSE_DIR: ${{ secrets.C00_COMPOSE_DIR }}
           C00_STATE_DIR: ${{ secrets.C00_STATE_DIR }}
+          C00_CUTOVER_STATE_DIR: ${{ secrets.C00_CUTOVER_STATE_DIR }}
           # read:packages-only PAT (CHE-549) — C00 has no ambient registry
           # credential, so deploy.sh logs in to ghcr.io with this immediately
           # before its pull step and logs out unconditionally afterwards (see
@@ -468,19 +469,11 @@ jobs:
           remote_dir="${C00_STATE_DIR%/}/cd-deploy-$(date +%s)"
 
           "${ssh_cmd[@]}" "mkdir -p '$remote_dir'"
-          # capture-tuple.sh, tuple-snapshot.mjs and deploy-lib.sh all travel
-          # with deploy.sh: deploy.sh delegates its post-deploy tuple
-          # recording to the first two and sources deploy-lib.sh directly
-          # for its own JSON/image/migration helpers (CHE-397 unit 2's
-          # shared-library extraction) — it refuses to start if any of the
-          # three are absent from its own script_dir (see deploy.sh's
-          # file-existence checks immediately after usage()). A transfer
-          # set missing any one of them fails deploy.sh before it does
-          # anything, on C00, not in CI — this exact omission for
-          # deploy-lib.sh was caught only by reproducing this scp's file
-          # list locally (independent review of CHE-608).
+          # Run the admitted release through the A/B controller already
+          # installed under C00_COMPOSE_DIR. Do not copy its source tree into
+          # a flat temp directory: cutover.sh and router.sh resolve the A/B
+          # overlay, migration inventory, and router template from that tree.
           scp -i ~/.ssh/c00_deploy_key -o BatchMode=yes \
-            deploy/cd/deploy.sh deploy/cd/deploy-lib.sh deploy/cd/capture-tuple.sh deploy/cd/tuple-snapshot.mjs \
             "$local_manifest" \
             "${C00_SSH_USER}@${C00_SSH_HOST}:${remote_dir}/"
 
@@ -496,14 +489,14 @@ jobs:
           # any other account on the host) and not written to a file on C00
           # (nothing left behind for `remote_dir`'s cleanup below to miss).
           # `set -a` exports every var assigned afterwards, including the one
-          # `deploy.sh` reads by name, without listing it a second time.
+          # `cutover.sh` reads by name, without listing it a second time.
           set +e
           {
             printf 'set -a\n'
             printf 'GHCR_PULL_TOKEN=%q\n' "$GHCR_PULL_TOKEN"
             printf 'set +a\n'
-            printf "bash '%s/deploy.sh' --manifest '%s/%s' --compose-dir '%s' --state-dir '%s'\n" \
-              "$remote_dir" "$remote_dir" "$manifest_basename" "$C00_COMPOSE_DIR" "$C00_STATE_DIR"
+            printf "cd '%s' && . ./.env && export CUTOVER_DATABASE_URL=\"postgres://\${POSTGRES_USER:-multica}:\${POSTGRES_PASSWORD:-multica}@postgres:5432/\${POSTGRES_DB:-multica}?sslmode=disable\" && bash deploy/cd/cutover.sh cutover --manifest '%s/%s' --packet '%s/release-packet.json' --compose-dir '%s' --state-dir '%s'\n" \
+              "$C00_COMPOSE_DIR" "$remote_dir" "$manifest_basename" "$C00_CUTOVER_STATE_DIR" "$C00_COMPOSE_DIR" "$C00_CUTOVER_STATE_DIR"
           } | "${ssh_cmd[@]}" bash -s
           deploy_status=$?
           set -e
