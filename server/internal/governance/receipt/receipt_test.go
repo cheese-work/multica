@@ -198,6 +198,11 @@ func TestObserve_NilProviderRecordsError(t *testing.T) {
 	if result.Status != "error" || result.ShedReason != ReasonError {
 		t.Fatalf("result = %+v, want error/error", result)
 	}
+	// Persistence now happens on Observer's background writer, off the
+	// request path (CHE-685 review B2) — WaitForIdle is the deterministic
+	// point after which the queued write is guaranteed to have reached
+	// Store, instead of a sleep racing that goroutine.
+	o.WaitForIdle()
 	rows := store.inserted()
 	if len(rows) != 1 {
 		t.Fatalf("inserted %d row(s), want 1", len(rows))
@@ -229,6 +234,7 @@ func TestObserve_DecidedPersistsAnswersAndActionKind(t *testing.T) {
 		t.Fatal("Decision is nil for a decided result")
 	}
 
+	o.WaitForIdle()
 	rows := store.inserted()
 	if len(rows) != 1 {
 		t.Fatalf("inserted %d row(s), want 1", len(rows))
@@ -284,6 +290,7 @@ func TestObserve_ProviderErrorIsRecordedAsDecidedAbstention(t *testing.T) {
 		t.Fatalf("Decision = %+v, want AbstainReason=provider_error", result.Decision)
 	}
 
+	o.WaitForIdle()
 	rows := store.inserted()
 	if len(rows) != 1 {
 		t.Fatalf("inserted %d row(s), want 1", len(rows))
@@ -303,6 +310,7 @@ func TestObserve_PanicIsRecordedAsError(t *testing.T) {
 	if result.Status != "error" || result.ShedReason != ReasonError {
 		t.Fatalf("result = %+v, want error/error", result)
 	}
+	o.WaitForIdle()
 	rows := store.inserted()
 	if len(rows) != 1 || rows[0].Status != "error" {
 		t.Fatalf("rows = %+v, want exactly one error row", rows)
@@ -332,6 +340,7 @@ func TestObserve_BudgetExceededSheds(t *testing.T) {
 		t.Errorf("Observe took %v, want well under the provider's %v delay", elapsed, provider.delay)
 	}
 
+	o.WaitForIdle()
 	rows := store.inserted()
 	if len(rows) != 1 || rows[0].Status != "shed" || rows[0].ShedReason.String != "budget_exceeded" {
 		t.Fatalf("rows = %+v, want exactly one shed/budget_exceeded row", rows)
@@ -380,6 +389,7 @@ func TestObserve_PoolCapOne_ConcurrentObservationIsShedPoolBusy(t *testing.T) {
 		t.Errorf("provider called %d time(s), want exactly 1 (the shed observation must never call it)", provider.calls.Load())
 	}
 
+	o.WaitForIdle()
 	rows := store.inserted()
 	var sawPoolBusy, sawDecided bool
 	for _, r := range rows {
@@ -417,6 +427,78 @@ func TestObserve_PoolReleasedAfterCompletion(t *testing.T) {
 	}
 }
 
+// TestObserve_BusyGateHeldUntilProviderActuallyReturns is CHE-685 review N1:
+// once Budget elapses, Observe must not release the cap-1 gate until the
+// still-running provider goroutine has actually finished — not immediately
+// at the moment evaluate returns a budget_exceeded Result. This never
+// mattered while Provider is nil in production (see releaseBusyWhenDone's
+// doc), but it must hold before a live Jev provider is wired: otherwise a
+// second Observe could be admitted while the first provider call is still
+// physically in flight, letting two calls overlap despite the cap-1
+// contract.
+func TestObserve_BusyGateHeldUntilProviderActuallyReturns(t *testing.T) {
+	unblock := make(chan struct{})
+	entered := make(chan struct{})
+	// blockingProvider itself returns promptly on ctx cancellation, which
+	// makes it unsuitable for proving N1: it would let the provider
+	// goroutine exit right at Budget, exactly the immediate-release
+	// behavior this test needs to distinguish from. ctxIgnoringProvider
+	// ignores ctx entirely — the way a real network client's Evaluate call
+	// can end up behaving under a wedged transport — so the provider
+	// goroutine stays running strictly after Budget elapses.
+	provider := &ctxIgnoringProvider{entered: entered, release: unblock, resp: mentionOwnerResponse(0.99)}
+	store := &fakeStore{}
+	o := &Observer{Provider: provider, Store: store}
+
+	firstDone := make(chan Result, 1)
+	go func() {
+		firstDone <- o.Observe(context.Background(), testInput())
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first Observe never reached the provider")
+	}
+
+	var first Result
+	select {
+	case first = <-firstDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first Observe never returned a budget_exceeded result")
+	}
+	if first.Status != "shed" || first.ShedReason != ReasonBudgetExceeded {
+		t.Fatalf("first Observe = %+v, want shed/budget_exceeded (provider still blocked past Budget)", first)
+	}
+
+	// The provider call is STILL running (release has not been closed yet).
+	// Per N1, the cap-1 gate must still be held: a second Observe must be
+	// shed with pool_busy, not admitted.
+	second := o.Observe(context.Background(), testInput())
+	if second.Status != "shed" || second.ShedReason != ReasonPoolBusy {
+		t.Fatalf("second Observe = %+v, want shed/pool_busy (gate must stay held while the first provider call is still in flight)", second)
+	}
+	if provider.calls.Load() != 1 {
+		t.Errorf("provider called %d time(s), want exactly 1 (the still-busy gate must have blocked the second call)", provider.calls.Load())
+	}
+
+	// Now let the first provider call finish. The gate must become
+	// available again shortly after — this is the "eventually released"
+	// half of the contract; N1 only changes WHEN it releases, not whether.
+	close(unblock)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		third := o.Observe(context.Background(), testInput())
+		if third.Status != "shed" || third.ShedReason != ReasonPoolBusy {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("cap-1 gate was never released after the first provider call finished")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // blockingProvider blocks inside Evaluate until release is closed, signaling
 // entered once it has started — used to deterministically win the race
 // against a concurrent second Observe call without a sleep-based retry.
@@ -436,5 +518,26 @@ func (p *blockingProvider) Evaluate(ctx context.Context, _ jev.Request) (*jev.Re
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+	return p.resp, nil
+}
+
+// ctxIgnoringProvider blocks inside Evaluate until release is closed,
+// deliberately NOT selecting on ctx.Done() — modeling a provider whose
+// underlying transport does not honor context cancellation (a real
+// possibility for a live Jev client, and the exact shape CHE-685 review N1
+// is about). Used only to prove the cap-1 gate stays held while such a
+// provider call is genuinely still in flight past Budget.
+type ctxIgnoringProvider struct {
+	entered chan struct{}
+	release chan struct{}
+	resp    *jev.Response
+	calls   atomic.Int32
+	once    sync.Once
+}
+
+func (p *ctxIgnoringProvider) Evaluate(context.Context, jev.Request) (*jev.Response, error) {
+	p.calls.Add(1)
+	p.once.Do(func() { close(p.entered) })
+	<-p.release
 	return p.resp, nil
 }

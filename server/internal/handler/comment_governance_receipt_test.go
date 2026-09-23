@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/governance"
@@ -97,9 +98,38 @@ func withGovernanceFlag(t *testing.T, enabled bool) {
 // handler's previous one afterward.
 func withGovernanceObserver(t *testing.T, provider governance.Provider, store receipt.Store) {
 	t.Helper()
+	withGovernanceObserverWriteBudget(t, provider, store, 0)
+}
+
+// withGovernanceObserverWriteBudget is withGovernanceObserver plus an
+// explicit Observer.WriteBudget for the duration of one test. writeBudget<=0
+// falls back to receipt.DefaultWriteBudget, same as a production Observer.
+// CHE-685 review B1 asked for exactly this: an injectable write deadline so
+// a test can prove persistence succeeds under a generous budget or sheds
+// under a near-zero one, deterministically, instead of depending on how
+// fast the real test database happens to respond on a given CI run.
+func withGovernanceObserverWriteBudget(t *testing.T, provider governance.Provider, store receipt.Store, writeBudget time.Duration) {
+	t.Helper()
 	previous := testHandler.GovernanceReceipts
-	testHandler.GovernanceReceipts = &receipt.Observer{Provider: provider, Store: store}
+	testHandler.GovernanceReceipts = &receipt.Observer{Provider: provider, Store: store, WriteBudget: writeBudget}
 	t.Cleanup(func() { testHandler.GovernanceReceipts = previous })
+}
+
+// slowGovernanceStore wraps a real Store and sleeps before delegating, so a
+// test can force the background writer's WriteBudget to be exceeded without
+// depending on real database slowness.
+type slowGovernanceStore struct {
+	inner receipt.Store
+	delay time.Duration
+}
+
+func (s slowGovernanceStore) InsertGovernanceReceipt(ctx context.Context, arg db.InsertGovernanceReceiptParams) (db.GovernanceReceipt, error) {
+	select {
+	case <-time.After(s.delay):
+	case <-ctx.Done():
+		return db.GovernanceReceipt{}, ctx.Err()
+	}
+	return s.inner.InsertGovernanceReceipt(ctx, arg)
 }
 
 func governanceReceiptCountForComment(t *testing.T, commentID string) int {
@@ -227,6 +257,11 @@ func TestCreateComment_GovernanceFlagOn_ProviderSucceeds_ResponseUnaffected(t *t
 	}
 	got := normalizedCommentResponse(t, w.Body.Bytes())
 	assertNormalizedResponsesEqual(t, got, baseline)
+	// Persistence happens on Observer's background writer, off the request
+	// path (CHE-685 review B2) — WaitForIdle is the deterministic point
+	// after which the queued write is guaranteed to have reached Store,
+	// instead of a sleep racing that goroutine.
+	testHandler.GovernanceReceipts.WaitForIdle()
 	if got := governanceReceiptCountForComment(t, commentID); got != 1 {
 		t.Fatalf("governance_receipt rows = %d, want 1 (flag on, fake provider succeeds)", got)
 	}
@@ -260,6 +295,7 @@ func TestCreateComment_GovernanceFlagOn_ProviderErrors_ResponseUnaffected(t *tes
 	// A provider error is still a 'decided' receipt (governance.Evaluate's
 	// own contract turns it into a ReasonProviderError abstention) — see
 	// server/internal/governance/receipt's decisionResult.
+	testHandler.GovernanceReceipts.WaitForIdle()
 	if got := governanceReceiptCountForComment(t, commentID); got != 1 {
 		t.Fatalf("governance_receipt rows = %d, want 1 (flag on, fake provider errors)", got)
 	}
@@ -343,6 +379,11 @@ func TestUpdateComment_GovernanceFlagOn_ProviderSucceeds_ResponseUnaffected(t *t
 	}
 	got := normalizedCommentResponse(t, w.Body.Bytes())
 	assertNormalizedResponsesEqual(t, got, baseline)
+	// Persistence happens on Observer's background writer, off the request
+	// path (CHE-685 review B2) — WaitForIdle is the deterministic point
+	// after which the queued write is guaranteed to have reached Store,
+	// instead of a sleep racing that goroutine.
+	testHandler.GovernanceReceipts.WaitForIdle()
 	if got := governanceReceiptCountForComment(t, commentID); got != 1 {
 		t.Fatalf("governance_receipt rows = %d, want 1 (flag on, fake provider succeeds)", got)
 	}
@@ -370,6 +411,7 @@ func TestUpdateComment_GovernanceFlagOn_ProviderErrors_ResponseUnaffected(t *tes
 	}
 	got := normalizedCommentResponse(t, w.Body.Bytes())
 	assertNormalizedResponsesEqual(t, got, baseline)
+	testHandler.GovernanceReceipts.WaitForIdle()
 	if got := governanceReceiptCountForComment(t, commentID); got != 1 {
 		t.Fatalf("governance_receipt rows = %d, want 1 (flag on, fake provider errors)", got)
 	}
@@ -399,6 +441,119 @@ func TestUpdateComment_GovernanceFlagOn_StorageWriteFails_ResponseUnaffected(t *
 	assertNormalizedResponsesEqual(t, got, baseline)
 }
 
+// ---- CHE-685 review B1/B2: injectable write budget, request latency -------
+//
+// The receipt hook's persistence write used to run synchronously on the
+// request goroutine with a fixed 500ms deadline (writeBudget). That made
+// this suite flaky under ordinary DB contention (CHE-685 review B1) and let
+// every comment pay up to ~550ms of request latency for a receipt write the
+// caller never sees (review B2). Persistence now runs on Observer's
+// background writer, off the request path entirely, with an injectable
+// WriteBudget — the tests below replace the old ambient-speed assertions
+// with deterministic ones: a generous budget proves the row lands, a
+// near-zero budget proves the write times out and is counted as failed.
+
+// TestCreateComment_GovernanceOn_GenerousWriteBudgetPersistsDeterministically
+// is CHE-685 review B1's DB-backed case: a real *db.Queries write against
+// the real test database, under a deliberately generous WriteBudget, proves
+// persistence succeeds without depending on how fast the test database
+// happens to respond on a given CI run.
+func TestCreateComment_GovernanceOn_GenerousWriteBudgetPersistsDeterministically(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	issueID := createCommentTriggerPreviewIssue(t, "governance generous write budget", "member", testUserID)
+
+	withGovernanceFlag(t, true)
+	withGovernanceObserverWriteBudget(t, &governanceFakeProvider{}, testHandler.Queries, 10*time.Second)
+
+	w, commentID := createCommentForGovernanceTest(t, issueID, "generous write budget case")
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	testHandler.GovernanceReceipts.WaitForIdle()
+	if got := governanceReceiptCountForComment(t, commentID); got != 1 {
+		t.Fatalf("governance_receipt rows = %d, want 1 (generous WriteBudget must persist deterministically)", got)
+	}
+	stats := testHandler.GovernanceReceipts.Stats()
+	if stats.PersistedTotal < 1 {
+		t.Errorf("Stats().PersistedTotal = %d, want >= 1", stats.PersistedTotal)
+	}
+}
+
+// TestCreateComment_GovernanceOn_TightWriteBudgetShedsDeterministically is
+// CHE-685 review B1's other half: a WriteBudget shorter than a scripted slow
+// Store proves the write-timeout path deterministically, in place of the old
+// test that only failed depending on ambient DB contention. The comment
+// response itself must stay unaffected either way — persistence timing on
+// the background writer can never reach the request path (review B2).
+func TestCreateComment_GovernanceOn_TightWriteBudgetShedsDeterministically(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	baselineIssueID := createCommentTriggerPreviewIssue(t, "governance tight write budget baseline", "member", testUserID)
+	withGovernanceFlag(t, false)
+	baselineW, _ := createCommentForGovernanceTest(t, baselineIssueID, "identical content across all four cases")
+	if baselineW.Code != http.StatusCreated {
+		t.Fatalf("baseline CreateComment: expected 201, got %d: %s", baselineW.Code, baselineW.Body.String())
+	}
+	baseline := normalizedCommentResponse(t, baselineW.Body.Bytes())
+
+	issueID := createCommentTriggerPreviewIssue(t, "governance tight write budget", "member", testUserID)
+	withGovernanceFlag(t, true)
+	slowStore := slowGovernanceStore{inner: testHandler.Queries, delay: 200 * time.Millisecond}
+	withGovernanceObserverWriteBudget(t, &governanceFakeProvider{}, slowStore, 1*time.Millisecond)
+
+	w, commentID := createCommentForGovernanceTest(t, issueID, "identical content across all four cases")
+	if w.Code != baselineW.Code {
+		t.Fatalf("status code = %d, want %d (baseline) — a slow background write must never change the comment response", w.Code, baselineW.Code)
+	}
+	got := normalizedCommentResponse(t, w.Body.Bytes())
+	assertNormalizedResponsesEqual(t, got, baseline)
+
+	testHandler.GovernanceReceipts.WaitForIdle()
+	if got := governanceReceiptCountForComment(t, commentID); got != 0 {
+		t.Errorf("governance_receipt rows = %d, want 0 (1ms WriteBudget against a 200ms-delayed store must time out deterministically)", got)
+	}
+	stats := testHandler.GovernanceReceipts.Stats()
+	if stats.PersistFailedTotal < 1 {
+		t.Errorf("Stats().PersistFailedTotal = %d, want >= 1 (the timed-out write must be counted)", stats.PersistFailedTotal)
+	}
+}
+
+// TestCreateComment_GovernanceOn_StatsCountEligibleAndPersisted is CHE-685
+// review B3's counters requirement: an eligible observation that reaches a
+// decided, persisted receipt must be visible on Observer.Stats() without
+// requiring any external metrics system.
+func TestCreateComment_GovernanceOn_StatsCountEligibleAndPersisted(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	issueID := createCommentTriggerPreviewIssue(t, "governance stats counters", "member", testUserID)
+
+	withGovernanceFlag(t, true)
+	withGovernanceObserver(t, &governanceFakeProvider{}, testHandler.Queries)
+
+	before := testHandler.GovernanceReceipts.Stats()
+	w, commentID := createCommentForGovernanceTest(t, issueID, "stats counters case")
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	testHandler.GovernanceReceipts.WaitForIdle()
+	if got := governanceReceiptCountForComment(t, commentID); got != 1 {
+		t.Fatalf("governance_receipt rows = %d, want 1", got)
+	}
+
+	after := testHandler.GovernanceReceipts.Stats()
+	if after.EligibleTotal != before.EligibleTotal+1 {
+		t.Errorf("EligibleTotal = %d, want %d", after.EligibleTotal, before.EligibleTotal+1)
+	}
+	if after.PersistedTotal != before.PersistedTotal+1 {
+		t.Errorf("PersistedTotal = %d, want %d", after.PersistedTotal, before.PersistedTotal+1)
+	}
+}
+
 // ---- native mention-routing behavior unaffected --------------------------
 
 // TestCreateComment_GovernanceOn_NativeMentionRoutingUnaffected proves the
@@ -424,6 +579,7 @@ func TestCreateComment_GovernanceOn_NativeMentionRoutingUnaffected(t *testing.T)
 	if got := countQueuedCommentTriggerTasks(t, issueID, agentID); got != 1 {
 		t.Errorf("queued tasks for mentioned agent = %d, want 1 (governance observation must not change native routing)", got)
 	}
+	testHandler.GovernanceReceipts.WaitForIdle()
 	if got := governanceReceiptCountForComment(t, commentID); got != 1 {
 		t.Errorf("governance_receipt rows = %d, want 1", got)
 	}
