@@ -22,8 +22,11 @@ jobs:
   # call) or accepting a weaker kill(-pgid) fallback that reintroduces the
   # PGID-reuse race this code was written to close (see the "Older kernels
   # fail closed" comment in captureCursorUnixGroup) are the only two real
-  # options. macOS stays on Blacksmith. Windows leg removed org-wide per
-  # CHE-522 (Cheese: Linux CI only, no Windows jobs or artifacts).
+  # options. macOS moved to GitHub-hosted macos-latest (CHE-748): the repo is
+  # public, so standard hosted macOS minutes are free and this leg has no
+  # dind/service-container dependency that would tie it to a specific host.
+  # Windows leg removed org-wide per CHE-522 (Cheese: Linux CI only, no
+  # Windows jobs or artifacts).
   cursor-background-lifecycle:
     needs: changes
     if: ${{ needs.changes.outputs.backend == 'true' }}
@@ -31,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, blacksmith-6vcpu-macos-latest]
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v5
@@ -65,7 +68,7 @@ jobs:
   # a `go test -race` run. The outputs are consumed by the focused jobs
   # below.
   changes:
-    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: read
@@ -214,7 +217,7 @@ jobs:
 
   sqlc-check:
     needs: changes
-    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         if: ${{ needs.changes.outputs.sqlc == 'true' }}
@@ -249,7 +252,7 @@ jobs:
   # increases total runner-minutes but reduces wall-clock feedback time.
   frontend-build:
     needs: changes
-    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
+    runs-on: ubuntu-latest
     env:
       # Pin turbo's filesystem cache somewhere actions/cache can address.
       TURBO_CACHE_DIR: .turbo/cache
@@ -373,7 +376,7 @@ jobs:
 
   frontend-test:
     needs: changes
-    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
+    runs-on: ubuntu-latest
     env:
       TURBO_CACHE_DIR: .turbo/cache
     steps:
@@ -435,7 +438,7 @@ jobs:
             total: 2
           - index: 2
             total: 2
-    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
+    runs-on: ubuntu-latest
     env:
       TURBO_CACHE_DIR: .turbo/cache
     steps:
@@ -492,7 +495,7 @@ jobs:
     # is cancelled by the concurrency group above, and there is no reason to
     # spend a runner reporting a verdict nobody will read.
     if: ${{ !cancelled() }}
-    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
+    runs-on: ubuntu-latest
     steps:
       - name: Check frontend job results
         env:
@@ -545,21 +548,26 @@ jobs:
   # a cached "ok" from an untouched package could mask a real failure.
   backend-tests:
     needs: changes
-    # Stays on a GitHub-hosted runner even where the rest of Linux CI moves to
-    # cheese-x99 (CHE-700): this is the only job in the repo that uses
-    # `services`, and the self-hosted runners talk to a nested Docker daemon
-    # (`DOCKER_HOST=tcp://dind-N:2376`) living in a *different* network
-    # namespace from the runner itself. Service-container ports are published
-    # by that nested daemon, so they bind inside the dind container's
-    # namespace and never appear on the runner's 127.0.0.1 — the job's
-    # `postgres://...@localhost:5432` is unreachable by construction, not
-    # merely slow to come up. Docker's own health check still reports
+    # Stays off cheese-x99 (CHE-748): this is the only job in the repo that
+    # uses `services`, and the self-hosted runners talk to a nested Docker
+    # daemon (`DOCKER_HOST=tcp://dind-N:2376`) living in a *different*
+    # network namespace from the runner itself. Service-container ports are
+    # published by that nested daemon, so they bind inside the dind
+    # container's namespace and never appear on the runner's 127.0.0.1 — the
+    # job's `postgres://...@localhost:5432` is unreachable by construction,
+    # not merely slow to come up. Docker's own health check still reports
     # `healthy` (it runs inside the dind namespace), so the job proceeds and
     # then burns its whole migration retry window on `connection refused`.
-    # Routing this one job back is the small carve-out; making it work on
-    # cheese-x99 needs the runner and dind to share a namespace, which is a
-    # runner-fleet change, not a workflow change.
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    # A live rerun on cheese-x99-repo-4 still failed with this exact
+    # class of failure (see PR #92, run 35701219643) — the runner/dind
+    # namespace split has not actually been closed. Moved to GitHub-hosted
+    # ubuntu-latest rather than back to Blacksmith or X99: the repo is
+    # public so standard hosted minutes are free, and hosted `services:`
+    # containers publish on the runner's own loopback with no nested-daemon
+    # namespace split. Making this job work on cheese-x99 still needs the
+    # runner and dind to share a namespace, which is a runner-fleet change,
+    # not a workflow change.
+    runs-on: ubuntu-latest
     # `services` cannot be conditional, so the Postgres and Redis containers
     # still start on a filtered PR. That is ~1 minute of runner time against
     # the several minutes the gated steps below cost; job-level `if` would
@@ -752,7 +760,7 @@ jobs:
   # The aggregate backend job below still treats both jobs as one merge gate.
   go-vulnerability-scan:
     needs: changes
-    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         if: ${{ needs.changes.outputs.backend == 'true' }}
@@ -782,7 +790,9 @@ jobs:
   # merge base to diff against, and its branch was already checked.
   go-lint:
     needs: changes
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    # GitHub-hosted (CHE-748): no service containers, no X99-only
+    # dependency — plain checkout + golangci-lint.
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' }}
@@ -814,7 +824,7 @@ jobs:
   backend:
     needs: [backend-tests, backend-agent-tests, sqlc-check, go-vulnerability-scan, go-lint]
     if: ${{ !cancelled() }}
-    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
+    runs-on: ubuntu-latest
     steps:
       - name: Check backend job results
         env:
@@ -841,7 +851,7 @@ jobs:
     # and the branch it came from was already checked.
     needs: changes
     if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.images == 'true' }}
-    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -868,8 +878,10 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
-          - blacksmith-6vcpu-macos-latest
+          # GitHub-hosted (CHE-748): free on this public repo, no Blacksmith,
+          # no X99-only dependency — plain checkout + shell tests.
+          - ubuntu-latest
+          - macos-latest
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
