@@ -293,26 +293,43 @@ set -e
 expect_exit 1 "$status" out-of-order-migrations
 expect_contains "$output" "not in on-disk applied order" out-of-order-migrations
 
-# base_rename_packet.mjs builds a packet whose ordered_migrations explicitly
-# includes 491_github_merge_announcement (not necessarily in the plain
-# last-5 slice build_base_packet uses), so the rename-reconciliation
-# scenarios below have a real on-disk target version to reconcile onto.
-build_base_rename_packet() {
+# build_c00_shape_packet.mjs builds a packet reproducing C00's actual
+# pre-cutover shape from run 35745037983's admitted baseline tuple:
+# ordered_migrations is the full on-disk set through 501 (the baseline's
+# latest, 501_protocol_lint_run_checked_at_idx), and the observed ledger is
+# that same version list with all five CHE-548 renames substituted back to
+# their pre-rename names — reproducing what C00's schema_migrations table
+# actually held, not just the single name the first-unknown-version early
+# exit in validatePacket happened to report.
+build_c00_shape_packet() {
   local out=$1
   node -e '
     const fs = require("fs");
     const crypto = require("crypto");
     const path = require("path");
     const dir = "server/migrations";
-    const target = "491_github_merge_announcement";
+    const latest = "501_protocol_lint_run_checked_at_idx";
     const files = fs.readdirSync(dir).filter((f) => f.endsWith(".up.sql")).sort();
-    const targetIdx = files.findIndex((f) => f === `${target}.up.sql`);
-    if (targetIdx === -1) throw new Error(`fixture assumption failed: ${target}.up.sql not found under ${dir}`);
-    const last = files.slice(0, targetIdx + 1).slice(-5);
-    const ordered = last.map((f) => {
+    const latestIdx = files.findIndex((f) => f === `${latest}.up.sql`);
+    if (latestIdx === -1) throw new Error(`fixture assumption failed: ${latest}.up.sql not found under ${dir}`);
+    const upTo501 = files.slice(0, latestIdx + 1);
+    const ordered = upTo501.map((f) => {
       const bytes = fs.readFileSync(path.join(dir, f));
       return { version: f.replace(/\.up\.sql$/, ""), sha256: "sha256:" + crypto.createHash("sha256").update(bytes).digest("hex") };
     });
+    const renames = new Map([
+      ["491_github_merge_announcement", "470_github_merge_announcement"],
+      ["492_github_merge_announcement_identity_uidx", "471_github_merge_announcement_identity_uidx"],
+      ["493_github_merge_announcement_pending_idx", "472_github_merge_announcement_pending_idx"],
+      ["494_github_merge_announcement_html_url", "473_github_merge_announcement_html_url"],
+      ["495_agent_task_rerun_lineage_unique", "474_agent_task_rerun_lineage_unique"],
+    ]);
+    for (const onDiskName of renames.keys()) {
+      if (!ordered.some((o) => o.version === onDiskName)) {
+        throw new Error(`fixture assumption failed: ${onDiskName} not found through ${latest}`);
+      }
+    }
+    const observedLedger = ordered.map((o) => renames.get(o.version) ?? o.version);
     const packet = {
       schema_version: 1,
       candidate: {
@@ -325,7 +342,7 @@ build_base_rename_packet() {
       ordered_migrations: ordered,
       observed_state: {
         schema_version: 1,
-        ledger: { status: "complete", versions: ordered.map((o) => o.version) },
+        ledger: { status: "complete", versions: observedLedger },
         indexes: { status: "complete", invalid: [] },
         hooks: { status: "complete", observations: [{ name: "backfill_example", status: "completed" }] },
       },
@@ -335,48 +352,48 @@ build_base_rename_packet() {
         backend_digest: "sha256:" + "a".repeat(64),
         web_digest: "sha256:" + "b".repeat(64),
       },
-      minimum_rollback_version: ordered[0].version,
+      minimum_rollback_version: ordered[ordered.length - 1].version,
     };
     fs.writeFileSync(process.argv[1], JSON.stringify(packet, null, 2));
   ' "$out"
 }
 
-base_rename_packet="$work_dir/base-rename.json"
-build_base_rename_packet "$base_rename_packet"
+c00_shape_packet="$work_dir/c00-shape.json"
+build_c00_shape_packet "$c00_shape_packet"
 
 # ---------------------------------------------------------------------------
-# Scenario 10: a ledger row under the known pre-CHE-548 historical name
-# (470_github_merge_announcement) must reconcile to the on-disk
-# 491_github_merge_announcement version and verify — the exact case
-# C00's ledger reported before the renumber merged.
+# Scenario 10: a ledger reproducing C00's real pre-cutover shape — the
+# on-disk migration set through 501 with all five CHE-548 renames still
+# recorded under their pre-rename names — must reconcile every one of them
+# and verify. This is the exact case run 35745037983 stopped on; reconciling
+# only 470 would still leave 471-474 dirty against this same ledger.
 # ---------------------------------------------------------------------------
-renamed="$work_dir/renamed.json"
-mutate "$base_rename_packet" "$renamed" '
-  const idx = p.observed_state.ledger.versions.indexOf("491_github_merge_announcement");
-  if (idx === -1) throw new Error("fixture assumption failed: 491_github_merge_announcement not in base packet ledger");
-  p.observed_state.ledger.versions[idx] = "470_github_merge_announcement";
-'
-output="$(node deploy/cd/release-packet.mjs verify --packet "$renamed" --manifest "$manifest" 2>&1)"
+output="$(node deploy/cd/release-packet.mjs verify --packet "$c00_shape_packet" --manifest "$manifest" 2>&1)"
 status=$?
-expect_exit 0 "$status" known-ledger-rename
-expect_contains "$output" '"ok":true' known-ledger-rename
+expect_exit 0 "$status" c00-shape-ledger-replay
+expect_contains "$output" '"ok":true' c00-shape-ledger-replay
 
 # ---------------------------------------------------------------------------
-# Scenario 11 (negative control): an unrelated unknown historical version
-# must still fail closed as dirty-ledger state — the rename reconciliation
-# is a single fixed mapping, not a general amnesty for unrecognized names.
+# Scenario 11 (negative control): a version that does not exist under
+# server/migrations/ at all, and is not one of the five known renames, must
+# still fail closed as dirty-ledger state — the rename reconciliation is a
+# fixed five-entry mapping, not a general amnesty for unrecognized names.
+# 999_not_a_migration cannot collide with an on-disk file (three-digit
+# migration numbering tops out well below 999) and is not itself a rename
+# target, unlike 470_issue_status_icon (a real, differently-numbered on-disk
+# migration) which would only fail here because a narrower fixture omits it.
 # ---------------------------------------------------------------------------
 unknown_rename="$work_dir/unknown-rename.json"
-mutate "$base_rename_packet" "$unknown_rename" '
-  const idx = p.observed_state.ledger.versions.indexOf("491_github_merge_announcement");
-  if (idx === -1) throw new Error("fixture assumption failed: 491_github_merge_announcement not in base packet ledger");
-  p.observed_state.ledger.versions[idx] = "470_issue_status_icon";
+mutate "$c00_shape_packet" "$unknown_rename" '
+  const idx = p.observed_state.ledger.versions.indexOf("470_github_merge_announcement");
+  if (idx === -1) throw new Error("fixture assumption failed: 470_github_merge_announcement not in c00-shape ledger");
+  p.observed_state.ledger.versions[idx] = "999_not_a_migration";
 '
 set +e
 output="$(node deploy/cd/release-packet.mjs verify --packet "$unknown_rename" --manifest "$manifest" 2>&1)"
 status=$?
 set -e
 expect_exit 1 "$status" unknown-ledger-rename
-expect_contains "$output" "ledger contains version 470_issue_status_icon not present in ordered_migrations — dirty ledger state" unknown-ledger-rename
+expect_contains "$output" "ledger contains version 999_not_a_migration not present in ordered_migrations — dirty ledger state" unknown-ledger-rename
 
 echo "release-packet.mjs control-flow fixtures passed"
