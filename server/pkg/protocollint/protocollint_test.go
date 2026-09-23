@@ -271,12 +271,29 @@ func TestCheckUnsupportedWaiver(t *testing.T) {
 		}
 	})
 
+	t.Run("unrelated member grant does not suppress a protocol claim", func(t *testing.T) {
+		t.Parallel()
+		in := Input{
+			RunID: "run-9b",
+			PostedComments: []PostedComment{
+				{ID: "c1", Content: "The protocol review was waived."},
+			},
+			OtherComments: []OtherComment{
+				{AuthorType: "member", Content: "ABI waiver granted by release policy."},
+			},
+		}
+		violations := Check(in)
+		if len(violations) != 1 || violations[0].Code != CodeUnsupportedWaiver {
+			t.Fatalf("Check() = %v, want exactly 1 %q violation", violations, CodeUnsupportedWaiver)
+		}
+	})
+
 	t.Run("an agent's own claim does not count as a grant", func(t *testing.T) {
 		t.Parallel()
 		in := Input{
 			RunID: "run-10",
 			PostedComments: []PostedComment{
-				{ID: "c1", Content: "This step was waived per approval."},
+				{ID: "c1", Content: "This protocol review was waived per approval."},
 			},
 			OtherComments: []OtherComment{
 				// Another agent (e.g. a squad leader) echoing the same claim
@@ -304,6 +321,135 @@ func TestCheckUnsupportedWaiver(t *testing.T) {
 	})
 }
 
+// TestCheckIgnoresUnrelatedWaiverVocabulary is CHE-681's regression coverage:
+// waiverClaimRe must not fire on real engineering text that merely mentions
+// the word "waiver" outside a fabricated-authorization claim. Cases are
+// seeded verbatim from the false positives found in production data
+// (protocol_lint_run, 2026-09-18..21): CI/ABI governance language and
+// self-referential discussion of this very check.
+func TestCheckIgnoresUnrelatedWaiverVocabulary(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{
+			name:    "CD/ABI waiver governance language",
+			content: "This needs a scoped waiver for this stack before the gate reopens.",
+		},
+		{
+			name:    "ABI check waiver reference",
+			content: "Filed a waiver on `checkLegacyAbi` for the RevenueCat SDK bump.",
+		},
+		{
+			name:    "self-referential discussion of this check",
+			content: "This is about checkUnsupportedWaivers's own waiver-grant lookup bug, not a real claim.",
+		},
+		{
+			name:    "ABI waiver with a later status reference",
+			content: "The ABI check was waived by release policy. Status reporting remains unchanged.",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			in := Input{
+				RunID:          "run-che681",
+				PostedComments: []PostedComment{{ID: "c1", Content: tc.content}},
+			}
+			if violations := Check(in); len(violations) != 0 {
+				t.Fatalf("Check() with unrelated waiver text %q = %v, want no violations", tc.content, violations)
+			}
+		})
+	}
+}
+
+// TestWaiverClaimAndGrantBindToWorkflowStep is CHE-681's second regression
+// table: the waiver verb must apply to a Multica workflow step, not merely
+// share a sentence with one. Genuine claims, including passive forms, still
+// fire; CI/ABI governance and quoted discussion of this check do not.
+func TestWaiverClaimAndGrantBindToWorkflowStep(t *testing.T) {
+	t.Parallel()
+
+	claims := []struct {
+		content string
+		want    bool
+	}{
+		{"The protocol review was skipped with approval.", true},
+		{"Skipped the status readback per waiver.", true},
+		{"I waived the verification step since it was trivial.", true},
+		{"Review #2 has been waived.", true},
+		{"The protocol review waiver was granted.", true},
+		{"Waiver granted for the verification step.", true},
+		{"The `protocol review` was waived.", true},
+		{"The independent review was skipped with approval.", true},
+		{"The verification step was waived.", true},
+		{"The review step was waived.", true},
+		{"The evidence step was waived.", true},
+		{"The review step was skipped with approval.", true},
+		{"Skipped the verification step with approval.", true},
+		{"The verification and review steps were waived.", true},
+		{"The ABI step was waived.", false},
+		{"The workflow steps were waived.", true},
+		{"The protocol steps were skipped with approval.", true},
+		{"All the review and verification steps were waived.", true},
+		{"The ABI verification steps were waived under release policy.", false},
+		{"The ABI review and verification steps were skipped with approval.", false},
+		{"The ABI review was waived under release policy.", false},
+		{"The ABI verification was skipped with approval.", false},
+		{"The ABI check was waived by release policy; protocol review remains mandatory.", false},
+		{"The ABI waiver was granted; protocol review remains mandatory.", false},
+		{"The ABI check was waived by release policy, so the status comment follows.", false},
+		{"The CI release was skipped with approval; review continues.", false},
+		{"The required status check was waived for the hotfix branch.", false},
+		{"checkUnsupportedWaivers reports when a posted comment says a step was waived.", false},
+		{"The lint flags `this step was explicitly waived` as a claim.", false},
+		{"Regression input: \"The protocol review was skipped with approval.\"", false},
+	}
+	for _, tc := range claims {
+		t.Run("claim/"+tc.content, func(t *testing.T) {
+			t.Parallel()
+			in := Input{RunID: "run-che681", PostedComments: []PostedComment{{ID: "c1", Content: tc.content}}}
+			if got := len(Check(in)) == 1; got != tc.want {
+				t.Fatalf("Check(%q) flagged=%v, want %v", tc.content, got, tc.want)
+			}
+		})
+	}
+
+	grants := []struct {
+		content string
+		want    bool
+	}{
+		{"You may skip the protocol review here.", true},
+		{"Okay to skip the verification step.", true},
+		{"Protocol review waiver granted for this PR.", true},
+		{"I waive `protocol review`.", true},
+		{"You may skip the workflow steps for this hotfix.", true},
+		{"You may skip the ABI verification steps.", false},
+		{"You may skip review of the ABI check.", false},
+		{"I waive the ABI review.", false},
+		{"The protocol review waiver was granted.", true},
+		{"ABI waiver granted by release policy; the review stays required.", false},
+		{"ABI waiver granted; protocol review remains mandatory.", false},
+		{"You can skip the ABI check, but the status comment still needs posting.", false},
+		{"waiverGrantRe should match `you can skip the CI gate`.", false},
+	}
+	for _, tc := range grants {
+		t.Run("grant/"+tc.content, func(t *testing.T) {
+			t.Parallel()
+			in := Input{
+				RunID:          "run-che681",
+				PostedComments: []PostedComment{{ID: "c1", Content: "The protocol review was skipped with approval."}},
+				OtherComments:  []OtherComment{{AuthorType: "member", Content: tc.content}},
+			}
+			if got := len(Check(in)) == 0; got != tc.want {
+				t.Fatalf("member grant %q accepted=%v, want %v", tc.content, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestCheckReportsEveryUnsupportedWaiverClaim: each fabricated claim is an
 // independent violation, not just the first one found.
 func TestCheckReportsEveryUnsupportedWaiverClaim(t *testing.T) {
@@ -312,8 +458,8 @@ func TestCheckReportsEveryUnsupportedWaiverClaim(t *testing.T) {
 	in := Input{
 		RunID: "run-12",
 		PostedComments: []PostedComment{
-			{ID: "c1", Content: "Step A was explicitly waived."},
-			{ID: "c2", Content: "Step B was also explicitly waived."},
+			{ID: "c1", Content: "Protocol review A was explicitly waived."},
+			{ID: "c2", Content: "Verification B was also explicitly waived."},
 		},
 	}
 	violations := Check(in)
@@ -334,7 +480,7 @@ func TestCheckAggregatesMultipleIndependentViolations(t *testing.T) {
 		StatusReadBack:     false,
 		ClaimedEvidenceURL: "not-a-url",
 		PostedComments: []PostedComment{
-			{ID: "reply-1", ParentID: "wrong-parent", Content: "Done, waived the rest."},
+			{ID: "reply-1", ParentID: "wrong-parent", Content: "Done, the remaining protocol review was waived."},
 		},
 	}
 	violations := Check(in)

@@ -275,19 +275,79 @@ func checkEvidenceURL(in Input) (Violation, bool) {
 	}, false
 }
 
+// workflowStepRe names the Multica workflow steps this package owns. A
+// waiver claim or grant only counts when its verb applies to one of these
+// (see waiverClaimRe / waiverGrantRe).
+//
+// Generic nouns ("review", "verification", "evidence", "status") are
+// ordinary engineering vocabulary, so alone they are not a step: "the ABI
+// review was waived" and "skip review of the ABI check" must not count. They
+// qualify only as a workflow compound ("protocol review", "independent
+// review", "status readback"), with an ordinal label ("Review #2",
+// "verification B"), or as "<noun> step(s)" directly after a determiner
+// ("the verification and review steps"). The determiner is what binds the
+// noun to the step: "the ABI verification steps" has a foreign qualifier in
+// between, so it stays out. A bare "step(s)" likewise needs a determiner, so
+// "the ABI step" stays out.
+const workflowStepRe = `(?:` +
+	`protocol(?:\s+(?:review|check|steps?))?` +
+	`|workflow\s+(?:review|steps?)` +
+	`|(?:independent|exact-SHA|PR|code)\s+review` +
+	`|status\s+(?:change|update|read-?back)` +
+	`|comment\s+scan|CI\s+gate` +
+	`|` + stepDeterminerRe + `\s+(?:` + genericStepNounRe + `(?:\s*(?:,|and|or|&)\s*` + genericStepNounRe + `)*\s+)?steps?` +
+	`|(?:review|verification|evidence)\s+(?:(?-i:[A-Z])|#?\d+)` +
+	`)`
+
+const stepDeterminerRe = `(?:this|that|these|those|the|each|every|both|all(?:\s+the)?)`
+
+const genericStepNounRe = `(?:review|verification|read-?back|evidence|status)`
+
+// stepRefRe is a workflow step with an optional determiner before it and an
+// optional ordinal label after it ("protocol review A"). The label is
+// deliberately narrow: "status check" must not become a step reference.
+const stepRefRe = `(?:(?:the|this|that)\s+)?` + workflowStepRe + `(?:\s+(?:(?-i:[A-Z])|#?\d+))?`
+
 // waiverClaimRe matches this run's own comment text claiming a human waived a
-// step, in the specific vocabulary the CLAUDE.md brief warns against
-// fabricating ("waived", "waiver granted", "explicitly waived", etc.).
-// Deliberately narrow: it exists to catch the fabrication pattern the task
-// names, not to police every mention of the word "waive".
-var waiverClaimRe = regexp.MustCompile(`(?i)\b(waiv(?:ed|er)|skip(?:ped|ping) (?:with|per) (?:approval|waiver))\b`)
+// Multica workflow step, in the vocabulary the CLAUDE.md brief warns against
+// fabricating: "<step> was (explicitly) waived", "<step> was skipped with
+// approval", "waived <step>", "skipped <step> per waiver".
+//
+// CHE-681: the waiver verb must apply to the step, not merely share a
+// sentence with it. The previous bare "waiver" match (and then sentence-wide
+// co-occurrence) fired on CI/ABI governance ("The ABI check was waived by
+// release policy. Status ...") and on discussion of this very check.
+var waiverClaimRe = regexp.MustCompile(`(?i)\b(?:` +
+	stepRefRe + `\s+(?:(?:was|were|is|are|has\s+been|have\s+been|got)\s+)?(?:(?:\w+ly|also|already)\s+)*(?:waived|skipped\s+(?:with|per)\s+(?:approval|waiver))` +
+	`|waived\s+` + stepRefRe +
+	`|skipp(?:ed|ing)\s+` + stepRefRe + `\s+(?:with|per)\s+(?:approval|waiver)` +
+	`|` + stepWaiverGrantedRe +
+	`)\b`)
+
+// stepWaiverGrantedRe is "<step> waiver (was) granted" or "waiver (was)
+// granted for <step>". An agent writing it is a claim; a member writing it is
+// a grant, so both regexes share it.
+const stepWaiverGrantedRe = stepRefRe + `\s+waiver\s+` + grantedRe +
+	`|waiver\s+` + grantedRe + `\s+for\s+` + stepRefRe
+
+const grantedRe = `(?:(?:was|has\s+been|is)\s+)?(?:granted|approved)`
 
 // waiverGrantRe matches a human actually granting one, in a comment authored
-// by a workspace member (never an agent or system narration). Intentionally
-// the mirror of waiverClaimRe's vocabulary plus an explicit approval verb, so
-// a member saying "waived" in an unrelated sentence doesn't count as a grant
-// merely by using the same word — it must read as authorization, not mention.
-var waiverGrantRe = regexp.MustCompile(`(?i)\b(i waive|waiver granted|you (?:can|may) skip|approved? to skip|ok(?:ay)? to skip)\b`)
+// by a workspace member (never an agent or system narration). Like a claim,
+// the grant must apply to a workflow step, so an unrelated grant ("ABI waiver
+// granted") cannot mask a protocol violation.
+var waiverGrantRe = regexp.MustCompile(`(?i)\b(?:` +
+	`(?:i\s+waive|you\s+(?:can|may)\s+skip|(?:approved?|ok(?:ay)?)\s+to\s+skip)\s+` + stepRefRe +
+	`|` + stepWaiverGrantedRe +
+	`)\b`)
+
+// quotedRe finds code spans and double-quoted text. A quoted span that
+// itself holds waiver wording is a mention (e.g. discussing what this check
+// flags), not a claim or grant, so it is dropped. Any other quoted span is
+// just formatting ("The `protocol review` was waived."), so its text is kept.
+var quotedRe = regexp.MustCompile("`[^`]*`|\"[^\"\n]*\"|\u201c[^\u201d\n]*\u201d")
+
+var waiverWordRe = regexp.MustCompile(`(?i)waiv|skip|grant`)
 
 // checkUnsupportedWaivers is assertion 5: a run must not claim, in its own
 // posted comments, that a human waived some step unless a member's comment on
@@ -297,7 +357,7 @@ var waiverGrantRe = regexp.MustCompile(`(?i)\b(i waive|waiver granted|you (?:can
 func checkUnsupportedWaivers(in Input) []Violation {
 	granted := false
 	for _, oc := range in.OtherComments {
-		if oc.AuthorType == "member" && waiverGrantRe.MatchString(oc.Content) {
+		if oc.AuthorType == "member" && waiverGrantRe.MatchString(unquoted(oc.Content)) {
 			granted = true
 			break
 		}
@@ -305,7 +365,7 @@ func checkUnsupportedWaivers(in Input) []Violation {
 
 	var violations []Violation
 	for _, c := range in.PostedComments {
-		if !waiverClaimRe.MatchString(c.Content) {
+		if !waiverClaimRe.MatchString(unquoted(c.Content)) {
 			continue
 		}
 		if granted {
@@ -320,6 +380,15 @@ func checkUnsupportedWaivers(in Input) []Violation {
 		})
 	}
 	return violations
+}
+
+func unquoted(content string) string {
+	return quotedRe.ReplaceAllStringFunc(content, func(span string) string {
+		if waiverWordRe.MatchString(span) {
+			return " "
+		}
+		return strings.Trim(span, "`\"\u201c\u201d")
+	})
 }
 
 func label(runID string) string {
