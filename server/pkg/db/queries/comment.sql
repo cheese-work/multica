@@ -956,3 +956,16 @@ FROM comment c
 JOIN ancestor_ids path ON path.id = c.id
 ORDER BY c.id
 FOR UPDATE OF c;
+
+-- name: ListCommentsForIssueUpTo :many
+-- CHE-755 provenance export: the OLDEST @row_limit comments on an issue created
+-- at or before @cutoff, chronological with UUID tiebreak. Unlike
+-- ListCommentsForIssue this is a prefix, so a caller asking for limit+1 rows can
+-- detect overflow and report it instead of silently truncating. Tombstoned
+-- rows are included so the caller can classify them rather than lose them.
+SELECT * FROM comment
+WHERE issue_id = @issue_id
+  AND workspace_id = @workspace_id
+  AND created_at <= @cutoff
+ORDER BY created_at ASC, id ASC
+LIMIT @row_limit;

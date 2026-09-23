@@ -1293,6 +1293,21 @@ type ProtocolLintRun struct {
 	ViolationCodes []string           `json:"violation_codes"`
 }
 
+type ProvenanceExportLog struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	ActorType      string             `json:"actor_type"`
+	ActorID        pgtype.UUID        `json:"actor_id"`
+	RequestDigest  string             `json:"request_digest"`
+	ManifestDigest string             `json:"manifest_digest"`
+	Cutoff         pgtype.Timestamptz `json:"cutoff"`
+	SourceCount    int32              `json:"source_count"`
+	IncludedCount  int32              `json:"included_count"`
+	ExcludedCount  int32              `json:"excluded_count"`
+	Manifest       []byte             `json:"manifest"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
 type QuickAction struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
