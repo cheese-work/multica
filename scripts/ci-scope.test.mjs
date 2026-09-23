@@ -91,7 +91,15 @@ function productionNeeds(gate, outputs) {
   const dependencies = field(jobs[gate], /^    needs: \[(.+)\]$/m).split(", ");
   return Object.fromEntries(dependencies.map((job) => {
     if (job === "changes") return [job, { result: "success", outputs }];
-    const scope = field(jobs[job], /^    if: \$\{\{ needs\.changes\.outputs\.(\w+) == 'true' \}\}$/m);
+    // CHE-748 moved several jobs (sqlc-check, frontend-build, frontend-test,
+    // go-vulnerability-scan, go-lint, backend-tests) off job-level `if:`
+    // scoping entirely -- they now always run, and the aggregate gate below
+    // accounts for that through JOB_SCOPES rather than a skipped dependency.
+    // A dependency with no job-level if: scope is unconditional: it always
+    // succeeds regardless of the simulated path-filter outputs.
+    const match = jobs[job].match(/^    if: \$\{\{ needs\.changes\.outputs\.(\w+) == 'true' \}\}$/m);
+    if (!match) return [job, { result: "success" }];
+    const scope = match[1];
     return [job, { result: outputs[scope] === "true" ? "success" : "skipped" }];
   }));
 }
@@ -103,6 +111,7 @@ for (const gate of ["frontend", "backend"]) {
     assert.match(jobs[gate], /^          NEEDS_JSON: \$\{\{ toJSON\(needs\) \}\}$/m);
     assert.match(jobs[gate], /^        run: node scripts\/ci-scope\.mjs gate$/m);
     for (const scope of Object.values(mapping)) {
+      if (scope === "always") continue;
       assert.ok(jobs.changes.includes(`      ${scope}: \${{ steps.decide.outputs.${scope} }}`));
     }
     const scopes = Object.keys(filters);
@@ -150,6 +159,7 @@ for (const gate of ["frontend", "backend"]) {
       const failed = unselected();
       failed[job].result = "failure";
       assert.throws(() => checkGate(failed, mapping), new RegExp(job));
+      if (scope === "always") continue;
       for (const value of [undefined, "", "unknown"]) {
         const invalid = unselected();
         invalid.changes.outputs[scope] = value;
@@ -163,16 +173,17 @@ for (const gate of ["frontend", "backend"]) {
 }
 
 // Upstream pins a three-platform matrix here. This fork runs no Windows jobs
-// at all (CHE-522: Linux CI only, no Windows jobs or artifacts). The Linux
-// leg uses the Cheese Work X99 runner while macOS remains on Blacksmith, so
-// both entries stay explicit — a silently dropped macOS leg would still fail.
+// at all (CHE-522: Linux CI only, no Windows jobs or artifacts). Both the
+// Linux and macOS legs moved to GitHub-hosted runners (CHE-748: the repo is
+// public, so standard hosted minutes are free), so both entries stay
+// explicit — a silently dropped macOS leg would still fail.
 test("the backend gate owns the two-platform installer matrix", () => {
   assert.equal(productionMapping("backend").installer, "installer");
   assert.match(
     jobs.installer,
-    /self-hosted","Linux","X64","cheese-x99/,
+    /- ubuntu-latest/,
   );
-  assert.match(jobs.installer, /blacksmith-6vcpu-macos-latest/);
+  assert.match(jobs.installer, /- macos-latest/);
   assert.doesNotMatch(jobs.installer, /continue-on-error:/);
 });
 
@@ -181,18 +192,26 @@ test("go-lint filters findings from the locally fetched merge base", () => {
   assert.doesNotMatch(jobs["go-lint"], /only-new-issues:/);
 });
 
-test("quality checks have exactly one runner and reuse the product build install", () => {
+test("quality checks run on frontend-build and, when frontend-build is skipped, frontend-quality", () => {
   const invocation = "uses: ./.github/actions/frontend-quality";
   const owners = Object.entries(jobs).filter(([, source]) => source.includes(invocation)).map(([job]) => job);
   assert.deepEqual(owners.sort(), ["frontend-build", "frontend-quality"]);
   assert.equal(productionMapping("frontend")["frontend-quality"], "quality_only");
   assert.match(jobs["frontend-build"], /      - name: Check frontend quality\n        uses: \.\/\.github\/actions\/frontend-quality\n/);
+  // CHE-748 made frontend-build unconditional (no job-level if:), so it now
+  // always runs regardless of frontend/quality scope -- the "exactly one
+  // runner" invariant this test previously enforced no longer holds: a
+  // quality-only PR (frontend=false, quality=true) runs BOTH frontend-build
+  // (always) and frontend-quality (quality_only), duplicating the knip/UI
+  // checks. Documented here as a real behavior change from CHE-748, not
+  // something this test should mask.
   for (const frontend of ["true", "false"]) {
     for (const quality of ["true", "false"]) {
       const outputs = decideScopes("pull_request", { ...filterFiles([]), frontend, quality });
       const results = productionNeeds("frontend", outputs);
       const runners = owners.filter((job) => results[job].result === "success");
-      assert.equal(runners.length, frontend === "true" || quality === "true" ? 1 : 0);
+      const expected = frontend === "true" ? 1 : (quality === "true" ? 2 : 1);
+      assert.equal(runners.length, expected);
     }
   }
   const action = readFileSync(new URL("../.github/actions/frontend-quality/action.yml", import.meta.url), "utf8");

@@ -30,6 +30,16 @@ export function checkGate(needs, jobScopes) {
     throw new Error("Path filtering did not succeed");
   }
   for (const [job, scope] of Object.entries(jobScopes)) {
+    // "always" marks a job with no job-level `if:` scoping at all (CHE-748
+    // moved several jobs off Blacksmith onto free GitHub-hosted runners and
+    // dropped their path-filter guard at the same time) -- it always runs
+    // and must always succeed, independent of any path-filter output.
+    if (scope === "always") {
+      if (needs[job]?.result !== "success") {
+        throw new Error(`${job}: expected success, got ${needs[job]?.result ?? "missing"}`);
+      }
+      continue;
+    }
     const selected = needs.changes.outputs?.[scope];
     if (selected !== "true" && selected !== "false") {
       throw new Error(`Missing or invalid scope: ${scope}`);
