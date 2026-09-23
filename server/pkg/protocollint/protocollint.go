@@ -277,13 +277,28 @@ func checkEvidenceURL(in Input) (Violation, bool) {
 
 // workflowStepRe names the Multica workflow steps this package owns. A
 // waiver claim or grant only counts when its verb applies to one of these
-// (see waiverClaimRe / waiverGrantRe); a bare "step" needs a determiner so
-// "the ABI step" stays out.
-const workflowStepRe = `(?:(?:this|that|the|each|every|protocol|workflow)\s+step|protocol(?:\s+(?:review|check))?|workflow|review|verification|read-?back|status(?:\s+(?:change|update|read-?back))?|comment\s+scan|evidence|CI\s+gate)`
+// (see waiverClaimRe / waiverGrantRe).
+//
+// Generic nouns ("review", "verification", "evidence", "status") are
+// ordinary engineering vocabulary, so alone they are not a step: "the ABI
+// review was waived" and "skip review of the ABI check" must not count. They
+// qualify only as a workflow compound ("protocol review", "independent
+// review", "status readback", "verification step") or with an ordinal label
+// ("Review #2", "verification B"). A bare "step" needs a determiner, so "the
+// ABI step" stays out.
+const workflowStepRe = `(?:` +
+	`protocol(?:\s+(?:review|check|step))?` +
+	`|workflow\s+(?:review|step)` +
+	`|(?:independent|exact-SHA|PR|code)\s+review` +
+	`|status\s+(?:change|update|read-?back)` +
+	`|comment\s+scan|CI\s+gate` +
+	`|(?:this|that|the|each|every|review|verification|read-?back|evidence|status)\s+step` +
+	`|(?:review|verification|evidence)\s+(?:(?-i:[A-Z])|#?\d+)` +
+	`)`
 
 // stepRefRe is a workflow step with an optional determiner before it and an
-// optional ordinal label after it ("verification B", "review #2"). The label
-// is deliberately narrow: "status check" must not become a step reference.
+// optional ordinal label after it ("protocol review A"). The label is
+// deliberately narrow: "status check" must not become a step reference.
 const stepRefRe = `(?:(?:the|this|that)\s+)?` + workflowStepRe + `(?:\s+(?:(?-i:[A-Z])|#?\d+))?`
 
 // waiverClaimRe matches this run's own comment text claiming a human waived a
@@ -319,10 +334,13 @@ var waiverGrantRe = regexp.MustCompile(`(?i)\b(?:` +
 	`|` + stepWaiverGrantedRe +
 	`)\b`)
 
-// quotedRe drops code spans and double-quoted text before matching: quoting
-// a waiver phrase (e.g. discussing what this check flags) mentions it rather
-// than claims or grants it.
+// quotedRe finds code spans and double-quoted text. A quoted span that
+// itself holds waiver wording is a mention (e.g. discussing what this check
+// flags), not a claim or grant, so it is dropped. Any other quoted span is
+// just formatting ("The `protocol review` was waived."), so its text is kept.
 var quotedRe = regexp.MustCompile("`[^`]*`|\"[^\"\n]*\"|\u201c[^\u201d\n]*\u201d")
+
+var waiverWordRe = regexp.MustCompile(`(?i)waiv|skip|grant`)
 
 // checkUnsupportedWaivers is assertion 5: a run must not claim, in its own
 // posted comments, that a human waived some step unless a member's comment on
@@ -358,7 +376,12 @@ func checkUnsupportedWaivers(in Input) []Violation {
 }
 
 func unquoted(content string) string {
-	return quotedRe.ReplaceAllString(content, " ")
+	return quotedRe.ReplaceAllStringFunc(content, func(span string) string {
+		if waiverWordRe.MatchString(span) {
+			return " "
+		}
+		return strings.Trim(span, "`\"\u201c\u201d")
+	})
 }
 
 func label(runID string) string {
