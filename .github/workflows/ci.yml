@@ -337,7 +337,12 @@ jobs:
         # ~50s of expo-lint + tsc to every web/desktop PR. Keep this
         # filter in sync with the root package.json scripts, which also
         # exclude @multica/mobile.
-        run: pnpm exec turbo build typecheck lint --filter='!@multica/docs' --filter='!@multica/mobile'
+        #
+        # CHE-731: turbo's default concurrency (10) let enough Next.js
+        # build/tsc/eslint processes run at once to exceed cheese-x99's 4 GiB
+        # per-runner cgroup limit and get OOM-killed. concurrency=4 still hit
+        # OOM in a later run; cap further.
+        run: pnpm exec turbo build typecheck lint --concurrency=2 --filter='!@multica/docs' --filter='!@multica/mobile'
 
       # Blocking from the start: it reports nothing today, and it covers the
       # one regression knip structurally cannot see. packages/ui exports four
