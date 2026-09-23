@@ -153,4 +153,53 @@ cat >"$checks" <<EOF
 EOF
 reject legacy-checks-without-path-filter-evidence
 
+# --- pending required checks -----------------------------------------------
+#
+# Run 35822016641 snapshotted the checks while CI's `backend` was still in
+# flight, and admission refused it as a failure. The recorder now asks
+# `pending` which checks to wait for: a check is pending while it runs (null
+# conclusion) or before its run exists (absent and not path-excluded).
+
+expect_pending() {
+  local name=$1 want=$2 got
+  got="$(node deploy/cd/admission.mjs pending --checks "$checks" | tr '\n' ' ')"
+  if [ "$got" != "$want" ]; then
+    echo "pending fixture $name: want '$want', got '$got'" >&2
+    exit 1
+  fi
+}
+
+write_checks '"success"' '["server/only.md"]' ""
+expect_pending all-settled ""
+
+# The real 5c834a2f snapshot: backend's needs-gated run did not exist yet.
+cat >"$checks" <<EOF
+{"sha":"$source_sha","contexts":{"frontend":null,"cd-qualification":"success"},
+ "changed_files":["server/only.md"],"changed_files_truncated":false,
+ "path_filters":{"mobile":["apps/mobile/**"]}}
+EOF
+expect_pending backend-not-created-frontend-running "backend frontend "
+reject pending-check-at-wait-deadline
+# A check still running at the deadline is refused under its real name.
+sed -i 's/"frontend":null/"backend":null,"frontend":"success"/' "$checks"
+if admit >/dev/null 2>"$tmp_dir/err.txt"; then
+  echo "negative fixture accepted: running-check-at-wait-deadline" >&2
+  exit 1
+fi
+grep -q "required check backend has not completed" "$tmp_dir/err.txt"
+
+# Terminal results are settled, so the wait ends, and they are still refused.
+write_checks '"failure"' '["server/only.md"]' ""
+expect_pending terminal-failure-is-settled ""
+reject terminal-failure-after-wait
+write_checks '"cancelled"' '["server/only.md"]' ""
+expect_pending terminal-cancelled-is-settled ""
+reject terminal-cancelled-after-wait
+
+# An absent check its path filter covers is waited for, never excused.
+write_checks omit '["apps/mobile/app/index.tsx"]' ""
+expect_pending path-filtered-check-not-created-yet "mobile "
+write_checks omit '["server/only.md"]' ""
+expect_pending path-filtered-check-excluded ""
+
 echo "admission positive and negative fixtures passed"
