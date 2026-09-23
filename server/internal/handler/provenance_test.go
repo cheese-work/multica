@@ -415,21 +415,88 @@ func TestExportProvenance_CommentDeleteAfterCutoffExcludesIssue(t *testing.T) {
 	)
 	dbfx.QueryRow(t, `SELECT revision, updated_at, last_activity_at FROM issue WHERE id = $1`, issueID).
 		Scan(&revision, &updatedAt, &activityAt)
-	if revision != preIssue.Revision+1 || updatedAt.After(cutoff) || !activityAt.After(cutoff) {
+	if revision != preIssue.RevisionAtExport+1 || updatedAt.After(cutoff) || !activityAt.After(cutoff) {
 		t.Fatalf("delete left revision=%d (was %d) updated_at=%s last_activity_at=%s; want revision bump and activity after cutoff %s with updated_at untouched",
-			revision, preIssue.Revision, updatedAt, activityAt, cutoff)
+			revision, preIssue.RevisionAtExport, updatedAt, activityAt, cutoff)
 	}
 
 	out, _, _ := provenanceExportOK(t, cutoff, []string{issueID}, nil)
 	records, reasons := provenanceOutcome(out)
 	if r, ok := records[issueID]; ok {
-		t.Fatalf("issue exported at post-cutoff revision %d: %+v", r.Revision, r)
+		t.Fatalf("issue exported at post-cutoff revision %d: %+v", r.RevisionAtExport, r)
 	}
 	if got := reasons[issueID]; got != service.ProvenanceModifiedAfterCutoff {
 		t.Fatalf("exclusion[%s] = %q, want modified_after_cutoff (all: %+v)", issueID, got, out.Exclusions)
 	}
 	if _, ok := records[survivor]; !ok {
 		t.Errorf("untouched comment under the excluded issue must still export (exclusions %+v)", out.Exclusions)
+	}
+}
+
+// Reactions bump revision without moving updated_at or last_activity_at, so
+// the row stays exported with unchanged content and no timestamp to exclude
+// it on; the export must label that revision as read at export time.
+func TestExportProvenance_ReactionAfterCutoffReportsRevisionAtExport(t *testing.T) {
+	requireProvenanceDB(t)
+	provenanceCleanupLogs(t)
+	cutoff := time.Now().Add(-time.Hour).Truncate(time.Second)
+	created := cutoff.Add(-2 * time.Hour)
+
+	issueID := dbfx.Issue(t, "Reacted after cutoff", provenanceUnchangedSince(created))
+	commentID := dbfx.Comment(t, issueID, "reacted after cutoff", provenanceUnchangedSince(created))
+
+	pre, _, _ := provenanceExportOK(t, cutoff, []string{issueID}, nil)
+	preRecords, _ := provenanceOutcome(pre)
+	preIssue, issueOK := preRecords[issueID]
+	preComment, commentOK := preRecords[commentID]
+	if !issueOK || !commentOK {
+		t.Fatalf("issue and comment must export before the reactions (exclusions %+v)", pre.Exclusions)
+	}
+
+	testutil.Call(t, testHandler.AddIssueReaction, withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/reactions",
+		map[string]any{"emoji": "eyes"}), "id", issueID)).Want(http.StatusCreated)
+	testutil.Call(t, testHandler.AddReaction, withURLParam(newRequest(http.MethodPost, "/api/comments/"+commentID+"/reactions",
+		map[string]any{"emoji": "eyes"}), "commentId", commentID)).Want(http.StatusCreated)
+
+	var (
+		issueRevision, commentRevision int64
+		issueUpdated, commentUpdated   time.Time
+		issueActivity                  *time.Time
+	)
+	dbfx.QueryRow(t, `SELECT revision, updated_at, last_activity_at FROM issue WHERE id = $1`, issueID).
+		Scan(&issueRevision, &issueUpdated, &issueActivity)
+	dbfx.QueryRow(t, `SELECT revision, updated_at FROM comment WHERE id = $1`, commentID).
+		Scan(&commentRevision, &commentUpdated)
+	if issueRevision != preIssue.RevisionAtExport+1 || issueUpdated.After(cutoff) || (issueActivity != nil && issueActivity.After(cutoff)) {
+		t.Fatalf("issue reaction left revision=%d (was %d) updated_at=%s last_activity_at=%v; want revision bump with both timestamps at or before cutoff %s",
+			issueRevision, preIssue.RevisionAtExport, issueUpdated, issueActivity, cutoff)
+	}
+	if commentRevision != preComment.RevisionAtExport+1 || commentUpdated.After(cutoff) {
+		t.Fatalf("comment reaction left revision=%d (was %d) updated_at=%s; want revision bump with updated_at at or before cutoff %s",
+			commentRevision, preComment.RevisionAtExport, commentUpdated, cutoff)
+	}
+
+	out, body, manifest := provenanceExportOK(t, cutoff, []string{issueID}, nil)
+	records, reasons := provenanceOutcome(out)
+	for id, want := range map[string]struct {
+		pre      service.ProvenanceRecord
+		revision int64
+	}{issueID: {preIssue, issueRevision}, commentID: {preComment, commentRevision}} {
+		r, ok := records[id]
+		if !ok {
+			t.Fatalf("row %s dropped after a reaction left its content unchanged (reason %q)", id, reasons[id])
+		}
+		if r.RevisionAtExport != want.revision {
+			t.Errorf("row %s revision_at_export = %d, want export-time %d", id, r.RevisionAtExport, want.revision)
+		}
+		if r.Title != want.pre.Title || r.Description != want.pre.Description || r.Content != want.pre.Content {
+			t.Errorf("row %s content changed: %+v, was %+v", id, r, want.pre)
+		}
+	}
+	for _, where := range []struct{ name, text string }{{"response", body}, {"audit manifest", manifest}} {
+		if !strings.Contains(where.text, `"revision_at_export"`) || strings.Contains(where.text, `"revision"`) {
+			t.Errorf("%s must label revision as revision_at_export only: %s", where.name, where.text)
+		}
 	}
 }
 

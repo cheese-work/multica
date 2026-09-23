@@ -45,8 +45,9 @@ type provenanceExportResponse struct {
 // ExportProvenance (CHE-755) returns a bounded, redacted, read-only package of
 // issue and comment-thread rows created at or before a cutoff and unmodified
 // since; a row modified after the cutoff is excluded, not reconstructed to an
-// earlier state. It records an audit row before any of it leaves the server.
-// Human owners/admins only.
+// earlier state. Each record's revision_at_export is read at export time and
+// is not verified as of the cutoff. It records an audit row before any of it
+// leaves the server. Human owners/admins only.
 func (h *Handler) ExportProvenance(w http.ResponseWriter, r *http.Request) {
 	// No audit row is written for a rejected or failed attempt (row presence
 	// means data left the server), so every such exit leaves a log line with

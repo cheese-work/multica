@@ -29,12 +29,13 @@ var provenanceExportCmd = &cobra.Command{
 	Short: "Export issue and thread records unmodified since a cutoff",
 	Long: `Export a bounded, redacted package of issue and comment-thread records
 created at or before --cutoff and unmodified since. A row modified after the
-cutoff is excluded, not reconstructed to an earlier state. Read-only: nothing
-in the workspace is changed.
+cutoff is excluded, not reconstructed to an earlier state. The reported
+revision is the value at export time, not a verified value at the cutoff.
+Read-only: nothing in the workspace is changed.
 
 Only human workspace owners and admins may export; agent task tokens are
-rejected. Every successful export writes an audit row (ids, revisions and
-digests only) before any record is returned.
+rejected. Every successful export writes an audit row (ids, export-time
+revisions and digests only) before any record is returned.
 
 Every scope flag is explicit on purpose: --workspace never falls back to
 --workspace-id, MULTICA_WORKSPACE_ID or the saved config.`,

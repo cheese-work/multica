@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -285,6 +286,40 @@ func TestProvenanceExportIssueActivityAfterCutoff(t *testing.T) {
 	recs := e.Records()
 	if len(recs) != 2 || recs[0].ID != util.UUIDToString(quiet.ID) || recs[1].ID != util.UUIDToString(legacy.ID) {
 		t.Fatalf("records = %+v, want quiet and legacy only", recs)
+	}
+}
+
+// A revision-only bump (a reaction) leaves the row's timestamps alone, so it
+// is still exported; its revision is the export-time value, digest and all.
+func TestProvenanceExportRevisionIsReadAtExport(t *testing.T) {
+	cutoff := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	export := func(revision int64) (ProvenanceRecord, ProvenanceManifestEntry) {
+		c := provComment(1, "member", cutoff.Add(-time.Hour))
+		c.Revision = revision
+		e := NewProvenanceExport(cutoff, nil)
+		if err := e.AddComments("thread:t", []db.Comment{c}); err != nil {
+			t.Fatal(err)
+		}
+		m, _, err := e.Manifest()
+		if err != nil || len(e.Records()) != 1 || len(m.Records) != 1 {
+			t.Fatalf("export err=%v records=%+v manifest=%+v", err, e.Records(), m)
+		}
+		return e.Records()[0], m.Records[0]
+	}
+	atCutoff, _ := export(1)
+	reacted, entry := export(3)
+	if reacted.RevisionAtExport != 3 || entry.RevisionAtExport != 3 {
+		t.Fatalf("revision_at_export record=%d manifest=%d, want 3", reacted.RevisionAtExport, entry.RevisionAtExport)
+	}
+	if reacted.Digest == atCutoff.Digest || entry.Digest != reacted.Digest {
+		t.Fatalf("digest must cover the export-time revision: record=%s manifest=%s at-cutoff=%s", reacted.Digest, entry.Digest, atCutoff.Digest)
+	}
+	payload, err := json.Marshal(reacted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(payload), `"revision_at_export":3`) || strings.Contains(string(payload), `"revision":`) {
+		t.Fatalf("record JSON = %s, want revision_at_export only", payload)
 	}
 }
 

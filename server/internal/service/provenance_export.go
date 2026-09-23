@@ -45,24 +45,29 @@ const (
 	ProvenanceCommentRecord ProvenanceRecordKind = "comment"
 )
 
+// ProvenanceRecord is one exported row. Content fields are as of the cutoff:
+// a row whose updated_at (or, for an issue, last_activity_at) moved past it is
+// excluded instead. RevisionAtExport is not held to that guarantee: reactions
+// and other revision-only writes bump it without moving either timestamp, so
+// it can exceed the row's revision at the cutoff.
 type ProvenanceRecord struct {
-	Kind         ProvenanceRecordKind `json:"kind"`
-	ID           string               `json:"id"`
-	IssueID      string               `json:"issue_id"`
-	Source       string               `json:"source"`
-	ParentID     string               `json:"parent_id,omitempty"`
-	AuthorType   string               `json:"author_type"`
-	AuthorID     string               `json:"author_id"`
-	SourceTaskID string               `json:"source_task_id,omitempty"`
-	OriginType   string               `json:"origin_type,omitempty"`
-	Title        string               `json:"title,omitempty"`
-	Description  string               `json:"description,omitempty"`
-	Content      string               `json:"content,omitempty"`
-	CreatedAt    string               `json:"created_at"`
-	UpdatedAt    string               `json:"updated_at"`
-	Revision     int64                `json:"revision"`
-	Redacted     bool                 `json:"redacted"`
-	Digest       string               `json:"digest"`
+	Kind             ProvenanceRecordKind `json:"kind"`
+	ID               string               `json:"id"`
+	IssueID          string               `json:"issue_id"`
+	Source           string               `json:"source"`
+	ParentID         string               `json:"parent_id,omitempty"`
+	AuthorType       string               `json:"author_type"`
+	AuthorID         string               `json:"author_id"`
+	SourceTaskID     string               `json:"source_task_id,omitempty"`
+	OriginType       string               `json:"origin_type,omitempty"`
+	Title            string               `json:"title,omitempty"`
+	Description      string               `json:"description,omitempty"`
+	Content          string               `json:"content,omitempty"`
+	CreatedAt        string               `json:"created_at"`
+	UpdatedAt        string               `json:"updated_at"`
+	RevisionAtExport int64                `json:"revision_at_export"`
+	Redacted         bool                 `json:"redacted"`
+	Digest           string               `json:"digest"`
 }
 
 type ProvenanceExclusion struct {
@@ -76,14 +81,14 @@ type ProvenanceExclusion struct {
 }
 
 // ProvenanceManifestEntry is the retention projection of a record: ids,
-// revision and digest only, never the exported text.
+// export-time revision and digest only, never the exported text.
 type ProvenanceManifestEntry struct {
-	Kind     ProvenanceRecordKind `json:"kind"`
-	ID       string               `json:"id"`
-	IssueID  string               `json:"issue_id"`
-	Revision int64                `json:"revision"`
-	Redacted bool                 `json:"redacted"`
-	Digest   string               `json:"digest"`
+	Kind             ProvenanceRecordKind `json:"kind"`
+	ID               string               `json:"id"`
+	IssueID          string               `json:"issue_id"`
+	RevisionAtExport int64                `json:"revision_at_export"`
+	Redacted         bool                 `json:"redacted"`
+	Digest           string               `json:"digest"`
 }
 
 type ProvenanceManifest struct {
@@ -228,20 +233,20 @@ func (e *ProvenanceExport) AddIssue(source string, issue db.Issue) (bool, error)
 	title := redact.Text(issue.Title)
 	description := redact.Text(issue.Description.String)
 	rec := ProvenanceRecord{
-		Kind:         ProvenanceIssueRecord,
-		ID:           id,
-		IssueID:      id,
-		Source:       source,
-		AuthorType:   issue.CreatorType,
-		AuthorID:     util.UUIDToString(issue.CreatorID),
-		OriginType:   issue.OriginType.String,
-		SourceTaskID: sourceTaskID,
-		Title:        title,
-		Description:  description,
-		CreatedAt:    provenanceTime(issue.CreatedAt.Time),
-		UpdatedAt:    provenanceTime(issue.UpdatedAt.Time),
-		Revision:     issue.Revision,
-		Redacted:     title != issue.Title || description != issue.Description.String,
+		Kind:             ProvenanceIssueRecord,
+		ID:               id,
+		IssueID:          id,
+		Source:           source,
+		AuthorType:       issue.CreatorType,
+		AuthorID:         util.UUIDToString(issue.CreatorID),
+		OriginType:       issue.OriginType.String,
+		SourceTaskID:     sourceTaskID,
+		Title:            title,
+		Description:      description,
+		CreatedAt:        provenanceTime(issue.CreatedAt.Time),
+		UpdatedAt:        provenanceTime(issue.UpdatedAt.Time),
+		RevisionAtExport: issue.Revision,
+		Redacted:         title != issue.Title || description != issue.Description.String,
 	}
 	return true, e.add(source, rec)
 }
@@ -283,17 +288,17 @@ func (e *ProvenanceExport) AddComments(source string, rows []db.Comment) error {
 		}
 		content := redact.Text(c.Content)
 		rec := ProvenanceRecord{
-			Kind:       ProvenanceCommentRecord,
-			ID:         id,
-			IssueID:    util.UUIDToString(c.IssueID),
-			Source:     source,
-			AuthorType: c.AuthorType,
-			AuthorID:   util.UUIDToString(c.AuthorID),
-			Content:    content,
-			CreatedAt:  provenanceTime(c.CreatedAt.Time),
-			UpdatedAt:  provenanceTime(c.UpdatedAt.Time),
-			Revision:   c.Revision,
-			Redacted:   content != c.Content,
+			Kind:             ProvenanceCommentRecord,
+			ID:               id,
+			IssueID:          util.UUIDToString(c.IssueID),
+			Source:           source,
+			AuthorType:       c.AuthorType,
+			AuthorID:         util.UUIDToString(c.AuthorID),
+			Content:          content,
+			CreatedAt:        provenanceTime(c.CreatedAt.Time),
+			UpdatedAt:        provenanceTime(c.UpdatedAt.Time),
+			RevisionAtExport: c.Revision,
+			Redacted:         content != c.Content,
 		}
 		if c.ParentID.Valid {
 			rec.ParentID = util.UUIDToString(c.ParentID)
@@ -355,7 +360,7 @@ func (e *ProvenanceExport) Manifest() (ProvenanceManifest, string, error) {
 	}
 	for _, r := range e.records {
 		m.Records = append(m.Records, ProvenanceManifestEntry{
-			Kind: r.Kind, ID: r.ID, IssueID: r.IssueID, Revision: r.Revision, Redacted: r.Redacted, Digest: r.Digest,
+			Kind: r.Kind, ID: r.ID, IssueID: r.IssueID, RevisionAtExport: r.RevisionAtExport, Redacted: r.Redacted, Digest: r.Digest,
 		})
 	}
 	sort.Slice(m.Records, func(i, j int) bool {
