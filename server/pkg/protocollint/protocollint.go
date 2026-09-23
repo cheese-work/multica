@@ -283,18 +283,25 @@ func checkEvidenceURL(in Input) (Violation, bool) {
 // ordinary engineering vocabulary, so alone they are not a step: "the ABI
 // review was waived" and "skip review of the ABI check" must not count. They
 // qualify only as a workflow compound ("protocol review", "independent
-// review", "status readback", "verification step") or with an ordinal label
-// ("Review #2", "verification B"). A bare "step" needs a determiner, so "the
-// ABI step" stays out.
+// review", "status readback"), with an ordinal label ("Review #2",
+// "verification B"), or as "<noun> step(s)" directly after a determiner
+// ("the verification and review steps"). The determiner is what binds the
+// noun to the step: "the ABI verification steps" has a foreign qualifier in
+// between, so it stays out. A bare "step(s)" likewise needs a determiner, so
+// "the ABI step" stays out.
 const workflowStepRe = `(?:` +
-	`protocol(?:\s+(?:review|check|step))?` +
-	`|workflow\s+(?:review|step)` +
+	`protocol(?:\s+(?:review|check|steps?))?` +
+	`|workflow\s+(?:review|steps?)` +
 	`|(?:independent|exact-SHA|PR|code)\s+review` +
 	`|status\s+(?:change|update|read-?back)` +
 	`|comment\s+scan|CI\s+gate` +
-	`|(?:this|that|the|each|every|review|verification|read-?back|evidence|status)\s+steps?` +
+	`|` + stepDeterminerRe + `\s+(?:` + genericStepNounRe + `(?:\s*(?:,|and|or|&)\s*` + genericStepNounRe + `)*\s+)?steps?` +
 	`|(?:review|verification|evidence)\s+(?:(?-i:[A-Z])|#?\d+)` +
 	`)`
+
+const stepDeterminerRe = `(?:this|that|these|those|the|each|every|both|all(?:\s+the)?)`
+
+const genericStepNounRe = `(?:review|verification|read-?back|evidence|status)`
 
 // stepRefRe is a workflow step with an optional determiner before it and an
 // optional ordinal label after it ("protocol review A"). The label is
