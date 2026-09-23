@@ -97,9 +97,10 @@ func TestProvenanceExportOverCapIsReported(t *testing.T) {
 	if got := len(e.Records()); got != ProvenanceMaxCommentsPerSource {
 		t.Fatalf("records = %d", got)
 	}
+	// The limit+1 probe proves overflow of at least one row, not how many.
 	ex := e.Exclusions()
-	if len(ex) != 1 || ex[0].Reason != ProvenanceOverCap || ex[0].Count != 1 {
-		t.Fatalf("exclusions = %+v", ex)
+	if len(ex) != 1 || ex[0].Reason != ProvenanceOverCap || ex[0].Count != 1 || !ex[0].CountIsFloor {
+		t.Fatalf("exclusions = %+v, want one over_cap with count 1 as a floor", ex)
 	}
 }
 
@@ -178,9 +179,10 @@ func TestProvenanceExportRecordCapAggregatesPerSource(t *testing.T) {
 		t.Fatalf("records = %d, want cap %d", got, ProvenanceMaxRecords)
 	}
 	ex := e.Exclusions()
-	want := ProvenanceExclusion{Source: fmt.Sprintf("issue:X-%d", batches-1), Reason: ProvenanceOverCap, Count: ProvenanceMaxCommentsPerSource}
+	// Every rejected row is counted, so this count is exact, not a floor.
+	want := ProvenanceExclusion{Source: fmt.Sprintf("issue:X-%d", batches-1), Reason: ProvenanceOverCap, Count: ProvenanceMaxCommentsPerSource, CountIsFloor: false}
 	if len(ex) != 1 || ex[0] != want {
-		t.Fatalf("exclusions = %+v, want one aggregated %+v", ex, want)
+		t.Fatalf("exclusions = %+v, want one aggregated exact %+v", ex, want)
 	}
 }
 
@@ -192,7 +194,7 @@ func provReasons(e *ProvenanceExport) map[string]ProvenanceExclusionReason {
 	return out
 }
 
-func TestProvenanceExportAsOfCutoffStateChanges(t *testing.T) {
+func TestProvenanceExportRowsChangedAfterCutoff(t *testing.T) {
 	cutoff := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	before := cutoff.Add(-time.Hour)
 
@@ -227,9 +229,9 @@ func TestProvenanceExportAsOfCutoffStateChanges(t *testing.T) {
 	}
 	reasons := provReasons(e)
 	want := map[string]ProvenanceExclusionReason{
-		util.UUIDToString(edited.ID):                ProvenanceEditedAfterCutoff,
+		util.UUIDToString(edited.ID):                ProvenanceModifiedAfterCutoff,
 		util.UUIDToString(deletedAtCutoff.ID):       ProvenanceDeleted,
-		util.UUIDToString(editedAndDeletedLater.ID): ProvenanceEditedAfterCutoff,
+		util.UUIDToString(editedAndDeletedLater.ID): ProvenanceModifiedAfterCutoff,
 	}
 	for id, reason := range want {
 		if reasons[id] != reason {
@@ -241,7 +243,7 @@ func TestProvenanceExportAsOfCutoffStateChanges(t *testing.T) {
 	}
 }
 
-func TestProvenanceExportIssueEditedAfterCutoff(t *testing.T) {
+func TestProvenanceExportIssueModifiedAfterCutoff(t *testing.T) {
 	cutoff := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	issue := db.Issue{ID: provUUID(1), CreatorType: "member", Title: "renamed later",
 		CreatedAt: provTS(cutoff.Add(-time.Hour)), UpdatedAt: provTS(cutoff.Add(time.Second))}
@@ -253,8 +255,8 @@ func TestProvenanceExportIssueEditedAfterCutoff(t *testing.T) {
 	if len(e.Records()) != 0 {
 		t.Fatalf("edited issue exported: %+v", e.Records())
 	}
-	if got := provReasons(e)[util.UUIDToString(issue.ID)]; got != ProvenanceEditedAfterCutoff {
-		t.Fatalf("reason = %q, want edited_after_cutoff", got)
+	if got := provReasons(e)[util.UUIDToString(issue.ID)]; got != ProvenanceModifiedAfterCutoff {
+		t.Fatalf("reason = %q, want modified_after_cutoff", got)
 	}
 }
 
@@ -321,12 +323,35 @@ func TestProvenanceExportAgentIssueProvenance(t *testing.T) {
 			if err != nil || !included {
 				t.Fatalf("AddIssue = %v, %v", included, err)
 			}
-			if got := len(e.Records()) == 1; got != tc.want {
+			recs := e.Records()
+			if got := len(recs) == 1; got != tc.want {
 				t.Fatalf("exported = %v, want %v (exclusions %+v)", got, tc.want, e.Exclusions())
 			}
 			if !tc.want && provReasons(e)[util.UUIDToString(tc.issue.ID)] != ProvenanceMissingProvenance {
 				t.Fatalf("exclusions = %+v, want missing_provenance", e.Exclusions())
 			}
+			if tc.want && (recs[0].OriginType != tc.issue.OriginType.String || recs[0].SourceTaskID != util.UUIDToString(task)) {
+				t.Fatalf("record origin = (%q, %q), want (%q, %q)", recs[0].OriginType, recs[0].SourceTaskID, tc.issue.OriginType.String, util.UUIDToString(task))
+			}
 		})
+	}
+}
+
+func TestProvenanceExportMemberIssueCarriesOriginTypeOnly(t *testing.T) {
+	cutoff := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	ts := provTS(cutoff.Add(-time.Hour))
+	issue := db.Issue{ID: provUUID(1), CreatorType: "member", CreatedAt: ts, UpdatedAt: ts,
+		OriginType: pgtype.Text{String: "autopilot", Valid: true}, OriginID: provUUID(70)}
+	var calls int
+	e := NewProvenanceExport(cutoff, provTasks(&calls, provUUID(70)))
+	if _, err := e.AddIssue("issue:X-1", issue); err != nil {
+		t.Fatal(err)
+	}
+	recs := e.Records()
+	if len(recs) != 1 || recs[0].OriginType != "autopilot" || recs[0].SourceTaskID != "" {
+		t.Fatalf("records = %+v, want origin_type autopilot and no task id", recs)
+	}
+	if calls != 0 {
+		t.Fatalf("verifier calls = %d, want none for a member-created issue", calls)
 	}
 }

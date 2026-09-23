@@ -29,13 +29,13 @@ const (
 type ProvenanceExclusionReason string
 
 const (
-	ProvenanceNotFoundOrDenied  ProvenanceExclusionReason = "not_found_or_denied"
-	ProvenanceMalformed         ProvenanceExclusionReason = "malformed"
-	ProvenanceOutOfCutoff       ProvenanceExclusionReason = "out_of_cutoff"
-	ProvenanceMissingProvenance ProvenanceExclusionReason = "missing_provenance"
-	ProvenanceOverCap           ProvenanceExclusionReason = "over_cap"
-	ProvenanceDeleted           ProvenanceExclusionReason = "deleted"
-	ProvenanceEditedAfterCutoff ProvenanceExclusionReason = "edited_after_cutoff"
+	ProvenanceNotFoundOrDenied    ProvenanceExclusionReason = "not_found_or_denied"
+	ProvenanceMalformed           ProvenanceExclusionReason = "malformed"
+	ProvenanceOutOfCutoff         ProvenanceExclusionReason = "out_of_cutoff"
+	ProvenanceMissingProvenance   ProvenanceExclusionReason = "missing_provenance"
+	ProvenanceOverCap             ProvenanceExclusionReason = "over_cap"
+	ProvenanceDeleted             ProvenanceExclusionReason = "deleted"
+	ProvenanceModifiedAfterCutoff ProvenanceExclusionReason = "modified_after_cutoff"
 )
 
 type ProvenanceRecordKind string
@@ -54,6 +54,7 @@ type ProvenanceRecord struct {
 	AuthorType   string               `json:"author_type"`
 	AuthorID     string               `json:"author_id"`
 	SourceTaskID string               `json:"source_task_id,omitempty"`
+	OriginType   string               `json:"origin_type,omitempty"`
 	Title        string               `json:"title,omitempty"`
 	Description  string               `json:"description,omitempty"`
 	Content      string               `json:"content,omitempty"`
@@ -69,6 +70,9 @@ type ProvenanceExclusion struct {
 	ID     string                    `json:"id,omitempty"`
 	Reason ProvenanceExclusionReason `json:"reason"`
 	Count  int                       `json:"count,omitempty"`
+	// CountIsFloor marks Count as a lower bound: at least Count rows were
+	// dropped, the true number may be larger.
+	CountIsFloor bool `json:"count_is_floor,omitempty"`
 }
 
 // ProvenanceManifestEntry is the retention projection of a record: ids,
@@ -133,8 +137,9 @@ type ProvenanceExport struct {
 	capped map[string]int
 }
 
-// NewProvenanceExport starts an export as of cutoff. A nil verifyTask treats
-// every agent-authored row as lacking provenance.
+// NewProvenanceExport starts an export of rows created at or before cutoff
+// and unmodified since. A nil verifyTask treats every agent-authored row as
+// lacking provenance.
 func NewProvenanceExport(cutoff time.Time, verifyTask ProvenanceTaskVerifier) *ProvenanceExport {
 	return &ProvenanceExport{
 		cutoff:     cutoff,
@@ -157,8 +162,7 @@ func (e *ProvenanceExport) afterCutoff(ts time.Time) bool {
 
 // changedAfterCutoff reports whether a row's stored state may differ from the
 // state it had at the cutoff. There is no edit history to rebuild the earlier
-// state from, so such a row is excluded rather than exported with later
-// content under an as-of claim.
+// state from, so such a row is excluded, not reconstructed.
 func (e *ProvenanceExport) changedAfterCutoff(updatedAt pgtype.Timestamptz) bool {
 	return !updatedAt.Valid || e.afterCutoff(updatedAt.Time)
 }
@@ -200,11 +204,13 @@ func (e *ProvenanceExport) AddIssue(source string, issue db.Issue) (bool, error)
 		return false, nil
 	}
 	if e.changedAfterCutoff(issue.UpdatedAt) {
-		e.Exclude(source, id, ProvenanceEditedAfterCutoff, 0)
+		e.Exclude(source, id, ProvenanceModifiedAfterCutoff, 0)
 		return true, nil
 	}
+	var sourceTaskID string
 	if issue.CreatorType == "agent" {
-		ok, err := e.taskResolves(issueOriginTask(issue))
+		task := issueOriginTask(issue)
+		ok, err := e.taskResolves(task)
 		if err != nil {
 			return false, err
 		}
@@ -212,31 +218,39 @@ func (e *ProvenanceExport) AddIssue(source string, issue db.Issue) (bool, error)
 			e.Exclude(source, id, ProvenanceMissingProvenance, 0)
 			return true, nil
 		}
+		sourceTaskID = util.UUIDToString(task)
 	}
 	title := redact.Text(issue.Title)
 	description := redact.Text(issue.Description.String)
 	rec := ProvenanceRecord{
-		Kind:        ProvenanceIssueRecord,
-		ID:          id,
-		IssueID:     id,
-		Source:      source,
-		AuthorType:  issue.CreatorType,
-		AuthorID:    util.UUIDToString(issue.CreatorID),
-		Title:       title,
-		Description: description,
-		CreatedAt:   provenanceTime(issue.CreatedAt.Time),
-		UpdatedAt:   provenanceTime(issue.UpdatedAt.Time),
-		Revision:    issue.Revision,
-		Redacted:    title != issue.Title || description != issue.Description.String,
+		Kind:         ProvenanceIssueRecord,
+		ID:           id,
+		IssueID:      id,
+		Source:       source,
+		AuthorType:   issue.CreatorType,
+		AuthorID:     util.UUIDToString(issue.CreatorID),
+		OriginType:   issue.OriginType.String,
+		SourceTaskID: sourceTaskID,
+		Title:        title,
+		Description:  description,
+		CreatedAt:    provenanceTime(issue.CreatedAt.Time),
+		UpdatedAt:    provenanceTime(issue.UpdatedAt.Time),
+		Revision:     issue.Revision,
+		Redacted:     title != issue.Title || description != issue.Description.String,
 	}
 	return true, e.add(source, rec)
 }
 
 // AddComments classifies rows fetched with a limit of
-// ProvenanceMaxCommentsPerSource+1; the extra row only proves overflow.
+// ProvenanceMaxCommentsPerSource+1. The extra row proves overflow but cannot
+// say how far past the cap the source goes, so the over_cap count is reported
+// as a floor rather than paying for a second COUNT query per source.
 func (e *ProvenanceExport) AddComments(source string, rows []db.Comment) error {
 	if len(rows) > ProvenanceMaxCommentsPerSource {
-		e.Exclude(source, "", ProvenanceOverCap, len(rows)-ProvenanceMaxCommentsPerSource)
+		e.exclusions = append(e.exclusions, ProvenanceExclusion{
+			Source: source, Reason: ProvenanceOverCap,
+			Count: len(rows) - ProvenanceMaxCommentsPerSource, CountIsFloor: true,
+		})
 		rows = rows[:ProvenanceMaxCommentsPerSource]
 	}
 	for _, c := range rows {
@@ -249,7 +263,7 @@ func (e *ProvenanceExport) AddComments(source string, rows []db.Comment) error {
 			e.Exclude(source, id, ProvenanceDeleted, 0)
 			continue
 		case e.changedAfterCutoff(c.UpdatedAt):
-			e.Exclude(source, id, ProvenanceEditedAfterCutoff, 0)
+			e.Exclude(source, id, ProvenanceModifiedAfterCutoff, 0)
 			continue
 		}
 		if c.AuthorType == "agent" {

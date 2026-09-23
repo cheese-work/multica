@@ -1,10 +1,12 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -27,9 +29,9 @@ type provenanceTestResponse struct {
 	Exclusions     []service.ProvenanceExclusion `json:"exclusions"`
 }
 
-// provenanceAsOf pins created_at and updated_at so a fixture row reads as
+// provenanceUnchangedSince pins created_at and updated_at so a fixture row reads as
 // unchanged since creation; fixtures otherwise default updated_at to now().
-func provenanceAsOf(at time.Time, extra ...testutil.Cols) testutil.Cols {
+func provenanceUnchangedSince(at time.Time, extra ...testutil.Cols) testutil.Cols {
 	cols := testutil.Cols{"created_at": at, "updated_at": at}
 	for _, e := range extra {
 		for k, v := range e {
@@ -61,6 +63,33 @@ func provenanceLogCount(t *testing.T) int {
 	return dbfx.Count(t, `SELECT count(*) FROM provenance_export_log WHERE workspace_id = $1`, testWorkspaceID)
 }
 
+// captureProvenanceLogs routes the default slog logger into a buffer for the
+// rest of the test.
+func captureProvenanceLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &logs
+}
+
+// requireRejectionLogged asserts the denied attempt left a trace naming the
+// actor, the workspace and the reason, since no audit row is written for it.
+func requireRejectionLogged(t *testing.T, logs *bytes.Buffer, actorID, workspaceID, reason string) {
+	t.Helper()
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, "provenance export: rejected") &&
+			strings.Contains(line, "actor_id="+actorID) &&
+			strings.Contains(line, "workspace_id="+workspaceID) &&
+			strings.Contains(line, "reason="+reason) {
+			logs.Reset()
+			return
+		}
+	}
+	t.Fatalf("no rejection log with actor=%s workspace=%s reason=%s:\n%s", actorID, workspaceID, reason, logs.String())
+}
+
 func requireProvenanceDB(t *testing.T) {
 	t.Helper()
 	if testHandler == nil || testPool == nil {
@@ -77,24 +106,27 @@ func TestExportProvenance_RejectsBeforeDatabaseWork(t *testing.T) {
 		tooMany[i] = fmt.Sprintf("HAN-%d", i+1)
 	}
 	cases := []struct {
-		name string
-		req  *http.Request
-		want int
+		name   string
+		req    *http.Request
+		want   int
+		reason string
 	}{
-		{"empty allowlists", provenanceRequest(testWorkspaceID, testUserID, provenanceBody(testWorkspaceID, cutoff, nil, nil)), http.StatusBadRequest},
-		{"workspace mismatch", provenanceRequest(testWorkspaceID, testUserID, provenanceBody("00000000-0000-0000-0000-000000000001", cutoff, []string{"HAN-1"}, nil)), http.StatusBadRequest},
-		{"missing workspace", provenanceRequest(testWorkspaceID, testUserID, provenanceBody("", cutoff, []string{"HAN-1"}, nil)), http.StatusBadRequest},
-		{"future cutoff", provenanceRequest(testWorkspaceID, testUserID, provenanceBody(testWorkspaceID, time.Now().Add(time.Hour), []string{"HAN-1"}, nil)), http.StatusBadRequest},
-		{"bad cutoff", provenanceRequest(testWorkspaceID, testUserID, map[string]any{"workspace_id": testWorkspaceID, "issues": []string{"HAN-1"}, "cutoff": "yesterday"}), http.StatusBadRequest},
-		{"unknown field", provenanceRequest(testWorkspaceID, testUserID, map[string]any{"workspace_id": testWorkspaceID, "issues": []string{"HAN-1"}, "cutoff": cutoff.Format(time.RFC3339), "chat_sessions": []string{"x"}}), http.StatusBadRequest},
-		{"malformed body", provenanceRequest(testWorkspaceID, testUserID, "{not json"), http.StatusBadRequest},
-		{"over source cap", provenanceRequest(testWorkspaceID, testUserID, provenanceBody(testWorkspaceID, cutoff, tooMany, nil)), http.StatusBadRequest},
-		{"task token", testutil.WithHeaders(provenanceRequest(testWorkspaceID, testUserID, provenanceBody(testWorkspaceID, cutoff, []string{"HAN-1"}, nil)), "X-Actor-Source", "task_token"), http.StatusForbidden},
-		{"cloud pat", testutil.WithHeaders(provenanceRequest(testWorkspaceID, testUserID, provenanceBody(testWorkspaceID, cutoff, []string{"HAN-1"}, nil)), "X-Actor-Source", "cloud_pat"), http.StatusForbidden},
+		{"empty allowlists", provenanceRequest(testWorkspaceID, testUserID, provenanceBody(testWorkspaceID, cutoff, nil, nil)), http.StatusBadRequest, "no_sources"},
+		{"workspace mismatch", provenanceRequest(testWorkspaceID, testUserID, provenanceBody("00000000-0000-0000-0000-000000000001", cutoff, []string{"HAN-1"}, nil)), http.StatusBadRequest, "workspace_mismatch"},
+		{"missing workspace", provenanceRequest(testWorkspaceID, testUserID, provenanceBody("", cutoff, []string{"HAN-1"}, nil)), http.StatusBadRequest, "workspace_mismatch"},
+		{"future cutoff", provenanceRequest(testWorkspaceID, testUserID, provenanceBody(testWorkspaceID, time.Now().Add(time.Hour), []string{"HAN-1"}, nil)), http.StatusBadRequest, "future_cutoff"},
+		{"bad cutoff", provenanceRequest(testWorkspaceID, testUserID, map[string]any{"workspace_id": testWorkspaceID, "issues": []string{"HAN-1"}, "cutoff": "yesterday"}), http.StatusBadRequest, "invalid_cutoff"},
+		{"unknown field", provenanceRequest(testWorkspaceID, testUserID, map[string]any{"workspace_id": testWorkspaceID, "issues": []string{"HAN-1"}, "cutoff": cutoff.Format(time.RFC3339), "chat_sessions": []string{"x"}}), http.StatusBadRequest, "invalid_body"},
+		{"malformed body", provenanceRequest(testWorkspaceID, testUserID, "{not json"), http.StatusBadRequest, "invalid_body"},
+		{"over source cap", provenanceRequest(testWorkspaceID, testUserID, provenanceBody(testWorkspaceID, cutoff, tooMany, nil)), http.StatusBadRequest, "too_many_sources"},
+		{"task token", testutil.WithHeaders(provenanceRequest(testWorkspaceID, testUserID, provenanceBody(testWorkspaceID, cutoff, []string{"HAN-1"}, nil)), "X-Actor-Source", "task_token"), http.StatusForbidden, "machine_credential"},
+		{"cloud pat", testutil.WithHeaders(provenanceRequest(testWorkspaceID, testUserID, provenanceBody(testWorkspaceID, cutoff, []string{"HAN-1"}, nil)), "X-Actor-Source", "cloud_pat"), http.StatusForbidden, "machine_credential"},
 	}
+	logs := captureProvenanceLogs(t)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			testutil.Call(t, testHandler.ExportProvenance, tc.req).Want(tc.want)
+			requireRejectionLogged(t, logs, testUserID, testWorkspaceID, tc.reason)
 		})
 	}
 	if got := provenanceLogCount(t); got != 0 {
@@ -108,11 +140,13 @@ func TestExportProvenance_RequiresOwnerOrAdmin(t *testing.T) {
 	cutoff := time.Now().Add(-time.Hour)
 	suffix := time.Now().UnixNano()
 
+	logs := captureProvenanceLogs(t)
 	plainUser := dbfx.User(t, "Prov Member", fmt.Sprintf("prov-member-%d@example.test", suffix))
 	dbfx.Member(t, testWorkspaceID, plainUser, "member")
 	testutil.Call(t, testHandler.ExportProvenance,
 		provenanceRequest(testWorkspaceID, plainUser, provenanceBody(testWorkspaceID, cutoff, []string{"HAN-1"}, nil))).
 		Want(http.StatusForbidden)
+	requireRejectionLogged(t, logs, plainUser, testWorkspaceID, "not_owner_or_admin")
 
 	adminUser := dbfx.User(t, "Prov Admin", fmt.Sprintf("prov-admin-%d@example.test", suffix))
 	dbfx.Member(t, testWorkspaceID, adminUser, "admin")
@@ -124,6 +158,7 @@ func TestExportProvenance_RequiresOwnerOrAdmin(t *testing.T) {
 	testutil.Call(t, testHandler.ExportProvenance,
 		provenanceRequest(otherWS, testUserID, provenanceBody(otherWS, cutoff, []string{"HAN-1"}, nil))).
 		Want(http.StatusNotFound)
+	requireRejectionLogged(t, logs, testUserID, otherWS, "not_owner_or_admin")
 	if got := dbfx.Count(t, `SELECT count(*) FROM provenance_export_log WHERE workspace_id = $1`, otherWS); got != 0 {
 		t.Fatalf("non-member export wrote %d audit rows", got)
 	}
@@ -135,25 +170,25 @@ func TestExportProvenance_CutoffProvenanceRedactionAndAudit(t *testing.T) {
 	cutoff := time.Now().Add(-time.Hour).Truncate(time.Second)
 	suffix := time.Now().UnixNano()
 
-	issueID := dbfx.Issue(t, "Provenance subject", provenanceAsOf(cutoff.Add(-2*time.Hour)))
+	issueID := dbfx.Issue(t, "Provenance subject", provenanceUnchangedSince(cutoff.Add(-2*time.Hour)))
 	var number int
 	dbfx.QueryRow(t, `SELECT number FROM issue WHERE id = $1`, issueID).Scan(&number)
 
-	before := dbfx.Comment(t, issueID, "before cutoff", provenanceAsOf(cutoff.Add(-time.Minute)))
-	atCutoff := dbfx.Comment(t, issueID, "exactly at cutoff", provenanceAsOf(cutoff))
-	after := dbfx.Comment(t, issueID, "after cutoff", provenanceAsOf(cutoff.Add(time.Minute)))
-	secret := dbfx.Comment(t, issueID, "token "+provenanceFakeSecret(), provenanceAsOf(cutoff.Add(-30*time.Second)))
-	orphanAgent := dbfx.Comment(t, issueID, "agent without task", provenanceAsOf(cutoff.Add(-20*time.Second),
+	before := dbfx.Comment(t, issueID, "before cutoff", provenanceUnchangedSince(cutoff.Add(-time.Minute)))
+	atCutoff := dbfx.Comment(t, issueID, "exactly at cutoff", provenanceUnchangedSince(cutoff))
+	after := dbfx.Comment(t, issueID, "after cutoff", provenanceUnchangedSince(cutoff.Add(time.Minute)))
+	secret := dbfx.Comment(t, issueID, "token "+provenanceFakeSecret(), provenanceUnchangedSince(cutoff.Add(-30*time.Second)))
+	orphanAgent := dbfx.Comment(t, issueID, "agent without task", provenanceUnchangedSince(cutoff.Add(-20*time.Second),
 		testutil.Cols{"author_type": "agent", "author_id": testUserID}))
-	threadRoot := dbfx.Comment(t, issueID, "thread root", provenanceAsOf(cutoff.Add(-10*time.Minute)))
-	threadReply := dbfx.Comment(t, issueID, "thread reply", provenanceAsOf(cutoff.Add(-9*time.Minute), testutil.Cols{"parent_id": threadRoot}))
-	threadLate := dbfx.Comment(t, issueID, "late reply", provenanceAsOf(cutoff.Add(2*time.Minute), testutil.Cols{"parent_id": threadRoot}))
+	threadRoot := dbfx.Comment(t, issueID, "thread root", provenanceUnchangedSince(cutoff.Add(-10*time.Minute)))
+	threadReply := dbfx.Comment(t, issueID, "thread reply", provenanceUnchangedSince(cutoff.Add(-9*time.Minute), testutil.Cols{"parent_id": threadRoot}))
+	threadLate := dbfx.Comment(t, issueID, "late reply", provenanceUnchangedSince(cutoff.Add(2*time.Minute), testutil.Cols{"parent_id": threadRoot}))
 
-	lateIssue := dbfx.Issue(t, "Created after cutoff", provenanceAsOf(cutoff.Add(time.Minute)))
+	lateIssue := dbfx.Issue(t, "Created after cutoff", provenanceUnchangedSince(cutoff.Add(time.Minute)))
 
 	otherWS := dbfx.Workspace(t, "Prov Foreign", fmt.Sprintf("prov-foreign-%d", suffix))
-	foreignIssue := dbfx.Issue(t, "Foreign", provenanceAsOf(cutoff.Add(-time.Hour), testutil.Cols{"workspace_id": otherWS}))
-	foreignComment := dbfx.Comment(t, foreignIssue, "foreign", provenanceAsOf(cutoff.Add(-time.Hour), testutil.Cols{"workspace_id": otherWS}))
+	foreignIssue := dbfx.Issue(t, "Foreign", provenanceUnchangedSince(cutoff.Add(-time.Hour), testutil.Cols{"workspace_id": otherWS}))
+	foreignComment := dbfx.Comment(t, foreignIssue, "foreign", provenanceUnchangedSince(cutoff.Add(-time.Hour), testutil.Cols{"workspace_id": otherWS}))
 
 	body := provenanceBody(testWorkspaceID, cutoff,
 		[]string{fmt.Sprintf("HAN-%d", number), lateIssue, foreignIssue, "OTHER-1"},
@@ -313,20 +348,20 @@ func TestExportProvenance_RowsChangedAfterCutoff(t *testing.T) {
 	cutoff := time.Now().Add(-time.Hour).Truncate(time.Second)
 	created := cutoff.Add(-2 * time.Hour)
 
-	issueID := dbfx.Issue(t, "As-of subject", provenanceAsOf(created))
-	edited := dbfx.Comment(t, issueID, "edited after cutoff", provenanceAsOf(created, testutil.Cols{"updated_at": cutoff.Add(time.Minute)}))
-	deletedLater := dbfx.Comment(t, issueID, "deleted after cutoff", provenanceAsOf(created, testutil.Cols{"deleted_at": cutoff.Add(time.Minute)}))
-	deletedBefore := dbfx.Comment(t, issueID, "deleted before cutoff", provenanceAsOf(created, testutil.Cols{"deleted_at": cutoff}))
-	editedIssue := dbfx.Issue(t, "Renamed after cutoff", provenanceAsOf(created, testutil.Cols{"updated_at": cutoff.Add(time.Minute)}))
-	underEdited := dbfx.Comment(t, editedIssue, "comment on renamed issue", provenanceAsOf(created))
+	issueID := dbfx.Issue(t, "Modified-after-cutoff subject", provenanceUnchangedSince(created))
+	edited := dbfx.Comment(t, issueID, "edited after cutoff", provenanceUnchangedSince(created, testutil.Cols{"updated_at": cutoff.Add(time.Minute)}))
+	deletedLater := dbfx.Comment(t, issueID, "deleted after cutoff", provenanceUnchangedSince(created, testutil.Cols{"deleted_at": cutoff.Add(time.Minute)}))
+	deletedBefore := dbfx.Comment(t, issueID, "deleted before cutoff", provenanceUnchangedSince(created, testutil.Cols{"deleted_at": cutoff}))
+	editedIssue := dbfx.Issue(t, "Renamed after cutoff", provenanceUnchangedSince(created, testutil.Cols{"updated_at": cutoff.Add(time.Minute)}))
+	underEdited := dbfx.Comment(t, editedIssue, "comment on renamed issue", provenanceUnchangedSince(created))
 
 	out, body, manifest := provenanceExportOK(t, cutoff, []string{issueID, editedIssue}, nil)
 	records, reasons := provenanceOutcome(out)
 
 	for id, want := range map[string]service.ProvenanceExclusionReason{
-		edited:        service.ProvenanceEditedAfterCutoff,
+		edited:        service.ProvenanceModifiedAfterCutoff,
 		deletedBefore: service.ProvenanceDeleted,
-		editedIssue:   service.ProvenanceEditedAfterCutoff,
+		editedIssue:   service.ProvenanceModifiedAfterCutoff,
 	} {
 		if got := reasons[id]; got != want {
 			t.Errorf("exclusion[%s] = %q, want %q (all: %+v)", id, got, want, out.Exclusions)
@@ -336,7 +371,7 @@ func TestExportProvenance_RowsChangedAfterCutoff(t *testing.T) {
 		}
 	}
 	if r, ok := records[deletedLater]; !ok || r.Content != "deleted after cutoff" {
-		t.Errorf("comment deleted after cutoff = %+v, present=%v; want exported as it stood", r, ok)
+		t.Errorf("comment deleted after cutoff = %+v, present=%v; want exported unchanged", r, ok)
 	}
 	if _, ok := reasons[deletedLater]; ok {
 		t.Errorf("comment deleted after cutoff was excluded: %+v", out.Exclusions)
@@ -360,7 +395,7 @@ func TestExportProvenance_IdentifierRefsNeverEchoed(t *testing.T) {
 	// check, with a fake-secret prefix that is not this workspace's.
 	secretRef := strings.Join([]string{provenanceFakeSecret(), "-", "1"}, "")
 	var number int
-	issueID := dbfx.Issue(t, "Identifier echo subject", provenanceAsOf(cutoff.Add(-time.Hour)))
+	issueID := dbfx.Issue(t, "Identifier echo subject", provenanceUnchangedSince(cutoff.Add(-time.Hour)))
 	dbfx.QueryRow(t, `SELECT number FROM issue WHERE id = $1`, issueID).Scan(&number)
 	ownRef := fmt.Sprintf("HAN-%d", number)
 
@@ -394,26 +429,26 @@ func TestExportProvenance_AgentRowsNeedWorkspaceTask(t *testing.T) {
 	suffix := time.Now().UnixNano()
 
 	agentID := dbfx.Agent(t, "prov agent", testRuntimeID)
-	anchorIssue := dbfx.Issue(t, "Task anchor", provenanceAsOf(created))
+	anchorIssue := dbfx.Issue(t, "Task anchor", provenanceUnchangedSince(created))
 	ownTask := dbfx.Task(t, agentID, testutil.Cols{"issue_id": anchorIssue, "runtime_id": testRuntimeID})
 
 	otherWS := dbfx.Workspace(t, "Prov Task Foreign", fmt.Sprintf("prov-task-foreign-%d", suffix))
 	foreignRuntime := dbfx.Runtime(t, "prov foreign runtime", testutil.Cols{"workspace_id": otherWS})
 	foreignAgent := dbfx.Agent(t, "prov foreign agent", foreignRuntime, testutil.Cols{"workspace_id": otherWS})
-	foreignIssue := dbfx.Issue(t, "Foreign task anchor", provenanceAsOf(created, testutil.Cols{"workspace_id": otherWS}))
+	foreignIssue := dbfx.Issue(t, "Foreign task anchor", provenanceUnchangedSince(created, testutil.Cols{"workspace_id": otherWS}))
 	foreignTask := dbfx.Task(t, foreignAgent, testutil.Cols{"issue_id": foreignIssue, "runtime_id": foreignRuntime})
 	missingTask := "00000000-0000-4000-8000-00000000c755"
 
 	agentCols := func(taskID string) testutil.Cols {
-		return provenanceAsOf(created, testutil.Cols{"author_type": "agent", "author_id": agentID, "source_task_id": taskID})
+		return provenanceUnchangedSince(created, testutil.Cols{"author_type": "agent", "author_id": agentID, "source_task_id": taskID})
 	}
-	subject := dbfx.Issue(t, "Agent provenance subject", provenanceAsOf(created))
+	subject := dbfx.Issue(t, "Agent provenance subject", provenanceUnchangedSince(created))
 	viaOwn := dbfx.Comment(t, subject, "own task", agentCols(ownTask))
 	viaForeign := dbfx.Comment(t, subject, "foreign task", agentCols(foreignTask))
 	viaMissing := dbfx.Comment(t, subject, "missing task", agentCols(missingTask))
 
 	agentIssue := func(title string, extra testutil.Cols) string {
-		return dbfx.Issue(t, title, provenanceAsOf(created, testutil.Cols{"creator_type": "agent", "creator_id": agentID}, extra))
+		return dbfx.Issue(t, title, provenanceUnchangedSince(created, testutil.Cols{"creator_type": "agent", "creator_id": agentID}, extra))
 	}
 	issueOwn := agentIssue("agent issue own task", testutil.Cols{"origin_type": "agent_create", "origin_id": ownTask})
 	issueForeign := agentIssue("agent issue foreign task", testutil.Cols{"origin_type": "agent_create", "origin_id": foreignTask})
@@ -426,6 +461,9 @@ func TestExportProvenance_AgentRowsNeedWorkspaceTask(t *testing.T) {
 		if _, ok := records[id]; !ok {
 			t.Errorf("row %s with a same-workspace task missing (exclusions %+v)", id, out.Exclusions)
 		}
+	}
+	if r := records[issueOwn]; r.OriginType != "agent_create" || r.SourceTaskID != ownTask {
+		t.Errorf("agent issue origin = (%q, %q), want (agent_create, %s)", r.OriginType, r.SourceTaskID, ownTask)
 	}
 	for _, id := range []string{viaForeign, viaMissing, issueForeign, issueNoOrigin} {
 		if _, ok := records[id]; ok {

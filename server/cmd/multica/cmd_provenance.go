@@ -26,9 +26,11 @@ var provenanceCmd = &cobra.Command{
 
 var provenanceExportCmd = &cobra.Command{
 	Use:   "export",
-	Short: "Export issue and thread records as of a cutoff",
-	Long: `Export a bounded, redacted package of issue and comment-thread records as
-they stood at --cutoff. Read-only: nothing in the workspace is changed.
+	Short: "Export issue and thread records unmodified since a cutoff",
+	Long: `Export a bounded, redacted package of issue and comment-thread records
+created at or before --cutoff and unmodified since. A row modified after the
+cutoff is excluded, not reconstructed to an earlier state. Read-only: nothing
+in the workspace is changed.
 
 Only human workspace owners and admins may export; agent task tokens are
 rejected. Every successful export writes an audit row (ids, revisions and
@@ -36,7 +38,7 @@ digests only) before any record is returned.
 
 Every scope flag is explicit on purpose: --workspace never falls back to
 --workspace-id, MULTICA_WORKSPACE_ID or the saved config.`,
-	Example: `  # Export one issue and one thread as of a fixed instant
+	Example: `  # Export one issue and one thread up to a fixed cutoff
   $ multica provenance export --workspace <uuid> --issue MUL-123 \
       --thread <comment-uuid> --cutoff 2026-09-01T00:00:00Z
 
@@ -56,7 +58,7 @@ func addProvenanceExportFlags(cmd *cobra.Command) {
 	cmd.Flags().StringArray("workspace", nil, "Workspace UUID to export from (required, exactly one)")
 	cmd.Flags().StringArray("issue", nil, "Issue UUID or identifier to export (repeatable)")
 	cmd.Flags().StringArray("thread", nil, "Comment UUID whose thread to export (repeatable)")
-	cmd.Flags().String("cutoff", "", "Export records as of this instant (RFC3339, required)")
+	cmd.Flags().String("cutoff", "", "Export records created at or before this instant and unmodified since (RFC3339, required)")
 	cmd.Flags().String("output", "json", "Output format: json or table")
 }
 

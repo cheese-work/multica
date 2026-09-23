@@ -43,13 +43,32 @@ type provenanceExportResponse struct {
 }
 
 // ExportProvenance (CHE-755) returns a bounded, redacted, read-only package of
-// issue and comment-thread rows as they stood at a cutoff, and records an
-// audit row before any of it leaves the server. Human owners/admins only.
+// issue and comment-thread rows created at or before a cutoff and unmodified
+// since; a row modified after the cutoff is excluded, not reconstructed to an
+// earlier state. It records an audit row before any of it leaves the server.
+// Human owners/admins only.
 func (h *Handler) ExportProvenance(w http.ResponseWriter, r *http.Request) {
+	// No audit row is written for a rejected or failed attempt (row presence
+	// means data left the server), so every such exit leaves a log line with
+	// who asked, for which workspace, and why it was refused.
+	actorID := requestUserID(r)
+	logWS := r.Header.Get("X-Workspace-ID")
+	reject := func(status int, reason, msg string, attrs ...any) {
+		slog.Warn("provenance export: rejected", append([]any{
+			"actor_id", actorID, "actor_source", r.Header.Get("X-Actor-Source"),
+			"workspace_id", provenanceLogUUID(logWS), "reason", reason, "status", status,
+		}, attrs...)...)
+		writeError(w, status, msg)
+	}
+	fail := func(stage string, err error) {
+		slog.Error("provenance export: failed", "actor_id", actorID, "workspace_id", provenanceLogUUID(logWS), "stage", stage, "error", err)
+		writeError(w, http.StatusInternalServerError, "provenance export failed")
+	}
+
 	// Router applies RequireHumanActor too; this backstop keeps the handler
 	// fail-closed if it is ever mounted without that middleware.
 	if isMachineCredentialActor(r) {
-		writeError(w, http.StatusForbidden, "this endpoint is only available to human actors")
+		reject(http.StatusForbidden, "machine_credential", "this endpoint is only available to human actors")
 		return
 	}
 	userID, ok := requireUserID(w, r)
@@ -62,65 +81,71 @@ func (h *Handler) ExportProvenance(w http.ResponseWriter, r *http.Request) {
 	dec.DisallowUnknownFields()
 	var req provenanceExportRequest
 	if err := dec.Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		reject(http.StatusBadRequest, "invalid_body", "invalid request body")
 		return
 	}
 
 	ctxWS := h.resolveWorkspaceID(r)
+	logWS = ctxWS
 	ctxWSUUID, ctxErr := util.ParseUUID(ctxWS)
 	reqWSUUID, reqErr := util.ParseUUID(strings.TrimSpace(req.WorkspaceID))
 	if ctxErr != nil || reqErr != nil || ctxWSUUID != reqWSUUID {
-		writeError(w, http.StatusBadRequest, "workspace_id must match the request workspace")
+		reject(http.StatusBadRequest, "workspace_mismatch", "workspace_id must match the request workspace",
+			"requested_workspace_id", provenanceLogUUID(req.WorkspaceID))
 		return
 	}
 	cutoff, err := time.Parse(time.RFC3339, strings.TrimSpace(req.Cutoff))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "cutoff must be RFC3339")
+		reject(http.StatusBadRequest, "invalid_cutoff", "cutoff must be RFC3339")
 		return
 	}
 	if cutoff.After(time.Now()) {
-		writeError(w, http.StatusBadRequest, "cutoff must not be in the future")
+		reject(http.StatusBadRequest, "future_cutoff", "cutoff must not be in the future", "cutoff", cutoff.UTC().Format(time.RFC3339))
 		return
 	}
-	if len(req.Issues) == 0 && len(req.Threads) == 0 {
-		writeError(w, http.StatusBadRequest, "at least one issue or thread source is required")
+	sourceCount := len(req.Issues) + len(req.Threads)
+	if sourceCount == 0 {
+		reject(http.StatusBadRequest, "no_sources", "at least one issue or thread source is required")
 		return
 	}
-	if len(req.Issues)+len(req.Threads) > service.ProvenanceMaxSources {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("at most %d sources per export", service.ProvenanceMaxSources))
+	if sourceCount > service.ProvenanceMaxSources {
+		reject(http.StatusBadRequest, "too_many_sources", fmt.Sprintf("at most %d sources per export", service.ProvenanceMaxSources),
+			"source_count", sourceCount)
 		return
 	}
 
 	workspaceID := util.UUIDToString(ctxWSUUID)
 	if _, ok := h.requireWorkspaceRole(w, r, workspaceID, "workspace not found", "owner", "admin"); !ok {
+		// requireWorkspaceRole already wrote the 404/403 and does not log.
+		slog.Warn("provenance export: rejected", "actor_id", actorID, "actor_source", r.Header.Get("X-Actor-Source"),
+			"workspace_id", workspaceID, "reason", "not_owner_or_admin")
 		return
 	}
 
 	export, err := h.collectProvenance(r.Context(), ctxWSUUID, req, cutoff)
 	if err != nil {
-		slog.Error("provenance export: collect failed", "workspace_id", workspaceID, "error", err)
-		writeError(w, http.StatusInternalServerError, "provenance export failed")
+		fail("collect", err)
 		return
 	}
 
 	requestDigest, err := service.ProvenanceRequestDigest(workspaceID, req.Issues, req.Threads, cutoff)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "provenance export failed")
+		fail("request_digest", err)
 		return
 	}
 	manifest, manifestDigest, err := export.Manifest()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "provenance export failed")
+		fail("manifest", err)
 		return
 	}
 	manifestJSON, err := json.Marshal(manifest)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "provenance export failed")
+		fail("manifest_marshal", err)
 		return
 	}
 	actorUUID, err := util.ParseUUID(userID)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "user not authenticated")
+		reject(http.StatusUnauthorized, "invalid_actor_id", "user not authenticated")
 		return
 	}
 
@@ -132,14 +157,13 @@ func (h *Handler) ExportProvenance(w http.ResponseWriter, r *http.Request) {
 		RequestDigest:  requestDigest,
 		ManifestDigest: manifestDigest,
 		Cutoff:         pgtype.Timestamptz{Time: cutoff, Valid: true},
-		SourceCount:    int32(len(req.Issues) + len(req.Threads)),
+		SourceCount:    int32(sourceCount),
 		IncludedCount:  int32(len(manifest.Records)),
 		ExcludedCount:  int32(len(manifest.Exclusions)),
 		Manifest:       manifestJSON,
 	})
 	if err != nil {
-		slog.Error("provenance export: audit log insert failed", "workspace_id", workspaceID, "error", err)
-		writeError(w, http.StatusInternalServerError, "provenance export failed")
+		fail("audit_insert", err)
 		return
 	}
 
@@ -153,6 +177,20 @@ func (h *Handler) ExportProvenance(w http.ResponseWriter, r *http.Request) {
 		Records:         export.Records(),
 		Exclusions:      export.Exclusions(),
 	})
+}
+
+// provenanceLogUUID keeps caller-supplied workspace values out of logs unless
+// they are a UUID, so a pasted secret in the field is never persisted.
+func provenanceLogUUID(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	id, err := util.ParseUUID(raw)
+	if err != nil {
+		return "invalid"
+	}
+	return util.UUIDToString(id)
 }
 
 // collectProvenance reads every source inside one read-only repeatable-read
