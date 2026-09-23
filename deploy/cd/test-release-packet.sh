@@ -294,28 +294,39 @@ expect_exit 1 "$status" out-of-order-migrations
 expect_contains "$output" "not in on-disk applied order" out-of-order-migrations
 
 # build_c00_shape_packet.mjs builds a packet reproducing C00's actual
-# pre-cutover shape from run 35745037983's admitted baseline tuple:
-# ordered_migrations is the full on-disk set through the renamed files'
-# current latest (512_stage_completion_wake_workspace_index — the CHE-650
-# upstream v0.5.0 sync moved the fork's own migrations twice: the five
+# pre-cutover shape from the admitted baseline tuple (run 35745037983,
+# artifact cd-deploy-admitted-input/baseline-tuple.json): row_count 535,
+# latest 501_protocol_lint_run_checked_at_idx, ordered_sha256
+# sha256:b24294b971a0e471ff0c13478d5f71f76c90e27388725d8e4dadc5b5b700708f.
+#
+# ordered_migrations is the full on-disk set through the renamed files
+# current latest (512_stage_completion_wake_workspace_index -- the CHE-650
+# upstream v0.5.0 sync moved the fork own migrations twice: the five
 # CHE-548 renames 491-495 -> 504-508, and the CHE-488 stage-completion-wake
 # group 496-499 -> 509-512, because upstream now owns 491-499 outright).
-# The observed ledger is NOT the same version list: it substitutes all nine
-# renames back to their original pre-sync names, and — critically — excludes
-# upstream's own 491-499 (491_issue_status_category_backfill and so on)
-# entirely, because C00's ledger never applied those; they only exist on
-# this branch after the sync. Listing them in ordered_migrations (they are
-# real on-disk files) without also listing them in the observed ledger is
-# correct — C00 admits as pending, not applied. An earlier version of this
-# fixture built the ledger from ALL on-disk versions through 508, which
-# silently included upstream's 491-499 as if C00 had run them and made the
-# dirty-ledger check vacuous for the fork's own then-unmapped 496-499 rename
-# gap (CHE-650 review finding).
+#
+# The observed ledger is NOT that same version list. It reproduces what
+# capture-tuple.sh actually reads from C00 with
+# "SELECT version FROM schema_migrations ORDER BY version": the migrator
+# keys purely on filename, so CHE-548 renaming 470-474 to 491-495 did not
+# delete the old 470-474 rows -- it just ran five more files it had never
+# seen under their new names. C00 ledger holds BOTH the pre-CHE-548 names
+# (470-474) AND the CHE-548 names (491-495): 530 (main up-migrations
+# through 501) + 5 (470-474 orphans) = 535 rows, matching the admitted
+# baseline exactly. Upstream own 491-499 (491_issue_status_category_backfill
+# and so on) are excluded entirely: C00 never applied those, they only
+# exist on this branch after the sync, and must show as pending in
+# ordered_migrations, never as ledger rows. An earlier version of this
+# fixture assumed the ledger held only one of the two pre-sync names per
+# migration, which both undercounted the real 535-row ledger and could not
+# have caught the case a real C00 deploy actually hits (CHE-650 review
+# finding, hash-verified against the production artifact).
 build_c00_shape_packet() {
   local out=$1
   node -e '
     const fs = require("fs");
     const crypto = require("crypto");
+    const child_process = require("child_process");
     const path = require("path");
     const dir = "server/migrations";
     const latest = "512_stage_completion_wake_workspace_index";
@@ -327,46 +338,61 @@ build_c00_shape_packet() {
       const bytes = fs.readFileSync(path.join(dir, f));
       return { version: f.replace(/\.up\.sql$/, ""), sha256: "sha256:" + crypto.createHash("sha256").update(bytes).digest("hex") };
     });
+
+    const mainTree = child_process.execFileSync("git", ["ls-tree", "origin/main:server/migrations"], { encoding: "utf8" });
+    const mainVersions = mainTree
+      .split("\n")
+      .filter((line) => line.endsWith(".up.sql"))
+      .map((line) => line.split("\t").pop().replace(/\.up\.sql$/, ""))
+      .sort();
+    const mainLatestIdx = mainVersions.indexOf("501_protocol_lint_run_checked_at_idx");
+    if (mainLatestIdx === -1) throw new Error("fixture assumption failed: 501_protocol_lint_run_checked_at_idx not found in origin/main tree");
+    const mainUpTo501 = mainVersions.slice(0, mainLatestIdx + 1);
+    if (mainUpTo501.length !== 530) {
+      throw new Error(`fixture assumption failed: expected 530 main migrations through 501, got ${mainUpTo501.length}`);
+    }
+
+    const orphans = [
+      "470_github_merge_announcement",
+      "471_github_merge_announcement_identity_uidx",
+      "472_github_merge_announcement_pending_idx",
+      "473_github_merge_announcement_html_url",
+      "474_agent_task_rerun_lineage_unique",
+    ];
+
     const renames = new Map([
-      ["504_github_merge_announcement", "470_github_merge_announcement"],
-      ["505_github_merge_announcement_identity_uidx", "471_github_merge_announcement_identity_uidx"],
-      ["506_github_merge_announcement_pending_idx", "472_github_merge_announcement_pending_idx"],
-      ["507_github_merge_announcement_html_url", "473_github_merge_announcement_html_url"],
-      ["508_agent_task_rerun_lineage_unique", "474_agent_task_rerun_lineage_unique"],
-      ["509_stage_completion_wake", "496_stage_completion_wake"],
-      ["510_stage_completion_wake_unique", "497_stage_completion_wake_unique"],
-      ["511_stage_generation_workspace_index", "498_stage_generation_workspace_index"],
-      ["512_stage_completion_wake_workspace_index", "499_stage_completion_wake_workspace_index"],
+      ["470_github_merge_announcement", "504_github_merge_announcement"],
+      ["471_github_merge_announcement_identity_uidx", "505_github_merge_announcement_identity_uidx"],
+      ["472_github_merge_announcement_pending_idx", "506_github_merge_announcement_pending_idx"],
+      ["473_github_merge_announcement_html_url", "507_github_merge_announcement_html_url"],
+      ["474_agent_task_rerun_lineage_unique", "508_agent_task_rerun_lineage_unique"],
+      ["491_github_merge_announcement", "504_github_merge_announcement"],
+      ["492_github_merge_announcement_identity_uidx", "505_github_merge_announcement_identity_uidx"],
+      ["493_github_merge_announcement_pending_idx", "506_github_merge_announcement_pending_idx"],
+      ["494_github_merge_announcement_html_url", "507_github_merge_announcement_html_url"],
+      ["495_agent_task_rerun_lineage_unique", "508_agent_task_rerun_lineage_unique"],
+      ["496_stage_completion_wake", "509_stage_completion_wake"],
+      ["497_stage_completion_wake_unique", "510_stage_completion_wake_unique"],
+      ["498_stage_generation_workspace_index", "511_stage_generation_workspace_index"],
+      ["499_stage_completion_wake_workspace_index", "512_stage_completion_wake_workspace_index"],
     ]);
-    for (const onDiskName of renames.keys()) {
+    for (const onDiskName of renames.values()) {
       if (!ordered.some((o) => o.version === onDiskName)) {
         throw new Error(`fixture assumption failed: ${onDiskName} not found through ${latest}`);
       }
     }
-    // upstream v0.5.0 own migrations landed at the numeric range the
-    // fork pre-sync files used to occupy (491-499). C00 never ran them:
-    // they must appear in ordered_migrations (real on-disk files, so the
-    // candidate checksum coverage includes them) but NOT in the observed
-    // ledger below, or this fixture stops being C00-shaped.
-    const upstreamPending = new Set([
-      "491_issue_status_category_backfill",
-      "492_issue_status_category_contract",
-      "493_issue_status_category_validate",
-      "494_issue_status_category_read_contract",
-      "495_issue_to_label_label_id_index",
-      "496_chat_session_agent_id_index",
-      "497_agent_task_queue_delegated_failure_evidence_index",
-      "498_chat_session_runtime_id_index",
-      "499_agent_task_issue_snapshot",
-    ]);
-    for (const version of upstreamPending) {
-      if (!ordered.some((o) => o.version === version)) {
-        throw new Error(`fixture assumption failed: upstream pending version ${version} not found on disk`);
-      }
+
+    const rawLedger = mainUpTo501.concat(orphans);
+    const ledgerSorted = [...rawLedger].sort();
+    if (ledgerSorted.length !== 535) {
+      throw new Error(`fixture assumption failed: expected 535-row C00 ledger, got ${ledgerSorted.length}`);
     }
-    const observedLedger = ordered
-      .filter((o) => !upstreamPending.has(o.version))
-      .map((o) => renames.get(o.version) ?? o.version);
+    const observedHash = crypto.createHash("sha256").update(ledgerSorted.join("\n") + "\n").digest("hex");
+    const expectedHash = "b24294b971a0e471ff0c13478d5f71f76c90e27388725d8e4dadc5b5b700708f";
+    if (observedHash !== expectedHash) {
+      throw new Error(`fixture assumption failed: C00-shape ledger hash ${observedHash} does not match admitted baseline ${expectedHash}`);
+    }
+    const observedLedger = ledgerSorted;
     const packet = {
       schema_version: 1,
       candidate: {

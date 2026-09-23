@@ -26,7 +26,18 @@ function fail(message) {
 // its current on-disk version, across two independent rename events:
 //
 // 1. The original CHE-548 renumber (6057b2237, R100 content-identical
-//    renames) moved five files from 470-474 to 491-495.
+//    renames) moved five files from 470-474 to 491-495. The migrator keys
+//    purely on filename (server/internal/migrations.AllVersions() walks
+//    server/migrations/ by name), so it has no notion that a renamed file
+//    is "the same" migration under a new name: it saw 491-495 as five new,
+//    unapplied files and ran them, leaving the original 470-474 rows in
+//    schema_migrations untouched. C00's ledger therefore holds BOTH the old
+//    AND the CHE-548 names for these five migrations — not just one or the
+//    other. (Hash-verified against the real production ledger, admitted
+//    baseline tuple from run 35745037983: 535 rows,
+//    ordered_sha256 sha256:b24294b971a0e471ff0c13478d5f71f76c90e27388725d8e4dadc5b5b700708f,
+//    matches exactly main's 530 up-migrations through 501 plus 470-474 as
+//    five extra rows.)
 // 2. The CHE-650 upstream v0.5.0 sync renumbered the fork's own migrations a
 //    second time, because upstream now owns 491-499:
 //      - the CHE-548 group moves again, 491-495 -> 504-508
@@ -34,27 +45,35 @@ function fail(message) {
 //        through 499_stage_completion_wake_workspace_index), never touched by
 //        CHE-548 and so still on its original names, moves 496-499 -> 509-512
 //
-// Every hop is a content-identical rename, so a pre-sync production ledger
-// entry maps straight to its current on-disk name:
+// Both the pre-CHE-548 names (470-474) and the CHE-548 names (491-495) are
+// content-identical to the current on-disk files, so both map to the same
+// current name — this is a many-to-one map, not a rename chain:
 //   470_github_merge_announcement                -> 504_github_merge_announcement
 //   471_github_merge_announcement_identity_uidx   -> 505_github_merge_announcement_identity_uidx
 //   472_github_merge_announcement_pending_idx     -> 506_github_merge_announcement_pending_idx
 //   473_github_merge_announcement_html_url        -> 507_github_merge_announcement_html_url
 //   474_agent_task_rerun_lineage_unique           -> 508_agent_task_rerun_lineage_unique
+//   491_github_merge_announcement                -> 504_github_merge_announcement
+//   492_github_merge_announcement_identity_uidx   -> 505_github_merge_announcement_identity_uidx
+//   493_github_merge_announcement_pending_idx     -> 506_github_merge_announcement_pending_idx
+//   494_github_merge_announcement_html_url        -> 507_github_merge_announcement_html_url
+//   495_agent_task_rerun_lineage_unique           -> 508_agent_task_rerun_lineage_unique
 //   496_stage_completion_wake                     -> 509_stage_completion_wake
 //   497_stage_completion_wake_unique              -> 510_stage_completion_wake_unique
 //   498_stage_generation_workspace_index           -> 511_stage_generation_workspace_index
 //   499_stage_completion_wake_workspace_index      -> 512_stage_completion_wake_workspace_index
-// The fork's old 496-499 names do not collide with upstream v0.5.0's own,
-// differently-named 496-499 (496_chat_session_agent_id_index and so on) —
-// the version strings differ, so reconcileLedgerVersions cannot conflate them.
+// The fork's 491-495 and 496-499 old names do not collide with upstream
+// v0.5.0's own, differently-named 491-499 (491_issue_status_category_backfill,
+// 496_chat_session_agent_id_index, and so on) — the version strings differ,
+// so reconcileLedgerVersions cannot conflate them.
 //
-// This is deliberately a fixed nine-entry table, not a general remap: C00's
-// admitted ledger (main through 501_protocol_lint_run_checked_at_idx) only
-// reproduces as clean when all nine old names are present alongside the
+// This is deliberately a fixed fourteen-entry table, not a general remap:
+// C00's admitted ledger (main's up-set through 501_protocol_lint_run_checked_at_idx,
+// plus 470-474 as orphan rows — the hash-verified 535-row shape above) only
+// reproduces as clean when all fourteen old names are present alongside the
 // on-disk ledger — validatePacket's dirty-ledger check fails closed on the
 // first unrecognized version it sees, so an earlier run that only
-// reconciled some of the nine masked the rest until the next one was
+// reconciled some of the fourteen masked the rest until the next one was
 // reached. Any version outside this table must keep failing closed as
 // dirty-ledger state, not be silently guessed at.
 const KNOWN_LEDGER_RENAMES = new Map([
@@ -63,6 +82,11 @@ const KNOWN_LEDGER_RENAMES = new Map([
   ["472_github_merge_announcement_pending_idx", "506_github_merge_announcement_pending_idx"],
   ["473_github_merge_announcement_html_url", "507_github_merge_announcement_html_url"],
   ["474_agent_task_rerun_lineage_unique", "508_agent_task_rerun_lineage_unique"],
+  ["491_github_merge_announcement", "504_github_merge_announcement"],
+  ["492_github_merge_announcement_identity_uidx", "505_github_merge_announcement_identity_uidx"],
+  ["493_github_merge_announcement_pending_idx", "506_github_merge_announcement_pending_idx"],
+  ["494_github_merge_announcement_html_url", "507_github_merge_announcement_html_url"],
+  ["495_agent_task_rerun_lineage_unique", "508_agent_task_rerun_lineage_unique"],
   ["496_stage_completion_wake", "509_stage_completion_wake"],
   ["497_stage_completion_wake_unique", "510_stage_completion_wake_unique"],
   ["498_stage_generation_workspace_index", "511_stage_generation_workspace_index"],
