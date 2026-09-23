@@ -9,10 +9,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	"github.com/multica-ai/multica/server/internal/cli"
 )
+
+// provenanceMaxSources must match service.ProvenanceMaxSources; the CLI does
+// not import server-internal packages.
+const provenanceMaxSources = 256
 
 var provenanceCmd = &cobra.Command{
 	Use:   "provenance",
@@ -85,6 +90,9 @@ func parseProvenanceExportFlags(cmd *cobra.Command) (provenanceExportRequest, st
 		return req, "", errors.New("--workspace must not be empty")
 	}
 	req.WorkspaceID = strings.TrimSpace(workspaces[0])
+	if _, err := uuid.Parse(req.WorkspaceID); err != nil {
+		return req, "", fmt.Errorf("invalid --workspace %q: expected a workspace UUID", req.WorkspaceID)
+	}
 
 	raw, _ := cmd.Flags().GetString("cutoff")
 	if strings.TrimSpace(raw) == "" {
@@ -99,6 +107,9 @@ func parseProvenanceExportFlags(cmd *cobra.Command) (provenanceExportRequest, st
 	req.Threads, _ = cmd.Flags().GetStringArray("thread")
 	if len(req.Issues) == 0 && len(req.Threads) == 0 {
 		return req, "", errors.New("at least one --issue or --thread is required")
+	}
+	if n := len(req.Issues) + len(req.Threads); n > provenanceMaxSources {
+		return req, "", fmt.Errorf("too many sources: %d --issue/--thread given, at most %d per export", n, provenanceMaxSources)
 	}
 	if req.Issues == nil {
 		req.Issues = []string{}

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/redact"
@@ -33,6 +35,7 @@ const (
 	ProvenanceMissingProvenance ProvenanceExclusionReason = "missing_provenance"
 	ProvenanceOverCap           ProvenanceExclusionReason = "over_cap"
 	ProvenanceDeleted           ProvenanceExclusionReason = "deleted"
+	ProvenanceEditedAfterCutoff ProvenanceExclusionReason = "edited_after_cutoff"
 )
 
 type ProvenanceRecordKind string
@@ -85,10 +88,11 @@ type ProvenanceManifest struct {
 }
 
 // ProvenanceSourceRef renders a caller-supplied ref for responses and the
-// audit manifest. A ref that failed validation is arbitrary input (it could
-// be a pasted secret), so only its hash is ever echoed back or stored.
-func ProvenanceSourceRef(kind, ref string, wellFormed bool) string {
-	if !wellFormed {
+// audit manifest. Only a ref whose exact bytes are known to be harmless (a
+// parsed UUID) may be echoed; anything else is arbitrary input that could be
+// a pasted secret, so only its hash is ever echoed back or stored.
+func ProvenanceSourceRef(kind, ref string, safeToEcho bool) string {
+	if !safeToEcho {
 		sum := sha256.Sum256([]byte(ref))
 		return kind + ":sha256:" + hex.EncodeToString(sum[:])
 	}
@@ -107,10 +111,19 @@ func ProvenanceRequestDigest(workspaceID string, issues, threads []string, cutof
 	}{workspaceID, sortedUnique(issues), sortedUnique(threads), cutoff.UTC().Format(time.RFC3339Nano)})
 }
 
+// ProvenanceTaskVerifier reports whether taskID names a task in the export's
+// workspace. It returns false, nil for a task that does not exist or belongs
+// to another workspace.
+type ProvenanceTaskVerifier func(taskID pgtype.UUID) (bool, error)
+
 // ProvenanceExport accumulates one bounded export. It is not safe for
 // concurrent use.
 type ProvenanceExport struct {
 	cutoff     time.Time
+	verifyTask ProvenanceTaskVerifier
+	// tasks caches verifyTask results so a task cited by many rows costs one
+	// lookup per export.
+	tasks      map[[16]byte]bool
 	records    []ProvenanceRecord
 	exclusions []ProvenanceExclusion
 	seen       map[string]bool
@@ -120,8 +133,16 @@ type ProvenanceExport struct {
 	capped map[string]int
 }
 
-func NewProvenanceExport(cutoff time.Time) *ProvenanceExport {
-	return &ProvenanceExport{cutoff: cutoff, seen: map[string]bool{}, capped: map[string]int{}}
+// NewProvenanceExport starts an export as of cutoff. A nil verifyTask treats
+// every agent-authored row as lacking provenance.
+func NewProvenanceExport(cutoff time.Time, verifyTask ProvenanceTaskVerifier) *ProvenanceExport {
+	return &ProvenanceExport{
+		cutoff:     cutoff,
+		verifyTask: verifyTask,
+		tasks:      map[[16]byte]bool{},
+		seen:       map[string]bool{},
+		capped:     map[string]int{},
+	}
 }
 
 func (e *ProvenanceExport) Cutoff() time.Time { return e.cutoff }
@@ -134,13 +155,63 @@ func (e *ProvenanceExport) afterCutoff(ts time.Time) bool {
 	return ts.After(e.cutoff)
 }
 
+// changedAfterCutoff reports whether a row's stored state may differ from the
+// state it had at the cutoff. There is no edit history to rebuild the earlier
+// state from, so such a row is excluded rather than exported with later
+// content under an as-of claim.
+func (e *ProvenanceExport) changedAfterCutoff(updatedAt pgtype.Timestamptz) bool {
+	return !updatedAt.Valid || e.afterCutoff(updatedAt.Time)
+}
+
+func (e *ProvenanceExport) taskResolves(taskID pgtype.UUID) (bool, error) {
+	if !taskID.Valid || e.verifyTask == nil {
+		return false, nil
+	}
+	if ok, cached := e.tasks[taskID.Bytes]; cached {
+		return ok, nil
+	}
+	ok, err := e.verifyTask(taskID)
+	if err != nil {
+		return false, err
+	}
+	e.tasks[taskID.Bytes] = ok
+	return ok, nil
+}
+
+// issueOriginTask returns the agent_task_queue row an agent-created issue is
+// stamped with. Only these origin types carry a task id in origin_id; other
+// origins (autopilot, chat integrations) name non-task rows.
+func issueOriginTask(issue db.Issue) pgtype.UUID {
+	switch issue.OriginType.String {
+	case "agent_create", "quick_create":
+		return issue.OriginID
+	}
+	return pgtype.UUID{}
+}
+
 // AddIssue adds the issue row itself. It reports false when the issue did not
 // exist at the cutoff, in which case the caller must not export its comments.
+// An issue that existed but is excluded for another reason still reports true:
+// its comments are separate rows and are classified on their own.
 func (e *ProvenanceExport) AddIssue(source string, issue db.Issue) (bool, error) {
 	id := util.UUIDToString(issue.ID)
 	if !issue.CreatedAt.Valid || e.afterCutoff(issue.CreatedAt.Time) {
 		e.Exclude(source, id, ProvenanceOutOfCutoff, 0)
 		return false, nil
+	}
+	if e.changedAfterCutoff(issue.UpdatedAt) {
+		e.Exclude(source, id, ProvenanceEditedAfterCutoff, 0)
+		return true, nil
+	}
+	if issue.CreatorType == "agent" {
+		ok, err := e.taskResolves(issueOriginTask(issue))
+		if err != nil {
+			return false, err
+		}
+		if !ok {
+			e.Exclude(source, id, ProvenanceMissingProvenance, 0)
+			return true, nil
+		}
 	}
 	title := redact.Text(issue.Title)
 	description := redact.Text(issue.Description.String)
@@ -174,12 +245,22 @@ func (e *ProvenanceExport) AddComments(source string, rows []db.Comment) error {
 		case !c.CreatedAt.Valid || e.afterCutoff(c.CreatedAt.Time):
 			e.Exclude(source, id, ProvenanceOutOfCutoff, 0)
 			continue
-		case c.DeletedAt.Valid:
+		case c.DeletedAt.Valid && !e.afterCutoff(c.DeletedAt.Time):
 			e.Exclude(source, id, ProvenanceDeleted, 0)
 			continue
-		case c.AuthorType == "agent" && !c.SourceTaskID.Valid:
-			e.Exclude(source, id, ProvenanceMissingProvenance, 0)
+		case e.changedAfterCutoff(c.UpdatedAt):
+			e.Exclude(source, id, ProvenanceEditedAfterCutoff, 0)
 			continue
+		}
+		if c.AuthorType == "agent" {
+			ok, err := e.taskResolves(c.SourceTaskID)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				e.Exclude(source, id, ProvenanceMissingProvenance, 0)
+				continue
+			}
 		}
 		content := redact.Text(c.Content)
 		rec := ProvenanceRecord{

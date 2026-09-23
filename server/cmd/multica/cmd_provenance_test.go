@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -40,6 +41,10 @@ func provenanceTestServer(t *testing.T, calls *atomic.Int32, handle func(w http.
 }
 
 func TestProvenanceExportFailsClosedWithoutHTTP(t *testing.T) {
+	overCap := []string{"--workspace", provenanceTestWorkspace, "--cutoff", "2026-09-01T00:00:00Z"}
+	for i := 0; i <= provenanceMaxSources; i++ {
+		overCap = append(overCap, "--issue", fmt.Sprintf("MUL-%d", i+1))
+	}
 	cases := []struct {
 		name    string
 		args    []string
@@ -48,6 +53,8 @@ func TestProvenanceExportFailsClosedWithoutHTTP(t *testing.T) {
 		{"missing workspace", []string{"--issue", "MUL-1", "--cutoff", "2026-09-01T00:00:00Z"}, "--workspace is required"},
 		{"two workspaces", []string{"--workspace", provenanceTestWorkspace, "--workspace", provenanceTestWorkspace, "--issue", "MUL-1", "--cutoff", "2026-09-01T00:00:00Z"}, "exactly once"},
 		{"blank workspace", []string{"--workspace", " ", "--issue", "MUL-1", "--cutoff", "2026-09-01T00:00:00Z"}, "must not be empty"},
+		{"workspace not a uuid", []string{"--workspace", "acme-prod", "--issue", "MUL-1", "--cutoff", "2026-09-01T00:00:00Z"}, "expected a workspace UUID"},
+		{"over source cap", overCap, "at most 256 per export"},
 		{"missing cutoff", []string{"--workspace", provenanceTestWorkspace, "--issue", "MUL-1"}, "--cutoff is required"},
 		{"bad cutoff", []string{"--workspace", provenanceTestWorkspace, "--issue", "MUL-1", "--cutoff", "2026-09-01"}, "expected RFC3339"},
 		{"no sources", []string{"--workspace", provenanceTestWorkspace, "--cutoff", "2026-09-01T00:00:00Z"}, "at least one --issue or --thread"},

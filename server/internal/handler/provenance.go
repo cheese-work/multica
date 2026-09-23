@@ -174,7 +174,19 @@ func (h *Handler) collectProvenance(ctx context.Context, workspaceID pgtype.UUID
 		return nil, fmt.Errorf("load workspace: %w", err)
 	}
 	prefix := issuePrefixForWorkspace(ws)
-	export := service.NewProvenanceExport(cutoff)
+	// source_task_id / origin_id have no FK, so a value can name a missing
+	// task or one in another workspace; only a task this workspace owns counts
+	// as provenance.
+	export := service.NewProvenanceExport(cutoff, func(taskID pgtype.UUID) (bool, error) {
+		_, err := q.GetAgentTaskInWorkspace(ctx, db.GetAgentTaskInWorkspaceParams{ID: taskID, WorkspaceID: workspaceID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		if err != nil {
+			return false, fmt.Errorf("verify task provenance: %w", err)
+		}
+		return true, nil
+	})
 
 	for _, ref := range req.Issues {
 		if err := collectIssueSource(ctx, q, export, workspaceID, prefix, strings.TrimSpace(ref)); err != nil {
@@ -197,7 +209,9 @@ func collectIssueSource(ctx context.Context, q *db.Queries, export *service.Prov
 	id, uuidErr := util.ParseUUID(ref)
 	parts := splitIdentifier(ref)
 	wellFormed := len(ref) <= service.ProvenanceMaxRefLength && (uuidErr == nil || parts != nil)
-	source := service.ProvenanceSourceRef("issue", ref, wellFormed)
+	// An identifier only has to look like PREFIX-N, so its bytes are still
+	// caller-controlled (e.g. a secret shaped like one); only a UUID is echoed.
+	source := service.ProvenanceSourceRef("issue", ref, wellFormed && uuidErr == nil)
 	switch {
 	case !wellFormed:
 		export.Exclude(source, "", service.ProvenanceMalformed, 0)
