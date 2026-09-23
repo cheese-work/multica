@@ -299,7 +299,16 @@ var waiverClaimRe = regexp.MustCompile(`(?i)\b(?:` +
 	stepRefRe + `\s+(?:(?:was|were|is|are|has\s+been|have\s+been|got)\s+)?(?:(?:\w+ly|also|already)\s+)*(?:waived|skipped\s+(?:with|per)\s+(?:approval|waiver))` +
 	`|waived\s+` + stepRefRe +
 	`|skipp(?:ed|ing)\s+` + stepRefRe + `\s+(?:with|per)\s+(?:approval|waiver)` +
+	`|` + stepWaiverGrantedRe +
 	`)\b`)
+
+// stepWaiverGrantedRe is "<step> waiver (was) granted" or "waiver (was)
+// granted for <step>". An agent writing it is a claim; a member writing it is
+// a grant, so both regexes share it.
+const stepWaiverGrantedRe = stepRefRe + `\s+waiver\s+` + grantedRe +
+	`|waiver\s+` + grantedRe + `\s+for\s+` + stepRefRe
+
+const grantedRe = `(?:(?:was|has\s+been|is)\s+)?(?:granted|approved)`
 
 // waiverGrantRe matches a human actually granting one, in a comment authored
 // by a workspace member (never an agent or system narration). Like a claim,
@@ -307,8 +316,7 @@ var waiverClaimRe = regexp.MustCompile(`(?i)\b(?:` +
 // granted") cannot mask a protocol violation.
 var waiverGrantRe = regexp.MustCompile(`(?i)\b(?:` +
 	`(?:i\s+waive|you\s+(?:can|may)\s+skip|(?:approved?|ok(?:ay)?)\s+to\s+skip)\s+` + stepRefRe +
-	`|` + workflowStepRe + `\s+waiver\s+granted` +
-	`|waiver\s+granted\s+for\s+` + stepRefRe +
+	`|` + stepWaiverGrantedRe +
 	`)\b`)
 
 // quotedRe drops code spans and double-quoted text before matching: quoting
