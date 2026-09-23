@@ -299,7 +299,7 @@ var waiverGrantRe = regexp.MustCompile(`(?i)\b(i waive|waiver granted|you (?:can
 // workflowContextRe limits waiver checks to the Multica workflow facts this
 // package owns. A generic ABI/deploy waiver must neither produce nor suppress
 // a protocol-lint violation.
-var workflowContextRe = regexp.MustCompile(`(?i)\b(comment|status|review|verification|evidence|protocol|workflow|CI gate)\b`)
+var workflowContextRe = regexp.MustCompile(`(?i)\b(comment|status|review|verification|evidence|protocol|workflow|CI gate|step)\b`)
 
 // checkUnsupportedWaivers is assertion 5: a run must not claim, in its own
 // posted comments, that a human waived some step unless a member's comment on
