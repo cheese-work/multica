@@ -293,4 +293,90 @@ set -e
 expect_exit 1 "$status" out-of-order-migrations
 expect_contains "$output" "not in on-disk applied order" out-of-order-migrations
 
+# base_rename_packet.mjs builds a packet whose ordered_migrations explicitly
+# includes 491_github_merge_announcement (not necessarily in the plain
+# last-5 slice build_base_packet uses), so the rename-reconciliation
+# scenarios below have a real on-disk target version to reconcile onto.
+build_base_rename_packet() {
+  local out=$1
+  node -e '
+    const fs = require("fs");
+    const crypto = require("crypto");
+    const path = require("path");
+    const dir = "server/migrations";
+    const target = "491_github_merge_announcement";
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith(".up.sql")).sort();
+    const targetIdx = files.findIndex((f) => f === `${target}.up.sql`);
+    if (targetIdx === -1) throw new Error(`fixture assumption failed: ${target}.up.sql not found under ${dir}`);
+    const last = files.slice(0, targetIdx + 1).slice(-5);
+    const ordered = last.map((f) => {
+      const bytes = fs.readFileSync(path.join(dir, f));
+      return { version: f.replace(/\.up\.sql$/, ""), sha256: "sha256:" + crypto.createHash("sha256").update(bytes).digest("hex") };
+    });
+    const packet = {
+      schema_version: 1,
+      candidate: {
+        source_sha: "504078f8ea7fa31f342f195659e93a7f6c3e5a91",
+        backend_image: "ghcr.io/cheese-work/multica-backend@sha256:" + "c".repeat(64),
+        web_image: "ghcr.io/cheese-work/multica-web@sha256:" + "d".repeat(64),
+        migration_inventory_sha256: "sha256:" + "e".repeat(64),
+        baseline_tuple_sha256: "sha256:" + "f".repeat(64),
+      },
+      ordered_migrations: ordered,
+      observed_state: {
+        schema_version: 1,
+        ledger: { status: "complete", versions: ordered.map((o) => o.version) },
+        indexes: { status: "complete", invalid: [] },
+        hooks: { status: "complete", observations: [{ name: "backfill_example", status: "completed" }] },
+      },
+      previous_image_pair: {
+        backend: "ghcr.io/cheese-work/multica-backend:sha-abc123",
+        web: "ghcr.io/cheese-work/multica-web:sha-abc123",
+        backend_digest: "sha256:" + "a".repeat(64),
+        web_digest: "sha256:" + "b".repeat(64),
+      },
+      minimum_rollback_version: ordered[0].version,
+    };
+    fs.writeFileSync(process.argv[1], JSON.stringify(packet, null, 2));
+  ' "$out"
+}
+
+base_rename_packet="$work_dir/base-rename.json"
+build_base_rename_packet "$base_rename_packet"
+
+# ---------------------------------------------------------------------------
+# Scenario 10: a ledger row under the known pre-CHE-548 historical name
+# (470_github_merge_announcement) must reconcile to the on-disk
+# 491_github_merge_announcement version and verify — the exact case
+# C00's ledger reported before the renumber merged.
+# ---------------------------------------------------------------------------
+renamed="$work_dir/renamed.json"
+mutate "$base_rename_packet" "$renamed" '
+  const idx = p.observed_state.ledger.versions.indexOf("491_github_merge_announcement");
+  if (idx === -1) throw new Error("fixture assumption failed: 491_github_merge_announcement not in base packet ledger");
+  p.observed_state.ledger.versions[idx] = "470_github_merge_announcement";
+'
+output="$(node deploy/cd/release-packet.mjs verify --packet "$renamed" --manifest "$manifest" 2>&1)"
+status=$?
+expect_exit 0 "$status" known-ledger-rename
+expect_contains "$output" '"ok":true' known-ledger-rename
+
+# ---------------------------------------------------------------------------
+# Scenario 11 (negative control): an unrelated unknown historical version
+# must still fail closed as dirty-ledger state — the rename reconciliation
+# is a single fixed mapping, not a general amnesty for unrecognized names.
+# ---------------------------------------------------------------------------
+unknown_rename="$work_dir/unknown-rename.json"
+mutate "$base_rename_packet" "$unknown_rename" '
+  const idx = p.observed_state.ledger.versions.indexOf("491_github_merge_announcement");
+  if (idx === -1) throw new Error("fixture assumption failed: 491_github_merge_announcement not in base packet ledger");
+  p.observed_state.ledger.versions[idx] = "470_issue_status_icon";
+'
+set +e
+output="$(node deploy/cd/release-packet.mjs verify --packet "$unknown_rename" --manifest "$manifest" 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" unknown-ledger-rename
+expect_contains "$output" "ledger contains version 470_issue_status_icon not present in ordered_migrations — dirty ledger state" unknown-ledger-rename
+
 echo "release-packet.mjs control-flow fixtures passed"

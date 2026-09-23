@@ -22,6 +22,27 @@ function fail(message) {
   throw new Error(message);
 }
 
+// KNOWN_LEDGER_RENAMES maps a historical schema_migrations version string to
+// its current on-disk version, for the one CHE-548 rename a production
+// ledger can have applied before the renumber landed (470_
+// github_merge_announcement -> 491_github_merge_announcement; same file
+// bytes, filename only). This is deliberately a single fixed entry, not a
+// general remap table: CHE-548 renumbered five files, but this reconciles
+// only the one version an observed ledger has actually reported — any other
+// unrecognized version must keep failing closed as dirty-ledger state, not
+// be silently guessed at.
+const KNOWN_LEDGER_RENAMES = new Map([
+  ["470_github_merge_announcement", "491_github_merge_announcement"],
+]);
+
+// reconcileLedgerVersions maps known historical version names in an observed
+// ledger to their current on-disk names, so a pre-CHE-548 production ledger
+// verifies against the renumbered candidate without weakening the
+// dirty-ledger check for every other version.
+function reconcileLedgerVersions(versions) {
+  return versions.map((version) => KNOWN_LEDGER_RENAMES.get(version) ?? version);
+}
+
 function option(name, args) {
   const index = args.indexOf(name);
   if (index === -1 || !args[index + 1]) fail(`missing ${name}`);
@@ -123,7 +144,13 @@ function validatePacket(packet, { migrationsDir, manifest }) {
   // Do not synthesize applied_by rows or allowlists. Ownership is proven by
   // the supervised one-shot migrator; this packet records only what the
   // database can actually report.
-  for (const version of observed.ledger.versions) {
+  //
+  // reconcileLedgerVersions maps the one known pre-CHE-548 rename
+  // (470_github_merge_announcement -> 491_github_merge_announcement) before
+  // this check, so a production ledger that applied the migration under its
+  // old filename still verifies. Every other version passes through
+  // unchanged and still fails closed as dirty-ledger state below.
+  for (const version of reconcileLedgerVersions(observed.ledger.versions)) {
     if (!packetVersions.includes(version)) {
       fail(`ledger contains version ${version} not present in ordered_migrations — dirty ledger state`);
     }
