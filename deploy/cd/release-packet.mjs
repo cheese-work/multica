@@ -22,6 +22,40 @@ function fail(message) {
   throw new Error(message);
 }
 
+// KNOWN_LEDGER_RENAMES maps a historical schema_migrations version string to
+// its current on-disk version, for the exact five CHE-548 renames
+// (6057b2237, all reported as R100 — content-identical renames) a
+// production ledger can have applied before the renumber landed:
+//   470_github_merge_announcement                -> 491_github_merge_announcement
+//   471_github_merge_announcement_identity_uidx   -> 492_github_merge_announcement_identity_uidx
+//   472_github_merge_announcement_pending_idx     -> 493_github_merge_announcement_pending_idx
+//   473_github_merge_announcement_html_url        -> 494_github_merge_announcement_html_url
+//   474_agent_task_rerun_lineage_unique           -> 495_agent_task_rerun_lineage_unique
+// This is deliberately a fixed five-entry table, not a general remap: C00's
+// admitted baseline tuple (run 35745037983, row_count 535, latest
+// 501_protocol_lint_run_checked_at_idx) only reproduces its recorded
+// ordered_sha256 when all five old names are present alongside the on-disk
+// ledger through 501 — validatePacket's dirty-ledger check fails closed on
+// the first unrecognized version it sees, so an earlier run that only
+// reconciled 470 masked the other four until the next one was reached. Any
+// version outside this table must keep failing closed as dirty-ledger
+// state, not be silently guessed at.
+const KNOWN_LEDGER_RENAMES = new Map([
+  ["470_github_merge_announcement", "491_github_merge_announcement"],
+  ["471_github_merge_announcement_identity_uidx", "492_github_merge_announcement_identity_uidx"],
+  ["472_github_merge_announcement_pending_idx", "493_github_merge_announcement_pending_idx"],
+  ["473_github_merge_announcement_html_url", "494_github_merge_announcement_html_url"],
+  ["474_agent_task_rerun_lineage_unique", "495_agent_task_rerun_lineage_unique"],
+]);
+
+// reconcileLedgerVersions maps known historical version names in an observed
+// ledger to their current on-disk names, so a pre-CHE-548 production ledger
+// verifies against the renumbered candidate without weakening the
+// dirty-ledger check for every other version.
+function reconcileLedgerVersions(versions) {
+  return versions.map((version) => KNOWN_LEDGER_RENAMES.get(version) ?? version);
+}
+
 function option(name, args) {
   const index = args.indexOf(name);
   if (index === -1 || !args[index + 1]) fail(`missing ${name}`);
@@ -123,7 +157,12 @@ function validatePacket(packet, { migrationsDir, manifest }) {
   // Do not synthesize applied_by rows or allowlists. Ownership is proven by
   // the supervised one-shot migrator; this packet records only what the
   // database can actually report.
-  for (const version of observed.ledger.versions) {
+  //
+  // reconcileLedgerVersions maps the five known pre-CHE-548 renames before
+  // this check, so a production ledger that applied those migrations under
+  // their old filenames still verifies. Every other version passes through
+  // unchanged and still fails closed as dirty-ledger state below.
+  for (const version of reconcileLedgerVersions(observed.ledger.versions)) {
     if (!packetVersions.includes(version)) {
       fail(`ledger contains version ${version} not present in ordered_migrations — dirty ledger state`);
     }
