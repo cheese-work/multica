@@ -30,7 +30,7 @@ concurrency:
 
 jobs:
   compare:
-    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
+    runs-on: ubuntu-latest
     # Measured on CI: ~340s for the comparison itself, of which ~292s is the
     # two builds and ~26s the two measurements, plus setup. Fifteen minutes
     # leaves room for build variance and still stops a run that has hung.
