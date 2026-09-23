@@ -292,7 +292,7 @@ const workflowStepRe = `(?:` +
 	`|(?:independent|exact-SHA|PR|code)\s+review` +
 	`|status\s+(?:change|update|read-?back)` +
 	`|comment\s+scan|CI\s+gate` +
-	`|(?:this|that|the|each|every|review|verification|read-?back|evidence|status)\s+step` +
+	`|(?:this|that|the|each|every|review|verification|read-?back|evidence|status)\s+steps?` +
 	`|(?:review|verification|evidence)\s+(?:(?-i:[A-Z])|#?\d+)` +
 	`)`
 
