@@ -40,6 +40,18 @@ const (
 	// EvalContext is now populated, so an allow list on workspace_id, or a
 	// deny list on agent_id, reaches real requests.
 	Jev = "jev_enabled"
+	// JevReceipts gates governance RECEIPT CAPTURE (CHE-685) — the
+	// post-commit, best-effort observation hook in
+	// server/internal/governance/receipt that runs governance.Evaluate and
+	// persists a governance_receipt row. It is deliberately a SEPARATE key
+	// from Jev rather than reusing it: Jev is the live-spend kill switch for
+	// an eventual paid, acting evaluation, while this key only ever gates a
+	// capture path that (in every delivery through CHE-685) runs against a
+	// nil/fake Provider and never acts on what it observes. Sharing one key
+	// would mean flipping on real Jev spend later also silently turns on
+	// receipt capture (or vice versa) for workspaces that were never
+	// independently opted into each. Off by default, same as Jev.
+	JevReceipts = "jev_receipts_enabled"
 	// agentBuilderCompat is no longer a release flag. Keep publishing the key
 	// as enabled so installed desktop clients that still gate the AI creation
 	// entry on this config decision receive the permanently enabled behavior.
@@ -77,6 +89,12 @@ func PluginsV1Enabled(ctx context.Context, flags *featureflag.Service) bool {
 
 func TriageV1Enabled(ctx context.Context, flags *featureflag.Service) bool {
 	return flags.IsEnabled(ctx, TriageV1, false)
+}
+
+// JevReceiptsEnabled reports whether this request may run a governance
+// receipt-capture observation. See [JevReceipts].
+func JevReceiptsEnabled(ctx context.Context, flags *featureflag.Service) bool {
+	return flags.IsEnabled(ctx, JevReceipts, false)
 }
 
 func EvaluateFrontendPublicFlags(ctx context.Context, flags *featureflag.Service) map[string]bool {

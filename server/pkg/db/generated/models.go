@@ -772,6 +772,21 @@ type GithubPullRequestCheckSuite struct {
 	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
 }
 
+type GovernanceReceipt struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	CommentID     pgtype.UUID        `json:"comment_id"`
+	Trigger       string             `json:"trigger"`
+	Status        string             `json:"status"`
+	ShedReason    pgtype.Text        `json:"shed_reason"`
+	AbstainReason string             `json:"abstain_reason"`
+	ActionKind    pgtype.Text        `json:"action_kind"`
+	Answers       []byte             `json:"answers"`
+	ObservedAt    pgtype.Timestamptz `json:"observed_at"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
 type InboxItem struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`

@@ -25,6 +25,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
+	"github.com/multica-ai/multica/server/internal/governance/receipt"
 	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
@@ -447,6 +448,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	h.Metrics = opts.BusinessMetrics
 	h.FeatureFlags = opts.FeatureFlags
 	h.TaskService.FeatureFlags = opts.FeatureFlags
+	// GovernanceReceipts (CHE-685): receipt-capture-only, gated behind the
+	// separate JevReceipts flag (off by default). Provider stays nil in
+	// every wiring path this delivery adds — a nil Provider makes every
+	// observation record status="error"/shed_reason="error" rather than
+	// attempting a call, which is the intended no-key, no-network behavior
+	// for D03. Wiring a live jev.Client here is explicitly out of scope
+	// until a later delivery lifts the CHE-697 viability block.
+	h.GovernanceReceipts = &receipt.Observer{Store: queries}
 	h.TaskService.Metrics = opts.BusinessMetrics
 	h.IssueService.Metrics = opts.BusinessMetrics
 	entitlementClient, entitlementErr := entitlement.New(entitlement.Config{

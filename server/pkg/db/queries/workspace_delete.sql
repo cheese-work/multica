@@ -356,6 +356,11 @@ deleted_stage_generations AS (
 deleted_issue_checkpoints AS (
     DELETE FROM issue_checkpoint WHERE workspace_id = $1
 ),
+-- CHE-685 Jev governance routing receipts: workspace-owned observation
+-- history, same leaf shape as issue_checkpoint above (no dependents, no FK).
+deleted_governance_receipts AS (
+    DELETE FROM governance_receipt WHERE workspace_id = $1
+),
 deleted_activity AS (
     DELETE FROM activity_log WHERE workspace_id = $1
 ),

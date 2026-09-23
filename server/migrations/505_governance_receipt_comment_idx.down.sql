@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_governance_receipt_comment_id;

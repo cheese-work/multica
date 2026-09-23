@@ -25,6 +25,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/dbreader"
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/governance/receipt"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
 	composio "github.com/multica-ai/multica/server/internal/integrations/composio"
 	"github.com/multica-ai/multica/server/internal/integrations/dingtalk"
@@ -218,6 +219,14 @@ type Handler struct {
 	LocalSkillListStore   LocalSkillListStore
 	LocalSkillImportStore LocalSkillImportStore
 	FeatureFlags          *featureflag.Service
+	// GovernanceReceipts runs the CHE-685 observe-only Jev governance
+	// receipt capture hook after a comment create/edit commits. Nil is the
+	// safe default (every call site checks for it before use) — every
+	// production Handler must still set the field to get a real *receipt.Observer
+	// wired with Store: queries, but its Provider stays nil until a later,
+	// still-blocked delivery wires a live Jev client (see CHE-685 scope:
+	// this delivery never sets Provider to anything but a fake in tests).
+	GovernanceReceipts *receipt.Observer
 	// IssueStatusCatalog reads the workspace status catalog. Defaults to
 	// Queries; a test can substitute a counting wrapper to assert HOW MANY
 	// catalog reads a request performs, which is the only property that
