@@ -295,12 +295,14 @@ expect_contains "$output" "not in on-disk applied order" out-of-order-migrations
 
 # build_c00_shape_packet.mjs builds a packet reproducing C00's actual
 # pre-cutover shape from run 35745037983's admitted baseline tuple:
-# ordered_migrations is the full on-disk set through 501 (the baseline's
-# latest, 501_protocol_lint_run_checked_at_idx), and the observed ledger is
-# that same version list with all five CHE-548 renames substituted back to
-# their pre-rename names — reproducing what C00's schema_migrations table
-# actually held, not just the single name the first-unknown-version early
-# exit in validatePacket happened to report.
+# ordered_migrations is the full on-disk set through the renamed files'
+# current latest (508_agent_task_rerun_lineage_unique — the CHE-650 upstream
+# v0.5.0 sync moved the five CHE-548 renames a second time, 491-495 ->
+# 504-508, because upstream now owns 491-499), and the observed ledger is
+# that same version list with all five renames substituted back to their
+# original pre-CHE-548 names — reproducing what C00's schema_migrations
+# table actually held, not just the single name the first-unknown-version
+# early exit in validatePacket happened to report.
 build_c00_shape_packet() {
   local out=$1
   node -e '
@@ -308,7 +310,7 @@ build_c00_shape_packet() {
     const crypto = require("crypto");
     const path = require("path");
     const dir = "server/migrations";
-    const latest = "501_protocol_lint_run_checked_at_idx";
+    const latest = "508_agent_task_rerun_lineage_unique";
     const files = fs.readdirSync(dir).filter((f) => f.endsWith(".up.sql")).sort();
     const latestIdx = files.findIndex((f) => f === `${latest}.up.sql`);
     if (latestIdx === -1) throw new Error(`fixture assumption failed: ${latest}.up.sql not found under ${dir}`);
@@ -318,11 +320,11 @@ build_c00_shape_packet() {
       return { version: f.replace(/\.up\.sql$/, ""), sha256: "sha256:" + crypto.createHash("sha256").update(bytes).digest("hex") };
     });
     const renames = new Map([
-      ["491_github_merge_announcement", "470_github_merge_announcement"],
-      ["492_github_merge_announcement_identity_uidx", "471_github_merge_announcement_identity_uidx"],
-      ["493_github_merge_announcement_pending_idx", "472_github_merge_announcement_pending_idx"],
-      ["494_github_merge_announcement_html_url", "473_github_merge_announcement_html_url"],
-      ["495_agent_task_rerun_lineage_unique", "474_agent_task_rerun_lineage_unique"],
+      ["504_github_merge_announcement", "470_github_merge_announcement"],
+      ["505_github_merge_announcement_identity_uidx", "471_github_merge_announcement_identity_uidx"],
+      ["506_github_merge_announcement_pending_idx", "472_github_merge_announcement_pending_idx"],
+      ["507_github_merge_announcement_html_url", "473_github_merge_announcement_html_url"],
+      ["508_agent_task_rerun_lineage_unique", "474_agent_task_rerun_lineage_unique"],
     ]);
     for (const onDiskName of renames.keys()) {
       if (!ordered.some((o) => o.version === onDiskName)) {

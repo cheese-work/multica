@@ -23,14 +23,17 @@ function fail(message) {
 }
 
 // KNOWN_LEDGER_RENAMES maps a historical schema_migrations version string to
-// its current on-disk version, for the exact five CHE-548 renames
-// (6057b2237, all reported as R100 — content-identical renames) a
-// production ledger can have applied before the renumber landed:
-//   470_github_merge_announcement                -> 491_github_merge_announcement
-//   471_github_merge_announcement_identity_uidx   -> 492_github_merge_announcement_identity_uidx
-//   472_github_merge_announcement_pending_idx     -> 493_github_merge_announcement_pending_idx
-//   473_github_merge_announcement_html_url        -> 494_github_merge_announcement_html_url
-//   474_agent_task_rerun_lineage_unique           -> 495_agent_task_rerun_lineage_unique
+// its current on-disk version. The original CHE-548 renumber (6057b2237,
+// R100 content-identical renames) moved these five files from 470-474 to
+// 491-495. The CHE-650 upstream v0.5.0 sync then renumbered them a second
+// time, 491-495 -> 504-508, because upstream now owns 491-499. Both hops are
+// content-identical renames, so a pre-CHE-548 production ledger entry maps
+// straight to its current on-disk name:
+//   470_github_merge_announcement                -> 504_github_merge_announcement
+//   471_github_merge_announcement_identity_uidx   -> 505_github_merge_announcement_identity_uidx
+//   472_github_merge_announcement_pending_idx     -> 506_github_merge_announcement_pending_idx
+//   473_github_merge_announcement_html_url        -> 507_github_merge_announcement_html_url
+//   474_agent_task_rerun_lineage_unique           -> 508_agent_task_rerun_lineage_unique
 // This is deliberately a fixed five-entry table, not a general remap: C00's
 // admitted baseline tuple (run 35745037983, row_count 535, latest
 // 501_protocol_lint_run_checked_at_idx) only reproduces its recorded
@@ -41,11 +44,11 @@ function fail(message) {
 // version outside this table must keep failing closed as dirty-ledger
 // state, not be silently guessed at.
 const KNOWN_LEDGER_RENAMES = new Map([
-  ["470_github_merge_announcement", "491_github_merge_announcement"],
-  ["471_github_merge_announcement_identity_uidx", "492_github_merge_announcement_identity_uidx"],
-  ["472_github_merge_announcement_pending_idx", "493_github_merge_announcement_pending_idx"],
-  ["473_github_merge_announcement_html_url", "494_github_merge_announcement_html_url"],
-  ["474_agent_task_rerun_lineage_unique", "495_agent_task_rerun_lineage_unique"],
+  ["470_github_merge_announcement", "504_github_merge_announcement"],
+  ["471_github_merge_announcement_identity_uidx", "505_github_merge_announcement_identity_uidx"],
+  ["472_github_merge_announcement_pending_idx", "506_github_merge_announcement_pending_idx"],
+  ["473_github_merge_announcement_html_url", "507_github_merge_announcement_html_url"],
+  ["474_agent_task_rerun_lineage_unique", "508_agent_task_rerun_lineage_unique"],
 ]);
 
 // reconcileLedgerVersions maps known historical version names in an observed
