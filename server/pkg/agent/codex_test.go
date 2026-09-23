@@ -2800,6 +2800,81 @@ func TestCodexExecuteRetriesAfterSignaledProcessIsReaped(t *testing.T) {
 	}
 }
 
+// CHE-737: Codex exits during initialize when its SQLite state runtime cannot
+// be opened under host I/O stalls; the DB is healthy afterwards, so one delayed
+// retry recovers the task.
+func TestCodexExecuteRetriesOnceAfterSQLiteStateRuntimeInitExit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+	codexGracefulShutdownTimeoutNanos.Store(int64(100 * time.Millisecond))
+	defer codexGracefulShutdownTimeoutNanos.Store(0)
+	codexStateRuntimeRetryBackoff = 10 * time.Millisecond
+	defer func() { codexStateRuntimeRetryBackoff = 10 * time.Second }()
+	countPath := filepath.Join(t.TempDir(), "launch-count")
+	fakePath := writeFakeCodexAppServer(t, ""+
+		`count=0; test -f `+countPath+` && count=$(cat `+countPath+`)`+"\n"+
+		`count=$((count + 1)); echo "$count" > `+countPath+"\n"+
+		`if test "$count" -eq 1; then echo "Error: failed to initialize sqlite state runtime under /x/codex-home: failed to initialize state runtime at /x/codex-home" >&2; exit 1; fi`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":1,"result":{}}'`+"\n"+
+		`read line`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thr-sqlite"}}}'`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":3,"result":{}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr-sqlite","turn":{"id":"turn-1","status":"completed"}}}'`+"\n")
+	result := executeFakeCodex(t, fakePath, ExecOptions{Timeout: 10 * time.Second})
+	if result.Status != "completed" {
+		t.Fatalf("sqlite state runtime init exit should retry once: %+v", result)
+	}
+	if got, _ := os.ReadFile(countPath); strings.TrimSpace(string(got)) != "2" {
+		t.Fatalf("launch count = %q, want 2", got)
+	}
+}
+
+func TestCodexExecuteSQLiteStateRuntimeInitExitRetriesOnlyOnce(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+	codexGracefulShutdownTimeoutNanos.Store(int64(100 * time.Millisecond))
+	defer codexGracefulShutdownTimeoutNanos.Store(0)
+	codexStateRuntimeRetryBackoff = 10 * time.Millisecond
+	defer func() { codexStateRuntimeRetryBackoff = 10 * time.Second }()
+	countPath := filepath.Join(t.TempDir(), "launch-count")
+	fakePath := writeFakeCodexAppServer(t, ""+
+		`count=0; test -f `+countPath+` && count=$(cat `+countPath+`)`+"\n"+
+		`count=$((count + 1)); echo "$count" > `+countPath+"\n"+
+		`echo "Error: failed to initialize sqlite state runtime under /x/codex-home: failed to initialize state runtime at /x/codex-home" >&2; exit 1`+"\n")
+	result := executeFakeCodex(t, fakePath, ExecOptions{Timeout: 10 * time.Second})
+	if result.Status != "failed" {
+		t.Fatalf("second sqlite failure must be terminal: %+v", result)
+	}
+	if got, _ := os.ReadFile(countPath); strings.TrimSpace(string(got)) != "2" {
+		t.Fatalf("launch count = %q, want 2", got)
+	}
+}
+
+func TestCodexExecuteDoesNotRetryGenericInitializeProcessExit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+	codexGracefulShutdownTimeoutNanos.Store(int64(100 * time.Millisecond))
+	defer codexGracefulShutdownTimeoutNanos.Store(0)
+	countPath := filepath.Join(t.TempDir(), "launch-count")
+	fakePath := writeFakeCodexAppServer(t, ""+
+		`count=0; test -f `+countPath+` && count=$(cat `+countPath+`)`+"\n"+
+		`count=$((count + 1)); echo "$count" > `+countPath+"\n"+
+		`echo "Error: something else broke" >&2; exit 1`+"\n")
+	result := executeFakeCodex(t, fakePath, ExecOptions{Timeout: 10 * time.Second})
+	if result.Status != "failed" {
+		t.Fatalf("generic process exit must fail: %+v", result)
+	}
+	if got, _ := os.ReadFile(countPath); strings.TrimSpace(string(got)) != "1" {
+		t.Fatalf("launch count = %q, want 1 (no retry)", got)
+	}
+}
+
 func TestCodexExecuteFirstTurnNoProgressSurfacesDiagnostics(t *testing.T) {
 	// Not t.Parallel(): this test mutates codexGracefulShutdownTimeoutNanos.
 	// The model catalog signal below makes both attempts retry safe, so this

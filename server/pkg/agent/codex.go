@@ -107,6 +107,17 @@ var codexCleanupConfirmationOverride atomic.Int32
 // production never reassigns it.
 var codexCatalogRetryBackoff = 500 * time.Millisecond
 
+// codexStateRuntimeRetryBackoff is the delay before retrying an initialize
+// that died opening Codex's SQLite state runtime. On x99 this happened under
+// host I/O writeback stalls, and the DB was healthy once the stall cleared
+// (CHE-737), so the retry needs seconds rather than the sub-second jitter the
+// other retries use. Package tests shorten it; production never reassigns it.
+var codexStateRuntimeRetryBackoff = 10 * time.Second
+
+// codexStateRuntimeInitSignal is the stderr line Codex prints when it exits
+// during initialize because its SQLite state runtime could not be opened.
+const codexStateRuntimeInitSignal = "Error: failed to initialize sqlite state runtime under "
+
 func sanitizeCodexDiagnostic(value string) string {
 	return sanitizeAgentDiagnostic(value)
 }
@@ -979,6 +990,8 @@ func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 				retryReason = "initialize"
 			case result.codexStartupRefreshRetrySafe:
 				retryReason = "model_catalog_refresh"
+			case result.codexStateRuntimeRetrySafe:
+				retryReason = "sqlite_state_runtime"
 			}
 			if retryReason == "" || attempt == 2 {
 				flushHeldPins()
@@ -990,6 +1003,9 @@ func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 			// handshake gets. Both stay well inside the task timeout, and
 			// ctx.Done() below keeps the retry from extending it.
 			backoff := 75*time.Millisecond + time.Duration(time.Now().UnixNano()%50)*time.Millisecond
+			if retryReason == "sqlite_state_runtime" {
+				backoff = codexStateRuntimeRetryBackoff
+			}
 			if retryReason == "model_catalog_refresh" {
 				backoff = codexCatalogRetryBackoff + time.Duration(time.Now().UnixNano()%1000)*(2*codexCatalogRetryBackoff/1000)
 				// The stalled attempt already reached turn/started, so the prior
@@ -1478,13 +1494,20 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 				finalError = withAgentStderr(finalError, "codex", sanitizeCodexDiagnostic(stderrBuf.Tail()))
 			}
 			retrySafe := timedOut && !semanticObserved.Load() && cleanupConfirmed && codexInitializeRetrySupported()
+			// Match the raw tail before sanitizing: the signal is a fixed Codex
+			// line, and the raw tail itself is never persisted.
+			// The exit can surface as errCodexProcessExited or as a broken pipe on
+			// the initialize write, depending on which side loses the race.
+			stateRuntimeRetrySafe := !timedOut && !contextEnded &&
+				strings.Contains(stderrBuf.Tail(), codexStateRuntimeInitSignal) &&
+				!semanticObserved.Load() && cleanupConfirmed && codexInitializeRetrySupported()
 			if timedOut && !cleanupConfirmed {
 				finalError += "; retry suppressed: process cleanup/reap not confirmed"
 			} else if timedOut && cleanupConfirmed && !codexInitializeRetrySupported() {
 				finalError += "; retry suppressed: process-tree cleanup cannot be confirmed on this platform"
 			}
-			b.cfg.Logger.Warn("codex lifecycle", "phase", "initialize_failure", "task_id", b.cfg.TaskID, "runtime_id", b.cfg.RuntimeID, "pid", cmd.Process.Pid, "attempt", attempt, "latency", initializeLatency.Round(time.Millisecond).String(), "semantic_activity", semanticObserved.Load(), "cleanup_confirmed", cleanupConfirmed, "retry_safe", retrySafe)
-			resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds(), codexInitializeRetrySafe: retrySafe}
+			b.cfg.Logger.Warn("codex lifecycle", "phase", "initialize_failure", "task_id", b.cfg.TaskID, "runtime_id", b.cfg.RuntimeID, "pid", cmd.Process.Pid, "attempt", attempt, "latency", initializeLatency.Round(time.Millisecond).String(), "semantic_activity", semanticObserved.Load(), "cleanup_confirmed", cleanupConfirmed, "retry_safe", retrySafe, "state_runtime_retry_safe", stateRuntimeRetrySafe)
+			resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds(), codexInitializeRetrySafe: retrySafe, codexStateRuntimeRetrySafe: stateRuntimeRetrySafe}
 			return
 		}
 		b.cfg.Logger.Info("codex lifecycle", "phase", "initialize_response", "task_id", b.cfg.TaskID, "runtime_id", b.cfg.RuntimeID, "pid", cmd.Process.Pid, "attempt", attempt, "latency", time.Since(initializeStarted).Round(time.Millisecond).String())

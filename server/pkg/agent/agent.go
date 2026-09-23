@@ -289,6 +289,10 @@ type Result struct {
 	// its model catalog, and that the process tree was reaped afterwards.
 	// Like codexInitializeRetrySafe it is not part of the public contract.
 	codexStartupRefreshRetrySafe bool
+	// codexStateRuntimeRetrySafe is provider-internal evidence that Codex
+	// exited during initialize because its SQLite state runtime could not be
+	// opened, before semantic activity and after the process tree was reaped.
+	codexStateRuntimeRetrySafe bool
 }
 
 // Config configures a Backend instance.
