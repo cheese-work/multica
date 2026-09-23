@@ -333,6 +333,9 @@ deleted_stage_generations AS (
 deleted_issue_checkpoints AS (
     DELETE FROM issue_checkpoint WHERE workspace_id = $1
 ),
+deleted_governance_receipts AS (
+    DELETE FROM governance_receipt WHERE workspace_id = $1
+),
 deleted_activity AS (
     DELETE FROM activity_log WHERE workspace_id = $1
 ),
@@ -503,6 +506,8 @@ WHERE channel_media_pending_object.workspace_id = $1
 // CHE-488 durable stage-completion-wake bookkeeping (stage_generation,
 // stage_completion_wake). Deleted before the parent issues below so neither
 // statement depends on FK cascade ordering.
+// CHE-685 Jev governance routing receipts: workspace-owned observation
+// history, same leaf shape as issue_checkpoint above (no dependents, no FK).
 // Keep the two-system cleanup ledger until object storage has been settled.
 // Moving every row out of pending also prevents a concurrent media bind from
 // attaching an object after the workspace teardown commits. The reconciler

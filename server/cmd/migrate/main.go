@@ -324,6 +324,7 @@ var concurrentIndexCleanups = map[string]string{
 	"499_stage_completion_wake_workspace_index":                 "idx_stage_completion_wake_workspace_id",
 	"501_protocol_lint_run_checked_at_idx":                      "idx_protocol_lint_run_checked_at",
 	"503_issue_checkpoint_owner_uidx":                           "uq_issue_checkpoint_owner",
+	"505_governance_receipt_comment_idx":                        "idx_governance_receipt_comment_id",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction
