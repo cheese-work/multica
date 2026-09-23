@@ -294,10 +294,17 @@ expect_exit 1 "$status" out-of-order-migrations
 expect_contains "$output" "not in on-disk applied order" out-of-order-migrations
 
 # build_c00_shape_packet.mjs builds a packet reproducing C00's actual
-# pre-cutover shape from the admitted baseline tuple (run 35745037983,
+# pre-cutover shape from deploy/cd/fixtures/c00-ledger-35745037983.json, a
+# committed snapshot of the admitted baseline tuple (run 35745037983,
 # artifact cd-deploy-admitted-input/baseline-tuple.json): row_count 535,
 # latest 501_protocol_lint_run_checked_at_idx, ordered_sha256
 # sha256:b24294b971a0e471ff0c13478d5f71f76c90e27388725d8e4dadc5b5b700708f.
+# An earlier version of this fixture derived that ledger at test-run time
+# from "git ls-tree origin/main:server/migrations", which is a moving
+# target: it breaks in a --depth 1 clone (no origin/main at all) and would
+# have produced a different, wrong hash once this PR merges and origin/main
+# itself contains the renamed files (CHE-650 review finding). The committed
+# fixture is the actual historical ledger, not a derivation of it.
 #
 # ordered_migrations is the full on-disk set through the renamed files
 # current latest (512_stage_completion_wake_workspace_index -- the CHE-650
@@ -305,28 +312,20 @@ expect_contains "$output" "not in on-disk applied order" out-of-order-migrations
 # CHE-548 renames 491-495 -> 504-508, and the CHE-488 stage-completion-wake
 # group 496-499 -> 509-512, because upstream now owns 491-499 outright).
 #
-# The observed ledger is NOT that same version list. It reproduces what
-# capture-tuple.sh actually reads from C00 with
-# "SELECT version FROM schema_migrations ORDER BY version": the migrator
-# keys purely on filename, so CHE-548 renaming 470-474 to 491-495 did not
-# delete the old 470-474 rows -- it just ran five more files it had never
-# seen under their new names. C00 ledger holds BOTH the pre-CHE-548 names
-# (470-474) AND the CHE-548 names (491-495): 530 (main up-migrations
-# through 501) + 5 (470-474 orphans) = 535 rows, matching the admitted
-# baseline exactly. Upstream own 491-499 (491_issue_status_category_backfill
+# The observed ledger is NOT that same version list. It is the committed
+# 535-row fixture verbatim: the migrator keys purely on filename, so
+# CHE-548 renaming 470-474 to 491-495 did not delete the old 470-474 rows
+# -- it just ran five more files it had never seen under their new names.
+# C00 ledger holds BOTH the pre-CHE-548 names (470-474) AND the CHE-548
+# names (491-495). Upstream own 491-499 (491_issue_status_category_backfill
 # and so on) are excluded entirely: C00 never applied those, they only
 # exist on this branch after the sync, and must show as pending in
-# ordered_migrations, never as ledger rows. An earlier version of this
-# fixture assumed the ledger held only one of the two pre-sync names per
-# migration, which both undercounted the real 535-row ledger and could not
-# have caught the case a real C00 deploy actually hits (CHE-650 review
-# finding, hash-verified against the production artifact).
+# ordered_migrations, never as ledger rows.
 build_c00_shape_packet() {
   local out=$1
   node -e '
     const fs = require("fs");
     const crypto = require("crypto");
-    const child_process = require("child_process");
     const path = require("path");
     const dir = "server/migrations";
     const latest = "512_stage_completion_wake_workspace_index";
@@ -339,26 +338,16 @@ build_c00_shape_packet() {
       return { version: f.replace(/\.up\.sql$/, ""), sha256: "sha256:" + crypto.createHash("sha256").update(bytes).digest("hex") };
     });
 
-    const mainTree = child_process.execFileSync("git", ["ls-tree", "origin/main:server/migrations"], { encoding: "utf8" });
-    const mainVersions = mainTree
-      .split("\n")
-      .filter((line) => line.endsWith(".up.sql"))
-      .map((line) => line.split("\t").pop().replace(/\.up\.sql$/, ""))
-      .sort();
-    const mainLatestIdx = mainVersions.indexOf("501_protocol_lint_run_checked_at_idx");
-    if (mainLatestIdx === -1) throw new Error("fixture assumption failed: 501_protocol_lint_run_checked_at_idx not found in origin/main tree");
-    const mainUpTo501 = mainVersions.slice(0, mainLatestIdx + 1);
-    if (mainUpTo501.length !== 530) {
-      throw new Error(`fixture assumption failed: expected 530 main migrations through 501, got ${mainUpTo501.length}`);
+    const fixture = JSON.parse(fs.readFileSync("deploy/cd/fixtures/c00-ledger-35745037983.json", "utf8"));
+    const ledgerSorted = fixture.versions;
+    if (ledgerSorted.length !== 535) {
+      throw new Error(`fixture assumption failed: expected 535-row C00 ledger, got ${ledgerSorted.length}`);
     }
-
-    const orphans = [
-      "470_github_merge_announcement",
-      "471_github_merge_announcement_identity_uidx",
-      "472_github_merge_announcement_pending_idx",
-      "473_github_merge_announcement_html_url",
-      "474_agent_task_rerun_lineage_unique",
-    ];
+    const observedHash = crypto.createHash("sha256").update(ledgerSorted.join("\n") + "\n").digest("hex");
+    const expectedHash = "b24294b971a0e471ff0c13478d5f71f76c90e27388725d8e4dadc5b5b700708f";
+    if (observedHash !== expectedHash) {
+      throw new Error(`fixture assumption failed: C00-shape ledger hash ${observedHash} does not match admitted baseline ${expectedHash}`);
+    }
 
     const renames = new Map([
       ["470_github_merge_announcement", "504_github_merge_announcement"],
@@ -382,16 +371,6 @@ build_c00_shape_packet() {
       }
     }
 
-    const rawLedger = mainUpTo501.concat(orphans);
-    const ledgerSorted = [...rawLedger].sort();
-    if (ledgerSorted.length !== 535) {
-      throw new Error(`fixture assumption failed: expected 535-row C00 ledger, got ${ledgerSorted.length}`);
-    }
-    const observedHash = crypto.createHash("sha256").update(ledgerSorted.join("\n") + "\n").digest("hex");
-    const expectedHash = "b24294b971a0e471ff0c13478d5f71f76c90e27388725d8e4dadc5b5b700708f";
-    if (observedHash !== expectedHash) {
-      throw new Error(`fixture assumption failed: C00-shape ledger hash ${observedHash} does not match admitted baseline ${expectedHash}`);
-    }
     const observedLedger = ledgerSorted;
     const packet = {
       schema_version: 1,
