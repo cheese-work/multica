@@ -93,7 +93,7 @@ func parseProvenanceExportFlags(cmd *cobra.Command) (provenanceExportRequest, st
 	}
 	req.WorkspaceID = strings.TrimSpace(workspaces[0])
 	if _, err := uuid.Parse(req.WorkspaceID); err != nil {
-		return req, "", fmt.Errorf("invalid --workspace %q: expected a workspace UUID", req.WorkspaceID)
+		return req, "", errors.New("--workspace must be a valid UUID")
 	}
 
 	raw, _ := cmd.Flags().GetString("cutoff")
@@ -101,7 +101,7 @@ func parseProvenanceExportFlags(cmd *cobra.Command) (provenanceExportRequest, st
 		return req, "", errors.New("--cutoff is required")
 	}
 	if _, err := time.Parse(time.RFC3339, raw); err != nil {
-		return req, "", fmt.Errorf("invalid --cutoff %q: expected RFC3339, e.g. 2026-08-19T00:00:00Z", raw)
+		return req, "", errors.New("--cutoff must be RFC3339, e.g. 2026-08-19T00:00:00Z")
 	}
 	req.Cutoff = raw
 
@@ -122,7 +122,7 @@ func parseProvenanceExportFlags(cmd *cobra.Command) (provenanceExportRequest, st
 
 	output, _ := cmd.Flags().GetString("output")
 	if output != "json" && output != "table" {
-		return req, "", fmt.Errorf("invalid --output %q: expected json or table", output)
+		return req, "", errors.New("--output must be json or table")
 	}
 	return req, output, nil
 }

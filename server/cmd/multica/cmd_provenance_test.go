@@ -53,12 +53,12 @@ func TestProvenanceExportFailsClosedWithoutHTTP(t *testing.T) {
 		{"missing workspace", []string{"--issue", "MUL-1", "--cutoff", "2026-09-01T00:00:00Z"}, "--workspace is required"},
 		{"two workspaces", []string{"--workspace", provenanceTestWorkspace, "--workspace", provenanceTestWorkspace, "--issue", "MUL-1", "--cutoff", "2026-09-01T00:00:00Z"}, "exactly once"},
 		{"blank workspace", []string{"--workspace", " ", "--issue", "MUL-1", "--cutoff", "2026-09-01T00:00:00Z"}, "must not be empty"},
-		{"workspace not a uuid", []string{"--workspace", "acme-prod", "--issue", "MUL-1", "--cutoff", "2026-09-01T00:00:00Z"}, "expected a workspace UUID"},
+		{"workspace not a uuid", []string{"--workspace", "acme-prod", "--issue", "MUL-1", "--cutoff", "2026-09-01T00:00:00Z"}, "--workspace must be a valid UUID"},
 		{"over source cap", overCap, "at most 256 per export"},
 		{"missing cutoff", []string{"--workspace", provenanceTestWorkspace, "--issue", "MUL-1"}, "--cutoff is required"},
-		{"bad cutoff", []string{"--workspace", provenanceTestWorkspace, "--issue", "MUL-1", "--cutoff", "2026-09-01"}, "expected RFC3339"},
+		{"bad cutoff", []string{"--workspace", provenanceTestWorkspace, "--issue", "MUL-1", "--cutoff", "2026-09-01"}, "--cutoff must be RFC3339"},
 		{"no sources", []string{"--workspace", provenanceTestWorkspace, "--cutoff", "2026-09-01T00:00:00Z"}, "at least one --issue or --thread"},
-		{"bad output", []string{"--workspace", provenanceTestWorkspace, "--issue", "MUL-1", "--cutoff", "2026-09-01T00:00:00Z", "--output", "yaml"}, "invalid --output"},
+		{"bad output", []string{"--workspace", provenanceTestWorkspace, "--issue", "MUL-1", "--cutoff", "2026-09-01T00:00:00Z", "--output", "yaml"}, "--output must be json or table"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -73,6 +73,44 @@ func TestProvenanceExportFailsClosedWithoutHTTP(t *testing.T) {
 			}
 			if !strings.HasPrefix(err.Error(), "provenance export: ") {
 				t.Fatalf("err = %q, want provenance export prefix", err)
+			}
+			if got := calls.Load(); got != 0 {
+				t.Fatalf("HTTP calls = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestProvenanceExportErrorsNeverEchoFlagValues(t *testing.T) {
+	secret := strings.Join([]string{"gh", "p_", strings.Repeat("Q7w6", 10)}, "")
+	// A long value would expose any interpolation through the length bound
+	// even if it stopped matching the secret substring.
+	long := secret + strings.Repeat("x", 4096)
+	const maxErrLen = 200
+	base := func(workspace, cutoff, output string) []string {
+		return []string{"--workspace", workspace, "--issue", "MUL-1", "--cutoff", cutoff, "--output", output}
+	}
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"workspace", base(secret, "2026-09-01T00:00:00Z", "json")},
+		{"long workspace", base(long, "2026-09-01T00:00:00Z", "json")},
+		{"cutoff", base(provenanceTestWorkspace, secret, "json")},
+		{"long cutoff", base(provenanceTestWorkspace, long, "json")},
+		{"output", base(provenanceTestWorkspace, "2026-09-01T00:00:00Z", secret)},
+		{"long output", base(provenanceTestWorkspace, "2026-09-01T00:00:00Z", long)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int32
+			provenanceTestServer(t, &calls, nil)
+			err := runProvenanceExport(newProvenanceExportTestCmd(t, tc.args...), nil)
+			if err == nil {
+				t.Fatal("want an error")
+			}
+			if msg := err.Error(); strings.Contains(msg, secret) || len(msg) >= maxErrLen {
+				t.Fatalf("error echoes input or is unbounded (len %d): %q", len(msg), msg)
 			}
 			if got := calls.Load(); got != 0 {
 				t.Fatalf("HTTP calls = %d, want 0", got)

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -260,6 +261,33 @@ func TestProvenanceExportIssueModifiedAfterCutoff(t *testing.T) {
 	}
 }
 
+func TestProvenanceExportIssueActivityAfterCutoff(t *testing.T) {
+	cutoff := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	before := cutoff.Add(-time.Hour)
+	// Shape left by TouchIssueForCommentDelete: revision and last_activity_at
+	// move, updated_at does not.
+	touched := db.Issue{ID: provUUID(1), CreatorType: "member", Title: "comment deleted later", Revision: 2,
+		CreatedAt: provTS(before), UpdatedAt: provTS(before), LastActivityAt: provTS(cutoff.Add(time.Second))}
+	quiet := db.Issue{ID: provUUID(2), CreatorType: "member", Title: "quiet", Revision: 1,
+		CreatedAt: provTS(before), UpdatedAt: provTS(before), LastActivityAt: provTS(cutoff)}
+	legacy := db.Issue{ID: provUUID(3), CreatorType: "member", Title: "no activity column value", Revision: 1,
+		CreatedAt: provTS(before), UpdatedAt: provTS(before)}
+
+	e := NewProvenanceExport(cutoff, nil)
+	for _, issue := range []db.Issue{touched, quiet, legacy} {
+		if included, err := e.AddIssue("issue:"+util.UUIDToString(issue.ID), issue); err != nil || !included {
+			t.Fatalf("AddIssue(%s) = %v, %v; want existed-at-cutoff", issue.Title, included, err)
+		}
+	}
+	if got := provReasons(e)[util.UUIDToString(touched.ID)]; got != ProvenanceModifiedAfterCutoff {
+		t.Fatalf("touched reason = %q, want modified_after_cutoff", got)
+	}
+	recs := e.Records()
+	if len(recs) != 2 || recs[0].ID != util.UUIDToString(quiet.ID) || recs[1].ID != util.UUIDToString(legacy.ID) {
+		t.Fatalf("records = %+v, want quiet and legacy only", recs)
+	}
+}
+
 func TestProvenanceExportVerifiesAgentTaskProvenance(t *testing.T) {
 	cutoff := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	before := cutoff.Add(-time.Hour)
@@ -291,7 +319,7 @@ func TestProvenanceExportVerifiesAgentTaskProvenance(t *testing.T) {
 
 	errBoom := fmt.Errorf("lookup down")
 	failing := NewProvenanceExport(cutoff, func(pgtype.UUID) (bool, error) { return false, errBoom })
-	if err := failing.AddComments("issue:X-1", []db.Comment{verified}); err != errBoom {
+	if err := failing.AddComments("issue:X-1", []db.Comment{verified}); !errors.Is(err, errBoom) {
 		t.Fatalf("verifier error = %v, want propagated", err)
 	}
 }

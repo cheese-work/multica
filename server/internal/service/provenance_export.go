@@ -203,7 +203,12 @@ func (e *ProvenanceExport) AddIssue(source string, issue db.Issue) (bool, error)
 		e.Exclude(source, id, ProvenanceOutOfCutoff, 0)
 		return false, nil
 	}
-	if e.changedAfterCutoff(issue.UpdatedAt) {
+	// Activity such as a comment delete bumps revision and last_activity_at
+	// without touching updated_at. NULL is not a failure: rows predating the
+	// column keep it NULL until their first activity write, which always
+	// stamps it, so updated_at alone covers them.
+	if e.changedAfterCutoff(issue.UpdatedAt) ||
+		(issue.LastActivityAt.Valid && e.afterCutoff(issue.LastActivityAt.Time)) {
 		e.Exclude(source, id, ProvenanceModifiedAfterCutoff, 0)
 		return true, nil
 	}

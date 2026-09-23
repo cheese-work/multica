@@ -386,6 +386,53 @@ func TestExportProvenance_RowsChangedAfterCutoff(t *testing.T) {
 	}
 }
 
+// A comment delete bumps its issue's revision through TouchIssueForCommentDelete
+// without touching updated_at; the bumped revision did not exist at the cutoff
+// and must not be certified by an exported record.
+func TestExportProvenance_CommentDeleteAfterCutoffExcludesIssue(t *testing.T) {
+	requireProvenanceDB(t)
+	provenanceCleanupLogs(t)
+	cutoff := time.Now().Add(-time.Hour).Truncate(time.Second)
+	created := cutoff.Add(-2 * time.Hour)
+
+	issueID := dbfx.Issue(t, "Comment deleted after cutoff", provenanceUnchangedSince(created))
+	doomed := dbfx.Comment(t, issueID, "deleted after cutoff", provenanceUnchangedSince(created))
+	survivor := dbfx.Comment(t, issueID, "survives", provenanceUnchangedSince(created))
+
+	pre, _, _ := provenanceExportOK(t, cutoff, []string{issueID}, nil)
+	preRecords, _ := provenanceOutcome(pre)
+	preIssue, ok := preRecords[issueID]
+	if !ok {
+		t.Fatalf("issue must export before the delete (exclusions %+v)", pre.Exclusions)
+	}
+
+	if _, err := testHandler.deleteComment(context.Background(), parseUUID(doomed), parseUUID(testWorkspaceID)); err != nil {
+		t.Fatalf("deleteComment: %v", err)
+	}
+	var (
+		revision              int64
+		updatedAt, activityAt time.Time
+	)
+	dbfx.QueryRow(t, `SELECT revision, updated_at, last_activity_at FROM issue WHERE id = $1`, issueID).
+		Scan(&revision, &updatedAt, &activityAt)
+	if revision != preIssue.Revision+1 || updatedAt.After(cutoff) || !activityAt.After(cutoff) {
+		t.Fatalf("delete left revision=%d (was %d) updated_at=%s last_activity_at=%s; want revision bump and activity after cutoff %s with updated_at untouched",
+			revision, preIssue.Revision, updatedAt, activityAt, cutoff)
+	}
+
+	out, _, _ := provenanceExportOK(t, cutoff, []string{issueID}, nil)
+	records, reasons := provenanceOutcome(out)
+	if r, ok := records[issueID]; ok {
+		t.Fatalf("issue exported at post-cutoff revision %d: %+v", r.Revision, r)
+	}
+	if got := reasons[issueID]; got != service.ProvenanceModifiedAfterCutoff {
+		t.Fatalf("exclusion[%s] = %q, want modified_after_cutoff (all: %+v)", issueID, got, out.Exclusions)
+	}
+	if _, ok := records[survivor]; !ok {
+		t.Errorf("untouched comment under the excluded issue must still export (exclusions %+v)", out.Exclusions)
+	}
+}
+
 func TestExportProvenance_IdentifierRefsNeverEchoed(t *testing.T) {
 	requireProvenanceDB(t)
 	provenanceCleanupLogs(t)
