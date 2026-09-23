@@ -275,31 +275,46 @@ func checkEvidenceURL(in Input) (Violation, bool) {
 	}, false
 }
 
+// workflowStepRe names the Multica workflow steps this package owns. A
+// waiver claim or grant only counts when its verb applies to one of these
+// (see waiverClaimRe / waiverGrantRe); a bare "step" needs a determiner so
+// "the ABI step" stays out.
+const workflowStepRe = `(?:(?:this|that|the|each|every|protocol|workflow)\s+step|protocol(?:\s+(?:review|check))?|workflow|review|verification|read-?back|status(?:\s+(?:change|update|read-?back))?|comment\s+scan|evidence|CI\s+gate)`
+
+// stepRefRe is a workflow step with an optional determiner before it and an
+// optional ordinal label after it ("verification B", "review #2"). The label
+// is deliberately narrow: "status check" must not become a step reference.
+const stepRefRe = `(?:(?:the|this|that)\s+)?` + workflowStepRe + `(?:\s+(?:(?-i:[A-Z])|#?\d+))?`
+
 // waiverClaimRe matches this run's own comment text claiming a human waived a
-// step, in the specific vocabulary the CLAUDE.md brief warns against
-// fabricating ("waived", "explicitly waived", "skipped with/per waiver",
-// etc.). It must also identify a Multica workflow step in the same sentence:
-// this check does not police unrelated engineering waiver language.
+// Multica workflow step, in the vocabulary the CLAUDE.md brief warns against
+// fabricating: "<step> was (explicitly) waived", "<step> was skipped with
+// approval", "waived <step>", "skipped <step> per waiver".
 //
-// CHE-681: the bare noun "waiver" was previously matched on its own, which
-// fired on any unrelated engineering use of the word — CI/ABI/deploy
-// governance ("scoped waiver for this stack", "waiver on `checkLegacyAbi`")
-// and self-referential discussion of this very check ("...own waiver-grant
-// lookup bug"). A real fabricated-waiver claim always asserts something WAS
-// waived (past tense), so the noun form is dropped. The remaining
-// waiver-language match is paired with workflowContextRe below.
-var waiverClaimRe = regexp.MustCompile(`(?i)\b(waived|skip(?:ped|ping) (?:with|per) (?:approval|waiver))\b`)
+// CHE-681: the waiver verb must apply to the step, not merely share a
+// sentence with it. The previous bare "waiver" match (and then sentence-wide
+// co-occurrence) fired on CI/ABI governance ("The ABI check was waived by
+// release policy. Status ...") and on discussion of this very check.
+var waiverClaimRe = regexp.MustCompile(`(?i)\b(?:` +
+	stepRefRe + `\s+(?:(?:was|were|is|are|has\s+been|have\s+been|got)\s+)?(?:(?:\w+ly|also|already)\s+)*(?:waived|skipped\s+(?:with|per)\s+(?:approval|waiver))` +
+	`|waived\s+` + stepRefRe +
+	`|skipp(?:ed|ing)\s+` + stepRefRe + `\s+(?:with|per)\s+(?:approval|waiver)` +
+	`)\b`)
 
 // waiverGrantRe matches a human actually granting one, in a comment authored
-// by a workspace member (never an agent or system narration). It uses the
-// same workflow context check as a claim, so an unrelated grant cannot mask
-// a protocol violation.
-var waiverGrantRe = regexp.MustCompile(`(?i)\b(i waive|waiver granted|you (?:can|may) skip|approved? to skip|ok(?:ay)? to skip)\b`)
+// by a workspace member (never an agent or system narration). Like a claim,
+// the grant must apply to a workflow step, so an unrelated grant ("ABI waiver
+// granted") cannot mask a protocol violation.
+var waiverGrantRe = regexp.MustCompile(`(?i)\b(?:` +
+	`(?:i\s+waive|you\s+(?:can|may)\s+skip|(?:approved?|ok(?:ay)?)\s+to\s+skip)\s+` + stepRefRe +
+	`|` + workflowStepRe + `\s+waiver\s+granted` +
+	`|waiver\s+granted\s+for\s+` + stepRefRe +
+	`)\b`)
 
-// workflowContextRe limits waiver checks to the Multica workflow facts this
-// package owns. A generic ABI/deploy waiver must neither produce nor suppress
-// a protocol-lint violation.
-var workflowContextRe = regexp.MustCompile(`(?i)\b(comment|status|review|verification|evidence|protocol|workflow|CI gate|step)\b`)
+// quotedRe drops code spans and double-quoted text before matching: quoting
+// a waiver phrase (e.g. discussing what this check flags) mentions it rather
+// than claims or grants it.
+var quotedRe = regexp.MustCompile("`[^`]*`|\"[^\"\n]*\"|\u201c[^\u201d\n]*\u201d")
 
 // checkUnsupportedWaivers is assertion 5: a run must not claim, in its own
 // posted comments, that a human waived some step unless a member's comment on
@@ -309,7 +324,7 @@ var workflowContextRe = regexp.MustCompile(`(?i)\b(comment|status|review|verific
 func checkUnsupportedWaivers(in Input) []Violation {
 	granted := false
 	for _, oc := range in.OtherComments {
-		if oc.AuthorType == "member" && hasWorkflowWaiver(oc.Content, waiverGrantRe) {
+		if oc.AuthorType == "member" && waiverGrantRe.MatchString(unquoted(oc.Content)) {
 			granted = true
 			break
 		}
@@ -317,7 +332,7 @@ func checkUnsupportedWaivers(in Input) []Violation {
 
 	var violations []Violation
 	for _, c := range in.PostedComments {
-		if !hasWorkflowWaiver(c.Content, waiverClaimRe) {
+		if !waiverClaimRe.MatchString(unquoted(c.Content)) {
 			continue
 		}
 		if granted {
@@ -334,14 +349,8 @@ func checkUnsupportedWaivers(in Input) []Violation {
 	return violations
 }
 
-// hasWorkflowWaiver keeps the waiver wording and workflow context in one
-// sentence, so an unrelated waiver cannot match a later status/review mention.
-func hasWorkflowWaiver(content string, waiverRe *regexp.Regexp) bool {
-	return slices.ContainsFunc(strings.FieldsFunc(content, func(r rune) bool {
-		return r == '.' || r == '!' || r == '?' || r == '\n'
-	}), func(sentence string) bool {
-		return waiverRe.MatchString(sentence) && workflowContextRe.MatchString(sentence)
-	})
+func unquoted(content string) string {
+	return quotedRe.ReplaceAllString(content, " ")
 }
 
 func label(runID string) string {

@@ -365,6 +365,64 @@ func TestCheckIgnoresUnrelatedWaiverVocabulary(t *testing.T) {
 	}
 }
 
+// TestWaiverClaimAndGrantBindToWorkflowStep is CHE-681's second regression
+// table: the waiver verb must apply to a Multica workflow step, not merely
+// share a sentence with one. Genuine claims, including passive forms, still
+// fire; CI/ABI governance and quoted discussion of this check do not.
+func TestWaiverClaimAndGrantBindToWorkflowStep(t *testing.T) {
+	t.Parallel()
+
+	claims := []struct {
+		content string
+		want    bool
+	}{
+		{"The protocol review was skipped with approval.", true},
+		{"Skipped the status readback per waiver.", true},
+		{"I waived the verification step since it was trivial.", true},
+		{"Review #2 has been waived.", true},
+		{"The ABI check was waived by release policy, so the status comment follows.", false},
+		{"The CI release was skipped with approval; review continues.", false},
+		{"The required status check was waived for the hotfix branch.", false},
+		{"checkUnsupportedWaivers reports when a posted comment says a step was waived.", false},
+		{"The lint flags `this step was explicitly waived` as a claim.", false},
+		{"Regression input: \"The protocol review was skipped with approval.\"", false},
+	}
+	for _, tc := range claims {
+		t.Run("claim/"+tc.content, func(t *testing.T) {
+			t.Parallel()
+			in := Input{RunID: "run-che681", PostedComments: []PostedComment{{ID: "c1", Content: tc.content}}}
+			if got := len(Check(in)) == 1; got != tc.want {
+				t.Fatalf("Check(%q) flagged=%v, want %v", tc.content, got, tc.want)
+			}
+		})
+	}
+
+	grants := []struct {
+		content string
+		want    bool
+	}{
+		{"You may skip the protocol review here.", true},
+		{"Okay to skip the verification step.", true},
+		{"Review waiver granted for this PR.", true},
+		{"ABI waiver granted by release policy; the review stays required.", false},
+		{"You can skip the ABI check, but the status comment still needs posting.", false},
+		{"waiverGrantRe should match `you can skip the CI gate`.", false},
+	}
+	for _, tc := range grants {
+		t.Run("grant/"+tc.content, func(t *testing.T) {
+			t.Parallel()
+			in := Input{
+				RunID:          "run-che681",
+				PostedComments: []PostedComment{{ID: "c1", Content: "The protocol review was skipped with approval."}},
+				OtherComments:  []OtherComment{{AuthorType: "member", Content: tc.content}},
+			}
+			if got := len(Check(in)) == 0; got != tc.want {
+				t.Fatalf("member grant %q accepted=%v, want %v", tc.content, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestCheckReportsEveryUnsupportedWaiverClaim: each fabricated claim is an
 // independent violation, not just the first one found.
 func TestCheckReportsEveryUnsupportedWaiverClaim(t *testing.T) {
