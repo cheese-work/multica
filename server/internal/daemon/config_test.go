@@ -658,6 +658,24 @@ func TestLoadConfig_AutoUpdateDefault_SelfHostOff(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_CodexSQLiteInitRetryDefaultsOff(t *testing.T) {
+	t.Setenv("MULTICA_CODEX_SQLITE_INIT_RETRY", "")
+	cfg, err := LoadConfig(Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CodexSQLiteInitRetry {
+		t.Fatal("CodexSQLiteInitRetry must default off")
+	}
+	t.Setenv("MULTICA_CODEX_SQLITE_INIT_RETRY", "true")
+	if cfg, err = LoadConfig(Overrides{}); err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.CodexSQLiteInitRetry {
+		t.Fatal("MULTICA_CODEX_SQLITE_INIT_RETRY=true must enable the retry")
+	}
+}
+
 func TestLoadConfig_CodexHandshakeTimeout(t *testing.T) {
 	stageFakeAgent(t)
 	t.Setenv("MULTICA_CODEX_HANDSHAKE_TIMEOUT", "")

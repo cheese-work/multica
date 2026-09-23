@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -2800,22 +2801,38 @@ func TestCodexExecuteRetriesAfterSignaledProcessIsReaped(t *testing.T) {
 	}
 }
 
-// CHE-737: Codex exits during initialize when its SQLite state runtime cannot
-// be opened under host I/O stalls; the DB is healthy afterwards, so one delayed
-// retry recovers the task.
-func TestCodexExecuteRetriesOnceAfterSQLiteStateRuntimeInitExit(t *testing.T) {
+// codexSQLiteInitFixture is the raw stderr Codex 0.155/0.156 printed on x99
+// (daemon.log, CHE-737), with the task home replaced by the test's home.
+func codexSQLiteInitFixture(home string) string {
+	return "Error: failed to initialize sqlite state runtime under " + home + ": failed to initialize state runtime at " + home
+}
+
+// runCodexSQLiteInitFixture launches a fake Codex whose first launch prints
+// firstStderr and exits 1 during initialize (every launch when always is set),
+// and returns the result plus how many times it was launched.
+func runCodexSQLiteInitFixture(t *testing.T, home, firstStderr string, always, enabled bool) (Result, int) {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fixture is POSIX-only")
 	}
 	codexGracefulShutdownTimeoutNanos.Store(int64(100 * time.Millisecond))
-	defer codexGracefulShutdownTimeoutNanos.Store(0)
+	t.Cleanup(func() { codexGracefulShutdownTimeoutNanos.Store(0) })
 	codexStateRuntimeRetryBackoff = 10 * time.Millisecond
-	defer func() { codexStateRuntimeRetryBackoff = 10 * time.Second }()
-	countPath := filepath.Join(t.TempDir(), "launch-count")
+	t.Cleanup(func() { codexStateRuntimeRetryBackoff = 10 * time.Second })
+	dir := t.TempDir()
+	countPath := filepath.Join(dir, "launch-count")
+	stderrPath := filepath.Join(dir, "stderr")
+	if err := os.WriteFile(stderrPath, []byte(firstStderr+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	failWhen := `test "$count" -eq 1`
+	if always {
+		failWhen = `true`
+	}
 	fakePath := writeFakeCodexAppServer(t, ""+
 		`count=0; test -f `+countPath+` && count=$(cat `+countPath+`)`+"\n"+
 		`count=$((count + 1)); echo "$count" > `+countPath+"\n"+
-		`if test "$count" -eq 1; then echo "Error: failed to initialize sqlite state runtime under /x/codex-home: failed to initialize state runtime at /x/codex-home" >&2; exit 1; fi`+"\n"+
+		`if `+failWhen+`; then cat `+stderrPath+` >&2; exit 1; fi`+"\n"+
 		`read line`+"\n"+
 		`echo '{"jsonrpc":"2.0","id":1,"result":{}}'`+"\n"+
 		`read line`+"\n"+
@@ -2824,54 +2841,54 @@ func TestCodexExecuteRetriesOnceAfterSQLiteStateRuntimeInitExit(t *testing.T) {
 		`read line`+"\n"+
 		`echo '{"jsonrpc":"2.0","id":3,"result":{}}'`+"\n"+
 		`echo '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr-sqlite","turn":{"id":"turn-1","status":"completed"}}}'`+"\n")
-	result := executeFakeCodex(t, fakePath, ExecOptions{Timeout: 10 * time.Second})
-	if result.Status != "completed" {
-		t.Fatalf("sqlite state runtime init exit should retry once: %+v", result)
-	}
-	if got, _ := os.ReadFile(countPath); strings.TrimSpace(string(got)) != "2" {
-		t.Fatalf("launch count = %q, want 2", got)
+	result, _ := executeFakeCodexCollectingMessagesWithConfig(t, fakePath,
+		Config{Logger: slog.Default(), Env: map[string]string{"CODEX_HOME": home}},
+		ExecOptions{Timeout: 10 * time.Second, CodexSQLiteInitRetry: enabled}, 10*time.Second)
+	got, _ := os.ReadFile(countPath)
+	n, _ := strconv.Atoi(strings.TrimSpace(string(got)))
+	return result, n
+}
+
+// CHE-737: Codex exits during initialize when its SQLite state runtime cannot
+// be opened under host I/O stalls; the DB is healthy afterwards, so one delayed
+// retry recovers the task.
+func TestCodexExecuteRetriesOnceAfterSQLiteStateRuntimeInitExit(t *testing.T) {
+	home := t.TempDir()
+	result, launches := runCodexSQLiteInitFixture(t, home, codexSQLiteInitFixture(home), false, true)
+	if result.Status != "completed" || launches != 2 {
+		t.Fatalf("exact signature should retry once: launches=%d result=%+v", launches, result)
 	}
 }
 
 func TestCodexExecuteSQLiteStateRuntimeInitExitRetriesOnlyOnce(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-script fixture is POSIX-only")
-	}
-	codexGracefulShutdownTimeoutNanos.Store(int64(100 * time.Millisecond))
-	defer codexGracefulShutdownTimeoutNanos.Store(0)
-	codexStateRuntimeRetryBackoff = 10 * time.Millisecond
-	defer func() { codexStateRuntimeRetryBackoff = 10 * time.Second }()
-	countPath := filepath.Join(t.TempDir(), "launch-count")
-	fakePath := writeFakeCodexAppServer(t, ""+
-		`count=0; test -f `+countPath+` && count=$(cat `+countPath+`)`+"\n"+
-		`count=$((count + 1)); echo "$count" > `+countPath+"\n"+
-		`echo "Error: failed to initialize sqlite state runtime under /x/codex-home: failed to initialize state runtime at /x/codex-home" >&2; exit 1`+"\n")
-	result := executeFakeCodex(t, fakePath, ExecOptions{Timeout: 10 * time.Second})
-	if result.Status != "failed" {
-		t.Fatalf("second sqlite failure must be terminal: %+v", result)
-	}
-	if got, _ := os.ReadFile(countPath); strings.TrimSpace(string(got)) != "2" {
-		t.Fatalf("launch count = %q, want 2", got)
+	home := t.TempDir()
+	result, launches := runCodexSQLiteInitFixture(t, home, codexSQLiteInitFixture(home), true, true)
+	if result.Status != "failed" || launches != 2 {
+		t.Fatalf("second sqlite failure must be terminal: launches=%d result=%+v", launches, result)
 	}
 }
 
-func TestCodexExecuteDoesNotRetryGenericInitializeProcessExit(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-script fixture is POSIX-only")
-	}
-	codexGracefulShutdownTimeoutNanos.Store(int64(100 * time.Millisecond))
-	defer codexGracefulShutdownTimeoutNanos.Store(0)
-	countPath := filepath.Join(t.TempDir(), "launch-count")
-	fakePath := writeFakeCodexAppServer(t, ""+
-		`count=0; test -f `+countPath+` && count=$(cat `+countPath+`)`+"\n"+
-		`count=$((count + 1)); echo "$count" > `+countPath+"\n"+
-		`echo "Error: something else broke" >&2; exit 1`+"\n")
-	result := executeFakeCodex(t, fakePath, ExecOptions{Timeout: 10 * time.Second})
-	if result.Status != "failed" {
-		t.Fatalf("generic process exit must fail: %+v", result)
-	}
-	if got, _ := os.ReadFile(countPath); strings.TrimSpace(string(got)) != "1" {
-		t.Fatalf("launch count = %q, want 1 (no retry)", got)
+func TestCodexExecuteSQLiteStateRuntimeInitExitNoRetry(t *testing.T) {
+	home := t.TempDir()
+	sig := codexSQLiteInitFixture(home)
+	for _, tc := range []struct {
+		name, stderr string
+		enabled      bool
+	}{
+		{"gate off", sig, false},
+		{"generic exit", "Error: something else broke", true},
+		{"prefix only", "Error: failed to initialize sqlite state runtime under " + home, true},
+		{"unrelated fatal quoting signature", "panic: boom\n" + sig, true},
+		{"signature then unrelated fatal", sig + "\nError: config.toml: invalid", true},
+		{"other codex home", codexSQLiteInitFixture(home + "-other"), true},
+		{"truncated tail", strings.Repeat("x", codexStderrTailBytes) + "\n" + sig, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, launches := runCodexSQLiteInitFixture(t, home, tc.stderr, false, tc.enabled)
+			if result.Status != "failed" || launches != 1 {
+				t.Fatalf("must not retry: launches=%d result=%+v", launches, result)
+			}
+		})
 	}
 }
 

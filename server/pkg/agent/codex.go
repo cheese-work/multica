@@ -114,9 +114,19 @@ var codexCatalogRetryBackoff = 500 * time.Millisecond
 // other retries use. Package tests shorten it; production never reassigns it.
 var codexStateRuntimeRetryBackoff = 10 * time.Second
 
-// codexStateRuntimeInitSignal is the stderr line Codex prints when it exits
-// during initialize because its SQLite state runtime could not be opened.
-const codexStateRuntimeInitSignal = "Error: failed to initialize sqlite state runtime under "
+// isCodexStateRuntimeInitFailure reports whether the raw stderr tail is exactly
+// the line Codex prints when it exits during initialize because the SQLite
+// state runtime under codexHome could not be opened. It fails closed: the
+// whole stderr must be that one line for this task's home, and a truncated
+// tail never matches (its first line is not the complete signature).
+func isCodexStateRuntimeInitFailure(stderrTail string, truncated bool, codexHome string) bool {
+	if truncated || codexHome == "" {
+		return false
+	}
+	want := "Error: failed to initialize sqlite state runtime under " + codexHome +
+		": failed to initialize state runtime at " + codexHome
+	return strings.TrimSpace(stderrTail) == want
+}
 
 func sanitizeCodexDiagnostic(value string) string {
 	return sanitizeAgentDiagnostic(value)
@@ -1494,12 +1504,12 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 				finalError = withAgentStderr(finalError, "codex", sanitizeCodexDiagnostic(stderrBuf.Tail()))
 			}
 			retrySafe := timedOut && !semanticObserved.Load() && cleanupConfirmed && codexInitializeRetrySupported()
-			// Match the raw tail before sanitizing: the signal is a fixed Codex
-			// line, and the raw tail itself is never persisted.
-			// The exit can surface as errCodexProcessExited or as a broken pipe on
-			// the initialize write, depending on which side loses the race.
-			stateRuntimeRetrySafe := !timedOut && !contextEnded &&
-				strings.Contains(stderrBuf.Tail(), codexStateRuntimeInitSignal) &&
+			// Match the raw tail before sanitizing; the raw tail itself is never
+			// persisted. The exit can surface as errCodexProcessExited or as a
+			// broken pipe on the initialize write, depending on which side loses
+			// the race, so key on the exact stderr instead of the error type.
+			stateRuntimeRetrySafe := opts.CodexSQLiteInitRetry && !timedOut && !contextEnded &&
+				isCodexStateRuntimeInitFailure(stderrBuf.Tail(), stderrBuf.TotalBytes() > codexStderrTailBytes, codexHome) &&
 				!semanticObserved.Load() && cleanupConfirmed && codexInitializeRetrySupported()
 			if timedOut && !cleanupConfirmed {
 				finalError += "; retry suppressed: process cleanup/reap not confirmed"
