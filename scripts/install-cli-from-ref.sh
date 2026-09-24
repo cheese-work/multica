@@ -135,9 +135,25 @@ chmod 0755 "$staged_binary"
 # backup and the live binary share one filesystem, which restore_previous
 # below needs for its rename(2) to be atomic rather than a cross-device copy.
 backup_binary="$bin_dir/.multica.previous"
-rm -f "$backup_binary"
 if [ -e "$bin_dir/multica" ]; then
-  cp -p "$bin_dir/multica" "$backup_binary"
+  # Stage the new backup under its own temp name and verify the copy
+  # succeeded BEFORE anything happens to the existing $backup_binary. A
+  # naive `rm -f "$backup_binary"` up front, followed by `cp`, destroys the
+  # one durable rollback artifact this script maintains the moment the copy
+  # fails for any reason (disk full, permission error, killed mid-write) —
+  # exactly the failure this script exists to protect against, just moved
+  # one file over. Renaming the verified staged copy into place is the same
+  # same-filesystem atomic swap restore_previous() below relies on: the
+  # existing backup is either fully replaced by a complete, verified copy of
+  # the CURRENT $bin_dir/multica, or left completely untouched.
+  backup_staging="$bin_dir/.multica.previous.new.$$"
+  rm -f "$backup_staging"
+  if cp -p "$bin_dir/multica" "$backup_staging" && [ -s "$backup_staging" ]; then
+    mv -f "$backup_staging" "$backup_binary"
+  else
+    echo "install-cli-from-ref: could not stage a new backup of $bin_dir/multica — keeping the existing backup (if any) untouched" >&2
+    rm -f "$backup_staging"
+  fi
 fi
 
 restore_previous() {

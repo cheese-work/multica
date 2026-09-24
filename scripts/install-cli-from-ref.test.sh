@@ -277,6 +277,79 @@ if [ ! -x "$retention_across_success_dir/.multica.previous" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Scenario: an existing backup must survive a failure to CREATE the new
+# backup. A previous review round found the script deleting the existing
+# .multica.previous up front and only then copying its replacement — if that
+# copy failed (disk full, permission error, killed mid-write), the one
+# durable rollback artifact was already gone, exactly the failure this
+# script exists to protect against. Injects a copy failure via a `cp` stub
+# on PATH that fails ONLY for the backup's own staging filename
+# (.multica.previous.new.<pid>) and behaves as the real `cp` for every other
+# call the script makes (staging the new binary, etc.), so only the one
+# operation under test is affected.
+# ---------------------------------------------------------------------------
+backup_copy_failure_dir="$work_dir/bin-backup-copy-failure"
+bash "$script" --repo "$fixture_repo" --ref "$good_sha" --bin-dir "$backup_copy_failure_dir" >/dev/null 2>&1
+existing_backup_dir="$work_dir/bin-backup-copy-failure-seed"
+mkdir -p "$existing_backup_dir"
+# Seed an existing backup by hand: content distinguishable from both the
+# currently-installed binary and whatever this run would otherwise produce,
+# so "the existing backup was preserved byte-for-byte" is unambiguous rather
+# than coincidentally matching a fresh copy.
+printf '#!/bin/sh\necho seeded-existing-backup\n' >"$backup_copy_failure_dir/.multica.previous"
+chmod +x "$backup_copy_failure_dir/.multica.previous"
+seeded_backup_checksum="$(sha256sum "$backup_copy_failure_dir/.multica.previous" 2>/dev/null || shasum -a 256 "$backup_copy_failure_dir/.multica.previous")"
+
+cp_stub_dir="$work_dir/cp-stub"
+mkdir -p "$cp_stub_dir"
+real_cp="$(command -v cp)"
+cat >"$cp_stub_dir/cp" <<EOF
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  case "\$arg" in
+    *.multica.previous.new.*)
+      echo "stub cp: simulated write failure staging a new backup: \$arg" >&2
+      exit 1
+      ;;
+  esac
+done
+exec "$real_cp" "\$@"
+EOF
+chmod +x "$cp_stub_dir/cp"
+
+set +e
+backup_copy_failure_output="$(PATH="$cp_stub_dir:$PATH" bash "$script" --repo "$fixture_repo" --ref "$good_sha" --bin-dir "$backup_copy_failure_dir" 2>&1)"
+set -e
+
+if [[ "$backup_copy_failure_output" != *"could not stage a new backup"* ]]; then
+  echo "scenario backup-copy-failure: expected a diagnostic naming the failed backup staging, got:" >&2
+  echo "$backup_copy_failure_output" >&2
+  exit 1
+fi
+
+if [ ! -e "$backup_copy_failure_dir/.multica.previous" ]; then
+  echo "scenario backup-copy-failure: the existing backup must survive a failed backup-refresh attempt, found none" >&2
+  exit 1
+fi
+
+after_backup_checksum="$(sha256sum "$backup_copy_failure_dir/.multica.previous" 2>/dev/null || shasum -a 256 "$backup_copy_failure_dir/.multica.previous")"
+if [ "$after_backup_checksum" != "$seeded_backup_checksum" ]; then
+  echo "scenario backup-copy-failure: the seeded backup was modified even though its own copy step failed" >&2
+  exit 1
+fi
+
+if [ ! -x "$backup_copy_failure_dir/.multica.previous" ]; then
+  echo "scenario backup-copy-failure: the surviving backup must remain executable/usable, not just present" >&2
+  exit 1
+fi
+
+backup_copy_failure_leftover="$(find "$backup_copy_failure_dir" -maxdepth 1 -name '.multica.previous.new.*' 2>/dev/null)"
+if [ -n "$backup_copy_failure_leftover" ]; then
+  echo "scenario backup-copy-failure: a failed backup-staging temp file was left behind: $backup_copy_failure_leftover" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
 # Scenario: post-replace exec failure (noexec-equivalent). The scenario above
 # only exercises a bad build being caught BEFORE the atomic replace, at the
 # staged copy in $work_dir. A real noexec target filesystem, wrong
