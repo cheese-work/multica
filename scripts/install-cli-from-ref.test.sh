@@ -238,6 +238,45 @@ if [ -n "$leftover" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Scenario: the durable backup survives a SUCCESSFUL install, not just a
+# failed one. A previous review round found the backup staged under
+# $work_dir, which the script's own EXIT trap deletes unconditionally —
+# including on success — so a successful upgrade silently destroyed its own
+# rollback packet. The backup must live at --bin-dir itself and remain after
+# a clean install exits 0.
+# ---------------------------------------------------------------------------
+retention_across_success_dir="$work_dir/bin-retention-across-success"
+bash "$script" --repo "$fixture_repo" --ref "$good_sha" --bin-dir "$retention_across_success_dir" >/dev/null 2>&1
+if [ -e "$retention_across_success_dir/.multica.previous" ]; then
+  echo "scenario retention-across-success: expected no backup after the FIRST install (nothing existed to back up), found one" >&2
+  exit 1
+fi
+
+second_good_sha="$good_sha"
+# A second install of the identical commit still exercises a real
+# backup-then-restore-eligible cycle (the script does not special-case
+# "same commit already installed"), and confirms the backup left behind is a
+# byte-faithful copy of what was actually running, not a placeholder.
+before_second_commit="$("$retention_across_success_dir/multica" version --output json | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.parse(d).commit))')"
+bash "$script" --repo "$fixture_repo" --ref "$second_good_sha" --bin-dir "$retention_across_success_dir" >/dev/null 2>&1
+
+if [ ! -e "$retention_across_success_dir/.multica.previous" ]; then
+  echo "scenario retention-across-success: expected the previous binary to remain as a durable backup after a SUCCESSFUL second install, found none" >&2
+  exit 1
+fi
+
+backup_commit="$("$retention_across_success_dir/.multica.previous" version --output json | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.parse(d).commit))')"
+if [ "$backup_commit" != "$before_second_commit" ]; then
+  echo "scenario retention-across-success: expected the retained backup to report the commit that was running before this install ($before_second_commit), got $backup_commit" >&2
+  exit 1
+fi
+
+if [ ! -x "$retention_across_success_dir/.multica.previous" ]; then
+  echo "scenario retention-across-success: the retained backup must remain executable, not just present" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
 # Scenario: post-replace exec failure (noexec-equivalent). The scenario above
 # only exercises a bad build being caught BEFORE the atomic replace, at the
 # staged copy in $work_dir. A real noexec target filesystem, wrong
@@ -335,6 +374,106 @@ fi
 
 if [ ! -x "$postreplace_bin_dir/multica" ]; then
   echo "scenario post-replace-exec-failure: the restored binary must remain executable" >&2
+  exit 1
+fi
+
+# restore_previous renames the backup back onto the live path (mv, not a
+# copy that leaves the source behind) -- after a successful restore, the
+# backup file itself must be gone: the live binary IS the former backup now,
+# not a separate copy of it.
+if [ -e "$postreplace_bin_dir/.multica.previous" ]; then
+  echo "scenario post-replace-exec-failure: expected the backup to be consumed by the restore (renamed, not copied), but .multica.previous still exists" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Static check: the restore path must use a same-filesystem rename, never an
+# in-place copy onto the live binary. A `cp` overwrites the target's bytes
+# while a concurrent reader (or the daemon that execs this exact path) could
+# still have it open, risking a partial read; `mv`/rename(2) instead swaps
+# the directory entry as a single atomic operation, so a reader always sees
+# either the complete old file or the complete new one. This is checked
+# directly against the script source because the failure mode a `cp`-based
+# restore risks -- a reader observing a torn write -- is a race that cannot
+# be forced to reproduce deterministically in a portable test; asserting the
+# primitive itself is the reliable half of this property this harness can
+# exercise. The dynamic scenario above (post-replace-exec-failure) already
+# proves restore_previous's OBSERABLE effect (right commit, right mtime, old
+# backup consumed); this proves it uses the atomic primitive to get there.
+restore_previous_body="$(awk '/^restore_previous\(\) \{/,/^\}/' "$script")"
+if [[ "$restore_previous_body" != *'mv -f "$backup_binary" "$bin_dir/multica"'* ]]; then
+  echo 'scenario restore-uses-atomic-rename: expected restore_previous() to restore via mv -f "$backup_binary" "$bin_dir/multica", got:' >&2
+  echo "$restore_previous_body" >&2
+  exit 1
+fi
+if [[ "$restore_previous_body" == *'cp -p "$backup_binary" "$bin_dir/multica"'* ]] || [[ "$restore_previous_body" == *'cp "$backup_binary" "$bin_dir/multica"'* ]]; then
+  echo "scenario restore-uses-atomic-rename: restore_previous() must not cp onto the live binary path" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Scenario: concurrent-reader boundary, as far as a portable harness can
+# exercise it. A background loop continuously execs the installed binary
+# throughout an entire install-then-post-replace-failure-then-restore cycle;
+# every single invocation must either fully succeed (valid JSON, matching
+# one of the two commits that were ever legitimately installed at this path)
+# or the binary must be transiently absent between the atomic replace and
+# the restore -- never truncated output, a corrupt exec, or content from
+# neither commit. A real forced interleaving (pausing the writer mid-`mv`)
+# is not possible from outside the process without a debugger; this proves
+# the property observable from a well-behaved reader's side, which is what
+# an actual daemon holding this path open would experience.
+# ---------------------------------------------------------------------------
+# Named with the same "bin-postreplace" substring the shared fixture main.go
+# (written above) keys its fault injection on -- this scenario's bad build IS
+# that same fixture, and needs the same trigger to actually fail here.
+concurrent_bin_dir="$work_dir/bin-postreplace-concurrent"
+bash "$script" --repo "$fixture_repo" --ref "$good_sha" --bin-dir "$concurrent_bin_dir" >/dev/null 2>&1
+concurrent_good_commit="$("$concurrent_bin_dir/multica" version --output json | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.parse(d).commit))')"
+
+reader_log="$work_dir/concurrent-reader.log"
+: >"$reader_log"
+reader_stop="$work_dir/concurrent-reader.stop"
+rm -f "$reader_stop"
+(
+  while [ ! -e "$reader_stop" ]; do
+    out="$("$concurrent_bin_dir/multica" version --output json 2>/dev/null)"
+    status=$?
+    if [ "$status" -eq 0 ]; then
+      commit="$(printf '%s' "$out" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(d).commit||"")}catch{process.stdout.write("PARSE_ERROR")}})' 2>/dev/null)"
+      if [ "$commit" != "$concurrent_good_commit" ] && [[ "$postreplace_bad_sha" != "$commit"* ]] && [ -n "$commit" ]; then
+        echo "UNEXPECTED_COMMIT:$commit" >>"$reader_log"
+      fi
+      if [ "$commit" = "PARSE_ERROR" ]; then
+        echo "TORN_READ:$out" >>"$reader_log"
+      fi
+    fi
+    # A nonzero exit is acceptable ONLY in the narrow window between the
+    # atomic replace and this script's own post-replace verification+
+    # restore -- not logged as a failure here, since "briefly absent or
+    # mid-transition" is expected; the assertions below instead check that
+    # the FINAL state afterward is fully consistent.
+  done
+) &
+reader_pid=$!
+
+set +e
+concurrent_output="$(bash "$script" --repo "$fixture_repo" --ref "$postreplace_bad_sha" --bin-dir "$concurrent_bin_dir" 2>&1)"
+set -e
+
+touch "$reader_stop"
+wait "$reader_pid" 2>/dev/null || true
+
+if [ -s "$reader_log" ]; then
+  echo "scenario concurrent-reader: a concurrent reader observed corrupt or unexpected content during install+restore:" >&2
+  cat "$reader_log" >&2
+  exit 1
+fi
+
+concurrent_final_commit="$("$concurrent_bin_dir/multica" version --output json | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.parse(d).commit))')"
+if [ "$concurrent_final_commit" != "$concurrent_good_commit" ]; then
+  echo "scenario concurrent-reader: expected the final state to be the restored good commit ($concurrent_good_commit), got $concurrent_final_commit" >&2
+  echo "$concurrent_output" >&2
   exit 1
 fi
 

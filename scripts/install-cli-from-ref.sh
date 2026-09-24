@@ -127,15 +127,28 @@ chmod 0755 "$staged_binary"
 # unconditional: even a $bin_dir/multica this script cannot itself verify
 # (e.g. it was already broken) is still ours to put back exactly as found,
 # never ours to silently drop.
-backup_binary=""
+#
+# The backup lives in --bin-dir itself, NOT $work_dir: $work_dir is removed
+# unconditionally on exit (the EXIT trap above) — including on a SUCCESSFUL
+# run — so a backup staged there would already be gone by the time anyone
+# needed to roll back. Living next to the install target also guarantees the
+# backup and the live binary share one filesystem, which restore_previous
+# below needs for its rename(2) to be atomic rather than a cross-device copy.
+backup_binary="$bin_dir/.multica.previous"
+rm -f "$backup_binary"
 if [ -e "$bin_dir/multica" ]; then
-  backup_binary="$work_dir/multica.previous"
   cp -p "$bin_dir/multica" "$backup_binary"
 fi
 
 restore_previous() {
-  if [ -n "$backup_binary" ]; then
-    cp -p "$backup_binary" "$bin_dir/multica"
+  if [ -e "$backup_binary" ]; then
+    # Same-filesystem rename(2), not an in-place copy: a copy overwrites the
+    # live path byte-by-byte, so a concurrent reader (or the daemon that
+    # execs this exact path) can observe a partially written file mid-copy.
+    # A rename instead swaps the directory entry atomically — any reader
+    # either sees the broken binary being replaced or the fully-restored
+    # previous one, never a partial file.
+    mv -f "$backup_binary" "$bin_dir/multica"
     echo "install-cli-from-ref: restored the previous binary at $bin_dir/multica" >&2
   else
     rm -f "$bin_dir/multica"
@@ -152,6 +165,11 @@ restore_previous() {
 replace_tmp="$bin_dir/.multica.new.$$"
 cp "$staged_binary" "$replace_tmp"
 if ! mv -f "$replace_tmp" "$bin_dir/multica"; then
+  # The rename never happened, so $bin_dir/multica is exactly what it was
+  # before this run — $backup_binary is redundant right now but is left in
+  # place rather than deleted: it is still a truthful, durable copy of what
+  # is currently installed, and this script's job is never to remove a
+  # rollback artifact it did not just supersede with a newer one.
   echo "install-cli-from-ref: atomic replace of $bin_dir/multica failed — previous binary (if any) is untouched" >&2
   rm -f "$replace_tmp"
   exit 1
@@ -177,6 +195,18 @@ if [ "${resolved_commit:0:9}" != "$installed_commit" ]; then
   echo "install-cli-from-ref: FATAL — $bin_dir/multica reports commit $installed_commit after replacement, expected ${resolved_commit:0:9}" >&2
   restore_previous
   exit 1
+fi
+
+# Success: deliberately NOT deleting $backup_binary here. The verification
+# above only proves the new binary starts and reports the right commit — it
+# cannot prove the new commit is actually correct for this host's workload,
+# so the previous binary stays at $bin_dir/.multica.previous as the durable
+# rollback packet for whatever this script cannot itself catch. A future
+# install run's own unconditional `rm -f "$backup_binary"` (above, before
+# taking its own backup) is what retires it, once a NEWER successful install
+# makes it stale.
+if [ -e "$backup_binary" ]; then
+  echo "Previous binary kept at $backup_binary for rollback." >&2
 fi
 
 echo "Installed multica ($installed_commit) to $bin_dir/multica"
