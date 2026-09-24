@@ -46,6 +46,17 @@ WHERE id = $1;
 SELECT export_redaction_mode, export_manifest_retention_days FROM workspace
 WHERE id = $1;
 
+-- name: GetWorkspaceExportPrivacyForUpdate :one
+-- CHE-766: same lean projection as GetWorkspaceExportPrivacy, but FOR UPDATE
+-- so UpdateWorkspaceExportPrivacy's read-modify-write is atomic against a
+-- second concurrent PATCH: two admins racing a partial update (one setting
+-- only redaction_mode, the other only manifest_retention_days) cannot each
+-- read the pre-update row and clobber the other's field. Call inside the same
+-- transaction as the subsequent UpdateWorkspaceExportPrivacy.
+SELECT export_redaction_mode, export_manifest_retention_days FROM workspace
+WHERE id = $1
+FOR UPDATE;
+
 -- name: UpdateWorkspaceExportPrivacy :one
 -- CHE-766: dedicated, validated write path for the export privacy policy.
 -- Deliberately separate from UpdateWorkspace's generic settings blob: mode

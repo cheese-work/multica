@@ -809,8 +809,9 @@ func main() {
 		slog.Warn("scheduler: failed to register plugin_hook_schedule_dispatch job", "error", err)
 	}
 	// CHE-766: scheduled deletion of provenance_export_log rows once they pass
-	// each workspace's own export_manifest_retention_days (default 90).
-	if err := schedulerMgr.Register(scheduler.ProvenanceExportRetentionJob(queries)); err != nil {
+	// each workspace's own export_manifest_retention_days (default 90), read
+	// live at deletion time with a workspace-scoped receipt per sweep.
+	if err := schedulerMgr.Register(scheduler.ProvenanceExportRetentionJob(queries, pool)); err != nil {
 		slog.Warn("scheduler: failed to register provenance_export_retention job", "error", err)
 	}
 	go func() {

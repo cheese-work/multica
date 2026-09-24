@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,8 +11,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/featureflag"
 )
 
 func exportPrivacyRequest(method, workspaceID, userID string, body any) *http.Request {
@@ -181,13 +184,13 @@ func TestExportProvenance_FailsClosedOnUnimplementedMode(t *testing.T) {
 }
 
 // TestDeleteExpiredProvenanceExportLogsForWorkspace_ExpiryAndIsolation is the
-// SQL-level counterpart to the scheduler's fake-backed unit tests in
-// internal/scheduler: it exercises the real
-// DeleteExpiredProvenanceExportLogsForWorkspace query against Postgres to
-// confirm the created_at cutoff math and workspace_id scoping the scheduler
-// job depends on actually hold — a row just inside the window survives, a row
-// just past it is deleted, and a foreign workspace's row is never touched
-// regardless of its own age.
+// SQL-level counterpart to the scheduler's tests in internal/scheduler: it
+// exercises the real DeleteExpiredProvenanceExportLogsForWorkspace query
+// against Postgres to confirm the created_at cutoff math (read live from
+// workspace.export_manifest_retention_days, not a caller-supplied value) and
+// workspace_id scoping the scheduler job depends on actually hold — a row
+// just inside the window survives, a row just past it is deleted, and a
+// foreign workspace's row is never touched regardless of its own age.
 func TestDeleteExpiredProvenanceExportLogsForWorkspace_ExpiryAndIsolation(t *testing.T) {
 	requireProvenanceDB(t)
 	suffix := time.Now().UnixNano()
@@ -195,6 +198,9 @@ func TestDeleteExpiredProvenanceExportLogsForWorkspace_ExpiryAndIsolation(t *tes
 	ctx := context.Background()
 
 	otherWS := dbfx.Workspace(t, "Retention Other", fmt.Sprintf("retention-other-%d", suffix))
+	resetExportPrivacy(t, testWorkspaceID)
+	dbfx.Exec(t, `UPDATE workspace SET export_manifest_retention_days = 90 WHERE id = $1`, testWorkspaceID)
+	dbfx.Exec(t, `UPDATE workspace SET export_manifest_retention_days = 90 WHERE id = $1`, otherWS)
 
 	insertLog := func(workspaceID string, age time.Duration) {
 		dbfx.Insert(t, "provenance_export_log", testutil.Cols{
@@ -218,17 +224,15 @@ func TestDeleteExpiredProvenanceExportLogsForWorkspace_ExpiryAndIsolation(t *tes
 
 	t.Cleanup(func() {
 		dbfx.Cleanup(t, `DELETE FROM provenance_export_log WHERE workspace_id IN ($1, $2)`, testWorkspaceID, otherWS)
+		resetExportPrivacy(t, testWorkspaceID)
 	})
 
-	deleted, err := queries.DeleteExpiredProvenanceExportLogsForWorkspace(ctx, db.DeleteExpiredProvenanceExportLogsForWorkspaceParams{
-		WorkspaceID:   parseUUID(testWorkspaceID),
-		RetentionDays: 90,
-	})
+	deletedIDs, err := queries.DeleteExpiredProvenanceExportLogsForWorkspace(ctx, parseUUID(testWorkspaceID))
 	if err != nil {
 		t.Fatalf("delete expired logs: %v", err)
 	}
-	if deleted != 1 {
-		t.Fatalf("deleted = %d, want 1 (only the 100-day-old row for testWorkspaceID)", deleted)
+	if len(deletedIDs) != 1 {
+		t.Fatalf("deleted = %d, want 1 (only the 100-day-old row for testWorkspaceID)", len(deletedIDs))
 	}
 
 	remaining := dbfx.Count(t, `SELECT count(*) FROM provenance_export_log WHERE workspace_id = $1`, testWorkspaceID)
@@ -238,5 +242,161 @@ func TestDeleteExpiredProvenanceExportLogsForWorkspace_ExpiryAndIsolation(t *tes
 	otherRemaining := dbfx.Count(t, `SELECT count(*) FROM provenance_export_log WHERE workspace_id = $1`, otherWS)
 	if otherRemaining != 1 {
 		t.Fatalf("otherWS row was deleted by a call scoped to testWorkspaceID: remaining=%d, want 1", otherRemaining)
+	}
+}
+
+// TestExportProvenance_KillSwitchDisabled covers review finding B1: turning
+// off the export_privacy_controls flag must deny ExportProvenance outright,
+// before authentication or any row is read, and must not write an audit row.
+func TestExportProvenance_KillSwitchDisabled(t *testing.T) {
+	requireProvenanceDB(t)
+	provenanceCleanupLogs(t)
+	withFeatureFlag(t, testHandler, featureflags.ExportPrivacyControls, false)
+
+	before := provenanceLogCount(t)
+	cutoff := time.Now().Add(-time.Hour)
+	testutil.Call(t, testHandler.ExportProvenance,
+		provenanceRequest(testWorkspaceID, testUserID, provenanceBody(testWorkspaceID, cutoff, []string{"HAN-1"}, nil))).
+		Want(http.StatusServiceUnavailable)
+
+	if after := provenanceLogCount(t); after != before {
+		t.Fatalf("export wrote an audit row despite the kill switch being off: before=%d after=%d", before, after)
+	}
+}
+
+// TestExportProvenance_KillSwitchErroringFlagDeniesRegardlessOfDefault
+// exercises the "unavailable" half of the fail-closed contract: a provider
+// that errors evaluating the flag returns Enabled=false unconditionally
+// (pkg/featureflag's ReasonError contract), so export must be denied even
+// though ExportPrivacyControlsEnabled's own default is true.
+func TestExportProvenance_KillSwitchErroringFlagDeniesRegardlessOfDefault(t *testing.T) {
+	requireProvenanceDB(t)
+	provenanceCleanupLogs(t)
+
+	errFlags := featureflag.NewService(&errorFlagProvider{key: featureflags.ExportPrivacyControls})
+	origFlags := testHandler.FeatureFlags
+	testHandler.FeatureFlags = errFlags
+	t.Cleanup(func() { testHandler.FeatureFlags = origFlags })
+
+	before := provenanceLogCount(t)
+	cutoff := time.Now().Add(-time.Hour)
+	testutil.Call(t, testHandler.ExportProvenance,
+		provenanceRequest(testWorkspaceID, testUserID, provenanceBody(testWorkspaceID, cutoff, []string{"HAN-1"}, nil))).
+		Want(http.StatusServiceUnavailable)
+
+	if after := provenanceLogCount(t); after != before {
+		t.Fatalf("export wrote an audit row despite an erroring flag provider: before=%d after=%d", before, after)
+	}
+}
+
+// errorFlagProvider always returns a ReasonError decision with Enabled=false
+// for the named key, modeling a provider that is "unavailable" (e.g. its
+// backing config source failed to parse or load) — see
+// pkg/featureflag/env_provider.go for the same contract in the real env
+// provider.
+type errorFlagProvider struct{ key string }
+
+func (p *errorFlagProvider) Name() string { return "error-provider-test" }
+func (p *errorFlagProvider) Lookup(ctx context.Context, key string) (featureflag.Decision, bool) {
+	if key != p.key {
+		return featureflag.Decision{}, false
+	}
+	return featureflag.Decision{
+		Key:     key,
+		Enabled: false,
+		Variant: "off",
+		Reason:  featureflag.ReasonError,
+		Source:  "error-provider-test",
+	}, true
+}
+
+// TestWorkspaceExportPrivacy_KillSwitchDisabled covers the same B1 finding
+// for both config endpoints: disabling the flag hides and blocks the config
+// surface along with the capability it configures.
+func TestWorkspaceExportPrivacy_KillSwitchDisabled(t *testing.T) {
+	requireProvenanceDB(t)
+	resetExportPrivacy(t, testWorkspaceID)
+	t.Cleanup(func() { resetExportPrivacy(t, testWorkspaceID) })
+	withFeatureFlag(t, testHandler, featureflags.ExportPrivacyControls, false)
+
+	testutil.Call(t, testHandler.GetWorkspaceExportPrivacy,
+		exportPrivacyRequest(http.MethodGet, testWorkspaceID, testUserID, nil)).
+		Want(http.StatusServiceUnavailable)
+	testutil.Call(t, testHandler.UpdateWorkspaceExportPrivacy,
+		exportPrivacyRequest(http.MethodPatch, testWorkspaceID, testUserID, map[string]any{"manifest_retention_days": 30})).
+		Want(http.StatusServiceUnavailable)
+
+	var days int
+	dbfx.QueryRow(t, `SELECT export_manifest_retention_days FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&days)
+	if days != 90 {
+		t.Fatalf("manifest_retention_days changed to %d despite the kill switch being off", days)
+	}
+}
+
+// countExportPrivacyAuditRows counts durable policy-change receipts for a
+// workspace, scoped to CHE-766's own action key so unrelated activity_log
+// rows from other tests/features never inflate the count.
+func countExportPrivacyAuditRows(t *testing.T, workspaceID string) int {
+	t.Helper()
+	return dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE workspace_id = $1 AND action = $2`,
+		workspaceID, exportPrivacyPolicyChangedActivity)
+}
+
+// TestWorkspaceExportPrivacy_WritesDurableAuditRecord covers review finding
+// B1 directly: a successful policy update must leave a durable,
+// actor-attributed activity_log row recording the old and new values, not
+// only a slog line.
+func TestWorkspaceExportPrivacy_WritesDurableAuditRecord(t *testing.T) {
+	requireProvenanceDB(t)
+	resetExportPrivacy(t, testWorkspaceID)
+	t.Cleanup(func() { resetExportPrivacy(t, testWorkspaceID) })
+
+	before := countExportPrivacyAuditRows(t, testWorkspaceID)
+	testutil.Call(t, testHandler.UpdateWorkspaceExportPrivacy,
+		exportPrivacyRequest(http.MethodPatch, testWorkspaceID, testUserID, map[string]any{"manifest_retention_days": 30})).
+		Want(http.StatusOK)
+
+	after := countExportPrivacyAuditRows(t, testWorkspaceID)
+	if after != before+1 {
+		t.Fatalf("audit rows = %d, want %d (before+1)", after, before+1)
+	}
+
+	var actorID string
+	var detailsRaw []byte
+	dbfx.QueryRow(t,
+		`SELECT actor_id, details FROM activity_log
+		 WHERE workspace_id = $1 AND action = $2
+		 ORDER BY created_at DESC LIMIT 1`,
+		testWorkspaceID, exportPrivacyPolicyChangedActivity).Scan(&actorID, &detailsRaw)
+	if actorID != testUserID {
+		t.Fatalf("audit actor_id = %q, want %q", actorID, testUserID)
+	}
+	var details exportPrivacyAuditDetails
+	if err := json.Unmarshal(detailsRaw, &details); err != nil {
+		t.Fatalf("unmarshal audit details: %v", err)
+	}
+	if details.FromManifestRetentionDays != 90 || details.ToManifestRetentionDays != 30 {
+		t.Fatalf("audit details = %+v, want from=90 to=30", details)
+	}
+}
+
+// TestWorkspaceExportPrivacy_NoOpUpdateWritesNoAuditRow guards against a
+// resend of the current values manufacturing a misleading "policy changed"
+// entry: PATCHing with the already-stored values must not add a row.
+func TestWorkspaceExportPrivacy_NoOpUpdateWritesNoAuditRow(t *testing.T) {
+	requireProvenanceDB(t)
+	resetExportPrivacy(t, testWorkspaceID)
+	t.Cleanup(func() { resetExportPrivacy(t, testWorkspaceID) })
+
+	before := countExportPrivacyAuditRows(t, testWorkspaceID)
+	testutil.Call(t, testHandler.UpdateWorkspaceExportPrivacy,
+		exportPrivacyRequest(http.MethodPatch, testWorkspaceID, testUserID, map[string]any{
+			"redaction_mode": "small", "manifest_retention_days": 90,
+		})).
+		Want(http.StatusOK)
+
+	after := countExportPrivacyAuditRows(t, testWorkspaceID)
+	if after != before {
+		t.Fatalf("audit rows = %d, want %d (no-op PATCH must not write a row)", after, before)
 	}
 }

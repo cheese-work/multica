@@ -11,28 +11,42 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const deleteExpiredProvenanceExportLogsForWorkspace = `-- name: DeleteExpiredProvenanceExportLogsForWorkspace :execrows
+const deleteExpiredProvenanceExportLogsForWorkspace = `-- name: DeleteExpiredProvenanceExportLogsForWorkspace :many
 DELETE FROM provenance_export_log
 WHERE workspace_id = $1
-  AND created_at < now() - make_interval(days => $2::int)
+  AND created_at < now() - make_interval(days =>
+        (SELECT export_manifest_retention_days FROM workspace WHERE id = $1)::int)
+RETURNING id
 `
 
-type DeleteExpiredProvenanceExportLogsForWorkspaceParams struct {
-	WorkspaceID   pgtype.UUID `json:"workspace_id"`
-	RetentionDays int32       `json:"retention_days"`
-}
-
-// CHE-766: scheduled retention cleanup. Deletes audit rows older than the
-// workspace's own configured retention window rather than a single global
-// cutoff, so each workspace's admin-set retention_days is honored exactly.
-// Returns the row count so the scheduler's audit trail records how many
-// manifests were reaped per tick.
-func (q *Queries) DeleteExpiredProvenanceExportLogsForWorkspace(ctx context.Context, arg DeleteExpiredProvenanceExportLogsForWorkspaceParams) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteExpiredProvenanceExportLogsForWorkspace, arg.WorkspaceID, arg.RetentionDays)
+// CHE-766: scheduled retention cleanup for one workspace. The cutoff is
+// computed from a live subquery on workspace.export_manifest_retention_days
+// — NOT a value the caller fetched earlier and passes in — so a concurrent
+// admin edit to retention_days (e.g. an emergency extension from 1 to 365
+// days to protect an active obligation) is honored by this exact statement,
+// not by whatever the retention setting happened to be when the scheduler's
+// workspace list was built. Returns the deleted ids so the caller can write
+// a workspace-scoped, content-free receipt of exactly what was removed
+// (never titles/descriptions/comment bodies — provenance_export_log already
+// carries only ids, digests and exclusion reasons per migration 515).
+func (q *Queries) DeleteExpiredProvenanceExportLogsForWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, deleteExpiredProvenanceExportLogsForWorkspace, workspaceID)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return result.RowsAffected(), nil
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const insertProvenanceExportLog = `-- name: InsertProvenanceExportLog :one
@@ -92,31 +106,29 @@ func (q *Queries) InsertProvenanceExportLog(ctx context.Context, arg InsertProve
 }
 
 const listWorkspaceExportRetentionSettings = `-- name: ListWorkspaceExportRetentionSettings :many
-SELECT id AS workspace_id, export_manifest_retention_days
+SELECT id AS workspace_id
 FROM workspace
 ORDER BY id ASC
 `
 
-type ListWorkspaceExportRetentionSettingsRow struct {
-	WorkspaceID                 pgtype.UUID `json:"workspace_id"`
-	ExportManifestRetentionDays int32       `json:"export_manifest_retention_days"`
-}
-
-// CHE-766: retention-days per workspace, for the scheduler to fan out
-// DeleteExpiredProvenanceExportLogsForWorkspace one call per workspace.
-func (q *Queries) ListWorkspaceExportRetentionSettings(ctx context.Context) ([]ListWorkspaceExportRetentionSettingsRow, error) {
+// CHE-766: workspace ids for the scheduler to fan out
+// DeleteExpiredProvenanceExportLogsForWorkspace one call per workspace. Only
+// ids are needed — retention_days is read live by the delete query itself,
+// not carried from here, so this list can never go stale between being read
+// and being acted on.
+func (q *Queries) ListWorkspaceExportRetentionSettings(ctx context.Context) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listWorkspaceExportRetentionSettings)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListWorkspaceExportRetentionSettingsRow{}
+	items := []pgtype.UUID{}
 	for rows.Next() {
-		var i ListWorkspaceExportRetentionSettingsRow
-		if err := rows.Scan(&i.WorkspaceID, &i.ExportManifestRetentionDays); err != nil {
+		var workspace_id pgtype.UUID
+		if err := rows.Scan(&workspace_id); err != nil {
 			return nil, err
 		}
-		items = append(items, i)
+		items = append(items, workspace_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

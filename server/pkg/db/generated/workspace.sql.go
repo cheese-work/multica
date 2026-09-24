@@ -317,6 +317,30 @@ func (q *Queries) GetWorkspaceExportPrivacy(ctx context.Context, id pgtype.UUID)
 	return i, err
 }
 
+const getWorkspaceExportPrivacyForUpdate = `-- name: GetWorkspaceExportPrivacyForUpdate :one
+SELECT export_redaction_mode, export_manifest_retention_days FROM workspace
+WHERE id = $1
+FOR UPDATE
+`
+
+type GetWorkspaceExportPrivacyForUpdateRow struct {
+	ExportRedactionMode         string `json:"export_redaction_mode"`
+	ExportManifestRetentionDays int32  `json:"export_manifest_retention_days"`
+}
+
+// CHE-766: same lean projection as GetWorkspaceExportPrivacy, but FOR UPDATE
+// so UpdateWorkspaceExportPrivacy's read-modify-write is atomic against a
+// second concurrent PATCH: two admins racing a partial update (one setting
+// only redaction_mode, the other only manifest_retention_days) cannot each
+// read the pre-update row and clobber the other's field. Call inside the same
+// transaction as the subsequent UpdateWorkspaceExportPrivacy.
+func (q *Queries) GetWorkspaceExportPrivacyForUpdate(ctx context.Context, id pgtype.UUID) (GetWorkspaceExportPrivacyForUpdateRow, error) {
+	row := q.db.QueryRow(ctx, getWorkspaceExportPrivacyForUpdate, id)
+	var i GetWorkspaceExportPrivacyForUpdateRow
+	err := row.Scan(&i.ExportRedactionMode, &i.ExportManifestRetentionDays)
+	return i, err
+}
+
 const incrementIssueCounter = `-- name: IncrementIssueCounter :one
 UPDATE workspace SET issue_counter = issue_counter + 1
 WHERE id = $1

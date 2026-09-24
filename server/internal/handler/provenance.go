@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -70,6 +71,12 @@ func (h *Handler) ExportProvenance(w http.ResponseWriter, r *http.Request) {
 	// fail-closed if it is ever mounted without that middleware.
 	if isMachineCredentialActor(r) {
 		reject(http.StatusForbidden, "machine_credential", "this endpoint is only available to human actors")
+		return
+	}
+	// CHE-766: kill switch, checked before authentication so a disabled or
+	// erroring flag denies with no dependence on who is asking.
+	if !featureflags.ExportPrivacyControlsEnabled(r.Context(), h.FeatureFlags) {
+		reject(http.StatusServiceUnavailable, "export_disabled", "provenance export is currently disabled")
 		return
 	}
 	userID, ok := requireUserID(w, r)

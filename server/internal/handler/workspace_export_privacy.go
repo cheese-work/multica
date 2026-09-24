@@ -2,16 +2,27 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/logger"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
+
+// exportPrivacyPolicyChangedActivity is the activity_log action name for a
+// CHE-766 export-privacy policy change. Stable across releases — this is a
+// durable audit key, not a display string.
+const exportPrivacyPolicyChangedActivity = "export_privacy_policy_changed"
 
 // ExportRedactionModeSmall is the only implemented CHE-755 export redaction
 // mode: unconditional secret/credential masking via redact.Text, and nothing
@@ -45,6 +56,12 @@ type workspaceExportPrivacyResponse struct {
 func (h *Handler) GetWorkspaceExportPrivacy(w http.ResponseWriter, r *http.Request) {
 	if isMachineCredentialActor(r) {
 		writeError(w, http.StatusForbidden, "this endpoint is only available to human actors")
+		return
+	}
+	// CHE-766: same kill switch as ExportProvenance — disabling it hides and
+	// blocks the config surface along with the capability it configures.
+	if !featureflags.ExportPrivacyControlsEnabled(r.Context(), h.FeatureFlags) {
+		writeError(w, http.StatusServiceUnavailable, "export privacy controls are currently disabled")
 		return
 	}
 	id := workspaceIDFromURL(r, "id")
@@ -83,12 +100,22 @@ func (h *Handler) UpdateWorkspaceExportPrivacy(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusForbidden, "this endpoint is only available to human actors")
 		return
 	}
+	// CHE-766: same kill switch as ExportProvenance.
+	if !featureflags.ExportPrivacyControlsEnabled(r.Context(), h.FeatureFlags) {
+		writeError(w, http.StatusServiceUnavailable, "export privacy controls are currently disabled")
+		return
+	}
 	id := workspaceIDFromURL(r, "id")
 	if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner", "admin"); !ok {
 		return
 	}
 	idUUID, ok := parseUUIDOrBadRequest(w, id, "workspace id")
 	if !ok {
+		return
+	}
+	actorUUID, err := util.ParseUUID(requestUserID(r))
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "user not authenticated")
 		return
 	}
 
@@ -109,40 +136,27 @@ func (h *Handler) UpdateWorkspaceExportPrivacy(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	current, err := h.Queries.GetWorkspaceExportPrivacy(r.Context(), idUUID)
-	if err != nil {
-		slog.Error("update workspace export privacy: load current failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", id)...)
-		writeError(w, http.StatusInternalServerError, "failed to load export privacy settings")
-		return
-	}
-
-	mode := current.ExportRedactionMode
+	var requestedMode *string
 	if req.RedactionMode != nil {
-		mode = strings.TrimSpace(*req.RedactionMode)
+		trimmed := strings.TrimSpace(*req.RedactionMode)
 		// Fail closed: only the fully implemented mode may be selected. This
 		// also blocks re-selecting an already-stored "strict" row from a future
 		// migration default change — the handler, not the column default, is
 		// the source of truth for what is actually enforced today.
-		if mode != ExportRedactionModeSmall {
+		if trimmed != ExportRedactionModeSmall {
 			writeError(w, http.StatusBadRequest, "redaction_mode must be \"small\" — strict mode is not yet implemented")
 			return
 		}
+		requestedMode = &trimmed
 	}
-
-	retentionDays := current.ExportManifestRetentionDays
 	if req.ManifestRetentionDays != nil {
-		retentionDays = *req.ManifestRetentionDays
-		if retentionDays < exportRetentionMinDays || retentionDays > exportRetentionMaxDays {
+		if *req.ManifestRetentionDays < exportRetentionMinDays || *req.ManifestRetentionDays > exportRetentionMaxDays {
 			writeError(w, http.StatusBadRequest, "manifest_retention_days must be between 1 and 3650")
 			return
 		}
 	}
 
-	updated, err := h.Queries.UpdateWorkspaceExportPrivacy(r.Context(), db.UpdateWorkspaceExportPrivacyParams{
-		ID:                          idUUID,
-		ExportRedactionMode:         mode,
-		ExportManifestRetentionDays: retentionDays,
-	})
+	updated, changed, err := h.updateExportPrivacyAtomically(r.Context(), idUUID, actorUUID, requestedMode, req.ManifestRetentionDays)
 	if err != nil {
 		slog.Error("update workspace export privacy failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", id)...)
 		writeError(w, http.StatusInternalServerError, "failed to update export privacy settings")
@@ -150,13 +164,99 @@ func (h *Handler) UpdateWorkspaceExportPrivacy(w http.ResponseWriter, r *http.Re
 	}
 
 	slog.Info("workspace export privacy updated", append(logger.RequestAttrs(r),
-		"workspace_id", id, "redaction_mode", updated.ExportRedactionMode,
+		"workspace_id", id, "actor_id", requestUserID(r), "changed", changed,
+		"redaction_mode", updated.ExportRedactionMode,
 		"manifest_retention_days", updated.ExportManifestRetentionDays)...)
 
 	writeJSON(w, http.StatusOK, workspaceExportPrivacyResponse{
 		RedactionMode:         updated.ExportRedactionMode,
 		ManifestRetentionDays: updated.ExportManifestRetentionDays,
 	})
+}
+
+// updateExportPrivacyAtomically reads the current policy FOR UPDATE, applies
+// the requested fields, writes the new row, and records an actor-attributed
+// old→new activity_log entry — all inside one transaction. If the audit
+// insert fails, the whole transaction (including the policy write) rolls
+// back: a durable history of who changed retention/mode and when is a
+// precondition for the change taking effect, not a best-effort side note.
+// This is what closes the review finding that a policy change (e.g.
+// shortening retention right before a scheduled sweep) could happen with
+// only a non-durable slog.Info line to show for it.
+//
+// changed reports whether anything actually differed from the stored row,
+// so a no-op PATCH (both fields resent unchanged) does not manufacture a
+// misleading audit entry.
+func (h *Handler) updateExportPrivacyAtomically(ctx context.Context, workspaceID, actorID pgtype.UUID, requestedMode *string, requestedRetentionDays *int32) (db.UpdateWorkspaceExportPrivacyRow, bool, error) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return db.UpdateWorkspaceExportPrivacyRow{}, false, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	q := h.Queries.WithTx(tx)
+
+	current, err := q.GetWorkspaceExportPrivacyForUpdate(ctx, workspaceID)
+	if err != nil {
+		return db.UpdateWorkspaceExportPrivacyRow{}, false, fmt.Errorf("load current (for update): %w", err)
+	}
+
+	mode := current.ExportRedactionMode
+	if requestedMode != nil {
+		mode = *requestedMode
+	}
+	retentionDays := current.ExportManifestRetentionDays
+	if requestedRetentionDays != nil {
+		retentionDays = *requestedRetentionDays
+	}
+	changed := mode != current.ExportRedactionMode || retentionDays != current.ExportManifestRetentionDays
+
+	updated, err := q.UpdateWorkspaceExportPrivacy(ctx, db.UpdateWorkspaceExportPrivacyParams{
+		ID:                          workspaceID,
+		ExportRedactionMode:         mode,
+		ExportManifestRetentionDays: retentionDays,
+	})
+	if err != nil {
+		return db.UpdateWorkspaceExportPrivacyRow{}, false, fmt.Errorf("update: %w", err)
+	}
+
+	if changed {
+		details, err := json.Marshal(exportPrivacyAuditDetails{
+			FromRedactionMode:         current.ExportRedactionMode,
+			ToRedactionMode:           updated.ExportRedactionMode,
+			FromManifestRetentionDays: current.ExportManifestRetentionDays,
+			ToManifestRetentionDays:   updated.ExportManifestRetentionDays,
+		})
+		if err != nil {
+			return db.UpdateWorkspaceExportPrivacyRow{}, false, fmt.Errorf("marshal audit details: %w", err)
+		}
+		if _, err := q.CreateActivity(ctx, db.CreateActivityParams{
+			WorkspaceID: workspaceID,
+			ActorType:   pgtype.Text{String: "member", Valid: true},
+			ActorID:     actorID,
+			Action:      exportPrivacyPolicyChangedActivity,
+			Details:     details,
+		}); err != nil {
+			// Fails the whole transaction: a policy change with no durable audit
+			// record is exactly the gap this handler exists to close, so the
+			// change itself must not persist if the record of it cannot.
+			return db.UpdateWorkspaceExportPrivacyRow{}, false, fmt.Errorf("insert audit record: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return db.UpdateWorkspaceExportPrivacyRow{}, false, fmt.Errorf("commit: %w", err)
+	}
+	return updated, changed, nil
+}
+
+// exportPrivacyAuditDetails is the activity_log.details payload for
+// exportPrivacyPolicyChangedActivity. Field names are stable — anything
+// reading this history later (a dashboard, an export) depends on them.
+type exportPrivacyAuditDetails struct {
+	FromRedactionMode         string `json:"from_redaction_mode"`
+	ToRedactionMode           string `json:"to_redaction_mode"`
+	FromManifestRetentionDays int32  `json:"from_manifest_retention_days"`
+	ToManifestRetentionDays   int32  `json:"to_manifest_retention_days"`
 }
 
 // exportRedactionModeEnforced reports whether mode is the one CHE-755's
