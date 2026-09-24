@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -72,6 +73,12 @@ func (h *Handler) ExportProvenance(w http.ResponseWriter, r *http.Request) {
 		reject(http.StatusForbidden, "machine_credential", "this endpoint is only available to human actors")
 		return
 	}
+	// CHE-766: kill switch, checked before authentication so a disabled or
+	// erroring flag denies with no dependence on who is asking.
+	if !featureflags.ExportPrivacyControlsEnabled(r.Context(), h.FeatureFlags) {
+		reject(http.StatusServiceUnavailable, "export_disabled", "provenance export is currently disabled")
+		return
+	}
 	userID, ok := requireUserID(w, r)
 	if !ok {
 		return
@@ -120,6 +127,22 @@ func (h *Handler) ExportProvenance(w http.ResponseWriter, r *http.Request) {
 		// requireWorkspaceRole already wrote the 404/403 and does not log.
 		slog.Warn("provenance export: rejected", "actor_id", actorID, "actor_source", r.Header.Get("X-Actor-Source"),
 			"workspace_id", workspaceID, "reason", "not_owner_or_admin")
+		return
+	}
+
+	// CHE-766: fail closed before any row is read. A workspace column can only
+	// hold "small" or "strict" (DB CHECK in migration 517), but only "small" is
+	// implemented; a stored "strict" — from a future default change or a manual
+	// DB edit — must refuse the export rather than run it under a policy this
+	// handler does not actually enforce.
+	privacy, err := h.Queries.GetWorkspaceExportPrivacy(r.Context(), ctxWSUUID)
+	if err != nil {
+		fail("load_export_privacy", err)
+		return
+	}
+	if err := requireEnforcedExportRedactionMode(privacy.ExportRedactionMode); err != nil {
+		reject(http.StatusConflict, "redaction_mode_unimplemented", "workspace export redaction mode is not implemented",
+			"redaction_mode", privacy.ExportRedactionMode)
 		return
 	}
 

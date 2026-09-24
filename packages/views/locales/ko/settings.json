@@ -367,6 +367,7 @@
       "integrations": "연동",
       "labs": "실험실",
       "members": "멤버",
+      "export_privacy": "내보내기 개인정보 보호",
       "labels": "레이블",
       "issue_statuses": "태스크 상태",
       "properties": "속성",
@@ -734,6 +735,28 @@
     "toast_delete_failed": "워크스페이스를 삭제하지 못했습니다",
     "confirm_cancel": "취소",
     "confirm_action": "확인"
+  },
+  "export_privacy": {
+    "title": "내보내기 개인정보 보호",
+    "description": "출처 내보내기에서 마스킹되는 항목과 감사 매니페스트 보관 기간을 관리합니다.",
+    "section_title": "내보내기 정책",
+    "loading": "내보내기 개인정보 보호 설정을 불러오는 중…",
+    "mode_label": "마스킹 모드",
+    "mode_hint": "엄격 마스킹은 아직 제공되지 않으며 선택할 수 없습니다.",
+    "mode_small_label": "기본 (비밀 및 자격 증명 마스킹)",
+    "retention_label": "매니페스트 보관 기간(일)",
+    "retention_hint": "감사 매니페스트는 이 일수({{min}}–{{max}}) 후 자동으로 삭제됩니다.",
+    "retention_range_error": "{{min}}에서 {{max}} 사이의 숫자를 입력하세요.",
+    "unavailable_title": "내보내기 개인정보 보호 설정을 사용할 수 없습니다",
+    "unavailable_description": "이 기능은 일시적으로 비활성화되어 있습니다. 나중에 다시 시도하세요.",
+    "load_failed_title": "내보내기 개인정보 보호 설정을 불러오지 못했습니다",
+    "load_failed_description": "현재 정책을 불러오는 중 문제가 발생했습니다. 나중에 다시 시도하세요.",
+    "errors": {
+      "save_failed": "내보내기 개인정보 보호 설정을 저장하지 못했습니다",
+      "unavailable": "내보내기 개인정보 보호 설정을 일시적으로 사용할 수 없습니다",
+      "permission_changed": "더 이상 내보내기 개인정보 보호 설정을 관리할 권한이 없습니다",
+      "permission_changed_title": "권한이 필요합니다"
+    }
   },
   "delete_workspace_dialog": {
     "title": "워크스페이스 삭제",

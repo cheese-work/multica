@@ -276,6 +276,72 @@ describe("ApiClient Plugin preview response schema", () => {
   });
 });
 
+describe("ApiClient workspace export privacy response schema", () => {
+  // CHE-771 review finding F1: unlike the plugin/preview endpoints above,
+  // this endpoint must NOT fall back to a plausible-looking default on a
+  // malformed 2xx body. Retention days and redaction mode are confirmed
+  // server state an admin acts on directly ("saved: 90 days") — a fallback
+  // number here would misrepresent how long the audit trail actually
+  // survives, which is worse than surfacing a load failure.
+  it("throws instead of returning a fabricated policy when the GET response is malformed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ manifest_retention_days: "ninety" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").getWorkspaceExportPrivacy(
+        "workspace-1",
+      ),
+    ).rejects.toThrow();
+  });
+
+  it("throws instead of returning a fabricated policy when the PATCH response is malformed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ redaction_mode: 42 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").updateWorkspaceExportPrivacy(
+        "workspace-1",
+        { manifest_retention_days: 1 },
+      ),
+    ).rejects.toThrow();
+  });
+
+  it("parses a well-formed response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            redaction_mode: "small",
+            manifest_retention_days: 30,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").getWorkspaceExportPrivacy(
+        "workspace-1",
+      ),
+    ).resolves.toEqual({ redaction_mode: "small", manifest_retention_days: 30 });
+  });
+});
+
 describe("ApiClient Plugin surface bridge routes", () => {
   it("relays Action API calls through the session-only bridge prefix", async () => {
     const fetchMock = vi.fn().mockResolvedValue(

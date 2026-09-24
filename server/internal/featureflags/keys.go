@@ -52,6 +52,22 @@ const (
 	// receipt capture (or vice versa) for workspaces that were never
 	// independently opted into each. Off by default, same as Jev.
 	JevReceipts = "jev_receipts_enabled"
+	// ExportPrivacyControls (CHE-766) is the kill switch for the CHE-755
+	// provenance-export capability and its export-privacy config endpoints.
+	// Default TRUE: export already shipped in CHE-755 without a flag, so a
+	// CONFIGURED provider that simply has no rule for this key must preserve
+	// that existing behavior, not silently disable a capability nobody asked
+	// to gate. That default only applies once a real provider is in play,
+	// though — ExportPrivacyControlsEnabled denies outright when the
+	// *Service or its provider is absent, rather than trusting this default in
+	// a state indistinguishable from "no flag evaluation happened at all". A
+	// provider that errors evaluating this key already returns
+	// Reason=ReasonError with Enabled=false unconditionally (see
+	// pkg/featureflag/env_provider.go), covering the "provider present but
+	// broken" half of unavailable. Turning this off in a working provider is
+	// the operator's explicit kill switch: it disables ExportProvenance AND
+	// both export-privacy config routes in one write.
+	ExportPrivacyControls = "export_privacy_controls"
 	// agentBuilderCompat is no longer a release flag. Keep publishing the key
 	// as enabled so installed desktop clients that still gate the AI creation
 	// entry on this config decision receive the permanently enabled behavior.
@@ -95,6 +111,23 @@ func TriageV1Enabled(ctx context.Context, flags *featureflag.Service) bool {
 // receipt-capture observation. See [JevReceipts].
 func JevReceiptsEnabled(ctx context.Context, flags *featureflag.Service) bool {
 	return flags.IsEnabled(ctx, JevReceipts, false)
+}
+
+// ExportPrivacyControlsEnabled reports whether CHE-755 provenance export and
+// the CHE-766 export-privacy config endpoints may run. See
+// [ExportPrivacyControls] for the fail-closed contract on error/unavailable.
+//
+// A nil *Service or a Service with no configured Provider is deliberately
+// NOT the same as "the key is unset on a working provider": IsEnabled alone
+// cannot tell those apart — both return this call's default — so relying on
+// it here would let export run under wiring that never evaluated the flag at
+// all (Sol's finding on df415ab6). This checks Provider() directly and
+// denies before ever reaching IsEnabled's default-passthrough.
+func ExportPrivacyControlsEnabled(ctx context.Context, flags *featureflag.Service) bool {
+	if flags == nil || flags.Provider() == nil {
+		return false
+	}
+	return flags.IsEnabled(ctx, ExportPrivacyControls, true)
 }
 
 func EvaluateFrontendPublicFlags(ctx context.Context, flags *featureflag.Service) map[string]bool {

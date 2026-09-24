@@ -11,6 +11,50 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteExpiredProvenanceExportLogsForWorkspace = `-- name: DeleteExpiredProvenanceExportLogsForWorkspace :many
+DELETE FROM provenance_export_log
+WHERE workspace_id = $1
+  AND created_at < now() - make_interval(days =>
+        (SELECT export_manifest_retention_days FROM workspace WHERE id = $1 FOR SHARE)::int)
+RETURNING id
+`
+
+// CHE-766: scheduled retention cleanup for one workspace. The cutoff comes
+// from a subquery that takes FOR SHARE on the workspace row — the same row
+// UpdateWorkspaceExportPrivacy locks FOR UPDATE inside its own transaction
+// (server/internal/handler/workspace_export_privacy.go). FOR SHARE is a
+// genuine lock wait, not just a read of whatever happens to be committed at
+// statement-snapshot time: if an admin's PATCH transaction is mid-flight
+// holding FOR UPDATE on this row (e.g. raising retention from 1 to 365 days
+// to protect an active obligation), this subquery BLOCKS until that PATCH
+// commits or rolls back, then reads the value it actually left behind. A
+// plain scalar subquery with no lock does not block on a concurrent FOR
+// UPDATE holder and can still read a value that is about to be superseded —
+// that gap is what this lock closes (review finding on df415ab6d). Returns
+// the deleted ids so the caller can write a workspace-scoped, content-free
+// receipt of exactly what was removed (never titles/descriptions/comment
+// bodies — provenance_export_log already carries only ids, digests and
+// exclusion reasons per migration 515).
+func (q *Queries) DeleteExpiredProvenanceExportLogsForWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, deleteExpiredProvenanceExportLogsForWorkspace, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const insertProvenanceExportLog = `-- name: InsertProvenanceExportLog :one
 INSERT INTO provenance_export_log (
     workspace_id, actor_type, actor_id, request_digest, manifest_digest,
@@ -65,4 +109,35 @@ func (q *Queries) InsertProvenanceExportLog(ctx context.Context, arg InsertProve
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const listWorkspaceExportRetentionSettings = `-- name: ListWorkspaceExportRetentionSettings :many
+SELECT id AS workspace_id
+FROM workspace
+ORDER BY id ASC
+`
+
+// CHE-766: workspace ids for the scheduler to fan out
+// DeleteExpiredProvenanceExportLogsForWorkspace one call per workspace. Only
+// ids are needed — retention_days is read live by the delete query itself,
+// not carried from here, so this list can never go stale between being read
+// and being acted on.
+func (q *Queries) ListWorkspaceExportRetentionSettings(ctx context.Context) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listWorkspaceExportRetentionSettings)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var workspace_id pgtype.UUID
+		if err := rows.Scan(&workspace_id); err != nil {
+			return nil, err
+		}
+		items = append(items, workspace_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

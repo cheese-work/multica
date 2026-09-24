@@ -33,6 +33,7 @@ import type {
   WorkspaceSeatPurchasePreview,
   PurchaseWorkspaceSeatsResponse,
   CreateWorkspaceSubscriptionPortalResponse,
+  WorkspaceExportPrivacy,
   CronPreviewResponse,
   DingTalkInstallation,
   ListDingTalkInstallationsResponse,
@@ -3486,3 +3487,21 @@ export const EMPTY_JOIN_SHARE_LINK_RESPONSE: {
   workspace_id: "",
   workspace_slug: "",
 };
+
+// CHE-766: `redaction_mode` stays `z.string()`, not `z.enum(["small",
+// "strict"])` — an unrecognized future value must surface to the UI as an
+// unrecognized value (which the dashboard renders as read-only/unavailable),
+// not get coerced into "small" by a fallback that would misreport the active
+// policy.
+export const WorkspaceExportPrivacySchema = z
+  .object({
+    redaction_mode: z.string().min(1),
+    manifest_retention_days: z.number().int().positive(),
+  })
+  .loose()
+  .transform(
+    (value): WorkspaceExportPrivacy => ({
+      redaction_mode: value.redaction_mode,
+      manifest_retention_days: value.manifest_retention_days,
+    }),
+  );

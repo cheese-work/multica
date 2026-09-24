@@ -21,6 +21,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/featureflag"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -89,6 +90,14 @@ func TestMain(m *testing.M) {
 	bus := events.New()
 	emailSvc := service.NewEmailService()
 	testHandler = New(queries, pool, hub, bus, emailSvc, nil, nil, analytics.NoopClient{}, Config{AllowSignup: true})
+	// Production always wires a real *featureflag.Service (cmd/server/main.go);
+	// leaving it nil here would make every flag defaulting to true (currently
+	// only ExportPrivacyControls, CHE-766) silently deny in tests where a
+	// working-but-unconfigured provider should fall through to that default.
+	// An empty StaticProvider has no rules at all, matching "flag wiring
+	// exists, this key just isn't configured" — the same state a self-hosted
+	// deployment with no flag config file would actually be in.
+	testHandler.FeatureFlags = featureflag.NewService(featureflag.NewStaticProvider())
 	// httptest.NewRequest defaults RemoteAddr to 192.0.2.1, so every webhook
 	// test in the suite shares one IP bucket. With the production default
 	// (30/min) the budget runs out partway through the suite and unrelated

@@ -367,6 +367,7 @@
       "integrations": "連携",
       "labs": "ラボ",
       "members": "メンバー",
+      "export_privacy": "エクスポートプライバシー",
       "labels": "ラベル",
       "issue_statuses": "タスクステータス",
       "properties": "プロパティ",
@@ -734,6 +735,28 @@
     "click_logo_hint": "ロゴをクリックして新しい画像をアップロード",
     "toast_logo_updated": "ワークスペースのロゴを更新しました",
     "toast_logo_failed": "ワークスペースのロゴをアップロードできませんでした"
+  },
+  "export_privacy": {
+    "title": "エクスポートプライバシー",
+    "description": "プロベナンスエクスポートで削除される内容と、監査マニフェストの保持期間を管理します。",
+    "section_title": "エクスポートポリシー",
+    "loading": "エクスポートプライバシー設定を読み込み中…",
+    "mode_label": "削除モード",
+    "mode_hint": "厳格な削除はまだ利用できず、選択できません。",
+    "mode_small_label": "小規模（シークレットと認証情報をマスク）",
+    "retention_label": "マニフェスト保持期間（日数）",
+    "retention_hint": "監査マニフェストはこの日数（{{min}}〜{{max}}）が経過すると自動的に削除されます。",
+    "retention_range_error": "{{min}}から{{max}}の間の数値を入力してください。",
+    "unavailable_title": "エクスポートプライバシー設定は利用できません",
+    "unavailable_description": "この機能は一時的に無効になっています。しばらくしてから再度お試しください。",
+    "load_failed_title": "エクスポートプライバシー設定を読み込めませんでした",
+    "load_failed_description": "現在のポリシーの読み込み中に問題が発生しました。しばらくしてから再度お試しください。",
+    "errors": {
+      "save_failed": "エクスポートプライバシー設定の保存に失敗しました",
+      "unavailable": "エクスポートプライバシー設定は一時的に利用できません",
+      "permission_changed": "エクスポートプライバシー設定を管理する権限がなくなりました",
+      "permission_changed_title": "権限が必要です"
+    }
   },
   "delete_workspace_dialog": {
     "title": "ワークスペースを削除",

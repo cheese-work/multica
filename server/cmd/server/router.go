@@ -1661,6 +1661,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 						r.Delete("/", h.DeleteMember)
 					})
 					r.Delete("/invitations/{invitationId}", h.RevokeInvitation)
+					// CHE-766: export privacy policy (CHE-755 redaction mode +
+					// audit-manifest retention). Human owners/admins only — layered
+					// on top of the admin-role group with RequireHumanActor so an
+					// agent actor holding owner/admin membership still cannot read
+					// or raise export privilege; the handlers re-check as a backstop.
+					r.With(handler.RequireHumanActor).Get("/export-privacy", h.GetWorkspaceExportPrivacy)
+					r.With(handler.RequireHumanActor).Patch("/export-privacy", h.UpdateWorkspaceExportPrivacy)
 					// Curating the shared MCP library is an admin action.
 					// Creating an entry binds it to no agent; an agent owner
 					// adds it to their own agent through the agent routes.

@@ -132,3 +132,17 @@ export interface ShareLinkInfo {
   creator_name?: string;
   role: MemberRole;
 }
+
+/**
+ * CHE-766 export privacy policy: the CHE-755 export redaction mode and the
+ * retention window for audit manifests. `redaction_mode` stays a plain
+ * string, not a union — "strict" exists at the DB/CHECK level as a forward
+ * compatibility placeholder but has no server-side enforcement yet
+ * (server/internal/handler/workspace_export_privacy.go), so the UI must be
+ * able to represent a value it does not offer as selectable rather than
+ * coercing an unrecognized value into "small".
+ */
+export interface WorkspaceExportPrivacy {
+  redaction_mode: string;
+  manifest_retention_days: number;
+}
