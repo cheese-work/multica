@@ -11,6 +11,30 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteExpiredProvenanceExportLogsForWorkspace = `-- name: DeleteExpiredProvenanceExportLogsForWorkspace :execrows
+DELETE FROM provenance_export_log
+WHERE workspace_id = $1
+  AND created_at < now() - make_interval(days => $2::int)
+`
+
+type DeleteExpiredProvenanceExportLogsForWorkspaceParams struct {
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	RetentionDays int32       `json:"retention_days"`
+}
+
+// CHE-766: scheduled retention cleanup. Deletes audit rows older than the
+// workspace's own configured retention window rather than a single global
+// cutoff, so each workspace's admin-set retention_days is honored exactly.
+// Returns the row count so the scheduler's audit trail records how many
+// manifests were reaped per tick.
+func (q *Queries) DeleteExpiredProvenanceExportLogsForWorkspace(ctx context.Context, arg DeleteExpiredProvenanceExportLogsForWorkspaceParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredProvenanceExportLogsForWorkspace, arg.WorkspaceID, arg.RetentionDays)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const insertProvenanceExportLog = `-- name: InsertProvenanceExportLog :one
 INSERT INTO provenance_export_log (
     workspace_id, actor_type, actor_id, request_digest, manifest_digest,
@@ -65,4 +89,37 @@ func (q *Queries) InsertProvenanceExportLog(ctx context.Context, arg InsertProve
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const listWorkspaceExportRetentionSettings = `-- name: ListWorkspaceExportRetentionSettings :many
+SELECT id AS workspace_id, export_manifest_retention_days
+FROM workspace
+ORDER BY id ASC
+`
+
+type ListWorkspaceExportRetentionSettingsRow struct {
+	WorkspaceID                 pgtype.UUID `json:"workspace_id"`
+	ExportManifestRetentionDays int32       `json:"export_manifest_retention_days"`
+}
+
+// CHE-766: retention-days per workspace, for the scheduler to fan out
+// DeleteExpiredProvenanceExportLogsForWorkspace one call per workspace.
+func (q *Queries) ListWorkspaceExportRetentionSettings(ctx context.Context) ([]ListWorkspaceExportRetentionSettingsRow, error) {
+	rows, err := q.db.Query(ctx, listWorkspaceExportRetentionSettings)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListWorkspaceExportRetentionSettingsRow{}
+	for rows.Next() {
+		var i ListWorkspaceExportRetentionSettingsRow
+		if err := rows.Scan(&i.WorkspaceID, &i.ExportManifestRetentionDays); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

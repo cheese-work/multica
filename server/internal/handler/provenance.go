@@ -123,6 +123,22 @@ func (h *Handler) ExportProvenance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// CHE-766: fail closed before any row is read. A workspace column can only
+	// hold "small" or "strict" (DB CHECK in migration 517), but only "small" is
+	// implemented; a stored "strict" — from a future default change or a manual
+	// DB edit — must refuse the export rather than run it under a policy this
+	// handler does not actually enforce.
+	privacy, err := h.Queries.GetWorkspaceExportPrivacy(r.Context(), ctxWSUUID)
+	if err != nil {
+		fail("load_export_privacy", err)
+		return
+	}
+	if err := requireEnforcedExportRedactionMode(privacy.ExportRedactionMode); err != nil {
+		reject(http.StatusConflict, "redaction_mode_unimplemented", "workspace export redaction mode is not implemented",
+			"redaction_mode", privacy.ExportRedactionMode)
+		return
+	}
+
 	export, err := h.collectProvenance(r.Context(), ctxWSUUID, req, cutoff)
 	if err != nil {
 		fail("collect", err)
