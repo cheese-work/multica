@@ -1,0 +1,41 @@
+name: CHE-701 services smoke
+
+on:
+  push:
+    branches: [agent/c00-hermes-devops/che701-services-smoke]
+
+jobs:
+  services-localhost:
+    runs-on: [self-hosted, linux, x64, cheese-x99]
+    timeout-minutes: 10
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 26379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Ping service through runner localhost
+        run: |
+          python3 - <<'PY'
+          import socket
+          import time
+
+          for attempt in range(30):
+              try:
+                  with socket.create_connection(("127.0.0.1", 26379), timeout=2) as conn:
+                      conn.sendall(b"PING\r\n")
+                      response = conn.recv(128)
+                  if response != b"+PONG\r\n":
+                      raise AssertionError(f"Unexpected Redis response: {response!r}")
+                  print(f"PASS: {socket.gethostname()} localhost:26379 -> Redis PONG")
+                  break
+              except OSError:
+                  if attempt == 29:
+                      raise
+                  time.sleep(1)
+          PY
