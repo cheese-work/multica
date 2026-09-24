@@ -237,4 +237,105 @@ if [ -n "$leftover" ]; then
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# Scenario: post-replace exec failure (noexec-equivalent). The scenario above
+# only exercises a bad build being caught BEFORE the atomic replace, at the
+# staged copy in $work_dir. A real noexec target filesystem, wrong
+# architecture, or truncated copy can only be observed by executing the
+# binary from its FINAL installed path, which staging structurally cannot
+# do (staging never runs from $bin_dir). Creating a real noexec mount needs
+# root/mount-namespace privileges this sandbox and many CI runners don't
+# grant, so this fixture simulates the same failure class deterministically:
+# the binary itself detects it is running from a directory literally named
+# "bin-postreplace" and refuses to execute only then — succeeding identically
+# to every other scenario in this file everywhere else, including when
+# staged in $work_dir. This is fault injection at the same observable
+# boundary (does `$bin_dir/multica version` succeed?), not a weaker proxy for
+# it.
+# ---------------------------------------------------------------------------
+postreplace_bin_dir="$work_dir/bin-postreplace"
+bash "$script" --repo "$fixture_repo" --ref "$good_sha" --bin-dir "$postreplace_bin_dir" >/dev/null 2>&1
+postreplace_good_commit="$("$postreplace_bin_dir/multica" version --output json | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.parse(d).commit))')"
+postreplace_good_mtime="$(stat -c %Y "$postreplace_bin_dir/multica" 2>/dev/null || stat -f %m "$postreplace_bin_dir/multica")"
+
+cat >"$fixture_repo/server/cmd/multica/main.go" <<'EOF'
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+var version = "dev"
+var commit = "unknown"
+var date = "unknown"
+
+func main() {
+	if len(os.Args) >= 2 && os.Args[1] == "version" {
+		if strings.Contains(filepath.Base(filepath.Dir(os.Args[0])), "bin-postreplace") {
+			fmt.Fprintln(os.Stderr, "simulated post-replace exec failure (stands in for noexec/wrong-arch/truncated-copy)")
+			os.Exit(1)
+		}
+		enc := json.NewEncoder(os.Stdout)
+		_ = enc.Encode(map[string]string{"version": version, "commit": commit, "date": date})
+		return
+	}
+	fmt.Println("fixture multica")
+}
+EOF
+git -C "$fixture_repo" add -A
+git -C "$fixture_repo" commit --quiet -m "commit that only fails once installed to bin-postreplace"
+postreplace_bad_sha="$(git -C "$fixture_repo" rev-parse HEAD)"
+
+set +e
+postreplace_output="$(bash "$script" --repo "$fixture_repo" --ref "$postreplace_bad_sha" --bin-dir "$postreplace_bin_dir" 2>&1)"
+postreplace_status=$?
+set -e
+
+if [ "$postreplace_status" -eq 0 ]; then
+  echo "scenario post-replace-exec-failure: expected nonzero exit when the installed binary fails to execute, got 0" >&2
+  echo "$postreplace_output" >&2
+  exit 1
+fi
+if [[ "$postreplace_output" != *"restored the previous binary"* ]]; then
+  echo "scenario post-replace-exec-failure: expected an explicit restore message, got:" >&2
+  echo "$postreplace_output" >&2
+  exit 1
+fi
+
+postreplace_after_commit="$("$postreplace_bin_dir/multica" version --output json | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.parse(d).commit))')"
+if [ "$postreplace_after_commit" != "$postreplace_good_commit" ]; then
+  echo "scenario post-replace-exec-failure: expected the previous binary (commit $postreplace_good_commit) to be restored, found commit $postreplace_after_commit" >&2
+  exit 1
+fi
+
+# `cp -p` preserves mtime, so the backup carries the original install's
+# mtime through the whole backup -> failed-replace -> restore cycle: the
+# restored file's mtime matching the original is proof restore ran and
+# restored a byte-identical copy, not evidence it didn't. It does not, on
+# its own, distinguish "restored" from "the original file, never touched" —
+# the commit check above and the "restored the previous binary" message
+# check together already establish that a replace attempt happened; this
+# assertion only additionally confirms the restore reproduced the original
+# exactly, rather than e.g. a fresh build that happens to match the commit.
+postreplace_after_mtime="$(stat -c %Y "$postreplace_bin_dir/multica" 2>/dev/null || stat -f %m "$postreplace_bin_dir/multica")"
+if [ "$postreplace_after_mtime" != "$postreplace_good_mtime" ]; then
+  echo "scenario post-replace-exec-failure: expected the restored binary's mtime ($postreplace_good_mtime) to match the original install, got $postreplace_after_mtime" >&2
+  exit 1
+fi
+
+postreplace_leftover="$(find "$postreplace_bin_dir" -maxdepth 1 -name '.multica.new.*' 2>/dev/null)"
+if [ -n "$postreplace_leftover" ]; then
+  echo "scenario post-replace-exec-failure: a staging temp file was left behind: $postreplace_leftover" >&2
+  exit 1
+fi
+
+if [ ! -x "$postreplace_bin_dir/multica" ]; then
+  echo "scenario post-replace-exec-failure: the restored binary must remain executable" >&2
+  exit 1
+fi
+
 echo "install-cli-from-ref.sh fixtures passed"

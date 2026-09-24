@@ -120,6 +120,29 @@ fi
 mkdir -p "$bin_dir"
 chmod 0755 "$staged_binary"
 
+# Preserve whatever is currently installed BEFORE the replace, so a failure
+# that only manifests after the rename (the new binary can't even exec on
+# this filesystem — e.g. noexec, wrong architecture, truncated copy — not
+# just "wrong commit") still has something to restore. Backing this up is
+# unconditional: even a $bin_dir/multica this script cannot itself verify
+# (e.g. it was already broken) is still ours to put back exactly as found,
+# never ours to silently drop.
+backup_binary=""
+if [ -e "$bin_dir/multica" ]; then
+  backup_binary="$work_dir/multica.previous"
+  cp -p "$bin_dir/multica" "$backup_binary"
+fi
+
+restore_previous() {
+  if [ -n "$backup_binary" ]; then
+    cp -p "$backup_binary" "$bin_dir/multica"
+    echo "install-cli-from-ref: restored the previous binary at $bin_dir/multica" >&2
+  else
+    rm -f "$bin_dir/multica"
+    echo "install-cli-from-ref: removed the partially installed binary at $bin_dir/multica (nothing was installed there before)" >&2
+  fi
+}
+
 # Atomic replacement: `mv` within the same filesystem is a single rename(2),
 # so a reader (including a daemon that execs this path) either sees the old
 # binary or the fully-staged new one, never a partially written file. Staging
@@ -134,9 +157,25 @@ if ! mv -f "$replace_tmp" "$bin_dir/multica"; then
   exit 1
 fi
 
-installed_commit="$("$bin_dir/multica" version --output json | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.parse(d).commit))')"
+# Verify the binary AT ITS FINAL INSTALLED PATH, not just the staged copy:
+# this is the only way to catch a failure mode staging can't see, such as
+# --bin-dir being on a noexec mount. Any failure here — exec itself failing,
+# or the exec succeeding but reporting the wrong commit — restores the
+# previous binary before this script exits, so a bad replacement never
+# leaves the host worse off than before the attempt.
+set +e
+installed_commit="$("$bin_dir/multica" version --output json 2>/dev/null | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(d).commit)}catch{}})' 2>/dev/null)"
+verify_status=$?
+set -e
+
+if [ "$verify_status" -ne 0 ] || [ -z "$installed_commit" ]; then
+  echo "install-cli-from-ref: FATAL — $bin_dir/multica failed to execute after replacement (exit $verify_status)" >&2
+  restore_previous
+  exit 1
+fi
 if [ "${resolved_commit:0:9}" != "$installed_commit" ]; then
-  echo "install-cli-from-ref: FATAL — $bin_dir/multica reports commit $installed_commit after replacement, expected ${resolved_commit:0:9}. The previous binary is gone; re-run this script with a known-good --ref to recover." >&2
+  echo "install-cli-from-ref: FATAL — $bin_dir/multica reports commit $installed_commit after replacement, expected ${resolved_commit:0:9}" >&2
+  restore_previous
   exit 1
 fi
 
