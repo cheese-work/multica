@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -238,7 +239,7 @@ func (h *Handler) hermesExceptionVerifyAndSwapWorkspaceContext(ctx context.Conte
 	var currentContext *string
 	err = tx.QueryRow(ctx, `SELECT context FROM workspace WHERE id = $1 FOR UPDATE`, wsUUID).Scan(&currentContext)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return hermesExceptionSwapResult{}, hermesExceptionRejectNotFound, nil
 		}
 		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal, err
@@ -290,7 +291,7 @@ func (h *Handler) hermesExceptionVerifyAndSwapSquadInstructions(ctx context.Cont
 	var currentInstructions string
 	err = tx.QueryRow(ctx, `SELECT instructions FROM squad WHERE id = $1 FOR UPDATE`, squadUUID).Scan(&currentInstructions)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return hermesExceptionSwapResult{}, hermesExceptionRejectNotFound, nil
 		}
 		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal, err
