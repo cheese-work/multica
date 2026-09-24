@@ -27,7 +27,7 @@
 //     runtime_recovery, timeout, iteration_limit, agent_blocked,
 //     api_invalid_request, skill_bundle_unavailable,
 //     runtime_cli_timeout, environment_prepare_failed,
-//     invalid_task_identity
+//     invalid_task_identity, runtime_access_denied
 //
 //   - A dispatch-blocked value (`dispatch_blocked.` prefix), written at
 //     admission time — before a task row exists — when service.AgentReadiness
@@ -184,6 +184,22 @@ const (
 	// only repeat an isolation failure.
 	ReasonInvalidTaskIdentity Reason = "invalid_task_identity"
 
+	// ReasonRuntimeAccessDenied: the daemon refused a claimed task because
+	// a private runtime does not authorize the task's agent — the runtime
+	// owner and the agent owner differ, a private owned runtime was paired
+	// with an ownerless agent, or the runtime owner needed for
+	// authorization was missing at the delivery gate. The agent process is
+	// never launched. Unlike ReasonInvalidTaskIdentity the task's persisted
+	// identity is intact; what fails is ownership authorization. Permanent
+	// and non-retryable: retrying the same runtime/agent pair reproduces
+	// the denial, so recovery is user configuration (make the runtime
+	// public, or rebind the agent to a runtime its owner may use), not
+	// another attempt. Written by the daemon claim settlement paths in
+	// handler/daemon.go. Shares the runtime_access_denied wire value with
+	// dispatch.ReasonRuntimeAccessDenied so admission blocks and persisted
+	// settlement failures surface the same recovery guidance.
+	ReasonRuntimeAccessDenied Reason = "runtime_access_denied"
+
 	// Dispatch-blocked side: a NEW top-level namespace (dispatch_blocked.*),
 	// deliberately NOT platform-side and NOT agent_error.*. service.AgentReadiness
 	// refuses these before a task is ever created, so unlike every reason above
@@ -321,6 +337,7 @@ var allReasons = []Reason{
 	ReasonRuntimeCLITimeout,
 	ReasonEnvironmentPrepareFailed,
 	ReasonInvalidTaskIdentity,
+	ReasonRuntimeAccessDenied,
 
 	// Dispatch-blocked side: admission-time policy refusals.
 	ReasonDispatchBlockedProviderHold,

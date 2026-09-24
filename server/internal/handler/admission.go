@@ -57,6 +57,7 @@ const (
 	ReasonTargetUnavailable     = dispatch.ReasonTargetUnavailable
 	ReasonRuntimeOffline        = dispatch.ReasonRuntimeOffline
 	ReasonRuntimeUnusable       = dispatch.ReasonRuntimeUnusable
+	ReasonRuntimeAccessDenied   = dispatch.ReasonRuntimeAccessDenied
 	ReasonRuntimeProfileMissing = dispatch.ReasonRuntimeProfileMissing
 	ReasonAgentRuntimeRequired  = dispatch.ReasonAgentRuntimeRequired
 	ReasonAttributionBlocked    = dispatch.ReasonAttributionBlocked
@@ -122,6 +123,8 @@ func dispatchBlockedFallbackMessage(code DispatchReasonCode) string {
 		return "the target's runtime is offline"
 	case ReasonRuntimeUnusable:
 		return "the target's agent CLI cannot run on its machine"
+	case ReasonRuntimeAccessDenied:
+		return "the target cannot run on this runtime"
 	case ReasonRuntimeProfileMissing:
 		return "the target's agent CLI is missing a runtime profile on its machine"
 	case ReasonAgentRuntimeRequired:

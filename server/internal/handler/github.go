@@ -160,7 +160,7 @@ type GitHubMergeAnnouncementResponse struct {
 	Status string `json:"status"`
 	// DeliveryGUID is the GitHub delivery id that first enqueued this record,
 	// when known — an audit trail back to GitHub's own delivery log, not the
-	// dedup identity (see 492_github_merge_announcement_identity_uidx.up.sql).
+	// dedup identity (see 501_github_merge_announcement_identity_uidx.up.sql).
 	DeliveryGUID *string `json:"delivery_guid,omitempty"`
 	AttemptCount int32   `json:"attempt_count"`
 	// LastError is the sanitized reason from the most recent attempt, present
@@ -1145,7 +1145,7 @@ func (h *Handler) ListGitHubInstallationRepositories(w http.ResponseWriter, r *h
 		return
 	}
 	if !isGitHubRepositoryBrowseConfigured() {
-		writeError(w, http.StatusServiceUnavailable, "github repository browsing is not configured")
+		writeFeatureDisabled(w, "github_repository_browsing_not_configured", "github repository browsing is not configured")
 		return
 	}
 	page, ok := parseGitHubPageParam(w, r, "page", 1, 1, 100000)
@@ -1454,7 +1454,7 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	if secret == "" {
 		// Refusing to process webhooks at all is safer than treating an
 		// unconfigured deployment as "all signatures valid".
-		writeError(w, http.StatusServiceUnavailable, "github webhooks not configured")
+		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 	sigHeader := r.Header.Get("X-Hub-Signature-256")
@@ -1466,7 +1466,7 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	// Audit-only: GitHub mints a new delivery GUID on every redelivery of the
 	// same logical event, so it cannot be the merge-announcement dedup key
 	// (that's the identity index on workspace/provider/repository/pr/issue/
-	// event_kind — see 492_github_merge_announcement_identity_uidx.up.sql).
+	// event_kind — see 501_github_merge_announcement_identity_uidx.up.sql).
 	// It's still recorded on the announcement row for tracing a specific
 	// delivery back through GitHub's own logs.
 	deliveryGUID := r.Header.Get("X-GitHub-Delivery")

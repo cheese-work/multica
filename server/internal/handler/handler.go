@@ -112,7 +112,7 @@ type Config struct {
 	// without a header-stripping reverse proxy in front.
 	TrustedProxies []netip.Prefix
 	// CloudURL enables the SaaS-only multica-cloud connection when set. Empty
-	// keeps self-hosted deployments explicit: Cloud endpoints return 503 instead
+	// keeps self-hosted deployments explicit: Cloud endpoints return 403 instead
 	// of attempting to dial a hard-coded private service.
 	CloudURL                 string
 	CloudTimeout             time.Duration
@@ -267,7 +267,7 @@ type Handler struct {
 	googleOAuthHTTPClient *http.Client
 	// Lark integration. All three are nil when the Lark master key
 	// (MULTICA_LARK_SECRET_KEY) is unset; the corresponding HTTP
-	// handlers return 503 in that case so a misconfigured self-host
+	// handlers return 403 in that case so a misconfigured self-host
 	// deployment surfaces a clear error instead of silently using a
 	// zero key. Wired in cmd/server/router.go after handler.New.
 	LarkInstallations *lark.InstallationService
@@ -288,7 +288,7 @@ type Handler struct {
 	// entry points.
 	LarkAPIClient lark.APIClient
 	// Composio integration (MUL-3720). Nil when COMPOSIO_API_KEY is unset;
-	// the composio HTTP handlers return 503 in that case. Wired in
+	// the composio HTTP handlers return 403 in that case. Wired in
 	// cmd/server/router.go after handler.New.
 	Composio *composio.Service
 	// Jev is the TypeSafe System One evaluation client (CHE-683). Nil when
@@ -343,7 +343,7 @@ type Handler struct {
 	SlackHistory ChatChannelHistoryReader
 	// WecomStore is the read/write handle over channel_installation rows scoped
 	// to channel_type='wecom'. Nil disables the wecom Web-UI endpoints (they
-	// return 503) and prevents boot from wiring the smart-bot supervisor.
+	// return 403) and prevents boot from wiring the smart-bot supervisor.
 	WecomStore *wecom.Store
 	// WecomCredentials unseals a wecom installation's smart-bot secret for the
 	// WebSocket subscribe frame. Nil disables the wecom integration.
@@ -352,7 +352,7 @@ type Handler struct {
 	// "link your Multica account" prompt sent to first-time WeCom users
 	// (their aibot userid is a "T"-prefixed anonymized id with no relation
 	// to their real userid or email, so an explicit binding is required —
-	// see wecom/binding.go). Nil disables the redeem endpoint (returns 503)
+	// see wecom/binding.go). Nil disables the redeem endpoint (returns 403)
 	// and the OutboundReplier's binding-prompt path.
 	WecomBindingTokens WecomBindingRedeemer
 
@@ -404,7 +404,7 @@ type Handler struct {
 	LLM *llm.Client
 	// VCSSecretBox encrypts/decrypts per-workspace Git provider access tokens and
 	// webhook secrets at rest (Forgejo / Gitea / GitLab). Nil when
-	// MULTICA_VCS_SECRET_KEY is unset; the connect/webhook handlers return 503
+	// MULTICA_VCS_SECRET_KEY is unset; connect returns 403 and webhook returns 404
 	// in that case so a misconfigured self-host deployment surfaces a clear
 	// error rather than silently storing plaintext. Wired in
 	// cmd/server/router.go after New.
@@ -589,6 +589,13 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 // fallback for anything that has not been given a translation yet.
 func writeErrorCode(w http.ResponseWriter, status int, code, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg, "code": code})
+}
+
+// writeFeatureDisabled reports a deliberate deployment or feature gate as a
+// non-retryable refusal. A disabled capability is not a transient service
+// failure: returning 503 would invite retries and pollute availability alerts.
+func writeFeatureDisabled(w http.ResponseWriter, code, msg string) {
+	writeErrorCode(w, http.StatusForbidden, code, msg)
 }
 
 func writeRevisionConflict(w http.ResponseWriter, resourceType string, resourceID pgtype.UUID, expected, actual int64) {

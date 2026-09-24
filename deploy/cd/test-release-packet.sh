@@ -294,13 +294,33 @@ expect_exit 1 "$status" out-of-order-migrations
 expect_contains "$output" "not in on-disk applied order" out-of-order-migrations
 
 # build_c00_shape_packet.mjs builds a packet reproducing C00's actual
-# pre-cutover shape from run 35745037983's admitted baseline tuple:
-# ordered_migrations is the full on-disk set through 501 (the baseline's
-# latest, 501_protocol_lint_run_checked_at_idx), and the observed ledger is
-# that same version list with all five CHE-548 renames substituted back to
-# their pre-rename names — reproducing what C00's schema_migrations table
-# actually held, not just the single name the first-unknown-version early
-# exit in validatePacket happened to report.
+# pre-cutover shape from deploy/cd/fixtures/c00-ledger-35745037983.json, a
+# committed snapshot of the admitted baseline tuple (run 35745037983,
+# artifact cd-deploy-admitted-input/baseline-tuple.json): row_count 535,
+# latest 501_protocol_lint_run_checked_at_idx, ordered_sha256
+# sha256:b24294b971a0e471ff0c13478d5f71f76c90e27388725d8e4dadc5b5b700708f.
+# An earlier version of this fixture derived that ledger at test-run time
+# from "git ls-tree origin/main:server/migrations", which is a moving
+# target: it breaks in a --depth 1 clone (no origin/main at all) and would
+# have produced a different, wrong hash once this PR merges and origin/main
+# itself contains the renamed files (CHE-650 review finding). The committed
+# fixture is the actual historical ledger, not a derivation of it.
+#
+# ordered_migrations is the full on-disk set through the renamed files
+# current latest (512_stage_completion_wake_workspace_index -- the CHE-650
+# upstream v0.5.0 sync moved the fork own migrations twice: the five
+# CHE-548 renames 491-495 -> 504-508, and the CHE-488 stage-completion-wake
+# group 496-499 -> 509-512, because upstream now owns 491-499 outright).
+#
+# The observed ledger is NOT that same version list. It is the committed
+# 535-row fixture verbatim: the migrator keys purely on filename, so
+# CHE-548 renaming 470-474 to 491-495 did not delete the old 470-474 rows
+# -- it just ran five more files it had never seen under their new names.
+# C00 ledger holds BOTH the pre-CHE-548 names (470-474) AND the CHE-548
+# names (491-495). Upstream own 491-499 (491_issue_status_category_backfill
+# and so on) are excluded entirely: C00 never applied those, they only
+# exist on this branch after the sync, and must show as pending in
+# ordered_migrations, never as ledger rows.
 build_c00_shape_packet() {
   local out=$1
   node -e '
@@ -308,28 +328,50 @@ build_c00_shape_packet() {
     const crypto = require("crypto");
     const path = require("path");
     const dir = "server/migrations";
-    const latest = "501_protocol_lint_run_checked_at_idx";
+    const latest = "512_stage_completion_wake_workspace_index";
     const files = fs.readdirSync(dir).filter((f) => f.endsWith(".up.sql")).sort();
     const latestIdx = files.findIndex((f) => f === `${latest}.up.sql`);
     if (latestIdx === -1) throw new Error(`fixture assumption failed: ${latest}.up.sql not found under ${dir}`);
-    const upTo501 = files.slice(0, latestIdx + 1);
-    const ordered = upTo501.map((f) => {
+    const upToLatest = files.slice(0, latestIdx + 1);
+    const ordered = upToLatest.map((f) => {
       const bytes = fs.readFileSync(path.join(dir, f));
       return { version: f.replace(/\.up\.sql$/, ""), sha256: "sha256:" + crypto.createHash("sha256").update(bytes).digest("hex") };
     });
+
+    const fixture = JSON.parse(fs.readFileSync("deploy/cd/fixtures/c00-ledger-35745037983.json", "utf8"));
+    const ledgerSorted = fixture.versions;
+    if (ledgerSorted.length !== 535) {
+      throw new Error(`fixture assumption failed: expected 535-row C00 ledger, got ${ledgerSorted.length}`);
+    }
+    const observedHash = crypto.createHash("sha256").update(ledgerSorted.join("\n") + "\n").digest("hex");
+    const expectedHash = "b24294b971a0e471ff0c13478d5f71f76c90e27388725d8e4dadc5b5b700708f";
+    if (observedHash !== expectedHash) {
+      throw new Error(`fixture assumption failed: C00-shape ledger hash ${observedHash} does not match admitted baseline ${expectedHash}`);
+    }
+
     const renames = new Map([
-      ["491_github_merge_announcement", "470_github_merge_announcement"],
-      ["492_github_merge_announcement_identity_uidx", "471_github_merge_announcement_identity_uidx"],
-      ["493_github_merge_announcement_pending_idx", "472_github_merge_announcement_pending_idx"],
-      ["494_github_merge_announcement_html_url", "473_github_merge_announcement_html_url"],
-      ["495_agent_task_rerun_lineage_unique", "474_agent_task_rerun_lineage_unique"],
+      ["470_github_merge_announcement", "504_github_merge_announcement"],
+      ["471_github_merge_announcement_identity_uidx", "505_github_merge_announcement_identity_uidx"],
+      ["472_github_merge_announcement_pending_idx", "506_github_merge_announcement_pending_idx"],
+      ["473_github_merge_announcement_html_url", "507_github_merge_announcement_html_url"],
+      ["474_agent_task_rerun_lineage_unique", "508_agent_task_rerun_lineage_unique"],
+      ["491_github_merge_announcement", "504_github_merge_announcement"],
+      ["492_github_merge_announcement_identity_uidx", "505_github_merge_announcement_identity_uidx"],
+      ["493_github_merge_announcement_pending_idx", "506_github_merge_announcement_pending_idx"],
+      ["494_github_merge_announcement_html_url", "507_github_merge_announcement_html_url"],
+      ["495_agent_task_rerun_lineage_unique", "508_agent_task_rerun_lineage_unique"],
+      ["496_stage_completion_wake", "509_stage_completion_wake"],
+      ["497_stage_completion_wake_unique", "510_stage_completion_wake_unique"],
+      ["498_stage_generation_workspace_index", "511_stage_generation_workspace_index"],
+      ["499_stage_completion_wake_workspace_index", "512_stage_completion_wake_workspace_index"],
     ]);
-    for (const onDiskName of renames.keys()) {
+    for (const onDiskName of renames.values()) {
       if (!ordered.some((o) => o.version === onDiskName)) {
         throw new Error(`fixture assumption failed: ${onDiskName} not found through ${latest}`);
       }
     }
-    const observedLedger = ordered.map((o) => renames.get(o.version) ?? o.version);
+
+    const observedLedger = ledgerSorted;
     const packet = {
       schema_version: 1,
       candidate: {
