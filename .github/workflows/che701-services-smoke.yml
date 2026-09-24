@@ -1,8 +1,8 @@
 name: CHE-701 services smoke
 
+# Run manually after changes to the X99 runner/dind Compose stack.
 on:
-  push:
-    branches: [agent/c00-hermes-devops/che701-services-smoke]
+  workflow_dispatch:
 
 jobs:
   services-localhost:
