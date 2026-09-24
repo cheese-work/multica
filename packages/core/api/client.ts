@@ -53,6 +53,7 @@ import type {
   IssueReaction,
   Workspace,
   WorkspaceRepo,
+  WorkspaceExportPrivacy,
   WorkspaceMcpServer,
   MemberWithUser,
   User,
@@ -348,6 +349,7 @@ import {
   WorkspaceSeatPurchasePreviewSchema,
   PurchaseWorkspaceSeatsResponseSchema,
   CreateWorkspaceSubscriptionPortalResponseSchema,
+  WorkspaceExportPrivacySchema,
   DingTalkInstallationSchema,
   ListDingTalkInstallationsResponseSchema,
   ListDingTalkGroupsResponseSchema,
@@ -2781,6 +2783,44 @@ export class ApiClient {
       method: "PATCH",
       body: JSON.stringify(data),
     });
+  }
+
+  // CHE-766: owner/admin + human-actor only, kill-switch gated server-side
+  // (server/internal/handler/workspace_export_privacy.go). A disabled flag or
+  // absent ACL surfaces here as a thrown ApiError (403/503), not a parsed
+  // value — callers must render "unavailable", never a fabricated default.
+  //
+  // The fallback below is deliberately "small"/90 days, not "leave whatever
+  // the caller last had" — "small" is the only mode the server actually
+  // enforces today, so this can never make the dashboard overstate the
+  // active protection the way echoing a stale/attacker-influenced value
+  // could. It only takes effect if the response fails schema validation.
+  async getWorkspaceExportPrivacy(id: string): Promise<WorkspaceExportPrivacy> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${id}/export-privacy`,
+    );
+    return parseWithFallback(
+      raw,
+      WorkspaceExportPrivacySchema,
+      { redaction_mode: "small", manifest_retention_days: 90 },
+      { endpoint: "GET /api/workspaces/{id}/export-privacy" },
+    );
+  }
+
+  async updateWorkspaceExportPrivacy(
+    id: string,
+    data: { redaction_mode?: string; manifest_retention_days?: number },
+  ): Promise<WorkspaceExportPrivacy> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${id}/export-privacy`,
+      { method: "PATCH", body: JSON.stringify(data) },
+    );
+    return parseWithFallback(
+      raw,
+      WorkspaceExportPrivacySchema,
+      { redaction_mode: "small", manifest_retention_days: 90 },
+      { endpoint: "PATCH /api/workspaces/{id}/export-privacy" },
+    );
   }
 
   async listPluginInstallations(workspaceId: string): Promise<PluginInstallationListResponse> {

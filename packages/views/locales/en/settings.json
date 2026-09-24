@@ -367,6 +367,7 @@
       "integrations": "Integrations",
       "labs": "Labs",
       "members": "Members",
+      "export_privacy": "Export Privacy",
       "labels": "Labels",
       "issue_statuses": "Issue Statuses",
       "properties": "Properties",
@@ -736,6 +737,28 @@
     "toast_delete_failed": "Failed to delete workspace",
     "confirm_cancel": "Cancel",
     "confirm_action": "Confirm"
+  },
+  "export_privacy": {
+    "title": "Export Privacy",
+    "description": "Controls what provenance exports redact and how long their audit manifests are kept.",
+    "section_title": "Export policy",
+    "loading": "Loading export privacy settings…",
+    "mode_label": "Redaction mode",
+    "mode_hint": "Strict redaction is not yet available and cannot be selected.",
+    "mode_small_label": "Small (secrets and credentials masked)",
+    "retention_label": "Manifest retention (days)",
+    "retention_hint": "Audit manifests are automatically deleted after this many days ({{min}}–{{max}}).",
+    "retention_range_error": "Enter a number between {{min}} and {{max}}.",
+    "unavailable_title": "Export privacy controls are unavailable",
+    "unavailable_description": "This feature is temporarily disabled. Try again later.",
+    "load_failed_title": "Couldn't load export privacy settings",
+    "load_failed_description": "Something went wrong loading the current policy. Try again later.",
+    "errors": {
+      "save_failed": "Failed to save export privacy settings",
+      "unavailable": "Export privacy controls are temporarily unavailable",
+      "permission_changed": "You no longer have permission to manage export privacy settings",
+      "permission_changed_title": "Permission required"
+    }
   },
   "delete_workspace_dialog": {
     "title": "Delete workspace",

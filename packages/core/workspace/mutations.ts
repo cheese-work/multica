@@ -163,3 +163,24 @@ export function useRemoveAgentMcpServer(agentId: string) {
   return useAgentMcpMutation(agentId, (serverId: string) =>
     api.removeAgentMcpServer(agentId, serverId));
 }
+
+/**
+ * CHE-766: updates the workspace export privacy policy. No optimistic write —
+ * this gates what an export can read and how long its audit trail survives,
+ * so the panel must show the server's confirmed value, not a guess. On
+ * success the response is seeded directly into the query cache (the PATCH
+ * response is the authoritative new row); on any failure the cache is left
+ * untouched and the caller surfaces the thrown ApiError.
+ */
+export function useUpdateWorkspaceExportPrivacy(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: {
+      redaction_mode?: string;
+      manifest_retention_days?: number;
+    }) => api.updateWorkspaceExportPrivacy(wsId, data),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(workspaceKeys.exportPrivacy(wsId), updated);
+    },
+  });
+}

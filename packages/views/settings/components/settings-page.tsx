@@ -18,6 +18,7 @@ import {
   Blocks,
   CreditCard,
   Server,
+  ShieldCheck,
 } from "lucide-react";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { useFeatureEnabled } from "@multica/core/config";
@@ -44,6 +45,7 @@ import { KeyboardShortcutsTab } from "./keyboard-shortcuts-tab";
 import { PluginsTab } from "./plugins-tab";
 import { McpTab } from "./mcp-tab";
 import { BillingTab } from "./billing-tab";
+import { ExportPrivacyTab } from "./export-privacy-tab";
 import { CollapsedNavTrigger } from "../../layout/page-header";
 import { useT } from "../../i18n";
 
@@ -132,6 +134,12 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
           t(($) => $.page.tabs.members),
           Users,
           <MembersTab />,
+        ),
+        entry(
+          "export-privacy",
+          t(($) => $.page.tabs.export_privacy),
+          ShieldCheck,
+          <ExportPrivacyTab />,
         ),
         ...(billingEnabled
           ? [
