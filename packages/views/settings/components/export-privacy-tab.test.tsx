@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   privacyData: undefined as WorkspaceExportPrivacy | undefined,
   privacyPending: false,
   privacyError: null as unknown,
+  lastExportPrivacyEnabled: undefined as boolean | undefined,
 }));
 
 vi.mock("@tanstack/react-query", () => ({
@@ -76,6 +77,9 @@ describe("ExportPrivacyTab", () => {
         };
       }
       if (last === "export-privacy") {
+        mocks.lastExportPrivacyEnabled = (
+          options as { enabled?: boolean }
+        ).enabled;
         return {
           data: mocks.privacyData,
           isPending: mocks.privacyPending,
@@ -87,10 +91,15 @@ describe("ExportPrivacyTab", () => {
     });
   });
 
-  it("renders nothing for a plain member", () => {
+  it("renders nothing for a plain member, and never enables the privacy query", () => {
     mocks.memberRole = "member";
     const { container } = renderWithI18n(<ExportPrivacyTab />);
     expect(container).toBeEmptyDOMElement();
+    // The headline security claim ("a member/agent never issues the
+    // request") is that `enabled` reaches useQuery as false — not just that
+    // nothing renders, which could also happen if data merely came back
+    // empty after a real request went out.
+    expect(mocks.lastExportPrivacyEnabled).toBe(false);
   });
 
   it("shows the default small mode and 90-day retention for an admin", () => {
@@ -144,6 +153,17 @@ describe("ExportPrivacyTab", () => {
     mocks.privacyError = new ApiError("forbidden", 403, "Forbidden");
     renderWithI18n(<ExportPrivacyTab />);
     expect(screen.getByText("Permission required")).toBeTruthy();
+  });
+
+  it("shows a load-failed state and never a fabricated retention value when the query errors with a non-ApiError (e.g. a schema parse failure)", () => {
+    mocks.privacyData = undefined;
+    mocks.privacyError = new Error("invalid response shape");
+    renderWithI18n(<ExportPrivacyTab />);
+    expect(
+      screen.getByText("Couldn't load export privacy settings"),
+    ).toBeTruthy();
+    expect(screen.queryByText("90")).toBeNull();
+    expect(screen.queryByDisplayValue("90")).toBeNull();
   });
 
   it("rejects an out-of-range retention value without calling the API", async () => {

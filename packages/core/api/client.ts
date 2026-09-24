@@ -2790,21 +2790,18 @@ export class ApiClient {
   // absent ACL surfaces here as a thrown ApiError (403/503), not a parsed
   // value — callers must render "unavailable", never a fabricated default.
   //
-  // The fallback below is deliberately "small"/90 days, not "leave whatever
-  // the caller last had" — "small" is the only mode the server actually
-  // enforces today, so this can never make the dashboard overstate the
-  // active protection the way echoing a stale/attacker-influenced value
-  // could. It only takes effect if the response fails schema validation.
+  // Unlike other endpoints in this file, a malformed response is NOT given a
+  // safe-looking fallback via parseWithFallback: retention days and redaction
+  // mode are confirmed server state an admin acts on ("saved: 90 days"). A
+  // fallback number here would misrepresent how long the audit trail
+  // actually survives — worse than surfacing nothing. Parse strictly and
+  // throw; the caller's existing load_failed / reportSaveError paths already
+  // handle a thrown error correctly.
   async getWorkspaceExportPrivacy(id: string): Promise<WorkspaceExportPrivacy> {
     const raw = await this.fetch<unknown>(
       `/api/workspaces/${id}/export-privacy`,
     );
-    return parseWithFallback(
-      raw,
-      WorkspaceExportPrivacySchema,
-      { redaction_mode: "small", manifest_retention_days: 90 },
-      { endpoint: "GET /api/workspaces/{id}/export-privacy" },
-    );
+    return WorkspaceExportPrivacySchema.parse(raw);
   }
 
   async updateWorkspaceExportPrivacy(
@@ -2815,12 +2812,7 @@ export class ApiClient {
       `/api/workspaces/${id}/export-privacy`,
       { method: "PATCH", body: JSON.stringify(data) },
     );
-    return parseWithFallback(
-      raw,
-      WorkspaceExportPrivacySchema,
-      { redaction_mode: "small", manifest_retention_days: 90 },
-      { endpoint: "PATCH /api/workspaces/{id}/export-privacy" },
-    );
+    return WorkspaceExportPrivacySchema.parse(raw);
   }
 
   async listPluginInstallations(workspaceId: string): Promise<PluginInstallationListResponse> {
