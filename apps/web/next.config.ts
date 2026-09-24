@@ -42,14 +42,16 @@ const nextConfig: NextConfig = {
   ...(process.env.STANDALONE === "true" ? { output: "standalone" as const } : {}),
   transpilePackages: ["@multica/core", "@multica/ui", "@multica/views"],
   // CI's self-hosted builders run `next build` inside a memory-capped (4GiB,
-  // 2-CPU) nested container. `experimental.cpus` defaults to
-  // `availableCpus - 1`, read from the host (56 cores here, not the
-  // container's 2-CPU cgroup quota), so "Collecting page data" forked ~55
-  // worker processes and the combined RSS OOM-killed the build even after
-  // the webpack compile and typecheck stages succeeded. Pin it to what the
-  // container actually has. webpackMemoryOptimizations plus disabling the
-  // persistent webpack cache in production trims the compile stage's own
-  // footprint (each is a Next-documented, low-risk memory lever).
+  // 2-CPU) nested container. The observed CI failures OOM-killed a single
+  // `next-build` compile process (anon-rss ~3.5GiB) during "Creating an
+  // optimized production build" -- before typecheck or page-data collection
+  // even start. webpackMemoryOptimizations plus disabling the persistent
+  // webpack cache in production are the two Next-documented, low-risk
+  // memory levers for that compile-stage footprint. `experimental.cpus`
+  // defaults to `availableCpus - 1` read from the host (56 cores here, not
+  // the container's 2-CPU cgroup quota); pinning it to 2 guards the later
+  // page-data-collection phase, which forks one worker per detected CPU and
+  // would OOM the same way once compile gets past the memory cap.
   experimental: {
     cpus: 2,
     webpackMemoryOptimizations: true,
