@@ -488,7 +488,7 @@ jobs:
           set +e
           bash deploy/cd/render-cutover-remote-script.sh \
             --router-state-dir "$router_state_dir" \
-            -- bash -c "cd '$remote_dir' && sha256sum -c cutover-controller.tar.sha256 && tar -xf cutover-controller.tar && bash cutover-controller/deploy/cd/verify-cutover-bundle.sh cutover-controller && cd '$C00_COMPOSE_DIR' && . ./.env && export CUTOVER_DATABASE_URL=\"postgres://\${POSTGRES_USER:***@postgres:5432/\${POSTGRES_DB:-multica}?sslmode=disable\" && bash '$remote_dir/cutover-controller/deploy/cd/cutover.sh' cutover --manifest '$remote_dir/cutover-controller/evidence/manifest.json' --packet '$remote_dir/cutover-controller/evidence/release-packet.json' --compose-dir '$C00_COMPOSE_DIR' --state-dir '$C00_CUTOVER_STATE_DIR'" \
+            -- bash -c "cd '$remote_dir' && sha256sum -c cutover-controller.tar.sha256 && tar -xf cutover-controller.tar && bash cutover-controller/deploy/cd/verify-cutover-bundle.sh cutover-controller && cd '$C00_COMPOSE_DIR' && . ./.env && export CUTOVER_DATABASE_URL=\"postgres://\${POSTGRES_USER:-multica}:\${POSTGRES_PASSWORD:-multica}@postgres:5432/\${POSTGRES_DB:-multica}?sslmode=disable\" && bash '$remote_dir/cutover-controller/deploy/cd/cutover.sh' cutover --manifest '$remote_dir/cutover-controller/evidence/manifest.json' --packet '$remote_dir/cutover-controller/evidence/release-packet.json' --compose-dir '$C00_COMPOSE_DIR' --state-dir '$C00_CUTOVER_STATE_DIR'" \
             | "${ssh_cmd[@]}" bash -s
           deploy_status=$?
           set -e
