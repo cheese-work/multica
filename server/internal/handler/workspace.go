@@ -418,11 +418,16 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	// never rejected by — the generic guard; every other request continues
 	// straight into the unmodified CHE-455 path below.
 	if hermesExceptionIdentityMatches(actorType, actorID) && hermesExceptionMatchesWorkspaceContext(id, req.Context != nil) {
+		var rawFields map[string]json.RawMessage
+		if err := json.Unmarshal(bodyBytes, &rawFields); err != nil || !hermesExceptionOnlyAllowedKeys(rawFields, "context", "expected_before_digest") {
+			writeError(w, http.StatusBadRequest, "this request may only include context and expected_before_digest")
+			return
+		}
 		result, reason, swapErr := h.hermesExceptionVerifyAndSwapWorkspaceContext(r.Context(), id, hermesExceptionRequest{
 			NewContent:           *req.Context,
 			ExpectedBeforeDigest: req.ExpectedBeforeDigest,
 		})
-		logHermesExceptionOutcome(r, "workspace.context", id, result, reason, swapErr)
+		logHermesExceptionOutcome(r, actorID, "workspace.context", id, result, reason, swapErr)
 		if reason != hermesExceptionRejectNone {
 			hermesExceptionWriteRejection(w, r, reason, swapErr)
 			return
@@ -432,8 +437,15 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to reload workspace after hermes exception write")
 			return
 		}
+		resp := h.workspaceToResponse(ws)
+		// Publish the same live-update event the ordinary human path emits
+		// below (h.publish(protocol.EventWorkspaceUpdated, ...)) so UI
+		// clients watching this workspace see the change; the exception path
+		// returns before reaching that call (security review finding,
+		// CHE-764).
+		h.publish(protocol.EventWorkspaceUpdated, id, "agent", actorID, map[string]any{"workspace": resp})
 		writeJSON(w, http.StatusOK, map[string]any{
-			"workspace":     h.workspaceToResponse(ws),
+			"workspace":     resp,
 			"before_digest": result.BeforeDigest,
 			"after_digest":  result.AfterDigest,
 		})

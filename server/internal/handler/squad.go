@@ -400,11 +400,16 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 	// (agent, squad, field) triple never reaches the generic guard; every
 	// other request falls through to the unmodified CHE-455 path below.
 	if hermesExceptionIdentityMatches(actorType, actorID) && hermesExceptionMatchesSquadInstructions(uuidToString(squad.ID), req.Instructions != nil) {
+		var rawFields map[string]json.RawMessage
+		if err := json.Unmarshal(bodyBytes, &rawFields); err != nil || !hermesExceptionOnlyAllowedKeys(rawFields, "instructions", "expected_before_digest") {
+			writeError(w, http.StatusBadRequest, "this request may only include instructions and expected_before_digest")
+			return
+		}
 		result, reason, swapErr := h.hermesExceptionVerifyAndSwapSquadInstructions(r.Context(), uuidToString(squad.ID), hermesExceptionRequest{
 			NewContent:           *req.Instructions,
 			ExpectedBeforeDigest: req.ExpectedBeforeDigest,
 		})
-		logHermesExceptionOutcome(r, "squad.instructions", uuidToString(squad.ID), result, reason, swapErr)
+		logHermesExceptionOutcome(r, actorID, "squad.instructions", uuidToString(squad.ID), result, reason, swapErr)
 		if reason != hermesExceptionRejectNone {
 			hermesExceptionWriteRejection(w, r, reason, swapErr)
 			return
@@ -422,6 +427,11 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to load squad member preview")
 			return
 		}
+		// Publish the same live-update event the ordinary human path emits
+		// below (h.publish(protocol.EventSquadUpdated, ...)) so UI clients
+		// watching this squad see the change; the exception path returns
+		// before reaching that call (security review finding, CHE-764).
+		h.publish(protocol.EventSquadUpdated, workspaceID, "agent", actorID, map[string]any{"squad": resp})
 		writeJSON(w, http.StatusOK, map[string]any{
 			"squad":         resp,
 			"before_digest": result.BeforeDigest,

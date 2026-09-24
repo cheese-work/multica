@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/multica-ai/multica/server/internal/logger"
@@ -57,11 +59,24 @@ import (
 //     re-reads the live value and its own freshly computed digest inside the
 //     same transaction that performs the write, and refuses to write at all
 //     if they disagree (see hermesExceptionVerifyAndSwap callers in
-//     workspace.go / squad.go). This is what "reject unreviewed bytes"
-//     reduces to in a codebase with no local reviewed-candidate registry:
-//     the only bytes this path will ever accept are bytes whose digest
-//     matches a value the caller already knows was live a moment ago, and
-//     the after-digest is always returned so the caller (or a human
+//     workspace.go / squad.go).
+//
+//     IMPORTANT LIMITATION (flagged by independent security review,
+//     CHE-764): this digest check proves only "the caller's belief about
+//     the current live value matches reality" — it does NOT prove the new
+//     bytes were reviewed by a human. Both governed fields are readable by
+//     the very agent this exception is scoped to (workspace.context is
+//     delivered to every claiming runtime as part of its brief; squad
+//     instructions are readable via the squad read endpoint), so this
+//     mechanism cannot by itself distinguish "Hermes applying a
+//     human-reviewed candidate" from "Hermes writing arbitrary content it
+//     computed a fresh before-digest for" — including content it was
+//     steered into writing by a prompt-injected task. The actual
+//     "reviewed-candidate" guarantee has to come from whatever selects and
+//     hands Hermes the bytes to write (the CHE-763 apply flow), not from
+//     this endpoint. This is a known gap, not a design claim resolved by
+//     this file — see CHE-764 for the open follow-up.
+//     The after-digest is always returned so the caller (or a human
 //     reviewing the audit log) can confirm byte-for-byte what actually
 //     landed.
 //  4. Every successful and rejected attempt is audit-logged with actor,
@@ -154,6 +169,32 @@ func hermesExceptionMatchesSquadInstructions(squadID string, fieldWillBeWritten 
 	return fieldWillBeWritten && squadID == hermesExceptionSquadID
 }
 
+// hermesExceptionOnlyAllowedKeys reports whether rawFields contains nothing
+// beyond the given allowed set (case-insensitive, matching how encoding/json
+// itself matches keys to struct fields — see rawFieldsHasKeyFold's doc
+// comment in governed_instruction_fields.go). The exception path is a
+// dedicated single-field compare-and-swap, not a general-purpose update: a
+// request that also carries other fields (name, settings, leader_id, ...)
+// alongside the governed field would silently have those extra fields
+// dropped by the exception's early return, which could mislead a caller
+// into believing they were applied (security review finding, CHE-764).
+// Rejecting outright is safer than guessing which fields to also apply.
+func hermesExceptionOnlyAllowedKeys(rawFields map[string]json.RawMessage, allowed ...string) bool {
+	for k := range rawFields {
+		found := false
+		for _, a := range allowed {
+			if strings.EqualFold(k, a) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
 // hermesExceptionRequest is the subset of the exception's request shape
 // shared by both call sites (workspace context, squad instructions):
 // the new content plus a digest of what the caller believes is currently
@@ -224,6 +265,11 @@ func (h *Handler) hermesExceptionVerifyAndSwapWorkspaceContext(ctx context.Conte
 	if !isWellFormedDigestHex(req.ExpectedBeforeDigest) {
 		return hermesExceptionSwapResult{}, hermesExceptionRejectMalformedDigest, nil
 	}
+	// hermesExceptionDigest always produces lowercase hex; isWellFormedDigestHex
+	// accepts uppercase too, so normalize before comparing or an
+	// otherwise-correct uppercase digest would fail closed as "stale"
+	// (security review finding, CHE-764).
+	req.ExpectedBeforeDigest = strings.ToLower(req.ExpectedBeforeDigest)
 
 	wsUUID, err := util.ParseUUID(workspaceID)
 	if err != nil {
@@ -257,7 +303,7 @@ func (h *Handler) hermesExceptionVerifyAndSwapWorkspaceContext(ctx context.Conte
 	newBytes := []byte(req.NewContent)
 	afterDigest := hermesExceptionDigest(newBytes)
 
-	if _, err := tx.Exec(ctx, `UPDATE workspace SET context = $1 WHERE id = $2`, req.NewContent, wsUUID); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE workspace SET context = $1, updated_at = now() WHERE id = $2`, req.NewContent, wsUUID); err != nil {
 		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal, err
 	}
 
@@ -276,6 +322,9 @@ func (h *Handler) hermesExceptionVerifyAndSwapSquadInstructions(ctx context.Cont
 	if !isWellFormedDigestHex(req.ExpectedBeforeDigest) {
 		return hermesExceptionSwapResult{}, hermesExceptionRejectMalformedDigest, nil
 	}
+	// See the matching comment in hermesExceptionVerifyAndSwapWorkspaceContext:
+	// normalize case before comparing against our always-lowercase digest.
+	req.ExpectedBeforeDigest = strings.ToLower(req.ExpectedBeforeDigest)
 
 	squadUUID, err := util.ParseUUID(squadID)
 	if err != nil {
@@ -304,7 +353,7 @@ func (h *Handler) hermesExceptionVerifyAndSwapSquadInstructions(ctx context.Cont
 
 	afterDigest := hermesExceptionDigest([]byte(req.NewContent))
 
-	if _, err := tx.Exec(ctx, `UPDATE squad SET instructions = $1 WHERE id = $2`, req.NewContent, squadUUID); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE squad SET instructions = $1, updated_at = now() WHERE id = $2`, req.NewContent, squadUUID); err != nil {
 		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal, err
 	}
 
@@ -346,10 +395,22 @@ func hermesExceptionWriteRejection(w http.ResponseWriter, r *http.Request, reaso
 // exactly what changed"). Called for both the allowed compare-and-swap path
 // and for every rejection reason, so a rejected attempt is exactly as
 // visible in logs as a successful one.
-func logHermesExceptionOutcome(r *http.Request, targetKind, targetID string, result hermesExceptionSwapResult, reason hermesExceptionRejectReason, err error) {
+//
+// actorID is resolveActor's return value for this request, not the
+// hermesExceptionAgentID constant — the two are equal by construction at
+// this call site (callers only reach here after hermesExceptionIdentityMatches
+// confirmed it), but logging what was actually observed rather than the
+// constant it was checked against keeps this line honest as a record of what
+// happened, independent of the check's own correctness. task_id is the
+// server-stamped X-Task-ID off the request, letting a reviewer trace a write
+// back to the specific task/issue/originator that produced it (security
+// review finding, CHE-764) — logged as-is (may be empty for a request that
+// didn't carry one).
+func logHermesExceptionOutcome(r *http.Request, actorID, targetKind, targetID string, result hermesExceptionSwapResult, reason hermesExceptionRejectReason, err error) {
 	attrs := append(logger.RequestAttrs(r),
 		"che_issue", "CHE-764",
-		"actor_agent_id", hermesExceptionAgentID,
+		"actor_agent_id", actorID,
+		"task_id", r.Header.Get("X-Task-ID"),
 		"target_kind", targetKind,
 		"target_id", targetID,
 		"reject_reason", int(reason),

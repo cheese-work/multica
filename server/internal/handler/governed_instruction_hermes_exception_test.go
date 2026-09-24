@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -516,6 +518,98 @@ func TestHermesException_UpdateSquad_MalformedDigest_Rejected(t *testing.T) {
 	dbfx.QueryRow(t, `SELECT instructions FROM squad WHERE id = $1`, hermesExceptionSquadID).Scan(&stored)
 	if stored != "original squad instructions" {
 		t.Errorf("instructions must remain untouched after malformed-digest rejection, got %q", stored)
+	}
+}
+
+// ── Workspace context: negative — extra fields rejected ──────────────────
+// Security review finding (CHE-764): the exception path is a dedicated
+// single-field compare-and-swap; a request that also carries other fields
+// must be rejected outright rather than silently dropping them.
+
+func TestHermesException_UpdateWorkspace_ExtraFieldsRejected(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	_, agentID, taskID := hermesExceptionFixture(t, "ws-extra-fields")
+
+	req := hermesWorkspaceReq(agentID, taskID, map[string]any{
+		"context":                "irrelevant",
+		"expected_before_digest": testDigest("original workspace context"),
+		"name":                   "sneaking in a rename",
+	})
+	w := httptest.NewRecorder()
+	testHandler.UpdateWorkspace(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when extra fields accompany the exception write, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var storedContext, storedName string
+	dbfx.QueryRow(t, `SELECT context, name FROM workspace WHERE id = $1`, hermesExceptionWorkspaceID).Scan(&storedContext, &storedName)
+	if storedContext != "original workspace context" {
+		t.Errorf("context must remain untouched, got %q", storedContext)
+	}
+	if storedName == "sneaking in a rename" {
+		t.Errorf("name must not have been applied via the exception path")
+	}
+}
+
+// ── Workspace context: positive — updated_at bumped, uppercase digest accepted ──
+
+func TestHermesException_UpdateWorkspace_BumpsUpdatedAtAndAcceptsUppercaseDigest(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	_, agentID, taskID := hermesExceptionFixture(t, "ws-updated-at")
+
+	var before time.Time
+	dbfx.QueryRow(t, `SELECT updated_at FROM workspace WHERE id = $1`, hermesExceptionWorkspaceID).Scan(&before)
+
+	uppercaseDigest := strings.ToUpper(testDigest("original workspace context"))
+	req := hermesWorkspaceReq(agentID, taskID, map[string]any{
+		"context":                "new content via uppercase digest",
+		"expected_before_digest": uppercaseDigest,
+	})
+	w := httptest.NewRecorder()
+	testHandler.UpdateWorkspace(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for well-formed uppercase digest, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var after time.Time
+	dbfx.QueryRow(t, `SELECT updated_at FROM workspace WHERE id = $1`, hermesExceptionWorkspaceID).Scan(&after)
+	if !after.After(before) {
+		t.Errorf("updated_at must advance after a successful exception write: before=%v after=%v", before, after)
+	}
+}
+
+// ── Squad instructions: negative — extra fields rejected ─────────────────
+
+func TestHermesException_UpdateSquad_ExtraFieldsRejected(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ownerUserID, agentID, taskID := hermesExceptionFixture(t, "sq-extra-fields")
+	leaderID := createHandlerTestAgent(t, "che764-hermes-squad-leader-extrafields", nil)
+	hermesExceptionSquadFixture(t, hermesExceptionWorkspaceID, ownerUserID, leaderID)
+
+	req := hermesSquadReq(ownerUserID, agentID, taskID, hermesExceptionSquadID, map[string]any{
+		"instructions":           "irrelevant",
+		"expected_before_digest": testDigest("original squad instructions"),
+		"name":                   "sneaking in a rename",
+	})
+	w := httptest.NewRecorder()
+	testHandler.UpdateSquad(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when extra fields accompany the exception write, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var storedInstructions, storedName string
+	dbfx.QueryRow(t, `SELECT instructions, name FROM squad WHERE id = $1`, hermesExceptionSquadID).Scan(&storedInstructions, &storedName)
+	if storedInstructions != "original squad instructions" {
+		t.Errorf("instructions must remain untouched, got %q", storedInstructions)
+	}
+	if storedName == "sneaking in a rename" {
+		t.Errorf("name must not have been applied via the exception path")
 	}
 }
 
