@@ -128,16 +128,36 @@ function verify(args) {
     // provably touches nothing the check's own path filter covers. A check
     // that ran and failed, or is still pending, is always a refusal.
     if (conclusion === undefined && isExcludedByPathFilter(name, checks)) continue;
+    // The recorder waits for pending checks, so reaching this means it gave
+    // up waiting. Say so rather than calling a running check a failure.
+    if (conclusion === null) fail(`required check ${name} has not completed`);
     fail(`required check ${name} is not success`);
   }
 
   process.stdout.write(`${JSON.stringify({ admitted: true, source_sha: manifest.source_sha })}\n`);
 }
 
+// Lists the required checks whose result is not yet final, one per line; no
+// output means the checks file is safe to snapshot. A check still running is
+// recorded with a null conclusion, and one whose job has not been created yet
+// (a `needs:`-gated job such as `backend`) is simply absent — so absence
+// counts as pending unless the path filter provably excludes the commit.
+// Terminal results, failures included, are settled: waiting cannot change
+// them, and verify refuses them.
+function pending(args) {
+  const checks = readJSON(option("--checks", args));
+  for (const name of requiredChecks) {
+    const conclusion = checks.contexts?.[name];
+    if (conclusion === null) process.stdout.write(`${name}\n`);
+    if (conclusion === undefined && !isExcludedByPathFilter(name, checks)) process.stdout.write(`${name}\n`);
+  }
+}
+
 try {
   const [command, ...args] = process.argv.slice(2);
-  if (command !== "verify") fail("usage: admission.mjs verify [options]");
-  verify(args);
+  if (command === "verify") verify(args);
+  else if (command === "pending") pending(args);
+  else fail("usage: admission.mjs verify|pending [options]");
 } catch (error) {
   process.stderr.write(`admission: ${error.message}\n`);
   process.exitCode = 1;

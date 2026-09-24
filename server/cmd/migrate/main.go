@@ -328,6 +328,7 @@ var concurrentIndexCleanups = map[string]string{
 	"510_stage_completion_wake_unique":                          "idx_one_wake_per_parent_stage_generation",
 	"511_stage_generation_workspace_index":                      "idx_stage_generation_workspace_id",
 	"512_stage_completion_wake_workspace_index":                 "idx_stage_completion_wake_workspace_id",
+	"514_governance_receipt_comment_idx":                        "idx_governance_receipt_comment_id",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction

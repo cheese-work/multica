@@ -260,6 +260,7 @@ before it runs an upgrade or rollback rehearsal.
 ```bash
 bash deploy/cd/test-release-manifest.sh
 bash deploy/cd/test-admission.sh
+bash deploy/cd/test-record-checks.sh
 bash deploy/cd/test-isolated-qualification.sh
 bash deploy/cd/test-tuple-snapshot.sh
 bash deploy/cd/test-quiescence.sh
@@ -421,6 +422,17 @@ D1's evidence (carrying D1's own image digests forward unchanged) as a
 release-candidate bound to it, records the qualifying event and the commit's
 required-check results, and hands the set to the unchanged `admission` and
 `deploy` jobs.
+
+D1 completing does not mean CI has: `backend` is a `needs:`-gated job whose
+check run does not exist until the jobs it aggregates finish, often well after
+`cd-qualification`. `record-checks.sh` therefore polls the commit's check runs
+until `admission.mjs pending` reports every required check terminal (or
+provably path-excluded), up to an hour, before it writes `cd-checks.json`. It
+waits before reading C00's baseline so the tuple is fresh. A terminal failure
+or cancellation ends the wait at once and admission refuses it; a check still
+running at the deadline is recorded as running and refused as "has not
+completed". Run 35822016641 (`5c834a2f`) is the case: the snapshot at
+05:37 UTC had no `backend` run, which then passed at 05:55.
 
 `admission.mjs` is not weakened to make this fit: it still refuses
 build-evidence, still requires the manifest to bind the exact tuple it is
