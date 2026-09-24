@@ -111,6 +111,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"project":                            workspaceDelete,
 	"project_resource":                   workspaceDelete,
 	"protocol_lint_run":                  workspaceDeleteKeep, // Cross-workspace protocol-lint audit/reporting data (CHE-552), not workspace-owned.
+	"provenance_export_log":              workspaceDelete,     // CHE-755 provenance export audit rows; workspace-owned leaf.
 	"quick_action":                       workspaceDelete,
 	"runtime_profile":                    workspaceDelete,
 	"schema_migrations":                  workspaceDeleteKeep,

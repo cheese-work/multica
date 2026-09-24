@@ -1968,6 +1968,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Get("/api/tasks/{taskId}/messages", h.ListTaskMessagesByUser)
 			r.With(handler.RequireHumanActor).Post("/api/tasks/{taskId}/retry-source-context", h.RetrySourceContextQuickCreate)
 
+			// CHE-755 read-only provenance export. Human owners/admins only; the
+			// handler re-checks the role and actor source as a backstop.
+			r.With(handler.RequireHumanActor).Post("/api/provenance/export", h.ExportProvenance)
+
 			// Issue quick actions (definitions; running one lives under
 			// /api/issues/{id}/quick-actions/{quickActionId}/run)
 			r.Route("/api/quick-actions", func(r chi.Router) {

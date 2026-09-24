@@ -1267,6 +1267,72 @@ func (q *Queries) ListCommentsForIssue(ctx context.Context, arg ListCommentsForI
 	return items, nil
 }
 
+const listCommentsForIssueUpTo = `-- name: ListCommentsForIssueUpTo :many
+SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at FROM comment
+WHERE issue_id = $1
+  AND workspace_id = $2
+  AND created_at <= $3
+ORDER BY created_at ASC, id ASC
+LIMIT $4
+`
+
+type ListCommentsForIssueUpToParams struct {
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Cutoff      pgtype.Timestamptz `json:"cutoff"`
+	RowLimit    int32              `json:"row_limit"`
+}
+
+// CHE-755 provenance export: the OLDEST @row_limit comments on an issue created
+// at or before @cutoff, chronological with UUID tiebreak. Unlike
+// ListCommentsForIssue this is a prefix, so a caller asking for limit+1 rows can
+// detect overflow and report it instead of silently truncating. Tombstoned
+// rows are included so the caller can classify them rather than lose them.
+func (q *Queries) ListCommentsForIssueUpTo(ctx context.Context, arg ListCommentsForIssueUpToParams) ([]Comment, error) {
+	rows, err := q.db.Query(ctx, listCommentsForIssueUpTo,
+		arg.IssueID,
+		arg.WorkspaceID,
+		arg.Cutoff,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Comment{}
+	for rows.Next() {
+		var i Comment
+		if err := rows.Scan(
+			&i.ID,
+			&i.IssueID,
+			&i.AuthorType,
+			&i.AuthorID,
+			&i.Content,
+			&i.Type,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ParentID,
+			&i.WorkspaceID,
+			&i.ResolvedAt,
+			&i.ResolvedByType,
+			&i.ResolvedByID,
+			&i.SourceTaskID,
+			&i.QuickActionID,
+			&i.ViaPluginID,
+			&i.Revision,
+			&i.RecoverySettledAt,
+			&i.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCommentsSinceForIssue = `-- name: ListCommentsSinceForIssue :many
 SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at FROM comment
 WHERE issue_id = $1 AND workspace_id = $2 AND created_at > $3
