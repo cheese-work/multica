@@ -812,4 +812,55 @@ expect_not_contains "$workflow_text" "bash '%s/deploy.sh' --manifest" workflow-a
 expect_not_contains "$workflow_text" 'deploy/cd/deploy.sh deploy/cd/deploy-lib.sh' workflow-ab-deploy-route
 expect_not_contains "$workflow_text" 'compose up -d --no-deps backend frontend' workflow-ab-deploy-route
 
+# ---------------------------------------------------------------------------
+# The `-- bash -c "..."` cutover command is one big double-quoted string
+# nested inside the workflow's own `run: |` block; `expect_contains` above
+# only proves substrings are present, not that the nested string is still
+# balanced quote-for-quote. A 2026-09-24 edit dropped `-multica}` out of
+# `${POSTGRES_USER:-multica}`, leaving `${POSTGRES_USER:***@postgres` — one
+# unclosed `${` that swallowed the rest of the line, including the intended
+# closing `\"`, and produced `bash: -c: line 1: unexpected EOF while looking
+# for matching '"'` only once C00's SSH session tried to parse it (CD run
+# 35978855184). Nothing that greps the YAML text catches this: the outer
+# `-c "<whole string>"` argument is itself well-formed either way. Reproduce
+# the actual failure by rendering the real line through
+# render-cutover-remote-script.sh (the same renderer the workflow calls) and
+# executing it, exactly like the SSH session does.
+remote_cmd_line="$(grep -F -f <(printf '%s' '-- bash -c "cd '"'"'$remote_dir'"'"'') "$root_dir/.github/workflows/cd-deploy.yml")"
+remote_cmd_inner="${remote_cmd_line#*-- bash -c \"}"
+remote_cmd_inner="${remote_cmd_inner%\\}"
+remote_cmd_inner="${remote_cmd_inner% }"
+remote_cmd_inner="${remote_cmd_inner%\"}"
+[ -n "$remote_cmd_inner" ] || { echo "scenario workflow-cutover-quoting: could not extract the -- bash -c command from cd-deploy.yml" >&2; exit 1; }
+
+cutover_quoting_dir="$(fresh_scenario_dir cutover-quoting)"
+remote_dir="$cutover_quoting_dir/remote"
+C00_COMPOSE_DIR="$cutover_quoting_dir/compose"
+C00_CUTOVER_STATE_DIR="$cutover_quoting_dir/state"
+router_state_dir="$cutover_quoting_dir/router"
+mkdir -p "$remote_dir" "$C00_COMPOSE_DIR" "$router_state_dir"
+
+# Expand the workflow's own shell variables the same way bash's double-quote
+# interpolation does when the job runs — this is what actually reaches
+# render-cutover-remote-script.sh as its command argument, not a second
+# re-parse of literal text.
+expanded_remote_cmd="$(eval "printf '%s' \"$remote_cmd_inner\"")"
+rendered_cutover_script="$(GHCR_PULL_TOKEN=test-token bash deploy/cd/render-cutover-remote-script.sh --router-state-dir "$router_state_dir" -- bash -c "$expanded_remote_cmd")"
+printf '%s' "$rendered_cutover_script" >"$cutover_quoting_dir/rendered.sh"
+
+set +e
+cutover_quoting_output="$(bash "$cutover_quoting_dir/rendered.sh" 2>&1)"
+cutover_quoting_status=$?
+set -e
+
+# A quoting break fails immediately with bash's own parse error, before any
+# real command in the string ever runs. A sound command instead reaches and
+# fails on the first real, expected precondition (the sha256 fixture this
+# scenario deliberately never creates) — proving the nested `-c "..."`
+# argument parsed as one well-formed command.
+expect_not_contains "$cutover_quoting_output" "unexpected EOF" workflow-cutover-quoting
+expect_not_contains "$cutover_quoting_output" "unexpected end of file" workflow-cutover-quoting
+expect_exit 1 "$cutover_quoting_status" workflow-cutover-quoting
+expect_contains "$cutover_quoting_output" "cutover-controller.tar.sha256" workflow-cutover-quoting
+
 echo "deploy.sh control-flow fixtures passed"
