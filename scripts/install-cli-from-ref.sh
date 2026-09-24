@@ -11,14 +11,25 @@
 # `make build` a preflight would run by hand (see CHE-765).
 #
 # Usage:
-#   scripts/install-cli-from-ref.sh --repo <git-url> --ref <commit-or-tag> [--bin-dir <dir>]
+#   scripts/install-cli-from-ref.sh --repo <git-url> --ref <full-40-char-commit-sha> [--bin-dir <dir>]
 #
-# Verifies the installed binary reports the expected commit before exiting
-# successfully, so a partial or stale install is never reported as done.
+# `--ref` must be a full, immutable 40-character commit SHA, not a branch or
+# tag: those can move between the moment an operator reads them and the
+# moment this script resolves them, silently installing a different commit
+# than the one that was reviewed and qualified. `git checkout` on a 40-char
+# hex string is already exact; this only rejects anything shorter or
+# non-hex before doing any network or filesystem work.
+#
+# Stages the build in a scratch directory, verifies its reported commit
+# BEFORE touching the target bin dir, and only then does one atomic
+# replacement (`mv` within the same filesystem, so readers never see a
+# partial file). If verification fails, or the atomic replace itself fails,
+# the previous binary at --bin-dir is left untouched — this script never
+# unlinks the existing multica before its replacement is proven good.
 set -euo pipefail
 
 usage() {
-  echo "usage: install-cli-from-ref.sh --repo <git-url> --ref <commit-or-tag> [--bin-dir <dir>]" >&2
+  echo "usage: install-cli-from-ref.sh --repo <git-url> --ref <full-40-char-commit-sha> [--bin-dir <dir>]" >&2
 }
 
 repo_url=""
@@ -37,8 +48,42 @@ done
 [ -n "$repo_url" ] || { usage; exit 2; }
 [ -n "$ref" ] || { usage; exit 2; }
 
-command -v go >/dev/null 2>&1 || { echo "install-cli-from-ref: go is required" >&2; exit 1; }
+if ! [[ "$ref" =~ ^[0-9a-fA-F]{40}$ ]]; then
+  echo "install-cli-from-ref: --ref must be a full 40-character commit SHA, not a branch, tag, or short SHA (got: $ref)" >&2
+  echo "install-cli-from-ref: a mutable ref can resolve to a different commit than the one reviewed/qualified" >&2
+  exit 2
+fi
+
+# ---------------------------------------------------------------------------
+# Fail closed on every prerequisite before any clone or build work starts —
+# a partial failure after cloning wastes the clone and can leave ambiguous
+# partial state; checking first makes every failure mode a clean, immediate,
+# named exit.
+# ---------------------------------------------------------------------------
+required_go_version="$(grep -E '^go [0-9]+\.[0-9]+\.[0-9]+$' "$(dirname "${BASH_SOURCE[0]}")/../server/go.mod" 2>/dev/null | awk '{print $2}')"
+required_go_version="${required_go_version:-1.26.6}"
+
 command -v git >/dev/null 2>&1 || { echo "install-cli-from-ref: git is required" >&2; exit 1; }
+command -v go >/dev/null 2>&1 || { echo "install-cli-from-ref: go is required (server/go.mod needs $required_go_version or newer; none found on PATH)" >&2; exit 1; }
+command -v node >/dev/null 2>&1 || { echo "install-cli-from-ref: node is required (used to verify the installed binary's reported commit)" >&2; exit 1; }
+
+# Not re-checked against the local `go version` output here: Go's own
+# toolchain resolution (GOTOOLCHAIN=auto by default) transparently fetches a
+# newer patch to satisfy server/go.mod's `go 1.26.6` floor even when the
+# PATH binary reports an older one — verified on this host (go1.26.2 on
+# PATH, `go build` still succeeds by fetching 1.26.6+ on demand). Duplicating
+# a version gate here would reject hosts `go build` itself accepts. `go
+# build` below is the actual enforcement point: with GOTOOLCHAIN=local (or no
+# network to fetch a newer toolchain) it fails closed with its own clear
+# "go.mod requires go >= X" diagnostic before anything is staged or replaced.
+installed_go_version="$(go version | grep -oE 'go[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1 | tr -d 'go')"
+echo "go on PATH: $installed_go_version (server/go.mod requires $required_go_version or newer; GOTOOLCHAIN=${GOTOOLCHAIN:-auto} may fetch a newer one automatically)"
+
+echo "Checking clone access to $repo_url..."
+if ! git ls-remote --exit-code "$repo_url" >/dev/null 2>&1; then
+  echo "install-cli-from-ref: cannot reach $repo_url — this host needs read access to the private repo (SSH key or credential helper) before it can build a candidate" >&2
+  exit 1
+fi
 
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
@@ -47,20 +92,51 @@ echo "Cloning $repo_url at $ref..."
 git clone --quiet "$repo_url" "$work_dir/src"
 git -C "$work_dir/src" checkout --quiet "$ref"
 resolved_commit="$(git -C "$work_dir/src" rev-parse HEAD)"
+if [ "$resolved_commit" != "$ref" ]; then
+  echo "install-cli-from-ref: checked-out commit $resolved_commit does not match requested $ref" >&2
+  exit 1
+fi
 
 echo "Building multica CLI from $resolved_commit..."
+staged_binary="$work_dir/multica"
 (
   cd "$work_dir/src/server"
   go build -ldflags "-X main.version=$ref -X main.commit=${resolved_commit:0:9} -X main.date=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-    -o "$work_dir/multica" ./cmd/multica
+    -o "$staged_binary" ./cmd/multica
 )
 
+# ---------------------------------------------------------------------------
+# Verify the STAGED binary in place, before it ever touches --bin-dir. Only
+# once this passes does the existing installed binary become eligible for
+# replacement — a build that produces a binary reporting the wrong commit
+# (or that fails to run at all) never displaces a working install.
+# ---------------------------------------------------------------------------
+staged_commit="$("$staged_binary" version --output json | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.parse(d).commit))')"
+if [ "${resolved_commit:0:9}" != "$staged_commit" ]; then
+  echo "install-cli-from-ref: staged binary reports commit $staged_commit, expected ${resolved_commit:0:9} — leaving any existing install at $bin_dir/multica untouched" >&2
+  exit 1
+fi
+
 mkdir -p "$bin_dir"
-install -m 0755 "$work_dir/multica" "$bin_dir/multica"
+chmod 0755 "$staged_binary"
+
+# Atomic replacement: `mv` within the same filesystem is a single rename(2),
+# so a reader (including a daemon that execs this path) either sees the old
+# binary or the fully-staged new one, never a partially written file. Staging
+# inside --bin-dir itself (not $work_dir, which trap will delete regardless
+# of outcome) keeps the rename on one filesystem even when $TMPDIR is a
+# separate mount from $bin_dir.
+replace_tmp="$bin_dir/.multica.new.$$"
+cp "$staged_binary" "$replace_tmp"
+if ! mv -f "$replace_tmp" "$bin_dir/multica"; then
+  echo "install-cli-from-ref: atomic replace of $bin_dir/multica failed — previous binary (if any) is untouched" >&2
+  rm -f "$replace_tmp"
+  exit 1
+fi
 
 installed_commit="$("$bin_dir/multica" version --output json | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.parse(d).commit))')"
 if [ "${resolved_commit:0:9}" != "$installed_commit" ]; then
-  echo "install-cli-from-ref: installed binary reports commit $installed_commit, expected ${resolved_commit:0:9}" >&2
+  echo "install-cli-from-ref: FATAL — $bin_dir/multica reports commit $installed_commit after replacement, expected ${resolved_commit:0:9}. The previous binary is gone; re-run this script with a known-good --ref to recover." >&2
   exit 1
 fi
 

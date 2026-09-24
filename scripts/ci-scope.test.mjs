@@ -25,7 +25,11 @@ for (const [name, files, selected] of [
   ["agent process code", ["server/pkg/agent/cursor_background.go"], ["backend", "runtime"]],
   ["daemon dependency", ["server/internal/skill/service.go"], ["backend", "runtime"]],
   ["native test compilation dependency", ["server/pkg/db/generated/issues.sql.go"], ["backend", "sqlc", "runtime"]],
-  ["Go dependencies", ["server/go.mod", "server/go.sum"], ["backend", "runtime"]],
+  // server/go.mod also gates "installer": install-cli-from-ref.sh (CHE-765)
+  // reads its `go X.Y.Z` line to derive the minimum Go toolchain a daemon
+  // host must have before building a candidate CLI, so a version bump there
+  // should re-run that installer's own regression coverage.
+  ["Go dependencies", ["server/go.mod", "server/go.sum"], ["backend", "runtime", "installer"]],
   ["Helm only", ["deploy/helm/multica/templates/deployment.yaml"], ["scripts"]],
   ["container entrypoint", ["docker/entrypoint.sh"], ["scripts"]],
   ["selfhost config", [".env.example"], ["scripts", "installer"]],

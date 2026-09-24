@@ -83,6 +83,7 @@ jobs:
       quality_only: ${{ steps.decide.outputs.quality_only }}
       scripts: ${{ steps.decide.outputs.scripts }}
       installer: ${{ steps.decide.outputs.installer }}
+      deploy_cd: ${{ steps.decide.outputs.deploy_cd }}
       images: ${{ steps.decide.outputs.images }}
       full: ${{ steps.decide.outputs.full }}
     steps:
@@ -598,7 +599,7 @@ jobs:
   # Preserve the existing required-check name while allowing tests, generated
   # SQL verification, and the vulnerability scan to run independently.
   backend:
-    needs: [changes, backend-tests, backend-agent-tests, sqlc-check, go-vulnerability-scan, go-lint, macos-runtime, script-checks, installer]
+    needs: [changes, backend-tests, backend-agent-tests, sqlc-check, go-vulnerability-scan, go-lint, macos-runtime, script-checks, installer, deploy-cd]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
@@ -606,7 +607,7 @@ jobs:
       - name: Check backend job results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          JOB_SCOPES: '{"backend-tests":"always","backend-agent-tests":"backend","sqlc-check":"always","go-vulnerability-scan":"always","go-lint":"always","macos-runtime":"full","script-checks":"scripts","installer":"installer"}'
+          JOB_SCOPES: '{"backend-tests":"always","backend-agent-tests":"backend","sqlc-check":"always","go-vulnerability-scan":"always","go-lint":"always","macos-runtime":"full","script-checks":"scripts","installer":"installer","deploy-cd":"deploy_cd"}'
         run: node scripts/ci-scope.mjs gate
 
   # The only macOS runner here, and the only place cursor_background_process_darwin.go
@@ -704,6 +705,28 @@ jobs:
       - name: Test shell installers
         run: bash scripts/install.test.sh
 
+      # install-cli-from-ref.sh (CHE-765) does a real `git clone` + `go
+      # build` against a fixture repo the test creates on disk, then shells
+      # out to `node` to verify the staged/installed binary's reported
+      # commit — needs actual Go and Node toolchains, unlike
+      # scripts/install.sh's stub-driven suite above. Explicit setup steps
+      # rather than relying on whatever ships preinstalled on the runner
+      # image, matching this repo's Go/Node pins elsewhere in this workflow.
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+          cache-dependency-path: server/go.sum
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Test daemon-host CLI installer
+        run: bash scripts/install-cli-from-ref.test.sh
+
   script-checks:
     needs: changes
     if: ${{ needs.changes.outputs.scripts == 'true' }}
@@ -746,6 +769,25 @@ jobs:
 
       - name: Test build output naming
         run: bash scripts/makefile-build.test.sh
+
+  deploy-cd:
+    # deploy/cd/test-deploy.sh's fixtures (CHE-765): stub-driven, like
+    # scripts/install.test.sh above — deploy.sh talks to mocked `docker`,
+    # `docker compose`, `curl`, and `sleep` binaries on a scripted PATH, so
+    # this needs no real Docker daemon and no X99-only dependency. D1
+    # (cd-qualification.yml) already runs a curated subset of
+    # deploy/cd/test-*.sh, but only on a trusted push to main; this is the
+    # pre-merge PR-facing coverage for the cutover-command construction that
+    # D1 does not exercise.
+    needs: changes
+    if: ${{ needs.changes.outputs.deploy_cd == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Test D2 deploy control flow
+        run: bash deploy/cd/test-deploy.sh
 
   frontend-quality:
     needs: changes
