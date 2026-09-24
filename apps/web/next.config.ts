@@ -41,6 +41,25 @@ const allowedDevOrigins = process.env.CORS_ALLOWED_ORIGINS
 const nextConfig: NextConfig = {
   ...(process.env.STANDALONE === "true" ? { output: "standalone" as const } : {}),
   transpilePackages: ["@multica/core", "@multica/ui", "@multica/views"],
+  // CI's self-hosted builders run `next build` inside a memory-capped (4GiB,
+  // 2-CPU) nested container. `experimental.cpus` defaults to
+  // `availableCpus - 1`, read from the host (56 cores here, not the
+  // container's 2-CPU cgroup quota), so "Collecting page data" forked ~55
+  // worker processes and the combined RSS OOM-killed the build even after
+  // the webpack compile and typecheck stages succeeded. Pin it to what the
+  // container actually has. webpackMemoryOptimizations plus disabling the
+  // persistent webpack cache in production trims the compile stage's own
+  // footprint (each is a Next-documented, low-risk memory lever).
+  experimental: {
+    cpus: 2,
+    webpackMemoryOptimizations: true,
+  },
+  webpack: (config, { dev }) => {
+    if (config.cache && !dev) {
+      config.cache = Object.freeze({ type: "memory" });
+    }
+    return config;
+  },
   ...(allowedDevOrigins && allowedDevOrigins.length > 0
     ? { allowedDevOrigins }
     : {}),
