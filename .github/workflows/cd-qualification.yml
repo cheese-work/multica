@@ -48,6 +48,7 @@ jobs:
           set -euo pipefail
           bash deploy/cd/test-release-manifest.sh
           bash deploy/cd/test-admission.sh
+          bash deploy/cd/test-record-checks.sh
           bash deploy/cd/test-workflow-path-filters.sh
           bash deploy/cd/test-isolated-qualification.sh
           bash deploy/cd/test-tuple-snapshot.sh

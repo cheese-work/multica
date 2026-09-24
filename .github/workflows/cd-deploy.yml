@@ -77,7 +77,9 @@ jobs:
   prepare-release-candidate:
     if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
     runs-on: [self-hosted, linux, x64, cheese-c00-deploy]
-    timeout-minutes: 15
+    # Up to 60 minutes waiting for CI's required checks plus the original
+    # 15-minute budget for the baseline read and evidence issue.
+    timeout-minutes: 80
     environment: c00-production
     outputs:
       source_sha: ${{ steps.evidence.outputs.source_sha }}
@@ -97,6 +99,23 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+
+      # Before anything reads C00: CI's required checks finish well after
+      # this workflow is triggered, and the baseline read below should be as
+      # fresh as possible when the evidence set is issued.
+      - name: Install the YAML parser the path-filter reader needs
+        shell: bash
+        run: bash deploy/cd/ensure-pyyaml.sh
+
+      - name: Record the required-check results for this commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          CHECKS_WAIT_SECONDS: "3600"
+        # Waits for pending required checks, then snapshots them; see the
+        # script header. Admission still decides; this only records.
+        run: bash deploy/cd/record-checks.sh "$SOURCE_SHA" cd-checks.json
 
       - name: Download D1 build evidence
         uses: actions/download-artifact@v4
@@ -248,65 +267,6 @@ jobs:
           RUN_EVENT: ${{ github.event.workflow_run.event }}
           RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
           SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
-
-      - name: Install the YAML parser the path-filter reader needs
-        shell: bash
-        run: bash deploy/cd/ensure-pyyaml.sh
-
-      - name: Record the required-check results for this commit
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
-        run: |
-          set -euo pipefail
-          # admission.mjs requires backend, frontend, mobile and
-          # cd-qualification to all be "success" for this exact SHA. Take
-          # them from the commit's check runs — the same source a human
-          # reading the PR would use — rather than asserting them here.
-          gh api "repos/${GITHUB_REPOSITORY}/commits/${SOURCE_SHA}/check-runs?per_page=100" \
-            --paginate --jq '.check_runs[] | {name, conclusion}' > check-runs.jsonl
-
-          # Some required checks are path-filtered and legitimately do not run
-          # on a commit that touches none of their paths (`mobile` is one).
-          # Admission must be able to tell "excluded" from "missing", so record
-          # the raw evidence for that decision rather than the decision itself:
-          # the commit's changed files, and each check's declared path filter
-          # read out of the workflow that defines it. admission.mjs re-derives
-          # the match; nothing here asserts a check may be skipped.
-          gh api "repos/${GITHUB_REPOSITORY}/commits/${SOURCE_SHA}" \
-            --jq '{files: [.files[]?.filename], truncated: ((.files | length) >= 300)}' > commit-files.json
-
-          # Parse the workflows with a real YAML parser rather than regexes —
-          # `on:` blocks vary in formatting enough that pattern-matching them
-          # silently misses filters, and a missed filter here would be read as
-          # "check absent for no reason" downstream. The script lives in a file
-          # rather than a heredoc: a heredoc body inside this block scalar
-          # cannot be indented below the block's own margin, which GitHub's
-          # workflow parser rejects outright.
-          python3 deploy/cd/workflow-path-filters.py > path-filters.json
-
-          node -e '
-            const fs = require("node:fs");
-
-            const contexts = {};
-            for (const line of fs.readFileSync("check-runs.jsonl", "utf8").split("\n")) {
-              if (!line.trim()) continue;
-              const run = JSON.parse(line);
-              contexts[run.name] = run.conclusion;
-            }
-
-            const commit = JSON.parse(fs.readFileSync("commit-files.json", "utf8"));
-            const pathFilters = JSON.parse(fs.readFileSync("path-filters.json", "utf8"));
-
-            fs.writeFileSync("cd-checks.json", `${JSON.stringify({
-              sha: process.env.SOURCE_SHA,
-              contexts,
-              changed_files: commit.files ?? [],
-              changed_files_truncated: Boolean(commit.truncated),
-              path_filters: pathFilters,
-            }, null, 2)}\n`);
-          '
 
       - name: Upload the release-candidate evidence set
         uses: actions/upload-artifact@v4
