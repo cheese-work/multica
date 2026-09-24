@@ -31,9 +31,32 @@ vi.mock("./quick-actions-tab", stub("QuickActionsTab"));
 vi.mock("./keyboard-shortcuts-tab", stub("KeyboardShortcutsTab"));
 vi.mock("./plugins-tab", stub("PluginsTab"));
 vi.mock("./billing-tab", stub("BillingTab"));
+vi.mock("./export-privacy-tab", stub("ExportPrivacyTab"));
 
 vi.mock("@multica/core/paths", () => ({
-  useCurrentWorkspace: () => ({ name: "Acme" }),
+  useCurrentWorkspace: () => ({ id: "workspace-1", name: "Acme" }),
+}));
+
+const membershipState = {
+  role: "owner" as "owner" | "admin" | "member",
+};
+vi.mock("@multica/core/auth", () => ({
+  useAuthStore: (
+    selector?: (state: { user: { id: string } }) => unknown,
+  ) => {
+    const state = { user: { id: "user-1" } };
+    return selector ? selector(state) : state;
+  },
+}));
+vi.mock("@multica/core/workspace", () => ({
+  memberListOptions: (wsId: string) => ({
+    queryKey: ["workspaces", wsId, "members"],
+  }),
+}));
+vi.mock("@tanstack/react-query", () => ({
+  useQuery: () => ({
+    data: [{ user_id: "user-1", role: membershipState.role }],
+  }),
 }));
 
 const replace = vi.fn();
@@ -74,6 +97,7 @@ beforeEach(() => {
   navigationState.search = "";
   configStore.getState().setFeatureFlags({});
   replace.mockClear();
+  membershipState.role = "owner";
 });
 
 describe("SettingsPage nav trigger", () => {
@@ -166,6 +190,41 @@ describe("SettingsPage workspace subscription feature flag", () => {
 
     expect(screen.getByRole("link", { name: "Billing" })).toBeInTheDocument();
     expect(screen.getByText("BillingTab")).toBeInTheDocument();
+  });
+});
+
+describe("SettingsPage Export Privacy role gate (CHE-771 N1)", () => {
+  it("hides Export Privacy and falls back from a direct tab URL for a plain member", () => {
+    membershipState.role = "member";
+    navigationState.search = "tab=export-privacy";
+
+    renderWithI18n(<SettingsPage />);
+
+    expect(
+      screen.queryByRole("link", { name: "Export Privacy" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("ExportPrivacyTab")).not.toBeInTheDocument();
+    expect(screen.getByText("AccountTab")).toBeInTheDocument();
+  });
+
+  it("shows Export Privacy for an admin", () => {
+    membershipState.role = "admin";
+
+    renderWithI18n(<SettingsPage />);
+
+    expect(
+      screen.getByRole("link", { name: "Export Privacy" }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows Export Privacy for an owner", () => {
+    membershipState.role = "owner";
+
+    renderWithI18n(<SettingsPage />);
+
+    expect(
+      screen.getByRole("link", { name: "Export Privacy" }),
+    ).toBeInTheDocument();
   });
 });
 

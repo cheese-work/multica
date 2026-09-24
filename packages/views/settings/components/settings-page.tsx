@@ -20,12 +20,15 @@ import {
   Server,
   ShieldCheck,
 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { useAuthStore } from "@multica/core/auth";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { useFeatureEnabled } from "@multica/core/config";
 import {
   BILLING_WORKSPACE_SUBSCRIPTIONS_FLAG,
   PLUGINS_V1_FLAG,
 } from "@multica/core/feature-flags";
+import { memberListOptions } from "@multica/core/workspace";
 import { cn } from "@multica/ui/lib/utils";
 import { resolveSettingsLocation, settingsHref } from "./settings-navigation";
 import { AppLink, useNavigation } from "../../navigation";
@@ -65,14 +68,27 @@ type SettingsEntry = ExtraSettingsTab & { wide?: boolean };
 
 export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
   const { t } = useT("settings");
-  const workspaceName =
-    useCurrentWorkspace()?.name ?? t(($) => $.page.workspace_fallback);
+  const workspace = useCurrentWorkspace();
+  const workspaceName = workspace?.name ?? t(($) => $.page.workspace_fallback);
   const navigation = useNavigation();
   const pluginsEnabled = useFeatureEnabled(PLUGINS_V1_FLAG, false);
   const billingEnabled = useFeatureEnabled(
     BILLING_WORKSPACE_SUBSCRIPTIONS_FLAG,
     false,
   );
+  const user = useAuthStore((s) => s.user);
+  const { data: members = [] } = useQuery({
+    ...memberListOptions(workspace?.id ?? ""),
+    enabled: !!workspace?.id,
+  });
+  // CHE-771/N1: the Export Privacy nav entry mirrors ExportPrivacyTab's own
+  // gate (and the server's owner/admin ACL) so a member never sees a link
+  // that opens to a blank pane. This does not grant or check any privilege
+  // itself — ExportPrivacyTab and the server independently re-derive and
+  // enforce the same role check.
+  const currentMember = members.find((m) => m.user_id === user?.id) ?? null;
+  const canManageExportPrivacy =
+    currentMember?.role === "owner" || currentMember?.role === "admin";
   const entry = (
     value: string,
     label: string,
@@ -135,12 +151,16 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
           Users,
           <MembersTab />,
         ),
-        entry(
-          "export-privacy",
-          t(($) => $.page.tabs.export_privacy),
-          ShieldCheck,
-          <ExportPrivacyTab />,
-        ),
+        ...(canManageExportPrivacy
+          ? [
+              entry(
+                "export-privacy",
+                t(($) => $.page.tabs.export_privacy),
+                ShieldCheck,
+                <ExportPrivacyTab />,
+              ),
+            ]
+          : []),
         ...(billingEnabled
           ? [
               entry(
