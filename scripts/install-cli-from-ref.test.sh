@@ -276,34 +276,12 @@ if [ ! -x "$retention_across_success_dir/.multica.previous" ]; then
   exit 1
 fi
 
-# ---------------------------------------------------------------------------
-# Scenario: an existing backup must survive a failure to CREATE the new
-# backup. A previous review round found the script deleting the existing
-# .multica.previous up front and only then copying its replacement — if that
-# copy failed (disk full, permission error, killed mid-write), the one
-# durable rollback artifact was already gone, exactly the failure this
-# script exists to protect against. Injects a copy failure via a `cp` stub
-# on PATH that fails ONLY for the backup's own staging filename
-# (.multica.previous.new.<pid>) and behaves as the real `cp` for every other
-# call the script makes (staging the new binary, etc.), so only the one
-# operation under test is affected.
-# ---------------------------------------------------------------------------
-backup_copy_failure_dir="$work_dir/bin-backup-copy-failure"
-bash "$script" --repo "$fixture_repo" --ref "$good_sha" --bin-dir "$backup_copy_failure_dir" >/dev/null 2>&1
-existing_backup_dir="$work_dir/bin-backup-copy-failure-seed"
-mkdir -p "$existing_backup_dir"
-# Seed an existing backup by hand: content distinguishable from both the
-# currently-installed binary and whatever this run would otherwise produce,
-# so "the existing backup was preserved byte-for-byte" is unambiguous rather
-# than coincidentally matching a fresh copy.
-printf '#!/bin/sh\necho seeded-existing-backup\n' >"$backup_copy_failure_dir/.multica.previous"
-chmod +x "$backup_copy_failure_dir/.multica.previous"
-seeded_backup_checksum="$(sha256sum "$backup_copy_failure_dir/.multica.previous" 2>/dev/null || shasum -a 256 "$backup_copy_failure_dir/.multica.previous")"
-
-cp_stub_dir="$work_dir/cp-stub"
-mkdir -p "$cp_stub_dir"
-real_cp="$(command -v cp)"
-cat >"$cp_stub_dir/cp" <<EOF
+write_cp_stub_failing_for_backup_staging() {
+  local stub_dir="$1"
+  mkdir -p "$stub_dir"
+  local real_cp
+  real_cp="$(command -v cp)"
+  cat >"$stub_dir/cp" <<EOF
 #!/usr/bin/env bash
 for arg in "\$@"; do
   case "\$arg" in
@@ -315,15 +293,67 @@ for arg in "\$@"; do
 done
 exec "$real_cp" "\$@"
 EOF
-chmod +x "$cp_stub_dir/cp"
+  chmod +x "$stub_dir/cp"
+}
+
+# ---------------------------------------------------------------------------
+# Scenario: a failure to back up the CURRENTLY installed binary must be
+# FATAL, before the live binary is touched at all — not a logged warning
+# followed by replacing the live CLI anyway. A previous review round's fix
+# made the failure non-fatal (log and continue); this is a fail-closed
+# rollback violation on its own: with no prior backup, a later post-replace
+# failure would have nothing to restore and leave the host with no working
+# CLI; with an OLDER backup present, restore_previous() would silently roll
+# back to that stale version instead of the one that was actually live
+# moments before this run. Injects a copy failure via a `cp` stub on PATH
+# that fails ONLY for the backup's own staging filename
+# (.multica.previous.new.<pid>) and behaves as the real `cp` for every other
+# call the script makes, so only the one operation under test is affected —
+# meaning any success/failure this scenario observes is specifically about
+# the backup step, not a broader tooling failure.
+# ---------------------------------------------------------------------------
+backup_copy_failure_dir="$work_dir/bin-backup-copy-failure"
+bash "$script" --repo "$fixture_repo" --ref "$good_sha" --bin-dir "$backup_copy_failure_dir" >/dev/null 2>&1
+live_before_commit="$("$backup_copy_failure_dir/multica" version --output json | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.parse(d).commit))')"
+live_before_mtime="$(stat -c %Y "$backup_copy_failure_dir/multica" 2>/dev/null || stat -f %m "$backup_copy_failure_dir/multica")"
+# Seed an existing backup by hand: content distinguishable from both the
+# currently-installed binary and whatever this run would otherwise produce,
+# so "the existing backup was preserved byte-for-byte" is unambiguous rather
+# than coincidentally matching a fresh copy.
+printf '#!/bin/sh\necho seeded-existing-backup\n' >"$backup_copy_failure_dir/.multica.previous"
+chmod +x "$backup_copy_failure_dir/.multica.previous"
+seeded_backup_checksum="$(sha256sum "$backup_copy_failure_dir/.multica.previous" 2>/dev/null || shasum -a 256 "$backup_copy_failure_dir/.multica.previous")"
+
+cp_stub_dir="$work_dir/cp-stub"
+write_cp_stub_failing_for_backup_staging "$cp_stub_dir"
 
 set +e
 backup_copy_failure_output="$(PATH="$cp_stub_dir:$PATH" bash "$script" --repo "$fixture_repo" --ref "$good_sha" --bin-dir "$backup_copy_failure_dir" 2>&1)"
+backup_copy_failure_status=$?
 set -e
 
-if [[ "$backup_copy_failure_output" != *"could not stage a new backup"* ]]; then
-  echo "scenario backup-copy-failure: expected a diagnostic naming the failed backup staging, got:" >&2
+if [ "$backup_copy_failure_status" -eq 0 ]; then
+  echo "scenario backup-copy-failure: expected a nonzero exit when the pre-replace backup cannot be created, got 0" >&2
   echo "$backup_copy_failure_output" >&2
+  exit 1
+fi
+if [[ "$backup_copy_failure_output" != *"FATAL — could not back up"* ]]; then
+  echo "scenario backup-copy-failure: expected a FATAL diagnostic naming the failed backup, got:" >&2
+  echo "$backup_copy_failure_output" >&2
+  exit 1
+fi
+
+# The live binary must be completely untouched: same commit, same mtime.
+# Same commit alone would not catch a rebuild-with-identical-output; mtime
+# is what proves this specific file was never replaced.
+live_after_commit="$("$backup_copy_failure_dir/multica" version --output json | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.parse(d).commit))')"
+if [ "$live_after_commit" != "$live_before_commit" ]; then
+  echo "scenario backup-copy-failure: expected the live binary's commit to be unchanged ($live_before_commit) after a fatal backup failure, got $live_after_commit" >&2
+  exit 1
+fi
+live_after_mtime="$(stat -c %Y "$backup_copy_failure_dir/multica" 2>/dev/null || stat -f %m "$backup_copy_failure_dir/multica")"
+if [ "$live_after_mtime" != "$live_before_mtime" ]; then
+  echo "scenario backup-copy-failure: expected the live binary's mtime to be unchanged after a fatal backup failure — it was touched" >&2
   exit 1
 fi
 
@@ -331,21 +361,67 @@ if [ ! -e "$backup_copy_failure_dir/.multica.previous" ]; then
   echo "scenario backup-copy-failure: the existing backup must survive a failed backup-refresh attempt, found none" >&2
   exit 1
 fi
-
 after_backup_checksum="$(sha256sum "$backup_copy_failure_dir/.multica.previous" 2>/dev/null || shasum -a 256 "$backup_copy_failure_dir/.multica.previous")"
 if [ "$after_backup_checksum" != "$seeded_backup_checksum" ]; then
   echo "scenario backup-copy-failure: the seeded backup was modified even though its own copy step failed" >&2
   exit 1
 fi
-
 if [ ! -x "$backup_copy_failure_dir/.multica.previous" ]; then
   echo "scenario backup-copy-failure: the surviving backup must remain executable/usable, not just present" >&2
   exit 1
 fi
 
-backup_copy_failure_leftover="$(find "$backup_copy_failure_dir" -maxdepth 1 -name '.multica.previous.new.*' 2>/dev/null)"
+backup_copy_failure_leftover="$(find "$backup_copy_failure_dir" -maxdepth 1 \( -name '.multica.previous.new.*' -o -name '.multica.new.*' \) 2>/dev/null)"
 if [ -n "$backup_copy_failure_leftover" ]; then
-  echo "scenario backup-copy-failure: a failed backup-staging temp file was left behind: $backup_copy_failure_leftover" >&2
+  echo "scenario backup-copy-failure: a staged temp file was left behind: $backup_copy_failure_leftover" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Scenario: the same fatal-before-replacement contract with NO existing
+# backup to protect. Nothing to preserve byte-for-byte here; the assertion
+# is that the live binary is left completely alone and no partial/empty
+# backup or staging file is ever created at $bin_dir.
+# ---------------------------------------------------------------------------
+backup_copy_failure_no_backup_dir="$work_dir/bin-backup-copy-failure-no-backup"
+bash "$script" --repo "$fixture_repo" --ref "$good_sha" --bin-dir "$backup_copy_failure_no_backup_dir" >/dev/null 2>&1
+no_backup_live_before_commit="$("$backup_copy_failure_no_backup_dir/multica" version --output json | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.parse(d).commit))')"
+no_backup_live_before_mtime="$(stat -c %Y "$backup_copy_failure_no_backup_dir/multica" 2>/dev/null || stat -f %m "$backup_copy_failure_no_backup_dir/multica")"
+rm -f "$backup_copy_failure_no_backup_dir/.multica.previous"
+
+cp_stub_dir_no_backup="$work_dir/cp-stub-no-backup"
+write_cp_stub_failing_for_backup_staging "$cp_stub_dir_no_backup"
+
+set +e
+no_backup_output="$(PATH="$cp_stub_dir_no_backup:$PATH" bash "$script" --repo "$fixture_repo" --ref "$good_sha" --bin-dir "$backup_copy_failure_no_backup_dir" 2>&1)"
+no_backup_status=$?
+set -e
+
+if [ "$no_backup_status" -eq 0 ]; then
+  echo "scenario backup-copy-failure-no-backup: expected a nonzero exit when the pre-replace backup cannot be created, got 0" >&2
+  echo "$no_backup_output" >&2
+  exit 1
+fi
+
+no_backup_live_after_commit="$("$backup_copy_failure_no_backup_dir/multica" version --output json | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.parse(d).commit))')"
+if [ "$no_backup_live_after_commit" != "$no_backup_live_before_commit" ]; then
+  echo "scenario backup-copy-failure-no-backup: expected the live binary's commit to be unchanged after a fatal backup failure, got $no_backup_live_after_commit" >&2
+  exit 1
+fi
+no_backup_live_after_mtime="$(stat -c %Y "$backup_copy_failure_no_backup_dir/multica" 2>/dev/null || stat -f %m "$backup_copy_failure_no_backup_dir/multica")"
+if [ "$no_backup_live_after_mtime" != "$no_backup_live_before_mtime" ]; then
+  echo "scenario backup-copy-failure-no-backup: expected the live binary's mtime to be unchanged after a fatal backup failure — it was touched" >&2
+  exit 1
+fi
+
+if [ -e "$backup_copy_failure_no_backup_dir/.multica.previous" ]; then
+  echo "scenario backup-copy-failure-no-backup: expected no backup to be created when there was nothing to back up from, found one" >&2
+  exit 1
+fi
+
+no_backup_leftover="$(find "$backup_copy_failure_no_backup_dir" -maxdepth 1 \( -name '.multica.previous.new.*' -o -name '.multica.new.*' \) 2>/dev/null)"
+if [ -n "$no_backup_leftover" ]; then
+  echo "scenario backup-copy-failure-no-backup: a staged temp file was left behind: $no_backup_leftover" >&2
   exit 1
 fi
 

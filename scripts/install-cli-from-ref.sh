@@ -146,14 +146,24 @@ if [ -e "$bin_dir/multica" ]; then
   # same-filesystem atomic swap restore_previous() below relies on: the
   # existing backup is either fully replaced by a complete, verified copy of
   # the CURRENT $bin_dir/multica, or left completely untouched.
+  #
+  # A failed backup is FATAL, before the live binary is touched — not a
+  # logged warning to continue past. Continuing here would mean: no prior
+  # backup existed -> a post-replace failure later has nothing to restore,
+  # leaving the host with no working CLI at all; an OLDER backup existed ->
+  # restore_previous() would silently roll back to that stale version
+  # instead of the one that was actually live moments ago, corrupting the
+  # rollback contract this whole script exists to provide. The live binary
+  # at $bin_dir/multica is completely untouched at this point, so exiting
+  # here is a true no-op from the host's perspective.
   backup_staging="$bin_dir/.multica.previous.new.$$"
   rm -f "$backup_staging"
-  if cp -p "$bin_dir/multica" "$backup_staging" && [ -s "$backup_staging" ]; then
-    mv -f "$backup_staging" "$backup_binary"
-  else
-    echo "install-cli-from-ref: could not stage a new backup of $bin_dir/multica — keeping the existing backup (if any) untouched" >&2
+  if ! { cp -p "$bin_dir/multica" "$backup_staging" && [ -s "$backup_staging" ]; }; then
+    echo "install-cli-from-ref: FATAL — could not back up $bin_dir/multica before replacing it; leaving it and any existing backup untouched" >&2
     rm -f "$backup_staging"
+    exit 1
   fi
+  mv -f "$backup_staging" "$backup_binary"
 fi
 
 restore_previous() {
