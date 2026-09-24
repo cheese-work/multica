@@ -37,7 +37,7 @@ type fakeSweeper struct {
 
 func (f *fakeSweeper) SweepWorkspace(ctx context.Context, workspaceID pgtype.UUID) (int64, error) {
 	f.calls = append(f.calls, workspaceID)
-	key := workspaceUUIDString(workspaceID)
+	key := workspaceMapKey(workspaceID)
 	if f.failOn == key {
 		return 0, errors.New("simulated sweep failure")
 	}
@@ -64,8 +64,8 @@ func TestProvenanceExportRetention_SweepsEveryWorkspace(t *testing.T) {
 	lister := &fakeWorkspaceLister{workspaces: []pgtype.UUID{wsA, wsB}}
 	sweeper := &fakeSweeper{
 		deleted: map[string]int64{
-			workspaceUUIDString(wsA): 3,
-			workspaceUUIDString(wsB): 5,
+			workspaceMapKey(wsA): 3,
+			workspaceMapKey(wsB): 5,
 		},
 	}
 
@@ -96,7 +96,7 @@ func TestProvenanceExportRetention_FailsClosedOnSweepError(t *testing.T) {
 	wsA := fakeWorkspaceID(1)
 	wsB := fakeWorkspaceID(2)
 	lister := &fakeWorkspaceLister{workspaces: []pgtype.UUID{wsA, wsB}}
-	sweeper := &fakeSweeper{failOn: workspaceUUIDString(wsB)}
+	sweeper := &fakeSweeper{failOn: workspaceMapKey(wsB)}
 
 	handler := makeProvenanceExportRetentionHandler(lister, sweeper)
 	if _, err := handler(context.Background(), HandlerInput{}); err == nil {

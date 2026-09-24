@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -89,7 +90,7 @@ func makeProvenanceExportRetentionHandler(queries provenanceRetentionWorkspaceLi
 				// activity_log receipt in its own transaction (see SweepWorkspace),
 				// so returning here loses no history — only this and later
 				// workspaces are retried on the scheduler's own backoff.
-				return HandlerResult{}, fmt.Errorf("sweep workspace %s: %w", workspaceUUIDString(workspaceID), err)
+				return HandlerResult{}, fmt.Errorf("sweep workspace %s: %w", util.UUIDToString(workspaceID), err)
 			}
 			totalDeleted += deleted
 			workspacesSwept++
@@ -167,6 +168,12 @@ func (s *poolSweeper) SweepWorkspace(ctx context.Context, workspaceID pgtype.UUI
 	return int64(len(deletedIDs)), nil
 }
 
-func workspaceUUIDString(id pgtype.UUID) string {
+// workspaceMapKey returns a cheap, stable map key for a workspace UUID. It is
+// NOT for display, logs, or error text: pgtype.UUID.Bytes are raw bytes, not
+// UTF-8, and Postgres rejects most of them as invalid text (SQLSTATE 22021)
+// — which is exactly how a prior version of this file broke
+// sys_cron_executions.error_msg writes on sweep failure (review finding N4).
+// Use util.UUIDToString for anything a human or the database will read.
+func workspaceMapKey(id pgtype.UUID) string {
 	return string(id.Bytes[:])
 }

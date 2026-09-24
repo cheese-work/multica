@@ -10,20 +10,26 @@ INSERT INTO provenance_export_log (
 RETURNING *;
 
 -- name: DeleteExpiredProvenanceExportLogsForWorkspace :many
--- CHE-766: scheduled retention cleanup for one workspace. The cutoff is
--- computed from a live subquery on workspace.export_manifest_retention_days
--- — NOT a value the caller fetched earlier and passes in — so a concurrent
--- admin edit to retention_days (e.g. an emergency extension from 1 to 365
--- days to protect an active obligation) is honored by this exact statement,
--- not by whatever the retention setting happened to be when the scheduler's
--- workspace list was built. Returns the deleted ids so the caller can write
--- a workspace-scoped, content-free receipt of exactly what was removed
--- (never titles/descriptions/comment bodies — provenance_export_log already
--- carries only ids, digests and exclusion reasons per migration 515).
+-- CHE-766: scheduled retention cleanup for one workspace. The cutoff comes
+-- from a subquery that takes FOR SHARE on the workspace row — the same row
+-- UpdateWorkspaceExportPrivacy locks FOR UPDATE inside its own transaction
+-- (server/internal/handler/workspace_export_privacy.go). FOR SHARE is a
+-- genuine lock wait, not just a read of whatever happens to be committed at
+-- statement-snapshot time: if an admin's PATCH transaction is mid-flight
+-- holding FOR UPDATE on this row (e.g. raising retention from 1 to 365 days
+-- to protect an active obligation), this subquery BLOCKS until that PATCH
+-- commits or rolls back, then reads the value it actually left behind. A
+-- plain scalar subquery with no lock does not block on a concurrent FOR
+-- UPDATE holder and can still read a value that is about to be superseded —
+-- that gap is what this lock closes (review finding on df415ab6d). Returns
+-- the deleted ids so the caller can write a workspace-scoped, content-free
+-- receipt of exactly what was removed (never titles/descriptions/comment
+-- bodies — provenance_export_log already carries only ids, digests and
+-- exclusion reasons per migration 515).
 DELETE FROM provenance_export_log
 WHERE workspace_id = $1
   AND created_at < now() - make_interval(days =>
-        (SELECT export_manifest_retention_days FROM workspace WHERE id = $1)::int)
+        (SELECT export_manifest_retention_days FROM workspace WHERE id = $1 FOR SHARE)::int)
 RETURNING id;
 
 -- name: ListWorkspaceExportRetentionSettings :many

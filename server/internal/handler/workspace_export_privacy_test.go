@@ -310,6 +310,78 @@ func (p *errorFlagProvider) Lookup(ctx context.Context, key string) (featureflag
 	}, true
 }
 
+// TestExportProvenance_KillSwitchNilFlagServiceDenies is the direct
+// regression for Sol's renewed-review finding on df415ab6d: a nil
+// *featureflag.Service (flag evaluation absent entirely, e.g. missing wiring)
+// must deny, not fall through to IsEnabled's true default. IsEnabled alone
+// cannot tell "no provider was ever wired" apart from "a working provider has
+// no rule for this key" — both hit the same defaultVal branch — so
+// ExportPrivacyControlsEnabled has to check for the absent service/provider
+// itself before ever calling IsEnabled.
+func TestExportProvenance_KillSwitchNilFlagServiceDenies(t *testing.T) {
+	requireProvenanceDB(t)
+	provenanceCleanupLogs(t)
+
+	origFlags := testHandler.FeatureFlags
+	testHandler.FeatureFlags = nil
+	t.Cleanup(func() { testHandler.FeatureFlags = origFlags })
+
+	before := provenanceLogCount(t)
+	cutoff := time.Now().Add(-time.Hour)
+	testutil.Call(t, testHandler.ExportProvenance,
+		provenanceRequest(testWorkspaceID, testUserID, provenanceBody(testWorkspaceID, cutoff, []string{"HAN-1"}, nil))).
+		Want(http.StatusServiceUnavailable)
+
+	if after := provenanceLogCount(t); after != before {
+		t.Fatalf("export wrote an audit row despite a nil flag service: before=%d after=%d", before, after)
+	}
+}
+
+// TestExportProvenance_KillSwitchNilProviderDenies covers the sibling case: a
+// non-nil *featureflag.Service wrapping a nil Provider (constructible via
+// featureflag.NewService(nil), matching the package's own documented "no
+// provider" contract) must also deny outright.
+func TestExportProvenance_KillSwitchNilProviderDenies(t *testing.T) {
+	requireProvenanceDB(t)
+	provenanceCleanupLogs(t)
+
+	origFlags := testHandler.FeatureFlags
+	testHandler.FeatureFlags = featureflag.NewService(nil)
+	t.Cleanup(func() { testHandler.FeatureFlags = origFlags })
+
+	before := provenanceLogCount(t)
+	cutoff := time.Now().Add(-time.Hour)
+	testutil.Call(t, testHandler.ExportProvenance,
+		provenanceRequest(testWorkspaceID, testUserID, provenanceBody(testWorkspaceID, cutoff, []string{"HAN-1"}, nil))).
+		Want(http.StatusServiceUnavailable)
+
+	if after := provenanceLogCount(t); after != before {
+		t.Fatalf("export wrote an audit row despite a nil-provider flag service: before=%d after=%d", before, after)
+	}
+}
+
+// TestExportProvenance_KillSwitchUnconfiguredKeyOnWorkingProviderStillEnabled
+// is the regression guard for the OTHER half of the contract: a working,
+// non-nil provider that simply has no rule for export_privacy_controls must
+// still fall through to the true default (export already shipped in CHE-755
+// without a flag) — the nil/absent-provider check must not overreach and
+// deny a perfectly normal "key unset" case too.
+func TestExportProvenance_KillSwitchUnconfiguredKeyOnWorkingProviderStillEnabled(t *testing.T) {
+	requireProvenanceDB(t)
+	provenanceCleanupLogs(t)
+
+	origFlags := testHandler.FeatureFlags
+	// A static provider with no rule for featureflags.ExportPrivacyControls at
+	// all — distinct from withFeatureFlag, which always sets a rule.
+	testHandler.FeatureFlags = featureflag.NewService(featureflag.NewStaticProvider())
+	t.Cleanup(func() { testHandler.FeatureFlags = origFlags })
+
+	cutoff := time.Now().Add(-time.Hour)
+	testutil.Call(t, testHandler.ExportProvenance,
+		provenanceRequest(testWorkspaceID, testUserID, provenanceBody(testWorkspaceID, cutoff, []string{"HAN-1"}, nil))).
+		Want(http.StatusOK)
+}
+
 // TestWorkspaceExportPrivacy_KillSwitchDisabled covers the same B1 finding
 // for both config endpoints: disabling the flag hides and blocks the config
 // surface along with the capability it configures.

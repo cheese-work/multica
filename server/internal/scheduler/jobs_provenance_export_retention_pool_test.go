@@ -10,6 +10,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // insertRetentionTestWorkspace creates a bare workspace row with the given
@@ -213,10 +216,10 @@ func TestProvenanceExportRetention_PartialSweepFailureKeepsPriorReceipts(t *test
 
 	for _, ws := range []pgtype.UUID{wsOK1, wsOK2} {
 		if remaining := countRetentionTestLogs(t, pool, ws); remaining != 0 {
-			t.Fatalf("workspace %s: expected its expired row deleted before the later failure, remaining=%d", workspaceUUIDString(ws), remaining)
+			t.Fatalf("workspace %s: expected its expired row deleted before the later failure, remaining=%d", util.UUIDToString(ws), remaining)
 		}
 		if receipts := countRetentionReceipts(t, pool, ws); receipts != 1 {
-			t.Fatalf("workspace %s: expected a durable receipt to survive the later failure, receipts=%d", workspaceUUIDString(ws), receipts)
+			t.Fatalf("workspace %s: expected a durable receipt to survive the later failure, receipts=%d", util.UUIDToString(ws), receipts)
 		}
 	}
 	// wsFail's own row must be untouched — its transaction never committed.
@@ -235,45 +238,101 @@ type partialFailureSweeper struct {
 
 func (s *partialFailureSweeper) SweepWorkspace(ctx context.Context, workspaceID pgtype.UUID) (int64, error) {
 	if workspaceID == s.failOn {
-		return 0, fmt.Errorf("injected failure for workspace %s", workspaceUUIDString(workspaceID))
+		return 0, fmt.Errorf("injected failure for workspace %s", util.UUIDToString(workspaceID))
 	}
 	return s.real.SweepWorkspace(ctx, workspaceID)
 }
 
-// TestPoolSweeper_ConcurrentRetentionRaiseDuringSweep is a true concurrency
-// regression for the same stale-policy finding covered synchronously by
-// TestPoolSweeper_UsesLiveRetentionAtDeletionTime: here an admin's retention
-// increase races an in-flight sweep for real, via two goroutines and a
-// barrier, rather than being sequenced by the test before the sweep starts.
-// The sweep's own transaction reads export_manifest_retention_days live, so
-// however the race resolves, the row must never be deleted once the raised
-// value has committed and is visible to a REPEATABLE READ (default read
-// committed here) transaction starting after it.
+// concurrentSweepBlockWindow is how long TestPoolSweeper_ConcurrentRetentionRaiseDuringSweep
+// holds the PATCH transaction's lock open before committing. The sweep must
+// not observe a result before this window elapses; that ordering, not
+// pg_locks introspection, is the proof of genuine blocking. pg_locks was
+// tried first and rejected: Postgres does not reliably surface an uncontended
+// or short-window row-level lock wait as a `granted=false` pg_locks row (the
+// tuple lock itself often does not appear in pg_locks at all until there is
+// real contention to report), so polling it produced false negatives even
+// while the block was verifiably happening (confirmed separately by wall-clock
+// timing against a real two-transaction session).
+const concurrentSweepBlockWindow = 1500 * time.Millisecond
+
+// TestPoolSweeper_ConcurrentRetentionRaiseDuringSweep is a genuinely
+// overlapping two-transaction regression for the same stale-policy finding
+// covered synchronously by TestPoolSweeper_UsesLiveRetentionAtDeletionTime,
+// and for the serialization Sol's review specifically asked for: the PATCH
+// path's row lock (FOR UPDATE, via UpdateWorkspaceExportPrivacy's real
+// transaction) is held open — retention raised but NOT yet committed — while
+// a sweep is started concurrently in a second goroutine. The sweep's
+// DeleteExpiredProvenanceExportLogsForWorkspace query takes FOR SHARE on the
+// same workspace row, so it must BLOCK until the PATCH transaction commits,
+// not read a stale value out from under it. The proof of genuine overlap is
+// timing: the sweep goroutine must not report a result until AFTER
+// concurrentSweepBlockWindow has elapsed and the PATCH has committed — if the
+// FOR SHARE lock were not serializing against FOR UPDATE, the sweep would
+// finish almost immediately instead.
 func TestPoolSweeper_ConcurrentRetentionRaiseDuringSweep(t *testing.T) {
 	pool := integrationPool(t)
 	workspaceID := insertRetentionTestWorkspace(t, pool, 1)
 	insertRetentionTestLog(t, pool, workspaceID, 100*24*time.Hour)
 
-	// Commit the retention raise BEFORE starting the sweep's transaction, so
-	// under read-committed isolation the sweep is guaranteed to see it — this
-	// pins the outcome deterministically while still exercising the real
-	// transactional path end-to-end (as opposed to asserting on SQL text).
-	raiseDone := make(chan error, 1)
-	go func() {
-		_, err := pool.Exec(context.Background(),
-			`UPDATE workspace SET export_manifest_retention_days = 365 WHERE id = $1`, workspaceID)
-		raiseDone <- err
-	}()
-	if err := <-raiseDone; err != nil {
-		t.Fatalf("concurrent retention raise: %v", err)
+	ctx := context.Background()
+
+	// Start the PATCH-equivalent transaction and hold its FOR UPDATE lock open
+	// (raised to 365 days, NOT yet committed) using the exact same queries the
+	// real handler uses.
+	patchTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin patch tx: %v", err)
+	}
+	patchQueries := db.New(patchTx)
+	if _, err := patchQueries.GetWorkspaceExportPrivacyForUpdate(ctx, workspaceID); err != nil {
+		t.Fatalf("lock workspace row FOR UPDATE: %v", err)
+	}
+	if _, err := patchQueries.UpdateWorkspaceExportPrivacy(ctx, db.UpdateWorkspaceExportPrivacyParams{
+		ID:                          workspaceID,
+		ExportRedactionMode:         "small",
+		ExportManifestRetentionDays: 365,
+	}); err != nil {
+		t.Fatalf("update retention inside patch tx: %v", err)
 	}
 
-	sweeper := &poolSweeper{pool: pool}
-	deleted, err := sweeper.SweepWorkspace(context.Background(), workspaceID)
-	if err != nil {
-		t.Fatalf("SweepWorkspace: %v", err)
+	// Start the sweep concurrently. It must block on the FOR SHARE subquery
+	// until patchTx below commits.
+	type sweepResult struct {
+		deleted  int64
+		err      error
+		finished time.Time
 	}
-	if deleted != 0 {
-		t.Fatalf("deleted = %d, want 0 — the concurrent raise to 365 days must protect the 100-day-old row", deleted)
+	sweepStart := time.Now()
+	sweepDone := make(chan sweepResult, 1)
+	go func() {
+		sweeper := &poolSweeper{pool: pool}
+		deleted, err := sweeper.SweepWorkspace(ctx, workspaceID)
+		sweepDone <- sweepResult{deleted, err, time.Now()}
+	}()
+
+	// Give the sweep goroutine time to actually reach and block on the FOR
+	// SHARE subquery before committing — otherwise a slow scheduler could let
+	// the sweep run to completion before it ever contends for the lock, which
+	// would pass for the wrong reason (no contention, not successful blocking).
+	time.Sleep(concurrentSweepBlockWindow)
+	commitTime := time.Now()
+	if err := patchTx.Commit(ctx); err != nil {
+		t.Fatalf("commit patch tx: %v", err)
+	}
+
+	result := <-sweepDone
+	if result.err != nil {
+		t.Fatalf("SweepWorkspace: %v", result.err)
+	}
+	if result.finished.Before(commitTime) {
+		t.Fatalf("sweep finished at %s, before the PATCH committed at %s — the FOR SHARE subquery did not block on the FOR UPDATE holder",
+			result.finished.Format(time.RFC3339Nano), commitTime.Format(time.RFC3339Nano))
+	}
+	if result.finished.Sub(sweepStart) < concurrentSweepBlockWindow {
+		t.Fatalf("sweep completed after only %s, less than the %s the PATCH held its lock — it did not genuinely wait",
+			result.finished.Sub(sweepStart), concurrentSweepBlockWindow)
+	}
+	if result.deleted != 0 {
+		t.Fatalf("deleted = %d, want 0 — the sweep must observe the committed 365-day retention it waited on, not the stale 1-day value", result.deleted)
 	}
 }
