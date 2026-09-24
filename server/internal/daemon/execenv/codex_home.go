@@ -349,6 +349,7 @@ func resolveSharedCodexHome() string {
 // memories_*) which are not session-derived. All are left intact.
 var codexSessionStateGlobs = []string{
 	"state_*.sqlite",
+	"state_*.sqlite-journal",
 	"state_*.sqlite-shm",
 	"state_*.sqlite-wal",
 }
