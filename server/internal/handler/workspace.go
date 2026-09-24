@@ -328,6 +328,15 @@ type UpdateWorkspaceRequest struct {
 	Repos       any     `json:"repos"`
 	IssuePrefix *string `json:"issue_prefix"`
 	AvatarURL   *string `json:"avatar_url"`
+
+	// ExpectedBeforeDigest is CHE-764's narrow, human-approved exception
+	// field. It is only consulted when the request also matches
+	// hermesExceptionMatchesWorkspaceContext (this exact workspace, a
+	// `context` write, from exactly agent hermesExceptionAgentID) — for
+	// every other caller this field is decoded and silently ignored, same
+	// as any other unrecognized-by-that-caller field would be. See
+	// governed_instruction_hermes_exception.go for the full rationale.
+	ExpectedBeforeDigest string `json:"expected_before_digest"`
 }
 
 type workspaceRepoRef struct {
@@ -399,7 +408,50 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	// actually branches on — not a raw JSON key lookup, which a
 	// case-varied key ("Context") bypasses (encoding/json matches keys to
 	// struct fields case-insensitively).
-	actorType, _ := h.resolveActor(r, requestUserID(r), id)
+	actorType, actorID := h.resolveActor(r, requestUserID(r), id)
+
+	// CHE-764: a single, human-approved, narrowly-scoped exception to the
+	// CHE-455 rule immediately above — see
+	// governed_instruction_hermes_exception.go for the full predicate and
+	// provenance. This is checked BEFORE the default-deny call so the one
+	// permitted (agent, workspace, field) triple never reaches — and is
+	// never rejected by — the generic guard; every other request continues
+	// straight into the unmodified CHE-455 path below.
+	if hermesExceptionIdentityMatches(actorType, actorID) && hermesExceptionMatchesWorkspaceContext(id, req.Context != nil) {
+		var rawFields map[string]json.RawMessage
+		if err := json.Unmarshal(bodyBytes, &rawFields); err != nil || !hermesExceptionOnlyAllowedKeys(rawFields, "context", "expected_before_digest") {
+			writeError(w, http.StatusBadRequest, "this request may only include context and expected_before_digest")
+			return
+		}
+		result, reason, swapErr := h.hermesExceptionVerifyAndSwapWorkspaceContext(r.Context(), id, hermesExceptionRequest{
+			NewContent:           *req.Context,
+			ExpectedBeforeDigest: req.ExpectedBeforeDigest,
+		})
+		logHermesExceptionOutcome(r, actorID, "workspace.context", id, result, reason, swapErr)
+		if reason != hermesExceptionRejectNone {
+			hermesExceptionWriteRejection(w, r, reason, swapErr)
+			return
+		}
+		ws, err := h.Queries.GetWorkspace(r.Context(), idUUID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to reload workspace after hermes exception write")
+			return
+		}
+		resp := h.workspaceToResponse(ws)
+		// Publish the same live-update event the ordinary human path emits
+		// below (h.publish(protocol.EventWorkspaceUpdated, ...)) so UI
+		// clients watching this workspace see the change; the exception path
+		// returns before reaching that call (security review finding,
+		// CHE-764).
+		h.publish(protocol.EventWorkspaceUpdated, id, "agent", actorID, map[string]any{"workspace": resp})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"workspace":     resp,
+			"before_digest": result.BeforeDigest,
+			"after_digest":  result.AfterDigest,
+		})
+		return
+	}
+
 	if rejectGovernedFieldForAgentActor(w, r, actorType, req.Context != nil, "context") {
 		return
 	}
