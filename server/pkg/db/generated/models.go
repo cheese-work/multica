@@ -1676,6 +1676,10 @@ type Workspace struct {
 	AvatarUrl    pgtype.Text        `json:"avatar_url"`
 	// When TRUE, an agent run that resolves to no precise accountable human (would be owner_fallback) is refused at enqueue instead of degrading to the agent owner (MUL-4302 §3.5). Default FALSE = owner_fallback. Never affects authorization (originator_user_id).
 	AttributionFailClosed bool `json:"attribution_fail_closed"`
+	// CHE-766: redaction mode for CHE-755 provenance export. Only "small" is implemented and enforced server-side; "strict" is stored for forward compatibility but is rejected fail-closed by the export handler until it ships.
+	ExportRedactionMode string `json:"export_redaction_mode"`
+	// CHE-766: days a provenance_export_log row is kept before scheduled deletion. Default 90.
+	ExportManifestRetentionDays int32 `json:"export_manifest_retention_days"`
 }
 
 type WorkspaceInvitation struct {
