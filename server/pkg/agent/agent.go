@@ -70,7 +70,11 @@ type ExecOptions struct {
 	// preserves the legacy behavior for callers that explicitly set
 	// HandshakeTimeout; when both are zero Codex uses separate built-in defaults.
 	ThreadHandshakeTimeout time.Duration
-	ResumeSessionID        string // if non-empty, resume a previous agent session
+	// CodexSQLiteInitRetry enables one retry when Codex exits during
+	// initialize with the exact SQLite state-runtime failure for its own
+	// CODEX_HOME (CHE-737). Off by default.
+	CodexSQLiteInitRetry bool
+	ResumeSessionID      string // if non-empty, resume a previous agent session
 	// ResumeExpected records that this task intended to continue a prior
 	// conversation, independent of ResumeSessionID (which a fallback retry may
 	// clear). When it is true but the backend ends up on a fresh thread — the
@@ -289,6 +293,10 @@ type Result struct {
 	// its model catalog, and that the process tree was reaped afterwards.
 	// Like codexInitializeRetrySafe it is not part of the public contract.
 	codexStartupRefreshRetrySafe bool
+	// codexStateRuntimeRetrySafe is provider-internal evidence that Codex
+	// exited during initialize because its SQLite state runtime could not be
+	// opened, before semantic activity and after the process tree was reaped.
+	codexStateRuntimeRetrySafe bool
 }
 
 // Config configures a Backend instance.
