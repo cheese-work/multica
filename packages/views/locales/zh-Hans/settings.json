@@ -367,6 +367,7 @@
       "integrations": "集成",
       "labs": "实验室",
       "members": "成员",
+      "export_privacy": "导出隐私",
       "labels": "标签",
       "issue_statuses": "任务状态",
       "properties": "属性",
@@ -734,6 +735,28 @@
     "toast_delete_failed": "删除工作区失败",
     "confirm_cancel": "取消",
     "confirm_action": "确认"
+  },
+  "export_privacy": {
+    "title": "导出隐私",
+    "description": "控制来源导出会脱敏哪些内容，以及审计清单的保留时长。",
+    "section_title": "导出策略",
+    "loading": "正在加载导出隐私设置…",
+    "mode_label": "脱敏模式",
+    "mode_hint": "严格脱敏尚不可用，暂不可选。",
+    "mode_small_label": "基础（屏蔽密钥和凭据）",
+    "retention_label": "清单保留天数",
+    "retention_hint": "审计清单会在此天数（{{min}}–{{max}}）后自动删除。",
+    "retention_range_error": "请输入 {{min}} 到 {{max}} 之间的数字。",
+    "unavailable_title": "导出隐私控制不可用",
+    "unavailable_description": "此功能暂时已禁用，请稍后重试。",
+    "load_failed_title": "无法加载导出隐私设置",
+    "load_failed_description": "加载当前策略时出现问题，请稍后重试。",
+    "errors": {
+      "save_failed": "保存导出隐私设置失败",
+      "unavailable": "导出隐私控制暂时不可用",
+      "permission_changed": "您已不再拥有管理导出隐私设置的权限",
+      "permission_changed_title": "需要权限"
+    }
   },
   "delete_workspace_dialog": {
     "title": "删除工作区",

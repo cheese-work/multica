@@ -367,6 +367,7 @@
       "integrations": "Intégrations",
       "labs": "Labo",
       "members": "Membres",
+      "export_privacy": "Confidentialité des exports",
       "labels": "Étiquettes",
       "issue_statuses": "États des tâches",
       "properties": "Propriétés",
@@ -736,6 +737,28 @@
     "toast_delete_failed": "Échec de la suppression de l'espace de travail",
     "confirm_cancel": "Annuler",
     "confirm_action": "Confirmer"
+  },
+  "export_privacy": {
+    "title": "Confidentialité des exports",
+    "description": "Contrôle ce que les exports de provenance masquent et la durée de conservation de leurs manifestes d'audit.",
+    "section_title": "Politique d'export",
+    "loading": "Chargement des paramètres de confidentialité des exports…",
+    "mode_label": "Mode de masquage",
+    "mode_hint": "Le masquage strict n'est pas encore disponible et ne peut pas être sélectionné.",
+    "mode_small_label": "Basique (secrets et identifiants masqués)",
+    "retention_label": "Conservation des manifestes (jours)",
+    "retention_hint": "Les manifestes d'audit sont automatiquement supprimés après ce nombre de jours ({{min}}–{{max}}).",
+    "retention_range_error": "Saisissez un nombre entre {{min}} et {{max}}.",
+    "unavailable_title": "Contrôles de confidentialité des exports indisponibles",
+    "unavailable_description": "Cette fonctionnalité est temporairement désactivée. Réessayez plus tard.",
+    "load_failed_title": "Impossible de charger les paramètres de confidentialité des exports",
+    "load_failed_description": "Une erreur s'est produite lors du chargement de la politique actuelle. Réessayez plus tard.",
+    "errors": {
+      "save_failed": "Échec de l'enregistrement des paramètres de confidentialité des exports",
+      "unavailable": "Contrôles de confidentialité des exports temporairement indisponibles",
+      "permission_changed": "Vous n'avez plus l'autorisation de gérer les paramètres de confidentialité des exports",
+      "permission_changed_title": "Autorisation requise"
+    }
   },
   "delete_workspace_dialog": {
     "title": "Supprimer l'espace de travail",
