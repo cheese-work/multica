@@ -6238,3 +6238,174 @@ func TestCodexResumeOverflowError(t *testing.T) {
 		})
 	}
 }
+
+// TestIsCodexZeroToolFalseNegative exercises the pure classification function
+// behind CHE-775: a turn's final agent message claims missing terminal/CLI
+// access while the turn made zero real (exec_command/patch_apply) tool
+// calls. Codex CLI 0.156.0's multi-agent v2 defect steers the model toward
+// collaboration.* MCP tools (or no tool calls at all) instead of exec, so
+// realToolCalls deliberately excludes MCP tool calls — a turn that called
+// only collaboration.* tools still counts as zero here.
+func TestIsCodexZeroToolFalseNegative(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name          string
+		finalMessage  string
+		realToolCalls int64
+		want          bool
+	}{
+		{
+			name:          "zero tools and no-terminal claim",
+			finalMessage:  "This run exposes no terminal/Multica CLI capability, so I cannot proceed.",
+			realToolCalls: 0,
+			want:          true,
+		},
+		{
+			name:          "zero tools and no-multica-cli claim, different casing",
+			finalMessage:  "I have No Multica CLI access in this session.",
+			realToolCalls: 0,
+			want:          true,
+		},
+		{
+			name:          "zero tools and rerun-with-cli-access claim",
+			finalMessage:  "Please rerun with CLI access so I can complete this task.",
+			realToolCalls: 0,
+			want:          true,
+		},
+		{
+			name:          "zero tools but unrelated final message must not be flagged",
+			finalMessage:  "Here is a summary of the architecture you asked about.",
+			realToolCalls: 0,
+			want:          false,
+		},
+		{
+			name:          "zero tools and empty message",
+			finalMessage:  "",
+			realToolCalls: 0,
+			want:          false,
+		},
+		{
+			name:          "real tool call and false-negative-shaped message must not be flagged",
+			finalMessage:  "This run exposes no terminal/Multica CLI capability.",
+			realToolCalls: 1,
+			want:          false,
+		},
+		{
+			name:          "real tool call and unrelated message",
+			finalMessage:  "Done.",
+			realToolCalls: 3,
+			want:          false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isCodexZeroToolFalseNegative(tc.finalMessage, tc.realToolCalls); got != tc.want {
+				t.Fatalf("isCodexZeroToolFalseNegative(%q, %d) = %v, want %v", tc.finalMessage, tc.realToolCalls, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCodexExecuteRetriesZeroToolFalseNegativeThenCompletes drives the full
+// Execute retry loop (CHE-775): the first attempt calls only an MCP tool
+// (standing in for a collaboration.* tool exposed by the upstream multi-agent
+// v2 defect) and ends with the false-negative "no terminal/CLI access"
+// message. That must be retried once. The second attempt makes a real
+// exec_command call and completes normally, proving the false-negative
+// classification does not persist once the model actually uses a tool.
+func TestCodexExecuteRetriesZeroToolFalseNegativeThenCompletes(t *testing.T) {
+	// Not t.Parallel(): this test mutates codexGracefulShutdownTimeoutNanos.
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+	codexGracefulShutdownTimeoutNanos.Store(int64(100 * time.Millisecond))
+	t.Cleanup(func() { codexGracefulShutdownTimeoutNanos.Store(0) })
+
+	fakePath := writeFakeCodexAppServer(t, ""+
+		`DIR="$(dirname "$0")"`+"\n"+
+		`ATTEMPT=$(cat "$DIR/attempts" 2>/dev/null || echo 0)`+"\n"+
+		`ATTEMPT=$((ATTEMPT+1))`+"\n"+
+		`echo "$ATTEMPT" > "$DIR/attempts"`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":1,"result":{}}'`+"\n"+
+		`read line`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thr-zt-'"$ATTEMPT"'"}}}'`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":3,"result":{}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr-zt-'"$ATTEMPT"'","turn":{"id":"turn-zt-'"$ATTEMPT"'"}}}'`+"\n"+
+		`if [ "$ATTEMPT" = "1" ]; then`+"\n"+
+		// Attempt 1: only an MCP tool call (collaboration.* stand-in), then the
+		// false-negative final message. Zero exec_command/patch_apply calls.
+		`  echo '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thr-zt-1","item":{"type":"mcpToolCall","id":"mcp-1","tool":"collaboration.spawn_agent","status":"completed"}}}'`+"\n"+
+		`  echo '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thr-zt-1","item":{"type":"agentMessage","id":"msg-1","phase":"final_answer","text":"This run exposes no terminal/Multica CLI capability."}}}'`+"\n"+
+		`  echo '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr-zt-1","turn":{"id":"turn-zt-1","status":"completed"}}}'`+"\n"+
+		`else`+"\n"+
+		// Attempt 2: a real exec_command call, then a normal completion.
+		`  echo '{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"thr-zt-2","item":{"type":"commandExecution","id":"cmd-1","command":"ls"}}}'`+"\n"+
+		`  echo '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thr-zt-2","item":{"type":"commandExecution","id":"cmd-1","aggregatedOutput":"file1"}}}'`+"\n"+
+		`  echo '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thr-zt-2","item":{"type":"agentMessage","id":"msg-2","phase":"final_answer","text":"Listed files."}}}'`+"\n"+
+		`  echo '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr-zt-2","turn":{"id":"turn-zt-2","status":"completed"}}}'`+"\n"+
+		`fi`+"\n")
+
+	result := executeFakeCodex(t, fakePath, ExecOptions{
+		Timeout:                   5 * time.Second,
+		SemanticInactivityTimeout: 5 * time.Second,
+	})
+	if result.Status != "completed" {
+		t.Fatalf("expected the retry to complete, got status=%q error=%q", result.Status, result.Error)
+	}
+	if result.Output != "Listed files." {
+		t.Fatalf("expected the second attempt's deliverable, got %q", result.Output)
+	}
+	assertCodexAttemptCount(t, fakePath, "2")
+}
+
+// TestCodexExecuteZeroToolFalseNegativeFailsAfterSecondOccurrence proves the
+// CHE-775 guardrail's fail-fast half: when the same zero-tool false-negative
+// pattern recurs on the retried attempt, Execute must surface a clear
+// "failed" status instead of letting a "completed" status carry the false
+// "no terminal/CLI access" claim through as a normal deliverable.
+func TestCodexExecuteZeroToolFalseNegativeFailsAfterSecondOccurrence(t *testing.T) {
+	// Not t.Parallel(): this test mutates codexGracefulShutdownTimeoutNanos.
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+	codexGracefulShutdownTimeoutNanos.Store(int64(100 * time.Millisecond))
+	t.Cleanup(func() { codexGracefulShutdownTimeoutNanos.Store(0) })
+
+	fakePath := writeFakeCodexAppServer(t, ""+
+		`DIR="$(dirname "$0")"`+"\n"+
+		`ATTEMPT=$(cat "$DIR/attempts" 2>/dev/null || echo 0)`+"\n"+
+		`ATTEMPT=$((ATTEMPT+1))`+"\n"+
+		`echo "$ATTEMPT" > "$DIR/attempts"`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":1,"result":{}}'`+"\n"+
+		`read line`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thr-zt2-'"$ATTEMPT"'"}}}'`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":3,"result":{}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr-zt2-'"$ATTEMPT"'","turn":{"id":"turn-zt2-'"$ATTEMPT"'"}}}'`+"\n"+
+		// Every attempt: zero real tool calls, same false-negative final message.
+		`echo '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thr-zt2-'"$ATTEMPT"'","item":{"type":"agentMessage","id":"msg-'"$ATTEMPT"'","phase":"final_answer","text":"This run exposes no terminal/Multica CLI capability."}}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr-zt2-'"$ATTEMPT"'","turn":{"id":"turn-zt2-'"$ATTEMPT"'","status":"completed"}}}'`+"\n")
+
+	result := executeFakeCodex(t, fakePath, ExecOptions{
+		Timeout:                   5 * time.Second,
+		SemanticInactivityTimeout: 5 * time.Second,
+	})
+	if result.Status != "failed" {
+		t.Fatalf("expected the recurring false negative to surface as failed, got status=%q output=%q", result.Status, result.Output)
+	}
+	if !strings.Contains(result.Error, "CHE-775") {
+		t.Fatalf("expected a greppable CHE-775 error message, got %q", result.Error)
+	}
+	if !strings.Contains(result.Error, "zero exec_command/patch_apply tool calls") {
+		t.Fatalf("expected the error to describe the zero-tool pattern, got %q", result.Error)
+	}
+	assertCodexAttemptCount(t, fakePath, "2")
+}
