@@ -952,6 +952,16 @@ func isCodexBareTomlKey(s string) bool {
 }
 
 func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
+	// A thread persisted under multi-agent v2 would resume with the shell
+	// tool hidden, which the catalog override cannot undo. Start fresh and
+	// keep ResumeExpected so the turn carries the continuity notice.
+	if codexResumeKeepsMultiAgentV2(strings.TrimSpace(b.cfg.Env["CODEX_HOME"]), opts.ResumeSessionID) {
+		b.cfg.Logger.Warn("codex dropping resume of multi-agent v2 thread; starting fresh",
+			"prior_thread_id", opts.ResumeSessionID,
+		)
+		opts.ResumeSessionID = ""
+		opts.ResumeExpected = true
+	}
 	firstSession, err := b.executeOnce(ctx, prompt, opts, 1)
 	if err != nil {
 		return nil, err
