@@ -440,7 +440,23 @@ jobs:
 
           ssh_cmd=(ssh -i ~/.ssh/c00_deploy_key -o BatchMode=yes "${C00_SSH_USER}@${C00_SSH_HOST}")
           remote_dir="${C00_STATE_DIR%/}/cd-deploy-$(date +%s)"
-          router_state_dir="${C00_COMPOSE_DIR%/}/deploy/cd/router/state"
+
+          # CHE-702: the router may run from a different checkout than
+          # C00_COMPOSE_DIR. Ask the running container which host directory
+          # it mounts as its state dir; the controller and the health check
+          # below both use that one. Refuses on a missing or ambiguous mount.
+          resolve_dir="${remote_dir}-router"
+          "${ssh_cmd[@]}" "mkdir -p '$resolve_dir'"
+          scp -i ~/.ssh/c00_deploy_key -o BatchMode=yes deploy/cd/resolve-router-state-dir.sh \
+            "${C00_SSH_USER}@${C00_SSH_HOST}:${resolve_dir}/"
+          router_state_dir="$("${ssh_cmd[@]}" "bash '$resolve_dir/resolve-router-state-dir.sh'")" || {
+            "${ssh_cmd[@]}" "rm -rf '$resolve_dir'" || true
+            echo "::error::cannot resolve the running router's state directory on C00; refusing before drain"
+            exit 1
+          }
+          "${ssh_cmd[@]}" "rm -rf '$resolve_dir'" || true
+          test -n "$router_state_dir"
+          echo "router state dir (from running router mount): $router_state_dir"
 
           # Observe the real database immediately before building the packet.
           # The capture is read-only and fails closed on any unknown ledger,

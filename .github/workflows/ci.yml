@@ -795,6 +795,7 @@ jobs:
         run: |
           bash deploy/cd/test-cutover.sh
           bash deploy/cd/test-ab-health-check.sh
+          bash deploy/cd/test-resolve-router-state-dir.sh
 
   frontend-quality:
     needs: changes

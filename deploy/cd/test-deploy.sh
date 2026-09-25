@@ -800,7 +800,14 @@ expect_contains "$workflow_text" 'path: cutover-input' workflow-release-packet
 expect_contains "$workflow_text" 'build-cutover-bundle.sh' workflow-release-packet
 expect_contains "$workflow_text" 'verify-cutover-bundle.sh' workflow-release-packet
 expect_contains "$workflow_text" 'sha256sum -c cutover-controller.tar.sha256' workflow-release-packet
-expect_contains "$workflow_text" 'router_state_dir="${C00_COMPOSE_DIR%/}/deploy/cd/router/state"' workflow-router-state
+# CHE-702: the router state dir comes from the running router's mount,
+# never from the Compose checkout path, and feeds both the controller and
+# the post-deploy health check.
+expect_not_contains "$workflow_text" 'router_state_dir="${C00_COMPOSE_DIR%/}/deploy/cd/router/state"' workflow-router-state
+expect_contains "$workflow_text" "router_state_dir=\"\$(\"\${ssh_cmd[@]}\" \"bash '\$resolve_dir/resolve-router-state-dir.sh'\")\"" workflow-router-state
+expect_contains "$workflow_text" 'refusing before drain' workflow-router-state
+expect_contains "$workflow_text" '--router-state-dir "$router_state_dir"' workflow-router-state
+expect_contains "$workflow_text" "--router-state-dir '\$router_state_dir'" workflow-router-state
 expect_contains "$workflow_text" 'render-cutover-remote-script.sh' workflow-router-state
 remote_script="$(GHCR_PULL_TOKEN=test-token bash deploy/cd/render-cutover-remote-script.sh --router-state-dir '/durable router/state' -- bash -c 'printf %s "$ROUTER_STATE_DIR"')"
 expect_contains "$remote_script" 'export ROUTER_STATE_DIR=' workflow-router-state
