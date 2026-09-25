@@ -419,6 +419,25 @@ jobs:
           C00_COMPOSE_DIR: ${{ secrets.C00_COMPOSE_DIR }}
           C00_STATE_DIR: ${{ secrets.C00_STATE_DIR }}
           C00_CUTOVER_STATE_DIR: ${{ secrets.C00_CUTOVER_STATE_DIR }}
+          # Deployment tuple state, A/B cutover state, and the router's own
+          # state directory are three separate durable roots on C00 (CHE-701
+          # already split cutover state out of C00_STATE_DIR for the same
+          # reason). `deploy/cd/router/docker-compose.router.yml` bind-mounts
+          # its state directory from wherever the router container was first
+          # adopted on the host -- a one-time, host-side choice that is NOT
+          # guaranteed to sit under C00_COMPOSE_DIR. Deriving
+          # "$C00_COMPOSE_DIR/deploy/cd/router/state" silently pointed at a
+          # path with no active.json (CD run 36083685740, CHE-768): the
+          # router's real state lives at ${HOME}/.multica/ab/deploy/cd/router/state
+          # on C00, a different tree entirely. This must be its own secret,
+          # not a guess. It MUST be the absolute path (no leading ~): the
+          # value is passed through render-cutover-remote-script.sh's
+          # `printf '%q'`, which escapes a leading ~ into a literal
+          # character instead of letting the remote shell expand it to
+          # C00's home directory (CHE-768 review) -- provision the secret
+          # as the real absolute path, not the shorthand this comment used
+          # before.
+          C00_ROUTER_STATE_DIR: ${{ secrets.C00_ROUTER_STATE_DIR }}
           # read:packages-only PAT (CHE-549) — C00 has no ambient registry
           # credential, so deploy.sh logs in to ghcr.io with this immediately
           # before its pull step and logs out unconditionally afterwards (see
@@ -432,6 +451,23 @@ jobs:
           baseline_path="cutover-input/baseline-tuple.json"
           test -f "$manifest_path"
           test -f "$baseline_path"
+          # C00_ROUTER_STATE_DIR crosses an SSH boundary through
+          # render-cutover-remote-script.sh's printf '%q', which escapes a
+          # leading ~ into a literal character rather than letting the
+          # remote shell expand it -- so a secret provisioned as
+          # "~/.multica/..." would silently point at a directory that can
+          # never exist, exactly the CHE-768 symptom this fix addresses.
+          # Require an absolute path and refuse anything else outright
+          # rather than attempting our own tilde/variable expansion, which
+          # would mean evaluating attacker- or operator-controlled shell
+          # syntax from a repository secret.
+          case "$C00_ROUTER_STATE_DIR" in
+            /*) : ;;
+            *)
+              echo "C00_ROUTER_STATE_DIR must be an absolute path (got '${C00_ROUTER_STATE_DIR}'); a leading ~ is not expanded across the SSH boundary -- provision the secret with C00's real absolute path (e.g. /home/<user>/.multica/ab/deploy/cd/router/state)" >&2
+              exit 1
+              ;;
+          esac
 
           mkdir -p ~/.ssh
           printf '%s\n' "$C00_SSH_KEY" > ~/.ssh/c00_deploy_key
@@ -440,7 +476,7 @@ jobs:
 
           ssh_cmd=(ssh -i ~/.ssh/c00_deploy_key -o BatchMode=yes "${C00_SSH_USER}@${C00_SSH_HOST}")
           remote_dir="${C00_STATE_DIR%/}/cd-deploy-$(date +%s)"
-          router_state_dir="${C00_COMPOSE_DIR%/}/deploy/cd/router/state"
+          router_state_dir="${C00_ROUTER_STATE_DIR%/}"
 
           # Observe the real database immediately before building the packet.
           # The capture is read-only and fails closed on any unknown ledger,

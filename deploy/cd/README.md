@@ -389,9 +389,17 @@ upstream `/readyz` and the public listeners must answer 2xx for the whole
 
 For public 502s, a `Multica A/B cutover outage` annotation, or a failing
 `ab-health-check.sh`, run everything on C00 from `$C00_COMPOSE_DIR`, with
-`ab=(-f docker-compose.selfhost.yml -f deploy/cd/docker-compose.ab.yml)`:
+`ab=(-f docker-compose.selfhost.yml -f deploy/cd/docker-compose.ab.yml)` —
+except the router state directory below, which is wherever
+`docker-compose.router.yml`'s `./state` bind mount actually resolved when
+the router container was first adopted on C00 (a one-time, host-side
+choice, recorded as `C00_ROUTER_STATE_DIR` in CD's own secrets; CHE-768
+found it does NOT necessarily sit under `$C00_COMPOSE_DIR` — confirm the
+real path with `docker inspect multica-ab-router --format '{{range
+.Mounts}}{{.Source}} -> {{.Destination}}{{"\n"}}{{end}}'` rather than
+assuming `deploy/cd/router/state`).
 
-1. Record the state. Run `cat <state-dir>/cutover-state.json <state-dir>/outage-alert.json deploy/cd/router/state/active.json`,
+1. Record the state. Run `cat <state-dir>/cutover-state.json <state-dir>/outage-alert.json <router-state-dir>/active.json`,
    `docker exec multica-ab-router nginx -T | grep proxy_pass`, and
    `docker compose "${ab[@]}" ps -a`.
 2. Confirm that at most one backend colour runs. If both run, stop the one
@@ -412,7 +420,7 @@ For public 502s, a `Multica A/B cutover outage` annotation, or a failing
      `backend_port` in `active.json`.
    - `curl -s 127.0.0.1:8081/health` reports the expected commit.
    - `curl -sI 127.0.0.1:3000/` returns 200.
-   - `bash deploy/cd/ab-health-check.sh --router-state-dir deploy/cd/router/state --cutover-state-dir <state-dir> --window 120` exits 0.
+   - `bash deploy/cd/ab-health-check.sh --router-state-dir <router-state-dir> --cutover-state-dir <state-dir> --window 120` exits 0.
 6. If the router selects a colour whose ports differ from Compose's render,
    re-select it with the rendered ports (`BACKEND_<C>_PORT=... FRONTEND_<C>_PORT=... bash deploy/cd/router.sh select --colour <colour>`).
    Take the ports from `docker compose "${ab[@]}" port ...`, never from memory.
