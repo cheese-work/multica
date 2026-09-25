@@ -22,6 +22,10 @@ fi
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
 
+# router.sh has no port fallback (CHE-773): callers pass the ports Compose
+# publishes. These mirror docker-compose.ab.yml's defaults.
+export BACKEND_BLUE_PORT=18081 BACKEND_GREEN_PORT=18082 FRONTEND_BLUE_PORT=13001 FRONTEND_GREEN_PORT=13002
+
 expect_exit() {
   local want=$1 got=$2 name=$3
   if [ "$got" -ne "$want" ]; then

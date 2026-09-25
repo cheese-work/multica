@@ -493,6 +493,19 @@ jobs:
           deploy_status=$?
           set -e
 
+          # CHE-773: bounded post-deploy observation — the public route and
+          # the router-selected upstream must stay healthy for 120s. Runs on
+          # failure too, so an outage the controller could not repair is
+          # annotated on the run instead of being discovered hours later.
+          # Read-only; it never restarts or reroutes anything.
+          scp -i ~/.ssh/c00_deploy_key -o BatchMode=yes deploy/cd/ab-health-check.sh \
+            "${C00_SSH_USER}@${C00_SSH_HOST}:${remote_dir}/" || true
+          window=120
+          [ "$deploy_status" -eq 0 ] || window=0
+          if ! "${ssh_cmd[@]}" "bash '${remote_dir}/ab-health-check.sh' --router-state-dir '$router_state_dir' --cutover-state-dir '$C00_CUTOVER_STATE_DIR' --window $window"; then
+            deploy_status=1
+          fi
+
           # Best-effort cleanup of the transferred copy; failure here must
           # never mask the deploy's own exit status.
           "${ssh_cmd[@]}" "rm -rf '$remote_dir'" || true
