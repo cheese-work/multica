@@ -51,6 +51,13 @@ type CodexHomeOptions struct {
 	// daemon falls back to danger-full-access for network access. See
 	// codex_sandbox.go for details.
 	CodexVersion string
+	// CodexBinaryPath is the daemon's resolved Codex CLI executable path
+	// (AgentEntry.Path for provider "codex"), the same value threaded through
+	// as OpenclawBin for the openclaw provider. Used to invoke
+	// `codex debug models` for ensureCodexModelCatalogOverride (CHE-773/
+	// CHE-778). Empty skips that override entirely rather than falling back
+	// to a PATH lookup — see codexModelCatalogBinaryPath for why.
+	CodexBinaryPath string
 	// GOOS overrides the target platform when deciding the sandbox policy.
 	// Empty means use runtime.GOOS. Primarily exists so tests can exercise
 	// both macOS and Linux paths deterministically.
@@ -96,7 +103,10 @@ type CodexHomeOptions struct {
 // tests that don't care about platform-aware sandbox configuration. It pins
 // GOOS to linux, which resolves to the danger-full-access default (MUL-5578),
 // so the sandbox block it writes is stable regardless of the host running the
-// test.
+// test. Leaves CodexBinaryPath empty, which makes
+// ensureCodexModelCatalogOverride fail open without resolving or executing
+// any `codex` binary on the test machine's PATH — see
+// codexModelCatalogBinaryPath.
 func prepareCodexHome(codexHome string, logger *slog.Logger) error {
 	return prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{GOOS: "linux"}, logger)
 }
@@ -305,6 +315,16 @@ func prepareCodexHomeWithOpts(codexHome string, opts CodexHomeOptions, logger *s
 	// codex_multi_agent.go for the full rationale and escape hatch.
 	if err := ensureCodexMultiAgentConfig(filepath.Join(codexHome, "config.toml"), logger); err != nil {
 		logger.Warn("execenv: codex-home ensure multi-agent config failed", "error", err)
+	}
+
+	// Rewrite Codex's bundled model catalog so the gpt-5.6-*/gpt-6-astra
+	// family's multi_agent_version/tool_mode fields stop re-enabling native
+	// multi-agent and swapping in the code-mode-only tool surface that leaves
+	// the model with no shell/exec tool (CHE-773/CHE-778). Shares the escape
+	// hatch above since it works around the same lifecycle problem. See
+	// codex_model_catalog.go.
+	if err := ensureCodexModelCatalogOverride(codexHome, opts, logger); err != nil {
+		logger.Warn("execenv: codex-home ensure model catalog override failed", "error", err)
 	}
 
 	// Disable Codex native auto-memory inside daemon-managed task sessions
