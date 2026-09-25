@@ -2492,15 +2492,17 @@ type codexClient struct {
 	turnErrorMu sync.Mutex
 	turnError   string // captured from turn/completed status=failed or terminal error notifications
 
-	// realToolCalls counts item/started notifications for itemType
-	// "commandExecution" (exec_command) or "fileChange" (patch_apply) —
-	// evidence the model actually exercised terminal/filesystem capability
-	// during this turn, as opposed to only calling MCP-exposed
-	// collaboration.* tools (spawn_agent, list_agents, wait_agent, etc.) or
-	// making no tool calls at all. Deliberately excludes mcpToolCall: Codex
-	// CLI 0.156.0's multi-agent v2 defect exposes collaboration.* as MCP
-	// tools, so counting mcpToolCall would hide the exact false-negative
-	// pattern this field exists to detect (CHE-775).
+	// realToolCalls counts evidence the model actually exercised
+	// terminal/filesystem capability during this turn, as opposed to only
+	// calling MCP-exposed collaboration.* tools (spawn_agent, list_agents,
+	// wait_agent, etc.) or making no tool calls at all. Tracked across both
+	// protocols Codex speaks: raw v2 item/started notifications for itemType
+	// "commandExecution" (exec_command) or "fileChange" (patch_apply), and
+	// the legacy codex/event exec_command_begin / patch_apply_begin
+	// notifications. Deliberately excludes mcpToolCall: Codex CLI 0.156.0's
+	// multi-agent v2 defect exposes collaboration.* as MCP tools, so
+	// counting mcpToolCall would hide the exact false-negative pattern this
+	// field exists to detect (CHE-775).
 	realToolCalls atomic.Int64
 }
 
@@ -3453,6 +3455,7 @@ func (c *codexClient) handleEvent(msg map[string]any) {
 			c.onAgentMessage(text)
 		}
 	case "exec_command_begin":
+		c.realToolCalls.Add(1)
 		callID, _ := msg["call_id"].(string)
 		command, _ := msg["command"].(string)
 		if c.onMessage != nil {
@@ -3475,6 +3478,7 @@ func (c *codexClient) handleEvent(msg map[string]any) {
 			})
 		}
 	case "patch_apply_begin":
+		c.realToolCalls.Add(1)
 		callID, _ := msg["call_id"].(string)
 		if c.onMessage != nil {
 			c.onMessage(Message{

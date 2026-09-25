@@ -6409,3 +6409,81 @@ func TestCodexExecuteZeroToolFalseNegativeFailsAfterSecondOccurrence(t *testing.
 	}
 	assertCodexAttemptCount(t, fakePath, "2")
 }
+
+// TestCodexLegacyEventExecCommandCountsAsRealToolCall proves realToolCalls
+// tracks the legacy codex/event protocol, not just raw v2 item/started
+// notifications (CHE-775 follow-up). Older Codex CLI builds still speaking
+// codex/event never emit item/started, so exec_command_begin and
+// patch_apply_begin must independently feed the same counter the
+// false-negative classifier reads — otherwise a legacy-protocol turn that
+// genuinely ran a tool gets misclassified as a zero-tool false negative.
+func TestCodexLegacyEventExecCommandCountsAsRealToolCall(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+
+	if got := c.realToolCalls.Load(); got != 0 {
+		t.Fatalf("expected realToolCalls to start at 0, got %d", got)
+	}
+
+	c.handleLine(`{"jsonrpc":"2.0","method":"codex/event","params":{"msg":{"type":"exec_command_begin","call_id":"c1","command":"ls -la"}}}`)
+	if got := c.realToolCalls.Load(); got != 1 {
+		t.Fatalf("expected realToolCalls=1 after legacy exec_command_begin, got %d", got)
+	}
+
+	c.handleLine(`{"jsonrpc":"2.0","method":"codex/event","params":{"msg":{"type":"patch_apply_begin","call_id":"c2","changes":{}}}}`)
+	if got := c.realToolCalls.Load(); got != 2 {
+		t.Fatalf("expected realToolCalls=2 after legacy patch_apply_begin, got %d", got)
+	}
+}
+
+// TestCodexExecuteLegacyProtocolRealToolCallNotMisclassifiedAsFalseNegative
+// is the end-to-end counterpart of the unit test above, mirroring
+// TestCodexExecuteRetriesZeroToolFalseNegativeThenCompletes but driving the
+// legacy codex/event protocol throughout: a turn that genuinely runs
+// exec_command via legacy framing and then produces a final message that
+// happens to contain a false-negative trigger phrase must NOT be retried or
+// failed — realToolCalls > 0 short-circuits the classifier regardless of
+// message content. Before the CHE-775 follow-up fix, legacy exec_command_begin
+// never touched realToolCalls, so this exact scenario was misclassified.
+func TestCodexExecuteLegacyProtocolRealToolCallNotMisclassifiedAsFalseNegative(t *testing.T) {
+	// Not t.Parallel(): this test mutates codexGracefulShutdownTimeoutNanos.
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+	codexGracefulShutdownTimeoutNanos.Store(int64(100 * time.Millisecond))
+	t.Cleanup(func() { codexGracefulShutdownTimeoutNanos.Store(0) })
+
+	fakePath := writeFakeCodexAppServer(t, ""+
+		`DIR="$(dirname "$0")"`+"\n"+
+		`ATTEMPT=$(cat "$DIR/attempts" 2>/dev/null || echo 0)`+"\n"+
+		`ATTEMPT=$((ATTEMPT+1))`+"\n"+
+		`echo "$ATTEMPT" > "$DIR/attempts"`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":1,"result":{}}'`+"\n"+
+		`read line`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thr-legacy-'"$ATTEMPT"'"}}}'`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":3,"result":{}}'`+"\n"+
+		// A genuine legacy exec_command_begin/end pair, then a final message
+		// whose text happens to contain a false-negative trigger phrase (e.g.
+		// the agent summarizing that it confirmed CLI access was unnecessary
+		// for a sub-step). Real tool use must win over the phrase match.
+		`echo '{"jsonrpc":"2.0","method":"codex/event","params":{"msg":{"type":"exec_command_begin","call_id":"c1","command":"ls"}}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"codex/event","params":{"msg":{"type":"exec_command_end","call_id":"c1","output":"file1"}}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"codex/event","params":{"msg":{"type":"agent_message","message":"Listed files; confirmed no terminal escape was needed for this step."}}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"codex/event","params":{"msg":{"type":"task_complete"}}}'`+"\n")
+
+	result := executeFakeCodex(t, fakePath, ExecOptions{
+		Timeout:                   5 * time.Second,
+		SemanticInactivityTimeout: 5 * time.Second,
+	})
+	if result.Status != "completed" {
+		t.Fatalf("expected a genuine legacy-protocol tool call to complete normally, got status=%q error=%q", result.Status, result.Error)
+	}
+	if result.Output != "Listed files; confirmed no terminal escape was needed for this step." {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+	assertCodexAttemptCount(t, fakePath, "1")
+}
