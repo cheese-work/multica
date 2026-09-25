@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -536,7 +537,7 @@ func TestResolveWorkspaceByIDOrSlug(t *testing.T) {
 func resetWorkspaceUpdateFlags(t *testing.T) {
 	t.Helper()
 	flags := workspaceUpdateCmd.Flags()
-	for _, name := range []string{"name", "description", "context", "issue-prefix"} {
+	for _, name := range []string{"name", "description", "context", "context-file", "issue-prefix", "expected-before-digest"} {
 		_ = flags.Set(name, "")
 		if f := flags.Lookup(name); f != nil {
 			f.Changed = false
@@ -796,5 +797,335 @@ func TestRunWorkspaceMemberInviteRejectsUnknownRole(t *testing.T) {
 	_ = cmd.Flags().Set("role", "superuser")
 	if err := runWorkspaceMemberInvite(cmd, []string{"alice@example.com"}); err == nil {
 		t.Fatal("expected error for unknown --role, got nil")
+	}
+}
+
+// ── CHE-789: digest-mode conditional updates ───────────────────────────────
+
+const testDigestHex = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+func setWorkspaceUpdateServerEnv(t *testing.T, serverURL string) {
+	t.Helper()
+	t.Chdir(t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("MULTICA_SERVER_URL", serverURL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+	t.Setenv("MULTICA_AGENT_ID", "")
+	t.Setenv("MULTICA_TASK_ID", "")
+	t.Setenv("MULTICA_DAEMON_PORT", "")
+}
+
+const testWorkspaceUUID = "f2b734e0-b6de-4414-8a27-a2f69b0ef843"
+
+func TestBuildWorkspaceUpdateDigestBody(t *testing.T) {
+	t.Run("builds single-field body with context and digest", func(t *testing.T) {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "context", "new context text")
+		setStringFlag(t, "expected-before-digest", testDigestHex)
+
+		body, err := buildWorkspaceUpdateDigestBody(workspaceUpdateCmd)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if len(body) != 2 {
+			t.Fatalf("body = %v, want exactly 2 keys (context, expected_before_digest)", body)
+		}
+		if body["context"] != "new context text" {
+			t.Errorf("context = %v, want new context text", body["context"])
+		}
+		if body["expected_before_digest"] != testDigestHex {
+			t.Errorf("expected_before_digest = %v, want %v", body["expected_before_digest"], testDigestHex)
+		}
+	})
+
+	t.Run("malformed digest rejected client-side", func(t *testing.T) {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "context", "new context text")
+		setStringFlag(t, "expected-before-digest", "not-a-digest")
+
+		_, err := buildWorkspaceUpdateDigestBody(workspaceUpdateCmd)
+		if err == nil || !strings.Contains(err.Error(), "64 hex characters") {
+			t.Fatalf("err = %v, want malformed digest rejection", err)
+		}
+	})
+
+	t.Run("missing context is rejected", func(t *testing.T) {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "expected-before-digest", testDigestHex)
+
+		_, err := buildWorkspaceUpdateDigestBody(workspaceUpdateCmd)
+		if err == nil || !strings.Contains(err.Error(), "requires the new context") {
+			t.Fatalf("err = %v, want missing-context rejection", err)
+		}
+	})
+
+	t.Run("conflicting flag rejected client-side", func(t *testing.T) {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "context", "new context text")
+		setStringFlag(t, "expected-before-digest", testDigestHex)
+		setStringFlag(t, "name", "New Name")
+
+		_, err := buildWorkspaceUpdateDigestBody(workspaceUpdateCmd)
+		if err == nil || !strings.Contains(err.Error(), "--name") {
+			t.Fatalf("err = %v, want conflicting --name rejection", err)
+		}
+	})
+
+	t.Run("context-file participates in mutual exclusion with inline context", func(t *testing.T) {
+		resetWorkspaceUpdateFlags(t)
+		path := filepath.Join(t.TempDir(), "context.txt")
+		if err := os.WriteFile(path, []byte("file content"), 0o600); err != nil {
+			t.Fatalf("write context file: %v", err)
+		}
+		setStringFlag(t, "context", "inline")
+		setStringFlag(t, "context-file", path)
+		setStringFlag(t, "expected-before-digest", testDigestHex)
+
+		_, err := buildWorkspaceUpdateDigestBody(workspaceUpdateCmd)
+		if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+			t.Fatalf("err = %v, want mutually exclusive context/context-file rejection", err)
+		}
+	})
+}
+
+func TestResolveWorkspaceContextLosslessReadsFileVerbatim(t *testing.T) {
+	resetWorkspaceUpdateFlags(t)
+	want := "line one\n\nno trailing newline trimming: literal \\n stays\n"
+	path := filepath.Join(t.TempDir(), "context.md")
+	if err := os.WriteFile(path, []byte(want), 0o600); err != nil {
+		t.Fatalf("write context file: %v", err)
+	}
+	setStringFlag(t, "context-file", path)
+
+	got, ok, err := resolveWorkspaceContextLossless(workspaceUpdateCmd)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if got != want {
+		t.Errorf("context = %q, want byte-for-byte %q", got, want)
+	}
+}
+
+func TestResolveWorkspaceContextLosslessReadsStdinVerbatim(t *testing.T) {
+	resetWorkspaceUpdateFlags(t)
+	setBoolFlag(t, "context-stdin", true)
+
+	want := "first\nsecond line with literal \\n and trailing newline\n"
+	var got string
+	pipeStdin(t, want, func() {
+		v, ok, err := resolveWorkspaceContextLossless(workspaceUpdateCmd)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if !ok {
+			t.Fatal("expected ok=true")
+		}
+		got = v
+	})
+	if got != want {
+		t.Errorf("context = %q, want byte-for-byte (no trailing-newline trim) %q", got, want)
+	}
+}
+
+func TestResolveWorkspaceContextLosslessRejectsInvalidUTF8(t *testing.T) {
+	resetWorkspaceUpdateFlags(t)
+	path := filepath.Join(t.TempDir(), "bad.txt")
+	if err := os.WriteFile(path, []byte{0xff, 0xfe}, 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	setStringFlag(t, "context-file", path)
+
+	_, _, err := resolveWorkspaceContextLossless(workspaceUpdateCmd)
+	if err == nil || !strings.Contains(err.Error(), "valid UTF-8") {
+		t.Fatalf("err = %v, want invalid UTF-8 rejection", err)
+	}
+}
+
+func TestRunWorkspaceUpdateDigestModeBuildsSingleFieldBody(t *testing.T) {
+	var gotBody map[string]any
+	var gotMethod string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		if r.URL.Path != "/api/workspaces/"+testWorkspaceUUID {
+			http.NotFound(w, r)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"workspace":     map[string]any{"id": testWorkspaceUUID, "context": gotBody["context"]},
+			"before_digest": "before123",
+			"after_digest":  "after456",
+		})
+	}))
+	defer srv.Close()
+	setWorkspaceUpdateServerEnv(t, srv.URL)
+
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "context", "hermes-applied context")
+	setStringFlag(t, "expected-before-digest", testDigestHex)
+	setStringFlag(t, "output", "json")
+
+	out, err := captureStdout(t, func() error {
+		return runWorkspaceUpdate(workspaceUpdateCmd, []string{testWorkspaceUUID})
+	})
+	if err != nil {
+		t.Fatalf("runWorkspaceUpdate: %v", err)
+	}
+	if gotMethod != http.MethodPatch {
+		t.Fatalf("method = %s, want PATCH", gotMethod)
+	}
+	if len(gotBody) != 2 {
+		t.Fatalf("request body = %v, want exactly context + expected_before_digest", gotBody)
+	}
+	if gotBody["context"] != "hermes-applied context" {
+		t.Errorf("context = %v, want hermes-applied context", gotBody["context"])
+	}
+	if gotBody["expected_before_digest"] != testDigestHex {
+		t.Errorf("expected_before_digest = %v, want %v", gotBody["expected_before_digest"], testDigestHex)
+	}
+
+	var printed map[string]any
+	if err := json.Unmarshal([]byte(out), &printed); err != nil {
+		t.Fatalf("decode stdout JSON %q: %v", out, err)
+	}
+	if printed["before_digest"] != "before123" || printed["after_digest"] != "after456" {
+		t.Errorf("printed digests = %v, want before123/after456", printed)
+	}
+}
+
+func TestRunWorkspaceUpdateDigestModeRejectsMalformedDigestWithoutHTTPCall(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer srv.Close()
+	setWorkspaceUpdateServerEnv(t, srv.URL)
+
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "context", "new context")
+	setStringFlag(t, "expected-before-digest", "too-short")
+
+	err := runWorkspaceUpdate(workspaceUpdateCmd, []string{testWorkspaceUUID})
+	if err == nil || !strings.Contains(err.Error(), "64 hex characters") {
+		t.Fatalf("err = %v, want malformed digest rejection", err)
+	}
+	if called {
+		t.Fatal("malformed digest must be rejected client-side without an HTTP call")
+	}
+}
+
+func TestRunWorkspaceUpdateDigestModeRejectsConflictingFlagWithoutHTTPCall(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer srv.Close()
+	setWorkspaceUpdateServerEnv(t, srv.URL)
+
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "context", "new context")
+	setStringFlag(t, "expected-before-digest", testDigestHex)
+	setStringFlag(t, "name", "conflicting name")
+
+	err := runWorkspaceUpdate(workspaceUpdateCmd, []string{testWorkspaceUUID})
+	if err == nil || !strings.Contains(err.Error(), "--name") {
+		t.Fatalf("err = %v, want conflicting --name rejection", err)
+	}
+	if called {
+		t.Fatal("conflicting flag combination must be rejected client-side without an HTTP call")
+	}
+}
+
+func TestRunWorkspaceUpdateDigestModeSurfaces403WithoutRetry(t *testing.T) {
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "actor is not permitted to write this field"})
+	}))
+	defer srv.Close()
+	setWorkspaceUpdateServerEnv(t, srv.URL)
+
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "context", "attempted context")
+	setStringFlag(t, "expected-before-digest", testDigestHex)
+
+	err := runWorkspaceUpdate(workspaceUpdateCmd, []string{testWorkspaceUUID})
+	if err == nil {
+		t.Fatal("expected error surfaced from 403 response")
+	}
+	var httpErr *cli.HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("err = %v, want *cli.HTTPError", err)
+	}
+	if httpErr.StatusCode != http.StatusForbidden {
+		t.Errorf("StatusCode = %d, want 403", httpErr.StatusCode)
+	}
+	if callCount != 1 {
+		t.Errorf("server called %d times, want exactly 1 (no retry)", callCount)
+	}
+}
+
+func TestRunWorkspaceUpdateDigestModeSurfaces409WithoutRetry(t *testing.T) {
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "expected_before_digest is stale"})
+	}))
+	defer srv.Close()
+	setWorkspaceUpdateServerEnv(t, srv.URL)
+
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "context", "attempted context")
+	setStringFlag(t, "expected-before-digest", testDigestHex)
+
+	err := runWorkspaceUpdate(workspaceUpdateCmd, []string{testWorkspaceUUID})
+	if err == nil {
+		t.Fatal("expected error surfaced from 409 response")
+	}
+	var httpErr *cli.HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("err = %v, want *cli.HTTPError", err)
+	}
+	if httpErr.StatusCode != http.StatusConflict {
+		t.Errorf("StatusCode = %d, want 409", httpErr.StatusCode)
+	}
+	if callCount != 1 {
+		t.Errorf("server called %d times, want exactly 1 (no retry)", callCount)
+	}
+}
+
+func TestRunWorkspaceUpdateNonDigestModeUnchanged(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": testWorkspaceUUID, "name": gotBody["name"]})
+	}))
+	defer srv.Close()
+	setWorkspaceUpdateServerEnv(t, srv.URL)
+
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "name", "Plain Update")
+	setStringFlag(t, "output", "json")
+
+	if err := runWorkspaceUpdate(workspaceUpdateCmd, []string{testWorkspaceUUID}); err != nil {
+		t.Fatalf("runWorkspaceUpdate: %v", err)
+	}
+	if gotBody["name"] != "Plain Update" {
+		t.Errorf("name = %v, want Plain Update", gotBody["name"])
+	}
+	if _, present := gotBody["expected_before_digest"]; present {
+		t.Errorf("expected_before_digest must not appear when --expected-before-digest was not set, got %v", gotBody)
 	}
 }

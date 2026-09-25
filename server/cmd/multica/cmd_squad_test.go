@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"github.com/multica-ai/multica/server/internal/cli"
 )
 
 func newSquadUpdateTestCmd() *cobra.Command {
@@ -24,6 +27,7 @@ func newSquadUpdateTestCmd() *cobra.Command {
 	cmd.Flags().String("instructions-file", "", "")
 	cmd.Flags().String("leader", "", "")
 	cmd.Flags().String("avatar-url", "", "")
+	cmd.Flags().String("expected-before-digest", "", "")
 	cmd.Flags().String("output", "json", "")
 	return cmd
 }
@@ -233,5 +237,253 @@ func TestRunSquadMemberSetRoleValidatesRequiredFlags(t *testing.T) {
 	_ = cmd.Flags().Set("member-id", "member-456")
 	if err := runSquadMemberSetRole(cmd, []string{"squad-123"}); err == nil {
 		t.Fatal("expected missing --role error")
+	}
+}
+
+// ── CHE-789: digest-mode conditional updates ───────────────────────────────
+
+func TestBuildSquadUpdateDigestBody(t *testing.T) {
+	t.Run("builds single-field body with instructions and digest", func(t *testing.T) {
+		cmd := newSquadUpdateTestCmd()
+		_ = cmd.Flags().Set("instructions", "hermes-applied instructions")
+		_ = cmd.Flags().Set("expected-before-digest", testDigestHex)
+
+		body, err := buildSquadUpdateDigestBody(cmd)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if len(body) != 2 {
+			t.Fatalf("body = %v, want exactly 2 keys (instructions, expected_before_digest)", body)
+		}
+		if body["instructions"] != "hermes-applied instructions" {
+			t.Errorf("instructions = %v, want hermes-applied instructions", body["instructions"])
+		}
+		if body["expected_before_digest"] != testDigestHex {
+			t.Errorf("expected_before_digest = %v, want %v", body["expected_before_digest"], testDigestHex)
+		}
+	})
+
+	t.Run("malformed digest rejected client-side", func(t *testing.T) {
+		cmd := newSquadUpdateTestCmd()
+		_ = cmd.Flags().Set("instructions", "new instructions")
+		_ = cmd.Flags().Set("expected-before-digest", "short")
+
+		_, err := buildSquadUpdateDigestBody(cmd)
+		if err == nil || !strings.Contains(err.Error(), "64 hex characters") {
+			t.Fatalf("err = %v, want malformed digest rejection", err)
+		}
+	})
+
+	t.Run("missing instructions is rejected", func(t *testing.T) {
+		cmd := newSquadUpdateTestCmd()
+		_ = cmd.Flags().Set("expected-before-digest", testDigestHex)
+
+		_, err := buildSquadUpdateDigestBody(cmd)
+		if err == nil || !strings.Contains(err.Error(), "requires the new instructions") {
+			t.Fatalf("err = %v, want missing-instructions rejection", err)
+		}
+	})
+
+	t.Run("conflicting flag rejected client-side", func(t *testing.T) {
+		cmd := newSquadUpdateTestCmd()
+		_ = cmd.Flags().Set("instructions", "new instructions")
+		_ = cmd.Flags().Set("expected-before-digest", testDigestHex)
+		_ = cmd.Flags().Set("name", "conflicting name")
+
+		_, err := buildSquadUpdateDigestBody(cmd)
+		if err == nil || !strings.Contains(err.Error(), "--name") {
+			t.Fatalf("err = %v, want conflicting --name rejection", err)
+		}
+	})
+
+	t.Run("leader flag conflicts too", func(t *testing.T) {
+		cmd := newSquadUpdateTestCmd()
+		_ = cmd.Flags().Set("instructions", "new instructions")
+		_ = cmd.Flags().Set("expected-before-digest", testDigestHex)
+		_ = cmd.Flags().Set("leader", "some-agent")
+
+		_, err := buildSquadUpdateDigestBody(cmd)
+		if err == nil || !strings.Contains(err.Error(), "--leader") {
+			t.Fatalf("err = %v, want conflicting --leader rejection", err)
+		}
+	})
+}
+
+func squadUpdateDigestTestServer(t *testing.T, body *map[string]any) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Fatalf("method = %s, want PUT", r.Method)
+		}
+		if r.URL.Path != "/api/squads/squad-123" {
+			t.Fatalf("path = %q, want squad update path", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"squad":         map[string]any{"id": "squad-123", "instructions": (*body)["instructions"]},
+			"before_digest": "before123",
+			"after_digest":  "after456",
+		})
+	}))
+}
+
+func TestRunSquadUpdateDigestModeBuildsSingleFieldBody(t *testing.T) {
+	var body map[string]any
+	srv := squadUpdateDigestTestServer(t, &body)
+	defer srv.Close()
+	setSquadUpdateServerEnv(t, srv.URL)
+
+	cmd := newSquadUpdateTestCmd()
+	_ = cmd.Flags().Set("instructions", "hermes-applied instructions")
+	_ = cmd.Flags().Set("expected-before-digest", testDigestHex)
+	_ = cmd.Flags().Set("output", "json")
+
+	out, err := captureStdout(t, func() error { return runSquadUpdate(cmd, []string{"squad-123"}) })
+	if err != nil {
+		t.Fatalf("runSquadUpdate: %v", err)
+	}
+	if len(body) != 2 {
+		t.Fatalf("request body = %v, want exactly instructions + expected_before_digest", body)
+	}
+	if body["instructions"] != "hermes-applied instructions" {
+		t.Errorf("instructions = %v, want hermes-applied instructions", body["instructions"])
+	}
+	if body["expected_before_digest"] != testDigestHex {
+		t.Errorf("expected_before_digest = %v, want %v", body["expected_before_digest"], testDigestHex)
+	}
+
+	var printed map[string]any
+	if err := json.Unmarshal([]byte(out), &printed); err != nil {
+		t.Fatalf("decode stdout JSON %q: %v", out, err)
+	}
+	if printed["before_digest"] != "before123" || printed["after_digest"] != "after456" {
+		t.Errorf("printed digests = %v, want before123/after456", printed)
+	}
+}
+
+func TestRunSquadUpdateDigestModeRejectsMalformedDigestWithoutHTTPCall(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer srv.Close()
+	setSquadUpdateServerEnv(t, srv.URL)
+
+	cmd := newSquadUpdateTestCmd()
+	_ = cmd.Flags().Set("instructions", "new instructions")
+	_ = cmd.Flags().Set("expected-before-digest", "not-64-hex")
+
+	err := runSquadUpdate(cmd, []string{"squad-123"})
+	if err == nil || !strings.Contains(err.Error(), "64 hex characters") {
+		t.Fatalf("err = %v, want malformed digest rejection", err)
+	}
+	if called {
+		t.Fatal("malformed digest must be rejected client-side without an HTTP call")
+	}
+}
+
+func TestRunSquadUpdateDigestModeRejectsConflictingFlagWithoutHTTPCall(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer srv.Close()
+	setSquadUpdateServerEnv(t, srv.URL)
+
+	cmd := newSquadUpdateTestCmd()
+	_ = cmd.Flags().Set("instructions", "new instructions")
+	_ = cmd.Flags().Set("expected-before-digest", testDigestHex)
+	_ = cmd.Flags().Set("avatar-url", "https://example.test/avatar.png")
+
+	err := runSquadUpdate(cmd, []string{"squad-123"})
+	if err == nil || !strings.Contains(err.Error(), "--avatar-url") {
+		t.Fatalf("err = %v, want conflicting --avatar-url rejection", err)
+	}
+	if called {
+		t.Fatal("conflicting flag combination must be rejected client-side without an HTTP call")
+	}
+}
+
+func TestRunSquadUpdateDigestModeSurfaces403WithoutRetry(t *testing.T) {
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "actor is not permitted to write this field"})
+	}))
+	defer srv.Close()
+	setSquadUpdateServerEnv(t, srv.URL)
+
+	cmd := newSquadUpdateTestCmd()
+	_ = cmd.Flags().Set("instructions", "attempted instructions")
+	_ = cmd.Flags().Set("expected-before-digest", testDigestHex)
+
+	err := runSquadUpdate(cmd, []string{"squad-123"})
+	if err == nil {
+		t.Fatal("expected error surfaced from 403 response")
+	}
+	var httpErr *cli.HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("err = %v, want *cli.HTTPError", err)
+	}
+	if httpErr.StatusCode != http.StatusForbidden {
+		t.Errorf("StatusCode = %d, want 403", httpErr.StatusCode)
+	}
+	if callCount != 1 {
+		t.Errorf("server called %d times, want exactly 1 (no retry)", callCount)
+	}
+}
+
+func TestRunSquadUpdateDigestModeSurfaces409WithoutRetry(t *testing.T) {
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "expected_before_digest is stale"})
+	}))
+	defer srv.Close()
+	setSquadUpdateServerEnv(t, srv.URL)
+
+	cmd := newSquadUpdateTestCmd()
+	_ = cmd.Flags().Set("instructions", "attempted instructions")
+	_ = cmd.Flags().Set("expected-before-digest", testDigestHex)
+
+	err := runSquadUpdate(cmd, []string{"squad-123"})
+	if err == nil {
+		t.Fatal("expected error surfaced from 409 response")
+	}
+	var httpErr *cli.HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("err = %v, want *cli.HTTPError", err)
+	}
+	if httpErr.StatusCode != http.StatusConflict {
+		t.Errorf("StatusCode = %d, want 409", httpErr.StatusCode)
+	}
+	if callCount != 1 {
+		t.Errorf("server called %d times, want exactly 1 (no retry)", callCount)
+	}
+}
+
+func TestRunSquadUpdateNonDigestModeUnchanged(t *testing.T) {
+	var body map[string]any
+	srv := squadUpdateTestServer(t, &body)
+	defer srv.Close()
+	setSquadUpdateServerEnv(t, srv.URL)
+
+	cmd := newSquadUpdateTestCmd()
+	_ = cmd.Flags().Set("instructions", "plain update")
+	_ = cmd.Flags().Set("output", "json")
+
+	if _, err := captureStdout(t, func() error { return runSquadUpdate(cmd, []string{"squad-123"}) }); err != nil {
+		t.Fatalf("runSquadUpdate: %v", err)
+	}
+	if body["instructions"] != "plain update" {
+		t.Errorf("instructions = %v, want plain update", body["instructions"])
+	}
+	if _, present := body["expected_before_digest"]; present {
+		t.Errorf("expected_before_digest must not appear when --expected-before-digest was not set, got %v", body)
 	}
 }
