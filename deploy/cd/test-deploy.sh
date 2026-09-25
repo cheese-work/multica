@@ -838,6 +838,43 @@ expect_contains "$mismatch_output" "$real_mounted_dir" workflow-router-state-mis
 # C00_COMPOSE_DIR fails this test even if the happy-path check above did not.
 expect_not_contains "$mismatch_remote_script" "$compose_checkout_dir" workflow-router-state-mismatch
 
+# CHE-768 review: C00_ROUTER_STATE_DIR crosses the SSH boundary through
+# render-cutover-remote-script.sh's `printf '%q'`, which escapes a leading
+# `~` into a literal backslash-tilde rather than letting the remote shell
+# expand it. A secret provisioned as the shorthand "~/.multica/..." this
+# fix's own first draft documented would silently resolve to a directory
+# that can never exist -- the same missing-active.json symptom all over
+# again, just moved one secret over. The workflow's own `run:` step now
+# validates C00_ROUTER_STATE_DIR is an absolute path and refuses anything
+# else before ever contacting SSH; extract and execute that exact guard
+# (not a reimplementation of it) against both the documented tilde form and
+# a real absolute path.
+path_guard_lines="$(awk '
+  /case "\$C00_ROUTER_STATE_DIR" in/ { capture=1 }
+  capture { print }
+  capture && /esac/ { exit }
+' "$root_dir/.github/workflows/cd-deploy.yml")"
+[ -n "$path_guard_lines" ] || { echo "scenario workflow-router-state-absolute: could not extract the C00_ROUTER_STATE_DIR path guard from cd-deploy.yml" >&2; exit 1; }
+
+run_path_guard() {
+  C00_ROUTER_STATE_DIR="$1" bash -c "set -euo pipefail; $path_guard_lines" 2>&1
+}
+
+tilde_guard_exit=0
+tilde_guard_output="$(run_path_guard '~/.multica/ab/deploy/cd/router/state')" || tilde_guard_exit=$?
+if [ "$tilde_guard_exit" -eq 0 ]; then
+  echo "scenario workflow-router-state-absolute: the documented tilde form must be rejected before SSH, but the guard accepted it" >&2
+  exit 1
+fi
+expect_contains "$tilde_guard_output" "must be an absolute path" workflow-router-state-absolute
+
+absolute_guard_exit=0
+absolute_guard_output="$(run_path_guard '/home/deploy/.multica/ab/deploy/cd/router/state')" || absolute_guard_exit=$?
+if [ "$absolute_guard_exit" -ne 0 ]; then
+  echo "scenario workflow-router-state-absolute: a real absolute path must pass the guard, got exit $absolute_guard_exit: $absolute_guard_output" >&2
+  exit 1
+fi
+
 expect_not_contains "$workflow_text" 'local_packet="cd-deploy-manifest/release-packet.json"' workflow-release-packet
 expect_contains "$workflow_text" 'CUTOVER_DATABASE_URL=' workflow-ab-deploy-route
 expect_not_contains "$workflow_text" "bash '%s/deploy.sh' --manifest" workflow-ab-deploy-route
