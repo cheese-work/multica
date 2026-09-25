@@ -385,6 +385,24 @@ writes `<state-dir>/outage-alert.json` and exits 1.
 upstream `/readyz` and the public listeners must answer 2xx for the whole
 `--window`. CD runs it for 120s after every cutover (0s after a failed one).
 
+### Router state dir source of truth (CHE-773 follow-up)
+
+`router/docker-compose.router.yml` is brought up once, by hand, as a
+separate C00-side adoption step (see "What this unit does NOT cover" below)
+— its `./state:/etc/nginx/router-state:ro` bind mount resolves from wherever
+that compose file was run, which is not guaranteed to be `$C00_COMPOSE_DIR`.
+`cd-deploy.yml` used to assume `$C00_COMPOSE_DIR/deploy/cd/router/state`;
+CD run 36083685740 attempt 2 refused before drain against that assumed path
+while the router already had a healthy, adopted `active.json` at its real
+(different) mount, because nothing on C00 had ever moved the router itself.
+
+`resolve-router-state-dir.sh` fixes this the same way the port-source fix
+does: never derive the path, read it from the one place that can't lie about
+it — `docker inspect`'s `.Mounts` on the running `multica-ab-router`
+container. `cd-deploy.yml` runs it over SSH before anything else touches the
+router, and fails the job outright if the container is missing or its
+reported mount does not exist on the host, rather than silently guessing.
+
 ### A/B outage runbook
 
 For public 502s, a `Multica A/B cutover outage` annotation, or a failing

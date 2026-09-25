@@ -796,6 +796,12 @@ jobs:
           bash deploy/cd/test-cutover.sh
           bash deploy/cd/test-ab-health-check.sh
 
+      # CHE-773 follow-up: router state dir must come from the running
+      # container's own bind mount, never a path derived from
+      # $C00_COMPOSE_DIR (mocked `docker`, no real daemon needed).
+      - name: Test router state dir resolution
+        run: bash deploy/cd/test-resolve-router-state-dir.sh
+
   frontend-quality:
     needs: changes
     if: ${{ needs.changes.outputs.quality_only == 'true' }}

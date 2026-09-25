@@ -800,7 +800,16 @@ expect_contains "$workflow_text" 'path: cutover-input' workflow-release-packet
 expect_contains "$workflow_text" 'build-cutover-bundle.sh' workflow-release-packet
 expect_contains "$workflow_text" 'verify-cutover-bundle.sh' workflow-release-packet
 expect_contains "$workflow_text" 'sha256sum -c cutover-controller.tar.sha256' workflow-release-packet
-expect_contains "$workflow_text" 'router_state_dir="${C00_COMPOSE_DIR%/}/deploy/cd/router/state"' workflow-router-state
+# CHE-773 follow-up: router_state_dir must come from the running router
+# container's own bind mount (resolve-router-state-dir.sh), never a path
+# derived from $C00_COMPOSE_DIR — router/docker-compose.router.yml is a
+# separate, by-hand C00 adoption step that can live anywhere (CD run
+# 36083685740 attempt 2 assumed they were the same directory and refused
+# before drain against a path the router was never mounted at).
+expect_not_contains "$workflow_text" 'router_state_dir="${C00_COMPOSE_DIR%/}/deploy/cd/router/state"' workflow-router-state
+expect_contains "$workflow_text" 'resolve-router-state-dir.sh' workflow-router-state
+expect_contains "$workflow_text" 'router_state_dir="$("${ssh_cmd[@]}" "bash '"'"'$resolver_remote'"'"'" | tr -d '"'"'[:space:]'"'"')"' workflow-router-state
+expect_contains "$workflow_text" '[ -n "$router_state_dir" ]' workflow-router-state
 expect_contains "$workflow_text" 'render-cutover-remote-script.sh' workflow-router-state
 remote_script="$(GHCR_PULL_TOKEN=test-token bash deploy/cd/render-cutover-remote-script.sh --router-state-dir '/durable router/state' -- bash -c 'printf %s "$ROUTER_STATE_DIR"')"
 expect_contains "$remote_script" 'export ROUTER_STATE_DIR=' workflow-router-state

@@ -440,7 +440,23 @@ jobs:
 
           ssh_cmd=(ssh -i ~/.ssh/c00_deploy_key -o BatchMode=yes "${C00_SSH_USER}@${C00_SSH_HOST}")
           remote_dir="${C00_STATE_DIR%/}/cd-deploy-$(date +%s)"
-          router_state_dir="${C00_COMPOSE_DIR%/}/deploy/cd/router/state"
+
+          # CHE-773 follow-up: router/docker-compose.router.yml is a one-time,
+          # by-hand C00 adoption step (deploy/cd/README.md, "What this unit
+          # does NOT cover") — its bind-mount source is whoever ran that
+          # compose file's choice, not necessarily $C00_COMPOSE_DIR. CD run
+          # 36083685740 attempt 2 assumed they were the same directory and
+          # refused before drain against a path the router was never mounted
+          # at, while the router already had a healthy, adopted active.json
+          # at its real (different) mount. Ask the running container instead
+          # of deriving a path — same "never guess, read the live source of
+          # truth" posture as the port-source fix (CHE-773).
+          resolver_remote="${C00_STATE_DIR%/}/cd-deploy-resolve-router-state-dir-$(date +%s).sh"
+          scp -i ~/.ssh/c00_deploy_key -o BatchMode=yes deploy/cd/resolve-router-state-dir.sh \
+            "${C00_SSH_USER}@${C00_SSH_HOST}:${resolver_remote}"
+          router_state_dir="$("${ssh_cmd[@]}" "bash '$resolver_remote'" | tr -d '[:space:]')"
+          "${ssh_cmd[@]}" "rm -f '$resolver_remote'" || true
+          [ -n "$router_state_dir" ]
 
           # Observe the real database immediately before building the packet.
           # The capture is read-only and fails closed on any unknown ledger,
