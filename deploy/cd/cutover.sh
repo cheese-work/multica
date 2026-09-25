@@ -208,10 +208,23 @@ published_port_matches() {
   fi
 }
 
-# router_selects: the router's active generation forwards to exactly this
-# colour's rendered ports.
+# conf_upstreams prints "<listen port>=<upstream port>" for each server
+# block of an Nginx config read on stdin (router/nginx.conf.template shape:
+# one listen + one proxy_pass per server).
+conf_upstreams() {
+  awk '
+    /listen 127\.0\.0\.1:[0-9]+/ { match($0, /:[0-9]+/); listen = substr($0, RSTART + 1, RLENGTH - 1) }
+    /proxy_pass http:\/\/127\.0\.0\.1:[0-9]+/ { match($0, /127\.0\.0\.1:[0-9]+/); print listen "=" substr($0, RSTART + 10, RLENGTH - 10) }
+  '
+}
+
+# router_selects: the router forwards to exactly this colour's rendered
+# ports — checked in all three places that could disagree: the generation
+# metadata (active.json), the generation file Nginx includes (active.conf),
+# and the config the RUNNING router container actually loads (`nginx -T`
+# inside it, which also proves its bind mount sees this generation).
 router_selects() {
-  local colour=$1 json="$router_state_dir/active.json" c b f
+  local colour=$1 json="$router_state_dir/active.json" c b f want got
   if [ ! -f "$json" ]; then
     echo "!! no active router generation at $json" >&2
     return 1
@@ -220,7 +233,18 @@ router_selects() {
   b="$(json_field "$json" backend_port)"
   f="$(json_field "$json" frontend_port)"
   if [ "$c" != "$colour" ] || [ "$b" != "$(slot_port backend "$colour")" ] || [ "$f" != "$(slot_port frontend "$colour")" ]; then
-    echo "!! router selects colour=$c backend=$b frontend=$f; expected colour=$colour backend=$(slot_port backend "$colour") frontend=$(slot_port frontend "$colour")" >&2
+    echo "!! router metadata selects colour=$c backend=$b frontend=$f; expected colour=$colour backend=$(slot_port backend "$colour") frontend=$(slot_port frontend "$colour")" >&2
+    return 1
+  fi
+  want="$(printf '%s=%s\n%s=%s' "$router_api_port" "$(slot_port backend "$colour")" "$router_web_port" "$(slot_port frontend "$colour")")"
+  got="$(conf_upstreams <"$router_state_dir/active.conf" 2>/dev/null || true)"
+  if [ "$got" != "$want" ]; then
+    echo "!! router active.conf upstreams [${got//$'\n'/ }] differ from expected [${want//$'\n'/ }]" >&2
+    return 1
+  fi
+  got="$(docker exec "${ROUTER_CONTAINER_NAME:-multica-ab-router}" nginx -T 2>/dev/null | conf_upstreams || true)"
+  if [ "$got" != "$want" ]; then
+    echo "!! running router's effective config (nginx -T) upstreams [${got//$'\n'/ }] differ from expected [${want//$'\n'/ }]" >&2
     return 1
   fi
 }
@@ -229,13 +253,68 @@ health_commit() {
   curl --fail --silent --show-error "http://127.0.0.1:$1/health" 2>/dev/null | json_field /dev/stdin commit 2>/dev/null
 }
 
-# public_route_serves: the router's public listeners answer, and the API
-# listener reports the expected commit — proof traffic actually reaches the
-# intended release, not just that something returns 200.
+health_process() {
+  curl --fail --silent --show-error "http://127.0.0.1:$1/health" 2>/dev/null |
+    node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const h=JSON.parse(d);if(h.commit&&h.pid)process.stdout.write(`${h.commit}/${h.pid}/${h.started_at??""}`)}catch{}})'
+}
+
+# public_route_serves: the router's public API listener reaches the SAME
+# backend process as the slot port (commit + pid + started_at from /health —
+# a commit alone cannot tell two slots running the same release apart), it
+# reports the expected commit, and the public web listener answers.
 public_route_serves() {
-  local commit=$1
-  verify_health_identity "$router_api_port" "$commit" &&
-    curl --fail --silent --show-error "http://127.0.0.1:${router_web_port}/" >/dev/null 2>&1
+  local backend_port=$1 commit=$2 via_router direct
+  via_router="$(health_process "$router_api_port")"
+  direct="$(health_process "$backend_port")"
+  if [ -z "$direct" ] || [ "$via_router" != "$direct" ] || [ "${direct%%/*}" != "$commit" ]; then
+    echo "!! public API :$router_api_port reaches process '${via_router:-<none>}', slot :$backend_port is '${direct:-<none>}', expected commit $commit" >&2
+    return 1
+  fi
+  curl --fail --silent --show-error "http://127.0.0.1:${router_web_port}/" >/dev/null 2>&1
+}
+
+# stop_confirmed stops services and proves they are down: Compose's own exit
+# status AND `compose ps --status running` listing none of them. The single-
+# active-backend invariant rests on this — a stop that failed or left a
+# container running must never be followed by a migration or by starting
+# the other colour.
+stop_confirmed() {
+  local still
+  if ! compose stop "$@" >/dev/null 2>&1; then
+    echo "!! docker compose stop $* failed" >&2
+    return 1
+  fi
+  if ! still="$(compose ps --status running --format '{{.Service}}' "$@" 2>/dev/null)"; then
+    echo "!! could not confirm $* stopped (docker compose ps failed)" >&2
+    return 1
+  fi
+  if [ -n "$still" ]; then
+    echo "!! still running after stop: ${still//$'\n'/ }" >&2
+    return 1
+  fi
+}
+
+# container_image_id: the image ID the service's RUNNING container was
+# created from — not what its tag points at now, which a stale container
+# would not reflect.
+container_image_id() {
+  local cid
+  cid="$(compose ps -q "$1" 2>/dev/null | head -1)"
+  [ -n "$cid" ] || return 1
+  docker inspect --format '{{.Image}}' "$cid" 2>/dev/null
+}
+
+# runs_verified_image: service's running container uses exactly the local
+# image repo:tag resolves to, whose digest verify_pulled_digest already
+# matched against the manifest.
+runs_verified_image() {
+  local service=$1 ref=$2 running want
+  running="$(container_image_id "$service" || true)"
+  want="$(docker inspect --format '{{.Id}}' "$ref" 2>/dev/null || true)"
+  if [ -z "$want" ] || [ "$running" != "$want" ]; then
+    echo "!! $service runs image '${running:-<none>}', verified $ref is '${want:-<none>}'" >&2
+    return 1
+  fi
 }
 
 alert_outage() {
@@ -264,7 +343,10 @@ recover_incumbent() {
   local reason=$1 ledger final
   echo "!! $reason" >&2
   echo "==> post-drain failure; attempting compatibility-gated recovery of incumbent colour=$from_colour" >&2
-  compose stop "backend-${to_colour}" "frontend-${to_colour}" >/dev/null 2>&1 || true
+  if ! stop_confirmed "backend-${to_colour}" "frontend-${to_colour}"; then
+    alert_outage "$reason; candidate $to_colour shutdown NOT confirmed, so $from_colour was NOT started (never two backends on one DB); stop $to_colour by hand, then follow the runbook"
+    exit 1
+  fi
 
   ledger="$(current_ledger_version)" || ledger=""
   final="$(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(p.ordered_migrations.at(-1)?.version??"")' "$packet")"
@@ -278,10 +360,10 @@ recover_incumbent() {
     alert_outage "$reason; restarting $from_colour failed; both colours are stopped"
     exit 1
   fi
-  if [ "$(running_image_ref "backend-${from_colour}" || true)" != "$incumbent_backend_image" ] ||
-    [ "$(running_image_ref "frontend-${from_colour}" || true)" != "$incumbent_web_image" ]; then
-    compose stop "backend-${from_colour}" "frontend-${from_colour}" >/dev/null 2>&1 || true
-    alert_outage "$reason; restarted $from_colour image differs from the pre-drain incumbent ($incumbent_backend_image / $incumbent_web_image); stopped it again"
+  if [ "$(container_image_id "backend-${from_colour}" || true)" != "$incumbent_backend_image_id" ] ||
+    [ "$(container_image_id "frontend-${from_colour}" || true)" != "$incumbent_web_image_id" ]; then
+    stop_confirmed "backend-${from_colour}" "frontend-${from_colour}" || true
+    alert_outage "$reason; restarted $from_colour container image differs from the pre-drain incumbent ($incumbent_backend_image_id / $incumbent_web_image_id); stopping it again was attempted"
     exit 1
   fi
   if ! published_port_matches "backend-${from_colour}" 8080 "$(slot_port backend "$from_colour")" ||
@@ -292,7 +374,7 @@ recover_incumbent() {
     exit 1
   fi
   if ! bash "$script_dir/router.sh" select --colour "$from_colour" --state-dir "$router_state_dir" ||
-    ! router_selects "$from_colour" || ! public_route_serves "$incumbent_commit"; then
+    ! router_selects "$from_colour" || ! public_route_serves "$(slot_port backend "$from_colour")" "$incumbent_commit"; then
     alert_outage "$reason; $from_colour is running and healthy but the public route does not read back as $from_colour"
     exit 1
   fi
@@ -476,12 +558,15 @@ case "$command" in
     incumbent_commit="$(health_commit "$(slot_port backend "$from_colour")" || true)"
     incumbent_backend_image="$(running_image_ref "backend-${from_colour}" || true)"
     incumbent_web_image="$(running_image_ref "frontend-${from_colour}" || true)"
+    incumbent_backend_image_id="$(container_image_id "backend-${from_colour}" || true)"
+    incumbent_web_image_id="$(container_image_id "frontend-${from_colour}" || true)"
     incumbent_ledger="$(current_ledger_version || true)"
-    if [ -z "$incumbent_commit" ] || [ -z "$incumbent_backend_image" ] || [ -z "$incumbent_web_image" ] || [ -z "$incumbent_ledger" ]; then
+    if [ -z "$incumbent_commit" ] || [ -z "$incumbent_backend_image" ] || [ -z "$incumbent_web_image" ] ||
+      [ -z "$incumbent_backend_image_id" ] || [ -z "$incumbent_web_image_id" ] || [ -z "$incumbent_ledger" ]; then
       echo "!! could not record $from_colour's commit/image pair/ledger (needed to prove a recovery); refusing before drain — $from_colour remains active" >&2
       exit 1
     fi
-    if ! public_route_serves "$incumbent_commit"; then
+    if ! public_route_serves "$(slot_port backend "$from_colour")" "$incumbent_commit"; then
       echo "!! public route (router :$router_api_port/:$router_web_port) does not serve $from_colour commit $incumbent_commit; refusing before drain — $from_colour remains active" >&2
       exit 1
     fi
@@ -507,7 +592,10 @@ case "$command" in
     # not a regression: a live schema migration cannot safely run against a
     # schema a serving backend still holds connections against.
     echo "==> draining and stopping current colour=$from_colour (required before the quiescence final-gate can ever admit)"
-    compose stop "backend-${from_colour}" "frontend-${from_colour}" >/dev/null 2>&1 || true
+    if ! stop_confirmed "backend-${from_colour}" "frontend-${from_colour}"; then
+      alert_outage "drain of $from_colour NOT confirmed; final gate and migration NOT run and $to_colour NOT started (never migrate under, or start beside, a possibly-live backend); $from_colour may be partially stopped — check 'docker compose ps' and follow the runbook"
+      exit 1
+    fi
 
     # Step 3: final gate immediately before the first candidate mutation —
     # strict, zero-tolerance. A denial here means $from_colour is ALREADY
@@ -543,6 +631,13 @@ case "$command" in
       recover_incumbent "candidate colour=$to_colour failed to start"
     fi
 
+    # The candidate's RUNNING containers must be the digest-verified images,
+    # not a stale container Compose chose to keep.
+    if ! runs_verified_image "backend-${to_colour}" "${backend_repo}:${image_tag}" ||
+      ! runs_verified_image "frontend-${to_colour}" "${web_repo}:${image_tag}"; then
+      recover_incumbent "candidate colour=$to_colour is not running the manifest-verified images"
+    fi
+
     # The candidate's ACTUAL published bindings must equal the rendered
     # ports every later check and the router use.
     candidate_port="$(slot_port backend "$to_colour")"
@@ -576,7 +671,7 @@ case "$command" in
     if ! bash "$script_dir/router.sh" select --colour "$to_colour" --state-dir "$router_state_dir"; then
       recover_incumbent "router generation switch failed; candidate colour=$to_colour is running but NOT receiving traffic"
     fi
-    if ! router_selects "$to_colour" || ! public_route_serves "$source_sha"; then
+    if ! router_selects "$to_colour" || ! public_route_serves "$candidate_port" "$source_sha"; then
       recover_incumbent "router was switched but the public route does not read back as $to_colour commit $source_sha"
     fi
 
@@ -611,7 +706,10 @@ case "$command" in
     # leaves the ALREADY-FAILING candidate as the only thing "active" —
     # exactly the outage rollback exists to end.
     echo "==> draining and stopping failing candidate colour=$from_colour (required before the quiescence final-gate can ever admit)"
-    compose stop "backend-${from_colour}" "frontend-${from_colour}" >/dev/null 2>&1 || true
+    if ! stop_confirmed "backend-${from_colour}" "frontend-${from_colour}"; then
+      echo "!! drain of failing candidate $from_colour NOT confirmed; final gate NOT run and $to_colour NOT started (never two backends on one DB) — MANUAL INTERVENTION REQUIRED" >&2
+      exit 1
+    fi
 
     echo "==> quiescence final-gate (pre-rollback)"
     if ! node "$script_dir/quiescence.mjs" final-gate --database-url "$database_url" --psql-via-docker-exec "$postgres_container"; then
@@ -682,7 +780,7 @@ case "$command" in
       echo "!! router restore failed — retained predecessor colour=$to_colour is healthy but NOT receiving traffic; MANUAL INTERVENTION REQUIRED" >&2
       exit 1
     fi
-    if ! router_selects "$to_colour" || ! public_route_serves "$(health_commit "$backend_port")"; then
+    if ! router_selects "$to_colour" || ! public_route_serves "$backend_port" "$(health_commit "$backend_port")"; then
       echo "!! router restore did not read back — the public route does not serve $to_colour; MANUAL INTERVENTION REQUIRED" >&2
       exit 1
     fi

@@ -95,6 +95,14 @@ fail_if_flagged() {
 
 if [ "\$1" = "inspect" ]; then
   ref="\${*: -1}"
+  # --format {{.Image}} <container id>: the image a RUNNING container was
+  # created from (CHE-773 review finding 3). --format {{.Id}} <repo:tag>:
+  # the local image that tag resolves to now. Kept distinct so a stale
+  # container (image-<service> not refreshed by "up") is detectable.
+  case "\$*" in
+    *'{{.Image}}'*) cat "\$control_dir/image-\${ref#cid-}" 2>/dev/null; exit 0 ;;
+    *'--format {{.Id}}'*) printf 'imgid-%s\n' "\$ref"; exit 0 ;;
+  esac
   repo="\${ref%%:*}"
   digest=""
   case "\$ref" in
@@ -141,6 +149,17 @@ if [ "\$1" = "logout" ]; then
 fi
 
 if [ "\$1" = "exec" ] && [ "\$2" = "multica-ab-router" ]; then
+  # nginx -T: the running router's effective config. Normally whatever
+  # active.conf names; router-effective-conf models a router whose loaded
+  # config disagrees with the generation files (CHE-773 review finding 4).
+  if [ "\$4" = "-T" ]; then
+    if [ -f "\$control_dir/router-effective-conf" ]; then
+      cat "\$control_dir/router-effective-conf"
+    else
+      cat "\${ROUTER_STATE_DIR:?}/active.conf"
+    fi
+    exit 0
+  fi
   fail_if_flagged fail-router-reload
   exit 0
 fi
@@ -219,6 +238,15 @@ if [ "\$1" = "compose" ]; then
             if [ "\$sub" = up ] || [ ! -f "\$control_dir/commit-\$a" ]; then
               printf '%s\n' "\${MOCK_EXPECTED_COMMIT:-}" >"\$control_dir/commit-\$a"
             fi
+            # "up" recreates the container from the tag it was given, unless
+            # stale-container-<service> models Compose keeping an old one.
+            if [ "\$sub" = up ] && [ ! -f "\$control_dir/stale-container-\$a" ]; then
+              case "\$a" in
+                backend-*) repo="\${MOCK_UP_BACKEND_REPO:-\${MULTICA_BACKEND_IMAGE:-}}" ;;
+                frontend-*) repo="\${MULTICA_WEB_IMAGE:-}" ;;
+              esac
+              printf 'imgid-%s:%s\n' "\$repo" "\${MULTICA_IMAGE_TAG:-}" >"\$control_dir/image-\$a"
+            fi
             touch "\$control_dir/running-\$a"
             ;;
         esac
@@ -226,9 +254,19 @@ if [ "\$1" = "compose" ]; then
       exit 0
       ;;
     stop)
+      # fail-stop-<service>: stop exits nonzero and the container keeps
+      # running. stop-noop-<service>: stop exits 0 but the container is
+      # still running (CHE-773 review findings 1/2).
       printf '%s\n' "\$*" >>"\$control_dir/stop-calls.log"
-      for a in "\$@"; do rm -f "\$control_dir/running-\$a"; done
-      exit 0
+      status=0
+      for a in "\$@"; do
+        if [ -f "\$control_dir/fail-stop-\$a" ]; then
+          status=1
+        elif [ ! -f "\$control_dir/stop-noop-\$a" ]; then
+          rm -f "\$control_dir/running-\$a"
+        fi
+      done
+      exit "\$status"
       ;;
     images)
       # images <service> --format json — deploy-lib.sh's running_service_image,
@@ -264,6 +302,17 @@ if [ "\$1" = "compose" ]; then
         printf 'mock-postgres-container-id\n'
         exit 0
       fi
+      # ps -q <slot service>: its running container id.
+      if [ "\$1" = "-q" ]; then
+        [ -f "\$control_dir/running-\$2" ] && printf 'cid-%s\n' "\$2"
+        exit 0
+      fi
+      # ps --status running --format ... <slot services>: which are running.
+      for a in "\$@"; do
+        case "\$a" in
+          backend-* | frontend-*) [ -f "\$control_dir/running-\$a" ] && printf '%s\n' "\$a" ;;
+        esac
+      done
       # ps --status running --format '{{.Service}}' backend frontend — the
       # base-service port-collision preflight. Empty (nothing running) by
       # default; a scenario touches base-services-running to model the
@@ -296,12 +345,13 @@ control_dir="${CUTOVER_TEST_CONTROL_DIR:?CUTOVER_TEST_CONTROL_DIR unset}"
 # a port nothing publishes is connection-refused, exactly the CHE-773 shape.
 url="${*: -1}"
 port="$(printf '%s' "$url" | sed -E 's#^.*127\.0\.0\.1:([0-9]+).*#\1#')"
-active_json="${ROUTER_STATE_DIR:-}/active.json"
+active_conf="${ROUTER_STATE_DIR:-}/active.conf"
 case "$port" in
   8081 | 3000)
-    [ -f "$active_json" ] || exit 7
-    field=backend_port; [ "$port" = 3000 ] && field=frontend_port
-    port="$(sed -E "s/.*\"$field\": *([0-9]+).*/\1/" "$active_json")"
+    # Route by the generation file Nginx actually includes, not by the
+    # active.json metadata.
+    [ -f "$active_conf" ] || exit 7
+    port="$(awk -v l="$port" '/listen/ { hit = index($0, ":" l ";") > 0 } hit && /proxy_pass/ { match($0, /127\.0\.0\.1:[0-9]+/); print substr($0, RSTART + 10, RLENGTH - 10); exit }' "$active_conf")"
     ;;
 esac
 service="$(sed -n "s/=$port\$//p" "$control_dir/rendered-ports" 2>/dev/null | head -1)"
@@ -311,7 +361,7 @@ if printf '%s' "$url" | grep -q '/health$'; then
   if [ -f "$control_dir/health-commit-override-$port" ]; then
     cat "$control_dir/health-commit-override-$port"
   else
-    printf '{"status":"ok","pid":1,"commit":"%s"}\n' "$(cat "$control_dir/commit-$service")"
+    printf '{"status":"ok","pid":%s,"commit":"%s","started_at":"t-%s"}\n' "${#service}$(printf '%s' "$service" | cksum | cut -c1-4)" "$(cat "$control_dir/commit-$service")" "$service"
   fi
 fi
 exit 0
@@ -457,6 +507,7 @@ bootstrap_incumbent() {
   for svc in backend-blue frontend-blue; do
     touch "$CUTOVER_TEST_CONTROL_DIR/running-$svc"
     printf '%s\n' "$incumbent_commit" >"$CUTOVER_TEST_CONTROL_DIR/commit-$svc"
+    printf 'imgid-incumbent-%s\n' "$svc" >"$CUTOVER_TEST_CONTROL_DIR/image-$svc"
   done
   BACKEND_BLUE_PORT="$(sed -n 's/^backend-blue=//p' "$ports")" \
     FRONTEND_BLUE_PORT="$(sed -n 's/^frontend-blue=//p' "$ports")" \
@@ -1036,7 +1087,7 @@ output="$(run_cd_shaped "$state_dir" 2>&1)"
 status=$?
 set -e
 expect_exit 1 "$status" che773-router-mismatch
-expect_contains "$output" "router selects colour=blue backend=18081" che773-router-mismatch
+expect_contains "$output" "router metadata selects colour=blue backend=18081" che773-router-mismatch
 if drained_before_refusal "$state_dir"; then echo "scenario che773-router-mismatch: blue was drained" >&2; exit 1; fi
 
 # Post-drain: candidate never ready -> gated recovery. Green is stopped
@@ -1099,6 +1150,125 @@ status=$?
 set -e
 expect_exit 1 "$status" router-no-port-fallback
 expect_contains "$output" "BACKEND_GREEN_PORT is not set" router-no-port-fallback
+
+# --- CHE-773 review (x99-codex-sol) negative controls ---------------------
+
+no_green_started() {
+  ! grep -qE 'up -d --no-deps backend-green' "$1/control/docker-calls.log"
+}
+
+# Finding 2: the drain of blue fails (stop exits nonzero) or silently leaves
+# blue running (stop exits 0). Neither the final gate nor the migration may
+# run, and green must not start.
+for mode in fail-stop stop-noop; do
+  name="che773-drain-$mode"
+  state_dir="$(fresh_scenario_dir "$name")"
+  mkdir -p "$state_dir/control"
+  touch "$state_dir/control/$mode-backend-blue"
+  set +e
+  output="$(run_cd_shaped "$state_dir" 2>&1)"
+  status=$?
+  set -e
+  expect_exit 1 "$status" "$name"
+  expect_contains "$output" "drain of blue NOT confirmed" "$name"
+  expect_contains "$output" "::error title=Multica A/B cutover outage::" "$name"
+  if grep -q '^final-gate' "$state_dir/control/quiescence-calls.log" 2>/dev/null || [ -f "$state_dir/control/migrate-calls.log" ]; then
+    echo "scenario $name: final gate/migration ran with blue possibly live" >&2; exit 1
+  fi
+  no_green_started "$state_dir" || { echo "scenario $name: green started beside blue" >&2; exit 1; }
+done
+
+# Finding 1: during recovery the candidate's stop fails or leaves it
+# running. Blue must NOT be started (two schedulers on one DB); alert.
+for mode in fail-stop stop-noop; do
+  name="che773-recovery-candidate-$mode"
+  state_dir="$(fresh_scenario_dir "$name")"
+  mkdir -p "$state_dir/control"
+  touch "$state_dir/control/health-never-ready-18092" "$state_dir/control/$mode-backend-green"
+  set +e
+  output="$(run_cd_shaped "$state_dir" 2>&1)"
+  status=$?
+  set -e
+  expect_exit 1 "$status" "$name"
+  expect_contains "$output" "candidate green shutdown NOT confirmed, so blue was NOT started" "$name"
+  if [ -f "$state_dir/control/start-calls.log" ]; then
+    echo "scenario $name: blue was started while green may still run" >&2; exit 1
+  fi
+done
+
+# Finding 3a: Compose keeps a stale green container (old image) — the
+# candidate must not be selected; recovery restores blue.
+state_dir="$(fresh_scenario_dir che773-stale-candidate-container)"
+mkdir -p "$state_dir/control"
+touch "$state_dir/control/stale-container-backend-green"
+echo "imgid-ghcr.io/cheese-work/multica-backend:sha-old" >"$state_dir/control/image-backend-green"
+set +e
+output="$(run_cd_shaped "$state_dir" 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" che773-stale-candidate-container
+expect_contains "$output" "backend-green runs image 'imgid-ghcr.io/cheese-work/multica-backend:sha-old'" che773-stale-candidate-container
+expect_contains "$output" "RECOVERED" che773-stale-candidate-container
+[ ! -f "$state_dir/cutover-state.json" ] || { echo "scenario che773-stale-candidate-container: recorded a stale candidate as active" >&2; exit 1; }
+
+# Finding 3b: the web container is stale while backend is fine.
+state_dir="$(fresh_scenario_dir che773-stale-web-container)"
+mkdir -p "$state_dir/control"
+touch "$state_dir/control/stale-container-frontend-green"
+set +e
+output="$(run_cd_shaped "$state_dir" 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" che773-stale-web-container
+expect_contains "$output" "frontend-green runs image" che773-stale-web-container
+expect_contains "$output" "RECOVERED" che773-stale-web-container
+
+# Finding 4a: active.json says blue on 18091, but active.conf (what Nginx
+# includes) still forwards to a stale port -> refuse before drain.
+state_dir="$(fresh_scenario_dir che773-router-conf-vs-metadata)"
+mkdir -p "$state_dir/control"
+export CUTOVER_TEST_CONTROL_DIR="$state_dir/control" ROUTER_STATE_DIR="$state_dir/router-state"
+bootstrap_incumbent "$c00_compose_dir"
+conf_target="$state_dir/router-state/$(readlink "$state_dir/router-state/active.conf")"
+sed -i 's/127\.0\.0\.1:18091/127.0.0.1:18081/' "$conf_target"
+set +e
+output="$(run_cd_shaped "$state_dir" 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" che773-router-conf-vs-metadata
+expect_contains "$output" "router active.conf upstreams [8081=18081 3000=13001] differ from expected [8081=18091 3000=13001]" che773-router-conf-vs-metadata
+if drained_before_refusal "$state_dir"; then echo "scenario che773-router-conf-vs-metadata: blue was drained" >&2; exit 1; fi
+
+# Finding 4b: generation files agree but the RUNNING router loaded something
+# else (nginx -T) -> refuse before drain.
+state_dir="$(fresh_scenario_dir che773-router-effective-config)"
+mkdir -p "$state_dir/control"
+export CUTOVER_TEST_CONTROL_DIR="$state_dir/control" ROUTER_STATE_DIR="$state_dir/router-state"
+bootstrap_incumbent "$c00_compose_dir"
+sed 's/127\.0\.0\.1:18091/127.0.0.1:18081/' "$state_dir/router-state/active.conf" >"$state_dir/control/router-effective-conf"
+set +e
+output="$(run_cd_shaped "$state_dir" 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" che773-router-effective-config
+expect_contains "$output" "running router's effective config (nginx -T) upstreams [8081=18081 3000=13001]" che773-router-effective-config
+if drained_before_refusal "$state_dir"; then echo "scenario che773-router-effective-config: blue was drained" >&2; exit 1; fi
+
+# Finding 4c: after activation the running router keeps serving blue's
+# ports (reload silently not applied). Equal commits can't hide this: the
+# readback must fail, and recovery must restore blue.
+state_dir="$(fresh_scenario_dir che773-router-not-applied-after-switch)"
+mkdir -p "$state_dir/control"
+export CUTOVER_TEST_CONTROL_DIR="$state_dir/control" ROUTER_STATE_DIR="$state_dir/router-state"
+bootstrap_incumbent "$c00_compose_dir"
+cp "$state_dir/router-state/active.conf" "$state_dir/control/router-effective-conf"
+set +e
+output="$(run_cd_shaped "$state_dir" 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" che773-router-not-applied-after-switch
+expect_contains "$output" "running router's effective config (nginx -T) upstreams [8081=18091 3000=13001] differ from expected [8081=18092 3000=13002]" che773-router-not-applied-after-switch
+expect_contains "$output" "RECOVERED" che773-router-not-applied-after-switch
 unset ROUTER_STATE_DIR
 
 echo "cutover.sh control-flow fixtures passed"

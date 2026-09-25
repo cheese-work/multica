@@ -353,10 +353,23 @@ shell `${VAR:-default}`: CD sources `.env` in a `bash -c` without exporting
 it, so a child process sees none of it. That is how CD run 36023317861
 health-checked green on 18082 while green listened on 18092.
 
-Before draining the incumbent, `cutover` requires the incumbent's bindings,
-the router's active generation and the public route (`:8081/health` as the
-incumbent's commit, `:3000/`) to agree, and the candidate's generation to
-pass `nginx -t`. Any disagreement refuses while the incumbent still serves.
+Before draining the incumbent, `cutover` requires these to agree:
+- the incumbent's bindings;
+- the router's selected upstreams in `active.json`, in `active.conf`, and in
+  the running router's `nginx -T`;
+- the public route: `:8081/health` must reach the same backend process
+  (commit + pid + started_at) as the slot port, and `:3000/` must answer.
+
+The candidate's generation must also pass `nginx -t`. Any disagreement
+refuses while the incumbent still serves.
+
+Every stop that the single-active-backend invariant depends on (the drain,
+the candidate stop during recovery, the rollback drain) is confirmed twice:
+by Compose's exit status and by `compose ps --status running`. If either is
+unconfirmed, nothing runs afterwards: no migration and no other colour. The
+controller alerts instead. After `compose up`, the candidate's running
+backend and web containers must use the exact local image IDs of the
+digest-verified tags. A stale container causes recovery.
 
 After the drain, a failure (final gate denial, candidate start/binding/
 readiness/identity failure, router switch or public readback failure) runs
