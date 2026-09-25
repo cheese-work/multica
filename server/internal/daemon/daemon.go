@@ -7838,6 +7838,13 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if provider == "openclaw" {
 		openclawBin = entry.Path
 	}
+	// Resolved codex CLI path, handed to execenv so
+	// ensureCodexModelCatalogOverride can invoke `codex debug models` without
+	// its own PATH lookup (CHE-773/CHE-778). Mirrors openclawBin above.
+	codexBinaryPath := ""
+	if provider == "codex" {
+		codexBinaryPath = entry.Path
+	}
 	// Resolve any local_directory assignment again here so runTask can plumb
 	// LocalWorkDir into execenv. handleTask already validated + locked the
 	// path for worker tasks; leader tasks intentionally skip the assignment.
@@ -8068,6 +8075,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			WorkDir:               priorWorkDir,
 			Provider:              provider,
 			CodexVersion:          codexVersion,
+			CodexBinaryPath:       codexBinaryPath,
 			ResumeSessionID:       task.PriorSessionID,
 			OpenclawBin:           openclawBin,
 			McpConfig:             effectiveMcpConfig,
@@ -8119,6 +8127,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			EnvRootPreclaimed:     true,
 			Provider:              provider,
 			CodexVersion:          codexVersion,
+			CodexBinaryPath:       codexBinaryPath,
 			OpenclawBin:           openclawBin,
 			McpConfig:             effectiveMcpConfig,
 			CursorMcpAuthSource:   cursorMcpAuthSource,
