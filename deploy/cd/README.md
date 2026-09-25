@@ -342,6 +342,68 @@ shared Postgres, shared uploads, never simultaneous serving.
   D2 does not verify migration checksums today (see "What D2 does not yet
   cover" above); this module does, and only for the A/B cutover path.
 
+### Port source of truth (CHE-773)
+
+Slot ports have exactly one interpretation: the one Compose renders from
+`.env`. `cutover.sh` reads every slot port from `docker compose config`,
+exports it under the names `router.sh` reads, and checks the running
+containers' `docker compose port` bindings against it. `router.sh` has no
+fallback port and refuses when one is missing. Never read a slot port from a
+shell `${VAR:-default}`: CD sources `.env` in a `bash -c` without exporting
+it, so a child process sees none of it. That is how CD run 36023317861
+health-checked green on 18082 while green listened on 18092.
+
+Before draining the incumbent, `cutover` requires the incumbent's bindings,
+the router's active generation and the public route (`:8081/health` as the
+incumbent's commit, `:3000/`) to agree, and the candidate's generation to
+pass `nginx -t`. Any disagreement refuses while the incumbent still serves.
+
+After the drain, a failure (final gate denial, candidate start/binding/
+readiness/identity failure, router switch or public readback failure) runs
+`recover_incumbent`: stop the candidate, prove the live ledger is the pre-
+drain ledger or within `[minimum_rollback_version, packet final version]`,
+`compose start` the incumbent's own stopped containers, and require the same
+image pair, `/health` commit, router generation and public route as before
+the drain. A failed migration or any unproven step does not restart
+anything. Instead it prints `::error title=Multica A/B cutover outage::`,
+writes `<state-dir>/outage-alert.json` and exits 1.
+
+`ab-health-check.sh` is the bounded, read-only alarm: the router-selected
+upstream `/readyz` and the public listeners must answer 2xx for the whole
+`--window`. CD runs it for 120s after every cutover (0s after a failed one).
+
+### A/B outage runbook
+
+For public 502s, a `Multica A/B cutover outage` annotation, or a failing
+`ab-health-check.sh`, run everything on C00 from `$C00_COMPOSE_DIR`, with
+`ab=(-f docker-compose.selfhost.yml -f deploy/cd/docker-compose.ab.yml)`:
+
+1. Record the state. Run `cat <state-dir>/cutover-state.json <state-dir>/outage-alert.json deploy/cd/router/state/active.json`,
+   `docker exec multica-ab-router nginx -T | grep proxy_pass`, and
+   `docker compose "${ab[@]}" ps -a`.
+2. Confirm that at most one backend colour runs. If both run, stop the one
+   the router does not select. Never run both on purpose: schedulers and
+   realtime hubs are per-process.
+3. Check schema compatibility before starting any colour. Read the ledger
+   with `docker compose "${ab[@]}" exec -T postgres psql -U multica -d multica -tAc "select max(version) from schema_migrations"`.
+   The incumbent can be restarted if the ledger equals its last-served
+   ledger, or sits at or after `minimum_rollback_version` in
+   `cutover-state.json` and no migration failed partway. If a migration
+   failed, or you cannot tell, stop and escalate. Down migrations and
+   backup restores need separate authorization.
+4. Restart the router-selected colour's own containers with
+   `docker compose "${ab[@]}" start backend-<colour> frontend-<colour>`. This
+   reuses the stopped containers, so the image does not change.
+5. Read back each of these, and do not stop at an HTTP 200:
+   - `docker compose "${ab[@]}" port backend-<colour> 8080` equals
+     `backend_port` in `active.json`.
+   - `curl -s 127.0.0.1:8081/health` reports the expected commit.
+   - `curl -sI 127.0.0.1:3000/` returns 200.
+   - `bash deploy/cd/ab-health-check.sh --router-state-dir deploy/cd/router/state --cutover-state-dir <state-dir> --window 120` exits 0.
+6. If the router selects a colour whose ports differ from Compose's render,
+   re-select it with the rendered ports (`BACKEND_<C>_PORT=... FRONTEND_<C>_PORT=... bash deploy/cd/router.sh select --colour <colour>`).
+   Take the ports from `docker compose "${ab[@]}" port ...`, never from memory.
+
 ### What this unit does NOT cover
 
 Real C00 execution (real forward switch, real rollback, controlled

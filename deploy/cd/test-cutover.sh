@@ -33,6 +33,9 @@ web_digest="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 # manifest-pinned digests above (CHE-678).
 incumbent_backend_digest="sha256:$(printf 'c%.0s' {1..64})"
 incumbent_web_digest="sha256:$(printf 'd%.0s' {1..64})"
+# What the pre-drain incumbent's /health reports — distinct from source_sha
+# so recovery must prove it restarted the incumbent, not the candidate.
+incumbent_commit="1111111111111111111111111111111111111111"
 
 # The mock ledger uses REAL server/migrations version strings throughout —
 # never fabricated placeholders — so ledger_at_or_after (deploy-lib.sh),
@@ -177,13 +180,54 @@ if [ "\$1" = "compose" ]; then
       fi
       exit 0
       ;;
-    up)
-      fail_if_flagged fail-container-start
-      touch "\$control_dir/containers-up-\${*: -2:1}"
+    config)
+      # config --format json — the .env-aware render cutover.sh takes every
+      # slot port from (CHE-773). Like real Compose, this reads ./.env from
+      # the project directory itself (compose() cd's there) and ignores the
+      # caller's unexported shell variables. The rendered map is also saved
+      # for the curl mock, which has to know which service owns a port.
+      render_port() {
+        local var=\$1 default=\$2 value
+        value="\$(sed -n "s/^\${var}=//p" .env 2>/dev/null | tail -1)"
+        printf '%s' "\${value:-\$default}"
+      }
+      bb="\$(render_port BACKEND_BLUE_PORT 18081)"; bg="\$(render_port BACKEND_GREEN_PORT 18082)"
+      fb="\$(render_port FRONTEND_BLUE_PORT 13001)"; fg="\$(render_port FRONTEND_GREEN_PORT 13002)"
+      printf 'backend-blue=%s\nbackend-green=%s\nfrontend-blue=%s\nfrontend-green=%s\n' "\$bb" "\$bg" "\$fb" "\$fg" >"\$control_dir/rendered-ports"
+      printf '{"services":{"backend-blue":{"ports":[{"target":8080,"published":"%s"}]},"backend-green":{"ports":[{"target":8080,"published":"%s"}]},"frontend-blue":{"ports":[{"target":3000,"published":"%s"}]},"frontend-green":{"ports":[{"target":3000,"published":"%s"}]}}}\n' "\$bb" "\$bg" "\$fb" "\$fg"
+      exit 0
+      ;;
+    port)
+      # port <service> <target> — the RUNNING container's actual binding.
+      # published-port-<service> models a container whose binding differs
+      # from the current render (e.g. created before .env changed).
+      if [ -f "\$control_dir/published-port-\$1" ]; then
+        printf '127.0.0.1:%s\n' "\$(cat "\$control_dir/published-port-\$1")"
+      else
+        printf '127.0.0.1:%s\n' "\$(sed -n "s/^\$1=//p" "\$control_dir/rendered-ports")"
+      fi
+      exit 0
+      ;;
+    up | start)
+      [ "\$sub" = up ] && fail_if_flagged fail-container-start
+      [ "\$sub" = start ] && printf '%s\n' "\$*" >>"\$control_dir/start-calls.log"
+      for a in "\$@"; do
+        case "\$a" in
+          backend-* | frontend-*)
+            # "up" (re)creates from the candidate image; "start" resumes the
+            # stopped container, keeping whatever commit it last ran.
+            if [ "\$sub" = up ] || [ ! -f "\$control_dir/commit-\$a" ]; then
+              printf '%s\n' "\${MOCK_EXPECTED_COMMIT:-}" >"\$control_dir/commit-\$a"
+            fi
+            touch "\$control_dir/running-\$a"
+            ;;
+        esac
+      done
       exit 0
       ;;
     stop)
       printf '%s\n' "\$*" >>"\$control_dir/stop-calls.log"
+      for a in "\$@"; do rm -f "\$control_dir/running-\$a"; done
       exit 0
       ;;
     images)
@@ -245,29 +289,32 @@ cat >"$mock_bin/curl" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
 control_dir="${CUTOVER_TEST_CONTROL_DIR:?CUTOVER_TEST_CONTROL_DIR unset}"
-# Last argument is the URL; extract the port to know which colour is being probed.
+# Last argument is the URL. Resolve its port to the service that owns it —
+# the router listeners (8081/3000) forward to whatever the ACTIVE router
+# generation names, slot ports belong to whichever service Compose rendered
+# them for — and answer only if that service is actually running. A probe on
+# a port nothing publishes is connection-refused, exactly the CHE-773 shape.
 url="${*: -1}"
 port="$(printf '%s' "$url" | sed -E 's#^.*127\.0\.0\.1:([0-9]+).*#\1#')"
-if [ -f "$control_dir/health-never-ready-$port" ]; then
-  exit 22
-fi
+active_json="${ROUTER_STATE_DIR:-}/active.json"
+case "$port" in
+  8081 | 3000)
+    [ -f "$active_json" ] || exit 7
+    field=backend_port; [ "$port" = 3000 ] && field=frontend_port
+    port="$(sed -E "s/.*\"$field\": *([0-9]+).*/\1/" "$active_json")"
+    ;;
+esac
+service="$(sed -n "s/=$port\$//p" "$control_dir/rendered-ports" 2>/dev/null | head -1)"
+[ -n "$service" ] && [ -f "$control_dir/running-$service" ] || exit 7
+[ -f "$control_dir/health-never-ready-$port" ] && exit 22
 if printf '%s' "$url" | grep -q '/health$'; then
   if [ -f "$control_dir/health-commit-override-$port" ]; then
     cat "$control_dir/health-commit-override-$port"
   else
-    printf '{"status":"ok","pid":1,"commit":"%s"}\n' "${MOCK_EXPECTED_COMMIT:-}"
+    printf '{"status":"ok","pid":1,"commit":"%s"}\n' "$(cat "$control_dir/commit-$service")"
   fi
-  exit 0
 fi
-if [ -f "$control_dir/containers-up-backend-${port##1808}" ] || [ -f "$control_dir/ready-$port" ]; then
-  exit 0
-fi
-# Default: ready once the corresponding "containers-up-backend-<colour>"
-# marker exists for the colour whose port this is.
-if [ -f "$control_dir/backend-ready-$port" ]; then
-  exit 0
-fi
-exit 22
+exit 0
 MOCK
 chmod +x "$mock_bin/curl"
 
@@ -390,16 +437,31 @@ run_cutover() {
   # deploy/cd/router/state, per the fix for independent-review finding 3's
   # second sub-finding — see cutover.sh's own comment on router_state_dir).
   export ROUTER_STATE_DIR="$state_dir/router-state"
-  # Mark blue's backend as reachable/ready by default (the incumbent colour
-  # in every scenario below); green becomes ready once its own containers-up
-  # marker is touched by the mock's `up` handler.
-  touch "$CUTOVER_TEST_CONTROL_DIR/backend-ready-${BACKEND_BLUE_PORT:-18081}"
-  touch "$CUTOVER_TEST_CONTROL_DIR/backend-ready-${BACKEND_GREEN_PORT:-18082}"
+  bootstrap_incumbent "${2:-$compose_dir}"
   bash deploy/cd/cutover.sh cutover \
     --manifest "$manifest" \
     --packet "$packet" \
-    --compose-dir "$compose_dir" \
+    --compose-dir "${2:-$compose_dir}" \
     --state-dir "$state_dir"
+}
+
+# bootstrap_incumbent models a live host on first use of a scenario dir:
+# blue running as commit incumbent_commit and the router selecting blue on
+# the ports Compose renders for this compose dir. Later runs in the same
+# dir keep whatever the previous cutover left behind.
+bootstrap_incumbent() {
+  local dir=$1
+  [ -f "$ROUTER_STATE_DIR/active.json" ] && return 0
+  (cd "$dir" && docker compose config --format json >/dev/null)
+  local ports="$CUTOVER_TEST_CONTROL_DIR/rendered-ports"
+  for svc in backend-blue frontend-blue; do
+    touch "$CUTOVER_TEST_CONTROL_DIR/running-$svc"
+    printf '%s\n' "$incumbent_commit" >"$CUTOVER_TEST_CONTROL_DIR/commit-$svc"
+  done
+  BACKEND_BLUE_PORT="$(sed -n 's/^backend-blue=//p' "$ports")" \
+    FRONTEND_BLUE_PORT="$(sed -n 's/^frontend-blue=//p' "$ports")" \
+    bash deploy/cd/router.sh select --colour blue --state-dir "$ROUTER_STATE_DIR" >/dev/null
+  : >"$CUTOVER_TEST_CONTROL_DIR/docker-calls.log"
 }
 
 # ---------------------------------------------------------------------------
@@ -593,8 +655,8 @@ output="$(run_cutover "$state_dir" 2>&1)"
 status=$?
 set -e
 expect_exit 1 "$status" candidate-never-ready
-expect_contains "$output" "did not become ready within 180s" candidate-never-ready
-expect_contains "$output" "MANUAL INTERVENTION REQUIRED" candidate-never-ready
+expect_contains "$output" "did not become ready on port 18082 within 180s" candidate-never-ready
+expect_contains "$output" "RECOVERED: cutover to green failed" candidate-never-ready
 
 # ---------------------------------------------------------------------------
 # Scenario 7 (negative control): candidate /health reports the wrong commit
@@ -858,8 +920,7 @@ export MOCK_INCUMBENT_WEB_DIGEST="$incumbent_web_digest"
 export MOCK_EXPECTED_COMMIT="$source_sha"
 export CUTOVER_DATABASE_URL="postgres://multica:***@127.0.0.1:5432/multica?sslmode=disable"
 durable_router_state="$work_dir/live-router-mount"
-touch "$CUTOVER_TEST_CONTROL_DIR/backend-ready-${BACKEND_BLUE_PORT:-18081}"
-touch "$CUTOVER_TEST_CONTROL_DIR/backend-ready-${BACKEND_GREEN_PORT:-18082}"
+ROUTER_STATE_DIR="$durable_router_state" bootstrap_incumbent "$compose_dir"
 
 remote_parent_script="$work_dir/remote-parent.sh"
 GHCR_PULL_TOKEN='' bash deploy/cd/render-cutover-remote-script.sh \
@@ -879,6 +940,7 @@ output="$(env -i \
   MOCK_INCUMBENT_WEB_DIGEST="$MOCK_INCUMBENT_WEB_DIGEST" \
   MOCK_EXPECTED_COMMIT="$MOCK_EXPECTED_COMMIT" CUTOVER_DATABASE_URL="$CUTOVER_DATABASE_URL" \
   bash "$remote_parent_script" 2>&1)"
+unset ROUTER_STATE_DIR
 status=$?
 expect_exit 0 "$status" relocated-controller-live-router-state
 expect_contains "$output" "cutover complete: green is now active" relocated-controller-live-router-state
@@ -903,5 +965,140 @@ grep -q '127.0.0.1:18082' "$durable_router_state/active.conf" || {
   echo "scenario relocated-controller-live-router-state: bundle cleanup invalidated durable route" >&2
   exit 1
 }
+
+# ---------------------------------------------------------------------------
+# CHE-773 scenarios. The compose dir's .env overrides every slot port
+# (C00's real values) and the controller is launched exactly the way
+# cd-deploy.yml launches it: a `bash -c` that sources .env WITHOUT exporting
+# it and then starts cutover.sh as a child. The fresh `env -i` shell keeps
+# this test's own environment from leaking port variables into the child.
+# ---------------------------------------------------------------------------
+c00_compose_dir="$work_dir/compose-c00-ports"
+mkdir -p "$c00_compose_dir"
+touch "$c00_compose_dir/docker-compose.selfhost.yml"
+printf 'BACKEND_BLUE_PORT=18091\nBACKEND_GREEN_PORT=18092\nFRONTEND_BLUE_PORT=13001\nFRONTEND_GREEN_PORT=13002\n' >"$c00_compose_dir/.env"
+
+run_cd_shaped() {
+  local state_dir=$1
+  mkdir -p "$state_dir/control"
+  export CUTOVER_TEST_CONTROL_DIR="$state_dir/control" ROUTER_STATE_DIR="$state_dir/router-state"
+  bootstrap_incumbent "$c00_compose_dir"
+  env -i HOME="$HOME" PATH="$PATH" \
+    CUTOVER_TEST_CONTROL_DIR="$CUTOVER_TEST_CONTROL_DIR" ROUTER_STATE_DIR="$ROUTER_STATE_DIR" \
+    MOCK_BACKEND_DIGEST="$backend_digest" MOCK_WEB_DIGEST="$web_digest" \
+    MOCK_INCUMBENT_BACKEND_DIGEST="$incumbent_backend_digest" MOCK_INCUMBENT_WEB_DIGEST="$incumbent_web_digest" \
+    MOCK_EXPECTED_COMMIT="$source_sha" MOCK_LEDGER_VERSION_AFTER_MIGRATE="${MOCK_LEDGER_VERSION_AFTER_MIGRATE:-}" \
+    bash -c "cd '$c00_compose_dir' && . ./.env && export CUTOVER_DATABASE_URL=postgres://multica:multica@postgres:5432/multica && bash '$root_dir/deploy/cd/cutover.sh' cutover --manifest '$manifest' --packet '$packet' --compose-dir '$c00_compose_dir' --state-dir '$state_dir'"
+}
+
+json_field() {
+  node -e 'process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]]))' "$1" "$2"
+}
+
+drained_before_refusal() {
+  [ -f "$1/control/stop-calls.log" ] && grep -q "backend-blue" "$1/control/stop-calls.log"
+}
+
+# Happy path: health check, bindings and router all use 18092/13002.
+state_dir="$(fresh_scenario_dir che773-nondefault-ports)"
+output="$(run_cd_shaped "$state_dir" 2>&1)"
+status=$?
+expect_exit 0 "$status" che773-nondefault-ports
+expect_contains "$output" "health-checking candidate colour=green on port 18092" che773-nondefault-ports
+expect_contains "$output" "cutover complete: green is now active" che773-nondefault-ports
+grep -q '127.0.0.1:18092' "$state_dir/router-state/active.conf" || { echo "scenario che773-nondefault-ports: router does not target 18092" >&2; exit 1; }
+grep -q '127.0.0.1:13002' "$state_dir/router-state/active.conf" || { echo "scenario che773-nondefault-ports: router does not target 13002" >&2; exit 1; }
+if grep -q '1808[12]' "$state_dir/router-state/active.conf"; then
+  echo "scenario che773-nondefault-ports: router still carries a default 1808x port" >&2; exit 1
+fi
+
+# Pre-drain refusal 1: blue's RUNNING binding differs from the render
+# (container created before .env changed). Nothing may be stopped.
+state_dir="$(fresh_scenario_dir che773-incumbent-binding-mismatch)"
+mkdir -p "$state_dir/control"
+echo 18081 >"$state_dir/control/published-port-backend-blue"
+set +e
+output="$(run_cd_shaped "$state_dir" 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" che773-incumbent-binding-mismatch
+expect_contains "$output" "refusing before drain — blue remains active" che773-incumbent-binding-mismatch
+if drained_before_refusal "$state_dir"; then echo "scenario che773-incumbent-binding-mismatch: blue was drained" >&2; exit 1; fi
+
+# Pre-drain refusal 2: the router generation forwards to ports the render
+# does not publish (the CHE-773 router/Compose split).
+state_dir="$(fresh_scenario_dir che773-router-mismatch)"
+mkdir -p "$state_dir/control"
+export CUTOVER_TEST_CONTROL_DIR="$state_dir/control" ROUTER_STATE_DIR="$state_dir/router-state"
+BACKEND_BLUE_PORT=18081 FRONTEND_BLUE_PORT=13001 bash deploy/cd/router.sh select --colour blue --state-dir "$ROUTER_STATE_DIR" >/dev/null
+set +e
+output="$(run_cd_shaped "$state_dir" 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" che773-router-mismatch
+expect_contains "$output" "router selects colour=blue backend=18081" che773-router-mismatch
+if drained_before_refusal "$state_dir"; then echo "scenario che773-router-mismatch: blue was drained" >&2; exit 1; fi
+
+# Post-drain: candidate never ready -> gated recovery. Green is stopped
+# BEFORE blue restarts (never two backends), blue comes back as its own
+# pre-drain commit, and the public route reads back blue.
+state_dir="$(fresh_scenario_dir che773-candidate-not-ready-recovers)"
+mkdir -p "$state_dir/control"
+touch "$state_dir/control/health-never-ready-18092"
+set +e
+output="$(run_cd_shaped "$state_dir" 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" che773-candidate-not-ready-recovers
+expect_contains "$output" "did not become ready on port 18092" che773-candidate-not-ready-recovers
+expect_contains "$output" "RECOVERED: cutover to green failed" che773-candidate-not-ready-recovers
+expect_contains "$output" "commit $incumbent_commit" che773-candidate-not-ready-recovers
+last_green_stop="$(grep -n 'stop backend-green' "$state_dir/control/docker-calls.log" | tail -1 | cut -d: -f1)"
+blue_start="$(grep -n 'start backend-blue' "$state_dir/control/docker-calls.log" | tail -1 | cut -d: -f1)"
+if [ -z "$last_green_stop" ] || [ -z "$blue_start" ] || [ "$last_green_stop" -gt "$blue_start" ]; then
+  echo "scenario che773-candidate-not-ready-recovers: blue restarted before green was stopped (two backends)" >&2; exit 1
+fi
+[ -f "$state_dir/control/running-backend-blue" ] && [ ! -f "$state_dir/control/running-backend-green" ] || {
+  echo "scenario che773-candidate-not-ready-recovers: want only blue running" >&2; exit 1; }
+[ "$(json_field "$state_dir/router-state/active.json" colour)" = blue ] || {
+  echo "scenario che773-candidate-not-ready-recovers: router not back on blue" >&2; exit 1; }
+[ ! -f "$state_dir/cutover-state.json" ] || { echo "scenario che773-candidate-not-ready-recovers: cutover state recorded a failed cutover" >&2; exit 1; }
+
+# Post-drain: candidate's actual published binding differs from the render.
+state_dir="$(fresh_scenario_dir che773-candidate-binding-mismatch)"
+mkdir -p "$state_dir/control"
+echo 18082 >"$state_dir/control/published-port-backend-green"
+set +e
+output="$(run_cd_shaped "$state_dir" 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" che773-candidate-binding-mismatch
+expect_contains "$output" "published bindings differ from the rendered ports" che773-candidate-binding-mismatch
+expect_contains "$output" "RECOVERED" che773-candidate-binding-mismatch
+
+# Post-drain, unprovable compatibility: the ledger after migration is not
+# a known version -> blue is NOT restarted blind; the outage is alerted
+# loudly and recorded, never silent.
+state_dir="$(fresh_scenario_dir che773-unprovable-recovery-alerts)"
+mkdir -p "$state_dir/control"
+touch "$state_dir/control/health-never-ready-18092"
+set +e
+output="$(MOCK_LEDGER_VERSION_AFTER_MIGRATE=999999_unknown_out_of_band run_cd_shaped "$state_dir" 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" che773-unprovable-recovery-alerts
+expect_contains "$output" "::error title=Multica A/B cutover outage::" che773-unprovable-recovery-alerts
+expect_contains "$output" "NOT restarted" che773-unprovable-recovery-alerts
+[ -f "$state_dir/outage-alert.json" ] || { echo "scenario che773-unprovable-recovery-alerts: no outage-alert.json" >&2; exit 1; }
+if [ -f "$state_dir/control/start-calls.log" ]; then echo "scenario che773-unprovable-recovery-alerts: blue was started without compatibility proof" >&2; exit 1; fi
+
+# Router without an explicit port must refuse, never fall back.
+set +e
+output="$(env -u BACKEND_GREEN_PORT -u FRONTEND_GREEN_PORT bash deploy/cd/router.sh validate --colour green --state-dir "$work_dir/router-no-port" 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" router-no-port-fallback
+expect_contains "$output" "BACKEND_GREEN_PORT is not set" router-no-port-fallback
+unset ROUTER_STATE_DIR
 
 echo "cutover.sh control-flow fixtures passed"

@@ -162,11 +162,142 @@ active_colour() {
   fi
 }
 
-backend_port_for() {
-  case "$1" in
-    blue) echo "${BACKEND_BLUE_PORT:-18081}" ;;
-    green) echo "${BACKEND_GREEN_PORT:-18082}" ;;
-  esac
+# Ports (CHE-773). Every slot port comes from `docker compose config` —
+# the same .env-aware render Compose publishes from — and is exported under
+# the names router.sh reads, so controller, Compose and router can never
+# hold different interpretations. The previous `${BACKEND_GREEN_PORT:-18082}`
+# fallback silently disagreed with Compose whenever .env set a port the
+# calling shell had sourced but not exported (`. ./.env` in CD's `bash -c`):
+# the controller health-checked 18082 while green listened on 18092, then
+# stopped green with blue already drained.
+resolve_slot_ports() {
+  local colour role target var port
+  for colour in blue green; do
+    for role in backend frontend; do
+      target=8080
+      [ "$role" = frontend ] && target=3000
+      var="$(printf '%s_%s_PORT' "$role" "$colour" | tr '[:lower:]' '[:upper:]')"
+      if ! port="$(compose_rendered_port "${role}-${colour}" "$target")"; then
+        echo "!! could not resolve the host port Compose renders for ${role}-${colour}:${target}" >&2
+        return 1
+      fi
+      export "$var=$port"
+    done
+  done
+}
+
+slot_port() {
+  local var
+  var="$(printf '%s_%s_PORT' "$1" "$2" | tr '[:lower:]' '[:upper:]')"
+  printf '%s' "${!var}"
+}
+
+# The router's own listeners (router/nginx.conf.template) — what Tailscale
+# Serve forwards public traffic to.
+router_api_port=8081
+router_web_port=3000
+
+# published_port_matches: the RUNNING container's actual published binding
+# (`docker compose port`) equals the rendered one.
+published_port_matches() {
+  local service=$1 target=$2 want=$3 got
+  got="$(service_published_port "$service" "$target")"
+  if [ "$got" != "$want" ]; then
+    echo "!! ${service}:${target} is published on '${got:-<none>}', Compose renders '$want'" >&2
+    return 1
+  fi
+}
+
+# router_selects: the router's active generation forwards to exactly this
+# colour's rendered ports.
+router_selects() {
+  local colour=$1 json="$router_state_dir/active.json" c b f
+  if [ ! -f "$json" ]; then
+    echo "!! no active router generation at $json" >&2
+    return 1
+  fi
+  c="$(json_field "$json" colour)"
+  b="$(json_field "$json" backend_port)"
+  f="$(json_field "$json" frontend_port)"
+  if [ "$c" != "$colour" ] || [ "$b" != "$(slot_port backend "$colour")" ] || [ "$f" != "$(slot_port frontend "$colour")" ]; then
+    echo "!! router selects colour=$c backend=$b frontend=$f; expected colour=$colour backend=$(slot_port backend "$colour") frontend=$(slot_port frontend "$colour")" >&2
+    return 1
+  fi
+}
+
+health_commit() {
+  curl --fail --silent --show-error "http://127.0.0.1:$1/health" 2>/dev/null | json_field /dev/stdin commit 2>/dev/null
+}
+
+# public_route_serves: the router's public listeners answer, and the API
+# listener reports the expected commit — proof traffic actually reaches the
+# intended release, not just that something returns 200.
+public_route_serves() {
+  local commit=$1
+  verify_health_identity "$router_api_port" "$commit" &&
+    curl --fail --silent --show-error "http://127.0.0.1:${router_web_port}/" >/dev/null 2>&1
+}
+
+alert_outage() {
+  local reason=$1
+  echo "::error title=Multica A/B cutover outage::$reason" >&2
+  echo "!! OUTAGE: $reason — MANUAL INTERVENTION REQUIRED (runbook: deploy/cd/README.md, \"A/B outage runbook\")" >&2
+  cat >"$state_dir/outage-alert.json" <<JSON
+{"at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)", "reason": "$reason"}
+JSON
+}
+
+# recover_incumbent restarts the drained incumbent after a post-drain
+# failure — only when compatibility is proven, never blind:
+#   - the candidate is stopped first (one backend/scheduler at a time);
+#   - the live ledger is unchanged since the incumbent last served it, or
+#     sits within [packet minimum_rollback_version, packet final version] —
+#     a schema the incumbent is required to serve under expand/contract (no
+#     down migration, no restore);
+#   - `compose start` reuses the incumbent's own stopped containers, and the
+#     restarted image must equal the one recorded before the drain;
+#   - its /health commit, its router generation and the public route must
+#     all read back as the pre-drain incumbent.
+# Any unproven step raises alert_outage instead. Always exits nonzero: the
+# cutover itself failed.
+recover_incumbent() {
+  local reason=$1 ledger final
+  echo "!! $reason" >&2
+  echo "==> post-drain failure; attempting compatibility-gated recovery of incumbent colour=$from_colour" >&2
+  compose stop "backend-${to_colour}" "frontend-${to_colour}" >/dev/null 2>&1 || true
+
+  ledger="$(current_ledger_version)" || ledger=""
+  final="$(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(p.ordered_migrations.at(-1)?.version??"")' "$packet")"
+  if [ -z "$ledger" ] || { [ "$ledger" != "$incumbent_ledger" ] && {
+    ! ledger_at_or_after "$ledger" "$packet_minimum_rollback_version" "$root_dir/server/migrations" ||
+      ! ledger_at_or_after "$final" "$ledger" "$root_dir/server/migrations"; }; }; then
+    alert_outage "$reason; ledger '${ledger:-<unreadable>}' is neither the pre-drain ledger ($incumbent_ledger) nor within [$packet_minimum_rollback_version, $final], so $from_colour is not proven schema-compatible and was NOT restarted; both colours are stopped"
+    exit 1
+  fi
+  if ! compose start "backend-${from_colour}" "frontend-${from_colour}" >/dev/null 2>&1; then
+    alert_outage "$reason; restarting $from_colour failed; both colours are stopped"
+    exit 1
+  fi
+  if [ "$(running_image_ref "backend-${from_colour}" || true)" != "$incumbent_backend_image" ] ||
+    [ "$(running_image_ref "frontend-${from_colour}" || true)" != "$incumbent_web_image" ]; then
+    compose stop "backend-${from_colour}" "frontend-${from_colour}" >/dev/null 2>&1 || true
+    alert_outage "$reason; restarted $from_colour image differs from the pre-drain incumbent ($incumbent_backend_image / $incumbent_web_image); stopped it again"
+    exit 1
+  fi
+  if ! published_port_matches "backend-${from_colour}" 8080 "$(slot_port backend "$from_colour")" ||
+    ! published_port_matches "frontend-${from_colour}" 3000 "$(slot_port frontend "$from_colour")" ||
+    ! wait_ready_on_port "$(slot_port backend "$from_colour")" 120 ||
+    ! verify_health_identity "$(slot_port backend "$from_colour")" "$incumbent_commit"; then
+    alert_outage "$reason; $from_colour was restarted but did not come back healthy as commit $incumbent_commit"
+    exit 1
+  fi
+  if ! bash "$script_dir/router.sh" select --colour "$from_colour" --state-dir "$router_state_dir" ||
+    ! router_selects "$from_colour" || ! public_route_serves "$incumbent_commit"; then
+    alert_outage "$reason; $from_colour is running and healthy but the public route does not read back as $from_colour"
+    exit 1
+  fi
+  echo "!! RECOVERED: cutover to $to_colour failed ($reason); $from_colour restarted (image $incumbent_backend_image, commit $incumbent_commit, ledger $ledger) and the public route reads back healthy. Cutover state unchanged; investigate before retrying." >&2
+  exit 1
 }
 
 write_cutover_state() {
@@ -264,6 +395,12 @@ case "$command" in
     to_colour="$(other_colour "$from_colour")"
     echo "==> cutover plan: $from_colour (active) -> $to_colour (candidate)"
 
+    if ! resolve_slot_ports; then
+      echo "!! slot ports unresolved; $from_colour remains active" >&2
+      exit 1
+    fi
+    echo "==> rendered slot ports: backend blue=$BACKEND_BLUE_PORT green=$BACKEND_GREEN_PORT, frontend blue=$FRONTEND_BLUE_PORT green=$FRONTEND_GREEN_PORT"
+
     migration_service_name="backend-${to_colour}"
 
     # quiescence.mjs has no host `psql` binary to fall back to on C00 —
@@ -321,6 +458,38 @@ case "$command" in
       exit 1
     fi
 
+    # Pre-drain agreement gate (CHE-773). Everything the post-drain path
+    # relies on is proven while $from_colour still serves, so a mismatch
+    # refuses with the API up instead of discovering it with both colours
+    # stopped: the incumbent's running bindings equal the rendered ports,
+    # the router forwards to exactly those ports, the public route answers
+    # as the incumbent's commit, and the candidate's generation renders and
+    # passes nginx -t on ITS rendered ports. The incumbent's image pair and
+    # commit and the pre-drain ledger are recorded for recover_incumbent.
+    echo "==> pre-drain agreement gate (Compose render == running bindings == router generation)"
+    if ! published_port_matches "backend-${from_colour}" 8080 "$(slot_port backend "$from_colour")" ||
+      ! published_port_matches "frontend-${from_colour}" 3000 "$(slot_port frontend "$from_colour")" ||
+      ! router_selects "$from_colour"; then
+      echo "!! controller, Compose and router disagree on $from_colour's ports; refusing before drain — $from_colour remains active" >&2
+      exit 1
+    fi
+    incumbent_commit="$(health_commit "$(slot_port backend "$from_colour")" || true)"
+    incumbent_backend_image="$(running_image_ref "backend-${from_colour}" || true)"
+    incumbent_web_image="$(running_image_ref "frontend-${from_colour}" || true)"
+    incumbent_ledger="$(current_ledger_version || true)"
+    if [ -z "$incumbent_commit" ] || [ -z "$incumbent_backend_image" ] || [ -z "$incumbent_web_image" ] || [ -z "$incumbent_ledger" ]; then
+      echo "!! could not record $from_colour's commit/image pair/ledger (needed to prove a recovery); refusing before drain — $from_colour remains active" >&2
+      exit 1
+    fi
+    if ! public_route_serves "$incumbent_commit"; then
+      echo "!! public route (router :$router_api_port/:$router_web_port) does not serve $from_colour commit $incumbent_commit; refusing before drain — $from_colour remains active" >&2
+      exit 1
+    fi
+    if ! bash "$script_dir/router.sh" validate --colour "$to_colour" --state-dir "$router_state_dir" >/dev/null; then
+      echo "!! candidate router generation for $to_colour failed validation; refusing before drain — $from_colour remains active" >&2
+      exit 1
+    fi
+
     # Step 2: drain and stop the incumbent colour BEFORE the strict
     # quiescence final-gate runs and before the migrator touches the schema
     # — matching the accepted architecture's own step 2 ("drain and shut
@@ -347,8 +516,7 @@ case "$command" in
     # before this ordering fix.
     echo "==> quiescence final-gate (pre-migration)"
     if ! node "$script_dir/quiescence.mjs" final-gate --database-url "$database_url" --psql-via-docker-exec "$postgres_container"; then
-      echo "!! quiescence final-gate denied cutover after draining $from_colour — the API is DOWN; MANUAL INTERVENTION REQUIRED to restart $from_colour" >&2
-      exit 1
+      recover_incumbent "quiescence final-gate denied cutover after draining $from_colour (no migration ran)"
     fi
 
     # Run the standalone migrator exactly once, from the candidate image,
@@ -357,8 +525,10 @@ case "$command" in
     # never risks touching a live serving container's dependency graph.
     echo "==> running migration step (one-shot, candidate image, before candidate starts)"
     if ! run_migration_step "$backend_repo" "$image_tag" up; then
-      echo "!! migration step failed after draining $from_colour — the API is DOWN; candidate not started; MANUAL INTERVENTION REQUIRED to restart $from_colour" >&2
-      echo "!! quiescent gate must be re-run before retrying — do not restart the candidate against a partially migrated schema" >&2
+      # No automatic recovery here: a failed migration can leave DDL the
+      # ledger does not record, so ledger proof cannot establish that
+      # $from_colour is compatible with the schema actually in place.
+      alert_outage "migration step failed after draining $from_colour; schema state is unproven, so neither colour was started — re-run the quiescent gate and inspect the schema before restarting anything"
       exit 1
     fi
 
@@ -370,16 +540,23 @@ case "$command" in
     if ! MULTICA_BACKEND_IMAGE="$backend_repo" MULTICA_WEB_IMAGE="$(image_repo "$web_image")" \
       MULTICA_IMAGE_TAG="$image_tag" MULTICA_SKIP_MIGRATIONS=1 \
       compose up -d --no-deps "backend-${to_colour}" "frontend-${to_colour}"; then
-      echo "!! candidate colour=$to_colour failed to start after draining $from_colour — the API is DOWN; MANUAL INTERVENTION REQUIRED" >&2
-      exit 1
+      recover_incumbent "candidate colour=$to_colour failed to start"
     fi
 
-    candidate_port="$(backend_port_for "$to_colour")"
+    # The candidate's ACTUAL published bindings must equal the rendered
+    # ports every later check and the router use.
+    candidate_port="$(slot_port backend "$to_colour")"
+    candidate_web_port="$(slot_port frontend "$to_colour")"
+    if ! published_port_matches "backend-${to_colour}" 8080 "$candidate_port" ||
+      ! published_port_matches "frontend-${to_colour}" 3000 "$candidate_web_port"; then
+      recover_incumbent "candidate colour=$to_colour published bindings differ from the rendered ports"
+    fi
     echo "==> health-checking candidate colour=$to_colour on port $candidate_port"
     if ! wait_ready_on_port "$candidate_port" 180; then
-      echo "!! candidate colour=$to_colour did not become ready within 180s; stopping it — the API is DOWN ($from_colour already drained); MANUAL INTERVENTION REQUIRED" >&2
-      compose stop "backend-${to_colour}" "frontend-${to_colour}" >/dev/null 2>&1 || true
-      exit 1
+      recover_incumbent "candidate colour=$to_colour did not become ready on port $candidate_port within 180s"
+    fi
+    if ! wait_http_ok "http://127.0.0.1:${candidate_web_port}/" 120; then
+      recover_incumbent "candidate frontend-$to_colour did not answer on port $candidate_web_port within 120s"
     fi
 
     # Require the EXACT expected /health commit — a 200 alone only proves
@@ -387,9 +564,7 @@ case "$command" in
     # migrated and started (see deploy-lib.sh's verify_health_identity).
     echo "==> verifying candidate /health identity"
     if ! verify_health_identity "$candidate_port" "$source_sha"; then
-      echo "!! candidate colour=$to_colour /health identity mismatch; stopping it — the API is DOWN ($from_colour already drained); MANUAL INTERVENTION REQUIRED" >&2
-      compose stop "backend-${to_colour}" "frontend-${to_colour}" >/dev/null 2>&1 || true
-      exit 1
+      recover_incumbent "candidate colour=$to_colour /health identity mismatch"
     fi
 
     # Activate the complete router generation. router.sh's own `nginx -t`
@@ -399,8 +574,10 @@ case "$command" in
     # reimplemented here.
     echo "==> activating router generation for colour=$to_colour"
     if ! bash "$script_dir/router.sh" select --colour "$to_colour" --state-dir "$router_state_dir"; then
-      echo "!! router generation switch failed; candidate colour=$to_colour is running but NOT receiving traffic — the API is DOWN ($from_colour already drained and the router still is not pointed at $to_colour); MANUAL INTERVENTION REQUIRED" >&2
-      exit 1
+      recover_incumbent "router generation switch failed; candidate colour=$to_colour is running but NOT receiving traffic"
+    fi
+    if ! router_selects "$to_colour" || ! public_route_serves "$source_sha"; then
+      recover_incumbent "router was switched but the public route does not read back as $to_colour commit $source_sha"
     fi
 
     ledger_version="$(current_ledger_version)"
@@ -482,14 +659,20 @@ case "$command" in
       exit 1
     fi
 
-    backend_port="$(backend_port_for "$to_colour")"
+    if ! resolve_slot_ports; then
+      echo "!! slot ports unresolved; $to_colour NOT started — MANUAL INTERVENTION REQUIRED" >&2
+      exit 1
+    fi
+    backend_port="$(slot_port backend "$to_colour")"
     echo "==> starting retained predecessor colour=$to_colour without migrations"
     if ! MULTICA_SKIP_MIGRATIONS=1 compose up -d --no-deps "backend-${to_colour}" "frontend-${to_colour}"; then
       echo "!! failed to start retained predecessor colour=$to_colour — MANUAL INTERVENTION REQUIRED" >&2
       exit 1
     fi
 
-    if ! wait_ready_on_port "$backend_port" 120; then
+    if ! published_port_matches "backend-${to_colour}" 8080 "$backend_port" ||
+      ! published_port_matches "frontend-${to_colour}" 3000 "$(slot_port frontend "$to_colour")" ||
+      ! wait_ready_on_port "$backend_port" 120; then
       echo "!! retained predecessor colour=$to_colour did not become healthy within 120s — MANUAL INTERVENTION REQUIRED" >&2
       exit 1
     fi
@@ -497,6 +680,10 @@ case "$command" in
     echo "==> restoring router generation for colour=$to_colour"
     if ! bash "$script_dir/router.sh" select --colour "$to_colour" --state-dir "$router_state_dir"; then
       echo "!! router restore failed — retained predecessor colour=$to_colour is healthy but NOT receiving traffic; MANUAL INTERVENTION REQUIRED" >&2
+      exit 1
+    fi
+    if ! router_selects "$to_colour" || ! public_route_serves "$(health_commit "$backend_port")"; then
+      echo "!! router restore did not read back — the public route does not serve $to_colour; MANUAL INTERVENTION REQUIRED" >&2
       exit 1
     fi
 

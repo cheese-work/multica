@@ -102,20 +102,26 @@ fi
 generations_dir="$state_dir/generations"
 mkdir -p "$generations_dir"
 
-# port_for reads the docker-compose.ab.yml default for a given colour/role
-# so the router and the compose overlay can never silently drift onto
-# different port numbers — this is the single place both are derived from
-# an env override, falling back to the same literal defaults
-# docker-compose.ab.yml documents in its own `ports:` block.
+# port_for reads the port for a colour/role from the caller's environment
+# and REFUSES when it is unset — no fallback. A literal default here is a
+# second interpretation of docker-compose.ab.yml that silently disagrees
+# with Compose whenever .env overrides a port but the caller never exported
+# it (CHE-773). cutover.sh passes the ports Compose actually renders
+# (compose_rendered_port); a manual caller must pass them too.
 port_for() {
-  local role=$1 colour=$2
+  local role=$1 colour=$2 var
   case "${role}_${colour}" in
-    backend_blue) echo "${BACKEND_BLUE_PORT:-18081}" ;;
-    backend_green) echo "${BACKEND_GREEN_PORT:-18082}" ;;
-    frontend_blue) echo "${FRONTEND_BLUE_PORT:-13001}" ;;
-    frontend_green) echo "${FRONTEND_GREEN_PORT:-13002}" ;;
+    backend_blue) var=BACKEND_BLUE_PORT ;;
+    backend_green) var=BACKEND_GREEN_PORT ;;
+    frontend_blue) var=FRONTEND_BLUE_PORT ;;
+    frontend_green) var=FRONTEND_GREEN_PORT ;;
     *) echo "unknown role/colour: $role/$colour" >&2; return 1 ;;
   esac
+  if ! [[ "${!var:-}" =~ ^[0-9]+$ ]]; then
+    echo "!! $var is not set to a port; router.sh never guesses — pass the port Compose actually publishes (docker compose ... port ${role}-${colour})" >&2
+    return 1
+  fi
+  echo "${!var}"
 }
 
 # render writes a complete, self-contained config for the given colour to
@@ -311,7 +317,8 @@ JSON
       exit 1
     fi
     active_colour="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).colour)' "$state_dir/active.json")"
-    backend_port="$(port_for backend "$active_colour")"
+    # The port the active generation actually forwards to, not a re-derived one.
+    backend_port="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).backend_port)' "$state_dir/active.json")"
     if curl --fail --silent --show-error "http://127.0.0.1:${backend_port}/readyz" >/dev/null 2>&1; then
       echo "$active_colour"
       exit 0

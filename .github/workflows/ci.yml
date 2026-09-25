@@ -789,6 +789,13 @@ jobs:
       - name: Test D2 deploy control flow
         run: bash deploy/cd/test-deploy.sh
 
+      # CHE-773: A/B cutover port agreement, pre-drain refusal, gated
+      # incumbent recovery, and the public-route health alarm.
+      - name: Test A/B cutover control flow
+        run: |
+          bash deploy/cd/test-cutover.sh
+          bash deploy/cd/test-ab-health-check.sh
+
   frontend-quality:
     needs: changes
     if: ${{ needs.changes.outputs.quality_only == 'true' }}

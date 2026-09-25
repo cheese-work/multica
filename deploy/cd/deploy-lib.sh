@@ -108,6 +108,47 @@ service_published_port() {
   compose port "$service" "$container_port" 2>/dev/null | sed -E 's#^.*:##'
 }
 
+# compose_rendered_port prints the host port Compose will publish for
+# <service>:<container_port>, read from `docker compose config`. Compose
+# loads .env itself, so this is the only port source a controller may use —
+# never a shell `${VAR:-default}`: a `. ./.env` in a parent shell does not
+# export anything to a child process, which is exactly how CHE-773's
+# controller health-checked green on 18082 while Compose published 18092.
+# Fails (nonzero, no output) when the service or port is not rendered.
+compose_rendered_port() {
+  local service=$1
+  local container_port=$2
+  compose config --format json 2>/dev/null | node -e '
+    let d = "";
+    process.stdin.on("data", (c) => (d += c));
+    process.stdin.on("end", () => {
+      const [service, target] = process.argv.slice(1);
+      let ports = [];
+      try { ports = JSON.parse(d).services?.[service]?.ports ?? []; } catch { process.exit(1); }
+      const port = ports.find((p) => String(p.target) === target);
+      if (!port || !/^[0-9]+$/.test(String(port.published ?? ""))) process.exit(1);
+      process.stdout.write(String(port.published));
+    });
+  ' "$service" "$container_port"
+}
+
+# wait_http_ok polls an arbitrary URL until curl --fail succeeds or
+# timeout_s elapses (frontend roots, router listeners — anything that is not
+# a backend /readyz).
+wait_http_ok() {
+  local url=$1
+  local timeout_s=$2
+  local waited=0
+  while [ "$waited" -lt "$timeout_s" ]; do
+    if curl --fail --silent --show-error "$url" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+    waited=$((waited + 2))
+  done
+  return 1
+}
+
 # wait_ready_on_port polls /readyz on 127.0.0.1:$port until it succeeds or
 # timeout_s elapses. Split out from the original wait_ready (which resolved
 # its own port via service_published_port) so cutover.sh can wait on a
