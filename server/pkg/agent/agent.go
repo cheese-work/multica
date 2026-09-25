@@ -297,6 +297,14 @@ type Result struct {
 	// exited during initialize because its SQLite state runtime could not be
 	// opened, before semantic activity and after the process tree was reaped.
 	codexStateRuntimeRetrySafe bool
+	// codexZeroToolFalseNegativeRetrySafe is provider-internal evidence that
+	// the turn matched the Codex CLI 0.156.0 multi-agent v2 false-negative
+	// pattern (CHE-775): the model's final message claims no terminal/CLI
+	// access while the turn made zero real (exec_command/patch_apply) tool
+	// calls, whether it called only collaboration.* MCP tools or nothing at
+	// all. Like the other codex*RetrySafe fields it is not part of the
+	// public result contract and only drives Execute's retry loop.
+	codexZeroToolFalseNegativeRetrySafe bool
 }
 
 // Config configures a Backend instance.

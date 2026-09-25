@@ -139,6 +139,43 @@ func isCodexStateRuntimeInitFailure(stderrTail string, truncated bool, codexHome
 	return strings.TrimSpace(stderrTail) == want
 }
 
+// codexZeroToolFalseNegativePhrases are case-insensitive substrings of a
+// final agent message that, combined with zero observed exec_command/
+// patch_apply tool calls in the same turn, indicate the upstream Codex CLI
+// 0.156.0 multi-agent v2 defect (CHE-775): the model falsely claims it has no
+// terminal/CLI access even though exec was available, because its internal
+// "primary agent in a team of agents" framing steered it toward
+// collaboration.* MCP tools (or no tool calls at all) instead. See the
+// package-level defect summary near isCodexStateRuntimeInitFailure's callers
+// in Execute for the retry wiring this feeds.
+var codexZeroToolFalseNegativePhrases = []string{
+	"no terminal",
+	"no multica cli",
+	"rerun with cli access",
+}
+
+// isCodexZeroToolFalseNegative reports whether a turn's outcome matches the
+// false-negative pattern: the final agent message claims missing terminal/
+// CLI capability while the turn made zero real (exec_command or
+// patch_apply) tool calls. realToolCalls deliberately excludes MCP tool
+// calls, so a turn that called only collaboration.* MCP tools (spawn_agent,
+// list_agents, wait_agent, ...) still counts as zero — that is exactly the
+// case observed in the field. A turn is not flagged merely for being
+// toolless: the message must also match one of the known false-negative
+// phrases, so a legitimate Q&A turn with no tool calls is left alone.
+func isCodexZeroToolFalseNegative(finalMessage string, realToolCalls int64) bool {
+	if realToolCalls > 0 {
+		return false
+	}
+	lower := strings.ToLower(finalMessage)
+	for _, phrase := range codexZeroToolFalseNegativePhrases {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
 func sanitizeCodexDiagnostic(value string) string {
 	return sanitizeAgentDiagnostic(value)
 }
@@ -1013,8 +1050,24 @@ func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 				retryReason = "model_catalog_refresh"
 			case result.codexStateRuntimeRetrySafe:
 				retryReason = "sqlite_state_runtime"
+			case result.codexZeroToolFalseNegativeRetrySafe:
+				retryReason = "zero_tool_false_negative"
 			}
-			if retryReason == "" || attempt == 2 {
+			if retryReason == "" {
+				flushHeldPins()
+				resCh <- result
+				return
+			}
+			if attempt == 2 {
+				// The same zero-tool false-negative pattern recurred on the retry
+				// attempt: the upstream Codex defect (CHE-775) is not transient for
+				// this turn. Surface it as a clear failure instead of letting a
+				// "completed" status carry a false "no terminal/CLI access" claim
+				// through as a normal deliverable comment.
+				if result.codexZeroToolFalseNegativeRetrySafe {
+					result.Status = "failed"
+					result.Error = "codex reported no terminal/Multica CLI access after making zero exec_command/patch_apply tool calls on two consecutive attempts; this is the known Codex CLI 0.156.0 multi-agent v2 false-negative defect (CHE-775), not a genuine capability gap"
+				}
 				flushHeldPins()
 				resCh <- result
 				return
@@ -1899,6 +1952,23 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 		finalOutput := codexDeliverableOutput(finalAnswer, lastAgentMessage)
 		outputMu.Unlock()
 
+		// A turn that otherwise looks like a normal completion can still be the
+		// Codex CLI 0.156.0 multi-agent v2 false negative (CHE-775): the model
+		// claims it has no terminal/CLI access while it made zero real
+		// exec_command/patch_apply tool calls — whether it called only
+		// collaboration.* MCP tools or nothing at all. Only classify a
+		// completed turn: a genuine failure/timeout/aborted status already
+		// carries its own clear error and must not be reclassified.
+		zeroToolFalseNegative := finalStatus == "completed" &&
+			isCodexZeroToolFalseNegative(finalOutput, c.realToolCalls.Load())
+		if zeroToolFalseNegative {
+			b.cfg.Logger.Warn("codex zero-tool false-negative CLI-access claim is retry safe",
+				"pid", cmd.Process.Pid,
+				"thread_id", threadID,
+				"attempt", attempt,
+			)
+		}
+
 		// Build usage map from accumulated codex usage.
 		// First check JSON-RPC notifications (often empty for Codex).
 		var usageMap map[string]TokenUsage
@@ -1929,13 +1999,14 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 		}
 
 		resCh <- Result{
-			Status:                       finalStatus,
-			Output:                       finalOutput,
-			Error:                        finalError,
-			SessionID:                    threadID,
-			DurationMs:                   duration.Milliseconds(),
-			Usage:                        usageMap,
-			codexStartupRefreshRetrySafe: startupRefreshRetrySafe,
+			Status:                              finalStatus,
+			Output:                              finalOutput,
+			Error:                               finalError,
+			SessionID:                           threadID,
+			DurationMs:                          duration.Milliseconds(),
+			Usage:                               usageMap,
+			codexStartupRefreshRetrySafe:        startupRefreshRetrySafe,
+			codexZeroToolFalseNegativeRetrySafe: zeroToolFalseNegative,
 		}
 	}()
 
@@ -2420,6 +2491,19 @@ type codexClient struct {
 
 	turnErrorMu sync.Mutex
 	turnError   string // captured from turn/completed status=failed or terminal error notifications
+
+	// realToolCalls counts evidence the model actually exercised
+	// terminal/filesystem capability during this turn, as opposed to only
+	// calling MCP-exposed collaboration.* tools (spawn_agent, list_agents,
+	// wait_agent, etc.) or making no tool calls at all. Tracked across both
+	// protocols Codex speaks: raw v2 item/started notifications for itemType
+	// "commandExecution" (exec_command) or "fileChange" (patch_apply), and
+	// the legacy codex/event exec_command_begin / patch_apply_begin
+	// notifications. Deliberately excludes mcpToolCall: Codex CLI 0.156.0's
+	// multi-agent v2 defect exposes collaboration.* as MCP tools, so
+	// counting mcpToolCall would hide the exact false-negative pattern this
+	// field exists to detect (CHE-775).
+	realToolCalls atomic.Int64
 }
 
 type codexAgentMessageStream struct {
@@ -3371,6 +3455,7 @@ func (c *codexClient) handleEvent(msg map[string]any) {
 			c.onAgentMessage(text)
 		}
 	case "exec_command_begin":
+		c.realToolCalls.Add(1)
 		callID, _ := msg["call_id"].(string)
 		command, _ := msg["command"].(string)
 		if c.onMessage != nil {
@@ -3393,6 +3478,7 @@ func (c *codexClient) handleEvent(msg map[string]any) {
 			})
 		}
 	case "patch_apply_begin":
+		c.realToolCalls.Add(1)
 		callID, _ := msg["call_id"].(string)
 		if c.onMessage != nil {
 			c.onMessage(Message{
@@ -3697,6 +3783,7 @@ func (c *codexClient) handleItemNotification(method string, params map[string]an
 		c.handleAgentMessageDelta(itemID, delta)
 
 	case method == "item/started" && itemType == "commandExecution":
+		c.realToolCalls.Add(1)
 		command, _ := item["command"].(string)
 		if c.onMessage != nil {
 			c.onMessage(Message{
@@ -3719,6 +3806,7 @@ func (c *codexClient) handleItemNotification(method string, params map[string]an
 		}
 
 	case method == "item/started" && itemType == "fileChange":
+		c.realToolCalls.Add(1)
 		if c.onMessage != nil {
 			c.onMessage(Message{
 				Type:   MessageToolUse,
