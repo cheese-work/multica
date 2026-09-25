@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"strings"
@@ -13,6 +15,29 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/cli"
 )
+
+// digestHexLen is the length of a lowercase-or-uppercase-hex-encoded sha256
+// digest (32 bytes -> 64 hex characters). Mirrors
+// server/internal/handler/governed_instruction_hermes_exception.go's
+// digestHexLen — duplicated here, not imported, because the CLI binary must
+// not depend on the server's internal/handler package (it pulls in the DB
+// layer and other server-only dependencies that have no place in a client
+// binary). This is a small, stable format constant, not shared business
+// logic.
+const digestHexLen = 64
+
+// isWellFormedDigestHex reports whether s could plausibly be a sha256 hex
+// digest: exactly 64 lowercase-or-uppercase hex characters. This is a
+// client-side pre-check only — the server performs the authoritative check
+// and still 400s on a malformed digest — but failing fast here saves the
+// round trip for the common case (spec requirement: CHE-789).
+func isWellFormedDigestHex(s string) bool {
+	if len(s) != digestHexLen {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil
+}
 
 var workspaceCmd = &cobra.Command{
 	Use:   "workspace",
@@ -191,7 +216,9 @@ func init() {
 	workspaceUpdateCmd.Flags().Bool("description-stdin", false, "Read description from stdin (preserves multi-line content verbatim)")
 	workspaceUpdateCmd.Flags().String("context", "", "New workspace context (decodes \\n, \\r, \\t, \\\\; pipe via --context-stdin to preserve literal backslashes)")
 	workspaceUpdateCmd.Flags().Bool("context-stdin", false, "Read context from stdin (preserves multi-line content verbatim)")
+	workspaceUpdateCmd.Flags().String("context-file", "", "Read context from a file, byte-for-byte (no escape decoding)")
 	workspaceUpdateCmd.Flags().String("issue-prefix", "", "New issue prefix (uppercased server-side)")
+	workspaceUpdateCmd.Flags().String("expected-before-digest", "", "sha256 hex digest of the context value the caller believes is currently live; enables a conditional compare-and-swap write instead of an unconditional update. Requires the context to be set via --context, --context-stdin, or --context-file, and forbids combining with any other update flag.")
 	workspaceUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 
 	workspaceMcpListCmd.Flags().String("output", "json", "Output format: table or json")
@@ -532,6 +559,109 @@ func printWorkspace(cmd *cobra.Command, ws map[string]any) error {
 	return cli.PrintJSON(os.Stdout, ws)
 }
 
+// resolveWorkspaceContextLossless reads workspace context byte-for-byte from
+// --context-file or --context-stdin, modeled directly on
+// resolveSquadInstructions in cmd_squad.go (including that function's choice
+// not to apply ensureFileFlagWithinWorkdir's cwd guard — the same tradeoff
+// applies identically to both governed fields). It deliberately does NOT
+// reuse resolveTextFlag: that helper's inline path runs
+// util.UnescapeBackslashEscapes (fine for the existing lossy --context
+// behavior, wrong here) and its stdin/file paths additionally call
+// strings.TrimSuffix(data, "\n"), silently dropping one trailing newline —
+// a mismatch with resolveSquadInstructions's byte-for-byte stdin/file
+// reads. CHE-789's digest mode computes a sha256 over exactly what the
+// caller sends, so a single dropped byte would make every digest the
+// caller computes locally disagree with the server's, permanently — this
+// path must never share code with a lossy reader.
+//
+// Unlike resolveTextFlag, inline --context participates here too (verbatim,
+// no escape decoding) because digest mode needs a lossless inline path and
+// the existing --context flag's lossy decoding cannot be reused for it.
+func resolveWorkspaceContextLossless(cmd *cobra.Command) (string, bool, error) {
+	inline, _ := cmd.Flags().GetString("context")
+	fromStdin, _ := cmd.Flags().GetBool("context-stdin")
+	filePath, _ := cmd.Flags().GetString("context-file")
+	inlineSet := cmd.Flags().Changed("context")
+	fileSet := cmd.Flags().Changed("context-file")
+
+	sources := 0
+	if inlineSet {
+		sources++
+	}
+	if fromStdin {
+		sources++
+	}
+	if fileSet {
+		sources++
+	}
+	if sources > 1 {
+		return "", false, fmt.Errorf("--context, --context-stdin, and --context-file are mutually exclusive")
+	}
+	if inlineSet {
+		if !utf8.Valid([]byte(inline)) {
+			return "", false, fmt.Errorf("workspace context must be valid UTF-8")
+		}
+		return inline, true, nil
+	}
+
+	var data []byte
+	var err error
+	switch {
+	case fromStdin:
+		data, err = io.ReadAll(cmd.InOrStdin())
+	case fileSet:
+		if filePath == "" {
+			return "", false, fmt.Errorf("--context-file: path must not be empty")
+		}
+		data, err = os.ReadFile(filePath)
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("read workspace context: %w", err)
+	}
+	if sources == 0 {
+		return "", false, nil
+	}
+	if !utf8.Valid(data) {
+		return "", false, fmt.Errorf("workspace context must be valid UTF-8")
+	}
+	return string(data), true, nil
+}
+
+// buildWorkspaceUpdateDigestBody assembles the digest-mode PATCH payload:
+// exactly {"context": ..., "expected_before_digest": ...} and nothing else.
+// The server's hermesExceptionOnlyAllowedKeys 400s on any other key in the
+// body (even ones the CLI didn't intend to send), so this must not reuse
+// buildWorkspaceUpdateBody, which can accumulate name/description/etc.
+func buildWorkspaceUpdateDigestBody(cmd *cobra.Command) (map[string]any, error) {
+	digest, _ := cmd.Flags().GetString("expected-before-digest")
+	if !isWellFormedDigestHex(digest) {
+		return nil, fmt.Errorf("--expected-before-digest must be exactly 64 hex characters (sha256), got %d", len(digest))
+	}
+
+	// The exception is single-field-only server-side: reject any other
+	// update flag client-side, naming the conflicting one, rather than
+	// silently dropping it or sending a body the server would 400 on.
+	conflicting := []string{"name", "description", "description-stdin", "issue-prefix"}
+	for _, name := range conflicting {
+		if cmd.Flags().Changed(name) {
+			return nil, fmt.Errorf("--expected-before-digest cannot be combined with --%s; digest-mode updates exactly one field (context)", name)
+		}
+	}
+
+	ctxText, hasCtx, err := resolveWorkspaceContextLossless(cmd)
+	if err != nil {
+		return nil, err
+	}
+	if !hasCtx {
+		return nil, fmt.Errorf("--expected-before-digest requires the new context to be set via --context, --context-stdin, or --context-file")
+	}
+
+	return map[string]any{
+		"context":                ctxText,
+		"expected_before_digest": digest,
+	}, nil
+}
+
 // buildWorkspaceUpdateBody assembles the PATCH payload from the flags the
 // caller actually set, mirroring server/internal/handler/workspace.go's
 // UpdateWorkspaceRequest. Only fields whose flag is Changed() are emitted, so
@@ -570,20 +700,46 @@ func buildWorkspaceUpdateBody(cmd *cobra.Command) (map[string]any, error) {
 }
 
 func runWorkspaceUpdate(cmd *cobra.Command, args []string) error {
+	// Digest mode's client-side validation (digest format, flag exclusivity,
+	// input presence) must run before wsID resolution: resolveWorkspaceArg
+	// issues a real GET /api/workspaces lookup when args[0] is a slug/prefix
+	// rather than a raw UUID, and CHE-789 requires malformed digest-mode
+	// requests to be rejected before any request goes out.
+	if cmd.Flags().Changed("expected-before-digest") {
+		body, err := buildWorkspaceUpdateDigestBody(cmd)
+		if err != nil {
+			return err
+		}
+
+		wsID, err := resolveWorkspaceArg(cmd, args)
+		if err != nil {
+			return err
+		}
+		if wsID == "" {
+			return fmt.Errorf("workspace ID is required: pass an id/slug/prefix as argument or set MULTICA_WORKSPACE_ID")
+		}
+
+		client, err := newAPIClient(cmd)
+		if err != nil {
+			return err
+		}
+
+		ctx, cancel := cli.APIContext(context.Background())
+		defer cancel()
+
+		var result map[string]any
+		if err := client.PatchJSON(ctx, "/api/workspaces/"+wsID, body, &result); err != nil {
+			return fmt.Errorf("update workspace: %w", err)
+		}
+		return printDigestSwapResult(cmd, "workspace", result)
+	}
+
 	wsID, err := resolveWorkspaceArg(cmd, args)
 	if err != nil {
 		return err
 	}
 	if wsID == "" {
 		return fmt.Errorf("workspace ID is required: pass an id/slug/prefix as argument or set MULTICA_WORKSPACE_ID")
-	}
-
-	body, err := buildWorkspaceUpdateBody(cmd)
-	if err != nil {
-		return err
-	}
-	if len(body) == 0 {
-		return fmt.Errorf("no fields to update; use --name, --description, --context, or --issue-prefix")
 	}
 
 	client, err := newAPIClient(cmd)
@@ -594,12 +750,44 @@ func runWorkspaceUpdate(cmd *cobra.Command, args []string) error {
 	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 
+	body, err := buildWorkspaceUpdateBody(cmd)
+	if err != nil {
+		return err
+	}
+	if len(body) == 0 {
+		return fmt.Errorf("no fields to update; use --name, --description, --context, or --issue-prefix")
+	}
+
 	var ws map[string]any
 	if err := client.PatchJSON(ctx, "/api/workspaces/"+wsID, body, &ws); err != nil {
 		return fmt.Errorf("update workspace: %w", err)
 	}
 
 	return printWorkspace(cmd, ws)
+}
+
+// printDigestSwapResult renders a CHE-764 digest-mode compare-and-swap
+// response: {"workspace"|"squad": {...}, "before_digest": ..., "after_digest":
+// ...}. entityKey is "workspace" or "squad" — whichever the caller's endpoint
+// nests the updated entity under.
+func printDigestSwapResult(cmd *cobra.Command, entityKey string, result map[string]any) error {
+	output, _ := cmd.Flags().GetString("output")
+	if output != "table" {
+		return cli.PrintJSON(os.Stdout, result)
+	}
+
+	headers := []string{strings.ToUpper(entityKey) + " ID", "BEFORE_DIGEST", "AFTER_DIGEST"}
+	entityID := ""
+	if entity, ok := result[entityKey].(map[string]any); ok {
+		entityID = strVal(entity, "id")
+	}
+	rows := [][]string{{
+		entityID,
+		strVal(result, "before_digest"),
+		strVal(result, "after_digest"),
+	}}
+	cli.PrintTable(os.Stdout, headers, rows)
+	return nil
 }
 
 func runWorkspaceMcpList(cmd *cobra.Command, args []string) error {

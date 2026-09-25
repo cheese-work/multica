@@ -173,17 +173,32 @@ var squadUpdateCmd = &cobra.Command{
 }
 
 func runSquadUpdate(cmd *cobra.Command, args []string) error {
-	instructions, hasInstructions, err := resolveSquadInstructions(cmd)
-	if err != nil {
-		return err
-	}
-
 	client, err := newAPIClient(cmd)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
+
+	// --expected-before-digest present -> conditional compare-and-swap on
+	// exactly `instructions`, single-field body. Absent -> the existing
+	// unconditional update path below, completely unchanged.
+	if cmd.Flags().Changed("expected-before-digest") {
+		body, err := buildSquadUpdateDigestBody(cmd)
+		if err != nil {
+			return err
+		}
+		var result map[string]any
+		if err := client.PutJSON(ctx, "/api/squads/"+args[0], body, &result); err != nil {
+			return fmt.Errorf("update squad: %w", err)
+		}
+		return printDigestSwapResult(cmd, "squad", result)
+	}
+
+	instructions, hasInstructions, err := resolveSquadInstructions(cmd)
+	if err != nil {
+		return err
+	}
 
 	body := map[string]any{}
 	if cmd.Flags().Changed("name") {
@@ -227,6 +242,39 @@ func runSquadUpdate(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// buildSquadUpdateDigestBody assembles the digest-mode PUT payload: exactly
+// {"instructions": ..., "expected_before_digest": ...} and nothing else,
+// mirroring buildWorkspaceUpdateDigestBody. The server's
+// hermesExceptionOnlyAllowedKeys 400s on any other key, so this must not
+// reuse the general update body builder above, which can accumulate
+// name/description/leader_id/avatar_url.
+func buildSquadUpdateDigestBody(cmd *cobra.Command) (map[string]any, error) {
+	digest, _ := cmd.Flags().GetString("expected-before-digest")
+	if !isWellFormedDigestHex(digest) {
+		return nil, fmt.Errorf("--expected-before-digest must be exactly 64 hex characters (sha256), got %d", len(digest))
+	}
+
+	conflicting := []string{"name", "description", "leader", "avatar-url"}
+	for _, name := range conflicting {
+		if cmd.Flags().Changed(name) {
+			return nil, fmt.Errorf("--expected-before-digest cannot be combined with --%s; digest-mode updates exactly one field (instructions)", name)
+		}
+	}
+
+	instructions, hasInstructions, err := resolveSquadInstructions(cmd)
+	if err != nil {
+		return nil, err
+	}
+	if !hasInstructions {
+		return nil, fmt.Errorf("--expected-before-digest requires the new instructions to be set via --instructions, --instructions-stdin, or --instructions-file")
+	}
+
+	return map[string]any{
+		"instructions":           instructions,
+		"expected_before_digest": digest,
+	}, nil
+}
+
 // resolveSquadInstructions keeps instruction input byte-for-byte intact.
 // The API body is JSON, so invalid UTF-8 is rejected instead of being silently
 // replaced during JSON encoding.
@@ -251,6 +299,9 @@ func resolveSquadInstructions(cmd *cobra.Command) (string, bool, error) {
 		return "", false, fmt.Errorf("--instructions, --instructions-stdin, and --instructions-file are mutually exclusive")
 	}
 	if inlineSet {
+		if !utf8.Valid([]byte(inline)) {
+			return "", false, fmt.Errorf("squad instructions must be valid UTF-8")
+		}
 		return inline, true, nil
 	}
 
@@ -581,6 +632,7 @@ func init() {
 	squadUpdateCmd.Flags().String("instructions-file", "", "Read instructions from a file")
 	squadUpdateCmd.Flags().String("leader", "", "New leader agent (name or ID)")
 	squadUpdateCmd.Flags().String("avatar-url", "", "New avatar URL")
+	squadUpdateCmd.Flags().String("expected-before-digest", "", "sha256 hex digest of the instructions value the caller believes is currently live; enables a conditional compare-and-swap write instead of an unconditional update. Requires instructions to be set via --instructions, --instructions-stdin, or --instructions-file, and forbids combining with any other update flag.")
 	squadUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 
 	// delete
