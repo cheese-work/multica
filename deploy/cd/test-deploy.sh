@@ -800,12 +800,44 @@ expect_contains "$workflow_text" 'path: cutover-input' workflow-release-packet
 expect_contains "$workflow_text" 'build-cutover-bundle.sh' workflow-release-packet
 expect_contains "$workflow_text" 'verify-cutover-bundle.sh' workflow-release-packet
 expect_contains "$workflow_text" 'sha256sum -c cutover-controller.tar.sha256' workflow-release-packet
-expect_contains "$workflow_text" 'router_state_dir="${C00_COMPOSE_DIR%/}/deploy/cd/router/state"' workflow-router-state
+expect_contains "$workflow_text" 'router_state_dir="${C00_ROUTER_STATE_DIR%/}"' workflow-router-state
+expect_contains "$workflow_text" 'C00_ROUTER_STATE_DIR: ${{ secrets.C00_ROUTER_STATE_DIR }}' workflow-router-state
+expect_not_contains "$workflow_text" 'router_state_dir="${C00_COMPOSE_DIR%/}/deploy/cd/router/state"' workflow-router-state
 expect_contains "$workflow_text" 'render-cutover-remote-script.sh' workflow-router-state
 remote_script="$(GHCR_PULL_TOKEN=test-token bash deploy/cd/render-cutover-remote-script.sh --router-state-dir '/durable router/state' -- bash -c 'printf %s "$ROUTER_STATE_DIR"')"
 expect_contains "$remote_script" 'export ROUTER_STATE_DIR=' workflow-router-state
 output="$(env -i PATH="$PATH" bash -s <<<"$remote_script")"
 expect_contains "$output" '/durable router/state' workflow-router-state
+
+# CHE-768: docker-compose.router.yml's state bind mount is wherever the
+# router container was first adopted on the host, a one-time host-side
+# choice, NOT necessarily anywhere under C00_COMPOSE_DIR. Deriving
+# router_state_dir from C00_COMPOSE_DIR silently pointed at a directory with
+# no active.json while the router's real state (with a real active.json)
+# sat elsewhere entirely (CD run 36083685740) -- `cutover`'s own drain
+# refused, not because of a missing generation, but because it was looking
+# in the wrong directory. Prove C00_ROUTER_STATE_DIR is read as its own,
+# independent value: point it somewhere that shares no path segment with
+# C00_COMPOSE_DIR, and confirm the rendered remote script's ROUTER_STATE_DIR
+# is exactly that value, never a compose-dir-derived guess.
+mismatch_dir="$(fresh_scenario_dir router-state-mismatch)"
+compose_checkout_dir="$mismatch_dir/checkout/compose-dir-guess/deploy/cd/router/state"
+real_mounted_dir="$mismatch_dir/dotmultica/ab/deploy/cd/router/state"
+mkdir -p "$compose_checkout_dir" "$real_mounted_dir"
+# Only the real mounted directory has an active.json -- the compose-dir
+# guess is a plausible-looking but empty directory, exactly what a
+# derived-not-configured path produced on C00.
+printf '{"backend_port":18091,"frontend_port":13001}\n' >"$real_mounted_dir/active.json"
+[ ! -e "$compose_checkout_dir/active.json" ] || { echo "scenario workflow-router-state-mismatch: fixture setup is wrong -- the compose-dir guess must NOT have active.json" >&2; exit 1; }
+mismatch_remote_script="$(GHCR_PULL_TOKEN=test-token bash deploy/cd/render-cutover-remote-script.sh \
+  --router-state-dir "$real_mounted_dir" -- bash -c 'test -f "$ROUTER_STATE_DIR/active.json" && printf %s "$ROUTER_STATE_DIR"')"
+mismatch_output="$(env -i PATH="$PATH" bash -s <<<"$mismatch_remote_script")"
+expect_contains "$mismatch_output" "$real_mounted_dir" workflow-router-state-mismatch
+# The old formula would have produced $compose_checkout_dir here; assert the
+# rendered script never contains it, so a regression back to deriving from
+# C00_COMPOSE_DIR fails this test even if the happy-path check above did not.
+expect_not_contains "$mismatch_remote_script" "$compose_checkout_dir" workflow-router-state-mismatch
+
 expect_not_contains "$workflow_text" 'local_packet="cd-deploy-manifest/release-packet.json"' workflow-release-packet
 expect_contains "$workflow_text" 'CUTOVER_DATABASE_URL=' workflow-ab-deploy-route
 expect_not_contains "$workflow_text" "bash '%s/deploy.sh' --manifest" workflow-ab-deploy-route
