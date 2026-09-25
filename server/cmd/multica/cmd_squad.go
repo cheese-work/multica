@@ -299,6 +299,9 @@ func resolveSquadInstructions(cmd *cobra.Command) (string, bool, error) {
 		return "", false, fmt.Errorf("--instructions, --instructions-stdin, and --instructions-file are mutually exclusive")
 	}
 	if inlineSet {
+		if !utf8.Valid([]byte(inline)) {
+			return "", false, fmt.Errorf("squad instructions must be valid UTF-8")
+		}
 		return inline, true, nil
 	}
 

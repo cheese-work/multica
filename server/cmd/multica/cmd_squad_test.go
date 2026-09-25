@@ -157,6 +157,37 @@ func TestResolveSquadInstructionsRejectsInvalidUTF8(t *testing.T) {
 	}
 }
 
+func TestResolveSquadInstructionsRejectsInvalidUTF8Inline(t *testing.T) {
+	cmd := newSquadUpdateTestCmd()
+	_ = cmd.Flags().Set("instructions", string([]byte{0xff, 0xfe}))
+
+	_, _, err := resolveSquadInstructions(cmd)
+	if err == nil || !strings.Contains(err.Error(), "valid UTF-8") {
+		t.Fatalf("error = %v, want invalid UTF-8 error", err)
+	}
+}
+
+func TestRunSquadUpdateDigestModeRejectsInvalidUTF8InlineWithoutHTTPCall(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer srv.Close()
+	setSquadUpdateServerEnv(t, srv.URL)
+
+	cmd := newSquadUpdateTestCmd()
+	_ = cmd.Flags().Set("instructions", string([]byte{0xff, 0xfe}))
+	_ = cmd.Flags().Set("expected-before-digest", testDigestHex)
+
+	err := runSquadUpdate(cmd, []string{"squad-123"})
+	if err == nil || !strings.Contains(err.Error(), "valid UTF-8") {
+		t.Fatalf("error = %v, want invalid UTF-8 error", err)
+	}
+	if called {
+		t.Fatal("invalid inline UTF-8 must be rejected client-side without an HTTP call")
+	}
+}
+
 func newSquadMemberSetRoleTestCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "set-role"}
 	cmd.Flags().String("server-url", "", "")

@@ -598,6 +598,9 @@ func resolveWorkspaceContextLossless(cmd *cobra.Command) (string, bool, error) {
 		return "", false, fmt.Errorf("--context, --context-stdin, and --context-file are mutually exclusive")
 	}
 	if inlineSet {
+		if !utf8.Valid([]byte(inline)) {
+			return "", false, fmt.Errorf("workspace context must be valid UTF-8")
+		}
 		return inline, true, nil
 	}
 
@@ -697,6 +700,40 @@ func buildWorkspaceUpdateBody(cmd *cobra.Command) (map[string]any, error) {
 }
 
 func runWorkspaceUpdate(cmd *cobra.Command, args []string) error {
+	// Digest mode's client-side validation (digest format, flag exclusivity,
+	// input presence) must run before wsID resolution: resolveWorkspaceArg
+	// issues a real GET /api/workspaces lookup when args[0] is a slug/prefix
+	// rather than a raw UUID, and CHE-789 requires malformed digest-mode
+	// requests to be rejected before any request goes out.
+	if cmd.Flags().Changed("expected-before-digest") {
+		body, err := buildWorkspaceUpdateDigestBody(cmd)
+		if err != nil {
+			return err
+		}
+
+		wsID, err := resolveWorkspaceArg(cmd, args)
+		if err != nil {
+			return err
+		}
+		if wsID == "" {
+			return fmt.Errorf("workspace ID is required: pass an id/slug/prefix as argument or set MULTICA_WORKSPACE_ID")
+		}
+
+		client, err := newAPIClient(cmd)
+		if err != nil {
+			return err
+		}
+
+		ctx, cancel := cli.APIContext(context.Background())
+		defer cancel()
+
+		var result map[string]any
+		if err := client.PatchJSON(ctx, "/api/workspaces/"+wsID, body, &result); err != nil {
+			return fmt.Errorf("update workspace: %w", err)
+		}
+		return printDigestSwapResult(cmd, "workspace", result)
+	}
+
 	wsID, err := resolveWorkspaceArg(cmd, args)
 	if err != nil {
 		return err
@@ -712,21 +749,6 @@ func runWorkspaceUpdate(cmd *cobra.Command, args []string) error {
 
 	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
-
-	// --expected-before-digest present -> conditional compare-and-swap on
-	// exactly `context`, single-field body. Absent -> the existing
-	// unconditional update path, completely unchanged.
-	if cmd.Flags().Changed("expected-before-digest") {
-		body, err := buildWorkspaceUpdateDigestBody(cmd)
-		if err != nil {
-			return err
-		}
-		var result map[string]any
-		if err := client.PatchJSON(ctx, "/api/workspaces/"+wsID, body, &result); err != nil {
-			return fmt.Errorf("update workspace: %w", err)
-		}
-		return printDigestSwapResult(cmd, "workspace", result)
-	}
 
 	body, err := buildWorkspaceUpdateBody(cmd)
 	if err != nil {

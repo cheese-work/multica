@@ -945,6 +945,37 @@ func TestResolveWorkspaceContextLosslessRejectsInvalidUTF8(t *testing.T) {
 	}
 }
 
+func TestResolveWorkspaceContextLosslessRejectsInvalidUTF8Inline(t *testing.T) {
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "context", string([]byte{0xff, 0xfe}))
+
+	_, _, err := resolveWorkspaceContextLossless(workspaceUpdateCmd)
+	if err == nil || !strings.Contains(err.Error(), "valid UTF-8") {
+		t.Fatalf("err = %v, want invalid UTF-8 rejection", err)
+	}
+}
+
+func TestRunWorkspaceUpdateDigestModeRejectsInvalidUTF8InlineWithoutHTTPCall(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer srv.Close()
+	setWorkspaceUpdateServerEnv(t, srv.URL)
+
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "context", string([]byte{0xff, 0xfe}))
+	setStringFlag(t, "expected-before-digest", testDigestHex)
+
+	err := runWorkspaceUpdate(workspaceUpdateCmd, []string{testWorkspaceUUID})
+	if err == nil || !strings.Contains(err.Error(), "valid UTF-8") {
+		t.Fatalf("err = %v, want invalid UTF-8 rejection", err)
+	}
+	if called {
+		t.Fatal("invalid inline UTF-8 must be rejected client-side without an HTTP call")
+	}
+}
+
 func TestRunWorkspaceUpdateDigestModeBuildsSingleFieldBody(t *testing.T) {
 	var gotBody map[string]any
 	var gotMethod string
@@ -997,6 +1028,37 @@ func TestRunWorkspaceUpdateDigestModeBuildsSingleFieldBody(t *testing.T) {
 	}
 	if printed["before_digest"] != "before123" || printed["after_digest"] != "after456" {
 		t.Errorf("printed digests = %v, want before123/after456", printed)
+	}
+}
+
+func TestRunWorkspaceUpdateDigestModeRejectsMalformedDigestWithSlugTargetWithoutHTTPCall(t *testing.T) {
+	// Regression for CHE-789 finding 2: when args[0] isn't a raw UUID,
+	// resolveWorkspaceArg falls back to resolveWorkspaceRef, which issues a
+	// real GET /api/workspaces to resolve the slug/prefix. Digest-mode
+	// client-side validation must run and reject BEFORE that lookup, so a
+	// malformed digest must never trigger the slug-resolution GET either.
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer srv.Close()
+	setWorkspaceUpdateServerEnv(t, srv.URL)
+
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "context", "new context")
+	setStringFlag(t, "expected-before-digest", "too-short")
+
+	slugTarget := "my-workspace-slug"
+	if uuidRegexp.MatchString(slugTarget) {
+		t.Fatal("test target must not match uuidRegexp, or it would skip the slug-resolution path")
+	}
+
+	err := runWorkspaceUpdate(workspaceUpdateCmd, []string{slugTarget})
+	if err == nil || !strings.Contains(err.Error(), "64 hex characters") {
+		t.Fatalf("err = %v, want malformed digest rejection", err)
+	}
+	if called {
+		t.Fatal("malformed digest must be rejected client-side before any HTTP call, including slug resolution")
 	}
 }
 
