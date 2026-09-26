@@ -134,6 +134,9 @@ func ParseRuleRevision(data []byte) (RuleRevision, error) {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return RuleRevision{}, errors.New("invalid rule manifest")
 	}
+	if err := validateRuleJSONFields(json.NewDecoder(bytes.NewReader(data))); err != nil {
+		return RuleRevision{}, errors.New("invalid rule manifest")
+	}
 	if containsRuleSecret(decoded) {
 		return RuleRevision{}, errors.New("sensitive rule manifest")
 	}
@@ -200,6 +203,36 @@ func ParseRuleRevision(data []byte) (RuleRevision, error) {
 	}
 	revision.Digest = fmt.Sprintf("%x", sha256.Sum256(normalized))
 	return revision, nil
+}
+
+func validateRuleJSONFields(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	fields := make(map[string]bool)
+	for decoder.More() {
+		if delimiter == '{' {
+			field, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			name := strings.ToUpper(field.(string))
+			if fields[name] {
+				return errors.New("duplicate rule manifest field")
+			}
+			fields[name] = true
+		}
+		if err := validateRuleJSONFields(decoder); err != nil {
+			return err
+		}
+	}
+	_, err = decoder.Token()
+	return err
 }
 
 func containsRuleSecret(value any) bool {

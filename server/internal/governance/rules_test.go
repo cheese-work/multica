@@ -221,6 +221,50 @@ func TestRuleManifestValidationAndCanonicalSource(t *testing.T) {
 	}
 }
 
+func TestRuleManifestRejectsDuplicateFields(t *testing.T) {
+	rule := testRule("workspace", "workspace", workspaceID)
+	rule.Text = `api_key="12345678901234567890"`
+	first, err := json.Marshal([]Rule{rule})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hiddenSecret := `{"schema_version":1,"rules":` + string(first) + `,"rules":[{"id":"workspace"}]}`
+	var scanned any
+	if err := json.Unmarshal([]byte(hiddenSecret), &scanned); err != nil {
+		t.Fatal(err)
+	}
+	if containsRuleSecret(scanned) {
+		t.Fatal("generic decoding unexpectedly retained the hidden first array")
+	}
+	rule.Text = "workspace"
+	data, err := json.Marshal(RuleRevision{SchemaVersion: 1, Rules: []Rule{rule}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := string(data)
+	for name, input := range map[string]string{
+		"hidden secret":    hiddenSecret,
+		"rules":            strings.Replace(manifest, `"rules":`, `"rules":[],"rules":`, 1),
+		"escaped rules":    strings.Replace(manifest, `"rules":`, `"rules":[],"\u0072ules":`, 1),
+		"case alias":       strings.Replace(manifest, `"rules":`, `"Rules":[],"rules":`, 1),
+		"schema version":   strings.Replace(manifest, `"schema_version":1`, `"schema_version":2,"schema_version":1`, 1),
+		"rule text":        strings.Replace(manifest, `"text":"workspace"`, `"text":"discarded","text":"workspace"`, 1),
+		"scope kind":       strings.Replace(manifest, `"kind":"workspace"`, `"kind":"agent","kind":"workspace"`, 1),
+		"nested grant":     strings.Replace(manifest, `"mode":"shadow"`, `"mode":"shadow","overridable_by":[{"scope":"agent","scope":"project","fields":["text"]}]`, 1),
+		"nested reference": strings.TrimSuffix(manifest, "}") + `,"references":[{"repository":"discarded/repo","repository":"cheese-work/multica-dotfiles","commit":"` + strings.Repeat("1", 40) + `","path":"standards/reference.md","sha256":"` + strings.Repeat("a", 64) + `"}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			revision, err := ParseRuleRevision([]byte(input))
+			if err == nil {
+				t.Fatal("duplicate manifest fields accepted")
+			}
+			if len(revision.Rules) != 0 || strings.Contains(err.Error(), "12345678901234567890") {
+				t.Fatal("rejected manifest exposed sensitive data")
+			}
+		})
+	}
+}
+
 func TestReferenceDigestAndUnsupportedCheck(t *testing.T) {
 	rule := testRule("workspace", "workspace", workspaceID)
 	revision := RuleRevision{SchemaVersion: 1, Rules: []Rule{rule}, References: []RuleReference{{Repository: RuleRepository, Commit: strings.Repeat("1", 40), Path: "standards/reference.md", SHA256: strings.Repeat("a", 64)}}}
