@@ -200,17 +200,24 @@ func TestRuleManifestValidationAndCanonicalSource(t *testing.T) {
 		t.Fatal("oversize manifest accepted")
 	}
 	for name, input := range map[string]string{
-		"unsupported":        `{"schema_version":2,"rules":[]}`,
-		"unknown field":      `{"schema_version":1,"rules":[],"include":"docs/x"}`,
-		"unknown action":     strings.Replace(string(data), "mention_agent", "wipe_workspace", 1),
-		"unknown scope":      strings.Replace(string(data), `"kind":"workspace"`, `"kind":"unbounded"`, 1),
-		"secret":             strings.Replace(string(data), "workspace", "api_key=12345678901234567890", 1),
-		"escaped secret":     strings.Replace(string(data), `"text":"workspace"`, `"text":"\u0061pi_key=12345678901234567890"`, 1),
-		"multiple documents": string(data) + "{}",
+		"unsupported":                       `{"schema_version":2,"rules":[]}`,
+		"unknown field":                     `{"schema_version":1,"rules":[],"include":"docs/x"}`,
+		"unknown action":                    strings.Replace(string(data), "mention_agent", "wipe_workspace", 1),
+		"unknown scope":                     strings.Replace(string(data), `"kind":"workspace"`, `"kind":"unbounded"`, 1),
+		"secret":                            strings.Replace(string(data), "workspace", "api_key=12345678901234567890", 1),
+		"escaped secret":                    strings.Replace(string(data), `"text":"workspace"`, `"text":"\u0061pi_key=12345678901234567890"`, 1),
+		"quoted credential":                 strings.Replace(string(data), `"text":"workspace"`, `"text":"api_key=\"12345678901234567890\""`, 1),
+		"escaped key and quoted credential": `{"schema_version":1,"rules":[],"\u0061pi_key":"\"12345678901234567890\""}`,
+		"multiple documents":                string(data) + "{}",
 	} {
 		if _, err := ParseRuleRevision([]byte(input)); err == nil {
 			t.Fatalf("%s accepted", name)
 		}
+	}
+	secret := "api_key=12345678901234567890"
+	unknownField := `{"schema_version":1,"rules":[],"\u0061pi_key=12345678901234567890":true}`
+	if _, err := ParseRuleRevision([]byte(unknownField)); err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("unknown escaped credential must be rejected without echoing it: %v", err)
 	}
 }
 

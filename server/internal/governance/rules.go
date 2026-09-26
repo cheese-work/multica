@@ -130,11 +130,18 @@ func ParseRuleRevision(data []byte) (RuleRevision, error) {
 	if len(data) > maxRuleManifestBytes || secretPattern.Match(data) {
 		return RuleRevision{}, errors.New("oversize or sensitive rule manifest")
 	}
+	var decoded any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return RuleRevision{}, errors.New("invalid rule manifest")
+	}
+	if containsRuleSecret(decoded) {
+		return RuleRevision{}, errors.New("sensitive rule manifest")
+	}
 	var revision RuleRevision
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&revision); err != nil {
-		return RuleRevision{}, fmt.Errorf("invalid rule manifest: %w", err)
+		return RuleRevision{}, errors.New("invalid rule manifest")
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
@@ -193,6 +200,29 @@ func ParseRuleRevision(data []byte) (RuleRevision, error) {
 	}
 	revision.Digest = fmt.Sprintf("%x", sha256.Sum256(normalized))
 	return revision, nil
+}
+
+func containsRuleSecret(value any) bool {
+	switch typed := value.(type) {
+	case string:
+		return secretPattern.MatchString(typed)
+	case []any:
+		for _, item := range typed {
+			if containsRuleSecret(item) {
+				return true
+			}
+		}
+	case map[string]any:
+		for key, item := range typed {
+			if containsRuleSecret(key) || containsRuleSecret(item) {
+				return true
+			}
+			if text, ok := item.(string); ok && secretPattern.MatchString(key+"="+text) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func validScope(scope RuleScope) bool {
