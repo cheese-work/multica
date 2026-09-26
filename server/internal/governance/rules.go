@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/google/uuid"
 )
@@ -221,7 +222,19 @@ func validateRuleJSONFields(decoder *json.Decoder) error {
 			if err != nil {
 				return err
 			}
-			name := strings.ToUpper(field.(string))
+			name, ok := field.(string)
+			if !ok {
+				return errors.New("invalid rule manifest field")
+			}
+			name = strings.Map(func(character rune) rune {
+				for {
+					folded := unicode.SimpleFold(character)
+					if folded <= character {
+						return folded
+					}
+					character = folded
+				}
+			}, name)
 			if fields[name] {
 				return errors.New("duplicate rule manifest field")
 			}

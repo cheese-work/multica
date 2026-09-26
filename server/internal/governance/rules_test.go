@@ -243,15 +243,21 @@ func TestRuleManifestRejectsDuplicateFields(t *testing.T) {
 	}
 	manifest := string(data)
 	for name, input := range map[string]string{
-		"hidden secret":    hiddenSecret,
-		"rules":            strings.Replace(manifest, `"rules":`, `"rules":[],"rules":`, 1),
-		"escaped rules":    strings.Replace(manifest, `"rules":`, `"rules":[],"\u0072ules":`, 1),
-		"case alias":       strings.Replace(manifest, `"rules":`, `"Rules":[],"rules":`, 1),
-		"schema version":   strings.Replace(manifest, `"schema_version":1`, `"schema_version":2,"schema_version":1`, 1),
-		"rule text":        strings.Replace(manifest, `"text":"workspace"`, `"text":"discarded","text":"workspace"`, 1),
-		"scope kind":       strings.Replace(manifest, `"kind":"workspace"`, `"kind":"agent","kind":"workspace"`, 1),
-		"nested grant":     strings.Replace(manifest, `"mode":"shadow"`, `"mode":"shadow","overridable_by":[{"scope":"agent","scope":"project","fields":["text"]}]`, 1),
-		"nested reference": strings.TrimSuffix(manifest, "}") + `,"references":[{"repository":"discarded/repo","repository":"cheese-work/multica-dotfiles","commit":"` + strings.Repeat("1", 40) + `","path":"standards/reference.md","sha256":"` + strings.Repeat("a", 64) + `"}]}`,
+		"hidden secret":        hiddenSecret,
+		"rules":                strings.Replace(manifest, `"rules":`, `"rules":[],"rules":`, 1),
+		"escaped rules":        strings.Replace(manifest, `"rules":`, `"rules":[],"\u0072ules":`, 1),
+		"case alias":           strings.Replace(manifest, `"rules":`, `"Rules":[],"rules":`, 1),
+		"ASCII check alias":    strings.Replace(manifest, `"check":"missing_mention_v1"`, `"check":"unsupported","CHECK":"missing_mention_v1"`, 1),
+		"long-s rules alias":   strings.Replace(manifest, `"rules":`, `"rule\u017f":[],"rules":`, 1),
+		"escaped Kelvin check": strings.Replace(manifest, `"check":"missing_mention_v1"`, `"check":"unsupported","chec\u212a":"missing_mention_v1"`, 1),
+		"literal Kelvin check": strings.Replace(manifest, `"check":"missing_mention_v1"`, `"check":"unsupported","checK":"missing_mention_v1"`, 1),
+		"escaped Kelvin scope": strings.Replace(manifest, `"kind":"workspace"`, `"kind":"invalid","\u212aind":"workspace"`, 1),
+		"Kelvin scope first":   strings.Replace(manifest, `"kind":"workspace"`, `"\u212aind":"invalid","kind":"workspace"`, 1),
+		"schema version":       strings.Replace(manifest, `"schema_version":1`, `"schema_version":2,"schema_version":1`, 1),
+		"rule text":            strings.Replace(manifest, `"text":"workspace"`, `"text":"discarded","text":"workspace"`, 1),
+		"scope kind":           strings.Replace(manifest, `"kind":"workspace"`, `"kind":"agent","kind":"workspace"`, 1),
+		"nested grant":         strings.Replace(manifest, `"mode":"shadow"`, `"mode":"shadow","overridable_by":[{"scope":"agent","scope":"project","fields":["text"]}]`, 1),
+		"nested reference":     strings.TrimSuffix(manifest, "}") + `,"references":[{"repository":"discarded/repo","repository":"cheese-work/multica-dotfiles","commit":"` + strings.Repeat("1", 40) + `","path":"standards/reference.md","sha256":"` + strings.Repeat("a", 64) + `"}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			revision, err := ParseRuleRevision([]byte(input))
