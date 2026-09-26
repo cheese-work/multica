@@ -188,6 +188,9 @@ func ParseRuleRevision(data []byte) (RuleRevision, error) {
 	if err != nil {
 		return RuleRevision{}, err
 	}
+	if secretPattern.Match(normalized) {
+		return RuleRevision{}, errors.New("sensitive rule manifest")
+	}
 	revision.Digest = fmt.Sprintf("%x", sha256.Sum256(normalized))
 	return revision, nil
 }
@@ -234,6 +237,17 @@ func overrideAllowed(ancestor, replacement Rule) bool {
 			return false
 		}
 	}
+	for _, grant := range replacement.OverridableBy {
+		for _, field := range grant.Fields {
+			allowed := false
+			for _, inherited := range ancestor.OverridableBy {
+				allowed = allowed || inherited.Scope == grant.Scope && slices.Contains(inherited.Fields, field)
+			}
+			if !allowed {
+				return false
+			}
+		}
+	}
 	changed := map[string]bool{
 		"text":                ancestor.Text != replacement.Text,
 		"triggers":            !reflect.DeepEqual(ancestor.Triggers, replacement.Triggers),
@@ -277,6 +291,16 @@ func ResolveRules(revision RuleRevision, subject RuleContext) EffectiveRules {
 	replacements := make(map[string][]Rule)
 	conflicted := make(map[string]bool)
 	for _, rule := range revision.Rules {
+		if !applies(rule.Scope, subject) || rule.Scope.Kind == "workspace" {
+			continue
+		}
+		for _, action := range rule.AllowedCorrections {
+			if !workspaceActions[action] {
+				conflicted[rule.ID] = true
+			}
+		}
+	}
+	for _, rule := range revision.Rules {
 		if !applies(rule.Scope, subject) || rule.Replaces == "" {
 			continue
 		}
@@ -285,7 +309,26 @@ func ResolveRules(revision RuleRevision, subject RuleContext) EffectiveRules {
 			conflicted[rule.ID] = true
 			continue
 		}
-		replacements[ancestor.ID] = append(replacements[ancestor.ID], rule)
+		if !conflicted[rule.ID] {
+			replacements[ancestor.ID] = append(replacements[ancestor.ID], rule)
+		}
+	}
+	for ancestorID, candidates := range replacements {
+		if len(candidates) > 1 {
+			conflicted[ancestorID] = true
+			for _, candidate := range candidates {
+				conflicted[candidate.ID] = true
+			}
+		}
+	}
+	for changed := true; changed; {
+		changed = false
+		for _, rule := range revision.Rules {
+			if applies(rule.Scope, subject) && rule.Replaces != "" && conflicted[rule.Replaces] && !conflicted[rule.ID] {
+				conflicted[rule.ID] = true
+				changed = true
+			}
+		}
 	}
 	for _, rule := range revision.Rules {
 		if !applies(rule.Scope, subject) {
@@ -296,25 +339,7 @@ func ResolveRules(revision RuleRevision, subject RuleContext) EffectiveRules {
 			result.Conflicting = append(result.Conflicting, rule)
 			continue
 		}
-		if rule.Scope.Kind != "workspace" {
-			expands := false
-			for _, action := range rule.AllowedCorrections {
-				expands = expands || !workspaceActions[action]
-			}
-			if expands {
-				result.Conflicting = append(result.Conflicting, rule)
-				continue
-			}
-		}
-		if len(replacements[rule.ID]) > 1 {
-			result.Conflicting = append(result.Conflicting, rule)
-			continue
-		}
 		if rule.Replaces != "" {
-			if len(replacements[rule.Replaces]) > 1 {
-				result.Conflicting = append(result.Conflicting, rule)
-				continue
-			}
 			if conflicted[rule.Replaces] || len(replacements[rule.Replaces]) == 0 {
 				result.Conflicting = append(result.Conflicting, rule)
 				continue

@@ -91,6 +91,68 @@ func TestRuleConflictsAndNonExpandingGrants(t *testing.T) {
 	}
 }
 
+func TestRuleReplacementCannotDelegateBeyondAncestor(t *testing.T) {
+	workspace := testRule("workspace", "workspace", workspaceID)
+	workspace.OverridableBy = []RuleOverrideGrant{{Scope: "project", Fields: []string{"text"}}}
+	project := testRule("project", "project", projectID)
+	project.Replaces = workspace.ID
+	project.OverridableBy = []RuleOverrideGrant{{Scope: "agent", Fields: []string{"text", "mode"}}}
+	agent := testRule("agent", "agent", agentID)
+	agent.Replaces = project.ID
+	agent.Mode = "correct"
+	result := ResolveRules(testRevision(t, workspace, project, agent), RuleContext{WorkspaceID: workspaceID, ProjectID: projectID, AgentID: agentID})
+	if len(result.Effective) != 1 || result.Effective[0].ID != workspace.ID || len(result.Conflicting) != 2 {
+		t.Fatalf("ungranted descendant override accepted: %+v", result)
+	}
+}
+
+func TestRuleReplacementRetainsExplicitDelegation(t *testing.T) {
+	workspace := testRule("workspace", "workspace", workspaceID)
+	workspace.OverridableBy = []RuleOverrideGrant{{Scope: "project", Fields: []string{"text"}}, {Scope: "agent", Fields: []string{"text"}}}
+	project := testRule("project", "project", projectID)
+	project.Replaces = workspace.ID
+	project.OverridableBy = []RuleOverrideGrant{{Scope: "agent", Fields: []string{"text"}}}
+	agent := testRule("agent", "agent", agentID)
+	agent.Replaces = project.ID
+	result := ResolveRules(testRevision(t, workspace, project, agent), RuleContext{WorkspaceID: workspaceID, ProjectID: projectID, AgentID: agentID})
+	if len(result.Effective) != 1 || result.Effective[0].ID != agent.ID || len(result.Replaced) != 2 || len(result.Conflicting) != 0 {
+		t.Fatalf("authorized descendant override lost: %+v", result)
+	}
+}
+
+func TestRuleConflictPropagatesToDescendants(t *testing.T) {
+	workspace := testRule("workspace", "workspace", workspaceID)
+	workspace.OverridableBy = []RuleOverrideGrant{
+		{Scope: "project", Fields: []string{"text"}},
+		{Scope: "squad", Fields: []string{"text"}},
+		{Scope: "agent", Fields: []string{"text"}},
+	}
+	project := testRule("project", "project", projectID)
+	project.Replaces, project.OverridableBy = workspace.ID, workspace.OverridableBy
+	squad := testRule("squad", "squad", squadID)
+	squad.Replaces, squad.OverridableBy = workspace.ID, workspace.OverridableBy
+	agent := testRule("agent", "agent", agentID)
+	agent.Replaces = project.ID
+	result := ResolveRules(testRevision(t, workspace, project, squad, agent), RuleContext{WorkspaceID: workspaceID, ProjectID: projectID, SquadIDs: []string{squadID}, AgentID: agentID})
+	if len(result.Effective) != 0 || len(result.Conflicting) != 4 {
+		t.Fatalf("conflicted ancestor delegated authority: %+v", result)
+	}
+}
+
+func TestRuleConflictingActionDoesNotSuppressValidReplacement(t *testing.T) {
+	workspace := testRule("workspace", "workspace", workspaceID)
+	workspace.OverridableBy = []RuleOverrideGrant{{Scope: "project", Fields: []string{"text"}}, {Scope: "squad", Fields: []string{"text"}}}
+	project := testRule("project", "project", projectID)
+	project.Replaces = workspace.ID
+	squad := testRule("squad", "squad", squadID)
+	squad.Replaces = workspace.ID
+	squad.AllowedCorrections = []string{"assign_agent"}
+	result := ResolveRules(testRevision(t, workspace, project, squad), RuleContext{WorkspaceID: workspaceID, ProjectID: projectID, SquadIDs: []string{squadID}})
+	if len(result.Effective) != 1 || result.Effective[0].ID != project.ID || len(result.Conflicting) != 1 {
+		t.Fatalf("invalid action contested valid replacement: %+v", result)
+	}
+}
+
 func TestRuleManifestValidationAndCanonicalSource(t *testing.T) {
 	rule := testRule("workspace", "workspace", workspaceID)
 	revision := testRevision(t, rule)
@@ -143,6 +205,7 @@ func TestRuleManifestValidationAndCanonicalSource(t *testing.T) {
 		"unknown action":     strings.Replace(string(data), "mention_agent", "wipe_workspace", 1),
 		"unknown scope":      strings.Replace(string(data), `"kind":"workspace"`, `"kind":"unbounded"`, 1),
 		"secret":             strings.Replace(string(data), "workspace", "api_key=12345678901234567890", 1),
+		"escaped secret":     strings.Replace(string(data), `"text":"workspace"`, `"text":"\u0061pi_key=12345678901234567890"`, 1),
 		"multiple documents": string(data) + "{}",
 	} {
 		if _, err := ParseRuleRevision([]byte(input)); err == nil {
