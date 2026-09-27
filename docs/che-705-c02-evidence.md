@@ -16,6 +16,7 @@ DATABASE_URL="$CHE705_TEST_DATABASE_URL" go test -p 1 ./internal/handler ./inter
   -run 'Governance(CaseAudit|Evidence)|GovernanceCaseEvidenceRetention|GovernanceEvaluationSourceInsertSerializes' -count=1
 DATABASE_URL="$CHE705_TEST_DATABASE_URL" go test -race -p 1 ./internal/handler ./internal/scheduler ./internal/featureflags \
   -run 'Governance(CaseAudit|Evidence)|GovernanceCaseEvidenceRetention|GovernanceEvaluationSourceInsertSerializes' -count=1
+go test ./cmd/migrate -run 'TestEveryConcurrentUpBuildHasCleanup|TestConcurrentIndexCleanupsMatchTheirMigrations' -count=1
 go vet ./cmd/server ./internal/featureflags ./internal/handler ./internal/scheduler
 go test ./internal/governance/receipt -run '^TestObserve_BudgetExceededSheds$' -count=1
 cd ..
@@ -24,6 +25,8 @@ git diff --check
 ```
 
 `CHE705_TEST_DATABASE_URL` must point to the isolated local `_test` database; the recorded run used the test database migrated through 536. Both focused runs passed across 13 tests in three packages, including the deletion/writer interleaving under `-race`. SQLC regeneration, targeted vet, the 50ms observation-budget test, and whitespace validation passed. The 90-day retention and audit-access/ENG-07 evidence below remain unchanged.
+
+The CI migration audit initially caught missing invalid-index cleanup registrations for migrations 532–536. The standard pre-migration cleanup hooks are now registered for all five concurrent index builds; both migration registry checks pass.
 
 ## Source redaction and audit access
 
