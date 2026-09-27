@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"fmt"
@@ -1223,7 +1224,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		keys := []credential.Key{key}
 		if previous, err := credential.DecodeKey("previous", strings.TrimSpace(os.Getenv("MULTICA_JEV_SECRET_KEY_PREVIOUS"))); err == nil {
 			previous.ID = credential.KeyID(previous.Material)
-			if previous.ID != key.ID {
+			if !bytes.Equal(previous.Material, key.Material) {
 				keys = append(keys, previous)
 			}
 		}

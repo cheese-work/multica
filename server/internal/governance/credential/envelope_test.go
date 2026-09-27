@@ -102,3 +102,13 @@ func TestDecodeKeyAndKeyIDRejectInvalidDeploymentMaterial(t *testing.T) {
 		}
 	}
 }
+
+func TestNewKeyringRejectsDistinctMaterialWithTheSameID(t *testing.T) {
+	_, err := NewKeyring(
+		Key{ID: "collision", Material: bytes.Repeat([]byte{1}, 32)},
+		Key{ID: "collision", Material: bytes.Repeat([]byte{2}, 32)},
+	)
+	if err == nil {
+		t.Fatal("keyring accepted distinct key material with the same ID")
+	}
+}
