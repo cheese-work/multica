@@ -66,12 +66,17 @@ func (h *Handler) GetGovernanceConfig(w http.ResponseWriter, r *http.Request) {
 		writeGovernanceProblem(w, r, http.StatusServiceUnavailable, "configuration_unavailable")
 		return
 	}
+	credentialPresent, err := credentialPresent(r.Context(), h.DB, workspaceID, JevCredentialPurpose)
+	if err != nil {
+		writeGovernanceProblem(w, r, http.StatusServiceUnavailable, "configuration_unavailable")
+		return
+	}
 	writeJSON(w, http.StatusOK, governanceConfigResponse{
 		WorkspaceConfig:     config,
 		MissingRequirements: config.MissingRequirements(),
 		OperatingLimits:     governance.DescribeOperatingLimits(config, audit),
 		AuditHistory:        audit,
-		CredentialPresent:   false,
+		CredentialPresent:   credentialPresent,
 	})
 }
 
@@ -131,12 +136,17 @@ func (h *Handler) PatchGovernanceConfig(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
+	credentialPresent, err := credentialPresent(r.Context(), h.DB, workspaceID, JevCredentialPurpose)
+	if err != nil {
+		writeGovernanceProblem(w, r, http.StatusServiceUnavailable, "configuration_unavailable")
+		return
+	}
 	writeJSON(w, http.StatusOK, governanceConfigResponse{
 		WorkspaceConfig:     config,
 		MissingRequirements: config.MissingRequirements(),
 		OperatingLimits:     governance.DescribeOperatingLimits(config, audit),
 		AuditHistory:        audit,
-		CredentialPresent:   false,
+		CredentialPresent:   credentialPresent,
 	})
 }
 

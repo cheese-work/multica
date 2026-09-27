@@ -301,6 +301,16 @@ func SafeProblemFor(code string) (SafeProblem, bool) {
 			PermittedFix: "Retry later; governance remains disabled until configuration is available.", Retryable: true,
 			DocumentationLink: "/docs/governance/errors#configuration_unavailable",
 		},
+		"credential_unavailable": {
+			Problem: "credential_storage_unavailable", Cause: "Credential storage is not configured on this server.",
+			PermittedFix: "Configure the server's credential encryption key, then retry.", Retryable: true,
+			DocumentationLink: "/docs/governance/errors#credential_unavailable",
+		},
+		"credential_not_found": {
+			Problem: "credential_not_found", Cause: "No credential is stored for this workspace and purpose.",
+			PermittedFix: "Write a credential before deleting or relying on it.", Retryable: false,
+			DocumentationLink: "/docs/governance/errors#credential_not_found",
+		},
 	}
 	problem, ok := problems[code]
 	return problem, ok

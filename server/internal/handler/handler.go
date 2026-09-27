@@ -43,6 +43,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
+	"github.com/multica-ai/multica/server/pkg/credential"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
 	"github.com/multica-ai/multica/server/pkg/jev"
@@ -227,6 +228,12 @@ type Handler struct {
 	// still-blocked delivery wires a live Jev client (see CHE-685 scope:
 	// this delivery never sets Provider to anything but a fake in tests).
 	GovernanceReceipts *receipt.Observer
+	// CredentialKeyring seals/opens workspace credentials at rest (CHE-714),
+	// starting with the Jev API key. Nil means credential storage is not
+	// configured on this server — write/delete return 503 rather than
+	// falling back to plaintext or panicking; read-status endpoints still
+	// work since presence doesn't require decrypting anything.
+	CredentialKeyring *credential.Keyring
 	// IssueStatusCatalog reads the workspace status catalog. Defaults to
 	// Queries; a test can substitute a counting wrapper to assert HOW MANY
 	// catalog reads a request performs, which is the only property that

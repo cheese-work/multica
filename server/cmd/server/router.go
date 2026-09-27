@@ -44,6 +44,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
 	composiosdk "github.com/multica-ai/multica/server/pkg/composio"
+	"github.com/multica-ai/multica/server/pkg/credential"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
 	"github.com/multica-ai/multica/server/pkg/llm"
@@ -456,6 +457,19 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// for D03. Wiring a live jev.Client here is explicitly out of scope
 	// until a later delivery lifts the CHE-697 viability block.
 	h.GovernanceReceipts = &receipt.Observer{Store: queries}
+	// Credential storage (CHE-714), default-off: an absent or blank
+	// MULTICA_GOVERNANCE_CREDENTIAL_KEYS leaves h.CredentialKeyring nil, and
+	// the credential write/delete handlers return 503 rather than falling
+	// back to plaintext — the server still starts normally, matching every
+	// other optional-dependency integration in this file (see the Lark
+	// block below). A present but malformed value is a config error, so it
+	// is logged and credential storage stays disabled rather than either
+	// crashing router construction or silently using a broken keyring.
+	if credentialKeyring, err := credential.LoadKeyringFromEnv("MULTICA_GOVERNANCE_CREDENTIAL_KEYS"); err != nil {
+		slog.Error("governance credential: invalid MULTICA_GOVERNANCE_CREDENTIAL_KEYS; credential storage disabled", "error", err)
+	} else {
+		h.CredentialKeyring = credentialKeyring
+	}
 	h.TaskService.Metrics = opts.BusinessMetrics
 	h.IssueService.Metrics = opts.BusinessMetrics
 	entitlementClient, entitlementErr := entitlement.New(entitlement.Config{
@@ -1642,6 +1656,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// entries are write-only.
 					r.Get("/mcp-servers", h.ListWorkspaceMcpServers)
 					r.Get("/governance/config", h.GetGovernanceConfig)
+					// Credential presence only — never the value. Write/delete
+					// are admin-gated below.
+					r.Get("/governance/credential", h.GetGovernanceCredentialStatus)
 					// Installed Plugins are member-visible so a member can
 					// see what is mounted in their workspace and which scopes
 					// it holds; install / configure / remove stay admin-only.
@@ -1657,6 +1674,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Put("/", h.UpdateWorkspace)
 					r.Patch("/", h.UpdateWorkspace)
 					r.Patch("/governance/config", h.PatchGovernanceConfig)
+					r.Put("/governance/credential", h.PutGovernanceCredential)
+					r.Delete("/governance/credential", h.DeleteGovernanceCredential)
 					r.Post("/members", h.CreateInvitation)
 					r.Route("/members/{memberId}", func(r chi.Router) {
 						r.Patch("/", h.UpdateMember)

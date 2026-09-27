@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS governance_workspace_credential_audit_workspace_purpose_idx;
