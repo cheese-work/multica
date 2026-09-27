@@ -1,16 +1,20 @@
--- CHE-704 / C01 persistence primitives. No query here advances a lifecycle,
--- admits a task, invokes a model, or applies a correction.
+-- CHE-704 / C01 persistence and C03 lifecycle primitives. These queries never
+-- invoke a provider or apply a correction.
 
--- The transaction-backed create-or-resolve primitive takes this lock before
--- reading or allocating a generation. A separate lock statement is required:
--- a single CTE would retain a pre-lock snapshot after waiting for a peer.
+-- The transaction-backed lifecycle primitives take this lock before reading
+-- or allocating a generation. It spans source revisions for one subject/rule.
+-- A separate statement is required so a waiter gets a post-lock snapshot.
 -- name: LockGovernanceCaseIdentity :exec
 SELECT pg_advisory_xact_lock(hashtextextended(
     sqlc.arg(workspace_id)::uuid::text || ':' || sqlc.arg(subject_type) || ':' ||
-    sqlc.arg(subject_id)::uuid::text || ':' || sqlc.arg(subject_revision)::bigint::text || ':' ||
-    sqlc.arg(rule_id)::uuid::text || ':governance_case',
+    sqlc.arg(subject_id)::uuid::text || ':' || sqlc.arg(rule_id)::uuid::text || ':governance_case',
     0
 ));
+
+-- name: LockGovernanceCaseForUpdate :one
+SELECT * FROM governance_case
+WHERE workspace_id = $1 AND id = $2
+FOR UPDATE;
 
 -- name: FindGovernanceCaseByMaterialFingerprint :one
 SELECT * FROM governance_case
@@ -26,7 +30,8 @@ INSERT INTO governance_case (
     workspace_id, subject_type, subject_id, subject_revision, rule_id,
     generation, material_fingerprint, state, authority_lineage, trigger_aliases,
     evidence_digest, rule_revision, activation_revision, config_revision,
-    budget_root_id, frozen_strategy, absolute_deadline
+    predecessor_case_id, budget_root_id, frozen_strategy, absolute_deadline,
+    evidence_epoch, refresh_count
 )
 SELECT
     $1, $2, $3, $4, $5,
@@ -36,11 +41,39 @@ SELECT
         WHERE gc.workspace_id = $1
           AND gc.subject_type = $2
           AND gc.subject_id = $3
-          AND gc.subject_revision = $4
           AND gc.rule_id = $5
     ), 0),
-    $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+    $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
 RETURNING *;
+
+-- name: FindGovernanceCaseTransitionByCause :one
+SELECT * FROM governance_case_transition
+WHERE workspace_id = $1 AND case_id = $2 AND cause_event_key = $3;
+
+-- name: UpdateGovernanceCaseTransitionCAS :one
+UPDATE governance_case
+SET state = sqlc.arg(next_state)::text,
+    state_revision = state_revision + 1,
+    lease_token = NULL,
+    lease_expires_at = NULL,
+    reason = sqlc.arg(reason)::text,
+    updated_at = sqlc.arg(updated_at)::timestamptz
+WHERE workspace_id = sqlc.arg(workspace_id)::uuid
+  AND id = sqlc.arg(id)::uuid
+  AND state = sqlc.arg(expected_state)::text
+  AND state_revision = sqlc.arg(expected_state_revision)::bigint
+RETURNING *;
+
+-- name: UpdateGovernanceCaseLease :one
+UPDATE governance_case
+SET lease_token = $4, lease_expires_at = $5, updated_at = $6
+WHERE workspace_id = $1 AND id = $2 AND state_revision = $3
+RETURNING *;
+
+-- name: ReleaseGovernanceCaseLease :execrows
+UPDATE governance_case
+SET lease_token = NULL, lease_expires_at = NULL, updated_at = $4
+WHERE workspace_id = $1 AND id = $2 AND lease_token = $3;
 
 -- name: InsertGovernanceCaseTransition :one
 INSERT INTO governance_case_transition (
@@ -59,6 +92,11 @@ INSERT INTO governance_attempt (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 )
 RETURNING *;
+
+-- name: LockGovernanceAttemptForUpdate :one
+SELECT * FROM governance_attempt
+WHERE workspace_id = $1 AND case_id = $2 AND id = $3
+FOR UPDATE;
 
 -- name: InsertGovernanceEvaluation :one
 INSERT INTO governance_evaluation (
