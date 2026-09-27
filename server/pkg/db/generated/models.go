@@ -845,6 +845,21 @@ type GovernanceCaseTransition struct {
 	CreatedAt              pgtype.Timestamptz `json:"created_at"`
 }
 
+type GovernanceConcurrencyGuard struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Resource    string      `json:"resource"`
+	HeldSlots   int64       `json:"held_slots"`
+}
+
+type GovernanceConcurrencyHold struct {
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	Resource      string             `json:"resource"`
+	ReservationID pgtype.UUID        `json:"reservation_id"`
+	State         string             `json:"state"`
+	HeldAt        pgtype.Timestamptz `json:"held_at"`
+	ReleasedAt    pgtype.Timestamptz `json:"released_at"`
+}
+
 type GovernanceEvaluation struct {
 	ID                    pgtype.UUID        `json:"id"`
 	WorkspaceID           pgtype.UUID        `json:"workspace_id"`

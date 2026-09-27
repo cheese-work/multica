@@ -347,6 +347,8 @@ var concurrentIndexCleanups = map[string]string{
 	"534_governance_evaluation_workspace_case_captured_idx":     "idx_governance_evaluation_workspace_case_captured",
 	"535_governance_case_transition_workspace_case_created_idx": "idx_governance_case_transition_workspace_case_created",
 	"536_governance_receipt_workspace_comment_created_idx":      "idx_governance_receipt_workspace_comment_created",
+	"539_governance_concurrency_guard_identity":                 "governance_concurrency_guard_identity_uidx",
+	"540_governance_concurrency_hold_identity":                  "governance_concurrency_hold_identity_uidx",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction
