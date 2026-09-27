@@ -75,8 +75,23 @@ func (h *Handler) PutJevCredential(w http.ResponseWriter, r *http.Request) {
 		writeGovernanceProblem(w, r, http.StatusServiceUnavailable, "configuration_unavailable")
 		return
 	}
-	_, err = h.DB.Exec(r.Context(), `INSERT INTO governance_jev_credential (workspace_id, envelope, updated_by) VALUES ($1, $2, $3) ON CONFLICT (workspace_id) DO UPDATE SET envelope = EXCLUDED.envelope, updated_by = EXCLUDED.updated_by, updated_at = now()`, workspaceID, encoded, actorID)
+	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
+		writeGovernanceProblem(w, r, http.StatusServiceUnavailable, "configuration_unavailable")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	if _, err := qtx.LockWorkspaceForJevCredentialWrite(r.Context(), workspaceID); err != nil {
+		writeGovernanceProblem(w, r, http.StatusServiceUnavailable, "configuration_unavailable")
+		return
+	}
+	_, err = tx.Exec(r.Context(), `INSERT INTO governance_jev_credential (workspace_id, envelope, updated_by) VALUES ($1, $2, $3) ON CONFLICT (workspace_id) DO UPDATE SET envelope = EXCLUDED.envelope, updated_by = EXCLUDED.updated_by, updated_at = now()`, workspaceID, encoded, actorID)
+	if err != nil {
+		writeGovernanceProblem(w, r, http.StatusServiceUnavailable, "configuration_unavailable")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		writeGovernanceProblem(w, r, http.StatusServiceUnavailable, "configuration_unavailable")
 		return
 	}
@@ -108,6 +123,10 @@ func (h *Handler) ResolveJevCredential(ctx context.Context, workspaceID pgtype.U
 		return nil, ErrJevCredentialUnavailable
 	}
 	defer tx.Rollback(ctx)
+	qtx := h.Queries.WithTx(tx)
+	if _, err := qtx.LockWorkspaceForJevCredentialWrite(ctx, workspaceID); err != nil {
+		return nil, ErrJevCredentialUnavailable
+	}
 	var raw []byte
 	if err := tx.QueryRow(ctx, `SELECT envelope FROM governance_jev_credential WHERE workspace_id = $1 FOR UPDATE`, workspaceID).Scan(&raw); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

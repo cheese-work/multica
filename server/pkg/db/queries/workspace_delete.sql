@@ -361,6 +361,12 @@ deleted_issue_checkpoints AS (
 deleted_governance_receipts AS (
     DELETE FROM governance_receipt WHERE workspace_id = $1
 ),
+-- CHE-714 Jev provider credentials are workspace-owned encrypted material.
+-- Keep the explicit application teardown (rather than an FK cascade) in this
+-- transaction so it commits or rolls back with the workspace row.
+deleted_governance_jev_credentials AS (
+    DELETE FROM governance_jev_credential WHERE workspace_id = $1
+),
 deleted_governance_config_audit AS (
     DELETE FROM governance_workspace_config_audit WHERE workspace_id = $1
 ),

@@ -482,6 +482,21 @@ func (q *Queries) LockWorkspaceForDelete(ctx context.Context, id pgtype.UUID) (p
 	return id_2, err
 }
 
+const lockWorkspaceForJevCredentialWrite = `-- name: LockWorkspaceForJevCredentialWrite :one
+SELECT id FROM workspace WHERE id = $1 FOR KEY SHARE
+`
+
+// Credential writes and key rotation must take the workspace row lock in their
+// own transaction. It conflicts with DeleteWorkspace's FOR UPDATE lock: a
+// write that wins commits before teardown and is swept, while a write that
+// loses sees no workspace row after teardown commits and fails closed.
+func (q *Queries) LockWorkspaceForJevCredentialWrite(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockWorkspaceForJevCredentialWrite, id)
+	var id_2 pgtype.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
 const updateWorkspace = `-- name: UpdateWorkspace :one
 UPDATE workspace SET
     name = COALESCE($2, name),
