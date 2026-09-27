@@ -38,6 +38,7 @@ func TestNewJevClientBlankKeyReturnsNilClientNilError(t *testing.T) {
 // the production gate attached (proven by the gate denying while the flag is
 // off).
 func TestNewJevClientWithKeyConstructsGatedClient(t *testing.T) {
+	t.Setenv(jev.EgressAllowlistEnv, "api.typesafe.ai:443")
 	flags := featureflag.NewService(featureflag.NewStaticProvider())
 	c, err := newJevClient("test-key", flags)
 	if err != nil {

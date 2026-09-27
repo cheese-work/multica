@@ -61,4 +61,15 @@
 // Build a normal software workflow and insert System One only where a
 // judgment is genuinely needed. If a question can be answered by a query, it
 // must be a query.
+//
+// # Outbound transport
+//
+// Production clients require an exact host:port entry in
+// MULTICA_JEV_EGRESS_ALLOWLIST (comma-separated, no wildcards or URL schemes).
+// The default provider is api.typesafe.ai:443. Base URLs must use HTTPS; the
+// transport disables redirects, validates and pins DNS answers per connection,
+// verifies TLS hostnames, rejects metadata and reserved addresses, and bounds
+// time and response size. Private or loopback destinations require an exact
+// literal-address allowlist entry. Options.EgressAllowlist adds exact
+// code-controlled endpoints such as offline fake services.
 package jev

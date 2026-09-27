@@ -140,7 +140,7 @@ func LoadReplayScenarios(path string) (ReplayScenarioFile, error) {
 // decoding) end to end with no live TypeSafe API key, no network access
 // beyond this local server, and no agent CLI invoked.
 func RunReplayScenario(ctx context.Context, sc ReplayScenario) (ReplayResult, error) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		body := struct {
 			Model   string                     `json:"model"`
@@ -155,9 +155,11 @@ func RunReplayScenario(ctx context.Context, sc ReplayScenario) (ReplayResult, er
 	defer srv.Close()
 
 	client, err := jev.NewClient(jev.Options{
-		APIKey:     "govreplay-fake-key-not-a-real-credential",
-		BaseURL:    srv.URL,
-		RetryCount: -1,
+		APIKey:          "govreplay-fake-key-not-a-real-credential",
+		BaseURL:         srv.URL,
+		HTTPClient:      srv.Client(),
+		EgressAllowlist: []string{srv.Listener.Addr().String()},
+		RetryCount:      -1,
 	})
 	if err != nil {
 		return ReplayResult{}, fmt.Errorf("governance: build replay client: %w", err)

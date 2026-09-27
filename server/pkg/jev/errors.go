@@ -1,7 +1,6 @@
 package jev
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -24,8 +23,8 @@ var ErrNoQuestions = errors.New("jev: request has no questions")
 // APIError is returned when TypeSafe responds with a non-2xx status.
 //
 // The documented error statuses are 401 (bad key), 422 (validation), 429
-// (rate limit), and 529 (overloaded). RawBody is kept verbatim so the full
-// upstream response can be logged.
+// (rate limit), and 529 (overloaded). Provider messages and bodies are not
+// retained, because upstream error text is untrusted and may contain secrets.
 type APIError struct {
 	HTTPStatus int    `json:"-"`
 	Message    string `json:"message,omitempty"`
@@ -38,10 +37,7 @@ func (e *APIError) Error() string {
 	if e == nil {
 		return ""
 	}
-	msg := e.Message
-	if msg == "" {
-		msg = http.StatusText(e.HTTPStatus)
-	}
+	msg := http.StatusText(e.HTTPStatus)
 	if msg == "" {
 		msg = "unknown error"
 	}
@@ -93,29 +89,6 @@ func retryableStatus(status int) bool {
 	}
 }
 
-// parseAPIError decodes TypeSafe's error body. The documented contract is
-// only "a JSON body describing what went wrong", so both a bare object and
-// an {"error": {...}} envelope are accepted; an unrecognized body still
-// yields an APIError carrying the status and the raw bytes.
-func parseAPIError(status int, body []byte) *APIError {
-	out := &APIError{HTTPStatus: status, RawBody: body}
-	if len(body) == 0 {
-		return out
-	}
-
-	var envelope struct {
-		Error APIError `json:"error"`
-	}
-	if err := json.Unmarshal(body, &envelope); err == nil && envelope.Error.Message != "" {
-		out.Message = envelope.Error.Message
-		out.Type = envelope.Error.Type
-		return out
-	}
-
-	var bare APIError
-	if err := json.Unmarshal(body, &bare); err == nil {
-		out.Message = bare.Message
-		out.Type = bare.Type
-	}
-	return out
+func parseAPIError(status int, _ []byte) *APIError {
+	return &APIError{HTTPStatus: status}
 }

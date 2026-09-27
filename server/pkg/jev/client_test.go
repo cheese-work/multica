@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,13 +17,14 @@ import (
 // unless the test opts in.
 func newTestClient(t *testing.T, handler http.HandlerFunc, mutate func(*Options)) *Client {
 	t.Helper()
-	srv := httptest.NewServer(handler)
+	srv := httptest.NewTLSServer(handler)
 	t.Cleanup(srv.Close)
 
-	opts := Options{APIKey: "test-key", BaseURL: srv.URL, RetryCount: -1}
+	opts := Options{APIKey: "test-key", BaseURL: srv.URL, HTTPClient: srv.Client(), RetryCount: -1}
 	if mutate != nil {
 		mutate(&opts)
 	}
+	t.Setenv(EgressAllowlistEnv, srv.Listener.Addr().String())
 	c, err := NewClient(opts)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
@@ -37,6 +39,7 @@ func TestNewClientRequiresAPIKey(t *testing.T) {
 }
 
 func TestNewClientPinsExactModelVersion(t *testing.T) {
+	t.Setenv(EgressAllowlistEnv, "api.typesafe.ai:443")
 	c, err := NewClient(Options{APIKey: "k"})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
@@ -265,9 +268,9 @@ func TestEvaluateRetriesRetryableStatuses(t *testing.T) {
 	}
 }
 
-func TestEvaluateSurfacesTypedAPIError(t *testing.T) {
+func TestEvaluateScrubsUpstreamAPIError(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusUnprocessableEntity, `{"message":"questions.bad.criteria: too few options"}`)
+		writeJSON(w, http.StatusUnprocessableEntity, `{"message":"provider echoed secret test-key"}`)
 	}, nil)
 
 	_, err := c.Evaluate(context.Background(), Request{
@@ -285,8 +288,11 @@ func TestEvaluateSurfacesTypedAPIError(t *testing.T) {
 	if apiErr.Retryable() {
 		t.Error("422 reported as retryable")
 	}
-	if apiErr.Message != "questions.bad.criteria: too few options" {
-		t.Errorf("Message = %q", apiErr.Message)
+	if apiErr.Message != "" || apiErr.Type != "" || len(apiErr.RawBody) != 0 {
+		t.Errorf("upstream details were retained: %#v", apiErr)
+	}
+	if strings.Contains(err.Error(), "test-key") {
+		t.Errorf("upstream secret leaked in error: %v", err)
 	}
 }
 
