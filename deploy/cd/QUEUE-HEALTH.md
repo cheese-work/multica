@@ -5,11 +5,14 @@
 no deploy concurrency group, production environment, C00 secrets, or write
 permissions. A queue cannot hide its own failure behind its unavailable runner.
 
-A CD run in `queued`, `pending`, or `waiting` for at least 30 minutes fails
-the alarm with the exact run URL. Waiting for environment approval and legitimate
-long-running concurrency predecessors also alert: inspect rather than assume
-all queue age means runner failure. Running deployments are not interrupted.
-All API pages for those states are read; API or malformed-data failures fail
+A current-attempt `deploy` job in `queued`, `pending`, or `waiting` for at least
+30 minutes fails the alarm with the exact job URL. Age starts at job creation
+(or its API `started_at` when creation is absent), never original workflow
+creation. Old attempts and long preparation do not age a newly queued deploy.
+Runs without a deploy job yet, including workflow-level concurrency waits, are
+not timed by this alarm. Environment waits represented by a deploy job do alert.
+Running deployments are not interrupted. All API pages for active runs and
+their current-attempt jobs are read; API or malformed-data failures fail
 loudly rather than claiming health. This is detection, not automatic recovery
 or a hard queue deadline. GitHub job `timeout-minutes` does not bound runner
 queue time. Enable Actions failure notifications for this workflow; schedule
