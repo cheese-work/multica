@@ -1318,7 +1318,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		keys := []credential.Key{key}
 		if previous, err := credential.DecodeKey("previous", strings.TrimSpace(os.Getenv("MULTICA_JEV_SECRET_KEY_PREVIOUS"))); err == nil {
 			previous.ID = credential.KeyID(previous.Material)
-			keys = append(keys, previous)
+			if previous.ID != key.ID {
+				keys = append(keys, previous)
+			}
 		}
 		if ring, err := credential.NewKeyring(keys...); err != nil {
 			slog.Error("jev: credential keyring disabled", "error", err)
