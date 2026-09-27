@@ -198,6 +198,10 @@ services:
       MULTICA_VCS_INTEGRATION_ENABLED: ${MULTICA_VCS_INTEGRATION_ENABLED:-true}
       # VCS integration at-rest encryption key for token-based providers
       MULTICA_VCS_SECRET_KEY: ${MULTICA_VCS_SECRET_KEY:-}
+      # Per-workspace Jev credential encryption; unset keeps this write-only
+      # storage disabled without affecting the existing process-wide JEV_API_KEY.
+      MULTICA_JEV_SECRET_KEY: ${MULTICA_JEV_SECRET_KEY:-}
+      MULTICA_JEV_SECRET_KEY_PREVIOUS: ${MULTICA_JEV_SECRET_KEY_PREVIOUS:-}
       # WeCom smart-bot integration. MULTICA_WECOM_SECRET_KEY is the
       # opt-in: unset = integration disabled. It encrypts each installation's
       # smart-bot secret at rest. The server needs it to unseal a bot's
