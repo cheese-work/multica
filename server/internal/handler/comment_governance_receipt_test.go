@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -13,7 +15,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/governance"
 	"github.com/multica-ai/multica/server/internal/governance/receipt"
@@ -105,6 +109,25 @@ type blockingGovernanceProvider struct {
 	entered chan struct{}
 	release chan struct{}
 	calls   atomic.Int64
+}
+
+type observedTxStarter struct {
+	inner   txStarter
+	started chan<- int32
+}
+
+func (starter observedTxStarter) Begin(ctx context.Context) (pgx.Tx, error) {
+	tx, err := starter.inner.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var pid int32
+	if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		_ = tx.Rollback(context.Background())
+		return nil, err
+	}
+	starter.started <- pid
+	return tx, nil
 }
 
 func (provider *blockingGovernanceProvider) Evaluate(ctx context.Context, request jev.Request) (*jev.Response, error) {
@@ -343,24 +366,39 @@ func TestGovernanceDisableWaitsForInFlightEvaluationAdmission(t *testing.T) {
 	if !errors.As(lockErr, &postgresErr) || postgresErr.Code != "55P03" {
 		t.Fatalf("in-flight evaluation control lock error = %v, want PostgreSQL lock-not-available", lockErr)
 	}
+	originalStarter := testHandler.TxStarter
+	disablePIDs := make(chan int32, 1)
+	testHandler.TxStarter = observedTxStarter{inner: originalStarter, started: disablePIDs}
+	t.Cleanup(func() { testHandler.TxStarter = originalStarter })
 	expectedVersion := int64(1)
 	disabled := false
 	requestID := uuid.New()
-	disableStarted := make(chan struct{})
 	disableDone := make(chan error, 1)
 	go func() {
-		close(disableStarted)
 		_, writeErr := testHandler.writeGovernanceConfig(context.Background(), workspaceID, actorID, requestID, strings.Repeat("0", 64), governanceConfigPatch{
 			RequestID: requestID.String(), ExpectedVersion: &expectedVersion, JevGovernanceEnabled: &disabled,
 		})
 		disableDone <- writeErr
 	}()
-	<-disableStarted
+	var disablePID int32
+	select {
+	case disablePID = <-disablePIDs:
+	case writeErr := <-disableDone:
+		close(provider.release)
+		t.Fatalf("master disable returned before exposing its backend: %v", writeErr)
+	case <-time.After(5 * time.Second):
+		close(provider.release)
+		t.Fatal("master disable transaction did not begin")
+	}
+	if err := waitForGovernanceBackendLockWait(t, context.Background(), disablePID, 5*time.Second); err != nil {
+		close(provider.release)
+		t.Fatalf("disable did not wait for the admitted evaluation: %v", err)
+	}
 	select {
 	case writeErr := <-disableDone:
 		close(provider.release)
 		t.Fatalf("master disable completed during admitted evaluation: %v", writeErr)
-	case <-time.After(10 * time.Millisecond):
+	default:
 	}
 	close(provider.release)
 	select {
@@ -371,9 +409,14 @@ func TestGovernanceDisableWaitsForInFlightEvaluationAdmission(t *testing.T) {
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("comment response = %d: %s", recorder.Code, recorder.Body.String())
 	}
+	var response CommentResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || response.ID == "" {
+		t.Fatalf("decode observed comment response id=%q err=%v: %s", response.ID, err, recorder.Body.String())
+	}
 	if err := <-disableDone; err != nil {
 		t.Fatalf("master disable: %v", err)
 	}
+	testHandler.TxStarter = originalStarter
 	testHandler.GovernanceReceipts.WaitForIdle()
 	config, err := loadGovernanceControl(context.Background(), testPool, workspaceID)
 	if err != nil {
@@ -388,9 +431,315 @@ func TestGovernanceDisableWaitsForInFlightEvaluationAdmission(t *testing.T) {
 	if second.Code != http.StatusCreated {
 		t.Fatalf("post-disable comment = %d: %s", second.Code, second.Body.String())
 	}
+	var secondResponse CommentResponse
+	if err := json.Unmarshal(second.Body.Bytes(), &secondResponse); err != nil {
+		t.Fatalf("decode post-disable comment: %v", err)
+	}
+	testHandler.GovernanceReceipts.WaitForIdle()
+	if got := governanceReceiptCountForComment(t, secondResponse.ID); got != 0 {
+		t.Fatalf("post-disable governance receipts = %d, want 0", got)
+	}
 	if calls := provider.calls.Load(); calls != 1 {
 		t.Fatalf("provider calls = %d after acknowledged disable, want 1 total", calls)
 	}
+}
+
+func TestGovernanceDisableWinsConcurrentEvaluationAdmission(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	requireGovernanceConfigTables(t)
+	issueID := createCommentTriggerPreviewIssue(t, "governance disable wins race", "member", testUserID)
+	withGovernanceFlag(t, true)
+	provider := &blockingGovernanceProvider{entered: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(func() {
+		select {
+		case <-provider.release:
+		default:
+			close(provider.release)
+		}
+	})
+	withGovernanceObserver(t, provider, testHandler.Queries)
+	workspaceID, err := util.ParseUUID(testWorkspaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	disableConn, err := pgx.Connect(ctx, os.Getenv("DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer disableConn.Close(context.Background())
+	disableTx, err := disableConn.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed := false
+	t.Cleanup(func() {
+		if !committed {
+			_ = disableTx.Rollback(context.Background())
+		}
+	})
+	if _, err := disableTx.Exec(ctx, `
+		UPDATE governance_workspace_config
+		SET config_version = config_version + 1,
+		    control_epoch = control_epoch + 1,
+		    settings = jsonb_set(settings, '{jev_governance_enabled}', 'false'::jsonb, true),
+		    updated_at = now()
+		WHERE workspace_id = $1
+	`, workspaceID); err != nil {
+		t.Fatal(err)
+	}
+	var disablePID int32
+	if err := disableConn.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&disablePID); err != nil {
+		t.Fatal(err)
+	}
+	originalStarter := testHandler.TxStarter
+	started := make(chan int32, 8)
+	testHandler.TxStarter = observedTxStarter{inner: originalStarter, started: started}
+	t.Cleanup(func() { testHandler.TxStarter = originalStarter })
+	recorder := httptest.NewRecorder()
+	request := withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": "disable wins admission race"}), "id", issueID)
+	requestDone := make(chan struct{})
+	go func() {
+		testHandler.CreateComment(recorder, request)
+		close(requestDone)
+	}()
+	var writerPID int32
+	select {
+	case writerPID = <-started:
+	case <-provider.entered:
+		t.Fatal("evaluation reached the provider before disable committed")
+	case <-requestDone:
+		t.Fatal("comment request completed before evaluation admission waited on disable")
+	case <-ctx.Done():
+		t.Fatalf("evaluation admission did not begin before timeout: %v", ctx.Err())
+	}
+	if writerPID == disablePID {
+		t.Fatalf("evaluation writer reused disable backend pid %d", disablePID)
+	}
+	if err := waitForGovernanceBackendLockWait(t, ctx, writerPID, 5*time.Second); err != nil {
+		t.Fatalf("evaluation admission did not wait on disable: %v", err)
+	}
+	if err := disableTx.Commit(ctx); err != nil {
+		t.Fatalf("commit disable before evaluation admission: %v", err)
+	}
+	committed = true
+	select {
+	case <-requestDone:
+	case <-provider.entered:
+		t.Fatal("evaluation reached the provider after disable commit")
+	case <-ctx.Done():
+		t.Fatalf("comment request did not complete after disable: %v", ctx.Err())
+	}
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("comment response = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var response CommentResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || response.ID == "" {
+		t.Fatalf("decode comment response id=%q err=%v: %s", response.ID, err, recorder.Body.String())
+	}
+	testHandler.GovernanceReceipts.WaitForIdle()
+	if got := governanceReceiptCountForComment(t, response.ID); got != 0 {
+		t.Fatalf("disabled evaluation persisted %d receipt rows, want none", got)
+	}
+	if calls := provider.calls.Load(); calls != 0 {
+		t.Fatalf("provider calls after disable won = %d, want 0", calls)
+	}
+	config, err := loadGovernanceControl(context.Background(), testPool, workspaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Settings.JevGovernanceEnabled || config.ControlEpoch != 2 {
+		t.Fatalf("disable-wins config = enabled:%v epoch:%d, want false/2", config.Settings.JevGovernanceEnabled, config.ControlEpoch)
+	}
+}
+
+func waitForGovernanceBackendLockWait(t *testing.T, ctx context.Context, pid int32, timeout time.Duration) error {
+	t.Helper()
+	observer, err := pgx.Connect(ctx, os.Getenv("DATABASE_URL"))
+	if err != nil {
+		return err
+	}
+	defer observer.Close(context.Background())
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var blocked bool
+		if err := observer.QueryRow(ctx, `SELECT cardinality(pg_blocking_pids($1)) > 0`, pid).Scan(&blocked); err != nil {
+			return err
+		}
+		if blocked {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return errors.New("backend did not enter a PostgreSQL lock wait")
+		case <-ticker.C:
+		}
+	}
+}
+
+func TestGovernanceReceiptPersistenceRacesDisable(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	requireGovernanceConfigTables(t)
+	for _, order := range []string{"receipt first", "disable first"} {
+		t.Run(order, func(t *testing.T) {
+			withGovernanceFlag(t, false)
+			issueID := createCommentTriggerPreviewIssue(t, "governance receipt persistence race", "member", testUserID)
+			comment, commentID := createCommentForGovernanceTest(t, issueID, "receipt persistence race input")
+			if comment.Code != http.StatusCreated || commentID == "" {
+				t.Fatalf("create receipt source comment = %d id=%q: %s", comment.Code, commentID, comment.Body.String())
+			}
+			withGovernanceFlag(t, true)
+			config, err := loadGovernanceControl(context.Background(), testPool, parseUUID(testWorkspaceID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			params := db.InsertGovernanceReceiptParams{
+				WorkspaceID: parseUUID(testWorkspaceID), IssueID: parseUUID(issueID), CommentID: parseUUID(commentID),
+				Trigger: string(receipt.TriggerCreate), Status: "decided", Answers: []byte("[]"),
+				ObservedAt: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}, ControlEpoch: config.ControlEpoch,
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			receiptConn, err := pgx.Connect(ctx, os.Getenv("DATABASE_URL"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer receiptConn.Close(context.Background())
+			disableConn, err := pgx.Connect(ctx, os.Getenv("DATABASE_URL"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer disableConn.Close(context.Background())
+
+			if order == "receipt first" {
+				writerTx, err := receiptConn.Begin(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer writerTx.Rollback(context.Background())
+				stored, err := db.New(writerTx).InsertGovernanceReceipt(ctx, params)
+				if err != nil {
+					t.Fatalf("persist receipt before disable: %v", err)
+				}
+				started, disabled := startGovernanceControlDisable(ctx, disableConn, params.WorkspaceID)
+				var disablePID int32
+				select {
+				case disablePID = <-started:
+				case err := <-disabled:
+					t.Fatalf("disable failed before lock observation: %v", err)
+				case <-ctx.Done():
+					t.Fatalf("disable did not start: %v", ctx.Err())
+				}
+				if err := waitForGovernanceBackendLockWait(t, ctx, disablePID, 5*time.Second); err != nil {
+					t.Fatalf("disable did not wait for receipt transaction: %v", err)
+				}
+				select {
+				case err := <-disabled:
+					t.Fatalf("disable completed before receipt commit: %v", err)
+				default:
+				}
+				if err := writerTx.Commit(ctx); err != nil {
+					t.Fatalf("commit receipt before disable: %v", err)
+				}
+				if err := <-disabled; err != nil {
+					t.Fatalf("disable after receipt commit: %v", err)
+				}
+				var storedEpoch int64
+				if err := testPool.QueryRow(ctx, `SELECT control_epoch FROM governance_receipt WHERE id = $1`, stored.ID).Scan(&storedEpoch); err != nil {
+					t.Fatalf("read receipt after disable: %v", err)
+				}
+				if storedEpoch != config.ControlEpoch {
+					t.Fatalf("stored receipt epoch = %d, want captured %d", storedEpoch, config.ControlEpoch)
+				}
+				return
+			}
+
+			disableTx, err := disableConn.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer disableTx.Rollback(context.Background())
+			if _, err := disableTx.Exec(ctx, `
+				UPDATE governance_workspace_config
+				SET config_version = config_version + 1, control_epoch = control_epoch + 1,
+				    settings = jsonb_set(settings, '{jev_governance_enabled}', 'false'::jsonb, true), updated_at = now()
+				WHERE workspace_id = $1
+			`, params.WorkspaceID); err != nil {
+				t.Fatalf("hold disable control lock: %v", err)
+			}
+			writerTx, err := receiptConn.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer writerTx.Rollback(context.Background())
+			var writerPID int32
+			if err := writerTx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&writerPID); err != nil {
+				t.Fatal(err)
+			}
+			inserted := make(chan error, 1)
+			go func() {
+				_, insertErr := db.New(writerTx).InsertGovernanceReceipt(ctx, params)
+				inserted <- insertErr
+			}()
+			if err := waitForGovernanceBackendLockWait(t, ctx, writerPID, 5*time.Second); err != nil {
+				t.Fatalf("receipt insert did not wait for disable: %v", err)
+			}
+			if err := disableTx.Commit(ctx); err != nil {
+				t.Fatalf("commit disable before receipt insert: %v", err)
+			}
+			if err := <-inserted; !errors.Is(err, pgx.ErrNoRows) {
+				t.Fatalf("stale receipt after disable = %v, want pgx.ErrNoRows", err)
+			}
+			if got := governanceReceiptCountForComment(t, commentID); got != 0 {
+				t.Fatalf("receipt rows after disable = %d, want zero", got)
+			}
+		})
+	}
+}
+
+func startGovernanceControlDisable(ctx context.Context, conn *pgx.Conn, workspaceID pgtype.UUID) (<-chan int32, <-chan error) {
+	started := make(chan int32, 1)
+	done := make(chan error, 1)
+	go func() {
+		tx, err := conn.Begin(ctx)
+		if err != nil {
+			done <- err
+			return
+		}
+		var pid int32
+		if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+			_ = tx.Rollback(context.Background())
+			done <- err
+			return
+		}
+		started <- pid
+		result, err := tx.Exec(ctx, `
+			UPDATE governance_workspace_config
+			SET config_version = config_version + 1, control_epoch = control_epoch + 1,
+			    settings = jsonb_set(settings, '{jev_governance_enabled}', 'false'::jsonb, true), updated_at = now()
+			WHERE workspace_id = $1
+		`, workspaceID)
+		if err == nil && result.RowsAffected() != 1 {
+			err = fmt.Errorf("disable updated %d control rows, want 1", result.RowsAffected())
+		}
+		if err != nil {
+			_ = tx.Rollback(context.Background())
+			done <- err
+			return
+		}
+		done <- tx.Commit(ctx)
+	}()
+	return started, done
 }
 
 func TestCreateComment_GovernanceFlagOn_ProviderErrors_ResponseUnaffected(t *testing.T) {

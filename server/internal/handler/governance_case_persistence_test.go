@@ -154,6 +154,7 @@ func TestGovernanceCasePersistence_CreateOrResolveRaces(t *testing.T) {
 	create := func(fingerprint string) (db.GovernanceCase, error) {
 		return queries.CreateOrResolveGovernanceCase(ctx, db.InsertNextGovernanceCaseParams{
 			WorkspaceID:         parseUUID(workspaceID),
+			ControlEpoch:        1,
 			SubjectType:         "issue",
 			SubjectID:           parseUUID(subjectID),
 			SubjectRevision:     1,

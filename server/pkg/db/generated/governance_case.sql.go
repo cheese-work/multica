@@ -543,9 +543,10 @@ SELECT
           AND gc.rule_id = $5
     ), 0),
     $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-    control.control_epoch, $18, $19
+    $20, $18, $19
 FROM governance_workspace_config AS control
 WHERE control.workspace_id = $1
+  AND control.control_epoch = $20
   AND control.settings->>'jev_governance_enabled' = 'true'
 FOR SHARE
 RETURNING id, workspace_id, subject_type, subject_id, subject_revision, rule_id, generation, material_fingerprint, state, state_revision, authority_lineage, trigger_aliases, evidence_id, evidence_digest, rule_revision, activation_revision, config_revision, lease_token, lease_expires_at, current_attempt_id, current_action_id, predecessor_case_id, budget_root_id, evidence_epoch, refresh_count, absolute_deadline, frozen_strategy, reason, created_at, updated_at, control_epoch
@@ -571,6 +572,7 @@ type InsertNextGovernanceCaseParams struct {
 	AbsoluteDeadline    pgtype.Timestamptz `json:"absolute_deadline"`
 	EvidenceEpoch       int32              `json:"evidence_epoch"`
 	RefreshCount        int32              `json:"refresh_count"`
+	ControlEpoch        int64              `json:"control_epoch"`
 }
 
 func (q *Queries) InsertNextGovernanceCase(ctx context.Context, arg InsertNextGovernanceCaseParams) (GovernanceCase, error) {
@@ -594,6 +596,7 @@ func (q *Queries) InsertNextGovernanceCase(ctx context.Context, arg InsertNextGo
 		arg.AbsoluteDeadline,
 		arg.EvidenceEpoch,
 		arg.RefreshCount,
+		arg.ControlEpoch,
 	)
 	var i GovernanceCase
 	err := row.Scan(
@@ -1156,6 +1159,27 @@ func (q *Queries) LockGovernanceCaseIdentity(ctx context.Context, arg LockGovern
 		arg.RuleID,
 	)
 	return err
+}
+
+const lockGovernanceWorkspaceControl = `-- name: LockGovernanceWorkspaceControl :one
+SELECT control_epoch
+FROM governance_workspace_config
+WHERE workspace_id = $1
+  AND control_epoch = $2
+  AND settings->>'jev_governance_enabled' = 'true'
+FOR SHARE
+`
+
+type LockGovernanceWorkspaceControlParams struct {
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+	ControlEpoch int64       `json:"control_epoch"`
+}
+
+func (q *Queries) LockGovernanceWorkspaceControl(ctx context.Context, arg LockGovernanceWorkspaceControlParams) (int64, error) {
+	row := q.db.QueryRow(ctx, lockGovernanceWorkspaceControl, arg.WorkspaceID, arg.ControlEpoch)
+	var control_epoch int64
+	err := row.Scan(&control_epoch)
+	return control_epoch, err
 }
 
 const pruneExpiredGovernanceObligationAttemptMetadata = `-- name: PruneExpiredGovernanceObligationAttemptMetadata :execrows
