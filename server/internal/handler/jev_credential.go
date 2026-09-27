@@ -49,7 +49,7 @@ func (h *Handler) PutJevCredential(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.JevCredentials == nil {
-		writeFeatureDisabled(w, "jev_credentials_not_configured", "Jev credentials are not configured on this deployment")
+		writeGovernanceProblem(w, r, http.StatusForbidden, "credential_configuration_required")
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, governanceConfigBodyMaxBytes)

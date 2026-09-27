@@ -127,6 +127,53 @@ func TestJevCredentialRejectsNonAdminsMachinesAndMissingKey(t *testing.T) {
 	}
 }
 
+func TestJevCredentialDefaultOffReturnsNonretryableSafeProblem(t *testing.T) {
+	if testHandler == nil || testPool == nil || dbfx == nil {
+		t.Skip("handler test database is unavailable")
+	}
+	requireJevCredentialTable(t)
+	workspaceID := dbfx.Workspace(t, "Jev credential default-off", "jev-credential-default-off-"+uuid.NewString())
+	dbfx.Member(t, workspaceID, testUserID, "owner")
+	h := *testHandler
+	response := invokeJevCredentialForWorkspace(t, &h, workspaceID, testUserID, http.MethodPut,
+		[]byte(`{"api_key":"`+jevCredentialTestSecret+`"}`), "")
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("default-off PUT = %d: %s", response.Code, response.Body.String())
+	}
+	if response.Header().Get("Content-Type") != "application/problem+json" {
+		t.Errorf("default-off Content-Type = %q, want application/problem+json", response.Header().Get("Content-Type"))
+	}
+	var problem map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &problem); err != nil {
+		t.Fatalf("decode default-off problem: %v: %s", err, response.Body.String())
+	}
+	for _, field := range []string{"problem", "cause", "permitted_fix", "correlation_id", "documentation_link"} {
+		value, ok := problem[field].(string)
+		if !ok || strings.TrimSpace(value) == "" {
+			t.Errorf("default-off problem field %q missing: %s", field, response.Body.String())
+		}
+	}
+	if problem["problem"] != "jev_credential_configuration_required" {
+		t.Errorf("default-off problem = %v, want jev_credential_configuration_required", problem["problem"])
+	}
+	if retryable, ok := problem["retryable"].(bool); !ok || retryable {
+		t.Errorf("default-off retryable = %v, want explicit false", problem["retryable"])
+	}
+	if correlationID, _ := problem["correlation_id"].(string); correlationID == "" || correlationID != response.Header().Get("X-Request-ID") {
+		t.Errorf("default-off correlation id %q does not match response header %q", correlationID, response.Header().Get("X-Request-ID"))
+	}
+	if strings.Contains(response.Body.String(), jevCredentialTestSecret) || strings.Contains(response.Body.String(), "api_key") {
+		t.Errorf("default-off problem echoed credential input: %s", response.Body.String())
+	}
+	var credentialPresent bool
+	if err := testPool.QueryRow(t.Context(), `SELECT EXISTS(SELECT 1 FROM governance_jev_credential WHERE workspace_id = $1)`, workspaceID).Scan(&credentialPresent); err != nil {
+		t.Fatal(err)
+	}
+	if credentialPresent {
+		t.Fatal("default-off PUT persisted a credential")
+	}
+}
+
 func TestResolveJevCredentialRotatesOnlyAfterAuthenticatedOpen(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("handler test database is unavailable")

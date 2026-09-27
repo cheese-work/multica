@@ -281,6 +281,11 @@ func SafeProblemFor(code string) (SafeProblem, bool) {
 			PermittedFix: "Verify workspace access and retry.", Retryable: false,
 			DocumentationLink: "/docs/governance/errors#workspace_not_found",
 		},
+		"credential_configuration_required": {
+			Problem: "jev_credential_configuration_required", Cause: "Jev credential encryption is not configured for this deployment.",
+			PermittedFix: "Configure the deployment's Jev credential encryption keyring before accepting credentials.", Retryable: false,
+			DocumentationLink: "/docs/governance/errors#credential_configuration_required",
+		},
 		"idempotency_conflict": {
 			Problem: "idempotency_key_conflict", Cause: "The request identifier was already used with different configuration data.",
 			PermittedFix: "Use a new request identifier for the corrected request.", Retryable: false,
