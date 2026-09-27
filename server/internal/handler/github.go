@@ -2091,9 +2091,13 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 			}
 		}
 		if p.Action == "closed" || (state != "merged" && state != "closed") {
+			closingIDs, err := h.closingIssueIDs(ctx, qtx, ws, closing, func(id string) bool { return linkPolicy.permitsClose(id, workspaceID) })
+			if err != nil {
+				return fmt.Errorf("github: resolve close intent: %w", err)
+			}
 			if err := qtx.SyncPullRequestCloseIntent(ctx, db.SyncPullRequestCloseIntentParams{
 				PullRequestID:   pr.ID,
-				ClosingIssueIds: h.closingIssueIDs(ctx, ws, closing, func(id string) bool { return linkPolicy.permitsClose(id, workspaceID) }),
+				ClosingIssueIds: closingIDs,
 			}); err != nil {
 				return fmt.Errorf("github: sync close intent: %w", err)
 			}
@@ -2179,7 +2183,10 @@ func (h *Handler) reconcileAutoLinks(ctx context.Context, queries *db.Queries, w
 	ambiguousIssues := map[pgtype.UUID]struct{}{}
 	prefix := issuePrefixForWorkspace(ws)
 	for _, id := range in.idents {
-		issue, ok := h.lookupIssueByIdentifier(ctx, ws.ID, prefix, id)
+		issue, ok, err := h.lookupIssueByIdentifier(ctx, queries, ws.ID, prefix, id)
+		if err != nil {
+			return linked, touched, err
+		}
 		if !ok {
 			continue
 		}
@@ -2239,18 +2246,22 @@ func (h *Handler) reconcileAutoLinks(ctx context.Context, queries *db.Queries, w
 // delivery's cross-workspace verdict (permitsClose on GitHub). Close intent
 // only decides anything once the PR merges — a PR event of its own — so the
 // sync is not one. Never nil: an empty list clears every link's close intent.
-func (h *Handler) closingIssueIDs(ctx context.Context, ws db.Workspace, closing []string, permits func(string) bool) []pgtype.UUID {
+func (h *Handler) closingIssueIDs(ctx context.Context, queries *db.Queries, ws db.Workspace, closing []string, permits func(string) bool) ([]pgtype.UUID, error) {
 	ids := make([]pgtype.UUID, 0, len(closing))
 	prefix := issuePrefixForWorkspace(ws)
 	for _, id := range closing {
 		if !permits(id) {
 			continue
 		}
-		if issue, ok := h.lookupIssueByIdentifier(ctx, ws.ID, prefix, id); ok {
+		issue, ok, err := h.lookupIssueByIdentifier(ctx, queries, ws.ID, prefix, id)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			ids = append(ids, issue.ID)
 		}
 	}
-	return ids
+	return ids, nil
 }
 
 // derivePRMergeableState resolves the upsert behaviour for the PR row's
@@ -2630,19 +2641,22 @@ func issueNumberForPrefix(identifier, prefix string) (int32, bool) {
 // lookupIssueByIdentifier looks up an issue in the given workspace by its
 // "PREFIX-NUMBER" identifier. Returns the row + true if the prefix matches
 // the workspace's configured prefix and the number resolves to a real issue.
-func (h *Handler) lookupIssueByIdentifier(ctx context.Context, workspaceID pgtype.UUID, prefix, identifier string) (db.Issue, bool) {
+func (h *Handler) lookupIssueByIdentifier(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, prefix, identifier string) (db.Issue, bool, error) {
 	number, ok := issueNumberForPrefix(identifier, prefix)
 	if !ok {
-		return db.Issue{}, false
+		return db.Issue{}, false, nil
 	}
-	issue, err := h.Queries.GetIssueByNumber(ctx, db.GetIssueByNumberParams{
+	issue, err := queries.GetIssueByNumber(ctx, db.GetIssueByNumberParams{
 		WorkspaceID: workspaceID,
 		Number:      number,
 	})
-	if err != nil {
-		return db.Issue{}, false
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.Issue{}, false, nil
 	}
-	return issue, true
+	if err != nil {
+		return db.Issue{}, false, fmt.Errorf("lookup issue %s: %w", identifier, err)
+	}
+	return issue, true, nil
 }
 
 // advanceIssueToDone auto-completes an issue whose linked PR(s) merged with

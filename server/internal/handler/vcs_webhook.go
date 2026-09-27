@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -141,7 +142,11 @@ func (h *Handler) HandleVCSWebhook(w http.ResponseWriter, r *http.Request) {
 		if pr, err := provider.ParsePullRequest(body); err != nil {
 			slog.Warn("vcs: bad pull_request payload", "provider", conn.Provider, "err", err)
 		} else {
-			h.mirrorVCSPullRequest(r.Context(), conn, pr)
+			if err := h.mirrorVCSPullRequest(r.Context(), conn, pr); err != nil {
+				slog.Error("vcs: pull_request event failed", "provider", conn.Provider, "err", err)
+				writeError(w, http.StatusInternalServerError, "failed to process pull_request event")
+				return
+			}
 		}
 	case vcs.EventCIStatus:
 		if st, err := provider.ParseCIStatus(body); err != nil {
@@ -155,25 +160,36 @@ func (h *Handler) HandleVCSWebhook(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnection, ev vcs.PullRequestEvent) {
+func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnection, ev vcs.PullRequestEvent) error {
 	if ev.RepoOwner == "" || ev.RepoName == "" || ev.Number == 0 {
 		slog.Warn("vcs: pull_request missing repo identity", "provider", conn.Provider)
-		return
+		return nil
 	}
-
+	ws, err := h.Queries.GetWorkspace(ctx, conn.WorkspaceID)
+	if err != nil {
+		return fmt.Errorf("vcs: load workspace: %w", err)
+	}
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("vcs: begin mirror transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	qtx := h.Queries.WithTx(tx)
 	// The stored state before this event, so a merge completes issues once —
 	// when it happens — and not again on a later event of a merged PR.
 	prevState := ""
-	if prev, err := h.Queries.GetVCSPullRequestByKey(ctx, db.GetVCSPullRequestByKeyParams{
+	if prev, err := qtx.GetVCSPullRequestByKey(ctx, db.GetVCSPullRequestByKeyParams{
 		ConnectionID: conn.ID,
 		RepoOwner:    ev.RepoOwner,
 		RepoName:     ev.RepoName,
 		PrNumber:     ev.Number,
 	}); err == nil {
 		prevState = prev.State
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("vcs: load previous pr state: %w", err)
 	}
 
-	pr, err := h.Queries.UpsertVCSPullRequest(ctx, db.UpsertVCSPullRequestParams{
+	pr, err := qtx.UpsertVCSPullRequest(ctx, db.UpsertVCSPullRequestParams{
 		WorkspaceID:     conn.WorkspaceID,
 		ConnectionID:    conn.ID,
 		Provider:        conn.Provider,
@@ -196,8 +212,7 @@ func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnectio
 		HeadSha:         ev.HeadSHA,
 	})
 	if err != nil {
-		slog.Warn("vcs: upsert pr failed", "err", err)
-		return
+		return fmt.Errorf("vcs: upsert pr: %w", err)
 	}
 
 	// Out-of-order guard for the link write. UpsertVCSPullRequest keeps the
@@ -211,7 +226,7 @@ func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnectio
 	// stored value, so it proceeds.)
 	evUpdatedAt := parseGHTimeRequired(ev.UpdatedAt)
 	if pr.PrUpdatedAt.Valid && evUpdatedAt.Valid && pr.PrUpdatedAt.Time.After(evUpdatedAt.Time) {
-		return
+		return nil
 	}
 
 	workspaceID := uuidToString(conn.WorkspaceID)
@@ -222,62 +237,61 @@ func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnectio
 	// per-workspace flag. The issue-side machinery is shared with GitHub
 	// (reconcileAutoLinks, maybeAutoCompleteIssue). A connection belongs to
 	// exactly one workspace, so there is no cross-workspace ambiguity to settle.
-	linkedIssueIDs := make([]string, 0)
-	ws, err := h.Queries.GetWorkspace(ctx, conn.WorkspaceID)
-	if err == nil {
-		var touched map[pgtype.UUID]struct{}
-		idents, closing := prClaimedIdentifiers(ev.Title, ev.Body, ev.Branch)
-		permits := func(string) bool { return true }
-		var linkErr error
-		linkedIssueIDs, touched, linkErr = h.reconcileAutoLinks(ctx, h.Queries, ws, pr.ID, ev.State, prAutoLinkInput{
-			idents:    idents,
-			permits:   permits,
-			ambiguous: func(string) bool { return false },
-			link: func(issueID pgtype.UUID) (int64, error) {
-				return h.Queries.LinkIssueToVCSPullRequest(ctx, db.LinkIssueToVCSPullRequestParams{IssueID: issueID, PullRequestID: pr.ID})
-			},
-			unlink: func(issueID pgtype.UUID) (int64, error) {
-				return h.Queries.UnlinkIssueFromVCSPullRequest(ctx, db.UnlinkIssueFromVCSPullRequestParams{IssueID: issueID, PullRequestID: pr.ID})
-			},
-			listAuto: func() ([]pgtype.UUID, error) {
-				return h.Queries.ListAutoLinkedIssueIDsForVCSPullRequest(ctx, pr.ID)
-			},
-		})
-		if linkErr != nil {
-			slog.Warn("vcs: reconcile links failed", "err", linkErr)
-			return
+	idents, closing := prClaimedIdentifiers(ev.Title, ev.Body, ev.Branch)
+	permits := func(string) bool { return true }
+	linkedIssueIDs, touched, err := h.reconcileAutoLinks(ctx, qtx, ws, pr.ID, ev.State, prAutoLinkInput{
+		idents:    idents,
+		permits:   permits,
+		ambiguous: func(string) bool { return false },
+		link: func(issueID pgtype.UUID) (int64, error) {
+			return qtx.LinkIssueToVCSPullRequest(ctx, db.LinkIssueToVCSPullRequestParams{IssueID: issueID, PullRequestID: pr.ID})
+		},
+		unlink: func(issueID pgtype.UUID) (int64, error) {
+			return qtx.UnlinkIssueFromVCSPullRequest(ctx, db.UnlinkIssueFromVCSPullRequestParams{IssueID: issueID, PullRequestID: pr.ID})
+		},
+		listAuto: func() ([]pgtype.UUID, error) {
+			return qtx.ListAutoLinkedIssueIDsForVCSPullRequest(ctx, pr.ID)
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("vcs: reconcile links: %w", err)
+	}
+	// Close intent follows the PR text up to and including the merge/close
+	// event, on every link of the PR (see closingIssueIDs).
+	if ev.Terminal() || (ev.State != "merged" && ev.State != "closed") {
+		closingIDs, err := h.closingIssueIDs(ctx, qtx, ws, closing, permits)
+		if err != nil {
+			return fmt.Errorf("vcs: resolve close intent: %w", err)
 		}
-		// Close intent follows the PR text up to and including the merge/close
-		// event, on every link of the PR (see closingIssueIDs).
-		if ev.Terminal() || (ev.State != "merged" && ev.State != "closed") {
-			if err := h.Queries.SyncVCSPullRequestCloseIntent(ctx, db.SyncVCSPullRequestCloseIntentParams{
-				PullRequestID:   pr.ID,
-				ClosingIssueIds: h.closingIssueIDs(ctx, ws, closing, permits),
-			}); err != nil {
-				slog.Warn("vcs: sync close intent failed", "err", err)
-			}
+		if err := qtx.SyncVCSPullRequestCloseIntent(ctx, db.SyncVCSPullRequestCloseIntentParams{
+			PullRequestID:   pr.ID,
+			ClosingIssueIds: closingIDs,
+		}); err != nil {
+			return fmt.Errorf("vcs: sync close intent: %w", err)
 		}
-		if ev.State == "merged" && prevState != "merged" {
-			issueIDs, err := h.Queries.ListIssueIDsForVCSPullRequest(ctx, pr.ID)
-			if err != nil {
-				slog.Warn("vcs: list linked issues failed", "err", err)
-			}
-			for _, id := range issueIDs {
-				touched[id] = struct{}{}
-			}
+	}
+	if ev.State == "merged" && prevState != "merged" {
+		issueIDs, err := qtx.ListIssueIDsForVCSPullRequest(ctx, pr.ID)
+		if err != nil {
+			return fmt.Errorf("vcs: list linked issues: %w", err)
 		}
-		resolver := issuestatus.NewResolver(conn.WorkspaceID)
-		for issueID := range touched {
-			h.maybeAutoCompleteIssue(ctx, conn.WorkspaceID, issueID, resolver)
+		for _, id := range issueIDs {
+			touched[id] = struct{}{}
 		}
-	} else {
-		slog.Warn("vcs: load workspace failed", "err", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("vcs: commit mirror transaction: %w", err)
+	}
+	resolver := issuestatus.NewResolver(conn.WorkspaceID)
+	for issueID := range touched {
+		h.maybeAutoCompleteIssue(ctx, conn.WorkspaceID, issueID, resolver)
 	}
 
 	h.publish(protocol.EventPullRequestUpdated, workspaceID, "system", "", map[string]any{
 		"pull_request":     resp,
 		"linked_issue_ids": linkedIssueIDs,
 	})
+	return nil
 }
 
 func (h *Handler) mirrorVCSCIStatus(ctx context.Context, conn db.VcsConnection, ev vcs.CIStatusEvent) {
