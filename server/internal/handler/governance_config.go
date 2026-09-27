@@ -347,6 +347,7 @@ func loadGovernanceControl(ctx context.Context, database dbExecutor, workspaceID
 		SELECT config_version, control_epoch, settings
 		FROM governance_workspace_config
 		WHERE workspace_id = $1
+		FOR SHARE
 	`, workspaceID).Scan(&config.Version, &config.ControlEpoch, &settingsJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return config, nil

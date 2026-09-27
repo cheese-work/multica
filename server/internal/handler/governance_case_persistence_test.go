@@ -134,8 +134,15 @@ func TestGovernanceCasePersistence_CreateOrResolveRaces(t *testing.T) {
 		"name": "Governance case persistence races",
 		"slug": slug,
 	})
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO governance_workspace_config (workspace_id, config_version, control_epoch, settings)
+		VALUES ($1, 1, 1, '{"jev_governance_enabled":true,"rule_mode":"off"}'::jsonb)
+	`, workspaceID); err != nil {
+		t.Fatalf("enable governance control fixture: %v", err)
+	}
 	t.Cleanup(func() {
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM governance_case WHERE workspace_id = $1`, workspaceID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM governance_workspace_config WHERE workspace_id = $1`, workspaceID)
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id = $1`, workspaceID)
 	})
 

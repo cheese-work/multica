@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/governance"
 	"github.com/multica-ai/multica/server/internal/governance/receipt"
@@ -303,6 +304,13 @@ func TestGovernanceDisableWaitsForInFlightEvaluationAdmission(t *testing.T) {
 	issueID := createCommentTriggerPreviewIssue(t, "governance disable race", "member", testUserID)
 	withGovernanceFlag(t, true)
 	provider := &blockingGovernanceProvider{entered: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(func() {
+		select {
+		case <-provider.release:
+		default:
+			close(provider.release)
+		}
+	})
 	withGovernanceObserver(t, provider, testHandler.Queries)
 	recorder := httptest.NewRecorder()
 	request := withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": "observe while disable races"}), "id", issueID)
@@ -323,6 +331,17 @@ func TestGovernanceDisableWaitsForInFlightEvaluationAdmission(t *testing.T) {
 	actorID, err := util.ParseUUID(testUserID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	var lockedWorkspaceID string
+	lockErr := testPool.QueryRow(context.Background(), `
+		SELECT workspace_id
+		FROM governance_workspace_config
+		WHERE workspace_id = $1
+		FOR UPDATE NOWAIT
+	`, workspaceID).Scan(&lockedWorkspaceID)
+	var postgresErr *pgconn.PgError
+	if !errors.As(lockErr, &postgresErr) || postgresErr.Code != "55P03" {
+		t.Fatalf("in-flight evaluation control lock error = %v, want PostgreSQL lock-not-available", lockErr)
 	}
 	expectedVersion := int64(1)
 	disabled := false
