@@ -7,12 +7,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/governance"
 	"github.com/multica-ai/multica/server/internal/governance/receipt"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
 	"github.com/multica-ai/multica/server/pkg/jev"
@@ -86,11 +90,32 @@ func (failingGovernanceStore) InsertGovernanceReceipt(context.Context, db.Insert
 // test and restores the handler's previous FeatureFlags afterward.
 func withGovernanceFlag(t *testing.T, enabled bool) {
 	t.Helper()
+	if enabled {
+		useCompleteGovernanceConfigFixture(t)
+	}
 	previous := testHandler.FeatureFlags
 	sp := featureflag.NewStaticProvider()
 	sp.LoadRules(map[string]featureflag.Rule{featureflags.JevReceipts: {Default: enabled}})
 	testHandler.FeatureFlags = featureflag.NewService(sp)
 	t.Cleanup(func() { testHandler.FeatureFlags = previous })
+}
+
+type blockingGovernanceProvider struct {
+	entered chan struct{}
+	release chan struct{}
+	calls   atomic.Int64
+}
+
+func (provider *blockingGovernanceProvider) Evaluate(ctx context.Context, request jev.Request) (*jev.Response, error) {
+	if provider.calls.Add(1) == 1 {
+		close(provider.entered)
+		select {
+		case <-provider.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return (&governanceFakeProvider{}).Evaluate(ctx, request)
 }
 
 // withGovernanceObserver swaps in a fresh *receipt.Observer for the
@@ -267,6 +292,85 @@ func TestCreateComment_GovernanceFlagOn_ProviderSucceeds_ResponseUnaffected(t *t
 	}
 	if statuses := governanceReceiptStatusesForComment(t, commentID); len(statuses) != 1 || statuses[0] != "decided" {
 		t.Errorf("statuses = %v, want [decided]", statuses)
+	}
+}
+
+func TestGovernanceDisableWaitsForInFlightEvaluationAdmission(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	requireGovernanceConfigTables(t)
+	issueID := createCommentTriggerPreviewIssue(t, "governance disable race", "member", testUserID)
+	withGovernanceFlag(t, true)
+	provider := &blockingGovernanceProvider{entered: make(chan struct{}), release: make(chan struct{})}
+	withGovernanceObserver(t, provider, testHandler.Queries)
+	recorder := httptest.NewRecorder()
+	request := withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": "observe while disable races"}), "id", issueID)
+	observed := make(chan struct{})
+	go func() {
+		testHandler.CreateComment(recorder, request)
+		close(observed)
+	}()
+	select {
+	case <-provider.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("governance evaluation did not start")
+	}
+	workspaceID, err := util.ParseUUID(testWorkspaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actorID, err := util.ParseUUID(testUserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedVersion := int64(1)
+	disabled := false
+	requestID := uuid.New()
+	disableStarted := make(chan struct{})
+	disableDone := make(chan error, 1)
+	go func() {
+		close(disableStarted)
+		_, writeErr := testHandler.writeGovernanceConfig(context.Background(), workspaceID, actorID, requestID, strings.Repeat("0", 64), governanceConfigPatch{
+			RequestID: requestID.String(), ExpectedVersion: &expectedVersion, JevGovernanceEnabled: &disabled,
+		})
+		disableDone <- writeErr
+	}()
+	<-disableStarted
+	select {
+	case writeErr := <-disableDone:
+		close(provider.release)
+		t.Fatalf("master disable completed during admitted evaluation: %v", writeErr)
+	case <-time.After(10 * time.Millisecond):
+	}
+	close(provider.release)
+	select {
+	case <-observed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("comment observation did not finish")
+	}
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("comment response = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if err := <-disableDone; err != nil {
+		t.Fatalf("master disable: %v", err)
+	}
+	testHandler.GovernanceReceipts.WaitForIdle()
+	config, err := loadGovernanceControl(context.Background(), testPool, workspaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Settings.JevGovernanceEnabled || config.ControlEpoch != 2 {
+		t.Fatalf("disabled config = enabled:%v epoch:%d, want false/2", config.Settings.JevGovernanceEnabled, config.ControlEpoch)
+	}
+	second := httptest.NewRecorder()
+	secondRequest := withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": "after disable acknowledgement"}), "id", issueID)
+	testHandler.CreateComment(second, secondRequest)
+	if second.Code != http.StatusCreated {
+		t.Fatalf("post-disable comment = %d: %s", second.Code, second.Body.String())
+	}
+	if calls := provider.calls.Load(); calls != 1 {
+		t.Fatalf("provider calls = %d after acknowledged disable, want 1 total", calls)
 	}
 }
 

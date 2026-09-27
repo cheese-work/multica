@@ -68,8 +68,33 @@ func (h *Handler) observeGovernanceReceipt(r *http.Request, issue db.Issue, comm
 	if !ok {
 		return
 	}
+	if h.TxStarter == nil {
+		return
+	}
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		slog.Warn("governance control could not be locked; observation skipped",
+			append(logger.RequestAttrs(r), "issue_id", uuidToString(issue.ID), "error", err)...)
+		return
+	}
+	defer tx.Rollback(ctx)
+	config, err := loadGovernanceControl(ctx, tx, issue.WorkspaceID)
+	if err != nil {
+		slog.Warn("governance control could not be loaded; observation skipped",
+			append(logger.RequestAttrs(r), "issue_id", uuidToString(issue.ID), "error", err)...)
+		return
+	}
+	if !config.Allows(governance.GateInput{Action: governance.GateEvaluation, TransportEnabled: true}) {
+		return
+	}
+	in.ControlEpoch = config.ControlEpoch
 
 	result := h.GovernanceReceipts.Observe(ctx, in)
+	if err := tx.Commit(ctx); err != nil {
+		slog.Warn("governance evaluation admission could not commit",
+			append(logger.RequestAttrs(r), "issue_id", uuidToString(issue.ID), "error", err)...)
+		return
+	}
 	if result.Status != "decided" {
 		slog.Info("governance receipt observation did not reach a decision",
 			append(logger.RequestAttrs(r),

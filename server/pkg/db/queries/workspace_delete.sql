@@ -373,6 +373,12 @@ deleted_issue_checkpoints AS (
 deleted_governance_receipts AS (
     DELETE FROM governance_receipt WHERE workspace_id = $1
 ),
+deleted_governance_config_audit AS (
+    DELETE FROM governance_workspace_config_audit WHERE workspace_id = $1
+),
+deleted_governance_configs AS (
+    DELETE FROM governance_workspace_config WHERE workspace_id = $1
+),
 -- CHE-704 / C01 durable MJ cases and immutable captured evidence. These have
 -- no database cascades by design, so every workspace-owned table is removed
 -- explicitly before its workspace row.
