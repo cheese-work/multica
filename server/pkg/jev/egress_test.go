@@ -1,11 +1,15 @@
 package jev
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -302,5 +306,123 @@ func TestTransportErrorsAreScrubbed(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "test-key") || strings.Contains(err.Error(), "provider.example") {
 		t.Fatalf("transport error disclosed details: %v", err)
+	}
+}
+
+func TestRetryLoggingDoesNotExposeUpstreamDecodeError(t *testing.T) {
+	const fakeSecret = "987654321987654321987654321"
+	logReader, logWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	originalStderr := os.Stderr
+	os.Stderr = logWriter
+	t.Cleanup(func() {
+		os.Stderr = originalStderr
+		_ = logWriter.Close()
+		_ = logReader.Close()
+	})
+
+	var hits atomic.Int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"usage":{"input_tokens":`+strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")+`}}`)
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv(EgressAllowlistEnv, srv.Listener.Addr().String())
+	client, err := NewClient(Options{
+		APIKey:           fakeSecret,
+		BaseURL:          srv.URL,
+		HTTPClient:       srv.Client(),
+		RetryCount:       1,
+		RetryWaitTime:    time.Millisecond,
+		RetryMaxWaitTime: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	_, evaluateErr := client.Evaluate(context.Background(), Request{
+		State:     "fake",
+		Questions: map[string]Question{"q": NewNoul("fake?", nil)},
+	})
+	os.Stderr = originalStderr
+	if err := logWriter.Close(); err != nil {
+		t.Fatalf("close captured log writer: %v", err)
+	}
+	logs, err := io.ReadAll(logReader)
+	if err != nil {
+		t.Fatalf("read captured logs: %v", err)
+	}
+	if err := logReader.Close(); err != nil {
+		t.Fatalf("close captured log reader: %v", err)
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("fake upstream hits = %d, want 2 attempts", hits.Load())
+	}
+	if !errors.Is(evaluateErr, ErrUpstreamRequest) {
+		t.Fatalf("Evaluate error = %v, want ErrUpstreamRequest", evaluateErr)
+	}
+	if strings.Contains(evaluateErr.Error(), fakeSecret) || bytes.Contains(logs, []byte(fakeSecret)) {
+		t.Fatalf("fake credential leaked in error or logs: error=%q logs=%q", evaluateErr, logs)
+	}
+}
+
+func TestResponseLimitAppliesAfterGzipDecompression(t *testing.T) {
+	payload := []byte(`{"model":"` + strings.Repeat("x", 2<<20) + `","answers":{"q":{"type":"noul","noul":0.5}},"usage":{}}`)
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	if _, err := writer.Write(payload); err != nil {
+		t.Fatalf("gzip payload: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close gzip writer: %v", err)
+	}
+	if compressed.Len() >= maxResponseBytes || len(payload) <= maxResponseBytes {
+		t.Fatalf("test payload sizes: compressed=%d inflated=%d", compressed.Len(), len(payload))
+	}
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "gzip")
+		_, _ = w.Write(compressed.Bytes())
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv(EgressAllowlistEnv, srv.Listener.Addr().String())
+
+	for _, test := range []struct {
+		name               string
+		disableCompression bool
+	}{
+		{name: "ordinary transport"},
+		{name: "compression disabled on supplied transport", disableCompression: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			httpClient := srv.Client()
+			if test.disableCompression {
+				transport := httpClient.Transport.(*http.Transport).Clone()
+				transport.DisableCompression = true
+				httpClient.Transport = transport
+			}
+			client, err := NewClient(Options{
+				APIKey:     "fake-key",
+				BaseURL:    srv.URL,
+				HTTPClient: httpClient,
+				RetryCount: -1,
+			})
+			if err != nil {
+				t.Fatalf("NewClient: %v", err)
+			}
+			response, err := client.Evaluate(context.Background(), Request{
+				State:     "fake",
+				Questions: map[string]Question{"q": NewNoul("fake?", nil)},
+			})
+			if !errors.Is(err, ErrResponseTooLarge) {
+				t.Fatalf("Evaluate error = %v, want ErrResponseTooLarge", err)
+			}
+			if response != nil {
+				t.Fatalf("Evaluate returned oversized response with model length %d", len(response.Model))
+			}
+		})
 	}
 }

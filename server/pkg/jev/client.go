@@ -111,6 +111,12 @@ type Client struct {
 	timeout time.Duration
 }
 
+type discardRestyLogger struct{}
+
+func (discardRestyLogger) Errorf(string, ...interface{}) {}
+func (discardRestyLogger) Warnf(string, ...interface{})  {}
+func (discardRestyLogger) Debugf(string, ...interface{}) {}
+
 // NewClient constructs a Client, failing on obviously broken options.
 func NewClient(opts Options) (*Client, error) {
 	if strings.TrimSpace(opts.APIKey) == "" {
@@ -162,6 +168,8 @@ func NewClient(opts Options) (*Client, error) {
 	}
 
 	rc := resty.NewWithClient(httpClient).
+		SetLogger(discardRestyLogger{}).
+		SetResponseBodyLimit(maxResponseBytes).
 		SetBaseURL(baseURL).
 		SetHeader("Content-Type", "application/json").
 		SetHeader("Accept", "application/json").
@@ -199,7 +207,7 @@ func applyRetryPolicy(rc *resty.Client, opts Options) {
 		SetRetryMaxWaitTime(maxWait).
 		AddRetryCondition(func(resp *resty.Response, err error) bool {
 			if err != nil {
-				if errors.Is(err, ErrEgressDenied) || errors.Is(err, ErrResponseTooLarge) {
+				if errors.Is(err, ErrEgressDenied) || errors.Is(err, ErrResponseTooLarge) || errors.Is(err, resty.ErrResponseBodyTooLarge) {
 					return false
 				}
 				return true
@@ -328,7 +336,7 @@ func (c *Client) Evaluate(ctx context.Context, req Request) (*Response, error) {
 		if errors.Is(err, ErrEgressDenied) {
 			return nil, ErrEgressDenied
 		}
-		if errors.Is(err, ErrResponseTooLarge) {
+		if errors.Is(err, ErrResponseTooLarge) || errors.Is(err, resty.ErrResponseBodyTooLarge) {
 			return nil, ErrResponseTooLarge
 		}
 		return nil, ErrUpstreamRequest
