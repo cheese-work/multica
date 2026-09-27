@@ -11,6 +11,82 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteExpiredGovernanceAttemptsForWorkspace = `-- name: DeleteExpiredGovernanceAttemptsForWorkspace :execrows
+DELETE FROM governance_attempt AS attempt
+USING governance_case AS case_record
+WHERE attempt.workspace_id = $1::uuid
+  AND attempt.case_id = case_record.id
+  AND case_record.workspace_id = $1::uuid
+  AND case_record.state IN ('resolved', 'dismissed', 'invalidated', 'failed', 'parked')
+  AND attempt.created_at < now() - interval '90 days'
+  AND attempt.terminal_at IS NOT NULL
+  AND attempt.obligation_id IS NULL
+`
+
+func (q *Queries) DeleteExpiredGovernanceAttemptsForWorkspace(ctx context.Context, workspaceID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredGovernanceAttemptsForWorkspace, workspaceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteExpiredGovernanceEvaluationSourcesForWorkspace = `-- name: DeleteExpiredGovernanceEvaluationSourcesForWorkspace :execrows
+DELETE FROM governance_evaluation_source AS source
+USING governance_evaluation AS evaluation, governance_case AS governance_case
+WHERE source.workspace_id = $1::uuid
+  AND source.evaluation_id = evaluation.id
+  AND evaluation.workspace_id = $1::uuid
+  AND evaluation.case_id = governance_case.id
+  AND governance_case.workspace_id = $1::uuid
+  AND governance_case.state IN ('resolved', 'dismissed', 'invalidated', 'failed', 'parked')
+  AND evaluation.captured_at < now() - interval '90 days'
+`
+
+func (q *Queries) DeleteExpiredGovernanceEvaluationSourcesForWorkspace(ctx context.Context, workspaceID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredGovernanceEvaluationSourcesForWorkspace, workspaceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteExpiredGovernanceEvaluationsForWorkspace = `-- name: DeleteExpiredGovernanceEvaluationsForWorkspace :execrows
+DELETE FROM governance_evaluation AS evaluation
+USING governance_case AS governance_case
+WHERE evaluation.workspace_id = $1::uuid
+  AND evaluation.case_id = governance_case.id
+  AND governance_case.workspace_id = $1::uuid
+  AND governance_case.state IN ('resolved', 'dismissed', 'invalidated', 'failed', 'parked')
+  AND evaluation.captured_at < now() - interval '90 days'
+`
+
+func (q *Queries) DeleteExpiredGovernanceEvaluationsForWorkspace(ctx context.Context, workspaceID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredGovernanceEvaluationsForWorkspace, workspaceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteExpiredGovernanceTransitionsForWorkspace = `-- name: DeleteExpiredGovernanceTransitionsForWorkspace :execrows
+DELETE FROM governance_case_transition AS transition
+USING governance_case AS case_record
+WHERE transition.workspace_id = $1::uuid
+  AND transition.case_id = case_record.id
+  AND case_record.workspace_id = $1::uuid
+  AND case_record.state IN ('resolved', 'dismissed', 'invalidated', 'failed', 'parked')
+  AND transition.created_at < now() - interval '90 days'
+`
+
+func (q *Queries) DeleteExpiredGovernanceTransitionsForWorkspace(ctx context.Context, workspaceID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredGovernanceTransitionsForWorkspace, workspaceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const findGovernanceCaseByMaterialFingerprint = `-- name: FindGovernanceCaseByMaterialFingerprint :one
 SELECT id, workspace_id, subject_type, subject_id, subject_revision, rule_id, generation, material_fingerprint, state, state_revision, authority_lineage, trigger_aliases, evidence_id, evidence_digest, rule_revision, activation_revision, config_revision, lease_token, lease_expires_at, current_attempt_id, current_action_id, predecessor_case_id, budget_root_id, evidence_epoch, refresh_count, absolute_deadline, frozen_strategy, reason, created_at, updated_at FROM governance_case
 WHERE workspace_id = $1
@@ -75,6 +151,66 @@ func (q *Queries) FindGovernanceCaseByMaterialFingerprint(ctx context.Context, a
 	return i, err
 }
 
+const getGovernanceCaseAudit = `-- name: GetGovernanceCaseAudit :one
+SELECT id, workspace_id, subject_type, subject_id, subject_revision, rule_id,
+       generation, state, state_revision, rule_revision, activation_revision,
+       config_revision, evidence_epoch, refresh_count, absolute_deadline,
+       created_at, updated_at
+FROM governance_case
+WHERE workspace_id = $1::uuid
+  AND id = $2::uuid
+`
+
+type GetGovernanceCaseAuditParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	CaseID      pgtype.UUID `json:"case_id"`
+}
+
+type GetGovernanceCaseAuditRow struct {
+	ID                 pgtype.UUID        `json:"id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	SubjectType        string             `json:"subject_type"`
+	SubjectID          pgtype.UUID        `json:"subject_id"`
+	SubjectRevision    int64              `json:"subject_revision"`
+	RuleID             pgtype.UUID        `json:"rule_id"`
+	Generation         int32              `json:"generation"`
+	State              string             `json:"state"`
+	StateRevision      int64              `json:"state_revision"`
+	RuleRevision       string             `json:"rule_revision"`
+	ActivationRevision string             `json:"activation_revision"`
+	ConfigRevision     string             `json:"config_revision"`
+	EvidenceEpoch      int32              `json:"evidence_epoch"`
+	RefreshCount       int32              `json:"refresh_count"`
+	AbsoluteDeadline   pgtype.Timestamptz `json:"absolute_deadline"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) GetGovernanceCaseAudit(ctx context.Context, arg GetGovernanceCaseAuditParams) (GetGovernanceCaseAuditRow, error) {
+	row := q.db.QueryRow(ctx, getGovernanceCaseAudit, arg.WorkspaceID, arg.CaseID)
+	var i GetGovernanceCaseAuditRow
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SubjectType,
+		&i.SubjectID,
+		&i.SubjectRevision,
+		&i.RuleID,
+		&i.Generation,
+		&i.State,
+		&i.StateRevision,
+		&i.RuleRevision,
+		&i.ActivationRevision,
+		&i.ConfigRevision,
+		&i.EvidenceEpoch,
+		&i.RefreshCount,
+		&i.AbsoluteDeadline,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const insertGovernanceAttempt = `-- name: InsertGovernanceAttempt :one
 INSERT INTO governance_attempt (
     workspace_id, case_id, ordinal, kind, candidate_id, task_id, obligation_id,
@@ -82,7 +218,7 @@ INSERT INTO governance_attempt (
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 )
-RETURNING id, workspace_id, case_id, ordinal, kind, candidate_id, task_id, obligation_id, input_digest, attempt_fence, claimed_at, deadline_at, terminal_reason, terminal_at, confidence, result, usage, created_at, updated_at
+RETURNING id, workspace_id, case_id, ordinal, kind, candidate_id, task_id, obligation_id, input_digest, attempt_fence, claimed_at, deadline_at, terminal_reason, terminal_at, confidence, result, usage, created_at, updated_at, redacted_at
 `
 
 type InsertGovernanceAttemptParams struct {
@@ -138,6 +274,7 @@ func (q *Queries) InsertGovernanceAttempt(ctx context.Context, arg InsertGoverna
 		&i.Usage,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RedactedAt,
 	)
 	return i, err
 }
@@ -205,7 +342,7 @@ INSERT INTO governance_evaluation (
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
 )
-RETURNING id, workspace_id, case_id, attempt_id, trigger_identity, subject_revision_vector, snapshot, snapshot_digest, snapshot_schema_version, required_complete, candidate_map, citation_map, estimated_tokens, applicable_rule_digests, question_criteria_hash, requested_model, returned_model, answers, captured_at, created_at
+RETURNING id, workspace_id, case_id, attempt_id, trigger_identity, subject_revision_vector, snapshot, snapshot_digest, snapshot_schema_version, required_complete, candidate_map, citation_map, estimated_tokens, applicable_rule_digests, question_criteria_hash, requested_model, returned_model, answers, captured_at, created_at, redacted_at
 `
 
 type InsertGovernanceEvaluationParams struct {
@@ -270,28 +407,63 @@ func (q *Queries) InsertGovernanceEvaluation(ctx context.Context, arg InsertGove
 		&i.Answers,
 		&i.CapturedAt,
 		&i.CreatedAt,
+		&i.RedactedAt,
 	)
 	return i, err
 }
 
 const insertGovernanceEvaluationSource = `-- name: InsertGovernanceEvaluationSource :one
+WITH locked_issue AS MATERIALIZED (
+    SELECT issue.id
+    FROM issue
+    WHERE $3::text = 'issue'
+      AND issue.workspace_id = $1::uuid
+      AND issue.id::text = $7::text
+    FOR KEY SHARE OF issue
+), locked_comment_issue AS MATERIALIZED (
+    SELECT issue.id
+    FROM issue
+    JOIN comment
+      ON comment.issue_id = issue.id
+     AND comment.workspace_id = issue.workspace_id
+    WHERE $3::text = 'comment'
+      AND issue.workspace_id = $1::uuid
+      AND comment.id::text = $7::text
+      AND comment.deleted_at IS NULL
+    FOR KEY SHARE OF issue
+), locked_comment AS MATERIALIZED (
+    SELECT comment.id
+    FROM comment
+    JOIN locked_comment_issue ON locked_comment_issue.id = comment.issue_id
+    WHERE comment.workspace_id = $1::uuid
+      AND comment.id::text = $7::text
+      AND comment.deleted_at IS NULL
+    FOR UPDATE OF comment
+), live_source AS MATERIALIZED (
+    SELECT id FROM locked_issue
+    UNION ALL
+    SELECT id FROM locked_comment
+)
 INSERT INTO governance_evaluation_source (
     workspace_id, evaluation_id, object_type, object_id, object_revision,
     object_digest, copied_context
-) VALUES (
-    $1, $2, $3, $4, $5, $6, $7
 )
-RETURNING id, workspace_id, evaluation_id, object_type, object_id, object_revision, object_digest, copied_context, created_at
+SELECT $1::uuid, $2::uuid,
+       $3::text, live_source.id::text,
+       $4::text, $5::text,
+       $6::jsonb
+FROM live_source
+RETURNING id, workspace_id, evaluation_id, object_type, object_id, object_revision, object_digest, copied_context, created_at, redacted_at
 `
 
 type InsertGovernanceEvaluationSourceParams struct {
 	WorkspaceID    pgtype.UUID `json:"workspace_id"`
 	EvaluationID   pgtype.UUID `json:"evaluation_id"`
 	ObjectType     string      `json:"object_type"`
-	ObjectID       string      `json:"object_id"`
 	ObjectRevision string      `json:"object_revision"`
 	ObjectDigest   string      `json:"object_digest"`
 	CopiedContext  []byte      `json:"copied_context"`
+	ObjectID       string      `json:"object_id"`
 }
 
 func (q *Queries) InsertGovernanceEvaluationSource(ctx context.Context, arg InsertGovernanceEvaluationSourceParams) (GovernanceEvaluationSource, error) {
@@ -299,10 +471,10 @@ func (q *Queries) InsertGovernanceEvaluationSource(ctx context.Context, arg Inse
 		arg.WorkspaceID,
 		arg.EvaluationID,
 		arg.ObjectType,
-		arg.ObjectID,
 		arg.ObjectRevision,
 		arg.ObjectDigest,
 		arg.CopiedContext,
+		arg.ObjectID,
 	)
 	var i GovernanceEvaluationSource
 	err := row.Scan(
@@ -315,6 +487,7 @@ func (q *Queries) InsertGovernanceEvaluationSource(ctx context.Context, arg Inse
 		&i.ObjectDigest,
 		&i.CopiedContext,
 		&i.CreatedAt,
+		&i.RedactedAt,
 	)
 	return i, err
 }
@@ -413,6 +586,332 @@ func (q *Queries) InsertNextGovernanceCase(ctx context.Context, arg InsertNextGo
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const listGovernanceCaseAuditAttempts = `-- name: ListGovernanceCaseAuditAttempts :many
+SELECT id, ordinal, kind, obligation_id, deadline_at, terminal_at, created_at
+FROM governance_attempt
+WHERE workspace_id = $1::uuid
+  AND case_id = $2::uuid
+  AND (
+      $3::boolean = FALSE
+      OR (created_at, id) < (
+          $4::timestamptz,
+          $5::uuid
+      )
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT $6::integer
+`
+
+type ListGovernanceCaseAuditAttemptsParams struct {
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	CaseID          pgtype.UUID        `json:"case_id"`
+	HasCursor       bool               `json:"has_cursor"`
+	CursorCreatedAt pgtype.Timestamptz `json:"cursor_created_at"`
+	CursorID        pgtype.UUID        `json:"cursor_id"`
+	PageSize        int32              `json:"page_size"`
+}
+
+type ListGovernanceCaseAuditAttemptsRow struct {
+	ID           pgtype.UUID        `json:"id"`
+	Ordinal      int32              `json:"ordinal"`
+	Kind         string             `json:"kind"`
+	ObligationID pgtype.UUID        `json:"obligation_id"`
+	DeadlineAt   pgtype.Timestamptz `json:"deadline_at"`
+	TerminalAt   pgtype.Timestamptz `json:"terminal_at"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) ListGovernanceCaseAuditAttempts(ctx context.Context, arg ListGovernanceCaseAuditAttemptsParams) ([]ListGovernanceCaseAuditAttemptsRow, error) {
+	rows, err := q.db.Query(ctx, listGovernanceCaseAuditAttempts,
+		arg.WorkspaceID,
+		arg.CaseID,
+		arg.HasCursor,
+		arg.CursorCreatedAt,
+		arg.CursorID,
+		arg.PageSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGovernanceCaseAuditAttemptsRow{}
+	for rows.Next() {
+		var i ListGovernanceCaseAuditAttemptsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Ordinal,
+			&i.Kind,
+			&i.ObligationID,
+			&i.DeadlineAt,
+			&i.TerminalAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGovernanceCaseAuditEvaluations = `-- name: ListGovernanceCaseAuditEvaluations :many
+SELECT id, snapshot_schema_version, required_complete, estimated_tokens,
+       captured_at, redacted_at
+FROM governance_evaluation
+WHERE workspace_id = $1::uuid
+  AND case_id = $2::uuid
+  AND (
+      $3::boolean = FALSE
+      OR (captured_at, id) < (
+          $4::timestamptz,
+          $5::uuid
+      )
+  )
+ORDER BY captured_at DESC, id DESC
+LIMIT $6::integer
+`
+
+type ListGovernanceCaseAuditEvaluationsParams struct {
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	CaseID           pgtype.UUID        `json:"case_id"`
+	HasCursor        bool               `json:"has_cursor"`
+	CursorCapturedAt pgtype.Timestamptz `json:"cursor_captured_at"`
+	CursorID         pgtype.UUID        `json:"cursor_id"`
+	PageSize         int32              `json:"page_size"`
+}
+
+type ListGovernanceCaseAuditEvaluationsRow struct {
+	ID                    pgtype.UUID        `json:"id"`
+	SnapshotSchemaVersion int16              `json:"snapshot_schema_version"`
+	RequiredComplete      bool               `json:"required_complete"`
+	EstimatedTokens       int32              `json:"estimated_tokens"`
+	CapturedAt            pgtype.Timestamptz `json:"captured_at"`
+	RedactedAt            pgtype.Timestamptz `json:"redacted_at"`
+}
+
+func (q *Queries) ListGovernanceCaseAuditEvaluations(ctx context.Context, arg ListGovernanceCaseAuditEvaluationsParams) ([]ListGovernanceCaseAuditEvaluationsRow, error) {
+	rows, err := q.db.Query(ctx, listGovernanceCaseAuditEvaluations,
+		arg.WorkspaceID,
+		arg.CaseID,
+		arg.HasCursor,
+		arg.CursorCapturedAt,
+		arg.CursorID,
+		arg.PageSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGovernanceCaseAuditEvaluationsRow{}
+	for rows.Next() {
+		var i ListGovernanceCaseAuditEvaluationsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.SnapshotSchemaVersion,
+			&i.RequiredComplete,
+			&i.EstimatedTokens,
+			&i.CapturedAt,
+			&i.RedactedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGovernanceCaseAuditPage = `-- name: ListGovernanceCaseAuditPage :many
+SELECT id, workspace_id, subject_type, subject_id, subject_revision, rule_id,
+       generation, state, state_revision, rule_revision, activation_revision,
+       config_revision, evidence_epoch, refresh_count, absolute_deadline,
+       created_at, updated_at
+FROM governance_case
+WHERE workspace_id = $1::uuid
+  AND (
+      $2::boolean = FALSE
+      OR (created_at, id) < (
+          $3::timestamptz,
+          $4::uuid
+      )
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT $5::integer
+`
+
+type ListGovernanceCaseAuditPageParams struct {
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	HasCursor       bool               `json:"has_cursor"`
+	CursorCreatedAt pgtype.Timestamptz `json:"cursor_created_at"`
+	CursorID        pgtype.UUID        `json:"cursor_id"`
+	PageSize        int32              `json:"page_size"`
+}
+
+type ListGovernanceCaseAuditPageRow struct {
+	ID                 pgtype.UUID        `json:"id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	SubjectType        string             `json:"subject_type"`
+	SubjectID          pgtype.UUID        `json:"subject_id"`
+	SubjectRevision    int64              `json:"subject_revision"`
+	RuleID             pgtype.UUID        `json:"rule_id"`
+	Generation         int32              `json:"generation"`
+	State              string             `json:"state"`
+	StateRevision      int64              `json:"state_revision"`
+	RuleRevision       string             `json:"rule_revision"`
+	ActivationRevision string             `json:"activation_revision"`
+	ConfigRevision     string             `json:"config_revision"`
+	EvidenceEpoch      int32              `json:"evidence_epoch"`
+	RefreshCount       int32              `json:"refresh_count"`
+	AbsoluteDeadline   pgtype.Timestamptz `json:"absolute_deadline"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) ListGovernanceCaseAuditPage(ctx context.Context, arg ListGovernanceCaseAuditPageParams) ([]ListGovernanceCaseAuditPageRow, error) {
+	rows, err := q.db.Query(ctx, listGovernanceCaseAuditPage,
+		arg.WorkspaceID,
+		arg.HasCursor,
+		arg.CursorCreatedAt,
+		arg.CursorID,
+		arg.PageSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGovernanceCaseAuditPageRow{}
+	for rows.Next() {
+		var i ListGovernanceCaseAuditPageRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.SubjectType,
+			&i.SubjectID,
+			&i.SubjectRevision,
+			&i.RuleID,
+			&i.Generation,
+			&i.State,
+			&i.StateRevision,
+			&i.RuleRevision,
+			&i.ActivationRevision,
+			&i.ConfigRevision,
+			&i.EvidenceEpoch,
+			&i.RefreshCount,
+			&i.AbsoluteDeadline,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGovernanceCaseAuditTransitions = `-- name: ListGovernanceCaseAuditTransitions :many
+SELECT id, resulting_state_revision, expected_state_revision, from_state,
+       to_state, actor_type, created_at
+FROM governance_case_transition
+WHERE workspace_id = $1::uuid
+  AND case_id = $2::uuid
+  AND (
+      $3::boolean = FALSE
+      OR (created_at, id) < (
+          $4::timestamptz,
+          $5::uuid
+      )
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT $6::integer
+`
+
+type ListGovernanceCaseAuditTransitionsParams struct {
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	CaseID          pgtype.UUID        `json:"case_id"`
+	HasCursor       bool               `json:"has_cursor"`
+	CursorCreatedAt pgtype.Timestamptz `json:"cursor_created_at"`
+	CursorID        pgtype.UUID        `json:"cursor_id"`
+	PageSize        int32              `json:"page_size"`
+}
+
+type ListGovernanceCaseAuditTransitionsRow struct {
+	ID                     pgtype.UUID        `json:"id"`
+	ResultingStateRevision int64              `json:"resulting_state_revision"`
+	ExpectedStateRevision  int64              `json:"expected_state_revision"`
+	FromState              string             `json:"from_state"`
+	ToState                string             `json:"to_state"`
+	ActorType              string             `json:"actor_type"`
+	CreatedAt              pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) ListGovernanceCaseAuditTransitions(ctx context.Context, arg ListGovernanceCaseAuditTransitionsParams) ([]ListGovernanceCaseAuditTransitionsRow, error) {
+	rows, err := q.db.Query(ctx, listGovernanceCaseAuditTransitions,
+		arg.WorkspaceID,
+		arg.CaseID,
+		arg.HasCursor,
+		arg.CursorCreatedAt,
+		arg.CursorID,
+		arg.PageSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGovernanceCaseAuditTransitionsRow{}
+	for rows.Next() {
+		var i ListGovernanceCaseAuditTransitionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ResultingStateRevision,
+			&i.ExpectedStateRevision,
+			&i.FromState,
+			&i.ToState,
+			&i.ActorType,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGovernanceCaseRetentionWorkspaces = `-- name: ListGovernanceCaseRetentionWorkspaces :many
+SELECT DISTINCT workspace_id
+FROM governance_case
+ORDER BY workspace_id
+`
+
+func (q *Queries) ListGovernanceCaseRetentionWorkspaces(ctx context.Context) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listGovernanceCaseRetentionWorkspaces)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var workspace_id pgtype.UUID
+		if err := rows.Scan(&workspace_id); err != nil {
+			return nil, err
+		}
+		items = append(items, workspace_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listGovernanceCasesPage = `-- name: ListGovernanceCasesPage :many
@@ -524,5 +1023,273 @@ func (q *Queries) LockGovernanceCaseIdentity(ctx context.Context, arg LockGovern
 		arg.SubjectRevision,
 		arg.RuleID,
 	)
+	return err
+}
+
+const pruneExpiredGovernanceObligationAttemptMetadata = `-- name: PruneExpiredGovernanceObligationAttemptMetadata :execrows
+UPDATE governance_attempt AS attempt
+SET candidate_id = NULL,
+    task_id = NULL,
+    input_digest = '',
+    deadline_at = NULL,
+    terminal_reason = 'expired',
+    confidence = '{}'::jsonb,
+    result = '{}'::jsonb,
+    usage = '{}'::jsonb
+FROM governance_case AS case_record
+WHERE attempt.workspace_id = $1::uuid
+  AND attempt.case_id = case_record.id
+  AND case_record.workspace_id = $1::uuid
+  AND case_record.state IN ('resolved', 'dismissed', 'invalidated', 'failed', 'parked')
+  AND attempt.created_at < now() - interval '90 days'
+  AND attempt.terminal_at IS NOT NULL
+  AND attempt.obligation_id IS NOT NULL
+`
+
+func (q *Queries) PruneExpiredGovernanceObligationAttemptMetadata(ctx context.Context, workspaceID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, pruneExpiredGovernanceObligationAttemptMetadata, workspaceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const redactExpiredGovernanceAttemptResultsForWorkspace = `-- name: RedactExpiredGovernanceAttemptResultsForWorkspace :exec
+UPDATE governance_attempt AS attempt
+SET input_digest = '',
+    terminal_reason = CASE WHEN attempt.terminal_at IS NOT NULL THEN 'redacted' ELSE '' END,
+    confidence = '{}'::jsonb,
+    result = '{}'::jsonb,
+    usage = '{}'::jsonb,
+    redacted_at = COALESCE(attempt.redacted_at, now())
+WHERE attempt.workspace_id = $1::uuid
+  AND (
+      attempt.created_at < now() - interval '30 days'
+      OR EXISTS (
+          SELECT 1
+          FROM governance_evaluation AS evaluation
+          WHERE evaluation.workspace_id = $1::uuid
+            AND evaluation.attempt_id = attempt.id
+            AND evaluation.captured_at < now() - interval '30 days'
+      )
+  )
+  AND attempt.redacted_at IS NULL
+`
+
+func (q *Queries) RedactExpiredGovernanceAttemptResultsForWorkspace(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, redactExpiredGovernanceAttemptResultsForWorkspace, workspaceID)
+	return err
+}
+
+const redactExpiredGovernanceEvidenceForWorkspace = `-- name: RedactExpiredGovernanceEvidenceForWorkspace :exec
+WITH affected AS MATERIALIZED (
+    SELECT evaluation.id, evaluation.case_id
+    FROM governance_evaluation AS evaluation
+    WHERE evaluation.workspace_id = $1::uuid
+      AND evaluation.captured_at < now() - interval '30 days'
+      AND evaluation.redacted_at IS NULL
+), redacted_sources AS (
+    UPDATE governance_evaluation_source AS source
+    SET copied_context = '{}'::jsonb,
+        object_digest = '',
+        redacted_at = COALESCE(source.redacted_at, now())
+    FROM affected
+    WHERE source.workspace_id = $1::uuid
+      AND source.evaluation_id = affected.id
+      AND source.redacted_at IS NULL
+    RETURNING source.evaluation_id
+), expired_cases AS MATERIALIZED (
+    SELECT case_record.id
+    FROM governance_case case_record
+    WHERE case_record.workspace_id = $1::uuid
+      AND case_record.created_at < now() - interval '30 days'
+    UNION
+    SELECT affected.case_id
+    FROM affected
+), redacted_cases AS (
+    UPDATE governance_case case_record
+    SET trigger_aliases = '[]'::jsonb,
+        evidence_digest = '',
+        reason = '',
+        frozen_strategy = '[]'::jsonb
+    FROM expired_cases
+    WHERE case_record.workspace_id = $1::uuid
+      AND case_record.id = expired_cases.id
+    RETURNING case_record.id
+), redacted_transitions AS (
+    UPDATE governance_case_transition transition
+    SET sanitized_reason = ''
+    WHERE transition.workspace_id = $1::uuid
+      AND transition.created_at < now() - interval '30 days'
+      AND transition.sanitized_reason <> ''
+    RETURNING transition.id
+)
+UPDATE governance_evaluation AS evaluation
+SET snapshot = '{}'::jsonb,
+    snapshot_digest = '',
+    required_complete = false,
+    candidate_map = '[]'::jsonb,
+    citation_map = '[]'::jsonb,
+    estimated_tokens = 0,
+    requested_model = '',
+    returned_model = '',
+    answers = '[]'::jsonb,
+    redacted_at = COALESCE(evaluation.redacted_at, now())
+WHERE evaluation.workspace_id = $1::uuid
+  AND evaluation.id IN (SELECT id FROM affected)
+  AND evaluation.redacted_at IS NULL
+`
+
+func (q *Queries) RedactExpiredGovernanceEvidenceForWorkspace(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, redactExpiredGovernanceEvidenceForWorkspace, workspaceID)
+	return err
+}
+
+const redactGovernanceEvidenceForIssue = `-- name: RedactGovernanceEvidenceForIssue :exec
+WITH affected AS MATERIALIZED (
+    SELECT DISTINCT source_index.evaluation_id
+    FROM governance_evaluation_source AS source_index
+    WHERE source_index.workspace_id = $1::uuid
+      AND (
+          (source_index.object_type = 'issue' AND source_index.object_id = $2::uuid::text)
+          OR (
+              source_index.object_type = 'comment'
+              AND source_index.object_id IN (
+                  SELECT comment.id::text
+                  FROM comment
+                  WHERE comment.workspace_id = $1::uuid
+                    AND comment.issue_id = $2::uuid
+              )
+          )
+      )
+), redacted_sources AS (
+    UPDATE governance_evaluation_source source
+    SET copied_context = '{}'::jsonb,
+        object_digest = '',
+        redacted_at = COALESCE(source.redacted_at, now())
+    FROM affected
+    WHERE source.workspace_id = $1::uuid
+      AND source.evaluation_id = affected.evaluation_id
+      AND source.redacted_at IS NULL
+    RETURNING source.evaluation_id
+), redacted_evaluations AS (
+    UPDATE governance_evaluation evaluation
+    SET snapshot = '{}'::jsonb,
+        snapshot_digest = '',
+        required_complete = false,
+        candidate_map = '[]'::jsonb,
+        citation_map = '[]'::jsonb,
+        estimated_tokens = 0,
+        requested_model = '',
+        returned_model = '',
+        answers = '[]'::jsonb,
+        redacted_at = COALESCE(evaluation.redacted_at, now())
+    FROM affected
+    WHERE evaluation.workspace_id = $1::uuid
+      AND evaluation.id = affected.evaluation_id
+      AND evaluation.redacted_at IS NULL
+    RETURNING evaluation.attempt_id
+), redacted_cases AS (
+    UPDATE governance_case case_record
+    SET trigger_aliases = '[]'::jsonb,
+        evidence_digest = '',
+        reason = ''
+    FROM governance_evaluation evaluation, affected
+    WHERE evaluation.workspace_id = $1::uuid
+      AND evaluation.id = affected.evaluation_id
+      AND case_record.workspace_id = $1::uuid
+      AND case_record.id = evaluation.case_id
+    RETURNING case_record.id
+)
+UPDATE governance_attempt attempt
+SET input_digest = '',
+    terminal_reason = CASE WHEN attempt.terminal_at IS NOT NULL THEN 'redacted' ELSE '' END,
+    confidence = '{}'::jsonb,
+    result = '{}'::jsonb,
+    usage = '{}'::jsonb,
+    redacted_at = COALESCE(attempt.redacted_at, now())
+WHERE attempt.id IN (
+    SELECT attempt_id FROM redacted_evaluations WHERE attempt_id IS NOT NULL
+)
+  AND attempt.workspace_id = $1::uuid
+`
+
+type RedactGovernanceEvidenceForIssueParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+}
+
+func (q *Queries) RedactGovernanceEvidenceForIssue(ctx context.Context, arg RedactGovernanceEvidenceForIssueParams) error {
+	_, err := q.db.Exec(ctx, redactGovernanceEvidenceForIssue, arg.WorkspaceID, arg.IssueID)
+	return err
+}
+
+const redactGovernanceEvidenceForSource = `-- name: RedactGovernanceEvidenceForSource :exec
+WITH affected AS MATERIALIZED (
+    SELECT DISTINCT source_index.evaluation_id
+    FROM governance_evaluation_source AS source_index
+    WHERE source_index.workspace_id = $1::uuid
+      AND source_index.object_type = $2
+      AND source_index.object_id = $3
+), redacted_sources AS (
+    UPDATE governance_evaluation_source source
+    SET copied_context = '{}'::jsonb,
+        object_digest = '',
+        redacted_at = COALESCE(source.redacted_at, now())
+    FROM affected
+    WHERE source.workspace_id = $1::uuid
+      AND source.evaluation_id = affected.evaluation_id
+      AND source.redacted_at IS NULL
+    RETURNING source.evaluation_id
+), redacted_evaluations AS (
+    UPDATE governance_evaluation evaluation
+    SET snapshot = '{}'::jsonb,
+        snapshot_digest = '',
+        required_complete = false,
+        candidate_map = '[]'::jsonb,
+        citation_map = '[]'::jsonb,
+        estimated_tokens = 0,
+        requested_model = '',
+        returned_model = '',
+        answers = '[]'::jsonb,
+        redacted_at = COALESCE(evaluation.redacted_at, now())
+    FROM affected
+    WHERE evaluation.workspace_id = $1::uuid
+      AND evaluation.id = affected.evaluation_id
+      AND evaluation.redacted_at IS NULL
+    RETURNING evaluation.attempt_id
+), redacted_cases AS (
+    UPDATE governance_case case_record
+    SET trigger_aliases = '[]'::jsonb,
+        evidence_digest = '',
+        reason = ''
+    FROM governance_evaluation evaluation, affected
+    WHERE evaluation.workspace_id = $1::uuid
+      AND evaluation.id = affected.evaluation_id
+      AND case_record.workspace_id = $1::uuid
+      AND case_record.id = evaluation.case_id
+    RETURNING case_record.id
+)
+UPDATE governance_attempt attempt
+SET input_digest = '',
+    terminal_reason = CASE WHEN attempt.terminal_at IS NOT NULL THEN 'redacted' ELSE '' END,
+    confidence = '{}'::jsonb,
+    result = '{}'::jsonb,
+    usage = '{}'::jsonb,
+    redacted_at = COALESCE(attempt.redacted_at, now())
+WHERE attempt.id IN (
+    SELECT attempt_id FROM redacted_evaluations WHERE attempt_id IS NOT NULL
+)
+  AND attempt.workspace_id = $1::uuid
+`
+
+type RedactGovernanceEvidenceForSourceParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ObjectType  string      `json:"object_type"`
+	ObjectID    string      `json:"object_id"`
+}
+
+func (q *Queries) RedactGovernanceEvidenceForSource(ctx context.Context, arg RedactGovernanceEvidenceForSourceParams) error {
+	_, err := q.db.Exec(ctx, redactGovernanceEvidenceForSource, arg.WorkspaceID, arg.ObjectType, arg.ObjectID)
 	return err
 }

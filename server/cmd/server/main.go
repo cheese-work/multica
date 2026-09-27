@@ -814,6 +814,9 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.ProvenanceExportRetentionJob(queries, pool)); err != nil {
 		slog.Warn("scheduler: failed to register provenance_export_retention job", "error", err)
 	}
+	if err := schedulerMgr.Register(scheduler.GovernanceCaseEvidenceRetentionJob(queries, pool)); err != nil {
+		slog.Warn("scheduler: failed to register governance_case_evidence_retention job", "error", err)
+	}
 	go func() {
 		_ = schedulerMgr.Run(sweepCtx)
 	}()

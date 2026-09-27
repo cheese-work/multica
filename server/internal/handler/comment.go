@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -3840,6 +3841,13 @@ func (h *Handler) deleteComment(ctx context.Context, commentID, workspaceID pgty
 	})
 	if err != nil {
 		return out, err
+	}
+	if err := qtx.RedactGovernanceEvidenceForSource(ctx, db.RedactGovernanceEvidenceForSourceParams{
+		WorkspaceID: target.WorkspaceID,
+		ObjectType:  "comment",
+		ObjectID:    uuidToString(target.ID),
+	}); err != nil {
+		return out, fmt.Errorf("redact governance evidence for comment delete: %w", err)
 	}
 	// Separate statement on purpose: its snapshot postdates the locks above,
 	// so it sees every committed reply, and none can be added while they are

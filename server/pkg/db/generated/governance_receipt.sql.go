@@ -71,14 +71,20 @@ func (q *Queries) InsertGovernanceReceipt(ctx context.Context, arg InsertGoverna
 
 const listGovernanceReceiptsForComment = `-- name: ListGovernanceReceiptsForComment :many
 SELECT id, workspace_id, issue_id, comment_id, trigger, status, shed_reason, abstain_reason, action_kind, answers, observed_at, created_at FROM governance_receipt
-WHERE comment_id = $1
-ORDER BY created_at DESC
+WHERE workspace_id = $1
+  AND comment_id = $2
+ORDER BY created_at DESC, id DESC
 `
+
+type ListGovernanceReceiptsForCommentParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	CommentID   pgtype.UUID `json:"comment_id"`
+}
 
 // Test/diagnostic read: every observation attempt recorded for one comment,
 // newest first.
-func (q *Queries) ListGovernanceReceiptsForComment(ctx context.Context, commentID pgtype.UUID) ([]GovernanceReceipt, error) {
-	rows, err := q.db.Query(ctx, listGovernanceReceiptsForComment, commentID)
+func (q *Queries) ListGovernanceReceiptsForComment(ctx context.Context, arg ListGovernanceReceiptsForCommentParams) ([]GovernanceReceipt, error) {
+	rows, err := q.db.Query(ctx, listGovernanceReceiptsForComment, arg.WorkspaceID, arg.CommentID)
 	if err != nil {
 		return nil, err
 	}
