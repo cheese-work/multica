@@ -773,6 +773,111 @@ type GithubPullRequestCheckSuite struct {
 	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
 }
 
+type GovernanceAttempt struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	CaseID         pgtype.UUID        `json:"case_id"`
+	Ordinal        int32              `json:"ordinal"`
+	Kind           string             `json:"kind"`
+	CandidateID    pgtype.UUID        `json:"candidate_id"`
+	TaskID         pgtype.UUID        `json:"task_id"`
+	ObligationID   pgtype.UUID        `json:"obligation_id"`
+	InputDigest    string             `json:"input_digest"`
+	AttemptFence   pgtype.UUID        `json:"attempt_fence"`
+	ClaimedAt      pgtype.Timestamptz `json:"claimed_at"`
+	DeadlineAt     pgtype.Timestamptz `json:"deadline_at"`
+	TerminalReason string             `json:"terminal_reason"`
+	TerminalAt     pgtype.Timestamptz `json:"terminal_at"`
+	Confidence     []byte             `json:"confidence"`
+	Result         []byte             `json:"result"`
+	Usage          []byte             `json:"usage"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
+type GovernanceCase struct {
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	SubjectType         string             `json:"subject_type"`
+	SubjectID           pgtype.UUID        `json:"subject_id"`
+	SubjectRevision     int64              `json:"subject_revision"`
+	RuleID              pgtype.UUID        `json:"rule_id"`
+	Generation          int32              `json:"generation"`
+	MaterialFingerprint string             `json:"material_fingerprint"`
+	State               string             `json:"state"`
+	StateRevision       int64              `json:"state_revision"`
+	AuthorityLineage    []byte             `json:"authority_lineage"`
+	TriggerAliases      []byte             `json:"trigger_aliases"`
+	EvidenceID          pgtype.UUID        `json:"evidence_id"`
+	EvidenceDigest      string             `json:"evidence_digest"`
+	RuleRevision        string             `json:"rule_revision"`
+	ActivationRevision  string             `json:"activation_revision"`
+	ConfigRevision      string             `json:"config_revision"`
+	LeaseToken          pgtype.UUID        `json:"lease_token"`
+	LeaseExpiresAt      pgtype.Timestamptz `json:"lease_expires_at"`
+	CurrentAttemptID    pgtype.UUID        `json:"current_attempt_id"`
+	CurrentActionID     pgtype.UUID        `json:"current_action_id"`
+	PredecessorCaseID   pgtype.UUID        `json:"predecessor_case_id"`
+	BudgetRootID        pgtype.UUID        `json:"budget_root_id"`
+	EvidenceEpoch       int32              `json:"evidence_epoch"`
+	RefreshCount        int32              `json:"refresh_count"`
+	AbsoluteDeadline    pgtype.Timestamptz `json:"absolute_deadline"`
+	FrozenStrategy      []byte             `json:"frozen_strategy"`
+	Reason              string             `json:"reason"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
+}
+
+type GovernanceCaseTransition struct {
+	ID                     pgtype.UUID        `json:"id"`
+	WorkspaceID            pgtype.UUID        `json:"workspace_id"`
+	CaseID                 pgtype.UUID        `json:"case_id"`
+	ResultingStateRevision int64              `json:"resulting_state_revision"`
+	ExpectedStateRevision  int64              `json:"expected_state_revision"`
+	FromState              string             `json:"from_state"`
+	ToState                string             `json:"to_state"`
+	CauseEventKey          string             `json:"cause_event_key"`
+	ActorType              string             `json:"actor_type"`
+	ActorID                pgtype.UUID        `json:"actor_id"`
+	SanitizedReason        string             `json:"sanitized_reason"`
+	CreatedAt              pgtype.Timestamptz `json:"created_at"`
+}
+
+type GovernanceEvaluation struct {
+	ID                    pgtype.UUID        `json:"id"`
+	WorkspaceID           pgtype.UUID        `json:"workspace_id"`
+	CaseID                pgtype.UUID        `json:"case_id"`
+	AttemptID             pgtype.UUID        `json:"attempt_id"`
+	TriggerIdentity       string             `json:"trigger_identity"`
+	SubjectRevisionVector []byte             `json:"subject_revision_vector"`
+	Snapshot              []byte             `json:"snapshot"`
+	SnapshotDigest        string             `json:"snapshot_digest"`
+	SnapshotSchemaVersion int16              `json:"snapshot_schema_version"`
+	RequiredComplete      bool               `json:"required_complete"`
+	CandidateMap          []byte             `json:"candidate_map"`
+	CitationMap           []byte             `json:"citation_map"`
+	EstimatedTokens       int32              `json:"estimated_tokens"`
+	ApplicableRuleDigests []byte             `json:"applicable_rule_digests"`
+	QuestionCriteriaHash  string             `json:"question_criteria_hash"`
+	RequestedModel        string             `json:"requested_model"`
+	ReturnedModel         string             `json:"returned_model"`
+	Answers               []byte             `json:"answers"`
+	CapturedAt            pgtype.Timestamptz `json:"captured_at"`
+	CreatedAt             pgtype.Timestamptz `json:"created_at"`
+}
+
+type GovernanceEvaluationSource struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	EvaluationID   pgtype.UUID        `json:"evaluation_id"`
+	ObjectType     string             `json:"object_type"`
+	ObjectID       string             `json:"object_id"`
+	ObjectRevision string             `json:"object_revision"`
+	ObjectDigest   string             `json:"object_digest"`
+	CopiedContext  []byte             `json:"copied_context"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
 type GovernanceReceipt struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`

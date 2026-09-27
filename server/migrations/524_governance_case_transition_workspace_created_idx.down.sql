@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_governance_case_transition_workspace_created;

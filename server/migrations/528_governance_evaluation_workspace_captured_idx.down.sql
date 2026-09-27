@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_governance_evaluation_workspace_captured;

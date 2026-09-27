@@ -361,6 +361,24 @@ deleted_issue_checkpoints AS (
 deleted_governance_receipts AS (
     DELETE FROM governance_receipt WHERE workspace_id = $1
 ),
+-- CHE-704 / C01 durable MJ cases and immutable captured evidence. These have
+-- no database cascades by design, so every workspace-owned table is removed
+-- explicitly before its workspace row.
+deleted_governance_evaluation_sources AS (
+    DELETE FROM governance_evaluation_source WHERE workspace_id = $1
+),
+deleted_governance_evaluations AS (
+    DELETE FROM governance_evaluation WHERE workspace_id = $1
+),
+deleted_governance_attempts AS (
+    DELETE FROM governance_attempt WHERE workspace_id = $1
+),
+deleted_governance_case_transitions AS (
+    DELETE FROM governance_case_transition WHERE workspace_id = $1
+),
+deleted_governance_cases AS (
+    DELETE FROM governance_case WHERE workspace_id = $1
+),
 -- CHE-755 provenance export audit rows: workspace-owned leaf, no dependents.
 deleted_provenance_export_logs AS (
     DELETE FROM provenance_export_log WHERE workspace_id = $1
