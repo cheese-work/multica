@@ -336,6 +336,21 @@ deleted_issue_checkpoints AS (
 deleted_governance_receipts AS (
     DELETE FROM governance_receipt WHERE workspace_id = $1
 ),
+deleted_governance_evaluation_sources AS (
+    DELETE FROM governance_evaluation_source WHERE workspace_id = $1
+),
+deleted_governance_evaluations AS (
+    DELETE FROM governance_evaluation WHERE workspace_id = $1
+),
+deleted_governance_attempts AS (
+    DELETE FROM governance_attempt WHERE workspace_id = $1
+),
+deleted_governance_case_transitions AS (
+    DELETE FROM governance_case_transition WHERE workspace_id = $1
+),
+deleted_governance_cases AS (
+    DELETE FROM governance_case WHERE workspace_id = $1
+),
 deleted_provenance_export_logs AS (
     DELETE FROM provenance_export_log WHERE workspace_id = $1
 ),
@@ -511,6 +526,9 @@ WHERE channel_media_pending_object.workspace_id = $1
 // statement depends on FK cascade ordering.
 // CHE-685 Jev governance routing receipts: workspace-owned observation
 // history, same leaf shape as issue_checkpoint above (no dependents, no FK).
+// CHE-704 / C01 durable MJ cases and immutable captured evidence. These have
+// no database cascades by design, so every workspace-owned table is removed
+// explicitly before its workspace row.
 // CHE-755 provenance export audit rows: workspace-owned leaf, no dependents.
 // Keep the two-system cleanup ledger until object storage has been settled.
 // Moving every row out of pending also prevents a concurrent media bind from

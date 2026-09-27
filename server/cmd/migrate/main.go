@@ -330,6 +330,18 @@ var concurrentIndexCleanups = map[string]string{
 	"512_stage_completion_wake_workspace_index":                 "idx_stage_completion_wake_workspace_id",
 	"514_governance_receipt_comment_idx":                        "idx_governance_receipt_comment_id",
 	"516_provenance_export_log_workspace_idx":                   "idx_provenance_export_log_workspace_created",
+	"519_governance_case_identity_uidx":                         "uq_governance_case_identity_generation",
+	"520_governance_case_material_fingerprint_uidx":             "uq_governance_case_material_fingerprint",
+	"521_governance_case_workspace_created_idx":                 "idx_governance_case_workspace_created",
+	"522_governance_case_transition_identity_uidx":              "uq_governance_case_transition_revision",
+	"523_governance_case_transition_cause_uidx":                 "uq_governance_case_transition_cause",
+	"524_governance_case_transition_workspace_created_idx":      "idx_governance_case_transition_workspace_created",
+	"525_governance_attempt_identity_uidx":                      "uq_governance_attempt_case_ordinal",
+	"526_governance_attempt_active_agent_uidx":                  "uq_governance_attempt_active_agent",
+	"527_governance_attempt_workspace_deadline_idx":             "idx_governance_attempt_workspace_deadline",
+	"528_governance_evaluation_workspace_captured_idx":          "idx_governance_evaluation_workspace_captured",
+	"529_governance_evaluation_source_identity_uidx":            "uq_governance_evaluation_source_identity",
+	"530_governance_evaluation_source_workspace_object_idx":     "idx_governance_evaluation_source_workspace_object",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction

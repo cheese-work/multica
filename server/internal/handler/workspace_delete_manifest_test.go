@@ -69,6 +69,11 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"github_pull_request_check_run":      workspaceDelete,
 	"github_pull_request_check_suite":    workspaceDelete,
 	"governance_receipt":                 workspaceDelete, // CHE-685 Jev governance routing receipts; workspace-owned, same shape as issue_checkpoint.
+	"governance_case":                    workspaceDelete, // CHE-704 C01 lifecycle authority; no FK/cascade teardown.
+	"governance_case_transition":         workspaceDelete, // CHE-704 immutable CAS/audit trail.
+	"governance_attempt":                 workspaceDelete, // CHE-704 case-bound Jev/agent attempt evidence.
+	"governance_evaluation":              workspaceDelete, // CHE-704 immutable snapshot/vector/candidate/citation map.
+	"governance_evaluation_source":       workspaceDelete, // CHE-704 copied-context source index/redaction lookup.
 	"inbox_item":                         workspaceDelete,
 	"instance_telemetry_state":           workspaceDeleteKeep,
 	"issue":                              workspaceDelete,
