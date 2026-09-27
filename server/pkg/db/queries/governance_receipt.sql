@@ -15,5 +15,6 @@ RETURNING *;
 -- Test/diagnostic read: every observation attempt recorded for one comment,
 -- newest first.
 SELECT * FROM governance_receipt
-WHERE comment_id = $1
-ORDER BY created_at DESC;
+WHERE workspace_id = $1
+  AND comment_id = $2
+ORDER BY created_at DESC, id DESC;
