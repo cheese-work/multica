@@ -413,12 +413,46 @@ func (q *Queries) InsertGovernanceEvaluation(ctx context.Context, arg InsertGove
 }
 
 const insertGovernanceEvaluationSource = `-- name: InsertGovernanceEvaluationSource :one
+WITH locked_issue AS MATERIALIZED (
+    SELECT issue.id
+    FROM issue
+    WHERE $3::text = 'issue'
+      AND issue.workspace_id = $1::uuid
+      AND issue.id::text = $7::text
+    FOR KEY SHARE OF issue
+), locked_comment_issue AS MATERIALIZED (
+    SELECT issue.id
+    FROM issue
+    JOIN comment
+      ON comment.issue_id = issue.id
+     AND comment.workspace_id = issue.workspace_id
+    WHERE $3::text = 'comment'
+      AND issue.workspace_id = $1::uuid
+      AND comment.id::text = $7::text
+      AND comment.deleted_at IS NULL
+    FOR KEY SHARE OF issue
+), locked_comment AS MATERIALIZED (
+    SELECT comment.id
+    FROM comment
+    JOIN locked_comment_issue ON locked_comment_issue.id = comment.issue_id
+    WHERE comment.workspace_id = $1::uuid
+      AND comment.id::text = $7::text
+      AND comment.deleted_at IS NULL
+    FOR UPDATE OF comment
+), live_source AS MATERIALIZED (
+    SELECT id FROM locked_issue
+    UNION ALL
+    SELECT id FROM locked_comment
+)
 INSERT INTO governance_evaluation_source (
     workspace_id, evaluation_id, object_type, object_id, object_revision,
     object_digest, copied_context
-) VALUES (
-    $1, $2, $3, $4, $5, $6, $7
 )
+SELECT $1::uuid, $2::uuid,
+       $3::text, live_source.id::text,
+       $4::text, $5::text,
+       $6::jsonb
+FROM live_source
 RETURNING id, workspace_id, evaluation_id, object_type, object_id, object_revision, object_digest, copied_context, created_at, redacted_at
 `
 
@@ -426,10 +460,10 @@ type InsertGovernanceEvaluationSourceParams struct {
 	WorkspaceID    pgtype.UUID `json:"workspace_id"`
 	EvaluationID   pgtype.UUID `json:"evaluation_id"`
 	ObjectType     string      `json:"object_type"`
-	ObjectID       string      `json:"object_id"`
 	ObjectRevision string      `json:"object_revision"`
 	ObjectDigest   string      `json:"object_digest"`
 	CopiedContext  []byte      `json:"copied_context"`
+	ObjectID       string      `json:"object_id"`
 }
 
 func (q *Queries) InsertGovernanceEvaluationSource(ctx context.Context, arg InsertGovernanceEvaluationSourceParams) (GovernanceEvaluationSource, error) {
@@ -437,10 +471,10 @@ func (q *Queries) InsertGovernanceEvaluationSource(ctx context.Context, arg Inse
 		arg.WorkspaceID,
 		arg.EvaluationID,
 		arg.ObjectType,
-		arg.ObjectID,
 		arg.ObjectRevision,
 		arg.ObjectDigest,
 		arg.CopiedContext,
+		arg.ObjectID,
 	)
 	var i GovernanceEvaluationSource
 	err := row.Scan(
@@ -1026,6 +1060,7 @@ SET input_digest = '',
     terminal_reason = CASE WHEN attempt.terminal_at IS NOT NULL THEN 'redacted' ELSE '' END,
     confidence = '{}'::jsonb,
     result = '{}'::jsonb,
+    usage = '{}'::jsonb,
     redacted_at = COALESCE(attempt.redacted_at, now())
 WHERE attempt.workspace_id = $1::uuid
   AND (
@@ -1063,15 +1098,31 @@ WITH affected AS MATERIALIZED (
       AND source.evaluation_id = affected.id
       AND source.redacted_at IS NULL
     RETURNING source.evaluation_id
+), expired_cases AS MATERIALIZED (
+    SELECT case_record.id
+    FROM governance_case case_record
+    WHERE case_record.workspace_id = $1::uuid
+      AND case_record.created_at < now() - interval '30 days'
+    UNION
+    SELECT affected.case_id
+    FROM affected
 ), redacted_cases AS (
     UPDATE governance_case case_record
     SET trigger_aliases = '[]'::jsonb,
         evidence_digest = '',
-        reason = ''
-    FROM affected
+        reason = '',
+        frozen_strategy = '[]'::jsonb
+    FROM expired_cases
     WHERE case_record.workspace_id = $1::uuid
-      AND case_record.id = affected.case_id
+      AND case_record.id = expired_cases.id
     RETURNING case_record.id
+), redacted_transitions AS (
+    UPDATE governance_case_transition transition
+    SET sanitized_reason = ''
+    WHERE transition.workspace_id = $1::uuid
+      AND transition.created_at < now() - interval '30 days'
+      AND transition.sanitized_reason <> ''
+    RETURNING transition.id
 )
 UPDATE governance_evaluation AS evaluation
 SET snapshot = '{}'::jsonb,
@@ -1138,12 +1189,24 @@ WITH affected AS MATERIALIZED (
       AND evaluation.id = affected.evaluation_id
       AND evaluation.redacted_at IS NULL
     RETURNING evaluation.attempt_id
+), redacted_cases AS (
+    UPDATE governance_case case_record
+    SET trigger_aliases = '[]'::jsonb,
+        evidence_digest = '',
+        reason = ''
+    FROM governance_evaluation evaluation, affected
+    WHERE evaluation.workspace_id = $1::uuid
+      AND evaluation.id = affected.evaluation_id
+      AND case_record.workspace_id = $1::uuid
+      AND case_record.id = evaluation.case_id
+    RETURNING case_record.id
 )
 UPDATE governance_attempt attempt
 SET input_digest = '',
     terminal_reason = CASE WHEN attempt.terminal_at IS NOT NULL THEN 'redacted' ELSE '' END,
     confidence = '{}'::jsonb,
     result = '{}'::jsonb,
+    usage = '{}'::jsonb,
     redacted_at = COALESCE(attempt.redacted_at, now())
 WHERE attempt.id IN (
     SELECT attempt_id FROM redacted_evaluations WHERE attempt_id IS NOT NULL
@@ -1212,6 +1275,7 @@ SET input_digest = '',
     terminal_reason = CASE WHEN attempt.terminal_at IS NOT NULL THEN 'redacted' ELSE '' END,
     confidence = '{}'::jsonb,
     result = '{}'::jsonb,
+    usage = '{}'::jsonb,
     redacted_at = COALESCE(attempt.redacted_at, now())
 WHERE attempt.id IN (
     SELECT attempt_id FROM redacted_evaluations WHERE attempt_id IS NOT NULL

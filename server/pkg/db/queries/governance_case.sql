@@ -72,12 +72,46 @@ INSERT INTO governance_evaluation (
 RETURNING *;
 
 -- name: InsertGovernanceEvaluationSource :one
+WITH locked_issue AS MATERIALIZED (
+    SELECT issue.id
+    FROM issue
+    WHERE sqlc.arg('object_type')::text = 'issue'
+      AND issue.workspace_id = sqlc.arg('workspace_id')::uuid
+      AND issue.id::text = sqlc.arg('object_id')::text
+    FOR KEY SHARE OF issue
+), locked_comment_issue AS MATERIALIZED (
+    SELECT issue.id
+    FROM issue
+    JOIN comment
+      ON comment.issue_id = issue.id
+     AND comment.workspace_id = issue.workspace_id
+    WHERE sqlc.arg('object_type')::text = 'comment'
+      AND issue.workspace_id = sqlc.arg('workspace_id')::uuid
+      AND comment.id::text = sqlc.arg('object_id')::text
+      AND comment.deleted_at IS NULL
+    FOR KEY SHARE OF issue
+), locked_comment AS MATERIALIZED (
+    SELECT comment.id
+    FROM comment
+    JOIN locked_comment_issue ON locked_comment_issue.id = comment.issue_id
+    WHERE comment.workspace_id = sqlc.arg('workspace_id')::uuid
+      AND comment.id::text = sqlc.arg('object_id')::text
+      AND comment.deleted_at IS NULL
+    FOR UPDATE OF comment
+), live_source AS MATERIALIZED (
+    SELECT id FROM locked_issue
+    UNION ALL
+    SELECT id FROM locked_comment
+)
 INSERT INTO governance_evaluation_source (
     workspace_id, evaluation_id, object_type, object_id, object_revision,
     object_digest, copied_context
-) VALUES (
-    $1, $2, $3, $4, $5, $6, $7
 )
+SELECT sqlc.arg('workspace_id')::uuid, sqlc.arg('evaluation_id')::uuid,
+       sqlc.arg('object_type')::text, live_source.id::text,
+       sqlc.arg('object_revision')::text, sqlc.arg('object_digest')::text,
+       sqlc.arg('copied_context')::jsonb
+FROM live_source
 RETURNING *;
 
 -- name: ListGovernanceCasesPage :many
@@ -216,6 +250,7 @@ SET input_digest = '',
     terminal_reason = CASE WHEN attempt.terminal_at IS NOT NULL THEN 'redacted' ELSE '' END,
     confidence = '{}'::jsonb,
     result = '{}'::jsonb,
+    usage = '{}'::jsonb,
     redacted_at = COALESCE(attempt.redacted_at, now())
 WHERE attempt.id IN (
     SELECT attempt_id FROM redacted_evaluations WHERE attempt_id IS NOT NULL
@@ -244,15 +279,31 @@ WITH affected AS MATERIALIZED (
       AND source.evaluation_id = affected.id
       AND source.redacted_at IS NULL
     RETURNING source.evaluation_id
+), expired_cases AS MATERIALIZED (
+    SELECT case_record.id
+    FROM governance_case case_record
+    WHERE case_record.workspace_id = sqlc.arg('workspace_id')::uuid
+      AND case_record.created_at < now() - interval '30 days'
+    UNION
+    SELECT affected.case_id
+    FROM affected
 ), redacted_cases AS (
     UPDATE governance_case case_record
     SET trigger_aliases = '[]'::jsonb,
         evidence_digest = '',
-        reason = ''
-    FROM affected
+        reason = '',
+        frozen_strategy = '[]'::jsonb
+    FROM expired_cases
     WHERE case_record.workspace_id = sqlc.arg('workspace_id')::uuid
-      AND case_record.id = affected.case_id
+      AND case_record.id = expired_cases.id
     RETURNING case_record.id
+), redacted_transitions AS (
+    UPDATE governance_case_transition transition
+    SET sanitized_reason = ''
+    WHERE transition.workspace_id = sqlc.arg('workspace_id')::uuid
+      AND transition.created_at < now() - interval '30 days'
+      AND transition.sanitized_reason <> ''
+    RETURNING transition.id
 )
 UPDATE governance_evaluation AS evaluation
 SET snapshot = '{}'::jsonb,
@@ -275,6 +326,7 @@ SET input_digest = '',
     terminal_reason = CASE WHEN attempt.terminal_at IS NOT NULL THEN 'redacted' ELSE '' END,
     confidence = '{}'::jsonb,
     result = '{}'::jsonb,
+    usage = '{}'::jsonb,
     redacted_at = COALESCE(attempt.redacted_at, now())
 WHERE attempt.workspace_id = sqlc.arg('workspace_id')::uuid
   AND (
@@ -392,12 +444,24 @@ WITH affected AS MATERIALIZED (
       AND evaluation.id = affected.evaluation_id
       AND evaluation.redacted_at IS NULL
     RETURNING evaluation.attempt_id
+), redacted_cases AS (
+    UPDATE governance_case case_record
+    SET trigger_aliases = '[]'::jsonb,
+        evidence_digest = '',
+        reason = ''
+    FROM governance_evaluation evaluation, affected
+    WHERE evaluation.workspace_id = sqlc.arg('workspace_id')::uuid
+      AND evaluation.id = affected.evaluation_id
+      AND case_record.workspace_id = sqlc.arg('workspace_id')::uuid
+      AND case_record.id = evaluation.case_id
+    RETURNING case_record.id
 )
 UPDATE governance_attempt attempt
 SET input_digest = '',
     terminal_reason = CASE WHEN attempt.terminal_at IS NOT NULL THEN 'redacted' ELSE '' END,
     confidence = '{}'::jsonb,
     result = '{}'::jsonb,
+    usage = '{}'::jsonb,
     redacted_at = COALESCE(attempt.redacted_at, now())
 WHERE attempt.id IN (
     SELECT attempt_id FROM redacted_evaluations WHERE attempt_id IS NOT NULL

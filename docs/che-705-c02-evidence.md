@@ -2,6 +2,29 @@
 
 Observed 2026-09-27 on X99 against the merged C01 base `43c938b46360f65eb214bce34f3af5af1e66d8f8`. E01 remains `REJECT`; decision `01a0de3c-6338-7306-9241-7a15e55f056b` waives its economic PASS, measurements, and N>=5 only for default-off development admission.
 
+## Sol review corrections
+
+Issue deletion now clears linked case `reason`, `trigger_aliases`, and `evidence_digest`. Source deletion scrubs attempt `usage` alongside result/confidence. The 30-day sweep clears attempt `usage`, case `frozen_strategy`, and transition `sanitized_reason`, while retaining obligation IDs and qualification revisions.
+
+`InsertGovernanceEvaluationSource` now locks a live issue first, then a live non-tombstoned comment when applicable, before inserting its index row. This matches the issue-then-comment deletion lock order; a deleted or tombstoned source returns no row. The regression holds the writer transaction open, observes comment deletion blocked by that writer through `pg_blocking_pids`, commits it, and verifies the resulting evidence is redacted and unavailable to replay.
+
+Observed passing on the isolated `_test` database (migrated through 536):
+
+```sh
+cd server
+DATABASE_URL="$CHE705_TEST_DATABASE_URL" go test -p 1 ./internal/handler ./internal/scheduler ./internal/featureflags \
+  -run 'Governance(CaseAudit|Evidence)|GovernanceCaseEvidenceRetention|GovernanceEvaluationSourceInsertSerializes' -count=1
+DATABASE_URL="$CHE705_TEST_DATABASE_URL" go test -race -p 1 ./internal/handler ./internal/scheduler ./internal/featureflags \
+  -run 'Governance(CaseAudit|Evidence)|GovernanceCaseEvidenceRetention|GovernanceEvaluationSourceInsertSerializes' -count=1
+go vet ./cmd/server ./internal/featureflags ./internal/handler ./internal/scheduler
+go test ./internal/governance/receipt -run '^TestObserve_BudgetExceededSheds$' -count=1
+cd ..
+make sqlc
+git diff --check
+```
+
+`CHE705_TEST_DATABASE_URL` must point to the isolated local `_test` database; the recorded run used the test database migrated through 536. Both focused runs passed across 13 tests in three packages, including the deletion/writer interleaving under `-race`. SQLC regeneration, targeted vet, the 50ms observation-budget test, and whitespace validation passed. The 90-day retention and audit-access/ENG-07 evidence below remain unchanged.
+
 ## Source redaction and audit access
 
 The focused handler tests cover default-off behavior, owner/admin enforcement, cross-workspace isolation, list/detail/export secret-sentinel omission, keyset continuation, transactional comment and issue deletion redaction, 30-day content scrubbing, 90-day terminal-case pruning, and preservation of active case/attempt and obligation references.

@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -10,10 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/scheduler"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
 )
 
@@ -286,7 +289,7 @@ INSERT INTO governance_evaluation_source (
 	if _, err := testHandler.deleteComment(context.Background(), commentUUID, workspaceUUID); err != nil {
 		t.Fatalf("delete source comment: %v", err)
 	}
-	var snapshot, candidates, citations, answers, copiedContext, result, confidence string
+	var snapshot, candidates, citations, answers, copiedContext, result, confidence, usage string
 	var requestedModel, returnedModel, inputDigest string
 	var caseReason, evidenceDigest, triggerAliases string
 	var redactedAt time.Time
@@ -295,25 +298,25 @@ INSERT INTO governance_evaluation_source (
 SELECT evaluation.snapshot::text, evaluation.candidate_map::text, evaluation.citation_map::text,
        evaluation.answers::text, evaluation.redacted_at,
        evaluation.requested_model, evaluation.returned_model, attempt.input_digest,
-       source.copied_context::text, attempt.result::text, attempt.confidence::text,
+       source.copied_context::text, attempt.result::text, attempt.confidence::text, attempt.usage::text,
        attempt.obligation_id::text
 FROM governance_evaluation evaluation
 JOIN governance_evaluation_source source ON source.evaluation_id = evaluation.id
 JOIN governance_attempt attempt ON attempt.id = evaluation.attempt_id
 WHERE evaluation.id = $1 AND source.object_id = $2
-`, fixture.evaluationID, commentID).Scan(&snapshot, &candidates, &citations, &answers, &redactedAt,
-		&requestedModel, &returnedModel, &inputDigest, &copiedContext, &result, &confidence, &obligationID); err != nil {
+	`, fixture.evaluationID, commentID).Scan(&snapshot, &candidates, &citations, &answers, &redactedAt,
+		&requestedModel, &returnedModel, &inputDigest, &copiedContext, &result, &confidence, &usage, &obligationID); err != nil {
 		t.Fatalf("read redacted governance evidence: %v", err)
 	}
-	for _, value := range []string{snapshot, candidates, citations, answers, copiedContext, result, confidence} {
+	for _, value := range []string{snapshot, candidates, citations, answers, copiedContext, result, confidence, usage} {
 		if strings.Contains(value, fixture.secret) {
 			t.Fatalf("redacted evidence retained source content: %s", value)
 		}
 	}
 	if snapshot != "{}" || candidates != "[]" || citations != "[]" || answers != "[]" || copiedContext != "{}" ||
-		result != "{}" || confidence != "{}" || requestedModel != "" || returnedModel != "" || inputDigest != "" {
-		t.Fatalf("unexpected redaction payloads: snapshot=%s candidates=%s citations=%s answers=%s context=%s result=%s confidence=%s requested_model=%q returned_model=%q input_digest=%q",
-			snapshot, candidates, citations, answers, copiedContext, result, confidence, requestedModel, returnedModel, inputDigest)
+		result != "{}" || confidence != "{}" || usage != "{}" || requestedModel != "" || returnedModel != "" || inputDigest != "" {
+		t.Fatalf("unexpected redaction payloads: snapshot=%s candidates=%s citations=%s answers=%s context=%s result=%s confidence=%s usage=%s requested_model=%q returned_model=%q input_digest=%q",
+			snapshot, candidates, citations, answers, copiedContext, result, confidence, usage, requestedModel, returnedModel, inputDigest)
 	}
 	if redactedAt.IsZero() {
 		t.Fatal("evaluation redaction timestamp was not set")
@@ -359,24 +362,142 @@ INSERT INTO governance_evaluation_source (
 	if _, err := testHandler.deleteIssueAndCollectAttachmentURLs(context.Background(), issue, nil); err != nil {
 		t.Fatalf("delete governance source issue: %v", err)
 	}
-	var snapshot, copiedContext, result string
+	var snapshot, copiedContext, result, usage string
 	var redactedSources int
 	var redactedAt time.Time
 	if err := testPool.QueryRow(context.Background(), `
-SELECT evaluation.snapshot::text, attempt.result::text, evaluation.redacted_at,
+SELECT evaluation.snapshot::text, attempt.result::text, attempt.usage::text, evaluation.redacted_at,
        count(*) FILTER (WHERE source.redacted_at IS NOT NULL)::integer,
        string_agg(source.copied_context::text, '')
 FROM governance_evaluation evaluation
 JOIN governance_attempt attempt ON attempt.id = evaluation.attempt_id
 JOIN governance_evaluation_source source ON source.evaluation_id = evaluation.id
 WHERE evaluation.id = $1
-GROUP BY evaluation.snapshot, attempt.result, evaluation.redacted_at
-`, fixture.evaluationID).Scan(&snapshot, &result, &redactedAt, &redactedSources, &copiedContext); err != nil {
+GROUP BY evaluation.snapshot, attempt.result, attempt.usage, evaluation.redacted_at
+	`, fixture.evaluationID).Scan(&snapshot, &result, &usage, &redactedAt, &redactedSources, &copiedContext); err != nil {
 		t.Fatalf("read issue-delete redaction: %v", err)
 	}
-	if snapshot != "{}" || result != "{}" || redactedAt.IsZero() || redactedSources != 3 || strings.Contains(copiedContext, fixture.secret) {
-		t.Fatalf("issue deletion failed to redact indexed evidence: snapshot=%s result=%s redacted_at=%v sources=%d contexts=%s",
-			snapshot, result, redactedAt, redactedSources, copiedContext)
+	if snapshot != "{}" || result != "{}" || usage != "{}" || redactedAt.IsZero() || redactedSources != 3 || strings.Contains(copiedContext, fixture.secret) {
+		t.Fatalf("issue deletion failed to redact indexed evidence: snapshot=%s result=%s usage=%s redacted_at=%v sources=%d contexts=%s",
+			snapshot, result, usage, redactedAt, redactedSources, copiedContext)
+	}
+	var reason, digest, aliases string
+	if err := testPool.QueryRow(context.Background(), `
+SELECT reason, evidence_digest, trigger_aliases::text
+FROM governance_case WHERE id = $1
+`, fixture.caseID).Scan(&reason, &digest, &aliases); err != nil {
+		t.Fatalf("read issue-delete case content: %v", err)
+	}
+	if reason != "" || digest != "" || aliases != "[]" {
+		t.Fatalf("issue deletion retained source-linked case content: reason=%q digest=%q aliases=%s", reason, digest, aliases)
+	}
+}
+
+func TestGovernanceEvaluationSourceInsertSerializesWithCommentDeletion(t *testing.T) {
+	requireProvenanceDB(t)
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	fixture := newGovernanceCaseAuditFixture(t, suffix, "source-race-sentinel-"+suffix)
+	issueID := dbfx.Issue(t, "Governance source race", testutil.Cols{"workspace_id": fixture.workspaceID})
+	commentID := dbfx.Comment(t, issueID, "source comment", testutil.Cols{
+		"workspace_id": fixture.workspaceID,
+		"author_id":    fixture.userID,
+	})
+	dbfx.Comment(t, issueID, "reply keeps a tombstone", testutil.Cols{
+		"workspace_id": fixture.workspaceID,
+		"author_id":    fixture.userID,
+		"parent_id":    commentID,
+	})
+	workspaceUUID, err := util.ParseUUID(fixture.workspaceID)
+	if err != nil {
+		t.Fatalf("parse workspace id: %v", err)
+	}
+	evaluationUUID, err := util.ParseUUID(fixture.evaluationID)
+	if err != nil {
+		t.Fatalf("parse evaluation id: %v", err)
+	}
+	commentUUID, err := util.ParseUUID(commentID)
+	if err != nil {
+		t.Fatalf("parse comment id: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	tx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin source writer transaction: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	var writerPID int32
+	if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&writerPID); err != nil {
+		t.Fatalf("read source writer pid: %v", err)
+	}
+	sourceParams := db.InsertGovernanceEvaluationSourceParams{
+		WorkspaceID: workspaceUUID, EvaluationID: evaluationUUID,
+		ObjectType: "comment", ObjectID: commentID, ObjectRevision: "1",
+		ObjectDigest: fixture.secret, CopiedContext: []byte(`{"copied":"` + fixture.secret + `"}`),
+	}
+	if _, err := testHandler.Queries.WithTx(tx).InsertGovernanceEvaluationSource(ctx, sourceParams); err != nil {
+		t.Fatalf("insert live comment source index: %v", err)
+	}
+	deleted := make(chan error, 1)
+	go func() {
+		_, deleteErr := testHandler.deleteComment(ctx, commentUUID, workspaceUUID)
+		deleted <- deleteErr
+	}()
+	blockedDeadline := time.NewTimer(5 * time.Second)
+	defer blockedDeadline.Stop()
+	blockPoll := time.NewTicker(10 * time.Millisecond)
+	defer blockPoll.Stop()
+	for {
+		var blocked bool
+		if err := testPool.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1 FROM pg_stat_activity
+    WHERE $1::integer = ANY(pg_blocking_pids(pid))
+)
+`, writerPID).Scan(&blocked); err != nil {
+			t.Fatalf("observe source writer lock wait: %v", err)
+		}
+		if blocked {
+			break
+		}
+		select {
+		case deleteErr := <-deleted:
+			t.Fatalf("comment deletion completed before the source writer committed: %v", deleteErr)
+		case <-blockedDeadline.C:
+			t.Fatal("comment deletion never waited for the source writer lock")
+		case <-blockPoll.C:
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit source writer transaction: %v", err)
+	}
+	select {
+	case err := <-deleted:
+		if err != nil {
+			t.Fatalf("delete source comment: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("comment deletion did not finish after writer commit: %v", ctx.Err())
+	}
+	if _, err := testHandler.Queries.InsertGovernanceEvaluationSource(ctx, sourceParams); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("source writer accepted a deleted comment: %v", err)
+	}
+	var snapshot, copiedContext, usage string
+	var replayable, sourceRedacted bool
+	if err := testPool.QueryRow(ctx, `
+SELECT evaluation.snapshot::text, source.copied_context::text, attempt.usage::text,
+       evaluation.redacted_at IS NULL, source.redacted_at IS NOT NULL
+FROM governance_evaluation evaluation
+JOIN governance_evaluation_source source ON source.evaluation_id = evaluation.id
+JOIN governance_attempt attempt ON attempt.id = evaluation.attempt_id
+WHERE evaluation.id = $1 AND source.object_id = $2
+`, fixture.evaluationID, commentID).Scan(&snapshot, &copiedContext, &usage, &replayable, &sourceRedacted); err != nil {
+		t.Fatalf("read evidence after source deletion: %v", err)
+	}
+	if strings.Contains(snapshot+copiedContext+usage, fixture.secret) || snapshot != "{}" || copiedContext != "{}" ||
+		usage != "{}" || replayable || !sourceRedacted {
+		t.Fatalf("source writer outlived deletion: snapshot=%s copied_context=%s usage=%s replayable=%t source_redacted=%t",
+			snapshot, copiedContext, usage, replayable, sourceRedacted)
 	}
 }
 
@@ -386,6 +507,16 @@ func TestGovernanceEvidenceRetentionPreservesQualificationAndObligationKeys(t *t
 	fixture := newGovernanceCaseAuditFixture(t, suffix, "retention-sentinel-"+suffix)
 	old := time.Now().UTC().Add(-31 * 24 * time.Hour)
 	if _, err := testPool.Exec(context.Background(), `
+	UPDATE governance_case SET frozen_strategy = jsonb_build_array($2::text) WHERE id = $1
+	`, fixture.caseID, fixture.secret); err != nil {
+		t.Fatalf("set retained strategy sentinel: %v", err)
+	}
+	if _, err := testPool.Exec(context.Background(), `
+	UPDATE governance_case_transition SET created_at = $2 WHERE case_id = $1
+	`, fixture.caseID, old); err != nil {
+		t.Fatalf("age governance transition reason: %v", err)
+	}
+	if _, err := testPool.Exec(context.Background(), `
 	UPDATE governance_evaluation SET captured_at = $2, created_at = $2 WHERE id = $1
 	`, fixture.evaluationID, old); err != nil {
 		t.Fatalf("age governance evidence for 30-day retention: %v", err)
@@ -394,26 +525,28 @@ func TestGovernanceEvidenceRetentionPreservesQualificationAndObligationKeys(t *t
 	if _, err := job.Handler(context.Background(), scheduler.HandlerInput{}); err != nil {
 		t.Fatalf("run 30-day governance retention: %v", err)
 	}
-	var snapshot, copiedContext, result, caseReason, evidenceDigest, requestedModel, returnedModel, inputDigest string
+	var snapshot, copiedContext, result, usage, caseReason, evidenceDigest, frozenStrategy, transitionReason, requestedModel, returnedModel, inputDigest string
 	var redacted bool
 	if err := testPool.QueryRow(context.Background(), `
-SELECT evaluation.snapshot::text, source.copied_context::text, attempt.result::text,
+SELECT evaluation.snapshot::text, source.copied_context::text, attempt.result::text, attempt.usage::text,
        evaluation.requested_model, evaluation.returned_model, attempt.input_digest,
-       governance_case.reason, governance_case.evidence_digest,
+       governance_case.reason, governance_case.evidence_digest, governance_case.frozen_strategy::text,
+       transition.sanitized_reason,
        evaluation.redacted_at IS NOT NULL
 FROM governance_evaluation evaluation
 JOIN governance_evaluation_source source ON source.evaluation_id = evaluation.id
 JOIN governance_attempt attempt ON attempt.id = evaluation.attempt_id
 JOIN governance_case ON governance_case.id = evaluation.case_id
+JOIN governance_case_transition transition ON transition.case_id = governance_case.id
 WHERE evaluation.id = $1
-	`, fixture.evaluationID).Scan(&snapshot, &copiedContext, &result, &requestedModel, &returnedModel, &inputDigest,
-		&caseReason, &evidenceDigest, &redacted); err != nil {
+	`, fixture.evaluationID).Scan(&snapshot, &copiedContext, &result, &usage, &requestedModel, &returnedModel, &inputDigest,
+		&caseReason, &evidenceDigest, &frozenStrategy, &transitionReason, &redacted); err != nil {
 		t.Fatalf("read retained governance evidence: %v", err)
 	}
-	if snapshot != "{}" || copiedContext != "{}" || result != "{}" || requestedModel != "" || returnedModel != "" ||
-		inputDigest != "" || caseReason != "" || evidenceDigest != "" || !redacted {
-		t.Fatalf("30-day content retention failed: snapshot=%s source=%s result=%s requested_model=%q returned_model=%q input_digest=%q reason=%q digest=%q redacted=%t",
-			snapshot, copiedContext, result, requestedModel, returnedModel, inputDigest, caseReason, evidenceDigest, redacted)
+	if snapshot != "{}" || copiedContext != "{}" || result != "{}" || usage != "{}" || frozenStrategy != "[]" || transitionReason != "" ||
+		requestedModel != "" || returnedModel != "" || inputDigest != "" || caseReason != "" || evidenceDigest != "" || !redacted {
+		t.Fatalf("30-day content retention failed: snapshot=%s source=%s result=%s usage=%s frozen_strategy=%s transition_reason=%q requested_model=%q returned_model=%q input_digest=%q reason=%q digest=%q redacted=%t",
+			snapshot, copiedContext, result, usage, frozenStrategy, transitionReason, requestedModel, returnedModel, inputDigest, caseReason, evidenceDigest, redacted)
 	}
 	var ruleRevision, activationRevision, configRevision, obligationID string
 	if err := testPool.QueryRow(context.Background(), `
