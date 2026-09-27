@@ -92,7 +92,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 			tokenString, fromCookie := extractToken(r)
 			if tokenString == "" {
 				slog.Debug("auth: no token found", "path", r.URL.Path)
-				http.Error(w, `{"error":"missing authorization"}`, http.StatusUnauthorized)
+				writeAuthenticationError(w, r, `{"error":"missing authorization"}`)
 				return
 			}
 
@@ -115,7 +115,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 			// `actorSourceFromRequest`. MUL-2600.
 			if strings.HasPrefix(tokenString, "mat_") {
 				if queries == nil {
-					http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+					writeAuthenticationError(w, r, `{"error":"invalid token"}`)
 					return
 				}
 				hash := auth.HashToken(tokenString)
@@ -197,14 +197,14 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 			if strings.HasPrefix(tokenString, auth.CloudPATPrefix) {
 				if cloudPAT == nil {
 					slog.Warn("auth: mcn_ token presented but cloud verifier not configured", "path", r.URL.Path)
-					http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+					writeAuthenticationError(w, r, `{"error":"invalid token"}`)
 					return
 				}
 				identity, err := cloudPAT.Verify(r.Context(), tokenString, ownerLookupFor(queries))
 				if err != nil {
 					if errors.Is(err, auth.ErrCloudPATInvalid) {
 						slog.Warn("auth: cloud rejected mcn_ token", "path", r.URL.Path, "error", err)
-						http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+						writeAuthenticationError(w, r, `{"error":"invalid token"}`)
 						return
 					}
 					// Cloud unreachable / 5xx / decode error. We surface
@@ -252,13 +252,13 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				}
 
 				if queries == nil {
-					http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+					writeAuthenticationError(w, r, `{"error":"invalid token"}`)
 					return
 				}
 				pat, err := queries.GetPersonalAccessTokenByHash(r.Context(), hash)
 				if err != nil {
 					slog.Warn("auth: invalid PAT", "path", r.URL.Path, "error", err)
-					http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+					writeAuthenticationError(w, r, `{"error":"invalid token"}`)
 					return
 				}
 
@@ -295,21 +295,21 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 			})
 			if err != nil || !token.Valid {
 				slog.Warn("auth: invalid token", "path", r.URL.Path, "error", err)
-				http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+				writeAuthenticationError(w, r, `{"error":"invalid token"}`)
 				return
 			}
 
 			claims, ok := token.Claims.(jwt.MapClaims)
 			if !ok {
 				slog.Warn("auth: invalid claims", "path", r.URL.Path)
-				http.Error(w, `{"error":"invalid claims"}`, http.StatusUnauthorized)
+				writeAuthenticationError(w, r, `{"error":"invalid claims"}`)
 				return
 			}
 
 			sub, ok := claims["sub"].(string)
 			if !ok || strings.TrimSpace(sub) == "" {
 				slog.Warn("auth: invalid claims", "path", r.URL.Path)
-				http.Error(w, `{"error":"invalid claims"}`, http.StatusUnauthorized)
+				writeAuthenticationError(w, r, `{"error":"invalid claims"}`)
 				return
 			}
 			email, _ := claims["email"].(string)

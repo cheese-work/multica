@@ -59,8 +59,20 @@ func writeGovernanceProposalProblem(w http.ResponseWriter, r *http.Request, stat
 	_ = json.NewEncoder(w).Encode(problem)
 }
 
+func isGovernanceProposalRoute(r *http.Request) bool {
+	return strings.HasPrefix(r.URL.Path, "/api/governance/proposals/")
+}
+
+func writeAuthenticationError(w http.ResponseWriter, r *http.Request, message string) {
+	if isGovernanceProposalRoute(r) {
+		writeGovernanceProposalProblem(w, r, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	http.Error(w, message, http.StatusUnauthorized)
+}
+
 func writeInvalidTaskToken(w http.ResponseWriter, r *http.Request) {
-	if strings.HasPrefix(r.URL.Path, "/api/governance/proposals/") {
+	if isGovernanceProposalRoute(r) {
 		writeGovernanceProposalProblem(w, r, http.StatusUnauthorized, "proposal_unavailable")
 		return
 	}

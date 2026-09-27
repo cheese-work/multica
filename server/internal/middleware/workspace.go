@@ -251,7 +251,11 @@ func buildMiddleware(queries *db.Queries, resolve workspaceResolver, roles []str
 				WorkspaceID: wsUUID,
 			})
 			if err != nil {
-				writeError(w, http.StatusNotFound, "workspace not found")
+				if isGovernanceProposalRoute(r) {
+					writeGovernanceProposalProblem(w, r, http.StatusNotFound, "workspace_not_found")
+				} else {
+					writeError(w, http.StatusNotFound, "workspace not found")
+				}
 				return
 			}
 

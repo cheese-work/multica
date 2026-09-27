@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -26,13 +28,18 @@ func TestDecodeGovernanceProposalResultConfidence(t *testing.T) {
 	}{
 		{name: "zero", value: `{"label":"no_correction","proposal_confidence":0}`},
 		{name: "one", value: `{"label":"no_correction","proposal_confidence":1}`},
+		{name: "negative zero", value: `{"label":"no_correction","proposal_confidence":-0.0}`},
+		{name: "one with decimal zeros", value: `{"label":"no_correction","proposal_confidence":1.000}`},
+		{name: "one with exponent", value: `{"label":"no_correction","proposal_confidence":10e-1}`},
 		{name: "missing", value: `{"label":"no_correction"}`, wantErr: true},
 		{name: "null", value: `{"label":"no_correction","proposal_confidence":null}`, wantErr: true},
 		{name: "boolean", value: `{"label":"no_correction","proposal_confidence":true}`, wantErr: true},
 		{name: "string", value: `{"label":"no_correction","proposal_confidence":"0.5"}`, wantErr: true},
 		{name: "malformed", value: `{"label":"no_correction","proposal_confidence":}`, wantErr: true},
 		{name: "negative", value: `{"label":"no_correction","proposal_confidence":-0.01}`, wantErr: true},
+		{name: "negative underflow", value: `{"label":"no_correction","proposal_confidence":-1e-1000}`, wantErr: true},
 		{name: "above one", value: `{"label":"no_correction","proposal_confidence":1.01}`, wantErr: true},
+		{name: "above one precision", value: `{"label":"no_correction","proposal_confidence":1.0000000000000000001}`, wantErr: true},
 		{name: "overflow", value: `{"label":"no_correction","proposal_confidence":1e999}`, wantErr: true},
 		{name: "NaN", value: `{"label":"no_correction","proposal_confidence":NaN}`, wantErr: true},
 		{name: "positive infinity", value: `{"label":"no_correction","proposal_confidence":Infinity}`, wantErr: true},
@@ -45,6 +52,120 @@ func TestDecodeGovernanceProposalResultConfidence(t *testing.T) {
 				t.Fatalf("error = %v, wantErr %v", err, test.wantErr)
 			}
 		})
+	}
+}
+
+func TestGovernanceProposalResultRejectsOutOfRangeWithoutPersistence(t *testing.T) {
+	requireGovernanceProposalSchema(t)
+	for _, confidence := range []string{"-1e-1000", "1.0000000000000000001"} {
+		t.Run(confidence, func(t *testing.T) {
+			fixture := newGovernanceProposalFixture(t)
+			router, rawToken, basePath := governanceProposalTestRouter(t, fixture)
+			request := httptest.NewRequest(http.MethodPost, basePath+"/result", strings.NewReader(
+				`{"label":"no_correction","proposal_confidence":`+confidence+`}`,
+			))
+			request.Header.Set("Authorization", "Bearer "+rawToken)
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("out-of-range confidence %s returned HTTP %d: %s", confidence, response.Code, response.Body.String())
+			}
+			var persistedResult, persistedConfidence []byte
+			if err := testPool.QueryRow(t.Context(), `
+SELECT result, confidence FROM governance_attempt WHERE workspace_id = $1 AND id = $2
+`, fixture.workspaceID, fixture.attemptID).Scan(&persistedResult, &persistedConfidence); err != nil {
+				t.Fatal(err)
+			}
+			if string(persistedResult) != `{}` || string(persistedConfidence) != `{}` {
+				t.Fatalf("out-of-range result persisted: result=%s confidence=%s", persistedResult, persistedConfidence)
+			}
+		})
+	}
+}
+
+func TestGovernanceProposalAuthFailuresUseSafeProblem(t *testing.T) {
+	requireGovernanceProposalSchema(t)
+	fixture := newGovernanceProposalFixture(t)
+	router, _, basePath := governanceProposalTestRouter(t, fixture)
+	for _, test := range []struct {
+		name          string
+		authorization string
+	}{
+		{name: "missing authorization"},
+		{name: "invalid jwt", authorization: "Bearer invalid-jwt"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, basePath+"/evidence", nil)
+			if test.authorization != "" {
+				request.Header.Set("Authorization", test.authorization)
+			}
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			requireGovernanceProposalSafeProblem(t, response, http.StatusUnauthorized, "authentication_required")
+		})
+	}
+}
+
+func TestGovernanceProposalRevokedMembershipUsesSafeProblem(t *testing.T) {
+	requireGovernanceProposalSchema(t)
+	fixture := newGovernanceProposalFixture(t)
+	router, rawToken, basePath := governanceProposalTestRouter(t, fixture)
+	fixture.fx.Exec(t, `DELETE FROM member WHERE workspace_id = $1 AND user_id = $2`, fixture.workspaceID, testUserID)
+	request := httptest.NewRequest(http.MethodGet, basePath+"/evidence", nil)
+	request.Header.Set("Authorization", "Bearer "+rawToken)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	requireGovernanceProposalSafeProblem(t, response, http.StatusNotFound, "workspace_unavailable")
+}
+
+func governanceProposalTestRouter(t *testing.T, fixture governanceProposalFixture) (http.Handler, string, string) {
+	t.Helper()
+	fixture.fx.Exec(t, `UPDATE governance_workspace_config SET settings = '{"jev_governance_enabled":true}'::jsonb WHERE workspace_id = $1`, fixture.workspaceID)
+	rawToken := "mat_" + uuid.NewString()
+	queries := db.New(testPool)
+	_, err := queries.CreateGovernanceProposalTaskToken(t.Context(), db.CreateGovernanceProposalTaskTokenParams{
+		TokenHash: auth.HashToken(rawToken), UserID: proposalUUID(t, testUserID),
+		ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
+		WorkspaceID: proposalUUID(t, fixture.workspaceID), CaseID: proposalUUID(t, fixture.caseID),
+		AttemptID: proposalUUID(t, fixture.attemptID), TaskID: proposalUUID(t, fixture.taskID),
+		AgentID: proposalUUID(t, fixture.agentID),
+	})
+	if err != nil {
+		t.Fatalf("create proposal token: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := testPool.Exec(context.Background(), `DELETE FROM task_token WHERE token_hash = $1`, auth.HashToken(rawToken)); err != nil {
+			t.Errorf("delete proposal token: %v", err)
+		}
+	})
+	router := chi.NewRouter()
+	router.Use(middleware.Auth(queries, nil, nil, nil))
+	router.Use(middleware.RequireWorkspaceMember(queries))
+	router.Route("/api/governance/proposals/{caseId}/attempts/{attemptId}", func(router chi.Router) {
+		router.Get("/evidence", testHandler.GetGovernanceProposalEvidence)
+		router.Post("/heartbeat", testHandler.HeartbeatGovernanceProposalAttempt)
+		router.Post("/result", testHandler.SubmitGovernanceProposalResult)
+	})
+	return router, rawToken, "/api/governance/proposals/" + fixture.caseID + "/attempts/" + fixture.attemptID
+}
+
+func requireGovernanceProposalSafeProblem(t *testing.T, response *httptest.ResponseRecorder, status int, problem string) {
+	t.Helper()
+	if response.Code != status || response.Header().Get("Content-Type") != "application/problem+json" {
+		t.Fatalf("safe problem = HTTP %d (%s): %s", response.Code, response.Header().Get("Content-Type"), response.Body.String())
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("invalid safe problem JSON: %s", response.Body.String())
+	}
+	for _, field := range []string{"problem", "cause", "permitted_fix", "retryable", "correlation_id", "documentation_link"} {
+		if _, present := payload[field]; !present {
+			t.Errorf("DX-03 missing %s: %s", field, response.Body.String())
+		}
+	}
+	var actualProblem string
+	if err := json.Unmarshal(payload["problem"], &actualProblem); err != nil || actualProblem != problem {
+		t.Errorf("problem = %q, want %q", actualProblem, problem)
 	}
 }
 

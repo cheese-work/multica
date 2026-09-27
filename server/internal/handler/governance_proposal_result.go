@@ -219,12 +219,62 @@ func decodeProbability(encoded json.RawMessage, target *float64) error {
 	if !ok {
 		return errors.New("invalid probability")
 	}
-	parsed, err := strconv.ParseFloat(number.String(), 64)
+	numberText := number.String()
+	if !probabilityNumberInRange(numberText) {
+		return errors.New("invalid probability")
+	}
+	parsed, err := strconv.ParseFloat(numberText, 64)
 	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed < 0 || parsed > 1 {
 		return errors.New("invalid probability")
 	}
 	*target = parsed
 	return nil
+}
+
+func probabilityNumberInRange(encoded string) bool {
+	negative := strings.HasPrefix(encoded, "-")
+	if negative {
+		encoded = encoded[1:]
+	}
+	mantissa := encoded
+	exponentText := ""
+	if exponentIndex := strings.IndexAny(encoded, "eE"); exponentIndex >= 0 {
+		mantissa = encoded[:exponentIndex]
+		exponentText = encoded[exponentIndex+1:]
+	}
+	integerDigits := len(mantissa)
+	if decimalIndex := strings.IndexByte(mantissa, '.'); decimalIndex >= 0 {
+		integerDigits = decimalIndex
+		mantissa = mantissa[:decimalIndex] + mantissa[decimalIndex+1:]
+	}
+	leadingZeroes := len(mantissa) - len(strings.TrimLeft(mantissa, "0"))
+	if leadingZeroes == len(mantissa) {
+		return true
+	}
+	if negative {
+		return false
+	}
+	exponent := int64(0)
+	if exponentText != "" {
+		parsedExponent, err := strconv.ParseInt(exponentText, 10, 64)
+		if err != nil {
+			return errors.Is(err, strconv.ErrRange) && strings.HasPrefix(exponentText, "-")
+		}
+		exponent = parsedExponent
+	}
+	significant := mantissa[leadingZeroes:]
+	decimalScale := int64(integerDigits - leadingZeroes)
+	if exponent > 1-decimalScale {
+		return false
+	}
+	if exponent < -decimalScale {
+		return true
+	}
+	decimalScale += exponent
+	if decimalScale < 1 {
+		return true
+	}
+	return decimalScale == 1 && significant[0] == '1' && strings.Trim(significant[1:], "0") == ""
 }
 
 func requireJSONEOF(decoder *json.Decoder) error {
