@@ -102,6 +102,7 @@ func TestWebhookStatusResolver(t *testing.T) {
 								p.PullRequest.State, p.PullRequest.Merged = "closed", true
 								p.PullRequest.HTMLURL = fmt.Sprintf("https://github.test/fixture/resolver/pull/%d", number)
 								p.PullRequest.CreatedAt, p.PullRequest.UpdatedAt = timestamp, timestamp
+								p.PullRequest.MergedAt = timestamp
 								if err := h.mirrorPullRequestForWorkspace(ctx, wsID, int64(91000+workspace), p, prLinkPolicy{unrestricted: true}, ""); err != nil {
 									t.Fatalf("mirrorPullRequestForWorkspace: %v", err)
 								}

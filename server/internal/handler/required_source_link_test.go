@@ -672,10 +672,7 @@ func che408HandlerFailingAfter(t *testing.T, marker string, skip int) *Handler {
 	return &faulty
 }
 
-// che408IssueSelect is the column list unique to the issue-row SELECTs. The
-// guard's re-fetch uses it, and so does the handler's own earlier load, which
-// is why the counting variant above exists.
-const che408IssueSelect = "triage_state FROM issue"
+const che408IssueSelect = " FROM issue\nWHERE id = $1"
 
 // TestCreateIssue_ParentLookupErrorFailsClosed covers issue.go's re-fetch of
 // the PARENT issue. That lookup is what tells the guard whether the parent

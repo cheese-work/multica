@@ -2087,6 +2087,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// CHE-755 read-only provenance export. Human owners/admins only; the
 			// handler re-checks the role and actor source as a backstop.
 			r.With(handler.RequireHumanActor).Post("/api/provenance/export", h.ExportProvenance)
+			r.With(handler.RequireHumanActor).Get("/api/governance/cases", h.ListGovernanceCaseAudit)
+			r.With(handler.RequireHumanActor).Get("/api/governance/cases/{caseId}", h.GetGovernanceCaseAudit)
+			r.With(handler.RequireHumanActor).Post("/api/governance/cases/{caseId}/export", h.ExportGovernanceCaseAudit)
 
 			// Issue quick actions (definitions; running one lives under
 			// /api/issues/{id}/quick-actions/{quickActionId}/run)

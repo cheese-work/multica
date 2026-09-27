@@ -170,6 +170,20 @@ func (h *Handler) maybeAutoCompleteIssue(ctx context.Context, workspaceID, issue
 	if d.State != prAutoCompleteAllMerged {
 		return
 	}
+	children, err := h.Queries.ListChildIssues(ctx, issue.ID)
+	if err != nil {
+		slog.Warn("pr auto-complete: list children failed", "err", err, "issue_id", uuidToString(issue.ID))
+		return
+	}
+	if len(children) > 0 {
+		effective := h.childStatusResolver(ctx)
+		for _, child := range children {
+			status, err := effective(child)
+			if err != nil || !isTerminalChildStatus(status) {
+				return
+			}
+		}
+	}
 
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {

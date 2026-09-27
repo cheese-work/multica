@@ -4430,6 +4430,11 @@ func (h *Handler) deleteIssuesAndCollectAttachmentURLs(ctx context.Context, issu
 		}); err != nil {
 			return issueDeleteResult{}, fmt.Errorf("lock issue for delete: %w", err)
 		}
+		if err := qtx.RedactGovernanceEvidenceForIssue(ctx, db.RedactGovernanceEvidenceForIssueParams{
+			WorkspaceID: issue.WorkspaceID, IssueID: issue.ID,
+		}); err != nil {
+			return issueDeleteResult{}, fmt.Errorf("redact governance evidence for issue delete: %w", err)
+		}
 		detached, err := qtx.DetachDirectChildIssues(ctx, db.DetachDirectChildIssuesParams{
 			WorkspaceID: issue.WorkspaceID, ParentIssueID: issue.ID, ExcludedIssueIds: excludedIssueIDs,
 		})

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -93,11 +94,11 @@ type CommentResponse struct {
 	// nil/empty in that case. Any comment carrying additional text alongside
 	// a status word is NOT a match and goes through the normal trigger path,
 	// leaving this field nil.
-	StatusAnswer *StatusAnswer `json:"status_answer,omitempty"`
-	SupplementTaskID        string                  `json:"supplement_task_id,omitempty"`
-	SupplementStatus        string                  `json:"supplement_status,omitempty"`
-	SupplementFailureReason *string                 `json:"supplement_failure_reason,omitempty"`
-	SupplementDeliveredAt   *string                 `json:"supplement_delivered_at,omitempty"`
+	StatusAnswer            *StatusAnswer `json:"status_answer,omitempty"`
+	SupplementTaskID        string        `json:"supplement_task_id,omitempty"`
+	SupplementStatus        string        `json:"supplement_status,omitempty"`
+	SupplementFailureReason *string       `json:"supplement_failure_reason,omitempty"`
+	SupplementDeliveredAt   *string       `json:"supplement_delivered_at,omitempty"`
 }
 
 // CommentTriggerOutcome is the per-target result of an explicit @agent / @squad
@@ -3920,6 +3921,13 @@ func (h *Handler) deleteComment(ctx context.Context, commentID, workspaceID pgty
 		}
 	} else if !errors.Is(receiptErr, pgx.ErrNoRows) {
 		return out, receiptErr
+	}
+	if err := qtx.RedactGovernanceEvidenceForSource(ctx, db.RedactGovernanceEvidenceForSourceParams{
+		WorkspaceID: target.WorkspaceID,
+		ObjectType:  "comment",
+		ObjectID:    uuidToString(target.ID),
+	}); err != nil {
+		return out, fmt.Errorf("redact governance evidence for comment delete: %w", err)
 	}
 	// Separate statement on purpose: its snapshot postdates the locks above,
 	// so it sees every committed reply, and none can be added while they are

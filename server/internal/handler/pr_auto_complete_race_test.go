@@ -55,11 +55,15 @@ func TestPRAutoComplete_PRLinkedDuringCompletionKeepsIssueOpen(t *testing.T) {
 // with an explicit updated_at.
 func fireTimedPRWebhook(t *testing.T, inst int64, identifier, state, timestamp string) {
 	t.Helper()
+	var mergedAt any
+	if state == "closed" {
+		mergedAt = timestamp
+	}
 	raw, err := json.Marshal(map[string]any{
 		"action":       "edited",
 		"installation": map[string]any{"id": inst},
 		"repository":   map[string]any{"name": "widget", "owner": map[string]any{"login": "acme"}},
-		"pull_request": map[string]any{"number": 1, "html_url": "https://github.com/acme/widget/pull/1", "title": "Closes " + identifier, "state": state, "merged": state == "closed", "created_at": "2026-09-22T00:00:00Z", "updated_at": timestamp, "head": map[string]any{"ref": "fix/a"}},
+		"pull_request": map[string]any{"number": 1, "html_url": "https://github.com/acme/widget/pull/1", "title": "Closes " + identifier, "state": state, "merged": state == "closed", "merged_at": mergedAt, "created_at": "2026-09-22T00:00:00Z", "updated_at": timestamp, "head": map[string]any{"ref": "fix/a"}},
 	})
 	if err != nil {
 		t.Fatal(err)

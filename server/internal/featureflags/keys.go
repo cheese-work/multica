@@ -51,7 +51,8 @@ const (
 	// would mean flipping on real Jev spend later also silently turns on
 	// receipt capture (or vice versa) for workspaces that were never
 	// independently opted into each. Off by default, same as Jev.
-	JevReceipts = "jev_receipts_enabled"
+	JevReceipts         = "jev_receipts_enabled"
+	GovernanceCaseAudit = "governance_case_audit_enabled"
 	// ExportPrivacyControls (CHE-766) is the kill switch for the CHE-755
 	// provenance-export capability and its export-privacy config endpoints.
 	// Default TRUE: export already shipped in CHE-755 without a flag, so a
@@ -111,6 +112,13 @@ func TriageV1Enabled(ctx context.Context, flags *featureflag.Service) bool {
 // receipt-capture observation. See [JevReceipts].
 func JevReceiptsEnabled(ctx context.Context, flags *featureflag.Service) bool {
 	return flags.IsEnabled(ctx, JevReceipts, false)
+}
+
+func GovernanceCaseAuditEnabled(ctx context.Context, flags *featureflag.Service) bool {
+	if flags == nil || flags.Provider() == nil {
+		return false
+	}
+	return flags.IsEnabled(ctx, GovernanceCaseAudit, false)
 }
 
 // ExportPrivacyControlsEnabled reports whether CHE-755 provenance export and

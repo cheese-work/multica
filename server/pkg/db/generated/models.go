@@ -812,6 +812,7 @@ type GovernanceAttempt struct {
 	Usage          []byte             `json:"usage"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	RedactedAt     pgtype.Timestamptz `json:"redacted_at"`
 }
 
 type GovernanceCase struct {
@@ -883,6 +884,7 @@ type GovernanceEvaluation struct {
 	Answers               []byte             `json:"answers"`
 	CapturedAt            pgtype.Timestamptz `json:"captured_at"`
 	CreatedAt             pgtype.Timestamptz `json:"created_at"`
+	RedactedAt            pgtype.Timestamptz `json:"redacted_at"`
 }
 
 type GovernanceEvaluationSource struct {
@@ -895,6 +897,7 @@ type GovernanceEvaluationSource struct {
 	ObjectDigest   string             `json:"object_digest"`
 	CopiedContext  []byte             `json:"copied_context"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	RedactedAt     pgtype.Timestamptz `json:"redacted_at"`
 }
 
 type GovernanceReceipt struct {
