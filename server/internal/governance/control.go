@@ -306,6 +306,26 @@ func SafeProblemFor(code string) (SafeProblem, bool) {
 			PermittedFix: "Retry later; governance remains disabled until configuration is available.", Retryable: true,
 			DocumentationLink: "/docs/governance/errors#configuration_unavailable",
 		},
+		"proposal_token_scope_denied": {
+			Problem: "proposal_token_scope_denied", Cause: "The proposal credential cannot access this operation.",
+			PermittedFix: "Use the case-scoped proposal endpoint authorized for this attempt.", Retryable: false,
+			DocumentationLink: "/docs/governance/errors#proposal_token_scope_denied",
+		},
+		"proposal_access_denied": {
+			Problem: "proposal_access_denied", Cause: "The source principal or assigned specialist no longer has access to this case.",
+			PermittedFix: "Restore the required workspace and specialist access before issuing a new attempt.", Retryable: false,
+			DocumentationLink: "/docs/governance/errors#proposal_access_denied",
+		},
+		"proposal_unavailable": {
+			Problem: "proposal_unavailable", Cause: "The case, attempt, evidence, or governance control is no longer current.",
+			PermittedFix: "Stop using this attempt and follow the server-owned case lifecycle.", Retryable: false,
+			DocumentationLink: "/docs/governance/errors#proposal_unavailable",
+		},
+		"proposal_invalid_request": {
+			Problem: "invalid_proposal_result", Cause: "The result does not match the typed proposal contract or offered evidence.",
+			PermittedFix: "Submit only an allowed label and references from the current evidence with a finite confidence in [0,1].", Retryable: false,
+			DocumentationLink: "/docs/governance/errors#proposal_invalid_request",
+		},
 	}
 	problem, ok := problems[code]
 	return problem, ok

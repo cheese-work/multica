@@ -166,6 +166,113 @@ SELECT sqlc.arg('workspace_id')::uuid, sqlc.arg('evaluation_id')::uuid,
 FROM live_source
 RETURNING *;
 
+-- name: GetGovernanceProposalEvidence :one
+SELECT case_record.workspace_id, case_record.id AS case_id,
+       case_record.evidence_epoch, case_record.control_epoch,
+       attempt.id AS attempt_id, attempt.task_id, attempt.candidate_id,
+       attempt.input_digest, attempt.attempt_fence,
+       evaluation.snapshot, evaluation.candidate_map,
+       evaluation.citation_map, evaluation.snapshot_digest
+FROM governance_case AS case_record
+JOIN governance_attempt AS attempt
+  ON attempt.workspace_id = case_record.workspace_id
+ AND attempt.case_id = case_record.id
+ AND attempt.id = sqlc.arg('attempt_id')::uuid
+JOIN governance_evaluation AS evaluation
+  ON evaluation.workspace_id = case_record.workspace_id
+ AND evaluation.case_id = case_record.id
+ AND evaluation.attempt_id = attempt.id
+JOIN governance_workspace_config AS control
+  ON control.workspace_id = case_record.workspace_id
+WHERE case_record.workspace_id = sqlc.arg('workspace_id')::uuid
+  AND case_record.id = sqlc.arg('case_id')::uuid
+  AND case_record.current_attempt_id = attempt.id
+  AND case_record.state = 'agent_attempt'
+  AND case_record.evidence_epoch = sqlc.arg('evidence_epoch')::integer
+  AND case_record.control_epoch = control.control_epoch
+  AND control.settings->>'jev_governance_enabled' = 'true'
+  AND attempt.task_id = sqlc.arg('task_id')::uuid
+  AND attempt.candidate_id = sqlc.arg('agent_id')::uuid
+  AND attempt.attempt_fence = sqlc.arg('attempt_fence')::uuid
+  AND attempt.kind = 'agent'
+  AND attempt.redacted_at IS NULL
+  AND attempt.terminal_at IS NULL
+  AND attempt.deadline_at > now()
+  AND evaluation.redacted_at IS NULL
+  AND NOT EXISTS (
+      SELECT 1
+      FROM governance_evaluation_source AS source
+      WHERE source.evaluation_id = evaluation.id
+        AND (source.workspace_id <> case_record.workspace_id OR source.redacted_at IS NOT NULL)
+  );
+
+-- name: HeartbeatGovernanceProposalAttempt :execrows
+UPDATE governance_attempt AS attempt
+SET claimed_at = COALESCE(attempt.claimed_at, now()),
+    last_heartbeat_at = now(),
+    updated_at = now()
+FROM governance_case AS case_record,
+     governance_workspace_config AS control
+WHERE attempt.workspace_id = sqlc.arg('workspace_id')::uuid
+  AND attempt.case_id = sqlc.arg('case_id')::uuid
+  AND attempt.id = sqlc.arg('attempt_id')::uuid
+  AND attempt.task_id = sqlc.arg('task_id')::uuid
+  AND attempt.candidate_id = sqlc.arg('agent_id')::uuid
+  AND attempt.attempt_fence = sqlc.arg('attempt_fence')::uuid
+  AND attempt.kind = 'agent'
+  AND attempt.redacted_at IS NULL
+  AND attempt.terminal_at IS NULL
+  AND attempt.deadline_at > now()
+  AND case_record.workspace_id = attempt.workspace_id
+  AND case_record.id = attempt.case_id
+  AND case_record.current_attempt_id = attempt.id
+  AND case_record.state = 'agent_attempt'
+  AND case_record.evidence_epoch = sqlc.arg('evidence_epoch')::integer
+  AND control.workspace_id = case_record.workspace_id
+  AND control.control_epoch = case_record.control_epoch
+  AND control.settings->>'jev_governance_enabled' = 'true';
+
+-- name: SubmitGovernanceProposalResult :execrows
+UPDATE governance_attempt AS attempt
+SET result = sqlc.arg('result')::jsonb,
+    confidence = sqlc.arg('confidence')::jsonb,
+    terminal_reason = 'proposal_submitted',
+    terminal_at = now(),
+    updated_at = now()
+FROM governance_case AS case_record,
+     governance_evaluation AS evaluation,
+     governance_workspace_config AS control
+WHERE attempt.workspace_id = sqlc.arg('workspace_id')::uuid
+  AND attempt.case_id = sqlc.arg('case_id')::uuid
+  AND attempt.id = sqlc.arg('attempt_id')::uuid
+  AND attempt.task_id = sqlc.arg('task_id')::uuid
+  AND attempt.candidate_id = sqlc.arg('agent_id')::uuid
+  AND attempt.attempt_fence = sqlc.arg('attempt_fence')::uuid
+  AND attempt.kind = 'agent'
+  AND attempt.redacted_at IS NULL
+  AND attempt.terminal_at IS NULL
+  AND attempt.deadline_at > now()
+  AND case_record.workspace_id = attempt.workspace_id
+  AND case_record.id = attempt.case_id
+  AND case_record.current_attempt_id = attempt.id
+  AND case_record.state = 'agent_attempt'
+  AND case_record.evidence_epoch = sqlc.arg('evidence_epoch')::integer
+  AND evaluation.workspace_id = case_record.workspace_id
+  AND evaluation.case_id = case_record.id
+  AND evaluation.attempt_id = attempt.id
+  AND evaluation.candidate_map = sqlc.arg('candidate_map')::jsonb
+  AND evaluation.citation_map = sqlc.arg('citation_map')::jsonb
+  AND evaluation.redacted_at IS NULL
+  AND NOT EXISTS (
+      SELECT 1
+      FROM governance_evaluation_source AS source
+      WHERE source.evaluation_id = evaluation.id
+        AND (source.workspace_id <> case_record.workspace_id OR source.redacted_at IS NOT NULL)
+  )
+  AND control.workspace_id = case_record.workspace_id
+  AND control.control_epoch = case_record.control_epoch
+  AND control.settings->>'jev_governance_enabled' = 'true';
+
 -- name: ListGovernanceCasesPage :many
 -- Bounded workspace-leading keyset page for future case listing. The first
 -- page passes has_cursor=false; later pages pass the last created_at/id pair.

@@ -2117,6 +2117,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.With(handler.RequireHumanActor).Get("/api/governance/cases", h.ListGovernanceCaseAudit)
 			r.With(handler.RequireHumanActor).Get("/api/governance/cases/{caseId}", h.GetGovernanceCaseAudit)
 			r.With(handler.RequireHumanActor).Post("/api/governance/cases/{caseId}/export", h.ExportGovernanceCaseAudit)
+			r.Route("/api/governance/proposals/{caseId}/attempts/{attemptId}", func(r chi.Router) {
+				r.Get("/evidence", h.GetGovernanceProposalEvidence)
+				r.Post("/heartbeat", h.HeartbeatGovernanceProposalAttempt)
+				r.Post("/result", h.SubmitGovernanceProposalResult)
+			})
 
 			// Issue quick actions (definitions; running one lives under
 			// /api/issues/{id}/quick-actions/{quickActionId}/run)

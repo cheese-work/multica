@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -67,6 +68,11 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 			// to convince a downstream handler that its request came
 			// from a non-task-token path.
 			r.Header.Del("X-Actor-Source")
+			r.Header.Del("X-Task-Token-Purpose")
+			r.Header.Del("X-Governance-Case-ID")
+			r.Header.Del("X-Governance-Attempt-ID")
+			r.Header.Del("X-Governance-Attempt-Fence")
+			r.Header.Del("X-Governance-Evidence-Epoch")
 
 			// Agent identity is server-set for exactly the same reason,
 			// and the rest of the codebase already assumes it (see
@@ -116,7 +122,31 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				tt, err := queries.GetTaskTokenByHash(r.Context(), hash)
 				if err != nil {
 					slog.Warn("auth: invalid task token", "path", r.URL.Path, "error", err)
-					http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+					writeInvalidTaskToken(w, r)
+					return
+				}
+				switch tt.Purpose {
+				case "agent_task":
+					if tt.GovernanceCaseID.Valid || tt.GovernanceAttemptID.Valid || tt.GovernanceAttemptFence.Valid || tt.GovernanceEvidenceEpoch.Valid {
+						writeInvalidTaskToken(w, r)
+						return
+					}
+				case GovernanceProposalTaskPurpose:
+					if !tt.GovernanceCaseID.Valid || !tt.GovernanceAttemptID.Valid ||
+						!tt.GovernanceAttemptFence.Valid || !tt.GovernanceEvidenceEpoch.Valid ||
+						tt.GovernanceEvidenceEpoch.Int32 < 0 {
+						writeInvalidTaskToken(w, r)
+						return
+					}
+					if governanceProposalCapability(
+						r.Method, r.URL.Path, r.URL.RawPath, r.URL.RawQuery,
+						uuidToString(tt.GovernanceCaseID), uuidToString(tt.GovernanceAttemptID),
+					) == "" {
+						writeGovernanceProposalProblem(w, r, http.StatusForbidden, "proposal_token_scope_denied")
+						return
+					}
+				default:
+					writeInvalidTaskToken(w, r)
 					return
 				}
 				userID := uuidToString(tt.UserID)
@@ -127,6 +157,13 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				r.Header.Set("X-Agent-ID", uuidToString(tt.AgentID))
 				r.Header.Set("X-Task-ID", uuidToString(tt.TaskID))
 				r.Header.Set("X-Workspace-ID", uuidToString(tt.WorkspaceID))
+				r.Header.Set("X-Task-Token-Purpose", tt.Purpose)
+				if tt.Purpose == GovernanceProposalTaskPurpose {
+					r.Header.Set("X-Governance-Case-ID", uuidToString(tt.GovernanceCaseID))
+					r.Header.Set("X-Governance-Attempt-ID", uuidToString(tt.GovernanceAttemptID))
+					r.Header.Set("X-Governance-Attempt-Fence", uuidToString(tt.GovernanceAttemptFence))
+					r.Header.Set("X-Governance-Evidence-Epoch", strconv.FormatInt(int64(tt.GovernanceEvidenceEpoch.Int32), 10))
+				}
 				// X-Actor-Source flags the auth path so resolveActor and
 				// any owner-only handler can deny without re-querying the
 				// token table. The value "task_token" is the only signal
