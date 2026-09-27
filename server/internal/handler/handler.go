@@ -25,6 +25,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/dbreader"
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/governance/credential"
 	"github.com/multica-ai/multica/server/internal/governance/receipt"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
 	composio "github.com/multica-ai/multica/server/internal/integrations/composio"
@@ -311,6 +312,10 @@ type Handler struct {
 	// mean calls are permitted. Wired in cmd/server/router.go after
 	// handler.New.
 	Jev *jev.Client
+	// JevCredentials holds per-workspace provider credentials encrypted with a
+	// dedicated keyring. Nil is intentional default-off: write requests fail
+	// closed and no credential can be persisted in plaintext.
+	JevCredentials *credential.Keyring
 	// ChannelSupervisor owns the per-installation supervisor goroutines
 	// that hold the §4.4 WS lease and drive each channel.Channel
 	// (MUL-3620 generalized the Feishu-only Hub into this channel-agnostic
