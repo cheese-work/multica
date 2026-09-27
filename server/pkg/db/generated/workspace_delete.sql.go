@@ -336,6 +336,12 @@ deleted_issue_checkpoints AS (
 deleted_governance_receipts AS (
     DELETE FROM governance_receipt WHERE workspace_id = $1
 ),
+deleted_governance_config_audit AS (
+    DELETE FROM governance_workspace_config_audit WHERE workspace_id = $1
+),
+deleted_governance_configs AS (
+    DELETE FROM governance_workspace_config WHERE workspace_id = $1
+),
 deleted_governance_evaluation_sources AS (
     DELETE FROM governance_evaluation_source WHERE workspace_id = $1
 ),

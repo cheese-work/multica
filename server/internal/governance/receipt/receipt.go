@@ -163,11 +163,12 @@ type Store interface {
 // CommentID are the receipt's owner-scoping key; Eval is passed through to
 // governance.Evaluate unchanged.
 type Input struct {
-	WorkspaceID pgtype.UUID
-	IssueID     pgtype.UUID
-	CommentID   pgtype.UUID
-	Trigger     Trigger
-	Eval        governance.Input
+	WorkspaceID  pgtype.UUID
+	ControlEpoch int64
+	IssueID      pgtype.UUID
+	CommentID    pgtype.UUID
+	Trigger      Trigger
+	Eval         governance.Input
 }
 
 // Observer runs bounded, best-effort governance observations with a
@@ -576,12 +577,13 @@ func errPanic(rec any) error {
 // rather than trusted to every future caller of Observe to remember.
 func (o *Observer) record(ctx context.Context, in Input, result Result) {
 	params := db.InsertGovernanceReceiptParams{
-		WorkspaceID: in.WorkspaceID,
-		IssueID:     in.IssueID,
-		CommentID:   in.CommentID,
-		Trigger:     string(in.Trigger),
-		Status:      result.Status,
-		Answers:     []byte("[]"),
+		WorkspaceID:  in.WorkspaceID,
+		ControlEpoch: in.ControlEpoch,
+		IssueID:      in.IssueID,
+		CommentID:    in.CommentID,
+		Trigger:      string(in.Trigger),
+		Status:       result.Status,
+		Answers:      []byte("[]"),
 	}
 	if result.ShedReason != "" {
 		params.ShedReason = pgtype.Text{String: string(result.ShedReason), Valid: true}

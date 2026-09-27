@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -204,6 +205,109 @@ func TestAttemptFenceRechecksExpiryAfterAttemptLock(t *testing.T) {
 				t.Fatalf("completion after expiry error = %v, want ErrStaleFence", observed.err)
 			}
 		})
+	}
+}
+
+func TestDisabledControlEpochFencesLifecycleWrites(t *testing.T) {
+	t.Run("new case admission", func(t *testing.T) {
+		fixture := newLifecycleFixture(t, CaseCaptured)
+		disableLifecycleControl(t, fixture)
+		_, err := fixture.queries.InsertNextGovernanceCase(context.Background(), db.InsertNextGovernanceCaseParams{
+			WorkspaceID: fixture.workspaceID, SubjectType: "issue", SubjectID: lifecycleUUID(t), SubjectRevision: 1,
+			RuleID: lifecycleUUID(t), MaterialFingerprint: "post-disable", State: string(CaseCaptured),
+			AuthorityLineage: []byte("[]"), TriggerAliases: []byte("[]"), EvidenceDigest: "evidence-post-disable",
+			RuleRevision: "rule-1", ActivationRevision: "activation-1", ConfigRevision: "config-1",
+			BudgetRootID: lifecycleUUID(t), FrozenStrategy: []byte("[]"),
+		})
+		if !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatalf("post-disable case admission error = %v, want pgx.ErrNoRows", err)
+		}
+	})
+
+	t.Run("action lease claim", func(t *testing.T) {
+		fixture := newLifecycleFixture(t, CaseCorrectionPending)
+		disableLifecycleControl(t, fixture)
+		_, err := fixture.service().ClaimLease(context.Background(), LeaseCommand{
+			WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID,
+			ExpectedState: CaseCorrectionPending, ExpectedRevision: 0,
+			Token: lifecycleUUID(t), Duration: time.Minute,
+		})
+		if !errors.Is(err, ErrStaleControlEpoch) {
+			t.Fatalf("post-disable action claim error = %v, want ErrStaleControlEpoch", err)
+		}
+		current, err := fixture.currentCase(t)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.LeaseToken.Valid || current.StateRevision != 0 {
+			t.Fatalf("stale action claim mutated lease/revision: valid=%v revision=%d", current.LeaseToken.Valid, current.StateRevision)
+		}
+	})
+
+	t.Run("queue transition", func(t *testing.T) {
+		fixture := newLifecycleFixture(t, CaseCaptured)
+		disableLifecycleControl(t, fixture)
+		_, err := fixture.service().Transition(context.Background(), TransitionCommand{
+			WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID,
+			ExpectedState: CaseCaptured, ExpectedRevision: 0, NextState: CaseEvidenceReady,
+			CauseEventKey: "post-disable-queue-transition", Actor: ActorSystem, Reason: ReasonEvidenceCaptured,
+		})
+		if !errors.Is(err, ErrStaleControlEpoch) {
+			t.Fatalf("post-disable queue transition error = %v, want ErrStaleControlEpoch", err)
+		}
+		if transitions := fixture.countTransitions(t, "post-disable-queue-transition"); transitions != 0 {
+			t.Fatalf("stale queue transition wrote %d rows, want zero", transitions)
+		}
+	})
+
+	t.Run("correction transition", func(t *testing.T) {
+		fixture := newLifecycleFixture(t, CaseJevEvaluating)
+		disableLifecycleControl(t, fixture)
+		_, err := fixture.service().Transition(context.Background(), TransitionCommand{
+			WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID,
+			ExpectedState: CaseJevEvaluating, ExpectedRevision: 0, NextState: CaseCorrectionPending,
+			CauseEventKey: "post-disable-correction-transition", Actor: ActorSystem, Reason: ReasonQualifiedProposal,
+			LeaseToken: lifecycleUUID(t), AttemptID: lifecycleUUID(t), AttemptFence: lifecycleUUID(t),
+		})
+		if !errors.Is(err, ErrStaleControlEpoch) {
+			t.Fatalf("post-disable correction transition error = %v, want ErrStaleControlEpoch", err)
+		}
+		if transitions := fixture.countTransitions(t, "post-disable-correction-transition"); transitions != 0 {
+			t.Fatalf("stale correction transition wrote %d rows, want zero", transitions)
+		}
+	})
+
+	t.Run("successor mutation", func(t *testing.T) {
+		fixture := newLifecycleFixture(t, CaseCaptured)
+		disableLifecycleControl(t, fixture)
+		_, err := fixture.service().CreateSuccessor(context.Background(), SuccessorCommand{
+			WorkspaceID: fixture.workspaceID, PredecessorID: fixture.caseRow.ID,
+			ExpectedState: CaseCaptured, ExpectedRevision: 0,
+			CauseEventKey: "post-disable-successor", Actor: ActorSystem,
+			Successor: db.InsertNextGovernanceCaseParams{
+				WorkspaceID: fixture.workspaceID, SubjectType: fixture.caseRow.SubjectType,
+				SubjectID: fixture.caseRow.SubjectID, SubjectRevision: 2, RuleID: fixture.caseRow.RuleID,
+				MaterialFingerprint: "post-disable-successor", State: string(CaseCaptured),
+				AuthorityLineage: []byte("[]"), TriggerAliases: []byte("[]"), EvidenceDigest: "fresh-evidence",
+				RuleRevision: "rule-2", ActivationRevision: "activation-2", ConfigRevision: "config-2",
+			},
+		})
+		if !errors.Is(err, ErrStaleControlEpoch) {
+			t.Fatalf("post-disable successor error = %v, want ErrStaleControlEpoch", err)
+		}
+	})
+}
+
+func disableLifecycleControl(t *testing.T, fixture *lifecycleFixture) {
+	t.Helper()
+	if _, err := fixture.pool.Exec(context.Background(), `
+		UPDATE governance_workspace_config
+		SET config_version = config_version + 1,
+		    control_epoch = control_epoch + 1,
+		    settings = jsonb_set(settings, '{jev_governance_enabled}', 'false'::jsonb, true)
+		WHERE workspace_id = $1
+	`, fixture.workspaceID); err != nil {
+		t.Fatal(err)
 	}
 }
 

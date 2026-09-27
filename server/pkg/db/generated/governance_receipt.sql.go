@@ -14,11 +14,16 @@ import (
 const insertGovernanceReceipt = `-- name: InsertGovernanceReceipt :one
 INSERT INTO governance_receipt (
     workspace_id, issue_id, comment_id, trigger, status, shed_reason,
-    abstain_reason, action_kind, answers, observed_at
-) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+    abstain_reason, action_kind, answers, observed_at, control_epoch
 )
-RETURNING id, workspace_id, issue_id, comment_id, trigger, status, shed_reason, abstain_reason, action_kind, answers, observed_at, created_at
+SELECT
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, control.control_epoch
+FROM governance_workspace_config AS control
+WHERE control.workspace_id = $1
+  AND control.control_epoch = $11
+  AND control.settings->>'jev_governance_enabled' = 'true'
+FOR SHARE
+RETURNING id, workspace_id, issue_id, comment_id, trigger, status, shed_reason, abstain_reason, action_kind, answers, observed_at, created_at, control_epoch
 `
 
 type InsertGovernanceReceiptParams struct {
@@ -32,6 +37,7 @@ type InsertGovernanceReceiptParams struct {
 	ActionKind    pgtype.Text        `json:"action_kind"`
 	Answers       []byte             `json:"answers"`
 	ObservedAt    pgtype.Timestamptz `json:"observed_at"`
+	ControlEpoch  int64              `json:"control_epoch"`
 }
 
 // One row per observation attempt (CHE-685). Plain INSERT, no upsert: a
@@ -50,6 +56,7 @@ func (q *Queries) InsertGovernanceReceipt(ctx context.Context, arg InsertGoverna
 		arg.ActionKind,
 		arg.Answers,
 		arg.ObservedAt,
+		arg.ControlEpoch,
 	)
 	var i GovernanceReceipt
 	err := row.Scan(
@@ -65,12 +72,13 @@ func (q *Queries) InsertGovernanceReceipt(ctx context.Context, arg InsertGoverna
 		&i.Answers,
 		&i.ObservedAt,
 		&i.CreatedAt,
+		&i.ControlEpoch,
 	)
 	return i, err
 }
 
 const listGovernanceReceiptsForComment = `-- name: ListGovernanceReceiptsForComment :many
-SELECT id, workspace_id, issue_id, comment_id, trigger, status, shed_reason, abstain_reason, action_kind, answers, observed_at, created_at FROM governance_receipt
+SELECT id, workspace_id, issue_id, comment_id, trigger, status, shed_reason, abstain_reason, action_kind, answers, observed_at, created_at, control_epoch FROM governance_receipt
 WHERE workspace_id = $1
   AND comment_id = $2
 ORDER BY created_at DESC, id DESC
@@ -105,6 +113,7 @@ func (q *Queries) ListGovernanceReceiptsForComment(ctx context.Context, arg List
 			&i.Answers,
 			&i.ObservedAt,
 			&i.CreatedAt,
+			&i.ControlEpoch,
 		); err != nil {
 			return nil, err
 		}

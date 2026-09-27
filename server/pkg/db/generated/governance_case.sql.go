@@ -88,7 +88,7 @@ func (q *Queries) DeleteExpiredGovernanceTransitionsForWorkspace(ctx context.Con
 }
 
 const findGovernanceCaseByMaterialFingerprint = `-- name: FindGovernanceCaseByMaterialFingerprint :one
-SELECT id, workspace_id, subject_type, subject_id, subject_revision, rule_id, generation, material_fingerprint, state, state_revision, authority_lineage, trigger_aliases, evidence_id, evidence_digest, rule_revision, activation_revision, config_revision, lease_token, lease_expires_at, current_attempt_id, current_action_id, predecessor_case_id, budget_root_id, evidence_epoch, refresh_count, absolute_deadline, frozen_strategy, reason, created_at, updated_at FROM governance_case
+SELECT id, workspace_id, subject_type, subject_id, subject_revision, rule_id, generation, material_fingerprint, state, state_revision, authority_lineage, trigger_aliases, evidence_id, evidence_digest, rule_revision, activation_revision, config_revision, lease_token, lease_expires_at, current_attempt_id, current_action_id, predecessor_case_id, budget_root_id, evidence_epoch, refresh_count, absolute_deadline, frozen_strategy, reason, created_at, updated_at, control_epoch FROM governance_case
 WHERE workspace_id = $1
   AND subject_type = $2
   AND subject_id = $3
@@ -147,6 +147,7 @@ func (q *Queries) FindGovernanceCaseByMaterialFingerprint(ctx context.Context, a
 		&i.Reason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ControlEpoch,
 	)
 	return i, err
 }
@@ -528,7 +529,7 @@ INSERT INTO governance_case (
     workspace_id, subject_type, subject_id, subject_revision, rule_id,
     generation, material_fingerprint, state, authority_lineage, trigger_aliases,
     evidence_digest, rule_revision, activation_revision, config_revision,
-    predecessor_case_id, budget_root_id, frozen_strategy, absolute_deadline,
+    predecessor_case_id, budget_root_id, frozen_strategy, absolute_deadline, control_epoch,
     evidence_epoch, refresh_count
 )
 SELECT
@@ -541,8 +542,13 @@ SELECT
           AND gc.subject_id = $3
           AND gc.rule_id = $5
     ), 0),
-    $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
-RETURNING id, workspace_id, subject_type, subject_id, subject_revision, rule_id, generation, material_fingerprint, state, state_revision, authority_lineage, trigger_aliases, evidence_id, evidence_digest, rule_revision, activation_revision, config_revision, lease_token, lease_expires_at, current_attempt_id, current_action_id, predecessor_case_id, budget_root_id, evidence_epoch, refresh_count, absolute_deadline, frozen_strategy, reason, created_at, updated_at
+    $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+    control.control_epoch, $18, $19
+FROM governance_workspace_config AS control
+WHERE control.workspace_id = $1
+  AND control.settings->>'jev_governance_enabled' = 'true'
+FOR SHARE
+RETURNING id, workspace_id, subject_type, subject_id, subject_revision, rule_id, generation, material_fingerprint, state, state_revision, authority_lineage, trigger_aliases, evidence_id, evidence_digest, rule_revision, activation_revision, config_revision, lease_token, lease_expires_at, current_attempt_id, current_action_id, predecessor_case_id, budget_root_id, evidence_epoch, refresh_count, absolute_deadline, frozen_strategy, reason, created_at, updated_at, control_epoch
 `
 
 type InsertNextGovernanceCaseParams struct {
@@ -621,6 +627,7 @@ func (q *Queries) InsertNextGovernanceCase(ctx context.Context, arg InsertNextGo
 		&i.Reason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ControlEpoch,
 	)
 	return i, err
 }
@@ -952,7 +959,7 @@ func (q *Queries) ListGovernanceCaseRetentionWorkspaces(ctx context.Context) ([]
 }
 
 const listGovernanceCasesPage = `-- name: ListGovernanceCasesPage :many
-SELECT id, workspace_id, subject_type, subject_id, subject_revision, rule_id, generation, material_fingerprint, state, state_revision, authority_lineage, trigger_aliases, evidence_id, evidence_digest, rule_revision, activation_revision, config_revision, lease_token, lease_expires_at, current_attempt_id, current_action_id, predecessor_case_id, budget_root_id, evidence_epoch, refresh_count, absolute_deadline, frozen_strategy, reason, created_at, updated_at FROM governance_case
+SELECT id, workspace_id, subject_type, subject_id, subject_revision, rule_id, generation, material_fingerprint, state, state_revision, authority_lineage, trigger_aliases, evidence_id, evidence_digest, rule_revision, activation_revision, config_revision, lease_token, lease_expires_at, current_attempt_id, current_action_id, predecessor_case_id, budget_root_id, evidence_epoch, refresh_count, absolute_deadline, frozen_strategy, reason, created_at, updated_at, control_epoch FROM governance_case
 WHERE workspace_id = $1
   AND (
       $3::boolean = FALSE
@@ -1018,6 +1025,7 @@ func (q *Queries) ListGovernanceCasesPage(ctx context.Context, arg ListGovernanc
 			&i.Reason,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ControlEpoch,
 		); err != nil {
 			return nil, err
 		}
@@ -1070,7 +1078,7 @@ func (q *Queries) LockGovernanceAttemptForUpdate(ctx context.Context, arg LockGo
 }
 
 const lockGovernanceCaseForUpdate = `-- name: LockGovernanceCaseForUpdate :one
-SELECT id, workspace_id, subject_type, subject_id, subject_revision, rule_id, generation, material_fingerprint, state, state_revision, authority_lineage, trigger_aliases, evidence_id, evidence_digest, rule_revision, activation_revision, config_revision, lease_token, lease_expires_at, current_attempt_id, current_action_id, predecessor_case_id, budget_root_id, evidence_epoch, refresh_count, absolute_deadline, frozen_strategy, reason, created_at, updated_at FROM governance_case
+SELECT id, workspace_id, subject_type, subject_id, subject_revision, rule_id, generation, material_fingerprint, state, state_revision, authority_lineage, trigger_aliases, evidence_id, evidence_digest, rule_revision, activation_revision, config_revision, lease_token, lease_expires_at, current_attempt_id, current_action_id, predecessor_case_id, budget_root_id, evidence_epoch, refresh_count, absolute_deadline, frozen_strategy, reason, created_at, updated_at, control_epoch FROM governance_case
 WHERE workspace_id = $1 AND id = $2
 FOR UPDATE
 `
@@ -1114,6 +1122,7 @@ func (q *Queries) LockGovernanceCaseForUpdate(ctx context.Context, arg LockGover
 		&i.Reason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ControlEpoch,
 	)
 	return i, err
 }
@@ -1447,7 +1456,7 @@ const updateGovernanceCaseLease = `-- name: UpdateGovernanceCaseLease :one
 UPDATE governance_case
 SET lease_token = $4, lease_expires_at = $5, updated_at = $6
 WHERE workspace_id = $1 AND id = $2 AND state_revision = $3
-RETURNING id, workspace_id, subject_type, subject_id, subject_revision, rule_id, generation, material_fingerprint, state, state_revision, authority_lineage, trigger_aliases, evidence_id, evidence_digest, rule_revision, activation_revision, config_revision, lease_token, lease_expires_at, current_attempt_id, current_action_id, predecessor_case_id, budget_root_id, evidence_epoch, refresh_count, absolute_deadline, frozen_strategy, reason, created_at, updated_at
+RETURNING id, workspace_id, subject_type, subject_id, subject_revision, rule_id, generation, material_fingerprint, state, state_revision, authority_lineage, trigger_aliases, evidence_id, evidence_digest, rule_revision, activation_revision, config_revision, lease_token, lease_expires_at, current_attempt_id, current_action_id, predecessor_case_id, budget_root_id, evidence_epoch, refresh_count, absolute_deadline, frozen_strategy, reason, created_at, updated_at, control_epoch
 `
 
 type UpdateGovernanceCaseLeaseParams struct {
@@ -1500,6 +1509,7 @@ func (q *Queries) UpdateGovernanceCaseLease(ctx context.Context, arg UpdateGover
 		&i.Reason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ControlEpoch,
 	)
 	return i, err
 }
@@ -1516,7 +1526,7 @@ WHERE workspace_id = $4::uuid
   AND id = $5::uuid
   AND state = $6::text
   AND state_revision = $7::bigint
-RETURNING id, workspace_id, subject_type, subject_id, subject_revision, rule_id, generation, material_fingerprint, state, state_revision, authority_lineage, trigger_aliases, evidence_id, evidence_digest, rule_revision, activation_revision, config_revision, lease_token, lease_expires_at, current_attempt_id, current_action_id, predecessor_case_id, budget_root_id, evidence_epoch, refresh_count, absolute_deadline, frozen_strategy, reason, created_at, updated_at
+RETURNING id, workspace_id, subject_type, subject_id, subject_revision, rule_id, generation, material_fingerprint, state, state_revision, authority_lineage, trigger_aliases, evidence_id, evidence_digest, rule_revision, activation_revision, config_revision, lease_token, lease_expires_at, current_attempt_id, current_action_id, predecessor_case_id, budget_root_id, evidence_epoch, refresh_count, absolute_deadline, frozen_strategy, reason, created_at, updated_at, control_epoch
 `
 
 type UpdateGovernanceCaseTransitionCASParams struct {
@@ -1571,6 +1581,7 @@ func (q *Queries) UpdateGovernanceCaseTransitionCAS(ctx context.Context, arg Upd
 		&i.Reason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ControlEpoch,
 	)
 	return i, err
 }

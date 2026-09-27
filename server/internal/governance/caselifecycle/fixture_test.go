@@ -39,6 +39,12 @@ func newLifecycleFixture(t *testing.T, state CaseState) *lifecycleFixture {
 	workspaceID := lifecycleUUID(t)
 	clock := &fakeLifecycleClock{current: time.Date(2030, time.January, 2, 3, 4, 5, 0, time.UTC)}
 	queries := db.New(pool)
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO governance_workspace_config (workspace_id, config_version, control_epoch, settings)
+		VALUES ($1, 1, 1, '{"jev_governance_enabled":true,"rule_mode":"shadow"}'::jsonb)
+	`, workspaceID); err != nil {
+		t.Fatalf("insert lifecycle fixture control: %v", err)
+	}
 	caseRow, err := queries.InsertNextGovernanceCase(context.Background(), db.InsertNextGovernanceCaseParams{
 		WorkspaceID:         workspaceID,
 		SubjectType:         "issue",
@@ -66,6 +72,8 @@ func newLifecycleFixture(t *testing.T, state CaseState) *lifecycleFixture {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM governance_attempt WHERE workspace_id = $1`, workspaceID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM governance_case_transition WHERE workspace_id = $1`, workspaceID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM governance_case WHERE workspace_id = $1`, workspaceID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM governance_workspace_config_audit WHERE workspace_id = $1`, workspaceID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM governance_workspace_config WHERE workspace_id = $1`, workspaceID)
 	})
 	return &lifecycleFixture{pool: pool, queries: queries, workspaceID: workspaceID, caseRow: caseRow, clock: clock}
 }

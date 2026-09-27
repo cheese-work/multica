@@ -5,10 +5,15 @@
 -- more rows rather than overwriting an earlier attempt's record.
 INSERT INTO governance_receipt (
     workspace_id, issue_id, comment_id, trigger, status, shed_reason,
-    abstain_reason, action_kind, answers, observed_at
-) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+    abstain_reason, action_kind, answers, observed_at, control_epoch
 )
+SELECT
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, control.control_epoch
+FROM governance_workspace_config AS control
+WHERE control.workspace_id = $1
+  AND control.control_epoch = $11
+  AND control.settings->>'jev_governance_enabled' = 'true'
+FOR SHARE
 RETURNING *;
 
 -- name: ListGovernanceReceiptsForComment :many

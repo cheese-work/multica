@@ -827,6 +827,7 @@ type GovernanceCase struct {
 	Reason              string             `json:"reason"`
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
+	ControlEpoch        int64              `json:"control_epoch"`
 }
 
 type GovernanceCaseTransition struct {
@@ -894,6 +895,29 @@ type GovernanceReceipt struct {
 	Answers       []byte             `json:"answers"`
 	ObservedAt    pgtype.Timestamptz `json:"observed_at"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	ControlEpoch  int64              `json:"control_epoch"`
+}
+
+type GovernanceWorkspaceConfig struct {
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	ConfigVersion int64              `json:"config_version"`
+	ControlEpoch  int64              `json:"control_epoch"`
+	Settings      []byte             `json:"settings"`
+	UpdatedBy     pgtype.UUID        `json:"updated_by"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
+type GovernanceWorkspaceConfigAudit struct {
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	ConfigVersion     int64              `json:"config_version"`
+	RequestID         pgtype.UUID        `json:"request_id"`
+	RequestDigest     string             `json:"request_digest"`
+	ActorID           pgtype.UUID        `json:"actor_id"`
+	SettingsBefore    []byte             `json:"settings_before"`
+	SettingsAfter     []byte             `json:"settings_after"`
+	ControlEpoch      int64              `json:"control_epoch"`
+	RollbackOfVersion pgtype.Int8        `json:"rollback_of_version"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 }
 
 type InboxItem struct {
