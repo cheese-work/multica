@@ -30,11 +30,10 @@ func (q *Queries) CreateOrResolveGovernanceCase(ctx context.Context, arg InsertN
 
 	txq := q.WithTx(tx)
 	identity := LockGovernanceCaseIdentityParams{
-		WorkspaceID:     arg.WorkspaceID,
-		SubjectType:     pgtype.Text{String: arg.SubjectType, Valid: true},
-		SubjectID:       arg.SubjectID,
-		SubjectRevision: arg.SubjectRevision,
-		RuleID:          arg.RuleID,
+		WorkspaceID: arg.WorkspaceID,
+		SubjectType: pgtype.Text{String: arg.SubjectType, Valid: true},
+		SubjectID:   arg.SubjectID,
+		RuleID:      arg.RuleID,
 	}
 	if err := txq.LockGovernanceCaseIdentity(ctx, identity); err != nil {
 		return GovernanceCase{}, fmt.Errorf("lock governance case identity: %w", err)
