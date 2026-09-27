@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, render, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { RESOURCES } from "@multica/views/locales";
@@ -109,14 +109,16 @@ vi.mock("@multica/views/chat", () => ({
 }));
 
 vi.mock("./tab-bar", () => ({ TabBar: () => null }));
-vi.mock("./window-overlay", () => ({ WindowOverlay: () => null }));
+vi.mock("./window-overlay", () => ({
+  WindowOverlay: () => <div data-testid="window-overlay" />,
+}));
 vi.mock("./tab-content", () => ({
   TabContent: () => <div data-testid="tab-content" />,
 }));
 
 const { DesktopShell } = await import("./desktop-layout");
 
-function renderShell() {
+function renderShell(seedWorkspaceList = true) {
   (
     window as unknown as { desktopAPI: Record<string, unknown> }
   ).desktopAPI = {
@@ -127,7 +129,7 @@ function renderShell() {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   });
-  qc.setQueryData(["workspace-list"], state.wsList);
+  if (seedWorkspaceList) qc.setQueryData(["workspace-list"], state.wsList);
 
   return render(
     <QueryClientProvider client={qc}>
@@ -183,7 +185,7 @@ describe("DesktopShell workspace gating", () => {
     // nothing has cleared the slug singleton yet.
     state.wsList = [];
 
-    const { queryByTestId } = renderShell();
+    const { queryByRole, queryByTestId } = renderShell();
 
     expect(queryByTestId("app-sidebar")).toBeNull();
     expect(queryByTestId("search-command")).toBeNull();
@@ -191,14 +193,33 @@ describe("DesktopShell workspace gating", () => {
     expect(queryByTestId("modal-registry")).toBeNull();
     expect(queryByTestId("floating-chat")).toBeNull();
     expect(queryByTestId("tab-content")).not.toBeNull();
+    expect(queryByRole("status", { name: /loading workspace/i })).toBeNull();
+    expect(queryByTestId("window-overlay")).not.toBeNull();
   });
 
   it("keeps TabContent mounted with no workspace so the tab router can still resolve one", () => {
+    state.currentSlug = null;
     state.wsList = [];
 
-    const { queryByTestId } = renderShell();
+    const { queryByRole, queryByTestId } = renderShell();
 
     expect(queryByTestId("tab-content")).not.toBeNull();
+    expect(queryByRole("status", { name: /loading workspace/i })).toBeNull();
+    expect(queryByTestId("window-overlay")).not.toBeNull();
+  });
+
+  it("shows a loader while the workspace list is pending, then removes it for an empty list", async () => {
+    state.currentSlug = null;
+    state.wsList = [];
+
+    const { getByRole, queryByRole, queryByTestId } = renderShell(false);
+
+    expect(getByRole("status", { name: /loading workspace/i })).toBeVisible();
+    await waitFor(() => {
+      expect(queryByRole("status", { name: /loading workspace/i })).toBeNull();
+    });
+    expect(queryByTestId("tab-content")).not.toBeNull();
+    expect(queryByTestId("window-overlay")).not.toBeNull();
   });
 
   // The shell had no navigation feedback at all before MUL-6404 — the bar

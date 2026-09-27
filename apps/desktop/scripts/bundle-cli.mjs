@@ -78,7 +78,7 @@ const destBinary = join(destDir, binName);
 // Hand git arguments straight to the binary (no shell) on every platform.
 function git(...args) {
   try {
-    return execFileSync("git", args, { encoding: "utf-8" }).trim();
+    return execFileSync("git", args, { encoding: "utf-8", cwd: repoRoot }).trim();
   } catch {
     return "";
   }
@@ -103,7 +103,7 @@ async function exists(p) {
 }
 
 if (hasGo()) {
-  const version = deriveVersion() || "dev";
+  const version = deriveVersion(repoRoot) || "dev";
   const commit = git("rev-parse", "--short", "HEAD") || "unknown";
   const date = new Date().toISOString().replace(/\.\d+Z$/, "Z");
   const ldflags = `-X main.version=${version} -X main.commit=${commit} -X main.date=${date}`;

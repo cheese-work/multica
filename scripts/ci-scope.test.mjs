@@ -192,6 +192,13 @@ test("the backend gate owns the two-platform installer matrix", () => {
   assert.doesNotMatch(jobs.installer, /continue-on-error:/);
 });
 
+test("installer does not advertise PowerShell coverage without Windows runners", () => {
+  assert.doesNotMatch(jobs.installer, /windows-latest/);
+  assert.doesNotMatch(jobs.installer, /runner\.os == 'Windows'/);
+  assert.doesNotMatch(jobs.installer, /shell: (powershell|pwsh)/);
+  assert.doesNotMatch(jobs.installer, /run: .*install\.ps1\.test\.ps1/);
+});
+
 test("go-lint filters findings from the locally fetched merge base", () => {
   assert.match(jobs["go-lint"], /args: --new-from-merge-base=origin\/\$\{\{ github\.base_ref \}\}/);
   assert.doesNotMatch(jobs["go-lint"], /only-new-issues:/);

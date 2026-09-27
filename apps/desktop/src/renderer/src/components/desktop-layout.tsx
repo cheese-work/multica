@@ -234,7 +234,7 @@ export function DesktopShell() {
   // diverging. TabContent stays outside the gate: it must always render so
   // the tab router can mount WorkspaceRouteLayout, which is what populates
   // the singleton in the first place.
-  const { data: workspaces = [] } = useQuery(workspaceListOptions());
+  const { data: workspaces = [], isPending } = useQuery(workspaceListOptions());
   const slug =
     currentSlug && workspaces.some((w) => w.slug === currentSlug)
       ? currentSlug
@@ -275,7 +275,7 @@ export function DesktopShell() {
             {/* Right side: header + content container */}
             <div className="flex flex-1 min-w-0 flex-col">
               <MainTopBar sidebarMounted={Boolean(slug)} />
-              <MainCanvas showWorkspaceLoading={!slug}>
+              <MainCanvas showWorkspaceLoading={!slug && (isPending || workspaces.length > 0)}>
                 {/* Same indicator, same anchor as web: DashboardLayout puts it
                     at the top of SidebarInset, and MainCanvas is desktop's
                     equivalent relative/overflow-hidden content box. Desktop

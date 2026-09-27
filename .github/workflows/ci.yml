@@ -754,15 +754,6 @@ jobs:
 
       - name: Test daemon-host CLI installer
         run: bash scripts/install-cli-from-ref.test.sh
-      - name: Test installer with Windows PowerShell 5.1
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: ./scripts/install.ps1.test.ps1
-
-      - name: Test installer with PowerShell 7
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./scripts/install.ps1.test.ps1
 
   script-checks:
     needs: changes
