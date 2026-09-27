@@ -38,6 +38,7 @@ export {
 } from "./thread-fold-coordinator";
 export { useCommentComposerStore } from "./comment-composer-store";
 export { useCommentDraftStore, type CommentDraftKey } from "./comment-draft-store";
+export { useTaskSupplementDraftStore, type TaskSupplementDraft } from "./task-supplement-draft-store";
 export {
   myIssuesViewStore,
   type MyIssuesViewState,

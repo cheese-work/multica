@@ -279,6 +279,11 @@ func TestClaim_LeaderSwappedAfterEnqueue_NoBriefingAndNoLeaderRole(t *testing.T)
 // returns the agent block of the response. Fails the test on non-200.
 func claimAndDecodeAgent(t *testing.T, runtimeID string) *TaskAgentData {
 	t.Helper()
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE agent_runtime SET status = 'online', last_seen_at = now() WHERE id = $1`, runtimeID,
+	); err != nil {
+		t.Fatalf("refresh runtime heartbeat: %v", err)
+	}
 	w := httptest.NewRecorder()
 	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/claim", nil, testWorkspaceID, "test-claim-squad-briefing")
 	req = withURLParam(req, "runtimeId", runtimeID)
