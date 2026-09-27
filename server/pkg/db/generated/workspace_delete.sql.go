@@ -352,6 +352,9 @@ deleted_issue_checkpoints AS (
 deleted_governance_receipts AS (
     DELETE FROM governance_receipt WHERE workspace_id = $1
 ),
+deleted_governance_jev_credentials AS (
+    DELETE FROM governance_jev_credential WHERE workspace_id = $1
+),
 deleted_governance_config_audit AS (
     DELETE FROM governance_workspace_config_audit WHERE workspace_id = $1
 ),
@@ -558,6 +561,9 @@ WHERE channel_media_pending_object.workspace_id = $1
 // statement depends on FK cascade ordering.
 // CHE-685 Jev governance routing receipts: workspace-owned observation
 // history, same leaf shape as issue_checkpoint above (no dependents, no FK).
+// CHE-714 Jev provider credentials are workspace-owned encrypted material.
+// Keep the explicit application teardown (rather than an FK cascade) in this
+// transaction so it commits or rolls back with the workspace row.
 // CHE-704 / C01 durable MJ cases and immutable captured evidence. These have
 // no database cascades by design, so every workspace-owned table is removed
 // explicitly before its workspace row.

@@ -901,6 +901,13 @@ type GovernanceEvaluationSource struct {
 	RedactedAt     pgtype.Timestamptz `json:"redacted_at"`
 }
 
+type GovernanceJevCredential struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Envelope    []byte             `json:"envelope"`
+	UpdatedBy   pgtype.UUID        `json:"updated_by"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
 type GovernanceReceipt struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
