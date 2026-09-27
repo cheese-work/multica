@@ -1,15 +1,45 @@
 -- CHE-704 / C01 persistence primitives. No query here advances a lifecycle,
 -- admits a task, invokes a model, or applies a correction.
 
--- name: InsertGovernanceCase :one
+-- The transaction-backed create-or-resolve primitive takes this lock before
+-- reading or allocating a generation. A separate lock statement is required:
+-- a single CTE would retain a pre-lock snapshot after waiting for a peer.
+-- name: LockGovernanceCaseIdentity :exec
+SELECT pg_advisory_xact_lock(hashtextextended(
+    sqlc.arg(workspace_id)::uuid::text || ':' || sqlc.arg(subject_type) || ':' ||
+    sqlc.arg(subject_id)::uuid::text || ':' || sqlc.arg(subject_revision)::bigint::text || ':' ||
+    sqlc.arg(rule_id)::uuid::text || ':governance_case',
+    0
+));
+
+-- name: FindGovernanceCaseByMaterialFingerprint :one
+SELECT * FROM governance_case
+WHERE workspace_id = $1
+  AND subject_type = $2
+  AND subject_id = $3
+  AND subject_revision = $4
+  AND rule_id = $5
+  AND material_fingerprint = $6;
+
+-- name: InsertNextGovernanceCase :one
 INSERT INTO governance_case (
     workspace_id, subject_type, subject_id, subject_revision, rule_id,
     generation, material_fingerprint, state, authority_lineage, trigger_aliases,
     evidence_digest, rule_revision, activation_revision, config_revision,
     budget_root_id, frozen_strategy, absolute_deadline
-) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
 )
+SELECT
+    $1, $2, $3, $4, $5,
+    COALESCE((
+        SELECT max(gc.generation) + 1
+        FROM governance_case gc
+        WHERE gc.workspace_id = $1
+          AND gc.subject_type = $2
+          AND gc.subject_id = $3
+          AND gc.subject_revision = $4
+          AND gc.rule_id = $5
+    ), 0),
+    $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
 RETURNING *;
 
 -- name: InsertGovernanceCaseTransition :one

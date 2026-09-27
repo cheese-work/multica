@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 func TestGovernanceCasePersistence_EnforcesIdentityAndEvidenceBounds(t *testing.T) {
@@ -118,6 +120,100 @@ LIMIT 10
 	}
 	if plan := strings.Join(planLines, "\n"); !strings.Contains(plan, "idx_governance_case_workspace_created") {
 		t.Fatalf("case listing plan did not use workspace-leading index:\n%s", plan)
+	}
+}
+
+func TestGovernanceCasePersistence_CreateOrResolveRaces(t *testing.T) {
+	if testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	const slug = "handler-tests-governance-case-races"
+	_, _ = testPool.Exec(ctx, `DELETE FROM workspace WHERE slug = $1`, slug)
+	workspaceID := dbfx.Insert(t, "workspace", testutil.Cols{
+		"name": "Governance case persistence races",
+		"slug": slug,
+	})
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM governance_case WHERE workspace_id = $1`, workspaceID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id = $1`, workspaceID)
+	})
+
+	var subjectID, ruleID, budgetRootID string
+	if err := testPool.QueryRow(ctx, `SELECT gen_random_uuid(), gen_random_uuid(), gen_random_uuid()`).Scan(&subjectID, &ruleID, &budgetRootID); err != nil {
+		t.Fatalf("generate governance case IDs: %v", err)
+	}
+	queries := db.New(testPool)
+	create := func(fingerprint string) (db.GovernanceCase, error) {
+		return queries.CreateOrResolveGovernanceCase(ctx, db.InsertNextGovernanceCaseParams{
+			WorkspaceID:         parseUUID(workspaceID),
+			SubjectType:         "issue",
+			SubjectID:           parseUUID(subjectID),
+			SubjectRevision:     1,
+			RuleID:              parseUUID(ruleID),
+			MaterialFingerprint: fingerprint,
+			State:               "captured",
+			AuthorityLineage:    []byte("[]"),
+			TriggerAliases:      []byte("[]"),
+			BudgetRootID:        parseUUID(budgetRootID),
+			FrozenStrategy:      []byte("[]"),
+		})
+	}
+	runConcurrent := func(fingerprints []string) []db.GovernanceCase {
+		t.Helper()
+		start := make(chan struct{})
+		results := make(chan db.GovernanceCase, len(fingerprints))
+		errs := make(chan error, len(fingerprints))
+		var wg sync.WaitGroup
+		for _, fingerprint := range fingerprints {
+			wg.Add(1)
+			go func(fingerprint string) {
+				defer wg.Done()
+				<-start
+				got, err := create(fingerprint)
+				if err != nil {
+					errs <- err
+					return
+				}
+				results <- got
+			}(fingerprint)
+		}
+		close(start)
+		wg.Wait()
+		close(results)
+		close(errs)
+		for err := range errs {
+			t.Fatalf("create or resolve governance case: %v", err)
+		}
+		got := make([]db.GovernanceCase, 0, len(fingerprints))
+		for item := range results {
+			got = append(got, item)
+		}
+		return got
+	}
+
+	duplicates := runConcurrent([]string{"same", "same", "same", "same"})
+	if len(duplicates) != 4 {
+		t.Fatalf("same-fingerprint results = %d, want 4", len(duplicates))
+	}
+	for _, got := range duplicates {
+		if got.ID != duplicates[0].ID || got.Generation != 0 {
+			t.Fatalf("same fingerprint did not resolve generation 0 case: %#v", got)
+		}
+	}
+
+	successors := runConcurrent([]string{"successor-a", "successor-b", "successor-c", "successor-d"})
+	if len(successors) != 4 {
+		t.Fatalf("successor results = %d, want 4", len(successors))
+	}
+	seenGenerations := map[int32]bool{}
+	for _, got := range successors {
+		seenGenerations[got.Generation] = true
+	}
+	for generation := int32(1); generation <= 4; generation++ {
+		if !seenGenerations[generation] {
+			t.Fatalf("successor contention skipped generation %d: %#v", generation, successors)
+		}
 	}
 }
 

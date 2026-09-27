@@ -11,6 +11,70 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const findGovernanceCaseByMaterialFingerprint = `-- name: FindGovernanceCaseByMaterialFingerprint :one
+SELECT id, workspace_id, subject_type, subject_id, subject_revision, rule_id, generation, material_fingerprint, state, state_revision, authority_lineage, trigger_aliases, evidence_id, evidence_digest, rule_revision, activation_revision, config_revision, lease_token, lease_expires_at, current_attempt_id, current_action_id, predecessor_case_id, budget_root_id, evidence_epoch, refresh_count, absolute_deadline, frozen_strategy, reason, created_at, updated_at FROM governance_case
+WHERE workspace_id = $1
+  AND subject_type = $2
+  AND subject_id = $3
+  AND subject_revision = $4
+  AND rule_id = $5
+  AND material_fingerprint = $6
+`
+
+type FindGovernanceCaseByMaterialFingerprintParams struct {
+	WorkspaceID         pgtype.UUID `json:"workspace_id"`
+	SubjectType         string      `json:"subject_type"`
+	SubjectID           pgtype.UUID `json:"subject_id"`
+	SubjectRevision     int64       `json:"subject_revision"`
+	RuleID              pgtype.UUID `json:"rule_id"`
+	MaterialFingerprint string      `json:"material_fingerprint"`
+}
+
+func (q *Queries) FindGovernanceCaseByMaterialFingerprint(ctx context.Context, arg FindGovernanceCaseByMaterialFingerprintParams) (GovernanceCase, error) {
+	row := q.db.QueryRow(ctx, findGovernanceCaseByMaterialFingerprint,
+		arg.WorkspaceID,
+		arg.SubjectType,
+		arg.SubjectID,
+		arg.SubjectRevision,
+		arg.RuleID,
+		arg.MaterialFingerprint,
+	)
+	var i GovernanceCase
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SubjectType,
+		&i.SubjectID,
+		&i.SubjectRevision,
+		&i.RuleID,
+		&i.Generation,
+		&i.MaterialFingerprint,
+		&i.State,
+		&i.StateRevision,
+		&i.AuthorityLineage,
+		&i.TriggerAliases,
+		&i.EvidenceID,
+		&i.EvidenceDigest,
+		&i.RuleRevision,
+		&i.ActivationRevision,
+		&i.ConfigRevision,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.CurrentAttemptID,
+		&i.CurrentActionID,
+		&i.PredecessorCaseID,
+		&i.BudgetRootID,
+		&i.EvidenceEpoch,
+		&i.RefreshCount,
+		&i.AbsoluteDeadline,
+		&i.FrozenStrategy,
+		&i.Reason,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const insertGovernanceAttempt = `-- name: InsertGovernanceAttempt :one
 INSERT INTO governance_attempt (
     workspace_id, case_id, ordinal, kind, candidate_id, task_id, obligation_id,
@@ -72,97 +136,6 @@ func (q *Queries) InsertGovernanceAttempt(ctx context.Context, arg InsertGoverna
 		&i.Confidence,
 		&i.Result,
 		&i.Usage,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const insertGovernanceCase = `-- name: InsertGovernanceCase :one
-
-INSERT INTO governance_case (
-    workspace_id, subject_type, subject_id, subject_revision, rule_id,
-    generation, material_fingerprint, state, authority_lineage, trigger_aliases,
-    evidence_digest, rule_revision, activation_revision, config_revision,
-    budget_root_id, frozen_strategy, absolute_deadline
-) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
-)
-RETURNING id, workspace_id, subject_type, subject_id, subject_revision, rule_id, generation, material_fingerprint, state, state_revision, authority_lineage, trigger_aliases, evidence_id, evidence_digest, rule_revision, activation_revision, config_revision, lease_token, lease_expires_at, current_attempt_id, current_action_id, predecessor_case_id, budget_root_id, evidence_epoch, refresh_count, absolute_deadline, frozen_strategy, reason, created_at, updated_at
-`
-
-type InsertGovernanceCaseParams struct {
-	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
-	SubjectType         string             `json:"subject_type"`
-	SubjectID           pgtype.UUID        `json:"subject_id"`
-	SubjectRevision     int64              `json:"subject_revision"`
-	RuleID              pgtype.UUID        `json:"rule_id"`
-	Generation          int32              `json:"generation"`
-	MaterialFingerprint string             `json:"material_fingerprint"`
-	State               string             `json:"state"`
-	AuthorityLineage    []byte             `json:"authority_lineage"`
-	TriggerAliases      []byte             `json:"trigger_aliases"`
-	EvidenceDigest      string             `json:"evidence_digest"`
-	RuleRevision        string             `json:"rule_revision"`
-	ActivationRevision  string             `json:"activation_revision"`
-	ConfigRevision      string             `json:"config_revision"`
-	BudgetRootID        pgtype.UUID        `json:"budget_root_id"`
-	FrozenStrategy      []byte             `json:"frozen_strategy"`
-	AbsoluteDeadline    pgtype.Timestamptz `json:"absolute_deadline"`
-}
-
-// CHE-704 / C01 persistence primitives. No query here advances a lifecycle,
-// admits a task, invokes a model, or applies a correction.
-func (q *Queries) InsertGovernanceCase(ctx context.Context, arg InsertGovernanceCaseParams) (GovernanceCase, error) {
-	row := q.db.QueryRow(ctx, insertGovernanceCase,
-		arg.WorkspaceID,
-		arg.SubjectType,
-		arg.SubjectID,
-		arg.SubjectRevision,
-		arg.RuleID,
-		arg.Generation,
-		arg.MaterialFingerprint,
-		arg.State,
-		arg.AuthorityLineage,
-		arg.TriggerAliases,
-		arg.EvidenceDigest,
-		arg.RuleRevision,
-		arg.ActivationRevision,
-		arg.ConfigRevision,
-		arg.BudgetRootID,
-		arg.FrozenStrategy,
-		arg.AbsoluteDeadline,
-	)
-	var i GovernanceCase
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.SubjectType,
-		&i.SubjectID,
-		&i.SubjectRevision,
-		&i.RuleID,
-		&i.Generation,
-		&i.MaterialFingerprint,
-		&i.State,
-		&i.StateRevision,
-		&i.AuthorityLineage,
-		&i.TriggerAliases,
-		&i.EvidenceID,
-		&i.EvidenceDigest,
-		&i.RuleRevision,
-		&i.ActivationRevision,
-		&i.ConfigRevision,
-		&i.LeaseToken,
-		&i.LeaseExpiresAt,
-		&i.CurrentAttemptID,
-		&i.CurrentActionID,
-		&i.PredecessorCaseID,
-		&i.BudgetRootID,
-		&i.EvidenceEpoch,
-		&i.RefreshCount,
-		&i.AbsoluteDeadline,
-		&i.FrozenStrategy,
-		&i.Reason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -346,6 +319,102 @@ func (q *Queries) InsertGovernanceEvaluationSource(ctx context.Context, arg Inse
 	return i, err
 }
 
+const insertNextGovernanceCase = `-- name: InsertNextGovernanceCase :one
+INSERT INTO governance_case (
+    workspace_id, subject_type, subject_id, subject_revision, rule_id,
+    generation, material_fingerprint, state, authority_lineage, trigger_aliases,
+    evidence_digest, rule_revision, activation_revision, config_revision,
+    budget_root_id, frozen_strategy, absolute_deadline
+)
+SELECT
+    $1, $2, $3, $4, $5,
+    COALESCE((
+        SELECT max(gc.generation) + 1
+        FROM governance_case gc
+        WHERE gc.workspace_id = $1
+          AND gc.subject_type = $2
+          AND gc.subject_id = $3
+          AND gc.subject_revision = $4
+          AND gc.rule_id = $5
+    ), 0),
+    $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+RETURNING id, workspace_id, subject_type, subject_id, subject_revision, rule_id, generation, material_fingerprint, state, state_revision, authority_lineage, trigger_aliases, evidence_id, evidence_digest, rule_revision, activation_revision, config_revision, lease_token, lease_expires_at, current_attempt_id, current_action_id, predecessor_case_id, budget_root_id, evidence_epoch, refresh_count, absolute_deadline, frozen_strategy, reason, created_at, updated_at
+`
+
+type InsertNextGovernanceCaseParams struct {
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	SubjectType         string             `json:"subject_type"`
+	SubjectID           pgtype.UUID        `json:"subject_id"`
+	SubjectRevision     int64              `json:"subject_revision"`
+	RuleID              pgtype.UUID        `json:"rule_id"`
+	MaterialFingerprint string             `json:"material_fingerprint"`
+	State               string             `json:"state"`
+	AuthorityLineage    []byte             `json:"authority_lineage"`
+	TriggerAliases      []byte             `json:"trigger_aliases"`
+	EvidenceDigest      string             `json:"evidence_digest"`
+	RuleRevision        string             `json:"rule_revision"`
+	ActivationRevision  string             `json:"activation_revision"`
+	ConfigRevision      string             `json:"config_revision"`
+	BudgetRootID        pgtype.UUID        `json:"budget_root_id"`
+	FrozenStrategy      []byte             `json:"frozen_strategy"`
+	AbsoluteDeadline    pgtype.Timestamptz `json:"absolute_deadline"`
+}
+
+func (q *Queries) InsertNextGovernanceCase(ctx context.Context, arg InsertNextGovernanceCaseParams) (GovernanceCase, error) {
+	row := q.db.QueryRow(ctx, insertNextGovernanceCase,
+		arg.WorkspaceID,
+		arg.SubjectType,
+		arg.SubjectID,
+		arg.SubjectRevision,
+		arg.RuleID,
+		arg.MaterialFingerprint,
+		arg.State,
+		arg.AuthorityLineage,
+		arg.TriggerAliases,
+		arg.EvidenceDigest,
+		arg.RuleRevision,
+		arg.ActivationRevision,
+		arg.ConfigRevision,
+		arg.BudgetRootID,
+		arg.FrozenStrategy,
+		arg.AbsoluteDeadline,
+	)
+	var i GovernanceCase
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SubjectType,
+		&i.SubjectID,
+		&i.SubjectRevision,
+		&i.RuleID,
+		&i.Generation,
+		&i.MaterialFingerprint,
+		&i.State,
+		&i.StateRevision,
+		&i.AuthorityLineage,
+		&i.TriggerAliases,
+		&i.EvidenceID,
+		&i.EvidenceDigest,
+		&i.RuleRevision,
+		&i.ActivationRevision,
+		&i.ConfigRevision,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.CurrentAttemptID,
+		&i.CurrentActionID,
+		&i.PredecessorCaseID,
+		&i.BudgetRootID,
+		&i.EvidenceEpoch,
+		&i.RefreshCount,
+		&i.AbsoluteDeadline,
+		&i.FrozenStrategy,
+		&i.Reason,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const listGovernanceCasesPage = `-- name: ListGovernanceCasesPage :many
 SELECT id, workspace_id, subject_type, subject_id, subject_revision, rule_id, generation, material_fingerprint, state, state_revision, authority_lineage, trigger_aliases, evidence_id, evidence_digest, rule_revision, activation_revision, config_revision, lease_token, lease_expires_at, current_attempt_id, current_action_id, predecessor_case_id, budget_root_id, evidence_epoch, refresh_count, absolute_deadline, frozen_strategy, reason, created_at, updated_at FROM governance_case
 WHERE workspace_id = $1
@@ -422,4 +491,38 @@ func (q *Queries) ListGovernanceCasesPage(ctx context.Context, arg ListGovernanc
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockGovernanceCaseIdentity = `-- name: LockGovernanceCaseIdentity :exec
+
+SELECT pg_advisory_xact_lock(hashtextextended(
+    $1::uuid::text || ':' || $2 || ':' ||
+    $3::uuid::text || ':' || $4::bigint::text || ':' ||
+    $5::uuid::text || ':governance_case',
+    0
+))
+`
+
+type LockGovernanceCaseIdentityParams struct {
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	SubjectType     pgtype.Text `json:"subject_type"`
+	SubjectID       pgtype.UUID `json:"subject_id"`
+	SubjectRevision int64       `json:"subject_revision"`
+	RuleID          pgtype.UUID `json:"rule_id"`
+}
+
+// CHE-704 / C01 persistence primitives. No query here advances a lifecycle,
+// admits a task, invokes a model, or applies a correction.
+// The transaction-backed create-or-resolve primitive takes this lock before
+// reading or allocating a generation. A separate lock statement is required:
+// a single CTE would retain a pre-lock snapshot after waiting for a peer.
+func (q *Queries) LockGovernanceCaseIdentity(ctx context.Context, arg LockGovernanceCaseIdentityParams) error {
+	_, err := q.db.Exec(ctx, lockGovernanceCaseIdentity,
+		arg.WorkspaceID,
+		arg.SubjectType,
+		arg.SubjectID,
+		arg.SubjectRevision,
+		arg.RuleID,
+	)
+	return err
 }
