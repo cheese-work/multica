@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -53,7 +54,7 @@ func (q *Queries) CreateOrResolveGovernanceCase(ctx context.Context, arg InsertN
 		}
 		return existing, nil
 	}
-	if err != pgx.ErrNoRows {
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return GovernanceCase{}, fmt.Errorf("find governance case by material fingerprint: %w", err)
 	}
 
