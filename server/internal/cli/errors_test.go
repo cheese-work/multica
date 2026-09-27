@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -680,13 +681,13 @@ func TestWithUserMessageUnlessNetwork(t *testing.T) {
 
 	t.Run("transport failure keeps the network copy", func(t *testing.T) {
 		underlying := wrapTransport(nil, errors.New("Get \"https://api.multica.ai/api/me\": net/http: TLS handshake timeout"))
-		expected, ok := underlying.(*NetworkError)
-		if !ok {
+		var expected *NetworkError
+		if !errors.As(underlying, &expected) {
 			t.Fatalf("expected fixture to be *NetworkError, got %T", underlying)
 		}
 		err := WithUserMessageUnlessNetwork(hint, underlying)
-		actual, ok := err.(*NetworkError)
-		if !ok || actual != expected {
+		var actual *NetworkError
+		if !errors.As(err, &actual) || actual != expected || reflect.TypeOf(err) != reflect.TypeOf(expected) {
 			t.Fatalf("expected the *NetworkError to pass through unchanged, got %T", err)
 		}
 		got := FormatError(err, false)
