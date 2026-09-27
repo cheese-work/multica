@@ -56,7 +56,7 @@ func wakeupWrite[T any](h *Handler, r *http.Request, write func(*db.Queries) (T,
 	if err != nil {
 		return zero, err
 	}
-	if err = tx.Commit(r.Context()); err != nil {
+	if err := tx.Commit(r.Context()); err != nil {
 		return zero, err
 	}
 	return result, nil

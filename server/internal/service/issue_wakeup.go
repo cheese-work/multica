@@ -185,7 +185,7 @@ func StopClosedIssueWakeups(ctx context.Context, q *db.Queries, issue db.Issue) 
 	if err != nil || active {
 		return nil, err
 	}
-	if err = q.DisableIssueWakeups(ctx, issue.ID); err != nil {
+	if err := q.DisableIssueWakeups(ctx, issue.ID); err != nil {
 		return nil, err
 	}
 	return q.CancelUnstartedIssueWakeupTasks(ctx, issue.ID)
@@ -222,7 +222,7 @@ func (s *IssueWakeupService) EditInstruction(ctx context.Context, issueID, id, m
 	defer tx.Rollback(ctx)
 	q := s.Tasks.Queries.WithTx(tx)
 	var workspace pgtype.UUID
-	if err = tx.QueryRow(ctx, "SELECT w.id FROM workspace w JOIN issue i ON i.workspace_id=w.id WHERE i.id=$1 FOR KEY SHARE OF w", issueID).Scan(&workspace); err != nil {
+	if err := tx.QueryRow(ctx, "SELECT w.id FROM workspace w JOIN issue i ON i.workspace_id=w.id WHERE i.id=$1 FOR KEY SHARE OF w", issueID).Scan(&workspace); err != nil {
 		return err
 	}
 	issue, err := q.LockWakeupIssue(ctx, issueID)
@@ -247,7 +247,7 @@ func (s *IssueWakeupService) EditInstruction(ctx context.Context, issueID, id, m
 	if err != nil {
 		return ErrWakeupForbidden
 	}
-	if err = s.authorize(ctx, q, issue.WorkspaceID, member, agent); err != nil {
+	if err := s.authorize(ctx, q, issue.WorkspaceID, member, agent); err != nil {
 		return err
 	}
 	if w.Revision != in.Revision || w.Instruction != in.ExpectedInstruction {
@@ -280,7 +280,7 @@ func (s *IssueWakeupService) save(ctx context.Context, issueID, member, source, 
 	defer tx.Rollback(ctx)
 	q := s.Tasks.Queries.WithTx(tx)
 	var workspace pgtype.UUID
-	if err = tx.QueryRow(ctx, "SELECT w.id FROM workspace w JOIN issue i ON i.workspace_id=w.id WHERE i.id=$1 FOR KEY SHARE OF w", issueID).Scan(&workspace); err != nil {
+	if err := tx.QueryRow(ctx, "SELECT w.id FROM workspace w JOIN issue i ON i.workspace_id=w.id WHERE i.id=$1 FOR KEY SHARE OF w", issueID).Scan(&workspace); err != nil {
 		return out, err
 	}
 	issue, err := q.LockWakeupIssue(ctx, issueID)
@@ -295,7 +295,7 @@ func (s *IssueWakeupService) save(ctx context.Context, issueID, member, source, 
 		return out, fmt.Errorf("%w: issue is closed", ErrWakeupInput)
 	}
 	var now time.Time
-	if err = tx.QueryRow(ctx, "SELECT now()").Scan(&now); err != nil {
+	if err := tx.QueryRow(ctx, "SELECT now()").Scan(&now); err != nil {
 		return out, err
 	}
 
@@ -328,8 +328,8 @@ func (s *IssueWakeupService) save(ctx context.Context, issueID, member, source, 
 				return out, fmt.Errorf("%w: consumed one-shot requires explicit rearm", ErrWakeupInput)
 			}
 			var activeRun bool
-			if e = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM agent_task_queue WHERE issue_id=$1 AND context->>'wakeup_id'=$2 AND status IN ('queued','deferred','dispatched','running','waiting_local_directory'))", issueID, optionalID(old.ID)).Scan(&activeRun); e != nil {
-				return out, e
+			if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM agent_task_queue WHERE issue_id=$1 AND context->>'wakeup_id'=$2 AND status IN ('queued','deferred','dispatched','running','waiting_local_directory'))", issueID, optionalID(old.ID)).Scan(&activeRun); err != nil {
+				return out, err
 			}
 			if activeRun {
 				return out, fmt.Errorf("%w: previous run is still active", ErrWakeupConflict)
@@ -360,7 +360,7 @@ func (s *IssueWakeupService) save(ctx context.Context, issueID, member, source, 
 	if err != nil {
 		return out, ErrWakeupForbidden
 	}
-	if err = s.authorize(ctx, q, issue.WorkspaceID, member, agent); err != nil {
+	if err := s.authorize(ctx, q, issue.WorkspaceID, member, agent); err != nil {
 		return out, err
 	}
 	filterAgent, err := wakeupUUID(in.FilterAgentID)
@@ -431,7 +431,7 @@ func (s *IssueWakeupService) save(ctx context.Context, issueID, member, source, 
 			}
 			return old, tx.Commit(ctx)
 		}
-		if err = q.DiscardWakeupReceipts(ctx, old.ID); err != nil {
+		if err := q.DiscardWakeupReceipts(ctx, old.ID); err != nil {
 			return out, err
 		}
 		if _, err = q.CancelUnstartedWakeupTasks(ctx, util.UUIDToString(old.ID)); err != nil {
@@ -486,7 +486,7 @@ func (s *IssueWakeupService) save(ctx context.Context, issueID, member, source, 
 			}
 		}
 	}
-	if err = tx.Commit(ctx); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		return out, err
 	}
 	return out, nil
@@ -530,7 +530,7 @@ func (s *IssueWakeupService) Tick(ctx context.Context) error {
 		}
 		// Outcome writes must not turn a busy rule row into another batch-wide
 		// wait. Use the batch context, not dispatch's expired per-rule context.
-		if err = s.dispatch(ctx, w); err != nil {
+		if err := s.dispatch(ctx, w); err != nil {
 			errs = append(errs, fmt.Errorf("wakeup %s: %w", util.UUIDToString(w.ID), err))
 			outcomeCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 			_ = s.Tasks.Queries.NoteWakeupFailure(outcomeCtx, db.NoteWakeupFailureParams{ID: w.ID, LastError: pgtype.Text{String: truncateForSummary(err.Error(), 500), Valid: true}})
@@ -571,7 +571,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	q := s.Tasks.Queries.WithTx(tx)
 	var fenced bool
 	if candidate.ID.Valid {
-		if err = tx.QueryRow(ctx, "SELECT lock_task_owner_rows($1,$2,$3)", candidate.ID, prev.IssueID, candidate.RuntimeID).Scan(&fenced); err != nil {
+		if err := tx.QueryRow(ctx, "SELECT lock_task_owner_rows($1,$2,$3)", candidate.ID, prev.IssueID, candidate.RuntimeID).Scan(&fenced); err != nil {
 			return err
 		}
 		if !fenced {
@@ -616,7 +616,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		if err != nil {
 			return err
 		}
-		if err = q.DiscardWakeupReceipts(ctx, w.ID); err != nil {
+		if err := q.DiscardWakeupReceipts(ctx, w.ID); err != nil {
 			return err
 		}
 		if _, err = q.CancelUnstartedWakeupTasks(ctx, util.UUIDToString(w.ID)); err != nil {
@@ -628,7 +628,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		return err
 	}
 	var now time.Time
-	if err = tx.QueryRow(ctx, "SELECT now()").Scan(&now); err != nil {
+	if err := tx.QueryRow(ctx, "SELECT now()").Scan(&now); err != nil {
 		return err
 	}
 	next := w.NextFireAt
@@ -707,7 +707,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	if taskExists {
 		task, err = q.ReplaceWakeupEvidence(ctx, db.ReplaceWakeupEvidenceParams{ID: task.ID, HandoffNote: pgtype.Text{String: note, Valid: true}, WakeupEvidence: evidence})
 	} else {
-		if err = guardIssueNotInTriage(ctx, q, issue.ID, OriginNamed); err != nil {
+		if err := guardIssueNotInTriage(ctx, q, issue.ID, OriginNamed); err != nil {
 			return err
 		}
 		contextJSON, _ := json.Marshal(map[string]any{"wakeup_id": util.UUIDToString(w.ID), "wakeup_revision": w.Revision, "wakeup_evidence": evidence})
@@ -716,13 +716,13 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	if err != nil {
 		return err
 	}
-	if err = q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids, TaskID: task.ID}); err != nil {
+	if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids, TaskID: task.ID}); err != nil {
 		return err
 	}
-	if err = q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: enabled, NextFireAt: next, LastTaskID: task.ID}); err != nil {
+	if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: enabled, NextFireAt: next, LastTaskID: task.ID}); err != nil {
 		return err
 	}
-	if err = tx.Commit(ctx); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 	s.Tasks.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
@@ -751,7 +751,7 @@ func (s *IssueWakeupService) Disable(ctx context.Context, issueID, id, member pg
 	defer tx.Rollback(ctx)
 	q := s.Tasks.Queries.WithTx(tx)
 	var workspace pgtype.UUID
-	if err = tx.QueryRow(ctx, "SELECT w.id FROM workspace w JOIN issue i ON i.workspace_id=w.id WHERE i.id=$1 FOR KEY SHARE OF w", issueID).Scan(&workspace); err != nil {
+	if err := tx.QueryRow(ctx, "SELECT w.id FROM workspace w JOIN issue i ON i.workspace_id=w.id WHERE i.id=$1 FOR KEY SHARE OF w", issueID).Scan(&workspace); err != nil {
 		return out, err
 	}
 	issue, err := q.LockWakeupIssue(ctx, issueID)
@@ -776,7 +776,7 @@ func (s *IssueWakeupService) Disable(ctx context.Context, issueID, id, member pg
 	if err != nil {
 		return out, err
 	}
-	if err = q.DiscardWakeupReceipts(ctx, id); err != nil {
+	if err := q.DiscardWakeupReceipts(ctx, id); err != nil {
 		return out, err
 	}
 	tasks, err := q.CancelUnstartedWakeupTasks(ctx, util.UUIDToString(id))
@@ -787,7 +787,7 @@ func (s *IssueWakeupService) Disable(ctx context.Context, issueID, id, member pg
 	if err != nil {
 		return out, err
 	}
-	if err = tx.Commit(ctx); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		return out, err
 	}
 	for _, task := range tasks {

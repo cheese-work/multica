@@ -74,7 +74,7 @@ func runIssueWakeup(cmd *cobra.Command, args []string, action string) error {
 	var result any
 	if action == "list" || action == "get" {
 		var rows []map[string]any
-		if err = client.GetJSON(ctx, path, &rows); err != nil {
+		if err := client.GetJSON(ctx, path, &rows); err != nil {
 			return err
 		}
 		result = rows

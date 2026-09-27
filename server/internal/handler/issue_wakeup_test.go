@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -66,7 +67,7 @@ func TestIssueWakeupAPIAndTrustedOrigin(t *testing.T) {
 		t.Fatalf("borrowed runtime owner permission: %d %s", rec.Code, rec.Body.String())
 	}
 	svc := service.IssueWakeupService{Tasks: testHandler.TaskService}
-	if _, err := svc.Disable(context.Background(), parseUUID(issue), result.ID, parseUUID(outsider)); err != service.ErrWakeupForbidden {
+	if _, err := svc.Disable(context.Background(), parseUUID(issue), result.ID, parseUUID(outsider)); !errors.Is(err, service.ErrWakeupForbidden) {
 		t.Fatalf("other member disabled: %v", err)
 	}
 	if _, err := svc.Disable(context.Background(), parseUUID(issue), result.ID, parseUUID(testUserID)); err != nil {

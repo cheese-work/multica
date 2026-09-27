@@ -115,7 +115,7 @@ func ensureFileFlagWithinWorkdir(cmd *cobra.Command, fileFlag, flagName, filePat
 			return fmt.Errorf(
 				"--%s path %q does not exist; it also resolves outside the current working directory, "+
 					"so --allow-external-file would not make this read succeed. Write the file inside the "+
-					"task workdir (e.g. ./%s.md) and pass that path.",
+					"task workdir (e.g. ./%s.md) and pass that path",
 				fileFlag, filePath, flagName)
 		}
 		return fmt.Errorf(
@@ -1492,7 +1492,7 @@ func ensureAttachmentWithinWorkdir(cmd *cobra.Command, filePath string) error {
 			return fmt.Errorf(
 				"--attachment path %q does not exist; it also resolves outside the current working "+
 					"directory, so --allow-external-file would not make this upload succeed. Generate the "+
-					"file inside the task workdir and attach that path.",
+					"file inside the task workdir and attach that path",
 				filePath)
 		}
 		return fmt.Errorf(

@@ -996,7 +996,7 @@ func defuseThinkTags(s string) string {
 	if !strings.Contains(s, "<") {
 		return s
 	}
-	const zwsp = "​"
+	const zwsp = "\u200b"
 	var b strings.Builder
 	last := 0
 	// Indexing s directly, never a case-folded copy of it. Walking s while

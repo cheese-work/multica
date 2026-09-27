@@ -156,7 +156,7 @@ type Task struct {
 	// prefix, so a changing checkpoint costs only this turn's tokens
 	// (MUL-5377).
 	CheckpointBlock string `json:"checkpoint_block,omitempty"`
-	WakeupID                      string                 `json:"wakeup_id,omitempty"`
+	WakeupID        string `json:"wakeup_id,omitempty"`
 
 	SquadID               string `json:"squad_id,omitempty"`                // when the picker was a squad, the squad's UUID; Agent is still the resolved leader
 	SquadName             string `json:"squad_name,omitempty"`              // display name for the picker squad, used in prompt text

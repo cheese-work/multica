@@ -2048,13 +2048,13 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name,
 		PrNumber: p.PullRequest.Number, Title: p.PullRequest.Title, State: state,
 		HtmlUrl: p.PullRequest.HTMLURL, Branch: ptrToText(strPtrOrNil(p.PullRequest.Head.Ref)),
-		AuthorLogin: ptrToText(strPtrOrNil(p.PullRequest.User.Login)),
+		AuthorLogin:     ptrToText(strPtrOrNil(p.PullRequest.User.Login)),
 		AuthorAvatarUrl: ptrToText(strPtrOrNil(p.PullRequest.User.AvatarURL)),
-		MergedAt: parseGHTime(p.PullRequest.MergedAt), ClosedAt: parseGHTime(p.PullRequest.ClosedAt),
+		MergedAt:        parseGHTime(p.PullRequest.MergedAt), ClosedAt: parseGHTime(p.PullRequest.ClosedAt),
 		PrCreatedAt: parseGHTimeRequired(p.PullRequest.CreatedAt), PrUpdatedAt: parseGHTimeRequired(p.PullRequest.UpdatedAt),
 		HeadSha: p.PullRequest.Head.SHA, MergeableState: mergeable,
 		ClearMergeableState: pgtype.Bool{Bool: clearMergeable, Valid: true},
-		Additions: p.PullRequest.Additions, Deletions: p.PullRequest.Deletions,
+		Additions:           p.PullRequest.Additions, Deletions: p.PullRequest.Deletions,
 		ChangedFiles: p.PullRequest.ChangedFiles, IsReopen: p.Action == "reopened",
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -2075,8 +2075,8 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		}
 		if autoLink {
 			linkedIssueIDs, touched, err = h.reconcileAutoLinks(ctx, qtx, ws, pr.ID, state, prAutoLinkInput{
-				idents: idents,
-				permits: func(id string) bool { return linkPolicy.permits(id, workspaceID) },
+				idents:    idents,
+				permits:   func(id string) bool { return linkPolicy.permits(id, workspaceID) },
 				ambiguous: func(id string) bool { return linkPolicy.ambiguous[id] },
 				link: func(issueID pgtype.UUID) (int64, error) {
 					return qtx.LinkIssueToPullRequest(ctx, db.LinkIssueToPullRequestParams{IssueID: issueID, PullRequestID: pr.ID})
@@ -2092,7 +2092,7 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		}
 		if p.Action == "closed" || (state != "merged" && state != "closed") {
 			if err := qtx.SyncPullRequestCloseIntent(ctx, db.SyncPullRequestCloseIntentParams{
-				PullRequestID: pr.ID,
+				PullRequestID:   pr.ID,
 				ClosingIssueIds: h.closingIssueIDs(ctx, ws, closing, func(id string) bool { return linkPolicy.permitsClose(id, workspaceID) }),
 			}); err != nil {
 				return fmt.Errorf("github: sync close intent: %w", err)
@@ -2112,7 +2112,7 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 				PrNumber: p.PullRequest.Number, PullRequestID: pr.ID, IssueID: link.IssueID,
 				EventKind: "merged", DeliveryGuid: ptrToText(strPtrOrNil(deliveryGUID)),
 				MergeCommitSha: p.PullRequest.MergeCommitSHA, MergedAt: parseGHTime(p.PullRequest.MergedAt),
-				HtmlUrl: ptrToText(strPtrOrNil(p.PullRequest.HTMLURL)),
+				HtmlUrl:     ptrToText(strPtrOrNil(p.PullRequest.HTMLURL)),
 				CloseIntent: pgtype.Bool{Bool: link.CloseIntent, Valid: true},
 			})
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -2142,7 +2142,7 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		}
 	}
 	h.publish(protocol.EventPullRequestUpdated, workspaceID, "system", "", map[string]any{
-		"pull_request": githubPullRequestToResponse(pr, h.PRRefresh.Enabled()),
+		"pull_request":     githubPullRequestToResponse(pr, h.PRRefresh.Enabled()),
 		"linked_issue_ids": linkedIssueIDs,
 	})
 	return nil
@@ -2722,6 +2722,7 @@ func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, worksp
 		"source":         "github_pr_merged",
 	})
 }
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 func parseStrictUUID(s string) (pgtype.UUID, error) {

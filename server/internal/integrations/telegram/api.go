@@ -303,7 +303,8 @@ func (a *botAPI) SendMedia(ctx context.Context, p sendMediaParams) (Message, err
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	var m Message
-	return m, a.do(req, method, &m)
+	err = a.do(req, method, &m)
+	return m, err
 }
 
 // MessageEntity is the Bot API's structured annotation for mentions,

@@ -191,7 +191,7 @@ func TestCreateIssuePropertiesRejectDefinitionAndActorBoundaries(t *testing.T) {
 func TestCreateIssuePropertiesRejectsDuplicateJSONKey(t *testing.T) {
 	property := createTestProperty(t, map[string]any{"name": "DuplicateCreate" + uuid.NewString()[:8], "type": "text"})
 	title := "duplicate property JSON " + uuid.NewString()
-	body := fmt.Sprintf(`{"title":%q,"properties":{"%s":"first","%s":"second"}}`, title, property.ID, property.ID)
+	body := fmt.Sprintf(`{"title":%q,"properties":{%q:"first",%q:"second"}}`, title, property.ID, property.ID)
 	req := httptest.NewRequest(http.MethodPost, "/api/issues?workspace_id="+testWorkspaceID, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-User-ID", testUserID)
@@ -206,7 +206,7 @@ func TestCreateIssuePropertiesRejectsDuplicateCanonicalPropertyID(t *testing.T) 
 	property := createTestProperty(t, map[string]any{"name": "DuplicateCanonical" + uuid.NewString()[:8], "type": "text"})
 	title := "duplicate canonical property " + uuid.NewString()
 	body := fmt.Sprintf(
-		`{"title":%q,"properties":{"%s":"first","%s":"second"}}`,
+		`{"title":%q,"properties":{%q:"first",%q:"second"}}`,
 		title,
 		property.ID,
 		strings.ReplaceAll(property.ID, "-", ""),

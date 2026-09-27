@@ -872,10 +872,10 @@ func (s *claudeUsageSnapshot) appendedCostStateUsage() (map[string]TokenUsage, b
 		return nil, false, fmt.Errorf("stat Claude session after exit: %w", err)
 	}
 	if !os.SameFile(s.fileInfo, info) {
-		return nil, false, errors.New("Claude session file was replaced during execution")
+		return nil, false, errors.New("claude session file was replaced during execution")
 	}
 	if info.Size() < s.offset {
-		return nil, false, errors.New("Claude session file shrank during execution")
+		return nil, false, errors.New("claude session file shrank during execution")
 	}
 	return readLastClaudeCostStateUsage(f, s.offset, info.Size())
 }

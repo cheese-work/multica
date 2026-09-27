@@ -155,14 +155,14 @@ type terminalReply struct {
 	fallbackFreshSend bool
 	plainTextFallback bool
 	plainTextEdit     bool
-	kind            terminalKind
-	settleReason    string
-	turn            replyTurn
-	turnResolved    bool
-	lease           *deliveryLease
-	acquireAttempts int
-	editAttempts    int
-	cleanupOnce     sync.Once
+	kind              terminalKind
+	settleReason      string
+	turn              replyTurn
+	turnResolved      bool
+	lease             *deliveryLease
+	acquireAttempts   int
+	editAttempts      int
+	cleanupOnce       sync.Once
 }
 
 // terminalKind is what a queued item delivers. All three take the turn's lease
@@ -423,16 +423,15 @@ func (o *Outbound) handleTaskMessage(e events.Event) {
 	}
 	st.accumulated += payload.Content
 	snapshot := st.accumulated
-	msgID := st.messageID
 	o.mu.Unlock()
 
-	o.pushPartial(ctx, target, st, lease, msgID, snapshot)
+	o.pushPartial(ctx, target, st, lease, snapshot)
 }
 
 // pushPartial sends the placeholder on the first flush and edits it after. It
 // runs under the turn's lease, so the final answer cannot take the reply over
 // between the decision made here and the call that acts on it.
-func (o *Outbound) pushPartial(ctx context.Context, target *replyTarget, st *streamState, lease *deliveryLease, msgID int64, snapshot string) {
+func (o *Outbound) pushPartial(ctx context.Context, target *replyTarget, st *streamState, lease *deliveryLease, snapshot string) {
 	if !st.schedule.mu.TryLock() {
 		return
 	}
@@ -454,7 +453,7 @@ func (o *Outbound) pushPartial(ctx context.Context, target *replyTarget, st *str
 		o.mu.Unlock()
 		return
 	}
-	msgID = st.messageID
+	msgID := st.messageID
 	o.mu.Unlock()
 
 	if msgID != 0 {

@@ -69,7 +69,6 @@ import (
 // its round's own pack — but a deployment that configures no second language
 // produces exactly these words, so they are what those tests pin.
 var (
-	streamCopyNoReply    = copyFor(DefaultLocale).StreamNoReply
 	streamCopyNotStarted = copyFor(DefaultLocale).StreamNotStarted
 	streamCopyFailed     = copyFor(DefaultLocale).StreamFailed
 	streamCopyCancelled  = copyFor(DefaultLocale).StreamCancelled
@@ -517,7 +516,7 @@ func (m *TypingIndicatorManager) handleTaskFailed(e events.Event) {
 		}
 		bound = found
 	}
-	m.sayAsPlainMessage(ctx, sessionID, bound, taskID,
+	_ = m.sayAsPlainMessage(ctx, sessionID, bound, taskID,
 		failureText(e, localeFor(ctx, m.languages, bound.InstallationID, bound.ChatType, bound.ChatID)))
 }
 

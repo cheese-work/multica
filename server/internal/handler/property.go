@@ -312,7 +312,6 @@ func selectOptionsHint(cfg PropertyConfig) string {
 type actorRef = issueproperty.ActorRef
 
 func propertyTypeIsActor(t string) bool { return issueproperty.IsActor(t) }
-func actorKindsHint() string            { return issueproperty.ActorKindsHint() }
 func parseActorRef(s string) (actorRef, error) {
 	return issueproperty.ParseActorRef(s)
 }

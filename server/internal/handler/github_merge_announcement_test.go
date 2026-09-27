@@ -2257,7 +2257,7 @@ func seedMergedGitHubPRLink(t *testing.T, ctx context.Context, issueID, owner, r
 	}
 	if closeIntent {
 		if err := testHandler.Queries.SyncPullRequestCloseIntent(ctx, db.SyncPullRequestCloseIntentParams{
-			PullRequestID: pr.ID,
+			PullRequestID:   pr.ID,
 			ClosingIssueIds: []pgtype.UUID{parseUUID(issueID)},
 		}); err != nil {
 			t.Fatalf("SyncPullRequestCloseIntent: %v", err)
