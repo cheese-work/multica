@@ -28,7 +28,11 @@ func rejectTemporarilyDisabledUser(w http.ResponseWriter, r *http.Request, userI
 		"user_id", userID,
 		"auth_path", authPath,
 	)
-	writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
+	if isGovernanceProposalRoute(r) {
+		writeGovernanceProposalProblem(w, r, http.StatusForbidden, "proposal_access_denied")
+	} else {
+		writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
+	}
 	return true
 }
 
@@ -99,7 +103,11 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 			// Cookie-based auth requires CSRF validation for state-changing methods.
 			if fromCookie && !auth.ValidateCSRF(r) {
 				slog.Debug("auth: CSRF validation failed", "path", r.URL.Path)
-				http.Error(w, `{"error":"CSRF validation failed"}`, http.StatusForbidden)
+				if isGovernanceProposalRoute(r) {
+					writeGovernanceProposalProblem(w, r, http.StatusForbidden, "csrf_validation_failed")
+				} else {
+					http.Error(w, `{"error":"CSRF validation failed"}`, http.StatusForbidden)
+				}
 				return
 			}
 
@@ -211,7 +219,11 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 					// 503 so callers (CLI / daemon) can retry — a 401
 					// here would tell them to throw out a valid token.
 					slog.Warn("auth: cloud pat verify unavailable", "path", r.URL.Path, "error", err)
-					http.Error(w, `{"error":"cloud pat verifier unavailable"}`, http.StatusServiceUnavailable)
+					if isGovernanceProposalRoute(r) {
+						writeGovernanceProposalProblem(w, r, http.StatusServiceUnavailable, "authentication_unavailable")
+					} else {
+						http.Error(w, `{"error":"cloud pat verifier unavailable"}`, http.StatusServiceUnavailable)
+					}
 					return
 				}
 				if rejectTemporarilyDisabledUser(w, r, identity.OwnerID, "", "cloud_pat") {

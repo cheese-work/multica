@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -106,6 +107,50 @@ func TestGovernanceProposalAuthFailuresUseSafeProblem(t *testing.T) {
 	}
 }
 
+func TestGovernanceProposalCookieCSRFRejectionsUseSafeProblem(t *testing.T) {
+	requireGovernanceProposalSchema(t)
+	fixture := newGovernanceProposalFixture(t)
+	router, _, basePath := governanceProposalTestRouter(t, fixture)
+	for _, endpoint := range []string{"heartbeat", "result"} {
+		t.Run(endpoint, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, basePath+"/"+endpoint, nil)
+			request.AddCookie(&http.Cookie{Name: auth.AuthCookieName, Value: "invalid-jwt"})
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			requireGovernanceProposalSafeProblem(t, response, http.StatusForbidden, "csrf_validation_failed")
+		})
+	}
+}
+
+func TestGovernanceProposalWorkspaceErrorsUseSafeProblem(t *testing.T) {
+	requireGovernanceProposalSchema(t)
+	fixture := newGovernanceProposalFixture(t)
+	router, _, basePath := governanceProposalTestRouter(t, fixture)
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub": testUserID,
+		"exp": time.Now().Add(time.Minute).Unix(),
+	}).SignedString(auth.JWTSecret())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name      string
+		workspace string
+	}{
+		{name: "missing workspace"},
+		{name: "malformed workspace", workspace: "not-a-uuid"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, basePath+"/evidence", nil)
+			request.Header.Set("Authorization", "Bearer "+token)
+			request.Header.Set("X-Workspace-ID", test.workspace)
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			requireGovernanceProposalSafeProblem(t, response, http.StatusBadRequest, "workspace_unavailable")
+		})
+	}
+}
+
 func TestGovernanceProposalRevokedMembershipUsesSafeProblem(t *testing.T) {
 	requireGovernanceProposalSchema(t)
 	fixture := newGovernanceProposalFixture(t)
@@ -161,6 +206,22 @@ func requireGovernanceProposalSafeProblem(t *testing.T, response *httptest.Respo
 	for _, field := range []string{"problem", "cause", "permitted_fix", "retryable", "correlation_id", "documentation_link"} {
 		if _, present := payload[field]; !present {
 			t.Errorf("DX-03 missing %s: %s", field, response.Body.String())
+		}
+	}
+	for _, field := range []string{"cause", "permitted_fix", "correlation_id", "documentation_link"} {
+		var value string
+		if err := json.Unmarshal(payload[field], &value); err != nil || strings.TrimSpace(value) == "" {
+			t.Errorf("DX-03 %s is empty or invalid: %s", field, response.Body.String())
+		}
+	}
+	var retryable bool
+	if err := json.Unmarshal(payload["retryable"], &retryable); err != nil {
+		t.Errorf("DX-03 retryable is invalid: %s", response.Body.String())
+	}
+	var correlationID string
+	if err := json.Unmarshal(payload["correlation_id"], &correlationID); err == nil {
+		if _, err := uuid.Parse(correlationID); err != nil {
+			t.Errorf("DX-03 correlation_id is not a UUID: %q", correlationID)
 		}
 	}
 	var actualProblem string

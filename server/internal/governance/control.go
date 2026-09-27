@@ -276,6 +276,16 @@ func SafeProblemFor(code string) (SafeProblem, bool) {
 			PermittedFix: "Authenticate and retry the request.", Retryable: false,
 			DocumentationLink: "/docs/governance/errors#unauthorized",
 		},
+		"authentication_unavailable": {
+			Problem: "authentication_unavailable", Cause: "The authentication service could not verify the request.",
+			PermittedFix: "Retry after the authentication service is available.", Retryable: true,
+			DocumentationLink: "/docs/governance/errors#authentication_unavailable",
+		},
+		"csrf_validation_failed": {
+			Problem: "csrf_validation_failed", Cause: "The browser request did not include a valid request-verification token.",
+			PermittedFix: "Refresh the session and retry with its current CSRF token.", Retryable: false,
+			DocumentationLink: "/docs/governance/errors#csrf_validation_failed",
+		},
 		"workspace_not_found": {
 			Problem: "workspace_unavailable", Cause: "The workspace is unavailable to the current actor.",
 			PermittedFix: "Verify workspace access and retry.", Retryable: false,
