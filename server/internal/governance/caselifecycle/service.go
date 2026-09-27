@@ -428,7 +428,7 @@ func sameTransitionRequest(prior db.GovernanceCaseTransition, command Transition
 func requiresAttemptFence(command TransitionCommand) bool {
 	switch command.ExpectedState {
 	case CaseJevEvaluating:
-		return command.NextState == CaseCorrectionPending
+		return command.NextState == CaseCorrectionPending || command.NextState == CaseAgentEscalation || command.NextState == CaseAbstained
 	case CaseAgentAttempt:
 		return command.NextState == CaseCorrectionPending || command.NextState == CaseNextAttempt
 	default:

@@ -69,6 +69,67 @@ func TestJevCompletionAcceptsCurrentLease(t *testing.T) {
 	}
 }
 
+func TestJevOutcomesRequireCurrentLease(t *testing.T) {
+	outcomes := []struct {
+		state  CaseState
+		reason CaseReason
+	}{
+		{state: CaseCorrectionPending, reason: ReasonQualifiedProposal},
+		{state: CaseAgentEscalation, reason: ReasonUncertainClassification},
+		{state: CaseAbstained, reason: ReasonNoViolation},
+	}
+	for _, outcome := range outcomes {
+		for _, ownership := range []string{"current", "stolen"} {
+			t.Run(string(outcome.state)+"_"+ownership, func(t *testing.T) {
+				fixture := newLifecycleFixture(t, CaseJevEvaluating)
+				attempt := insertJevAttempt(t, fixture)
+				service := fixture.service()
+				firstToken := lifecycleUUID(t)
+				currentToken := firstToken
+				claim := LeaseCommand{WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID,
+					ExpectedState: CaseJevEvaluating, ExpectedRevision: 0, Token: firstToken, Duration: time.Minute}
+				if _, err := service.ClaimLease(context.Background(), claim); err != nil {
+					t.Fatal(err)
+				}
+				if ownership == "stolen" {
+					fixture.clock.Advance(2 * time.Minute)
+					currentToken = lifecycleUUID(t)
+					claim.Token = currentToken
+					if _, err := service.ClaimLease(context.Background(), claim); err != nil {
+						t.Fatal(err)
+					}
+				}
+				causeEventKey := "jev-" + string(outcome.state) + "-" + ownership
+				result, err := service.Transition(context.Background(), TransitionCommand{
+					WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID,
+					ExpectedState: CaseJevEvaluating, ExpectedRevision: 0, NextState: outcome.state,
+					CauseEventKey: causeEventKey, Actor: ActorSystem, Reason: outcome.reason,
+					LeaseToken: firstToken, AttemptID: attempt.ID, AttemptFence: attempt.AttemptFence,
+				})
+				if ownership == "current" {
+					if err != nil || result.Case.State != string(outcome.state) || result.Case.StateRevision != 1 {
+						t.Fatalf("current owner: error=%v state=%s revision=%d; want %s/1", err, result.Case.State, result.Case.StateRevision, outcome.state)
+					}
+					return
+				}
+				if !errors.Is(err, ErrStaleFence) {
+					t.Fatalf("stolen owner: error=%v state=%s revision=%d; want ErrStaleFence", err, result.Case.State, result.Case.StateRevision)
+				}
+				current, readErr := fixture.currentCase(t)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if current.State != string(CaseJevEvaluating) || current.StateRevision != 0 || current.LeaseToken != currentToken {
+					t.Errorf("stale result mutated case: state=%s revision=%d lease_preserved=%t; want jev_evaluating/0 and current lease intact", current.State, current.StateRevision, current.LeaseToken == currentToken)
+				}
+				if transitions := fixture.countTransitions(t, causeEventKey); transitions != 0 {
+					t.Errorf("stale result wrote %d transitions; want zero", transitions)
+				}
+			})
+		}
+	}
+}
+
 func TestAttemptFenceRechecksExpiryAfterAttemptLock(t *testing.T) {
 	tests := []struct {
 		name          string
