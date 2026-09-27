@@ -409,18 +409,28 @@ func (h *Handler) LinkIssuePullRequest(w http.ResponseWriter, r *http.Request) {
 	if parsed, err := util.ParseUUID(actorID); err == nil {
 		linkedBy = parsed
 	}
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to link pull request")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
 	var rows int64
 	if pr.github {
-		rows, err = h.Queries.LinkIssueToPullRequestManually(r.Context(), db.LinkIssueToPullRequestManuallyParams{
+		rows, err = qtx.LinkIssueToPullRequestManually(r.Context(), db.LinkIssueToPullRequestManuallyParams{
 			IssueID: issue.ID, PullRequestID: pr.ID, LinkedByID: linkedBy,
 		})
 	} else {
-		rows, err = h.Queries.LinkIssueToVCSPullRequestManually(r.Context(), db.LinkIssueToVCSPullRequestManuallyParams{
+		rows, err = qtx.LinkIssueToVCSPullRequestManually(r.Context(), db.LinkIssueToVCSPullRequestManuallyParams{
 			IssueID: issue.ID, PullRequestID: pr.ID, LinkedByID: linkedBy,
 		})
 	}
 	if err == nil {
-		err = h.Queries.DeletePullRequestExclusion(r.Context(), db.DeletePullRequestExclusionParams{IssueID: issue.ID, PullRequestID: pr.ID})
+		err = qtx.DeletePullRequestExclusion(r.Context(), db.DeletePullRequestExclusionParams{IssueID: issue.ID, PullRequestID: pr.ID})
+	}
+	if err == nil {
+		err = tx.Commit(r.Context())
 	}
 	if err != nil {
 		slog.Warn("link pull request failed", "err", err)
