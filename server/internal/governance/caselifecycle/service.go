@@ -380,7 +380,9 @@ func (service *Service) validateAttemptFence(ctx context.Context, queries *db.Qu
 		}
 		return fmt.Errorf("lock governance attempt fence: %w", err)
 	}
-	if attempt.AttemptFence != command.AttemptFence || attempt.TerminalAt.Valid ||
+	now = service.clock.Now().UTC()
+	if !caseRow.LeaseExpiresAt.Time.After(now) ||
+		attempt.AttemptFence != command.AttemptFence || attempt.TerminalAt.Valid ||
 		(attempt.DeadlineAt.Valid && !attempt.DeadlineAt.Time.After(now)) {
 		return ErrStaleFence
 	}
@@ -424,8 +426,14 @@ func sameTransitionRequest(prior db.GovernanceCaseTransition, command Transition
 }
 
 func requiresAttemptFence(command TransitionCommand) bool {
-	return command.ExpectedState == CaseAgentAttempt &&
-		(command.NextState == CaseCorrectionPending || command.NextState == CaseNextAttempt)
+	switch command.ExpectedState {
+	case CaseJevEvaluating:
+		return command.NextState == CaseCorrectionPending
+	case CaseAgentAttempt:
+		return command.NextState == CaseCorrectionPending || command.NextState == CaseNextAttempt
+	default:
+		return false
+	}
 }
 
 func validActor(actor ActorType, actorID pgtype.UUID) bool {
