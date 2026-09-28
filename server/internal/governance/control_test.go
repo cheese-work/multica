@@ -127,25 +127,29 @@ func TestOperatingLimitCatalogIsClassifiedAndSafeCapsAreImmutable(t *testing.T) 
 }
 
 func TestGovernanceSafeProblemUsesStableNonSensitiveFields(t *testing.T) {
-	problem, ok := SafeProblemFor("revision_conflict")
-	if !ok {
-		t.Fatal("revision conflict has no safe problem contract")
-	}
-	for name, value := range map[string]string{
-		"problem":            problem.Problem,
-		"cause":              problem.Cause,
-		"permitted fix":      problem.PermittedFix,
-		"documentation link": problem.DocumentationLink,
-	} {
-		if strings.TrimSpace(value) == "" {
-			t.Errorf("%s is empty", name)
-		}
-	}
-	if problem.CorrelationID != "" {
-		t.Fatal("static problem catalog must not invent a correlation ID")
-	}
-	if strings.Contains(strings.ToLower(problem.Cause+problem.PermittedFix), "api_key") {
-		t.Fatal("safe problem contract contains secret-like detail")
+	for _, code := range []string{"revision_conflict", "authentication_unavailable", "csrf_validation_failed"} {
+		t.Run(code, func(t *testing.T) {
+			problem, ok := SafeProblemFor(code)
+			if !ok {
+				t.Fatal("problem code has no safe contract")
+			}
+			for name, value := range map[string]string{
+				"problem":            problem.Problem,
+				"cause":              problem.Cause,
+				"permitted fix":      problem.PermittedFix,
+				"documentation link": problem.DocumentationLink,
+			} {
+				if strings.TrimSpace(value) == "" {
+					t.Errorf("%s is empty", name)
+				}
+			}
+			if problem.CorrelationID != "" {
+				t.Fatal("static problem catalog must not invent a correlation ID")
+			}
+			if strings.Contains(strings.ToLower(problem.Cause+problem.PermittedFix), "api_key") {
+				t.Fatal("safe problem contract contains secret-like detail")
+			}
+		})
 	}
 }
 

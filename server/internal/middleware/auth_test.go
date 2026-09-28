@@ -115,6 +115,19 @@ func TestAuth_InvalidToken(t *testing.T) {
 	}
 }
 
+func TestAuth_CookieCSRFErrorRemainsLegacyOutsideProposalRoutes(t *testing.T) {
+	handler := Auth(nil, nil, nil, nil)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler should not be called")
+	}))
+	request := httptest.NewRequest(http.MethodPost, "/api/me", nil)
+	request.AddCookie(&http.Cookie{Name: auth.AuthCookieName, Value: "invalid-jwt"})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || response.Body.String() != "{\"error\":\"CSRF validation failed\"}\n" {
+		t.Fatalf("non-proposal CSRF error changed: HTTP %d: %s", response.Code, response.Body.String())
+	}
+}
+
 func TestAuth_ExpiredToken(t *testing.T) {
 	handler := authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("next handler should not be called")

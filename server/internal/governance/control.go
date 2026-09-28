@@ -276,6 +276,16 @@ func SafeProblemFor(code string) (SafeProblem, bool) {
 			PermittedFix: "Authenticate and retry the request.", Retryable: false,
 			DocumentationLink: "/docs/governance/errors#unauthorized",
 		},
+		"authentication_unavailable": {
+			Problem: "authentication_unavailable", Cause: "The authentication service could not verify the request.",
+			PermittedFix: "Retry after the authentication service is available.", Retryable: true,
+			DocumentationLink: "/docs/governance/errors#authentication_unavailable",
+		},
+		"csrf_validation_failed": {
+			Problem: "csrf_validation_failed", Cause: "The browser request did not include a valid request-verification token.",
+			PermittedFix: "Refresh the session and retry with its current CSRF token.", Retryable: false,
+			DocumentationLink: "/docs/governance/errors#csrf_validation_failed",
+		},
 		"workspace_not_found": {
 			Problem: "workspace_unavailable", Cause: "The workspace is unavailable to the current actor.",
 			PermittedFix: "Verify workspace access and retry.", Retryable: false,
@@ -305,6 +315,26 @@ func SafeProblemFor(code string) (SafeProblem, bool) {
 			Problem: "governance_configuration_unavailable", Cause: "The workspace configuration could not be loaded safely.",
 			PermittedFix: "Retry later; governance remains disabled until configuration is available.", Retryable: true,
 			DocumentationLink: "/docs/governance/errors#configuration_unavailable",
+		},
+		"proposal_token_scope_denied": {
+			Problem: "proposal_token_scope_denied", Cause: "The proposal credential cannot access this operation.",
+			PermittedFix: "Use the case-scoped proposal endpoint authorized for this attempt.", Retryable: false,
+			DocumentationLink: "/docs/governance/errors#proposal_token_scope_denied",
+		},
+		"proposal_access_denied": {
+			Problem: "proposal_access_denied", Cause: "The source principal or assigned specialist no longer has access to this case.",
+			PermittedFix: "Restore the required workspace and specialist access before issuing a new attempt.", Retryable: false,
+			DocumentationLink: "/docs/governance/errors#proposal_access_denied",
+		},
+		"proposal_unavailable": {
+			Problem: "proposal_unavailable", Cause: "The case, attempt, evidence, or governance control is no longer current.",
+			PermittedFix: "Stop using this attempt and follow the server-owned case lifecycle.", Retryable: false,
+			DocumentationLink: "/docs/governance/errors#proposal_unavailable",
+		},
+		"proposal_invalid_request": {
+			Problem: "invalid_proposal_result", Cause: "The result does not match the typed proposal contract or offered evidence.",
+			PermittedFix: "Submit only an allowed label and references from the current evidence with a finite confidence in [0,1].", Retryable: false,
+			DocumentationLink: "/docs/governance/errors#proposal_invalid_request",
 		},
 	}
 	problem, ok := problems[code]

@@ -793,26 +793,27 @@ type GithubPullRequestCheckSuite struct {
 }
 
 type GovernanceAttempt struct {
-	ID             pgtype.UUID        `json:"id"`
-	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
-	CaseID         pgtype.UUID        `json:"case_id"`
-	Ordinal        int32              `json:"ordinal"`
-	Kind           string             `json:"kind"`
-	CandidateID    pgtype.UUID        `json:"candidate_id"`
-	TaskID         pgtype.UUID        `json:"task_id"`
-	ObligationID   pgtype.UUID        `json:"obligation_id"`
-	InputDigest    string             `json:"input_digest"`
-	AttemptFence   pgtype.UUID        `json:"attempt_fence"`
-	ClaimedAt      pgtype.Timestamptz `json:"claimed_at"`
-	DeadlineAt     pgtype.Timestamptz `json:"deadline_at"`
-	TerminalReason string             `json:"terminal_reason"`
-	TerminalAt     pgtype.Timestamptz `json:"terminal_at"`
-	Confidence     []byte             `json:"confidence"`
-	Result         []byte             `json:"result"`
-	Usage          []byte             `json:"usage"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
-	RedactedAt     pgtype.Timestamptz `json:"redacted_at"`
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	CaseID          pgtype.UUID        `json:"case_id"`
+	Ordinal         int32              `json:"ordinal"`
+	Kind            string             `json:"kind"`
+	CandidateID     pgtype.UUID        `json:"candidate_id"`
+	TaskID          pgtype.UUID        `json:"task_id"`
+	ObligationID    pgtype.UUID        `json:"obligation_id"`
+	InputDigest     string             `json:"input_digest"`
+	AttemptFence    pgtype.UUID        `json:"attempt_fence"`
+	ClaimedAt       pgtype.Timestamptz `json:"claimed_at"`
+	DeadlineAt      pgtype.Timestamptz `json:"deadline_at"`
+	TerminalReason  string             `json:"terminal_reason"`
+	TerminalAt      pgtype.Timestamptz `json:"terminal_at"`
+	Confidence      []byte             `json:"confidence"`
+	Result          []byte             `json:"result"`
+	Usage           []byte             `json:"usage"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	RedactedAt      pgtype.Timestamptz `json:"redacted_at"`
+	LastHeartbeatAt pgtype.Timestamptz `json:"last_heartbeat_at"`
 }
 
 type GovernanceCase struct {
@@ -1714,14 +1715,19 @@ type TaskSupplementCapability struct {
 }
 
 type TaskToken struct {
-	ID          pgtype.UUID        `json:"id"`
-	TokenHash   string             `json:"token_hash"`
-	TaskID      pgtype.UUID        `json:"task_id"`
-	AgentID     pgtype.UUID        `json:"agent_id"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	UserID      pgtype.UUID        `json:"user_id"`
-	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	ID                      pgtype.UUID        `json:"id"`
+	TokenHash               string             `json:"token_hash"`
+	TaskID                  pgtype.UUID        `json:"task_id"`
+	AgentID                 pgtype.UUID        `json:"agent_id"`
+	WorkspaceID             pgtype.UUID        `json:"workspace_id"`
+	UserID                  pgtype.UUID        `json:"user_id"`
+	ExpiresAt               pgtype.Timestamptz `json:"expires_at"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+	Purpose                 string             `json:"purpose"`
+	GovernanceCaseID        pgtype.UUID        `json:"governance_case_id"`
+	GovernanceAttemptID     pgtype.UUID        `json:"governance_attempt_id"`
+	GovernanceAttemptFence  pgtype.UUID        `json:"governance_attempt_fence"`
+	GovernanceEvidenceEpoch pgtype.Int4        `json:"governance_evidence_epoch"`
 }
 
 type TaskUsage struct {

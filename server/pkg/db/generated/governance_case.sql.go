@@ -243,6 +243,155 @@ func (q *Queries) GetGovernanceCaseAudit(ctx context.Context, arg GetGovernanceC
 	return i, err
 }
 
+const getGovernanceProposalEvidence = `-- name: GetGovernanceProposalEvidence :one
+SELECT case_record.workspace_id, case_record.id AS case_id,
+       case_record.evidence_epoch, case_record.control_epoch,
+       attempt.id AS attempt_id, attempt.task_id, attempt.candidate_id,
+       attempt.input_digest, attempt.attempt_fence,
+       evaluation.snapshot, evaluation.candidate_map,
+       evaluation.citation_map, evaluation.snapshot_digest
+FROM governance_case AS case_record
+JOIN governance_attempt AS attempt
+  ON attempt.workspace_id = case_record.workspace_id
+ AND attempt.case_id = case_record.id
+ AND attempt.id = $1::uuid
+JOIN governance_evaluation AS evaluation
+  ON evaluation.workspace_id = case_record.workspace_id
+ AND evaluation.case_id = case_record.id
+ AND evaluation.attempt_id = attempt.id
+JOIN governance_workspace_config AS control
+  ON control.workspace_id = case_record.workspace_id
+WHERE case_record.workspace_id = $2::uuid
+  AND case_record.id = $3::uuid
+  AND case_record.current_attempt_id = attempt.id
+  AND case_record.state = 'agent_attempt'
+  AND case_record.evidence_epoch = $4::integer
+  AND case_record.control_epoch = control.control_epoch
+  AND control.settings->>'jev_governance_enabled' = 'true'
+  AND attempt.task_id = $5::uuid
+  AND attempt.candidate_id = $6::uuid
+  AND attempt.attempt_fence = $7::uuid
+  AND attempt.kind = 'agent'
+  AND attempt.redacted_at IS NULL
+  AND attempt.terminal_at IS NULL
+  AND attempt.deadline_at > now()
+  AND evaluation.redacted_at IS NULL
+  AND NOT EXISTS (
+      SELECT 1
+      FROM governance_evaluation_source AS source
+      WHERE source.evaluation_id = evaluation.id
+        AND (source.workspace_id <> case_record.workspace_id OR source.redacted_at IS NOT NULL)
+  )
+`
+
+type GetGovernanceProposalEvidenceParams struct {
+	AttemptID     pgtype.UUID `json:"attempt_id"`
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	CaseID        pgtype.UUID `json:"case_id"`
+	EvidenceEpoch int32       `json:"evidence_epoch"`
+	TaskID        pgtype.UUID `json:"task_id"`
+	AgentID       pgtype.UUID `json:"agent_id"`
+	AttemptFence  pgtype.UUID `json:"attempt_fence"`
+}
+
+type GetGovernanceProposalEvidenceRow struct {
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	CaseID         pgtype.UUID `json:"case_id"`
+	EvidenceEpoch  int32       `json:"evidence_epoch"`
+	ControlEpoch   int64       `json:"control_epoch"`
+	AttemptID      pgtype.UUID `json:"attempt_id"`
+	TaskID         pgtype.UUID `json:"task_id"`
+	CandidateID    pgtype.UUID `json:"candidate_id"`
+	InputDigest    string      `json:"input_digest"`
+	AttemptFence   pgtype.UUID `json:"attempt_fence"`
+	Snapshot       []byte      `json:"snapshot"`
+	CandidateMap   []byte      `json:"candidate_map"`
+	CitationMap    []byte      `json:"citation_map"`
+	SnapshotDigest string      `json:"snapshot_digest"`
+}
+
+func (q *Queries) GetGovernanceProposalEvidence(ctx context.Context, arg GetGovernanceProposalEvidenceParams) (GetGovernanceProposalEvidenceRow, error) {
+	row := q.db.QueryRow(ctx, getGovernanceProposalEvidence,
+		arg.AttemptID,
+		arg.WorkspaceID,
+		arg.CaseID,
+		arg.EvidenceEpoch,
+		arg.TaskID,
+		arg.AgentID,
+		arg.AttemptFence,
+	)
+	var i GetGovernanceProposalEvidenceRow
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.CaseID,
+		&i.EvidenceEpoch,
+		&i.ControlEpoch,
+		&i.AttemptID,
+		&i.TaskID,
+		&i.CandidateID,
+		&i.InputDigest,
+		&i.AttemptFence,
+		&i.Snapshot,
+		&i.CandidateMap,
+		&i.CitationMap,
+		&i.SnapshotDigest,
+	)
+	return i, err
+}
+
+const heartbeatGovernanceProposalAttempt = `-- name: HeartbeatGovernanceProposalAttempt :execrows
+UPDATE governance_attempt AS attempt
+SET claimed_at = COALESCE(attempt.claimed_at, now()),
+    last_heartbeat_at = now(),
+    updated_at = now()
+FROM governance_case AS case_record,
+     governance_workspace_config AS control
+WHERE attempt.workspace_id = $1::uuid
+  AND attempt.case_id = $2::uuid
+  AND attempt.id = $3::uuid
+  AND attempt.task_id = $4::uuid
+  AND attempt.candidate_id = $5::uuid
+  AND attempt.attempt_fence = $6::uuid
+  AND attempt.kind = 'agent'
+  AND attempt.redacted_at IS NULL
+  AND attempt.terminal_at IS NULL
+  AND attempt.deadline_at > now()
+  AND case_record.workspace_id = attempt.workspace_id
+  AND case_record.id = attempt.case_id
+  AND case_record.current_attempt_id = attempt.id
+  AND case_record.state = 'agent_attempt'
+  AND case_record.evidence_epoch = $7::integer
+  AND control.workspace_id = case_record.workspace_id
+  AND control.control_epoch = case_record.control_epoch
+  AND control.settings->>'jev_governance_enabled' = 'true'
+`
+
+type HeartbeatGovernanceProposalAttemptParams struct {
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	CaseID        pgtype.UUID `json:"case_id"`
+	AttemptID     pgtype.UUID `json:"attempt_id"`
+	TaskID        pgtype.UUID `json:"task_id"`
+	AgentID       pgtype.UUID `json:"agent_id"`
+	AttemptFence  pgtype.UUID `json:"attempt_fence"`
+	EvidenceEpoch int32       `json:"evidence_epoch"`
+}
+
+func (q *Queries) HeartbeatGovernanceProposalAttempt(ctx context.Context, arg HeartbeatGovernanceProposalAttemptParams) (int64, error) {
+	result, err := q.db.Exec(ctx, heartbeatGovernanceProposalAttempt,
+		arg.WorkspaceID,
+		arg.CaseID,
+		arg.AttemptID,
+		arg.TaskID,
+		arg.AgentID,
+		arg.AttemptFence,
+		arg.EvidenceEpoch,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const insertGovernanceAttempt = `-- name: InsertGovernanceAttempt :one
 INSERT INTO governance_attempt (
     workspace_id, case_id, ordinal, kind, candidate_id, task_id, obligation_id,
@@ -250,7 +399,7 @@ INSERT INTO governance_attempt (
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 )
-RETURNING id, workspace_id, case_id, ordinal, kind, candidate_id, task_id, obligation_id, input_digest, attempt_fence, claimed_at, deadline_at, terminal_reason, terminal_at, confidence, result, usage, created_at, updated_at, redacted_at
+RETURNING id, workspace_id, case_id, ordinal, kind, candidate_id, task_id, obligation_id, input_digest, attempt_fence, claimed_at, deadline_at, terminal_reason, terminal_at, confidence, result, usage, created_at, updated_at, redacted_at, last_heartbeat_at
 `
 
 type InsertGovernanceAttemptParams struct {
@@ -307,6 +456,7 @@ func (q *Queries) InsertGovernanceAttempt(ctx context.Context, arg InsertGoverna
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.RedactedAt,
+		&i.LastHeartbeatAt,
 	)
 	return i, err
 }
@@ -1041,7 +1191,7 @@ func (q *Queries) ListGovernanceCasesPage(ctx context.Context, arg ListGovernanc
 }
 
 const lockGovernanceAttemptForUpdate = `-- name: LockGovernanceAttemptForUpdate :one
-SELECT id, workspace_id, case_id, ordinal, kind, candidate_id, task_id, obligation_id, input_digest, attempt_fence, claimed_at, deadline_at, terminal_reason, terminal_at, confidence, result, usage, created_at, updated_at, redacted_at FROM governance_attempt
+SELECT id, workspace_id, case_id, ordinal, kind, candidate_id, task_id, obligation_id, input_digest, attempt_fence, claimed_at, deadline_at, terminal_reason, terminal_at, confidence, result, usage, created_at, updated_at, redacted_at, last_heartbeat_at FROM governance_attempt
 WHERE workspace_id = $1 AND case_id = $2 AND id = $3
 FOR UPDATE
 `
@@ -1076,6 +1226,7 @@ func (q *Queries) LockGovernanceAttemptForUpdate(ctx context.Context, arg LockGo
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.RedactedAt,
+		&i.LastHeartbeatAt,
 	)
 	return i, err
 }
@@ -1469,6 +1620,82 @@ func (q *Queries) ReleaseGovernanceCaseLease(ctx context.Context, arg ReleaseGov
 		arg.ID,
 		arg.LeaseToken,
 		arg.UpdatedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const submitGovernanceProposalResult = `-- name: SubmitGovernanceProposalResult :execrows
+UPDATE governance_attempt AS attempt
+SET result = $1::jsonb,
+    confidence = $2::jsonb,
+    terminal_reason = 'proposal_submitted',
+    terminal_at = now(),
+    updated_at = now()
+FROM governance_case AS case_record,
+     governance_evaluation AS evaluation,
+     governance_workspace_config AS control
+WHERE attempt.workspace_id = $3::uuid
+  AND attempt.case_id = $4::uuid
+  AND attempt.id = $5::uuid
+  AND attempt.task_id = $6::uuid
+  AND attempt.candidate_id = $7::uuid
+  AND attempt.attempt_fence = $8::uuid
+  AND attempt.kind = 'agent'
+  AND attempt.redacted_at IS NULL
+  AND attempt.terminal_at IS NULL
+  AND attempt.deadline_at > now()
+  AND case_record.workspace_id = attempt.workspace_id
+  AND case_record.id = attempt.case_id
+  AND case_record.current_attempt_id = attempt.id
+  AND case_record.state = 'agent_attempt'
+  AND case_record.evidence_epoch = $9::integer
+  AND evaluation.workspace_id = case_record.workspace_id
+  AND evaluation.case_id = case_record.id
+  AND evaluation.attempt_id = attempt.id
+  AND evaluation.candidate_map = $10::jsonb
+  AND evaluation.citation_map = $11::jsonb
+  AND evaluation.redacted_at IS NULL
+  AND NOT EXISTS (
+      SELECT 1
+      FROM governance_evaluation_source AS source
+      WHERE source.evaluation_id = evaluation.id
+        AND (source.workspace_id <> case_record.workspace_id OR source.redacted_at IS NOT NULL)
+  )
+  AND control.workspace_id = case_record.workspace_id
+  AND control.control_epoch = case_record.control_epoch
+  AND control.settings->>'jev_governance_enabled' = 'true'
+`
+
+type SubmitGovernanceProposalResultParams struct {
+	Result        []byte      `json:"result"`
+	Confidence    []byte      `json:"confidence"`
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	CaseID        pgtype.UUID `json:"case_id"`
+	AttemptID     pgtype.UUID `json:"attempt_id"`
+	TaskID        pgtype.UUID `json:"task_id"`
+	AgentID       pgtype.UUID `json:"agent_id"`
+	AttemptFence  pgtype.UUID `json:"attempt_fence"`
+	EvidenceEpoch int32       `json:"evidence_epoch"`
+	CandidateMap  []byte      `json:"candidate_map"`
+	CitationMap   []byte      `json:"citation_map"`
+}
+
+func (q *Queries) SubmitGovernanceProposalResult(ctx context.Context, arg SubmitGovernanceProposalResultParams) (int64, error) {
+	result, err := q.db.Exec(ctx, submitGovernanceProposalResult,
+		arg.Result,
+		arg.Confidence,
+		arg.WorkspaceID,
+		arg.CaseID,
+		arg.AttemptID,
+		arg.TaskID,
+		arg.AgentID,
+		arg.AttemptFence,
+		arg.EvidenceEpoch,
+		arg.CandidateMap,
+		arg.CitationMap,
 	)
 	if err != nil {
 		return 0, err
