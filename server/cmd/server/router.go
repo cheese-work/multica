@@ -1776,6 +1776,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
 					r.Put("/", h.UpdateWorkspace)
 					r.Patch("/", h.UpdateWorkspace)
+					r.With(handler.RequireHumanActor).Put("/instruction-pair", h.ApplyInstructionPair)
 					r.Patch("/governance/config", h.PatchGovernanceConfig)
 					r.Put("/jev/credential", h.PutJevCredential)
 					r.Delete("/jev/credential", h.DeleteJevCredential)
