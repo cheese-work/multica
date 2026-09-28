@@ -45,6 +45,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/governance"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/jev"
 )
 
 // Budget bounds the governance.Evaluate call: provider round trip plus
@@ -158,6 +159,11 @@ type Store interface {
 	InsertGovernanceReceipt(ctx context.Context, arg db.InsertGovernanceReceiptParams) (db.GovernanceReceipt, error)
 }
 
+type BudgetAdmission interface {
+	ReserveEvaluation(context.Context, *governance.DeploymentBudgetPolicy, governance.EvaluationBudgetInput) (governance.BudgetReservationResult, error)
+	SettleEvaluation(context.Context, *governance.DeploymentBudgetPolicy, governance.BudgetReservationResult, string, int64, int64, bool) error
+}
+
 // Input is one observation request: everything [Observer.Observe] needs to
 // run governance.Evaluate and persist the outcome. WorkspaceID, IssueID, and
 // CommentID are the receipt's owner-scoping key; Eval is passed through to
@@ -165,6 +171,7 @@ type Store interface {
 type Input struct {
 	WorkspaceID  pgtype.UUID
 	ControlEpoch int64
+	Limits       governance.OperatingLimits
 	IssueID      pgtype.UUID
 	CommentID    pgtype.UUID
 	Trigger      Trigger
@@ -196,7 +203,9 @@ type Observer struct {
 	// nil Provider records ReasonError without attempting a call. Wiring
 	// a live provider is out of scope for this delivery; every production
 	// value here today is nil, and every test value is a fake.
-	Provider governance.Provider
+	Provider        governance.Provider
+	BudgetAdmission BudgetAdmission
+	BudgetPolicy    *governance.DeploymentBudgetPolicy
 	// Store persists the receipt. A nil Store makes Observe a no-op
 	// (nothing to observe into), used defensively so a caller that wires
 	// the Observer but forgets Store fails safe rather than panicking on
@@ -513,6 +522,25 @@ func (o *Observer) evaluate(ctx context.Context, in Input) (Result, <-chan struc
 		close(closed)
 		return Result{Status: "error", ShedReason: ReasonError}, closed
 	}
+	if o.BudgetAdmission == nil || o.BudgetPolicy == nil {
+		closed := make(chan struct{})
+		close(closed)
+		return Result{Status: "error", ShedReason: ReasonError}, closed
+	}
+	in.Eval.ExpectedModel = o.BudgetPolicy.Model
+	reservation, err := o.BudgetAdmission.ReserveEvaluation(ctx, o.BudgetPolicy, governance.EvaluationBudgetInput{
+		WorkspaceID:  in.WorkspaceID,
+		CaseID:       in.IssueID,
+		AttemptID:    in.CommentID,
+		ObligationID: in.CommentID,
+		ControlEpoch: in.ControlEpoch,
+		Limits:       in.Limits,
+	})
+	if err != nil || reservation.Duplicate {
+		closed := make(chan struct{})
+		close(closed)
+		return Result{Status: "error", ShedReason: ReasonError}, closed
+	}
 
 	type outcome struct {
 		decision governance.Decision
@@ -520,21 +548,24 @@ func (o *Observer) evaluate(ctx context.Context, in Input) (Result, <-chan struc
 	}
 	done := make(chan outcome, 1)
 	goroutineDone := make(chan struct{})
+	provider := &usageTrackingProvider{provider: o.Provider}
 	go func() {
 		defer close(goroutineDone)
+		var result outcome
 		defer func() {
-			// Panic containment: Evaluate runs on its own goroutine here
-			// so a slow OR panicking fake/live provider can never take
-			// down the caller's goroutine, and so the select below can
-			// enforce Budget even against a provider that ignores ctx
-			// cancellation. An unrecovered panic on a bare goroutine
-			// would otherwise crash the whole process.
 			if rec := recover(); rec != nil {
-				done <- outcome{err: errPanic(rec)}
+				result = outcome{err: errPanic(rec)}
 			}
+			inputTokens, outputTokens, usageKnown := provider.usage()
+			settleCtx, cancel := context.WithTimeout(context.Background(), DefaultWriteBudget)
+			settleErr := o.BudgetAdmission.SettleEvaluation(settleCtx, o.BudgetPolicy, reservation, in.CommentID.String(), inputTokens, outputTokens, usageKnown)
+			cancel()
+			if settleErr != nil {
+				result = outcome{err: settleErr}
+			}
+			done <- result
 		}()
-		decision, err := governance.Evaluate(ctx, o.Provider, in.Eval)
-		done <- outcome{decision: decision, err: err}
+		result.decision, result.err = governance.Evaluate(ctx, provider, in.Eval)
 	}()
 
 	select {
@@ -543,6 +574,39 @@ func (o *Observer) evaluate(ctx context.Context, in Input) (Result, <-chan struc
 	case out := <-done:
 		return decisionResult(out.decision, out.err), goroutineDone
 	}
+}
+
+type usageTrackingProvider struct {
+	provider governance.Provider
+	mu       sync.Mutex
+	called   bool
+	input    int64
+	output   int64
+	known    bool
+}
+
+func (provider *usageTrackingProvider) Evaluate(ctx context.Context, request jev.Request) (*jev.Response, error) {
+	provider.mu.Lock()
+	provider.called = true
+	provider.mu.Unlock()
+	response, err := provider.provider.Evaluate(ctx, request)
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if response != nil {
+		provider.input = int64(response.Usage.InputTokens)
+		provider.output = int64(response.Usage.OutputTokens)
+		provider.known = provider.input > 0 || provider.output > 0
+	}
+	return response, err
+}
+
+func (provider *usageTrackingProvider) usage() (int64, int64, bool) {
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if !provider.called {
+		return 0, 0, true
+	}
+	return provider.input, provider.output, provider.known
 }
 
 // decisionResult classifies a completed governance.Evaluate call. Per

@@ -42,7 +42,9 @@ import (
 //
 // issue and comment are passed by value (not re-fetched) so this hook
 // never issues its own extra read against data the caller already holds
-// from inside the just-committed request.
+// from inside the just-committed request. The control snapshot is committed
+// before Observe; the budget reservation then takes its own control lock and
+// rejects a captured epoch that changed in between.
 func (h *Handler) observeGovernanceReceipt(r *http.Request, issue db.Issue, comment db.Comment, trig receipt.Trigger) {
 	if h == nil || h.GovernanceReceipts == nil {
 		return
@@ -88,13 +90,14 @@ func (h *Handler) observeGovernanceReceipt(r *http.Request, issue db.Issue, comm
 		return
 	}
 	in.ControlEpoch = config.ControlEpoch
-
-	result := h.GovernanceReceipts.Observe(ctx, in)
+	in.Limits = config.Settings.Limits
 	if err := tx.Commit(ctx); err != nil {
 		slog.Warn("governance evaluation admission could not commit",
 			append(logger.RequestAttrs(r), "issue_id", uuidToString(issue.ID), "error", err)...)
 		return
 	}
+
+	result := h.GovernanceReceipts.Observe(ctx, in)
 	if result.Status != "decided" {
 		slog.Info("governance receipt observation did not reach a decision",
 			append(logger.RequestAttrs(r),

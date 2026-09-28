@@ -453,6 +453,8 @@ func budgetReserveDigest(command BudgetReserveCommand, windowStart, windowEnd ti
 		RootCapMicroUSD        int64     `json:"root_cap_micro_usd"`
 		WindowCapMicroUSD      int64     `json:"window_cap_micro_usd"`
 		MaxAttemptCostMicroUSD int64     `json:"max_attempt_cost_micro_usd"`
+		MaxEvaluationsPerCase  int64     `json:"max_evaluations_per_case"`
+		PolicyVersion          string    `json:"policy_version"`
 		RetryAllowance         int64     `json:"retry_allowance"`
 		RetryPolicyBounded     bool      `json:"retry_policy_bounded"`
 		SlotLimit              int64     `json:"slot_limit"`
@@ -460,7 +462,8 @@ func budgetReserveDigest(command BudgetReserveCommand, windowStart, windowEnd ti
 		budgetUUIDString(command.BudgetRootID), budgetUUIDString(command.CaseID),
 		budgetUUIDString(command.AttemptID), budgetUUIDString(command.ObligationID),
 		command.Resource, command.ControlEpoch, windowStart, windowEnd, command.RootCapMicroUSD,
-		command.WindowCapMicroUSD, command.MaxAttemptCostMicroUSD, command.RetryAllowance,
+		command.WindowCapMicroUSD, command.MaxAttemptCostMicroUSD, command.MaxEvaluationsPerCase,
+		command.PolicyVersion, command.RetryAllowance,
 		command.RetryPolicyBounded, command.SlotLimit}), nil
 }
 

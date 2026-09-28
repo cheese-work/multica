@@ -168,6 +168,96 @@ func (f *fakeStore) inserted() []db.InsertGovernanceReceiptParams {
 	return out
 }
 
+type fakeBudgetAdmission struct {
+	duplicate  bool
+	reserveErr error
+	settleErr  error
+	settled    bool
+	input      int64
+	output     int64
+	usageKnown bool
+}
+
+func (budget *fakeBudgetAdmission) ReserveEvaluation(_ context.Context, _ *governance.DeploymentBudgetPolicy, input governance.EvaluationBudgetInput) (governance.BudgetReservationResult, error) {
+	return governance.BudgetReservationResult{
+		Reservation: db.GovernanceBudgetReservation{
+			WorkspaceID: input.WorkspaceID, ReservationID: input.AttemptID, Revision: 1,
+			TotalCapMicroUsd: 100,
+		},
+		Duplicate: budget.duplicate,
+	}, budget.reserveErr
+}
+
+func (budget *fakeBudgetAdmission) SettleEvaluation(_ context.Context, _ *governance.DeploymentBudgetPolicy, _ governance.BudgetReservationResult, _ string, inputTokens, outputTokens int64, usageKnown bool) error {
+	budget.settled = true
+	budget.input = inputTokens
+	budget.output = outputTokens
+	budget.usageKnown = usageKnown
+	return budget.settleErr
+}
+
+func testObserver(provider governance.Provider, store Store) *Observer {
+	return &Observer{
+		Provider:        provider,
+		Store:           store,
+		BudgetAdmission: &fakeBudgetAdmission{},
+		BudgetPolicy:    &governance.DeploymentBudgetPolicy{Version: "test-v1", Provider: "jev", Model: jev.DefaultModel},
+	}
+}
+
+func TestObserve_FailsClosedWhenBudgetAdmissionIsMissing(t *testing.T) {
+	provider := &fakeProvider{resp: mentionOwnerResponse(0.99)}
+	o := &Observer{Provider: provider, Store: &fakeStore{}}
+
+	result := o.Observe(context.Background(), testInput())
+	if result.Status != "error" || provider.calls.Load() != 0 {
+		t.Fatalf("result/provider calls = %+v/%d, want error/0", result, provider.calls.Load())
+	}
+}
+
+func TestObserve_FailsClosedWhenDeploymentPolicyIsMissing(t *testing.T) {
+	provider := &fakeProvider{resp: mentionOwnerResponse(0.99)}
+	budget := &fakeBudgetAdmission{}
+	o := testObserver(provider, &fakeStore{})
+	o.BudgetPolicy = nil
+	o.BudgetAdmission = budget
+
+	result := o.Observe(context.Background(), testInput())
+	if result.Status != "error" || provider.calls.Load() != 0 || budget.settled {
+		t.Fatalf("result/provider calls/settled = %+v/%d/%v, want error/0/false", result, provider.calls.Load(), budget.settled)
+	}
+}
+
+func TestObserve_DuplicateBudgetReservationDoesNotCallProvider(t *testing.T) {
+	provider := &fakeProvider{resp: mentionOwnerResponse(0.99)}
+	budget := &fakeBudgetAdmission{duplicate: true}
+	o := testObserver(provider, &fakeStore{})
+	o.BudgetAdmission = budget
+
+	result := o.Observe(context.Background(), testInput())
+	if result.Status != "error" || provider.calls.Load() != 0 || budget.settled {
+		t.Fatalf("result/provider calls/settled = %+v/%d/%v, want error/0/false", result, provider.calls.Load(), budget.settled)
+	}
+}
+
+func TestObserve_SettlesKnownProviderUsage(t *testing.T) {
+	response := mentionOwnerResponse(0.99)
+	response.Usage.InputTokens = 100
+	response.Usage.OutputTokens = 25
+	provider := &fakeProvider{resp: response}
+	budget := &fakeBudgetAdmission{}
+	o := testObserver(provider, &fakeStore{})
+	o.BudgetAdmission = budget
+
+	result := o.Observe(context.Background(), testInput())
+	if result.Status != "decided" {
+		t.Fatalf("result = %+v, want decided", result)
+	}
+	if !budget.settled || !budget.usageKnown || budget.input != 100 || budget.output != 25 {
+		t.Fatalf("settlement = %+v, want known 100/25 usage", budget)
+	}
+}
+
 // ---- tests -------------------------------------------------------------
 
 // TestObserve_NilStoreIsNoOp proves a caller that wires an Observer without
@@ -223,7 +313,7 @@ func TestObserve_NilProviderRecordsError(t *testing.T) {
 func TestObserve_DecidedPersistsAnswersAndActionKind(t *testing.T) {
 	provider := &fakeProvider{resp: mentionOwnerResponse(0.99)}
 	store := &fakeStore{}
-	o := &Observer{Provider: provider, Store: store}
+	o := testObserver(provider, store)
 
 	in := testInput()
 	result := o.Observe(context.Background(), in)
@@ -280,7 +370,7 @@ func TestObserve_DecidedPersistsAnswersAndActionKind(t *testing.T) {
 func TestObserve_ProviderErrorIsRecordedAsDecidedAbstention(t *testing.T) {
 	provider := &fakeProvider{err: errors.New("synthetic transport failure")}
 	store := &fakeStore{}
-	o := &Observer{Provider: provider, Store: store}
+	o := testObserver(provider, store)
 
 	result := o.Observe(context.Background(), testInput())
 	if result.Status != "decided" {
@@ -304,7 +394,7 @@ func TestObserve_ProviderErrorIsRecordedAsDecidedAbstention(t *testing.T) {
 // crash the caller and is recorded distinctly from a clean provider error.
 func TestObserve_PanicIsRecordedAsError(t *testing.T) {
 	store := &fakeStore{}
-	o := &Observer{Provider: panicProvider{}, Store: store}
+	o := testObserver(panicProvider{}, store)
 
 	result := o.Observe(context.Background(), testInput())
 	if result.Status != "error" || result.ShedReason != ReasonError {
@@ -324,7 +414,7 @@ func TestObserve_PanicIsRecordedAsError(t *testing.T) {
 func TestObserve_BudgetExceededSheds(t *testing.T) {
 	provider := &fakeProvider{resp: mentionOwnerResponse(0.99), delay: Budget * 20}
 	store := &fakeStore{}
-	o := &Observer{Provider: provider, Store: store}
+	o := testObserver(provider, store)
 
 	start := time.Now()
 	result := o.Observe(context.Background(), testInput())
@@ -357,7 +447,7 @@ func TestObserve_PoolCapOne_ConcurrentObservationIsShedPoolBusy(t *testing.T) {
 	entered := make(chan struct{})
 	provider := &blockingProvider{entered: entered, release: release, resp: mentionOwnerResponse(0.99)}
 	store := &fakeStore{}
-	o := &Observer{Provider: provider, Store: store}
+	o := testObserver(provider, store)
 
 	var firstResult Result
 	done := make(chan struct{})
@@ -414,7 +504,7 @@ func TestObserve_PoolCapOne_ConcurrentObservationIsShedPoolBusy(t *testing.T) {
 func TestObserve_PoolReleasedAfterCompletion(t *testing.T) {
 	provider := &fakeProvider{resp: mentionOwnerResponse(0.99)}
 	store := &fakeStore{}
-	o := &Observer{Provider: provider, Store: store}
+	o := testObserver(provider, store)
 
 	first := o.Observe(context.Background(), testInput())
 	second := o.Observe(context.Background(), testInput())
@@ -448,7 +538,7 @@ func TestObserve_BusyGateHeldUntilProviderActuallyReturns(t *testing.T) {
 	// goroutine stays running strictly after Budget elapses.
 	provider := &ctxIgnoringProvider{entered: entered, release: unblock, resp: mentionOwnerResponse(0.99)}
 	store := &fakeStore{}
-	o := &Observer{Provider: provider, Store: store}
+	o := testObserver(provider, store)
 
 	firstDone := make(chan Result, 1)
 	go func() {
