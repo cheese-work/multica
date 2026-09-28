@@ -148,6 +148,8 @@ var concurrentIndexCleanups = map[string]string{
 	"556_governance_budget_reservation_root_window_idx":         "governance_budget_reservation_root_window_idx",
 	"557_governance_budget_outbox_due_idx":                      "governance_budget_outbox_due_idx",
 	"558_governance_budget_reservation_attempt_obligation_uidx": "governance_budget_reservation_attempt_obligation_uidx",
+	"559_governance_budget_window_overlap_idx":                  "governance_budget_window_overlap_idx",
+	"560_governance_budget_reservation_open_window_idx":         "governance_budget_reservation_open_window_idx",
 	"535_github_pr_address_index":                               "idx_github_pull_request_pr_owner_repo",
 	"539_task_supplement_request_index":                         "task_supplement_task_request_uidx",
 	"540_task_supplement_capability_index":                      "task_supplement_capability_task_uidx",
@@ -411,6 +413,17 @@ var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
 		TableRegclass: "governance_budget_reservation",
 		Unique:        true,
 		Columns:       []string{"workspace_id", "attempt_id", "obligation_id"},
+	},
+	"559_governance_budget_window_overlap_idx": {
+		IndexRegclass: "governance_budget_window_overlap_idx",
+		TableRegclass: "governance_budget_window",
+		Columns:       []string{"workspace_id", "window_end", "window_start"},
+	},
+	"560_governance_budget_reservation_open_window_idx": {
+		IndexRegclass: "governance_budget_reservation_open_window_idx",
+		TableRegclass: "governance_budget_reservation",
+		Columns:       []string{"workspace_id", "window_start"},
+		Predicate:     "state = 'reserved'::text",
 	},
 }
 

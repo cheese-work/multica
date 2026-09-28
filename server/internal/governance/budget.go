@@ -155,7 +155,7 @@ func (service *BudgetService) Reserve(ctx context.Context, command BudgetReserve
 	`, command.WorkspaceID, windowStart, windowEnd, command.WindowCapMicroUSD); err != nil {
 		return BudgetReservationResult{}, err
 	}
-	state, err := loadBudgetState(ctx, tx, command.WorkspaceID)
+	state, err := loadBudgetAdmissionState(ctx, tx, command.WorkspaceID, command.BudgetRootID, windowStart, now)
 	if err != nil {
 		return BudgetReservationResult{}, err
 	}
@@ -170,7 +170,7 @@ func (service *BudgetService) Reserve(ctx context.Context, command BudgetReserve
 	if !window.end.Equal(windowEnd) {
 		return BudgetReservationResult{}, ErrBudgetWindowConflict
 	}
-	if err := checkBudgetAdmission(state, command, totalCap, now, root, window); err != nil {
+	if err := checkBudgetAdmission(state, command, totalCap, root, window); err != nil {
 		return BudgetReservationResult{}, err
 	}
 	effectiveRootCap := minBudgetCap(root.cap, command.RootCapMicroUSD)
@@ -226,7 +226,7 @@ func (service *BudgetService) Debit(ctx context.Context, command BudgetDebitComm
 	if _, err := LockConcurrencyResources(ctx, tx, command.WorkspaceID, location.resource); err != nil {
 		return BudgetReservationResult{}, err
 	}
-	state, err := loadBudgetState(ctx, tx, command.WorkspaceID)
+	state, err := loadBudgetReservationState(ctx, tx, command.WorkspaceID, command.ReservationID, location)
 	if err != nil {
 		return BudgetReservationResult{}, err
 	}
@@ -301,7 +301,7 @@ func (service *BudgetService) Settle(ctx context.Context, command BudgetSettleCo
 	if err != nil {
 		return BudgetSettlementResult{}, err
 	}
-	state, err := loadBudgetState(ctx, tx, command.WorkspaceID)
+	state, err := loadBudgetReservationState(ctx, tx, command.WorkspaceID, command.ReservationID, location)
 	if err != nil {
 		return BudgetSettlementResult{}, err
 	}
