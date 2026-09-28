@@ -64,6 +64,7 @@ func newLifecycleFixture(t *testing.T, state CaseState) *lifecycleFixture {
 		AbsoluteDeadline:    pgtype.Timestamptz{Time: clock.Now().Add(time.Hour), Valid: true},
 		EvidenceEpoch:       3,
 		RefreshCount:        2,
+		ControlEpoch:        1,
 	})
 	if err != nil {
 		t.Fatalf("insert lifecycle fixture case: %v", err)

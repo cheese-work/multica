@@ -189,3 +189,15 @@ func TestResolveWorkspaceIDFromRequest(t *testing.T) {
 		})
 	}
 }
+
+func TestRequireWorkspaceMemberMissingContextRemainsLegacyOutsideProposalRoutes(t *testing.T) {
+	handler := RequireWorkspaceMember(db.New(nil))(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler should not be called")
+	}))
+	request := httptest.NewRequest(http.MethodGet, "/api/issues", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || response.Body.String() != `{"error":"workspace_id or workspace_slug is required"}` {
+		t.Fatalf("non-proposal workspace error changed: HTTP %d: %s", response.Code, response.Body.String())
+	}
+}

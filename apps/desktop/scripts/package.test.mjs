@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, it, expect } from "vitest";
 import {
   builderArgsForTarget,
@@ -147,6 +148,23 @@ describe("deriveVersion (real git describe)", () => {
   it("falls back to 0.0.0-g<hash> when no semver tag is reachable", () => {
     const { dir } = initRepo();
     expect(deriveVersion(dir)).toMatch(/^0\.0\.0-g[0-9a-f]+$/);
+  });
+
+  it("defaults to the script repository rather than an unrelated working directory", () => {
+    const { dir, run } = initRepo();
+    run("tag", "v9.9.9");
+    const desktopRoot = existsSync(resolve("scripts/package.mjs"))
+      ? resolve(".")
+      : resolve("apps/desktop");
+    const repoRoot = resolve(desktopRoot, "../..");
+    const scriptURL = pathToFileURL(resolve(desktopRoot, "scripts/package.mjs")).href;
+    const version = execFileSync(
+      process.execPath,
+      ["--input-type=module", "--eval", `import { deriveVersion } from ${JSON.stringify(scriptURL)}; process.stdout.write(deriveVersion() ?? "");`],
+      { cwd: dir, encoding: "utf-8" },
+    );
+    expect(version).toBe(deriveVersion(repoRoot));
+    expect(version).not.toBe("9.9.9");
   });
 });
 

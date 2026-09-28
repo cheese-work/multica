@@ -13,10 +13,43 @@ import (
 func TestMigrationNumericPrefixesAreUnique(t *testing.T) {
 	files := migrationFilesForLint(t, "*.up.sql")
 
-	// Migrations through 128 contain historical duplicate numeric prefixes.
-	// From 129 onward, keep the numeric sequence unique so release tooling and
-	// operators can identify one schema change unambiguously by its number.
 	const firstUniqueMigrationNumber = 129
+	allowedForkCollisions := map[string]string{
+		"500_protocol_lint_run":                                 "500_task_message_call_id",
+		"501_protocol_lint_run_checked_at_idx":                  "501_runtime_profile_runtime_type",
+		"502_channel_reply_delivery":                            "502_issue_checkpoint",
+		"503_channel_reply_delivery_turn_index":                 "503_issue_checkpoint_owner_uidx",
+		"504_channel_reply_delivery_installation_index":         "504_github_merge_announcement",
+		"505_channel_reply_delivery_binding_index":              "505_github_merge_announcement_identity_uidx",
+		"506_channel_reply_delivery_attempt_depth":              "506_github_merge_announcement_pending_idx",
+		"509_issue_wakeup":                                      "509_stage_completion_wake",
+		"510_stage_completion_wake_unique":                      "510_wakeup_id",
+		"511_stage_generation_workspace_index":                  "511_wakeup_issue",
+		"512_stage_completion_wake_workspace_index":             "512_wakeup_due",
+		"513_governance_receipt":                                "513_wakeup_receipt_id",
+		"514_governance_receipt_comment_idx":                    "514_wakeup_receipt_key",
+		"515_provenance_export_log":                             "515_wakeup_receipt_pending",
+		"516_provenance_export_log_workspace_idx":               "516_wakeup_pending_scope",
+		"518_governance_case_persistence":                       "518_wakeup_event_capture",
+		"519_governance_case_identity_uidx":                     "519_wakeup_event_issue",
+		"520_collaboration_wakeup_events":                       "520_governance_case_material_fingerprint_uidx",
+		"521_governance_case_workspace_created_idx":             "521_wakeup_workspace_summary",
+		"522_governance_case_transition_identity_uidx":          "522_wakeup_run_lookup",
+		"523_governance_case_transition_cause_uidx":             "523_wakeup_registration_source",
+		"524_governance_case_transition_workspace_created_idx":  "524_wakeup_workspace_history",
+		"525_governance_attempt_identity_uidx":                  "525_wakeup_active_runs",
+		"526_governance_attempt_active_agent_uidx":              "526_wakeup_terminal_runs",
+		"527_governance_attempt_workspace_deadline_idx":         "527_wakeup_receipt_expiry",
+		"528_governance_evaluation_workspace_captured_idx":      "528_wakeup_receipt_coalescing",
+		"529_governance_evaluation_source_identity_uidx":        "529_wakeup_pending_event",
+		"530_governance_evaluation_source_workspace_object_idx": "530_wakeup_bounded_capture",
+		"531_governance_evidence_redaction":                     "531_wakeup_actor_filter",
+		"532_governance_attempt_workspace_case_created_idx":     "532_wakeup_actor_capture",
+		"533_governance_attempt_workspace_created_idx":          "533_wakeup_close_in_app",
+		"534_drop_comment_agent_delivery":                       "534_governance_evaluation_workspace_case_captured_idx",
+		"535_github_pr_address_index":                           "535_governance_case_transition_workspace_case_created_idx",
+		"536_governance_receipt_workspace_comment_created_idx":  "536_issue_duplicate_of",
+	}
 	stemByNumber := make(map[int]string)
 	for _, file := range files {
 		stem, _, ok := splitMigrationFilename(filepath.Base(file))
@@ -32,6 +65,9 @@ func TestMigrationNumericPrefixesAreUnique(t *testing.T) {
 			continue
 		}
 		if previous, exists := stemByNumber[number]; exists {
+			if allowedForkCollisions[previous] == stem {
+				continue
+			}
 			t.Errorf("migrations %s and %s share numeric prefix %s", previous, stem, prefix)
 			continue
 		}

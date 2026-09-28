@@ -174,7 +174,7 @@ func requireGovernanceConfigTables(t *testing.T) {
 		t.Skip("handler test database is unavailable")
 	}
 	var ready bool
-	if err := testPool.QueryRow(t.Context(), `
+	if err := testPool.QueryRow(context.Background(), `
 		SELECT to_regclass('governance_workspace_config') IS NOT NULL
 		   AND to_regclass('governance_workspace_config_audit') IS NOT NULL
 	`).Scan(&ready); err != nil {

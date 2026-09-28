@@ -25,6 +25,7 @@ func TestTransitionCompletionDedupesAfterServiceRestart(t *testing.T) {
 	if _, err := service.ClaimLease(context.Background(), LeaseCommand{
 		WorkspaceID:      fixture.workspaceID,
 		CaseID:           fixture.caseRow.ID,
+		ControlEpoch:     fixture.caseRow.ControlEpoch,
 		ExpectedState:    CaseAgentAttempt,
 		ExpectedRevision: 0,
 		Token:            leaseToken,
@@ -36,6 +37,7 @@ func TestTransitionCompletionDedupesAfterServiceRestart(t *testing.T) {
 	command := TransitionCommand{
 		WorkspaceID:      fixture.workspaceID,
 		CaseID:           fixture.caseRow.ID,
+		ControlEpoch:     fixture.caseRow.ControlEpoch,
 		ExpectedState:    CaseAgentAttempt,
 		ExpectedRevision: 0,
 		NextState:        CaseCorrectionPending,
@@ -86,6 +88,7 @@ func TestLeaseTheftFencesStaleCompletion(t *testing.T) {
 		_, err := service.ClaimLease(context.Background(), LeaseCommand{
 			WorkspaceID:      fixture.workspaceID,
 			CaseID:           fixture.caseRow.ID,
+			ControlEpoch:     fixture.caseRow.ControlEpoch,
 			ExpectedState:    CaseAgentAttempt,
 			ExpectedRevision: 0,
 			Token:            token,
@@ -103,6 +106,7 @@ func TestLeaseTheftFencesStaleCompletion(t *testing.T) {
 	command := TransitionCommand{
 		WorkspaceID:      fixture.workspaceID,
 		CaseID:           fixture.caseRow.ID,
+		ControlEpoch:     fixture.caseRow.ControlEpoch,
 		ExpectedState:    CaseAgentAttempt,
 		ExpectedRevision: 0,
 		NextState:        CaseCorrectionPending,
@@ -138,6 +142,7 @@ func TestMaterialSuccessorInvalidatesAndPreservesSourceCoverage(t *testing.T) {
 	if _, err := service.ClaimLease(context.Background(), LeaseCommand{
 		WorkspaceID:      fixture.workspaceID,
 		CaseID:           fixture.caseRow.ID,
+		ControlEpoch:     fixture.caseRow.ControlEpoch,
 		ExpectedState:    CaseAgentAttempt,
 		ExpectedRevision: 0,
 		Token:            leaseToken,
@@ -155,6 +160,7 @@ func TestMaterialSuccessorInvalidatesAndPreservesSourceCoverage(t *testing.T) {
 		Actor:            ActorSystem,
 		Successor: db.InsertNextGovernanceCaseParams{
 			WorkspaceID:         fixture.workspaceID,
+			ControlEpoch:        1,
 			SubjectType:         fixture.caseRow.SubjectType,
 			SubjectID:           fixture.caseRow.SubjectID,
 			SubjectRevision:     2,
@@ -208,6 +214,7 @@ func TestMaterialSuccessorInvalidatesAndPreservesSourceCoverage(t *testing.T) {
 	_, err = service.Transition(context.Background(), TransitionCommand{
 		WorkspaceID:      fixture.workspaceID,
 		CaseID:           fixture.caseRow.ID,
+		ControlEpoch:     fixture.caseRow.ControlEpoch,
 		ExpectedState:    CaseAgentAttempt,
 		ExpectedRevision: 0,
 		NextState:        CaseCorrectionPending,
@@ -238,6 +245,7 @@ func TestTerminalCaseDeduplicatesSuccessorWithoutReopening(t *testing.T) {
 		Actor:            ActorSystem,
 		Successor: db.InsertNextGovernanceCaseParams{
 			WorkspaceID:         fixture.workspaceID,
+			ControlEpoch:        1,
 			SubjectType:         fixture.caseRow.SubjectType,
 			SubjectID:           fixture.caseRow.SubjectID,
 			SubjectRevision:     2,
@@ -284,6 +292,7 @@ func TestParkedCaseRequiresFreshSuccessorWhenReenabled(t *testing.T) {
 	if _, err := service.Transition(context.Background(), TransitionCommand{
 		WorkspaceID:      fixture.workspaceID,
 		CaseID:           fixture.caseRow.ID,
+		ControlEpoch:     fixture.caseRow.ControlEpoch,
 		ExpectedState:    CaseParked,
 		ExpectedRevision: 0,
 		NextState:        CaseEvidenceReady,
@@ -303,6 +312,7 @@ func TestParkedCaseRequiresFreshSuccessorWhenReenabled(t *testing.T) {
 		Actor:            ActorSystem,
 		Successor: db.InsertNextGovernanceCaseParams{
 			WorkspaceID:         fixture.workspaceID,
+			ControlEpoch:        1,
 			SubjectType:         fixture.caseRow.SubjectType,
 			SubjectID:           fixture.caseRow.SubjectID,
 			SubjectRevision:     2,
@@ -347,6 +357,7 @@ func TestConcurrentInvalidationAndLeaseClaimRespectLockOrder(t *testing.T) {
 		_, err := service.ClaimLease(ctx, LeaseCommand{
 			WorkspaceID:      fixture.workspaceID,
 			CaseID:           fixture.caseRow.ID,
+			ControlEpoch:     fixture.caseRow.ControlEpoch,
 			ExpectedState:    CaseEvidenceReady,
 			ExpectedRevision: 0,
 			Token:            lifecycleUUID(t),
@@ -368,6 +379,7 @@ func TestConcurrentInvalidationAndLeaseClaimRespectLockOrder(t *testing.T) {
 			Actor:            ActorSystem,
 			Successor: db.InsertNextGovernanceCaseParams{
 				WorkspaceID:         fixture.workspaceID,
+				ControlEpoch:        1,
 				SubjectType:         fixture.caseRow.SubjectType,
 				SubjectID:           fixture.caseRow.SubjectID,
 				SubjectRevision:     2,
