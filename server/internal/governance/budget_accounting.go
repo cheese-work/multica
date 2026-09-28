@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"math"
 	"strings"
 	"time"
@@ -526,19 +525,4 @@ func budgetAddAmounts(first, second int64) (int64, error) {
 
 func budgetUUIDString(value pgtype.UUID) string {
 	return uuid.UUID(value.Bytes).String()
-}
-
-func validBudgetInputUUID(value pgtype.UUID) bool {
-	return value.Valid && value.Bytes != [16]byte{}
-}
-
-func nextBudgetRevision(current int64) (int64, error) {
-	if current < 1 || current == math.MaxInt64 {
-		return 0, ErrBudgetOverflow
-	}
-	return current + 1, nil
-}
-
-func formatBudgetError(operation string, err error) error {
-	return fmt.Errorf("%s: %w", operation, err)
 }
