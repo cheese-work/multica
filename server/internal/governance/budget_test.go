@@ -159,6 +159,65 @@ func TestReviewBudgetResizeThenRolloverRetainsActiveWindowCap(t *testing.T) {
 	}
 }
 
+func TestBudgetReserveRejectsAfterWorkspaceLockWaitPastWindowEnd(t *testing.T) {
+	fixture := newBudgetTestFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	windowStart := budgetTestTime(12, 0)
+	windowEnd := budgetTestTime(13, 0)
+	fixture.clock.Set(budgetTestTime(12, 59))
+	command := fixture.reserveCommand("resource-lock-wait", windowStart, windowEnd, 100, 100, 25, 1)
+	lockTx, err := fixture.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lockTx.Rollback(context.Background())
+	var controlEpoch int64
+	if err := lockTx.QueryRow(ctx, `
+		SELECT control_epoch FROM governance_workspace_config
+		WHERE workspace_id = $1 FOR UPDATE
+	`, fixture.workspaceID).Scan(&controlEpoch); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, err := fixture.service.Reserve(ctx, command)
+		result <- err
+	}()
+	lockerPID := int32(lockTx.Conn().PgConn().PID())
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var blocked bool
+		if err := fixture.pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM pg_stat_activity
+				WHERE wait_event_type = 'Lock'
+					AND $1::integer = ANY(pg_blocking_pids(pid))
+					AND query LIKE '%FROM governance_workspace_config%'
+			)
+		`, lockerPID).Scan(&blocked); err != nil {
+			t.Fatalf("check reservation lock wait: %v", err)
+		}
+		if blocked {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("reservation did not wait on workspace lock: %v", ctx.Err())
+		case <-ticker.C:
+		}
+	}
+	fixture.clock.Set(windowEnd)
+	if err := lockTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-result; !errors.Is(err, ErrBudgetWindow) {
+		t.Fatalf("reservation after lock wait error = %v, want ErrBudgetWindow", err)
+	}
+	assertBudgetNoArtifacts(t, fixture, command.ReservationID)
+}
+
 func TestBudgetLiabilityShrinkExpandKeepsEveryOpenBoundary(t *testing.T) {
 	fixture := newBudgetTestFixture(t)
 	ctx := context.Background()

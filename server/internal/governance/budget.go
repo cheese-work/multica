@@ -93,7 +93,6 @@ func NewBudgetService(database *pgxpool.Pool, clock BudgetClock) (*BudgetService
 }
 
 func (service *BudgetService) Reserve(ctx context.Context, command BudgetReserveCommand) (BudgetReservationResult, error) {
-	now := service.clock.Now().UTC()
 	windowStart := command.WindowStart.UTC()
 	windowEnd := command.WindowEnd.UTC()
 	totalCap, err := budgetTotalCap(command.MaxAttemptCostMicroUSD, command.RetryAllowance)
@@ -132,6 +131,7 @@ func (service *BudgetService) Reserve(ctx context.Context, command BudgetReserve
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return BudgetReservationResult{}, err
 	}
+	now := service.clock.Now().UTC()
 	if now.Before(windowStart) || !now.Before(windowEnd) {
 		return BudgetReservationResult{}, ErrBudgetWindow
 	}
