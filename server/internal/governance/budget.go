@@ -97,7 +97,9 @@ func ReserveBudget(ctx context.Context, tx pgx.Tx, workspaceID pgtype.UUID, requ
 	if tx == nil || !validConcurrencyUUID(workspaceID) || !validBudgetRequest(request) {
 		return BudgetReservation{}, false, ErrBudgetInput
 	}
-	requestDigest, err := digestBudgetValue(request)
+	digestRequest := request
+	digestRequest.ReservationID = pgtype.UUID{}
+	requestDigest, err := digestBudgetValue(digestRequest)
 	if err != nil {
 		return BudgetReservation{}, false, err
 	}
@@ -105,7 +107,11 @@ func ReserveBudget(ctx context.Context, tx pgx.Tx, workspaceID pgtype.UUID, requ
 	if err != nil {
 		return BudgetReservation{}, false, err
 	}
-	if existing, loadErr := loadBudgetReservation(ctx, tx, workspaceID, request.ReservationID, false); loadErr == nil {
+	existing, loadErr := loadBudgetReservation(ctx, tx, workspaceID, request.ReservationID, false)
+	if errors.Is(loadErr, pgx.ErrNoRows) {
+		existing, loadErr = loadBudgetReservationByAttempt(ctx, tx, workspaceID, request.AttemptID, request.ObligationID)
+	}
+	if loadErr == nil {
 		if existing.RequestDigest != requestDigest || existing.BudgetRootID != request.BudgetRootID {
 			return BudgetReservation{}, false, ErrBudgetIdempotencyConflict
 		}
@@ -146,6 +152,17 @@ func ReserveBudget(ctx context.Context, tx pgx.Tx, workspaceID pgtype.UUID, requ
 	}
 	workspaceCap := *guards.settings.Limits.WorkspaceSpendCapMicroUSD
 	totalCap := request.MaxAttemptCostMicroUSD * (request.RetryAllowance + 1)
+	var overlappingLiability int64
+	if err := tx.QueryRow(ctx, `
+		SELECT COALESCE(SUM(reserved_micro_usd + spent_micro_usd), 0)
+		FROM governance_budget_window
+		WHERE workspace_id = $1 AND window_start < $3 AND window_end > $2
+	`, workspaceID, request.WindowStart, request.WindowEnd).Scan(&overlappingLiability); err != nil {
+		return BudgetReservation{}, false, err
+	}
+	if !budgetCanFit(0, overlappingLiability, totalCap, workspaceCap) {
+		return BudgetReservation{}, false, ErrBudgetLimit
+	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO governance_budget_window (workspace_id, window_start, window_end, spend_cap_micro_usd)
 		VALUES ($1, $2, $3, $4) ON CONFLICT (workspace_id, window_start) DO NOTHING
@@ -384,7 +401,7 @@ func SettleBudget(ctx context.Context, tx pgx.Tx, workspaceID pgtype.UUID, settl
 		return BudgetReservation{}, false, err
 	}
 	if err := insertBudgetOutbox(ctx, tx, workspaceID, settlement.ReservationID,
-		"settled/"+settlement.EventKey, "settled", reservation.CaseID, reservation.AttemptID,
+		"settled/"+uuidText(settlement.ReservationID), "settled", reservation.CaseID, reservation.AttemptID,
 		reservation.ObligationID, payload); err != nil {
 		return BudgetReservation{}, false, err
 	}
@@ -435,6 +452,18 @@ func loadBudgetReservation(ctx context.Context, tx pgx.Tx, workspaceID, reservat
 		&reservation.DebitedMicroUSD, &reservation.SettledMicroUSD, &reservation.State, &reservation.Revision,
 		&reservation.RequestDigest, &reservation.SettlementReceiptID, &reservation.UsageKnown, &reservation.TerminationKnown)
 	return reservation, err
+}
+
+func loadBudgetReservationByAttempt(ctx context.Context, tx pgx.Tx, workspaceID, attemptID, obligationID pgtype.UUID) (BudgetReservation, error) {
+	var reservationID pgtype.UUID
+	err := tx.QueryRow(ctx, `
+		SELECT reservation_id FROM governance_budget_reservation
+		WHERE workspace_id = $1 AND attempt_id = $2 AND obligation_id = $3
+	`, workspaceID, attemptID, obligationID).Scan(&reservationID)
+	if err != nil {
+		return BudgetReservation{}, err
+	}
+	return loadBudgetReservation(ctx, tx, workspaceID, reservationID, false)
 }
 
 func lockBudgetReservation(ctx context.Context, tx pgx.Tx, workspaceID, reservationID pgtype.UUID) (*ConcurrencyGuards, BudgetReservation, error) {

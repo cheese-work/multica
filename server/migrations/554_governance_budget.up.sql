@@ -67,13 +67,6 @@ CREATE TABLE governance_budget_reservation (
     CHECK ((state = 'settled') = (settled_at IS NOT NULL))
 );
 
-CREATE UNIQUE INDEX governance_budget_reservation_receipt_uidx
-ON governance_budget_reservation (workspace_id, settlement_receipt_id)
-WHERE settlement_receipt_id IS NOT NULL;
-
-CREATE INDEX governance_budget_reservation_root_window_idx
-ON governance_budget_reservation (workspace_id, budget_root_id, window_start, reservation_id);
-
 CREATE TABLE governance_budget_journal (
     workspace_id UUID NOT NULL,
     reservation_id UUID NOT NULL,
@@ -101,6 +94,3 @@ CREATE TABLE governance_budget_outbox (
     PRIMARY KEY (workspace_id, event_id),
     UNIQUE (workspace_id, reservation_id, event_key)
 );
-
-CREATE INDEX governance_budget_outbox_due_idx
-ON governance_budget_outbox (workspace_id, state, created_at, event_id);

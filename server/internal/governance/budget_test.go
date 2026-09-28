@@ -3,6 +3,7 @@ package governance
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -613,4 +614,201 @@ func TestBudgetRootLiabilitySurvivesRolloverAndLimitReduction(t *testing.T) {
 		t.Fatalf("old-window liability failed late settlement: %+v/%v", settled, err)
 	}
 	fixture.counts(t, request.Resource, 0, 1)
+}
+
+func TestBudgetAttemptObligationReservesOnceAcrossReservationIDs(t *testing.T) {
+	fixture := newBudgetFixture(t)
+	now := time.Date(2026, 9, 28, 12, 35, 0, 0, time.UTC)
+	request := fixture.request(now)
+	request.RetryAllowance = 0
+	first, duplicate := fixture.reserve(t, request, now)
+	if duplicate {
+		t.Fatal("first attempt admission was marked duplicate")
+	}
+
+	request.ReservationID = concurrencyUUID()
+	second, duplicate := fixture.reserve(t, request, now)
+	if !duplicate || second.ReservationID != first.ReservationID {
+		t.Fatalf("restarted attempt admission = %s duplicate=%v, want original %s and duplicate", uuidText(second.ReservationID), duplicate, uuidText(first.ReservationID))
+	}
+
+	var reservations, reserved, outbox int64
+	if err := fixture.pool.QueryRow(context.Background(), `
+		SELECT count(*), COALESCE(sum(total_cap_micro_usd), 0)
+		FROM governance_budget_reservation
+		WHERE workspace_id = $1 AND attempt_id = $2 AND obligation_id = $3
+	`, fixture.workspaceID, request.AttemptID, request.ObligationID).Scan(&reservations, &reserved); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM governance_budget_outbox
+		WHERE workspace_id = $1 AND attempt_id = $2 AND obligation_id = $3 AND event_type = 'admit'
+	`, fixture.workspaceID, request.AttemptID, request.ObligationID).Scan(&outbox); err != nil {
+		t.Fatal(err)
+	}
+	if reservations != 1 || reserved != first.TotalCapMicroUSD || outbox != 1 {
+		t.Fatalf("same attempt/obligation reserved %d rows/%d and enqueued %d admissions", reservations, reserved, outbox)
+	}
+}
+
+func TestBudgetWindowResizeCannotResetOverlappingSpendCap(t *testing.T) {
+	fixture := newBudgetFixture(t)
+	fixture.setWindowCap(t, 100)
+	now := time.Date(2026, 9, 28, 12, 35, 0, 0, time.UTC)
+	request := fixture.request(now)
+	request.RetryAllowance = 0
+	fixture.reserve(t, request, now)
+	if _, err := fixture.pool.Exec(context.Background(), `
+		UPDATE governance_workspace_config
+		SET control_epoch = 2,
+		    settings = jsonb_set(settings, '{limits,admission_window_seconds}', '1800'::jsonb)
+		WHERE workspace_id = $1
+	`, fixture.workspaceID); err != nil {
+		t.Fatal(err)
+	}
+
+	resized := fixture.request(now)
+	resized.RetryAllowance = 0
+	resized.ControlEpoch = 2
+	resized.WindowStart = now.Truncate(30 * time.Minute)
+	resized.WindowEnd = resized.WindowStart.Add(30 * time.Minute)
+	if err := fixture.tryReserve(resized, now); !errors.Is(err, ErrBudgetLimit) {
+		t.Fatalf("overlapping resized window reserve = %v, want %v", err, ErrBudgetLimit)
+	}
+
+	var rows, liability int64
+	if err := fixture.pool.QueryRow(context.Background(), `
+		SELECT count(*), COALESCE(sum(total_cap_micro_usd), 0)
+		FROM governance_budget_reservation
+		WHERE workspace_id = $1 AND window_start < $3 AND window_end > $2
+	`, fixture.workspaceID, resized.WindowStart, resized.WindowEnd).Scan(&rows, &liability); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 || liability != 100 {
+		t.Fatalf("overlapping windows contain reservations=%d liability=%d, want 1/100", rows, liability)
+	}
+}
+
+func TestBudgetConcurrentResizedWindowsRespectAggregateCap(t *testing.T) {
+	fixture := newBudgetFixture(t)
+	fixture.setWindowCap(t, 200)
+	now := time.Date(2026, 9, 28, 12, 35, 0, 0, time.UTC)
+	prior := fixture.request(now)
+	prior.ConcurrencyLimit = 4
+	prior.RetryAllowance = 0
+	prior.MaxAttemptCostMicroUSD = 100
+	fixture.reserve(t, prior, now)
+	if _, err := fixture.pool.Exec(context.Background(), `
+		UPDATE governance_workspace_config
+		SET control_epoch = 2,
+		    settings = jsonb_set(settings, '{limits,admission_window_seconds}', '1800'::jsonb)
+		WHERE workspace_id = $1
+	`, fixture.workspaceID); err != nil {
+		t.Fatal(err)
+	}
+
+	requests := []BudgetRequest{fixture.request(now), fixture.request(now)}
+	for index := range requests {
+		requests[index].ConcurrencyLimit = 4
+		requests[index].ControlEpoch = 2
+		requests[index].RetryAllowance = 0
+		requests[index].MaxAttemptCostMicroUSD = 100
+		requests[index].WindowStart = now.Truncate(30 * time.Minute)
+		requests[index].WindowEnd = requests[index].WindowStart.Add(30 * time.Minute)
+	}
+	transactions := make([]pgx.Tx, len(requests))
+	connections := make(map[uint32]bool)
+	for index := range requests {
+		tx, err := fixture.pool.Begin(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		transactions[index] = tx
+		connections[tx.Conn().PgConn().PID()] = true
+	}
+	if len(connections) != len(requests) {
+		t.Fatal("resized-window race did not use independent PostgreSQL connections")
+	}
+
+	results := make(chan error, len(requests))
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	workers.Add(len(requests))
+	for index, tx := range transactions {
+		go func(index int, tx pgx.Tx) {
+			defer workers.Done()
+			<-start
+			_, _, err := ReserveBudget(context.Background(), tx, fixture.workspaceID, requests[index], now)
+			if err == nil {
+				err = tx.Commit(context.Background())
+			} else {
+				_ = tx.Rollback(context.Background())
+			}
+			results <- err
+		}(index, tx)
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+	admitted, refused := 0, 0
+	for err := range results {
+		switch {
+		case err == nil:
+			admitted++
+		case errors.Is(err, ErrBudgetLimit):
+			refused++
+		default:
+			t.Fatalf("unexpected resized-window admission result: %v", err)
+		}
+	}
+	if admitted != 1 || refused != 1 {
+		t.Fatalf("resized-window admitted/refused = %d/%d, want 1/1", admitted, refused)
+	}
+
+	var rows, liability int64
+	if err := fixture.pool.QueryRow(context.Background(), `
+		SELECT count(*), COALESCE(sum(total_cap_micro_usd), 0)
+		FROM governance_budget_reservation
+		WHERE workspace_id = $1 AND window_start < $3 AND window_end > $2
+	`, fixture.workspaceID, requests[0].WindowStart, requests[0].WindowEnd).Scan(&rows, &liability); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 2 || liability != 200 {
+		t.Fatalf("overlapping windows contain reservations=%d liability=%d, want 2/200", rows, liability)
+	}
+}
+
+func TestBudgetSettlementAcceptsMaximumValidEventKey(t *testing.T) {
+	fixture := newBudgetFixture(t)
+	now := time.Date(2026, 9, 28, 12, 35, 0, 0, time.UTC)
+	request := fixture.request(now)
+	reservation, _ := fixture.reserve(t, request, now)
+	eventKey := strings.Repeat("k", 200)
+	if !validBudgetKey(eventKey) {
+		t.Fatal("200-character event key should be a valid budget key")
+	}
+	if _, _, err := fixture.settle(t, BudgetSettlement{
+		ReservationID:    request.ReservationID,
+		ExpectedRevision: reservation.Revision,
+		EventKey:         eventKey,
+		ReceiptID:        "valid-receipt",
+		UsageKnown:       true,
+		UsageMicroUSD:    10,
+		TerminationKnown: true,
+	}, now); err != nil {
+		t.Fatalf("valid 200-character settlement key failed: %v", err)
+	}
+	var journalKeyLength, outboxKeyLength int
+	if err := fixture.pool.QueryRow(context.Background(), `
+		SELECT length(j.event_key), length(o.event_key)
+		FROM governance_budget_journal j
+		JOIN governance_budget_outbox o
+		  ON o.workspace_id = j.workspace_id AND o.reservation_id = j.reservation_id
+		WHERE j.workspace_id = $1 AND j.reservation_id = $2 AND j.event_type = 'settle'
+	`, fixture.workspaceID, request.ReservationID).Scan(&journalKeyLength, &outboxKeyLength); err != nil {
+		t.Fatal(err)
+	}
+	if journalKeyLength != 200 || outboxKeyLength > 200 {
+		t.Fatalf("settlement key lengths = journal %d/outbox %d, want 200/<=200", journalKeyLength, outboxKeyLength)
+	}
 }

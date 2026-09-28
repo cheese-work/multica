@@ -20,6 +20,7 @@ func TestBudgetWorkspaceLeadingIndexesAndNoForeignKeys(t *testing.T) {
 		{"governance_budget_window_pkey", "workspace_id, window_start"},
 		{"governance_budget_root_pkey", "workspace_id, budget_root_id"},
 		{"governance_budget_reservation_pkey", "workspace_id, reservation_id"},
+		{"governance_budget_reservation_attempt_obligation_uidx", "workspace_id, attempt_id, obligation_id"},
 		{"governance_budget_reservation_root_window_idx", "workspace_id, budget_root_id, window_start, reservation_id"},
 		{"governance_budget_journal_pkey", "workspace_id, reservation_id, event_key"},
 		{"governance_budget_outbox_pkey", "workspace_id, event_id"},
