@@ -49,6 +49,9 @@ func TestMigrationNumericPrefixesAreUnique(t *testing.T) {
 		"534_drop_comment_agent_delivery":                       "534_governance_evaluation_workspace_case_captured_idx",
 		"535_github_pr_address_index":                           "535_governance_case_transition_workspace_case_created_idx",
 		"536_governance_receipt_workspace_comment_created_idx":  "536_issue_duplicate_of",
+		"548_governance_workspace_control":                      "548_task_supplement_comment_task_index",
+		"549_governance_jev_credential":                         "549_task_supplement_comment_task_primary_key",
+		"550_comment_suppressed_agents":                         "550_governance_proposal_task_tokens",
 	}
 	stemByNumber := make(map[int]string)
 	for _, file := range files {

@@ -318,7 +318,7 @@ func (q *Queries) GetIssuePullRequestCloseAggregate(ctx context.Context, issueID
 }
 
 const getIssuePullRequestLink = `-- name: GetIssuePullRequestLink :one
-SELECT issue_id, pull_request_id, close_intent FROM issue_pull_request
+SELECT issue_id, pull_request_id FROM issue_pull_request
 WHERE issue_id = $1 AND pull_request_id = $2
 `
 
@@ -330,10 +330,9 @@ type GetIssuePullRequestLinkParams struct {
 type GetIssuePullRequestLinkRow struct {
 	IssueID       pgtype.UUID `json:"issue_id"`
 	PullRequestID pgtype.UUID `json:"pull_request_id"`
-	CloseIntent   bool        `json:"close_intent"`
 }
 
-// Existence + close_intent check for one (issue, pull_request) pair, used by
+// Existence check for one (issue, pull_request) pair, used by
 // MergeAnnouncementWorker.ProcessNext to revalidate that a queued
 // announcement's link has not been removed since it was enqueued (CHE-374
 // review round 2, item 2) — an item-1-style "unlink beat us here" race, but
@@ -342,7 +341,7 @@ type GetIssuePullRequestLinkRow struct {
 func (q *Queries) GetIssuePullRequestLink(ctx context.Context, arg GetIssuePullRequestLinkParams) (GetIssuePullRequestLinkRow, error) {
 	row := q.db.QueryRow(ctx, getIssuePullRequestLink, arg.IssueID, arg.PullRequestID)
 	var i GetIssuePullRequestLinkRow
-	err := row.Scan(&i.IssueID, &i.PullRequestID, &i.CloseIntent)
+	err := row.Scan(&i.IssueID, &i.PullRequestID)
 	return i, err
 }
 
@@ -419,9 +418,10 @@ type LinkIssueToPullRequestParams struct {
 // Issue ↔ Pull Request link
 // =====================
 // Automatic link from a PR title, branch, or closing keyword. Returns 1 only
-// when the link is new, so the webhook evaluates auto-complete on the link
-// event and not on every redelivery. An existing link (automatic or manual) is
-// left untouched; close_intent is set by SyncPullRequestCloseIntent.
+// when the link is new, so the webhook evaluates the merge automation on the
+// link event and not on every redelivery. An existing link (automatic or
+// manual) is left untouched. close_intent is no longer read or written
+// (MUL-7726).
 func (q *Queries) LinkIssueToPullRequest(ctx context.Context, arg LinkIssueToPullRequestParams) (int64, error) {
 	result, err := q.db.Exec(ctx, linkIssueToPullRequest, arg.IssueID, arg.PullRequestID)
 	if err != nil {
@@ -780,27 +780,6 @@ func (q *Queries) ListPullRequestsByIssue(ctx context.Context, issueID pgtype.UU
 		return nil, err
 	}
 	return items, nil
-}
-
-const syncPullRequestCloseIntent = `-- name: SyncPullRequestCloseIntent :exec
-UPDATE issue_pull_request
-SET close_intent = (issue_id = ANY($1::uuid[]))
-WHERE pull_request_id = $2
-  AND close_intent <> (issue_id = ANY($1::uuid[]))
-`
-
-type SyncPullRequestCloseIntentParams struct {
-	ClosingIssueIds []pgtype.UUID `json:"closing_issue_ids"`
-	PullRequestID   pgtype.UUID   `json:"pull_request_id"`
-}
-
-// Sets close_intent on every link of the PR, automatic or manual, to whether
-// the PR text closes that issue with a keyword ("Closes MUL-1" in its title or
-// body), so a keyword removed before the merge stops counting. The webhook
-// calls it until the PR's merge/close event, which fixes the decision.
-func (q *Queries) SyncPullRequestCloseIntent(ctx context.Context, arg SyncPullRequestCloseIntentParams) error {
-	_, err := q.db.Exec(ctx, syncPullRequestCloseIntent, arg.ClosingIssueIds, arg.PullRequestID)
-	return err
 }
 
 const unlinkIssueFromPullRequest = `-- name: UnlinkIssueFromPullRequest :execrows

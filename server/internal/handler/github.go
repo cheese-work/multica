@@ -1414,7 +1414,7 @@ func (h *Handler) ListPullRequestsForIssue(w http.ResponseWriter, r *http.Reques
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"pull_requests": out,
-		"auto_complete": prAutoCompleteToResponse(ws, decision),
+		"auto_complete": prAutoCompleteToResponse(decision),
 	})
 }
 
@@ -1453,10 +1453,10 @@ var identifierRe = regexp.MustCompile(`(?i)\b([a-z][a-z0-9]{0,9})-(\d+)\b`)
 // closingIdentifierRe extracts identifiers that appear immediately after a
 // GitHub-style closing keyword ("close[sd]?", "fix(e[sd])?", "resolve[sd]?"),
 // optionally separated by a colon and whitespace. Matching is intentionally
-// strict on adjacency — "Fix MUL-1" closes MUL-1, but "Fix login MUL-1" does
-// not. A closing keyword is what lets a merged PR complete its issue; a bare
-// title prefix like "MUL-1: ..." or a branch reference links the PR but never
-// completes the issue on its own.
+// strict on adjacency — "Fix MUL-1" names MUL-1, but "Fix login MUL-1" does
+// not. It is the one way a PR body links an issue; a bare body mention links
+// nothing. Since MUL-7726 the keyword only links: what a merge does is the
+// workspace's choice, not the PR text's.
 var closingIdentifierRe = regexp.MustCompile(
 	`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[:\s]+([a-z][a-z0-9]{0,9})-(\d+)\b`,
 )
@@ -1727,9 +1727,8 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte, deliv
 	// Fanning out means an identifier can resolve in more than one workspace at
 	// once (issue prefixes are not globally unique and issue numbers restart at
 	// 1 per workspace, so two bound workspaces can both own a real "ABC-100").
-	// Settle who — if anyone — may act on a closing keyword BEFORE any workspace
-	// links, and treat that verdict as authoritative for the whole delivery, so
-	// the mirror pass cannot re-derive a different answer. See closeIntentPolicy.
+	// Settle which workspace may link each claimed identifier before writing any
+	// workspace links, and treat that verdict as authoritative for the delivery.
 	closePolicy := h.resolvePRLinkPolicy(ctx, insts, &p)
 	// Fan out to every bound workspace and keep going on a per-workspace
 	// failure — one workspace's transaction failing must not stop another
@@ -1759,12 +1758,11 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte, deliv
 // link, and is the single authority for that decision: the per-workspace mirror
 // pass consults it instead of re-deriving the answer from its own reads.
 //
-// A link is a claim that the PR delivers the issue, and a merged link set with
-// a closing keyword completes the issue. So when one installation is bound to
-// several workspaces, an identifier that resolves in more than one of them must
-// not link anywhere — otherwise merging the PR could complete an issue in a
-// workspace that has nothing to do with it (#6804). A member can still link the
-// PR by hand.
+// A link is a claim that the PR delivers the issue. So when one installation
+// is bound to several workspaces, an identifier that resolves in more than one
+// of them must not link anywhere — otherwise merging the PR could change the
+// status of an issue in a workspace that has nothing to do with it (#6804). A
+// member can still link the PR by hand.
 type prLinkPolicy struct {
 	// unrestricted marks the single-binding case: cross-workspace ambiguity is
 	// impossible with one bound workspace, so the scan does no reads at all.
@@ -1779,9 +1777,6 @@ type prLinkPolicy struct {
 	// ambiguous lists identifiers that resolved in more than one auto-linking
 	// workspace.
 	ambiguous map[string]bool
-	// sole maps an identifier to the workspace proven to be the only bound one
-	// resolving it, auto-link on or off (see permitsClose).
-	sole map[string]string
 }
 
 // permits reports whether workspaceID may link identifier.
@@ -1793,35 +1788,17 @@ func (c prLinkPolicy) permits(identifier, workspaceID string) bool {
 	return ok && owner == workspaceID
 }
 
-// permitsClose reports whether workspaceID may act on a closing keyword for
-// identifier on the links it already has. Auto-link decides which links get
-// created, not whether their keywords count, so a workspace that turned it off
-// still acts when no other bound workspace resolves the identifier. The
-// auto-linking owner acts too: another resolver with auto-link off holds only
-// links a person added, and does not act.
-func (c prLinkPolicy) permitsClose(identifier, workspaceID string) bool {
-	if c.unrestricted {
-		return true
-	}
-	if owner, ok := c.owner[identifier]; ok && owner == workspaceID {
-		return true
-	}
-	sole, ok := c.sole[identifier]
-	return ok && sole == workspaceID
-}
-
 // resolvePRLinkPolicy determines, before any workspace writes, which claimed
-// identifiers on this PR may link, or carry close intent, and in which
-// workspace. An identifier is allowed only when exactly one bound workspace
-// was proven to resolve it (see permits and permitsClose for which count);
-// misjudging "unique" as "ambiguous" costs a link a person can add by hand,
-// while the reverse would complete someone else's issue.
+// identifiers on this PR may link, and in which workspace. An identifier is
+// allowed only when exactly one auto-linking bound workspace was proven to
+// resolve it; misjudging "unique" as "ambiguous" costs a link a person can add
+// by hand, while the reverse would move someone else's issue on merge.
 func (h *Handler) resolvePRLinkPolicy(ctx context.Context, insts []db.GithubInstallation, p *ghPullRequestPayload) prLinkPolicy {
 	if len(insts) < 2 {
 		return prLinkPolicy{unrestricted: true}
 	}
-	idents, _ := prClaimedIdentifiers(p.PullRequest.Title, p.PullRequest.Body, p.PullRequest.Head.Ref)
-	policy := prLinkPolicy{owner: map[string]string{}, ambiguous: map[string]bool{}, sole: map[string]string{}}
+	idents := prClaimedIdentifiers(p.PullRequest.Title, p.PullRequest.Body, p.PullRequest.Head.Ref)
+	policy := prLinkPolicy{owner: map[string]string{}, ambiguous: map[string]bool{}}
 	if len(idents) == 0 {
 		return policy
 	}
@@ -1873,9 +1850,6 @@ func (h *Handler) resolvePRLinkPolicy(ctx context.Context, insts []db.GithubInst
 		}
 	}
 	for id, all := range resolvers {
-		if len(all) == 1 {
-			policy.sole[id] = all[0].workspaceID
-		}
 		// A workspace with auto-link off never writes a link row, so it is not
 		// a competing claimant for the link.
 		var wss []string
@@ -1995,14 +1969,11 @@ func (h *Handler) triggerPRRefreshFromCIEvent(ctx context.Context, body []byte) 
 // mirrorPullRequestForWorkspace mirrors a pull_request webhook into a single
 // workspace: it upserts the PR row, replays any check_suite events that
 // arrived before the PR was mirrored, auto-links referenced issues (gated by
-// the workspace's github toggles), completes issues on a merge, and broadcasts
-// the change. Invoked once per workspace bound to the delivering installation.
+// the workspace's GitHub toggles), applies the workspace's merge-status choice,
+// and broadcasts the change. Invoked once per bound workspace.
 //
-// closePolicy is the delivery-wide verdict on which closing identifiers this
-// workspace may act on; identifiers it does not permit still link, but never
-// carry close_intent, so they can never advance an issue to done. This function
-// only ever narrows that verdict — it cannot grant close intent the policy
-// withheld.
+// linkPolicy is the delivery-wide verdict on which claimed identifiers this
+// workspace may link. It cannot choose the workspace's merge-status target.
 // mirrorPullRequestForWorkspace persists everything one workspace's view of a
 // pull_request webhook changes: the PR mirror row, the issue link/unlink
 // rows, and any merge-announcement intent. Returns an error when the write
@@ -2067,8 +2038,8 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	workspaceID := uuidToString(wsID)
 	linkedIssueIDs := make([]string, 0)
 	touched := map[pgtype.UUID]struct{}{}
-	if !linkPolicy.indeterminate {
-		idents, closing := prClaimedIdentifiers(p.PullRequest.Title, p.PullRequest.Body, p.PullRequest.Head.Ref)
+	if githubFeaturesEnabled(ws) && !linkPolicy.indeterminate {
+		idents := prClaimedIdentifiers(p.PullRequest.Title, p.PullRequest.Body, p.PullRequest.Head.Ref)
 		autoLink, err := autoLinkPRsEnabledForWorkspace(ws)
 		if err != nil {
 			return fmt.Errorf("github: read auto-link setting: %w", err)
@@ -2090,34 +2061,21 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 				return fmt.Errorf("github: reconcile links: %w", err)
 			}
 		}
-		if p.Action == "closed" || (state != "merged" && state != "closed") {
-			closingIDs, err := h.closingIssueIDs(ctx, qtx, ws, closing, func(id string) bool { return linkPolicy.permitsClose(id, workspaceID) })
-			if err != nil {
-				return fmt.Errorf("github: resolve close intent: %w", err)
-			}
-			if err := qtx.SyncPullRequestCloseIntent(ctx, db.SyncPullRequestCloseIntentParams{
-				PullRequestID:   pr.ID,
-				ClosingIssueIds: closingIDs,
-			}); err != nil {
-				return fmt.Errorf("github: sync close intent: %w", err)
-			}
-		}
 	}
-	links, err := qtx.ListIssuePullRequestLinksForPullRequest(ctx, pr.ID)
+	issueIDs, err := qtx.ListIssueIDsForPullRequest(ctx, pr.ID)
 	if err != nil {
 		return fmt.Errorf("github: list persisted links: %w", err)
 	}
 	announcements := 0
 	if p.PullRequest.Merged {
-		for _, link := range links {
+		for _, issueID := range issueIDs {
 			_, err := qtx.CreateGitHubMergeAnnouncement(ctx, db.CreateGitHubMergeAnnouncementParams{
 				WorkspaceID: wsID, Provider: "github", RepositoryID: p.Repository.ID,
 				RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name,
-				PrNumber: p.PullRequest.Number, PullRequestID: pr.ID, IssueID: link.IssueID,
+				PrNumber: p.PullRequest.Number, PullRequestID: pr.ID, IssueID: issueID,
 				EventKind: "merged", DeliveryGuid: ptrToText(strPtrOrNil(deliveryGUID)),
 				MergeCommitSha: p.PullRequest.MergeCommitSHA, MergedAt: parseGHTime(p.PullRequest.MergedAt),
-				HtmlUrl:     ptrToText(strPtrOrNil(p.PullRequest.HTMLURL)),
-				CloseIntent: pgtype.Bool{Bool: link.CloseIntent, Valid: true},
+				HtmlUrl: ptrToText(strPtrOrNil(p.PullRequest.HTMLURL)),
 			})
 			if errors.Is(err, pgx.ErrNoRows) {
 				continue
@@ -2134,10 +2092,10 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	if announcements > 0 {
 		h.MergeAnnouncementWorker.Notify()
 	}
-	if !linkPolicy.indeterminate {
+	if githubFeaturesEnabled(ws) && !linkPolicy.indeterminate {
 		if state == "merged" && prevState != "merged" {
-			for _, link := range links {
-				touched[link.IssueID] = struct{}{}
+			for _, issueID := range issueIDs {
+				touched[issueID] = struct{}{}
 			}
 		}
 		resolver := issuestatus.NewResolver(wsID)
@@ -2237,31 +2195,6 @@ func (h *Handler) reconcileAutoLinks(ctx context.Context, queries *db.Queries, w
 		}
 	}
 	return linked, touched, nil
-}
-
-// closingIssueIDs resolves the identifiers a PR closes with a keyword to this
-// workspace's issues, for the PR-wide close_intent sync: every link of the PR,
-// automatic or manual, gets close intent exactly when its issue is in this
-// list, so a keyword removed from the text stops counting. It honors the
-// delivery's cross-workspace verdict (permitsClose on GitHub). Close intent
-// only decides anything once the PR merges — a PR event of its own — so the
-// sync is not one. Never nil: an empty list clears every link's close intent.
-func (h *Handler) closingIssueIDs(ctx context.Context, queries *db.Queries, ws db.Workspace, closing []string, permits func(string) bool) ([]pgtype.UUID, error) {
-	ids := make([]pgtype.UUID, 0, len(closing))
-	prefix := issuePrefixForWorkspace(ws)
-	for _, id := range closing {
-		if !permits(id) {
-			continue
-		}
-		issue, ok, err := h.lookupIssueByIdentifier(ctx, queries, ws.ID, prefix, id)
-		if err != nil {
-			return nil, err
-		}
-		if ok {
-			ids = append(ids, issue.ID)
-		}
-	}
-	return ids, nil
 }
 
 // derivePRMergeableState resolves the upsert behaviour for the PR row's
@@ -2509,15 +2442,14 @@ func extractClosingIdentifiers(parts ...string) []string {
 // into the permissive default. Callers deciding whether to write a link row
 // keep taking the default, but the cross-workspace scan has to tell "auto-link
 // is on" apart from "we could not find out" — see prLinkPolicy.
-func prClaimedIdentifiers(title, body, branch string) (idents, closing []string) {
-	idents = extractIdentifiers(title, branch)
-	closing = extractClosingIdentifiers(title, body)
-	for _, id := range closing {
+func prClaimedIdentifiers(title, body, branch string) []string {
+	idents := extractIdentifiers(title, branch)
+	for _, id := range extractClosingIdentifiers(title, body) {
 		if !slices.Contains(idents, id) {
 			idents = append(idents, id)
 		}
 	}
-	return idents, closing
+	return idents
 }
 
 func autoLinkPRsEnabledForWorkspace(ws db.Workspace) (bool, error) {
@@ -2716,13 +2648,8 @@ func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, worksp
 		return
 	}
 
-	// Fire the platform parent-notification path on the same transition the
-	// HTTP UpdateIssue / BatchUpdateIssues paths use. A merged PR is one of
-	// the most common ways a sub-issue actually reaches `done`, and skipping
-	// it here would leave the parent silent for the dominant completion path.
-	// notifyParentOfChildDone re-checks every guard (prev != done, parent
-	// exists, parent not terminal), so calling it unconditionally is safe.
-	h.notifyParentOfChildDone(ctx, issue, updated)
+	// The status write records a child event; process it after the write commits.
+	h.processChildEvents(ctx, updated.ParentIssueID)
 
 	prefix := h.getIssuePrefix(ctx, issue.WorkspaceID)
 	resp := issueToResponse(updated, prefix)

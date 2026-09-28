@@ -191,13 +191,13 @@ const createGitHubMergeAnnouncement = `-- name: CreateGitHubMergeAnnouncement :o
 INSERT INTO github_merge_announcement (
     workspace_id, provider, repository_id, repo_owner, repo_name, pr_number,
     pull_request_id, issue_id, event_kind, delivery_guid, merge_commit_sha, merged_at,
-    html_url, close_intent
+    html_url
 ) VALUES (
     $1, $2, $3,
     $4, $5, $6,
     $7, $8, $9,
     $10, $11, $12,
-    $13, $14
+    $13
 )
 ON CONFLICT (workspace_id, provider, repository_id, pr_number, issue_id, event_kind) DO NOTHING
 RETURNING id, workspace_id, provider, repository_id, repo_owner, repo_name, pr_number, pull_request_id, issue_id, event_kind, delivery_guid, merge_commit_sha, merged_at, status, attempt_count, last_error, lease_token, lease_expires_at, available_at, comment_id, delivered_at, created_at, updated_at, html_url, close_intent
@@ -217,7 +217,6 @@ type CreateGitHubMergeAnnouncementParams struct {
 	MergeCommitSha string             `json:"merge_commit_sha"`
 	MergedAt       pgtype.Timestamptz `json:"merged_at"`
 	HtmlUrl        pgtype.Text        `json:"html_url"`
-	CloseIntent    pgtype.Bool        `json:"close_intent"`
 }
 
 // =====================
@@ -251,7 +250,6 @@ func (q *Queries) CreateGitHubMergeAnnouncement(ctx context.Context, arg CreateG
 		arg.MergeCommitSha,
 		arg.MergedAt,
 		arg.HtmlUrl,
-		arg.CloseIntent,
 	)
 	var i GithubMergeAnnouncement
 	err := row.Scan(

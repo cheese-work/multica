@@ -15,6 +15,12 @@ permissions:
 env:
   X99_MIN_FREE_GB: "50"
 
+# Deleting and recreating a tag can enqueue multiple runs for the same ref.
+# Serialize them so publishers never race while replacing same-name assets.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -492,7 +498,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # electron-builder's GitHub publisher reads this:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Disable code signing on Linux for now — the public release is
-          # unsigned for this platform, the CLI carries the trust boundary.
+          # Same-tag reruns must also replace Desktop assets after the
+          # publisher's default two-hour safety window has elapsed.
+          EP_GH_IGNORE_TIME: "true"
+          # Disable code signing on Linux/Windows for now — the public
+          # release is unsigned for these platforms, the CLI carries the
+          # trust boundary. Set CSC_LINK in repo secrets to enable
+          # Windows signing later.
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: node scripts/package.mjs --${{ matrix.target }} --x64 --arm64 --publish always

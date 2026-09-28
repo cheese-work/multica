@@ -30,9 +30,7 @@ const (
 // MergeAnnouncementWorker delivers exactly one system comment per merged,
 // linked GitHub pull request (CHE-374/CHE-379). It is deliberately
 // independent of issue completion: the announcement is a durable record of
-// "this PR merged", not a vote on whether the issue is done, so it must never
-// read or write issue.status and must run whether or not the merge carried
-// close intent.
+// "this PR merged", not a vote on the workspace's merge-status choice.
 //
 // Enqueueing (CreateGitHubMergeAnnouncement) happens inline in
 // mirrorPullRequestForWorkspace, in the same request that persists the PR
@@ -405,11 +403,8 @@ func (h *Handler) mergeAnnouncementOwnerName(ctx context.Context, workspaceID pg
 // reach this content.
 //
 // CHE-374 review fix T3: previously omitted the PR URL entirely, never
-// rendered merged_at even though it was already stored, printed the raw
-// assignee_type discriminator ("agent"/"member") instead of a name, and
-// always claimed the PR "does not declare completion" even when this exact
-// merge carried closing intent (in which case the issue's own advance-to-done
-// gate is the thing that will resolve it, not this comment.
+// rendered merged_at even though it was already stored, and printed the raw
+// assignee_type discriminator ("agent"/"member") instead of a name.
 func (h *Handler) mergeAnnouncementCommentBody(ctx context.Context, a db.GithubMergeAnnouncement, issue db.Issue) string {
 	owner := h.mergeAnnouncementOwnerName(ctx, issue.WorkspaceID, issue.AssigneeType.String, issue.AssigneeID)
 
@@ -423,24 +418,9 @@ func (h *Handler) mergeAnnouncementCommentBody(ctx context.Context, a db.GithubM
 		mergedAtText = fmt.Sprintf(" at %s", a.MergedAt.Time.UTC().Format(time.RFC3339))
 	}
 
-	// close_intent is captured on the announcement row at link time (frozen
-	// to what was true for this specific merge — see migration 469), so a
-	// later edit to the link row can't change what a past merge's comment
-	// says. Pre-migration rows have no captured value (Valid=false); those
-	// fall back to the original, close-intent-agnostic wording rather than
-	// asserting something about a merge we don't have the answer for.
-	nextAction := "Next: continue the issue's remaining work; this PR does not declare completion."
-	if a.CloseIntent.Valid {
-		if a.CloseIntent.Bool {
-			nextAction = "Next: this PR declared closing intent for this issue; the issue will auto-advance once no linked PR is still open."
-		} else {
-			nextAction = "Next: this PR did not declare closing intent for this issue; continue the issue's remaining work. No agent run was created by this system announcement — post an explicit @agent or @squad mention to dispatch one."
-		}
-	}
-
 	return fmt.Sprintf(
-		"PR %s merged%s — commit `%.12s`.\n\nStatus: %s. Owner: %s. %s",
-		prRef, mergedAtText, a.MergeCommitSha, issue.Status, owner, nextAction,
+		"PR %s merged%s — commit `%.12s`.\n\nStatus: %s. Owner: %s.",
+		prRef, mergedAtText, a.MergeCommitSha, issue.Status, owner,
 	)
 }
 
@@ -535,10 +515,8 @@ func (h *Handler) AnnounceMergeForIssue(w http.ResponseWriter, r *http.Request) 
 
 	// The existing working link is required — recovery narrates "this PR
 	// merged for this issue"; there is no announcement to recover for a PR
-	// this issue was never linked to. Also captures close_intent for the
-	// recovered row so its rendered comment matches the same wording a live
-	// webhook delivery would have produced.
-	link, err := h.Queries.GetIssuePullRequestLink(ctx, db.GetIssuePullRequestLinkParams{
+	// this issue was never linked to.
+	_, err = h.Queries.GetIssuePullRequestLink(ctx, db.GetIssuePullRequestLinkParams{
 		IssueID:       issue.ID,
 		PullRequestID: pr.ID,
 	})
@@ -608,7 +586,6 @@ func (h *Handler) AnnounceMergeForIssue(w http.ResponseWriter, r *http.Request) 
 		MergeCommitSha: identity.MergeCommitSHA,
 		MergedAt:       mergedAt,
 		HtmlUrl:        strToTextPtr(identity.HTMLURL),
-		CloseIntent:    pgtype.Bool{Bool: link.CloseIntent, Valid: true},
 	})
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusInternalServerError, "failed to record merge announcement")
