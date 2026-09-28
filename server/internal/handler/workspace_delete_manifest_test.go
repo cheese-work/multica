@@ -87,6 +87,11 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"github_pull_request_check_run":      workspaceDelete,
 	"github_pull_request_check_suite":    workspaceDelete,
 	"governance_receipt":                 workspaceDelete, // CHE-685 Jev governance routing receipts; workspace-owned, same shape as issue_checkpoint.
+	"governance_budget_window":           workspaceDelete,
+	"governance_budget_root":             workspaceDelete,
+	"governance_budget_reservation":      workspaceDelete,
+	"governance_budget_journal":          workspaceDelete,
+	"governance_budget_outbox":           workspaceDelete,
 	"governance_concurrency_guard":       workspaceDelete,
 	"governance_concurrency_hold":        workspaceDelete,
 	"governance_jev_credential":          workspaceDelete, // CHE-714 write-only encrypted Jev provider credential; explicit transactional teardown.

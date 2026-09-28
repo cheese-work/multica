@@ -144,12 +144,16 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
-	"535_github_pr_address_index":                      "idx_github_pull_request_pr_owner_repo",
-	"539_task_supplement_request_index":                "task_supplement_task_request_uidx",
-	"540_task_supplement_capability_index":             "task_supplement_capability_task_uidx",
-	"541_task_supplement_comment_index":                "task_supplement_comment_uidx",
-	"546_issue_pr_automation_workspace_index":          "idx_issue_pr_automation_workspace",
-	"547_issue_pull_request_exclusion_workspace_index": "idx_issue_pull_request_exclusion_workspace",
+	"555_governance_budget_reservation_receipt_idx":             "governance_budget_reservation_receipt_uidx",
+	"556_governance_budget_reservation_root_window_idx":         "governance_budget_reservation_root_window_idx",
+	"557_governance_budget_outbox_due_idx":                      "governance_budget_outbox_due_idx",
+	"558_governance_budget_reservation_attempt_obligation_uidx": "governance_budget_reservation_attempt_obligation_uidx",
+	"535_github_pr_address_index":                               "idx_github_pull_request_pr_owner_repo",
+	"539_task_supplement_request_index":                         "task_supplement_task_request_uidx",
+	"540_task_supplement_capability_index":                      "task_supplement_capability_task_uidx",
+	"541_task_supplement_comment_index":                         "task_supplement_comment_uidx",
+	"546_issue_pr_automation_workspace_index":                   "idx_issue_pr_automation_workspace",
+	"547_issue_pull_request_exclusion_workspace_index":          "idx_issue_pull_request_exclusion_workspace",
 
 	"510_wakeup_id":                                             "issue_wakeup_id_idx",
 	"511_wakeup_issue":                                          "issue_wakeup_issue_idx",
@@ -374,6 +378,40 @@ var concurrentIndexCleanups = map[string]string{
 	"536_governance_receipt_workspace_comment_created_idx":      "idx_governance_receipt_workspace_comment_created",
 	"552_governance_concurrency_guard_identity":                 "governance_concurrency_guard_identity_uidx",
 	"553_governance_concurrency_hold_identity":                  "governance_concurrency_hold_identity_uidx",
+}
+
+type requiredConcurrentIndex struct {
+	IndexRegclass string
+	TableRegclass string
+	Unique        bool
+	Columns       []string
+	Predicate     string
+}
+
+var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
+	"555_governance_budget_reservation_receipt_idx": {
+		IndexRegclass: "governance_budget_reservation_receipt_uidx",
+		TableRegclass: "governance_budget_reservation",
+		Unique:        true,
+		Columns:       []string{"workspace_id", "settlement_receipt_id"},
+		Predicate:     "settlement_receipt_id IS NOT NULL",
+	},
+	"556_governance_budget_reservation_root_window_idx": {
+		IndexRegclass: "governance_budget_reservation_root_window_idx",
+		TableRegclass: "governance_budget_reservation",
+		Columns:       []string{"workspace_id", "budget_root_id", "window_start", "reservation_id"},
+	},
+	"557_governance_budget_outbox_due_idx": {
+		IndexRegclass: "governance_budget_outbox_due_idx",
+		TableRegclass: "governance_budget_outbox",
+		Columns:       []string{"workspace_id", "state", "created_at", "event_id"},
+	},
+	"558_governance_budget_reservation_attempt_obligation_uidx": {
+		IndexRegclass: "governance_budget_reservation_attempt_obligation_uidx",
+		TableRegclass: "governance_budget_reservation",
+		Unique:        true,
+		Columns:       []string{"workspace_id", "attempt_id", "obligation_id"},
+	},
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction
@@ -720,6 +758,75 @@ func cleanupInvalidConcurrentIndexHook(indexRegclass string) preMigrationHook {
 		slog.Warn("removed invalid index before migration retry", "index", qualifiedName)
 		return nil
 	}
+}
+
+func verifyRequiredConcurrentIndex(ctx context.Context, conn *pgxpool.Conn, version string) error {
+	requirement, ok := requiredConcurrentIndexes[version]
+	if !ok {
+		return nil
+	}
+
+	var isIndex, isValid, isReady, tableMatches, isUnique bool
+	var accessMethod, predicate string
+	var columns []string
+	err := conn.QueryRow(ctx, `
+		SELECT c.relkind = 'i',
+		       COALESCE(i.indisvalid, FALSE),
+		       COALESCE(i.indisready, FALSE),
+		       COALESCE(i.indrelid = to_regclass($2), FALSE),
+		       COALESCE(i.indisunique, FALSE),
+		       COALESCE(am.amname, ''),
+		       COALESCE((
+		           SELECT array_agg(pg_get_indexdef(i.indexrelid, key_position, FALSE) ORDER BY key_position)
+		           FROM generate_series(1, i.indnkeyatts) AS key_position
+		       ), ARRAY[]::text[]),
+		       COALESCE(pg_get_expr(i.indpred, i.indrelid), '')
+		FROM pg_class AS c
+		LEFT JOIN pg_index AS i ON i.indexrelid = c.oid
+		LEFT JOIN pg_am AS am ON am.oid = c.relam
+		WHERE c.oid = to_regclass($1)
+	`, requirement.IndexRegclass, requirement.TableRegclass).Scan(
+		&isIndex,
+		&isValid,
+		&isReady,
+		&tableMatches,
+		&isUnique,
+		&accessMethod,
+		&columns,
+		&predicate,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("required index %q is missing", requirement.IndexRegclass)
+	}
+	if err != nil {
+		return fmt.Errorf("inspect required index %q: %w", requirement.IndexRegclass, err)
+	}
+	if !isIndex {
+		return fmt.Errorf("required relation %q is not an index", requirement.IndexRegclass)
+	}
+	if !isValid || !isReady {
+		return fmt.Errorf("required index %q is not valid and ready", requirement.IndexRegclass)
+	}
+	if !tableMatches || accessMethod != "btree" || isUnique != requirement.Unique || !equalIndexColumns(columns, requirement.Columns) || normalizeIndexPredicate(predicate) != normalizeIndexPredicate(requirement.Predicate) {
+		return fmt.Errorf("required index %q has an unexpected definition", requirement.IndexRegclass)
+	}
+	return nil
+}
+
+func equalIndexColumns(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeIndexPredicate(predicate string) string {
+	return strings.ToLower(strings.NewReplacer(" ", "", "\n", "", "\t", "", "(", "", ")", "").Replace(predicate))
 }
 
 func runTaskUsageHourlyHook(ctx context.Context, pool *pgxpool.Pool) error {
@@ -1160,6 +1267,9 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) err
 
 		if opts.Direction == "up" {
 			if exists {
+				if err := verifyRequiredConcurrentIndex(ctx, conn, version); err != nil {
+					return fmt.Errorf("verify recorded migration %q: %w", version, err)
+				}
 				fmt.Printf("  skip  %s (already applied)\n", version)
 				continue
 			}
@@ -1204,6 +1314,9 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) err
 		}
 
 		if opts.Direction == "up" {
+			if err := verifyRequiredConcurrentIndex(ctx, conn, version); err != nil {
+				return fmt.Errorf("verify migration %q before recording: %w", version, err)
+			}
 			_, err = conn.Exec(ctx, insertSQL, version)
 		} else {
 			_, err = conn.Exec(ctx, deleteSQL, version)
