@@ -39,6 +39,7 @@ for (const [name, files, selected] of [
   ["performance harness", ["scripts/perf-compare.test.sh"], ["scripts"]],
   ["reserved slug source", ["server/internal/handler/reserved_slugs.json"], ["backend", "runtime", "scripts"]],
   ["reserved slug output", ["packages/core/paths/reserved-slugs.ts"], ["frontend", "quality", "scripts"]],
+  ["integration key gates", ["server/cmd/server/router.go"], ["backend", "runtime", "scripts"]],
   ["cross-module runtime contract", ["packages/core/runtimes/cli-version.ts"], ["frontend", "backend", "runtime", "quality"]],
   ["lockfile", ["pnpm-lock.yaml"], ["frontend", "quality"]],
   ["package patch", ["patches/example.patch"], ["frontend", "quality"]],
@@ -189,6 +190,13 @@ test("the backend gate owns the two-platform installer matrix", () => {
   );
   assert.match(jobs.installer, /- macos-latest/);
   assert.doesNotMatch(jobs.installer, /continue-on-error:/);
+});
+
+test("installer does not advertise PowerShell coverage without Windows runners", () => {
+  assert.doesNotMatch(jobs.installer, /windows-latest/);
+  assert.doesNotMatch(jobs.installer, /runner\.os == 'Windows'/);
+  assert.doesNotMatch(jobs.installer, /shell: (powershell|pwsh)/);
+  assert.doesNotMatch(jobs.installer, /run: .*install\.ps1\.test\.ps1/);
 });
 
 test("go-lint filters findings from the locally fetched merge base", () => {

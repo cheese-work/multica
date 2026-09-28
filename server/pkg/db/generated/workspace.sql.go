@@ -79,6 +79,9 @@ cleared_channel_task_deliveries AS (
 cleared_channel_outbound_messages AS (
     DELETE FROM channel_outbound_message WHERE installation_id IN (SELECT id FROM ws_installations)
 ),
+cleared_channel_reply_deliveries AS (
+    DELETE FROM channel_reply_delivery WHERE installation_id IN (SELECT id FROM ws_installations)
+),
 cleared_chat_sessions AS (
     DELETE FROM channel_chat_session_binding WHERE installation_id IN (SELECT id FROM ws_installations)
     RETURNING chat_session_id
@@ -477,6 +480,21 @@ SELECT id FROM workspace WHERE id = $1 FOR UPDATE
 // workspace, so this cannot deadlock against it.
 func (q *Queries) LockWorkspaceForDelete(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
 	row := q.db.QueryRow(ctx, lockWorkspaceForDelete, id)
+	var id_2 pgtype.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
+const lockWorkspaceForJevCredentialWrite = `-- name: LockWorkspaceForJevCredentialWrite :one
+SELECT id FROM workspace WHERE id = $1 FOR KEY SHARE
+`
+
+// Credential writes and key rotation must take the workspace row lock in their
+// own transaction. It conflicts with DeleteWorkspace's FOR UPDATE lock: a
+// write that wins commits before teardown and is swept, while a write that
+// loses sees no workspace row after teardown commits and fails closed.
+func (q *Queries) LockWorkspaceForJevCredentialWrite(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockWorkspaceForJevCredentialWrite, id)
 	var id_2 pgtype.UUID
 	err := row.Scan(&id_2)
 	return id_2, err

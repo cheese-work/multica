@@ -25,6 +25,12 @@ deleted_task_messages AS (
 deleted_task_tokens AS (
     DELETE FROM task_token WHERE task_id IN (SELECT id FROM batch)
 ),
+deleted_task_supplements AS (
+    DELETE FROM task_supplement WHERE task_id IN (SELECT id FROM batch)
+),
+deleted_task_supplement_capabilities AS (
+    DELETE FROM task_supplement_capability WHERE task_id IN (SELECT id FROM batch)
+),
 deleted_channel_outbound_cards AS (
     DELETE FROM channel_outbound_card_message WHERE task_id IN (SELECT id FROM batch)
 ),
@@ -227,7 +233,11 @@ func (q *Queries) DeleteWorkspaceConnections(ctx context.Context, workspaceID pg
 }
 
 const deleteWorkspaceIssueRoots = `-- name: DeleteWorkspaceIssueRoots :exec
-WITH
+WITH deleted_wakeup_receipts AS (
+ DELETE FROM issue_wakeup_receipt WHERE wakeup_id IN (SELECT id FROM issue_wakeup WHERE workspace_id=$1)
+), deleted_wakeups AS (
+ DELETE FROM issue_wakeup WHERE workspace_id=$1
+),
 deleted_issues AS (
     DELETE FROM issue WHERE issue.workspace_id = $1
 ),
@@ -294,6 +304,12 @@ deleted_task_tokens AS (
     DELETE FROM task_token
     WHERE workspace_id = $1
 ),
+deleted_orphan_task_supplements AS (
+    DELETE FROM task_supplement WHERE workspace_id = $1
+),
+deleted_orphan_task_supplement_capabilities AS (
+    DELETE FROM task_supplement_capability WHERE workspace_id = $1
+),
 deleted_hourly_dirty AS (
     DELETE FROM task_usage_hourly_dirty WHERE workspace_id = $1
 ),
@@ -341,6 +357,9 @@ deleted_governance_concurrency_holds AS (
 ),
 deleted_governance_concurrency_guards AS (
     DELETE FROM governance_concurrency_guard WHERE workspace_id = $1
+),
+deleted_governance_jev_credentials AS (
+    DELETE FROM governance_jev_credential WHERE workspace_id = $1
 ),
 deleted_governance_config_audit AS (
     DELETE FROM governance_workspace_config_audit WHERE workspace_id = $1
@@ -406,6 +425,12 @@ deleted_issue_vcs_links AS (
     WHERE issue_id IN (SELECT id FROM ws_issues)
        OR pull_request_id IN (SELECT id FROM ws_vcs_prs)
 ),
+deleted_issue_pr_automation AS (
+    DELETE FROM issue_pr_automation WHERE workspace_id = $1
+),
+deleted_issue_pr_exclusions AS (
+    DELETE FROM issue_pull_request_exclusion WHERE workspace_id = $1
+),
 deleted_agent_invocation_targets AS (
     DELETE FROM agent_invocation_target
     WHERE agent_id IN (SELECT id FROM ws_agents)
@@ -458,6 +483,10 @@ deleted_channel_task_deliveries AS (
 ),
 deleted_channel_outbound_messages AS (
     DELETE FROM channel_outbound_message
+    WHERE installation_id IN (SELECT id FROM ws_channel_installations)
+),
+deleted_channel_reply_deliveries AS (
+    DELETE FROM channel_reply_delivery
     WHERE installation_id IN (SELECT id FROM ws_channel_installations)
 ),
 deleted_channel_chat_contexts AS (
@@ -538,6 +567,9 @@ WHERE channel_media_pending_object.workspace_id = $1
 // statement depends on FK cascade ordering.
 // CHE-685 Jev governance routing receipts: workspace-owned observation
 // history, same leaf shape as issue_checkpoint above (no dependents, no FK).
+// CHE-714 Jev provider credentials are workspace-owned encrypted material.
+// Keep the explicit application teardown (rather than an FK cascade) in this
+// transaction so it commits or rolls back with the workspace row.
 // CHE-704 / C01 durable MJ cases and immutable captured evidence. These have
 // no database cascades by design, so every workspace-owned table is removed
 // explicitly before its workspace row.

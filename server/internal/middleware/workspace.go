@@ -166,6 +166,14 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	w.Write([]byte(`{"error":"` + msg + `"}`))
 }
 
+func writeWorkspaceError(w http.ResponseWriter, r *http.Request, status int, message, proposalProblem string) {
+	if isGovernanceProposalRoute(r) {
+		writeGovernanceProposalProblem(w, r, status, proposalProblem)
+		return
+	}
+	writeError(w, status, message)
+}
+
 // RequireWorkspaceMember resolves the workspace from slug (preferred) or UUID
 // (fallback), validates membership, and injects the member and workspace ID
 // into the request context.
@@ -208,11 +216,11 @@ func buildMiddleware(queries *db.Queries, resolve workspaceResolver, roles []str
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			workspaceID, resolveErr := resolve(r)
 			if resolveErr != nil {
-				writeError(w, http.StatusNotFound, "workspace not found")
+				writeWorkspaceError(w, r, http.StatusNotFound, "workspace not found", "workspace_not_found")
 				return
 			}
 			if workspaceID == "" {
-				writeError(w, http.StatusBadRequest, "workspace_id or workspace_slug is required")
+				writeWorkspaceError(w, r, http.StatusBadRequest, "workspace_id or workspace_slug is required", "workspace_not_found")
 				return
 			}
 
@@ -225,25 +233,25 @@ func buildMiddleware(queries *db.Queries, resolve workspaceResolver, roles []str
 			if r.Header.Get("X-Actor-Source") == "task_token" {
 				bound := r.Header.Get("X-Workspace-ID")
 				if bound == "" || workspaceID != bound {
-					writeError(w, http.StatusForbidden, "task token is bound to a different workspace")
+					writeWorkspaceError(w, r, http.StatusForbidden, "task token is bound to a different workspace", "proposal_token_scope_denied")
 					return
 				}
 			}
 
 			userID := r.Header.Get("X-User-ID")
 			if userID == "" {
-				writeError(w, http.StatusUnauthorized, "user not authenticated")
+				writeWorkspaceError(w, r, http.StatusUnauthorized, "user not authenticated", "unauthorized")
 				return
 			}
 
 			userUUID, err := util.ParseUUID(userID)
 			if err != nil {
-				writeError(w, http.StatusUnauthorized, "user not authenticated")
+				writeWorkspaceError(w, r, http.StatusUnauthorized, "user not authenticated", "unauthorized")
 				return
 			}
 			wsUUID, err := util.ParseUUID(workspaceID)
 			if err != nil {
-				writeError(w, http.StatusBadRequest, "invalid workspace_id")
+				writeWorkspaceError(w, r, http.StatusBadRequest, "invalid workspace_id", "workspace_not_found")
 				return
 			}
 			member, err := queries.GetMemberByUserAndWorkspace(r.Context(), db.GetMemberByUserAndWorkspaceParams{
@@ -251,7 +259,7 @@ func buildMiddleware(queries *db.Queries, resolve workspaceResolver, roles []str
 				WorkspaceID: wsUUID,
 			})
 			if err != nil {
-				writeError(w, http.StatusNotFound, "workspace not found")
+				writeWorkspaceError(w, r, http.StatusNotFound, "workspace not found", "workspace_not_found")
 				return
 			}
 
@@ -264,7 +272,7 @@ func buildMiddleware(queries *db.Queries, resolve workspaceResolver, roles []str
 					}
 				}
 				if !allowed {
-					writeError(w, http.StatusForbidden, "insufficient permissions")
+					writeWorkspaceError(w, r, http.StatusForbidden, "insufficient permissions", "proposal_access_denied")
 					return
 				}
 			}

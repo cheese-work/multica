@@ -121,6 +121,13 @@ SELECT id FROM workspace WHERE id = $1 FOR UPDATE;
 -- implicit FOR KEY SHARE, which would vanish if that FK is dropped.
 SELECT id FROM workspace WHERE id = $1 FOR KEY SHARE;
 
+-- name: LockWorkspaceForJevCredentialWrite :one
+-- Credential writes and key rotation must take the workspace row lock in their
+-- own transaction. It conflicts with DeleteWorkspace's FOR UPDATE lock: a
+-- write that wins commits before teardown and is swept, while a write that
+-- loses sees no workspace row after teardown commits and fails closed.
+SELECT id FROM workspace WHERE id = $1 FOR KEY SHARE;
+
 -- name: DeleteWorkspace :exec
 -- The channel_* tables (MUL-3515 §4), resource-label junctions, custom issue
 -- property definitions, and quick actions carry NO FK to workspace, so — unlike the CASCADE-backed
@@ -150,6 +157,9 @@ cleared_channel_task_deliveries AS (
 ),
 cleared_channel_outbound_messages AS (
     DELETE FROM channel_outbound_message WHERE installation_id IN (SELECT id FROM ws_installations)
+),
+cleared_channel_reply_deliveries AS (
+    DELETE FROM channel_reply_delivery WHERE installation_id IN (SELECT id FROM ws_installations)
 ),
 cleared_chat_sessions AS (
     DELETE FROM channel_chat_session_binding WHERE installation_id IN (SELECT id FROM ws_installations)

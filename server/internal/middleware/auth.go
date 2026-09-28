@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,7 +28,11 @@ func rejectTemporarilyDisabledUser(w http.ResponseWriter, r *http.Request, userI
 		"user_id", userID,
 		"auth_path", authPath,
 	)
-	writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
+	if isGovernanceProposalRoute(r) {
+		writeGovernanceProposalProblem(w, r, http.StatusForbidden, "proposal_access_denied")
+	} else {
+		writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
+	}
 	return true
 }
 
@@ -67,6 +72,11 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 			// to convince a downstream handler that its request came
 			// from a non-task-token path.
 			r.Header.Del("X-Actor-Source")
+			r.Header.Del("X-Task-Token-Purpose")
+			r.Header.Del("X-Governance-Case-ID")
+			r.Header.Del("X-Governance-Attempt-ID")
+			r.Header.Del("X-Governance-Attempt-Fence")
+			r.Header.Del("X-Governance-Evidence-Epoch")
 
 			// Agent identity is server-set for exactly the same reason,
 			// and the rest of the codebase already assumes it (see
@@ -86,14 +96,18 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 			tokenString, fromCookie := extractToken(r)
 			if tokenString == "" {
 				slog.Debug("auth: no token found", "path", r.URL.Path)
-				http.Error(w, `{"error":"missing authorization"}`, http.StatusUnauthorized)
+				writeAuthenticationError(w, r, `{"error":"missing authorization"}`)
 				return
 			}
 
 			// Cookie-based auth requires CSRF validation for state-changing methods.
 			if fromCookie && !auth.ValidateCSRF(r) {
 				slog.Debug("auth: CSRF validation failed", "path", r.URL.Path)
-				http.Error(w, `{"error":"CSRF validation failed"}`, http.StatusForbidden)
+				if isGovernanceProposalRoute(r) {
+					writeGovernanceProposalProblem(w, r, http.StatusForbidden, "csrf_validation_failed")
+				} else {
+					http.Error(w, `{"error":"CSRF validation failed"}`, http.StatusForbidden)
+				}
 				return
 			}
 
@@ -109,14 +123,38 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 			// `actorSourceFromRequest`. MUL-2600.
 			if strings.HasPrefix(tokenString, "mat_") {
 				if queries == nil {
-					http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+					writeAuthenticationError(w, r, `{"error":"invalid token"}`)
 					return
 				}
 				hash := auth.HashToken(tokenString)
 				tt, err := queries.GetTaskTokenByHash(r.Context(), hash)
 				if err != nil {
 					slog.Warn("auth: invalid task token", "path", r.URL.Path, "error", err)
-					http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+					writeInvalidTaskToken(w, r)
+					return
+				}
+				switch tt.Purpose {
+				case "agent_task":
+					if tt.GovernanceCaseID.Valid || tt.GovernanceAttemptID.Valid || tt.GovernanceAttemptFence.Valid || tt.GovernanceEvidenceEpoch.Valid {
+						writeInvalidTaskToken(w, r)
+						return
+					}
+				case GovernanceProposalTaskPurpose:
+					if !tt.GovernanceCaseID.Valid || !tt.GovernanceAttemptID.Valid ||
+						!tt.GovernanceAttemptFence.Valid || !tt.GovernanceEvidenceEpoch.Valid ||
+						tt.GovernanceEvidenceEpoch.Int32 < 0 {
+						writeInvalidTaskToken(w, r)
+						return
+					}
+					if governanceProposalCapability(
+						r.Method, r.URL.Path, r.URL.RawPath, r.URL.RawQuery,
+						uuidToString(tt.GovernanceCaseID), uuidToString(tt.GovernanceAttemptID),
+					) == "" {
+						writeGovernanceProposalProblem(w, r, http.StatusForbidden, "proposal_token_scope_denied")
+						return
+					}
+				default:
+					writeInvalidTaskToken(w, r)
 					return
 				}
 				userID := uuidToString(tt.UserID)
@@ -127,6 +165,13 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				r.Header.Set("X-Agent-ID", uuidToString(tt.AgentID))
 				r.Header.Set("X-Task-ID", uuidToString(tt.TaskID))
 				r.Header.Set("X-Workspace-ID", uuidToString(tt.WorkspaceID))
+				r.Header.Set("X-Task-Token-Purpose", tt.Purpose)
+				if tt.Purpose == GovernanceProposalTaskPurpose {
+					r.Header.Set("X-Governance-Case-ID", uuidToString(tt.GovernanceCaseID))
+					r.Header.Set("X-Governance-Attempt-ID", uuidToString(tt.GovernanceAttemptID))
+					r.Header.Set("X-Governance-Attempt-Fence", uuidToString(tt.GovernanceAttemptFence))
+					r.Header.Set("X-Governance-Evidence-Epoch", strconv.FormatInt(int64(tt.GovernanceEvidenceEpoch.Int32), 10))
+				}
 				// X-Actor-Source flags the auth path so resolveActor and
 				// any owner-only handler can deny without re-querying the
 				// token table. The value "task_token" is the only signal
@@ -160,21 +205,25 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 			if strings.HasPrefix(tokenString, auth.CloudPATPrefix) {
 				if cloudPAT == nil {
 					slog.Warn("auth: mcn_ token presented but cloud verifier not configured", "path", r.URL.Path)
-					http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+					writeAuthenticationError(w, r, `{"error":"invalid token"}`)
 					return
 				}
 				identity, err := cloudPAT.Verify(r.Context(), tokenString, ownerLookupFor(queries))
 				if err != nil {
 					if errors.Is(err, auth.ErrCloudPATInvalid) {
 						slog.Warn("auth: cloud rejected mcn_ token", "path", r.URL.Path, "error", err)
-						http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+						writeAuthenticationError(w, r, `{"error":"invalid token"}`)
 						return
 					}
 					// Cloud unreachable / 5xx / decode error. We surface
 					// 503 so callers (CLI / daemon) can retry — a 401
 					// here would tell them to throw out a valid token.
 					slog.Warn("auth: cloud pat verify unavailable", "path", r.URL.Path, "error", err)
-					http.Error(w, `{"error":"cloud pat verifier unavailable"}`, http.StatusServiceUnavailable)
+					if isGovernanceProposalRoute(r) {
+						writeGovernanceProposalProblem(w, r, http.StatusServiceUnavailable, "authentication_unavailable")
+					} else {
+						http.Error(w, `{"error":"cloud pat verifier unavailable"}`, http.StatusServiceUnavailable)
+					}
 					return
 				}
 				if rejectTemporarilyDisabledUser(w, r, identity.OwnerID, "", "cloud_pat") {
@@ -215,13 +264,13 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				}
 
 				if queries == nil {
-					http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+					writeAuthenticationError(w, r, `{"error":"invalid token"}`)
 					return
 				}
 				pat, err := queries.GetPersonalAccessTokenByHash(r.Context(), hash)
 				if err != nil {
 					slog.Warn("auth: invalid PAT", "path", r.URL.Path, "error", err)
-					http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+					writeAuthenticationError(w, r, `{"error":"invalid token"}`)
 					return
 				}
 
@@ -258,21 +307,21 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 			})
 			if err != nil || !token.Valid {
 				slog.Warn("auth: invalid token", "path", r.URL.Path, "error", err)
-				http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+				writeAuthenticationError(w, r, `{"error":"invalid token"}`)
 				return
 			}
 
 			claims, ok := token.Claims.(jwt.MapClaims)
 			if !ok {
 				slog.Warn("auth: invalid claims", "path", r.URL.Path)
-				http.Error(w, `{"error":"invalid claims"}`, http.StatusUnauthorized)
+				writeAuthenticationError(w, r, `{"error":"invalid claims"}`)
 				return
 			}
 
 			sub, ok := claims["sub"].(string)
 			if !ok || strings.TrimSpace(sub) == "" {
 				slog.Warn("auth: invalid claims", "path", r.URL.Path)
-				http.Error(w, `{"error":"invalid claims"}`, http.StatusUnauthorized)
+				writeAuthenticationError(w, r, `{"error":"invalid claims"}`)
 				return
 			}
 			email, _ := claims["email"].(string)

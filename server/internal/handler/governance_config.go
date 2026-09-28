@@ -107,6 +107,8 @@ func (h *Handler) PatchGovernanceConfig(w http.ResponseWriter, r *http.Request) 
 	result, err := h.writeGovernanceConfig(r.Context(), workspaceID, actorID, requestUUID, hex.EncodeToString(digest[:]), patch)
 	if err != nil {
 		switch {
+		case errors.Is(err, errGovernanceConfigWorkspaceUnavailable):
+			writeGovernanceProblem(w, r, http.StatusNotFound, "workspace_not_found")
 		case errors.Is(err, errGovernanceConfigConflict):
 			writeGovernanceProblem(w, r, http.StatusConflict, "revision_conflict")
 		case errors.Is(err, errGovernanceConfigIdempotencyConflict):
@@ -173,6 +175,13 @@ func (h *Handler) writeGovernanceConfig(ctx context.Context, workspaceID, actorI
 		return governanceConfigWrite{}, err
 	}
 	defer tx.Rollback(ctx)
+	var lockedWorkspaceID pgtype.UUID
+	if err := tx.QueryRow(ctx, `SELECT id FROM workspace WHERE id = $1 FOR KEY SHARE`, workspaceID).Scan(&lockedWorkspaceID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return governanceConfigWrite{}, errGovernanceConfigWorkspaceUnavailable
+		}
+		return governanceConfigWrite{}, err
+	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO governance_workspace_config (workspace_id)
 		VALUES ($1)
@@ -347,6 +356,7 @@ func loadGovernanceControl(ctx context.Context, database dbExecutor, workspaceID
 		SELECT config_version, control_epoch, settings
 		FROM governance_workspace_config
 		WHERE workspace_id = $1
+		FOR SHARE
 	`, workspaceID).Scan(&config.Version, &config.ControlEpoch, &settingsJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return config, nil
@@ -462,8 +472,9 @@ func writeGovernanceProblem(w http.ResponseWriter, r *http.Request, status int, 
 }
 
 var (
-	errGovernanceConfigConflict            = errors.New("governance config version conflict")
-	errGovernanceConfigIdempotencyConflict = errors.New("governance config request id conflict")
-	errGovernanceConfigRollbackMissing     = errors.New("governance config rollback version unavailable")
-	errGovernanceConfigInvalid             = errors.New("governance config invalid")
+	errGovernanceConfigWorkspaceUnavailable = errors.New("governance config workspace unavailable")
+	errGovernanceConfigConflict             = errors.New("governance config version conflict")
+	errGovernanceConfigIdempotencyConflict  = errors.New("governance config request id conflict")
+	errGovernanceConfigRollbackMissing      = errors.New("governance config rollback version unavailable")
+	errGovernanceConfigInvalid              = errors.New("governance config invalid")
 )

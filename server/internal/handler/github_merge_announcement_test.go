@@ -1266,7 +1266,7 @@ func TestWebhook_MergeAnnouncementWorkerSkipsUnlinkedIssueAtDelivery(t *testing.
 	// Remove the issue↔PR link directly — the same end state a post-merge
 	// edit dropping the closing claim, or a manual unlink, would produce —
 	// without touching the announcement row itself.
-	if err := testHandler.Queries.UnlinkIssueFromPullRequest(ctx, db.UnlinkIssueFromPullRequestParams{
+	if _, err := testHandler.Queries.UnlinkIssueFromPullRequest(ctx, db.UnlinkIssueFromPullRequestParams{
 		IssueID:       parseUUID(created.ID),
 		PullRequestID: pending.PullRequestID,
 	}); err != nil {
@@ -2249,13 +2249,19 @@ func seedMergedGitHubPRLink(t *testing.T, ctx context.Context, issueID, owner, r
 		t.Fatalf("UpsertGitHubPullRequest: %v", err)
 	}
 
-	if err := testHandler.Queries.LinkIssueToPullRequest(ctx, db.LinkIssueToPullRequestParams{
+	if _, err := testHandler.Queries.LinkIssueToPullRequest(ctx, db.LinkIssueToPullRequestParams{
 		IssueID:       parseUUID(issueID),
 		PullRequestID: pr.ID,
-		CloseIntent:   closeIntent,
-		LinkedByType:  pgtype.Text{String: "system", Valid: true},
 	}); err != nil {
 		t.Fatalf("LinkIssueToPullRequest: %v", err)
+	}
+	if closeIntent {
+		if err := testHandler.Queries.SyncPullRequestCloseIntent(ctx, db.SyncPullRequestCloseIntentParams{
+			PullRequestID:   pr.ID,
+			ClosingIssueIds: []pgtype.UUID{parseUUID(issueID)},
+		}); err != nil {
+			t.Fatalf("SyncPullRequestCloseIntent: %v", err)
+		}
 	}
 	return uuidToString(pr.ID)
 }

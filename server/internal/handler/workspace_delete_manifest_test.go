@@ -62,6 +62,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"channel_media_pending_object":       workspaceDeleteSettle,
 	"channel_outbound_card_message":      workspaceDelete,
 	"channel_outbound_message":           workspaceDelete,
+	"channel_reply_delivery":             workspaceDelete,
 	"channel_task_delivery":              workspaceDelete,
 	"channel_user_binding":               workspaceDelete,
 	"chat_draft_restore":                 workspaceDelete,
@@ -88,6 +89,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"governance_receipt":                 workspaceDelete, // CHE-685 Jev governance routing receipts; workspace-owned, same shape as issue_checkpoint.
 	"governance_concurrency_guard":       workspaceDelete,
 	"governance_concurrency_hold":        workspaceDelete,
+	"governance_jev_credential":          workspaceDelete, // CHE-714 write-only encrypted Jev provider credential; explicit transactional teardown.
 	"governance_workspace_config":        workspaceDelete, // CHE-707 versioned workspace governance gate and control epoch.
 	"governance_workspace_config_audit":  workspaceDelete, // CHE-707 idempotency, rollback, and operating-limit audit history.
 	"governance_case":                    workspaceDelete, // CHE-704 C01 lifecycle authority; no FK/cascade teardown.
@@ -99,12 +101,16 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"instance_telemetry_state":           workspaceDeleteKeep,
 	"issue":                              workspaceDelete,
 	"issue_checkpoint":                   workspaceDelete,
+	"issue_wakeup":                       workspaceDelete,
+	"issue_wakeup_receipt":               workspaceDelete,
 	"issue_view":                         workspaceDelete,
 	"issue_view_preference":              workspaceDelete,
 	"issue_dependency":                   workspaceDelete,
 	"issue_label":                        workspaceDelete,
 	"issue_property":                     workspaceDelete,
+	"issue_pr_automation":                workspaceDelete,
 	"issue_pull_request":                 workspaceDelete,
+	"issue_pull_request_exclusion":       workspaceDelete,
 	"issue_reaction":                     workspaceDelete,
 	"issue_source_context":               workspaceDelete,
 	"issue_source_context_object_intent": workspaceDeleteSettle,
@@ -151,6 +157,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"stage_generation":                   workspaceDelete,
 	"sys_cron_executions":                workspaceDeleteKeep,
 	"task_message":                       workspaceDelete,
+	"task_supplement":                    workspaceDelete,
+	"task_supplement_capability":         workspaceDelete,
 	"task_token":                         workspaceDelete,
 	"task_usage":                         workspaceDelete,
 	"task_usage_hourly":                  workspaceDelete,

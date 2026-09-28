@@ -378,15 +378,17 @@ type codexFirstItemWaitObservation struct {
 	mu         sync.Mutex
 	startedAt  time.Time
 	finishedAt time.Time
+	turnID     string
 	outcome    string
 	stderr     codexStderrClassification
 }
 
-func (o *codexFirstItemWaitObservation) start(now time.Time) {
+func (o *codexFirstItemWaitObservation) start(now time.Time, turnID string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.startedAt.IsZero() {
 		o.startedAt = now
+		o.turnID = turnID
 	}
 }
 
@@ -401,13 +403,13 @@ func (o *codexFirstItemWaitObservation) finish(now time.Time, outcome string, st
 	o.stderr = stderr
 }
 
-func (o *codexFirstItemWaitObservation) snapshot() (time.Duration, string, codexStderrClassification, bool) {
+func (o *codexFirstItemWaitObservation) snapshot() (time.Duration, string, string, codexStderrClassification, bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.startedAt.IsZero() || o.finishedAt.IsZero() || o.outcome == "" {
-		return 0, "", codexStderrClassification{}, false
+		return 0, "", "", codexStderrClassification{}, false
 	}
-	return o.finishedAt.Sub(o.startedAt), o.outcome, o.stderr, true
+	return o.finishedAt.Sub(o.startedAt), o.turnID, o.outcome, o.stderr, true
 }
 
 // codexBackend implements Backend by spawning `codex app-server --listen stdio://`
@@ -1005,8 +1007,30 @@ func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 	}
 	msgCh := make(chan Message, 256)
 	resCh := make(chan Result, 1)
+	var sessionMu sync.RWMutex
+	currentSession := firstSession
+	supplement := func(supplementCtx context.Context, instruction string) error {
+		sessionMu.RLock()
+		session := currentSession
+		sessionMu.RUnlock()
+		if session == nil || session.Supplement == nil {
+			return errors.New("codex turn does not accept additional messages")
+		}
+		return session.Supplement(supplementCtx, instruction)
+	}
+	supplementReady := func() bool {
+		sessionMu.RLock()
+		session := currentSession
+		sessionMu.RUnlock()
+		return session != nil && session.SupplementReady != nil && session.SupplementReady()
+	}
 
 	go func() {
+		defer func() {
+			sessionMu.Lock()
+			currentSession = nil
+			sessionMu.Unlock()
+		}()
 		defer close(msgCh)
 		defer close(resCh)
 		session := firstSession
@@ -1019,6 +1043,9 @@ func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 					resCh <- Result{Status: "failed", Error: err.Error()}
 					return
 				}
+				sessionMu.Lock()
+				currentSession = session
+				sessionMu.Unlock()
 			}
 			// Hold back the leading session-pin status messages until this
 			// attempt proves it made real progress. A retry never continues the
@@ -1117,7 +1144,7 @@ func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		}
 	}()
 
-	return &Session{Messages: msgCh, Result: resCh}, nil
+	return &Session{Supplement: supplement, SupplementReady: supplementReady, Messages: msgCh, Result: resCh}, nil
 }
 
 func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts ExecOptions, attempt int) (*Session, error) {
@@ -1298,11 +1325,12 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 	// race between the lifecycle goroutine writing and the reader reading.
 	turnDone := make(chan bool, 1) // true = aborted
 
+	var c *codexClient
 	observeMessage := func(msg Message) {
 		logCodexAgentMessage(b.cfg.Logger, msg)
 		activity := describeCodexSemanticActivity(msg)
 		if activity == "status:running" {
-			firstItemWait.start(time.Now())
+			firstItemWait.start(time.Now(), c.activeTurnID())
 		}
 		trySendString(semanticActivityCh, activity)
 		if activity != "" {
@@ -1310,7 +1338,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 		}
 	}
 
-	c := &codexClient{
+	c = &codexClient{
 		cfg:                    b.cfg,
 		stdin:                  stdin,
 		pending:                make(map[int]*pendingRPC),
@@ -1794,7 +1822,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 				resetTimer(semanticTimer, semanticInactivityTimeout)
 				if activity == "status:running" && !firstTurnStarted {
 					firstTurnStarted = true
-					firstItemWait.start(time.Now())
+					firstItemWait.start(time.Now(), c.activeTurnID())
 					firstTurnNoProgressTimer = time.NewTimer(firstTurnNoProgressTimeout)
 					firstTurnNoProgressTimerC = firstTurnNoProgressTimer.C
 				} else if firstTurnStarted && !firstTurnProgressObserved && isCodexFirstTurnProgressActivity(activity) {
@@ -1911,7 +1939,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 			)
 		}
 
-		if waitLatency, outcome, classification, ok := firstItemWait.snapshot(); ok {
+		if waitLatency, firstTurnID, outcome, classification, ok := firstItemWait.snapshot(); ok {
 			if waitLatency < 0 {
 				waitLatency = 0
 			}
@@ -1932,7 +1960,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 				"active_launches", activeLaunches,
 				"method", "turn/start",
 				"thread_id", threadID,
-				"turn_id", c.activeTurnID(),
+				"turn_id", firstTurnID,
 				"outcome", outcome,
 				"latency", waitLatency.Round(time.Millisecond).String(),
 				"latency_ms", waitLatency.Milliseconds(),
@@ -2020,7 +2048,29 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 		}
 	}()
 
-	return &Session{Messages: msgCh, Result: resCh}, nil
+	supplement := func(supplementCtx context.Context, instruction string) error {
+		return supplementCodexTurn(supplementCtx, c, instruction)
+	}
+	supplementReady := func() bool {
+		return c.getThreadID() != "" && c.activeTurnID() != ""
+	}
+	return &Session{Supplement: supplement, SupplementReady: supplementReady, Messages: msgCh, Result: resCh}, nil
+}
+
+func supplementCodexTurn(ctx context.Context, c *codexClient, instruction string) error {
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	threadID := c.getThreadID()
+	turnID := c.activeTurnID()
+	if threadID == "" || turnID == "" {
+		return errors.New("codex turn has not started")
+	}
+	_, err := c.request(ctx, "turn/steer", map[string]any{
+		"threadId":       threadID,
+		"expectedTurnId": turnID,
+		"input":          []map[string]any{{"type": "text", "text": instruction}},
+	})
+	return err
 }
 
 func resolveCodexHandshakeTimeouts(opts ExecOptions) (time.Duration, time.Duration) {
@@ -2454,6 +2504,7 @@ type codexClient struct {
 	threadIDMu             sync.RWMutex
 	threadID               string
 	turnIDMu               sync.RWMutex
+	lastTurnID             string
 	turnID                 string
 	onMessage              func(Message)
 	// onAgentMessageChunk reports whether a text chunk was handed to the
@@ -2621,12 +2672,19 @@ func (c *codexClient) getThreadID() string {
 }
 
 func (c *codexClient) setActiveTurnID(turnID string) {
-	if turnID == "" {
-		return
-	}
 	c.turnIDMu.Lock()
+	if turnID != "" {
+		c.lastTurnID = turnID
+	}
 	c.turnID = turnID
 	c.turnIDMu.Unlock()
+}
+
+// usageTurnID retains attribution after the turn closes its steering window.
+func (c *codexClient) usageTurnID() string {
+	c.turnIDMu.RLock()
+	defer c.turnIDMu.RUnlock()
+	return c.lastTurnID
 }
 
 func (c *codexClient) activeTurnID() string {
@@ -3571,6 +3629,7 @@ func (c *codexClient) handleRawNotification(method string, params map[string]any
 			return
 		}
 		c.turnCompleted = true
+		c.setActiveTurnID("")
 		aborted := status == "cancelled" || status == "canceled" ||
 			status == "aborted" || status == "interrupted"
 
@@ -3884,13 +3943,14 @@ func (c *codexClient) handleItemNotification(method string, params map[string]an
 
 // updateThreadTokenUsage consumes the v2 app-server's real usage notification.
 // Resume can replay a historical snapshot after thread/resume returns, so only
-// notifications attributed to the active turn are eligible. The first current-
+// notifications attributed to this run's active or just-completed turn are eligible.
+// A late final snapshot must survive closing supplement admission. The first current-
 // turn snapshot contributes `last`; later snapshots contribute the monotonic
 // delta from `total`. This retains multi-response tool loops without charging
 // replayed history or duplicate snapshots twice.
 func (c *codexClient) updateThreadTokenUsage(params map[string]any) {
 	turnID, _ := params["turnId"].(string)
-	if turnID == "" || turnID != c.activeTurnID() {
+	if turnID == "" || turnID != c.usageTurnID() {
 		return
 	}
 
