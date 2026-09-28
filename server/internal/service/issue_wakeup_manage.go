@@ -80,11 +80,11 @@ func (s *IssueWakeupService) Trigger(ctx context.Context, issueID, id, member pg
 	if err != nil {
 		return ErrWakeupForbidden
 	}
-	if err = s.authorize(ctx, q, w.WorkspaceID, member, agent); err != nil {
+	if err := s.authorize(ctx, q, w.WorkspaceID, member, agent); err != nil {
 		return err
 	}
 	var now time.Time
-	if err = tx.QueryRow(ctx, "SELECT now()").Scan(&now); err != nil {
+	if err := tx.QueryRow(ctx, "SELECT now()").Scan(&now); err != nil {
 		return err
 	}
 	key := "manual:" + util.UUIDToString(dbid.NewV7())
@@ -93,7 +93,7 @@ func (s *IssueWakeupService) Trigger(ctx context.Context, issueID, id, member pg
 	if _, err = q.RecordWakeupReceipt(ctx, db.RecordWakeupReceiptParams{ID: dbid.NewV7(), WakeupID: w.ID, Revision: w.Revision, EventKey: key, EventType: wakeupManualEventType, Payload: payload}); err != nil {
 		return err
 	}
-	if err = tx.Commit(ctx); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 	// Dispatch now rather than on the next tick; the scheduler retries if
@@ -119,13 +119,13 @@ func (s *IssueWakeupService) Delete(ctx context.Context, issueID, id, member pgt
 	if err != nil {
 		return err
 	}
-	if err = q.DeleteIssueWakeupReceipts(ctx, id); err != nil {
+	if err := q.DeleteIssueWakeupReceipts(ctx, id); err != nil {
 		return err
 	}
-	if err = q.DeleteIssueWakeup(ctx, db.DeleteIssueWakeupParams{ID: id, IssueID: issueID}); err != nil {
+	if err := q.DeleteIssueWakeup(ctx, db.DeleteIssueWakeupParams{ID: id, IssueID: issueID}); err != nil {
 		return err
 	}
-	if err = tx.Commit(ctx); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 	for _, task := range tasks {
@@ -170,7 +170,7 @@ func (s *IssueWakeupService) CheckIn(ctx context.Context, issueID, id, taskID pg
 		return fmt.Errorf("%w: check-ins are for scheduled checks; post a comment instead", ErrWakeupInput)
 	}
 	var now time.Time
-	if err = tx.QueryRow(ctx, "SELECT now()").Scan(&now); err != nil {
+	if err := tx.QueryRow(ctx, "SELECT now()").Scan(&now); err != nil {
 		return err
 	}
 	checkin, _ := json.Marshal(map[string]any{"note": note, "at": now.UTC().Format(time.RFC3339)})
@@ -181,7 +181,7 @@ func (s *IssueWakeupService) CheckIn(ctx context.Context, issueID, id, taskID pg
 	if err != nil {
 		return err
 	}
-	if err = tx.Commit(ctx); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 	s.publishWakeupActivities(activity)

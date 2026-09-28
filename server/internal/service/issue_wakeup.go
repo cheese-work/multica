@@ -931,33 +931,33 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 				return err
 			}
 			if timedOut {
-				if err = markTimedOut(); err != nil {
+				if err := markTimedOut(); err != nil {
 					return err
 				}
 			}
 			return commit()
 		case w.Enabled && w.MaxFires.Valid && w.FireCount >= w.MaxFires.Int32:
-			if err = q.DiscardWakeupReceipts(ctx, w.ID); err != nil {
+			if err := q.DiscardWakeupReceipts(ctx, w.ID); err != nil {
 				return err
 			}
-			if err = q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: w.Enabled, NextFireAt: next, LastTaskID: w.LastTaskID}); err != nil {
+			if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: w.Enabled, NextFireAt: next, LastTaskID: w.LastTaskID}); err != nil {
 				return err
 			}
-			if err = q.PauseIssueWakeup(ctx, db.PauseIssueWakeupParams{ID: w.ID, PausedReason: pgtype.Text{String: wakeupPausedMaxFires, Valid: true}, BlockRuns: false}); err != nil {
+			if err := q.PauseIssueWakeup(ctx, db.PauseIssueWakeupParams{ID: w.ID, PausedReason: pgtype.Text{String: wakeupPausedMaxFires, Valid: true}, BlockRuns: false}); err != nil {
 				return err
 			}
-			if err = note(wakeupActivityPaused, map[string]any{"reason": wakeupPausedMaxFires, "limit": w.MaxFires.Int32}); err != nil {
+			if err := note(wakeupActivityPaused, map[string]any{"reason": wakeupPausedMaxFires, "limit": w.MaxFires.Int32}); err != nil {
 				return err
 			}
 			return commit()
 		}
-		if err = q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: w.Enabled, NextFireAt: next, LastTaskID: w.LastTaskID}); err != nil {
+		if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: w.Enabled, NextFireAt: next, LastTaskID: w.LastTaskID}); err != nil {
 			return err
 		}
 	}
 	if len(receipts) == 0 {
 		if timedOut {
-			if err = markTimedOut(); err != nil {
+			if err := markTimedOut(); err != nil {
 				return err
 			}
 		}
@@ -982,21 +982,21 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 			return err
 		}
 		if self {
-			if err = q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
+			if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
 				return err
 			}
-			if err = q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: enabled, NextFireAt: next}); err != nil {
+			if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: enabled, NextFireAt: next}); err != nil {
 				return err
 			}
 			if timedOut {
-				if err = markTimedOut(); err != nil {
+				if err := markTimedOut(); err != nil {
 					return err
 				}
 			}
 			details := wakeupTriggerDetails(db.AgentTaskQueue{}, receipts)
 			details["outcome"] = wakeupOutcomeAcknowledged
 			delete(details, "task_id")
-			if err = note(wakeupActivityTriggered, details); err != nil {
+			if err := note(wakeupActivityTriggered, details); err != nil {
 				return err
 			}
 			return commit()
@@ -1008,11 +1008,11 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		if waiting {
 			// As while its own run is claimed: timers advance, inputs stay,
 			// and a once rule stays on until its input is handed over.
-			if err = q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: w.Enabled, NextFireAt: next}); err != nil {
+			if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: w.Enabled, NextFireAt: next}); err != nil {
 				return err
 			}
 			if timedOut {
-				if err = markTimedOut(); err != nil {
+				if err := markTimedOut(); err != nil {
 					return err
 				}
 			}
@@ -1041,13 +1041,13 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 				}
 			}
 			if reason != "" {
-				if err = q.PauseIssueWakeup(ctx, db.PauseIssueWakeupParams{ID: w.ID, PausedReason: pgtype.Text{String: reason, Valid: true}, BlockRuns: true}); err != nil {
+				if err := q.PauseIssueWakeup(ctx, db.PauseIssueWakeupParams{ID: w.ID, PausedReason: pgtype.Text{String: reason, Valid: true}, BlockRuns: true}); err != nil {
 					return err
 				}
-				if err = q.DiscardWakeupReceipts(ctx, w.ID); err != nil {
+				if err := q.DiscardWakeupReceipts(ctx, w.ID); err != nil {
 					return err
 				}
-				if err = note(wakeupActivityPaused, map[string]any{"reason": reason, "limit": wakeupHourlyRunLimit}); err != nil {
+				if err := note(wakeupActivityPaused, map[string]any{"reason": reason, "limit": wakeupHourlyRunLimit}); err != nil {
 					return err
 				}
 				return commit()
@@ -1074,32 +1074,32 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		return err
 	}
 	if timedOut {
-		if err = markTimedOut(); err != nil {
+		if err := markTimedOut(); err != nil {
 			return err
 		}
 	}
 	if !taskExists {
-		if err = q.CountWakeupFires(ctx, w.ID); err != nil {
+		if err := q.CountWakeupFires(ctx, w.ID); err != nil {
 			return err
 		}
 		// Schedules speak for themselves in the run list; triggers from events,
 		// conditions, a single time or a person get a timeline entry.
 		if w.Kind != "every" && w.Kind != "cron" {
-			if err = note(wakeupActivityTriggered, wakeupTriggerDetails(task, receipts)); err != nil {
+			if err := note(wakeupActivityTriggered, wakeupTriggerDetails(task, receipts)); err != nil {
 				return err
 			}
 		}
 		// The run that reaches the cap is legitimate; the rule stops after it.
 		if enabled && w.MaxFires.Valid && w.FireCount+1 >= w.MaxFires.Int32 {
-			if err = q.PauseIssueWakeup(ctx, db.PauseIssueWakeupParams{ID: w.ID, PausedReason: pgtype.Text{String: wakeupPausedMaxFires, Valid: true}, BlockRuns: false}); err != nil {
+			if err := q.PauseIssueWakeup(ctx, db.PauseIssueWakeupParams{ID: w.ID, PausedReason: pgtype.Text{String: wakeupPausedMaxFires, Valid: true}, BlockRuns: false}); err != nil {
 				return err
 			}
-			if err = note(wakeupActivityPaused, map[string]any{"reason": wakeupPausedMaxFires, "limit": w.MaxFires.Int32}); err != nil {
+			if err := note(wakeupActivityPaused, map[string]any{"reason": wakeupPausedMaxFires, "limit": w.MaxFires.Int32}); err != nil {
 				return err
 			}
 		}
 	}
-	if err = commit(); err != nil {
+	if err := commit(); err != nil {
 		return err
 	}
 	s.Tasks.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)

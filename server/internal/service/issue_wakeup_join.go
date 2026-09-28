@@ -272,7 +272,7 @@ func (s *IssueWakeupService) JoinWaitingWakeups(ctx context.Context, task db.Age
 	if err != nil {
 		return task.Context, err
 	}
-	if err = tx.Commit(ctx); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		return task.Context, err
 	}
 	return updated.Context, nil
@@ -340,7 +340,7 @@ func (s *IssueWakeupService) reserveForRun(ctx context.Context, q *db.Queries, i
 		return release()
 	}
 	if len(free) > 0 {
-		if err = q.ReserveWakeupReceipts(ctx, db.ReserveWakeupReceiptsParams{TaskID: task.ID, Ids: free}); err != nil {
+		if err := q.ReserveWakeupReceipts(ctx, db.ReserveWakeupReceiptsParams{TaskID: task.ID, Ids: free}); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -432,7 +432,7 @@ func takenReceipts(ctx context.Context, q *db.Queries, receipts []db.IssueWakeup
 				ids = append(ids, r.ID)
 				released[r.ID] = true
 			}
-			if err = q.ReleaseWakeupReceipts(ctx, ids); err != nil {
+			if err := q.ReleaseWakeupReceipts(ctx, ids); err != nil {
 				return nil, false, nil, err
 			}
 		}

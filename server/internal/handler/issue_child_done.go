@@ -228,6 +228,9 @@ func (h *Handler) notifyParentsOfBatchChildDone(ctx context.Context, completed [
 				"error", err, "parent_id", uuidToString(g.parentID))
 			continue
 		}
+		if !h.childDoneSystemRuleEnabled(ctx, g.parentID) {
+			continue
+		}
 		// Same parent guards as the single path (see notifyParentOfChildDone).
 		parentStatus, err := effective(parent)
 		if err != nil {

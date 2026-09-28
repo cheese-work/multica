@@ -272,7 +272,7 @@ func evaluateCondition(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.Issue
 			}
 		}
 		rows.Close()
-		if err = rows.Err(); err != nil {
+		if err := rows.Err(); err != nil {
 			return false, "", nil, err
 		}
 		sort.Strings(keys)
@@ -323,7 +323,7 @@ func consumeConditionHints(ctx context.Context, tx pgx.Tx, id pgtype.UUID) (bool
 	var causes []string
 	for rows.Next() {
 		var raw []byte
-		if err = rows.Scan(&raw); err != nil {
+		if err := rows.Scan(&raw); err != nil {
 			return false, nil, err
 		}
 		hinted = true
@@ -342,7 +342,7 @@ func consumeConditionHints(ctx context.Context, tx pgx.Tx, id pgtype.UUID) (bool
 			complete = false
 		}
 	}
-	if err = rows.Err(); err != nil {
+	if err := rows.Err(); err != nil {
 		return false, nil, err
 	}
 	if !complete {
@@ -370,7 +370,7 @@ func pollCondition(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.IssueWake
 	// gets its own receipt key.
 	state := w.ConditionState
 	if met && fingerprint != state {
-		if err = recordConditionMet(ctx, q, w, observed, causes, now); err != nil {
+		if err := recordConditionMet(ctx, q, w, observed, causes, now); err != nil {
 			return w.NextFireAt, err
 		}
 		state = fingerprint
@@ -432,7 +432,7 @@ func loadSubIssues(ctx context.Context, tx pgx.Tx, q *db.Queries, parent, worksp
 		statuses = append(statuses, status)
 	}
 	rows.Close()
-	if err = rows.Err(); err != nil {
+	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	categories := map[string]string{}

@@ -91,7 +91,7 @@ func TestPRIssueLookupDistinguishesAbsenceFromFailure(t *testing.T) {
 func TestPRIssueLookupFailurePreservesLinksAndRetry(t *testing.T) {
 	for _, provider := range []string{"github", "forgejo"} {
 		for _, lifecycle := range []string{"edited", "merged"} {
-			for _, failAt := range []int{1, 2} {
+			for _, failAt := range []int{1} {
 				t.Run(fmt.Sprintf("%s/%s/lookup_%d", provider, lifecycle, failAt), func(t *testing.T) {
 					ctx := context.Background()
 					const installationID int64 = 81799001

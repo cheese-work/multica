@@ -4145,6 +4145,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if statusChanged || prevIssue.ParentIssueID != issue.ParentIssueID || prevIssue.Stage != issue.Stage {
 		h.processChildEvents(r.Context(), issue.ParentIssueID, prevIssue.ParentIssueID)
 	}
+	if statusChanged && issue.ParentIssueID.Valid && h.childDoneSystemRuleEnabled(r.Context(), issue.ParentIssueID) {
+		h.notifyParentOfChildDone(r.Context(), prevIssue, issue)
+	}
 
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -4653,6 +4656,8 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	// One Resolver for the whole batch — a per-issue filler would query the
 	// catalog once per custom-status row. (MUL-6243)
 	fillBatch := h.newStatusCategoryFiller(r.Context(), wsUUID)
+	var childDoneCompleted []db.Issue
+	var childDoneReopened []db.Issue
 	// Parents whose sub-issues changed this batch. Their rules are evaluated
 	// once after the loop against the final state (MUL-4155), not per child
 	// against a mid-batch snapshot.
@@ -4874,6 +4879,18 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, req.Updates.HandoffNote)
 		}
 
+		if statusChanged && issue.ParentIssueID.Valid {
+			prevTerminal := isTerminalChildStatus(
+				issuestatus.Effective(r.Context(), h.Queries, prevIssue.WorkspaceID, prevIssue.Status))
+			nowTerminal := isTerminalChildStatus(
+				issuestatus.Effective(r.Context(), h.Queries, issue.WorkspaceID, issue.Status))
+			if !prevTerminal && nowTerminal {
+				childDoneCompleted = append(childDoneCompleted, issue)
+			} else if prevTerminal && !nowTerminal {
+				childDoneReopened = append(childDoneReopened, issue)
+			}
+		}
+
 		// No status change — not even → cancelled — cancels active tasks here,
 		// mirroring UpdateIssue (MUL-4465). See that handler for the rationale.
 
@@ -4888,6 +4905,11 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	// state, independent of issue_ids order (MUL-4155). A failure is retried
 	// by the sweep.
 	h.processChildEvents(r.Context(), changedParents...)
+
+	for _, reopened := range childDoneReopened {
+		h.bumpStageGenerationOnReopen(r.Context(), reopened)
+	}
+	h.notifyParentsOfBatchChildDone(r.Context(), childDoneCompleted)
 
 	slog.Info("batch update issues", append(logger.RequestAttrs(r), "count", updated)...)
 	writeJSON(w, http.StatusOK, map[string]any{"updated": updated})
