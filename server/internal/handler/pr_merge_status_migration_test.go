@@ -57,7 +57,7 @@ func TestPRMergeStatusMigration(t *testing.T) {
 		}
 	}
 
-	migration, err := os.ReadFile("../../migrations/551_pr_merge_status.up.sql")
+	migration, err := os.ReadFile("../../migrations/559_pr_merge_status.up.sql")
 	if err != nil {
 		t.Fatal(err)
 	}

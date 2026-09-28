@@ -4880,7 +4880,6 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		if statusChanged || prevIssue.ParentIssueID != issue.ParentIssueID || prevIssue.Stage != issue.Stage {
 			changedParents = append(changedParents, issue.ParentIssueID, prevIssue.ParentIssueID)
 		}
-
 		updated++
 	}
 
