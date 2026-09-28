@@ -24,6 +24,7 @@ type ConcurrencyGuards struct {
 	workspaceID  pgtype.UUID
 	controlEpoch int64
 	enabled      bool
+	settings     WorkspaceSettings
 	resources    []string
 }
 
@@ -58,6 +59,7 @@ func LockConcurrencyResources(ctx context.Context, tx pgx.Tx, workspaceID pgtype
 		return nil, err
 	}
 	guards.enabled = settings.JevGovernanceEnabled && (settings.RuleMode == RuleModeShadow || settings.RuleMode == RuleModeCorrection)
+	guards.settings = settings
 	for _, resource := range resources {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO governance_concurrency_guard (workspace_id, resource) VALUES ($1, $2)
