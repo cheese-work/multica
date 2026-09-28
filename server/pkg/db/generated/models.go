@@ -816,6 +816,85 @@ type GovernanceAttempt struct {
 	LastHeartbeatAt pgtype.Timestamptz `json:"last_heartbeat_at"`
 }
 
+type GovernanceBudgetJournal struct {
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	ReservationID     pgtype.UUID        `json:"reservation_id"`
+	EventKey          string             `json:"event_key"`
+	EventType         string             `json:"event_type"`
+	EventDigest       string             `json:"event_digest"`
+	ExpectedRevision  int64              `json:"expected_revision"`
+	ResultingRevision int64              `json:"resulting_revision"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+}
+
+type GovernanceBudgetOutbox struct {
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	EventID       pgtype.UUID        `json:"event_id"`
+	ReservationID pgtype.UUID        `json:"reservation_id"`
+	EventKey      string             `json:"event_key"`
+	EventType     string             `json:"event_type"`
+	CaseID        pgtype.UUID        `json:"case_id"`
+	AttemptID     pgtype.UUID        `json:"attempt_id"`
+	ObligationID  pgtype.UUID        `json:"obligation_id"`
+	Payload       []byte             `json:"payload"`
+	State         string             `json:"state"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
+type GovernanceBudgetReservation struct {
+	WorkspaceID             pgtype.UUID        `json:"workspace_id"`
+	ReservationID           pgtype.UUID        `json:"reservation_id"`
+	BudgetRootID            pgtype.UUID        `json:"budget_root_id"`
+	CaseID                  pgtype.UUID        `json:"case_id"`
+	AttemptID               pgtype.UUID        `json:"attempt_id"`
+	ObligationID            pgtype.UUID        `json:"obligation_id"`
+	Resource                string             `json:"resource"`
+	ControlEpoch            int64              `json:"control_epoch"`
+	WindowStart             pgtype.Timestamptz `json:"window_start"`
+	WindowEnd               pgtype.Timestamptz `json:"window_end"`
+	RootCapMicroUsd         int64              `json:"root_cap_micro_usd"`
+	WindowCapMicroUsd       int64              `json:"window_cap_micro_usd"`
+	MaxAttemptCostMicroUsd  int64              `json:"max_attempt_cost_micro_usd"`
+	RetryAllowance          int64              `json:"retry_allowance"`
+	RetryPolicyBounded      bool               `json:"retry_policy_bounded"`
+	RetryAllowanceRemaining int64              `json:"retry_allowance_remaining"`
+	AttemptsStarted         int64              `json:"attempts_started"`
+	TotalCapMicroUsd        int64              `json:"total_cap_micro_usd"`
+	RemainingMicroUsd       int64              `json:"remaining_micro_usd"`
+	DebitedMicroUsd         int64              `json:"debited_micro_usd"`
+	SettledMicroUsd         int64              `json:"settled_micro_usd"`
+	State                   string             `json:"state"`
+	Revision                int64              `json:"revision"`
+	RequestDigest           string             `json:"request_digest"`
+	SettlementReceiptID     pgtype.Text        `json:"settlement_receipt_id"`
+	UsageKnown              bool               `json:"usage_known"`
+	TerminationKnown        bool               `json:"termination_known"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
+	SettledAt               pgtype.Timestamptz `json:"settled_at"`
+}
+
+type GovernanceBudgetRoot struct {
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	BudgetRootID     pgtype.UUID        `json:"budget_root_id"`
+	SpendCapMicroUsd int64              `json:"spend_cap_micro_usd"`
+	ReservedMicroUsd int64              `json:"reserved_micro_usd"`
+	SpentMicroUsd    int64              `json:"spent_micro_usd"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+}
+
+type GovernanceBudgetWindow struct {
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	WindowStart      pgtype.Timestamptz `json:"window_start"`
+	WindowEnd        pgtype.Timestamptz `json:"window_end"`
+	SpendCapMicroUsd int64              `json:"spend_cap_micro_usd"`
+	ReservedMicroUsd int64              `json:"reserved_micro_usd"`
+	SpentMicroUsd    int64              `json:"spent_micro_usd"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+}
+
 type GovernanceCase struct {
 	ID                  pgtype.UUID        `json:"id"`
 	WorkspaceID         pgtype.UUID        `json:"workspace_id"`

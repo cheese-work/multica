@@ -373,6 +373,21 @@ deleted_issue_checkpoints AS (
 deleted_governance_receipts AS (
     DELETE FROM governance_receipt WHERE workspace_id = $1
 ),
+deleted_governance_budget_outbox AS (
+    DELETE FROM governance_budget_outbox WHERE workspace_id = $1
+),
+deleted_governance_budget_journal AS (
+    DELETE FROM governance_budget_journal WHERE workspace_id = $1
+),
+deleted_governance_budget_reservations AS (
+    DELETE FROM governance_budget_reservation WHERE workspace_id = $1
+),
+deleted_governance_budget_roots AS (
+    DELETE FROM governance_budget_root WHERE workspace_id = $1
+),
+deleted_governance_budget_windows AS (
+    DELETE FROM governance_budget_window WHERE workspace_id = $1
+),
 deleted_governance_concurrency_holds AS (
     DELETE FROM governance_concurrency_hold WHERE workspace_id = $1
 ),

@@ -591,6 +591,52 @@ INSERT INTO channel_media_pending_object (
 )
 VALUES ($1, $2, gen_random_uuid(), 's3://workspace-delete/tenant-isolation')
 `, fixture.mediaKey, fixture.workspaceID)
+		dbfx.Exec(t, `
+INSERT INTO governance_budget_window (workspace_id, window_start, window_end, spend_cap_micro_usd)
+VALUES ($1, date_trunc('hour', now()), date_trunc('hour', now()) + interval '1 hour', 1000000)
+`, fixture.workspaceID)
+		dbfx.Exec(t, `
+INSERT INTO governance_budget_root (workspace_id, budget_root_id, spend_cap_micro_usd)
+VALUES ($1, '00000000-0000-0000-0000-000000000011', 1000000)
+`, fixture.workspaceID)
+		dbfx.Exec(t, `
+INSERT INTO governance_budget_reservation (
+	workspace_id, reservation_id, budget_root_id, case_id, attempt_id, obligation_id,
+	resource, control_epoch, window_start, window_end, root_cap_micro_usd,
+	window_cap_micro_usd, max_attempt_cost_micro_usd, retry_allowance,
+	retry_policy_bounded, retry_allowance_remaining, total_cap_micro_usd,
+	remaining_micro_usd, request_digest
+)
+VALUES (
+	$1, '00000000-0000-0000-0000-000000000012', '00000000-0000-0000-0000-000000000011',
+	'00000000-0000-0000-0000-000000000013', '00000000-0000-0000-0000-000000000014',
+	'00000000-0000-0000-0000-000000000015', 'workspace-delete-test', 0,
+	date_trunc('hour', now()), date_trunc('hour', now()) + interval '1 hour',
+	1000000, 1000000, 500000, 0, TRUE, 0, 500000, 500000, repeat('a', 64)
+)
+`, fixture.workspaceID)
+		dbfx.Exec(t, `
+INSERT INTO governance_budget_journal (
+	workspace_id, reservation_id, event_key, event_type, event_digest,
+	expected_revision, resulting_revision
+)
+VALUES (
+	$1, '00000000-0000-0000-0000-000000000012', 'workspace-delete-test',
+	'reserve', repeat('b', 64), 0, 1
+)
+`, fixture.workspaceID)
+		dbfx.Exec(t, `
+INSERT INTO governance_budget_outbox (
+	workspace_id, event_id, reservation_id, event_key, event_type,
+	case_id, attempt_id, obligation_id, payload
+)
+VALUES (
+	$1, '00000000-0000-0000-0000-000000000016',
+	'00000000-0000-0000-0000-000000000012', 'workspace-delete-test', 'admit',
+	'00000000-0000-0000-0000-000000000013', '00000000-0000-0000-0000-000000000014',
+	'00000000-0000-0000-0000-000000000015', '{}'
+)
+`, fixture.workspaceID)
 	}
 
 	request := newRequest(http.MethodDelete, "/api/workspaces/"+targetWorkspaceID, nil)
@@ -598,13 +644,18 @@ VALUES ($1, $2, gen_random_uuid(), 's3://workspace-delete/tenant-isolation')
 	testutil.Call(t, testHandler.DeleteWorkspace, request).Want(http.StatusNoContent)
 
 	for table, predicate := range map[string]string{
-		"workspace":                    "id",
-		"issue":                        "workspace_id",
-		"comment":                      "workspace_id",
-		"inbox_item":                   "workspace_id",
-		"runtime_profile":              "workspace_id",
-		"task_usage_hourly_dirty":      "workspace_id",
-		"channel_media_pending_object": "workspace_id",
+		"workspace":                     "id",
+		"issue":                         "workspace_id",
+		"comment":                       "workspace_id",
+		"inbox_item":                    "workspace_id",
+		"runtime_profile":               "workspace_id",
+		"task_usage_hourly_dirty":       "workspace_id",
+		"channel_media_pending_object":  "workspace_id",
+		"governance_budget_window":      "workspace_id",
+		"governance_budget_root":        "workspace_id",
+		"governance_budget_reservation": "workspace_id",
+		"governance_budget_journal":     "workspace_id",
+		"governance_budget_outbox":      "workspace_id",
 	} {
 		var count int
 		dbfx.QueryRow(t, `
@@ -612,6 +663,15 @@ SELECT COUNT(*) FROM `+table+` WHERE `+predicate+` = $1
 `, neighborWorkspaceID).Scan(&count)
 		if count != 1 {
 			t.Fatalf("neighbor %s rows = %d, want 1", table, count)
+		}
+		if table == "channel_media_pending_object" {
+			continue
+		}
+		dbfx.QueryRow(t, `
+SELECT COUNT(*) FROM `+table+` WHERE `+predicate+` = $1
+`, targetWorkspaceID).Scan(&count)
+		if count != 0 {
+			t.Fatalf("deleted target %s rows = %d, want 0", table, count)
 		}
 	}
 
