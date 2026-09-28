@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -70,8 +70,8 @@ type Options struct {
 	// UserAgent defaults to [DefaultUserAgent].
 	UserAgent string
 
-	// Timeout is the per-request timeout, covering all retries. Zero means
-	// [DefaultTimeout]; negative disables it.
+	// Timeout is the per-evaluation timeout, including retries. Zero means
+	// [DefaultTimeout]; values above the transport maximum are clamped.
 	Timeout time.Duration
 
 	// Gate is the kill switch consulted before every call. A nil Gate
@@ -84,15 +84,22 @@ type Options struct {
 	// permit every call instead of denying it.
 	Gate Gate
 
-	// HTTPClient is adopted in full when non-nil, so a caller's Transport
-	// and instrumentation carry through.
+	// HTTPClient contributes its TLS roots, cookie jar, and a shorter timeout.
+	// Its proxy, dialer, and redirect behavior are replaced by the egress policy.
 	HTTPClient *http.Client
+
+	// EgressAllowlist adds exact host:port entries for code-controlled service
+	// endpoints. The deployment environment allowlist is always applied too.
+	EgressAllowlist []string
 
 	// RetryCount, RetryWaitTime, and RetryMaxWaitTime override the default
 	// retry policy. A negative RetryCount disables retries.
 	RetryCount       int
 	RetryWaitTime    time.Duration
 	RetryMaxWaitTime time.Duration
+
+	lookupIP    ipLookupFunc
+	dialContext dialContextFunc
 }
 
 // Client is the TypeSafe System One client. It is safe for concurrent use.
@@ -101,7 +108,14 @@ type Client struct {
 	baseURL string
 	model   string
 	gate    Gate
+	timeout time.Duration
 }
+
+type discardRestyLogger struct{}
+
+func (discardRestyLogger) Errorf(string, ...interface{}) {}
+func (discardRestyLogger) Warnf(string, ...interface{})  {}
+func (discardRestyLogger) Debugf(string, ...interface{}) {}
 
 // NewClient constructs a Client, failing on obviously broken options.
 func NewClient(opts Options) (*Client, error) {
@@ -113,10 +127,17 @@ func NewClient(opts Options) (*Client, error) {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
-	if _, err := url.Parse(baseURL); err != nil {
-		return nil, fmt.Errorf("jev: invalid BaseURL %q: %w", baseURL, err)
+	baseURL, authority, err := normalizeBaseURL(baseURL)
+	if err != nil {
+		return nil, err
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
+	allowed, err := loadEgressAllowlist(os.Getenv(EgressAllowlistEnv), opts.EgressAllowlist)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := allowed[authority]; !ok {
+		return nil, ErrEgressDenied
+	}
 
 	model := opts.Model
 	if model == "" {
@@ -129,14 +150,26 @@ func NewClient(opts Options) (*Client, error) {
 	}
 
 	timeout := opts.Timeout
-	switch {
-	case timeout == 0:
+	if timeout < 0 {
+		return nil, errors.New("jev: timeout must be positive")
+	}
+	if timeout == 0 {
 		timeout = DefaultTimeout
-	case timeout < 0:
-		timeout = 0 // resty treats 0 as "no timeout"
+	}
+	if timeout > maxRequestTimeout {
+		timeout = maxRequestTimeout
+	}
+	if opts.HTTPClient != nil && opts.HTTPClient.Timeout > 0 && opts.HTTPClient.Timeout < timeout {
+		timeout = opts.HTTPClient.Timeout
+	}
+	httpClient, err := newEgressHTTPClient(opts.HTTPClient, allowed, timeout, opts.lookupIP, opts.dialContext)
+	if err != nil {
+		return nil, err
 	}
 
-	rc := newRestyClient(opts.HTTPClient).
+	rc := resty.NewWithClient(httpClient).
+		SetLogger(discardRestyLogger{}).
+		SetResponseBodyLimit(maxResponseBytes).
 		SetBaseURL(baseURL).
 		SetHeader("Content-Type", "application/json").
 		SetHeader("Accept", "application/json").
@@ -146,14 +179,7 @@ func NewClient(opts Options) (*Client, error) {
 
 	applyRetryPolicy(rc, opts)
 
-	return &Client{rc: rc, baseURL: baseURL, model: model, gate: opts.Gate}, nil
-}
-
-func newRestyClient(hc *http.Client) *resty.Client {
-	if hc != nil {
-		return resty.NewWithClient(hc)
-	}
-	return resty.New()
+	return &Client{rc: rc, baseURL: baseURL, model: model, gate: opts.Gate, timeout: timeout}, nil
 }
 
 // applyRetryPolicy wires exponential backoff for the statuses TypeSafe
@@ -181,6 +207,9 @@ func applyRetryPolicy(rc *resty.Client, opts Options) {
 		SetRetryMaxWaitTime(maxWait).
 		AddRetryCondition(func(resp *resty.Response, err error) bool {
 			if err != nil {
+				if errors.Is(err, ErrEgressDenied) || errors.Is(err, ErrResponseTooLarge) || errors.Is(err, resty.ErrResponseBodyTooLarge) {
+					return false
+				}
 				return true
 			}
 			return retryableStatus(resp.StatusCode())
@@ -291,17 +320,28 @@ func (c *Client) Evaluate(ctx context.Context, req Request) (*Response, error) {
 	if req.Model == "" {
 		req.Model = c.model
 	}
+	requestContext, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
 
 	out := &Response{}
 	resp, err := c.rc.R().
-		SetContext(ctx).
+		SetContext(requestContext).
 		SetBody(req).
 		SetResult(out).
 		Post("/systemone")
 	if err != nil {
-		return nil, fmt.Errorf("jev: POST /systemone: %w", err)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if errors.Is(err, ErrEgressDenied) {
+			return nil, ErrEgressDenied
+		}
+		if errors.Is(err, ErrResponseTooLarge) || errors.Is(err, resty.ErrResponseBodyTooLarge) {
+			return nil, ErrResponseTooLarge
+		}
+		return nil, ErrUpstreamRequest
 	}
-	if resp.IsError() {
+	if resp.StatusCode() < http.StatusOK || resp.StatusCode() >= http.StatusMultipleChoices {
 		return nil, parseAPIError(resp.StatusCode(), resp.Body())
 	}
 	return out, nil

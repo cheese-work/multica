@@ -202,6 +202,7 @@ services:
       # storage disabled without affecting the existing process-wide JEV_API_KEY.
       MULTICA_JEV_SECRET_KEY: ${MULTICA_JEV_SECRET_KEY:-}
       MULTICA_JEV_SECRET_KEY_PREVIOUS: ${MULTICA_JEV_SECRET_KEY_PREVIOUS:-}
+      MULTICA_JEV_EGRESS_ALLOWLIST: "${MULTICA_JEV_EGRESS_ALLOWLIST:-api.typesafe.ai:443}"
       # WeCom smart-bot integration. MULTICA_WECOM_SECRET_KEY is the
       # opt-in: unset = integration disabled. It encrypts each installation's
       # smart-bot secret at rest. The server needs it to unseal a bot's

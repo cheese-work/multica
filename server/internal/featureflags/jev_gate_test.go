@@ -92,7 +92,7 @@ func TestJevProductionGateAllowsWhenFlagOnAndWorkspacePresent(t *testing.T) {
 // client's Evaluate short-circuits correctly.
 func TestJevProductionGateStopsRequestBeforeNetwork(t *testing.T) {
 	var deniedCalls atomic.Int32
-	failIfHit := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	failIfHit := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		deniedCalls.Add(1)
 		t.Errorf("request reached the fake TypeSafe server: %s %s", r.Method, r.URL.Path)
 		w.WriteHeader(http.StatusOK)
@@ -101,16 +101,16 @@ func TestJevProductionGateStopsRequestBeforeNetwork(t *testing.T) {
 	defer failIfHit.Close()
 
 	var allowedCalls atomic.Int32
-	succeeds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	succeeds := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		allowedCalls.Add(1)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"model":"jev-1.13.0","answers":{},"usage":{}}`))
 	}))
 	defer succeeds.Close()
 
-	newClientWithGate := func(baseURL string, gate jev.Gate) *jev.Client {
+	newClientWithGate := func(baseURL string, httpClient *http.Client, gate jev.Gate) *jev.Client {
 		t.Helper()
-		c, err := jev.NewClient(jev.Options{APIKey: "test-key", BaseURL: baseURL, RetryCount: -1, Gate: gate})
+		c, err := jev.NewClient(jev.Options{APIKey: "test-key", BaseURL: baseURL, HTTPClient: httpClient, RetryCount: -1, Gate: gate})
 		if err != nil {
 			t.Fatalf("NewClient: %v", err)
 		}
@@ -146,7 +146,8 @@ func TestJevProductionGateStopsRequestBeforeNetwork(t *testing.T) {
 
 	for name, tc := range denialCases {
 		t.Run(name, func(t *testing.T) {
-			c := newClientWithGate(failIfHit.URL, tc.gate)
+			t.Setenv(jev.EgressAllowlistEnv, failIfHit.Listener.Addr().String())
+			c := newClientWithGate(failIfHit.URL, failIfHit.Client(), tc.gate)
 			_, err := c.Evaluate(tc.ctx, req)
 			if err == nil {
 				t.Fatal("Evaluate succeeded but should have been denied")
@@ -161,7 +162,8 @@ func TestJevProductionGateStopsRequestBeforeNetwork(t *testing.T) {
 	// zero-count assertions above aren't passing merely because the wiring
 	// itself is broken.
 	t.Run("flag on and workspace present reaches the server", func(t *testing.T) {
-		c := newClientWithGate(succeeds.URL, JevProductionGate{Flags: serviceWithJevRule(t, featureflag.Rule{Default: true})})
+		t.Setenv(jev.EgressAllowlistEnv, succeeds.Listener.Addr().String())
+		c := newClientWithGate(succeeds.URL, succeeds.Client(), JevProductionGate{Flags: serviceWithJevRule(t, featureflag.Rule{Default: true})})
 		if _, err := c.Evaluate(ctxWithWorkspace(testWorkspaceID), req); err != nil {
 			t.Fatalf("Evaluate: %v", err)
 		}
