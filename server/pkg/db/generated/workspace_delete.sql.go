@@ -352,6 +352,12 @@ deleted_issue_checkpoints AS (
 deleted_governance_receipts AS (
     DELETE FROM governance_receipt WHERE workspace_id = $1
 ),
+deleted_governance_concurrency_holds AS (
+    DELETE FROM governance_concurrency_hold WHERE workspace_id = $1
+),
+deleted_governance_concurrency_guards AS (
+    DELETE FROM governance_concurrency_guard WHERE workspace_id = $1
+),
 deleted_governance_jev_credentials AS (
     DELETE FROM governance_jev_credential WHERE workspace_id = $1
 ),

@@ -2,9 +2,26 @@ package handler
 
 import (
 	"context"
+	"os"
 	"sort"
+	"strings"
 	"testing"
 )
+
+func TestGovernanceWorkspaceDeletionManifestHasExplicitQueries(t *testing.T) {
+	queries, err := os.ReadFile("../../pkg/db/queries/workspace_delete.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for table, action := range workspaceDeletionManifest {
+		if !strings.HasPrefix(table, "governance_") {
+			continue
+		}
+		if action != workspaceDelete || !strings.Contains(string(queries), "DELETE FROM "+table+" WHERE workspace_id = $1") {
+			t.Errorf("governance table %s lacks explicit workspace-scoped teardown", table)
+		}
+	}
+}
 
 type workspaceDeleteAction string
 
@@ -70,6 +87,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"github_pull_request_check_run":      workspaceDelete,
 	"github_pull_request_check_suite":    workspaceDelete,
 	"governance_receipt":                 workspaceDelete, // CHE-685 Jev governance routing receipts; workspace-owned, same shape as issue_checkpoint.
+	"governance_concurrency_guard":       workspaceDelete,
+	"governance_concurrency_hold":        workspaceDelete,
 	"governance_jev_credential":          workspaceDelete, // CHE-714 write-only encrypted Jev provider credential; explicit transactional teardown.
 	"governance_workspace_config":        workspaceDelete, // CHE-707 versioned workspace governance gate and control epoch.
 	"governance_workspace_config_audit":  workspaceDelete, // CHE-707 idempotency, rollback, and operating-limit audit history.
