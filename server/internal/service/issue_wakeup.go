@@ -573,7 +573,7 @@ func (s *IssueWakeupService) save(ctx context.Context, issueID, member, source, 
 		return out, err
 	}
 	if len(out.Condition) > 0 && conditionFiresOnChange(out.Condition) {
-		if err = baselineCondition(ctx, tx, q, out, now); err != nil {
+		if err := baselineCondition(ctx, tx, q, out, now); err != nil {
 			return out, err
 		}
 	}
@@ -905,17 +905,17 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		return err
 	}
 	for _, run := range taken {
-		if err = q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: receiptIDs(run.receipts), TaskID: run.task.ID}); err != nil {
+		if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: receiptIDs(run.receipts), TaskID: run.task.ID}); err != nil {
 			return err
 		}
-		if err = q.CountWakeupFires(ctx, w.ID); err != nil {
+		if err := q.CountWakeupFires(ctx, w.ID); err != nil {
 			return err
 		}
 		w.FireCount++
 		w.LastTaskID = run.task.ID
 		details := wakeupTriggerDetails(run.task, run.receipts)
 		details["outcome"] = wakeupOutcomeMerged
-		if err = note(wakeupActivityTriggered, details); err != nil {
+		if err := note(wakeupActivityTriggered, details); err != nil {
 			return err
 		}
 	}
@@ -924,10 +924,10 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		// as after a run of its own; later inputs are dropped with it.
 		switch {
 		case w.Mode == "once":
-			if err = q.DiscardWakeupReceipts(ctx, w.ID); err != nil {
+			if err := q.DiscardWakeupReceipts(ctx, w.ID); err != nil {
 				return err
 			}
-			if err = q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: false, LastTaskID: w.LastTaskID}); err != nil {
+			if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: false, LastTaskID: w.LastTaskID}); err != nil {
 				return err
 			}
 			if timedOut {

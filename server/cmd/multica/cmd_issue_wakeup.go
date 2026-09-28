@@ -127,12 +127,12 @@ func runIssueWakeup(cmd *cobra.Command, args []string, action string) error {
 		err = client.PostJSON(ctx, path+"/"+url.PathEscape(args[1])+"/disable", map[string]any{}, &row)
 		result = row
 	} else if action == "trigger" {
-		if err = client.PostJSON(ctx, path+"/"+url.PathEscape(args[1])+"/trigger", map[string]any{}, nil); err != nil {
+		if err := client.PostJSON(ctx, path+"/"+url.PathEscape(args[1])+"/trigger", map[string]any{}, nil); err != nil {
 			return err
 		}
 		result = map[string]any{"id": args[1], "triggered": true}
 	} else if action == "delete" {
-		if err = client.DeleteJSON(ctx, path+"/"+url.PathEscape(args[1])); err != nil {
+		if err := client.DeleteJSON(ctx, path+"/"+url.PathEscape(args[1])); err != nil {
 			return err
 		}
 		result = map[string]any{"id": args[1], "deleted": true}
@@ -141,14 +141,14 @@ func runIssueWakeup(cmd *cobra.Command, args []string, action string) error {
 		if note == "" {
 			return fmt.Errorf("--note is required")
 		}
-		if err = client.PostJSON(ctx, path+"/"+url.PathEscape(args[1])+"/checkin", map[string]any{"note": note}, nil); err != nil {
+		if err := client.PostJSON(ctx, path+"/"+url.PathEscape(args[1])+"/checkin", map[string]any{"note": note}, nil); err != nil {
 			return err
 		}
 		fmt.Fprintln(os.Stderr, "Checked in; this run will not post a comment.")
 		return nil
 	} else if action == "runs" {
 		var rows []map[string]any
-		if err = client.GetJSON(ctx, path+"/"+url.PathEscape(args[1])+"/runs", &rows); err != nil {
+		if err := client.GetJSON(ctx, path+"/"+url.PathEscape(args[1])+"/runs", &rows); err != nil {
 			return err
 		}
 		output, _ := cmd.Flags().GetString("output")
