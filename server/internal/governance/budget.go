@@ -56,8 +56,9 @@ type BudgetReserveCommand struct {
 }
 
 type BudgetReservationResult struct {
-	Reservation db.GovernanceBudgetReservation
-	Duplicate   bool
+	Reservation   db.GovernanceBudgetReservation
+	OutboxEventID pgtype.UUID
+	Duplicate     bool
 }
 
 type BudgetDebitCommand struct {
@@ -93,20 +94,7 @@ func NewBudgetService(database *pgxpool.Pool, clock BudgetClock) (*BudgetService
 }
 
 func (service *BudgetService) Reserve(ctx context.Context, command BudgetReserveCommand) (BudgetReservationResult, error) {
-	windowStart := command.WindowStart.UTC()
-	windowEnd := command.WindowEnd.UTC()
-	totalCap, err := budgetTotalCap(command.MaxAttemptCostMicroUSD, command.RetryAllowance)
-	if err != nil {
-		return BudgetReservationResult{}, err
-	}
-	if !validBudgetReserveCommand(command, windowStart, windowEnd) {
-		if !command.RetryPolicyBounded {
-			return BudgetReservationResult{}, ErrBudgetRetryUnbounded
-		}
-		return BudgetReservationResult{}, ErrBudgetInput
-	}
-	digest, err := budgetReserveDigest(command, windowStart, windowEnd)
-	if err != nil {
+	if _, _, _, _, err := prepareBudgetReservation(command); err != nil {
 		return BudgetReservationResult{}, err
 	}
 	tx, err := service.database.Begin(ctx)
@@ -118,15 +106,38 @@ func (service *BudgetService) Reserve(ctx context.Context, command BudgetReserve
 	if err != nil {
 		return BudgetReservationResult{}, err
 	}
+	result, err := service.reserveInTransaction(ctx, tx, guards, command, "")
+	if err != nil {
+		return BudgetReservationResult{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return BudgetReservationResult{}, fmt.Errorf("commit governance budget reservation: %w", err)
+	}
+	return result, nil
+}
+
+func (service *BudgetService) reserveInTransaction(ctx context.Context, tx pgx.Tx, guards *ConcurrencyGuards, command BudgetReserveCommand, admissionDigest string) (BudgetReservationResult, error) {
+	windowStart, windowEnd, totalCap, digest, err := prepareBudgetReservation(command)
+	if err != nil {
+		return BudgetReservationResult{}, err
+	}
+	if guards == nil || guards.workspaceID != command.WorkspaceID || !guards.validReservation(command.Resource, command.ReservationID) {
+		return BudgetReservationResult{}, ErrConcurrencyInput
+	}
 	reservation, err := readBudgetReservation(ctx, tx, command.WorkspaceID, command.ReservationID, false)
 	if err == nil {
 		if reservation.RequestDigest != digest {
 			return BudgetReservationResult{}, ErrBudgetConflict
 		}
-		if err := tx.Commit(ctx); err != nil {
-			return BudgetReservationResult{}, fmt.Errorf("commit duplicate governance budget reservation: %w", err)
+		var outboxEventID pgtype.UUID
+		if admissionDigest != "" {
+			var persistedDigest string
+			outboxEventID, persistedDigest, err = readBudgetOutboxIntent(ctx, tx, command.WorkspaceID, command.ReservationID, command.EventKey)
+			if err != nil || persistedDigest != admissionDigest {
+				return BudgetReservationResult{}, ErrBudgetConflict
+			}
 		}
-		return BudgetReservationResult{Reservation: reservation, Duplicate: true}, nil
+		return BudgetReservationResult{Reservation: reservation, OutboxEventID: outboxEventID, Duplicate: true}, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return BudgetReservationResult{}, err
@@ -196,17 +207,35 @@ func (service *BudgetService) Reserve(ctx context.Context, command BudgetReserve
 	if err := insertBudgetJournal(ctx, tx, command.WorkspaceID, command.ReservationID, command.EventKey, "reserve", digest, 0, 1); err != nil {
 		return BudgetReservationResult{}, err
 	}
-	if err := insertBudgetOutbox(ctx, tx, command.WorkspaceID, command.ReservationID, command.EventKey, "admit", command.CaseID, command.AttemptID, command.ObligationID); err != nil {
+	outboxEventID, err := insertBudgetOutboxIntent(ctx, tx, command.WorkspaceID, command.ReservationID, command.EventKey, "admit", command.CaseID, command.AttemptID, command.ObligationID, admissionDigest)
+	if err != nil {
 		return BudgetReservationResult{}, err
 	}
 	reservation, err = readBudgetReservation(ctx, tx, command.WorkspaceID, command.ReservationID, false)
 	if err != nil {
 		return BudgetReservationResult{}, err
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return BudgetReservationResult{}, fmt.Errorf("commit governance budget reservation: %w", err)
+	return BudgetReservationResult{Reservation: reservation, OutboxEventID: outboxEventID}, nil
+}
+
+func prepareBudgetReservation(command BudgetReserveCommand) (time.Time, time.Time, int64, string, error) {
+	windowStart := command.WindowStart.UTC()
+	windowEnd := command.WindowEnd.UTC()
+	totalCap, err := budgetTotalCap(command.MaxAttemptCostMicroUSD, command.RetryAllowance)
+	if err != nil {
+		return time.Time{}, time.Time{}, 0, "", err
 	}
-	return BudgetReservationResult{Reservation: reservation}, nil
+	if !validBudgetReserveCommand(command, windowStart, windowEnd) {
+		if !command.RetryPolicyBounded {
+			return time.Time{}, time.Time{}, 0, "", ErrBudgetRetryUnbounded
+		}
+		return time.Time{}, time.Time{}, 0, "", ErrBudgetInput
+	}
+	digest, err := budgetReserveDigest(command, windowStart, windowEnd)
+	if err != nil {
+		return time.Time{}, time.Time{}, 0, "", err
+	}
+	return windowStart, windowEnd, totalCap, digest, nil
 }
 
 func (service *BudgetService) Debit(ctx context.Context, command BudgetDebitCommand) (BudgetReservationResult, error) {

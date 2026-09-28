@@ -107,6 +107,35 @@ INSERT INTO governance_attempt (
 )
 RETURNING *;
 
+-- name: InsertGovernanceAttemptWithID :one
+INSERT INTO governance_attempt (
+    id, workspace_id, case_id, ordinal, kind, candidate_id, task_id, obligation_id,
+    input_digest, attempt_fence, deadline_at, confidence, result, usage
+) VALUES (
+    sqlc.arg(id)::uuid, sqlc.arg(workspace_id)::uuid, sqlc.arg(case_id)::uuid,
+    sqlc.arg(ordinal)::integer, sqlc.arg(kind)::text, sqlc.arg(candidate_id)::uuid,
+    sqlc.narg(task_id)::uuid, sqlc.arg(obligation_id)::uuid, sqlc.arg(input_digest)::text,
+    sqlc.arg(attempt_fence)::uuid, sqlc.arg(deadline_at)::timestamptz,
+    sqlc.arg(confidence)::jsonb, sqlc.arg(result)::jsonb, sqlc.arg(usage)::jsonb
+)
+RETURNING *;
+
+-- name: AssociateGovernanceAttemptWithCase :one
+UPDATE governance_case AS case_record
+SET current_attempt_id = attempt.id,
+    updated_at = sqlc.arg(updated_at)::timestamptz
+FROM governance_attempt AS attempt
+WHERE case_record.workspace_id = sqlc.arg(workspace_id)::uuid
+  AND case_record.id = sqlc.arg(case_id)::uuid
+  AND case_record.state = 'agent_attempt'
+  AND case_record.state_revision = sqlc.arg(state_revision)::bigint
+  AND case_record.current_attempt_id = sqlc.arg(expected_attempt_id)::uuid
+  AND attempt.workspace_id = case_record.workspace_id
+  AND attempt.case_id = case_record.id
+  AND attempt.id = sqlc.arg(attempt_id)::uuid
+  AND attempt.obligation_id = sqlc.arg(obligation_id)::uuid
+RETURNING case_record.*;
+
 -- name: LockGovernanceAttemptForUpdate :one
 SELECT * FROM governance_attempt
 WHERE workspace_id = $1 AND case_id = $2 AND id = $3
