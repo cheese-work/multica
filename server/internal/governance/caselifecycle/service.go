@@ -17,6 +17,7 @@ var (
 	ErrInvalidTransition = errors.New("governance case transition is invalid")
 	ErrLeaseHeld         = errors.New("governance case lease is held")
 	ErrStaleFence        = errors.New("governance case attempt fence is stale")
+	ErrStaleControlEpoch = errors.New("governance workspace control epoch is stale or disabled")
 	ErrInputConflict     = errors.New("governance case input key conflicts with prior transition")
 	ErrSuccessorConflict = errors.New("governance case successor conflicts with prior generation")
 )
@@ -59,6 +60,7 @@ func NewService(database Database, clock Clock) (*Service, error) {
 type TransitionCommand struct {
 	WorkspaceID      pgtype.UUID
 	CaseID           pgtype.UUID
+	ControlEpoch     int64
 	ExpectedState    CaseState
 	ExpectedRevision int64
 	NextState        CaseState
@@ -80,6 +82,7 @@ type TransitionResult struct {
 type LeaseCommand struct {
 	WorkspaceID      pgtype.UUID
 	CaseID           pgtype.UUID
+	ControlEpoch     int64
 	ExpectedState    CaseState
 	ExpectedRevision int64
 	Token            pgtype.UUID
@@ -114,6 +117,9 @@ func (service *Service) Transition(ctx context.Context, command TransitionComman
 	}
 	defer tx.Rollback(ctx)
 
+	if err := lockGovernanceControl(ctx, tx, command.WorkspaceID, command.ControlEpoch); err != nil {
+		return TransitionResult{}, err
+	}
 	queries := db.New(tx)
 	caseRow, err := queries.LockGovernanceCaseForUpdate(ctx, db.LockGovernanceCaseForUpdateParams{
 		WorkspaceID: command.WorkspaceID,
@@ -121,6 +127,9 @@ func (service *Service) Transition(ctx context.Context, command TransitionComman
 	})
 	if err != nil {
 		return TransitionResult{}, fmt.Errorf("lock governance case: %w", err)
+	}
+	if caseRow.ControlEpoch != command.ControlEpoch {
+		return TransitionResult{}, ErrStaleControlEpoch
 	}
 	result, err := service.transitionLocked(ctx, queries, caseRow, command)
 	if err != nil {
@@ -135,7 +144,7 @@ func (service *Service) Transition(ctx context.Context, command TransitionComman
 func (service *Service) ClaimLease(ctx context.Context, command LeaseCommand) (db.GovernanceCase, error) {
 	if !validUUID(command.WorkspaceID) || !validUUID(command.CaseID) || !validUUID(command.Token) ||
 		!validCaseState(command.ExpectedState) || command.ExpectedState.IsTerminal() || command.ExpectedState == CaseParked ||
-		command.ExpectedRevision < 0 || command.Duration <= 0 {
+		command.ControlEpoch < 1 || command.ExpectedRevision < 0 || command.Duration <= 0 {
 		return db.GovernanceCase{}, errors.New("invalid governance case lease request")
 	}
 	now := service.clock.Now().UTC()
@@ -148,6 +157,9 @@ func (service *Service) ClaimLease(ctx context.Context, command LeaseCommand) (d
 		return db.GovernanceCase{}, fmt.Errorf("begin governance case lease claim: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := lockGovernanceControl(ctx, tx, command.WorkspaceID, command.ControlEpoch); err != nil {
+		return db.GovernanceCase{}, err
+	}
 	queries := db.New(tx)
 	caseRow, err := queries.LockGovernanceCaseForUpdate(ctx, db.LockGovernanceCaseForUpdateParams{
 		WorkspaceID: command.WorkspaceID,
@@ -155,6 +167,9 @@ func (service *Service) ClaimLease(ctx context.Context, command LeaseCommand) (d
 	})
 	if err != nil {
 		return db.GovernanceCase{}, fmt.Errorf("lock governance case for lease: %w", err)
+	}
+	if caseRow.ControlEpoch != command.ControlEpoch {
+		return db.GovernanceCase{}, ErrStaleControlEpoch
 	}
 	if CaseState(caseRow.State) != command.ExpectedState || caseRow.StateRevision != command.ExpectedRevision {
 		return db.GovernanceCase{}, ErrStaleCase
@@ -182,8 +197,8 @@ func (service *Service) ClaimLease(ctx context.Context, command LeaseCommand) (d
 	return updated, nil
 }
 
-func (service *Service) ReleaseLease(ctx context.Context, workspaceID, caseID, token pgtype.UUID) (bool, error) {
-	if !validUUID(workspaceID) || !validUUID(caseID) || !validUUID(token) {
+func (service *Service) ReleaseLease(ctx context.Context, workspaceID, caseID, token pgtype.UUID, capturedControlEpoch int64) (bool, error) {
+	if !validUUID(workspaceID) || !validUUID(caseID) || !validUUID(token) || capturedControlEpoch < 1 {
 		return false, errors.New("invalid governance case lease release")
 	}
 	tx, err := service.database.Begin(ctx)
@@ -191,12 +206,19 @@ func (service *Service) ReleaseLease(ctx context.Context, workspaceID, caseID, t
 		return false, fmt.Errorf("begin governance case lease release: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := lockGovernanceControl(ctx, tx, workspaceID, capturedControlEpoch); err != nil {
+		return false, err
+	}
 	queries := db.New(tx)
-	if _, err := queries.LockGovernanceCaseForUpdate(ctx, db.LockGovernanceCaseForUpdateParams{
+	caseRow, err := queries.LockGovernanceCaseForUpdate(ctx, db.LockGovernanceCaseForUpdateParams{
 		WorkspaceID: workspaceID,
 		ID:          caseID,
-	}); err != nil {
+	})
+	if err != nil {
 		return false, fmt.Errorf("lock governance case for lease release: %w", err)
+	}
+	if caseRow.ControlEpoch != capturedControlEpoch {
+		return false, ErrStaleControlEpoch
 	}
 	count, err := queries.ReleaseGovernanceCaseLease(ctx, db.ReleaseGovernanceCaseLeaseParams{
 		WorkspaceID: workspaceID,
@@ -222,6 +244,9 @@ func (service *Service) CreateSuccessor(ctx context.Context, command SuccessorCo
 		return SuccessorResult{}, fmt.Errorf("begin governance case successor: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := lockGovernanceControl(ctx, tx, command.WorkspaceID, command.Successor.ControlEpoch); err != nil {
+		return SuccessorResult{}, err
+	}
 	queries := db.New(tx)
 	next := command.Successor
 	if err := queries.LockGovernanceCaseIdentity(ctx, db.LockGovernanceCaseIdentityParams{
@@ -238,6 +263,9 @@ func (service *Service) CreateSuccessor(ctx context.Context, command SuccessorCo
 	})
 	if err != nil {
 		return SuccessorResult{}, fmt.Errorf("lock governance case predecessor: %w", err)
+	}
+	if predecessor.ControlEpoch != next.ControlEpoch {
+		return SuccessorResult{}, ErrStaleControlEpoch
 	}
 	if predecessor.SubjectType != next.SubjectType || predecessor.SubjectID != next.SubjectID || predecessor.RuleID != next.RuleID {
 		return SuccessorResult{}, ErrSuccessorConflict
@@ -299,6 +327,27 @@ func (service *Service) CreateSuccessor(ctx context.Context, command SuccessorCo
 		return SuccessorResult{}, fmt.Errorf("commit governance case successor: %w", err)
 	}
 	return result, nil
+}
+
+func lockGovernanceControl(ctx context.Context, tx pgx.Tx, workspaceID pgtype.UUID, capturedControlEpoch int64) error {
+	if capturedControlEpoch < 1 {
+		return ErrStaleControlEpoch
+	}
+	var controlEpoch int64
+	var enabled bool
+	err := tx.QueryRow(ctx, `
+		SELECT control_epoch, settings->>'jev_governance_enabled' = 'true'
+		FROM governance_workspace_config
+		WHERE workspace_id = $1
+		FOR SHARE
+	`, workspaceID).Scan(&controlEpoch, &enabled)
+	if err != nil {
+		return ErrStaleControlEpoch
+	}
+	if !enabled || controlEpoch != capturedControlEpoch {
+		return ErrStaleControlEpoch
+	}
+	return nil
 }
 
 func (service *Service) transitionLocked(ctx context.Context, queries *db.Queries, caseRow db.GovernanceCase, command TransitionCommand) (TransitionResult, error) {
@@ -391,6 +440,7 @@ func (service *Service) validateAttemptFence(ctx context.Context, queries *db.Qu
 
 func validateTransitionCommand(command TransitionCommand) error {
 	if !validUUID(command.WorkspaceID) || !validUUID(command.CaseID) ||
+		command.ControlEpoch < 1 ||
 		!validCaseState(command.ExpectedState) || !validCaseState(command.NextState) ||
 		command.ExpectedRevision < 0 || !validEventKey(command.CauseEventKey) ||
 		!validActor(command.Actor, command.ActorID) || !validCaseReason(command.Reason) ||
@@ -411,7 +461,7 @@ func validateSuccessorCommand(command SuccessorCommand) error {
 		!validEventKey(command.CauseEventKey) || !validActor(command.Actor, command.ActorID) ||
 		!validUUID(next.WorkspaceID) || next.WorkspaceID != command.WorkspaceID ||
 		next.SubjectType == "" || !validUUID(next.SubjectID) || !validUUID(next.RuleID) ||
-		next.MaterialFingerprint == "" || next.State != string(CaseCaptured) ||
+		next.MaterialFingerprint == "" || next.ControlEpoch < 1 || next.State != string(CaseCaptured) ||
 		len(next.AuthorityLineage) == 0 || len(next.TriggerAliases) == 0 {
 		return ErrSuccessorConflict
 	}

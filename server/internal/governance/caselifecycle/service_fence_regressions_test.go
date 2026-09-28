@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -17,6 +18,7 @@ func TestStolenJevLeaseCannotComplete(t *testing.T) {
 	service := fixture.service()
 	firstToken := lifecycleUUID(t)
 	claim := LeaseCommand{WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID,
+		ControlEpoch:  fixture.caseRow.ControlEpoch,
 		ExpectedState: CaseJevEvaluating, ExpectedRevision: 0, Token: firstToken, Duration: time.Minute}
 	if _, err := service.ClaimLease(context.Background(), claim); err != nil {
 		t.Fatal(err)
@@ -29,6 +31,7 @@ func TestStolenJevLeaseCannotComplete(t *testing.T) {
 	}
 	_, err := service.Transition(context.Background(), TransitionCommand{
 		WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID,
+		ControlEpoch:  fixture.caseRow.ControlEpoch,
 		ExpectedState: CaseJevEvaluating, ExpectedRevision: 0, NextState: CaseCorrectionPending,
 		CauseEventKey: "stolen-jev-completion", Actor: ActorSystem, Reason: ReasonQualifiedProposal,
 		LeaseToken: firstToken, AttemptID: attempt.ID, AttemptFence: attempt.AttemptFence,
@@ -51,12 +54,14 @@ func TestJevCompletionAcceptsCurrentLease(t *testing.T) {
 	leaseToken := lifecycleUUID(t)
 	if _, err := fixture.service().ClaimLease(context.Background(), LeaseCommand{
 		WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID,
+		ControlEpoch:  fixture.caseRow.ControlEpoch,
 		ExpectedState: CaseJevEvaluating, ExpectedRevision: 0, Token: leaseToken, Duration: time.Minute,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	result, err := fixture.service().Transition(context.Background(), TransitionCommand{
 		WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID,
+		ControlEpoch:  fixture.caseRow.ControlEpoch,
 		ExpectedState: CaseJevEvaluating, ExpectedRevision: 0, NextState: CaseCorrectionPending,
 		CauseEventKey: "current-jev-completion", Actor: ActorSystem, Reason: ReasonQualifiedProposal,
 		LeaseToken: leaseToken, AttemptID: attempt.ID, AttemptFence: attempt.AttemptFence,
@@ -87,6 +92,7 @@ func TestJevOutcomesRequireCurrentLease(t *testing.T) {
 				firstToken := lifecycleUUID(t)
 				currentToken := firstToken
 				claim := LeaseCommand{WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID,
+					ControlEpoch:  fixture.caseRow.ControlEpoch,
 					ExpectedState: CaseJevEvaluating, ExpectedRevision: 0, Token: firstToken, Duration: time.Minute}
 				if _, err := service.ClaimLease(context.Background(), claim); err != nil {
 					t.Fatal(err)
@@ -102,6 +108,7 @@ func TestJevOutcomesRequireCurrentLease(t *testing.T) {
 				causeEventKey := "jev-" + string(outcome.state) + "-" + ownership
 				result, err := service.Transition(context.Background(), TransitionCommand{
 					WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID,
+					ControlEpoch:  fixture.caseRow.ControlEpoch,
 					ExpectedState: CaseJevEvaluating, ExpectedRevision: 0, NextState: outcome.state,
 					CauseEventKey: causeEventKey, Actor: ActorSystem, Reason: outcome.reason,
 					LeaseToken: firstToken, AttemptID: attempt.ID, AttemptFence: attempt.AttemptFence,
@@ -153,6 +160,7 @@ func TestAttemptFenceRechecksExpiryAfterAttemptLock(t *testing.T) {
 			leaseToken := lifecycleUUID(t)
 			if _, err := fixture.service().ClaimLease(context.Background(), LeaseCommand{
 				WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID,
+				ControlEpoch:  fixture.caseRow.ControlEpoch,
 				ExpectedState: CaseAgentAttempt, ExpectedRevision: 0, Token: leaseToken, Duration: test.leaseDuration,
 			}); err != nil {
 				t.Fatal(err)
@@ -184,6 +192,7 @@ func TestAttemptFenceRechecksExpiryAfterAttemptLock(t *testing.T) {
 			go func() {
 				_, err := service.Transition(ctx, TransitionCommand{
 					WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID,
+					ControlEpoch:  fixture.caseRow.ControlEpoch,
 					ExpectedState: CaseAgentAttempt, ExpectedRevision: 0, NextState: CaseCorrectionPending,
 					CauseEventKey: "expired-after-attempt-lock-wait", Actor: ActorSystem, Reason: ReasonValidProposal,
 					LeaseToken: leaseToken, AttemptID: attempt.ID, AttemptFence: attempt.AttemptFence,
@@ -204,6 +213,232 @@ func TestAttemptFenceRechecksExpiryAfterAttemptLock(t *testing.T) {
 				t.Fatalf("completion after expiry error = %v, want ErrStaleFence", observed.err)
 			}
 		})
+	}
+}
+
+func TestDisabledControlEpochFencesLifecycleWrites(t *testing.T) {
+	t.Run("new case admission", func(t *testing.T) {
+		fixture := newLifecycleFixture(t, CaseCaptured)
+		disableLifecycleControl(t, fixture)
+		_, err := fixture.queries.InsertNextGovernanceCase(context.Background(), db.InsertNextGovernanceCaseParams{
+			WorkspaceID: fixture.workspaceID, SubjectType: "issue", SubjectID: lifecycleUUID(t), SubjectRevision: 1,
+			RuleID: lifecycleUUID(t), MaterialFingerprint: "post-disable", State: string(CaseCaptured),
+			AuthorityLineage: []byte("[]"), TriggerAliases: []byte("[]"), EvidenceDigest: "evidence-post-disable",
+			RuleRevision: "rule-1", ActivationRevision: "activation-1", ConfigRevision: "config-1",
+			BudgetRootID: lifecycleUUID(t), FrozenStrategy: []byte("[]"), ControlEpoch: 1,
+		})
+		if !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatalf("post-disable case admission error = %v, want pgx.ErrNoRows", err)
+		}
+	})
+
+	t.Run("action lease claim", func(t *testing.T) {
+		fixture := newLifecycleFixture(t, CaseCorrectionPending)
+		disableLifecycleControl(t, fixture)
+		_, err := fixture.service().ClaimLease(context.Background(), LeaseCommand{
+			WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID,
+			ControlEpoch:  fixture.caseRow.ControlEpoch,
+			ExpectedState: CaseCorrectionPending, ExpectedRevision: 0,
+			Token: lifecycleUUID(t), Duration: time.Minute,
+		})
+		if !errors.Is(err, ErrStaleControlEpoch) {
+			t.Fatalf("post-disable action claim error = %v, want ErrStaleControlEpoch", err)
+		}
+		current, err := fixture.currentCase(t)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.LeaseToken.Valid || current.StateRevision != 0 {
+			t.Fatalf("stale action claim mutated lease/revision: valid=%v revision=%d", current.LeaseToken.Valid, current.StateRevision)
+		}
+	})
+
+	t.Run("queue transition", func(t *testing.T) {
+		fixture := newLifecycleFixture(t, CaseCaptured)
+		disableLifecycleControl(t, fixture)
+		_, err := fixture.service().Transition(context.Background(), TransitionCommand{
+			WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID,
+			ControlEpoch:  fixture.caseRow.ControlEpoch,
+			ExpectedState: CaseCaptured, ExpectedRevision: 0, NextState: CaseEvidenceReady,
+			CauseEventKey: "post-disable-queue-transition", Actor: ActorSystem, Reason: ReasonEvidenceCaptured,
+		})
+		if !errors.Is(err, ErrStaleControlEpoch) {
+			t.Fatalf("post-disable queue transition error = %v, want ErrStaleControlEpoch", err)
+		}
+		if transitions := fixture.countTransitions(t, "post-disable-queue-transition"); transitions != 0 {
+			t.Fatalf("stale queue transition wrote %d rows, want zero", transitions)
+		}
+	})
+
+	t.Run("correction transition", func(t *testing.T) {
+		fixture := newLifecycleFixture(t, CaseJevEvaluating)
+		disableLifecycleControl(t, fixture)
+		_, err := fixture.service().Transition(context.Background(), TransitionCommand{
+			WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID,
+			ControlEpoch:  fixture.caseRow.ControlEpoch,
+			ExpectedState: CaseJevEvaluating, ExpectedRevision: 0, NextState: CaseCorrectionPending,
+			CauseEventKey: "post-disable-correction-transition", Actor: ActorSystem, Reason: ReasonQualifiedProposal,
+			LeaseToken: lifecycleUUID(t), AttemptID: lifecycleUUID(t), AttemptFence: lifecycleUUID(t),
+		})
+		if !errors.Is(err, ErrStaleControlEpoch) {
+			t.Fatalf("post-disable correction transition error = %v, want ErrStaleControlEpoch", err)
+		}
+		if transitions := fixture.countTransitions(t, "post-disable-correction-transition"); transitions != 0 {
+			t.Fatalf("stale correction transition wrote %d rows, want zero", transitions)
+		}
+	})
+
+	t.Run("successor mutation", func(t *testing.T) {
+		fixture := newLifecycleFixture(t, CaseCaptured)
+		disableLifecycleControl(t, fixture)
+		_, err := fixture.service().CreateSuccessor(context.Background(), SuccessorCommand{
+			WorkspaceID: fixture.workspaceID, PredecessorID: fixture.caseRow.ID,
+			ExpectedState: CaseCaptured, ExpectedRevision: 0,
+			CauseEventKey: "post-disable-successor", Actor: ActorSystem,
+			Successor: db.InsertNextGovernanceCaseParams{
+				WorkspaceID: fixture.workspaceID, SubjectType: fixture.caseRow.SubjectType,
+				SubjectID: fixture.caseRow.SubjectID, SubjectRevision: 2, RuleID: fixture.caseRow.RuleID,
+				MaterialFingerprint: "post-disable-successor", State: string(CaseCaptured),
+				AuthorityLineage: []byte("[]"), TriggerAliases: []byte("[]"), EvidenceDigest: "fresh-evidence",
+				RuleRevision: "rule-2", ActivationRevision: "activation-2", ConfigRevision: "config-2",
+				ControlEpoch: 1,
+			},
+		})
+		if !errors.Is(err, ErrStaleControlEpoch) {
+			t.Fatalf("post-disable successor error = %v, want ErrStaleControlEpoch", err)
+		}
+	})
+}
+
+func TestLifecycleMutationsRejectCapturedEpochAfterControlChanges(t *testing.T) {
+	tests := []struct {
+		name    string
+		state   CaseState
+		prepare func(*testing.T, *lifecycleFixture) func() error
+	}{
+		{
+			name:  "action claim",
+			state: CaseCorrectionPending,
+			prepare: func(t *testing.T, fixture *lifecycleFixture) func() error {
+				return func() error {
+					_, err := fixture.service().ClaimLease(context.Background(), LeaseCommand{
+						WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID,
+						ControlEpoch: fixture.caseRow.ControlEpoch, ExpectedState: CaseCorrectionPending,
+						ExpectedRevision: 0, Token: lifecycleUUID(t), Duration: time.Minute,
+					})
+					return err
+				}
+			},
+		},
+		{
+			name:  "queue mutation",
+			state: CaseCaptured,
+			prepare: func(_ *testing.T, fixture *lifecycleFixture) func() error {
+				return func() error {
+					_, err := fixture.service().Transition(context.Background(), TransitionCommand{
+						WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID,
+						ControlEpoch: fixture.caseRow.ControlEpoch, ExpectedState: CaseCaptured,
+						ExpectedRevision: 0, NextState: CaseEvidenceReady,
+						CauseEventKey: "stale-queue-after-control-change", Actor: ActorSystem, Reason: ReasonEvidenceCaptured,
+					})
+					return err
+				}
+			},
+		},
+		{
+			name:  "correction mutation",
+			state: CaseJevEvaluating,
+			prepare: func(t *testing.T, fixture *lifecycleFixture) func() error {
+				attempt := insertJevAttempt(t, fixture)
+				token := lifecycleUUID(t)
+				if _, err := fixture.service().ClaimLease(context.Background(), LeaseCommand{
+					WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID,
+					ControlEpoch: fixture.caseRow.ControlEpoch, ExpectedState: CaseJevEvaluating,
+					ExpectedRevision: 0, Token: token, Duration: time.Minute,
+				}); err != nil {
+					t.Fatal(err)
+				}
+				return func() error {
+					_, err := fixture.service().Transition(context.Background(), TransitionCommand{
+						WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID,
+						ControlEpoch: fixture.caseRow.ControlEpoch, ExpectedState: CaseJevEvaluating,
+						ExpectedRevision: 0, NextState: CaseCorrectionPending,
+						CauseEventKey: "stale-correction-after-control-change", Actor: ActorSystem,
+						Reason: ReasonQualifiedProposal, LeaseToken: token,
+						AttemptID: attempt.ID, AttemptFence: attempt.AttemptFence,
+					})
+					return err
+				}
+			},
+		},
+		{
+			name:  "lease release",
+			state: CaseCorrectionPending,
+			prepare: func(t *testing.T, fixture *lifecycleFixture) func() error {
+				token := lifecycleUUID(t)
+				if _, err := fixture.service().ClaimLease(context.Background(), LeaseCommand{
+					WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID,
+					ControlEpoch: fixture.caseRow.ControlEpoch, ExpectedState: CaseCorrectionPending,
+					ExpectedRevision: 0, Token: token, Duration: time.Minute,
+				}); err != nil {
+					t.Fatal(err)
+				}
+				return func() error {
+					_, err := fixture.service().ReleaseLease(context.Background(), fixture.workspaceID,
+						fixture.caseRow.ID, token, fixture.caseRow.ControlEpoch)
+					return err
+				}
+			},
+		},
+		{
+			name:  "successor insertion",
+			state: CaseCaptured,
+			prepare: func(_ *testing.T, fixture *lifecycleFixture) func() error {
+				return func() error {
+					next := newLifecycleCaseParams(fixture, "stale-successor-after-control-change", fixture.caseRow.ControlEpoch)
+					_, err := fixture.service().CreateSuccessor(context.Background(), SuccessorCommand{
+						WorkspaceID: fixture.workspaceID, PredecessorID: fixture.caseRow.ID,
+						ExpectedState: CaseCaptured, ExpectedRevision: 0,
+						CauseEventKey: "stale-successor-invalidation", Actor: ActorSystem, Successor: next,
+					})
+					return err
+				}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		for _, controlChange := range []string{"effective config", "disable and re-enable"} {
+			t.Run(test.name+" / "+controlChange, func(t *testing.T) {
+				fixture := newLifecycleFixture(t, test.state)
+				write := test.prepare(t, fixture)
+				if controlChange == "effective config" {
+					setLifecycleControl(t, fixture, true, "correction")
+				} else {
+					setLifecycleControl(t, fixture, false, "shadow")
+					setLifecycleControl(t, fixture, true, "shadow")
+				}
+				before := snapshotLifecycleWrite(t, fixture)
+				if err := write(); !errors.Is(err, ErrStaleControlEpoch) {
+					t.Fatalf("mutation with captured epoch %d after %s = %v, want ErrStaleControlEpoch",
+						fixture.caseRow.ControlEpoch, controlChange, err)
+				}
+				assertLifecycleWriteSnapshot(t, fixture, before)
+			})
+		}
+	}
+}
+
+func disableLifecycleControl(t *testing.T, fixture *lifecycleFixture) {
+	t.Helper()
+	if _, err := fixture.pool.Exec(context.Background(), `
+		UPDATE governance_workspace_config
+		SET config_version = config_version + 1,
+		    control_epoch = control_epoch + 1,
+		    settings = jsonb_set(settings, '{jev_governance_enabled}', 'false'::jsonb, true)
+		WHERE workspace_id = $1
+	`, fixture.workspaceID); err != nil {
+		t.Fatal(err)
 	}
 }
 

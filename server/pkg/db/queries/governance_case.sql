@@ -11,6 +11,14 @@ SELECT pg_advisory_xact_lock(hashtextextended(
     0
 ));
 
+-- name: LockGovernanceWorkspaceControl :one
+SELECT control_epoch
+FROM governance_workspace_config
+WHERE workspace_id = $1
+  AND control_epoch = $2
+  AND settings->>'jev_governance_enabled' = 'true'
+FOR SHARE;
+
 -- name: LockGovernanceCaseForUpdate :one
 SELECT * FROM governance_case
 WHERE workspace_id = $1 AND id = $2
@@ -30,7 +38,7 @@ INSERT INTO governance_case (
     workspace_id, subject_type, subject_id, subject_revision, rule_id,
     generation, material_fingerprint, state, authority_lineage, trigger_aliases,
     evidence_digest, rule_revision, activation_revision, config_revision,
-    predecessor_case_id, budget_root_id, frozen_strategy, absolute_deadline,
+    predecessor_case_id, budget_root_id, frozen_strategy, absolute_deadline, control_epoch,
     evidence_epoch, refresh_count
 )
 SELECT
@@ -43,7 +51,13 @@ SELECT
           AND gc.subject_id = $3
           AND gc.rule_id = $5
     ), 0),
-    $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
+    $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+    $20, $18, $19
+FROM governance_workspace_config AS control
+WHERE control.workspace_id = $1
+  AND control.control_epoch = $20
+  AND control.settings->>'jev_governance_enabled' = 'true'
+FOR SHARE
 RETURNING *;
 
 -- name: FindGovernanceCaseTransitionByCause :one

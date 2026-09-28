@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"fmt"
@@ -25,6 +26,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
+	"github.com/multica-ai/multica/server/internal/governance/credential"
 	"github.com/multica-ai/multica/server/internal/governance/receipt"
 	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
@@ -1309,6 +1311,26 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	} else {
 		slog.Info("jev integration disabled (JEV_API_KEY not set)")
 	}
+	// Per-workspace Jev credentials are separate from the legacy process-wide
+	// JEV_API_KEY. Without a dedicated at-rest key, the management endpoints
+	// fail closed and cannot write plaintext. The feature remains default-off.
+	if key, err := credential.DecodeKey("current", strings.TrimSpace(os.Getenv("MULTICA_JEV_SECRET_KEY"))); err == nil {
+		key.ID = credential.KeyID(key.Material)
+		keys := []credential.Key{key}
+		if previous, err := credential.DecodeKey("previous", strings.TrimSpace(os.Getenv("MULTICA_JEV_SECRET_KEY_PREVIOUS"))); err == nil {
+			previous.ID = credential.KeyID(previous.Material)
+			if !bytes.Equal(previous.Material, key.Material) {
+				keys = append(keys, previous)
+			}
+		}
+		if ring, err := credential.NewKeyring(keys...); err != nil {
+			slog.Error("jev: credential keyring disabled", "error", err)
+		} else {
+			h.JevCredentials = ring
+		}
+	} else {
+		slog.Info("jev credential storage disabled (MULTICA_JEV_SECRET_KEY not set)")
+	}
 
 	// VCS at-rest encryption: the box encrypts per-workspace access tokens and
 	// webhook secrets for token-based providers (Forgejo / Gitea / GitLab).
@@ -1738,6 +1760,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// The payload is names and transports only; the stored
 					// entries are write-only.
 					r.Get("/mcp-servers", h.ListWorkspaceMcpServers)
+					r.Get("/governance/config", h.GetGovernanceConfig)
+					r.Get("/jev/credential", h.GetJevCredential)
 					// Installed Plugins are member-visible so a member can
 					// see what is mounted in their workspace and which scopes
 					// it holds; install / configure / remove stay admin-only.
@@ -1752,6 +1776,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
 					r.Put("/", h.UpdateWorkspace)
 					r.Patch("/", h.UpdateWorkspace)
+					r.Patch("/governance/config", h.PatchGovernanceConfig)
+					r.Put("/jev/credential", h.PutJevCredential)
+					r.Delete("/jev/credential", h.DeleteJevCredential)
 					r.Post("/members", h.CreateInvitation)
 					r.Route("/members/{memberId}", func(r chi.Router) {
 						r.Patch("/", h.UpdateMember)

@@ -15,8 +15,9 @@ type transactionBeginner interface {
 
 // CreateOrResolveGovernanceCase returns the prior case for the same material
 // fingerprint, or atomically allocates the next generation for this identity.
-// The identity lock must precede reads in separate statements so a waiter gets
-// a post-lock Read Committed snapshot rather than a stale CTE snapshot.
+// The control lock must precede the identity lock so configuration writes and
+// case creation share one lock order. The identity lock precedes reads in
+// separate statements so a waiter gets a post-lock Read Committed snapshot.
 func (q *Queries) CreateOrResolveGovernanceCase(ctx context.Context, arg InsertNextGovernanceCaseParams) (GovernanceCase, error) {
 	beginner, ok := q.db.(transactionBeginner)
 	if !ok {
@@ -29,6 +30,12 @@ func (q *Queries) CreateOrResolveGovernanceCase(ctx context.Context, arg InsertN
 	defer tx.Rollback(ctx)
 
 	txq := q.WithTx(tx)
+	if _, err := txq.LockGovernanceWorkspaceControl(ctx, LockGovernanceWorkspaceControlParams{
+		WorkspaceID:  arg.WorkspaceID,
+		ControlEpoch: arg.ControlEpoch,
+	}); err != nil {
+		return GovernanceCase{}, fmt.Errorf("lock governance workspace control: %w", err)
+	}
 	identity := LockGovernanceCaseIdentityParams{
 		WorkspaceID: arg.WorkspaceID,
 		SubjectType: pgtype.Text{String: arg.SubjectType, Valid: true},
