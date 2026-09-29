@@ -824,6 +824,11 @@ jobs:
           bash deploy/cd/test-cutover.sh
           bash deploy/cd/test-ab-health-check.sh
 
+      # CHE-823: the CLI default wall-clock bound must cover docker exec
+      # overhead while the SQL statement budget stays 500ms.
+      - name: Test quiescence CLI timeout default
+        run: bash deploy/cd/test-quiescence-cli-timeout.sh
+
   frontend-quality:
     needs: changes
     if: ${{ needs.changes.outputs.quality_only == 'true' }}
