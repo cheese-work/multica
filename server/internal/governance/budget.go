@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -49,6 +51,8 @@ type BudgetReserveCommand struct {
 	RootCapMicroUSD        int64
 	WindowCapMicroUSD      int64
 	MaxAttemptCostMicroUSD int64
+	MaxEvaluationsPerCase  int64
+	PolicyVersion          string
 	RetryAllowance         int64
 	RetryPolicyBounded     bool
 	SlotLimit              int64
@@ -150,6 +154,18 @@ func (service *BudgetService) reserveInTransaction(ctx context.Context, tx pgx.T
 		return BudgetReservationResult{}, ErrBudgetConflict
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return BudgetReservationResult{}, err
+	}
+	if command.MaxEvaluationsPerCase > 0 {
+		var evaluations int64
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM governance_budget_reservation
+			WHERE workspace_id = $1 AND case_id = $2 AND resource = $3
+		`, command.WorkspaceID, command.CaseID, command.Resource).Scan(&evaluations); err != nil {
+			return BudgetReservationResult{}, err
+		}
+		if evaluations >= command.MaxEvaluationsPerCase {
+			return BudgetReservationResult{}, ErrBudgetLimit
+		}
 	}
 	if _, err := guards.Reserve(ctx, command.Resource, command.ReservationID, command.ControlEpoch, command.SlotLimit); err != nil {
 		return BudgetReservationResult{}, err
@@ -462,6 +478,8 @@ func validBudgetReserveCommand(command BudgetReserveCommand, windowStart, window
 		validConcurrencyUUID(command.AttemptID) && validConcurrencyUUID(command.ObligationID) &&
 		command.Resource != "" && command.ControlEpoch >= 0 && command.RootCapMicroUSD > 0 &&
 		command.WindowCapMicroUSD > 0 && command.MaxAttemptCostMicroUSD > 0 && command.RetryAllowance >= 0 &&
+		command.MaxEvaluationsPerCase >= 0 && command.PolicyVersion == strings.TrimSpace(command.PolicyVersion) &&
+		utf8.ValidString(command.PolicyVersion) && utf8.RuneCountInString(command.PolicyVersion) <= 64 &&
 		command.RetryPolicyBounded && command.SlotLimit >= 0 && validBudgetKey(command.EventKey) &&
 		windowStart.Before(windowEnd)
 }

@@ -16,7 +16,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/governance"
@@ -111,6 +110,18 @@ type blockingGovernanceProvider struct {
 	calls   atomic.Int64
 }
 
+type handlerTestBudgetAdmission struct{}
+
+func (handlerTestBudgetAdmission) ReserveEvaluation(_ context.Context, _ *governance.DeploymentBudgetPolicy, input governance.EvaluationBudgetInput) (governance.BudgetReservationResult, error) {
+	return governance.BudgetReservationResult{Reservation: db.GovernanceBudgetReservation{
+		WorkspaceID: input.WorkspaceID, ReservationID: input.AttemptID, Revision: 1, TotalCapMicroUsd: 1,
+	}}, nil
+}
+
+func (handlerTestBudgetAdmission) SettleEvaluation(context.Context, *governance.DeploymentBudgetPolicy, governance.BudgetReservationResult, string, int64, int64, bool) error {
+	return nil
+}
+
 type observedTxStarter struct {
 	inner   txStarter
 	started chan<- int32
@@ -160,7 +171,11 @@ func withGovernanceObserver(t *testing.T, provider governance.Provider, store re
 func withGovernanceObserverWriteBudget(t *testing.T, provider governance.Provider, store receipt.Store, writeBudget time.Duration) {
 	t.Helper()
 	previous := testHandler.GovernanceReceipts
-	testHandler.GovernanceReceipts = &receipt.Observer{Provider: provider, Store: store, WriteBudget: writeBudget}
+	testHandler.GovernanceReceipts = &receipt.Observer{
+		Provider: provider, Store: store, WriteBudget: writeBudget,
+		BudgetAdmission: handlerTestBudgetAdmission{},
+		BudgetPolicy:    &governance.DeploymentBudgetPolicy{Version: "test-v1", Provider: "jev", Model: "test-model"},
+	}
 	t.Cleanup(func() { testHandler.GovernanceReceipts = previous })
 }
 
@@ -319,7 +334,7 @@ func TestCreateComment_GovernanceFlagOn_ProviderSucceeds_ResponseUnaffected(t *t
 	}
 }
 
-func TestGovernanceDisableWaitsForInFlightEvaluationAdmission(t *testing.T) {
+func TestGovernanceDisableFencesReceiptAfterAdmittedEvaluation(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -362,43 +377,16 @@ func TestGovernanceDisableWaitsForInFlightEvaluationAdmission(t *testing.T) {
 		WHERE workspace_id = $1
 		FOR UPDATE NOWAIT
 	`, workspaceID).Scan(&lockedWorkspaceID)
-	var postgresErr *pgconn.PgError
-	if !errors.As(lockErr, &postgresErr) || postgresErr.Code != "55P03" {
-		t.Fatalf("in-flight evaluation control lock error = %v, want PostgreSQL lock-not-available", lockErr)
+	if lockErr != nil {
+		t.Fatalf("control lock while provider is running = %v, want committed snapshot lock released", lockErr)
 	}
-	originalStarter := testHandler.TxStarter
-	disablePIDs := make(chan int32, 1)
-	testHandler.TxStarter = observedTxStarter{inner: originalStarter, started: disablePIDs}
-	t.Cleanup(func() { testHandler.TxStarter = originalStarter })
 	expectedVersion := int64(1)
 	disabled := false
 	requestID := uuid.New()
-	disableDone := make(chan error, 1)
-	go func() {
-		_, writeErr := testHandler.writeGovernanceConfig(context.Background(), workspaceID, actorID, requestID, strings.Repeat("0", 64), governanceConfigPatch{
-			RequestID: requestID.String(), ExpectedVersion: &expectedVersion, JevGovernanceEnabled: &disabled,
-		})
-		disableDone <- writeErr
-	}()
-	var disablePID int32
-	select {
-	case disablePID = <-disablePIDs:
-	case writeErr := <-disableDone:
-		close(provider.release)
-		t.Fatalf("master disable returned before exposing its backend: %v", writeErr)
-	case <-time.After(5 * time.Second):
-		close(provider.release)
-		t.Fatal("master disable transaction did not begin")
-	}
-	if err := waitForGovernanceBackendLockWait(t, context.Background(), disablePID, 5*time.Second); err != nil {
-		close(provider.release)
-		t.Fatalf("disable did not wait for the admitted evaluation: %v", err)
-	}
-	select {
-	case writeErr := <-disableDone:
-		close(provider.release)
-		t.Fatalf("master disable completed during admitted evaluation: %v", writeErr)
-	default:
+	if _, err := testHandler.writeGovernanceConfig(context.Background(), workspaceID, actorID, requestID, strings.Repeat("0", 64), governanceConfigPatch{
+		RequestID: requestID.String(), ExpectedVersion: &expectedVersion, JevGovernanceEnabled: &disabled,
+	}); err != nil {
+		t.Fatalf("master disable after reservation: %v", err)
 	}
 	close(provider.release)
 	select {
@@ -413,10 +401,6 @@ func TestGovernanceDisableWaitsForInFlightEvaluationAdmission(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || response.ID == "" {
 		t.Fatalf("decode observed comment response id=%q err=%v: %s", response.ID, err, recorder.Body.String())
 	}
-	if err := <-disableDone; err != nil {
-		t.Fatalf("master disable: %v", err)
-	}
-	testHandler.TxStarter = originalStarter
 	testHandler.GovernanceReceipts.WaitForIdle()
 	config, err := loadGovernanceControl(context.Background(), testPool, workspaceID)
 	if err != nil {
@@ -424,6 +408,9 @@ func TestGovernanceDisableWaitsForInFlightEvaluationAdmission(t *testing.T) {
 	}
 	if config.Settings.JevGovernanceEnabled || config.ControlEpoch != 2 {
 		t.Fatalf("disabled config = enabled:%v epoch:%d, want false/2", config.Settings.JevGovernanceEnabled, config.ControlEpoch)
+	}
+	if got := governanceReceiptCountForComment(t, response.ID); got != 0 {
+		t.Fatalf("receipt rows for stale admitted evaluation = %d, want 0", got)
 	}
 	second := httptest.NewRecorder()
 	secondRequest := withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": "after disable acknowledgement"}), "id", issueID)

@@ -26,6 +26,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
+	"github.com/multica-ai/multica/server/internal/governance"
 	"github.com/multica-ai/multica/server/internal/governance/credential"
 	"github.com/multica-ai/multica/server/internal/governance/receipt"
 	"github.com/multica-ai/multica/server/internal/handler"
@@ -59,6 +60,10 @@ var defaultOrigins = []string{
 }
 
 const pluginBridgePrefix = "/api/plugin-bridge/v1"
+
+type serverBudgetClock struct{}
+
+func (serverBudgetClock) Now() time.Time { return time.Now().UTC() }
 
 // corsAllowedHeaders must list every header the browser clients send. A header
 // missing here fails the preflight, so the request never reaches the handler at
@@ -463,7 +468,22 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// attempting a call, which is the intended no-key, no-network behavior
 	// for D03. Wiring a live jev.Client here is explicitly out of scope
 	// until a later delivery lifts the CHE-697 viability block.
-	h.GovernanceReceipts = &receipt.Observer{Store: queries}
+	budgetPolicy, budgetPolicyErr := governance.ParseDeploymentBudgetPolicy(os.Getenv("MULTICA_GOVERNANCE_BUDGET_POLICY"))
+	if budgetPolicyErr != nil {
+		slog.Error("governance deployment budget policy is invalid; evaluation admission fails closed", "error", budgetPolicyErr)
+	} else if budgetPolicy == nil {
+		slog.Warn("governance deployment budget policy is unset; evaluation admission fails closed", "configuration", "MULTICA_GOVERNANCE_BUDGET_POLICY")
+	}
+	var budgetAdmission receipt.BudgetAdmission
+	if pool != nil {
+		budgetService, budgetServiceErr := governance.NewBudgetService(pool, serverBudgetClock{})
+		if budgetServiceErr != nil {
+			slog.Error("governance budget service unavailable; evaluation admission fails closed", "error", budgetServiceErr)
+		} else {
+			budgetAdmission = budgetService
+		}
+	}
+	h.GovernanceReceipts = &receipt.Observer{Store: queries, BudgetAdmission: budgetAdmission, BudgetPolicy: budgetPolicy}
 	h.TaskService.Metrics = opts.BusinessMetrics
 	h.IssueService.Metrics = opts.BusinessMetrics
 	entitlementClient, entitlementErr := entitlement.New(entitlement.Config{

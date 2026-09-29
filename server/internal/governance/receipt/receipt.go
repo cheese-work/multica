@@ -37,15 +37,52 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/governance"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/jev"
 )
+
+// attemptIDNamespace is a fixed, arbitrary namespace UUID used only to
+// deterministically derive a per-evaluation-attempt identity (see
+// attemptID). It has no meaning beyond that — any fixed value works, since
+// what matters is that every caller of attemptID uses the same one.
+var attemptIDNamespace = uuid.MustParse("6f6d0f0a-6e29-4c60-9d61-6b3f2a2ee5aa")
+
+// attemptID derives BudgetReserveCommand's AttemptID (and therefore its
+// ReservationID — see governance.ReserveEvaluation) from the comment,
+// trigger, and revision this observation is for, rather than from CommentID
+// alone.
+//
+// Before this (CHE-707 review B1), every observation for a comment — its
+// create AND every later edit — passed the bare CommentID as AttemptID.
+// governance.ReserveEvaluation uses AttemptID as ReservationID directly, so
+// the create's reservation row was reused as the edit's: readBudgetReservation
+// finds a same-window edit request-digest mismatch and rejects it with
+// ErrBudgetConflict, or — once the create has settled — Reserve's own
+// "already exists" duplicate path returns the settled row, which
+// decisionResult/evaluate then treats as ReasonError. Either way every edit
+// evaluation after the first observation on a comment was refused, forever,
+// regardless of max_evaluations headroom.
+//
+// ObligationID stays CommentID unchanged: that is the durable "same
+// real-world obligation" identity the final-credit one-claim invariant
+// (TestReserveEvaluationAllowsOnlyOneConcurrentFinalCreditClaim) keys on,
+// and this fix does not touch it. AttemptID/ReservationID identifies one
+// evaluation ATTEMPT; ObligationID identifies the comment that attempt is
+// evaluating — they were wrongly collapsed into the same value, not wrongly
+// separate concepts.
+func attemptID(in Input) pgtype.UUID {
+	name := fmt.Sprintf("%x:%s:%d", in.CommentID.Bytes, in.Trigger, in.CommentRevision)
+	return pgtype.UUID{Bytes: uuid.NewSHA1(attemptIDNamespace, []byte(name)), Valid: true}
+}
 
 // Budget bounds the governance.Evaluate call: provider round trip plus
 // local decision logic. CHE-685 fixes this at 50ms — tight enough that a
@@ -158,17 +195,31 @@ type Store interface {
 	InsertGovernanceReceipt(ctx context.Context, arg db.InsertGovernanceReceiptParams) (db.GovernanceReceipt, error)
 }
 
+type BudgetAdmission interface {
+	ReserveEvaluation(context.Context, *governance.DeploymentBudgetPolicy, governance.EvaluationBudgetInput) (governance.BudgetReservationResult, error)
+	SettleEvaluation(context.Context, *governance.DeploymentBudgetPolicy, governance.BudgetReservationResult, string, int64, int64, bool) error
+}
+
 // Input is one observation request: everything [Observer.Observe] needs to
 // run governance.Evaluate and persist the outcome. WorkspaceID, IssueID, and
 // CommentID are the receipt's owner-scoping key; Eval is passed through to
 // governance.Evaluate unchanged.
+//
+// CommentRevision distinguishes one evaluation attempt on this comment from
+// another (a create and every later edit each get their own attempt/
+// reservation identity — see attemptID's doc, CHE-707 review B1). Callers
+// that cannot supply a real revision (e.g. tests) may leave it zero; every
+// such call then shares one attempt identity, same as before this field
+// existed.
 type Input struct {
-	WorkspaceID  pgtype.UUID
-	ControlEpoch int64
-	IssueID      pgtype.UUID
-	CommentID    pgtype.UUID
-	Trigger      Trigger
-	Eval         governance.Input
+	WorkspaceID     pgtype.UUID
+	ControlEpoch    int64
+	Limits          governance.OperatingLimits
+	IssueID         pgtype.UUID
+	CommentID       pgtype.UUID
+	CommentRevision int64
+	Trigger         Trigger
+	Eval            governance.Input
 }
 
 // Observer runs bounded, best-effort governance observations with a
@@ -196,7 +247,9 @@ type Observer struct {
 	// nil Provider records ReasonError without attempting a call. Wiring
 	// a live provider is out of scope for this delivery; every production
 	// value here today is nil, and every test value is a fake.
-	Provider governance.Provider
+	Provider        governance.Provider
+	BudgetAdmission BudgetAdmission
+	BudgetPolicy    *governance.DeploymentBudgetPolicy
 	// Store persists the receipt. A nil Store makes Observe a no-op
 	// (nothing to observe into), used defensively so a caller that wires
 	// the Observer but forgets Store fails safe rather than panicking on
@@ -513,6 +566,26 @@ func (o *Observer) evaluate(ctx context.Context, in Input) (Result, <-chan struc
 		close(closed)
 		return Result{Status: "error", ShedReason: ReasonError}, closed
 	}
+	if o.BudgetAdmission == nil || o.BudgetPolicy == nil {
+		closed := make(chan struct{})
+		close(closed)
+		return Result{Status: "error", ShedReason: ReasonError}, closed
+	}
+	in.Eval.ExpectedModel = o.BudgetPolicy.Model
+	attempt := attemptID(in)
+	reservation, err := o.BudgetAdmission.ReserveEvaluation(ctx, o.BudgetPolicy, governance.EvaluationBudgetInput{
+		WorkspaceID:  in.WorkspaceID,
+		CaseID:       in.IssueID,
+		AttemptID:    attempt,
+		ObligationID: in.CommentID,
+		ControlEpoch: in.ControlEpoch,
+		Limits:       in.Limits,
+	})
+	if err != nil || reservation.Duplicate {
+		closed := make(chan struct{})
+		close(closed)
+		return Result{Status: "error", ShedReason: ReasonError}, closed
+	}
 
 	type outcome struct {
 		decision governance.Decision
@@ -520,21 +593,33 @@ func (o *Observer) evaluate(ctx context.Context, in Input) (Result, <-chan struc
 	}
 	done := make(chan outcome, 1)
 	goroutineDone := make(chan struct{})
+	provider := &usageTrackingProvider{provider: o.Provider}
 	go func() {
 		defer close(goroutineDone)
+		var result outcome
 		defer func() {
-			// Panic containment: Evaluate runs on its own goroutine here
-			// so a slow OR panicking fake/live provider can never take
-			// down the caller's goroutine, and so the select below can
-			// enforce Budget even against a provider that ignores ctx
-			// cancellation. An unrecovered panic on a bare goroutine
-			// would otherwise crash the whole process.
 			if rec := recover(); rec != nil {
-				done <- outcome{err: errPanic(rec)}
+				result = outcome{err: errPanic(rec)}
 			}
+			inputTokens, outputTokens, usageKnown := provider.usage()
+			settleCtx, cancel := context.WithTimeout(context.Background(), DefaultWriteBudget)
+			// receiptID must be unique per evaluation ATTEMPT, not per comment
+			// (governance_budget_reservation_receipt_uidx is unique on
+			// (workspace_id, settlement_receipt_id)) — using the bare
+			// CommentID here reproduced CHE-707 review B1 one level deeper
+			// even after AttemptID/ReservationID stopped colliding: the
+			// create's settle claimed the comment's receipt id, and every
+			// later edit's settle then hit this unique constraint and was
+			// reported back to Observe's caller as a generic ReasonError,
+			// indistinguishable from the original bug's symptom.
+			settleErr := o.BudgetAdmission.SettleEvaluation(settleCtx, o.BudgetPolicy, reservation, attempt.String(), inputTokens, outputTokens, usageKnown)
+			cancel()
+			if settleErr != nil {
+				result = outcome{err: settleErr}
+			}
+			done <- result
 		}()
-		decision, err := governance.Evaluate(ctx, o.Provider, in.Eval)
-		done <- outcome{decision: decision, err: err}
+		result.decision, result.err = governance.Evaluate(ctx, provider, in.Eval)
 	}()
 
 	select {
@@ -543,6 +628,39 @@ func (o *Observer) evaluate(ctx context.Context, in Input) (Result, <-chan struc
 	case out := <-done:
 		return decisionResult(out.decision, out.err), goroutineDone
 	}
+}
+
+type usageTrackingProvider struct {
+	provider governance.Provider
+	mu       sync.Mutex
+	called   bool
+	input    int64
+	output   int64
+	known    bool
+}
+
+func (provider *usageTrackingProvider) Evaluate(ctx context.Context, request jev.Request) (*jev.Response, error) {
+	provider.mu.Lock()
+	provider.called = true
+	provider.mu.Unlock()
+	response, err := provider.provider.Evaluate(ctx, request)
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if response != nil {
+		provider.input = int64(response.Usage.InputTokens)
+		provider.output = int64(response.Usage.OutputTokens)
+		provider.known = provider.input > 0 || provider.output > 0
+	}
+	return response, err
+}
+
+func (provider *usageTrackingProvider) usage() (int64, int64, bool) {
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if !provider.called {
+		return 0, 0, true
+	}
+	return provider.input, provider.output, provider.known
 }
 
 // decisionResult classifies a completed governance.Evaluate call. Per
