@@ -844,7 +844,11 @@ function connOptsFromArgs(args) {
   const databaseUrl = option("--database-url", args, { required: false, fallback: process.env.DATABASE_URL }) || fail("missing --database-url");
   const dockerNetwork = option("--psql-via-docker-network", args, { required: false, fallback: undefined });
   const dockerExecContainer = option("--psql-via-docker-exec", args, { required: false, fallback: undefined });
-  const queryTimeoutMs = Number(option("--query-timeout-ms", args, { required: false, fallback: String(DEFAULT_QUERY_TIMEOUT_MS) }));
+  // The CLI default is the WALL-CLOCK default, never the 500ms statement
+  // budget: cutover.sh omits --query-timeout-ms, and a 500ms outer bound
+  // killed ordinary `docker exec` latency on C00 (CHE-823). runPsql still
+  // caps the server-side statement_timeout at DEFAULT_QUERY_TIMEOUT_MS.
+  const queryTimeoutMs = Number(option("--query-timeout-ms", args, { required: false, fallback: String(DEFAULT_WALL_CLOCK_TIMEOUT_MS) }));
   return { databaseUrl, dockerNetwork, dockerExecContainer, queryTimeoutMs };
 }
 
