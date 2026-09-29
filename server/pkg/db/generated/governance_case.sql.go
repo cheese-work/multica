@@ -11,6 +11,80 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const associateGovernanceAttemptWithCase = `-- name: AssociateGovernanceAttemptWithCase :one
+UPDATE governance_case AS case_record
+SET current_attempt_id = attempt.id,
+    updated_at = $1::timestamptz
+FROM governance_attempt AS attempt
+WHERE case_record.workspace_id = $2::uuid
+  AND case_record.id = $3::uuid
+  AND case_record.state = 'agent_attempt'
+  AND case_record.state_revision = $4::bigint
+  AND case_record.current_attempt_id = $5::uuid
+  AND attempt.workspace_id = case_record.workspace_id
+  AND attempt.case_id = case_record.id
+  AND attempt.id = $6::uuid
+  AND attempt.obligation_id = $7::uuid
+RETURNING case_record.id, case_record.workspace_id, case_record.subject_type, case_record.subject_id, case_record.subject_revision, case_record.rule_id, case_record.generation, case_record.material_fingerprint, case_record.state, case_record.state_revision, case_record.authority_lineage, case_record.trigger_aliases, case_record.evidence_id, case_record.evidence_digest, case_record.rule_revision, case_record.activation_revision, case_record.config_revision, case_record.lease_token, case_record.lease_expires_at, case_record.current_attempt_id, case_record.current_action_id, case_record.predecessor_case_id, case_record.budget_root_id, case_record.evidence_epoch, case_record.refresh_count, case_record.absolute_deadline, case_record.frozen_strategy, case_record.reason, case_record.created_at, case_record.updated_at, case_record.control_epoch
+`
+
+type AssociateGovernanceAttemptWithCaseParams struct {
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	CaseID            pgtype.UUID        `json:"case_id"`
+	StateRevision     int64              `json:"state_revision"`
+	ExpectedAttemptID pgtype.UUID        `json:"expected_attempt_id"`
+	AttemptID         pgtype.UUID        `json:"attempt_id"`
+	ObligationID      pgtype.UUID        `json:"obligation_id"`
+}
+
+func (q *Queries) AssociateGovernanceAttemptWithCase(ctx context.Context, arg AssociateGovernanceAttemptWithCaseParams) (GovernanceCase, error) {
+	row := q.db.QueryRow(ctx, associateGovernanceAttemptWithCase,
+		arg.UpdatedAt,
+		arg.WorkspaceID,
+		arg.CaseID,
+		arg.StateRevision,
+		arg.ExpectedAttemptID,
+		arg.AttemptID,
+		arg.ObligationID,
+	)
+	var i GovernanceCase
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SubjectType,
+		&i.SubjectID,
+		&i.SubjectRevision,
+		&i.RuleID,
+		&i.Generation,
+		&i.MaterialFingerprint,
+		&i.State,
+		&i.StateRevision,
+		&i.AuthorityLineage,
+		&i.TriggerAliases,
+		&i.EvidenceID,
+		&i.EvidenceDigest,
+		&i.RuleRevision,
+		&i.ActivationRevision,
+		&i.ConfigRevision,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.CurrentAttemptID,
+		&i.CurrentActionID,
+		&i.PredecessorCaseID,
+		&i.BudgetRootID,
+		&i.EvidenceEpoch,
+		&i.RefreshCount,
+		&i.AbsoluteDeadline,
+		&i.FrozenStrategy,
+		&i.Reason,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ControlEpoch,
+	)
+	return i, err
+}
+
 const deleteExpiredGovernanceAttemptsForWorkspace = `-- name: DeleteExpiredGovernanceAttemptsForWorkspace :execrows
 DELETE FROM governance_attempt AS attempt
 USING governance_case AS case_record
@@ -420,6 +494,81 @@ type InsertGovernanceAttemptParams struct {
 
 func (q *Queries) InsertGovernanceAttempt(ctx context.Context, arg InsertGovernanceAttemptParams) (GovernanceAttempt, error) {
 	row := q.db.QueryRow(ctx, insertGovernanceAttempt,
+		arg.WorkspaceID,
+		arg.CaseID,
+		arg.Ordinal,
+		arg.Kind,
+		arg.CandidateID,
+		arg.TaskID,
+		arg.ObligationID,
+		arg.InputDigest,
+		arg.AttemptFence,
+		arg.DeadlineAt,
+		arg.Confidence,
+		arg.Result,
+		arg.Usage,
+	)
+	var i GovernanceAttempt
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.CaseID,
+		&i.Ordinal,
+		&i.Kind,
+		&i.CandidateID,
+		&i.TaskID,
+		&i.ObligationID,
+		&i.InputDigest,
+		&i.AttemptFence,
+		&i.ClaimedAt,
+		&i.DeadlineAt,
+		&i.TerminalReason,
+		&i.TerminalAt,
+		&i.Confidence,
+		&i.Result,
+		&i.Usage,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.RedactedAt,
+		&i.LastHeartbeatAt,
+	)
+	return i, err
+}
+
+const insertGovernanceAttemptWithID = `-- name: InsertGovernanceAttemptWithID :one
+INSERT INTO governance_attempt (
+    id, workspace_id, case_id, ordinal, kind, candidate_id, task_id, obligation_id,
+    input_digest, attempt_fence, deadline_at, confidence, result, usage
+) VALUES (
+    $1::uuid, $2::uuid, $3::uuid,
+    $4::integer, $5::text, $6::uuid,
+    $7::uuid, $8::uuid, $9::text,
+    $10::uuid, $11::timestamptz,
+    $12::jsonb, $13::jsonb, $14::jsonb
+)
+RETURNING id, workspace_id, case_id, ordinal, kind, candidate_id, task_id, obligation_id, input_digest, attempt_fence, claimed_at, deadline_at, terminal_reason, terminal_at, confidence, result, usage, created_at, updated_at, redacted_at, last_heartbeat_at
+`
+
+type InsertGovernanceAttemptWithIDParams struct {
+	ID           pgtype.UUID        `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	CaseID       pgtype.UUID        `json:"case_id"`
+	Ordinal      int32              `json:"ordinal"`
+	Kind         string             `json:"kind"`
+	CandidateID  pgtype.UUID        `json:"candidate_id"`
+	TaskID       pgtype.UUID        `json:"task_id"`
+	ObligationID pgtype.UUID        `json:"obligation_id"`
+	InputDigest  string             `json:"input_digest"`
+	AttemptFence pgtype.UUID        `json:"attempt_fence"`
+	DeadlineAt   pgtype.Timestamptz `json:"deadline_at"`
+	Confidence   []byte             `json:"confidence"`
+	Result       []byte             `json:"result"`
+	Usage        []byte             `json:"usage"`
+}
+
+func (q *Queries) InsertGovernanceAttemptWithID(ctx context.Context, arg InsertGovernanceAttemptWithIDParams) (GovernanceAttempt, error) {
+	row := q.db.QueryRow(ctx, insertGovernanceAttemptWithID,
+		arg.ID,
 		arg.WorkspaceID,
 		arg.CaseID,
 		arg.Ordinal,

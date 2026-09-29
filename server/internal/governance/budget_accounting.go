@@ -415,27 +415,47 @@ func findBudgetJournal(ctx context.Context, tx pgx.Tx, workspaceID, reservationI
 }
 
 func insertBudgetOutbox(ctx context.Context, tx pgx.Tx, workspaceID, reservationID pgtype.UUID, eventKey, eventType string, caseID, attemptID, obligationID pgtype.UUID) error {
+	_, err := insertBudgetOutboxIntent(ctx, tx, workspaceID, reservationID, eventKey, eventType, caseID, attemptID, obligationID, "")
+	return err
+}
+
+func insertBudgetOutboxIntent(ctx context.Context, tx pgx.Tx, workspaceID, reservationID pgtype.UUID, eventKey, eventType string, caseID, attemptID, obligationID pgtype.UUID, admissionDigest string) (pgtype.UUID, error) {
 	payload, err := json.Marshal(struct {
-		ReservationID string `json:"reservation_id"`
-		CaseID        string `json:"case_id"`
-		AttemptID     string `json:"attempt_id"`
-		ObligationID  string `json:"obligation_id"`
+		ReservationID   string `json:"reservation_id"`
+		CaseID          string `json:"case_id"`
+		AttemptID       string `json:"attempt_id"`
+		ObligationID    string `json:"obligation_id"`
+		AdmissionDigest string `json:"admission_digest,omitempty"`
 	}{
-		ReservationID: budgetUUIDString(reservationID),
-		CaseID:        budgetUUIDString(caseID),
-		AttemptID:     budgetUUIDString(attemptID),
-		ObligationID:  budgetUUIDString(obligationID),
+		ReservationID:   budgetUUIDString(reservationID),
+		CaseID:          budgetUUIDString(caseID),
+		AttemptID:       budgetUUIDString(attemptID),
+		ObligationID:    budgetUUIDString(obligationID),
+		AdmissionDigest: admissionDigest,
 	})
 	if err != nil {
-		return err
+		return pgtype.UUID{}, err
 	}
-	_, err = tx.Exec(ctx, `
+	var eventID pgtype.UUID
+	err = tx.QueryRow(ctx, `
 		INSERT INTO governance_budget_outbox (
 			workspace_id, reservation_id, event_key, event_type, case_id,
 			attempt_id, obligation_id, payload
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-	`, workspaceID, reservationID, eventKey, eventType, caseID, attemptID, obligationID, payload)
-	return err
+		RETURNING event_id
+	`, workspaceID, reservationID, eventKey, eventType, caseID, attemptID, obligationID, payload).Scan(&eventID)
+	return eventID, err
+}
+
+func readBudgetOutboxIntent(ctx context.Context, tx pgx.Tx, workspaceID, reservationID pgtype.UUID, eventKey string) (pgtype.UUID, string, error) {
+	var eventID pgtype.UUID
+	var admissionDigest string
+	err := tx.QueryRow(ctx, `
+		SELECT event_id, COALESCE(payload->>'admission_digest', '')
+		FROM governance_budget_outbox
+		WHERE workspace_id = $1 AND reservation_id = $2 AND event_key = $3 AND event_type = 'admit'
+	`, workspaceID, reservationID, eventKey).Scan(&eventID, &admissionDigest)
+	return eventID, admissionDigest, err
 }
 
 func budgetReserveDigest(command BudgetReserveCommand, windowStart, windowEnd time.Time) (string, error) {
