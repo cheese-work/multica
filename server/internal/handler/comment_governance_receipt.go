@@ -144,10 +144,11 @@ func buildGovernanceObservationInput(issue db.Issue, comment db.Comment, trig re
 	}
 
 	return receipt.Input{
-		WorkspaceID: issue.WorkspaceID,
-		IssueID:     issue.ID,
-		CommentID:   comment.ID,
-		Trigger:     trig,
+		WorkspaceID:     issue.WorkspaceID,
+		IssueID:         issue.ID,
+		CommentID:       comment.ID,
+		CommentRevision: comment.Revision,
+		Trigger:         trig,
 		Eval: governance.Input{
 			State:            comment.Content,
 			Candidates:       []governance.Candidate{candidate},

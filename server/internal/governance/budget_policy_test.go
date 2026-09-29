@@ -20,11 +20,12 @@ func TestParseDeploymentBudgetPolicyFailsClosedWhenMissing(t *testing.T) {
 
 func TestParseDeploymentBudgetPolicyRequiresVersionedPositiveCaps(t *testing.T) {
 	for _, raw := range []string{
-		`{"version":"v1","provider":"jev","model":"model","input_micro_usd_per_million_tokens":1,"output_micro_usd_per_million_tokens":0,"max_attempt_cost_micro_usd":0,"max_window_spend_micro_usd":1,"max_workspace_spend_micro_usd":1,"max_window_seconds":3600,"max_evaluations_per_case":10}`,
-		`{"version":"v1","provider":"jev","model":"model","input_micro_usd_per_million_tokens":0,"output_micro_usd_per_million_tokens":0,"max_attempt_cost_micro_usd":1,"max_window_spend_micro_usd":1,"max_workspace_spend_micro_usd":1,"max_window_seconds":3600,"max_evaluations_per_case":10}`,
-		`{"version":"v1","provider":"jev","model":"model","input_micro_usd_per_million_tokens":1,"output_micro_usd_per_million_tokens":0,"max_attempt_cost_micro_usd":2,"max_window_spend_micro_usd":1,"max_workspace_spend_micro_usd":1,"max_window_seconds":3600,"max_evaluations_per_case":10}`,
-		`{"version":"v1","provider":"jev","model":"model","input_micro_usd_per_million_tokens":1,"output_micro_usd_per_million_tokens":0,"max_attempt_cost_micro_usd":1,"max_window_spend_micro_usd":2,"max_workspace_spend_micro_usd":1,"max_window_seconds":3600,"max_evaluations_per_case":10}`,
-		`{"version":"v1","provider":"jev","model":"model","input_micro_usd_per_million_tokens":1,"output_micro_usd_per_million_tokens":0,"max_attempt_cost_micro_usd":1,"max_window_spend_micro_usd":1,"max_workspace_spend_micro_usd":1,"max_window_seconds":3600,"max_evaluations_per_case":10,"unexpected":true}`,
+		`{"version":"v1","provider":"jev","model":"model","input_micro_usd_per_million_tokens":1,"output_micro_usd_per_million_tokens":0,"max_attempt_cost_micro_usd":0,"max_window_spend_micro_usd":1,"max_workspace_spend_micro_usd":1,"max_window_seconds":3600,"max_evaluations_per_case":10,"max_concurrent_evaluations":5}`,
+		`{"version":"v1","provider":"jev","model":"model","input_micro_usd_per_million_tokens":0,"output_micro_usd_per_million_tokens":0,"max_attempt_cost_micro_usd":1,"max_window_spend_micro_usd":1,"max_workspace_spend_micro_usd":1,"max_window_seconds":3600,"max_evaluations_per_case":10,"max_concurrent_evaluations":5}`,
+		`{"version":"v1","provider":"jev","model":"model","input_micro_usd_per_million_tokens":1,"output_micro_usd_per_million_tokens":0,"max_attempt_cost_micro_usd":2,"max_window_spend_micro_usd":1,"max_workspace_spend_micro_usd":1,"max_window_seconds":3600,"max_evaluations_per_case":10,"max_concurrent_evaluations":5}`,
+		`{"version":"v1","provider":"jev","model":"model","input_micro_usd_per_million_tokens":1,"output_micro_usd_per_million_tokens":0,"max_attempt_cost_micro_usd":1,"max_window_spend_micro_usd":2,"max_workspace_spend_micro_usd":1,"max_window_seconds":3600,"max_evaluations_per_case":10,"max_concurrent_evaluations":5}`,
+		`{"version":"v1","provider":"jev","model":"model","input_micro_usd_per_million_tokens":1,"output_micro_usd_per_million_tokens":0,"max_attempt_cost_micro_usd":1,"max_window_spend_micro_usd":1,"max_workspace_spend_micro_usd":1,"max_window_seconds":3600,"max_evaluations_per_case":10,"max_concurrent_evaluations":5,"unexpected":true}`,
+		`{"version":"v1","provider":"jev","model":"model","input_micro_usd_per_million_tokens":1,"output_micro_usd_per_million_tokens":0,"max_attempt_cost_micro_usd":1,"max_window_spend_micro_usd":1,"max_workspace_spend_micro_usd":1,"max_window_seconds":3600,"max_evaluations_per_case":10,"max_concurrent_evaluations":0}`,
 	} {
 		if policy, err := ParseDeploymentBudgetPolicy(raw); err == nil || policy != nil {
 			t.Fatalf("invalid policy accepted: %+v, %v", policy, err)
@@ -33,14 +34,14 @@ func TestParseDeploymentBudgetPolicyRequiresVersionedPositiveCaps(t *testing.T) 
 }
 
 func TestParseDeploymentBudgetPolicyAcceptsVersionedPolicy(t *testing.T) {
-	policy, err := ParseDeploymentBudgetPolicy(`{"version":"v1","provider":"jev","model":"model","input_micro_usd_per_million_tokens":1,"output_micro_usd_per_million_tokens":0,"max_attempt_cost_micro_usd":1,"max_window_spend_micro_usd":1,"max_workspace_spend_micro_usd":1,"max_window_seconds":3600,"max_evaluations_per_case":10}`)
+	policy, err := ParseDeploymentBudgetPolicy(`{"version":"v1","provider":"jev","model":"model","input_micro_usd_per_million_tokens":1,"output_micro_usd_per_million_tokens":0,"max_attempt_cost_micro_usd":1,"max_window_spend_micro_usd":1,"max_workspace_spend_micro_usd":1,"max_window_seconds":3600,"max_evaluations_per_case":10,"max_concurrent_evaluations":5}`)
 	if err != nil || policy == nil || policy.Version != "v1" {
 		t.Fatalf("parsed policy = %+v, %v; want version v1", policy, err)
 	}
 }
 
 func TestParseDeploymentBudgetPolicyRejectsTrailingData(t *testing.T) {
-	policy, err := ParseDeploymentBudgetPolicy(`{"version":"v1","provider":"jev","model":"model","input_micro_usd_per_million_tokens":1,"output_micro_usd_per_million_tokens":0,"max_attempt_cost_micro_usd":1,"max_window_spend_micro_usd":1,"max_workspace_spend_micro_usd":1,"max_window_seconds":3600,"max_evaluations_per_case":10} trailing`)
+	policy, err := ParseDeploymentBudgetPolicy(`{"version":"v1","provider":"jev","model":"model","input_micro_usd_per_million_tokens":1,"output_micro_usd_per_million_tokens":0,"max_attempt_cost_micro_usd":1,"max_window_spend_micro_usd":1,"max_workspace_spend_micro_usd":1,"max_window_seconds":3600,"max_evaluations_per_case":10,"max_concurrent_evaluations":5} trailing`)
 	if err == nil || policy != nil {
 		t.Fatalf("trailing data accepted: %+v, %v", policy, err)
 	}
@@ -58,6 +59,7 @@ func TestDeploymentBudgetPolicyUsesIntegerMicroUSD(t *testing.T) {
 		MaxWorkspaceSpendMicroUSD:      200,
 		MaxWindowSeconds:               3600,
 		MaxEvaluationsPerCase:          10,
+		MaxConcurrentEvaluations:       5,
 	}
 	cost, err := policy.CostMicroUSD(3, 2)
 	if err != nil || cost != 9 {
@@ -134,6 +136,64 @@ func TestReserveEvaluationPerCaseLimitIgnoresOtherResources(t *testing.T) {
 	input := testEvaluationBudgetInput(fixture.workspaceID, caseID, budgetTestUUID(), 1, 100, 1)
 	if _, err := fixture.service.ReserveEvaluation(context.Background(), testDeploymentBudgetPolicy(40, 100, 100), input); err != nil {
 		t.Fatalf("evaluation admission after other resource: %v", err)
+	}
+}
+
+// TestReserveEvaluationConcurrencyLimitIsIndependentOfPerCaseLimit is the
+// CHE-707 review B2 regression. Before the fix, ReserveEvaluation passed
+// *input.Limits.MaxEvaluations (a PER-CASE total-attempts cap) as
+// BudgetReserveCommand.SlotLimit, which LockConcurrencyResources /
+// guards.Reserve enforce as a WORKSPACE-WIDE in-flight concurrency cap on
+// the shared "governance-evaluation" resource (see concurrency.go). A
+// workspace with a low per-case max_evaluations setting (here: 1) then had
+// its cross-case concurrency throttled to that same number, so a second
+// case's first-ever evaluation could be shed with ErrConcurrencyLimit purely
+// because an unrelated case's evaluation was still reserved — even though
+// each case was well within its own per-case limit.
+//
+// This test reserves one evaluation for case A (consuming its entire
+// max_evaluations=1 budget) and, while that reservation is still held
+// (unsettled), reserves one evaluation for a DIFFERENT case B with the same
+// max_evaluations=1 setting. With MaxConcurrentEvaluations raised above 1 in
+// the deployment policy, case B's reservation must succeed: per-case and
+// concurrency limits are independent knobs.
+func TestReserveEvaluationConcurrencyLimitIsIndependentOfPerCaseLimit(t *testing.T) {
+	fixture := newBudgetTestFixture(t)
+	policy := testDeploymentBudgetPolicyWithConcurrency(40, 100, 100, 5)
+
+	caseA := testEvaluationBudgetInput(fixture.workspaceID, budgetTestUUID(), budgetTestUUID(), 1, 100, 1)
+	if _, err := fixture.service.ReserveEvaluation(context.Background(), policy, caseA); err != nil {
+		t.Fatalf("case A admission: %v", err)
+	}
+
+	caseB := testEvaluationBudgetInput(fixture.workspaceID, budgetTestUUID(), budgetTestUUID(), 1, 100, 1)
+	if _, err := fixture.service.ReserveEvaluation(context.Background(), policy, caseB); err != nil {
+		t.Fatalf("case B admission = %v, want success (concurrency limit must not reuse the per-case max_evaluations setting)", err)
+	}
+}
+
+// TestReserveEvaluationConcurrencyLimitCapsAcrossCases proves
+// MaxConcurrentEvaluations still enforces its own workspace-wide cap once
+// that cap is actually reached, so the B2 fix does not accidentally disable
+// concurrency limiting altogether: a third case must be refused once
+// MaxConcurrentEvaluations (2, here) is exhausted by two other cases' still-
+// held reservations, even though each case's own max_evaluations=1 setting
+// is not itself the limiting factor.
+func TestReserveEvaluationConcurrencyLimitCapsAcrossCases(t *testing.T) {
+	fixture := newBudgetTestFixture(t)
+	policy := testDeploymentBudgetPolicyWithConcurrency(40, 100, 100, 2)
+
+	first := testEvaluationBudgetInput(fixture.workspaceID, budgetTestUUID(), budgetTestUUID(), 1, 100, 1)
+	if _, err := fixture.service.ReserveEvaluation(context.Background(), policy, first); err != nil {
+		t.Fatalf("first case admission: %v", err)
+	}
+	second := testEvaluationBudgetInput(fixture.workspaceID, budgetTestUUID(), budgetTestUUID(), 1, 100, 1)
+	if _, err := fixture.service.ReserveEvaluation(context.Background(), policy, second); err != nil {
+		t.Fatalf("second case admission: %v", err)
+	}
+	third := testEvaluationBudgetInput(fixture.workspaceID, budgetTestUUID(), budgetTestUUID(), 1, 100, 1)
+	if _, err := fixture.service.ReserveEvaluation(context.Background(), policy, third); !errors.Is(err, ErrConcurrencyLimit) {
+		t.Fatalf("third case admission error = %v, want ErrConcurrencyLimit", err)
 	}
 }
 
@@ -271,11 +331,16 @@ func TestReserveEvaluationPreservesDefaultOffAndEpochFence(t *testing.T) {
 }
 
 func testDeploymentBudgetPolicy(attemptCap, windowCap, workspaceCap int64) *DeploymentBudgetPolicy {
+	return testDeploymentBudgetPolicyWithConcurrency(attemptCap, windowCap, workspaceCap, 10)
+}
+
+func testDeploymentBudgetPolicyWithConcurrency(attemptCap, windowCap, workspaceCap, maxConcurrentEvaluations int64) *DeploymentBudgetPolicy {
 	return &DeploymentBudgetPolicy{
 		Version: "test-v1", Provider: "jev", Model: "test-model",
 		InputMicroUSDPerMillionTokens: 100, OutputMicroUSDPerMillionTokens: 200,
 		MaxAttemptCostMicroUSD: attemptCap, MaxWindowSpendMicroUSD: windowCap,
 		MaxWorkspaceSpendMicroUSD: workspaceCap, MaxWindowSeconds: 3600, MaxEvaluationsPerCase: 10,
+		MaxConcurrentEvaluations: maxConcurrentEvaluations,
 	}
 }
 

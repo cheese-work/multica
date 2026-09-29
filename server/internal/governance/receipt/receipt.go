@@ -37,16 +37,52 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/governance"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/jev"
 )
+
+// attemptIDNamespace is a fixed, arbitrary namespace UUID used only to
+// deterministically derive a per-evaluation-attempt identity (see
+// attemptID). It has no meaning beyond that — any fixed value works, since
+// what matters is that every caller of attemptID uses the same one.
+var attemptIDNamespace = uuid.MustParse("6f6d0f0a-6e29-4c60-9d61-6b3f2a2ee5aa")
+
+// attemptID derives BudgetReserveCommand's AttemptID (and therefore its
+// ReservationID — see governance.ReserveEvaluation) from the comment,
+// trigger, and revision this observation is for, rather than from CommentID
+// alone.
+//
+// Before this (CHE-707 review B1), every observation for a comment — its
+// create AND every later edit — passed the bare CommentID as AttemptID.
+// governance.ReserveEvaluation uses AttemptID as ReservationID directly, so
+// the create's reservation row was reused as the edit's: readBudgetReservation
+// finds a same-window edit request-digest mismatch and rejects it with
+// ErrBudgetConflict, or — once the create has settled — Reserve's own
+// "already exists" duplicate path returns the settled row, which
+// decisionResult/evaluate then treats as ReasonError. Either way every edit
+// evaluation after the first observation on a comment was refused, forever,
+// regardless of max_evaluations headroom.
+//
+// ObligationID stays CommentID unchanged: that is the durable "same
+// real-world obligation" identity the final-credit one-claim invariant
+// (TestReserveEvaluationAllowsOnlyOneConcurrentFinalCreditClaim) keys on,
+// and this fix does not touch it. AttemptID/ReservationID identifies one
+// evaluation ATTEMPT; ObligationID identifies the comment that attempt is
+// evaluating — they were wrongly collapsed into the same value, not wrongly
+// separate concepts.
+func attemptID(in Input) pgtype.UUID {
+	name := fmt.Sprintf("%x:%s:%d", in.CommentID.Bytes, in.Trigger, in.CommentRevision)
+	return pgtype.UUID{Bytes: uuid.NewSHA1(attemptIDNamespace, []byte(name)), Valid: true}
+}
 
 // Budget bounds the governance.Evaluate call: provider round trip plus
 // local decision logic. CHE-685 fixes this at 50ms — tight enough that a
@@ -168,14 +204,22 @@ type BudgetAdmission interface {
 // run governance.Evaluate and persist the outcome. WorkspaceID, IssueID, and
 // CommentID are the receipt's owner-scoping key; Eval is passed through to
 // governance.Evaluate unchanged.
+//
+// CommentRevision distinguishes one evaluation attempt on this comment from
+// another (a create and every later edit each get their own attempt/
+// reservation identity — see attemptID's doc, CHE-707 review B1). Callers
+// that cannot supply a real revision (e.g. tests) may leave it zero; every
+// such call then shares one attempt identity, same as before this field
+// existed.
 type Input struct {
-	WorkspaceID  pgtype.UUID
-	ControlEpoch int64
-	Limits       governance.OperatingLimits
-	IssueID      pgtype.UUID
-	CommentID    pgtype.UUID
-	Trigger      Trigger
-	Eval         governance.Input
+	WorkspaceID     pgtype.UUID
+	ControlEpoch    int64
+	Limits          governance.OperatingLimits
+	IssueID         pgtype.UUID
+	CommentID       pgtype.UUID
+	CommentRevision int64
+	Trigger         Trigger
+	Eval            governance.Input
 }
 
 // Observer runs bounded, best-effort governance observations with a
@@ -528,10 +572,11 @@ func (o *Observer) evaluate(ctx context.Context, in Input) (Result, <-chan struc
 		return Result{Status: "error", ShedReason: ReasonError}, closed
 	}
 	in.Eval.ExpectedModel = o.BudgetPolicy.Model
+	attempt := attemptID(in)
 	reservation, err := o.BudgetAdmission.ReserveEvaluation(ctx, o.BudgetPolicy, governance.EvaluationBudgetInput{
 		WorkspaceID:  in.WorkspaceID,
 		CaseID:       in.IssueID,
-		AttemptID:    in.CommentID,
+		AttemptID:    attempt,
 		ObligationID: in.CommentID,
 		ControlEpoch: in.ControlEpoch,
 		Limits:       in.Limits,
@@ -558,7 +603,16 @@ func (o *Observer) evaluate(ctx context.Context, in Input) (Result, <-chan struc
 			}
 			inputTokens, outputTokens, usageKnown := provider.usage()
 			settleCtx, cancel := context.WithTimeout(context.Background(), DefaultWriteBudget)
-			settleErr := o.BudgetAdmission.SettleEvaluation(settleCtx, o.BudgetPolicy, reservation, in.CommentID.String(), inputTokens, outputTokens, usageKnown)
+			// receiptID must be unique per evaluation ATTEMPT, not per comment
+			// (governance_budget_reservation_receipt_uidx is unique on
+			// (workspace_id, settlement_receipt_id)) — using the bare
+			// CommentID here reproduced CHE-707 review B1 one level deeper
+			// even after AttemptID/ReservationID stopped colliding: the
+			// create's settle claimed the comment's receipt id, and every
+			// later edit's settle then hit this unique constraint and was
+			// reported back to Observe's caller as a generic ReasonError,
+			// indistinguishable from the original bug's symptom.
+			settleErr := o.BudgetAdmission.SettleEvaluation(settleCtx, o.BudgetPolicy, reservation, attempt.String(), inputTokens, outputTokens, usageKnown)
 			cancel()
 			if settleErr != nil {
 				result = outcome{err: settleErr}

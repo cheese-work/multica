@@ -31,6 +31,19 @@ type DeploymentBudgetPolicy struct {
 	MaxWorkspaceSpendMicroUSD      int64  `json:"max_workspace_spend_micro_usd"`
 	MaxWindowSeconds               int64  `json:"max_window_seconds"`
 	MaxEvaluationsPerCase          int64  `json:"max_evaluations_per_case"`
+	// MaxConcurrentEvaluations bounds how many "governance-evaluation"
+	// concurrency slots (governance_concurrency_guard.held_slots) this
+	// workspace may hold at once, across every case. This is deliberately
+	// its own deployment-owned value rather than reusing MaxEvaluationsPerCase
+	// (CHE-707 review B2): MaxEvaluationsPerCase is a PER-CASE total-attempts
+	// cap ("Bounds total Jev evaluations per work item", control.go), while
+	// this is a workspace-wide IN-FLIGHT-AT-ONCE cap on the same shared
+	// "governance-evaluation" resource guards.Reserve serializes through. A
+	// workspace running many cases concurrently, each well under its own
+	// per-case attempt limit, must not have one case's evaluations shed with
+	// ErrConcurrencyLimit just because a low max_evaluations setting also
+	// throttled the pool.
+	MaxConcurrentEvaluations int64 `json:"max_concurrent_evaluations"`
 }
 
 type EffectiveBudgetLimits struct {
@@ -75,6 +88,7 @@ func (policy DeploymentBudgetPolicy) Validate() error {
 		policy.InputMicroUSDPerMillionTokens <= 0 || policy.OutputMicroUSDPerMillionTokens < 0 ||
 		policy.MaxAttemptCostMicroUSD <= 0 || policy.MaxWindowSpendMicroUSD <= 0 ||
 		policy.MaxWorkspaceSpendMicroUSD <= 0 || policy.MaxWindowSeconds <= 0 || policy.MaxEvaluationsPerCase <= 0 ||
+		policy.MaxConcurrentEvaluations <= 0 ||
 		policy.MaxAttemptCostMicroUSD > policy.MaxWindowSpendMicroUSD ||
 		policy.MaxWindowSpendMicroUSD > policy.MaxWorkspaceSpendMicroUSD {
 		return ErrBudgetPolicyInvalid
@@ -137,7 +151,7 @@ func (service *BudgetService) ReserveEvaluation(ctx context.Context, policy *Dep
 		MaxEvaluationsPerCase:  *input.Limits.MaxEvaluations,
 		PolicyVersion:          policy.Version,
 		RetryPolicyBounded:     true,
-		SlotLimit:              *input.Limits.MaxEvaluations,
+		SlotLimit:              policy.MaxConcurrentEvaluations,
 		EventKey:               "reserve:" + policy.Version + ":" + reservationID.String(),
 	})
 }
