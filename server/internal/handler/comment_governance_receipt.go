@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/governance"
@@ -53,6 +55,9 @@ func (h *Handler) observeGovernanceReceipt(r *http.Request, issue db.Issue, comm
 	if !featureflags.JevReceiptsEnabled(ctx, h.FeatureFlags) {
 		return
 	}
+	// One work deadline for the whole hook, taken before any DB acquisition so
+	// the control-lock wait and the evaluation share receipt.Budget.
+	deadline := time.Now().Add(receipt.Budget)
 	// A machine-authored comment type (status_change, system) never carries
 	// a next-work request a human or agent needs routed to them — observing
 	// it would only burn the cap-1 slot and a budget window on input the
@@ -73,14 +78,16 @@ func (h *Handler) observeGovernanceReceipt(r *http.Request, issue db.Issue, comm
 	if h.TxStarter == nil {
 		return
 	}
-	tx, err := h.TxStarter.Begin(ctx)
+	txCtx, cancelTx := context.WithDeadline(ctx, deadline)
+	defer cancelTx()
+	tx, err := h.TxStarter.Begin(txCtx)
 	if err != nil {
 		slog.Warn("governance control could not be locked; observation skipped",
 			append(logger.RequestAttrs(r), "issue_id", uuidToString(issue.ID), "error", err)...)
 		return
 	}
-	defer tx.Rollback(ctx)
-	config, err := loadGovernanceControl(ctx, tx, issue.WorkspaceID)
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	config, err := loadGovernanceControl(txCtx, tx, issue.WorkspaceID)
 	if err != nil {
 		slog.Warn("governance control could not be loaded; observation skipped",
 			append(logger.RequestAttrs(r), "issue_id", uuidToString(issue.ID), "error", err)...)
@@ -91,7 +98,8 @@ func (h *Handler) observeGovernanceReceipt(r *http.Request, issue db.Issue, comm
 	}
 	in.ControlEpoch = config.ControlEpoch
 	in.Limits = config.Settings.Limits
-	if err := tx.Commit(ctx); err != nil {
+	in.Deadline = deadline
+	if err := tx.Commit(txCtx); err != nil {
 		slog.Warn("governance evaluation admission could not commit",
 			append(logger.RequestAttrs(r), "issue_id", uuidToString(issue.ID), "error", err)...)
 		return
