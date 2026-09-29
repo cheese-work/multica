@@ -13,7 +13,6 @@ import (
 // "Concurrent" so the plan's -count=20 command selects them.
 
 type recoveryOutcome struct {
-	name string
 	err  error
 	kind string
 }

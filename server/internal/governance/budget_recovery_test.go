@@ -366,3 +366,74 @@ func TestBudgetRecoverySettlementCommit(t *testing.T) {
 }
 
 var _ = caselifecycle.CaseAgentAttempt
+
+// R4f-R4h cover the production settle path, SettleEvaluation, which records
+// verified usage and settles. It is a distinct Debit caller from the wire
+// dispatcher: settle-time usage is not new wire work.
+
+func reserveEvaluationForRecovery(t *testing.T, fixture *budgetTestFixture) (*DeploymentBudgetPolicy, BudgetReservationResult) {
+	t.Helper()
+	policy := testDeploymentBudgetPolicy(400, 1000, 1000)
+	input := testEvaluationBudgetInput(fixture.workspaceID, budgetTestUUID(), budgetTestUUID(), 3, 1000, 1)
+	reserved, err := fixture.service.ReserveEvaluation(context.Background(), policy, input)
+	if err != nil {
+		t.Fatalf("reserve evaluation: %v", err)
+	}
+	return policy, reserved
+}
+
+func TestBudgetRecoverySettleEvaluation(t *testing.T) {
+	ctx := context.Background()
+	// 1,000,000 input tokens cost 100 micro-USD under the test pricing policy.
+	const usageTokens = 1_000_000
+	t.Run("R4f_settle_after_window_end_still_settles_verified_usage", func(t *testing.T) {
+		fixture := newBudgetTestFixture(t)
+		policy, reserved := reserveEvaluationForRecovery(t, fixture)
+		fixture.clock.Set(budgetTestTime(13, 0)) // provider call straddled the window end
+		if err := fixture.service.SettleEvaluation(ctx, policy, reserved, "receipt-1", usageTokens, 0, true); err != nil {
+			t.Fatalf("settle after window end = %v, want settled", err)
+		}
+		row := readRecoveryReservation(t, fixture.pool, fixture.workspaceID, reserved.Reservation.ReservationID)
+		if row.StateName != "settled" || row.Settled != 100 {
+			t.Fatalf("reservation after late settle = %+v, want settled at 100", row)
+		}
+		assertRecoveryConservation(t, fixture.pool, fixture.workspaceID)
+	})
+	t.Run("R4g_settle_after_wire_predebit_neither_double_debits_nor_consumes_retry", func(t *testing.T) {
+		fixture := newBudgetTestFixture(t)
+		policy, reserved := reserveEvaluationForRecovery(t, fixture)
+		id := reserved.Reservation.ReservationID
+		debited, err := fixture.service.Debit(ctx, BudgetDebitCommand{
+			WorkspaceID: fixture.workspaceID, ReservationID: id, ExpectedRevision: reserved.Reservation.Revision, EventKey: "wire-1", AmountMicroUSD: 40,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := fixture.service.SettleEvaluation(ctx, policy, debited, "receipt-1", usageTokens, 0, true); err != nil {
+			t.Fatalf("settle after wire pre-debit = %v, want settled", err)
+		}
+		row := readRecoveryReservation(t, fixture.pool, fixture.workspaceID, id)
+		if row.StateName != "settled" || row.Settled != 100 || row.Debited != 100 || row.AttemptsStarted != 1 {
+			t.Fatalf("settled reservation = %+v, want settled/debited 100 and one attempt", row)
+		}
+		assertRecoveryConservation(t, fixture.pool, fixture.workspaceID)
+	})
+	t.Run("R4h_usage_below_wire_predebit_is_rejected_and_retains_liability", func(t *testing.T) {
+		fixture := newBudgetTestFixture(t)
+		policy, reserved := reserveEvaluationForRecovery(t, fixture)
+		id := reserved.Reservation.ReservationID
+		debited, err := fixture.service.Debit(ctx, BudgetDebitCommand{
+			WorkspaceID: fixture.workspaceID, ReservationID: id, ExpectedRevision: reserved.Reservation.Revision, EventKey: "wire-1", AmountMicroUSD: 300,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := fixture.service.SettleEvaluation(ctx, policy, debited, "receipt-1", usageTokens, 0, true); !errors.Is(err, ErrBudgetInvariant) {
+			t.Fatalf("usage below the persisted pre-debit = %v, want ErrBudgetInvariant", err)
+		}
+		if row := readRecoveryReservation(t, fixture.pool, fixture.workspaceID, id); row.StateName != "reserved" || row.Debited != 300 {
+			t.Fatalf("rejected settle changed the reservation: %+v", row)
+		}
+		assertRecoveryConservation(t, fixture.pool, fixture.workspaceID)
+	})
+}
