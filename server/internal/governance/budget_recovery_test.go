@@ -418,9 +418,41 @@ func TestBudgetRecoverySettleEvaluation(t *testing.T) {
 		}
 		assertRecoveryConservation(t, fixture.pool, fixture.workspaceID)
 	})
-	t.Run("R4h_usage_below_wire_predebit_is_rejected_and_retains_liability", func(t *testing.T) {
+	t.Run("R4h_worst_case_predebit_settles_and_refunds_only_the_excess_exactly_once", func(t *testing.T) {
 		fixture := newBudgetTestFixture(t)
 		policy, reserved := reserveEvaluationForRecovery(t, fixture)
+		id := reserved.Reservation.ReservationID
+		debited, err := fixture.service.Debit(ctx, BudgetDebitCommand{
+			WorkspaceID: fixture.workspaceID, ReservationID: id, ExpectedRevision: reserved.Reservation.Revision, EventKey: "wire-1", AmountMicroUSD: 400,
+		}) // worst case: the whole attempt cap, taken before the wire
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertBudgetRootTotals(t, fixture, reserved.Reservation.BudgetRootID, reserved.Reservation.TotalCapMicroUsd-400, 400)
+		if err := fixture.service.SettleEvaluation(ctx, policy, debited, "receipt-1", usageTokens, 0, true); err != nil {
+			t.Fatalf("settle below the worst-case pre-debit = %v, want settled with a refund", err)
+		}
+		row := readRecoveryReservation(t, fixture.pool, fixture.workspaceID, id)
+		if row.StateName != "settled" || row.Settled != 100 || row.Debited != 100 || row.Remaining != 0 {
+			t.Fatalf("settled reservation = %+v, want settled at 100 (300 refunded)", row)
+		}
+		assertBudgetRootTotals(t, fixture, reserved.Reservation.BudgetRootID, 0, 100)
+		// A replay under a different event key must not refund a second time.
+		if err := fixture.service.SettleEvaluation(ctx, policy, debited, "receipt-1", usageTokens, 0, true); err != nil {
+			t.Fatalf("replayed settle = %v, want duplicate no-op", err)
+		}
+		assertBudgetRootTotals(t, fixture, reserved.Reservation.BudgetRootID, 0, 100)
+		assertRecoveryConservation(t, fixture.pool, fixture.workspaceID)
+		// The refund is spendable once, not twice: 300 freed, so a 300-cap sibling fits and a 301 one does not.
+		fits := fixture.reserveCommand("resource-refund", budgetTestTime(12, 0), budgetTestTime(13, 0), 1000, 1000, 300, 1)
+		fits.BudgetRootID = reserved.Reservation.BudgetRootID
+		if _, err := fixture.service.Reserve(ctx, fits); err != nil {
+			t.Fatalf("reserve against the refund: %v", err)
+		}
+	})
+	t.Run("R4i_interim_usage_below_predebit_without_termination_retains_liability", func(t *testing.T) {
+		fixture := newBudgetTestFixture(t)
+		_, reserved := reserveEvaluationForRecovery(t, fixture)
 		id := reserved.Reservation.ReservationID
 		debited, err := fixture.service.Debit(ctx, BudgetDebitCommand{
 			WorkspaceID: fixture.workspaceID, ReservationID: id, ExpectedRevision: reserved.Reservation.Revision, EventKey: "wire-1", AmountMicroUSD: 300,
@@ -428,11 +460,15 @@ func TestBudgetRecoverySettleEvaluation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := fixture.service.SettleEvaluation(ctx, policy, debited, "receipt-1", usageTokens, 0, true); !errors.Is(err, ErrBudgetInvariant) {
-			t.Fatalf("usage below the persisted pre-debit = %v, want ErrBudgetInvariant", err)
+		_, err = fixture.service.Settle(ctx, BudgetSettleCommand{
+			WorkspaceID: fixture.workspaceID, ReservationID: id, ExpectedRevision: debited.Reservation.Revision,
+			EventKey: "interim", UsageKnown: true, UsageMicroUSD: 100,
+		})
+		if !errors.Is(err, ErrBudgetInvariant) {
+			t.Fatalf("interim usage below the pre-debit = %v, want ErrBudgetInvariant", err)
 		}
 		if row := readRecoveryReservation(t, fixture.pool, fixture.workspaceID, id); row.StateName != "reserved" || row.Debited != 300 {
-			t.Fatalf("rejected settle changed the reservation: %+v", row)
+			t.Fatalf("rejected interim settle changed the reservation: %+v", row)
 		}
 		assertRecoveryConservation(t, fixture.pool, fixture.workspaceID)
 	})
