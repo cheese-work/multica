@@ -22,10 +22,22 @@ type admissionTestFixture struct {
 func newAdmissionTestFixture(t *testing.T) *admissionTestFixture {
 	t.Helper()
 	budgetFixture := newBudgetTestFixture(t)
+	rootID := budgetTestUUID()
+	command := seedAdmissionCase(t, budgetFixture, rootID, "agent:fixed")
+	service, err := NewAdmissionService(budgetFixture.pool, budgetFixture.clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &admissionTestFixture{budget: budgetFixture, service: service, command: command, rootID: rootID}
+}
+
+// seedAdmissionCase inserts a leased governance case bound to rootID and
+// returns the admission command that would admit its next attempt.
+func seedAdmissionCase(t *testing.T, budgetFixture *budgetTestFixture, rootID pgtype.UUID, resource string) AdmissionCommand {
+	t.Helper()
 	queries := db.New(budgetFixture.pool)
 	ctx := context.Background()
 	caseID := budgetTestUUID()
-	rootID := budgetTestUUID()
 	caseRow, err := queries.InsertNextGovernanceCase(ctx, db.InsertNextGovernanceCaseParams{
 		WorkspaceID:         budgetFixture.workspaceID,
 		SubjectType:         "issue",
@@ -83,7 +95,7 @@ func newAdmissionTestFixture(t *testing.T) *admissionTestFixture {
 		ExpectedState:    caselifecycle.CaseAgentEscalation,
 		ExpectedRevision: caseRow.StateRevision,
 		Token:            leaseToken,
-		Duration:         time.Minute,
+		Duration:         time.Hour,
 	}); err != nil {
 		t.Fatalf("claim case admission lease: %v", err)
 	}
@@ -94,11 +106,7 @@ func newAdmissionTestFixture(t *testing.T) *admissionTestFixture {
 			}
 		}
 	})
-	service, err := NewAdmissionService(budgetFixture.pool, budgetFixture.clock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	command := AdmissionCommand{
+	return AdmissionCommand{
 		WorkspaceID:          budgetFixture.workspaceID,
 		CaseID:               caseRow.ID,
 		ControlEpoch:         1,
@@ -116,7 +124,7 @@ func newAdmissionTestFixture(t *testing.T) *admissionTestFixture {
 		DeadlineAt:           budgetFixture.clock.Now().Add(5 * time.Minute),
 		ReservationID:        budgetTestUUID(),
 		BudgetPolicy: AdmissionBudgetPolicy{
-			Resource:               "agent:fixed",
+			Resource:               resource,
 			WindowStart:            budgetTestTime(12, 0),
 			WindowEnd:              budgetTestTime(13, 0),
 			RootCapMicroUSD:        100,
@@ -126,7 +134,6 @@ func newAdmissionTestFixture(t *testing.T) *admissionTestFixture {
 			SlotLimit:              4,
 		},
 	}
-	return &admissionTestFixture{budget: budgetFixture, service: service, command: command, rootID: rootID}
 }
 
 func TestBudgetCompositionCommitsCaseAttemptHoldBudgetJournalAndOutbox(t *testing.T) {
