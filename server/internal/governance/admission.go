@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/governance/caselifecycle"
@@ -230,5 +229,3 @@ func admissionRequestDigest(command AdmissionCommand) string {
 		SlotLimit:            policy.SlotLimit,
 	})
 }
-
-var _ = pgx.Tx(nil)

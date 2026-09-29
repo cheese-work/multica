@@ -16,6 +16,7 @@ type admissionTestFixture struct {
 	budget  *budgetTestFixture
 	service *AdmissionService
 	command AdmissionCommand
+	rootID  pgtype.UUID
 }
 
 func newAdmissionTestFixture(t *testing.T) *admissionTestFixture {
@@ -125,7 +126,7 @@ func newAdmissionTestFixture(t *testing.T) *admissionTestFixture {
 			SlotLimit:              4,
 		},
 	}
-	return &admissionTestFixture{budget: budgetFixture, service: service, command: command}
+	return &admissionTestFixture{budget: budgetFixture, service: service, command: command, rootID: rootID}
 }
 
 func TestBudgetCompositionCommitsCaseAttemptHoldBudgetJournalAndOutbox(t *testing.T) {
@@ -206,6 +207,7 @@ func TestBudgetCompositionRejectsStaleFenceRevisionAndMissingPolicy(t *testing.T
 		{name: "stale attempt fence", edit: func(command *AdmissionCommand) { command.ExpectedAttemptFence = budgetTestUUID() }, want: caselifecycle.ErrStaleFence},
 		{name: "stale case revision", edit: func(command *AdmissionCommand) { command.ExpectedRevision++ }, want: caselifecycle.ErrStaleCase},
 		{name: "missing budget policy", edit: func(command *AdmissionCommand) { command.BudgetPolicy.MaxAttemptCostMicroUSD = 0 }, want: ErrBudgetInput},
+		{name: "empty budget policy", edit: func(command *AdmissionCommand) { command.BudgetPolicy = AdmissionBudgetPolicy{} }, want: ErrBudgetRetryUnbounded},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -242,6 +244,118 @@ func TestBudgetCompositionRejectsCrossWorkspaceCase(t *testing.T) {
 	assertNoAdmissionArtifacts(t, fixture)
 	if got := budgetCount(t, fixture.budget.pool, `SELECT count(*) FROM governance_concurrency_hold WHERE workspace_id = $1 AND reservation_id = $2`, otherWorkspaceID, command.ReservationID); got != 0 {
 		t.Fatalf("cross-workspace hold count = %d, want 0", got)
+	}
+}
+
+func TestBudgetCompositionRollsBackWhenRootCapExceededAfterCaseWrite(t *testing.T) {
+	fixture := newAdmissionTestFixture(t)
+	// Legitimately consume most of the shared root's cap with a prior,
+	// unrelated reservation before admission ever runs, so the case/attempt
+	// write that Admit performs is real work discarded by the later
+	// root-cap rejection, not a fixture invariant violation.
+	priorCommand := fixture.budget.reserveCommand(
+		fixture.command.BudgetPolicy.Resource,
+		fixture.command.BudgetPolicy.WindowStart, fixture.command.BudgetPolicy.WindowEnd,
+		fixture.command.BudgetPolicy.WindowCapMicroUSD, fixture.command.BudgetPolicy.RootCapMicroUSD,
+		85, 1,
+	)
+	priorCommand.BudgetRootID = fixture.rootID
+	if _, err := fixture.budget.service.Reserve(context.Background(), priorCommand); err != nil {
+		t.Fatalf("consume root cap with prior reservation: %v", err)
+	}
+	if _, err := fixture.service.Admit(context.Background(), fixture.command); !errors.Is(err, ErrBudgetLimit) {
+		t.Fatalf("root-cap-exceeded admission error = %v, want ErrBudgetLimit", err)
+	}
+	assertNoAdmissionArtifacts(t, fixture)
+	if got := budgetCount(t, fixture.budget.pool, `SELECT held_slots FROM governance_concurrency_guard WHERE workspace_id = $1 AND resource = $2`, fixture.command.WorkspaceID, fixture.command.BudgetPolicy.Resource); got != 1 {
+		t.Fatalf("rolled-back admission left held_slots = %d, want 1 (only the prior reservation's hold)", got)
+	}
+}
+
+func TestBudgetCompositionRollsBackWhenOutboxWriteConflictsAfterBudgetWrite(t *testing.T) {
+	fixture := newAdmissionTestFixture(t)
+	if _, err := fixture.budget.pool.Exec(context.Background(), `
+		INSERT INTO governance_budget_outbox (
+			workspace_id, reservation_id, event_key, event_type, case_id, attempt_id, obligation_id, payload
+		) VALUES ($1, $2, $3, 'admit', $4, $5, $6, '{}'::jsonb)
+	`, fixture.command.WorkspaceID, fixture.command.ReservationID, fixture.command.CauseEventKey,
+		budgetTestUUID(), budgetTestUUID(), budgetTestUUID()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.service.Admit(context.Background(), fixture.command); err == nil {
+		t.Fatal("admission with a pre-existing clashing outbox row committed, want an error")
+	}
+	// The case/attempt/transition/reservation/journal/hold writes made
+	// inside this attempt roll back in full. The outbox check is bespoke
+	// (not assertNoAdmissionArtifacts) because a pre-existing, untouched
+	// outbox row under the same reservation_id/event_key is exactly what
+	// this scenario seeds and expects to survive unharmed.
+	for _, check := range []struct {
+		name  string
+		query string
+		args  []any
+	}{
+		{"attempt", `SELECT count(*) FROM governance_attempt WHERE workspace_id = $1 AND case_id = $2 AND id = $3`, []any{fixture.command.WorkspaceID, fixture.command.CaseID, fixture.command.AttemptID}},
+		{"transition", `SELECT count(*) FROM governance_case_transition WHERE workspace_id = $1 AND case_id = $2 AND cause_event_key = $3`, []any{fixture.command.WorkspaceID, fixture.command.CaseID, fixture.command.CauseEventKey}},
+		{"reservation", `SELECT count(*) FROM governance_budget_reservation WHERE workspace_id = $1 AND reservation_id = $2`, []any{fixture.command.WorkspaceID, fixture.command.ReservationID}},
+		{"journal", `SELECT count(*) FROM governance_budget_journal WHERE workspace_id = $1 AND reservation_id = $2`, []any{fixture.command.WorkspaceID, fixture.command.ReservationID}},
+		{"hold", `SELECT count(*) FROM governance_concurrency_hold WHERE workspace_id = $1 AND reservation_id = $2`, []any{fixture.command.WorkspaceID, fixture.command.ReservationID}},
+		{"root", `SELECT count(*) FROM governance_budget_root WHERE workspace_id = $1`, []any{fixture.command.WorkspaceID}},
+		{"window", `SELECT count(*) FROM governance_budget_window WHERE workspace_id = $1`, []any{fixture.command.WorkspaceID}},
+	} {
+		t.Run(check.name, func(t *testing.T) {
+			if got := budgetCount(t, fixture.budget.pool, check.query, check.args...); got != 0 {
+				t.Fatalf("partial %s count = %d, want 0", check.name, got)
+			}
+		})
+	}
+	if got := budgetCount(t, fixture.budget.pool, `SELECT count(*) FROM governance_budget_outbox WHERE workspace_id = $1 AND reservation_id = $2`, fixture.command.WorkspaceID, fixture.command.ReservationID); got != 1 {
+		t.Fatalf("outbox row count = %d, want 1 (only the pre-existing seeded row, untouched)", got)
+	}
+	var state string
+	if err := fixture.budget.pool.QueryRow(context.Background(), `SELECT state FROM governance_case WHERE workspace_id = $1 AND id = $2`, fixture.command.WorkspaceID, fixture.command.CaseID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != string(caselifecycle.CaseAgentEscalation) {
+		t.Fatalf("failed admission changed case state to %s", state)
+	}
+}
+
+func TestBudgetCompositionUnknownTerminationRetainsHoldAndReservation(t *testing.T) {
+	fixture := newAdmissionTestFixture(t)
+	result, err := fixture.service.Admit(context.Background(), fixture.command)
+	if err != nil {
+		t.Fatalf("admit attempt: %v", err)
+	}
+	// No native dispatch ever reports outcome for this attempt (unknown
+	// termination): the committed hold, reservation and outbox intent must
+	// stay exactly as committed, not settle or release themselves.
+	var holdState string
+	if err := fixture.budget.pool.QueryRow(context.Background(), `
+		SELECT state FROM governance_concurrency_hold WHERE workspace_id = $1 AND reservation_id = $2
+	`, fixture.command.WorkspaceID, fixture.command.ReservationID).Scan(&holdState); err != nil {
+		t.Fatal(err)
+	}
+	if holdState != "held" {
+		t.Fatalf("unknown-termination hold state = %s, want held", holdState)
+	}
+	var reservationState string
+	if err := fixture.budget.pool.QueryRow(context.Background(), `
+		SELECT state FROM governance_budget_reservation WHERE workspace_id = $1 AND reservation_id = $2
+	`, fixture.command.WorkspaceID, fixture.command.ReservationID).Scan(&reservationState); err != nil {
+		t.Fatal(err)
+	}
+	if reservationState != "reserved" {
+		t.Fatalf("unknown-termination reservation state = %s, want reserved", reservationState)
+	}
+	var outboxState string
+	if err := fixture.budget.pool.QueryRow(context.Background(), `
+		SELECT state FROM governance_budget_outbox WHERE workspace_id = $1 AND event_id = $2
+	`, fixture.command.WorkspaceID, result.OutboxEventID).Scan(&outboxState); err != nil {
+		t.Fatal(err)
+	}
+	if outboxState != "pending" {
+		t.Fatalf("unknown-termination outbox state = %s, want pending", outboxState)
 	}
 }
 
