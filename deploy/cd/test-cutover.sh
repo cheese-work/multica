@@ -172,6 +172,16 @@ if [ "\$1" = "compose" ]; then
   case "\$sub" in
     pull)
       fail_if_flagged fail-pull
+      # fail-pull-times N: fail only the next N pulls, modeling a transient
+      # registry reset (CHE-823, run 36527988890) that a retry recovers.
+      if [ -f "\$control_dir/fail-pull-times" ]; then
+        left="\$(cat "\$control_dir/fail-pull-times")"
+        if [ "\$left" -gt 0 ]; then
+          echo \$((left - 1)) >"\$control_dir/fail-pull-times"
+          echo "mock docker: failed to copy: read: connection reset by peer" >&2
+          exit 1
+        fi
+      fi
       exit 0
       ;;
     run)
@@ -1270,5 +1280,43 @@ expect_exit 1 "$status" che773-router-not-applied-after-switch
 expect_contains "$output" "running router's effective config (nginx -T) upstreams [8081=18091 3000=13001] differ from expected [8081=18092 3000=13002]" che773-router-not-applied-after-switch
 expect_contains "$output" "RECOVERED" che773-router-not-applied-after-switch
 unset ROUTER_STATE_DIR
+
+# ---------------------------------------------------------------------------
+# CHE-823: one GHCR connection reset during `compose pull` failed a whole
+# admitted deploy (run 36527988890). A transient pull failure must be
+# retried; a persistent one must still fail closed after a bounded number
+# of attempts, before drain, with the incumbent colour active.
+# ---------------------------------------------------------------------------
+pull_calls() { grep -c "^compose .*pull" "$1/control/docker-calls.log" || true; }
+
+state_dir="$(fresh_scenario_dir che823-pull-transient-reset)"
+mkdir -p "$state_dir/control"
+echo 2 >"$state_dir/control/fail-pull-times"
+set +e
+output="$(run_cutover "$state_dir" 2>&1)"
+status=$?
+set -e
+expect_exit 0 "$status" che823-pull-transient-reset
+expect_contains "$output" "image pull attempt 1/3 failed" che823-pull-transient-reset
+expect_contains "$output" "cutover complete: green is now active" che823-pull-transient-reset
+if [ "$(pull_calls "$state_dir")" -ne 3 ]; then
+  echo "scenario che823-pull-transient-reset: want 3 pull calls, got $(pull_calls "$state_dir")" >&2
+  exit 1
+fi
+
+state_dir="$(fresh_scenario_dir che823-pull-persistent-failure)"
+mkdir -p "$state_dir/control"
+touch "$state_dir/control/fail-pull"
+set +e
+output="$(run_cutover "$state_dir" 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" che823-pull-persistent-failure
+expect_contains "$output" "image pull failed for colour=green; blue remains active" che823-pull-persistent-failure
+if [ "$(pull_calls "$state_dir")" -ne 3 ]; then
+  echo "scenario che823-pull-persistent-failure: want 3 pull calls, got $(pull_calls "$state_dir")" >&2
+  exit 1
+fi
+if drained_before_refusal "$state_dir"; then echo "scenario che823-pull-persistent-failure: blue was drained" >&2; exit 1; fi
 
 echo "cutover.sh control-flow fixtures passed"
