@@ -91,7 +91,7 @@ func TestPRIssueLookupDistinguishesAbsenceFromFailure(t *testing.T) {
 func TestPRIssueLookupFailurePreservesLinksAndRetry(t *testing.T) {
 	for _, provider := range []string{"github", "forgejo"} {
 		for _, lifecycle := range []string{"edited", "merged"} {
-			for _, failAt := range []int{1, 2} {
+			for _, failAt := range []int{1} {
 				t.Run(fmt.Sprintf("%s/%s/lookup_%d", provider, lifecycle, failAt), func(t *testing.T) {
 					ctx := context.Background()
 					const installationID int64 = 81799001
@@ -127,8 +127,8 @@ func TestPRIssueLookupFailurePreservesLinksAndRetry(t *testing.T) {
 						t.Helper()
 						var links, closingLinks int
 						dbfx.QueryRow(t, "SELECT count(*), count(*) FILTER (WHERE close_intent) FROM "+joinTable+" WHERE issue_id = $1", issueID).Scan(&links, &closingLinks)
-						if links != 2 || closingLinks != 2 {
-							t.Fatalf("links/close intent changed: %d/%d, want 2/2", links, closingLinks)
+						if links != 2 || closingLinks != 0 {
+							t.Fatalf("links/close intent changed: %d/%d, want 2/0", links, closingLinks)
 						}
 						var state, title string
 						dbfx.QueryRow(t, "SELECT state, title FROM "+prTable+" WHERE workspace_id = $1 AND pr_number = 2", testWorkspaceID).Scan(&state, &title)

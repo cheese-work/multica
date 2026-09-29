@@ -237,7 +237,7 @@ func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnectio
 	// per-workspace flag. The issue-side machinery is shared with GitHub
 	// (reconcileAutoLinks, maybeAutoCompleteIssue). A connection belongs to
 	// exactly one workspace, so there is no cross-workspace ambiguity to settle.
-	idents, closing := prClaimedIdentifiers(ev.Title, ev.Body, ev.Branch)
+	idents := prClaimedIdentifiers(ev.Title, ev.Body, ev.Branch)
 	permits := func(string) bool { return true }
 	linkedIssueIDs, touched, err := h.reconcileAutoLinks(ctx, qtx, ws, pr.ID, ev.State, prAutoLinkInput{
 		idents:    idents,
@@ -255,20 +255,6 @@ func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnectio
 	})
 	if err != nil {
 		return fmt.Errorf("vcs: reconcile links: %w", err)
-	}
-	// Close intent follows the PR text up to and including the merge/close
-	// event, on every link of the PR (see closingIssueIDs).
-	if ev.Terminal() || (ev.State != "merged" && ev.State != "closed") {
-		closingIDs, err := h.closingIssueIDs(ctx, qtx, ws, closing, permits)
-		if err != nil {
-			return fmt.Errorf("vcs: resolve close intent: %w", err)
-		}
-		if err := qtx.SyncVCSPullRequestCloseIntent(ctx, db.SyncVCSPullRequestCloseIntentParams{
-			PullRequestID:   pr.ID,
-			ClosingIssueIds: closingIDs,
-		}); err != nil {
-			return fmt.Errorf("vcs: sync close intent: %w", err)
-		}
 	}
 	if ev.State == "merged" && prevState != "merged" {
 		issueIDs, err := qtx.ListIssueIDsForVCSPullRequest(ctx, pr.ID)

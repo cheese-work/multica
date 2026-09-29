@@ -25,9 +25,7 @@ import (
 )
 
 // buildMergedPRWebhookBody returns a minimal `pull_request` webhook body for
-// a merged PR referencing issueIdentifier by title prefix (link-only, no
-// closing keyword) so the merge announcement path can be exercised
-// independent of the close_intent / advance-to-done gate.
+// a merged PR referencing issueIdentifier by title prefix.
 func buildMergedPRWebhookBody(issueIdentifier string, prNumber int, repoOwner, repoName string, installationID int64) map[string]any {
 	return map[string]any{
 		"action": "closed",
@@ -73,11 +71,11 @@ func postSignedGitHubWebhook(t *testing.T, secret string, body map[string]any, d
 }
 
 // TestWebhook_MergedPR_EnqueuesAndDeliversMergeAnnouncement is the primary
-// TDD case for CHE-374/CHE-379: a title-linked PR (no closing keyword, so it
-// carries no close_intent and must not advance the issue) merges. The
+// TDD case for CHE-374/CHE-379: a title-linked PR merges. The workspace's
+// merge-status choice is applied by the webhook, not announcement delivery.
 // webhook must durably enqueue exactly one github_merge_announcement row,
 // and running the worker must produce exactly one system comment on the
-// issue, with the issue's status left untouched.
+// issue, without changing the status selected by the webhook.
 func TestWebhook_MergedPR_EnqueuesAndDeliversMergeAnnouncement(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("handler test fixture not initialized (no DB?)")
@@ -134,14 +132,14 @@ func TestWebhook_MergedPR_EnqueuesAndDeliversMergeAnnouncement(t *testing.T) {
 		t.Errorf("expected merge_commit_sha to be captured from payload, got %q", announcements[0].MergeCommitSha)
 	}
 
-	// Issue status must be untouched by the enqueue — no close_intent was
-	// declared, so the advance-to-done gate must not have fired either.
+	// The merge webhook applies the workspace's default Done target before
+	// the independent announcement worker runs.
 	beforeWorker, err := testHandler.Queries.GetIssue(ctx, parseUUID(created.ID))
 	if err != nil {
 		t.Fatalf("GetIssue: %v", err)
 	}
-	if beforeWorker.Status != "in_progress" {
-		t.Fatalf("expected issue status unchanged at 'in_progress' before worker delivery, got %q", beforeWorker.Status)
+	if beforeWorker.Status != "done" {
+		t.Fatalf("expected issue status 'done' before worker delivery, got %q", beforeWorker.Status)
 	}
 
 	// Step 2: run the worker synchronously (ProcessNext, not Run — no
@@ -173,27 +171,23 @@ func TestWebhook_MergedPR_EnqueuesAndDeliversMergeAnnouncement(t *testing.T) {
 	).Scan(&content); err != nil {
 		t.Fatalf("read system comment content: %v", err)
 	}
-	// CHE-374 review fix T3: the comment now names the PR as a link (still
-	// containing "#4242"), includes the PR's html_url, and — since this test's
-	// webhook body declares no closing keyword — states that no closing
-	// intent was declared for this issue, rather than the old always-on
-	// "this PR does not declare completion" wording.
+	// The comment names the PR and URL without interpreting a close keyword.
 	if !bytes.Contains([]byte(content), []byte("#4242")) {
 		t.Errorf("expected comment to name the merged PR, got %q", content)
 	}
 	if !bytes.Contains([]byte(content), []byte("https://github.com/acme/widget/pull/999")) {
 		t.Errorf("expected comment to include the PR html_url, got %q", content)
 	}
-	if !bytes.Contains([]byte(content), []byte("did not declare closing intent")) {
-		t.Errorf("expected deterministic next-action text for a non-close-intent merge, got %q", content)
+	if bytes.Contains([]byte(content), []byte("closing intent")) {
+		t.Errorf("announcement must not describe close intent, got %q", content)
 	}
 
 	afterWorker, err := testHandler.Queries.GetIssue(ctx, parseUUID(created.ID))
 	if err != nil {
 		t.Fatalf("GetIssue: %v", err)
 	}
-	if afterWorker.Status != "in_progress" {
-		t.Errorf("expected issue status unchanged at 'in_progress' after delivery, got %q", afterWorker.Status)
+	if afterWorker.Status != "done" {
+		t.Errorf("expected announcement delivery to preserve webhook status 'done', got %q", afterWorker.Status)
 	}
 
 	delivered, err := testHandler.Queries.ListGitHubMergeAnnouncementsByIssue(ctx, parseUUID(created.ID))
@@ -926,23 +920,18 @@ func TestWebhook_MergeAnnouncementSkipsJustUnlinkedIssue(t *testing.T) {
 	}
 }
 
-// TestWebhook_MergeAnnouncementCommentReflectsCloseIntent is the T3
-// close-intent regression guard: the rendered comment's "remaining issue
-// action" text must accurately reflect whether this specific merge declared
-// closing intent for the issue, not always deny completion intent.
-// TestWebhook_MergedPR_EnqueuesAndDeliversMergeAnnouncement already covers
-// the close_intent=false branch (via buildMergedPRWebhookBody, which declares
-// no closing keyword); this test exercises the close_intent=true branch.
-func TestWebhook_MergeAnnouncementCommentReflectsCloseIntent(t *testing.T) {
+// TestWebhook_MergeAnnouncementCommentDoesNotInterpretCloseKeywords verifies
+// that announcement text does not override the workspace's merge-status rule.
+func TestWebhook_MergeAnnouncementCommentDoesNotInterpretCloseKeywords(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("handler test fixture not initialized (no DB?)")
 	}
 	ctx := context.Background()
-	secret := "close-intent-render-secret"
+	secret := "merge-status-render-secret"
 	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
 
 	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
-		"title":  "Close-intent rendering test issue",
+		"title":  "Merge-status rendering test issue",
 		"status": "in_progress",
 	})
 	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
@@ -969,9 +958,8 @@ func TestWebhook_MergeAnnouncementCommentReflectsCloseIntent(t *testing.T) {
 		t.Fatalf("CreateGitHubInstallation: %v", err)
 	}
 
-	// Opened and merged with a genuine closing keyword this time (unlike
-	// buildMergedPRWebhookBody's bare-mention body), so close_intent=true is
-	// captured on the announcement row.
+	// A closing keyword still links the issue, but the announcement should not
+	// infer status behavior from that keyword.
 	firePRWebhook(t, secret, installationID, 1010, "Closing PR", "Closes "+created.Identifier, "fix/close", "opened")
 	firePRWebhook(t, secret, installationID, 1010, "Closing PR", "Closes "+created.Identifier, "fix/close", "merged")
 
@@ -991,11 +979,11 @@ func TestWebhook_MergeAnnouncementCommentReflectsCloseIntent(t *testing.T) {
 	).Scan(&content); err != nil {
 		t.Fatalf("read system comment content: %v", err)
 	}
-	if !bytes.Contains([]byte(content), []byte("will auto-advance once no linked PR is still open")) {
-		t.Errorf("expected close-intent-accurate next-action text for a close-intent merge, got %q", content)
+	if !bytes.Contains([]byte(content), []byte("Status: done.")) {
+		t.Errorf("expected announcement to report the workspace-selected merge status, got %q", content)
 	}
-	if bytes.Contains([]byte(content), []byte("did not declare closing intent")) {
-		t.Errorf("close-intent merge must not render the non-close-intent wording, got %q", content)
+	if bytes.Contains([]byte(content), []byte("closing intent")) {
+		t.Errorf("announcement must not describe close intent, got %q", content)
 	}
 }
 
@@ -1004,9 +992,7 @@ func TestWebhook_MergeAnnouncementCommentReflectsCloseIntent(t *testing.T) {
 // while github_auto_link_prs_enabled=false. In that state the webhook must
 // not create new link rows from this event's identifiers, but a link row
 // persisted by an earlier event (while auto-link was still on) must still
-// drive both the merge announcement and the advance-to-done re-evaluation —
-// using the link row's already-stored close_intent, not anything re-parsed
-// from this merge event's payload.
+// drive both the merge announcement and the workspace-selected merge status.
 func TestWebhook_MergeAnnouncementUsesPersistedLinkWhenAutoLinkDisabled(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("handler test fixture not initialized (no DB?)")
@@ -1044,9 +1030,8 @@ func TestWebhook_MergeAnnouncementUsesPersistedLinkWhenAutoLinkDisabled(t *testi
 	}
 
 	const prNumber = 6161
-	// Auto-link is still on for the "opened" event: this persists the link
-	// row (with close_intent=true from the closing keyword) that the rest of
-	// the test relies on being read back, not re-derived.
+	// Auto-link is still on for the "opened" event, which persists the link
+	// used by the later merge event.
 	firePRWebhook(t, secret, installationID, prNumber, "Auto-link-disabled PR", "Closes "+created.Identifier, "fix/auto-link-disabled", "opened")
 
 	linked, err := testHandler.Queries.ListPullRequestsByIssue(ctx, parseUUID(created.ID))
@@ -1083,10 +1068,6 @@ func TestWebhook_MergeAnnouncementUsesPersistedLinkWhenAutoLinkDisabled(t *testi
 	if len(announcements) != 1 {
 		t.Fatalf("expected a merge announcement driven off the persisted link even with auto-link disabled, got %d", len(announcements))
 	}
-	if !announcements[0].CloseIntent.Valid || !announcements[0].CloseIntent.Bool {
-		t.Errorf("expected the announcement's close_intent to come from the persisted link row (true), got %+v", announcements[0].CloseIntent)
-	}
-
 	worker := NewMergeAnnouncementWorker(testHandler)
 	worked, err := worker.ProcessNext(ctx)
 	if err != nil {
@@ -1096,15 +1077,14 @@ func TestWebhook_MergeAnnouncementUsesPersistedLinkWhenAutoLinkDisabled(t *testi
 		t.Fatalf("expected ProcessNext to claim and deliver the pending announcement")
 	}
 
-	// Advance-to-done must also have fired off the persisted link's
-	// close_intent, using the merge event that closed the PR (no open linked
-	// PRs remain, and the persisted link carries close_intent=true).
+	// The existing link still participates in the workspace-selected merge
+	// status even though auto-linking was disabled before the merge event.
 	afterMerge, err := testHandler.Queries.GetIssue(ctx, parseUUID(created.ID))
 	if err != nil {
 		t.Fatalf("GetIssue after merge: %v", err)
 	}
 	if afterMerge.Status != "done" {
-		t.Errorf("expected the issue to auto-advance to done using the persisted link's close_intent, got %q", afterMerge.Status)
+		t.Errorf("expected the issue to move to the workspace's Done target, got %q", afterMerge.Status)
 	}
 }
 
@@ -2221,7 +2201,7 @@ func withTestPRRefresh(t *testing.T, srv *httptest.Server) {
 // merged PR was correctly mirrored/linked by an earlier webhook, but never
 // produced an announcement (e.g. it merged before the feature existed).
 // Returns the PR row's UUID.
-func seedMergedGitHubPRLink(t *testing.T, ctx context.Context, issueID, owner, repo string, prNumber int32, installationID int64, closeIntent bool) string {
+func seedMergedGitHubPRLink(t *testing.T, ctx context.Context, issueID, owner, repo string, prNumber int32, installationID int64) string {
 	t.Helper()
 	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
 		WorkspaceID:    parseUUID(testWorkspaceID),
@@ -2254,14 +2234,6 @@ func seedMergedGitHubPRLink(t *testing.T, ctx context.Context, issueID, owner, r
 		PullRequestID: pr.ID,
 	}); err != nil {
 		t.Fatalf("LinkIssueToPullRequest: %v", err)
-	}
-	if closeIntent {
-		if err := testHandler.Queries.SyncPullRequestCloseIntent(ctx, db.SyncPullRequestCloseIntentParams{
-			PullRequestID:   pr.ID,
-			ClosingIssueIds: []pgtype.UUID{parseUUID(issueID)},
-		}); err != nil {
-			t.Fatalf("SyncPullRequestCloseIntent: %v", err)
-		}
 	}
 	return uuidToString(pr.ID)
 }
@@ -2364,7 +2336,7 @@ func TestListPullRequestsForIssue_OmitsMergeAnnouncementWhenNoneEnqueued(t *test
 	ctx := context.Background()
 	created := createTestIssueForMergeAnnouncement(t, "No announcement issue")
 
-	seedMergedGitHubPRLink(t, ctx, created.ID, "acme", "noannounce", 6161, 99887733, false)
+	seedMergedGitHubPRLink(t, ctx, created.ID, "acme", "noannounce", 6161, 99887733)
 
 	req := withURLParam(newRequest("GET", "/api/issues/"+created.ID+"/pull-requests", nil), "id", created.ID)
 	w := testutil.Call(t, testHandler.ListPullRequestsForIssue, req).Want(http.StatusOK)
@@ -2393,7 +2365,7 @@ func TestAnnounceMergeForIssue_RecoversHistoricalMerge(t *testing.T) {
 	created := createTestIssueForMergeAnnouncement(t, "Recovery test issue")
 
 	const installationID int64 = 99887744
-	prID := seedMergedGitHubPRLink(t, ctx, created.ID, "acme", "recover", 7171, installationID, true)
+	prID := seedMergedGitHubPRLink(t, ctx, created.ID, "acme", "recover", 7171, installationID)
 	_ = prID
 
 	const wantMergedAt = "2026-08-01T12:00:00Z"
@@ -2479,7 +2451,7 @@ func TestAnnounceMergeForIssue_RetryIsIdempotent(t *testing.T) {
 	created := createTestIssueForMergeAnnouncement(t, "Idempotent recovery issue")
 
 	const installationID int64 = 99887755
-	seedMergedGitHubPRLink(t, ctx, created.ID, "acme", "idempotent", 8181, installationID, false)
+	seedMergedGitHubPRLink(t, ctx, created.ID, "acme", "idempotent", 8181, installationID)
 
 	srv := fakeGitHubAppServer(t, func(vars map[string]any) string {
 		return `{"repository":{"databaseId":424243,"pullRequest":{
@@ -2539,7 +2511,7 @@ func TestAnnounceMergeForIssue_RejectsUnmergedPR(t *testing.T) {
 	// Seed the link as though the PR were merged in our own mirror (state
 	// drift scenario) — the recovery path must trust GitHub's live answer,
 	// not the locally mirrored state.
-	seedMergedGitHubPRLink(t, ctx, created.ID, "acme", "notmerged", 9191, installationID, false)
+	seedMergedGitHubPRLink(t, ctx, created.ID, "acme", "notmerged", 9191, installationID)
 
 	srv := fakeGitHubAppServer(t, func(vars map[string]any) string {
 		return `{"repository":{"databaseId":424244,"pullRequest":{
@@ -2585,7 +2557,7 @@ func TestAnnounceMergeForIssue_RejectsWhenGitHubDisabled(t *testing.T) {
 	created := createTestIssueForMergeAnnouncement(t, "Disabled github recovery issue")
 
 	const installationID int64 = 99887777
-	seedMergedGitHubPRLink(t, ctx, created.ID, "acme", "disabled", 1010, installationID, false)
+	seedMergedGitHubPRLink(t, ctx, created.ID, "acme", "disabled", 1010, installationID)
 
 	var previousSettings []byte
 	testPool.QueryRow(ctx, `SELECT settings FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&previousSettings)
@@ -2644,7 +2616,7 @@ func TestAnnounceMergeForIssue_DoesNotCrossClaimUnrelatedPendingRow(t *testing.T
 	// the worker's global (available_at, created_at) ordering.
 	decoyIssue := createTestIssueForMergeAnnouncement(t, "Decoy issue for cross-claim regression")
 	const decoyInstallationID int64 = 99887788
-	decoyPRID := seedMergedGitHubPRLink(t, ctx, decoyIssue.ID, "acme", "decoy", 5050, decoyInstallationID, false)
+	decoyPRID := seedMergedGitHubPRLink(t, ctx, decoyIssue.ID, "acme", "decoy", 5050, decoyInstallationID)
 	decoyAnnouncement, err := testHandler.Queries.CreateGitHubMergeAnnouncement(ctx, db.CreateGitHubMergeAnnouncementParams{
 		WorkspaceID:    parseUUID(testWorkspaceID),
 		Provider:       "github",
@@ -2669,7 +2641,7 @@ func TestAnnounceMergeForIssue_DoesNotCrossClaimUnrelatedPendingRow(t *testing.T
 	// created_at sort strictly after the decoy's.
 	created := createTestIssueForMergeAnnouncement(t, "Cross-claim regression target issue")
 	const installationID int64 = 99887799
-	seedMergedGitHubPRLink(t, ctx, created.ID, "acme", "crossclaim", 6060, installationID, false)
+	seedMergedGitHubPRLink(t, ctx, created.ID, "acme", "crossclaim", 6060, installationID)
 
 	srv := fakeGitHubAppServer(t, func(vars map[string]any) string {
 		return `{"repository":{"databaseId":424245,"pullRequest":{

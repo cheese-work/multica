@@ -2,17 +2,19 @@
 
 Product contracts the runtime brief does not fully encode.
 
-- [PR linking and auto-complete](#pr-linking-and-auto-complete)
-- [Reading a linked PR's real state](#reading-a-linked-prs-real-state)
+- [PR linking](#pr-linking)
 - [`issue get` has no structured ETA](#issue-get-has-no-structured-eta)
 - [Custom properties: typed workflow state](#custom-properties-typed-workflow-state)
 - [Status changes have server side effects](#status-changes-have-server-side-effects)
 - [Who else is running right now](#who-else-is-running-right-now)
 - [Sub-issues: todo starts work now, backlog parks it](#sub-issues-todo-starts-work-now-backlog-parks-it)
 - [Per-issue token usage](#per-issue-token-usage)
+- [Charts and files in a comment](#charts-and-files-in-a-comment)
 - [Incorrect to correct](#incorrect-to-correct)
 
-## PR linking and auto-complete
+To attach a local file to an existing issue description, use `multica issue update <id> --attachment <local-path>`. The CLI appends the file's Markdown reference to the end of the description; to replace an image, also use `--description-file` to remove the old reference. Do not put local filesystem paths in the description.
+
+## PR linking
 
 A PR is linked to an issue when its **title** or **branch name** contains a
 routable issue key (`PREFIX-NUMBER`, e.g. `MUL-123`), or when its title or body
@@ -24,29 +26,12 @@ the issue page; a removed PR is not linked again by later webhooks.
 ```text
 MUL-123: add the thing the issue asks for     # key in title  → links
 agent/dana/mul-123-add-the-thing              # key in branch → links
-Closes MUL-123   (body)                       # links AND closes
+Closes MUL-123   (body)                       # key after a keyword → links
 Related to MUL-123   (body only)              # no link
 ```
 
-**Only a closing keyword completes the issue.** When every PR linked to an issue
-is merged and at least one of them puts a closing keyword right before the key
-(`Closes MUL-123`; `Fix login MUL-123` does not count, and a branch name never
-does), the issue moves to `done` on its own — unless the workspace turned PR
-auto-complete off (Settings → Issue statuses) or someone turned it off for that
-issue. A title or branch key alone links the PR but never completes the issue.
-A linked PR still open or draft keeps the issue waiting, and so does a PR closed
-without merging until someone removes it from the issue.
-
-The check runs only when a PR event touches the issue: a linked PR merges, a PR
-is linked, or a link is removed. Reopening an issue or changing the setting never
-completes it by itself.
-
-While a PR is open, its automatic links and its closing keyword follow the live
-title, branch, and body: removing the key drops the link, and downgrading
-`Closes MUL-123` to a plain mention keeps the title link but drops the close.
-After merge or close, existing links and the close decision stay. Adding a key to
-an already-merged PR still links it, but that late link does not complete the
-issue.
+While a PR is open, its automatic links follow the live title, branch, and
+body: removing the key drops the link. After merge or close, existing links stay.
 
 ### Default for code-changing issue work
 
@@ -59,83 +44,16 @@ instead of pretending the run is complete.
 
 To make the PR show on the issue, put a routable issue key in the PR **title**
 (preferred) or the **branch**. A key that appears only as a bare mention in the
-body links nothing. Do not use a closing keyword (`Closes` / `Fixes` /
-`Resolves`) unless merging the PR should move the issue to `done`.
+body links nothing.
 
 ```text
-MUL-123: fix login redirect        # key in title → links, does not complete
-Closes MUL-123                     # only when merge should mark the issue done
+MUL-123: fix login redirect        # key in title → links
 Part of MUL-123                    # body mention only → no link at all
 ```
 
 In the final issue comment, include the PR URL when a PR exists. If the task did
 not produce a PR because no code changed or the user asked not to create one, say
 that explicitly.
-
-## Reading a linked PR's real state
-
-When a step depends on PR state, query Multica's link table — do not infer it
-from branch names, GitHub search, memory, or stale values left on the issue by
-an earlier run.
-
-```bash
-multica issue pull-requests <issue-id> --output json
-```
-
-Returns `{"pull_requests": [...], "auto_complete": {...}}`.
-`auto_complete.state` says what the merge rule will do for this issue:
-`no_close_intent` (no linked PR closes the issue with a keyword, so merging
-completes nothing), `waiting` (some linked PRs are still open or draft),
-`not_merged` (one was closed without merging), `all_merged`,
-`workspace_disabled`, `issue_disabled`, `terminal`, `triage`, or `none`;
-`auto_complete.pull_request_ids` names the PRs the state is about. Each element of `pull_requests` exposes:
-
-- `number`, `html_url`, `title`
-- `link_source` — why the PR is on the issue: `title`, `branch`, `manual`, or
-  `auto` (any other automatic link, such as a closing keyword in the body).
-- `state` — the PR lifecycle as a **single enum**, one of `merged`, `closed`,
-  `draft`, `open`. There is no separate `draft` or `merged` boolean in the
-  response; the server folds them into `state` (merged wins, then closed, then
-  draft, else open).
-- `merged_at` — non-null once merged; a second confirmation of `state: merged`.
-- `provider` — `github`, `forgejo`, `gitea`, or `gitlab`.
-- `mergeable_state` — mirrors GitHub (`clean` / `dirty` surfaced; other values
-  round-trip as unknown; retained for compatibility).
-- GitHub API snapshot fields: `snapshot_available`, `mergeable`,
-  `merge_state_status`, `checks_rollup`, `checks_total`, `checks_passed`,
-  `checks_failed`, `checks_running`, `failed_check_names`,
-  `snapshot_fetched_at`, and `snapshot_stale`. `snapshot_available == true`
-  means the feature is enabled and the snapshot matches the PR's current head.
-  Only then does `checks_rollup == null` mean "no checks"; false means the
-  snapshot feature is disabled, has not fetched yet, or only has an old head.
-- `checks_conclusion` — coarse CI compatibility status: `passed`, `failed`,
-  `pending`, or `null`. GitHub derives it from the current API snapshot;
-  Forgejo/Gitea/GitLab derive it from webhook commit statuses. Backed by the
-  provider-appropriate check counts.
-
-So "is it merged?" is `state == "merged"` (or `merged_at != null`); "is it still
-a draft?" is `state == "draft"`; coarse CI status is `checks_conclusion`.
-
-- `merge_announcement` — present only for a GitHub PR that has an enqueued
-  merge-announcement record; absent means none was ever enqueued (never
-  merged while linked, or merged before the feature existed). Fields:
-  `status` (`pending` / `delivered` / `failed` / `skipped`), `attempt_count`,
-  `last_error` (sanitized, no secrets), `next_retry_at` (while `pending`),
-  and `sent_at` / `comment_id` (once `delivered`). Read this instead of
-  scanning comments by hand to check whether a merge's announcement landed.
-
-`--output table` (the default) adds three derived columns on top of `NUMBER` /
-`STATE` / `TITLE` / `URL`:
-
-- `HEAD` — the PR's `branch`, or `unavailable` when absent. The response does
-  not expose a head commit SHA (only branch), so this column identifies the
-  head by branch name, not by commit.
-- `CI` — `unavailable` when no current snapshot exists (`snapshot_available`
-  is not `true`); `no checks` when a snapshot exists but `checks_rollup` is
-  `null` (checks have not reported yet — **never** rendered as `passed`);
-  otherwise the raw `checks_rollup` value.
-- `SNAPSHOT` — `unavailable` with no snapshot; `stale` (with an age) when
-  `snapshot_stale` is `true`; otherwise the age since `snapshot_fetched_at`.
 
 ## Recovering a missed merge announcement
 
@@ -320,10 +238,7 @@ explicit status filter.
   confirms the overall goal is met.
 - **`in_review`** is an accepted issue status. Some workflows use it while a PR
   is open and awaiting review; moving to it is an explicit mutation.
-- **`done`** on a child issue posts a system comment on its parent. When every
-  PR linked to the issue has merged and one of them carries a closing keyword
-  (`Closes MUL-XXXX`), the server moves it to `done` itself (see PR linking and
-  auto-complete) — you do not also need to flip it manually.
+- **`done`** on a child issue can wake its parent's assignee (see Stages).
 - **`cancelled`** is a terminal, user-driven decision to close the issue. Like
   `done` it enqueues no new agent work, but it does **not** stop tasks already in
   flight — a run in progress keeps going. To stop a running task, cancel the
@@ -416,12 +331,13 @@ Creating every serial step as `todo` enqueues the whole chain at once.
 ### Stages: order sub-issues into barrier groups
 
 `--stage <N>` (N >= 1) groups sub-issues under the same parent into ordered
-stages. The server **tries once to wake the parent assignee when a whole stage
-finishes** — i.e. every sub-issue in the lowest unfinished stage has reached a
-terminal status (`done`/`cancelled`); a notification that fails is not replayed.
-A completion that does not close a stage is silent (no comment, no wake). A
-sibling set with **no** stages is one implicit stage, so the parent is woken
-once when the *last* sub-issue finishes — not on every child.
+stages. The platform's sub-issue wakeup **wakes the parent assignee when a stage
+closes while a later stage is waiting** — every sub-issue up to that stage has
+reached a terminal status (`done`/`cancelled`) — and **once more when every
+sub-issue, staged or not, is closed**. A completion that closes nothing is
+silent. A sibling set with **no** stages wakes the parent once, when the *last*
+sub-issue finishes. A parent in `backlog` is not woken; it catches up once it
+leaves backlog. A member assignee gets an inbox notification instead of a run.
 
 Advancement is agent-driven: the server only detects the closed barrier and
 wakes the parent assignee, who then decides whether to promote the next stage's
@@ -435,8 +351,9 @@ multica issue create --title "Build"      --parent <id> --assignee <agent> --sta
 multica issue create --title "Ship"       --parent <id> --assignee <agent> --stage 3 --status backlog
 ```
 
-When both Stage 1 sub-issues finish you (the parent assignee) are woken with a
-"Stage 1 complete" comment. Inspect the layout, then promote the next stage:
+When both Stage 1 sub-issues finish you (the parent assignee) are woken by the
+sub-issue wakeup; its `[WAKEUP]` block lists every stage and names the next one.
+Inspect the layout, then promote the next stage:
 
 ```bash
 multica issue children <parent-id>             # sub-issues grouped by stage
@@ -469,6 +386,38 @@ prefixed with `>=` is a lower bound, not the real total: one or more terminal
 runs did not report usage (aborted or infra-failed), so the true figure is at
 least that but unknown above it. Do not compare an unprefixed total with a
 `>=`-prefixed one without checking which you have.
+## Charts and files in a comment
+
+Where content goes decides how it shows:
+
+- **In the body, rendered in place** — a fenced ` ```html ` or ` ```mermaid `
+  block in the comment content. It renders inside the comment with a title
+  bar (Preview / Source, fullscreen, copy) and takes its content's height;
+  anything taller than 480px collapses behind "Show all". Name it with
+  `title="..."` on the fence line. HTML runs in a scripts-only sandbox (no
+  cookies, storage or parent access; CDN `<script src>` works).
+- **An attached file** — `--attachment <path>`. Every non-image file shows as
+  a file card that opens in the viewer, **HTML included**: an uploaded
+  `report.html` is a deliverable to open, not an inline chart. Use it for
+  something the reader keeps or downloads.
+
+For HTML that should follow light / dark mode, style it with the page's theme
+variables: `var(--background)`, `var(--foreground)`, `var(--muted)`,
+`var(--muted-foreground)`, `var(--border)`, `var(--primary)`,
+`var(--chart-1)` … `var(--chart-5)`, `var(--font-sans)`. Using any of them opts
+the block into the app's color scheme, so also set the page background
+(`body { background: var(--background); color: var(--foreground) }`). HTML
+that uses none keeps its own look. Size to the content, not the viewport:
+`100vh` heights have no fixed viewport to fill here.
+
+````markdown
+```html title="p95 latency, last 7 days"
+<canvas id="c"></canvas>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>/* draw with getComputedStyle(document.documentElement)
+  .getPropertyValue("--chart-1") so it follows the theme */</script>
+```
+````
 
 ## Incorrect to correct
 
@@ -497,3 +446,36 @@ multica issue create --title "Step 3" --parent <issue-id> --assignee <agent> --s
 ## Issue wakeups
 
 `multica issue wakeup` persists event/time work: see [wakeups.md](wakeups.md).
+
+Use `multica issue wakeup` to arrange a future ordinary run, then finish the
+current run. A wakeup persists on the issue; it is not a sleeping process.
+
+- `wakeup events` lists supported business facts. These work with plugins disabled.
+- `wakeup create <issue> --agent-id <target> --kind event --event task.completed,task.failed,task.cancelled --task-id <run> --instruction-file ./instruction.md` wakes once. Omit `--agent-id` only when acting as the authenticated agent. A specific run must belong to this issue; if already terminal, registration captures its matching state immediately.
+- For a continuing subscription use `--mode continuous`. For task events, use `--filter-agent-id` to match that agent's future runs; this does not replay historical runs. For comment/issue/reaction/attachment changes, use `--filter-actor-type member|agent --filter-actor-id <user-or-agent-id>` to match the actual author/editor. Mutation-only `--filter-agent-id` remains a legacy alias for actor=agent; do not combine it with actor flags.
+- `wakeup create <issue> --kind at --after 10m --instruction-file ./instruction.md` schedules one run. Alternatively use `--at <RFC3339>`.
+- `wakeup create <issue> --kind every --every 1h --instruction-file ./instruction.md` schedules a repeating check. Or use `--kind cron --cron '0 * * * *' --timezone Asia/Shanghai`.
+- `wakeup list <issue>` / `wakeup get <issue> <id>` show the saved configuration, next time and latest run. Only promise that a reminder is arranged after creation succeeds.
+- `wakeup update <issue> <id>` uses the same flags as create and replaces the whole configuration, explicitly re-enabling it. Supply all intended fields. Old unclaimed work is withdrawn.
+- `wakeup disable <issue> <id>` stops future triggers and withdraws unclaimed work. Users can also turn it off in the issue sidebar. Closing/cancelling/completing the issue disables its wakeups; reopening does not restore them.
+- `--parent <comment-id>` keeps result delivery in the original thread.
+- Give waits an end: `--expires-in 72h` (restarts if the rule is re-enabled) or `--expires-at <RFC3339>`. With `--on-timeout wake`, an event rule runs the target once with a `wakeup.timeout` fact when the deadline passes first; the default `end` stops quietly. Recurring checks should carry an end date.
+- Members create the same rules from the issue sidebar. The parent's stage wake (see Stages above) appears there as a system rule; a member may turn it off for one issue or set its instruction, which your `[WAKEUP]` block then carries.
+
+Read current state with issue get, comment list, and run inspection before
+judging business completion. For CI, use the existing GitHub tools from a time
+wakeup; CI events are not supported here yet. A failed run does not imply its
+business goal is complete. Automatic retry chains are not followed by event
+filters; subscribe to a new run if needed. Once the goal is met, disable any
+continuous configuration. Every wakeup runs under ordinary execution and comment
+delivery rules, even when a periodic check finds no change.
+
+Self-trigger protection excludes the registering run and runs started by the
+same rule when their source identity is available. Your own comments and issue
+changes never wake you, and a condition your own unfinished run satisfies does
+not wake you when you or the platform set the rule up. A wakeup that fires
+while a run of yours for the same person is waiting to start on the issue
+joins that run instead of starting another: its instruction and facts appear
+in that run's `[WAKEUP — joined this run]` block, so handle them there. None of this prevents
+cycles between different rules. Avoid mutually triggering continuous comment
+subscriptions; when waiting for a person's reply, filter that member explicitly.

@@ -335,12 +335,12 @@ func TestLegacyRedirectsFollowTheDaemonsBrief(t *testing.T) {
 }
 
 // TestPlatformSkillDescriptionNamesEveryDomain is the recall guard for the
-// nine-into-one merge (MUL-6986).
+// ten-into-one merge (MUL-6986).
 //
 // Before the merge, each domain advertised its own description in the
 // always-loaded listing, so an agent looking for "how does squad routing work"
-// matched on the word "squad". Collapsing to one skill removes seven of those
-// eight surfaces, and the remaining description is the only thing an agent sees
+// matched on the word "squad". Collapsing to one skill removes nine of those
+// ten surfaces, and the remaining description is the only thing an agent sees
 // before deciding to open the skill. If a domain's trigger word is not in it,
 // that domain became strictly harder to find than it was before — which is the
 // one regression this merge is not allowed to cause.
@@ -353,6 +353,7 @@ func TestPlatformSkillDescriptionNamesEveryDomain(t *testing.T) {
 	// autopilot", never as "Core model".
 	triggerWords := map[string]string{
 		"references/issues.md":       "issue",
+		"references/pull-requests.md": "pr",
 		"references/mentions.md":     "mention",
 		"references/agents.md":       "agent",
 		"references/squads.md":       "squad",
@@ -426,6 +427,7 @@ func TestPlatformSkillCoversPlatformContracts(t *testing.T) {
 				"Do not read them all",
 				// The router's whole job: name every domain and its file.
 				"references/issues.md",
+				"references/pull-requests.md",
 				"references/mentions.md",
 				"references/agents.md",
 				"references/squads.md",
@@ -455,9 +457,18 @@ func TestPlatformSkillCoversPlatformContracts(t *testing.T) {
 			},
 		},
 		{
-			file: "references/issues.md",
+			file: "references/pull-requests.md",
 			want: []string{
 				"multica issue pull-requests <issue-id> --output json",
+				"stale values left on the issue by an earlier run",
+				"merge_announcement",
+				"checks_conclusion",
+				"failed_check_names",
+			},
+		},
+		{
+			file: "references/issues.md",
+			want: []string{
 				"Default for code-changing issue work",
 				"open or update a PR before posting the final Multica issue comment",
 				"This is a default, not",
@@ -471,25 +482,15 @@ func TestPlatformSkillCoversPlatformContracts(t *testing.T) {
 				"stop editing the PR blind",
 				"whether the installation is bound to this workspace",
 				"redelivered once the receiving side is fixed",
-				// Only a closing keyword completes an issue on merge, so agents
-				// must not add one to a PR that delivers only part of the work.
-				"Only a closing keyword completes the issue",
-				"unless merging the PR should move the issue to `done`",
 				"include the PR URL when a PR exists",
 				"Closes MUL-123",
 				"--status backlog",
-				// The link table is the only sanctioned source of PR state,
-				// and the guard against stale data survives MUL-6966 without
-				// naming the key it used to name: `issue get` still returns
-				// whatever an older run left on the issue, but a warning that
-				// spells out a metadata key teaches the key.
-				"stale values left on the issue by an earlier run",
 				// MUL-5442: the brief's Sub-issue Creation section is a
 				// one-line map pointing here. These anchors are the demoted
 				// playbook — if they leave, the brief pointer dangles.
 				"todo starts work now, backlog parks it",
 				"`--stage <N>`",
-				"when a whole stage finishes",
+				"wakes the parent assignee when a stage",
 				"multica issue status <child-id> todo",
 				// MUL-6966 phase 1 retired the metadata write discipline
 				// along with the brief section that pointed here. What the

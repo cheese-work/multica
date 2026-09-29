@@ -69,6 +69,11 @@ const (
 	// the operator's explicit kill switch: it disables ExportProvenance AND
 	// both export-privacy config routes in one write.
 	ExportPrivacyControls = "export_privacy_controls"
+	// LocalSearchIndex gates the sync endpoints behind Web/Desktop local search
+	// (MUL-7754). On by default. Turning it off (FF_LOCAL_SEARCH_INDEX=off)
+	// makes those endpoints answer 404, so clients stop syncing and search
+	// through the server again without a client release.
+	LocalSearchIndex = "local_search_index"
 	// agentBuilderCompat is no longer a release flag. Keep publishing the key
 	// as enabled so installed desktop clients that still gate the AI creation
 	// entry on this config decision receive the permanently enabled behavior.
@@ -136,6 +141,10 @@ func ExportPrivacyControlsEnabled(ctx context.Context, flags *featureflag.Servic
 		return false
 	}
 	return flags.IsEnabled(ctx, ExportPrivacyControls, true)
+}
+
+func LocalSearchIndexEnabled(ctx context.Context, flags *featureflag.Service) bool {
+	return flags.IsEnabled(ctx, LocalSearchIndex, true)
 }
 
 func EvaluateFrontendPublicFlags(ctx context.Context, flags *featureflag.Service) map[string]bool {
