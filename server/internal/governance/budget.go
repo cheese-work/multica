@@ -296,6 +296,28 @@ func (service *BudgetService) Debit(ctx context.Context, command BudgetDebitComm
 	if reservation.State != "reserved" || command.AmountMicroUSD > reservation.MaxAttemptCostMicroUsd || command.AmountMicroUSD > reservation.RemainingMicroUsd {
 		return BudgetReservationResult{}, ErrBudgetLimit
 	}
+	// Sampled after the workspace lock: a debit that waited past the window end
+	// must not start new wire work. The first debit rides the attempt reserved
+	// at admission; each distinct later wire key consumes one retry.
+	if now := service.clock.Now().UTC(); !now.Before(reservation.WindowEnd.Time) {
+		return BudgetReservationResult{}, ErrBudgetWindow
+	}
+	// Only wire debits count: interim usage from Settle also raises
+	// debited_micro_usd but is not wire work, so it cannot mark a retry.
+	var wireDebits int64
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM governance_budget_journal
+		WHERE workspace_id = $1 AND reservation_id = $2 AND event_type = 'debit'
+	`, command.WorkspaceID, command.ReservationID).Scan(&wireDebits); err != nil {
+		return BudgetReservationResult{}, err
+	}
+	retry := int64(0)
+	if wireDebits > 0 {
+		if reservation.RetryAllowanceRemaining < 1 {
+			return BudgetReservationResult{}, ErrBudgetLimit
+		}
+		retry = 1
+	}
 	resultingRevision := reservation.Revision + 1
 	if resultingRevision <= reservation.Revision {
 		return BudgetReservationResult{}, ErrBudgetOverflow
@@ -307,9 +329,11 @@ func (service *BudgetService) Debit(ctx context.Context, command BudgetDebitComm
 		UPDATE governance_budget_reservation
 		SET remaining_micro_usd = remaining_micro_usd - $3,
 		    debited_micro_usd = debited_micro_usd + $3,
+		    attempts_started = attempts_started + $5,
+		    retry_allowance_remaining = retry_allowance_remaining - $5,
 		    revision = $4, updated_at = now()
 		WHERE workspace_id = $1 AND reservation_id = $2 AND state = 'reserved'
-	`, command.WorkspaceID, command.ReservationID, command.AmountMicroUSD, resultingRevision)
+	`, command.WorkspaceID, command.ReservationID, command.AmountMicroUSD, resultingRevision, retry)
 	if err != nil {
 		return BudgetReservationResult{}, err
 	}
@@ -432,9 +456,9 @@ func (service *BudgetService) Settle(ctx context.Context, command BudgetSettleCo
 	if command.UsageKnown {
 		settledAmount = command.UsageMicroUSD
 	}
-	if settledAmount < reservation.DebitedMicroUsd {
-		return BudgetSettlementResult{}, ErrBudgetInvariant
-	}
+	// Terminal settlement is the only path that may refund: a worst-case wire
+	// pre-debit above verified usage returns its excess (a negative spend delta)
+	// once, because the reservation leaves 'reserved' in this same transaction.
 	additionalSpend := settledAmount - reservation.DebitedMicroUsd
 	remaining := reservation.RemainingMicroUsd
 	if err := adjustBudgetCounters(ctx, tx, command.WorkspaceID, reservation.BudgetRootID, reservation.WindowStart.Time, -remaining, additionalSpend, -remaining, additionalSpend); err != nil {

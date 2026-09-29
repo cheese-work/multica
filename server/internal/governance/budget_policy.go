@@ -173,17 +173,9 @@ func (service *BudgetService) SettleEvaluation(ctx context.Context, policy *Depl
 			usageErr = ErrBudgetLimit
 		}
 	}
-	if settledKnown && amount > 0 {
-		debited, err := service.Debit(ctx, BudgetDebitCommand{
-			WorkspaceID: current.WorkspaceID, ReservationID: current.ReservationID,
-			ExpectedRevision: current.Revision, EventKey: "debit:" + policy.Version + ":" + current.ReservationID.String(),
-			AmountMicroUSD: amount,
-		})
-		if err != nil {
-			return err
-		}
-		current = debited.Reservation
-	}
+	// Verified usage is booked by the terminal Settle itself (usage minus what a
+	// wire pre-debit already took). A separate Debit here would be rejected after
+	// window end and would double-count against a pre-debit.
 	_, settleErr := service.Settle(ctx, BudgetSettleCommand{
 		WorkspaceID: current.WorkspaceID, ReservationID: current.ReservationID,
 		ExpectedRevision: current.Revision, EventKey: "settle:" + policy.Version + ":" + current.ReservationID.String(),
