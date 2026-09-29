@@ -302,8 +302,17 @@ func (service *BudgetService) Debit(ctx context.Context, command BudgetDebitComm
 	if now := service.clock.Now().UTC(); !now.Before(reservation.WindowEnd.Time) {
 		return BudgetReservationResult{}, ErrBudgetWindow
 	}
+	// Only wire debits count: interim usage from Settle also raises
+	// debited_micro_usd but is not wire work, so it cannot mark a retry.
+	var wireDebits int64
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM governance_budget_journal
+		WHERE workspace_id = $1 AND reservation_id = $2 AND event_type = 'debit'
+	`, command.WorkspaceID, command.ReservationID).Scan(&wireDebits); err != nil {
+		return BudgetReservationResult{}, err
+	}
 	retry := int64(0)
-	if reservation.DebitedMicroUsd > 0 {
+	if wireDebits > 0 {
 		if reservation.RetryAllowanceRemaining < 1 {
 			return BudgetReservationResult{}, ErrBudgetLimit
 		}

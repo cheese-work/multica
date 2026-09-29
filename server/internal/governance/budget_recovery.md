@@ -15,7 +15,8 @@ contract; it does not wait for CHE-729 to close.
 3. **Wire pre-debit** — `Debit` has one role: a worst-case pre-debit for new
    wire work, persisted under a unique `EventKey` *before* the broker sends.
    The same key never debits twice. The first pre-debit rides the attempt
-   reserved at admission; each further distinct key consumes one
+   reserved at admission (first means no prior `debit` journal row; interim
+   usage from `Settle` does not count); each further distinct key consumes one
    `retry_allowance_remaining`, and an exhausted allowance returns
    `ErrBudgetLimit` with no wire work to follow.
 4. **Expiry** — `Debit` samples the clock after the workspace lock. At or after
