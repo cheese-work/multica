@@ -512,11 +512,20 @@ case "$command" in
     fi
 
     echo "==> pulling candidate image pair (tag ${image_tag}) for colour=$to_colour"
-    if ! MULTICA_BACKEND_IMAGE="$backend_repo" MULTICA_WEB_IMAGE="$web_repo" MULTICA_IMAGE_TAG="$image_tag" \
-      compose pull "backend-${to_colour}" "frontend-${to_colour}"; then
-      echo "!! image pull failed for colour=$to_colour; $from_colour remains active" >&2
-      exit 1
-    fi
+    # Bounded retry (CHE-823): one GHCR connection reset failed a whole
+    # admitted deploy. Nothing is drained yet, so retrying is safe; the
+    # digest checks below still pin exactly what was pulled.
+    pull_attempt=1
+    until MULTICA_BACKEND_IMAGE="$backend_repo" MULTICA_WEB_IMAGE="$web_repo" MULTICA_IMAGE_TAG="$image_tag" \
+      compose pull "backend-${to_colour}" "frontend-${to_colour}"; do
+      if [ "$pull_attempt" -ge 3 ]; then
+        echo "!! image pull failed for colour=$to_colour; $from_colour remains active" >&2
+        exit 1
+      fi
+      echo "!! image pull attempt $pull_attempt/3 failed; retrying in $((pull_attempt * 5))s" >&2
+      sleep $((pull_attempt * 5))
+      pull_attempt=$((pull_attempt + 1))
+    done
     if ! verify_pulled_digest "$backend_repo" "$image_tag" "$backend_digest"; then
       echo "!! pulled backend image digest mismatch for colour=$to_colour; $from_colour remains active" >&2
       exit 1
