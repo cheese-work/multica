@@ -44,15 +44,12 @@ import (
 //     and there is nothing to "trigger" on a human assignee. Skipping the
 //     comment entirely (Bohan's call on MUL-2538) also sidesteps the
 //     mention question — no comment, no mention, no inbox row.
-//   - the completion must close a STAGE barrier (MUL-3508). Sub-issues under
+//   - the completion must close a staged barrier (MUL-3508). Sub-issues under
 //     a parent can be grouped into ordered stages via issue.stage; the
-//     notification + wake fire only when every sibling in the lowest
-//     unfinished stage is terminal (stageBarrierClosed). An unstaged sibling
-//     set is one implicit stage, so this fires once when the last sub-issue
-//     finishes instead of on every child — the default fix for the
-//     fire-on-every-child cascade reported in #4320. The woken assignee
-//     decides whether to promote the next stage (agent-driven advancement);
-//     the server only detects the barrier and wakes.
+//     stage-completion comment and durable stage-wake receipt are recorded
+//     only when every sibling in the lowest unfinished stage is terminal
+//     (stageBarrierClosed). The wakeup service dispatches the parent assignee
+//     from the recorded child event and owns the implicit-stage wrap-up.
 //
 // The comment is inserted directly via db.Queries (not through the
 // CreateComment HTTP handler) so it bypasses the generic on_comment trigger
@@ -63,9 +60,8 @@ import (
 // narrowed to skip member assignees outright). To keep the platform in
 // control of side effects, the cmd/server notification + subscriber
 // listeners still skip system comments wholesale, so smuggled mentions from
-// the child title cannot light up unrelated members. The parent assignee's
-// own trigger is fired explicitly by dispatchParentAssigneeTrigger below,
-// with the idempotency guard documented there.
+// the child title cannot light up unrelated members. The issue wakeup service
+// owns parent-assignee task dispatch.
 //
 // Errors are logged at warn level and swallowed: this is a best-effort
 // notification on the side of a successful status update; failing it must
@@ -143,14 +139,8 @@ func (h *Handler) notifyParentOfChildDone(ctx context.Context, prev, issue db.Is
 		return
 	}
 
-	// Stage barrier (MUL-3508 / discussion #4320). The notification + assignee
-	// wake fire only when this completion *closes a stage* — i.e. every sibling
-	// in the lowest unfinished stage is now terminal. An unstaged sibling set is
-	// one implicit stage, so this collapses to "wake once when the last
-	// sub-issue finishes" instead of the old fire-on-every-child behavior that
-	// caused the surprise cascade. A completion that does not close a stage is
-	// silent: no comment, no wake. ListChildIssues already reflects this child's
-	// committed terminal status (the status update commits before this runs).
+	// Keep stage-progress comments limited to closed staged barriers; the
+	// child-event wakeup service handles assignee dispatch and implicit wrap-up.
 	children, err := h.Queries.ListChildIssues(ctx, parent.ID)
 	if err != nil {
 		slog.Warn("child done: failed to list siblings for stage barrier",
@@ -168,14 +158,13 @@ func (h *Handler) notifyParentOfChildDone(ctx context.Context, prev, issue db.Is
 		return
 	}
 	staged := siblingsAreStaged(children)
+	if !staged {
+		return
+	}
 	// When the set is staged and the barrier closed, the completed child is
 	// guaranteed to carry a stage (stageBarrierClosed returns false for an
 	// unstaged completed child in a staged set), so issue.Stage.Int32 is safe.
-	var closedStage int32
-	if staged {
-		closedStage = issue.Stage.Int32
-	}
-	h.postChildDoneComment(ctx, parent, issue, children, staged, closedStage, false, statuses, nil, effective)
+	h.postChildDoneComment(ctx, parent, issue, children, true, issue.Stage.Int32, false, statuses, nil, effective)
 }
 
 // notifyParentsOfBatchChildDone emits child-done parent notifications for a
@@ -261,13 +250,6 @@ func (h *Handler) notifyParentsOfBatchChildDone(ctx context.Context, completed [
 		}
 		batch := len(g.children) > 1
 		if !siblingsAreStaged(children) {
-			// Unstaged: one implicit stage. Fire once iff every child is terminal
-			// in the final state. stageBarrierClosed ignores `completed` on the
-			// unstaged path, so any completed child stands in for the barrier check.
-			if !stageBarrierClosed(children, g.children[0], statuses.isTerminal) {
-				continue
-			}
-			h.postChildDoneComment(ctx, parent, g.children[0], children, false, 0, batch, statuses, g.children, effective)
 			continue
 		}
 
@@ -703,13 +685,6 @@ func (h *Handler) postChildDoneComment(ctx context.Context, parent, completed db
 		"issue_revision":      created.IssueRevision,
 	})
 
-	// Dispatch the explicit trigger / inbox row for the parent assignee.
-	// Listener-level mention parsing is intentionally NOT involved (the
-	// notification + subscriber listeners both short-circuit on
-	// author_type='system'); this keeps smuggled mentions from the child
-	// title inert and gives the platform a single place to apply the loop
-	// and idempotency guards.
-	h.dispatchParentAssigneeTrigger(ctx, parent, comment)
 }
 
 // isTerminalChildStatus reports whether a child issue status counts as
@@ -1070,69 +1045,6 @@ func sanitizeMentionLabel(name string) string {
 		return "assignee"
 	}
 	return cleaned
-}
-
-// dispatchParentAssigneeTrigger fires the explicit side effect that pairs
-// with the @mention link in the system comment body — an agent task for
-// agent or squad-leader assignees. Member assignees never reach this code
-// path; notifyParentOfChildDone skips them outright. The generic comment
-// listener is intentionally bypassed (it short-circuits on
-// author_type='system'), so this is the single place where the platform
-// applies the idempotency guard for the child-done notification.
-//
-// Side-effect semantics (intentionally narrower than a normal @mention):
-//   - agent parent: one EnqueueTaskForMention on the parent assignee, same
-//     trigger surface as a real @-mention so dedupe and readiness checks
-//     match what users already rely on.
-//   - squad parent: one EnqueueTaskForSquadLeader on the squad LEADER only.
-//     Unlike a human @squad mention, this does NOT fan out to squad members
-//     — child-done is a coordination signal, the leader decides whether
-//     and how to wake the rest of the squad. Documented here so reviewers
-//     don't read "system mention" as inheriting the full member fan-out. The
-//     actor that closed the child is irrelevant to routing: the target is the
-//     parent's own leader, chosen (and permission-checked) at squad-assign
-//     time, so no actor identity is threaded in — see triggerChildDoneSquad.
-//   - notification_preference is not consulted: this is a platform routing
-//     signal targeted at the assignee that already owns the parent, not a
-//     general notification. Per-user mute settings are evaluated by the
-//     downstream agent_task / inbox pipeline once the task is dispatched.
-//   - notification_listeners.go short-circuits on author_type='system', so
-//     subscriber emails and member-inbox rows from smuggled mentions in the
-//     child title are inert — only the explicit dispatch below runs.
-//
-// Guards applied here:
-//   - No-op when the parent has no assignee row.
-//   - NO self-trigger guard on either the agent OR the squad path. Waking the
-//     parent assignee when one of its children finishes is a serial sub-task
-//     handoff across two DIFFERENT issues, not a self-loop — legitimate per
-//     isAgentRunningOnIssue and the @mention self-trigger path
-//     (computeMentionedAgentCommentTriggers). The squad path used to skip a
-//     same-squad or shared-leader child on the theory that the leader had
-//     already observed the work through its own coordination cycle on the
-//     child. That stranded the common pattern where a squad decomposes its
-//     parent into sub-issues assigned to its own squad: the stage-barrier
-//     system comment lands on the PARENT carrying the "advance the next stage /
-//     wrap up" instruction, which a child-side wake never delivers — so the
-//     parent silently stalled in in_progress (MUL-3969). The squad path now
-//     mirrors the agent path (MUL-2808): always dispatch, bounded only by
-//     idempotency.
-//   - Idempotency: HasPendingTaskForIssueAndAgent dedupes rapid-fire enqueues
-//     for the same parent (e.g. two children finishing back-to-back). It also
-//     bounds any re-trigger, since a leader waking on the parent does not by
-//     itself push a child back into a terminal transition.
-//   - Readiness: archived agents / missing runtimes are silently skipped
-//     so a closed-out agent does not surface as a phantom assignee.
-func (h *Handler) dispatchParentAssigneeTrigger(ctx context.Context, parent db.Issue, systemComment db.Comment) {
-	if !parent.AssigneeType.Valid || !parent.AssigneeID.Valid {
-		return
-	}
-
-	switch parent.AssigneeType.String {
-	case "agent":
-		h.triggerChildDoneAgent(ctx, parent, systemComment.ID)
-	case "squad":
-		h.triggerChildDoneSquad(ctx, parent, systemComment.ID)
-	}
 }
 
 // triggerChildDoneAgent enqueues a mention-style task for the parent's
