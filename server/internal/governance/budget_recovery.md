@@ -12,17 +12,23 @@ contract; it does not wait for CHE-729 to close.
    `governance_budget_outbox.obligation_id`. Redelivery of a `pending` or
    `claimed` row reuses that key, so the broker admits at most once. A retry of
    `Admit` with the same input returns `Duplicate` and the same outbox event id.
-3. **Wire key** — each wire attempt persists a worst-case `Debit` under a unique
-   `EventKey` *before* the broker sends. The same key never debits twice. The
-   first debit rides the attempt reserved at admission; each further distinct
-   key consumes one `retry_allowance_remaining`; an exhausted allowance returns
-   `ErrBudgetLimit` and no wire work may follow.
+3. **Wire pre-debit** — `Debit` has one role: a worst-case pre-debit for new
+   wire work, persisted under a unique `EventKey` *before* the broker sends.
+   The same key never debits twice. The first pre-debit rides the attempt
+   reserved at admission; each further distinct key consumes one
+   `retry_allowance_remaining`, and an exhausted allowance returns
+   `ErrBudgetLimit` with no wire work to follow.
 4. **Expiry** — `Debit` samples the clock after the workspace lock. At or after
-   `window_end` it returns `ErrBudgetWindow`; no new wire work is allowed.
-5. **Settle** — `terminationKnown && usageKnown` refunds only the proven
-   remainder; `terminationKnown && !usageKnown` charges the full cap; a settle
-   without observed termination retains slot and liability. Duplicate receipts
+   `window_end` it returns `ErrBudgetWindow`: no new wire work. `Settle` has no
+   expiry fence, so a provider call that straddles `window_end` still settles.
+5. **Settle** — books verified usage itself: `terminationKnown && usageKnown`
+   charges `usage - already pre-debited` and refunds only the proven remainder
+   (usage below the pre-debit is `ErrBudgetInvariant` and retains liability);
+   `terminationKnown && !usageKnown` charges the full cap; a settle without
+   observed termination retains slot and liability. Duplicate receipts
    no-op; a conflicting receipt or usage returns `ErrBudgetConflict`.
+   `BudgetService.SettleEvaluation` therefore never calls `Debit`; a broker that
+   pre-debits and then settles is neither double-counted nor charged a retry.
 6. **Uncertain native outcome** — an unacknowledged or uncertain admission keeps
    its slot and spend until an observed terminal receipt settles it.
 
