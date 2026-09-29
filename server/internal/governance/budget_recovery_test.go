@@ -458,6 +458,34 @@ func TestBudgetRecoverySettleEvaluation(t *testing.T) {
 			t.Fatalf("reserve against the refund: %v", err)
 		}
 	})
+	t.Run("R4j_first_wire_debit_after_interim_usage_is_not_metered_as_a_retry", func(t *testing.T) {
+		fixture := newBudgetTestFixture(t)
+		_, reserved := reserveEvaluationForRecovery(t, fixture) // retry allowance 0
+		id := reserved.Reservation.ReservationID
+		interim, err := fixture.service.Settle(ctx, BudgetSettleCommand{
+			WorkspaceID: fixture.workspaceID, ReservationID: id, ExpectedRevision: reserved.Reservation.Revision,
+			EventKey: "interim", UsageKnown: true, UsageMicroUSD: 50,
+		})
+		if err != nil {
+			t.Fatalf("interim usage report: %v", err)
+		}
+		debited, err := fixture.service.Debit(ctx, BudgetDebitCommand{
+			WorkspaceID: fixture.workspaceID, ReservationID: id, ExpectedRevision: interim.Reservation.Revision, EventKey: "wire-1", AmountMicroUSD: 100,
+		})
+		if err != nil {
+			t.Fatalf("first wire debit after interim usage = %v, want it to ride the reserved attempt", err)
+		}
+		if debited.Reservation.AttemptsStarted != 1 || debited.Reservation.RetryAllowanceRemaining != 0 {
+			t.Fatalf("attempts/retry remaining = %d/%d, want 1/0", debited.Reservation.AttemptsStarted, debited.Reservation.RetryAllowanceRemaining)
+		}
+		// A second distinct wire key is a retry, and the allowance is 0.
+		if _, err := fixture.service.Debit(ctx, BudgetDebitCommand{
+			WorkspaceID: fixture.workspaceID, ReservationID: id, ExpectedRevision: debited.Reservation.Revision, EventKey: "wire-2", AmountMicroUSD: 10,
+		}); !errors.Is(err, ErrBudgetLimit) {
+			t.Fatalf("second wire key with no allowance = %v, want ErrBudgetLimit", err)
+		}
+		assertRecoveryConservation(t, fixture.pool, fixture.workspaceID)
+	})
 	t.Run("R4i_interim_usage_below_predebit_without_termination_retains_liability", func(t *testing.T) {
 		fixture := newBudgetTestFixture(t)
 		_, reserved := reserveEvaluationForRecovery(t, fixture)
