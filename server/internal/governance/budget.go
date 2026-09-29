@@ -296,6 +296,19 @@ func (service *BudgetService) Debit(ctx context.Context, command BudgetDebitComm
 	if reservation.State != "reserved" || command.AmountMicroUSD > reservation.MaxAttemptCostMicroUsd || command.AmountMicroUSD > reservation.RemainingMicroUsd {
 		return BudgetReservationResult{}, ErrBudgetLimit
 	}
+	// Sampled after the workspace lock: a debit that waited past the window end
+	// must not start new wire work. The first debit rides the attempt reserved
+	// at admission; each distinct later wire key consumes one retry.
+	if now := service.clock.Now().UTC(); !now.Before(reservation.WindowEnd.Time) {
+		return BudgetReservationResult{}, ErrBudgetWindow
+	}
+	retry := int64(0)
+	if reservation.DebitedMicroUsd > 0 {
+		if reservation.RetryAllowanceRemaining < 1 {
+			return BudgetReservationResult{}, ErrBudgetLimit
+		}
+		retry = 1
+	}
 	resultingRevision := reservation.Revision + 1
 	if resultingRevision <= reservation.Revision {
 		return BudgetReservationResult{}, ErrBudgetOverflow
@@ -307,9 +320,11 @@ func (service *BudgetService) Debit(ctx context.Context, command BudgetDebitComm
 		UPDATE governance_budget_reservation
 		SET remaining_micro_usd = remaining_micro_usd - $3,
 		    debited_micro_usd = debited_micro_usd + $3,
+		    attempts_started = attempts_started + $5,
+		    retry_allowance_remaining = retry_allowance_remaining - $5,
 		    revision = $4, updated_at = now()
 		WHERE workspace_id = $1 AND reservation_id = $2 AND state = 'reserved'
-	`, command.WorkspaceID, command.ReservationID, command.AmountMicroUSD, resultingRevision)
+	`, command.WorkspaceID, command.ReservationID, command.AmountMicroUSD, resultingRevision, retry)
 	if err != nil {
 		return BudgetReservationResult{}, err
 	}
