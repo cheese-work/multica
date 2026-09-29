@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -26,6 +27,41 @@ const budgetReservationColumns = `
 	state, revision, request_digest, settlement_receipt_id, usage_known,
 	termination_known, created_at, updated_at, settled_at`
 
+const protectedBudgetWindowsQuery = `
+	WITH protected_starts AS (
+		SELECT $2::timestamptz AS window_start
+		UNION
+		SELECT window_start
+		FROM governance_budget_window
+		WHERE workspace_id = $1 AND window_start <= $3 AND window_end > $3
+		UNION
+		SELECT window_start
+		FROM governance_budget_reservation
+		WHERE workspace_id = $1 AND state = 'reserved'
+	)
+	SELECT budget_window_row.window_start, budget_window_row.window_end, budget_window_row.spend_cap_micro_usd,
+	       budget_window_row.reserved_micro_usd, budget_window_row.spent_micro_usd
+	FROM governance_budget_window AS budget_window_row
+	JOIN protected_starts AS protected USING (window_start)
+	WHERE budget_window_row.workspace_id = $1
+	ORDER BY budget_window_row.window_start
+	FOR UPDATE OF budget_window_row
+`
+
+const budgetWindowExposureQuery = `
+	SELECT protected.window_start,
+	       COALESCE(SUM(overlapping.reserved_micro_usd::numeric + overlapping.spent_micro_usd::numeric), 0)::text
+	FROM unnest($2::timestamptz[]) AS protected(window_start)
+	JOIN governance_budget_window AS boundary
+	  ON boundary.workspace_id = $1 AND boundary.window_start = protected.window_start
+	LEFT JOIN governance_budget_window AS overlapping
+	  ON overlapping.workspace_id = boundary.workspace_id
+	 AND overlapping.window_start < boundary.window_end
+	 AND overlapping.window_end > boundary.window_start
+	GROUP BY protected.window_start
+	ORDER BY protected.window_start
+`
+
 type budgetRootState struct {
 	cap      int64
 	reserved int64
@@ -40,15 +76,11 @@ type budgetWindowState struct {
 	spent    int64
 }
 
-type budgetCounters struct {
-	reserved int64
-	spent    int64
-}
-
 type budgetState struct {
-	roots        map[pgtype.UUID]budgetRootState
-	windows      map[int64]budgetWindowState
-	reservations map[pgtype.UUID]db.GovernanceBudgetReservation
+	roots          map[pgtype.UUID]budgetRootState
+	windows        map[int64]budgetWindowState
+	reservations   map[pgtype.UUID]db.GovernanceBudgetReservation
+	windowExposure map[int64]int64
 }
 
 type budgetLocation struct {
@@ -130,178 +162,181 @@ func readBudgetLocation(ctx context.Context, tx pgx.Tx, workspaceID, reservation
 	return location, nil
 }
 
-func loadBudgetState(ctx context.Context, tx pgx.Tx, workspaceID pgtype.UUID) (budgetState, error) {
+func loadBudgetAdmissionState(ctx context.Context, tx pgx.Tx, workspaceID, rootID pgtype.UUID, incomingStart, now time.Time) (budgetState, error) {
 	state := budgetState{
-		roots:        make(map[pgtype.UUID]budgetRootState),
-		windows:      make(map[int64]budgetWindowState),
-		reservations: make(map[pgtype.UUID]db.GovernanceBudgetReservation),
+		roots:          make(map[pgtype.UUID]budgetRootState, 1),
+		windows:        make(map[int64]budgetWindowState),
+		reservations:   make(map[pgtype.UUID]db.GovernanceBudgetReservation),
+		windowExposure: make(map[int64]int64),
 	}
-	rootRows, err := tx.Query(ctx, `
-		SELECT budget_root_id, spend_cap_micro_usd, reserved_micro_usd, spent_micro_usd
-		FROM governance_budget_root
-		WHERE workspace_id = $1
-		ORDER BY budget_root_id
-		FOR UPDATE
-	`, workspaceID)
+	root, err := readBudgetRoot(ctx, tx, workspaceID, rootID)
 	if err != nil {
 		return budgetState{}, err
 	}
-	for rootRows.Next() {
-		var rootID pgtype.UUID
-		var root budgetRootState
-		if err := rootRows.Scan(&rootID, &root.cap, &root.reserved, &root.spent); err != nil {
-			rootRows.Close()
-			return budgetState{}, err
-		}
-		if !validConcurrencyUUID(rootID) || root.cap <= 0 || root.reserved < 0 || root.spent < 0 {
-			rootRows.Close()
-			return budgetState{}, ErrBudgetInvariant
-		}
-		state.roots[rootID] = root
-	}
-	if err := rootRows.Err(); err != nil {
-		rootRows.Close()
-		return budgetState{}, err
-	}
-	rootRows.Close()
+	state.roots[rootID] = root
 
-	windowRows, err := tx.Query(ctx, `
-		SELECT window_start, window_end, spend_cap_micro_usd, reserved_micro_usd, spent_micro_usd
-		FROM governance_budget_window
-		WHERE workspace_id = $1
-		ORDER BY window_start
-		FOR UPDATE
-	`, workspaceID)
+	rows, err := tx.Query(ctx, protectedBudgetWindowsQuery, workspaceID, incomingStart.UTC(), now.UTC())
 	if err != nil {
 		return budgetState{}, err
 	}
-	for windowRows.Next() {
+	starts := make([]time.Time, 0, 4)
+	for rows.Next() {
 		var window budgetWindowState
-		if err := windowRows.Scan(&window.start, &window.end, &window.cap, &window.reserved, &window.spent); err != nil {
-			windowRows.Close()
+		if err := rows.Scan(&window.start, &window.end, &window.cap, &window.reserved, &window.spent); err != nil {
+			rows.Close()
 			return budgetState{}, err
 		}
 		window.start = window.start.UTC()
 		window.end = window.end.UTC()
-		if !window.start.Before(window.end) || window.cap <= 0 || window.reserved < 0 || window.spent < 0 {
-			windowRows.Close()
+		if !validBudgetWindow(window) {
+			rows.Close()
 			return budgetState{}, ErrBudgetInvariant
 		}
-		state.windows[budgetWindowKey(window.start)] = window
+		key := budgetWindowKey(window.start)
+		state.windows[key] = window
+		starts = append(starts, window.start)
 	}
-	if err := windowRows.Err(); err != nil {
-		windowRows.Close()
+	if err := rows.Err(); err != nil {
+		rows.Close()
 		return budgetState{}, err
 	}
-	windowRows.Close()
+	rows.Close()
+	if len(starts) == 0 {
+		return budgetState{}, ErrBudgetInvariant
+	}
 
-	reservationRows, err := tx.Query(ctx, "SELECT "+budgetReservationColumns+` FROM governance_budget_reservation
-		WHERE workspace_id = $1
-		ORDER BY reservation_id
-		FOR UPDATE`, workspaceID)
+	exposureRows, err := tx.Query(ctx, budgetWindowExposureQuery, workspaceID, starts)
 	if err != nil {
 		return budgetState{}, err
 	}
-	for reservationRows.Next() {
-		reservation, err := scanBudgetReservation(reservationRows)
-		if err != nil {
-			reservationRows.Close()
+	for exposureRows.Next() {
+		var start time.Time
+		var exposureText string
+		if err := exposureRows.Scan(&start, &exposureText); err != nil {
+			exposureRows.Close()
 			return budgetState{}, err
 		}
-		if !validConcurrencyUUID(reservation.ReservationID) {
-			reservationRows.Close()
+		exposure, err := strconv.ParseInt(exposureText, 10, 64)
+		if err != nil {
+			exposureRows.Close()
+			if errors.Is(err, strconv.ErrRange) {
+				return budgetState{}, ErrBudgetOverflow
+			}
 			return budgetState{}, ErrBudgetInvariant
 		}
-		state.reservations[reservation.ReservationID] = reservation
+		state.windowExposure[budgetWindowKey(start)] = exposure
 	}
-	if err := reservationRows.Err(); err != nil {
-		reservationRows.Close()
+	if err := exposureRows.Err(); err != nil {
+		exposureRows.Close()
 		return budgetState{}, err
 	}
-	reservationRows.Close()
-	if err := validateBudgetState(state); err != nil {
-		return budgetState{}, err
+	exposureRows.Close()
+	if len(state.windowExposure) != len(state.windows) {
+		return budgetState{}, ErrBudgetInvariant
 	}
 	return state, nil
 }
 
-func validateBudgetState(state budgetState) error {
-	rootTotals := make(map[pgtype.UUID]budgetCounters)
-	windowTotals := make(map[int64]budgetCounters)
-	for _, reservation := range state.reservations {
-		if !validConcurrencyUUID(reservation.WorkspaceID) || !validConcurrencyUUID(reservation.BudgetRootID) ||
-			!validConcurrencyUUID(reservation.CaseID) || !validConcurrencyUUID(reservation.AttemptID) ||
-			!validConcurrencyUUID(reservation.ObligationID) || !reservation.WindowStart.Valid || !reservation.WindowEnd.Valid ||
-			!reservation.WindowStart.Time.Before(reservation.WindowEnd.Time) || reservation.TotalCapMicroUsd <= 0 ||
-			reservation.RootCapMicroUsd <= 0 || reservation.WindowCapMicroUsd <= 0 || reservation.MaxAttemptCostMicroUsd <= 0 ||
-			!reservation.RetryPolicyBounded || reservation.RetryAllowance < 0 || reservation.RetryAllowanceRemaining < 0 ||
-			reservation.RetryAllowanceRemaining > reservation.RetryAllowance || reservation.AttemptsStarted < 1 ||
-			reservation.AttemptsStarted > reservation.RetryAllowance+1 || reservation.RemainingMicroUsd < 0 ||
-			reservation.DebitedMicroUsd < 0 || reservation.SettledMicroUsd < 0 || reservation.Revision < 1 ||
-			!validBudgetDigest(reservation.RequestDigest) || !validBudgetKey(reservation.Resource) {
-			return ErrBudgetInvariant
-		}
-		totalParts, err := budgetAddAmounts(reservation.RemainingMicroUsd, reservation.DebitedMicroUsd)
-		if err != nil || (reservation.State == "reserved" && totalParts != reservation.TotalCapMicroUsd) {
-			return ErrBudgetInvariant
-		}
-		root, ok := state.roots[reservation.BudgetRootID]
-		if !ok || reservation.RootCapMicroUsd > root.cap {
-			return ErrBudgetInvariant
-		}
-		window, ok := state.windows[budgetWindowKey(reservation.WindowStart.Time)]
-		if !ok || !window.end.Equal(reservation.WindowEnd.Time) || reservation.WindowCapMicroUsd > window.cap {
-			return ErrBudgetInvariant
-		}
-		rootTotal := rootTotals[reservation.BudgetRootID]
-		windowKey := budgetWindowKey(reservation.WindowStart.Time)
-		windowTotal := windowTotals[windowKey]
-		switch reservation.State {
-		case "reserved":
-			rootTotal.reserved, err = budgetAddAmounts(rootTotal.reserved, reservation.RemainingMicroUsd)
-			if err == nil {
-				rootTotal.spent, err = budgetAddAmounts(rootTotal.spent, reservation.DebitedMicroUsd)
-			}
-			if err == nil {
-				windowTotal.reserved, err = budgetAddAmounts(windowTotal.reserved, reservation.RemainingMicroUsd)
-			}
-			if err == nil {
-				windowTotal.spent, err = budgetAddAmounts(windowTotal.spent, reservation.DebitedMicroUsd)
-			}
-		case "settled":
-			if reservation.RemainingMicroUsd != 0 || reservation.DebitedMicroUsd != reservation.SettledMicroUsd ||
-				reservation.SettledMicroUsd > reservation.TotalCapMicroUsd || !reservation.TerminationKnown ||
-				!reservation.SettlementReceiptID.Valid || !reservation.SettledAt.Valid ||
-				(!reservation.UsageKnown && reservation.SettledMicroUsd != reservation.TotalCapMicroUsd) {
-				return ErrBudgetInvariant
-			}
-			rootTotal.spent, err = budgetAddAmounts(rootTotal.spent, reservation.SettledMicroUsd)
-			if err == nil {
-				windowTotal.spent, err = budgetAddAmounts(windowTotal.spent, reservation.SettledMicroUsd)
-			}
-		default:
-			return ErrBudgetInvariant
-		}
-		if err != nil {
-			return err
-		}
-		rootTotals[reservation.BudgetRootID] = rootTotal
-		windowTotals[windowKey] = windowTotal
+func loadBudgetReservationState(ctx context.Context, tx pgx.Tx, workspaceID, reservationID pgtype.UUID, location budgetLocation) (budgetState, error) {
+	root, err := readBudgetRoot(ctx, tx, workspaceID, location.rootID)
+	if err != nil {
+		return budgetState{}, err
 	}
-	for rootID, root := range state.roots {
-		if rootTotals[rootID].reserved != root.reserved || rootTotals[rootID].spent != root.spent {
-			return ErrBudgetInvariant
-		}
+	window, err := readBudgetWindow(ctx, tx, workspaceID, location.windowStart)
+	if err != nil {
+		return budgetState{}, err
 	}
-	for windowKey, window := range state.windows {
-		if windowTotals[windowKey].reserved != window.reserved || windowTotals[windowKey].spent != window.spent {
-			return ErrBudgetInvariant
-		}
+	reservation, err := readBudgetReservation(ctx, tx, workspaceID, reservationID, true)
+	if err != nil {
+		return budgetState{}, err
 	}
-	return nil
+	if err := validateBudgetReservation(reservation, root, window); err != nil {
+		return budgetState{}, err
+	}
+	return budgetState{
+		roots:        map[pgtype.UUID]budgetRootState{location.rootID: root},
+		windows:      map[int64]budgetWindowState{budgetWindowKey(window.start): window},
+		reservations: map[pgtype.UUID]db.GovernanceBudgetReservation{reservationID: reservation},
+	}, nil
 }
 
-func checkBudgetAdmission(state budgetState, command BudgetReserveCommand, totalCap int64, now time.Time, root budgetRootState, incoming budgetWindowState) error {
+func readBudgetRoot(ctx context.Context, tx pgx.Tx, workspaceID, rootID pgtype.UUID) (budgetRootState, error) {
+	var root budgetRootState
+	err := tx.QueryRow(ctx, `
+		SELECT spend_cap_micro_usd, reserved_micro_usd, spent_micro_usd
+		FROM governance_budget_root
+		WHERE workspace_id = $1 AND budget_root_id = $2
+		FOR UPDATE
+	`, workspaceID, rootID).Scan(&root.cap, &root.reserved, &root.spent)
+	if err != nil {
+		return budgetRootState{}, err
+	}
+	if root.cap <= 0 || root.reserved < 0 || root.spent < 0 {
+		return budgetRootState{}, ErrBudgetInvariant
+	}
+	return root, nil
+}
+
+func readBudgetWindow(ctx context.Context, tx pgx.Tx, workspaceID pgtype.UUID, start time.Time) (budgetWindowState, error) {
+	var window budgetWindowState
+	err := tx.QueryRow(ctx, `
+		SELECT window_start, window_end, spend_cap_micro_usd, reserved_micro_usd, spent_micro_usd
+		FROM governance_budget_window
+		WHERE workspace_id = $1 AND window_start = $2
+		FOR UPDATE
+	`, workspaceID, start.UTC()).Scan(&window.start, &window.end, &window.cap, &window.reserved, &window.spent)
+	if err != nil {
+		return budgetWindowState{}, err
+	}
+	window.start = window.start.UTC()
+	window.end = window.end.UTC()
+	if !validBudgetWindow(window) {
+		return budgetWindowState{}, ErrBudgetInvariant
+	}
+	return window, nil
+}
+
+func validBudgetWindow(window budgetWindowState) bool {
+	return window.start.Before(window.end) && window.cap > 0 && window.reserved >= 0 && window.spent >= 0
+}
+
+func validateBudgetReservation(reservation db.GovernanceBudgetReservation, root budgetRootState, window budgetWindowState) error {
+	if !validConcurrencyUUID(reservation.WorkspaceID) || !validConcurrencyUUID(reservation.ReservationID) ||
+		!validConcurrencyUUID(reservation.BudgetRootID) || !validConcurrencyUUID(reservation.CaseID) ||
+		!validConcurrencyUUID(reservation.AttemptID) || !validConcurrencyUUID(reservation.ObligationID) ||
+		!reservation.WindowStart.Valid || !reservation.WindowEnd.Valid ||
+		!reservation.WindowStart.Time.Before(reservation.WindowEnd.Time) || reservation.TotalCapMicroUsd <= 0 ||
+		reservation.RootCapMicroUsd <= 0 || reservation.WindowCapMicroUsd <= 0 || reservation.MaxAttemptCostMicroUsd <= 0 ||
+		!reservation.RetryPolicyBounded || reservation.RetryAllowance < 0 || reservation.RetryAllowanceRemaining < 0 ||
+		reservation.RetryAllowanceRemaining > reservation.RetryAllowance || reservation.AttemptsStarted < 1 ||
+		reservation.AttemptsStarted > reservation.RetryAllowance+1 || reservation.RemainingMicroUsd < 0 ||
+		reservation.DebitedMicroUsd < 0 || reservation.SettledMicroUsd < 0 || reservation.Revision < 1 ||
+		!validBudgetDigest(reservation.RequestDigest) || !validBudgetKey(reservation.Resource) ||
+		reservation.RootCapMicroUsd > root.cap || reservation.WindowCapMicroUsd > window.cap ||
+		!reservation.WindowEnd.Time.Equal(window.end) || budgetWindowKey(reservation.WindowStart.Time) != budgetWindowKey(window.start) {
+		return ErrBudgetInvariant
+	}
+	totalParts, err := budgetAddAmounts(reservation.RemainingMicroUsd, reservation.DebitedMicroUsd)
+	if err != nil || reservation.State == "reserved" && totalParts != reservation.TotalCapMicroUsd {
+		return ErrBudgetInvariant
+	}
+	switch reservation.State {
+	case "reserved":
+		return nil
+	case "settled":
+		if reservation.RemainingMicroUsd != 0 || reservation.DebitedMicroUsd != reservation.SettledMicroUsd ||
+			reservation.SettledMicroUsd > reservation.TotalCapMicroUsd || !reservation.TerminationKnown ||
+			!reservation.SettlementReceiptID.Valid || !reservation.SettledAt.Valid ||
+			(!reservation.UsageKnown && reservation.SettledMicroUsd != reservation.TotalCapMicroUsd) {
+			return ErrBudgetInvariant
+		}
+		return nil
+	default:
+		return ErrBudgetInvariant
+	}
+}
+
+func checkBudgetAdmission(state budgetState, command BudgetReserveCommand, totalCap int64, root budgetRootState, incoming budgetWindowState) error {
 	rootExposure, err := budgetAddAmounts(root.reserved, root.spent)
 	if err != nil {
 		return err
@@ -310,48 +345,20 @@ func checkBudgetAdmission(state budgetState, command BudgetReserveCommand, total
 	if rootExposure > rootCap || totalCap > rootCap-rootExposure {
 		return ErrBudgetLimit
 	}
-	for _, boundary := range state.windows {
-		protected := !now.Before(boundary.start) && boundary.end.After(now)
-		for _, reservation := range state.reservations {
-			if reservation.State == "reserved" && budgetWindowKey(reservation.WindowStart.Time) == budgetWindowKey(boundary.start) {
-				protected = true
-				break
-			}
-		}
-		if !protected {
-			continue
+	for key, boundary := range state.windows {
+		exposure, ok := state.windowExposure[key]
+		if !ok {
+			return ErrBudgetInvariant
 		}
 		capMicroUSD := minBudgetCap(boundary.cap, command.WindowCapMicroUSD)
-		if budgetWindowKey(boundary.start) == budgetWindowKey(incoming.start) {
+		if key == budgetWindowKey(incoming.start) {
 			capMicroUSD = minBudgetCap(capMicroUSD, incoming.cap)
-		}
-		var exposure int64
-		for _, reservation := range state.reservations {
-			if reservation.State != "reserved" && !budgetIntervalsOverlap(reservation.WindowStart.Time, reservation.WindowEnd.Time, boundary.start, boundary.end) {
-				continue
-			}
-			charge := budgetReservationExposure(reservation)
-			exposure, err = budgetAddAmounts(exposure, charge)
-			if err != nil {
-				return err
-			}
 		}
 		if exposure > capMicroUSD || totalCap > capMicroUSD-exposure {
 			return ErrBudgetLimit
 		}
 	}
 	return nil
-}
-
-func budgetReservationExposure(reservation db.GovernanceBudgetReservation) int64 {
-	if reservation.State == "reserved" || !reservation.UsageKnown {
-		return reservation.TotalCapMicroUsd
-	}
-	return reservation.SettledMicroUsd
-}
-
-func budgetIntervalsOverlap(firstStart, firstEnd, secondStart, secondEnd time.Time) bool {
-	return firstStart.Before(secondEnd) && firstEnd.After(secondStart)
 }
 
 func adjustBudgetCounters(ctx context.Context, tx pgx.Tx, workspaceID, rootID pgtype.UUID, windowStart time.Time, rootReservedDelta, rootSpentDelta, windowReservedDelta, windowSpentDelta int64) error {

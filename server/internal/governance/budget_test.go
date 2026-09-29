@@ -159,6 +159,62 @@ func TestReviewBudgetResizeThenRolloverRetainsActiveWindowCap(t *testing.T) {
 	}
 }
 
+func TestBudgetReserveDoesNotWaitOnTerminalHistory(t *testing.T) {
+	fixture := newBudgetTestFixture(t)
+	ctx := context.Background()
+	oldWindowStart := budgetTestTime(10, 0)
+	oldWindowEnd := budgetTestTime(11, 0)
+	fixture.clock.Set(budgetTestTime(10, 5))
+
+	oldCommand := fixture.reserveCommand("resource-old", oldWindowStart, oldWindowEnd, 100, 100, 20, 1)
+	oldReservation, err := fixture.service.Reserve(ctx, oldCommand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.service.Settle(ctx, BudgetSettleCommand{
+		WorkspaceID:      fixture.workspaceID,
+		ReservationID:    oldReservation.Reservation.ReservationID,
+		ExpectedRevision: oldReservation.Reservation.Revision,
+		EventKey:         "settle-old-terminal",
+		ReceiptID:        "old-terminal",
+		UsageKnown:       true,
+		TerminationKnown: true,
+		UsageMicroUSD:    1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fixture.clock.Set(budgetTestTime(12, 5))
+
+	lockTx, err := fixture.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lockTx.Rollback(ctx)
+	var lockedID pgtype.UUID
+	if err := lockTx.QueryRow(ctx, `
+		SELECT reservation_id FROM governance_budget_reservation
+		WHERE workspace_id = $1 AND reservation_id = $2
+		FOR UPDATE
+	`, fixture.workspaceID, oldReservation.Reservation.ReservationID).Scan(&lockedID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lockTx.Exec(ctx, `
+		SELECT window_start FROM governance_budget_window
+		WHERE workspace_id = $1 AND window_start = $2
+		FOR UPDATE
+	`, fixture.workspaceID, oldWindowStart); err != nil {
+		t.Fatal(err)
+	}
+
+	command := fixture.reserveCommand("resource-current", budgetTestTime(12, 0), budgetTestTime(13, 0), 100, 100, 10, 1)
+	command.BudgetRootID = oldCommand.BudgetRootID
+	reserveCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if _, err := fixture.service.Reserve(reserveCtx, command); err != nil {
+		t.Fatalf("reserve waited on terminal history: %v", err)
+	}
+}
+
 func TestBudgetReserveRejectsAfterWorkspaceLockWaitPastWindowEnd(t *testing.T) {
 	fixture := newBudgetTestFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

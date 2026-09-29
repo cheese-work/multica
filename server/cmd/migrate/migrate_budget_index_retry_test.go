@@ -41,6 +41,16 @@ var budgetIndexRetryCases = []budgetIndexRetryCase{
 		tableName:    "governance_budget_reservation",
 		duplicateKey: "attempt-obligation",
 	},
+	{
+		version:   "559_governance_budget_window_overlap_idx",
+		indexName: "governance_budget_window_overlap_idx",
+		tableName: "governance_budget_window",
+	},
+	{
+		version:   "560_governance_budget_reservation_open_window_idx",
+		indexName: "governance_budget_reservation_open_window_idx",
+		tableName: "governance_budget_reservation",
+	},
 }
 
 func TestBudgetIndexRetry(t *testing.T) {
@@ -57,6 +67,10 @@ func TestBudgetIndexRetry(t *testing.T) {
 			} else if testCase.tableName == "governance_budget_reservation" {
 				if err := insertBudgetReservations(ctx, pool, "00000000-0000-0000-0000-000000000021", "", 1); err != nil {
 					t.Fatalf("seed reservation row: %v", err)
+				}
+			} else if testCase.tableName == "governance_budget_window" {
+				if err := insertBudgetWindowRow(ctx, pool, "00000000-0000-0000-0000-000000000021"); err != nil {
+					t.Fatalf("seed budget window row: %v", err)
 				}
 			} else if err := insertBudgetOutboxRow(ctx, pool, "00000000-0000-0000-0000-000000000021", "seed"); err != nil {
 				t.Fatalf("seed outbox row: %v", err)
@@ -302,6 +316,14 @@ func insertBudgetOutboxRow(ctx context.Context, exec budgetExec, workspaceID, ev
 	return err
 }
 
+func insertBudgetWindowRow(ctx context.Context, exec budgetExec, workspaceID string) error {
+	_, err := exec.Exec(ctx, `
+		INSERT INTO governance_budget_window (workspace_id, window_start, window_end, spend_cap_micro_usd)
+		VALUES ($1, $2::timestamptz, $2::timestamptz + interval '1 hour', 1000000)
+	`, workspaceID, time.Now().UTC())
+	return err
+}
+
 func holdBudgetIndexBuild(t *testing.T, ctx context.Context, pool *pgxpool.Pool, testCase budgetIndexRetryCase, workspaceID string) func() {
 	t.Helper()
 	conn, err := pool.Acquire(ctx)
@@ -313,16 +335,29 @@ func holdBudgetIndexBuild(t *testing.T, ctx context.Context, pool *pgxpool.Pool,
 		conn.Release()
 		t.Fatalf("begin concurrent-build blocker: %v", err)
 	}
-	if testCase.tableName == "governance_budget_reservation" {
+	switch testCase.tableName {
+	case "governance_budget_reservation":
 		if err := insertBudgetReservations(ctx, tx, workspaceID, "", 1); err != nil {
 			_ = tx.Rollback(ctx)
 			conn.Release()
 			t.Fatalf("insert concurrent-build blocker row: %v", err)
 		}
-	} else if err := insertBudgetOutboxRow(ctx, tx, workspaceID, "build-blocker"); err != nil {
+	case "governance_budget_window":
+		if err := insertBudgetWindowRow(ctx, tx, workspaceID); err != nil {
+			_ = tx.Rollback(ctx)
+			conn.Release()
+			t.Fatalf("insert concurrent-build blocker window: %v", err)
+		}
+	case "governance_budget_outbox":
+		if err := insertBudgetOutboxRow(ctx, tx, workspaceID, "build-blocker"); err != nil {
+			_ = tx.Rollback(ctx)
+			conn.Release()
+			t.Fatalf("insert concurrent-build blocker outbox row: %v", err)
+		}
+	default:
 		_ = tx.Rollback(ctx)
 		conn.Release()
-		t.Fatalf("insert concurrent-build blocker outbox row: %v", err)
+		t.Fatalf("unsupported budget index fixture table %q", testCase.tableName)
 	}
 	released := false
 	release := func() {
