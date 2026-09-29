@@ -447,9 +447,9 @@ func (service *BudgetService) Settle(ctx context.Context, command BudgetSettleCo
 	if command.UsageKnown {
 		settledAmount = command.UsageMicroUSD
 	}
-	if settledAmount < reservation.DebitedMicroUsd {
-		return BudgetSettlementResult{}, ErrBudgetInvariant
-	}
+	// Terminal settlement is the only path that may refund: a worst-case wire
+	// pre-debit above verified usage returns its excess (a negative spend delta)
+	// once, because the reservation leaves 'reserved' in this same transaction.
 	additionalSpend := settledAmount - reservation.DebitedMicroUsd
 	remaining := reservation.RemainingMicroUsd
 	if err := adjustBudgetCounters(ctx, tx, command.WorkspaceID, reservation.BudgetRootID, reservation.WindowStart.Time, -remaining, additionalSpend, -remaining, additionalSpend); err != nil {

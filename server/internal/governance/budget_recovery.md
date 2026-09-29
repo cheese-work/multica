@@ -21,14 +21,18 @@ contract; it does not wait for CHE-729 to close.
 4. **Expiry** — `Debit` samples the clock after the workspace lock. At or after
    `window_end` it returns `ErrBudgetWindow`: no new wire work. `Settle` has no
    expiry fence, so a provider call that straddles `window_end` still settles.
-5. **Settle** — books verified usage itself: `terminationKnown && usageKnown`
-   charges `usage - already pre-debited` and refunds only the proven remainder
-   (usage below the pre-debit is `ErrBudgetInvariant` and retains liability);
-   `terminationKnown && !usageKnown` charges the full cap; a settle without
-   observed termination retains slot and liability. Duplicate receipts
-   no-op; a conflicting receipt or usage returns `ErrBudgetConflict`.
-   `BudgetService.SettleEvaluation` therefore never calls `Debit`; a broker that
-   pre-debits and then settles is neither double-counted nor charged a retry.
+5. **Settle** — the only path that refunds, and it books verified usage itself.
+   `terminationKnown && usageKnown` sets spend to `usage`: a worst-case
+   pre-debit above usage is refunded by `pre-debit - usage` exactly once (the
+   reservation leaves `reserved` in the same transaction, so a replay or a
+   different event key for the same receipt is a no-op); usage above the
+   pre-debit is charged the difference. `terminationKnown && !usageKnown`
+   charges the full cap. A settle without observed termination retains slot and
+   liability, and interim usage below the pre-debit is `ErrBudgetInvariant`.
+   Duplicate receipts no-op; a conflicting receipt or usage returns
+   `ErrBudgetConflict`. `BudgetService.SettleEvaluation` therefore never calls
+   `Debit`; a broker that pre-debits and then settles is neither double-counted
+   nor charged a retry.
 6. **Uncertain native outcome** — an unacknowledged or uncertain admission keeps
    its slot and spend until an observed terminal receipt settles it.
 

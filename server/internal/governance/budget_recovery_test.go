@@ -442,6 +442,14 @@ func TestBudgetRecoverySettleEvaluation(t *testing.T) {
 			t.Fatalf("replayed settle = %v, want duplicate no-op", err)
 		}
 		assertBudgetRootTotals(t, fixture, reserved.Reservation.BudgetRootID, 0, 100)
+		sameReceiptNewKey, err := fixture.service.Settle(ctx, BudgetSettleCommand{
+			WorkspaceID: fixture.workspaceID, ReservationID: id, ExpectedRevision: debited.Reservation.Revision,
+			EventKey: "settle-other-key", ReceiptID: "receipt-1", UsageKnown: true, TerminationKnown: true, UsageMicroUSD: 100,
+		})
+		if err != nil || !sameReceiptNewKey.Duplicate {
+			t.Fatalf("same receipt under another event key = %+v, %v; want duplicate no-op", sameReceiptNewKey, err)
+		}
+		assertBudgetRootTotals(t, fixture, reserved.Reservation.BudgetRootID, 0, 100)
 		assertRecoveryConservation(t, fixture.pool, fixture.workspaceID)
 		// The refund is spendable once, not twice: 300 freed, so a 300-cap sibling fits and a 301 one does not.
 		fits := fixture.reserveCommand("resource-refund", budgetTestTime(12, 0), budgetTestTime(13, 0), 1000, 1000, 300, 1)
