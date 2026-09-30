@@ -1076,7 +1076,7 @@ func TestCreateComment_GovernancePerformanceHeldControlLockIsBounded(t *testing.
 		if w.Code != http.StatusCreated {
 			t.Fatalf("CreateComment = %d, want 201: %s", w.Code, w.Body.String())
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(time.Second):
 		t.Fatal("CreateComment blocked on the held control lock past the shared observation deadline")
 	}
 	testHandler.GovernanceReceipts.WaitForIdle()
