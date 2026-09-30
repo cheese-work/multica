@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -39,11 +40,16 @@ import (
 //	  -run '^$' -bench '^BenchmarkGovernanceComment' -benchtime=1000x -count=5 -timeout=30m
 //	node ../scripts/governance-perf-summarize.mjs ../perf-samples.jsonl
 //
-// Mode order alternates per invocation (A/B then B/A) and each invocation
-// warms 100 requests first. No -race for performance samples. Fixture seed:
-// none (fixed content strings; the issue row is created fresh per benchmark).
+// Both modes run back to back for every request, in a seeded random order, so a
+// host noise burst lands on both instead of on one sequential block. Each
+// invocation warms 100 pairs first. No -race for performance samples. Fixture
+// seed: none for data (fixed content strings; the issue row is created fresh per
+// benchmark); governancePerfSeed only fixes the per-pair mode order.
 
-const governancePerfWarmup = 100
+const (
+	governancePerfWarmup = 100
+	governancePerfSeed   = 884
+)
 
 type tracedStats struct {
 	stmts, govStmts, dbNanos atomic.Int64
@@ -145,41 +151,41 @@ func runGovernanceCommentBench(b *testing.B, name string, op func(h *Handler, is
 		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
 	})
 
-	modes := []string{"bypassed", "flag_off_hook"}
+	modes := [2]string{"bypassed", "flag_off_hook"}
 	batchCounter, _ := governancePerfBatch.LoadOrStore(name, new(atomic.Int64))
 	batch := int(batchCounter.(*atomic.Int64).Add(1)) - 1
-	if batch%2 == 1 {
-		modes[0], modes[1] = modes[1], modes[0]
-	}
 	enc := json.NewEncoder(file)
+	rng := rand.New(rand.NewPCG(governancePerfSeed, uint64(batch)))
+	// One batch = governancePerfWarmup unrecorded pairs, then b.N recorded pairs,
+	// run inline (no b.Run: sub-benchmarks would run the parent once and defeat
+	// -count batches). Sample Seq is the pair index, shared by both modes.
 	seq := 0
-	for _, mode := range modes {
-		if mode == "bypassed" {
-			h.GovernanceReceipts = nil
-		} else {
-			h.GovernanceReceipts = treatment
-		}
-		for i := 0; i < governancePerfWarmup; i++ {
-			op(h, issueID, commentID, seq)
-			seq++
-		}
-		// One batch = b.N measured requests per mode, run inline (no b.Run:
-		// sub-benchmarks would run the parent once and defeat -count batches).
-		for i := 0; i < b.N; i++ {
+	for i := 0; i < governancePerfWarmup+b.N; i++ {
+		first := rng.IntN(2)
+		for j := 0; j < 2; j++ {
+			mode := modes[(first+j)%2]
+			if mode == "bypassed" {
+				h.GovernanceReceipts = nil
+			} else {
+				h.GovernanceReceipts = treatment
+			}
 			s0, g0, d0, p0 := stats.stmts.Load(), stats.govStmts.Load(), stats.dbNanos.Load(), provider.calls.Load()
 			start := time.Now()
 			op(h, issueID, commentID, seq)
 			client := time.Since(start)
-			_ = enc.Encode(perfSample{Bench: name, Mode: mode, Batch: batch, Seq: i,
+			seq++
+			if i < governancePerfWarmup {
+				continue
+			}
+			_ = enc.Encode(perfSample{Bench: name, Mode: mode, Batch: batch, Seq: i - governancePerfWarmup,
 				ClientNs: client.Nanoseconds(), DBNs: stats.dbNanos.Load() - d0,
 				DBStmts: stats.stmts.Load() - s0, GovStmts: stats.govStmts.Load() - g0, Provider: provider.calls.Load() - p0})
-			seq++
 		}
 	}
 }
 
-// governancePerfBatch counts invocations per benchmark name so A/B order
-// alternates independently for create and update.
+// governancePerfBatch counts invocations per benchmark name: the batch number
+// labels samples and seeds that batch's pair order.
 var governancePerfBatch sync.Map
 
 func BenchmarkGovernanceCommentCreate(b *testing.B) {
