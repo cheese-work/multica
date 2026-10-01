@@ -153,8 +153,11 @@ test("schema-invalid rows exit 2, never a verdict", (t) => {
   const cases = {
     "non-object line": ["42", /not an object/],
     "null line": ["null", /not an object/],
-    "non-numeric ClientNs": [JSON.stringify({ ...good, ClientNs: "x" }), /ClientNs is not a finite number/],
-    "missing GovStmts": [JSON.stringify({ ...good, GovStmts: undefined }), /GovStmts is not a finite number/],
+    "non-numeric ClientNs": [JSON.stringify({ ...good, ClientNs: "x" }), /ClientNs is not a non-negative finite number/],
+    "missing GovStmts": [JSON.stringify({ ...good, GovStmts: undefined }), /GovStmts is not a non-negative integer/],
+    "negative GovStmts": [JSON.stringify({ ...good, GovStmts: -1 }), /GovStmts is not a non-negative integer/],
+    "fractional Batch": [JSON.stringify({ ...good, Batch: 0.5 }), /Batch is not a non-negative integer/],
+    "negative ClientNs": [JSON.stringify({ ...good, ClientNs: -1 }), /ClientNs is not a non-negative finite number/],
     "unknown Mode": [JSON.stringify({ ...good, Mode: "bogus" }), /unknown Mode/],
     "non-string Bench": [JSON.stringify({ ...good, Bench: 7 }), /Bench is not a string/],
   };
@@ -181,4 +184,10 @@ test("an extra statement on only some requests fails even when min and max match
   assert.equal(out.verdict, "FAIL");
   assert.equal(out.report.update.checks.sameStatementCountAsBypassed, false);
   assert.equal(status, 1);
+});
+
+test("error line numbers count blank lines", (t) => {
+  const { status, stderr } = summarize(t, { raw: '\n\n{"Bench":"create"' });
+  assert.equal(status, 2);
+  assert.match(stderr, /:3 is not valid JSON/);
 });

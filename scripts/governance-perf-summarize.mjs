@@ -28,9 +28,11 @@ const usageError = (message) => {
 };
 let rows;
 try {
-  rows = readFileSync(file, "utf8").split("\n").filter(Boolean).map((l, i) => {
+  // Keep source line numbers: blank lines are skipped, not renumbered.
+  rows = readFileSync(file, "utf8").split("\n").flatMap((l, i) => {
+    if (!l) return [];
     try {
-      return JSON.parse(l);
+      return [{ row: JSON.parse(l), line: i + 1 }];
     } catch {
       return usageError(`${file}:${i + 1} is not valid JSON (truncated sample file?)`);
     }
@@ -39,18 +41,24 @@ try {
   usageError(`cannot read ${file}: ${err.message}`);
 }
 const MODES = ["bypassed", "flag_off_hook"];
-const NUMERIC = ["Batch", "Seq", "ClientNs", "DBNs", "DBStmts", "GovStmts", "Provider"];
+// Counts and indexes are non-negative integers (a negative GovStmts would cancel a
+// real one in the sum); timings are non-negative finite numbers.
+const COUNTS = ["Batch", "Seq", "DBStmts", "GovStmts", "Provider"];
+const TIMINGS = ["ClientNs", "DBNs"];
 const invalidRow = (r) => {
   if (r === null || typeof r !== "object") return "not an object";
   if (typeof r.Bench !== "string") return "Bench is not a string";
   if (!MODES.includes(r.Mode)) return `unknown Mode ${JSON.stringify(r.Mode)}`;
-  const field = NUMERIC.find((k) => !Number.isFinite(r[k]));
-  return field && `${field} is not a finite number`;
+  const count = COUNTS.find((k) => !Number.isInteger(r[k]) || r[k] < 0);
+  if (count) return `${count} is not a non-negative integer`;
+  const timing = TIMINGS.find((k) => !Number.isFinite(r[k]) || r[k] < 0);
+  return timing && `${timing} is not a non-negative finite number`;
 };
-rows.forEach((r, i) => {
-  const bad = invalidRow(r);
-  if (bad) usageError(`${file}: row ${i + 1} is invalid: ${bad}`);
-});
+for (const { row, line } of rows) {
+  const bad = invalidRow(row);
+  if (bad) usageError(`${file}:${line} is invalid: ${bad}`);
+}
+rows = rows.map(({ row }) => row);
 // The benchmark restarts batch numbering at 0 per process and appends to the file,
 // so a second run into the same file repeats (Bench, Mode, Batch, Seq): reject it.
 const seen = new Set();
@@ -78,7 +86,7 @@ const benches = [...new Set([...EXPECTED_BENCHES, ...rows.map((r) => r.Bench)])]
 for (const bench of benches) {
   const per = {};
   const sets = {};
-  for (const mode of ["bypassed", "flag_off_hook"]) {
+  for (const mode of MODES) {
     const set = (sets[mode] = rows.filter((r) => r.Bench === bench && r.Mode === mode));
     const batches = new Map();
     for (const r of set) batches.set(r.Batch, (batches.get(r.Batch) ?? 0) + 1);
