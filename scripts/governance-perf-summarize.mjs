@@ -3,8 +3,8 @@
 // mode and a PASS/FAIL/INCONCLUSIVE verdict (CHE-884 / CHE-866 B4).
 //   node scripts/governance-perf-summarize.mjs <samples.jsonl>
 // Acceptance: zero governance statements and provider calls when the flag is
-// off; p95 added client time and DB time each <= max(1ms, 2% of the matched
-// bypassed-hook p95). "Added" is the median over batches of the paired per-batch
+// off; p95 added client time and DB time each <= max(1ms, 2% of the pooled
+// bypassed p95). "Added" is the median over batches of the paired per-batch
 // p95 delta (the benchmark interleaves both modes per request, so each batch is
 // a matched pair): a host noise burst that hits a minority of batches cannot
 // move it, a real per-request cost moves every batch. The pooled delta is
@@ -28,7 +28,7 @@ const ms = (ns) => ns / 1e6;
 const median = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
 const batchP95 = (set, col) => {
   const by = new Map();
-  for (const r of set) by.set(r.Batch, [...(by.get(r.Batch) ?? []), r[col]]);
+  for (const r of set) (by.get(r.Batch) ?? by.set(r.Batch, []).get(r.Batch)).push(r[col]);
   return new Map([...by].map(([batch, v]) => [batch, quantile(v.sort((a, b) => a - b), 0.95)]));
 };
 
@@ -53,8 +53,8 @@ for (const bench of [...new Set(rows.map((r) => r.Bench))]) {
       dbP95Ms: ms(quantile(dbt, 0.95)),
       govStatements: set.reduce((a, r) => a + r.GovStmts, 0),
       providerCalls: set.reduce((a, r) => a + r.Provider, 0),
-      dbStatementsPerRequestMax: Math.max(...set.map((r) => r.DBStmts)),
-      dbStatementsPerRequestMin: Math.min(...set.map((r) => r.DBStmts)),
+      dbStatementsPerRequestMax: set.reduce((m, r) => Math.max(m, r.DBStmts), -Infinity),
+      dbStatementsPerRequestMin: set.reduce((m, r) => Math.min(m, r.DBStmts), Infinity),
     };
   }
   const a = per.bypassed;
@@ -74,14 +74,20 @@ for (const bench of [...new Set(rows.map((r) => r.Bench))]) {
     zeroGovernanceStatements: b.govStatements === 0,
     zeroProviderCalls: b.providerCalls === 0,
     sameStatementCountAsBypassed:
+      a.n === 0 || b.n === 0 || // a missing mode is INCONCLUSIVE (enough=false), not a statement mismatch
       b.dbStatementsPerRequestMax === a.dbStatementsPerRequestMax &&
       b.dbStatementsPerRequestMin === a.dbStatementsPerRequestMin,
     clientP95WithinLimit: clientAdded <= clientLimit,
     dbP95WithinLimit: dbAdded <= dbLimit,
   };
-  const enough = [a, b].every((m) => m.batches >= MIN_BATCHES && m.shortBatches === 0);
+  // Enough = >= MIN_BATCHES full batches per mode AND >= MIN_BATCHES matched pairs
+  // (the median is over pairs). Missing data is inconclusive, never a timing FAIL.
+  const enough =
+    [a, b].every((m) => m.batches >= MIN_BATCHES && m.shortBatches === 0) && clientBatchAdded.length >= MIN_BATCHES;
   if (!enough) inconclusive = true;
-  if (!Object.values(checks).every(Boolean)) failed = true;
+  // Deterministic checks fail on any sample count; timing checks only with enough data.
+  const { clientP95WithinLimit, dbP95WithinLimit, ...deterministic } = checks;
+  if (!Object.values(deterministic).every(Boolean) || (enough && !(clientP95WithinLimit && dbP95WithinLimit))) failed = true;
   report[bench] = {
     per,
     clientAddedP95Ms: clientAdded, clientBatchAddedP95Ms: clientBatchAdded, pooledClientAddedP95Ms: b.clientP95Ms - a.clientP95Ms, clientLimitMs: clientLimit,
