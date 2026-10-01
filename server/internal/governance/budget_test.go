@@ -622,3 +622,38 @@ func assertBudgetRootTotals(t *testing.T, fixture *budgetTestFixture, rootID pgt
 		t.Fatalf("root counters = %d/%d, want %d/%d", reserved, spent, wantReserved, wantSpent)
 	}
 }
+
+// Window exposure counts only reservations whose window overlaps the boundary.
+// A disjoint open reservation must not consume another window's cap (OCR
+// finding on #146: the pre-B3 loop charged every open reservation in the
+// workspace to every protected boundary).
+func TestBudgetWindowExposureCountsOnlyOverlappingReservations(t *testing.T) {
+	fixture := newBudgetTestFixture(t)
+	ctx := context.Background()
+	fixture.clock.Set(budgetTestTime(12, 5))
+	w1 := fixture.reserveCommand("resource-a", budgetTestTime(12, 0), budgetTestTime(13, 0), 100, 1000, 40, 1)
+	if _, err := fixture.service.Reserve(ctx, w1); err != nil {
+		t.Fatal(err)
+	}
+	// W1 stays open past its end, so it remains a protected boundary (exposure 40).
+	fixture.clock.Set(budgetTestTime(14, 5))
+	reserveW2 := func(resource string, cost, epoch int64) error {
+		fixture.setEpoch(t, epoch)
+		command := fixture.reserveCommand(resource, budgetTestTime(14, 0), budgetTestTime(15, 0), 100, 1000, cost, epoch)
+		command.BudgetRootID = w1.BudgetRootID
+		_, err := fixture.service.Reserve(ctx, command)
+		return err
+	}
+	if err := reserveW2("resource-b", 40, 2); err != nil {
+		t.Fatalf("W2 first reservation: %v", err)
+	}
+	// W1 exposure is 40, W2 exposure is 40. 30 fits both (70 <= 100). Charging W2's
+	// open 40 to W1 as well would make W1 exposure 80 and reject it.
+	if err := reserveW2("resource-c", 30, 3); err != nil {
+		t.Fatalf("disjoint open reservation charged against another window's cap: %v", err)
+	}
+	// Overlapping exposure still counts: W2 is now 70, so 40 more exceeds 100.
+	if err := reserveW2("resource-d", 40, 4); !errors.Is(err, ErrBudgetLimit) {
+		t.Fatalf("overlapping exposure error = %v, want ErrBudgetLimit", err)
+	}
+}
