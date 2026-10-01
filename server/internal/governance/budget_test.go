@@ -649,3 +649,30 @@ func TestBudgetWindowExposureChargesOpenReservationsInOtherWindows(t *testing.T)
 		t.Fatalf("open reservations in other windows error = %v, want ErrBudgetLimit", err)
 	}
 }
+
+func TestBudgetWindowExposureRejectsAgainstOpenReservationInPriorWindow(t *testing.T) {
+	fixture := newBudgetTestFixture(t)
+	ctx := context.Background()
+	fixture.clock.Set(budgetTestTime(12, 5))
+	w1 := fixture.reserveCommand("resource-a", budgetTestTime(12, 0), budgetTestTime(13, 0), 100, 1000, 40, 1)
+	if _, err := fixture.service.Reserve(ctx, w1); err != nil {
+		t.Fatal(err)
+	}
+	// W1 stays open (unknown prior-window liability remains reserved) while W2 fills.
+	fixture.clock.Set(budgetTestTime(14, 5))
+	reserveW2 := func(resource string, cost, epoch int64) error {
+		fixture.setEpoch(t, epoch)
+		command := fixture.reserveCommand(resource, budgetTestTime(14, 0), budgetTestTime(15, 0), 100, 1000, cost, epoch)
+		command.BudgetRootID = w1.BudgetRootID
+		_, err := fixture.service.Reserve(ctx, command)
+		return err
+	}
+	if err := reserveW2("resource-b", 40, 2); err != nil {
+		t.Fatal(err)
+	}
+	// W1 sees 40 + 40 open, so 30 more is 110 > 100. main rejects it; the B3 query
+	// that counted only overlapping reservations admitted it.
+	if err := reserveW2("resource-c", 30, 3); !errors.Is(err, ErrBudgetLimit) {
+		t.Fatalf("reserve against open prior-window liability error = %v, want ErrBudgetLimit", err)
+	}
+}

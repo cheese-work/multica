@@ -225,6 +225,9 @@ func cleanupBudgetWorkspace(t *testing.T, pool *pgxpool.Pool, workspaceID pgtype
 	}
 }
 
+// exhaustiveBudgetWindowExposure restates the pre-B3 checkBudgetAdmission rule
+// over every reservation row: an open reservation counts against every protected
+// boundary, a settled one only where its window overlaps the boundary.
 func exhaustiveBudgetWindowExposure(t *testing.T, ctx context.Context, pool *pgxpool.Pool, workspaceID pgtype.UUID, boundaryStart time.Time) int64 {
 	t.Helper()
 	var exposure int64
@@ -237,8 +240,8 @@ func exhaustiveBudgetWindowExposure(t *testing.T, ctx context.Context, pool *pgx
 		FROM governance_budget_window AS boundary
 		JOIN governance_budget_reservation AS reservation
 		  ON reservation.workspace_id = boundary.workspace_id
-		 AND reservation.window_start < boundary.window_end
-		 AND reservation.window_end > boundary.window_start
+		 AND (reservation.state = 'reserved'
+		      OR (reservation.window_start < boundary.window_end AND reservation.window_end > boundary.window_start))
 		WHERE boundary.workspace_id = $1 AND boundary.window_start = $2
 	`, workspaceID, boundaryStart).Scan(&exposure)
 	if err != nil {
