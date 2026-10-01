@@ -33,6 +33,7 @@ import { IssueRunsDialog, RunTriggerLabel, runBarTone } from "./issue-runs-dialo
 import {
   buildRunTimeline,
   cumulativeCostAt,
+  costYPercent,
   idleSpanAround,
   runIndexAt,
   stepCurvePath,
@@ -281,7 +282,7 @@ function RunSpendSparkline({ timeline, onOpen }: { timeline: RunTimeline; onOpen
   const [e0, e1] = timeline.extent;
   const xPct = (ms: number) => ((ms - d0) / (d1 - d0)) * 100;
   const yMax = timeline.totalCost / SPARK_HEADROOM;
-  const yPct = (cost: number) => (1 - cost / yMax) * 100;
+  const yPct = (cost: number) => costYPercent(cost, yMax);
   const { line, area } = stepCurvePath(timeline.cumulative, timeline.domain, yMax);
   const last = timeline.cumulative[timeline.cumulative.length - 1];
 

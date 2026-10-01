@@ -277,6 +277,11 @@ export function cumulativeCostAt(steps: readonly CumulativeStep[], t: number): n
   return cost;
 }
 
+export function costYPercent(cost: number, yMax: number): number {
+  const scale = Number.isFinite(yMax) && yMax > 0 ? yMax : 1;
+  return (1 - cost / scale) * 100;
+}
+
 /**
  * The quiet stretch around `t`: when the last run before it ended and the
  * next one after it started. Either side is null past the first or last run.
@@ -308,7 +313,7 @@ export function stepCurvePath(
   yMax: number,
 ): { line: string; area: string } {
   const x = (t: number) => (((t - d0) / (d1 - d0)) * 1000).toFixed(2);
-  const y = (cost: number) => ((1 - cost / yMax) * 100).toFixed(2);
+  const y = (cost: number) => costYPercent(cost, yMax).toFixed(2);
   let line = "M0,100";
   let prevY = "100.00";
   for (const step of steps) {

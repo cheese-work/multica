@@ -33,6 +33,7 @@ import { AttributionBadge } from "./attribution-badge";
 import {
   buildRunTimeline,
   cumulativeCostAt,
+  costYPercent,
   groupRunsByDay,
   idleSpanAround,
   niceTicks,
@@ -274,7 +275,7 @@ function RunTimelineChart({ timeline }: { timeline: RunTimeline }) {
 
   const yTicks = niceTicks(timeline.totalCost);
   const yMax = yTicks[yTicks.length - 1] ?? 1;
-  const yPct = (cost: number) => (1 - cost / yMax) * 100;
+  const yPct = (cost: number) => costYPercent(cost, yMax);
 
   const ticks = timeTicks(timeline.domain);
   const multiDay = d1 - d0 > 36 * 60 * 60 * 1000;

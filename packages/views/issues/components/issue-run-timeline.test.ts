@@ -4,6 +4,7 @@ import type { AgentTask, TaskUsage } from "@multica/core/types";
 import {
   buildRunTimeline,
   cumulativeCostAt,
+  costYPercent,
   groupRunsByDay,
   idleSpanAround,
   niceTicks,
@@ -344,6 +345,37 @@ describe("stepCurvePath", () => {
     );
     expect(line).toBe("M0,100 L250.00,100.00 L250.00,50.00 L750.00,50.00 L750.00,0.00 L1000,0.00");
     expect(area).toBe(`${line} L1000,100 L0,100 Z`);
+  });
+
+  it("keeps an unmapped zero-cost run's curve coordinates finite", () => {
+    const timeline = buildRunTimeline(
+      [
+        makeTask({
+          usage: [
+            {
+              provider: "acme",
+              model: "made-up-model",
+              input_tokens: 1_000_000,
+              output_tokens: 0,
+              cache_read_tokens: 0,
+              cache_write_tokens: 0,
+            },
+          ],
+        }),
+      ],
+      NOW,
+    );
+    const { line, area } = stepCurvePath(
+      timeline.cumulative,
+      timeline.domain,
+      timeline.totalCost / 0.9,
+    );
+    const dotY = costYPercent(timeline.cumulative[0]!.cost, timeline.totalCost / 0.9);
+
+    expect(timeline.totalCost).toBe(0);
+    expect(`${line} ${area}`).not.toMatch(/NaN|Infinity/);
+    expect(Number.isFinite(dotY)).toBe(true);
+    expect(dotY).toBe(100);
   });
 });
 
