@@ -1,46 +1,8 @@
 package protocollint
 
 import (
-	"regexp"
 	"testing"
 )
-
-// githubMergeAnnouncementPRURLPattern is a literal copy of
-// server/internal/handler/github_merge_announcement.go's githubPRURLRe. This
-// package cannot import internal/handler (the reverse would create an import
-// cycle in the allowed dependency direction), so the two literals are pinned
-// together here: a change to either pattern without updating the other fails
-// this test.
-const githubMergeAnnouncementPRURLPattern = `^https://github\.com/([^/]+)/([^/]+)/pull/(\d+)/?$`
-
-// TestEvidenceURLPatternMatchesGitHubHandlerPattern guards against
-// githubPRURLPattern drifting from the server's own GitHub PR URL parser. If
-// this test starts failing, the fix is to copy the new pattern from
-// github_merge_announcement.go's githubPRURLRe into protocollint.go's
-// githubPRURLPattern verbatim.
-func TestEvidenceURLPatternMatchesGitHubHandlerPattern(t *testing.T) {
-	t.Parallel()
-
-	if githubPRURLPattern.String() != githubMergeAnnouncementPRURLPattern {
-		t.Fatalf("protocollint's githubPRURLPattern = %q, want it to match github_merge_announcement.go's githubPRURLRe = %q",
-			githubPRURLPattern.String(), githubMergeAnnouncementPRURLPattern)
-	}
-
-	// Belt and suspenders: also prove the two compiled patterns agree on
-	// actual inputs, not just their source text.
-	reference := regexp.MustCompile(githubMergeAnnouncementPRURLPattern)
-	for _, url := range []string{
-		"https://github.com/multica-ai/multica/pull/1234",
-		"https://github.com/multica-ai/multica/pull/1234/",
-		"https://github.com/multica-ai/multica/pull/1234/files",
-		"https://github.com/multica-ai/multica/issues/1234",
-		"not a url",
-	} {
-		if got, want := githubPRURLPattern.MatchString(url), reference.MatchString(url); got != want {
-			t.Errorf("MatchString(%q) = %v, want %v (reference pattern)", url, got, want)
-		}
-	}
-}
 
 // TestCheckPassesOnValidNoActionTurn pins CHE-529 step 3's requirement that a
 // turn with genuinely no issue/comment/status activity — no_action and

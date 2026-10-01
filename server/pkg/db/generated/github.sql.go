@@ -287,64 +287,6 @@ func (q *Queries) GetGitHubPullRequestInWorkspace(ctx context.Context, arg GetGi
 	return i, err
 }
 
-const getIssuePullRequestCloseAggregate = `-- name: GetIssuePullRequestCloseAggregate :one
-SELECT
-    COALESCE(SUM(CASE WHEN pr.state IN ('open', 'draft') THEN 1 ELSE 0 END), 0)::bigint AS open_count,
-    COALESCE(SUM(CASE WHEN pr.state = 'merged' AND ipr.close_intent THEN 1 ELSE 0 END), 0)::bigint AS merged_with_close_intent_count
-FROM github_pull_request pr
-JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
-WHERE ipr.issue_id = $1
-`
-
-type GetIssuePullRequestCloseAggregateRow struct {
-	OpenCount                  int64 `json:"open_count"`
-	MergedWithCloseIntentCount int64 `json:"merged_with_close_intent_count"`
-}
-
-// Aggregates the issue's linked PRs into the two counts that gate
-// auto-advance: how many are still in flight (`open` or `draft`) and how
-// many merged PRs declared explicit closing intent on the link row. The
-// webhook auto-advances the issue when open_count = 0 AND
-// merged_with_close_intent_count > 0. Both the PR state and the link row
-// (with close_intent) are persisted before this query runs, so the result
-// is event-agnostic — a link-only sibling closing after a closing-keyword
-// PR has already merged still resolves the issue. A bare body mention is not
-// linked at all, so a passing reference can never keep open_count > 0.
-func (q *Queries) GetIssuePullRequestCloseAggregate(ctx context.Context, issueID pgtype.UUID) (GetIssuePullRequestCloseAggregateRow, error) {
-	row := q.db.QueryRow(ctx, getIssuePullRequestCloseAggregate, issueID)
-	var i GetIssuePullRequestCloseAggregateRow
-	err := row.Scan(&i.OpenCount, &i.MergedWithCloseIntentCount)
-	return i, err
-}
-
-const getIssuePullRequestLink = `-- name: GetIssuePullRequestLink :one
-SELECT issue_id, pull_request_id FROM issue_pull_request
-WHERE issue_id = $1 AND pull_request_id = $2
-`
-
-type GetIssuePullRequestLinkParams struct {
-	IssueID       pgtype.UUID `json:"issue_id"`
-	PullRequestID pgtype.UUID `json:"pull_request_id"`
-}
-
-type GetIssuePullRequestLinkRow struct {
-	IssueID       pgtype.UUID `json:"issue_id"`
-	PullRequestID pgtype.UUID `json:"pull_request_id"`
-}
-
-// Existence check for one (issue, pull_request) pair, used by
-// MergeAnnouncementWorker.ProcessNext to revalidate that a queued
-// announcement's link has not been removed since it was enqueued (CHE-374
-// review round 2, item 2) — an item-1-style "unlink beat us here" race, but
-// observed at delivery time instead of enqueue time. Returns pgx.ErrNoRows
-// when the link no longer exists.
-func (q *Queries) GetIssuePullRequestLink(ctx context.Context, arg GetIssuePullRequestLinkParams) (GetIssuePullRequestLinkRow, error) {
-	row := q.db.QueryRow(ctx, getIssuePullRequestLink, arg.IssueID, arg.PullRequestID)
-	var i GetIssuePullRequestLinkRow
-	err := row.Scan(&i.IssueID, &i.PullRequestID)
-	return i, err
-}
-
 const getIssueReviewHeadSha = `-- name: GetIssueReviewHeadSha :one
 SELECT head_sha FROM (
     SELECT pr.head_sha AS head_sha, pr.state AS state, pr.pr_updated_at AS pr_updated_at
@@ -584,44 +526,6 @@ func (q *Queries) ListIssueIDsForPullRequest(ctx context.Context, pullRequestID 
 			return nil, err
 		}
 		items = append(items, issue_id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listIssuePullRequestLinksForPullRequest = `-- name: ListIssuePullRequestLinksForPullRequest :many
-SELECT issue_id, close_intent FROM issue_pull_request
-WHERE pull_request_id = $1
-`
-
-type ListIssuePullRequestLinksForPullRequestRow struct {
-	IssueID     pgtype.UUID `json:"issue_id"`
-	CloseIntent bool        `json:"close_intent"`
-}
-
-// Returns the persisted (issue_id, close_intent) pairs currently linked to a
-// PR, independent of how those links came to exist — a manual link with no
-// current identifier match reads the same as an auto-link one (CHE-374 review
-// round 2, item 1). Callers that drive the merge-announcement/advance-to-done
-// selection off "what's actually linked right now" must read this AFTER any
-// link/unlink writes for the same PR have been committed or are visible in
-// the same transaction — reading it beforehand reintroduces the "announce on
-// a just-unlinked issue" bug (A1) round 1 already fixed.
-func (q *Queries) ListIssuePullRequestLinksForPullRequest(ctx context.Context, pullRequestID pgtype.UUID) ([]ListIssuePullRequestLinksForPullRequestRow, error) {
-	rows, err := q.db.Query(ctx, listIssuePullRequestLinksForPullRequest, pullRequestID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListIssuePullRequestLinksForPullRequestRow{}
-	for rows.Next() {
-		var i ListIssuePullRequestLinksForPullRequestRow
-		if err := rows.Scan(&i.IssueID, &i.CloseIntent); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

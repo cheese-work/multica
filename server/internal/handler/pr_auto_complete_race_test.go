@@ -68,7 +68,7 @@ func fireTimedPRWebhook(t *testing.T, inst int64, identifier, state, timestamp s
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := testHandler.handlePullRequestEvent(context.Background(), raw, ""); err != nil {
+	if err := testHandler.handlePullRequestEvent(context.Background(), raw); err != nil {
 		t.Fatalf("handlePullRequestEvent: %v", err)
 	}
 }

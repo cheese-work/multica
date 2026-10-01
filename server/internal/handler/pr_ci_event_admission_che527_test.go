@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"testing"
 
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -67,11 +66,9 @@ func newPRMergeWebhookFixture(t *testing.T, installationID int64) prMergeWebhook
 }
 
 // postSignedGitHubCIEvent posts a signed non-pull_request GitHub webhook
-// (check_suite/check_run/status) against the real handler. Unlike the
-// pull_request-only postSignedGitHubWebhook helper in
-// github_merge_announcement_test.go, this needs a variable X-GitHub-Event
-// header, so it stays a separate, narrowly-scoped helper rather than
-// widening that one's signature.
+// (check_suite/check_run/status) against the real handler. Unlike the shared
+// postSignedGitHubWebhook helper, this needs a variable
+// X-GitHub-Event header, so it stays a separate helper.
 func postSignedGitHubCIEvent(t *testing.T, secret, event string, payload map[string]any) *httptest.ResponseRecorder {
 	t.Helper()
 	body, err := json.Marshal(payload)
@@ -91,32 +88,6 @@ func postSignedGitHubCIEvent(t *testing.T, secret, event string, payload map[str
 	return w
 }
 
-func mergedPRPayload(childIdentifier string, prNumber int, owner, repo, installationLogin string, installationID int64) map[string]any {
-	return map[string]any{
-		"action": "closed",
-		"pull_request": map[string]any{
-			"number":     prNumber,
-			"html_url":   "https://github.com/" + owner + "/" + repo + "/pull/" + strconv.Itoa(prNumber),
-			"title":      "Fix " + childIdentifier,
-			"body":       "",
-			"state":      "closed",
-			"draft":      false,
-			"merged":     true,
-			"merged_at":  "2026-09-16T00:00:00Z",
-			"closed_at":  "2026-09-16T00:00:00Z",
-			"created_at": "2026-09-15T00:00:00Z",
-			"updated_at": "2026-09-16T00:00:00Z",
-			"head":       map[string]any{"ref": "fix/che527"},
-			"user":       map[string]any{"login": "octocat", "avatar_url": ""},
-		},
-		"repository": map[string]any{
-			"name":  repo,
-			"owner": map[string]any{"login": owner},
-		},
-		"installation": map[string]any{"id": installationID, "account": map[string]any{"login": installationLogin}},
-	}
-}
-
 // TestPRMergeWebhookWakesAssignedParentAgentThroughAdmission proves the C4b
 // deliverable end to end: merging a child's PR through the real webhook
 // entry point wakes the parent's agent assignee exactly once, going through
@@ -130,7 +101,7 @@ func TestPRMergeWebhookWakesAssignedParentAgentThroughAdmission(t *testing.T) {
 	agentID := createHandlerTestAgent(t, "CHE-527 pr-merge wake", nil)
 	setIssueAssigneeDirect(t, fx.parent.ID, "agent", agentID)
 
-	payload := mergedPRPayload(fx.child.Identifier, 52701, "acme", "widget", "che527-acct", installationID)
+	payload := buildMergedPRWebhookBody(fx.child.Identifier, 52701, "acme", "widget", installationID)
 	postSignedGitHubWebhook(t, fx.secret, payload, "")
 
 	updatedChild, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(fx.child.ID))
@@ -158,7 +129,7 @@ func TestPRMergeWebhookWakesAssignedParentSquadThroughAdmission(t *testing.T) {
 	sq := newSquadCommentTriggerFixture(t)
 	setIssueAssigneeDirect(t, fx.parent.ID, "squad", sq.SquadID)
 
-	payload := mergedPRPayload(fx.child.Identifier, 52702, "acme", "widget", "che527-acct", installationID)
+	payload := buildMergedPRWebhookBody(fx.child.Identifier, 52702, "acme", "widget", installationID)
 	postSignedGitHubWebhook(t, fx.secret, payload, "")
 
 	if got := countPendingTasksForAgent(t, fx.parent.ID, sq.LeaderID); got != 1 {
@@ -180,7 +151,7 @@ func TestPRMergeWebhookRedeliveryDoesNotDuplicateWake(t *testing.T) {
 	agentID := createHandlerTestAgent(t, "CHE-527 redelivery", nil)
 	setIssueAssigneeDirect(t, fx.parent.ID, "agent", agentID)
 
-	payload := mergedPRPayload(fx.child.Identifier, 52703, "acme", "widget", "che527-acct", installationID)
+	payload := buildMergedPRWebhookBody(fx.child.Identifier, 52703, "acme", "widget", installationID)
 
 	postSignedGitHubWebhook(t, fx.secret, payload, "che527-delivery-1")
 	if got := countPendingTasksForAgent(t, fx.parent.ID, agentID); got != 1 {

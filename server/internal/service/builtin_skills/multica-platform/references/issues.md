@@ -55,27 +55,6 @@ In the final issue comment, include the PR URL when a PR exists. If the task did
 not produce a PR because no code changed or the user asked not to create one, say
 that explicitly.
 
-## Recovering a missed merge announcement
-
-A merged, linked GitHub PR should produce exactly one system comment on its
-issue (see `merge_announcement` above). If one merged without producing that
-comment — usually because it predates the announcement feature or the
-workspace's GitHub enablement — recover it explicitly:
-
-```bash
-multica issue announce-merge <issue-id> --pr-url <github-pr-url> --output json
-```
-
-A narrow, explicit action, never a bulk scan: exactly one issue and one
-already-linked, already-merged PR. It re-fetches the merge identity from
-GitHub and does not trust any merge SHA/time passed on the command line, so
-the comment always states the PR's real original merge time. Retrying with the
-same issue and PR URL is safe — it returns the existing outcome rather than
-duplicating. It fails closed if GitHub is disabled, the PR isn't
-mirrored/linked, the installation is no longer bound, or the PR isn't merged.
-Never fabricate this comment by hand; the recorded merge time and commit must
-stay authoritative.
-
 If the command returns no linked PRs after a PR was opened, check the syntax
 first: the key must be in the PR title or branch, or right after a closing
 keyword in the body — a bare body mention does not count. When the syntax is the

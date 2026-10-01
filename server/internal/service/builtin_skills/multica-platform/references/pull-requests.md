@@ -42,14 +42,6 @@ Returns `{"pull_requests": [...], ...}`. Each element of `pull_requests` exposes
 So "is it merged?" is `state == "merged"` (or `merged_at != null`); "is it still
 a draft?" is `state == "draft"`; coarse CI status is `checks_conclusion`.
 
-- `merge_announcement` — present only for a GitHub PR that has an enqueued
-  merge-announcement record; absent means none was ever enqueued (never
-  merged while linked, or merged before the feature existed). Fields:
-  `status` (`pending` / `delivered` / `failed` / `skipped`), `attempt_count`,
-  `last_error` (sanitized, no secrets), `next_retry_at` (while `pending`),
-  and `sent_at` / `comment_id` (once `delivered`). Read this instead of
-  scanning comments by hand to check whether a merge's announcement landed.
-
 `--output table` (the default) adds three derived columns on top of `NUMBER` /
 `STATE` / `TITLE` / `URL`:
 
