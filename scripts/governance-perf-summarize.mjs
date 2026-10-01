@@ -40,12 +40,15 @@ try {
 }
 const MODES = ["bypassed", "flag_off_hook"];
 const NUMERIC = ["Batch", "Seq", "ClientNs", "DBNs", "DBStmts", "GovStmts", "Provider"];
+const invalidRow = (r) => {
+  if (r === null || typeof r !== "object") return "not an object";
+  if (typeof r.Bench !== "string") return "Bench is not a string";
+  if (!MODES.includes(r.Mode)) return `unknown Mode ${JSON.stringify(r.Mode)}`;
+  const field = NUMERIC.find((k) => !Number.isFinite(r[k]));
+  return field && `${field} is not a finite number`;
+};
 rows.forEach((r, i) => {
-  const bad =
-    r === null || typeof r !== "object" ? "not an object"
-    : typeof r.Bench !== "string" ? "Bench is not a string"
-    : !MODES.includes(r.Mode) ? `unknown Mode ${JSON.stringify(r.Mode)}`
-    : NUMERIC.find((k) => !Number.isFinite(r[k])) && `${NUMERIC.find((k) => !Number.isFinite(r[k]))} is not a finite number`;
+  const bad = invalidRow(r);
   if (bad) usageError(`${file}: row ${i + 1} is invalid: ${bad}`);
 });
 // The benchmark restarts batch numbering at 0 per process and appends to the file,
@@ -90,6 +93,7 @@ for (const bench of benches) {
       dbP95Ms: ms(quantile(dbt, 0.95)),
       govStatements: set.reduce((a, r) => a + r.GovStmts, 0),
       providerCalls: set.reduce((a, r) => a + r.Provider, 0),
+      dbStatementsPerRequestMean: set.length ? set.reduce((a, r) => a + r.DBStmts, 0) / set.length : 0,
       dbStatementsPerRequestMax: set.reduce((m, r) => Math.max(m, r.DBStmts), -Infinity),
       dbStatementsPerRequestMin: set.reduce((m, r) => Math.min(m, r.DBStmts), Infinity),
     };
@@ -113,7 +117,9 @@ for (const bench of benches) {
     sameStatementCountAsBypassed:
       a.n === 0 || b.n === 0 || // a missing mode is INCONCLUSIVE (enough=false), not a statement mismatch
       (b.dbStatementsPerRequestMax === a.dbStatementsPerRequestMax &&
-        b.dbStatementsPerRequestMin === a.dbStatementsPerRequestMin),
+        b.dbStatementsPerRequestMin === a.dbStatementsPerRequestMin &&
+        // min/max alone miss an extra statement on only some requests
+        b.dbStatementsPerRequestMean <= a.dbStatementsPerRequestMean + 1e-9),
     clientP95WithinLimit: clientAdded <= clientLimit,
     dbP95WithinLimit: dbAdded <= dbLimit,
   };
@@ -134,4 +140,5 @@ for (const bench of benches) {
 }
 const verdict = failed ? "FAIL" : inconclusive ? "INCONCLUSIVE" : "PASS";
 console.log(JSON.stringify({ verdict, report }, null, 2));
-process.exit(failed ? 1 : inconclusive ? 3 : 0);
+// exitCode, not exit(): lets a piped stdout flush the whole report first.
+process.exitCode = failed ? 1 : inconclusive ? 3 : 0;

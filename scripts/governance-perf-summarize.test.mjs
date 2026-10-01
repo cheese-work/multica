@@ -10,9 +10,9 @@ const script = fileURLToPath(new URL("./governance-perf-summarize.mjs", import.m
 
 // Both modes sit at ~8ms; the hook mode is 18ms for `slowShare` of the samples
 // in each batch listed in `hookSlowBatches` (a host noise burst, not hook cost).
-function summarize(t, { batches = 5, hookSlowBatches = [], slowShare = 0.15, govStmts = 0, provider = 0, hookStmts = 14, hookBatchOffset = 0, modes = ["bypassed", "flag_off_hook"], benches = ["create", "update"], raw, dbOnlySlowBatches = [], lastBatchSize = 1000 } = {}) {
+function summarize(t, { batches = 5, hookSlowBatches = [], slowShare = 0.15, govStmts = 0, provider = 0, hookStmts = 14, hookExtraStmtEvery = 0, hookBatchOffset = 0, modes = ["bypassed", "flag_off_hook"], benches = ["create", "update"], raw, dbOnlySlowBatches = [], lastBatchSize = 1000 } = {}) {
   const rows = [];
-  for (const bench of benches) for (let batch = 0; batch < batches; batch++) {
+  if (!raw) for (const bench of benches) for (let batch = 0; batch < batches; batch++) {
     for (const mode of modes) {
       const n = batch === batches - 1 ? lastBatchSize : 1000;
       for (let seq = 0; seq < n; seq++) {
@@ -22,7 +22,7 @@ function summarize(t, { batches = 5, hookSlowBatches = [], slowShare = 0.15, gov
         const dbNs = (dbSlow ? 18e6 : 8e6 + (seq % 7) * 1e4) - 1e5;
         rows.push({
           Bench: bench, Mode: mode, Batch: mode === "flag_off_hook" ? batch + hookBatchOffset : batch, Seq: seq, ClientNs: ns, DBNs: dbNs,
-          DBStmts: mode === "flag_off_hook" ? hookStmts : 14,
+          DBStmts: mode === "flag_off_hook" ? hookStmts + (hookExtraStmtEvery && seq % hookExtraStmtEvery === 0 ? 1 : 0) : 14,
           GovStmts: mode === "flag_off_hook" && batch === 0 && seq === 0 ? govStmts : 0,
           Provider: mode === "flag_off_hook" && batch === 0 && seq === 0 ? provider : 0,
         });
@@ -164,4 +164,21 @@ test("schema-invalid rows exit 2, never a verdict", (t) => {
     assert.equal(stdout, "", name);
     assert.match(stderr, message, name);
   }
+});
+
+test("an extra statement on only some requests fails even when min and max match", (t) => {
+  // Bypassed alternates 14/15 statements (mean 14.5). The hook mode is 15 on 9 of 10
+  // requests (mean 14.9): same min and max, one extra statement on most requests.
+  const rows = [];
+  for (const bench of ["create", "update"]) for (let batch = 0; batch < 5; batch++) for (const mode of ["bypassed", "flag_off_hook"]) for (let seq = 0; seq < 1000; seq++) {
+    const ns = 8e6 + (seq % 7) * 1e4;
+    const stmts = mode === "bypassed" ? (seq % 2 ? 14 : 15) : seq % 10 === 0 ? 14 : 15;
+    rows.push({ Bench: bench, Mode: mode, Batch: batch, Seq: seq, ClientNs: ns, DBNs: ns - 1e5, DBStmts: stmts, GovStmts: 0, Provider: 0 });
+  }
+  const { status, out } = summarize(t, { raw: rows.map((r) => JSON.stringify(r)).join("\n") });
+  assert.equal(out.report.update.per.bypassed.dbStatementsPerRequestMax, out.report.update.per.flag_off_hook.dbStatementsPerRequestMax);
+  assert.equal(out.report.update.per.bypassed.dbStatementsPerRequestMin, out.report.update.per.flag_off_hook.dbStatementsPerRequestMin);
+  assert.equal(out.verdict, "FAIL");
+  assert.equal(out.report.update.checks.sameStatementCountAsBypassed, false);
+  assert.equal(status, 1);
 });
