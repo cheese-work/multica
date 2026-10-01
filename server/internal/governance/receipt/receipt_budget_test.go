@@ -12,8 +12,10 @@ import (
 	"github.com/multica-ai/multica/server/internal/governance"
 )
 
-// These tests exercise Observer.Observe against a real *governance.BudgetService
-// (not the in-memory fakeBudgetAdmission the rest of this file's tests use).
+// These tests exercise the receipt evaluation path against a real
+// *governance.BudgetService (not the in-memory fakeBudgetAdmission the rest of
+// this file's tests use). A background context keeps database timing separate
+// from the production observation deadline tested in receipt_test.go.
 // CHE-707 review B1 was invisible to a fake BudgetAdmission — the fake always
 // admits, regardless of what AttemptID/ReservationID it was called with — so
 // only a real BudgetService reproduces the bug: the create and every later
@@ -24,6 +26,12 @@ type receiptBudgetFixture struct {
 	pool        *pgxpool.Pool
 	workspaceID pgtype.UUID
 	service     *governance.BudgetService
+}
+
+func evaluateReceiptWithoutLatencyBudget(observer *Observer, input Input) Result {
+	result, done := observer.evaluate(context.Background(), input)
+	<-done
+	return result
 }
 
 type fixedClock struct{ now time.Time }
@@ -110,10 +118,10 @@ func receiptTestOperatingLimits() governance.OperatingLimits {
 // edit runs in a later admission window) failed with ErrBudgetConflict —
 // never reaching the provider at all, regardless of max_evaluations headroom.
 //
-// This test drives two full Observe calls for the same CommentID with
+// This test drives two full receipt evaluations for the same CommentID with
 // different (Trigger, CommentRevision) — exactly what CreateComment then
 // UpdateComment produce — against a real BudgetService, and asserts the
-// second (edit) observation is admitted and decided, not shed as an error.
+// second (edit) observation is admitted and decided, not treated as an error.
 func TestObserve_EditAfterSettledCreateIsAdmittedAgainstRealBudgetService(t *testing.T) {
 	fixture := newReceiptBudgetFixture(t)
 	policy := receiptTestBudgetPolicy()
@@ -137,7 +145,7 @@ func TestObserve_EditAfterSettledCreateIsAdmittedAgainstRealBudgetService(t *tes
 		Trigger:         TriggerCreate,
 		Eval:            oneCandidateOneSpanInput(),
 	}
-	createResult := observer.Observe(context.Background(), createInput)
+	createResult := evaluateReceiptWithoutLatencyBudget(observer, createInput)
 	if createResult.Status != "decided" {
 		t.Fatalf("create observation = %+v, want status decided", createResult)
 	}
@@ -146,7 +154,7 @@ func TestObserve_EditAfterSettledCreateIsAdmittedAgainstRealBudgetService(t *tes
 	editInput := createInput
 	editInput.CommentRevision = 2
 	editInput.Trigger = TriggerEdit
-	editResult := observer.Observe(context.Background(), editInput)
+	editResult := evaluateReceiptWithoutLatencyBudget(observer, editInput)
 	if editResult.Status != "decided" {
 		t.Fatalf("edit observation after settled create = %+v, want status decided (this is CHE-707 review B1: edits must not reuse the create's reservation identity)", editResult)
 	}
@@ -192,13 +200,13 @@ func TestObserve_SecondEditWithoutRevisionChangeReusesReservation(t *testing.T) 
 		Eval:         oneCandidateOneSpanInput(),
 	}
 
-	first := observer.Observe(context.Background(), input)
+	first := evaluateReceiptWithoutLatencyBudget(observer, input)
 	if first.Status != "decided" {
 		t.Fatalf("first observation = %+v, want status decided", first)
 	}
 	observer.WaitForIdle()
 
-	second := observer.Observe(context.Background(), input)
+	second := evaluateReceiptWithoutLatencyBudget(observer, input)
 	observer.WaitForIdle()
 	if second.Status != "error" || second.ShedReason != ReasonError {
 		t.Fatalf("second observation with identical (comment, trigger, revision) = %+v, want error/duplicate (unchanged pre-existing idempotency behavior)", second)

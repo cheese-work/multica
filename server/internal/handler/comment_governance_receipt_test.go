@@ -127,6 +127,14 @@ type observedTxStarter struct {
 	started chan<- int32
 }
 
+type governanceControlErrorTxStarter struct {
+	err error
+}
+
+func (starter governanceControlErrorTxStarter) Begin(context.Context) (pgx.Tx, error) {
+	return nil, starter.err
+}
+
 func (starter observedTxStarter) Begin(ctx context.Context) (pgx.Tx, error) {
 	tx, err := starter.inner.Begin(ctx)
 	if err != nil {
@@ -151,6 +159,51 @@ func (provider *blockingGovernanceProvider) Evaluate(ctx context.Context, reques
 		}
 	}
 	return (&governanceFakeProvider{}).Evaluate(ctx, request)
+}
+
+func TestObserveGovernanceReceipt_ControlLockDeadlineCountsBudgetExceeded(t *testing.T) {
+	for _, testCase := range []struct {
+		name string
+		err  error
+		want int64
+	}{
+		{name: "deadline exceeded", err: context.DeadlineExceeded, want: 1},
+		{name: "database error", err: errors.New("database unavailable")},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			provider := featureflag.NewStaticProvider()
+			provider.LoadRules(map[string]featureflag.Rule{
+				featureflags.JevReceipts: {Default: true},
+			})
+			observer := &receipt.Observer{}
+			handler := &Handler{
+				FeatureFlags:       featureflag.NewService(provider),
+				GovernanceReceipts: observer,
+				TxStarter:          governanceControlErrorTxStarter{err: testCase.err},
+			}
+			issue := db.Issue{
+				ID:          pgtype.UUID{Bytes: uuid.New(), Valid: true},
+				WorkspaceID: pgtype.UUID{Bytes: uuid.New(), Valid: true},
+				AssigneeID:  pgtype.UUID{Bytes: uuid.New(), Valid: true},
+				AssigneeType: pgtype.Text{
+					String: "agent",
+					Valid:  true,
+				},
+			}
+			comment := db.Comment{
+				ID:       pgtype.UUID{Bytes: uuid.New(), Valid: true},
+				Revision: 1,
+				Type:     "comment",
+				Content:  "please take this up",
+			}
+
+			handler.observeGovernanceReceipt(httptest.NewRequest(http.MethodPost, "/", nil), issue, comment, receipt.TriggerCreate)
+
+			if got := observer.Stats().ShedBudgetExceededTotal; got != testCase.want {
+				t.Fatalf("ShedBudgetExceededTotal = %d, want %d", got, testCase.want)
+			}
+		})
+	}
 }
 
 // withGovernanceObserver swaps in a fresh *receipt.Observer for the

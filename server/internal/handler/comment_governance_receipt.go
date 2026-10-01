@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -75,6 +77,7 @@ func (h *Handler) observeGovernanceReceipt(r *http.Request, issue db.Issue, comm
 	}
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
+		h.recordGovernanceControlTimeout(err)
 		slog.Warn("governance control could not be locked; observation skipped",
 			append(logger.RequestAttrs(r), "issue_id", uuidToString(issue.ID), "error", err)...)
 		return
@@ -82,6 +85,7 @@ func (h *Handler) observeGovernanceReceipt(r *http.Request, issue db.Issue, comm
 	defer tx.Rollback(ctx)
 	config, err := loadGovernanceControl(ctx, tx, issue.WorkspaceID)
 	if err != nil {
+		h.recordGovernanceControlTimeout(err)
 		slog.Warn("governance control could not be loaded; observation skipped",
 			append(logger.RequestAttrs(r), "issue_id", uuidToString(issue.ID), "error", err)...)
 		return
@@ -92,6 +96,7 @@ func (h *Handler) observeGovernanceReceipt(r *http.Request, issue db.Issue, comm
 	in.ControlEpoch = config.ControlEpoch
 	in.Limits = config.Settings.Limits
 	if err := tx.Commit(ctx); err != nil {
+		h.recordGovernanceControlTimeout(err)
 		slog.Warn("governance evaluation admission could not commit",
 			append(logger.RequestAttrs(r), "issue_id", uuidToString(issue.ID), "error", err)...)
 		return
@@ -106,6 +111,12 @@ func (h *Handler) observeGovernanceReceipt(r *http.Request, issue db.Issue, comm
 				"status", result.Status,
 				"shed_reason", string(result.ShedReason),
 			)...)
+	}
+}
+
+func (h *Handler) recordGovernanceControlTimeout(err error) {
+	if errors.Is(err, context.DeadlineExceeded) {
+		h.GovernanceReceipts.RecordControlLockTimeout()
 	}
 }
 
