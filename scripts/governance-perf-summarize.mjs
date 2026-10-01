@@ -101,8 +101,8 @@ for (const bench of benches) {
     zeroProviderCalls: b.providerCalls === 0,
     sameStatementCountAsBypassed:
       a.n === 0 || b.n === 0 || // a missing mode is INCONCLUSIVE (enough=false), not a statement mismatch
-      b.dbStatementsPerRequestMax === a.dbStatementsPerRequestMax &&
-      b.dbStatementsPerRequestMin === a.dbStatementsPerRequestMin,
+      (b.dbStatementsPerRequestMax === a.dbStatementsPerRequestMax &&
+        b.dbStatementsPerRequestMin === a.dbStatementsPerRequestMin),
     clientP95WithinLimit: clientAdded <= clientLimit,
     dbP95WithinLimit: dbAdded <= dbLimit,
   };
