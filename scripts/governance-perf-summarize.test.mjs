@@ -10,16 +10,16 @@ const script = fileURLToPath(new URL("./governance-perf-summarize.mjs", import.m
 
 // Both modes sit at ~8ms; the hook mode is 18ms for `slowShare` of the samples
 // in each batch listed in `hookSlowBatches` (a host noise burst, not hook cost).
-function summarize(t, { batches = 5, hookSlowBatches = [], slowShare = 0.15, govStmts = 0, provider = 0, hookStmts = 14, hookBatchOffset = 0, modes = ["bypassed", "flag_off_hook"] } = {}) {
+function summarize(t, { batches = 5, hookSlowBatches = [], slowShare = 0.15, govStmts = 0, provider = 0, hookStmts = 14, hookBatchOffset = 0, modes = ["bypassed", "flag_off_hook"], benches = ["create", "update"], raw } = {}) {
   const n = 1000;
   const rows = [];
-  for (let batch = 0; batch < batches; batch++) {
+  for (const bench of benches) for (let batch = 0; batch < batches; batch++) {
     for (const mode of modes) {
       for (let seq = 0; seq < n; seq++) {
         const slow = mode === "flag_off_hook" && hookSlowBatches.includes(batch) && seq < n * slowShare;
         const ns = slow ? 18e6 : 8e6 + (seq % 7) * 1e4;
         rows.push({
-          Bench: "update", Mode: mode, Batch: mode === "flag_off_hook" ? batch + hookBatchOffset : batch, Seq: seq, ClientNs: ns, DBNs: ns - 1e5,
+          Bench: bench, Mode: mode, Batch: mode === "flag_off_hook" ? batch + hookBatchOffset : batch, Seq: seq, ClientNs: ns, DBNs: ns - 1e5,
           DBStmts: mode === "flag_off_hook" ? hookStmts : 14,
           GovStmts: mode === "flag_off_hook" && batch === 0 && seq === 0 ? govStmts : 0,
           Provider: mode === "flag_off_hook" && batch === 0 && seq === 0 ? provider : 0,
@@ -30,10 +30,9 @@ function summarize(t, { batches = 5, hookSlowBatches = [], slowShare = 0.15, gov
   const dir = mkdtempSync(join(tmpdir(), "gov-perf-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const file = join(dir, "samples.jsonl");
-  writeFileSync(file, rows.map((r) => JSON.stringify(r)).join("\n"));
+  writeFileSync(file, raw ?? rows.map((r) => JSON.stringify(r)).join("\n"));
   const run = spawnSync(process.execPath, [script, file], { encoding: "utf8" });
-  assert.ok(run.stdout, `summarizer produced no output (exit ${run.status}): ${run.stderr}`);
-  return { status: run.status, out: JSON.parse(run.stdout) };
+  return { status: run.status, stdout: run.stdout, stderr: run.stderr, out: run.stdout ? JSON.parse(run.stdout) : undefined };
 }
 
 test("noise in a minority of batches does not flip the verdict", (t) => {
@@ -95,4 +94,37 @@ test("noisy data under five batches is inconclusive, not FAIL", (t) => {
   const { status, out } = summarize(t, { batches: 3, hookSlowBatches: [0, 1, 2] });
   assert.equal(out.verdict, "INCONCLUSIVE");
   assert.equal(status, 3);
+});
+
+test("empty input is inconclusive, never a pass", (t) => {
+  const { status, out } = summarize(t, { benches: [] });
+  assert.equal(out.verdict, "INCONCLUSIVE");
+  assert.equal(status, 3);
+});
+
+test("a missing expected bench is inconclusive, never a pass", (t) => {
+  const { status, out } = summarize(t, { benches: ["update"] });
+  assert.equal(out.verdict, "INCONCLUSIVE");
+  assert.equal(out.report.create.enoughSamples, false);
+  assert.equal(status, 3);
+});
+
+test("a truncated sample line exits 2 with a message, not a stack trace", (t) => {
+  const { status, stdout, stderr } = summarize(t, { raw: '{"Bench":"create"' });
+  assert.equal(status, 2);
+  assert.equal(stdout, "");
+  assert.match(stderr, /not valid JSON/);
+});
+
+test("two runs appended to one file are rejected, not merged", (t) => {
+  const line = JSON.stringify({ Bench: "create", Mode: "bypassed", Batch: 0, Seq: 0, ClientNs: 1, DBNs: 1, DBStmts: 1, GovStmts: 0, Provider: 0 });
+  const { status, stderr } = summarize(t, { raw: `${line}\n${line}` });
+  assert.equal(status, 2);
+  assert.match(stderr, /duplicate sample/);
+});
+
+test("a missing file exits 2", () => {
+  const run = spawnSync(process.execPath, [script, join(tmpdir(), "gov-perf-does-not-exist.jsonl")], { encoding: "utf8" });
+  assert.equal(run.status, 2);
+  assert.match(run.stderr, /cannot read/);
 });
