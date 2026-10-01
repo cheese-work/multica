@@ -42,12 +42,12 @@ var budgetIndexRetryCases = []budgetIndexRetryCase{
 		duplicateKey: "attempt-obligation",
 	},
 	{
-		version:   "559_governance_budget_window_overlap_idx",
+		version:   "572_governance_budget_window_overlap_idx",
 		indexName: "governance_budget_window_overlap_idx",
 		tableName: "governance_budget_window",
 	},
 	{
-		version:   "560_governance_budget_reservation_open_window_idx",
+		version:   "573_governance_budget_reservation_open_window_idx",
 		indexName: "governance_budget_reservation_open_window_idx",
 		tableName: "governance_budget_reservation",
 	},

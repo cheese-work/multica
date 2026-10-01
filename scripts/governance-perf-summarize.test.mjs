@@ -10,9 +10,9 @@ const script = fileURLToPath(new URL("./governance-perf-summarize.mjs", import.m
 
 // Both modes sit at ~8ms; the hook mode is 18ms for `slowShare` of the samples
 // in each batch listed in `hookSlowBatches` (a host noise burst, not hook cost).
-function summarize(t, { batches = 5, hookSlowBatches = [], slowShare = 0.15, govStmts = 0, provider = 0, hookStmts = 14, hookBatchOffset = 0, modes = ["bypassed", "flag_off_hook"], benches = ["create", "update"], raw, dbOnlySlowBatches = [], lastBatchSize = 1000 } = {}) {
+function summarize(t, { batches = 5, hookSlowBatches = [], slowShare = 0.15, govStmts = 0, provider = 0, hookStmts = 14, hookExtraStmtEvery = 0, hookBatchOffset = 0, modes = ["bypassed", "flag_off_hook"], benches = ["create", "update"], raw, dbOnlySlowBatches = [], lastBatchSize = 1000 } = {}) {
   const rows = [];
-  for (const bench of benches) for (let batch = 0; batch < batches; batch++) {
+  if (!raw) for (const bench of benches) for (let batch = 0; batch < batches; batch++) {
     for (const mode of modes) {
       const n = batch === batches - 1 ? lastBatchSize : 1000;
       for (let seq = 0; seq < n; seq++) {
@@ -22,7 +22,7 @@ function summarize(t, { batches = 5, hookSlowBatches = [], slowShare = 0.15, gov
         const dbNs = (dbSlow ? 18e6 : 8e6 + (seq % 7) * 1e4) - 1e5;
         rows.push({
           Bench: bench, Mode: mode, Batch: mode === "flag_off_hook" ? batch + hookBatchOffset : batch, Seq: seq, ClientNs: ns, DBNs: dbNs,
-          DBStmts: mode === "flag_off_hook" ? hookStmts : 14,
+          DBStmts: mode === "flag_off_hook" ? hookStmts + (hookExtraStmtEvery && seq % hookExtraStmtEvery === 0 ? 1 : 0) : 14,
           GovStmts: mode === "flag_off_hook" && batch === 0 && seq === 0 ? govStmts : 0,
           Provider: mode === "flag_off_hook" && batch === 0 && seq === 0 ? provider : 0,
         });
@@ -146,4 +146,48 @@ test("a DB-only slowdown fails the DB gate while client time passes", (t) => {
   assert.equal(out.report.update.checks.dbP95WithinLimit, false);
   assert.equal(out.report.update.checks.clientP95WithinLimit, true);
   assert.equal(status, 1);
+});
+
+test("schema-invalid rows exit 2, never a verdict", (t) => {
+  const good = { Bench: "create", Mode: "bypassed", Batch: 0, Seq: 0, ClientNs: 1, DBNs: 1, DBStmts: 1, GovStmts: 0, Provider: 0 };
+  const cases = {
+    "non-object line": ["42", /not an object/],
+    "null line": ["null", /not an object/],
+    "non-numeric ClientNs": [JSON.stringify({ ...good, ClientNs: "x" }), /ClientNs is not a non-negative finite number/],
+    "missing GovStmts": [JSON.stringify({ ...good, GovStmts: undefined }), /GovStmts is not a non-negative integer/],
+    "negative GovStmts": [JSON.stringify({ ...good, GovStmts: -1 }), /GovStmts is not a non-negative integer/],
+    "fractional Batch": [JSON.stringify({ ...good, Batch: 0.5 }), /Batch is not a non-negative integer/],
+    "negative ClientNs": [JSON.stringify({ ...good, ClientNs: -1 }), /ClientNs is not a non-negative finite number/],
+    "unknown Mode": [JSON.stringify({ ...good, Mode: "bogus" }), /unknown Mode/],
+    "non-string Bench": [JSON.stringify({ ...good, Bench: 7 }), /Bench is not a string/],
+  };
+  for (const [name, [raw, message]] of Object.entries(cases)) {
+    const { status, stdout, stderr } = summarize(t, { raw });
+    assert.equal(status, 2, name);
+    assert.equal(stdout, "", name);
+    assert.match(stderr, message, name);
+  }
+});
+
+test("an extra statement on only some requests fails even when min and max match", (t) => {
+  // Bypassed alternates 14/15 statements (mean 14.5). The hook mode is 15 on 9 of 10
+  // requests (mean 14.9): same min and max, one extra statement on most requests.
+  const rows = [];
+  for (const bench of ["create", "update"]) for (let batch = 0; batch < 5; batch++) for (const mode of ["bypassed", "flag_off_hook"]) for (let seq = 0; seq < 1000; seq++) {
+    const ns = 8e6 + (seq % 7) * 1e4;
+    const stmts = mode === "bypassed" ? (seq % 2 ? 14 : 15) : seq % 10 === 0 ? 14 : 15;
+    rows.push({ Bench: bench, Mode: mode, Batch: batch, Seq: seq, ClientNs: ns, DBNs: ns - 1e5, DBStmts: stmts, GovStmts: 0, Provider: 0 });
+  }
+  const { status, out } = summarize(t, { raw: rows.map((r) => JSON.stringify(r)).join("\n") });
+  assert.equal(out.report.update.per.bypassed.dbStatementsPerRequestMax, out.report.update.per.flag_off_hook.dbStatementsPerRequestMax);
+  assert.equal(out.report.update.per.bypassed.dbStatementsPerRequestMin, out.report.update.per.flag_off_hook.dbStatementsPerRequestMin);
+  assert.equal(out.verdict, "FAIL");
+  assert.equal(out.report.update.checks.sameStatementCountAsBypassed, false);
+  assert.equal(status, 1);
+});
+
+test("error line numbers count blank lines", (t) => {
+  const { status, stderr } = summarize(t, { raw: '\n\n{"Bench":"create"' });
+  assert.equal(status, 2);
+  assert.match(stderr, /:3 is not valid JSON/);
 });

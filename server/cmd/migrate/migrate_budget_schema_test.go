@@ -22,8 +22,8 @@ func TestBudgetSchema(t *testing.T) {
 		"556_governance_budget_reservation_root_window_idx",
 		"557_governance_budget_outbox_due_idx",
 		"558_governance_budget_reservation_attempt_obligation_uidx",
-		"559_governance_budget_window_overlap_idx",
-		"560_governance_budget_reservation_open_window_idx",
+		"572_governance_budget_window_overlap_idx",
+		"573_governance_budget_reservation_open_window_idx",
 	}
 	options := runOptions{
 		Direction:             "up",
@@ -109,13 +109,13 @@ func TestBudgetSchema(t *testing.T) {
 			columns: []string{"workspace_id", "attempt_id", "obligation_id"},
 		},
 		{
-			version: "559_governance_budget_window_overlap_idx",
+			version: "572_governance_budget_window_overlap_idx",
 			name:    "governance_budget_window_overlap_idx",
 			table:   "governance_budget_window",
 			columns: []string{"workspace_id", "window_end", "window_start"},
 		},
 		{
-			version:   "560_governance_budget_reservation_open_window_idx",
+			version:   "573_governance_budget_reservation_open_window_idx",
 			name:      "governance_budget_reservation_open_window_idx",
 			table:     "governance_budget_reservation",
 			columns:   []string{"workspace_id", "window_start"},

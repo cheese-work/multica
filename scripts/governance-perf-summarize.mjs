@@ -10,7 +10,8 @@
 // move it, a real per-request cost moves every batch. The pooled delta is
 // reported for reference only. Needs >= 5 batches of >= 1000 samples per mode
 // for both benches, else INCONCLUSIVE (empty input included). Unreadable input
-// (missing file, bad JSONL line, rows from two runs merged into one file) exits 2. This defines "negligible" for review, not a production SLA.
+// (missing file, bad JSONL line, a row with a missing or non-numeric field or an
+// unknown Mode, rows from two runs merged into one file) exits 2. This defines "negligible" for review, not a production SLA.
 import { readFileSync } from "node:fs";
 
 const MIN_BATCHES = 5;
@@ -27,9 +28,11 @@ const usageError = (message) => {
 };
 let rows;
 try {
-  rows = readFileSync(file, "utf8").split("\n").filter(Boolean).map((l, i) => {
+  // Keep source line numbers: blank lines are skipped, not renumbered.
+  rows = readFileSync(file, "utf8").split("\n").flatMap((l, i) => {
+    if (!l) return [];
     try {
-      return JSON.parse(l);
+      return [{ row: JSON.parse(l), line: i + 1 }];
     } catch {
       return usageError(`${file}:${i + 1} is not valid JSON (truncated sample file?)`);
     }
@@ -37,6 +40,25 @@ try {
 } catch (err) {
   usageError(`cannot read ${file}: ${err.message}`);
 }
+const MODES = ["bypassed", "flag_off_hook"];
+// Counts and indexes are non-negative integers (a negative GovStmts would cancel a
+// real one in the sum); timings are non-negative finite numbers.
+const COUNTS = ["Batch", "Seq", "DBStmts", "GovStmts", "Provider"];
+const TIMINGS = ["ClientNs", "DBNs"];
+const invalidRow = (r) => {
+  if (r === null || typeof r !== "object") return "not an object";
+  if (typeof r.Bench !== "string") return "Bench is not a string";
+  if (!MODES.includes(r.Mode)) return `unknown Mode ${JSON.stringify(r.Mode)}`;
+  const count = COUNTS.find((k) => !Number.isInteger(r[k]) || r[k] < 0);
+  if (count) return `${count} is not a non-negative integer`;
+  const timing = TIMINGS.find((k) => !Number.isFinite(r[k]) || r[k] < 0);
+  return timing && `${timing} is not a non-negative finite number`;
+};
+for (const { row, line } of rows) {
+  const bad = invalidRow(row);
+  if (bad) usageError(`${file}:${line} is invalid: ${bad}`);
+}
+rows = rows.map(({ row }) => row);
 // The benchmark restarts batch numbering at 0 per process and appends to the file,
 // so a second run into the same file repeats (Bench, Mode, Batch, Seq): reject it.
 const seen = new Set();
@@ -64,7 +86,7 @@ const benches = [...new Set([...EXPECTED_BENCHES, ...rows.map((r) => r.Bench)])]
 for (const bench of benches) {
   const per = {};
   const sets = {};
-  for (const mode of ["bypassed", "flag_off_hook"]) {
+  for (const mode of MODES) {
     const set = (sets[mode] = rows.filter((r) => r.Bench === bench && r.Mode === mode));
     const batches = new Map();
     for (const r of set) batches.set(r.Batch, (batches.get(r.Batch) ?? 0) + 1);
@@ -79,6 +101,7 @@ for (const bench of benches) {
       dbP95Ms: ms(quantile(dbt, 0.95)),
       govStatements: set.reduce((a, r) => a + r.GovStmts, 0),
       providerCalls: set.reduce((a, r) => a + r.Provider, 0),
+      dbStatementsPerRequestMean: set.length ? set.reduce((a, r) => a + r.DBStmts, 0) / set.length : 0,
       dbStatementsPerRequestMax: set.reduce((m, r) => Math.max(m, r.DBStmts), -Infinity),
       dbStatementsPerRequestMin: set.reduce((m, r) => Math.min(m, r.DBStmts), Infinity),
     };
@@ -102,7 +125,9 @@ for (const bench of benches) {
     sameStatementCountAsBypassed:
       a.n === 0 || b.n === 0 || // a missing mode is INCONCLUSIVE (enough=false), not a statement mismatch
       (b.dbStatementsPerRequestMax === a.dbStatementsPerRequestMax &&
-        b.dbStatementsPerRequestMin === a.dbStatementsPerRequestMin),
+        b.dbStatementsPerRequestMin === a.dbStatementsPerRequestMin &&
+        // min/max alone miss an extra statement on only some requests
+        b.dbStatementsPerRequestMean <= a.dbStatementsPerRequestMean + 1e-9),
     clientP95WithinLimit: clientAdded <= clientLimit,
     dbP95WithinLimit: dbAdded <= dbLimit,
   };
@@ -123,4 +148,5 @@ for (const bench of benches) {
 }
 const verdict = failed ? "FAIL" : inconclusive ? "INCONCLUSIVE" : "PASS";
 console.log(JSON.stringify({ verdict, report }, null, 2));
-process.exit(failed ? 1 : inconclusive ? 3 : 0);
+// exitCode, not exit(): lets a piped stdout flush the whole report first.
+process.exitCode = failed ? 1 : inconclusive ? 3 : 0;
