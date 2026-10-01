@@ -48,9 +48,19 @@ const protectedBudgetWindowsQuery = `
 	FOR UPDATE OF budget_window_row
 `
 
+// Exposure of a boundary = counters of every window overlapping it, plus the
+// total cap of every open reservation whose window does not overlap it (an open
+// reservation is charged to every protected boundary; those in overlapping
+// windows are already in the window counters). Open reservations are read through
+// governance_budget_reservation_open_window_idx, so cost is bounded by open rows,
+// not terminal history.
 const budgetWindowExposureQuery = `
 	SELECT protected.window_start,
-	       COALESCE(SUM(overlapping.reserved_micro_usd::numeric + overlapping.spent_micro_usd::numeric), 0)::text
+	       (COALESCE(SUM(overlapping.reserved_micro_usd::numeric + overlapping.spent_micro_usd::numeric), 0)
+	        + (SELECT COALESCE(SUM(other.total_cap_micro_usd::numeric), 0)
+	           FROM governance_budget_reservation AS other
+	           WHERE other.workspace_id = $1 AND other.state = 'reserved'
+	             AND (other.window_start >= boundary.window_end OR other.window_end <= boundary.window_start)))::text
 	FROM unnest($2::timestamptz[]) AS protected(window_start)
 	JOIN governance_budget_window AS boundary
 	  ON boundary.workspace_id = $1 AND boundary.window_start = protected.window_start
@@ -58,7 +68,7 @@ const budgetWindowExposureQuery = `
 	  ON overlapping.workspace_id = boundary.workspace_id
 	 AND overlapping.window_start < boundary.window_end
 	 AND overlapping.window_end > boundary.window_start
-	GROUP BY protected.window_start
+	GROUP BY protected.window_start, boundary.window_start, boundary.window_end
 	ORDER BY protected.window_start
 `
 

@@ -622,3 +622,30 @@ func assertBudgetRootTotals(t *testing.T, fixture *budgetTestFixture, rootID pgt
 		t.Fatalf("root counters = %d/%d, want %d/%d", reserved, spent, wantReserved, wantSpent)
 	}
 }
+
+func TestBudgetWindowExposureChargesOpenReservationsInOtherWindows(t *testing.T) {
+	fixture := newBudgetTestFixture(t)
+	ctx := context.Background()
+	fixture.clock.Set(budgetTestTime(12, 5))
+	w1 := fixture.reserveCommand("resource-a", budgetTestTime(12, 0), budgetTestTime(13, 0), 100, 1000, 40, 1)
+	if _, err := fixture.service.Reserve(ctx, w1); err != nil {
+		t.Fatal(err)
+	}
+	reserve := func(resource string, startHour int, cost, epoch int64) error {
+		fixture.setEpoch(t, epoch)
+		command := fixture.reserveCommand(resource, budgetTestTime(startHour, 0), budgetTestTime(startHour+1, 0), 100, 1000, cost, epoch)
+		command.BudgetRootID = w1.BudgetRootID
+		_, err := fixture.service.Reserve(ctx, command)
+		return err
+	}
+	fixture.clock.Set(budgetTestTime(13, 5))
+	if err := reserve("resource-b", 13, 40, 2); err != nil {
+		t.Fatal(err)
+	}
+	// Windows 12-13 and 13-14 are both open (40 each). On main every open
+	// reservation counted against every protected window, so 80 + 40 > 100.
+	fixture.clock.Set(budgetTestTime(14, 5))
+	if err := reserve("resource-c", 14, 40, 3); !errors.Is(err, ErrBudgetLimit) {
+		t.Fatalf("open reservations in other windows error = %v, want ErrBudgetLimit", err)
+	}
+}
