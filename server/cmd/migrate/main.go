@@ -147,8 +147,8 @@ var concurrentIndexCleanups = map[string]string{
 	"571_search_index_change_changed_at_index":                  "idx_search_index_change_changed_at",
 	"570_search_index_change_workspace_index":                   "idx_search_index_change_workspace_xid",
 	"560_agent_task_history_page_index":                         "idx_agent_task_queue_history_page",
-	"559_governance_budget_window_overlap_idx":                  "governance_budget_window_overlap_idx",
-	"560_governance_budget_reservation_open_window_idx":         "governance_budget_reservation_open_window_idx",
+	"572_governance_budget_window_overlap_idx":                  "governance_budget_window_overlap_idx",
+	"573_governance_budget_reservation_open_window_idx":         "governance_budget_reservation_open_window_idx",
 	"535_github_pr_address_index":                               "idx_github_pull_request_pr_owner_repo",
 	"539_task_supplement_request_index":                         "task_supplement_task_request_uidx",
 	"540_task_supplement_capability_index":                      "task_supplement_capability_task_uidx",
@@ -421,12 +421,12 @@ var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
 		Unique:        true,
 		Columns:       []string{"workspace_id", "attempt_id", "obligation_id"},
 	},
-	"559_governance_budget_window_overlap_idx": {
+	"572_governance_budget_window_overlap_idx": {
 		IndexRegclass: "governance_budget_window_overlap_idx",
 		TableRegclass: "governance_budget_window",
 		Columns:       []string{"workspace_id", "window_end", "window_start"},
 	},
-	"560_governance_budget_reservation_open_window_idx": {
+	"573_governance_budget_reservation_open_window_idx": {
 		IndexRegclass: "governance_budget_reservation_open_window_idx",
 		TableRegclass: "governance_budget_reservation",
 		Columns:       []string{"workspace_id", "window_start"},
