@@ -19,7 +19,7 @@ Read the invariants below, then open the reference(s) your task actually needs
 
 | Open | When the task is about |
 |---|---|
-| `references/issues.md` | Issues: PR linking and handoff, ETA, custom properties, status side effects, sub-issues and stages, who else is running, comments and attachments |
+| `references/issues.md` | Issues: PR linking and handoff, ETA, custom properties, status side effects, sub-issues and stages, who else is running, wakeups, comments, charts and attachments |
 | `references/pull-requests.md` | Linked PR state, current GitHub checks, merge-announcement state |
 | `references/wakeups.md` | Wakeups: event/time triggers, ownership and close behavior, retained inputs and status |
 | `references/mentions.md` | Writing a `mention://` link: which types enqueue a run, which are inert, why one silently did nothing |
