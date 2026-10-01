@@ -25,10 +25,3 @@ CREATE TABLE IF NOT EXISTS github_merge_announcement (
     html_url           TEXT,
     close_intent       BOOLEAN
 );
-
-CREATE UNIQUE INDEX IF NOT EXISTS uq_github_merge_announcement_identity
-    ON github_merge_announcement (workspace_id, provider, repository_id, pr_number, issue_id, event_kind);
-
-CREATE INDEX IF NOT EXISTS idx_github_merge_announcement_pending_claim
-    ON github_merge_announcement (available_at, created_at)
-    WHERE status = 'pending';
