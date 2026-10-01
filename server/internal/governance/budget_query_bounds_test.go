@@ -121,8 +121,10 @@ func TestBudgetQueryBounds(t *testing.T) {
 		if exposureMetrics.returnedRows != 2 {
 			t.Fatalf("exposure query returned %d rows at history=%d, want 2", exposureMetrics.returnedRows, historyRows)
 		}
-		if historyRows == 100000 && exposureMetrics.visitedRows > 8 {
-			t.Fatalf("exposure query visited %d scan rows at history=%d, want at most 8", exposureMetrics.visitedRows, historyRows)
+		// 8 for windows plus the fixture's one open reservation read once per boundary
+		// (2): cost follows open reservations, never terminal history.
+		if historyRows == 100000 && exposureMetrics.visitedRows > 10 {
+			t.Fatalf("exposure query visited %d scan rows at history=%d, want at most 10", exposureMetrics.visitedRows, historyRows)
 		}
 
 		tx, err := fixture.pool.Begin(ctx)
