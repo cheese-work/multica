@@ -147,3 +147,21 @@ test("a DB-only slowdown fails the DB gate while client time passes", (t) => {
   assert.equal(out.report.update.checks.clientP95WithinLimit, true);
   assert.equal(status, 1);
 });
+
+test("schema-invalid rows exit 2, never a verdict", (t) => {
+  const good = { Bench: "create", Mode: "bypassed", Batch: 0, Seq: 0, ClientNs: 1, DBNs: 1, DBStmts: 1, GovStmts: 0, Provider: 0 };
+  const cases = {
+    "non-object line": ["42", /not an object/],
+    "null line": ["null", /not an object/],
+    "non-numeric ClientNs": [JSON.stringify({ ...good, ClientNs: "x" }), /ClientNs is not a finite number/],
+    "missing GovStmts": [JSON.stringify({ ...good, GovStmts: undefined }), /GovStmts is not a finite number/],
+    "unknown Mode": [JSON.stringify({ ...good, Mode: "bogus" }), /unknown Mode/],
+    "non-string Bench": [JSON.stringify({ ...good, Bench: 7 }), /Bench is not a string/],
+  };
+  for (const [name, [raw, message]] of Object.entries(cases)) {
+    const { status, stdout, stderr } = summarize(t, { raw });
+    assert.equal(status, 2, name);
+    assert.equal(stdout, "", name);
+    assert.match(stderr, message, name);
+  }
+});

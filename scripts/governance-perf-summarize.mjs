@@ -10,7 +10,8 @@
 // move it, a real per-request cost moves every batch. The pooled delta is
 // reported for reference only. Needs >= 5 batches of >= 1000 samples per mode
 // for both benches, else INCONCLUSIVE (empty input included). Unreadable input
-// (missing file, bad JSONL line, rows from two runs merged into one file) exits 2. This defines "negligible" for review, not a production SLA.
+// (missing file, bad JSONL line, a row with a missing or non-numeric field or an
+// unknown Mode, rows from two runs merged into one file) exits 2. This defines "negligible" for review, not a production SLA.
 import { readFileSync } from "node:fs";
 
 const MIN_BATCHES = 5;
@@ -37,6 +38,16 @@ try {
 } catch (err) {
   usageError(`cannot read ${file}: ${err.message}`);
 }
+const MODES = ["bypassed", "flag_off_hook"];
+const NUMERIC = ["Batch", "Seq", "ClientNs", "DBNs", "DBStmts", "GovStmts", "Provider"];
+rows.forEach((r, i) => {
+  const bad =
+    r === null || typeof r !== "object" ? "not an object"
+    : typeof r.Bench !== "string" ? "Bench is not a string"
+    : !MODES.includes(r.Mode) ? `unknown Mode ${JSON.stringify(r.Mode)}`
+    : NUMERIC.find((k) => !Number.isFinite(r[k])) && `${NUMERIC.find((k) => !Number.isFinite(r[k]))} is not a finite number`;
+  if (bad) usageError(`${file}: row ${i + 1} is invalid: ${bad}`);
+});
 // The benchmark restarts batch numbering at 0 per process and appends to the file,
 // so a second run into the same file repeats (Bench, Mode, Batch, Seq): reject it.
 const seen = new Set();
