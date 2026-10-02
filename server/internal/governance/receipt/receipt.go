@@ -220,6 +220,11 @@ type Input struct {
 	CommentRevision int64
 	Trigger         Trigger
 	Eval            governance.Input
+	// Deadline is the caller's single work deadline for the whole observation
+	// hook (control-lock wait, evaluation), derived once before DB acquisition.
+	// Zero means "start Budget now". It never extends Budget: a later phase
+	// must not restart the 50ms clock.
+	Deadline time.Time
 }
 
 // Observer runs bounded, best-effort governance observations with a
@@ -396,8 +401,21 @@ func (o *Observer) Observe(_ context.Context, in Input) Result {
 		return result
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), Budget)
+	deadline := in.Deadline
+	if deadline.IsZero() {
+		deadline = time.Now().Add(Budget)
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
+	if ctx.Err() != nil {
+		// The shared budget was spent before evaluation began (e.g. waiting on
+		// the control lock): shed without a provider call or a budget reserve.
+		o.busy.Store(false)
+		o.stats.shedBudgetExceededTotal.Add(1)
+		result := Result{Status: "shed", ShedReason: ReasonBudgetExceeded}
+		o.enqueueWrite(in, result)
+		return result
+	}
 
 	result, done := o.evaluate(ctx, in)
 	// releaseBusy only fires once (see its own doc): either here, on the

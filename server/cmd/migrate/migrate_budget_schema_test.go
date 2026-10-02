@@ -22,6 +22,8 @@ func TestBudgetSchema(t *testing.T) {
 		"556_governance_budget_reservation_root_window_idx",
 		"557_governance_budget_outbox_due_idx",
 		"558_governance_budget_reservation_attempt_obligation_uidx",
+		"572_governance_budget_window_overlap_idx",
+		"573_governance_budget_reservation_open_window_idx",
 	}
 	options := runOptions{
 		Direction:             "up",
@@ -105,6 +107,19 @@ func TestBudgetSchema(t *testing.T) {
 			table:   "governance_budget_reservation",
 			unique:  true,
 			columns: []string{"workspace_id", "attempt_id", "obligation_id"},
+		},
+		{
+			version: "572_governance_budget_window_overlap_idx",
+			name:    "governance_budget_window_overlap_idx",
+			table:   "governance_budget_window",
+			columns: []string{"workspace_id", "window_end", "window_start"},
+		},
+		{
+			version:   "573_governance_budget_reservation_open_window_idx",
+			name:      "governance_budget_reservation_open_window_idx",
+			table:     "governance_budget_reservation",
+			columns:   []string{"workspace_id", "window_start"},
+			predicate: "state = 'reserved'::text",
 		},
 	}
 	indexOIDs := make(map[string]uint32, len(indexes))
