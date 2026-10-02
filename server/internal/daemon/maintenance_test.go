@@ -361,7 +361,7 @@ func TestMaintenanceAdmissionAndShutdownLinearize(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("shutdown = %d", rec.Code)
 		}
-		if _, _, err := d.acquireMaintenance(context.Background(), time.Minute); err != errMaintenanceClosing {
+		if _, _, err := d.acquireMaintenance(context.Background(), time.Minute); !errors.Is(err, errMaintenanceClosing) {
 			t.Fatalf("acquire after shutdown = %v, want %v", err, errMaintenanceClosing)
 		}
 		if claimsPaused(t, d) || d.updating.Load() {
@@ -372,7 +372,7 @@ func TestMaintenanceAdmissionAndShutdownLinearize(t *testing.T) {
 	t.Run("failed admission clears the reservation", func(t *testing.T) {
 		d, _ := newMaintenanceTestDaemon()
 		d.activeTasks.Store(1)
-		if _, _, err := d.acquireMaintenance(context.Background(), time.Minute); err != errMaintenanceBusy {
+		if _, _, err := d.acquireMaintenance(context.Background(), time.Minute); !errors.Is(err, errMaintenanceBusy) {
 			t.Fatalf("acquire with active task = %v", err)
 		}
 		d.activeTasks.Store(0)
