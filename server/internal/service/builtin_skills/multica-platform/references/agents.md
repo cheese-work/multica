@@ -258,6 +258,16 @@ Read-side facts (these are the wrong assumptions to avoid):
   /api/agents/{id}/env"). Plaintext env writes are handled by
   `PUT /api/agents/{id}/env` (`multica agent env set`), which carries the same
   gate and writes an audit row.
+- To change individual keys without touching the rest, use
+  `PATCH /api/agents/{id}/env` (`multica agent env patch`): body
+  `{"set": {K: V}, "unset": [K], "if_revision": "<rev>"}`. Read, optional
+  condition, merge, write and audit run in one transaction under a row lock, so
+  concurrent additions to other keys survive; a stale `if_revision` is a 412 and
+  writes nothing. `revision` is a content hash returned by `env get`/`set`/
+  `patch`. The response masks every value as `****`; the `****` marker is
+  rejected as an input value. A concurrent `PUT` is serialized with it but still
+  replaces the whole map by contract (omitted keys are removed). Same gate as
+  `PUT`; agent actors are denied; an audit-write failure rolls the patch back.
 
 ### mcp_config
 
@@ -354,6 +364,8 @@ State-changing (require an explicit instruction — do not run speculatively):
 - `multica agent skills add` / `set` — mutate bindings (`set` is destructive:
   it drops bindings not in the new list).
 - `multica agent env set` — overwrites the full `custom_env` map and writes an
+  audit row.
+- `multica agent env patch` — sets/unsets the named keys only and writes an
   audit row.
 
 ## Common wrong assumptions

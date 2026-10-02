@@ -2366,6 +2366,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// internal/handler/agent_env.go.
 					r.Get("/env", h.GetAgentEnv)
 					r.Put("/env", h.UpdateAgentEnv)
+					// Key-scoped, optionally conditional write; see
+					// PatchAgentEnv for the concurrency contract.
+					r.Patch("/env", h.PatchAgentEnv)
 				})
 			})
 

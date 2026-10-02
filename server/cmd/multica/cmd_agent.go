@@ -109,6 +109,13 @@ var agentEnvSetCmd = &cobra.Command{
 	RunE:  runAgentEnvSet,
 }
 
+var agentEnvPatchCmd = &cobra.Command{
+	Use:   "patch <agent-id>",
+	Short: "Set and/or unset individual custom_env keys without touching the rest (optionally conditional on --if-revision)",
+	Args:  exactArgs(1),
+	RunE:  runAgentEnvPatch,
+}
+
 var agentSkillsListCmd = &cobra.Command{
 	Use:   "list <agent-id>",
 	Short: "List skills assigned to an agent",
@@ -148,6 +155,7 @@ func init() {
 
 	agentEnvCmd.AddCommand(agentEnvGetCmd)
 	agentEnvCmd.AddCommand(agentEnvSetCmd)
+	agentEnvCmd.AddCommand(agentEnvPatchCmd)
 
 	// agent list
 	agentListCmd.Flags().String("output", "table", "Output format: table or json")
@@ -247,6 +255,16 @@ func init() {
 	agentEnvSetCmd.Flags().Bool("custom-env-stdin", false, "Read the replacement custom_env JSON object from stdin. Keeps secrets out of shell history and 'ps'. Mutually exclusive with --custom-env and --custom-env-file.")
 	agentEnvSetCmd.Flags().String("custom-env-file", "", "Read the replacement custom_env JSON object from a file path (suggested mode: 0600). Mutually exclusive with --custom-env and --custom-env-stdin.")
 	agentEnvSetCmd.Flags().String("output", "json", "Output format: json or table")
+
+	// agent env patch. The set-map channels are the same secret-safe trio as
+	// `agent env set`, but the map only names keys to write; every other key
+	// is left as stored.
+	agentEnvPatchCmd.Flags().String("custom-env", "", "JSON object of keys to set, e.g. '{\"KEY\":\"value\"}'. Visible to shell history and 'ps'; prefer --custom-env-stdin or --custom-env-file for real secrets. The value '****' is rejected.")
+	agentEnvPatchCmd.Flags().Bool("custom-env-stdin", false, "Read the JSON object of keys to set from stdin. Mutually exclusive with --custom-env and --custom-env-file.")
+	agentEnvPatchCmd.Flags().String("custom-env-file", "", "Read the JSON object of keys to set from a file path. Mutually exclusive with --custom-env and --custom-env-stdin.")
+	agentEnvPatchCmd.Flags().StringSlice("unset", nil, "Key to remove (repeatable or comma-separated)")
+	agentEnvPatchCmd.Flags().String("if-revision", "", "Apply only if the stored env still has this revision (from `agent env get`/`set`/`patch` JSON); otherwise exit non-zero and change nothing")
+	agentEnvPatchCmd.Flags().String("output", "json", "Output format: json or table")
 }
 
 // resolveProfile returns the --profile flag value (empty string means default profile).
@@ -1214,6 +1232,47 @@ func runAgentEnvSet(cmd *cobra.Command, args []string) error {
 
 	env, _ := result["custom_env"].(map[string]any)
 	fmt.Printf("Env updated for agent %s (%d keys)\n", args[0], len(env))
+	return nil
+}
+
+// runAgentEnvPatch is the key-scoped, optionally conditional counterpart of
+// runAgentEnvSet. The server applies it under a row lock, so unrelated keys
+// written concurrently by other clients are preserved. The response carries
+// masked values and the new revision for chaining a following patch.
+func runAgentEnvPatch(cmd *cobra.Command, args []string) error {
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+
+	set, _, err := resolveCustomEnv(cmd)
+	if err != nil {
+		return err
+	}
+	unset, _ := cmd.Flags().GetStringSlice("unset")
+	if len(set) == 0 && len(unset) == 0 {
+		return fmt.Errorf("specify keys to change via --custom-env/--custom-env-stdin/--custom-env-file and/or --unset")
+	}
+	body := map[string]any{"set": set, "unset": unset}
+	if cmd.Flags().Changed("if-revision") {
+		rev, _ := cmd.Flags().GetString("if-revision")
+		body["if_revision"] = rev
+	}
+
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+
+	var result map[string]any
+	if err := client.PatchJSON(ctx, "/api/agents/"+args[0]+"/env", body, &result); err != nil {
+		return fmt.Errorf("patch agent env: %w", err)
+	}
+
+	output, _ := cmd.Flags().GetString("output")
+	if output == "json" {
+		return cli.PrintJSON(os.Stdout, result)
+	}
+	env, _ := result["custom_env"].(map[string]any)
+	fmt.Printf("Env patched for agent %s (%d keys, revision %v)\n", args[0], len(env), result["revision"])
 	return nil
 }
 

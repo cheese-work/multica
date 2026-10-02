@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -42,6 +44,9 @@ const (
 type AgentEnvResponse struct {
 	AgentID   string            `json:"agent_id"`
 	CustomEnv map[string]string `json:"custom_env"`
+	// Revision identifies the stored map's exact content; see envRevision.
+	// Additive: clients that predate it ignore it.
+	Revision string `json:"revision"`
 }
 
 // UpdateAgentEnvRequest is the wire shape for `PUT
@@ -171,6 +176,7 @@ func (h *Handler) GetAgentEnv(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, AgentEnvResponse{
 		AgentID:   uuidToString(agent.ID),
 		CustomEnv: customEnv,
+		Revision:  envRevision(customEnv),
 	})
 }
 
@@ -202,15 +208,6 @@ func (h *Handler) UpdateAgentEnv(w http.ResponseWriter, r *http.Request) {
 		req.CustomEnv = map[string]string{}
 	}
 
-	existing := unmarshalCustomEnv(agent)
-	merged, audit := mergeAgentEnv(existing, req.CustomEnv)
-
-	envBytes, err := json.Marshal(merged)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to encode env")
-		return
-	}
-
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
 		slog.Error("agent_env update: begin tx failed",
@@ -220,6 +217,25 @@ func (h *Handler) UpdateAgentEnv(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
+
+	// Merge against the row as it is under the lock, not the snapshot
+	// authorizeAgentEnv loaded: the **** sentinel must preserve the value
+	// that is actually stored, and a PATCH committed in between must not be
+	// merged over a stale copy. The full-map contract itself is unchanged —
+	// keys the request omits are still removed.
+	locked, err := qtx.GetAgentForUpdate(r.Context(), agent.ID)
+	if err != nil {
+		slog.Warn("agent_env update: lock agent row failed",
+			append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(agent.ID))...)
+		writeError(w, http.StatusInternalServerError, "failed to update env")
+		return
+	}
+	merged, audit := mergeAgentEnv(unmarshalCustomEnv(locked), req.CustomEnv)
+	envBytes, err := json.Marshal(merged)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode env")
+		return
+	}
 
 	updated, err := qtx.UpdateAgentCustomEnv(r.Context(), db.UpdateAgentCustomEnvParams{
 		ID:        agent.ID,
@@ -263,6 +279,20 @@ func (h *Handler) UpdateAgentEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !h.broadcastAgentEnvUpdated(w, r, updated, member) {
+		return
+	}
+
+	writeJSON(w, http.StatusOK, AgentEnvResponse{
+		AgentID:   uuidToString(updated.ID),
+		CustomEnv: merged,
+		Revision:  envRevision(merged),
+	})
+}
+
+// broadcastAgentEnvUpdated publishes the redacted agent:status update after an
+// env commit. Returns false after writing the error response.
+func (h *Handler) broadcastAgentEnvUpdated(w http.ResponseWriter, r *http.Request, updated db.Agent, member db.Member) bool {
 	// Broadcast an agent:status update so connected clients refresh the
 	// "N variables configured" indicator. Payload is the redacted
 	// AgentResponse — no env values are sent. Skills are reloaded so the
@@ -272,15 +302,12 @@ func (h *Handler) UpdateAgentEnv(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("load agent skills after env update failed",
 			append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(updated.ID))...)
 		writeError(w, http.StatusInternalServerError, "failed to load agent skills")
-		return
+		return false
 	}
 	workspaceID := uuidToString(updated.WorkspaceID)
 	h.publish(protocol.EventAgentStatus, workspaceID, "member", uuidToString(member.UserID), map[string]any{"agent": broadcastAgentResponse(resp)})
 
-	writeJSON(w, http.StatusOK, AgentEnvResponse{
-		AgentID:   uuidToString(updated.ID),
-		CustomEnv: merged,
-	})
+	return true
 }
 
 // envAudit summarises the diff between an agent's existing env and the
@@ -373,4 +400,13 @@ func sortedKeys(m map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// envRevision is a content hash of an env map (json.Marshal sorts keys), the
+// token a conditional PATCH compares against. It is only ever returned to
+// callers already authorized to read the plaintext.
+func envRevision(m map[string]string) string {
+	b, _ := json.Marshal(m)
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
