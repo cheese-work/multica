@@ -704,9 +704,9 @@ jobs:
 
   installer:
     # Stub-driven shell tests for scripts/install.sh. Kept off the heavy
-    # backend job so installer regressions surface independently, and
-    # exercised on macOS too because the installer targets macOS/Homebrew and
-    # `tar` / `sed` / `mktemp` differ between BSD and GNU userlands.
+    # backend job so installer regressions surface independently. The macOS
+    # leg (BSD vs GNU `tar` / `sed` / `mktemp`) is halted (CHE-1012): no free
+    # macOS runners.
     # scripts/install.ps1's own PowerShell suite is no longer run in CI:
     # Windows jobs removed org-wide per CHE-522 (Cheese: Linux CI only, no
     # Windows jobs or artifacts). install.ps1 itself is unchanged and still
