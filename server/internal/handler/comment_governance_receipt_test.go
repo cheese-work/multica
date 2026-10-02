@@ -1096,3 +1096,41 @@ func TestCreateComment_GovernanceOn_NativeMentionRoutingUnaffected(t *testing.T)
 		t.Errorf("governance_receipt rows = %d, want 1", got)
 	}
 }
+
+// A held control lock must not stall the comment past the shared observation
+// deadline: the hook sheds/skips and the comment response is unchanged.
+func TestCreateComment_GovernancePerformanceHeldControlLockIsBounded(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	requireGovernanceConfigTables(t)
+	issueID := createCommentTriggerPreviewIssue(t, "governance held control lock", "member", testUserID)
+	withGovernanceFlag(t, true)
+	provider := &governanceFakeProvider{}
+	withGovernanceObserver(t, provider, testHandler.Queries)
+
+	ctx := context.Background()
+	holder, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = holder.Rollback(ctx) })
+	if _, err := holder.Exec(ctx, `SELECT 1 FROM governance_workspace_config WHERE workspace_id = $1 FOR UPDATE`, testWorkspaceID); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		w, _ := createCommentForGovernanceTest(t, issueID, "created while control lock is held")
+		done <- w
+	}()
+	select {
+	case w := <-done:
+		if w.Code != http.StatusCreated {
+			t.Fatalf("CreateComment = %d, want 201: %s", w.Code, w.Body.String())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("CreateComment blocked on the held control lock past the shared observation deadline")
+	}
+	testHandler.GovernanceReceipts.WaitForIdle()
+}

@@ -28,12 +28,6 @@ type receiptBudgetFixture struct {
 	service     *governance.BudgetService
 }
 
-func evaluateReceiptWithoutLatencyBudget(observer *Observer, input Input) Result {
-	result, done := observer.evaluate(context.Background(), input)
-	<-done
-	return result
-}
-
 type fixedClock struct{ now time.Time }
 
 func (c fixedClock) Now() time.Time { return c.now }
@@ -82,6 +76,31 @@ func newReceiptBudgetFixture(t *testing.T) *receiptBudgetFixture {
 		t.Fatal(err)
 	}
 	return &receiptBudgetFixture{pool: pool, workspaceID: workspaceID, service: service}
+}
+
+// realBudgetBound replaces the production 50ms Budget in these tests. They
+// assert reservation identity against a real Postgres budget service, not
+// latency (receipt_test.go and receipt_performance_test.go own the 50ms
+// contract). A cold reserve+settle (new pool connection, first-use statement
+// prepares) can alone outlast 50ms under -race or host load, which sheds the
+// observation as budget_exceeded before it is ever decided.
+const realBudgetBound = 5 * time.Second
+
+// observeRealBudget runs one Observe with an Input.Deadline far enough out that
+// a slow reserve cannot shed it. It first waits for the cap-1 gate: Observe
+// returns once the evaluation is decided, but releaseBusyWhenDone may still be
+// freeing the gate from a goroutine, so a back-to-back Observe is not
+// guaranteed a free gate and would be shed as pool_busy instead of reaching the
+// budget service.
+func observeRealBudget(t *testing.T, o *Observer, in Input) Result {
+	t.Helper()
+	for deadline := time.Now().Add(realBudgetBound); o.busy.Load(); time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("cap-1 gate still held; the previous Observe never released it")
+		}
+	}
+	in.Deadline = time.Now().Add(realBudgetBound)
+	return o.Observe(context.Background(), in)
 }
 
 func receiptTestUUID() pgtype.UUID {
@@ -145,7 +164,7 @@ func TestObserve_EditAfterSettledCreateIsAdmittedAgainstRealBudgetService(t *tes
 		Trigger:         TriggerCreate,
 		Eval:            oneCandidateOneSpanInput(),
 	}
-	createResult := evaluateReceiptWithoutLatencyBudget(observer, createInput)
+	createResult := observeRealBudget(t, observer, createInput)
 	if createResult.Status != "decided" {
 		t.Fatalf("create observation = %+v, want status decided", createResult)
 	}
@@ -154,7 +173,7 @@ func TestObserve_EditAfterSettledCreateIsAdmittedAgainstRealBudgetService(t *tes
 	editInput := createInput
 	editInput.CommentRevision = 2
 	editInput.Trigger = TriggerEdit
-	editResult := evaluateReceiptWithoutLatencyBudget(observer, editInput)
+	editResult := observeRealBudget(t, observer, editInput)
 	if editResult.Status != "decided" {
 		t.Fatalf("edit observation after settled create = %+v, want status decided (this is CHE-707 review B1: edits must not reuse the create's reservation identity)", editResult)
 	}
@@ -200,13 +219,13 @@ func TestObserve_SecondEditWithoutRevisionChangeReusesReservation(t *testing.T) 
 		Eval:         oneCandidateOneSpanInput(),
 	}
 
-	first := evaluateReceiptWithoutLatencyBudget(observer, input)
+	first := observeRealBudget(t, observer, input)
 	if first.Status != "decided" {
 		t.Fatalf("first observation = %+v, want status decided", first)
 	}
 	observer.WaitForIdle()
 
-	second := evaluateReceiptWithoutLatencyBudget(observer, input)
+	second := observeRealBudget(t, observer, input)
 	observer.WaitForIdle()
 	if second.Status != "error" || second.ShedReason != ReasonError {
 		t.Fatalf("second observation with identical (comment, trigger, revision) = %+v, want error/duplicate (unchanged pre-existing idempotency behavior)", second)
