@@ -169,6 +169,41 @@ availability stays independent of a third party's release cadence.
 Desktop-managed daemons ignore both, because the Desktop app owns its bundled
 CLI's lifecycle.
 
+### Maintenance window
+
+An operator replacing the daemon binary or its environment can hold the daemon
+idle first. A window pauses new task claims and takes the daemon's update
+ownership, so auto-reload, auto-update, server-triggered updates and runtime
+demotion all refuse to run while it is held.
+
+```bash
+multica daemon maintenance acquire --ttl 15m     # prints {"token","expires_at"}
+multica daemon maintenance status                # held? expiry? active tasks?
+multica daemon restart --maintenance-token "$TOKEN"   # or `daemon stop`
+multica daemon maintenance release --maintenance-token "$TOKEN"
+```
+
+Contract:
+
+- `acquire` succeeds only if no claim is in flight and no task is running (a
+  claim already in flight is waited out, up to 30s; new claims are refused for
+  the whole wait). Otherwise it exits non-zero and changes nothing. An idle
+  `status` is not ownership.
+- While held, `daemon stop` / `daemon restart` are refused without the token,
+  and a refusal never falls back to a forced kill. A token for a window that no
+  longer exists (expired, released, daemon restarted) is also refused: the
+  owner must reconcile, not assume.
+- The window exists only in the daemon process. `--ttl` (default 15m, max 1h)
+  bounds a window whose owner vanished; if the daemon dies the window dies with
+  it. Always confirm with `daemon status` after a restart — `daemon restart`
+  says so when it stopped the old daemon but could not start a replacement.
+- Once a shutdown with the token is accepted the lease no longer expires and
+  `release` is refused, so claims stay paused until the process exits.
+- Limits: the control endpoint is loopback-only and unauthenticated (same
+  boundary as `/shutdown`); the token proves window ownership, not caller
+  identity. A signal sent straight to the process is not an explicit restart and
+  is not gated. Commands are unavailable inside an agent task.
+
 ### Stop
 
 ```bash

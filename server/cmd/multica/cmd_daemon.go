@@ -1241,7 +1241,13 @@ func runDaemonRestart(cmd *cobra.Command, args []string) error {
 		pid, _ := health["pid"].(float64)
 		if pid > 0 {
 			fmt.Fprintf(os.Stderr, "Stopping daemon (pid %d)...\n", int(pid))
-			if err := requestDaemonShutdown(healthPort); err != nil {
+			if err := requestDaemonShutdown(healthPort, maintenanceTokenFromCmd(cmd)); err != nil {
+				// A refusal is the daemon enforcing a maintenance window, not a
+				// delivery failure: never escalate it to a kill.
+				var refused *daemonShutdownRefusedError
+				if errors.As(err, &refused) {
+					return fmt.Errorf("%w; the running daemon was left untouched", err)
+				}
 				if p, perr := os.FindProcess(int(pid)); perr == nil {
 					_ = p.Kill()
 				}
@@ -1261,7 +1267,10 @@ func runDaemonRestart(cmd *cobra.Command, args []string) error {
 	}
 
 	// Start fresh.
-	return runDaemonStart(cmd, args)
+	if err := runDaemonStart(cmd, args); err != nil {
+		return fmt.Errorf("%w (if the old daemon was already stopped, none is running now; confirm with 'multica daemon status')", err)
+	}
+	return nil
 }
 
 // --- daemon stop ---
@@ -1310,7 +1319,11 @@ func runDaemonStop(cmd *cobra.Command, _ []string) error {
 	// GenerateConsoleCtrlEvent can't reach it; HTTP works on both
 	// platforms and triggers the same context-cancel path the daemon
 	// already uses for self-restart.
-	if err := requestDaemonShutdown(healthPort); err != nil {
+	if err := requestDaemonShutdown(healthPort, maintenanceTokenFromCmd(cmd)); err != nil {
+		var refused *daemonShutdownRefusedError
+		if errors.As(err, &refused) {
+			return fmt.Errorf("%w; the running daemon was left untouched", err)
+		}
 		fmt.Fprintf(os.Stderr, "Graceful shutdown request failed: %v — falling back to forced kill.\n", err)
 		if kerr := process.Kill(); kerr != nil {
 			return fmt.Errorf("kill daemon (pid %d): %w", int(pid), kerr)
@@ -1339,11 +1352,14 @@ func runDaemonStop(cmd *cobra.Command, _ []string) error {
 // requestDaemonShutdown POSTs to the daemon's /shutdown endpoint to ask it
 // to exit gracefully. Returns an error if the request could not be delivered
 // (network error, non-2xx status, or the endpoint predates this change).
-func requestDaemonShutdown(healthPort int) error {
+func requestDaemonShutdown(healthPort int, maintenanceToken string) error {
 	url := fmt.Sprintf("http://127.0.0.1:%d/shutdown", healthPort)
 	req, err := http.NewRequest(http.MethodPost, url, nil)
 	if err != nil {
 		return err
+	}
+	if maintenanceToken != "" {
+		req.Header.Set("X-Maintenance-Token", maintenanceToken)
 	}
 	client := &http.Client{Timeout: 2 * time.Second}
 	resp, err := client.Do(req)
@@ -1351,10 +1367,26 @@ func requestDaemonShutdown(healthPort int) error {
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusConflict || resp.StatusCode == http.StatusForbidden {
+		var body struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&body)
+		return &daemonShutdownRefusedError{reason: body.Error}
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("unexpected status %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// daemonShutdownRefusedError means the daemon received the request and
+// declined it because of its maintenance window (409/403). Unlike a transport
+// failure it must never fall back to killing the process.
+type daemonShutdownRefusedError struct{ reason string }
+
+func (e *daemonShutdownRefusedError) Error() string {
+	return "daemon refused shutdown (maintenance window: " + e.reason + "); acquire/present the matching --maintenance-token, or release the window"
 }
 
 // --- daemon status ---
@@ -1493,6 +1525,9 @@ func printDaemonStatusReport(w io.Writer, label string, health map[string]any) {
 	// daemon to go idle, so it reads as an explanation rather than a status line.
 	if reason, ok := health["reload_pending_reason"].(string); ok && reason != "" {
 		rows = append(rows, row{"Restart pending", reason})
+	}
+	if held, _ := health["maintenance_held"].(bool); held {
+		rows = append(rows, row{"Maintenance", fmt.Sprintf("window held until %v (claims paused)", health["maintenance_expires_at"])})
 	}
 	if agents, ok := health["agents"].([]any); ok && len(agents) > 0 {
 		parts := make([]string, len(agents))
