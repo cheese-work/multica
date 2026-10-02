@@ -79,10 +79,33 @@ func (d *Daemon) acquireMaintenance(ctx context.Context, ttl time.Duration) (str
 	if d.RestartBinary() != "" {
 		return "", time.Time{}, errMaintenanceRestarting
 	}
+	// Reserve the lifecycle before taking the barrier (which can wait seconds
+	// for in-flight claims): a shutdown accepted earlier refuses us, and a
+	// shutdown arriving during admission is refused by authorizeShutdown. Only
+	// one of the two can ever win.
+	d.maintMu.Lock()
+	switch {
+	case d.shutdownAccepted:
+		d.maintMu.Unlock()
+		return "", time.Time{}, errMaintenanceClosing
+	case d.maintAcquiring || d.maint != nil:
+		d.maintMu.Unlock()
+		return "", time.Time{}, errMaintenanceUpdateRunning
+	}
+	d.maintAcquiring = true
+	d.maintMu.Unlock()
+	endAdmission := func() {
+		d.maintMu.Lock()
+		d.maintAcquiring = false
+		d.maintMu.Unlock()
+	}
+
 	switch d.tryBeginServerUpdate(ctx) {
 	case serverUpdateAlreadyRunning:
+		endAdmission()
 		return "", time.Time{}, errMaintenanceUpdateRunning
 	case serverUpdateRuntimeBusy:
+		endAdmission()
 		return "", time.Time{}, errMaintenanceBusy
 	}
 
@@ -90,11 +113,13 @@ func (d *Daemon) acquireMaintenance(ctx context.Context, ttl time.Duration) (str
 	if _, err := rand.Read(raw); err != nil {
 		d.releaseClaimBarrier()
 		d.updating.Store(false)
+		endAdmission()
 		return "", time.Time{}, err
 	}
 	lease := &maintenanceLease{token: hex.EncodeToString(raw), expires: time.Now().Add(ttl)}
 	d.maintMu.Lock()
 	d.maint = lease
+	d.maintAcquiring = false
 	lease.timer = time.AfterFunc(ttl, func() { _ = d.releaseMaintenance(lease.token) })
 	d.maintMu.Unlock()
 	d.logger.Info("maintenance window acquired", "expires_at", lease.expires.UTC().Format(time.RFC3339))
@@ -123,7 +148,8 @@ func (d *Daemon) releaseMaintenance(token string) error {
 }
 
 // authorizeShutdown decides whether /shutdown may proceed. With no window and
-// no token it is the historical unconditional shutdown. On success while a
+// no token it is the historical unconditional shutdown, unless an acquire is
+// mid-admission (refused) — and once accepted, later acquires are refused. On success while a
 // window is held the lease is frozen (no expiry, no release) so claims stay
 // paused until exit.
 func (d *Daemon) authorizeShutdown(token string) error {
@@ -131,7 +157,10 @@ func (d *Daemon) authorizeShutdown(token string) error {
 	defer d.maintMu.Unlock()
 	lease := d.maint
 	switch {
+	case lease == nil && token == "" && d.maintAcquiring:
+		return errMaintenanceUpdateRunning // admission in progress; owner not yet known
 	case lease == nil && token == "":
+		d.shutdownAccepted = true
 		return nil
 	case lease == nil:
 		return errMaintenanceNotHeld

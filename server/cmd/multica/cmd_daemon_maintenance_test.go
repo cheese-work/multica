@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func testServerPort(t *testing.T, srv *httptest.Server) int {
@@ -21,8 +22,8 @@ func testServerPort(t *testing.T, srv *httptest.Server) int {
 }
 
 // A 409/403 from /shutdown is the daemon enforcing a window: it must surface
-// as a refusal (callers then skip the kill fallback). A dead listener stays a
-// plain transport error so the existing forced-kill fallback still applies.
+// as a refusal (callers then skip the kill fallback). A lost response or dead
+// listener is an unknown outcome and fails closed the same way.
 func TestRequestDaemonShutdownDistinguishesRefusalFromTransportFailure(t *testing.T) {
 	var gotToken string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -46,8 +47,8 @@ func TestRequestDaemonShutdownDistinguishesRefusalFromTransportFailure(t *testin
 
 	srv.Close()
 	err = requestDaemonShutdown(port, "good")
-	if err == nil || errors.As(err, &refused) {
-		t.Fatalf("closed listener: %v, want a non-refusal transport error", err)
+	if err == nil || !errors.As(err, &refused) {
+		t.Fatalf("closed listener: %v, want fail-closed (no kill) error", err)
 	}
 }
 
@@ -81,5 +82,42 @@ func TestMaintenanceTokenFromCmdPrefersFlagThenEnv(t *testing.T) {
 	t.Cleanup(func() { _ = cmd.Flags().Set("maintenance-token", "") })
 	if got := maintenanceTokenFromCmd(cmd); got != "from-flag" {
 		t.Fatalf("flag = %q", got)
+	}
+}
+
+// Only a daemon predating /shutdown (404/405) stays kill-eligible; lost
+// responses, 5xx and timeouts must not, since a window may be held.
+func TestRequestDaemonShutdownFailsClosedOnUnknownOutcome(t *testing.T) {
+	cases := map[string]http.HandlerFunc{
+		"lost response": func(w http.ResponseWriter, r *http.Request) {
+			conn, _, _ := w.(http.Hijacker).Hijack()
+			_ = conn.Close()
+		},
+		"500": func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusInternalServerError) },
+		"timeout": func(w http.ResponseWriter, r *http.Request) {
+			select {
+			case <-r.Context().Done():
+			case <-time.After(5 * time.Second):
+			}
+		},
+	}
+	for name, h := range cases {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(h)
+			defer srv.Close()
+			var refused *daemonShutdownRefusedError
+			for _, tok := range []string{"", "stale"} {
+				if err := requestDaemonShutdown(testServerPort(t, srv), tok); !errors.As(err, &refused) {
+					t.Fatalf("token %q: %v, want fail-closed error", tok, err)
+				}
+			}
+		})
+	}
+	legacy := httptest.NewServer(http.NotFoundHandler())
+	defer legacy.Close()
+	err := requestDaemonShutdown(testServerPort(t, legacy), "")
+	var refused *daemonShutdownRefusedError
+	if err == nil || errors.As(err, &refused) {
+		t.Fatalf("legacy 404: %v, want plain error (kill-eligible)", err)
 	}
 }

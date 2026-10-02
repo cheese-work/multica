@@ -190,7 +190,12 @@ Contract:
   the whole wait). Otherwise it exits non-zero and changes nothing. An idle
   `status` is not ownership.
 - While held, `daemon stop` / `daemon restart` are refused without the token,
-  and a refusal never falls back to a forced kill. A token for a window that no
+  and neither a refusal nor an unknown outcome (lost response, timeout, 5xx)
+  falls back to a forced kill — the command errors and you reconcile with
+  `daemon status`. Only a daemon predating `/shutdown` (404/405) keeps the kill
+  fallback. A tokenless `/shutdown` arriving while `acquire` is still admitting
+  is refused (409), and `acquire` after an accepted shutdown is refused: the two
+  never both succeed. A token for a window that no
   longer exists (expired, released, daemon restarted) is also refused: the
   owner must reconcile, not assume.
 - The window exists only in the daemon process. `--ttl` (default 15m, max 1h)

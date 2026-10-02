@@ -312,3 +312,71 @@ func TestMaintenance_HTTPLifecycle(t *testing.T) {
 		t.Fatalf("negative ttl: %d", code)
 	}
 }
+
+// Admission and shutdown linearize: whichever reserves the lifecycle first
+// wins, the other is refused — never "shutdown accepted AND lease granted".
+func TestMaintenanceAdmissionAndShutdownLinearize(t *testing.T) {
+	t.Run("shutdown during admission is refused", func(t *testing.T) {
+		d, cancels := newMaintenanceTestDaemon()
+		if !d.tryEnterClaim() {
+			t.Fatal("setup claim refused")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		type res struct {
+			tok string
+			err error
+		}
+		done := make(chan res, 1)
+		go func() {
+			tok, _, err := d.acquireMaintenance(ctx, time.Minute)
+			done <- res{tok, err}
+		}()
+		for deadline := time.Now().Add(time.Second); !claimsPaused(t, d); {
+			if time.Now().After(deadline) {
+				t.Fatal("admission did not pause claims")
+			}
+			time.Sleep(time.Millisecond)
+		}
+		rec := httptest.NewRecorder()
+		d.shutdownHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/shutdown", nil))
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("tokenless shutdown during admission = %d, want 409", rec.Code)
+		}
+		d.exitClaim()
+		r := <-done
+		if r.err != nil {
+			t.Fatalf("acquire: %v", r.err)
+		}
+		defer d.releaseMaintenance(r.tok)
+		time.Sleep(20 * time.Millisecond)
+		if cancels.Load() != 0 {
+			t.Fatal("daemon cancelled while lease held")
+		}
+	})
+	t.Run("acquire after accepted shutdown is refused", func(t *testing.T) {
+		d, cancels := newMaintenanceTestDaemon()
+		rec := httptest.NewRecorder()
+		d.shutdownHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/shutdown", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("shutdown = %d", rec.Code)
+		}
+		if _, _, err := d.acquireMaintenance(context.Background(), time.Minute); err != errMaintenanceClosing {
+			t.Fatalf("acquire after shutdown = %v, want %v", err, errMaintenanceClosing)
+		}
+		if claimsPaused(t, d) || d.updating.Load() {
+			t.Fatal("refused acquire left barrier/update ownership behind")
+		}
+		_ = cancels
+	})
+	t.Run("failed admission clears the reservation", func(t *testing.T) {
+		d, _ := newMaintenanceTestDaemon()
+		d.activeTasks.Store(1)
+		if _, _, err := d.acquireMaintenance(context.Background(), time.Minute); err != errMaintenanceBusy {
+			t.Fatalf("acquire with active task = %v", err)
+		}
+		d.activeTasks.Store(0)
+		tok := mustAcquire(t, d)
+		_ = d.releaseMaintenance(tok)
+	})
+}

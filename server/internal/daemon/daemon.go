@@ -636,6 +636,11 @@ type Daemon struct {
 	// The lease holds `updating` + the claim barrier; it adds no second flag.
 	maintMu sync.Mutex
 	maint   *maintenanceLease
+	// maintAcquiring: an acquire has reserved the lifecycle but not yet
+	// installed its lease. shutdownAccepted: a tokenless /shutdown was accepted.
+	// Both live under maintMu so admission and shutdown linearize.
+	maintAcquiring   bool
+	shutdownAccepted bool
 
 	activeEnvRootsMu   sync.Mutex
 	activeEnvRootsCond *sync.Cond      // signalled when an in-flight env-root GC mutation finishes
