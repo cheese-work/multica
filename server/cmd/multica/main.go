@@ -38,6 +38,7 @@ func init() {
 	// Tag every CLI HTTP request with this binary's build version so the
 	// server can split logs/metrics by client version.
 	cli.ClientVersion = version
+	cli.ClientCommit = commit
 
 	rootCmd.PersistentFlags().String("server-url", "", "Multica server URL (env: MULTICA_SERVER_URL)")
 	rootCmd.PersistentFlags().String("workspace-id", "", "Workspace ID (env: MULTICA_WORKSPACE_ID)")

@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -29,6 +32,12 @@ func runUpdate(_ *cobra.Command, _ []string) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "Current version: %s (commit: %s, built: %s)\n", version, commit, date)
+
+	// Linux/macOS update from the fork's successful main CI artifacts only;
+	// there is no fallback to upstream releases or Homebrew.
+	if cli.ForkUpdateSupported(runtime.GOOS) {
+		return runForkUpdate()
+	}
 
 	// Check the configured release source.
 	latest, err := cli.FetchLatestRelease()
@@ -65,6 +74,26 @@ func runUpdate(_ *cobra.Command, _ []string) error {
 	output, err := cli.UpdateViaDownloadWithTimeout(targetVersion, updateDownloadTimeout)
 	if err != nil {
 		return fmt.Errorf("update failed: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "%s\nUpdate complete.\n", output)
+	return nil
+}
+
+func runForkUpdate() error {
+	ctx, cancel := context.WithTimeout(context.Background(), updateDownloadTimeout+time.Minute)
+	defer cancel()
+	u, err := cli.ResolveForkUpdate(ctx, runtime.GOOS, runtime.GOARCH, commit)
+	switch {
+	case errors.Is(err, cli.ErrForkUpToDate):
+		fmt.Fprintln(os.Stderr, "Already up to date.")
+		return nil
+	case err != nil:
+		return fmt.Errorf("no update applied; installed multica is unchanged: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "Updating to %s\n", u)
+	output, err := cli.ApplyForkUpdate(ctx, u, updateDownloadTimeout)
+	if err != nil {
+		return fmt.Errorf("update failed; installed multica is unchanged: %w", err)
 	}
 	fmt.Fprintf(os.Stderr, "%s\nUpdate complete.\n", output)
 	return nil

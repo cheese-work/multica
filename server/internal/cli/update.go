@@ -471,18 +471,29 @@ func UpdateViaDownloadWithTimeout(targetVersion string, downloadTimeout time.Dur
 		return "", fmt.Errorf("extract binary: %w", err)
 	}
 
+	if err := installBinary(exePath, binaryData); err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("Downloaded %s and replaced %s", assetName, exePath), nil
+}
+
+// installBinary atomically replaces exePath with data: temp file in the same
+// directory (so the rename stays on one filesystem), original permissions,
+// then rename. A failure at any step leaves the installed binary untouched.
+func installBinary(exePath string, data []byte) error {
 	// Atomic replace: write to temp file, then rename over the original.
 	dir := filepath.Dir(exePath)
 	tmpFile, err := os.CreateTemp(dir, "multica-update-*")
 	if err != nil {
-		return "", fmt.Errorf("create temp file: %w", err)
+		return fmt.Errorf("create temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
 
-	if _, err := tmpFile.Write(binaryData); err != nil {
+	if _, err := tmpFile.Write(data); err != nil {
 		tmpFile.Close()
 		os.Remove(tmpPath)
-		return "", fmt.Errorf("write temp file: %w", err)
+		return fmt.Errorf("write temp file: %w", err)
 	}
 	tmpFile.Close()
 
@@ -490,21 +501,21 @@ func UpdateViaDownloadWithTimeout(targetVersion string, downloadTimeout time.Dur
 	info, err := os.Stat(exePath)
 	if err != nil {
 		os.Remove(tmpPath)
-		return "", fmt.Errorf("stat original binary: %w", err)
+		return fmt.Errorf("stat original binary: %w", err)
 	}
 	if err := os.Chmod(tmpPath, info.Mode()); err != nil {
 		os.Remove(tmpPath)
-		return "", fmt.Errorf("chmod temp file: %w", err)
+		return fmt.Errorf("chmod temp file: %w", err)
 	}
 
 	// Replace the original binary. On Windows this moves the running executable
 	// aside first; on Unix a plain rename over the running inode is fine.
 	if err := replaceBinary(tmpPath, exePath); err != nil {
 		os.Remove(tmpPath)
-		return "", fmt.Errorf("replace binary: %w", err)
+		return fmt.Errorf("replace binary: %w", err)
 	}
 
-	return fmt.Sprintf("Downloaded %s and replaced %s", assetName, exePath), nil
+	return nil
 }
 
 // extractBinaryFromTarGz reads a .tar.gz stream and returns the contents of the
