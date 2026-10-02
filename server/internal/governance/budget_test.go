@@ -159,6 +159,62 @@ func TestReviewBudgetResizeThenRolloverRetainsActiveWindowCap(t *testing.T) {
 	}
 }
 
+func TestBudgetReserveDoesNotWaitOnTerminalHistory(t *testing.T) {
+	fixture := newBudgetTestFixture(t)
+	ctx := context.Background()
+	oldWindowStart := budgetTestTime(10, 0)
+	oldWindowEnd := budgetTestTime(11, 0)
+	fixture.clock.Set(budgetTestTime(10, 5))
+
+	oldCommand := fixture.reserveCommand("resource-old", oldWindowStart, oldWindowEnd, 100, 100, 20, 1)
+	oldReservation, err := fixture.service.Reserve(ctx, oldCommand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.service.Settle(ctx, BudgetSettleCommand{
+		WorkspaceID:      fixture.workspaceID,
+		ReservationID:    oldReservation.Reservation.ReservationID,
+		ExpectedRevision: oldReservation.Reservation.Revision,
+		EventKey:         "settle-old-terminal",
+		ReceiptID:        "old-terminal",
+		UsageKnown:       true,
+		TerminationKnown: true,
+		UsageMicroUSD:    1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fixture.clock.Set(budgetTestTime(12, 5))
+
+	lockTx, err := fixture.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lockTx.Rollback(ctx)
+	var lockedID pgtype.UUID
+	if err := lockTx.QueryRow(ctx, `
+		SELECT reservation_id FROM governance_budget_reservation
+		WHERE workspace_id = $1 AND reservation_id = $2
+		FOR UPDATE
+	`, fixture.workspaceID, oldReservation.Reservation.ReservationID).Scan(&lockedID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lockTx.Exec(ctx, `
+		SELECT window_start FROM governance_budget_window
+		WHERE workspace_id = $1 AND window_start = $2
+		FOR UPDATE
+	`, fixture.workspaceID, oldWindowStart); err != nil {
+		t.Fatal(err)
+	}
+
+	command := fixture.reserveCommand("resource-current", budgetTestTime(12, 0), budgetTestTime(13, 0), 100, 100, 10, 1)
+	command.BudgetRootID = oldCommand.BudgetRootID
+	reserveCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if _, err := fixture.service.Reserve(reserveCtx, command); err != nil {
+		t.Fatalf("reserve waited on terminal history: %v", err)
+	}
+}
+
 func TestBudgetReserveRejectsAfterWorkspaceLockWaitPastWindowEnd(t *testing.T) {
 	fixture := newBudgetTestFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -564,5 +620,59 @@ func assertBudgetRootTotals(t *testing.T, fixture *budgetTestFixture, rootID pgt
 	}
 	if reserved != wantReserved || spent != wantSpent {
 		t.Fatalf("root counters = %d/%d, want %d/%d", reserved, spent, wantReserved, wantSpent)
+	}
+}
+
+func TestBudgetWindowExposureChargesOpenReservationsInOtherWindows(t *testing.T) {
+	fixture := newBudgetTestFixture(t)
+	ctx := context.Background()
+	fixture.clock.Set(budgetTestTime(12, 5))
+	w1 := fixture.reserveCommand("resource-a", budgetTestTime(12, 0), budgetTestTime(13, 0), 100, 1000, 40, 1)
+	if _, err := fixture.service.Reserve(ctx, w1); err != nil {
+		t.Fatal(err)
+	}
+	reserve := func(resource string, startHour int, cost, epoch int64) error {
+		fixture.setEpoch(t, epoch)
+		command := fixture.reserveCommand(resource, budgetTestTime(startHour, 0), budgetTestTime(startHour+1, 0), 100, 1000, cost, epoch)
+		command.BudgetRootID = w1.BudgetRootID
+		_, err := fixture.service.Reserve(ctx, command)
+		return err
+	}
+	fixture.clock.Set(budgetTestTime(13, 5))
+	if err := reserve("resource-b", 13, 40, 2); err != nil {
+		t.Fatal(err)
+	}
+	// Windows 12-13 and 13-14 are both open (40 each). On main every open
+	// reservation counted against every protected window, so 80 + 40 > 100.
+	fixture.clock.Set(budgetTestTime(14, 5))
+	if err := reserve("resource-c", 14, 40, 3); !errors.Is(err, ErrBudgetLimit) {
+		t.Fatalf("open reservations in other windows error = %v, want ErrBudgetLimit", err)
+	}
+}
+
+func TestBudgetWindowExposureRejectsAgainstOpenReservationInPriorWindow(t *testing.T) {
+	fixture := newBudgetTestFixture(t)
+	ctx := context.Background()
+	fixture.clock.Set(budgetTestTime(12, 5))
+	w1 := fixture.reserveCommand("resource-a", budgetTestTime(12, 0), budgetTestTime(13, 0), 100, 1000, 40, 1)
+	if _, err := fixture.service.Reserve(ctx, w1); err != nil {
+		t.Fatal(err)
+	}
+	// W1 stays open (unknown prior-window liability remains reserved) while W2 fills.
+	fixture.clock.Set(budgetTestTime(14, 5))
+	reserveW2 := func(resource string, cost, epoch int64) error {
+		fixture.setEpoch(t, epoch)
+		command := fixture.reserveCommand(resource, budgetTestTime(14, 0), budgetTestTime(15, 0), 100, 1000, cost, epoch)
+		command.BudgetRootID = w1.BudgetRootID
+		_, err := fixture.service.Reserve(ctx, command)
+		return err
+	}
+	if err := reserveW2("resource-b", 40, 2); err != nil {
+		t.Fatal(err)
+	}
+	// W1 sees 40 + 40 open, so 30 more is 110 > 100. main rejects it; the B3 query
+	// that counted only overlapping reservations admitted it.
+	if err := reserveW2("resource-c", 30, 3); !errors.Is(err, ErrBudgetLimit) {
+		t.Fatalf("reserve against open prior-window liability error = %v, want ErrBudgetLimit", err)
 	}
 }
