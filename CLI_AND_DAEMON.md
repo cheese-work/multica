@@ -53,7 +53,7 @@ When these variables are unset, the GitHub defaults remain unchanged.
 
 On Linux and macOS, `multica update`, the daemon's auto-update poller, and the
 Runtimes-page update all ignore upstream releases, Homebrew and the
-`MULTICA_RELEASE_*` mirrors. They install the daemon artifact that
+`MULTICA_RELEASE_*` mirrors. Its API origin is fixed to `https://api.github.com`: no environment variable changes it, and redirects away from HTTPS are refused. They install the daemon artifact that
 `cheese-work/multica`'s `ci.yml` uploads on a push to `main`
 (`multica-daemon-<os>-<arch>`, one file named `multica`). Windows is unchanged.
 
@@ -64,6 +64,7 @@ binary is left untouched and the command or daemon log says why:
   a `push` to `main`, workflow `.github/workflows/ci.yml`, in `cheese-work/multica`
   itself (not a PR, fork, failed, cancelled or unfinished run).
 - It is unexpired and attributed by GitHub to that same run and commit.
+- CI stamps its version in `git describe` form (for example `v0.6.0-153-ged9f2e94d599`) so the Quick Create capability gates keep accepting the daemon; the exact full commit is stamped separately and checked by the updater.
 - That commit is ahead of the running binary's build commit (GitHub compare).
 - The zip's SHA-256 equals the digest GitHub reports for the artifact, the zip
   holds exactly one regular file named `multica`, and that file runs on this

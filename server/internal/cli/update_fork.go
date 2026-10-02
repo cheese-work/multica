@@ -134,36 +134,53 @@ func (r *forkRun) ineligible() string {
 	return ""
 }
 
-// forkGet performs an authenticated GET against the API. The token goes only
-// to the API host: Go drops Authorization on the cross-host redirect to the
-// artifact blob store, and CheckRedirect refuses plaintext hops outright.
+// forkAPIBase is the only origin fork updates read metadata from or send
+// credentials to. It is deliberately not configurable from the environment:
+// MULTICA_RELEASE_API_BASE_URL belongs to the upstream-release mirror path and
+// is ignored here, because a mirror could answer with forged run/artifact
+// metadata and would receive the token. Tests reassign it to a fake server.
+var forkAPIBase = "https://api.github.com"
+
+// forkGet performs a GET against the API, authenticated only when rawURL is on
+// the pinned origin. Credentials never follow a redirect to another origin,
+// and a redirect away from HTTPS is refused.
 func forkGet(ctx context.Context, rawURL string, timeout time.Duration) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	if tok := forkToken(); tok != "" {
-		req.Header.Set("Authorization", "Bearer "+tok)
+	if forkOriginMatches(req.URL, forkAPIBase) {
+		if tok := forkToken(); tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
 	}
-	client := &http.Client{
-		Timeout: timeout,
-		CheckRedirect: func(next *http.Request, via []*http.Request) error {
-			if len(via) >= 5 {
-				return errors.New("too many redirects")
-			}
-			if next.URL.Host != via[0].URL.Host {
-				next.Header.Del("Authorization")
-			}
-			return nil
-		},
-	}
+	client := &http.Client{Timeout: timeout, CheckRedirect: forkCheckRedirect}
 	resp, err := client.Do(req)
 	if err != nil {
 		// url.Error carries only the URL; the token is a header and never appears here.
 		return nil, err
 	}
 	return resp, nil
+}
+
+func forkOriginMatches(u *url.URL, base string) bool {
+	b, err := url.Parse(base)
+	return err == nil && u.Scheme == b.Scheme && u.Host == b.Host
+}
+
+func forkCheckRedirect(next *http.Request, via []*http.Request) error {
+	if len(via) >= 5 {
+		return errors.New("too many redirects")
+	}
+	first := via[0].URL
+	if first.Scheme == "https" && next.URL.Scheme != "https" {
+		return fmt.Errorf("refusing redirect to non-HTTPS URL %s://%s", next.URL.Scheme, next.URL.Host)
+	}
+	if next.URL.Scheme != first.Scheme || next.URL.Host != first.Host {
+		next.Header.Del("Authorization")
+	}
+	return nil
 }
 
 func forkToken() string {
@@ -176,7 +193,7 @@ func forkToken() string {
 }
 
 func forkGetJSON(ctx context.Context, path string, out any) (int, error) {
-	resp, err := forkGet(ctx, releaseAPIBaseURL()+"/repos/"+ForkRepo+path, forkAPITimeout)
+	resp, err := forkGet(ctx, forkAPIBase+"/repos/"+ForkRepo+path, forkAPITimeout)
 	if err != nil {
 		return 0, err
 	}
@@ -285,7 +302,7 @@ func ApplyForkUpdate(ctx context.Context, u *ForkUpdate, timeout time.Duration) 
 }
 
 func applyForkUpdateTo(ctx context.Context, u *ForkUpdate, timeout time.Duration, exePath string) (string, error) {
-	resp, err := forkGet(ctx, fmt.Sprintf("%s/repos/%s/actions/artifacts/%d/zip", releaseAPIBaseURL(), ForkRepo, u.ArtifactID), updateDownloadTimeoutOrDefault(timeout))
+	resp, err := forkGet(ctx, fmt.Sprintf("%s/repos/%s/actions/artifacts/%d/zip", forkAPIBase, ForkRepo, u.ArtifactID), updateDownloadTimeoutOrDefault(timeout))
 	if err != nil {
 		return "", fmt.Errorf("download artifact: %w", err)
 	}

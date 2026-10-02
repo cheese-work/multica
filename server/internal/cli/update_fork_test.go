@@ -79,7 +79,7 @@ func (f *fakeGitHub) serve(t *testing.T) *httptest.Server {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	t.Setenv(releaseAPIBaseURLEnv, srv.URL)
+	useForkAPI(t, srv.URL)
 	t.Setenv(forkTokenEnv, "")
 	t.Setenv("GH_TOKEN", "")
 	t.Setenv("GITHUB_TOKEN", "")
@@ -333,7 +333,7 @@ func TestApplyForkUpdateFailuresKeepInstalledBinary(t *testing.T) {
 		u.ArtifactID = 1 // server 404s any non-zip path below
 		srv := httptest.NewServer(http.NotFoundHandler())
 		defer srv.Close()
-		t.Setenv(releaseAPIBaseURLEnv, srv.URL)
+		useForkAPI(t, srv.URL)
 		if _, err := applyForkUpdateTo(context.Background(), u, time.Minute, exe); err == nil || !strings.Contains(err.Error(), "HTTP 404") {
 			t.Fatalf("err = %v", err)
 		}
@@ -361,7 +361,7 @@ func TestForkDownloadDropsTokenOnCrossHostRedirect(t *testing.T) {
 		http.Redirect(w, r, blobURL, http.StatusFound)
 	}))
 	defer api.Close()
-	t.Setenv(releaseAPIBaseURLEnv, api.URL)
+	useForkAPI(t, api.URL)
 	t.Setenv(forkTokenEnv, "tok-secret")
 	exe, _ := newInstallTarget(t)
 
@@ -378,5 +378,114 @@ func TestForkUpdateSupported(t *testing.T) {
 		if ForkUpdateSupported(goos) != want {
 			t.Fatalf("ForkUpdateSupported(%s) != %v", goos, want)
 		}
+	}
+}
+
+// useForkAPI points the fork source at a fake server for one test. Production
+// code cannot do this: forkAPIBase has no environment or flag override.
+func useForkAPI(t *testing.T, base string) {
+	t.Helper()
+	prev := forkAPIBase
+	forkAPIBase = base
+	t.Cleanup(func() { forkAPIBase = prev })
+}
+
+func TestForkAPIBaseIsPinnedToGitHubHTTPS(t *testing.T) {
+	if forkAPIBase != "https://api.github.com" {
+		t.Fatalf("forkAPIBase = %q", forkAPIBase)
+	}
+}
+
+// A configured release mirror (MULTICA_RELEASE_API_BASE_URL) must be ignored by
+// the fork source: it neither receives requests nor the token, and cannot
+// supply metadata.
+func TestForkSourceIgnoresReleaseMirrorAndKeepsTokenOffIt(t *testing.T) {
+	f := newFake(t)
+	var mirrorHits int
+	mirror := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mirrorHits++
+		t.Errorf("release mirror contacted: %s (Authorization %q)", r.URL, r.Header.Get("Authorization"))
+		http.NotFound(w, r)
+	}))
+	defer mirror.Close()
+	t.Setenv(releaseAPIBaseURLEnv, mirror.URL)
+	t.Setenv(releaseDownloadBaseURLEnv, mirror.URL)
+	t.Setenv(forkTokenEnv, "tok-secret")
+
+	u, err := ResolveForkUpdate(context.Background(), "linux", "amd64", testCurrent)
+	if err != nil {
+		t.Fatalf("ResolveForkUpdate: %v", err)
+	}
+	f.zip = zipOf(t, map[string][]byte{"multica": fakeBinary(testHead)})
+	exe, _ := newInstallTarget(t)
+	if _, err := applyForkUpdateTo(context.Background(), forkUpdateFor(f.zip), time.Minute, exe); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if u.HeadSHA != testHead || mirrorHits != 0 {
+		t.Fatalf("head=%s mirrorHits=%d", u.HeadSHA, mirrorHits)
+	}
+	for _, a := range f.gotAuth {
+		if a != "Bearer tok-secret" {
+			t.Fatalf("fake GitHub API saw Authorization %q", a)
+		}
+	}
+}
+
+// The token is attached only to requests on the pinned origin.
+func TestForkGetSendsNoTokenOffOrigin(t *testing.T) {
+	var got string
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Authorization")
+	}))
+	defer other.Close()
+	useForkAPI(t, "https://api.github.com")
+	t.Setenv(forkTokenEnv, "tok-secret")
+
+	resp, err := forkGet(context.Background(), other.URL, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got != "" {
+		t.Fatalf("token sent to %s: %q", other.URL, got)
+	}
+}
+
+func TestForkCheckRedirect(t *testing.T) {
+	req := func(raw string) *http.Request {
+		r, _ := http.NewRequest(http.MethodGet, raw, nil)
+		r.Header.Set("Authorization", "Bearer tok")
+		return r
+	}
+	cases := []struct {
+		name     string
+		first    string
+		next     string
+		hops     int
+		wantErr  bool
+		wantAuth bool
+	}{
+		{"https to same https origin keeps token", "https://api.github.com/a", "https://api.github.com/b", 1, false, true},
+		{"https downgrade on same authority refused", "https://api.github.com/a", "http://api.github.com/b", 1, true, false},
+		{"https downgrade to other host refused", "https://api.github.com/a", "http://blob.example/b", 1, true, false},
+		{"https to other https host drops token", "https://api.github.com/a", "https://blob.example/b", 1, false, false},
+		{"https to other port drops token", "https://api.github.com/a", "https://api.github.com:8443/b", 1, false, false},
+		{"too many redirects", "https://api.github.com/a", "https://api.github.com/b", 5, true, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			via := make([]*http.Request, c.hops)
+			for i := range via {
+				via[i] = req(c.first)
+			}
+			next := req(c.next)
+			err := forkCheckRedirect(next, via)
+			if (err != nil) != c.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, c.wantErr)
+			}
+			if err == nil && (next.Header.Get("Authorization") != "") != c.wantAuth {
+				t.Fatalf("Authorization = %q, want kept=%v", next.Header.Get("Authorization"), c.wantAuth)
+			}
+		})
 	}
 }
