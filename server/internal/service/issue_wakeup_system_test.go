@@ -88,3 +88,18 @@ func TestChildDoneInstructionPrecedence(t *testing.T) {
 		t.Fatal("unreadable settings must keep the rule on")
 	}
 }
+
+func TestPRWakeupSettingsDefaultOnAndIndependent(t *testing.T) {
+	if enabled, err := PRWakeupEnabled([]byte(`{}`), SystemRulePRMerged); err != nil || !enabled {
+		t.Fatalf("merge default = %v, %v; want enabled", enabled, err)
+	}
+	if enabled, err := PRWakeupEnabled([]byte(`{"github_wake_on_pr_merge":false}`), SystemRulePRMerged); err != nil || enabled {
+		t.Fatalf("merge override = %v, %v; want disabled", enabled, err)
+	}
+	if enabled, err := PRWakeupEnabled([]byte(`{"github_wake_on_pr_merge":false}`), SystemRulePRChecksFailed); err != nil || !enabled {
+		t.Fatalf("CI failure setting inherited merge override: %v, %v", enabled, err)
+	}
+	if enabled, err := PRWakeupEnabled([]byte(`{"github_enabled":false}`), SystemRulePRChecksFailed); err != nil || enabled {
+		t.Fatalf("GitHub master switch = %v, %v; want disabled", enabled, err)
+	}
+}

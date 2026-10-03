@@ -47,6 +47,18 @@ Clients do not resend instructions, filters or thread references. The new UI
 requires this endpoint for restore; deploy the server first. Old clients and the
 existing full-config CLI update continue to work without a migration.
 
+## Linked GitHub PR wakeups
+
+The platform creates system wakeups for a linked PR merge and for CI snapshots
+whose current head concludes with `FAILURE` or `ERROR`. Merge receipts deduplicate
+by repository and PR; CI receipts deduplicate by repository, PR and head SHA.
+Both workspace settings default to on: `github_wake_on_pr_merge` and
+`github_wake_on_ci_failure`. The `github_enabled` master switch also disables
+them. Unassigned, member-assigned and cancelled issues do not start agent runs, and
+an already-active run of the assigned agent is not duplicated. Wakeup prompts
+include the PR, merge commit or failing head, and issue status captured with the
+event.
+
 Agents manage configurations with `multica issue wakeup`:
 
 ```sh

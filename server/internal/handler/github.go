@@ -28,6 +28,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/middleware"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -1370,6 +1371,18 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 	for _, id := range issueIDs {
 		linked = append(linked, uuidToString(id))
 	}
+	if pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha && pr.ChecksRollupState.Valid &&
+		(pr.ChecksRollupState.String == "FAILURE" || pr.ChecksRollupState.String == "ERROR") {
+		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
+		for _, issueID := range issueIDs {
+			if err := wakeup.TriggerPullRequestWakeup(ctx, issueID, service.PullRequestWakeupInput{
+				Rule: service.SystemRulePRChecksFailed, RepoOwner: pr.RepoOwner, RepoName: pr.RepoName,
+				Number: pr.PrNumber, URL: pr.HtmlUrl, HeadSHA: pr.SnapshotHeadSha, Conclusion: pr.ChecksRollupState.String,
+			}); err != nil {
+				slog.Warn("github: failed to dispatch pull request check wakeup", "err", err, "pr_id", uuidToString(pr.ID), "issue_id", uuidToString(issueID))
+			}
+		}
+	}
 	h.publish(protocol.EventPullRequestUpdated, uuidToString(pr.WorkspaceID), "system", "", map[string]any{
 		"pull_request":     githubPullRequestToResponse(pr, h.PRRefresh.Enabled()),
 		"linked_issue_ids": linked,
@@ -1991,6 +2004,18 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		resolver := issuestatus.NewResolver(wsID)
 		for issueID := range touched {
 			h.maybeAutoCompleteIssue(ctx, wsID, issueID, resolver)
+		}
+	}
+	if state == "merged" {
+		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
+		for _, issueID := range issueIDs {
+			if err := wakeup.TriggerPullRequestWakeup(ctx, issueID, service.PullRequestWakeupInput{
+				Rule: service.SystemRulePRMerged, RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name,
+				Number: p.PullRequest.Number, URL: p.PullRequest.HTMLURL, MergeCommit: p.PullRequest.MergeCommitSHA,
+				HeadSHA: p.PullRequest.Head.SHA,
+			}); err != nil {
+				return fmt.Errorf("github: dispatch pull request merge wakeup: %w", err)
+			}
 		}
 	}
 	h.publish(protocol.EventPullRequestUpdated, workspaceID, "system", "", map[string]any{
