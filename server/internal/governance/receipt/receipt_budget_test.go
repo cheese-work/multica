@@ -12,8 +12,10 @@ import (
 	"github.com/multica-ai/multica/server/internal/governance"
 )
 
-// These tests exercise Observer.Observe against a real *governance.BudgetService
-// (not the in-memory fakeBudgetAdmission the rest of this file's tests use).
+// These tests exercise the receipt evaluation path against a real
+// *governance.BudgetService (not the in-memory fakeBudgetAdmission the rest of
+// this file's tests use). A background context keeps database timing separate
+// from the production observation deadline tested in receipt_test.go.
 // CHE-707 review B1 was invisible to a fake BudgetAdmission — the fake always
 // admits, regardless of what AttemptID/ReservationID it was called with — so
 // only a real BudgetService reproduces the bug: the create and every later
@@ -135,10 +137,10 @@ func receiptTestOperatingLimits() governance.OperatingLimits {
 // edit runs in a later admission window) failed with ErrBudgetConflict —
 // never reaching the provider at all, regardless of max_evaluations headroom.
 //
-// This test drives two full Observe calls for the same CommentID with
+// This test drives two full receipt evaluations for the same CommentID with
 // different (Trigger, CommentRevision) — exactly what CreateComment then
 // UpdateComment produce — against a real BudgetService, and asserts the
-// second (edit) observation is admitted and decided, not shed as an error.
+// second (edit) observation is admitted and decided, not treated as an error.
 func TestObserve_EditAfterSettledCreateIsAdmittedAgainstRealBudgetService(t *testing.T) {
 	fixture := newReceiptBudgetFixture(t)
 	policy := receiptTestBudgetPolicy()

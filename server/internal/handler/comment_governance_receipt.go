@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -19,13 +20,15 @@ import (
 // triggerTasksForComment has run — never inside either transaction, and
 // never able to influence either's outcome:
 //
-//   - It reads r.Context() only for the feature-flag EvalContext already
-//     attached to the request; it never uses that context to bound its own
-//     work (see receipt.Observer.Observe's doc on why).
+//   - It uses r.Context() for feature-flag evaluation and derives one
+//     receipt.Budget deadline before database acquisition, shared by the
+//     control-state read and evaluation. The background persistence write
+//     remains decoupled from the request context.
 //   - It runs synchronously, on the request goroutine, AFTER writeJSON has
 //     not yet been called by the caller — deliberately: this hook itself is
-//     bounded to receipt.Budget (50ms) by Observe, and running it inline
-//     rather than on a detached goroutine means a panic inside governance
+//     bounded to receipt.Budget (50ms) across the control-state read and
+//     Observe. Running it inline rather than on a detached goroutine means
+//     a panic inside governance
 //     code is caught by chi's Recoverer like the rest of the request instead
 //     of needing its own recover() (Observe still has one anyway, as
 //     defense in depth for the provider goroutine it spawns internally).
@@ -82,6 +85,7 @@ func (h *Handler) observeGovernanceReceipt(r *http.Request, issue db.Issue, comm
 	defer cancelTx()
 	tx, err := h.TxStarter.Begin(txCtx)
 	if err != nil {
+		h.recordGovernanceControlTimeout(err)
 		slog.Warn("governance control could not be locked; observation skipped",
 			append(logger.RequestAttrs(r), "issue_id", uuidToString(issue.ID), "error", err)...)
 		return
@@ -89,6 +93,7 @@ func (h *Handler) observeGovernanceReceipt(r *http.Request, issue db.Issue, comm
 	defer tx.Rollback(context.WithoutCancel(ctx))
 	config, err := loadGovernanceControl(txCtx, tx, issue.WorkspaceID)
 	if err != nil {
+		h.recordGovernanceControlTimeout(err)
 		slog.Warn("governance control could not be loaded; observation skipped",
 			append(logger.RequestAttrs(r), "issue_id", uuidToString(issue.ID), "error", err)...)
 		return
@@ -100,6 +105,7 @@ func (h *Handler) observeGovernanceReceipt(r *http.Request, issue db.Issue, comm
 	in.Limits = config.Settings.Limits
 	in.Deadline = deadline
 	if err := tx.Commit(txCtx); err != nil {
+		h.recordGovernanceControlTimeout(err)
 		slog.Warn("governance evaluation admission could not commit",
 			append(logger.RequestAttrs(r), "issue_id", uuidToString(issue.ID), "error", err)...)
 		return
@@ -114,6 +120,12 @@ func (h *Handler) observeGovernanceReceipt(r *http.Request, issue db.Issue, comm
 				"status", result.Status,
 				"shed_reason", string(result.ShedReason),
 			)...)
+	}
+}
+
+func (h *Handler) recordGovernanceControlTimeout(err error) {
+	if errors.Is(err, context.DeadlineExceeded) {
+		h.GovernanceReceipts.RecordControlLockTimeout()
 	}
 }
 

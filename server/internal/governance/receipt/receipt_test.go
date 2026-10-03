@@ -240,6 +240,41 @@ func TestObserve_DuplicateBudgetReservationDoesNotCallProvider(t *testing.T) {
 	}
 }
 
+func TestObserve_ReserveDeadlineErrorsShedAsBudgetExceeded(t *testing.T) {
+	for _, testCase := range []struct {
+		name string
+		err  error
+	}{
+		{name: "deadline exceeded", err: context.DeadlineExceeded},
+		{name: "canceled", err: context.Canceled},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			store := &fakeStore{}
+			provider := &fakeProvider{resp: mentionOwnerResponse(0.99)}
+			budget := &fakeBudgetAdmission{reserveErr: testCase.err}
+			observer := testObserver(provider, store)
+			observer.BudgetAdmission = budget
+
+			result := observer.Observe(context.Background(), testInput())
+			if result.Status != "shed" || result.ShedReason != ReasonBudgetExceeded {
+				t.Fatalf("result = %+v, want shed/budget_exceeded", result)
+			}
+			if stats := observer.Stats(); stats.ShedBudgetExceededTotal != 1 || stats.ErrorTotal != 0 {
+				t.Fatalf("stats = %+v, want one budget shed and no errors", stats)
+			}
+			if provider.calls.Load() != 0 || budget.settled {
+				t.Fatalf("provider calls/settled = %d/%v, want 0/false", provider.calls.Load(), budget.settled)
+			}
+
+			observer.WaitForIdle()
+			rows := store.inserted()
+			if len(rows) != 1 || rows[0].Status != "shed" || rows[0].ShedReason.String != string(ReasonBudgetExceeded) {
+				t.Fatalf("rows = %+v, want one shed/budget_exceeded receipt", rows)
+			}
+		})
+	}
+}
+
 func TestObserve_SettlesKnownProviderUsage(t *testing.T) {
 	response := mentionOwnerResponse(0.99)
 	response.Usage.InputTokens = 100

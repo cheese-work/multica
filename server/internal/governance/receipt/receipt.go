@@ -15,11 +15,11 @@
 // Three properties make this safe to run inline on the request goroutine
 // that just committed a comment:
 //
-//  1. A hard 50ms observation budget ([Budget]) around the
-//     governance.Evaluate call, enforced with context.WithTimeout against a
+//  1. A hard 50ms observation budget ([Budget]) around budget reservation and
+//     governance.Evaluate, enforced with context.WithTimeout against a
 //     context.Background()-derived context — never the caller's request
 //     context, which may already be near cancellation by the time this runs
-//     post-commit. Observe returns to its caller as soon as Evaluate
+//     post-commit. Observe returns to its caller as soon as the bounded work
 //     produces a Result: the request goroutine never makes the receipt
 //     persistence DB call itself (see writeQueue's doc below) — Budget is
 //     the caller's entire latency exposure, full stop.
@@ -84,13 +84,13 @@ func attemptID(in Input) pgtype.UUID {
 	return pgtype.UUID{Bytes: uuid.NewSHA1(attemptIDNamespace, []byte(name)), Valid: true}
 }
 
-// Budget bounds the governance.Evaluate call: provider round trip plus
-// local decision logic. CHE-685 fixes this at 50ms — tight enough that a
-// wedged fake/live provider can never meaningfully delay the request
-// goroutine it shares a process with.
+// Budget bounds budget reservation and governance.Evaluate. CHE-685 fixes
+// this at 50ms — tight enough that a wedged database or fake/live provider
+// can never meaningfully delay the request goroutine it shares a process
+// with.
 //
-// Budget bounds ONLY the evaluation. The persistence write is never part of
-// this window: it happens on a separate, supervised background goroutine
+// Budget bounds reservation and evaluation only. The persistence write is
+// never part of this window: it happens on a separate, supervised background goroutine
 // (see writeQueue) after Observe has already returned to its caller. An
 // earlier version of this package gave the write its own second,
 // request-goroutine-blocking deadline (writeBudget); that made the request
@@ -333,8 +333,8 @@ type Stats struct {
 	// ShedPoolBusyTotal counts observations shed because the cap-1 gate was
 	// already held.
 	ShedPoolBusyTotal int64
-	// ShedBudgetExceededTotal counts observations shed because Evaluate did
-	// not finish within Budget.
+	// ShedBudgetExceededTotal counts observations shed because reservation or
+	// evaluation did not finish within Budget, plus control-lock deadlines.
 	ShedBudgetExceededTotal int64
 	// ErrorTotal counts observations that reached ReasonError (nil
 	// Provider, or a panic inside the evaluate goroutine).
@@ -482,6 +482,15 @@ func (o *Observer) Stats() Stats {
 	}
 }
 
+// RecordControlLockTimeout counts a deadline while the handler reads the
+// governance control state, before Observe can run.
+func (o *Observer) RecordControlLockTimeout() {
+	if o == nil {
+		return
+	}
+	o.stats.shedBudgetExceededTotal.Add(1)
+}
+
 // startWriter lazily starts the single background writer goroutine on first
 // use. sync.Once makes this safe under the same concurrent-Observe-calls
 // conditions the cap-1 gate already has to tolerate. There is deliberately
@@ -599,7 +608,15 @@ func (o *Observer) evaluate(ctx context.Context, in Input) (Result, <-chan struc
 		ControlEpoch: in.ControlEpoch,
 		Limits:       in.Limits,
 	})
-	if err != nil || reservation.Duplicate {
+	if err != nil {
+		closed := make(chan struct{})
+		close(closed)
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return Result{Status: "shed", ShedReason: ReasonBudgetExceeded}, closed
+		}
+		return Result{Status: "error", ShedReason: ReasonError}, closed
+	}
+	if reservation.Duplicate {
 		closed := make(chan struct{})
 		close(closed)
 		return Result{Status: "error", ShedReason: ReasonError}, closed
