@@ -461,6 +461,36 @@ func TestMergedPRDoesNotQueueWhileAssignedAgentIsAlreadyActive(t *testing.T) {
 	}
 }
 
+func TestMergedPRWebhookFailsClosedOnMalformedWorkspaceSetting(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	const installationID int64 = 527125
+	fx := newPRMergeWebhookFixture(t, installationID)
+	agentID := createHandlerTestAgent(t, "CHE-973 malformed merge setting", nil)
+	setIssueAssigneeDirect(t, fx.child.ID, "agent", agentID)
+	var original []byte
+	if err := testPool.QueryRow(context.Background(), `SELECT COALESCE(settings, '{}'::jsonb) FROM workspace WHERE id=$1`, testWorkspaceID).Scan(&original); err != nil {
+		t.Fatalf("read workspace settings: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := testPool.Exec(context.Background(), `UPDATE workspace SET settings=$2::jsonb WHERE id=$1`, testWorkspaceID, original); err != nil {
+			t.Errorf("restore workspace settings: %v", err)
+		}
+	})
+	if _, err := testPool.Exec(context.Background(), `UPDATE workspace SET settings=COALESCE(settings, '{}'::jsonb)||'{"github_wake_on_pr_merge":"false"}'::jsonb WHERE id=$1`, testWorkspaceID); err != nil {
+		t.Fatalf("store malformed merge setting: %v", err)
+	}
+
+	postSignedGitHubWebhook(t, fx.secret, buildMergedPRWebhookBody(fx.child.Identifier, 52725, "acme", "widget", installationID), "che973-merge-malformed-setting")
+	if got := dbfx.Count(t, `SELECT count(*) FROM issue_wakeup_pr_event e JOIN issue_wakeup w ON w.id=e.wakeup_id WHERE w.issue_id=$1 AND w.system_rule='pr_merged'`, fx.child.ID); got != 0 {
+		t.Fatalf("malformed setting created %d PR event ledger rows, want 0", got)
+	}
+	if got := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND context->>'wakeup_system'='pr_merged'`, fx.child.ID); got != 0 {
+		t.Fatalf("malformed setting queued %d PR wake tasks, want 0", got)
+	}
+}
+
 func TestPRWakeupClaimWithMalformedWorkspaceSettingIsTerminal(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")

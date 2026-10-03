@@ -58,6 +58,8 @@ type PullRequestWakeupInput struct {
 	Conclusion  string
 }
 
+var errMalformedPRWakeupSettings = errors.New("malformed PR wakeup workspace settings")
+
 func prWakeupSetting(rule string) (string, bool) {
 	switch rule {
 	case SystemRulePRMerged:
@@ -83,7 +85,7 @@ func PRWakeupEnabled(settings []byte, rule string) (bool, error) {
 		WakeOnCIFailure *bool `json:"github_wake_on_ci_failure"`
 	}
 	if err := json.Unmarshal(settings, &values); err != nil {
-		return false, fmt.Errorf("parse workspace settings: %w", err)
+		return false, fmt.Errorf("%w: %v", errMalformedPRWakeupSettings, err)
 	}
 	if values.GitHubEnabled != nil && !*values.GitHubEnabled {
 		return false, nil
@@ -141,6 +143,10 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 	}
 	enabled, err := PRWakeupEnabled(ws.Settings, in.Rule)
 	if err != nil {
+		if errors.Is(err, errMalformedPRWakeupSettings) {
+			slog.WarnContext(ctx, "PR wakeup skipped because workspace settings are malformed", "issue_id", util.UUIDToString(issue.ID), "rule", in.Rule, "error", err)
+			return nil
+		}
 		return err
 	}
 	if !enabled {
@@ -674,6 +680,13 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 			return err
 		}
 		enabled, err := PRWakeupEnabled(ws.Settings, w.SystemRule.String)
+		if errors.Is(err, errMalformedPRWakeupSettings) {
+			slog.WarnContext(ctx, "pending PR wakeup discarded because workspace settings are malformed", "issue_id", util.UUIDToString(issue.ID), "wakeup_id", util.UUIDToString(w.ID), "rule", w.SystemRule.String, "error", err)
+			if err := q.DiscardWakeupReceipts(ctx, w.ID); err != nil {
+				return err
+			}
+			return tx.Commit(ctx)
+		}
 		if err != nil {
 			return err
 		}
@@ -864,17 +877,27 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		if pendingTask {
 			return commit()
 		}
-		activeRun, err := q.HasRunningTaskForIssueAndAgent(ctx, db.HasRunningTaskForIssueAndAgentParams{IssueID: issue.ID, AgentID: agent.ID})
-		if err != nil {
+		startedAt, err := q.GetRunningTaskStartForIssueAndAgent(ctx, db.GetRunningTaskStartForIssueAndAgentParams{IssueID: issue.ID, AgentID: agent.ID})
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		if activeRun {
-			facts["outcome"] = "suppressed_active_run"
-			if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
-				return err
+		if err == nil {
+			var suppressed []db.IssueWakeupReceipt
+			for _, receipt := range receipts {
+				if !receipt.CreatedAt.Valid || !receipt.CreatedAt.Time.Before(startedAt.Time) {
+					suppressed = append(suppressed, receipt)
+				}
 			}
-			if err := note(wakeupActivityTriggered, facts); err != nil {
-				return err
+			if len(suppressed) > 0 {
+				activeFacts := systemWakeupFacts(w, suppressed)
+				activeFacts["target_type"], activeFacts["target_id"] = current.Type, util.UUIDToString(current.ID)
+				activeFacts["outcome"] = "suppressed_active_run"
+				if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: receiptIDs(suppressed)}); err != nil {
+					return err
+				}
+				if err := note(wakeupActivityTriggered, activeFacts); err != nil {
+					return err
+				}
 			}
 			return commit()
 		}

@@ -2314,6 +2314,13 @@ SELECT EXISTS (
   WHERE issue_id = $1 AND agent_id = $2 AND status = 'running'
 );
 
+-- name: GetRunningTaskStartForIssueAndAgent :one
+SELECT COALESCE(started_at, created_at) AS started_at
+FROM agent_task_queue
+WHERE issue_id = $1 AND agent_id = $2 AND status = 'running'
+ORDER BY COALESCE(started_at, created_at) DESC
+LIMIT 1;
+
 -- name: HasPendingIssueTaskForAgent :one
 SELECT EXISTS (
   SELECT 1 FROM agent_task_queue

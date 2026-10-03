@@ -2,11 +2,14 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
@@ -106,6 +109,65 @@ func TestPRWakeupSettingsDefaultOnAndIndependent(t *testing.T) {
 	}
 	if enabled, err := PRWakeupEnabled([]byte(`{"github_enabled":false}`), SystemRulePRChecksFailed); err != nil || enabled {
 		t.Fatalf("GitHub master switch = %v, %v; want disabled", enabled, err)
+	}
+}
+
+func TestMalformedPRSettingsFailClosedWithoutAbortingUnrelatedJoins(t *testing.T) {
+	f, s, issue, agent := wakeFixture(t)
+	assignPRWakeupIssue(t, f, issue, agent)
+	ctx := context.Background()
+	queued := wakeWaitingRun(t, f, issue, agent, f.UserID)
+	input := PullRequestWakeupInput{
+		Rule: SystemRulePRChecksFailed, RepoOwner: "acme", RepoName: "widget", Number: 176,
+		URL: "https://github.com/acme/widget/pull/176", HeadSHA: "malformed-settings-head", Conclusion: "FAILURE",
+	}
+	if err := s.TriggerPullRequestWakeup(ctx, issue, input); err != nil {
+		t.Fatal(err)
+	}
+	unrelated := wakeCreate(t, f, s, issue, WakeupInput{
+		AgentID: agent, Kind: "event", EventTypes: []string{"comment.created"}, Instruction: "Keep the unrelated comment input",
+	})
+	f.Comment(t, util.UUIDToString(issue), "unrelated input")
+	wakeTick(t, f, s, unrelated.ID)
+	f.Exec(t, `UPDATE workspace SET settings='{"github_wake_on_ci_failure":"false"}'::jsonb WHERE id=$1`, f.WorkspaceID)
+
+	if notes := wakeClaim(t, f, s, queued); !strings.Contains(notes, "Keep the unrelated comment input") {
+		t.Fatalf("valid unrelated wakeup was not joined with malformed PR settings: %q", notes)
+	}
+	if got := f.Count(t, `SELECT count(*) FROM issue_wakeup_receipt r JOIN issue_wakeup w ON w.id=r.wakeup_id WHERE w.issue_id=$1 AND w.system_rule=$2 AND r.processed_at IS NULL`, issue, SystemRulePRChecksFailed); got != 1 {
+		t.Fatalf("malformed PR receipt before terminal scheduler handling = %d pending, want 1", got)
+	}
+
+	wakeStart(t, f, queued)
+	for tick := 0; tick < 2; tick++ {
+		if err := s.TickWorkspaces(ctx, parseTestUUID(t, f.WorkspaceID)); err != nil {
+			t.Fatalf("scheduler tick %d with malformed settings: %v", tick+1, err)
+		}
+	}
+	if got := f.Count(t, `SELECT count(*) FROM issue_wakeup_receipt r JOIN issue_wakeup w ON w.id=r.wakeup_id WHERE w.issue_id=$1 AND w.system_rule=$2 AND r.processed_at IS NULL`, issue, SystemRulePRChecksFailed); got != 0 {
+		t.Fatalf("malformed PR receipts after scheduler ticks = %d pending, want 0", got)
+	}
+	if got := f.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND context->>'wakeup_system'=$2`, issue, SystemRulePRChecksFailed); got != 0 {
+		t.Fatalf("malformed PR settings queued %d system wakeups, want 0", got)
+	}
+
+	w, err := f.q.GetSystemWakeup(ctx, db.GetSystemWakeupParams{IssueID: issue, SystemRule: systemRuleText(SystemRulePRChecksFailed)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := s.dispatchSystem(cancelled, w); !errors.Is(err, context.Canceled) {
+		t.Fatalf("transient database cancellation = %v, want context.Canceled", err)
+	}
+	input.Rule = SystemRulePRMerged
+	input.Number = 177
+	input.MergeCommit = "malformed-settings-merge"
+	if err := s.TriggerPullRequestWakeup(ctx, issue, input); err != nil {
+		t.Fatalf("merged PR capture under malformed settings: %v", err)
+	}
+	if got := f.Count(t, `SELECT count(*) FROM issue_wakeup_pr_event e JOIN issue_wakeup w ON w.id=e.wakeup_id WHERE w.issue_id=$1 AND w.system_rule=$2`, issue, SystemRulePRMerged); got != 0 {
+		t.Fatalf("malformed-setting merge created %d ledger events, want 0", got)
 	}
 }
 

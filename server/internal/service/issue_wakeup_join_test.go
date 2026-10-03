@@ -204,19 +204,77 @@ func TestPRWakeupPreservesFactsBehindQueuedRunFromAnotherOriginator(t *testing.T
 		t.Fatalf("PR wakeup tasks before queued run ends = %d, want 0", got)
 	}
 
-	f.Exec(t, `UPDATE agent_task_queue SET status='cancelled',completed_at=clock_timestamp() WHERE id=$1 AND started_at IS NULL`, queued)
-	w, err := f.q.GetSystemWakeup(ctx, db.GetSystemWakeupParams{IssueID: issue, SystemRule: systemRuleText(SystemRulePRChecksFailed)})
-	if err != nil {
-		t.Fatal(err)
+	if notes := wakeClaim(t, f, s, queued); notes != "" {
+		t.Fatalf("a different originator's claimed task received PR facts: %q", notes)
 	}
-	if err := s.dispatchSystem(ctx, w); err != nil {
-		t.Fatal(err)
+	if got := f.Count(t, `SELECT count(*) FROM issue_wakeup_receipt r JOIN issue_wakeup w ON w.id=r.wakeup_id WHERE w.issue_id=$1 AND w.system_rule=$2 AND r.processed_at IS NULL AND r.task_id IS NULL`, issue, SystemRulePRChecksFailed); got != 1 {
+		t.Fatalf("unjoined PR receipts after claim = %d, want 1 unreserved receipt", got)
 	}
+
+	wakeStart(t, f, queued)
+	if err := s.TickWorkspaces(ctx, parseTestUUID(t, f.WorkspaceID)); err != nil {
+		t.Fatalf("scheduler tick while the unrelated task runs: %v", err)
+	}
+	if got := f.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND status='running'`, issue); got != 1 {
+		t.Fatalf("running issue tasks after tick = %d, want only the existing task", got)
+	}
+	if got := f.Count(t, `SELECT count(*) FROM issue_wakeup_receipt r JOIN issue_wakeup w ON w.id=r.wakeup_id WHERE w.issue_id=$1 AND w.system_rule=$2 AND r.processed_at IS NULL`, issue, SystemRulePRChecksFailed); got != 1 {
+		t.Fatalf("PR receipts retained during unrelated run = %d, want 1", got)
+	}
+
+	f.Exec(t, `UPDATE agent_task_queue SET status='completed',completed_at=clock_timestamp() WHERE id=$1 AND status='running'`, queued)
+	if err := s.TickWorkspaces(ctx, parseTestUUID(t, f.WorkspaceID)); err != nil {
+		t.Fatalf("scheduler tick after the unrelated task completes: %v", err)
+	}
+	countPRTasks := func() int {
+		t.Helper()
+		return f.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND context->>'wakeup_system'=$2`, issue, SystemRulePRChecksFailed)
+	}
+	if got := countPRTasks(); got != 1 {
+		t.Fatalf("PR wakeup tasks after the unrelated task completes = %d, want exactly 1", got)
+	}
+	if got := f.Count(t, `SELECT count(*) FROM issue_wakeup_receipt r JOIN issue_wakeup w ON w.id=r.wakeup_id WHERE w.issue_id=$1 AND w.system_rule=$2 AND r.processed_at IS NULL`, issue, SystemRulePRChecksFailed); got != 0 {
+		t.Fatalf("PR receipts after the eventual wake = %d, want 0 pending", got)
+	}
+
 	if err := s.TriggerPullRequestWakeup(ctx, issue, input); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND context->>'wakeup_system'=$2`, issue, SystemRulePRChecksFailed); got != 1 {
-		t.Fatalf("replayed PR wakeup tasks after queued run cancellation = %d, want 1", got)
+	if err := s.TickWorkspaces(ctx, parseTestUUID(t, f.WorkspaceID)); err != nil {
+		t.Fatalf("scheduler tick after replay: %v", err)
+	}
+	if got := countPRTasks(); got != 1 {
+		t.Fatalf("PR wakeup tasks after replay = %d, want exactly 1", got)
+	}
+}
+
+func TestMalformedPRSettingsDropPreviouslyJoinedFactsOnReclaim(t *testing.T) {
+	f, s, issue, agent := wakeFixture(t)
+	assignPRWakeupIssue(t, f, issue, agent)
+	waiting := wakeWaitingRun(t, f, issue, agent, f.UserID)
+	if err := s.TriggerPullRequestWakeup(context.Background(), issue, PullRequestWakeupInput{
+		Rule: SystemRulePRMerged, RepoOwner: "acme", RepoName: "widget", Number: 178,
+		URL: "https://github.com/acme/widget/pull/178", MergeCommit: "malformed-reclaim-merge",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if notes := wakeClaim(t, f, s, waiting); !strings.Contains(notes, "PR #178") {
+		t.Fatalf("initial valid claim did not receive PR facts: %q", notes)
+	}
+	f.Exec(t, `UPDATE workspace SET settings='{"github_wake_on_pr_merge":"false"}'::jsonb WHERE id=$1`, f.WorkspaceID)
+	task, err := f.q.GetAgentTask(context.Background(), parseTestUUID(t, waiting))
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined, err := s.JoinWaitingWakeups(context.Background(), task)
+	if err != nil {
+		t.Fatalf("reclaim with malformed PR settings: %v", err)
+	}
+	if notes := JoinedWakeupNotes(joined); strings.Contains(notes, "https://github.com/acme/widget/pull/178") {
+		t.Fatalf("malformed settings retained previously joined PR facts: %q", notes)
+	}
+	if got := f.Count(t, `SELECT count(*) FROM issue_wakeup_receipt r JOIN issue_wakeup w ON w.id=r.wakeup_id WHERE w.issue_id=$1 AND w.system_rule=$2 AND r.processed_at IS NULL AND r.task_id IS NULL`, issue, SystemRulePRMerged); got != 1 {
+		t.Fatalf("receipt reservations after malformed reclaim = %d unreserved, want 1", got)
 	}
 }
 

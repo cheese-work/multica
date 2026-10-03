@@ -4794,6 +4794,26 @@ func (q *Queries) GetLatestTaskRolloutMissing(ctx context.Context, arg GetLatest
 	return session_rollout_missing, err
 }
 
+const getRunningTaskStartForIssueAndAgent = `-- name: GetRunningTaskStartForIssueAndAgent :one
+SELECT COALESCE(started_at, created_at) AS started_at
+FROM agent_task_queue
+WHERE issue_id = $1 AND agent_id = $2 AND status = 'running'
+ORDER BY COALESCE(started_at, created_at) DESC
+LIMIT 1
+`
+
+type GetRunningTaskStartForIssueAndAgentParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	AgentID pgtype.UUID `json:"agent_id"`
+}
+
+func (q *Queries) GetRunningTaskStartForIssueAndAgent(ctx context.Context, arg GetRunningTaskStartForIssueAndAgentParams) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, getRunningTaskStartForIssueAndAgent, arg.IssueID, arg.AgentID)
+	var started_at pgtype.Timestamptz
+	err := row.Scan(&started_at)
+	return started_at, err
+}
+
 const getWorkspaceAgentActivity30d = `-- name: GetWorkspaceAgentActivity30d :many
 SELECT
     atq.agent_id,

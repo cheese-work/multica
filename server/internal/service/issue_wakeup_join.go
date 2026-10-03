@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -234,6 +235,11 @@ func (s *IssueWakeupService) JoinWaitingWakeups(ctx context.Context, task db.Age
 			return task.Context, err
 		}
 		entry, ruleChain, err := s.reserveForRun(ctx, q, issue, task, w)
+		if errors.Is(err, errMalformedPRWakeupSettings) {
+			changed = changed || had
+			slog.WarnContext(ctx, "PR wakeup join skipped because workspace settings are malformed", "issue_id", util.UUIDToString(issue.ID), "wakeup_id", util.UUIDToString(id), "rule", w.SystemRule.String, "error", err)
+			continue
+		}
 		if err != nil {
 			return task.Context, err
 		}
@@ -326,6 +332,11 @@ func (s *IssueWakeupService) reserveForRun(ctx context.Context, q *db.Queries, i
 		return release()
 	}
 	instruction, ok, err := s.mayJoin(ctx, q, issue, task, w, receipts)
+	if errors.Is(err, errMalformedPRWakeupSettings) {
+		if _, _, releaseErr := release(); releaseErr != nil {
+			return nil, nil, releaseErr
+		}
+	}
 	if err != nil {
 		return nil, nil, err
 	}
