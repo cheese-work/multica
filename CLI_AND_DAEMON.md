@@ -49,6 +49,50 @@ The metadata mirror must serve `/repos/multica-ai/multica/releases/latest` and
 `/<tag>/<asset-name>` and preserve the published `checksums.txt` contents.
 When these variables are unset, the GitHub defaults remain unchanged.
 
+### Update source on the cheese-work fork (Linux and macOS)
+
+On Linux and macOS, `multica update`, the daemon's auto-update poller, and the
+Runtimes-page update all ignore upstream releases, Homebrew and the
+`MULTICA_RELEASE_*` mirrors. Its API origin is fixed to `https://api.github.com`: no environment variable changes it, and redirects away from HTTPS are refused. They install the daemon artifact that
+`cheese-work/multica`'s `ci.yml` uploads on a push to `main`
+(`multica-daemon-<os>-<arch>`, one file named `multica`). Windows is unchanged.
+
+An artifact is installed only when all of these hold; otherwise the installed
+binary is left untouched and the command or daemon log says why:
+
+- It belongs to the newest CI run on `main` that is `completed`/`success`, for
+  a `push` to `main`, workflow `.github/workflows/ci.yml`, in `cheese-work/multica`
+  itself (not a PR, fork, failed, cancelled or unfinished run).
+- It is unexpired and attributed by GitHub to that same run and commit.
+- CI stamps its version in `git describe` form (for example `v0.6.0-153-ged9f2e94d599`) so the Quick Create capability gates keep accepting the daemon; the exact full commit is stamped separately and checked by the updater.
+- That commit is ahead of the running binary's build commit (GitHub compare).
+- The zip's SHA-256 equals the digest GitHub reports for the artifact, the zip
+  holds exactly one regular file named `multica`, and that file runs on this
+  machine and reports the run's commit in `multica --version`.
+
+The running binary needs a build commit (`multica --version` shows
+`commit: <sha>`). A binary without one, or whose commit is not in the fork's
+history (for example an upstream release build), is not updated automatically:
+install once with `scripts/install-cli-from-ref.sh`.
+
+If the repository is private, give the process a token that can read Actions
+artifacts:
+
+```bash
+export MULTICA_UPDATE_GITHUB_TOKEN=...   # or GH_TOKEN / GITHUB_TOKEN; actions:read
+```
+
+The token is sent only to the GitHub API host, never to the artifact download
+host, and is not logged. Artifacts expire after 30 days; an expired artifact
+means "unavailable" until the next successful `main` run.
+
+**macOS limitation.** macOS daemon CI is halted (no free macOS runners), so no
+macOS artifact is built. macOS updates report "no eligible fork artifact ...
+macOS daemon CI is paused" and change nothing. Resuming them needs a macOS
+build job added to `ci.yml` by the MacBook's owner; the client side already
+accepts `multica-daemon-darwin-<arch>` artifacts. The macOS resolver path is
+covered by mocked tests only; real macOS execution is not tested.
+
 ## Quick Start
 
 ```bash

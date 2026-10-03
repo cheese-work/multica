@@ -2,8 +2,10 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -123,7 +125,10 @@ func (d *Daemon) autoUpdateLoop(ctx context.Context) {
 	switch {
 	case !pullEnabled:
 		d.logger.Info("auto-update: disabled")
-	case !isReleaseVersion(d.cfg.CLIVersion):
+	case forkUpdateSource() && !cli.ValidCommit(currentCommit()):
+		d.logger.Info("auto-update: skipped (build commit unknown)", "commit", currentCommit())
+		pullEnabled = false
+	case !forkUpdateSource() && !isReleaseVersion(d.cfg.CLIVersion):
 		d.logger.Info("auto-update: skipped (not a release build)", "version", d.cfg.CLIVersion)
 		pullEnabled = false
 	}
@@ -216,15 +221,8 @@ func (d *Daemon) tryAutoUpdate(ctx context.Context) {
 		return
 	}
 
-	release, err := fetchLatestRelease()
-	if err != nil {
-		d.logger.Warn("auto-update: fetch latest release failed — will retry", "error", err)
-		return
-	}
-	if release == nil || release.TagName == "" {
-		return
-	}
-	if !isNewerVersion(release.TagName, d.cfg.CLIVersion) {
+	target, ok := d.autoUpdateTarget(ctx)
+	if !ok {
 		return
 	}
 
@@ -262,15 +260,15 @@ func (d *Daemon) tryAutoUpdate(ctx context.Context) {
 	}()
 
 	d.logger.Info("auto-update: newer release available, upgrading",
-		"current", d.cfg.CLIVersion, "target", release.TagName)
+		"current", d.cfg.CLIVersion, "target", target)
 
-	output, err := d.runUpdateFn(release.TagName)
+	output, err := d.runUpdateFn(target)
 	if err != nil {
 		d.logger.Warn("auto-update: upgrade failed — will retry", "error", err, "output", output)
 		return
 	}
 
-	d.logger.Info("auto-update: upgrade completed, restarting", "target", release.TagName, "output", output)
+	d.logger.Info("auto-update: upgrade completed, restarting", "target", target, "output", output)
 	if !d.triggerRestart() {
 		// The upgrade landed but the handoff target could not be resolved, so
 		// no process exit is coming. Fall through to both deferred restores:
@@ -288,6 +286,32 @@ func (d *Daemon) tryAutoUpdate(ctx context.Context) {
 	// second auto-update tick to fire mid-shutdown.
 	released = true
 	barrierReleased = true
+}
+
+// autoUpdateTarget reports whether a newer build exists and what to call it in
+// logs. Fork source: newest successful main CI artifact ahead of the running
+// commit; otherwise the upstream release tag.
+func (d *Daemon) autoUpdateTarget(ctx context.Context) (string, bool) {
+	if forkUpdateSource() {
+		u, err := resolveForkUpdate(ctx, runtime.GOOS, runtime.GOARCH, currentCommit())
+		switch {
+		case errors.Is(err, cli.ErrForkUpToDate), errors.Is(err, cli.ErrForkNotNewer):
+			return "", false
+		case err != nil:
+			d.logger.Warn("auto-update: fork update unavailable, keeping installed daemon — will retry", "error", err)
+			return "", false
+		}
+		return u.HeadSHA, true
+	}
+	release, err := fetchLatestRelease()
+	if err != nil {
+		d.logger.Warn("auto-update: fetch latest release failed — will retry", "error", err)
+		return "", false
+	}
+	if release == nil || release.TagName == "" || !isNewerVersion(release.TagName, d.cfg.CLIVersion) {
+		return "", false
+	}
+	return release.TagName, true
 }
 
 // trySelfReload restarts the daemon when the multica binary on disk no longer
@@ -430,4 +454,30 @@ func (d *Daemon) reloadPending() string {
 		return *reason
 	}
 	return ""
+}
+
+// Indirections for the fork update source (CHE-1012), stubbed in tests.
+var (
+	resolveForkUpdate = cli.ResolveForkUpdate
+	applyForkUpdate   = cli.ApplyForkUpdate
+	forkUpdateSource  = func() bool { return cli.ForkUpdateSupported(runtime.GOOS) }
+	currentCommit     = func() string { return cli.ClientCommit }
+)
+
+// runForkUpdate installs the newest successful fork main CI artifact. Every
+// failure leaves the installed binary intact and is returned as-is; nothing
+// falls back to upstream releases or Homebrew.
+func (d *Daemon) runForkUpdate() (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), cli.DefaultUpdateDownloadTimeout+time.Minute)
+	defer cancel()
+	u, err := resolveForkUpdate(ctx, runtime.GOOS, runtime.GOARCH, currentCommit())
+	if err != nil {
+		return "", fmt.Errorf("fork update unavailable, installed daemon unchanged: %w", err)
+	}
+	d.logger.Info("updating CLI from fork main CI artifact", "artifact", u.String())
+	out, err := applyForkUpdate(ctx, u, cli.DefaultUpdateDownloadTimeout)
+	if err != nil {
+		return out, fmt.Errorf("fork update failed, installed daemon unchanged: %w", err)
+	}
+	return out, nil
 }

@@ -178,17 +178,13 @@ for (const gate of ["frontend", "backend"]) {
 }
 
 // Upstream pins a three-platform matrix here. This fork runs no Windows jobs
-// at all (CHE-522: Linux CI only, no Windows jobs or artifacts). Both the
-// Linux and macOS legs moved to GitHub-hosted runners (CHE-748: the repo is
-// public, so standard hosted minutes are free), so both entries stay
-// explicit — a silently dropped macOS leg would still fail.
-test("the backend gate owns the two-platform installer matrix", () => {
+// (CHE-522: Linux CI only) and no macOS jobs (CHE-1012: no free macOS
+// runners), so the installer matrix is Linux-only. Restore the macOS
+// assertion together with the matrix entry when a macOS runner exists.
+test("the backend gate owns the Linux-only installer matrix", () => {
   assert.equal(productionMapping("backend").installer, "installer");
-  assert.match(
-    jobs.installer,
-    /- ubuntu-latest/,
-  );
-  assert.match(jobs.installer, /- macos-latest/);
+  assert.match(jobs.installer, /- ubuntu-latest/);
+  assert.doesNotMatch(jobs.installer, /- macos-/);
   assert.doesNotMatch(jobs.installer, /continue-on-error:/);
 });
 

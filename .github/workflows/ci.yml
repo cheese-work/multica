@@ -37,7 +37,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest] # macOS leg halted (CHE-1012): no free macOS runners
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v5
@@ -52,14 +52,6 @@ jobs:
         run: |
           go test -race ./pkg/agent -v -run 'TestCursorBackground|TestCaptureCursorBackground' -count=1
           go test -race ./internal/daemon -v -run 'Test.*Background.*Watchdog|Test.*IdleWatchdog' -count=1
-      - name: Repeat macOS finalization and verify cgo-free ownership
-        if: runner.os == 'macOS'
-        shell: bash
-        working-directory: server
-        run: |
-          go test ./pkg/agent -run '^TestCursorBackgroundLifecycle/finish$' -count=5
-          go test -race ./pkg/agent -run '^TestCursorBackgroundLifecycle/finish$' -count=5
-          CGO_ENABLED=0 go test ./pkg/agent -run '^TestCaptureCursorBackground(KernelRejectsStaleIdentity|DetachedSession|LateDescendant)$' -count=1
 
   # Decides whether the heavy frontend validation jobs, the backend Go jobs
   # and sqlc verification have anything to do.
@@ -96,7 +88,7 @@ jobs:
           node-version: 22
 
       - name: Test CI selection and gates
-        run: node --test scripts/ci-scope.test.mjs scripts/check-image-budget.test.mjs scripts/governance-perf-summarize.test.mjs
+        run: node --test scripts/ci-scope.test.mjs scripts/check-image-budget.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs
 
       - name: Filter paths
         id: filter
@@ -626,7 +618,7 @@ jobs:
   # Preserve the existing required-check name while allowing tests, generated
   # SQL verification, and the vulnerability scan to run independently.
   backend:
-    needs: [changes, backend-tests, backend-agent-tests, sqlc-check, go-vulnerability-scan, go-lint, macos-runtime, script-checks, installer, deploy-cd]
+    needs: [changes, backend-tests, backend-agent-tests, sqlc-check, go-vulnerability-scan, go-lint, script-checks, installer, deploy-cd]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
@@ -634,52 +626,61 @@ jobs:
       - name: Check backend job results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          JOB_SCOPES: '{"backend-tests":"always","backend-agent-tests":"backend","sqlc-check":"always","go-vulnerability-scan":"always","go-lint":"always","macos-runtime":"full","script-checks":"scripts","installer":"installer","deploy-cd":"deploy_cd"}'
+          JOB_SCOPES: '{"backend-tests":"always","backend-agent-tests":"backend","sqlc-check":"always","go-vulnerability-scan":"always","go-lint":"always","script-checks":"scripts","installer":"installer","deploy-cd":"deploy_cd"}'
         run: node scripts/ci-scope.mjs gate
 
 
-  # The only macOS runner here, and the only place cursor_background_process_darwin.go
-  # is ever built: it signals a process group through XNU's per-process unique
-  # identity so a recycled PID cannot redirect a kill, and the two tests pinning
-  # that are `//go:build darwin`. This covers one integration's background
-  # shell rather than the shared launch path every agent uses, so the daily
-  # full run carries it instead of charging every backend merge for a macOS
-  # runner; `full` also means the stress counts below are now the only
-  # finalization pass, replacing the single-count merge variant. Upstream's
-  # Windows arm of the same concern lived in windows-execenv, which this fork
-  # does not run (CHE-522: Linux CI only, no Windows jobs or artifacts).
-  # Blacksmith, not GitHub-hosted macOS: only the Linux Cursor tests hit the
-  # 6.9 PIDFD gap that keeps backend-agent-tests on ubuntu-latest.
-  macos-runtime:
-    needs: changes
-    if: ${{ needs.changes.outputs.full == 'true' }}
-    runs-on: blacksmith-6vcpu-macos-latest
+  # macOS daemon CI is halted (CHE-1012): there are no free macOS runners, so
+  # the former macos-runtime job (Blacksmith) is removed and no macOS daemon
+  # artifact is built. cursor_background_process_darwin.go is therefore not
+  # built or tested in CI until a macOS runner is provisioned by its owner.
+
+  # Fork daemon update source (CHE-1012). `multica update` and the daemon
+  # self-update on Linux take their binary from the artifact this job uploads
+  # on a push to main, and only when this whole CI run later concludes
+  # successfully (the updater filters on run conclusion, event, branch, path and
+  # repository). Artifact name and single-file layout are the contract with
+  # server/internal/cli/update_fork.go: `multica-daemon-<goos>-<goarch>`
+  # holding one file named `multica`. No macOS job: macOS daemon CI is halted,
+  # so macOS updates report "unavailable" instead of installing anything.
+  daemon-artifact:
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goarch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0 # git describe needs tags for the version stamp
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.x"
           cache-dependency-path: server/go.sum
-      - name: Verify Cursor background lifecycle and watchdog races
-        shell: bash
+      - name: Build daemon binary
         working-directory: server
-        # Explicit, verbose selection prevents the Unix regression from silently
-        # disappearing behind a build tag.
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+        # main.version keeps the git-describe shape the capability gates accept
+        # (scripts/daemon-artifact-version.sh fails closed otherwise); the exact
+        # full commit goes separately into main.commit, which the updater
+        # requires the candidate's `--version` to report.
         run: |
-          go test -race ./pkg/agent -v -run 'TestCursorBackground|TestCaptureCursorBackground' -count=1
-          go test -race ./internal/daemon -v -run 'Test.*Background.*Watchdog|Test.*IdleWatchdog' -count=1
-
-      - name: Stress macOS finalization
-        shell: bash
-        working-directory: server
-        run: |
-          go test ./pkg/agent -run '^TestCursorBackgroundLifecycle/finish$' -count=5
-          go test -race ./pkg/agent -run '^TestCursorBackgroundLifecycle/finish$' -count=5
-
-      - name: Verify cgo-free macOS ownership
-        shell: bash
-        working-directory: server
-        run: CGO_ENABLED=0 go test ./pkg/agent -run '^TestCaptureCursorBackground(KernelRejectsStaleIdentity|DetachedSession|LateDescendant)$' -count=1
+          mkdir -p ../dist
+          version=$(cd .. && scripts/daemon-artifact-version.sh)
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${version} -X main.commit=${GITHUB_SHA} -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -o ../dist/multica ./cmd/multica
+      - name: Upload daemon artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: multica-daemon-linux-${{ matrix.goarch }}
+          path: dist/multica
+          if-no-files-found: error
+          retention-days: 30
 
   image-budget:
     # Soft gate against the 21.7MB of raw PNG/JPG that MUL-6352 cleared out:
@@ -708,9 +709,9 @@ jobs:
 
   installer:
     # Stub-driven shell tests for scripts/install.sh. Kept off the heavy
-    # backend job so installer regressions surface independently, and
-    # exercised on macOS too because the installer targets macOS/Homebrew and
-    # `tar` / `sed` / `mktemp` differ between BSD and GNU userlands.
+    # backend job so installer regressions surface independently. The macOS
+    # leg (BSD vs GNU `tar` / `sed` / `mktemp`) is halted (CHE-1012): no free
+    # macOS runners.
     # scripts/install.ps1's own PowerShell suite is no longer run in CI:
     # Windows jobs removed org-wide per CHE-522 (Cheese: Linux CI only, no
     # Windows jobs or artifacts). install.ps1 itself is unchanged and still
@@ -724,7 +725,7 @@ jobs:
           # GitHub-hosted (CHE-748): free on this public repo, no Blacksmith,
           # no X99-only dependency — plain checkout + shell tests.
           - ubuntu-latest
-          - macos-latest
+          # macOS leg halted (CHE-1012): no free macOS runners.
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout

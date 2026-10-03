@@ -5140,6 +5140,11 @@ func (d *Daemon) tryBeginServerUpdate(ctx context.Context) serverUpdateAcquireRe
 // the restart — extracted so the server-triggered path (handleUpdate) and the
 // auto-update poller (autoUpdateLoop) share the exact same execution body.
 func (d *Daemon) runUpdate(targetVersion string) (string, error) {
+	if cli.ForkUpdateSupported(runtime.GOOS) {
+		// targetVersion is an upstream release tag from the server or poller; the
+		// fork source ignores it and re-resolves the newest eligible main build.
+		return d.runForkUpdate()
+	}
 	if cli.IsBrewInstall() {
 		d.logger.Info("updating CLI via Homebrew...")
 		out, err := cli.UpdateViaBrew()
