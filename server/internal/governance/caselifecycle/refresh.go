@@ -12,12 +12,22 @@ import (
 )
 
 var (
+	ErrEvidenceExpired         = errors.New("governance case evidence is older than the freshness ceiling")
 	ErrEvidenceFresh           = errors.New("governance case evidence has not expired")
 	ErrRefreshUnreconciled     = errors.New("governance case has active or uncertain work to reconcile before refresh")
 	ErrRefreshEvidenceRejected = errors.New("governance refresh evidence is not a rebuilt, complete, current capture")
 )
 
-// RefreshCommand sweeps one correction_pending case whose evidence has aged
+// MaxEvidenceFreshness is the fixed freshness ceiling for case evidence,
+// measured from the capture time of the evaluation. Callers may tighten it,
+// never widen it.
+const MaxEvidenceFreshness = 60 * time.Second
+
+func effectiveFreshness(requested time.Duration) time.Duration {
+	return min(requested, MaxEvidenceFreshness)
+}
+
+// RefreshCommand sweeps one correction_pending or human_review case whose evidence has aged
 // out. The refresh work is keyed by (case, expired evidence epoch), so any
 // number of sweeps or restarts resolve to the same transition rows.
 type RefreshCommand struct {
@@ -47,6 +57,10 @@ type CompleteRefreshCommand struct {
 	ExpectedEvidenceEpoch int32
 	FreshEvaluationID     pgtype.UUID
 	MaxEvidenceAge        time.Duration
+}
+
+func deadlinePassed(caseRow db.GovernanceCase, now time.Time) bool {
+	return caseRow.AbsoluteDeadline.Valid && !now.Before(caseRow.AbsoluteDeadline.Time)
 }
 
 func refreshCauseKey(kind string, caseID pgtype.UUID, evidenceEpoch int32) string {
@@ -95,7 +109,8 @@ func (service *Service) BeginRefresh(ctx context.Context, command RefreshCommand
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return RefreshResult{}, fmt.Errorf("read governance refresh input: %w", err)
 	}
-	if CaseState(caseRow.State) != CaseCorrectionPending || caseRow.StateRevision != command.ExpectedRevision {
+	origin := CaseState(caseRow.State)
+	if (origin != CaseCorrectionPending && origin != CaseHumanReview) || caseRow.StateRevision != command.ExpectedRevision {
 		return RefreshResult{}, ErrStaleCase
 	}
 	now := service.clock.Now().UTC()
@@ -103,7 +118,7 @@ func (service *Service) BeginRefresh(ctx context.Context, command RefreshCommand
 	if err != nil {
 		return RefreshResult{}, err
 	}
-	if now.Sub(capturedAt) <= command.MaxEvidenceAge {
+	if now.Sub(capturedAt) <= effectiveFreshness(command.MaxEvidenceAge) {
 		return RefreshResult{}, ErrEvidenceFresh
 	}
 	if err := requireReconciled(ctx, tx, caseRow); err != nil {
@@ -115,14 +130,14 @@ func (service *Service) BeginRefresh(ctx context.Context, command RefreshCommand
 
 	transition, err := service.transitionLocked(ctx, queries, caseRow, TransitionCommand{
 		WorkspaceID: command.WorkspaceID, CaseID: command.CaseID, ControlEpoch: command.ControlEpoch,
-		ExpectedState: CaseCorrectionPending, ExpectedRevision: command.ExpectedRevision, NextState: CaseRefreshing,
+		ExpectedState: origin, ExpectedRevision: command.ExpectedRevision, NextState: CaseRefreshing,
 		CauseEventKey: expiryKey, Actor: ActorSystem, Reason: ReasonAgeOnlyExpiry,
 	})
 	if err != nil {
 		return RefreshResult{}, err
 	}
 	result := RefreshResult{Case: transition.Case, Transition: transition.Transition}
-	if int64(caseRow.RefreshCount) >= *maxRefreshes {
+	if int64(caseRow.RefreshCount) >= *maxRefreshes || deadlinePassed(caseRow, now) {
 		exhausted, err := service.transitionLocked(ctx, queries, transition.Case, TransitionCommand{
 			WorkspaceID: command.WorkspaceID, CaseID: command.CaseID, ControlEpoch: command.ControlEpoch,
 			ExpectedState: CaseRefreshing, ExpectedRevision: command.ExpectedRevision + 1, NextState: CaseHumanReview,
@@ -181,27 +196,57 @@ func (service *Service) CompleteRefresh(ctx context.Context, command CompleteRef
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return RefreshResult{}, fmt.Errorf("read governance refresh completion: %w", err)
 	}
+	exhaustedKey := refreshCauseKey("exhausted", command.CaseID, command.ExpectedEvidenceEpoch)
+	prior, err = queries.FindGovernanceCaseTransitionByCause(ctx, db.FindGovernanceCaseTransitionByCauseParams{
+		WorkspaceID: command.WorkspaceID, CaseID: command.CaseID, CauseEventKey: exhaustedKey,
+	})
+	if err == nil {
+		return RefreshResult{Case: caseRow, Transition: prior, Duplicate: true, Exhausted: true}, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return RefreshResult{}, fmt.Errorf("read governance refresh exhaustion: %w", err)
+	}
 	if CaseState(caseRow.State) != CaseRefreshing || caseRow.StateRevision != command.ExpectedRevision {
 		return RefreshResult{}, ErrStaleCase
 	}
 	if caseRow.EvidenceEpoch != command.ExpectedEvidenceEpoch {
 		return RefreshResult{}, ErrStaleEvidenceEpoch
 	}
+	now := service.clock.Now().UTC()
+	if deadlinePassed(caseRow, now) {
+		exhausted, err := service.transitionLocked(ctx, queries, caseRow, TransitionCommand{
+			WorkspaceID: command.WorkspaceID, CaseID: command.CaseID, ControlEpoch: command.ControlEpoch,
+			ExpectedState: CaseRefreshing, ExpectedRevision: command.ExpectedRevision, NextState: CaseHumanReview,
+			CauseEventKey: exhaustedKey, Actor: ActorSystem, Reason: ReasonRefreshBudgetExhausted,
+		})
+		if err != nil {
+			return RefreshResult{}, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return RefreshResult{}, fmt.Errorf("commit governance refresh deadline exhaustion: %w", err)
+		}
+		return RefreshResult{Case: exhausted.Case, Transition: exhausted.Transition, Exhausted: true}, nil
+	}
 	_, expiredAt, err := currentEvidenceCapture(ctx, tx, caseRow)
 	if err != nil {
 		return RefreshResult{}, err
 	}
 	fresh, err := readEvaluationCapture(ctx, tx, command.WorkspaceID, command.CaseID, command.FreshEvaluationID)
-	now := service.clock.Now().UTC()
 	if err != nil || !fresh.requiredComplete || fresh.redacted || command.FreshEvaluationID == caseRow.EvidenceID ||
-		!fresh.capturedAt.After(expiredAt) || fresh.capturedAt.After(now) || now.Sub(fresh.capturedAt) > command.MaxEvidenceAge {
+		!fresh.capturedAt.After(expiredAt) || fresh.capturedAt.After(now) || now.Sub(fresh.capturedAt) > effectiveFreshness(command.MaxEvidenceAge) {
 		return RefreshResult{}, ErrRefreshEvidenceRejected
 	}
 
+	next, reason := CaseEvidenceReady, ReasonFreshEvidence
+	if fromHuman, err := refreshStartedFromHumanReview(ctx, tx, caseRow); err != nil {
+		return RefreshResult{}, err
+	} else if fromHuman {
+		next, reason = CaseHumanReview, ReasonFreshEvidenceForHuman
+	}
 	transition, err := service.transitionLocked(ctx, queries, caseRow, TransitionCommand{
 		WorkspaceID: command.WorkspaceID, CaseID: command.CaseID, ControlEpoch: command.ControlEpoch,
-		ExpectedState: CaseRefreshing, ExpectedRevision: command.ExpectedRevision, NextState: CaseEvidenceReady,
-		CauseEventKey: completeKey, Actor: ActorSystem, Reason: ReasonFreshEvidence,
+		ExpectedState: CaseRefreshing, ExpectedRevision: command.ExpectedRevision, NextState: next,
+		CauseEventKey: completeKey, Actor: ActorSystem, Reason: reason,
 	})
 	if err != nil {
 		return RefreshResult{}, err
@@ -291,17 +336,26 @@ func currentEvidenceCapture(ctx context.Context, tx pgx.Tx, caseRow db.Governanc
 	return id, capturedAt.UTC(), nil
 }
 
-// requireReconciled blocks a refresh while the case still owns an unfinished
-// attempt or an unsettled budget reservation (active or uncertain outcome).
+// requireReconciled blocks a refresh while any case sharing the retained
+// budget root (the whole successor lineage) still owns an unfinished attempt,
+// an in-flight action, or an unsettled budget reservation (active or uncertain
+// outcome). Material succession must not launder an ancestor's liability.
 func requireReconciled(ctx context.Context, tx pgx.Tx, caseRow db.GovernanceCase) error {
 	var open bool
 	err := tx.QueryRow(ctx, `
-		SELECT $3::uuid IS NOT NULL
+		WITH lineage AS (
+			SELECT id, state, current_action_id FROM governance_case
+			WHERE workspace_id = $1 AND budget_root_id = $2
+		)
+		SELECT EXISTS (SELECT 1 FROM lineage
+		               WHERE current_action_id IS NOT NULL AND (id = $3 OR state NOT IN ('resolved', 'dismissed', 'abstained')))
 		    OR EXISTS (SELECT 1 FROM governance_attempt
-		               WHERE workspace_id = $1 AND case_id = $2 AND terminal_at IS NULL AND redacted_at IS NULL)
+		               WHERE workspace_id = $1 AND case_id IN (SELECT id FROM lineage)
+		                 AND terminal_at IS NULL AND redacted_at IS NULL)
 		    OR EXISTS (SELECT 1 FROM governance_budget_reservation
-		               WHERE workspace_id = $1 AND case_id = $2 AND state = 'reserved')
-	`, caseRow.WorkspaceID, caseRow.ID, caseRow.CurrentActionID).Scan(&open)
+		               WHERE workspace_id = $1 AND (budget_root_id = $2 OR case_id IN (SELECT id FROM lineage))
+		                 AND state = 'reserved')
+	`, caseRow.WorkspaceID, caseRow.BudgetRootID, caseRow.ID).Scan(&open)
 	if err != nil {
 		return fmt.Errorf("read governance unreconciled work: %w", err)
 	}
@@ -309,6 +363,20 @@ func requireReconciled(ctx context.Context, tx pgx.Tx, caseRow db.GovernanceCase
 		return ErrRefreshUnreconciled
 	}
 	return nil
+}
+
+// refreshStartedFromHumanReview reports whether the transition into the
+// current refreshing revision came from human_review.
+func refreshStartedFromHumanReview(ctx context.Context, tx pgx.Tx, caseRow db.GovernanceCase) (bool, error) {
+	var from string
+	err := tx.QueryRow(ctx, `
+		SELECT from_state FROM governance_case_transition
+		WHERE workspace_id = $1 AND case_id = $2 AND resulting_state_revision = $3
+	`, caseRow.WorkspaceID, caseRow.ID, caseRow.StateRevision).Scan(&from)
+	if err != nil {
+		return false, fmt.Errorf("read governance refresh origin: %w", err)
+	}
+	return CaseState(from) == CaseHumanReview, nil
 }
 
 // consumeRefresh counts the refresh and pins the expired evidence, so the

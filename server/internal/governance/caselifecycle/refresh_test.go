@@ -261,6 +261,7 @@ func TestCompleteRefreshRequiresRebuiltEvidence(t *testing.T) {
 
 func TestHumanApprovalRequiresCurrentEvidenceEpoch(t *testing.T) {
 	fixture := newLifecycleFixture(t, CaseHumanReview)
+	fixture.insertEvaluation(t, fixture.clock.Now(), "digest-current", true)
 	approve := TransitionCommand{
 		WorkspaceID:      fixture.workspaceID,
 		CaseID:           fixture.caseRow.ID,

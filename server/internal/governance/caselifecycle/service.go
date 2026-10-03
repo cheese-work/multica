@@ -134,6 +134,17 @@ func (service *Service) Transition(ctx context.Context, command TransitionComman
 	if caseRow.ControlEpoch != command.ControlEpoch {
 		return TransitionResult{}, ErrStaleControlEpoch
 	}
+	if command.Reason == ReasonHumanApproval && CaseState(caseRow.State) == command.ExpectedState &&
+		caseRow.StateRevision == command.ExpectedRevision {
+		// Epoch equality is not freshness: aged evidence must refresh first.
+		_, capturedAt, err := currentEvidenceCapture(ctx, tx, caseRow)
+		if err != nil {
+			return TransitionResult{}, err
+		}
+		if service.clock.Now().UTC().Sub(capturedAt) > MaxEvidenceFreshness {
+			return TransitionResult{}, ErrEvidenceExpired
+		}
+	}
 	result, err := service.transitionLocked(ctx, queries, caseRow, command)
 	if err != nil {
 		return TransitionResult{}, err
