@@ -141,7 +141,11 @@ func (service *Service) Transition(ctx context.Context, command TransitionComman
 		if err != nil {
 			return TransitionResult{}, err
 		}
-		if service.clock.Now().UTC().Sub(capturedAt) > MaxEvidenceFreshness {
+		now, err := databaseNow(ctx, tx)
+		if err != nil {
+			return TransitionResult{}, err
+		}
+		if now.Sub(capturedAt) > MaxEvidenceFreshness {
 			return TransitionResult{}, ErrEvidenceExpired
 		}
 	}

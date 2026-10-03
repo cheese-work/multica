@@ -11,7 +11,7 @@ import (
 
 func TestReviewerRefreshHonorsAbsoluteDeadline(t *testing.T) {
 	fixture, _ := expiredFixture(t)
-	fixture.clock.current = fixture.caseRow.AbsoluteDeadline.Time.Add(time.Second)
+	fixture.expireDeadline(t)
 	result, err := fixture.service().BeginRefresh(context.Background(), fixture.refreshCommand())
 	if err == nil && !result.Exhausted {
 		t.Fatalf("refresh admitted after absolute deadline: state=%s refresh_count=%d deadline=%s now=%s", result.Case.State, result.Case.RefreshCount, result.Case.AbsoluteDeadline.Time, fixture.clock.Now())
@@ -21,7 +21,7 @@ func TestReviewerRefreshHonorsAbsoluteDeadline(t *testing.T) {
 func TestReviewerHumanApprovalRejectsAgeExpiredSameEpoch(t *testing.T) {
 	fixture := newLifecycleFixture(t, CaseHumanReview)
 	fixture.setMaxRefreshes(t, ptr(int64(5)))
-	fixture.insertEvaluation(t, fixture.clock.Now().Add(-61*time.Second), "digest-old", true)
+	fixture.insertEvaluationAge(t, 61*time.Second, "digest-old", true)
 	result, err := fixture.service().Transition(context.Background(), TransitionCommand{
 		WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID, ControlEpoch: fixture.caseRow.ControlEpoch,
 		ExpectedState: CaseHumanReview, ExpectedRevision: 0, NextState: CaseCorrectionPending,
@@ -39,8 +39,8 @@ func TestReviewerFreshnessCeilingCannotBeWidened(t *testing.T) {
 	if _, err := service.BeginRefresh(context.Background(), fixture.refreshCommand()); err != nil {
 		t.Fatal(err)
 	}
-	fresh := fixture.insertEvaluation(t, fixture.clock.Now(), "digest-new", true)
-	fixture.clock.current = fixture.clock.Now().Add(61 * time.Second)
+	fresh := fixture.insertEvaluationAge(t, 0, "digest-new", true)
+	fixture.ageEvidence(t, 61*time.Second) // both captures age; the replacement is now 61s old
 	result, err := service.CompleteRefresh(context.Background(), CompleteRefreshCommand{
 		WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID, ControlEpoch: fixture.caseRow.ControlEpoch,
 		ExpectedRevision: 1, ExpectedEvidenceEpoch: fixture.caseRow.EvidenceEpoch,
@@ -54,7 +54,7 @@ func TestReviewerFreshnessCeilingCannotBeWidened(t *testing.T) {
 func TestReviewerHumanReviewCanRequestBoundedRefresh(t *testing.T) {
 	fixture := newLifecycleFixture(t, CaseHumanReview)
 	fixture.setMaxRefreshes(t, ptr(int64(5)))
-	fixture.insertEvaluation(t, fixture.clock.Now().Add(-61*time.Second), "digest-old", true)
+	fixture.insertEvaluationAge(t, 61*time.Second, "digest-old", true)
 	result, err := fixture.service().BeginRefresh(context.Background(), fixture.refreshCommand())
 	if err != nil {
 		t.Fatalf("age-expired human review cannot request same-case refresh: %v", err)
@@ -98,7 +98,7 @@ func TestReviewerRefreshReconcilesAncestorUnknownLiability(t *testing.T) {
 	if _, err := fixture.pool.Exec(context.Background(), `UPDATE governance_case SET state = 'correction_pending' WHERE workspace_id = $1 AND id = $2`, fixture.workspaceID, fixture.caseRow.ID); err != nil {
 		t.Fatal(err)
 	}
-	fixture.insertEvaluation(t, fixture.clock.Now().Add(-61*time.Second), "digest-successor", true)
+	fixture.insertEvaluationAge(t, 61*time.Second, "digest-successor", true)
 	result, err := fixture.service().BeginRefresh(context.Background(), fixture.refreshCommand())
 	if !errors.Is(err, ErrRefreshUnreconciled) {
 		t.Fatalf("refresh bypassed ancestor's reserved unknown liability under same root: error=%v state=%s root_preserved=%t", err, result.Case.State, successor.Case.BudgetRootID == predecessor.BudgetRootID)
@@ -111,8 +111,8 @@ func TestCompleteRefreshPastAbsoluteDeadlineExhaustsToHumanOnce(t *testing.T) {
 	if _, err := service.BeginRefresh(context.Background(), fixture.refreshCommand()); err != nil {
 		t.Fatal(err)
 	}
-	fresh := fixture.insertEvaluation(t, fixture.clock.Now(), "digest-new", true)
-	fixture.clock.current = fixture.caseRow.AbsoluteDeadline.Time.Add(time.Second)
+	fresh := fixture.insertEvaluationAge(t, 0, "digest-new", true)
+	fixture.expireDeadline(t)
 	complete := CompleteRefreshCommand{
 		WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID, ControlEpoch: fixture.caseRow.ControlEpoch,
 		ExpectedRevision: 1, ExpectedEvidenceEpoch: fixture.caseRow.EvidenceEpoch,
@@ -132,12 +132,12 @@ func TestCompleteRefreshPastAbsoluteDeadlineExhaustsToHumanOnce(t *testing.T) {
 func TestHumanReviewRefreshReturnsToHumanReviewWithFreshEvidence(t *testing.T) {
 	fixture := newLifecycleFixture(t, CaseHumanReview)
 	fixture.setMaxRefreshes(t, ptr(int64(5)))
-	fixture.insertEvaluation(t, fixture.clock.Now().Add(-61*time.Second), "digest-old", true)
+	fixture.insertEvaluationAge(t, 61*time.Second, "digest-old", true)
 	service := fixture.service()
 	if _, err := service.BeginRefresh(context.Background(), fixture.refreshCommand()); err != nil {
 		t.Fatal(err)
 	}
-	fresh := fixture.insertEvaluation(t, fixture.clock.Now(), "digest-new", true)
+	fresh := fixture.insertEvaluationAge(t, 0, "digest-new", true)
 	done, err := service.CompleteRefresh(context.Background(), CompleteRefreshCommand{
 		WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID, ControlEpoch: fixture.caseRow.ControlEpoch,
 		ExpectedRevision: 1, ExpectedEvidenceEpoch: fixture.caseRow.EvidenceEpoch,

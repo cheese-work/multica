@@ -43,6 +43,37 @@ func (fixture *lifecycleFixture) insertEvaluation(t *testing.T, capturedAt time.
 	return id
 }
 
+// insertEvaluationAge captures an evaluation that is already `age` old by the
+// database clock, which is the authority for freshness.
+func (fixture *lifecycleFixture) insertEvaluationAge(t *testing.T, age time.Duration, digest string, complete bool) pgtype.UUID {
+	t.Helper()
+	id := fixture.insertEvaluation(t, time.Time{}, digest, complete)
+	if _, err := fixture.pool.Exec(context.Background(), `
+		UPDATE governance_evaluation SET captured_at = clock_timestamp() - make_interval(secs => $3)
+		WHERE workspace_id = $1 AND id = $2`, fixture.workspaceID, id, age.Seconds()); err != nil {
+		t.Fatalf("age evaluation: %v", err)
+	}
+	return id
+}
+
+func (fixture *lifecycleFixture) ageEvidence(t *testing.T, by time.Duration) {
+	t.Helper()
+	if _, err := fixture.pool.Exec(context.Background(), `
+		UPDATE governance_evaluation SET captured_at = captured_at - make_interval(secs => $2)
+		WHERE workspace_id = $1`, fixture.workspaceID, by.Seconds()); err != nil {
+		t.Fatalf("age evidence: %v", err)
+	}
+}
+
+func (fixture *lifecycleFixture) expireDeadline(t *testing.T) {
+	t.Helper()
+	if _, err := fixture.pool.Exec(context.Background(), `
+		UPDATE governance_case SET absolute_deadline = clock_timestamp() - interval '1 second'
+		WHERE workspace_id = $1`, fixture.workspaceID); err != nil {
+		t.Fatalf("expire deadline: %v", err)
+	}
+}
+
 func (fixture *lifecycleFixture) refreshCommand() RefreshCommand {
 	return RefreshCommand{
 		WorkspaceID:      fixture.workspaceID,
@@ -71,7 +102,7 @@ func ptr[T any](value T) *T { return &value }
 func expiredFixture(t *testing.T) (*lifecycleFixture, pgtype.UUID) {
 	fixture := newLifecycleFixture(t, CaseCorrectionPending)
 	fixture.setMaxRefreshes(t, ptr(int64(5)))
-	evaluation := fixture.insertEvaluation(t, fixture.clock.Now().Add(-61*time.Second), "digest-old", true)
+	evaluation := fixture.insertEvaluationAge(t, 61*time.Second, "digest-old", true)
 	return fixture, evaluation
 }
 
@@ -108,7 +139,7 @@ func TestAgeOnlyExpiryRefreshesOnceAndPreservesLineage(t *testing.T) {
 func TestFreshEvidenceIsNotRefreshed(t *testing.T) {
 	fixture := newLifecycleFixture(t, CaseCorrectionPending)
 	fixture.setMaxRefreshes(t, ptr(int64(5)))
-	fixture.insertEvaluation(t, fixture.clock.Now().Add(-59*time.Second), "digest-recent", true)
+	fixture.insertEvaluationAge(t, 59*time.Second, "digest-recent", true)
 	// An event arriving now must not make 59s-old evidence expire or fresh.
 	_, err := fixture.service().BeginRefresh(context.Background(), fixture.refreshCommand())
 	if !errors.Is(err, ErrEvidenceFresh) {
@@ -217,17 +248,17 @@ func TestCompleteRefreshRequiresRebuiltEvidence(t *testing.T) {
 	rejected := map[string]func(*CompleteRefreshCommand){
 		"old evaluation retimestamped as current": func(c *CompleteRefreshCommand) { c.FreshEvaluationID = expired },
 		"stale evidence epoch": func(c *CompleteRefreshCommand) {
-			c.FreshEvaluationID = fixture.insertEvaluation(t, fixture.clock.Now(), "digest-new", true)
+			c.FreshEvaluationID = fixture.insertEvaluationAge(t, 0, "digest-new", true)
 			c.ExpectedEvidenceEpoch--
 		},
 		"incomplete required observation": func(c *CompleteRefreshCommand) {
-			c.FreshEvaluationID = fixture.insertEvaluation(t, fixture.clock.Now(), "digest-partial", false)
+			c.FreshEvaluationID = fixture.insertEvaluationAge(t, 0, "digest-partial", false)
 		},
 		"capture older than the expired evidence": func(c *CompleteRefreshCommand) {
-			c.FreshEvaluationID = fixture.insertEvaluation(t, fixture.clock.Now().Add(-120*time.Second), "digest-older", true)
+			c.FreshEvaluationID = fixture.insertEvaluationAge(t, 120*time.Second, "digest-older", true)
 		},
 		"already expired capture": func(c *CompleteRefreshCommand) {
-			c.FreshEvaluationID = fixture.insertEvaluation(t, fixture.clock.Now().Add(-60*time.Second-time.Millisecond), "digest-late", true)
+			c.FreshEvaluationID = fixture.insertEvaluationAge(t, 60*time.Second+time.Millisecond, "digest-late", true)
 		},
 		"unknown evaluation": func(c *CompleteRefreshCommand) { c.FreshEvaluationID = lifecycleUUID(t) },
 	}
@@ -242,7 +273,7 @@ func TestCompleteRefreshRequiresRebuiltEvidence(t *testing.T) {
 		}
 	}
 
-	fresh := fixture.insertEvaluation(t, fixture.clock.Now(), "digest-new", true)
+	fresh := fixture.insertEvaluationAge(t, 0, "digest-new", true)
 	complete.FreshEvaluationID = fresh
 	done, err := service.CompleteRefresh(context.Background(), complete)
 	if err != nil {
@@ -261,7 +292,7 @@ func TestCompleteRefreshRequiresRebuiltEvidence(t *testing.T) {
 
 func TestHumanApprovalRequiresCurrentEvidenceEpoch(t *testing.T) {
 	fixture := newLifecycleFixture(t, CaseHumanReview)
-	fixture.insertEvaluation(t, fixture.clock.Now(), "digest-current", true)
+	fixture.insertEvaluationAge(t, 0, "digest-current", true)
 	approve := TransitionCommand{
 		WorkspaceID:      fixture.workspaceID,
 		CaseID:           fixture.caseRow.ID,

@@ -59,6 +59,17 @@ type CompleteRefreshCommand struct {
 	MaxEvidenceAge        time.Duration
 }
 
+// databaseNow is the authoritative time for freshness and deadline guards: the
+// database clock, read inside the active transaction after its locks. A read
+// error fails the operation closed. The injected Clock only stamps rows.
+func databaseNow(ctx context.Context, tx pgx.Tx) (time.Time, error) {
+	var now time.Time
+	if err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
+		return time.Time{}, fmt.Errorf("read governance database time: %w", err)
+	}
+	return now.UTC(), nil
+}
+
 func deadlinePassed(caseRow db.GovernanceCase, now time.Time) bool {
 	return caseRow.AbsoluteDeadline.Valid && !now.Before(caseRow.AbsoluteDeadline.Time)
 }
@@ -113,7 +124,10 @@ func (service *Service) BeginRefresh(ctx context.Context, command RefreshCommand
 	if (origin != CaseCorrectionPending && origin != CaseHumanReview) || caseRow.StateRevision != command.ExpectedRevision {
 		return RefreshResult{}, ErrStaleCase
 	}
-	now := service.clock.Now().UTC()
+	now, err := databaseNow(ctx, tx)
+	if err != nil {
+		return RefreshResult{}, err
+	}
 	expiredID, capturedAt, err := currentEvidenceCapture(ctx, tx, caseRow)
 	if err != nil {
 		return RefreshResult{}, err
@@ -212,7 +226,10 @@ func (service *Service) CompleteRefresh(ctx context.Context, command CompleteRef
 	if caseRow.EvidenceEpoch != command.ExpectedEvidenceEpoch {
 		return RefreshResult{}, ErrStaleEvidenceEpoch
 	}
-	now := service.clock.Now().UTC()
+	now, err := databaseNow(ctx, tx)
+	if err != nil {
+		return RefreshResult{}, err
+	}
 	if deadlinePassed(caseRow, now) {
 		exhausted, err := service.transitionLocked(ctx, queries, caseRow, TransitionCommand{
 			WorkspaceID: command.WorkspaceID, CaseID: command.CaseID, ControlEpoch: command.ControlEpoch,
@@ -238,7 +255,7 @@ func (service *Service) CompleteRefresh(ctx context.Context, command CompleteRef
 	}
 
 	next, reason := CaseEvidenceReady, ReasonFreshEvidence
-	if fromHuman, err := refreshStartedFromHumanReview(ctx, tx, caseRow); err != nil {
+	if fromHuman, err := hasHumanReviewHistory(ctx, tx, caseRow); err != nil {
 		return RefreshResult{}, err
 	} else if fromHuman {
 		next, reason = CaseHumanReview, ReasonFreshEvidenceForHuman
@@ -365,18 +382,21 @@ func requireReconciled(ctx context.Context, tx pgx.Tx, caseRow db.GovernanceCase
 	return nil
 }
 
-// refreshStartedFromHumanReview reports whether the transition into the
-// current refreshing revision came from human_review.
-func refreshStartedFromHumanReview(ctx context.Context, tx pgx.Tx, caseRow db.GovernanceCase) (bool, error) {
-	var from string
+// hasHumanReviewHistory reports whether the case ever entered or left
+// human_review. A prior human approval covers only the evidence epoch it
+// reviewed, so any later refresh of such a case must return to human review.
+func hasHumanReviewHistory(ctx context.Context, tx pgx.Tx, caseRow db.GovernanceCase) (bool, error) {
+	var found bool
 	err := tx.QueryRow(ctx, `
-		SELECT from_state FROM governance_case_transition
-		WHERE workspace_id = $1 AND case_id = $2 AND resulting_state_revision = $3
-	`, caseRow.WorkspaceID, caseRow.ID, caseRow.StateRevision).Scan(&from)
+		SELECT EXISTS (
+			SELECT 1 FROM governance_case_transition
+			WHERE workspace_id = $1 AND case_id = $2 AND (from_state = 'human_review' OR to_state = 'human_review')
+		)
+	`, caseRow.WorkspaceID, caseRow.ID).Scan(&found)
 	if err != nil {
-		return false, fmt.Errorf("read governance refresh origin: %w", err)
+		return false, fmt.Errorf("read governance human review history: %w", err)
 	}
-	return CaseState(from) == CaseHumanReview, nil
+	return found, nil
 }
 
 // consumeRefresh counts the refresh and pins the expired evidence, so the
