@@ -1036,7 +1036,6 @@ func TestWebhook_ClosedSiblingAfterMerge(t *testing.T) {
 	json.NewDecoder(w.Body).Decode(&created)
 
 	t.Cleanup(func() {
-		testPool.Exec(ctx, `DELETE FROM github_merge_announcement WHERE issue_id = $1`, created.ID)
 		testPool.Exec(ctx, `DELETE FROM issue_pull_request_exclusion WHERE issue_id = $1`, created.ID)
 		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id = $1`, created.ID)
 		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE workspace_id = $1`, testWorkspaceID)
@@ -2462,6 +2461,13 @@ func TestWebhook_MergedPR_ChildWithParent_NotifiesParent(t *testing.T) {
 	if updatedChild.Status != "done" {
 		t.Fatalf("expected child status 'done', got %q", updatedChild.Status)
 	}
+	var childCommentCount int64
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM comment WHERE issue_id = $1`, child.ID).Scan(&childCommentCount); err != nil {
+		t.Fatalf("count child comments: %v", err)
+	}
+	if childCommentCount != 0 {
+		t.Fatalf("expected no system comment on the merged issue, got %d comments", childCommentCount)
+	}
 
 	// The merge closed the child through the PR path; the parent's rule
 	// recorded it once, like a manual status change.
@@ -3238,8 +3244,6 @@ func TestWebhook_PullRequest_AmbiguousCloseAcrossWorkspaces(t *testing.T) {
 
 	t.Cleanup(func() {
 		bg := context.Background()
-		testPool.Exec(bg, `DELETE FROM github_merge_announcement WHERE workspace_id = ANY($1)`,
-			[]string{testWorkspaceID, uuidToString(wsA.ID)})
 		testPool.Exec(bg, `DELETE FROM issue_pull_request WHERE issue_id = ANY($1)`,
 			[]string{issueB.ID, uuidToString(issueA.ID)})
 		testPool.Exec(bg, `DELETE FROM github_pull_request WHERE repo_owner = 'acme' AND repo_name = $1`, repo)
@@ -3415,7 +3419,6 @@ func TestWebhook_PullRequest_UniqueResolverAmongBindingsStillAutoCompletes(t *te
 
 	t.Cleanup(func() {
 		bg := context.Background()
-		testPool.Exec(bg, `DELETE FROM github_merge_announcement WHERE issue_id = $1`, issueB.ID)
 		testPool.Exec(bg, `DELETE FROM issue_pull_request WHERE issue_id = $1`, issueB.ID)
 		testPool.Exec(bg, `DELETE FROM github_pull_request WHERE repo_owner = 'acme' AND repo_name = $1`, repo)
 		testPool.Exec(bg, `DELETE FROM activity_log WHERE issue_id = $1`, issueB.ID)
@@ -3480,7 +3483,6 @@ func TestWebhook_PullRequest_UnreadableWorkspaceLinksNothing(t *testing.T) {
 
 	t.Cleanup(func() {
 		bg := context.Background()
-		testPool.Exec(bg, `DELETE FROM github_merge_announcement WHERE issue_id = $1`, issueB.ID)
 		testPool.Exec(bg, `DELETE FROM issue_pull_request WHERE issue_id = $1`, issueB.ID)
 		testPool.Exec(bg, `DELETE FROM github_pull_request WHERE repo_owner = 'acme' AND repo_name = $1`, repo)
 		testPool.Exec(bg, `DELETE FROM activity_log WHERE issue_id = $1`, issueB.ID)
@@ -3524,7 +3526,6 @@ func bindSecondWorkspaceForTest(t *testing.T, slug, prefix string, installationI
 	}
 	t.Cleanup(func() {
 		bg := context.Background()
-		testPool.Exec(bg, `DELETE FROM github_merge_announcement WHERE workspace_id = $1`, ws.ID)
 		testPool.Exec(bg, `DELETE FROM github_installation WHERE installation_id = $1`, installationID)
 		testPool.Exec(bg, `DELETE FROM workspace WHERE id = $1`, ws.ID)
 	})

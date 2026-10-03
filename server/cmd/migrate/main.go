@@ -463,6 +463,8 @@ var concurrentDownIndexCleanups = map[string]string{
 	"463_drop_issue_description_bigm_index":                 "idx_issue_description_bigm",
 	"464_drop_issue_description_trgm_index":                 "idx_issue_description_trgm",
 	"473_drop_agent_task_queue_chat_with_session_index":     "idx_agent_task_queue_chat_with_session_created_at",
+	"574_drop_github_merge_announcement_identity_index":     "uq_github_merge_announcement_identity",
+	"575_drop_github_merge_announcement_pending_index":      "idx_github_merge_announcement_pending_claim",
 }
 
 var preMigrationHooks = func() map[string]preMigrationHook {

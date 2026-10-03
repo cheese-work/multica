@@ -145,58 +145,6 @@ type GitHubPullRequestResponse struct {
 	Additions    int32 `json:"additions"`
 	Deletions    int32 `json:"deletions"`
 	ChangedFiles int32 `json:"changed_files"`
-	// MergeAnnouncement is the merge-announcement diagnostics for this PR on
-	// this issue (CHE-374/CHE-384), omitted when no announcement was ever
-	// enqueued (PR never merged while linked, or merged before the announcement
-	// feature existed). Optional field — older clients ignore it.
-	MergeAnnouncement *GitHubMergeAnnouncementResponse `json:"merge_announcement,omitempty"`
-}
-
-// GitHubMergeAnnouncementResponse is sanitized delivery diagnostics for one
-// merge-announcement record (CHE-384/01-02 task 1). It never carries
-// last_error's raw cause chain beyond what retryOrFail already sanitizes
-// (message-only, no stack/query text — see github_merge_announcement.go), and
-// never exposes lease_token, which is an internal delivery-worker handle with
-// no diagnostic value to a caller.
-type GitHubMergeAnnouncementResponse struct {
-	// Status is one of "pending", "delivered", "failed", "skipped" — the
-	// same values github_merge_announcement.status stores.
-	Status string `json:"status"`
-	// DeliveryGUID is the GitHub delivery id that first enqueued this record,
-	// when known — an audit trail back to GitHub's own delivery log, not the
-	// dedup identity (see 501_github_merge_announcement_identity_uidx.up.sql).
-	DeliveryGUID *string `json:"delivery_guid,omitempty"`
-	AttemptCount int32   `json:"attempt_count"`
-	// LastError is the sanitized reason from the most recent attempt, present
-	// for "failed" and "skipped" and for a "pending" record that has already
-	// retried at least once.
-	LastError *string `json:"last_error,omitempty"`
-	// NextRetryAt is when a "pending" record becomes claimable again; absent
-	// once the record leaves pending (delivered/failed/skipped are terminal).
-	NextRetryAt *string `json:"next_retry_at,omitempty"`
-	// SentAt is when the announcement comment was actually created —
-	// github_merge_announcement.delivered_at — present only once delivered.
-	SentAt *string `json:"sent_at,omitempty"`
-	// CommentID is the id of the system comment this announcement produced,
-	// present only once delivered.
-	CommentID *string `json:"comment_id,omitempty"`
-}
-
-func githubMergeAnnouncementToResponse(a db.GithubMergeAnnouncement) GitHubMergeAnnouncementResponse {
-	resp := GitHubMergeAnnouncementResponse{
-		Status:       a.Status,
-		DeliveryGUID: textToPtr(a.DeliveryGuid),
-		AttemptCount: a.AttemptCount,
-		LastError:    textToPtr(a.LastError),
-	}
-	if a.Status == "pending" {
-		resp.NextRetryAt = timestampToPtr(a.AvailableAt)
-	}
-	if a.Status == "delivered" {
-		resp.SentAt = timestampToPtr(a.DeliveredAt)
-		resp.CommentID = uuidToPtr(a.CommentID)
-	}
-	return resp
 }
 
 type GitHubConnectResponse struct {
@@ -1361,19 +1309,6 @@ func (h *Handler) ListPullRequestsForIssue(w http.ResponseWriter, r *http.Reques
 	out := make([]GitHubPullRequestResponse, 0, len(rows))
 	for _, row := range rows {
 		resp := issuePullRequestRowToResponse(row, h.PRRefresh.Enabled())
-		// Diagnostics are best-effort (CHE-384/01-02 task 1): a lookup failure
-		// here must not fail the whole PR list, so it's logged and the field
-		// is simply omitted rather than propagated as a request error.
-		if announcements, err := h.Queries.ListGitHubMergeAnnouncementsByIssueAndPullRequest(r.Context(), db.ListGitHubMergeAnnouncementsByIssueAndPullRequestParams{
-			IssueID:       issue.ID,
-			PullRequestID: row.ID,
-		}); err != nil {
-			slog.Error("github: list merge announcement diagnostics", "error", err, "pr_id", uuidToString(row.ID))
-		} else if len(announcements) > 0 {
-			// Newest first (see query comment); [0] is the current record.
-			ma := githubMergeAnnouncementToResponse(announcements[0])
-			resp.MergeAnnouncement = &ma
-		}
 		resp.LinkSource = prLinkSource(row.LinkedByType, identifier, row.Title, row.Branch.String)
 		out = append(out, resp)
 		// Page-visit trigger (MUL-5265): if this card's snapshot is missing or
@@ -1484,12 +1419,6 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	event := r.Header.Get("X-GitHub-Event")
-	// Audit-only: GitHub mints a new delivery GUID on every redelivery of the
-	// same logical event, so it cannot be the merge-announcement dedup key
-	// (that's the identity index on workspace/provider/repository/pr/issue/
-	// event_kind — see 501_github_merge_announcement_identity_uidx.up.sql).
-	// It's still recorded on the announcement row for tracing a specific
-	// delivery back through GitHub's own logs.
 	deliveryGUID := r.Header.Get("X-GitHub-Delivery")
 	ctx := r.Context()
 	switch event {
@@ -1499,12 +1428,8 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	case "installation":
 		h.handleInstallationEvent(ctx, body)
 	case "pull_request":
-		if err := h.handlePullRequestEvent(ctx, body, deliveryGUID); err != nil {
-			// A transactional write failed (PR mirror / link / merge
-			// announcement) — logging and still returning 202 would tell
-			// GitHub the delivery succeeded when the write never committed,
-			// silently dropping the merge announcement forever (CHE-374
-			// review fix T1). Returning 5xx makes GitHub redeliver instead.
+		if err := h.handlePullRequestEvent(ctx, body); err != nil {
+			// Returning 5xx makes GitHub redeliver when mirroring or link writes fail.
 			slog.Error("github: pull_request event failed", "err", err, "delivery_guid", deliveryGUID)
 			writeError(w, http.StatusInternalServerError, "failed to process pull_request event")
 			return
@@ -1685,7 +1610,7 @@ type ghPullRequestPayload struct {
 	} `json:"installation"`
 }
 
-func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte, deliveryGUID string) error {
+func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) error {
 	var p ghPullRequestPayload
 	if err := json.Unmarshal(body, &p); err != nil {
 		// A malformed payload is not something redelivery would fix, so this
@@ -1739,7 +1664,7 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte, deliv
 	// idempotent.
 	var errs []error
 	for _, inst := range insts {
-		if err := h.mirrorPullRequestForWorkspace(ctx, inst.WorkspaceID, inst.InstallationID, &p, closePolicy, deliveryGUID); err != nil {
+		if err := h.mirrorPullRequestForWorkspace(ctx, inst.WorkspaceID, inst.InstallationID, &p, closePolicy); err != nil {
 			errs = append(errs, fmt.Errorf("workspace %s: %w", uuidToString(inst.WorkspaceID), err))
 		}
 	}
@@ -1974,21 +1899,9 @@ func (h *Handler) triggerPRRefreshFromCIEvent(ctx context.Context, body []byte) 
 //
 // linkPolicy is the delivery-wide verdict on which claimed identifiers this
 // workspace may link. It cannot choose the workspace's merge-status target.
-// mirrorPullRequestForWorkspace persists everything one workspace's view of a
-// pull_request webhook changes: the PR mirror row, the issue link/unlink
-// rows, and any merge-announcement intent. Returns an error when the write
-// could not be committed, so the caller can surface it instead of the
-// pre-fix behavior of logging and returning 202 regardless (CHE-374 review
-// fix T1) — an enqueue failure here must not look like success to GitHub.
-//
-// The PR upsert, every link/unlink row, and the merge-announcement insert(s)
-// all happen in one DB transaction (h.TxStarter.Begin / qtx, mirroring
-// MergeAnnouncementWorker.deliver's shape below in this file). Before this
-// fix each was a separate autocommit call: a crash between the link writes
-// and the announcement insert silently dropped the "this PR merged" comment
-// forever, because the worker only ever scans existing rows and has no
-// reconciliation pass to notice a merge that never got an announcement row.
-func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype.UUID, installationID int64, p *ghPullRequestPayload, linkPolicy prLinkPolicy, deliveryGUID string) error {
+// mirrorPullRequestForWorkspace persists the PR mirror row and its issue
+// link/unlink rows in one DB transaction.
+func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype.UUID, installationID int64, p *ghPullRequestPayload, linkPolicy prLinkPolicy) error {
 	ws, err := h.Queries.GetWorkspace(ctx, wsID)
 	if err != nil {
 		return fmt.Errorf("github: load workspace: %w", err)
@@ -2066,31 +1979,8 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	if err != nil {
 		return fmt.Errorf("github: list persisted links: %w", err)
 	}
-	announcements := 0
-	if p.PullRequest.Merged {
-		for _, issueID := range issueIDs {
-			_, err := qtx.CreateGitHubMergeAnnouncement(ctx, db.CreateGitHubMergeAnnouncementParams{
-				WorkspaceID: wsID, Provider: "github", RepositoryID: p.Repository.ID,
-				RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name,
-				PrNumber: p.PullRequest.Number, PullRequestID: pr.ID, IssueID: issueID,
-				EventKind: "merged", DeliveryGuid: ptrToText(strPtrOrNil(deliveryGUID)),
-				MergeCommitSha: p.PullRequest.MergeCommitSHA, MergedAt: parseGHTime(p.PullRequest.MergedAt),
-				HtmlUrl: ptrToText(strPtrOrNil(p.PullRequest.HTMLURL)),
-			})
-			if errors.Is(err, pgx.ErrNoRows) {
-				continue
-			}
-			if err != nil {
-				return fmt.Errorf("github: enqueue merge announcement: %w", err)
-			}
-			announcements++
-		}
-	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("github: commit mirror transaction: %w", err)
-	}
-	if announcements > 0 {
-		h.MergeAnnouncementWorker.Notify()
 	}
 	if githubFeaturesEnabled(ws) && !linkPolicy.indeterminate {
 		if state == "merged" && prevState != "merged" {
@@ -2520,34 +2410,6 @@ func (h *Handler) githubEnabledForWorkspace(ctx context.Context, workspaceID pgt
 		return true
 	}
 	return githubEnabledForWorkspace(ws)
-}
-
-// githubEnabledForWorkspaceChecked is the error-expressing counterpart to
-// githubEnabledForWorkspace, for callers that must NOT fold a lookup failure
-// into the permissive default (CHE-374 review round 3, item 2). The webhook
-// mirror path intentionally stays fail-open — an unset/unreadable setting for
-// an existing workspace must keep behaving as it always has. The worker's
-// delivery-time eligibility recheck is different: an indeterminate answer
-// there must be treated as "could not verify" and go through retryOrFail, not
-// silently pass as "enabled".
-func (h *Handler) githubEnabledForWorkspaceChecked(ctx context.Context, workspaceID pgtype.UUID) (bool, error) {
-	ws, err := h.Queries.GetWorkspace(ctx, workspaceID)
-	if err != nil {
-		return false, fmt.Errorf("get workspace: %w", err)
-	}
-	if len(ws.Settings) == 0 {
-		return true, nil
-	}
-	var s struct {
-		GitHubEnabled *bool `json:"github_enabled"`
-	}
-	if err := json.Unmarshal(ws.Settings, &s); err != nil {
-		return false, fmt.Errorf("unmarshal workspace settings: %w", err)
-	}
-	if s.GitHubEnabled == nil {
-		return true, nil
-	}
-	return *s.GitHubEnabled, nil
 }
 
 // issueNumberForPrefix returns the issue number encoded in a "PREFIX-NUMBER"

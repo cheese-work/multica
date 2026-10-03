@@ -82,7 +82,6 @@ func TestWebhookStatusResolver(t *testing.T) {
 							closing = append(closing, fmt.Sprintf("Closes RSL-%d", i+1))
 						}
 						// Mirroring creates rows outside the fixture builders.
-						fixture.Cleanup(t, `DELETE FROM github_merge_announcement WHERE issue_id = ANY($1)`, ids)
 						for _, table := range []string{"issue_pull_request", "issue_vcs_pull_request"} {
 							fixture.Cleanup(t, "DELETE FROM "+table+" WHERE issue_id IN (SELECT id FROM issue WHERE workspace_id = $1)", ws)
 						}
@@ -103,7 +102,7 @@ func TestWebhookStatusResolver(t *testing.T) {
 								p.PullRequest.HTMLURL = fmt.Sprintf("https://github.test/fixture/resolver/pull/%d", number)
 								p.PullRequest.CreatedAt, p.PullRequest.UpdatedAt = timestamp, timestamp
 								p.PullRequest.MergedAt = timestamp
-								if err := h.mirrorPullRequestForWorkspace(ctx, wsID, int64(91000+workspace), p, prLinkPolicy{unrestricted: true}, ""); err != nil {
+								if err := h.mirrorPullRequestForWorkspace(ctx, wsID, int64(91000+workspace), p, prLinkPolicy{unrestricted: true}); err != nil {
 									t.Fatalf("mirrorPullRequestForWorkspace: %v", err)
 								}
 							}

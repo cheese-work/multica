@@ -352,16 +352,16 @@ func TestPlatformSkillDescriptionNamesEveryDomain(t *testing.T) {
 	// These are task nouns, not section headings: a task arrives as "set up an
 	// autopilot", never as "Core model".
 	triggerWords := map[string]string{
-		"references/issues.md":       "issue",
+		"references/issues.md":        "issue",
 		"references/pull-requests.md": "pr",
-		"references/mentions.md":     "mention",
-		"references/agents.md":       "agent",
-		"references/squads.md":       "squad",
-		"references/autopilots.md":   "autopilot",
-		"references/projects.md":     "project",
-		"references/runtimes.md":     "runtime",
-		"references/wakeups.md":      "wakeup",
-		"references/skill-import.md": "skill import",
+		"references/mentions.md":      "mention",
+		"references/agents.md":        "agent",
+		"references/squads.md":        "squad",
+		"references/autopilots.md":    "autopilot",
+		"references/projects.md":      "project",
+		"references/runtimes.md":      "runtime",
+		"references/wakeups.md":       "wakeup",
+		"references/skill-import.md":  "skill import",
 	}
 
 	skill, ok := findSkill(t, PlatformSkillName)
@@ -461,7 +461,6 @@ func TestPlatformSkillCoversPlatformContracts(t *testing.T) {
 			want: []string{
 				"multica issue pull-requests <issue-id> --output json",
 				"stale values left on the issue by an earlier run",
-				"merge_announcement",
 				"checks_conclusion",
 				"failed_check_names",
 			},

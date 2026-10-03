@@ -241,14 +241,7 @@ func checkStatusReadback(in Input) (Violation, bool) {
 	}, false
 }
 
-// githubPRURLPattern is byte-for-byte the same pattern the server's own
-// GitHub integration requires to resolve a PR URL back to a tracked pull
-// request (server/internal/handler/github_merge_announcement.go:
-// githubPRURLRe / parseGitHubPRURL). Reproduced rather than imported:
-// internal/handler importing this package is the allowed direction, not the
-// reverse, so the two copies are pinned together by
-// TestEvidenceURLPatternMatchesGitHubHandlerPattern instead — keep both
-// literals in lock-step by hand if either changes.
+// githubPRURLPattern validates claimed completion evidence URLs.
 var githubPRURLPattern = regexp.MustCompile(`^https://github\.com/([^/]+)/([^/]+)/pull/(\d+)/?$`)
 
 // checkEvidenceURL is the observable slice of assertion 4: when a run's

@@ -393,16 +393,6 @@ export const EMPTY_LIST_GITHUB_REPOSITORIES_RESPONSE: ListGitHubRepositoriesResp
   next_page: null,
 };
 
-export const GitHubMergeAnnouncementSchema = z.object({
-  status: z.string(),
-  delivery_guid: z.string().nullable().optional(),
-  attempt_count: z.number().optional().default(0),
-  last_error: z.string().nullable().optional(),
-  next_retry_at: z.string().nullable().optional(),
-  sent_at: z.string().nullable().optional(),
-  comment_id: z.string().nullable().optional(),
-}).loose();
-
 export const GitHubPullRequestSchema = z.object({
   id: z.string(),
   provider: z.string().optional().default("github"),
@@ -438,7 +428,6 @@ export const GitHubPullRequestSchema = z.object({
   additions: z.number().optional().default(0),
   deletions: z.number().optional().default(0),
   changed_files: z.number().optional().default(0),
-  merge_announcement: GitHubMergeAnnouncementSchema.nullable().optional(),
 }).loose();
 
 // A malformed auto_complete block degrades to null (the issue page shows no
