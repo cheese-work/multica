@@ -249,6 +249,9 @@ func (service *Service) CompleteRefresh(ctx context.Context, command CompleteRef
 		return RefreshResult{}, err
 	}
 	fresh, err := readEvaluationCapture(ctx, tx, command.WorkspaceID, command.CaseID, command.FreshEvaluationID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return RefreshResult{}, fmt.Errorf("read governance refresh evidence: %w", err)
+	}
 	if err != nil || !fresh.requiredComplete || fresh.redacted || command.FreshEvaluationID == caseRow.EvidenceID ||
 		!fresh.capturedAt.After(expiredAt) || fresh.capturedAt.After(now) || now.Sub(fresh.capturedAt) > effectiveFreshness(command.MaxEvidenceAge) {
 		return RefreshResult{}, ErrRefreshEvidenceRejected
@@ -281,7 +284,7 @@ func (service *Service) CompleteRefresh(ctx context.Context, command CompleteRef
 func (service *Service) parkForMissingLimit(ctx context.Context, tx pgx.Tx, queries *db.Queries, caseRow db.GovernanceCase, causeKey string) (RefreshResult, error) {
 	transition, err := service.transitionLocked(ctx, queries, caseRow, TransitionCommand{
 		WorkspaceID: caseRow.WorkspaceID, CaseID: caseRow.ID, ControlEpoch: caseRow.ControlEpoch,
-		ExpectedState: CaseCorrectionPending, ExpectedRevision: caseRow.StateRevision, NextState: CaseParked,
+		ExpectedState: CaseState(caseRow.State), ExpectedRevision: caseRow.StateRevision, NextState: CaseParked,
 		CauseEventKey: causeKey, Actor: ActorSystem, Reason: ReasonConfigMissing,
 	})
 	if err != nil {
@@ -294,7 +297,8 @@ func (service *Service) parkForMissingLimit(ctx context.Context, tx pgx.Tx, quer
 }
 
 // lockRefreshControl is lockGovernanceControl plus the configured refresh
-// limit; a nil limit means it is not configured.
+// limit; a nil limit means it is unset or not a non-negative integer, which
+// parks the case rather than guessing a bound.
 func lockRefreshControl(ctx context.Context, tx pgx.Tx, workspaceID pgtype.UUID, capturedControlEpoch int64) (*int64, error) {
 	if capturedControlEpoch < 1 {
 		return nil, ErrStaleControlEpoch
@@ -305,12 +309,20 @@ func lockRefreshControl(ctx context.Context, tx pgx.Tx, workspaceID pgtype.UUID,
 	err := tx.QueryRow(ctx, `
 		SELECT control_epoch, settings->>'jev_governance_enabled' = 'true',
 		       CASE WHEN jsonb_typeof(settings->'limits'->'max_refreshes') = 'number'
-		            THEN (settings->'limits'->>'max_refreshes')::bigint END
+		             AND (settings->'limits'->>'max_refreshes')::numeric = trunc((settings->'limits'->>'max_refreshes')::numeric)
+		             AND (settings->'limits'->>'max_refreshes')::numeric BETWEEN 0 AND 9007199254740991
+		            THEN (settings->'limits'->>'max_refreshes')::numeric::bigint END
 		FROM governance_workspace_config
 		WHERE workspace_id = $1
 		FOR SHARE
 	`, workspaceID).Scan(&controlEpoch, &enabled, &maxRefreshes)
-	if err != nil || !enabled || controlEpoch != capturedControlEpoch {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrStaleControlEpoch
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read governance refresh control: %w", err)
+	}
+	if !enabled || controlEpoch != capturedControlEpoch {
 		return nil, ErrStaleControlEpoch
 	}
 	return maxRefreshes, nil

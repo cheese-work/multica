@@ -434,3 +434,83 @@ func TestConcurrentExpirySweepsConsumeOneRefresh(t *testing.T) {
 		t.Fatalf("firsts:%d refresh_count:%d revision:%d, want 1/3/1", firsts, got.RefreshCount, got.StateRevision)
 	}
 }
+
+func TestMissingRefreshLimitParksHumanReviewOriginOnce(t *testing.T) {
+	fixture := newLifecycleFixture(t, CaseHumanReview)
+	fixture.setMaxRefreshes(t, nil)
+	fixture.insertEvaluationAge(t, 61*time.Second, "digest-old", true)
+	service := fixture.service()
+	first, err := service.BeginRefresh(context.Background(), fixture.refreshCommand())
+	if err != nil || first.Case.State != string(CaseParked) || first.Case.Reason != string(ReasonConfigMissing) {
+		t.Fatalf("human_review park err:%v state:%s reason:%s", err, first.Case.State, first.Case.Reason)
+	}
+	again, err := fixture.service().BeginRefresh(context.Background(), fixture.refreshCommand())
+	if err != nil || !again.Duplicate || again.Case.State != string(CaseParked) {
+		t.Fatalf("repeat sweep err:%v duplicate:%t state:%s", err, again.Duplicate, again.Case.State)
+	}
+	if count := fixture.countTransitionsLike(t, "refresh-expiry:%"); count != 1 {
+		t.Fatalf("park transitions = %d, want 1", count)
+	}
+}
+
+func TestCompleteRefreshEvidenceReadErrorIsNotRejection(t *testing.T) {
+	fixture, _ := expiredFixture(t)
+	service := fixture.service()
+	if _, err := service.BeginRefresh(context.Background(), fixture.refreshCommand()); err != nil {
+		t.Fatalf("begin refresh: %v", err)
+	}
+	fresh := fixture.insertEvaluationAge(t, 0, "digest-new", true)
+	// An infinite capture time cannot be scanned: a genuine read error, not "no rows".
+	if _, err := fixture.pool.Exec(context.Background(),
+		`UPDATE governance_evaluation SET captured_at = 'infinity' WHERE workspace_id = $1 AND id = $2`, fixture.workspaceID, fresh); err != nil {
+		t.Fatalf("poison capture time: %v", err)
+	}
+	_, err := service.CompleteRefresh(context.Background(), CompleteRefreshCommand{
+		WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID, ControlEpoch: fixture.caseRow.ControlEpoch,
+		ExpectedRevision: 1, ExpectedEvidenceEpoch: fixture.caseRow.EvidenceEpoch, FreshEvaluationID: fresh, MaxEvidenceAge: testFreshness,
+	})
+	if err == nil || errors.Is(err, ErrRefreshEvidenceRejected) {
+		t.Fatalf("read error = %v, want a wrapped non-rejection error", err)
+	}
+	if got := fixture.readCase(t); got.State != string(CaseRefreshing) {
+		t.Fatalf("read error mutated case: %s", got.State)
+	}
+}
+
+func TestNonIntegerRefreshLimitParksInsteadOfStaleEpoch(t *testing.T) {
+	for _, raw := range []string{"1.5", "-1", `"abc"`, "2.0e0"} {
+		t.Run(raw, func(t *testing.T) {
+			fixture, _ := expiredFixture(t)
+			if _, err := fixture.pool.Exec(context.Background(), `
+				UPDATE governance_workspace_config SET settings = jsonb_set(settings, '{limits,max_refreshes}', $2::jsonb)
+				WHERE workspace_id = $1`, fixture.workspaceID, raw); err != nil {
+				t.Fatalf("set raw limit: %v", err)
+			}
+			result, err := fixture.service().BeginRefresh(context.Background(), fixture.refreshCommand())
+			if raw == "2.0e0" {
+				// An integral value is a valid limit: refresh_count is already 2, so it exhausts.
+				if err != nil || !result.Exhausted {
+					t.Fatalf("integral limit err:%v exhausted:%t", err, result.Exhausted)
+				}
+				return
+			}
+			if err != nil || result.Case.State != string(CaseParked) || result.Case.Reason != string(ReasonConfigMissing) {
+				t.Fatalf("invalid limit err:%v state:%s reason:%s", err, result.Case.State, result.Case.Reason)
+			}
+		})
+	}
+}
+
+func TestRefreshControlLockDoesNotMaskContextFailureAsStaleEpoch(t *testing.T) {
+	fixture, _ := expiredFixture(t)
+	tx, err := fixture.pool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(context.Background())
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := lockRefreshControl(cancelled, tx, fixture.workspaceID, fixture.caseRow.ControlEpoch); err == nil || errors.Is(err, ErrStaleControlEpoch) {
+		t.Fatalf("cancelled lock error = %v, want a wrapped non-epoch error", err)
+	}
+}
