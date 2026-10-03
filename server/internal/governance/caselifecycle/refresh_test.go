@@ -514,3 +514,63 @@ func TestRefreshControlLockDoesNotMaskContextFailureAsStaleEpoch(t *testing.T) {
 		t.Fatalf("cancelled lock error = %v, want a wrapped non-epoch error", err)
 	}
 }
+
+func TestDefaultOrDisabledControlRejectsWithStaleEpochSentinel(t *testing.T) {
+	settings := map[string]string{
+		"key missing":    `{"rule_mode":"off"}`,
+		"key null":       `{"rule_mode":"off","jev_governance_enabled":null}`,
+		"explicit false": `{"rule_mode":"off","jev_governance_enabled":false}`,
+	}
+	for name, raw := range settings {
+		t.Run(name, func(t *testing.T) {
+			fixture, _ := expiredFixture(t)
+			if _, err := fixture.pool.Exec(context.Background(),
+				`UPDATE governance_workspace_config SET settings = $2::jsonb WHERE workspace_id = $1`, fixture.workspaceID, raw); err != nil {
+				t.Fatalf("set settings: %v", err)
+			}
+			service := fixture.service()
+			if _, err := service.BeginRefresh(context.Background(), fixture.refreshCommand()); !errors.Is(err, ErrStaleControlEpoch) {
+				t.Fatalf("begin error = %v, want ErrStaleControlEpoch", err)
+			}
+			if _, err := service.CompleteRefresh(context.Background(), CompleteRefreshCommand{
+				WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID, ControlEpoch: fixture.caseRow.ControlEpoch,
+				ExpectedRevision: 0, FreshEvaluationID: lifecycleUUID(t), MaxEvidenceAge: testFreshness,
+			}); !errors.Is(err, ErrStaleControlEpoch) {
+				t.Fatalf("complete error = %v, want ErrStaleControlEpoch", err)
+			}
+			if _, err := service.ClaimLease(context.Background(), LeaseCommand{
+				WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID, ControlEpoch: fixture.caseRow.ControlEpoch,
+				ExpectedState: CaseCorrectionPending, ExpectedRevision: 0, Token: lifecycleUUID(t), Duration: time.Minute,
+			}); !errors.Is(err, ErrStaleControlEpoch) {
+				t.Fatalf("lease error = %v, want ErrStaleControlEpoch", err)
+			}
+			if got := fixture.readCase(t); got.State != string(CaseCorrectionPending) || got.RefreshCount != 2 {
+				t.Fatalf("rejected control mutated case: %s/%d", got.State, got.RefreshCount)
+			}
+		})
+	}
+}
+
+func TestExhaustedReplayReturnsCanonicalExhaustionTransition(t *testing.T) {
+	fixture, _ := expiredFixture(t)
+	fixture.setMaxRefreshes(t, ptr(int64(0)))
+	service := fixture.service()
+	first, err := service.BeginRefresh(context.Background(), fixture.refreshCommand())
+	if err != nil || !first.Exhausted {
+		t.Fatalf("exhaust err:%v exhausted:%t", err, first.Exhausted)
+	}
+	replay, err := fixture.service().BeginRefresh(context.Background(), fixture.refreshCommand())
+	if err != nil || !replay.Duplicate || !replay.Exhausted || replay.Transition.ID != first.Transition.ID || replay.Transition.ToState != string(CaseHumanReview) {
+		t.Fatalf("begin replay err:%v duplicate:%t transition:%v->%s, want %v->human_review", err, replay.Duplicate, replay.Transition.ID, replay.Transition.ToState, first.Transition.ID)
+	}
+	complete, err := service.CompleteRefresh(context.Background(), CompleteRefreshCommand{
+		WorkspaceID: fixture.workspaceID, CaseID: fixture.caseRow.ID, ControlEpoch: fixture.caseRow.ControlEpoch,
+		ExpectedRevision: 1, ExpectedEvidenceEpoch: fixture.caseRow.EvidenceEpoch, FreshEvaluationID: lifecycleUUID(t), MaxEvidenceAge: testFreshness,
+	})
+	if err != nil || !complete.Exhausted || complete.Transition.ID != first.Transition.ID {
+		t.Fatalf("complete replay err:%v exhausted:%t transition:%v, want %v", err, complete.Exhausted, complete.Transition.ID, first.Transition.ID)
+	}
+	if got := fixture.readCase(t); got.RefreshCount != 2 || got.StateRevision != 2 {
+		t.Fatalf("replay changed counters: refresh:%d revision:%d, want 2/2", got.RefreshCount, got.StateRevision)
+	}
+}

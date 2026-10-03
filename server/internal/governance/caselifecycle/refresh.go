@@ -109,13 +109,17 @@ func (service *Service) BeginRefresh(ctx context.Context, command RefreshCommand
 		WorkspaceID: command.WorkspaceID, CaseID: command.CaseID, CauseEventKey: expiryKey,
 	})
 	if err == nil {
-		_, exhaustedErr := queries.FindGovernanceCaseTransitionByCause(ctx, db.FindGovernanceCaseTransitionByCauseParams{
+		exhausted, exhaustedErr := queries.FindGovernanceCaseTransitionByCause(ctx, db.FindGovernanceCaseTransitionByCauseParams{
 			WorkspaceID: command.WorkspaceID, CaseID: command.CaseID, CauseEventKey: exhaustedKey,
 		})
-		if exhaustedErr != nil && !errors.Is(exhaustedErr, pgx.ErrNoRows) {
+		if exhaustedErr == nil {
+			// Same canonical transition as the initial Begin and the exhausted Complete.
+			return RefreshResult{Case: caseRow, Transition: exhausted, Duplicate: true, Exhausted: true}, nil
+		}
+		if !errors.Is(exhaustedErr, pgx.ErrNoRows) {
 			return RefreshResult{}, fmt.Errorf("read governance refresh exhaustion: %w", exhaustedErr)
 		}
-		return RefreshResult{Case: caseRow, Transition: prior, Duplicate: true, Exhausted: exhaustedErr == nil}, nil
+		return RefreshResult{Case: caseRow, Transition: prior, Duplicate: true}, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return RefreshResult{}, fmt.Errorf("read governance refresh input: %w", err)
@@ -307,7 +311,7 @@ func lockRefreshControl(ctx context.Context, tx pgx.Tx, workspaceID pgtype.UUID,
 	var enabled bool
 	var maxRefreshes *int64
 	err := tx.QueryRow(ctx, `
-		SELECT control_epoch, settings->>'jev_governance_enabled' = 'true',
+		SELECT control_epoch, COALESCE(settings->>'jev_governance_enabled' = 'true', false),
 		       CASE WHEN jsonb_typeof(settings->'limits'->'max_refreshes') = 'number'
 		             AND (settings->'limits'->>'max_refreshes')::numeric = trunc((settings->'limits'->>'max_refreshes')::numeric)
 		             AND (settings->'limits'->>'max_refreshes')::numeric BETWEEN 0 AND 9007199254740991
