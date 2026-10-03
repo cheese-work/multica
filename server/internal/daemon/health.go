@@ -82,8 +82,13 @@ type HealthResponse struct {
 	// version change on disk but hasn't restarted into it yet — it was busy at
 	// the last barrier check and will retry when idle. Omitted when empty, so
 	// older consumers see no change. Diagnostic only: nothing keys off it.
-	ReloadPendingReason string            `json:"reload_pending_reason,omitempty"`
-	Workspaces          []healthWorkspace `json:"workspaces"`
+	ReloadPendingReason string `json:"reload_pending_reason,omitempty"`
+	// MaintenanceHeld is true while an owner maintenance window holds update
+	// ownership and the claim barrier; MaintenanceExpiresAt is its lease
+	// expiry (RFC 3339). The window token is never reported. See maintenance.go.
+	MaintenanceHeld      bool              `json:"maintenance_held,omitempty"`
+	MaintenanceExpiresAt string            `json:"maintenance_expires_at,omitempty"`
+	Workspaces           []healthWorkspace `json:"workspaces"`
 }
 
 type healthWorkspace struct {
@@ -362,6 +367,10 @@ func (d *Daemon) healthHandler(startedAt time.Time) http.HandlerFunc {
 			ReloadPendingReason: d.reloadPending(),
 			Workspaces:          wsList,
 		}
+		if held, expires := d.maintenanceStatus(); held {
+			resp.MaintenanceHeld = true
+			resp.MaintenanceExpiresAt = expires.UTC().Format(time.RFC3339)
+		}
 		if reporter, ok := d.repoCache.(interface{ Activity() repocache.Activity }); ok {
 			activity := reporter.Activity()
 			resp.RepoMaintenanceActive = activity.MaintenanceActive
@@ -393,6 +402,12 @@ func (d *Daemon) shutdownHandler() http.HandlerFunc {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		// An owner maintenance window gates explicit stop/restart: no token
+		// while one is held, or a token for a window that is gone, is refused.
+		if err := d.authorizeShutdown(r.Header.Get(maintenanceTokenHeader)); err != nil {
+			writeMaintenanceError(w, err)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "shutting down"})
 		if d.cancelFunc != nil {
@@ -403,15 +418,20 @@ func (d *Daemon) shutdownHandler() http.HandlerFunc {
 	}
 }
 
-// serveHealth runs the health HTTP server on the given listener.
-// Blocks until ctx is cancelled.
-func (d *Daemon) serveHealth(ctx context.Context, ln net.Listener, startedAt time.Time) {
+func (d *Daemon) healthMux(startedAt time.Time) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", d.healthHandler(startedAt))
 	mux.HandleFunc("/shutdown", d.shutdownHandler())
+	mux.HandleFunc("/maintenance/acquire", d.maintenanceAcquireHandler())
+	mux.HandleFunc("/maintenance/release", d.maintenanceReleaseHandler())
 	mux.HandleFunc("/repo/checkout", d.repoCheckoutHandler())
+	return mux
+}
 
-	srv := &http.Server{Handler: mux}
+// serveHealth runs the health HTTP server on the given listener.
+// Blocks until ctx is cancelled.
+func (d *Daemon) serveHealth(ctx context.Context, ln net.Listener, startedAt time.Time) {
+	srv := &http.Server{Handler: d.healthMux(startedAt)}
 
 	go func() {
 		<-ctx.Done()
