@@ -13,13 +13,14 @@ import (
 )
 
 var (
-	ErrStaleCase         = errors.New("governance case revision is stale")
-	ErrInvalidTransition = errors.New("governance case transition is invalid")
-	ErrLeaseHeld         = errors.New("governance case lease is held")
-	ErrStaleFence        = errors.New("governance case attempt fence is stale")
-	ErrStaleControlEpoch = errors.New("governance workspace control epoch is stale or disabled")
-	ErrInputConflict     = errors.New("governance case input key conflicts with prior transition")
-	ErrSuccessorConflict = errors.New("governance case successor conflicts with prior generation")
+	ErrStaleCase          = errors.New("governance case revision is stale")
+	ErrInvalidTransition  = errors.New("governance case transition is invalid")
+	ErrLeaseHeld          = errors.New("governance case lease is held")
+	ErrStaleFence         = errors.New("governance case attempt fence is stale")
+	ErrStaleControlEpoch  = errors.New("governance workspace control epoch is stale or disabled")
+	ErrInputConflict      = errors.New("governance case input key conflicts with prior transition")
+	ErrSuccessorConflict  = errors.New("governance case successor conflicts with prior generation")
+	ErrStaleEvidenceEpoch = errors.New("governance evidence epoch is stale")
 )
 
 type Database interface {
@@ -71,6 +72,8 @@ type TransitionCommand struct {
 	LeaseToken       pgtype.UUID
 	AttemptID        pgtype.UUID
 	AttemptFence     pgtype.UUID
+	// EvidenceEpoch is the epoch the actor reviewed; human approval requires it.
+	EvidenceEpoch *int32
 }
 
 type TransitionResult struct {
@@ -279,6 +282,14 @@ func (service *Service) CreateSuccessor(ctx context.Context, command SuccessorCo
 		MaterialFingerprint: next.MaterialFingerprint,
 	})
 	if err == nil {
+		// A repeat delivery of the facts the predecessor already covers (new
+		// arrival time, duplicate PR/native/MJ event) is not a material change.
+		if existing.ID == predecessor.ID {
+			if err := tx.Commit(ctx); err != nil {
+				return SuccessorResult{}, fmt.Errorf("commit duplicate governance case event: %w", err)
+			}
+			return SuccessorResult{Case: existing, Duplicate: true}, nil
+		}
 		if !existing.PredecessorCaseID.Valid || existing.PredecessorCaseID != predecessor.ID || existing.BudgetRootID != predecessor.BudgetRootID {
 			return SuccessorResult{}, ErrSuccessorConflict
 		}
@@ -367,6 +378,9 @@ func (service *Service) transitionLocked(ctx context.Context, queries *db.Querie
 	}
 	if CaseState(caseRow.State) != command.ExpectedState || caseRow.StateRevision != command.ExpectedRevision {
 		return TransitionResult{}, ErrStaleCase
+	}
+	if command.Reason == ReasonHumanApproval && (command.EvidenceEpoch == nil || *command.EvidenceEpoch != caseRow.EvidenceEpoch) {
+		return TransitionResult{}, ErrStaleEvidenceEpoch
 	}
 	if requiresAttemptFence(command) {
 		if err := service.validateAttemptFence(ctx, queries, caseRow, command); err != nil {
