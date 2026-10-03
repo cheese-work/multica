@@ -857,11 +857,25 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		return commit()
 	}
 	if isPRWakeup {
-		activeRun, err := q.HasActiveTaskForIssueAndAgent(ctx, db.HasActiveTaskForIssueAndAgentParams{IssueID: issue.ID, AgentID: agent.ID})
+		pendingTask, err := q.HasPendingIssueTaskForAgent(ctx, db.HasPendingIssueTaskForAgentParams{IssueID: issue.ID, AgentID: agent.ID})
+		if err != nil {
+			return err
+		}
+		if pendingTask {
+			return commit()
+		}
+		activeRun, err := q.HasRunningTaskForIssueAndAgent(ctx, db.HasRunningTaskForIssueAndAgentParams{IssueID: issue.ID, AgentID: agent.ID})
 		if err != nil {
 			return err
 		}
 		if activeRun {
+			facts["outcome"] = "suppressed_active_run"
+			if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
+				return err
+			}
+			if err := note(wakeupActivityTriggered, facts); err != nil {
+				return err
+			}
 			return commit()
 		}
 	}

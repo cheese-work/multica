@@ -1108,6 +1108,9 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 }
 
 func qCleanupMissingWakeup(ctx context.Context, tx pgx.Tx, id pgtype.UUID) error {
+	if _, err := tx.Exec(ctx, "DELETE FROM issue_wakeup_pr_event WHERE wakeup_id=$1", id); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, "DELETE FROM issue_wakeup_receipt WHERE wakeup_id=$1", id); err != nil {
 		return err
 	}
@@ -1207,7 +1210,7 @@ func (s *IssueWakeupService) CheckClaim(ctx context.Context, task db.AgentTaskQu
 			}
 			enabled, err := PRWakeupEnabled(workspace.Settings, w.SystemRule.String)
 			if err != nil {
-				return err
+				return errors.Join(ErrWakeupForbidden, err)
 			}
 			if !enabled {
 				return ErrWakeupForbidden

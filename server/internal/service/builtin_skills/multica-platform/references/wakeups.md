@@ -51,5 +51,5 @@ Event rules also have runaway protection: a rule pauses with `paused_reason=loop
 when triggered a third time in the same chain without a person in between, or
 with `paused_reason=rate` after 12 runs in an hour. Other paused rules stay off
 until re-enabled. A PR system rule keeps events received during a rate pause
-pending and resumes on a later PR event once fewer than 12 runs remain in the
-preceding hour.
+pending; the scheduler resumes them once fewer than 12 runs remain in the
+preceding hour, without requiring another PR event.

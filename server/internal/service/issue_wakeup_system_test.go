@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
 func sub(stage int32, closed, cancelled bool) subIssue {
@@ -216,6 +217,44 @@ func TestPRWakeupLedgerIsRemovedByIssueWorkspaceAndRuleDeletion(t *testing.T) {
 	}
 	if got := f.Count(t, `SELECT count(*) FROM issue_wakeup_pr_event WHERE wakeup_id=$1`, workspaceLedgerID); got != 0 {
 		t.Fatalf("ledger rows after workspace issue teardown = %d, want 0", got)
+	}
+}
+
+func TestPRWakeupOrphanCleanupRemovesLedger(t *testing.T) {
+	f, s, issue, agent := wakeFixture(t)
+	ctx := context.Background()
+	assignPRWakeupIssue(t, f, issue, agent)
+	if err := s.TriggerPullRequestWakeup(ctx, issue, PullRequestWakeupInput{
+		Rule: SystemRulePRMerged, RepoOwner: "acme", RepoName: "widget", Number: 160,
+		URL: "https://github.com/acme/widget/pull/160", MergeCommit: "merge-160",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w, err := f.q.GetSystemWakeup(ctx, db.GetSystemWakeupParams{IssueID: issue, SystemRule: systemRuleText(SystemRulePRMerged)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Cleanup(t, "DELETE FROM issue_wakeup_receipt WHERE wakeup_id=$1", w.ID)
+	f.Cleanup(t, "DELETE FROM issue_wakeup_pr_event WHERE wakeup_id=$1", w.ID)
+	f.Cleanup(t, "DELETE FROM issue_wakeup WHERE id=$1", w.ID)
+
+	orphanIssueID := dbid.NewV7()
+	f.Exec(t, `UPDATE issue_wakeup SET issue_id=$2 WHERE id=$1`, w.ID, orphanIssueID)
+	orphan, err := f.q.LocklessWakeup(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.dispatchSystem(ctx, orphan); err != nil {
+		t.Fatalf("dispatch orphan wakeup cleanup: %v", err)
+	}
+	if got := f.Count(t, `SELECT count(*) FROM issue_wakeup_receipt WHERE wakeup_id=$1`, w.ID); got != 0 {
+		t.Fatalf("orphan cleanup left %d receipts", got)
+	}
+	if got := f.Count(t, `SELECT count(*) FROM issue_wakeup_pr_event WHERE wakeup_id=$1`, w.ID); got != 0 {
+		t.Fatalf("orphan cleanup left %d ledger rows", got)
+	}
+	if got := f.Count(t, `SELECT count(*) FROM issue_wakeup WHERE id=$1`, w.ID); got != 0 {
+		t.Fatalf("orphan cleanup left %d wakeups", got)
 	}
 }
 

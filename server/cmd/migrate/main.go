@@ -160,6 +160,7 @@ var concurrentIndexCleanups = map[string]string{
 	"564_wakeup_system_rule_index":                              "issue_wakeup_system_rule_idx",
 	"567_issue_child_event_id":                                  "issue_child_event_id_idx",
 	"568_issue_child_event_pending":                             "issue_child_event_pending_idx",
+	"579_pr_wakeup_event_identity_index":                        "issue_wakeup_pr_event_identity_idx",
 	"558_governance_budget_reservation_attempt_obligation_uidx": "governance_budget_reservation_attempt_obligation_uidx",
 	"557_governance_budget_outbox_due_idx":                      "governance_budget_outbox_due_idx",
 	"556_governance_budget_reservation_root_window_idx":         "governance_budget_reservation_root_window_idx",

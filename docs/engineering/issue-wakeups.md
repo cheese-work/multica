@@ -62,8 +62,8 @@ an already-active run of the assigned agent is not duplicated. Wakeup prompts
 include the PR, merge commit or failing head, and issue status captured with the
 event. A queued run that cannot accept facts across originator identities keeps
 those receipts pending rather than consuming them. A PR rule paused at its
-12-runs-per-hour limit retains receipts and resumes them on a later PR event
-once the rolling-hour count falls below the cap.
+12-runs-per-hour limit retains receipts; the scheduler resumes them once the
+rolling-hour count falls below the cap, without requiring another PR event.
 
 Agents manage configurations with `multica issue wakeup`:
 

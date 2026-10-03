@@ -72,6 +72,7 @@ func newPRMergeWebhookFixture(t *testing.T, installationID int64) prMergeWebhook
 		testPool.Exec(context.Background(), `DELETE FROM github_installation WHERE installation_id = $1`, installationID)
 		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE issue_id IN ($1, $2)`, fx.child.ID, fx.parent.ID)
 		testPool.Exec(context.Background(), `DELETE FROM issue_wakeup_receipt WHERE wakeup_id IN (SELECT id FROM issue_wakeup WHERE issue_id IN ($1, $2))`, fx.child.ID, fx.parent.ID)
+		testPool.Exec(context.Background(), `DELETE FROM issue_wakeup_pr_event WHERE wakeup_id IN (SELECT id FROM issue_wakeup WHERE issue_id IN ($1, $2))`, fx.child.ID, fx.parent.ID)
 		testPool.Exec(context.Background(), `DELETE FROM issue_wakeup WHERE issue_id IN ($1, $2)`, fx.child.ID, fx.parent.ID)
 		testPool.Exec(context.Background(), `DELETE FROM activity_log WHERE issue_id IN ($1, $2)`, fx.child.ID, fx.parent.ID)
 	})
@@ -439,14 +440,78 @@ func TestMergedPRDoesNotQueueWhileAssignedAgentIsAlreadyActive(t *testing.T) {
 	fx := newPRMergeWebhookFixture(t, installationID)
 	agentID := createHandlerTestAgent(t, "CHE-973 active merge", nil)
 	setIssueAssigneeDirect(t, fx.child.ID, "agent", agentID)
-	if _, err := testPool.Exec(context.Background(), `
+	var activeTaskID string
+	if err := testPool.QueryRow(context.Background(), `
 		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, started_at)
-		SELECT id, runtime_id, $2, 'running', 1, now() FROM agent WHERE id=$1`, agentID, fx.child.ID); err != nil {
+		SELECT id, runtime_id, $2, 'running', 1, now() FROM agent WHERE id=$1 RETURNING id`, agentID, fx.child.ID).Scan(&activeTaskID); err != nil {
 		t.Fatalf("create active issue task: %v", err)
 	}
 	postSignedGitHubWebhook(t, fx.secret, buildMergedPRWebhookBody(fx.child.Identifier, 52711, "acme", "widget", installationID), "che973-merge-active")
 	if got := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2 AND context->>'wakeup_system'='pr_merged'`, fx.child.ID, agentID); got != 0 {
 		t.Fatalf("PR wake runs with active agent task = %d, want 0", got)
+	}
+	if _, err := testPool.Exec(context.Background(), `UPDATE agent_task_queue SET status='completed',completed_at=clock_timestamp() WHERE id=$1`, activeTaskID); err != nil {
+		t.Fatalf("complete active issue task: %v", err)
+	}
+	if err := (&service.IssueWakeupService{Tasks: testHandler.TaskService}).TickWorkspaces(context.Background(), parseUUID(testWorkspaceID)); err != nil {
+		t.Fatalf("tick wakeup scheduler after active run: %v", err)
+	}
+	if got := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2 AND context->>'wakeup_system'='pr_merged'`, fx.child.ID, agentID); got != 0 {
+		t.Fatalf("PR wake runs after active agent task completed = %d, want 0", got)
+	}
+}
+
+func TestPRWakeupClaimWithMalformedWorkspaceSettingIsTerminal(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	const installationID int64 = 527124
+	fx := newPRMergeWebhookFixture(t, installationID)
+	agentID := createHandlerTestAgent(t, "CHE-973 malformed setting", nil)
+	setIssueAssigneeDirect(t, fx.child.ID, "agent", agentID)
+	postSignedGitHubWebhook(t, fx.secret, buildMergedPRWebhookBody(fx.child.Identifier, 52724, "acme", "widget", installationID), "che973-merge-malformed-setting")
+
+	var taskID string
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT id FROM agent_task_queue
+		WHERE issue_id=$1 AND context->>'wakeup_system'='pr_merged'
+		ORDER BY created_at DESC LIMIT 1`, fx.child.ID).Scan(&taskID); err != nil {
+		t.Fatalf("find queued PR wakeup task: %v", err)
+	}
+	var originalSettings []byte
+	if err := testPool.QueryRow(context.Background(), `SELECT settings FROM workspace WHERE id=$1`, testWorkspaceID).Scan(&originalSettings); err != nil {
+		t.Fatalf("read original workspace settings: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := testPool.Exec(context.Background(), `UPDATE workspace SET settings=$2::jsonb WHERE id=$1`, testWorkspaceID, originalSettings); err != nil {
+			t.Errorf("restore workspace settings: %v", err)
+		}
+	})
+	if _, err := testPool.Exec(context.Background(), `UPDATE workspace SET settings=COALESCE(settings, '{}'::jsonb)||'{"github_wake_on_ci_failure":"false"}'::jsonb WHERE id=$1`, testWorkspaceID); err != nil {
+		t.Fatalf("store malformed workspace setting: %v", err)
+	}
+	if _, err := testPool.Exec(context.Background(), `UPDATE agent_task_queue SET status='dispatched',dispatched_at=clock_timestamp() WHERE id=$1`, taskID); err != nil {
+		t.Fatalf("dispatch queued PR wakeup task: %v", err)
+	}
+	task, err := testHandler.Queries.GetAgentTask(context.Background(), parseUUID(taskID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := testHandler.Queries.GetAgentRuntime(context.Background(), task.RuntimeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := newDaemonTokenRequest("POST", "/claim", nil, testWorkspaceID, "malformed-pr-wakeup-settings")
+	_, _, _, _, _, failure := testHandler.buildClaimedTaskResponse(req, &task, runtime, uuidToString(task.RuntimeID), testWorkspaceID)
+	if failure == nil || !failure.settled || failure.outcome != "wakeup_unavailable" || failure.status != http.StatusConflict {
+		t.Fatalf("malformed-setting claim failure = %+v, want terminal wakeup_unavailable conflict", failure)
+	}
+	settled, err := testHandler.Queries.GetAgentTask(context.Background(), parseUUID(taskID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settled.Status != "failed" {
+		t.Fatalf("malformed-setting task status = %q, want failed", settled.Status)
 	}
 }
 
