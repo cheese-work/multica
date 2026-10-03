@@ -467,17 +467,38 @@ func TestPRWakeSettingsDisableMerge(t *testing.T) {
 	}
 }
 
-func TestPRCheckFailureWebhookRefreshesSnapshotAndEnqueuesWakeup(t *testing.T) {
+func TestPRCheckSuiteOutcomesFlowThroughRefresh(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		rollup        string
+		settingOn     bool
+		wantWakeups   int
+		installation  int64
+		pullRequestNo int32
+	}{
+		{name: "failure wakes", rollup: "FAILURE", settingOn: true, wantWakeups: 1, installation: 527009, pullRequestNo: 52710},
+		{name: "error wakes", rollup: "ERROR", settingOn: true, wantWakeups: 1, installation: 527121, pullRequestNo: 52721},
+		{name: "success does not wake", rollup: "SUCCESS", settingOn: true, wantWakeups: 0, installation: 527122, pullRequestNo: 52722},
+		{name: "opt out before capture", rollup: "FAILURE", settingOn: false, wantWakeups: 0, installation: 527123, pullRequestNo: 52723},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testPRCheckSuiteOutcomeThroughRefresh(t, tc.installation, tc.pullRequestNo, tc.rollup, tc.settingOn, tc.wantWakeups)
+		})
+	}
+}
+
+func testPRCheckSuiteOutcomeThroughRefresh(t *testing.T, installationID int64, prNumber int32, rollup string, settingOn bool, wantWakeups int) {
+	t.Helper()
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	const installationID int64 = 527009
 	fx := newPRMergeWebhookFixture(t, installationID)
-	agentID := createHandlerTestAgent(t, "CHE-973 checks failure", nil)
+	agentID := createHandlerTestAgent(t, "CHE-973 checks outcome", nil)
 	setIssueAssigneeDirect(t, fx.child.ID, "agent", agentID)
-	pr := linkedPRForWakeup(t, fx, installationID, 52710, "che973-head-x")
+	headSHA := fmt.Sprintf("che973-head-%d", prNumber)
+	pr := linkedPRForWakeup(t, fx, installationID, prNumber, headSHA)
 	setWorkspacePRWakeSetting(t, "github_enabled", true)
-	setWorkspacePRWakeSetting(t, "github_wake_on_ci_failure", true)
+	setWorkspacePRWakeSetting(t, "github_wake_on_ci_failure", settingOn)
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
@@ -495,8 +516,8 @@ func TestPRCheckFailureWebhookRefreshesSnapshotAndEnqueuesWakeup(t *testing.T) {
 				return nil, fmt.Errorf("unexpected refresh address: installation=%d %s/%s#%d", gotInstallationID, owner, repo, number)
 			}
 			return &ghsnapshot.PRSnapshot{
-				HeadSHA: "che973-head-x", Mergeable: "MERGEABLE", MergeStateStatus: "CLEAN",
-				RollupState: "FAILURE", HasChecks: true,
+				HeadSHA: headSHA, Mergeable: "MERGEABLE", MergeStateStatus: "CLEAN",
+				RollupState: rollup, HasChecks: true,
 			}, nil
 		},
 		func(ctx context.Context, prID pgtype.UUID) {
@@ -515,7 +536,7 @@ func TestPRCheckFailureWebhookRefreshesSnapshotAndEnqueuesWakeup(t *testing.T) {
 	payload := map[string]any{
 		"action": "completed",
 		"check_suite": map[string]any{
-			"head_sha":      "che973-head-x",
+			"head_sha":      headSHA,
 			"conclusion":    "failure",
 			"pull_requests": []map[string]any{{"number": pr.PrNumber}},
 		},
@@ -536,10 +557,10 @@ func TestPRCheckFailureWebhookRefreshesSnapshotAndEnqueuesWakeup(t *testing.T) {
 	if err := testPool.QueryRow(context.Background(), `SELECT snapshot_head_sha,checks_rollup_state FROM github_pull_request WHERE id=$1`, pr.ID).Scan(&snapshotHead, &conclusion); err != nil {
 		t.Fatalf("read refreshed snapshot: %v", err)
 	}
-	if snapshotHead != "che973-head-x" || !conclusion.Valid || conclusion.String != "FAILURE" {
-		t.Fatalf("refreshed snapshot = head %q conclusion %+v, want failing current head", snapshotHead, conclusion)
+	if snapshotHead != headSHA || !conclusion.Valid || conclusion.String != rollup {
+		t.Fatalf("refreshed snapshot = head %q conclusion %+v, want %q / %q", snapshotHead, conclusion, headSHA, rollup)
 	}
-	if got := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2 AND context->>'wakeup_system'='pr_checks_failed'`, fx.child.ID, agentID); got != 1 {
-		t.Fatalf("failing refreshed check suite queued %d PR wakeups, want 1", got)
+	if got := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2 AND context->>'wakeup_system'='pr_checks_failed'`, fx.child.ID, agentID); got != wantWakeups {
+		t.Fatalf("refreshed %s check suite queued %d PR wakeups, want %d", rollup, got, wantWakeups)
 	}
 }

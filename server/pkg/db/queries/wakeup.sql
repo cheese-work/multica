@@ -195,6 +195,10 @@ UPDATE issue_wakeup SET enabled=false,next_fire_at=NULL,paused_reason= @paused_r
  disabled_at=CASE WHEN @block_runs::bool THEN COALESCE(disabled_at,clock_timestamp()) ELSE disabled_at END,
  updated_at=clock_timestamp() WHERE id= @id;
 
+-- name: ResumeRateLimitedSystemWakeup :exec
+UPDATE issue_wakeup SET enabled=true,paused_reason=NULL,disabled_at=NULL,updated_at=clock_timestamp()
+WHERE id= @id AND system_rule IN ('pr_merged','pr_checks_failed') AND paused_reason='rate';
+
 -- name: CountWakeupFires :exec
 UPDATE issue_wakeup SET fire_count=fire_count+1 WHERE id= @id;
 
@@ -219,6 +223,9 @@ ORDER BY t.created_at DESC,t.id DESC LIMIT 10;
 
 -- name: DeleteIssueWakeupReceipts :exec
 DELETE FROM issue_wakeup_receipt WHERE wakeup_id= @id;
+
+-- name: DeleteIssueWakeupPRLedger :exec
+DELETE FROM issue_wakeup_pr_event WHERE wakeup_id= @id;
 
 -- name: DeleteIssueWakeup :exec
 DELETE FROM issue_wakeup WHERE id= @id AND issue_id= @issue_id;

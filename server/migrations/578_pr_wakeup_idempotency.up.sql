@@ -1,8 +1,7 @@
 CREATE TABLE issue_wakeup_pr_event (
-    wakeup_id uuid NOT NULL REFERENCES issue_wakeup(id) ON DELETE CASCADE,
+    wakeup_id uuid NOT NULL,
     event_key text NOT NULL,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (wakeup_id, event_key)
+    created_at timestamptz NOT NULL DEFAULT now()
 );
 
 INSERT INTO issue_wakeup_pr_event (wakeup_id, event_key)

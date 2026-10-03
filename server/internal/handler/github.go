@@ -2008,21 +2008,35 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	}
 	if state == "merged" {
 		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
-		for _, issueID := range issueIDs {
-			if err := wakeup.TriggerPullRequestWakeup(ctx, issueID, service.PullRequestWakeupInput{
+		return dispatchMergedPRWakeups(issueIDs, func(issueID pgtype.UUID) error {
+			return wakeup.TriggerPullRequestWakeup(ctx, issueID, service.PullRequestWakeupInput{
 				Rule: service.SystemRulePRMerged, RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name,
 				Number: p.PullRequest.Number, URL: p.PullRequest.HTMLURL, MergeCommit: p.PullRequest.MergeCommitSHA,
 				HeadSHA: p.PullRequest.Head.SHA,
-			}); err != nil {
-				return fmt.Errorf("github: dispatch pull request merge wakeup: %w", err)
-			}
-		}
+			})
+		}, func() {
+			h.publish(protocol.EventPullRequestUpdated, workspaceID, "system", "", map[string]any{
+				"pull_request":     githubPullRequestToResponse(pr, h.PRRefresh.Enabled()),
+				"linked_issue_ids": linkedIssueIDs,
+			})
+		})
 	}
 	h.publish(protocol.EventPullRequestUpdated, workspaceID, "system", "", map[string]any{
 		"pull_request":     githubPullRequestToResponse(pr, h.PRRefresh.Enabled()),
 		"linked_issue_ids": linkedIssueIDs,
 	})
 	return nil
+}
+
+func dispatchMergedPRWakeups(issueIDs []pgtype.UUID, dispatch func(pgtype.UUID) error, publish func()) error {
+	var dispatchErrors []error
+	for _, issueID := range issueIDs {
+		if err := dispatch(issueID); err != nil {
+			dispatchErrors = append(dispatchErrors, fmt.Errorf("github: dispatch pull request merge wakeup for issue %s: %w", uuidToString(issueID), err))
+		}
+	}
+	publish()
+	return errors.Join(dispatchErrors...)
 }
 
 // prAutoLinkInput is what reconcileAutoLinks needs from one provider.

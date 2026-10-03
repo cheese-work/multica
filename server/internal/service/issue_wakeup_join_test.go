@@ -184,6 +184,42 @@ func TestWakeupJoinsOnlyRunsOfTheSamePerson(t *testing.T) {
 	}
 }
 
+func TestPRWakeupPreservesFactsBehindQueuedRunFromAnotherOriginator(t *testing.T) {
+	f, s, issue, agent := wakeFixture(t)
+	assignPRWakeupIssue(t, f, issue, agent)
+	other := f.member(t, "pr-wakeup-other-originator")
+	queued := wakeWaitingRun(t, f, issue, agent, other)
+	input := PullRequestWakeupInput{
+		Rule: SystemRulePRChecksFailed, RepoOwner: "acme", RepoName: "widget", Number: 157,
+		URL: "https://github.com/acme/widget/pull/157", HeadSHA: "attributed-head", Conclusion: "FAILURE",
+	}
+	ctx := context.Background()
+	if err := s.TriggerPullRequestWakeup(ctx, issue, input); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Count(t, `SELECT count(*) FROM issue_wakeup_receipt r JOIN issue_wakeup w ON w.id=r.wakeup_id WHERE w.issue_id=$1 AND w.system_rule=$2 AND r.processed_at IS NULL`, issue, SystemRulePRChecksFailed); got != 1 {
+		t.Fatalf("pending PR receipts behind another originator's queued run = %d, want 1", got)
+	}
+	if got := f.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND context->>'wakeup_system'=$2`, issue, SystemRulePRChecksFailed); got != 0 {
+		t.Fatalf("PR wakeup tasks before queued run ends = %d, want 0", got)
+	}
+
+	f.Exec(t, `UPDATE agent_task_queue SET status='cancelled',completed_at=clock_timestamp() WHERE id=$1 AND started_at IS NULL`, queued)
+	w, err := f.q.GetSystemWakeup(ctx, db.GetSystemWakeupParams{IssueID: issue, SystemRule: systemRuleText(SystemRulePRChecksFailed)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.dispatchSystem(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TriggerPullRequestWakeup(ctx, issue, input); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND context->>'wakeup_system'=$2`, issue, SystemRulePRChecksFailed); got != 1 {
+		t.Fatalf("replayed PR wakeup tasks after queued run cancellation = %d, want 1", got)
+	}
+}
+
 // A creator who lost access by the time the run is claimed hands it nothing.
 func TestJoinRechecksTheCreatorsAccess(t *testing.T) {
 	f, s, issue, agent := conditionFixture(t)

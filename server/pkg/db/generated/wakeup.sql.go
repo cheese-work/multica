@@ -574,6 +574,15 @@ func (q *Queries) DeleteIssueWakeup(ctx context.Context, arg DeleteIssueWakeupPa
 	return err
 }
 
+const deleteIssueWakeupPRLedger = `-- name: DeleteIssueWakeupPRLedger :exec
+DELETE FROM issue_wakeup_pr_event WHERE wakeup_id= $1
+`
+
+func (q *Queries) DeleteIssueWakeupPRLedger(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteIssueWakeupPRLedger, id)
+	return err
+}
+
 const deleteIssueWakeupReceipts = `-- name: DeleteIssueWakeupReceipts :exec
 DELETE FROM issue_wakeup_receipt WHERE wakeup_id= $1
 `
@@ -1666,6 +1675,16 @@ type ReserveWakeupReceiptsParams struct {
 // as handled once that run starts, and go back to the rule if it never does.
 func (q *Queries) ReserveWakeupReceipts(ctx context.Context, arg ReserveWakeupReceiptsParams) error {
 	_, err := q.db.Exec(ctx, reserveWakeupReceipts, arg.TaskID, arg.Ids)
+	return err
+}
+
+const resumeRateLimitedSystemWakeup = `-- name: ResumeRateLimitedSystemWakeup :exec
+UPDATE issue_wakeup SET enabled=true,paused_reason=NULL,disabled_at=NULL,updated_at=clock_timestamp()
+WHERE id= $1 AND system_rule IN ('pr_merged','pr_checks_failed') AND paused_reason='rate'
+`
+
+func (q *Queries) ResumeRateLimitedSystemWakeup(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, resumeRateLimitedSystemWakeup, id)
 	return err
 }
 

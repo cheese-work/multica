@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 func sub(stage int32, closed, cancelled bool) subIssue {
@@ -103,6 +105,117 @@ func TestPRWakeupSettingsDefaultOnAndIndependent(t *testing.T) {
 	}
 	if enabled, err := PRWakeupEnabled([]byte(`{"github_enabled":false}`), SystemRulePRChecksFailed); err != nil || enabled {
 		t.Fatalf("GitHub master switch = %v, %v; want disabled", enabled, err)
+	}
+}
+
+func TestPRWakeupLedgerHasDetachedUniqueIndex(t *testing.T) {
+	f, _, _, _ := wakeFixture(t)
+	if got := f.Count(t, `SELECT count(*) FROM pg_constraint WHERE conrelid='issue_wakeup_pr_event'::regclass AND contype IN ('f','p')`); got != 0 {
+		t.Fatalf("ledger foreign-key/primary-key constraints = %d, want 0", got)
+	}
+	if got := f.Count(t, `SELECT count(*) FROM pg_index WHERE indrelid='issue_wakeup_pr_event'::regclass AND indisunique AND indisvalid AND NOT indisprimary`); got != 1 {
+		t.Fatalf("valid standalone unique ledger indexes = %d, want 1", got)
+	}
+}
+
+func TestPRWakeupRatePauseRetainsEventsAndRecovers(t *testing.T) {
+	f, s, issue, agent := wakeFixture(t)
+	assignPRWakeupIssue(t, f, issue, agent)
+	ctx := context.Background()
+	trigger := func(head string) {
+		t.Helper()
+		if err := s.TriggerPullRequestWakeup(ctx, issue, PullRequestWakeupInput{
+			Rule: SystemRulePRChecksFailed, RepoOwner: "acme", RepoName: "widget", Number: 157,
+			URL: "https://github.com/acme/widget/pull/157", HeadSHA: head, Conclusion: "FAILURE",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	completeQueued := func() {
+		t.Helper()
+		f.Exec(t, `UPDATE agent_task_queue SET status='completed',completed_at=clock_timestamp() WHERE issue_id=$1 AND context->>'wakeup_system'=$2 AND status='queued'`, issue, SystemRulePRChecksFailed)
+	}
+	for index := 0; index < wakeupHourlyRunLimit; index++ {
+		trigger(fmt.Sprintf("head-%02d", index))
+		completeQueued()
+	}
+	trigger("head-at-cap")
+	w, err := f.q.GetSystemWakeup(ctx, db.GetSystemWakeupParams{IssueID: issue, SystemRule: systemRuleText(SystemRulePRChecksFailed)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.Enabled || !w.PausedReason.Valid || w.PausedReason.String != wakeupPausedRate {
+		t.Fatalf("rule at hourly cap = enabled %v, pause %q; want rate-paused", w.Enabled, w.PausedReason.String)
+	}
+	if got := f.Count(t, `SELECT count(*) FROM issue_wakeup_receipt WHERE wakeup_id=$1 AND processed_at IS NULL`, w.ID); got != 1 {
+		t.Fatalf("receipt at rate pause = %d pending, want 1", got)
+	}
+	trigger("head-while-paused")
+	if got := f.Count(t, `SELECT count(*) FROM issue_wakeup_receipt WHERE wakeup_id=$1 AND processed_at IS NULL`, w.ID); got != 2 {
+		t.Fatalf("receipts captured while paused = %d pending, want 2", got)
+	}
+	f.Exec(t, `UPDATE agent_task_queue SET created_at=now()-interval '2 hours' WHERE issue_id=$1 AND context->>'wakeup_id'=$2`, issue, w.ID)
+	trigger("head-after-recovery")
+	w, err = f.q.GetSystemWakeup(ctx, db.GetSystemWakeupParams{IssueID: issue, SystemRule: systemRuleText(SystemRulePRChecksFailed)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !w.Enabled || w.PausedReason.Valid {
+		t.Fatalf("rule after rate recovery = enabled %v, pause %q; want enabled and cleared", w.Enabled, w.PausedReason.String)
+	}
+	if got := f.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND context->>'wakeup_system'=$2`, issue, SystemRulePRChecksFailed); got != wakeupHourlyRunLimit+1 {
+		t.Fatalf("wake tasks after recovery = %d, want %d", got, wakeupHourlyRunLimit+1)
+	}
+	if got := f.Count(t, `SELECT count(*) FROM issue_wakeup_receipt WHERE wakeup_id=$1 AND processed_at IS NULL`, w.ID); got != 0 {
+		t.Fatalf("pending receipts after recovered dispatch = %d, want 0", got)
+	}
+}
+
+func TestPRWakeupLedgerIsRemovedByIssueWorkspaceAndRuleDeletion(t *testing.T) {
+	f, s, issue, agent := wakeFixture(t)
+	ctx := context.Background()
+	makePRLedger := func(issueID pgtype.UUID, number int32) pgtype.UUID {
+		t.Helper()
+		assignPRWakeupIssue(t, f, issueID, agent)
+		if err := s.TriggerPullRequestWakeup(ctx, issueID, PullRequestWakeupInput{
+			Rule: SystemRulePRMerged, RepoOwner: "acme", RepoName: "widget", Number: number,
+			URL: fmt.Sprintf("https://github.com/acme/widget/pull/%d", number), MergeCommit: fmt.Sprintf("merge-%d", number),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		w, err := f.q.GetSystemWakeup(ctx, db.GetSystemWakeupParams{IssueID: issueID, SystemRule: systemRuleText(SystemRulePRMerged)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return w.ID
+	}
+
+	ruleIssue := f.Issue(t, "delete wakeup ledger")
+	ruleID := parseTestUUID(t, ruleIssue)
+	rule := wakeCreate(t, f, s, ruleID, WakeupInput{AgentID: agent, Kind: "event", EventTypes: []string{"comment.created"}, Instruction: "Check the captured event"})
+	f.Exec(t, `INSERT INTO issue_wakeup_pr_event(wakeup_id,event_key) VALUES($1,'rule-delete')`, rule.ID)
+	if err := s.Delete(ctx, ruleID, rule.ID, parseTestUUID(t, f.UserID)); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Count(t, `SELECT count(*) FROM issue_wakeup_pr_event WHERE wakeup_id=$1`, rule.ID); got != 0 {
+		t.Fatalf("ledger rows after individual wakeup deletion = %d, want 0", got)
+	}
+
+	issueLedgerID := makePRLedger(issue, 158)
+	if err := f.q.DeleteIssue(ctx, db.DeleteIssueParams{ID: issue, WorkspaceID: parseTestUUID(t, f.WorkspaceID)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Count(t, `SELECT count(*) FROM issue_wakeup_pr_event WHERE wakeup_id=$1`, issueLedgerID); got != 0 {
+		t.Fatalf("ledger rows after issue deletion = %d, want 0", got)
+	}
+
+	workspaceIssue := parseTestUUID(t, f.Issue(t, "delete workspace ledger"))
+	workspaceLedgerID := makePRLedger(workspaceIssue, 159)
+	if err := f.q.DeleteWorkspaceIssueRoots(ctx, parseTestUUID(t, f.WorkspaceID)); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Count(t, `SELECT count(*) FROM issue_wakeup_pr_event WHERE wakeup_id=$1`, workspaceLedgerID); got != 0 {
+		t.Fatalf("ledger rows after workspace issue teardown = %d, want 0", got)
 	}
 }
 

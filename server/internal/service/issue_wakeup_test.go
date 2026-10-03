@@ -26,6 +26,7 @@ func wakeFixture(t *testing.T) (principalFixture, *IssueWakeupService, pgtype.UU
 	f.Cleanup(t, "DELETE FROM issue_wakeup WHERE issue_id=$1", issue)
 	f.Cleanup(t, "DELETE FROM issue_wakeup_receipt WHERE wakeup_id IN (SELECT id FROM issue_wakeup WHERE issue_id=$1)", issue)
 	f.Cleanup(t, "DELETE FROM agent_task_queue WHERE issue_id=$1", issue)
+	f.Cleanup(t, "DELETE FROM issue_wakeup_pr_event WHERE wakeup_id IN (SELECT id FROM issue_wakeup WHERE issue_id=$1)", issue)
 	return f, &IssueWakeupService{Tasks: f.svc.TaskSvc}, parseTestUUID(t, issue), agent
 }
 func parseTestUUID(t *testing.T, s string) pgtype.UUID {

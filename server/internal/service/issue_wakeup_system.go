@@ -655,13 +655,14 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		return err
 	}
 	_, isPRWakeup := prWakeupSetting(w.SystemRule.String)
+	ratePaused := isPRWakeup && !w.Enabled && w.PausedReason.Valid && w.PausedReason.String == wakeupPausedRate
 	active, err := systemWakeupIssueActive(ctx, q, issue, isPRWakeup)
 	if err != nil {
 		return err
 	}
 	// A closed parent or a rule that is off or paused keeps its state; a
 	// system rule is never disabled by the platform for a closed issue.
-	if !active || !w.Enabled {
+	if !active || (!w.Enabled && !ratePaused) {
 		if err := q.DiscardWakeupReceipts(ctx, w.ID); err != nil {
 			return err
 		}
@@ -861,13 +862,6 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 			return err
 		}
 		if activeRun {
-			facts["outcome"] = wakeupOutcomeAcknowledged
-			if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
-				return err
-			}
-			if err := note(wakeupActivityTriggered, facts); err != nil {
-				return err
-			}
 			return commit()
 		}
 	}
@@ -876,16 +870,23 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		return err
 	}
 	if recent >= wakeupHourlyRunLimit {
-		if err := q.PauseIssueWakeup(ctx, db.PauseIssueWakeupParams{ID: w.ID, PausedReason: pgtype.Text{String: wakeupPausedRate, Valid: true}, BlockRuns: true}); err != nil {
-			return err
-		}
-		if err := q.DiscardWakeupReceipts(ctx, w.ID); err != nil {
-			return err
-		}
-		if err := note(wakeupActivityPaused, map[string]any{"rule": w.SystemRule.String, "reason": wakeupPausedRate, "limit": wakeupHourlyRunLimit}); err != nil {
-			return err
+		if !ratePaused {
+			if err := q.PauseIssueWakeup(ctx, db.PauseIssueWakeupParams{ID: w.ID, PausedReason: pgtype.Text{String: wakeupPausedRate, Valid: true}, BlockRuns: true}); err != nil {
+				return err
+			}
+			if err := note(wakeupActivityPaused, map[string]any{"rule": w.SystemRule.String, "reason": wakeupPausedRate, "limit": wakeupHourlyRunLimit}); err != nil {
+				return err
+			}
 		}
 		return commit()
+	}
+	if ratePaused {
+		if err := q.ResumeRateLimitedSystemWakeup(ctx, w.ID); err != nil {
+			return err
+		}
+		w.Enabled = true
+		w.PausedReason = pgtype.Text{}
+		w.DisabledAt = pgtype.Timestamptz{}
 	}
 	if err := guardIssueNotInTriage(ctx, q, issue.ID, OriginDerived); err != nil {
 		return err

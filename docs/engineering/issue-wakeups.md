@@ -60,7 +60,10 @@ Both workspace settings default to on: `github_wake_on_pr_merge` and
 them. Unassigned, member-assigned and cancelled issues do not start agent runs, and
 an already-active run of the assigned agent is not duplicated. Wakeup prompts
 include the PR, merge commit or failing head, and issue status captured with the
-event.
+event. A queued run that cannot accept facts across originator identities keeps
+those receipts pending rather than consuming them. A PR rule paused at its
+12-runs-per-hour limit retains receipts and resumes them on a later PR event
+once the rolling-hour count falls below the cap.
 
 Agents manage configurations with `multica issue wakeup`:
 
@@ -195,8 +198,9 @@ starting a final run on the closed issue.
   service, scheduler and HTTP writers without a best-effort in-memory hop. They
   do not build a general event archive or evaluate business predicates.
 - `issue_wakeup_pr_event` retains compact PR event identities beyond receipt
-  expiry, without retaining receipt payloads. Its rows cascade with the parent
-  system wakeup.
+  expiry, without retaining receipt payloads. Its unique index is built
+  concurrently; issue, workspace and wakeup deletion explicitly remove ledger
+  rows in their transaction, without a foreign key or cascade.
 - Registration is prospective once committed; agents should subscribe before
   querying current state. The explicit run filter also checks current state
   during registration. There is no global event order or historical replay API.
@@ -223,9 +227,10 @@ starting a final run on the closed issue.
   thread stays in `trigger_comment_id`. This preserves old retry SQL during a
   rolling server upgrade. Comment/assign coalescing excludes wakeup inputs, and
   the existing issue/agent execution fence still serializes actual runs.
-- Issue/workspace deletion explicitly removes configurations and receipts in
-  the application deletion graph. The PR event identity ledger cascades with
-  its parent wakeup; other wakeup tables have no foreign keys or cascades.
+- Issue/workspace deletion explicitly removes configurations, receipts and PR
+  event identities in the application deletion graph; wakeup deletion removes
+  its ledger rows in the same transaction. Wakeup tables have no foreign keys
+  or cascades.
 
 ## Deployment and verification
 
