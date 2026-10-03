@@ -159,6 +159,13 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 	if err != nil {
 		return err
 	}
+	tag, err := tx.Exec(ctx, `INSERT INTO issue_wakeup_pr_event(wakeup_id,event_key) VALUES($1,$2) ON CONFLICT DO NOTHING`, w.ID, eventKey)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return tx.Commit(ctx)
+	}
 	payload := map[string]any{
 		"repo_owner": in.RepoOwner, "repo_name": in.RepoName, "pr_number": in.Number,
 		"pr_url": in.URL, "issue_status": issue.Status,

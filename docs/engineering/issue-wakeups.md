@@ -52,6 +52,9 @@ existing full-config CLI update continue to work without a migration.
 The platform creates system wakeups for a linked PR merge and for CI snapshots
 whose current head concludes with `FAILURE` or `ERROR`. Merge receipts deduplicate
 by repository and PR; CI receipts deduplicate by repository, PR and head SHA.
+Compact event identities outlive the seven-day receipt cleanup; receipt payloads
+retain the normal expiry. Workspace opt-outs are rechecked when queued PR wakeups
+are claimed or joined to another run.
 Both workspace settings default to on: `github_wake_on_pr_merge` and
 `github_wake_on_ci_failure`. The `github_enabled` master switch also disables
 them. Unassigned, member-assigned and cancelled issues do not start agent runs, and
@@ -191,6 +194,9 @@ starting a final run on the closed issue.
   capture matching receipts in the source transaction. SQL capture hooks cover
   service, scheduler and HTTP writers without a best-effort in-memory hop. They
   do not build a general event archive or evaluate business predicates.
+- `issue_wakeup_pr_event` retains compact PR event identities beyond receipt
+  expiry, without retaining receipt payloads. Its rows cascade with the parent
+  system wakeup.
 - Registration is prospective once committed; agents should subscribe before
   querying current state. The explicit run filter also checks current state
   during registration. There is no global event order or historical replay API.
@@ -218,8 +224,8 @@ starting a final run on the closed issue.
   rolling server upgrade. Comment/assign coalescing excludes wakeup inputs, and
   the existing issue/agent execution fence still serializes actual runs.
 - Issue/workspace deletion explicitly removes configurations and receipts in
-  the application deletion graph. No foreign keys or cascading relationships
-  are added.
+  the application deletion graph. The PR event identity ledger cascades with
+  its parent wakeup; other wakeup tables have no foreign keys or cascades.
 
 ## Deployment and verification
 

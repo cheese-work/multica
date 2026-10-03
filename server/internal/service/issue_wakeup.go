@@ -1200,6 +1200,19 @@ func (s *IssueWakeupService) CheckClaim(ctx context.Context, task db.AgentTaskQu
 		if !w.Enabled || w.DisabledAt.Valid || w.Revision != source.Revision || w.IssueID != task.IssueID {
 			return ErrWakeupForbidden
 		}
+		if _, isPRWakeup := prWakeupSetting(w.SystemRule.String); isPRWakeup {
+			workspace, err := s.Tasks.Queries.GetWorkspace(ctx, w.WorkspaceID)
+			if err != nil {
+				return err
+			}
+			enabled, err := PRWakeupEnabled(workspace.Settings, w.SystemRule.String)
+			if err != nil {
+				return err
+			}
+			if !enabled {
+				return ErrWakeupForbidden
+			}
+		}
 		agent, err := s.Tasks.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: task.AgentID, WorkspaceID: w.WorkspaceID})
 		if errors.Is(err, pgx.ErrNoRows) || (err == nil && (agent.ArchivedAt.Valid || !agent.RuntimeID.Valid)) {
 			return ErrWakeupForbidden

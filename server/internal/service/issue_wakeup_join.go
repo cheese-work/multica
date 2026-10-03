@@ -212,10 +212,6 @@ func (s *IssueWakeupService) JoinWaitingWakeups(ctx context.Context, task db.Age
 	if err != nil {
 		return task.Context, err
 	}
-	active, err := wakeupIssueActive(ctx, q, issue)
-	if err != nil {
-		return task.Context, err
-	}
 	changed := len(previous) != len(stored.Joined)
 	joined := make([]joinedWakeup, 0, len(rules))
 	chain := stored.Chain
@@ -237,7 +233,7 @@ func (s *IssueWakeupService) JoinWaitingWakeups(ctx context.Context, task db.Age
 		if err != nil {
 			return task.Context, err
 		}
-		entry, ruleChain, err := s.reserveForRun(ctx, q, issue, active, task, w)
+		entry, ruleChain, err := s.reserveForRun(ctx, q, issue, task, w)
 		if err != nil {
 			return task.Context, err
 		}
@@ -282,7 +278,7 @@ func (s *IssueWakeupService) JoinWaitingWakeups(ctx context.Context, task db.Age
 // returns its entry, or releases what the run held and returns nil when the
 // rule must not reach this run (or, for its own dispatch to decide, the inputs
 // are the agent's own or close a loop).
-func (s *IssueWakeupService) reserveForRun(ctx context.Context, q *db.Queries, issue db.Issue, active bool, task db.AgentTaskQueue, w db.IssueWakeup) (*joinedWakeup, []string, error) {
+func (s *IssueWakeupService) reserveForRun(ctx context.Context, q *db.Queries, issue db.Issue, task db.AgentTaskQueue, w db.IssueWakeup) (*joinedWakeup, []string, error) {
 	pending, err := q.ListPendingWakeupReceipts(ctx, db.ListPendingWakeupReceiptsParams{WakeupID: w.ID, Revision: w.Revision})
 	if err != nil {
 		return nil, nil, err
@@ -309,6 +305,16 @@ func (s *IssueWakeupService) reserveForRun(ctx context.Context, q *db.Queries, i
 		}
 		return nil, nil, q.ReleaseWakeupReceipts(ctx, held)
 	}
+	active, err := wakeupIssueActive(ctx, q, issue)
+	if w.SystemRule.Valid {
+		_, isPRWakeup := prWakeupSetting(w.SystemRule.String)
+		if isPRWakeup {
+			active, err = systemWakeupIssueActive(ctx, q, issue, true)
+		}
+	}
+	if err != nil {
+		return nil, nil, err
+	}
 	if len(receipts) == 0 || !active || w.DisabledAt.Valid || w.IssueID != task.IssueID {
 		return release()
 	}
@@ -319,7 +325,7 @@ func (s *IssueWakeupService) reserveForRun(ctx context.Context, q *db.Queries, i
 		}
 		return release()
 	}
-	instruction, ok, err := s.mayJoin(ctx, q, issue, task, w)
+	instruction, ok, err := s.mayJoin(ctx, q, issue, task, w, receipts)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -350,7 +356,7 @@ func (s *IssueWakeupService) reserveForRun(ctx context.Context, q *db.Queries, i
 // mayJoin reports whether the run is one the rule's own run would be: the
 // same agent, run as the same person, who may still use the agent. It returns
 // the instruction the run gets.
-func (s *IssueWakeupService) mayJoin(ctx context.Context, q *db.Queries, issue db.Issue, task db.AgentTaskQueue, w db.IssueWakeup) (string, bool, error) {
+func (s *IssueWakeupService) mayJoin(ctx context.Context, q *db.Queries, issue db.Issue, task db.AgentTaskQueue, w db.IssueWakeup, receipts []db.IssueWakeupReceipt) (string, bool, error) {
 	agent, err := q.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: task.AgentID, WorkspaceID: w.WorkspaceID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
@@ -381,11 +387,17 @@ func (s *IssueWakeupService) mayJoin(ctx context.Context, q *db.Queries, issue d
 	if err != nil || runAs.UserID != task.OriginatorUserID {
 		return "", false, err
 	}
-	var settings []byte
-	if ws, err := q.GetWorkspace(ctx, issue.WorkspaceID); err == nil {
-		settings = ws.Settings
+	ws, err := q.GetWorkspace(ctx, issue.WorkspaceID)
+	if err != nil {
+		return "", false, err
 	}
-	return ChildDoneInstruction(w.Instruction, settings), true, nil
+	if _, isPRWakeup := prWakeupSetting(w.SystemRule.String); isPRWakeup {
+		enabled, err := PRWakeupEnabled(ws.Settings, w.SystemRule.String)
+		if err != nil || !enabled {
+			return "", false, err
+		}
+	}
+	return systemWakeupInstruction(w, ws.Settings, receipts), true, nil
 }
 
 // takenRun is a run that took some of a rule's inputs along and has started.

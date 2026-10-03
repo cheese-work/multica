@@ -4,9 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -15,6 +20,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
+	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -289,6 +297,57 @@ func TestMergedPRWakesTheLinkedIssueAssigneeWithReceipt(t *testing.T) {
 	}
 }
 
+func TestMergedPRWakeJoinsQueuedTaskAfterWebhookCompletesIssue(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	const installationID int64 = 527011
+	fx := newPRMergeWebhookFixture(t, installationID)
+	agentID := createHandlerTestAgent(t, "CHE-973 queued PR merge", nil)
+	setIssueAssigneeDirect(t, fx.child.ID, "agent", agentID)
+	waitingTaskID := dbfx.Task(t, agentID, testutil.Cols{
+		"runtime_id":          handlerTestRuntimeID(t),
+		"issue_id":            fx.child.ID,
+		"originator_user_id":  testUserID,
+		"accountable_user_id": testUserID,
+	})
+
+	postSignedGitHubWebhook(t, fx.secret, buildMergedPRWebhookBody(fx.child.Identifier, 52711, "acme", "widget", installationID), "che973-merge-queued")
+	updatedIssue, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(fx.child.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedIssue.Status != "done" {
+		t.Fatalf("merged webhook left issue status %q, want done", updatedIssue.Status)
+	}
+	if got := countPendingTasksForAgent(t, fx.child.ID, agentID); got != 1 {
+		t.Fatalf("pending task count after merge = %d, want only the queued ordinary run", got)
+	}
+	if _, err := testPool.Exec(context.Background(), `UPDATE agent_task_queue SET status='dispatched',dispatched_at=clock_timestamp() WHERE id=$1`, waitingTaskID); err != nil {
+		t.Fatal(err)
+	}
+	task, err := testHandler.Queries.GetAgentTask(context.Background(), parseUUID(waitingTaskID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined, err := (&service.IssueWakeupService{Tasks: testHandler.TaskService}).JoinWaitingWakeups(context.Background(), task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes := service.JoinedWakeupNotes(joined)
+	for _, want := range []string{"A linked pull request has merged", "PR #52711", "ae18acf237df4b9862d52f82aa7d866052613507", "issue status when it merged was done"} {
+		if !strings.Contains(notes, want) {
+			t.Errorf("joined PR note %q does not contain %q", notes, want)
+		}
+	}
+	if strings.Contains(notes, service.ChildDoneDefaultInstruction) {
+		t.Fatalf("joined PR note contains the child-completion instruction: %q", notes)
+	}
+	if got := dbfx.Count(t, `SELECT count(*) FROM issue_wakeup_receipt r JOIN issue_wakeup w ON w.id=r.wakeup_id WHERE w.issue_id=$1 AND w.system_rule='pr_merged' AND r.task_id=$2 AND r.processed_at IS NULL`, fx.child.ID, waitingTaskID); got != 1 {
+		t.Fatalf("reserved merge receipts on claimed run = %d, want 1 pending receipt", got)
+	}
+}
+
 func TestMergedPRWakeRedeliveryDoesNotDuplicateRun(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -391,7 +450,7 @@ func TestMergedPRDoesNotQueueWhileAssignedAgentIsAlreadyActive(t *testing.T) {
 	}
 }
 
-func TestPRWakeSettingsDisableMergeAndCheckFailure(t *testing.T) {
+func TestPRWakeSettingsDisableMerge(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
@@ -403,17 +462,12 @@ func TestPRWakeSettingsDisableMergeAndCheckFailure(t *testing.T) {
 	setIssueAssigneeDirect(t, fx.child.ID, "agent", agentID)
 
 	postSignedGitHubWebhook(t, fx.secret, buildMergedPRWebhookBody(fx.child.Identifier, 52708, "acme", "widget", installationID), "che973-merge-disabled")
-	pr := linkedPRForWakeup(t, fx, installationID, 52709, "che973-head-x")
-	if _, err := testPool.Exec(context.Background(), `UPDATE github_pull_request SET snapshot_head_sha=head_sha, checks_rollup_state='FAILURE' WHERE id=$1`, pr.ID); err != nil {
-		t.Fatalf("set failing snapshot: %v", err)
-	}
-	testHandler.broadcastPRSnapshotApplied(context.Background(), pr.ID)
 	if got := countPendingTasksForAgent(t, fx.child.ID, agentID); got != 0 {
-		t.Fatalf("pending tasks with wake settings off = %d, want 0", got)
+		t.Fatalf("pending tasks with merge wake setting off = %d, want 0", got)
 	}
 }
 
-func TestPRCheckFailureWakesOncePerHeadAndIgnoresSuccess(t *testing.T) {
+func TestPRCheckFailureWebhookRefreshesSnapshotAndEnqueuesWakeup(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
@@ -422,47 +476,70 @@ func TestPRCheckFailureWakesOncePerHeadAndIgnoresSuccess(t *testing.T) {
 	agentID := createHandlerTestAgent(t, "CHE-973 checks failure", nil)
 	setIssueAssigneeDirect(t, fx.child.ID, "agent", agentID)
 	pr := linkedPRForWakeup(t, fx, installationID, 52710, "che973-head-x")
-
-	setSnapshot := func(head, rollup string) {
-		t.Helper()
-		if _, err := testPool.Exec(context.Background(), `UPDATE github_pull_request SET head_sha=$2, snapshot_head_sha=$2, checks_rollup_state=$3 WHERE id=$1`, pr.ID, head, rollup); err != nil {
-			t.Fatalf("set %s snapshot: %v", rollup, err)
-		}
-		testHandler.broadcastPRSnapshotApplied(context.Background(), pr.ID)
+	setWorkspacePRWakeSetting(t, "github_enabled", true)
+	setWorkspacePRWakeSetting(t, "github_wake_on_ci_failure", true)
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
 	}
-	setSnapshot("che973-head-x", "SUCCESS")
-	if got := countPendingTasksForAgent(t, fx.child.ID, agentID); got != 0 {
-		t.Fatalf("success enqueued %d pending tasks, want 0", got)
+	t.Setenv("GITHUB_APP_ID", "123")
+	t.Setenv("GITHUB_APP_PRIVATE_KEY", string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})))
+	client, err := ghsnapshot.NewClientFromEnv()
+	if err != nil {
+		t.Fatal(err)
 	}
-	setSnapshot("che973-head-x", "FAILURE")
-	if got := countPendingTasksForAgent(t, fx.child.ID, agentID); got != 1 {
-		t.Fatalf("head X failure enqueued %d pending tasks, want 1", got)
+	applied := make(chan struct{}, 1)
+	refresh := ghsnapshot.NewManagerWithFetcher(client, testHandler.Queries, testPool,
+		func(_ context.Context, _ *ghsnapshot.Client, gotInstallationID int64, owner, repo string, number int32) (*ghsnapshot.PRSnapshot, error) {
+			if gotInstallationID != installationID || owner != "acme" || repo != "widget" || number != pr.PrNumber {
+				return nil, fmt.Errorf("unexpected refresh address: installation=%d %s/%s#%d", gotInstallationID, owner, repo, number)
+			}
+			return &ghsnapshot.PRSnapshot{
+				HeadSHA: "che973-head-x", Mergeable: "MERGEABLE", MergeStateStatus: "CLEAN",
+				RollupState: "FAILURE", HasChecks: true,
+			}, nil
+		},
+		func(ctx context.Context, prID pgtype.UUID) {
+			testHandler.broadcastPRSnapshotApplied(ctx, prID)
+			applied <- struct{}{}
+		},
+	)
+	previous := testHandler.PRRefresh
+	testHandler.PRRefresh = refresh
+	refreshCtx, cancelRefresh := context.WithCancel(context.Background())
+	refresh.Start(refreshCtx)
+	t.Cleanup(func() {
+		cancelRefresh()
+		testHandler.PRRefresh = previous
+	})
+	payload := map[string]any{
+		"action": "completed",
+		"check_suite": map[string]any{
+			"head_sha":      "che973-head-x",
+			"conclusion":    "failure",
+			"pull_requests": []map[string]any{{"number": pr.PrNumber}},
+		},
+		"repository":   map[string]any{"name": "widget", "owner": map[string]any{"login": "acme"}},
+		"installation": map[string]any{"id": installationID},
 	}
-	var instruction string
-	if err := testPool.QueryRow(context.Background(), `SELECT handoff_note FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2 AND context->>'wakeup_system'='pr_checks_failed'`, fx.child.ID, agentID).Scan(&instruction); err != nil {
-		t.Fatalf("read check-failure wake instruction: %v", err)
+	response := postSignedGitHubCIEvent(t, fx.secret, "check_suite", payload)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("check_suite webhook: expected 202, got %d: %s", response.Code, response.Body.String())
 	}
-	for _, want := range []string{"PR #52710", "che973-head-x", "issue status when those checks finished was in_progress"} {
-		if !strings.Contains(instruction, want) {
-			t.Errorf("check-failure wake instruction %q does not contain %q", instruction, want)
-		}
+	select {
+	case <-applied:
+	case <-time.After(5 * time.Second):
+		t.Fatal("snapshot refresh did not apply and invoke its callback")
 	}
-	setSnapshot("che973-head-x", "FAILURE")
-	if got := dbfx.Count(t, `SELECT count(*) FROM issue_wakeup_receipt r JOIN issue_wakeup w ON w.id=r.wakeup_id WHERE w.issue_id=$1 AND w.system_rule='pr_checks_failed' AND r.event_type='pr.checks_failed'`, fx.child.ID); got != 1 {
-		t.Fatalf("head X failure receipts after replay = %d, want 1", got)
+	var snapshotHead string
+	var conclusion pgtype.Text
+	if err := testPool.QueryRow(context.Background(), `SELECT snapshot_head_sha,checks_rollup_state FROM github_pull_request WHERE id=$1`, pr.ID).Scan(&snapshotHead, &conclusion); err != nil {
+		t.Fatalf("read refreshed snapshot: %v", err)
 	}
-	if _, err := testPool.Exec(context.Background(), `UPDATE agent_task_queue SET status='completed', completed_at=now() WHERE issue_id=$1 AND agent_id=$2`, fx.child.ID, agentID); err != nil {
-		t.Fatalf("complete first wakeup: %v", err)
+	if snapshotHead != "che973-head-x" || !conclusion.Valid || conclusion.String != "FAILURE" {
+		t.Fatalf("refreshed snapshot = head %q conclusion %+v, want failing current head", snapshotHead, conclusion)
 	}
-	setSnapshot("che973-head-y", "ERROR")
-	if got := dbfx.Count(t, `SELECT count(*) FROM issue_wakeup_receipt r JOIN issue_wakeup w ON w.id=r.wakeup_id WHERE w.issue_id=$1 AND w.system_rule='pr_checks_failed' AND r.event_type='pr.checks_failed'`, fx.child.ID); got != 2 {
-		t.Fatalf("failure receipts for heads X and Y = %d, want 2", got)
-	}
-	if got := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2 AND context->>'wakeup_system'='pr_checks_failed'`, fx.child.ID, agentID); got != 2 {
-		t.Fatalf("wake runs for heads X and Y = %d, want 2", got)
-	}
-	setSnapshot("che973-head-z", "SUCCESS")
-	if got := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2 AND context->>'wakeup_system'='pr_checks_failed'`, fx.child.ID, agentID); got != 2 {
-		t.Fatalf("success on head Z increased wake runs to %d, want 2", got)
+	if got := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2 AND context->>'wakeup_system'='pr_checks_failed'`, fx.child.ID, agentID); got != 1 {
+		t.Fatalf("failing refreshed check suite queued %d PR wakeups, want 1", got)
 	}
 }

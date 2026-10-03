@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -266,6 +267,125 @@ func TestWakeupKeepsItsInputWhenTheWaitingRunDoesNotTakeIt(t *testing.T) {
 			t.Fatalf("runs of the rule = %d, want 1", n)
 		}
 	})
+}
+
+func TestPRMergeWakeJoinsQueuedRunAfterIssueCompletes(t *testing.T) {
+	f, s, issue, agent := wakeFixture(t)
+	assignPRWakeupIssue(t, f, issue, agent)
+	waiting := wakeWaitingRun(t, f, issue, agent, f.UserID)
+	wakeSetStatus(t, f, issue, "done")
+	if err := s.TriggerPullRequestWakeup(context.Background(), issue, PullRequestWakeupInput{
+		Rule: SystemRulePRMerged, RepoOwner: "acme", RepoName: "widget", Number: 157,
+		URL: "https://github.com/acme/widget/pull/157", MergeCommit: "merge-sha",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	notes := wakeClaim(t, f, s, waiting)
+	for _, want := range []string{"A linked pull request has merged", "PR #157", "merge-sha", "issue status when it merged was done"} {
+		if !strings.Contains(notes, want) {
+			t.Errorf("joined note %q does not contain %q", notes, want)
+		}
+	}
+	if strings.Contains(notes, ChildDoneDefaultInstruction) || strings.Count(notes, "pr.merged") != 1 {
+		t.Fatalf("merge notification was incorrect or duplicated: %q", notes)
+	}
+	wakeStart(t, f, waiting)
+	w, err := f.q.GetSystemWakeup(context.Background(), db.GetSystemWakeupParams{IssueID: issue, SystemRule: systemRuleText(SystemRulePRMerged)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.dispatchSystem(context.Background(), w); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Count(t, `SELECT count(*) FROM issue_wakeup_receipt r WHERE r.wakeup_id=$1 AND r.processed_at IS NOT NULL`, w.ID); got != 1 {
+		t.Fatalf("merged receipt settlements = %d, want 1", got)
+	}
+	if got := f.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND context->>'wakeup_system'='pr_merged'`, issue); got != 0 {
+		t.Fatalf("joined merge also queued %d standalone runs", got)
+	}
+}
+
+func TestPRWakeupsJoinWithEventSpecificInstructions(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input PullRequestWakeupInput
+		wants []string
+	}{
+		{"merge", PullRequestWakeupInput{Rule: SystemRulePRMerged, RepoOwner: "acme", RepoName: "widget", Number: 157, MergeCommit: "merge-sha"}, []string{"A linked pull request has merged", "PR #157", "merge-sha"}},
+		{"checks failure", PullRequestWakeupInput{Rule: SystemRulePRChecksFailed, RepoOwner: "acme", RepoName: "widget", Number: 157, HeadSHA: "head-sha", Conclusion: "FAILURE"}, []string{"Checks for linked PR #157 (", "finished with FAILURE on head head-sha"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, s, issue, agent := conditionFixture(t)
+			assignPRWakeupIssue(t, f, issue, agent)
+			waiting := wakeWaitingRun(t, f, issue, agent, f.UserID)
+			tc.input.URL = "https://github.com/acme/widget/pull/157"
+			if err := s.TriggerPullRequestWakeup(context.Background(), issue, tc.input); err != nil {
+				t.Fatal(err)
+			}
+			notes := wakeClaim(t, f, s, waiting)
+			for _, want := range tc.wants {
+				if !strings.Contains(notes, want) {
+					t.Errorf("joined note %q does not contain %q", notes, want)
+				}
+			}
+			if strings.Contains(notes, ChildDoneDefaultInstruction) {
+				t.Fatalf("joined note contains the child-completion instruction: %q", notes)
+			}
+		})
+	}
+}
+
+func TestPRWakeupOptOutIsRecheckedBeforeClaimAndJoin(t *testing.T) {
+	for _, tc := range []struct {
+		setting string
+		rule    string
+	}{
+		{WorkspaceSettingPRMerged, SystemRulePRMerged},
+		{WorkspaceSettingPRFailure, SystemRulePRChecksFailed},
+		{"github_enabled", SystemRulePRChecksFailed},
+	} {
+		for _, phase := range []string{"claim", "join"} {
+			t.Run(tc.rule+"/"+phase, func(t *testing.T) {
+				f, s, issue, agent := conditionFixture(t)
+				assignPRWakeupIssue(t, f, issue, agent)
+				var waiting string
+				if phase == "join" {
+					waiting = wakeWaitingRun(t, f, issue, agent, f.UserID)
+				}
+				input := PullRequestWakeupInput{Rule: tc.rule, RepoOwner: "acme", RepoName: "widget", Number: 157}
+				if tc.rule == SystemRulePRMerged {
+					input.MergeCommit = "merge-sha"
+				} else {
+					input.HeadSHA = "head-sha"
+					input.Conclusion = "FAILURE"
+				}
+				if err := s.TriggerPullRequestWakeup(context.Background(), issue, input); err != nil {
+					t.Fatal(err)
+				}
+				f.Exec(t, `UPDATE workspace SET settings=COALESCE(settings,'{}'::jsonb)||jsonb_build_object($2::text,false) WHERE id=$1`, f.WorkspaceID, tc.setting)
+				if phase == "claim" {
+					var taskID pgtype.UUID
+					if err := f.Pool.QueryRow(context.Background(), `SELECT id FROM agent_task_queue WHERE issue_id=$1 AND context->>'wakeup_system'=$2`, issue, tc.rule).Scan(&taskID); err != nil {
+						t.Fatal(err)
+					}
+					task, err := f.q.GetAgentTask(context.Background(), taskID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := s.CheckClaim(context.Background(), task); !errors.Is(err, ErrWakeupForbidden) {
+						t.Fatalf("CheckClaim after opt-out = %v, want ErrWakeupForbidden", err)
+					}
+					return
+				}
+				if notes := wakeClaim(t, f, s, waiting); notes != "" {
+					t.Fatalf("opted-out %s event joined the claim: %q", tc.rule, notes)
+				}
+				if got := f.Count(t, `SELECT count(*) FROM issue_wakeup_receipt r JOIN issue_wakeup w ON w.id=r.wakeup_id WHERE w.issue_id=$1 AND w.system_rule=$2 AND r.task_id IS NOT NULL AND r.processed_at IS NULL`, issue, tc.rule); got != 0 {
+					t.Fatalf("opted-out receipt reservations = %d, want 0", got)
+				}
+			})
+		}
+	}
 }
 
 // The one-time backfill can create a parent's rule while a sub-issue's

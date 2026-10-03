@@ -1,7 +1,9 @@
 package service
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -102,4 +104,44 @@ func TestPRWakeupSettingsDefaultOnAndIndependent(t *testing.T) {
 	if enabled, err := PRWakeupEnabled([]byte(`{"github_enabled":false}`), SystemRulePRChecksFailed); err != nil || enabled {
 		t.Fatalf("GitHub master switch = %v, %v; want disabled", enabled, err)
 	}
+}
+
+func TestPRFailureReplayAfterReceiptExpiryRemainsDeduplicated(t *testing.T) {
+	f, s, issue, agent := wakeFixture(t)
+	assignPRWakeupIssue(t, f, issue, agent)
+	ctx := context.Background()
+	input := PullRequestWakeupInput{Rule: SystemRulePRChecksFailed, RepoOwner: "acme", RepoName: "widget", Number: 157, URL: "https://github.com/acme/widget/pull/157", HeadSHA: "head-x", Conclusion: "FAILURE"}
+	if err := s.TriggerPullRequestWakeup(ctx, issue, input); err != nil {
+		t.Fatal(err)
+	}
+	f.Exec(t, `UPDATE agent_task_queue SET status='completed',completed_at=clock_timestamp() WHERE issue_id=$1`, issue)
+	f.Exec(t, `UPDATE issue_wakeup_receipt r SET created_at=now()-interval '10 days',processed_at=now()-interval '9 days' FROM issue_wakeup w WHERE w.id=r.wakeup_id AND w.issue_id=$1 AND w.system_rule='pr_checks_failed'`, issue)
+	removed, err := f.q.DeleteExpiredWakeupReceipts(ctx, pgtype.Timestamptz{Time: time.Now().Add(-7 * 24 * time.Hour), Valid: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Fatalf("expired receipts removed = %d, want 1", removed)
+	}
+	if err := s.TriggerPullRequestWakeup(ctx, issue, input); err != nil {
+		t.Fatal(err)
+	}
+	count := func() int {
+		return f.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND context->>'wakeup_system'='pr_checks_failed'`, issue)
+	}
+	if got := count(); got != 1 {
+		t.Fatalf("replay after receipt expiry queued %d runs, want 1 total", got)
+	}
+	input.HeadSHA = "head-y"
+	if err := s.TriggerPullRequestWakeup(ctx, issue, input); err != nil {
+		t.Fatal(err)
+	}
+	if got := count(); got != 2 {
+		t.Fatalf("different failing head queued %d runs, want 2 total", got)
+	}
+}
+
+func assignPRWakeupIssue(t *testing.T, f principalFixture, issue pgtype.UUID, agent string) {
+	t.Helper()
+	f.Exec(t, `UPDATE issue SET status='in_progress',assignee_type='agent',assignee_id=$2 WHERE id=$1`, issue, agent)
 }
