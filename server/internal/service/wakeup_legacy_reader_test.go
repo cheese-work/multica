@@ -10,6 +10,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
 func defRow(scope string, scopeID pgtype.UUID, key, config string) db.IssueWakeupDefinition {
@@ -238,64 +239,78 @@ func TestBackfilledDefinitionLeavesLegacyDispatchUnchanged(t *testing.T) {
 	}
 }
 
-func TestSuspendedLegacyDispatchHoldsPRWorkspaceInstruction(t *testing.T) {
-	for _, rule := range []string{SystemRulePRMerged, SystemRulePRChecksFailed} {
-		for _, phase := range []string{"dispatch", "claim", "join"} {
-			t.Run(rule+"/"+phase, func(t *testing.T) {
-				f, s, issue, agent := conditionFixture(t)
-				assignPRWakeupIssue(t, f, issue, agent)
-				f.Cleanup(t, "DELETE FROM issue_wakeup_definition WHERE workspace_id=$1", f.WorkspaceID)
-				ctx := context.Background()
-				input := prMergedInput
-				input.Rule = rule
-				if rule == SystemRulePRChecksFailed {
-					input.MergeCommit, input.HeadSHA, input.Conclusion = "", "head-sha", "FAILURE"
-				}
-				var waiting string
-				if phase == "join" {
-					waiting = wakeWaitingRun(t, f, issue, agent, f.UserID)
-				}
-				if phase != "dispatch" {
-					if err := s.TriggerPullRequestWakeup(ctx, issue, input); err != nil {
+// A stored PR instruction is never executed by legacy PR text, at workspace
+// scope or mirrored onto a customized row by a matching issue definition.
+func TestSuspendedLegacyDispatchHoldsPRInstruction(t *testing.T) {
+	for _, scope := range []string{"workspace", "issue"} {
+		for _, rule := range []string{SystemRulePRMerged, SystemRulePRChecksFailed} {
+			for _, phase := range []string{"dispatch", "claim", "join"} {
+				t.Run(scope+"/"+rule+"/"+phase, func(t *testing.T) {
+					f, s, issue, agent := conditionFixture(t)
+					assignPRWakeupIssue(t, f, issue, agent)
+					f.Cleanup(t, "DELETE FROM issue_wakeup_definition WHERE workspace_id=$1", f.WorkspaceID)
+					ctx := context.Background()
+					scopeID, config := f.WorkspaceID, `{"v":1,"instruction":"scoped text"}`
+					if scope == "issue" {
+						// The runtime row is customized with the same instruction the definition mirrors.
+						scopeID, config = util.UUIDToString(issue), `{"v":1,"enabled":true,"instruction":"scoped text"}`
+						w, err := f.q.CreateSystemWakeup(ctx, db.CreateSystemWakeupParams{ID: dbid.NewV7(), WorkspaceID: parseTestUUID(t, f.WorkspaceID), IssueID: issue, EventTypes: []string{}, Enabled: true, SystemRule: systemRuleText(rule)})
+						if err != nil {
+							t.Fatal(err)
+						}
+						f.Exec(t, `UPDATE issue_wakeup SET customized_at=clock_timestamp(),instruction='scoped text' WHERE id=$1`, w.ID)
+					}
+					input := prMergedInput
+					input.Rule = rule
+					if rule == SystemRulePRChecksFailed {
+						input.MergeCommit, input.HeadSHA, input.Conclusion = "", "head-sha", "FAILURE"
+					}
+					var waiting string
+					if phase == "join" {
+						waiting = wakeWaitingRun(t, f, issue, agent, f.UserID)
+					}
+					if phase != "dispatch" {
+						if err := s.TriggerPullRequestWakeup(ctx, issue, input); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if err := insertDefinition(t, f, scope, scopeID, rule, false, config); err != nil {
 						t.Fatal(err)
 					}
-				}
-				if err := insertDefinition(t, f, "workspace", f.WorkspaceID, rule, false, `{"v":1,"instruction":"scoped text"}`); err != nil {
-					t.Fatal(err)
-				}
-				pending := `SELECT count(*) FROM issue_wakeup_receipt r JOIN issue_wakeup w ON w.id=r.wakeup_id WHERE w.issue_id=$1 AND w.system_rule=$2 AND r.processed_at IS NULL`
-				switch phase {
-				case "dispatch":
-					if err := s.TriggerPullRequestWakeup(ctx, issue, input); err != nil {
-						t.Fatal(err)
+					pending := `SELECT count(*) FROM issue_wakeup_receipt r JOIN issue_wakeup w ON w.id=r.wakeup_id WHERE w.issue_id=$1 AND w.system_rule=$2 AND r.processed_at IS NULL`
+					switch phase {
+					case "dispatch":
+						if err := s.TriggerPullRequestWakeup(ctx, issue, input); err != nil {
+							t.Fatal(err)
+						}
+						if got := f.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND context->>'wakeup_system'=$2`, issue, rule); got != 0 {
+							t.Fatalf("held rule queued %d runs", got)
+						}
+						if got := f.Count(t, pending, issue, rule); got != 1 {
+							t.Fatalf("pending receipts = %d, want 1", got)
+						}
+					case "claim":
+						var taskID pgtype.UUID
+						if err := f.Pool.QueryRow(ctx, `SELECT id FROM agent_task_queue WHERE issue_id=$1 AND context->>'wakeup_system'=$2`, issue, rule).Scan(&taskID); err != nil {
+							t.Fatal(err)
+						}
+						task, err := f.q.GetAgentTask(ctx, taskID)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := s.CheckClaim(ctx, task); !errors.Is(err, ErrWakeupForbidden) {
+							t.Fatalf("CheckClaim = %v, want ErrWakeupForbidden", err)
+						}
+					case "join":
+						if notes := wakeClaim(t, f, s, waiting); notes != "" {
+							t.Fatalf("held rule joined the claim: %q", notes)
+						}
+						if got := f.Count(t, pending, issue, rule); got != 1 {
+							t.Fatalf("pending receipts = %d, want 1", got)
+						}
 					}
-					if got := f.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND context->>'wakeup_system'=$2`, issue, rule); got != 0 {
-						t.Fatalf("held rule queued %d runs", got)
-					}
-					if got := f.Count(t, pending, issue, rule); got != 1 {
-						t.Fatalf("pending receipts = %d, want 1", got)
-					}
-				case "claim":
-					var taskID pgtype.UUID
-					if err := f.Pool.QueryRow(ctx, `SELECT id FROM agent_task_queue WHERE issue_id=$1 AND context->>'wakeup_system'=$2`, issue, rule).Scan(&taskID); err != nil {
-						t.Fatal(err)
-					}
-					task, err := f.q.GetAgentTask(ctx, taskID)
-					if err != nil {
-						t.Fatal(err)
-					}
-					if err := s.CheckClaim(ctx, task); !errors.Is(err, ErrWakeupForbidden) {
-						t.Fatalf("CheckClaim = %v, want ErrWakeupForbidden", err)
-					}
-				case "join":
-					if notes := wakeClaim(t, f, s, waiting); notes != "" {
-						t.Fatalf("held rule joined the claim: %q", notes)
-					}
-					if got := f.Count(t, pending, issue, rule); got != 1 {
-						t.Fatalf("pending receipts = %d, want 1", got)
-					}
-				}
-			})
+				})
+			}
 		}
 	}
 }

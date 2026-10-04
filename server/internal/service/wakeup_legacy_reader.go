@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"log/slog"
+	"reflect"
+	"strings"
 
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -61,26 +63,22 @@ func LegacyDispatchGate(ruleKey string, legacy db.IssueWakeup, rows []db.IssueWa
 			return suspend(LegacySuspendUnreadable)
 		}
 		p := def.Patch
-		switch def.Scope {
-		case WakeupScopeProject:
+		if def.Scope == WakeupScopeProject {
 			return suspend(LegacySuspendProjectScope)
-		case WakeupScopeWorkspace:
-			if p.Enabled.Set || (ruleKey == SystemRuleChildDone && p.Instruction.Set) {
+		}
+		if def.Scope == WakeupScopeIssue && !legacyIssueFieldsMatch(p, projected) {
+			return suspend(LegacySuspendIssueDiverges)
+		}
+		// Whatever the definition stores must be something legacy execution
+		// reads at that scope, whether it sets or clears the field.
+		for _, field := range setWakeupFields(p) {
+			switch {
+			case legacyReadsStoredField(def.Scope, ruleKey, field):
+			case def.Scope == WakeupScopeWorkspace && legacyAliasedField(ruleKey, field):
 				return suspend(LegacySuspendAliasConflict)
-			}
-			// Only child_done runs a stored instruction; PR text is always
-			// built from the receipt facts, so a stored one, even a clear,
-			// would be silently ignored.
-			if p.Instruction.Set {
+			default:
 				return suspend(LegacySuspendUnsupported)
 			}
-		case WakeupScopeIssue:
-			if !legacyIssueFieldsMatch(p, projected) {
-				return suspend(LegacySuspendIssueDiverges)
-			}
-		}
-		if legacyUnsupportedFields(p) {
-			return suspend(LegacySuspendUnsupported)
 		}
 	}
 	return LegacyDispatchVerdict{Allowed: true}
@@ -94,11 +92,47 @@ func isDefaultDerivedWakeup(w db.IssueWakeup) bool {
 	return !w.SystemRule.Valid && (w.DefaultRuleKey.Valid || w.DefaultScopeKind.Valid || w.DefaultScopeID.Valid)
 }
 
-// legacyUnsupportedFields reports whether a patch sets (or clears) anything
-// beyond the label, enabled and instruction fields the legacy path knows.
-func legacyUnsupportedFields(p WakeupConfigPatch) bool {
-	return p.Trigger.Set || p.Target.Set || p.Mode.Set || p.MaxFires.Set || p.Expiry.Set || p.Schedule.Set ||
-		p.RateLimit.Set || p.AggregateLimit.Set || p.Filters.Set || p.ActiveRun.Set
+// legacyReadsStoredField says whether legacy execution reads a stored
+// definition's field at a scope. It reads exactly these, and nothing else:
+//
+//   - workspace: nothing from a stored definition. The enabled value of each
+//     built-in and child_done's instruction come from the settings aliases.
+//   - project: nothing; the legacy path has no project scope.
+//   - issue: the legacy row's enabled (every rule) and instruction (child_done
+//     only; PR text is built from the receipt facts and ignores a stored one).
+//
+// The name is a display label with no execution effect, so it is allowed at
+// every scope. A field added to the patch later is unread until classified
+// here; TestLegacyMatrixCoversEveryPatchField keeps the two in step.
+func legacyReadsStoredField(scope WakeupScope, ruleKey, field string) bool {
+	switch field {
+	case "name":
+		return true
+	case "enabled":
+		return scope == WakeupScopeIssue
+	case "instruction":
+		return scope == WakeupScopeIssue && ruleKey == SystemRuleChildDone
+	}
+	return false
+}
+
+// legacyAliasedField reports fields whose legacy value lives in the workspace
+// settings aliases, so a stored workspace copy is a conflicting second one.
+func legacyAliasedField(ruleKey, field string) bool {
+	return field == "enabled" || (field == "instruction" && ruleKey == SystemRuleChildDone)
+}
+
+// setWakeupFields lists the JSON names of every field a patch sets or clears.
+// It reflects over the patch, so a new field is covered the day it is added.
+func setWakeupFields(p WakeupConfigPatch) []string {
+	var names []string
+	v, t := reflect.ValueOf(p), reflect.TypeOf(p)
+	for i := range t.NumField() {
+		if zero, ok := v.Field(i).Interface().(interface{ IsZero() bool }); ok && !zero.IsZero() {
+			names = append(names, strings.Split(t.Field(i).Tag.Get("json"), ",")[0])
+		}
+	}
+	return names
 }
 
 // legacyIssueFieldsMatch compares an issue definition's enabled and
