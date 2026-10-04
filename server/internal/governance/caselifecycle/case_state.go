@@ -42,10 +42,13 @@ const (
 	ReasonAgeOnlyExpiry           CaseReason = "age_only_expiry"
 	ReasonFreshEvidence           CaseReason = "fresh_evidence"
 	ReasonRefreshBudgetExhausted  CaseReason = "refresh_budget_exhausted"
-	ReasonDisabled                CaseReason = "disabled"
-	ReasonConfigMissing           CaseReason = "configuration_missing"
-	ReasonMaterialChanged         CaseReason = "material_changed"
-	ReasonInfrastructureFailure   CaseReason = "infrastructure_failure"
+	// ReasonFreshEvidenceForHuman returns a refreshed human_review case to the
+	// human; fresh evidence alone never lets it skip the human disposition.
+	ReasonFreshEvidenceForHuman CaseReason = "fresh_evidence_for_human"
+	ReasonDisabled              CaseReason = "disabled"
+	ReasonConfigMissing         CaseReason = "configuration_missing"
+	ReasonMaterialChanged       CaseReason = "material_changed"
+	ReasonInfrastructureFailure CaseReason = "infrastructure_failure"
 )
 
 func (state CaseState) IsTerminal() bool {
@@ -90,7 +93,7 @@ func CanTransition(from, to CaseState) bool {
 	case CaseRefreshing:
 		return to == CaseEvidenceReady || to == CaseHumanReview
 	case CaseHumanReview:
-		return to == CaseCorrectionPending || to == CaseDismissed
+		return to == CaseCorrectionPending || to == CaseDismissed || to == CaseRefreshing
 	default:
 		return false
 	}
@@ -148,10 +151,13 @@ func CanTransitionReason(from, to CaseState, reason CaseReason) bool {
 		if to == CaseEvidenceReady {
 			return reason == ReasonFreshEvidence
 		}
-		return reason == ReasonRefreshBudgetExhausted
+		return reason == ReasonRefreshBudgetExhausted || reason == ReasonFreshEvidenceForHuman
 	case CaseHumanReview:
-		if to == CaseCorrectionPending {
+		switch to {
+		case CaseCorrectionPending:
 			return reason == ReasonHumanApproval
+		case CaseRefreshing:
+			return reason == ReasonAgeOnlyExpiry
 		}
 		return reason == ReasonHumanDismissal
 	default:
@@ -167,7 +173,7 @@ func validCaseReason(reason CaseReason) bool {
 		ReasonNoAdmissibleRoute, ReasonValidProposal, ReasonUnqualifiedAttempt,
 		ReasonRemainingEligibleSlot, ReasonAttemptsExhausted, ReasonGuardsPassed,
 		ReasonCoveredMutation, ReasonHumanApproval, ReasonHumanDismissal,
-		ReasonAgeOnlyExpiry, ReasonFreshEvidence, ReasonRefreshBudgetExhausted,
+		ReasonAgeOnlyExpiry, ReasonFreshEvidence, ReasonRefreshBudgetExhausted, ReasonFreshEvidenceForHuman,
 		ReasonDisabled, ReasonConfigMissing, ReasonMaterialChanged, ReasonInfrastructureFailure:
 		return true
 	default:
