@@ -13,7 +13,7 @@ import (
 )
 
 const advanceIssueWakeup = `-- name: AdvanceIssueWakeup :exec
-UPDATE issue_wakeup SET enabled= $1,next_fire_at=$2,last_task_id=COALESCE($3,last_task_id),last_error=$4,updated_at=clock_timestamp() WHERE id= $5
+UPDATE issue_wakeup SET enabled=($1::bool AND paused_reason IS NULL),next_fire_at=$2,last_task_id=COALESCE($3,last_task_id),last_error=$4,updated_at=clock_timestamp() WHERE id= $5
 `
 
 type AdvanceIssueWakeupParams struct {
@@ -24,6 +24,9 @@ type AdvanceIssueWakeupParams struct {
 	ID         pgtype.UUID        `json:"id"`
 }
 
+// A paused rule is never revived here: enabled stays false while paused_reason
+// is set, so only a guarded resume (ResumeRateLimitedSystemWakeup) or a person
+// turning the rule on can clear a pause and its disabled_at together.
 func (q *Queries) AdvanceIssueWakeup(ctx context.Context, arg AdvanceIssueWakeupParams) error {
 	_, err := q.db.Exec(ctx, advanceIssueWakeup,
 		arg.Enabled,
@@ -1678,14 +1681,27 @@ func (q *Queries) ReserveWakeupReceipts(ctx context.Context, arg ReserveWakeupRe
 	return err
 }
 
-const resumeRateLimitedSystemWakeup = `-- name: ResumeRateLimitedSystemWakeup :exec
+const resumeRateLimitedSystemWakeup = `-- name: ResumeRateLimitedSystemWakeup :execrows
 UPDATE issue_wakeup SET enabled=true,paused_reason=NULL,disabled_at=NULL,updated_at=clock_timestamp()
-WHERE id= $1 AND system_rule IN ('pr_merged','pr_checks_failed') AND paused_reason='rate'
+WHERE issue_wakeup.id= $1 AND system_rule IN ('pr_merged','pr_checks_failed') AND paused_reason='rate'
+ AND (SELECT count(*) FROM agent_task_queue t WHERE t.context->>'wakeup_id'=issue_wakeup.id::text AND t.issue_id=issue_wakeup.issue_id AND t.created_at> $2) < $3::bigint
 `
 
-func (q *Queries) ResumeRateLimitedSystemWakeup(ctx context.Context, id pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, resumeRateLimitedSystemWakeup, id)
-	return err
+type ResumeRateLimitedSystemWakeupParams struct {
+	ID          pgtype.UUID        `json:"id"`
+	Since       pgtype.Timestamptz `json:"since"`
+	HourlyLimit int64              `json:"hourly_limit"`
+}
+
+// The one transition out of a rate pause: clears paused_reason and disabled_at
+// together, and only while fewer than @hourly_limit runs started since @since.
+// Manual, loop and max_fires pauses never match.
+func (q *Queries) ResumeRateLimitedSystemWakeup(ctx context.Context, arg ResumeRateLimitedSystemWakeupParams) (int64, error) {
+	result, err := q.db.Exec(ctx, resumeRateLimitedSystemWakeup, arg.ID, arg.Since, arg.HourlyLimit)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const setClaimedTaskContext = `-- name: SetClaimedTaskContext :one

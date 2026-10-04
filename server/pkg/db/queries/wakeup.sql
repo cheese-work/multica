@@ -105,7 +105,10 @@ UPDATE issue_wakeup_receipt SET task_id=sqlc.narg(task_id),processed_at=now() WH
 -- name: DiscardWakeupReceipts :exec
 UPDATE issue_wakeup_receipt SET processed_at=now() WHERE wakeup_id= @id AND processed_at IS NULL;
 -- name: AdvanceIssueWakeup :exec
-UPDATE issue_wakeup SET enabled= @enabled,next_fire_at=sqlc.narg(next_fire_at),last_task_id=COALESCE(sqlc.narg(last_task_id),last_task_id),last_error=sqlc.narg(last_error),updated_at=clock_timestamp() WHERE id= @id;
+-- A paused rule is never revived here: enabled stays false while paused_reason
+-- is set, so only a guarded resume (ResumeRateLimitedSystemWakeup) or a person
+-- turning the rule on can clear a pause and its disabled_at together.
+UPDATE issue_wakeup SET enabled=(@enabled::bool AND paused_reason IS NULL),next_fire_at=sqlc.narg(next_fire_at),last_task_id=COALESCE(sqlc.narg(last_task_id),last_task_id),last_error=sqlc.narg(last_error),updated_at=clock_timestamp() WHERE id= @id;
 -- name: FindPendingWakeupTask :one
 SELECT * FROM agent_task_queue WHERE context->>'wakeup_id'= @wakeup_id::text AND status IN ('queued','dispatched') ORDER BY created_at LIMIT 1 FOR UPDATE;
 
@@ -195,9 +198,13 @@ UPDATE issue_wakeup SET enabled=false,next_fire_at=NULL,paused_reason= @paused_r
  disabled_at=CASE WHEN @block_runs::bool THEN COALESCE(disabled_at,clock_timestamp()) ELSE disabled_at END,
  updated_at=clock_timestamp() WHERE id= @id;
 
--- name: ResumeRateLimitedSystemWakeup :exec
+-- name: ResumeRateLimitedSystemWakeup :execrows
+-- The one transition out of a rate pause: clears paused_reason and disabled_at
+-- together, and only while fewer than @hourly_limit runs started since @since.
+-- Manual, loop and max_fires pauses never match.
 UPDATE issue_wakeup SET enabled=true,paused_reason=NULL,disabled_at=NULL,updated_at=clock_timestamp()
-WHERE id= @id AND system_rule IN ('pr_merged','pr_checks_failed') AND paused_reason='rate';
+WHERE issue_wakeup.id= @id AND system_rule IN ('pr_merged','pr_checks_failed') AND paused_reason='rate'
+ AND (SELECT count(*) FROM agent_task_queue t WHERE t.context->>'wakeup_id'=issue_wakeup.id::text AND t.issue_id=issue_wakeup.issue_id AND t.created_at> @since) < @hourly_limit::bigint;
 
 -- name: CountWakeupFires :exec
 UPDATE issue_wakeup SET fire_count=fire_count+1 WHERE id= @id;

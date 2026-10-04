@@ -765,7 +765,14 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: receiptIDs(run.receipts), TaskID: run.task.ID}); err != nil {
 			return err
 		}
-		if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: true, LastTaskID: run.task.ID}); err != nil {
+		// A run that started while the rule was rate-paused settles its facts
+		// without reviving the rule; only the guarded resume lifts the pause.
+		if ratePaused {
+			if err := resumeRateLimited(ctx, q, &w, now); err != nil {
+				return err
+			}
+		}
+		if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: w.Enabled, LastTaskID: run.task.ID}); err != nil {
 			return err
 		}
 		if err := q.CountWakeupFires(ctx, w.ID); err != nil {
@@ -918,12 +925,9 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		return commit()
 	}
 	if ratePaused {
-		if err := q.ResumeRateLimitedSystemWakeup(ctx, w.ID); err != nil {
+		if err := resumeRateLimited(ctx, q, &w, now); err != nil {
 			return err
 		}
-		w.Enabled = true
-		w.PausedReason = pgtype.Text{}
-		w.DisabledAt = pgtype.Timestamptz{}
 	}
 	if err := guardIssueNotInTriage(ctx, q, issue.ID, OriginDerived); err != nil {
 		return err
@@ -1090,4 +1094,18 @@ func (s *IssueWakeupService) SetChildDoneDefault(ctx context.Context, workspaceI
 		}
 	}
 	return int64(len(changed)), tx.Commit(ctx)
+}
+
+// resumeRateLimited lifts a rate pause in one guarded statement that clears
+// paused_reason and disabled_at together, and only while the rolling hourly
+// limit allows another run. When it does not match, w keeps the paused state.
+func resumeRateLimited(ctx context.Context, q *db.Queries, w *db.IssueWakeup, now time.Time) error {
+	resumed, err := q.ResumeRateLimitedSystemWakeup(ctx, db.ResumeRateLimitedSystemWakeupParams{ID: w.ID, Since: pgtype.Timestamptz{Time: now.Add(-time.Hour), Valid: true}, HourlyLimit: wakeupHourlyRunLimit})
+	if err != nil || resumed == 0 {
+		return err
+	}
+	w.Enabled = true
+	w.PausedReason = pgtype.Text{}
+	w.DisabledAt = pgtype.Timestamptz{}
+	return nil
 }
