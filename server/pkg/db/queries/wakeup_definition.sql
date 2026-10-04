@@ -66,8 +66,10 @@ WHERE workspace_id= @workspace_id AND scope_kind= @scope_kind AND scope_id= @sco
 -- name: LockWorkspaceSettingsForWakeupDefinition :exec
 -- A definition write that touches the settings aliases holds the workspace row
 -- from its revision check to its commit, so a settings writer cannot slip in
--- between: every settings write is an UPDATE of this row.
-SELECT id FROM workspace WHERE id= @workspace_id FOR UPDATE;
+-- between: every settings write is an UPDATE of this row, which takes the same
+-- NO KEY UPDATE lock. That mode does not block the FOR KEY SHARE that rows
+-- referencing the workspace take, as a plain FOR UPDATE would.
+SELECT id FROM workspace WHERE id= @workspace_id FOR NO KEY UPDATE;
 
 -- name: RetireCustomizedSystemWakeup :one
 -- Reset an issue's legacy override to inheritance. Pauses, fire counts and

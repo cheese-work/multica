@@ -185,6 +185,10 @@ func (a wakeupDefinitionAPI) caller(w http.ResponseWriter, r *http.Request, writ
 		return c, true
 	}
 	switch {
+	case isMachineCredentialActor(r):
+		// A task token or cloud-node PAT carries its owner's user id and role, so
+		// the checks below would otherwise let it write as that human.
+		writeError(w, http.StatusForbidden, "machine credentials cannot manage wakeup definitions")
 	case c.actorType == "agent":
 		writeError(w, http.StatusForbidden, "agents cannot manage wakeup definitions")
 	case a.kind != service.WakeupScopeIssue && !roleAllowed(member.Role, "owner", "admin"):
@@ -366,6 +370,12 @@ func (a wakeupDefinitionAPI) Effective(w http.ResponseWriter, r *http.Request) {
 func (a wakeupDefinitionAPI) Preview(w http.ResponseWriter, r *http.Request) {
 	c, ok := a.caller(w, r, false)
 	if !ok {
+		return
+	}
+	// A preview probes what its owner may invoke and resolves private prompts,
+	// so it is as human-only as the write it rehearses.
+	if isMachineCredentialActor(r) {
+		writeError(w, http.StatusForbidden, "machine credentials cannot manage wakeup definitions")
 		return
 	}
 	body, patch, ok := decodeWakeupDefinitionBody(w, r)

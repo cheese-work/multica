@@ -359,12 +359,14 @@ func (q *Queries) LockWakeupDefinitionScope(ctx context.Context, scopeKey string
 }
 
 const lockWorkspaceSettingsForWakeupDefinition = `-- name: LockWorkspaceSettingsForWakeupDefinition :exec
-SELECT id FROM workspace WHERE id= $1 FOR UPDATE
+SELECT id FROM workspace WHERE id= $1 FOR NO KEY UPDATE
 `
 
 // A definition write that touches the settings aliases holds the workspace row
 // from its revision check to its commit, so a settings writer cannot slip in
-// between: every settings write is an UPDATE of this row.
+// between: every settings write is an UPDATE of this row, which takes the same
+// NO KEY UPDATE lock. That mode does not block the FOR KEY SHARE that rows
+// referencing the workspace take, as a plain FOR UPDATE would.
 func (q *Queries) LockWorkspaceSettingsForWakeupDefinition(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, lockWorkspaceSettingsForWakeupDefinition, workspaceID)
 	return err

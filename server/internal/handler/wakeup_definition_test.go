@@ -715,7 +715,8 @@ func TestWakeupDefinitionAliasWriteWaitsForSettingsWriters(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer writer.Rollback(ctx)
-	if _, err := writer.Exec(ctx, `SELECT id FROM workspace WHERE id = $1 FOR UPDATE`, testWorkspaceID); err != nil {
+	// A settings writer's own UPDATE is what takes the row lock.
+	if _, err := writer.Exec(ctx, `UPDATE workspace SET settings = COALESCE(settings,'{}'::jsonb) || '{"system_wakeup_child_done": false}'::jsonb WHERE id = $1`, testWorkspaceID); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan int, 1)
@@ -723,9 +724,6 @@ func TestWakeupDefinitionAliasWriteWaitsForSettingsWriters(t *testing.T) {
 		done <- k.workspace().put("child_done", 0, cfg(map[string]any{"enabled": true, "instruction": "late writer"})).Code
 	}()
 	time.Sleep(400 * time.Millisecond)
-	if _, err := writer.Exec(ctx, `UPDATE workspace SET settings = COALESCE(settings,'{}'::jsonb) || '{"system_wakeup_child_done": false}'::jsonb WHERE id = $1`, testWorkspaceID); err != nil {
-		t.Fatal(err)
-	}
 	if err := writer.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -910,5 +908,84 @@ func TestWakeupDefinitionTrimsBranchesAndNamesTheFirstUnsupportedField(t *testin
 		if !strings.Contains(resp.Text(), "aggregate_limit") {
 			t.Fatalf("the error must name the first unsupported field every time: %s", resp.Text())
 		}
+	}
+}
+
+// ---- addendum: machine credentials and the resolved target -----------------
+
+func asActorSource(source string) wdAs {
+	return func(r *http.Request) *http.Request { r.Header.Set("X-Actor-Source", source); return r }
+}
+
+// A machine credential (a task token or a cloud-node PAT) carries its owner's
+// user id, so a role check alone would let it write as that human. Writes and
+// previews (which probe what the owner may invoke) refuse it at every scope.
+func TestWakeupDefinitionRefusesMachineCredentials(t *testing.T) {
+	k := newWakeupDefinitionKit(t)
+	own := handlerTestAgentID(t)
+	for _, source := range []string{"task_token", "cloud_pat"} {
+		for _, s := range []wdScope{k.workspace(), k.project(), k.issue()} {
+			as := asActorSource(source)
+			label := source + " at " + string(s.kind)
+			config := cfg(map[string]any{"instruction": "from a machine", "target": map[string]any{"type": "agent", "id": own}})
+			if resp := s.put("child_done", 0, config, as); resp.Code != http.StatusForbidden {
+				t.Errorf("%s PUT: got %d: %s", label, resp.Code, resp.Text())
+			}
+			if resp := s.del("child_done", "1", as); resp.Code != http.StatusForbidden {
+				t.Errorf("%s DELETE: got %d: %s", label, resp.Code, resp.Text())
+			}
+			if resp := s.preview("child_done", config, as); resp.Code != http.StatusForbidden {
+				t.Errorf("%s preview: got %d: %s", label, resp.Code, resp.Text())
+			}
+			if s.kind != service.WakeupScopeIssue {
+				create := cfg(map[string]any{"trigger": map[string]any{"kind": "pr_merged"}, "instruction": "x"})
+				if resp := s.create(create, as); resp.Code != http.StatusForbidden {
+					t.Errorf("%s POST: got %d: %s", label, resp.Code, resp.Text())
+				}
+			}
+		}
+	}
+	if n := wdCount(t); n != 0 {
+		t.Fatalf("%d definitions persisted by machine credentials", n)
+	}
+	// The same human over an ordinary session still writes.
+	k.project().put("child_done", 0, cfg(map[string]any{"name": "human"})).Want(http.StatusOK)
+}
+
+// A sparse override inherits its target. Writing an instruction that will run
+// on an agent the writer may not invoke would let them steer it, so the
+// resolved target is authorized when the result is enabled.
+func TestWakeupDefinitionAuthorizesTheResolvedTarget(t *testing.T) {
+	k := newWakeupDefinitionKit(t)
+	member := wdMember(t, "WD Inheritor", "member")
+	private := dbfx.Agent(t, "wd inherited agent", handlerTestRuntimeID(t), testutil.Cols{"owner_id": testUserID})
+	squad := dbfx.Squad(t, "wd inherited squad", private)
+	for rule, target := range map[string]map[string]any{
+		"pr_merged":        {"type": "agent", "id": private},
+		"pr_checks_failed": {"type": "squad", "id": squad},
+	} {
+		k.workspace().put(rule, 0, cfg(map[string]any{"target": target})).Want(http.StatusOK)
+
+		// Sparse overrides that leave the rule enabled are refused for a member who cannot invoke the target.
+		for name, sparse := range map[string]map[string]any{
+			"instruction": {"instruction": "steer it"},
+			"mode":        {"mode": "continuous"},
+			"enabled":     {"enabled": true},
+		} {
+			if resp := k.issue().put(rule, 0, cfg(sparse), asUser(member)); resp.Code != http.StatusForbidden {
+				t.Errorf("%s: %s override by a member who cannot invoke the target: got %d: %s", rule, name, resp.Code, resp.Text())
+			}
+			if resp := k.issue().preview(rule, cfg(sparse), asUser(member)); resp.Code != http.StatusForbidden {
+				t.Errorf("%s: %s preview: got %d", rule, name, resp.Code)
+			}
+		}
+		if n := dbfx.Count(t, `SELECT count(*) FROM issue_wakeup_definition WHERE workspace_id = $1 AND scope_kind = 'issue' AND rule_key = $2`, testWorkspaceID, rule); n != 0 {
+			t.Fatalf("%s: %d issue overrides persisted from denied writes", rule, n)
+		}
+		// Turning the inherited rule off runs nothing, so it stays allowed, and so does a
+		// person who can invoke the target.
+		resp := k.issue().put(rule, 0, cfg(map[string]any{"enabled": false}), asUser(member)).Want(http.StatusOK)
+		k.issue().del(rule, strconv.FormatInt(int64(decodeDefinition(t, resp).Revision), 10), asUser(member)).Want(http.StatusNoContent)
+		k.issue().put(rule, 0, cfg(map[string]any{"instruction": "owner text"})).Want(http.StatusOK)
 	}
 }
