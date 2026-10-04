@@ -782,6 +782,13 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		}
 	}
 	if len(receipts) == 0 {
+		// Nothing is waiting, so no event will come to lift a rate pause;
+		// the scheduler does it once the rolling limit has room.
+		if ratePaused {
+			if _, err := resumeRateLimited(ctx, q, &w, now); err != nil {
+				return err
+			}
+		}
 		return commit()
 	}
 	ids := receiptIDs(receipts)
@@ -918,12 +925,13 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		return commit()
 	}
 	if ratePaused {
-		if err := q.ResumeRateLimitedSystemWakeup(ctx, w.ID); err != nil {
+		resumed, err := resumeRateLimited(ctx, q, &w, now)
+		if err != nil {
 			return err
 		}
-		w.Enabled = true
-		w.PausedReason = pgtype.Text{}
-		w.DisabledAt = pgtype.Timestamptz{}
+		if !resumed {
+			return commit()
+		}
 	}
 	if err := guardIssueNotInTriage(ctx, q, issue.ID, OriginDerived); err != nil {
 		return err
@@ -961,6 +969,17 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	s.Tasks.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
 	s.Tasks.NotifyTaskEnqueued(ctx, task)
 	return nil
+}
+
+// resumeRateLimited lifts a rate pause through the one guarded statement and
+// mirrors it on w; false means the limit still leaves no room.
+func resumeRateLimited(ctx context.Context, q *db.Queries, w *db.IssueWakeup, now time.Time) (bool, error) {
+	n, err := q.ResumeRateLimitedSystemWakeup(ctx, db.ResumeRateLimitedSystemWakeupParams{ID: w.ID, Since: pgtype.Timestamptz{Time: now.Add(-time.Hour), Valid: true}, MaxRuns: wakeupHourlyRunLimit})
+	if err != nil || n == 0 {
+		return false, err
+	}
+	w.Enabled, w.PausedReason, w.DisabledAt = true, pgtype.Text{}, pgtype.Timestamptz{}
+	return true, nil
 }
 
 func (s *IssueWakeupService) publishSystemInbox(item db.InboxItem, issueStatus string) {
