@@ -40,8 +40,11 @@ type WakeupDefinition struct {
 	ScopeID  pgtype.UUID
 	Revision int64
 	// Root marks the definition that created a custom rule.
-	Root  bool
-	Patch WakeupConfigPatch
+	Root bool
+	// UpdatedBy is the member whose last write this is; execution asks again
+	// whether they may use the target the definition names.
+	UpdatedBy pgtype.UUID
+	Patch     WakeupConfigPatch
 }
 
 // WakeupDefinitionFromRow decodes a stored row. A scope or config this build
@@ -55,7 +58,7 @@ func WakeupDefinitionFromRow(row db.IssueWakeupDefinition) (WakeupDefinition, er
 	if err != nil {
 		return WakeupDefinition{}, fmt.Errorf("wakeup definition %s: %w", row.RuleKey, err)
 	}
-	return WakeupDefinition{Scope: scope, ScopeID: row.ScopeID, Revision: row.Revision, Root: row.Root, Patch: patch}, nil
+	return WakeupDefinition{Scope: scope, ScopeID: row.ScopeID, Revision: row.Revision, Root: row.Root, UpdatedBy: row.UpdatedBy, Patch: patch}, nil
 }
 
 // WakeupResolveInput carries one rule's definitions for one issue. The caller
