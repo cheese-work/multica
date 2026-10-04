@@ -85,7 +85,7 @@ func PRWakeupEnabled(settings []byte, rule string) (bool, error) {
 		WakeOnCIFailure *bool `json:"github_wake_on_ci_failure"`
 	}
 	if err := json.Unmarshal(settings, &values); err != nil {
-		return false, fmt.Errorf("%w: %v", errMalformedPRWakeupSettings, err)
+		return false, fmt.Errorf("%w: %w", errMalformedPRWakeupSettings, err)
 	}
 	if values.GitHubEnabled != nil && !*values.GitHubEnabled {
 		return false, nil
