@@ -629,6 +629,8 @@ WITH deleted_wakeup_pr_events AS (
  DELETE FROM issue_wakeup_receipt WHERE wakeup_id IN (SELECT id FROM issue_wakeup WHERE workspace_id=$1)
 ), deleted_wakeups AS (
  DELETE FROM issue_wakeup WHERE workspace_id=$1
+), deleted_wakeup_definitions AS (
+ DELETE FROM issue_wakeup_definition WHERE workspace_id=$1
 ),
 deleted_child_events AS (
  DELETE FROM issue_child_event WHERE workspace_id=$1
