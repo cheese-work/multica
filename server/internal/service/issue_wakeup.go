@@ -746,6 +746,12 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	if w.Revision != prev.Revision {
 		return tx.Commit(ctx)
 	}
+	// A default-derived instance is held, its inputs left pending.
+	if allowed, err := legacyDispatchAllowed(ctx, q, issue, w); err != nil {
+		return err
+	} else if !allowed {
+		return tx.Commit(ctx)
+	}
 	active, err := wakeupIssueActive(ctx, q, issue)
 	if err != nil {
 		return err
@@ -1237,6 +1243,9 @@ func (s *IssueWakeupService) CheckClaim(ctx context.Context, task db.AgentTaskQu
 		return err
 	}
 	if w.DisabledAt.Valid || w.Revision != source.Revision || w.IssueID != task.IssueID || w.AgentID != task.AgentID || w.CreatedBy != task.OriginatorUserID {
+		return ErrWakeupForbidden
+	}
+	if isDefaultDerivedWakeup(w) {
 		return ErrWakeupForbidden
 	}
 	agent, err := s.Tasks.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: w.AgentID, WorkspaceID: w.WorkspaceID})

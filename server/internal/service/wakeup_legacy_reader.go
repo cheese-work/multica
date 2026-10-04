@@ -25,6 +25,9 @@ const (
 	// LegacySuspendIssueDiverges: a stored issue definition says something
 	// the legacy issue row does not.
 	LegacySuspendIssueDiverges LegacySuspendReason = "issue_override_diverges"
+	// LegacySuspendDefaultInstance: a runtime row derived from a scoped
+	// (custom) rule; this build cannot execute the definition it came from.
+	LegacySuspendDefaultInstance LegacySuspendReason = "default_derived_instance"
 )
 
 // LegacyDispatchVerdict is the answer of LegacyDispatchGate.
@@ -41,12 +44,16 @@ type LegacyDispatchVerdict struct {
 // issue's workspace, current project and itself, says nothing the legacy path
 // does not already do; anything else suspends dispatch of that rule only.
 // Definitions are only read, so their configuration is preserved untouched.
-// Custom rules are not executed by the legacy path and are not gated.
+// A row derived from a scoped (custom) rule is always held: this build has no
+// way to execute it. Other custom keys are not gated.
 func LegacyDispatchGate(ruleKey string, legacy db.IssueWakeup, rows []db.IssueWakeupDefinition) LegacyDispatchVerdict {
+	suspend := func(r LegacySuspendReason) LegacyDispatchVerdict { return LegacyDispatchVerdict{Reason: r} }
+	if isDefaultDerivedWakeup(legacy) {
+		return suspend(LegacySuspendDefaultInstance)
+	}
 	if _, builtin := WakeupBuiltinBaseline(ruleKey); !builtin {
 		return LegacyDispatchVerdict{Allowed: true}
 	}
-	suspend := func(r LegacySuspendReason) LegacyDispatchVerdict { return LegacyDispatchVerdict{Reason: r} }
 	projected, _ := LegacyIssueWakeupDefinition(legacy)
 	for _, row := range rows {
 		def, err := WakeupDefinitionFromRow(row)
@@ -61,6 +68,12 @@ func LegacyDispatchGate(ruleKey string, legacy db.IssueWakeup, rows []db.IssueWa
 			if p.Enabled.Set || (ruleKey == SystemRuleChildDone && p.Instruction.Set) {
 				return suspend(LegacySuspendAliasConflict)
 			}
+			// Only child_done runs a stored instruction; PR text is always
+			// built from the receipt facts, so a stored one, even a clear,
+			// would be silently ignored.
+			if p.Instruction.Set {
+				return suspend(LegacySuspendUnsupported)
+			}
 		case WakeupScopeIssue:
 			if !legacyIssueFieldsMatch(p, projected) {
 				return suspend(LegacySuspendIssueDiverges)
@@ -71,6 +84,14 @@ func LegacyDispatchGate(ruleKey string, legacy db.IssueWakeup, rows []db.IssueWa
 		}
 	}
 	return LegacyDispatchVerdict{Allowed: true}
+}
+
+// isDefaultDerivedWakeup reports whether a runtime row was materialized from a
+// scoped rule. It has no system rule, so only its origin metadata tells it from
+// a genuine local wakeup. Without a rule key it cannot be resolved here, so it
+// is never executed.
+func isDefaultDerivedWakeup(w db.IssueWakeup) bool {
+	return !w.SystemRule.Valid && (w.DefaultRuleKey.Valid || w.DefaultScopeKind.Valid || w.DefaultScopeID.Valid)
 }
 
 // legacyUnsupportedFields reports whether a patch sets (or clears) anything
@@ -101,6 +122,11 @@ func sameWakeupField[T comparable](a, b wakeupField[T]) bool {
 // Without any stored definition it is a single indexed lookup.
 func legacyDispatchAllowed(ctx context.Context, q *db.Queries, issue db.Issue, w db.IssueWakeup) (bool, error) {
 	if !w.SystemRule.Valid {
+		if isDefaultDerivedWakeup(w) {
+			slog.WarnContext(ctx, "legacy wakeup dispatch suspended for a default-derived instance this build cannot execute",
+				"issue_id", uuidString(issue.ID), "wakeup_id", uuidString(w.ID), "rule", w.DefaultRuleKey.String, "reason", string(LegacySuspendDefaultInstance))
+			return false, nil
+		}
 		return true, nil
 	}
 	rows, err := q.ListWakeupDefinitionsForRule(ctx, db.ListWakeupDefinitionsForRuleParams{
