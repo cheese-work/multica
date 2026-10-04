@@ -101,6 +101,7 @@ func loadWakeupChain(ctx context.Context, q *db.Queries, ref WakeupScopeRef, key
 	if err != nil {
 		return in, err
 	}
+	in.settings = ws.Settings
 	var issue db.Issue
 	switch ref.Kind {
 	case WakeupScopeProject:
@@ -261,7 +262,13 @@ func (s *IssueWakeupService) SaveWakeupDefinition(ctx context.Context, ref Wakeu
 	if err := s.authorizeWakeupRefs(ctx, q, ref.WorkspaceID, member, refs); err != nil {
 		return WakeupDefinitionView{}, err
 	}
-	eff, err := resolveWakeupProposal(in, ref, &WakeupDefinition{Scope: ref.Kind, ScopeID: ref.ID, Root: root, Patch: patch})
+	candidate := patch
+	if aliased {
+		if candidate, err = workspaceAliasReadback(in.settings, w.RuleKey, patch); err != nil {
+			return WakeupDefinitionView{}, err
+		}
+	}
+	eff, err := resolveWakeupProposal(in, ref, &WakeupDefinition{Scope: ref.Kind, ScopeID: ref.ID, Root: root, Patch: candidate})
 	if err != nil {
 		return WakeupDefinitionView{}, err
 	}
@@ -324,28 +331,15 @@ func (s *IssueWakeupService) SaveWakeupDefinition(ctx context.Context, ref Wakeu
 }
 
 // writeWorkspaceAliasesTx applies the alias fields of a replacing patch through
-// the settings path, inside the caller's transaction. A replace clears an alias
-// the patch leaves out, and the legacy instruction limit applies to the alias.
+// the settings path, inside the caller's transaction.
 func writeWorkspaceAliasesTx(ctx context.Context, tx pgx.Tx, q *db.Queries, ws pgtype.UUID, key string, patch WakeupConfigPatch) (WakeupConfigPatch, error) {
 	row, err := q.GetWorkspace(ctx, ws)
 	if err != nil {
 		return patch, err
 	}
-	current, err := legacyWorkspacePatch(row.Settings, key)
+	alias, err := workspaceAliasWrite(row.Settings, key, patch)
 	if err != nil {
 		return patch, err
-	}
-	alias := patch
-	if current.Enabled.Set && !patch.Enabled.Set {
-		alias.Enabled = wakeupField[bool]{Set: true, Null: true}
-	}
-	if key == SystemRuleChildDone {
-		if current.Instruction.Set && !patch.Instruction.Set {
-			alias.Instruction = wakeupField[string]{Set: true, Null: true}
-		}
-		if alias.Instruction.Set && !alias.Instruction.Null && len(alias.Instruction.Value) > MaxSystemWakeupInstruction {
-			return patch, wakeupDefinitionBad("this rule's workspace instruction must be at most %d bytes", MaxSystemWakeupInstruction)
-		}
 	}
 	return applyWorkspaceWakeupAliasesTx(ctx, tx, q, ws, key, alias)
 }
@@ -458,11 +452,26 @@ func retireLegacyIssueOverride(ctx context.Context, tx pgx.Tx, q *db.Queries, re
 	return q.DiscardWakeupReceipts(ctx, updated.ID)
 }
 
+// afterWakeupListRows is a test seam: it runs between a list reading the
+// stored definitions and resolving them, where a concurrent write could land.
+var afterWakeupListRows func()
+
 // ListWakeupDefinitions returns one scope's definitions. At workspace scope the
 // built-ins whose enabled/instruction live in the settings aliases appear with
 // those values, so the list shows the revision a write expects.
 func (s *IssueWakeupService) ListWakeupDefinitions(ctx context.Context, ref WakeupScopeRef) ([]WakeupDefinitionView, error) {
-	q := s.Tasks.Queries
+	tx, err := s.Tasks.TxStarter.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	// One snapshot for the definitions and for every resolution of them: callers
+	// judge who may see a patch by what it resolves to, so the two must be the
+	// same revision.
+	if _, err := tx.Exec(ctx, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"); err != nil {
+		return nil, err
+	}
+	q := s.Tasks.Queries.WithTx(tx)
 	rows, err := q.ListWakeupDefinitionsInScope(ctx, db.ListWakeupDefinitionsInScopeParams{WorkspaceID: ref.WorkspaceID, ScopeKind: string(ref.Kind), ScopeID: ref.ID})
 	if err != nil {
 		return nil, err
@@ -475,6 +484,9 @@ func (s *IssueWakeupService) ListWakeupDefinitions(ctx context.Context, ref Wake
 		}
 		out = append(out, view)
 	}
+	if afterWakeupListRows != nil {
+		afterWakeupListRows()
+	}
 	if ref.Kind == WakeupScopeWorkspace {
 		if out, err = s.withWorkspaceBuiltins(ctx, q, ref, out); err != nil {
 			return nil, err
@@ -483,12 +495,14 @@ func (s *IssueWakeupService) ListWakeupDefinitions(ctx context.Context, ref Wake
 	for i := range out {
 		in, err := loadWakeupChain(ctx, q, ref, out[i].RuleKey)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("load wakeup rule %s: %w", out[i].RuleKey, err)
 		}
-		if eff, err := ResolveWakeupConfig(in); err == nil {
-			resolved := eff.Config
-			out[i].Effective = &resolved
+		eff, err := ResolveWakeupConfig(in)
+		if err != nil {
+			return nil, fmt.Errorf("resolve wakeup rule %s: %w", out[i].RuleKey, err)
 		}
+		resolved := eff.Config
+		out[i].Effective = &resolved
 	}
 	return out, nil
 }
@@ -546,6 +560,12 @@ func (s *IssueWakeupService) EffectiveWakeupRule(ctx context.Context, ref Wakeup
 		root := newRoot || scopeDef != nil && scopeDef.Root
 		if root && (!patch.Trigger.Set || patch.Trigger.Null || !patch.Instruction.Set || patch.Instruction.Null) {
 			return WakeupEffectiveRule{}, wakeupDefinitionBad("a custom rule needs a trigger and an instruction")
+		}
+		if _, builtin := WakeupBuiltinBaseline(ruleKey); builtin && ref.Kind == WakeupScopeWorkspace {
+			// Preview what saving would read back, not the literal proposal.
+			if patch, err = workspaceAliasReadback(in.settings, ruleKey, patch); err != nil {
+				return WakeupEffectiveRule{}, err
+			}
 		}
 		candidate := &WakeupDefinition{Scope: ref.Kind, ScopeID: ref.ID, Root: root, Patch: patch}
 		eff, err := resolveWakeupProposal(in, ref, candidate)

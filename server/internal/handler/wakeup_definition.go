@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -280,7 +281,8 @@ func (a wakeupDefinitionAPI) List(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := a.service().ListWakeupDefinitions(r.Context(), c.ref)
 	if err != nil {
-		wakeupError(w, err)
+		slog.Warn("list wakeup definitions failed", "error", err, "scope", string(c.ref.Kind), "scope_id", uuidToString(c.ref.ID))
+		writeError(w, http.StatusInternalServerError, "could not load wakeup definitions")
 		return
 	}
 	out := wakeupDefinitionListResponse{Definitions: make([]wakeupDefinitionResponse, 0, len(rows)), Capabilities: a.h.wakeupCapabilities(r)}

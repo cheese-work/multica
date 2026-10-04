@@ -111,6 +111,21 @@ func normalizeWakeupPatch(p *WakeupConfigPatch) {
 	if p.Instruction.Set && !p.Instruction.Null {
 		p.Instruction.Value = strings.TrimSpace(p.Instruction.Value)
 	}
+	// Branches match exactly, so a stored " main" could never match: store them
+	// trimmed. An undecodable filter is left for validation to refuse.
+	if p.Filters.Set && !p.Filters.Null {
+		var spec wakeupFiltersSpec
+		if decodeWakeupSpec(p.Filters.Value, &spec) == nil {
+			for _, branch := range []*string{spec.BaseBranch, spec.HeadBranch} {
+				if branch != nil {
+					*branch = strings.TrimSpace(*branch)
+				}
+			}
+			if raw, err := json.Marshal(spec); err == nil {
+				p.Filters.Value = raw
+			}
+		}
+	}
 }
 
 // wakeupPatchRefs are the workspace-scoped references a patch names, which the
@@ -126,9 +141,12 @@ type wakeupPatchRefs struct {
 // checked on the resolved rule by validateEffectiveWakeup.
 func validateWakeupPatch(ruleKey string, p WakeupConfigPatch, now time.Time) (wakeupPatchRefs, error) {
 	var refs wakeupPatchRefs
-	for name, unsupported := range map[string]bool{"aggregate_limit": p.AggregateLimit.Set, "active_run": p.ActiveRun.Set, "schedule": p.Schedule.Set} {
-		if unsupported {
-			return refs, wakeupDefinitionBad("%s is not available yet", name)
+	for _, unsupported := range []struct {
+		name string
+		set  bool
+	}{{"aggregate_limit", p.AggregateLimit.Set}, {"active_run", p.ActiveRun.Set}, {"schedule", p.Schedule.Set}} {
+		if unsupported.set {
+			return refs, wakeupDefinitionBad("%s is not available yet", unsupported.name)
 		}
 	}
 	if len(setWakeupFields(p)) == 0 {
@@ -206,9 +224,12 @@ func validateWakeupFilters(raw json.RawMessage) ([]pgtype.UUID, error) {
 	if err := decodeWakeupSpec(raw, &spec); err != nil {
 		return nil, wakeupDefinitionBad("invalid filters: %v", err)
 	}
-	for name, branch := range map[string]*string{"base_branch": spec.BaseBranch, "head_branch": spec.HeadBranch} {
-		if branch != nil && (strings.TrimSpace(*branch) == "" || len(*branch) > 255) {
-			return nil, wakeupDefinitionBad("%s must be 1–255 bytes", name)
+	for _, b := range []struct {
+		name   string
+		branch *string
+	}{{"base_branch", spec.BaseBranch}, {"head_branch", spec.HeadBranch}} {
+		if b.branch != nil && (strings.TrimSpace(*b.branch) == "" || len(strings.TrimSpace(*b.branch)) > 255) {
+			return nil, wakeupDefinitionBad("%s must be 1–255 bytes", b.name)
 		}
 	}
 	if spec.CI != nil && !slices.Contains([]string{"failure", "error", "both"}, *spec.CI) {

@@ -825,3 +825,90 @@ func TestWakeupDefinitionIssueDeleteRetiresTheLegacyOverride(t *testing.T) {
 		})
 	}
 }
+
+// ---- correction round 2 ----------------------------------------------------
+
+// What a preview reports must be what saving the same proposal produces, and
+// what the effective read then says.
+func TestWakeupDefinitionPreviewSaveAndEffectiveAgree(t *testing.T) {
+	k := newWakeupDefinitionKit(t)
+	var settings string
+	dbfx.QueryRow(t, `SELECT settings::text FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&settings)
+	t.Cleanup(func() {
+		dbfx.Exec(t, `UPDATE workspace SET settings = $1::jsonb WHERE id = $2`, settings, testWorkspaceID)
+	})
+
+	revisionOf := func(rule string) string {
+		for _, d := range k.workspace().list().Definitions {
+			if d.RuleKey == rule {
+				return strconv.FormatInt(int64(d.Revision), 10)
+			}
+		}
+		return "0"
+	}
+	cases := []struct {
+		name, rule string
+		set, clear map[string]any
+	}{
+		{"pr_merged enabled", "pr_merged", map[string]any{"enabled": false}, map[string]any{"enabled": nil}},
+		{"child_done enabled", "child_done", map[string]any{"enabled": false}, map[string]any{"enabled": nil}},
+		{"child_done instruction", "child_done", map[string]any{"instruction": "  alias text  "}, map[string]any{"instruction": nil}},
+		{"child_done replace keeps nothing", "child_done", map[string]any{"enabled": false, "instruction": "x"}, map[string]any{"name": "only a label"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			k.workspace().put(c.rule, revisionOf(c.rule), cfg(c.set)).Want(http.StatusOK)
+			var preview wakeupEffectiveResponse
+			k.workspace().preview(c.rule, cfg(c.clear)).Want(http.StatusOK).JSON(&preview)
+			before := wdCount(t)
+			k.workspace().put(c.rule, revisionOf(c.rule), cfg(c.clear)).Want(http.StatusOK)
+			effective := k.workspace().effective(c.rule)
+			if preview.Enabled != effective.Enabled || string(preview.Config) != string(effective.Config) {
+				t.Fatalf("preview and the saved state disagree:\n preview   enabled=%v %s\n effective enabled=%v %s", preview.Enabled, preview.Config, effective.Enabled, effective.Config)
+			}
+			if len(preview.Sources) != len(effective.Sources) {
+				t.Fatalf("sources differ: preview %v, effective %v", preview.Sources, effective.Sources)
+			}
+			for field, scope := range preview.Sources {
+				if effective.Sources[field] != scope {
+					t.Fatalf("source of %s: preview %s, effective %s", field, scope, effective.Sources[field])
+				}
+			}
+			_ = before
+		})
+	}
+}
+
+// A list that cannot resolve a definition is an error, not a permission-like
+// redaction the viewer would read as "you may not see this".
+func TestWakeupDefinitionListFailsLoudlyWhenResolutionFails(t *testing.T) {
+	k := newWakeupDefinitionKit(t)
+	rule := "00000000-0000-4000-8000-0000000000aa"
+	// Two roots of one custom rule cannot resolve: a second root is refused.
+	for _, row := range []struct{ kind, id string }{{"workspace", testWorkspaceID}, {"project", k.projectID}} {
+		dbfx.Exec(t, `INSERT INTO issue_wakeup_definition(workspace_id,scope_kind,scope_id,rule_key,root,config) VALUES($1,$2,$3,$4,true,'{"v":1,"name":"x"}'::jsonb)`,
+			testWorkspaceID, row.kind, row.id, rule)
+	}
+	resp := k.project().call(k.project().api().List, "GET", "", nil, nil)
+	if resp.Code == http.StatusOK {
+		t.Fatalf("an unresolvable list answered 200: %s", resp.Text())
+	}
+	if strings.Contains(resp.Text(), `"redacted"`) {
+		t.Fatalf("an error must not look like redaction: %s", resp.Text())
+	}
+}
+
+func TestWakeupDefinitionTrimsBranchesAndNamesTheFirstUnsupportedField(t *testing.T) {
+	k := newWakeupDefinitionKit(t)
+	saved := decodeDefinition(t, k.project().put("pr_merged", 0, cfg(map[string]any{"filters": map[string]any{"base_branch": "  main ", "head_branch": "feature/x"}})).Want(http.StatusOK))
+	if !strings.Contains(string(saved.Config), `"base_branch":"main"`) {
+		t.Fatalf("branch not stored trimmed: %s", saved.Config)
+	}
+	k.project().put("pr_merged", saved.Revision, cfg(map[string]any{"filters": map[string]any{"base_branch": "   "}})).Want(http.StatusBadRequest)
+	for i := 0; i < 20; i++ {
+		resp := k.project().put("pr_merged", 0, cfg(map[string]any{"schedule": map[string]any{}, "active_run": "defer", "aggregate_limit": 3})).Want(http.StatusBadRequest)
+		if !strings.Contains(resp.Text(), "aggregate_limit") {
+			t.Fatalf("the error must name the first unsupported field every time: %s", resp.Text())
+		}
+	}
+}
