@@ -1313,6 +1313,12 @@ type IssueWakeup struct {
 	PausedReason    pgtype.Text        `json:"paused_reason"`
 }
 
+type IssueWakeupPrEvent struct {
+	WakeupID  pgtype.UUID        `json:"wakeup_id"`
+	EventKey  string             `json:"event_key"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
 type IssueWakeupReceipt struct {
 	ID          pgtype.UUID        `json:"id"`
 	WakeupID    pgtype.UUID        `json:"wakeup_id"`

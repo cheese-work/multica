@@ -122,6 +122,9 @@ func (s *IssueWakeupService) Delete(ctx context.Context, issueID, id, member pgt
 	if err := q.DeleteIssueWakeupReceipts(ctx, id); err != nil {
 		return err
 	}
+	if err := q.DeleteIssueWakeupPRLedger(ctx, id); err != nil {
+		return err
+	}
 	if err := q.DeleteIssueWakeup(ctx, db.DeleteIssueWakeupParams{ID: id, IssueID: issueID}); err != nil {
 		return err
 	}
