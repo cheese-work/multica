@@ -358,6 +358,83 @@ func (q *Queries) LockWakeupDefinitionScope(ctx context.Context, scopeKey string
 	return err
 }
 
+const lockWorkspaceSettingsForWakeupDefinition = `-- name: LockWorkspaceSettingsForWakeupDefinition :exec
+SELECT id FROM workspace WHERE id= $1 FOR UPDATE
+`
+
+// A definition write that touches the settings aliases holds the workspace row
+// from its revision check to its commit, so a settings writer cannot slip in
+// between: every settings write is an UPDATE of this row.
+func (q *Queries) LockWorkspaceSettingsForWakeupDefinition(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockWorkspaceSettingsForWakeupDefinition, workspaceID)
+	return err
+}
+
+const retireCustomizedSystemWakeup = `-- name: RetireCustomizedSystemWakeup :one
+UPDATE issue_wakeup SET customized_at=NULL,instruction='',
+ enabled=CASE WHEN paused_reason IS NULL AND disabled_at IS NULL THEN $1::bool ELSE enabled END,
+ updated_at=clock_timestamp()
+WHERE id= $2 AND customized_at IS NOT NULL
+RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint
+`
+
+type RetireCustomizedSystemWakeupParams struct {
+	Enabled bool        `json:"enabled"`
+	ID      pgtype.UUID `json:"id"`
+}
+
+// Reset an issue's legacy override to inheritance. Pauses, fire counts and
+// consumed state stay as they are: enabled follows the inherited value only on
+// a row nothing has paused or ended.
+func (q *Queries) RetireCustomizedSystemWakeup(ctx context.Context, arg RetireCustomizedSystemWakeupParams) (IssueWakeup, error) {
+	row := q.db.QueryRow(ctx, retireCustomizedSystemWakeup, arg.Enabled, arg.ID)
+	var i IssueWakeup
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.AgentID,
+		&i.CreatedBy,
+		&i.SourceTaskID,
+		&i.ParentCommentID,
+		&i.Instruction,
+		&i.Kind,
+		&i.Mode,
+		&i.EventTypes,
+		&i.FilterAgentID,
+		&i.FilterTaskID,
+		&i.IntervalSeconds,
+		&i.CronExpression,
+		&i.Timezone,
+		&i.NextFireAt,
+		&i.Enabled,
+		&i.DisabledAt,
+		&i.Revision,
+		&i.LastTaskID,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.FilterActorType,
+		&i.FilterActorID,
+		&i.ExpiresAt,
+		&i.ExpirySeconds,
+		&i.OnTimeout,
+		&i.TimedOutAt,
+		&i.SystemRule,
+		&i.CustomizedAt,
+		&i.Condition,
+		&i.ConditionState,
+		&i.MaxFires,
+		&i.FireCount,
+		&i.PausedReason,
+		&i.DefaultRuleKey,
+		&i.DefaultScopeKind,
+		&i.DefaultScopeID,
+		&i.ConfigFingerprint,
+	)
+	return i, err
+}
+
 const updateWakeupDefinition = `-- name: UpdateWakeupDefinition :one
 UPDATE issue_wakeup_definition
 SET config= $1,revision=revision+1,updated_by= $2,updated_at=clock_timestamp()

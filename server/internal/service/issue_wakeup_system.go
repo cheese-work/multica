@@ -1074,6 +1074,21 @@ func (s *IssueWakeupService) UpdateChildDoneRule(ctx context.Context, issueID pg
 // SetChildDoneDefault stores the rule's workspace default and applies it to
 // every rule nobody customized. It returns how many rules changed.
 func (s *IssueWakeupService) SetChildDoneDefault(ctx context.Context, workspaceID pgtype.UUID, enabled *bool, instruction *string) (int64, error) {
+	tx, err := s.Tasks.TxStarter.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	changed, err := setChildDoneDefaultTx(ctx, tx, s.Tasks.Queries.WithTx(tx), workspaceID, enabled, instruction)
+	if err != nil {
+		return 0, err
+	}
+	return changed, tx.Commit(ctx)
+}
+
+// setChildDoneDefaultTx is SetChildDoneDefault inside the caller's transaction,
+// so a caller can make the default and its own writes one atomic change.
+func setChildDoneDefaultTx(ctx context.Context, tx pgx.Tx, q *db.Queries, workspaceID pgtype.UUID, enabled *bool, instruction *string) (int64, error) {
 	patch := map[string]any{}
 	if enabled != nil {
 		patch[WorkspaceSettingChildDone] = *enabled
@@ -1089,16 +1104,11 @@ func (s *IssueWakeupService) SetChildDoneDefault(ctx context.Context, workspaceI
 		return 0, nil
 	}
 	raw, _ := json.Marshal(patch)
-	tx, err := s.Tasks.TxStarter.Begin(ctx)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback(ctx)
-	q := s.Tasks.Queries.WithTx(tx)
 	if err := q.MergeWorkspaceSettings(ctx, db.MergeWorkspaceSettingsParams{ID: workspaceID, Patch: raw}); err != nil {
 		return 0, err
 	}
 	var changed []db.IssueWakeup
+	var err error
 	if enabled != nil {
 		if changed, err = q.ApplySystemWakeupDefault(ctx, db.ApplySystemWakeupDefaultParams{WorkspaceID: workspaceID, SystemRule: systemRuleText(SystemRuleChildDone), Enabled: *enabled}); err != nil {
 			return 0, err
@@ -1115,5 +1125,5 @@ func (s *IssueWakeupService) SetChildDoneDefault(ctx context.Context, workspaceI
 			}
 		}
 	}
-	return int64(len(changed)), tx.Commit(ctx)
+	return int64(len(changed)), nil
 }

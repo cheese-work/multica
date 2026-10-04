@@ -62,3 +62,19 @@ RETURNING *;
 -- name: DeleteWakeupDefinition :execrows
 DELETE FROM issue_wakeup_definition
 WHERE workspace_id= @workspace_id AND scope_kind= @scope_kind AND scope_id= @scope_id AND rule_key= @rule_key AND revision= @expected_revision;
+
+-- name: LockWorkspaceSettingsForWakeupDefinition :exec
+-- A definition write that touches the settings aliases holds the workspace row
+-- from its revision check to its commit, so a settings writer cannot slip in
+-- between: every settings write is an UPDATE of this row.
+SELECT id FROM workspace WHERE id= @workspace_id FOR UPDATE;
+
+-- name: RetireCustomizedSystemWakeup :one
+-- Reset an issue's legacy override to inheritance. Pauses, fire counts and
+-- consumed state stay as they are: enabled follows the inherited value only on
+-- a row nothing has paused or ended.
+UPDATE issue_wakeup SET customized_at=NULL,instruction='',
+ enabled=CASE WHEN paused_reason IS NULL AND disabled_at IS NULL THEN @enabled::bool ELSE enabled END,
+ updated_at=clock_timestamp()
+WHERE id= @id AND customized_at IS NOT NULL
+RETURNING *;

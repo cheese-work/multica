@@ -1,12 +1,14 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -27,7 +29,7 @@ func newWakeupDefinitionKit(t *testing.T) *wdKit {
 	t.Helper()
 	withFeatureFlag(t, testHandler, featureflags.WakeupDefinitionWrites, true)
 	k := &wdKit{t: t, projectID: dbfx.Project(t, "wd project")}
-	k.issueID = dbfx.Issue(t, "wd issue", testutil.Cols{"project_id": k.projectID})
+	k.issueID = dbfx.Issue(t, "wd issue", testutil.Cols{"project_id": k.projectID, "number": nextWorkspaceIssueNumber(t)})
 	wipeWakeupDefinitions(t)
 	t.Cleanup(func() { wipeWakeupDefinitions(t) })
 	return k
@@ -73,11 +75,11 @@ func (s wdScope) call(h http.HandlerFunc, method, query string, body any, as []w
 	return testutil.Call(s.t, h, req)
 }
 
-func wdBody(revision int64, config map[string]any) map[string]any {
+func wdBody(revision any, config map[string]any) map[string]any {
 	return map[string]any{"revision": revision, "config": config}
 }
 
-func (s wdScope) put(rule string, revision int64, config map[string]any, as ...wdAs) *testutil.Response {
+func (s wdScope) put(rule string, revision any, config map[string]any, as ...wdAs) *testutil.Response {
 	s.t.Helper()
 	return s.call(s.api().Put, "PUT", "", wdBody(revision, config), as, "rule", rule)
 }
@@ -160,7 +162,7 @@ func configKeys(t *testing.T, raw json.RawMessage) map[string]json.RawMessage {
 
 func TestWakeupDefinitionWritesClosedByDefault(t *testing.T) {
 	k := &wdKit{t: t, projectID: dbfx.Project(t, "wd project")}
-	k.issueID = dbfx.Issue(t, "wd issue", testutil.Cols{"project_id": k.projectID})
+	k.issueID = dbfx.Issue(t, "wd issue", testutil.Cols{"project_id": k.projectID, "number": nextWorkspaceIssueNumber(t)})
 	wipeWakeupDefinitions(t)
 	t.Cleanup(func() { wipeWakeupDefinitions(t) })
 	for name, s := range map[string]wdScope{"workspace": k.workspace(), "project": k.project(), "issue": k.issue()} {
@@ -569,4 +571,257 @@ func TestWakeupDefinitionRedactsTargetsTheViewerCannotSee(t *testing.T) {
 	}
 	// A preview by the member cannot probe the hidden agent either.
 	k.issue().preview("pr_merged", cfg(map[string]any{"target": map[string]any{"type": "agent", "id": private}}), asUser(member)).Want(http.StatusForbidden)
+}
+
+// ---- correction round (Sol P1/P2, OCR high) --------------------------------
+
+// Alias revisions are 62-bit hashes. A JSON number loses them in JavaScript, so
+// the wire carries a decimal string and a write echoes it back unchanged.
+func TestWakeupDefinitionRevisionIsLosslessOnTheWire(t *testing.T) {
+	k := newWakeupDefinitionKit(t)
+	var settings string
+	dbfx.QueryRow(t, `SELECT settings::text FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&settings)
+	t.Cleanup(func() {
+		dbfx.Exec(t, `UPDATE workspace SET settings = $1::jsonb WHERE id = $2`, settings, testWorkspaceID)
+	})
+
+	var saved map[string]any
+	k.workspace().put("child_done", 0, cfg(map[string]any{"enabled": false, "instruction": "Alias text."})).Want(http.StatusOK).JSON(&saved)
+	rev, ok := saved["revision"].(string)
+	if !ok {
+		t.Fatalf("revision must be a JSON string, got %T %v", saved["revision"], saved["revision"])
+	}
+	if n, err := strconv.ParseInt(rev, 10, 64); err != nil || n <= 1<<53 {
+		t.Fatalf("alias revision %q is not beyond the safe integer range; the test would prove nothing", rev)
+	}
+	// The list shows the same string, and echoing it back as a string updates.
+	if list := k.workspace().list().Definitions; len(list) != 1 || strconv.FormatInt(int64(list[0].Revision), 10) != rev {
+		t.Fatalf("list revision differs from the write's %s: %+v", rev, list)
+	}
+	k.workspace().put("child_done", rev, cfg(map[string]any{"enabled": true, "name": "Label"})).Want(http.StatusOK)
+	// A rounded number (what a double-based client would send) conflicts.
+	n, _ := strconv.ParseInt(rev, 10, 64)
+	k.workspace().put("child_done", float64(n), cfg(map[string]any{"enabled": false})).Want(http.StatusConflict)
+}
+
+func TestWakeupDefinitionListRedactsOnTheResolvedTarget(t *testing.T) {
+	k := newWakeupDefinitionKit(t)
+	member := wdMember(t, "WD List Viewer", "member")
+	private := dbfx.Agent(t, "wd list hidden agent", handlerTestRuntimeID(t), testutil.Cols{"owner_id": testUserID})
+	squad := dbfx.Squad(t, "wd list hidden squad", private)
+	cases := map[string]map[string]any{
+		"pr_merged":        {"type": "agent", "id": private},
+		"pr_checks_failed": {"type": "squad", "id": squad},
+	}
+	for rule, target := range cases {
+		// The workspace names the private target; project and issue override only the prompt.
+		k.workspace().put(rule, 0, cfg(map[string]any{"target": target, "instruction": "workspace secret"})).Want(http.StatusOK)
+		k.project().put(rule, 0, cfg(map[string]any{"instruction": "project secret"})).Want(http.StatusOK)
+		k.issue().put(rule, 0, cfg(map[string]any{"instruction": "issue secret"})).Want(http.StatusOK)
+	}
+	for name, s := range map[string]wdScope{"workspace": k.workspace(), "project": k.project(), "issue": k.issue()} {
+		list := s.list(asUser(member)).Definitions
+		if len(list) < 2 {
+			t.Fatalf("%s: expected both rules listed, got %+v", name, list)
+		}
+		for _, view := range list {
+			body := string(view.Config)
+			if !view.Redacted || strings.Contains(body, "secret") || strings.Contains(body, private) || strings.Contains(body, squad) {
+				t.Errorf("%s list leaks %s to an ordinary member: %+v", name, view.RuleKey, view)
+			}
+		}
+		// The owner sees everything, and the patch stays sparse.
+		for _, view := range s.list().Definitions {
+			if view.Redacted || !strings.Contains(string(view.Config), "secret") {
+				t.Errorf("%s list hides %s from the owner: %+v", name, view.RuleKey, view)
+			}
+		}
+	}
+	// A project override alone must not carry the inherited target into the sparse patch.
+	for _, view := range k.project().list().Definitions {
+		if strings.Contains(string(view.Config), `"target"`) {
+			t.Errorf("project patch is no longer sparse: %s", view.Config)
+		}
+	}
+}
+
+// failDefinitionInserts makes every definition insert of the test workspace
+// fail, after the settings aliases have been written in the same request.
+func failDefinitionInserts(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := testPool.Exec(ctx, `CREATE OR REPLACE FUNCTION wd_force_failure() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'forced definition write failure'; END $$ LANGUAGE plpgsql`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(ctx, `CREATE TRIGGER wd_force_failure BEFORE INSERT OR UPDATE ON issue_wakeup_definition FOR EACH ROW WHEN (NEW.workspace_id = '`+testWorkspaceID+`') EXECUTE FUNCTION wd_force_failure()`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DROP TRIGGER IF EXISTS wd_force_failure ON issue_wakeup_definition`)
+		testPool.Exec(ctx, `DROP FUNCTION IF EXISTS wd_force_failure()`)
+	})
+}
+
+func TestWakeupDefinitionAliasAndRowWriteAreAtomic(t *testing.T) {
+	k := newWakeupDefinitionKit(t)
+	var settings string
+	dbfx.QueryRow(t, `SELECT settings::text FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&settings)
+	t.Cleanup(func() {
+		dbfx.Exec(t, `UPDATE workspace SET settings = $1::jsonb WHERE id = $2`, settings, testWorkspaceID)
+	})
+	// A parent whose child_done instance follows the workspace default.
+	fx := newChildDoneFixture(t, "in_progress")
+	updateChildStatus(t, fx.child.ID, "done") // the first sub-issue change creates the instance
+	ruleEnabled := func() bool {
+		var enabled bool
+		dbfx.QueryRow(t, `SELECT enabled FROM issue_wakeup WHERE issue_id = $1 AND system_rule = 'child_done'`, fx.parent.ID).Scan(&enabled)
+		return enabled
+	}
+	if !ruleEnabled() {
+		t.Fatal("fixture instance should start enabled")
+	}
+
+	failDefinitionInserts(t)
+	resp := k.workspace().put("child_done", 0, cfg(map[string]any{"enabled": false, "instruction": "never applied", "name": "label"}))
+	if resp.Code == http.StatusOK {
+		t.Fatalf("the forced row failure was not reported: %s", resp.Text())
+	}
+	var after string
+	dbfx.QueryRow(t, `SELECT settings::text FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&after)
+	if after != settings {
+		t.Fatalf("a failed row write left the alias changed:\n%s\n%s", settings, after)
+	}
+	if !ruleEnabled() {
+		t.Fatal("a failed row write left the legacy child_done instance disabled")
+	}
+	if n := wdCount(t); n != 0 {
+		t.Fatalf("%d definitions persisted", n)
+	}
+}
+
+// A settings writer that commits between the caller's observation and the
+// write must make the write conflict, not be overwritten.
+func TestWakeupDefinitionAliasWriteWaitsForSettingsWriters(t *testing.T) {
+	k := newWakeupDefinitionKit(t)
+	var settings string
+	dbfx.QueryRow(t, `SELECT settings::text FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&settings)
+	t.Cleanup(func() {
+		dbfx.Exec(t, `UPDATE workspace SET settings = $1::jsonb WHERE id = $2`, settings, testWorkspaceID)
+	})
+
+	ctx := context.Background()
+	writer, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Rollback(ctx)
+	if _, err := writer.Exec(ctx, `SELECT id FROM workspace WHERE id = $1 FOR UPDATE`, testWorkspaceID); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan int, 1)
+	go func() {
+		done <- k.workspace().put("child_done", 0, cfg(map[string]any{"enabled": true, "instruction": "late writer"})).Code
+	}()
+	time.Sleep(400 * time.Millisecond)
+	if _, err := writer.Exec(ctx, `UPDATE workspace SET settings = COALESCE(settings,'{}'::jsonb) || '{"system_wakeup_child_done": false}'::jsonb WHERE id = $1`, testWorkspaceID); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if code := <-done; code != http.StatusConflict {
+		t.Fatalf("write racing a settings writer: got %d, want 409", code)
+	}
+	var raw string
+	dbfx.QueryRow(t, `SELECT settings::text FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&raw)
+	if strings.Contains(raw, "late writer") || !strings.Contains(raw, `"system_wakeup_child_done": false`) {
+		t.Fatalf("the racing write overwrote the settings writer: %s", raw)
+	}
+}
+
+func TestWakeupDefinitionNullOnlyAliasClearSucceeds(t *testing.T) {
+	k := newWakeupDefinitionKit(t)
+	var settings string
+	dbfx.QueryRow(t, `SELECT settings::text FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&settings)
+	t.Cleanup(func() {
+		dbfx.Exec(t, `UPDATE workspace SET settings = $1::jsonb WHERE id = $2`, settings, testWorkspaceID)
+	})
+
+	// pr_merged: set the alias, then clear it with a null-only patch.
+	k.workspace().put("pr_merged", 0, cfg(map[string]any{"enabled": false})).Want(http.StatusOK)
+	var rev string
+	var list wakeupDefinitionListResponse
+	k.workspace().call(k.workspace().api().List, "GET", "", nil, nil).Want(http.StatusOK).JSON(&list)
+	for _, d := range list.Definitions {
+		if d.RuleKey == "pr_merged" {
+			rev = strconv.FormatInt(int64(d.Revision), 10)
+		}
+	}
+	var cleared wakeupDefinitionResponse
+	k.workspace().put("pr_merged", rev, cfg(map[string]any{"enabled": nil})).Want(http.StatusOK).JSON(&cleared)
+	if cleared.Revision != 0 || string(cleared.Config) != `{"v":1}` {
+		t.Fatalf("cleared view = %+v %s", cleared, cleared.Config)
+	}
+	// child_done: an instruction-only clear with no enabled alias set.
+	k.workspace().put("child_done", 0, cfg(map[string]any{"instruction": "to clear"})).Want(http.StatusOK)
+	var list2 wakeupDefinitionListResponse
+	k.workspace().call(k.workspace().api().List, "GET", "", nil, nil).Want(http.StatusOK).JSON(&list2)
+	var childRev string
+	for _, d := range list2.Definitions {
+		if d.RuleKey == "child_done" {
+			childRev = strconv.FormatInt(int64(d.Revision), 10)
+		}
+	}
+	k.workspace().put("child_done", childRev, cfg(map[string]any{"instruction": nil})).Want(http.StatusOK)
+	if n := wdCount(t); n != 0 {
+		t.Fatalf("a clear stored %d rows", n)
+	}
+}
+
+func TestWakeupDefinitionIssueDeleteRetiresTheLegacyOverride(t *testing.T) {
+	for name, paused := range map[string]bool{"inherits": false, "keeps a safety pause": true} {
+		t.Run(name, func(t *testing.T) {
+			k := newWakeupDefinitionKit(t)
+			fx := newChildDoneFixture(t, "in_progress")
+			dbfx.Exec(t, `UPDATE issue SET project_id = $1 WHERE id = $2`, k.projectID, fx.parent.ID)
+			issue := wdScope{t: t, kind: service.WakeupScopeIssue, params: []string{"id", fx.parent.ID}}
+			// The project supplies the inherited instruction.
+			k.project().put("child_done", 0, cfg(map[string]any{"instruction": "Project text"})).Want(http.StatusOK)
+			// A pre-existing customized legacy override, as the old endpoint writes it.
+			if w := putChildDoneRule(t, fx.parent.ID, map[string]any{"enabled": true, "instruction": "Legacy A"}); w.Code != http.StatusOK {
+				t.Fatalf("legacy write: %d %s", w.Code, w.Body.String())
+			}
+			if paused {
+				dbfx.Exec(t, `UPDATE issue_wakeup SET paused_reason = 'loop', enabled = false, fire_count = 3 WHERE issue_id = $1 AND system_rule = 'child_done'`, fx.parent.ID)
+			}
+			issue.put("child_done", 0, cfg(map[string]any{"instruction": "Stored B"})).Want(http.StatusOK)
+			if got := issue.effective("child_done").Sources["instruction"]; got != "issue" {
+				t.Fatalf("source before delete = %s", got)
+			}
+			var stored wakeupDefinitionListResponse
+			issue.call(issue.api().List, "GET", "", nil, nil).JSON(&stored)
+			issue.del("child_done", strconv.FormatInt(int64(stored.Definitions[0].Revision), 10)).Want(http.StatusNoContent)
+
+			eff := issue.effective("child_done")
+			if eff.Sources["instruction"] != "project" || !strings.Contains(string(eff.Config), "Project text") || strings.Contains(string(eff.Config), "Legacy A") {
+				t.Fatalf("delete resurrected the legacy override: %s %v", eff.Config, eff.Sources)
+			}
+			var customized bool
+			var instruction string
+			var enabled bool
+			var reason *string
+			var fires int
+			dbfx.QueryRow(t, `SELECT customized_at IS NOT NULL, instruction, enabled, paused_reason, fire_count FROM issue_wakeup WHERE issue_id = $1 AND system_rule = 'child_done'`, fx.parent.ID).
+				Scan(&customized, &instruction, &enabled, &reason, &fires)
+			if customized || instruction != "" {
+				t.Fatalf("legacy override not retired: customized=%v instruction=%q", customized, instruction)
+			}
+			if paused && (reason == nil || *reason != "loop" || enabled || fires != 3) {
+				t.Fatalf("safety pause or counters changed: enabled=%v reason=%v fires=%d", enabled, reason, fires)
+			}
+			if !paused && !enabled {
+				t.Fatal("an unpaused row must follow the inherited enabled state")
+			}
+		})
+	}
 }

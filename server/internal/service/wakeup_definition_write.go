@@ -1,17 +1,12 @@
 package service
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"regexp"
 	"slices"
-	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -61,6 +56,10 @@ type WakeupDefinitionView struct {
 	Revision  int64
 	Patch     WakeupConfigPatch
 	UpdatedAt pgtype.Timestamptz
+	// Effective is the rule as it resolves at this scope. Callers judge who may
+	// see the definition by its resolved target, since a sparse patch may inherit
+	// the target from an ancestor. Nil means it could not be resolved.
+	Effective *WakeupConfigPatch
 }
 
 // WakeupDefinitionWrite is one create/replace request. An empty RuleKey creates
@@ -78,287 +77,6 @@ type WakeupDefinitionWrite struct {
 type WakeupEffectiveRule struct {
 	EffectiveWakeupConfig
 	Overrides []string
-}
-
-// WakeupDefinitionTriggerKinds lists the trigger kinds a definition may use
-// today: the three built-in presets. A later layer adds a kind when it
-// implements its execution; unimplemented kinds are rejected, never stored.
-func WakeupDefinitionTriggerKinds() []string { return slices.Clone(builtinWakeupRules) }
-
-// builtinWakeupRules are the platform rules, which double as the trigger presets.
-var builtinWakeupRules = []string{SystemRuleChildDone, SystemRulePRMerged, SystemRulePRChecksFailed}
-
-// WakeupDefinitionFields lists the patch fields a definition may set today.
-// aggregate_limit, active_run and schedule belong to later layers.
-func WakeupDefinitionFields() []string {
-	return []string{"enabled", "name", "trigger", "target", "instruction", "mode", "max_fires", "expiry", "rate_limit", "filters"}
-}
-
-type wakeupTriggerSpec struct {
-	Kind string `json:"kind"`
-}
-
-type wakeupTargetSpec struct {
-	Type string `json:"type"`
-	ID   string `json:"id,omitempty"`
-}
-
-type wakeupExpirySpec struct {
-	At           *time.Time `json:"at,omitempty"`
-	AfterSeconds *int64     `json:"after_seconds,omitempty"`
-}
-
-type wakeupFiltersSpec struct {
-	BaseBranch *string  `json:"base_branch,omitempty"`
-	HeadBranch *string  `json:"head_branch,omitempty"`
-	CI         *string  `json:"ci,omitempty"`
-	Labels     []string `json:"labels,omitempty"`
-	Priorities []string `json:"priorities,omitempty"`
-}
-
-func decodeWakeupSpec(raw json.RawMessage, v any) error {
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(v); err != nil {
-		return err
-	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return errors.New("trailing data")
-	}
-	return nil
-}
-
-// WakeupPatchTarget returns the target type a patch names and, for an agent or
-// squad, its id. A target this build cannot read reports as an agent with no
-// id, so callers that gate on visibility fail closed.
-func WakeupPatchTarget(p WakeupConfigPatch) (string, pgtype.UUID) {
-	if !p.Target.Set || p.Target.Null {
-		return "", pgtype.UUID{}
-	}
-	var spec wakeupTargetSpec
-	if decodeWakeupSpec(p.Target.Value, &spec) != nil {
-		return "agent", pgtype.UUID{}
-	}
-	id, _ := wakeupUUID(spec.ID)
-	return spec.Type, id
-}
-
-// WakeupRedactedTarget and WakeupRedactedInstruction replace what a viewer may
-// not see.
-func WakeupRedactedTarget() wakeupObject {
-	return wakeupObject{Set: true, Value: json.RawMessage(`{"redacted":true}`)}
-}
-
-func WakeupRedactedInstruction() wakeupField[string] { return wakeupField[string]{} }
-
-func wakeupDefinitionBad(format string, args ...any) error {
-	return fmt.Errorf("%w: %s", ErrWakeupInput, fmt.Sprintf(format, args...))
-}
-
-func checkWakeupRuleKey(key string) error {
-	if _, builtin := WakeupBuiltinBaseline(key); builtin || customWakeupRuleKey.MatchString(key) {
-		return nil
-	}
-	return wakeupDefinitionBad("unknown rule %q", key)
-}
-
-// normalizeWakeupPatch trims the text fields a definition stores.
-func normalizeWakeupPatch(p *WakeupConfigPatch) {
-	if p.Name.Set && !p.Name.Null {
-		p.Name.Value = strings.TrimSpace(p.Name.Value)
-	}
-	if p.Instruction.Set && !p.Instruction.Null {
-		p.Instruction.Value = strings.TrimSpace(p.Instruction.Value)
-	}
-}
-
-// wakeupPatchRefs are the workspace-scoped references a patch names, which the
-// caller must still authorize.
-type wakeupPatchRefs struct {
-	targetType string
-	targetID   pgtype.UUID
-	labels     []pgtype.UUID
-}
-
-// validateWakeupPatch checks one patch on its own: types, ranges and the fields
-// and trigger kinds this build can run. Cross-field and cross-scope rules are
-// checked on the resolved rule by validateEffectiveWakeup.
-func validateWakeupPatch(ruleKey string, p WakeupConfigPatch, now time.Time) (wakeupPatchRefs, error) {
-	var refs wakeupPatchRefs
-	for name, unsupported := range map[string]bool{"aggregate_limit": p.AggregateLimit.Set, "active_run": p.ActiveRun.Set, "schedule": p.Schedule.Set} {
-		if unsupported {
-			return refs, wakeupDefinitionBad("%s is not available yet", name)
-		}
-	}
-	if len(setWakeupFields(p)) == 0 {
-		return refs, wakeupDefinitionBad("a definition sets at least one field; delete it to inherit")
-	}
-	live := func(f interface{ IsZero() bool }, null bool) bool { return !f.IsZero() && !null }
-	if live(p.Name, p.Name.Null) && (p.Name.Value == "" || utf8.RuneCountInString(p.Name.Value) > maxWakeupDefinitionName) {
-		return refs, wakeupDefinitionBad("name must be 1–%d characters", maxWakeupDefinitionName)
-	}
-	if live(p.Instruction, p.Instruction.Null) && (p.Instruction.Value == "" || len(p.Instruction.Value) > maxWakeupDefinitionInstruction) {
-		return refs, wakeupDefinitionBad("instruction must be 1–%d bytes", maxWakeupDefinitionInstruction)
-	}
-	if live(p.Mode, p.Mode.Null) && p.Mode.Value != "once" && p.Mode.Value != "continuous" {
-		return refs, wakeupDefinitionBad("mode must be once or continuous")
-	}
-	if live(p.MaxFires, p.MaxFires.Null) && (p.MaxFires.Value < 1 || p.MaxFires.Value > maxWakeupDefinitionMaxFires) {
-		return refs, wakeupDefinitionBad("max_fires must be 1–%d", maxWakeupDefinitionMaxFires)
-	}
-	if live(p.RateLimit, p.RateLimit.Null) && (p.RateLimit.Value < 1 || p.RateLimit.Value > maxWakeupDefinitionRateLimit) {
-		return refs, wakeupDefinitionBad("rate_limit must be 1–%d", maxWakeupDefinitionRateLimit)
-	}
-	if live(p.Trigger, p.Trigger.Null) {
-		var spec wakeupTriggerSpec
-		if err := decodeWakeupSpec(p.Trigger.Value, &spec); err != nil {
-			return refs, wakeupDefinitionBad("invalid trigger: %v", err)
-		}
-		if !slices.Contains(WakeupDefinitionTriggerKinds(), spec.Kind) {
-			return refs, wakeupDefinitionBad("trigger kind %q is not available yet", spec.Kind)
-		}
-		if _, builtin := WakeupBuiltinBaseline(ruleKey); builtin && spec.Kind != ruleKey {
-			return refs, wakeupDefinitionBad("a built-in rule keeps its own trigger")
-		}
-	}
-	if live(p.Target, p.Target.Null) {
-		var spec wakeupTargetSpec
-		if err := decodeWakeupSpec(p.Target.Value, &spec); err != nil {
-			return refs, wakeupDefinitionBad("invalid target: %v", err)
-		}
-		id, err := wakeupUUID(spec.ID)
-		switch {
-		case err != nil:
-			return refs, wakeupDefinitionBad("invalid target id")
-		case spec.Type == "assignee" && id.Valid, (spec.Type == "agent" || spec.Type == "squad") && !id.Valid,
-			spec.Type != "assignee" && spec.Type != "agent" && spec.Type != "squad":
-			return refs, wakeupDefinitionBad("target must be the assignee, or an agent or squad with an id")
-		}
-		refs.targetType, refs.targetID = spec.Type, id
-	}
-	if live(p.Expiry, p.Expiry.Null) {
-		var spec wakeupExpirySpec
-		if err := decodeWakeupSpec(p.Expiry.Value, &spec); err != nil {
-			return refs, wakeupDefinitionBad("invalid expiry: %v", err)
-		}
-		if (spec.At == nil) == (spec.AfterSeconds == nil) {
-			return refs, wakeupDefinitionBad("expiry takes exactly one of at or after_seconds")
-		}
-		if spec.AfterSeconds != nil && (*spec.AfterSeconds < 60 || *spec.AfterSeconds > maxWakeupSeconds) {
-			return refs, wakeupDefinitionBad("expiry after_seconds must be 60–%d", maxWakeupSeconds)
-		}
-		if spec.At != nil && (!spec.At.After(now) || spec.At.Sub(now) > maxWakeupSeconds*time.Second) {
-			return refs, wakeupDefinitionBad("expiry at must be in the next year")
-		}
-	}
-	if live(p.Filters, p.Filters.Null) {
-		var err error
-		if refs.labels, err = validateWakeupFilters(p.Filters.Value); err != nil {
-			return refs, err
-		}
-	}
-	return refs, nil
-}
-
-func validateWakeupFilters(raw json.RawMessage) ([]pgtype.UUID, error) {
-	var spec wakeupFiltersSpec
-	if err := decodeWakeupSpec(raw, &spec); err != nil {
-		return nil, wakeupDefinitionBad("invalid filters: %v", err)
-	}
-	for name, branch := range map[string]*string{"base_branch": spec.BaseBranch, "head_branch": spec.HeadBranch} {
-		if branch != nil && (strings.TrimSpace(*branch) == "" || len(*branch) > 255) {
-			return nil, wakeupDefinitionBad("%s must be 1–255 bytes", name)
-		}
-	}
-	if spec.CI != nil && !slices.Contains([]string{"failure", "error", "both"}, *spec.CI) {
-		return nil, wakeupDefinitionBad("ci must be failure, error or both")
-	}
-	if len(spec.Priorities) > 5 {
-		return nil, wakeupDefinitionBad("too many priorities")
-	}
-	for _, p := range spec.Priorities {
-		if !slices.Contains([]string{"urgent", "high", "medium", "low", "none"}, p) {
-			return nil, wakeupDefinitionBad("unknown priority %q", p)
-		}
-	}
-	if len(spec.Labels) > maxWakeupDefinitionLabels {
-		return nil, wakeupDefinitionBad("at most %d labels", maxWakeupDefinitionLabels)
-	}
-	labels := make([]pgtype.UUID, 0, len(spec.Labels))
-	for _, l := range spec.Labels {
-		id, err := wakeupUUID(l)
-		if err != nil || !id.Valid {
-			return nil, wakeupDefinitionBad("invalid label id")
-		}
-		labels = append(labels, id)
-	}
-	return labels, nil
-}
-
-// validateEffectiveWakeup checks the complete resolved rule, because a patch is
-// only valid in the chain it lands in: a custom rule must stay runnable, and a
-// filter must fit the trigger it narrows.
-func validateEffectiveWakeup(eff EffectiveWakeupConfig) error {
-	_, builtin := WakeupBuiltinBaseline(eff.RuleKey)
-	if !builtin && (!eff.Config.Trigger.Set || !eff.Config.Instruction.Set) {
-		return wakeupDefinitionBad("a custom rule needs a trigger and an instruction")
-	}
-	if !eff.Config.Filters.Set {
-		return nil
-	}
-	kind := eff.RuleKey
-	if eff.Config.Trigger.Set {
-		var spec wakeupTriggerSpec
-		_ = decodeWakeupSpec(eff.Config.Trigger.Value, &spec)
-		kind = spec.Kind
-	}
-	var spec wakeupFiltersSpec
-	_ = decodeWakeupSpec(eff.Config.Filters.Value, &spec)
-	pr := kind == SystemRulePRMerged || kind == SystemRulePRChecksFailed
-	if (spec.BaseBranch != nil || spec.HeadBranch != nil) && !pr {
-		return wakeupDefinitionBad("branch filters apply to pull request triggers only")
-	}
-	if spec.CI != nil && kind != SystemRulePRChecksFailed {
-		return wakeupDefinitionBad("the ci filter applies to failed pull request checks only")
-	}
-	return nil
-}
-
-// authorizeWakeupRefs proves the member may use every workspace reference of a
-// patch. A reference outside the workspace, an archived or runtime-less agent
-// and an agent the member may not invoke all read as forbidden, so a caller
-// learns nothing about another workspace. A squad runs through its leader.
-func (s *IssueWakeupService) authorizeWakeupRefs(ctx context.Context, q *db.Queries, ws, member pgtype.UUID, refs wakeupPatchRefs) error {
-	agentID := refs.targetID
-	switch refs.targetType {
-	case "squad":
-		squad, err := q.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: refs.targetID, WorkspaceID: ws})
-		if errors.Is(err, pgx.ErrNoRows) || err == nil && squad.ArchivedAt.Valid {
-			return ErrWakeupForbidden
-		} else if err != nil {
-			return err
-		}
-		agentID = squad.LeaderID
-		fallthrough
-	case "agent":
-		agent, err := q.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: agentID, WorkspaceID: ws})
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrWakeupForbidden
-		} else if err != nil {
-			return err
-		}
-		if err := s.authorize(ctx, q, ws, member, agent); err != nil {
-			return err
-		}
-	}
-	for _, label := range refs.labels {
-		if _, err := q.GetLabel(ctx, db.GetLabelParams{ID: label, WorkspaceID: ws}); errors.Is(err, pgx.ErrNoRows) {
-			return ErrWakeupForbidden
-		} else if err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func wakeupDefinitionView(row db.IssueWakeupDefinition) (WakeupDefinitionView, error) {
@@ -500,6 +218,13 @@ func (s *IssueWakeupService) SaveWakeupDefinition(ctx context.Context, ref Wakeu
 	if err := q.LockWakeupDefinitionScope(ctx, ref.lockKey()); err != nil {
 		return WakeupDefinitionView{}, err
 	}
+	if aliased {
+		// Every settings write updates this row, so holding it from the revision
+		// check to the commit keeps a settings writer out of the middle.
+		if err := q.LockWorkspaceSettingsForWakeupDefinition(ctx, ref.WorkspaceID); err != nil {
+			return WakeupDefinitionView{}, err
+		}
+	}
 	existing, err := q.GetWakeupDefinition(ctx, wakeupDefinitionParams(ref, w.RuleKey))
 	found := err == nil
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -536,13 +261,14 @@ func (s *IssueWakeupService) SaveWakeupDefinition(ctx context.Context, ref Wakeu
 	if err := s.authorizeWakeupRefs(ctx, q, ref.WorkspaceID, member, refs); err != nil {
 		return WakeupDefinitionView{}, err
 	}
-	if _, err := resolveWakeupProposal(in, ref, &WakeupDefinition{Scope: ref.Kind, ScopeID: ref.ID, Root: root, Patch: patch}); err != nil {
+	eff, err := resolveWakeupProposal(in, ref, &WakeupDefinition{Scope: ref.Kind, ScopeID: ref.ID, Root: root, Patch: patch})
+	if err != nil {
 		return WakeupDefinitionView{}, err
 	}
 
 	rest := patch
 	if aliased {
-		if rest, err = s.writeWorkspaceAliases(ctx, ref.WorkspaceID, w.RuleKey, patch); err != nil {
+		if rest, err = writeWorkspaceAliasesTx(ctx, tx, q, ref.WorkspaceID, w.RuleKey, patch); err != nil {
 			return WakeupDefinitionView{}, err
 		}
 	}
@@ -574,24 +300,34 @@ func (s *IssueWakeupService) SaveWakeupDefinition(ctx context.Context, ref Wakeu
 	} else if err != nil {
 		return WakeupDefinitionView{}, err
 	}
+	var view WakeupDefinitionView
+	if aliased {
+		// Read inside the transaction: the alias values it just wrote are the
+		// view, and a clear that leaves nothing stored is an empty definition.
+		merged, err := s.workspaceBuiltinView(ctx, q, ref.WorkspaceID, w.RuleKey)
+		if err != nil {
+			return WakeupDefinitionView{}, err
+		}
+		if merged == nil {
+			merged = &WakeupDefinitionView{Scope: WakeupScopeWorkspace, ScopeID: ref.WorkspaceID, RuleKey: w.RuleKey}
+		}
+		view = *merged
+	} else if view, err = wakeupDefinitionView(row); err != nil {
+		return WakeupDefinitionView{}, err
+	}
+	resolved := eff.Config
+	view.Effective = &resolved
 	if err := tx.Commit(ctx); err != nil {
 		return WakeupDefinitionView{}, err
 	}
-	if aliased {
-		views, err := s.workspaceBuiltinView(ctx, s.Tasks.Queries, ref.WorkspaceID, w.RuleKey)
-		if err != nil || views == nil {
-			return WakeupDefinitionView{}, errors.Join(err, errors.New("saved definition not readable"))
-		}
-		return *views, nil
-	}
-	return wakeupDefinitionView(row)
+	return view, nil
 }
 
-// writeWorkspaceAliases applies the alias fields of a replacing patch through
-// the settings path. A replace clears an alias the patch leaves out, and the
-// legacy instruction limit applies to the alias.
-func (s *IssueWakeupService) writeWorkspaceAliases(ctx context.Context, ws pgtype.UUID, key string, patch WakeupConfigPatch) (WakeupConfigPatch, error) {
-	row, err := s.Tasks.Queries.GetWorkspace(ctx, ws)
+// writeWorkspaceAliasesTx applies the alias fields of a replacing patch through
+// the settings path, inside the caller's transaction. A replace clears an alias
+// the patch leaves out, and the legacy instruction limit applies to the alias.
+func writeWorkspaceAliasesTx(ctx context.Context, tx pgx.Tx, q *db.Queries, ws pgtype.UUID, key string, patch WakeupConfigPatch) (WakeupConfigPatch, error) {
+	row, err := q.GetWorkspace(ctx, ws)
 	if err != nil {
 		return patch, err
 	}
@@ -611,7 +347,7 @@ func (s *IssueWakeupService) writeWorkspaceAliases(ctx context.Context, ws pgtyp
 			return patch, wakeupDefinitionBad("this rule's workspace instruction must be at most %d bytes", MaxSystemWakeupInstruction)
 		}
 	}
-	return s.ApplyWorkspaceWakeupAliases(ctx, ws, key, alias)
+	return applyWorkspaceWakeupAliasesTx(ctx, tx, q, ws, key, alias)
 }
 
 // workspaceBuiltinView is a workspace built-in's effective definition: the
@@ -676,7 +412,50 @@ func (s *IssueWakeupService) DeleteWakeupDefinition(ctx context.Context, ref Wak
 	} else if n == 0 {
 		return ErrWakeupConflict
 	}
+	if _, builtin := WakeupBuiltinBaseline(ruleKey); builtin && ref.Kind == WakeupScopeIssue {
+		if err := retireLegacyIssueOverride(ctx, tx, q, ref, ruleKey); err != nil {
+			return err
+		}
+	}
 	return tx.Commit(ctx)
+}
+
+// retireLegacyIssueOverride resets an issue's customized legacy row to
+// inheritance. Without it, deleting the stored definition would let the same
+// row project back as the issue's override. Pauses, fire counts and consumed
+// state are untouched; enabled follows the inherited value only on a row
+// nothing has paused or ended, and a changed child_done state is re-baselined
+// (or its receipts discarded) exactly as a workspace default change does.
+func retireLegacyIssueOverride(ctx context.Context, tx pgx.Tx, q *db.Queries, ref WakeupScopeRef, key string) error {
+	if _, err := q.LockWakeupIssue(ctx, ref.ID); err != nil {
+		return err
+	}
+	row, err := q.GetSystemWakeup(ctx, db.GetSystemWakeupParams{IssueID: ref.ID, SystemRule: systemRuleText(key)})
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && !row.CustomizedAt.Valid {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	in, err := loadWakeupChain(ctx, q, ref, key)
+	if err != nil {
+		return err
+	}
+	in.Issue = nil
+	inherited, err := ResolveWakeupConfig(in)
+	if err != nil {
+		return err
+	}
+	updated, err := q.RetireCustomizedSystemWakeup(ctx, db.RetireCustomizedSystemWakeupParams{ID: row.ID, Enabled: inherited.Enabled()})
+	if err != nil {
+		return err
+	}
+	if key != SystemRuleChildDone || updated.Enabled == row.Enabled {
+		return nil
+	}
+	if updated.Enabled {
+		return baselineChildDone(ctx, tx, q, updated)
+	}
+	return q.DiscardWakeupReceipts(ctx, updated.ID)
 }
 
 // ListWakeupDefinitions returns one scope's definitions. At workspace scope the
@@ -696,9 +475,27 @@ func (s *IssueWakeupService) ListWakeupDefinitions(ctx context.Context, ref Wake
 		}
 		out = append(out, view)
 	}
-	if ref.Kind != WakeupScopeWorkspace {
-		return out, nil
+	if ref.Kind == WakeupScopeWorkspace {
+		if out, err = s.withWorkspaceBuiltins(ctx, q, ref, out); err != nil {
+			return nil, err
+		}
 	}
+	for i := range out {
+		in, err := loadWakeupChain(ctx, q, ref, out[i].RuleKey)
+		if err != nil {
+			continue
+		}
+		if eff, err := ResolveWakeupConfig(in); err == nil {
+			resolved := eff.Config
+			out[i].Effective = &resolved
+		}
+	}
+	return out, nil
+}
+
+// withWorkspaceBuiltins adds the built-ins whose settings aliases carry values,
+// or replaces their stored views with the alias-merged ones.
+func (s *IssueWakeupService) withWorkspaceBuiltins(ctx context.Context, q *db.Queries, ref WakeupScopeRef, out []WakeupDefinitionView) ([]WakeupDefinitionView, error) {
 	for _, key := range builtinWakeupRules {
 		merged, err := s.workspaceBuiltinView(ctx, q, ref.WorkspaceID, key)
 		if err != nil || merged == nil {

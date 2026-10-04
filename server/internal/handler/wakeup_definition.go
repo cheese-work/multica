@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -30,12 +31,35 @@ func (h *Handler) WakeupDefinitionAPI(kind service.WakeupScope) wakeupDefinition
 	return wakeupDefinitionAPI{h: h, kind: kind}
 }
 
+// wireRevision is a definition revision on the wire. Workspace alias revisions
+// reach 62 bits, which a JSON number cannot carry through JavaScript, so it is
+// written as a decimal string. A request may send a string or, for small
+// values, a bare number.
+type wireRevision int64
+
+func (r wireRevision) MarshalJSON() ([]byte, error) {
+	return []byte(strconv.Quote(strconv.FormatInt(int64(r), 10))), nil
+}
+
+func (r *wireRevision) UnmarshalJSON(b []byte) error {
+	text := string(bytes.TrimSpace(b))
+	if unquoted, err := strconv.Unquote(text); err == nil {
+		text = unquoted
+	}
+	n, err := strconv.ParseInt(text, 10, 64)
+	if err != nil || n < 0 {
+		return errors.New("revision must be a non-negative integer")
+	}
+	*r = wireRevision(n)
+	return nil
+}
+
 type wakeupDefinitionResponse struct {
 	Scope     string          `json:"scope"`
 	ScopeID   string          `json:"scope_id"`
 	RuleKey   string          `json:"rule_key"`
 	Root      bool            `json:"root"`
-	Revision  int64           `json:"revision"`
+	Revision  wireRevision    `json:"revision"`
 	Config    json.RawMessage `json:"config"`
 	UpdatedAt *time.Time      `json:"updated_at"`
 	// Redacted is set when the viewer may not see the target agent: the
@@ -91,7 +115,7 @@ type wakeupEffectiveResponse struct {
 
 type wakeupDefinitionBody struct {
 	RuleKey  string          `json:"rule_key"`
-	Revision int64           `json:"revision"`
+	Revision wireRevision    `json:"revision"`
 	Config   json.RawMessage `json:"config"`
 }
 
@@ -199,14 +223,14 @@ func decodeWakeupDefinitionBody(w http.ResponseWriter, r *http.Request) (wakeupD
 // definitionView renders one definition for the caller, withholding a target
 // and prompt they may not see.
 func (h *Handler) definitionView(r *http.Request, c wakeupDefinitionCaller, v service.WakeupDefinitionView) (wakeupDefinitionResponse, error) {
-	patch, redacted := h.redactWakeupPatch(r, c, v.Patch)
+	patch, redacted := h.redactWakeupPatch(r, c, v.Patch, v.Effective)
 	raw, err := service.MarshalWakeupConfigPatch(patch)
 	if err != nil {
 		return wakeupDefinitionResponse{}, err
 	}
 	out := wakeupDefinitionResponse{
 		Scope: string(v.Scope), ScopeID: uuidToString(v.ScopeID), RuleKey: v.RuleKey, Root: v.Root,
-		Revision: v.Revision, Config: raw, Redacted: redacted,
+		Revision: wireRevision(v.Revision), Config: raw, Redacted: redacted,
 	}
 	if v.UpdatedAt.Valid {
 		out.UpdatedAt = &v.UpdatedAt.Time
@@ -214,10 +238,13 @@ func (h *Handler) definitionView(r *http.Request, c wakeupDefinitionCaller, v se
 	return out, nil
 }
 
-// redactWakeupPatch drops the target and instruction when the target agent (or
-// the leader of the target squad) is one the caller may not view.
-func (h *Handler) redactWakeupPatch(r *http.Request, c wakeupDefinitionCaller, p service.WakeupConfigPatch) (service.WakeupConfigPatch, bool) {
-	if h.wakeupTargetVisible(r, c, p) {
+// redactWakeupPatch drops the target and instruction of p when the target the
+// rule resolves to (an agent, or the leader of a squad) is one the caller may
+// not view. Visibility follows the resolved target, not the patch: an
+// instruction-only override inherits its target from an ancestor. A nil
+// resolution fails closed.
+func (h *Handler) redactWakeupPatch(r *http.Request, c wakeupDefinitionCaller, p service.WakeupConfigPatch, resolved *service.WakeupConfigPatch) (service.WakeupConfigPatch, bool) {
+	if resolved != nil && h.wakeupTargetVisible(r, c, *resolved) {
 		return p, false
 	}
 	p.Target = service.WakeupRedactedTarget()
@@ -291,7 +318,7 @@ func (a wakeupDefinitionAPI) save(w http.ResponseWriter, r *http.Request, ruleKe
 		writeError(w, http.StatusBadRequest, "rule_key belongs in the path")
 		return
 	}
-	saved, err := a.service().SaveWakeupDefinition(r.Context(), c.ref, c.member, service.WakeupDefinitionWrite{RuleKey: ruleKey, Revision: body.Revision, Patch: patch})
+	saved, err := a.service().SaveWakeupDefinition(r.Context(), c.ref, c.member, service.WakeupDefinitionWrite{RuleKey: ruleKey, Revision: int64(body.Revision), Patch: patch})
 	if err != nil {
 		wakeupError(w, err)
 		return
@@ -352,7 +379,7 @@ func (a wakeupDefinitionAPI) effective(w http.ResponseWriter, r *http.Request, c
 		wakeupError(w, err)
 		return
 	}
-	patch, redacted := a.h.redactWakeupPatch(r, c, eff.Config)
+	patch, redacted := a.h.redactWakeupPatch(r, c, eff.Config, &eff.Config)
 	raw, err := service.MarshalWakeupConfigPatch(patch)
 	if err != nil {
 		wakeupError(w, err)
