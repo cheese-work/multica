@@ -379,7 +379,7 @@ func (s *IssueWakeupService) mayJoin(ctx context.Context, q *db.Queries, issue d
 		if w.AgentID != task.AgentID || w.CreatedBy != task.OriginatorUserID || (w.Mode == "once" && w.LastTaskID.Valid) {
 			return "", false, nil
 		}
-		if isDefaultDerivedWakeup(w) {
+		if defaultDerivedHeld(ctx, issue, w) {
 			return "", false, nil
 		}
 		if err := s.authorize(ctx, q, w.WorkspaceID, w.CreatedBy, agent); err != nil {
@@ -390,14 +390,31 @@ func (s *IssueWakeupService) mayJoin(ctx context.Context, q *db.Queries, issue d
 		}
 		return w.Instruction, true, nil
 	}
-	if !w.Enabled || issuestatus.Effective(ctx, q, issue.WorkspaceID, issue.Status) == "backlog" {
+	config, err := loadBuiltinWakeup(ctx, q, issue, w.SystemRule.String, &w)
+	if errors.Is(err, errWakeupConfigHeld) {
+		logWakeupHeld(ctx, issue, w, err)
 		return "", false, nil
 	}
-	if allowed, err := legacyDispatchAllowed(ctx, q, issue, w); err != nil || !allowed {
+	if err != nil {
 		return "", false, err
 	}
-	target, err := resolveWakeTarget(ctx, q, issue)
-	if err != nil || target.Agent.ID != task.AgentID {
+	on := w.Enabled
+	if config != nil {
+		on = config.enabled() && !systemWakeupPaused(w)
+	}
+	// A configuration that changed since the capture left these inputs behind
+	// for the rule's own dispatch to retire.
+	if !on || issuestatus.Effective(ctx, q, issue.WorkspaceID, issue.Status) == "backlog" || !builtinConfigCurrent(w, config) {
+		return "", false, nil
+	}
+	if eligible, err := config.matchesIssue(ctx, q, issue); err != nil || !eligible {
+		return "", false, err
+	}
+	if limit, limited := config.fireLimit(); limited && w.FireCount >= limit || config.expired(w.CreatedAt.Time, time.Now()) {
+		return "", false, nil
+	}
+	target, err := builtinTarget(ctx, s, q, issue, config)
+	if err != nil || target.Refused != "" || target.Agent.ID != task.AgentID {
 		return "", false, err
 	}
 	runAs, err := s.childDoneRunAs(ctx, issue, agent)
@@ -409,12 +426,12 @@ func (s *IssueWakeupService) mayJoin(ctx context.Context, q *db.Queries, issue d
 		return "", false, err
 	}
 	if _, isPRWakeup := prWakeupSetting(w.SystemRule.String); isPRWakeup {
-		enabled, err := PRWakeupEnabled(ws.Settings, w.SystemRule.String)
+		enabled, err := prRuleEnabled(ws.Settings, w.SystemRule.String, config != nil)
 		if err != nil || !enabled {
 			return "", false, err
 		}
 	}
-	return systemWakeupInstruction(w, ws.Settings, receipts), true, nil
+	return config.systemInstruction(w, ws.Settings, receipts), true, nil
 }
 
 // takenRun is a run that took some of a rule's inputs along and has started.
