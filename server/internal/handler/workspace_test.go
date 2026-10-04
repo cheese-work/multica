@@ -304,7 +304,13 @@ INSERT INTO issue_source_context_object_intent (
 VALUES ($1, $2, gen_random_uuid(), gen_random_uuid(), 's3://workspace-delete/source-context-object')
 `, sourceContextObjectKey, wsID)
 
+	dbfx.Exec(t, `
+INSERT INTO issue_wakeup_definition (workspace_id, scope_kind, scope_id, rule_key, config)
+VALUES ($1, 'workspace', $1, 'child_done', '{"v":1}')
+`, wsID)
+
 	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM issue_wakeup_definition WHERE workspace_id = $1`, wsID)
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM task_usage_hourly_dirty WHERE workspace_id = $1`, wsID)
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM task_usage_hourly WHERE workspace_id = $1`, wsID)
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM runtime_profile WHERE id = $1`, runtimeProfileID)
@@ -352,6 +358,7 @@ VALUES ($1, $2, gen_random_uuid(), gen_random_uuid(), 's3://workspace-delete/sou
 		"task_usage_hourly",
 		"runtime_profile",
 		"autopilot_rule_version",
+		"issue_wakeup_definition",
 	} {
 		var count int
 		dbfx.QueryRow(t, `SELECT COUNT(*) FROM `+table+` WHERE workspace_id = $1`, wsID).Scan(&count)
