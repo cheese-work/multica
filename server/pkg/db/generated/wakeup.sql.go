@@ -13,7 +13,7 @@ import (
 )
 
 const advanceIssueWakeup = `-- name: AdvanceIssueWakeup :exec
-UPDATE issue_wakeup SET enabled= $1,next_fire_at=$2,last_task_id=COALESCE($3,last_task_id),last_error=$4,updated_at=clock_timestamp() WHERE id= $5
+UPDATE issue_wakeup SET enabled= $1::bool AND paused_reason IS NULL AND disabled_at IS NULL,next_fire_at=$2,last_task_id=COALESCE($3,last_task_id),last_error=$4,updated_at=clock_timestamp() WHERE id= $5
 `
 
 type AdvanceIssueWakeupParams struct {
@@ -24,6 +24,8 @@ type AdvanceIssueWakeupParams struct {
 	ID         pgtype.UUID        `json:"id"`
 }
 
+// Progress bookkeeping never lifts a pause: a paused or disabled row stays
+// off, so enabled, paused_reason and disabled_at cannot drift apart.
 func (q *Queries) AdvanceIssueWakeup(ctx context.Context, arg AdvanceIssueWakeupParams) error {
 	_, err := q.db.Exec(ctx, advanceIssueWakeup,
 		arg.Enabled,
@@ -991,6 +993,13 @@ WITH candidates AS (
  SELECT id FROM issue_wakeup WHERE enabled AND condition IS NOT NULL AND next_fire_at<=now()
  UNION
  SELECT wakeup_id FROM issue_wakeup_receipt WHERE processed_at IS NULL
+ UNION
+ -- Rate-paused PR rules recover by the clock, on any issue PR dispatch accepts
+ -- (everything but the closed category; see systemWakeupIssueActive).
+ SELECT w.id FROM issue_wakeup w JOIN issue i ON i.id=w.issue_id AND i.workspace_id=w.workspace_id
+ WHERE NOT w.enabled AND w.paused_reason='rate' AND w.system_rule IN ('pr_merged','pr_checks_failed')
+  AND i.status<>'cancelled'
+  AND NOT EXISTS(SELECT 1 FROM issue_status s WHERE s.workspace_id=i.workspace_id AND s.key=i.status AND s.category='closed')
 )
 SELECT w.id, w.workspace_id, w.issue_id, w.agent_id, w.created_by, w.source_task_id, w.parent_comment_id, w.instruction, w.kind, w.mode, w.event_types, w.filter_agent_id, w.filter_task_id, w.interval_seconds, w.cron_expression, w.timezone, w.next_fire_at, w.enabled, w.disabled_at, w.revision, w.last_task_id, w.last_error, w.created_at, w.updated_at, w.filter_actor_type, w.filter_actor_id, w.expires_at, w.expiry_seconds, w.on_timeout, w.timed_out_at, w.system_rule, w.customized_at, w.condition, w.condition_state, w.max_fires, w.fire_count, w.paused_reason FROM candidates c JOIN issue_wakeup w ON w.id=c.id
 WHERE $1::uuid[] IS NULL OR w.workspace_id = ANY($1::uuid[])
@@ -1678,14 +1687,27 @@ func (q *Queries) ReserveWakeupReceipts(ctx context.Context, arg ReserveWakeupRe
 	return err
 }
 
-const resumeRateLimitedSystemWakeup = `-- name: ResumeRateLimitedSystemWakeup :exec
-UPDATE issue_wakeup SET enabled=true,paused_reason=NULL,disabled_at=NULL,updated_at=clock_timestamp()
-WHERE id= $1 AND system_rule IN ('pr_merged','pr_checks_failed') AND paused_reason='rate'
+const resumeRateLimitedSystemWakeup = `-- name: ResumeRateLimitedSystemWakeup :execrows
+UPDATE issue_wakeup w SET enabled=true,paused_reason=NULL,disabled_at=NULL,updated_at=clock_timestamp()
+WHERE w.id= $1 AND w.system_rule IN ('pr_merged','pr_checks_failed') AND w.paused_reason='rate'
+ AND (SELECT count(*) FROM agent_task_queue t WHERE t.context->>'wakeup_id'=w.id::text AND t.issue_id=w.issue_id AND t.created_at> $2) < $3::bigint
 `
 
-func (q *Queries) ResumeRateLimitedSystemWakeup(ctx context.Context, id pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, resumeRateLimitedSystemWakeup, id)
-	return err
+type ResumeRateLimitedSystemWakeupParams struct {
+	ID      pgtype.UUID        `json:"id"`
+	Since   pgtype.Timestamptz `json:"since"`
+	MaxRuns int64              `json:"max_runs"`
+}
+
+// The only way out of a rate pause: one statement clears the pause and its
+// run block together, and only while the rolling limit has room. Manual,
+// loop and max_fires pauses never match.
+func (q *Queries) ResumeRateLimitedSystemWakeup(ctx context.Context, arg ResumeRateLimitedSystemWakeupParams) (int64, error) {
+	result, err := q.db.Exec(ctx, resumeRateLimitedSystemWakeup, arg.ID, arg.Since, arg.MaxRuns)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const setClaimedTaskContext = `-- name: SetClaimedTaskContext :one
