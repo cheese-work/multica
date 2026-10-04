@@ -273,13 +273,6 @@ func (s *IssueWakeupService) SaveWakeupDefinition(ctx context.Context, ref Wakeu
 	if root && (!patch.Trigger.Set || patch.Trigger.Null || !patch.Instruction.Set || patch.Instruction.Null) {
 		return WakeupDefinitionView{}, wakeupDefinitionBad("a custom rule needs a trigger and an instruction")
 	}
-	if !found {
-		if n, err := q.CountWakeupDefinitionsInScope(ctx, db.CountWakeupDefinitionsInScopeParams{WorkspaceID: ref.WorkspaceID, ScopeKind: string(ref.Kind), ScopeID: ref.ID}); err != nil {
-			return WakeupDefinitionView{}, err
-		} else if n >= maxWakeupDefinitionsPerScope {
-			return WakeupDefinitionView{}, wakeupDefinitionBad("a scope holds at most %d definitions", maxWakeupDefinitionsPerScope)
-		}
-	}
 	if err := s.authorizeWakeupRefs(ctx, q, ref.WorkspaceID, member, refs); err != nil {
 		return WakeupDefinitionView{}, err
 	}
@@ -304,6 +297,17 @@ func (s *IssueWakeupService) SaveWakeupDefinition(ctx context.Context, ref Wakeu
 		}
 	}
 	keep := len(setWakeupFields(rest)) > 0
+	// The ceiling bounds stored records, so it applies only when this write
+	// inserts one: an alias-only update of a workspace built-in stores nothing.
+	// The scope lock is held, so the count cannot move before the insert, and a
+	// refusal rolls the alias effects back with the transaction.
+	if keep && !found {
+		if n, err := q.CountWakeupDefinitionsInScope(ctx, db.CountWakeupDefinitionsInScopeParams{WorkspaceID: ref.WorkspaceID, ScopeKind: string(ref.Kind), ScopeID: ref.ID}); err != nil {
+			return WakeupDefinitionView{}, err
+		} else if n >= maxWakeupDefinitionsPerScope {
+			return WakeupDefinitionView{}, wakeupDefinitionBad("a scope holds at most %d definitions", maxWakeupDefinitionsPerScope)
+		}
+	}
 	raw, err := MarshalWakeupConfigPatch(rest)
 	if err != nil {
 		return WakeupDefinitionView{}, err

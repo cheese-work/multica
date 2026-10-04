@@ -1049,3 +1049,78 @@ func TestWakeupDefinitionRefusesAliasWritesOnNonObjectSettings(t *testing.T) {
 		})
 	}
 }
+
+// ---- round 4: the per-scope ceiling counts stored records only -------------
+
+func workspaceRevision(k *wdKit, rule string) string {
+	for _, d := range k.workspace().list().Definitions {
+		if d.RuleKey == rule {
+			return strconv.FormatInt(int64(d.Revision), 10)
+		}
+	}
+	return "0"
+}
+
+func fillWorkspaceDefinitions(t *testing.T, k *wdKit, n int) {
+	t.Helper()
+	for i := range n {
+		k.workspace().create(cfg(map[string]any{"trigger": map[string]any{"kind": "pr_merged"}, "instruction": "filler " + strconv.Itoa(i)})).Want(http.StatusCreated)
+	}
+}
+
+// An alias-only update of a workspace built-in stores no row, so the 32-record
+// ceiling must not stop it: at the ceiling a workspace can still toggle,
+// disable and clear its built-ins. Only a write that inserts a record counts.
+func TestWakeupDefinitionAliasOnlyWritesWorkAtTheCeiling(t *testing.T) {
+	k := newWakeupDefinitionKit(t)
+	var settings string
+	dbfx.QueryRow(t, `SELECT settings::text FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&settings)
+	t.Cleanup(func() {
+		dbfx.Exec(t, `UPDATE workspace SET settings = $1::jsonb WHERE id = $2`, settings, testWorkspaceID)
+	})
+
+	// The alias exists first and stores no row; then the scope fills to 32.
+	k.workspace().put("pr_merged", "0", cfg(map[string]any{"enabled": false})).Want(http.StatusOK)
+	fillWorkspaceDefinitions(t, k, 32)
+	if n := wdCount(t); n != 32 {
+		t.Fatalf("setup: %d stored records, want 32", n)
+	}
+
+	// Toggle the built-in back on, echoing the decimal-string revision LIST gave.
+	k.workspace().put("pr_merged", workspaceRevision(k, "pr_merged"), cfg(map[string]any{"enabled": true})).Want(http.StatusOK)
+	if n := wdCount(t); n != 32 {
+		t.Fatalf("an alias-only write changed the stored count to %d", n)
+	}
+
+	// Alias-only sets and clears of all three built-ins.
+	for _, rule := range []string{"pr_merged", "pr_checks_failed", "child_done"} {
+		k.workspace().put(rule, workspaceRevision(k, rule), cfg(map[string]any{"enabled": false})).Want(http.StatusOK)
+		k.workspace().put(rule, workspaceRevision(k, rule), cfg(map[string]any{"enabled": nil})).Want(http.StatusOK)
+	}
+	k.workspace().put("child_done", workspaceRevision(k, "child_done"), cfg(map[string]any{"instruction": "alias text"})).Want(http.StatusOK)
+	k.workspace().put("child_done", workspaceRevision(k, "child_done"), cfg(map[string]any{"instruction": nil})).Want(http.StatusOK)
+	if n := wdCount(t); n != 32 {
+		t.Fatalf("alias-only writes left %d stored records", n)
+	}
+
+	// Negative control: a write that would store a 33rd record is still refused,
+	// and its alias effects roll back with it.
+	var before string
+	dbfx.QueryRow(t, `SELECT settings::text FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&before)
+	k.workspace().create(cfg(map[string]any{"trigger": map[string]any{"kind": "pr_merged"}, "instruction": "33rd"})).Want(http.StatusBadRequest)
+	k.workspace().put("pr_checks_failed", workspaceRevision(k, "pr_checks_failed"), cfg(map[string]any{"enabled": false, "name": "needs a row"})).Want(http.StatusBadRequest)
+	var after string
+	dbfx.QueryRow(t, `SELECT settings::text FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&after)
+	if after != before || wdCount(t) != 32 {
+		t.Fatalf("a refused 33rd record changed state: settings %s -> %s, %d records", before, after, wdCount(t))
+	}
+	// An existing record still updates at the ceiling.
+	var first wakeupDefinitionResponse
+	for _, d := range k.workspace().list().Definitions {
+		if d.Root {
+			first = d
+			break
+		}
+	}
+	k.workspace().put(first.RuleKey, strconv.FormatInt(int64(first.Revision), 10), cfg(map[string]any{"trigger": map[string]any{"kind": "pr_merged"}, "instruction": "edited"})).Want(http.StatusOK)
+}
