@@ -1,7 +1,7 @@
 import type { ZodType } from "zod";
 import type { IssueWakeup, IssueWakeupInput, IssueWakeupSummaryRow, PausedWakeup, SystemWakeup, WakeupRun, WorkspaceSystemWakeup } from "../types/issue-wakeup";
-import type { WorkspaceWakeupPage, WorkspaceWakeupFilters } from "../types/issue-wakeup";
-import { WorkspaceWakeupPageSchema, IssueWakeupSchema, IssueWakeupSummaryRowSchema, PausedWakeupSchema, SystemWakeupSchema, WakeupRunSchema, WorkspaceSystemWakeupSchema } from "./schemas";
+import type { WorkspaceWakeupPage, WorkspaceWakeupFilters, WakeupDefinition, WakeupDefinitionConfig, WakeupDefinitionList, WakeupDefinitionScope, WakeupEffectiveRule } from "../types/issue-wakeup";
+import { WorkspaceWakeupPageSchema, IssueWakeupSchema, IssueWakeupSummaryRowSchema, PausedWakeupSchema, SystemWakeupSchema, WakeupRunSchema, WorkspaceSystemWakeupSchema, WakeupDefinitionSchema, WakeupDefinitionListSchema, WakeupEffectiveRuleSchema } from "./schemas";
 import type { InboxFilters } from "../inbox/filter-store";
 import type { ArchivedInboxPage, ArchivedInboxFacets } from "../types/inbox";
 import { configStore } from "../config";
@@ -1384,6 +1384,59 @@ export class ApiClient {
 
   async updateWorkspaceSystemWakeup(rule: WorkspaceSystemWakeup["rule"], input: { enabled?: boolean; instruction?: string }): Promise<void> {
     await this.fetch(`/api/system-wakeups/${encodeURIComponent(rule)}`, { method: "PUT", body: JSON.stringify(input) });
+  }
+
+  private wakeupDefinitionsPath(scope: WakeupDefinitionScope): string {
+    switch (scope.kind) {
+      case "workspace":
+        return "/api/wakeup-definitions";
+      case "project":
+        return `/api/projects/${encodeURIComponent(scope.id)}/wakeup-definitions`;
+      case "issue":
+        return `/api/issues/${encodeURIComponent(scope.id)}/wakeup-definitions`;
+    }
+  }
+
+  async listWakeupDefinitions(scope: WakeupDefinitionScope): Promise<WakeupDefinitionList> {
+    const raw = await this.fetch<unknown>(this.wakeupDefinitionsPath(scope));
+    const parsed = parseWithFallback<WakeupDefinitionList | null>(raw, WakeupDefinitionListSchema, null, { endpoint: "GET wakeup-definitions" });
+    if (!parsed) throw new Error("Could not load wakeup definitions");
+    return parsed;
+  }
+
+  async getEffectiveWakeupRule(scope: WakeupDefinitionScope, ruleKey: string): Promise<WakeupEffectiveRule> {
+    const raw = await this.fetch<unknown>(`${this.wakeupDefinitionsPath(scope)}/${encodeURIComponent(ruleKey)}/effective`);
+    const parsed = parseWithFallback<WakeupEffectiveRule | null>(raw, WakeupEffectiveRuleSchema, null, { endpoint: "GET wakeup-definitions/:rule/effective" });
+    if (!parsed) throw new Error("Could not load the effective wakeup rule");
+    return parsed;
+  }
+
+  /** What a config would resolve to at this scope, without saving it. An empty `rule_key` previews a new custom rule. */
+  async previewWakeupDefinition(scope: WakeupDefinitionScope, input: { rule_key: string; config: WakeupDefinitionConfig }): Promise<WakeupEffectiveRule> {
+    const raw = await this.fetch<unknown>(`${this.wakeupDefinitionsPath(scope)}/preview`, { method: "POST", body: JSON.stringify(input) });
+    const parsed = parseWithFallback<WakeupEffectiveRule | null>(raw, WakeupEffectiveRuleSchema, null, { endpoint: "POST wakeup-definitions/preview" });
+    if (!parsed) throw new Error("Could not preview the wakeup rule");
+    return parsed;
+  }
+
+  /** Creates (`revision` 0) or replaces one rule's definition; a stale revision is refused with 409. */
+  async saveWakeupDefinition(scope: WakeupDefinitionScope, ruleKey: string, input: { revision: number; config: WakeupDefinitionConfig }): Promise<WakeupDefinition> {
+    const raw = await this.fetch<unknown>(`${this.wakeupDefinitionsPath(scope)}/${encodeURIComponent(ruleKey)}`, { method: "PUT", body: JSON.stringify(input) });
+    const parsed = parseWithFallback<WakeupDefinition | null>(raw, WakeupDefinitionSchema, null, { endpoint: "PUT wakeup-definitions/:rule" });
+    if (!parsed) throw new Error("Could not read the saved wakeup definition");
+    return parsed;
+  }
+
+  /** Creates a custom root rule under a server-assigned key, at a workspace or project. */
+  async createWakeupDefinition(scope: Exclude<WakeupDefinitionScope, { kind: "issue" }>, input: { config: WakeupDefinitionConfig }): Promise<WakeupDefinition> {
+    const raw = await this.fetch<unknown>(this.wakeupDefinitionsPath(scope), { method: "POST", body: JSON.stringify({ revision: 0, ...input }) });
+    const parsed = parseWithFallback<WakeupDefinition | null>(raw, WakeupDefinitionSchema, null, { endpoint: "POST wakeup-definitions" });
+    if (!parsed) throw new Error("Could not read the created wakeup definition");
+    return parsed;
+  }
+
+  async deleteWakeupDefinition(scope: WakeupDefinitionScope, ruleKey: string, revision: number): Promise<void> {
+    await this.fetch(`${this.wakeupDefinitionsPath(scope)}/${encodeURIComponent(ruleKey)}?revision=${revision}`, { method: "DELETE" });
   }
 
   async disableIssueWakeup(issueId: string, wakeupId: string): Promise<void> {

@@ -3675,6 +3675,46 @@ export const WorkspaceSystemWakeupSchema = z.object({
   builtin_instruction: z.string().default(""), customized: z.number().int().nonnegative().default(0),
 });
 
+// Scoped wakeup definitions (CHE-1082). Scopes and rule keys stay plain strings
+// so a newer server's value still parses; the config keeps unknown fields.
+export const WakeupDefinitionConfigSchema = z.object({ v: z.number().int().default(1) }).passthrough();
+
+export const WakeupCapabilitiesSchema = z.object({
+  // Closed unless the server says otherwise.
+  definition_writes: z.boolean().catch(false),
+  trigger_kinds: z.array(z.string()).catch([]),
+  fields: z.array(z.string()).catch([]),
+});
+
+export const WakeupDefinitionSchema = z.object({
+  scope: z.string(), scope_id: z.string(), rule_key: z.string(),
+  root: z.boolean().default(false), revision: z.number().int().nonnegative(),
+  config: WakeupDefinitionConfigSchema,
+  updated_at: z.string().nullish().transform((v) => v ?? null),
+  redacted: z.boolean().default(false),
+});
+
+export const WakeupDefinitionListSchema = z.object({
+  definitions: z.array(WakeupDefinitionSchema),
+  capabilities: WakeupCapabilitiesSchema.default({ definition_writes: false, trigger_kinds: [], fields: [] }),
+});
+
+export const WakeupEffectiveRuleSchema = z.object({
+  rule_key: z.string(), scope: z.string(), applicable: z.boolean(),
+  inapplicable_reason: z.string().default(""), enabled: z.boolean(),
+  config: WakeupDefinitionConfigSchema,
+  sources: z.record(z.string(), z.string()).default({}),
+  overrides: z.array(z.string()).default([]),
+  aggregate_caps: z.array(z.object({ scope: z.string(), scope_id: z.string(), limit: z.number().int() })).default([]),
+  fingerprint: z.string().default(""),
+  execution: z.object({
+    instance_id: z.string(), enabled: z.boolean(),
+    paused_reason: z.string().nullish().transform((v) => v ?? null),
+  }).nullish().transform((v) => v ?? null),
+  redacted: z.boolean().default(false),
+  capabilities: WakeupCapabilitiesSchema.default({ definition_writes: false, trigger_kinds: [], fields: [] }),
+});
+
 export const IssueWakeupSummaryRowSchema = IssueWakeupSchema.pick({
   id: true, issue_id: true, agent_id: true, agent_name: true, kind: true, mode: true,
   event_types: true, filter_task_id: true, filter_agent_name: true, interval_seconds: true,
