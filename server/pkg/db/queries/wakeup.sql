@@ -46,8 +46,8 @@ LEFT JOIN member actor_member ON w.filter_actor_type='member' AND actor_member.u
 LEFT JOIN "user" actor_user ON actor_user.id=actor_member.user_id
 LEFT JOIN agent source ON source.id=w.filter_agent_id AND source.workspace_id=w.workspace_id AND source.id=ANY(@agent_ids::uuid[])
  WHERE w.workspace_id= @workspace_id AND w.enabled
-  AND i.status NOT IN ('done','cancelled')
-  AND NOT EXISTS(SELECT 1 FROM issue_status s WHERE s.workspace_id=i.workspace_id AND s.key=i.status AND s.category IN ('done','closed'))
+  AND i.status<>'cancelled'
+  AND NOT EXISTS(SELECT 1 FROM issue_status s WHERE s.workspace_id=i.workspace_id AND s.key=i.status AND s.category='closed')
 )
 SELECT issue_id,id,agent_id,agent_name,kind,mode,event_types,filter_actor_type,filter_actor_id,filter_actor_name,filter_task_id,filter_agent_name,interval_seconds,cron_expression,timezone,next_fire_at,condition,active_count,event_count
 FROM ranked WHERE rank<=3 ORDER BY issue_id,rank;
@@ -80,10 +80,12 @@ WITH candidates AS (
  UNION
  SELECT wakeup_id FROM issue_wakeup_receipt WHERE processed_at IS NULL
  UNION
+ -- Rate-paused PR rules recover by the clock, on any issue PR dispatch accepts
+ -- (everything but the closed category; see systemWakeupIssueActive).
  SELECT w.id FROM issue_wakeup w JOIN issue i ON i.id=w.issue_id AND i.workspace_id=w.workspace_id
  WHERE NOT w.enabled AND w.paused_reason='rate' AND w.system_rule IN ('pr_merged','pr_checks_failed')
-  AND i.status NOT IN ('done','cancelled')
-  AND NOT EXISTS(SELECT 1 FROM issue_status s WHERE s.workspace_id=i.workspace_id AND s.key=i.status AND s.category IN ('done','closed'))
+  AND i.status<>'cancelled'
+  AND NOT EXISTS(SELECT 1 FROM issue_status s WHERE s.workspace_id=i.workspace_id AND s.key=i.status AND s.category='closed')
 )
 SELECT w.* FROM candidates c JOIN issue_wakeup w ON w.id=c.id
 WHERE sqlc.narg('workspace_ids')::uuid[] IS NULL OR w.workspace_id = ANY(sqlc.narg('workspace_ids')::uuid[])
