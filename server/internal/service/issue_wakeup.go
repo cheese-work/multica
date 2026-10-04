@@ -1203,6 +1203,20 @@ func (s *IssueWakeupService) CheckClaim(ctx context.Context, task db.AgentTaskQu
 		if !w.Enabled || w.DisabledAt.Valid || w.Revision != source.Revision || w.IssueID != task.IssueID {
 			return ErrWakeupForbidden
 		}
+		issue, err := s.Tasks.Queries.GetIssue(ctx, w.IssueID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrWakeupForbidden
+		}
+		if err != nil {
+			return err
+		}
+		allowed, err := legacyDispatchAllowed(ctx, s.Tasks.Queries, issue, w)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return ErrWakeupForbidden
+		}
 		if _, isPRWakeup := prWakeupSetting(w.SystemRule.String); isPRWakeup {
 			workspace, err := s.Tasks.Queries.GetWorkspace(ctx, w.WorkspaceID)
 			if err != nil {

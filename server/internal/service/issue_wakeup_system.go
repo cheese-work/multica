@@ -674,6 +674,13 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		}
 		return tx.Commit(ctx)
 	}
+	// Scoped definitions this build cannot execute hold the rule: its facts
+	// stay pending, nothing runs.
+	if allowed, err := legacyDispatchAllowed(ctx, q, issue, w); err != nil {
+		return err
+	} else if !allowed {
+		return tx.Commit(ctx)
+	}
 	if isPRWakeup {
 		ws, err := q.GetWorkspace(ctx, issue.WorkspaceID)
 		if err != nil {
