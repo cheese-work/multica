@@ -1419,8 +1419,8 @@ export class ApiClient {
     return parsed;
   }
 
-  /** Creates (`revision` 0) or replaces one rule's definition; a stale revision is refused with 409. */
-  async saveWakeupDefinition(scope: WakeupDefinitionScope, ruleKey: string, input: { revision: number; config: WakeupDefinitionConfig }): Promise<WakeupDefinition> {
+  /** Creates (`revision` "0") or replaces one rule's definition; a stale revision is refused with 409. */
+  async saveWakeupDefinition(scope: WakeupDefinitionScope, ruleKey: string, input: { revision: string; config: WakeupDefinitionConfig }): Promise<WakeupDefinition> {
     const raw = await this.fetch<unknown>(`${this.wakeupDefinitionsPath(scope)}/${encodeURIComponent(ruleKey)}`, { method: "PUT", body: JSON.stringify(input) });
     const parsed = parseWithFallback<WakeupDefinition | null>(raw, WakeupDefinitionSchema, null, { endpoint: "PUT wakeup-definitions/:rule" });
     if (!parsed) throw new Error("Could not read the saved wakeup definition");
@@ -1429,14 +1429,14 @@ export class ApiClient {
 
   /** Creates a custom root rule under a server-assigned key, at a workspace or project. */
   async createWakeupDefinition(scope: Exclude<WakeupDefinitionScope, { kind: "issue" }>, input: { config: WakeupDefinitionConfig }): Promise<WakeupDefinition> {
-    const raw = await this.fetch<unknown>(this.wakeupDefinitionsPath(scope), { method: "POST", body: JSON.stringify({ revision: 0, ...input }) });
+    const raw = await this.fetch<unknown>(this.wakeupDefinitionsPath(scope), { method: "POST", body: JSON.stringify({ ...input, revision: "0" }) });
     const parsed = parseWithFallback<WakeupDefinition | null>(raw, WakeupDefinitionSchema, null, { endpoint: "POST wakeup-definitions" });
     if (!parsed) throw new Error("Could not read the created wakeup definition");
     return parsed;
   }
 
-  async deleteWakeupDefinition(scope: WakeupDefinitionScope, ruleKey: string, revision: number): Promise<void> {
-    await this.fetch(`${this.wakeupDefinitionsPath(scope)}/${encodeURIComponent(ruleKey)}?revision=${revision}`, { method: "DELETE" });
+  async deleteWakeupDefinition(scope: WakeupDefinitionScope, ruleKey: string, revision: string): Promise<void> {
+    await this.fetch(`${this.wakeupDefinitionsPath(scope)}/${encodeURIComponent(ruleKey)}?revision=${encodeURIComponent(revision)}`, { method: "DELETE" });
   }
 
   async disableIssueWakeup(issueId: string, wakeupId: string): Promise<void> {

@@ -216,7 +216,8 @@ export interface WakeupDefinitionConfig {
   enabled?: boolean | null;
   name?: string | null;
   trigger?: { kind: string } | null;
-  target?: { type: "assignee" | "agent" | "squad"; id?: string; redacted?: boolean } | null;
+  /** `type` is absent when the viewer may not see the target (`redacted`). */
+  target?: { type?: "assignee" | "agent" | "squad"; id?: string; redacted?: boolean } | null;
   instruction?: string | null;
   mode?: "once" | "continuous" | null;
   max_fires?: number | null;
@@ -239,8 +240,12 @@ export interface WakeupDefinition {
   rule_key: string;
   /** The definition that created a custom rule. */
   root: boolean;
-  /** Send it back on a write; a stale one is refused with 409. */
-  revision: number;
+  /**
+   * A decimal string: workspace alias revisions reach 62 bits, which a JSON
+   * number loses. Send it back unchanged on a write; a stale one is refused
+   * with 409, and "0" means the definition does not exist yet.
+   */
+  revision: string;
   config: WakeupDefinitionConfig;
   updated_at: string | null;
   /** The viewer may not see the target agent: target and instruction are withheld. */

@@ -3679,16 +3679,21 @@ export const WorkspaceSystemWakeupSchema = z.object({
 // so a newer server's value still parses; the config keeps unknown fields.
 export const WakeupDefinitionConfigSchema = z.object({ v: z.number().int().default(1) }).passthrough();
 
-export const WakeupCapabilitiesSchema = z.object({
-  // Closed unless the server says otherwise.
-  definition_writes: z.boolean().catch(false),
-  trigger_kinds: z.array(z.string()).catch([]),
-  fields: z.array(z.string()).catch([]),
-});
+// Closed unless the server says otherwise.
+const CLOSED_WAKEUP_CAPABILITIES = { definition_writes: false, trigger_kinds: [], fields: [] };
+const WakeupCapabilitiesSchema = z
+  .object({
+    definition_writes: z.boolean().catch(false),
+    trigger_kinds: z.array(z.string()).catch([]),
+    fields: z.array(z.string()).catch([]),
+  })
+  .nullish()
+  .catch(null)
+  .transform((v) => v ?? { ...CLOSED_WAKEUP_CAPABILITIES });
 
 export const WakeupDefinitionSchema = z.object({
   scope: z.string(), scope_id: z.string(), rule_key: z.string(),
-  root: z.boolean().default(false), revision: z.number().int().nonnegative(),
+  root: z.boolean().default(false), revision: z.string().regex(/^\d+$/),
   config: WakeupDefinitionConfigSchema,
   updated_at: z.string().nullish().transform((v) => v ?? null),
   redacted: z.boolean().default(false),
@@ -3696,7 +3701,7 @@ export const WakeupDefinitionSchema = z.object({
 
 export const WakeupDefinitionListSchema = z.object({
   definitions: z.array(WakeupDefinitionSchema),
-  capabilities: WakeupCapabilitiesSchema.default({ definition_writes: false, trigger_kinds: [], fields: [] }),
+  capabilities: WakeupCapabilitiesSchema,
 });
 
 export const WakeupEffectiveRuleSchema = z.object({
@@ -3712,7 +3717,7 @@ export const WakeupEffectiveRuleSchema = z.object({
     paused_reason: z.string().nullish().transform((v) => v ?? null),
   }).nullish().transform((v) => v ?? null),
   redacted: z.boolean().default(false),
-  capabilities: WakeupCapabilitiesSchema.default({ definition_writes: false, trigger_kinds: [], fields: [] }),
+  capabilities: WakeupCapabilitiesSchema,
 });
 
 export const IssueWakeupSummaryRowSchema = IssueWakeupSchema.pick({
