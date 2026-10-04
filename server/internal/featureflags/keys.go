@@ -53,6 +53,12 @@ const (
 	// independently opted into each. Off by default, same as Jev.
 	JevReceipts         = "jev_receipts_enabled"
 	GovernanceCaseAudit = "governance_case_audit_enabled"
+	// WakeupDefinitionWrites (CHE-1082) is the server-side activation gate for
+	// scoped wakeup definition writes (create, update, delete). It is CLOSED by
+	// default and nothing but an explicit rule opens it: production must hold
+	// zero scoped definitions until the layer that backfills and activates
+	// them. Reads and previews are not gated; they never persist.
+	WakeupDefinitionWrites = "wakeup_definition_writes"
 	// ExportPrivacyControls (CHE-766) is the kill switch for the CHE-755
 	// provenance-export capability and its export-privacy config endpoints.
 	// Default TRUE: export already shipped in CHE-755 without a flag, so a
@@ -141,6 +147,15 @@ func ExportPrivacyControlsEnabled(ctx context.Context, flags *featureflag.Servic
 		return false
 	}
 	return flags.IsEnabled(ctx, ExportPrivacyControls, true)
+}
+
+// WakeupDefinitionWritesEnabled reports whether scoped wakeup definition writes
+// are open. A nil service or provider is closed, never "unset".
+func WakeupDefinitionWritesEnabled(ctx context.Context, flags *featureflag.Service) bool {
+	if flags == nil || flags.Provider() == nil {
+		return false
+	}
+	return flags.IsEnabled(ctx, WakeupDefinitionWrites, false)
 }
 
 func LocalSearchIndexEnabled(ctx context.Context, flags *featureflag.Service) bool {
