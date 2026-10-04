@@ -243,6 +243,30 @@ func (q *Queries) ListCustomizedSystemWakeupsAfter(ctx context.Context, arg List
 	return items, nil
 }
 
+const listIssueLabelIDs = `-- name: ListIssueLabelIDs :many
+SELECT label_id FROM issue_to_label WHERE issue_id= $1
+`
+
+func (q *Queries) ListIssueLabelIDs(ctx context.Context, issueID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listIssueLabelIDs, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var label_id pgtype.UUID
+		if err := rows.Scan(&label_id); err != nil {
+			return nil, err
+		}
+		items = append(items, label_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listWakeupDefinitionsForRule = `-- name: ListWakeupDefinitionsForRule :many
 SELECT d.workspace_id,d.scope_kind,d.scope_id,d.rule_key,d.root,d.config,d.revision,d.created_by,d.updated_by,d.created_at,d.updated_at FROM issue_wakeup_definition d
 WHERE d.workspace_id= $1 AND d.scope_kind='workspace' AND d.scope_id= $1 AND d.rule_key= $2
@@ -370,6 +394,70 @@ SELECT id FROM workspace WHERE id= $1 FOR NO KEY UPDATE
 func (q *Queries) LockWorkspaceSettingsForWakeupDefinition(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, lockWorkspaceSettingsForWakeupDefinition, workspaceID)
 	return err
+}
+
+const rebaseSystemWakeupConfig = `-- name: RebaseSystemWakeupConfig :one
+UPDATE issue_wakeup SET revision=revision+1,config_fingerprint=NULLIF($1::text,''),updated_at=clock_timestamp()
+WHERE id= $2 AND system_rule IS NOT NULL
+RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint
+`
+
+type RebaseSystemWakeupConfigParams struct {
+	Fingerprint string      `json:"fingerprint"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+// A platform rule's instance moves to the configuration it now resolves to. The
+// revision moves with it, so inputs and queued runs captured under the old
+// configuration stop matching; identity, fire count, pauses and consumed state
+// stay as they are. An empty fingerprint means no scoped definition applies.
+func (q *Queries) RebaseSystemWakeupConfig(ctx context.Context, arg RebaseSystemWakeupConfigParams) (IssueWakeup, error) {
+	row := q.db.QueryRow(ctx, rebaseSystemWakeupConfig, arg.Fingerprint, arg.ID)
+	var i IssueWakeup
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.AgentID,
+		&i.CreatedBy,
+		&i.SourceTaskID,
+		&i.ParentCommentID,
+		&i.Instruction,
+		&i.Kind,
+		&i.Mode,
+		&i.EventTypes,
+		&i.FilterAgentID,
+		&i.FilterTaskID,
+		&i.IntervalSeconds,
+		&i.CronExpression,
+		&i.Timezone,
+		&i.NextFireAt,
+		&i.Enabled,
+		&i.DisabledAt,
+		&i.Revision,
+		&i.LastTaskID,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.FilterActorType,
+		&i.FilterActorID,
+		&i.ExpiresAt,
+		&i.ExpirySeconds,
+		&i.OnTimeout,
+		&i.TimedOutAt,
+		&i.SystemRule,
+		&i.CustomizedAt,
+		&i.Condition,
+		&i.ConditionState,
+		&i.MaxFires,
+		&i.FireCount,
+		&i.PausedReason,
+		&i.DefaultRuleKey,
+		&i.DefaultScopeKind,
+		&i.DefaultScopeID,
+		&i.ConfigFingerprint,
+	)
+	return i, err
 }
 
 const retireCustomizedSystemWakeup = `-- name: RetireCustomizedSystemWakeup :one

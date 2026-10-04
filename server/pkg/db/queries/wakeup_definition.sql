@@ -80,3 +80,15 @@ UPDATE issue_wakeup SET customized_at=NULL,instruction='',
  updated_at=clock_timestamp()
 WHERE id= @id AND customized_at IS NOT NULL
 RETURNING *;
+
+-- name: RebaseSystemWakeupConfig :one
+-- A platform rule's instance moves to the configuration it now resolves to. The
+-- revision moves with it, so inputs and queued runs captured under the old
+-- configuration stop matching; identity, fire count, pauses and consumed state
+-- stay as they are. An empty fingerprint means no scoped definition applies.
+UPDATE issue_wakeup SET revision=revision+1,config_fingerprint=NULLIF(@fingerprint::text,''),updated_at=clock_timestamp()
+WHERE id= @id AND system_rule IS NOT NULL
+RETURNING *;
+
+-- name: ListIssueLabelIDs :many
+SELECT label_id FROM issue_to_label WHERE issue_id= @issue_id;
