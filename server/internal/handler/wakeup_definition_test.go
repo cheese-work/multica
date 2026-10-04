@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
@@ -987,5 +988,64 @@ func TestWakeupDefinitionAuthorizesTheResolvedTarget(t *testing.T) {
 		resp := k.issue().put(rule, 0, cfg(map[string]any{"enabled": false}), asUser(member)).Want(http.StatusOK)
 		k.issue().del(rule, strconv.FormatInt(int64(decodeDefinition(t, resp).Revision), 10), asUser(member)).Want(http.StatusNoContent)
 		k.issue().put(rule, 0, cfg(map[string]any{"instruction": "owner text"})).Want(http.StatusOK)
+	}
+}
+
+// ---- round 3: workspace settings that are not an object --------------------
+
+// The owner/admin workspace update stores `settings` unchecked, so an array, a
+// scalar or JSON null is reachable. An alias write merges an object into the
+// settings, which cannot be simulated (or applied) on those shapes: they are
+// refused before anything persists, and preview, save and effective agree.
+func TestWakeupDefinitionRefusesAliasWritesOnNonObjectSettings(t *testing.T) {
+	var original string
+	dbfx.QueryRow(t, `SELECT settings::text FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&original)
+	t.Cleanup(func() {
+		dbfx.Exec(t, `UPDATE workspace SET settings = $1::jsonb WHERE id = $2`, original, testWorkspaceID)
+	})
+
+	storeViaWorkspaceUpdate := func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req := withURLParam(newRequest("PUT", "/api/workspaces/"+testWorkspaceID, map[string]any{"settings": []any{}}), "id", testWorkspaceID)
+		testHandler.UpdateWorkspace(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("workspace update: %d %s", w.Code, w.Body.String())
+		}
+	}
+	storeRaw := func(literal string) func(*testing.T) {
+		return func(t *testing.T) {
+			dbfx.Exec(t, `UPDATE workspace SET settings = $1::jsonb WHERE id = $2`, literal, testWorkspaceID)
+		}
+	}
+	for name, store := range map[string]func(*testing.T){
+		"array via the workspace update": storeViaWorkspaceUpdate,
+		"array":                          storeRaw(`[]`),
+		"scalar number":                  storeRaw(`5`),
+		"scalar string":                  storeRaw(`"text"`),
+		"json null":                      storeRaw(`null`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			k := newWakeupDefinitionKit(t)
+			store(t)
+			var stored string
+			dbfx.QueryRow(t, `SELECT settings::text FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&stored)
+			for _, rule := range []string{"child_done", "pr_merged"} {
+				alias := cfg(map[string]any{"enabled": false})
+				k.workspace().preview(rule, alias).Want(http.StatusBadRequest)
+				k.workspace().put(rule, "0", alias).Want(http.StatusBadRequest)
+			}
+			k.workspace().put("child_done", "0", cfg(map[string]any{"instruction": "alias text"})).Want(http.StatusBadRequest)
+			var after string
+			dbfx.QueryRow(t, `SELECT settings::text FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&after)
+			if after != stored || wdCount(t) != 0 {
+				t.Fatalf("a refused write changed state: settings %s -> %s, %d definitions", stored, after, wdCount(t))
+			}
+			// The effective read still resolves the built-in default, and a write that
+			// touches no alias field has nothing to merge, so it is not refused.
+			if eff := k.workspace().effective("child_done"); !eff.Enabled {
+				t.Fatalf("effective read: %+v", eff)
+			}
+			k.workspace().put("child_done", "0", cfg(map[string]any{"name": "label only"})).Want(http.StatusOK)
+		})
 	}
 }

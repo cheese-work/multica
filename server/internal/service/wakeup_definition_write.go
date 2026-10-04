@@ -242,6 +242,11 @@ func (s *IssueWakeupService) SaveWakeupDefinition(ctx context.Context, ref Wakeu
 			return WakeupDefinitionView{}, err
 		}
 	}
+	if aliased {
+		if err := requireAliasSettings(ctx, q, ref.WorkspaceID, w.RuleKey, patch); err != nil {
+			return WakeupDefinitionView{}, err
+		}
+	}
 	existing, err := q.GetWakeupDefinition(ctx, wakeupDefinitionParams(ref, w.RuleKey))
 	found := err == nil
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -561,6 +566,13 @@ func (s *IssueWakeupService) EffectiveWakeupRule(ctx context.Context, ref Wakeup
 		return WakeupEffectiveRule{}, err
 	}
 	q := s.Tasks.Queries
+	if _, builtin := WakeupBuiltinBaseline(ruleKey); builtin && ref.Kind == WakeupScopeWorkspace && proposal != nil {
+		patch := proposal.Patch
+		normalizeWakeupPatch(&patch)
+		if err := requireAliasSettings(ctx, q, ref.WorkspaceID, ruleKey, patch); err != nil {
+			return WakeupEffectiveRule{}, err
+		}
+	}
 	in, err := loadWakeupChain(ctx, q, ref, ruleKey)
 	if err != nil {
 		return WakeupEffectiveRule{}, err

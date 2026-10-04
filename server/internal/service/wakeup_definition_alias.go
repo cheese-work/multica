@@ -1,15 +1,57 @@
 package service
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"strings"
+
+	"github.com/jackc/pgx/v5/pgtype"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
+
+// workspaceSettingsObject decodes the workspace settings as the object an alias
+// write merges into. The settings column is jsonb and the workspace update
+// stores whatever it is given, so an array, a scalar or JSON null can be there;
+// a merge into those does not produce the object a simulation would, and a nil
+// map cannot be written to. Those shapes are refused with an input error before
+// anything is simulated or persisted.
+func workspaceSettingsObject(settings []byte) (map[string]json.RawMessage, error) {
+	if len(bytes.TrimSpace(settings)) == 0 {
+		return map[string]json.RawMessage{}, nil
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(settings, &object); err != nil || object == nil {
+		return nil, wakeupDefinitionBad("the workspace settings are not a JSON object, so an alias field cannot be written; repair them first")
+	}
+	return object, nil
+}
+
+// requireAliasSettings refuses, before the chain is read or anything is
+// written, an alias-bearing patch for a workspace whose settings are not an
+// object. A patch with no alias field merges nothing and is not refused.
+func requireAliasSettings(ctx context.Context, q *db.Queries, ws pgtype.UUID, key string, patch WakeupConfigPatch) error {
+	if len(aliasSettingsPatch(key, patch)) == 0 {
+		return nil
+	}
+	row, err := q.GetWorkspace(ctx, ws)
+	if err != nil {
+		return err
+	}
+	_, err = workspaceSettingsObject(row.Settings)
+	return err
+}
 
 // workspaceAliasWrite is the alias part of a replacing write to a workspace
 // built-in: the patch with every alias the patch leaves out cleared, since a
 // replace keeps nothing the caller did not send. It is pure, so a preview and
 // the write derive the same thing. The legacy instruction limit applies.
 func workspaceAliasWrite(settings []byte, key string, patch WakeupConfigPatch) (WakeupConfigPatch, error) {
+	if len(aliasSettingsPatch(key, patch)) > 0 {
+		if _, err := workspaceSettingsObject(settings); err != nil {
+			return patch, err
+		}
+	}
 	current, err := legacyWorkspacePatch(settings, key)
 	if err != nil {
 		return patch, err
@@ -70,18 +112,22 @@ func workspaceAliasReadback(settings []byte, key string, patch WakeupConfigPatch
 	if err != nil {
 		return patch, err
 	}
-	merged := map[string]json.RawMessage{}
-	_ = json.Unmarshal(settings, &merged)
-	for k, v := range aliasSettingsPatch(key, alias) {
-		raw, err := json.Marshal(v)
+	raw := settings
+	if sets := aliasSettingsPatch(key, alias); len(sets) > 0 {
+		merged, err := workspaceSettingsObject(settings)
 		if err != nil {
 			return patch, err
 		}
-		merged[k] = raw
-	}
-	raw, err := json.Marshal(merged)
-	if err != nil {
-		return patch, err
+		for k, v := range sets {
+			encoded, err := json.Marshal(v)
+			if err != nil {
+				return patch, err
+			}
+			merged[k] = encoded
+		}
+		if raw, err = json.Marshal(merged); err != nil {
+			return patch, err
+		}
 	}
 	after, err := legacyWorkspacePatch(raw, key)
 	if err != nil {
