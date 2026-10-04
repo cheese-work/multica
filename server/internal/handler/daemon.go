@@ -4086,8 +4086,23 @@ func (h *Handler) StartTask(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
 
 	// Verify the caller owns this task's workspace.
-	_, workspaceID, ok := h.requireDaemonTaskAccessWithWorkspace(w, r, taskID)
+	claimed, workspaceID, ok := h.requireDaemonTaskAccessWithWorkspace(w, r, taskID)
 	if !ok {
+		return
+	}
+	// A platform rule's run captured under a configuration that changed since
+	// the claim does not start; a failed run is visible, and a running one is
+	// never touched.
+	if err := (&service.IssueWakeupService{Tasks: h.TaskService}).CheckStart(r.Context(), claimed); err != nil {
+		if !errors.Is(err, service.ErrWakeupForbidden) {
+			slog.Warn("start task: wakeup check failed", "task_id", taskID, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to start task")
+			return
+		}
+		if _, failErr := h.TaskService.FailTask(r.Context(), claimed.ID, "Wakeup configuration changed before the run started.", "", "", "", taskfailure.ReasonInvalidTaskIdentity.String(), false, "", ""); failErr != nil {
+			slog.Warn("start task: failing a stale wakeup run failed", "task_id", taskID, "error", failErr)
+		}
+		writeError(w, http.StatusConflict, "wakeup configuration changed")
 		return
 	}
 

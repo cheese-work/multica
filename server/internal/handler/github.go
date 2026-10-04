@@ -1378,6 +1378,9 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 			if err := wakeup.TriggerPullRequestWakeup(ctx, issueID, service.PullRequestWakeupInput{
 				Rule: service.SystemRulePRChecksFailed, RepoOwner: pr.RepoOwner, RepoName: pr.RepoName,
 				Number: pr.PrNumber, URL: pr.HtmlUrl, HeadSHA: pr.SnapshotHeadSha, Conclusion: pr.ChecksRollupState.String,
+				// The mirror keeps the head branch only; a base-branch filter
+				// never matches a failing-checks event until it is stored.
+				HeadBranch: pr.Branch.String,
 			}); err != nil {
 				slog.Warn("github: failed to dispatch pull request check wakeup", "err", err, "pr_id", uuidToString(pr.ID), "issue_id", uuidToString(issueID))
 			}
@@ -1605,6 +1608,9 @@ type ghPullRequestPayload struct {
 			Ref string `json:"ref"`
 			SHA string `json:"sha"`
 		} `json:"head"`
+		Base struct {
+			Ref string `json:"ref"`
+		} `json:"base"`
 		User struct {
 			Login     string `json:"login"`
 			AvatarURL string `json:"avatar_url"`
@@ -2012,7 +2018,7 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 			return wakeup.TriggerPullRequestWakeup(ctx, issueID, service.PullRequestWakeupInput{
 				Rule: service.SystemRulePRMerged, RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name,
 				Number: p.PullRequest.Number, URL: p.PullRequest.HTMLURL, MergeCommit: p.PullRequest.MergeCommitSHA,
-				HeadSHA: p.PullRequest.Head.SHA,
+				HeadSHA: p.PullRequest.Head.SHA, BaseBranch: p.PullRequest.Base.Ref, HeadBranch: p.PullRequest.Head.Ref,
 			})
 		}, func() {
 			h.publish(protocol.EventPullRequestUpdated, workspaceID, "system", "", map[string]any{
