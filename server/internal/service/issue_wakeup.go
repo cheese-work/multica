@@ -666,11 +666,23 @@ func (s *IssueWakeupService) tick(ctx context.Context, workspaceIDs []pgtype.UUI
 	pruneCtx, pruneCancel := context.WithTimeout(ctx, 2*time.Second)
 	pruneErr := pruneWakeupAggregateReservations(pruneCtx, s.Tasks.Queries, time.Now())
 	pruneCancel()
+	// Scoped events captured in the outbox become receipts before due rules are
+	// dispatched, so an instance created now can run in this same pass.
+	drainErr := s.drainScopedEvents(ctx, workspaceIDs)
+	scopedPruneCtx, scopedPruneCancel := context.WithTimeout(ctx, 2*time.Second)
+	scopedPruneErr := s.pruneScopedEvents(scopedPruneCtx, time.Now())
+	scopedPruneCancel()
 	rows, err := s.Tasks.Queries.ListReadyWakeups(ctx, workspaceIDs)
 	if err != nil {
 		return err
 	}
 	var errs []error
+	if drainErr != nil {
+		errs = append(errs, fmt.Errorf("drain scoped wakeup events: %w", drainErr))
+	}
+	if scopedPruneErr != nil {
+		errs = append(errs, fmt.Errorf("prune scoped wakeup events: %w", scopedPruneErr))
+	}
 	if cleanupErr != nil {
 		errs = append(errs, fmt.Errorf("expire wakeup receipts: %w", cleanupErr))
 	}

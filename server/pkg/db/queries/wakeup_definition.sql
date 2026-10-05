@@ -3,13 +3,13 @@
 -- its current project's (project_id may be NULL) and its own. Three exact
 -- lookups on the full identity index, so cost and result stay bounded no
 -- matter how many other definitions the workspace has.
-SELECT d.workspace_id,d.scope_kind,d.scope_id,d.rule_key,d.root,d.config,d.revision,d.created_by,d.updated_by,d.created_at,d.updated_at FROM issue_wakeup_definition d
+SELECT d.workspace_id,d.scope_kind,d.scope_id,d.rule_key,d.root,d.config,d.revision,d.created_by,d.updated_by,d.created_at,d.updated_at,d.event_types FROM issue_wakeup_definition d
 WHERE d.workspace_id= @workspace_id AND d.scope_kind='workspace' AND d.scope_id= @workspace_id AND d.rule_key= @rule_key
 UNION ALL
-SELECT d.workspace_id,d.scope_kind,d.scope_id,d.rule_key,d.root,d.config,d.revision,d.created_by,d.updated_by,d.created_at,d.updated_at FROM issue_wakeup_definition d
+SELECT d.workspace_id,d.scope_kind,d.scope_id,d.rule_key,d.root,d.config,d.revision,d.created_by,d.updated_by,d.created_at,d.updated_at,d.event_types FROM issue_wakeup_definition d
 WHERE d.workspace_id= @workspace_id AND d.scope_kind='project' AND d.scope_id= sqlc.narg(project_id)::uuid AND d.rule_key= @rule_key
 UNION ALL
-SELECT d.workspace_id,d.scope_kind,d.scope_id,d.rule_key,d.root,d.config,d.revision,d.created_by,d.updated_by,d.created_at,d.updated_at FROM issue_wakeup_definition d
+SELECT d.workspace_id,d.scope_kind,d.scope_id,d.rule_key,d.root,d.config,d.revision,d.created_by,d.updated_by,d.created_at,d.updated_at,d.event_types FROM issue_wakeup_definition d
 WHERE d.workspace_id= @workspace_id AND d.scope_kind='issue' AND d.scope_id= @issue_id AND d.rule_key= @rule_key;
 
 -- name: InsertWakeupDefinitionIfAbsent :execrows
@@ -47,15 +47,15 @@ WHERE workspace_id= @workspace_id AND scope_kind= @scope_kind AND scope_id= @sco
 
 -- name: InsertWakeupDefinition :one
 -- Never replaces: a definition that already exists yields no row.
-INSERT INTO issue_wakeup_definition(workspace_id,scope_kind,scope_id,rule_key,root,config,created_by,updated_by)
-VALUES(@workspace_id,@scope_kind,@scope_id,@rule_key,@root,@config,@actor,@actor)
+INSERT INTO issue_wakeup_definition(workspace_id,scope_kind,scope_id,rule_key,root,config,event_types,created_by,updated_by)
+VALUES(@workspace_id,@scope_kind,@scope_id,@rule_key,@root,@config,@event_types,@actor,@actor)
 ON CONFLICT (workspace_id,scope_kind,scope_id,rule_key) DO NOTHING
 RETURNING *;
 
 -- name: UpdateWakeupDefinition :one
 -- Compare-and-swap on the revision the caller observed; no row means it moved.
 UPDATE issue_wakeup_definition
-SET config= @config,revision=revision+1,updated_by= @actor,updated_at=clock_timestamp()
+SET config= @config,event_types= @event_types,revision=revision+1,updated_by= @actor,updated_at=clock_timestamp()
 WHERE workspace_id= @workspace_id AND scope_kind= @scope_kind AND scope_id= @scope_id AND rule_key= @rule_key AND revision= @expected_revision
 RETURNING *;
 
