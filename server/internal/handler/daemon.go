@@ -4132,13 +4132,23 @@ func (h *Handler) StartTask(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, "failed to start task")
 				return
 			}
-			if _, failErr := h.TaskService.FailTask(r.Context(), claimed.ID, "Wakeup configuration changed before the run started.", "", "", "", taskfailure.ReasonInvalidTaskIdentity.String(), false, "", ""); failErr != nil {
+			// Claim-scoped: a task that started meanwhile, or a newer claim of it,
+			// is not failed (the ordinary start below answers for it).
+			claim := db.LockAgentTaskStartClaimParams{ID: claimed.ID, RuntimeID: claimed.RuntimeID, DispatchedAt: claimed.DispatchedAt}
+			switch _, failErr := h.TaskService.FailUnstartedClaimedTask(r.Context(), claim, "Wakeup configuration changed before the run started.", taskfailure.ReasonInvalidTaskIdentity.String()); {
+			case failErr == nil:
+				writeError(w, http.StatusConflict, "wakeup configuration changed")
+				return
+			case !errors.Is(failErr, service.ErrClaimNotUnstarted):
+				// The rejection was not recorded; the claim is still live, so
+				// the caller must retry rather than treat it as settled.
 				slog.Warn("start task: failing a stale wakeup run failed", "task_id", taskID, "error", failErr)
+				writeError(w, http.StatusServiceUnavailable, "failed to reject a stale wakeup run; retry")
+				return
 			}
-			writeError(w, http.StatusConflict, "wakeup configuration changed")
-			return
 		}
 	}
+
 	enableTaskSupplement := slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementV1)
 	var task *db.AgentTaskQueue
 	var err error
