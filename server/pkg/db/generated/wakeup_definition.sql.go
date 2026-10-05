@@ -56,6 +56,32 @@ func (q *Queries) DeleteWakeupDefinition(ctx context.Context, arg DeleteWakeupDe
 	return result.RowsAffected(), nil
 }
 
+const findWaitingIssueLeaderRun = `-- name: FindWaitingIssueLeaderRun :one
+SELECT id FROM agent_task_queue WHERE issue_id= $1 AND agent_id= $2 AND status='queued'
+ AND originator_user_id= $3::uuid AND is_leader_task AND squad_id= $4::uuid ORDER BY created_at,id LIMIT 1
+`
+
+type FindWaitingIssueLeaderRunParams struct {
+	IssueID          pgtype.UUID `json:"issue_id"`
+	AgentID          pgtype.UUID `json:"agent_id"`
+	OriginatorUserID pgtype.UUID `json:"originator_user_id"`
+	SquadID          pgtype.UUID `json:"squad_id"`
+}
+
+// A leader task of this squad that has not been claimed and runs as this person:
+// the only kind of waiting run a squad-targeted rule may leave its facts with.
+func (q *Queries) FindWaitingIssueLeaderRun(ctx context.Context, arg FindWaitingIssueLeaderRunParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, findWaitingIssueLeaderRun,
+		arg.IssueID,
+		arg.AgentID,
+		arg.OriginatorUserID,
+		arg.SquadID,
+	)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const getWakeupDefinition = `-- name: GetWakeupDefinition :one
 SELECT workspace_id, scope_kind, scope_id, rule_key, root, config, revision, created_by, updated_by, created_at, updated_at FROM issue_wakeup_definition
 WHERE workspace_id= $1 AND scope_kind= $2 AND scope_id= $3 AND rule_key= $4
