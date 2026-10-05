@@ -667,21 +667,25 @@ func (s *IssueWakeupService) tick(ctx context.Context, workspaceIDs []pgtype.UUI
 	pruneErr := pruneWakeupAggregateReservations(pruneCtx, s.Tasks.Queries, time.Now())
 	pruneCancel()
 	// Scoped events captured in the outbox become receipts before due rules are
-	// dispatched, so an instance created now can run in this same pass.
-	drainErr := s.drainScopedEvents(ctx, workspaceIDs)
+	// dispatched, so an instance created now can run in this same pass. Inputs past
+	// retention expire first; the drain never claims them. The drain has its own
+	// budget so it cannot use up the pass.
 	scopedPruneCtx, scopedPruneCancel := context.WithTimeout(ctx, 2*time.Second)
 	scopedPruneErr := s.pruneScopedEvents(scopedPruneCtx, time.Now())
 	scopedPruneCancel()
-	rows, err := s.Tasks.Queries.ListReadyWakeups(ctx, workspaceIDs)
-	if err != nil {
-		return err
-	}
+	drainCtx, drainCancel := context.WithTimeout(ctx, 10*time.Second)
+	drainErr := s.drainScopedEvents(drainCtx, workspaceIDs)
+	drainCancel()
 	var errs []error
 	if drainErr != nil {
 		errs = append(errs, fmt.Errorf("drain scoped wakeup events: %w", drainErr))
 	}
 	if scopedPruneErr != nil {
 		errs = append(errs, fmt.Errorf("prune scoped wakeup events: %w", scopedPruneErr))
+	}
+	rows, err := s.Tasks.Queries.ListReadyWakeups(ctx, workspaceIDs)
+	if err != nil {
+		return errors.Join(append(errs, err)...)
 	}
 	if cleanupErr != nil {
 		errs = append(errs, fmt.Errorf("expire wakeup receipts: %w", cleanupErr))
