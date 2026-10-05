@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -54,7 +55,6 @@ const (
 	scopedOutcomeNoInstruction    = "no_instruction"
 	scopedOutcomeCapacity         = "default_capacity"
 	scopedOutcomeInstanceOff      = "instance_disabled"
-	scopedOutcomeExpired          = "expired"
 )
 
 // wakeupEventTriggerSpec is the trigger of an event rule: the event types it
@@ -121,6 +121,11 @@ func (s *IssueWakeupService) drainScopedEvents(ctx context.Context, workspaceIDs
 			return errors.Join(append(errs, ctx.Err())...)
 		}
 		handled, failed, err := s.drainOneScopedIssue(ctx, workspaceIDs, now, budget)
+		if scopedLockBusy(err) {
+			// Another writer holds the issue. That is contention, not a fault: the
+			// input stays pending and the next pass tries again, with no retry delay.
+			break
+		}
 		if err != nil {
 			errs = append(errs, err)
 			if !failed.Valid {
@@ -138,6 +143,13 @@ func (s *IssueWakeupService) drainScopedEvents(ctx context.Context, workspaceIDs
 		budget -= handled
 	}
 	return errors.Join(errs...)
+}
+
+// scopedLockBusy reports a lock wait that gave up (lock_timeout) or lost a
+// deadlock: another transaction held the issue.
+func scopedLockBusy(err error) bool {
+	var pg *pgconn.PgError
+	return errors.As(err, &pg) && (pg.Code == "55P03" || pg.Code == "40P01")
 }
 
 // drainOneScopedIssue claims, resolves and settles the pending inputs of one
