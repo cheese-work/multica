@@ -58,9 +58,10 @@ func TestWakeupScopedEventMigrationsAreRetrySafeAndReversible(t *testing.T) {
 	defer cancel()
 	schema := createScratchSchema(t, ctx, base, "wakeup_scoped_event_")
 	pool := openTestPoolWithSearchPath(t, schema)
-	// Stubs for the composite types the capture functions declare.
+	// Stubs for the composite types the capture functions declare and the columns
+	// the SQL-language chain function is checked against when it is created.
 	for _, stmt := range []string{
-		`CREATE TABLE issue_wakeup_definition (workspace_id uuid)`,
+		`CREATE TABLE issue_wakeup_definition (workspace_id uuid, scope_kind text, scope_id uuid, rule_key text, revision bigint, updated_at timestamptz, event_types text[])`,
 		`CREATE TABLE issue_wakeup (id uuid)`,
 		`CREATE TABLE comment (id uuid)`,
 	} {
@@ -86,6 +87,7 @@ func TestWakeupScopedEventMigrationsAreRetrySafeAndReversible(t *testing.T) {
 		return count(`SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname=current_schema() AND p.proname='capture_issue_wakeup'`)
 	}
 	probes := func() int {
+		// two probes and the chain snapshot
 		return count(`SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname=current_schema() AND p.proname LIKE 'wakeup_scoped_event_%'`)
 	}
 	for attempt := 1; attempt <= 2; attempt++ {
@@ -95,8 +97,8 @@ func TestWakeupScopedEventMigrationsAreRetrySafeAndReversible(t *testing.T) {
 	if got := capture(); got != 1 {
 		t.Fatalf("capture_issue_wakeup definitions after a retry = %d, want exactly one", got)
 	}
-	if got := probes(); got != 2 {
-		t.Fatalf("probe functions = %d, want 2", got)
+	if got := probes(); got != 3 {
+		t.Fatalf("probe functions = %d, want 3", got)
 	}
 	apply(wakeupScopedEventCaptureVersion, "down")
 	if got := capture(); got != 1 || probes() != 0 {
