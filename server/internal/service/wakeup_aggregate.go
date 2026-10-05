@@ -31,18 +31,32 @@ const (
 	// wakeupAggregateDefault is the starts/hour a newly created custom root rule
 	// gets when it sets none.
 	wakeupAggregateDefault = 12
+	// wakeupAggregateWaiterStale is how long past its retry time a delayed
+	// instance still holds its place in line; one the scheduler has stopped
+	// retrying must not keep others waiting.
+	wakeupAggregateWaiterStale = 5 * time.Minute
+	// wakeupAggregateRetention is how long a reservation is kept: far past the
+	// counting window.
+	wakeupAggregateRetention = 24 * time.Hour
+	// wakeupAggregatePruneBatch bounds the expired reservations one scheduler
+	// pass deletes.
+	wakeupAggregatePruneBatch = 500
 	// maxWakeupDefinitionAggregateLimit bounds an explicit cap.
 	maxWakeupDefinitionAggregateLimit = 1000
 )
 
-// aggregateStart is the one new paid start asking for admission.
+// aggregateStart is the one new paid start asking for admission. BlockedSince is
+// when the instance was first delayed by this rule's counters (zero for a fresh
+// ask), which fixes its place in line.
 type aggregateStart struct {
 	WorkspaceID, WakeupID, TaskID pgtype.UUID
 	RuleKey                       string
+	BlockedSince                  time.Time
 }
 
 // aggregateAdmission is the outcome. When not admitted, Blocked is the counter
-// that frees last and RetryAt when the scheduler should look again.
+// that holds the start back longest and RetryAt when the scheduler should look
+// again.
 type aggregateAdmission struct {
 	Admitted bool
 	Blocked  WakeupAggregateCap
@@ -54,6 +68,11 @@ type aggregateAdmission struct {
 // ends. caps are ordered broadest scope first, so racing starts take the locks in
 // one order and cannot deadlock on each other. Re-admitting a task that already
 // holds a reservation never takes a second slot.
+//
+// Room is first come, first served. A counter with room still refuses a start
+// while older delayed instances are waiting for it, so an event that dispatches
+// immediately cannot overtake facts the scheduler is holding back; the oldest
+// waiter takes the next slot when it retries.
 func admitAggregateStart(ctx context.Context, q *db.Queries, start aggregateStart, caps []WakeupAggregateCap, now time.Time) (aggregateAdmission, error) {
 	since := pgtype.Timestamptz{Time: now.Add(-wakeupAggregateWindow), Valid: true}
 	for _, c := range caps {
@@ -63,26 +82,39 @@ func admitAggregateStart(ctx context.Context, q *db.Queries, start aggregateStar
 			return aggregateAdmission{}, err
 		}
 	}
+	recheck := now.Add(wakeupAggregateRecheck)
 	var out aggregateAdmission
+	holdBack := func(c WakeupAggregateCap, until time.Time) {
+		// A start waits for the slowest of the counters that refuse it.
+		if until.After(out.RetryAt) {
+			out.Blocked, out.RetryAt = c, until
+		}
+	}
 	for _, c := range caps {
-		key := db.CountWakeupAggregateStartsParams{WorkspaceID: start.WorkspaceID, ScopeKind: string(c.Scope), ScopeID: c.ScopeID, RuleKey: start.RuleKey, Since: since, TaskID: start.TaskID}
-		used, err := q.CountWakeupAggregateStarts(ctx, key)
-		if err != nil {
-			return aggregateAdmission{}, err
-		}
-		if int(used) < c.Limit {
-			continue
-		}
-		// Room returns when enough counted starts leave the window to get under
-		// the limit; a start must wait for the slowest of the full counters.
-		oldest, err := q.WakeupAggregateFreeAt(ctx, db.WakeupAggregateFreeAtParams{
-			WorkspaceID: key.WorkspaceID, ScopeKind: key.ScopeKind, ScopeID: key.ScopeID, RuleKey: key.RuleKey, Since: key.Since, TaskID: key.TaskID, Skip: int32(int(used) - c.Limit),
+		sum, err := q.SummarizeWakeupAggregateStarts(ctx, db.SummarizeWakeupAggregateStartsParams{
+			WorkspaceID: start.WorkspaceID, ScopeKind: string(c.Scope), ScopeID: c.ScopeID, RuleKey: start.RuleKey, Since: since, TaskID: start.TaskID, StartsPerHour: int64(c.Limit),
 		})
 		if err != nil {
 			return aggregateAdmission{}, err
 		}
-		if at := oldest.Time.Add(wakeupAggregateWindow); at.After(out.RetryAt) {
-			out.Blocked, out.RetryAt = c, at
+		if int(sum.Used) >= c.Limit {
+			if sum.FreeAt.Valid {
+				holdBack(c, sum.FreeAt.Time.Add(wakeupAggregateWindow))
+			} else {
+				holdBack(c, recheck)
+			}
+			continue
+		}
+		older, err := q.CountOlderWakeupAggregateWaiters(ctx, db.CountOlderWakeupAggregateWaitersParams{
+			WorkspaceID: start.WorkspaceID, ScopeKind: pgtype.Text{String: string(c.Scope), Valid: true}, ScopeID: c.ScopeID, RuleKey: start.RuleKey,
+			WakeupID: start.WakeupID, Since: pgtype.Timestamptz{Time: start.BlockedSince, Valid: !start.BlockedSince.IsZero()},
+			FreshAfter: pgtype.Timestamptz{Time: now.Add(-wakeupAggregateWaiterStale), Valid: true},
+		})
+		if err != nil {
+			return aggregateAdmission{}, err
+		}
+		if int(sum.Used)+int(older) >= c.Limit {
+			holdBack(c, recheck)
 		}
 	}
 	if out.RetryAt.IsZero() {
@@ -97,10 +129,21 @@ func admitAggregateStart(ctx context.Context, q *db.Queries, start aggregateStar
 		out.Admitted = true
 		return out, nil
 	}
-	if recheck := now.Add(wakeupAggregateRecheck); recheck.Before(out.RetryAt) {
+	if recheck.Before(out.RetryAt) {
 		out.RetryAt = recheck
 	}
 	return out, nil
+}
+
+// pruneWakeupAggregateReservations deletes one bounded batch of reservations
+// older than the retention window. Only starts inside the one-hour counting
+// window matter, so a day of margin leaves a retried admission nothing to
+// double count.
+func pruneWakeupAggregateReservations(ctx context.Context, q *db.Queries, now time.Time) error {
+	_, err := q.PruneWakeupAggregateReservations(ctx, db.PruneWakeupAggregateReservationsParams{
+		Before: pgtype.Timestamptz{Time: now.Add(-wakeupAggregateRetention), Valid: true}, Batch: wakeupAggregatePruneBatch,
+	})
+	return err
 }
 
 // WakeupAggregateStatus is one counter's state as data for the layers that
@@ -115,9 +158,10 @@ type WakeupAggregateStatus struct {
 
 // WakeupAggregateStatusOf reads one counter without locking it.
 func WakeupAggregateStatusOf(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, c WakeupAggregateCap, ruleKey string, now time.Time) (WakeupAggregateStatus, error) {
-	used, err := q.CountWakeupAggregateStarts(ctx, db.CountWakeupAggregateStartsParams{
+	sum, err := q.SummarizeWakeupAggregateStarts(ctx, db.SummarizeWakeupAggregateStartsParams{
 		WorkspaceID: workspaceID, ScopeKind: string(c.Scope), ScopeID: c.ScopeID, RuleKey: ruleKey,
 		Since: pgtype.Timestamptz{Time: now.Add(-wakeupAggregateWindow), Valid: true}, TaskID: pgtype.UUID{Valid: true}, // no task is excluded
+		StartsPerHour: int64(c.Limit),
 	})
 	if err != nil {
 		return WakeupAggregateStatus{}, err
@@ -126,7 +170,7 @@ func WakeupAggregateStatusOf(ctx context.Context, q *db.Queries, workspaceID pgt
 	if err != nil {
 		return WakeupAggregateStatus{}, err
 	}
-	status := WakeupAggregateStatus{Used: int(used), Limit: c.Limit, Backlog: int(held.Backlog)}
+	status := WakeupAggregateStatus{Used: int(sum.Used), Limit: c.Limit, Backlog: int(held.Backlog)}
 	if held.EarliestRetry.Valid {
 		status.EarliestRetry = held.EarliestRetry.Time
 	}

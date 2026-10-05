@@ -662,6 +662,10 @@ func (s *IssueWakeupService) tick(ctx context.Context, workspaceIDs []pgtype.UUI
 	cleanupCtx, cleanupCancel := context.WithTimeout(ctx, 2*time.Second)
 	_, cleanupErr := s.Tasks.Queries.DeleteExpiredWakeupReceipts(cleanupCtx, pgtype.Timestamptz{Time: time.Now().Add(-7 * 24 * time.Hour), Valid: true})
 	cleanupCancel()
+	// Reservations only count for an hour; sweep old ones a bounded batch a pass.
+	pruneCtx, pruneCancel := context.WithTimeout(ctx, 2*time.Second)
+	pruneErr := pruneWakeupAggregateReservations(pruneCtx, s.Tasks.Queries, time.Now())
+	pruneCancel()
 	rows, err := s.Tasks.Queries.ListReadyWakeups(ctx, workspaceIDs)
 	if err != nil {
 		return err
@@ -669,6 +673,9 @@ func (s *IssueWakeupService) tick(ctx context.Context, workspaceIDs []pgtype.UUI
 	var errs []error
 	if cleanupErr != nil {
 		errs = append(errs, fmt.Errorf("expire wakeup receipts: %w", cleanupErr))
+	}
+	if pruneErr != nil {
+		errs = append(errs, fmt.Errorf("prune wakeup aggregate reservations: %w", pruneErr))
 	}
 	for _, w := range rows {
 		if ctx.Err() != nil {

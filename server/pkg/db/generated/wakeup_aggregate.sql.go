@@ -12,7 +12,7 @@ import (
 )
 
 const clearWakeupAggregateBlocked = `-- name: ClearWakeupAggregateBlocked :exec
-UPDATE issue_wakeup SET aggregate_blocked_scope_kind=NULL,aggregate_blocked_scope_id=NULL,aggregate_retry_at=NULL
+UPDATE issue_wakeup SET aggregate_blocked_scope_kind=NULL,aggregate_blocked_scope_id=NULL,aggregate_blocked_since=NULL,aggregate_retry_at=NULL
 WHERE id= $1 AND aggregate_retry_at IS NOT NULL
 `
 
@@ -21,33 +21,39 @@ func (q *Queries) ClearWakeupAggregateBlocked(ctx context.Context, id pgtype.UUI
 	return err
 }
 
-const countWakeupAggregateStarts = `-- name: CountWakeupAggregateStarts :one
-SELECT count(*) FROM wakeup_aggregate_reservation r JOIN agent_task_queue t ON t.id=r.task_id
-WHERE r.workspace_id= $1 AND r.scope_kind= $2 AND r.scope_id= $3 AND r.rule_key= $4
- AND r.reserved_at> $5 AND r.task_id<> $6
- AND NOT (t.started_at IS NULL AND t.status IN ('cancelled','failed'))
+const countOlderWakeupAggregateWaiters = `-- name: CountOlderWakeupAggregateWaiters :one
+SELECT count(*) FROM issue_wakeup w
+WHERE w.workspace_id= $1 AND w.aggregate_blocked_scope_kind= $2 AND w.aggregate_blocked_scope_id= $3
+ AND w.aggregate_retry_at> $4 AND COALESCE(w.system_rule,w.default_rule_key)= $5::text
+ AND w.id<> $6
+ AND ($7::timestamptz IS NULL OR (w.aggregate_blocked_since,w.id)<($7::timestamptz, $6::uuid))
+ AND EXISTS(SELECT 1 FROM issue_wakeup_receipt r WHERE r.wakeup_id=w.id AND r.processed_at IS NULL)
 `
 
-type CountWakeupAggregateStartsParams struct {
+type CountOlderWakeupAggregateWaitersParams struct {
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	ScopeKind   string             `json:"scope_kind"`
+	ScopeKind   pgtype.Text        `json:"scope_kind"`
 	ScopeID     pgtype.UUID        `json:"scope_id"`
+	FreshAfter  pgtype.Timestamptz `json:"fresh_after"`
 	RuleKey     string             `json:"rule_key"`
+	WakeupID    pgtype.UUID        `json:"wakeup_id"`
 	Since       pgtype.Timestamptz `json:"since"`
-	TaskID      pgtype.UUID        `json:"task_id"`
 }
 
-// Paid starts of a counter inside the window, other than the asking task's own.
-// A run that was cancelled or failed before it ever started was never paid for
-// and a purged task is gone, so neither counts: no release step can be missed.
-func (q *Queries) CountWakeupAggregateStarts(ctx context.Context, arg CountWakeupAggregateStartsParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countWakeupAggregateStarts,
+// Instances this counter is already holding back that have waited longer than
+// the asking one (a fresh ask, with no since, is behind all of them) and still
+// have facts pending. They are first in line for any room the counter has. A
+// waiter whose retry time is older than fresh_after has stopped being retried
+// (its rule is held, say) and keeps nobody else waiting.
+func (q *Queries) CountOlderWakeupAggregateWaiters(ctx context.Context, arg CountOlderWakeupAggregateWaitersParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countOlderWakeupAggregateWaiters,
 		arg.WorkspaceID,
 		arg.ScopeKind,
 		arg.ScopeID,
+		arg.FreshAfter,
 		arg.RuleKey,
+		arg.WakeupID,
 		arg.Since,
-		arg.TaskID,
 	)
 	var count int64
 	err := row.Scan(&count)
@@ -87,27 +93,55 @@ func (q *Queries) LockWakeupAggregateBudget(ctx context.Context, arg LockWakeupA
 }
 
 const markWakeupAggregateBlocked = `-- name: MarkWakeupAggregateBlocked :exec
-UPDATE issue_wakeup SET aggregate_blocked_scope_kind= $1,aggregate_blocked_scope_id= $2,aggregate_retry_at= $3
-WHERE id= $4
+UPDATE issue_wakeup SET aggregate_blocked_scope_kind= $1,aggregate_blocked_scope_id= $2,aggregate_retry_at= $3,
+ aggregate_blocked_since=COALESCE(aggregate_blocked_since, $4)
+WHERE id= $5
 `
 
 type MarkWakeupAggregateBlockedParams struct {
 	ScopeKind pgtype.Text        `json:"scope_kind"`
 	ScopeID   pgtype.UUID        `json:"scope_id"`
 	RetryAt   pgtype.Timestamptz `json:"retry_at"`
+	Since     pgtype.Timestamptz `json:"since"`
 	ID        pgtype.UUID        `json:"id"`
 }
 
 // A full counter delays the instance: it keeps its pending facts, names the
 // counter and says when the scheduler may look again.
+// Its place in line (aggregate_blocked_since) is kept across re-checks.
 func (q *Queries) MarkWakeupAggregateBlocked(ctx context.Context, arg MarkWakeupAggregateBlockedParams) error {
 	_, err := q.db.Exec(ctx, markWakeupAggregateBlocked,
 		arg.ScopeKind,
 		arg.ScopeID,
 		arg.RetryAt,
+		arg.Since,
 		arg.ID,
 	)
 	return err
+}
+
+const pruneWakeupAggregateReservations = `-- name: PruneWakeupAggregateReservations :execrows
+DELETE FROM wakeup_aggregate_reservation r USING (
+ SELECT x.workspace_id,x.scope_kind,x.scope_id,x.rule_key,x.task_id FROM wakeup_aggregate_reservation x
+ WHERE x.reserved_at< $1 ORDER BY x.reserved_at LIMIT $2::int
+) d
+WHERE r.workspace_id=d.workspace_id AND r.scope_kind=d.scope_kind AND r.scope_id=d.scope_id AND r.rule_key=d.rule_key AND r.task_id=d.task_id
+`
+
+type PruneWakeupAggregateReservationsParams struct {
+	Before pgtype.Timestamptz `json:"before"`
+	Batch  int32              `json:"batch"`
+}
+
+// Retention: reservations far older than the counting window (and those of tasks
+// long purged, which are older still) no longer count. A bounded batch per pass,
+// oldest first, so the sweep never holds a long lock.
+func (q *Queries) PruneWakeupAggregateReservations(ctx context.Context, arg PruneWakeupAggregateReservationsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, pruneWakeupAggregateReservations, arg.Before, arg.Batch)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const reserveWakeupAggregateStart = `-- name: ReserveWakeupAggregateStart :exec
@@ -173,37 +207,50 @@ func (q *Queries) SummarizeWakeupAggregateBacklog(ctx context.Context, arg Summa
 	return i, err
 }
 
-const wakeupAggregateFreeAt = `-- name: WakeupAggregateFreeAt :one
-SELECT r.reserved_at FROM wakeup_aggregate_reservation r JOIN agent_task_queue t ON t.id=r.task_id
-WHERE r.workspace_id= $1 AND r.scope_kind= $2 AND r.scope_id= $3 AND r.rule_key= $4
- AND r.reserved_at> $5 AND r.task_id<> $6
- AND NOT (t.started_at IS NULL AND t.status IN ('cancelled','failed'))
-ORDER BY r.reserved_at OFFSET $7::int LIMIT 1
+const summarizeWakeupAggregateStarts = `-- name: SummarizeWakeupAggregateStarts :one
+WITH counted AS (
+ SELECT r.reserved_at,row_number() OVER (ORDER BY r.reserved_at) AS n
+ FROM wakeup_aggregate_reservation r JOIN agent_task_queue t ON t.id=r.task_id
+ WHERE r.workspace_id= $2 AND r.scope_kind= $3 AND r.scope_id= $4 AND r.rule_key= $5
+  AND r.reserved_at> $6 AND r.task_id<> $7
+  AND NOT (t.started_at IS NULL AND t.status IN ('cancelled','failed'))
+)
+SELECT (SELECT count(*) FROM counted)::bigint AS used,
+ (SELECT c.reserved_at FROM counted c WHERE c.n=(SELECT count(*) FROM counted)- $1::bigint+1)::timestamptz AS free_at
 `
 
-type WakeupAggregateFreeAtParams struct {
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	ScopeKind   string             `json:"scope_kind"`
-	ScopeID     pgtype.UUID        `json:"scope_id"`
-	RuleKey     string             `json:"rule_key"`
-	Since       pgtype.Timestamptz `json:"since"`
-	TaskID      pgtype.UUID        `json:"task_id"`
-	Skip        int32              `json:"skip"`
+type SummarizeWakeupAggregateStartsParams struct {
+	StartsPerHour int64              `json:"starts_per_hour"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	ScopeKind     string             `json:"scope_kind"`
+	ScopeID       pgtype.UUID        `json:"scope_id"`
+	RuleKey       string             `json:"rule_key"`
+	Since         pgtype.Timestamptz `json:"since"`
+	TaskID        pgtype.UUID        `json:"task_id"`
 }
 
-// When the (skip+1)th oldest counted start leaves the window: the first moment a
-// full counter has room again. skip is how far over the limit the count is.
-func (q *Queries) WakeupAggregateFreeAt(ctx context.Context, arg WakeupAggregateFreeAtParams) (pgtype.Timestamptz, error) {
-	row := q.db.QueryRow(ctx, wakeupAggregateFreeAt,
+type SummarizeWakeupAggregateStartsRow struct {
+	Used   int64              `json:"used"`
+	FreeAt pgtype.Timestamptz `json:"free_at"`
+}
+
+// Paid starts of a counter inside the window, other than the asking task's own,
+// and the moment it next has room: the (used-limit+1)th oldest counted start
+// leaving the window. One statement, so the two always describe the same set
+// even while runs are cancelled concurrently. A run that was cancelled or failed
+// before it ever started was never paid for and a purged task is gone, so
+// neither counts: no release step can be missed.
+func (q *Queries) SummarizeWakeupAggregateStarts(ctx context.Context, arg SummarizeWakeupAggregateStartsParams) (SummarizeWakeupAggregateStartsRow, error) {
+	row := q.db.QueryRow(ctx, summarizeWakeupAggregateStarts,
+		arg.StartsPerHour,
 		arg.WorkspaceID,
 		arg.ScopeKind,
 		arg.ScopeID,
 		arg.RuleKey,
 		arg.Since,
 		arg.TaskID,
-		arg.Skip,
 	)
-	var reserved_at pgtype.Timestamptz
-	err := row.Scan(&reserved_at)
-	return reserved_at, err
+	var i SummarizeWakeupAggregateStartsRow
+	err := row.Scan(&i.Used, &i.FreeAt)
+	return i, err
 }

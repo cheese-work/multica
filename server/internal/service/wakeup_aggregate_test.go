@@ -2,11 +2,13 @@ package service
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -239,10 +241,12 @@ func TestAggregateAncestorCapsAreAllEnforced(t *testing.T) {
 	if got := e.fire(t, first); sum(got) != 3 {
 		t.Fatalf("a project cap of 10 lifted the workspace cap of 3: %v", got)
 	}
-	// Free the workspace counter, then make the project stricter: only its cap binds.
+	// Free the workspace counter and drop the facts it delayed (they would
+	// rightly be first in line), then make the project stricter: only its cap binds.
 	for _, issue := range first {
 		e.cancelRuns(t, issue)
 	}
+	e.f.Exec(t, `UPDATE issue_wakeup_receipt SET processed_at=now() WHERE processed_at IS NULL AND wakeup_id IN (SELECT id FROM issue_wakeup WHERE issue_id=ANY($1))`, first)
 	e.defineAt(t, WakeupScopeProject, e.project, SystemRulePRMerged, `"aggregate_limit":1`)
 	if got := e.fire(t, batch(3)); sum(got) != 1 {
 		t.Fatalf("a stricter project cap of 1 admitted %v", got)
@@ -560,5 +564,144 @@ func TestAggregateConcurrentDispatchNeverExceedsTheCap(t *testing.T) {
 	}
 	if total() != limit {
 		t.Fatalf("%d starts after the delayed instances were retried, want exactly %d", total(), limit)
+	}
+}
+
+// afterFirstReservationRead runs a callback right after the first statement
+// that reads the reservation table, standing in for another session that
+// commits between two statements of one admission (READ COMMITTED).
+type afterFirstReservationRead struct {
+	db.DBTX
+	after func()
+	once  sync.Once
+}
+
+func (a *afterFirstReservationRead) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	row := a.DBTX.QueryRow(ctx, sql, args...)
+	if strings.Contains(sql, "wakeup_aggregate_reservation") {
+		a.once.Do(a.after)
+	}
+	return row
+}
+
+// A queued counted run cancelled while an admission is reading its counter is
+// the normal way a slot is released; it must delay or admit the start, never
+// fail it.
+func TestAggregateReleaseBetweenReadsIsNotAnError(t *testing.T) {
+	e := newBuiltinEnv(t)
+	e.cleanAggregate(t)
+	ctx := context.Background()
+	ws := parseTestUUID(t, e.f.WorkspaceID)
+	caps := []WakeupAggregateCap{{Scope: WakeupScopeProject, ScopeID: e.project, Limit: 2}}
+	reserve := func(q *db.Queries, task pgtype.UUID) (aggregateAdmission, error) {
+		return admitAggregateStart(ctx, q, aggregateStart{WorkspaceID: ws, RuleKey: SystemRulePRMerged, WakeupID: task, TaskID: task}, caps, time.Now())
+	}
+	counted := []pgtype.UUID{e.bareTask(t), e.bareTask(t)}
+	for _, task := range counted {
+		if adm, err := reserve(e.f.q, task); err != nil || !adm.Admitted {
+			t.Fatalf("setup: admitted=%v err=%v", adm.Admitted, err)
+		}
+	}
+	tx, err := e.s.Tasks.TxStarter.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	racing := &afterFirstReservationRead{DBTX: tx, after: func() {
+		for _, task := range counted {
+			e.f.Exec(t, `UPDATE agent_task_queue SET status='cancelled',completed_at=now() WHERE id=$1`, task)
+		}
+	}}
+	adm, err := reserve(db.New(racing), e.bareTask(t))
+	if err != nil {
+		t.Fatalf("a slot released between the counter's reads failed the admission: %v", err)
+	}
+	if adm.Admitted || adm.RetryAt.IsZero() {
+		t.Fatalf("the read that saw the counter full must delay the start: %+v", adm)
+	}
+}
+
+// Slots a delayed fact is waiting for go to the oldest waiters first: a fresh
+// event, which dispatches immediately and not through the scheduler's order,
+// must not take a slot ahead of facts that were delayed earlier.
+func TestAggregateFreedSlotGoesToOlderBlockedFactsFirst(t *testing.T) {
+	e := newBuiltinEnv(t)
+	e.cleanAggregate(t)
+	e.define(t, WakeupScopeProject, SystemRulePRMerged, `"aggregate_limit":1`)
+	holder, waiting, fresh := e.issueIn(t, e.project), e.issueIn(t, e.project), e.issueIn(t, e.project)
+	e.mergedOn(t, holder, 1)
+	e.mergedOn(t, waiting, 2)
+	if e.runs(t, holder) != 1 || e.runs(t, waiting) != 0 {
+		t.Fatal("setup: the cap of 1 must delay the second start")
+	}
+	e.cancelRuns(t, holder)
+	e.mergedOn(t, fresh, 3)
+	if e.runs(t, fresh) != 0 || e.pendingOn(t, fresh) != 1 {
+		t.Fatalf("a fresh event took the freed slot ahead of an older delayed fact (runs=%d)", e.runs(t, fresh))
+	}
+	e.redispatch(t, waiting)
+	if e.runs(t, waiting) != 1 {
+		t.Fatal("the oldest delayed fact did not get the freed slot")
+	}
+	// The fresh fact keeps its place in line behind it and starts once room returns.
+	e.redispatch(t, fresh)
+	if e.runs(t, fresh) != 0 {
+		t.Fatal("the cap of 1 was passed")
+	}
+	e.cancelRuns(t, waiting)
+	e.redispatch(t, fresh)
+	if e.runs(t, fresh) != 1 {
+		t.Fatal("the delayed fresh fact never started once its turn came")
+	}
+}
+
+// Reservations older than the retention window are pruned a bounded batch per
+// scheduler pass; recent ones, which still count, are kept.
+func TestAggregateReservationRetentionIsBounded(t *testing.T) {
+	e := newBuiltinEnv(t)
+	e.cleanAggregate(t)
+	ctx := context.Background()
+	ws := parseTestUUID(t, e.f.WorkspaceID)
+	extra := 3
+	e.f.Exec(t, `INSERT INTO wakeup_aggregate_reservation(workspace_id,scope_kind,scope_id,rule_key,task_id,wakeup_id,reserved_at)
+		SELECT $1,'project',$2,'pr_merged',gen_random_uuid(),gen_random_uuid(),now()-interval '25 hours' FROM generate_series(1,$3::int)`, ws, e.project, wakeupAggregatePruneBatch+extra)
+	e.f.Exec(t, `INSERT INTO wakeup_aggregate_reservation(workspace_id,scope_kind,scope_id,rule_key,task_id,wakeup_id,reserved_at)
+		SELECT $1,'project',$2,'pr_merged',gen_random_uuid(),gen_random_uuid(),now()-interval '30 minutes' FROM generate_series(1,2)`, ws, e.project)
+	old := func() int {
+		return e.f.Count(t, `SELECT count(*) FROM wakeup_aggregate_reservation WHERE workspace_id=$1 AND reserved_at < now()-interval '24 hours'`, e.f.WorkspaceID)
+	}
+	if err := e.s.TickWorkspaces(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	if got := old(); got != extra {
+		t.Fatalf("after one pass %d expired reservations remain, want %d (one bounded batch of %d pruned)", got, extra, wakeupAggregatePruneBatch)
+	}
+	if err := e.s.TickWorkspaces(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	if got := old(); got != 0 {
+		t.Fatalf("%d expired reservations survived two passes", got)
+	}
+	if n := e.f.Count(t, `SELECT count(*) FROM wakeup_aggregate_reservation WHERE workspace_id=$1`, e.f.WorkspaceID); n != 2 {
+		t.Fatalf("%d reservations remain, want the 2 recent ones that still count", n)
+	}
+}
+
+// An explicit null on a new custom root is the caller clearing the optional
+// cap: it opts out of the 12/hour default instead of being overwritten by it.
+func TestAggregateExplicitNullOnNewRootOptsOutOfTheDefault(t *testing.T) {
+	e := newBuiltinEnv(t)
+	ref := WakeupScopeRef{Kind: WakeupScopeProject, ID: e.project, WorkspaceID: parseTestUUID(t, e.f.WorkspaceID)}
+	created, err := e.s.SaveWakeupDefinition(context.Background(), ref, e.owner, WakeupDefinitionWrite{
+		Patch: patchOf(t, `"enabled":true,"trigger":{"kind":"pr_merged"},"instruction":"uncapped root","aggregate_limit":null`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := created.Patch.AggregateLimit; !p.Set || !p.Null {
+		t.Fatalf("an explicit null was replaced by %+v", p)
+	}
+	rule, err := e.s.EffectiveWakeupRule(context.Background(), ref, e.owner, created.RuleKey, nil)
+	if err != nil || len(rule.AggregateCaps) != 0 {
+		t.Fatalf("an opted-out root resolved caps %+v (err %v)", rule.AggregateCaps, err)
 	}
 }

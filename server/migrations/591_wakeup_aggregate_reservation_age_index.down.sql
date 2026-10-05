@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS wakeup_aggregate_reservation_age_idx;

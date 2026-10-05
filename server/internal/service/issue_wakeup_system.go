@@ -1229,7 +1229,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	// again when the counter may have room.
 	taskID := dbid.NewV7()
 	if caps := config.aggregateCaps(); len(caps) > 0 {
-		admission, err := admitAggregateStart(ctx, q, aggregateStart{WorkspaceID: issue.WorkspaceID, WakeupID: w.ID, TaskID: taskID, RuleKey: w.SystemRule.String}, caps, now)
+		admission, err := admitAggregateStart(ctx, q, aggregateStart{WorkspaceID: issue.WorkspaceID, WakeupID: w.ID, TaskID: taskID, RuleKey: w.SystemRule.String, BlockedSince: w.AggregateBlockedSince.Time}, caps, now)
 		if aggregateCounterBusy(err) {
 			return nil // another start holds the counter; this one is retried on a later pass
 		}
@@ -1239,7 +1239,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		if !admission.Admitted {
 			if err := q.MarkWakeupAggregateBlocked(ctx, db.MarkWakeupAggregateBlockedParams{
 				ID: w.ID, ScopeKind: pgtype.Text{String: string(admission.Blocked.Scope), Valid: true}, ScopeID: admission.Blocked.ScopeID,
-				RetryAt: pgtype.Timestamptz{Time: admission.RetryAt, Valid: true},
+				RetryAt: pgtype.Timestamptz{Time: admission.RetryAt, Valid: true}, Since: pgtype.Timestamptz{Time: now, Valid: true},
 			}); err != nil {
 				return err
 			}
