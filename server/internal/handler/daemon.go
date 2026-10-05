@@ -4081,16 +4081,35 @@ func (h *Handler) ExtendTaskPrepareLease(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, taskToResponse(*updated, taskWorkspaceID))
 }
 
+// startOwnsClaim reports whether a start request names the claim the task is
+// currently under: the runtime and claim generation match and the task is still
+// startable. A legacy request (no runtime, no generation) owns a dispatched task.
+func (h *Handler) startOwnsClaim(task db.AgentTaskQueue, runtimeID, dispatchedAt string) bool {
+	if runtimeID == "" && dispatchedAt == "" {
+		return task.Status == "dispatched"
+	}
+	runtime, err := util.ParseUUID(runtimeID)
+	generation, parseErr := time.Parse(time.RFC3339Nano, dispatchedAt)
+	if err != nil || parseErr != nil || generation.Nanosecond()%1000 != 0 {
+		return false
+	}
+	switch task.Status {
+	case "dispatched", "waiting_local_directory", "running":
+	default:
+		return false
+	}
+	return task.RuntimeID == runtime && task.DispatchedAt.Valid && task.DispatchedAt.Time.Equal(generation)
+}
+
 // StartTask marks a dispatched task as running.
 func (h *Handler) StartTask(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
 
 	// Verify the caller owns this task's workspace.
-	_, workspaceID, ok := h.requireDaemonTaskAccessWithWorkspace(w, r, taskID)
+	claimed, workspaceID, ok := h.requireDaemonTaskAccessWithWorkspace(w, r, taskID)
 	if !ok {
 		return
 	}
-
 	var req struct {
 		Capabilities []string `json:"capabilities"`
 		RuntimeID    string   `json:"runtime_id"`
@@ -4102,6 +4121,34 @@ func (h *Handler) StartTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// A platform rule's run captured under a configuration that changed since
+	// the claim does not start; a failed run is visible, and a running one is
+	// never touched. Only the delivery that owns the claim may fail the run: a
+	// stale or foreign one falls through to the ordinary start, which refuses it.
+	if h.startOwnsClaim(claimed, req.RuntimeID, req.DispatchedAt) {
+		if err := (&service.IssueWakeupService{Tasks: h.TaskService}).CheckStart(r.Context(), claimed); err != nil {
+			if !errors.Is(err, service.ErrWakeupForbidden) {
+				slog.Warn("start task: wakeup check failed", "task_id", taskID, "error", err)
+				writeError(w, http.StatusInternalServerError, "failed to start task")
+				return
+			}
+			// Claim-scoped: a task that started meanwhile, or a newer claim of it,
+			// is not failed (the ordinary start below answers for it).
+			claim := db.LockAgentTaskStartClaimParams{ID: claimed.ID, RuntimeID: claimed.RuntimeID, DispatchedAt: claimed.DispatchedAt}
+			switch _, failErr := h.TaskService.FailUnstartedClaimedTask(r.Context(), claim, "Wakeup configuration changed before the run started.", taskfailure.ReasonInvalidTaskIdentity.String()); {
+			case failErr == nil:
+				writeError(w, http.StatusConflict, "wakeup configuration changed")
+				return
+			case !errors.Is(failErr, service.ErrClaimNotUnstarted):
+				// The rejection was not recorded; the claim is still live, so
+				// the caller must retry rather than treat it as settled.
+				slog.Warn("start task: failing a stale wakeup run failed", "task_id", taskID, "error", failErr)
+				writeError(w, http.StatusServiceUnavailable, "failed to reject a stale wakeup run; retry")
+				return
+			}
+		}
+	}
+
 	enableTaskSupplement := slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementV1)
 	var task *db.AgentTaskQueue
 	var err error

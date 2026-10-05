@@ -80,3 +80,21 @@ UPDATE issue_wakeup SET customized_at=NULL,instruction='',
  updated_at=clock_timestamp()
 WHERE id= @id AND customized_at IS NOT NULL
 RETURNING *;
+
+-- name: RebaseSystemWakeupConfig :one
+-- A platform rule's instance moves to the configuration it now resolves to. The
+-- revision moves with it, so inputs and queued runs captured under the old
+-- configuration stop matching; identity, fire count, pauses and consumed state
+-- stay as they are. An empty fingerprint means no scoped definition applies.
+UPDATE issue_wakeup SET revision=revision+1,config_fingerprint=NULLIF(@fingerprint::text,''),updated_at=clock_timestamp()
+WHERE id= @id AND system_rule IS NOT NULL
+RETURNING *;
+
+-- name: ListIssueLabelIDs :many
+SELECT label_id FROM issue_to_label WHERE issue_id= @issue_id;
+
+-- name: FindWaitingIssueLeaderRun :one
+-- A leader task of this squad that has not been claimed and runs as this person:
+-- the only kind of waiting run a squad-targeted rule may leave its facts with.
+SELECT id FROM agent_task_queue WHERE issue_id= @issue_id AND agent_id= @agent_id AND status='queued'
+ AND originator_user_id= @originator_user_id::uuid AND is_leader_task AND squad_id= @squad_id::uuid ORDER BY created_at,id LIMIT 1;
