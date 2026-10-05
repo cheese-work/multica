@@ -156,7 +156,7 @@ func (q *Queries) CountWakeupScopedEventsByOutcome(ctx context.Context, workspac
 const createDefaultWakeupInstance = `-- name: CreateDefaultWakeupInstance :one
 INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,created_by,instruction,kind,mode,event_types,max_fires,enabled,default_rule_key,default_scope_kind,default_scope_id,config_fingerprint)
 VALUES($1,$2,$3,$4,$5,$6,'event',$7,$8,$9,false,$10,$11,$12,$13)
-RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_blocked_since, aggregate_retry_at
+RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at
 `
 
 type CreateDefaultWakeupInstanceParams struct {
@@ -238,7 +238,6 @@ func (q *Queries) CreateDefaultWakeupInstance(ctx context.Context, arg CreateDef
 		&i.CapacityReason,
 		&i.AggregateBlockedScopeKind,
 		&i.AggregateBlockedScopeID,
-		&i.AggregateBlockedSince,
 		&i.AggregateRetryAt,
 	)
 	return i, err
@@ -298,7 +297,7 @@ func (q *Queries) ExpireWakeupScopedEvents(ctx context.Context, arg ExpireWakeup
 }
 
 const getDefaultWakeupInstance = `-- name: GetDefaultWakeupInstance :one
-SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_blocked_since, aggregate_retry_at FROM issue_wakeup WHERE issue_id= $1 AND default_rule_key= $2::text AND system_rule IS NULL ORDER BY id LIMIT 1
+SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at FROM issue_wakeup WHERE issue_id= $1 AND default_rule_key= $2::text AND system_rule IS NULL ORDER BY id LIMIT 1
 `
 
 type GetDefaultWakeupInstanceParams struct {
@@ -356,7 +355,6 @@ func (q *Queries) GetDefaultWakeupInstance(ctx context.Context, arg GetDefaultWa
 		&i.CapacityReason,
 		&i.AggregateBlockedScopeKind,
 		&i.AggregateBlockedScopeID,
-		&i.AggregateBlockedSince,
 		&i.AggregateRetryAt,
 	)
 	return i, err
@@ -381,7 +379,7 @@ const rebaseDefaultWakeupInstance = `-- name: RebaseDefaultWakeupInstance :one
 UPDATE issue_wakeup SET agent_id= $1,created_by= $2,instruction= $3,mode= $4,event_types= $5,max_fires=$6,
  config_fingerprint= $7,revision=revision+1,updated_at=clock_timestamp()
 WHERE id= $8 AND default_rule_key IS NOT NULL AND system_rule IS NULL
-RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_blocked_since, aggregate_retry_at
+RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at
 `
 
 type RebaseDefaultWakeupInstanceParams struct {
@@ -455,7 +453,6 @@ func (q *Queries) RebaseDefaultWakeupInstance(ctx context.Context, arg RebaseDef
 		&i.CapacityReason,
 		&i.AggregateBlockedScopeKind,
 		&i.AggregateBlockedScopeID,
-		&i.AggregateBlockedSince,
 		&i.AggregateRetryAt,
 	)
 	return i, err
