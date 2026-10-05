@@ -92,3 +92,9 @@ RETURNING *;
 
 -- name: ListIssueLabelIDs :many
 SELECT label_id FROM issue_to_label WHERE issue_id= @issue_id;
+
+-- name: FindWaitingIssueLeaderRun :one
+-- A leader task of this squad that has not been claimed and runs as this person:
+-- the only kind of waiting run a squad-targeted rule may leave its facts with.
+SELECT id FROM agent_task_queue WHERE issue_id= @issue_id AND agent_id= @agent_id AND status='queued'
+ AND originator_user_id= @originator_user_id::uuid AND is_leader_task AND squad_id= @squad_id::uuid ORDER BY created_at,id LIMIT 1;
