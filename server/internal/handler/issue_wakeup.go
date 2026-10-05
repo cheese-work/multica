@@ -103,7 +103,7 @@ func (h *Handler) ListWorkspaceWakeups(w http.ResponseWriter, r *http.Request) {
 
 func wakeupError(w http.ResponseWriter, err error) {
 	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.ConstraintName == "issue_wakeup_active_limit" {
+	if errors.As(err, &pgErr) && (pgErr.ConstraintName == "issue_wakeup_active_limit" || pgErr.ConstraintName == "issue_wakeup_default_capacity") {
 		writeErrorCode(w, 400, "wakeup_capacity_exceeded", pgErr.Message)
 		return
 	}

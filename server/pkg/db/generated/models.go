@@ -1315,6 +1315,7 @@ type IssueWakeup struct {
 	DefaultScopeKind  pgtype.Text        `json:"default_scope_kind"`
 	DefaultScopeID    pgtype.UUID        `json:"default_scope_id"`
 	ConfigFingerprint pgtype.Text        `json:"config_fingerprint"`
+	CapacityReason    pgtype.Text        `json:"capacity_reason"`
 }
 
 type IssueWakeupDefinition struct {
