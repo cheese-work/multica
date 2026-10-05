@@ -808,3 +808,34 @@ func TestScopedDrainAPoisonedInputDoesNotBlockItsIssue(t *testing.T) {
 		t.Fatalf("instances = %d, want 1: the rolled-back attempt must leave none behind", got)
 	}
 }
+
+// An issue another writer holds is contention, not a fault: the drain gives up
+// on it quietly after its short lock wait, keeps the input pending with no
+// retry delay and takes it on the next pass.
+func TestScopedDrainWaitsOutAnIssueAnotherWriterHolds(t *testing.T) {
+	k := newDrainKit(t)
+	k.defineRoot(t, "workspace", k.f.WorkspaceID, scopedRuleA, "comment.created")
+	k.comment(t, "the issue is busy")
+	ctx := context.Background()
+	holder, err := k.f.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback(ctx)
+	if _, err := holder.Exec(ctx, `SELECT 1 FROM issue WHERE id=$1 FOR NO KEY UPDATE`, k.issue); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.s.DrainScopedEvents(ctx, parseTestUUID(t, k.f.WorkspaceID)); err != nil {
+		t.Fatalf("contention must not surface as an error: %v", err)
+	}
+	var retry *time.Time
+	if err := k.f.Pool.QueryRow(ctx, `SELECT retry_at FROM wakeup_scoped_event WHERE workspace_id=$1`, k.f.WorkspaceID).Scan(&retry); err != nil {
+		t.Fatal(err)
+	}
+	if retry != nil || k.pending(t) != 1 {
+		t.Fatalf("a busy issue must leave its input pending without a retry delay (retry_at=%v pending=%d)", retry, k.pending(t))
+	}
+	holder.Rollback(ctx)
+	k.drain(t)
+	k.wantOutcomes(t, "delivered")
+}
