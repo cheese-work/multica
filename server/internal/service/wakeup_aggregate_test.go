@@ -705,3 +705,98 @@ func TestAggregateExplicitNullOnNewRootOptsOutOfTheDefault(t *testing.T) {
 		t.Fatalf("an opted-out root resolved caps %+v (err %v)", rule.AggregateCaps, err)
 	}
 }
+
+// consumeFacts marks pending facts of the issue's instance consumed without a
+// paid start (as an acknowledgement, a suppression or a join does). newest
+// consumes only the latest one.
+func (e builtinEnv) consumeFacts(t *testing.T, issue pgtype.UUID, newest bool) {
+	t.Helper()
+	pick := ``
+	if newest {
+		pick = ` AND id=(SELECT r2.id FROM issue_wakeup_receipt r2 JOIN issue_wakeup w2 ON w2.id=r2.wakeup_id WHERE w2.issue_id=$1 AND r2.processed_at IS NULL ORDER BY r2.created_at DESC,r2.id DESC LIMIT 1)`
+	}
+	e.f.Exec(t, `UPDATE issue_wakeup_receipt SET processed_at=now() WHERE processed_at IS NULL AND wakeup_id IN (SELECT id FROM issue_wakeup WHERE issue_id=$1)`+pick, issue)
+}
+
+// A delayed instance whose pending facts were all consumed without a start
+// stands at the back of the line again: a receipt that arrives later is a new
+// fact, and must not jump ahead of facts delayed in between.
+func TestAggregateFullyConsumedBatchLosesItsQueueAge(t *testing.T) {
+	e := newBuiltinEnv(t)
+	e.cleanAggregate(t)
+	e.define(t, WakeupScopeProject, SystemRulePRMerged, `"aggregate_limit":1`)
+	holder, early, between := e.issueIn(t, e.project), e.issueIn(t, e.project), e.issueIn(t, e.project)
+	e.mergedOn(t, holder, 1)
+	e.mergedOn(t, early, 2)
+	e.mergedOn(t, between, 3)
+	if e.runs(t, early) != 0 || e.runs(t, between) != 0 {
+		t.Fatal("setup: both later facts must be delayed")
+	}
+	e.consumeFacts(t, early, false)
+	e.cancelRuns(t, holder)
+	e.mergedOn(t, early, 4) // a new fact on the instance that waited first
+	if e.runs(t, early) != 0 || e.pendingOn(t, early) != 1 {
+		t.Fatalf("a new fact kept the queue age of facts that were already consumed (runs=%d)", e.runs(t, early))
+	}
+	e.redispatch(t, between)
+	if e.runs(t, between) != 1 {
+		t.Fatal("the fact delayed before the new one did not get the freed slot")
+	}
+}
+
+// Consuming only some of the facts keeps the age of those still pending.
+func TestAggregatePartialConsumptionKeepsTheQueueAgeOfPendingFacts(t *testing.T) {
+	e := newBuiltinEnv(t)
+	e.cleanAggregate(t)
+	e.define(t, WakeupScopeProject, SystemRulePRMerged, `"aggregate_limit":1`)
+	holder, early, between := e.issueIn(t, e.project), e.issueIn(t, e.project), e.issueIn(t, e.project)
+	e.mergedOn(t, holder, 1)
+	e.mergedOn(t, early, 2)
+	e.mergedOn(t, between, 3)
+	e.mergedOn(t, early, 4)
+	e.consumeFacts(t, early, true) // the newest goes; the first fact is still pending
+	if e.pendingOn(t, early) != 1 {
+		t.Fatalf("setup: %d facts pending, want the oldest only", e.pendingOn(t, early))
+	}
+	e.cancelRuns(t, holder)
+	e.redispatch(t, between)
+	if e.runs(t, between) != 0 {
+		t.Fatal("a younger delayed fact overtook an instance whose oldest fact is still pending")
+	}
+	e.redispatch(t, early)
+	if e.runs(t, early) != 1 {
+		t.Fatal("the instance with the oldest pending fact did not get the slot")
+	}
+}
+
+// The same through a real pre-admission path: facts suppressed because the agent
+// is already running on the issue are consumed without a start, so the instance
+// loses the age they gave it.
+func TestAggregateSuppressedFactsLoseTheirQueueAge(t *testing.T) {
+	e := newBuiltinEnv(t)
+	e.cleanAggregate(t)
+	e.define(t, WakeupScopeProject, SystemRulePRMerged, `"aggregate_limit":1`)
+	holder, early, between := e.issueIn(t, e.project), e.issueIn(t, e.project), e.issueIn(t, e.project)
+	e.mergedOn(t, holder, 1)
+	e.mergedOn(t, early, 2)
+	e.mergedOn(t, between, 3)
+	var runtime pgtype.UUID
+	if err := e.f.Pool.QueryRow(context.Background(), `SELECT runtime_id FROM agent WHERE id=$1`, e.agent).Scan(&runtime); err != nil {
+		t.Fatal(err)
+	}
+	e.f.Exec(t, `INSERT INTO agent_task_queue(id,agent_id,runtime_id,issue_id,status,priority,started_at) VALUES (gen_random_uuid(),$1,$2,$3,'running',0,now()-interval '1 hour')`, e.agent, runtime, early)
+	e.redispatch(t, early)
+	if e.pendingOn(t, early) != 0 || e.f.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND details->>'outcome'='suppressed_active_run'`, early) != 1 {
+		t.Fatalf("setup: the active run must have suppressed the instance's facts (pending=%d)", e.pendingOn(t, early))
+	}
+	e.f.Exec(t, `UPDATE agent_task_queue SET status='completed',completed_at=now() WHERE issue_id=$1 AND status='running'`, early)
+	e.cancelRuns(t, holder)
+	e.mergedOn(t, early, 4)
+	if e.runs(t, early) != 0 {
+		t.Fatal("a new fact kept the queue age of facts the active run had suppressed")
+	}
+	e.redispatch(t, between)
+	if e.runs(t, between) != 1 {
+		t.Fatal("the older delayed fact did not get the freed slot")
+	}
+}
