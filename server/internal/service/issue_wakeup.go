@@ -1301,7 +1301,9 @@ func (s *IssueWakeupService) CheckStart(ctx context.Context, task db.AgentTaskQu
 		return nil
 	}
 	if source.System != "" {
-		return s.CheckClaim(ctx, task)
+		if err := s.CheckClaim(ctx, task); err != nil {
+			return err
+		}
 	}
 	for _, entry := range source.Joined {
 		if err := s.checkJoinedAtStart(ctx, task, entry); err != nil {
@@ -1351,6 +1353,17 @@ func (s *IssueWakeupService) checkJoinedAtStart(ctx context.Context, task db.Age
 		return err
 	} else if !eligible {
 		return ErrWakeupForbidden
+	}
+	if _, isPRWakeup := prWakeupSetting(w.SystemRule.String); isPRWakeup && config != nil {
+		// The GitHub master switch is not part of the fingerprint; it is a veto
+		// for a scoped firing, judged again here as at dispatch and claim.
+		workspace, err := s.Tasks.Queries.GetWorkspace(ctx, w.WorkspaceID)
+		if err != nil {
+			return err
+		}
+		if enabled, err := prRuleEnabled(workspace.Settings, w.SystemRule.String, true); err != nil || !enabled {
+			return errors.Join(ErrWakeupForbidden, err)
+		}
 	}
 	if config != nil && config.Eff.Config.Target.Set {
 		target, err := builtinTarget(ctx, s, s.Tasks.Queries, issue, config)
