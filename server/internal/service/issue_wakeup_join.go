@@ -379,6 +379,9 @@ func (s *IssueWakeupService) mayJoin(ctx context.Context, q *db.Queries, issue d
 		if w.AgentID != task.AgentID || w.CreatedBy != task.OriginatorUserID || (w.Mode == "once" && w.LastTaskID.Valid) {
 			return "", false, nil
 		}
+		if isDefaultDerivedWakeup(w) {
+			return "", false, nil
+		}
 		if err := s.authorize(ctx, q, w.WorkspaceID, w.CreatedBy, agent); err != nil {
 			if errors.Is(err, ErrWakeupForbidden) {
 				err = nil
@@ -389,6 +392,9 @@ func (s *IssueWakeupService) mayJoin(ctx context.Context, q *db.Queries, issue d
 	}
 	if !w.Enabled || issuestatus.Effective(ctx, q, issue.WorkspaceID, issue.Status) == "backlog" {
 		return "", false, nil
+	}
+	if allowed, err := legacyDispatchAllowed(ctx, q, issue, w); err != nil || !allowed {
+		return "", false, err
 	}
 	target, err := resolveWakeTarget(ctx, q, issue)
 	if err != nil || target.Agent.ID != task.AgentID {

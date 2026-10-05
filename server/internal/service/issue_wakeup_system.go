@@ -60,6 +60,10 @@ type PullRequestWakeupInput struct {
 
 var errMalformedPRWakeupSettings = errors.New("malformed PR wakeup workspace settings")
 
+func malformedPRWakeupSettings(err error) error {
+	return fmt.Errorf("%w: %w", errMalformedPRWakeupSettings, err)
+}
+
 func prWakeupSetting(rule string) (string, bool) {
 	switch rule {
 	case SystemRulePRMerged:
@@ -79,13 +83,9 @@ func PRWakeupEnabled(settings []byte, rule string) (bool, error) {
 	if len(settings) == 0 {
 		return true, nil
 	}
-	var values struct {
-		GitHubEnabled   *bool `json:"github_enabled"`
-		WakeOnPRMerge   *bool `json:"github_wake_on_pr_merge"`
-		WakeOnCIFailure *bool `json:"github_wake_on_ci_failure"`
-	}
+	var values prWakeupSettings
 	if err := json.Unmarshal(settings, &values); err != nil {
-		return false, fmt.Errorf("%w: %w", errMalformedPRWakeupSettings, err)
+		return false, malformedPRWakeupSettings(err)
 	}
 	if values.GitHubEnabled != nil && !*values.GitHubEnabled {
 		return false, nil
@@ -672,6 +672,13 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		if err := q.DiscardWakeupReceipts(ctx, w.ID); err != nil {
 			return err
 		}
+		return tx.Commit(ctx)
+	}
+	// Scoped definitions this build cannot execute hold the rule: its facts
+	// stay pending, nothing runs.
+	if allowed, err := legacyDispatchAllowed(ctx, q, issue, w); err != nil {
+		return err
+	} else if !allowed {
 		return tx.Commit(ctx)
 	}
 	if isPRWakeup {
