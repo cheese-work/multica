@@ -163,6 +163,10 @@ type joinedWakeup struct {
 	WakeupID string `json:"wakeup_id"`
 	Revision int64  `json:"wakeup_revision"`
 	Note     string `json:"note"`
+	// FireLimit is the once/max_fires limit the firing was joined under (0: none).
+	// A firing that starts later counts against it whatever the rule's
+	// configuration says by then, so an edit cannot rearm the instance.
+	FireLimit int32 `json:"fire_limit,omitempty"`
 }
 
 // JoinWaitingWakeups hands a run being claimed the inputs of the wakeup rules
@@ -361,7 +365,15 @@ func (s *IssueWakeupService) reserveForRun(ctx context.Context, q *db.Queries, i
 			return nil, nil, err
 		}
 	}
-	return &joinedWakeup{WakeupID: util.UUIDToString(w.ID), Revision: w.Revision, Note: joinedWakeupNote(w, instruction, receipts)}, chain, nil
+	var fireLimit int32
+	if w.SystemRule.Valid {
+		config, err := loadBuiltinWakeup(ctx, q, issue, w.SystemRule.String, &w)
+		if err != nil {
+			return nil, nil, err
+		}
+		fireLimit, _ = config.fireLimit()
+	}
+	return &joinedWakeup{WakeupID: util.UUIDToString(w.ID), Revision: w.Revision, Note: joinedWakeupNote(w, instruction, receipts), FireLimit: fireLimit}, chain, nil
 }
 
 // mayJoin reports whether the run is one the rule's own run would be: the

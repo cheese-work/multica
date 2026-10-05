@@ -359,7 +359,16 @@ func rebaseBuiltinConfig(ctx context.Context, tx pgx.Tx, q *db.Queries, issue db
 	if err != nil {
 		return w, nil, err
 	}
-	if limit, limited := b.fireLimit(); len(taken) > 0 && limited && rebased.FireCount >= limit && !systemWakeupPaused(rebased) {
+	// A started joined firing ends the instance under the limit it was joined
+	// under; the new configuration's limit may only tighten that.
+	exhausted := false
+	for _, run := range taken {
+		exhausted = exhausted || joinedFireLimit(run.task, w.ID) > 0 && rebased.FireCount >= joinedFireLimit(run.task, w.ID)
+	}
+	if limit, limited := b.fireLimit(); limited && rebased.FireCount >= limit {
+		exhausted = exhausted || len(taken) > 0
+	}
+	if exhausted && !systemWakeupPaused(rebased) {
 		if err := q.PauseIssueWakeup(ctx, db.PauseIssueWakeupParams{ID: w.ID, PausedReason: pgtype.Text{String: wakeupPausedMaxFires, Valid: true}}); err != nil {
 			return w, nil, err
 		}
@@ -474,4 +483,20 @@ func (b *builtinWakeup) runEligible(ctx context.Context, q *db.Queries, issue db
 		return false, nil
 	}
 	return b.matchesIssue(ctx, q, issue)
+}
+
+// joinedFireLimit is the limit the carrier run recorded when the wakeup joined it.
+func joinedFireLimit(carrier db.AgentTaskQueue, wakeupID pgtype.UUID) int32 {
+	var stored struct {
+		Joined []joinedWakeup `json:"wakeup_joined"`
+	}
+	if json.Unmarshal(carrier.Context, &stored) != nil {
+		return 0
+	}
+	for _, entry := range stored.Joined {
+		if id, err := util.ParseUUID(entry.WakeupID); err == nil && id == wakeupID {
+			return entry.FireLimit
+		}
+	}
+	return 0
 }

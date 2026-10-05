@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -82,11 +83,15 @@ func TestBuiltinJoinedRunIsRevalidatedAtStart(t *testing.T) {
 
 // A joined firing that has started counts toward once/max_fires even when an
 // ancestor edit retires the revision it was reserved under before the rule's
-// own dispatch settled it.
+// own dispatch settled it, and the instance ends under the policy it started
+// under: an edit that loosens or clears the limit does not rearm it.
 func TestBuiltinStartedJoinedFiringSurvivesAncestorEdit(t *testing.T) {
-	for _, tc := range []struct{ name, fields string }{
-		{"once", `"mode":"once"`},
-		{"max_fires 1", `"max_fires":1`},
+	for _, tc := range []struct{ name, fields, edit string }{
+		{"once, same policy", `"mode":"once"`, `"mode":"once"`},
+		{"max_fires 1, same policy", `"max_fires":1`, `"max_fires":1`},
+		{"once, switched to continuous", `"mode":"once"`, `"mode":"continuous"`},
+		{"max_fires 1, raised", `"max_fires":1`, `"max_fires":5`},
+		{"max_fires 1, cleared", `"max_fires":1`, `"name":"cleared"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newBuiltinEnv(t)
@@ -97,7 +102,7 @@ func TestBuiltinStartedJoinedFiringSurvivesAncestorEdit(t *testing.T) {
 				t.Fatalf("the rule did not join: %q", notes)
 			}
 			wakeStart(t, e.f, carrier)
-			e.define(t, WakeupScopeProject, SystemRulePRMerged, `"instruction":"Two",`+tc.fields)
+			e.define(t, WakeupScopeProject, SystemRulePRMerged, `"instruction":"Two",`+tc.edit)
 			e.mergedPR(t, 511)
 			w := e.rule(t, SystemRulePRMerged)
 			if w.FireCount != 1 || !w.PausedReason.Valid || w.PausedReason.String != wakeupPausedMaxFires {
@@ -357,5 +362,95 @@ func TestBuiltinBaseBranchFilterIsRefusedForFailingChecks(t *testing.T) {
 	_, err := e.s.SaveWakeupDefinition(context.Background(), ref, e.owner, WakeupDefinitionWrite{RuleKey: SystemRulePRChecksFailed, Patch: patchOf(t, `"filters":{"base_branch":"main"}`)})
 	if !errors.Is(err, ErrWakeupInput) {
 		t.Fatalf("saving base_branch for failing checks = %v, want an input error", err)
+	}
+}
+
+// A system-rule carrier is judged on its primary rule and on every rule that
+// joined it; passing the primary must not skip the joined entries.
+func TestBuiltinSystemCarrierJoinedEntriesAreRevalidatedAtStart(t *testing.T) {
+	e := newBuiltinEnv(t)
+	ctx := context.Background()
+	e.define(t, WakeupScopeProject, SystemRulePRMerged, `"instruction":"One"`)
+	// The carrier is the pending own run of an unaffected pr_checks_failed rule.
+	e.failedChecks(t, "carrier-head", "FAILURE")
+	carrier := e.lastTask(t, SystemRulePRChecksFailed)
+	// pr_merged's fact waits for it and is taken along when it is claimed.
+	e.mergedPR(t, 540)
+	if notes := wakeClaim(t, e.f, e.s, util.UUIDToString(carrier.ID)); !strings.Contains(notes, "One") {
+		t.Fatalf("the merged-PR rule did not join the system carrier: %q", notes)
+	}
+	if err := e.s.CheckStart(ctx, e.task(t, util.UUIDToString(carrier.ID))); err != nil {
+		t.Fatalf("start of an unchanged system carrier: %v", err)
+	}
+	e.define(t, WakeupScopeProject, SystemRulePRMerged, `"instruction":"Two"`)
+	if err := e.s.CheckStart(ctx, e.task(t, util.UUIDToString(carrier.ID))); !errors.Is(err, ErrWakeupForbidden) {
+		t.Fatalf("start with a stale joined instruction on a system carrier = %v, want ErrWakeupForbidden", err)
+	}
+}
+
+// The GitHub master switch is a veto at every scope, and it is not part of the
+// configuration fingerprint, so it is judged again for a scoped joined firing.
+func TestBuiltinJoinedPRFiringHonorsTheGitHubMasterSwitchAtStart(t *testing.T) {
+	e := newBuiltinEnv(t)
+	ctx := context.Background()
+	e.define(t, WakeupScopeProject, SystemRulePRMerged, `"instruction":"One"`)
+	carrier := wakeWaitingRun(t, e.f, e.issue, e.agent, e.f.UserID)
+	e.mergedPR(t, 550)
+	if notes := wakeClaim(t, e.f, e.s, carrier); !strings.Contains(notes, "One") {
+		t.Fatalf("the rule did not join: %q", notes)
+	}
+	if err := e.s.CheckStart(ctx, e.task(t, carrier)); err != nil {
+		t.Fatalf("start before the integration was switched off: %v", err)
+	}
+	before := e.rule(t, SystemRulePRMerged)
+	e.f.Exec(t, `UPDATE workspace SET settings='{"github_enabled":false}'::jsonb WHERE id=$1`, e.f.WorkspaceID)
+	if after := e.loadBuiltin(t, SystemRulePRMerged); after.Eff.Fingerprint != before.ConfigFingerprint.String {
+		t.Fatal("the master switch changed the fingerprint; the test would not isolate the veto")
+	}
+	if err := e.s.CheckStart(ctx, e.task(t, carrier)); !errors.Is(err, ErrWakeupForbidden) {
+		t.Fatalf("start after the integration was switched off = %v, want ErrWakeupForbidden", err)
+	}
+}
+
+// A rejection at start is scoped to the claim it judged: it can never fail a
+// task that started meanwhile, or a newer claim of the same task.
+func TestFailUnstartedClaimedTaskIsClaimScoped(t *testing.T) {
+	e := newBuiltinEnv(t)
+	ctx := context.Background()
+	generation := time.Date(2026, 10, 5, 9, 0, 0, 123456000, time.UTC)
+	claimed := func(t *testing.T, status string) (string, db.LockAgentTaskStartClaimParams) {
+		id := wakeWaitingRun(t, e.f, e.issue, e.agent, e.f.UserID)
+		e.f.Exec(t, `UPDATE agent_task_queue SET status=$2,dispatched_at=$3 WHERE id=$1`, id, status, generation)
+		task := e.task(t, id)
+		return id, db.LockAgentTaskStartClaimParams{ID: task.ID, RuntimeID: task.RuntimeID, DispatchedAt: pgtype.Timestamptz{Time: generation, Valid: true}}
+	}
+	status := func(id string) string { return e.task(t, id).Status }
+	for _, state := range []string{"dispatched", "waiting_local_directory"} {
+		id, claim := claimed(t, state)
+		if _, err := e.s.Tasks.FailUnstartedClaimedTask(ctx, claim, "stale", ""); err != nil {
+			t.Fatalf("%s: %v", state, err)
+		}
+		if got := status(id); got != "failed" {
+			t.Fatalf("an unstarted %s claim was not failed: %q", state, got)
+		}
+		e.f.Exec(t, `UPDATE agent_task_queue SET status='cancelled' WHERE id=$1`, id)
+	}
+	// A task that started after the check was made is never failed.
+	id, claim := claimed(t, "dispatched")
+	e.f.Exec(t, `UPDATE agent_task_queue SET status='running',started_at=clock_timestamp() WHERE id=$1`, id)
+	if _, err := e.s.Tasks.FailUnstartedClaimedTask(ctx, claim, "stale", ""); !errors.Is(err, ErrClaimNotUnstarted) {
+		t.Fatalf("failing a running task = %v, want ErrClaimNotUnstarted", err)
+	}
+	if got := status(id); got != "running" {
+		t.Fatalf("a running task was failed: %q", got)
+	}
+	// A newer claim of the same task is not the claim that was judged.
+	id, claim = claimed(t, "dispatched")
+	e.f.Exec(t, `UPDATE agent_task_queue SET dispatched_at=$2 WHERE id=$1`, id, generation.Add(time.Microsecond))
+	if _, err := e.s.Tasks.FailUnstartedClaimedTask(ctx, claim, "stale", ""); !errors.Is(err, ErrClaimNotUnstarted) {
+		t.Fatalf("failing a newer claim = %v, want ErrClaimNotUnstarted", err)
+	}
+	if got := status(id); got != "dispatched" {
+		t.Fatalf("a newer claim was failed: %q", got)
 	}
 }
