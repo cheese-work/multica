@@ -155,10 +155,13 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		legacy = &w
 	}
 	config, err := loadBuiltinWakeup(ctx, q, issue, in.Rule, legacy)
+	held := false
 	switch {
 	case errors.Is(err, errWakeupConfigHeld):
-		// Captured as the legacy path would; dispatch holds the input.
-		config, err = nil, nil
+		// Captured under the instance's recorded configuration; dispatch holds
+		// the input. A hold is not the absence of definitions, so nothing is
+		// rebased.
+		config, held, err = nil, true, nil
 	case errors.Is(err, errMalformedPRWakeupSettings):
 		// The check below reports the malformed settings the way it always has.
 		config, err = nil, nil
@@ -201,9 +204,11 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 	}
 	// What this input is captured under: a configuration that changed since the
 	// instance last ran retires its older inputs and unstarted runs first.
-	w, withdrawn, err := rebaseBuiltinConfig(ctx, tx, q, issue, w, config)
-	if err != nil {
-		return err
+	var withdrawn []db.AgentTaskQueue
+	if !held {
+		if w, withdrawn, err = rebaseBuiltinConfig(ctx, tx, q, issue, w, config); err != nil {
+			return err
+		}
 	}
 	tag, err := tx.Exec(ctx, `INSERT INTO issue_wakeup_pr_event(wakeup_id,event_key) VALUES($1,$2) ON CONFLICT DO NOTHING`, w.ID, eventKey)
 	if err != nil {
@@ -954,7 +959,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	}
 	// Facts a claimed run took along count once that run starts; until then
 	// they wait with it, and they come back if it ends without starting.
-	receipts, _, taken, err := takenReceipts(ctx, q, receipts)
+	receipts, holding, taken, err := takenReceipts(ctx, q, receipts)
 	if err != nil {
 		return err
 	}
@@ -1020,11 +1025,18 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		}
 		return commit()
 	}
-	if limited && w.FireCount >= fireLimit {
-		if err := endAtLimit(); err != nil {
-			return err
+	if limited {
+		switch {
+		case w.FireCount >= fireLimit:
+			if err := endAtLimit(); err != nil {
+				return err
+			}
+			return commit()
+		case w.FireCount+int32(holding) >= fireLimit:
+			// Joined firings that have not started hold the remaining slots; a
+			// carrier that never starts gives its inputs back, so they wait.
+			return commit()
 		}
-		return commit()
 	}
 	facts := systemWakeupFacts(w, receipts)
 	if current.Type != "none" {
@@ -1106,7 +1118,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	if err != nil {
 		return err
 	}
-	waiting, err := hasWaitingRun(ctx, q, issue.ID, agent.ID, attr.UserID)
+	waiting, err := hasWaitingRunFor(ctx, q, issue.ID, agent.ID, attr.UserID, config, current)
 	if err != nil {
 		return err
 	}
