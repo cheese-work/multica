@@ -171,6 +171,7 @@ var concurrentIndexCleanups = map[string]string{
 	"593_wakeup_scoped_event_id_index":                          "wakeup_scoped_event_id_idx",
 	"594_wakeup_scoped_event_pending_index":                     "wakeup_scoped_event_pending_idx",
 	"595_wakeup_scoped_event_handled_index":                     "wakeup_scoped_event_handled_idx",
+	"596_wakeup_scoped_event_issue_index":                       "wakeup_scoped_event_issue_idx",
 	"558_governance_budget_reservation_attempt_obligation_uidx": "governance_budget_reservation_attempt_obligation_uidx",
 	"557_governance_budget_outbox_due_idx":                      "governance_budget_outbox_due_idx",
 	"556_governance_budget_reservation_root_window_idx":         "governance_budget_reservation_root_window_idx",
@@ -466,6 +467,12 @@ var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
 		TableRegclass: "wakeup_scoped_event",
 		Columns:       []string{"handled_at"},
 		Predicate:     "handled_at IS NOT NULL",
+	},
+	"596_wakeup_scoped_event_issue_index": {
+		IndexRegclass: "wakeup_scoped_event_issue_idx",
+		TableRegclass: "wakeup_scoped_event",
+		Columns:       []string{"issue_id", "captured_at", "id"},
+		Predicate:     "handled_at IS NULL",
 	},
 	"555_governance_budget_reservation_receipt_idx": {
 		IndexRegclass: "governance_budget_reservation_receipt_uidx",

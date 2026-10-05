@@ -1,4 +1,4 @@
--- Scoped-event capture (CHE-1082 L9). The ordinary event triggers also write
+-- Scoped-event capture (CHE-1082 L9; the outbox and its indexes are 592-596). The ordinary event triggers also write
 -- the scoped-event outbox (592) when a definition selecting the event exists, in
 -- the source transaction and with indexed lookups only. capture_issue_wakeup
 -- gains p_only so the drain can replay one event into named instances through
@@ -30,7 +30,7 @@ END $$;
 
 CREATE OR REPLACE FUNCTION capture_issue_wakeup(p_issue uuid, p_type text, p_key text, p_agent uuid, p_task uuid, p_payload jsonb, p_only uuid[] DEFAULT NULL)
 RETURNS void LANGUAGE plpgsql AS $$
-DECLARE w issue_wakeup; owner_workspace uuid; owner_project uuid; evidence jsonb; violated_constraint text; legacy boolean; scoped boolean;
+DECLARE w issue_wakeup; owner_workspace uuid; owner_project uuid; evidence jsonb; violated_constraint text; legacy boolean; scoped boolean; delivered text[] := '{}';
 BEGIN
  legacy := EXISTS (SELECT 1 FROM issue_wakeup WHERE issue_id=p_issue AND enabled AND kind='event' AND p_type=ANY(event_types));
  -- A drain replay (p_only) targets given instances and never captures again.
@@ -48,44 +48,46 @@ BEGIN
   'source_task_id',p_task,'agent_id',p_agent,
   'actor_type',COALESCE(NULLIF(current_setting('multica.actor_type',true),''),CASE WHEN p_agent IS NOT NULL THEN 'agent' ELSE 'system' END),
   'actor_id',COALESCE(NULLIF(current_setting('multica.actor_id',true),''),p_agent::text)) || p_payload;
+ IF legacy THEN
+  FOR w IN SELECT * FROM issue_wakeup WHERE issue_id=p_issue AND workspace_id=owner_workspace AND enabled AND kind='event'
+    AND (p_only IS NULL OR id=ANY(p_only))
+    AND p_type=ANY(event_types)
+    AND (filter_actor_type IS NULL OR (filter_actor_type=evidence->>'actor_type' AND filter_actor_id::text=evidence->>'actor_id'))
+    AND (filter_agent_id IS NULL OR filter_agent_id=p_agent)
+    AND (filter_task_id IS NULL OR filter_task_id=p_task)
+    AND (p_task IS NULL OR source_task_id IS DISTINCT FROM p_task)
+    AND NOT EXISTS (SELECT 1 FROM agent_task_queue t WHERE t.id=p_task AND t.context->>'wakeup_id'=issue_wakeup.id::text)
+    ORDER BY id
+  LOOP
+   -- One pending notification per event type. Preserve the first key for
+   -- duplicate suppression and the latest source reference for state reads.
+   BEGIN
+    INSERT INTO issue_wakeup_receipt(id,wakeup_id,revision,event_key,event_type,payload,coalesce_key)
+     VALUES(gen_random_uuid(),w.id,w.revision,p_key,p_type,
+      evidence || jsonb_build_object('coalesced_count',1,'first_occurred_at',evidence->'occurred_at'),p_type)
+    ON CONFLICT(wakeup_id,revision,coalesce_key) WHERE processed_at IS NULL AND coalesce_key IS NOT NULL
+    -- Rotate the receipt identity on merge. An older dispatcher that read
+    -- without FOR UPDATE can only consume its observed version, leaving the
+    -- replacement pending instead of silently consuming unseen evidence.
+    DO UPDATE SET id=EXCLUDED.id,payload=EXCLUDED.payload || jsonb_build_object(
+     'coalesced_count',COALESCE((issue_wakeup_receipt.payload->>'coalesced_count')::bigint,1)+1,
+     'first_occurred_at',issue_wakeup_receipt.payload->'first_occurred_at')
+    WHERE issue_wakeup_receipt.event_key<>p_key AND issue_wakeup_receipt.payload->>'event_id' IS DISTINCT FROM p_key;
+   EXCEPTION WHEN unique_violation THEN
+    GET STACKED DIAGNOSTICS violated_constraint = CONSTRAINT_NAME;
+    -- A retained receipt already handled this exact source fact. This also
+    -- fences the locked registration snapshot against terminal-task capture.
+    IF violated_constraint <> 'issue_wakeup_receipt_key_idx' THEN RAISE; END IF;
+   END;
+   -- Live capture served this default instance: the drain must not count it again.
+   IF w.default_rule_key IS NOT NULL THEN delivered := delivered || (w.id::text||':'||w.revision::text); END IF;
+  END LOOP;
+ END IF;
  -- References only: the source payload and identities, never a body or URL.
  IF scoped THEN
-  INSERT INTO wakeup_scoped_event(workspace_id,issue_id,project_id,event_type,event_key,agent_id,source_task_id,actor_type,actor_id,payload,captured_at)
-   VALUES(owner_workspace,p_issue,owner_project,p_type,p_key,p_agent,p_task,evidence->>'actor_type',evidence->>'actor_id',p_payload,clock_timestamp());
+  INSERT INTO wakeup_scoped_event(workspace_id,issue_id,project_id,event_type,event_key,agent_id,source_task_id,actor_type,actor_id,payload,delivered,captured_at)
+   VALUES(owner_workspace,p_issue,owner_project,p_type,p_key,p_agent,p_task,evidence->>'actor_type',evidence->>'actor_id',p_payload,delivered,clock_timestamp());
  END IF;
- IF NOT legacy THEN RETURN; END IF;
- FOR w IN SELECT * FROM issue_wakeup WHERE issue_id=p_issue AND workspace_id=owner_workspace AND enabled AND kind='event'
-   AND (p_only IS NULL OR id=ANY(p_only))
-   AND p_type=ANY(event_types)
-   AND (filter_actor_type IS NULL OR (filter_actor_type=evidence->>'actor_type' AND filter_actor_id::text=evidence->>'actor_id'))
-   AND (filter_agent_id IS NULL OR filter_agent_id=p_agent)
-   AND (filter_task_id IS NULL OR filter_task_id=p_task)
-   AND (p_task IS NULL OR source_task_id IS DISTINCT FROM p_task)
-   AND NOT EXISTS (SELECT 1 FROM agent_task_queue t WHERE t.id=p_task AND t.context->>'wakeup_id'=issue_wakeup.id::text)
-   ORDER BY id
- LOOP
-  -- One pending notification per event type. Preserve the first key for
-  -- duplicate suppression and the latest source reference for state reads.
-  BEGIN
-   INSERT INTO issue_wakeup_receipt(id,wakeup_id,revision,event_key,event_type,payload,coalesce_key)
-    VALUES(gen_random_uuid(),w.id,w.revision,p_key,p_type,
-     evidence || jsonb_build_object('coalesced_count',1,'first_occurred_at',evidence->'occurred_at'),p_type)
-   ON CONFLICT(wakeup_id,revision,coalesce_key) WHERE processed_at IS NULL AND coalesce_key IS NOT NULL
-   -- Rotate the receipt identity on merge. An older dispatcher that read
-   -- without FOR UPDATE can only consume its observed version, leaving the
-   -- replacement pending instead of silently consuming unseen evidence.
-   DO UPDATE SET id=EXCLUDED.id,payload=EXCLUDED.payload || jsonb_build_object(
-    'coalesced_count',COALESCE((issue_wakeup_receipt.payload->>'coalesced_count')::bigint,1)+1,
-    'first_occurred_at',issue_wakeup_receipt.payload->'first_occurred_at')
-   WHERE issue_wakeup_receipt.event_key<>p_key AND issue_wakeup_receipt.payload->>'event_id' IS DISTINCT FROM p_key;
-  EXCEPTION WHEN unique_violation THEN
-   GET STACKED DIAGNOSTICS violated_constraint = CONSTRAINT_NAME;
-   -- A retained receipt already handled this exact source fact. This also
-   -- fences the locked registration snapshot against terminal-task capture.
-   IF violated_constraint <> 'issue_wakeup_receipt_key_idx' THEN RAISE; END IF;
-  END;
-
- END LOOP;
 END $$;
 
 CREATE OR REPLACE FUNCTION capture_comment_wakeup() RETURNS trigger LANGUAGE plpgsql AS $$

@@ -9,8 +9,8 @@ import (
 
 const (
 	wakeupScopedEventTableVersion     = "592_wakeup_scoped_event"
-	wakeupScopedEventCaptureVersion   = "596_wakeup_scoped_event_capture"
-	wakeupScopedEventConcurrentMigrat = "593_wakeup_scoped_event_id_index 594_wakeup_scoped_event_pending_index 595_wakeup_scoped_event_handled_index"
+	wakeupScopedEventCaptureVersion   = "597_wakeup_scoped_event_capture"
+	wakeupScopedEventConcurrentMigrat = "593_wakeup_scoped_event_id_index 594_wakeup_scoped_event_pending_index 595_wakeup_scoped_event_handled_index 596_wakeup_scoped_event_issue_index"
 )
 
 // The outbox migrations add a table, a column and functions only: no FK,

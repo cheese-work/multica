@@ -12,7 +12,7 @@ import (
 )
 
 const claimWakeupScopedEvents = `-- name: ClaimWakeupScopedEvents :many
-SELECT id, workspace_id, issue_id, project_id, event_type, event_key, agent_id, source_task_id, actor_type, actor_id, payload, captured_at, retry_at, handled_at, outcome FROM wakeup_scoped_event
+SELECT id, workspace_id, issue_id, project_id, event_type, event_key, agent_id, source_task_id, actor_type, actor_id, payload, delivered, captured_at, retry_at, handled_at, outcome FROM wakeup_scoped_event
 WHERE handled_at IS NULL AND (retry_at IS NULL OR retry_at <= $1::timestamptz)
  AND ($2::uuid[] IS NULL OR workspace_id = ANY($2::uuid[]))
 ORDER BY captured_at, id LIMIT $3
@@ -25,7 +25,7 @@ type ClaimWakeupScopedEventsParams struct {
 	BatchSize    int32              `json:"batch_size"`
 }
 
-// One bounded batch of pending outbox inputs, oldest first. SKIP LOCKED lets
+// The oldest pending outbox inputs. SKIP LOCKED lets
 // concurrent schedulers take disjoint rows; a row whose last attempt hit a real
 // database error waits for its retry time so it cannot starve the rest.
 func (q *Queries) ClaimWakeupScopedEvents(ctx context.Context, arg ClaimWakeupScopedEventsParams) ([]WakeupScopedEvent, error) {
@@ -49,6 +49,65 @@ func (q *Queries) ClaimWakeupScopedEvents(ctx context.Context, arg ClaimWakeupSc
 			&i.ActorType,
 			&i.ActorID,
 			&i.Payload,
+			&i.Delivered,
+			&i.CapturedAt,
+			&i.RetryAt,
+			&i.HandledAt,
+			&i.Outcome,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const claimWakeupScopedEventsOfIssue = `-- name: ClaimWakeupScopedEventsOfIssue :many
+SELECT id, workspace_id, issue_id, project_id, event_type, event_key, agent_id, source_task_id, actor_type, actor_id, payload, delivered, captured_at, retry_at, handled_at, outcome FROM wakeup_scoped_event
+WHERE issue_id= $1 AND handled_at IS NULL AND (retry_at IS NULL OR retry_at <= $2::timestamptz) AND id<> $3
+ORDER BY captured_at, id LIMIT $4
+FOR UPDATE SKIP LOCKED
+`
+
+type ClaimWakeupScopedEventsOfIssueParams struct {
+	IssueID   pgtype.UUID        `json:"issue_id"`
+	Now       pgtype.Timestamptz `json:"now"`
+	ExceptID  pgtype.UUID        `json:"except_id"`
+	BatchSize int32              `json:"batch_size"`
+}
+
+// The rest of one issue's pending inputs, so a burst on one issue is resolved
+// once. Same locking and retry rules as the oldest-first claim.
+func (q *Queries) ClaimWakeupScopedEventsOfIssue(ctx context.Context, arg ClaimWakeupScopedEventsOfIssueParams) ([]WakeupScopedEvent, error) {
+	rows, err := q.db.Query(ctx, claimWakeupScopedEventsOfIssue,
+		arg.IssueID,
+		arg.Now,
+		arg.ExceptID,
+		arg.BatchSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WakeupScopedEvent{}
+	for rows.Next() {
+		var i WakeupScopedEvent
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.ProjectID,
+			&i.EventType,
+			&i.EventKey,
+			&i.AgentID,
+			&i.SourceTaskID,
+			&i.ActorType,
+			&i.ActorID,
+			&i.Payload,
+			&i.Delivered,
 			&i.CapturedAt,
 			&i.RetryAt,
 			&i.HandledAt,
