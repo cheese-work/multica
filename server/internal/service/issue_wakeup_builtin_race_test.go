@@ -162,3 +162,60 @@ func TestBuiltinTwoCarriersCannotBothStartPastTheLimit(t *testing.T) {
 		t.Fatalf("a carrier started after the last slot was taken = %v, want ErrWakeupForbidden", err)
 	}
 }
+
+// crowdReceipts adds free pending inputs that sort ahead of every reservation
+// the rule holds, so a read of the first page of pending inputs never reaches
+// the reserved ones.
+func (e builtinEnv) crowdReceipts(t *testing.T, key string, n int) {
+	t.Helper()
+	w := e.rule(t, key)
+	e.f.Exec(t, `INSERT INTO issue_wakeup_receipt(id,wakeup_id,revision,event_key,event_type,payload,created_at)
+		SELECT gen_random_uuid(),$1,$2,'crowd:'||g,'pr.merged','{}'::jsonb,now()-interval '1 day'+g*interval '1 second' FROM generate_series(1,$3) g`, w.ID, w.Revision, n)
+}
+
+// More pending inputs than one page holds must not hide another carrier's
+// reservation from the join gate.
+func TestBuiltinJoinCountsReservationsBeyondOnePageOfInputs(t *testing.T) {
+	e := newBuiltinEnv(t)
+	e.define(t, WakeupScopeProject, SystemRulePRMerged, `"instruction":"One","max_fires":1`)
+	a := wakeWaitingRun(t, e.f, e.issue, e.agent, e.f.UserID)
+	e.mergedPR(t, 620)
+	if notes := wakeClaim(t, e.f, e.s, a); !strings.Contains(notes, "One") {
+		t.Fatalf("the first carrier did not join: %q", notes)
+	}
+	e.crowdReceipts(t, SystemRulePRMerged, 120)
+	b := e.secondCarrier(t)
+	if notes := wakeClaim(t, e.f, e.s, b); notes != "" {
+		t.Fatalf("a second carrier joined the last slot behind %d unreserved inputs: %q", 120, notes)
+	}
+}
+
+// The same at start: both carriers hold reservations past the first page.
+func TestBuiltinTwoCarriersCannotBothStartWithReservationsBeyondOnePage(t *testing.T) {
+	ctx := context.Background()
+	e := newBuiltinEnv(t)
+	e.define(t, WakeupScopeProject, SystemRulePRMerged, `"instruction":"One","max_fires":1`)
+	a := wakeWaitingRun(t, e.f, e.issue, e.agent, e.f.UserID)
+	e.mergedPR(t, 630)
+	if notes := wakeClaim(t, e.f, e.s, a); !strings.Contains(notes, "One") {
+		t.Fatalf("the first carrier did not join: %q", notes)
+	}
+	e.crowdReceipts(t, SystemRulePRMerged, 120)
+	b := e.secondCarrier(t)
+	e.mergedPR(t, 631)
+	e.f.Exec(t, `UPDATE issue_wakeup_receipt SET task_id=$1 WHERE event_key LIKE 'github:%631%' AND processed_at IS NULL AND task_id IS NULL AND wakeup_id=$2`, b, e.rule(t, SystemRulePRMerged).ID)
+	e.f.Exec(t, `UPDATE agent_task_queue SET status='dispatched',dispatched_at=clock_timestamp(),
+		context=jsonb_set(COALESCE(context,'{}'::jsonb),'{wakeup_joined}',(SELECT context->'wakeup_joined' FROM agent_task_queue WHERE id=$2)) WHERE id=$1`, b, a)
+	passed := 0
+	for _, id := range []string{a, b} {
+		switch err := e.s.CheckStart(ctx, e.task(t, id)); {
+		case err == nil:
+			passed++
+		case !errors.Is(err, ErrWakeupForbidden):
+			t.Fatal(err)
+		}
+	}
+	if passed != 1 {
+		t.Fatalf("%d of two carriers may start the last slot, want exactly 1", passed)
+	}
+}

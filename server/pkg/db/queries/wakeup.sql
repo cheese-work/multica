@@ -92,6 +92,13 @@ WHERE sqlc.narg('workspace_ids')::uuid[] IS NULL OR w.workspace_id = ANY(sqlc.na
 ORDER BY w.updated_at,w.id LIMIT 100;
 -- name: ListPendingWakeupReceipts :many
 SELECT * FROM issue_wakeup_receipt WHERE wakeup_id= @wakeup_id AND revision= @revision AND processed_at IS NULL ORDER BY created_at,id LIMIT 100 FOR UPDATE;
+-- name: ListWakeupReservingTasks :many
+-- Every run that holds a pending input of this rule, once each. Not paged: the
+-- fire cap counts all of them, however many inputs are pending.
+SELECT t.* FROM agent_task_queue t WHERE t.id IN (
+  SELECT DISTINCT r.task_id FROM issue_wakeup_receipt r
+  WHERE r.wakeup_id= @wakeup_id AND r.revision= @revision AND r.processed_at IS NULL AND r.task_id IS NOT NULL
+);
 
 -- name: DeleteExpiredWakeupReceipts :execrows
 -- Pending inputs are never expired. Bound work and avoid waiting on dispatch.

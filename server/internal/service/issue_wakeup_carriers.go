@@ -17,23 +17,14 @@ import (
 // count, with a started run ahead of any that has not started and ties broken
 // by run id, so concurrent starts agree on who gets the last slot.
 func otherCarrierSlots(ctx context.Context, q *db.Queries, w db.IssueWakeup, self pgtype.UUID, atStart bool) (int32, error) {
-	pending, err := q.ListPendingWakeupReceipts(ctx, db.ListPendingWakeupReceiptsParams{WakeupID: w.ID, Revision: w.Revision})
+	tasks, err := q.ListWakeupReservingTasks(ctx, db.ListWakeupReservingTasksParams{WakeupID: w.ID, Revision: w.Revision})
 	if err != nil {
 		return 0, err
 	}
-	seen := map[pgtype.UUID]bool{}
 	var slots int32
-	for _, r := range pending {
-		if !r.TaskID.Valid || r.TaskID == self || seen[r.TaskID] {
+	for _, task := range tasks {
+		if task.ID == self {
 			continue
-		}
-		seen[r.TaskID] = true
-		task, err := q.GetAgentTask(ctx, r.TaskID)
-		if errors.Is(err, pgx.ErrNoRows) {
-			continue
-		}
-		if err != nil {
-			return 0, err
 		}
 		started := task.StartedAt.Valid || task.Status == "running"
 		ended := task.Status == "completed" || task.Status == "failed" || task.Status == "cancelled"
