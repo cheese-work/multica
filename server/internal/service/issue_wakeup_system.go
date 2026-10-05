@@ -252,6 +252,11 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		payload["head_sha"] = in.HeadSHA
 		payload["conclusion"] = in.Conclusion
 	}
+	if held {
+		// The filters cannot be read now, so dispatch applies them to these
+		// facts once the hold lifts (splitDeferredPRFilters).
+		payload["filters_deferred"], payload["base_branch"], payload["head_branch"] = true, in.BaseBranch, in.HeadBranch
+	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -962,6 +967,17 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	receipts, holding, taken, err := takenReceipts(ctx, q, receipts)
 	if err != nil {
 		return err
+	}
+	if isPRWakeup {
+		var refused []db.IssueWakeupReceipt
+		if receipts, refused = splitDeferredPRFilters(config, w.SystemRule.String, receipts); len(refused) > 0 {
+			if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: receiptIDs(refused)}); err != nil {
+				return err
+			}
+			if err := note(wakeupActivityTriggered, map[string]any{"rule": w.SystemRule.String, "outcome": wakeupOutcomeFiltered, "filtered": len(refused)}); err != nil {
+				return err
+			}
+		}
 	}
 	for _, run := range taken {
 		if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: receiptIDs(run.receipts), TaskID: run.task.ID}); err != nil {

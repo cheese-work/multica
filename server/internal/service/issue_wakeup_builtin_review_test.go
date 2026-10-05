@@ -454,3 +454,67 @@ func TestFailUnstartedClaimedTaskIsClaimScoped(t *testing.T) {
 		t.Fatalf("a newer claim was failed: %q", got)
 	}
 }
+
+// Facts captured while a configuration is held are still subject to its PR
+// filters once the hold lifts: an event the filter would have refused never
+// fires, and one it admits does.
+func TestBuiltinCaptureUnderHoldStillAppliesPRFilters(t *testing.T) {
+	hold := func(e builtinEnv) {
+		e.f.Exec(t, `UPDATE issue_wakeup_definition SET config=jsonb_set(config,'{aggregate_limit}','3'),revision=revision+1 WHERE workspace_id=$1 AND scope_kind='project' AND rule_key=$2`, e.f.WorkspaceID, SystemRulePRMerged)
+	}
+	lift := func(e builtinEnv) {
+		// The hold is reset to the exact configuration it interrupted, so the
+		// instance's recorded fingerprint still matches and nothing is rebased.
+		e.f.Exec(t, `UPDATE issue_wakeup_definition SET config=config-'aggregate_limit',revision=revision-1 WHERE workspace_id=$1 AND scope_kind='project' AND rule_key=$2`, e.f.WorkspaceID, SystemRulePRMerged)
+		if err := e.s.dispatchSystem(context.Background(), e.rule(t, SystemRulePRMerged)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("base branch", func(t *testing.T) {
+		e := newBuiltinEnv(t)
+		e.define(t, WakeupScopeProject, SystemRulePRMerged, `"filters":{"base_branch":"main"}`)
+		e.mergedPR(t, 560) // creates the instance and its queued run
+		e.finishTasks(t)
+		hold(e)
+		e.mergedPR(t, 561, func(in *PullRequestWakeupInput) { in.BaseBranch = "develop" })
+		e.mergedPR(t, 562)
+		if e.tasks(t, SystemRulePRMerged) != 1 || e.pending(t, SystemRulePRMerged) != 2 {
+			t.Fatalf("under the hold: %d runs, %d pending; want the held facts pending and no new run", e.tasks(t, SystemRulePRMerged), e.pending(t, SystemRulePRMerged))
+		}
+		lift(e)
+		if e.tasks(t, SystemRulePRMerged) != 2 {
+			t.Fatalf("after the hold lifted: %d runs, want exactly the matching PR to have fired (2 in all)", e.tasks(t, SystemRulePRMerged))
+		}
+		if note := e.lastTask(t, SystemRulePRMerged).HandoffNote.String; strings.Contains(note, `"pr_number":561`) || !strings.Contains(note, `"pr_number":562`) {
+			t.Fatalf("the run carries the wrong facts: %q", note)
+		}
+	})
+	t.Run("a refused held fact does not join a run", func(t *testing.T) {
+		e := newBuiltinEnv(t)
+		e.define(t, WakeupScopeProject, SystemRulePRMerged, `"filters":{"base_branch":"main"}`)
+		e.mergedPR(t, 580)
+		e.finishTasks(t)
+		hold(e)
+		carrier := wakeWaitingRun(t, e.f, e.issue, e.agent, e.f.UserID)
+		e.mergedPR(t, 581, func(in *PullRequestWakeupInput) { in.BaseBranch = "develop" })
+		e.f.Exec(t, `UPDATE issue_wakeup_definition SET config=config-'aggregate_limit',revision=revision-1 WHERE workspace_id=$1 AND scope_kind='project' AND rule_key=$2`, e.f.WorkspaceID, SystemRulePRMerged)
+		if notes := wakeClaim(t, e.f, e.s, carrier); strings.Contains(notes, "581") {
+			t.Fatalf("a fact the filter refuses joined the claimed run: %q", notes)
+		}
+	})
+	t.Run("ci conclusion", func(t *testing.T) {
+		e := newBuiltinEnv(t)
+		e.define(t, WakeupScopeProject, SystemRulePRChecksFailed, `"filters":{"ci":"failure"}`)
+		e.failedChecks(t, "ci-first", "FAILURE")
+		e.finishTasks(t)
+		e.f.Exec(t, `UPDATE issue_wakeup_definition SET config=jsonb_set(config,'{aggregate_limit}','3'),revision=revision+1 WHERE workspace_id=$1 AND scope_kind='project' AND rule_key=$2`, e.f.WorkspaceID, SystemRulePRChecksFailed)
+		e.failedChecks(t, "ci-held-error", "ERROR")
+		e.f.Exec(t, `UPDATE issue_wakeup_definition SET config=config-'aggregate_limit',revision=revision-1 WHERE workspace_id=$1 AND scope_kind='project' AND rule_key=$2`, e.f.WorkspaceID, SystemRulePRChecksFailed)
+		if err := e.s.dispatchSystem(context.Background(), e.rule(t, SystemRulePRChecksFailed)); err != nil {
+			t.Fatal(err)
+		}
+		if e.tasks(t, SystemRulePRChecksFailed) != 1 {
+			t.Fatalf("an ERROR conclusion captured under a hold fired a failure-only rule: %d runs", e.tasks(t, SystemRulePRChecksFailed))
+		}
+	})
+}

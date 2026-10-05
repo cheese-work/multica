@@ -422,6 +422,10 @@ func (s *IssueWakeupService) mayJoin(ctx context.Context, q *db.Queries, issue d
 	if eligible, err := config.matchesIssue(ctx, q, issue); err != nil || !eligible {
 		return "", false, err
 	}
+	if _, refused := splitDeferredPRFilters(config, w.SystemRule.String, receipts); len(refused) > 0 {
+		// Facts the filters refuse are dropped by the rule's own dispatch.
+		return "", false, nil
+	}
 	if limit, limited := config.fireLimit(); limited && w.FireCount >= limit || config.expired(w.CreatedAt.Time, time.Now()) {
 		return "", false, nil
 	}

@@ -500,3 +500,25 @@ func joinedFireLimit(carrier db.AgentTaskQueue, wakeupID pgtype.UUID) int32 {
 	}
 	return 0
 }
+
+// splitDeferredPRFilters applies the PR filters to receipts captured while the
+// configuration was held, which carry their branch and CI facts (and the
+// filters_deferred mark) for exactly this. Receipts without the mark were
+// filtered at capture and pass.
+func splitDeferredPRFilters(b *builtinWakeup, rule string, receipts []db.IssueWakeupReceipt) (kept, refused []db.IssueWakeupReceipt) {
+	for _, r := range receipts {
+		var facts struct {
+			Deferred   bool   `json:"filters_deferred"`
+			BaseBranch string `json:"base_branch"`
+			HeadBranch string `json:"head_branch"`
+			Conclusion string `json:"conclusion"`
+		}
+		if json.Unmarshal(r.Payload, &facts) == nil && facts.Deferred &&
+			!b.matchesPR(PullRequestWakeupInput{Rule: rule, BaseBranch: facts.BaseBranch, HeadBranch: facts.HeadBranch, Conclusion: facts.Conclusion}) {
+			refused = append(refused, r)
+			continue
+		}
+		kept = append(kept, r)
+	}
+	return kept, refused
+}
