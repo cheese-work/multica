@@ -440,8 +440,10 @@ func TestWakeupDefinitionRejectsUnimplementedAndInvalidConfig(t *testing.T) {
 	k.project().put("pr_checks_failed", 0, cfg(map[string]any{
 		"mode": "continuous", "max_fires": 5, "rate_limit": 6,
 		"expiry":  map[string]any{"after_seconds": 3600},
-		"filters": map[string]any{"base_branch": "main", "ci": "failure", "priorities": []string{"urgent", "high"}},
+		"filters": map[string]any{"head_branch": "main", "ci": "failure", "priorities": []string{"urgent", "high"}},
 	})).Want(http.StatusOK)
+	// The failing-checks event carries no base branch, so that filter is refused.
+	k.project().put("pr_checks_failed", 1, cfg(map[string]any{"filters": map[string]any{"base_branch": "main"}})).Want(http.StatusBadRequest)
 	// An unknown rule key is not a rule.
 	k.project().put("not-a-rule", 0, cfg(map[string]any{"name": "x"})).Want(http.StatusBadRequest)
 }

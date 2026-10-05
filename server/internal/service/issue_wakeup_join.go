@@ -417,6 +417,9 @@ func (s *IssueWakeupService) mayJoin(ctx context.Context, q *db.Queries, issue d
 	if err != nil || target.Refused != "" || target.Agent.ID != task.AgentID {
 		return "", false, err
 	}
+	if !config.carrierMatchesTarget(target, task) {
+		return "", false, nil
+	}
 	runAs, err := s.childDoneRunAs(ctx, issue, agent)
 	if err != nil || runAs.UserID != task.OriginatorUserID {
 		return "", false, err
@@ -442,10 +445,10 @@ type takenRun struct {
 
 // takenReceipts sorts a rule's pending inputs by the run a claim reserved them
 // for. It returns the free ones (including those of a run that ended without
-// starting, which go back to the rule), whether a run that has not started
-// yet still holds some, and the runs that started with some, whose inputs
+// starting, which go back to the rule), how many runs that have not started
+// yet still hold some, and the runs that started with some, whose inputs
 // the caller consumes as a merged firing.
-func takenReceipts(ctx context.Context, q *db.Queries, receipts []db.IssueWakeupReceipt) ([]db.IssueWakeupReceipt, bool, []takenRun, error) {
+func takenReceipts(ctx context.Context, q *db.Queries, receipts []db.IssueWakeupReceipt) ([]db.IssueWakeupReceipt, int, []takenRun, error) {
 	byRun := map[pgtype.UUID][]db.IssueWakeupReceipt{}
 	var runs []pgtype.UUID
 	for _, r := range receipts {
@@ -457,21 +460,21 @@ func takenReceipts(ctx context.Context, q *db.Queries, receipts []db.IssueWakeup
 		}
 	}
 	if len(runs) == 0 {
-		return receipts, false, nil, nil
+		return receipts, 0, nil, nil
 	}
 	released := map[pgtype.UUID]bool{}
-	holding := false
+	holding := 0
 	var taken []takenRun
 	for _, id := range runs {
 		task, err := q.GetAgentTask(ctx, id)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return nil, false, nil, err
+			return nil, 0, nil, err
 		}
 		switch {
 		case err == nil && (task.StartedAt.Valid || task.Status == "running"):
 			taken = append(taken, takenRun{task: task, receipts: byRun[id]})
 		case err == nil && task.Status != "completed" && task.Status != "failed" && task.Status != "cancelled":
-			holding = true
+			holding++
 		default:
 			ids := make([]pgtype.UUID, 0, len(byRun[id]))
 			for _, r := range byRun[id] {
@@ -479,7 +482,7 @@ func takenReceipts(ctx context.Context, q *db.Queries, receipts []db.IssueWakeup
 				released[r.ID] = true
 			}
 			if err := q.ReleaseWakeupReceipts(ctx, ids); err != nil {
-				return nil, false, nil, err
+				return nil, 0, nil, err
 			}
 		}
 	}

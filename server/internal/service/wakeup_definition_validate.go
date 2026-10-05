@@ -280,6 +280,11 @@ func validateEffectiveWakeup(eff EffectiveWakeupConfig) error {
 	if (spec.BaseBranch != nil || spec.HeadBranch != nil) && !pr {
 		return wakeupDefinitionBad("branch filters apply to pull request triggers only")
 	}
+	// The failing-checks event carries no base branch, so the filter could
+	// never match: refuse it instead of storing a rule that silently never runs.
+	if spec.BaseBranch != nil && kind == SystemRulePRChecksFailed {
+		return wakeupDefinitionBad("the base_branch filter applies to merged pull requests only")
+	}
 	if spec.CI != nil && kind != SystemRulePRChecksFailed {
 		return wakeupDefinitionBad("the ci filter applies to failed pull request checks only")
 	}

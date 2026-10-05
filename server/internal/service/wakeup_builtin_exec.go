@@ -93,7 +93,7 @@ func loadBuiltinWakeup(ctx context.Context, q *db.Queries, issue db.Issue, rule 
 		return nil, err
 	}
 	if in.Issue == nil && legacy != nil {
-		if in.Issue, err = LegacyIssueWakeupDefinition(*legacy); err != nil {
+		if in.Issue, err = LegacyIssueWakeupDefinition(executionLegacyRow(*legacy)); err != nil {
 			return nil, heldConfig("%v", err)
 		}
 	}
@@ -166,10 +166,9 @@ func (b *builtinWakeup) rateLimit() int {
 }
 
 // fireLimit is how many runs the instance may start in all: one for once mode,
-// else max_fires. Nothing is set unless a definition says so. A run that joined
-// another counts when it starts, so under concurrency a limit can be passed by
-// the joined runs still waiting to start (ponytail: no in-flight reservation;
-// add one if exact caps are needed).
+// else max_fires. Nothing is set unless a definition says so. A joined firing
+// counts when its carrier starts; until then dispatch treats it as holding one
+// of the slots, so the limit is never passed.
 func (b *builtinWakeup) fireLimit() (int32, bool) {
 	if b == nil {
 		return 0, false
@@ -328,9 +327,43 @@ func rebaseBuiltinConfig(ctx context.Context, tx pgx.Tx, q *db.Queries, issue db
 	if w.ConfigFingerprint.String == fingerprint {
 		return w, nil, nil
 	}
+	// Firings that already started on a carrier run are consumed work: settle
+	// them against the old revision before it is retired, so an ancestor edit
+	// cannot erase their count (and with it a once/max_fires ending).
+	pending, err := q.ListPendingWakeupReceipts(ctx, db.ListPendingWakeupReceiptsParams{WakeupID: w.ID, Revision: w.Revision})
+	if err != nil {
+		return w, nil, err
+	}
+	_, _, taken, err := takenReceipts(ctx, q, pending)
+	if err != nil {
+		return w, nil, err
+	}
+	for _, run := range taken {
+		if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: receiptIDs(run.receipts), TaskID: run.task.ID}); err != nil {
+			return w, nil, err
+		}
+		if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: true, LastTaskID: run.task.ID}); err != nil {
+			return w, nil, err
+		}
+		if err := q.CountWakeupFires(ctx, w.ID); err != nil {
+			return w, nil, err
+		}
+		facts := systemWakeupFacts(w, run.receipts)
+		facts["outcome"], facts["task_id"] = wakeupOutcomeMerged, util.UUIDToString(run.task.ID)
+		// Published with the next timeline refresh; no live event from here.
+		if _, err := recordWakeupActivity(ctx, q, w, wakeupActivityTriggered, "system", pgtype.UUID{}, facts); err != nil {
+			return w, nil, err
+		}
+	}
 	rebased, err := q.RebaseSystemWakeupConfig(ctx, db.RebaseSystemWakeupConfigParams{ID: w.ID, Fingerprint: fingerprint})
 	if err != nil {
 		return w, nil, err
+	}
+	if limit, limited := b.fireLimit(); len(taken) > 0 && limited && rebased.FireCount >= limit && !systemWakeupPaused(rebased) {
+		if err := q.PauseIssueWakeup(ctx, db.PauseIssueWakeupParams{ID: w.ID, PausedReason: pgtype.Text{String: wakeupPausedMaxFires, Valid: true}}); err != nil {
+			return w, nil, err
+		}
+		rebased.Enabled, rebased.PausedReason = false, pgtype.Text{String: wakeupPausedMaxFires, Valid: true}
 	}
 	cancelled, err := q.CancelUnstartedWakeupTasks(ctx, util.UUIDToString(w.ID))
 	if err != nil {
@@ -393,4 +426,52 @@ func prRuleEnabled(settings []byte, rule string, configured bool) (bool, error) 
 		return false, malformedPRWakeupSettings(err)
 	}
 	return values.GitHubEnabled == nil || *values.GitHubEnabled, nil
+}
+
+// executionLegacyRow is the issue's customized legacy row as configuration sees
+// it: a runtime pause (max_fires, loop, rate) is not a configuration change, so a
+// paused row projects the enabled value it ran with. The pause itself stays a
+// veto, applied from the row (systemWakeupPaused).
+func executionLegacyRow(w db.IssueWakeup) db.IssueWakeup {
+	if w.PausedReason.Valid {
+		w.Enabled, w.PausedReason, w.DisabledAt = true, pgtype.Text{}, pgtype.Timestamptz{}
+	}
+	return w
+}
+
+// carrierMatchesTarget reports whether a waiting run can carry the rule's
+// facts. A configured squad target is briefed through a leader task of that
+// squad; a bare run of the leader, or a leader task of another squad, would
+// keep the wrong role and never receive the briefing. Other targets and the
+// legacy path accept any run of the target agent.
+func (b *builtinWakeup) carrierMatchesTarget(target wakeTarget, task db.AgentTaskQueue) bool {
+	if b == nil || !b.Eff.Config.Target.Set || !target.SquadID.Valid {
+		return true
+	}
+	return task.IsLeaderTask && task.SquadID == target.SquadID
+}
+
+// hasWaitingRunFor is hasWaitingRun for the run that may carry this rule's
+// facts: for a configured squad target only a leader task of that squad.
+func hasWaitingRunFor(ctx context.Context, q *db.Queries, issueID, agentID, runAs pgtype.UUID, b *builtinWakeup, target wakeTarget) (bool, error) {
+	if b == nil || !b.Eff.Config.Target.Set || !target.SquadID.Valid {
+		return hasWaitingRun(ctx, q, issueID, agentID, runAs)
+	}
+	if !runAs.Valid {
+		return false, nil
+	}
+	_, err := q.FindWaitingIssueLeaderRun(ctx, db.FindWaitingIssueLeaderRunParams{IssueID: issueID, AgentID: agentID, OriginatorUserID: runAs, SquadID: target.SquadID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// runEligible applies the predicates that can change after a run was queued:
+// the expiry window and the issue's labels and priority.
+func (b *builtinWakeup) runEligible(ctx context.Context, q *db.Queries, issue db.Issue, w db.IssueWakeup) (bool, error) {
+	if b.expired(w.CreatedAt.Time, time.Now()) {
+		return false, nil
+	}
+	return b.matchesIssue(ctx, q, issue)
 }
