@@ -214,3 +214,40 @@ func TestWakeupDefaultCapacityMigrationsFollowTheRules(t *testing.T) {
 		t.Errorf("%s has no validity requirement", wakeupDefaultScopeIndexVer)
 	}
 }
+
+// The aggregate-admission migration adds tables and columns only (no index, FK
+// or cascade); each of its four indexes is one concurrent statement of its own,
+// with a cleanup hook and a validity requirement.
+func TestWakeupAggregateMigrationsFollowTheRules(t *testing.T) {
+	t.Parallel()
+	const tables = "585_wakeup_aggregate_admission"
+	for _, direction := range []string{"up", "down"} {
+		body := strings.ToUpper(stripSQLComments(readWakeupMigration(t, tables, direction)))
+		for _, banned := range []string{"REFERENCES", "FOREIGN KEY", "ON DELETE", "ON UPDATE", "CREATE INDEX", "CREATE UNIQUE", "PRIMARY KEY"} {
+			if strings.Contains(body, banned) {
+				t.Errorf("%s.%s contains %q", tables, direction, banned)
+			}
+		}
+	}
+	for version, index := range map[string]string{
+		"586_wakeup_aggregate_budget_identity_index":      "wakeup_aggregate_budget_identity_idx",
+		"587_wakeup_aggregate_reservation_identity_index": "wakeup_aggregate_reservation_identity_idx",
+		"588_wakeup_aggregate_reservation_window_index":   "wakeup_aggregate_reservation_window_idx",
+		"589_wakeup_aggregate_blocked_index":              "issue_wakeup_aggregate_blocked_idx",
+	} {
+		up := stripSQLComments(readWakeupMigration(t, version, "up"))
+		if strings.Count(up, ";") != 1 || !strings.Contains(up, "INDEX CONCURRENTLY") || !strings.Contains(up, index) {
+			t.Errorf("%s up must be one concurrent build of %s:\n%s", version, index, up)
+		}
+		down := readWakeupMigration(t, version, "down")
+		if !strings.Contains(down, "DROP INDEX CONCURRENTLY IF EXISTS "+index) || strings.Count(down, ";") != 1 {
+			t.Errorf("%s down must be one concurrent drop:\n%s", version, down)
+		}
+		if got := concurrentIndexCleanups[version]; got != index {
+			t.Errorf("%s cleanup hook = %q, want %q", version, got, index)
+		}
+		if got := requiredConcurrentIndexes[version].IndexRegclass; got != index {
+			t.Errorf("%s validity requirement = %q, want %q", version, got, index)
+		}
+	}
+}

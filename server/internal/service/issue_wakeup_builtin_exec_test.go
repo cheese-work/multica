@@ -582,7 +582,6 @@ func TestBuiltinRateLimitLowersTheHourlyCap(t *testing.T) {
 // the captured fact waits, and the definition is left as stored.
 func TestBuiltinUnexecutableDefinitionsHoldTheRule(t *testing.T) {
 	for _, tc := range []struct{ name, fields string }{
-		{"aggregate cap", `"aggregate_limit":3`},
 		{"active run defer", `"active_run":"defer"`},
 		{"schedule", `"schedule":{"cron":"* * * * *"}`},
 		{"other trigger kind", `"trigger":{"kind":"cron"}`},

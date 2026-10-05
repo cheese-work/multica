@@ -1274,48 +1274,51 @@ type IssueViewPreference struct {
 }
 
 type IssueWakeup struct {
-	ID                pgtype.UUID        `json:"id"`
-	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
-	IssueID           pgtype.UUID        `json:"issue_id"`
-	AgentID           pgtype.UUID        `json:"agent_id"`
-	CreatedBy         pgtype.UUID        `json:"created_by"`
-	SourceTaskID      pgtype.UUID        `json:"source_task_id"`
-	ParentCommentID   pgtype.UUID        `json:"parent_comment_id"`
-	Instruction       string             `json:"instruction"`
-	Kind              string             `json:"kind"`
-	Mode              string             `json:"mode"`
-	EventTypes        []string           `json:"event_types"`
-	FilterAgentID     pgtype.UUID        `json:"filter_agent_id"`
-	FilterTaskID      pgtype.UUID        `json:"filter_task_id"`
-	IntervalSeconds   pgtype.Int8        `json:"interval_seconds"`
-	CronExpression    pgtype.Text        `json:"cron_expression"`
-	Timezone          string             `json:"timezone"`
-	NextFireAt        pgtype.Timestamptz `json:"next_fire_at"`
-	Enabled           bool               `json:"enabled"`
-	DisabledAt        pgtype.Timestamptz `json:"disabled_at"`
-	Revision          int64              `json:"revision"`
-	LastTaskID        pgtype.UUID        `json:"last_task_id"`
-	LastError         pgtype.Text        `json:"last_error"`
-	CreatedAt         pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
-	FilterActorType   pgtype.Text        `json:"filter_actor_type"`
-	FilterActorID     pgtype.UUID        `json:"filter_actor_id"`
-	ExpiresAt         pgtype.Timestamptz `json:"expires_at"`
-	ExpirySeconds     pgtype.Int8        `json:"expiry_seconds"`
-	OnTimeout         pgtype.Text        `json:"on_timeout"`
-	TimedOutAt        pgtype.Timestamptz `json:"timed_out_at"`
-	SystemRule        pgtype.Text        `json:"system_rule"`
-	CustomizedAt      pgtype.Timestamptz `json:"customized_at"`
-	Condition         json.RawMessage    `json:"condition"`
-	ConditionState    string             `json:"condition_state"`
-	MaxFires          pgtype.Int4        `json:"max_fires"`
-	FireCount         int32              `json:"fire_count"`
-	PausedReason      pgtype.Text        `json:"paused_reason"`
-	DefaultRuleKey    pgtype.Text        `json:"default_rule_key"`
-	DefaultScopeKind  pgtype.Text        `json:"default_scope_kind"`
-	DefaultScopeID    pgtype.UUID        `json:"default_scope_id"`
-	ConfigFingerprint pgtype.Text        `json:"config_fingerprint"`
-	CapacityReason    pgtype.Text        `json:"capacity_reason"`
+	ID                        pgtype.UUID        `json:"id"`
+	WorkspaceID               pgtype.UUID        `json:"workspace_id"`
+	IssueID                   pgtype.UUID        `json:"issue_id"`
+	AgentID                   pgtype.UUID        `json:"agent_id"`
+	CreatedBy                 pgtype.UUID        `json:"created_by"`
+	SourceTaskID              pgtype.UUID        `json:"source_task_id"`
+	ParentCommentID           pgtype.UUID        `json:"parent_comment_id"`
+	Instruction               string             `json:"instruction"`
+	Kind                      string             `json:"kind"`
+	Mode                      string             `json:"mode"`
+	EventTypes                []string           `json:"event_types"`
+	FilterAgentID             pgtype.UUID        `json:"filter_agent_id"`
+	FilterTaskID              pgtype.UUID        `json:"filter_task_id"`
+	IntervalSeconds           pgtype.Int8        `json:"interval_seconds"`
+	CronExpression            pgtype.Text        `json:"cron_expression"`
+	Timezone                  string             `json:"timezone"`
+	NextFireAt                pgtype.Timestamptz `json:"next_fire_at"`
+	Enabled                   bool               `json:"enabled"`
+	DisabledAt                pgtype.Timestamptz `json:"disabled_at"`
+	Revision                  int64              `json:"revision"`
+	LastTaskID                pgtype.UUID        `json:"last_task_id"`
+	LastError                 pgtype.Text        `json:"last_error"`
+	CreatedAt                 pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                 pgtype.Timestamptz `json:"updated_at"`
+	FilterActorType           pgtype.Text        `json:"filter_actor_type"`
+	FilterActorID             pgtype.UUID        `json:"filter_actor_id"`
+	ExpiresAt                 pgtype.Timestamptz `json:"expires_at"`
+	ExpirySeconds             pgtype.Int8        `json:"expiry_seconds"`
+	OnTimeout                 pgtype.Text        `json:"on_timeout"`
+	TimedOutAt                pgtype.Timestamptz `json:"timed_out_at"`
+	SystemRule                pgtype.Text        `json:"system_rule"`
+	CustomizedAt              pgtype.Timestamptz `json:"customized_at"`
+	Condition                 json.RawMessage    `json:"condition"`
+	ConditionState            string             `json:"condition_state"`
+	MaxFires                  pgtype.Int4        `json:"max_fires"`
+	FireCount                 int32              `json:"fire_count"`
+	PausedReason              pgtype.Text        `json:"paused_reason"`
+	DefaultRuleKey            pgtype.Text        `json:"default_rule_key"`
+	DefaultScopeKind          pgtype.Text        `json:"default_scope_kind"`
+	DefaultScopeID            pgtype.UUID        `json:"default_scope_id"`
+	ConfigFingerprint         pgtype.Text        `json:"config_fingerprint"`
+	CapacityReason            pgtype.Text        `json:"capacity_reason"`
+	AggregateBlockedScopeKind pgtype.Text        `json:"aggregate_blocked_scope_kind"`
+	AggregateBlockedScopeID   pgtype.UUID        `json:"aggregate_blocked_scope_id"`
+	AggregateRetryAt          pgtype.Timestamptz `json:"aggregate_retry_at"`
 }
 
 type IssueWakeupDefinition struct {
@@ -2007,6 +2010,26 @@ type VerificationCode struct {
 	Used      bool               `json:"used"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 	Attempts  int32              `json:"attempts"`
+}
+
+type WakeupAggregateBudget struct {
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	ScopeKind     string             `json:"scope_kind"`
+	ScopeID       pgtype.UUID        `json:"scope_id"`
+	RuleKey       string             `json:"rule_key"`
+	StartsPerHour int32              `json:"starts_per_hour"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
+type WakeupAggregateReservation struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	ScopeKind   string             `json:"scope_kind"`
+	ScopeID     pgtype.UUID        `json:"scope_id"`
+	RuleKey     string             `json:"rule_key"`
+	TaskID      pgtype.UUID        `json:"task_id"`
+	WakeupID    pgtype.UUID        `json:"wakeup_id"`
+	ReservedAt  pgtype.Timestamptz `json:"reserved_at"`
 }
 
 type WebhookDelivery struct {
