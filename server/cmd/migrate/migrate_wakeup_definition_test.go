@@ -216,7 +216,7 @@ func TestWakeupDefaultCapacityMigrationsFollowTheRules(t *testing.T) {
 }
 
 // The aggregate-admission migration adds tables and columns only (no index, FK
-// or cascade); each of its four indexes is one concurrent statement of its own,
+// or cascade); each of its five indexes is one concurrent statement of its own,
 // with a cleanup hook and a validity requirement.
 func TestWakeupAggregateMigrationsFollowTheRules(t *testing.T) {
 	t.Parallel()
@@ -234,6 +234,7 @@ func TestWakeupAggregateMigrationsFollowTheRules(t *testing.T) {
 		"587_wakeup_aggregate_reservation_identity_index": "wakeup_aggregate_reservation_identity_idx",
 		"588_wakeup_aggregate_reservation_window_index":   "wakeup_aggregate_reservation_window_idx",
 		"589_wakeup_aggregate_blocked_index":              "issue_wakeup_aggregate_blocked_idx",
+		"590_wakeup_aggregate_reservation_age_index":      "wakeup_aggregate_reservation_age_idx",
 	} {
 		up := stripSQLComments(readWakeupMigration(t, version, "up"))
 		if strings.Count(up, ";") != 1 || !strings.Contains(up, "INDEX CONCURRENTLY") || !strings.Contains(up, index) {
@@ -249,5 +250,30 @@ func TestWakeupAggregateMigrationsFollowTheRules(t *testing.T) {
 		if got := requiredConcurrentIndexes[version].IndexRegclass; got != index {
 			t.Errorf("%s validity requirement = %q, want %q", version, got, index)
 		}
+	}
+}
+
+// The runner executes a migration's SQL and records its version afterwards, so
+// an interruption in between makes the next run execute the same SQL again. The
+// aggregate-admission migration must therefore be safe to apply twice: every
+// statement, the constraint included.
+func TestWakeupAggregateAdmissionMigrationIsRetrySafe(t *testing.T) {
+	base := openTestPool(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+	defer cancel()
+	schema := createScratchSchema(t, ctx, base, "wakeup_aggregate_retry_")
+	pool := openTestPoolWithSearchPath(t, schema)
+	if _, err := pool.Exec(ctx, `CREATE TABLE issue_wakeup (id UUID NOT NULL, issue_id UUID NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	up := readWakeupMigration(t, "585_wakeup_aggregate_admission", "up")
+	for attempt := 1; attempt <= 2; attempt++ {
+		if _, err := pool.Exec(ctx, up); err != nil {
+			t.Fatalf("applying the migration (attempt %d): %v", attempt, err)
+		}
+	}
+	var constraints int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_constraint WHERE conrelid='issue_wakeup'::regclass AND conname='issue_wakeup_aggregate_blocked_check'`).Scan(&constraints); err != nil || constraints != 1 {
+		t.Fatalf("constraints after a retry = %d (err %v), want 1", constraints, err)
 	}
 }

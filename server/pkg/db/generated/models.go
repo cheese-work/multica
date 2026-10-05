@@ -1318,6 +1318,7 @@ type IssueWakeup struct {
 	CapacityReason            pgtype.Text        `json:"capacity_reason"`
 	AggregateBlockedScopeKind pgtype.Text        `json:"aggregate_blocked_scope_kind"`
 	AggregateBlockedScopeID   pgtype.UUID        `json:"aggregate_blocked_scope_id"`
+	AggregateBlockedSince     pgtype.Timestamptz `json:"aggregate_blocked_since"`
 	AggregateRetryAt          pgtype.Timestamptz `json:"aggregate_retry_at"`
 }
 
