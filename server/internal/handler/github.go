@@ -1378,8 +1378,8 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 			if err := wakeup.TriggerPullRequestWakeup(ctx, issueID, service.PullRequestWakeupInput{
 				Rule: service.SystemRulePRChecksFailed, RepoOwner: pr.RepoOwner, RepoName: pr.RepoName,
 				Number: pr.PrNumber, URL: pr.HtmlUrl, HeadSHA: pr.SnapshotHeadSha, Conclusion: pr.ChecksRollupState.String,
-				// The mirror keeps the head branch only; a base-branch filter
-				// never matches a failing-checks event until it is stored.
+				// The mirror keeps the head branch only; base_branch filters are
+				// refused for this rule when a definition is written.
 				HeadBranch: pr.Branch.String,
 			}); err != nil {
 				slog.Warn("github: failed to dispatch pull request check wakeup", "err", err, "pr_id", uuidToString(pr.ID), "issue_id", uuidToString(issueID))
