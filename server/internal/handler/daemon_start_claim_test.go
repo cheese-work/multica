@@ -240,6 +240,16 @@ func TestStartTaskRefusesRunCapturedUnderChangedWakeupConfig(t *testing.T) {
 			if stale {
 				want = http.StatusConflict
 			}
+			if stale {
+				// A delivery that is not this claim neither starts nor fails the run.
+				testutil.Call(t, testHandler.StartTask, startClaimRequest(id, runtimeID, generation.Add(-time.Microsecond))).Want(http.StatusConflict)
+				testutil.Call(t, testHandler.StartTask, startClaimRequest(id, "00000000-0000-0000-0000-000000000001", generation)).Want(http.StatusConflict)
+				var untouched string
+				dbfx.QueryRow(t, `SELECT status FROM agent_task_queue WHERE id=$1`, id).Scan(&untouched)
+				if untouched != "dispatched" {
+					t.Fatalf("a stale delivery changed the claimed run to %q", untouched)
+				}
+			}
 			testutil.Call(t, testHandler.StartTask, startClaimRequest(id, runtimeID, generation)).Want(want)
 			var status string
 			dbfx.QueryRow(t, `SELECT status FROM agent_task_queue WHERE id=$1`, id).Scan(&status)
