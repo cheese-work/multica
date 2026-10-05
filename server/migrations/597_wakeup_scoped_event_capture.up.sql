@@ -28,9 +28,23 @@ BEGIN
   OR wakeup_scoped_event_probe(ws,'issue',p_issue,p_type);
 END $$;
 
+-- The definitions an input was captured under: every definition, in the issue's
+-- workspace, current project and issue scope, of each rule that has one selecting
+-- p_type, as scope:rule:revision:updated-micros. The drain compares it with the
+-- chain it finds, so an edit, a reset (deletion) or a recreation in between is a
+-- change however the revision counter moved. Run only when an input is kept.
+CREATE OR REPLACE FUNCTION wakeup_scoped_event_chain(p_workspace uuid, p_project uuid, p_issue uuid, p_type text) RETURNS text[] LANGUAGE sql STABLE AS $$
+ WITH defs AS (
+  SELECT scope_kind,rule_key,revision,updated_at,event_types FROM issue_wakeup_definition WHERE workspace_id=p_workspace AND scope_kind='workspace' AND scope_id=p_workspace
+  UNION ALL SELECT scope_kind,rule_key,revision,updated_at,event_types FROM issue_wakeup_definition WHERE workspace_id=p_workspace AND scope_kind='project' AND scope_id=p_project
+  UNION ALL SELECT scope_kind,rule_key,revision,updated_at,event_types FROM issue_wakeup_definition WHERE workspace_id=p_workspace AND scope_kind='issue' AND scope_id=p_issue)
+ SELECT COALESCE(array_agg(scope_kind||':'||rule_key||':'||revision||':'||(extract(epoch FROM updated_at)*1000000)::bigint ORDER BY scope_kind,rule_key),'{}')
+ FROM defs WHERE rule_key IN (SELECT rule_key FROM defs WHERE p_type=ANY(event_types))
+$$;
+
 CREATE OR REPLACE FUNCTION capture_issue_wakeup(p_issue uuid, p_type text, p_key text, p_agent uuid, p_task uuid, p_payload jsonb, p_only uuid[] DEFAULT NULL)
 RETURNS void LANGUAGE plpgsql AS $$
-DECLARE w issue_wakeup; owner_workspace uuid; owner_project uuid; evidence jsonb; violated_constraint text; legacy boolean; scoped boolean; delivered text[] := '{}';
+DECLARE w issue_wakeup; owner_workspace uuid; owner_project uuid; evidence jsonb; violated_constraint text; legacy boolean; scoped boolean; delivered text[] := '{}'; chain text[];
 BEGIN
  legacy := EXISTS (SELECT 1 FROM issue_wakeup WHERE issue_id=p_issue AND enabled AND kind='event' AND p_type=ANY(event_types));
  -- A drain replay (p_only) targets given instances and never captures again.
@@ -69,9 +83,14 @@ BEGIN
     -- Rotate the receipt identity on merge. An older dispatcher that read
     -- without FOR UPDATE can only consume its observed version, leaving the
     -- replacement pending instead of silently consuming unseen evidence.
-    DO UPDATE SET id=EXCLUDED.id,payload=EXCLUDED.payload || jsonb_build_object(
+    -- The receipt keeps the latest payload by event time, so a delayed older
+   -- event never replaces newer evidence, while the count and the earliest time
+   -- merge whatever the arrival order.
+   DO UPDATE SET id=EXCLUDED.id,payload=CASE
+     WHEN (EXCLUDED.payload->>'occurred_at')::timestamptz >= COALESCE((issue_wakeup_receipt.payload->>'occurred_at')::timestamptz,'-infinity')
+     THEN EXCLUDED.payload ELSE issue_wakeup_receipt.payload END || jsonb_build_object(
      'coalesced_count',COALESCE((issue_wakeup_receipt.payload->>'coalesced_count')::bigint,1)+1,
-     'first_occurred_at',issue_wakeup_receipt.payload->'first_occurred_at')
+     'first_occurred_at',LEAST((issue_wakeup_receipt.payload->>'first_occurred_at')::timestamptz,(EXCLUDED.payload->>'occurred_at')::timestamptz,(issue_wakeup_receipt.payload->>'occurred_at')::timestamptz))
     WHERE issue_wakeup_receipt.event_key<>p_key AND issue_wakeup_receipt.payload->>'event_id' IS DISTINCT FROM p_key;
    EXCEPTION WHEN unique_violation THEN
     GET STACKED DIAGNOSTICS violated_constraint = CONSTRAINT_NAME;
@@ -85,8 +104,9 @@ BEGIN
  END IF;
  -- References only: the source payload and identities, never a body or URL.
  IF scoped THEN
-  INSERT INTO wakeup_scoped_event(workspace_id,issue_id,project_id,event_type,event_key,agent_id,source_task_id,actor_type,actor_id,payload,delivered,captured_at)
-   VALUES(owner_workspace,p_issue,owner_project,p_type,p_key,p_agent,p_task,evidence->>'actor_type',evidence->>'actor_id',p_payload,delivered,clock_timestamp());
+  chain := wakeup_scoped_event_chain(owner_workspace,owner_project,p_issue,p_type);
+  INSERT INTO wakeup_scoped_event(workspace_id,issue_id,project_id,event_type,event_key,agent_id,source_task_id,actor_type,actor_id,payload,delivered,chain,captured_at)
+   VALUES(owner_workspace,p_issue,owner_project,p_type,p_key,p_agent,p_task,evidence->>'actor_type',evidence->>'actor_id',p_payload,delivered,chain,clock_timestamp());
  END IF;
 END $$;
 

@@ -580,7 +580,7 @@ func TestScopedDrainBatchIsBoundedAndSkipsLockedRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := db.New(tx).ClaimWakeupScopedEvents(ctx, db.ClaimWakeupScopedEventsParams{Now: pgtype.Timestamptz{Time: time.Now(), Valid: true}, BatchSize: 100}); err != nil {
+	if _, err := db.New(tx).ClaimWakeupScopedEvents(ctx, db.ClaimWakeupScopedEventsParams{Now: pgtype.Timestamptz{Time: time.Now(), Valid: true}, Oldest: pgtype.Timestamptz{Time: time.Now().Add(-scopedEventRetention), Valid: true}, SkipIssues: []pgtype.UUID{}, BatchSize: 100}); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)

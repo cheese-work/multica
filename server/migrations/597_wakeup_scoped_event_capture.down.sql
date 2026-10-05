@@ -133,4 +133,5 @@ BEGIN
  RETURN NEW;
 END $$;
 DROP FUNCTION IF EXISTS wakeup_scoped_event_wanted(uuid, text);
+DROP FUNCTION IF EXISTS wakeup_scoped_event_chain(uuid, uuid, uuid, text);
 DROP FUNCTION IF EXISTS wakeup_scoped_event_probe(uuid, text, uuid, text);
