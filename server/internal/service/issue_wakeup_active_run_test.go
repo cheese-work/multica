@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 )
@@ -21,6 +22,13 @@ func (e builtinEnv) runningRun(t *testing.T, originator string) string {
 	return e.f.Task(t, e.agent, testutil.Cols{"issue_id": e.issue, "status": "running", "started_at": testutil.Raw("clock_timestamp()"),
 		"runtime_id":         testutil.Raw("(SELECT runtime_id FROM agent WHERE id='" + e.agent + "')"),
 		"originator_user_id": originator, "accountable_user_id": originator})
+}
+
+// unreserved counts the pending facts no run carries: a queued follow-up
+// reserves its facts until it starts, so "handed to a run" reads as zero here.
+func (e builtinEnv) unreserved(t *testing.T, key string) int {
+	t.Helper()
+	return e.f.Count(t, `SELECT count(*) FROM issue_wakeup_receipt r JOIN issue_wakeup w ON w.id=r.wakeup_id WHERE w.issue_id=$1 AND w.system_rule=$2 AND r.processed_at IS NULL AND r.task_id IS NULL`, e.issue, key)
 }
 
 func (e builtinEnv) endRun(t *testing.T, id string) {
@@ -121,8 +129,8 @@ func TestActiveRunDeferRetainsThenFollowsUpOnce(t *testing.T) {
 
 	e.endRun(t, run)
 	e.tick(t, SystemRulePRMerged)
-	if e.tasks(t, SystemRulePRMerged) != 1 || e.pending(t, SystemRulePRMerged) != 0 {
-		t.Fatalf("at idle: %d runs, %d pending; want 1 and 0", e.tasks(t, SystemRulePRMerged), e.pending(t, SystemRulePRMerged))
+	if e.tasks(t, SystemRulePRMerged) != 1 || e.unreserved(t, SystemRulePRMerged) != 0 {
+		t.Fatalf("at idle: %d runs, %d unreserved; want 1 and 0", e.tasks(t, SystemRulePRMerged), e.unreserved(t, SystemRulePRMerged))
 	}
 	note := e.lastTask(t, SystemRulePRMerged).HandoffNote.String
 	for _, number := range []int32{701, 702} {
@@ -248,8 +256,8 @@ func TestActiveRunDeferChildDoneAndSelfAcknowledgement(t *testing.T) {
 		}
 		e.endRun(t, run)
 		e.tick(t, SystemRuleChildDone)
-		if e.tasks(t, SystemRuleChildDone) != 1 || e.pending(t, SystemRuleChildDone) != 0 {
-			t.Fatalf("at idle: %d runs, %d pending; want 1 and 0", e.tasks(t, SystemRuleChildDone), e.pending(t, SystemRuleChildDone))
+		if e.tasks(t, SystemRuleChildDone) != 1 || e.unreserved(t, SystemRuleChildDone) != 0 {
+			t.Fatalf("at idle: %d runs, %d unreserved; want 1 and 0", e.tasks(t, SystemRuleChildDone), e.unreserved(t, SystemRuleChildDone))
 		}
 	})
 }
@@ -336,8 +344,8 @@ func TestActiveRunDeferFollowUpRespectsRateAndAggregateGates(t *testing.T) {
 		}
 		e.f.Exec(t, `UPDATE agent_task_queue SET created_at=now()-interval '2 hours' WHERE issue_id=$1 AND context->>'wakeup_system'='pr_merged'`, e.issue)
 		e.tick(t, SystemRulePRMerged)
-		if e.tasks(t, SystemRulePRMerged) != 2 || e.pending(t, SystemRulePRMerged) != 0 {
-			t.Fatalf("after the window: %d runs, %d pending; want the delayed follow-up to run", e.tasks(t, SystemRulePRMerged), e.pending(t, SystemRulePRMerged))
+		if e.tasks(t, SystemRulePRMerged) != 2 || e.unreserved(t, SystemRulePRMerged) != 0 {
+			t.Fatalf("after the window: %d runs, %d unreserved; want the delayed follow-up to run", e.tasks(t, SystemRulePRMerged), e.unreserved(t, SystemRulePRMerged))
 		}
 	})
 	t.Run("aggregate", func(t *testing.T) {
@@ -355,8 +363,8 @@ func TestActiveRunDeferFollowUpRespectsRateAndAggregateGates(t *testing.T) {
 		}
 		e.cancelRuns(t, other)
 		e.redispatch(t, e.issue)
-		if e.runs(t, e.issue) != 1 || e.pendingOn(t, e.issue) != 0 {
-			t.Fatalf("after a slot freed: %d runs, %d pending; want 1 and 0", e.runs(t, e.issue), e.pendingOn(t, e.issue))
+		if e.runs(t, e.issue) != 1 || e.unreserved(t, SystemRulePRMerged) != 0 {
+			t.Fatalf("after a slot freed: %d runs, %d unreserved; want 1 and 0", e.runs(t, e.issue), e.unreserved(t, SystemRulePRMerged))
 		}
 	})
 }
@@ -371,7 +379,188 @@ func TestActiveRunDeferDoesNotConsumeForAnyAgentRun(t *testing.T) {
 	e.f.Task(t, other, testutil.Cols{"issue_id": e.issue, "status": "running", "started_at": testutil.Raw("clock_timestamp()"),
 		"runtime_id": testutil.Raw("(SELECT runtime_id FROM agent WHERE id='" + other + "')")})
 	e.mergedPR(t, 770)
-	if e.tasks(t, SystemRulePRMerged) != 1 || e.pending(t, SystemRulePRMerged) != 0 {
-		t.Fatalf("another agent's run held the fact: %d runs, %d pending; want 1 and 0", e.tasks(t, SystemRulePRMerged), e.pending(t, SystemRulePRMerged))
+	if e.tasks(t, SystemRulePRMerged) != 1 || e.unreserved(t, SystemRulePRMerged) != 0 {
+		t.Fatalf("another agent's run held the fact: %d runs, %d unreserved; want 1 and 0", e.tasks(t, SystemRulePRMerged), e.unreserved(t, SystemRulePRMerged))
+	}
+}
+
+// ---- review corrections (CHE-1195 signing review of 921d07b2) ---------------
+
+func (e builtinEnv) reservedFor(t *testing.T, key string, task pgtype.UUID) int {
+	t.Helper()
+	return e.f.Count(t, `SELECT count(*) FROM issue_wakeup_receipt r JOIN issue_wakeup w ON w.id=r.wakeup_id WHERE w.issue_id=$1 AND w.system_rule=$2 AND r.task_id=$3 AND r.processed_at IS NULL`, e.issue, key, task)
+}
+
+// An unstarted follow-up only reserves the facts it carries. Cancelled before
+// it starts, it gives them back and a replacement attempt carries them.
+func TestActiveRunDeferFollowUpKeepsFactsUntilItStarts(t *testing.T) {
+	e := newBuiltinEnv(t)
+	e.define(t, WakeupScopeProject, SystemRulePRMerged, `"active_run":"defer"`)
+	run := e.runningRun(t, e.f.UserID)
+	e.mergedPR(t, 880)
+	e.endRun(t, run)
+	e.tick(t, SystemRulePRMerged)
+	followup := e.lastTask(t, SystemRulePRMerged)
+	if followup.Status != "queued" || e.reservedFor(t, SystemRulePRMerged, followup.ID) != 1 || e.pending(t, SystemRulePRMerged) != 1 {
+		t.Fatalf("queued follow-up: status %s, %d reserved, %d pending; want the fact reserved, not consumed", followup.Status, e.reservedFor(t, SystemRulePRMerged, followup.ID), e.pending(t, SystemRulePRMerged))
+	}
+	if n := e.rule(t, SystemRulePRMerged).FireCount; n != 0 {
+		t.Fatalf("fire_count %d before the follow-up started, want 0", n)
+	}
+	if _, err := e.s.Tasks.CancelTaskWithReason(context.Background(), followup.ID, "failed before start", "test_before_start"); err != nil {
+		t.Fatal(err)
+	}
+	e.tick(t, SystemRulePRMerged)
+	again := e.lastTask(t, SystemRulePRMerged)
+	if again.ID == followup.ID || e.reservedFor(t, SystemRulePRMerged, again.ID) != 1 || !strings.Contains(again.HandoffNote.String, e.prNote(t, 880)) {
+		t.Fatalf("no replacement attempt carries the fact: last task %s, %d reserved", util.UUIDToString(again.ID), e.reservedFor(t, SystemRulePRMerged, again.ID))
+	}
+}
+
+// Claim and start settle the reservation once: the fact is consumed with the
+// run that started, the firing counts once, and replays add nothing.
+func TestActiveRunDeferFollowUpSettlesOnceAtStart(t *testing.T) {
+	e := newBuiltinEnv(t)
+	e.define(t, WakeupScopeProject, SystemRulePRMerged, `"active_run":"defer"`)
+	run := e.runningRun(t, e.f.UserID)
+	e.mergedPR(t, 890)
+	e.endRun(t, run)
+	e.tick(t, SystemRulePRMerged)
+	followup := e.lastTask(t, SystemRulePRMerged)
+	id := util.UUIDToString(followup.ID)
+	// The claim does not release the rule's own reservation.
+	wakeClaim(t, e.f, e.s, id)
+	if e.reservedFor(t, SystemRulePRMerged, followup.ID) != 1 {
+		t.Fatal("claiming the follow-up released the facts it carries")
+	}
+	wakeStart(t, e.f, id)
+	e.tick(t, SystemRulePRMerged)
+	e.tick(t, SystemRulePRMerged)
+	if e.pending(t, SystemRulePRMerged) != 0 || e.f.Count(t, `SELECT count(*) FROM issue_wakeup_receipt r JOIN issue_wakeup w ON w.id=r.wakeup_id WHERE w.issue_id=$1 AND r.task_id=$2 AND r.processed_at IS NOT NULL`, e.issue, followup.ID) != 1 {
+		t.Fatalf("after start: %d pending; want the fact consumed with the started run", e.pending(t, SystemRulePRMerged))
+	}
+	if n := e.rule(t, SystemRulePRMerged).FireCount; n != 1 {
+		t.Fatalf("fire_count %d after start and replays, want 1", n)
+	}
+	if e.tasks(t, SystemRulePRMerged) != 1 || e.outcomeCount(t, SystemRulePRMerged, wakeupOutcomeMerged) != 1 {
+		t.Fatalf("%d runs, outcomes %v; want one run and one settlement", e.tasks(t, SystemRulePRMerged), e.outcomes(t, SystemRulePRMerged))
+	}
+}
+
+// A fact that arrives while the follow-up waits to start joins it (the
+// follow-up is the same rule's run) and is reserved with it, not consumed.
+func TestActiveRunDeferFollowUpExtensionReservesTheNewFact(t *testing.T) {
+	e := newBuiltinEnv(t)
+	e.define(t, WakeupScopeProject, SystemRulePRMerged, `"active_run":"defer"`)
+	run := e.runningRun(t, e.f.UserID)
+	e.mergedPR(t, 895)
+	e.endRun(t, run)
+	e.tick(t, SystemRulePRMerged)
+	e.mergedPR(t, 896)
+	followup := e.lastTask(t, SystemRulePRMerged)
+	if e.tasks(t, SystemRulePRMerged) != 1 || e.reservedFor(t, SystemRulePRMerged, followup.ID) != 2 || !strings.Contains(followup.HandoffNote.String, e.prNote(t, 896)) {
+		t.Fatalf("%d runs, %d reserved; want one follow-up carrying both facts", e.tasks(t, SystemRulePRMerged), e.reservedFor(t, SystemRulePRMerged, followup.ID))
+	}
+	if _, err := e.s.Tasks.CancelTaskWithReason(context.Background(), followup.ID, "failed before start", "test_before_start"); err != nil {
+		t.Fatal(err)
+	}
+	e.tick(t, SystemRulePRMerged)
+	if e.pending(t, SystemRulePRMerged) != 2 {
+		t.Fatalf("%d pending after the cancel, want both facts back", e.pending(t, SystemRulePRMerged))
+	}
+}
+
+// max_fires counts a deferred follow-up when it starts, and the held slot keeps
+// later facts from passing it meanwhile.
+func TestActiveRunDeferFollowUpCountsAgainstMaxFiresAtStart(t *testing.T) {
+	e := newBuiltinEnv(t)
+	e.define(t, WakeupScopeProject, SystemRulePRMerged, `"active_run":"defer","max_fires":1`)
+	run := e.runningRun(t, e.f.UserID)
+	e.mergedPR(t, 897)
+	e.endRun(t, run)
+	e.tick(t, SystemRulePRMerged)
+	followup := e.lastTask(t, SystemRulePRMerged)
+	if w := e.rule(t, SystemRulePRMerged); w.PausedReason.Valid || w.FireCount != 0 || e.reservedFor(t, SystemRulePRMerged, followup.ID) != 1 {
+		t.Fatalf("before start: pause %q, fire_count %d, %d reserved; want the fact kept until start", w.PausedReason.String, w.FireCount, e.reservedFor(t, SystemRulePRMerged, followup.ID))
+	}
+	wakeStart(t, e.f, util.UUIDToString(followup.ID))
+	e.tick(t, SystemRulePRMerged)
+	if w := e.rule(t, SystemRulePRMerged); w.FireCount != 1 || w.PausedReason.String != wakeupPausedMaxFires {
+		t.Fatalf("after start: fire_count %d, pause %q; want 1 and the max_fires ending", w.FireCount, w.PausedReason.String)
+	}
+}
+
+// Rules never merge: a follow-up of one rule does not carry another rule's
+// facts at claim, and the other rule does not consume with it at start.
+func TestActiveRunDeferDifferentRulesStaySeparateThroughClaimAndStart(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		checksFields string
+	}{
+		{"both defer", `"active_run":"defer"`},
+		{"joiner suppresses", `"instruction":"Fix the build"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newBuiltinEnv(t)
+			e.define(t, WakeupScopeProject, SystemRulePRMerged, `"active_run":"defer"`)
+			e.define(t, WakeupScopeProject, SystemRulePRChecksFailed, tc.checksFields)
+			run := e.runningRun(t, e.f.UserID)
+			e.mergedPR(t, 881)
+			e.endRun(t, run)
+			e.tick(t, SystemRulePRMerged)
+			merged := e.lastTask(t, SystemRulePRMerged)
+			// The checks fact arrives while the merged follow-up waits to start.
+			e.failedChecks(t, "isolation-head", "FAILURE")
+			e.tick(t, SystemRulePRChecksFailed)
+			if joined := wakeClaim(t, e.f, e.s, util.UUIDToString(merged.ID)); strings.Contains(joined, "isolation-head") {
+				t.Fatalf("checks facts joined the merged follow-up: %s", joined)
+			}
+			wakeStart(t, e.f, util.UUIDToString(merged.ID))
+			e.tick(t, SystemRulePRChecksFailed)
+			if got := e.f.Count(t, `SELECT count(*) FROM issue_wakeup_receipt r JOIN issue_wakeup w ON w.id=r.wakeup_id WHERE w.issue_id=$1 AND w.system_rule=$2 AND r.task_id=$3`, e.issue, SystemRulePRChecksFailed, merged.ID); got != 0 {
+				t.Fatalf("the checks rule reserved or consumed %d receipts with the merged run", got)
+			}
+			if e.pending(t, SystemRulePRChecksFailed) != 1 {
+				t.Fatalf("the checks fact is not pending: %d", e.pending(t, SystemRulePRChecksFailed))
+			}
+			// Once the merged run is over the checks rule makes its own attempt.
+			e.endRun(t, util.UUIDToString(merged.ID))
+			e.tick(t, SystemRulePRChecksFailed)
+			if e.tasks(t, SystemRulePRChecksFailed) != 1 || strings.Contains(e.lastTask(t, SystemRulePRChecksFailed).HandoffNote.String, "pull/881") {
+				t.Fatalf("checks rule: %d runs; want its own run without the merged fact", e.tasks(t, SystemRulePRChecksFailed))
+			}
+		})
+	}
+}
+
+// Ordinary carriers keep their contract: a plain waiting run still takes the
+// facts of two different deferring rules, as it does for legacy rules.
+func TestActiveRunDeferStillJoinsAnOrdinaryWaitingRun(t *testing.T) {
+	e := newBuiltinEnv(t)
+	e.define(t, WakeupScopeProject, SystemRulePRMerged, `"active_run":"defer"`)
+	waiting := wakeWaitingRun(t, e.f, e.issue, e.agent, e.f.UserID)
+	e.mergedPR(t, 898)
+	if joined := wakeClaim(t, e.f, e.s, waiting); !strings.Contains(joined, "pull/898") {
+		t.Fatalf("an ordinary waiting run did not carry the fact: %q", joined)
+	}
+}
+
+// Every expired fact is accounted for, once, with its receipt.
+func TestActiveRunDeferBatchExpiryAccountsForEveryFact(t *testing.T) {
+	e := newBuiltinEnv(t)
+	e.define(t, WakeupScopeProject, SystemRulePRMerged, `"active_run":"defer"`)
+	e.runningRun(t, e.f.UserID)
+	e.mergedPR(t, 883)
+	e.mergedPR(t, 884)
+	e.f.Exec(t, `UPDATE issue_wakeup_receipt r SET created_at=now()-interval '25 hours' FROM issue_wakeup w WHERE w.id=r.wakeup_id AND w.issue_id=$1`, e.issue)
+	e.tick(t, SystemRulePRMerged)
+	e.tick(t, SystemRulePRMerged)
+	if e.pending(t, SystemRulePRMerged) != 0 || e.outcomeCount(t, SystemRulePRMerged, "defer_expired") != 2 {
+		t.Fatalf("%d pending, outcomes %v; want both facts expired with one account each", e.pending(t, SystemRulePRMerged), e.outcomes(t, SystemRulePRMerged))
+	}
+	var withIDs, withPRs int
+	e.f.QueryRow(t, `SELECT count(*) FILTER (WHERE details->>'receipt_id' IS NOT NULL), count(DISTINCT details->>'pr_number') FROM activity_log WHERE issue_id=$1 AND details->>'outcome'='defer_expired'`, e.issue).Scan(&withIDs, &withPRs)
+	if withIDs != 2 || withPRs != 2 {
+		t.Fatalf("expiry accounts: %d with a receipt id, %d distinct PRs; want 2 and 2", withIDs, withPRs)
 	}
 }

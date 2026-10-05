@@ -328,10 +328,14 @@ func (s *IssueWakeupService) reserveForRun(ctx context.Context, q *db.Queries, i
 	if len(receipts) == 0 || !active || w.DisabledAt.Valid || w.IssueID != task.IssueID {
 		return release()
 	}
-	if _, err := q.FindPendingWakeupTask(ctx, util.UUIDToString(w.ID)); err == nil || !errors.Is(err, pgx.ErrNoRows) {
-		// The rule's own run takes its inputs.
+	if own, err := q.FindPendingWakeupTask(ctx, util.UUIDToString(w.ID)); err == nil || !errors.Is(err, pgx.ErrNoRows) {
+		// The rule's own run takes its inputs. A run that is this one keeps the
+		// inputs it reserved when it queued (a deferred follow-up).
 		if err != nil {
 			return nil, nil, err
+		}
+		if own.ID == task.ID {
+			return nil, nil, nil
 		}
 		return release()
 	}
@@ -387,6 +391,10 @@ func (s *IssueWakeupService) mayJoin(ctx context.Context, q *db.Queries, issue d
 	if err != nil {
 		return "", false, err
 	}
+	carrier := carrierOfOtherRule(task, w)
+	if carrier.isolated {
+		return "", false, nil
+	}
 	if !w.SystemRule.Valid {
 		if w.AgentID != task.AgentID || w.CreatedBy != task.OriginatorUserID || (w.Mode == "once" && w.LastTaskID.Valid) {
 			return "", false, nil
@@ -409,6 +417,9 @@ func (s *IssueWakeupService) mayJoin(ctx context.Context, q *db.Queries, issue d
 	}
 	if err != nil {
 		return "", false, err
+	}
+	if carrier.other && config.defersActiveRun() {
+		return "", false, nil
 	}
 	on := w.Enabled
 	if config != nil {

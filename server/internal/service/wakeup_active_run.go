@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -30,6 +31,30 @@ const (
 // not a promise of eventual delivery.
 const wakeupDeferRetention = 24 * time.Hour
 
+// wakeupIsolatedKey marks a task a deferring rule queued for its own facts. No
+// other rule's inputs join it, and it joins no other rule's task.
+const wakeupIsolatedKey = "wakeup_isolated"
+
+// carrierOwner says whose run a waiting task is, for the rule boundary of
+// defer: facts of different rules are never merged or consumed together.
+type carrierOwner struct {
+	// other: the task was queued by a wakeup rule that is not w.
+	other bool
+	// isolated: other, and queued by a deferring rule.
+	isolated bool
+}
+
+func carrierOfOtherRule(task db.AgentTaskQueue, w db.IssueWakeup) carrierOwner {
+	var stored struct {
+		WakeupID string `json:"wakeup_id"`
+		Isolated bool   `json:"wakeup_isolated"`
+	}
+	if json.Unmarshal(task.Context, &stored) != nil || stored.WakeupID == "" || stored.WakeupID == util.UUIDToString(w.ID) {
+		return carrierOwner{}
+	}
+	return carrierOwner{other: true, isolated: stored.Isolated}
+}
+
 func validWakeupActiveRun(v string) bool {
 	return v == wakeupActiveRunSuppress || v == wakeupActiveRunDefer
 }
@@ -54,11 +79,18 @@ func deferForActiveRun(ctx context.Context, q *db.Queries, w db.IssueWakeup, tar
 			held = append(held, r)
 		}
 	}
+	// Each fact is accounted for on its own, with its receipt, so a batch never
+	// hides all but one of its members.
 	record := func(outcome string, rs []db.IssueWakeupReceipt) error {
-		facts := systemWakeupFacts(w, rs)
-		facts["target_type"], facts["target_id"] = target.Type, util.UUIDToString(target.ID)
-		facts["outcome"] = outcome
-		return note(wakeupActivityTriggered, facts)
+		for _, r := range rs {
+			facts := systemWakeupFacts(w, []db.IssueWakeupReceipt{r})
+			facts["target_type"], facts["target_id"] = target.Type, util.UUIDToString(target.ID)
+			facts["outcome"], facts["receipt_id"] = outcome, util.UUIDToString(r.ID)
+			if err := note(wakeupActivityTriggered, facts); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	if len(expired) > 0 {
 		if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: receiptIDs(expired), TaskID: pgtype.UUID{}}); err != nil {
