@@ -2046,6 +2046,7 @@ type WakeupScopedEvent struct {
 	ActorType    pgtype.Text        `json:"actor_type"`
 	ActorID      pgtype.Text        `json:"actor_id"`
 	Payload      []byte             `json:"payload"`
+	Delivered    []string           `json:"delivered"`
 	CapturedAt   pgtype.Timestamptz `json:"captured_at"`
 	RetryAt      pgtype.Timestamptz `json:"retry_at"`
 	HandledAt    pgtype.Timestamptz `json:"handled_at"`

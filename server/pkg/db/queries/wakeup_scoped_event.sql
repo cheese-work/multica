@@ -8,6 +8,14 @@ WHERE handled_at IS NULL AND (retry_at IS NULL OR retry_at <= @now::timestamptz)
 ORDER BY captured_at, id LIMIT @batch_size
 FOR UPDATE SKIP LOCKED;
 
+-- name: ClaimWakeupScopedEventsOfIssue :many
+-- The rest of one issue's pending inputs, so a burst on one issue is resolved
+-- once. Same locking and retry rules as the oldest-first claim.
+SELECT * FROM wakeup_scoped_event
+WHERE issue_id= @issue_id AND handled_at IS NULL AND (retry_at IS NULL OR retry_at <= @now::timestamptz) AND id<> @except_id
+ORDER BY captured_at, id LIMIT @batch_size
+FOR UPDATE SKIP LOCKED;
+
 -- name: MarkWakeupScopedEventHandled :exec
 UPDATE wakeup_scoped_event SET handled_at= @now::timestamptz,outcome= @outcome::text,retry_at=NULL WHERE id= @id;
 

@@ -4,11 +4,14 @@
 -- transaction, only when a definition selecting that event type exists in the
 -- issue's workspace, current project or issue scope, and holds references only:
 -- event, actor and source-run ids, issue and project identity, changed-field
--- names, capture time. Never a comment body, attachment URL or event archive.
+-- names, capture time, and which default instances (id:revision) live capture
+-- already delivered the event to, so the drain never counts it twice. Never a
+-- comment body, attachment URL or event archive.
 -- The scheduler drains it into the existing wakeup receipts and stamps the row
 -- handled with an outcome; handled and expired rows are pruned in bounded
--- batches. Identity is the unique index added by 593, the drain scan is 594 and
--- the retention scan is 595. No primary key, foreign key or cascade.
+-- batches. Identity is the unique index added by 593, the drain scan is 594, the
+-- retention scan is 595 and the per-issue claim is 596; the capture functions
+-- follow in 597. No primary key, foreign key or cascade.
 -- event_types on a definition lists the event types its trigger selects, in a
 -- column so the capture trigger can early-exit on an indexed lookup. Empty for
 -- every definition that exists today.
@@ -25,6 +28,7 @@ CREATE TABLE IF NOT EXISTS wakeup_scoped_event (
  actor_type text,
  actor_id text,
  payload jsonb NOT NULL,
+ delivered text[] NOT NULL DEFAULT '{}',
  captured_at timestamptz NOT NULL,
  retry_at timestamptz,
  handled_at timestamptz,

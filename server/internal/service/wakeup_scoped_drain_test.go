@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -200,21 +201,48 @@ func TestScopedDrainSingleAgentEventKeepsItsActor(t *testing.T) {
 }
 
 // Once the instance exists live capture delivers at once; the drain must add
-// nothing on top of it.
+// nothing on top of it, not even a count, and must not make an older event the
+// receipt's latest.
 func TestScopedDrainAfterLiveCaptureDoesNotDoubleCount(t *testing.T) {
 	k := newDrainKit(t)
 	k.defineRoot(t, "workspace", k.f.WorkspaceID, scopedRuleA, "comment.created")
 	k.comment(t, "creates the instance")
 	k.drain(t)
 	k.comment(t, "captured live, and in the outbox")
-	if got := k.receipts(t, scopedRuleA); len(got) != 1 || got[0].Count != 2 {
-		t.Fatalf("live capture receipts = %+v, want one with count 2", got)
+	k.comment(t, "captured live, second")
+	last := k.comment(t, "captured live, latest")
+	if got := k.receipts(t, scopedRuleA); len(got) != 1 || got[0].Count != 4 {
+		t.Fatalf("live capture receipts = %+v, want one with count 4", got)
 	}
 	k.drain(t)
-	if got := k.receipts(t, scopedRuleA); len(got) != 1 || got[0].Count != 2 {
+	if got := k.receipts(t, scopedRuleA); len(got) != 1 || got[0].Count != 4 {
 		t.Fatalf("receipts after drain = %+v, want the count unchanged", got)
 	}
-	k.wantOutcomes(t, "delivered", "delivered")
+	var latest string
+	if err := k.f.Pool.QueryRow(context.Background(), `SELECT r.payload->>'comment_id' FROM issue_wakeup_receipt r JOIN issue_wakeup w ON w.id=r.wakeup_id WHERE w.workspace_id=$1`, k.f.WorkspaceID).Scan(&latest); err != nil {
+		t.Fatal(err)
+	}
+	if latest != last {
+		t.Fatalf("the receipt's latest reference moved to %s, want the newest comment %s", latest, last)
+	}
+	k.wantOutcomes(t, "delivered", "delivered", "delivered", "delivered")
+}
+
+// An instance that exists but was switched to another configuration after live
+// capture served the event is a different revision: the event is delivered to it.
+func TestScopedDrainDeliversToTheNewRevisionAfterLiveCapture(t *testing.T) {
+	k := newDrainKit(t)
+	k.defineRoot(t, "workspace", k.f.WorkspaceID, scopedRuleA, "comment.created")
+	k.comment(t, "creates the instance")
+	k.drain(t)
+	k.f.Exec(t, `UPDATE issue_wakeup_definition SET config=$2::jsonb,revision=revision+1,updated_at=clock_timestamp() WHERE workspace_id=$1`,
+		k.f.WorkspaceID, k.eventConfig("edited text", "comment.created"))
+	k.comment(t, "live-captured under the old revision")
+	k.drain(t)
+	got := k.receipts(t, scopedRuleA)
+	if len(got) != 2 || got[1].Revision != 2 || got[1].Count != 1 {
+		t.Fatalf("receipts = %+v, want the event also pending under the new revision", got)
+	}
 }
 
 func TestScopedDrainActivationWatermark(t *testing.T) {
@@ -392,45 +420,107 @@ func TestScopedDrainNeverDeliversToRulesCreatedAfterTheEvent(t *testing.T) {
 	}
 }
 
-// failingTx fails the statements of one named query, in the transaction and in
-// every savepoint under it.
-type failingTx struct {
+// probeTx watches the statements of a transaction and every savepoint under it:
+// it counts the named queries that run and fails the ones that match.
+type probeTx struct {
 	pgx.Tx
-	query string
-	err   error
+	probe *sqlProbe
 }
 
-func (tx failingTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
-	if strings.Contains(sql, tx.query) {
-		return failedRow{tx.err}
+type sqlProbe struct {
+	mu     sync.Mutex
+	counts map[string]int
+	// failQuery names the query to fail; failArg, when set, restricts the failure
+	// to statements that carry that argument.
+	failQuery string
+	failArg   string
+	err       error
+}
+
+func (p *sqlProbe) seen(sql string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.counts == nil {
+		p.counts = map[string]int{}
+	}
+	if i := strings.Index(sql, "-- name: "); i >= 0 {
+		name := strings.Fields(sql[i+len("-- name: "):])[0]
+		p.counts[name]++
+	}
+}
+
+func (p *sqlProbe) count(name string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.counts[name]
+}
+
+func (p *sqlProbe) fails(sql string, args []any) bool {
+	if p.failQuery == "" || !strings.Contains(sql, "-- name: "+p.failQuery) {
+		return false
+	}
+	if p.failArg == "" {
+		return true
+	}
+	for _, a := range args {
+		if s, ok := a.(string); ok && s == p.failArg {
+			return true
+		}
+	}
+	return false
+}
+
+func (tx probeTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	tx.probe.seen(sql)
+	if tx.probe.fails(sql, args) {
+		return failedRow{tx.probe.err}
 	}
 	return tx.Tx.QueryRow(ctx, sql, args...)
 }
 
-func (tx failingTx) Begin(ctx context.Context) (pgx.Tx, error) {
+func (tx probeTx) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	tx.probe.seen(sql)
+	if tx.probe.fails(sql, args) {
+		return nil, tx.probe.err
+	}
+	return tx.Tx.Query(ctx, sql, args...)
+}
+
+func (tx probeTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	tx.probe.seen(sql)
+	if tx.probe.fails(sql, args) {
+		return pgconn.CommandTag{}, tx.probe.err
+	}
+	return tx.Tx.Exec(ctx, sql, args...)
+}
+
+func (tx probeTx) Begin(ctx context.Context) (pgx.Tx, error) {
 	inner, err := tx.Tx.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return failingTx{Tx: inner, query: tx.query, err: tx.err}, nil
+	return probeTx{Tx: inner, probe: tx.probe}, nil
 }
 
 type failedRow struct{ err error }
 
 func (r failedRow) Scan(...any) error { return r.err }
 
-type failingStarter struct {
+type probeStarter struct {
 	TxStarter
-	query string
-	err   error
+	probe *sqlProbe
 }
 
-func (s failingStarter) Begin(ctx context.Context) (pgx.Tx, error) {
+func (s probeStarter) Begin(ctx context.Context) (pgx.Tx, error) {
 	tx, err := s.TxStarter.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return failingTx{Tx: tx, query: s.query, err: s.err}, nil
+	return probeTx{Tx: tx, probe: s.probe}, nil
+}
+
+func (k drainKit) probed(probe *sqlProbe) *IssueWakeupService {
+	return &IssueWakeupService{Tasks: &TaskService{Queries: k.s.Tasks.Queries, TxStarter: probeStarter{TxStarter: k.f.Pool, probe: probe}, Bus: k.s.Tasks.Bus}}
 }
 
 func TestScopedDrainRealDatabaseErrorsStayRetryable(t *testing.T) {
@@ -444,8 +534,7 @@ func TestScopedDrainRealDatabaseErrorsStayRetryable(t *testing.T) {
 	k.f.Comment(t, second, "unhealthy: creation fails")
 
 	boom := errors.New("injected database failure")
-	failing := &IssueWakeupService{Tasks: &TaskService{Queries: k.s.Tasks.Queries, TxStarter: failingStarter{TxStarter: k.f.Pool, query: "-- name: CreateDefaultWakeupInstance", err: boom}, Bus: k.s.Tasks.Bus}}
-	err := failing.DrainScopedEvents(context.Background(), parseTestUUID(t, k.f.WorkspaceID))
+	err := k.probed(&sqlProbe{failQuery: "CreateDefaultWakeupInstance", err: boom}).DrainScopedEvents(context.Background(), parseTestUUID(t, k.f.WorkspaceID))
 	if !errors.Is(err, boom) {
 		t.Fatalf("drain error = %v, want the database failure to surface", err)
 	}
@@ -661,5 +750,61 @@ func TestWakeupDefinitionWriteStoresTheEventSelector(t *testing.T) {
 	_, err := k.s.SaveWakeupDefinition(context.Background(), ref, parseTestUUID(t, k.owner), WakeupDefinitionWrite{RuleKey: scopedRuleA, Patch: event})
 	if !errors.Is(err, ErrWakeupInput) {
 		t.Fatalf("an event trigger must still be refused, got %v", err)
+	}
+}
+
+// A burst on one issue is claimed together and resolved once: the issue is
+// locked and its definitions loaded one time for all of its inputs.
+func TestScopedDrainResolvesABurstOnOneIssueOnce(t *testing.T) {
+	k := newDrainKit(t)
+	k.defineRoot(t, "workspace", k.f.WorkspaceID, scopedRuleA, "comment.created")
+	const burst = 30
+	for range burst {
+		k.comment(t, "burst")
+	}
+	probe := &sqlProbe{}
+	if err := k.probed(probe).DrainScopedEvents(context.Background(), parseTestUUID(t, k.f.WorkspaceID)); err != nil {
+		t.Fatal(err)
+	}
+	if got := k.pending(t); got != 0 {
+		t.Fatalf("pending = %d, want the whole burst handled in one pass", got)
+	}
+	if locks, loads, creates := probe.count("LockWakeupIssue"), probe.count("ListWakeupDefinitionsInScope"), probe.count("CreateDefaultWakeupInstance"); locks != 1 || loads != 3 || creates != 1 {
+		t.Fatalf("issue locks=%d definition loads=%d instance creations=%d, want 1, 3 (workspace, project and issue scope) and 1 for %d inputs", locks, loads, creates, burst)
+	}
+	if got := k.receipts(t, scopedRuleA); len(got) != 1 || got[0].Count != burst {
+		t.Fatalf("receipts = %+v, want one receipt coalescing the burst", got)
+	}
+}
+
+// One input that cannot be handled holds back only itself: the rest of its
+// issue's inputs are claimed again and delivered.
+func TestScopedDrainAPoisonedInputDoesNotBlockItsIssue(t *testing.T) {
+	k := newDrainKit(t)
+	k.defineRoot(t, "workspace", k.f.WorkspaceID, scopedRuleA, "comment.created")
+	for range 3 {
+		k.comment(t, "burst")
+	}
+	var poisoned string
+	if err := k.f.Pool.QueryRow(context.Background(), `SELECT event_key FROM wakeup_scoped_event WHERE workspace_id=$1 ORDER BY captured_at,id OFFSET 1 LIMIT 1`, k.f.WorkspaceID).Scan(&poisoned); err != nil {
+		t.Fatal(err)
+	}
+	boom := errors.New("injected replay failure")
+	err := k.probed(&sqlProbe{failQuery: "ReplayScopedWakeupEvent", failArg: poisoned, err: boom}).DrainScopedEvents(context.Background(), parseTestUUID(t, k.f.WorkspaceID))
+	if !errors.Is(err, boom) {
+		t.Fatalf("drain error = %v, want the injected failure", err)
+	}
+	var stuck, retrying int
+	if err := k.f.Pool.QueryRow(context.Background(), `SELECT count(*) FILTER (WHERE handled_at IS NULL),count(*) FILTER (WHERE handled_at IS NULL AND retry_at>now() AND event_key=$2) FROM wakeup_scoped_event WHERE workspace_id=$1`, k.f.WorkspaceID, poisoned).Scan(&stuck, &retrying); err != nil {
+		t.Fatal(err)
+	}
+	if stuck != 1 || retrying != 1 {
+		t.Fatalf("pending=%d retrying=%d, want only the poisoned input left, waiting for its retry", stuck, retrying)
+	}
+	if got := k.receipts(t, scopedRuleA); len(got) != 1 || got[0].Count != 2 {
+		t.Fatalf("receipts = %+v, want the two healthy events delivered", got)
+	}
+	if got := len(k.instances(t, k.issue)); got != 1 {
+		t.Fatalf("instances = %d, want 1: the rolled-back attempt must leave none behind", got)
 	}
 }
