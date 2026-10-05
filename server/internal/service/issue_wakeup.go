@@ -1374,5 +1374,13 @@ func (s *IssueWakeupService) checkJoinedAtStart(ctx context.Context, task db.Age
 			return ErrWakeupForbidden
 		}
 	}
+	// The limit the firing was joined under still binds it at start.
+	limit := entry.FireLimit
+	if cfgLimit, limited := config.fireLimit(); limited && (limit == 0 || cfgLimit < limit) {
+		limit = cfgLimit
+	}
+	if limit > 0 {
+		return s.checkJoinedFireCap(ctx, task, entry, limit)
+	}
 	return nil
 }

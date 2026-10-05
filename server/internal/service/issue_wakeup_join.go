@@ -426,8 +426,18 @@ func (s *IssueWakeupService) mayJoin(ctx context.Context, q *db.Queries, issue d
 		// Facts the filters refuse are dropped by the rule's own dispatch.
 		return "", false, nil
 	}
-	if limit, limited := config.fireLimit(); limited && w.FireCount >= limit || config.expired(w.CreatedAt.Time, time.Now()) {
+	if config.expired(w.CreatedAt.Time, time.Now()) {
 		return "", false, nil
+	}
+	if limit, limited := config.fireLimit(); limited {
+		// Inputs other runs already took are firings that count too.
+		others, err := otherCarrierSlots(ctx, q, w, task.ID, false)
+		if err != nil {
+			return "", false, err
+		}
+		if w.FireCount+others >= limit {
+			return "", false, nil
+		}
 	}
 	target, err := builtinTarget(ctx, s, q, issue, config)
 	if err != nil || target.Refused != "" || target.Agent.ID != task.AgentID {

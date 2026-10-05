@@ -435,7 +435,10 @@ func (s *IssueWakeupService) processChildEvents(ctx context.Context, parentID pg
 		}
 		return tx.Commit(ctx)
 	}
-	parent, err := q.GetIssue(ctx, parentID)
+	// The same lock order as dispatch: the issue, then the instance. The rule is
+	// read under both, so the configuration it is rebased from is the one it
+	// has now, not one a concurrent dispatch already moved it past.
+	parent, err := q.LockWakeupIssue(ctx, parentID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return finish()
 	}
@@ -451,6 +454,9 @@ func (s *IssueWakeupService) processChildEvents(ctx context.Context, parentID pg
 	}
 	ensured, err := EnsureChildDoneRule(ctx, tx, q, parent)
 	if err != nil {
+		return err
+	}
+	if ensured, err = q.LockIssueWakeup(ctx, ensured.ID); err != nil {
 		return err
 	}
 	rules, err := q.ListChildConditionWakeups(ctx, parent.ID)
