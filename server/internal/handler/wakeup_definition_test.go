@@ -405,7 +405,7 @@ func TestWakeupDefinitionRejectsUnimplementedAndInvalidConfig(t *testing.T) {
 		"trigger kind of built-in": cfg(map[string]any{"trigger": prTrigger}),
 		"aggregate limit zero":     cfg(map[string]any{"aggregate_limit": 0}),
 		"aggregate limit too high": cfg(map[string]any{"aggregate_limit": 1001}),
-		"active run":               cfg(map[string]any{"active_run": "defer"}),
+		"unknown active run":       cfg(map[string]any{"active_run": "queue"}),
 		"schedule":                 cfg(map[string]any{"schedule": map[string]any{"every_seconds": 3600}}),
 		"unknown field":            cfg(map[string]any{"surprise": true}),
 		"future version":           {"v": 2, "name": "x"},
@@ -927,7 +927,7 @@ func TestWakeupDefinitionListFailsLoudlyWhenResolutionFails(t *testing.T) {
 	}
 }
 
-func TestWakeupDefinitionTrimsBranchesAndNamesTheFirstUnsupportedField(t *testing.T) {
+func TestWakeupDefinitionTrimsBranchesAndNamesTheUnsupportedField(t *testing.T) {
 	k := newWakeupDefinitionKit(t)
 	saved := decodeDefinition(t, k.project().put("pr_merged", 0, cfg(map[string]any{"filters": map[string]any{"base_branch": "  main ", "head_branch": "feature/x"}})).Want(http.StatusOK))
 	if !strings.Contains(string(saved.Config), `"base_branch":"main"`) {
@@ -936,8 +936,8 @@ func TestWakeupDefinitionTrimsBranchesAndNamesTheFirstUnsupportedField(t *testin
 	k.project().put("pr_merged", saved.Revision, cfg(map[string]any{"filters": map[string]any{"base_branch": "   "}})).Want(http.StatusBadRequest)
 	for i := 0; i < 20; i++ {
 		resp := k.project().put("pr_merged", 0, cfg(map[string]any{"schedule": map[string]any{}, "active_run": "defer"})).Want(http.StatusBadRequest)
-		if !strings.Contains(resp.Text(), "active_run") {
-			t.Fatalf("the error must name the first unsupported field every time: %s", resp.Text())
+		if !strings.Contains(resp.Text(), "schedule") {
+			t.Fatalf("the error must name the unsupported field every time: %s", resp.Text())
 		}
 	}
 }

@@ -32,8 +32,8 @@ import (
 // TestBuiltinExecutionClassifiesEveryPatchField keeps both lists in step with
 // WakeupConfigPatch.
 var (
-	builtinExecutedFields = []string{"enabled", "name", "trigger", "target", "instruction", "mode", "max_fires", "expiry", "rate_limit", "aggregate_limit", "filters"}
-	builtinHeldFields     = []string{"schedule", "active_run"}
+	builtinExecutedFields = []string{"enabled", "name", "trigger", "target", "instruction", "mode", "max_fires", "expiry", "rate_limit", "aggregate_limit", "filters", "active_run"}
+	builtinHeldFields     = []string{"schedule"}
 )
 
 // errWakeupConfigHeld marks a rule whose stored configuration this build cannot
@@ -103,8 +103,11 @@ func loadBuiltinWakeup(ctx context.Context, q *db.Queries, issue db.Issue, rule 
 	}
 	b := &builtinWakeup{Eff: eff}
 	c := eff.Config
-	if c.Schedule.Set || c.ActiveRun.Set {
-		return nil, heldConfig("schedule and active_run are not executed yet")
+	if c.Schedule.Set {
+		return nil, heldConfig("schedule is not executed yet")
+	}
+	if c.ActiveRun.Set && !validWakeupActiveRun(c.ActiveRun.Value) {
+		return nil, heldConfig("unreadable active_run")
 	}
 	for _, cap := range eff.AggregateCaps {
 		if cap.Limit < 1 {

@@ -30,9 +30,9 @@ func WakeupDefinitionTriggerKinds() []string { return slices.Clone(builtinWakeup
 var builtinWakeupRules = []string{SystemRuleChildDone, SystemRulePRMerged, SystemRulePRChecksFailed}
 
 // WakeupDefinitionFields lists the patch fields a definition may set today.
-// active_run and schedule belong to later layers.
+// schedule belongs to a later layer.
 func WakeupDefinitionFields() []string {
-	return []string{"enabled", "name", "trigger", "target", "instruction", "mode", "max_fires", "expiry", "rate_limit", "aggregate_limit", "filters"}
+	return []string{"enabled", "name", "trigger", "target", "instruction", "mode", "max_fires", "expiry", "rate_limit", "aggregate_limit", "filters", "active_run"}
 }
 
 type wakeupTriggerSpec struct {
@@ -141,13 +141,8 @@ type wakeupPatchRefs struct {
 // checked on the resolved rule by validateEffectiveWakeup.
 func validateWakeupPatch(ruleKey string, p WakeupConfigPatch, now time.Time) (wakeupPatchRefs, error) {
 	var refs wakeupPatchRefs
-	for _, unsupported := range []struct {
-		name string
-		set  bool
-	}{{"active_run", p.ActiveRun.Set}, {"schedule", p.Schedule.Set}} {
-		if unsupported.set {
-			return refs, wakeupDefinitionBad("%s is not available yet", unsupported.name)
-		}
+	if p.Schedule.Set {
+		return refs, wakeupDefinitionBad("schedule is not available yet")
 	}
 	if len(setWakeupFields(p)) == 0 {
 		return refs, wakeupDefinitionBad("a definition sets at least one field; delete it to inherit")
@@ -158,6 +153,9 @@ func validateWakeupPatch(ruleKey string, p WakeupConfigPatch, now time.Time) (wa
 	}
 	if live(p.Instruction, p.Instruction.Null) && (p.Instruction.Value == "" || len(p.Instruction.Value) > maxWakeupDefinitionInstruction) {
 		return refs, wakeupDefinitionBad("instruction must be 1–%d bytes", maxWakeupDefinitionInstruction)
+	}
+	if live(p.ActiveRun, p.ActiveRun.Null) && !validWakeupActiveRun(p.ActiveRun.Value) {
+		return refs, wakeupDefinitionBad("active_run must be suppress or defer")
 	}
 	if live(p.Mode, p.Mode.Null) && p.Mode.Value != "once" && p.Mode.Value != "continuous" {
 		return refs, wakeupDefinitionBad("mode must be once or continuous")

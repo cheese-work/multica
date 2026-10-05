@@ -1147,6 +1147,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	if waiting {
 		return commit()
 	}
+	deferring := config.defersActiveRun()
 	if isPRWakeup {
 		pendingTask, err := q.HasPendingIssueTaskForAgent(ctx, db.HasPendingIssueTaskForAgentParams{IssueID: issue.ID, AgentID: agent.ID})
 		if err != nil {
@@ -1155,11 +1156,21 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		if pendingTask {
 			return commit()
 		}
+	}
+	if isPRWakeup || deferring {
 		startedAt, err := q.GetRunningTaskStartForIssueAndAgent(ctx, db.GetRunningTaskStartForIssueAndAgentParams{IssueID: issue.ID, AgentID: agent.ID})
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
 		if err == nil {
+			// A deferring rule keeps every fact for the next idle pass; a
+			// suppressing one consumes what arrived after the run started.
+			if deferring {
+				if err := deferForActiveRun(ctx, q, w, current, receipts, now, note); err != nil {
+					return err
+				}
+				return commit()
+			}
 			var suppressed []db.IssueWakeupReceipt
 			for _, receipt := range receipts {
 				if !receipt.CreatedAt.Valid || !receipt.CreatedAt.Time.Before(startedAt.Time) {
