@@ -316,11 +316,16 @@ VALUES ($1, 'workspace', $1, 'child_done', 12)
 INSERT INTO wakeup_aggregate_reservation (workspace_id, scope_kind, scope_id, rule_key, task_id, wakeup_id, reserved_at)
 VALUES ($1, 'workspace', $1, 'child_done', gen_random_uuid(), gen_random_uuid(), now())
 `, wsID)
+	dbfx.Exec(t, `
+INSERT INTO wakeup_scoped_event (workspace_id, issue_id, event_type, event_key, payload, captured_at)
+VALUES ($1, gen_random_uuid(), 'comment.created', 'workspace-delete', '{}', now())
+`, wsID)
 
 	t.Cleanup(func() {
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM issue_wakeup_definition WHERE workspace_id = $1`, wsID)
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM wakeup_aggregate_budget WHERE workspace_id = $1`, wsID)
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM wakeup_aggregate_reservation WHERE workspace_id = $1`, wsID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM wakeup_scoped_event WHERE workspace_id = $1`, wsID)
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM task_usage_hourly_dirty WHERE workspace_id = $1`, wsID)
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM task_usage_hourly WHERE workspace_id = $1`, wsID)
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM runtime_profile WHERE id = $1`, runtimeProfileID)
@@ -371,6 +376,7 @@ VALUES ($1, 'workspace', $1, 'child_done', gen_random_uuid(), gen_random_uuid(),
 		"issue_wakeup_definition",
 		"wakeup_aggregate_budget",
 		"wakeup_aggregate_reservation",
+		"wakeup_scoped_event",
 	} {
 		var count int
 		dbfx.QueryRow(t, `SELECT COUNT(*) FROM `+table+` WHERE workspace_id = $1`, wsID).Scan(&count)

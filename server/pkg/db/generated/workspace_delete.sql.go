@@ -245,6 +245,8 @@ WITH deleted_wakeup_pr_events AS (
  DELETE FROM wakeup_aggregate_reservation WHERE workspace_id=$1
 ), deleted_wakeup_aggregate_budgets AS (
  DELETE FROM wakeup_aggregate_budget WHERE workspace_id=$1
+), deleted_wakeup_scoped_events AS (
+ DELETE FROM wakeup_scoped_event WHERE workspace_id=$1
 ),
 deleted_child_events AS (
  DELETE FROM issue_child_event WHERE workspace_id=$1
