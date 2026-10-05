@@ -401,9 +401,10 @@ func (o *Observer) Observe(_ context.Context, in Input) Result {
 		return result
 	}
 
-	deadline := in.Deadline
-	if deadline.IsZero() {
-		deadline = time.Now().Add(Budget)
+	// Clamp: a caller-supplied deadline never extends Budget (see Input.Deadline).
+	deadline := time.Now().Add(Budget)
+	if !in.Deadline.IsZero() && in.Deadline.Before(deadline) {
+		deadline = in.Deadline
 	}
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
