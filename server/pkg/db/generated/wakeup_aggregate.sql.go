@@ -12,7 +12,7 @@ import (
 )
 
 const clearWakeupAggregateBlocked = `-- name: ClearWakeupAggregateBlocked :exec
-UPDATE issue_wakeup SET aggregate_blocked_scope_kind=NULL,aggregate_blocked_scope_id=NULL,aggregate_blocked_since=NULL,aggregate_retry_at=NULL
+UPDATE issue_wakeup SET aggregate_blocked_scope_kind=NULL,aggregate_blocked_scope_id=NULL,aggregate_retry_at=NULL
 WHERE id= $1 AND aggregate_retry_at IS NOT NULL
 `
 
@@ -26,8 +26,7 @@ SELECT count(*) FROM issue_wakeup w
 WHERE w.workspace_id= $1 AND w.aggregate_blocked_scope_kind= $2 AND w.aggregate_blocked_scope_id= $3
  AND w.aggregate_retry_at> $4 AND COALESCE(w.system_rule,w.default_rule_key)= $5::text
  AND w.id<> $6
- AND ($7::timestamptz IS NULL OR (w.aggregate_blocked_since,w.id)<($7::timestamptz, $6::uuid))
- AND EXISTS(SELECT 1 FROM issue_wakeup_receipt r WHERE r.wakeup_id=w.id AND r.processed_at IS NULL)
+ AND ((SELECT min(r.created_at) FROM issue_wakeup_receipt r WHERE r.wakeup_id=w.id AND r.processed_at IS NULL),w.id)<($7::timestamptz, $6::uuid)
 `
 
 type CountOlderWakeupAggregateWaitersParams struct {
@@ -40,11 +39,12 @@ type CountOlderWakeupAggregateWaitersParams struct {
 	Since       pgtype.Timestamptz `json:"since"`
 }
 
-// Instances this counter is already holding back that have waited longer than
-// the asking one (a fresh ask, with no since, is behind all of them) and still
-// have facts pending. They are first in line for any room the counter has. A
-// waiter whose retry time is older than fresh_after has stopped being retried
-// (its rule is held, say) and keeps nobody else waiting.
+// Instances this counter is already holding back whose oldest pending fact is
+// older than the asking instance's (since). Age is the age of the facts still
+// pending, so facts consumed without a start take their place in line with them,
+// and an instance with nothing pending is not waiting. They are first in line for
+// any room the counter has. A waiter whose retry time is older than fresh_after
+// has stopped being retried (its rule is held, say) and keeps nobody else waiting.
 func (q *Queries) CountOlderWakeupAggregateWaiters(ctx context.Context, arg CountOlderWakeupAggregateWaitersParams) (int64, error) {
 	row := q.db.QueryRow(ctx, countOlderWakeupAggregateWaiters,
 		arg.WorkspaceID,
@@ -93,28 +93,24 @@ func (q *Queries) LockWakeupAggregateBudget(ctx context.Context, arg LockWakeupA
 }
 
 const markWakeupAggregateBlocked = `-- name: MarkWakeupAggregateBlocked :exec
-UPDATE issue_wakeup SET aggregate_blocked_scope_kind= $1,aggregate_blocked_scope_id= $2,aggregate_retry_at= $3,
- aggregate_blocked_since=COALESCE(aggregate_blocked_since, $4)
-WHERE id= $5
+UPDATE issue_wakeup SET aggregate_blocked_scope_kind= $1,aggregate_blocked_scope_id= $2,aggregate_retry_at= $3
+WHERE id= $4
 `
 
 type MarkWakeupAggregateBlockedParams struct {
 	ScopeKind pgtype.Text        `json:"scope_kind"`
 	ScopeID   pgtype.UUID        `json:"scope_id"`
 	RetryAt   pgtype.Timestamptz `json:"retry_at"`
-	Since     pgtype.Timestamptz `json:"since"`
 	ID        pgtype.UUID        `json:"id"`
 }
 
 // A full counter delays the instance: it keeps its pending facts, names the
 // counter and says when the scheduler may look again.
-// Its place in line (aggregate_blocked_since) is kept across re-checks.
 func (q *Queries) MarkWakeupAggregateBlocked(ctx context.Context, arg MarkWakeupAggregateBlockedParams) error {
 	_, err := q.db.Exec(ctx, markWakeupAggregateBlocked,
 		arg.ScopeKind,
 		arg.ScopeID,
 		arg.RetryAt,
-		arg.Since,
 		arg.ID,
 	)
 	return err

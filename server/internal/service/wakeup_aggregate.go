@@ -45,13 +45,22 @@ const (
 	maxWakeupDefinitionAggregateLimit = 1000
 )
 
-// aggregateStart is the one new paid start asking for admission. BlockedSince is
-// when the instance was first delayed by this rule's counters (zero for a fresh
-// ask), which fixes its place in line.
+// aggregateStart is the one new paid start asking for admission. FactAge is when
+// the oldest fact it would carry arrived, which fixes its place in line: facts
+// that were consumed without a start no longer count, so an instance that
+// receives a new fact after its old ones were dealt with queues as a new fact.
 type aggregateStart struct {
 	WorkspaceID, WakeupID, TaskID pgtype.UUID
 	RuleKey                       string
-	BlockedSince                  time.Time
+	FactAge                       time.Time
+}
+
+// factAge is the asking fact's age; a start that names none is as young as now.
+func (a aggregateStart) factAge(now time.Time) time.Time {
+	if a.FactAge.IsZero() {
+		return now
+	}
+	return a.FactAge
 }
 
 // aggregateAdmission is the outcome. When not admitted, Blocked is the counter
@@ -107,7 +116,7 @@ func admitAggregateStart(ctx context.Context, q *db.Queries, start aggregateStar
 		}
 		older, err := q.CountOlderWakeupAggregateWaiters(ctx, db.CountOlderWakeupAggregateWaitersParams{
 			WorkspaceID: start.WorkspaceID, ScopeKind: pgtype.Text{String: string(c.Scope), Valid: true}, ScopeID: c.ScopeID, RuleKey: start.RuleKey,
-			WakeupID: start.WakeupID, Since: pgtype.Timestamptz{Time: start.BlockedSince, Valid: !start.BlockedSince.IsZero()},
+			WakeupID: start.WakeupID, Since: pgtype.Timestamptz{Time: start.factAge(now), Valid: true},
 			FreshAfter: pgtype.Timestamptz{Time: now.Add(-wakeupAggregateWaiterStale), Valid: true},
 		})
 		if err != nil {
@@ -209,4 +218,15 @@ func checkWakeupAggregateScope(kind WakeupScope, p WakeupConfigPatch) error {
 func aggregateCounterBusy(err error) bool {
 	var pg *pgconn.PgError
 	return errors.As(err, &pg) && pg.Code == "55P03"
+}
+
+// oldestReceiptAge is when the oldest of the facts arrived; zero when there are none.
+func oldestReceiptAge(receipts []db.IssueWakeupReceipt) time.Time {
+	var oldest time.Time
+	for _, r := range receipts {
+		if r.CreatedAt.Valid && (oldest.IsZero() || r.CreatedAt.Time.Before(oldest)) {
+			oldest = r.CreatedAt.Time
+		}
+	}
+	return oldest
 }

@@ -26,17 +26,17 @@ SELECT (SELECT count(*) FROM counted)::bigint AS used,
  (SELECT c.reserved_at FROM counted c WHERE c.n=(SELECT count(*) FROM counted)- sqlc.arg(starts_per_hour)::bigint+1)::timestamptz AS free_at;
 
 -- name: CountOlderWakeupAggregateWaiters :one
--- Instances this counter is already holding back that have waited longer than
--- the asking one (a fresh ask, with no since, is behind all of them) and still
--- have facts pending. They are first in line for any room the counter has. A
--- waiter whose retry time is older than fresh_after has stopped being retried
--- (its rule is held, say) and keeps nobody else waiting.
+-- Instances this counter is already holding back whose oldest pending fact is
+-- older than the asking instance's (since). Age is the age of the facts still
+-- pending, so facts consumed without a start take their place in line with them,
+-- and an instance with nothing pending is not waiting. They are first in line for
+-- any room the counter has. A waiter whose retry time is older than fresh_after
+-- has stopped being retried (its rule is held, say) and keeps nobody else waiting.
 SELECT count(*) FROM issue_wakeup w
 WHERE w.workspace_id= @workspace_id AND w.aggregate_blocked_scope_kind= @scope_kind AND w.aggregate_blocked_scope_id= @scope_id
  AND w.aggregate_retry_at> @fresh_after AND COALESCE(w.system_rule,w.default_rule_key)= @rule_key::text
  AND w.id<> @wakeup_id
- AND (sqlc.narg(since)::timestamptz IS NULL OR (w.aggregate_blocked_since,w.id)<(sqlc.narg(since)::timestamptz, @wakeup_id::uuid))
- AND EXISTS(SELECT 1 FROM issue_wakeup_receipt r WHERE r.wakeup_id=w.id AND r.processed_at IS NULL);
+ AND ((SELECT min(r.created_at) FROM issue_wakeup_receipt r WHERE r.wakeup_id=w.id AND r.processed_at IS NULL),w.id)<(sqlc.arg(since)::timestamptz, @wakeup_id::uuid);
 
 -- name: ReserveWakeupAggregateStart :exec
 -- One task counts once against one counter however often admission is retried.
@@ -47,13 +47,11 @@ ON CONFLICT (workspace_id,scope_kind,scope_id,rule_key,task_id) DO NOTHING;
 -- name: MarkWakeupAggregateBlocked :exec
 -- A full counter delays the instance: it keeps its pending facts, names the
 -- counter and says when the scheduler may look again.
--- Its place in line (aggregate_blocked_since) is kept across re-checks.
-UPDATE issue_wakeup SET aggregate_blocked_scope_kind= @scope_kind,aggregate_blocked_scope_id= @scope_id,aggregate_retry_at= @retry_at,
- aggregate_blocked_since=COALESCE(aggregate_blocked_since, @since)
+UPDATE issue_wakeup SET aggregate_blocked_scope_kind= @scope_kind,aggregate_blocked_scope_id= @scope_id,aggregate_retry_at= @retry_at
 WHERE id= @id;
 
 -- name: ClearWakeupAggregateBlocked :exec
-UPDATE issue_wakeup SET aggregate_blocked_scope_kind=NULL,aggregate_blocked_scope_id=NULL,aggregate_blocked_since=NULL,aggregate_retry_at=NULL
+UPDATE issue_wakeup SET aggregate_blocked_scope_kind=NULL,aggregate_blocked_scope_id=NULL,aggregate_retry_at=NULL
 WHERE id= @id AND aggregate_retry_at IS NOT NULL;
 
 -- name: SummarizeWakeupAggregateBacklog :one
