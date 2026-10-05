@@ -11,6 +11,132 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countWakeupDefinitionsInScope = `-- name: CountWakeupDefinitionsInScope :one
+SELECT count(*) FROM issue_wakeup_definition
+WHERE workspace_id= $1 AND scope_kind= $2 AND scope_id= $3
+`
+
+type CountWakeupDefinitionsInScopeParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ScopeKind   string      `json:"scope_kind"`
+	ScopeID     pgtype.UUID `json:"scope_id"`
+}
+
+func (q *Queries) CountWakeupDefinitionsInScope(ctx context.Context, arg CountWakeupDefinitionsInScopeParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countWakeupDefinitionsInScope, arg.WorkspaceID, arg.ScopeKind, arg.ScopeID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const deleteWakeupDefinition = `-- name: DeleteWakeupDefinition :execrows
+DELETE FROM issue_wakeup_definition
+WHERE workspace_id= $1 AND scope_kind= $2 AND scope_id= $3 AND rule_key= $4 AND revision= $5
+`
+
+type DeleteWakeupDefinitionParams struct {
+	WorkspaceID      pgtype.UUID `json:"workspace_id"`
+	ScopeKind        string      `json:"scope_kind"`
+	ScopeID          pgtype.UUID `json:"scope_id"`
+	RuleKey          string      `json:"rule_key"`
+	ExpectedRevision int64       `json:"expected_revision"`
+}
+
+func (q *Queries) DeleteWakeupDefinition(ctx context.Context, arg DeleteWakeupDefinitionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteWakeupDefinition,
+		arg.WorkspaceID,
+		arg.ScopeKind,
+		arg.ScopeID,
+		arg.RuleKey,
+		arg.ExpectedRevision,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const getWakeupDefinition = `-- name: GetWakeupDefinition :one
+SELECT workspace_id, scope_kind, scope_id, rule_key, root, config, revision, created_by, updated_by, created_at, updated_at FROM issue_wakeup_definition
+WHERE workspace_id= $1 AND scope_kind= $2 AND scope_id= $3 AND rule_key= $4
+`
+
+type GetWakeupDefinitionParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ScopeKind   string      `json:"scope_kind"`
+	ScopeID     pgtype.UUID `json:"scope_id"`
+	RuleKey     string      `json:"rule_key"`
+}
+
+func (q *Queries) GetWakeupDefinition(ctx context.Context, arg GetWakeupDefinitionParams) (IssueWakeupDefinition, error) {
+	row := q.db.QueryRow(ctx, getWakeupDefinition,
+		arg.WorkspaceID,
+		arg.ScopeKind,
+		arg.ScopeID,
+		arg.RuleKey,
+	)
+	var i IssueWakeupDefinition
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.ScopeKind,
+		&i.ScopeID,
+		&i.RuleKey,
+		&i.Root,
+		&i.Config,
+		&i.Revision,
+		&i.CreatedBy,
+		&i.UpdatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const insertWakeupDefinition = `-- name: InsertWakeupDefinition :one
+INSERT INTO issue_wakeup_definition(workspace_id,scope_kind,scope_id,rule_key,root,config,created_by,updated_by)
+VALUES($1,$2,$3,$4,$5,$6,$7,$7)
+ON CONFLICT (workspace_id,scope_kind,scope_id,rule_key) DO NOTHING
+RETURNING workspace_id, scope_kind, scope_id, rule_key, root, config, revision, created_by, updated_by, created_at, updated_at
+`
+
+type InsertWakeupDefinitionParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ScopeKind   string      `json:"scope_kind"`
+	ScopeID     pgtype.UUID `json:"scope_id"`
+	RuleKey     string      `json:"rule_key"`
+	Root        bool        `json:"root"`
+	Config      []byte      `json:"config"`
+	Actor       pgtype.UUID `json:"actor"`
+}
+
+// Never replaces: a definition that already exists yields no row.
+func (q *Queries) InsertWakeupDefinition(ctx context.Context, arg InsertWakeupDefinitionParams) (IssueWakeupDefinition, error) {
+	row := q.db.QueryRow(ctx, insertWakeupDefinition,
+		arg.WorkspaceID,
+		arg.ScopeKind,
+		arg.ScopeID,
+		arg.RuleKey,
+		arg.Root,
+		arg.Config,
+		arg.Actor,
+	)
+	var i IssueWakeupDefinition
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.ScopeKind,
+		&i.ScopeID,
+		&i.RuleKey,
+		&i.Root,
+		&i.Config,
+		&i.Revision,
+		&i.CreatedBy,
+		&i.UpdatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const insertWakeupDefinitionIfAbsent = `-- name: InsertWakeupDefinitionIfAbsent :execrows
 INSERT INTO issue_wakeup_definition(workspace_id,scope_kind,scope_id,rule_key,root,config)
 VALUES($1,$2,$3,$4,false,$5)
@@ -174,4 +300,184 @@ func (q *Queries) ListWakeupDefinitionsForRule(ctx context.Context, arg ListWake
 		return nil, err
 	}
 	return items, nil
+}
+
+const listWakeupDefinitionsInScope = `-- name: ListWakeupDefinitionsInScope :many
+SELECT workspace_id, scope_kind, scope_id, rule_key, root, config, revision, created_by, updated_by, created_at, updated_at FROM issue_wakeup_definition
+WHERE workspace_id= $1 AND scope_kind= $2 AND scope_id= $3
+ORDER BY created_at,rule_key LIMIT 100
+`
+
+type ListWakeupDefinitionsInScopeParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ScopeKind   string      `json:"scope_kind"`
+	ScopeID     pgtype.UUID `json:"scope_id"`
+}
+
+// One scope's definitions; the per-scope ceiling keeps this small.
+func (q *Queries) ListWakeupDefinitionsInScope(ctx context.Context, arg ListWakeupDefinitionsInScopeParams) ([]IssueWakeupDefinition, error) {
+	rows, err := q.db.Query(ctx, listWakeupDefinitionsInScope, arg.WorkspaceID, arg.ScopeKind, arg.ScopeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []IssueWakeupDefinition{}
+	for rows.Next() {
+		var i IssueWakeupDefinition
+		if err := rows.Scan(
+			&i.WorkspaceID,
+			&i.ScopeKind,
+			&i.ScopeID,
+			&i.RuleKey,
+			&i.Root,
+			&i.Config,
+			&i.Revision,
+			&i.CreatedBy,
+			&i.UpdatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockWakeupDefinitionScope = `-- name: LockWakeupDefinitionScope :exec
+SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
+`
+
+// Serializes definition writes of one scope (revision checks, the per-scope
+// ceiling) for the rest of the transaction.
+func (q *Queries) LockWakeupDefinitionScope(ctx context.Context, scopeKey string) error {
+	_, err := q.db.Exec(ctx, lockWakeupDefinitionScope, scopeKey)
+	return err
+}
+
+const lockWorkspaceSettingsForWakeupDefinition = `-- name: LockWorkspaceSettingsForWakeupDefinition :exec
+SELECT id FROM workspace WHERE id= $1 FOR NO KEY UPDATE
+`
+
+// A definition write that touches the settings aliases holds the workspace row
+// from its revision check to its commit, so a settings writer cannot slip in
+// between: every settings write is an UPDATE of this row, which takes the same
+// NO KEY UPDATE lock. That mode does not block the FOR KEY SHARE that rows
+// referencing the workspace take, as a plain FOR UPDATE would.
+func (q *Queries) LockWorkspaceSettingsForWakeupDefinition(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockWorkspaceSettingsForWakeupDefinition, workspaceID)
+	return err
+}
+
+const retireCustomizedSystemWakeup = `-- name: RetireCustomizedSystemWakeup :one
+UPDATE issue_wakeup SET customized_at=NULL,instruction='',
+ enabled=CASE WHEN paused_reason IS NULL AND disabled_at IS NULL THEN $1::bool ELSE enabled END,
+ updated_at=clock_timestamp()
+WHERE id= $2 AND customized_at IS NOT NULL
+RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint
+`
+
+type RetireCustomizedSystemWakeupParams struct {
+	Enabled bool        `json:"enabled"`
+	ID      pgtype.UUID `json:"id"`
+}
+
+// Reset an issue's legacy override to inheritance. Pauses, fire counts and
+// consumed state stay as they are: enabled follows the inherited value only on
+// a row nothing has paused or ended.
+func (q *Queries) RetireCustomizedSystemWakeup(ctx context.Context, arg RetireCustomizedSystemWakeupParams) (IssueWakeup, error) {
+	row := q.db.QueryRow(ctx, retireCustomizedSystemWakeup, arg.Enabled, arg.ID)
+	var i IssueWakeup
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.AgentID,
+		&i.CreatedBy,
+		&i.SourceTaskID,
+		&i.ParentCommentID,
+		&i.Instruction,
+		&i.Kind,
+		&i.Mode,
+		&i.EventTypes,
+		&i.FilterAgentID,
+		&i.FilterTaskID,
+		&i.IntervalSeconds,
+		&i.CronExpression,
+		&i.Timezone,
+		&i.NextFireAt,
+		&i.Enabled,
+		&i.DisabledAt,
+		&i.Revision,
+		&i.LastTaskID,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.FilterActorType,
+		&i.FilterActorID,
+		&i.ExpiresAt,
+		&i.ExpirySeconds,
+		&i.OnTimeout,
+		&i.TimedOutAt,
+		&i.SystemRule,
+		&i.CustomizedAt,
+		&i.Condition,
+		&i.ConditionState,
+		&i.MaxFires,
+		&i.FireCount,
+		&i.PausedReason,
+		&i.DefaultRuleKey,
+		&i.DefaultScopeKind,
+		&i.DefaultScopeID,
+		&i.ConfigFingerprint,
+	)
+	return i, err
+}
+
+const updateWakeupDefinition = `-- name: UpdateWakeupDefinition :one
+UPDATE issue_wakeup_definition
+SET config= $1,revision=revision+1,updated_by= $2,updated_at=clock_timestamp()
+WHERE workspace_id= $3 AND scope_kind= $4 AND scope_id= $5 AND rule_key= $6 AND revision= $7
+RETURNING workspace_id, scope_kind, scope_id, rule_key, root, config, revision, created_by, updated_by, created_at, updated_at
+`
+
+type UpdateWakeupDefinitionParams struct {
+	Config           []byte      `json:"config"`
+	Actor            pgtype.UUID `json:"actor"`
+	WorkspaceID      pgtype.UUID `json:"workspace_id"`
+	ScopeKind        string      `json:"scope_kind"`
+	ScopeID          pgtype.UUID `json:"scope_id"`
+	RuleKey          string      `json:"rule_key"`
+	ExpectedRevision int64       `json:"expected_revision"`
+}
+
+// Compare-and-swap on the revision the caller observed; no row means it moved.
+func (q *Queries) UpdateWakeupDefinition(ctx context.Context, arg UpdateWakeupDefinitionParams) (IssueWakeupDefinition, error) {
+	row := q.db.QueryRow(ctx, updateWakeupDefinition,
+		arg.Config,
+		arg.Actor,
+		arg.WorkspaceID,
+		arg.ScopeKind,
+		arg.ScopeID,
+		arg.RuleKey,
+		arg.ExpectedRevision,
+	)
+	var i IssueWakeupDefinition
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.ScopeKind,
+		&i.ScopeID,
+		&i.RuleKey,
+		&i.Root,
+		&i.Config,
+		&i.Revision,
+		&i.CreatedBy,
+		&i.UpdatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }

@@ -70,6 +70,9 @@ type WakeupResolveInput struct {
 	Workspace   *WakeupDefinition
 	Project     *WakeupDefinition
 	Issue       *WakeupDefinition
+	// settings are the workspace settings the chain was read with. Resolution
+	// ignores them; the definition API uses them to predict alias read-back.
+	settings []byte
 }
 
 // WakeupAggregateCap is one scope's own starts/hour cap shared by every

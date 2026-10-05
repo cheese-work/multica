@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -129,6 +130,22 @@ func wakeupContentRevision(parts ...string) int64 {
 // to the inherited default (on, no instruction). The legacy 4,000-byte
 // instruction limit applies to the alias.
 func (s *IssueWakeupService) ApplyWorkspaceWakeupAliases(ctx context.Context, workspaceID pgtype.UUID, ruleKey string, p WakeupConfigPatch) (WakeupConfigPatch, error) {
+	tx, err := s.Tasks.TxStarter.Begin(ctx)
+	if err != nil {
+		return p, err
+	}
+	defer tx.Rollback(ctx)
+	rest, err := applyWorkspaceWakeupAliasesTx(ctx, tx, s.Tasks.Queries.WithTx(tx), workspaceID, ruleKey, p)
+	if err != nil {
+		return p, err
+	}
+	return rest, tx.Commit(ctx)
+}
+
+// applyWorkspaceWakeupAliasesTx is ApplyWorkspaceWakeupAliases inside the
+// caller's transaction, so the alias effects (settings, and for child_done the
+// legacy instances and receipts) commit or roll back with the caller's writes.
+func applyWorkspaceWakeupAliasesTx(ctx context.Context, tx pgx.Tx, q *db.Queries, workspaceID pgtype.UUID, ruleKey string, p WakeupConfigPatch) (WakeupConfigPatch, error) {
 	rest := p
 	switch ruleKey {
 	case SystemRuleChildDone:
@@ -145,7 +162,7 @@ func (s *IssueWakeupService) ApplyWorkspaceWakeupAliases(ctx context.Context, wo
 			}
 			instruction, rest.Instruction = &text, wakeupField[string]{}
 		}
-		if _, err := s.SetChildDoneDefault(ctx, workspaceID, enabled, instruction); err != nil {
+		if _, err := setChildDoneDefaultTx(ctx, tx, q, workspaceID, enabled, instruction); err != nil {
 			return p, err
 		}
 	case SystemRulePRMerged, SystemRulePRChecksFailed:
@@ -161,15 +178,7 @@ func (s *IssueWakeupService) ApplyWorkspaceWakeupAliases(ctx context.Context, wo
 		if err != nil {
 			return p, err
 		}
-		tx, err := s.Tasks.TxStarter.Begin(ctx)
-		if err != nil {
-			return p, err
-		}
-		defer tx.Rollback(ctx)
-		if err := s.Tasks.Queries.WithTx(tx).MergeWorkspaceSettings(ctx, db.MergeWorkspaceSettingsParams{ID: workspaceID, Patch: raw}); err != nil {
-			return p, err
-		}
-		if err := tx.Commit(ctx); err != nil {
+		if err := q.MergeWorkspaceSettings(ctx, db.MergeWorkspaceSettingsParams{ID: workspaceID, Patch: raw}); err != nil {
 			return p, err
 		}
 		rest.Enabled = wakeupField[bool]{}

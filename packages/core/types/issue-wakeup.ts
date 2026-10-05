@@ -197,3 +197,89 @@ export interface WorkspaceWakeupFilters {
   offset: number;
   limit: number;
 }
+
+export type WakeupDefinitionScopeKind = "workspace" | "project" | "issue";
+
+/** Where a definition lives; `workspace` is the current workspace. */
+export type WakeupDefinitionScope =
+  | { kind: "workspace" }
+  | { kind: "project"; id: string }
+  | { kind: "issue"; id: string };
+
+/**
+ * A scoped definition's sparse configuration patch. An absent field inherits,
+ * an explicit `null` clears an inherited value. Unknown fields from a newer
+ * server are preserved.
+ */
+export interface WakeupDefinitionConfig {
+  v: number;
+  enabled?: boolean | null;
+  name?: string | null;
+  trigger?: { kind: string } | null;
+  /** `type` is absent when the viewer may not see the target (`redacted`). */
+  target?: { type?: "assignee" | "agent" | "squad"; id?: string; redacted?: boolean } | null;
+  instruction?: string | null;
+  mode?: "once" | "continuous" | null;
+  max_fires?: number | null;
+  expiry?: { at?: string; after_seconds?: number } | null;
+  rate_limit?: number | null;
+  filters?: {
+    base_branch?: string;
+    head_branch?: string;
+    ci?: "failure" | "error" | "both";
+    labels?: string[];
+    priorities?: string[];
+  } | null;
+  [unknown: string]: unknown;
+}
+
+export interface WakeupDefinition {
+  scope: WakeupDefinitionScopeKind;
+  scope_id: string;
+  /** `child_done`, `pr_merged`, `pr_checks_failed`, or a custom rule's UUID. */
+  rule_key: string;
+  /** The definition that created a custom rule. */
+  root: boolean;
+  /**
+   * A decimal string: workspace alias revisions reach 62 bits, which a JSON
+   * number loses. Send it back unchanged on a write; a stale one is refused
+   * with 409, and "0" means the definition does not exist yet.
+   */
+  revision: string;
+  config: WakeupDefinitionConfig;
+  updated_at: string | null;
+  /** The viewer may not see the target agent: target and instruction are withheld. */
+  redacted: boolean;
+}
+
+export interface WakeupCapabilities {
+  /** The server-side activation gate; hide editing while false. */
+  definition_writes: boolean;
+  trigger_kinds: string[];
+  fields: string[];
+}
+
+export interface WakeupDefinitionList {
+  definitions: WakeupDefinition[];
+  capabilities: WakeupCapabilities;
+}
+
+/** One rule as it resolves at a scope, with where each field came from. */
+export interface WakeupEffectiveRule {
+  rule_key: string;
+  scope: WakeupDefinitionScopeKind;
+  applicable: boolean;
+  /** `no_root` when a custom rule's root definition is gone. */
+  inapplicable_reason: string;
+  /** Configuration state only; `execution` carries the issue instance's pause state. */
+  enabled: boolean;
+  config: WakeupDefinitionConfig;
+  sources: Record<string, string>;
+  /** Fields this scope sets over an inherited value. */
+  overrides: string[];
+  aggregate_caps: { scope: string; scope_id: string; limit: number }[];
+  fingerprint: string;
+  execution: { instance_id: string; enabled: boolean; paused_reason: string | null } | null;
+  redacted: boolean;
+  capabilities: WakeupCapabilities;
+}

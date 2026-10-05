@@ -2122,6 +2122,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/wakeups/{wakeupID}/runs", h.ListIssueWakeupRuns)
 					r.Get("/system-wakeups", h.ListIssueSystemWakeups)
 					r.Put("/system-wakeups/{rule}", h.UpdateIssueSystemWakeup)
+					r.Route("/wakeup-definitions", func(r chi.Router) {
+						d := h.WakeupDefinitionAPI(service.WakeupScopeIssue)
+						r.Get("/", d.List)
+						r.Post("/preview", d.Preview)
+						r.Put("/{rule}", d.Put)
+						r.Delete("/{rule}", d.Delete)
+						r.Get("/{rule}/effective", d.Effective)
+					})
 					r.Get("/active-task", h.GetActiveTaskForIssue)
 					r.Post("/tasks/{taskId}/cancel", h.CancelTask)
 					r.With(handler.RequireHumanActor).Post("/tasks/{taskId}/supplements", h.CreateTaskSupplement)
@@ -2225,6 +2233,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/resources", h.CreateProjectResource)
 					r.Put("/resources/{resourceId}", h.UpdateProjectResource)
 					r.Delete("/resources/{resourceId}", h.DeleteProjectResource)
+					r.Route("/wakeup-definitions", func(r chi.Router) {
+						d := h.WakeupDefinitionAPI(service.WakeupScopeProject)
+						r.Get("/", d.List)
+						r.Post("/", d.Create)
+						r.Post("/preview", d.Preview)
+						r.Put("/{rule}", d.Put)
+						r.Delete("/{rule}", d.Delete)
+						r.Get("/{rule}/effective", d.Effective)
+					})
 				})
 			})
 
@@ -2475,6 +2492,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Get("/api/issue-wakeup-paused", h.ListPausedWakeups)
 			r.Get("/api/system-wakeups", h.ListWorkspaceSystemWakeups)
 			r.Put("/api/system-wakeups/{rule}", h.UpdateWorkspaceSystemWakeup)
+			r.Route("/api/wakeup-definitions", func(r chi.Router) {
+				d := h.WakeupDefinitionAPI(service.WakeupScopeWorkspace)
+				r.Get("/", d.List)
+				r.Post("/", d.Create)
+				r.Post("/preview", d.Preview)
+				r.Put("/{rule}", d.Put)
+				r.Delete("/{rule}", d.Delete)
+				r.Get("/{rule}/effective", d.Effective)
+			})
 
 			// Independent workspace-level list backing the issues-header
 			// "agents working" chip and its assignee-id Table filter.
