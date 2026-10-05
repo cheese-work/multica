@@ -234,7 +234,7 @@ func TestWakeupAggregateMigrationsFollowTheRules(t *testing.T) {
 		"587_wakeup_aggregate_reservation_identity_index": "wakeup_aggregate_reservation_identity_idx",
 		"588_wakeup_aggregate_reservation_window_index":   "wakeup_aggregate_reservation_window_idx",
 		"589_wakeup_aggregate_blocked_index":              "issue_wakeup_aggregate_blocked_idx",
-		"590_wakeup_aggregate_reservation_age_index":      "wakeup_aggregate_reservation_age_idx",
+		"591_wakeup_aggregate_reservation_age_index":      "wakeup_aggregate_reservation_age_idx",
 	} {
 		up := stripSQLComments(readWakeupMigration(t, version, "up"))
 		if strings.Count(up, ";") != 1 || !strings.Contains(up, "INDEX CONCURRENTLY") || !strings.Contains(up, index) {

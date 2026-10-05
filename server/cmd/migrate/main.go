@@ -167,7 +167,7 @@ var concurrentIndexCleanups = map[string]string{
 	"587_wakeup_aggregate_reservation_identity_index":           "wakeup_aggregate_reservation_identity_idx",
 	"588_wakeup_aggregate_reservation_window_index":             "wakeup_aggregate_reservation_window_idx",
 	"589_wakeup_aggregate_blocked_index":                        "issue_wakeup_aggregate_blocked_idx",
-	"590_wakeup_aggregate_reservation_age_index":                "wakeup_aggregate_reservation_age_idx",
+	"591_wakeup_aggregate_reservation_age_index":                "wakeup_aggregate_reservation_age_idx",
 	"558_governance_budget_reservation_attempt_obligation_uidx": "governance_budget_reservation_attempt_obligation_uidx",
 	"557_governance_budget_outbox_due_idx":                      "governance_budget_outbox_due_idx",
 	"556_governance_budget_reservation_root_window_idx":         "governance_budget_reservation_root_window_idx",
@@ -441,7 +441,7 @@ var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
 		Columns:       []string{"workspace_id", "aggregate_blocked_scope_kind", "aggregate_blocked_scope_id"},
 		Predicate:     "aggregate_retry_at IS NOT NULL",
 	},
-	"590_wakeup_aggregate_reservation_age_index": {
+	"591_wakeup_aggregate_reservation_age_index": {
 		IndexRegclass: "wakeup_aggregate_reservation_age_idx",
 		TableRegclass: "wakeup_aggregate_reservation",
 		Columns:       []string{"reserved_at"},

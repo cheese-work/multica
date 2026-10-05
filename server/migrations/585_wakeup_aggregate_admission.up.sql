@@ -6,7 +6,7 @@
 -- the task itself, so a run cancelled or failed before it started gives its slot
 -- back with no release step to lose. An issue_wakeup that a full budget delayed
 -- names it, says since when it waits (its place in line) and when to look
--- again (589 lists them); 590 serves the retention sweep of old reservations. No primary key,
+-- again (589 lists them); 591 serves the retention sweep of old reservations. No primary key,
 -- foreign key or cascade; nothing here is read until a cap resolves.
 CREATE TABLE IF NOT EXISTS wakeup_aggregate_budget (
  workspace_id uuid NOT NULL,
