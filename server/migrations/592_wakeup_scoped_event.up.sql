@@ -5,7 +5,10 @@
 -- issue's workspace, current project or issue scope, and holds references only:
 -- event, actor and source-run ids, issue and project identity, changed-field
 -- names, capture time, and which default instances (id:revision) live capture
--- already delivered the event to, so the drain never counts it twice. Never a
+-- already delivered the event to, so the drain never counts it twice, and the
+-- definitions the event was captured under (scope:rule:revision:updated-micros),
+-- so a definition edited, reset or deleted before the drain disposes the input
+-- instead of delivering it under another configuration. Never a
 -- comment body, attachment URL or event archive.
 -- The scheduler drains it into the existing wakeup receipts and stamps the row
 -- handled with an outcome; handled and expired rows are pruned in bounded
@@ -29,6 +32,7 @@ CREATE TABLE IF NOT EXISTS wakeup_scoped_event (
  actor_id text,
  payload jsonb NOT NULL,
  delivered text[] NOT NULL DEFAULT '{}',
+ chain text[] NOT NULL DEFAULT '{}',
  captured_at timestamptz NOT NULL,
  retry_at timestamptz,
  handled_at timestamptz,

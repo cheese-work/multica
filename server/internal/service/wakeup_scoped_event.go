@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -129,6 +130,23 @@ func (s *IssueWakeupService) DrainScopedEvents(ctx context.Context, workspaceIDs
 	return s.drainScopedEvents(ctx, workspaceIDs)
 }
 
+// scopedBusyPerPass bounds how many busy issues one pass waits on, each for the
+// short lock wait. scopedBusyDelay is how long a busy issue's inputs then wait
+// before they are claimed again: progress carries across passes, so the busy
+// issues at the head of the queue cannot hold back the work behind them. It is
+// shorter than the scheduler's cadence, so a freed issue is picked up next tick.
+const (
+	scopedBusyPerPass = 5
+	scopedBusyDelay   = 20 * time.Second
+)
+
+// scopedPass is what one transaction of the drain did. failed names the input a
+// returned error belongs to; busy names the issue another writer held.
+type scopedPass struct {
+	handled      int
+	failed, busy pgtype.UUID
+}
+
 // drainScopedEvents handles at most scopedDrainBatch inputs, one transaction
 // per issue. A transaction claims the oldest unclaimed input with SKIP LOCKED
 // and with it that issue's other pending inputs, so concurrent schedulers take
@@ -136,35 +154,44 @@ func (s *IssueWakeupService) DrainScopedEvents(ctx context.Context, workspaceIDs
 // resolved once, and its inputs coalesce in the receipts they are delivered to.
 // An input that fails on a real database error rolls its transaction back, is
 // scheduled for a later retry and reported; the issue's other inputs are
-// claimed again by the next transaction.
+// claimed again by the next transaction. An issue another writer holds is
+// contention, not a fault: the pass skips it, carries on with other work and
+// leaves its inputs pending for the next pass, with no retry delay.
 func (s *IssueWakeupService) drainScopedEvents(ctx context.Context, workspaceIDs []pgtype.UUID) error {
 	var errs []error
 	now := time.Now()
+	busy := []pgtype.UUID{}
 	for budget := scopedDrainBatch; budget > 0; {
 		if ctx.Err() != nil {
 			return errors.Join(append(errs, ctx.Err())...)
 		}
-		handled, failed, err := s.drainOneScopedIssue(ctx, workspaceIDs, now, budget)
-		if scopedLockBusy(err) {
-			// Another writer holds the issue. That is contention, not a fault: the
-			// input stays pending and the next pass tries again, with no retry delay.
-			break
+		pass, err := s.drainOneScopedIssue(ctx, workspaceIDs, now, budget, busy)
+		if scopedLockBusy(err) && pass.busy.Valid {
+			// The issue's inputs wait out a short delay, so this pass and the next
+			// go on to other work. The error, if any, is only for the delay's sake.
+			if deferErr := s.Tasks.Queries.DeferWakeupScopedEventsOfIssue(ctx, db.DeferWakeupScopedEventsOfIssueParams{IssueID: pass.busy, RetryAt: pgtype.Timestamptz{Time: now.Add(scopedBusyDelay), Valid: true}}); deferErr != nil {
+				return errors.Join(append(errs, deferErr)...)
+			}
+			if busy = append(busy, pass.busy); len(busy) >= scopedBusyPerPass {
+				break
+			}
+			continue
 		}
 		if err != nil {
 			errs = append(errs, err)
-			if !failed.Valid {
+			if !pass.failed.Valid {
 				return errors.Join(errs...)
 			}
-			if deferErr := s.Tasks.Queries.DeferWakeupScopedEvent(ctx, db.DeferWakeupScopedEventParams{ID: failed, RetryAt: pgtype.Timestamptz{Time: now.Add(scopedRetryDelay), Valid: true}}); deferErr != nil {
+			if deferErr := s.Tasks.Queries.DeferWakeupScopedEvent(ctx, db.DeferWakeupScopedEventParams{ID: pass.failed, RetryAt: pgtype.Timestamptz{Time: now.Add(scopedRetryDelay), Valid: true}}); deferErr != nil {
 				return errors.Join(append(errs, deferErr)...)
 			}
 			budget--
 			continue
 		}
-		if handled == 0 {
+		if pass.handled == 0 {
 			break
 		}
-		budget -= handled
+		budget -= pass.handled
 	}
 	return errors.Join(errs...)
 }
@@ -177,34 +204,38 @@ func scopedLockBusy(err error) bool {
 }
 
 // drainOneScopedIssue claims, resolves and settles the pending inputs of one
-// issue, at most budget of them. handled counts the inputs it settled; failed
-// names the input a returned error belongs to, when one does.
-func (s *IssueWakeupService) drainOneScopedIssue(ctx context.Context, workspaceIDs []pgtype.UUID, now time.Time, budget int) (handled int, failed pgtype.UUID, err error) {
+// issue, at most budget of them, leaving the issues in skip alone.
+func (s *IssueWakeupService) drainOneScopedIssue(ctx context.Context, workspaceIDs []pgtype.UUID, now time.Time, budget int, skip []pgtype.UUID) (pass scopedPass, err error) {
 	tx, err := s.Tasks.TxStarter.Begin(ctx)
 	if err != nil {
-		return 0, failed, err
+		return pass, err
 	}
 	defer tx.Rollback(ctx)
 	if _, err := tx.Exec(ctx, "SET LOCAL lock_timeout = '200ms'"); err != nil {
-		return 0, failed, err
+		return pass, err
 	}
 	q := s.Tasks.Queries.WithTx(tx)
 	stamp := pgtype.Timestamptz{Time: now, Valid: true}
-	first, err := q.ClaimWakeupScopedEvents(ctx, db.ClaimWakeupScopedEventsParams{Now: stamp, WorkspaceIds: workspaceIDs, BatchSize: 1})
+	// An input past retention is never claimed: it can only expire.
+	oldest := pgtype.Timestamptz{Time: now.Add(-scopedEventRetention), Valid: true}
+	first, err := q.ClaimWakeupScopedEvents(ctx, db.ClaimWakeupScopedEventsParams{Now: stamp, Oldest: oldest, WorkspaceIds: workspaceIDs, SkipIssues: skip, BatchSize: 1})
 	if err != nil || len(first) == 0 {
-		return 0, failed, err
+		return pass, err
 	}
 	events := first
 	if budget > 1 {
-		rest, err := q.ClaimWakeupScopedEventsOfIssue(ctx, db.ClaimWakeupScopedEventsOfIssueParams{IssueID: first[0].IssueID, ExceptID: first[0].ID, Now: stamp, BatchSize: int32(budget - 1)})
+		rest, err := q.ClaimWakeupScopedEventsOfIssue(ctx, db.ClaimWakeupScopedEventsOfIssueParams{IssueID: first[0].IssueID, ExceptID: first[0].ID, Now: stamp, Oldest: oldest, BatchSize: int32(budget - 1)})
 		if err != nil {
-			return 0, failed, err
+			// A deadlock here is contention on this issue like any other.
+			pass.busy = first[0].IssueID
+			return pass, err
 		}
 		events = append(events, rest...)
 	}
 	batch, err := s.newScopedIssueBatch(ctx, tx, q, first[0])
 	if err != nil {
-		return 0, first[0].ID, fmt.Errorf("scoped event %s: %w", util.UUIDToString(first[0].ID), err)
+		pass.failed, pass.busy = first[0].ID, first[0].IssueID
+		return pass, fmt.Errorf("scoped event %s: %w", util.UUIDToString(first[0].ID), err)
 	}
 	for _, ev := range events {
 		outcome, err := batch.resolve(ctx, ev)
@@ -212,14 +243,16 @@ func (s *IssueWakeupService) drainOneScopedIssue(ctx context.Context, workspaceI
 			err = q.MarkWakeupScopedEventHandled(ctx, db.MarkWakeupScopedEventHandledParams{ID: ev.ID, Now: stamp, Outcome: outcome})
 		}
 		if err != nil {
-			return 0, ev.ID, fmt.Errorf("scoped event %s: %w", util.UUIDToString(ev.ID), err)
+			pass.failed, pass.busy = ev.ID, ev.IssueID
+			return scopedPass{failed: ev.ID, busy: ev.IssueID}, fmt.Errorf("scoped event %s: %w", util.UUIDToString(ev.ID), err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return 0, failed, err
+		return pass, err
 	}
 	s.publishWithdrawn(ctx, batch.withdrawn)
-	return len(events), failed, nil
+	pass.handled = len(events)
+	return pass, nil
 }
 
 func scopedText(s string) pgtype.Text { return pgtype.Text{String: s, Valid: true} }
@@ -279,16 +312,38 @@ type scopedRule struct {
 	key     string
 	chain   *scopedRuleChain
 	invalid bool
-	newest  time.Time
-	eff     EffectiveWakeupConfig
-	root    *WakeupDefinition
-	member  pgtype.UUID
-	events  []string
+	// definitions is the rule's stored chain in the form capture records it.
+	definitions []string
+	eff         EffectiveWakeupConfig
+	root        *WakeupDefinition
+	member      pgtype.UUID
+	events      []string
 	// condition is the normalized predicate of a condition rule, nil for an event rule.
 	condition []byte
 	ensured   bool
 	instance  db.IssueWakeup
 	reason    string
+}
+
+// scopedDefinitionStamp is one stored definition as capture records it:
+// scope:rule:revision:updated-micros (migration 597).
+func scopedDefinitionStamp(d *db.IssueWakeupDefinition) string {
+	return d.ScopeKind + ":" + d.RuleKey + ":" + strconv.FormatInt(d.Revision, 10) + ":" + strconv.FormatInt(d.UpdatedAt.Time.UnixMicro(), 10)
+}
+
+// capturedUnderThisChain reports whether the definitions the event was captured
+// under, for this rule, are exactly the ones stored now.
+func (r *scopedRule) capturedUnderThisChain(ev db.WakeupScopedEvent) bool {
+	var then []string
+	for _, stamp := range ev.Chain {
+		if parts := strings.SplitN(stamp, ":", 3); len(parts) == 3 && parts[1] == r.key {
+			then = append(then, stamp)
+		}
+	}
+	now := slices.Clone(r.definitions)
+	slices.Sort(then)
+	slices.Sort(now)
+	return slices.Equal(then, now)
 }
 
 // scopedIssueBatch is the state of draining one issue's inputs in one
@@ -352,9 +407,7 @@ func newScopedRule(issue db.Issue, key string, chain *scopedRuleChain) *scopedRu
 			r.invalid = true
 			return r
 		}
-		if row.UpdatedAt.Time.After(r.newest) {
-			r.newest = row.UpdatedAt.Time
-		}
+		r.definitions = append(r.definitions, scopedDefinitionStamp(row))
 		switch def.Scope {
 		case WakeupScopeWorkspace:
 			in.Workspace = &def
@@ -475,9 +528,11 @@ func (b *scopedIssueBatch) deliverable(ctx context.Context, r *scopedRule, ev db
 	switch {
 	case r.invalid:
 		return db.IssueWakeup{}, scopedOutcomeInvalid, nil
-	case r.newest.After(ev.CapturedAt.Time):
-		// A definition written after the event was captured belongs to a newer
-		// configuration: the event predates its activation and is not new work.
+	case !r.capturedUnderThisChain(ev):
+		// The rule's definitions were written, reset, deleted or recreated after the
+		// event was captured: it belongs to another configuration, predates its
+		// activation and is not new work. Comparing what capture recorded survives a
+		// deletion, which leaves no newer definition behind to find.
 		return db.IssueWakeup{}, scopedOutcomeDefinitionChange, nil
 	case !r.eff.Applicable:
 		return db.IssueWakeup{}, scopedOutcomeNoRule, nil
@@ -503,6 +558,14 @@ func (b *scopedIssueBatch) ensure(ctx context.Context, r *scopedRule, baseline b
 	c := r.eff.Config
 	if !c.Instruction.Set || c.Instruction.Value == "" || r.root == nil {
 		return db.IssueWakeup{}, scopedOutcomeNoInstruction, nil
+	}
+	// What an instance can hold is checked before any database write: a value the
+	// table would refuse is this rule's invalid definition, not a database error
+	// that rolls back every other rule's delivery.
+	if (c.Mode.Set && c.Mode.Value != "once" && c.Mode.Value != "continuous") ||
+		(c.MaxFires.Set && (c.MaxFires.Value < 1 || c.MaxFires.Value > maxWakeupDefinitionMaxFires)) ||
+		len(c.Instruction.Value) > maxWakeupDefinitionInstruction {
+		return db.IssueWakeup{}, scopedOutcomeInvalid, nil
 	}
 	w := &builtinWakeup{Eff: r.eff, Authorizer: r.member}
 	if c.Target.Set {

@@ -1,10 +1,14 @@
 -- name: ClaimWakeupScopedEvents :many
--- The oldest pending outbox inputs. SKIP LOCKED lets
--- concurrent schedulers take disjoint rows; a row whose last attempt hit a real
--- database error waits for its retry time so it cannot starve the rest.
+-- The oldest pending outbox inputs. SKIP LOCKED lets concurrent schedulers take
+-- different rows; a row whose last attempt hit a real database error waits for
+-- its retry time so it cannot starve the rest. An input captured before @oldest
+-- is past retention: it is never claimed, so it can only expire, and neither the
+-- size of an expired backlog nor the order of the prune can make it deliver.
+-- @skip_issues are the issues this pass found busy.
 SELECT * FROM wakeup_scoped_event
-WHERE handled_at IS NULL AND (retry_at IS NULL OR retry_at <= @now::timestamptz)
+WHERE handled_at IS NULL AND captured_at >= @oldest::timestamptz AND (retry_at IS NULL OR retry_at <= @now::timestamptz)
  AND (sqlc.narg(workspace_ids)::uuid[] IS NULL OR workspace_id = ANY(sqlc.narg(workspace_ids)::uuid[]))
+ AND issue_id <> ALL(@skip_issues::uuid[])
 ORDER BY captured_at, id LIMIT @batch_size
 FOR UPDATE SKIP LOCKED;
 
@@ -12,7 +16,7 @@ FOR UPDATE SKIP LOCKED;
 -- The rest of one issue's pending inputs, so a burst on one issue is resolved
 -- once. Same locking and retry rules as the oldest-first claim.
 SELECT * FROM wakeup_scoped_event
-WHERE issue_id= @issue_id AND handled_at IS NULL AND (retry_at IS NULL OR retry_at <= @now::timestamptz) AND id<> @except_id
+WHERE issue_id= @issue_id AND handled_at IS NULL AND captured_at >= @oldest::timestamptz AND (retry_at IS NULL OR retry_at <= @now::timestamptz) AND id<> @except_id
 ORDER BY captured_at, id LIMIT @batch_size
 FOR UPDATE SKIP LOCKED;
 
@@ -22,15 +26,25 @@ UPDATE wakeup_scoped_event SET handled_at= @now::timestamptz,outcome= @outcome::
 -- name: DeferWakeupScopedEvent :exec
 UPDATE wakeup_scoped_event SET retry_at= @retry_at::timestamptz WHERE id= @id AND handled_at IS NULL;
 
+-- name: DeferWakeupScopedEventsOfIssue :exec
+-- A busy issue's pending inputs wait for @retry_at, so the next claim passes over
+-- them and goes on to other work. It never shortens a wait, and a row another
+-- scheduler holds is left to that scheduler. Retention is unaffected: the claims
+-- still refuse an input captured before the retention cut.
+UPDATE wakeup_scoped_event SET retry_at= @retry_at::timestamptz
+WHERE id IN (SELECT e.id FROM wakeup_scoped_event e WHERE e.issue_id= @issue_id AND e.handled_at IS NULL AND (e.retry_at IS NULL OR e.retry_at < @retry_at::timestamptz) FOR UPDATE SKIP LOCKED);
+
 -- name: ExpireWakeupScopedEvents :execrows
 -- Pending inputs past retention are closed with a visible outcome, never
--- dropped silently and never promised.
+-- dropped silently and never promised. A row a drain holds is skipped, and the
+-- outer statement rechecks that it is still pending, so an input delivered at
+-- this moment keeps its outcome.
 UPDATE wakeup_scoped_event SET handled_at= @now::timestamptz,outcome='expired',retry_at=NULL
-WHERE id IN (SELECT e.id FROM wakeup_scoped_event e WHERE e.handled_at IS NULL AND e.captured_at < @before::timestamptz ORDER BY e.captured_at LIMIT @batch_size);
+WHERE handled_at IS NULL AND id IN (SELECT e.id FROM wakeup_scoped_event e WHERE e.handled_at IS NULL AND e.captured_at < @before::timestamptz ORDER BY e.captured_at LIMIT @batch_size FOR UPDATE SKIP LOCKED);
 
 -- name: DeleteHandledWakeupScopedEvents :execrows
 DELETE FROM wakeup_scoped_event
-WHERE id IN (SELECT e.id FROM wakeup_scoped_event e WHERE e.handled_at IS NOT NULL AND e.handled_at < @before::timestamptz ORDER BY e.handled_at LIMIT @batch_size);
+WHERE id IN (SELECT e.id FROM wakeup_scoped_event e WHERE e.handled_at IS NOT NULL AND e.handled_at < @before::timestamptz ORDER BY e.handled_at LIMIT @batch_size FOR UPDATE SKIP LOCKED);
 
 -- name: CountWakeupScopedEventsByOutcome :many
 -- Accounting of one workspace's retained inputs; an input not yet handled counts as pending.

@@ -12,24 +12,36 @@ import (
 )
 
 const claimWakeupScopedEvents = `-- name: ClaimWakeupScopedEvents :many
-SELECT id, workspace_id, issue_id, project_id, event_type, event_key, agent_id, source_task_id, actor_type, actor_id, payload, delivered, captured_at, retry_at, handled_at, outcome FROM wakeup_scoped_event
-WHERE handled_at IS NULL AND (retry_at IS NULL OR retry_at <= $1::timestamptz)
- AND ($2::uuid[] IS NULL OR workspace_id = ANY($2::uuid[]))
-ORDER BY captured_at, id LIMIT $3
+SELECT id, workspace_id, issue_id, project_id, event_type, event_key, agent_id, source_task_id, actor_type, actor_id, payload, delivered, chain, captured_at, retry_at, handled_at, outcome FROM wakeup_scoped_event
+WHERE handled_at IS NULL AND captured_at >= $1::timestamptz AND (retry_at IS NULL OR retry_at <= $2::timestamptz)
+ AND ($3::uuid[] IS NULL OR workspace_id = ANY($3::uuid[]))
+ AND issue_id <> ALL($4::uuid[])
+ORDER BY captured_at, id LIMIT $5
 FOR UPDATE SKIP LOCKED
 `
 
 type ClaimWakeupScopedEventsParams struct {
+	Oldest       pgtype.Timestamptz `json:"oldest"`
 	Now          pgtype.Timestamptz `json:"now"`
 	WorkspaceIds []pgtype.UUID      `json:"workspace_ids"`
+	SkipIssues   []pgtype.UUID      `json:"skip_issues"`
 	BatchSize    int32              `json:"batch_size"`
 }
 
-// The oldest pending outbox inputs. SKIP LOCKED lets
-// concurrent schedulers take disjoint rows; a row whose last attempt hit a real
-// database error waits for its retry time so it cannot starve the rest.
+// The oldest pending outbox inputs. SKIP LOCKED lets concurrent schedulers take
+// different rows; a row whose last attempt hit a real database error waits for
+// its retry time so it cannot starve the rest. An input captured before @oldest
+// is past retention: it is never claimed, so it can only expire, and neither the
+// size of an expired backlog nor the order of the prune can make it deliver.
+// @skip_issues are the issues this pass found busy.
 func (q *Queries) ClaimWakeupScopedEvents(ctx context.Context, arg ClaimWakeupScopedEventsParams) ([]WakeupScopedEvent, error) {
-	rows, err := q.db.Query(ctx, claimWakeupScopedEvents, arg.Now, arg.WorkspaceIds, arg.BatchSize)
+	rows, err := q.db.Query(ctx, claimWakeupScopedEvents,
+		arg.Oldest,
+		arg.Now,
+		arg.WorkspaceIds,
+		arg.SkipIssues,
+		arg.BatchSize,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -50,6 +62,7 @@ func (q *Queries) ClaimWakeupScopedEvents(ctx context.Context, arg ClaimWakeupSc
 			&i.ActorID,
 			&i.Payload,
 			&i.Delivered,
+			&i.Chain,
 			&i.CapturedAt,
 			&i.RetryAt,
 			&i.HandledAt,
@@ -66,14 +79,15 @@ func (q *Queries) ClaimWakeupScopedEvents(ctx context.Context, arg ClaimWakeupSc
 }
 
 const claimWakeupScopedEventsOfIssue = `-- name: ClaimWakeupScopedEventsOfIssue :many
-SELECT id, workspace_id, issue_id, project_id, event_type, event_key, agent_id, source_task_id, actor_type, actor_id, payload, delivered, captured_at, retry_at, handled_at, outcome FROM wakeup_scoped_event
-WHERE issue_id= $1 AND handled_at IS NULL AND (retry_at IS NULL OR retry_at <= $2::timestamptz) AND id<> $3
-ORDER BY captured_at, id LIMIT $4
+SELECT id, workspace_id, issue_id, project_id, event_type, event_key, agent_id, source_task_id, actor_type, actor_id, payload, delivered, chain, captured_at, retry_at, handled_at, outcome FROM wakeup_scoped_event
+WHERE issue_id= $1 AND handled_at IS NULL AND captured_at >= $2::timestamptz AND (retry_at IS NULL OR retry_at <= $3::timestamptz) AND id<> $4
+ORDER BY captured_at, id LIMIT $5
 FOR UPDATE SKIP LOCKED
 `
 
 type ClaimWakeupScopedEventsOfIssueParams struct {
 	IssueID   pgtype.UUID        `json:"issue_id"`
+	Oldest    pgtype.Timestamptz `json:"oldest"`
 	Now       pgtype.Timestamptz `json:"now"`
 	ExceptID  pgtype.UUID        `json:"except_id"`
 	BatchSize int32              `json:"batch_size"`
@@ -84,6 +98,7 @@ type ClaimWakeupScopedEventsOfIssueParams struct {
 func (q *Queries) ClaimWakeupScopedEventsOfIssue(ctx context.Context, arg ClaimWakeupScopedEventsOfIssueParams) ([]WakeupScopedEvent, error) {
 	rows, err := q.db.Query(ctx, claimWakeupScopedEventsOfIssue,
 		arg.IssueID,
+		arg.Oldest,
 		arg.Now,
 		arg.ExceptID,
 		arg.BatchSize,
@@ -108,6 +123,7 @@ func (q *Queries) ClaimWakeupScopedEventsOfIssue(ctx context.Context, arg ClaimW
 			&i.ActorID,
 			&i.Payload,
 			&i.Delivered,
+			&i.Chain,
 			&i.CapturedAt,
 			&i.RetryAt,
 			&i.HandledAt,
@@ -269,9 +285,28 @@ func (q *Queries) DeferWakeupScopedEvent(ctx context.Context, arg DeferWakeupSco
 	return err
 }
 
+const deferWakeupScopedEventsOfIssue = `-- name: DeferWakeupScopedEventsOfIssue :exec
+UPDATE wakeup_scoped_event SET retry_at= $1::timestamptz
+WHERE id IN (SELECT e.id FROM wakeup_scoped_event e WHERE e.issue_id= $2 AND e.handled_at IS NULL AND (e.retry_at IS NULL OR e.retry_at < $1::timestamptz) FOR UPDATE SKIP LOCKED)
+`
+
+type DeferWakeupScopedEventsOfIssueParams struct {
+	RetryAt pgtype.Timestamptz `json:"retry_at"`
+	IssueID pgtype.UUID        `json:"issue_id"`
+}
+
+// A busy issue's pending inputs wait for @retry_at, so the next claim passes over
+// them and goes on to other work. It never shortens a wait, and a row another
+// scheduler holds is left to that scheduler. Retention is unaffected: the claims
+// still refuse an input captured before the retention cut.
+func (q *Queries) DeferWakeupScopedEventsOfIssue(ctx context.Context, arg DeferWakeupScopedEventsOfIssueParams) error {
+	_, err := q.db.Exec(ctx, deferWakeupScopedEventsOfIssue, arg.RetryAt, arg.IssueID)
+	return err
+}
+
 const deleteHandledWakeupScopedEvents = `-- name: DeleteHandledWakeupScopedEvents :execrows
 DELETE FROM wakeup_scoped_event
-WHERE id IN (SELECT e.id FROM wakeup_scoped_event e WHERE e.handled_at IS NOT NULL AND e.handled_at < $1::timestamptz ORDER BY e.handled_at LIMIT $2)
+WHERE id IN (SELECT e.id FROM wakeup_scoped_event e WHERE e.handled_at IS NOT NULL AND e.handled_at < $1::timestamptz ORDER BY e.handled_at LIMIT $2 FOR UPDATE SKIP LOCKED)
 `
 
 type DeleteHandledWakeupScopedEventsParams struct {
@@ -289,7 +324,7 @@ func (q *Queries) DeleteHandledWakeupScopedEvents(ctx context.Context, arg Delet
 
 const expireWakeupScopedEvents = `-- name: ExpireWakeupScopedEvents :execrows
 UPDATE wakeup_scoped_event SET handled_at= $1::timestamptz,outcome='expired',retry_at=NULL
-WHERE id IN (SELECT e.id FROM wakeup_scoped_event e WHERE e.handled_at IS NULL AND e.captured_at < $2::timestamptz ORDER BY e.captured_at LIMIT $3)
+WHERE handled_at IS NULL AND id IN (SELECT e.id FROM wakeup_scoped_event e WHERE e.handled_at IS NULL AND e.captured_at < $2::timestamptz ORDER BY e.captured_at LIMIT $3 FOR UPDATE SKIP LOCKED)
 `
 
 type ExpireWakeupScopedEventsParams struct {
@@ -299,7 +334,9 @@ type ExpireWakeupScopedEventsParams struct {
 }
 
 // Pending inputs past retention are closed with a visible outcome, never
-// dropped silently and never promised.
+// dropped silently and never promised. A row a drain holds is skipped, and the
+// outer statement rechecks that it is still pending, so an input delivered at
+// this moment keeps its outcome.
 func (q *Queries) ExpireWakeupScopedEvents(ctx context.Context, arg ExpireWakeupScopedEventsParams) (int64, error) {
 	result, err := q.db.Exec(ctx, expireWakeupScopedEvents, arg.Now, arg.Before, arg.BatchSize)
 	if err != nil {
