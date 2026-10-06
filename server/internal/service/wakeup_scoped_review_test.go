@@ -238,14 +238,15 @@ func TestScopedDrainPersistentlyBusyIssuesDoNotStarveHealthyWork(t *testing.T) {
 	healthy.defineRoot(t, "workspace", healthy.f.WorkspaceID, scopedRuleA, "comment.created")
 	healthy.comment(t, "newer, in an unrelated workspace")
 	scope = append(scope, parseTestUUID(t, healthy.f.WorkspaceID))
-	var holders []pgx.Tx
+	// One transaction holds all five issues: the shared test pool has as many
+	// connections as the machine has CPUs (four on CI), so one held transaction per
+	// issue would leave the drain without a connection.
+	holder, err := healthy.f.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { holder.Rollback(ctx) })
 	for _, k := range kits {
-		holder, err := k.f.Pool.Begin(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { holder.Rollback(ctx) })
-		holders = append(holders, holder)
 		if _, err := holder.Exec(ctx, `SELECT 1 FROM issue WHERE id=$1 FOR NO KEY UPDATE`, k.issue); err != nil {
 			t.Fatal(err)
 		}
@@ -266,9 +267,7 @@ func TestScopedDrainPersistentlyBusyIssuesDoNotStarveHealthyWork(t *testing.T) {
 			t.Fatalf("a held issue's input must stay pending, got %d", k.pending(t))
 		}
 	}
-	for _, h := range holders {
-		h.Rollback(ctx)
-	}
+	holder.Rollback(ctx)
 	if err := healthy.s.DrainScopedEvents(ctx, scope...); err != nil {
 		t.Fatal(err)
 	}
