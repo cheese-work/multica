@@ -245,7 +245,7 @@ func TestScopedDrainPersistentlyBusyIssuesDoNotStarveHealthyWork(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer holder.Rollback(ctx)
+		t.Cleanup(func() { holder.Rollback(ctx) })
 		holders = append(holders, holder)
 		if _, err := holder.Exec(ctx, `SELECT 1 FROM issue WHERE id=$1 FOR NO KEY UPDATE`, k.issue); err != nil {
 			t.Fatal(err)
