@@ -3716,6 +3716,10 @@ export const WakeupEffectiveRuleSchema = z.object({
     instance_id: z.string(), enabled: z.boolean(),
     paused_reason: z.string().nullish().transform((v) => v ?? null),
   }).nullish().transform((v) => v ?? null),
+  // Only a condition rule's preview carries it; an older server never does.
+  already_satisfied: z.object({
+    satisfied: z.number().int().nonnegative(), examined: z.number().int().nonnegative(), truncated: z.boolean().default(false),
+  }).nullish().catch(null).transform((v) => v ?? null),
   redacted: z.boolean().default(false),
   capabilities: WakeupCapabilitiesSchema,
 });
