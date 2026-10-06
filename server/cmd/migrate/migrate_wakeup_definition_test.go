@@ -180,3 +180,37 @@ func TestRunMigrationsRepairsInvalidWakeupDefinitionIndexBeforeRetry(t *testing.
 	}
 	assertIndexValidity(t, pool, schema, wakeupDefinitionIndexName, true)
 }
+
+const (
+	wakeupDefaultCapacityVersion = "583_wakeup_default_capacity"
+	wakeupDefaultScopeIndexVer   = "584_wakeup_default_scope_index"
+	wakeupDefaultScopeIndexName  = "issue_wakeup_default_scope_idx"
+)
+
+// The capacity migration adds a column and replaces a function (no index, FK
+// or cascade); its index is one concurrent statement of its own.
+func TestWakeupDefaultCapacityMigrationsFollowTheRules(t *testing.T) {
+	t.Parallel()
+	for _, direction := range []string{"up", "down"} {
+		body := strings.ToUpper(stripSQLComments(readWakeupMigration(t, wakeupDefaultCapacityVersion, direction)))
+		for _, banned := range []string{"REFERENCES", "FOREIGN KEY", "ON DELETE", "ON UPDATE", "CREATE INDEX", "CREATE UNIQUE"} {
+			if strings.Contains(body, banned) {
+				t.Errorf("%s.%s contains %q", wakeupDefaultCapacityVersion, direction, banned)
+			}
+		}
+	}
+	up := stripSQLComments(readWakeupMigration(t, wakeupDefaultScopeIndexVer, "up"))
+	if strings.Count(up, ";") != 1 || !strings.Contains(up, "CREATE INDEX CONCURRENTLY") || !strings.Contains(up, wakeupDefaultScopeIndexName) {
+		t.Fatalf("up migration must be one concurrent build of %s:\n%s", wakeupDefaultScopeIndexName, up)
+	}
+	down := readWakeupMigration(t, wakeupDefaultScopeIndexVer, "down")
+	if !strings.Contains(down, "DROP INDEX CONCURRENTLY IF EXISTS "+wakeupDefaultScopeIndexName) || strings.Count(down, ";") != 1 {
+		t.Fatalf("down migration must be one concurrent drop:\n%s", down)
+	}
+	if _, ok := concurrentIndexCleanups[wakeupDefaultScopeIndexVer]; !ok {
+		t.Errorf("%s has no invalid-index cleanup hook", wakeupDefaultScopeIndexVer)
+	}
+	if _, ok := requiredConcurrentIndexes[wakeupDefaultScopeIndexVer]; !ok {
+		t.Errorf("%s has no validity requirement", wakeupDefaultScopeIndexVer)
+	}
+}
