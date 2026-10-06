@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -130,21 +131,61 @@ func (s *IssueWakeupService) DrainScopedEvents(ctx context.Context, workspaceIDs
 	return s.drainScopedEvents(ctx, workspaceIDs)
 }
 
-// scopedBusyPerPass bounds how many busy issues one pass waits on, each for the
-// short lock wait. scopedBusyDelay is how long a busy issue's inputs then wait
-// before they are claimed again: progress carries across passes, so the busy
-// issues at the head of the queue cannot hold back the work behind them. It is
-// shorter than the scheduler's cadence, so a freed issue is picked up next tick.
-const (
-	scopedBusyPerPass = 5
-	scopedBusyDelay   = 20 * time.Second
-)
+// A busy issue (held by another writer) is never waited for: the drain tries its
+// lock with SKIP LOCKED and goes on to other work. Fairness does not depend on any
+// timer or cache: the drain keeps a scan position over (captured_at, id) and the
+// claim starts after it. A pass that finds a busy issue moves the position past
+// that issue's input, so the next claim (and the next pass) reaches what is
+// behind it; a scan that finds nothing after the position wraps to the start.
+// Every pending input is therefore reached in turn however many busy issues are
+// ahead of it, a busy issue is tried again on the next sweep, and nothing is
+// written to the outbox for contention. A pass notes at most scopedBusyAttempts
+// busy issues, which bounds its work. The position lives in memory (the scheduler
+// job keeps one service instance): a restart starts the sweep from the oldest
+// input again, and a second server instance sweeps with a position of its own,
+// which only means an extra no-wait try.
+var scopedBusyAttempts = 50
+
+// errScopedIssueBusy marks an issue another writer held when the drain tried it.
+var errScopedIssueBusy = errors.New("issue held by another writer")
+
+// scopedCursor is the drain's scan position; the zero value is the start.
+type scopedCursor struct {
+	mu  sync.Mutex
+	at  time.Time
+	id  pgtype.UUID
+	set bool
+}
+
+func (c *scopedCursor) get() (time.Time, pgtype.UUID) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.set {
+		return time.Time{}, pgtype.UUID{Valid: true}
+	}
+	return c.at, c.id
+}
+
+func (c *scopedCursor) put(at time.Time, id pgtype.UUID) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.at, c.id, c.set = at, id, true
+}
+
+func (c *scopedCursor) reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.set = false
+}
 
 // scopedPass is what one transaction of the drain did. failed names the input a
 // returned error belongs to; busy names the issue another writer held.
 type scopedPass struct {
 	handled      int
 	failed, busy pgtype.UUID
+	// at and pos locate the input the transaction claimed first.
+	at  time.Time
+	pos pgtype.UUID
 }
 
 // drainScopedEvents handles at most scopedDrainBatch inputs, one transaction
@@ -160,19 +201,19 @@ type scopedPass struct {
 func (s *IssueWakeupService) drainScopedEvents(ctx context.Context, workspaceIDs []pgtype.UUID) error {
 	var errs []error
 	now := time.Now()
-	busy := []pgtype.UUID{}
+	afterAt, afterID := s.scopedPos.get()
+	skip := []pgtype.UUID{}
+	wrapped := false
 	for budget := scopedDrainBatch; budget > 0; {
 		if ctx.Err() != nil {
+			s.scopedPos.put(afterAt, afterID)
 			return errors.Join(append(errs, ctx.Err())...)
 		}
-		pass, err := s.drainOneScopedIssue(ctx, workspaceIDs, now, budget, busy)
+		pass, err := s.drainOneScopedIssue(ctx, workspaceIDs, now, budget, skip, afterAt, afterID)
 		if scopedLockBusy(err) && pass.busy.Valid {
-			// The issue's inputs wait out a short delay, so this pass and the next
-			// go on to other work. The error, if any, is only for the delay's sake.
-			if deferErr := s.Tasks.Queries.DeferWakeupScopedEventsOfIssue(ctx, db.DeferWakeupScopedEventsOfIssueParams{IssueID: pass.busy, RetryAt: pgtype.Timestamptz{Time: now.Add(scopedBusyDelay), Valid: true}}); deferErr != nil {
-				return errors.Join(append(errs, deferErr)...)
-			}
-			if busy = append(busy, pass.busy); len(busy) >= scopedBusyPerPass {
+			// Move the position past the busy issue's input and go on.
+			skip, afterAt, afterID = append(skip, pass.busy), pass.at, pass.pos
+			if len(skip) >= scopedBusyAttempts {
 				break
 			}
 			continue
@@ -180,32 +221,41 @@ func (s *IssueWakeupService) drainScopedEvents(ctx context.Context, workspaceIDs
 		if err != nil {
 			errs = append(errs, err)
 			if !pass.failed.Valid {
+				s.scopedPos.put(afterAt, afterID)
 				return errors.Join(errs...)
 			}
 			if deferErr := s.Tasks.Queries.DeferWakeupScopedEvent(ctx, db.DeferWakeupScopedEventParams{ID: pass.failed, RetryAt: pgtype.Timestamptz{Time: now.Add(scopedRetryDelay), Valid: true}}); deferErr != nil {
+				s.scopedPos.put(afterAt, afterID)
 				return errors.Join(append(errs, deferErr)...)
 			}
 			budget--
 			continue
 		}
 		if pass.handled == 0 {
-			break
+			// Nothing after the position: sweep from the start once, then stop.
+			if !afterAt.IsZero() && !wrapped {
+				afterAt, afterID, wrapped = time.Time{}, pgtype.UUID{Valid: true}, true
+				continue
+			}
+			s.scopedPos.reset()
+			return errors.Join(errs...)
 		}
 		budget -= pass.handled
 	}
+	s.scopedPos.put(afterAt, afterID)
 	return errors.Join(errs...)
 }
 
-// scopedLockBusy reports a lock wait that gave up (lock_timeout) or lost a
-// deadlock: another transaction held the issue.
+// scopedLockBusy reports an issue another transaction held: found locked by the
+// drain's no-wait try, a lock wait that gave up (lock_timeout) or a lost deadlock.
 func scopedLockBusy(err error) bool {
 	var pg *pgconn.PgError
-	return errors.As(err, &pg) && (pg.Code == "55P03" || pg.Code == "40P01")
+	return errors.Is(err, errScopedIssueBusy) || errors.As(err, &pg) && (pg.Code == "55P03" || pg.Code == "40P01")
 }
 
 // drainOneScopedIssue claims, resolves and settles the pending inputs of one
-// issue, at most budget of them, leaving the issues in skip alone.
-func (s *IssueWakeupService) drainOneScopedIssue(ctx context.Context, workspaceIDs []pgtype.UUID, now time.Time, budget int, skip []pgtype.UUID) (pass scopedPass, err error) {
+// issue, at most budget of them, leaving the issues in skip alone and scanning after the given position.
+func (s *IssueWakeupService) drainOneScopedIssue(ctx context.Context, workspaceIDs []pgtype.UUID, now time.Time, budget int, skip []pgtype.UUID, afterAt time.Time, afterID pgtype.UUID) (pass scopedPass, err error) {
 	tx, err := s.Tasks.TxStarter.Begin(ctx)
 	if err != nil {
 		return pass, err
@@ -218,10 +268,11 @@ func (s *IssueWakeupService) drainOneScopedIssue(ctx context.Context, workspaceI
 	stamp := pgtype.Timestamptz{Time: now, Valid: true}
 	// An input past retention is never claimed: it can only expire.
 	oldest := pgtype.Timestamptz{Time: now.Add(-scopedEventRetention), Valid: true}
-	first, err := q.ClaimWakeupScopedEvents(ctx, db.ClaimWakeupScopedEventsParams{Now: stamp, Oldest: oldest, WorkspaceIds: workspaceIDs, SkipIssues: skip, BatchSize: 1})
+	first, err := q.ClaimWakeupScopedEvents(ctx, db.ClaimWakeupScopedEventsParams{Now: stamp, Oldest: oldest, WorkspaceIds: workspaceIDs, SkipIssues: skip, AfterAt: pgtype.Timestamptz{Time: afterAt, Valid: true}, AfterID: afterID, BatchSize: 1})
 	if err != nil || len(first) == 0 {
 		return pass, err
 	}
+	pass.at, pass.pos = first[0].CapturedAt.Time, first[0].ID
 	events := first
 	if budget > 1 {
 		rest, err := q.ClaimWakeupScopedEventsOfIssue(ctx, db.ClaimWakeupScopedEventsOfIssueParams{IssueID: first[0].IssueID, ExceptID: first[0].ID, Now: stamp, Oldest: oldest, BatchSize: int32(budget - 1)})
@@ -364,12 +415,23 @@ type scopedIssueBatch struct {
 
 func (s *IssueWakeupService) newScopedIssueBatch(ctx context.Context, tx pgx.Tx, q *db.Queries, first db.WakeupScopedEvent) (*scopedIssueBatch, error) {
 	b := &scopedIssueBatch{s: s, tx: tx, q: q, rules: map[string]*scopedRule{}}
-	issue, err := q.LockWakeupIssue(ctx, first.IssueID)
-	if errors.Is(err, pgx.ErrNoRows) || err == nil && issue.WorkspaceID != first.WorkspaceID {
+	issue, err := q.TryLockWakeupIssue(ctx, first.IssueID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// No row: the issue is held by another writer, or gone.
+		exists, existsErr := q.WakeupIssueExists(ctx, first.IssueID)
+		if existsErr != nil {
+			return nil, existsErr
+		}
+		if exists {
+			return nil, errScopedIssueBusy
+		}
 		b.outcome = scopedOutcomeIssueGone
 		return b, nil
 	} else if err != nil {
 		return nil, err
+	} else if issue.WorkspaceID != first.WorkspaceID {
+		b.outcome = scopedOutcomeIssueGone
+		return b, nil
 	}
 	b.issue = issue
 	if active, err := wakeupIssueActive(ctx, q, issue); err != nil {
