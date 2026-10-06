@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1153,4 +1154,44 @@ func TestWakeupDefinitionAliasOnlyWritesWorkAtTheCeiling(t *testing.T) {
 		}
 	}
 	k.workspace().put(first.RuleKey, strconv.FormatInt(int64(first.Revision), 10), cfg(map[string]any{"trigger": map[string]any{"kind": "pr_merged"}, "instruction": "edited"})).Want(http.StatusOK)
+}
+
+// ---- custom event and condition triggers (L10) -----------------------------
+
+func TestWakeupDefinitionCustomTriggersAreAcceptedBehindTheGate(t *testing.T) {
+	k := newWakeupDefinitionKit(t)
+	caps := k.workspace().list().Capabilities
+	for _, kind := range []string{"event", "condition"} {
+		if !slices.Contains(caps.TriggerKinds, kind) {
+			t.Fatalf("trigger kinds %v lack %q", caps.TriggerKinds, kind)
+		}
+	}
+	condition := map[string]any{"kind": "condition", "condition": map[string]any{"type": "issue_field", "field": "status", "value": "todo"}}
+	body := cfg(map[string]any{"enabled": true, "trigger": condition, "instruction": "it is ready"})
+
+	// The preview says how many issues already satisfy the predicate, and persists nothing.
+	var preview wakeupEffectiveResponse
+	k.project().preview("", body).Want(http.StatusOK).JSON(&preview)
+	if preview.AlreadySatisfied == nil || preview.AlreadySatisfied.Satisfied != 1 || preview.AlreadySatisfied.Examined != 1 || preview.AlreadySatisfied.Truncated {
+		t.Fatalf("already satisfied = %+v, want the project's one todo issue", preview.AlreadySatisfied)
+	}
+	if n := wdCount(t); n != 0 {
+		t.Fatalf("a preview persisted %d definitions", n)
+	}
+	var event wakeupEffectiveResponse
+	k.project().preview("", cfg(map[string]any{"enabled": true, "trigger": map[string]any{"kind": "event", "events": []string{"comment.created"}}, "instruction": "x"})).Want(http.StatusOK).JSON(&event)
+	if event.AlreadySatisfied != nil {
+		t.Fatalf("an event rule has no predicate to count, got %+v", event.AlreadySatisfied)
+	}
+
+	k.project().create(body).Want(http.StatusCreated)
+	k.project().create(cfg(map[string]any{"trigger": map[string]any{"kind": "event", "events": []string{"not.an.event"}}, "instruction": "x"})).Want(http.StatusBadRequest)
+	k.project().create(cfg(map[string]any{"trigger": map[string]any{"kind": "condition", "condition": map[string]any{"type": "nonsense"}}, "instruction": "x"})).Want(http.StatusBadRequest)
+	if n := wdCount(t); n != 1 {
+		t.Fatalf("%d definitions stored, want only the valid one", n)
+	}
+
+	// Behind the closed gate none of this is writable.
+	withFeatureFlag(t, testHandler, featureflags.WakeupDefinitionWrites, false)
+	k.project().create(body).Want(http.StatusForbidden)
 }

@@ -726,7 +726,7 @@ func TestWakeupEventSelector(t *testing.T) {
 }
 
 // A definition written through the API stores the selector its trigger
-// selects. No event trigger is accepted yet, so a built-in stores none.
+// selects; a built-in stores none.
 func TestWakeupDefinitionWriteStoresTheEventSelector(t *testing.T) {
 	k := newDrainKit(t)
 	ws := parseTestUUID(t, k.f.WorkspaceID)
@@ -743,13 +743,14 @@ func TestWakeupDefinitionWriteStoresTheEventSelector(t *testing.T) {
 	if len(selector) != 0 {
 		t.Fatalf("a built-in definition selects no ordinary event, stored %v", selector)
 	}
-	// Event triggers stay unavailable until a later layer implements them.
+	// An event trigger is accepted where it can run (L10); written at a project
+	// as an override of a rule that has no root there, it is still refused.
 	var event WakeupConfigPatch
 	event.Trigger = wakeupObject{Set: true, Value: []byte(`{"kind":"event","events":["comment.created"]}`)}
 	event.Instruction = wakeupField[string]{Set: true, Value: "text"}
 	_, err := k.s.SaveWakeupDefinition(context.Background(), ref, parseTestUUID(t, k.owner), WakeupDefinitionWrite{RuleKey: scopedRuleA, Patch: event})
 	if !errors.Is(err, ErrWakeupInput) {
-		t.Fatalf("an event trigger must still be refused, got %v", err)
+		t.Fatalf("an event override of a rule with no root must be refused, got %v", err)
 	}
 }
 
