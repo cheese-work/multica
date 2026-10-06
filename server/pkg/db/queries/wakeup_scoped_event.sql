@@ -42,13 +42,21 @@ SELECT EXISTS(SELECT 1 FROM issue WHERE id= @id);
 -- Pending inputs past retention are closed with a visible outcome, never
 -- dropped silently and never promised. A row a drain holds is skipped, and the
 -- outer statement rechecks that it is still pending, so an input delivered at
--- this moment keeps its outcome.
-UPDATE wakeup_scoped_event SET handled_at= @now::timestamptz,outcome='expired',retry_at=NULL
-WHERE handled_at IS NULL AND id IN (SELECT e.id FROM wakeup_scoped_event e WHERE e.handled_at IS NULL AND e.captured_at < @before::timestamptz ORDER BY e.captured_at LIMIT @batch_size FOR UPDATE SKIP LOCKED);
+-- this moment keeps its outcome. The picked ids are materialized first: a plain
+-- IN (subquery ... LIMIT) lets the planner run the subquery once per outer row,
+-- which does not bound the batch.
+WITH picked AS MATERIALIZED (
+ SELECT e.id FROM wakeup_scoped_event e WHERE e.handled_at IS NULL AND e.captured_at < @before::timestamptz
+ ORDER BY e.captured_at, e.id LIMIT @batch_size FOR UPDATE SKIP LOCKED)
+UPDATE wakeup_scoped_event w SET handled_at= @now::timestamptz,outcome='expired',retry_at=NULL
+FROM picked WHERE w.id=picked.id AND w.handled_at IS NULL;
 
 -- name: DeleteHandledWakeupScopedEvents :execrows
-DELETE FROM wakeup_scoped_event
-WHERE id IN (SELECT e.id FROM wakeup_scoped_event e WHERE e.handled_at IS NOT NULL AND e.handled_at < @before::timestamptz ORDER BY e.handled_at LIMIT @batch_size FOR UPDATE SKIP LOCKED);
+-- Same materialized pick, for the same reason.
+WITH picked AS MATERIALIZED (
+ SELECT e.id FROM wakeup_scoped_event e WHERE e.handled_at IS NOT NULL AND e.handled_at < @before::timestamptz
+ ORDER BY e.handled_at, e.id LIMIT @batch_size FOR UPDATE SKIP LOCKED)
+DELETE FROM wakeup_scoped_event w USING picked WHERE w.id=picked.id;
 
 -- name: CountWakeupScopedEventsByOutcome :many
 -- Accounting of one workspace's retained inputs; an input not yet handled counts as pending.
