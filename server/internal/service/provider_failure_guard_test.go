@@ -15,10 +15,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/multica-ai/multica/server/internal/dispatch"
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 type providerFailureProbeStub struct {
@@ -214,18 +217,82 @@ func TestAutopilotScheduleReusesEquivalentActiveRun(t *testing.T) {
 	f, ownerID := newPrincipalFixture(t)
 	agentID := f.privateAgentOwnedBy(t, ownerID, "active-schedule")
 	autopilotID, triggerID := f.autopilotWithTrigger(t, agentID, ownerID, ownerID)
+	ap, err := f.q.GetAutopilot(context.Background(), util.MustParseUUID(autopilotID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plannedAt := time.Now().UTC().Truncate(time.Second)
 
-	first := f.dispatch(t, autopilotID, triggerID)
-	second := f.dispatch(t, autopilotID, triggerID)
-	if util.UUIDToString(first.ID) != util.UUIDToString(second.ID) {
-		t.Fatalf("second occurrence created run %s instead of reusing %s", util.UUIDToString(second.ID), util.UUIDToString(first.ID))
+	first, err := f.svc.DispatchAutopilotForPlan(context.Background(), ap, util.MustParseUUID(triggerID), "schedule", nil, plannedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondPlannedAt := plannedAt.Add(5 * time.Minute)
+	second, err := f.svc.DispatchAutopilotForPlan(context.Background(), ap, util.MustParseUUID(triggerID), "schedule", nil, secondPlannedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID == second.ID {
+		t.Fatalf("second occurrence reused run %s", util.UUIDToString(first.ID))
+	}
+	if second.Status != "skipped" || !second.ReasonCode.Valid || second.ReasonCode.String != string(dispatch.ReasonAlreadyActive) {
+		t.Fatalf("second occurrence = %+v, want a distinct already-active skip", second)
+	}
+	if !second.PlannedAt.Valid || !second.PlannedAt.Time.Equal(secondPlannedAt) {
+		t.Fatalf("second occurrence planned_at = %+v, want %s", second.PlannedAt, secondPlannedAt)
 	}
 	var runs int
 	if err := f.Pool.QueryRow(context.Background(), "SELECT count(*) FROM autopilot_run WHERE trigger_id=$1", triggerID).Scan(&runs); err != nil {
 		t.Fatal(err)
 	}
-	if runs != 1 {
-		t.Fatalf("scheduled runs = %d, want 1", runs)
+	if runs != 2 {
+		t.Fatalf("scheduled runs = %d, want a row for each of 2 occurrences", runs)
+	}
+}
+
+func TestProviderFailureOwnerNoticeIsIdempotent(t *testing.T) {
+	f, ownerID := newPrincipalFixture(t)
+	wakeupID := dbid.NewV7()
+	failedTaskID := seedProviderFailureWakeupTask(t, f, wakeupID, "head-a", "now()-interval '90 minutes'")
+	recoveryTaskID := seedProviderFailureWakeupTask(t, f, wakeupID, "head-a", "now()-interval '1 minute'")
+	if _, err := f.q.RecordProviderFailureRecovery(context.Background(), db.RecordProviderFailureRecoveryParams{
+		FailedTaskID:     parseTestUUID(t, failedTaskID),
+		TriggerKind:      "issue_wakeup",
+		TriggerID:        wakeupID,
+		ConditionKey:     "head-a",
+		FailedAt:         pgtype.Timestamptz{Time: time.Now().UTC().Add(-90 * time.Minute), Valid: true},
+		ProbeAt:          pgtype.Timestamptz{Time: time.Now().UTC().Add(-30 * time.Minute), Valid: true},
+		ProbeStatus:      http.StatusUnauthorized,
+		ChangedCondition: providerFailureChangedState,
+		RecoveryTaskID:   parseTestUUID(t, recoveryTaskID),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := f.svc.TaskSvc.prepareProviderFailureRecovery(context.Background(), f.q, providerFailureRecoveryScope{
+		Kind: "issue_wakeup", TriggerID: wakeupID, ConditionKey: "head-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempt == nil || !attempt.ReturnOwner || !strings.Contains(attempt.SkipReason, "new external condition") {
+		t.Fatalf("failed recovery decision = %+v, want owner return without a new condition", attempt)
+	}
+	inboxEvents := 0
+	f.svc.TaskSvc.Bus.Subscribe(protocol.EventInboxNew, func(events.Event) { inboxEvents++ })
+	workspaceID := parseTestUUID(t, f.WorkspaceID)
+	ownerIDValue := parseTestUUID(t, ownerID)
+	for range 2 {
+		f.svc.TaskSvc.notifyProviderFailureOwner(context.Background(), f.q, attempt, workspaceID, ownerIDValue, pgtype.UUID{})
+	}
+	var recipientID, noticeType, severity, title, body string
+	if err := f.Pool.QueryRow(context.Background(), `SELECT recipient_id::text,type,severity,title,body FROM inbox_item WHERE id=$1`, recoveryTaskID).Scan(&recipientID, &noticeType, &severity, &title, &body); err != nil {
+		t.Fatal(err)
+	}
+	if recipientID != ownerID || noticeType != "provider_failure_recovery_blocked" || severity != "action_required" || title == "" || !strings.Contains(body, "until its condition changes") {
+		t.Fatalf("owner notice recipient=%s type=%s severity=%s title=%q body=%q", recipientID, noticeType, severity, title, body)
+	}
+	if inboxEvents != 1 {
+		t.Fatalf("inbox events = %d, want exactly 1", inboxEvents)
 	}
 }
 

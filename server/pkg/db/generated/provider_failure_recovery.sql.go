@@ -11,25 +11,61 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const createProviderFailureOwnerNotice = `-- name: CreateProviderFailureOwnerNotice :execrows
+INSERT INTO inbox_item (
+    id, workspace_id, recipient_type, recipient_id, type, severity,
+    issue_id, title, body, actor_type, details
+)
+VALUES (
+    $1, $2, 'member', $3,
+    'provider_failure_recovery_blocked', 'action_required',
+    $4::uuid,
+    'Provider recovery needs attention',
+    'An automatic provider recovery also failed. This recurring trigger will stay suppressed until its condition changes. Review the provider and trigger, then update or disable the trigger; no further recovery dispatch will occur automatically.',
+    'system', $5
+)
+ON CONFLICT (id) DO NOTHING
+`
+
+type CreateProviderFailureOwnerNoticeParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RecipientID pgtype.UUID `json:"recipient_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	Details     []byte      `json:"details"`
+}
+
+func (q *Queries) CreateProviderFailureOwnerNotice(ctx context.Context, arg CreateProviderFailureOwnerNoticeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, createProviderFailureOwnerNotice,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.RecipientID,
+		arg.IssueID,
+		arg.Details,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const findActiveScheduledAutopilotRunForTrigger = `-- name: FindActiveScheduledAutopilotRunForTrigger :one
 SELECT id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at, webhook_delivery_id, quota_reservation_id, reason_code FROM autopilot_run
 WHERE trigger_id = $1
   AND source = 'schedule'
   AND status IN ('pending', 'issue_created', 'running')
-  AND planned_at = $2::timestamptz
-  AND COALESCE(trigger_payload->>'head_sha', '') = $3::text
+  AND COALESCE(trigger_payload->>'head_sha', '') = $2::text
 ORDER BY created_at DESC
 LIMIT 1
 `
 
 type FindActiveScheduledAutopilotRunForTriggerParams struct {
-	TriggerID    pgtype.UUID        `json:"trigger_id"`
-	PlannedAt    pgtype.Timestamptz `json:"planned_at"`
-	ConditionKey string             `json:"condition_key"`
+	TriggerID    pgtype.UUID `json:"trigger_id"`
+	ConditionKey string      `json:"condition_key"`
 }
 
 func (q *Queries) FindActiveScheduledAutopilotRunForTrigger(ctx context.Context, arg FindActiveScheduledAutopilotRunForTriggerParams) (AutopilotRun, error) {
-	row := q.db.QueryRow(ctx, findActiveScheduledAutopilotRunForTrigger, arg.TriggerID, arg.PlannedAt, arg.ConditionKey)
+	row := q.db.QueryRow(ctx, findActiveScheduledAutopilotRunForTrigger, arg.TriggerID, arg.ConditionKey)
 	var i AutopilotRun
 	err := row.Scan(
 		&i.ID,

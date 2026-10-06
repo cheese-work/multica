@@ -24,7 +24,6 @@ SELECT * FROM autopilot_run
 WHERE trigger_id = @trigger_id
   AND source = 'schedule'
   AND status IN ('pending', 'issue_created', 'running')
-  AND planned_at = @planned_at::timestamptz
   AND COALESCE(trigger_payload->>'head_sha', '') = @condition_key::text
 ORDER BY created_at DESC
 LIMIT 1;
@@ -57,3 +56,18 @@ VALUES (
     @probe_at, @probe_status, @changed_condition, sqlc.narg(recovery_run_id), sqlc.narg(recovery_task_id)
 )
 ON CONFLICT (failed_task_id) DO NOTHING;
+
+-- name: CreateProviderFailureOwnerNotice :execrows
+INSERT INTO inbox_item (
+    id, workspace_id, recipient_type, recipient_id, type, severity,
+    issue_id, title, body, actor_type, details
+)
+VALUES (
+    @id, @workspace_id, 'member', @recipient_id,
+    'provider_failure_recovery_blocked', 'action_required',
+    sqlc.narg('issue_id')::uuid,
+    'Provider recovery needs attention',
+    'An automatic provider recovery also failed. This recurring trigger will stay suppressed until its condition changes. Review the provider and trigger, then update or disable the trigger; no further recovery dispatch will occur automatically.',
+    'system', @details
+)
+ON CONFLICT (id) DO NOTHING;

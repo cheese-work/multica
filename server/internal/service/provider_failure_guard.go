@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"path"
@@ -14,8 +15,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 const (
@@ -97,6 +100,7 @@ type providerFailureRecoveryAttempt struct {
 	ProbeStatus  int32
 	Scope        providerFailureRecoveryScope
 	SkipReason   string
+	ReturnOwner  bool
 }
 
 func providerTriggerConditionKey(payload []byte) string {
@@ -161,6 +165,7 @@ func (s *TaskService) prepareProviderFailureRecovery(ctx context.Context, q *db.
 	}
 	if snapshot.IsRecovery {
 		attempt.SkipReason = "provider recovery already failed; a new external condition is required"
+		attempt.ReturnOwner = true
 		return attempt, nil
 	}
 	if time.Since(attempt.FailedAt) < providerFailureCooldown {
@@ -183,6 +188,85 @@ func (s *TaskService) prepareProviderFailureRecovery(ctx context.Context, q *db.
 		return attempt, nil
 	}
 	return attempt, nil
+}
+
+func (s *TaskService) notifyProviderFailureOwner(
+	ctx context.Context,
+	q *db.Queries,
+	attempt *providerFailureRecoveryAttempt,
+	workspaceID, ownerID, issueID pgtype.UUID,
+) {
+	if s == nil || q == nil || attempt == nil || !attempt.ReturnOwner || !attempt.FailedTaskID.Valid || !workspaceID.Valid || !ownerID.Valid {
+		return
+	}
+	if _, err := q.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: ownerID, WorkspaceID: workspaceID}); err != nil {
+		slog.Warn("provider recovery owner notice skipped: trigger owner is not a workspace member",
+			"failed_task_id", util.UUIDToString(attempt.FailedTaskID),
+			"owner_id", util.UUIDToString(ownerID),
+			"error", err,
+		)
+		return
+	}
+	details, err := json.Marshal(map[string]string{
+		"reason_code":    "provider_failure_cooldown",
+		"failed_task_id": util.UUIDToString(attempt.FailedTaskID),
+		"trigger_kind":   attempt.Scope.Kind,
+		"trigger_id":     util.UUIDToString(attempt.Scope.TriggerID),
+		"condition_key":  attempt.Scope.ConditionKey,
+	})
+	if err != nil {
+		return
+	}
+	rows, err := q.CreateProviderFailureOwnerNotice(ctx, db.CreateProviderFailureOwnerNoticeParams{
+		ID:          attempt.FailedTaskID,
+		WorkspaceID: workspaceID,
+		RecipientID: ownerID,
+		IssueID:     issueID,
+		Details:     details,
+	})
+	if err != nil {
+		slog.Warn("provider recovery owner notice failed",
+			"failed_task_id", util.UUIDToString(attempt.FailedTaskID),
+			"owner_id", util.UUIDToString(ownerID),
+			"error", err,
+		)
+		return
+	}
+	if rows != 1 || s.Bus == nil {
+		return
+	}
+	item, err := q.GetInboxItem(ctx, attempt.FailedTaskID)
+	if err != nil {
+		slog.Warn("provider recovery owner notice readback failed",
+			"failed_task_id", util.UUIDToString(attempt.FailedTaskID),
+			"error", err,
+		)
+		return
+	}
+	s.Bus.Publish(events.Event{
+		Type:        protocol.EventInboxNew,
+		WorkspaceID: util.UUIDToString(workspaceID),
+		ActorType:   "system",
+		Payload: map[string]any{
+			"item": map[string]any{
+				"id":             util.UUIDToString(item.ID),
+				"workspace_id":   util.UUIDToString(item.WorkspaceID),
+				"recipient_type": item.RecipientType,
+				"recipient_id":   util.UUIDToString(item.RecipientID),
+				"type":           item.Type,
+				"severity":       item.Severity,
+				"issue_id":       util.UUIDToPtr(item.IssueID),
+				"title":          item.Title,
+				"body":           item.Body.String,
+				"actor_type":     item.ActorType.String,
+				"actor_id":       util.UUIDToPtr(item.ActorID),
+				"read":           item.Read,
+				"archived":       item.Archived,
+				"created_at":     item.CreatedAt.Time,
+				"details":        json.RawMessage(item.Details),
+			},
+		},
+	})
 }
 
 func noProviderRecoveryEvidenceReason(failedAt, now time.Time) string {

@@ -1121,7 +1121,11 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 				if err := note(wakeupActivitySkipped, details); err != nil {
 					return err
 				}
-				return commit()
+				if err := commit(); err != nil {
+					return err
+				}
+				s.Tasks.notifyProviderFailureOwner(ctx, s.Tasks.Queries, recoveryAttempt, w.WorkspaceID, w.CreatedBy, w.IssueID)
+				return nil
 			}
 		}
 		contextJSON, _ := json.Marshal(map[string]any{"wakeup_id": util.UUIDToString(w.ID), "wakeup_revision": w.Revision, "wakeup_evidence": evidence, "wakeup_chain": chain})

@@ -574,10 +574,12 @@ func (s *AutopilotService) dispatchAutopilot(
 	if source == "schedule" {
 		scope := providerFailureRecoveryScope{Kind: "autopilot_schedule", TriggerID: triggerID, ConditionKey: providerTriggerConditionKey(payload)}
 		active, activeErr := s.Queries.FindActiveScheduledAutopilotRunForTrigger(ctx, db.FindActiveScheduledAutopilotRunForTriggerParams{
-			TriggerID: scope.TriggerID, ConditionKey: scope.ConditionKey, PlannedAt: plannedAt,
+			TriggerID: scope.TriggerID, ConditionKey: scope.ConditionKey,
 		})
 		if activeErr == nil {
-			return &active, dispatch.ReasonAlreadyActive, nil
+			reason := "equivalent scheduled run is already active: " + util.UUIDToString(active.ID)
+			skipped, skipErr := s.recordSkippedRun(ctx, autopilot, triggerID, source, payload, plannedAt, webhookDeliveryID, reason, dispatch.ReasonAlreadyActive)
+			return skipped, dispatch.ReasonAlreadyActive, skipErr
 		}
 		if !errors.Is(activeErr, pgx.ErrNoRows) {
 			return nil, dispatch.ReasonInternalError, fmt.Errorf("find active scheduled autopilot run: %w", activeErr)
@@ -589,6 +591,10 @@ func (s *AutopilotService) dispatchAutopilot(
 		if recoveryAttempt != nil && recoveryAttempt.SkipReason != "" {
 			reason := providerFailureCooldownReason(recoveryAttempt)
 			skipped, skipErr := s.recordSkippedRun(ctx, autopilot, triggerID, source, payload, plannedAt, webhookDeliveryID, reason, dispatch.ReasonProviderFailureCooldown)
+			if skipErr == nil && recoveryAttempt.ReturnOwner {
+				ownerID := ResolveAutopilotTriggerPrincipal(ctx, s.Queries, triggerID, autopilot.ID, autopilot.WorkspaceID)
+				s.TaskSvc.notifyProviderFailureOwner(ctx, s.Queries, recoveryAttempt, autopilot.WorkspaceID, ownerID, pgtype.UUID{})
+			}
 			return skipped, dispatch.ReasonProviderFailureCooldown, skipErr
 		}
 	}
