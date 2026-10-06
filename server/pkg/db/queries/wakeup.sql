@@ -88,7 +88,9 @@ WITH candidates AS (
   AND NOT EXISTS(SELECT 1 FROM issue_status s WHERE s.workspace_id=i.workspace_id AND s.key=i.status AND s.category='closed')
 )
 SELECT w.* FROM candidates c JOIN issue_wakeup w ON w.id=c.id
-WHERE sqlc.narg('workspace_ids')::uuid[] IS NULL OR w.workspace_id = ANY(sqlc.narg('workspace_ids')::uuid[])
+WHERE (sqlc.narg('workspace_ids')::uuid[] IS NULL OR w.workspace_id = ANY(sqlc.narg('workspace_ids')::uuid[]))
+ -- An instance a full aggregate counter delayed waits for its retry time.
+ AND (w.aggregate_retry_at IS NULL OR w.aggregate_retry_at<=now())
 ORDER BY w.updated_at,w.id LIMIT 100;
 -- name: ListPendingWakeupReceipts :many
 SELECT * FROM issue_wakeup_receipt WHERE wakeup_id= @wakeup_id AND revision= @revision AND processed_at IS NULL ORDER BY created_at,id LIMIT 100 FOR UPDATE;

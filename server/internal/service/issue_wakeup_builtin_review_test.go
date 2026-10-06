@@ -316,7 +316,7 @@ func TestBuiltinCaptureUnderHoldKeepsTheInstance(t *testing.T) {
 	if !before.ConfigFingerprint.Valid {
 		t.Fatal("no recorded configuration to preserve")
 	}
-	e.f.Exec(t, `UPDATE issue_wakeup_definition SET config=jsonb_set(config,'{aggregate_limit}','3'),revision=revision+1 WHERE workspace_id=$1 AND scope_kind='project' AND rule_key=$2`, e.f.WorkspaceID, SystemRulePRMerged)
+	e.f.Exec(t, `UPDATE issue_wakeup_definition SET config=jsonb_set(config,'{active_run}','"defer"'),revision=revision+1 WHERE workspace_id=$1 AND scope_kind='project' AND rule_key=$2`, e.f.WorkspaceID, SystemRulePRMerged)
 	e.mergedPR(t, 531)
 	after := e.rule(t, SystemRulePRMerged)
 	if after.Revision != before.Revision || after.ConfigFingerprint != before.ConfigFingerprint {
@@ -329,7 +329,7 @@ func TestBuiltinCaptureUnderHoldKeepsTheInstance(t *testing.T) {
 		t.Fatalf("the held fact: %d pending, %d runs; want 1 pending and the original run only", e.pending(t, SystemRulePRMerged), e.tasks(t, SystemRulePRMerged))
 	}
 	// Resolving again with the hold gone retires nothing it should keep.
-	e.f.Exec(t, `UPDATE issue_wakeup_definition SET config=config-'aggregate_limit',revision=revision+1 WHERE workspace_id=$1 AND scope_kind='project' AND rule_key=$2`, e.f.WorkspaceID, SystemRulePRMerged)
+	e.f.Exec(t, `UPDATE issue_wakeup_definition SET config=config-'active_run',revision=revision+1 WHERE workspace_id=$1 AND scope_kind='project' AND rule_key=$2`, e.f.WorkspaceID, SystemRulePRMerged)
 	if err := e.s.dispatchSystem(context.Background(), e.rule(t, SystemRulePRMerged)); err != nil {
 		t.Fatal(err)
 	}
@@ -460,12 +460,12 @@ func TestFailUnstartedClaimedTaskIsClaimScoped(t *testing.T) {
 // fires, and one it admits does.
 func TestBuiltinCaptureUnderHoldStillAppliesPRFilters(t *testing.T) {
 	hold := func(e builtinEnv) {
-		e.f.Exec(t, `UPDATE issue_wakeup_definition SET config=jsonb_set(config,'{aggregate_limit}','3'),revision=revision+1 WHERE workspace_id=$1 AND scope_kind='project' AND rule_key=$2`, e.f.WorkspaceID, SystemRulePRMerged)
+		e.f.Exec(t, `UPDATE issue_wakeup_definition SET config=jsonb_set(config,'{active_run}','"defer"'),revision=revision+1 WHERE workspace_id=$1 AND scope_kind='project' AND rule_key=$2`, e.f.WorkspaceID, SystemRulePRMerged)
 	}
 	lift := func(e builtinEnv) {
 		// The hold is reset to the exact configuration it interrupted, so the
 		// instance's recorded fingerprint still matches and nothing is rebased.
-		e.f.Exec(t, `UPDATE issue_wakeup_definition SET config=config-'aggregate_limit',revision=revision-1 WHERE workspace_id=$1 AND scope_kind='project' AND rule_key=$2`, e.f.WorkspaceID, SystemRulePRMerged)
+		e.f.Exec(t, `UPDATE issue_wakeup_definition SET config=config-'active_run',revision=revision-1 WHERE workspace_id=$1 AND scope_kind='project' AND rule_key=$2`, e.f.WorkspaceID, SystemRulePRMerged)
 		if err := e.s.dispatchSystem(context.Background(), e.rule(t, SystemRulePRMerged)); err != nil {
 			t.Fatal(err)
 		}
@@ -497,7 +497,7 @@ func TestBuiltinCaptureUnderHoldStillAppliesPRFilters(t *testing.T) {
 		hold(e)
 		carrier := wakeWaitingRun(t, e.f, e.issue, e.agent, e.f.UserID)
 		e.mergedPR(t, 581, func(in *PullRequestWakeupInput) { in.BaseBranch = "develop" })
-		e.f.Exec(t, `UPDATE issue_wakeup_definition SET config=config-'aggregate_limit',revision=revision-1 WHERE workspace_id=$1 AND scope_kind='project' AND rule_key=$2`, e.f.WorkspaceID, SystemRulePRMerged)
+		e.f.Exec(t, `UPDATE issue_wakeup_definition SET config=config-'active_run',revision=revision-1 WHERE workspace_id=$1 AND scope_kind='project' AND rule_key=$2`, e.f.WorkspaceID, SystemRulePRMerged)
 		if notes := wakeClaim(t, e.f, e.s, carrier); strings.Contains(notes, "581") {
 			t.Fatalf("a fact the filter refuses joined the claimed run: %q", notes)
 		}
@@ -507,9 +507,9 @@ func TestBuiltinCaptureUnderHoldStillAppliesPRFilters(t *testing.T) {
 		e.define(t, WakeupScopeProject, SystemRulePRChecksFailed, `"filters":{"ci":"failure"}`)
 		e.failedChecks(t, "ci-first", "FAILURE")
 		e.finishTasks(t)
-		e.f.Exec(t, `UPDATE issue_wakeup_definition SET config=jsonb_set(config,'{aggregate_limit}','3'),revision=revision+1 WHERE workspace_id=$1 AND scope_kind='project' AND rule_key=$2`, e.f.WorkspaceID, SystemRulePRChecksFailed)
+		e.f.Exec(t, `UPDATE issue_wakeup_definition SET config=jsonb_set(config,'{active_run}','"defer"'),revision=revision+1 WHERE workspace_id=$1 AND scope_kind='project' AND rule_key=$2`, e.f.WorkspaceID, SystemRulePRChecksFailed)
 		e.failedChecks(t, "ci-held-error", "ERROR")
-		e.f.Exec(t, `UPDATE issue_wakeup_definition SET config=config-'aggregate_limit',revision=revision-1 WHERE workspace_id=$1 AND scope_kind='project' AND rule_key=$2`, e.f.WorkspaceID, SystemRulePRChecksFailed)
+		e.f.Exec(t, `UPDATE issue_wakeup_definition SET config=config-'active_run',revision=revision-1 WHERE workspace_id=$1 AND scope_kind='project' AND rule_key=$2`, e.f.WorkspaceID, SystemRulePRChecksFailed)
 		if err := e.s.dispatchSystem(context.Background(), e.rule(t, SystemRulePRChecksFailed)); err != nil {
 			t.Fatal(err)
 		}

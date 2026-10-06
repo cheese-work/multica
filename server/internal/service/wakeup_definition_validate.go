@@ -30,9 +30,9 @@ func WakeupDefinitionTriggerKinds() []string { return slices.Clone(builtinWakeup
 var builtinWakeupRules = []string{SystemRuleChildDone, SystemRulePRMerged, SystemRulePRChecksFailed}
 
 // WakeupDefinitionFields lists the patch fields a definition may set today.
-// aggregate_limit, active_run and schedule belong to later layers.
+// active_run and schedule belong to later layers.
 func WakeupDefinitionFields() []string {
-	return []string{"enabled", "name", "trigger", "target", "instruction", "mode", "max_fires", "expiry", "rate_limit", "filters"}
+	return []string{"enabled", "name", "trigger", "target", "instruction", "mode", "max_fires", "expiry", "rate_limit", "aggregate_limit", "filters"}
 }
 
 type wakeupTriggerSpec struct {
@@ -144,7 +144,7 @@ func validateWakeupPatch(ruleKey string, p WakeupConfigPatch, now time.Time) (wa
 	for _, unsupported := range []struct {
 		name string
 		set  bool
-	}{{"aggregate_limit", p.AggregateLimit.Set}, {"active_run", p.ActiveRun.Set}, {"schedule", p.Schedule.Set}} {
+	}{{"active_run", p.ActiveRun.Set}, {"schedule", p.Schedule.Set}} {
 		if unsupported.set {
 			return refs, wakeupDefinitionBad("%s is not available yet", unsupported.name)
 		}
@@ -167,6 +167,9 @@ func validateWakeupPatch(ruleKey string, p WakeupConfigPatch, now time.Time) (wa
 	}
 	if live(p.RateLimit, p.RateLimit.Null) && (p.RateLimit.Value < 1 || p.RateLimit.Value > maxWakeupDefinitionRateLimit) {
 		return refs, wakeupDefinitionBad("rate_limit must be 1–%d", maxWakeupDefinitionRateLimit)
+	}
+	if live(p.AggregateLimit, p.AggregateLimit.Null) && (p.AggregateLimit.Value < 1 || p.AggregateLimit.Value > maxWakeupDefinitionAggregateLimit) {
+		return refs, wakeupDefinitionBad("aggregate_limit must be 1–%d", maxWakeupDefinitionAggregateLimit)
 	}
 	if live(p.Trigger, p.Trigger.Null) {
 		var spec wakeupTriggerSpec

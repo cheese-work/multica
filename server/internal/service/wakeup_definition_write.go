@@ -219,6 +219,12 @@ func (s *IssueWakeupService) SaveWakeupDefinition(ctx context.Context, ref Wakeu
 	}
 	patch := w.Patch
 	normalizeWakeupPatch(&patch)
+	if create {
+		withRootAggregateDefault(&patch)
+	}
+	if err := checkWakeupAggregateScope(ref.Kind, patch); err != nil {
+		return WakeupDefinitionView{}, err
+	}
 	refs, err := validateWakeupPatch(w.RuleKey, patch, time.Now())
 	if err != nil {
 		return WakeupDefinitionView{}, err
@@ -585,6 +591,12 @@ func (s *IssueWakeupService) EffectiveWakeupRule(ctx context.Context, ref Wakeup
 	if proposal != nil {
 		patch := proposal.Patch
 		normalizeWakeupPatch(&patch)
+		if newRoot {
+			withRootAggregateDefault(&patch)
+		}
+		if err := checkWakeupAggregateScope(ref.Kind, patch); err != nil {
+			return WakeupEffectiveRule{}, err
+		}
 		refs, err := validateWakeupPatch(ruleKey, patch, time.Now())
 		if err != nil {
 			return WakeupEffectiveRule{}, err
