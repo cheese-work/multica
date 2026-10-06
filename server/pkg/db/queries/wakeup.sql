@@ -118,6 +118,10 @@ VALUES(@id,@wakeup_id,@revision,@event_key,@event_type,@payload)
 ON CONFLICT(wakeup_id,revision,event_key) DO UPDATE SET event_key=EXCLUDED.event_key RETURNING *;
 -- name: ConsumeWakeupReceipts :exec
 UPDATE issue_wakeup_receipt SET task_id=sqlc.narg(task_id),processed_at=now() WHERE id=ANY(@ids::uuid[]);
+-- name: MarkWakeupReceiptsDeferred :many
+-- Active-run defer: stamps the facts a running target held back and returns
+-- only those not stamped before, so the reason is recorded once per fact.
+UPDATE issue_wakeup_receipt SET deferred_at=now() WHERE id=ANY(@ids::uuid[]) AND processed_at IS NULL AND deferred_at IS NULL RETURNING *;
 -- name: DiscardWakeupReceipts :exec
 UPDATE issue_wakeup_receipt SET processed_at=now() WHERE wakeup_id= @id AND processed_at IS NULL;
 -- name: AdvanceIssueWakeup :exec
