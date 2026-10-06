@@ -747,9 +747,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		return tx.Commit(ctx)
 	}
 	// A default-derived instance is held, its inputs left pending.
-	if allowed, err := legacyDispatchAllowed(ctx, q, issue, w); err != nil {
-		return err
-	} else if !allowed {
+	if defaultDerivedHeld(ctx, issue, w) {
 		return tx.Commit(ctx)
 	}
 	active, err := wakeupIssueActive(ctx, q, issue)
@@ -1204,9 +1202,10 @@ func (s *IssueWakeupService) CheckClaim(ctx context.Context, task db.AgentTaskQu
 		return err
 	}
 	if w.SystemRule.Valid {
-		// A system rule's run targets the assignee resolved when it fired; it
-		// is claimable while the rule is on and that agent can still run.
-		if !w.Enabled || w.DisabledAt.Valid || w.Revision != source.Revision || w.IssueID != task.IssueID {
+		// A system rule's run targets what the rule resolved when it fired; it
+		// is claimable while the rule is on, nothing it was captured under has
+		// changed, and that agent can still run.
+		if w.DisabledAt.Valid || w.Revision != source.Revision || w.IssueID != task.IssueID {
 			return ErrWakeupForbidden
 		}
 		issue, err := s.Tasks.Queries.GetIssue(ctx, w.IssueID)
@@ -1216,11 +1215,28 @@ func (s *IssueWakeupService) CheckClaim(ctx context.Context, task db.AgentTaskQu
 		if err != nil {
 			return err
 		}
-		allowed, err := legacyDispatchAllowed(ctx, s.Tasks.Queries, issue, w)
+		config, err := loadBuiltinWakeup(ctx, s.Tasks.Queries, issue, w.SystemRule.String, &w)
+		if errors.Is(err, errWakeupConfigHeld) {
+			logWakeupHeld(ctx, issue, w, err)
+			return ErrWakeupForbidden
+		}
+		if errors.Is(err, errMalformedPRWakeupSettings) {
+			return errors.Join(ErrWakeupForbidden, err)
+		}
 		if err != nil {
 			return err
 		}
-		if !allowed {
+		on := w.Enabled || w.PausedReason.String == wakeupPausedMaxFires
+		if config != nil {
+			on = config.enabled()
+		}
+		if !on || !builtinConfigCurrent(w, config) {
+			return ErrWakeupForbidden
+		}
+		// Expiry and the issue's labels and priority can change while a run waits.
+		if eligible, err := config.runEligible(ctx, s.Tasks.Queries, issue, w); err != nil {
+			return err
+		} else if !eligible {
 			return ErrWakeupForbidden
 		}
 		if _, isPRWakeup := prWakeupSetting(w.SystemRule.String); isPRWakeup {
@@ -1228,7 +1244,7 @@ func (s *IssueWakeupService) CheckClaim(ctx context.Context, task db.AgentTaskQu
 			if err != nil {
 				return err
 			}
-			enabled, err := PRWakeupEnabled(workspace.Settings, w.SystemRule.String)
+			enabled, err := prRuleEnabled(workspace.Settings, w.SystemRule.String, config != nil)
 			if err != nil {
 				return errors.Join(ErrWakeupForbidden, err)
 			}
@@ -1240,7 +1256,20 @@ func (s *IssueWakeupService) CheckClaim(ctx context.Context, task db.AgentTaskQu
 		if errors.Is(err, pgx.ErrNoRows) || (err == nil && (agent.ArchivedAt.Valid || !agent.RuntimeID.Valid)) {
 			return ErrWakeupForbidden
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		if config != nil && config.Eff.Config.Target.Set {
+			// A named target is asked again whether its writer may use it.
+			target, err := builtinTarget(ctx, s, s.Tasks.Queries, issue, config)
+			if err != nil {
+				return err
+			}
+			if target.Refused != "" || target.Agent.ID != task.AgentID {
+				return ErrWakeupForbidden
+			}
+		}
+		return nil
 	}
 	if w.DisabledAt.Valid || w.Revision != source.Revision || w.IssueID != task.IssueID || w.AgentID != task.AgentID || w.CreatedBy != task.OriginatorUserID {
 		return ErrWakeupForbidden
@@ -1256,4 +1285,102 @@ func (s *IssueWakeupService) CheckClaim(ctx context.Context, task db.AgentTaskQu
 		return err
 	}
 	return s.authorize(ctx, s.Tasks.Queries, w.WorkspaceID, w.CreatedBy, agent)
+}
+
+// CheckStart is the last check before a claimed run begins. A run of a platform
+// rule that was captured under a configuration that has since changed, or whose
+// target was refused meanwhile, does not start, and neither does any run that
+// carries such a rule's firing as a joined wakeup. Once running, a prompt stays
+// as it is.
+func (s *IssueWakeupService) CheckStart(ctx context.Context, task db.AgentTaskQueue) error {
+	var source struct {
+		System string         `json:"wakeup_system"`
+		Joined []joinedWakeup `json:"wakeup_joined"`
+	}
+	if task.StartedAt.Valid || task.Status == "running" || json.Unmarshal(task.Context, &source) != nil {
+		return nil
+	}
+	if source.System != "" {
+		if err := s.CheckClaim(ctx, task); err != nil {
+			return err
+		}
+	}
+	for _, entry := range source.Joined {
+		if err := s.checkJoinedAtStart(ctx, task, entry); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkJoinedAtStart judges one joined entry the way its own run would be: the
+// revision it was joined under, the configuration now resolved, eligibility, and
+// the target's authorization. Entries of local wakeups and of rules that are gone
+// are not this gate's business.
+func (s *IssueWakeupService) checkJoinedAtStart(ctx context.Context, task db.AgentTaskQueue, entry joinedWakeup) error {
+	id, err := wakeupUUID(entry.WakeupID)
+	if err != nil || !id.Valid {
+		return nil
+	}
+	w, err := s.Tasks.Queries.LocklessWakeup(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && !w.SystemRule.Valid {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if w.DisabledAt.Valid || w.Revision != entry.Revision || w.IssueID != task.IssueID {
+		return ErrWakeupForbidden
+	}
+	issue, err := s.Tasks.Queries.GetIssue(ctx, w.IssueID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrWakeupForbidden
+	}
+	if err != nil {
+		return err
+	}
+	config, err := loadBuiltinWakeup(ctx, s.Tasks.Queries, issue, w.SystemRule.String, &w)
+	if errors.Is(err, errWakeupConfigHeld) || errors.Is(err, errMalformedPRWakeupSettings) {
+		return ErrWakeupForbidden
+	}
+	if err != nil {
+		return err
+	}
+	if !builtinConfigCurrent(w, config) || config != nil && !config.enabled() {
+		return ErrWakeupForbidden
+	}
+	if eligible, err := config.runEligible(ctx, s.Tasks.Queries, issue, w); err != nil {
+		return err
+	} else if !eligible {
+		return ErrWakeupForbidden
+	}
+	if _, isPRWakeup := prWakeupSetting(w.SystemRule.String); isPRWakeup && config != nil {
+		// The GitHub master switch is not part of the fingerprint; it is a veto
+		// for a scoped firing, judged again here as at dispatch and claim.
+		workspace, err := s.Tasks.Queries.GetWorkspace(ctx, w.WorkspaceID)
+		if err != nil {
+			return err
+		}
+		if enabled, err := prRuleEnabled(workspace.Settings, w.SystemRule.String, true); err != nil || !enabled {
+			return errors.Join(ErrWakeupForbidden, err)
+		}
+	}
+	if config != nil && config.Eff.Config.Target.Set {
+		target, err := builtinTarget(ctx, s, s.Tasks.Queries, issue, config)
+		if err != nil {
+			return err
+		}
+		if target.Refused != "" || target.Agent.ID != task.AgentID || !config.carrierMatchesTarget(target, task) {
+			return ErrWakeupForbidden
+		}
+	}
+	// The limit the firing was joined under still binds it at start.
+	limit := entry.FireLimit
+	if cfgLimit, limited := config.fireLimit(); limited && (limit == 0 || cfgLimit < limit) {
+		limit = cfgLimit
+	}
+	if limit > 0 {
+		return s.checkJoinedFireCap(ctx, task, entry, limit)
+	}
+	return nil
 }

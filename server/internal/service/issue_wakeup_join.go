@@ -163,6 +163,10 @@ type joinedWakeup struct {
 	WakeupID string `json:"wakeup_id"`
 	Revision int64  `json:"wakeup_revision"`
 	Note     string `json:"note"`
+	// FireLimit is the once/max_fires limit the firing was joined under (0: none).
+	// A firing that starts later counts against it whatever the rule's
+	// configuration says by then, so an edit cannot rearm the instance.
+	FireLimit int32 `json:"fire_limit,omitempty"`
 }
 
 // JoinWaitingWakeups hands a run being claimed the inputs of the wakeup rules
@@ -361,7 +365,15 @@ func (s *IssueWakeupService) reserveForRun(ctx context.Context, q *db.Queries, i
 			return nil, nil, err
 		}
 	}
-	return &joinedWakeup{WakeupID: util.UUIDToString(w.ID), Revision: w.Revision, Note: joinedWakeupNote(w, instruction, receipts)}, chain, nil
+	var fireLimit int32
+	if w.SystemRule.Valid {
+		config, err := loadBuiltinWakeup(ctx, q, issue, w.SystemRule.String, &w)
+		if err != nil {
+			return nil, nil, err
+		}
+		fireLimit, _ = config.fireLimit()
+	}
+	return &joinedWakeup{WakeupID: util.UUIDToString(w.ID), Revision: w.Revision, Note: joinedWakeupNote(w, instruction, receipts), FireLimit: fireLimit}, chain, nil
 }
 
 // mayJoin reports whether the run is one the rule's own run would be: the
@@ -379,7 +391,7 @@ func (s *IssueWakeupService) mayJoin(ctx context.Context, q *db.Queries, issue d
 		if w.AgentID != task.AgentID || w.CreatedBy != task.OriginatorUserID || (w.Mode == "once" && w.LastTaskID.Valid) {
 			return "", false, nil
 		}
-		if isDefaultDerivedWakeup(w) {
+		if defaultDerivedHeld(ctx, issue, w) {
 			return "", false, nil
 		}
 		if err := s.authorize(ctx, q, w.WorkspaceID, w.CreatedBy, agent); err != nil {
@@ -390,15 +402,49 @@ func (s *IssueWakeupService) mayJoin(ctx context.Context, q *db.Queries, issue d
 		}
 		return w.Instruction, true, nil
 	}
-	if !w.Enabled || issuestatus.Effective(ctx, q, issue.WorkspaceID, issue.Status) == "backlog" {
+	config, err := loadBuiltinWakeup(ctx, q, issue, w.SystemRule.String, &w)
+	if errors.Is(err, errWakeupConfigHeld) {
+		logWakeupHeld(ctx, issue, w, err)
 		return "", false, nil
 	}
-	if allowed, err := legacyDispatchAllowed(ctx, q, issue, w); err != nil || !allowed {
+	if err != nil {
 		return "", false, err
 	}
-	target, err := resolveWakeTarget(ctx, q, issue)
-	if err != nil || target.Agent.ID != task.AgentID {
+	on := w.Enabled
+	if config != nil {
+		on = config.enabled() && !systemWakeupPaused(w)
+	}
+	// A configuration that changed since the capture left these inputs behind
+	// for the rule's own dispatch to retire.
+	if !on || issuestatus.Effective(ctx, q, issue.WorkspaceID, issue.Status) == "backlog" || !builtinConfigCurrent(w, config) {
+		return "", false, nil
+	}
+	if eligible, err := config.matchesIssue(ctx, q, issue); err != nil || !eligible {
 		return "", false, err
+	}
+	if _, refused := splitDeferredPRFilters(config, w.SystemRule.String, receipts); len(refused) > 0 {
+		// Facts the filters refuse are dropped by the rule's own dispatch.
+		return "", false, nil
+	}
+	if config.expired(w.CreatedAt.Time, time.Now()) {
+		return "", false, nil
+	}
+	if limit, limited := config.fireLimit(); limited {
+		// Inputs other runs already took are firings that count too.
+		others, err := otherCarrierSlots(ctx, q, w, task.ID, false)
+		if err != nil {
+			return "", false, err
+		}
+		if w.FireCount+others >= limit {
+			return "", false, nil
+		}
+	}
+	target, err := builtinTarget(ctx, s, q, issue, config)
+	if err != nil || target.Refused != "" || target.Agent.ID != task.AgentID {
+		return "", false, err
+	}
+	if !config.carrierMatchesTarget(target, task) {
+		return "", false, nil
 	}
 	runAs, err := s.childDoneRunAs(ctx, issue, agent)
 	if err != nil || runAs.UserID != task.OriginatorUserID {
@@ -409,12 +455,12 @@ func (s *IssueWakeupService) mayJoin(ctx context.Context, q *db.Queries, issue d
 		return "", false, err
 	}
 	if _, isPRWakeup := prWakeupSetting(w.SystemRule.String); isPRWakeup {
-		enabled, err := PRWakeupEnabled(ws.Settings, w.SystemRule.String)
+		enabled, err := prRuleEnabled(ws.Settings, w.SystemRule.String, config != nil)
 		if err != nil || !enabled {
 			return "", false, err
 		}
 	}
-	return systemWakeupInstruction(w, ws.Settings, receipts), true, nil
+	return config.systemInstruction(w, ws.Settings, receipts), true, nil
 }
 
 // takenRun is a run that took some of a rule's inputs along and has started.
@@ -425,10 +471,10 @@ type takenRun struct {
 
 // takenReceipts sorts a rule's pending inputs by the run a claim reserved them
 // for. It returns the free ones (including those of a run that ended without
-// starting, which go back to the rule), whether a run that has not started
-// yet still holds some, and the runs that started with some, whose inputs
+// starting, which go back to the rule), how many runs that have not started
+// yet still hold some, and the runs that started with some, whose inputs
 // the caller consumes as a merged firing.
-func takenReceipts(ctx context.Context, q *db.Queries, receipts []db.IssueWakeupReceipt) ([]db.IssueWakeupReceipt, bool, []takenRun, error) {
+func takenReceipts(ctx context.Context, q *db.Queries, receipts []db.IssueWakeupReceipt) ([]db.IssueWakeupReceipt, int, []takenRun, error) {
 	byRun := map[pgtype.UUID][]db.IssueWakeupReceipt{}
 	var runs []pgtype.UUID
 	for _, r := range receipts {
@@ -440,21 +486,21 @@ func takenReceipts(ctx context.Context, q *db.Queries, receipts []db.IssueWakeup
 		}
 	}
 	if len(runs) == 0 {
-		return receipts, false, nil, nil
+		return receipts, 0, nil, nil
 	}
 	released := map[pgtype.UUID]bool{}
-	holding := false
+	holding := 0
 	var taken []takenRun
 	for _, id := range runs {
 		task, err := q.GetAgentTask(ctx, id)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return nil, false, nil, err
+			return nil, 0, nil, err
 		}
 		switch {
 		case err == nil && (task.StartedAt.Valid || task.Status == "running"):
 			taken = append(taken, takenRun{task: task, receipts: byRun[id]})
 		case err == nil && task.Status != "completed" && task.Status != "failed" && task.Status != "cancelled":
-			holding = true
+			holding++
 		default:
 			ids := make([]pgtype.UUID, 0, len(byRun[id]))
 			for _, r := range byRun[id] {
@@ -462,7 +508,7 @@ func takenReceipts(ctx context.Context, q *db.Queries, receipts []db.IssueWakeup
 				released[r.ID] = true
 			}
 			if err := q.ReleaseWakeupReceipts(ctx, ids); err != nil {
-				return nil, false, nil, err
+				return nil, 0, nil, err
 			}
 		}
 	}

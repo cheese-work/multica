@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
+	"strings"
 )
 
 // WakeupConfigVersion is the only patch version this build can read. A stored
@@ -100,4 +102,17 @@ func DecodeWakeupConfigPatch(raw []byte) (WakeupConfigPatch, error) {
 // MarshalWakeupConfigPatch is the inverse of DecodeWakeupConfigPatch.
 func MarshalWakeupConfigPatch(p WakeupConfigPatch) ([]byte, error) {
 	return json.Marshal(wakeupPatchWire{Version: WakeupConfigVersion, WakeupConfigPatch: p})
+}
+
+// setWakeupFields lists the JSON names of every field a patch sets or clears.
+// It reflects over the patch, so a new field is covered the day it is added.
+func setWakeupFields(p WakeupConfigPatch) []string {
+	var names []string
+	v, t := reflect.ValueOf(p), reflect.TypeOf(p)
+	for i := range t.NumField() {
+		if zero, ok := v.Field(i).Interface().(interface{ IsZero() bool }); ok && !zero.IsZero() {
+			names = append(names, strings.Split(t.Field(i).Tag.Get("json"), ",")[0])
+		}
+	}
+	return names
 }
