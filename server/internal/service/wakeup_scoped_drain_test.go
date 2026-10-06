@@ -580,7 +580,7 @@ func TestScopedDrainBatchIsBoundedAndSkipsLockedRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := db.New(tx).ClaimWakeupScopedEvents(ctx, db.ClaimWakeupScopedEventsParams{Now: pgtype.Timestamptz{Time: time.Now(), Valid: true}, Oldest: pgtype.Timestamptz{Time: time.Now().Add(-scopedEventRetention), Valid: true}, SkipIssues: []pgtype.UUID{}, BatchSize: 100}); err != nil {
+	if _, err := db.New(tx).ClaimWakeupScopedEvents(ctx, db.ClaimWakeupScopedEventsParams{Now: pgtype.Timestamptz{Time: time.Now(), Valid: true}, Oldest: pgtype.Timestamptz{Time: time.Now().Add(-scopedEventRetention), Valid: true}, SkipIssues: []pgtype.UUID{}, AfterAt: pgtype.Timestamptz{Valid: true}, AfterID: pgtype.UUID{Valid: true}, BatchSize: 100}); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
@@ -632,8 +632,6 @@ func TestScopedDrainConcurrentSchedulersHandleEachInputOnce(t *testing.T) {
 		// Competing schedulers may lose a lock race; nothing may be lost.
 		t.Logf("drain: %v", err)
 	}
-	// A drainer that lost a lock race left that issue cooling; let it pass.
-	newScopedCadence(k).advance(t, 2*scopedBusyCooldown)
 	k.drain(t)
 	k.drain(t)
 	if got := k.pending(t); got != 0 {
@@ -813,13 +811,13 @@ func TestScopedDrainAPoisonedInputDoesNotBlockItsIssue(t *testing.T) {
 
 // An issue another writer holds is contention, not a fault: the drain does not
 // wait for it, writes nothing for it, reports no error and leaves the input
-// pending. It cools for a while, then the input is delivered.
+// pending. The scan moves past it and wraps, so the input is delivered by the
+// next pass once the issue is free.
 func TestScopedDrainWaitsOutAnIssueAnotherWriterHolds(t *testing.T) {
 	k := newDrainKit(t)
 	k.defineRoot(t, "workspace", k.f.WorkspaceID, scopedRuleA, "comment.created")
 	k.comment(t, "the issue is busy")
 	ctx := context.Background()
-	clock := newScopedCadence(k)
 	holder, err := k.f.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -839,11 +837,6 @@ func TestScopedDrainWaitsOutAnIssueAnotherWriterHolds(t *testing.T) {
 		t.Fatal("a busy issue's input must stay pending and untouched")
 	}
 	holder.Rollback(ctx)
-	k.drain(t)
-	if k.pending(t) != 1 {
-		t.Fatal("the issue must cool for a while even though it is free again")
-	}
-	clock.advance(t, scopedBusyCooldown+time.Second)
 	k.drain(t)
 	k.wantOutcomes(t, "delivered")
 }

@@ -14,15 +14,18 @@ import (
 const claimWakeupScopedEvents = `-- name: ClaimWakeupScopedEvents :many
 SELECT id, workspace_id, issue_id, project_id, event_type, event_key, agent_id, source_task_id, actor_type, actor_id, payload, delivered, chain, captured_at, retry_at, handled_at, outcome FROM wakeup_scoped_event
 WHERE handled_at IS NULL AND captured_at >= $1::timestamptz AND (retry_at IS NULL OR retry_at <= $2::timestamptz)
- AND ($3::uuid[] IS NULL OR workspace_id = ANY($3::uuid[]))
- AND issue_id <> ALL($4::uuid[])
-ORDER BY captured_at, id LIMIT $5
+ AND (captured_at, id) > ($3::timestamptz, $4::uuid)
+ AND ($5::uuid[] IS NULL OR workspace_id = ANY($5::uuid[]))
+ AND issue_id <> ALL($6::uuid[])
+ORDER BY captured_at, id LIMIT $7
 FOR UPDATE SKIP LOCKED
 `
 
 type ClaimWakeupScopedEventsParams struct {
 	Oldest       pgtype.Timestamptz `json:"oldest"`
 	Now          pgtype.Timestamptz `json:"now"`
+	AfterAt      pgtype.Timestamptz `json:"after_at"`
+	AfterID      pgtype.UUID        `json:"after_id"`
 	WorkspaceIds []pgtype.UUID      `json:"workspace_ids"`
 	SkipIssues   []pgtype.UUID      `json:"skip_issues"`
 	BatchSize    int32              `json:"batch_size"`
@@ -33,11 +36,16 @@ type ClaimWakeupScopedEventsParams struct {
 // its retry time so it cannot starve the rest. An input captured before @oldest
 // is past retention: it is never claimed, so it can only expire, and neither the
 // size of an expired backlog nor the order of the prune can make it deliver.
-// @skip_issues are the issues the drain is leaving alone for now (found busy).
+// @skip_issues are the issues this pass found busy. The scan starts after
+// (@after_at, @after_id), the drain's fair position: a pass that finds busy
+// issues moves it past them, so the next pass reaches the work behind them, and
+// an empty scan wraps it to the start, so every input is reached in turn.
 func (q *Queries) ClaimWakeupScopedEvents(ctx context.Context, arg ClaimWakeupScopedEventsParams) ([]WakeupScopedEvent, error) {
 	rows, err := q.db.Query(ctx, claimWakeupScopedEvents,
 		arg.Oldest,
 		arg.Now,
+		arg.AfterAt,
+		arg.AfterID,
 		arg.WorkspaceIds,
 		arg.SkipIssues,
 		arg.BatchSize,
