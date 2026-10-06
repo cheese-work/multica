@@ -273,6 +273,25 @@ func (q *Queries) DeferWakeupScopedEvent(ctx context.Context, arg DeferWakeupSco
 	return err
 }
 
+const deferWakeupScopedEventsOfIssue = `-- name: DeferWakeupScopedEventsOfIssue :exec
+UPDATE wakeup_scoped_event SET retry_at= $1::timestamptz
+WHERE id IN (SELECT e.id FROM wakeup_scoped_event e WHERE e.issue_id= $2 AND e.handled_at IS NULL AND (e.retry_at IS NULL OR e.retry_at < $1::timestamptz) FOR UPDATE SKIP LOCKED)
+`
+
+type DeferWakeupScopedEventsOfIssueParams struct {
+	RetryAt pgtype.Timestamptz `json:"retry_at"`
+	IssueID pgtype.UUID        `json:"issue_id"`
+}
+
+// A busy issue's pending inputs wait for @retry_at, so the next claim passes over
+// them and goes on to other work. It never shortens a wait, and a row another
+// scheduler holds is left to that scheduler. Retention is unaffected: the claims
+// still refuse an input captured before the retention cut.
+func (q *Queries) DeferWakeupScopedEventsOfIssue(ctx context.Context, arg DeferWakeupScopedEventsOfIssueParams) error {
+	_, err := q.db.Exec(ctx, deferWakeupScopedEventsOfIssue, arg.RetryAt, arg.IssueID)
+	return err
+}
+
 const deleteHandledWakeupScopedEvents = `-- name: DeleteHandledWakeupScopedEvents :execrows
 DELETE FROM wakeup_scoped_event
 WHERE id IN (SELECT e.id FROM wakeup_scoped_event e WHERE e.handled_at IS NOT NULL AND e.handled_at < $1::timestamptz ORDER BY e.handled_at LIMIT $2 FOR UPDATE SKIP LOCKED)
