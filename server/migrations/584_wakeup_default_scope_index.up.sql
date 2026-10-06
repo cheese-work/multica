@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_wakeup_default_scope_idx ON issue_wakeup(workspace_id, default_scope_kind, default_scope_id) WHERE enabled AND system_rule IS NULL AND default_rule_key IS NOT NULL;

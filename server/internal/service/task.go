@@ -4915,6 +4915,25 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 // CompleteTaskWithTransition. The bool is false for an idempotent replay that
 // observed an already-terminal row.
 func (s *TaskService) FailTaskWithTransition(ctx context.Context, taskID pgtype.UUID, errMsg, sessionID, workDir, branchName, failureReason string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) (*db.AgentTaskQueue, bool, error) {
+	return s.failTask(ctx, nil, taskID, errMsg, sessionID, workDir, branchName, failureReason, sessionRolloutMissing, retiredSessionID, durableWorkDir)
+}
+
+// ErrClaimNotUnstarted: the task is no longer the unstarted claim a guarded
+// failure named (it started, finished, or was claimed again).
+var ErrClaimNotUnstarted = errors.New("task is no longer the unstarted claim")
+
+// FailUnstartedClaimedTask fails a claimed run that has not started, for a
+// caller that judged that exact claim (runtime and generation). The claim is
+// locked and re-read in the failing transaction, so a task that started or was
+// claimed again meanwhile is left alone and ErrClaimNotUnstarted is returned.
+func (s *TaskService) FailUnstartedClaimedTask(ctx context.Context, claim db.LockAgentTaskStartClaimParams, errMsg, failureReason string) (*db.AgentTaskQueue, error) {
+	task, _, err := s.failTask(ctx, &claim, claim.ID, errMsg, "", "", "", failureReason, false, "", "")
+	return task, err
+}
+
+// failTask is FailTaskWithTransition; a non-nil guard restricts it to the
+// unstarted claim the guard names.
+func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStartClaimParams, taskID pgtype.UUID, errMsg, sessionID, workDir, branchName, failureReason string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) (*db.AgentTaskQueue, bool, error) {
 	// Strip bytes PostgreSQL cannot store before anything else reads errMsg, so
 	// the classifier, the transaction and every downstream consumer see the one
 	// text we will actually persist (GH #7098). Kept at the service boundary
@@ -5003,6 +5022,15 @@ func (s *TaskService) FailTaskWithTransition(ctx context.Context, taskID pgtype.
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		if err := lockChatSessionForTaskWrite(ctx, qtx, taskID); err != nil {
 			return err
+		}
+		if guard != nil {
+			locked, err := qtx.LockAgentTaskStartClaim(ctx, *guard)
+			if errors.Is(err, pgx.ErrNoRows) || err == nil && (locked.Status == "running" || locked.StartedAt.Valid) {
+				return ErrClaimNotUnstarted
+			}
+			if err != nil {
+				return err
+			}
 		}
 		t, err := qtx.FailAgentTask(ctx, db.FailAgentTaskParams{
 			ID:             taskID,
@@ -5236,6 +5264,9 @@ func (s *TaskService) FailTaskWithTransition(ctx context.Context, taskID pgtype.
 		}
 		return nil
 	}); err != nil {
+		if errors.Is(err, ErrClaimNotUnstarted) {
+			return nil, false, err
+		}
 		if existing, lookupErr := s.Queries.GetAgentTask(ctx, taskID); lookupErr == nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				slog.Info("fail task: already finalized",

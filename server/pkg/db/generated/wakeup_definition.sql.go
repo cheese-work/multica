@@ -56,6 +56,32 @@ func (q *Queries) DeleteWakeupDefinition(ctx context.Context, arg DeleteWakeupDe
 	return result.RowsAffected(), nil
 }
 
+const findWaitingIssueLeaderRun = `-- name: FindWaitingIssueLeaderRun :one
+SELECT id FROM agent_task_queue WHERE issue_id= $1 AND agent_id= $2 AND status='queued'
+ AND originator_user_id= $3::uuid AND is_leader_task AND squad_id= $4::uuid ORDER BY created_at,id LIMIT 1
+`
+
+type FindWaitingIssueLeaderRunParams struct {
+	IssueID          pgtype.UUID `json:"issue_id"`
+	AgentID          pgtype.UUID `json:"agent_id"`
+	OriginatorUserID pgtype.UUID `json:"originator_user_id"`
+	SquadID          pgtype.UUID `json:"squad_id"`
+}
+
+// A leader task of this squad that has not been claimed and runs as this person:
+// the only kind of waiting run a squad-targeted rule may leave its facts with.
+func (q *Queries) FindWaitingIssueLeaderRun(ctx context.Context, arg FindWaitingIssueLeaderRunParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, findWaitingIssueLeaderRun,
+		arg.IssueID,
+		arg.AgentID,
+		arg.OriginatorUserID,
+		arg.SquadID,
+	)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const getWakeupDefinition = `-- name: GetWakeupDefinition :one
 SELECT workspace_id, scope_kind, scope_id, rule_key, root, config, revision, created_by, updated_by, created_at, updated_at FROM issue_wakeup_definition
 WHERE workspace_id= $1 AND scope_kind= $2 AND scope_id= $3 AND rule_key= $4
@@ -167,7 +193,7 @@ func (q *Queries) InsertWakeupDefinitionIfAbsent(ctx context.Context, arg Insert
 }
 
 const listCustomizedSystemWakeupsAfter = `-- name: ListCustomizedSystemWakeupsAfter :many
-SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint FROM issue_wakeup
+SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at FROM issue_wakeup
 WHERE system_rule IS NOT NULL AND customized_at IS NOT NULL AND id> $1
  AND ($2::uuid IS NULL OR workspace_id= $2::uuid)
 ORDER BY id LIMIT $3
@@ -232,10 +258,38 @@ func (q *Queries) ListCustomizedSystemWakeupsAfter(ctx context.Context, arg List
 			&i.DefaultScopeKind,
 			&i.DefaultScopeID,
 			&i.ConfigFingerprint,
+			&i.CapacityReason,
+			&i.AggregateBlockedScopeKind,
+			&i.AggregateBlockedScopeID,
+			&i.AggregateRetryAt,
 		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listIssueLabelIDs = `-- name: ListIssueLabelIDs :many
+SELECT label_id FROM issue_to_label WHERE issue_id= $1
+`
+
+func (q *Queries) ListIssueLabelIDs(ctx context.Context, issueID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listIssueLabelIDs, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var label_id pgtype.UUID
+		if err := rows.Scan(&label_id); err != nil {
+			return nil, err
+		}
+		items = append(items, label_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -372,12 +426,82 @@ func (q *Queries) LockWorkspaceSettingsForWakeupDefinition(ctx context.Context, 
 	return err
 }
 
+const rebaseSystemWakeupConfig = `-- name: RebaseSystemWakeupConfig :one
+UPDATE issue_wakeup SET revision=revision+1,config_fingerprint=NULLIF($1::text,''),updated_at=clock_timestamp(),
+ aggregate_blocked_scope_kind=NULL,aggregate_blocked_scope_id=NULL,aggregate_retry_at=NULL
+WHERE id= $2 AND system_rule IS NOT NULL
+RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at
+`
+
+type RebaseSystemWakeupConfigParams struct {
+	Fingerprint string      `json:"fingerprint"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+// A platform rule's instance moves to the configuration it now resolves to. The
+// revision moves with it, so inputs and queued runs captured under the old
+// configuration stop matching; identity, fire count, pauses and consumed state
+// stay as they are. An aggregate delay belonged to the old configuration's cap, so
+// it ends too. An empty fingerprint means no scoped definition applies.
+func (q *Queries) RebaseSystemWakeupConfig(ctx context.Context, arg RebaseSystemWakeupConfigParams) (IssueWakeup, error) {
+	row := q.db.QueryRow(ctx, rebaseSystemWakeupConfig, arg.Fingerprint, arg.ID)
+	var i IssueWakeup
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.AgentID,
+		&i.CreatedBy,
+		&i.SourceTaskID,
+		&i.ParentCommentID,
+		&i.Instruction,
+		&i.Kind,
+		&i.Mode,
+		&i.EventTypes,
+		&i.FilterAgentID,
+		&i.FilterTaskID,
+		&i.IntervalSeconds,
+		&i.CronExpression,
+		&i.Timezone,
+		&i.NextFireAt,
+		&i.Enabled,
+		&i.DisabledAt,
+		&i.Revision,
+		&i.LastTaskID,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.FilterActorType,
+		&i.FilterActorID,
+		&i.ExpiresAt,
+		&i.ExpirySeconds,
+		&i.OnTimeout,
+		&i.TimedOutAt,
+		&i.SystemRule,
+		&i.CustomizedAt,
+		&i.Condition,
+		&i.ConditionState,
+		&i.MaxFires,
+		&i.FireCount,
+		&i.PausedReason,
+		&i.DefaultRuleKey,
+		&i.DefaultScopeKind,
+		&i.DefaultScopeID,
+		&i.ConfigFingerprint,
+		&i.CapacityReason,
+		&i.AggregateBlockedScopeKind,
+		&i.AggregateBlockedScopeID,
+		&i.AggregateRetryAt,
+	)
+	return i, err
+}
+
 const retireCustomizedSystemWakeup = `-- name: RetireCustomizedSystemWakeup :one
 UPDATE issue_wakeup SET customized_at=NULL,instruction='',
  enabled=CASE WHEN paused_reason IS NULL AND disabled_at IS NULL THEN $1::bool ELSE enabled END,
  updated_at=clock_timestamp()
 WHERE id= $2 AND customized_at IS NOT NULL
-RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint
+RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at
 `
 
 type RetireCustomizedSystemWakeupParams struct {
@@ -433,6 +557,10 @@ func (q *Queries) RetireCustomizedSystemWakeup(ctx context.Context, arg RetireCu
 		&i.DefaultScopeKind,
 		&i.DefaultScopeID,
 		&i.ConfigFingerprint,
+		&i.CapacityReason,
+		&i.AggregateBlockedScopeKind,
+		&i.AggregateBlockedScopeID,
+		&i.AggregateRetryAt,
 	)
 	return i, err
 }

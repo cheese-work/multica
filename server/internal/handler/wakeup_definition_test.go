@@ -403,8 +403,9 @@ func TestWakeupDefinitionRejectsUnimplementedAndInvalidConfig(t *testing.T) {
 		"event trigger":            cfg(map[string]any{"trigger": map[string]any{"kind": "event"}, "instruction": "x"}),
 		"cron trigger":             cfg(map[string]any{"trigger": map[string]any{"kind": "cron"}, "instruction": "x"}),
 		"trigger kind of built-in": cfg(map[string]any{"trigger": prTrigger}),
-		"aggregate limit":          cfg(map[string]any{"aggregate_limit": 6}),
-		"active run":               cfg(map[string]any{"active_run": "defer"}),
+		"aggregate limit zero":     cfg(map[string]any{"aggregate_limit": 0}),
+		"aggregate limit too high": cfg(map[string]any{"aggregate_limit": 1001}),
+		"unknown active run":       cfg(map[string]any{"active_run": "queue"}),
 		"schedule":                 cfg(map[string]any{"schedule": map[string]any{"every_seconds": 3600}}),
 		"unknown field":            cfg(map[string]any{"surprise": true}),
 		"future version":           {"v": 2, "name": "x"},
@@ -440,10 +441,35 @@ func TestWakeupDefinitionRejectsUnimplementedAndInvalidConfig(t *testing.T) {
 	k.project().put("pr_checks_failed", 0, cfg(map[string]any{
 		"mode": "continuous", "max_fires": 5, "rate_limit": 6,
 		"expiry":  map[string]any{"after_seconds": 3600},
-		"filters": map[string]any{"base_branch": "main", "ci": "failure", "priorities": []string{"urgent", "high"}},
+		"filters": map[string]any{"head_branch": "main", "ci": "failure", "priorities": []string{"urgent", "high"}},
 	})).Want(http.StatusOK)
+	// The failing-checks event carries no base branch, so that filter is refused.
+	k.project().put("pr_checks_failed", 1, cfg(map[string]any{"filters": map[string]any{"base_branch": "main"}})).Want(http.StatusBadRequest)
 	// An unknown rule key is not a rule.
 	k.project().put("not-a-rule", 0, cfg(map[string]any{"name": "x"})).Want(http.StatusBadRequest)
+}
+
+// An aggregate cap is a workspace or project setting: an explicit value is
+// stored as sent, an override that does not mention it gains none, and an issue
+// cannot hold one.
+func TestWakeupDefinitionAggregateLimitScopes(t *testing.T) {
+	k := newWakeupDefinitionKit(t)
+	ws := decodeDefinition(t, k.workspace().put("pr_merged", 0, cfg(map[string]any{"aggregate_limit": 6})).Want(http.StatusOK))
+	if got := string(configKeys(t, ws.Config)["aggregate_limit"]); got != "6" {
+		t.Fatalf("workspace cap stored as %q: %s", got, ws.Config)
+	}
+	proj := decodeDefinition(t, k.project().put("pr_merged", 0, cfg(map[string]any{"instruction": "Project text."})).Want(http.StatusOK))
+	if _, ok := configKeys(t, proj.Config)["aggregate_limit"]; ok {
+		t.Fatalf("an instruction-only override gained a cap: %s", proj.Config)
+	}
+	k.project().put("pr_merged", proj.Revision, cfg(map[string]any{"aggregate_limit": 3})).Want(http.StatusOK)
+	k.issue().put("pr_merged", 0, cfg(map[string]any{"aggregate_limit": 3})).Want(http.StatusBadRequest)
+	explicit := decodeDefinition(t, k.workspace().create(cfg(map[string]any{
+		"enabled": true, "trigger": map[string]any{"kind": "pr_merged"}, "instruction": "Summarise.", "aggregate_limit": 5,
+	})).Want(http.StatusCreated))
+	if got := string(configKeys(t, explicit.Config)["aggregate_limit"]); got != "5" {
+		t.Fatalf("an explicit cap on a new root is %q, want 5", got)
+	}
 }
 
 func TestWakeupDefinitionCustomRuleRootAndOverrides(t *testing.T) {
@@ -454,9 +480,13 @@ func TestWakeupDefinitionCustomRuleRootAndOverrides(t *testing.T) {
 	if !root.Root || root.Revision != 1 || len(root.RuleKey) != 36 {
 		t.Fatalf("root: %+v", root)
 	}
-	// Creation inserts no default: no aggregate cap, fire cap, mode or defer.
+	// Creation inserts the 12/hour aggregate cap and nothing else: no fire cap,
+	// mode or defer.
 	keys := configKeys(t, root.Config)
-	for _, banned := range []string{"aggregate_limit", "max_fires", "mode", "active_run", "rate_limit", "expiry"} {
+	if got := string(keys["aggregate_limit"]); got != "12" {
+		t.Errorf("a new custom root has aggregate_limit %q, want the default 12: %s", got, root.Config)
+	}
+	for _, banned := range []string{"max_fires", "mode", "active_run", "rate_limit", "expiry"} {
 		if _, ok := keys[banned]; ok {
 			t.Errorf("creation inserted a default %s: %s", banned, root.Config)
 		}
@@ -897,7 +927,7 @@ func TestWakeupDefinitionListFailsLoudlyWhenResolutionFails(t *testing.T) {
 	}
 }
 
-func TestWakeupDefinitionTrimsBranchesAndNamesTheFirstUnsupportedField(t *testing.T) {
+func TestWakeupDefinitionTrimsBranchesAndNamesTheUnsupportedField(t *testing.T) {
 	k := newWakeupDefinitionKit(t)
 	saved := decodeDefinition(t, k.project().put("pr_merged", 0, cfg(map[string]any{"filters": map[string]any{"base_branch": "  main ", "head_branch": "feature/x"}})).Want(http.StatusOK))
 	if !strings.Contains(string(saved.Config), `"base_branch":"main"`) {
@@ -905,9 +935,9 @@ func TestWakeupDefinitionTrimsBranchesAndNamesTheFirstUnsupportedField(t *testin
 	}
 	k.project().put("pr_merged", saved.Revision, cfg(map[string]any{"filters": map[string]any{"base_branch": "   "}})).Want(http.StatusBadRequest)
 	for i := 0; i < 20; i++ {
-		resp := k.project().put("pr_merged", 0, cfg(map[string]any{"schedule": map[string]any{}, "active_run": "defer", "aggregate_limit": 3})).Want(http.StatusBadRequest)
-		if !strings.Contains(resp.Text(), "aggregate_limit") {
-			t.Fatalf("the error must name the first unsupported field every time: %s", resp.Text())
+		resp := k.project().put("pr_merged", 0, cfg(map[string]any{"schedule": map[string]any{}, "active_run": "defer"})).Want(http.StatusBadRequest)
+		if !strings.Contains(resp.Text(), "schedule") {
+			t.Fatalf("the error must name the unsupported field every time: %s", resp.Text())
 		}
 	}
 }

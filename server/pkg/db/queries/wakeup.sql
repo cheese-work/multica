@@ -88,10 +88,19 @@ WITH candidates AS (
   AND NOT EXISTS(SELECT 1 FROM issue_status s WHERE s.workspace_id=i.workspace_id AND s.key=i.status AND s.category='closed')
 )
 SELECT w.* FROM candidates c JOIN issue_wakeup w ON w.id=c.id
-WHERE sqlc.narg('workspace_ids')::uuid[] IS NULL OR w.workspace_id = ANY(sqlc.narg('workspace_ids')::uuid[])
+WHERE (sqlc.narg('workspace_ids')::uuid[] IS NULL OR w.workspace_id = ANY(sqlc.narg('workspace_ids')::uuid[]))
+ -- An instance a full aggregate counter delayed waits for its retry time.
+ AND (w.aggregate_retry_at IS NULL OR w.aggregate_retry_at<=now())
 ORDER BY w.updated_at,w.id LIMIT 100;
 -- name: ListPendingWakeupReceipts :many
 SELECT * FROM issue_wakeup_receipt WHERE wakeup_id= @wakeup_id AND revision= @revision AND processed_at IS NULL ORDER BY created_at,id LIMIT 100 FOR UPDATE;
+-- name: ListWakeupReservingTasks :many
+-- Every run that holds a pending input of this rule, once each. Not paged: the
+-- fire cap counts all of them, however many inputs are pending.
+SELECT t.* FROM agent_task_queue t WHERE t.id IN (
+  SELECT DISTINCT r.task_id FROM issue_wakeup_receipt r
+  WHERE r.wakeup_id= @wakeup_id AND r.revision= @revision AND r.processed_at IS NULL AND r.task_id IS NOT NULL
+);
 
 -- name: DeleteExpiredWakeupReceipts :execrows
 -- Pending inputs are never expired. Bound work and avoid waiting on dispatch.
@@ -109,6 +118,10 @@ VALUES(@id,@wakeup_id,@revision,@event_key,@event_type,@payload)
 ON CONFLICT(wakeup_id,revision,event_key) DO UPDATE SET event_key=EXCLUDED.event_key RETURNING *;
 -- name: ConsumeWakeupReceipts :exec
 UPDATE issue_wakeup_receipt SET task_id=sqlc.narg(task_id),processed_at=now() WHERE id=ANY(@ids::uuid[]);
+-- name: MarkWakeupReceiptsDeferred :many
+-- Active-run defer: stamps the facts a running target held back and returns
+-- only those not stamped before, so the reason is recorded once per fact.
+UPDATE issue_wakeup_receipt SET deferred_at=now() WHERE id=ANY(@ids::uuid[]) AND processed_at IS NULL AND deferred_at IS NULL RETURNING *;
 -- name: DiscardWakeupReceipts :exec
 UPDATE issue_wakeup_receipt SET processed_at=now() WHERE wakeup_id= @id AND processed_at IS NULL;
 -- name: AdvanceIssueWakeup :exec

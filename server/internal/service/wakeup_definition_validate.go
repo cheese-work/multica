@@ -30,9 +30,9 @@ func WakeupDefinitionTriggerKinds() []string { return slices.Clone(builtinWakeup
 var builtinWakeupRules = []string{SystemRuleChildDone, SystemRulePRMerged, SystemRulePRChecksFailed}
 
 // WakeupDefinitionFields lists the patch fields a definition may set today.
-// aggregate_limit, active_run and schedule belong to later layers.
+// schedule belongs to a later layer.
 func WakeupDefinitionFields() []string {
-	return []string{"enabled", "name", "trigger", "target", "instruction", "mode", "max_fires", "expiry", "rate_limit", "filters"}
+	return []string{"enabled", "name", "trigger", "target", "instruction", "mode", "max_fires", "expiry", "rate_limit", "aggregate_limit", "filters", "active_run"}
 }
 
 type wakeupTriggerSpec struct {
@@ -141,13 +141,8 @@ type wakeupPatchRefs struct {
 // checked on the resolved rule by validateEffectiveWakeup.
 func validateWakeupPatch(ruleKey string, p WakeupConfigPatch, now time.Time) (wakeupPatchRefs, error) {
 	var refs wakeupPatchRefs
-	for _, unsupported := range []struct {
-		name string
-		set  bool
-	}{{"aggregate_limit", p.AggregateLimit.Set}, {"active_run", p.ActiveRun.Set}, {"schedule", p.Schedule.Set}} {
-		if unsupported.set {
-			return refs, wakeupDefinitionBad("%s is not available yet", unsupported.name)
-		}
+	if p.Schedule.Set {
+		return refs, wakeupDefinitionBad("schedule is not available yet")
 	}
 	if len(setWakeupFields(p)) == 0 {
 		return refs, wakeupDefinitionBad("a definition sets at least one field; delete it to inherit")
@@ -159,6 +154,9 @@ func validateWakeupPatch(ruleKey string, p WakeupConfigPatch, now time.Time) (wa
 	if live(p.Instruction, p.Instruction.Null) && (p.Instruction.Value == "" || len(p.Instruction.Value) > maxWakeupDefinitionInstruction) {
 		return refs, wakeupDefinitionBad("instruction must be 1–%d bytes", maxWakeupDefinitionInstruction)
 	}
+	if live(p.ActiveRun, p.ActiveRun.Null) && !validWakeupActiveRun(p.ActiveRun.Value) {
+		return refs, wakeupDefinitionBad("active_run must be suppress or defer")
+	}
 	if live(p.Mode, p.Mode.Null) && p.Mode.Value != "once" && p.Mode.Value != "continuous" {
 		return refs, wakeupDefinitionBad("mode must be once or continuous")
 	}
@@ -167,6 +165,9 @@ func validateWakeupPatch(ruleKey string, p WakeupConfigPatch, now time.Time) (wa
 	}
 	if live(p.RateLimit, p.RateLimit.Null) && (p.RateLimit.Value < 1 || p.RateLimit.Value > maxWakeupDefinitionRateLimit) {
 		return refs, wakeupDefinitionBad("rate_limit must be 1–%d", maxWakeupDefinitionRateLimit)
+	}
+	if live(p.AggregateLimit, p.AggregateLimit.Null) && (p.AggregateLimit.Value < 1 || p.AggregateLimit.Value > maxWakeupDefinitionAggregateLimit) {
+		return refs, wakeupDefinitionBad("aggregate_limit must be 1–%d", maxWakeupDefinitionAggregateLimit)
 	}
 	if live(p.Trigger, p.Trigger.Null) {
 		var spec wakeupTriggerSpec
@@ -279,6 +280,11 @@ func validateEffectiveWakeup(eff EffectiveWakeupConfig) error {
 	pr := kind == SystemRulePRMerged || kind == SystemRulePRChecksFailed
 	if (spec.BaseBranch != nil || spec.HeadBranch != nil) && !pr {
 		return wakeupDefinitionBad("branch filters apply to pull request triggers only")
+	}
+	// The failing-checks event carries no base branch, so the filter could
+	// never match: refuse it instead of storing a rule that silently never runs.
+	if spec.BaseBranch != nil && kind == SystemRulePRChecksFailed {
+		return wakeupDefinitionBad("the base_branch filter applies to merged pull requests only")
 	}
 	if spec.CI != nil && kind != SystemRulePRChecksFailed {
 		return wakeupDefinitionBad("the ci filter applies to failed pull request checks only")

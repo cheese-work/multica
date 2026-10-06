@@ -6,12 +6,16 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
 func startClaimFixture(t *testing.T, status string) (string, string, time.Time) {
@@ -208,5 +212,85 @@ func TestStartClaimWirePrecision(t *testing.T) {
 				t.Fatalf("claim timestamp = %q, want canonical UTC with microseconds %q", *resp.DispatchedAt, want)
 			}
 		})
+	}
+}
+
+// A run of a platform rule that was captured under a configuration which has
+// changed since does not start; one whose configuration still matches does.
+func TestStartTaskRefusesRunCapturedUnderChangedWakeupConfig(t *testing.T) {
+	for _, stale := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stale=%t", stale), func(t *testing.T) {
+			id, runtimeID, generation := startClaimFixture(t, "dispatched")
+			var issueID, workspaceID pgtype.UUID
+			dbfx.QueryRow(t, `SELECT issue_id,workspace_id FROM agent_task_queue t JOIN issue i ON i.id=t.issue_id WHERE t.id=$1`, id).Scan(&issueID, &workspaceID)
+			w, err := testHandler.Queries.CreateSystemWakeup(context.Background(), db.CreateSystemWakeupParams{
+				ID: dbid.NewV7(), WorkspaceID: workspaceID, IssueID: issueID, EventTypes: []string{}, Enabled: true,
+				SystemRule: pgtype.Text{String: "pr_merged", Valid: true},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM issue_wakeup WHERE id=$1`, w.ID) })
+			if stale {
+				// The instance last ran under a configuration no stored definition produces any more.
+				dbfx.Exec(t, `UPDATE issue_wakeup SET config_fingerprint='older-configuration' WHERE id=$1`, w.ID)
+			}
+			dbfx.Exec(t, `UPDATE agent_task_queue SET context=$2::jsonb WHERE id=$1`, id,
+				fmt.Sprintf(`{"wakeup_id":%q,"wakeup_revision":%d,"wakeup_system":"pr_merged"}`, util.UUIDToString(w.ID), w.Revision))
+			want := http.StatusOK
+			if stale {
+				want = http.StatusConflict
+			}
+			if stale {
+				// A delivery that is not this claim neither starts nor fails the run.
+				testutil.Call(t, testHandler.StartTask, startClaimRequest(id, runtimeID, generation.Add(-time.Microsecond))).Want(http.StatusConflict)
+				testutil.Call(t, testHandler.StartTask, startClaimRequest(id, "00000000-0000-0000-0000-000000000001", generation)).Want(http.StatusConflict)
+				var untouched string
+				dbfx.QueryRow(t, `SELECT status FROM agent_task_queue WHERE id=$1`, id).Scan(&untouched)
+				if untouched != "dispatched" {
+					t.Fatalf("a stale delivery changed the claimed run to %q", untouched)
+				}
+			}
+			testutil.Call(t, testHandler.StartTask, startClaimRequest(id, runtimeID, generation)).Want(want)
+			var status string
+			dbfx.QueryRow(t, `SELECT status FROM agent_task_queue WHERE id=$1`, id).Scan(&status)
+			if stale && status != "failed" || !stale && status != "running" {
+				t.Fatalf("task status after start = %q (stale=%t)", status, stale)
+			}
+		})
+	}
+}
+
+// If recording the rejection itself fails, the caller gets a retryable server
+// error, not a 409 that tells it the claim is settled while the run is still
+// dispatched.
+func TestStartTaskReportsAFailureWriteErrorAsRetryable(t *testing.T) {
+	id, runtimeID, generation := startClaimFixture(t, "dispatched")
+	var issueID, workspaceID pgtype.UUID
+	dbfx.QueryRow(t, `SELECT issue_id,workspace_id FROM agent_task_queue t JOIN issue i ON i.id=t.issue_id WHERE t.id=$1`, id).Scan(&issueID, &workspaceID)
+	w, err := testHandler.Queries.CreateSystemWakeup(context.Background(), db.CreateSystemWakeupParams{
+		ID: dbid.NewV7(), WorkspaceID: workspaceID, IssueID: issueID, EventTypes: []string{}, Enabled: true,
+		SystemRule: pgtype.Text{String: "pr_merged", Valid: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM issue_wakeup WHERE id=$1`, w.ID) })
+	dbfx.Exec(t, `UPDATE issue_wakeup SET config_fingerprint='older-configuration' WHERE id=$1`, w.ID)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET context=$2::jsonb WHERE id=$1`, id,
+		fmt.Sprintf(`{"wakeup_id":%q,"wakeup_revision":%d,"wakeup_system":"pr_merged"}`, util.UUIDToString(w.ID), w.Revision))
+	// A test-owned trigger makes the failure write raise.
+	fn := "che1140_refuse_fail_" + strings.ReplaceAll(id, "-", "")
+	dbfx.Exec(t, fmt.Sprintf(`CREATE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'refused'; END $$`, fn))
+	dbfx.Exec(t, fmt.Sprintf(`CREATE TRIGGER %s BEFORE UPDATE ON agent_task_queue FOR EACH ROW WHEN (OLD.id='%s' AND NEW.status='failed') EXECUTE FUNCTION %s()`, fn, id, fn))
+	t.Cleanup(func() {
+		dbfx.Exec(t, fmt.Sprintf(`DROP TRIGGER IF EXISTS %s ON agent_task_queue`, fn))
+		dbfx.Exec(t, fmt.Sprintf(`DROP FUNCTION IF EXISTS %s()`, fn))
+	})
+	testutil.Call(t, testHandler.StartTask, startClaimRequest(id, runtimeID, generation)).Want(http.StatusServiceUnavailable)
+	var status string
+	dbfx.QueryRow(t, `SELECT status FROM agent_task_queue WHERE id=$1`, id).Scan(&status)
+	if status != "dispatched" {
+		t.Fatalf("task status after a failed rejection write = %q, want it left dispatched", status)
 	}
 }

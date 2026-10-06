@@ -135,6 +135,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"maintenance_job":                    workspaceDeleteKeep, // Global maintenance audit history, not workspace-owned.
 	"member":                             workspaceDelete,
 	"agent_mcp_server":                   workspaceDelete,
+	"wakeup_aggregate_budget":            workspaceDelete,
+	"wakeup_aggregate_reservation":       workspaceDelete,
 	"workspace_mcp_server":               workspaceDelete,
 	"notification_preference":            workspaceDelete,
 	"personal_access_token":              workspaceDeleteKeep,

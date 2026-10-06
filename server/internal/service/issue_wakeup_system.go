@@ -56,6 +56,10 @@ type PullRequestWakeupInput struct {
 	MergeCommit string
 	HeadSHA     string
 	Conclusion  string
+	// BaseBranch and HeadBranch are the PR's branches when the event carries
+	// them; a branch filter never matches a missing one.
+	BaseBranch string
+	HeadBranch string
 }
 
 var errMalformedPRWakeupSettings = errors.New("malformed PR wakeup workspace settings")
@@ -141,7 +145,31 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 	if err != nil {
 		return err
 	}
-	enabled, err := PRWakeupEnabled(ws.Settings, in.Rule)
+	w, err := q.GetSystemWakeup(ctx, db.GetSystemWakeupParams{IssueID: issue.ID, SystemRule: systemRuleText(in.Rule)})
+	exists := err == nil
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	var legacy *db.IssueWakeup
+	if exists {
+		legacy = &w
+	}
+	config, err := loadBuiltinWakeup(ctx, q, issue, in.Rule, legacy)
+	held := false
+	switch {
+	case errors.Is(err, errWakeupConfigHeld):
+		// Captured under the instance's recorded configuration; dispatch holds
+		// the input. A hold is not the absence of definitions, so nothing is
+		// rebased.
+		config, held, err = nil, true, nil
+	case errors.Is(err, errMalformedPRWakeupSettings):
+		// The check below reports the malformed settings the way it always has.
+		config, err = nil, nil
+	}
+	if err != nil {
+		return err
+	}
+	enabled, err := prRuleEnabled(ws.Settings, in.Rule, config != nil)
 	if err != nil {
 		if errors.Is(err, errMalformedPRWakeupSettings) {
 			slog.WarnContext(ctx, "PR wakeup skipped because workspace settings are malformed", "issue_id", util.UUIDToString(issue.ID), "rule", in.Rule, "error", err)
@@ -149,11 +177,20 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		}
 		return err
 	}
+	if config != nil {
+		enabled = enabled && config.enabled()
+	}
 	if !enabled {
 		return tx.Commit(ctx)
 	}
-	w, err := q.GetSystemWakeup(ctx, db.GetSystemWakeupParams{IssueID: issue.ID, SystemRule: systemRuleText(in.Rule)})
-	if errors.Is(err, pgx.ErrNoRows) {
+	created := time.Now()
+	if exists {
+		created = w.CreatedAt.Time
+	}
+	if config.expired(created, time.Now()) {
+		return tx.Commit(ctx)
+	}
+	if !exists {
 		w, err = q.CreateSystemWakeup(ctx, db.CreateSystemWakeupParams{
 			ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID,
 			EventTypes: []string{}, Enabled: true, SystemRule: systemRuleText(in.Rule),
@@ -161,16 +198,49 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		if errors.Is(err, pgx.ErrNoRows) {
 			w, err = q.GetSystemWakeup(ctx, db.GetSystemWakeupParams{IssueID: issue.ID, SystemRule: systemRuleText(in.Rule)})
 		}
+		if err != nil {
+			return err
+		}
 	}
-	if err != nil {
-		return err
+	// What this input is captured under: a configuration that changed since the
+	// instance last ran retires its older inputs and unstarted runs first.
+	var withdrawn []db.AgentTaskQueue
+	if !held {
+		if w, withdrawn, err = rebaseBuiltinConfig(ctx, tx, q, issue, w, config); err != nil {
+			return err
+		}
 	}
 	tag, err := tx.Exec(ctx, `INSERT INTO issue_wakeup_pr_event(wakeup_id,event_key) VALUES($1,$2) ON CONFLICT DO NOTHING`, w.ID, eventKey)
 	if err != nil {
 		return err
 	}
+	announceWithdrawn := func() {
+		for _, task := range withdrawn {
+			s.Tasks.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, task)
+		}
+	}
 	if tag.RowsAffected() == 0 {
-		return tx.Commit(ctx)
+		if err := tx.Commit(ctx); err != nil {
+			return err
+		}
+		announceWithdrawn()
+		return nil
+	}
+	if !config.matchesPR(in) {
+		// The event's identity is spent: a redelivery never fires once the
+		// filter changes. The refusal is visible on the timeline.
+		a, err := recordWakeupActivity(ctx, q, w, wakeupActivityTriggered, "system", pgtype.UUID{}, map[string]any{
+			"rule": in.Rule, "repo_owner": in.RepoOwner, "repo_name": in.RepoName, "pr_number": in.Number, "outcome": wakeupOutcomeFiltered,
+		})
+		if err != nil {
+			return err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return err
+		}
+		announceWithdrawn()
+		s.publishWakeupActivities(a)
+		return nil
 	}
 	payload := map[string]any{
 		"repo_owner": in.RepoOwner, "repo_name": in.RepoName, "pr_number": in.Number,
@@ -181,6 +251,11 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 	} else {
 		payload["head_sha"] = in.HeadSHA
 		payload["conclusion"] = in.Conclusion
+	}
+	if held {
+		// The filters cannot be read now, so dispatch applies them to these
+		// facts once the hold lifts (splitDeferredPRFilters).
+		payload["filters_deferred"], payload["base_branch"], payload["head_branch"] = true, in.BaseBranch, in.HeadBranch
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
@@ -194,6 +269,7 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
+	announceWithdrawn()
 	return s.dispatchSystem(ctx, w)
 }
 
@@ -244,6 +320,34 @@ func baselineChildDone(ctx context.Context, tx pgx.Tx, q *db.Queries, rule db.Is
 	return q.SetWakeupConditionState(ctx, db.SetWakeupConditionStateParams{ID: rule.ID, ConditionState: fingerprint})
 }
 
+// childDoneBaseline is the condition state that records what already holds on a
+// parent, treating sub-issues whose closing is recorded but not yet processed as
+// still open, so that change still wakes the assignee.
+func childDoneBaseline(ctx context.Context, tx pgx.Tx, q *db.Queries, parent db.Issue) (string, error) {
+	children, err := loadSubIssues(ctx, tx, q, parent.ID, parent.WorkspaceID)
+	if err != nil {
+		return "", err
+	}
+	closing, err := q.ListUnprocessedClosedChildren(ctx, parent.ID)
+	if err != nil {
+		return "", err
+	}
+	asOpen := make(map[pgtype.UUID]bool, len(closing))
+	for _, id := range closing {
+		asOpen[id] = true
+	}
+	for i := range children {
+		if asOpen[children[i].ID] {
+			children[i].Closed, children[i].Cancelled = false, false
+		}
+	}
+	met, fingerprint, _ := stageProgress(children)
+	if !met {
+		fingerprint = ""
+	}
+	return fingerprint, nil
+}
+
 // EnsureChildDoneRule returns the parent's rule, creating it when missing.
 // The new rule's baseline treats sub-issues whose closing is recorded but not
 // yet processed as still open, so that change still wakes the assignee,
@@ -258,26 +362,9 @@ func EnsureChildDoneRule(ctx context.Context, tx pgx.Tx, q *db.Queries, parent d
 		return rule, err
 	}
 	enabled, _ := SystemWakeupDefault(ws.Settings)
-	children, err := loadSubIssues(ctx, tx, q, parent.ID, parent.WorkspaceID)
+	fingerprint, err := childDoneBaseline(ctx, tx, q, parent)
 	if err != nil {
 		return rule, err
-	}
-	closing, err := q.ListUnprocessedClosedChildren(ctx, parent.ID)
-	if err != nil {
-		return rule, err
-	}
-	asOpen := make(map[pgtype.UUID]bool, len(closing))
-	for _, id := range closing {
-		asOpen[id] = true
-	}
-	for i := range children {
-		if asOpen[children[i].ID] {
-			children[i].Closed, children[i].Cancelled = false, false
-		}
-	}
-	met, fingerprint, _ := stageProgress(children)
-	if !met {
-		fingerprint = ""
 	}
 	rule, err = q.CreateSystemWakeup(ctx, db.CreateSystemWakeupParams{
 		ID: dbid.NewV7(), WorkspaceID: parent.WorkspaceID, IssueID: parent.ID,
@@ -348,7 +435,10 @@ func (s *IssueWakeupService) processChildEvents(ctx context.Context, parentID pg
 		}
 		return tx.Commit(ctx)
 	}
-	parent, err := q.GetIssue(ctx, parentID)
+	// The same lock order as dispatch: the issue, then the instance. The rule is
+	// read under both, so the configuration it is rebased from is the one it
+	// has now, not one a concurrent dispatch already moved it past.
+	parent, err := q.LockWakeupIssue(ctx, parentID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return finish()
 	}
@@ -362,10 +452,18 @@ func (s *IssueWakeupService) processChildEvents(ctx context.Context, parentID pg
 	if !active {
 		return finish()
 	}
-	if _, err = EnsureChildDoneRule(ctx, tx, q, parent); err != nil {
+	ensured, err := EnsureChildDoneRule(ctx, tx, q, parent)
+	if err != nil {
+		return err
+	}
+	if ensured, err = q.LockIssueWakeup(ctx, ensured.ID); err != nil {
 		return err
 	}
 	rules, err := q.ListChildConditionWakeups(ctx, parent.ID)
+	if err != nil {
+		return err
+	}
+	rules, withdrawn, err := configureChildDoneRule(ctx, tx, q, parent, ensured, rules)
 	if err != nil {
 		return err
 	}
@@ -387,6 +485,9 @@ func (s *IssueWakeupService) processChildEvents(ctx context.Context, parentID pg
 	if err := finish(); err != nil {
 		return err
 	}
+	for _, task := range withdrawn {
+		s.Tasks.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, task)
+	}
 	// People's and agents' rules first, so the system rule sees their run and
 	// waits to join it instead of starting a second one for the same fact.
 	var errs []error
@@ -404,6 +505,43 @@ func (s *IssueWakeupService) processChildEvents(ctx context.Context, parentID pg
 		slog.Info("sub-issue wakeups: immediate dispatch deferred to the scheduler", "parent_id", util.UUIDToString(parent.ID), "error", errors.Join(errs...))
 	}
 	return nil
+}
+
+// configureChildDoneRule settles the parent's child_done instance against the
+// configuration it resolves to before hints are recorded on it: a changed
+// configuration is rebased first, so the hint belongs to the new revision, and
+// the rule takes part when its resolved value is on, even if the instance's own
+// flag follows a workspace default that is off. Without a stored definition the
+// instance is listed exactly when its own flag is on, as before.
+func configureChildDoneRule(ctx context.Context, tx pgx.Tx, q *db.Queries, parent db.Issue, ensured db.IssueWakeup, rules []db.IssueWakeup) ([]db.IssueWakeup, []db.AgentTaskQueue, error) {
+	config, err := loadBuiltinWakeup(ctx, q, parent, SystemRuleChildDone, &ensured)
+	if errors.Is(err, errWakeupConfigHeld) {
+		// Dispatch holds the rule; its hints are recorded as before.
+		return rules, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	system, withdrawn, err := rebaseBuiltinConfig(ctx, tx, q, parent, ensured, config)
+	if err != nil {
+		return nil, nil, err
+	}
+	listed := false
+	out := make([]db.IssueWakeup, 0, len(rules))
+	for _, w := range rules {
+		if w.ID == ensured.ID {
+			listed = true
+			continue
+		}
+		out = append(out, w)
+	}
+	if config != nil {
+		listed = config.enabled() && !systemWakeupPaused(system)
+	}
+	if listed {
+		out = append(out, system)
+	}
+	return out, withdrawn, nil
 }
 
 // SweepChildEvents processes changes that were recorded but not handled
@@ -459,10 +597,13 @@ type wakeTarget struct {
 	ID      pgtype.UUID
 	Agent   db.Agent
 	SquadID pgtype.UUID
+	// Refused is the outcome of a configured target that must not run: it is
+	// gone, cannot run, or its writer may no longer invoke it.
+	Refused string
 }
 
 func (t wakeTarget) key() string {
-	return t.Type + ":" + util.UUIDToString(t.ID) + ":" + util.UUIDToString(t.Agent.ID) + ":" + util.UUIDToString(t.Agent.RuntimeID)
+	return t.Type + ":" + util.UUIDToString(t.ID) + ":" + util.UUIDToString(t.Agent.ID) + ":" + util.UUIDToString(t.Agent.RuntimeID) + ":" + t.Refused
 }
 
 func resolveWakeTarget(ctx context.Context, q *db.Queries, issue db.Issue) (wakeTarget, error) {
@@ -609,7 +750,11 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}
-	target, err := resolveWakeTarget(ctx, s.Tasks.Queries, snapshot)
+	snapshotConfig, err := loadBuiltinWakeup(ctx, s.Tasks.Queries, snapshot, prev.SystemRule.String, &prev)
+	if err != nil && !errors.Is(err, errWakeupConfigHeld) && !errors.Is(err, errMalformedPRWakeupSettings) {
+		return err
+	}
+	target, err := builtinTarget(ctx, s, s.Tasks.Queries, snapshot, snapshotConfig)
 	if err != nil {
 		return err
 	}
@@ -648,27 +793,9 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	if w.Revision != prev.Revision {
 		return tx.Commit(ctx)
 	}
-	current, err := resolveWakeTarget(ctx, q, issue)
-	if err != nil {
-		return err
-	}
-	if current.key() != target.key() {
-		// The assignee changed after the read above; the pending receipts
-		// stay for the next pass.
-		return tx.Commit(ctx)
-	}
-	if _, err = tx.Exec(ctx, "UPDATE issue_wakeup_receipt SET processed_at=now() WHERE wakeup_id=$1 AND revision<>$2 AND processed_at IS NULL", w.ID, w.Revision); err != nil {
-		return err
-	}
 	_, isPRWakeup := prWakeupSetting(w.SystemRule.String)
-	ratePaused := isPRWakeup && !w.Enabled && w.PausedReason.Valid && w.PausedReason.String == wakeupPausedRate
-	active, err := systemWakeupIssueActive(ctx, q, issue, isPRWakeup)
-	if err != nil {
-		return err
-	}
-	// A closed parent or a rule that is off or paused keeps its state; a
-	// system rule is never disabled by the platform for a closed issue.
-	if !active || (!w.Enabled && !ratePaused) {
+	discardMalformed := func(err error) error {
+		slog.WarnContext(ctx, "pending PR wakeup discarded because workspace settings are malformed", "issue_id", util.UUIDToString(issue.ID), "wakeup_id", util.UUIDToString(w.ID), "rule", w.SystemRule.String, "error", err)
 		if err := q.DiscardWakeupReceipts(ctx, w.ID); err != nil {
 			return err
 		}
@@ -676,23 +803,87 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	}
 	// Scoped definitions this build cannot execute hold the rule: its facts
 	// stay pending, nothing runs.
-	if allowed, err := legacyDispatchAllowed(ctx, q, issue, w); err != nil {
-		return err
-	} else if !allowed {
+	config, err := loadBuiltinWakeup(ctx, q, issue, w.SystemRule.String, &w)
+	if errors.Is(err, errWakeupConfigHeld) {
+		// What the instance's own flags already end (a closed parent, a rule
+		// that is off) is still dropped; everything else waits for the hold to lift.
+		active, activeErr := systemWakeupIssueActive(ctx, q, issue, isPRWakeup)
+		if activeErr != nil {
+			return activeErr
+		}
+		if !active || !w.Enabled && !(isPRWakeup && w.PausedReason.String == wakeupPausedRate) {
+			if err := q.DiscardWakeupReceipts(ctx, w.ID); err != nil {
+				return err
+			}
+		}
+		logWakeupHeld(ctx, issue, w, err)
 		return tx.Commit(ctx)
+	}
+	if errors.Is(err, errMalformedPRWakeupSettings) {
+		return discardMalformed(err)
+	}
+	if err != nil {
+		return err
+	}
+	// A configuration that changed since the last capture, dispatch or claim
+	// retires what was captured under the old one.
+	w, withdrawn, err := rebaseBuiltinConfig(ctx, tx, q, issue, w, config)
+	if err != nil {
+		return err
+	}
+	// Runs the rebase withdrew are announced once it commits, whichever way
+	// this dispatch ends.
+	commitWithdrawn := func() error {
+		if err := tx.Commit(ctx); err != nil {
+			return err
+		}
+		for _, task := range withdrawn {
+			s.Tasks.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, task)
+		}
+		return nil
+	}
+	current, err := builtinTarget(ctx, s, q, issue, config)
+	if err != nil {
+		return err
+	}
+	if current.key() != target.key() {
+		// The assignee changed after the read above; the pending receipts
+		// stay for the next pass.
+		return commitWithdrawn()
+	}
+	if _, err = tx.Exec(ctx, "UPDATE issue_wakeup_receipt SET processed_at=now() WHERE wakeup_id=$1 AND revision<>$2 AND processed_at IS NULL", w.ID, w.Revision); err != nil {
+		return err
+	}
+	ratePaused := isPRWakeup && !w.Enabled && w.PausedReason.Valid && w.PausedReason.String == wakeupPausedRate
+	active, err := systemWakeupIssueActive(ctx, q, issue, isPRWakeup)
+	if err != nil {
+		return err
+	}
+	// A closed parent or a rule that is off or paused keeps its state; a
+	// system rule is never disabled by the platform for a closed issue. A
+	// configured rule is on by its resolved enabled value; only a pause on the
+	// instance itself (or the rate pause, which recovers) stops it.
+	on := w.Enabled || ratePaused
+	if config != nil {
+		on = config.enabled() && (!systemWakeupPaused(w) || ratePaused)
+	}
+	if !active || !on {
+		if err := q.DiscardWakeupReceipts(ctx, w.ID); err != nil {
+			return err
+		}
+		return commitWithdrawn()
 	}
 	if isPRWakeup {
 		ws, err := q.GetWorkspace(ctx, issue.WorkspaceID)
 		if err != nil {
 			return err
 		}
-		enabled, err := PRWakeupEnabled(ws.Settings, w.SystemRule.String)
+		// Configured rules take their enabled value from the resolved chain
+		// (the workspace setting is one input of it); the GitHub master switch
+		// stays a veto at every scope.
+		enabled, err := prRuleEnabled(ws.Settings, w.SystemRule.String, config != nil)
 		if errors.Is(err, errMalformedPRWakeupSettings) {
-			slog.WarnContext(ctx, "pending PR wakeup discarded because workspace settings are malformed", "issue_id", util.UUIDToString(issue.ID), "wakeup_id", util.UUIDToString(w.ID), "rule", w.SystemRule.String, "error", err)
-			if err := q.DiscardWakeupReceipts(ctx, w.ID); err != nil {
-				return err
-			}
-			return tx.Commit(ctx)
+			return discardMalformed(err)
 		}
 		if err != nil {
 			return err
@@ -701,8 +892,23 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 			if err := q.DiscardWakeupReceipts(ctx, w.ID); err != nil {
 				return err
 			}
-			return tx.Commit(ctx)
+			return commitWithdrawn()
 		}
+	}
+	if eligible, err := config.matchesIssue(ctx, q, issue); err != nil {
+		return err
+	} else if !eligible {
+		// Not eligible now: facts that are point-in-time facts are dropped, a
+		// sub-issue condition keeps its state until the issue qualifies.
+		if isPRWakeup {
+			err = q.DiscardWakeupReceipts(ctx, w.ID)
+		} else {
+			_, _, err = consumeConditionHints(ctx, tx, w.ID)
+		}
+		if err != nil {
+			return err
+		}
+		return commitWithdrawn()
 	}
 	// A parked parent holds: nothing fires and nothing is marked as seen, so
 	// a stage that closed meanwhile wakes the assignee once it leaves backlog.
@@ -710,7 +916,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		if _, _, err = consumeConditionHints(ctx, tx, w.ID); err != nil {
 			return err
 		}
-		return tx.Commit(ctx)
+		return commitWithdrawn()
 	}
 	var now time.Time
 	if err := tx.QueryRow(ctx, "SELECT now()").Scan(&now); err != nil {
@@ -753,7 +959,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		return err
 	}
 	commit := func() error {
-		if err := tx.Commit(ctx); err != nil {
+		if err := commitWithdrawn(); err != nil {
 			return err
 		}
 		s.publishWakeupActivities(activities...)
@@ -764,9 +970,20 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	}
 	// Facts a claimed run took along count once that run starts; until then
 	// they wait with it, and they come back if it ends without starting.
-	receipts, _, taken, err := takenReceipts(ctx, q, receipts)
+	receipts, holding, taken, err := takenReceipts(ctx, q, receipts)
 	if err != nil {
 		return err
+	}
+	if isPRWakeup {
+		var refused []db.IssueWakeupReceipt
+		if receipts, refused = splitDeferredPRFilters(config, w.SystemRule.String, receipts); len(refused) > 0 {
+			if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: receiptIDs(refused)}); err != nil {
+				return err
+			}
+			if err := note(wakeupActivityTriggered, map[string]any{"rule": w.SystemRule.String, "outcome": wakeupOutcomeFiltered, "filtered": len(refused)}); err != nil {
+				return err
+			}
+		}
 	}
 	for _, run := range taken {
 		if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: receiptIDs(run.receipts), TaskID: run.task.ID}); err != nil {
@@ -778,6 +995,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		if err := q.CountWakeupFires(ctx, w.ID); err != nil {
 			return err
 		}
+		w.FireCount++
 		facts := systemWakeupFacts(w, run.receipts)
 		facts["target_type"], facts["target_id"] = "agent", util.UUIDToString(run.task.AgentID)
 		if current.Agent.ID == run.task.AgentID {
@@ -788,17 +1006,60 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 			return err
 		}
 	}
+	// Once and max_fires end the instance for good, whichever run counted last.
+	endAtLimit := func() error {
+		if err := q.DiscardWakeupReceipts(ctx, w.ID); err != nil {
+			return err
+		}
+		if systemWakeupPaused(w) {
+			return nil
+		}
+		if err := q.PauseIssueWakeup(ctx, db.PauseIssueWakeupParams{ID: w.ID, PausedReason: pgtype.Text{String: wakeupPausedMaxFires, Valid: true}}); err != nil {
+			return err
+		}
+		limit, _ := config.fireLimit()
+		return note(wakeupActivityPaused, map[string]any{"rule": w.SystemRule.String, "reason": wakeupPausedMaxFires, "limit": limit})
+	}
+	fireLimit, limited := config.fireLimit()
+	if len(taken) > 0 && limited && w.FireCount >= fireLimit {
+		if err := endAtLimit(); err != nil {
+			return err
+		}
+		return commit()
+	}
 	if len(receipts) == 0 {
 		// Nothing is waiting, so no event will come to lift a rate pause;
 		// the scheduler does it once the rolling limit has room.
 		if ratePaused {
-			if _, err := resumeRateLimited(ctx, q, &w, now); err != nil {
+			if _, err := resumeRateLimited(ctx, q, &w, now, config.rateLimit()); err != nil {
 				return err
 			}
 		}
 		return commit()
 	}
 	ids := receiptIDs(receipts)
+	if config.expired(w.CreatedAt.Time, now) {
+		if err := q.DiscardWakeupReceipts(ctx, w.ID); err != nil {
+			return err
+		}
+		if err := note(wakeupActivityTimedOut, map[string]any{"rule": w.SystemRule.String, "woke": false}); err != nil {
+			return err
+		}
+		return commit()
+	}
+	if limited {
+		switch {
+		case w.FireCount >= fireLimit:
+			if err := endAtLimit(); err != nil {
+				return err
+			}
+			return commit()
+		case w.FireCount+int32(holding) >= fireLimit:
+			// Joined firings that have not started hold the remaining slots; a
+			// carrier that never starts gives its inputs back, so they wait.
+			return commit()
+		}
+	}
 	facts := systemWakeupFacts(w, receipts)
 	if current.Type != "none" {
 		facts["target_type"], facts["target_id"] = current.Type, util.UUIDToString(current.ID)
@@ -807,6 +1068,9 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	// assignee whose agent cannot run.
 	if current.Type == "member" || !current.Agent.ID.Valid {
 		facts["outcome"] = "none"
+		if current.Refused != "" {
+			facts["outcome"] = current.Refused
+		}
 		if current.Type == "member" && !isPRWakeup {
 			facts["outcome"] = "notified"
 			details, _ := json.Marshal(facts)
@@ -836,21 +1100,31 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	taskExists := err == nil
 	if taskExists && task.Status == "dispatched" {
 		// A claimed prompt is immutable; the new facts wait for the next run.
-		return tx.Commit(ctx)
+		return commitWithdrawn()
 	}
 	instruction := w
 	if ws, e := q.GetWorkspace(ctx, issue.WorkspaceID); e == nil {
-		instruction.Instruction = systemWakeupInstruction(w, ws.Settings, receipts)
+		instruction.Instruction = config.systemInstruction(w, ws.Settings, receipts)
 	} else {
-		instruction.Instruction = systemWakeupInstruction(w, nil, receipts)
+		instruction.Instruction = config.systemInstruction(w, nil, receipts)
 	}
 	noteText, evidence := mergeWakeupEvidence(instruction, task, receipts)
+	// A deferring rule's follow-up only reserves the facts it carries: they
+	// count as handled when it starts, and come back if it ends without
+	// starting (takenReceipts). Every other rule consumes them when it queues.
+	deferring := config.defersActiveRun()
+	settleQueued := func(taskID pgtype.UUID) error {
+		if deferring {
+			return q.ReserveWakeupReceipts(ctx, db.ReserveWakeupReceiptsParams{TaskID: taskID, Ids: ids})
+		}
+		return q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids, TaskID: taskID})
+	}
 	if taskExists {
 		task, err = q.ReplaceWakeupEvidence(ctx, db.ReplaceWakeupEvidenceParams{ID: task.ID, HandoffNote: pgtype.Text{String: noteText, Valid: true}, WakeupEvidence: evidence})
 		if err != nil {
 			return err
 		}
-		if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids, TaskID: task.ID}); err != nil {
+		if err := settleQueued(task.ID); err != nil {
 			return err
 		}
 		return commit()
@@ -876,7 +1150,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	if err != nil {
 		return err
 	}
-	waiting, err := hasWaitingRun(ctx, q, issue.ID, agent.ID, attr.UserID)
+	waiting, err := hasWaitingRunFor(ctx, q, issue.ID, agent.ID, attr.UserID, config, current)
 	if err != nil {
 		return err
 	}
@@ -891,11 +1165,21 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		if pendingTask {
 			return commit()
 		}
+	}
+	if isPRWakeup || deferring {
 		startedAt, err := q.GetRunningTaskStartForIssueAndAgent(ctx, db.GetRunningTaskStartForIssueAndAgentParams{IssueID: issue.ID, AgentID: agent.ID})
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
 		if err == nil {
+			// A deferring rule keeps every fact for the next idle pass; a
+			// suppressing one consumes what arrived after the run started.
+			if deferring {
+				if err := deferForActiveRun(ctx, q, w, current, receipts, now, note); err != nil {
+					return err
+				}
+				return commit()
+			}
 			var suppressed []db.IssueWakeupReceipt
 			for _, receipt := range receipts {
 				if !receipt.CreatedAt.Valid || !receipt.CreatedAt.Time.Before(startedAt.Time) {
@@ -920,19 +1204,19 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	if err != nil {
 		return err
 	}
-	if recent >= wakeupHourlyRunLimit {
+	if rateLimit := config.rateLimit(); int(recent) >= rateLimit {
 		if !ratePaused {
 			if err := q.PauseIssueWakeup(ctx, db.PauseIssueWakeupParams{ID: w.ID, PausedReason: pgtype.Text{String: wakeupPausedRate, Valid: true}, BlockRuns: true}); err != nil {
 				return err
 			}
-			if err := note(wakeupActivityPaused, map[string]any{"rule": w.SystemRule.String, "reason": wakeupPausedRate, "limit": wakeupHourlyRunLimit}); err != nil {
+			if err := note(wakeupActivityPaused, map[string]any{"rule": w.SystemRule.String, "reason": wakeupPausedRate, "limit": rateLimit}); err != nil {
 				return err
 			}
 		}
 		return commit()
 	}
 	if ratePaused {
-		resumed, err := resumeRateLimited(ctx, q, &w, now)
+		resumed, err := resumeRateLimited(ctx, q, &w, now, config.rateLimit())
 		if err != nil {
 			return err
 		}
@@ -940,14 +1224,45 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 			return commit()
 		}
 	}
+	// A new paid start counts against every aggregate cap that applies. A full
+	// counter delays the instance: its facts stay pending and it is looked at
+	// again when the counter may have room.
+	taskID := dbid.NewV7()
+	if caps := config.aggregateCaps(); len(caps) > 0 {
+		admission, err := admitAggregateStart(ctx, q, aggregateStart{WorkspaceID: issue.WorkspaceID, WakeupID: w.ID, TaskID: taskID, RuleKey: w.SystemRule.String, FactAge: oldestReceiptAge(receipts)}, caps, now)
+		if aggregateCounterBusy(err) {
+			return nil // another start holds the counter; this one is retried on a later pass
+		}
+		if err != nil {
+			return err
+		}
+		if !admission.Admitted {
+			if err := q.MarkWakeupAggregateBlocked(ctx, db.MarkWakeupAggregateBlockedParams{
+				ID: w.ID, ScopeKind: pgtype.Text{String: string(admission.Blocked.Scope), Valid: true}, ScopeID: admission.Blocked.ScopeID,
+				RetryAt: pgtype.Timestamptz{Time: admission.RetryAt, Valid: true},
+			}); err != nil {
+				return err
+			}
+			return commit()
+		}
+	}
+	if w.AggregateRetryAt.Valid {
+		if err := q.ClearWakeupAggregateBlocked(ctx, w.ID); err != nil {
+			return err
+		}
+	}
 	if err := guardIssueNotInTriage(ctx, q, issue.ID, OriginDerived); err != nil {
 		return err
 	}
 	overlay := s.Tasks.buildRuntimeMCPOverlay(ctx, attr.UserID, agent)
 	source, delegatedFrom, _, _ := attributionCreateParams(attr)
-	contextJSON, _ := json.Marshal(map[string]any{"wakeup_id": util.UUIDToString(w.ID), "wakeup_revision": w.Revision, "wakeup_evidence": evidence, "wakeup_system": w.SystemRule.String})
+	taskContext := map[string]any{"wakeup_id": util.UUIDToString(w.ID), "wakeup_revision": w.Revision, "wakeup_evidence": evidence, "wakeup_system": w.SystemRule.String}
+	if deferring {
+		taskContext[wakeupIsolatedKey] = true
+	}
+	contextJSON, _ := json.Marshal(taskContext)
 	task, err = q.CreateWakeupTask(ctx, db.CreateWakeupTaskParams{
-		ID: dbid.NewV7(), AgentID: agent.ID, RuntimeID: agent.RuntimeID, IssueID: issue.ID, Priority: priorityToInt(issue.Priority),
+		ID: taskID, AgentID: agent.ID, RuntimeID: agent.RuntimeID, IssueID: issue.ID, Priority: priorityToInt(issue.Priority),
 		TriggerSummary: pgtype.Text{String: systemWakeupTriggerSummary(w.SystemRule.String), Valid: true}, HandoffNote: pgtype.Text{String: noteText, Valid: true},
 		IsLeaderTask: pgtype.Bool{Bool: current.Type == "squad", Valid: current.Type == "squad"}, SquadID: current.SquadID,
 		OriginatorUserID: attr.UserID, AccountableUserID: attr.AccountableUserID, OriginatorSource: source, DelegatedFromTaskID: delegatedFrom,
@@ -957,18 +1272,27 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	if err != nil {
 		return err
 	}
-	if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids, TaskID: task.ID}); err != nil {
+	if err := settleQueued(task.ID); err != nil {
 		return err
 	}
-	if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: true, LastTaskID: task.ID}); err != nil {
-		return err
-	}
-	if err := q.CountWakeupFires(ctx, w.ID); err != nil {
-		return err
+	if !deferring {
+		if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: true, LastTaskID: task.ID}); err != nil {
+			return err
+		}
+		if err := q.CountWakeupFires(ctx, w.ID); err != nil {
+			return err
+		}
 	}
 	facts["outcome"], facts["task_id"] = "woke", util.UUIDToString(task.ID)
 	if err := note(wakeupActivityTriggered, facts); err != nil {
 		return err
+	}
+	// The run that reaches the cap is legitimate; the instance ends after it.
+	// A deferred follow-up counts, and ends the instance, when it starts.
+	if !deferring && limited && w.FireCount+1 >= fireLimit {
+		if err := endAtLimit(); err != nil {
+			return err
+		}
 	}
 	if err := commit(); err != nil {
 		return err
@@ -980,8 +1304,8 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 
 // resumeRateLimited lifts a rate pause through the one guarded statement and
 // mirrors it on w; false means the limit still leaves no room.
-func resumeRateLimited(ctx context.Context, q *db.Queries, w *db.IssueWakeup, now time.Time) (bool, error) {
-	n, err := q.ResumeRateLimitedSystemWakeup(ctx, db.ResumeRateLimitedSystemWakeupParams{ID: w.ID, Since: pgtype.Timestamptz{Time: now.Add(-time.Hour), Valid: true}, MaxRuns: wakeupHourlyRunLimit})
+func resumeRateLimited(ctx context.Context, q *db.Queries, w *db.IssueWakeup, now time.Time, limit int) (bool, error) {
+	n, err := q.ResumeRateLimitedSystemWakeup(ctx, db.ResumeRateLimitedSystemWakeupParams{ID: w.ID, Since: pgtype.Timestamptz{Time: now.Add(-time.Hour), Valid: true}, MaxRuns: int64(limit)})
 	if err != nil || n == 0 {
 		return false, err
 	}
