@@ -188,7 +188,6 @@ func TestScopedDrainBusyIssueDoesNotStallOtherWork(t *testing.T) {
 		t.Fatalf("busy pending = %d, want the locked input left for a later pass", busy.pending(t))
 	}
 	holder.Rollback(ctx)
-	newScopedCadence(busy).advance(t, scopedBusyCooldown+time.Second)
 	busy.drain(t)
 	busy.wantOutcomes(t, "delivered")
 }
@@ -221,8 +220,8 @@ func TestScopedDrainInvalidSettingsIsolateTheirRule(t *testing.T) {
 }
 
 // Held issues are passed over without a wait or a write, so five of them do not
-// starve healthy work behind them even in back-to-back passes. They cool, and
-// once the cooldown has passed and the locks are gone they deliver.
+// starve healthy work behind them even in back-to-back passes, and once the locks
+// are gone the next pass delivers them.
 func TestScopedDrainPersistentlyBusyIssuesDoNotStarveHealthyWork(t *testing.T) {
 	const busyIssues = 5
 	ctx := context.Background()
@@ -239,7 +238,6 @@ func TestScopedDrainPersistentlyBusyIssuesDoNotStarveHealthyWork(t *testing.T) {
 	healthy.defineRoot(t, "workspace", healthy.f.WorkspaceID, scopedRuleA, "comment.created")
 	healthy.comment(t, "newer, in an unrelated workspace")
 	scope = append(scope, parseTestUUID(t, healthy.f.WorkspaceID))
-	clock := newScopedCadence(healthy)
 	var holders []pgx.Tx
 	for _, k := range kits {
 		holder, err := k.f.Pool.Begin(ctx)
@@ -271,13 +269,6 @@ func TestScopedDrainPersistentlyBusyIssuesDoNotStarveHealthyWork(t *testing.T) {
 	for _, h := range holders {
 		h.Rollback(ctx)
 	}
-	if err := healthy.s.DrainScopedEvents(ctx, scope...); err != nil {
-		t.Fatal(err)
-	}
-	if got := healthy.f.Count(t, `SELECT count(*) FROM wakeup_scoped_event WHERE handled_at IS NULL AND workspace_id=ANY($1)`, scope); got != busyIssues {
-		t.Fatalf("pending = %d: a cooling issue is left alone even when it is free again", got)
-	}
-	clock.advance(t, scopedBusyCooldown+time.Second)
 	if err := healthy.s.DrainScopedEvents(ctx, scope...); err != nil {
 		t.Fatal(err)
 	}
@@ -318,12 +309,10 @@ func TestScopedDrainBusyHeadLongerThanOnePassStillProgresses(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	clock := newScopedCadence(healthy)
 	for tick := 1; tick <= 4 && healthy.pending(t) > 0; tick++ {
 		if err := healthy.s.TickWorkspaces(ctx, scope...); err != nil {
 			t.Fatalf("tick %d: %v", tick, err)
 		}
-		clock.advance(t, 30*time.Second)
 	}
 	if healthy.pending(t) != 0 {
 		t.Fatal("a held head longer than one pass starved healthy work across four 30 s ticks")
@@ -342,26 +331,6 @@ func TestScopedBusyDelayDoesNotOutliveRetention(t *testing.T) {
 		t.Fatal(err)
 	}
 	k.wantOutcomes(t, "expired")
-}
-
-// scopedCadence models the scheduler: each step advances the drain's cooldown
-// clock and the database timestamps a delay is kept in by the same interval, so a
-// delay behaves as it would after that much wall time without the test sleeping.
-type scopedCadence struct {
-	now time.Time
-	k   drainKit
-}
-
-func newScopedCadence(k drainKit) *scopedCadence {
-	c := &scopedCadence{now: time.Now(), k: k}
-	k.s.scopedClock = func() time.Time { return c.now }
-	return c
-}
-
-func (c *scopedCadence) advance(t *testing.T, d time.Duration) {
-	t.Helper()
-	c.now = c.now.Add(d)
-	c.k.f.Exec(t, `UPDATE wakeup_scoped_event SET retry_at=retry_at-($1::bigint*interval '1 microsecond') WHERE retry_at IS NOT NULL`, d.Microseconds())
 }
 
 // Five persistently held issues must not starve healthy work at the scheduler's
@@ -392,10 +361,8 @@ func TestScopedDrainBusyIssuesAtSchedulerCadence(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	clock := newScopedCadence(healthy)
 	delivered := -1
-	for tick, gap := range []time.Duration{0, 30 * time.Second, 50 * time.Second, 30 * time.Second} { // the third tick is late
-		clock.advance(t, gap)
+	for tick := range 4 {
 		if err := healthy.s.TickWorkspaces(ctx, scope...); err != nil {
 			t.Fatalf("tick %d: contention must not surface as an error: %v", tick+1, err)
 		}
@@ -415,7 +382,6 @@ func TestScopedDrainBusyIssuesAtSchedulerCadence(t *testing.T) {
 	healthy.wantOutcomes(t, "delivered")
 	// Released, the held inputs deliver on a later tick without being edited.
 	holder.Rollback(ctx)
-	clock.advance(t, 30*time.Second)
 	if err := healthy.s.TickWorkspaces(ctx, scope...); err != nil {
 		t.Fatal(err)
 	}
@@ -435,7 +401,6 @@ func TestScopedDrainBusyIssueBacklogIsNotRewritten(t *testing.T) {
  SELECT workspace_id,issue_id,project_id,event_type,gen_random_uuid()::text,payload,chain,captured_at
  FROM wakeup_scoped_event,generate_series(1,500) WHERE workspace_id=$1`, k.f.WorkspaceID)
 	ctx := context.Background()
-	clock := newScopedCadence(k)
 	holder, err := k.f.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -451,13 +416,143 @@ func TestScopedDrainBusyIssueBacklogIsNotRewritten(t *testing.T) {
 		t.Fatalf("one pass over a held issue wrote %d outbox rows, beyond the %d-input budget", written, scopedDrainBatch)
 	}
 	holder.Rollback(ctx)
-	for range 12 {
-		clock.advance(t, 40*time.Second)
+	for range 15 {
 		if err := k.s.DrainScopedEvents(ctx, parseTestUUID(t, k.f.WorkspaceID)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if got := k.pending(t); got != 0 {
 		t.Fatalf("pending = %d: a backlog larger than the bound must still drain in bounded passes", got)
+	}
+}
+
+// heldPrefix puts n issues, each with one outbox input older than any other, in a
+// workspace whose issue rows one transaction holds, and a healthy rule with one
+// newer input in another workspace. The production bounds stay unchanged.
+func heldPrefix(t *testing.T, n int) (held, healthy drainKit, holder pgx.Tx, scope []pgtype.UUID) {
+	t.Helper()
+	held = newDrainKit(t)
+	held.f.Cleanup(t, `DELETE FROM issue WHERE workspace_id=$1 AND id<>$2`, held.f.WorkspaceID, held.issue)
+	held.f.Exec(t, `WITH added AS (
+ INSERT INTO issue(workspace_id,title,status,priority,creator_type,creator_id,number)
+ SELECT $1,'held prefix','todo','none','member',$2,1000+n FROM generate_series(1,$3::int) n
+ RETURNING id,workspace_id,number)
+ INSERT INTO wakeup_scoped_event(workspace_id,issue_id,event_type,event_key,payload,captured_at)
+ SELECT workspace_id,id,'comment.created','held-'||number,'{}',now()-interval '1 hour'+number*interval '1 microsecond' FROM added`, held.f.WorkspaceID, held.owner, n)
+	healthy = newDrainKit(t)
+	healthy.defineRoot(t, "workspace", healthy.f.WorkspaceID, scopedRuleA, "comment.created")
+	healthy.comment(t, "healthy, behind the held prefix")
+	ctx := context.Background()
+	holder, err := held.f.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = holder.Rollback(ctx) })
+	if _, err := holder.Exec(ctx, `SELECT 1 FROM issue WHERE workspace_id=$1 AND id<>$2 FOR NO KEY UPDATE`, held.f.WorkspaceID, held.issue); err != nil {
+		t.Fatal(err)
+	}
+	return held, healthy, holder, []pgtype.UUID{parseTestUUID(t, held.f.WorkspaceID), parseTestUUID(t, healthy.f.WorkspaceID)}
+}
+
+func outboxFingerprint(t *testing.T, k drainKit) string {
+	t.Helper()
+	var sum string
+	if err := k.f.Pool.QueryRow(context.Background(), `SELECT md5(string_agg(row_to_json(e)::text||e.xmin::text,',' ORDER BY e.id)) FROM wakeup_scoped_event e WHERE workspace_id=$1`, k.f.WorkspaceID).Scan(&sum); err != nil {
+		t.Fatal(err)
+	}
+	return sum
+}
+
+// A held prefix of any length, below, at and beyond the old 1,000-entry cache and
+// whatever the spacing of the ticks, must not starve healthy work behind it: the
+// real tick reaches it while every lock is still held, and the held inputs are
+// neither rewritten nor lost, then deliver once their issues are free.
+func TestScopedDrainHeldPrefixNeverStarvesHealthyWork(t *testing.T) {
+	if testing.Short() {
+		t.Skip("production-bound fixture")
+	}
+	// Progress is a scan position, not a timer: the spacing of the ticks (30 s,
+	// late, or longer than the old 10-minute parking) cannot change it, so the
+	// ticks run back to back and the sizes are the boundaries that mattered.
+	for _, tc := range []struct {
+		name string
+		n    int
+	}{
+		{"below_old_cache_999", 999},
+		{"at_old_cache_1000", 1000},
+		{"beyond_old_cache_1050", 1050},
+		{"short_prefix_120", 120},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			held, healthy, holder, scope := heldPrefix(t, tc.n)
+			ctx := context.Background()
+			before := outboxFingerprint(t, held)
+			delivered := -1
+			for tick := 0; tick < 45 && delivered < 0; tick++ {
+				if err := healthy.s.TickWorkspaces(ctx, scope...); err != nil {
+					t.Fatalf("tick %d: contention must not surface as an error: %v", tick, err)
+				}
+				if healthy.pending(t) == 0 {
+					delivered = tick
+				}
+			}
+			if delivered < 0 {
+				t.Fatalf("healthy work starved across 45 ticks behind %d held issues, every lock still held", tc.n)
+			}
+			t.Logf("%d held issues: healthy input delivered at tick %d", tc.n, delivered)
+			if before != outboxFingerprint(t, held) || held.pending(t) != tc.n {
+				t.Fatal("contention rewrote or lost held outbox rows")
+			}
+			holder.Rollback(ctx)
+			for i := 0; i < tc.n/scopedDrainBatch+3 && held.pending(t) > 0; i++ {
+				if err := healthy.s.DrainScopedEvents(ctx, scope...); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := held.pending(t); got != 0 {
+				t.Fatalf("%d held inputs still pending after their issues were free: every busy input must be retried", got)
+			}
+		})
+	}
+}
+
+// A pass does a bounded amount of contention work however many issues are held.
+func TestScopedDrainPassTriesAtMostTheBusyBoundOfHeldIssues(t *testing.T) {
+	held, healthy, _, scope := heldPrefix(t, 200)
+	probe := &sqlProbe{}
+	if err := healthy.probed(probe).DrainScopedEvents(context.Background(), scope...); err != nil {
+		t.Fatal(err)
+	}
+	if got := probe.count("TryLockWakeupIssue"); got > scopedBusyAttempts+1 {
+		t.Fatalf("one pass tried %d issue locks over 200 held issues, want at most %d", got, scopedBusyAttempts+1)
+	}
+	if held.pending(t) != 200 {
+		t.Fatal("held inputs must stay pending")
+	}
+}
+
+// A steady stream of newer inputs never starves a held issue's input: the scan
+// wraps, so once the issue is free its input is reached while the stream goes on.
+func TestScopedDrainSteadyStreamDoesNotStarveHeldInputs(t *testing.T) {
+	held, healthy, holder, scope := heldPrefix(t, 120)
+	ctx := context.Background()
+	for tick := range 6 {
+		healthy.comment(t, "stream")
+		if err := healthy.s.TickWorkspaces(ctx, scope...); err != nil {
+			t.Fatalf("tick %d: %v", tick, err)
+		}
+	}
+	if got := healthy.pending(t); got > 3 {
+		t.Fatalf("%d stream inputs pending after six ticks behind a held prefix of 120", got)
+	}
+	holder.Rollback(ctx)
+	for tick := range 6 {
+		healthy.comment(t, "stream")
+		if err := healthy.s.TickWorkspaces(ctx, scope...); err != nil {
+			t.Fatalf("tick %d: %v", tick, err)
+		}
+	}
+	if got := held.pending(t); got != 0 {
+		t.Fatalf("%d held inputs still pending six ticks after their issues were free, with a stream of newer inputs", got)
 	}
 }

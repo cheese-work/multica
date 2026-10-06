@@ -104,11 +104,8 @@ func (s *IssueWakeupService) Expiry(in *WakeupInput, now time.Time) (pgtype.Time
 
 type IssueWakeupService struct {
 	Tasks *TaskService
-	// scopedClock replaces the wall clock of the scoped-event drain's busy-issue
-	// cooldown; tests set it to model the scheduler's cadence.
-	scopedClock func() time.Time
-	// scopedBusy remembers which issues the drain found busy; see scopedBusyState.
-	scopedBusy scopedBusyState
+	// scopedPos is the scoped-event drain's fair scan position; see scopedCursor.
+	scopedPos scopedCursor
 }
 
 func (s *IssueWakeupService) Validate(in *WakeupInput, now time.Time) (pgtype.Timestamptz, error) {
