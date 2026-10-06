@@ -20,7 +20,7 @@ func TestBuiltinHeldConfigurationBlocksDispatchClaimAndJoin(t *testing.T) {
 	for _, bad := range []struct{ name, config string }{
 		{"unreadable version", `{"v":99}`},
 		{"unknown field", `{"v":1,"future":true}`},
-		{"active run", `{"v":1,"active_run":"defer"}`},
+		{"unknown active run", `{"v":1,"active_run":"queue"}`},
 	} {
 		for _, phase := range []string{"dispatch", "claim", "join"} {
 			t.Run(bad.name+"/"+phase, func(t *testing.T) {

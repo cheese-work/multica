@@ -1109,12 +1109,22 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		instruction.Instruction = config.systemInstruction(w, nil, receipts)
 	}
 	noteText, evidence := mergeWakeupEvidence(instruction, task, receipts)
+	// A deferring rule's follow-up only reserves the facts it carries: they
+	// count as handled when it starts, and come back if it ends without
+	// starting (takenReceipts). Every other rule consumes them when it queues.
+	deferring := config.defersActiveRun()
+	settleQueued := func(taskID pgtype.UUID) error {
+		if deferring {
+			return q.ReserveWakeupReceipts(ctx, db.ReserveWakeupReceiptsParams{TaskID: taskID, Ids: ids})
+		}
+		return q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids, TaskID: taskID})
+	}
 	if taskExists {
 		task, err = q.ReplaceWakeupEvidence(ctx, db.ReplaceWakeupEvidenceParams{ID: task.ID, HandoffNote: pgtype.Text{String: noteText, Valid: true}, WakeupEvidence: evidence})
 		if err != nil {
 			return err
 		}
-		if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids, TaskID: task.ID}); err != nil {
+		if err := settleQueued(task.ID); err != nil {
 			return err
 		}
 		return commit()
@@ -1155,11 +1165,21 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		if pendingTask {
 			return commit()
 		}
+	}
+	if isPRWakeup || deferring {
 		startedAt, err := q.GetRunningTaskStartForIssueAndAgent(ctx, db.GetRunningTaskStartForIssueAndAgentParams{IssueID: issue.ID, AgentID: agent.ID})
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
 		if err == nil {
+			// A deferring rule keeps every fact for the next idle pass; a
+			// suppressing one consumes what arrived after the run started.
+			if deferring {
+				if err := deferForActiveRun(ctx, q, w, current, receipts, now, note); err != nil {
+					return err
+				}
+				return commit()
+			}
 			var suppressed []db.IssueWakeupReceipt
 			for _, receipt := range receipts {
 				if !receipt.CreatedAt.Valid || !receipt.CreatedAt.Time.Before(startedAt.Time) {
@@ -1236,7 +1256,11 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	}
 	overlay := s.Tasks.buildRuntimeMCPOverlay(ctx, attr.UserID, agent)
 	source, delegatedFrom, _, _ := attributionCreateParams(attr)
-	contextJSON, _ := json.Marshal(map[string]any{"wakeup_id": util.UUIDToString(w.ID), "wakeup_revision": w.Revision, "wakeup_evidence": evidence, "wakeup_system": w.SystemRule.String})
+	taskContext := map[string]any{"wakeup_id": util.UUIDToString(w.ID), "wakeup_revision": w.Revision, "wakeup_evidence": evidence, "wakeup_system": w.SystemRule.String}
+	if deferring {
+		taskContext[wakeupIsolatedKey] = true
+	}
+	contextJSON, _ := json.Marshal(taskContext)
 	task, err = q.CreateWakeupTask(ctx, db.CreateWakeupTaskParams{
 		ID: taskID, AgentID: agent.ID, RuntimeID: agent.RuntimeID, IssueID: issue.ID, Priority: priorityToInt(issue.Priority),
 		TriggerSummary: pgtype.Text{String: systemWakeupTriggerSummary(w.SystemRule.String), Valid: true}, HandoffNote: pgtype.Text{String: noteText, Valid: true},
@@ -1248,21 +1272,24 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	if err != nil {
 		return err
 	}
-	if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids, TaskID: task.ID}); err != nil {
+	if err := settleQueued(task.ID); err != nil {
 		return err
 	}
-	if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: true, LastTaskID: task.ID}); err != nil {
-		return err
-	}
-	if err := q.CountWakeupFires(ctx, w.ID); err != nil {
-		return err
+	if !deferring {
+		if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: true, LastTaskID: task.ID}); err != nil {
+			return err
+		}
+		if err := q.CountWakeupFires(ctx, w.ID); err != nil {
+			return err
+		}
 	}
 	facts["outcome"], facts["task_id"] = "woke", util.UUIDToString(task.ID)
 	if err := note(wakeupActivityTriggered, facts); err != nil {
 		return err
 	}
 	// The run that reaches the cap is legitimate; the instance ends after it.
-	if limited && w.FireCount+1 >= fireLimit {
+	// A deferred follow-up counts, and ends the instance, when it starts.
+	if !deferring && limited && w.FireCount+1 >= fireLimit {
 		if err := endAtLimit(); err != nil {
 			return err
 		}

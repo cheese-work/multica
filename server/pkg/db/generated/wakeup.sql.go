@@ -961,7 +961,7 @@ func (q *Queries) ListPausedWakeupIssues(ctx context.Context, workspaceID pgtype
 }
 
 const listPendingWakeupReceipts = `-- name: ListPendingWakeupReceipts :many
-SELECT id, wakeup_id, revision, event_key, event_type, payload, task_id, processed_at, created_at, coalesce_key FROM issue_wakeup_receipt WHERE wakeup_id= $1 AND revision= $2 AND processed_at IS NULL ORDER BY created_at,id LIMIT 100 FOR UPDATE
+SELECT id, wakeup_id, revision, event_key, event_type, payload, task_id, processed_at, created_at, coalesce_key, deferred_at FROM issue_wakeup_receipt WHERE wakeup_id= $1 AND revision= $2 AND processed_at IS NULL ORDER BY created_at,id LIMIT 100 FOR UPDATE
 `
 
 type ListPendingWakeupReceiptsParams struct {
@@ -989,6 +989,7 @@ func (q *Queries) ListPendingWakeupReceipts(ctx context.Context, arg ListPending
 			&i.ProcessedAt,
 			&i.CreatedAt,
 			&i.CoalesceKey,
+			&i.DeferredAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1635,6 +1636,44 @@ func (q *Queries) LocklessWakeup(ctx context.Context, id pgtype.UUID) (IssueWake
 	return i, err
 }
 
+const markWakeupReceiptsDeferred = `-- name: MarkWakeupReceiptsDeferred :many
+UPDATE issue_wakeup_receipt SET deferred_at=now() WHERE id=ANY($1::uuid[]) AND processed_at IS NULL AND deferred_at IS NULL RETURNING id, wakeup_id, revision, event_key, event_type, payload, task_id, processed_at, created_at, coalesce_key, deferred_at
+`
+
+// Active-run defer: stamps the facts a running target held back and returns
+// only those not stamped before, so the reason is recorded once per fact.
+func (q *Queries) MarkWakeupReceiptsDeferred(ctx context.Context, ids []pgtype.UUID) ([]IssueWakeupReceipt, error) {
+	rows, err := q.db.Query(ctx, markWakeupReceiptsDeferred, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []IssueWakeupReceipt{}
+	for rows.Next() {
+		var i IssueWakeupReceipt
+		if err := rows.Scan(
+			&i.ID,
+			&i.WakeupID,
+			&i.Revision,
+			&i.EventKey,
+			&i.EventType,
+			&i.Payload,
+			&i.TaskID,
+			&i.ProcessedAt,
+			&i.CreatedAt,
+			&i.CoalesceKey,
+			&i.DeferredAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markWakeupTimedOut = `-- name: MarkWakeupTimedOut :exec
 UPDATE issue_wakeup SET enabled=false,next_fire_at=NULL,timed_out_at=clock_timestamp(),updated_at=clock_timestamp() WHERE id= $1
 `
@@ -1684,7 +1723,7 @@ func (q *Queries) PauseIssueWakeup(ctx context.Context, arg PauseIssueWakeupPara
 const recordWakeupReceipt = `-- name: RecordWakeupReceipt :one
 INSERT INTO issue_wakeup_receipt(id,wakeup_id,revision,event_key,event_type,payload)
 VALUES($1,$2,$3,$4,$5,$6)
-ON CONFLICT(wakeup_id,revision,event_key) DO UPDATE SET event_key=EXCLUDED.event_key RETURNING id, wakeup_id, revision, event_key, event_type, payload, task_id, processed_at, created_at, coalesce_key
+ON CONFLICT(wakeup_id,revision,event_key) DO UPDATE SET event_key=EXCLUDED.event_key RETURNING id, wakeup_id, revision, event_key, event_type, payload, task_id, processed_at, created_at, coalesce_key, deferred_at
 `
 
 type RecordWakeupReceiptParams struct {
@@ -1717,6 +1756,7 @@ func (q *Queries) RecordWakeupReceipt(ctx context.Context, arg RecordWakeupRecei
 		&i.ProcessedAt,
 		&i.CreatedAt,
 		&i.CoalesceKey,
+		&i.DeferredAt,
 	)
 	return i, err
 }

@@ -316,7 +316,7 @@ func TestBuiltinCaptureUnderHoldKeepsTheInstance(t *testing.T) {
 	if !before.ConfigFingerprint.Valid {
 		t.Fatal("no recorded configuration to preserve")
 	}
-	e.f.Exec(t, `UPDATE issue_wakeup_definition SET config=jsonb_set(config,'{active_run}','"defer"'),revision=revision+1 WHERE workspace_id=$1 AND scope_kind='project' AND rule_key=$2`, e.f.WorkspaceID, SystemRulePRMerged)
+	e.f.Exec(t, `UPDATE issue_wakeup_definition SET config=jsonb_set(config,'{active_run}','"queue"'),revision=revision+1 WHERE workspace_id=$1 AND scope_kind='project' AND rule_key=$2`, e.f.WorkspaceID, SystemRulePRMerged)
 	e.mergedPR(t, 531)
 	after := e.rule(t, SystemRulePRMerged)
 	if after.Revision != before.Revision || after.ConfigFingerprint != before.ConfigFingerprint {
@@ -460,7 +460,7 @@ func TestFailUnstartedClaimedTaskIsClaimScoped(t *testing.T) {
 // fires, and one it admits does.
 func TestBuiltinCaptureUnderHoldStillAppliesPRFilters(t *testing.T) {
 	hold := func(e builtinEnv) {
-		e.f.Exec(t, `UPDATE issue_wakeup_definition SET config=jsonb_set(config,'{active_run}','"defer"'),revision=revision+1 WHERE workspace_id=$1 AND scope_kind='project' AND rule_key=$2`, e.f.WorkspaceID, SystemRulePRMerged)
+		e.f.Exec(t, `UPDATE issue_wakeup_definition SET config=jsonb_set(config,'{active_run}','"queue"'),revision=revision+1 WHERE workspace_id=$1 AND scope_kind='project' AND rule_key=$2`, e.f.WorkspaceID, SystemRulePRMerged)
 	}
 	lift := func(e builtinEnv) {
 		// The hold is reset to the exact configuration it interrupted, so the
@@ -507,7 +507,7 @@ func TestBuiltinCaptureUnderHoldStillAppliesPRFilters(t *testing.T) {
 		e.define(t, WakeupScopeProject, SystemRulePRChecksFailed, `"filters":{"ci":"failure"}`)
 		e.failedChecks(t, "ci-first", "FAILURE")
 		e.finishTasks(t)
-		e.f.Exec(t, `UPDATE issue_wakeup_definition SET config=jsonb_set(config,'{active_run}','"defer"'),revision=revision+1 WHERE workspace_id=$1 AND scope_kind='project' AND rule_key=$2`, e.f.WorkspaceID, SystemRulePRChecksFailed)
+		e.f.Exec(t, `UPDATE issue_wakeup_definition SET config=jsonb_set(config,'{active_run}','"queue"'),revision=revision+1 WHERE workspace_id=$1 AND scope_kind='project' AND rule_key=$2`, e.f.WorkspaceID, SystemRulePRChecksFailed)
 		e.failedChecks(t, "ci-held-error", "ERROR")
 		e.f.Exec(t, `UPDATE issue_wakeup_definition SET config=config-'active_run',revision=revision-1 WHERE workspace_id=$1 AND scope_kind='project' AND rule_key=$2`, e.f.WorkspaceID, SystemRulePRChecksFailed)
 		if err := e.s.dispatchSystem(context.Background(), e.rule(t, SystemRulePRChecksFailed)); err != nil {

@@ -1352,6 +1352,7 @@ type IssueWakeupReceipt struct {
 	ProcessedAt pgtype.Timestamptz `json:"processed_at"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	CoalesceKey pgtype.Text        `json:"coalesce_key"`
+	DeferredAt  pgtype.Timestamptz `json:"deferred_at"`
 }
 
 type LarkBindingToken struct {
