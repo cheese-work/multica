@@ -120,18 +120,8 @@ func loadBuiltinWakeup(ctx context.Context, q *db.Queries, issue db.Issue, rule 
 			return nil, heldConfig("a built-in rule keeps its own trigger")
 		}
 	}
-	for _, spec := range []struct {
-		field wakeupObject
-		into  any
-	}{{c.Target, &b.target}, {c.Filters, &b.filters}, {c.Expiry, &b.expiry}} {
-		if spec.field.Set {
-			if err := decodeWakeupSpec(spec.field.Value, spec.into); err != nil {
-				return nil, heldConfig("%v", err)
-			}
-		}
-	}
-	if c.Target.Set && !validBuiltinTarget(b.target) {
-		return nil, heldConfig("unreadable target")
+	if err := b.decodeSpecs(); err != nil {
+		return nil, err
 	}
 	if src, ok := eff.Sources["target"]; ok {
 		for _, def := range []*WakeupDefinition{in.Workspace, in.Project, in.Issue} {
@@ -141,6 +131,26 @@ func loadBuiltinWakeup(ctx context.Context, q *db.Queries, issue db.Issue, rule 
 		}
 	}
 	return b, nil
+}
+
+// decodeSpecs reads the target, filters and expiry the configuration sets; one
+// this build cannot read holds the rule.
+func (b *builtinWakeup) decodeSpecs() error {
+	c := b.Eff.Config
+	for _, spec := range []struct {
+		field wakeupObject
+		into  any
+	}{{c.Target, &b.target}, {c.Filters, &b.filters}, {c.Expiry, &b.expiry}} {
+		if spec.field.Set {
+			if err := decodeWakeupSpec(spec.field.Value, spec.into); err != nil {
+				return heldConfig("%v", err)
+			}
+		}
+	}
+	if c.Target.Set && !validBuiltinTarget(b.target) {
+		return heldConfig("unreadable target")
+	}
+	return nil
 }
 
 func validBuiltinTarget(t wakeupTargetSpec) bool {
@@ -412,19 +422,9 @@ func logWakeupHeld(ctx context.Context, issue db.Issue, w db.IssueWakeup, err er
 
 // isDefaultDerivedWakeup reports whether a runtime row was materialized from a
 // scoped (custom) rule. It has no system rule, so only its origin metadata tells
-// it from a genuine local wakeup. Custom rules execute from a later layer, so
-// such a row is held: dispatch, join and claim all refuse it.
+// it from a genuine local wakeup; the scoped configuration decides what it runs.
 func isDefaultDerivedWakeup(w db.IssueWakeup) bool {
 	return !w.SystemRule.Valid && (w.DefaultRuleKey.Valid || w.DefaultScopeKind.Valid || w.DefaultScopeID.Valid)
-}
-
-func defaultDerivedHeld(ctx context.Context, issue db.Issue, w db.IssueWakeup) bool {
-	if !isDefaultDerivedWakeup(w) {
-		return false
-	}
-	slog.WarnContext(ctx, "wakeup dispatch suspended for a default-derived instance this build cannot execute",
-		"issue_id", util.UUIDToString(issue.ID), "wakeup_id", util.UUIDToString(w.ID), "rule", w.DefaultRuleKey.String)
-	return true
 }
 
 // prRuleEnabled is whether GitHub-driven rule may run on a workspace's
