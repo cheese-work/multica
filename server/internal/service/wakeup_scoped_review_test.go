@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -592,5 +593,176 @@ func TestScopedRetentionPassBoundHoldsAtAnyTableSizeAndStatistics(t *testing.T) 
 				t.Fatalf("handled rows left = %d, want %d: a pass deletes at most %d", got, tc.rows-scopedPruneBatch, scopedPruneBatch)
 			}
 		})
+	}
+}
+
+// arriveClones adds n new pending inputs to the workspace of k by cloning its
+// oldest input's captured evidence with fresh keys and times, so a stream can be
+// supplied without the capture path; definitions and their stamps are unchanged.
+func arriveClones(t *testing.T, k drainKit, n int) {
+	t.Helper()
+	k.f.Exec(t, `INSERT INTO wakeup_scoped_event(workspace_id,issue_id,project_id,event_type,event_key,payload,chain,captured_at)
+ SELECT workspace_id,issue_id,project_id,event_type,gen_random_uuid()::text,payload,chain,clock_timestamp()
+ FROM (SELECT * FROM wakeup_scoped_event WHERE workspace_id=$1 ORDER BY captured_at,id LIMIT 1) seed CROSS JOIN generate_series(1,$2::int)`, k.f.WorkspaceID, n)
+}
+
+// scopedRevisitTicks is the bound the sweep promises: an older input whose issue
+// is free is delivered within this many ticks however many inputs arrive per tick.
+const scopedRevisitTicks = 3
+
+func revisitUnderArrivals(t *testing.T, arrivals int, spacing time.Duration) {
+	t.Helper()
+	ctx := context.Background()
+	old := newDrainKit(t)
+	old.defineRoot(t, "workspace", old.f.WorkspaceID, scopedRuleA, "comment.created")
+	old.comment(t, "older input while its issue is held")
+	stream := newDrainKit(t)
+	stream.defineRoot(t, "workspace", stream.f.WorkspaceID, scopedRuleA, "comment.created")
+	stream.comment(t, "stream seed")
+	arriveClones(t, stream, 49)
+	scope := []pgtype.UUID{parseTestUUID(t, old.f.WorkspaceID), parseTestUUID(t, stream.f.WorkspaceID)}
+	holder, err := old.f.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback(ctx)
+	if _, err := holder.Exec(ctx, `SELECT 1 FROM issue WHERE id=$1 FOR NO KEY UPDATE`, old.issue); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.s.TickWorkspaces(ctx, scope...); err != nil {
+		t.Fatal(err)
+	}
+	if old.pending(t) != 1 || stream.pending(t) != 0 {
+		t.Fatalf("setup: old pending %d, stream pending %d", old.pending(t), stream.pending(t))
+	}
+	if err := holder.Rollback(ctx); err != nil { // no lock from here on
+		t.Fatal(err)
+	}
+	delivered := -1
+	for tick := 0; tick < 12 && delivered < 0; tick++ {
+		if tick > 0 && spacing > 0 {
+			time.Sleep(spacing)
+		}
+		arriveClones(t, stream, arrivals)
+		if err := stream.s.TickWorkspaces(ctx, scope...); err != nil {
+			t.Fatal(err)
+		}
+		if old.pending(t) == 0 {
+			delivered = tick
+		}
+	}
+	if delivered < 0 || delivered >= scopedRevisitTicks {
+		t.Fatalf("with %d arrivals per tick the released older input was delivered at tick %d (want within %d ticks, 0 = first)", arrivals, delivered, scopedRevisitTicks)
+	}
+	t.Logf("%d arrivals per tick: older input delivered at tick %d", arrivals, delivered)
+	old.wantOutcomes(t, "delivered")
+}
+
+// An older input whose issue has become free is revisited even when new inputs
+// arrive at, or above, the drain's per-pass budget (49, 50 and 60 per tick): the
+// sweep is bounded, so it does not depend on the newer tail emptying.
+func TestScopedDrainReleasedInputIsRevisitedUnderSteadyArrivals(t *testing.T) {
+	for _, arrivals := range []int{49, 50, 60, 120} {
+		t.Run(fmt.Sprint(arrivals), func(t *testing.T) { revisitUnderArrivals(t, arrivals, 0) })
+	}
+}
+
+// The same at a scheduler-like spacing between ticks (scaled down: the sweep has
+// no timer, so spacing cannot change the outcome), including a late tick.
+func TestScopedDrainReleasedInputIsRevisitedAtSpacedTicks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spaced ticks")
+	}
+	revisitUnderArrivals(t, 50, 1500*time.Millisecond)
+}
+
+// A busy replay (receipt rows another writer holds, issue rows free) keeps the
+// fairness position: successive passes advance and reach healthy work while the
+// receipt locks are held, and a pass never spends more than a bounded time
+// waiting for locks.
+func TestScopedDrainReceiptLockContentionKeepsTheScanPosition(t *testing.T) {
+	ctx := context.Background()
+	var contended []drainKit
+	var scope []pgtype.UUID
+	for range 50 {
+		k := newDrainKit(t)
+		k.defineRoot(t, "workspace", k.f.WorkspaceID, scopedRuleA, "comment.created")
+		k.comment(t, "seed receipt")
+		k.drain(t)
+		arriveClones(t, k, 1)
+		contended = append(contended, k)
+		scope = append(scope, parseTestUUID(t, k.f.WorkspaceID))
+	}
+	healthy := newDrainKit(t)
+	healthy.defineRoot(t, "workspace", healthy.f.WorkspaceID, scopedRuleA, "comment.created")
+	healthy.comment(t, "healthy behind contended receipts")
+	holder, err := healthy.f.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback(ctx)
+	if _, err := holder.Exec(ctx, `SELECT 1 FROM issue_wakeup_receipt WHERE wakeup_id IN (SELECT id FROM issue_wakeup WHERE workspace_id=ANY($1)) FOR UPDATE`, scope); err != nil {
+		t.Fatal(err)
+	}
+	scope = append(scope, parseTestUUID(t, healthy.f.WorkspaceID))
+
+	pass, err := healthy.s.drainOneScopedIssue(ctx, scope, time.Now(), scopedDrainBatch, []pgtype.UUID{}, time.Time{}, pgtype.UUID{Valid: true}, time.Now().Add(time.Hour), pgtype.UUID{Bytes: [16]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, Valid: true})
+	if !scopedLockBusy(err) || !pass.busy.Valid {
+		t.Fatalf("expected real replay contention: %+v %v", pass, err)
+	}
+	if pass.at.IsZero() || !pass.pos.Valid {
+		t.Fatal("receipt contention discarded the claimed input's scan position")
+	}
+	delivered, longest := -1, time.Duration(0)
+	for p := range 8 {
+		started := time.Now()
+		if err := healthy.s.DrainScopedEvents(ctx, scope...); err != nil {
+			t.Fatalf("pass %d: contention must not surface as an error: %v", p, err)
+		}
+		if d := time.Since(started); d > longest {
+			longest = d
+		}
+		if healthy.pending(t) == 0 && delivered < 0 {
+			delivered = p
+		}
+	}
+	if delivered < 0 {
+		t.Fatal("50 receipt-contended inputs starved healthy work across eight passes while the receipt locks were held")
+	}
+	if longest > scopedDrainWaitBudget+time.Second {
+		t.Fatalf("a pass took %v waiting for locks, bound is %v", longest, scopedDrainWaitBudget)
+	}
+	t.Logf("healthy delivered at pass %d with the receipt locks held; longest pass %v", delivered, longest)
+	for _, k := range contended {
+		if k.pending(t) != 1 {
+			t.Fatal("a contended input changed disposition")
+		}
+	}
+	holder.Rollback(ctx)
+	for range 6 {
+		if err := healthy.s.DrainScopedEvents(ctx, scope...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, k := range contended {
+		if k.pending(t) != 0 {
+			t.Fatal("released receipt inputs were not retried")
+		}
+	}
+}
+
+// A nil skip list must not make the claim match nothing.
+func TestScopedClaimWithNilSkipListClaimsInputs(t *testing.T) {
+	k := newDrainKit(t)
+	k.defineRoot(t, "workspace", k.f.WorkspaceID, scopedRuleA, "comment.created")
+	k.comment(t, "claimable")
+	rows, err := k.s.Tasks.Queries.ClaimWakeupScopedEvents(context.Background(), db.ClaimWakeupScopedEventsParams{
+		Now: pgtype.Timestamptz{Time: time.Now(), Valid: true}, Oldest: pgtype.Timestamptz{Time: time.Now().Add(-scopedEventRetention), Valid: true},
+		WorkspaceIds: []pgtype.UUID{parseTestUUID(t, k.f.WorkspaceID)}, AfterAt: pgtype.Timestamptz{Valid: true}, AfterID: pgtype.UUID{Valid: true},
+		UntilAt: pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true}, UntilID: pgtype.UUID{Bytes: [16]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, Valid: true},
+		BatchSize: 10,
+	})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("claim with a nil skip list = %d rows (err %v), want 1", len(rows), err)
 	}
 }

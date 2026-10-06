@@ -109,49 +109,61 @@ func (s *IssueWakeupService) DrainScopedEvents(ctx context.Context, workspaceIDs
 
 // A busy issue (held by another writer) is never waited for: the drain tries its
 // lock with SKIP LOCKED and goes on to other work. Fairness does not depend on any
-// timer or cache: the drain keeps a scan position over (captured_at, id) and the
-// claim starts after it. A pass that finds a busy issue moves the position past
-// that issue's input, so the next claim (and the next pass) reaches what is
-// behind it; a scan that finds nothing after the position wraps to the start.
-// Every pending input is therefore reached in turn however many busy issues are
-// ahead of it, a busy issue is tried again on the next sweep, and nothing is
-// written to the outbox for contention. A pass notes at most scopedBusyAttempts
-// busy issues, which bounds its work. The position lives in memory (the scheduler
-// job keeps one service instance): a restart starts the sweep from the oldest
-// input again, and a second server instance sweeps with a position of its own,
-// which only means an extra no-wait try.
+// timer or cache. The drain sweeps the pending inputs in (captured_at, id) order
+// with a scan position, and a sweep has a horizon: the newest input pending when
+// it began. A pass moves the position past every input it attempted, busy or
+// handled, so the next claim and the next pass reach what is behind it; when
+// nothing is left up to the horizon the sweep is complete and the next one starts
+// from the oldest input with a new horizon. Inputs that arrive during a sweep
+// wait for the next one, so a steady stream, however fast, cannot keep the sweep
+// from ending, and every older input is reached again: a busy issue is retried
+// on the next sweep and a released one is delivered by it. A sweep is finite (it
+// covers what was pending at its start), nothing is written to the outbox for
+// contention, and a pass attempts at most scopedBusyAttempts busy issues and
+// spends at most scopedDrainWaitBudget waiting for locks. The position lives in
+// memory (the scheduler job keeps one service instance): a restart starts a new
+// sweep, and a second server instance sweeps independently, which only means an
+// extra no-wait try.
 var scopedBusyAttempts = 50
+
+const (
+	// scopedLockWait is how long a transaction of the drain waits for a lock it
+	// must take (a receipt row, say) before it counts as contention.
+	scopedLockWait = 200 * time.Millisecond
+	// scopedLockWaitsPerPass bounds the passes' lock waiting: a pass gives up
+	// after this many waits, so contention on receipts costs at most
+	// scopedDrainWaitBudget of the tick's 10 s drain budget.
+	scopedLockWaitsPerPass = 10
+	scopedDrainWaitBudget  = scopedLockWaitsPerPass * scopedLockWait
+)
 
 // errScopedIssueBusy marks an issue another writer held when the drain tried it.
 var errScopedIssueBusy = errors.New("issue held by another writer")
 
-// scopedCursor is the drain's scan position; the zero value is the start.
+// scopedCursor is the drain's sweep state; the zero value means no sweep yet.
 type scopedCursor struct {
-	mu  sync.Mutex
-	at  time.Time
-	id  pgtype.UUID
-	set bool
+	mu          sync.Mutex
+	at, until   time.Time
+	id, untilID pgtype.UUID
+	started     bool // a sweep is under way: until is its horizon
+	advanced    bool // at/id is a position inside it
 }
 
-func (c *scopedCursor) get() (time.Time, pgtype.UUID) {
+func (c *scopedCursor) get() (at time.Time, id pgtype.UUID, until time.Time, untilID pgtype.UUID, started bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !c.set {
-		return time.Time{}, pgtype.UUID{Valid: true}
+	at, id = time.Time{}, pgtype.UUID{Valid: true}
+	if c.advanced {
+		at, id = c.at, c.id
 	}
-	return c.at, c.id
+	return at, id, c.until, c.untilID, c.started
 }
 
-func (c *scopedCursor) put(at time.Time, id pgtype.UUID) {
+func (c *scopedCursor) put(at time.Time, id pgtype.UUID, until time.Time, untilID pgtype.UUID, started bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.at, c.id, c.set = at, id, true
-}
-
-func (c *scopedCursor) reset() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.set = false
+	c.at, c.id, c.until, c.untilID, c.started = at, id, until, untilID, started
+	c.advanced = !at.IsZero()
 }
 
 // scopedPass is what one transaction of the drain did. failed names the input a
@@ -165,31 +177,55 @@ type scopedPass struct {
 }
 
 // drainScopedEvents handles at most scopedDrainBatch inputs, one transaction
-// per issue. A transaction claims the oldest unclaimed input with SKIP LOCKED
-// and with it that issue's other pending inputs, so concurrent schedulers take
-// different issues and never wait for each other, a burst on one issue is
-// resolved once, and its inputs coalesce in the receipts they are delivered to.
-// An input that fails on a real database error rolls its transaction back, is
-// scheduled for a later retry and reported; the issue's other inputs are
-// claimed again by the next transaction. An issue another writer holds is
-// contention, not a fault: the pass skips it, carries on with other work and
-// leaves its inputs pending for the next pass, with no retry delay.
+// per issue. A transaction claims the oldest unclaimed input after the scan
+// position with SKIP LOCKED and with it that issue's other pending inputs, so
+// concurrent schedulers take different issues and never wait for each other, a
+// burst on one issue is resolved once, and its inputs coalesce in the receipts
+// they are delivered to. An input that fails on a real database error rolls its
+// transaction back, is scheduled for a later retry and reported. An issue
+// another writer holds is contention, not a fault: the pass moves past it,
+// carries on with other work and leaves its inputs pending, with no retry delay.
 func (s *IssueWakeupService) drainScopedEvents(ctx context.Context, workspaceIDs []pgtype.UUID) error {
 	var errs []error
 	now := time.Now()
-	afterAt, afterID := s.scopedPos.get()
+	afterAt, afterID, untilAt, untilID, started := s.scopedPos.get()
+	save := func() { s.scopedPos.put(afterAt, afterID, untilAt, untilID, started) }
+	// startSweep sets the horizon; false means nothing is pending at all.
+	startSweep := func() bool {
+		newest, err := s.Tasks.Queries.NewestPendingWakeupScopedEvent(ctx)
+		if err != nil {
+			if !errors.Is(err, pgx.ErrNoRows) {
+				errs = append(errs, err)
+			}
+			afterAt, afterID, untilAt, untilID, started = time.Time{}, pgtype.UUID{Valid: true}, time.Time{}, pgtype.UUID{}, false
+			return false
+		}
+		afterAt, afterID, untilAt, untilID, started = time.Time{}, pgtype.UUID{Valid: true}, newest.CapturedAt.Time, newest.ID, true
+		return true
+	}
+	if !started && !startSweep() {
+		save()
+		return errors.Join(errs...)
+	}
 	skip := []pgtype.UUID{}
-	wrapped := false
+	waits, wrapped := 0, false
 	for budget := scopedDrainBatch; budget > 0; {
 		if ctx.Err() != nil {
-			s.scopedPos.put(afterAt, afterID)
+			save()
 			return errors.Join(append(errs, ctx.Err())...)
 		}
-		pass, err := s.drainOneScopedIssue(ctx, workspaceIDs, now, budget, skip, afterAt, afterID)
+		pass, err := s.drainOneScopedIssue(ctx, workspaceIDs, now, budget, skip, afterAt, afterID, untilAt, untilID)
 		if scopedLockBusy(err) && pass.busy.Valid {
-			// Move the position past the busy issue's input and go on.
-			skip, afterAt, afterID = append(skip, pass.busy), pass.at, pass.pos
-			if len(skip) >= scopedBusyAttempts {
+			// Move the position past the busy issue's input and go on. A pass that
+			// had to wait for a lock (not just find the issue held) counts the wait.
+			skip = append(skip, pass.busy)
+			if !pass.at.IsZero() {
+				afterAt, afterID = pass.at, pass.pos
+			}
+			if !errors.Is(err, errScopedIssueBusy) {
+				waits++
+			}
+			if len(skip) >= scopedBusyAttempts || waits >= scopedLockWaitsPerPass {
 				break
 			}
 			continue
@@ -197,28 +233,35 @@ func (s *IssueWakeupService) drainScopedEvents(ctx context.Context, workspaceIDs
 		if err != nil {
 			errs = append(errs, err)
 			if !pass.failed.Valid {
-				s.scopedPos.put(afterAt, afterID)
+				save()
 				return errors.Join(errs...)
 			}
 			if deferErr := s.Tasks.Queries.DeferWakeupScopedEvent(ctx, db.DeferWakeupScopedEventParams{ID: pass.failed, RetryAt: pgtype.Timestamptz{Time: now.Add(scopedRetryDelay), Valid: true}}); deferErr != nil {
-				s.scopedPos.put(afterAt, afterID)
+				save()
 				return errors.Join(append(errs, deferErr)...)
 			}
 			budget--
 			continue
 		}
 		if pass.handled == 0 {
-			// Nothing after the position: sweep from the start once, then stop.
-			if !afterAt.IsZero() && !wrapped {
-				afterAt, afterID, wrapped = time.Time{}, pgtype.UUID{Valid: true}, true
-				continue
+			// Nothing left up to the horizon: the sweep is complete. Begin the next
+			// one from the oldest input, once per pass, so inputs that arrived during
+			// this one and older ones released meanwhile get their turn.
+			if wrapped || !startSweep() {
+				if wrapped {
+					save()
+				} else {
+					s.scopedPos.put(time.Time{}, pgtype.UUID{Valid: true}, time.Time{}, pgtype.UUID{}, false)
+				}
+				return errors.Join(errs...)
 			}
-			s.scopedPos.reset()
-			return errors.Join(errs...)
+			wrapped = true
+			continue
 		}
+		afterAt, afterID = pass.at, pass.pos
 		budget -= pass.handled
 	}
-	s.scopedPos.put(afterAt, afterID)
+	save()
 	return errors.Join(errs...)
 }
 
@@ -230,21 +273,28 @@ func scopedLockBusy(err error) bool {
 }
 
 // drainOneScopedIssue claims, resolves and settles the pending inputs of one
-// issue, at most budget of them, leaving the issues in skip alone and scanning after the given position.
-func (s *IssueWakeupService) drainOneScopedIssue(ctx context.Context, workspaceIDs []pgtype.UUID, now time.Time, budget int, skip []pgtype.UUID, afterAt time.Time, afterID pgtype.UUID) (pass scopedPass, err error) {
+// issue, at most budget of them, leaving the issues in skip alone and scanning
+// after the given position up to the sweep's horizon. Every return keeps the
+// position of the input it claimed, so contention anywhere in the transaction
+// does not cost the scan its place.
+func (s *IssueWakeupService) drainOneScopedIssue(ctx context.Context, workspaceIDs []pgtype.UUID, now time.Time, budget int, skip []pgtype.UUID, afterAt time.Time, afterID pgtype.UUID, untilAt time.Time, untilID pgtype.UUID) (pass scopedPass, err error) {
 	tx, err := s.Tasks.TxStarter.Begin(ctx)
 	if err != nil {
 		return pass, err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "SET LOCAL lock_timeout = '200ms'"); err != nil {
+	if _, err := tx.Exec(ctx, "SET LOCAL lock_timeout = '"+strconv.FormatInt(scopedLockWait.Milliseconds(), 10)+"ms'"); err != nil {
 		return pass, err
 	}
 	q := s.Tasks.Queries.WithTx(tx)
 	stamp := pgtype.Timestamptz{Time: now, Valid: true}
 	// An input past retention is never claimed: it can only expire.
 	oldest := pgtype.Timestamptz{Time: now.Add(-scopedEventRetention), Valid: true}
-	first, err := q.ClaimWakeupScopedEvents(ctx, db.ClaimWakeupScopedEventsParams{Now: stamp, Oldest: oldest, WorkspaceIds: workspaceIDs, SkipIssues: skip, AfterAt: pgtype.Timestamptz{Time: afterAt, Valid: true}, AfterID: afterID, BatchSize: 1})
+	first, err := q.ClaimWakeupScopedEvents(ctx, db.ClaimWakeupScopedEventsParams{
+		Now: stamp, Oldest: oldest, WorkspaceIds: workspaceIDs, SkipIssues: skip,
+		AfterAt: pgtype.Timestamptz{Time: afterAt, Valid: true}, AfterID: afterID,
+		UntilAt: pgtype.Timestamptz{Time: untilAt, Valid: true}, UntilID: untilID, BatchSize: 1,
+	})
 	if err != nil || len(first) == 0 {
 		return pass, err
 	}
@@ -270,8 +320,9 @@ func (s *IssueWakeupService) drainOneScopedIssue(ctx context.Context, workspaceI
 			err = q.MarkWakeupScopedEventHandled(ctx, db.MarkWakeupScopedEventHandledParams{ID: ev.ID, Now: stamp, Outcome: outcome})
 		}
 		if err != nil {
+			// Keep pass.at and pass.pos: the position survives.
 			pass.failed, pass.busy = ev.ID, ev.IssueID
-			return scopedPass{failed: ev.ID, busy: ev.IssueID}, fmt.Errorf("scoped event %s: %w", util.UUIDToString(ev.ID), err)
+			return pass, fmt.Errorf("scoped event %s: %w", util.UUIDToString(ev.ID), err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
