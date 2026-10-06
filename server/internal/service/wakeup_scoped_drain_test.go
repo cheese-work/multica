@@ -632,9 +632,8 @@ func TestScopedDrainConcurrentSchedulersHandleEachInputOnce(t *testing.T) {
 		// Competing schedulers may lose a lock race; nothing may be lost.
 		t.Logf("drain: %v", err)
 	}
-	// A scheduler that lost a lock race left that issue's inputs waiting out the
-	// short busy delay; let it pass.
-	k.f.Exec(t, `UPDATE wakeup_scoped_event SET retry_at=NULL WHERE workspace_id=$1 AND handled_at IS NULL`, k.f.WorkspaceID)
+	// A drainer that lost a lock race left that issue cooling; let it pass.
+	newScopedCadence(k).advance(t, 2*scopedBusyCooldown)
 	k.drain(t)
 	k.drain(t)
 	if got := k.pending(t); got != 0 {
@@ -772,7 +771,7 @@ func TestScopedDrainResolvesABurstOnOneIssueOnce(t *testing.T) {
 	if got := k.pending(t); got != 0 {
 		t.Fatalf("pending = %d, want the whole burst handled in one pass", got)
 	}
-	if locks, loads, creates := probe.count("LockWakeupIssue"), probe.count("ListWakeupDefinitionsInScope"), probe.count("CreateDefaultWakeupInstance"); locks != 1 || loads != 3 || creates != 1 {
+	if locks, loads, creates := probe.count("TryLockWakeupIssue"), probe.count("ListWakeupDefinitionsInScope"), probe.count("CreateDefaultWakeupInstance"); locks != 1 || loads != 3 || creates != 1 {
 		t.Fatalf("issue locks=%d definition loads=%d instance creations=%d, want 1, 3 (workspace, project and issue scope) and 1 for %d inputs", locks, loads, creates, burst)
 	}
 	if got := k.receipts(t, scopedRuleA); len(got) != 1 || got[0].Count != burst {
@@ -812,15 +811,15 @@ func TestScopedDrainAPoisonedInputDoesNotBlockItsIssue(t *testing.T) {
 	}
 }
 
-// An issue another writer holds is contention, not a fault: the drain gives up
-// on it quietly after its short lock wait and leaves the input pending with a
-// short retry delay, so the pass goes on to other work. Once the delay has
-// passed and the issue is free the input is delivered.
+// An issue another writer holds is contention, not a fault: the drain does not
+// wait for it, writes nothing for it, reports no error and leaves the input
+// pending. It cools for a while, then the input is delivered.
 func TestScopedDrainWaitsOutAnIssueAnotherWriterHolds(t *testing.T) {
 	k := newDrainKit(t)
 	k.defineRoot(t, "workspace", k.f.WorkspaceID, scopedRuleA, "comment.created")
 	k.comment(t, "the issue is busy")
 	ctx := context.Background()
+	clock := newScopedCadence(k)
 	holder, err := k.f.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -829,22 +828,22 @@ func TestScopedDrainWaitsOutAnIssueAnotherWriterHolds(t *testing.T) {
 	if _, err := holder.Exec(ctx, `SELECT 1 FROM issue WHERE id=$1 FOR NO KEY UPDATE`, k.issue); err != nil {
 		t.Fatal(err)
 	}
+	started := time.Now()
 	if err := k.s.DrainScopedEvents(ctx, parseTestUUID(t, k.f.WorkspaceID)); err != nil {
 		t.Fatalf("contention must not surface as an error: %v", err)
 	}
-	var retry *time.Time
-	if err := k.f.Pool.QueryRow(ctx, `SELECT retry_at FROM wakeup_scoped_event WHERE workspace_id=$1`, k.f.WorkspaceID).Scan(&retry); err != nil {
-		t.Fatal(err)
+	if took := time.Since(started); took > 150*time.Millisecond {
+		t.Fatalf("the drain waited %v for a held issue", took)
 	}
-	if retry == nil || !retry.After(time.Now()) || retry.After(time.Now().Add(scopedBusyDelay+time.Second)) || k.pending(t) != 1 {
-		t.Fatalf("a busy issue's input must stay pending with a short retry delay (retry_at=%v pending=%d)", retry, k.pending(t))
+	if k.pending(t) != 1 || k.f.Count(t, `SELECT count(*) FROM wakeup_scoped_event WHERE workspace_id=$1 AND retry_at IS NOT NULL`, k.f.WorkspaceID) != 0 {
+		t.Fatal("a busy issue's input must stay pending and untouched")
 	}
 	holder.Rollback(ctx)
 	k.drain(t)
 	if k.pending(t) != 1 {
-		t.Fatal("the input must wait out its delay even though the issue is free")
+		t.Fatal("the issue must cool for a while even though it is free again")
 	}
-	k.f.Exec(t, `UPDATE wakeup_scoped_event SET retry_at=now()-interval '1 second' WHERE workspace_id=$1`, k.f.WorkspaceID)
+	clock.advance(t, scopedBusyCooldown+time.Second)
 	k.drain(t)
 	k.wantOutcomes(t, "delivered")
 }

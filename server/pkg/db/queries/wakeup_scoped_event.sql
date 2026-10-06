@@ -4,7 +4,7 @@
 -- its retry time so it cannot starve the rest. An input captured before @oldest
 -- is past retention: it is never claimed, so it can only expire, and neither the
 -- size of an expired backlog nor the order of the prune can make it deliver.
--- @skip_issues are the issues this pass found busy.
+-- @skip_issues are the issues the drain is leaving alone for now (found busy).
 SELECT * FROM wakeup_scoped_event
 WHERE handled_at IS NULL AND captured_at >= @oldest::timestamptz AND (retry_at IS NULL OR retry_at <= @now::timestamptz)
  AND (sqlc.narg(workspace_ids)::uuid[] IS NULL OR workspace_id = ANY(sqlc.narg(workspace_ids)::uuid[]))
@@ -26,13 +26,13 @@ UPDATE wakeup_scoped_event SET handled_at= @now::timestamptz,outcome= @outcome::
 -- name: DeferWakeupScopedEvent :exec
 UPDATE wakeup_scoped_event SET retry_at= @retry_at::timestamptz WHERE id= @id AND handled_at IS NULL;
 
--- name: DeferWakeupScopedEventsOfIssue :exec
--- A busy issue's pending inputs wait for @retry_at, so the next claim passes over
--- them and goes on to other work. It never shortens a wait, and a row another
--- scheduler holds is left to that scheduler. Retention is unaffected: the claims
--- still refuse an input captured before the retention cut.
-UPDATE wakeup_scoped_event SET retry_at= @retry_at::timestamptz
-WHERE id IN (SELECT e.id FROM wakeup_scoped_event e WHERE e.issue_id= @issue_id AND e.handled_at IS NULL AND (e.retry_at IS NULL OR e.retry_at < @retry_at::timestamptz) FOR UPDATE SKIP LOCKED);
+-- name: TryLockWakeupIssue :one
+-- The drain's issue lock never waits: a held issue yields no row, and the caller
+-- tells it from a deleted one with WakeupIssueExists.
+SELECT * FROM issue WHERE id= @id FOR NO KEY UPDATE SKIP LOCKED;
+
+-- name: WakeupIssueExists :one
+SELECT EXISTS(SELECT 1 FROM issue WHERE id= @id);
 
 -- name: ExpireWakeupScopedEvents :execrows
 -- Pending inputs past retention are closed with a visible outcome, never

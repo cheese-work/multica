@@ -188,7 +188,7 @@ func TestScopedDrainBusyIssueDoesNotStallOtherWork(t *testing.T) {
 		t.Fatalf("busy pending = %d, want the locked input left for a later pass", busy.pending(t))
 	}
 	holder.Rollback(ctx)
-	busy.f.Exec(t, `UPDATE wakeup_scoped_event SET retry_at=now()-interval '1 second' WHERE workspace_id=$1`, busy.f.WorkspaceID)
+	newScopedCadence(busy).advance(t, scopedBusyCooldown+time.Second)
 	busy.drain(t)
 	busy.wantOutcomes(t, "delivered")
 }
@@ -220,9 +220,9 @@ func TestScopedDrainInvalidSettingsIsolateTheirRule(t *testing.T) {
 	}
 }
 
-// Busy issues are deferred with a short retry delay, so each pass carries
-// progress past them. Five persistently held issues must not starve healthy work
-// behind them, and their inputs are claimed again once the delay has passed.
+// Held issues are passed over without a wait or a write, so five of them do not
+// starve healthy work behind them even in back-to-back passes. They cool, and
+// once the cooldown has passed and the locks are gone they deliver.
 func TestScopedDrainPersistentlyBusyIssuesDoNotStarveHealthyWork(t *testing.T) {
 	const busyIssues = 5
 	ctx := context.Background()
@@ -239,6 +239,7 @@ func TestScopedDrainPersistentlyBusyIssuesDoNotStarveHealthyWork(t *testing.T) {
 	healthy.defineRoot(t, "workspace", healthy.f.WorkspaceID, scopedRuleA, "comment.created")
 	healthy.comment(t, "newer, in an unrelated workspace")
 	scope = append(scope, parseTestUUID(t, healthy.f.WorkspaceID))
+	clock := newScopedCadence(healthy)
 	var holders []pgx.Tx
 	for _, k := range kits {
 		holder, err := k.f.Pool.Begin(ctx)
@@ -251,26 +252,21 @@ func TestScopedDrainPersistentlyBusyIssuesDoNotStarveHealthyWork(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for pass := 1; pass <= 3 && healthy.pending(t) > 0; pass++ {
-		if err := healthy.s.DrainScopedEvents(ctx, scope...); err != nil {
-			t.Fatalf("pass %d: contention must not surface as an error: %v", pass, err)
-		}
+	started := time.Now()
+	if err := healthy.s.DrainScopedEvents(ctx, scope...); err != nil {
+		t.Fatalf("contention must not surface as an error: %v", err)
 	}
 	if healthy.pending(t) != 0 {
-		t.Fatal("five held issues starved unrelated work across three passes, with every lock still held")
+		t.Fatal("five held issues starved unrelated work in the first pass, with every lock still held")
+	}
+	if took := time.Since(started); took > time.Second {
+		t.Fatalf("the pass took %v: held issues must not be waited for", took)
 	}
 	healthy.wantOutcomes(t, "delivered")
 	for _, k := range kits {
 		if k.pending(t) != 1 {
 			t.Fatalf("a held issue's input must stay pending, got %d", k.pending(t))
 		}
-	}
-
-	// Still held, the busy inputs wait out their delay instead of being claimed
-	// again; once it has passed and the locks are gone they deliver.
-	var delayed int
-	if err := healthy.f.Pool.QueryRow(ctx, `SELECT count(*) FROM wakeup_scoped_event WHERE handled_at IS NULL AND retry_at>now() AND workspace_id=ANY($1)`, scope).Scan(&delayed); err != nil || delayed != busyIssues {
-		t.Fatalf("delayed busy inputs = %d (err %v), want %d", delayed, err, busyIssues)
 	}
 	for _, h := range holders {
 		h.Rollback(ctx)
@@ -279,15 +275,60 @@ func TestScopedDrainPersistentlyBusyIssuesDoNotStarveHealthyWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := healthy.f.Count(t, `SELECT count(*) FROM wakeup_scoped_event WHERE handled_at IS NULL AND workspace_id=ANY($1)`, scope); got != busyIssues {
-		t.Fatalf("pending = %d: an input must wait out its delay even when its issue is free", got)
+		t.Fatalf("pending = %d: a cooling issue is left alone even when it is free again", got)
 	}
-	healthy.f.Exec(t, `UPDATE wakeup_scoped_event SET retry_at=now()-interval '1 second' WHERE handled_at IS NULL AND workspace_id=ANY($1)`, scope)
+	clock.advance(t, scopedBusyCooldown+time.Second)
 	if err := healthy.s.DrainScopedEvents(ctx, scope...); err != nil {
 		t.Fatal(err)
 	}
 	for _, k := range kits {
 		k.wantOutcomes(t, "delivered")
 	}
+}
+
+// With more held issues at the head than one pass will note, the passes at the
+// scheduler's cadence move past the ones already tried, so healthy work behind
+// them is reached while every lock is still held.
+func TestScopedDrainBusyHeadLongerThanOnePassStillProgresses(t *testing.T) {
+	old := scopedBusyAttempts
+	scopedBusyAttempts = 3
+	t.Cleanup(func() { scopedBusyAttempts = old })
+	const busyIssues = 8
+	ctx := context.Background()
+	var kits []drainKit
+	var scope []pgtype.UUID
+	for range busyIssues {
+		k := newDrainKit(t)
+		k.defineRoot(t, "workspace", k.f.WorkspaceID, scopedRuleA, "comment.created")
+		k.comment(t, "older input on a held issue")
+		kits = append(kits, k)
+		scope = append(scope, parseTestUUID(t, k.f.WorkspaceID))
+	}
+	healthy := newDrainKit(t)
+	healthy.defineRoot(t, "workspace", healthy.f.WorkspaceID, scopedRuleA, "comment.created")
+	healthy.comment(t, "healthy input behind eight held issues")
+	scope = append(scope, parseTestUUID(t, healthy.f.WorkspaceID))
+	holder, err := healthy.f.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { holder.Rollback(ctx) })
+	for _, k := range kits {
+		if _, err := holder.Exec(ctx, `SELECT 1 FROM issue WHERE id=$1 FOR NO KEY UPDATE`, k.issue); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clock := newScopedCadence(healthy)
+	for tick := 1; tick <= 4 && healthy.pending(t) > 0; tick++ {
+		if err := healthy.s.TickWorkspaces(ctx, scope...); err != nil {
+			t.Fatalf("tick %d: %v", tick, err)
+		}
+		clock.advance(t, 30*time.Second)
+	}
+	if healthy.pending(t) != 0 {
+		t.Fatal("a held head longer than one pass starved healthy work across four 30 s ticks")
+	}
+	healthy.wantOutcomes(t, "delivered")
 }
 
 // A busy delay never extends retention: an input past seven days expires however
@@ -301,4 +342,122 @@ func TestScopedBusyDelayDoesNotOutliveRetention(t *testing.T) {
 		t.Fatal(err)
 	}
 	k.wantOutcomes(t, "expired")
+}
+
+// scopedCadence models the scheduler: each step advances the drain's cooldown
+// clock and the database timestamps a delay is kept in by the same interval, so a
+// delay behaves as it would after that much wall time without the test sleeping.
+type scopedCadence struct {
+	now time.Time
+	k   drainKit
+}
+
+func newScopedCadence(k drainKit) *scopedCadence {
+	c := &scopedCadence{now: time.Now(), k: k}
+	k.s.scopedClock = func() time.Time { return c.now }
+	return c
+}
+
+func (c *scopedCadence) advance(t *testing.T, d time.Duration) {
+	t.Helper()
+	c.now = c.now.Add(d)
+	c.k.f.Exec(t, `UPDATE wakeup_scoped_event SET retry_at=retry_at-($1::bigint*interval '1 microsecond') WHERE retry_at IS NOT NULL`, d.Microseconds())
+}
+
+// Five persistently held issues must not starve healthy work at the scheduler's
+// real 30 s cadence, including a late tick, with every lock still held and no
+// edit of the inputs. The healthy input is delivered before the locks release.
+func TestScopedDrainBusyIssuesAtSchedulerCadence(t *testing.T) {
+	ctx := context.Background()
+	var kits []drainKit
+	var scope []pgtype.UUID
+	for range 5 {
+		k := newDrainKit(t)
+		k.defineRoot(t, "workspace", k.f.WorkspaceID, scopedRuleA, "comment.created")
+		k.comment(t, "older input on a held issue")
+		kits = append(kits, k)
+		scope = append(scope, parseTestUUID(t, k.f.WorkspaceID))
+	}
+	healthy := newDrainKit(t)
+	healthy.defineRoot(t, "workspace", healthy.f.WorkspaceID, scopedRuleA, "comment.created")
+	healthy.comment(t, "healthy input behind five held issues")
+	scope = append(scope, parseTestUUID(t, healthy.f.WorkspaceID))
+	holder, err := healthy.f.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { holder.Rollback(ctx) })
+	for _, k := range kits {
+		if _, err := holder.Exec(ctx, `SELECT 1 FROM issue WHERE id=$1 FOR NO KEY UPDATE`, k.issue); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clock := newScopedCadence(healthy)
+	delivered := -1
+	for tick, gap := range []time.Duration{0, 30 * time.Second, 50 * time.Second, 30 * time.Second} { // the third tick is late
+		clock.advance(t, gap)
+		if err := healthy.s.TickWorkspaces(ctx, scope...); err != nil {
+			t.Fatalf("tick %d: contention must not surface as an error: %v", tick+1, err)
+		}
+		if delivered < 0 && healthy.pending(t) == 0 {
+			delivered = tick + 1
+		}
+		for _, k := range kits {
+			if k.pending(t) != 1 {
+				t.Fatalf("tick %d: a held issue's input changed disposition with its lock held", tick+1)
+			}
+		}
+	}
+	if delivered < 0 {
+		t.Fatal("five held issues starved healthy work across four scheduler ticks, every lock still held")
+	}
+	t.Logf("healthy input delivered at tick %d with all five locks held", delivered)
+	healthy.wantOutcomes(t, "delivered")
+	// Released, the held inputs deliver on a later tick without being edited.
+	holder.Rollback(ctx)
+	clock.advance(t, 30*time.Second)
+	if err := healthy.s.TickWorkspaces(ctx, scope...); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range kits {
+		k.wantOutcomes(t, "delivered")
+	}
+}
+
+// Busy deferral does not rewrite an issue's pending backlog: a burst far larger
+// than the drain's budget on one held issue costs no outbox writes, and the
+// backlog is delivered in bounded passes once the issue is free.
+func TestScopedDrainBusyIssueBacklogIsNotRewritten(t *testing.T) {
+	k := newDrainKit(t)
+	k.defineRoot(t, "workspace", k.f.WorkspaceID, scopedRuleA, "comment.created")
+	k.comment(t, "pending burst on one busy issue")
+	k.f.Exec(t, `INSERT INTO wakeup_scoped_event(workspace_id,issue_id,project_id,event_type,event_key,payload,chain,captured_at)
+ SELECT workspace_id,issue_id,project_id,event_type,gen_random_uuid()::text,payload,chain,captured_at
+ FROM wakeup_scoped_event,generate_series(1,500) WHERE workspace_id=$1`, k.f.WorkspaceID)
+	ctx := context.Background()
+	clock := newScopedCadence(k)
+	holder, err := k.f.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { holder.Rollback(ctx) })
+	if _, err := holder.Exec(ctx, `SELECT 1 FROM issue WHERE id=$1 FOR NO KEY UPDATE`, k.issue); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.s.DrainScopedEvents(ctx, parseTestUUID(t, k.f.WorkspaceID)); err != nil {
+		t.Fatal(err)
+	}
+	if written := k.f.Count(t, `SELECT count(*) FROM wakeup_scoped_event WHERE workspace_id=$1 AND (retry_at IS NOT NULL OR handled_at IS NOT NULL)`, k.f.WorkspaceID); written > scopedDrainBatch {
+		t.Fatalf("one pass over a held issue wrote %d outbox rows, beyond the %d-input budget", written, scopedDrainBatch)
+	}
+	holder.Rollback(ctx)
+	for range 12 {
+		clock.advance(t, 40*time.Second)
+		if err := k.s.DrainScopedEvents(ctx, parseTestUUID(t, k.f.WorkspaceID)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := k.pending(t); got != 0 {
+		t.Fatalf("pending = %d: a backlog larger than the bound must still drain in bounded passes", got)
+	}
 }

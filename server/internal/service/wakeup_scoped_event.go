@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -106,15 +107,63 @@ func (s *IssueWakeupService) DrainScopedEvents(ctx context.Context, workspaceIDs
 	return s.drainScopedEvents(ctx, workspaceIDs)
 }
 
-// scopedBusyPerPass bounds how many busy issues one pass waits on, each for the
-// short lock wait. scopedBusyDelay is how long a busy issue's inputs then wait
-// before they are claimed again: progress carries across passes, so the busy
-// issues at the head of the queue cannot hold back the work behind them. It is
-// shorter than the scheduler's cadence, so a freed issue is picked up next tick.
+// A busy issue (held by another writer) is never waited for: the drain tries its
+// lock with SKIP LOCKED, notes the issue as cooling and goes on to other work, so
+// the issues at the head of the queue cannot hold back what is behind them. The
+// cooldown lives in memory (the scheduler job keeps one service instance), costs
+// no outbox write and leaves every input pending and retryable. It is longer
+// than the scheduler's 30 s cadence, so the next tick moves past the issue
+// instead of trying it again; a restart or a late tick only means one more try.
+// scopedBusyAttempts bounds how many busy issues one pass notes before it leaves
+// the rest to the next tick. A pass that reaches the bound has found a busy head
+// longer than itself, so it parks the issues it noted for scopedBusyBackoff
+// instead: the next ticks then move on to the issues behind them, and progress
+// reaches the healthy work without depending on any busy issue clearing.
 const (
-	scopedBusyPerPass = 5
-	scopedBusyDelay   = 20 * time.Second
+	scopedBusyCooldown = 35 * time.Second
+	scopedBusyBackoff  = 10 * time.Minute
+	// scopedCoolingMax bounds the in-memory cooldown set.
+	scopedCoolingMax = 1000
 )
+
+var scopedBusyAttempts = 50
+
+// errScopedIssueBusy marks an issue another writer held when the drain tried it.
+var errScopedIssueBusy = errors.New("issue held by another writer")
+
+// scopedBusyState holds the issues the drain found busy and until when to leave
+// them alone.
+type scopedBusyState struct {
+	mu    sync.Mutex
+	until map[pgtype.UUID]time.Time
+}
+
+// cooling returns the issues still cooling at now, dropping the expired ones.
+func (b *scopedBusyState) cooling(now time.Time) []pgtype.UUID {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := make([]pgtype.UUID, 0, len(b.until))
+	for id, until := range b.until {
+		if until.After(now) {
+			out = append(out, id)
+		} else {
+			delete(b.until, id)
+		}
+	}
+	return out
+}
+
+func (b *scopedBusyState) cool(id pgtype.UUID, until time.Time) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.until == nil {
+		b.until = map[pgtype.UUID]time.Time{}
+	}
+	if _, known := b.until[id]; !known && len(b.until) >= scopedCoolingMax {
+		return // the in-pass skip list still covers this pass
+	}
+	b.until[id] = until
+}
 
 // scopedPass is what one transaction of the drain did. failed names the input a
 // returned error belongs to; busy names the issue another writer held.
@@ -136,19 +185,20 @@ type scopedPass struct {
 func (s *IssueWakeupService) drainScopedEvents(ctx context.Context, workspaceIDs []pgtype.UUID) error {
 	var errs []error
 	now := time.Now()
-	busy := []pgtype.UUID{}
+	cooling := s.scopedBusy.cooling(s.scopedNow())
+	var noted []pgtype.UUID // the busy issues this pass found
 	for budget := scopedDrainBatch; budget > 0; {
 		if ctx.Err() != nil {
 			return errors.Join(append(errs, ctx.Err())...)
 		}
-		pass, err := s.drainOneScopedIssue(ctx, workspaceIDs, now, budget, busy)
+		pass, err := s.drainOneScopedIssue(ctx, workspaceIDs, now, budget, cooling)
 		if scopedLockBusy(err) && pass.busy.Valid {
-			// The issue's inputs wait out a short delay, so this pass and the next
-			// go on to other work. The error, if any, is only for the delay's sake.
-			if deferErr := s.Tasks.Queries.DeferWakeupScopedEventsOfIssue(ctx, db.DeferWakeupScopedEventsOfIssueParams{IssueID: pass.busy, RetryAt: pgtype.Timestamptz{Time: now.Add(scopedBusyDelay), Valid: true}}); deferErr != nil {
-				return errors.Join(append(errs, deferErr)...)
-			}
-			if busy = append(busy, pass.busy); len(busy) >= scopedBusyPerPass {
+			s.scopedBusy.cool(pass.busy, s.scopedNow().Add(scopedBusyCooldown))
+			cooling, noted = append(cooling, pass.busy), append(noted, pass.busy)
+			if len(noted) >= scopedBusyAttempts {
+				for _, id := range noted {
+					s.scopedBusy.cool(id, s.scopedNow().Add(scopedBusyBackoff))
+				}
 				break
 			}
 			continue
@@ -172,11 +222,19 @@ func (s *IssueWakeupService) drainScopedEvents(ctx context.Context, workspaceIDs
 	return errors.Join(errs...)
 }
 
-// scopedLockBusy reports a lock wait that gave up (lock_timeout) or lost a
-// deadlock: another transaction held the issue.
+// scopedNow is the drain's cooldown clock.
+func (s *IssueWakeupService) scopedNow() time.Time {
+	if s.scopedClock != nil {
+		return s.scopedClock()
+	}
+	return time.Now()
+}
+
+// scopedLockBusy reports an issue another transaction held: found locked by the
+// drain's no-wait try, a lock wait that gave up (lock_timeout) or a lost deadlock.
 func scopedLockBusy(err error) bool {
 	var pg *pgconn.PgError
-	return errors.As(err, &pg) && (pg.Code == "55P03" || pg.Code == "40P01")
+	return errors.Is(err, errScopedIssueBusy) || errors.As(err, &pg) && (pg.Code == "55P03" || pg.Code == "40P01")
 }
 
 // drainOneScopedIssue claims, resolves and settles the pending inputs of one
@@ -334,12 +392,23 @@ type scopedIssueBatch struct {
 
 func (s *IssueWakeupService) newScopedIssueBatch(ctx context.Context, tx pgx.Tx, q *db.Queries, first db.WakeupScopedEvent) (*scopedIssueBatch, error) {
 	b := &scopedIssueBatch{s: s, tx: tx, q: q, rules: map[string]*scopedRule{}}
-	issue, err := q.LockWakeupIssue(ctx, first.IssueID)
-	if errors.Is(err, pgx.ErrNoRows) || err == nil && issue.WorkspaceID != first.WorkspaceID {
+	issue, err := q.TryLockWakeupIssue(ctx, first.IssueID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// No row: the issue is held by another writer, or gone.
+		exists, existsErr := q.WakeupIssueExists(ctx, first.IssueID)
+		if existsErr != nil {
+			return nil, existsErr
+		}
+		if exists {
+			return nil, errScopedIssueBusy
+		}
 		b.outcome = scopedOutcomeIssueGone
 		return b, nil
 	} else if err != nil {
 		return nil, err
+	} else if issue.WorkspaceID != first.WorkspaceID {
+		b.outcome = scopedOutcomeIssueGone
+		return b, nil
 	}
 	b.issue = issue
 	if active, err := wakeupIssueActive(ctx, q, issue); err != nil {
