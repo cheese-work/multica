@@ -33,7 +33,7 @@ type ClaimWakeupScopedEventsParams struct {
 // its retry time so it cannot starve the rest. An input captured before @oldest
 // is past retention: it is never claimed, so it can only expire, and neither the
 // size of an expired backlog nor the order of the prune can make it deliver.
-// @skip_issues are the issues this pass found busy.
+// @skip_issues are the issues the drain is leaving alone for now (found busy).
 func (q *Queries) ClaimWakeupScopedEvents(ctx context.Context, arg ClaimWakeupScopedEventsParams) ([]WakeupScopedEvent, error) {
 	rows, err := q.db.Query(ctx, claimWakeupScopedEvents,
 		arg.Oldest,
@@ -270,25 +270,6 @@ type DeferWakeupScopedEventParams struct {
 
 func (q *Queries) DeferWakeupScopedEvent(ctx context.Context, arg DeferWakeupScopedEventParams) error {
 	_, err := q.db.Exec(ctx, deferWakeupScopedEvent, arg.RetryAt, arg.ID)
-	return err
-}
-
-const deferWakeupScopedEventsOfIssue = `-- name: DeferWakeupScopedEventsOfIssue :exec
-UPDATE wakeup_scoped_event SET retry_at= $1::timestamptz
-WHERE id IN (SELECT e.id FROM wakeup_scoped_event e WHERE e.issue_id= $2 AND e.handled_at IS NULL AND (e.retry_at IS NULL OR e.retry_at < $1::timestamptz) FOR UPDATE SKIP LOCKED)
-`
-
-type DeferWakeupScopedEventsOfIssueParams struct {
-	RetryAt pgtype.Timestamptz `json:"retry_at"`
-	IssueID pgtype.UUID        `json:"issue_id"`
-}
-
-// A busy issue's pending inputs wait for @retry_at, so the next claim passes over
-// them and goes on to other work. It never shortens a wait, and a row another
-// scheduler holds is left to that scheduler. Retention is unaffected: the claims
-// still refuse an input captured before the retention cut.
-func (q *Queries) DeferWakeupScopedEventsOfIssue(ctx context.Context, arg DeferWakeupScopedEventsOfIssueParams) error {
-	_, err := q.db.Exec(ctx, deferWakeupScopedEventsOfIssue, arg.RetryAt, arg.IssueID)
 	return err
 }
 
@@ -531,4 +512,59 @@ func (q *Queries) ReplayScopedWakeupEvent(ctx context.Context, arg ReplayScopedW
 		arg.InstanceIds,
 	)
 	return err
+}
+
+const tryLockWakeupIssue = `-- name: TryLockWakeupIssue :one
+SELECT id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id FROM issue WHERE id= $1 FOR NO KEY UPDATE SKIP LOCKED
+`
+
+// The drain's issue lock never waits: a held issue yields no row, and the caller
+// tells it from a deleted one with WakeupIssueExists.
+func (q *Queries) TryLockWakeupIssue(ctx context.Context, id pgtype.UUID) (Issue, error) {
+	row := q.db.QueryRow(ctx, tryLockWakeupIssue, id)
+	var i Issue
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Priority,
+		&i.AssigneeType,
+		&i.AssigneeID,
+		&i.CreatorType,
+		&i.CreatorID,
+		&i.ParentIssueID,
+		&i.AcceptanceCriteria,
+		&i.ContextRefs,
+		&i.Position,
+		&i.DueDate,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Number,
+		&i.ProjectID,
+		&i.OriginType,
+		&i.OriginID,
+		&i.FirstExecutedAt,
+		&i.StartDate,
+		&i.Metadata,
+		&i.Stage,
+		&i.Properties,
+		&i.Revision,
+		&i.LastActivityAt,
+		&i.TriageState,
+		&i.DuplicateOfIssueID,
+	)
+	return i, err
+}
+
+const wakeupIssueExists = `-- name: WakeupIssueExists :one
+SELECT EXISTS(SELECT 1 FROM issue WHERE id= $1)
+`
+
+func (q *Queries) WakeupIssueExists(ctx context.Context, id pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, wakeupIssueExists, id)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
