@@ -311,7 +311,7 @@ func (s *AutopilotService) DispatchAutopilotForWebhookDelivery(
 	}
 	// Webhook worker dispatch has no member actor and no human reason-code
 	// surface, so actorUserID is invalid and the reason code is dropped.
-	dispatched, _, err := s.dispatchAutopilotRun(ctx, autopilot, triggerID, "webhook", run, pgtype.UUID{})
+	dispatched, _, err := s.dispatchAutopilotRun(ctx, autopilot, triggerID, "webhook", run, pgtype.UUID{}, nil)
 	return dispatched, err
 }
 
@@ -570,6 +570,28 @@ func (s *AutopilotService) dispatchAutopilot(
 		run, err := s.recordSkippedRun(ctx, autopilot, triggerID, source, payload, plannedAt, webhookDeliveryID, reason)
 		return run, code, err
 	}
+	var recoveryAttempt *providerFailureRecoveryAttempt
+	if source == "schedule" {
+		scope := providerFailureRecoveryScope{Kind: "autopilot_schedule", TriggerID: triggerID, ConditionKey: providerTriggerConditionKey(payload)}
+		active, activeErr := s.Queries.FindActiveScheduledAutopilotRunForTrigger(ctx, db.FindActiveScheduledAutopilotRunForTriggerParams{
+			TriggerID: scope.TriggerID, ConditionKey: scope.ConditionKey,
+		})
+		if activeErr == nil {
+			return &active, dispatch.ReasonAlreadyActive, nil
+		}
+		if !errors.Is(activeErr, pgx.ErrNoRows) {
+			return nil, dispatch.ReasonInternalError, fmt.Errorf("find active scheduled autopilot run: %w", activeErr)
+		}
+		recoveryAttempt, activeErr = s.TaskSvc.prepareProviderFailureRecovery(ctx, s.Queries, scope)
+		if activeErr != nil {
+			return nil, dispatch.ReasonInternalError, activeErr
+		}
+		if recoveryAttempt != nil && recoveryAttempt.SkipReason != "" {
+			reason := providerFailureCooldownReason(recoveryAttempt)
+			skipped, skipErr := s.recordSkippedRun(ctx, autopilot, triggerID, source, payload, plannedAt, webhookDeliveryID, reason, dispatch.ReasonProviderFailureCooldown)
+			return skipped, dispatch.ReasonProviderFailureCooldown, skipErr
+		}
+	}
 
 	// Determine initial status based on execution mode.
 	initialStatus := "issue_created"
@@ -600,7 +622,7 @@ func (s *AutopilotService) dispatchAutopilot(
 		return &run, dispatch.ReasonCode(run.ReasonCode.String), nil
 	}
 	s.captureAutopilotRunStarted(autopilot, run, source)
-	return s.dispatchAutopilotRun(ctx, autopilot, triggerID, source, &run, actorUserID)
+	return s.dispatchAutopilotRun(ctx, autopilot, triggerID, source, &run, actorUserID, recoveryAttempt)
 }
 
 // dispatchAutopilotRun performs the downstream side effect for an already
@@ -614,11 +636,12 @@ func (s *AutopilotService) dispatchAutopilotRun(
 	source string,
 	run *db.AutopilotRun,
 	actorUserID pgtype.UUID,
+	recoveryAttempt *providerFailureRecoveryAttempt,
 ) (*db.AutopilotRun, dispatch.ReasonCode, error) {
 	switch autopilot.ExecutionMode {
 	case "create_issue":
 		triggerTimezone := s.resolveAutopilotTriggerTimezone(ctx, triggerID)
-		if err := s.dispatchCreateIssue(ctx, autopilot, run, triggerTimezone, actorUserID); err != nil {
+		if err := s.dispatchCreateIssue(ctx, autopilot, run, triggerTimezone, actorUserID, recoveryAttempt); err != nil {
 			if skipped, code := s.handleDispatchSkip(ctx, autopilot, run, err); skipped != nil {
 				return skipped, code, nil
 			}
@@ -627,7 +650,7 @@ func (s *AutopilotService) dispatchAutopilotRun(
 			return run, dispatchFailReasonCode(err), fmt.Errorf("dispatch create_issue: %w", err)
 		}
 	case "run_only":
-		if err := s.dispatchRunOnly(ctx, autopilot, run, actorUserID); err != nil {
+		if err := s.dispatchRunOnly(ctx, autopilot, run, actorUserID, recoveryAttempt); err != nil {
 			if skipped, code := s.handleDispatchSkip(ctx, autopilot, run, err); skipped != nil {
 				return skipped, code, nil
 			}
@@ -682,7 +705,7 @@ func dispatchFailReasonCode(err error) dispatch.ReasonCode {
 // Creator on the issue is always the agent that will actually do the work
 // (the resolved leader for a squad autopilot, otherwise the assignee agent
 // itself), so activity / mentions render with the right author identity.
-func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopilot, run *db.AutopilotRun, triggerTimezone string, actorUserID pgtype.UUID) error {
+func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopilot, run *db.AutopilotRun, triggerTimezone string, actorUserID pgtype.UUID, recoveryAttempts ...*providerFailureRecoveryAttempt) error {
 	leader, _, err := s.resolveAutopilotLeader(ctx, ap)
 	if err != nil {
 		return fmt.Errorf("resolve leader: %w", err)
@@ -796,6 +819,16 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 		return fmt.Errorf("link run to issue: %w", err)
 	}
 	*run = updatedRun
+	if len(recoveryAttempts) > 0 && recoveryAttempts[0] != nil {
+		reserved, reserveErr := s.TaskSvc.reserveProviderFailureRecovery(ctx, qtx, recoveryAttempts[0], run.ID, pgtype.UUID{})
+		if reserveErr != nil {
+			return reserveErr
+		}
+		if !reserved {
+			recoveryAttempts[0].SkipReason = "recovery reservation was already consumed or the failed task is no longer current"
+			return &errDispatchSkipped{reason: providerFailureCooldownReason(recoveryAttempts[0]), code: dispatch.ReasonProviderFailureCooldown}
+		}
+	}
 	if _, err := settleAutopilotQuota(ctx, qtx, run.QuotaReservationID, true); err != nil {
 		return fmt.Errorf("consume quota reservation: %w", err)
 	}
@@ -987,7 +1020,7 @@ func (e *errDispatchSkipped) Error() string { return e.reason }
 // applies also run here as belt-and-braces: if the leader changed between
 // admission and dispatch, or the runtime went offline in the gap, we still
 // fail closed instead of enqueueing a doomed task.
-func (s *AutopilotService) dispatchRunOnly(ctx context.Context, ap db.Autopilot, run *db.AutopilotRun, actorUserID pgtype.UUID) error {
+func (s *AutopilotService) dispatchRunOnly(ctx context.Context, ap db.Autopilot, run *db.AutopilotRun, actorUserID pgtype.UUID, recoveryAttempts ...*providerFailureRecoveryAttempt) error {
 	agent, _, err := s.resolveAutopilotLeader(ctx, ap)
 	if err != nil {
 		// Same admission-vs-failure classification as shouldSkipDispatch:
@@ -1040,7 +1073,21 @@ func (s *AutopilotService) dispatchRunOnly(ctx context.Context, ap db.Autopilot,
 		return &errDispatchSkipped{reason: formatAdmissionReason(ap, "workspace fail-closed: no accountable human for autopilot run"), code: dispatch.ReasonAttributionBlocked}
 	}
 	apSource, _, apEvidenceKind, apEvidenceRef := attributionCreateParams(autopilotAttr)
-	task, err := s.Queries.CreateAutopilotTask(ctx, db.CreateAutopilotTaskParams{
+	queries := s.Queries
+	var tx pgx.Tx
+	var recoveryAttempt *providerFailureRecoveryAttempt
+	if len(recoveryAttempts) > 0 {
+		recoveryAttempt = recoveryAttempts[0]
+	}
+	if recoveryAttempt != nil {
+		tx, err = s.TxStarter.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("begin autopilot recovery dispatch: %w", err)
+		}
+		defer tx.Rollback(ctx)
+		queries = s.Queries.WithTx(tx)
+	}
+	task, err := queries.CreateAutopilotTask(ctx, db.CreateAutopilotTaskParams{
 		ID:             dbid.NewV7(),
 		AgentID:        agent.ID,
 		RuntimeID:      agent.RuntimeID,
@@ -1063,9 +1110,19 @@ func (s *AutopilotService) dispatchRunOnly(ctx context.Context, ap db.Autopilot,
 	if err != nil {
 		return fmt.Errorf("create autopilot task: %w", err)
 	}
+	if recoveryAttempt != nil {
+		reserved, reserveErr := s.TaskSvc.reserveProviderFailureRecovery(ctx, queries, recoveryAttempt, run.ID, pgtype.UUID{})
+		if reserveErr != nil {
+			return reserveErr
+		}
+		if !reserved {
+			recoveryAttempt.SkipReason = "recovery reservation was already consumed or the failed task is no longer current"
+			return &errDispatchSkipped{reason: providerFailureCooldownReason(recoveryAttempt), code: dispatch.ReasonProviderFailureCooldown}
+		}
+	}
 
 	// Update run with task reference.
-	updatedRun, err := s.Queries.UpdateAutopilotRunRunning(ctx, db.UpdateAutopilotRunRunningParams{
+	updatedRun, err := queries.UpdateAutopilotRunRunning(ctx, db.UpdateAutopilotRunRunningParams{
 		ID:     run.ID,
 		TaskID: task.ID,
 	})
@@ -1073,6 +1130,11 @@ func (s *AutopilotService) dispatchRunOnly(ctx context.Context, ap db.Autopilot,
 		slog.Warn("failed to update run with task_id", "run_id", util.UUIDToString(run.ID), "error", err)
 	} else {
 		*run = updatedRun
+	}
+	if tx != nil {
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("commit autopilot recovery dispatch: %w", err)
+		}
 	}
 
 	// Drop the empty-claim cache and wake the daemon. dispatchRunOnly

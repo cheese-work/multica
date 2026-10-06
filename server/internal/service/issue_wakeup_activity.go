@@ -25,6 +25,7 @@ const (
 	wakeupActivityTimedOut   = "wakeup_timed_out"
 	wakeupActivityCheckin    = "wakeup_checkin"
 	wakeupActivityPaused     = "wakeup_paused"
+	wakeupActivitySkipped    = "wakeup_skipped"
 	wakeupPausedLoop         = "loop"
 	wakeupPausedRate         = "rate"
 	wakeupPausedMaxFires     = "max_fires"
