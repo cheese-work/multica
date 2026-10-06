@@ -555,3 +555,42 @@ func TestScopedDrainSteadyStreamDoesNotStarveHeldInputs(t *testing.T) {
 		t.Fatalf("%d held inputs still pending six ticks after their issues were free, with a stream of newer inputs", got)
 	}
 }
+
+// A retention pass touches at most scopedPruneBatch rows of each kind whatever
+// the table holds and whatever the planner knows about it: the bound must not
+// depend on a freshly created table's statistics.
+func TestScopedRetentionPassBoundHoldsAtAnyTableSizeAndStatistics(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		rows    int
+		analyze bool
+	}{
+		{"small_fresh", 250, false},
+		{"small_analyzed", 250, true},
+		{"medium_analyzed", 2000, true},
+		{"large_analyzed", 20000, true},
+		{"large_fresh_statistics", 20000, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			k := newDrainKit(t)
+			ctx := context.Background()
+			old := time.Now().Add(-8 * 24 * time.Hour)
+			k.f.Exec(t, `INSERT INTO wakeup_scoped_event(workspace_id,issue_id,event_type,event_key,payload,captured_at)
+ SELECT $1,$2,'comment.created',gen_random_uuid()::text,'{}'::jsonb,$3 FROM generate_series(1,$4::int)`, k.f.WorkspaceID, k.issue, old, tc.rows)
+			k.f.Exec(t, `INSERT INTO wakeup_scoped_event(workspace_id,issue_id,event_type,event_key,payload,captured_at,handled_at,outcome)
+ SELECT $1,$2,'comment.created',gen_random_uuid()::text,'{}'::jsonb,$3,$3,'delivered' FROM generate_series(1,$4::int)`, k.f.WorkspaceID, k.issue, old, tc.rows)
+			if tc.analyze {
+				k.f.Exec(t, `ANALYZE wakeup_scoped_event`)
+			}
+			if err := k.s.pruneScopedEvents(ctx, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			if got := k.f.Count(t, `SELECT count(*) FROM wakeup_scoped_event WHERE workspace_id=$1 AND outcome='expired'`, k.f.WorkspaceID); got != scopedPruneBatch {
+				t.Fatalf("expired in one pass = %d, want exactly the bound %d", got, scopedPruneBatch)
+			}
+			if got := k.f.Count(t, `SELECT count(*) FROM wakeup_scoped_event WHERE workspace_id=$1 AND outcome='delivered'`, k.f.WorkspaceID); got != tc.rows-scopedPruneBatch {
+				t.Fatalf("handled rows left = %d, want %d: a pass deletes at most %d", got, tc.rows-scopedPruneBatch, scopedPruneBatch)
+			}
+		})
+	}
+}
