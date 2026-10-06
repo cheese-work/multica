@@ -16,18 +16,20 @@ SELECT id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggere
 WHERE trigger_id = $1
   AND source = 'schedule'
   AND status IN ('pending', 'issue_created', 'running')
-  AND COALESCE(trigger_payload->>'head_sha', '') = $2::text
+  AND planned_at = $2::timestamptz
+  AND COALESCE(trigger_payload->>'head_sha', '') = $3::text
 ORDER BY created_at DESC
 LIMIT 1
 `
 
 type FindActiveScheduledAutopilotRunForTriggerParams struct {
-	TriggerID    pgtype.UUID `json:"trigger_id"`
-	ConditionKey string      `json:"condition_key"`
+	TriggerID    pgtype.UUID        `json:"trigger_id"`
+	PlannedAt    pgtype.Timestamptz `json:"planned_at"`
+	ConditionKey string             `json:"condition_key"`
 }
 
 func (q *Queries) FindActiveScheduledAutopilotRunForTrigger(ctx context.Context, arg FindActiveScheduledAutopilotRunForTriggerParams) (AutopilotRun, error) {
-	row := q.db.QueryRow(ctx, findActiveScheduledAutopilotRunForTrigger, arg.TriggerID, arg.ConditionKey)
+	row := q.db.QueryRow(ctx, findActiveScheduledAutopilotRunForTrigger, arg.TriggerID, arg.PlannedAt, arg.ConditionKey)
 	var i AutopilotRun
 	err := row.Scan(
 		&i.ID,

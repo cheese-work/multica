@@ -24,6 +24,7 @@ SELECT * FROM autopilot_run
 WHERE trigger_id = @trigger_id
   AND source = 'schedule'
   AND status IN ('pending', 'issue_created', 'running')
+  AND planned_at = @planned_at::timestamptz
   AND COALESCE(trigger_payload->>'head_sha', '') = @condition_key::text
 ORDER BY created_at DESC
 LIMIT 1;

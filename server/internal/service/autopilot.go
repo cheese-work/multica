@@ -574,7 +574,7 @@ func (s *AutopilotService) dispatchAutopilot(
 	if source == "schedule" {
 		scope := providerFailureRecoveryScope{Kind: "autopilot_schedule", TriggerID: triggerID, ConditionKey: providerTriggerConditionKey(payload)}
 		active, activeErr := s.Queries.FindActiveScheduledAutopilotRunForTrigger(ctx, db.FindActiveScheduledAutopilotRunForTriggerParams{
-			TriggerID: scope.TriggerID, ConditionKey: scope.ConditionKey,
+			TriggerID: scope.TriggerID, ConditionKey: scope.ConditionKey, PlannedAt: plannedAt,
 		})
 		if activeErr == nil {
 			return &active, dispatch.ReasonAlreadyActive, nil
