@@ -1204,6 +1204,33 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 			return commit()
 		}
 	}
+	// A new paid start counts against every aggregate cap that applies. A full
+	// counter delays the instance: its facts stay pending and it is looked at
+	// again when the counter may have room.
+	taskID := dbid.NewV7()
+	if caps := config.aggregateCaps(); len(caps) > 0 {
+		admission, err := admitAggregateStart(ctx, q, aggregateStart{WorkspaceID: issue.WorkspaceID, WakeupID: w.ID, TaskID: taskID, RuleKey: w.SystemRule.String, FactAge: oldestReceiptAge(receipts)}, caps, now)
+		if aggregateCounterBusy(err) {
+			return nil // another start holds the counter; this one is retried on a later pass
+		}
+		if err != nil {
+			return err
+		}
+		if !admission.Admitted {
+			if err := q.MarkWakeupAggregateBlocked(ctx, db.MarkWakeupAggregateBlockedParams{
+				ID: w.ID, ScopeKind: pgtype.Text{String: string(admission.Blocked.Scope), Valid: true}, ScopeID: admission.Blocked.ScopeID,
+				RetryAt: pgtype.Timestamptz{Time: admission.RetryAt, Valid: true},
+			}); err != nil {
+				return err
+			}
+			return commit()
+		}
+	}
+	if w.AggregateRetryAt.Valid {
+		if err := q.ClearWakeupAggregateBlocked(ctx, w.ID); err != nil {
+			return err
+		}
+	}
 	if err := guardIssueNotInTriage(ctx, q, issue.ID, OriginDerived); err != nil {
 		return err
 	}
@@ -1211,7 +1238,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	source, delegatedFrom, _, _ := attributionCreateParams(attr)
 	contextJSON, _ := json.Marshal(map[string]any{"wakeup_id": util.UUIDToString(w.ID), "wakeup_revision": w.Revision, "wakeup_evidence": evidence, "wakeup_system": w.SystemRule.String})
 	task, err = q.CreateWakeupTask(ctx, db.CreateWakeupTaskParams{
-		ID: dbid.NewV7(), AgentID: agent.ID, RuntimeID: agent.RuntimeID, IssueID: issue.ID, Priority: priorityToInt(issue.Priority),
+		ID: taskID, AgentID: agent.ID, RuntimeID: agent.RuntimeID, IssueID: issue.ID, Priority: priorityToInt(issue.Priority),
 		TriggerSummary: pgtype.Text{String: systemWakeupTriggerSummary(w.SystemRule.String), Valid: true}, HandoffNote: pgtype.Text{String: noteText, Valid: true},
 		IsLeaderTask: pgtype.Bool{Bool: current.Type == "squad", Valid: current.Type == "squad"}, SquadID: current.SquadID,
 		OriginatorUserID: attr.UserID, AccountableUserID: attr.AccountableUserID, OriginatorSource: source, DelegatedFromTaskID: delegatedFrom,

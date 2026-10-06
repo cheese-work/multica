@@ -85,8 +85,10 @@ RETURNING *;
 -- A platform rule's instance moves to the configuration it now resolves to. The
 -- revision moves with it, so inputs and queued runs captured under the old
 -- configuration stop matching; identity, fire count, pauses and consumed state
--- stay as they are. An empty fingerprint means no scoped definition applies.
-UPDATE issue_wakeup SET revision=revision+1,config_fingerprint=NULLIF(@fingerprint::text,''),updated_at=clock_timestamp()
+-- stay as they are. An aggregate delay belonged to the old configuration's cap, so
+-- it ends too. An empty fingerprint means no scoped definition applies.
+UPDATE issue_wakeup SET revision=revision+1,config_fingerprint=NULLIF(@fingerprint::text,''),updated_at=clock_timestamp(),
+ aggregate_blocked_scope_kind=NULL,aggregate_blocked_scope_id=NULL,aggregate_retry_at=NULL
 WHERE id= @id AND system_rule IS NOT NULL
 RETURNING *;
 

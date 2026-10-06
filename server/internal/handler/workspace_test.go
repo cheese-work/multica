@@ -308,9 +308,19 @@ VALUES ($1, $2, gen_random_uuid(), gen_random_uuid(), 's3://workspace-delete/sou
 INSERT INTO issue_wakeup_definition (workspace_id, scope_kind, scope_id, rule_key, config)
 VALUES ($1, 'workspace', $1, 'child_done', '{"v":1}')
 `, wsID)
+	dbfx.Exec(t, `
+INSERT INTO wakeup_aggregate_budget (workspace_id, scope_kind, scope_id, rule_key, starts_per_hour)
+VALUES ($1, 'workspace', $1, 'child_done', 12)
+`, wsID)
+	dbfx.Exec(t, `
+INSERT INTO wakeup_aggregate_reservation (workspace_id, scope_kind, scope_id, rule_key, task_id, wakeup_id, reserved_at)
+VALUES ($1, 'workspace', $1, 'child_done', gen_random_uuid(), gen_random_uuid(), now())
+`, wsID)
 
 	t.Cleanup(func() {
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM issue_wakeup_definition WHERE workspace_id = $1`, wsID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM wakeup_aggregate_budget WHERE workspace_id = $1`, wsID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM wakeup_aggregate_reservation WHERE workspace_id = $1`, wsID)
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM task_usage_hourly_dirty WHERE workspace_id = $1`, wsID)
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM task_usage_hourly WHERE workspace_id = $1`, wsID)
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM runtime_profile WHERE id = $1`, runtimeProfileID)
@@ -359,6 +369,8 @@ VALUES ($1, 'workspace', $1, 'child_done', '{"v":1}')
 		"runtime_profile",
 		"autopilot_rule_version",
 		"issue_wakeup_definition",
+		"wakeup_aggregate_budget",
+		"wakeup_aggregate_reservation",
 	} {
 		var count int
 		dbfx.QueryRow(t, `SELECT COUNT(*) FROM `+table+` WHERE workspace_id = $1`, wsID).Scan(&count)
