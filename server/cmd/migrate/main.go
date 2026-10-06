@@ -162,6 +162,7 @@ var concurrentIndexCleanups = map[string]string{
 	"568_issue_child_event_pending":                             "issue_child_event_pending_idx",
 	"579_pr_wakeup_event_identity_index":                        "issue_wakeup_pr_event_identity_idx",
 	"582_wakeup_definition_identity_index":                      "issue_wakeup_definition_identity_idx",
+	"584_wakeup_default_scope_index":                            "issue_wakeup_default_scope_idx",
 	"558_governance_budget_reservation_attempt_obligation_uidx": "governance_budget_reservation_attempt_obligation_uidx",
 	"557_governance_budget_outbox_due_idx":                      "governance_budget_outbox_due_idx",
 	"556_governance_budget_reservation_root_window_idx":         "governance_budget_reservation_root_window_idx",
@@ -405,6 +406,12 @@ var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
 		TableRegclass: "issue_wakeup_definition",
 		Unique:        true,
 		Columns:       []string{"workspace_id", "scope_kind", "scope_id", "rule_key"},
+	},
+	"584_wakeup_default_scope_index": {
+		IndexRegclass: "issue_wakeup_default_scope_idx",
+		TableRegclass: "issue_wakeup",
+		Columns:       []string{"workspace_id", "default_scope_kind", "default_scope_id"},
+		Predicate:     "enabled AND system_rule IS NULL AND default_rule_key IS NOT NULL",
 	},
 	"555_governance_budget_reservation_receipt_idx": {
 		IndexRegclass: "governance_budget_reservation_receipt_uidx",
