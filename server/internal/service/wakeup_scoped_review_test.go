@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -184,9 +185,10 @@ func TestScopedDrainBusyIssueDoesNotStallOtherWork(t *testing.T) {
 		t.Fatal("the oldest locked issue stalled an unrelated workspace in the same pass")
 	}
 	if busy.pending(t) != 1 {
-		t.Fatalf("busy pending = %d, want the locked input left for the next pass", busy.pending(t))
+		t.Fatalf("busy pending = %d, want the locked input left for a later pass", busy.pending(t))
 	}
 	holder.Rollback(ctx)
+	busy.f.Exec(t, `UPDATE wakeup_scoped_event SET retry_at=now()-interval '1 second' WHERE workspace_id=$1`, busy.f.WorkspaceID)
 	busy.drain(t)
 	busy.wantOutcomes(t, "delivered")
 }
@@ -216,4 +218,87 @@ func TestScopedDrainInvalidSettingsIsolateTheirRule(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Busy issues are deferred with a short retry delay, so each pass carries
+// progress past them. Five persistently held issues must not starve healthy work
+// behind them, and their inputs are claimed again once the delay has passed.
+func TestScopedDrainPersistentlyBusyIssuesDoNotStarveHealthyWork(t *testing.T) {
+	const busyIssues = 5
+	ctx := context.Background()
+	var kits []drainKit
+	var scope []pgtype.UUID
+	for range busyIssues {
+		k := newDrainKit(t)
+		k.defineRoot(t, "workspace", k.f.WorkspaceID, scopedRuleA, "comment.created")
+		k.comment(t, "oldest, on a held issue")
+		kits = append(kits, k)
+		scope = append(scope, parseTestUUID(t, k.f.WorkspaceID))
+	}
+	healthy := newDrainKit(t)
+	healthy.defineRoot(t, "workspace", healthy.f.WorkspaceID, scopedRuleA, "comment.created")
+	healthy.comment(t, "newer, in an unrelated workspace")
+	scope = append(scope, parseTestUUID(t, healthy.f.WorkspaceID))
+	var holders []pgx.Tx
+	for _, k := range kits {
+		holder, err := k.f.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer holder.Rollback(ctx)
+		holders = append(holders, holder)
+		if _, err := holder.Exec(ctx, `SELECT 1 FROM issue WHERE id=$1 FOR NO KEY UPDATE`, k.issue); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for pass := 1; pass <= 3 && healthy.pending(t) > 0; pass++ {
+		if err := healthy.s.DrainScopedEvents(ctx, scope...); err != nil {
+			t.Fatalf("pass %d: contention must not surface as an error: %v", pass, err)
+		}
+	}
+	if healthy.pending(t) != 0 {
+		t.Fatal("five held issues starved unrelated work across three passes, with every lock still held")
+	}
+	healthy.wantOutcomes(t, "delivered")
+	for _, k := range kits {
+		if k.pending(t) != 1 {
+			t.Fatalf("a held issue's input must stay pending, got %d", k.pending(t))
+		}
+	}
+
+	// Still held, the busy inputs wait out their delay instead of being claimed
+	// again; once it has passed and the locks are gone they deliver.
+	var delayed int
+	if err := healthy.f.Pool.QueryRow(ctx, `SELECT count(*) FROM wakeup_scoped_event WHERE handled_at IS NULL AND retry_at>now() AND workspace_id=ANY($1)`, scope).Scan(&delayed); err != nil || delayed != busyIssues {
+		t.Fatalf("delayed busy inputs = %d (err %v), want %d", delayed, err, busyIssues)
+	}
+	for _, h := range holders {
+		h.Rollback(ctx)
+	}
+	if err := healthy.s.DrainScopedEvents(ctx, scope...); err != nil {
+		t.Fatal(err)
+	}
+	if got := healthy.f.Count(t, `SELECT count(*) FROM wakeup_scoped_event WHERE handled_at IS NULL AND workspace_id=ANY($1)`, scope); got != busyIssues {
+		t.Fatalf("pending = %d: an input must wait out its delay even when its issue is free", got)
+	}
+	healthy.f.Exec(t, `UPDATE wakeup_scoped_event SET retry_at=now()-interval '1 second' WHERE handled_at IS NULL AND workspace_id=ANY($1)`, scope)
+	if err := healthy.s.DrainScopedEvents(ctx, scope...); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range kits {
+		k.wantOutcomes(t, "delivered")
+	}
+}
+
+// A busy delay never extends retention: an input past seven days expires however
+// recently its issue was found busy.
+func TestScopedBusyDelayDoesNotOutliveRetention(t *testing.T) {
+	k := newDrainKit(t)
+	k.defineRoot(t, "workspace", k.f.WorkspaceID, scopedRuleA, "comment.created")
+	k.comment(t, "held, then too old")
+	k.f.Exec(t, `UPDATE wakeup_scoped_event SET captured_at=now()-interval '8 days',retry_at=now()+interval '1 minute' WHERE workspace_id=$1`, k.f.WorkspaceID)
+	if err := k.s.pruneScopedEvents(context.Background(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	k.wantOutcomes(t, "expired")
 }

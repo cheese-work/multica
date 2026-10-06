@@ -107,8 +107,14 @@ func (s *IssueWakeupService) DrainScopedEvents(ctx context.Context, workspaceIDs
 }
 
 // scopedBusyPerPass bounds how many busy issues one pass waits on, each for the
-// short lock wait, before it leaves the rest to the next pass.
-const scopedBusyPerPass = 5
+// short lock wait. scopedBusyDelay is how long a busy issue's inputs then wait
+// before they are claimed again: progress carries across passes, so the busy
+// issues at the head of the queue cannot hold back the work behind them. It is
+// shorter than the scheduler's cadence, so a freed issue is picked up next tick.
+const (
+	scopedBusyPerPass = 5
+	scopedBusyDelay   = 20 * time.Second
+)
 
 // scopedPass is what one transaction of the drain did. failed names the input a
 // returned error belongs to; busy names the issue another writer held.
@@ -137,6 +143,11 @@ func (s *IssueWakeupService) drainScopedEvents(ctx context.Context, workspaceIDs
 		}
 		pass, err := s.drainOneScopedIssue(ctx, workspaceIDs, now, budget, busy)
 		if scopedLockBusy(err) && pass.busy.Valid {
+			// The issue's inputs wait out a short delay, so this pass and the next
+			// go on to other work. The error, if any, is only for the delay's sake.
+			if deferErr := s.Tasks.Queries.DeferWakeupScopedEventsOfIssue(ctx, db.DeferWakeupScopedEventsOfIssueParams{IssueID: pass.busy, RetryAt: pgtype.Timestamptz{Time: now.Add(scopedBusyDelay), Valid: true}}); deferErr != nil {
+				return errors.Join(append(errs, deferErr)...)
+			}
 			if busy = append(busy, pass.busy); len(busy) >= scopedBusyPerPass {
 				break
 			}
@@ -191,6 +202,8 @@ func (s *IssueWakeupService) drainOneScopedIssue(ctx context.Context, workspaceI
 	if budget > 1 {
 		rest, err := q.ClaimWakeupScopedEventsOfIssue(ctx, db.ClaimWakeupScopedEventsOfIssueParams{IssueID: first[0].IssueID, ExceptID: first[0].ID, Now: stamp, Oldest: oldest, BatchSize: int32(budget - 1)})
 		if err != nil {
+			// A deadlock here is contention on this issue like any other.
+			pass.busy = first[0].IssueID
 			return pass, err
 		}
 		events = append(events, rest...)

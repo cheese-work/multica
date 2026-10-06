@@ -632,6 +632,9 @@ func TestScopedDrainConcurrentSchedulersHandleEachInputOnce(t *testing.T) {
 		// Competing schedulers may lose a lock race; nothing may be lost.
 		t.Logf("drain: %v", err)
 	}
+	// A scheduler that lost a lock race left that issue's inputs waiting out the
+	// short busy delay; let it pass.
+	k.f.Exec(t, `UPDATE wakeup_scoped_event SET retry_at=NULL WHERE workspace_id=$1 AND handled_at IS NULL`, k.f.WorkspaceID)
 	k.drain(t)
 	k.drain(t)
 	if got := k.pending(t); got != 0 {
@@ -810,8 +813,9 @@ func TestScopedDrainAPoisonedInputDoesNotBlockItsIssue(t *testing.T) {
 }
 
 // An issue another writer holds is contention, not a fault: the drain gives up
-// on it quietly after its short lock wait, keeps the input pending with no
-// retry delay and takes it on the next pass.
+// on it quietly after its short lock wait and leaves the input pending with a
+// short retry delay, so the pass goes on to other work. Once the delay has
+// passed and the issue is free the input is delivered.
 func TestScopedDrainWaitsOutAnIssueAnotherWriterHolds(t *testing.T) {
 	k := newDrainKit(t)
 	k.defineRoot(t, "workspace", k.f.WorkspaceID, scopedRuleA, "comment.created")
@@ -832,10 +836,15 @@ func TestScopedDrainWaitsOutAnIssueAnotherWriterHolds(t *testing.T) {
 	if err := k.f.Pool.QueryRow(ctx, `SELECT retry_at FROM wakeup_scoped_event WHERE workspace_id=$1`, k.f.WorkspaceID).Scan(&retry); err != nil {
 		t.Fatal(err)
 	}
-	if retry != nil || k.pending(t) != 1 {
-		t.Fatalf("a busy issue must leave its input pending without a retry delay (retry_at=%v pending=%d)", retry, k.pending(t))
+	if retry == nil || !retry.After(time.Now()) || retry.After(time.Now().Add(scopedBusyDelay+time.Second)) || k.pending(t) != 1 {
+		t.Fatalf("a busy issue's input must stay pending with a short retry delay (retry_at=%v pending=%d)", retry, k.pending(t))
 	}
 	holder.Rollback(ctx)
+	k.drain(t)
+	if k.pending(t) != 1 {
+		t.Fatal("the input must wait out its delay even though the issue is free")
+	}
+	k.f.Exec(t, `UPDATE wakeup_scoped_event SET retry_at=now()-interval '1 second' WHERE workspace_id=$1`, k.f.WorkspaceID)
 	k.drain(t)
 	k.wantOutcomes(t, "delivered")
 }
