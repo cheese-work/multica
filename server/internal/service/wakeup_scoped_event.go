@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -16,7 +17,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
-	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
 // Scoped-event capture and drain (CHE-1082 L9). The ordinary event triggers
@@ -25,9 +25,11 @@ import (
 // project or issue scope (migration 597). The scheduler drains those rows here:
 // it resolves only the event's issue, ensures that issue's runtime instance of
 // each matching rule and delivers the event into the existing wakeup receipts,
-// atomically with marking the input handled. Nothing here defines an event, an
-// instance default or a write path; definitions that select events are written
-// by a later layer, and until then the outbox stays empty.
+// atomically with marking the input handled. The instance runs through the
+// ordinary dispatch (wakeup_custom_exec.go); condition rules also reach issues
+// through the activation sweep (wakeup_custom_sweep.go). Definitions that select
+// events are written through the definition API behind its activation gate, and
+// until a definition exists the outbox stays empty.
 
 const (
 	scopedDrainBatch = 50
@@ -59,30 +61,46 @@ const (
 	scopedOutcomeInstanceOff      = "instance_disabled"
 )
 
-// wakeupEventTriggerSpec is the trigger of an event rule: the event types it
-// selects.
-type wakeupEventTriggerSpec struct {
-	Kind   string   `json:"kind"`
-	Events []string `json:"events"`
+const (
+	wakeupTriggerKindEvent     = "event"
+	wakeupTriggerKindCondition = "condition"
+	// wakeupActivateEvent is the signal an issue gives when it becomes newly
+	// eligible for a condition rule (created, moved into a project, out of
+	// backlog). It is captured like an ordinary event but is not one: no instance
+	// subscribes to it and it is not in the event catalog.
+	wakeupActivateEvent = "issue.activate"
+)
+
+// triggerSpec decodes a stored trigger; ok is false for none, a cleared one
+// and one this build cannot read.
+func triggerSpec(trigger wakeupObject) (spec wakeupTriggerSpec, ok bool) {
+	if !trigger.Set || trigger.Null || decodeWakeupSpec(trigger.Value, &spec) != nil {
+		return spec, false
+	}
+	return spec, true
 }
 
-const wakeupTriggerKindEvent = "event"
-
-// eventTriggerEvents lists the event types an event trigger selects, sorted and
-// unique. A trigger of another kind, a malformed one and an unknown event type
-// select nothing.
+// eventTriggerEvents lists the event types a rule's instances subscribe to,
+// sorted and unique: the selected events of an event trigger, the hint events
+// of a condition. A trigger of another kind, a malformed one and an unknown
+// event type select nothing.
 func eventTriggerEvents(trigger wakeupObject) []string {
-	if !trigger.Set || trigger.Null {
-		return nil
-	}
-	var spec wakeupEventTriggerSpec
-	if decodeWakeupSpec(trigger.Value, &spec) != nil || spec.Kind != wakeupTriggerKindEvent {
+	spec, ok := triggerSpec(trigger)
+	if !ok {
 		return nil
 	}
 	var events []string
-	for _, e := range spec.Events {
-		if slices.Contains(WakeupEventTypes, e) {
-			events = append(events, e)
+	switch spec.Kind {
+	case wakeupTriggerKindEvent:
+		for _, e := range spec.Events {
+			if slices.Contains(WakeupEventTypes, e) {
+				events = append(events, e)
+			}
+		}
+	case wakeupTriggerKindCondition:
+		var c WakeupCondition
+		if json.Unmarshal(spec.Condition, &c) == nil {
+			events = conditionHints(c)
 		}
 	}
 	slices.Sort(events)
@@ -91,10 +109,16 @@ func eventTriggerEvents(trigger wakeupObject) []string {
 
 // WakeupEventSelector is what a stored definition records in its event_types
 // column: the event types its own trigger selects, which the capture trigger
-// probes by index. An override that sets no trigger records none; the root it
-// overrides is probed in its own scope.
+// probes by index, and for a condition the activation signal. An override that
+// sets no trigger records none; the root it overrides is probed in its own
+// scope.
 func WakeupEventSelector(p WakeupConfigPatch) []string {
-	return append([]string{}, eventTriggerEvents(p.Trigger)...)
+	events := append([]string{}, eventTriggerEvents(p.Trigger)...)
+	if spec, ok := triggerSpec(p.Trigger); ok && spec.Kind == wakeupTriggerKindCondition {
+		events = append(events, wakeupActivateEvent)
+		slices.Sort(events)
+	}
+	return events
 }
 
 // DrainScopedEvents handles one bounded pass over the pending outbox inputs of
@@ -328,6 +352,7 @@ func (s *IssueWakeupService) drainOneScopedIssue(ctx context.Context, workspaceI
 	if err := tx.Commit(ctx); err != nil {
 		return pass, err
 	}
+	s.publishWithdrawn(ctx, batch.withdrawn)
 	pass.handled = len(events)
 	return pass, nil
 }
@@ -395,9 +420,11 @@ type scopedRule struct {
 	root        *WakeupDefinition
 	member      pgtype.UUID
 	events      []string
-	ensured     bool
-	instance    db.IssueWakeup
-	reason      string
+	// condition is the normalized predicate of a condition rule, nil for an event rule.
+	condition []byte
+	ensured   bool
+	instance  db.IssueWakeup
+	reason    string
 }
 
 // scopedDefinitionStamp is one stored definition as capture records it:
@@ -432,6 +459,9 @@ type scopedIssueBatch struct {
 	outcome string
 	keys    []string
 	rules   map[string]*scopedRule
+	// withdrawn are the queued runs a configuration change cancelled; they are
+	// announced once the transaction commits.
+	withdrawn []db.AgentTaskQueue
 }
 
 func (s *IssueWakeupService) newScopedIssueBatch(ctx context.Context, tx pgx.Tx, q *db.Queries, first db.WakeupScopedEvent) (*scopedIssueBatch, error) {
@@ -508,7 +538,7 @@ func newScopedRule(issue db.Issue, key string, chain *scopedRuleChain) *scopedRu
 		r.invalid = true
 		return r
 	}
-	r.eff, r.events = eff, eventTriggerEvents(eff.Config.Trigger)
+	r.eff, r.events, r.condition = eff, eventTriggerEvents(eff.Config.Trigger), customCondition(eff.Config.Trigger)
 	// The member who wrote the layer that named the target answers for it; with
 	// no named target, the member who wrote the most specific layer.
 	layer, named := eff.Sources["target"]
@@ -531,6 +561,9 @@ func (b *scopedIssueBatch) resolve(ctx context.Context, ev db.WakeupScopedEvent)
 	// rules never inherit it.
 	if b.issue.ProjectID != ev.ProjectID {
 		return scopedOutcomeScopeChanged, nil
+	}
+	if ev.EventType == wakeupActivateEvent {
+		return b.resolveActivation(ctx)
 	}
 	// One input may reach several rules; one that is refused does not stop the
 	// others. When none is delivered the first reason is recorded.
@@ -575,6 +608,32 @@ func (b *scopedIssueBatch) resolve(ctx context.Context, ev db.WakeupScopedEvent)
 	return scopedOutcomeDelivered, nil
 }
 
+// resolveActivation handles the signal that the issue became eligible for
+// condition rules: each such rule that runs here gets its instance, starting
+// from the facts already true. Nothing is delivered and no run is queued.
+func (b *scopedIssueBatch) resolveActivation(ctx context.Context) (string, error) {
+	served, reason := 0, scopedOutcomeNoRule
+	for _, key := range b.keys {
+		r := b.rules[key]
+		if !r.chain.selects(wakeupActivateEvent) {
+			continue
+		}
+		inst, why, err := b.activate(ctx, r, true)
+		if err != nil {
+			return "", err
+		}
+		if inst.ID.Valid {
+			served++
+		} else if served == 0 {
+			reason = why
+		}
+	}
+	if served == 0 {
+		return reason, nil
+	}
+	return scopedOutcomeDelivered, nil
+}
+
 // deliverable returns the instance an event may be delivered to for one rule,
 // or the reason it may not. Anything the stored configuration gets wrong is a
 // reason; only database failures are errors.
@@ -597,7 +656,7 @@ func (b *scopedIssueBatch) deliverable(ctx context.Context, r *scopedRule, ev db
 	}
 	if !r.ensured {
 		var err error
-		if r.instance, r.reason, err = b.ensure(ctx, r); err != nil {
+		if r.instance, r.reason, err = b.ensure(ctx, r, false); err != nil {
 			return db.IssueWakeup{}, "", err
 		}
 		r.ensured = true
@@ -606,7 +665,9 @@ func (b *scopedIssueBatch) deliverable(ctx context.Context, r *scopedRule, ev db
 }
 
 // ensure resolves the rule's target and ensures the issue's runtime instance.
-func (b *scopedIssueBatch) ensure(ctx context.Context, r *scopedRule) (db.IssueWakeup, string, error) {
+// baseline says a condition rule starts from the facts already true instead of
+// acting on them.
+func (b *scopedIssueBatch) ensure(ctx context.Context, r *scopedRule, baseline bool) (db.IssueWakeup, string, error) {
 	c := r.eff.Config
 	if !c.Instruction.Set || c.Instruction.Value == "" || r.root == nil {
 		return db.IssueWakeup{}, scopedOutcomeNoInstruction, nil
@@ -632,60 +693,7 @@ func (b *scopedIssueBatch) ensure(ctx context.Context, r *scopedRule) (db.IssueW
 	if target.Refused != "" || !target.Agent.ID.Valid || !r.member.Valid {
 		return db.IssueWakeup{}, scopedOutcomeNoTarget, nil
 	}
-	return b.s.ensureScopedInstance(ctx, b.tx, b.q, b.issue, r.key, r.root, r.eff, target, r.member, r.events)
-}
-
-// ensureScopedInstance finds or creates the issue's runtime instance of a rule
-// and brings it to the configuration the rule now resolves to. A new instance
-// is created disabled and enabled through the default capacity guard, so a full
-// pool is a reason, never an error, and never fails the source write.
-func (s *IssueWakeupService) ensureScopedInstance(ctx context.Context, tx pgx.Tx, q *db.Queries, issue db.Issue, rule string, root *WakeupDefinition,
-	eff EffectiveWakeupConfig, target wakeTarget, member pgtype.UUID, events []string) (db.IssueWakeup, string, error) {
-	mode, maxFires := "continuous", pgtype.Int4{}
-	if eff.Config.Mode.Set {
-		mode = eff.Config.Mode.Value
-	}
-	if eff.Config.MaxFires.Set {
-		maxFires = pgtype.Int4{Int32: int32(eff.Config.MaxFires.Value), Valid: true}
-	}
-	existing, err := q.GetDefaultWakeupInstance(ctx, db.GetDefaultWakeupInstanceParams{IssueID: issue.ID, RuleKey: rule})
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		created, err := q.CreateDefaultWakeupInstance(ctx, db.CreateDefaultWakeupInstanceParams{
-			ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AgentID: target.Agent.ID, CreatedBy: member,
-			Instruction: eff.Config.Instruction.Value, Mode: mode, EventTypes: events, MaxFires: maxFires,
-			RuleKey: scopedText(rule), ScopeKind: scopedText(string(root.Scope)), ScopeID: root.ScopeID, Fingerprint: scopedText(eff.Fingerprint),
-		})
-		if err != nil {
-			return db.IssueWakeup{}, "", err
-		}
-		existing = created
-	case err != nil:
-		return db.IssueWakeup{}, "", err
-	case existing.ConfigFingerprint.String != eff.Fingerprint:
-		if existing, err = q.RebaseDefaultWakeupInstance(ctx, db.RebaseDefaultWakeupInstanceParams{
-			ID: existing.ID, AgentID: target.Agent.ID, CreatedBy: member, Instruction: eff.Config.Instruction.Value, Mode: mode,
-			EventTypes: events, MaxFires: maxFires, Fingerprint: scopedText(eff.Fingerprint),
-		}); err != nil {
-			return db.IssueWakeup{}, "", err
-		}
-	}
-	if existing.Enabled {
-		return existing, "", nil
-	}
-	// Disabled by a pause or by a person: nothing a configuration edit lifts. A
-	// default pool that was full is retried, as capacity may have freed.
-	if !existing.CapacityReason.Valid && existing.DisabledAt.Valid || existing.PausedReason.Valid {
-		return db.IssueWakeup{}, scopedOutcomeInstanceOff, nil
-	}
-	admission, err := ApplyDefaultWakeupInstance(ctx, tx, existing.ID)
-	if err != nil {
-		return db.IssueWakeup{}, "", err
-	}
-	if !admission.Applied {
-		return db.IssueWakeup{}, scopedOutcomeCapacity, nil
-	}
-	return existing, "", nil
+	return b.s.ensureScopedInstance(ctx, b, r, target, baseline)
 }
 
 // pruneScopedEvents closes pending inputs past retention with a visible outcome

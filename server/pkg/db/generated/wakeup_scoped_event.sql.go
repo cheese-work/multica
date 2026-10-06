@@ -185,28 +185,36 @@ func (q *Queries) CountWakeupScopedEventsByOutcome(ctx context.Context, workspac
 }
 
 const createDefaultWakeupInstance = `-- name: CreateDefaultWakeupInstance :one
-INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,created_by,instruction,kind,mode,event_types,max_fires,enabled,default_rule_key,default_scope_kind,default_scope_id,config_fingerprint)
-VALUES($1,$2,$3,$4,$5,$6,'event',$7,$8,$9,false,$10,$11,$12,$13)
+INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,created_by,instruction,kind,mode,event_types,max_fires,enabled,default_rule_key,default_scope_kind,default_scope_id,config_fingerprint,
+ condition,condition_state,next_fire_at,expires_at)
+VALUES($1,$2,$3,$4,$5,$6,'event',$7,$8,$9,false,$10,$11,$12,$13,
+ $14::jsonb,$15::text,$16::timestamptz,$17::timestamptz)
 RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at
 `
 
 type CreateDefaultWakeupInstanceParams struct {
-	ID          pgtype.UUID `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	IssueID     pgtype.UUID `json:"issue_id"`
-	AgentID     pgtype.UUID `json:"agent_id"`
-	CreatedBy   pgtype.UUID `json:"created_by"`
-	Instruction string      `json:"instruction"`
-	Mode        string      `json:"mode"`
-	EventTypes  []string    `json:"event_types"`
-	MaxFires    pgtype.Int4 `json:"max_fires"`
-	RuleKey     pgtype.Text `json:"rule_key"`
-	ScopeKind   pgtype.Text `json:"scope_kind"`
-	ScopeID     pgtype.UUID `json:"scope_id"`
-	Fingerprint pgtype.Text `json:"fingerprint"`
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	IssueID        pgtype.UUID        `json:"issue_id"`
+	AgentID        pgtype.UUID        `json:"agent_id"`
+	CreatedBy      pgtype.UUID        `json:"created_by"`
+	Instruction    string             `json:"instruction"`
+	Mode           string             `json:"mode"`
+	EventTypes     []string           `json:"event_types"`
+	MaxFires       pgtype.Int4        `json:"max_fires"`
+	RuleKey        pgtype.Text        `json:"rule_key"`
+	ScopeKind      pgtype.Text        `json:"scope_kind"`
+	ScopeID        pgtype.UUID        `json:"scope_id"`
+	Fingerprint    pgtype.Text        `json:"fingerprint"`
+	Condition      []byte             `json:"condition"`
+	ConditionState string             `json:"condition_state"`
+	NextFireAt     pgtype.Timestamptz `json:"next_fire_at"`
+	ExpiresAt      pgtype.Timestamptz `json:"expires_at"`
 }
 
-// Created disabled: the capacity guard decides on enabling it.
+// Created disabled: the capacity guard decides on enabling it. A condition rule's
+// instance carries its predicate and the facts it starts from (condition_state);
+// it is evaluated by the scheduler from next_fire_at.
 func (q *Queries) CreateDefaultWakeupInstance(ctx context.Context, arg CreateDefaultWakeupInstanceParams) (IssueWakeup, error) {
 	row := q.db.QueryRow(ctx, createDefaultWakeupInstance,
 		arg.ID,
@@ -222,6 +230,10 @@ func (q *Queries) CreateDefaultWakeupInstance(ctx context.Context, arg CreateDef
 		arg.ScopeKind,
 		arg.ScopeID,
 		arg.Fingerprint,
+		arg.Condition,
+		arg.ConditionState,
+		arg.NextFireAt,
+		arg.ExpiresAt,
 	)
 	var i IssueWakeup
 	err := row.Scan(
@@ -435,25 +447,32 @@ func (q *Queries) NewestPendingWakeupScopedEvent(ctx context.Context) (NewestPen
 
 const rebaseDefaultWakeupInstance = `-- name: RebaseDefaultWakeupInstance :one
 UPDATE issue_wakeup SET agent_id= $1,created_by= $2,instruction= $3,mode= $4,event_types= $5,max_fires=$6,
- config_fingerprint= $7,revision=revision+1,updated_at=clock_timestamp()
-WHERE id= $8 AND default_rule_key IS NOT NULL AND system_rule IS NULL
+ condition=$7::jsonb,condition_state= $8::text,next_fire_at=$9::timestamptz,expires_at=$10::timestamptz,
+ config_fingerprint= $11,revision=revision+1,updated_at=clock_timestamp(),
+ aggregate_blocked_scope_kind=NULL,aggregate_blocked_scope_id=NULL,aggregate_retry_at=NULL
+WHERE id= $12 AND default_rule_key IS NOT NULL AND system_rule IS NULL
 RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at
 `
 
 type RebaseDefaultWakeupInstanceParams struct {
-	AgentID     pgtype.UUID `json:"agent_id"`
-	CreatedBy   pgtype.UUID `json:"created_by"`
-	Instruction string      `json:"instruction"`
-	Mode        string      `json:"mode"`
-	EventTypes  []string    `json:"event_types"`
-	MaxFires    pgtype.Int4 `json:"max_fires"`
-	Fingerprint pgtype.Text `json:"fingerprint"`
-	ID          pgtype.UUID `json:"id"`
+	AgentID        pgtype.UUID        `json:"agent_id"`
+	CreatedBy      pgtype.UUID        `json:"created_by"`
+	Instruction    string             `json:"instruction"`
+	Mode           string             `json:"mode"`
+	EventTypes     []string           `json:"event_types"`
+	MaxFires       pgtype.Int4        `json:"max_fires"`
+	Condition      []byte             `json:"condition"`
+	ConditionState string             `json:"condition_state"`
+	NextFireAt     pgtype.Timestamptz `json:"next_fire_at"`
+	ExpiresAt      pgtype.Timestamptz `json:"expires_at"`
+	Fingerprint    pgtype.Text        `json:"fingerprint"`
+	ID             pgtype.UUID        `json:"id"`
 }
 
 // The instance moves to the configuration it now resolves to. The revision
 // moves with it, so inputs captured under the old configuration stop matching;
-// identity, fire count, pauses and consumed state stay as they are.
+// identity, fire count, pauses and consumed state stay as they are. An
+// aggregate delay belonged to the old configuration's cap, so it ends too.
 func (q *Queries) RebaseDefaultWakeupInstance(ctx context.Context, arg RebaseDefaultWakeupInstanceParams) (IssueWakeup, error) {
 	row := q.db.QueryRow(ctx, rebaseDefaultWakeupInstance,
 		arg.AgentID,
@@ -462,6 +481,10 @@ func (q *Queries) RebaseDefaultWakeupInstance(ctx context.Context, arg RebaseDef
 		arg.Mode,
 		arg.EventTypes,
 		arg.MaxFires,
+		arg.Condition,
+		arg.ConditionState,
+		arg.NextFireAt,
+		arg.ExpiresAt,
 		arg.Fingerprint,
 		arg.ID,
 	)

@@ -172,6 +172,9 @@ var concurrentIndexCleanups = map[string]string{
 	"594_wakeup_scoped_event_pending_index":                     "wakeup_scoped_event_pending_idx",
 	"595_wakeup_scoped_event_handled_index":                     "wakeup_scoped_event_handled_idx",
 	"596_wakeup_scoped_event_issue_index":                       "wakeup_scoped_event_issue_idx",
+	"599_wakeup_definition_sweep_index":                         "issue_wakeup_definition_sweep_idx",
+	"600_issue_project_keyset_index":                            "idx_issue_project_id_keyset",
+	"601_wakeup_capacity_held_index":                            "issue_wakeup_capacity_held_idx",
 	"558_governance_budget_reservation_attempt_obligation_uidx": "governance_budget_reservation_attempt_obligation_uidx",
 	"557_governance_budget_outbox_due_idx":                      "governance_budget_outbox_due_idx",
 	"556_governance_budget_reservation_root_window_idx":         "governance_budget_reservation_root_window_idx",
@@ -473,6 +476,23 @@ var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
 		TableRegclass: "wakeup_scoped_event",
 		Columns:       []string{"issue_id", "captured_at", "id"},
 		Predicate:     "handled_at IS NULL",
+	},
+	"599_wakeup_definition_sweep_index": {
+		IndexRegclass: "issue_wakeup_definition_sweep_idx",
+		TableRegclass: "issue_wakeup_definition",
+		Columns:       []string{"updated_at", "rule_key"},
+		Predicate:     "NOT sweep_done OR sweep_revision <> revision",
+	},
+	"600_issue_project_keyset_index": {
+		IndexRegclass: "idx_issue_project_id_keyset",
+		TableRegclass: "issue",
+		Columns:       []string{"project_id", "id"},
+	},
+	"601_wakeup_capacity_held_index": {
+		IndexRegclass: "issue_wakeup_capacity_held_idx",
+		TableRegclass: "issue_wakeup",
+		Columns:       []string{"updated_at", "id"},
+		Predicate:     "capacity_reason IS NOT NULL",
 	},
 	"555_governance_budget_reservation_receipt_idx": {
 		IndexRegclass: "governance_budget_reservation_receipt_uidx",

@@ -13,12 +13,15 @@ import (
 
 const enableDefaultWakeupInstance = `-- name: EnableDefaultWakeupInstance :execrows
 UPDATE issue_wakeup SET enabled=true,disabled_at=NULL,capacity_reason=NULL,
+ next_fire_at=CASE WHEN condition IS NOT NULL THEN clock_timestamp() ELSE next_fire_at END,
  last_error=CASE WHEN capacity_reason IS NOT NULL THEN NULL ELSE last_error END,
  updated_at=clock_timestamp()
 WHERE id= $1 AND default_rule_key IS NOT NULL AND system_rule IS NULL
 `
 
 // Applies a default-derived instance. The capacity guard may refuse it.
+// A condition instance is due for evaluation as soon as it applies: retiring one
+// clears its schedule.
 func (q *Queries) EnableDefaultWakeupInstance(ctx context.Context, id pgtype.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, enableDefaultWakeupInstance, id)
 	if err != nil {

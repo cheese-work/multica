@@ -83,16 +83,23 @@ SELECT capture_issue_wakeup(@issue_id::uuid,@event_type::text,@event_key::text,s
 SELECT * FROM issue_wakeup WHERE issue_id= @issue_id AND default_rule_key= @rule_key::text AND system_rule IS NULL ORDER BY id LIMIT 1;
 
 -- name: CreateDefaultWakeupInstance :one
--- Created disabled: the capacity guard decides on enabling it.
-INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,created_by,instruction,kind,mode,event_types,max_fires,enabled,default_rule_key,default_scope_kind,default_scope_id,config_fingerprint)
-VALUES(@id,@workspace_id,@issue_id,@agent_id,@created_by,@instruction,'event',@mode,@event_types,sqlc.narg(max_fires),false,@rule_key,@scope_kind,@scope_id,@fingerprint)
+-- Created disabled: the capacity guard decides on enabling it. A condition rule's
+-- instance carries its predicate and the facts it starts from (condition_state);
+-- it is evaluated by the scheduler from next_fire_at.
+INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,created_by,instruction,kind,mode,event_types,max_fires,enabled,default_rule_key,default_scope_kind,default_scope_id,config_fingerprint,
+ condition,condition_state,next_fire_at,expires_at)
+VALUES(@id,@workspace_id,@issue_id,@agent_id,@created_by,@instruction,'event',@mode,@event_types,sqlc.narg(max_fires),false,@rule_key,@scope_kind,@scope_id,@fingerprint,
+ sqlc.narg(condition)::jsonb,@condition_state::text,sqlc.narg(next_fire_at)::timestamptz,sqlc.narg(expires_at)::timestamptz)
 RETURNING *;
 
 -- name: RebaseDefaultWakeupInstance :one
 -- The instance moves to the configuration it now resolves to. The revision
 -- moves with it, so inputs captured under the old configuration stop matching;
--- identity, fire count, pauses and consumed state stay as they are.
+-- identity, fire count, pauses and consumed state stay as they are. An
+-- aggregate delay belonged to the old configuration's cap, so it ends too.
 UPDATE issue_wakeup SET agent_id= @agent_id,created_by= @created_by,instruction= @instruction,mode= @mode,event_types= @event_types,max_fires=sqlc.narg(max_fires),
- config_fingerprint= @fingerprint,revision=revision+1,updated_at=clock_timestamp()
+ condition=sqlc.narg(condition)::jsonb,condition_state= @condition_state::text,next_fire_at=sqlc.narg(next_fire_at)::timestamptz,expires_at=sqlc.narg(expires_at)::timestamptz,
+ config_fingerprint= @fingerprint,revision=revision+1,updated_at=clock_timestamp(),
+ aggregate_blocked_scope_kind=NULL,aggregate_blocked_scope_id=NULL,aggregate_retry_at=NULL
 WHERE id= @id AND default_rule_key IS NOT NULL AND system_rule IS NULL
 RETURNING *;

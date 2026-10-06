@@ -77,6 +77,9 @@ type WakeupDefinitionWrite struct {
 type WakeupEffectiveRule struct {
 	EffectiveWakeupConfig
 	Overrides []string
+	// AlreadySatisfied is set on the preview of a condition rule: what enabling
+	// it would meet at once.
+	AlreadySatisfied *WakeupSatisfiedPreview
 }
 
 func wakeupDefinitionView(row db.IssueWakeupDefinition) (WakeupDefinitionView, error) {
@@ -221,6 +224,7 @@ func (s *IssueWakeupService) SaveWakeupDefinition(ctx context.Context, ref Wakeu
 	normalizeWakeupPatch(&patch)
 	if create {
 		withRootAggregateDefault(&patch)
+		withRootFireDefault(&patch)
 	}
 	if err := checkWakeupAggregateScope(ref.Kind, patch); err != nil {
 		return WakeupDefinitionView{}, err
@@ -239,6 +243,9 @@ func (s *IssueWakeupService) SaveWakeupDefinition(ctx context.Context, ref Wakeu
 	defer tx.Rollback(ctx)
 	q := s.Tasks.Queries.WithTx(tx)
 	if err := q.LockWakeupDefinitionScope(ctx, ref.lockKey()); err != nil {
+		return WakeupDefinitionView{}, err
+	}
+	if err := normalizeWakeupConditionTrigger(ctx, tx, ref.WorkspaceID, &patch); err != nil {
 		return WakeupDefinitionView{}, err
 	}
 	if aliased {
@@ -593,12 +600,16 @@ func (s *IssueWakeupService) EffectiveWakeupRule(ctx context.Context, ref Wakeup
 		normalizeWakeupPatch(&patch)
 		if newRoot {
 			withRootAggregateDefault(&patch)
+			withRootFireDefault(&patch)
 		}
 		if err := checkWakeupAggregateScope(ref.Kind, patch); err != nil {
 			return WakeupEffectiveRule{}, err
 		}
 		refs, err := validateWakeupPatch(ruleKey, patch, time.Now())
 		if err != nil {
+			return WakeupEffectiveRule{}, err
+		}
+		if err := s.normalizeConditionTriggerReadOnly(ctx, ref.WorkspaceID, &patch); err != nil {
 			return WakeupEffectiveRule{}, err
 		}
 		if err := s.authorizeWakeupRefs(ctx, q, ref.WorkspaceID, member, refs); err != nil {
@@ -622,7 +633,11 @@ func (s *IssueWakeupService) EffectiveWakeupRule(ctx context.Context, ref Wakeup
 		if err := s.authorizeResolvedTarget(ctx, q, ref.WorkspaceID, member, eff); err != nil {
 			return WakeupEffectiveRule{}, err
 		}
-		return WakeupEffectiveRule{EffectiveWakeupConfig: eff, Overrides: overriddenWakeupFields(in, ref, candidate)}, nil
+		satisfied, err := s.previewSatisfied(ctx, ref, eff.Config.Trigger)
+		if err != nil {
+			return WakeupEffectiveRule{}, err
+		}
+		return WakeupEffectiveRule{EffectiveWakeupConfig: eff, Overrides: overriddenWakeupFields(in, ref, candidate), AlreadySatisfied: satisfied}, nil
 	}
 	eff, err := ResolveWakeupConfig(in)
 	if err != nil {

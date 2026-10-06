@@ -681,10 +681,14 @@ func systemWakeupFacts(w db.IssueWakeup, receipts []db.IssueWakeupReceipt) map[s
 	if w.SystemRule.String == SystemRuleChildDone {
 		return childDoneFacts(receipts)
 	}
-	facts := map[string]any{"rule": w.SystemRule.String}
+	rule := w.SystemRule.String
+	if !w.SystemRule.Valid {
+		rule = w.DefaultRuleKey.String
+	}
+	facts := map[string]any{"rule": rule}
 	for i := len(receipts) - 1; i >= 0; i-- {
 		if err := json.Unmarshal(receipts[i].Payload, &facts); err == nil {
-			facts["rule"] = w.SystemRule.String
+			facts["rule"] = rule
 			return facts
 		}
 	}

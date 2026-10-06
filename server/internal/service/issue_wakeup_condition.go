@@ -59,6 +59,25 @@ func badCondition(msg string) error {
 	return fmt.Errorf("%w: %w: %s", ErrWakeupInput, errBadCondition, msg)
 }
 
+// conditionHints are the same-issue events that should trigger an early
+// evaluation of a normalized condition; the rest is polled.
+func conditionHints(c WakeupCondition) []string {
+	if c.Type != "issue_field" {
+		return nil
+	}
+	switch c.Field {
+	case "status":
+		return []string{"issue.status_changed"}
+	case "assignee":
+		return []string{"issue.assignee_changed"}
+	case "label":
+		return []string{"issue.labels_changed"}
+	case "property":
+		return []string{"issue.properties_changed"}
+	}
+	return nil
+}
+
 // validateCondition normalizes a condition against the issue's workspace and
 // returns the same-issue events that should trigger an early evaluation.
 func validateCondition(ctx context.Context, tx pgx.Tx, issue db.Issue, raw json.RawMessage) (json.RawMessage, []string, error) {
@@ -81,7 +100,6 @@ func validateCondition(ctx context.Context, tx pgx.Tx, issue db.Issue, raw json.
 		}
 		return id, nil
 	}
-	var events []string
 	var out WakeupCondition
 	switch c.Type {
 	case "issue_field":
@@ -102,7 +120,6 @@ func validateCondition(ctx context.Context, tx pgx.Tx, issue db.Issue, raw json.
 				}
 			}
 			out.Value, _ = json.Marshal(status)
-			events = []string{"issue.status_changed"}
 		case "assignee":
 			id, err := uuidArg(c.AssigneeID, "assignee_id")
 			if err != nil {
@@ -126,7 +143,6 @@ func validateCondition(ctx context.Context, tx pgx.Tx, issue db.Issue, raw json.
 				return nil, nil, badCondition("unknown assignee")
 			}
 			out.AssigneeType, out.AssigneeID = c.AssigneeType, util.UUIDToString(id)
-			events = []string{"issue.assignee_changed"}
 		case "label":
 			id, err := uuidArg(c.LabelID, "label_id")
 			if err != nil {
@@ -140,7 +156,6 @@ func validateCondition(ctx context.Context, tx pgx.Tx, issue db.Issue, raw json.
 				return nil, nil, badCondition("unknown label")
 			}
 			out.LabelID = util.UUIDToString(id)
-			events = []string{"issue.labels_changed"}
 		case "property":
 			id, err := uuidArg(c.PropertyID, "property_id")
 			if err != nil {
@@ -158,7 +173,6 @@ func validateCondition(ctx context.Context, tx pgx.Tx, issue db.Issue, raw json.
 				return nil, nil, badCondition("property value must be a JSON value within 1 KB")
 			}
 			out.PropertyID, out.Value = util.UUIDToString(id), value
-			events = []string{"issue.properties_changed"}
 		default:
 			return nil, nil, badCondition("field must be status, assignee, label or property")
 		}
@@ -199,7 +213,7 @@ func validateCondition(ctx context.Context, tx pgx.Tx, issue db.Issue, raw json.
 		return nil, nil, badCondition("type must be issue_field, children_done, pull_request or other_issue")
 	}
 	normalized, _ := json.Marshal(out)
-	return normalized, events, nil
+	return normalized, conditionHints(out), nil
 }
 
 // evaluateCondition reports whether the predicate holds, a fingerprint of the

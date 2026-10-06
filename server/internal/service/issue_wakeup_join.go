@@ -376,6 +376,12 @@ func (s *IssueWakeupService) reserveForRun(ctx context.Context, q *db.Queries, i
 			return nil, nil, err
 		}
 		fireLimit, _ = config.fireLimit()
+	} else if isDefaultDerivedWakeup(w) {
+		config, ok, err := s.customCurrent(ctx, q, issue, w)
+		if err != nil || !ok {
+			return nil, nil, err
+		}
+		fireLimit, _ = config.fireLimit()
 	}
 	return &joinedWakeup{WakeupID: util.UUIDToString(w.ID), Revision: w.Revision, Note: joinedWakeupNote(w, instruction, receipts), FireLimit: fireLimit}, chain, nil
 }
@@ -399,8 +405,10 @@ func (s *IssueWakeupService) mayJoin(ctx context.Context, q *db.Queries, issue d
 		if w.AgentID != task.AgentID || w.CreatedBy != task.OriginatorUserID || (w.Mode == "once" && w.LastTaskID.Valid) {
 			return "", false, nil
 		}
-		if defaultDerivedHeld(ctx, issue, w) {
-			return "", false, nil
+		if isDefaultDerivedWakeup(w) {
+			if ok, err := s.customMayJoin(ctx, q, issue, task, w, carrier); err != nil || !ok {
+				return "", false, err
+			}
 		}
 		if err := s.authorize(ctx, q, w.WorkspaceID, w.CreatedBy, agent); err != nil {
 			if errors.Is(err, ErrWakeupForbidden) {

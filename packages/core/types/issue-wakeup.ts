@@ -280,6 +280,8 @@ export interface WakeupEffectiveRule {
   aggregate_caps: { scope: string; scope_id: string; limit: number }[];
   fingerprint: string;
   execution: { instance_id: string; enabled: boolean; paused_reason: string | null } | null;
+  /** On the preview of a condition rule: what enabling it would meet at once. */
+  already_satisfied: { satisfied: number; examined: number; truncated: boolean } | null;
   redacted: boolean;
   capabilities: WakeupCapabilities;
 }

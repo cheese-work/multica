@@ -106,9 +106,10 @@ func TestBuiltinBackfilledDefinitionRunsLikeTheLegacyRow(t *testing.T) {
 }
 
 // A default-derived runtime row has no system rule, so only its origin metadata
-// tells it from a local wakeup. Custom rules execute from a later layer, so
-// dispatch, claim and join all hold it.
-func TestBuiltinDefaultDerivedInstancesStayHeld(t *testing.T) {
+// tells it from a local wakeup. Its rule decides what it runs; with no
+// definition left for it (here, none was ever stored) it rests: dispatch retires
+// it and drops its inputs, and claim and join refuse it.
+func TestBuiltinDefaultDerivedInstancesWithoutARuleRest(t *testing.T) {
 	custom := "7f1d6a2e-3b44-4d8e-9a55-0c6b1f2e8d10"
 	mark := func(t *testing.T, f principalFixture, id pgtype.UUID) {
 		t.Helper()
@@ -130,8 +131,8 @@ func TestBuiltinDefaultDerivedInstancesStayHeld(t *testing.T) {
 		mark(t, f, w.ID)
 		f.Comment(t, util.UUIDToString(issue), "input")
 		wakeTick(t, f, s, w.ID)
-		if n := wakeRuns(t, f, w.ID); n != 0 || pendingOf(t, f, w) != 1 {
-			t.Fatalf("default-derived instance: %d runs, %d pending; want 0 and 1", n, pendingOf(t, f, w))
+		if n := wakeRuns(t, f, w.ID); n != 0 || pendingOf(t, f, w) != 0 || f.Count(t, `SELECT count(*) FROM issue_wakeup WHERE id=$1 AND NOT enabled`, w.ID) != 1 {
+			t.Fatalf("default-derived instance: %d runs, %d pending; want it retired with 0 and 0", n, pendingOf(t, f, w))
 		}
 	})
 	t.Run("claim", func(t *testing.T) {
@@ -160,7 +161,7 @@ func TestBuiltinDefaultDerivedInstancesStayHeld(t *testing.T) {
 		waiting := wakeWaitingRun(t, f, issue, agent, f.UserID)
 		f.Comment(t, util.UUIDToString(issue), "input")
 		wakeTick(t, f, s, w.ID)
-		if notes := wakeClaim(t, f, s, waiting); notes != "" || pendingOf(t, f, w) != 1 {
+		if notes := wakeClaim(t, f, s, waiting); notes != "" {
 			t.Fatalf("default-derived instance joined the claim: %q (%d pending)", notes, pendingOf(t, f, w))
 		}
 	})
