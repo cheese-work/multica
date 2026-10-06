@@ -5,16 +5,23 @@
 -- is past retention: it is never claimed, so it can only expire, and neither the
 -- size of an expired backlog nor the order of the prune can make it deliver.
 -- @skip_issues are the issues this pass found busy. The scan starts after
--- (@after_at, @after_id), the drain's fair position: a pass that finds busy
--- issues moves it past them, so the next pass reaches the work behind them, and
--- an empty scan wraps it to the start, so every input is reached in turn.
+-- (@after_at, @after_id), the drain's fair position, and stops at the sweep's
+-- horizon (@until_at, @until_id): a pass moves the position past what it tried,
+-- so the next pass reaches the work behind it, and a sweep ends at its horizon,
+-- so inputs that arrive during it wait for the next sweep instead of extending
+-- it, and every older input is reached again.
 SELECT * FROM wakeup_scoped_event
 WHERE handled_at IS NULL AND captured_at >= @oldest::timestamptz AND (retry_at IS NULL OR retry_at <= @now::timestamptz)
  AND (captured_at, id) > (@after_at::timestamptz, @after_id::uuid)
+ AND (captured_at, id) <= (@until_at::timestamptz, @until_id::uuid)
  AND (sqlc.narg(workspace_ids)::uuid[] IS NULL OR workspace_id = ANY(sqlc.narg(workspace_ids)::uuid[]))
- AND issue_id <> ALL(@skip_issues::uuid[])
+ AND issue_id <> ALL(COALESCE(@skip_issues::uuid[], '{}'::uuid[]))
 ORDER BY captured_at, id LIMIT @batch_size
 FOR UPDATE SKIP LOCKED;
+
+-- name: NewestPendingWakeupScopedEvent :one
+-- The newest pending input: the horizon of a new sweep.
+SELECT captured_at,id FROM wakeup_scoped_event WHERE handled_at IS NULL ORDER BY captured_at DESC,id DESC LIMIT 1;
 
 -- name: ClaimWakeupScopedEventsOfIssue :many
 -- The rest of one issue's pending inputs, so a burst on one issue is resolved
