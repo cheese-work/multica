@@ -284,7 +284,7 @@ func (h *Handler) finalizeClaimDeliveryForTestWithRuntime(
 	if terr != nil {
 		return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, nil, fmt.Errorf("generate token: %w", terr)
 	}
-	remoteMCPToken, daemonTokens, derr := remoteMCPDaemonTokenForClaim(resp, runtime)
+	remoteMCPToken, daemonTokens, derr := daemonTokenForClaim(resp, runtime, testHandler.TaskGateway.Requires(uuidToString(runtime.ID)))
 	if derr != nil {
 		return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, nil, fmt.Errorf("remote mcp token: %w", derr)
 	}
@@ -305,7 +305,7 @@ func (h *Handler) finalizeClaimDeliveryForTestWithRuntime(
 		return AgentTaskResponse{}, deliveredCommentIDs, agentSkillCount, builtinSkillCount, deliveryFailure, nil
 	}
 	resp.AuthToken = tokenStr
-	resp.RemoteMCPDaemonToken = remoteMCPToken
+	setClaimDaemonTokens(&resp, remoteMCPToken)
 	resp.DeliveredCommentIDs = uuidStringsOrEmpty(receipt)
 	return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, nil, nil
 }

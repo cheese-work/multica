@@ -1878,7 +1878,7 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 			}
 			continue
 		}
-		remoteMCPToken, daemonTokens, derr := remoteMCPDaemonTokenForClaim(resp, rt)
+		remoteMCPToken, daemonTokens, derr := daemonTokenForClaim(resp, rt, h.TaskGateway.Requires(uuidToString(rt.ID)))
 		if derr != nil {
 			slog.Error("batch claim: generate Remote MCP daemon token failed; requeueing claim",
 				"task_id", uuidToString(task.ID), "error", derr)
@@ -1923,7 +1923,7 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		resp.AuthToken = tokenStr
-		resp.RemoteMCPDaemonToken = remoteMCPToken
+		setClaimDaemonTokens(&resp, remoteMCPToken)
 		resp.DeliveredCommentIDs = uuidStringsOrEmpty(receipt)
 		out = append(out, resp)
 	}
@@ -2057,6 +2057,9 @@ func (h *Handler) finalizeClaimDelivery(
 		tokenParams.UserID = locked.OwnerID
 		if h.applyTaskGatewayClaimPolicy(*task, locked, uuidToString(tokenParams.WorkspaceID), response, capabilities) != nil {
 			return &service.ClaimDeliveryAuthzError{Reason: "error_task_gateway_unavailable", Detail: "trusted task gateway claim admission refused"}
+		}
+		if response != nil && response.RequireCredentialIsolation && (len(daemonTokens) != 1 || !locked.DaemonID.Valid || locked.DaemonID.String == "" || daemonTokens[0].DaemonID != locked.DaemonID.String || daemonTokens[0].WorkspaceID != locked.WorkspaceID) {
+			return &service.ClaimDeliveryAuthzError{Reason: "error_task_gateway_unavailable", Detail: "trusted task gateway daemon identity changed"}
 		}
 		return nil
 	}
@@ -2224,12 +2227,8 @@ func (h *Handler) rejectClaimOnWorkspaceMismatch(ctx context.Context, task *db.A
 	}
 }
 
-// remoteMCPDaemonTokenForClaim prepares the short-lived credential the daemon
-// uses to resolve write-only Remote MCP secrets for this task. The raw token is
-// returned only in the claim response; its hash is committed atomically with
-// the task-scoped agent token by FinalizeTaskClaim.
-func remoteMCPDaemonTokenForClaim(resp AgentTaskResponse, runtime db.AgentRuntime) (string, []db.CreateDaemonTokenParams, error) {
-	if len(resp.RemoteMCPConnections) == 0 {
+func daemonTokenForClaim(resp AgentTaskResponse, runtime db.AgentRuntime, gatewayRequired bool) (string, []db.CreateDaemonTokenParams, error) {
+	if len(resp.RemoteMCPConnections) == 0 && !gatewayRequired {
 		return "", nil, nil
 	}
 	if !runtime.DaemonID.Valid || strings.TrimSpace(runtime.DaemonID.String) == "" {
@@ -2245,6 +2244,17 @@ func remoteMCPDaemonTokenForClaim(resp AgentTaskResponse, runtime db.AgentRuntim
 		DaemonID:    runtime.DaemonID.String,
 		ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(24 * time.Hour), Valid: true},
 	}}, nil
+}
+
+func setClaimDaemonTokens(response *AgentTaskResponse, raw string) {
+	response.RemoteMCPDaemonToken = ""
+	response.TaskGatewayDaemonToken = ""
+	if len(response.RemoteMCPConnections) != 0 {
+		response.RemoteMCPDaemonToken = raw
+	}
+	if response.RequireCredentialIsolation {
+		response.TaskGatewayDaemonToken = raw
+	}
 }
 
 // failClaimedTaskBeforeLaunch settles a durable claim-time rejection before
@@ -3885,7 +3895,7 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to mint task token")
 		return
 	}
-	remoteMCPToken, daemonTokens, derr := remoteMCPDaemonTokenForClaim(resp, runtime)
+	remoteMCPToken, daemonTokens, derr := daemonTokenForClaim(resp, runtime, h.TaskGateway.Requires(uuidToString(runtime.ID)))
 	if derr != nil {
 		outcome = "error_remote_mcp_token"
 		slog.Error("task claim: failed to generate Remote MCP daemon token",
@@ -3930,7 +3940,7 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp.AuthToken = tokenStr
-	resp.RemoteMCPDaemonToken = remoteMCPToken
+	setClaimDaemonTokens(&resp, remoteMCPToken)
 	task.DeliveredCommentIds = receipt
 	resp.DeliveredCommentIDs = uuidStringsOrEmpty(receipt)
 

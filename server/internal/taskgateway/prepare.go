@@ -10,11 +10,20 @@ func (operator *Provisioner) Prepare(ctx context.Context, runtimeID string, spec
 	if _, err := operator.Authorize(runtimeID, spec.Provider, spec.Binding); err != nil {
 		return nil, ErrUnavailable
 	}
+	return PrepareHandoff(ctx, spec, func(ctx context.Context) (Grant, error) {
+		return operator.Provision(ctx, runtimeID, spec.Provider, spec.Binding)
+	})
+}
+
+func PrepareHandoff(ctx context.Context, spec credentialexec.Spec, fetch func(context.Context) (Grant, error)) (*credentialexec.Boundary, error) {
+	if fetch == nil {
+		return nil, ErrUnavailable
+	}
 	boundary, err := credentialexec.Prepare(ctx, spec)
 	if err != nil {
 		return nil, ErrUnavailable
 	}
-	grant, err := operator.Provision(ctx, runtimeID, spec.Provider, spec.Binding)
+	grant, err := fetch(ctx)
 	if err == nil {
 		err = boundary.BindGateway(ctx, credentialexec.GatewayCredential{Binding: grant.Binding, BaseURL: grant.BaseURL, Key: grant.Key})
 	}

@@ -105,8 +105,42 @@ old-daemon capabilities, protected-task movement and exact authenticated identit
 The handler's pure claim-policy seam runs without a database using the production handler sources.
 That unit check is not a real transactional database claim test.
 
-The remaining integration must deliver grants only to the authenticated owning daemon,
-prepare before provisioning and wire the prepared broker to launch/resume.
+## Authenticated daemon handoff source
+
+`POST /api/daemon/runtimes/{runtimeId}/tasks/{taskId}/gateway-grant` requires an existing
+`mdt_` daemon credential, not a PAT, JWT or native task token in the authorization header.
+Its bounded JSON body carries the existing committed `mat_` task token and exact `dispatched_at`.
+Protected claim delivery atomically commits a daemon-token hash alongside the task-token hash.
+Only the daemon receives `task_gateway_daemon_token`; neither that credential nor the operator
+credential is native-child configuration.
+
+The handoff locks runtime, exact task claim, agent and task token in that order before provisioning.
+The authenticated daemon/workspace, locked runtime owner, agent binding, task-token purpose/expiry,
+frozen policy and capability must agree. Only dispatched or running same-task claims are supported.
+Token revocation, reclaim and identity changes cannot race those locked rows during provisioning.
+Authorization and expiry are checked again before commit. A failed commit returns no credential.
+The trusted operator's effects are not refunded or reset if subsequent delivery fails.
+The explicit response is non-cacheable and contains only the task binding, fixed gateway origin
+and selected task key. Ordinary `Grant` JSON and formatting still redact the key.
+
+`Client.PrepareTaskGateway` validates the authenticated claim and fixed server origin, prepares the
+actual OS boundary, then requests and binds the grant. No preparation error reaches the handoff.
+The request uses a dedicated bounded HTTP client with no proxy, redirect, retry or error-body echo.
+HTTP 429 and unsupported responses refuse without another request or unlimited fallback.
+Malformed, duplicate, oversized, unknown-field and mismatched-binding handoffs refuse.
+Failed fetch/bind closes synchronously; successful callers own `Boundary.Close`.
+The caller must supply the trusted private root and pinned executable/helper, not task input.
+The trusted owning daemon is outside the attacker boundary; this endpoint does not remotely attest
+OS preparation by a compromised daemon.
+
+Owned row fixtures execute the production handler and verify query identity, authorization locks,
+provisioning order, rollback and commit refusal. They do not execute PostgreSQL transactions.
+Owned HTTP/ELF fixtures verify daemon preparation order, broker binding, same-task state and refusal.
+No installed native agent or real provider is invoked.
+
+The new helper is not wired into `runTask`. The current daemon still refuses before preparation
+and does not advertise `task-gateway-v1`; this source activates no live policy or task launch.
+The remaining integration must wire the prepared broker to daemon launch/resume.
 The integration must stage only authorized task input and support credential-exclusive task tooling.
 The native transport and hard-429/no-fallback contract must pass at both production adapter launch/resume seams.
 Until that complete trusted handoff exists, the daemon's current early refusal must remain.
