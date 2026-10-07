@@ -31,6 +31,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/agent"
+	"github.com/multica-ai/multica/server/pkg/credentialexec"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -2011,6 +2012,7 @@ func (h *Handler) finalizeClaimDelivery(
 			// can never leak stale user context to the daemon.
 			response.RequestingUserName = ""
 			response.RequestingUserProfileDescription = ""
+			response.CredentialExecutionBinding = nil
 		}
 		agent, aerr := qtx.GetAgentForUpdate(ctx, task.AgentID)
 		if aerr != nil {
@@ -2050,6 +2052,9 @@ func (h *Handler) finalizeClaimDelivery(
 		// its current owner as the task-token identity rather than the stale
 		// claim-time snapshot captured by the caller.
 		tokenParams.UserID = locked.OwnerID
+		if response != nil {
+			response.CredentialExecutionBinding = credentialExecutionBindingForClaim(*task, locked, response.WorkspaceID)
+		}
 		return nil
 	}
 
@@ -2331,6 +2336,17 @@ func applyFreshSessionRetryWorkdir(task db.AgentTaskQueue, resp *AgentTaskRespon
 
 func claimResponseAgentIdentityMatches(resp AgentTaskResponse) bool {
 	return resp.AgentID != "" && resp.Agent != nil && resp.Agent.ID == resp.AgentID
+}
+
+func credentialExecutionBindingForClaim(task db.AgentTaskQueue, runtime db.AgentRuntime, workspaceID string) *credentialexec.Binding {
+	if !runtime.OwnerID.Valid {
+		return nil
+	}
+	binding := credentialexec.Binding{TaskID: uuidToString(task.ID), OwnerID: uuidToString(runtime.OwnerID), WorkspaceID: workspaceID}
+	if binding.Validate() != nil {
+		return nil
+	}
+	return &binding
 }
 
 // buildClaimedTaskResponse assembles the full daemon claim payload for a

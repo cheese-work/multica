@@ -7676,6 +7676,12 @@ func qualifyTaskModel(
 }
 
 func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot int, taskLog *slog.Logger) (taskResult TaskResult, returnErr error) {
+	if task.RequireCredentialIsolation {
+		if task.CredentialExecutionBinding == nil || task.CredentialExecutionBinding.Validate() != nil || task.CredentialExecutionBinding.TaskID != task.ID || task.CredentialExecutionBinding.WorkspaceID != task.WorkspaceID {
+			return TaskResult{}, fmt.Errorf("credential execution boundary unavailable: missing authenticated task/owner binding")
+		}
+		return TaskResult{}, fmt.Errorf("credential execution boundary unavailable: trusted task gateway handoff is not integrated")
+	}
 	phaseRecorder := taskPhaseRecorderFromContext(ctx)
 	phaseRecorder.Mark(taskPhasePrepareStarted)
 	// A claim carries the task-row agent id both at the top level and inside

@@ -27,6 +27,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/agent"
+	"github.com/multica-ai/multica/server/pkg/credentialexec"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
@@ -358,9 +359,11 @@ type TaskCancellationActor struct {
 }
 
 type AgentTaskResponse struct {
-	StartClaimSupported      bool                   `json:"start_claim_supported,omitempty"`
-	CancelledByCommentChange bool                   `json:"cancelled_by_comment_change,omitempty"`
-	CancelledBy              *TaskCancellationActor `json:"cancelled_by,omitempty"`
+	RequireCredentialIsolation bool                    `json:"require_credential_isolation,omitempty"`
+	CredentialExecutionBinding *credentialexec.Binding `json:"credential_execution_binding,omitempty"`
+	StartClaimSupported        bool                    `json:"start_claim_supported,omitempty"`
+	CancelledByCommentChange   bool                    `json:"cancelled_by_comment_change,omitempty"`
+	CancelledBy                *TaskCancellationActor  `json:"cancelled_by,omitempty"`
 
 	ID                   string                 `json:"id"`
 	AgentID              string                 `json:"agent_id"`
