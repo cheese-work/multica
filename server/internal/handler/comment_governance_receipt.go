@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/governance"
 	"github.com/multica-ai/multica/server/internal/governance/receipt"
@@ -90,7 +91,7 @@ func (h *Handler) observeGovernanceReceipt(r *http.Request, issue db.Issue, comm
 			append(logger.RequestAttrs(r), "issue_id", uuidToString(issue.ID), "error", err)...)
 		return
 	}
-	defer tx.Rollback(context.WithoutCancel(ctx))
+	defer rollbackWithinBudget(ctx, tx)
 	config, err := loadGovernanceControl(txCtx, tx, issue.WorkspaceID)
 	if err != nil {
 		h.recordGovernanceControlTimeout(err)
@@ -121,6 +122,15 @@ func (h *Handler) observeGovernanceReceipt(r *http.Request, issue db.Issue, comm
 				"shed_reason", string(result.ShedReason),
 			)...)
 	}
+}
+
+// rollbackWithinBudget rolls tx back detached from request cancellation but
+// bounded to receipt.Budget, so a hung DB cannot hold the request goroutine.
+// After a successful Commit the rollback is a no-op.
+func rollbackWithinBudget(ctx context.Context, tx pgx.Tx) {
+	rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), receipt.Budget)
+	defer cancel()
+	_ = tx.Rollback(rbCtx)
 }
 
 func (h *Handler) recordGovernanceControlTimeout(err error) {
