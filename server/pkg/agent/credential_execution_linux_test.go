@@ -70,7 +70,12 @@ func credentialFixtureAgent() {
 				continue
 			}
 			for _, suffix := range []string{"", "/../../../unlimited", "/../../unlimited", "/../unlimited"} {
-				data, _ := os.ReadFile("/proc/self/fd/" + entry.Name() + suffix)
+				path := "/proc/self/fd/" + entry.Name() + suffix
+				info, err := os.Stat(path)
+				if err != nil || !info.Mode().IsRegular() {
+					continue
+				}
+				data, _ := os.ReadFile(path)
 				if strings.Contains(string(data), "owned-unlimited") {
 					fmt.Print("owned-unlimited")
 					return
@@ -141,7 +146,7 @@ func credentialFixtureAgent() {
 	_, _ = fmt.Sscanf(string(state), "%d", &observation.Count)
 	observation.Count++
 	_ = os.WriteFile(statePath, []byte(fmt.Sprint(observation.Count)), 0600)
-	if base := os.Getenv("ANTHROPIC_BASE_URL"); base != "" {
+	if base := os.Getenv("ANTHROPIC_BASE_URL"); observation.Scoped && base != "" {
 		endpoint := "/v1/messages"
 		if os.Getenv("MULTICA_CREDENTIAL_PROVIDER") == "codex" {
 			endpoint = "/v1/responses"
@@ -194,6 +199,16 @@ func credentialFixtureAgent() {
 }
 
 func TestCredentialExclusiveProductionAdapters(test *testing.T) {
+	if _, err := os.Stat("/usr/bin/bwrap"); os.IsNotExist(err) {
+		test.Skip("credential-exclusive integration NOT-RUN: system bubblewrap is unavailable")
+	}
+	inheritedGateway := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		test.Error("ordinary fixture used an inherited provider gateway")
+		writer.WriteHeader(http.StatusForbidden)
+	}))
+	defer inheritedGateway.Close()
+	test.Setenv("ANTHROPIC_BASE_URL", inheritedGateway.URL)
+	test.Setenv("OPENAI_BASE_URL", inheritedGateway.URL)
 	test.Setenv("OWNED_UNLIMITED", "owned-unlimited")
 	test.Setenv("OPENAI_API_KEY", "owned-unlimited")
 	test.Setenv("AWS_SECRET_ACCESS_KEY", "owned-unlimited")
@@ -385,5 +400,34 @@ func TestCredentialExclusiveAbsentBoundaryRefusesBeforeNativeLaunch(test *testin
 		if _, err := New(provider, Config{ExecutablePath: "/owned/not-launched", RequireCredentialIsolation: true, BuiltinRuntime: true}); err == nil {
 			test.Errorf("%s accepted missing boundary", provider)
 		}
+	}
+}
+
+func TestCredentialFixtureDescriptorProbeDoesNotBlock(test *testing.T) {
+	executable := filepath.Join(test.TempDir(), "credential-fixture-descriptor")
+	current, err := os.Executable()
+	if err != nil {
+		test.Fatal(err)
+	}
+	binary, err := os.ReadFile(current)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if err := os.WriteFile(executable, binary, 0700); err != nil {
+		test.Fatal(err)
+	}
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		test.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, executable, "__owned_descriptor_helper")
+	command.Env = []string{"GORACE=atexit_sleep_ms=0"}
+	command.ExtraFiles = []*os.File{reader}
+	if output, err := command.CombinedOutput(); err != nil || len(output) != 0 {
+		test.Fatalf("descriptor probe blocked or read a nonregular descriptor: %q, %v", output, err)
 	}
 }

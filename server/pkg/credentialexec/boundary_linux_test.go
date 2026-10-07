@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -26,6 +27,10 @@ func TestCredentialExecutionPreparationAndRefusal(test *testing.T) {
 	spec := Spec{Root: filepath.Join(root, "private"), Binding: Binding{TaskID: "00000000-0000-4000-8000-000000000001", OwnerID: "00000000-0000-4000-8000-000000000002", WorkspaceID: "00000000-0000-4000-8000-000000000003"}, Provider: "codex", Executable: executable, HelperExecutable: helper}
 	boundary, err := Prepare(context.Background(), spec)
 	if err != nil {
+		if _, statErr := os.Stat("/usr/bin/bwrap"); os.IsNotExist(statErr) && errors.Is(err, ErrUnavailable) && strings.Contains(err.Error(), "bubblewrap missing") {
+			test.Log("PASS: missing system bubblewrap refuses preparation")
+			test.Skip("credential-exclusive integration NOT-RUN: system bubblewrap is unavailable")
+		}
 		test.Fatal(err)
 	}
 	defer boundary.Close()
