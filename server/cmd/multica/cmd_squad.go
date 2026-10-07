@@ -261,12 +261,15 @@ func buildSquadUpdateDigestBody(cmd *cobra.Command) (map[string]any, error) {
 		}
 	}
 
+	if cmd.Flags().Changed("instructions") {
+		return nil, errInlineCandidate("instructions")
+	}
 	instructions, hasInstructions, err := resolveSquadInstructions(cmd)
 	if err != nil {
 		return nil, err
 	}
 	if !hasInstructions {
-		return nil, fmt.Errorf("--expected-before-digest requires the new instructions to be set via --instructions, --instructions-stdin, or --instructions-file")
+		return nil, fmt.Errorf("--expected-before-digest requires the new instructions to be set via --instructions-stdin or --instructions-file")
 	}
 
 	return map[string]any{
@@ -632,7 +635,7 @@ func init() {
 	squadUpdateCmd.Flags().String("instructions-file", "", "Read instructions from a file")
 	squadUpdateCmd.Flags().String("leader", "", "New leader agent (name or ID)")
 	squadUpdateCmd.Flags().String("avatar-url", "", "New avatar URL")
-	squadUpdateCmd.Flags().String("expected-before-digest", "", "sha256 hex digest of the instructions value the caller believes is currently live; enables a conditional compare-and-swap write instead of an unconditional update. Requires instructions to be set via --instructions, --instructions-stdin, or --instructions-file, and forbids combining with any other update flag. The digest is over the RAW UTF-8 bytes of the live value (no newline stripping; a card-manifest digest that strips one terminal LF does not match a value ending in LF). Prefer --instructions-file or --instructions-stdin for the candidate: inline text appears in the process arguments. A 5xx or dropped connection is reported as AMBIGUOUS and is never retried.")
+	squadUpdateCmd.Flags().String("expected-before-digest", "", "sha256 hex digest of the instructions value the caller believes is currently live; enables a conditional compare-and-swap write instead of an unconditional update. Requires instructions to be set via --instructions-stdin or --instructions-file (inline --instructions is refused so the candidate never appears in arguments), and forbids combining with any other update flag. The digest is over the RAW UTF-8 bytes of the live value (no newline stripping; a card-manifest digest that strips one terminal LF does not match a value ending in LF). A 5xx or dropped connection is reported as AMBIGUOUS and is never retried.")
 	squadUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 
 	// delete

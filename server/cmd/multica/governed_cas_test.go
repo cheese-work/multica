@@ -13,6 +13,8 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"github.com/multica-ai/multica/server/internal/cli"
 )
 
 // CHE-1300: CLI side of the owner-only guarded CAS — agent flags, stdin/file
@@ -282,5 +284,97 @@ func TestDigestModeDefinitiveRefusalIsNotAmbiguous(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// Sol P1 (PR #178 review): main prints cli.FormatError(err, debug), which
+// shows only the root cause's friendly line. The ambiguous-outcome warning and
+// the recovery digests must survive that formatting, not only err.Error().
+func TestDigestModeAmbiguousWarningSurvivesDefaultErrorFormatting(t *testing.T) {
+	const candidate = "CANDIDATE-TEXT-MUST-NOT-LEAK\n"
+	sum := sha256.Sum256([]byte(candidate))
+	wantAfter := fmt.Sprintf("%x", sum)
+
+	failures := map[string]http.HandlerFunc{
+		"500 response": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"boom"}`))
+		},
+		"dropped connection": func(w http.ResponseWriter, r *http.Request) {
+			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+				conn.Close()
+			}
+		},
+	}
+	for _, c := range casCLICases() {
+		for fname, handler := range failures {
+			t.Run(c.name+"/"+fname, func(t *testing.T) {
+				srv := httptest.NewServer(handler)
+				defer srv.Close()
+				setSquadUpdateServerEnv(t, srv.URL)
+
+				err := c.run(t, candidate)
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				for _, debug := range []bool{false, true} {
+					out := cli.FormatError(err, debug)
+					for _, want := range []string{"AMBIGUOUS", "do NOT retry", testDigestHex, wantAfter} {
+						if !strings.Contains(out, want) {
+							t.Errorf("FormatError(debug=%v) missing %q:\n%s", debug, want, out)
+						}
+					}
+					if strings.Contains(out, "CANDIDATE-TEXT-MUST-NOT-LEAK") {
+						t.Errorf("FormatError(debug=%v) leaks candidate text:\n%s", debug, out)
+					}
+				}
+			})
+		}
+	}
+}
+
+// Sol P1: Acceptance 5 — candidate text never appears in arguments. Digest
+// mode refuses inline text for workspace and squad as it already does for
+// agent, before any HTTP call.
+func TestDigestModeRefusesInlineCandidateText(t *testing.T) {
+	const secret = "INLINE-CANDIDATE-SECRET"
+	inline := []casCLICase{
+		{"workspace.context", func(t *testing.T, candidate string) error {
+			resetWorkspaceUpdateFlags(t)
+			setStringFlag(t, "context", candidate)
+			setStringFlag(t, "expected-before-digest", testDigestHex)
+			return runWorkspaceUpdate(workspaceUpdateCmd, []string{testWorkspaceUUID})
+		}},
+		{"squad.instructions", func(t *testing.T, candidate string) error {
+			cmd := newSquadUpdateTestCmd()
+			_ = cmd.Flags().Set("instructions", candidate)
+			_ = cmd.Flags().Set("expected-before-digest", testDigestHex)
+			return runSquadUpdate(cmd, []string{"squad-123"})
+		}},
+		{"agent.instructions", func(t *testing.T, candidate string) error {
+			cmd := newAgentCASTestCmd()
+			_ = cmd.Flags().Set("instructions", candidate)
+			_ = cmd.Flags().Set("expected-before-digest", testDigestHex)
+			return runAgentUpdate(cmd, []string{"agent-123"})
+		}},
+	}
+	for _, c := range inline {
+		t.Run(c.name, func(t *testing.T) {
+			called := false
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true }))
+			defer srv.Close()
+			setSquadUpdateServerEnv(t, srv.URL)
+
+			err := c.run(t, secret)
+			if err == nil || !strings.Contains(err.Error(), "-stdin") || !strings.Contains(err.Error(), "-file") {
+				t.Fatalf("err = %v, want inline refusal naming stdin and file", err)
+			}
+			if strings.Contains(err.Error(), secret) {
+				t.Errorf("error leaks candidate text: %v", err)
+			}
+			if called {
+				t.Error("inline candidate must be refused before any HTTP call")
+			}
+		})
 	}
 }

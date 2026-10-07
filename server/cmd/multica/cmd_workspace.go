@@ -218,7 +218,7 @@ func init() {
 	workspaceUpdateCmd.Flags().Bool("context-stdin", false, "Read context from stdin (preserves multi-line content verbatim)")
 	workspaceUpdateCmd.Flags().String("context-file", "", "Read context from a file, byte-for-byte (no escape decoding)")
 	workspaceUpdateCmd.Flags().String("issue-prefix", "", "New issue prefix (uppercased server-side)")
-	workspaceUpdateCmd.Flags().String("expected-before-digest", "", "sha256 hex digest of the context value the caller believes is currently live; enables a conditional compare-and-swap write instead of an unconditional update. Requires the context to be set via --context, --context-stdin, or --context-file, and forbids combining with any other update flag. The digest is over the RAW UTF-8 bytes of the live value (no newline stripping; a card-manifest digest that strips one terminal LF does not match a value ending in LF). Prefer --context-file or --context-stdin for the candidate: inline text appears in the process arguments. A 5xx or dropped connection is reported as AMBIGUOUS and is never retried.")
+	workspaceUpdateCmd.Flags().String("expected-before-digest", "", "sha256 hex digest of the context value the caller believes is currently live; enables a conditional compare-and-swap write instead of an unconditional update. Requires the context to be set via --context-stdin or --context-file (inline --context is refused so the candidate never appears in arguments), and forbids combining with any other update flag. The digest is over the RAW UTF-8 bytes of the live value (no newline stripping; a card-manifest digest that strips one terminal LF does not match a value ending in LF). A 5xx or dropped connection is reported as AMBIGUOUS and is never retried.")
 	workspaceUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 
 	workspaceMcpListCmd.Flags().String("output", "json", "Output format: table or json")
@@ -574,9 +574,9 @@ func printWorkspace(cmd *cobra.Command, ws map[string]any) error {
 // caller computes locally disagree with the server's, permanently — this
 // path must never share code with a lossy reader.
 //
-// Unlike resolveTextFlag, inline --context participates here too (verbatim,
-// no escape decoding) because digest mode needs a lossless inline path and
-// the existing --context flag's lossy decoding cannot be reused for it.
+// Inline --context still reads verbatim here, but digest mode refuses it
+// before calling this function (CHE-1300: candidate text stays out of the
+// process arguments), so the digest path only ever sees stdin or a file.
 func resolveWorkspaceContextLossless(cmd *cobra.Command) (string, bool, error) {
 	inline, _ := cmd.Flags().GetString("context")
 	fromStdin, _ := cmd.Flags().GetBool("context-stdin")
@@ -648,12 +648,15 @@ func buildWorkspaceUpdateDigestBody(cmd *cobra.Command) (map[string]any, error) 
 		}
 	}
 
+	if cmd.Flags().Changed("context") {
+		return nil, errInlineCandidate("context")
+	}
 	ctxText, hasCtx, err := resolveWorkspaceContextLossless(cmd)
 	if err != nil {
 		return nil, err
 	}
 	if !hasCtx {
-		return nil, fmt.Errorf("--expected-before-digest requires the new context to be set via --context, --context-stdin, or --context-file")
+		return nil, fmt.Errorf("--expected-before-digest requires the new context to be set via --context-stdin or --context-file")
 	}
 
 	return map[string]any{

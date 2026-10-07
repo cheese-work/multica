@@ -34,7 +34,7 @@ func resolveAgentInstructions(cmd *cobra.Command, allowInline bool) (string, boo
 	fileSet := cmd.Flags().Changed("instructions-file")
 
 	if inlineSet && !allowInline {
-		return "", false, fmt.Errorf("--expected-before-digest cannot be combined with --instructions: inline text would put the candidate in the process arguments; use --instructions-stdin or --instructions-file")
+		return "", false, errInlineCandidate("instructions")
 	}
 	sources := 0
 	for _, set := range []bool{inlineSet, fromStdin, fileSet} {
@@ -69,6 +69,12 @@ func resolveAgentInstructions(cmd *cobra.Command, allowInline bool) (string, boo
 		return "", false, fmt.Errorf("agent instructions must be valid UTF-8")
 	}
 	return string(data), true, nil
+}
+
+// errInlineCandidate refuses inline candidate text in digest mode: Acceptance 5,
+// candidate text never appears in the process arguments.
+func errInlineCandidate(field string) error {
+	return fmt.Errorf("--expected-before-digest cannot be combined with --%[1]s: inline text would put the candidate in the process arguments; use --%[1]s-stdin or --%[1]s-file", field)
 }
 
 func mustGetString(cmd *cobra.Command, name string) string {
@@ -121,8 +127,11 @@ func digestWriteError(op string, err error, candidate, expectedBefore string) er
 	if errors.As(err, &httpErr) && httpErr.StatusCode < 500 {
 		return fmt.Errorf("%s: %w", op, err)
 	}
-	return fmt.Errorf("%s: AMBIGUOUS outcome: the write may or may not have been applied; do NOT retry. Read the live value and compare its sha256: %s means not applied, %x means applied: %w",
-		op, expectedBefore, sha256.Sum256([]byte(candidate)), err)
+	// UserMessageError, not a plain wrapper: main prints cli.FormatError, which
+	// shows only the root cause's friendly line by default and would drop this
+	// warning and the recovery digests.
+	return cli.WithUserMessage(fmt.Sprintf("%s: AMBIGUOUS outcome: the write may or may not have been applied; do NOT retry. Read the live value and compare its sha256: %s means not applied, %x means applied",
+		op, expectedBefore, sha256.Sum256([]byte(candidate))), err)
 }
 
 func bodyText(body map[string]any, key string) string {
