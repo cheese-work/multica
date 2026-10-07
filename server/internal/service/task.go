@@ -77,7 +77,8 @@ type TaskService struct {
 	// whole feature off — no pending marker, no pills — which is the expected
 	// state for a self-hosted deployment with no MULTICA_LLM_* configuration.
 	// Wired in router.go from the same *llm.Client that backs chat auto-titling.
-	QuickActions ChatQuickActionsLLM
+	QuickActions         ChatQuickActionsLLM
+	ProviderFailureProbe ProviderFailureProbe
 	// quickActionsInFlight (chat session id -> struct{}{}) and
 	// quickActionsRunning admit suggestion passes: one per session, and a
 	// process-wide ceiling. Both zero values are usable, so a TaskService built

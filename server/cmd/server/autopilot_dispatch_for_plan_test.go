@@ -130,8 +130,8 @@ func TestDispatchAutopilotForPlanIsIdempotent(t *testing.T) {
 		t.Fatalf("expected exactly 1 autopilot_run for the (trigger, planned_at) pair, got %d", rowCount)
 	}
 
-	// A different planned_at for the same trigger MUST be allowed —
-	// it represents the next scheduled occurrence, not a duplicate.
+	// A different planned_at is a distinct occurrence, but equivalent work
+	// already active for the same trigger must suppress a second dispatch.
 	plannedAt2 := plannedAt.Add(5 * time.Minute)
 	third, err := autopilotSvc.DispatchAutopilotForPlan(
 		ctx, ap, trigger.ID, "schedule", nil, plannedAt2,
@@ -140,7 +140,13 @@ func TestDispatchAutopilotForPlanIsIdempotent(t *testing.T) {
 		t.Fatalf("third DispatchAutopilotForPlan with new planned_at: %v", err)
 	}
 	if third.ID == first.ID {
-		t.Fatalf("different planned_at must produce a different run, got reuse")
+		t.Fatalf("different planned_at must produce a distinct occurrence run, got reuse")
+	}
+	if third.Status != "skipped" || !third.ReasonCode.Valid || third.ReasonCode.String != "already_active" {
+		t.Fatalf("different planned_at while equivalent work is active = %+v, want skipped already_active", third)
+	}
+	if !third.PlannedAt.Valid || !third.PlannedAt.Time.Equal(plannedAt2) {
+		t.Fatalf("third run planned_at = %+v, want %s", third.PlannedAt, plannedAt2)
 	}
 
 	if err := testPool.QueryRow(ctx,

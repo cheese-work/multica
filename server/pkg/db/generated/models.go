@@ -1648,6 +1648,20 @@ type ProvenanceExportLog struct {
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 }
 
+type ProviderFailureRecovery struct {
+	FailedTaskID     pgtype.UUID        `json:"failed_task_id"`
+	TriggerKind      string             `json:"trigger_kind"`
+	TriggerID        pgtype.UUID        `json:"trigger_id"`
+	ConditionKey     string             `json:"condition_key"`
+	FailedAt         pgtype.Timestamptz `json:"failed_at"`
+	ProbeAt          pgtype.Timestamptz `json:"probe_at"`
+	ProbeStatus      int32              `json:"probe_status"`
+	ChangedCondition string             `json:"changed_condition"`
+	RecoveryRunID    pgtype.UUID        `json:"recovery_run_id"`
+	RecoveryTaskID   pgtype.UUID        `json:"recovery_task_id"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+}
+
 type QuickAction struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
