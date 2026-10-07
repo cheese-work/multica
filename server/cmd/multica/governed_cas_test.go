@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -232,9 +233,9 @@ func TestDigestModeAmbiguousFailuresAreReportedNeverRetried(t *testing.T) {
 	for _, c := range casCLICases() {
 		for fname, handler := range failures {
 			t.Run(c.name+"/"+fname, func(t *testing.T) {
-				calls := 0
+				var calls atomic.Int32
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					calls++
+					calls.Add(1)
 					handler(w, r)
 				}))
 				defer srv.Close()
@@ -253,8 +254,8 @@ func TestDigestModeAmbiguousFailuresAreReportedNeverRetried(t *testing.T) {
 				if strings.Contains(msg, "CANDIDATE-TEXT-MUST-NOT-LEAK") {
 					t.Errorf("error leaks candidate text: %v", msg)
 				}
-				if calls != 1 {
-					t.Errorf("server called %d times, want exactly 1 (never retried)", calls)
+				if n := calls.Load(); n != 1 {
+					t.Errorf("server called %d times, want exactly 1 (never retried)", n)
 				}
 			})
 		}
