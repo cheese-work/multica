@@ -2692,6 +2692,9 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := guardCommentSelfMention(content, client.AgentID); err != nil {
+		return err
+	}
 
 	// Use a longer timeout when attachments are present (file uploads can be slow).
 	timeout := cli.APITimeout()
@@ -2769,6 +2772,9 @@ func runIssueCommentUpdate(cmd *cobra.Command, args []string) error {
 
 	client, err := newAPIClient(cmd)
 	if err != nil {
+		return err
+	}
+	if err := guardCommentSelfMention(content, client.AgentID); err != nil {
 		return err
 	}
 
