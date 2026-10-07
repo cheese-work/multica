@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -376,6 +378,30 @@ func TestOwnerCAS_ConcurrentWritersExactlyOneWins(t *testing.T) {
 		}
 		if got := tg.read(t, id); got != contents[winner] {
 			t.Errorf("stored = %q, want winner's %q", got, contents[winner])
+		}
+	})
+}
+
+// Candidate text must never reach the logs: the audit line carries ids and
+// digests only, on success and on every refusal.
+func TestOwnerCAS_LogsCarryNoCandidateText(t *testing.T) {
+	eachOwnerCASTarget(t, func(t *testing.T, tg ownerCASTarget) {
+		var buf bytes.Buffer
+		prev := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+		t.Cleanup(func() { slog.SetDefault(prev) })
+
+		const secret = "CANDIDATE-SECRET-TEXT"
+		id := tg.seed(t, "live")
+		tg.do(testUserID, id, secret+" stale", testDigest("not live")) // 409
+		tg.do(testUserID, id, secret+" ok", testDigest("live"))        // 200
+		tg.do(testUserID, id, secret+" malformed", "nope")             // 400
+
+		if !strings.Contains(buf.String(), "CHE-1300") {
+			t.Fatalf("expected the CHE-1300 audit line, got: %s", buf.String())
+		}
+		if strings.Contains(buf.String(), secret) {
+			t.Errorf("logs leak candidate text:\n%s", buf.String())
 		}
 	})
 }
