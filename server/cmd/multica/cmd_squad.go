@@ -190,7 +190,7 @@ func runSquadUpdate(cmd *cobra.Command, args []string) error {
 		}
 		var result map[string]any
 		if err := client.PutJSON(ctx, "/api/squads/"+args[0], body, &result); err != nil {
-			return fmt.Errorf("update squad: %w", err)
+			return digestWriteError("update squad", err, bodyText(body, "instructions"), bodyText(body, "expected_before_digest"))
 		}
 		return printDigestSwapResult(cmd, "squad", result)
 	}
@@ -632,7 +632,7 @@ func init() {
 	squadUpdateCmd.Flags().String("instructions-file", "", "Read instructions from a file")
 	squadUpdateCmd.Flags().String("leader", "", "New leader agent (name or ID)")
 	squadUpdateCmd.Flags().String("avatar-url", "", "New avatar URL")
-	squadUpdateCmd.Flags().String("expected-before-digest", "", "sha256 hex digest of the instructions value the caller believes is currently live; enables a conditional compare-and-swap write instead of an unconditional update. Requires instructions to be set via --instructions, --instructions-stdin, or --instructions-file, and forbids combining with any other update flag.")
+	squadUpdateCmd.Flags().String("expected-before-digest", "", "sha256 hex digest of the instructions value the caller believes is currently live; enables a conditional compare-and-swap write instead of an unconditional update. Requires instructions to be set via --instructions, --instructions-stdin, or --instructions-file, and forbids combining with any other update flag. The digest is over the RAW UTF-8 bytes of the live value (no newline stripping; a card-manifest digest that strips one terminal LF does not match a value ending in LF). Prefer --instructions-file or --instructions-stdin for the candidate: inline text appears in the process arguments. A 5xx or dropped connection is reported as AMBIGUOUS and is never retried.")
 	squadUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 
 	// delete

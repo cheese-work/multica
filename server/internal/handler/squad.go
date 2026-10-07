@@ -364,13 +364,12 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 		LeaderID     *string `json:"leader_id"`
 		AvatarURL    *string `json:"avatar_url"`
 
-		// ExpectedBeforeDigest is CHE-764's narrow, human-approved exception
-		// field — see governed_instruction_hermes_exception.go. Only
-		// consulted when this request also matches
-		// hermesExceptionMatchesSquadInstructions (this exact squad, an
-		// `instructions` write, from exactly agent hermesExceptionAgentID);
-		// otherwise decoded and silently ignored like any other field this
-		// caller doesn't need.
+		// ExpectedBeforeDigest drives two guarded paths: CHE-764's Hermes
+		// exception (hermesExceptionMatchesSquadInstructions: this exact
+		// squad, an `instructions` write, from exactly agent
+		// hermesExceptionAgentID) and CHE-1300's owner-only CAS
+		// (governed_instruction_owner_cas.go). Every other caller is refused
+		// when the key is present.
 		ExpectedBeforeDigest string `json:"expected_before_digest"`
 	}
 	bodyBytes, err := io.ReadAll(r.Body)
@@ -441,6 +440,15 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if rejectGovernedFieldForAgentActor(w, r, actorType, req.Instructions != nil, "instructions") {
+		return
+	}
+
+	// CHE-1300: owner-only atomic CAS, entered by the digest key. After the
+	// guard above so a machine actor never reaches it.
+	var rawFields map[string]json.RawMessage
+	_ = json.Unmarshal(bodyBytes, &rawFields) // body already decoded into req above
+	if ownerCASRequested(rawFields) {
+		h.ownerCASUpdateSquad(w, r, workspaceID, member, squad, actorType, rawFields)
 		return
 	}
 

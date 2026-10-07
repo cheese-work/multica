@@ -218,7 +218,7 @@ func init() {
 	workspaceUpdateCmd.Flags().Bool("context-stdin", false, "Read context from stdin (preserves multi-line content verbatim)")
 	workspaceUpdateCmd.Flags().String("context-file", "", "Read context from a file, byte-for-byte (no escape decoding)")
 	workspaceUpdateCmd.Flags().String("issue-prefix", "", "New issue prefix (uppercased server-side)")
-	workspaceUpdateCmd.Flags().String("expected-before-digest", "", "sha256 hex digest of the context value the caller believes is currently live; enables a conditional compare-and-swap write instead of an unconditional update. Requires the context to be set via --context, --context-stdin, or --context-file, and forbids combining with any other update flag.")
+	workspaceUpdateCmd.Flags().String("expected-before-digest", "", "sha256 hex digest of the context value the caller believes is currently live; enables a conditional compare-and-swap write instead of an unconditional update. Requires the context to be set via --context, --context-stdin, or --context-file, and forbids combining with any other update flag. The digest is over the RAW UTF-8 bytes of the live value (no newline stripping; a card-manifest digest that strips one terminal LF does not match a value ending in LF). Prefer --context-file or --context-stdin for the candidate: inline text appears in the process arguments. A 5xx or dropped connection is reported as AMBIGUOUS and is never retried.")
 	workspaceUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 
 	workspaceMcpListCmd.Flags().String("output", "json", "Output format: table or json")
@@ -729,7 +729,7 @@ func runWorkspaceUpdate(cmd *cobra.Command, args []string) error {
 
 		var result map[string]any
 		if err := client.PatchJSON(ctx, "/api/workspaces/"+wsID, body, &result); err != nil {
-			return fmt.Errorf("update workspace: %w", err)
+			return digestWriteError("update workspace", err, bodyText(body, "context"), bodyText(body, "expected_before_digest"))
 		}
 		return printDigestSwapResult(cmd, "workspace", result)
 	}
