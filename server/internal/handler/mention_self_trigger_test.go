@@ -183,60 +183,60 @@ func TestEnqueueMentionedAgentTasks_SelfMentionWhileRunningSuppressed(t *testing
 	}
 }
 
-func TestComputeCommentAgentTriggers_SelfMentionOutcome(t *testing.T) {
+func TestComputeCommentAgentTriggers_SelfMentionOutcome(test *testing.T) {
 	ctx := context.Background()
-	fixture := newSelfMentionFixture(t)
+	fixture := newSelfMentionFixture(test)
 	triggers, targets := testHandler.computeCommentAgentTriggers(ctx, fixture.IssueA, fixture.CommentA.Content, nil, "agent", fixture.JID, commentTriggerComputeOptions{})
 	if len(triggers) != 0 || len(targets) != 1 {
-		t.Fatalf("triggers=%d targets=%d, want 0 and 1", len(triggers), len(targets))
+		test.Fatalf("triggers=%d targets=%d, want 0 and 1", len(triggers), len(targets))
 	}
 	if targets[0].Status != DispatchBlocked || targets[0].ReasonCode != ReasonSelfTriggerSuppressed {
-		t.Fatalf("target=%+v, want blocked/self_trigger_suppressed", targets[0])
+		test.Fatalf("target=%+v, want blocked/self_trigger_suppressed", targets[0])
 	}
 	triggers, _ = testHandler.computeCommentAgentTriggers(ctx, fixture.IssueA, fixture.CommentA.Content, nil, "member", testUserID, commentTriggerComputeOptions{})
 	if len(triggers) != 1 {
-		t.Fatalf("member mention triggers=%d, want 1", len(triggers))
+		test.Fatalf("member mention triggers=%d, want 1", len(triggers))
 	}
 }
 
-func TestCommentSelfMentionByMemberEditorSuppressed(t *testing.T) {
-	fixture := newSelfMentionFixture(t)
-	preview := previewCommentTriggersForTest(t, fixture.IssueAID, map[string]any{
+func TestCommentSelfMentionByMemberEditorSuppressed(test *testing.T) {
+	fixture := newSelfMentionFixture(test)
+	preview := previewCommentTriggersForTest(test, fixture.IssueAID, map[string]any{
 		"content":            fixture.CommentA.Content,
 		"editing_comment_id": fixture.CommentAID,
 	})
 	if len(preview.Agents) != 0 || len(preview.Blocked) != 1 || preview.Blocked[0].ReasonCode != ReasonSelfTriggerSuppressed {
-		t.Fatalf("editing preview=%+v, want author suppressed", preview)
+		test.Fatalf("editing preview=%+v, want author suppressed", preview)
 	}
-	updateCommentForTriggerPreviewTest(t, fixture.CommentAID, map[string]any{"content": fixture.CommentA.Content + " updated"})
-	if got := countQueuedOrDispatched(t, fixture.JID, fixture.IssueAID); got != 0 {
-		t.Fatalf("member edit queued %d tasks for the comment author", got)
+	updateCommentForTriggerPreviewTest(test, fixture.CommentAID, map[string]any{"content": fixture.CommentA.Content + " updated"})
+	if got := countQueuedOrDispatched(test, fixture.JID, fixture.IssueAID); got != 0 {
+		test.Fatalf("member edit queued %d tasks for the comment author", got)
 	}
 }
 
-func TestCommentSelfMentionSquadAndOtherAgent(t *testing.T) {
+func TestCommentSelfMentionSquadAndOtherAgent(test *testing.T) {
 	ctx := context.Background()
-	fixture := newSelfMentionFixture(t)
-	squadID := dbfx.Squad(t, "self-mention squad", fixture.JID)
-	otherID := createHandlerTestAgent(t, "other comment recipient", nil)
+	fixture := newSelfMentionFixture(test)
+	squadID := dbfx.Squad(test, "self-mention squad", fixture.JID)
+	otherID := createHandlerTestAgent(test, "other comment recipient", nil)
 	for _, status := range []string{"running", "completed"} {
-		t.Run(status, func(t *testing.T) {
-			dbfx.Task(t, fixture.JID, testutil.Cols{
+		test.Run(status, func(test *testing.T) {
+			dbfx.Task(test, fixture.JID, testutil.Cols{
 				"runtime_id": fixture.RuntimeID, "issue_id": fixture.IssueAID,
 				"status": status, "squad_id": squadID, "is_leader_task": false,
 			})
 			content := "[self](mention://agent/" + fixture.JID + ") [squad](mention://squad/" + squadID + ") [other](mention://agent/" + otherID + ")"
 			triggers, targets := testHandler.computeCommentAgentTriggers(ctx, fixture.IssueA, content, nil, "agent", fixture.JID, commentTriggerComputeOptions{})
 			if len(triggers) != 1 || uuidToString(triggers[0].Agent.ID) != otherID {
-				t.Fatalf("triggers=%+v, want other agent only", triggers)
+				test.Fatalf("triggers=%+v, want other agent only", triggers)
 			}
 			outcomes := commentBlockedTargetOutcomes(targets)
 			if len(outcomes) != 2 {
-				t.Fatalf("outcomes=%+v, want both self mention forms blocked", outcomes)
+				test.Fatalf("outcomes=%+v, want both self mention forms blocked", outcomes)
 			}
 			for _, outcome := range outcomes {
 				if outcome.ReasonCode != ReasonSelfTriggerSuppressed {
-					t.Fatalf("outcome=%+v, want self_trigger_suppressed", outcome)
+					test.Fatalf("outcome=%+v, want self_trigger_suppressed", outcome)
 				}
 			}
 		})

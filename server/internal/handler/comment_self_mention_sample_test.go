@@ -11,14 +11,14 @@ import (
 	"github.com/multica-ai/multica/server/internal/util"
 )
 
-func TestHandoffSampleSelfEchoReplay(t *testing.T) {
+func TestHandoffSampleSelfEchoReplay(test *testing.T) {
 	path := os.Getenv("MULTICA_HANDOFF_REPLAY_SAMPLE")
 	if path == "" {
-		t.Skip("no historical handoff sample supplied")
+		test.Skip("no historical handoff sample supplied")
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatal(err)
+		test.Fatal(err)
 	}
 	var sample struct {
 		SquadLeaders map[string]string `json:"squad_leaders"`
@@ -29,18 +29,18 @@ func TestHandoffSampleSelfEchoReplay(t *testing.T) {
 		} `json:"samples"`
 	}
 	if err := json.Unmarshal(data, &sample); err != nil {
-		t.Fatal(err)
+		test.Fatal(err)
 	}
 	if len(sample.Samples) != 20 {
-		t.Fatalf("sample_size=%d, want 20", len(sample.Samples))
+		test.Fatalf("sample_size=%d, want 20", len(sample.Samples))
 	}
 	ctx := context.Background()
 	for _, original := range sample.Samples {
-		t.Run(original.CommentID, func(t *testing.T) {
+		test.Run(original.CommentID, func(test *testing.T) {
 			agents := map[string]string{}
 			mappedAgent := func(originalID string) string {
 				if agents[originalID] == "" {
-					agents[originalID] = createHandlerTestAgent(t, "replayed "+originalID, nil)
+					agents[originalID] = createHandlerTestAgent(test, "replayed "+originalID, nil)
 				}
 				return agents[originalID]
 			}
@@ -53,26 +53,26 @@ func TestHandoffSampleSelfEchoReplay(t *testing.T) {
 				case "squad":
 					leaderID := sample.SquadLeaders[mention.ID]
 					if leaderID == "" {
-						t.Fatalf("missing squad leader for %s", mention.ID)
+						test.Fatalf("missing squad leader for %s", mention.ID)
 					}
-					squadID := dbfx.Squad(t, "replayed squad", mappedAgent(leaderID))
+					squadID := dbfx.Squad(test, "replayed squad", mappedAgent(leaderID))
 					content = strings.ReplaceAll(content, "mention://squad/"+mention.ID, "mention://squad/"+squadID)
 				}
 			}
-			issueID := dbfx.Issue(t, "handoff replay")
-			dbfx.Task(t, authorID, testutil.Cols{"runtime_id": handlerTestRuntimeID(t), "issue_id": issueID, "status": "running"})
-			commentID := dbfx.Comment(t, issueID, content, testutil.Cols{"author_type": "agent", "author_id": authorID})
+			issueID := dbfx.Issue(test, "handoff replay")
+			dbfx.Task(test, authorID, testutil.Cols{"runtime_id": handlerTestRuntimeID(test), "issue_id": issueID, "status": "running"})
+			commentID := dbfx.Comment(test, issueID, content, testutil.Cols{"author_type": "agent", "author_id": authorID})
 			issue, err := testHandler.Queries.GetIssue(ctx, util.MustParseUUID(issueID))
 			if err != nil {
-				t.Fatal(err)
+				test.Fatal(err)
 			}
 			comment, err := testHandler.Queries.GetComment(ctx, util.MustParseUUID(commentID))
 			if err != nil {
-				t.Fatal(err)
+				test.Fatal(err)
 			}
 			testHandler.triggerTasksForComment(ctx, issue, comment, nil, "agent", authorID, testUserID, nil, nil)
-			if got := countQueuedOrDispatched(t, authorID, issueID); got != 0 {
-				t.Fatalf("self_echo_runs=%d, want zero", got)
+			if got := countQueuedOrDispatched(test, authorID, issueID); got != 0 {
+				test.Fatalf("self_echo_runs=%d, want zero", got)
 			}
 		})
 	}
