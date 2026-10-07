@@ -29,6 +29,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/taskgateway"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	"github.com/multica-ai/multica/server/pkg/credentialexec"
@@ -1903,7 +1904,7 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 			WorkspaceID: parseUUID(resp.WorkspaceID),
 			UserID:      rt.OwnerID,
 			ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(24 * time.Hour), Valid: true},
-		}, deliveredCommentIDs, commentBackedTask, issueSnapshot, daemonTokens...)
+		}, deliveredCommentIDs, commentBackedTask, issueSnapshot, requestClientCapabilities(r), daemonTokens...)
 		if ferr != nil {
 			slog.Error("batch claim: finalize task claim failed; requeueing claim",
 				"task_id", uuidToString(task.ID), "error", ferr)
@@ -1994,6 +1995,7 @@ func (h *Handler) finalizeClaimDelivery(
 	deliveredCommentIDs []pgtype.UUID,
 	recordCommentReceipt bool,
 	issueSnapshot []byte,
+	capabilities []string,
 	daemonTokens ...db.CreateDaemonTokenParams,
 ) (receipt []pgtype.UUID, deliveryFailure *claimBuildFailure, err error) {
 	var agentOwnerID pgtype.UUID
@@ -2013,6 +2015,7 @@ func (h *Handler) finalizeClaimDelivery(
 			response.RequestingUserName = ""
 			response.RequestingUserProfileDescription = ""
 			response.CredentialExecutionBinding = nil
+			response.RequireCredentialIsolation = false
 		}
 		agent, aerr := qtx.GetAgentForUpdate(ctx, task.AgentID)
 		if aerr != nil {
@@ -2052,8 +2055,8 @@ func (h *Handler) finalizeClaimDelivery(
 		// its current owner as the task-token identity rather than the stale
 		// claim-time snapshot captured by the caller.
 		tokenParams.UserID = locked.OwnerID
-		if response != nil {
-			response.CredentialExecutionBinding = credentialExecutionBindingForClaim(*task, locked, response.WorkspaceID)
+		if h.applyTaskGatewayClaimPolicy(*task, locked, uuidToString(tokenParams.WorkspaceID), response, capabilities) != nil {
+			return &service.ClaimDeliveryAuthzError{Reason: "error_task_gateway_unavailable", Detail: "trusted task gateway claim admission refused"}
 		}
 		return nil
 	}
@@ -2069,6 +2072,11 @@ func (h *Handler) finalizeClaimDelivery(
 	// Authorization rejected at the delivery boundary: settle through the
 	// existing failure path so the task never reaches the daemon.
 	switch authzErr.Reason {
+	case "error_task_gateway_unavailable":
+		failure := h.failClaimedTaskBeforeLaunch(ctx, task,
+			"This task requires a trusted credential-exclusive runtime and an exact authorized gateway policy. The task was not delivered.",
+			taskfailure.ReasonInvalidTaskIdentity, "error_task_gateway_unavailable", http.StatusForbidden, "trusted task gateway claim admission refused")
+		return nil, failure, nil
 	case "error_agent_runtime_changed":
 		failure := h.failClaimedTaskBeforeLaunch(
 			ctx, task,
@@ -2347,6 +2355,27 @@ func credentialExecutionBindingForClaim(task db.AgentTaskQueue, runtime db.Agent
 		return nil
 	}
 	return &binding
+}
+
+func (h *Handler) applyTaskGatewayClaimPolicy(task db.AgentTaskQueue, runtime db.AgentRuntime, workspaceID string, response *AgentTaskResponse, capabilities []string) error {
+	if response != nil {
+		response.RequireCredentialIsolation = false
+		response.CredentialExecutionBinding = nil
+	}
+	binding := credentialExecutionBindingForClaim(task, runtime, workspaceID)
+	identity := credentialexec.Binding{TaskID: uuidToString(task.ID)}
+	if binding != nil {
+		identity = *binding
+	}
+	required, err := h.TaskGateway.Admit(uuidToString(runtime.ID), runtime.Provider, identity, capabilities)
+	if err != nil || required && (response == nil || response.WorkspaceID != workspaceID || runtime.ProfileID.Valid || task.RuntimeID != runtime.ID) {
+		return taskgateway.ErrUnavailable
+	}
+	if response != nil {
+		response.CredentialExecutionBinding = binding
+		response.RequireCredentialIsolation = required
+	}
+	return nil
 }
 
 // buildClaimedTaskResponse assembles the full daemon claim payload for a
@@ -3873,7 +3902,7 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID: parseUUID(resp.WorkspaceID),
 		UserID:      runtime.OwnerID,
 		ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(24 * time.Hour), Valid: true},
-	}, deliveredCommentIDs, commentBackedTask, issueSnapshot, daemonTokens...)
+	}, deliveredCommentIDs, commentBackedTask, issueSnapshot, requestClientCapabilities(r), daemonTokens...)
 	if ferr != nil {
 		outcome = "error_claim_finalize"
 		slog.Error("task claim: failed to finalize token and comment delivery receipt",

@@ -31,6 +31,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/scheduler"
 	"github.com/multica-ai/multica/server/internal/selfhosttelemetry"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/taskgateway"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
 	"github.com/multica-ai/multica/server/pkg/llm"
@@ -679,7 +680,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	trustedTaskGateway, err := taskgateway.LoadFromEnv()
+	if err != nil {
+		slog.Error("trusted task gateway configuration refused")
+		os.Exit(1)
+	}
 	r, h := NewRouterWithOptions(pool, hub, bus, analyticsClient, storeRedis, RouterOptions{
+		TaskGateway:         trustedTaskGateway,
 		HTTPMetrics:         httpMetrics,
 		BusinessMetrics:     businessMetrics,
 		ChannelLeaseMetrics: channelLeaseMetrics,

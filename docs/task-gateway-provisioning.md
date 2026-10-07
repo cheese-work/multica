@@ -12,7 +12,38 @@ Each policy pins a canonical platform runtime, runtime owner, workspace and exec
 The policy also pins the gateway owner, a positive finite cap and both provider key IDs.
 Neither a prompt, an agent environment variable nor a parseable task ID authorizes provisioning.
 Policy maps are copied on input and on authorization readback.
-An empty policy list authorizes no task. This package is not wired into server or daemon configuration yet.
+An empty policy list authorizes no task.
+The server loads an optional deployment-owned policy document at startup.
+No operator credential or provider key enters the claim payload.
+
+## Default-off server configuration and claim admission
+
+`MULTICA_TASK_GATEWAY_CONFIG` names an absolute, regular, non-symlink JSON file.
+The file must not be group/world writable and must be at most 1 MiB.
+`MULTICA_TASK_GATEWAY_SECRET_KEY` uses the existing base64 32-byte deployment-key format.
+Both variables absent means disabled. Partial, unavailable or invalid configuration stops startup.
+This candidate does not change either variable on a live server or daemon.
+
+The document contains `base_url`, `policies` and an encrypted `operator_credential` envelope.
+The existing credential keyring opens the envelope with workspace `deployment`, record `task-gateway`
+and purpose `operator-api`. The envelope key ID is `credential.KeyID` of the deployment key.
+Plaintext operator fields, unknown JSON fields, duplicate fields, an empty policy list,
+wrong-purpose envelopes and invalid bindings refuse. The policy document is deployment-trusted,
+not task input. It is loaded once and cannot be overridden by an agent environment or prompt.
+No plaintext operator credential is persisted by this loader.
+
+Both singular and batch claims apply the policy inside the existing delivery transaction.
+The policy gate uses the locked runtime owner, the claimed task and the token's authorized workspace.
+Configured runtimes require the exact `task-gateway-v1` capability and frozen policy match.
+A protected task cannot escape opt-in by moving to an otherwise unmanaged runtime.
+Missing bindings, changed owners/workspaces/tasks, unsupported providers and custom profiles refuse.
+A refused response clears stale credential bindings and cannot mint a committed task token.
+No claim admission calls the gateway operator; provisioning must still follow OS preparation.
+Unmanaged claims keep the prior behavior when no policy covers their runtime or task.
+
+The current daemon deliberately does not advertise `task-gateway-v1` over HTTP or WebSocket.
+Its opted-in launch refusal remains in place. This is an old-daemon fence, not activation.
+The authenticated grant endpoint and daemon preparation/launch handoff remain unfinished.
 
 The authenticated source contract is Sub2API PR 80 at
 `5ca44abeccad64205b8845b531f4e1b8387603e1`, on
@@ -69,8 +100,13 @@ go vet ./internal/taskgateway
 golangci-lint run ./internal/taskgateway/...
 ```
 
-The remaining integration must derive opt-in and identity from authenticated server policy,
-use existing secret mechanisms and an old-daemon capability fence, and prepare before provisioning.
+Owned configuration/admission tests cover encrypted loading, default-off behavior, malformed policy,
+old-daemon capabilities, protected-task movement and exact authenticated identity.
+The handler's pure claim-policy seam runs without a database using the production handler sources.
+That unit check is not a real transactional database claim test.
+
+The remaining integration must deliver grants only to the authenticated owning daemon,
+prepare before provisioning and wire the prepared broker to launch/resume.
 The integration must stage only authorized task input and support credential-exclusive task tooling.
 The native transport and hard-429/no-fallback contract must pass at both production adapter launch/resume seams.
 Until that complete trusted handoff exists, the daemon's current early refusal must remain.

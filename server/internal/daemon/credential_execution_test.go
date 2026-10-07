@@ -5,8 +5,19 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/taskgateway"
 	"github.com/multica-ai/multica/server/pkg/credentialexec"
 )
+
+func TestCredentialExclusiveDaemonDoesNotAdvertiseUnintegratedGateway(test *testing.T) {
+	for _, capabilities := range []string{daemonClientCapabilities(), daemonHTTPClientCapabilities()} {
+		for _, capability := range strings.Split(capabilities, ",") {
+			if capability == taskgateway.Capability {
+				test.Fatal("daemon advertised incomplete trusted handoff")
+			}
+		}
+	}
+}
 
 func TestCredentialExclusiveDaemonRefusesBeforePreparation(test *testing.T) {
 	task := Task{ID: "00000000-0000-4000-8000-000000000001", WorkspaceID: "00000000-0000-4000-8000-000000000002", RequireCredentialIsolation: true}

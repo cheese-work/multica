@@ -297,7 +297,7 @@ func (h *Handler) finalizeClaimDeliveryForTestWithRuntime(
 		WorkspaceID: parseUUID(resp.WorkspaceID),
 		UserID:      runtime.OwnerID,
 		ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(24 * time.Hour), Valid: true},
-	}, deliveredCommentIDs, commentBackedTask, nil, daemonTokens...)
+	}, deliveredCommentIDs, commentBackedTask, nil, requestClientCapabilities(r), daemonTokens...)
 	if ferr != nil {
 		return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, nil, ferr
 	}

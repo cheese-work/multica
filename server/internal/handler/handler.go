@@ -42,6 +42,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
+	"github.com/multica-ai/multica/server/internal/taskgateway"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -152,7 +153,7 @@ type Config struct {
 	// LLMDisableThinking is the parsed MULTICA_LLM_DISABLE_THINKING switch.
 	// cmd/server validates the raw value before the boot continues, so a
 	// non-boolean never reaches this struct.
-	LLMDisableThinking bool
+	LLMDisableThinking      bool
 	ProviderRecoveryBaseURL string
 	// ServerVersion is the build version of the running API binary (the same
 	// value main.go stamps via -X main.version and reports on /metrics).
@@ -205,6 +206,7 @@ type RuntimeRecoveryNotifier interface {
 }
 
 type Handler struct {
+	TaskGateway            *taskgateway.Provisioner
 	Queries                *db.Queries
 	ReadSelector           *dbreader.Selector
 	DB                     dbExecutor

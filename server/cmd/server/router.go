@@ -44,6 +44,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
+	"github.com/multica-ai/multica/server/internal/taskgateway"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
 	composiosdk "github.com/multica-ai/multica/server/pkg/composio"
@@ -223,6 +224,7 @@ func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus, analytics
 }
 
 type RouterOptions struct {
+	TaskGateway         *taskgateway.Provisioner
 	HTTPMetrics         *obsmetrics.HTTPMetrics
 	BusinessMetrics     *obsmetrics.BusinessMetrics
 	ChannelLeaseMetrics *obsmetrics.ChannelLeaseMetrics
@@ -455,6 +457,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		ServerVersion:            normalizeServerVersion(version),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
+	h.TaskGateway = opts.TaskGateway
 	invitationRateLimits := handler.DefaultInvitationRateLimits()
 	invitationRateLimits.Actor.Limit = envNonNegativeInt("RATE_LIMIT_INVITATION_ACTOR_10M", invitationRateLimits.Actor.Limit)
 	invitationRateLimits.Workspace.Limit = envNonNegativeInt("RATE_LIMIT_INVITATION_WORKSPACE_24H", invitationRateLimits.Workspace.Limit)
