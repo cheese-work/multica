@@ -110,6 +110,9 @@ func TestIsReleaseVersion(t *testing.T) {
 		{"bare release", "0.1.13", true},
 		{"v-prefixed release", "v0.1.13", true},
 		{"surrounding whitespace", "  v0.1.13  ", true},
+		{"stamped release", "v0.6.0-20261008-1331", true},
+		{"release metadata", "0.6.0+20261008-1331", true},
+		{"prerelease stamp", "0.6.0-rc1-20261008-1331", false},
 		{"dev describe", "v0.2.15-235-gdaf0e935", false},
 		{"dirty dev describe", "v0.2.15-235-gdaf0e935-dirty", false},
 		{"empty", "", false},
@@ -133,6 +136,9 @@ func TestIsNewerVersion(t *testing.T) {
 		want            bool
 	}{
 		{"patch bump", "v0.1.14", "v0.1.13", true},
+		{"stamped current release", "v0.6.1", "0.6.0-20261008-1331", true},
+		{"stamped latest release", "0.6.1-20261008-1331", "v0.6.0", true},
+		{"same release with different stamps", "0.6.0-20261009-0900", "v0.6.0-20261008-1331", false},
 		{"minor bump", "v0.2.0", "v0.1.99", true},
 		{"major bump", "v1.0.0", "v0.99.99", true},
 		{"same version", "v0.1.13", "v0.1.13", false},

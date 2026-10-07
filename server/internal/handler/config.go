@@ -8,6 +8,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/featureflags"
+	"github.com/multica-ai/multica/server/pkg/buildinfo"
 )
 
 type AppConfig struct {
@@ -100,6 +101,8 @@ type AppConfig struct {
 	// which is continuously deployed so its users can't act on the version —
 	// and empty for dev builds that aren't stamped via -X main.version.
 	ServerVersion string `json:"server_version,omitempty"`
+	Version       string `json:"version,omitempty"`
+	Build         string `json:"build,omitempty"`
 }
 
 // GetConfig is mounted on the public (unauthenticated) route group because
@@ -130,6 +133,7 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 	// the Help popover's version row would just be noise there (MUL-4108).
 	if !isOfficialCloudDeployment() {
 		config.ServerVersion = h.cfg.ServerVersion
+		config.Version, config.Build = buildinfo.Split(h.cfg.ServerVersion)
 	}
 
 	// Re-read from env on every request so operators can rotate keys via
