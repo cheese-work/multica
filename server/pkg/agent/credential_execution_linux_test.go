@@ -46,6 +46,9 @@ type credentialProbe struct {
 	AbstractSocket  string
 }
 
+const ownedClaudeGatewayResponse = `{"id":"msg_owned","type":"message","role":"assistant","model":"owned-model","content":[],"stop_reason":"end_turn","usage":{"input_tokens":7,"cache_creation_input_tokens":2,"cache_read_input_tokens":3,"output_tokens":5}}`
+const ownedResponsesGatewayResponse = `{"id":"resp_owned","object":"response","model":"owned-model","status":"completed","output":[],"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":3,"cache_write_tokens":2},"output_tokens":5,"output_tokens_details":{"reasoning_tokens":2},"total_tokens":17}}`
+
 type credentialObservation struct {
 	Readable       map[string]bool
 	Inherited      bool
@@ -163,7 +166,7 @@ func credentialFixtureAgent() {
 		if err == nil {
 			payload, _ := io.ReadAll(response.Body)
 			_ = response.Body.Close()
-			observation.Gateway = response.StatusCode == http.StatusOK && string(payload) == "owned-scoped"
+			observation.Gateway = response.StatusCode == http.StatusOK && (string(payload) == ownedClaudeGatewayResponse || string(payload) == ownedResponsesGatewayResponse)
 		}
 		adminResponse, err := client.Get(base + "/admin/credentials")
 		if err == nil {
@@ -315,7 +318,12 @@ func TestCredentialExclusiveProductionAdapters(test *testing.T) {
 					writer.WriteHeader(403)
 					return
 				}
-				_, _ = io.WriteString(writer, "owned-scoped")
+				writer.Header().Set("Content-Type", "application/json")
+				if provider == "claude" {
+					_, _ = io.WriteString(writer, ownedClaudeGatewayResponse)
+				} else {
+					_, _ = io.WriteString(writer, ownedResponsesGatewayResponse)
+				}
 			}))
 			defer gateway.Close()
 			if err := boundary.BindGateway(context.Background(), credentialexec.GatewayCredential{Binding: binding, BaseURL: gateway.URL, Key: "owned-scoped"}); err != nil {

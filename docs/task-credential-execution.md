@@ -45,8 +45,9 @@ an unknown outcome and refuses. Forwarding is serialized until the streamed body
 closes successfully. A body read error, cancellation, premature close or close error records an unknown
 outcome before releasing admission. Body errors become the fixed local failure, not raw upstream errors.
 Concurrent body close unblocks a reader and releases admission exactly once. After a refusal, queued
-and later requests return a fixed local 429 or 503 without reaching the gateway. Successful bodies
-remain streamed rather than buffered. A complete byte stream permits another supported request.
+and later requests return a fixed local 429 or 503 without reaching the gateway. Successful SSE bodies
+remain streamed one validated frame at a time; JSON bodies wait for bounded completion validation.
+Only supported provider completion, explicit final usage, EOF and successful close permit another request.
 The upstream transport uses no proxy or reused keepalive connection, so it cannot transparently retry
 a request on a reused connection. Already admitted streams are not refunded or reset.
 
@@ -67,7 +68,7 @@ requests after a 429, 502 or transport disconnect cause exactly one upstream req
 state refuses same-task preparation without clearing native state. Marker unit tests cover malformed,
 public, symlink and directory state. `TestCredentialExclusiveQuotaStopAtProductionAdapters` covers both
 production adapter launch/resume seams with owned ELF fixtures that try three requests and forged success.
-`TestCredentialGatewayStreamLifecycle` covers complete/empty streams, truncation, cancellation,
+`TestCredentialGatewayStreamLifecycle` covers complete streams, refused empty inference, truncation, cancellation,
 premature close and unsupported upgrade with owned local HTTP fixtures. Additional race tests cover
 concurrent read/close and redacted close failures. Admission remains locked through body close.
 `TestCredentialExclusiveStreamStopAtProductionAdapters` exercises the same owned ELF launch/resume
@@ -77,11 +78,47 @@ The isolated path stops after one gateway request and one native launch. Its ord
 forwards all three requests and accepts forged success; the denial assertion fails as intended.
 
 These checks prove terminal refusal at owned broker/adapter seams only. Installed Claude/OpenAI native
-transport and end-to-end billable-attempt acceptance remain NOT-RUN. Byte-level EOF does not establish
-provider-protocol completion or normalized final usage. Semantic/trailer/usage validation of a cleanly
-closed but incomplete provider stream remains unfinished. Unknown usage is not zero.
+transport and end-to-end billable-attempt acceptance remain NOT-RUN. Byte-level EOF alone does not establish
+provider-protocol completion or normalized final usage. The bounded protocol guard below checks supported
+local provider fixtures, not installed native transport, durable accounting or gateway/worker settlement.
+Unknown usage is not zero.
 The daemon still does not advertise `task-gateway-v1` and still refuses opted-in launch before preparation.
 Prepared daemon launch/resume, complete authorized task inputs and credential-exclusive tooling remain unfinished.
+
+## Bounded provider-protocol guard
+
+The broker supports HTTP 200 UTF-8 JSON or SSE on Claude `/v1/messages` and OpenAI `/v1/responses`.
+Text-only content is supported. Claude tool/thinking/server-tool blocks and OpenAI tool/refusal/reasoning
+items or events refuse; this subset is not complete native CLI compatibility. Chat Completions refuses
+before forwarding. `/v1/models` and Claude `/v1/messages/count_tokens` have bounded JSON metadata guards,
+not inference usage defaults. Other statuses, media types, protocol upgrades and declared/late trailers refuse.
+
+JSON bodies and individual SSE frames are bounded to 1 MiB with at most 32 JSON nesting levels.
+Duplicate JSON keys, including escaped/case-folded names, refuse. LF/CRLF and multiline `data` are supported.
+SSE `id`/`retry`, `[DONE]`, partial frames and unknown event variants refuse. Invalid/error frames are not
+forwarded, even when fragmented. Successful frames preserve exact wire bytes; the whole SSE response is
+not buffered. Closing before the validated output is consumed also records an unknown outcome.
+
+Claude requires message identity/model, supported terminal stop reason and explicit input/cache-write/
+cache-read/output counts. SSE block lifecycle must close before a single final delta and `message_stop`.
+Cumulative delta counts overwrite monotonically; omitted optional counts retain known start values.
+OpenAI requires stable response identity/model, consecutive event sequence, closed supported items and
+`response.completed` with completed status and final usage. The supported streamed message has at most one
+text part; SHA-256 digests verify text deltas against text/part/item/final snapshots without retaining the
+whole response. Unsupported output, changed identity, incomplete status or terminal error refuses.
+
+All required counters are finite nonnegative decimal int64 values. Missing/null counts are unknown, not
+zero. Explicit zero counts remain valid. OpenAI total must equal input plus output without overflow;
+cache-read plus cache-write must fit input and reasoning must fit output. The private disjoint buckets
+are uncached input, cache creation, cache read and inclusive output. Cache and reasoning are not added
+again. These values are guard state only; no usage-reporting, durable settlement, quota refund or reset API
+is added. Real provider protocol compatibility and full accounting acceptance remain NOT-RUN.
+
+`TestCredentialGatewayProtocolCompletion`, fragmentation/usage and malformed-outcome tests exercise
+valid terminal JSON/SSE, incomplete clean EOF, missing/invalid counters, unsupported events, changed
+identities, ordering, bounds, trailers and split error redaction. Both production adapters' owned ELF
+launch/resume fixtures stop after one gateway call and one native launch for incomplete/error outcomes.
+Existing native state, session identity and already observed usage remain; retry flags clear.
 
 `TestCredentialExclusiveProductionAdapters` uses only owned copies of the test executable at the real Claude/Codex production adapter seam. Its ordinary negative control reads an owned unlimited sentinel via direct paths, symlinks, inherited environment, an owned peer's environment/descriptor, a shell helper and owned host TCP/pathname/abstract Unix services. The isolated runs deny those routes, exclude another prepared task, reach only the scoped fixture gateway, override forged request credentials/task headers, preserve same-task home state and exercise resume. Override routes and extra descriptors refuse before launch.
 

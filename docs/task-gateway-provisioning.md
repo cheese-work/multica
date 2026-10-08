@@ -155,7 +155,13 @@ ordinary negative control. The task stop marker refuses another preparation/prov
 clearing native state. See `task-credential-execution.md` for the exact terminal-state contract and limits.
 Body truncation, cancellation and premature/failed close now stop the broker with an unknown outcome
 before admitting another request. Owned ELF fixtures cover both production adapters' launch/resume
-seams; byte-level EOF is not provider-protocol completion or normalized final usage evidence.
+seams; byte-level EOF alone is not provider-protocol completion or normalized final usage evidence.
+The broker now requires supported terminal Claude/OpenAI JSON/SSE and explicit final usage before
+admitting another request. Missing/invalid usage, incomplete clean EOF, malformed/error frames and
+trailers record unknown outcome. Text-only protocol support and private disjoint usage normalization
+are source guards, not complete native transport or durable settlement. Unsupported variants refuse.
+See `task-credential-execution.md` for exact bounds and supported events. No daemon launch capability
+is enabled by this protocol source slice.
 Actual supported native transport and end-to-end hard-429/no-new-billable-attempt/no-fallback acceptance remain unfinished.
 Until that complete trusted handoff exists, the daemon's current early refusal must remain.
 Native transport and full gateway/worker acceptance are NOT-RUN.

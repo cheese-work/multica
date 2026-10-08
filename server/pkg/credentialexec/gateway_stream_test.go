@@ -33,16 +33,16 @@ func TestCredentialGatewayStreamLifecycle(test *testing.T) {
 				}
 				writer.Header().Set("Content-Type", "text/event-stream")
 				if outcome == "truncated" {
-					writer.Header().Set("Content-Length", "128")
+					writer.Header().Set("Content-Length", "10000")
 				}
-				_, _ = io.WriteString(writer, "data: owned partial output\n\n")
+				_, _ = io.WriteString(writer, completeResponsesSSE)
 				if outcome == "cancelled" || outcome == "early-close" {
 					writer.(http.Flusher).Flush()
 					<-request.Context().Done()
 				}
 			}))
 			defer upstream.Close()
-			boundary := &Boundary{state: test.TempDir(), stopped: make(chan struct{})}
+			boundary := &Boundary{state: test.TempDir(), spec: Spec{Provider: "codex"}, stopped: make(chan struct{})}
 			marker := filepath.Join(boundary.state, "native-session")
 			if err := os.WriteFile(marker, []byte("retained"), 0600); err != nil {
 				test.Fatal(err)
@@ -61,7 +61,7 @@ func TestCredentialGatewayStreamLifecycle(test *testing.T) {
 				test.Fatal(err)
 			}
 			defer response.Body.Close()
-			if outcome != "upgrade" && boundary.requestMutex.TryLock() {
+			if outcome != "upgrade" && outcome != "empty" && boundary.requestMutex.TryLock() {
 				boundary.requestMutex.Unlock()
 				test.Error("another request can reach the gateway before the stream is consumed and closed")
 			}
@@ -72,7 +72,7 @@ func TestCredentialGatewayStreamLifecycle(test *testing.T) {
 			if outcome != "early-close" {
 				_, readErr = io.ReadAll(response.Body)
 			}
-			if outcome != "upgrade" && boundary.requestMutex.TryLock() {
+			if outcome != "upgrade" && outcome != "empty" && boundary.requestMutex.TryLock() {
 				boundary.requestMutex.Unlock()
 				test.Error("reading the stream released admission before body close")
 			}
@@ -84,7 +84,7 @@ func TestCredentialGatewayStreamLifecycle(test *testing.T) {
 				test.Fatal("response close did not release request admission")
 			}
 			boundary.requestMutex.Unlock()
-			if outcome == "complete" || outcome == "empty" {
+			if outcome == "complete" {
 				if readErr != nil || closeErr != nil || boundary.StopError() != nil {
 					test.Fatalf("complete byte stream refused: read=%v close=%v stop=%v", readErr, closeErr, boundary.StopError())
 				}

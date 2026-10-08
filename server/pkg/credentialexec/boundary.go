@@ -223,7 +223,7 @@ func allowedGatewayRequest(provider string, request *http.Request) bool {
 	if provider == "claude" {
 		return request.URL.Path == "/v1/messages" || request.URL.Path == "/v1/messages/count_tokens"
 	}
-	return request.URL.Path == "/v1/responses" || request.URL.Path == "/v1/chat/completions"
+	return request.URL.Path == "/v1/responses"
 }
 
 func (boundary *Boundary) Close() error {

@@ -128,22 +128,33 @@ func (transport *gatewayTransport) RoundTrip(request *http.Request) (*http.Respo
 		transport.boundary.stopGateway(reason)
 		return stoppedGatewayResponse(request, transport.boundary.StopError()), nil
 	}
-	body := &gatewayResponseBody{body: response.Body, boundary: transport.boundary}
-	body.complete.Store(response.Body == http.NoBody)
+	protocol, err := newGatewayProtocol(transport.boundary.spec.Provider, request, response)
+	if err != nil {
+		_ = response.Body.Close()
+		transport.boundary.stopGateway(ErrOutcomeUnknown)
+		return stoppedGatewayResponse(request, transport.boundary.StopError()), nil
+	}
+	body := &gatewayResponseBody{body: response.Body, boundary: transport.boundary, protocol: protocol, response: response}
 	response.Body = body
 	releaseAdmission = false
 	return response, nil
 }
 
 type gatewayResponseBody struct {
-	body     io.ReadCloser
-	boundary *Boundary
-	complete atomic.Bool
-	once     sync.Once
-	closeErr error
+	body      io.ReadCloser
+	boundary  *Boundary
+	complete  atomic.Bool
+	once      sync.Once
+	closeErr  error
+	protocol  *gatewayProtocol
+	response  *http.Response
+	sourceEOF bool
 }
 
 func (body *gatewayResponseBody) Read(buffer []byte) (int, error) {
+	if body.protocol != nil {
+		return body.readProtocol(buffer)
+	}
 	count, err := body.body.Read(buffer)
 	if errors.Is(err, io.EOF) {
 		body.complete.Store(true)
@@ -153,6 +164,42 @@ func (body *gatewayResponseBody) Read(buffer []byte) (int, error) {
 		return count, body.boundary.StopError()
 	}
 	return count, err
+}
+
+func (body *gatewayResponseBody) readProtocol(buffer []byte) (int, error) {
+	if len(buffer) == 0 {
+		return 0, nil
+	}
+	for {
+		if err := body.boundary.StopError(); err != nil {
+			return 0, err
+		}
+		if len(body.protocol.ready) != 0 {
+			count := copy(buffer, body.protocol.ready)
+			body.protocol.ready = body.protocol.ready[count:]
+			return count, nil
+		}
+		if body.sourceEOF {
+			body.complete.Store(true)
+			return 0, io.EOF
+		}
+		var chunk [32768]byte
+		count, err := body.body.Read(chunk[:])
+		if body.protocol.feed(chunk[:count]) != nil || err != nil && !errors.Is(err, io.EOF) {
+			body.boundary.stopGateway(ErrOutcomeUnknown)
+			return 0, body.boundary.StopError()
+		}
+		if errors.Is(err, io.EOF) {
+			if body.protocol.finish() != nil || len(body.response.Trailer) != 0 {
+				body.boundary.stopGateway(ErrOutcomeUnknown)
+				return 0, body.boundary.StopError()
+			}
+			if !body.protocol.stream {
+				body.protocol.ready = body.protocol.buffer
+			}
+			body.sourceEOF = true
+		}
+	}
 }
 
 func (body *gatewayResponseBody) Close() error {

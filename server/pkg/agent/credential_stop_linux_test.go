@@ -74,14 +74,22 @@ func quotaFixtureAgent() {
 }
 
 func TestCredentialExclusiveQuotaStopAtProductionAdapters(test *testing.T) {
-	testCredentialExclusiveStopAtProductionAdapters(test, false)
+	testCredentialExclusiveStopAtProductionAdapters(test, "quota")
 }
 
 func TestCredentialExclusiveStreamStopAtProductionAdapters(test *testing.T) {
-	testCredentialExclusiveStopAtProductionAdapters(test, true)
+	testCredentialExclusiveStopAtProductionAdapters(test, "truncated")
 }
 
-func testCredentialExclusiveStopAtProductionAdapters(test *testing.T, streamFailure bool) {
+func TestCredentialExclusiveSemanticStopAtProductionAdapters(test *testing.T) {
+	for _, outcome := range []string{"incomplete", "error"} {
+		test.Run(outcome, func(test *testing.T) {
+			testCredentialExclusiveStopAtProductionAdapters(test, outcome)
+		})
+	}
+}
+
+func testCredentialExclusiveStopAtProductionAdapters(test *testing.T, outcome string) {
 	test.Helper()
 	if _, err := os.Stat("/usr/bin/bwrap"); os.IsNotExist(err) {
 		test.Skip("gateway-stop adapter integration NOT-RUN: system bubblewrap unavailable")
@@ -98,10 +106,20 @@ func testCredentialExclusiveStopAtProductionAdapters(test *testing.T, streamFail
 					if provider == "claude" && request.Header.Get("X-Api-Key") != "owned-task-key" || provider == "codex" && request.Header.Get("Authorization") != "Bearer owned-task-key" {
 						test.Error("task-bound credential lost")
 					}
-					if streamFailure {
+					if outcome == "truncated" {
 						writer.Header().Set("Content-Type", "text/event-stream")
 						writer.Header().Set("Content-Length", "128")
 						_, _ = io.WriteString(writer, "data: owned partial output\n\n")
+					} else if outcome == "error" {
+						writer.Header().Set("Content-Type", "text/event-stream")
+						_, _ = io.WriteString(writer, "event: error\ndata: {\"type\":\"error\",\"error\":{\"message\":\"owned response secret\"}}\n\n")
+					} else if outcome == "incomplete" {
+						writer.Header().Set("Content-Type", "application/json")
+						if provider == "claude" {
+							_, _ = io.WriteString(writer, strings.Replace(ownedClaudeGatewayResponse, `"stop_reason":"end_turn"`, `"stop_reason":null`, 1))
+						} else {
+							_, _ = io.WriteString(writer, strings.Replace(ownedResponsesGatewayResponse, `"status":"completed"`, `"status":"incomplete"`, 1))
+						}
 					} else {
 						writer.WriteHeader(http.StatusTooManyRequests)
 						_, _ = io.WriteString(writer, "owned response secret")
@@ -150,7 +168,7 @@ func testCredentialExclusiveStopAtProductionAdapters(test *testing.T, streamFail
 				}
 				result := <-session.Result
 				expectedError := "task quota exhausted"
-				if streamFailure {
+				if outcome != "quota" {
 					expectedError = "task gateway outcome unknown"
 				}
 				if result.Status != "failed" || !strings.Contains(result.Error, expectedError) || result.Output != "" || result.ResumeRejected || result.ResumeRejectedTransient || calls.Load() != 1 || strings.Contains(result.Error, "owned response secret") {
@@ -179,12 +197,26 @@ func testCredentialExclusiveStopAtProductionAdapters(test *testing.T, streamFail
 }
 
 func TestCredentialQuotaStopNegativeControl(test *testing.T) {
+	testCredentialStopNegativeControl(test, false)
+}
+
+func TestCredentialSemanticStopNegativeControl(test *testing.T) {
+	testCredentialStopNegativeControl(test, true)
+}
+
+func testCredentialStopNegativeControl(test *testing.T, semantic bool) {
+	test.Helper()
 	for _, provider := range []string{"claude", "codex"} {
 		test.Run(provider, func(test *testing.T) {
 			var calls atomic.Int32
 			gateway := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 				calls.Add(1)
-				writer.WriteHeader(http.StatusTooManyRequests)
+				if semantic {
+					writer.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(writer, `{"status":"incomplete","error":"owned response secret"}`)
+				} else {
+					writer.WriteHeader(http.StatusTooManyRequests)
+				}
 			}))
 			defer gateway.Close()
 			helper, err := os.Executable()
@@ -214,7 +246,11 @@ func TestCredentialQuotaStopNegativeControl(test *testing.T) {
 			}
 			result := <-session.Result
 			if os.Getenv("MULTICA_CREDENTIAL_STOP_NEGATIVE_DENY") == "1" {
-				if result.Status != "failed" || !strings.Contains(result.Error, "task quota exhausted") || calls.Load() != 1 {
+				expected := "task quota exhausted"
+				if semantic {
+					expected = "task gateway outcome unknown"
+				}
+				if result.Status != "failed" || !strings.Contains(result.Error, expected) || calls.Load() != 1 {
 					test.Fatalf("intended negative denial assertion failed: status=%s calls=%d", result.Status, calls.Load())
 				}
 			} else if result.Status != "completed" || result.Output != "forged quota success" || calls.Load() != 3 {
