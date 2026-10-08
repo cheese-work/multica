@@ -1333,6 +1333,7 @@ type IssueWakeupDefinition struct {
 	UpdatedBy   pgtype.UUID        `json:"updated_by"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	EventTypes  []string           `json:"event_types"`
 }
 
 type IssueWakeupPrEvent struct {
@@ -2045,6 +2046,26 @@ type WakeupAggregateReservation struct {
 	TaskID      pgtype.UUID        `json:"task_id"`
 	WakeupID    pgtype.UUID        `json:"wakeup_id"`
 	ReservedAt  pgtype.Timestamptz `json:"reserved_at"`
+}
+
+type WakeupScopedEvent struct {
+	ID           pgtype.UUID        `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	IssueID      pgtype.UUID        `json:"issue_id"`
+	ProjectID    pgtype.UUID        `json:"project_id"`
+	EventType    string             `json:"event_type"`
+	EventKey     string             `json:"event_key"`
+	AgentID      pgtype.UUID        `json:"agent_id"`
+	SourceTaskID pgtype.UUID        `json:"source_task_id"`
+	ActorType    pgtype.Text        `json:"actor_type"`
+	ActorID      pgtype.Text        `json:"actor_id"`
+	Payload      []byte             `json:"payload"`
+	Delivered    []string           `json:"delivered"`
+	Chain        []string           `json:"chain"`
+	CapturedAt   pgtype.Timestamptz `json:"captured_at"`
+	RetryAt      pgtype.Timestamptz `json:"retry_at"`
+	HandledAt    pgtype.Timestamptz `json:"handled_at"`
+	Outcome      pgtype.Text        `json:"outcome"`
 }
 
 type WebhookDelivery struct {
