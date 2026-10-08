@@ -105,6 +105,9 @@ jobs:
         id: decide
         env:
           EVENT_NAME: ${{ github.event_name }}
+          # PR head branch, else the pushed/dispatched ref: upstream-sync/* heads
+          # must not select the X99 self-hosted jobs (CHE-1381).
+          HEAD_REF: ${{ github.head_ref || github.ref_name }}
           FILTER_RESULTS: ${{ toJSON(steps.filter.outputs) }}
         run: node scripts/ci-scope.mjs decide
 

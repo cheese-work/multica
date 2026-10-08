@@ -68,6 +68,25 @@ test("scheduled and manual runs select every scope without a path-filter result"
   }
 });
 
+test("upstream-sync heads never select the X99 self-hosted scopes", () => {
+  const everything = Object.fromEntries(Object.keys(filters).map((scope) => [scope, "true"]));
+  const syncHead = "upstream-sync/multica/" + "a".repeat(40);
+  for (const event of ["push", "pull_request"]) {
+    const outputs = decideScopes(event, everything, syncHead);
+    assert.equal(outputs.scripts, "false");
+    assert.equal(outputs.quality_only, "false");
+    assert.equal(outputs.backend, "true", "hosted jobs keep running");
+  }
+  assert.equal(decideScopes("workflow_dispatch", {}, syncHead).scripts, "false");
+  const ordinary = decideScopes("pull_request", { ...everything, frontend: "false" }, "feature/x");
+  assert.equal(ordinary.scripts, "true");
+  assert.equal(ordinary.quality_only, "true");
+  // The aggregate gates accept the skipped X99 jobs on a sync head.
+  for (const gate of ["frontend", "backend"]) {
+    checkGate(productionNeeds(gate, decideScopes("pull_request", everything, syncHead)), productionMapping(gate));
+  }
+});
+
 test("missing, malformed and unsupported filter results fail closed", () => {
   for (const value of [undefined, "", "unknown", true]) {
     assert.throws(() => decideScopes("push", { ...filterFiles([]), backend: value }), /backend/);
