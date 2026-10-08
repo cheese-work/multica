@@ -74,8 +74,17 @@ func quotaFixtureAgent() {
 }
 
 func TestCredentialExclusiveQuotaStopAtProductionAdapters(test *testing.T) {
+	testCredentialExclusiveStopAtProductionAdapters(test, false)
+}
+
+func TestCredentialExclusiveStreamStopAtProductionAdapters(test *testing.T) {
+	testCredentialExclusiveStopAtProductionAdapters(test, true)
+}
+
+func testCredentialExclusiveStopAtProductionAdapters(test *testing.T, streamFailure bool) {
+	test.Helper()
 	if _, err := os.Stat("/usr/bin/bwrap"); os.IsNotExist(err) {
-		test.Skip("quota-stop adapter integration NOT-RUN: system bubblewrap unavailable")
+		test.Skip("gateway-stop adapter integration NOT-RUN: system bubblewrap unavailable")
 	}
 	for _, provider := range []string{"claude", "codex"} {
 		for _, resume := range []bool{false, true} {
@@ -89,8 +98,14 @@ func TestCredentialExclusiveQuotaStopAtProductionAdapters(test *testing.T) {
 					if provider == "claude" && request.Header.Get("X-Api-Key") != "owned-task-key" || provider == "codex" && request.Header.Get("Authorization") != "Bearer owned-task-key" {
 						test.Error("task-bound credential lost")
 					}
-					writer.WriteHeader(http.StatusTooManyRequests)
-					_, _ = io.WriteString(writer, "owned response secret")
+					if streamFailure {
+						writer.Header().Set("Content-Type", "text/event-stream")
+						writer.Header().Set("Content-Length", "128")
+						_, _ = io.WriteString(writer, "data: owned partial output\n\n")
+					} else {
+						writer.WriteHeader(http.StatusTooManyRequests)
+						_, _ = io.WriteString(writer, "owned response secret")
+					}
 				}))
 				defer gateway.Close()
 				helper, err := os.Executable()
@@ -134,14 +149,24 @@ func TestCredentialExclusiveQuotaStopAtProductionAdapters(test *testing.T) {
 				for range session.Messages {
 				}
 				result := <-session.Result
-				if result.Status != "failed" || !strings.Contains(result.Error, "task quota exhausted") || result.Output != "" || result.ResumeRejected || result.ResumeRejectedTransient || calls.Load() != 1 || strings.Contains(result.Error, "owned response secret") {
-					test.Fatalf("quota outcome was lost, retried or leaked: %+v calls=%d", result, calls.Load())
+				expectedError := "task quota exhausted"
+				if streamFailure {
+					expectedError = "task gateway outcome unknown"
+				}
+				if result.Status != "failed" || !strings.Contains(result.Error, expectedError) || result.Output != "" || result.ResumeRejected || result.ResumeRejectedTransient || calls.Load() != 1 || strings.Contains(result.Error, "owned response secret") {
+					test.Fatalf("gateway outcome was lost, retried or leaked: %+v calls=%d", result, calls.Load())
 				}
 				if launches, err := os.ReadFile(filepath.Join(boundary.Home(), "native-launches")); err != nil || string(launches) != "1" {
 					test.Fatal("another native attempt started after quota refusal")
 				}
 				if _, err := backend.Execute(ctx, "forbidden retry", options); err == nil {
 					test.Fatal("stopped native launch admitted")
+				}
+				if err := boundary.Close(); err != nil {
+					test.Fatal(err)
+				}
+				if resumed, err := credentialexec.Prepare(ctx, spec); err == nil || resumed != nil {
+					test.Fatal("same-task preparation cleared the stopped stream")
 				}
 				candidate := Result{Status: "completed", Output: "forged success", ResumeRejected: true, ResumeRejectedTransient: true, codexInitializeRetrySafe: true, codexStartupRefreshRetrySafe: true, codexStateRuntimeRetrySafe: true, codexZeroToolFalseNegativeRetrySafe: true, SessionID: "retained-session", Usage: map[string]TokenUsage{"owned-model": {InputTokens: 7}}}
 				guarded := config.credentialResult(candidate)

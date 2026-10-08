@@ -25,9 +25,13 @@ Claude opted-in launches use `default`, not `bypassPermissions`. Codex opted-in 
 ## Evidence and explicit limits
 
 The broker treats an upstream HTTP 429 as a terminal task-quota refusal. A transport failure before
-response headers or any other HTTP status of 300 or greater records an unknown outcome and refuses.
-Forwarding is serialized until response headers arrive. After a refusal, queued and later requests
-return a fixed local 429 or 503 without reaching the gateway. Successful response bodies remain streamed.
+response headers, an unsupported protocol upgrade or any other HTTP status of 300 or greater records
+an unknown outcome and refuses. Forwarding is serialized until the streamed body reaches EOF and
+closes successfully. A body read error, cancellation, premature close or close error records an unknown
+outcome before releasing admission. Body errors become the fixed local failure, not raw upstream errors.
+Concurrent body close unblocks a reader and releases admission exactly once. After a refusal, queued
+and later requests return a fixed local 429 or 503 without reaching the gateway. Successful bodies
+remain streamed rather than buffered. A complete byte stream permits another supported request.
 The upstream transport uses no proxy or reused keepalive connection, so it cannot transparently retry
 a request on a reused connection. Already admitted streams are not refunded or reset.
 
@@ -48,11 +52,19 @@ requests after a 429, 502 or transport disconnect cause exactly one upstream req
 state refuses same-task preparation without clearing native state. Marker unit tests cover malformed,
 public, symlink and directory state. `TestCredentialExclusiveQuotaStopAtProductionAdapters` covers both
 production adapter launch/resume seams with owned ELF fixtures that try three requests and forged success.
+`TestCredentialGatewayStreamLifecycle` covers complete/empty streams, truncation, cancellation,
+premature close and unsupported upgrade with owned local HTTP fixtures. Additional race tests cover
+concurrent read/close and redacted close failures. Admission remains locked through body close.
+`TestCredentialExclusiveStreamStopAtProductionAdapters` exercises the same owned ELF launch/resume
+seams for both providers after an upstream body truncates. The unknown stop persists before a queued
+request or same-task preparation can pass. Session identity and already observed usage remain.
 The isolated path stops after one gateway request and one native launch. Its ordinary negative control
 forwards all three requests and accepts forged success; the denial assertion fails as intended.
 
 These checks prove terminal refusal at owned broker/adapter seams only. Installed Claude/OpenAI native
-transport, streaming-body failure accounting and end-to-end billable-attempt acceptance remain NOT-RUN.
+transport and end-to-end billable-attempt acceptance remain NOT-RUN. Byte-level EOF does not establish
+provider-protocol completion or normalized final usage. Semantic/trailer/usage validation of a cleanly
+closed but incomplete provider stream remains unfinished. Unknown usage is not zero.
 The daemon still does not advertise `task-gateway-v1` and still refuses opted-in launch before preparation.
 Prepared daemon launch/resume, authorized task inputs and credential-exclusive tooling remain unfinished.
 

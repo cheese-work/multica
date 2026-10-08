@@ -145,6 +145,9 @@ The integration must stage only authorized task input and support credential-exc
 The broker/production-adapter hard-429 stop now passes owned launch/resume fixtures, including an intended-fail
 ordinary negative control. The task stop marker refuses another preparation/provisioning attempt without
 clearing native state. See `task-credential-execution.md` for the exact terminal-state contract and limits.
+Body truncation, cancellation and premature/failed close now stop the broker with an unknown outcome
+before admitting another request. Owned ELF fixtures cover both production adapters' launch/resume
+seams; byte-level EOF is not provider-protocol completion or normalized final usage evidence.
 Actual supported native transport and end-to-end hard-429/no-new-billable-attempt/no-fallback acceptance remain unfinished.
 Until that complete trusted handoff exists, the daemon's current early refusal must remain.
 Native transport and full gateway/worker acceptance are NOT-RUN.

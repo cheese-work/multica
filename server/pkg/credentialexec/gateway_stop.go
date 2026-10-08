@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 )
 
 func readGatewayStop(state string) error {
@@ -105,12 +107,17 @@ func stoppedGatewayResponse(request *http.Request, err error) *http.Response {
 
 func (transport *gatewayTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	transport.boundary.requestMutex.Lock()
-	defer transport.boundary.requestMutex.Unlock()
+	releaseAdmission := true
+	defer func() {
+		if releaseAdmission {
+			transport.boundary.requestMutex.Unlock()
+		}
+	}()
 	if err := transport.boundary.StopError(); err != nil {
 		return stoppedGatewayResponse(request, err), nil
 	}
 	response, err := transport.transport.RoundTrip(request)
-	if err != nil || response.StatusCode >= http.StatusMultipleChoices {
+	if err != nil || response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		reason := ErrOutcomeUnknown
 		if response != nil {
 			if response.StatusCode == http.StatusTooManyRequests {
@@ -121,5 +128,40 @@ func (transport *gatewayTransport) RoundTrip(request *http.Request) (*http.Respo
 		transport.boundary.stopGateway(reason)
 		return stoppedGatewayResponse(request, transport.boundary.StopError()), nil
 	}
+	body := &gatewayResponseBody{body: response.Body, boundary: transport.boundary}
+	body.complete.Store(response.Body == http.NoBody)
+	response.Body = body
+	releaseAdmission = false
 	return response, nil
+}
+
+type gatewayResponseBody struct {
+	body     io.ReadCloser
+	boundary *Boundary
+	complete atomic.Bool
+	once     sync.Once
+	closeErr error
+}
+
+func (body *gatewayResponseBody) Read(buffer []byte) (int, error) {
+	count, err := body.body.Read(buffer)
+	if errors.Is(err, io.EOF) {
+		body.complete.Store(true)
+		return count, io.EOF
+	} else if err != nil {
+		body.boundary.stopGateway(ErrOutcomeUnknown)
+		return count, body.boundary.StopError()
+	}
+	return count, err
+}
+
+func (body *gatewayResponseBody) Close() error {
+	body.once.Do(func() {
+		if err := body.body.Close(); err != nil || !body.complete.Load() {
+			body.boundary.stopGateway(ErrOutcomeUnknown)
+			body.closeErr = body.boundary.StopError()
+		}
+		body.boundary.requestMutex.Unlock()
+	})
+	return body.closeErr
 }
