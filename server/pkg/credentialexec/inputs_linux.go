@@ -3,8 +3,10 @@ package credentialexec
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -61,6 +63,54 @@ func (boundary *Boundary) accessInputs(ctx context.Context, inputs map[string][]
 			return ErrUnavailable
 		}
 	}
+	inputRoot, err := openInputDirectory(int(root.Fd()), "multica-input", false)
+	if err != nil {
+		return ErrUnavailable
+	}
+	defer inputRoot.Close()
+	return verifyInputTree(inputRoot, inputs)
+}
+
+func verifyInputTree(root *os.File, inputs map[string][]byte) error {
+	expected := make(map[string]bool)
+	for name := range inputs {
+		name = strings.TrimPrefix(name, "multica-input/")
+		expected[name] = false
+		for parent := filepath.Dir(name); parent != "."; parent = filepath.Dir(parent) {
+			expected[parent] = true
+		}
+	}
+	seen := 0
+	var verify func(*os.File, string) error
+	verify = func(directory *os.File, prefix string) error {
+		entries, err := directory.ReadDir(len(expected) + 1)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return ErrUnavailable
+		}
+		for _, entry := range entries {
+			name := filepath.Join(prefix, entry.Name())
+			isDirectory, exists := expected[name]
+			if !exists || entry.IsDir() != isDirectory {
+				return ErrUnavailable
+			}
+			seen++
+			if isDirectory {
+				child, err := openInputDirectory(int(directory.Fd()), entry.Name(), false)
+				if err != nil {
+					return ErrUnavailable
+				}
+				err = verify(child, name)
+				closeErr := child.Close()
+				if err != nil || closeErr != nil {
+					return ErrUnavailable
+				}
+			}
+		}
+		return nil
+	}
+	if verify(root, "") != nil || seen != len(expected) {
+		return ErrUnavailable
+	}
 	return nil
 }
 
@@ -70,7 +120,7 @@ func openInputDirectory(parent int, name string, create bool) (*os.File, error) 
 			return nil, ErrUnavailable
 		}
 	}
-	descriptor, err := unix.Openat2(parent, name, &unix.OpenHow{Flags: unix.O_PATH | unix.O_DIRECTORY | unix.O_CLOEXEC, Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS})
+	descriptor, err := unix.Openat2(parent, name, &unix.OpenHow{Flags: unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC, Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS})
 	if err != nil {
 		return nil, ErrUnavailable
 	}

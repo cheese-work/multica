@@ -58,6 +58,18 @@ func taskGatewayNativeFixture() {
 					return walkErr
 				}
 				if entry.IsDir() {
+					if err := os.WriteFile(filepath.Join(path, "unexpected-input"), []byte("untrusted"), 0600); !errors.Is(err, syscall.EROFS) {
+						if err == nil {
+							return fmt.Errorf("trusted input directory permits new entries: %s", path)
+						}
+						return fmt.Errorf("trusted input directory is not read-only: %s: %w", path, err)
+					}
+					if err := os.Rename(path, path+"-moved"); !errors.Is(err, syscall.EBUSY) && !errors.Is(err, syscall.EROFS) {
+						if err == nil {
+							return fmt.Errorf("trusted input directory can be renamed: %s", path)
+						}
+						return fmt.Errorf("trusted input directory is not pinned: %s: %w", path, err)
+					}
 					return nil
 				}
 				if err := os.WriteFile(path, []byte("forged native input"), 0600); !errors.Is(err, syscall.EROFS) {
@@ -66,7 +78,7 @@ func taskGatewayNativeFixture() {
 					}
 					return fmt.Errorf("trusted input is not read-only: %s: %w", path, err)
 				}
-				if err := os.Remove(path); !errors.Is(err, syscall.EBUSY) {
+				if err := os.Remove(path); !errors.Is(err, syscall.EBUSY) && !errors.Is(err, syscall.EROFS) {
 					if err == nil {
 						return fmt.Errorf("trusted input was removed: %s", path)
 					}
@@ -252,6 +264,18 @@ func TestTaskGatewayExecutionPreparedLaunchAndResume(test *testing.T) {
 						}
 					}
 					if err := os.WriteFile(promptPath, []byte(BuildPrompt(resolved, provider)), 0600); err != nil {
+						test.Fatal(err)
+					}
+				}
+				for _, relative := range []string{"multica-input/unexpected.md", "multica-input/skills/owned-skill/unexpected.md"} {
+					path := filepath.Join(execution.boundary.WorkDir(), relative)
+					if err := os.WriteFile(path, []byte("untrusted extra input"), 0600); err != nil {
+						test.Fatal(err)
+					}
+					if result, err := execution.Run(context.Background(), nil); err == nil || result.Status != "" || calls.Load() != int32(attempt-1) {
+						test.Fatal("unexpected input launched", result, err)
+					}
+					if err := os.Remove(path); err != nil {
 						test.Fatal(err)
 					}
 				}

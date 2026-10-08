@@ -88,6 +88,46 @@ func TestCredentialInputsVerifyUnavailable(test *testing.T) {
 	}
 }
 
+func TestCredentialInputsRefuseUnexpectedEntries(test *testing.T) {
+	for _, kind := range []string{"file", "directory", "symlink", "nested-file"} {
+		test.Run(kind, func(test *testing.T) {
+			inputs := map[string][]byte{"multica-input/prompt.md": []byte("authorized prompt"), "multica-input/skills/owned/SKILL.md": []byte("authorized skill")}
+			boundary := &Boundary{state: test.TempDir(), spec: Spec{Inputs: inputs}}
+			if err := os.Mkdir(boundary.WorkDir(), 0700); err != nil {
+				test.Fatal(err)
+			}
+			if err := boundary.stageInputs(context.Background(), inputs); err != nil {
+				test.Fatal(err)
+			}
+			path := filepath.Join(boundary.WorkDir(), "multica-input", "unexpected")
+			var err error
+			switch kind {
+			case "file":
+				err = os.WriteFile(path, []byte("untrusted"), 0600)
+			case "directory":
+				err = os.Mkdir(path, 0700)
+			case "symlink":
+				err = os.Symlink(test.TempDir(), path)
+			case "nested-file":
+				path = filepath.Join(boundary.WorkDir(), "multica-input", "skills", "owned", "unexpected")
+				err = os.WriteFile(path, []byte("untrusted"), 0600)
+			}
+			if err != nil {
+				test.Fatal(err)
+			}
+			if err := boundary.VerifyInputs(context.Background()); !errors.Is(err, ErrUnavailable) {
+				test.Fatal("unexpected input entry verified", err)
+			}
+			if err := boundary.stageInputs(context.Background(), inputs); !errors.Is(err, ErrUnavailable) {
+				test.Fatal("same-task preparation accepted unexpected input", err)
+			}
+			if _, err := os.Lstat(path); err != nil {
+				test.Fatal("input verification silently removed an unexpected entry", err)
+			}
+		})
+	}
+}
+
 func TestCredentialInputsRetainState(test *testing.T) {
 	boundary := &Boundary{state: test.TempDir()}
 	if err := os.Mkdir(boundary.WorkDir(), 0700); err != nil {

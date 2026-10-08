@@ -313,8 +313,19 @@ func (boundary *Boundary) wrap(command *exec.Cmd, withGateway bool) (func(), err
 		files = append(files, os.NewFile(uintptr(descriptor), directory))
 	}
 	arguments := []string{boundary.bwrap, "--unshare-all", "--unshare-user", "--unshare-pid", "--unshare-net", "--unshare-ipc", "--unshare-uts", "--die-with-parent", "--new-session", "--cap-drop", "ALL", "--ro-bind-fd", "5", "/", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--bind-fd", "3", boundary.Home(), "--bind-fd", "4", boundary.WorkDir(), "--chdir", boundary.WorkDir()}
-	if withGateway {
+	if withGateway && len(boundary.spec.Inputs) != 0 {
 		if ValidateInputs(boundary.spec.Inputs) != nil {
+			cleanup()
+			return nil, ErrUnavailable
+		}
+		inputRoot, err := openInputDirectory(int(files[1].Fd()), "multica-input", false)
+		if err != nil {
+			cleanup()
+			return nil, ErrUnavailable
+		}
+		arguments = append(arguments, "--ro-bind-fd", strconv.Itoa(len(files)+3), filepath.Join(boundary.WorkDir(), "multica-input"))
+		files = append(files, inputRoot)
+		if verifyInputTree(inputRoot, boundary.spec.Inputs) != nil {
 			cleanup()
 			return nil, ErrUnavailable
 		}
@@ -324,7 +335,7 @@ func (boundary *Boundary) wrap(command *exec.Cmd, withGateway bool) (func(), err
 		}
 		sort.Strings(names)
 		for _, name := range names {
-			file, err := accessInput(files[1], name, boundary.spec.Inputs[name], false)
+			file, err := accessInput(inputRoot, strings.TrimPrefix(name, "multica-input/"), boundary.spec.Inputs[name], false)
 			if err != nil {
 				cleanup()
 				return nil, ErrUnavailable
