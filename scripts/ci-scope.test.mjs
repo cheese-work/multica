@@ -83,7 +83,25 @@ test("upstream-sync heads never select the X99 self-hosted scopes", () => {
   assert.equal(ordinary.quality_only, "true");
   // The aggregate gates accept the skipped X99 jobs on a sync head.
   for (const gate of ["frontend", "backend"]) {
-    checkGate(productionNeeds(gate, decideScopes("pull_request", everything, syncHead)), productionMapping(gate));
+    checkGate(productionNeeds(gate, decideScopes("pull_request", everything, syncHead), syncHead), productionMapping(gate));
+  }
+});
+
+// A candidate controls scripts/ci-scope.mjs, which the runner does not block.
+// Simulate a candidate whose helper ignores the head ref: the X99 jobs must
+// still be skipped by their own job-level `if`, and the gate fails closed.
+test("a tampered ci-scope helper cannot admit a sync head to X99", () => {
+  const everything = Object.fromEntries(Object.keys(filters).map((scope) => [scope, "true"]));
+  const syncHead = "upstream-sync/multica/" + "a".repeat(40);
+  const tampered = decideScopes("pull_request", { ...everything, frontend: "false" });
+  assert.equal(tampered.scripts, "true");
+  assert.equal(tampered.quality_only, "true");
+  for (const [job, gate] of [["script-checks", "backend"], ["frontend-quality", "frontend"]]) {
+    assert.match(jobs[job], /^    runs-on: .*cheese-x99/m);
+    assert.match(jobs[job], /!startsWith\(github\.head_ref \|\| github\.ref_name, 'upstream-sync\/'\)/);
+    const needs = productionNeeds(gate, tampered, syncHead);
+    assert.equal(needs[job].result, "skipped");
+    assert.throws(() => checkGate(needs, productionMapping(gate)), new RegExp(job));
   }
 });
 
@@ -111,7 +129,7 @@ function field(source, pattern) {
 function productionMapping(gate) {
   return JSON.parse(field(jobs[gate], /^          JOB_SCOPES: '(.+)'$/m));
 }
-function productionNeeds(gate, outputs) {
+function productionNeeds(gate, outputs, headRef = "") {
   const dependencies = field(jobs[gate], /^    needs: \[(.+)\]$/m).split(", ");
   return Object.fromEntries(dependencies.map((job) => {
     if (job === "changes") return [job, { result: "success", outputs }];
@@ -121,10 +139,11 @@ function productionNeeds(gate, outputs) {
     // accounts for that through JOB_SCOPES rather than a skipped dependency.
     // A dependency with no job-level if: scope is unconditional: it always
     // succeeds regardless of the simulated path-filter outputs.
-    const match = jobs[job].match(/^    if: \$\{\{ needs\.changes\.outputs\.(\w+) == 'true' \}\}$/m);
+    const match = jobs[job].match(/^    if: \$\{\{ needs\.changes\.outputs\.(\w+) == 'true'( && !startsWith\(github\.head_ref \|\| github\.ref_name, 'upstream-sync\/'\))? \}\}$/m);
     if (!match) return [job, { result: "success" }];
-    const scope = match[1];
-    return [job, { result: outputs[scope] === "true" ? "success" : "skipped" }];
+    const [, scope, syncExclusion] = match;
+    const excluded = syncExclusion && headRef.startsWith("upstream-sync/");
+    return [job, { result: outputs[scope] === "true" && !excluded ? "success" : "skipped" }];
   }));
 }
 

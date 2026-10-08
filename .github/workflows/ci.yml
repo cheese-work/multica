@@ -761,7 +761,9 @@ jobs:
 
   script-checks:
     needs: changes
-    if: ${{ needs.changes.outputs.scripts == 'true' }}
+    # X99 job: the sync-head exclusion lives here, not only in candidate-controlled
+    # scripts/ci-scope.mjs (CHE-1381).
+    if: ${{ needs.changes.outputs.scripts == 'true' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') }}
     runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
     steps:
       - uses: actions/checkout@v6
@@ -835,7 +837,9 @@ jobs:
 
   frontend-quality:
     needs: changes
-    if: ${{ needs.changes.outputs.quality_only == 'true' }}
+    # X99 job: the sync-head exclusion lives here, not only in candidate-controlled
+    # scripts/ci-scope.mjs (CHE-1381).
+    if: ${{ needs.changes.outputs.quality_only == 'true' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') }}
     runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
     steps:
       - uses: actions/checkout@v6
