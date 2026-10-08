@@ -329,13 +329,18 @@ func TestTaskGatewayExecutionRefusesBeforeGrant(test *testing.T) {
 			test.Fatal("unsupported launch prepared/provisioned")
 		}
 	}
-	if execution, err := client.prepareTaskGatewayExecution(context.Background(), task, spec, agent.ExecOptions{}); err == nil || execution != nil || calls.Load() != 1 {
-		test.Fatal("valid OS preparation did not reach refused grant", calls.Load(), err)
-	}
-	spec.Executable = "/owned/missing"
-	if execution, err := client.prepareTaskGatewayExecution(context.Background(), task, spec, agent.ExecOptions{}); err == nil || execution != nil || calls.Load() != 1 {
-		test.Fatal("missing OS boundary requested credentials")
-	}
+	test.Run("prepared-boundary", func(test *testing.T) {
+		if _, err := os.Stat("/usr/bin/bwrap"); os.IsNotExist(err) {
+			test.Skip("prepared daemon grant fixture NOT-RUN: bubblewrap unavailable")
+		}
+		if execution, err := client.prepareTaskGatewayExecution(context.Background(), task, spec, agent.ExecOptions{}); err == nil || execution != nil || calls.Load() != 1 {
+			test.Fatal("valid OS preparation did not reach refused grant", calls.Load(), err)
+		}
+		spec.Executable = "/owned/missing"
+		if execution, err := client.prepareTaskGatewayExecution(context.Background(), task, spec, agent.ExecOptions{}); err == nil || execution != nil || calls.Load() != 1 {
+			test.Fatal("missing OS boundary requested credentials")
+		}
+	})
 	if taskgateway.Capability == "" {
 		test.Fatal("missing capability contract")
 	}
