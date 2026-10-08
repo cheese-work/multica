@@ -32,3 +32,31 @@ unresolved reachable vulnerability.
 
 Every Go binary retains its compiler version in the standard Go build metadata;
 use `go version -m <binary>` when auditing a downloaded release artifact.
+
+## Release build stamps
+
+The verification job computes one ICT (`Asia/Ho_Chi_Minh`, UTC+7) stamp in
+`YYYYMMDD-hhmm` format. The publishing jobs reuse that output for CLI ldflags,
+backend and web image builds, and an additional stamped image tag. Existing
+semantic-version, SHA, and stable `latest` image tags stay unchanged.
+
+`scripts/release-stamp.sh` is the byte-identical shared helper from
+`cheese-work/multica-dotfiles` at published revision
+`5dafb3d959466df589353a8de1da0def15102a62` (CHE-1308). This pinned vendored copy
+lets release jobs call the shared implementation without adding a credential
+for cross-repository access to that private repository. Refresh the copy and
+its checksum test together when the shared helper changes.
+
+The joined `<upstream>-<stamp>` string is display-only. `multica version
+--output json` returns plain `version`, separate `build`, and `display_version`.
+Self-hosted `/api/config` adds `version` and `build` while retaining
+`server_version` as the display string for installed clients. Official cloud
+config still omits server build information.
+
+Runtime update comparisons accept release stamps and `+` metadata, but do not
+treat git-describe, dirty, or prerelease versions as stable releases. CLI
+minimum-version gates retain their existing parsing and dev-build policy.
+Local builds, PR artifacts, release tags, and archive names are unchanged.
+For an unpublished GoReleaser snapshot, leave `RELEASE_BUILD_STAMP` unset; for
+a release outside the workflow, set it once with
+`export RELEASE_BUILD_STAMP="$(sh scripts/release-stamp.sh)"` before GoReleaser.

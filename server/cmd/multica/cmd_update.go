@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/multica-ai/multica/server/internal/cli"
+	"github.com/multica-ai/multica/server/pkg/buildinfo"
 )
 
 var updateDownloadTimeout time.Duration = cli.DefaultUpdateDownloadTimeout
@@ -44,9 +45,7 @@ func runUpdate(_ *cobra.Command, _ []string) error {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not check latest version: %v\n", err)
 	} else {
-		latestVer := strings.TrimPrefix(latest.TagName, "v")
-		currentVer := strings.TrimPrefix(version, "v")
-		if currentVer == latestVer {
+		if releaseVersionsMatch(version, latest.TagName) {
 			fmt.Fprintln(os.Stderr, "Already up to date.")
 			return nil
 		}
@@ -77,6 +76,12 @@ func runUpdate(_ *cobra.Command, _ []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "%s\nUpdate complete.\n", output)
 	return nil
+}
+
+func releaseVersionsMatch(current, latest string) bool {
+	currentVersion, _ := buildinfo.Split(current)
+	latestVersion, _ := buildinfo.Split(latest)
+	return strings.TrimPrefix(currentVersion, "v") == strings.TrimPrefix(latestVersion, "v")
 }
 
 func runForkUpdate() error {

@@ -48,7 +48,9 @@ async function fetchLatestVersion(): Promise<string | null> {
  * loop decides the same question.
  */
 function parseReleaseVersion(v: string): number[] | null {
-  const parts = v.trim().replace(/^v/, "").split(".");
+  const plainVersion = v.trim().replace(/^v/, "")
+    .replace(/-\d{8}-\d{4}(?=\+|$)/, "").split("+", 1)[0] ?? "";
+  const parts = plainVersion.split(".");
   if (parts.length !== 3) return null;
   const parsed: number[] = [];
   for (const part of parts) {
