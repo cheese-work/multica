@@ -1376,6 +1376,16 @@ describe("AppConfigSchema cdn_signed drift", () => {
     expect(AppConfigSchema.parse({ server_version: "1.2.3" }).server_version).toBe("1.2.3");
     expect(AppConfigSchema.parse({}).server_version).toBeUndefined();
   });
+
+  it("preserves plain version and build fields while rejecting malformed values", () => {
+    const parsed = AppConfigSchema.parse({ version: "0.6.0", build: "20261008-1331" });
+    expect(parsed.version).toBe("0.6.0");
+    expect(parsed.build).toBe("20261008-1331");
+    const malformed = AppConfigSchema.parse({ version: 123, build: { stamp: "bad" } });
+    expect(malformed.version).toBeUndefined();
+    expect(malformed.build).toBeUndefined();
+    expect(AppConfigSchema.parse({}).build).toBeUndefined();
+  });
 });
 
 describe("InboxUnreadSummarySchema", () => {

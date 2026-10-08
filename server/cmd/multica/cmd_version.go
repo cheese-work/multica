@@ -7,6 +7,8 @@ import (
 	"runtime"
 
 	"github.com/spf13/cobra"
+
+	"github.com/multica-ai/multica/server/pkg/buildinfo"
 )
 
 func init() {
@@ -23,13 +25,16 @@ func runVersion(cmd *cobra.Command, _ []string) error {
 	output, _ := cmd.Flags().GetString("output")
 
 	if output == "json" {
+		plainVersion, build := buildinfo.Split(version)
 		info := map[string]string{
-			"version": version,
-			"commit":  commit,
-			"date":    date,
-			"go":      runtime.Version(),
-			"os":      runtime.GOOS,
-			"arch":    runtime.GOARCH,
+			"version":         plainVersion,
+			"build":           build,
+			"display_version": version,
+			"commit":          commit,
+			"date":            date,
+			"go":              runtime.Version(),
+			"os":              runtime.GOOS,
+			"arch":            runtime.GOARCH,
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")

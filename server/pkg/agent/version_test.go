@@ -32,6 +32,7 @@ func TestParseSemver(t *testing.T) {
 		{"2.1.100 (Claude Code)", semver{2, 1, 100}, false},
 		{"codex-cli 0.118.0", semver{0, 118, 0}, false},
 		{"1.0.20", semver{1, 0, 20}, false},
+		{"v0.6.0-20261008-1331", semver{0, 6, 0}, false},
 		{"invalid", semver{}, true},
 		{"", semver{}, true},
 	}
@@ -78,6 +79,9 @@ func TestCheckMinCLIVersion(t *testing.T) {
 		{"tagged release above minimum", "0.3.1", nil},
 		{"previous tagged release below minimum", "v0.2.20", ErrCLIVersionTooOld},
 		{"tagged release below minimum", "v0.2.15", ErrCLIVersionTooOld},
+		{"stamped release at minimum", "v0.2.21-20261008-1331", nil},
+		{"stamped release above minimum", "0.6.0-20261008-1331", nil},
+		{"stamped release below minimum", "v0.2.20-20261008-1331", ErrCLIVersionTooOld},
 		{"empty string", "", ErrCLIVersionMissing},
 		{"unparsable", "not-a-version", ErrCLIVersionMissing},
 		{"git-describe dev build past old tag", "v0.2.15-235-gdaf0e935", nil},
@@ -104,6 +108,15 @@ func TestCheckMinCLIVersionForQuickCreateFields(t *testing.T) {
 	}
 	if err := CheckMinCLIVersionFor("v0.4.2-7-gabc1234", MinQuickCreateFieldsCLIVersion); err != nil {
 		t.Fatalf("dev build error = %v, want nil", err)
+	}
+}
+
+func TestCheckMinCLIVersionForStampedFieldsRelease(test *testing.T) {
+	if err := CheckMinCLIVersionFor("0.4.2-20261008-1331", MinQuickCreateFieldsCLIVersion); !errors.Is(err, ErrCLIVersionTooOld) {
+		test.Fatalf("stamped older release error = %v, want ErrCLIVersionTooOld", err)
+	}
+	if err := CheckMinCLIVersionFor("0.4.3-20261008-1331", MinQuickCreateFieldsCLIVersion); err != nil {
+		test.Fatalf("stamped release at minimum error = %v, want nil", err)
 	}
 }
 
