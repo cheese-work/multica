@@ -43,7 +43,7 @@ Unmanaged claims keep the prior behavior when no policy covers their runtime or 
 
 The current daemon deliberately does not advertise `task-gateway-v1` over HTTP or WebSocket.
 Its opted-in launch refusal remains in place. This is an old-daemon fence, not activation.
-The authenticated grant endpoint and daemon preparation/launch handoff remain unfinished.
+The authenticated grant endpoint and preparation helper exist in source. Daemon launch integration remains unfinished.
 
 The authenticated source contract is Sub2API PR 80 at
 `5ca44abeccad64205b8845b531f4e1b8387603e1`, on
@@ -142,7 +142,10 @@ The new helper is not wired into `runTask`. The current daemon still refuses bef
 and does not advertise `task-gateway-v1`; this source activates no live policy or task launch.
 The remaining integration must wire the prepared broker to daemon launch/resume.
 The integration must stage only authorized task input and support credential-exclusive task tooling.
-The native transport and hard-429/no-fallback contract must pass at both production adapter launch/resume seams.
+The broker/production-adapter hard-429 stop now passes owned launch/resume fixtures, including an intended-fail
+ordinary negative control. The task stop marker refuses another preparation/provisioning attempt without
+clearing native state. See `task-credential-execution.md` for the exact terminal-state contract and limits.
+Actual supported native transport and end-to-end hard-429/no-new-billable-attempt/no-fallback acceptance remain unfinished.
 Until that complete trusted handoff exists, the daemon's current early refusal must remain.
 Native transport and full gateway/worker acceptance are NOT-RUN.
 Independent different-lab signing and current-pair OCR/OER-1 remain required before this issue becomes review-ready.

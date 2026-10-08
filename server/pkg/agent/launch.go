@@ -338,6 +338,36 @@ func (config Config) wrapCredentialCommand(cmd *exec.Cmd) (func(), error) {
 	return config.CredentialBoundary.Wrap(cmd)
 }
 
+func (config Config) credentialRunContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	runCtx, cancel := runContext(ctx, timeout)
+	if config.CredentialBoundary != nil {
+		stopped := make(chan struct{})
+		go func() {
+			defer close(stopped)
+			select {
+			case <-runCtx.Done():
+			case <-config.CredentialBoundary.Stopped():
+				cancel()
+			}
+		}()
+		return runCtx, func() {
+			cancel()
+			<-stopped
+		}
+	}
+	return runCtx, cancel
+}
+
+func (config Config) credentialResult(result Result) Result {
+	if err := config.CredentialBoundary.StopError(); err != nil {
+		result.Status, result.Output, result.Error = "failed", "", err.Error()
+		result.ResumeRejected, result.ResumeRejectedTransient = false, false
+		result.codexInitializeRetrySafe, result.codexStartupRefreshRetrySafe = false, false
+		result.codexStateRuntimeRetrySafe, result.codexZeroToolFalseNegativeRetrySafe = false, false
+	}
+	return result
+}
+
 // logAgentCommand is the only boundary allowed to record runtime process
 // arguments. It works from the final exec.Cmd so launch prefixes and
 // platform-specific rewrites are represented, but never records argument

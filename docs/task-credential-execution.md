@@ -24,6 +24,38 @@ Claude opted-in launches use `default`, not `bypassPermissions`. Codex opted-in 
 
 ## Evidence and explicit limits
 
+The broker treats an upstream HTTP 429 as a terminal task-quota refusal. A transport failure before
+response headers or any other HTTP status of 300 or greater records an unknown outcome and refuses.
+Forwarding is serialized until response headers arrive. After a refusal, queued and later requests
+return a fixed local 429 or 503 without reaching the gateway. Successful response bodies remain streamed.
+The upstream transport uses no proxy or reused keepalive connection, so it cannot transparently retry
+a request on a reused connection. Already admitted streams are not refunded or reset.
+
+The trusted daemon records `gateway-stop` in the task state with exclusive creation, mode 0600 and
+file/directory sync. Only `quota` or `unknown` is valid. Malformed or unavailable markers refuse.
+Preparation and launch reject a stopped task before another provisioning call or native launch.
+Persistence errors stop the current boundary with an unavailable outcome. No automatic removal,
+reset, expiry or release exists. Native session/cache/home state remains intact. This local refusal
+marker is not a quota ledger, crash-durable failed-outcome retry queue or recovery of unknown spend.
+
+Both production adapters cancel an active opted-in native process when the broker stops. The trusted
+stop overrides native success/cancellation text with a fixed failed result and suppresses every native
+resume/fresh-session retry flag before Codex retry selection. The result keeps the session ID and any
+already observed usage. Missing usage remains unknown, not zero. Unmanaged adapters remain unchanged.
+
+`TestCredentialGatewayStopIsTerminal` uses a real OS boundary and local HTTP fixtures. Twelve concurrent
+requests after a 429, 502 or transport disconnect cause exactly one upstream request. Persisted stop
+state refuses same-task preparation without clearing native state. Marker unit tests cover malformed,
+public, symlink and directory state. `TestCredentialExclusiveQuotaStopAtProductionAdapters` covers both
+production adapter launch/resume seams with owned ELF fixtures that try three requests and forged success.
+The isolated path stops after one gateway request and one native launch. Its ordinary negative control
+forwards all three requests and accepts forged success; the denial assertion fails as intended.
+
+These checks prove terminal refusal at owned broker/adapter seams only. Installed Claude/OpenAI native
+transport, streaming-body failure accounting and end-to-end billable-attempt acceptance remain NOT-RUN.
+The daemon still does not advertise `task-gateway-v1` and still refuses opted-in launch before preparation.
+Prepared daemon launch/resume, authorized task inputs and credential-exclusive tooling remain unfinished.
+
 `TestCredentialExclusiveProductionAdapters` uses only owned copies of the test executable at the real Claude/Codex production adapter seam. Its ordinary negative control reads an owned unlimited sentinel via direct paths, symlinks, inherited environment, an owned peer's environment/descriptor, a shell helper and owned host TCP/pathname/abstract Unix services. The isolated runs deny those routes, exclude another prepared task, reach only the scoped fixture gateway, override forged request credentials/task headers, preserve same-task home state and exercise resume. Override routes and extra descriptors refuse before launch.
 
 `TestCredentialExecutionPreparationAndRefusal` executes the real namespace control, verifies repeated preparation, refuses unsupported identities/providers, source owner rebind, missing/failed facilities, unsafe native-state symlinks and an unbound gateway. Handler/daemon checks verify authoritative identity derivation and early refusal with no preparation/provisioning/native side effects.

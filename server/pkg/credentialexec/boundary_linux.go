@@ -39,6 +39,9 @@ func Prepare(ctx context.Context, spec Spec) (*Boundary, error) {
 		return nil, err
 	}
 	state := filepath.Join(spec.Root, spec.Binding.TaskID)
+	if err := readGatewayStop(state); err != nil {
+		return nil, err
+	}
 	if entries, err := os.ReadDir(state); err == nil && len(entries) != 0 {
 		info, markerErr := os.Lstat(filepath.Join(state, "binding.json"))
 		if markerErr != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
@@ -123,7 +126,7 @@ func Prepare(ctx context.Context, spec Spec) (*Boundary, error) {
 	if err := placeholder.Close(); err != nil {
 		return nil, err
 	}
-	boundary := &Boundary{spec: spec, state: state, runtimeRoot: runtimeRoot, bwrap: "/usr/bin/bwrap"}
+	boundary := &Boundary{spec: spec, state: state, runtimeRoot: runtimeRoot, bwrap: "/usr/bin/bwrap", stopped: make(chan struct{})}
 	home, err := os.Open(boundary.Home())
 	if err != nil {
 		return nil, err
@@ -277,6 +280,9 @@ func (boundary *Boundary) Wrap(command *exec.Cmd) (func(), error) {
 func (boundary *Boundary) wrap(command *exec.Cmd, withGateway bool) (func(), error) {
 	boundary.mutex.Lock()
 	defer boundary.mutex.Unlock()
+	if err := boundary.stopErrorLocked(); err != nil {
+		return nil, err
+	}
 	if boundary.closed || command.Dir != boundary.WorkDir() || len(command.ExtraFiles) != 0 || withGateway && (boundary.server == nil || command.Path != boundary.spec.Executable) {
 		return nil, fmt.Errorf("%w: unsupported launch, descriptor or missing gateway", ErrUnavailable)
 	}

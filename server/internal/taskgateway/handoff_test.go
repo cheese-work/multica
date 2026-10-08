@@ -44,6 +44,9 @@ func TestTaskGatewayStrictHandoff(test *testing.T) {
 }
 
 func TestTaskGatewayHandoffPreparesBeforeFetching(test *testing.T) {
+	if _, err := os.Stat("/usr/bin/bwrap"); os.IsNotExist(err) {
+		test.Skip("handoff preparation namespace integration NOT-RUN: system bubblewrap unavailable")
+	}
 	_, binding, _ := gatewayFixture(test)
 	spec := credentialexec.Spec{Root: filepath.Join(test.TempDir(), "private"), Binding: binding, Provider: "codex", Executable: "/owned/missing-elf", HelperExecutable: "/owned/missing-helper"}
 	fetched := false

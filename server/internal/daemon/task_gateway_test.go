@@ -16,6 +16,9 @@ import (
 )
 
 func TestTaskGatewayDaemonPreparedDelivery(test *testing.T) {
+	if _, err := os.Stat("/usr/bin/bwrap"); os.IsNotExist(err) {
+		test.Skip("daemon prepared-delivery namespace integration NOT-RUN: system bubblewrap unavailable")
+	}
 	binding := credentialexec.Binding{TaskID: "00000000-0000-4000-8000-000000000001", OwnerID: "00000000-0000-4000-8000-000000000002", WorkspaceID: "00000000-0000-4000-8000-000000000003"}
 	root := test.TempDir()
 	helper, err := os.Executable()

@@ -25,6 +25,8 @@ const HelperArg = "__multica_credential_runner"
 const NativePlaceholder = "multica-task-gateway-only"
 
 var ErrUnavailable = errors.New("credential execution boundary unavailable")
+var ErrQuotaExhausted = fmt.Errorf("%w: task quota exhausted", ErrUnavailable)
+var ErrOutcomeUnknown = fmt.Errorf("%w: task gateway outcome unknown", ErrUnavailable)
 
 type Binding struct {
 	TaskID      string `json:"task_id"`
@@ -47,18 +49,21 @@ type GatewayCredential struct {
 }
 
 type Boundary struct {
-	spec        Spec
-	state       string
-	runtimeRoot string
-	bwrap       string
-	mutex       sync.Mutex
-	server      *http.Server
-	listener    net.Listener
-	socket      string
-	credential  GatewayCredential
-	closed      bool
-	serveDone   chan struct{}
-	transport   *http.Transport
+	spec         Spec
+	state        string
+	runtimeRoot  string
+	bwrap        string
+	mutex        sync.Mutex
+	server       *http.Server
+	listener     net.Listener
+	socket       string
+	credential   GatewayCredential
+	closed       bool
+	serveDone    chan struct{}
+	transport    *http.Transport
+	requestMutex sync.Mutex
+	stopErr      error
+	stopped      chan struct{}
 }
 
 func (binding Binding) Validate() error {
@@ -80,6 +85,9 @@ func (boundary *Boundary) Validate(taskID, provider, executable string) error {
 	}
 	boundary.mutex.Lock()
 	defer boundary.mutex.Unlock()
+	if err := boundary.stopErrorLocked(); err != nil {
+		return err
+	}
 	if boundary.closed || boundary.spec.Binding.TaskID != taskID || boundary.spec.Provider != provider || boundary.spec.Executable != executable {
 		return fmt.Errorf("%w: launch binding mismatch or closed boundary", ErrUnavailable)
 	}
@@ -166,7 +174,7 @@ func (boundary *Boundary) BindGateway(ctx context.Context, credential GatewayCre
 		_ = os.Remove(brokerDir)
 		return fmt.Errorf("%w: secure gateway socket", ErrUnavailable)
 	}
-	transport := &http.Transport{Proxy: nil, MaxIdleConnsPerHost: 4}
+	transport := &http.Transport{Proxy: nil, DisableKeepAlives: true}
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(request *httputil.ProxyRequest) {
 			request.SetURL(upstream)
@@ -181,7 +189,7 @@ func (boundary *Boundary) BindGateway(ctx context.Context, credential GatewayCre
 				request.Out.Header.Set("Authorization", "Bearer "+credential.Key)
 			}
 		},
-		Transport: transport,
+		Transport: &gatewayTransport{boundary: boundary, transport: transport},
 		ErrorHandler: func(writer http.ResponseWriter, _ *http.Request, _ error) {
 			http.Error(writer, "task gateway unavailable", http.StatusBadGateway)
 		},
