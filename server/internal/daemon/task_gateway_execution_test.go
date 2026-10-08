@@ -126,6 +126,17 @@ func TestTaskGatewayExecutionPreparedLaunchAndResume(test *testing.T) {
 	for _, provider := range []string{"claude", "codex"} {
 		test.Run(provider, func(test *testing.T) {
 			task, binding := ownedTaskGatewayClaim()
+			bundle := makeResolvableSkillBundle("owned-skill")
+			task.Agent.SkillRefs = []SkillRefData{skillRefFromBundle(bundle)}
+			task.ChatSessionID = "00000000-0000-4000-8000-000000000009"
+			task.ChatMessage = "Use [/owned-skill](slash://skill/owned-skill)."
+			resolved := task
+			resolvedAgent := *task.Agent
+			resolved.Agent = &resolvedAgent
+			resolved.Agent.SkillRefs, resolved.Agent.Skills = nil, []SkillData{bundle}
+			if BuildPrompt(resolved, provider) == BuildPrompt(task, provider) {
+				test.Fatal("fixture did not distinguish resolved native and staged prompts")
+			}
 			root := test.TempDir()
 			helper, err := os.Executable()
 			if err != nil {
@@ -160,11 +171,15 @@ func TestTaskGatewayExecutionPreparedLaunchAndResume(test *testing.T) {
 			}))
 			defer gateway.Close()
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-				grants.Add(1)
 				if request.Header.Get("Authorization") != "Bearer "+task.TaskGatewayDaemonToken {
 					test.Error("owning-daemon authentication lost")
 				}
-				if contents, err := os.ReadFile(filepath.Join(spec.Root, task.ID, "workdir", "multica-input", "prompt.md")); err != nil || string(contents) != BuildPrompt(task, provider) {
+				if strings.HasSuffix(request.URL.Path, "/skill-bundles/resolve") {
+					_ = json.NewEncoder(writer).Encode(map[string]any{"bundles": []SkillData{bundle}})
+					return
+				}
+				grants.Add(1)
+				if contents, err := os.ReadFile(filepath.Join(spec.Root, task.ID, "workdir", "multica-input", "prompt.md")); err != nil || string(contents) != BuildPrompt(resolved, provider) {
 					test.Error("grant precedes preparation/input staging")
 				}
 				_ = json.NewEncoder(writer).Encode(map[string]any{"binding": binding, "base_url": gateway.URL, "key": "owned-task-key"})
@@ -201,7 +216,7 @@ func TestTaskGatewayExecutionPreparedLaunchAndResume(test *testing.T) {
 							test.Fatal("launch verification repaired missing input", err)
 						}
 					}
-					if err := os.WriteFile(promptPath, []byte(BuildPrompt(task, provider)), 0600); err != nil {
+					if err := os.WriteFile(promptPath, []byte(BuildPrompt(resolved, provider)), 0600); err != nil {
 						test.Fatal(err)
 					}
 				}

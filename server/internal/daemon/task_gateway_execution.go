@@ -50,8 +50,7 @@ func (client *Client) prepareTaskGatewayExecution(ctx context.Context, task Task
 			return nil, taskgateway.ErrUnavailable
 		}
 	}
-	prompt := BuildPrompt(task, spec.Provider)
-	boundary, err := client.PrepareTaskGateway(ctx, task, spec)
+	boundary, resolved, err := client.prepareTaskGateway(ctx, task, spec)
 	if err != nil {
 		return nil, taskgateway.ErrUnavailable
 	}
@@ -70,7 +69,7 @@ func (client *Client) prepareTaskGatewayExecution(ctx context.Context, task Task
 	allowed.Cwd, allowed.Model = boundary.WorkDir(), task.Agent.Model
 	allowed.ThinkingLevel, allowed.ServiceTier = task.Agent.ThinkingLevel, task.Agent.ServiceTier
 	allowed.ResumeExpected = allowed.ResumeSessionID != ""
-	return &taskGatewayExecution{boundary: boundary, backend: backend, prompt: prompt, options: allowed}, nil
+	return &taskGatewayExecution{boundary: boundary, backend: backend, prompt: BuildPrompt(resolved, spec.Provider), options: allowed}, nil
 }
 
 func (execution *taskGatewayExecution) Run(ctx context.Context, observe func(agent.Message)) (agent.Result, error) {

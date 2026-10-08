@@ -131,13 +131,15 @@ Malformed, duplicate, oversized, unknown-field and mismatched-binding handoffs r
 Failed fetch/bind closes synchronously; successful callers own `Boundary.Close`.
 The caller must supply the trusted private root and pinned executable/helper, not task input.
 The daemon helper now selects generated prompt, agent instructions, workspace context and embedded
-skill text only from the authenticated claim. It rejects caller-provided input manifests and unresolved
-skill references. The OS namespace control and anchored input staging both precede every grant request.
+skill text only from the authenticated claim or exact claim-pinned server bundles. It rejects caller-provided
+input manifests and unavailable or changed skill references. The OS namespace control and anchored input
+staging both precede every grant request. The owning-daemon skill request has no proxy, redirect or retry.
 Staging does not copy host files, shared credentials/configuration, caches, sockets or repositories.
 Inputs have canonical relative paths, no file/directory collision, at most 128 files, at most 1 MiB
 per file and at most 8 MiB total. Same-task exact input is reused without resetting native state;
 changed bytes or unsafe/private-path violations refuse before the handoff. No overwrite/reset exists.
-This is an embedded claim-input source slice, not complete tooling or a trusted refresh mechanism.
+This is a claim-pinned input source slice, not complete tooling or a trusted refresh mechanism.
+The existing skill endpoint supports preparing tasks only; running-task reference resolution remains unavailable.
 The trusted owning daemon is outside the attacker boundary; this endpoint does not remotely attest
 OS preparation by a compromised daemon.
 

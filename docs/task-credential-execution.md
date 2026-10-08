@@ -25,17 +25,38 @@ Claude opted-in launches use `default`, not `bypassPermissions`. Codex opted-in 
 ## Authenticated input staging source
 
 The authenticated daemon helper stages only the claim's generated prompt, agent instructions,
-workspace context and embedded skill text under `WorkDir/multica-input` before grant delivery.
-Caller-supplied input manifests refuse. Unresolved skill references refuse; no host cache, repository,
+workspace context and embedded or claim-pinned skill text under `WorkDir/multica-input` before grant delivery.
+Caller-supplied input manifests refuse. Unavailable or changed skill references refuse; no host cache, repository,
 shared authentication/configuration, socket, hard link or runtime directory is imported.
 Only explicit in-memory bytes are supported. Input staging is not credential-exclusive task tooling.
 The namespace control succeeds before staging; staging succeeds before every grant request.
 Anchored `openat2` operations refuse symlinks, non-regular files, multiple links and non-private paths.
 Canonical paths, directory/file collisions and finite file/count/aggregate limits are validated.
 Same-task preparation checks exact existing bytes rather than overwriting changed input or native state.
-Changed/unsafe input refuses before credential delivery. Authorized input updates and external skill
-references need a separately implemented trusted refresh path; no automatic replacement exists.
+Changed/unsafe input refuses before credential delivery. Authorized input updates need a separately
+implemented trusted refresh path; no automatic replacement exists.
 Owned fixtures cover these refusals and both production adapters' launch/resume visibility.
+
+### Claim-pinned server skill resolution
+
+The prepared helper resolves workspace, builtin and plugin references through the existing authenticated
+runtime/task skill-bundle endpoint. It uses the claim's owning-daemon credential, not the general client token.
+The request stays on the validated fixed Multica origin, with no inherited proxy, redirect or retry.
+The response must contain exactly the requested bundles, in claim order, with matching source, ID,
+claim-time manifest hash, file count and recomputed byte size. A current but changed server bundle refuses;
+the ordinary unmanaged resolver's refresh/cache behavior does not apply to this route.
+
+Resolution uses only bounded in-memory responses. It imports no daemon skill cache or host files.
+The request is at most 1 MiB and the response is at most 8 MiB, with a 25-second HTTP timeout.
+Existing canonical-path, file/count/aggregate input limits still apply before staging or grant delivery.
+The helper leaves the original claim unchanged and uses the same resolved snapshot for staged and native prompts.
+Exact same-task input reuses native state; changed pins or bytes never overwrite the retained state.
+Unavailable resolution, hard 429, malformed/trailing/unknown-field JSON and wrong bundles refuse without a grant.
+
+The existing server endpoint serves preparing tasks only. No server authorization or status rule changes.
+Re-preparing a running task with references therefore remains unavailable through that endpoint.
+This is pinned input source support, not authenticated input refresh, native skill registration or complete tooling.
+Database/native/full gateway acceptance remains NOT-RUN. The daemon's early opt-in refusal remains.
 
 ## Evidence and explicit limits
 
@@ -154,7 +175,7 @@ Owned ELF/local-HTTP fixtures exercise both adapters' prepared launch/resume, in
 refusal, single-run/close lifecycle and hard-429/no-new-launch/no-new-grant behavior. They are not installed
 native CLI compatibility, PostgreSQL transactions, durable accounting or full gateway acceptance.
 This helper remains outside `runTask`. Early opt-in refusal and the unadvertised capability remain.
-Authenticated input refresh, external skill resolution, credential-exclusive tooling, complete native
+Authenticated input refresh, running-task skill resolution, credential-exclusive tooling, complete native
 transport/protocol support and gateway/worker settlement integration remain unfinished.
 The daemon's early refusal and unsupported protocol refusals remain. No launch capability is enabled.
 
