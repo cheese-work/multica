@@ -12,6 +12,82 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func TestCredentialInputsVerifyWithoutRepair(test *testing.T) {
+	for _, kind := range []string{"unchanged", "changed", "missing", "missing-directory", "symlink", "hardlink", "public", "public-directory", "fifo"} {
+		test.Run(kind, func(test *testing.T) {
+			inputs := map[string][]byte{"multica-input/prompt.md": []byte("authorized prompt")}
+			boundary := &Boundary{state: test.TempDir(), spec: Spec{Inputs: inputs}}
+			if err := os.Mkdir(boundary.WorkDir(), 0700); err != nil {
+				test.Fatal(err)
+			}
+			if err := boundary.stageInputs(context.Background(), inputs); err != nil {
+				test.Fatal(err)
+			}
+			path := filepath.Join(boundary.WorkDir(), "multica-input", "prompt.md")
+			sentinel := filepath.Join(test.TempDir(), "credential")
+			if err := os.WriteFile(sentinel, []byte("owned unrelated credential"), 0600); err != nil {
+				test.Fatal(err)
+			}
+			var err error
+			switch kind {
+			case "changed":
+				err = os.WriteFile(path, []byte("untrusted prompt"), 0600)
+			case "missing", "missing-directory", "symlink", "hardlink", "fifo":
+				err = os.Remove(path)
+				if err == nil {
+					switch kind {
+					case "missing-directory":
+						err = os.Remove(filepath.Dir(path))
+					case "symlink":
+						err = os.Symlink(sentinel, path)
+					case "hardlink":
+						err = os.Link(sentinel, path)
+					case "fifo":
+						err = unix.Mkfifo(path, 0600)
+					}
+				}
+			case "public":
+				err = os.Chmod(path, 0644)
+			case "public-directory":
+				err = os.Chmod(filepath.Dir(path), 0755)
+			}
+			if err != nil {
+				test.Fatal(err)
+			}
+			err = boundary.VerifyInputs(context.Background())
+			if kind == "unchanged" {
+				if err != nil {
+					test.Fatal("valid staged input cannot be verified", err)
+				}
+			} else if !errors.Is(err, ErrUnavailable) {
+				test.Fatal("changed or unsafe staged input admitted", err)
+			}
+			if kind == "missing" || kind == "missing-directory" {
+				if _, err := os.Lstat(path); !os.IsNotExist(err) {
+					test.Fatal("verification recreated missing input", err)
+				}
+			}
+			if contents, err := os.ReadFile(sentinel); err != nil || string(contents) != "owned unrelated credential" {
+				test.Fatal("verification changed unrelated input", err)
+			}
+		})
+	}
+}
+
+func TestCredentialInputsVerifyUnavailable(test *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, boundary := range []*Boundary{nil, {closed: true}, {stopErr: ErrOutcomeUnknown}} {
+		if err := boundary.VerifyInputs(context.Background()); !errors.Is(err, ErrUnavailable) {
+			test.Fatal("unavailable input verification admitted", err)
+		}
+	}
+	boundary := &Boundary{state: test.TempDir()}
+	if err := boundary.VerifyInputs(ctx); !errors.Is(err, ErrUnavailable) {
+		test.Fatal("canceled input verification admitted", err)
+	}
+}
+
 func TestCredentialInputsRetainState(test *testing.T) {
 	boundary := &Boundary{state: test.TempDir()}
 	if err := os.Mkdir(boundary.WorkDir(), 0700); err != nil {

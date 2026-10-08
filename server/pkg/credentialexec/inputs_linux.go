@@ -12,6 +12,22 @@ import (
 )
 
 func (boundary *Boundary) stageInputs(ctx context.Context, inputs map[string][]byte) error {
+	return boundary.accessInputs(ctx, inputs, true)
+}
+
+func (boundary *Boundary) VerifyInputs(ctx context.Context) error {
+	if boundary == nil {
+		return ErrUnavailable
+	}
+	boundary.mutex.Lock()
+	defer boundary.mutex.Unlock()
+	if boundary.closed || boundary.stopErrorLocked() != nil {
+		return ErrUnavailable
+	}
+	return boundary.accessInputs(ctx, boundary.spec.Inputs, false)
+}
+
+func (boundary *Boundary) accessInputs(ctx context.Context, inputs map[string][]byte, create bool) error {
 	if ctx.Err() != nil || ValidateInputs(inputs) != nil {
 		return ErrUnavailable
 	}
@@ -34,7 +50,7 @@ func (boundary *Boundary) stageInputs(ctx context.Context, inputs map[string][]b
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		if ctx.Err() != nil || stageInput(root, name, inputs[name]) != nil {
+		if ctx.Err() != nil || accessInput(root, name, inputs[name], create) != nil {
 			return ErrUnavailable
 		}
 	}
@@ -60,7 +76,7 @@ func openInputDirectory(parent int, name string, create bool) (*os.File, error) 
 	return file, nil
 }
 
-func stageInput(root *os.File, name string, contents []byte) error {
+func accessInput(root *os.File, name string, contents []byte, create bool) error {
 	parent := root
 	var directories []*os.File
 	defer func() {
@@ -70,7 +86,7 @@ func stageInput(root *os.File, name string, contents []byte) error {
 	}()
 	parts := strings.Split(name, "/")
 	for _, component := range parts[:len(parts)-1] {
-		directory, err := openInputDirectory(int(parent.Fd()), component, true)
+		directory, err := openInputDirectory(int(parent.Fd()), component, create)
 		if err != nil {
 			return ErrUnavailable
 		}
@@ -79,9 +95,12 @@ func stageInput(root *os.File, name string, contents []byte) error {
 	}
 	filename := parts[len(parts)-1]
 	options := &unix.OpenHow{Flags: unix.O_WRONLY | unix.O_CREAT | unix.O_EXCL | unix.O_CLOEXEC | unix.O_NONBLOCK, Mode: 0600, Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS}
+	if !create {
+		options.Flags, options.Mode = unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NONBLOCK, 0
+	}
 	descriptor, err := unix.Openat2(int(parent.Fd()), filename, options)
-	existing := err == unix.EEXIST
-	if existing {
+	existing := !create || err == unix.EEXIST
+	if err == unix.EEXIST {
 		options.Flags, options.Mode = unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NONBLOCK, 0
 		descriptor, err = unix.Openat2(int(parent.Fd()), filename, options)
 	}

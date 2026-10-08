@@ -169,6 +169,14 @@ is distinct from unknown. Metadata is not inference. Observations are process-lo
 broker, not task-wide durable settlement or platform usage reporting. See the execution document for
 overflow and memory bounds. This usage handoff does not wire `runTask` or enable the launch capability.
 Actual supported native transport and end-to-end hard-429/no-new-billable-attempt/no-fallback acceptance remain unfinished.
+
+The recovered `prepareTaskGatewayExecution` source now owns preparation, authenticated grant binding,
+the production adapter and its single-active-run/close lifecycle. It accepts only claim-derived model
+and resume identity and narrowly supported timing options. Read-only input verification precedes native
+execution; tampering or missing input refuses without repair. Owned ELF/HTTP fixtures cover this path,
+not installed native transport, PostgreSQL or durable settlement. The helper is not wired into `runTask`,
+does not advertise a capability and does not remove the existing early opt-in refusal. See the execution
+document for the remaining authorized-input/tooling and compatibility limits.
 Until that complete trusted handoff exists, the daemon's current early refusal must remain.
 Native transport and full gateway/worker acceptance are NOT-RUN.
 Independent different-lab signing and current-pair OCR/OER-1 remain required before this issue becomes review-ready.

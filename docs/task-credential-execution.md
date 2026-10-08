@@ -133,6 +133,29 @@ another request is admitted. Those are source memory/representation limits, not 
 Snapshots measure only requests observed by the current prepared broker. They are process-local,
 not crash-durable task-wide accounting, quota settlement, reconciliation, or a reset/recovery mechanism.
 Re-preparation does not reconstruct earlier observations or change the gateway ledger/native state.
+
+### Prepared daemon execution source
+
+The daemon's `prepareTaskGatewayExecution` connects the authenticated claim, OS/input preparation,
+trusted grant, bound broker and existing Claude/Codex production adapters in one owned source path.
+It refuses custom arguments, environment, MCP/runtime configuration and unsupported execution options.
+The resume session must match the authenticated claim; unavailable resume context refuses rather than
+selecting a new session. Model, thinking level and service tier come from that claim, not caller options.
+The caller still supplies daemon-owned pinned executable/helper paths and the private root.
+
+`Boundary.VerifyInputs` rechecks the staged bytes and anchored private regular files before each native
+launch. Verification is read-only: changed, missing, linked, public or otherwise unsafe inputs refuse.
+It never recreates missing files or directories, overwrites input, refreshes a manifest or resets state.
+Only one run may use a prepared execution at a time. Close cancels and joins its active run before
+closing the broker; repeated close cannot launch another native process. Gateway stops prevent another
+run or grant. Results retain the adapters' separately observed gateway usage and native session identity.
+
+Owned ELF/local-HTTP fixtures exercise both adapters' prepared launch/resume, input tampering, override
+refusal, single-run/close lifecycle and hard-429/no-new-launch/no-new-grant behavior. They are not installed
+native CLI compatibility, PostgreSQL transactions, durable accounting or full gateway acceptance.
+This helper remains outside `runTask`. Early opt-in refusal and the unadvertised capability remain.
+Authenticated input refresh, external skill resolution, credential-exclusive tooling, complete native
+transport/protocol support and gateway/worker settlement integration remain unfinished.
 The daemon's early refusal and unsupported protocol refusals remain. No launch capability is enabled.
 
 `TestCredentialGatewayProtocolCompletion`, fragmentation/usage and malformed-outcome tests exercise
