@@ -167,7 +167,7 @@ func TestResolveSquadInstructionsRejectsInvalidUTF8Inline(t *testing.T) {
 	}
 }
 
-func TestRunSquadUpdateDigestModeRejectsInvalidUTF8InlineWithoutHTTPCall(t *testing.T) {
+func TestRunSquadUpdateDigestModeRejectsInvalidUTF8FileWithoutHTTPCall(t *testing.T) {
 	called := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
@@ -176,7 +176,7 @@ func TestRunSquadUpdateDigestModeRejectsInvalidUTF8InlineWithoutHTTPCall(t *test
 	setSquadUpdateServerEnv(t, srv.URL)
 
 	cmd := newSquadUpdateTestCmd()
-	_ = cmd.Flags().Set("instructions", string([]byte{0xff, 0xfe}))
+	_ = cmd.Flags().Set("instructions-file", writeCASFile(t, string([]byte{0xff, 0xfe})))
 	_ = cmd.Flags().Set("expected-before-digest", testDigestHex)
 
 	err := runSquadUpdate(cmd, []string{"squad-123"})
@@ -184,7 +184,7 @@ func TestRunSquadUpdateDigestModeRejectsInvalidUTF8InlineWithoutHTTPCall(t *test
 		t.Fatalf("error = %v, want invalid UTF-8 error", err)
 	}
 	if called {
-		t.Fatal("invalid inline UTF-8 must be rejected client-side without an HTTP call")
+		t.Fatal("invalid UTF-8 must be rejected client-side without an HTTP call")
 	}
 }
 
@@ -276,7 +276,7 @@ func TestRunSquadMemberSetRoleValidatesRequiredFlags(t *testing.T) {
 func TestBuildSquadUpdateDigestBody(t *testing.T) {
 	t.Run("builds single-field body with instructions and digest", func(t *testing.T) {
 		cmd := newSquadUpdateTestCmd()
-		_ = cmd.Flags().Set("instructions", "hermes-applied instructions")
+		_ = cmd.Flags().Set("instructions-file", writeCASFile(t, "hermes-applied instructions"))
 		_ = cmd.Flags().Set("expected-before-digest", testDigestHex)
 
 		body, err := buildSquadUpdateDigestBody(cmd)
@@ -296,7 +296,7 @@ func TestBuildSquadUpdateDigestBody(t *testing.T) {
 
 	t.Run("malformed digest rejected client-side", func(t *testing.T) {
 		cmd := newSquadUpdateTestCmd()
-		_ = cmd.Flags().Set("instructions", "new instructions")
+		_ = cmd.Flags().Set("instructions-file", writeCASFile(t, "new instructions"))
 		_ = cmd.Flags().Set("expected-before-digest", "short")
 
 		_, err := buildSquadUpdateDigestBody(cmd)
@@ -317,7 +317,7 @@ func TestBuildSquadUpdateDigestBody(t *testing.T) {
 
 	t.Run("conflicting flag rejected client-side", func(t *testing.T) {
 		cmd := newSquadUpdateTestCmd()
-		_ = cmd.Flags().Set("instructions", "new instructions")
+		_ = cmd.Flags().Set("instructions-file", writeCASFile(t, "new instructions"))
 		_ = cmd.Flags().Set("expected-before-digest", testDigestHex)
 		_ = cmd.Flags().Set("name", "conflicting name")
 
@@ -329,7 +329,7 @@ func TestBuildSquadUpdateDigestBody(t *testing.T) {
 
 	t.Run("leader flag conflicts too", func(t *testing.T) {
 		cmd := newSquadUpdateTestCmd()
-		_ = cmd.Flags().Set("instructions", "new instructions")
+		_ = cmd.Flags().Set("instructions-file", writeCASFile(t, "new instructions"))
 		_ = cmd.Flags().Set("expected-before-digest", testDigestHex)
 		_ = cmd.Flags().Set("leader", "some-agent")
 
@@ -368,7 +368,7 @@ func TestRunSquadUpdateDigestModeBuildsSingleFieldBody(t *testing.T) {
 	setSquadUpdateServerEnv(t, srv.URL)
 
 	cmd := newSquadUpdateTestCmd()
-	_ = cmd.Flags().Set("instructions", "hermes-applied instructions")
+	_ = cmd.Flags().Set("instructions-file", writeCASFile(t, "hermes-applied instructions"))
 	_ = cmd.Flags().Set("expected-before-digest", testDigestHex)
 	_ = cmd.Flags().Set("output", "json")
 
@@ -404,7 +404,7 @@ func TestRunSquadUpdateDigestModeRejectsMalformedDigestWithoutHTTPCall(t *testin
 	setSquadUpdateServerEnv(t, srv.URL)
 
 	cmd := newSquadUpdateTestCmd()
-	_ = cmd.Flags().Set("instructions", "new instructions")
+	_ = cmd.Flags().Set("instructions-file", writeCASFile(t, "new instructions"))
 	_ = cmd.Flags().Set("expected-before-digest", "not-64-hex")
 
 	err := runSquadUpdate(cmd, []string{"squad-123"})
@@ -425,7 +425,7 @@ func TestRunSquadUpdateDigestModeRejectsConflictingFlagWithoutHTTPCall(t *testin
 	setSquadUpdateServerEnv(t, srv.URL)
 
 	cmd := newSquadUpdateTestCmd()
-	_ = cmd.Flags().Set("instructions", "new instructions")
+	_ = cmd.Flags().Set("instructions-file", writeCASFile(t, "new instructions"))
 	_ = cmd.Flags().Set("expected-before-digest", testDigestHex)
 	_ = cmd.Flags().Set("avatar-url", "https://example.test/avatar.png")
 
@@ -449,7 +449,7 @@ func TestRunSquadUpdateDigestModeSurfaces403WithoutRetry(t *testing.T) {
 	setSquadUpdateServerEnv(t, srv.URL)
 
 	cmd := newSquadUpdateTestCmd()
-	_ = cmd.Flags().Set("instructions", "attempted instructions")
+	_ = cmd.Flags().Set("instructions-file", writeCASFile(t, "attempted instructions"))
 	_ = cmd.Flags().Set("expected-before-digest", testDigestHex)
 
 	err := runSquadUpdate(cmd, []string{"squad-123"})
@@ -479,7 +479,7 @@ func TestRunSquadUpdateDigestModeSurfaces409WithoutRetry(t *testing.T) {
 	setSquadUpdateServerEnv(t, srv.URL)
 
 	cmd := newSquadUpdateTestCmd()
-	_ = cmd.Flags().Set("instructions", "attempted instructions")
+	_ = cmd.Flags().Set("instructions-file", writeCASFile(t, "attempted instructions"))
 	_ = cmd.Flags().Set("expected-before-digest", testDigestHex)
 
 	err := runSquadUpdate(cmd, []string{"squad-123"})

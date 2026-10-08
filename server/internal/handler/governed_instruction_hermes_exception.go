@@ -384,7 +384,7 @@ func hermesExceptionWriteRejection(w http.ResponseWriter, r *http.Request, reaso
 	case hermesExceptionRejectNotFound:
 		writeError(w, http.StatusNotFound, "target row not found")
 	default:
-		slog.Warn("hermes exception write failed", append(logger.RequestAttrs(r), "error", err)...)
+		slog.Warn("governed-field CAS write failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to apply governed field exception write")
 	}
 }

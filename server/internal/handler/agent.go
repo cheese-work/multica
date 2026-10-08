@@ -1953,6 +1953,13 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// CHE-1300: owner-only atomic CAS, entered by the digest key. After the
+	// guard above so a machine actor never reaches it.
+	if ownerCASRequested(rawFields) {
+		h.ownerCASUpdateAgent(w, r, existing, actorType, rawFields)
+		return
+	}
+
 	params := db.UpdateAgentParams{
 		ID: existing.ID,
 	}
@@ -2345,11 +2352,23 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	resp, ok := h.updatedAgentResponse(w, r, updated)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// updatedAgentResponse builds, broadcasts and redacts the response for an
+// agent that was just updated. Shared by UpdateAgent and the owner CAS path.
+// It writes the error response itself and returns ok=false on failure.
+func (h *Handler) updatedAgentResponse(w http.ResponseWriter, r *http.Request, updated db.Agent) (AgentResponse, bool) {
+	id := uuidToString(updated.ID)
 	resp := h.agentToResponse(updated)
 	if err := h.enrichAgentResponseWithTargets(r.Context(), &resp, updated.ID); err != nil {
 		slog.Warn("update agent: load invocation targets for response failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 		writeError(w, http.StatusInternalServerError, "failed to load agent invocation targets")
-		return
+		return AgentResponse{}, false
 	}
 	// agentToResponse always initialises Skills as []; junction-table rows
 	// are untouched by the SQL update, so we reload them here to keep the
@@ -2359,7 +2378,7 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	if err := h.attachAgentSkills(r.Context(), &resp, updated.ID); err != nil {
 		slog.Warn("load agent skills after update failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 		writeError(w, http.StatusInternalServerError, "failed to load agent skills")
-		return
+		return AgentResponse{}, false
 	}
 	slog.Info("agent updated", append(logger.RequestAttrs(r), "agent_id", id, "workspace_id", uuidToString(updated.WorkspaceID))...)
 	userID := requestUserID(r)
@@ -2375,7 +2394,7 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	} else if uuidToString(updated.OwnerID) != userID {
 		redactComposioToolkitAllowlist(&resp)
 	}
-	writeJSON(w, http.StatusOK, resp)
+	return resp, true
 }
 
 // attachAgentSkills populates resp.Skills from the agent_skill junction

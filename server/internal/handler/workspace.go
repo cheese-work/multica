@@ -329,13 +329,11 @@ type UpdateWorkspaceRequest struct {
 	IssuePrefix *string `json:"issue_prefix"`
 	AvatarURL   *string `json:"avatar_url"`
 
-	// ExpectedBeforeDigest is CHE-764's narrow, human-approved exception
-	// field. It is only consulted when the request also matches
-	// hermesExceptionMatchesWorkspaceContext (this exact workspace, a
-	// `context` write, from exactly agent hermesExceptionAgentID) — for
-	// every other caller this field is decoded and silently ignored, same
-	// as any other unrecognized-by-that-caller field would be. See
-	// governed_instruction_hermes_exception.go for the full rationale.
+	// ExpectedBeforeDigest drives two guarded paths: CHE-764's Hermes
+	// exception (hermesExceptionMatchesWorkspaceContext: this exact
+	// workspace, a `context` write, from exactly agent hermesExceptionAgentID)
+	// and CHE-1300's owner-only CAS (governed_instruction_owner_cas.go).
+	// Every other caller is refused when the key is present.
 	ExpectedBeforeDigest string `json:"expected_before_digest"`
 }
 
@@ -453,6 +451,15 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if rejectGovernedFieldForAgentActor(w, r, actorType, req.Context != nil, "context") {
+		return
+	}
+
+	// CHE-1300: owner-only atomic CAS, entered by the digest key. After the
+	// guard above so a machine actor never reaches it.
+	var rawFields map[string]json.RawMessage
+	_ = json.Unmarshal(bodyBytes, &rawFields) // body already decoded into req above
+	if ownerCASRequested(rawFields) {
+		h.ownerCASUpdateWorkspace(w, r, id, actorType, rawFields)
 		return
 	}
 
