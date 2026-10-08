@@ -12,6 +12,8 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+
+	"github.com/multica-ai/multica/server/pkg/credentialexec"
 )
 
 // Backend is the unified interface for executing prompts via coding agents.
@@ -323,14 +325,16 @@ type Result struct {
 
 // Config configures a Backend instance.
 type Config struct {
-	ExecutablePath string            // path to CLI binary (claude, codebuddy, codex, copilot, opencode, codearts, openclaw, hermes, pi, cursor, kimi, reasonix, dsh, kiro-cli, agy, qodercli, qoderclicn, traecli, grok, qwen, qwenpaw, mcode, dim, zeroclaw)
-	CLIVersion     string            // detected version paired with ExecutablePath; vendor-specific usage semantics also require BuiltinRuntime
-	Env            map[string]string // extra environment variables
-	Logger         *slog.Logger
-	TaskID         string
-	RuntimeID      string
-	DaemonVersion  string
-	CodexVersion   string
+	RequireCredentialIsolation bool
+	CredentialBoundary         *credentialexec.Boundary
+	ExecutablePath             string            // path to CLI binary (claude, codebuddy, codex, copilot, opencode, codearts, openclaw, hermes, pi, cursor, kimi, reasonix, dsh, kiro-cli, agy, qodercli, qoderclicn, traecli, grok, qwen, qwenpaw, mcode, dim, zeroclaw)
+	CLIVersion                 string            // detected version paired with ExecutablePath; vendor-specific usage semantics also require BuiltinRuntime
+	Env                        map[string]string // extra environment variables
+	Logger                     *slog.Logger
+	TaskID                     string
+	RuntimeID                  string
+	DaemonVersion              string
+	CodexVersion               string
 	// BuiltinRuntime reports that ExecutablePath is the provider's own
 	// discovered binary rather than a custom runtime profile's command. A
 	// custom profile keeps its protocol family as the provider, so the
@@ -446,6 +450,15 @@ func ResumeRejectionUndetectable(agentType string) bool {
 }
 
 func New(agentType string, cfg Config) (Backend, error) {
+	if cfg.RequireCredentialIsolation || cfg.CredentialBoundary != nil {
+		if !cfg.RequireCredentialIsolation || !cfg.BuiltinRuntime || len(cfg.LaunchPrefix) != 0 || agentType != "claude" && agentType != "codex" {
+			return nil, fmt.Errorf("%w: unsupported credential-exclusive runtime", credentialexec.ErrUnavailable)
+		}
+		if err := cfg.CredentialBoundary.Validate(cfg.TaskID, agentType, cfg.ExecutablePath); err != nil {
+			return nil, err
+		}
+		cfg.Env = cfg.CredentialBoundary.Environment()
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
