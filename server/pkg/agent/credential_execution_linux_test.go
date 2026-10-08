@@ -401,6 +401,17 @@ func observeCredentialExecution(test *testing.T, provider string, config Config,
 	if result.Status != "completed" {
 		test.Fatalf("adapter failed: %+v", result)
 	}
+	if config.CredentialBoundary != nil {
+		if result.GatewayUsage == nil || !result.GatewayUsage.Complete || len(result.GatewayUsage.Models) != 1 {
+			test.Fatal("opted-in launch/resume lost trusted final usage")
+		}
+		usage := result.GatewayUsage.Models["owned-model"]
+		if usage.InputTokens == 0 || usage.InputTokens%7 != 0 || usage.OutputTokens != usage.InputTokens/7*5 || usage.CacheReadTokens != usage.InputTokens/7*3 || usage.CacheWriteTokens != usage.InputTokens/7*2 {
+			test.Fatalf("provider-inclusive input/reasoning was double-counted: %+v", usage)
+		}
+	} else if result.GatewayUsage != nil {
+		test.Fatal("unmanaged result gained inferred trusted usage")
+	}
 	var observation credentialObservation
 	if err := json.Unmarshal([]byte(result.Output), &observation); err != nil {
 		test.Fatalf("observation %q: %v", result.Output, err)

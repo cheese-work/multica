@@ -50,21 +50,23 @@ type GatewayCredential struct {
 }
 
 type Boundary struct {
-	spec         Spec
-	state        string
-	runtimeRoot  string
-	bwrap        string
-	mutex        sync.Mutex
-	server       *http.Server
-	listener     net.Listener
-	socket       string
-	credential   GatewayCredential
-	closed       bool
-	serveDone    chan struct{}
-	transport    *http.Transport
-	requestMutex sync.Mutex
-	stopErr      error
-	stopped      chan struct{}
+	spec          Spec
+	state         string
+	runtimeRoot   string
+	bwrap         string
+	mutex         sync.Mutex
+	server        *http.Server
+	listener      net.Listener
+	socket        string
+	credential    GatewayCredential
+	closed        bool
+	serveDone     chan struct{}
+	transport     *http.Transport
+	requestMutex  sync.Mutex
+	stopErr       error
+	stopped       chan struct{}
+	usage         map[string]GatewayUsage
+	requestActive bool
 }
 
 func (binding Binding) Validate() error {

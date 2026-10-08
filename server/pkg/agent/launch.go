@@ -359,6 +359,10 @@ func (config Config) credentialRunContext(ctx context.Context, timeout time.Dura
 }
 
 func (config Config) credentialResult(result Result) Result {
+	if config.CredentialBoundary != nil {
+		snapshot := config.CredentialBoundary.UsageSnapshot()
+		result.GatewayUsage = &snapshot
+	}
 	if err := config.CredentialBoundary.StopError(); err != nil {
 		result.Status, result.Output, result.Error = "failed", "", err.Error()
 		result.ResumeRejected, result.ResumeRejectedTransient = false, false

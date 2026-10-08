@@ -111,8 +111,29 @@ All required counters are finite nonnegative decimal int64 values. Missing/null 
 zero. Explicit zero counts remain valid. OpenAI total must equal input plus output without overflow;
 cache-read plus cache-write must fit input and reasoning must fit output. The private disjoint buckets
 are uncached input, cache creation, cache read and inclusive output. Cache and reasoning are not added
-again. These values are guard state only; no usage-reporting, durable settlement, quota refund or reset API
-is added. Real provider protocol compatibility and full accounting acceptance remain NOT-RUN.
+again. These values feed observed broker usage snapshots; no platform usage-reporting, durable settlement,
+quota refund or reset API is added. Real provider protocol compatibility and full accounting acceptance remain NOT-RUN.
+
+### Observed usage handoff
+
+`Boundary.UsageSnapshot` returns a defensive per-model copy of the four disjoint counts.
+Both production adapters attach that snapshot to `Result.GatewayUsage` for opted-in launch/resume.
+Unmanaged results remain unchanged. Native-reported `Result.Usage` and session identity remain unchanged;
+native-reported counters are not the trusted gateway snapshot and cannot establish settlement.
+
+The broker records an inference only after supported terminal protocol validation, byte EOF, consumed
+validated output and successful upstream body close. Repeated close does not count another inference.
+Snapshot completeness is false while a request is in flight, after a stopped/ambiguous outcome, or when
+no inference has been observed. Explicit zero counts can be complete; absent counts are not zero.
+Previously observed counts survive later quota/unknown outcomes. Metadata requests contribute no tokens.
+Per-model accumulation checks the combined four buckets for int64 overflow before changing any counter.
+Overflow or exceeding 128 distinct models or a 1024-byte model name records unknown outcome before
+another request is admitted. Those are source memory/representation limits, not production quota caps.
+
+Snapshots measure only requests observed by the current prepared broker. They are process-local,
+not crash-durable task-wide accounting, quota settlement, reconciliation, or a reset/recovery mechanism.
+Re-preparation does not reconstruct earlier observations or change the gateway ledger/native state.
+The daemon's early refusal and unsupported protocol refusals remain. No launch capability is enabled.
 
 `TestCredentialGatewayProtocolCompletion`, fragmentation/usage and malformed-outcome tests exercise
 valid terminal JSON/SSE, incomplete clean EOF, missing/invalid counters, unsupported events, changed

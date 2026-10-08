@@ -110,12 +110,14 @@ func (transport *gatewayTransport) RoundTrip(request *http.Request) (*http.Respo
 	releaseAdmission := true
 	defer func() {
 		if releaseAdmission {
+			transport.boundary.setRequestActive(false)
 			transport.boundary.requestMutex.Unlock()
 		}
 	}()
 	if err := transport.boundary.StopError(); err != nil {
 		return stoppedGatewayResponse(request, err), nil
 	}
+	transport.boundary.setRequestActive(true)
 	response, err := transport.transport.RoundTrip(request)
 	if err != nil || response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		reason := ErrOutcomeUnknown
@@ -207,7 +209,11 @@ func (body *gatewayResponseBody) Close() error {
 		if err := body.body.Close(); err != nil || !body.complete.Load() {
 			body.boundary.stopGateway(ErrOutcomeUnknown)
 			body.closeErr = body.boundary.StopError()
+		} else if body.boundary.recordGatewayUsage(body.protocol) != nil {
+			body.boundary.stopGateway(ErrOutcomeUnknown)
+			body.closeErr = body.boundary.StopError()
 		}
+		body.boundary.setRequestActive(false)
 		body.boundary.requestMutex.Unlock()
 	})
 	return body.closeErr

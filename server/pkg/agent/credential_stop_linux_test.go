@@ -167,6 +167,9 @@ func testCredentialExclusiveStopAtProductionAdapters(test *testing.T, outcome st
 				for range session.Messages {
 				}
 				result := <-session.Result
+				if result.GatewayUsage == nil || result.GatewayUsage.Complete || len(result.GatewayUsage.Models) != 0 {
+					test.Fatal("unknown/quota refusal became known zero usage")
+				}
 				expectedError := "task quota exhausted"
 				if outcome != "quota" {
 					expectedError = "task gateway outcome unknown"

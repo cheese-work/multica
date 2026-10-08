@@ -158,10 +158,16 @@ before admitting another request. Owned ELF fixtures cover both production adapt
 seams; byte-level EOF alone is not provider-protocol completion or normalized final usage evidence.
 The broker now requires supported terminal Claude/OpenAI JSON/SSE and explicit final usage before
 admitting another request. Missing/invalid usage, incomplete clean EOF, malformed/error frames and
-trailers record unknown outcome. Text-only protocol support and private disjoint usage normalization
+trailers record unknown outcome. Text-only protocol support and disjoint usage normalization
 are source guards, not complete native transport or durable settlement. Unsupported variants refuse.
 See `task-credential-execution.md` for exact bounds and supported events. No daemon launch capability
 is enabled by this protocol source slice.
+The broker now exposes defensive per-model observed usage snapshots after successful response close.
+Both production adapters carry those snapshots separately from native-reported counters.
+Snapshot completeness is false for in-flight, stopped/ambiguous or unobserved inference; explicit zero
+is distinct from unknown. Metadata is not inference. Observations are process-local to one prepared
+broker, not task-wide durable settlement or platform usage reporting. See the execution document for
+overflow and memory bounds. This usage handoff does not wire `runTask` or enable the launch capability.
 Actual supported native transport and end-to-end hard-429/no-new-billable-attempt/no-fallback acceptance remain unfinished.
 Until that complete trusted handoff exists, the daemon's current early refusal must remain.
 Native transport and full gateway/worker acceptance are NOT-RUN.
