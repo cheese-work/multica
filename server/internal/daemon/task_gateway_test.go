@@ -35,6 +35,8 @@ func TestTaskGatewayDaemonPreparedDelivery(test *testing.T) {
 	}
 	spec := credentialexec.Spec{Root: filepath.Join(root, "private"), Binding: binding, Provider: "codex", Executable: executable, HelperExecutable: helper}
 	task := Task{ID: binding.TaskID, WorkspaceID: binding.WorkspaceID, RuntimeID: "00000000-0000-4000-8000-000000000004", RequireCredentialIsolation: true, CredentialExecutionBinding: &binding, TaskGatewayDaemonToken: "mdt_owned-daemon-secret", AuthToken: "mat_owned-task-secret", DispatchedAt: "2026-10-07T19:00:00Z"}
+	task.AgentID = "00000000-0000-4000-8000-000000000005"
+	task.Agent = &AgentData{ID: task.AgentID, Instructions: "owned instructions"}
 	var calls atomic.Int32
 	var status atomic.Int32
 	status.Store(http.StatusOK)
@@ -44,6 +46,9 @@ func TestTaskGatewayDaemonPreparedDelivery(test *testing.T) {
 		calls.Add(1)
 		if _, err := os.Stat(filepath.Join(spec.Root, binding.TaskID, "binding.json")); err != nil {
 			test.Error("grant requested before OS preparation")
+		}
+		if contents, err := os.ReadFile(filepath.Join(spec.Root, binding.TaskID, "workdir", "multica-input", "prompt.md")); err != nil || string(contents) != BuildPrompt(task, spec.Provider) {
+			test.Error("grant requested before authenticated input staging")
 		}
 		if request.Header.Get("Authorization") != "Bearer "+task.TaskGatewayDaemonToken || request.Header.Get("X-Client-Capabilities") != taskgateway.Capability || request.Method != http.MethodPost || request.URL.Path != "/api/daemon/runtimes/"+task.RuntimeID+"/tasks/"+task.ID+"/gateway-grant" {
 			test.Error("wrong authenticated daemon route")
@@ -83,6 +88,42 @@ func TestTaskGatewayDaemonPreparedDelivery(test *testing.T) {
 			test.Fatal(err)
 		}
 	}
+	before := calls.Load()
+	forged := spec
+	forged.Inputs = map[string][]byte{"multica-input/prompt.md": []byte("forged")}
+	if boundary, err := client.PrepareTaskGateway(context.Background(), task, forged); err == nil || boundary != nil || calls.Load() != before {
+		test.Fatal("caller-selected input bypassed authenticated claim")
+	}
+	changed := task
+	changedAgent := *task.Agent
+	changed.Agent = &changedAgent
+	changed.Agent.Instructions = "changed same-task instruction"
+	if boundary, err := client.PrepareTaskGateway(context.Background(), changed, spec); err == nil || boundary != nil || calls.Load() != before {
+		test.Fatal("changed same-task input requested credentials")
+	}
+	promptPath := filepath.Join(spec.Root, binding.TaskID, "workdir", "multica-input", "prompt.md")
+	sentinel := filepath.Join(root, "owned-unlimited-secret")
+	if err := os.WriteFile(sentinel, []byte("unlimited sentinel"), 0600); err != nil {
+		test.Fatal(err)
+	}
+	if err := os.Remove(promptPath); err != nil {
+		test.Fatal(err)
+	}
+	if err := os.Symlink(sentinel, promptPath); err != nil {
+		test.Fatal(err)
+	}
+	if boundary, err := client.PrepareTaskGateway(context.Background(), task, spec); err == nil || boundary != nil || calls.Load() != before {
+		test.Fatal("native-controlled input symlink requested credentials")
+	}
+	if contents, err := os.ReadFile(sentinel); err != nil || string(contents) != "unlimited sentinel" {
+		test.Fatal("staging overwrote the unlimited control")
+	}
+	if err := os.Remove(promptPath); err != nil {
+		test.Fatal(err)
+	}
+	if err := os.WriteFile(promptPath, []byte(BuildPrompt(task, spec.Provider)), 0600); err != nil {
+		test.Fatal(err)
+	}
 	for _, code := range []int{http.StatusTooManyRequests, http.StatusFound, http.StatusServiceUnavailable} {
 		status.Store(int32(code))
 		before := calls.Load()
@@ -95,7 +136,7 @@ func TestTaskGatewayDaemonPreparedDelivery(test *testing.T) {
 	if boundary, err := client.PrepareTaskGateway(context.Background(), task, spec); err == nil || boundary != nil {
 		test.Fatal("oversized grant admitted")
 	}
-	before := calls.Load()
+	before = calls.Load()
 	task.TaskGatewayDaemonToken = "mul_owner-pat"
 	if boundary, err := client.PrepareTaskGateway(context.Background(), task, spec); err == nil || boundary != nil || calls.Load() != before {
 		test.Fatal("owner PAT fallback admitted")

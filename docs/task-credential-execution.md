@@ -22,6 +22,21 @@ Claude opted-in launches use `default`, not `bypassPermissions`. Codex opted-in 
 4. Call `BindGateway` with exactly that binding, task key and fixed gateway origin. It reruns the namespace control before exposing a broker. The task ID pins owner/workspace/runtime digests; a persisted non-secret gateway fingerprint rejects changed keys/origins, including after same-task re-preparation. Repeated preparation preserves native state. This is not quota-ledger persistence or recovery of unknown spend.
 5. Use `agent.Config{RequireCredentialIsolation: true, CredentialBoundary: boundary, TaskID: binding.TaskID, BuiltinRuntime: true, ExecutablePath: pinnedPath}` and `ExecOptions.Cwd = boundary.WorkDir()`. Custom/extra arguments, launch profiles, unmanaged settings, MCP/hook routes, mismatched directories and inherited descriptors refuse before native launch. `Close` ends the broker and collects its service loop; scoped native state is retained for authorized same-task retry. The parent must replace the current daemon refusal only after its complete trusted handoff, supported native transport, task tooling and failure contracts are implemented and tested.
 
+## Authenticated input staging source
+
+The authenticated daemon helper stages only the claim's generated prompt, agent instructions,
+workspace context and embedded skill text under `WorkDir/multica-input` before grant delivery.
+Caller-supplied input manifests refuse. Unresolved skill references refuse; no host cache, repository,
+shared authentication/configuration, socket, hard link or runtime directory is imported.
+Only explicit in-memory bytes are supported. Input staging is not credential-exclusive task tooling.
+The namespace control succeeds before staging; staging succeeds before every grant request.
+Anchored `openat2` operations refuse symlinks, non-regular files, multiple links and non-private paths.
+Canonical paths, directory/file collisions and finite file/count/aggregate limits are validated.
+Same-task preparation checks exact existing bytes rather than overwriting changed input or native state.
+Changed/unsafe input refuses before credential delivery. Authorized input updates and external skill
+references need a separately implemented trusted refresh path; no automatic replacement exists.
+Owned fixtures cover these refusals and both production adapters' launch/resume visibility.
+
 ## Evidence and explicit limits
 
 The broker treats an upstream HTTP 429 as a terminal task-quota refusal. A transport failure before
@@ -66,7 +81,7 @@ transport and end-to-end billable-attempt acceptance remain NOT-RUN. Byte-level 
 provider-protocol completion or normalized final usage. Semantic/trailer/usage validation of a cleanly
 closed but incomplete provider stream remains unfinished. Unknown usage is not zero.
 The daemon still does not advertise `task-gateway-v1` and still refuses opted-in launch before preparation.
-Prepared daemon launch/resume, authorized task inputs and credential-exclusive tooling remain unfinished.
+Prepared daemon launch/resume, complete authorized task inputs and credential-exclusive tooling remain unfinished.
 
 `TestCredentialExclusiveProductionAdapters` uses only owned copies of the test executable at the real Claude/Codex production adapter seam. Its ordinary negative control reads an owned unlimited sentinel via direct paths, symlinks, inherited environment, an owned peer's environment/descriptor, a shell helper and owned host TCP/pathname/abstract Unix services. The isolated runs deny those routes, exclude another prepared task, reach only the scoped fixture gateway, override forged request credentials/task headers, preserve same-task home state and exercise resume. Override routes and extra descriptors refuse before launch.
 

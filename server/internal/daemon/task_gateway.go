@@ -27,6 +27,14 @@ func (client *Client) PrepareTaskGateway(ctx context.Context, task Task, spec cr
 	if _, err := time.Parse(time.RFC3339Nano, task.DispatchedAt); err != nil {
 		return nil, taskgateway.ErrUnavailable
 	}
+	if len(spec.Inputs) != 0 {
+		return nil, taskgateway.ErrUnavailable
+	}
+	inputs, err := taskGatewayInputs(task, spec.Provider)
+	if err != nil {
+		return nil, taskgateway.ErrUnavailable
+	}
+	spec.Inputs = inputs
 	endpoint, err := url.Parse(client.baseURL)
 	if err != nil || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.ForceQuery || endpoint.Fragment != "" || endpoint.Opaque != "" || endpoint.Path != "" && endpoint.Path != "/" {
 		return nil, taskgateway.ErrUnavailable

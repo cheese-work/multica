@@ -29,6 +29,9 @@ type runtimeIdentity struct {
 }
 
 func Prepare(ctx context.Context, spec Spec) (*Boundary, error) {
+	if err := ValidateInputs(spec.Inputs); err != nil {
+		return nil, err
+	}
 	if err := spec.Binding.Validate(); err != nil {
 		return nil, err
 	}
@@ -145,6 +148,9 @@ func Prepare(ctx context.Context, spec Spec) (*Boundary, error) {
 		}
 	}
 	if err := boundary.Probe(ctx); err != nil {
+		return nil, err
+	}
+	if err := boundary.stageInputs(ctx, spec.Inputs); err != nil {
 		return nil, err
 	}
 	return boundary, nil

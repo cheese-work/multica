@@ -60,6 +60,7 @@ type credentialObservation struct {
 	DescriptorLeak bool
 	NativeControl  bool
 	AdminDenied    bool
+	StagedInputs   bool
 }
 
 func credentialFixtureAgent() {
@@ -88,6 +89,9 @@ func credentialFixtureAgent() {
 	data, _ := os.ReadFile("probe.json")
 	_ = json.Unmarshal(data, &probe)
 	observation := credentialObservation{Readable: make(map[string]bool)}
+	stagedPrompt, promptErr := os.ReadFile("multica-input/prompt.md")
+	stagedSkill, skillErr := os.ReadFile("multica-input/skills/owned/SKILL.md")
+	observation.StagedInputs = promptErr == nil && skillErr == nil && string(stagedPrompt) == "owned authenticated prompt" && string(stagedSkill) == "owned authenticated skill"
 	for name, path := range map[string]string{"direct": probe.Outside, "symlink": "escape", "cross-task": probe.OtherTask, "peer-env": probe.PeerEnvironment, "peer-fd": probe.PeerDescriptor} {
 		data, err := os.ReadFile(path)
 		observation.Readable[name] = err == nil && strings.Contains(string(data), "owned-unlimited")
@@ -287,6 +291,7 @@ func TestCredentialExclusiveProductionAdapters(test *testing.T) {
 			test.Log("NEGATIVE CONTROL: ordinary production adapter reads owned unlimited sentinel and inherited credential")
 			binding := credentialexec.Binding{TaskID: "00000000-0000-4000-8000-000000000001", OwnerID: "00000000-0000-4000-8000-000000000002", WorkspaceID: "00000000-0000-4000-8000-000000000003"}
 			spec := credentialexec.Spec{Root: filepath.Join(root, "private"), Binding: binding, Provider: provider, Executable: executable, HelperExecutable: current}
+			spec.Inputs = map[string][]byte{"multica-input/prompt.md": []byte("owned authenticated prompt"), "multica-input/skills/owned/SKILL.md": []byte("owned authenticated skill")}
 			boundary, err := credentialexec.Prepare(context.Background(), spec)
 			if err != nil {
 				test.Fatal(err)
@@ -328,7 +333,7 @@ func TestCredentialExclusiveProductionAdapters(test *testing.T) {
 						test.Errorf("isolated %s reads %s", provider, route)
 					}
 				}
-				if isolated.Inherited || isolated.Helper || isolated.DescriptorLeak || isolated.HostNetwork || isolated.UnixPeer || isolated.AbstractPeer || isolated.ParentLeak || !isolated.Scoped || !isolated.Gateway || !isolated.AdminDenied || !isolated.NativeControl || isolated.Count != attempt {
+				if isolated.Inherited || isolated.Helper || isolated.DescriptorLeak || isolated.HostNetwork || isolated.UnixPeer || isolated.AbstractPeer || isolated.ParentLeak || !isolated.Scoped || !isolated.Gateway || !isolated.AdminDenied || !isolated.NativeControl || !isolated.StagedInputs || isolated.Count != attempt {
 					test.Fatalf("isolated control: %+v, attempt %d", isolated, attempt)
 				}
 			}

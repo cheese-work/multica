@@ -40,6 +40,7 @@ type Spec struct {
 	Provider         string
 	Executable       string
 	HelperExecutable string
+	Inputs           map[string][]byte
 }
 
 type GatewayCredential struct {
