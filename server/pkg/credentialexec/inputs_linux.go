@@ -50,7 +50,14 @@ func (boundary *Boundary) accessInputs(ctx context.Context, inputs map[string][]
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		if ctx.Err() != nil || accessInput(root, name, inputs[name], create) != nil {
+		if ctx.Err() != nil {
+			return ErrUnavailable
+		}
+		file, err := accessInput(root, name, inputs[name], create)
+		if err != nil {
+			return ErrUnavailable
+		}
+		if file.Close() != nil {
 			return ErrUnavailable
 		}
 	}
@@ -76,7 +83,7 @@ func openInputDirectory(parent int, name string, create bool) (*os.File, error) 
 	return file, nil
 }
 
-func accessInput(root *os.File, name string, contents []byte, create bool) error {
+func accessInput(root *os.File, name string, contents []byte, create bool) (*os.File, error) {
 	parent := root
 	var directories []*os.File
 	defer func() {
@@ -88,7 +95,7 @@ func accessInput(root *os.File, name string, contents []byte, create bool) error
 	for _, component := range parts[:len(parts)-1] {
 		directory, err := openInputDirectory(int(parent.Fd()), component, create)
 		if err != nil {
-			return ErrUnavailable
+			return nil, ErrUnavailable
 		}
 		directories = append(directories, directory)
 		parent = directory
@@ -105,29 +112,36 @@ func accessInput(root *os.File, name string, contents []byte, create bool) error
 		descriptor, err = unix.Openat2(int(parent.Fd()), filename, options)
 	}
 	if err != nil {
-		return ErrUnavailable
+		return nil, ErrUnavailable
 	}
 	file := os.NewFile(uintptr(descriptor), filename)
-	defer file.Close()
+	retained := false
+	defer func() {
+		if !retained {
+			_ = file.Close()
+		}
+	}()
 	var info unix.Stat_t
 	if unix.Fstat(descriptor, &info) != nil || info.Mode&unix.S_IFMT != unix.S_IFREG || info.Mode&07777 != 0600 || info.Nlink != 1 || info.Uid != uint32(os.Getuid()) {
-		return ErrUnavailable
+		return nil, ErrUnavailable
 	}
 	if existing {
 		if info.Size != int64(len(contents)) {
-			return ErrUnavailable
+			return nil, ErrUnavailable
 		}
 		stored, err := io.ReadAll(io.LimitReader(file, int64(len(contents))+1))
 		if err != nil || !bytes.Equal(stored, contents) {
-			return ErrUnavailable
+			return nil, ErrUnavailable
 		}
-		return nil
+		retained = true
+		return file, nil
 	}
 	if count, err := file.Write(contents); err != nil || count != len(contents) {
-		return ErrUnavailable
+		return nil, ErrUnavailable
 	}
-	if file.Sync() != nil || file.Close() != nil {
-		return ErrUnavailable
+	if file.Sync() != nil {
+		return nil, ErrUnavailable
 	}
-	return nil
+	retained = true
+	return file, nil
 }

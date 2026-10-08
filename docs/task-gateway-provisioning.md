@@ -139,6 +139,11 @@ Inputs have canonical relative paths, no file/directory collision, at most 128 f
 per file and at most 8 MiB total. Same-task exact input is reused without resetting native state;
 changed bytes or unsafe/private-path violations refuse before the handoff. No overwrite/reset exists.
 This is a claim-pinned input source slice, not complete tooling or a trusted refresh mechanism.
+Every opted-in native launch/resume additionally verifies and pins each declared input through a read-only
+descriptor mount. The child cannot overwrite or unlink declared inputs. Other task work and native home stay
+writable, preserving same-task state. Missing, changed or unsafe files refuse without repair or a provider call.
+Owned ELF fixtures exercise both provider adapters' launch/resume and unchanged writable task-state paths.
+These fixtures do not qualify installed native transports, authenticated refresh or full gateway acceptance.
 The existing skill endpoint preserves unmanaged preparing-task access. It additionally permits running-task
 resolution only through the owning-daemon token with the exact frozen gateway policy and capability.
 The server rechecks current task/runtime/agent ownership and a finite dispatch timestamp before reading skills.

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -312,6 +313,26 @@ func (boundary *Boundary) wrap(command *exec.Cmd, withGateway bool) (func(), err
 		files = append(files, os.NewFile(uintptr(descriptor), directory))
 	}
 	arguments := []string{boundary.bwrap, "--unshare-all", "--unshare-user", "--unshare-pid", "--unshare-net", "--unshare-ipc", "--unshare-uts", "--die-with-parent", "--new-session", "--cap-drop", "ALL", "--ro-bind-fd", "5", "/", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--bind-fd", "3", boundary.Home(), "--bind-fd", "4", boundary.WorkDir(), "--chdir", boundary.WorkDir()}
+	if withGateway {
+		if ValidateInputs(boundary.spec.Inputs) != nil {
+			cleanup()
+			return nil, ErrUnavailable
+		}
+		names := make([]string, 0, len(boundary.spec.Inputs))
+		for name := range boundary.spec.Inputs {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			file, err := accessInput(files[1], name, boundary.spec.Inputs[name], false)
+			if err != nil {
+				cleanup()
+				return nil, ErrUnavailable
+			}
+			arguments = append(arguments, "--ro-bind-fd", strconv.Itoa(len(files)+3), filepath.Join(boundary.WorkDir(), name))
+			files = append(files, file)
+		}
+	}
 	environment := boundary.Environment()
 	nativeArgs := command.Args
 	if withGateway {

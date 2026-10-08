@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -45,6 +47,38 @@ func taskGatewayNativeFixture() {
 		staged, err := os.ReadFile("multica-input/prompt.md")
 		if err != nil || string(staged) != prompt {
 			return "unbound prompt"
+		}
+		instructions, err := os.ReadFile("multica-input/instructions.md")
+		if err != nil {
+			return "unbound instructions"
+		}
+		if strings.Contains(string(instructions), "owned readonly input control") {
+			if err := filepath.WalkDir("multica-input", func(path string, entry os.DirEntry, walkErr error) error {
+				if walkErr != nil {
+					return walkErr
+				}
+				if entry.IsDir() {
+					return nil
+				}
+				if err := os.WriteFile(path, []byte("forged native input"), 0600); !errors.Is(err, syscall.EROFS) {
+					if err == nil {
+						return fmt.Errorf("trusted input is writable: %s", path)
+					}
+					return fmt.Errorf("trusted input is not read-only: %s: %w", path, err)
+				}
+				if err := os.Remove(path); !errors.Is(err, syscall.EBUSY) {
+					if err == nil {
+						return fmt.Errorf("trusted input was removed: %s", path)
+					}
+					return fmt.Errorf("trusted input is not pinned: %s: %w", path, err)
+				}
+				return nil
+			}); err != nil {
+				return err.Error()
+			}
+			if err := os.WriteFile("owned-work-state", []byte("retained mutable work"), 0600); err != nil {
+				return "task workdir is not writable"
+			}
 		}
 		for _, value := range os.Environ() {
 			if strings.Contains(value, "mdt_owned") || strings.Contains(value, "mat_owned") || strings.Contains(value, "owned-task-key") || strings.Contains(value, "owned-unlimited") {
@@ -126,6 +160,7 @@ func TestTaskGatewayExecutionPreparedLaunchAndResume(test *testing.T) {
 	for _, provider := range []string{"claude", "codex"} {
 		test.Run(provider, func(test *testing.T) {
 			task, binding := ownedTaskGatewayClaim()
+			task.Agent.Instructions += " owned readonly input control"
 			bundle := makeResolvableSkillBundle("owned-skill")
 			task.Agent.SkillRefs = []SkillRefData{skillRefFromBundle(bundle)}
 			task.ChatSessionID = "00000000-0000-4000-8000-000000000009"
@@ -223,6 +258,12 @@ func TestTaskGatewayExecutionPreparedLaunchAndResume(test *testing.T) {
 				result, err := execution.Run(context.Background(), nil)
 				if err != nil || result.Status != "completed" || result.Output != "owned prepared success" || result.SessionID != "owned-session" {
 					test.Fatalf("bound launch/resume: %+v err=%v", result, err)
+				}
+				if err := execution.boundary.VerifyInputs(context.Background()); err != nil {
+					test.Fatal("native launch/resume changed the authorized snapshot", err)
+				}
+				if contents, err := os.ReadFile(filepath.Join(execution.boundary.WorkDir(), "owned-work-state")); err != nil || string(contents) != "retained mutable work" {
+					test.Fatal("native launch/resume lost mutable task work", err)
 				}
 				if result.GatewayUsage == nil || !result.GatewayUsage.Complete || len(result.GatewayUsage.Models) != 1 {
 					test.Fatal("prepared execution lost observed gateway usage", result.GatewayUsage)

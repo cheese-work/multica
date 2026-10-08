@@ -37,6 +37,14 @@ Changed/unsafe input refuses before credential delivery. Authorized input update
 implemented trusted refresh path; no automatic replacement exists.
 Owned fixtures cover these refusals and both production adapters' launch/resume visibility.
 
+Opted-in native wrapping reopens and verifies each declared input through the anchored workdir.
+The same verified read-only descriptors become deterministic per-file read-only namespace mounts.
+Changed bytes, unsafe paths or modes and missing input refuse even on direct boundary wrapping.
+Native launch/resume cannot overwrite or unlink these declared files; task work and native home remain writable.
+Descriptor pinning survives replacement of the host pathname after verification, without a path-based reread.
+Only declared inputs receive these mounts. Namespace probes and input-free wrapping retain their original behavior.
+This adds immutable native input visibility, not an authenticated refresh mechanism or complete task tooling.
+
 ### Claim-pinned server skill resolution
 
 The prepared helper resolves workspace, builtin and plugin references through the existing authenticated
