@@ -3992,8 +3992,18 @@ func (h *Handler) ResolveTaskSkillBundles(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if task.Status != "dispatched" && task.Status != "waiting_local_directory" {
-		writeError(w, http.StatusConflict, "task is not preparing")
-		return
+		if task.Status != "running" {
+			writeError(w, http.StatusConflict, "task is not preparing")
+			return
+		}
+		agent, err := h.Queries.GetAgent(r.Context(), task.AgentID)
+		if err == nil {
+			_, err = h.authorizeTaskGatewayRuntimeTask(r.Context(), task, runtime, agent, requestClientCapabilities(r))
+		}
+		if err != nil {
+			writeError(w, http.StatusConflict, "task is not preparing")
+			return
+		}
 	}
 
 	var req resolveSkillBundlesRequest

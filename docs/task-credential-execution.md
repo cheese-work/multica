@@ -53,8 +53,11 @@ The helper leaves the original claim unchanged and uses the same resolved snapsh
 Exact same-task input reuses native state; changed pins or bytes never overwrite the retained state.
 Unavailable resolution, hard 429, malformed/trailing/unknown-field JSON and wrong bundles refuse without a grant.
 
-The existing server endpoint serves preparing tasks only. No server authorization or status rule changes.
-Re-preparing a running task with references therefore remains unavailable through that endpoint.
+The existing server endpoint still serves unmanaged preparing tasks without changing their authorization.
+Running-task resolution additionally requires the owning-daemon token and the exact frozen gateway policy.
+The current runtime owner, workspace, task, agent/runtime association, private-agent owner, builtin profile,
+finite dispatch timestamp and `task-gateway-v1` capability must agree. PAT/JWT, foreign daemons,
+unmanaged running tasks, changed bindings and terminal tasks refuse. No operator or provider call occurs.
 This is pinned input source support, not authenticated input refresh, native skill registration or complete tooling.
 Database/native/full gateway acceptance remains NOT-RUN. The daemon's early opt-in refusal remains.
 
@@ -175,7 +178,7 @@ Owned ELF/local-HTTP fixtures exercise both adapters' prepared launch/resume, in
 refusal, single-run/close lifecycle and hard-429/no-new-launch/no-new-grant behavior. They are not installed
 native CLI compatibility, PostgreSQL transactions, durable accounting or full gateway acceptance.
 This helper remains outside `runTask`. Early opt-in refusal and the unadvertised capability remain.
-Authenticated input refresh, running-task skill resolution, credential-exclusive tooling, complete native
+Authenticated input refresh, credential-exclusive tooling, complete native
 transport/protocol support and gateway/worker settlement integration remain unfinished.
 The daemon's early refusal and unsupported protocol refusals remain. No launch capability is enabled.
 

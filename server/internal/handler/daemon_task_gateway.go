@@ -17,9 +17,9 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-func (handler *Handler) authorizeTaskGatewayGrant(ctx context.Context, task db.AgentTaskQueue, runtime db.AgentRuntime, agent db.Agent, token db.TaskToken, capabilities []string) (credentialexec.Binding, error) {
+func (handler *Handler) authorizeTaskGatewayRuntimeTask(ctx context.Context, task db.AgentTaskQueue, runtime db.AgentRuntime, agent db.Agent, capabilities []string) (credentialexec.Binding, error) {
 	binding := credentialExecutionBindingForClaim(task, runtime, middleware.DaemonWorkspaceIDFromContext(ctx))
-	if middleware.DaemonAuthPathFromContext(ctx) != middleware.DaemonAuthPathDaemonToken || binding == nil || runtime.ProfileID.Valid || !runtime.DaemonID.Valid || runtime.DaemonID.String == "" || runtime.DaemonID.String != middleware.DaemonIDFromContext(ctx) || task.RuntimeID != runtime.ID || agent.ID != task.AgentID || agent.RuntimeID != runtime.ID || runtime.Visibility == "private" && agent.OwnerID != runtime.OwnerID || task.Status != "dispatched" && task.Status != "running" || !task.DispatchedAt.Valid || task.DispatchedAt.InfinityModifier != pgtype.Finite || token.TaskID != task.ID || token.AgentID != task.AgentID || token.UserID != runtime.OwnerID || token.WorkspaceID != runtime.WorkspaceID || token.Purpose != "agent_task" || !token.ExpiresAt.Valid || token.ExpiresAt.InfinityModifier != pgtype.Finite || !token.ExpiresAt.Time.After(time.Now()) {
+	if middleware.DaemonAuthPathFromContext(ctx) != middleware.DaemonAuthPathDaemonToken || binding == nil || uuidToString(runtime.WorkspaceID) != binding.WorkspaceID || runtime.ProfileID.Valid || !runtime.DaemonID.Valid || runtime.DaemonID.String == "" || runtime.DaemonID.String != middleware.DaemonIDFromContext(ctx) || task.RuntimeID != runtime.ID || agent.ID != task.AgentID || agent.RuntimeID != runtime.ID || runtime.Visibility == "private" && agent.OwnerID != runtime.OwnerID || task.Status != "dispatched" && task.Status != "running" || !task.DispatchedAt.Valid || task.DispatchedAt.InfinityModifier != pgtype.Finite {
 		return credentialexec.Binding{}, taskgateway.ErrUnavailable
 	}
 	required, err := handler.TaskGateway.Admit(uuidToString(runtime.ID), runtime.Provider, *binding, capabilities)
@@ -27,6 +27,14 @@ func (handler *Handler) authorizeTaskGatewayGrant(ctx context.Context, task db.A
 		return credentialexec.Binding{}, taskgateway.ErrUnavailable
 	}
 	return *binding, nil
+}
+
+func (handler *Handler) authorizeTaskGatewayGrant(ctx context.Context, task db.AgentTaskQueue, runtime db.AgentRuntime, agent db.Agent, token db.TaskToken, capabilities []string) (credentialexec.Binding, error) {
+	binding, err := handler.authorizeTaskGatewayRuntimeTask(ctx, task, runtime, agent, capabilities)
+	if err != nil || token.TaskID != task.ID || token.AgentID != task.AgentID || token.UserID != runtime.OwnerID || token.WorkspaceID != runtime.WorkspaceID || token.Purpose != "agent_task" || !token.ExpiresAt.Valid || token.ExpiresAt.InfinityModifier != pgtype.Finite || !token.ExpiresAt.Time.After(time.Now()) {
+		return credentialexec.Binding{}, taskgateway.ErrUnavailable
+	}
+	return binding, nil
 }
 
 func (handler *Handler) DeliverTaskGatewayGrant(writer http.ResponseWriter, request *http.Request) {

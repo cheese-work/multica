@@ -139,7 +139,12 @@ Inputs have canonical relative paths, no file/directory collision, at most 128 f
 per file and at most 8 MiB total. Same-task exact input is reused without resetting native state;
 changed bytes or unsafe/private-path violations refuse before the handoff. No overwrite/reset exists.
 This is a claim-pinned input source slice, not complete tooling or a trusted refresh mechanism.
-The existing skill endpoint supports preparing tasks only; running-task reference resolution remains unavailable.
+The existing skill endpoint preserves unmanaged preparing-task access. It additionally permits running-task
+resolution only through the owning-daemon token with the exact frozen gateway policy and capability.
+The server rechecks current task/runtime/agent ownership and a finite dispatch timestamp before reading skills.
+Unmanaged running tasks, PAT/JWT, foreign daemons, custom profiles and changed identities refuse.
+The shared grant authorization gate retains the grant's additional live task-token checks.
+This read-only eligibility check makes no operator or provider call and does not provision or reset a ledger.
 The trusted owning daemon is outside the attacker boundary; this endpoint does not remotely attest
 OS preparation by a compromised daemon.
 
