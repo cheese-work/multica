@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
@@ -162,5 +163,44 @@ func TestDecodeRemoteMCPSSEData(t *testing.T) {
 	raw, err := decodeRemoteMCPSSEData("text/event-stream; charset=utf-8", []byte("event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1}\n\n"))
 	if err != nil || string(raw) != `{"jsonrpc":"2.0","id":1}` {
 		t.Fatalf("decodeRemoteMCPSSEData = %q, %v", raw, err)
+	}
+}
+
+func TestRemoteMCPProxyEnforcesTaskCallCap(t *testing.T) {
+	var upstreamCalls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer upstream.Close()
+
+	endpoint, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := &remoteMCPProxy{
+		endpoint: endpoint, client: upstream.Client(), path: "/capability",
+		semaphore: make(chan struct{}, remoteMCPMaxConcurrency),
+	}
+	requestBody := `{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`
+
+	for callNumber := 1; callNumber <= remoteMCPMaxCalls+1; callNumber++ {
+		request := httptest.NewRequest(http.MethodPost, "/capability", strings.NewReader(requestBody))
+		response := httptest.NewRecorder()
+		proxy.ServeHTTP(response, request)
+
+		if callNumber <= remoteMCPMaxCalls {
+			if response.Code != http.StatusAccepted {
+				t.Fatalf("call %d status = %d, want %d: %s", callNumber, response.Code, http.StatusAccepted, response.Body.String())
+			}
+			continue
+		}
+		if !strings.Contains(response.Body.String(), "Remote MCP task call limit exceeded") {
+			t.Fatalf("call %d response = %s, want call-limit rejection", callNumber, response.Body.String())
+		}
+	}
+
+	if got := upstreamCalls.Load(); got != remoteMCPMaxCalls {
+		t.Fatalf("upstream calls = %d, want %d", got, remoteMCPMaxCalls)
 	}
 }
