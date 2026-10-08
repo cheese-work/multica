@@ -120,8 +120,8 @@ Prepared daemon launch/resume, complete authorized task inputs and credential-ex
 ## Bounded provider-protocol guard
 
 The broker supports HTTP 200 UTF-8 JSON or SSE on Claude `/v1/messages` and OpenAI `/v1/responses`.
-Text-only content is supported. Claude tool/thinking/server-tool blocks and OpenAI tool/refusal/reasoning
-items or events refuse; this subset is not complete native CLI compatibility. Chat Completions refuses
+Text content and Claude client `tool_use` blocks are supported. Claude thinking/server-tool blocks
+and OpenAI tool/refusal/reasoning items or events refuse; this subset is not complete native CLI compatibility. Chat Completions refuses
 before forwarding. `/v1/models` and Claude `/v1/messages/count_tokens` have bounded JSON metadata guards,
 not inference usage defaults. Other statuses, media types, protocol upgrades and declared/late trailers refuse.
 
@@ -134,6 +134,15 @@ not buffered. Closing before the validated output is consumed also records an un
 Claude requires message identity/model, supported terminal stop reason and explicit input/cache-write/
 cache-read/output counts. SSE block lifecycle must close before a single final delta and `message_stop`.
 Cumulative delta counts overwrite monotonically; omitted optional counts retain known start values.
+Client tool blocks require unique nonempty IDs, nonempty names and object-valued input. A streamed tool
+starts with an empty input object and accepts only `input_json_delta` arguments for that block.
+The broker accumulates at most 1 MiB across active tool arguments and validates the complete JSON object
+at block stop, including the existing depth and duplicate-field limits. Closed argument buffers are discarded.
+Empty-input tools are supported. A response with client tool blocks must terminate with `tool_use`;
+that stop reason without a tool block refuses. Malformed or incomplete arguments, unknown usage and
+unsupported tool variants retain the existing same-task unknown-outcome stop and prevent another attempt.
+Owned JSON/SSE fixtures verify wire preservation, usage and refusal. These are not installed native-tool
+or gateway/worker acceptance. The primary protocol reference is the Anthropic streaming documentation.
 OpenAI requires stable response identity/model, consecutive event sequence, closed supported items and
 `response.completed` with completed status and final usage. The supported streamed message has at most one
 text part; SHA-256 digests verify text deltas against text/part/item/final snapshots without retaining the

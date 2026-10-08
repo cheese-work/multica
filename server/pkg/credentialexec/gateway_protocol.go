@@ -38,6 +38,9 @@ type gatewayProtocol struct {
 	textHashes []hash.Hash
 	hasText    []bool
 	usage      map[string]int64
+	toolIDs    map[string]bool
+	toolInputs map[int64][]byte
+	toolBytes  int
 }
 
 func newGatewayProtocol(provider string, request *http.Request, response *http.Response) (*gatewayProtocol, error) {
@@ -141,7 +144,7 @@ func (protocol *gatewayProtocol) finish() error {
 		return err
 	}
 	if protocol.provider == "claude" {
-		if gatewayString(object, "type") != "message" || gatewayString(object, "role") != "assistant" || protocol.setIdentity(object) != nil || !claudeStopReason(gatewayString(object, "stop_reason")) || validateGatewayContent(object["content"], "text") != nil {
+		if gatewayString(object, "type") != "message" || gatewayString(object, "role") != "assistant" || protocol.setIdentity(object) != nil || protocol.validateClaudeContent(object["content"]) != nil || !protocol.validClaudeStopReason(gatewayString(object, "stop_reason")) {
 			return ErrOutcomeUnknown
 		}
 		usage, err := gatewayObject(object["usage"])
@@ -305,24 +308,65 @@ func (protocol *gatewayProtocol) consumeClaude(eventType string, object map[stri
 		}
 		if eventType == "content_block_start" {
 			block, err := gatewayObject(object["content_block"])
-			if err != nil || gatewayString(block, "type") != "text" || !gatewayText(block["text"]) || index != protocol.nextBlock || protocol.blocks[index] != "" {
+			if err != nil || index != protocol.nextBlock || protocol.blocks[index] != "" {
+				return ErrOutcomeUnknown
+			}
+			blockType := gatewayString(block, "type")
+			switch blockType {
+			case "text":
+				if !gatewayText(block["text"]) {
+					return ErrOutcomeUnknown
+				}
+			case "tool_use":
+				if protocol.registerClaudeTool(block, true) != nil {
+					return ErrOutcomeUnknown
+				}
+				protocol.toolInputs[index] = nil
+			default:
 				return ErrOutcomeUnknown
 			}
 			protocol.nextBlock++
-			protocol.blocks[index] = "text"
+			protocol.blocks[index] = blockType
 		} else if protocol.blocks[index] == "" {
 			return ErrOutcomeUnknown
 		} else if eventType == "content_block_stop" {
+			if protocol.blocks[index] == "tool_use" {
+				contents := protocol.toolInputs[index]
+				if len(contents) == 0 {
+					contents = []byte("{}")
+				}
+				if _, err := gatewayObject(contents); err != nil {
+					return ErrOutcomeUnknown
+				}
+				protocol.toolBytes -= len(protocol.toolInputs[index])
+				delete(protocol.toolInputs, index)
+			}
 			delete(protocol.blocks, index)
 		} else {
 			delta, err := gatewayObject(object["delta"])
-			if err != nil || gatewayString(delta, "type") != "text_delta" || !gatewayText(delta["text"]) {
+			if err != nil {
 				return ErrOutcomeUnknown
+			}
+			if protocol.blocks[index] == "text" {
+				if gatewayString(delta, "type") != "text_delta" || !gatewayText(delta["text"]) {
+					return ErrOutcomeUnknown
+				}
+			} else {
+				if gatewayString(delta, "type") != "input_json_delta" || !gatewayText(delta["partial_json"]) {
+					return ErrOutcomeUnknown
+				}
+				var fragment string
+				_ = json.Unmarshal(delta["partial_json"], &fragment)
+				if len(fragment) > gatewayFrameLimit-protocol.toolBytes {
+					return ErrOutcomeUnknown
+				}
+				protocol.toolInputs[index] = append(protocol.toolInputs[index], fragment...)
+				protocol.toolBytes += len(fragment)
 			}
 		}
 	case "message_delta":
 		delta, err := gatewayObject(object["delta"])
-		if err != nil || protocol.finalDelta || len(protocol.blocks) != 0 || !claudeStopReason(gatewayString(delta, "stop_reason")) {
+		if err != nil || protocol.finalDelta || len(protocol.blocks) != 0 || !protocol.validClaudeStopReason(gatewayString(delta, "stop_reason")) {
 			return ErrOutcomeUnknown
 		}
 		usage, err := gatewayObject(object["usage"])
@@ -339,6 +383,53 @@ func (protocol *gatewayProtocol) consumeClaude(eventType string, object map[stri
 		return ErrOutcomeUnknown
 	}
 	return nil
+}
+
+func (protocol *gatewayProtocol) registerClaudeTool(block map[string]json.RawMessage, stream bool) error {
+	input, err := gatewayObject(block["input"])
+	identity := gatewayString(block, "id")
+	if err != nil || stream && len(input) != 0 || identity == "" || gatewayString(block, "name") == "" || protocol.toolIDs[identity] {
+		return ErrOutcomeUnknown
+	}
+	if protocol.toolIDs == nil {
+		protocol.toolIDs = make(map[string]bool)
+		protocol.toolInputs = make(map[int64][]byte)
+	}
+	protocol.toolIDs[identity] = true
+	return nil
+}
+
+func (protocol *gatewayProtocol) validateClaudeContent(contents json.RawMessage) error {
+	var blocks []json.RawMessage
+	if json.Unmarshal(contents, &blocks) != nil || blocks == nil || len(blocks) > 4096 {
+		return ErrOutcomeUnknown
+	}
+	for _, contents := range blocks {
+		block, err := gatewayObject(contents)
+		if err != nil {
+			return ErrOutcomeUnknown
+		}
+		switch gatewayString(block, "type") {
+		case "text":
+			if !gatewayText(block["text"]) {
+				return ErrOutcomeUnknown
+			}
+		case "tool_use":
+			if protocol.registerClaudeTool(block, false) != nil {
+				return ErrOutcomeUnknown
+			}
+		default:
+			return ErrOutcomeUnknown
+		}
+	}
+	return nil
+}
+
+func (protocol *gatewayProtocol) validClaudeStopReason(reason string) bool {
+	if reason == "tool_use" {
+		return len(protocol.toolIDs) != 0
+	}
+	return len(protocol.toolIDs) == 0 && claudeStopReason(reason)
 }
 
 func (protocol *gatewayProtocol) setIdentity(object map[string]json.RawMessage) error {
