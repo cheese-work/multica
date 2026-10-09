@@ -68,6 +68,7 @@ can no longer merge as is, and when it returns to draft after acceptance:
   A merge clears the stored merge state of the other open PRs on its base and
   refreshes them, so a conflict it causes is seen without a page visit. A PR
   the refresh queue drops stays undecided, so the snapshot sweep refreshes it.
+  If that clear fails, the webhook delivery fails, so GitHub redelivers it.
 - A ready PR is converted to draft (`converted_to_draft`) while the linked
   issue holds an accepted verdict: `done`, `agent_accepted` or `approved`, in
   the `done` category. The prompt asks the owner to re-ready or explain. A draft

@@ -1708,7 +1708,9 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) error
 	// display anymore (MUL-5265).
 	h.PRRefresh.Enqueue(p.Installation.ID, p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number)
 	if p.PullRequest.Merged {
-		h.refreshOpenPRsOnBase(ctx, &p)
+		if err := h.refreshOpenPRsOnBase(ctx, &p); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if len(errs) > 0 {
 		return errors.Join(errs...)
@@ -2067,22 +2069,24 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 // a merge just moved (CHE-1417). Their merge state can turn DIRTY or BEHIND
 // without a pull_request event of their own; the refresh is what notices it.
 // Their stored merge state is cleared first, so a PR the refresh queue drops
-// is undecided and the snapshot sweep refreshes it.
-func (h *Handler) refreshOpenPRsOnBase(ctx context.Context, p *ghPullRequestPayload) {
+// is undecided and the snapshot sweep refreshes it. A failed clear is returned:
+// the old decided verdicts would stay outside the sweep, so the delivery must
+// fail and GitHub's redelivery retries it.
+func (h *Handler) refreshOpenPRsOnBase(ctx context.Context, p *ghPullRequestPayload) error {
 	if !h.PRRefresh.Enabled() || p.PullRequest.Base.Ref == "" {
-		return
+		return nil
 	}
 	rows, err := h.Queries.InvalidateOpenGitHubPRMergeStateOnBase(ctx, db.InvalidateOpenGitHubPRMergeStateOnBaseParams{
 		InstallationID: p.Installation.ID, RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name,
 		MergedPrNumber: p.PullRequest.Number, BaseRef: pgtype.Text{String: p.PullRequest.Base.Ref, Valid: true},
 	})
 	if err != nil {
-		slog.Warn("github: list open pull requests on merged base", "err", err)
-		return
+		return fmt.Errorf("github: invalidate merge state of open pull requests on merged base: %w", err)
 	}
 	for _, r := range rows {
 		h.PRRefresh.Enqueue(r.InstallationID, r.RepoOwner, r.RepoName, r.PrNumber)
 	}
+	return nil
 }
 
 func dispatchMergedPRWakeups(issueIDs []pgtype.UUID, dispatch func(pgtype.UUID) error, publish func()) error {
