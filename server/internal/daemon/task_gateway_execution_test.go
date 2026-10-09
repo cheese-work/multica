@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -27,6 +28,13 @@ func init() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+		os.Exit(0)
+	}
+	if len(os.Args) == 2 && os.Args[1] == "--owned-task-tool" {
+		if os.Getenv("OPENAI_API_KEY") != credentialexec.NativePlaceholder || os.Getenv("ANTHROPIC_API_KEY") != credentialexec.NativePlaceholder || os.Getenv("MULTICA_TOKEN") != "" {
+			os.Exit(2)
+		}
+		fmt.Print("owned task tool " + os.Getenv("MULTICA_TASK_ID"))
 		os.Exit(0)
 	}
 	if strings.HasPrefix(filepath.Base(os.Args[0]), "task-gateway-native-") {
@@ -112,6 +120,12 @@ func taskGatewayNativeFixture() {
 				return "task workdir is not writable"
 			}
 		}
+		if strings.Contains(string(instructions), "owned pinned tool control") {
+			tool := exec.Command("owned-tool", "--owned-task-tool")
+			if output, err := tool.CombinedOutput(); err != nil || string(output) != "owned task tool "+os.Getenv("MULTICA_TASK_ID") {
+				return "trusted task tool is unavailable or unbound"
+			}
+		}
 		for _, value := range os.Environ() {
 			if strings.Contains(value, "mdt_owned") || strings.Contains(value, "mat_owned") || strings.Contains(value, "owned-task-key") || strings.Contains(value, "owned-unlimited") {
 				return "credential leaked"
@@ -192,7 +206,7 @@ func TestTaskGatewayExecutionPreparedLaunchAndResume(test *testing.T) {
 	for _, provider := range []string{"claude", "codex"} {
 		test.Run(provider, func(test *testing.T) {
 			task, binding := ownedTaskGatewayClaim()
-			task.Agent.Instructions += " owned readonly input control"
+			task.Agent.Instructions += " owned readonly input control owned pinned tool control"
 			bundle := makeResolvableSkillBundle("owned-skill")
 			task.Agent.SkillRefs = []SkillRefData{skillRefFromBundle(bundle)}
 			task.ChatSessionID = "00000000-0000-4000-8000-000000000009"
@@ -217,7 +231,7 @@ func TestTaskGatewayExecutionPreparedLaunchAndResume(test *testing.T) {
 			if err := os.WriteFile(executable, contents, 0500); err != nil {
 				test.Fatal(err)
 			}
-			spec := credentialexec.Spec{Root: filepath.Join(root, "private"), Binding: binding, Provider: provider, Executable: executable, HelperExecutable: helper}
+			spec := credentialexec.Spec{Root: filepath.Join(root, "private"), Binding: binding, Provider: provider, Executable: executable, HelperExecutable: helper, ToolExecutables: map[string]string{"owned-tool": helper}}
 			var grants, calls atomic.Int32
 			var refuse atomic.Bool
 			gateway := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

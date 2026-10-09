@@ -23,6 +23,7 @@ import (
 
 const HelperArg = "__multica_credential_runner"
 const NativePlaceholder = "multica-task-gateway-only"
+const toolBin = "/multica-tools/bin"
 
 var ErrUnavailable = errors.New("credential execution boundary unavailable")
 var ErrQuotaExhausted = fmt.Errorf("%w: task quota exhausted", ErrUnavailable)
@@ -41,6 +42,7 @@ type Spec struct {
 	Executable       string
 	HelperExecutable string
 	Inputs           map[string][]byte
+	ToolExecutables  map[string]string
 }
 
 type GatewayCredential struct {
@@ -98,8 +100,12 @@ func (boundary *Boundary) Validate(taskID, provider, executable string) error {
 }
 
 func (boundary *Boundary) Environment() map[string]string {
+	path := "/bin"
+	if len(boundary.spec.ToolExecutables) != 0 {
+		path = toolBin + ":/bin"
+	}
 	return map[string]string{
-		"HOME": boundary.Home(), "PATH": "/bin", "LANG": "C.UTF-8",
+		"HOME": boundary.Home(), "PATH": path, "LANG": "C.UTF-8",
 		"XDG_CONFIG_HOME":   filepath.Join(boundary.Home(), ".config"),
 		"XDG_CACHE_HOME":    filepath.Join(boundary.Home(), ".cache"),
 		"XDG_DATA_HOME":     filepath.Join(boundary.Home(), ".data"),

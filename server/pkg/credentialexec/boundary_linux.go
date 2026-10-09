@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,14 +24,19 @@ import (
 )
 
 type runtimeIdentity struct {
-	Binding    Binding
-	Provider   string
-	Executable string
-	Helper     string
-	Digests    map[string]string
+	Binding         Binding
+	Provider        string
+	Executable      string
+	Helper          string
+	Digests         map[string]string
+	ToolExecutables map[string]string `json:"ToolExecutables,omitempty"`
 }
 
 func Prepare(ctx context.Context, spec Spec) (*Boundary, error) {
+	if err := validateToolExecutables(spec.ToolExecutables); err != nil {
+		return nil, err
+	}
+	spec.ToolExecutables = maps.Clone(spec.ToolExecutables)
 	if err := ValidateInputs(spec.Inputs); err != nil {
 		return nil, err
 	}
@@ -39,6 +45,17 @@ func Prepare(ctx context.Context, spec Spec) (*Boundary, error) {
 	}
 	if runtime.GOARCH != "amd64" || spec.Provider != "claude" && spec.Provider != "codex" || !filepath.IsAbs(spec.Root) || !filepath.IsAbs(spec.Executable) || !filepath.IsAbs(spec.HelperExecutable) {
 		return nil, fmt.Errorf("%w: unsupported provider or relative source path", ErrUnavailable)
+	}
+	assets := make(map[string][]byte)
+	if len(spec.ToolExecutables) != 0 {
+		if err := readGatewayStop(filepath.Join(spec.Root, spec.Binding.TaskID)); err != nil {
+			return nil, err
+		}
+		for _, path := range spec.ToolExecutables {
+			if err := collectRuntimeAsset(path, assets); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if err := privateDirectory(spec.Root); err != nil {
 		return nil, err
@@ -60,8 +77,7 @@ func Prepare(ctx context.Context, spec Spec) (*Boundary, error) {
 			return nil, err
 		}
 	}
-	identity := runtimeIdentity{Binding: spec.Binding, Provider: spec.Provider, Executable: spec.Executable, Helper: spec.HelperExecutable, Digests: make(map[string]string)}
-	assets := make(map[string][]byte)
+	identity := runtimeIdentity{Binding: spec.Binding, Provider: spec.Provider, Executable: spec.Executable, Helper: spec.HelperExecutable, Digests: make(map[string]string), ToolExecutables: spec.ToolExecutables}
 	for _, path := range []string{spec.Executable, spec.HelperExecutable, "/bin/sh", "/bin/true"} {
 		if err := collectRuntimeAsset(path, assets); err != nil {
 			return nil, err
@@ -95,6 +111,23 @@ func Prepare(ctx context.Context, spec Spec) (*Boundary, error) {
 	if err := privateDirectory(runtimeRoot); err != nil {
 		return nil, err
 	}
+	writeAsset := func(destination string, data []byte) error {
+		if err := os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
+			return err
+		}
+		if existing, err := os.ReadFile(destination); err == nil {
+			if string(existing) != string(data) {
+				return fmt.Errorf("%w: runtime snapshot changed", ErrUnavailable)
+			}
+		} else if os.IsNotExist(err) {
+			if err := os.WriteFile(destination, data, 0500); err != nil {
+				return err
+			}
+		} else {
+			return err
+		}
+		return nil
+	}
 	for path, data := range assets {
 		destination := filepath.Join(runtimeRoot, path)
 		if path == spec.Executable {
@@ -103,18 +136,12 @@ func Prepare(ctx context.Context, spec Spec) (*Boundary, error) {
 		if path == spec.HelperExecutable {
 			destination = filepath.Join(runtimeRoot, "runtime", "multica-helper")
 		}
-		if err := os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
+		if err := writeAsset(destination, data); err != nil {
 			return nil, err
 		}
-		if existing, err := os.ReadFile(destination); err == nil {
-			if string(existing) != string(data) {
-				return nil, fmt.Errorf("%w: runtime snapshot changed", ErrUnavailable)
-			}
-		} else if os.IsNotExist(err) {
-			if err := os.WriteFile(destination, data, 0500); err != nil {
-				return nil, err
-			}
-		} else {
+	}
+	for name, path := range spec.ToolExecutables {
+		if err := writeAsset(filepath.Join(runtimeRoot, toolBin, name), assets[path]); err != nil {
 			return nil, err
 		}
 	}
@@ -156,6 +183,23 @@ func Prepare(ctx context.Context, spec Spec) (*Boundary, error) {
 		return nil, err
 	}
 	return boundary, nil
+}
+
+func validateToolExecutables(tools map[string]string) error {
+	if len(tools) > 16 {
+		return fmt.Errorf("%w: too many tool executables", ErrUnavailable)
+	}
+	for name, path := range tools {
+		if name == "" || len(name) > 64 || name == "sh" || name == "true" || name == "claude" || name == "codex" || name == "multica-helper" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+			return fmt.Errorf("%w: unsupported tool executable", ErrUnavailable)
+		}
+		for index, character := range name {
+			if (character < 'a' || character > 'z') && (character < '0' || character > '9') && (index == 0 || character != '-' && character != '_') {
+				return fmt.Errorf("%w: unsupported tool name", ErrUnavailable)
+			}
+		}
+	}
+	return nil
 }
 
 func privateDirectory(path string) error {

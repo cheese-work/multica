@@ -274,3 +274,28 @@ go test ./pkg/credentialexec ./pkg/agent ./internal/daemon ./internal/handler -r
 ```
 
 The existing handler `TestMain` requires its configured test database even for pure helper tests. Do not point broad DB-backed tests at an unrelated or protected database. This source prerequisite does not authorize creating live containers or mutating protected PostgreSQL data to make a test gate green.
+
+### Pinned native tool source
+
+The trusted daemon's optional `credentialexec.Spec.ToolExecutables` maps explicit command aliases to
+absolute native ELF source paths. No task prompt, custom environment, native profile or shared home
+selects the manifest. At most 16 aliases are supported, each up to 64 bytes using lowercase ASCII
+letters, digits, hyphens or underscores, with an alphanumeric first character. Shell/probe, provider
+and internal helper names cannot be shadowed. Relative, unclean, missing and non-ELF sources refuse
+before creating private task state or requesting a grant. ELF loaders/libraries use the existing
+explicit native-asset collector; no host directory, credential/config file or shared CLI home is imported.
+
+Preparation copies the manifest and snapshots its binaries read-only under `/multica-tools/bin`.
+The clean child `PATH` is `/multica-tools/bin:/bin` only when tools are explicitly selected; the default
+remains `/bin`. The task's persisted source identity includes the alias/source mapping and asset
+digests. Same-task changes to aliases, source paths or binary bytes refuse without rewriting that
+identity or resetting native state. Caller mutation or later removal of the original source cannot
+change an already-prepared snapshot. The tools inherit only the existing isolated environment and
+namespace, with placeholder provider keys and the canonical task ID, not daemon/operator/gateway keys.
+
+Owned ELF fixtures establish ordinary-access negative controls, isolated tool execution, read-only
+snapshots, source/manifest replay refusal and both production adapters' prepared launch/resume.
+This adds no tool network route or task-platform token. Complete Multica CLI authentication/transport,
+remaining authorized task inputs, complete native compatibility and production `runTask` integration
+remain unfinished. The early opt-in refusal and unadvertised capability remain. Installed provider
+CLI smoke tests, real provider calls, database tests and full gateway/worker acceptance remain NOT-RUN.
