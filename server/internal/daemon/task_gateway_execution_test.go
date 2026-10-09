@@ -225,6 +225,23 @@ func TestTaskGatewayExecutionPreparedLaunchAndResume(test *testing.T) {
 					_ = json.NewEncoder(writer).Encode(map[string]any{"bundles": []SkillData{bundle}})
 					return
 				}
+				if strings.HasSuffix(request.URL.Path, "/gateway-inputs") {
+					var payload struct {
+						TaskToken    string `json:"task_token"`
+						DispatchedAt string `json:"dispatched_at"`
+					}
+					if json.NewDecoder(request.Body).Decode(&payload) != nil || payload.TaskToken != task.AuthToken || payload.DispatchedAt != task.DispatchedAt || request.Header.Get("X-Client-Capabilities") != taskgateway.Capability {
+						test.Error("pre-launch refresh lost committed task claim")
+					}
+					contents, err := taskgateway.EncodeInputSnapshot(taskgateway.InputSnapshot{Binding: binding, RuntimeID: task.RuntimeID, AgentID: task.AgentID, DispatchedAt: task.DispatchedAt, Instructions: task.Agent.Instructions, WorkspaceContext: task.WorkspaceContext})
+					if err != nil {
+						test.Error(err)
+						writer.WriteHeader(http.StatusServiceUnavailable)
+						return
+					}
+					_, _ = writer.Write(contents)
+					return
+				}
 				grants.Add(1)
 				if contents, err := os.ReadFile(filepath.Join(spec.Root, task.ID, "workdir", "multica-input", "prompt.md")); err != nil || string(contents) != BuildPrompt(resolved, provider) {
 					test.Error("grant precedes preparation/input staging")

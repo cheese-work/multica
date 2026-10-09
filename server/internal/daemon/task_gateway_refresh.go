@@ -45,15 +45,19 @@ func (execution *taskGatewayExecution) Refresh(ctx context.Context) error {
 		return err
 	}
 	defer finish()
-	if execution.boundary.VerifyInputs(runCtx) != nil {
+	return execution.refresh(runCtx)
+}
+
+func (execution *taskGatewayExecution) refresh(ctx context.Context) error {
+	if execution.boundary.VerifyInputs(ctx) != nil {
 		return taskgateway.ErrUnavailable
 	}
-	refreshed, err := execution.client.refreshTaskGatewayInputs(runCtx, execution.task, execution.provider)
+	refreshed, err := execution.client.refreshTaskGatewayInputs(ctx, execution.task, execution.provider)
 	if err != nil {
 		return taskgateway.ErrUnavailable
 	}
 	inputs, err := taskGatewayInputs(refreshed, execution.provider)
-	if err != nil || execution.boundary.RefreshInputs(runCtx, *execution.task.CredentialExecutionBinding, inputs) != nil {
+	if err != nil || execution.boundary.RefreshInputs(ctx, *execution.task.CredentialExecutionBinding, inputs) != nil {
 		return taskgateway.ErrUnavailable
 	}
 	execution.prompt = BuildPrompt(refreshed, execution.provider)

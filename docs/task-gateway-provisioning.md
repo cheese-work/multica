@@ -196,15 +196,18 @@ Native transport and full gateway/worker acceptance are NOT-RUN.
 Independent different-lab signing and current-pair OCR/OER-1 remain required before this issue becomes review-ready.
 CHE-1279's signing does not sign this integration, and CHE-1253's review is not a runner signature.
 
-The prepared helper now supports explicit authenticated instruction/workspace-context refresh, not automatic
-daemon refresh. `POST /api/daemon/runtimes/{runtimeId}/tasks/{taskId}/gateway-inputs` uses the same locked
+The prepared helper supports explicit authenticated instruction/workspace-context refresh and requires
+that refresh before every prepared native launch/resume, not an integrated production daemon refresh.
+`POST /api/daemon/runtimes/{runtimeId}/tasks/{taskId}/gateway-inputs` uses the same locked
 runtime/task/agent/task-token authorization as grant delivery and rechecks authorization before commit.
 The response carries the canonical binding, runtime, agent and dispatch timestamp with bounded UTF-8 text.
 Unsupported custom/runtime/MCP configuration refuses. No operator, provisioning or provider call occurs.
 The daemon re-resolves only the original skill pins, verifies the existing private input tree and atomically
 exchanges the same filenames from private staging. Run/refresh concurrency, closed/stopped boundaries,
-malformed responses and changed/missing inputs refuse. Close cancels and joins an active refresh.
+malformed responses and changed/missing inputs refuse. Invalid/unavailable automatic refresh refuses
+before native spawn and without another grant. Close cancels and joins an active refresh or a launch
+blocked in mandatory refresh.
 Gateway identity, task-native state, mutable work and usage are preserved; no reset or reconciliation occurs.
 Owned row/HTTP/ELF fixtures cover this source path. The narrower supported refresh contract and remaining
-automatic-refresh, task-input/tooling and native-compatibility limits are in `task-credential-execution.md`.
+production-refresh, task-input/tooling and native-compatibility limits are in `task-credential-execution.md`.
 Early opt-in refusal and the unadvertised `task-gateway-v1` capability remain unchanged.

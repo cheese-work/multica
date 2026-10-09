@@ -69,10 +69,12 @@ unmanaged running tasks, changed bindings and terminal tasks refuse. No operator
 This is pinned input source support, not native skill registration or complete tooling.
 Database/native/full gateway acceptance remains NOT-RUN. The daemon's early opt-in refusal remains.
 
-### Explicit authenticated instruction/context refresh
+### Authenticated instruction/context refresh
 
 Prepared executions retain a copied claim, canonical binding, fixed Multica origin and original skill pins.
 `Refresh` accepts no caller-supplied text, filenames, credentials, configuration or replacement claim.
+Every prepared `Run` uses the same authenticated refresh before native launch or same-task resume.
+An unavailable or invalid snapshot refuses before spawning the native executable, without another grant.
 The owning-daemon `gateway-inputs` endpoint additionally requires the original task token and dispatch
 timestamp. It locks runtime, task, agent and token, reads current agent instructions/workspace context,
 rechecks authorization and commits before delivery. Unsupported nonempty custom/runtime/MCP configuration
@@ -87,11 +89,14 @@ Staging is outside native home/workdir and is removed synchronously. Native stat
 gateway fingerprint and observed usage stay unchanged. Tampered/missing input, new filenames, changed
 skill pins, cancellation and active/stopped execution refuse without repair or credential delivery.
 Run and refresh share one active-operation guard; close cancels and joins either operation.
+Close also cancels and joins a launch blocked in its mandatory refresh, before any native process exists.
 The refreshed native prompt uses the same authenticated snapshot as the staged files.
 
 Owned row/HTTP/ELF fixtures cover authenticated refresh, both adapters' launch/resume, cancellation,
-concurrency, close, state/usage preservation and hard-429 refusal. These are not PostgreSQL transactions,
-installed native compatibility or full acceptance. Automatic refresh, expanded task inputs, native skill
+concurrency, close, state/usage preservation and hard-429 refusal. Both adapters' launch/resume require
+the latest authenticated snapshot and refuse malformed/mismatched input without a native spawn.
+These are not PostgreSQL transactions, installed native compatibility or full acceptance.
+Production daemon refresh, expanded task inputs, native skill
 registration, credential-exclusive tooling and production `runTask` integration remain unfinished.
 
 ## Evidence and explicit limits
@@ -234,7 +239,7 @@ Owned ELF/local-HTTP fixtures exercise both adapters' prepared launch/resume, in
 refusal, single-run/close lifecycle and hard-429/no-new-launch/no-new-grant behavior. They are not installed
 native CLI compatibility, PostgreSQL transactions, durable accounting or full gateway acceptance.
 This helper remains outside `runTask`. Early opt-in refusal and the unadvertised capability remain.
-Automatic input refresh, complete authorized task inputs, credential-exclusive tooling, complete native
+Production daemon input refresh, complete authorized task inputs, credential-exclusive tooling, complete native
 transport/protocol support and gateway/worker settlement integration remain unfinished.
 The daemon's early refusal and unsupported protocol refusals remain. No launch capability is enabled.
 

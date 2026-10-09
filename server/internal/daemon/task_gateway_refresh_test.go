@@ -25,7 +25,7 @@ func TestTaskGatewayExecutionAuthenticatedRefresh(test *testing.T) {
 	}
 	for _, provider := range []string{"claude", "codex"} {
 		for _, resume := range []bool{false, true} {
-			for _, outcome := range []string{"cancel", "close"} {
+			for _, outcome := range []string{"cancel", "close", "launch-close"} {
 				name := provider + "/launch"
 				if resume {
 					name = provider + "/resume"
@@ -131,12 +131,22 @@ func TestTaskGatewayExecutionAuthenticatedRefresh(test *testing.T) {
 						if err := execution.Refresh(context.Background()); err == nil || strings.Contains(err.Error(), "secret") || execution.prompt != originalPrompt || execution.boundary.VerifyInputs(context.Background()) != nil {
 							test.Fatal("invalid refresh changed a prepared execution", err)
 						}
+						if result, err := execution.Run(context.Background(), nil); err == nil || strings.Contains(err.Error(), "secret") || result.Status != "" || providerCalls.Load() != 0 || execution.prompt != originalPrompt {
+							test.Fatal("native launch admitted invalid authenticated input", result.Status, err)
+						}
 					}
 					response.Store([]byte{})
 					refreshCtx, cancelRefresh := context.WithCancel(context.Background())
 					defer cancelRefresh()
 					finished := make(chan error, 1)
-					go func() { finished <- execution.Refresh(refreshCtx) }()
+					go func() {
+						if outcome == "launch-close" {
+							_, err := execution.Run(refreshCtx, nil)
+							finished <- err
+							return
+						}
+						finished <- execution.Refresh(refreshCtx)
+					}()
 					select {
 					case <-started:
 					case <-time.After(2 * time.Second):
@@ -149,7 +159,7 @@ func TestTaskGatewayExecutionAuthenticatedRefresh(test *testing.T) {
 					if _, err := execution.Run(context.Background(), nil); err == nil || providerCalls.Load() != 0 {
 						test.Fatal("refresh admitted a concurrent native launch")
 					}
-					if outcome == "close" {
+					if strings.Contains(outcome, "close") {
 						closed := make(chan error, 1)
 						go func() { closed <- execution.Close() }()
 						select {
@@ -188,8 +198,25 @@ func TestTaskGatewayExecutionAuthenticatedRefresh(test *testing.T) {
 					if execution.prompt != BuildPrompt(resolved, provider) || task.Agent.Instructions == snapshot.Instructions || task.WorkspaceContext == snapshot.WorkspaceContext || grants.Load() != 1 || providerCalls.Load() != 0 {
 						test.Fatal("refresh mutated the original claim, provisioned or lost authenticated input")
 					}
+					response.Store([]byte(`{"instructions":"owned-secret"}`))
+					promptBefore := execution.prompt
+					usageBefore := execution.boundary.UsageSnapshot()
+					if result, err := execution.Run(context.Background(), nil); err == nil || result.Status != "" || providerCalls.Load() != 0 || execution.prompt != promptBefore || !reflect.DeepEqual(usageBefore, execution.boundary.UsageSnapshot()) {
+						test.Fatal("native launch ignored unavailable authenticated refresh", result.Status, err)
+					}
+					if _, err := os.Stat(filepath.Join(root, "private", binding.TaskID, "home", "owned-launches")); !os.IsNotExist(err) {
+						test.Fatal("refused refresh spawned a native executable", err)
+					}
+					snapshot.Instructions += " automatic pre-launch refresh"
+					encoded, err = taskgateway.EncodeInputSnapshot(snapshot)
+					if err != nil {
+						test.Fatal(err)
+					}
+					response.Store(encoded)
+					resolved.Agent.Instructions = snapshot.Instructions
+					before = refreshes.Load()
 					result, err := execution.Run(context.Background(), nil)
-					if err != nil || result.Status != "completed" || result.Output != "owned prepared success" || result.SessionID != "owned-session" || providerCalls.Load() != 1 {
+					if err != nil || result.Status != "completed" || result.Output != "owned prepared success" || result.SessionID != "owned-session" || providerCalls.Load() != 1 || refreshes.Load() != before+1 || execution.prompt != BuildPrompt(resolved, provider) {
 						test.Fatal("refreshed launch/resume failed", result.Status, result.Output, err)
 					}
 					usage := execution.boundary.UsageSnapshot()

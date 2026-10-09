@@ -117,7 +117,7 @@ func (execution *taskGatewayExecution) Run(ctx context.Context, observe func(age
 		return agent.Result{}, err
 	}
 	defer finish()
-	if execution.boundary.VerifyInputs(runCtx) != nil {
+	if execution.refresh(runCtx) != nil {
 		return agent.Result{}, taskgateway.ErrUnavailable
 	}
 	session, err := execution.backend.Execute(runCtx, execution.prompt, execution.options)
