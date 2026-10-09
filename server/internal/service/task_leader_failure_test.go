@@ -71,8 +71,8 @@ func TestSquadLeaderFailureMarkerSetsWithoutDispatchInAnyStatus(t *testing.T) {
 	}
 }
 
-func TestSquadLeaderFailureMarkerRequiresLeaderAndNoPendingRun(t *testing.T) {
-	for _, condition := range []string{"worker", "agent_assignee", "queued", "dispatched", "running", "waiting_local_directory", "deferred", "retry"} {
+func TestSquadLeaderFailureMarkerRequiresLeaderAndNoActiveRun(t *testing.T) {
+	for _, condition := range []string{"worker", "agent_assignee", "queued", "dispatched", "running", "waiting_local_directory", "retry"} {
 		t.Run(condition, func(t *testing.T) {
 			fixture, svc, rows := leaderFailureFixture(t)
 			reason := "agent_error.process_failure"
@@ -95,6 +95,18 @@ func TestSquadLeaderFailureMarkerRequiresLeaderAndNoPendingRun(t *testing.T) {
 			assertLeaderFailureMarker(t, svc, fixture.issueID, false)
 		})
 	}
+}
+
+func TestSquadLeaderFailureMarkerDeferredRunIsNotActive(t *testing.T) {
+	fixture, svc, rows := leaderFailureFixture(t)
+	rows.Insert(t, "agent_task_queue", dbfx.Cols{
+		"agent_id": fixture.worker, "runtime_id": fixture.runtimeID,
+		"issue_id": fixture.issueID, "status": "deferred",
+	})
+	if _, err := svc.FailTask(context.Background(), util.MustParseUUID(fixture.sourceTask), "", "", "", "", "agent_error.process_failure", false, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	assertLeaderFailureMarker(t, svc, fixture.issueID, true)
 }
 
 func TestSquadLeaderFailureMarkerClearsOnAnyLaterStart(t *testing.T) {

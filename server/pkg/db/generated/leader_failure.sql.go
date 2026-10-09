@@ -53,7 +53,7 @@ WHERE i.assignee_type = 'squad'
         AND NOT EXISTS (
             SELECT 1 FROM agent_task_queue successor
             WHERE successor.issue_id = i.id
-              AND (successor.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+              AND (successor.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
                    OR successor.started_at > failed.completed_at)
         )
   )
