@@ -1674,6 +1674,9 @@ func (h *Handler) PreviewCommentTriggers(w http.ResponseWriter, r *http.Request)
 		opts.AuthoringTaskID = h.commentSourceTaskID(r)
 	}
 	triggers, targets := h.computeCommentAgentTriggers(r.Context(), issue, content, parentComment, actorType, actorID, opts)
+	if editingComment != nil {
+		triggers, targets = filterCommentAuthorTriggers(triggers, targets, editingComment.AuthorType, uuidToString(editingComment.AuthorID))
+	}
 	resp := CommentTriggerPreviewResponse{
 		Agents:  make([]CommentTriggerAgentResponse, 0, len(triggers)),
 		Blocked: commentBlockedTargetOutcomes(targets),
@@ -2099,6 +2102,7 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 		AuthoringTaskID:         comment.SourceTaskID,
 		OriginatorUserID:        originatorUserID,
 	})
+	triggers, targets = filterCommentAuthorTriggers(triggers, targets, comment.AuthorType, uuidToString(comment.AuthorID))
 	triggers = filterSuppressedCommentAgentTriggers(triggers, suppressAgentIDs)
 	h.noteBlockedRuntimeTargets(ctx, issue, targets)
 	triggers, steered := h.steerCommentAgentTriggers(ctx, issue, comment, actorType, triggers, steerTaskIDs)
@@ -2753,7 +2757,11 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 // @squad mention (MUL-4525 §2). Targets come only from the explicit-mention path
 // — the implicit routing fallbacks (assignee, thread parent, conversation) were
 // never named by the user, so a no-route there is not a silent no-op.
-func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issue, content string, parentComment *db.Comment, actorType, actorID string, opts commentTriggerComputeOptions) ([]commentAgentTrigger, []commentMentionTarget) {
+func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issue, content string, parentComment *db.Comment, actorType, actorID string, opts commentTriggerComputeOptions) (triggers []commentAgentTrigger, targets []commentMentionTarget) {
+	defer func() {
+		triggers, targets = filterCommentAuthorTriggers(triggers, targets, actorType, actorID)
+	}()
+
 	// A persisted comment determines its thread; previews use the parent.
 	// A new top-level preview has no thread yet and cannot merge with a queue.
 	opts.ThreadCommentID = opts.ExcludeTriggerCommentID
@@ -2845,6 +2853,26 @@ func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issu
 		return []commentAgentTrigger{trigger}, nil
 	}
 	return nil, nil
+}
+
+func filterCommentAuthorTriggers(triggers []commentAgentTrigger, targets []commentMentionTarget, authorType, authorID string) ([]commentAgentTrigger, []commentMentionTarget) {
+	if authorType != "agent" || authorID == "" {
+		return triggers, targets
+	}
+	filtered := triggers[:0]
+	for _, trigger := range triggers {
+		if !strings.EqualFold(uuidToString(trigger.Agent.ID), authorID) {
+			filtered = append(filtered, trigger)
+		}
+	}
+	for index := range targets {
+		if strings.EqualFold(targets[index].ExecAgentID, authorID) {
+			targets[index].ExecAgentID = ""
+			targets[index].Status = DispatchBlocked
+			targets[index].ReasonCode = ReasonSelfTriggerSuppressed
+		}
+	}
+	return filtered, targets
 }
 
 func hasAgentOrSquadMention(mentions []util.Mention) bool {
@@ -3304,21 +3332,6 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 				continue
 			}
 			leaderID := squad.LeaderID
-			// A2A self-suppression: the author IS this squad's leader and its
-			// most recent task on this issue was a leader/generic role (NOT a
-			// fresh same-squad worker→leader handoff), so we do not re-fire the
-			// leader from its own @mention. The outcome must reflect reality, not
-			// assume success (MUL-4525): `deferred` only when a real non-terminal
-			// task is still active (its reconcile covers this comment); a query
-			// failure is a non-success internal_error, never a fabricated
-			// deferred; otherwise nothing runs → self_trigger_suppressed.
-			if authorType == "agent" && authorID == uuidToString(leaderID) &&
-				h.shouldSuppressSquadLeaderSelfTrigger(ctx, issue.ID, leaderID, squad.ID) {
-				active, activeErr := h.hasActiveTaskForIssueAndAgent(ctx, issue.ID, leaderID, opts.ThreadCommentID)
-				status, reason := decideSuppressedLeaderOutcome(active, activeErr)
-				addTarget(commentMentionTarget{TargetType: "squad", TargetID: m.ID, Status: status, ReasonCode: reason})
-				continue
-			}
 			agent, err := h.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{
 				ID:          leaderID,
 				WorkspaceID: issue.WorkspaceID,
