@@ -4287,9 +4287,17 @@ func (s *TaskService) maybeLogClaimSlow(agentID pgtype.UUID, outcome string, sta
 // Issue status is NOT changed here — the agent manages it via the CLI.
 func (s *TaskService) StartTask(ctx context.Context, taskID pgtype.UUID, supplementSupport ...bool) (*db.AgentTaskQueue, error) {
 	enableTaskSupplement := len(supplementSupport) > 0 && supplementSupport[0]
-	task, err := s.Queries.StartAgentTaskWithSupplement(ctx, db.StartAgentTaskWithSupplementParams{
-		TaskID:               taskID,
-		EnableTaskSupplement: enableTaskSupplement,
+	var task db.AgentTaskQueue
+	err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		var err error
+		task, err = qtx.StartAgentTaskWithSupplement(ctx, db.StartAgentTaskWithSupplementParams{
+			TaskID:               taskID,
+			EnableTaskSupplement: enableTaskSupplement,
+		})
+		if err != nil {
+			return err
+		}
+		return clearSquadLeaderFailureMarker(ctx, qtx, task)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("start task: %w", err)
@@ -4323,6 +4331,9 @@ func (s *TaskService) StartTaskForClaim(ctx context.Context, claim db.LockAgentT
 		})
 		if err != nil {
 			return nil, fmt.Errorf("start claimed task: %w", err)
+		}
+		if err := clearSquadLeaderFailureMarker(ctx, qtx, task); err != nil {
+			return nil, err
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -5053,14 +5064,6 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		}
 		task = t
 
-		// Atomic with the status flip, same as the completion path. A failed
-		// coordinator that already received the recovery comment has consumed
-		// the obligation: the pre-existing delivered_comment_ids coverage check
-		// never looked at the covering task's status either.
-		if err := SettleTerminalTaskState(ctx, qtx, t); err != nil {
-			return err
-		}
-
 		// Keep resume-unsafe sessions on the task row for observability, but
 		// do not promote them to the chat-level resume pointer.
 		//
@@ -5263,7 +5266,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 				return fmt.Errorf("write chat failure outcome: %w", err)
 			}
 		}
-		return nil
+		return SettleTerminalTaskState(ctx, qtx, t)
 	}); err != nil {
 		if errors.Is(err, ErrClaimNotUnstarted) {
 			return nil, false, err
@@ -6549,7 +6552,39 @@ func SettleTerminalTaskState(ctx context.Context, q *db.Queries, tasks ...db.Age
 	if _, err := q.SettleTerminalTaskSupplements(ctx, taskIDs); err != nil {
 		return fmt.Errorf("settle terminal task supplements: %w", err)
 	}
-	return SettleDeliveredDelegatedFailureRecoveries(ctx, q, tasks...)
+	if err := SettleDeliveredDelegatedFailureRecoveries(ctx, q, tasks...); err != nil {
+		return err
+	}
+	var failedTaskIDs, issueIDs []pgtype.UUID
+	for _, task := range tasks {
+		if task.Status == "failed" && task.IssueID.Valid {
+			failedTaskIDs = append(failedTaskIDs, task.ID)
+			issueIDs = append(issueIDs, task.IssueID)
+		}
+	}
+	if len(failedTaskIDs) == 0 {
+		return nil
+	}
+	if err := q.LockIssuesForLeaderFailureMarker(ctx, issueIDs); err != nil {
+		return fmt.Errorf("lock leader failure marker issues: %w", err)
+	}
+	if err := q.SetSquadLeaderFailureMarkers(ctx, failedTaskIDs); err != nil {
+		return fmt.Errorf("set leader failure markers: %w", err)
+	}
+	return nil
+}
+
+func clearSquadLeaderFailureMarker(ctx context.Context, q *db.Queries, task db.AgentTaskQueue) error {
+	if !task.IssueID.Valid {
+		return nil
+	}
+	if err := q.LockIssuesForLeaderFailureMarker(ctx, []pgtype.UUID{task.IssueID}); err != nil {
+		return fmt.Errorf("lock leader failure marker issue: %w", err)
+	}
+	if err := q.ClearSquadLeaderFailureMarker(ctx, task.IssueID); err != nil {
+		return fmt.Errorf("clear leader failure marker: %w", err)
+	}
+	return nil
 }
 
 // SettleDeliveredDelegatedFailureRecoveries retires every delegated-failure
