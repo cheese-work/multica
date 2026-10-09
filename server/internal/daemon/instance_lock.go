@@ -1,15 +1,39 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/cli"
 )
 
 var errDaemonInstanceLocked = errors.New("another daemon is already running (daemon instance lock is held)")
+
+func WaitForInstanceRelease(ctx context.Context, profile string) error {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		lock, err := acquireDaemonInstanceLock(profile)
+		if err == nil {
+			return lock.Close()
+		}
+		if !errors.Is(err, errDaemonInstanceLocked) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
 
 func acquireDaemonInstanceLock(profile string) (*os.File, error) {
 	dir, err := cli.ProfileDir(profile)

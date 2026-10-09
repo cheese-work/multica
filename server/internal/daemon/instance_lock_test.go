@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -26,6 +27,38 @@ type instanceProcess struct {
 	done   chan struct{}
 	output bytes.Buffer
 	err    error
+}
+
+func TestDaemonInstanceWaitForRelease(t *testing.T) {
+	instanceTestHome(t, "")
+	lock, err := acquireDaemonInstanceLock("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := WaitForInstanceRelease(ctx, ""); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("wait while locked: %v", err)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := WaitForInstanceRelease(context.Background(), ""); err != nil {
+		t.Fatalf("wait after owner release with stale lock file: %v", err)
+	}
+	if err := WaitForInstanceRelease(ctx, ""); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("cancelled wait: %v", err)
+	}
+	if err := os.Remove(lock.Name()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(lock.Name(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := WaitForInstanceRelease(context.Background(), ""); err == nil {
+		t.Fatal("lock path errors must fail closed")
+	}
 }
 
 func TestDaemonInstanceProcess(t *testing.T) {

@@ -1243,18 +1243,10 @@ func runDaemonRestart(cmd *cobra.Command, args []string) error {
 					_ = p.Kill()
 				}
 			}
-			// Wait until the port is fully released (not merely past "running"),
-			// otherwise the fresh start below races the old daemon's listener.
-			for i := 0; i < 10; i++ {
-				time.Sleep(500 * time.Millisecond)
-				sctx, scancel := context.WithTimeout(context.Background(), 1*time.Second)
-				h := checkDaemonHealthOnPort(sctx, healthPort)
-				scancel()
-				if !daemonAlive(h) {
-					break
-				}
-			}
 		}
+	}
+	if err := waitForDaemonShutdown(profile, healthPort); err != nil {
+		return err
 	}
 
 	// Start fresh.
@@ -1262,6 +1254,32 @@ func runDaemonRestart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("%w (if the old daemon was already stopped, none is running now; confirm with 'multica daemon status')", err)
 	}
 	return nil
+}
+
+func waitForDaemonShutdown(profile string, healthPort int) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+	if err := daemon.WaitForInstanceRelease(ctx, profile); err != nil {
+		return fmt.Errorf("wait for daemon shutdown: %w", err)
+	}
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		healthCtx, healthCancel := context.WithTimeout(ctx, time.Second)
+		health := checkDaemonHealthOnPort(healthCtx, healthPort)
+		healthCancel()
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("wait for daemon shutdown: %w", err)
+		}
+		if !daemonAlive(health) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for daemon shutdown: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 // --- daemon stop ---
@@ -1281,6 +1299,9 @@ func runDaemonStop(cmd *cobra.Command, _ []string) error {
 
 	health := checkDaemonHealthOnPort(ctx, healthPort)
 	if !daemonAlive(health) {
+		if err := waitForDaemonShutdown(profile, healthPort); err != nil {
+			return err
+		}
 		label := "Daemon"
 		if profile != "" {
 			label = fmt.Sprintf("Daemon [%s]", profile)
@@ -1323,20 +1344,14 @@ func runDaemonStop(cmd *cobra.Command, _ []string) error {
 
 	fmt.Fprintf(os.Stderr, "Stopping daemon (pid %d)...\n", int(pid))
 
-	// Poll health endpoint until daemon is gone.
-	for i := 0; i < 10; i++ {
-		time.Sleep(500 * time.Millisecond)
-		ctx2, cancel2 := context.WithTimeout(context.Background(), 1*time.Second)
-		h := checkDaemonHealthOnPort(ctx2, healthPort)
-		cancel2()
-		if !daemonAlive(h) {
-			os.Remove(daemonPIDPathForProfile(profile))
-			fmt.Fprintln(os.Stderr, "Daemon stopped.")
+	if err := waitForDaemonShutdown(profile, healthPort); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			fmt.Fprintln(os.Stderr, "Daemon is still stopping. It may be finishing an in-progress run.")
 			return nil
 		}
+		return err
 	}
-
-	fmt.Fprintln(os.Stderr, "Daemon is still stopping. It may be finishing an in-progress run.")
+	fmt.Fprintln(os.Stderr, "Daemon stopped.")
 	return nil
 }
 
