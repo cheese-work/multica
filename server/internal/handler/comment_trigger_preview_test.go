@@ -465,7 +465,7 @@ func TestPreviewCommentTriggers_ExplicitMentionSuppressesAssigneeFallback(t *tes
 	}
 }
 
-func TestCreateComment_ExplicitMentionQueuesDifferentThreadsIndependently(t *testing.T) {
+func TestCreateComment_ExplicitMentionInNewThreadFoldsIntoQueuedRun(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -486,8 +486,9 @@ func TestCreateComment_ExplicitMentionQueuesDifferentThreadsIndependently(t *tes
 	}
 
 	postCommentForTriggerPreviewTest(t, issueID, map[string]any{"content": content + " again"})
-	if got := countQueuedCommentTriggerTasks(t, issueID, mentionedID); got != 2 {
-		t.Fatalf("separate thread queued tasks = %d, want 2", got)
+	// CHE-1418: a new thread folds into the agent's queued run on the issue.
+	if got := countQueuedCommentTriggerTasks(t, issueID, mentionedID); got != 1 {
+		t.Fatalf("queued tasks after a second thread = %d, want 1", got)
 	}
 }
 
@@ -1033,7 +1034,7 @@ func TestPreviewCommentTriggers_MalformedMentionIDDoesNotPanic(t *testing.T) {
 	}
 }
 
-func TestPreviewCommentTriggers_AllSuppressesAssigneeAndNewThreadQueuesSeparately(t *testing.T) {
+func TestPreviewCommentTriggers_AllSuppressesAssigneeAndNewThreadFoldsIntoAssignment(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -1067,8 +1068,9 @@ func TestPreviewCommentTriggers_AllSuppressesAssigneeAndNewThreadQueuesSeparatel
 	postCommentForTriggerPreviewTest(t, issueID, map[string]any{
 		"content": "can you continue here?",
 	})
-	if got := countQueuedCommentTriggerTasks(t, issueID, agentID); got != 2 {
-		t.Fatalf("assignment and new comment thread queued tasks = %d, want 2", got)
+	// CHE-1418: the comment folds into the queued assignment run.
+	if got := countQueuedCommentTriggerTasks(t, issueID, agentID); got != 1 {
+		t.Fatalf("assignment and new comment thread queued tasks = %d, want 1", got)
 	}
 }
 

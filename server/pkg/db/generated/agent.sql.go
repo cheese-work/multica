@@ -1437,6 +1437,85 @@ func (q *Queries) CancelQueuedAgentTasksForSession(ctx context.Context, chatSess
 	return items, nil
 }
 
+const cancelQueuedDuplicateTask = `-- name: CancelQueuedDuplicateTask :one
+UPDATE agent_task_queue
+SET status = 'cancelled',
+    completed_at = now(),
+    cancelled_by_type = 'system',
+    cancelled_by_name = 'folded into an earlier queued run'
+WHERE id = $1 AND status = 'queued'
+RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot
+`
+
+// Cancels the caller's own fresh task once a queued sibling will carry its
+// comments. Only a still-queued task: a claimed one keeps running.
+func (q *Queries) CancelQueuedDuplicateTask(ctx context.Context, taskID pgtype.UUID) (AgentTaskQueue, error) {
+	row := q.db.QueryRow(ctx, cancelQueuedDuplicateTask, taskID)
+	var i AgentTaskQueue
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.IssueID,
+		&i.Status,
+		&i.Priority,
+		&i.DispatchedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.Result,
+		&i.Error,
+		&i.CreatedAt,
+		&i.Context,
+		&i.RuntimeID,
+		&i.SessionID,
+		&i.WorkDir,
+		&i.TriggerCommentID,
+		&i.ChatSessionID,
+		&i.AutopilotRunID,
+		&i.Attempt,
+		&i.MaxAttempts,
+		&i.ParentTaskID,
+		&i.FailureReason,
+		&i.TriggerSummary,
+		&i.ForceFreshSession,
+		&i.IsLeaderTask,
+		&i.WaitReason,
+		&i.InitiatorUserID,
+		&i.HandoffNote,
+		&i.PrepareLeaseExpiresAt,
+		&i.SquadID,
+		&i.RuntimeMcpOverlay,
+		&i.EscalationForTaskID,
+		&i.FireAt,
+		&i.OriginatorUserID,
+		&i.RuntimeConnectedApps,
+		&i.CoalescedCommentIds,
+		&i.DeliveredCommentIds,
+		&i.ChatInputTaskID,
+		&i.ChatFinalizeDeferredAt,
+		&i.OriginatorSource,
+		&i.DelegatedFromTaskID,
+		&i.RetryOfTaskID,
+		&i.RerunOfTaskID,
+		&i.RuleVersionID,
+		&i.TriggerEvidenceKind,
+		&i.TriggerEvidenceRefID,
+		&i.AccountableUserID,
+		&i.SessionRolloutMissing,
+		&i.RetiredSessionID,
+		&i.QuickActionsDisabled,
+		&i.RegenerateQuickActionsFor,
+		&i.BranchName,
+		&i.DurableWorkDir,
+		&i.ChannelContextRevision,
+		&i.CommentThreadID,
+		&i.CancelledByType,
+		&i.CancelledByID,
+		&i.CancelledByName,
+		&i.IssueSnapshot,
+	)
+	return i, err
+}
+
 const cancelSupersededDeferredRetriesForRuntimes = `-- name: CancelSupersededDeferredRetriesForRuntimes :many
 UPDATE agent_task_queue r
 SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
@@ -3989,6 +4068,43 @@ func (q *Queries) FindLiveRerunOfTask(ctx context.Context, arg FindLiveRerunOfTa
 		&i.IssueSnapshot,
 	)
 	return i, err
+}
+
+const foldTaskIntoQueuedSibling = `-- name: FoldTaskIntoQueuedSibling :one
+UPDATE agent_task_queue t
+SET coalesced_comment_ids = (
+        SELECT COALESCE(array_agg(DISTINCT e), '{}')
+        FROM unnest(t.coalesced_comment_ids || ARRAY[t.trigger_comment_id] || src.coalesced_comment_ids) AS e
+        WHERE e IS NOT NULL AND e IS DISTINCT FROM src.trigger_comment_id
+    ),
+    trigger_comment_id = src.trigger_comment_id,
+    trigger_summary = src.trigger_summary,
+    originator_user_id = src.originator_user_id,
+    accountable_user_id = src.accountable_user_id,
+    originator_source = src.originator_source,
+    delegated_from_task_id = src.delegated_from_task_id,
+    rule_version_id = src.rule_version_id,
+    trigger_evidence_kind = src.trigger_evidence_kind,
+    trigger_evidence_ref_id = src.trigger_evidence_ref_id,
+    runtime_mcp_overlay = src.runtime_mcp_overlay,
+    runtime_connected_apps = src.runtime_connected_apps
+FROM agent_task_queue src
+WHERE t.id = $1 AND t.status = 'queued' AND src.id = $2
+RETURNING t.id
+`
+
+type FoldTaskIntoQueuedSiblingParams struct {
+	SiblingID pgtype.UUID `json:"sibling_id"`
+	SourceID  pgtype.UUID `json:"source_id"`
+}
+
+// Moves the cancelled duplicate's trigger, covered comments and attribution
+// onto the queued sibling, the same re-attribution a comment fold applies.
+func (q *Queries) FoldTaskIntoQueuedSibling(ctx context.Context, arg FoldTaskIntoQueuedSiblingParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, foldTaskIntoQueuedSibling, arg.SiblingID, arg.SourceID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
 }
 
 const getAgent = `-- name: GetAgent :one
@@ -7057,6 +7173,32 @@ func (q *Queries) LockAgentTaskStartClaim(ctx context.Context, arg LockAgentTask
 	return i, err
 }
 
+const lockQueuedSiblingTask = `-- name: LockQueuedSiblingTask :one
+SELECT t.id FROM agent_task_queue t
+JOIN agent_task_queue m ON m.id = $1
+WHERE t.issue_id = m.issue_id AND t.agent_id = m.agent_id AND t.id <> m.id
+  AND t.status = 'queued' AND t.context->>'wakeup_id' IS NULL
+  AND t.is_leader_task = m.is_leader_task
+  AND t.squad_id IS NOT DISTINCT FROM m.squad_id
+  AND COALESCE(t.context->>'head_sha', '') = COALESCE(m.context->>'head_sha', '')
+ORDER BY t.created_at, t.id
+LIMIT 1
+FOR UPDATE OF t
+`
+
+// CHE-1418: two comments in different threads can each queue a run for the
+// same agent when neither sees the other's uncommitted task. After a fresh
+// enqueue, the caller (holding the (issue, agent) enqueue lock) looks for an
+// older queued sibling with the same squad role and reviewed head, and locks
+// it so a claim cannot take it mid-collapse. A sibling claimed first is
+// re-checked by FOR UPDATE and no longer matches.
+func (q *Queries) LockQueuedSiblingTask(ctx context.Context, taskID pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockQueuedSiblingTask, taskID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const markAgentTaskWaitingLocalDirectory = `-- name: MarkAgentTaskWaitingLocalDirectory :one
 UPDATE agent_task_queue
 SET status = 'waiting_local_directory',
@@ -7355,6 +7497,104 @@ func (q *Queries) MergeCommentIntoPendingTask(ctx context.Context, arg MergeComm
 		arg.HeadSha,
 	)
 	var i MergeCommentIntoPendingTaskRow
+	err := row.Scan(&i.ID, &i.CoalescedCommentIds)
+	return i, err
+}
+
+const mergeCommentIntoQueuedIssueTask = `-- name: MergeCommentIntoQueuedIssueTask :one
+UPDATE agent_task_queue
+SET coalesced_comment_ids = (
+        SELECT COALESCE(array_agg(DISTINCT e), '{}')
+        FROM unnest(array_append(coalesced_comment_ids, trigger_comment_id)) AS e
+        WHERE e IS NOT NULL AND e <> $1::uuid
+    ),
+    trigger_comment_id = $1::uuid,
+    trigger_summary = COALESCE($2, trigger_summary),
+    originator_user_id = $3::uuid,
+    accountable_user_id = $4::uuid,
+    originator_source = $5,
+    delegated_from_task_id = $6::uuid,
+    rule_version_id = $7::uuid,
+    trigger_evidence_kind = $8,
+    trigger_evidence_ref_id = $9::uuid,
+    runtime_mcp_overlay = $10,
+    runtime_connected_apps = $11
+WHERE id = (
+    SELECT t.id FROM agent_task_queue t
+    WHERE t.context->>'wakeup_id' IS NULL AND t.issue_id = $12
+      AND t.agent_id = $13
+      AND t.status = 'queued'
+      AND t.is_leader_task = ($14::uuid IS NOT NULL)
+      AND t.squad_id IS NOT DISTINCT FROM $14::uuid
+      AND (
+          COALESCE($15::text, '') = ''
+          OR t.context->>'head_sha' = $15::text
+      )
+    ORDER BY t.created_at DESC
+    LIMIT 1
+)
+  AND status = 'queued'
+RETURNING id, coalesced_comment_ids
+`
+
+type MergeCommentIntoQueuedIssueTaskParams struct {
+	NewTriggerCommentID     pgtype.UUID `json:"new_trigger_comment_id"`
+	NewTriggerSummary       pgtype.Text `json:"new_trigger_summary"`
+	NewOriginatorUserID     pgtype.UUID `json:"new_originator_user_id"`
+	NewAccountableUserID    pgtype.UUID `json:"new_accountable_user_id"`
+	NewOriginatorSource     pgtype.Text `json:"new_originator_source"`
+	NewDelegatedFromTaskID  pgtype.UUID `json:"new_delegated_from_task_id"`
+	NewRuleVersionID        pgtype.UUID `json:"new_rule_version_id"`
+	NewTriggerEvidenceKind  pgtype.Text `json:"new_trigger_evidence_kind"`
+	NewTriggerEvidenceRefID pgtype.UUID `json:"new_trigger_evidence_ref_id"`
+	NewRuntimeMcpOverlay    []byte      `json:"new_runtime_mcp_overlay"`
+	NewRuntimeConnectedApps []byte      `json:"new_runtime_connected_apps"`
+	IssueID                 pgtype.UUID `json:"issue_id"`
+	AgentID                 pgtype.UUID `json:"agent_id"`
+	SquadID                 pgtype.UUID `json:"squad_id"`
+	HeadSha                 pgtype.Text `json:"head_sha"`
+}
+
+type MergeCommentIntoQueuedIssueTaskRow struct {
+	ID                  pgtype.UUID   `json:"id"`
+	CoalescedCommentIds []pgtype.UUID `json:"coalesced_comment_ids"`
+}
+
+// CHE-1418: one comment produces at most one run per agent. Same fold and
+// re-attribution as MergeCommentIntoPendingTask, but the target is the agent's
+// QUEUED task anywhere on the issue — another thread, or an assignment task with
+// no thread — instead of a second queued task beside it. The prompt already
+// fans a run's trigger + coalesced comments out per thread (MUL-4348).
+// Re-pointing the trigger moves the task into the new comment's thread; the
+// caller tries this only after the same-thread paths found nothing pending, so
+// the per-thread unique index is free there. A race that fills it surfaces as a
+// unique violation and the caller falls back to the per-thread path. Arrivals
+// that miss each other here are collapsed after insert (LockQueuedSiblingTask).
+// The squad role must match: a leader-role comment never folds into the same
+// agent's worker task (or the reverse), since the claim briefing differs.
+// Re-checked on the row this UPDATE locks: a claim that committed while the
+// fold waited has made it 'dispatched', and its claim response already carries
+// the old trigger and attribution. Then nothing changes and the caller uses the
+// per-thread path (OCR-185-1).
+func (q *Queries) MergeCommentIntoQueuedIssueTask(ctx context.Context, arg MergeCommentIntoQueuedIssueTaskParams) (MergeCommentIntoQueuedIssueTaskRow, error) {
+	row := q.db.QueryRow(ctx, mergeCommentIntoQueuedIssueTask,
+		arg.NewTriggerCommentID,
+		arg.NewTriggerSummary,
+		arg.NewOriginatorUserID,
+		arg.NewAccountableUserID,
+		arg.NewOriginatorSource,
+		arg.NewDelegatedFromTaskID,
+		arg.NewRuleVersionID,
+		arg.NewTriggerEvidenceKind,
+		arg.NewTriggerEvidenceRefID,
+		arg.NewRuntimeMcpOverlay,
+		arg.NewRuntimeConnectedApps,
+		arg.IssueID,
+		arg.AgentID,
+		arg.SquadID,
+		arg.HeadSha,
+	)
+	var i MergeCommentIntoQueuedIssueTaskRow
 	err := row.Scan(&i.ID, &i.CoalescedCommentIds)
 	return i, err
 }
