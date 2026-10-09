@@ -223,7 +223,7 @@ WHERE installation_id = $1
   AND state IN ('open', 'draft')
   AND pr_number <> $4
   AND (snapshot_base_ref = $5 OR snapshot_base_ref IS NULL)
-ORDER BY pr_number
+ORDER BY pr_number DESC
 LIMIT $6
 `
 
@@ -246,7 +246,8 @@ type ListOpenGitHubPRAddressesOnBaseRow struct {
 // CHE-1417: a merge moves its base branch, which can make other open PRs on
 // that base DIRTY or BEHIND without any pull_request event of their own. The
 // merge handler refreshes those PRs. A row whose base is not known yet (no
-// snapshot since the column was added) is included. Bounded by max_rows.
+// snapshot since the column was added) is included. Newest PRs first, bounded
+// by max_rows.
 func (q *Queries) ListOpenGitHubPRAddressesOnBase(ctx context.Context, arg ListOpenGitHubPRAddressesOnBaseParams) ([]ListOpenGitHubPRAddressesOnBaseRow, error) {
 	rows, err := q.db.Query(ctx, listOpenGitHubPRAddressesOnBase,
 		arg.InstallationID,

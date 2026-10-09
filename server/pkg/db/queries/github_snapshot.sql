@@ -141,7 +141,8 @@ SELECT * FROM github_pull_request WHERE id = $1;
 -- CHE-1417: a merge moves its base branch, which can make other open PRs on
 -- that base DIRTY or BEHIND without any pull_request event of their own. The
 -- merge handler refreshes those PRs. A row whose base is not known yet (no
--- snapshot since the column was added) is included. Bounded by max_rows.
+-- snapshot since the column was added) is included. Newest PRs first, bounded
+-- by max_rows.
 SELECT DISTINCT installation_id, repo_owner, repo_name, pr_number
 FROM github_pull_request
 WHERE installation_id = sqlc.arg('installation_id')
@@ -150,5 +151,5 @@ WHERE installation_id = sqlc.arg('installation_id')
   AND state IN ('open', 'draft')
   AND pr_number <> sqlc.arg('merged_pr_number')
   AND (snapshot_base_ref = sqlc.arg('base_ref') OR snapshot_base_ref IS NULL)
-ORDER BY pr_number
+ORDER BY pr_number DESC
 LIMIT sqlc.arg('max_rows');
