@@ -660,12 +660,6 @@ func runDaemonBackground(cmd *cobra.Command) error {
 	waitCh := make(chan error, 1)
 	go func() { waitCh <- child.Wait() }()
 
-	// Write PID file.
-	pidPath := daemonPIDPathForProfile(profile)
-	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0o644); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not write PID file: %v\n", err)
-	}
-
 	// Poll the health endpoint until the daemon reports ready ("running") or we
 	// time out. The daemon binds the health port almost immediately but reports
 	// status:"starting" until preflight finishes (PAT renew + initial workspace
@@ -690,6 +684,15 @@ func runDaemonBackground(cmd *cobra.Command) error {
 		hctx, hcancel := context.WithTimeout(context.Background(), 2*time.Second)
 		health = checkDaemonHealthOnPort(hctx, healthPort)
 		hcancel()
+		if daemonAlive(health) {
+			if err := daemonIdentityMismatch(health, profile, healthPort); err != nil {
+				return err
+			}
+			healthPID, _ := health["pid"].(float64)
+			if int(healthPID) != pid {
+				return fmt.Errorf("another daemon is already running (pid %d); refusing a second start", int(healthPID))
+			}
+		}
 		lastStatus, _ = health["status"].(string)
 		if lastStatus == "running" {
 			started = true
@@ -1080,13 +1083,6 @@ func runDaemonForeground(cmd *cobra.Command) error {
 
 	d := daemon.New(cfg, logger)
 
-	// Write PID file so "daemon stop" can find us.
-	if dir := daemonDirForProfile(profile); dir != "" {
-		os.MkdirAll(dir, 0o755)
-		os.WriteFile(daemonPIDPathForProfile(profile), []byte(strconv.Itoa(os.Getpid())), 0o644)
-	}
-	defer os.Remove(daemonPIDPathForProfile(profile))
-
 	if err := d.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		return err
 	}
@@ -1149,10 +1145,6 @@ func runDaemonForeground(cmd *cobra.Command) error {
 		}
 		logFile.Close()
 		child.Process.Release()
-
-		// Write new PID file.
-		pidPath := daemonPIDPathForProfile(profile)
-		os.WriteFile(pidPath, []byte(strconv.Itoa(child.Process.Pid)), 0o644)
 
 		logger.Info("new daemon started", "pid", child.Process.Pid)
 	}
