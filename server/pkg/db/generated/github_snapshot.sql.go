@@ -96,6 +96,72 @@ func (q *Queries) InsertGitHubPRCheckRun(ctx context.Context, arg InsertGitHubPR
 	return err
 }
 
+const invalidateOpenGitHubPRMergeStateOnBase = `-- name: InvalidateOpenGitHubPRMergeStateOnBase :many
+UPDATE github_pull_request
+SET api_mergeable          = NULL,
+    api_merge_state_status = NULL,
+    updated_at             = now()
+WHERE installation_id = $1
+  AND repo_owner = $2
+  AND repo_name = $3
+  AND state IN ('open', 'draft')
+  AND pr_number <> $4
+  AND (snapshot_base_ref = $5 OR snapshot_base_ref IS NULL)
+RETURNING installation_id, repo_owner, repo_name, pr_number
+`
+
+type InvalidateOpenGitHubPRMergeStateOnBaseParams struct {
+	InstallationID int64       `json:"installation_id"`
+	RepoOwner      string      `json:"repo_owner"`
+	RepoName       string      `json:"repo_name"`
+	MergedPrNumber int32       `json:"merged_pr_number"`
+	BaseRef        pgtype.Text `json:"base_ref"`
+}
+
+type InvalidateOpenGitHubPRMergeStateOnBaseRow struct {
+	InstallationID int64  `json:"installation_id"`
+	RepoOwner      string `json:"repo_owner"`
+	RepoName       string `json:"repo_name"`
+	PrNumber       int32  `json:"pr_number"`
+}
+
+// CHE-1417: a merge moves its base branch, which can make other open PRs on
+// that base DIRTY or BEHIND without any pull_request event of their own. Their
+// stored merge state no longer describes the base, so it is cleared: the
+// merge handler refreshes the returned PRs, and one the refresh queue drops is
+// undecided, so ListStaleUndecidedGitHubPRs picks it up. A row whose base is
+// not known yet (no snapshot since the column was added) is included.
+func (q *Queries) InvalidateOpenGitHubPRMergeStateOnBase(ctx context.Context, arg InvalidateOpenGitHubPRMergeStateOnBaseParams) ([]InvalidateOpenGitHubPRMergeStateOnBaseRow, error) {
+	rows, err := q.db.Query(ctx, invalidateOpenGitHubPRMergeStateOnBase,
+		arg.InstallationID,
+		arg.RepoOwner,
+		arg.RepoName,
+		arg.MergedPrNumber,
+		arg.BaseRef,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []InvalidateOpenGitHubPRMergeStateOnBaseRow{}
+	for rows.Next() {
+		var i InvalidateOpenGitHubPRMergeStateOnBaseRow
+		if err := rows.Scan(
+			&i.InstallationID,
+			&i.RepoOwner,
+			&i.RepoName,
+			&i.PrNumber,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGitHubPRNumbersByHeadSHA = `-- name: ListGitHubPRNumbersByHeadSHA :many
 SELECT DISTINCT pr_number
 FROM github_pull_request
@@ -203,72 +269,6 @@ func (q *Queries) ListGitHubPRRowsByAddress(ctx context.Context, arg ListGitHubP
 			&i.WorkspaceID,
 			&i.HeadSha,
 			&i.State,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listOpenGitHubPRAddressesOnBase = `-- name: ListOpenGitHubPRAddressesOnBase :many
-SELECT DISTINCT installation_id, repo_owner, repo_name, pr_number
-FROM github_pull_request
-WHERE installation_id = $1
-  AND repo_owner = $2
-  AND repo_name = $3
-  AND state IN ('open', 'draft')
-  AND pr_number <> $4
-  AND (snapshot_base_ref = $5 OR snapshot_base_ref IS NULL)
-ORDER BY pr_number DESC
-LIMIT $6
-`
-
-type ListOpenGitHubPRAddressesOnBaseParams struct {
-	InstallationID int64       `json:"installation_id"`
-	RepoOwner      string      `json:"repo_owner"`
-	RepoName       string      `json:"repo_name"`
-	MergedPrNumber int32       `json:"merged_pr_number"`
-	BaseRef        pgtype.Text `json:"base_ref"`
-	MaxRows        int32       `json:"max_rows"`
-}
-
-type ListOpenGitHubPRAddressesOnBaseRow struct {
-	InstallationID int64  `json:"installation_id"`
-	RepoOwner      string `json:"repo_owner"`
-	RepoName       string `json:"repo_name"`
-	PrNumber       int32  `json:"pr_number"`
-}
-
-// CHE-1417: a merge moves its base branch, which can make other open PRs on
-// that base DIRTY or BEHIND without any pull_request event of their own. The
-// merge handler refreshes those PRs. A row whose base is not known yet (no
-// snapshot since the column was added) is included. Newest PRs first, bounded
-// by max_rows.
-func (q *Queries) ListOpenGitHubPRAddressesOnBase(ctx context.Context, arg ListOpenGitHubPRAddressesOnBaseParams) ([]ListOpenGitHubPRAddressesOnBaseRow, error) {
-	rows, err := q.db.Query(ctx, listOpenGitHubPRAddressesOnBase,
-		arg.InstallationID,
-		arg.RepoOwner,
-		arg.RepoName,
-		arg.MergedPrNumber,
-		arg.BaseRef,
-		arg.MaxRows,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListOpenGitHubPRAddressesOnBaseRow{}
-	for rows.Next() {
-		var i ListOpenGitHubPRAddressesOnBaseRow
-		if err := rows.Scan(
-			&i.InstallationID,
-			&i.RepoOwner,
-			&i.RepoName,
-			&i.PrNumber,
 		); err != nil {
 			return nil, err
 		}

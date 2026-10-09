@@ -2031,15 +2031,17 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		}
 	}
 	// A PR sent back to draft (CHE-1417): the rule itself decides whether the
-	// issue was already accepted.
+	// issue was already accepted. The action, not the mirror's previous state,
+	// identifies the conversion, so a redelivery after a failed capture still
+	// reaches the rule; EventAt separates it from a later conversion.
 	var attention service.PullRequestWakeupInput
 	switch {
 	case state == "merged":
 		attention = service.PullRequestWakeupInput{
 			Rule: service.SystemRulePRMerged, MergeCommit: p.PullRequest.MergeCommitSHA, DefaultBranch: p.Repository.DefaultBranch,
 		}
-	case state == "draft" && prevState == "open":
-		attention = service.PullRequestWakeupInput{Rule: service.SystemRulePRAttention, Reason: service.PRAttentionDraft}
+	case state == "draft" && p.Action == "converted_to_draft":
+		attention = service.PullRequestWakeupInput{Rule: service.SystemRulePRAttention, Reason: service.PRAttentionDraft, EventAt: p.PullRequest.UpdatedAt}
 	}
 	if attention.Rule != "" {
 		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
@@ -2061,20 +2063,18 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	return nil
 }
 
-// openPRsOnBaseRefreshLimit bounds the refreshes one merge enqueues.
-const openPRsOnBaseRefreshLimit = 100
-
 // refreshOpenPRsOnBase asks for a fresh snapshot of every open PR on the base
 // a merge just moved (CHE-1417). Their merge state can turn DIRTY or BEHIND
 // without a pull_request event of their own; the refresh is what notices it.
+// Their stored merge state is cleared first, so a PR the refresh queue drops
+// is undecided and the snapshot sweep refreshes it.
 func (h *Handler) refreshOpenPRsOnBase(ctx context.Context, p *ghPullRequestPayload) {
 	if !h.PRRefresh.Enabled() || p.PullRequest.Base.Ref == "" {
 		return
 	}
-	rows, err := h.Queries.ListOpenGitHubPRAddressesOnBase(ctx, db.ListOpenGitHubPRAddressesOnBaseParams{
+	rows, err := h.Queries.InvalidateOpenGitHubPRMergeStateOnBase(ctx, db.InvalidateOpenGitHubPRMergeStateOnBaseParams{
 		InstallationID: p.Installation.ID, RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name,
 		MergedPrNumber: p.PullRequest.Number, BaseRef: pgtype.Text{String: p.PullRequest.Base.Ref, Valid: true},
-		MaxRows: openPRsOnBaseRefreshLimit,
 	})
 	if err != nil {
 		slog.Warn("github: list open pull requests on merged base", "err", err)

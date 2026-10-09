@@ -65,12 +65,17 @@ can no longer merge as is, and when it returns to draft after acceptance:
 - The API snapshot's `mergeStateStatus` is `DIRTY` or `BEHIND` for the current
   head. The receipt deduplicates by repository, PR, head SHA and the snapshot's
   base branch (`snapshot_base_ref`), so a retarget or a new push is a new pair.
-  A merge refreshes the other open PRs on its base, so a conflict it causes is
-  seen without a page visit.
-- A ready PR is converted to draft while the linked issue's status is in the
-  `done` category; the prompt asks the owner to re-ready or explain. A draft on
-  an issue still in progress does not wake anyone. Receipts deduplicate by
-  repository, PR and head SHA.
+  A merge clears the stored merge state of the other open PRs on its base and
+  refreshes them, so a conflict it causes is seen without a page visit. A PR
+  the refresh queue drops stays undecided, so the snapshot sweep refreshes it.
+- A ready PR is converted to draft (`converted_to_draft`) while the linked
+  issue holds an accepted verdict: `done`, `agent_accepted` or `approved`, in
+  the `done` category. The prompt asks the owner to re-ready or explain. A draft
+  on an issue still in progress, or after a rejected verdict such as
+  `changes_requested` or `blockings_found`, does not wake anyone. Receipts
+  deduplicate by repository, PR, head SHA and the conversion's `updated_at`, so
+  a redelivery after a failed capture wakes once and a later conversion at the
+  same head wakes again.
 
 The platform never merges, rebases or retargets a PR for these rules.
 

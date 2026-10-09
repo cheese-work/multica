@@ -72,10 +72,18 @@ type PullRequestWakeupInput struct {
 	// DefaultBranch is the repository's default branch when known. A merge
 	// into any other branch is a delivered stack layer.
 	DefaultBranch string
-	// Reason and MergeState describe a pr_needs_attention event.
+	// Reason and MergeState describe a pr_needs_attention event. EventAt is
+	// when GitHub recorded a draft conversion: a redelivery repeats it, a later
+	// conversion at the same head does not.
 	Reason     string
 	MergeState string
+	EventAt    string
 }
+
+// prAcceptedStatuses are the issue statuses that record an accepted verdict.
+// Other done-category statuses, such as changes_requested or blockings_found,
+// record a rejection, so a draft after them is ordinary rework.
+var prAcceptedStatuses = map[string]bool{issuestatus.Done: true, "agent_accepted": true, "approved": true}
 
 var errMalformedPRWakeupSettings = errors.New("malformed PR wakeup workspace settings")
 
@@ -140,9 +148,9 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		case in.Reason == PRAttentionMergeability && (in.MergeState == "DIRTY" || in.MergeState == "BEHIND") && in.HeadSHA != "" && in.BaseBranch != "":
 			eventType = "pr.mergeability"
 			eventKey += ":mergeability:" + in.HeadSHA + ":" + in.BaseBranch
-		case in.Reason == PRAttentionDraft && in.HeadSHA != "":
+		case in.Reason == PRAttentionDraft && in.HeadSHA != "" && in.EventAt != "":
 			eventType = "pr.returned_to_draft"
-			eventKey += ":draft:" + in.HeadSHA
+			eventKey += ":draft:" + in.HeadSHA + ":" + in.EventAt
 		default:
 			return fmt.Errorf("invalid pull request attention input")
 		}
@@ -169,13 +177,16 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		return tx.Commit(ctx)
 	}
 	if in.Reason == PRAttentionDraft {
-		// Only a draft after acceptance asks for an answer: a draft while the
-		// issue is still being worked on is ordinary progress.
+		// Only a draft after an accepted verdict asks for an answer: a draft
+		// while the issue is still worked on, or after a rejection, is rework.
+		if !prAcceptedStatuses[issue.Status] {
+			return tx.Commit(ctx)
+		}
 		category, err := issuestatus.CategoryWithError(ctx, q, issue.WorkspaceID, issue.Status)
 		if err != nil {
 			return err
 		}
-		if category != "done" {
+		if category != issuestatus.CategoryDone {
 			return tx.Commit(ctx)
 		}
 	}
@@ -301,6 +312,9 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		payload["reason"], payload["head_sha"], payload["base_branch"] = in.Reason, in.HeadSHA, in.BaseBranch
 		if in.MergeState != "" {
 			payload["merge_state"] = in.MergeState
+		}
+		if in.EventAt != "" {
+			payload["converted_at"] = in.EventAt
 		}
 	}
 	if held {

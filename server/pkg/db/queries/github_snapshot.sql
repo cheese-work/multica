@@ -137,19 +137,21 @@ WHERE installation_id = $1 AND repo_owner = $2 AND repo_name = $3 AND head_sha =
 -- name: GetGitHubPullRequestByID :one
 SELECT * FROM github_pull_request WHERE id = $1;
 
--- name: ListOpenGitHubPRAddressesOnBase :many
+-- name: InvalidateOpenGitHubPRMergeStateOnBase :many
 -- CHE-1417: a merge moves its base branch, which can make other open PRs on
--- that base DIRTY or BEHIND without any pull_request event of their own. The
--- merge handler refreshes those PRs. A row whose base is not known yet (no
--- snapshot since the column was added) is included. Newest PRs first, bounded
--- by max_rows.
-SELECT DISTINCT installation_id, repo_owner, repo_name, pr_number
-FROM github_pull_request
+-- that base DIRTY or BEHIND without any pull_request event of their own. Their
+-- stored merge state no longer describes the base, so it is cleared: the
+-- merge handler refreshes the returned PRs, and one the refresh queue drops is
+-- undecided, so ListStaleUndecidedGitHubPRs picks it up. A row whose base is
+-- not known yet (no snapshot since the column was added) is included.
+UPDATE github_pull_request
+SET api_mergeable          = NULL,
+    api_merge_state_status = NULL,
+    updated_at             = now()
 WHERE installation_id = sqlc.arg('installation_id')
   AND repo_owner = sqlc.arg('repo_owner')
   AND repo_name = sqlc.arg('repo_name')
   AND state IN ('open', 'draft')
   AND pr_number <> sqlc.arg('merged_pr_number')
   AND (snapshot_base_ref = sqlc.arg('base_ref') OR snapshot_base_ref IS NULL)
-ORDER BY pr_number DESC
-LIMIT sqlc.arg('max_rows');
+RETURNING installation_id, repo_owner, repo_name, pr_number;
