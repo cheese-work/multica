@@ -120,8 +120,9 @@ Prepared daemon launch/resume, complete authorized task inputs and credential-ex
 ## Bounded provider-protocol guard
 
 The broker supports HTTP 200 UTF-8 JSON or SSE on Claude `/v1/messages` and OpenAI `/v1/responses`.
-Text content and Claude client `tool_use` blocks are supported. Claude thinking/server-tool blocks
-and OpenAI tool/refusal/reasoning items or events refuse; this subset is not complete native CLI compatibility. Chat Completions refuses
+Text content, Claude client `tool_use` blocks and direct OpenAI `function_call` items are supported.
+Claude thinking/server-tool blocks and OpenAI custom/async/program/namespaced tools, refusal and reasoning
+items or events refuse; this subset is not complete native CLI compatibility. Chat Completions refuses
 before forwarding. `/v1/models` and Claude `/v1/messages/count_tokens` have bounded JSON metadata guards,
 not inference usage defaults. Other statuses, media types, protocol upgrades and declared/late trailers refuse.
 
@@ -147,6 +148,19 @@ OpenAI requires stable response identity/model, consecutive event sequence, clos
 `response.completed` with completed status and final usage. The supported streamed message has at most one
 text part; SHA-256 digests verify text deltas against text/part/item/final snapshots without retaining the
 whole response. Unsupported output, changed identity, incomplete status or terminal error refuses.
+
+Direct OpenAI functions require unique nonempty item and call IDs, nonempty names and JSON-object
+arguments. Optional function status must match the item lifecycle. A streamed function starts with empty
+arguments, accepts only matching `response.function_call_arguments.delta` events, and requires matching
+`response.function_call_arguments.done`, `response.output_item.done` and terminal response snapshots.
+The broker accumulates at most 1 MiB across active function arguments, applying the same JSON depth and
+duplicate-field guards as Claude tools. Closed argument buffers are discarded; SHA-256 digests retain
+the verified arguments for terminal comparison. Interleaved functions preserve output-index identity.
+Malformed functions retain the unknown-outcome stop, suppress another upstream request and preserve native state.
+Owned fragmented JSON/SSE and local HTTP fixtures verify wire preservation, disjoint usage and refusal.
+These are not installed native-tool or gateway/worker acceptance. The primary schema is
+`openai/openai-node` revision `37af8fc9c78bd5c4d2979c5d51870dd38964e156`,
+`src/resources/responses/responses.ts`: `ResponseFunctionToolCallItem` and the argument delta/done events.
 
 All required counters are finite nonnegative decimal int64 values. Missing/null counts are unknown, not
 zero. Explicit zero counts remain valid. OpenAI total must equal input plus output without overflow;

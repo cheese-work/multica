@@ -41,6 +41,7 @@ type gatewayProtocol struct {
 	toolIDs    map[string]bool
 	toolInputs map[int64][]byte
 	toolBytes  int
+	functions  map[int64]gatewayFunctionCall
 }
 
 func newGatewayProtocol(provider string, request *http.Request, response *http.Response) (*gatewayProtocol, error) {
@@ -199,7 +200,13 @@ func (protocol *gatewayProtocol) consumeEvent() error {
 			return ErrOutcomeUnknown
 		}
 		item, err := gatewayObject(object["item"])
+		if err == nil && gatewayString(item, "type") == "function_call" {
+			return protocol.consumeFunctionItem(eventType, index, item)
+		}
 		if err != nil || gatewayString(item, "type") != "message" || gatewayString(item, "role") != "assistant" || gatewayString(item, "id") == "" {
+			return ErrOutcomeUnknown
+		}
+		if _, exists := protocol.functions[index]; exists {
 			return ErrOutcomeUnknown
 		}
 		identity := gatewayString(item, "id")
@@ -227,7 +234,8 @@ func (protocol *gatewayProtocol) consumeEvent() error {
 	case "response.output_text.delta", "response.output_text.done", "response.content_part.added", "response.content_part.done":
 		index, err := gatewayCount(object, "output_index")
 		contentIndex, contentErr := gatewayCount(object, "content_index")
-		if err != nil || contentErr != nil || contentIndex != 0 || protocol.blocks[index] == "" || gatewayString(object, "item_id") != protocol.blocks[index] {
+		_, function := protocol.functions[index]
+		if err != nil || contentErr != nil || contentIndex != 0 || function || protocol.blocks[index] == "" || gatewayString(object, "item_id") != protocol.blocks[index] {
 			return ErrOutcomeUnknown
 		}
 		if strings.HasPrefix(eventType, "response.content_part.") {
@@ -269,6 +277,8 @@ func (protocol *gatewayProtocol) consumeEvent() error {
 				return ErrOutcomeUnknown
 			}
 		}
+	case "response.function_call_arguments.delta", "response.function_call_arguments.done":
+		return protocol.consumeFunctionArguments(eventType, object)
 	case "response.completed":
 		response, err := gatewayObject(object["response"])
 		if err != nil || len(protocol.blocks) != 0 || protocol.validateResponse(response) != nil {
@@ -484,9 +494,10 @@ func (protocol *gatewayProtocol) validateResponse(object map[string]json.RawMess
 		return ErrOutcomeUnknown
 	}
 	identities := make(map[string]bool)
+	callIDs := make(map[string]bool)
 	for index, contents := range output {
 		item, err := gatewayObject(contents)
-		if err != nil || gatewayString(item, "type") != "message" || gatewayString(item, "role") != "assistant" || gatewayString(item, "id") == "" || gatewayString(item, "status") != "completed" || validateGatewayContent(item["content"], "output_text") != nil {
+		if err != nil || gatewayString(item, "id") == "" {
 			return ErrOutcomeUnknown
 		}
 		identity := gatewayString(item, "id")
@@ -494,7 +505,16 @@ func (protocol *gatewayProtocol) validateResponse(object map[string]json.RawMess
 			return ErrOutcomeUnknown
 		}
 		identities[identity] = true
-		if protocol.started && !protocol.matchesResponseContent(item["content"], index) {
+		expectedFunction, function := protocol.functions[int64(index)]
+		if gatewayString(item, "type") == "function_call" {
+			actual, err := parseGatewayFunction(item, false)
+			if err != nil || callIDs[actual.callID] || protocol.started && (!function || actual != expectedFunction) {
+				return ErrOutcomeUnknown
+			}
+			callIDs[actual.callID] = true
+			continue
+		}
+		if function || gatewayString(item, "type") != "message" || gatewayString(item, "role") != "assistant" || gatewayString(item, "status") != "completed" || validateGatewayContent(item["content"], "output_text") != nil || protocol.started && !protocol.matchesResponseContent(item["content"], index) {
 			return ErrOutcomeUnknown
 		}
 	}

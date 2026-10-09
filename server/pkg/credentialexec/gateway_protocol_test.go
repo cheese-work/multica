@@ -29,6 +29,10 @@ func TestCredentialGatewayProtocolCompletion(test *testing.T) {
 	}{
 		{"claude-json", "claude", "application/json", completeClaudeJSON, true},
 		{"responses-json", "codex", "application/json", completeResponsesJSON, true},
+		{"responses-tool-json", "codex", "application/json", ownedOpenAIToolJSON(ownedOpenAIToolItem), true},
+		{"responses-tool-stream", "codex", "text/event-stream", ownedOpenAIToolStream(), true},
+		{"responses-tool-invalid-arguments", "codex", "application/json", ownedOpenAIToolJSON(strings.Replace(ownedOpenAIToolItem, `{\"location\":\"owned\"}`, `[]`, 1)), false},
+		{"responses-tool-stream-changed-arguments", "codex", "text/event-stream", strings.Replace(ownedOpenAIToolStream(), `"arguments":"{\"location\":\"owned\"}"`, `"arguments":"{}"`, 1), false},
 		{"claude-stream", "claude", "text/event-stream", completeClaudeSSE, true},
 		{"claude-tool-json", "claude", "application/json", ownedClaudeToolJSON(), true},
 		{"claude-tool-stream", "claude", "text/event-stream", ownedClaudeToolStream(ownedClaudeToolEvents(0, "tool_owned", `{"location":"owned"}`)), true},

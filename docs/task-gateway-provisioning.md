@@ -172,7 +172,7 @@ before admitting another request. Owned ELF fixtures cover both production adapt
 seams; byte-level EOF alone is not provider-protocol completion or normalized final usage evidence.
 The broker now requires supported terminal Claude/OpenAI JSON/SSE and explicit final usage before
 admitting another request. Missing/invalid usage, incomplete clean EOF, malformed/error frames and
-trailers record unknown outcome. Text-only protocol support and disjoint usage normalization
+trailers record unknown outcome. Bounded text/client-function protocol support and disjoint usage normalization
 are source guards, not complete native transport or durable settlement. Unsupported variants refuse.
 See `task-credential-execution.md` for exact bounds and supported events. No daemon launch capability
 is enabled by this protocol source slice.
