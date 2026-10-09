@@ -743,6 +743,7 @@ type GithubPullRequest struct {
 	ChecksRollupState   pgtype.Text        `json:"checks_rollup_state"`
 	SnapshotHeadSha     string             `json:"snapshot_head_sha"`
 	SnapshotFetchedAt   pgtype.Timestamptz `json:"snapshot_fetched_at"`
+	SnapshotBaseRef     pgtype.Text        `json:"snapshot_base_ref"`
 }
 
 type GithubPullRequestCheckRun struct {

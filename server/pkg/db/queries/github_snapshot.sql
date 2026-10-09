@@ -51,6 +51,7 @@ SET api_mergeable          = sqlc.narg('api_mergeable'),
     api_merge_state_status = sqlc.narg('api_merge_state_status'),
     checks_rollup_state    = sqlc.narg('checks_rollup_state'),
     snapshot_head_sha      = sqlc.arg('head_sha'),
+    snapshot_base_ref      = sqlc.narg('base_ref'),
     snapshot_fetched_at    = sqlc.arg('fetched_at'),
     updated_at             = now()
 WHERE gpr.id = sqlc.arg('pr_id')
@@ -135,3 +136,19 @@ WHERE installation_id = $1 AND repo_owner = $2 AND repo_name = $3 AND head_sha =
 
 -- name: GetGitHubPullRequestByID :one
 SELECT * FROM github_pull_request WHERE id = $1;
+
+-- name: ListOpenGitHubPRAddressesOnBase :many
+-- CHE-1417: a merge moves its base branch, which can make other open PRs on
+-- that base DIRTY or BEHIND without any pull_request event of their own. The
+-- merge handler refreshes those PRs. A row whose base is not known yet (no
+-- snapshot since the column was added) is included. Bounded by max_rows.
+SELECT DISTINCT installation_id, repo_owner, repo_name, pr_number
+FROM github_pull_request
+WHERE installation_id = sqlc.arg('installation_id')
+  AND repo_owner = sqlc.arg('repo_owner')
+  AND repo_name = sqlc.arg('repo_name')
+  AND state IN ('open', 'draft')
+  AND pr_number <> sqlc.arg('merged_pr_number')
+  AND (snapshot_base_ref = sqlc.arg('base_ref') OR snapshot_base_ref IS NULL)
+ORDER BY pr_number
+LIMIT sqlc.arg('max_rows');

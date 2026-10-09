@@ -29,6 +29,19 @@ type prWakeupSettings struct {
 	GitHubEnabled   *bool `json:"github_enabled"`
 	WakeOnPRMerge   *bool `json:"github_wake_on_pr_merge"`
 	WakeOnCIFailure *bool `json:"github_wake_on_ci_failure"`
+	WakeOnAttention *bool `json:"github_wake_on_pr_attention"`
+}
+
+// ruleSetting is the stored value of one PR rule's switch; nil when unset.
+func (v prWakeupSettings) ruleSetting(rule string) *bool {
+	switch rule {
+	case SystemRulePRChecksFailed:
+		return v.WakeOnCIFailure
+	case SystemRulePRAttention:
+		return v.WakeOnAttention
+	default:
+		return v.WakeOnPRMerge
+	}
 }
 
 // legacyWorkspacePatch projects the aliases of one rule. A missing, null or
@@ -39,7 +52,7 @@ type prWakeupSettings struct {
 func legacyWorkspacePatch(settings []byte, ruleKey string) (WakeupConfigPatch, error) {
 	var p WakeupConfigPatch
 	switch ruleKey {
-	case SystemRulePRMerged, SystemRulePRChecksFailed:
+	case SystemRulePRMerged, SystemRulePRChecksFailed, SystemRulePRAttention:
 		if len(settings) == 0 {
 			return p, nil
 		}
@@ -47,10 +60,7 @@ func legacyWorkspacePatch(settings []byte, ruleKey string) (WakeupConfigPatch, e
 		if err := json.Unmarshal(settings, &v); err != nil {
 			return p, malformedPRWakeupSettings(err)
 		}
-		enabled := v.WakeOnPRMerge
-		if ruleKey == SystemRulePRChecksFailed {
-			enabled = v.WakeOnCIFailure
-		}
+		enabled := v.ruleSetting(ruleKey)
 		if enabled != nil {
 			p.Enabled = wakeupField[bool]{Set: true, Value: *enabled}
 		}
@@ -165,7 +175,7 @@ func applyWorkspaceWakeupAliasesTx(ctx context.Context, tx pgx.Tx, q *db.Queries
 		if _, err := setChildDoneDefaultTx(ctx, tx, q, workspaceID, enabled, instruction); err != nil {
 			return p, err
 		}
-	case SystemRulePRMerged, SystemRulePRChecksFailed:
+	case SystemRulePRMerged, SystemRulePRChecksFailed, SystemRulePRAttention:
 		if !p.Enabled.Set {
 			return p, nil
 		}

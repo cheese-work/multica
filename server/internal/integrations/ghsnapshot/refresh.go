@@ -466,6 +466,7 @@ func (m *Manager) applySnapshot(ctx context.Context, prID pgtype.UUID, snap *PRS
 		ApiMergeStateStatus: textOrNull(snap.MergeStateStatus),
 		ChecksRollupState:   rollup,
 		HeadSha:             snap.HeadSHA,
+		BaseRef:             textOrNull(snap.BaseRef),
 		FetchedAt:           tsFromTime(m.now()),
 		PrID:                prID,
 	})

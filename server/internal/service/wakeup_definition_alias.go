@@ -89,7 +89,7 @@ func aliasSettingsPatch(key string, alias WakeupConfigPatch) map[string]any {
 			}
 			out[WorkspaceSettingChildDoneInstruction] = text
 		}
-	case SystemRulePRMerged, SystemRulePRChecksFailed:
+	case SystemRulePRMerged, SystemRulePRChecksFailed, SystemRulePRAttention:
 		if alias.Enabled.Set {
 			setting, _ := prWakeupSetting(key)
 			if alias.Enabled.Null {
