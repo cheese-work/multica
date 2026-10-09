@@ -61,7 +61,7 @@ fi
 # named exit.
 # ---------------------------------------------------------------------------
 required_go_version="$(grep -E '^go [0-9]+\.[0-9]+\.[0-9]+$' "$(dirname "${BASH_SOURCE[0]}")/../server/go.mod" 2>/dev/null | awk '{print $2}')"
-required_go_version="${required_go_version:-1.26.6}"
+required_go_version="${required_go_version:-1.26.9}"
 
 command -v git >/dev/null 2>&1 || { echo "install-cli-from-ref: git is required" >&2; exit 1; }
 command -v go >/dev/null 2>&1 || { echo "install-cli-from-ref: go is required (server/go.mod needs $required_go_version or newer; none found on PATH)" >&2; exit 1; }
