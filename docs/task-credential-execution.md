@@ -239,9 +239,21 @@ Owned ELF/local-HTTP fixtures exercise both adapters' prepared launch/resume, in
 refusal, single-run/close lifecycle and hard-429/no-new-launch/no-new-grant behavior. They are not installed
 native CLI compatibility, PostgreSQL transactions, durable accounting or full gateway acceptance.
 This helper remains outside `runTask`. Early opt-in refusal and the unadvertised capability remain.
-Production daemon input refresh, complete authorized task inputs, credential-exclusive tooling, complete native
+Production daemon input refresh, remaining authorized task inputs, credential-exclusive tooling, complete native
 transport/protocol support and gateway/worker settlement integration remain unfinished.
 The daemon's early refusal and unsupported protocol refusals remain. No launch capability is enabled.
+
+The prepared helper reuses the unmanaged runtime-brief and project-resource renderers without importing
+host files or caches. Bounded claim-derived `multica-input/runtime.md` and
+`multica-input/project/resources.json` accompany the existing prompt, instruction, workspace and skill
+files. Verified descriptors project the brief read-only at Claude's `CLAUDE.md` or Codex's `AGENTS.md`,
+skills at `.claude/skills` or `.agents/skills`, and project metadata at `.multica/project/resources.json`.
+Every projected file is pinned separately; replacing a host path after wrapping cannot replace its bytes.
+Pre-existing symlink or mismatched-type native destinations refuse before wrapping. No host credential,
+runtime configuration or skill cache is imported. Native home/session/cache and ordinary work remain mutable.
+Mandatory authenticated refresh updates the rendered brief with the latest instructions/workspace context
+while preserving original claim metadata and skill pins. These paths are tested with owned ELF fixtures,
+not installed provider discovery, credential-exclusive tooling or production `runTask` integration.
 
 `TestCredentialGatewayProtocolCompletion`, fragmentation/usage and malformed-outcome tests exercise
 valid terminal JSON/SSE, incomplete clean EOF, missing/invalid counters, unsupported events, changed

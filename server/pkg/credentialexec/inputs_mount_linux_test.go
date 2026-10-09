@@ -69,6 +69,133 @@ func TestCredentialInputsMountVerifiedDescriptors(test *testing.T) {
 	}
 }
 
+func TestCredentialInputsMountNativeAliases(test *testing.T) {
+	for _, provider := range []string{"claude", "codex"} {
+		test.Run(provider, func(test *testing.T) {
+			inputs := map[string][]byte{
+				"multica-input/runtime.md":             []byte("authorized runtime brief"),
+				"multica-input/project/resources.json": []byte(`{"resources":[]}`),
+				"multica-input/skills/owned/SKILL.md":  []byte("authorized skill"),
+			}
+			boundary := ownedInputMountBoundary(test, inputs)
+			boundary.spec.Provider = provider
+			nativeRoot, briefName := ".agents", "AGENTS.md"
+			if provider == "claude" {
+				nativeRoot, briefName = ".claude", "CLAUDE.md"
+			}
+			command := exec.Command(boundary.spec.Executable)
+			command.Dir = boundary.WorkDir()
+			cleanup, err := boundary.Wrap(command)
+			if err != nil {
+				test.Fatal(err)
+			}
+			defer cleanup()
+			mounts := make(map[string]*os.File)
+			for index, argument := range command.Args {
+				if argument == "--ro-bind-fd" {
+					descriptor, err := strconv.Atoi(command.Args[index+1])
+					if err != nil {
+						test.Fatal(err)
+					}
+					mounts[command.Args[index+2]] = command.ExtraFiles[descriptor-3]
+				}
+			}
+			if len(command.ExtraFiles) != 16 {
+				test.Fatal("native alias descriptors missing", len(command.ExtraFiles))
+			}
+			for _, file := range command.ExtraFiles {
+				flags, err := unix.FcntlInt(file.Fd(), unix.F_GETFD, 0)
+				if err != nil || flags&unix.FD_CLOEXEC == 0 {
+					test.Fatal("native input descriptor can leak to unrelated children", err)
+				}
+			}
+			for name, contents := range inputs {
+				path := filepath.Join(boundary.WorkDir(), name)
+				if err := os.Rename(path, path+".old"); err != nil {
+					test.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte("replacement input"), 0600); err != nil {
+					test.Fatal(err)
+				}
+				for _, root := range []string{"multica-input", nativeRoot, ".multica"} {
+					alias := filepath.Join(boundary.WorkDir(), root, name[len("multica-input/"):])
+					file := mounts[alias]
+					if file == nil {
+						test.Fatal("missing native input mount", alias)
+					}
+					if _, err := file.Seek(0, io.SeekStart); err != nil {
+						test.Fatal(err)
+					}
+					observed, err := io.ReadAll(file)
+					if err != nil || string(observed) != string(contents) {
+						test.Fatal("native alias followed a replaced path", alias, err)
+					}
+					if _, err := file.Write([]byte("forged")); err == nil {
+						test.Fatal("native input descriptor permits writing", alias)
+					}
+				}
+			}
+			brief := mounts[filepath.Join(boundary.WorkDir(), briefName)]
+			if brief == nil {
+				test.Fatal("native runtime brief missing")
+			}
+			if _, err := brief.Seek(0, io.SeekStart); err != nil {
+				test.Fatal(err)
+			}
+			if contents, err := io.ReadAll(brief); err != nil || string(contents) != string(inputs["multica-input/runtime.md"]) {
+				test.Fatal("native runtime brief descriptor followed replaced input", err)
+			}
+			cleanup()
+			for _, file := range command.ExtraFiles {
+				if _, err := file.Stat(); !errors.Is(err, os.ErrClosed) {
+					test.Fatal("native alias cleanup leaked descriptor", err)
+				}
+			}
+		})
+	}
+}
+
+func TestCredentialInputsMountRefusesUnsafeNativeDestinations(test *testing.T) {
+	for _, provider := range []string{"claude", "codex"} {
+		for _, kind := range []string{"symlink", "wrong-type"} {
+			for _, name := range []string{".agents", ".multica", "AGENTS.md"} {
+				directory := name != "AGENTS.md"
+				if provider == "claude" && name == ".agents" {
+					name = ".claude"
+				}
+				if provider == "claude" && name == "AGENTS.md" {
+					name = "CLAUDE.md"
+				}
+				test.Run(provider+"/"+kind+"/"+name, func(test *testing.T) {
+					boundary := ownedInputMountBoundary(test, map[string][]byte{"multica-input/runtime.md": []byte("authorized brief")})
+					boundary.spec.Provider = provider
+					path := filepath.Join(boundary.WorkDir(), name)
+					var err error
+					if kind == "symlink" {
+						err = os.Symlink(boundary.Home(), path)
+					} else if directory {
+						err = os.WriteFile(path, []byte("untrusted alias"), 0600)
+					} else {
+						err = os.Mkdir(path, 0700)
+					}
+					if err != nil {
+						test.Fatal(err)
+					}
+					command := exec.Command(boundary.spec.Executable)
+					command.Dir = boundary.WorkDir()
+					cleanup, err := boundary.Wrap(command)
+					if cleanup != nil {
+						cleanup()
+					}
+					if !errors.Is(err, ErrUnavailable) || len(command.ExtraFiles) != 0 {
+						test.Fatal("unsafe native destination admitted", err)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestCredentialInputsMountRefusesChangedSnapshot(test *testing.T) {
 	for _, kind := range []string{"changed", "missing", "symlink", "hardlink", "fifo", "public", "public-directory", "invalid-manifest", "extra-file", "extra-directory", "extra-symlink"} {
 		test.Run(kind, func(test *testing.T) {

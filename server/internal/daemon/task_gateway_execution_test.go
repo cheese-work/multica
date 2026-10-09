@@ -53,40 +53,60 @@ func taskGatewayNativeFixture() {
 			return "unbound instructions"
 		}
 		if strings.Contains(string(instructions), "owned readonly input control") {
-			if err := filepath.WalkDir("multica-input", func(path string, entry os.DirEntry, walkErr error) error {
-				if walkErr != nil {
-					return walkErr
-				}
-				if entry.IsDir() {
-					if err := os.WriteFile(filepath.Join(path, "unexpected-input"), []byte("untrusted"), 0600); !errors.Is(err, syscall.EROFS) {
-						if err == nil {
-							return fmt.Errorf("trusted input directory permits new entries: %s", path)
-						}
-						return fmt.Errorf("trusted input directory is not read-only: %s: %w", path, err)
+			briefName, skillRoot := "AGENTS.md", ".agents"
+			if provider == "claude" {
+				briefName, skillRoot = "CLAUDE.md", ".claude"
+			}
+			brief, briefErr := os.ReadFile(briefName)
+			stagedBrief, stagedErr := os.ReadFile("multica-input/runtime.md")
+			workspace, workspaceErr := os.ReadFile("multica-input/workspace.md")
+			if briefErr != nil || stagedErr != nil || workspaceErr != nil || string(brief) != string(stagedBrief) || !strings.Contains(string(brief), string(instructions)) || !strings.Contains(string(brief), string(workspace)) {
+				return "native runtime brief is not the authorized snapshot"
+			}
+			resources, resourceErr := os.ReadFile(".multica/project/resources.json")
+			stagedResources, stagedResourceErr := os.ReadFile("multica-input/project/resources.json")
+			if resourceErr != nil || stagedResourceErr != nil || string(resources) != string(stagedResources) {
+				return "native project resources are not the authorized snapshot"
+			}
+			for _, root := range []string{"multica-input", skillRoot, ".multica"} {
+				if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+					if walkErr != nil {
+						return walkErr
 					}
-					if err := os.Rename(path, path+"-moved"); !errors.Is(err, syscall.EBUSY) && !errors.Is(err, syscall.EROFS) {
-						if err == nil {
-							return fmt.Errorf("trusted input directory can be renamed: %s", path)
+					if entry.IsDir() {
+						if err := os.WriteFile(filepath.Join(path, "unexpected-input"), []byte("untrusted"), 0600); !errors.Is(err, syscall.EROFS) {
+							if err == nil {
+								return fmt.Errorf("trusted input directory permits new entries: %s", path)
+							}
+							return fmt.Errorf("trusted input directory is not read-only: %s: %w", path, err)
 						}
-						return fmt.Errorf("trusted input directory is not pinned: %s: %w", path, err)
+						if err := os.Rename(path, path+"-moved"); !errors.Is(err, syscall.EBUSY) && !errors.Is(err, syscall.EROFS) {
+							if err == nil {
+								return fmt.Errorf("trusted input directory can be renamed: %s", path)
+							}
+							return fmt.Errorf("trusted input directory is not pinned: %s: %w", path, err)
+						}
+						return nil
+					}
+					if err := os.WriteFile(path, []byte("forged native input"), 0600); !errors.Is(err, syscall.EROFS) {
+						if err == nil {
+							return fmt.Errorf("trusted input is writable: %s", path)
+						}
+						return fmt.Errorf("trusted input is not read-only: %s: %w", path, err)
+					}
+					if err := os.Remove(path); !errors.Is(err, syscall.EBUSY) && !errors.Is(err, syscall.EROFS) {
+						if err == nil {
+							return fmt.Errorf("trusted input was removed: %s", path)
+						}
+						return fmt.Errorf("trusted input is not pinned: %s: %w", path, err)
 					}
 					return nil
+				}); err != nil {
+					return err.Error()
 				}
-				if err := os.WriteFile(path, []byte("forged native input"), 0600); !errors.Is(err, syscall.EROFS) {
-					if err == nil {
-						return fmt.Errorf("trusted input is writable: %s", path)
-					}
-					return fmt.Errorf("trusted input is not read-only: %s: %w", path, err)
-				}
-				if err := os.Remove(path); !errors.Is(err, syscall.EBUSY) && !errors.Is(err, syscall.EROFS) {
-					if err == nil {
-						return fmt.Errorf("trusted input was removed: %s", path)
-					}
-					return fmt.Errorf("trusted input is not pinned: %s: %w", path, err)
-				}
-				return nil
-			}); err != nil {
-				return err.Error()
+			}
+			if err := os.WriteFile(briefName, []byte("forged native brief"), 0600); !errors.Is(err, syscall.EROFS) {
+				return "native runtime brief is writable"
 			}
 			if err := os.WriteFile("owned-work-state", []byte("retained mutable work"), 0600); err != nil {
 				return "task workdir is not writable"

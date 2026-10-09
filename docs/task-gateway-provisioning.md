@@ -211,3 +211,13 @@ Gateway identity, task-native state, mutable work and usage are preserved; no re
 Owned row/HTTP/ELF fixtures cover this source path. The narrower supported refresh contract and remaining
 production-refresh, task-input/tooling and native-compatibility limits are in `task-credential-execution.md`.
 Early opt-in refusal and the unadvertised `task-gateway-v1` capability remain unchanged.
+
+The prepared helper now renders the authorized runtime brief and project sidecar through the existing
+pure renderers. The private input tree projects descriptor-pinned read-only native instruction, skill
+and project paths for both providers. Original repository/status/project metadata is copied before
+refresh; caller mutation cannot alter the prepared claim. Unsafe native alias destinations refuse.
+Owned launch/resume fixtures verify the projected bytes and read-only controls while preserving mutable
+native state and work. No host files, credential caches or installed-provider smoke tests are used.
+This source checkpoint does not complete remaining task inputs, credential-exclusive tooling, native
+compatibility, production `runTask` or durable gateway/worker integration. See the execution document
+for exact native paths. The current daemon still refuses opt-in and advertises no launch capability.

@@ -6,6 +6,7 @@ import (
 	"debug/elf"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -329,6 +330,51 @@ func (boundary *Boundary) wrap(command *exec.Cmd, withGateway bool) (func(), err
 			cleanup()
 			return nil, ErrUnavailable
 		}
+		mountAlias := func(file *os.File, destination string) error {
+			descriptor, err := unix.FcntlInt(file.Fd(), unix.F_DUPFD_CLOEXEC, 0)
+			if err != nil {
+				return ErrUnavailable
+			}
+			arguments = append(arguments, "--ro-bind-fd", strconv.Itoa(len(files)+3), destination)
+			files = append(files, os.NewFile(uintptr(descriptor), "input-alias"))
+			return nil
+		}
+		var nativeRoots []string
+		briefName := "AGENTS.md"
+		if _, present := boundary.spec.Inputs["multica-input/runtime.md"]; present {
+			skillRoot := ".agents"
+			if boundary.spec.Provider == "claude" {
+				skillRoot, briefName = ".claude", "CLAUDE.md"
+			}
+			for _, name := range []string{skillRoot, ".multica", briefName} {
+				descriptor, err := unix.Openat2(int(files[1].Fd()), name, &unix.OpenHow{Flags: unix.O_PATH | unix.O_CLOEXEC, Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS})
+				if errors.Is(err, unix.ENOENT) {
+					continue
+				}
+				if err != nil {
+					cleanup()
+					return nil, ErrUnavailable
+				}
+				var stat unix.Stat_t
+				err = unix.Fstat(descriptor, &stat)
+				_ = unix.Close(descriptor)
+				expectedType := uint32(unix.S_IFDIR)
+				if name == briefName {
+					expectedType = unix.S_IFREG
+				}
+				if err != nil || stat.Mode&unix.S_IFMT != expectedType {
+					cleanup()
+					return nil, ErrUnavailable
+				}
+			}
+			nativeRoots = []string{filepath.Join(boundary.WorkDir(), skillRoot), filepath.Join(boundary.WorkDir(), ".multica")}
+			for _, root := range nativeRoots {
+				if mountAlias(inputRoot, root) != nil {
+					cleanup()
+					return nil, ErrUnavailable
+				}
+			}
+		}
 		names := make([]string, 0, len(boundary.spec.Inputs))
 		for name := range boundary.spec.Inputs {
 			names = append(names, name)
@@ -342,6 +388,16 @@ func (boundary *Boundary) wrap(command *exec.Cmd, withGateway bool) (func(), err
 			}
 			arguments = append(arguments, "--ro-bind-fd", strconv.Itoa(len(files)+3), filepath.Join(boundary.WorkDir(), name))
 			files = append(files, file)
+			for _, root := range nativeRoots {
+				if mountAlias(file, filepath.Join(root, strings.TrimPrefix(name, "multica-input/"))) != nil {
+					cleanup()
+					return nil, ErrUnavailable
+				}
+			}
+			if len(nativeRoots) != 0 && name == "multica-input/runtime.md" && mountAlias(file, filepath.Join(boundary.WorkDir(), briefName)) != nil {
+				cleanup()
+				return nil, ErrUnavailable
+			}
 		}
 	}
 	environment := boundary.Environment()

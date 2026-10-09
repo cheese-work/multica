@@ -78,6 +78,18 @@ func (client *Client) prepareTaskGatewayExecution(ctx context.Context, task Task
 	claimed.Agent = &claimedAgent
 	claimedBinding := *task.CredentialExecutionBinding
 	claimed.CredentialExecutionBinding = &claimedBinding
+	claimed.CoalescedCommentIDs = slices.Clone(task.CoalescedCommentIDs)
+	claimed.CoalescedComments = slices.Clone(task.CoalescedComments)
+	claimed.IssueChangedFields = slices.Clone(task.IssueChangedFields)
+	claimed.QuickCreateSourceContext = slices.Clone(task.QuickCreateSourceContext)
+	claimed.AutopilotTriggerPayload = slices.Clone(task.AutopilotTriggerPayload)
+	claimed.ConnectedApps = slices.Clone(task.ConnectedApps)
+	claimed.Repos = slices.Clone(task.Repos)
+	claimed.IssueStatuses = slices.Clone(task.IssueStatuses)
+	claimed.ProjectResources = slices.Clone(task.ProjectResources)
+	for index := range claimed.ProjectResources {
+		claimed.ProjectResources[index].ResourceRef = slices.Clone(task.ProjectResources[index].ResourceRef)
+	}
 	claimed.Agent.SkillRefs = slices.Clone(task.Agent.SkillRefs)
 	for index := range claimed.Agent.SkillRefs {
 		claimed.Agent.SkillRefs[index].Files = slices.Clone(task.Agent.SkillRefs[index].Files)

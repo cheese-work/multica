@@ -34,6 +34,9 @@ func TestTaskGatewayExecutionAuthenticatedRefresh(test *testing.T) {
 				test.Run(name, func(test *testing.T) {
 					task, binding := ownedTaskGatewayClaim()
 					task.Agent.Instructions += " owned readonly input control"
+					task.Repos = []RepoData{{URL: "https://example.invalid/owned", Description: "authorized repository"}}
+					task.IssueStatuses = []IssueStatusData{{Key: "owned", Name: "authorized status"}}
+					task.ProjectResources = []ProjectResourceData{{ID: "owned-resource", ResourceRef: json.RawMessage(`{"url":"https://example.invalid/owned"}`)}}
 					if resume {
 						task.PriorSessionID = "owned-session"
 					}
@@ -118,6 +121,18 @@ func TestTaskGatewayExecutionAuthenticatedRefresh(test *testing.T) {
 						test.Fatal(err)
 					}
 					defer execution.Close()
+					originalInputs, err := taskGatewayInputs(execution.task, provider)
+					if err != nil {
+						test.Fatal(err)
+					}
+					task.Repos[0].Description = "forged repository"
+					task.IssueStatuses[0].Name = "forged status"
+					task.ProjectResources[0].ID = "forged-resource"
+					task.ProjectResources[0].ResourceRef[0] = '!'
+					copiedInputs, err := taskGatewayInputs(execution.task, provider)
+					if err != nil || !reflect.DeepEqual(originalInputs, copiedInputs) {
+						test.Fatal("prepared input metadata aliases caller memory", err)
+					}
 					originalPrompt := execution.prompt
 					for _, invalid := range [][]byte{
 						bytes.Replace(encoded, []byte(binding.OwnerID), []byte("00000000-0000-4000-8000-000000000009"), 1),
@@ -191,12 +206,15 @@ func TestTaskGatewayExecutionAuthenticatedRefresh(test *testing.T) {
 					if err := execution.Refresh(context.Background()); err != nil {
 						test.Fatal(err)
 					}
-					resolved := task
+					resolved := execution.task
 					resolvedAgent := *task.Agent
 					resolved.Agent = &resolvedAgent
 					resolved.Agent.Instructions, resolved.WorkspaceContext = snapshot.Instructions, snapshot.WorkspaceContext
 					if execution.prompt != BuildPrompt(resolved, provider) || task.Agent.Instructions == snapshot.Instructions || task.WorkspaceContext == snapshot.WorkspaceContext || grants.Load() != 1 || providerCalls.Load() != 0 {
 						test.Fatal("refresh mutated the original claim, provisioned or lost authenticated input")
+					}
+					if contents, err := os.ReadFile(filepath.Join(execution.boundary.WorkDir(), "multica-input", "project", "resources.json")); err != nil || !bytes.Equal(contents, originalInputs["multica-input/project/resources.json"]) {
+						test.Fatal("refresh changed pinned project resource metadata", err)
 					}
 					response.Store([]byte(`{"instructions":"owned-secret"}`))
 					promptBefore := execution.prompt

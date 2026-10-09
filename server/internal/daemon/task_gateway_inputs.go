@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/internal/taskgateway"
 	"github.com/multica-ai/multica/server/pkg/credentialexec"
 )
@@ -16,12 +17,20 @@ func taskGatewayInputs(task Task, provider string) (map[string][]byte, error) {
 	if len(prompt) > 1<<20 {
 		return nil, taskgateway.ErrUnavailable
 	}
-	inputs := map[string][]byte{
-		"multica-input/prompt.md":       []byte(prompt),
-		"multica-input/instructions.md": []byte(task.Agent.Instructions),
-		"multica-input/workspace.md":    []byte(task.WorkspaceContext),
+	taskContext := taskContextForEnv(task, provider)
+	brief := execenv.BuildRuntimeBrief(provider, taskContext)
+	resources, err := execenv.BuildProjectResources(taskContext)
+	if err != nil {
+		return nil, taskgateway.ErrUnavailable
 	}
-	total := len(prompt) + len(task.Agent.Instructions) + len(task.WorkspaceContext)
+	inputs := map[string][]byte{
+		"multica-input/prompt.md":              []byte(prompt),
+		"multica-input/instructions.md":        []byte(task.Agent.Instructions),
+		"multica-input/workspace.md":           []byte(task.WorkspaceContext),
+		"multica-input/runtime.md":             []byte(brief),
+		"multica-input/project/resources.json": resources,
+	}
+	total := len(prompt) + len(task.Agent.Instructions) + len(task.WorkspaceContext) + len(brief) + len(resources)
 	for _, skill := range task.Agent.Skills {
 		if skill.Name == "" || skill.Name == "." || skill.Name == ".." || filepath.Base(skill.Name) != skill.Name || strings.ContainsAny(skill.Name, "\\\x00") || len(skill.Content) > 1<<20 || len(inputs) >= 128 || total+len(skill.Content) > 8<<20 {
 			return nil, taskgateway.ErrUnavailable

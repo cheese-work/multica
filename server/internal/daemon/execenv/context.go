@@ -281,17 +281,7 @@ func writeProjectResources(workDir string, ctx TaskContextForEnv, manifest *side
 	if err := recordMkdirAll(dir, 0o755, manifest); err != nil {
 		return err
 	}
-	resources := ctx.ProjectResources
-	if resources == nil {
-		resources = []ProjectResourceForEnv{}
-	}
-	payload := projectResourceFile{
-		ProjectID:          ctx.ProjectID,
-		ProjectTitle:       ctx.ProjectTitle,
-		ProjectDescription: ctx.ProjectDescription,
-		Resources:          resources,
-	}
-	data, err := json.MarshalIndent(payload, "", "  ")
+	data, err := BuildProjectResources(ctx)
 	if err != nil {
 		return err
 	}
@@ -306,6 +296,17 @@ func writeProjectResources(workDir string, ctx TaskContextForEnv, manifest *side
 		}
 	}
 	return nil
+}
+
+func BuildProjectResources(ctx TaskContextForEnv) ([]byte, error) {
+	resources := ctx.ProjectResources
+	if resources == nil {
+		resources = []ProjectResourceForEnv{}
+	}
+	return json.MarshalIndent(projectResourceFile{
+		ProjectID: ctx.ProjectID, ProjectTitle: ctx.ProjectTitle,
+		ProjectDescription: ctx.ProjectDescription, Resources: resources,
+	}, "", "  ")
 }
 
 // resolveSkillsDir returns the directory where skills should be written
