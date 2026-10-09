@@ -2083,8 +2083,15 @@ func (d *Daemon) clearWSHeartbeatAcks() {
 
 // Run starts the daemon: resolves auth, registers runtimes, then polls for tasks.
 func (d *Daemon) Run(ctx context.Context) error {
+	instanceLock, err := acquireDaemonInstanceLock(d.cfg.Profile)
+	if err != nil {
+		return err
+	}
+	defer instanceLock.Close()
+
 	// Wrap context so handleUpdate can cancel the daemon for restart.
 	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	d.cancelFunc = cancel
 	d.setLifecycleCtx(ctx)
 	d.rootCtx = ctx
@@ -2094,6 +2101,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	defer healthLn.Close()
+
+	pidPath := filepath.Join(filepath.Dir(instanceLock.Name()), "daemon.pid")
+	_ = os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())), 0o644)
+	defer os.Remove(pidPath)
 
 	agentNames := make([]string, 0, len(d.agents()))
 	for name := range d.agents() {
