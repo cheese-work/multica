@@ -171,6 +171,65 @@ func TestSquadLeaderFailureMarkerCoversBulkOrphanFailure(t *testing.T) {
 	assertLeaderFailureMarker(t, svc, fixture.issueID, true)
 }
 
+func TestSquadLeaderFailureMarkerBulkRetries(t *testing.T) {
+	for _, condition := range []string{"runtime_recovery", "timeout", "runtime_offline", "exhausted"} {
+		t.Run(condition, func(t *testing.T) {
+			fixture, svc, rows := leaderFailureFixture(t)
+			ctx := context.Background()
+			if condition == "exhausted" {
+				rows.Exec(t, `UPDATE agent_task_queue SET attempt = max_attempts WHERE id = $1`, fixture.sourceTask)
+			}
+			var failed []db.AgentTaskQueue
+			var err error
+			switch condition {
+			case "timeout":
+				rows.Exec(t, `UPDATE agent_task_queue SET started_at = now() - interval '1 hour' WHERE id = $1`, fixture.sourceTask)
+				rows.Exec(t, `UPDATE agent_runtime SET last_seen_at = now() - interval '1 hour' WHERE id = $1`, fixture.runtimeID)
+				failed, err = svc.FailStaleTasks(ctx, db.FailStaleTasksParams{
+					DispatchTimeoutSecs: 60, RunningTimeoutSecs: 60,
+					RuntimeStaleSecs: 60, RuntimeReconnectGraceSecs: 60,
+				})
+			case "runtime_offline":
+				rows.Exec(t, `UPDATE agent_runtime SET status = 'offline', last_seen_at = now() - interval '1 hour' WHERE id = $1`, fixture.runtimeID)
+				failed, err = svc.FailTasksForOfflineRuntimes(ctx, db.FailTasksForOfflineRuntimesParams{
+					ReconnectGraceSecs: 60, MaxPerTick: 10,
+				})
+			default:
+				failed, err = svc.RecoverOrphanedTasksForRuntime(ctx, util.MustParseUUID(fixture.runtimeID))
+			}
+			if err != nil || len(failed) != 1 {
+				t.Fatalf("bulk failure = %v, %v", failed, err)
+			}
+			assertLeaderFailureMarker(t, svc, fixture.issueID, true)
+			wantRetries := 1
+			if condition == "exhausted" {
+				wantRetries = 0
+			}
+			if retried := svc.HandleFailedTasks(ctx, failed); retried != wantRetries {
+				t.Fatalf("HandleFailedTasks retried %d tasks; want %d", retried, wantRetries)
+			}
+			wantMarker := condition == "runtime_offline" || condition == "exhausted"
+			active, err := svc.Queries.HasActiveTaskForIssue(ctx, util.MustParseUUID(fixture.issueID))
+			if err != nil || active != !wantMarker {
+				t.Fatalf("HasActiveTaskForIssue = %v, %v; want %v", active, err, !wantMarker)
+			}
+			if wantRetries == 1 {
+				wantStatus := "queued"
+				if condition == "runtime_offline" {
+					wantStatus = "deferred"
+				}
+				if count := rows.Count(t, `SELECT count(*) FROM agent_task_queue WHERE parent_task_id = $1 AND status = $2`, fixture.sourceTask, wantStatus); count != 1 {
+					t.Fatalf("found %d %s retries; want 1", count, wantStatus)
+				}
+			}
+			if count := rows.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1`, fixture.issueID); count != 1+wantRetries {
+				t.Fatalf("found %d tasks; want %d", count, 1+wantRetries)
+			}
+			assertLeaderFailureMarker(t, svc, fixture.issueID, wantMarker)
+		})
+	}
+}
+
 func TestSquadLeaderFailureMarkerDoesNotCaptureWakeups(t *testing.T) {
 	fixture, svc, issue, agent := wakeFixture(t)
 	wakeup := wakeCreate(t, fixture, svc, issue, WakeupInput{

@@ -5810,6 +5810,11 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	}); err != nil {
 		return nil, fmt.Errorf("copy auto-retry channel delivery: %w", err)
 	}
+	if child.Status == "queued" {
+		if err := clearSquadLeaderFailureMarker(ctx, qtx, child); err != nil {
+			return nil, err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("task auto-retry: commit: %w", err)
 	}
@@ -6577,9 +6582,6 @@ func SettleTerminalTaskState(ctx context.Context, q *db.Queries, tasks ...db.Age
 func clearSquadLeaderFailureMarker(ctx context.Context, q *db.Queries, task db.AgentTaskQueue) error {
 	if !task.IssueID.Valid {
 		return nil
-	}
-	if err := q.LockIssuesForLeaderFailureMarker(ctx, []pgtype.UUID{task.IssueID}); err != nil {
-		return fmt.Errorf("lock leader failure marker issue: %w", err)
 	}
 	if err := q.ClearSquadLeaderFailureMarker(ctx, task.IssueID); err != nil {
 		return fmt.Errorf("clear leader failure marker: %w", err)
