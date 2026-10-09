@@ -22,28 +22,10 @@ func (client *Client) PrepareTaskGateway(ctx context.Context, task Task, spec cr
 }
 
 func (client *Client) prepareTaskGateway(ctx context.Context, task Task, spec credentialexec.Spec) (*credentialexec.Boundary, Task, error) {
-	if client == nil || !task.RequireCredentialIsolation || task.CredentialExecutionBinding == nil || *task.CredentialExecutionBinding != spec.Binding || spec.Binding.Validate() != nil || task.ID != spec.Binding.TaskID || task.WorkspaceID != spec.Binding.WorkspaceID || !strings.HasPrefix(task.TaskGatewayDaemonToken, "mdt_") || !strings.HasPrefix(task.AuthToken, "mat_") || strings.ContainsAny(task.TaskGatewayDaemonToken+task.AuthToken, "\r\n\x00") {
+	if client.validateTaskGatewayClaim(task, spec.Binding) != nil || len(spec.Inputs) != 0 {
 		return nil, Task{}, taskgateway.ErrUnavailable
 	}
-	runtimeID, err := uuid.Parse(task.RuntimeID)
-	if err != nil || runtimeID == uuid.Nil || runtimeID.String() != task.RuntimeID {
-		return nil, Task{}, taskgateway.ErrUnavailable
-	}
-	if _, err := time.Parse(time.RFC3339Nano, task.DispatchedAt); err != nil {
-		return nil, Task{}, taskgateway.ErrUnavailable
-	}
-	if len(spec.Inputs) != 0 {
-		return nil, Task{}, taskgateway.ErrUnavailable
-	}
-	endpoint, err := url.Parse(client.baseURL)
-	if err != nil || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.ForceQuery || endpoint.Fragment != "" || endpoint.Opaque != "" || endpoint.Path != "" && endpoint.Path != "/" {
-		return nil, Task{}, taskgateway.ErrUnavailable
-	}
-	address := net.ParseIP(endpoint.Hostname())
-	if endpoint.Scheme != "https" && (endpoint.Scheme != "http" || address == nil || !address.IsLoopback()) {
-		return nil, Task{}, taskgateway.ErrUnavailable
-	}
-	task, err = client.resolveTaskGatewaySkills(ctx, task, spec.Provider)
+	task, err := client.resolveTaskGatewaySkills(ctx, task, spec.Provider)
 	if err != nil {
 		return nil, Task{}, taskgateway.ErrUnavailable
 	}
@@ -66,6 +48,28 @@ func (client *Client) prepareTaskGateway(ctx context.Context, task Task, spec cr
 		return taskgateway.DecodeHandoff(contents, spec.Binding)
 	})
 	return boundary, task, err
+}
+
+func (client *Client) validateTaskGatewayClaim(task Task, expected credentialexec.Binding) error {
+	if client == nil || !task.RequireCredentialIsolation || task.CredentialExecutionBinding == nil || *task.CredentialExecutionBinding != expected || expected.Validate() != nil || task.ID != expected.TaskID || task.WorkspaceID != expected.WorkspaceID || !strings.HasPrefix(task.TaskGatewayDaemonToken, "mdt_") || !strings.HasPrefix(task.AuthToken, "mat_") || strings.ContainsAny(task.TaskGatewayDaemonToken+task.AuthToken, "\r\n\x00") {
+		return taskgateway.ErrUnavailable
+	}
+	runtimeID, err := uuid.Parse(task.RuntimeID)
+	if err != nil || runtimeID == uuid.Nil || runtimeID.String() != task.RuntimeID {
+		return taskgateway.ErrUnavailable
+	}
+	if _, err := time.Parse(time.RFC3339Nano, task.DispatchedAt); err != nil {
+		return taskgateway.ErrUnavailable
+	}
+	endpoint, err := url.Parse(client.baseURL)
+	if err != nil || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.ForceQuery || endpoint.Fragment != "" || endpoint.Opaque != "" || endpoint.Path != "" && endpoint.Path != "/" {
+		return taskgateway.ErrUnavailable
+	}
+	address := net.ParseIP(endpoint.Hostname())
+	if endpoint.Scheme != "https" && (endpoint.Scheme != "http" || address == nil || !address.IsLoopback()) {
+		return taskgateway.ErrUnavailable
+	}
+	return nil
 }
 
 func (client *Client) taskGatewayRequest(ctx context.Context, task Task, route string, body []byte, limit int64) ([]byte, error) {

@@ -137,15 +137,15 @@ staging both precede every grant request. The owning-daemon skill request has no
 Staging does not copy host files, shared credentials/configuration, caches, sockets or repositories.
 Inputs have canonical relative paths, no file/directory collision, at most 128 files, at most 1 MiB
 per file and at most 8 MiB total. Same-task exact input is reused without resetting native state;
-changed bytes or unsafe/private-path violations refuse before the handoff. No overwrite/reset exists.
-This is a claim-pinned input source slice, not complete tooling or a trusted refresh mechanism.
+changed bytes or unsafe/private-path violations refuse before the handoff. Preparation never overwrites or resets state.
+This is a claim-pinned input source slice, not complete tooling.
 Every opted-in native launch/resume additionally verifies the exact input tree and mounts its root read-only
 through an anchored descriptor. Each declared file retains its own verified read-only descriptor mount.
 The child cannot overwrite or unlink declared inputs, rename their ancestors or add input entries.
 Other task work and native home stay writable, preserving same-task state. Missing, changed, unsafe or
 unexpected entries refuse without repair or a provider call, including during same-task preparation.
 Owned ELF fixtures exercise both provider adapters' launch/resume and unchanged writable task-state paths.
-These fixtures do not qualify installed native transports, authenticated refresh or full gateway acceptance.
+These fixtures do not qualify installed native transports or full gateway acceptance.
 The existing skill endpoint preserves unmanaged preparing-task access. It additionally permits running-task
 resolution only through the owning-daemon token with the exact frozen gateway policy and capability.
 The server rechecks current task/runtime/agent ownership and a finite dispatch timestamp before reading skills.
@@ -195,3 +195,16 @@ Until that complete trusted handoff exists, the daemon's current early refusal m
 Native transport and full gateway/worker acceptance are NOT-RUN.
 Independent different-lab signing and current-pair OCR/OER-1 remain required before this issue becomes review-ready.
 CHE-1279's signing does not sign this integration, and CHE-1253's review is not a runner signature.
+
+The prepared helper now supports explicit authenticated instruction/workspace-context refresh, not automatic
+daemon refresh. `POST /api/daemon/runtimes/{runtimeId}/tasks/{taskId}/gateway-inputs` uses the same locked
+runtime/task/agent/task-token authorization as grant delivery and rechecks authorization before commit.
+The response carries the canonical binding, runtime, agent and dispatch timestamp with bounded UTF-8 text.
+Unsupported custom/runtime/MCP configuration refuses. No operator, provisioning or provider call occurs.
+The daemon re-resolves only the original skill pins, verifies the existing private input tree and atomically
+exchanges the same filenames from private staging. Run/refresh concurrency, closed/stopped boundaries,
+malformed responses and changed/missing inputs refuse. Close cancels and joins an active refresh.
+Gateway identity, task-native state, mutable work and usage are preserved; no reset or reconciliation occurs.
+Owned row/HTTP/ELF fixtures cover this source path. The narrower supported refresh contract and remaining
+automatic-refresh, task-input/tooling and native-compatibility limits are in `task-credential-execution.md`.
+Early opt-in refusal and the unadvertised `task-gateway-v1` capability remain unchanged.

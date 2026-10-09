@@ -46,6 +46,10 @@ func (boundary *Boundary) accessInputs(ctx context.Context, inputs map[string][]
 		return ErrUnavailable
 	}
 	defer root.Close()
+	return accessInputsAt(ctx, root, inputs, create)
+}
+
+func accessInputsAt(ctx context.Context, root *os.File, inputs map[string][]byte, create bool) error {
 	names := make([]string, 0, len(inputs))
 	for name := range inputs {
 		names = append(names, name)

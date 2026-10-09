@@ -33,8 +33,8 @@ The namespace control succeeds before staging; staging succeeds before every gra
 Anchored `openat2` operations refuse symlinks, non-regular files, multiple links and non-private paths.
 Canonical paths, directory/file collisions and finite file/count/aggregate limits are validated.
 Same-task preparation checks exact existing bytes rather than overwriting changed input or native state.
-Changed/unsafe input refuses before credential delivery. Authorized input updates need a separately
-implemented trusted refresh path; no automatic replacement exists.
+Changed/unsafe input refuses before credential delivery. Authorized instruction/context updates use the
+explicit authenticated refresh path below; same-task preparation never imports changed disk contents.
 Owned fixtures cover these refusals and both production adapters' launch/resume visibility.
 
 Opted-in native wrapping reopens and verifies each declared input through the anchored workdir.
@@ -43,7 +43,7 @@ Changed bytes, unsafe paths or modes and missing input refuse even on direct bou
 Native launch/resume cannot overwrite or unlink these declared files; task work and native home remain writable.
 Descriptor pinning survives replacement of the host pathname after verification, without a path-based reread.
 Only declared inputs receive these mounts. Namespace probes and input-free wrapping retain their original behavior.
-This adds immutable native input visibility, not an authenticated refresh mechanism or complete task tooling.
+This adds immutable native input visibility, not complete task tooling.
 
 ### Claim-pinned server skill resolution
 
@@ -66,8 +66,33 @@ Running-task resolution additionally requires the owning-daemon token and the ex
 The current runtime owner, workspace, task, agent/runtime association, private-agent owner, builtin profile,
 finite dispatch timestamp and `task-gateway-v1` capability must agree. PAT/JWT, foreign daemons,
 unmanaged running tasks, changed bindings and terminal tasks refuse. No operator or provider call occurs.
-This is pinned input source support, not authenticated input refresh, native skill registration or complete tooling.
+This is pinned input source support, not native skill registration or complete tooling.
 Database/native/full gateway acceptance remains NOT-RUN. The daemon's early opt-in refusal remains.
+
+### Explicit authenticated instruction/context refresh
+
+Prepared executions retain a copied claim, canonical binding, fixed Multica origin and original skill pins.
+`Refresh` accepts no caller-supplied text, filenames, credentials, configuration or replacement claim.
+The owning-daemon `gateway-inputs` endpoint additionally requires the original task token and dispatch
+timestamp. It locks runtime, task, agent and token, reads current agent instructions/workspace context,
+rechecks authorization and commits before delivery. Unsupported nonempty custom/runtime/MCP configuration
+refuses. Refresh does not call the operator, provision a grant, contact a provider or alter task counters.
+Responses use `Cache-Control: no-store`, canonical binding/runtime/agent identities, UTF-8 text bounded
+to 1 MiB per field and a 3 MiB frame. Unknown, duplicate, trailing, missing/null text and malformed fields refuse.
+
+The daemon re-resolves the original skill pins and validates the complete replacement snapshot.
+`Boundary.RefreshInputs` requires the same binding and filenames, an unchanged private input tree and
+an idle, open, unstopped broker. Private staging and a second verification precede atomic directory exchange.
+Staging is outside native home/workdir and is removed synchronously. Native state, mutable work,
+gateway fingerprint and observed usage stay unchanged. Tampered/missing input, new filenames, changed
+skill pins, cancellation and active/stopped execution refuse without repair or credential delivery.
+Run and refresh share one active-operation guard; close cancels and joins either operation.
+The refreshed native prompt uses the same authenticated snapshot as the staged files.
+
+Owned row/HTTP/ELF fixtures cover authenticated refresh, both adapters' launch/resume, cancellation,
+concurrency, close, state/usage preservation and hard-429 refusal. These are not PostgreSQL transactions,
+installed native compatibility or full acceptance. Automatic refresh, expanded task inputs, native skill
+registration, credential-exclusive tooling and production `runTask` integration remain unfinished.
 
 ## Evidence and explicit limits
 
@@ -201,7 +226,7 @@ The caller still supplies daemon-owned pinned executable/helper paths and the pr
 `Boundary.VerifyInputs` rechecks the staged bytes and anchored private regular files before each native
 launch. Verification is read-only: changed, missing, linked, public or otherwise unsafe inputs refuse.
 It never recreates missing files or directories, overwrites input, refreshes a manifest or resets state.
-Only one run may use a prepared execution at a time. Close cancels and joins its active run before
+Only one run or refresh may use a prepared execution at a time. Close cancels and joins its active operation before
 closing the broker; repeated close cannot launch another native process. Gateway stops prevent another
 run or grant. Results retain the adapters' separately observed gateway usage and native session identity.
 
@@ -209,7 +234,7 @@ Owned ELF/local-HTTP fixtures exercise both adapters' prepared launch/resume, in
 refusal, single-run/close lifecycle and hard-429/no-new-launch/no-new-grant behavior. They are not installed
 native CLI compatibility, PostgreSQL transactions, durable accounting or full gateway acceptance.
 This helper remains outside `runTask`. Early opt-in refusal and the unadvertised capability remain.
-Authenticated input refresh, credential-exclusive tooling, complete native
+Automatic input refresh, complete authorized task inputs, credential-exclusive tooling, complete native
 transport/protocol support and gateway/worker settlement integration remain unfinished.
 The daemon's early refusal and unsupported protocol refusals remain. No launch capability is enabled.
 

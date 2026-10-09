@@ -17,6 +17,9 @@ func (*Boundary) Probe(context.Context) error {
 func (*Boundary) VerifyInputs(context.Context) error {
 	return fmt.Errorf("%w: only Linux is supported", ErrUnavailable)
 }
+func (*Boundary) RefreshInputs(context.Context, Binding, map[string][]byte) error {
+	return fmt.Errorf("%w: only Linux is supported", ErrUnavailable)
+}
 func (*Boundary) Wrap(*exec.Cmd) (func(), error) {
 	return nil, fmt.Errorf("%w: only Linux is supported", ErrUnavailable)
 }

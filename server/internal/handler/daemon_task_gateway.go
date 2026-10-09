@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/middleware"
@@ -37,12 +38,38 @@ func (handler *Handler) authorizeTaskGatewayGrant(ctx context.Context, task db.A
 	return binding, nil
 }
 
+type taskGatewayClaim struct {
+	queries *db.Queries
+	runtime db.AgentRuntime
+	task    db.AgentTaskQueue
+	agent   db.Agent
+	binding credentialexec.Binding
+}
+
 func (handler *Handler) DeliverTaskGatewayGrant(writer http.ResponseWriter, request *http.Request) {
+	handler.deliverTaskGatewayClaim(writer, request, func(ctx context.Context, claim taskGatewayClaim) ([]byte, error) {
+		grant, err := handler.TaskGateway.Provision(ctx, uuidToString(claim.runtime.ID), claim.runtime.Provider, claim.binding)
+		if err != nil {
+			return nil, taskgateway.ErrUnavailable
+		}
+		return taskgateway.EncodeHandoff(grant)
+	})
+}
+
+func (handler *Handler) deliverTaskGatewayClaim(writer http.ResponseWriter, request *http.Request, build func(context.Context, taskGatewayClaim) ([]byte, error)) {
 	writer.Header().Set("Cache-Control", "no-store")
 	refuse := func() { writeError(writer, http.StatusServiceUnavailable, "trusted task gateway unavailable") }
 	if middleware.DaemonAuthPathFromContext(request.Context()) != middleware.DaemonAuthPathDaemonToken || handler.TaskGateway == nil || handler.TxStarter == nil {
 		refuse()
 		return
+	}
+	for _, name := range []string{"runtimeId", "taskId"} {
+		value := chi.URLParam(request, name)
+		identity, err := uuid.Parse(value)
+		if err != nil || identity == uuid.Nil || identity.String() != value {
+			refuse()
+			return
+		}
 	}
 	var payload struct {
 		TaskToken    string `json:"task_token"`
@@ -97,7 +124,7 @@ func (handler *Handler) DeliverTaskGatewayGrant(writer http.ResponseWriter, requ
 		refuse()
 		return
 	}
-	grant, err := handler.TaskGateway.Provision(ctx, uuidToString(runtime.ID), runtime.Provider, binding)
+	contents, err := build(ctx, taskGatewayClaim{queries: queries, runtime: runtime, task: task, agent: agent, binding: binding})
 	if err != nil {
 		refuse()
 		return
@@ -106,8 +133,7 @@ func (handler *Handler) DeliverTaskGatewayGrant(writer http.ResponseWriter, requ
 		refuse()
 		return
 	}
-	contents, err := taskgateway.EncodeHandoff(grant)
-	if err != nil || ctx.Err() != nil {
+	if ctx.Err() != nil {
 		refuse()
 		return
 	}

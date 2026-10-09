@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 
@@ -12,6 +13,9 @@ import (
 )
 
 type taskGatewayExecution struct {
+	client    *Client
+	task      Task
+	provider  string
 	boundary  *credentialexec.Boundary
 	backend   agent.Backend
 	prompt    string
@@ -69,29 +73,50 @@ func (client *Client) prepareTaskGatewayExecution(ctx context.Context, task Task
 	allowed.Cwd, allowed.Model = boundary.WorkDir(), task.Agent.Model
 	allowed.ThinkingLevel, allowed.ServiceTier = task.Agent.ThinkingLevel, task.Agent.ServiceTier
 	allowed.ResumeExpected = allowed.ResumeSessionID != ""
-	return &taskGatewayExecution{boundary: boundary, backend: backend, prompt: BuildPrompt(resolved, spec.Provider), options: allowed}, nil
+	claimed := task
+	claimedAgent := *task.Agent
+	claimed.Agent = &claimedAgent
+	claimedBinding := *task.CredentialExecutionBinding
+	claimed.CredentialExecutionBinding = &claimedBinding
+	claimed.Agent.SkillRefs = slices.Clone(task.Agent.SkillRefs)
+	for index := range claimed.Agent.SkillRefs {
+		claimed.Agent.SkillRefs[index].Files = slices.Clone(task.Agent.SkillRefs[index].Files)
+	}
+	claimed.Agent.Skills = slices.Clone(task.Agent.Skills)
+	for index := range claimed.Agent.Skills {
+		claimed.Agent.Skills[index].Files = slices.Clone(task.Agent.Skills[index].Files)
+	}
+	return &taskGatewayExecution{client: NewClient(client.baseURL), task: claimed, provider: spec.Provider, boundary: boundary, backend: backend, prompt: BuildPrompt(resolved, spec.Provider), options: allowed}, nil
 }
 
-func (execution *taskGatewayExecution) Run(ctx context.Context, observe func(agent.Message)) (agent.Result, error) {
-	if execution == nil {
-		return agent.Result{}, taskgateway.ErrUnavailable
+func (execution *taskGatewayExecution) begin(ctx context.Context) (context.Context, func(), error) {
+	if execution == nil || ctx.Err() != nil {
+		return nil, nil, taskgateway.ErrUnavailable
 	}
 	execution.mutex.Lock()
 	if execution.closed || execution.cancel != nil {
 		execution.mutex.Unlock()
-		return agent.Result{}, taskgateway.ErrUnavailable
+		return nil, nil, taskgateway.ErrUnavailable
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	execution.cancel, execution.done = cancel, done
 	execution.mutex.Unlock()
-	defer func() {
+	return runCtx, func() {
 		cancel()
 		execution.mutex.Lock()
 		execution.cancel, execution.done = nil, nil
 		close(done)
 		execution.mutex.Unlock()
-	}()
+	}, nil
+}
+
+func (execution *taskGatewayExecution) Run(ctx context.Context, observe func(agent.Message)) (agent.Result, error) {
+	runCtx, finish, err := execution.begin(ctx)
+	if err != nil {
+		return agent.Result{}, err
+	}
+	defer finish()
 	if execution.boundary.VerifyInputs(runCtx) != nil {
 		return agent.Result{}, taskgateway.ErrUnavailable
 	}
