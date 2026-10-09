@@ -2025,9 +2025,8 @@ RETURNING id, coalesced_comment_ids;
 -- Re-pointing the trigger moves the task into the new comment's thread; the
 -- caller tries this only after the same-thread paths found nothing pending, so
 -- the per-thread unique index is free there. A race that fills it surfaces as a
--- unique violation and the caller falls back to the per-thread path. The caller
--- holds the (issue, agent) enqueue lock, so concurrent arrivals cannot both miss
--- the fold and queue two runs (SOL-185-2).
+-- unique violation and the caller falls back to the per-thread path. Arrivals
+-- that miss each other here are collapsed after insert (LockQueuedSiblingTask).
 -- The squad role must match: a leader-role comment never folds into the same
 -- agent's worker task (or the reverse), since the claim briefing differs.
 UPDATE agent_task_queue
@@ -2067,6 +2066,59 @@ WHERE id = (
 -- per-thread path (OCR-185-1).
   AND status = 'queued'
 RETURNING id, coalesced_comment_ids;
+
+-- name: LockQueuedSiblingTask :one
+-- CHE-1418: two comments in different threads can each queue a run for the
+-- same agent when neither sees the other's uncommitted task. After a fresh
+-- enqueue, the caller (holding the (issue, agent) enqueue lock) looks for an
+-- older queued sibling with the same squad role and reviewed head, and locks
+-- it so a claim cannot take it mid-collapse. A sibling claimed first is
+-- re-checked by FOR UPDATE and no longer matches.
+SELECT t.id FROM agent_task_queue t
+JOIN agent_task_queue m ON m.id = @task_id
+WHERE t.issue_id = m.issue_id AND t.agent_id = m.agent_id AND t.id <> m.id
+  AND t.status = 'queued' AND t.context->>'wakeup_id' IS NULL
+  AND t.is_leader_task = m.is_leader_task
+  AND t.squad_id IS NOT DISTINCT FROM m.squad_id
+  AND COALESCE(t.context->>'head_sha', '') = COALESCE(m.context->>'head_sha', '')
+ORDER BY t.created_at, t.id
+LIMIT 1
+FOR UPDATE OF t;
+
+-- name: CancelQueuedDuplicateTask :one
+-- Cancels the caller's own fresh task once a queued sibling will carry its
+-- comments. Only a still-queued task: a claimed one keeps running.
+UPDATE agent_task_queue
+SET status = 'cancelled',
+    completed_at = now(),
+    cancelled_by_type = 'system',
+    cancelled_by_name = 'folded into an earlier queued run'
+WHERE id = @task_id AND status = 'queued'
+RETURNING *;
+
+-- name: FoldTaskIntoQueuedSibling :one
+-- Moves the cancelled duplicate's trigger, covered comments and attribution
+-- onto the queued sibling, the same re-attribution a comment fold applies.
+UPDATE agent_task_queue t
+SET coalesced_comment_ids = (
+        SELECT COALESCE(array_agg(DISTINCT e), '{}')
+        FROM unnest(t.coalesced_comment_ids || ARRAY[t.trigger_comment_id] || src.coalesced_comment_ids) AS e
+        WHERE e IS NOT NULL AND e IS DISTINCT FROM src.trigger_comment_id
+    ),
+    trigger_comment_id = src.trigger_comment_id,
+    trigger_summary = src.trigger_summary,
+    originator_user_id = src.originator_user_id,
+    accountable_user_id = src.accountable_user_id,
+    originator_source = src.originator_source,
+    delegated_from_task_id = src.delegated_from_task_id,
+    rule_version_id = src.rule_version_id,
+    trigger_evidence_kind = src.trigger_evidence_kind,
+    trigger_evidence_ref_id = src.trigger_evidence_ref_id,
+    runtime_mcp_overlay = src.runtime_mcp_overlay,
+    runtime_connected_apps = src.runtime_connected_apps
+FROM agent_task_queue src
+WHERE t.id = @sibling_id AND t.status = 'queued' AND src.id = @source_id
+RETURNING t.id;
 
 -- name: RegisterPlannedCommentForActiveTask :one
 -- #5914: durably register a comment that lost an enqueue race as a PLANNED

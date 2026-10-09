@@ -2189,38 +2189,64 @@ func (h *Handler) enqueueCommentAgentTriggers(ctx context.Context, issue db.Issu
 		results[uuidToString(trigger.Agent.ID)] = commentEnqueueResult{status: status, reason: reason, execSquadID: execSquadID}
 	}
 	for _, trigger := range triggers {
-		unlock := h.lockCommentEnqueue(ctx, issue.ID, trigger.Agent.ID)
 		status, reason := h.resolveCommentTriggerEnqueue(ctx, issue, trigger, triggerCommentID)
-		unlock()
 		record(trigger, status, reason)
 	}
 	return results
 }
 
-// lockCommentEnqueue serializes the fold-or-create decision for one (issue,
-// agent). Without it two arrivals in different threads can both miss the
-// issue-wide fold and each queue a run, because the unique index is per thread
-// (SOL-185-2). The lock is transaction-scoped and the returned func ends that
-// transaction. If the lock cannot be taken, the caller proceeds unserialized,
-// as it did before CHE-1418.
-func (h *Handler) lockCommentEnqueue(ctx context.Context, issueID, agentID pgtype.UUID) func() {
-	if h.TxStarter == nil {
-		return func() {}
+// collapseIntoQueuedSibling cancels a freshly queued task when another queued
+// task of the same agent, squad role and reviewed head exists on the issue, and
+// moves its comments and attribution onto that sibling. Two comments in
+// different threads can each queue a run when neither sees the other's
+// uncommitted insert (SOL-185-2); the later collapse always sees the earlier
+// commit, so one queued run remains. The (issue, agent) advisory lock
+// serializes collapses, and every statement runs on the lock's own
+// transaction, so the lock holder never waits for a second pool connection
+// (OCR-185-2). Any failure keeps the fresh task: a duplicate run, never a lost
+// comment.
+func (h *Handler) collapseIntoQueuedSibling(ctx context.Context, issue db.Issue, task db.AgentTaskQueue) bool {
+	if h.TxStarter == nil || !task.ID.Valid {
+		return false
 	}
 	tx, err := h.TxStarter.Begin(ctx)
-	if err == nil {
-		_, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-			"comment-enqueue:"+uuidToString(issueID)+":"+uuidToString(agentID))
-	}
 	if err != nil {
-		slog.Warn("comment enqueue lock unavailable; enqueueing unserialized",
-			"issue_id", uuidToString(issueID), "agent_id", uuidToString(agentID), "error", err)
-		if tx != nil {
-			_ = tx.Rollback(context.WithoutCancel(ctx))
-		}
-		return func() {}
+		slog.Warn("collapse queued duplicate: begin failed", "task_id", uuidToString(task.ID), "error", err)
+		return false
 	}
-	return func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	qtx := h.Queries.WithTx(tx)
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+		"comment-enqueue:"+uuidToString(issue.ID)+":"+uuidToString(task.AgentID)); err != nil {
+		slog.Warn("collapse queued duplicate: lock failed", "task_id", uuidToString(task.ID), "error", err)
+		return false
+	}
+	siblingID, err := qtx.LockQueuedSiblingTask(ctx, task.ID)
+	if err != nil {
+		if !isNotFound(err) {
+			slog.Warn("collapse queued duplicate: sibling lookup failed", "task_id", uuidToString(task.ID), "error", err)
+		}
+		return false
+	}
+	cancelled, err := qtx.CancelQueuedDuplicateTask(ctx, task.ID)
+	if err != nil {
+		if !isNotFound(err) {
+			slog.Warn("collapse queued duplicate: cancel failed", "task_id", uuidToString(task.ID), "error", err)
+		}
+		return false
+	}
+	if _, err := qtx.FoldTaskIntoQueuedSibling(ctx, db.FoldTaskIntoQueuedSiblingParams{SiblingID: siblingID, SourceID: task.ID}); err != nil {
+		slog.Warn("collapse queued duplicate: fold failed", "task_id", uuidToString(task.ID), "error", err)
+		return false
+	}
+	if err := tx.Commit(ctx); err != nil {
+		slog.Warn("collapse queued duplicate: commit failed", "task_id", uuidToString(task.ID), "error", err)
+		return false
+	}
+	h.TaskService.BroadcastCancelledTasks(ctx, uuidToString(issue.WorkspaceID), []db.AgentTaskQueue{cancelled})
+	slog.Info("collapsed queued duplicate into sibling",
+		"task_id", uuidToString(task.ID), "sibling_id", uuidToString(siblingID), "issue_id", uuidToString(issue.ID))
+	return true
 }
 
 // resolveCommentTriggerEnqueue resolves ONE trigger into its final dispatch
@@ -2351,7 +2377,8 @@ func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Iss
 		if h.foldCommentIntoQueuedIssueTask(ctx, issue, trigger, triggerCommentID, getHeadSha()) {
 			return DispatchCoalesced, ReasonCoalesced
 		}
-		if err := h.enqueueSingleCommentTrigger(ctx, issue, triggerCommentID, trigger); err != nil {
+		task, err := h.enqueueSingleCommentTrigger(ctx, issue, triggerCommentID, trigger)
+		if err != nil {
 			// Lost the enqueue race: a sibling task for this (issue, agent) now
 			// exists. Re-resolve as pending so the next attempt folds this
 			// comment into that sibling (queued) or durably registers it
@@ -2362,6 +2389,9 @@ func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Iss
 				continue
 			}
 			return DispatchBlocked, commentEnqueueFailureReason(err)
+		}
+		if h.collapseIntoQueuedSibling(ctx, issue, task) {
+			return DispatchCoalesced, ReasonCoalesced
 		}
 		return DispatchQueued, ReasonQueued
 	}
@@ -2756,7 +2786,7 @@ func (h *Handler) propagateUncoveredCommentObligation(ctx context.Context, issue
 		if h.mergeCommentIntoPendingTask(ctx, issue, trigger, commentID, headSha) == commentMergeSucceeded {
 			return true
 		}
-		err = h.enqueueSingleCommentTrigger(ctx, issue, commentID, trigger)
+		_, err = h.enqueueSingleCommentTrigger(ctx, issue, commentID, trigger)
 		if err == nil {
 			return true
 		}
@@ -2789,20 +2819,22 @@ func logCommentEnqueueFailure(msg string, err error, attrs ...any) {
 // enqueueSingleCommentTrigger enqueues one resolved trigger and returns the
 // enqueue error (nil on success) so the caller can surface a
 // trigger_outcome (MUL-4525 §2).
-func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, trigger commentAgentTrigger) error {
+func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, trigger commentAgentTrigger) (db.AgentTaskQueue, error) {
+	var task db.AgentTaskQueue
+	var err error
 	switch trigger.Source {
 	case commentTriggerSourceIssueAssignee:
 		if trigger.Squad != nil {
-			if _, err := h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, service.OriginDerived); err != nil {
+			if task, err = h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, service.OriginDerived); err != nil {
 				logCommentEnqueueFailure("enqueue squad leader task failed", err,
 					"issue_id", uuidToString(issue.ID),
 					"squad_id", uuidToString(trigger.Squad.ID),
 					"leader_id", uuidToString(trigger.Agent.ID))
-				return err
+				return task, err
 			}
-			return nil
+			return task, nil
 		}
-		if _, err := h.TaskService.EnqueueTaskForIssue(ctx, issue, triggerCommentID); err != nil {
+		if task, err = h.TaskService.EnqueueTaskForIssue(ctx, issue, triggerCommentID); err != nil {
 			// EnqueueTaskForIssue now returns ErrDuplicatePendingTask on the
 			// benign duplicate-pending-task race, so use the shared helper that
 			// downgrades that case to debug — matching the squad-leader and
@@ -2810,43 +2842,42 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 			// instead of surfacing a warning (#5914).
 			logCommentEnqueueFailure("enqueue agent task on comment failed", err,
 				"issue_id", uuidToString(issue.ID))
-			return err
+			return task, err
 		}
 	case commentTriggerSourceMentionSquadLeader:
-		if _, err := h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, service.OriginNamed); err != nil {
+		if task, err = h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, service.OriginNamed); err != nil {
 			logCommentEnqueueFailure("enqueue squad leader mention task failed", err,
 				"issue_id", uuidToString(issue.ID),
 				"agent_id", uuidToString(trigger.Agent.ID))
-			return err
+			return task, err
 		}
 	case commentTriggerSourceMentionAgent:
-		if _, err := h.TaskService.EnqueueTaskForMention(ctx, issue, trigger.Agent.ID, triggerCommentID, service.OriginNamed); err != nil {
+		if task, err = h.TaskService.EnqueueTaskForMention(ctx, issue, trigger.Agent.ID, triggerCommentID, service.OriginNamed); err != nil {
 			logCommentEnqueueFailure("enqueue mention agent task failed", err,
 				"issue_id", uuidToString(issue.ID),
 				"agent_id", uuidToString(trigger.Agent.ID))
-			return err
+			return task, err
 		}
 	case commentTriggerSourceThreadParent, commentTriggerSourceConversation:
-		var err error
 		// Squad is set on these two sources only when the routing already
 		// proved a leader role to continue: the thread root's prior task for
 		// the conversation path, the replied-to comment's own authoring task
 		// for the thread-parent path. Gating on the source as well would keep
 		// the thread-parent path demoted for no reason (MUL-7006).
 		if trigger.Squad != nil {
-			_, err = h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, service.OriginNamed)
+			task, err = h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, service.OriginNamed)
 		} else {
-			_, err = h.TaskService.EnqueueTaskForThreadParent(ctx, issue, trigger.Agent.ID, triggerCommentID)
+			task, err = h.TaskService.EnqueueTaskForThreadParent(ctx, issue, trigger.Agent.ID, triggerCommentID)
 		}
 		if err != nil {
 			logCommentEnqueueFailure("enqueue routed comment agent task failed", err,
 				"issue_id", uuidToString(issue.ID),
 				"agent_id", uuidToString(trigger.Agent.ID),
 				"source", trigger.Source)
-			return err
+			return task, err
 		}
 	}
-	return nil
+	return task, nil
 }
 
 // computeCommentAgentTriggers resolves which agents a comment triggers (deduped
