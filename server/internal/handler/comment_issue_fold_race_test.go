@@ -6,7 +6,13 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/multica-ai/multica/server/internal/analytics"
+	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/realtime"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // waitForLockWait blocks until a backend of this test database waits on a
@@ -126,5 +132,51 @@ func TestConcurrentNewThreadArrivalsQueueOneRun_CHE1418(t *testing.T) {
 	}
 	if got[DispatchQueued] != 1 || got[DispatchCoalesced] != 1 {
 		t.Fatalf("outcomes %v, want one queued and one coalesced", got)
+	}
+}
+
+// OCR-185-2: the per-agent serialization must not hold pool connections that
+// the lock owner itself needs. With a 2-connection pool, a lock owner plus one
+// waiter use every connection; all arrivals must still finish.
+func TestConcurrentArrivalsFinishOnSaturatedPool_CHE1418(t *testing.T) {
+	fx := newIssueFoldFixture(t, "fold pool saturation")
+	cfg := testPool.Config().Copy()
+	cfg.MaxConns = 2
+	cfg.MinConns = 0
+	small, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer small.Close()
+	hub := realtime.NewHub()
+	go hub.Run()
+	h := New(db.New(small), small, hub, events.New(), service.NewEmailService(), nil, nil, analytics.NoopClient{}, Config{})
+
+	const arrivals = 6
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	results := make(chan DispatchStatus, arrivals)
+	for range arrivals {
+		root := dbfx.Comment(t, fx.issueID, "new thread")
+		go func() {
+			out := h.enqueueCommentAgentTriggers(ctx, fx.issue, parseUUID(root),
+				[]commentAgentTrigger{{Agent: fx.agent, Source: commentTriggerSourceMentionAgent}})
+			results <- out[fx.agentID].status
+		}()
+	}
+	got := map[DispatchStatus]int{}
+	for i := range arrivals {
+		select {
+		case status := <-results:
+			got[status]++
+		case <-ctx.Done():
+			t.Fatalf("pool saturated: %d of %d arrivals finished (%v)", i, arrivals, got)
+		}
+	}
+	if got[DispatchQueued] != 1 || got[DispatchCoalesced] != arrivals-1 {
+		t.Fatalf("outcomes %v, want 1 queued and %d coalesced", got, arrivals-1)
+	}
+	if queued := fx.tasks(t, "queued"); len(queued) != 1 {
+		t.Fatalf("got %d queued runs, want 1", len(queued))
 	}
 }
