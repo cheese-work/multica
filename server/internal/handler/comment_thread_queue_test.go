@@ -38,8 +38,12 @@ func TestCommentThreadQueuesMergeAndExecuteIndependently(t *testing.T) {
 		}
 	}
 	enqueue(rootA, false, DispatchQueued)
-	// Even a stale pending hint from another thread must not merge or defer B.
-	enqueue(rootB, true, DispatchQueued)
+	// A plain new thread folds into A's queued run (CHE-1418, covered by
+	// comment_issue_fold_test.go). B models a run that cannot fold: the same
+	// agent in its squad-leader role keeps its own per-thread queue slot.
+	squadID := dbfx.Squad(t, "thread queue squad", agentID)
+	t.Cleanup(func() { dbfx.Exec(t, "DELETE FROM squad WHERE id = $1", squadID) })
+	dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "issue_id": issueID, "trigger_comment_id": rootB, "is_leader_task": true, "squad_id": squadID})
 	enqueue(replyA, true, DispatchCoalesced)
 	enqueue(nestedA, true, DispatchCoalesced)
 	tasks, err := testHandler.Queries.ListTasksByIssue(ctx, parseUUID(issueID))

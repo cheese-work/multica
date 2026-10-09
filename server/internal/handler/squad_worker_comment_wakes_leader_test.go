@@ -251,7 +251,7 @@ func TestCreateComment_WorkerAgentCommentWakesSquadLeader_MUL4015(t *testing.T) 
 // production — the leader is going to run once and will observe the worker's
 // comment in that run. Regression coverage so nobody drops the dedup and
 // starts stacking duplicate leader runs.
-func TestCreateComment_WorkerAgentCommentQueuesSeparatelyFromLeaderAssignment(t *testing.T) {
+func TestCreateComment_WorkerAgentCommentFoldsIntoQueuedLeaderAssignment(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -285,9 +285,9 @@ func TestCreateComment_WorkerAgentCommentQueuesSeparatelyFromLeaderAssignment(t 
 		t.Fatalf("load leader runtime: %v", err)
 	}
 	if _, err := testPool.Exec(ctx, `
-		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, is_leader_task, originator_user_id, accountable_user_id)
-		VALUES ($1, $2, $3, 'queued', TRUE, $4, $4)
-	`, fx.LeaderID, leaderRuntimeID, issueID, testUserID); err != nil {
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, is_leader_task, squad_id, originator_user_id, accountable_user_id)
+		VALUES ($1, $2, $3, 'queued', TRUE, $5, $4, $4)
+	`, fx.LeaderID, leaderRuntimeID, issueID, testUserID, fx.SquadID); err != nil {
 		t.Fatalf("seed queued leader task: %v", err)
 	}
 
@@ -304,7 +304,8 @@ func TestCreateComment_WorkerAgentCommentQueuesSeparatelyFromLeaderAssignment(t 
 		t.Fatalf("CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// The new comment thread queues independently of the assignment run.
+	// CHE-1418: the worker's result folds into the leader's queued run instead
+	// of queueing a second leader run (the CHE-982 collection-comment storm).
 	var leaderTasks int
 	if err := testPool.QueryRow(ctx, `
 		SELECT count(*) FROM agent_task_queue
@@ -312,8 +313,8 @@ func TestCreateComment_WorkerAgentCommentQueuesSeparatelyFromLeaderAssignment(t 
 	`, issueID, fx.LeaderID).Scan(&leaderTasks); err != nil {
 		t.Fatalf("count leader tasks: %v", err)
 	}
-	if leaderTasks != 2 {
-		t.Fatalf("expected separate assignment and comment tasks, got %d", leaderTasks)
+	if leaderTasks != 1 {
+		t.Fatalf("expected one leader run carrying the worker comment, got %d", leaderTasks)
 	}
 }
 
