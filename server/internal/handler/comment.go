@@ -2189,10 +2189,38 @@ func (h *Handler) enqueueCommentAgentTriggers(ctx context.Context, issue db.Issu
 		results[uuidToString(trigger.Agent.ID)] = commentEnqueueResult{status: status, reason: reason, execSquadID: execSquadID}
 	}
 	for _, trigger := range triggers {
+		unlock := h.lockCommentEnqueue(ctx, issue.ID, trigger.Agent.ID)
 		status, reason := h.resolveCommentTriggerEnqueue(ctx, issue, trigger, triggerCommentID)
+		unlock()
 		record(trigger, status, reason)
 	}
 	return results
+}
+
+// lockCommentEnqueue serializes the fold-or-create decision for one (issue,
+// agent). Without it two arrivals in different threads can both miss the
+// issue-wide fold and each queue a run, because the unique index is per thread
+// (SOL-185-2). The lock is transaction-scoped and the returned func ends that
+// transaction. If the lock cannot be taken, the caller proceeds unserialized,
+// as it did before CHE-1418.
+func (h *Handler) lockCommentEnqueue(ctx context.Context, issueID, agentID pgtype.UUID) func() {
+	if h.TxStarter == nil {
+		return func() {}
+	}
+	tx, err := h.TxStarter.Begin(ctx)
+	if err == nil {
+		_, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+			"comment-enqueue:"+uuidToString(issueID)+":"+uuidToString(agentID))
+	}
+	if err != nil {
+		slog.Warn("comment enqueue lock unavailable; enqueueing unserialized",
+			"issue_id", uuidToString(issueID), "agent_id", uuidToString(agentID), "error", err)
+		if tx != nil {
+			_ = tx.Rollback(context.WithoutCancel(ctx))
+		}
+		return func() {}
+	}
+	return func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }
 }
 
 // resolveCommentTriggerEnqueue resolves ONE trigger into its final dispatch

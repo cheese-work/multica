@@ -7391,6 +7391,7 @@ WHERE id = (
     ORDER BY t.created_at DESC
     LIMIT 1
 )
+  AND status = 'queued'
 RETURNING id, coalesced_comment_ids
 `
 
@@ -7425,9 +7426,15 @@ type MergeCommentIntoQueuedIssueTaskRow struct {
 // Re-pointing the trigger moves the task into the new comment's thread; the
 // caller tries this only after the same-thread paths found nothing pending, so
 // the per-thread unique index is free there. A race that fills it surfaces as a
-// unique violation and the caller falls back to the per-thread path.
+// unique violation and the caller falls back to the per-thread path. The caller
+// holds the (issue, agent) enqueue lock, so concurrent arrivals cannot both miss
+// the fold and queue two runs (SOL-185-2).
 // The squad role must match: a leader-role comment never folds into the same
 // agent's worker task (or the reverse), since the claim briefing differs.
+// Re-checked on the row this UPDATE locks: a claim that committed while the
+// fold waited has made it 'dispatched', and its claim response already carries
+// the old trigger and attribution. Then nothing changes and the caller uses the
+// per-thread path (OCR-185-1).
 func (q *Queries) MergeCommentIntoQueuedIssueTask(ctx context.Context, arg MergeCommentIntoQueuedIssueTaskParams) (MergeCommentIntoQueuedIssueTaskRow, error) {
 	row := q.db.QueryRow(ctx, mergeCommentIntoQueuedIssueTask,
 		arg.NewTriggerCommentID,
