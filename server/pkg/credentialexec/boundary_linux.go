@@ -6,13 +6,16 @@ import (
 	"debug/elf"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -21,24 +24,46 @@ import (
 )
 
 type runtimeIdentity struct {
-	Binding    Binding
-	Provider   string
-	Executable string
-	Helper     string
-	Digests    map[string]string
+	Binding         Binding
+	Provider        string
+	Executable      string
+	Helper          string
+	Digests         map[string]string
+	ToolExecutables map[string]string `json:"ToolExecutables,omitempty"`
 }
 
 func Prepare(ctx context.Context, spec Spec) (*Boundary, error) {
+	if err := validateToolExecutables(spec.ToolExecutables); err != nil {
+		return nil, err
+	}
+	spec.ToolExecutables = maps.Clone(spec.ToolExecutables)
+	if err := ValidateInputs(spec.Inputs); err != nil {
+		return nil, err
+	}
 	if err := spec.Binding.Validate(); err != nil {
 		return nil, err
 	}
 	if runtime.GOARCH != "amd64" || spec.Provider != "claude" && spec.Provider != "codex" || !filepath.IsAbs(spec.Root) || !filepath.IsAbs(spec.Executable) || !filepath.IsAbs(spec.HelperExecutable) {
 		return nil, fmt.Errorf("%w: unsupported provider or relative source path", ErrUnavailable)
 	}
+	assets := make(map[string][]byte)
+	if len(spec.ToolExecutables) != 0 {
+		if err := readGatewayStop(filepath.Join(spec.Root, spec.Binding.TaskID)); err != nil {
+			return nil, err
+		}
+		for _, path := range spec.ToolExecutables {
+			if err := collectRuntimeAsset(path, assets); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if err := privateDirectory(spec.Root); err != nil {
 		return nil, err
 	}
 	state := filepath.Join(spec.Root, spec.Binding.TaskID)
+	if err := readGatewayStop(state); err != nil {
+		return nil, err
+	}
 	if entries, err := os.ReadDir(state); err == nil && len(entries) != 0 {
 		info, markerErr := os.Lstat(filepath.Join(state, "binding.json"))
 		if markerErr != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
@@ -52,8 +77,7 @@ func Prepare(ctx context.Context, spec Spec) (*Boundary, error) {
 			return nil, err
 		}
 	}
-	identity := runtimeIdentity{Binding: spec.Binding, Provider: spec.Provider, Executable: spec.Executable, Helper: spec.HelperExecutable, Digests: make(map[string]string)}
-	assets := make(map[string][]byte)
+	identity := runtimeIdentity{Binding: spec.Binding, Provider: spec.Provider, Executable: spec.Executable, Helper: spec.HelperExecutable, Digests: make(map[string]string), ToolExecutables: spec.ToolExecutables}
 	for _, path := range []string{spec.Executable, spec.HelperExecutable, "/bin/sh", "/bin/true"} {
 		if err := collectRuntimeAsset(path, assets); err != nil {
 			return nil, err
@@ -87,6 +111,23 @@ func Prepare(ctx context.Context, spec Spec) (*Boundary, error) {
 	if err := privateDirectory(runtimeRoot); err != nil {
 		return nil, err
 	}
+	writeAsset := func(destination string, data []byte) error {
+		if err := os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
+			return err
+		}
+		if existing, err := os.ReadFile(destination); err == nil {
+			if string(existing) != string(data) {
+				return fmt.Errorf("%w: runtime snapshot changed", ErrUnavailable)
+			}
+		} else if os.IsNotExist(err) {
+			if err := os.WriteFile(destination, data, 0500); err != nil {
+				return err
+			}
+		} else {
+			return err
+		}
+		return nil
+	}
 	for path, data := range assets {
 		destination := filepath.Join(runtimeRoot, path)
 		if path == spec.Executable {
@@ -95,18 +136,12 @@ func Prepare(ctx context.Context, spec Spec) (*Boundary, error) {
 		if path == spec.HelperExecutable {
 			destination = filepath.Join(runtimeRoot, "runtime", "multica-helper")
 		}
-		if err := os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
+		if err := writeAsset(destination, data); err != nil {
 			return nil, err
 		}
-		if existing, err := os.ReadFile(destination); err == nil {
-			if string(existing) != string(data) {
-				return nil, fmt.Errorf("%w: runtime snapshot changed", ErrUnavailable)
-			}
-		} else if os.IsNotExist(err) {
-			if err := os.WriteFile(destination, data, 0500); err != nil {
-				return nil, err
-			}
-		} else {
+	}
+	for name, path := range spec.ToolExecutables {
+		if err := writeAsset(filepath.Join(runtimeRoot, toolBin, name), assets[path]); err != nil {
 			return nil, err
 		}
 	}
@@ -123,7 +158,7 @@ func Prepare(ctx context.Context, spec Spec) (*Boundary, error) {
 	if err := placeholder.Close(); err != nil {
 		return nil, err
 	}
-	boundary := &Boundary{spec: spec, state: state, runtimeRoot: runtimeRoot, bwrap: "/usr/bin/bwrap"}
+	boundary := &Boundary{spec: spec, state: state, runtimeRoot: runtimeRoot, bwrap: "/usr/bin/bwrap", stopped: make(chan struct{})}
 	home, err := os.Open(boundary.Home())
 	if err != nil {
 		return nil, err
@@ -144,7 +179,27 @@ func Prepare(ctx context.Context, spec Spec) (*Boundary, error) {
 	if err := boundary.Probe(ctx); err != nil {
 		return nil, err
 	}
+	if err := boundary.stageInputs(ctx, spec.Inputs); err != nil {
+		return nil, err
+	}
 	return boundary, nil
+}
+
+func validateToolExecutables(tools map[string]string) error {
+	if len(tools) > 16 {
+		return fmt.Errorf("%w: too many tool executables", ErrUnavailable)
+	}
+	for name, path := range tools {
+		if name == "" || len(name) > 64 || name == "sh" || name == "true" || name == "claude" || name == "codex" || name == "multica-helper" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+			return fmt.Errorf("%w: unsupported tool executable", ErrUnavailable)
+		}
+		for index, character := range name {
+			if (character < 'a' || character > 'z') && (character < '0' || character > '9') && (index == 0 || character != '-' && character != '_') {
+				return fmt.Errorf("%w: unsupported tool name", ErrUnavailable)
+			}
+		}
+	}
+	return nil
 }
 
 func privateDirectory(path string) error {
@@ -277,6 +332,9 @@ func (boundary *Boundary) Wrap(command *exec.Cmd) (func(), error) {
 func (boundary *Boundary) wrap(command *exec.Cmd, withGateway bool) (func(), error) {
 	boundary.mutex.Lock()
 	defer boundary.mutex.Unlock()
+	if err := boundary.stopErrorLocked(); err != nil {
+		return nil, err
+	}
 	if boundary.closed || command.Dir != boundary.WorkDir() || len(command.ExtraFiles) != 0 || withGateway && (boundary.server == nil || command.Path != boundary.spec.Executable) {
 		return nil, fmt.Errorf("%w: unsupported launch, descriptor or missing gateway", ErrUnavailable)
 	}
@@ -300,6 +358,92 @@ func (boundary *Boundary) wrap(command *exec.Cmd, withGateway bool) (func(), err
 		files = append(files, os.NewFile(uintptr(descriptor), directory))
 	}
 	arguments := []string{boundary.bwrap, "--unshare-all", "--unshare-user", "--unshare-pid", "--unshare-net", "--unshare-ipc", "--unshare-uts", "--die-with-parent", "--new-session", "--cap-drop", "ALL", "--ro-bind-fd", "5", "/", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--bind-fd", "3", boundary.Home(), "--bind-fd", "4", boundary.WorkDir(), "--chdir", boundary.WorkDir()}
+	if withGateway && len(boundary.spec.Inputs) != 0 {
+		if ValidateInputs(boundary.spec.Inputs) != nil {
+			cleanup()
+			return nil, ErrUnavailable
+		}
+		inputRoot, err := openInputDirectory(int(files[1].Fd()), "multica-input", false)
+		if err != nil {
+			cleanup()
+			return nil, ErrUnavailable
+		}
+		arguments = append(arguments, "--ro-bind-fd", strconv.Itoa(len(files)+3), filepath.Join(boundary.WorkDir(), "multica-input"))
+		files = append(files, inputRoot)
+		if verifyInputTree(inputRoot, boundary.spec.Inputs) != nil {
+			cleanup()
+			return nil, ErrUnavailable
+		}
+		mountAlias := func(file *os.File, destination string) error {
+			descriptor, err := unix.FcntlInt(file.Fd(), unix.F_DUPFD_CLOEXEC, 0)
+			if err != nil {
+				return ErrUnavailable
+			}
+			arguments = append(arguments, "--ro-bind-fd", strconv.Itoa(len(files)+3), destination)
+			files = append(files, os.NewFile(uintptr(descriptor), "input-alias"))
+			return nil
+		}
+		var nativeRoots []string
+		briefName := "AGENTS.md"
+		if _, present := boundary.spec.Inputs["multica-input/runtime.md"]; present {
+			skillRoot := ".agents"
+			if boundary.spec.Provider == "claude" {
+				skillRoot, briefName = ".claude", "CLAUDE.md"
+			}
+			for _, name := range []string{skillRoot, ".multica", briefName} {
+				descriptor, err := unix.Openat2(int(files[1].Fd()), name, &unix.OpenHow{Flags: unix.O_PATH | unix.O_CLOEXEC, Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS})
+				if errors.Is(err, unix.ENOENT) {
+					continue
+				}
+				if err != nil {
+					cleanup()
+					return nil, ErrUnavailable
+				}
+				var stat unix.Stat_t
+				err = unix.Fstat(descriptor, &stat)
+				_ = unix.Close(descriptor)
+				expectedType := uint32(unix.S_IFDIR)
+				if name == briefName {
+					expectedType = unix.S_IFREG
+				}
+				if err != nil || stat.Mode&unix.S_IFMT != expectedType {
+					cleanup()
+					return nil, ErrUnavailable
+				}
+			}
+			nativeRoots = []string{filepath.Join(boundary.WorkDir(), skillRoot), filepath.Join(boundary.WorkDir(), ".multica")}
+			for _, root := range nativeRoots {
+				if mountAlias(inputRoot, root) != nil {
+					cleanup()
+					return nil, ErrUnavailable
+				}
+			}
+		}
+		names := make([]string, 0, len(boundary.spec.Inputs))
+		for name := range boundary.spec.Inputs {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			file, err := accessInput(inputRoot, strings.TrimPrefix(name, "multica-input/"), boundary.spec.Inputs[name], false)
+			if err != nil {
+				cleanup()
+				return nil, ErrUnavailable
+			}
+			arguments = append(arguments, "--ro-bind-fd", strconv.Itoa(len(files)+3), filepath.Join(boundary.WorkDir(), name))
+			files = append(files, file)
+			for _, root := range nativeRoots {
+				if mountAlias(file, filepath.Join(root, strings.TrimPrefix(name, "multica-input/"))) != nil {
+					cleanup()
+					return nil, ErrUnavailable
+				}
+			}
+			if len(nativeRoots) != 0 && name == "multica-input/runtime.md" && mountAlias(file, filepath.Join(boundary.WorkDir(), briefName)) != nil {
+				cleanup()
+				return nil, ErrUnavailable
+			}
+		}
+	}
 	environment := boundary.Environment()
 	nativeArgs := command.Args
 	if withGateway {

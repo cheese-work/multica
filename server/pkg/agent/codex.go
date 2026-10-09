@@ -1085,6 +1085,7 @@ func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 				resCh <- Result{Status: "failed", Error: "codex attempt closed without result"}
 				return
 			}
+			result = b.cfg.credentialResult(result)
 			retryReason := ""
 			switch {
 			case result.codexInitializeRetrySafe:
@@ -1168,7 +1169,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 		semanticInactivityTimeout = defaultCodexSemanticInactivityTimeout
 	}
 	handshakeTimeout, threadHandshakeTimeout := resolveCodexHandshakeTimeouts(opts)
-	runCtx, cancel := runContext(ctx, timeout)
+	runCtx, cancel := b.cfg.credentialRunContext(ctx, timeout)
 
 	// Materialise the agent's MCP config into the per-task
 	// `$CODEX_HOME/config.toml`. Argv would be the simpler path, but

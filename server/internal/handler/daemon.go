@@ -29,6 +29,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/taskgateway"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	"github.com/multica-ai/multica/server/pkg/credentialexec"
@@ -1877,7 +1878,7 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 			}
 			continue
 		}
-		remoteMCPToken, daemonTokens, derr := remoteMCPDaemonTokenForClaim(resp, rt)
+		remoteMCPToken, daemonTokens, derr := daemonTokenForClaim(resp, rt, h.TaskGateway.Requires(uuidToString(rt.ID)))
 		if derr != nil {
 			slog.Error("batch claim: generate Remote MCP daemon token failed; requeueing claim",
 				"task_id", uuidToString(task.ID), "error", derr)
@@ -1903,7 +1904,7 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 			WorkspaceID: parseUUID(resp.WorkspaceID),
 			UserID:      rt.OwnerID,
 			ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(24 * time.Hour), Valid: true},
-		}, deliveredCommentIDs, commentBackedTask, issueSnapshot, daemonTokens...)
+		}, deliveredCommentIDs, commentBackedTask, issueSnapshot, requestClientCapabilities(r), daemonTokens...)
 		if ferr != nil {
 			slog.Error("batch claim: finalize task claim failed; requeueing claim",
 				"task_id", uuidToString(task.ID), "error", ferr)
@@ -1922,7 +1923,7 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		resp.AuthToken = tokenStr
-		resp.RemoteMCPDaemonToken = remoteMCPToken
+		setClaimDaemonTokens(&resp, remoteMCPToken)
 		resp.DeliveredCommentIDs = uuidStringsOrEmpty(receipt)
 		out = append(out, resp)
 	}
@@ -1994,6 +1995,7 @@ func (h *Handler) finalizeClaimDelivery(
 	deliveredCommentIDs []pgtype.UUID,
 	recordCommentReceipt bool,
 	issueSnapshot []byte,
+	capabilities []string,
 	daemonTokens ...db.CreateDaemonTokenParams,
 ) (receipt []pgtype.UUID, deliveryFailure *claimBuildFailure, err error) {
 	var agentOwnerID pgtype.UUID
@@ -2013,6 +2015,7 @@ func (h *Handler) finalizeClaimDelivery(
 			response.RequestingUserName = ""
 			response.RequestingUserProfileDescription = ""
 			response.CredentialExecutionBinding = nil
+			response.RequireCredentialIsolation = false
 		}
 		agent, aerr := qtx.GetAgentForUpdate(ctx, task.AgentID)
 		if aerr != nil {
@@ -2052,8 +2055,11 @@ func (h *Handler) finalizeClaimDelivery(
 		// its current owner as the task-token identity rather than the stale
 		// claim-time snapshot captured by the caller.
 		tokenParams.UserID = locked.OwnerID
-		if response != nil {
-			response.CredentialExecutionBinding = credentialExecutionBindingForClaim(*task, locked, response.WorkspaceID)
+		if h.applyTaskGatewayClaimPolicy(*task, locked, uuidToString(tokenParams.WorkspaceID), response, capabilities) != nil {
+			return &service.ClaimDeliveryAuthzError{Reason: "error_task_gateway_unavailable", Detail: "trusted task gateway claim admission refused"}
+		}
+		if response != nil && response.RequireCredentialIsolation && (len(daemonTokens) != 1 || !locked.DaemonID.Valid || locked.DaemonID.String == "" || daemonTokens[0].DaemonID != locked.DaemonID.String || daemonTokens[0].WorkspaceID != locked.WorkspaceID) {
+			return &service.ClaimDeliveryAuthzError{Reason: "error_task_gateway_unavailable", Detail: "trusted task gateway daemon identity changed"}
 		}
 		return nil
 	}
@@ -2069,6 +2075,11 @@ func (h *Handler) finalizeClaimDelivery(
 	// Authorization rejected at the delivery boundary: settle through the
 	// existing failure path so the task never reaches the daemon.
 	switch authzErr.Reason {
+	case "error_task_gateway_unavailable":
+		failure := h.failClaimedTaskBeforeLaunch(ctx, task,
+			"This task requires a trusted credential-exclusive runtime and an exact authorized gateway policy. The task was not delivered.",
+			taskfailure.ReasonInvalidTaskIdentity, "error_task_gateway_unavailable", http.StatusForbidden, "trusted task gateway claim admission refused")
+		return nil, failure, nil
 	case "error_agent_runtime_changed":
 		failure := h.failClaimedTaskBeforeLaunch(
 			ctx, task,
@@ -2216,12 +2227,8 @@ func (h *Handler) rejectClaimOnWorkspaceMismatch(ctx context.Context, task *db.A
 	}
 }
 
-// remoteMCPDaemonTokenForClaim prepares the short-lived credential the daemon
-// uses to resolve write-only Remote MCP secrets for this task. The raw token is
-// returned only in the claim response; its hash is committed atomically with
-// the task-scoped agent token by FinalizeTaskClaim.
-func remoteMCPDaemonTokenForClaim(resp AgentTaskResponse, runtime db.AgentRuntime) (string, []db.CreateDaemonTokenParams, error) {
-	if len(resp.RemoteMCPConnections) == 0 {
+func daemonTokenForClaim(resp AgentTaskResponse, runtime db.AgentRuntime, gatewayRequired bool) (string, []db.CreateDaemonTokenParams, error) {
+	if len(resp.RemoteMCPConnections) == 0 && !gatewayRequired {
 		return "", nil, nil
 	}
 	if !runtime.DaemonID.Valid || strings.TrimSpace(runtime.DaemonID.String) == "" {
@@ -2237,6 +2244,17 @@ func remoteMCPDaemonTokenForClaim(resp AgentTaskResponse, runtime db.AgentRuntim
 		DaemonID:    runtime.DaemonID.String,
 		ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(24 * time.Hour), Valid: true},
 	}}, nil
+}
+
+func setClaimDaemonTokens(response *AgentTaskResponse, raw string) {
+	response.RemoteMCPDaemonToken = ""
+	response.TaskGatewayDaemonToken = ""
+	if len(response.RemoteMCPConnections) != 0 {
+		response.RemoteMCPDaemonToken = raw
+	}
+	if response.RequireCredentialIsolation {
+		response.TaskGatewayDaemonToken = raw
+	}
 }
 
 // failClaimedTaskBeforeLaunch settles a durable claim-time rejection before
@@ -2347,6 +2365,27 @@ func credentialExecutionBindingForClaim(task db.AgentTaskQueue, runtime db.Agent
 		return nil
 	}
 	return &binding
+}
+
+func (h *Handler) applyTaskGatewayClaimPolicy(task db.AgentTaskQueue, runtime db.AgentRuntime, workspaceID string, response *AgentTaskResponse, capabilities []string) error {
+	if response != nil {
+		response.RequireCredentialIsolation = false
+		response.CredentialExecutionBinding = nil
+	}
+	binding := credentialExecutionBindingForClaim(task, runtime, workspaceID)
+	identity := credentialexec.Binding{TaskID: uuidToString(task.ID)}
+	if binding != nil {
+		identity = *binding
+	}
+	required, err := h.TaskGateway.Admit(uuidToString(runtime.ID), runtime.Provider, identity, capabilities)
+	if err != nil || required && (response == nil || response.WorkspaceID != workspaceID || runtime.ProfileID.Valid || task.RuntimeID != runtime.ID) {
+		return taskgateway.ErrUnavailable
+	}
+	if response != nil {
+		response.CredentialExecutionBinding = binding
+		response.RequireCredentialIsolation = required
+	}
+	return nil
 }
 
 // buildClaimedTaskResponse assembles the full daemon claim payload for a
@@ -3856,7 +3895,7 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to mint task token")
 		return
 	}
-	remoteMCPToken, daemonTokens, derr := remoteMCPDaemonTokenForClaim(resp, runtime)
+	remoteMCPToken, daemonTokens, derr := daemonTokenForClaim(resp, runtime, h.TaskGateway.Requires(uuidToString(runtime.ID)))
 	if derr != nil {
 		outcome = "error_remote_mcp_token"
 		slog.Error("task claim: failed to generate Remote MCP daemon token",
@@ -3873,7 +3912,7 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID: parseUUID(resp.WorkspaceID),
 		UserID:      runtime.OwnerID,
 		ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(24 * time.Hour), Valid: true},
-	}, deliveredCommentIDs, commentBackedTask, issueSnapshot, daemonTokens...)
+	}, deliveredCommentIDs, commentBackedTask, issueSnapshot, requestClientCapabilities(r), daemonTokens...)
 	if ferr != nil {
 		outcome = "error_claim_finalize"
 		slog.Error("task claim: failed to finalize token and comment delivery receipt",
@@ -3901,7 +3940,7 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp.AuthToken = tokenStr
-	resp.RemoteMCPDaemonToken = remoteMCPToken
+	setClaimDaemonTokens(&resp, remoteMCPToken)
 	task.DeliveredCommentIds = receipt
 	resp.DeliveredCommentIDs = uuidStringsOrEmpty(receipt)
 
@@ -3953,8 +3992,18 @@ func (h *Handler) ResolveTaskSkillBundles(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if task.Status != "dispatched" && task.Status != "waiting_local_directory" {
-		writeError(w, http.StatusConflict, "task is not preparing")
-		return
+		if task.Status != "running" {
+			writeError(w, http.StatusConflict, "task is not preparing")
+			return
+		}
+		agent, err := h.Queries.GetAgent(r.Context(), task.AgentID)
+		if err == nil {
+			_, err = h.authorizeTaskGatewayRuntimeTask(r.Context(), task, runtime, agent, requestClientCapabilities(r))
+		}
+		if err != nil {
+			writeError(w, http.StatusConflict, "task is not preparing")
+			return
+		}
 	}
 
 	var req resolveSkillBundlesRequest

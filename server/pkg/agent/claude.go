@@ -52,7 +52,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	}
 
 	timeout := opts.Timeout
-	runCtx, cancel := runContext(ctx, timeout)
+	runCtx, cancel := b.cfg.credentialRunContext(ctx, timeout)
 
 	args := buildClaudeArgs(opts, b.cfg.Logger)
 	if b.cfg.RequireCredentialIsolation {
@@ -456,7 +456,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			)
 		}
 
-		resCh <- Result{
+		resCh <- b.cfg.credentialResult(Result{
 			Status:         finalStatus,
 			Output:         finalOutput,
 			Error:          finalError,
@@ -464,7 +464,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			SessionID:      reportedSessionID,
 			Usage:          usage,
 			ResumeRejected: resumeRejected,
-		}
+		})
 	}()
 
 	session := &Session{Messages: msgCh, Result: resCh}

@@ -7780,61 +7780,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}
 	phaseRecorder.Mark(taskPhaseSkillsReady)
 
-	agentName := "agent"
-	var skills []SkillData
-	var instructions string
-	agentName = task.Agent.Name
-	skills = task.Agent.Skills
-	instructions = task.Agent.Instructions
+	agentName := task.Agent.Name
 
 	// Prepare isolated execution environment.
 	// Repos are passed as metadata only — the agent checks them out on demand
 	// via `multica repo checkout <url>`.
-	taskCtx := execenv.TaskContextForEnv{
-		IssueID:             task.IssueID,
-		TriggerCommentID:    task.TriggerCommentID,
-		TriggerThreadID:     task.TriggerThreadID,
-		CommentReplyTargets: commentReplyThreads(task),
-		NewCommentCount:     task.NewCommentCount,
-		NewCommentsSince:    task.NewCommentsSince,
-		PriorSessionResumed: task.PriorSessionID != "",
-		// MUL-5305: the server sets this when a more recent Codex session was
-		// withheld (rollout missing) and PriorSessionID is an older fallback (or
-		// absent). Seed the brief's continuity disclosure from it; the local
-		// resume gates below only ever OR it to true, so the signal is monotonic.
-		PriorSessionResumeUnavailable:    task.PriorSessionResumeUnavailable,
-		AgentID:                          task.AgentID,
-		AgentName:                        agentName,
-		AgentInstructions:                instructions,
-		AgentSkills:                      convertSkillsForEnv(skills),
-		DisabledRuntimeSkills:            convertDisabledRuntimeSkillsForEnv(task.Agent, task.RuntimeID, provider),
-		Repos:                            convertReposForEnv(task.Repos),
-		ProjectID:                        task.ProjectID,
-		ProjectTitle:                     task.ProjectTitle,
-		ProjectDescription:               task.ProjectDescription,
-		ProjectResources:                 convertProjectResourcesForEnv(task.ProjectResources),
-		ChatSessionID:                    task.ChatSessionID,
-		ChatChannelType:                  task.ChatChannelType,
-		ChatChannelDeliversFiles:         task.ChatChannelDeliversFiles,
-		AutopilotRunID:                   task.AutopilotRunID,
-		AutopilotID:                      task.AutopilotID,
-		AutopilotTitle:                   task.AutopilotTitle,
-		AutopilotDescription:             task.AutopilotDescription,
-		AutopilotSource:                  task.AutopilotSource,
-		AutopilotTriggerPayload:          strings.TrimSpace(string(task.AutopilotTriggerPayload)),
-		QuickCreatePrompt:                task.QuickCreatePrompt,
-		IsSquadLeader:                    taskIsSquadLeader(task),
-		RequestingUserName:               task.RequestingUserName,
-		RequestingUserProfileDescription: task.RequestingUserProfileDescription,
-		InitiatorType:                    task.InitiatorType,
-		InitiatorID:                      task.InitiatorID,
-		InitiatorName:                    task.InitiatorName,
-		InitiatorEmail:                   task.InitiatorEmail,
-		WorkspaceContext:                 task.WorkspaceContext,
-		IssueStatuses:                    convertIssueStatusesForEnv(task.IssueStatuses),
-		IssueStatusesOmitted:             task.IssueStatusesOmitted,
-		ConnectedApps:                    task.ConnectedApps,
-	}
+	taskCtx := taskContextForEnv(task, provider)
 
 	// Mark candidate env roots as active before any env work so the GC loop
 	// can't reclaim artifacts inside them mid-execution. We mark both the

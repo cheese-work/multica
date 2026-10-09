@@ -359,6 +359,7 @@ type TaskCancellationActor struct {
 }
 
 type AgentTaskResponse struct {
+	TaskGatewayDaemonToken     string                  `json:"task_gateway_daemon_token,omitempty"`
 	RequireCredentialIsolation bool                    `json:"require_credential_isolation,omitempty"`
 	CredentialExecutionBinding *credentialexec.Binding `json:"credential_execution_binding,omitempty"`
 	StartClaimSupported        bool                    `json:"start_claim_supported,omitempty"`
