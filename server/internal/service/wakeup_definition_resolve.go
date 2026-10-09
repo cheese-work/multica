@@ -117,7 +117,7 @@ func (e EffectiveWakeupConfig) Enabled() bool {
 // else: no mode, expiry, fire cap or aggregate cap.
 func WakeupBuiltinBaseline(key string) (WakeupConfigPatch, bool) {
 	switch key {
-	case SystemRuleChildDone, SystemRulePRMerged, SystemRulePRChecksFailed:
+	case SystemRuleChildDone, SystemRulePRMerged, SystemRulePRChecksFailed, SystemRulePRAttention:
 		var p WakeupConfigPatch
 		p.Enabled = wakeupField[bool]{Set: true, Value: true}
 		return p, true

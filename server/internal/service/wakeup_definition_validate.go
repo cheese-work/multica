@@ -27,7 +27,7 @@ import (
 func WakeupDefinitionTriggerKinds() []string { return slices.Clone(builtinWakeupRules) }
 
 // builtinWakeupRules are the platform rules, which double as the trigger presets.
-var builtinWakeupRules = []string{SystemRuleChildDone, SystemRulePRMerged, SystemRulePRChecksFailed}
+var builtinWakeupRules = []string{SystemRuleChildDone, SystemRulePRMerged, SystemRulePRChecksFailed, SystemRulePRAttention}
 
 // WakeupDefinitionFields lists the patch fields a definition may set today.
 // schedule belongs to a later layer.
@@ -277,7 +277,7 @@ func validateEffectiveWakeup(eff EffectiveWakeupConfig) error {
 	}
 	var spec wakeupFiltersSpec
 	_ = decodeWakeupSpec(eff.Config.Filters.Value, &spec)
-	pr := kind == SystemRulePRMerged || kind == SystemRulePRChecksFailed
+	pr := kind == SystemRulePRMerged || kind == SystemRulePRChecksFailed || kind == SystemRulePRAttention
 	if (spec.BaseBranch != nil || spec.HeadBranch != nil) && !pr {
 		return wakeupDefinitionBad("branch filters apply to pull request triggers only")
 	}

@@ -236,7 +236,7 @@ export interface WakeupDefinitionConfig {
 export interface WakeupDefinition {
   scope: WakeupDefinitionScopeKind;
   scope_id: string;
-  /** `child_done`, `pr_merged`, `pr_checks_failed`, or a custom rule's UUID. */
+  /** `child_done`, `pr_merged`, `pr_checks_failed`, `pr_needs_attention`, or a custom rule's UUID. */
   rule_key: string;
   /** The definition that created a custom rule. */
   root: boolean;

@@ -23,7 +23,7 @@ func (q *Queries) DeleteGitHubPRCheckRuns(ctx context.Context, prID pgtype.UUID)
 }
 
 const getGitHubPullRequestByID = `-- name: GetGitHubPullRequestByID :one
-SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at FROM github_pull_request WHERE id = $1
+SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref FROM github_pull_request WHERE id = $1
 `
 
 func (q *Queries) GetGitHubPullRequestByID(ctx context.Context, id pgtype.UUID) (GithubPullRequest, error) {
@@ -58,6 +58,7 @@ func (q *Queries) GetGitHubPullRequestByID(ctx context.Context, id pgtype.UUID) 
 		&i.ChecksRollupState,
 		&i.SnapshotHeadSha,
 		&i.SnapshotFetchedAt,
+		&i.SnapshotBaseRef,
 	)
 	return i, err
 }
@@ -93,6 +94,72 @@ func (q *Queries) InsertGitHubPRCheckRun(ctx context.Context, arg InsertGitHubPR
 		arg.DetailsUrl,
 	)
 	return err
+}
+
+const invalidateOpenGitHubPRMergeStateOnBase = `-- name: InvalidateOpenGitHubPRMergeStateOnBase :many
+UPDATE github_pull_request
+SET api_mergeable          = NULL,
+    api_merge_state_status = NULL,
+    updated_at             = now()
+WHERE installation_id = $1
+  AND repo_owner = $2
+  AND repo_name = $3
+  AND state IN ('open', 'draft')
+  AND pr_number <> $4
+  AND (snapshot_base_ref = $5 OR snapshot_base_ref IS NULL)
+RETURNING installation_id, repo_owner, repo_name, pr_number
+`
+
+type InvalidateOpenGitHubPRMergeStateOnBaseParams struct {
+	InstallationID int64       `json:"installation_id"`
+	RepoOwner      string      `json:"repo_owner"`
+	RepoName       string      `json:"repo_name"`
+	MergedPrNumber int32       `json:"merged_pr_number"`
+	BaseRef        pgtype.Text `json:"base_ref"`
+}
+
+type InvalidateOpenGitHubPRMergeStateOnBaseRow struct {
+	InstallationID int64  `json:"installation_id"`
+	RepoOwner      string `json:"repo_owner"`
+	RepoName       string `json:"repo_name"`
+	PrNumber       int32  `json:"pr_number"`
+}
+
+// CHE-1417: a merge moves its base branch, which can make other open PRs on
+// that base DIRTY or BEHIND without any pull_request event of their own. Their
+// stored merge state no longer describes the base, so it is cleared: the
+// merge handler refreshes the returned PRs, and one the refresh queue drops is
+// undecided, so ListStaleUndecidedGitHubPRs picks it up. A row whose base is
+// not known yet (no snapshot since the column was added) is included.
+func (q *Queries) InvalidateOpenGitHubPRMergeStateOnBase(ctx context.Context, arg InvalidateOpenGitHubPRMergeStateOnBaseParams) ([]InvalidateOpenGitHubPRMergeStateOnBaseRow, error) {
+	rows, err := q.db.Query(ctx, invalidateOpenGitHubPRMergeStateOnBase,
+		arg.InstallationID,
+		arg.RepoOwner,
+		arg.RepoName,
+		arg.MergedPrNumber,
+		arg.BaseRef,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []InvalidateOpenGitHubPRMergeStateOnBaseRow{}
+	for rows.Next() {
+		var i InvalidateOpenGitHubPRMergeStateOnBaseRow
+		if err := rows.Scan(
+			&i.InstallationID,
+			&i.RepoOwner,
+			&i.RepoName,
+			&i.PrNumber,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listGitHubPRNumbersByHeadSHA = `-- name: ListGitHubPRNumbersByHeadSHA :many
@@ -320,9 +387,10 @@ SET api_mergeable          = $1,
     api_merge_state_status = $2,
     checks_rollup_state    = $3,
     snapshot_head_sha      = $4,
-    snapshot_fetched_at    = $5,
+    snapshot_base_ref      = $5,
+    snapshot_fetched_at    = $6,
     updated_at             = now()
-WHERE gpr.id = $6
+WHERE gpr.id = $7
   AND gpr.head_sha = $4
   AND EXISTS (
       SELECT 1 FROM workspace w
@@ -336,6 +404,7 @@ type UpdateGitHubPRSnapshotParams struct {
 	ApiMergeStateStatus pgtype.Text        `json:"api_merge_state_status"`
 	ChecksRollupState   pgtype.Text        `json:"checks_rollup_state"`
 	HeadSha             string             `json:"head_sha"`
+	BaseRef             pgtype.Text        `json:"base_ref"`
 	FetchedAt           pgtype.Timestamptz `json:"fetched_at"`
 	PrID                pgtype.UUID        `json:"pr_id"`
 }
@@ -361,6 +430,7 @@ func (q *Queries) UpdateGitHubPRSnapshot(ctx context.Context, arg UpdateGitHubPR
 		arg.ApiMergeStateStatus,
 		arg.ChecksRollupState,
 		arg.HeadSha,
+		arg.BaseRef,
 		arg.FetchedAt,
 		arg.PrID,
 	)
