@@ -2016,6 +2016,51 @@ WHERE id = (
 )
 RETURNING id, coalesced_comment_ids;
 
+-- name: MergeCommentIntoQueuedIssueTask :one
+-- CHE-1418: one comment produces at most one run per agent. Same fold and
+-- re-attribution as MergeCommentIntoPendingTask, but the target is the agent's
+-- QUEUED task anywhere on the issue — another thread, or an assignment task with
+-- no thread — instead of a second queued task beside it. The prompt already
+-- fans a run's trigger + coalesced comments out per thread (MUL-4348).
+-- Re-pointing the trigger moves the task into the new comment's thread; the
+-- caller tries this only after the same-thread paths found nothing pending, so
+-- the per-thread unique index is free there. A race that fills it surfaces as a
+-- unique violation and the caller falls back to the per-thread path.
+-- The squad role must match: a leader-role comment never folds into the same
+-- agent's worker task (or the reverse), since the claim briefing differs.
+UPDATE agent_task_queue
+SET coalesced_comment_ids = (
+        SELECT COALESCE(array_agg(DISTINCT e), '{}')
+        FROM unnest(array_append(coalesced_comment_ids, trigger_comment_id)) AS e
+        WHERE e IS NOT NULL AND e <> @new_trigger_comment_id::uuid
+    ),
+    trigger_comment_id = @new_trigger_comment_id::uuid,
+    trigger_summary = COALESCE(sqlc.narg('new_trigger_summary'), trigger_summary),
+    originator_user_id = sqlc.narg('new_originator_user_id')::uuid,
+    accountable_user_id = sqlc.narg('new_accountable_user_id')::uuid,
+    originator_source = sqlc.narg('new_originator_source'),
+    delegated_from_task_id = sqlc.narg('new_delegated_from_task_id')::uuid,
+    rule_version_id = sqlc.narg('new_rule_version_id')::uuid,
+    trigger_evidence_kind = sqlc.narg('new_trigger_evidence_kind'),
+    trigger_evidence_ref_id = sqlc.narg('new_trigger_evidence_ref_id')::uuid,
+    runtime_mcp_overlay = sqlc.narg('new_runtime_mcp_overlay'),
+    runtime_connected_apps = sqlc.narg('new_runtime_connected_apps')
+WHERE id = (
+    SELECT t.id FROM agent_task_queue t
+    WHERE t.context->>'wakeup_id' IS NULL AND t.issue_id = @issue_id
+      AND t.agent_id = @agent_id
+      AND t.status = 'queued'
+      AND t.is_leader_task = (sqlc.narg('squad_id')::uuid IS NOT NULL)
+      AND t.squad_id IS NOT DISTINCT FROM sqlc.narg('squad_id')::uuid
+      AND (
+          COALESCE(sqlc.narg('head_sha')::text, '') = ''
+          OR t.context->>'head_sha' = sqlc.narg('head_sha')::text
+      )
+    ORDER BY t.created_at DESC
+    LIMIT 1
+)
+RETURNING id, coalesced_comment_ids;
+
 -- name: RegisterPlannedCommentForActiveTask :one
 -- #5914: durably register a comment that lost an enqueue race as a PLANNED
 -- (undelivered) input on the same-(issue, agent) ACTIVE task whose queued row

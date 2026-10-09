@@ -7359,6 +7359,98 @@ func (q *Queries) MergeCommentIntoPendingTask(ctx context.Context, arg MergeComm
 	return i, err
 }
 
+const mergeCommentIntoQueuedIssueTask = `-- name: MergeCommentIntoQueuedIssueTask :one
+UPDATE agent_task_queue
+SET coalesced_comment_ids = (
+        SELECT COALESCE(array_agg(DISTINCT e), '{}')
+        FROM unnest(array_append(coalesced_comment_ids, trigger_comment_id)) AS e
+        WHERE e IS NOT NULL AND e <> $1::uuid
+    ),
+    trigger_comment_id = $1::uuid,
+    trigger_summary = COALESCE($2, trigger_summary),
+    originator_user_id = $3::uuid,
+    accountable_user_id = $4::uuid,
+    originator_source = $5,
+    delegated_from_task_id = $6::uuid,
+    rule_version_id = $7::uuid,
+    trigger_evidence_kind = $8,
+    trigger_evidence_ref_id = $9::uuid,
+    runtime_mcp_overlay = $10,
+    runtime_connected_apps = $11
+WHERE id = (
+    SELECT t.id FROM agent_task_queue t
+    WHERE t.context->>'wakeup_id' IS NULL AND t.issue_id = $12
+      AND t.agent_id = $13
+      AND t.status = 'queued'
+      AND t.is_leader_task = ($14::uuid IS NOT NULL)
+      AND t.squad_id IS NOT DISTINCT FROM $14::uuid
+      AND (
+          COALESCE($15::text, '') = ''
+          OR t.context->>'head_sha' = $15::text
+      )
+    ORDER BY t.created_at DESC
+    LIMIT 1
+)
+RETURNING id, coalesced_comment_ids
+`
+
+type MergeCommentIntoQueuedIssueTaskParams struct {
+	NewTriggerCommentID     pgtype.UUID `json:"new_trigger_comment_id"`
+	NewTriggerSummary       pgtype.Text `json:"new_trigger_summary"`
+	NewOriginatorUserID     pgtype.UUID `json:"new_originator_user_id"`
+	NewAccountableUserID    pgtype.UUID `json:"new_accountable_user_id"`
+	NewOriginatorSource     pgtype.Text `json:"new_originator_source"`
+	NewDelegatedFromTaskID  pgtype.UUID `json:"new_delegated_from_task_id"`
+	NewRuleVersionID        pgtype.UUID `json:"new_rule_version_id"`
+	NewTriggerEvidenceKind  pgtype.Text `json:"new_trigger_evidence_kind"`
+	NewTriggerEvidenceRefID pgtype.UUID `json:"new_trigger_evidence_ref_id"`
+	NewRuntimeMcpOverlay    []byte      `json:"new_runtime_mcp_overlay"`
+	NewRuntimeConnectedApps []byte      `json:"new_runtime_connected_apps"`
+	IssueID                 pgtype.UUID `json:"issue_id"`
+	AgentID                 pgtype.UUID `json:"agent_id"`
+	SquadID                 pgtype.UUID `json:"squad_id"`
+	HeadSha                 pgtype.Text `json:"head_sha"`
+}
+
+type MergeCommentIntoQueuedIssueTaskRow struct {
+	ID                  pgtype.UUID   `json:"id"`
+	CoalescedCommentIds []pgtype.UUID `json:"coalesced_comment_ids"`
+}
+
+// CHE-1418: one comment produces at most one run per agent. Same fold and
+// re-attribution as MergeCommentIntoPendingTask, but the target is the agent's
+// QUEUED task anywhere on the issue — another thread, or an assignment task with
+// no thread — instead of a second queued task beside it. The prompt already
+// fans a run's trigger + coalesced comments out per thread (MUL-4348).
+// Re-pointing the trigger moves the task into the new comment's thread; the
+// caller tries this only after the same-thread paths found nothing pending, so
+// the per-thread unique index is free there. A race that fills it surfaces as a
+// unique violation and the caller falls back to the per-thread path.
+// The squad role must match: a leader-role comment never folds into the same
+// agent's worker task (or the reverse), since the claim briefing differs.
+func (q *Queries) MergeCommentIntoQueuedIssueTask(ctx context.Context, arg MergeCommentIntoQueuedIssueTaskParams) (MergeCommentIntoQueuedIssueTaskRow, error) {
+	row := q.db.QueryRow(ctx, mergeCommentIntoQueuedIssueTask,
+		arg.NewTriggerCommentID,
+		arg.NewTriggerSummary,
+		arg.NewOriginatorUserID,
+		arg.NewAccountableUserID,
+		arg.NewOriginatorSource,
+		arg.NewDelegatedFromTaskID,
+		arg.NewRuleVersionID,
+		arg.NewTriggerEvidenceKind,
+		arg.NewTriggerEvidenceRefID,
+		arg.NewRuntimeMcpOverlay,
+		arg.NewRuntimeConnectedApps,
+		arg.IssueID,
+		arg.AgentID,
+		arg.SquadID,
+		arg.HeadSha,
+	)
+	var i MergeCommentIntoQueuedIssueTaskRow
+	err := row.Scan(&i.ID, &i.CoalescedCommentIds)
+	return i, err
+}
+
 const mergeDelegatedFailureCommentIntoPendingTask = `-- name: MergeDelegatedFailureCommentIntoPendingTask :one
 UPDATE agent_task_queue
 SET coalesced_comment_ids = (
