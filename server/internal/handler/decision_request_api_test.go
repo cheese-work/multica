@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -31,6 +32,8 @@ func (fixture requestCoreFixture) apiRequest() *http.Request {
 
 func TestDecisionRequestAPIRoundTrip(test *testing.T) {
 	fixture := newRequestCoreFixture(test, false)
+	older := time.Now().Add(-time.Hour)
+	dbfx.Exec(test, `UPDATE chat_session SET updated_at = $1 WHERE id = $2`, older, fixture.sessionID)
 	dbfx.Cleanup(test, `DELETE FROM inbox_item WHERE issue_id = $1`, fixture.issueID)
 	var created map[string]any
 	var inboxEvents, commentEvents, chatEvents int
@@ -60,6 +63,11 @@ func TestDecisionRequestAPIRoundTrip(test *testing.T) {
 		test.Fatalf("wrong request response: %+v", created)
 	}
 	fixture.assertCounts(test, 1)
+	var updated time.Time
+	dbfx.QueryRow(test, `SELECT updated_at FROM chat_session WHERE id = $1`, fixture.sessionID).Scan(&updated)
+	if !updated.After(older) {
+		test.Fatal("ping did not touch the session's activity timestamp")
+	}
 	if inboxEvents != 1 || commentEvents != 1 || chatEvents != 1 {
 		test.Fatalf("post-commit events: inbox=%d comment=%d chat=%d", inboxEvents, commentEvents, chatEvents)
 	}
@@ -82,6 +90,27 @@ func TestDecisionRequestAPIRoundTrip(test *testing.T) {
 	}
 	if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE chat_session_id = $1`, fixture.sessionID); count != 0 {
 		test.Fatalf("ping started %d DM turns", count)
+	}
+}
+
+func TestDecisionRequestAPIAskContentLimit(test *testing.T) {
+	for _, size := range []int{maxCommentContentBytes, maxCommentContentBytes + 1} {
+		test.Run(map[bool]string{false: "at_limit", true: "over_limit"}[size > maxCommentContentBytes], func(test *testing.T) {
+			fixture := newRequestCoreFixture(test, false)
+			dbfx.Cleanup(test, `DELETE FROM inbox_item WHERE issue_id = $1`, fixture.issueID)
+			body := map[string]any{"issue_id": fixture.issueID, "session_id": fixture.sessionID, "ask": strings.Repeat("a", size), "escalation_class": "reversible"}
+			request := newRequest(http.MethodPost, "/api/decisions", body)
+			request.Header.Set("X-Actor-Source", "task_token")
+			request.Header.Set("X-Agent-ID", fixture.agentID)
+			request.Header.Set("X-Task-ID", fixture.taskID)
+			if size > maxCommentContentBytes {
+				testutil.Call(test, testHandler.RequestDecision, request).Want(http.StatusBadRequest)
+				fixture.assertCounts(test, 0)
+			} else {
+				testutil.Call(test, testHandler.RequestDecision, request).Want(http.StatusCreated)
+				fixture.assertCounts(test, 1)
+			}
+		})
 	}
 }
 

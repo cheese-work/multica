@@ -20,8 +20,12 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		Ask             string `json:"ask"`
 		EscalationClass string `json:"escalation_class"`
 	}
-	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8*maxCommentContentBytes)).Decode(&input); err != nil {
 		writeError(writer, http.StatusBadRequest, "invalid decision request")
+		return
+	}
+	if len(input.Ask) > maxCommentContentBytes {
+		writeError(writer, http.StatusBadRequest, "ask is too long")
 		return
 	}
 	issue, ok := handler.loadIssueForUser(writer, request, input.IssueID)
