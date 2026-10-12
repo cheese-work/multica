@@ -691,8 +691,7 @@ unconfirmed.
   `GITHUB_REF = refs/heads/main`. `admission.mjs` requires the same event
   (`event_name` `push`, `ref` `refs/heads/main`).
 - A dispatch of `cd-qualification.yml` is therefore refused (HTTP 422, no
-  `workflow_dispatch` trigger). Synthetic push evidence and rewritten `main`
-  refs are not a recovery route.
+  `workflow_dispatch` trigger).
 - To recover: merge a reviewed change to `main`. That merge is a real `push`
   event, so `cd-qualification` runs on the new `main` head and `cd-deploy`
   follows on its `workflow_run`. This note is such a change; it needs no
