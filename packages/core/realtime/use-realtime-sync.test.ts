@@ -265,6 +265,20 @@ describe("applyChatSessionUpdatedToCache", () => {
   // server refetch (last_read_at is untouched). An `active` status event leaves
   // the row's unread fields exactly as cached, so a previously-zeroed archived
   // row stays at 0 rather than being resurrected out of thin air.
+  it("preserves a continuation target on archive without changing the old transcript", () => {
+    const qc = createQueryClient();
+    qc.setQueryData<ChatSession[]>(chatKeys.sessions(WS_ID), [makeSession()]);
+    applyChatSessionUpdatedToCache(qc, WS_ID, {
+      chat_session_id: "s1",
+      status: "archived",
+      continued_into_session_id: "s2",
+    });
+    const row = qc.getQueryData<ChatSession[]>(chatKeys.sessions(WS_ID))![0]!;
+    expect(row.continued_into_session_id).toBe("s2");
+    expect(row.status).toBe("archived");
+    expect(row.unread_count).toBe(0);
+  });
+
   it("does not resurrect unread when a session_updated event reactivates a row", () => {
     const qc = createQueryClient();
     qc.setQueryData<ChatSession[]>(chatKeys.sessions(WS_ID), [
