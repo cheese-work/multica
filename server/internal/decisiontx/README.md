@@ -69,6 +69,10 @@ can request a decision. `GET /api/decisions/{id}` and
 `GET /api/decisions?issue=<UUID-or-identifier>` require workspace membership and
 an existing issue in that workspace. They expose request metadata, never DM
 transcripts. An empty list is `[]`.
+The ask shares the existing 64 KiB comment-content limit. JSON decoding is
+bounded using the existing eight-times-content allowance for escaped input.
+The ping touches the held session's activity timestamp inside the core
+transaction, so DM ordering and default-lane selection reflect the message.
 
 The CLI provides `multica decision request --issue <id> --session <id>
 --class <enum> --ask-file <path>`, `multica decision get <request-id>`, and
