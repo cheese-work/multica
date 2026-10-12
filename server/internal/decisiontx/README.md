@@ -61,11 +61,38 @@ Lock contention gets at most three attempts; the named deadlock gets at most
 one retry. Retryable database errors remain recognizable to the later API's
 503 mapper.
 
-This core adds no public route or CLI and performs no post-commit side effect.
-CHE-1570 owns API/read authorization, CLI, subscriber/mention/realtime work,
-and the inbox insertion/receipt transaction and worker retry query. It must
-perform those actions only after core success and must not activate the route
-before the inbox consumer exists. `ping_notified_at` remains NULL here.
+The core performs no post-commit side effect. The public request handler calls
+it before the inbox consumer or any subscriber/mention/realtime event.
+`POST /api/decisions` accepts `issue_id`, `session_id`, `ask`, and
+`escalation_class`. Only the running issue-task provenance admitted by the core
+can request a decision. `GET /api/decisions/{id}` and
+`GET /api/decisions?issue=<UUID-or-identifier>` require workspace membership and
+an existing issue in that workspace. They expose request metadata, never DM
+transcripts. An empty list is `[]`.
+
+The CLI provides `multica decision request --issue <id> --session <id>
+--class <enum> --ask-file <path>`, `multica decision get <request-id>`, and
+`multica decision list --issue <id>`. The ask file must be nonempty UTF-8;
+whitespace and newlines are preserved. Each command supports JSON and table
+output. A ping never enqueues a DM turn.
+
+`decisiontx.NotifyPing` is shared by the request handler and the later decision
+worker. It locks workspace, issue, then request. A NULL receipt is re-checked
+under the request lock. The `mentioned` inbox item and `ping_notified_at`
+commit in one transaction; cancellation writes only the receipt. Concurrent
+consumers, repeated retries, or a failed receipt write cannot leave duplicate
+or partially committed inbox items. The returned item is safe to publish only
+after this function succeeds. Missing requests and already-received pings
+return no item. A missing workspace/issue remains an error for later orphan
+cleanup, not a successful receipt.
+
+`ListDecisionPingRetries` is a bounded, ordered worker-facing selector for
+asked requests with a NULL receipt, including cancelled requests. The public
+handler returns 201 for a committed core even if the receipt transaction
+fails; the NULL receipt keeps that ping eligible for worker retry. The worker
+is supplied by CHE-1550, not this slice. Generic comment notifications suppress
+the ping's named target via the existing decision-intent target exclusion;
+other subscriber and mention notifications retain their existing behavior.
 
 Migrations create parent tables first, then their concurrent unique ID indexes,
 then the dependent tables. Each explicit index build/removal has its own
