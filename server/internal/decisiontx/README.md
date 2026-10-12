@@ -44,6 +44,29 @@ class-change/request and intent-target/intent. Baseline application transactions
 do not write decision tables. Owner deletion cleanup remains the later worker's
 responsibility.
 
+The unexported handler `createDecisionRequest` is the transactional ping core.
+It takes a loaded issue and a validated lane UUID with the ask/class strings;
+it re-checks issue scope, assignment and terminal status under the issue fence.
+Only middleware-stamped issue-task provenance is admitted. It locks the
+workspace, one session, the ask thread, issue, NOWAIT task/member rows, intent
+and target, in that order. The invalid-window guard runs before any ask, DM
+or thread-resolution write, so refusal can persist only the window seal/close.
+
+Success returns the committed request, stamped ask comment, non-turn DM message
+and any cleared thread resolutions. The lane stays immutable. IDs for the
+comment/message are allocated before the request insert, so all links commit
+together without a separate request update. One target is consumed, and the
+last target seals and consumes the intent. Failure returns an empty result.
+Lock contention gets at most three attempts; the named deadlock gets at most
+one retry. Retryable database errors remain recognizable to the later API's
+503 mapper.
+
+This core adds no public route or CLI and performs no post-commit side effect.
+CHE-1570 owns API/read authorization, CLI, subscriber/mention/realtime work,
+and the inbox insertion/receipt transaction and worker retry query. It must
+perform those actions only after core success and must not activate the route
+before the inbox consumer exists. `ping_notified_at` remains NULL here.
+
 Migrations create parent tables first, then their concurrent unique ID indexes,
 then the dependent tables. Each explicit index build/removal has its own
 single-statement migration. The target's composite primary key attaches its
