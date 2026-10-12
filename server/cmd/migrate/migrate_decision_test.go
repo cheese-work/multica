@@ -22,12 +22,12 @@ func TestDecisionMigrationsUpDownUp(test *testing.T) {
 	}
 	for _, direction := range []string{"up", "down", "up"} {
 		versions := []string{
-			"596_decision_parents", "597_decision_request_id_index", "598_decision_intent_id_index",
-			"599_decision_dependents", "600_decision_answer_id_index", "601_decision_target_identity_index",
-			"602_decision_live_answer_index", "603_decision_open_intent_index", "604_decision_answer_comment_index",
-			"605_decision_request_comment_index", "606_decision_answer_messages_index", "607_decision_request_scope_index",
-			"608_decision_worker_lease_name_index", "609_decision_class_change_request_index", "610_decision_answer_request_index",
-			"611_decision_target_primary_key", "612_decision_comment_kind_validate",
+			"597_decision_parents", "598_decision_request_id_index", "599_decision_intent_id_index",
+			"600_decision_dependents", "601_decision_answer_id_index", "602_decision_target_identity_index",
+			"603_decision_live_answer_index", "604_decision_open_intent_index", "605_decision_answer_comment_index",
+			"606_decision_request_comment_index", "607_decision_answer_messages_index", "608_decision_request_scope_index",
+			"609_decision_worker_lease_name_index", "610_decision_class_change_request_index", "611_decision_answer_request_index",
+			"612_decision_target_primary_key", "613_decision_comment_kind_validate",
 		}
 		if direction == "down" {
 			slices.Reverse(versions)
@@ -89,7 +89,7 @@ func TestDecisionCommentMigrationLockTimeout(test *testing.T) {
 			AdvisoryLockKey:       int64(rand.Uint64()&0x7fffffffffffffff) | 1,
 		})
 	}
-	err = run("596_decision_parents")
+	err = run("597_decision_parents")
 	var pgError *pgconn.PgError
 	if !errors.As(err, &pgError) || pgError.Code != "55P03" {
 		test.Fatalf("comment DDL must fail at its local lock timeout, not the context deadline: %v", err)
@@ -105,7 +105,7 @@ func TestDecisionCommentMigrationLockTimeout(test *testing.T) {
 	if err := reader.Rollback(ctx); err != nil {
 		test.Fatal(err)
 	}
-	if err := run("596_decision_parents"); err != nil {
+	if err := run("597_decision_parents"); err != nil {
 		test.Fatalf("retry after releasing the reader: %v", err)
 	}
 	validationReader, err := readerPool.Begin(ctx)
@@ -116,7 +116,7 @@ func TestDecisionCommentMigrationLockTimeout(test *testing.T) {
 	if _, err := validationReader.Exec(ctx, "SELECT * FROM comment"); err != nil {
 		test.Fatal(err)
 	}
-	if err := run("612_decision_comment_kind_validate"); err != nil {
+	if err := run("613_decision_comment_kind_validate"); err != nil {
 		test.Fatalf("separate CHECK validation must coexist with an ordinary reader: %v", err)
 	}
 }

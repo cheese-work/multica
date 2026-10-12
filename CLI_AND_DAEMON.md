@@ -2,6 +2,28 @@
 
 The `multica` CLI connects your local machine to Multica. It handles authentication, workspace management, issue tracking, and runs the agent daemon that executes AI tasks locally.
 
+## Continue a web DM
+
+Type `/compact` as the first line of a web DM message. An optional focus can follow, for example `/compact retain deployment evidence`. The agent writes a handoff summary and continues the conversation in a fresh DM with the same agent, title, creator and project. The old DM is archived, not deleted. The summary links back to its readable transcript.
+
+An agent running a chat task can also write a UTF-8 summary file in its working directory and run:
+
+```bash
+multica chat continue --summary-file ./summary.md
+```
+
+The command returns the new DM's URL. The summary is its first message and seeds the next agent turn without resuming the old provider session. A summary must be non-empty and at most 65536 bytes. Do not include credentials, tokens, or secrets.
+
+The API is `POST /api/chat/sessions/<id>/continue` with `{"summary":"..."}`. Only the session's human or a running chat task of that same session can call it. The task-scoped CLI uses `POST /api/chat/continue`, which resolves the source from the authenticated task rather than accepting another session ID. Retrying a successful continuation returns the same successor.
+
+Continuations do not move decision requests.
+
+### Saved compact prompt
+
+Set the workspace default with `PATCH /api/workspaces/{id}` in `settings.compact_prompt`. Set an optional per-agent override with `PATCH /api/agents/{id}` in `runtime_config.compact_prompt` (also available through `multica agent update --runtime-config`). These existing JSON settings are replaced, not merged; preserve other keys when updating them. Values are strings of at most 16384 bytes. Empty strings or `null` inherit the workspace default, or the built-in handoff criteria if no workspace default exists.
+
+`/compact [focus]` uses the saved summary requirements and appends the focus for that invocation only. Saved prompts do not replace the continuation instructions or the secret-handling restrictions. There is no new button or quick action.
+
 ## Installation
 
 ### Homebrew (macOS/Linux)

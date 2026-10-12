@@ -19,7 +19,7 @@ func TestLaneSummaryMigrationUpDownUp(test *testing.T) {
 	}
 	for _, direction := range []string{"up", "down", "up"} {
 		if err := runMigrations(ctx, pool, runOptions{
-			Direction: direction, Files: realMigrationFiles(test, []string{"595_chat_session_lane_summary"}, direction),
+			Direction: direction, Files: realMigrationFiles(test, []string{"596_chat_session_lane_summary"}, direction),
 			SchemaMigrationsTable: schema + ".schema_migrations", AdvisoryLockKey: int64(rand.Uint64()&0x7fffffffffffffff) | 1,
 			Hooks: hooksForDirection(direction), Conditions: conditionsForDirection(direction),
 		}); err != nil {

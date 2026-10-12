@@ -19,12 +19,12 @@ import (
 )
 
 var decisionSchemaMigrations = []string{
-	"596_decision_parents", "597_decision_request_id_index", "598_decision_intent_id_index",
-	"599_decision_dependents", "600_decision_answer_id_index", "601_decision_target_identity_index",
-	"602_decision_live_answer_index", "603_decision_open_intent_index", "604_decision_answer_comment_index",
-	"605_decision_request_comment_index", "606_decision_answer_messages_index", "607_decision_request_scope_index",
-	"608_decision_worker_lease_name_index", "609_decision_class_change_request_index", "610_decision_answer_request_index",
-	"611_decision_target_primary_key", "612_decision_comment_kind_validate",
+	"597_decision_parents", "598_decision_request_id_index", "599_decision_intent_id_index",
+	"600_decision_dependents", "601_decision_answer_id_index", "602_decision_target_identity_index",
+	"603_decision_live_answer_index", "604_decision_open_intent_index", "605_decision_answer_comment_index",
+	"606_decision_request_comment_index", "607_decision_answer_messages_index", "608_decision_request_scope_index",
+	"609_decision_worker_lease_name_index", "610_decision_class_change_request_index", "611_decision_answer_request_index",
+	"612_decision_target_primary_key", "613_decision_comment_kind_validate",
 }
 
 func TestDecisionSchemaV14(test *testing.T) {
@@ -62,7 +62,7 @@ func TestDecisionSchemaV14(test *testing.T) {
 	legacyMessage := fixture.Insert(test, "chat_message", testutil.Cols{"message_kind": "message"})
 	for _, migration := range decisionSchemaMigrations {
 		fixture.Exec(test, readMigrationFile(test, migration+".up.sql"))
-		if migration == "596_decision_parents" {
+		if migration == "597_decision_parents" {
 			test.Run("comment_constraint_not_valid", func(test *testing.T) {
 				if count := fixture.Count(test, `SELECT count(*) FROM pg_constraint WHERE conrelid = 'comment'::regclass AND conname = 'comment_decision_comment_kind_check' AND NOT convalidated`); count != 1 {
 					test.Fatal("comment CHECK must be NOT VALID until the separate validation migration")
@@ -296,7 +296,7 @@ func TestDecisionIndexMigrationStructure(test *testing.T) {
 }
 
 func TestDecisionCommentConstraintMigrationStructure(test *testing.T) {
-	parents := strings.Join(strings.Fields(readMigrationFile(test, "596_decision_parents.up.sql")), " ")
+	parents := strings.Join(strings.Fields(readMigrationFile(test, "597_decision_parents.up.sql")), " ")
 	for _, statement := range strings.Split(parents, ";") {
 		if strings.Contains(statement, "ADD COLUMN IF NOT EXISTS decision_comment_kind") && strings.Contains(statement, "CHECK") {
 			test.Error("comment columns must not include an inline CHECK that scans under ACCESS EXCLUSIVE")
@@ -311,7 +311,7 @@ func TestDecisionCommentConstraintMigrationStructure(test *testing.T) {
 	if strings.Contains(parents, "VALIDATE CONSTRAINT") {
 		test.Error("comment CHECK validation must not share the column-addition transaction")
 	}
-	validation := strings.Join(strings.Fields(readMigrationFile(test, "612_decision_comment_kind_validate.up.sql")), " ")
+	validation := strings.Join(strings.Fields(readMigrationFile(test, "613_decision_comment_kind_validate.up.sql")), " ")
 	if validation != "SET LOCAL lock_timeout = '2s'; ALTER TABLE comment VALIDATE CONSTRAINT comment_decision_comment_kind_check;" {
 		test.Error("the separate validation migration must acquire only the validation lock with a local timeout")
 	}
