@@ -1,3 +1,5 @@
+SET LOCAL lock_timeout = '2s';
+
 CREATE TABLE IF NOT EXISTS decision_request (
     id uuid NOT NULL DEFAULT gen_random_uuid(),
     workspace_id uuid NOT NULL,
@@ -41,4 +43,8 @@ ALTER TABLE comment
     ADD COLUMN IF NOT EXISTS decision_request_id uuid,
     ADD COLUMN IF NOT EXISTS decision_answer_id uuid,
     ADD COLUMN IF NOT EXISTS decision_intent_id uuid,
-    ADD COLUMN IF NOT EXISTS decision_comment_kind text CHECK (decision_comment_kind IN ('ask', 'quote', 'disclaim', 'delivery', 'cancel', 'veto'));
+    ADD COLUMN IF NOT EXISTS decision_comment_kind text;
+
+ALTER TABLE comment
+    DROP CONSTRAINT IF EXISTS comment_decision_comment_kind_check,
+    ADD CONSTRAINT comment_decision_comment_kind_check CHECK (decision_comment_kind IN ('ask', 'quote', 'disclaim', 'delivery', 'cancel', 'veto')) NOT VALID;

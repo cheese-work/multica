@@ -57,6 +57,14 @@ prerequisite as successfully applied.
 
 Comment stamps are nullable server-side insert parameters. Ordinary callers
 leave them unset; no HTTP request field or decision command is added here.
+Migration 596 adds the comment columns without inline checks and installs the
+kind constraint `NOT VALID` with a transaction-local 2-second lock timeout.
+Migration 612 validates it in a separate transaction, so the validation scan
+does not hold the column-addition lock. New writes are checked before validation.
+An already-applied 596 retains its existing constraint; 612 can validate it
+without replaying 596. Validation rollback is a no-op; 596 rollback drops the
+columns and their constraint. A lock-timeout failure leaves the migration
+unrecorded; retry after the conflicting transaction ends.
 Edits preserve stamps without reassigning them. Existing message provenance
 (`sent_via`, `message_kind`) is inherited unchanged from the predecessor; the
 three decision message kinds fit the existing unconstrained text column.
