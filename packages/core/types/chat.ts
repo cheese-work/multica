@@ -21,7 +21,8 @@ export type ChatMessageKind =
   | "message"
   | "no_response"
   | "onboarding_kickoff"
-  | "onboarding_opening";
+  | "onboarding_opening"
+  | "continuation_summary";
 
 /**
  * A concise follow-up offered by an assistant reply. `label` is rendered in
@@ -84,6 +85,7 @@ export interface ChatChannelSource {
 }
 
 export interface ChatSession {
+  continued_into_session_id?: string | null;
   id: string;
   workspace_id: string;
   agent_id: string;
@@ -111,6 +113,12 @@ export interface ChatSession {
   is_current_channel_route?: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface ChatContinueResponse {
+  session: ChatSession;
+  previous_session_id: string;
+  url: string;
 }
 
 export interface PendingChatTaskItem {
