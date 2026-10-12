@@ -29,6 +29,58 @@ func (q *Queries) CloseDecisionIntent(ctx context.Context, arg CloseDecisionInte
 	return err
 }
 
+const completeDecisionIntent = `-- name: CompleteDecisionIntent :exec
+UPDATE decision_intent intent
+SET consumed_at = clock_timestamp(), consumed_by_request_id = $1,
+    sealed_at = clock_timestamp()
+WHERE intent.workspace_id = $2 AND intent.id = $3
+  AND intent.consumed_at IS NULL AND intent.sealed_at IS NULL AND intent.closed_at IS NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM decision_intent_target target
+      WHERE target.decision_intent_id = intent.id AND target.consumed_at IS NULL
+  )
+`
+
+type CompleteDecisionIntentParams struct {
+	RequestID   pgtype.UUID `json:"request_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) CompleteDecisionIntent(ctx context.Context, arg CompleteDecisionIntentParams) error {
+	_, err := q.db.Exec(ctx, completeDecisionIntent, arg.RequestID, arg.WorkspaceID, arg.ID)
+	return err
+}
+
+const consumeDecisionIntentTarget = `-- name: ConsumeDecisionIntentTarget :execrows
+UPDATE decision_intent_target target
+SET consumed_at = clock_timestamp(), consumed_by_request_id = $1
+FROM decision_intent intent
+WHERE intent.id = target.decision_intent_id AND intent.workspace_id = $2
+  AND intent.id = $3 AND target.human_user_id = $4
+  AND target.consumed_at IS NULL
+`
+
+type ConsumeDecisionIntentTargetParams struct {
+	RequestID        pgtype.UUID `json:"request_id"`
+	WorkspaceID      pgtype.UUID `json:"workspace_id"`
+	DecisionIntentID pgtype.UUID `json:"decision_intent_id"`
+	HumanUserID      pgtype.UUID `json:"human_user_id"`
+}
+
+func (q *Queries) ConsumeDecisionIntentTarget(ctx context.Context, arg ConsumeDecisionIntentTargetParams) (int64, error) {
+	result, err := q.db.Exec(ctx, consumeDecisionIntentTarget,
+		arg.RequestID,
+		arg.WorkspaceID,
+		arg.DecisionIntentID,
+		arg.HumanUserID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const createDecisionAnswer = `-- name: CreateDecisionAnswer :one
 INSERT INTO decision_answer (decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, content_snapshot, effective_at, issue_comment_id)
 VALUES ($1, $2, $3, $4, $5, $6, $7)

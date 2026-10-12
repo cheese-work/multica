@@ -61,6 +61,25 @@ SELECT * FROM decision_request
 WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')
 ORDER BY created_at, id;
 
+-- name: ConsumeDecisionIntentTarget :execrows
+UPDATE decision_intent_target target
+SET consumed_at = clock_timestamp(), consumed_by_request_id = sqlc.arg('request_id')
+FROM decision_intent intent
+WHERE intent.id = target.decision_intent_id AND intent.workspace_id = sqlc.arg('workspace_id')
+  AND intent.id = sqlc.arg('decision_intent_id') AND target.human_user_id = sqlc.arg('human_user_id')
+  AND target.consumed_at IS NULL;
+
+-- name: CompleteDecisionIntent :exec
+UPDATE decision_intent intent
+SET consumed_at = clock_timestamp(), consumed_by_request_id = sqlc.arg('request_id'),
+    sealed_at = clock_timestamp()
+WHERE intent.workspace_id = sqlc.arg('workspace_id') AND intent.id = sqlc.arg('id')
+  AND intent.consumed_at IS NULL AND intent.sealed_at IS NULL AND intent.closed_at IS NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM decision_intent_target target
+      WHERE target.decision_intent_id = intent.id AND target.consumed_at IS NULL
+  );
+
 -- name: GetDecisionIntentForTask :one
 SELECT * FROM decision_intent
 WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')
