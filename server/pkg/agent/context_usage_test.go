@@ -44,13 +44,13 @@ func TestCompactionPointsHonorLowerCLIOverrides(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "config.toml"), []byte("model_auto_compact_token_limit = 150000\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if got := codexCompactionTokens(272000, root, root, nil); got != 150000 {
+	if got := codexCompactionTokens(272000, root, root, nil, ""); got != 150000 {
 		t.Fatalf("Codex config override = %d", got)
 	}
-	if got := codexCompactionTokens(272000, root, root, []string{"-c", "model_auto_compact_token_limit=100000"}); got != 100000 {
+	if got := codexCompactionTokens(272000, root, root, []string{"-c", "model_auto_compact_token_limit=100000"}, ""); got != 100000 {
 		t.Fatalf("Codex CLI override = %d", got)
 	}
-	if got := codexCompactionTokens(272000, "", root, nil); got != 0 {
+	if got := codexCompactionTokens(272000, "", root, nil, ""); got != 0 {
 		t.Fatal("unknown Codex config did not fail closed")
 	}
 }
@@ -68,6 +68,55 @@ func TestClaudeCompactionGuardReservesSmallWindowHeadroom(t *testing.T) {
 	env = append(env, "CLAUDE_CODE_MAX_CONTEXT_TOKENS=120000")
 	if got := claudeCompactionTokens(200000, env, root, nil, "claude-sonnet-4-6"); got != 0 {
 		t.Fatalf("unverified custom window must fail closed, got %d", got)
+	}
+}
+
+func TestCodexCompactionGuardHonorsModelCatalogLimit(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "config.toml"), []byte("model = 'gpt-test'\nmodel_auto_compact_token_limit = 150000\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	catalog := `{"models":[{"slug":"gpt-test","auto_compact_token_limit":50000}]}`
+	if err := os.WriteFile(filepath.Join(root, "models_cache.json"), []byte(catalog), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := codexCompactionTokens(272000, root, root, nil, ""); got != 50000 {
+		t.Fatalf("model catalog compaction guard = %d, want 50000", got)
+	}
+	if got := codexCompactionTokens(272000, root, root, nil, "unmatched"); got != 0 {
+		t.Fatalf("unmatched model must fail closed, got %d", got)
+	}
+	if got := codexCompactionTokens(272000, root, root, []string{"-c", "model_catalog_json='custom.json'"}, "gpt-test"); got != 0 {
+		t.Fatalf("unverified custom catalog must fail closed, got %d", got)
+	}
+	if got := codexCompactionTokens(272000, root, root, []string{"-c", "model = 'unmatched'"}, ""); got != 0 {
+		t.Fatalf("unverified model override must fail closed, got %d", got)
+	}
+}
+
+func TestCodexCompactionGuardNeedsDefaultPointEvidence(t *testing.T) {
+	root := t.TempDir()
+	if got := codexCompactionTokens(272000, root, root, nil, "gpt-test"); got != 0 {
+		t.Fatalf("unknown default model point must fail closed, got %d", got)
+	}
+	if err := os.WriteFile(filepath.Join(root, "models_cache.json"), []byte(`{"models":[{"slug":"gpt-test"}]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := codexCompactionTokens(272000, root, root, nil, "gpt-test"); got != 244800 {
+		t.Fatalf("known default catalog point = %d, want 244800", got)
+	}
+}
+
+func TestCodexCompactionGuardHonorsAttachedProfileFlags(t *testing.T) {
+	root := t.TempDir()
+	config := "model_auto_compact_token_limit = 150000\n[profiles.low]\nmodel_auto_compact_token_limit = 50000\n"
+	if err := os.WriteFile(filepath.Join(root, "config.toml"), []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, flag := range []string{"-plow", "-p=low", "--profile=low"} {
+		if got := codexCompactionTokens(272000, root, root, []string{flag}, ""); got != 50000 {
+			t.Fatalf("%s compaction guard = %d, want 50000", flag, got)
+		}
 	}
 }
 

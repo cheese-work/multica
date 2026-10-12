@@ -131,7 +131,7 @@ func claudeCompactionTokens(window int64, env []string, cwd string, args []strin
 	return max(int64(0), min(compactWindow-33000, compactWindow*percent/100))
 }
 
-func codexCompactionTokens(window int64, home, cwd string, args []string) int64 {
+func codexCompactionTokens(window int64, home, cwd string, args []string, model string) int64 {
 	if window <= 0 {
 		return 0
 	}
@@ -139,6 +139,8 @@ func codexCompactionTokens(window int64, home, cwd string, args []string) int64 
 	if home == "" {
 		return 0
 	}
+	configuredModel := ""
+	knownLimit := false
 	for _, path := range []string{filepath.Join(home, "config.toml"), filepath.Join(cwd, ".codex", "config.toml")} {
 		raw, err := os.ReadFile(path)
 		if os.IsNotExist(err) {
@@ -148,10 +150,14 @@ func codexCompactionTokens(window int64, home, cwd string, args []string) int64 
 			return 0
 		}
 		var config struct {
-			Limit    *int64 `toml:"model_auto_compact_token_limit"`
-			Profile  string `toml:"profile"`
+			Limit    *int64  `toml:"model_auto_compact_token_limit"`
+			Model    string  `toml:"model"`
+			Catalog  *string `toml:"model_catalog_json"`
+			Profile  string  `toml:"profile"`
 			Profiles map[string]struct {
-				Limit *int64 `toml:"model_auto_compact_token_limit"`
+				Limit   *int64  `toml:"model_auto_compact_token_limit"`
+				Model   string  `toml:"model"`
+				Catalog *string `toml:"model_catalog_json"`
 			} `toml:"profiles"`
 		}
 		if toml.Unmarshal(raw, &config) != nil {
@@ -159,13 +165,21 @@ func codexCompactionTokens(window int64, home, cwd string, args []string) int64 
 		}
 		if config.Limit != nil {
 			limit = min(limit, *config.Limit)
+			knownLimit = true
 		}
+		if config.Catalog != nil {
+			return 0
+		}
+		selectedModel := config.Model
 		for index, arg := range args {
 			if (arg == "-p" || arg == "--profile") && index+1 < len(args) {
 				config.Profile = args[index+1]
 			}
 			if strings.HasPrefix(arg, "--profile=") {
 				config.Profile = strings.TrimPrefix(arg, "--profile=")
+			}
+			if value, found := strings.CutPrefix(arg, "-p"); found && value != "" {
+				config.Profile = strings.TrimPrefix(value, "=")
 			}
 		}
 		if config.Profile != "" {
@@ -175,10 +189,30 @@ func codexCompactionTokens(window int64, home, cwd string, args []string) int64 
 			}
 			if profile.Limit != nil {
 				limit = min(limit, *profile.Limit)
+				knownLimit = true
 			}
+			if profile.Catalog != nil {
+				return 0
+			}
+			if profile.Model != "" {
+				selectedModel = profile.Model
+			}
+		}
+		if selectedModel != "" {
+			if (model == "" || model == "unknown") && configuredModel != "" && configuredModel != selectedModel {
+				return 0
+			}
+			configuredModel = selectedModel
 		}
 	}
 	for _, arg := range args {
+		key, _, _ := strings.Cut(arg, "=")
+		if strings.TrimSpace(key) == "profile" || ((model == "" || model == "unknown") && strings.TrimSpace(key) == "model") {
+			return 0
+		}
+		if strings.Contains(arg, "model_catalog_json") {
+			return 0
+		}
 		if strings.Contains(arg, "model_auto_compact_token_limit") {
 			_, value, found := strings.Cut(arg, "=")
 			configured, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
@@ -186,7 +220,37 @@ func codexCompactionTokens(window int64, home, cwd string, args []string) int64 
 				return 0
 			}
 			limit = min(limit, configured)
+			knownLimit = true
 		}
+	}
+	if model == "" || model == "unknown" {
+		model = configuredModel
+	}
+	raw, err := os.ReadFile(filepath.Join(home, "models_cache.json"))
+	if err == nil {
+		var catalog struct {
+			Models []struct {
+				Slug  string `json:"slug"`
+				Limit *int64 `json:"auto_compact_token_limit"`
+			} `json:"models"`
+		}
+		if json.Unmarshal(raw, &catalog) != nil {
+			return 0
+		}
+		foundModel := false
+		for _, entry := range catalog.Models {
+			if entry.Slug == model && model != "" {
+				foundModel = true
+				if entry.Limit != nil {
+					limit = min(limit, *entry.Limit)
+				}
+			}
+		}
+		if !foundModel {
+			return 0
+		}
+	} else if !os.IsNotExist(err) || !knownLimit {
+		return 0
 	}
 	return max(int64(0), limit)
 }

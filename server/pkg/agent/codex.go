@@ -2064,7 +2064,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 				lastModelRequest.Model = "unknown"
 			}
 			if b.cfg.CredentialBoundary == nil {
-				lastModelRequest.CLICompactionTokens = codexCompactionTokens(lastModelRequest.ContextWindow, strings.TrimSpace(b.cfg.Env["CODEX_HOME"]), opts.Cwd, append(append([]string{}, opts.ExtraArgs...), opts.CustomArgs...))
+				lastModelRequest.CLICompactionTokens = codexCompactionTokens(lastModelRequest.ContextWindow, strings.TrimSpace(b.cfg.Env["CODEX_HOME"]), opts.Cwd, append(append([]string{}, opts.ExtraArgs...), opts.CustomArgs...), lastModelRequest.Model)
 			}
 		}
 		resCh <- Result{
