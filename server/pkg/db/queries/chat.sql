@@ -15,6 +15,24 @@ WHERE project_id = $1 AND workspace_id = $2;
 SELECT * FROM chat_session
 WHERE id = $1;
 
+-- name: SetChatContinuationSource :one
+UPDATE chat_session
+SET continued_from_session_id = $2
+WHERE id = $1
+RETURNING *;
+
+-- name: ArchiveContinuedChatSession :one
+UPDATE chat_session
+SET status = 'archived', continued_into_session_id = $2, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: GetChatContinuationSummary :one
+SELECT * FROM chat_message
+WHERE chat_session_id = $1 AND message_kind = 'continuation_summary'
+ORDER BY created_at, id
+LIMIT 1;
+
 -- name: GetChatSessionInWorkspace :one
 SELECT * FROM chat_session
 WHERE id = $1 AND workspace_id = $2;

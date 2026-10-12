@@ -3302,6 +3302,15 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}
 		}
 		resp.ChatMessage = strings.Join(parts, "\n\n")
+		if resp.ChatChannelType == "" {
+			workspace, err := h.Queries.GetWorkspace(r.Context(), cs.WorkspaceID)
+			if err != nil {
+				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+					outcome: "error_chat_compact_settings", status: http.StatusInternalServerError, message: "failed to load compact settings",
+				}
+			}
+			resp.ChatMessage = compactChatPrompt(resp.ChatMessage, workspace.Settings, agent.RuntimeConfig)
+		}
 
 		// Fail closed: a task-owned direct task that resolves to no user text
 		// (and is not the agent's proactive intro) must never dispatch an
@@ -3326,6 +3335,15 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}
 		}
 
+		if cs.ContinuedFromSessionID.Valid && resp.PriorSessionID == "" {
+			summary, err := h.Queries.GetChatContinuationSummary(r.Context(), cs.ID)
+			if err != nil {
+				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+					outcome: "error_chat_continuation_summary", status: http.StatusInternalServerError, message: "failed to load continuation summary",
+				}
+			}
+			resp.ChatMessage = "Continuation context from the previous DM:\n\n" + summary.Content + "\n\nCurrent message:\n\n" + resp.ChatMessage
+		}
 		if strings.TrimSpace(resp.ThreadName) == "" && resp.ChatMessage != "" {
 			resp.ThreadName = resp.ChatMessage
 		}

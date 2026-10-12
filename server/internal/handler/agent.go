@@ -1537,6 +1537,10 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	// public mask sentinel as gateway.token (e.g. replayed a masked GET body)
 	// drop it rather than persisting a literal "***" as a real bearer token.
 	preserveMaskedGatewayToken(req.RuntimeConfig, nil)
+	if err := validateCompactPromptConfig(req.RuntimeConfig); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	rc, _ := json.Marshal(req.RuntimeConfig)
 	if req.RuntimeConfig == nil {
 		rc = []byte("{}")
@@ -1993,6 +1997,10 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		params.AvatarUrl = pgtype.Text{String: avatarURL, Valid: true}
 	}
 	if req.RuntimeConfig != nil {
+		if err := validateCompactPromptConfig(req.RuntimeConfig); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		// Restore the persisted gateway token when the request submitted the
 		// public mask sentinel. Without this, a UI that GETs the agent and
 		// PATCHes the same payload back round-trips "***" into the database

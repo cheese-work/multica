@@ -843,7 +843,7 @@ export const ChatMessageSchema = z.object({
   failure_reason: z.string().nullable().optional(),
   elapsed_ms: z.number().nullable().optional(),
   message_kind: z
-    .enum(["message", "no_response", "onboarding_kickoff", "onboarding_opening"])
+    .enum(["message", "no_response", "onboarding_kickoff", "onboarding_opening", "continuation_summary"])
     .catch("message")
     .optional(),
   // Optional additive data degrades independently: a malformed suggestion
@@ -2028,6 +2028,7 @@ const ChatLastMessageSchema = z.object({
     "no_response",
     "onboarding_kickoff",
     "onboarding_opening",
+    "continuation_summary",
   ]).optional().catch(undefined),
 }).loose();
 
@@ -2039,6 +2040,7 @@ const ChatChannelSourceSchema = z.object({
 
 export const ChatSessionSchema: z.ZodType<ChatSession> = z.object({
   id: z.string(),
+  continued_into_session_id: z.string().uuid().nullable().optional().catch(undefined),
   workspace_id: z.string().default(""),
   agent_id: z.string().default(""),
   creator_id: z.string().default(""),
@@ -2071,6 +2073,28 @@ export const ChatSessionListSchema = z
   .transform((sessions) => sessions.filter((session) => session.id !== ""))
   .default([]);
 export const EMPTY_CHAT_SESSION_LIST: ChatSession[] = [];
+
+export const ChatContinueResponseSchema = z.object({
+  session: ChatSessionSchema,
+  previous_session_id: z.string().default(""),
+  url: z.string().default(""),
+}).loose();
+
+export const ChatSessionUpdatedPayloadSchema = z.object({
+  chat_session_id: z.string().uuid(),
+  title: z.string().optional().catch(undefined),
+  project_id: z.string().nullable().optional().catch(undefined),
+  pinned: z.boolean().optional().catch(undefined),
+  status: z.enum(["active", "archived"]).optional().catch(undefined),
+  continued_into_session_id: z.string().uuid().optional().catch(undefined),
+  updated_at: z.string().optional().catch(undefined),
+}).loose();
+
+export const EMPTY_CHAT_CONTINUE_RESPONSE = {
+  session: EMPTY_CHAT_SESSION,
+  previous_session_id: "",
+  url: "",
+};
 
 // Deferred-cancellation draft restores
 // (`GET /api/chat/sessions/{id}/draft-restores`, #5219) feed the composer
