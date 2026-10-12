@@ -2527,6 +2527,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Patch("/archive", h.SetChatSessionArchived)
 					r.Delete("/", h.DeleteChatSession)
 					r.Post("/messages", h.SendChatMessage)
+					r.Post("/continue", h.ContinueChatSession)
 					r.Post("/onboarding", h.StartMikaOnboarding)
 					// Explicit "refresh" of a turn's quick actions: re-runs the
 					// daemon suggestion pass for the latest assistant reply (MUL-5149).
@@ -2559,6 +2560,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Get("/api/chat/history", h.GetChatChannelHistory)
 			r.Put("/api/chat/summary", h.SetChatLaneSummary)
 			r.Get("/api/chat/thread", h.GetChatThread)
+			r.Post("/api/chat/continue", h.ContinueChatSession)
 
 			// Inbox
 			r.Route("/api/inbox", func(r chi.Router) {
