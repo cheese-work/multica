@@ -675,3 +675,31 @@ command-line argument or a file written to C00, so it is not visible to
 `deploy/cd/test-deploy.sh`'s `ghcr-login-happy-path` and `ghcr-login-fails`
 scenarios (mocked `docker login`/`logout`; a real end-to-end pull against
 GHCR is still pending the runner above).
+
+## Recovering after a missed `main` push (2026-10-12)
+
+Incident: no workflow ran on this repository after the last runs were
+cancelled (around 09:30 ICT on 2026-10-09) until Actions was re-enabled (final
+re-enable around 20:40 ICT on 2026-10-12). The merge of PR #192 (`8bc42d6bd6`)
+in that window created no `cd-qualification` run, so C00 kept serving the last
+deployed build (`66686df76a`). The actor and the cause of the disable are
+unconfirmed.
+
+- Re-enabling Actions does not replay a push that was missed.
+- `cd-qualification.yml` triggers only on `push` to `main` and has no
+  `workflow_dispatch`. Its first step asserts `GITHUB_EVENT_NAME = push` and
+  `GITHUB_REF = refs/heads/main`. `admission.mjs` requires the same event
+  (`event_name` `push`, `ref` `refs/heads/main`).
+- A dispatch of `cd-qualification.yml` is therefore refused (HTTP 422, no
+  `workflow_dispatch` trigger). Synthetic push evidence and rewritten `main`
+  refs are not a recovery route.
+- To recover: merge a reviewed change to `main`. That merge is a real `push`
+  event, so `cd-qualification` runs on the new `main` head and `cd-deploy`
+  follows on its `workflow_run`. This note is such a change; it needs no
+  workflow edit.
+- The deployed build is the `main` head at the time of that push, not the
+  skipped commit. Check the served commit on C00 `/health` against the merged
+  SHA after `cd-deploy` finishes.
+- The X99 CLI and daemon are not updated by CD. Update them separately from the
+  deployed fork SHA with `scripts/install-cli-from-ref.sh`. Do not use
+  `multica update`, which fetches the upstream release.
