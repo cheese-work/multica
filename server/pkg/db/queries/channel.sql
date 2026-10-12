@@ -633,6 +633,11 @@ RETURNING *
 ), generation AS (
     INSERT INTO channel_chat_context_generation (chat_session_id, revision)
     SELECT chat_session_id, context_revision FROM binding
+), origin AS (
+    UPDATE chat_session AS session
+    SET channel_origin_at = binding.created_at
+    FROM binding
+    WHERE session.id = binding.chat_session_id AND session.channel_origin_at IS NULL
 )
 SELECT * FROM binding;
 
@@ -660,6 +665,11 @@ RETURNING *
     )
     SELECT chat_session_id, context_revision, history_start_message_id, history_boundary_pending
     FROM binding
+), origin AS (
+    UPDATE chat_session AS session
+    SET channel_origin_at = binding.created_at
+    FROM binding
+    WHERE session.id = binding.chat_session_id AND session.channel_origin_at IS NULL
 )
 SELECT * FROM binding;
 

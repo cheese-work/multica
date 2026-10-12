@@ -7302,6 +7302,9 @@ type MergeCommentIntoPendingTaskRow struct {
 // @new_trigger_comment_id becomes the new trigger, so the injected prompt shows
 // the latest deliberate instruction while the single run is still told to
 // address every folded comment.
+// Updating trigger_comment_id takes FOR KEY SHARE on the new comment via its FK.
+// Decision delivery's preceding issue lock fences comment delete/update paths;
+// this merge changes an FK column, unlike task registration.
 //
 // Target is restricted to a pre-claim task on purpose (MUL-4195 review rounds
 // 2–4). This merge is reached when HasPendingTaskForIssueAndAgent matched a
