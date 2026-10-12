@@ -73,7 +73,7 @@ func TestChannelOriginMigration(t *testing.T) {
 	fixture.Insert(t, "chat_message", dbfx.Cols{
 		"chat_session_id": web, "channel_ingested": false, "created_at": early,
 	})
-	fixture.Exec(t, readMigrationFile(t, "594_chat_session_channel_origin.up.sql"))
+	fixture.Exec(t, readMigrationFile(t, "595_chat_session_channel_origin.up.sql"))
 	for _, sessionID := range []string{bound, unbound, both} {
 		var origin time.Time
 		fixture.QueryRow(t, `SELECT channel_origin_at FROM chat_session WHERE id = $1`, sessionID).Scan(&origin)
@@ -95,9 +95,9 @@ func TestChannelOriginMigration(t *testing.T) {
 	}
 	fixture.Exec(t, `UPDATE chat_session SET channel_origin_at = channel_origin_at, status = 'archived' WHERE id = $1`, bound)
 	fixture.Exec(t, `UPDATE chat_session SET channel_origin_at = $2 WHERE id = $1`, web, early)
-	fixture.Exec(t, readMigrationFile(t, "594_chat_session_channel_origin.down.sql"))
+	fixture.Exec(t, readMigrationFile(t, "595_chat_session_channel_origin.down.sql"))
 	if count := fixture.Count(t, `SELECT count(*) FROM chat_session`); count != 4 {
 		t.Fatalf("rollback lost sessions: count=%d", count)
 	}
-	fixture.Exec(t, readMigrationFile(t, "594_chat_session_channel_origin.up.sql"))
+	fixture.Exec(t, readMigrationFile(t, "595_chat_session_channel_origin.up.sql"))
 }

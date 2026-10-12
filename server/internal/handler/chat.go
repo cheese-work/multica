@@ -212,21 +212,22 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			resp = append(resp, ChatSessionResponse{
-				ID:                   uuidToString(s.ID),
-				WorkspaceID:          uuidToString(s.WorkspaceID),
-				AgentID:              uuidToString(s.AgentID),
-				CreatorID:            uuidToString(s.CreatorID),
-				ProjectID:            uuidToPtr(s.ProjectID),
-				Title:                s.Title,
-				LaneSummary:          s.LaneSummary,
-				LaneSummaryUpdatedAt: timestampToPtr(s.LaneSummaryUpdatedAt),
-				Status:               s.Status,
-				HasUnread:            s.UnreadCount > 0,
-				UnreadCount:          int(s.UnreadCount),
-				LastMessage:          buildChatLastMessage(s.LastMessageAt, s.LastMessageContent, s.LastMessageRole, s.LastMessageFailureReason, s.LastMessageKind),
-				Pinned:               s.PinnedAt.Valid,
-				CreatedAt:            timestampToString(s.CreatedAt),
-				UpdatedAt:            timestampToString(s.UpdatedAt),
+				ID:                     uuidToString(s.ID),
+				ContinuedIntoSessionID: uuidToPtr(s.ContinuedIntoSessionID),
+				WorkspaceID:            uuidToString(s.WorkspaceID),
+				AgentID:                uuidToString(s.AgentID),
+				CreatorID:              uuidToString(s.CreatorID),
+				ProjectID:              uuidToPtr(s.ProjectID),
+				Title:                  s.Title,
+				LaneSummary:            s.LaneSummary,
+				LaneSummaryUpdatedAt:   timestampToPtr(s.LaneSummaryUpdatedAt),
+				Status:                 s.Status,
+				HasUnread:              s.UnreadCount > 0,
+				UnreadCount:            int(s.UnreadCount),
+				LastMessage:            buildChatLastMessage(s.LastMessageAt, s.LastMessageContent, s.LastMessageRole, s.LastMessageFailureReason, s.LastMessageKind),
+				Pinned:                 s.PinnedAt.Valid,
+				CreatedAt:              timestampToString(s.CreatedAt),
+				UpdatedAt:              timestampToString(s.UpdatedAt),
 			})
 		}
 	} else {
@@ -244,21 +245,22 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			resp = append(resp, ChatSessionResponse{
-				ID:                   uuidToString(s.ID),
-				WorkspaceID:          uuidToString(s.WorkspaceID),
-				AgentID:              uuidToString(s.AgentID),
-				CreatorID:            uuidToString(s.CreatorID),
-				ProjectID:            uuidToPtr(s.ProjectID),
-				Title:                s.Title,
-				LaneSummary:          s.LaneSummary,
-				LaneSummaryUpdatedAt: timestampToPtr(s.LaneSummaryUpdatedAt),
-				Status:               s.Status,
-				HasUnread:            s.UnreadCount > 0,
-				UnreadCount:          int(s.UnreadCount),
-				LastMessage:          buildChatLastMessage(s.LastMessageAt, s.LastMessageContent, s.LastMessageRole, s.LastMessageFailureReason, s.LastMessageKind),
-				Pinned:               s.PinnedAt.Valid,
-				CreatedAt:            timestampToString(s.CreatedAt),
-				UpdatedAt:            timestampToString(s.UpdatedAt),
+				ID:                     uuidToString(s.ID),
+				ContinuedIntoSessionID: uuidToPtr(s.ContinuedIntoSessionID),
+				WorkspaceID:            uuidToString(s.WorkspaceID),
+				AgentID:                uuidToString(s.AgentID),
+				CreatorID:              uuidToString(s.CreatorID),
+				ProjectID:              uuidToPtr(s.ProjectID),
+				Title:                  s.Title,
+				LaneSummary:            s.LaneSummary,
+				LaneSummaryUpdatedAt:   timestampToPtr(s.LaneSummaryUpdatedAt),
+				Status:                 s.Status,
+				HasUnread:              s.UnreadCount > 0,
+				UnreadCount:            int(s.UnreadCount),
+				LastMessage:            buildChatLastMessage(s.LastMessageAt, s.LastMessageContent, s.LastMessageRole, s.LastMessageFailureReason, s.LastMessageKind),
+				Pinned:                 s.PinnedAt.Valid,
+				CreatedAt:              timestampToString(s.CreatedAt),
+				UpdatedAt:              timestampToString(s.UpdatedAt),
 			})
 		}
 	}
@@ -1921,15 +1923,16 @@ func (h *Handler) CancelTaskByUser(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 type ChatSessionResponse struct {
-	ID                   string  `json:"id"`
-	WorkspaceID          string  `json:"workspace_id"`
-	AgentID              string  `json:"agent_id"`
-	CreatorID            string  `json:"creator_id"`
-	ProjectID            *string `json:"project_id"`
-	Title                string  `json:"title"`
-	LaneSummary          string  `json:"lane_summary"`
-	LaneSummaryUpdatedAt *string `json:"lane_summary_updated_at"`
-	Status               string  `json:"status"`
+	ID                     string  `json:"id"`
+	ContinuedIntoSessionID *string `json:"continued_into_session_id,omitempty"`
+	WorkspaceID            string  `json:"workspace_id"`
+	AgentID                string  `json:"agent_id"`
+	CreatorID              string  `json:"creator_id"`
+	ProjectID              *string `json:"project_id"`
+	Title                  string  `json:"title"`
+	LaneSummary            string  `json:"lane_summary"`
+	LaneSummaryUpdatedAt   *string `json:"lane_summary_updated_at"`
+	Status                 string  `json:"status"`
 	// Only populated by list endpoints — single-session fetches return 0/false/nil.
 	// HasUnread is kept as a convenience (== UnreadCount > 0) for existing consumers.
 	HasUnread   bool             `json:"has_unread"`
@@ -2040,18 +2043,19 @@ type ChatMessageResponse struct {
 
 func chatSessionToResponse(s db.ChatSession) ChatSessionResponse {
 	return ChatSessionResponse{
-		ID:                   uuidToString(s.ID),
-		WorkspaceID:          uuidToString(s.WorkspaceID),
-		AgentID:              uuidToString(s.AgentID),
-		CreatorID:            uuidToString(s.CreatorID),
-		ProjectID:            uuidToPtr(s.ProjectID),
-		Title:                s.Title,
-		LaneSummary:          s.LaneSummary,
-		LaneSummaryUpdatedAt: timestampToPtr(s.LaneSummaryUpdatedAt),
-		Status:               s.Status,
-		Pinned:               s.PinnedAt.Valid,
-		CreatedAt:            timestampToString(s.CreatedAt),
-		UpdatedAt:            timestampToString(s.UpdatedAt),
+		ID:                     uuidToString(s.ID),
+		ContinuedIntoSessionID: uuidToPtr(s.ContinuedIntoSessionID),
+		WorkspaceID:            uuidToString(s.WorkspaceID),
+		AgentID:                uuidToString(s.AgentID),
+		CreatorID:              uuidToString(s.CreatorID),
+		ProjectID:              uuidToPtr(s.ProjectID),
+		Title:                  s.Title,
+		LaneSummary:            s.LaneSummary,
+		LaneSummaryUpdatedAt:   timestampToPtr(s.LaneSummaryUpdatedAt),
+		Status:                 s.Status,
+		Pinned:                 s.PinnedAt.Valid,
+		CreatedAt:              timestampToString(s.CreatedAt),
+		UpdatedAt:              timestampToString(s.UpdatedAt),
 	}
 }
 
@@ -2110,6 +2114,8 @@ const chatQuickActionResponseLimit = 3
 // never surprises an older client into a broken render (MUL-4351).
 func normalizeMessageKind(kind string) string {
 	switch kind {
+	case protocol.ChatMessageKindContinuationSummary:
+		return protocol.ChatMessageKindContinuationSummary
 	case protocol.ChatMessageKindNoResponse:
 		return protocol.ChatMessageKindNoResponse
 	case protocol.ChatMessageKindOnboardingKickoff:

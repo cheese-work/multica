@@ -11,6 +11,10 @@ import (
 )
 
 func TestChatMessageSentViaMigration(test *testing.T) {
+	upMigration := readMigrationFile(test, "594_chat_message_auth_provenance.up.sql")
+	if !strings.HasPrefix(upMigration, "SET LOCAL lock_timeout = '2s';") {
+		test.Error("migration must bound lock acquisition before altering chat_message")
+	}
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		test.Skip("DATABASE_URL not set")
@@ -33,8 +37,15 @@ func TestChatMessageSentViaMigration(test *testing.T) {
 	if _, err := connection.Exec(ctx, `CREATE TABLE chat_message (id int PRIMARY KEY); INSERT INTO chat_message (id) VALUES (1)`); err != nil {
 		test.Fatal(err)
 	}
-	if _, err := connection.Exec(ctx, readMigrationFile(test, "593_chat_message_auth_provenance.up.sql")); err != nil {
+	if _, err := connection.Exec(ctx, upMigration); err != nil {
 		test.Fatal(err)
+	}
+	var constraintValidated bool
+	if err := connection.QueryRow(ctx, `SELECT convalidated FROM pg_constraint WHERE conrelid = 'chat_message'::regclass AND conname = 'chat_message_sent_via_check'`).Scan(&constraintValidated); err != nil {
+		test.Fatal(err)
+	}
+	if constraintValidated {
+		test.Error("migration must defer validating existing chat messages")
 	}
 	var legacyIsNull bool
 	if err := connection.QueryRow(ctx, `SELECT sent_via IS NULL FROM chat_message WHERE id = 1`).Scan(&legacyIsNull); err != nil {
@@ -51,7 +62,7 @@ func TestChatMessageSentViaMigration(test *testing.T) {
 	if _, err := connection.Exec(ctx, `INSERT INTO chat_message (id, sent_via) VALUES (9, 'member')`); err == nil {
 		test.Fatal("unrecognized provenance must be rejected")
 	}
-	if _, err := connection.Exec(ctx, readMigrationFile(test, "593_chat_message_auth_provenance.down.sql")); err != nil {
+	if _, err := connection.Exec(ctx, readMigrationFile(test, "594_chat_message_auth_provenance.down.sql")); err != nil {
 		test.Fatal(err)
 	}
 	var count int

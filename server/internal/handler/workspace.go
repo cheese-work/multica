@@ -481,6 +481,10 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		params.Context = pgtype.Text{String: *req.Context, Valid: true}
 	}
 	if req.Settings != nil {
+		if err := validateCompactPromptConfig(req.Settings); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		if incoming, ok := req.Settings.(map[string]any); ok {
 			// Only an old client's flip of the retired PR switch needs the
 			// stored value; see reconcilePRMergeSettings.
