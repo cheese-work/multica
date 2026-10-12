@@ -23,7 +23,7 @@ Sliding renewal preserves the signed `amr` claim for browser cookies and explici
 
 ## Message Insertion
 
-Migration `593_chat_message_auth_provenance` adds nullable `chat_message.sent_via`. Existing messages remain NULL; there is no authorship backfill. The database limits non-NULL values to `interactive_jwt`, `cli_jwt`, `pat`, `task_token`, `cloud_pat`, `channel` and `system`.
+Migration `594_chat_message_auth_provenance` adds nullable `chat_message.sent_via`. Existing messages remain NULL; there is no authorship backfill. The database limits non-NULL values to `interactive_jwt`, `cli_jwt`, `pat`, `task_token`, `cloud_pat`, `channel` and `system`.
 
 Direct-chat sends carry only the middleware stamp into the transaction that creates the task and its input message. Client JSON fields do not provide provenance. Channel-ingested messages are stamped `channel` by the shared insert query. Other automated messages, including kickoff and assistant messages, default to `system`.
 

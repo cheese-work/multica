@@ -261,7 +261,8 @@ type ChatMessagePayload struct {
 // degrade to ChatMessageKindMessage on older readers.
 const (
 	// ChatMessageKindMessage is an ordinary user/assistant message.
-	ChatMessageKindMessage = "message"
+	ChatMessageKindMessage             = "message"
+	ChatMessageKindContinuationSummary = "continuation_summary"
 	// ChatMessageKindNoResponse marks a direct-chat turn the agent completed
 	// without any text reply — a visible, deliberate terminal outcome rather
 	// than a silently-dropped turn (MUL-4351).
@@ -379,8 +380,9 @@ type ChatSessionDeletedPayload struct {
 // patch the session row in their cached list so the dropdown stays in sync
 // without a full refetch.
 type ChatSessionUpdatedPayload struct {
-	ChatSessionID string `json:"chat_session_id"`
-	Title         string `json:"title"`
+	ChatSessionID          string `json:"chat_session_id"`
+	Title                  string `json:"title"`
+	ContinuedIntoSessionID string `json:"continued_into_session_id,omitempty"`
 	// ProjectID is set only by the project-context update path. The double
 	// pointer distinguishes an omitted field from an explicit JSON null.
 	ProjectID **string `json:"project_id,omitempty"`
