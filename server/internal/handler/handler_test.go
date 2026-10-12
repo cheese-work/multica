@@ -2334,6 +2334,9 @@ func TestVerifyCode(t *testing.T) {
 	if resp.Token == "" {
 		t.Fatal("VerifyCode: expected non-empty token")
 	}
+	if claims := provenanceJWTClaims(t, resp.Token); claims["amr"] != "interactive" {
+		t.Fatalf("VerifyCode JWT must be interactive: %v", claims)
+	}
 	if resp.User.Email != email {
 		t.Fatalf("VerifyCode: expected email '%s', got '%s'", email, resp.User.Email)
 	}

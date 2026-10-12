@@ -290,8 +290,7 @@ func TestAuth_StripsClientSuppliedActorSource(t *testing.T) {
 	req := httptest.NewRequest("GET", "/api/me", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	// Client tries to forge the actor-source header. The middleware must
-	// discard it before the JWT branch runs (which doesn't set it again
-	// for human sessions).
+	// discard it before the JWT branch stamps the actual auth path.
 	req.Header.Set("X-Actor-Source", "task_token")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -299,8 +298,8 @@ func TestAuth_StripsClientSuppliedActorSource(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	if gotActorSource != "" {
-		t.Fatalf("X-Actor-Source must be cleared on non-task-token paths, got %q", gotActorSource)
+	if gotActorSource != "cli_jwt" {
+		t.Fatalf("X-Actor-Source must reflect the legacy JWT path, got %q", gotActorSource)
 	}
 }
 

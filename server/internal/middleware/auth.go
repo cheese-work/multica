@@ -53,7 +53,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// X-Actor-Source is server-set only — any value supplied by
 			// the client is untrusted and discarded before the auth
-			// branches run. Only the mat_ branch below re-sets it. This
+			// branches run. Each successful auth path re-stamps it. This
 			// is what prevents a client from sending a normal mul_ PAT
 			// plus a forged `X-Actor-Source: member` (or anything else)
 			// to convince a downstream handler that its request came
@@ -121,9 +121,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				r.Header.Set("X-Workspace-ID", uuidToString(tt.WorkspaceID))
 				// X-Actor-Source flags the auth path so resolveActor and
 				// any owner-only handler can deny without re-querying the
-				// token table. The value "task_token" is the only signal
-				// this header is allowed to carry — strip anything else a
-				// client tried to send.
+				// token table.
 				r.Header.Set("X-Actor-Source", "task_token")
 				next.ServeHTTP(w, r)
 				return
@@ -202,6 +200,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 						return
 					}
 					r.Header.Set("X-User-ID", userID)
+					r.Header.Set("X-Actor-Source", "pat")
 					next.ServeHTTP(w, r)
 					return
 				}
@@ -222,6 +221,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 					return
 				}
 				r.Header.Set("X-User-ID", userID)
+				r.Header.Set("X-Actor-Source", "pat")
 
 				// Clamp cache TTL to the token's remaining lifetime so a
 				// PAT expiring in <AuthCacheTTL can't continue passing
@@ -272,6 +272,10 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				return
 			}
 			r.Header.Set("X-User-ID", sub)
+			r.Header.Set("X-Actor-Source", "cli_jwt")
+			if method, ok := claims["amr"].(string); ok && method == "interactive" {
+				r.Header.Set("X-Actor-Source", "interactive_jwt")
+			}
 			if email != "" {
 				r.Header.Set("X-User-Email", email)
 			}

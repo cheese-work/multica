@@ -942,7 +942,7 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	// creator-only), so they are the task initiator — surfaced to the agent
 	// under `## Task Initiator`. actorType/actorID were resolved above for the
 	// invoke gate.
-	sent, err := h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID))
+	sent, err := h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), r.Header.Get("X-Actor-Source"))
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrChatSessionArchived):

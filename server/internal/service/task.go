@@ -2335,6 +2335,7 @@ func (s *TaskService) SendDirectChatMessage(
 	attachmentIDs []pgtype.UUID,
 	uploaderType string,
 	uploaderID pgtype.UUID,
+	sentVia string,
 ) (*DirectChatSendResult, error) {
 	// Build the per-task Composio overlay before the transaction — it can do
 	// network I/O and must not run with a DB transaction open.
@@ -2457,6 +2458,7 @@ func (s *TaskService) SendDirectChatMessage(
 			Content:       content,
 			TaskID:        task.ID,
 			MessageKind:   pgtype.Text{String: protocol.ChatMessageKindMessage, Valid: true},
+			SentVia:       pgtype.Text{String: sentVia, Valid: sentVia != ""},
 		})
 		if err != nil {
 			return fmt.Errorf("create user chat message: %w", err)
