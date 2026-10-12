@@ -1,5 +1,6 @@
 {
   "page": {
+    "interactive_login_required": "Sign in again to use Chat",
     "title": "Chat",
     "select_prompt": "Pick a conversation, or start a new one with +",
     "agent_link_no_access": "You don't have access to chat with this agent."

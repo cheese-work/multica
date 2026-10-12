@@ -1732,6 +1732,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/api/me/onboarding/runtime-bootstrap", h.BootstrapOnboardingRuntime)
 		r.Post("/api/me/onboarding/no-runtime-bootstrap", h.BootstrapOnboardingNoRuntime)
 		r.With(handler.RequireHumanActor).Post("/api/cli-token", h.IssueCliToken)
+		r.With(handler.RequireHumanActor).Post("/api/auth/desktop-token", h.IssueDesktopToken)
 		// Sliding session renewal for clients that hold the session as a
 		// string (Desktop, mobile). Browsers get theirs re-issued inline by
 		// middleware.Auth and never call this (MUL-7436).

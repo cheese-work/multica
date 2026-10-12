@@ -104,6 +104,7 @@ const storeRef = vi.hoisted(() => ({
 const storeListeners = vi.hoisted(() => new Set<() => void>());
 const availableAgentsRef = vi.hoisted(() => ({ current: [] as Agent[] }));
 const agentsSettledRef = vi.hoisted(() => ({ current: true }));
+const interactiveLoginRequiredRef = vi.hoisted(() => ({ current: false }));
 const mockStartNewChat = vi.hoisted(() => vi.fn());
 const mockToastError = vi.hoisted(() => vi.fn());
 const mockSetActiveSession = vi.hoisted(() =>
@@ -139,6 +140,7 @@ vi.mock("./components/use-chat-controller", async () => {
       availableAgents: availableAgentsRef.current,
       agentsSettled: agentsSettledRef.current,
       sessions: [],
+      interactiveLoginRequired: interactiveLoginRequiredRef.current,
       activeSessionId: useSyncExternalStore(
         subscribeToStore,
         () => storeRef.current,
@@ -252,6 +254,7 @@ function renderPage(search: string, { strict = false } = {}) {
 }
 
 beforeEach(() => {
+  interactiveLoginRequiredRef.current = false;
   vi.clearAllMocks();
   storeRef.current = { activeSessionId: null };
   storeListeners.clear();
@@ -262,6 +265,15 @@ beforeEach(() => {
 });
 
 describe("ChatPage URL synchronization", () => {
+
+  it("prompts for interactive re-login without navigating or clearing the session", () => {
+    interactiveLoginRequiredRef.current = true;
+    storeRef.current.activeSessionId = "preserved-session";
+    const page = renderPage("?session=preserved-session");
+    expect(screen.getByRole("alert")).toHaveTextContent("Sign in again to use Chat");
+    expect(storeRef.current.activeSessionId).toBe("preserved-session");
+    expect(page.replace).not.toHaveBeenCalled();
+  });
   it.each(["/globex/issues", "/acme/issues"])(
     "does not redirect back to chat when the retained page observes %s",
     (pathname) => {

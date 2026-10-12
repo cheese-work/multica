@@ -1,5 +1,6 @@
 {
   "page": {
+    "interactive_login_required": "Reconnectez-vous pour utiliser la discussion",
     "title": "Discussion",
     "select_prompt": "Choisissez une conversation, ou démarrez-en une nouvelle avec +",
     "agent_link_no_access": "Vous n'avez pas accès à la discussion avec cet agent."

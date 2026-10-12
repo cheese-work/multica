@@ -97,7 +97,6 @@ function CallbackContent() {
         .googleLogin(code, redirectUri)
         .then(({ token }) => {
           setDesktopToken(token);
-          window.location.href = `multica://auth/callback?token=${encodeURIComponent(token)}`;
         })
         .catch((err) => {
           authLogger.error("Desktop Google OAuth callback failed", err);

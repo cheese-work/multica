@@ -101,6 +101,13 @@ func TestChatLaneAuthCannotBeForged(test *testing.T) {
 				}
 				protected := middleware.Auth(testHandler.Queries, nil, verifier, nil)(endpoint.handler)
 				response := testutil.Call(test, protected.ServeHTTP, req).Want(want)
+				if endpoint.name != "summary" && (caller == "cli_jwt" || caller == "legacy_jwt" || caller == "unknown_jwt") {
+					var refusal map[string]string
+					response.JSON(&refusal)
+					if refusal["code"] != "interactive_login_required" {
+						test.Fatalf("chat refusal = %v, want interactive_login_required", refusal)
+					}
+				}
 				if caller == "own_chat" && endpoint.name == "get" {
 					var session ChatSessionResponse
 					response.JSON(&session)

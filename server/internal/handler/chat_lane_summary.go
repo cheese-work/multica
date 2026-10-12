@@ -13,6 +13,10 @@ import (
 )
 
 func (handler *Handler) callingChatSession(writer http.ResponseWriter, request *http.Request) (db.ChatSession, bool) {
+	if request.Header.Get("X-Actor-Source") == "cli_jwt" {
+		writeErrorCode(writer, http.StatusForbidden, "interactive_login_required", "Sign in again to use Chat")
+		return db.ChatSession{}, false
+	}
 	if request.Header.Get("X-Actor-Source") != "task_token" {
 		writeError(writer, http.StatusForbidden, "interactive authentication or an own-session chat task is required")
 		return db.ChatSession{}, false

@@ -10,7 +10,7 @@ The auth middleware strips client-supplied `X-Actor-Source`, `X-Agent-ID` and `X
 | --- | --- |
 | JWT issued by email verification or Google login, with `amr=interactive` | `interactive_jwt` |
 | CLI handoff JWT, with `amr=cli` | `cli_jwt` |
-| Legacy JWT without `amr`, or an unrecognized `amr` | `cli_jwt` |
+| Legacy JWT without `amr`, or an unrecognized `amr` | `cli_jwt`; Chat remains refused until the person signs in again |
 | Personal access token, including a cache hit | `pat` |
 | Agent task token | `task_token` |
 | Cloud node PAT | `cloud_pat` |
@@ -20,6 +20,12 @@ Cookie and bearer transport use the same claim classification. Moving a CLI toke
 Sliding renewal preserves the signed `amr` claim for browser cookies and explicit bearer refresh through `/api/auth/refresh`. Renewed interactive sessions stay interactive. Renewal does not upgrade CLI, legacy or unrecognized provenance to interactive.
 
 `POST /api/cli-token` requires a human actor **and** an interactive JWT. It returns a token with `amr=cli`. PATs, task tokens, cloud PATs, CLI JWTs and legacy JWTs cannot use this endpoint to mint an interactive token or a new CLI handoff token. A legacy browser session needs a fresh interactive sign-in before obtaining a CLI handoff token.
+
+`POST /api/auth/desktop-token` requires a human actor and a verified interactive JWT. Cookie-authenticated requests must pass the existing CSRF check. It issues `amr=interactive` with a new `sid`; non-interactive credentials cannot upgrade through this endpoint. `/api/cli-token` remains CLI-only.
+
+Browser email-code sign-in and already-signed-in desktop handoffs call the desktop endpoint only after the person clicks **Open Multica Desktop**. The Google desktop callback retains its interactive `GoogleLogin` token and also waits for that click before sending the `multica://auth/callback` deep link. Neither page sends a deep link on page load. Native desktop email-code sign-in still uses `VerifyCode` directly and already receives an interactive token; it does not use a browser handoff.
+
+The four existing Chat reads refuse CLI, legacy and unknown JWT provenance with HTTP 403 and `interactive_login_required`. Web and desktop Chat display **Sign in again to use Chat**, without automatically logging the person out. Existing desktop tokens minted through `/api/cli-token` also require a new interactive sign-in. An actively renewed legacy session has no absolute lifetime, so lockout lasts until actual re-login, not until an assumed expiry or migration deadline.
 
 ## Message Insertion
 

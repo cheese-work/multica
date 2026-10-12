@@ -36,6 +36,7 @@ import { NoAgentBanner } from "./components/no-agent-banner";
 import { ArchivedAgentBanner } from "./components/archived-agent-banner";
 import { AgentAccessRevokedBanner } from "./components/agent-access-revoked-banner";
 import { RuntimeRequiredBanner } from "./components/runtime-required-banner";
+import { InteractiveLoginBanner } from "./components/interactive-login-banner";
 
 /**
  * Chat tab — the first-class two-pane surface (thread list on the left,
@@ -358,6 +359,8 @@ export function ChatPage() {
       />
     </div>
   );
+
+  if (c.interactiveLoginRequired) return <InteractiveLoginBanner />;
 
   // -- Compact: list / conversation toggle -----------------------------------
   if (isCompact) {

@@ -18,7 +18,8 @@ import { useAuthStore } from "@multica/core/auth";
 import { agentListOptions, memberListOptions } from "@multica/core/workspace/queries";
 import { projectListOptions } from "@multica/core/projects/queries";
 import { canAssignAgent } from "../../issues/components/pickers/assignee-picker";
-import { api, dispatchReasonCode } from "@multica/core/api";
+import { api, dispatchReasonCode, errorCode } from "@multica/core/api";
+import { InteractiveLoginBanner } from "./interactive-login-banner";
 import {
   isAgentRuntimeBound,
   useAgentPresenceDetail,
@@ -121,7 +122,7 @@ export function ChatWindow() {
   const { data: members = [] } = useQuery(memberListOptions(wsId));
   // Single sessions cache — eliminates the separate active/all queries
   // that used to drift during the WS-invalidate window.
-  const { data: sessions = [], isSuccess: sessionsLoaded } = useQuery(
+  const { data: sessions = [], isSuccess: sessionsLoaded, error: sessionsError } = useQuery(
     chatSessionsOptions(wsId),
   );
   const { data: projects = [], isSuccess: projectsLoaded } = useQuery(
@@ -130,6 +131,7 @@ export function ChatWindow() {
   const {
     data: rawMessagePages,
     isLoading: messagesLoading,
+    error: messagesError,
     fetchNextPage: fetchOlderMessages,
     hasNextPage: hasOlderMessages,
     isFetchingNextPage: isFetchingOlderMessages,
@@ -831,6 +833,10 @@ export function ChatWindow() {
 
   const contextItems = useChatContextItems(wsId);
   const queuedTasks = pendingTask?.queued_tasks ?? [];
+  const interactiveLoginRequired = Boolean(
+    (sessionsError && errorCode(sessionsError) === "interactive_login_required") ||
+    (messagesError && errorCode(messagesError) === "interactive_login_required"),
+  );
 
   return (
     <motion.div
@@ -919,7 +925,9 @@ export function ChatWindow() {
       </div>
 
       {/* Messages / skeleton / empty state */}
-      {showSkeleton ? (
+      {interactiveLoginRequired ? (
+        <InteractiveLoginBanner />
+      ) : showSkeleton ? (
         <ChatMessageSkeleton />
       ) : hasMessages ? (
         <ChatMessageList
@@ -1007,6 +1015,7 @@ export function ChatWindow() {
         isRunning={!!pendingTaskId}
         allowSubmitWhileRunning={pendingTask?.supports_queue === true}
         disabled={
+          interactiveLoginRequired ||
           isSessionArchived ||
           isAgentArchived ||
           isAgentAccessRevoked ||

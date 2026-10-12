@@ -1,5 +1,6 @@
 {
   "page": {
+    "interactive_login_required": "チャットを使うには再度ログインしてください",
     "title": "チャット",
     "select_prompt": "会話を選ぶか、＋ で新規作成してください",
     "agent_link_no_access": "このエージェントとチャットする権限がありません。"

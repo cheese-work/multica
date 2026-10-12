@@ -35,6 +35,21 @@ returning an empty summary and null update time. Issue agents receive lane
 descriptions only through the decision-intent windowed listing implemented
 in the subsequent decision-request slice.
 
+CLI, legacy and unknown JWT provenance receives the stable refusal code
+`interactive_login_required`. Web and desktop Chat prompt **Sign in again to
+use Chat** without automatically logging out. Sliding renewal does not add
+`amr` to legacy tokens, so an active legacy session stays locked out until
+actual re-login, with no automatic migration deadline. Existing desktop
+tokens minted by `/api/cli-token` also need replacement.
+
+Desktop browser handoffs now use `POST /api/auth/desktop-token`, which
+requires a human actor, verified interactive JWT and cookie CSRF. It issues
+an interactive token with a new session ID. Email and already-signed-in
+browser handoffs mint only after **Open Multica Desktop** is clicked. Google
+retains its interactive token and waits for that click before deep-linking.
+Native desktop email sign-in remains a direct interactive `VerifyCode` login.
+Desktop handoffs never call the CLI-only `/api/cli-token` endpoint.
+
 Existing session mutations also redact those fields for non-interactive
 callers, so a rename, pin, or archive response cannot bypass the read gate.
 The dedicated summary write returns the caller's own accepted description.
