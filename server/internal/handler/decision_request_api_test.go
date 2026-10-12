@@ -41,6 +41,11 @@ func TestDecisionRequestAPIRoundTrip(test *testing.T) {
 	})
 	testHandler.Bus.Subscribe(protocol.EventCommentCreated, func(event events.Event) {
 		if event.ActorID == fixture.agentID {
+			payload := event.Payload.(map[string]any)
+			targets, ok := payload["decision_intent_targets"].([]string)
+			if !ok || len(targets) != 1 || targets[0] != fixture.humanID {
+				test.Fatalf("ask event did not suppress the receipt-owned target: %+v", payload)
+			}
 			commentEvents++
 		}
 	})
