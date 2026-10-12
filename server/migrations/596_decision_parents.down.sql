@@ -1,3 +1,5 @@
+SET LOCAL lock_timeout = '2s';
+
 ALTER TABLE comment
     DROP COLUMN IF EXISTS decision_comment_kind,
     DROP COLUMN IF EXISTS decision_intent_id,
