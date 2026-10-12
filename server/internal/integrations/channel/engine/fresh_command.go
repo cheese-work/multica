@@ -14,7 +14,6 @@ type ControlCommandKind uint8
 const (
 	ControlCommandFreshSession ControlCommandKind = iota + 1
 	ControlCommandNewChat
-	ControlCommandCompact
 )
 
 // ControlCommand is one parsed channel session-control directive.
@@ -27,9 +26,6 @@ type ControlCommand struct {
 // inbound syntax is intentionally identical; the only distinction is the
 // product action Router applies after normalization.
 func ParseControlCommand(body string) (ControlCommand, bool) {
-	if parsed, ok := parseLeadingCommand(body, "/compact"); ok {
-		return ControlCommand{Kind: ControlCommandCompact, Body: parsed}, true
-	}
 	if parsed, ok := parseLeadingCommand(body, newChatCommandPrefix); ok {
 		return ControlCommand{Kind: ControlCommandNewChat, Body: parsed}, true
 	}
