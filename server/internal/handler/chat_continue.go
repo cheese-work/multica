@@ -136,6 +136,12 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	if err == nil {
+		err = qtx.MoveQueuedChatContinuationInputs(r.Context(), db.MoveQueuedChatContinuationInputsParams{SourceSessionID: session.ID, SuccessorSessionID: next.ID})
+	}
+	if err == nil {
+		err = qtx.CancelQueuedChatCompactions(r.Context(), session.ID)
+	}
+	if err == nil {
 		session, err = qtx.ArchiveContinuedChatSession(r.Context(), db.ArchiveContinuedChatSessionParams{ID: session.ID, ContinuedIntoSessionID: next.ID})
 	}
 	if err != nil {

@@ -2339,6 +2339,7 @@ func (s *TaskService) PromoteDeferredChannelIssueTask(ctx context.Context, taskI
 // persisted, so the handler can broadcast the user message and shape its
 // response without re-reading them.
 type DirectChatSendResult struct {
+	Session            db.ChatSession
 	Task               db.AgentTaskQueue
 	Message            db.ChatMessage
 	BoundAttachmentIDs []pgtype.UUID
@@ -2402,9 +2403,21 @@ func (s *TaskService) SendDirectChatMessage(
 		if err != nil {
 			return fmt.Errorf("reload chat session: %w", err)
 		}
-		if currentSession.Status != "active" {
-			return ErrChatSessionArchived
+		for depth := 0; currentSession.Status != "active"; depth++ {
+			if depth >= 16 || !currentSession.ContinuedIntoSessionID.Valid {
+				return ErrChatSessionArchived
+			}
+			next, err := qtx.LockChatSessionForEnqueue(ctx, currentSession.ContinuedIntoSessionID)
+			if err != nil {
+				return err
+			}
+			if next.AgentID != session.AgentID || next.WorkspaceID != session.WorkspaceID || next.CreatorID != session.CreatorID {
+				return ErrChatSessionArchived
+			}
+			currentSession = next
 		}
+		session = currentSession
+		out.Session = session
 		carrier, err := qtx.GetAgentForClaimUpdate(ctx, session.AgentID)
 		if err != nil {
 			return fmt.Errorf("reload chat agent: %w", err)
@@ -5543,6 +5556,7 @@ func ResumeUnsafeFailure(failureReason, errorText string) bool {
 // never what the workspace wants.
 func retryEligible(failureReason string, t db.AgentTaskQueue) bool {
 	return retryableReasons[failureReason] &&
+		!t.ChatCompaction &&
 		t.Attempt < retryAttemptCeiling(failureReason, t.MaxAttempts) &&
 		!t.AutopilotRunID.Valid &&
 		!IsTriageTask(t) &&

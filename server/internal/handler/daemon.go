@@ -3302,6 +3302,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}
 		}
 		resp.ChatMessage = strings.Join(parts, "\n\n")
+		if task.ChatCompaction {
+			resp.ChatMessage = "/compact"
+		}
 		if resp.ChatChannelType == "" {
 			workspace, err := h.Queries.GetWorkspace(r.Context(), cs.WorkspaceID)
 			if err != nil {
@@ -4433,6 +4436,7 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !transitioned {
+		h.enqueueChatCompactionAfterCompletion(r.Context(), *task)
 		writeJSON(w, http.StatusOK, taskToResponse(*task, workspaceID))
 		return
 	}
@@ -4456,6 +4460,7 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	// Wake the owning runtime now so queued work that was blocked by this
 	// task's agent capacity or serialization key is re-claimed immediately.
 	h.TaskService.NotifyTaskFinished(*task)
+	h.enqueueChatCompactionAfterCompletion(r.Context(), *task)
 
 	// Best-effort revoke of any agent task token minted at claim time.
 	// The token would naturally expire at the 24h watermark and is also
@@ -5185,11 +5190,26 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Usage []TaskUsagePayload `json:"usage"`
+		Usage            []TaskUsagePayload       `json:"usage"`
+		LastModelRequest *agent.ModelRequestUsage `json:"last_model_request"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
+	}
+
+	if req.LastModelRequest != nil {
+		if err := req.LastModelRequest.Validate(); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		encoded, _ := json.Marshal(req.LastModelRequest)
+		if err := h.Queries.RecordChatLastModelRequest(r.Context(), db.RecordChatLastModelRequestParams{ID: task.ID, LastModelRequest: encoded}); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to record last model request")
+			return
+		}
+		task.LastModelRequest = encoded
+		h.enqueueChatCompactionAfterCompletion(r.Context(), task)
 	}
 
 	// Provider is lowercased on write so client-side pricing lookups tolerate

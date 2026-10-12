@@ -645,13 +645,15 @@ func (c *Client) completeTaskWithRetrySchedule(ctx context.Context, taskID, outp
 	return c.postJSONWithRetry(ctx, fmt.Sprintf("/api/daemon/tasks/%s/complete", taskID), body, nil, schedule)
 }
 
-func (c *Client) ReportTaskUsage(ctx context.Context, taskID string, usage []TaskUsageEntry) error {
-	if len(usage) == 0 {
+func (c *Client) ReportTaskUsage(ctx context.Context, taskID string, usage []TaskUsageEntry, last *agent.ModelRequestUsage) error {
+	if len(usage) == 0 && last == nil {
 		return nil
 	}
-	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/usage", taskID), map[string]any{
-		"usage": usage,
-	}, nil)
+	body := map[string]any{"usage": usage}
+	if last != nil {
+		body["last_model_request"] = last
+	}
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/usage", taskID), body, nil)
 }
 
 func (c *Client) FailTask(ctx context.Context, taskID, errMsg, sessionID, workDir, branchName, failureReason string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) error {

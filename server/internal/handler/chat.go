@@ -870,7 +870,7 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	// them (see SetChatSessionArchived). The frontend disables the composer
 	// for status='archived' and only offers unarchive/delete there. Legacy
 	// soft-archived rows from before the feature are covered by the same check.
-	if session.Status != "active" {
+	if session.Status != "active" && !session.ContinuedIntoSessionID.Valid {
 		writeError(w, http.StatusBadRequest, "chat session is archived")
 		return
 	}
@@ -960,6 +960,7 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	msg := sent.Message
 	task := sent.Task
+	session = sent.Session
 	currentTitle := session.Title
 	if sent.InitialTitle != "" {
 		currentTitle = sent.InitialTitle

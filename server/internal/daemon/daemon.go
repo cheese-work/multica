@@ -5870,8 +5870,8 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 	// goroutine. Both claude.go and codex.go populate result.Usage even when
 	// runCtx is cancelled, so dropping this on the cancelled path silently
 	// under-reports billing.
-	if len(result.Usage) > 0 {
-		if usageErr := d.client.ReportTaskUsage(ctx, task.ID, result.Usage); usageErr != nil {
+	if len(result.Usage) > 0 || result.LastModelRequest != nil {
+		if usageErr := d.client.ReportTaskUsage(ctx, task.ID, result.Usage, result.LastModelRequest); usageErr != nil {
 			taskLog.Warn("report task usage failed", "error", usageErr)
 		}
 	}
@@ -8893,6 +8893,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	)
 
 	// Convert agent usage map to task usage entries.
+	defer func() { taskResult.LastModelRequest = result.LastModelRequest }()
 	var usageEntries []TaskUsageEntry
 	for model, u := range result.Usage {
 		if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 && u.CostUSDTicks <= 0 {

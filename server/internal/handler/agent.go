@@ -1541,6 +1541,10 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := service.ValidateAutoCompactConfig(req.RuntimeConfig); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	rc, _ := json.Marshal(req.RuntimeConfig)
 	if req.RuntimeConfig == nil {
 		rc = []byte("{}")
@@ -1998,6 +2002,10 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.RuntimeConfig != nil {
 		if err := validateCompactPromptConfig(req.RuntimeConfig); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := service.ValidateAutoCompactConfig(req.RuntimeConfig); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}

@@ -33,6 +33,46 @@ WHERE chat_session_id = $1 AND message_kind = 'continuation_summary'
 ORDER BY created_at, id
 LIMIT 1;
 
+-- name: RecordChatLastModelRequest :exec
+UPDATE agent_task_queue SET last_model_request = $2
+WHERE id = $1 AND chat_session_id IS NOT NULL;
+
+-- name: SetChatTaskCompaction :one
+UPDATE agent_task_queue SET chat_compaction = true WHERE id = $1 RETURNING *;
+
+-- name: IsLatestChatTask :one
+SELECT NOT EXISTS (
+    SELECT 1 FROM agent_task_queue newer
+    JOIN agent_task_queue source ON source.id = $1
+    WHERE newer.chat_session_id = source.chat_session_id
+      AND (newer.created_at, newer.id) > (source.created_at, source.id)
+      AND (newer.status != 'cancelled' OR newer.chat_compaction)
+);
+
+-- name: MoveQueuedChatContinuationInputs :exec
+WITH moved_tasks AS (
+    UPDATE agent_task_queue task
+    SET chat_session_id = sqlc.arg(successor_session_id)::uuid
+    WHERE task.chat_session_id = sqlc.arg(source_session_id)::uuid AND task.status = 'queued' AND NOT task.chat_compaction
+      AND task.regenerate_quick_actions_for IS NULL
+    RETURNING task.id
+), ordered_messages AS (
+    SELECT message.id, row_number() OVER (ORDER BY message.created_at, message.id) AS placement
+    FROM chat_message message
+    WHERE message.chat_session_id = sqlc.arg(source_session_id)::uuid AND message.task_id IN (SELECT id FROM moved_tasks)
+), moved_messages AS (
+    UPDATE chat_message message
+    SET chat_session_id = sqlc.arg(successor_session_id)::uuid, created_at = statement_timestamp() + ordered_messages.placement * interval '1 microsecond'
+    FROM ordered_messages WHERE message.id = ordered_messages.id
+    RETURNING message.id
+)
+UPDATE attachment file SET chat_session_id = sqlc.arg(successor_session_id)::uuid
+WHERE file.chat_message_id IN (SELECT id FROM moved_messages);
+
+-- name: CancelQueuedChatCompactions :exec
+UPDATE agent_task_queue SET status = 'cancelled', completed_at = now()
+WHERE chat_session_id = $1 AND chat_compaction AND status = 'queued';
+
 -- name: GetChatSessionInWorkspace :one
 SELECT * FROM chat_session
 WHERE id = $1 AND workspace_id = $2;

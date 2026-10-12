@@ -2027,16 +2027,22 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 		var usageMap map[string]TokenUsage
 		c.usageMu.Lock()
 		u := c.usage
+		lastModelRequest := c.lastModelRequest
 		c.usageMu.Unlock()
 
 		// Fallback: if no usage from JSON-RPC, scan Codex session JSONL logs.
 		// Codex writes token_count events to $CODEX_HOME/sessions/YYYY/MM/DD/*.jsonl;
 		// scan this backend's per-task CODEX_HOME, since sessions are isolated
 		// there rather than in the shared ~/.codex/sessions (MUL-4424).
-		if b.cfg.CredentialBoundary == nil && u.InputTokens == 0 && u.OutputTokens == 0 {
+		if b.cfg.CredentialBoundary == nil && ((u.InputTokens == 0 && u.OutputTokens == 0) || lastModelRequest == nil) {
 			taskCodexHome := strings.TrimSpace(b.cfg.Env["CODEX_HOME"])
 			if scanned := scanCodexSessionUsage(startTime, taskCodexHome, threadID, resumed); scanned != nil {
-				u = scanned.usage
+				if u.InputTokens == 0 && u.OutputTokens == 0 {
+					u = scanned.usage
+				}
+				if lastModelRequest == nil {
+					lastModelRequest = scanned.lastModelRequest
+				}
 				if scanned.model != "" && opts.Model == "" {
 					opts.Model = scanned.model
 				}
@@ -2051,6 +2057,16 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 			usageMap = map[string]TokenUsage{model: u}
 		}
 
+		if lastModelRequest != nil {
+			lastModelRequest.Provider = "codex"
+			lastModelRequest.Model = opts.Model
+			if lastModelRequest.Model == "" {
+				lastModelRequest.Model = "unknown"
+			}
+			if b.cfg.CredentialBoundary == nil {
+				lastModelRequest.CLICompactionTokens = codexCompactionTokens(lastModelRequest.ContextWindow, strings.TrimSpace(b.cfg.Env["CODEX_HOME"]), opts.Cwd, append(append([]string{}, opts.ExtraArgs...), opts.CustomArgs...))
+			}
+		}
 		resCh <- Result{
 			Status:                              finalStatus,
 			Output:                              finalOutput,
@@ -2058,6 +2074,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 			SessionID:                           threadID,
 			DurationMs:                          duration.Milliseconds(),
 			Usage:                               usageMap,
+			LastModelRequest:                    lastModelRequest,
 			codexStartupRefreshRetrySafe:        startupRefreshRetrySafe,
 			codexZeroToolFalseNegativeRetrySafe: zeroToolFalseNegative,
 		}
@@ -2557,8 +2574,9 @@ type codexClient struct {
 	notificationProtocol string // "unknown", "legacy", "raw"
 	turnCompleted        bool
 
-	usageMu sync.Mutex
-	usage   TokenUsage // accumulated from turn events
+	usageMu          sync.Mutex
+	usage            TokenUsage // accumulated from turn events
+	lastModelRequest *ModelRequestUsage
 	// usageTotal is the last accepted cumulative v2 usage snapshot for the
 	// active turn. Comparing later snapshots against it makes replay and
 	// duplicate delivery idempotent while retaining multi-response turns.
@@ -4002,6 +4020,8 @@ func (c *codexClient) updateThreadTokenUsage(params map[string]any) {
 	c.usageTotal = total
 	c.usageTotalSet = true
 	u := codexTokenUsage(delta)
+	lastUsage := codexTokenUsage(codexRawTokenUsageFromV2(last))
+	c.lastModelRequest = &ModelRequestUsage{InputTokens: lastUsage.InputTokens, CacheReadTokens: lastUsage.CacheReadTokens, CacheWriteTokens: lastUsage.CacheWriteTokens, ContextWindow: codexInt64(tokenUsage, "modelContextWindow")}
 	c.usage.InputTokens += u.InputTokens
 	c.usage.OutputTokens += u.OutputTokens
 	c.usage.CacheReadTokens += u.CacheReadTokens
@@ -4100,8 +4120,9 @@ func codexInt64(m map[string]any, keys ...string) int64 {
 
 // codexSessionUsage holds usage extracted from a Codex session JSONL file.
 type codexSessionUsage struct {
-	usage TokenUsage
-	model string
+	usage            TokenUsage
+	model            string
+	lastModelRequest *ModelRequestUsage
 }
 
 // scanCodexSessionUsage extracts usage for threadID from its Codex rollout.
@@ -4299,9 +4320,10 @@ type codexSessionTokenCount struct {
 	Payload   *struct {
 		Type string `json:"type"`
 		Info *struct {
-			TotalTokenUsage *codexRawTokenUsage `json:"total_token_usage"`
-			LastTokenUsage  *codexRawTokenUsage `json:"last_token_usage"`
-			Model           string              `json:"model"`
+			TotalTokenUsage    *codexRawTokenUsage `json:"total_token_usage"`
+			LastTokenUsage     *codexRawTokenUsage `json:"last_token_usage"`
+			ModelContextWindow int64               `json:"model_context_window"`
+			Model              string              `json:"model"`
 		} `json:"info"`
 		Model string `json:"model"`
 	} `json:"payload"`
@@ -4361,6 +4383,10 @@ func parseCodexSessionFileSince(path string, startTime time.Time, resumed bool) 
 		if evt.Payload.Type == "token_count" && evt.Payload.Info != nil {
 			afterStart := startTime.IsZero() || timestampAfterStart ||
 				(evt.Timestamp.IsZero() && (!resumed || afterStartBoundary))
+			if last := evt.Payload.Info.LastTokenUsage; last != nil && afterStart {
+				lastUsage := codexTokenUsage(*last)
+				result.lastModelRequest = &ModelRequestUsage{InputTokens: lastUsage.InputTokens, CacheReadTokens: lastUsage.CacheReadTokens, CacheWriteTokens: lastUsage.CacheWriteTokens, ContextWindow: evt.Payload.Info.ModelContextWindow}
+			}
 			if usage := evt.Payload.Info.TotalTokenUsage; usage != nil {
 				current := normalizeCodexRawTokenUsage(*usage)
 				if afterStart {

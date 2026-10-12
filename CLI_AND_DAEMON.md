@@ -24,6 +24,26 @@ Set the workspace default with `PATCH /api/workspaces/{id}` in `settings.compact
 
 `/compact [focus]` uses the saved summary requirements and appends the focus for that invocation only. Saved prompts do not replace the continuation instructions or the secret-handling restrictions. There is no new button or quick action.
 
+### Automatic compaction
+
+Per-agent automatic compaction is off by default. Opt in through the existing agent API or `multica agent update --runtime-config`, preserving unrelated keys:
+
+```json
+{"auto_compact":"threshold:80"}
+```
+
+Use `"off"` to disable it. Thresholds are whole percentages from 1 through 89. The recommended value is **80%**. Multica checks the last main-model request's input + cache read + cache write, not the task's accumulated usage or output tokens. The daemon records that request separately in `agent_task_queue.last_model_request` even when automatic compaction is off.
+
+Claude uses the reported model context window, or a conservative 200000-token fallback for Claude model IDs with a `[1m]` override of 1000000. Main-loop assistant usage owns the measurement; subagent and terminal task totals do not replace it. Multica's conservative CLI guard is the lower of 95% of the compact window and the compact window minus 33000 tokens: 167000 for 200K, 950000 for 1M. This is not a claim that every Claude CLI compacts at exactly 95%; current Claude documentation describes about 967K for native 1M models. Lower `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, saved `autoCompactWindow` and per-model `modelSettings.<model>.autoCompactWindow` values lower the guard. `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` caps the guard's window at 200K. Unverified custom `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, settings-file environment overrides, `--settings` or `--autocompact` arguments disable automatic admission.
+
+Codex uses the current turn's native `tokenUsage.last`, or the current turn's rollout `last_token_usage`, with the reported `modelContextWindow`. Its default compaction point is 90% of the model window; Multica uses 90% of the reported window as a conservative guard. Lower `model_auto_compact_token_limit` settings in the task config, project config, profile or CLI arguments lower that guard. Missing request/window/CLI-point data disables automatic admission. Other providers currently do not report the required last-request data and therefore do not auto-compact.
+
+The threshold must be **strictly below** the recorded CLI guard. If a custom CLI setting compacts at or before the requested threshold, Multica does not fire. Lower the Multica threshold instead. CLI documentation: [Claude model and auto-compact configuration](https://code.claude.com/docs/en/model-config), [Claude environment variables](https://code.claude.com/docs/en/env-vars), [Codex configuration](https://developers.openai.com/codex/config-reference/) and [Codex model-window defaults](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/openai_models.rs).
+
+The single `ShouldAutoCompact` decision point is called only for completed chat turns. Under the session lock, admission checks that the DM is active, the creator may still invoke the agent, the completed turn is latest and no turn is queued/running/deferred. It creates one resumed compaction task with the saved prompt. Completion replay does not duplicate the task; compaction tasks do not recursively compact or auto-retry. A failed attempt leaves the source usable and preserves queued human input. No Jev engine is built here.
+
+Messages arriving during compaction stay sealed to their own queued tasks. Continuation transfers those tasks, messages and attachment bindings atomically to the successor. The successor summary stays first; transferred message placement times restart after the summary, while owning tasks retain their original creation times. A stale-tab send follows the continuation chain under the same lock. Consumed source messages and the original archive remain readable. Decision requests do not move.
+
 ## Installation
 
 ### Homebrew (macOS/Linux)

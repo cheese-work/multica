@@ -178,6 +178,8 @@ type AgentTaskQueue struct {
 	CancelledByID             pgtype.UUID `json:"cancelled_by_id"`
 	CancelledByName           pgtype.Text `json:"cancelled_by_name"`
 	IssueSnapshot             []byte      `json:"issue_snapshot"`
+	LastModelRequest          []byte      `json:"last_model_request"`
+	ChatCompaction            bool        `json:"chat_compaction"`
 }
 
 type AgentToLabel struct {

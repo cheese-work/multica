@@ -219,6 +219,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		sawAsyncLaunch := false
 		usage := make(map[string]TokenUsage)
 		seenUsage := make(map[string]struct{})
+		var lastModelRequest *ModelRequestUsage
 		eventCount := 0
 		invalidEventCount := 0
 		assistantEventCount := 0
@@ -277,6 +278,9 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			switch msg.Type {
 			case "assistant":
 				assistantEventCount++
+				if request := claudeRequestUsage(msg, opts.Model); request != nil {
+					lastModelRequest = request
+				}
 				turn := b.handleAssistant(msg, msgCh, usage, seenUsage)
 				toolUseCount += turn.toolUses
 				if !turn.understood {
@@ -294,6 +298,11 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				trySend(msgCh, Message{Type: MessageStatus, Status: "running", SessionID: sessionID})
 			case "result":
 				sawResult = true
+				if lastModelRequest != nil {
+					if modelUsage, found := msg.ModelUsage[lastModelRequest.Model]; found && modelUsage.ContextWindow > 0 {
+						lastModelRequest.ContextWindow = modelUsage.ContextWindow
+					}
+				}
 				finalResultText = msg.ResultText
 				resultIsError = msg.IsError
 				terminalReasonError = claudeTerminalReasonFailure(msg.TerminalReason, msg.ResultText)
@@ -456,14 +465,18 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			)
 		}
 
+		if lastModelRequest != nil {
+			lastModelRequest.CLICompactionTokens = claudeCompactionTokens(lastModelRequest.ContextWindow, cmd.Env, opts.Cwd, args, lastModelRequest.Model)
+		}
 		resCh <- Result{
-			Status:         finalStatus,
-			Output:         finalOutput,
-			Error:          finalError,
-			DurationMs:     duration.Milliseconds(),
-			SessionID:      reportedSessionID,
-			Usage:          usage,
-			ResumeRejected: resumeRejected,
+			Status:           finalStatus,
+			Output:           finalOutput,
+			Error:            finalError,
+			DurationMs:       duration.Milliseconds(),
+			SessionID:        reportedSessionID,
+			Usage:            usage,
+			LastModelRequest: lastModelRequest,
+			ResumeRejected:   resumeRejected,
 		}
 	}()
 
@@ -709,6 +722,7 @@ type claudeUsage struct {
 }
 
 type claudeResultModelUsage struct {
+	ContextWindow            int64 `json:"contextWindow"`
 	InputTokens              int64 `json:"inputTokens"`
 	OutputTokens             int64 `json:"outputTokens"`
 	CacheReadInputTokens     int64 `json:"cacheReadInputTokens"`
