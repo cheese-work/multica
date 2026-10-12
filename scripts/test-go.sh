@@ -49,7 +49,12 @@ if [ "$only" != agent ]; then
       *) regular_packages+=("$package") ;;
     esac
   done
-  "$GUARD_SCRIPT" -- go "${go_test_args[@]}" "${regular_packages[@]}"
+  # CHE-731: these packages share one Postgres instance and its tables (see
+  # testutil/db.go), so the default per-package parallelism raced multiple
+  # packages' fixtures against each other and produced cross-package lock
+  # waits and timeouts. -p 1 runs packages one at a time; tests within a
+  # package keep the default -parallel.
+  "$GUARD_SCRIPT" -- go "${go_test_args[@]}" -p 1 "${regular_packages[@]}"
 fi
 
 if [ "$only" != regular ]; then

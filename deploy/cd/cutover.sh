@@ -1,0 +1,825 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# A/B slot cutover controller (CHE-397 unit 2). Runs ON C00, under the same
+# deploy lock and Docker/Compose/migration primitives deploy.sh already
+# established (D2, CHE-530) — this script extends that machinery rather than
+# forking a second one: it sources deploy-lib.sh for every image/tuple/
+# migration helper, calls deploy/cd/quiescence.mjs for the same admission
+# gates D2 uses, and delegates the actual "is this packet safe to admit" and
+# "is this router config well-formed" questions to release-packet.mjs and
+# router.sh respectively.
+#
+# What this script adds that deploy.sh's single-slot path does not need:
+# picking which of two ALREADY-DEPLOYED colours is active, and switching the
+# local router's generation to match — deploy.sh has exactly one backend/
+# frontend pair and never needs to choose between colours.
+#
+# ## Forward and rollback execution (accepted architecture, verbatim mapping)
+#
+#   1. Acquire lock, record state           -> stage_prepare()
+#   2. Gate/drain/quiesce/migrate           -> stage_quiesce_and_migrate()
+#   3. Start candidate, activate router     -> stage_activate()
+#   4. Rollback: quiesce candidate, restore -> cmd_rollback()
+#   5. Record reconciliation, release lock  -> the `flock` fd closing on exit
+#
+# Only one colour is ever started at a time (see docker-compose.ab.yml's own
+# comment on why: in-memory realtime hubs and backend-owned schedulers make
+# a second live backend unsafe, not just redundant).
+
+usage() {
+  cat <<'EOF'
+usage: cutover.sh <command> [options]
+
+Commands:
+  cutover --manifest PATH --packet PATH --compose-dir PATH --state-dir PATH
+      Full forward cutover: quiesce the currently-active colour, run the
+      standalone migrator against the INACTIVE colour's image, start the
+      inactive colour through the migration-free path, verify /health +
+      /readyz, activate its router generation, reopen admission. On any
+      gate failure, leaves the previously-active colour serving and exits
+      nonzero without activating the router.
+
+  rollback --compose-dir PATH --state-dir PATH
+      Gate admission, verify the retained predecessor colour against the
+      CURRENT schema, start it without migrations, restore its router
+      generation. Never runs a down migration or restores from backup —
+      that is the separately authorized recovery path.
+
+  status --state-dir PATH
+      Print which colour is currently active (from cutover-state.json) and
+      exit 0. Never touches Docker or the router.
+
+State file: --state-dir/cutover-state.json records {active_colour,
+image_tuple, migration_ledger_version, minimum_rollback_version,
+router_generation, updated_at}. migration_ledger_version is the ACTIVE
+colour's own (post-migration) ledger; minimum_rollback_version is copied
+straight from the admitted release packet's own field — the compatibility
+floor a future rollback verifies the current ledger sits AT OR AFTER
+(order-aware, not strict equality — see cutover.sh's rollback branch) before
+restarting the retained predecessor. This is the A/B counterpart to
+deploy.sh's deployed-tuple.json. cutover.sh
+reads and writes this file under the SAME flock deploy.sh uses (--state-dir is shared),
+so a cutover.sh run and a deploy.sh run can never interleave.
+
+Environment:
+  GHCR_PULL_TOKEN     Optional read:packages GHCR PAT (CHE-549). When set,
+                      the `cutover` command logs in to ghcr.io immediately
+                      before pulling the candidate colour's image pair and
+                      logs out on exit. Unset skips both silently — same
+                      contract as deploy.sh's own GHCR_PULL_TOKEN.
+  CUTOVER_DATABASE_URL   Required by `cutover`/`rollback`: the DATABASE_URL
+                      the compose stack's postgres service uses.
+  ROUTER_STATE_DIR    Overrides router.sh's state directory (test isolation
+                      only — production uses the canonical repo-relative path).
+  CUTOVER_LOCK_WAIT_SECONDS   Overrides the 600s deploy-lock wait bound
+                      (test isolation only).
+EOF
+}
+
+root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+command=${1:-}
+shift || true
+
+if [ "$command" = "--help" ] || [ "$command" = "-h" ] || [ -z "$command" ]; then
+  usage
+  exit 0
+fi
+
+manifest=""
+packet=""
+compose_dir=""
+state_dir=""
+
+while (($#)); do
+  case "$1" in
+    --manifest) manifest=${2:?}; shift 2 ;;
+    --packet) packet=${2:?}; shift 2 ;;
+    --compose-dir) compose_dir=${2:?}; shift 2 ;;
+    --state-dir) state_dir=${2:?}; shift 2 ;;
+    --help) usage; exit 0 ;;
+    *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+require() {
+  if [ -z "$2" ]; then
+    echo "missing $1" >&2
+    usage >&2
+    exit 2
+  fi
+}
+require --state-dir "$state_dir"
+if [ "$command" != "status" ]; then
+  require --compose-dir "$compose_dir"
+fi
+
+mkdir -p "$state_dir"
+cutover_state_file="$state_dir/cutover-state.json"
+
+# router_state_dir MUST be the exact directory router/docker-compose.router.yml
+# bind-mounts into the running router container (./state relative to that
+# compose file, i.e. deploy/cd/router/state) — NOT a path derived from this
+# invocation's own --state-dir, which is caller-supplied and arbitrary (a
+# test's mktemp dir, an operator's chosen state root, ...). router.sh
+# defaults to exactly this same canonical location when no --state-dir is
+# given it; pointing cutover.sh's own call at a different, cutover-scoped
+# directory (the original bug an independent review caught) would make
+# `select` render and validate a generation the running container's bind
+# mount can never see, so a cutover would report success while the router
+# kept serving the previous generation. ROUTER_STATE_DIR exists solely for
+# test-cutover.sh to point at an isolated scratch directory instead of the
+# real repo-relative path.
+router_state_dir="${ROUTER_STATE_DIR:-$root_dir/deploy/cd/router/state}"
+deploy_lock="$state_dir/deploy.lock"
+
+# shellcheck source=deploy-lib.sh
+source "$script_dir/deploy-lib.sh"
+compose_files=("docker-compose.selfhost.yml" "$script_dir/docker-compose.ab.yml")
+
+# ghcr_login/ghcr_logout (deploy-lib.sh, CHE-549) — C00 has no ambient GHCR
+# credential, so an unauthenticated pull of the private multica-backend/
+# multica-web packages fails with 403 the same way deploy.sh's single-slot
+# pull did before CHE-549. Registered on EXIT immediately after sourcing
+# deploy-lib.sh, before login ever runs, so logout fires on every exit path
+# of every command (cutover, rollback, status, or an early require/usage
+# exit) — not just the cutover pull's own success path.
+trap ghcr_logout EXIT
+
+other_colour() {
+  case "$1" in
+    blue) echo green ;;
+    green) echo blue ;;
+    *) echo "unknown colour: $1" >&2; return 1 ;;
+  esac
+}
+
+active_colour() {
+  if [ -f "$cutover_state_file" ]; then
+    json_field "$cutover_state_file" active_colour
+  fi
+}
+
+# Ports (CHE-773). Every slot port comes from `docker compose config` —
+# the same .env-aware render Compose publishes from — and is exported under
+# the names router.sh reads, so controller, Compose and router can never
+# hold different interpretations. The previous `${BACKEND_GREEN_PORT:-18082}`
+# fallback silently disagreed with Compose whenever .env set a port the
+# calling shell had sourced but not exported (`. ./.env` in CD's `bash -c`):
+# the controller health-checked 18082 while green listened on 18092, then
+# stopped green with blue already drained.
+resolve_slot_ports() {
+  local colour role target var port
+  for colour in blue green; do
+    for role in backend frontend; do
+      target=8080
+      [ "$role" = frontend ] && target=3000
+      var="$(printf '%s_%s_PORT' "$role" "$colour" | tr '[:lower:]' '[:upper:]')"
+      if ! port="$(compose_rendered_port "${role}-${colour}" "$target")"; then
+        echo "!! could not resolve the host port Compose renders for ${role}-${colour}:${target}" >&2
+        return 1
+      fi
+      export "$var=$port"
+    done
+  done
+}
+
+slot_port() {
+  local var
+  var="$(printf '%s_%s_PORT' "$1" "$2" | tr '[:lower:]' '[:upper:]')"
+  printf '%s' "${!var}"
+}
+
+# The router's own listeners (router/nginx.conf.template) — what Tailscale
+# Serve forwards public traffic to.
+router_api_port=8081
+router_web_port=3000
+
+# published_port_matches: the RUNNING container's actual published binding
+# (`docker compose port`) equals the rendered one.
+published_port_matches() {
+  local service=$1 target=$2 want=$3 got
+  got="$(service_published_port "$service" "$target")"
+  if [ "$got" != "$want" ]; then
+    echo "!! ${service}:${target} is published on '${got:-<none>}', Compose renders '$want'" >&2
+    return 1
+  fi
+}
+
+# conf_upstreams prints "<listen port>=<upstream port>" for each server
+# block of an Nginx config read on stdin (router/nginx.conf.template shape:
+# one listen + one proxy_pass per server).
+conf_upstreams() {
+  awk '
+    /listen 127\.0\.0\.1:[0-9]+/ { match($0, /:[0-9]+/); listen = substr($0, RSTART + 1, RLENGTH - 1) }
+    /proxy_pass http:\/\/127\.0\.0\.1:[0-9]+/ { match($0, /127\.0\.0\.1:[0-9]+/); print listen "=" substr($0, RSTART + 10, RLENGTH - 10) }
+  '
+}
+
+# router_selects: the router forwards to exactly this colour's rendered
+# ports — checked in all three places that could disagree: the generation
+# metadata (active.json), the generation file Nginx includes (active.conf),
+# and the config the RUNNING router container actually loads (`nginx -T`
+# inside it, which also proves its bind mount sees this generation).
+router_selects() {
+  local colour=$1 json="$router_state_dir/active.json" c b f want got
+  if [ ! -f "$json" ]; then
+    echo "!! no active router generation at $json" >&2
+    return 1
+  fi
+  c="$(json_field "$json" colour)"
+  b="$(json_field "$json" backend_port)"
+  f="$(json_field "$json" frontend_port)"
+  if [ "$c" != "$colour" ] || [ "$b" != "$(slot_port backend "$colour")" ] || [ "$f" != "$(slot_port frontend "$colour")" ]; then
+    echo "!! router metadata selects colour=$c backend=$b frontend=$f; expected colour=$colour backend=$(slot_port backend "$colour") frontend=$(slot_port frontend "$colour")" >&2
+    return 1
+  fi
+  want="$(printf '%s=%s\n%s=%s' "$router_api_port" "$(slot_port backend "$colour")" "$router_web_port" "$(slot_port frontend "$colour")")"
+  got="$(conf_upstreams <"$router_state_dir/active.conf" 2>/dev/null || true)"
+  if [ "$got" != "$want" ]; then
+    echo "!! router active.conf upstreams [${got//$'\n'/ }] differ from expected [${want//$'\n'/ }]" >&2
+    return 1
+  fi
+  got="$(docker exec "${ROUTER_CONTAINER_NAME:-multica-ab-router}" nginx -T 2>/dev/null | conf_upstreams || true)"
+  if [ "$got" != "$want" ]; then
+    echo "!! running router's effective config (nginx -T) upstreams [${got//$'\n'/ }] differ from expected [${want//$'\n'/ }]" >&2
+    return 1
+  fi
+}
+
+health_commit() {
+  curl --fail --silent --show-error "http://127.0.0.1:$1/health" 2>/dev/null | json_field /dev/stdin commit 2>/dev/null
+}
+
+health_process() {
+  curl --fail --silent --show-error "http://127.0.0.1:$1/health" 2>/dev/null |
+    node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const h=JSON.parse(d);if(h.commit&&h.pid)process.stdout.write(`${h.commit}/${h.pid}/${h.started_at??""}`)}catch{}})'
+}
+
+# public_route_serves: the router's public API listener reaches the SAME
+# backend process as the slot port (commit + pid + started_at from /health —
+# a commit alone cannot tell two slots running the same release apart), it
+# reports the expected commit, and the public web listener answers.
+public_route_serves() {
+  local backend_port=$1 commit=$2 via_router direct
+  via_router="$(health_process "$router_api_port")"
+  direct="$(health_process "$backend_port")"
+  if [ -z "$direct" ] || [ "$via_router" != "$direct" ] || [ "${direct%%/*}" != "$commit" ]; then
+    echo "!! public API :$router_api_port reaches process '${via_router:-<none>}', slot :$backend_port is '${direct:-<none>}', expected commit $commit" >&2
+    return 1
+  fi
+  curl --fail --silent --show-error "http://127.0.0.1:${router_web_port}/" >/dev/null 2>&1
+}
+
+# stop_confirmed stops services and proves they are down: Compose's own exit
+# status AND `compose ps --status running` listing none of them. The single-
+# active-backend invariant rests on this — a stop that failed or left a
+# container running must never be followed by a migration or by starting
+# the other colour.
+stop_confirmed() {
+  local still
+  if ! compose stop "$@" >/dev/null 2>&1; then
+    echo "!! docker compose stop $* failed" >&2
+    return 1
+  fi
+  if ! still="$(compose ps --status running --format '{{.Service}}' "$@" 2>/dev/null)"; then
+    echo "!! could not confirm $* stopped (docker compose ps failed)" >&2
+    return 1
+  fi
+  if [ -n "$still" ]; then
+    echo "!! still running after stop: ${still//$'\n'/ }" >&2
+    return 1
+  fi
+}
+
+# container_image_id: the image ID the service's RUNNING container was
+# created from — not what its tag points at now, which a stale container
+# would not reflect.
+container_image_id() {
+  local cid
+  cid="$(compose ps -q "$1" 2>/dev/null | head -1)"
+  [ -n "$cid" ] || return 1
+  docker inspect --format '{{.Image}}' "$cid" 2>/dev/null
+}
+
+# runs_verified_image: service's running container uses exactly the local
+# image repo:tag resolves to, whose digest verify_pulled_digest already
+# matched against the manifest.
+runs_verified_image() {
+  local service=$1 ref=$2 running want
+  running="$(container_image_id "$service" || true)"
+  want="$(docker inspect --format '{{.Id}}' "$ref" 2>/dev/null || true)"
+  if [ -z "$want" ] || [ "$running" != "$want" ]; then
+    echo "!! $service runs image '${running:-<none>}', verified $ref is '${want:-<none>}'" >&2
+    return 1
+  fi
+}
+
+alert_outage() {
+  local reason=$1
+  echo "::error title=Multica A/B cutover outage::$reason" >&2
+  echo "!! OUTAGE: $reason — MANUAL INTERVENTION REQUIRED (runbook: deploy/cd/README.md, \"A/B outage runbook\")" >&2
+  cat >"$state_dir/outage-alert.json" <<JSON
+{"at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)", "reason": "$reason"}
+JSON
+}
+
+# recover_incumbent restarts the drained incumbent after a post-drain
+# failure — only when compatibility is proven, never blind:
+#   - the candidate is stopped first (one backend/scheduler at a time);
+#   - the live ledger is unchanged since the incumbent last served it, or
+#     sits within [packet minimum_rollback_version, packet final version] —
+#     a schema the incumbent is required to serve under expand/contract (no
+#     down migration, no restore);
+#   - `compose start` reuses the incumbent's own stopped containers, and the
+#     restarted image must equal the one recorded before the drain;
+#   - its /health commit, its router generation and the public route must
+#     all read back as the pre-drain incumbent.
+# Any unproven step raises alert_outage instead. Always exits nonzero: the
+# cutover itself failed.
+recover_incumbent() {
+  local reason=$1 ledger final
+  echo "!! $reason" >&2
+  echo "==> post-drain failure; attempting compatibility-gated recovery of incumbent colour=$from_colour" >&2
+  if ! stop_confirmed "backend-${to_colour}" "frontend-${to_colour}"; then
+    alert_outage "$reason; candidate $to_colour shutdown NOT confirmed, so $from_colour was NOT started (never two backends on one DB); stop $to_colour by hand, then follow the runbook"
+    exit 1
+  fi
+
+  ledger="$(current_ledger_version)" || ledger=""
+  final="$(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(p.ordered_migrations.at(-1)?.version??"")' "$packet")"
+  if [ -z "$ledger" ] || { [ "$ledger" != "$incumbent_ledger" ] && {
+    ! ledger_at_or_after "$ledger" "$packet_minimum_rollback_version" "$root_dir/server/migrations" ||
+      ! ledger_at_or_after "$final" "$ledger" "$root_dir/server/migrations"; }; }; then
+    alert_outage "$reason; ledger '${ledger:-<unreadable>}' is neither the pre-drain ledger ($incumbent_ledger) nor within [$packet_minimum_rollback_version, $final], so $from_colour is not proven schema-compatible and was NOT restarted; both colours are stopped"
+    exit 1
+  fi
+  if ! compose start "backend-${from_colour}" "frontend-${from_colour}" >/dev/null 2>&1; then
+    alert_outage "$reason; restarting $from_colour failed; both colours are stopped"
+    exit 1
+  fi
+  if [ "$(container_image_id "backend-${from_colour}" || true)" != "$incumbent_backend_image_id" ] ||
+    [ "$(container_image_id "frontend-${from_colour}" || true)" != "$incumbent_web_image_id" ]; then
+    stop_confirmed "backend-${from_colour}" "frontend-${from_colour}" || true
+    alert_outage "$reason; restarted $from_colour container image differs from the pre-drain incumbent ($incumbent_backend_image_id / $incumbent_web_image_id); stopping it again was attempted"
+    exit 1
+  fi
+  if ! published_port_matches "backend-${from_colour}" 8080 "$(slot_port backend "$from_colour")" ||
+    ! published_port_matches "frontend-${from_colour}" 3000 "$(slot_port frontend "$from_colour")" ||
+    ! wait_ready_on_port "$(slot_port backend "$from_colour")" 120 ||
+    ! verify_health_identity "$(slot_port backend "$from_colour")" "$incumbent_commit"; then
+    alert_outage "$reason; $from_colour was restarted but did not come back healthy as commit $incumbent_commit"
+    exit 1
+  fi
+  if ! bash "$script_dir/router.sh" select --colour "$from_colour" --state-dir "$router_state_dir" ||
+    ! router_selects "$from_colour" || ! public_route_serves "$(slot_port backend "$from_colour")" "$incumbent_commit"; then
+    alert_outage "$reason; $from_colour is running and healthy but the public route does not read back as $from_colour"
+    exit 1
+  fi
+  echo "!! RECOVERED: cutover to $to_colour failed ($reason); $from_colour restarted (image $incumbent_backend_image, commit $incumbent_commit, ledger $ledger) and the public route reads back healthy. Cutover state unchanged; investigate before retrying." >&2
+  exit 1
+}
+
+write_cutover_state() {
+  local colour=$1 backend_image=$2 web_image=$3 ledger_version=$4 minimum_rollback_version=$5
+  cat >"$cutover_state_file" <<JSON
+{
+  "active_colour": "$colour",
+  "image_tuple": { "backend": "$backend_image", "web": "$web_image" },
+  "migration_ledger_version": "$ledger_version",
+  "minimum_rollback_version": "$minimum_rollback_version",
+  "router_generation_colour": "$colour",
+  "updated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+JSON
+}
+
+# A second cutover/rollback invocation while one is already running must not
+# interleave migration steps, colour starts, or router generation swaps with
+# this one — and must not race a concurrent deploy.sh single-slot run either,
+# which is exactly why this uses the SAME lock file deploy.sh takes when
+# --state-dir points at the same directory.
+#
+# CUTOVER_LOCK_WAIT_SECONDS defaults to 600s (matching deploy.sh's own
+# bound) — overridable solely so test-cutover.sh's "lost controller
+# connection" scenario can prove the actual refusal path (message + no
+# Docker calls) in a few seconds instead of waiting out the real 600s
+# production bound.
+lock_wait_seconds="${CUTOVER_LOCK_WAIT_SECONDS:-600}"
+exec 9>"$deploy_lock"
+if ! flock -w "$lock_wait_seconds" 9; then
+  echo "could not acquire deploy lock within ${lock_wait_seconds}s — another deploy/cutover is running" >&2
+  exit 1
+fi
+
+case "$command" in
+  status)
+    colour="$(active_colour)"
+    if [ -z "$colour" ]; then
+      echo "no cutover state recorded in $state_dir" >&2
+      exit 1
+    fi
+    echo "$colour"
+    exit 0
+    ;;
+
+  cutover)
+    require --manifest "$manifest"
+    require --packet "$packet"
+
+    backend_image="$(json_field "$manifest" images.backend)"
+    web_image="$(json_field "$manifest" images.web)"
+    source_sha="$(json_field "$manifest" source_sha)"
+    if [ ! "$backend_image" ] || [ ! "$web_image" ] || [ ! "$source_sha" ]; then
+      echo "manifest is missing images.backend / images.web / source_sha" >&2
+      exit 1
+    fi
+    backend_repo="$(image_repo "$backend_image")"
+    backend_digest="$(image_digest "$backend_image")"
+    web_repo="$(image_repo "$web_image")"
+    web_digest="$(image_digest "$web_image")"
+    image_tag="sha-${source_sha}"
+
+    # Step 4 (contract): reject a packet with checksum drift, dirty ledger,
+    # invalid indexes, incomplete hooks, or a missing rollback target BEFORE
+    # any mutation — the packet is the release's admission proof, not an
+    # advisory document.
+    echo "==> verifying release packet contract"
+    if ! node "$script_dir/release-packet.mjs" verify --packet "$packet" --manifest "$manifest" \
+      --migrations-dir "$root_dir/server/migrations"; then
+      echo "!! release packet failed contract checks; refusing to cut over" >&2
+      exit 1
+    fi
+
+    # Port-collision preflight: the base (un-scaled) "frontend" service
+    # publishes 127.0.0.1:${FRONTEND_PORT:-3000}, the same host port the
+    # router's own frontend listener binds (docker-compose.router.yml,
+    # network_mode: host). docker-compose.ab.yml's own comment says the
+    # base backend/frontend services must be scaled to zero once A/B is
+    # adopted, but nothing enforced that — this is the documented
+    # prerequisite from an independent review finding made into an actual
+    # preflight check rather than an assumption. Refuse loudly here rather
+    # than let the router container fail to bind at reload time, deep into
+    # the cutover.
+    base_running="$(compose ps --status running --format '{{.Service}}' backend frontend 2>/dev/null || true)"
+    if [ -n "$base_running" ]; then
+      echo "!! base (pre-A/B) service(s) still running: $base_running — these must be scaled to zero before an A/B cutover (docker compose ... up -d --scale backend=0 --scale frontend=0 <router-adopting compose invocation>), or the router's own 127.0.0.1:3000 listener collides with the un-scaled frontend service's published port" >&2
+      exit 1
+    fi
+
+    from_colour="$(active_colour)"
+    if [ -z "$from_colour" ]; then
+      from_colour="blue" # first-ever A/B cutover on this host: treat blue as the incumbent slot
+      echo "==> no prior cutover-state.json; treating '$from_colour' as the incumbent colour for this first A/B cutover"
+    fi
+    to_colour="$(other_colour "$from_colour")"
+    echo "==> cutover plan: $from_colour (active) -> $to_colour (candidate)"
+
+    if ! resolve_slot_ports; then
+      echo "!! slot ports unresolved; $from_colour remains active" >&2
+      exit 1
+    fi
+    echo "==> rendered slot ports: backend blue=$BACKEND_BLUE_PORT green=$BACKEND_GREEN_PORT, frontend blue=$FRONTEND_BLUE_PORT green=$FRONTEND_GREEN_PORT"
+
+    migration_service_name="backend-${to_colour}"
+
+    # quiescence.mjs has no host `psql` binary to fall back to on C00 —
+    # docker exec into the already-running postgres service container
+    # (deploy-lib.sh's postgres_container_id) rather than quiescence.mjs's
+    # own --psql-via-docker-network mode, which starts a SECOND, independent
+    # postgres:16-alpine container per query: ~450-550ms of container-start
+    # overhead against quiescence.mjs's own <=500ms DEFAULT_QUERY_TIMEOUT_MS
+    # statement budget, which made every gate check below fail closed on a
+    # timeout indistinguishable from real contention (CHE-655). `docker exec`
+    # into the container already running measures ~100-150ms.
+    postgres_container="$(postgres_container_id)" || exit 1
+
+    # Step 1: admission gate + quiescence preflight against the CURRENTLY
+    # ACTIVE colour's database connection — coarse, cheap, denies on any
+    # already-visible hard blocker before an outage is even started.
+    database_url="${CUTOVER_DATABASE_URL:?CUTOVER_DATABASE_URL is required, the same DATABASE_URL the compose stacks postgres service uses}"
+    echo "==> quiescence preflight"
+    if ! node "$script_dir/quiescence.mjs" preflight --database-url "$database_url" --psql-via-docker-exec "$postgres_container"; then
+      echo "!! quiescence preflight denied cutover; $from_colour remains active" >&2
+      exit 1
+    fi
+
+    if ! ghcr_login; then
+      echo "!! ghcr.io login failed; $from_colour remains active" >&2
+      exit 1
+    fi
+
+    echo "==> pulling candidate image pair (tag ${image_tag}) for colour=$to_colour"
+    # Bounded retry (CHE-823): one GHCR connection reset failed a whole
+    # admitted deploy. Nothing is drained yet, so retrying is safe; the
+    # digest checks below still pin exactly what was pulled.
+    pull_attempt=1
+    until MULTICA_BACKEND_IMAGE="$backend_repo" MULTICA_WEB_IMAGE="$web_repo" MULTICA_IMAGE_TAG="$image_tag" \
+      compose pull "backend-${to_colour}" "frontend-${to_colour}"; do
+      if [ "$pull_attempt" -ge 3 ]; then
+        echo "!! image pull failed for colour=$to_colour; $from_colour remains active" >&2
+        exit 1
+      fi
+      echo "!! image pull attempt $pull_attempt/3 failed; retrying in $((pull_attempt * 5))s" >&2
+      sleep $((pull_attempt * 5))
+      pull_attempt=$((pull_attempt + 1))
+    done
+    if ! verify_pulled_digest "$backend_repo" "$image_tag" "$backend_digest"; then
+      echo "!! pulled backend image digest mismatch for colour=$to_colour; $from_colour remains active" >&2
+      exit 1
+    fi
+    if ! verify_pulled_digest "$web_repo" "$image_tag" "$web_digest"; then
+      echo "!! pulled web image digest mismatch for colour=$to_colour; $from_colour remains active" >&2
+      exit 1
+    fi
+
+    # The release packet's OWN minimum_rollback_version is the rollback
+    # compatibility anchor for THIS cutover — not a value cutover.sh derives
+    # itself from the ledger. release-packet.mjs already validated it is a
+    # real, known migration version (see that file's own checks), so
+    # reading it straight from the admitted packet is the source of truth,
+    # not a second, independently-computed guess. Read it now, before the
+    # migration step runs, so a migration failure below never lands a
+    # partially-written cutover-state.json.
+    packet_minimum_rollback_version="$(json_field "$packet" minimum_rollback_version)"
+    if [ -z "$packet_minimum_rollback_version" ]; then
+      echo "!! release packet is missing minimum_rollback_version; refusing to cut over without a rollback compatibility anchor" >&2
+      exit 1
+    fi
+
+    # Pre-drain agreement gate (CHE-773). Everything the post-drain path
+    # relies on is proven while $from_colour still serves, so a mismatch
+    # refuses with the API up instead of discovering it with both colours
+    # stopped: the incumbent's running bindings equal the rendered ports,
+    # the router forwards to exactly those ports, the public route answers
+    # as the incumbent's commit, and the candidate's generation renders and
+    # passes nginx -t on ITS rendered ports. The incumbent's image pair and
+    # commit and the pre-drain ledger are recorded for recover_incumbent.
+    echo "==> pre-drain agreement gate (Compose render == running bindings == router generation)"
+    if ! published_port_matches "backend-${from_colour}" 8080 "$(slot_port backend "$from_colour")" ||
+      ! published_port_matches "frontend-${from_colour}" 3000 "$(slot_port frontend "$from_colour")" ||
+      ! router_selects "$from_colour"; then
+      echo "!! controller, Compose and router disagree on $from_colour's ports; refusing before drain — $from_colour remains active" >&2
+      exit 1
+    fi
+    incumbent_commit="$(health_commit "$(slot_port backend "$from_colour")" || true)"
+    incumbent_backend_image="$(running_image_ref "backend-${from_colour}" || true)"
+    incumbent_web_image="$(running_image_ref "frontend-${from_colour}" || true)"
+    incumbent_backend_image_id="$(container_image_id "backend-${from_colour}" || true)"
+    incumbent_web_image_id="$(container_image_id "frontend-${from_colour}" || true)"
+    incumbent_ledger="$(current_ledger_version || true)"
+    if [ -z "$incumbent_commit" ] || [ -z "$incumbent_backend_image" ] || [ -z "$incumbent_web_image" ] ||
+      [ -z "$incumbent_backend_image_id" ] || [ -z "$incumbent_web_image_id" ] || [ -z "$incumbent_ledger" ]; then
+      echo "!! could not record $from_colour's commit/image pair/ledger (needed to prove a recovery); refusing before drain — $from_colour remains active" >&2
+      exit 1
+    fi
+    if ! public_route_serves "$(slot_port backend "$from_colour")" "$incumbent_commit"; then
+      echo "!! public route (router :$router_api_port/:$router_web_port) does not serve $from_colour commit $incumbent_commit; refusing before drain — $from_colour remains active" >&2
+      exit 1
+    fi
+    if ! bash "$script_dir/router.sh" validate --colour "$to_colour" --state-dir "$router_state_dir" >/dev/null; then
+      echo "!! candidate router generation for $to_colour failed validation; refusing before drain — $from_colour remains active" >&2
+      exit 1
+    fi
+
+    # Step 2: drain and stop the incumbent colour BEFORE the strict
+    # quiescence final-gate runs and before the migrator touches the schema
+    # — matching the accepted architecture's own step 2 ("drain and shut
+    # down the old backend before verifying quiescence and running the
+    # migrator") and this file's own header comment ("Gate/drain/quiesce/
+    # migrate"). The final-gate demands ZERO foreign sessions/locks
+    # (evaluateFinalGate, quiescence.mjs); the incumbent backend's own
+    # connection pool holds idle sessions for as long as it keeps running,
+    # so the gate could never admit while $from_colour still serves
+    # (CHE-655, found live on C00: every cutover and rollback refused here,
+    # unconditionally, purely because of this ordering bug — nothing was
+    # ever actually contending). Everything from this point on runs with
+    # NEITHER colour serving until the candidate is up and the router
+    # switches — an unavoidable outage window for the quiesce+migrate phase,
+    # not a regression: a live schema migration cannot safely run against a
+    # schema a serving backend still holds connections against.
+    echo "==> draining and stopping current colour=$from_colour (required before the quiescence final-gate can ever admit)"
+    if ! stop_confirmed "backend-${from_colour}" "frontend-${from_colour}"; then
+      alert_outage "drain of $from_colour NOT confirmed; final gate and migration NOT run and $to_colour NOT started (never migrate under, or start beside, a possibly-live backend); $from_colour may be partially stopped — check 'docker compose ps' and follow the runbook"
+      exit 1
+    fi
+
+    # Step 3: final gate immediately before the first candidate mutation —
+    # strict, zero-tolerance. A denial here means $from_colour is ALREADY
+    # stopped (see above): the API is down and needs manual intervention to
+    # restart it, not the "colour remains active" framing that was true
+    # before this ordering fix.
+    echo "==> quiescence final-gate (pre-migration)"
+    if ! node "$script_dir/quiescence.mjs" final-gate --database-url "$database_url" --psql-via-docker-exec "$postgres_container"; then
+      recover_incumbent "quiescence final-gate denied cutover after draining $from_colour (no migration ran)"
+    fi
+
+    # Run the standalone migrator exactly once, from the candidate image,
+    # against the inactive colour's (stopped) service identity — never the
+    # currently-serving colour's, so the one-shot container's --no-deps
+    # never risks touching a live serving container's dependency graph.
+    echo "==> running migration step (one-shot, candidate image, before candidate starts)"
+    if ! run_migration_step "$backend_repo" "$image_tag" up; then
+      # No automatic recovery here: a failed migration can leave DDL the
+      # ledger does not record, so ledger proof cannot establish that
+      # $from_colour is compatible with the schema actually in place.
+      alert_outage "migration step failed after draining $from_colour; schema state is unproven, so neither colour was started — re-run the quiescent gate and inspect the schema before restarting anything"
+      exit 1
+    fi
+
+    # Step 4: start the candidate through the migration-free authorized
+    # path — MULTICA_SKIP_MIGRATIONS=1, the same guard deploy.sh's
+    # single-slot forward path uses, so the just-applied migration step is
+    # never repeated.
+    echo "==> starting candidate colour=$to_colour (MULTICA_SKIP_MIGRATIONS=1)"
+    if ! MULTICA_BACKEND_IMAGE="$backend_repo" MULTICA_WEB_IMAGE="$(image_repo "$web_image")" \
+      MULTICA_IMAGE_TAG="$image_tag" MULTICA_SKIP_MIGRATIONS=1 \
+      compose up -d --no-deps "backend-${to_colour}" "frontend-${to_colour}"; then
+      recover_incumbent "candidate colour=$to_colour failed to start"
+    fi
+
+    # The candidate's RUNNING containers must be the digest-verified images,
+    # not a stale container Compose chose to keep.
+    if ! runs_verified_image "backend-${to_colour}" "${backend_repo}:${image_tag}" ||
+      ! runs_verified_image "frontend-${to_colour}" "${web_repo}:${image_tag}"; then
+      recover_incumbent "candidate colour=$to_colour is not running the manifest-verified images"
+    fi
+
+    # The candidate's ACTUAL published bindings must equal the rendered
+    # ports every later check and the router use.
+    candidate_port="$(slot_port backend "$to_colour")"
+    candidate_web_port="$(slot_port frontend "$to_colour")"
+    if ! published_port_matches "backend-${to_colour}" 8080 "$candidate_port" ||
+      ! published_port_matches "frontend-${to_colour}" 3000 "$candidate_web_port"; then
+      recover_incumbent "candidate colour=$to_colour published bindings differ from the rendered ports"
+    fi
+    echo "==> health-checking candidate colour=$to_colour on port $candidate_port"
+    if ! wait_ready_on_port "$candidate_port" 180; then
+      recover_incumbent "candidate colour=$to_colour did not become ready on port $candidate_port within 180s"
+    fi
+    if ! wait_http_ok "http://127.0.0.1:${candidate_web_port}/" 120; then
+      recover_incumbent "candidate frontend-$to_colour did not answer on port $candidate_web_port within 120s"
+    fi
+
+    # Require the EXACT expected /health commit — a 200 alone only proves
+    # something is listening on the port, not that it is the release just
+    # migrated and started (see deploy-lib.sh's verify_health_identity).
+    echo "==> verifying candidate /health identity"
+    if ! verify_health_identity "$candidate_port" "$source_sha"; then
+      recover_incumbent "candidate colour=$to_colour /health identity mismatch"
+    fi
+
+    # Activate the complete router generation. router.sh's own `nginx -t`
+    # gate means an invalid config never reaches the running router — this
+    # is the "prepare, validate, atomically replace, reload" sequence from
+    # the accepted architecture, delegated wholesale rather than
+    # reimplemented here.
+    echo "==> activating router generation for colour=$to_colour"
+    if ! bash "$script_dir/router.sh" select --colour "$to_colour" --state-dir "$router_state_dir"; then
+      recover_incumbent "router generation switch failed; candidate colour=$to_colour is running but NOT receiving traffic"
+    fi
+    if ! router_selects "$to_colour" || ! public_route_serves "$candidate_port" "$source_sha"; then
+      recover_incumbent "router was switched but the public route does not read back as $to_colour commit $source_sha"
+    fi
+
+    ledger_version="$(current_ledger_version)"
+    write_cutover_state "$to_colour" "$backend_image" "$web_image" "$ledger_version" "$packet_minimum_rollback_version"
+    echo "==> cutover complete: $to_colour is now active (ledger version: $ledger_version; rollback compatibility floor: $packet_minimum_rollback_version)"
+    ;;
+
+  rollback)
+    from_colour="$(active_colour)"
+    if [ -z "$from_colour" ]; then
+      echo "no cutover-state.json in $state_dir; nothing recorded to roll back from" >&2
+      exit 1
+    fi
+    to_colour="$(other_colour "$from_colour")"
+    echo "==> rollback plan: $from_colour (active, failing) -> $to_colour (retained predecessor)"
+
+    database_url="${CUTOVER_DATABASE_URL:?CUTOVER_DATABASE_URL is required}"
+    # quiescence.mjs has no host `psql` binary to fall back to on C00 —
+    # docker exec into the already-running postgres service container
+    # rather than quiescence.mjs's own --psql-via-docker-network mode (see
+    # the matching comment in the `cutover)` branch above for the measured
+    # overhead difference, CHE-655).
+    postgres_container="$(postgres_container_id)" || exit 1
+
+    # Drain and stop the failing candidate BEFORE the strict quiescence
+    # final-gate runs — same root cause and same fix as the `cutover)`
+    # branch above (CHE-655): $from_colour is the failing candidate here,
+    # and its own connection pool holds idle sessions for as long as it
+    # keeps running, so the gate could never admit while it still serves.
+    # Without this, the automated rollback refuses unconditionally and
+    # leaves the ALREADY-FAILING candidate as the only thing "active" —
+    # exactly the outage rollback exists to end.
+    echo "==> draining and stopping failing candidate colour=$from_colour (required before the quiescence final-gate can ever admit)"
+    if ! stop_confirmed "backend-${from_colour}" "frontend-${from_colour}"; then
+      echo "!! drain of failing candidate $from_colour NOT confirmed; final gate NOT run and $to_colour NOT started (never two backends on one DB) — MANUAL INTERVENTION REQUIRED" >&2
+      exit 1
+    fi
+
+    echo "==> quiescence final-gate (pre-rollback)"
+    if ! node "$script_dir/quiescence.mjs" final-gate --database-url "$database_url" --psql-via-docker-exec "$postgres_container"; then
+      echo "!! quiescence final-gate denied rollback after draining $from_colour — the API is DOWN; MANUAL INTERVENTION REQUIRED" >&2
+      exit 1
+    fi
+
+    # The retained predecessor must be verified against the CURRENT schema,
+    # not assumed compatible from when it was last active — a migration run
+    # by the failed candidate before this rollback fires could have moved
+    # the ledger. Never run a down migration or restore from backup here;
+    # that is the separately authorized recovery path (accepted
+    # architecture, step 4).
+    #
+    # The comparison anchor is minimum_rollback_version, straight from the
+    # release packet admitted for the cutover that made $from_colour active
+    # (see the "cutover)" branch above) — the actual proof mechanism the
+    # accepted architecture and release-packet.mjs already define, not a
+    # value cutover.sh derives on its own. The check is ORDER-AWARE
+    # (ledger_at_or_after, deploy-lib.sh), not strict equality: under
+    # expand/contract a retained predecessor is REQUIRED to serve the
+    # expanded (post-migration) schema — that is the normal, expected
+    # rollback condition, not an unsafe one, so the live ledger sitting AT
+    # OR AFTER the floor is exactly the case this guard must admit. What it
+    # refuses is the ledger sitting BEHIND that floor — e.g. an out-of-band
+    # down migration — which is genuinely incompatible and not routine.
+    # (Strict equality against the pre-migration ledger was CHE-608's
+    # independent-review finding 1's first fix attempt; the reviewer's
+    # follow-up correctly flagged that as over-corrected: it refused every
+    # migration-inclusive cutover's own rollback unconditionally, which is
+    # exactly the case A/B rollback exists for.)
+    current_version="$(current_ledger_version)"
+    minimum_rollback_version=""
+    if [ -f "$cutover_state_file" ]; then
+      minimum_rollback_version="$(json_field "$cutover_state_file" minimum_rollback_version)"
+    fi
+    if [ -z "$minimum_rollback_version" ]; then
+      echo "!! no minimum_rollback_version recorded in $cutover_state_file — cannot verify $to_colour is compatible with the current schema" >&2
+      echo "!! this is NOT a routine rollback case; refusing to start $to_colour blind — $from_colour is already drained, so the API is DOWN; MANUAL INTERVENTION REQUIRED" >&2
+      exit 1
+    fi
+    if ! ledger_at_or_after "$current_version" "$minimum_rollback_version"; then
+      echo "!! current ledger version ($current_version) is not at or after the rollback compatibility floor ($minimum_rollback_version) — the retained predecessor image cannot be assumed compatible with this schema" >&2
+      echo "!! this is NOT a routine rollback case; a down migration or backup restore requires separate authorization — refusing to start $to_colour blind — $from_colour is already drained, so the API is DOWN; MANUAL INTERVENTION REQUIRED" >&2
+      exit 1
+    fi
+
+    if ! resolve_slot_ports; then
+      echo "!! slot ports unresolved; $to_colour NOT started — MANUAL INTERVENTION REQUIRED" >&2
+      exit 1
+    fi
+    backend_port="$(slot_port backend "$to_colour")"
+    echo "==> starting retained predecessor colour=$to_colour without migrations"
+    if ! MULTICA_SKIP_MIGRATIONS=1 compose up -d --no-deps "backend-${to_colour}" "frontend-${to_colour}"; then
+      echo "!! failed to start retained predecessor colour=$to_colour — MANUAL INTERVENTION REQUIRED" >&2
+      exit 1
+    fi
+
+    if ! published_port_matches "backend-${to_colour}" 8080 "$backend_port" ||
+      ! published_port_matches "frontend-${to_colour}" 3000 "$(slot_port frontend "$to_colour")" ||
+      ! wait_ready_on_port "$backend_port" 120; then
+      echo "!! retained predecessor colour=$to_colour did not become healthy within 120s — MANUAL INTERVENTION REQUIRED" >&2
+      exit 1
+    fi
+
+    echo "==> restoring router generation for colour=$to_colour"
+    if ! bash "$script_dir/router.sh" select --colour "$to_colour" --state-dir "$router_state_dir"; then
+      echo "!! router restore failed — retained predecessor colour=$to_colour is healthy but NOT receiving traffic; MANUAL INTERVENTION REQUIRED" >&2
+      exit 1
+    fi
+    if ! router_selects "$to_colour" || ! public_route_serves "$backend_port" "$(health_commit "$backend_port")"; then
+      echo "!! router restore did not read back — the public route does not serve $to_colour; MANUAL INTERVENTION REQUIRED" >&2
+      exit 1
+    fi
+
+    # The retained predecessor's ACTUAL running image — never the pre-
+    # rollback state file's own image_tuple, which still holds the
+    # candidate's tuple: cutover-state.json only ever records the ONE
+    # active colour's image_tuple at a time, and $from_colour (the failing
+    # candidate) was still active when it was last written. Reading it
+    # here would just copy the candidate's own record onto the colour that
+    # replaced it, instead of what $to_colour actually started from
+    # (CHE-678). Ask Docker what $to_colour is actually running.
+    backend_image="$(running_image_ref "backend-${to_colour}")" || backend_image=""
+    web_image="$(running_image_ref "frontend-${to_colour}")" || web_image=""
+    if [ -z "$backend_image" ] || [ -z "$web_image" ]; then
+      echo "!! could not resolve the running image for retained predecessor colour=$to_colour after starting it — refusing to record an unverified image tuple in $cutover_state_file; $to_colour is healthy and serving, but $cutover_state_file needs manual correction; MANUAL INTERVENTION REQUIRED" >&2
+      exit 1
+    fi
+    # minimum_rollback_version carries forward unchanged: no migration ran
+    # during this rollback (see the guard above), so the same compatibility
+    # floor a future rollback attempt would need to verify against is still
+    # exactly right — nothing has moved the schema since it was last
+    # recorded and just re-verified.
+    write_cutover_state "$to_colour" "$backend_image" "$web_image" "$current_version" "$minimum_rollback_version"
+    echo "==> rollback complete: $to_colour restored and healthy (all acknowledged data/uploads on shared Postgres/volume preserved — no restore performed)"
+    ;;
+
+  *)
+    echo "unknown command: $command" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

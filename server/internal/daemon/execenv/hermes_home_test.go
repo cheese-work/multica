@@ -145,6 +145,35 @@ func TestHermesDisablesExternalMemoryProvider(t *testing.T) {
 	}
 }
 
+// TestHermesExternalMemoryOptIn: an agent whose custom_env sets
+// HERMES_EXTERNAL_MEMORY=inherit keeps the host's memory.provider; any other
+// value keeps the default isolation.
+func TestHermesExternalMemoryOptIn(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		value string
+		want  string
+	}{
+		{"inherit", "hindsight"},
+		{" Inherit ", "hindsight"},
+		{"true", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		sharedHome := t.TempDir()
+		mustWrite(t, filepath.Join(sharedHome, "config.yaml"), "memory:\n  provider: hindsight\n")
+		hermesHome := filepath.Join(t.TempDir(), "hermes-home")
+		skills := []SkillContextForEnv{{Name: "Review Helper", Content: "x"}}
+		env := map[string]string{HermesExternalMemoryEnv: tc.value}
+		if _, err := prepareHermesHome(hermesHome, sharedHome, false, skills, env, "", "", testLogger()); err != nil {
+			t.Fatalf("prepareHermesHome(%q) failed: %v", tc.value, err)
+		}
+		if got, _ := hermesMemoryProvider(t, filepath.Join(hermesHome, "config.yaml")); got != tc.want {
+			t.Errorf("%s=%q: memory.provider = %q, want %q", HermesExternalMemoryEnv, tc.value, got, tc.want)
+		}
+	}
+}
+
 // TestHermesDerivedConfigRebasesRelativeExternalDirs is the regression for the
 // silent-repoint bug: relative external_dirs must be rewritten to absolute paths
 // anchored at the shared home, absolute entries left intact, and the real skills

@@ -36,7 +36,7 @@ export {
   foldAllCommentThreads,
   unfoldAllCommentThreads,
 } from "./thread-fold-coordinator";
-export { useCommentComposerStore } from "./comment-composer-store";
+export { useCommentComposerStore, type RunningAgentReply } from "./comment-composer-store";
 export { useCommentDraftStore, type CommentDraftKey } from "./comment-draft-store";
 export {
   myIssuesViewStore,

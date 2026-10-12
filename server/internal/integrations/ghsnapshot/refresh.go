@@ -97,6 +97,19 @@ type Manager struct {
 // snapshot was actually written (guard passed), so the handler can broadcast a
 // realtime PR update. Passing a nil client yields a disabled (no-op) manager.
 func NewManager(client *Client, queries *db.Queries, pool TxBeginner, onApplied func(ctx context.Context, prID pgtype.UUID)) *Manager {
+	return newManager(client, queries, pool, FetchPRSnapshot, onApplied)
+}
+
+// NewManagerWithFetcher wires the normal refresh lifecycle with a supplied
+// snapshot fetcher. Production callers should normally use NewManager.
+func NewManagerWithFetcher(client *Client, queries *db.Queries, pool TxBeginner, fetch func(context.Context, *Client, int64, string, string, int32) (*PRSnapshot, error), onApplied func(ctx context.Context, prID pgtype.UUID)) *Manager {
+	if fetch == nil {
+		fetch = FetchPRSnapshot
+	}
+	return newManager(client, queries, pool, fetch, onApplied)
+}
+
+func newManager(client *Client, queries *db.Queries, pool TxBeginner, fetch func(context.Context, *Client, int64, string, string, int32) (*PRSnapshot, error), onApplied func(ctx context.Context, prID pgtype.UUID)) *Manager {
 	m := &Manager{
 		client:        client,
 		queries:       queries,
@@ -111,7 +124,7 @@ func NewManager(client *Client, queries *db.Queries, pool TxBeginner, onApplied 
 		chaseBackoff:  defaultChaseBackoff,
 		now:           time.Now,
 		jitter:        func() time.Duration { return time.Duration(rand.Int63n(int64(250 * time.Millisecond))) },
-		fetch:         FetchPRSnapshot,
+		fetch:         fetch,
 		queue:         make(chan address, queueBuffer),
 		active:        map[address]bool{},
 		inFlight:      map[address]bool{},
@@ -134,18 +147,6 @@ func (m *Manager) SetReadSelector(selector *dbreader.Selector) {
 
 // Enabled reports whether the pipeline will actually do anything.
 func (m *Manager) Enabled() bool { return m != nil && m.client.Enabled() }
-
-// Client exposes the underlying App-authenticated client for callers outside
-// this package that need a one-off authoritative fetch the sweep/refresh
-// pipeline doesn't do — currently just FetchPRMergeIdentity for selected merge
-// recovery (CHE-384/01-02 task 1). Returns nil when the manager itself is nil;
-// FetchPRMergeIdentity/Client.Enabled both tolerate a nil *Client.
-func (m *Manager) Client() *Client {
-	if m == nil {
-		return nil
-	}
-	return m.client
-}
 
 // Start launches the worker pool and the TTL sweeper under ctx. No-op (and
 // safe) when the manager is disabled.

@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_wakeup_aggregate_blocked_idx ON issue_wakeup(workspace_id, aggregate_blocked_scope_kind, aggregate_blocked_scope_id) WHERE aggregate_retry_at IS NOT NULL;

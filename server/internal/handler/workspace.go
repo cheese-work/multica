@@ -328,6 +328,13 @@ type UpdateWorkspaceRequest struct {
 	Repos       any     `json:"repos"`
 	IssuePrefix *string `json:"issue_prefix"`
 	AvatarURL   *string `json:"avatar_url"`
+
+	// ExpectedBeforeDigest drives two guarded paths: CHE-764's Hermes
+	// exception (hermesExceptionMatchesWorkspaceContext: this exact
+	// workspace, a `context` write, from exactly agent hermesExceptionAgentID)
+	// and CHE-1300's owner-only CAS (governed_instruction_owner_cas.go).
+	// Every other caller is refused when the key is present.
+	ExpectedBeforeDigest string `json:"expected_before_digest"`
 }
 
 type workspaceRepoRef struct {
@@ -399,8 +406,60 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	// actually branches on — not a raw JSON key lookup, which a
 	// case-varied key ("Context") bypasses (encoding/json matches keys to
 	// struct fields case-insensitively).
-	actorType, _ := h.resolveActor(r, requestUserID(r), id)
+	actorType, actorID := h.resolveActor(r, requestUserID(r), id)
+
+	// CHE-764: a single, human-approved, narrowly-scoped exception to the
+	// CHE-455 rule immediately above — see
+	// governed_instruction_hermes_exception.go for the full predicate and
+	// provenance. This is checked BEFORE the default-deny call so the one
+	// permitted (agent, workspace, field) triple never reaches — and is
+	// never rejected by — the generic guard; every other request continues
+	// straight into the unmodified CHE-455 path below.
+	if hermesExceptionIdentityMatches(actorType, actorID) && hermesExceptionMatchesWorkspaceContext(id, req.Context != nil) {
+		var rawFields map[string]json.RawMessage
+		if err := json.Unmarshal(bodyBytes, &rawFields); err != nil || !hermesExceptionOnlyAllowedKeys(rawFields, "context", "expected_before_digest") {
+			writeError(w, http.StatusBadRequest, "this request may only include context and expected_before_digest")
+			return
+		}
+		result, reason, swapErr := h.hermesExceptionVerifyAndSwapWorkspaceContext(r.Context(), id, hermesExceptionRequest{
+			NewContent:           *req.Context,
+			ExpectedBeforeDigest: req.ExpectedBeforeDigest,
+		})
+		logHermesExceptionOutcome(r, actorID, "workspace.context", id, result, reason, swapErr)
+		if reason != hermesExceptionRejectNone {
+			hermesExceptionWriteRejection(w, r, reason, swapErr)
+			return
+		}
+		ws, err := h.Queries.GetWorkspace(r.Context(), idUUID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to reload workspace after hermes exception write")
+			return
+		}
+		resp := h.workspaceToResponse(ws)
+		// Publish the same live-update event the ordinary human path emits
+		// below (h.publish(protocol.EventWorkspaceUpdated, ...)) so UI
+		// clients watching this workspace see the change; the exception path
+		// returns before reaching that call (security review finding,
+		// CHE-764).
+		h.publish(protocol.EventWorkspaceUpdated, id, "agent", actorID, map[string]any{"workspace": resp})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"workspace":     resp,
+			"before_digest": result.BeforeDigest,
+			"after_digest":  result.AfterDigest,
+		})
+		return
+	}
+
 	if rejectGovernedFieldForAgentActor(w, r, actorType, req.Context != nil, "context") {
+		return
+	}
+
+	// CHE-1300: owner-only atomic CAS, entered by the digest key. After the
+	// guard above so a machine actor never reaches it.
+	var rawFields map[string]json.RawMessage
+	_ = json.Unmarshal(bodyBytes, &rawFields) // body already decoded into req above
+	if ownerCASRequested(rawFields) {
+		h.ownerCASUpdateWorkspace(w, r, id, actorType, rawFields)
 		return
 	}
 
@@ -422,6 +481,17 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		params.Context = pgtype.Text{String: *req.Context, Valid: true}
 	}
 	if req.Settings != nil {
+		if incoming, ok := req.Settings.(map[string]any); ok {
+			// Only an old client's flip of the retired PR switch needs the
+			// stored value; see reconcilePRMergeSettings.
+			var stored map[string]any
+			if _, sent := incoming[prAutoCompleteLegacyKey]; sent {
+				if existing, err := h.Queries.GetWorkspace(r.Context(), idUUID); err == nil {
+					_ = json.Unmarshal(existing.Settings, &stored)
+				}
+			}
+			reconcilePRMergeSettings(stored, incoming)
+		}
 		s, _ := json.Marshal(req.Settings)
 		params.Settings = s
 	}
@@ -1260,6 +1330,12 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		{
 			name: "delete comments",
 			run:  func() error { return qtx.DeleteWorkspaceComments(ctx, requester.WorkspaceID) },
+		},
+		{
+			// Teardown mode keeps the triggers from logging the deletes above
+			// and below; this clears what normal writes logged before.
+			name: "delete search index changes",
+			run:  func() error { return qtx.DeleteWorkspaceSearchIndexChanges(ctx, requester.WorkspaceID) },
 		},
 		// Keep source-context object intents after the workspace row is gone.
 		// They are the durable retry ledger for an upload that began before the

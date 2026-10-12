@@ -90,5 +90,116 @@ sed -i 's#other-workspace/multica#cheese-work/multica#' "$provenance"
 # and check payloads claim success.
 sed -i 's/504078f8ea7fa31f342f195659e93a7f6c3e5a91/cccccccccccccccccccccccccccccccccccccccc/' "$manifest"
 reject source-mismatch
+sed -i 's/cccccccccccccccccccccccccccccccccccccccc/504078f8ea7fa31f342f195659e93a7f6c3e5a91/' "$manifest"
+
+# --- path-filtered required checks -----------------------------------------
+#
+# `mobile` only runs when a commit touches mobile-relevant paths, so a
+# docs-only commit produces no `mobile` check at all. Admission must tell that
+# apart from a check that is missing for any other reason: absence is excused
+# only when the commit provably matches none of the filter's paths, and the
+# proof is re-derived here from the raw file list, never asserted by the
+# recorder.
+
+write_checks() {
+  # $1 = mobile conclusion as a JSON fragment (`null` omits the key entirely)
+  # $2 = changed_files JSON array
+  # $3 = extra top-level JSON fields, may be empty
+  local mobile_entry=""
+  [ "$1" != "omit" ] && mobile_entry="\"mobile\":$1,"
+  cat >"$checks" <<EOF
+{
+  "sha": "$source_sha",
+  "contexts": {$mobile_entry "backend":"success","frontend":"success","cd-qualification":"success"},
+  "changed_files": $2,
+  "changed_files_truncated": false,
+  "path_filters": {"mobile": ["apps/mobile/**", "packages/core/**", "package.json"]}
+  $3
+}
+EOF
+}
+
+# Absent + no matching file -> admitted. This is the real 3afcfb94 case: a
+# docs-only commit under server/.
+write_checks omit '["server/internal/service/builtin_skills/multica-platform/references/issues.md"]' ""
+admit >/dev/null
+
+# Absent + a file the filter DOES cover -> refused. The check should have run;
+# its absence is a real gap, not an exclusion.
+write_checks omit '["apps/mobile/app/index.tsx"]' ""
+reject path-filtered-check-absent-but-required
+
+# A `**` filter must match at any depth, and a bare filename must not match a
+# same-named file in a subdirectory.
+write_checks omit '["packages/core/api/schema.ts"]' ""
+reject path-filter-doublestar-matches-nested
+write_checks omit '["apps/mobile/package.json"]' ""
+reject path-filter-matches-nested-package-json
+
+# Having RUN and failed is never excusable, whatever the commit touched.
+write_checks '"failure"' '["server/only.md"]' ""
+reject path-filtered-check-actually-failed
+write_checks '"cancelled"' '["server/only.md"]' ""
+reject path-filtered-check-cancelled
+
+# A truncated file list cannot prove absence of a match, so it must not excuse.
+write_checks omit '["server/only.md"]' ',"changed_files_truncated": true'
+reject truncated-file-list-cannot-excuse
+
+# Without the recorded evidence the check stays unconditionally required —
+# an older evidence set must not be admitted by the new code path.
+cat >"$checks" <<EOF
+{"sha":"$source_sha","contexts":{"backend":"success","frontend":"success","cd-qualification":"success"}}
+EOF
+reject legacy-checks-without-path-filter-evidence
+
+# --- pending required checks -----------------------------------------------
+#
+# Run 35822016641 snapshotted the checks while CI's `backend` was still in
+# flight, and admission refused it as a failure. The recorder now asks
+# `pending` which checks to wait for: a check is pending while it runs (null
+# conclusion) or before its run exists (absent and not path-excluded).
+
+expect_pending() {
+  local name=$1 want=$2 got
+  got="$(node deploy/cd/admission.mjs pending --checks "$checks" | tr '\n' ' ')"
+  if [ "$got" != "$want" ]; then
+    echo "pending fixture $name: want '$want', got '$got'" >&2
+    exit 1
+  fi
+}
+
+write_checks '"success"' '["server/only.md"]' ""
+expect_pending all-settled ""
+
+# The real 5c834a2f snapshot: backend's needs-gated run did not exist yet.
+cat >"$checks" <<EOF
+{"sha":"$source_sha","contexts":{"frontend":null,"cd-qualification":"success"},
+ "changed_files":["server/only.md"],"changed_files_truncated":false,
+ "path_filters":{"mobile":["apps/mobile/**"]}}
+EOF
+expect_pending backend-not-created-frontend-running "backend frontend "
+reject pending-check-at-wait-deadline
+# A check still running at the deadline is refused under its real name.
+sed -i 's/"frontend":null/"backend":null,"frontend":"success"/' "$checks"
+if admit >/dev/null 2>"$tmp_dir/err.txt"; then
+  echo "negative fixture accepted: running-check-at-wait-deadline" >&2
+  exit 1
+fi
+grep -q "required check backend has not completed" "$tmp_dir/err.txt"
+
+# Terminal results are settled, so the wait ends, and they are still refused.
+write_checks '"failure"' '["server/only.md"]' ""
+expect_pending terminal-failure-is-settled ""
+reject terminal-failure-after-wait
+write_checks '"cancelled"' '["server/only.md"]' ""
+expect_pending terminal-cancelled-is-settled ""
+reject terminal-cancelled-after-wait
+
+# An absent check its path filter covers is waited for, never excused.
+write_checks omit '["apps/mobile/app/index.tsx"]' ""
+expect_pending path-filtered-check-not-created-yet "mobile "
+write_checks omit '["server/only.md"]' ""
+expect_pending path-filtered-check-excluded ""
 
 echo "admission positive and negative fixtures passed"

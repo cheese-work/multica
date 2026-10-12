@@ -97,6 +97,67 @@ func TestRunMigrationsRepairsInvalidConcurrentIndexBeforeRetry(t *testing.T) {
 	}
 }
 
+func TestRunMigrationsRepairsInvalidPRWakeupEventIndexBeforeRetry(t *testing.T) {
+	t.Parallel()
+	adminPool := openTestPool(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	suffix := fmt.Sprintf("%d_%d", time.Now().UnixNano(), rand.Uint32())
+	schema := "migrate_pr_wakeup_index_" + suffix
+	schemaIdent := pgx.Identifier{schema}.Sanitize()
+	if _, err := adminPool.Exec(ctx, "CREATE SCHEMA "+schemaIdent); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		if _, err := adminPool.Exec(cleanupCtx, "DROP SCHEMA IF EXISTS "+schemaIdent+" CASCADE"); err != nil {
+			t.Logf("drop schema %s: %v", schema, err)
+		}
+	})
+	pool := openTestPoolWithSearchPath(t, schema)
+
+	const version = "579_pr_wakeup_event_identity_index"
+	const indexName = "issue_wakeup_pr_event_identity_idx"
+	if preMigrationHooks[version] == nil {
+		t.Fatalf("production hook is not registered for %s", version)
+	}
+	if _, err := pool.Exec(ctx, `CREATE TABLE issue_wakeup_pr_event (wakeup_id UUID NOT NULL, event_key TEXT NOT NULL)`); err != nil {
+		t.Fatalf("create event ledger: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO issue_wakeup_pr_event (wakeup_id, event_key) VALUES ('00000000-0000-7000-8000-000000000001', 'duplicate'), ('00000000-0000-7000-8000-000000000001', 'duplicate')`); err != nil {
+		t.Fatalf("seed duplicate event identities: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `CREATE UNIQUE INDEX CONCURRENTLY `+indexName+` ON issue_wakeup_pr_event(wakeup_id, event_key)`); err == nil {
+		t.Fatal("initial unique index build unexpectedly succeeded with duplicate event identities")
+	}
+	assertIndexValidity(t, pool, schema, indexName, false)
+	if _, err := pool.Exec(ctx, `DELETE FROM issue_wakeup_pr_event WHERE ctid=(SELECT max(ctid) FROM issue_wakeup_pr_event)`); err != nil {
+		t.Fatalf("remove duplicate event identity: %v", err)
+	}
+
+	migrationPath := filepath.Join("..", "..", "migrations", version+".up.sql")
+	options := runOptions{
+		Direction:             "up",
+		Files:                 []string{migrationPath},
+		SchemaMigrationsTable: "schema_migrations",
+		AdvisoryLockKey:       int64(rand.Uint64()&0x7fffffffffffffff) | 1,
+		Hooks:                 map[string]preMigrationHook{version: preMigrationHooks[version]},
+	}
+	if err := runMigrations(ctx, pool, options); err != nil {
+		t.Fatalf("retry migration after invalid concurrent index: %v", err)
+	}
+	assertIndexValidity(t, pool, schema, indexName, true)
+	var recorded bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version=$1)`, version).Scan(&recorded); err != nil {
+		t.Fatalf("read migration version: %v", err)
+	}
+	if !recorded {
+		t.Fatal("repaired migration was not recorded")
+	}
+}
+
 func TestRunMigrationsRepairsDingTalkGroupRouteIndexesBeforeRetry(t *testing.T) {
 	t.Parallel()
 	pool := openTestPool(t)

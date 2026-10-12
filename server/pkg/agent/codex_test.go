@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -39,6 +41,56 @@ func newTestCodexClient(t *testing.T) (*codexClient, *fakeStdin, []Message) {
 		onTurnDone: func(aborted bool) {},
 	}
 	return c, fs, messages
+}
+
+func TestSupplementCodexTurnTargetsExactActiveTurn(t *testing.T) {
+	c, _, _ := newTestCodexClient(t)
+	c.threadID = "thread-current"
+	c.setActiveTurnID("turn-current")
+	stdin := &fakeStdinWithHook{}
+	stdin.afterWrite = func() {
+		c.handleLine(`{"jsonrpc":"2.0","id":1,"result":{}}`)
+	}
+	c.stdin = stdin
+
+	if err := supplementCodexTurn(context.Background(), c, "keep the original goal and add this"); err != nil {
+		t.Fatalf("supplementCodexTurn: %v", err)
+	}
+	lines := stdin.Lines()
+	if len(lines) != 1 {
+		t.Fatalf("request lines = %d, want 1", len(lines))
+	}
+	var request struct {
+		Method string `json:"method"`
+		Params struct {
+			ThreadID       string `json:"threadId"`
+			ExpectedTurnID string `json:"expectedTurnId"`
+			Input          []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"input"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal([]byte(lines[0]), &request); err != nil {
+		t.Fatal(err)
+	}
+	if request.Method != "turn/steer" || request.Params.ThreadID != "thread-current" || request.Params.ExpectedTurnID != "turn-current" {
+		t.Fatalf("steer target = %#v", request)
+	}
+	if len(request.Params.Input) != 1 || request.Params.Input[0].Type != "text" || request.Params.Input[0].Text != "keep the original goal and add this" {
+		t.Fatalf("steer input = %#v", request.Params.Input)
+	}
+}
+
+func TestSupplementCodexTurnFailsClosedWithoutActiveTurn(t *testing.T) {
+	c, stdin, _ := newTestCodexClient(t)
+	c.threadID = "thread-current"
+	if err := supplementCodexTurn(context.Background(), c, "extra"); err == nil {
+		t.Fatal("supplementCodexTurn succeeded without an active turn")
+	}
+	if len(stdin.Lines()) != 0 {
+		t.Fatalf("wrote a steer request without an active turn: %v", stdin.Lines())
+	}
 }
 
 type fakeStdin struct {
@@ -1414,11 +1466,327 @@ func TestCodexRawItemAgentMessageFinalAnswerWaitsForTurnCompleted(t *testing.T) 
 	}
 }
 
+func TestCodexRawItemAgentMessageReconciliation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                 string
+		deltas               []string
+		completed            string
+		rejectFirstHandoff   bool
+		wantStream           string
+		wantAuthoritativeOut string
+	}{
+		{
+			name:                 "exact prefix is not duplicated",
+			deltas:               []string{"Hel", "lo"},
+			completed:            "Hello",
+			wantStream:           "Hello",
+			wantAuthoritativeOut: "Hello",
+		},
+		{
+			name:                 "completed fills a missing last delta",
+			deltas:               []string{"Hel"},
+			completed:            "Hello",
+			wantStream:           "Hello",
+			wantAuthoritativeOut: "Hello",
+		},
+		{
+			name:                 "unacknowledged delta is not counted as delivered",
+			deltas:               []string{"Hel"},
+			completed:            "Hello",
+			rejectFirstHandoff:   true,
+			wantStream:           "Hello",
+			wantAuthoritativeOut: "Hello",
+		},
+		{
+			name:                 "mismatch keeps append-only stream without duplicating snapshot",
+			deltas:               []string{"Hx", "llo"},
+			completed:            "Hello",
+			wantStream:           "Hxllo",
+			wantAuthoritativeOut: "Hello",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c, _, _ := newTestCodexClient(t)
+			c.notificationProtocol = "raw"
+
+			var chunks []string
+			var completed string
+			handoffs := 0
+			c.onAgentMessageChunk = func(text string) bool {
+				handoffs++
+				if tt.rejectFirstHandoff && handoffs == 1 {
+					return false
+				}
+				chunks = append(chunks, text)
+				return true
+			}
+			c.onAgentMessage = func(text string) { completed = text }
+
+			for _, delta := range tt.deltas {
+				c.handleLine(fmt.Sprintf(`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"msg-1","delta":%q}}`, delta))
+			}
+			// item/completed keeps its documented nested item; itemId is flat only
+			// on item/agentMessage/delta.
+			c.handleLine(fmt.Sprintf(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thr-1","turnId":"turn-1","item":{"type":"agentMessage","id":"msg-1","text":%q}}}`, tt.completed))
+
+			if got := strings.Join(chunks, ""); got != tt.wantStream {
+				t.Fatalf("streamed text = %q, want %q exactly once (chunks=%q)", got, tt.wantStream, chunks)
+			}
+			if completed != tt.wantAuthoritativeOut {
+				t.Fatalf("authoritative output = %q, want %q", completed, tt.wantAuthoritativeOut)
+			}
+		})
+	}
+}
+
+func TestCodexRawAgentMessageBelowAggregationThresholdDefersTailUntilCompleted(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+	c.notificationProtocol = "raw"
+	var chunks []string
+	c.onAgentMessageChunk = func(text string) bool {
+		chunks = append(chunks, text)
+		return true
+	}
+	var authoritative string
+	c.onAgentMessage = func(text string) { authoritative = text }
+
+	deltas := []string{"The ", "answer ", "is 42."}
+	completed := strings.Join(deltas, "")
+	if len(completed) >= codexAgentMessageAggregateBytes {
+		t.Fatalf("fixture is %d bytes, want below %d-byte aggregation threshold", len(completed), codexAgentMessageAggregateBytes)
+	}
+	for _, delta := range deltas {
+		c.handleLine(fmt.Sprintf(`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"msg-1","delta":%q}}`, delta))
+	}
+
+	if len(chunks) != 1 || chunks[0] != deltas[0] {
+		t.Fatalf("chunks before item/completed = %q, want only leading delta %q", chunks, deltas[0])
+	}
+
+	c.handleLine(fmt.Sprintf(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thr-1","turnId":"turn-1","item":{"type":"agentMessage","id":"msg-1","text":%q}}}`, completed))
+
+	wantTail := strings.Join(deltas[1:], "")
+	if len(chunks) != 2 || chunks[1] != wantTail {
+		t.Fatalf("chunks after item/completed = %q, want leading delta then tail %q exactly once", chunks, wantTail)
+	}
+	if got := strings.Join(chunks, ""); got != completed {
+		t.Fatalf("joined transcript = %q, want %q", got, completed)
+	}
+	if authoritative != completed {
+		t.Fatalf("authoritative output = %q, want %q", authoritative, completed)
+	}
+	c.flushAgentMessageDeltas()
+	if len(chunks) != 2 {
+		t.Fatalf("EOF flush duplicated tail: chunks=%q", chunks)
+	}
+}
+
+func TestCodexRawAgentMessageMismatchRetriesRejectedPendingAtTerminal(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+	c.notificationProtocol = "raw"
+	messages := make(chan Message, 2)
+	c.onAgentMessageChunk = func(text string) bool {
+		return trySend(messages, Message{Type: MessageText, Content: text})
+	}
+	var completed string
+	c.onAgentMessage = func(text string) { completed = text }
+
+	c.handleLine(`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"itemId":"msg-1","delta":"Hx"}}`)
+	// Fill the remaining slot after Hx was accepted. The mismatch path's first
+	// attempt to hand off pending "llo" must fail without clearing it.
+	messages <- Message{Type: MessageStatus, Status: "filler"}
+	c.handleLine(`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"itemId":"msg-1","delta":"llo"}}`)
+	c.handleLine(`{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"type":"agentMessage","id":"msg-1","text":"Hello"}}}`)
+
+	stream := c.agentMessageStreams["msg-1"]
+	if stream == nil {
+		t.Fatal("rejected mismatch pending stream was deleted")
+	}
+	if got := stream.pending.String(); got != "llo" {
+		t.Fatalf("rejected mismatch pending = %q, want retained llo", got)
+	}
+	first := <-messages
+	if first.Type != MessageText || first.Content != "Hx" {
+		t.Fatalf("first delivered message = %+v, want Hx", first)
+	}
+
+	// Consuming Hx frees one slot. The terminal flush must retry llo exactly
+	// once, then clear the stream without appending completed="Hello".
+	c.handleLine(`{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed"}}}`)
+	var tail strings.Builder
+	for len(messages) > 0 {
+		msg := <-messages
+		if msg.Type == MessageText {
+			tail.WriteString(msg.Content)
+		}
+	}
+	c.flushAgentMessageDeltas()
+	if len(messages) != 0 {
+		t.Fatalf("second terminal/EOF flush duplicated text: %+v", <-messages)
+	}
+	if got := first.Content + tail.String(); got != "Hxllo" {
+		t.Fatalf("append-only mismatch transcript = %q, want Hxllo", got)
+	}
+	if completed != "Hello" {
+		t.Fatalf("authoritative completed output = %q, want Hello", completed)
+	}
+	if c.agentMessageStreams["msg-1"] != nil {
+		t.Fatal("mismatch stream remained after successful terminal retry")
+	}
+}
+
+func TestCodexRawAgentMessageBurstDoesNotLoseTextUnderChannelPressure(t *testing.T) {
+	t.Parallel()
+
+	for _, status := range []string{"completed", "interrupted"} {
+		status := status
+		t.Run(status, func(t *testing.T) {
+			t.Parallel()
+			c, _, _ := newTestCodexClient(t)
+			c.notificationProtocol = "raw"
+			messages := make(chan Message, 256)
+			c.onAgentMessageChunk = func(text string) bool {
+				return trySend(messages, Message{Type: MessageText, Content: text})
+			}
+
+			var want strings.Builder
+			for i := 0; i < 300; i++ {
+				delta := fmt.Sprintf("%03d", i)
+				want.WriteString(delta)
+				c.handleLine(fmt.Sprintf(`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"msg-1","delta":%q}}`, delta))
+			}
+			// There is deliberately no item/completed. A terminal turn must flush
+			// the coalesced tail for both normal and cancellation paths.
+			c.handleLine(fmt.Sprintf(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr-1","turn":{"id":"turn-1","status":%q}}}`, status))
+
+			var got strings.Builder
+			for len(messages) > 0 {
+				got.WriteString((<-messages).Content)
+			}
+			if got.String() != want.String() {
+				t.Fatalf("delivered %d/%d bytes under pressure", got.Len(), want.Len())
+			}
+		})
+	}
+}
+
+func TestCodexRawAgentMessageDeltaFraming(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+	c.notificationProtocol = "raw"
+	text := make(chan string, 1)
+	c.onAgentMessageChunk = func(chunk string) bool {
+		text <- chunk
+		return true
+	}
+
+	reader, writer := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		scanner := newAgentStreamScanner(reader)
+		for scanner.Scan() {
+			c.handleLine(strings.TrimSpace(scanner.Text()))
+		}
+		c.flushAgentMessageDeltas()
+		done <- scanner.Err()
+	}()
+
+	first := `{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"msg-1","delta":"Hel`
+	if _, err := writer.Write([]byte(first)); err != nil {
+		t.Fatalf("write first JSON fragment: %v", err)
+	}
+	select {
+	case leaked := <-text:
+		t.Fatalf("incomplete JSON bytes leaked as text: %q", leaked)
+	default:
+	}
+	if _, err := writer.Write([]byte("lo\"}}\n")); err != nil {
+		t.Fatalf("write final JSON fragment: %v", err)
+	}
+	if got := <-text; got != "Hello" {
+		t.Fatalf("complete JSON delta = %q, want Hello", got)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close pipe: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("scan split JSON: %v", err)
+	}
+}
+
+func TestCodexRawAgentMessageMalformedAndIncompleteEOFDoNotLeak(t *testing.T) {
+	t.Parallel()
+
+	for _, input := range []string{
+		"not-json\n",
+		`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"itemId":"msg-1","delta":"must not leak"}`,
+	} {
+		input := input
+		t.Run(input[:min(len(input), 8)], func(t *testing.T) {
+			t.Parallel()
+			c, _, _ := newTestCodexClient(t)
+			c.notificationProtocol = "raw"
+			var chunks []string
+			c.onAgentMessageChunk = func(chunk string) bool {
+				chunks = append(chunks, chunk)
+				return true
+			}
+			scanner := newAgentStreamScanner(strings.NewReader(input))
+			for scanner.Scan() {
+				c.handleLine(scanner.Text())
+			}
+			c.flushAgentMessageDeltas()
+			if err := scanner.Err(); err != nil {
+				t.Fatalf("scan malformed fixture: %v", err)
+			}
+			if len(chunks) != 0 {
+				t.Fatalf("malformed/incomplete JSON leaked text: %q", chunks)
+			}
+		})
+	}
+}
+
+func TestCodexRawAgentMessageAbnormalEOFFlushesCompleteDeltas(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+	c.notificationProtocol = "raw"
+	var chunks []string
+	c.onAgentMessageChunk = func(chunk string) bool {
+		chunks = append(chunks, chunk)
+		return true
+	}
+	input := "" +
+		`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"itemId":"msg-1","delta":"Hel"}}` + "\n" +
+		`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"itemId":"msg-1","delta":"lo"}}` + "\n"
+	scanner := newAgentStreamScanner(strings.NewReader(input))
+	for scanner.Scan() {
+		c.handleLine(scanner.Text())
+	}
+	c.flushAgentMessageDeltas()
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan EOF fixture: %v", err)
+	}
+	if got := strings.Join(chunks, ""); got != "Hello" {
+		t.Fatalf("abnormal EOF delivered %q, want Hello", got)
+	}
+}
+
 // TestCodexDeliverableOutputExcludesNarration pins Result.Output to the turn's
 // deliverable. Codex used to concatenate every agent message, so a tool-using
 // run shipped its intermediate narration to Slack and Lark along with the answer
-// (GH #6006). The wiring mirrors executeOnce: onMessage tracks the last agent
-// message, onFinalAnswer captures the phase-labelled one, and
+// (GH #6006). The wiring mirrors executeOnce: onAgentMessage tracks the last
+// authoritative completed message, onFinalAnswer captures the phase-labelled one, and
 // codexDeliverableOutput picks between them.
 func TestCodexDeliverableOutputExcludesNarration(t *testing.T) {
 	t.Parallel()
@@ -1468,10 +1836,10 @@ func TestCodexDeliverableOutputExcludesNarration(t *testing.T) {
 			var streamed []string
 			c.onMessage = func(msg Message) {
 				if msg.Type == MessageText {
-					lastAgentMessage = msg.Content
 					streamed = append(streamed, msg.Content)
 				}
 			}
+			c.onAgentMessage = func(text string) { lastAgentMessage = text }
 			c.onFinalAnswer = func(text string) { finalAnswer = text }
 
 			for _, line := range tc.lines {
@@ -1568,14 +1936,17 @@ func TestCodexTurnNotificationGateIgnoresSubagentTurnStarted(t *testing.T) {
 
 	c.handleLine(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr_main","turn":{"id":"turn-main"}}}`)
 	c.handleLine(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr_subagent","turn":{"id":"turn-sub"}}}`)
+	if turnID := c.activeTurnID(); turnID != "turn-main" {
+		t.Fatalf("subagent turn/started replaced client turnID: got %q", turnID)
+	}
 	c.handleLine(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thr_main","turnId":"turn-main","item":{"type":"agentMessage","id":"msg-main","text":"Main answer"}}}`)
 	c.handleLine(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr_main","turn":{"id":"turn-main","status":"completed"}}}`)
 
 	if gate.turnID != "turn-main" {
 		t.Fatalf("subagent turn/started replaced gate turnID: got %q", gate.turnID)
 	}
-	if turnID := c.activeTurnID(); turnID != "turn-main" {
-		t.Fatalf("subagent turn/started replaced client turnID: got %q", turnID)
+	if turnID := c.activeTurnID(); turnID != "" {
+		t.Fatalf("completed main turn remained supplement-ready: active turn ID %q", turnID)
 	}
 	if gotText != "Main answer" {
 		t.Fatalf("main turn text was lost after subagent start: got %q", gotText)
@@ -2800,6 +3171,97 @@ func TestCodexExecuteRetriesAfterSignaledProcessIsReaped(t *testing.T) {
 	}
 }
 
+// codexSQLiteInitFixture is the raw stderr Codex 0.155/0.156 printed on x99
+// (daemon.log, CHE-737), with the task home replaced by the test's home.
+func codexSQLiteInitFixture(home string) string {
+	return "Error: failed to initialize sqlite state runtime under " + home + ": failed to initialize state runtime at " + home
+}
+
+// runCodexSQLiteInitFixture launches a fake Codex whose first launch prints
+// firstStderr and exits 1 during initialize (every launch when always is set),
+// and returns the result plus how many times it was launched.
+func runCodexSQLiteInitFixture(t *testing.T, home, firstStderr string, always, enabled bool) (Result, int) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+	codexGracefulShutdownTimeoutNanos.Store(int64(100 * time.Millisecond))
+	t.Cleanup(func() { codexGracefulShutdownTimeoutNanos.Store(0) })
+	codexStateRuntimeRetryBackoff = 10 * time.Millisecond
+	t.Cleanup(func() { codexStateRuntimeRetryBackoff = 10 * time.Second })
+	dir := t.TempDir()
+	countPath := filepath.Join(dir, "launch-count")
+	stderrPath := filepath.Join(dir, "stderr")
+	if err := os.WriteFile(stderrPath, []byte(firstStderr+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	failWhen := `test "$count" -eq 1`
+	if always {
+		failWhen = `true`
+	}
+	fakePath := writeFakeCodexAppServer(t, ""+
+		`count=0; test -f `+countPath+` && count=$(cat `+countPath+`)`+"\n"+
+		`count=$((count + 1)); echo "$count" > `+countPath+"\n"+
+		`if `+failWhen+`; then cat `+stderrPath+` >&2; exit 1; fi`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":1,"result":{}}'`+"\n"+
+		`read line`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thr-sqlite"}}}'`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":3,"result":{}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr-sqlite","turn":{"id":"turn-1","status":"completed"}}}'`+"\n")
+	result, _ := executeFakeCodexCollectingMessagesWithConfig(t, fakePath,
+		Config{Logger: slog.Default(), Env: map[string]string{"CODEX_HOME": home}},
+		ExecOptions{Timeout: 10 * time.Second, CodexSQLiteInitRetry: enabled}, 10*time.Second)
+	got, _ := os.ReadFile(countPath)
+	n, _ := strconv.Atoi(strings.TrimSpace(string(got)))
+	return result, n
+}
+
+// CHE-737: Codex exits during initialize when its SQLite state runtime cannot
+// be opened under host I/O stalls; the DB is healthy afterwards, so one delayed
+// retry recovers the task.
+func TestCodexExecuteRetriesOnceAfterSQLiteStateRuntimeInitExit(t *testing.T) {
+	home := t.TempDir()
+	result, launches := runCodexSQLiteInitFixture(t, home, codexSQLiteInitFixture(home), false, true)
+	if result.Status != "completed" || launches != 2 {
+		t.Fatalf("exact signature should retry once: launches=%d result=%+v", launches, result)
+	}
+}
+
+func TestCodexExecuteSQLiteStateRuntimeInitExitRetriesOnlyOnce(t *testing.T) {
+	home := t.TempDir()
+	result, launches := runCodexSQLiteInitFixture(t, home, codexSQLiteInitFixture(home), true, true)
+	if result.Status != "failed" || launches != 2 {
+		t.Fatalf("second sqlite failure must be terminal: launches=%d result=%+v", launches, result)
+	}
+}
+
+func TestCodexExecuteSQLiteStateRuntimeInitExitNoRetry(t *testing.T) {
+	home := t.TempDir()
+	sig := codexSQLiteInitFixture(home)
+	for _, tc := range []struct {
+		name, stderr string
+		enabled      bool
+	}{
+		{"gate off", sig, false},
+		{"generic exit", "Error: something else broke", true},
+		{"prefix only", "Error: failed to initialize sqlite state runtime under " + home, true},
+		{"unrelated fatal quoting signature", "panic: boom\n" + sig, true},
+		{"signature then unrelated fatal", sig + "\nError: config.toml: invalid", true},
+		{"other codex home", codexSQLiteInitFixture(home + "-other"), true},
+		{"truncated tail", strings.Repeat("x", codexStderrTailBytes) + "\n" + sig, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, launches := runCodexSQLiteInitFixture(t, home, tc.stderr, false, tc.enabled)
+			if result.Status != "failed" || launches != 1 {
+				t.Fatalf("must not retry: launches=%d result=%+v", launches, result)
+			}
+		})
+	}
+}
+
 func TestCodexExecuteFirstTurnNoProgressSurfacesDiagnostics(t *testing.T) {
 	// Not t.Parallel(): this test mutates codexGracefulShutdownTimeoutNanos.
 	// The model catalog signal below makes both attempts retry safe, so this
@@ -3260,6 +3722,7 @@ func TestCodexExecuteCancellationInterruptsTurnAndPreservesUsage(t *testing.T) {
 		`read line`+"\n"+
 		`echo '{"jsonrpc":"2.0","id":3,"result":{}}'`+"\n"+
 		`echo '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr-cancel-usage","turn":{"id":"turn-cancel-usage"}}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"thr-cancel-usage","turnId":"turn-cancel-usage","itemId":"msg-partial","delta":"partial before cancel"}}'`+"\n"+
 		`echo started > `+startedPath+"\n"+
 		`read line`+"\n"+
 		`printf '%s\n' "$line" > `+interruptPath+"\n"+
@@ -3282,8 +3745,15 @@ func TestCodexExecuteCancellationInterruptsTurnAndPreservesUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
+	var messagesMu sync.Mutex
+	var messages []Message
+	messagesDone := make(chan struct{})
 	go func() {
-		for range session.Messages {
+		defer close(messagesDone)
+		for message := range session.Messages {
+			messagesMu.Lock()
+			messages = append(messages, message)
+			messagesMu.Unlock()
 		}
 	}()
 
@@ -3316,6 +3786,18 @@ func TestCodexExecuteCancellationInterruptsTurnAndPreservesUsage(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for cancelled Codex result")
+	}
+	<-messagesDone
+	messagesMu.Lock()
+	var partial string
+	for _, message := range messages {
+		if message.Type == MessageText {
+			partial += message.Content
+		}
+	}
+	messagesMu.Unlock()
+	if partial != "partial before cancel" {
+		t.Fatalf("cancelled turn streamed text = %q, want its pre-cancel delta preserved", partial)
 	}
 
 	rawInterrupt, err := os.ReadFile(interruptPath)
@@ -3390,6 +3872,27 @@ func TestCodexThreadTokenUsageUpdatedDeduplicatesSnapshot(t *testing.T) {
 	want := (TokenUsage{InputTokens: 70, OutputTokens: 10, CacheReadTokens: 30})
 	if got != want {
 		t.Fatalf("usage after duplicate snapshot = %+v, want %+v", got, want)
+	}
+}
+
+func TestCodexTokenUsageArrivingAfterTurnCompleted(t *testing.T) {
+	c, _, _ := newTestCodexClient(t)
+	c.threadID = "thread-1"
+	c.setActiveTurnID("turn-current")
+	c.handleRawNotification("turn/completed", map[string]any{
+		"threadId": "thread-1", "turn": map[string]any{"id": "turn-current", "status": "completed"},
+	})
+	if c.activeTurnID() != "" {
+		t.Fatal("completed turn still accepts supplements")
+	}
+	for _, turn := range []string{"turn-old", "turn-current", "turn-current"} {
+		c.handleRawNotification("thread/tokenUsage/updated", codexThreadTokenUsageParams(
+			"thread-1", turn, map[string]any{"inputTokens": float64(110)},
+			map[string]any{"inputTokens": float64(100), "cachedInputTokens": float64(30), "outputTokens": float64(10)},
+		))
+	}
+	if want := (TokenUsage{InputTokens: 70, CacheReadTokens: 30, OutputTokens: 10}); c.usage != want {
+		t.Fatalf("late usage = %+v, want %+v", c.usage, want)
 	}
 }
 
@@ -3690,7 +4193,7 @@ func TestCodexExecuteSemanticInactivityAllowsContinuousDeltaProgress(t *testing.
 		`echo '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr-delta","turn":{"id":"turn-delta"}}}'`+"\n"+
 		`echo '{"jsonrpc":"2.0","method":"item/commandExecution/outputDelta","params":{"threadId":"thr-delta","item":{"type":"commandExecution","id":"cmd-1"},"delta":"line 1\n"}}'`+"\n"+
 		`sleep 0.05`+"\n"+
-		`echo '{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"thr-delta","item":{"type":"agentMessage","id":"msg-1"},"delta":"thinking"}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"thr-delta","turnId":"turn-delta","itemId":"msg-1","delta":"thinking"}}'`+"\n"+
 		`sleep 0.05`+"\n"+
 		`echo '{"jsonrpc":"2.0","method":"item/fileChange/outputDelta","params":{"threadId":"thr-delta","item":{"type":"fileChange","id":"patch-1"},"delta":"patched"}}'`+"\n"+
 		`sleep 0.05`+"\n"+
@@ -3704,6 +4207,108 @@ func TestCodexExecuteSemanticInactivityAllowsContinuousDeltaProgress(t *testing.
 	})
 	if result.Status != "completed" {
 		t.Fatalf("expected completed, got status=%q error=%q", result.Status, result.Error)
+	}
+}
+
+// TestCodexExecuteStreamsCompleteJSONDeltaBeforeItemCompleted is the latency
+// regression for chat: app-server emits agent text as JSON-RPC delta events
+// before the authoritative item/completed snapshot. A JSON event may itself be
+// split across pipe writes, so no text is visible until its newline-delimited
+// frame is complete; once complete, however, the adapter must not wait for the
+// later item/completed event.
+func TestCodexExecuteStreamsCompleteJSONDeltaBeforeItemCompleted(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+
+	fakePath := writeFakeCodexAppServer(t, ""+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":1,"result":{}}'`+"\n"+
+		`read line`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thr-stream"}}}'`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":3,"result":{}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr-stream","turn":{"id":"turn-stream"}}}'`+"\n"+
+		`printf '%s' '{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"thr-stream","turnId":"turn-stream","itemId":"msg-1","delta":"Hel'`+"\n"+
+		`sleep 0.05`+"\n"+
+		`printf '%s\n' 'lo"}}'`+"\n"+
+		`sleep 0.8`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thr-stream","turnId":"turn-stream","item":{"type":"agentMessage","id":"msg-1","text":"Hello","phase":"final_answer"}}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr-stream","turn":{"id":"turn-stream","status":"completed"}}}'`+"\n")
+
+	cfg := Config{ExecutablePath: fakePath, Logger: slog.Default()}
+	backend, err := New("codex", cfg)
+	if err != nil {
+		t.Fatalf("new codex backend: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	session, err := backend.Execute(ctx, "prompt", ExecOptions{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	var started time.Time
+	for {
+		select {
+		case msg, ok := <-session.Messages:
+			if !ok {
+				t.Fatal("message stream closed before the delta became visible")
+			}
+			if msg.Type == MessageStatus && msg.Status == "running" {
+				started = time.Now()
+				continue
+			}
+			if msg.Type != MessageText {
+				continue
+			}
+			if started.IsZero() {
+				t.Fatal("text delta arrived before turn/started")
+			}
+			if msg.Content != "Hello" {
+				t.Fatalf("first streamed text = %q, want Hello", msg.Content)
+			}
+			elapsed := time.Since(started)
+			t.Logf("complete delta JSON became visible %s after turn/started", elapsed.Round(time.Millisecond))
+			if elapsed >= 500*time.Millisecond {
+				t.Fatalf("first streamed text arrived after %s; adapter waited for item/completed", elapsed.Round(time.Millisecond))
+			}
+			return
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for streamed text")
+		}
+	}
+}
+
+func TestCodexExecutePhaseLessCompletedMessageRemainsAuthoritative(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+
+	fakePath := writeFakeCodexAppServer(t, ""+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":1,"result":{}}'`+"\n"+
+		`read line`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thr-output"}}}'`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":3,"result":{}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr-output","turn":{"id":"turn-output"}}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"thr-output","turnId":"turn-output","itemId":"msg-1","delta":"Hel"}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thr-output","turnId":"turn-output","item":{"type":"agentMessage","id":"msg-1","text":"Hello"}}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr-output","turn":{"id":"turn-output","status":"completed"}}}'`+"\n")
+
+	result := executeFakeCodex(t, fakePath, ExecOptions{
+		Timeout:                   5 * time.Second,
+		SemanticInactivityTimeout: 5 * time.Second,
+	})
+	if result.Status != "completed" {
+		t.Fatalf("status = %q, want completed (error=%q)", result.Status, result.Error)
+	}
+	if result.Output != "Hello" {
+		t.Fatalf("phase-less Result.Output = %q, want authoritative Hello", result.Output)
 	}
 }
 
@@ -5706,4 +6311,253 @@ func TestCodexResumeOverflowError(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestIsCodexZeroToolFalseNegative exercises the pure classification function
+// behind CHE-775: a turn's final agent message claims missing terminal/CLI
+// access while the turn made zero real (exec_command/patch_apply) tool
+// calls. Codex CLI 0.156.0's multi-agent v2 defect steers the model toward
+// collaboration.* MCP tools (or no tool calls at all) instead of exec, so
+// realToolCalls deliberately excludes MCP tool calls — a turn that called
+// only collaboration.* tools still counts as zero here.
+func TestIsCodexZeroToolFalseNegative(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name          string
+		finalMessage  string
+		realToolCalls int64
+		want          bool
+	}{
+		{
+			name:          "zero tools and no-terminal claim",
+			finalMessage:  "This run exposes no terminal/Multica CLI capability, so I cannot proceed.",
+			realToolCalls: 0,
+			want:          true,
+		},
+		{
+			name:          "zero tools and no-multica-cli claim, different casing",
+			finalMessage:  "I have No Multica CLI access in this session.",
+			realToolCalls: 0,
+			want:          true,
+		},
+		{
+			name:          "zero tools and rerun-with-cli-access claim",
+			finalMessage:  "Please rerun with CLI access so I can complete this task.",
+			realToolCalls: 0,
+			want:          true,
+		},
+		{
+			name:          "zero tools but unrelated final message must not be flagged",
+			finalMessage:  "Here is a summary of the architecture you asked about.",
+			realToolCalls: 0,
+			want:          false,
+		},
+		{
+			name:          "zero tools and empty message",
+			finalMessage:  "",
+			realToolCalls: 0,
+			want:          false,
+		},
+		{
+			name:          "real tool call and false-negative-shaped message must not be flagged",
+			finalMessage:  "This run exposes no terminal/Multica CLI capability.",
+			realToolCalls: 1,
+			want:          false,
+		},
+		{
+			name:          "real tool call and unrelated message",
+			finalMessage:  "Done.",
+			realToolCalls: 3,
+			want:          false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isCodexZeroToolFalseNegative(tc.finalMessage, tc.realToolCalls); got != tc.want {
+				t.Fatalf("isCodexZeroToolFalseNegative(%q, %d) = %v, want %v", tc.finalMessage, tc.realToolCalls, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCodexExecuteRetriesZeroToolFalseNegativeThenCompletes drives the full
+// Execute retry loop (CHE-775): the first attempt calls only an MCP tool
+// (standing in for a collaboration.* tool exposed by the upstream multi-agent
+// v2 defect) and ends with the false-negative "no terminal/CLI access"
+// message. That must be retried once. The second attempt makes a real
+// exec_command call and completes normally, proving the false-negative
+// classification does not persist once the model actually uses a tool.
+func TestCodexExecuteRetriesZeroToolFalseNegativeThenCompletes(t *testing.T) {
+	// Not t.Parallel(): this test mutates codexGracefulShutdownTimeoutNanos.
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+	codexGracefulShutdownTimeoutNanos.Store(int64(100 * time.Millisecond))
+	t.Cleanup(func() { codexGracefulShutdownTimeoutNanos.Store(0) })
+
+	fakePath := writeFakeCodexAppServer(t, ""+
+		`DIR="$(dirname "$0")"`+"\n"+
+		`ATTEMPT=$(cat "$DIR/attempts" 2>/dev/null || echo 0)`+"\n"+
+		`ATTEMPT=$((ATTEMPT+1))`+"\n"+
+		`echo "$ATTEMPT" > "$DIR/attempts"`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":1,"result":{}}'`+"\n"+
+		`read line`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thr-zt-'"$ATTEMPT"'"}}}'`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":3,"result":{}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr-zt-'"$ATTEMPT"'","turn":{"id":"turn-zt-'"$ATTEMPT"'"}}}'`+"\n"+
+		`if [ "$ATTEMPT" = "1" ]; then`+"\n"+
+		// Attempt 1: only an MCP tool call (collaboration.* stand-in), then the
+		// false-negative final message. Zero exec_command/patch_apply calls.
+		`  echo '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thr-zt-1","item":{"type":"mcpToolCall","id":"mcp-1","tool":"collaboration.spawn_agent","status":"completed"}}}'`+"\n"+
+		`  echo '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thr-zt-1","item":{"type":"agentMessage","id":"msg-1","phase":"final_answer","text":"This run exposes no terminal/Multica CLI capability."}}}'`+"\n"+
+		`  echo '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr-zt-1","turn":{"id":"turn-zt-1","status":"completed"}}}'`+"\n"+
+		`else`+"\n"+
+		// Attempt 2: a real exec_command call, then a normal completion.
+		`  echo '{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"thr-zt-2","item":{"type":"commandExecution","id":"cmd-1","command":"ls"}}}'`+"\n"+
+		`  echo '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thr-zt-2","item":{"type":"commandExecution","id":"cmd-1","aggregatedOutput":"file1"}}}'`+"\n"+
+		`  echo '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thr-zt-2","item":{"type":"agentMessage","id":"msg-2","phase":"final_answer","text":"Listed files."}}}'`+"\n"+
+		`  echo '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr-zt-2","turn":{"id":"turn-zt-2","status":"completed"}}}'`+"\n"+
+		`fi`+"\n")
+
+	result := executeFakeCodex(t, fakePath, ExecOptions{
+		Timeout:                   5 * time.Second,
+		SemanticInactivityTimeout: 5 * time.Second,
+	})
+	if result.Status != "completed" {
+		t.Fatalf("expected the retry to complete, got status=%q error=%q", result.Status, result.Error)
+	}
+	if result.Output != "Listed files." {
+		t.Fatalf("expected the second attempt's deliverable, got %q", result.Output)
+	}
+	assertCodexAttemptCount(t, fakePath, "2")
+}
+
+// TestCodexExecuteZeroToolFalseNegativeFailsAfterSecondOccurrence proves the
+// CHE-775 guardrail's fail-fast half: when the same zero-tool false-negative
+// pattern recurs on the retried attempt, Execute must surface a clear
+// "failed" status instead of letting a "completed" status carry the false
+// "no terminal/CLI access" claim through as a normal deliverable.
+func TestCodexExecuteZeroToolFalseNegativeFailsAfterSecondOccurrence(t *testing.T) {
+	// Not t.Parallel(): this test mutates codexGracefulShutdownTimeoutNanos.
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+	codexGracefulShutdownTimeoutNanos.Store(int64(100 * time.Millisecond))
+	t.Cleanup(func() { codexGracefulShutdownTimeoutNanos.Store(0) })
+
+	fakePath := writeFakeCodexAppServer(t, ""+
+		`DIR="$(dirname "$0")"`+"\n"+
+		`ATTEMPT=$(cat "$DIR/attempts" 2>/dev/null || echo 0)`+"\n"+
+		`ATTEMPT=$((ATTEMPT+1))`+"\n"+
+		`echo "$ATTEMPT" > "$DIR/attempts"`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":1,"result":{}}'`+"\n"+
+		`read line`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thr-zt2-'"$ATTEMPT"'"}}}'`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":3,"result":{}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr-zt2-'"$ATTEMPT"'","turn":{"id":"turn-zt2-'"$ATTEMPT"'"}}}'`+"\n"+
+		// Every attempt: zero real tool calls, same false-negative final message.
+		`echo '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thr-zt2-'"$ATTEMPT"'","item":{"type":"agentMessage","id":"msg-'"$ATTEMPT"'","phase":"final_answer","text":"This run exposes no terminal/Multica CLI capability."}}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr-zt2-'"$ATTEMPT"'","turn":{"id":"turn-zt2-'"$ATTEMPT"'","status":"completed"}}}'`+"\n")
+
+	result := executeFakeCodex(t, fakePath, ExecOptions{
+		Timeout:                   5 * time.Second,
+		SemanticInactivityTimeout: 5 * time.Second,
+	})
+	if result.Status != "failed" {
+		t.Fatalf("expected the recurring false negative to surface as failed, got status=%q output=%q", result.Status, result.Output)
+	}
+	if !strings.Contains(result.Error, "CHE-775") {
+		t.Fatalf("expected a greppable CHE-775 error message, got %q", result.Error)
+	}
+	if !strings.Contains(result.Error, "zero exec_command/patch_apply tool calls") {
+		t.Fatalf("expected the error to describe the zero-tool pattern, got %q", result.Error)
+	}
+	assertCodexAttemptCount(t, fakePath, "2")
+}
+
+// TestCodexLegacyEventExecCommandCountsAsRealToolCall proves realToolCalls
+// tracks the legacy codex/event protocol, not just raw v2 item/started
+// notifications (CHE-775 follow-up). Older Codex CLI builds still speaking
+// codex/event never emit item/started, so exec_command_begin and
+// patch_apply_begin must independently feed the same counter the
+// false-negative classifier reads — otherwise a legacy-protocol turn that
+// genuinely ran a tool gets misclassified as a zero-tool false negative.
+func TestCodexLegacyEventExecCommandCountsAsRealToolCall(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+
+	if got := c.realToolCalls.Load(); got != 0 {
+		t.Fatalf("expected realToolCalls to start at 0, got %d", got)
+	}
+
+	c.handleLine(`{"jsonrpc":"2.0","method":"codex/event","params":{"msg":{"type":"exec_command_begin","call_id":"c1","command":"ls -la"}}}`)
+	if got := c.realToolCalls.Load(); got != 1 {
+		t.Fatalf("expected realToolCalls=1 after legacy exec_command_begin, got %d", got)
+	}
+
+	c.handleLine(`{"jsonrpc":"2.0","method":"codex/event","params":{"msg":{"type":"patch_apply_begin","call_id":"c2","changes":{}}}}`)
+	if got := c.realToolCalls.Load(); got != 2 {
+		t.Fatalf("expected realToolCalls=2 after legacy patch_apply_begin, got %d", got)
+	}
+}
+
+// TestCodexExecuteLegacyProtocolRealToolCallNotMisclassifiedAsFalseNegative
+// is the end-to-end counterpart of the unit test above, mirroring
+// TestCodexExecuteRetriesZeroToolFalseNegativeThenCompletes but driving the
+// legacy codex/event protocol throughout: a turn that genuinely runs
+// exec_command via legacy framing and then produces a final message that
+// happens to contain a false-negative trigger phrase must NOT be retried or
+// failed — realToolCalls > 0 short-circuits the classifier regardless of
+// message content. Before the CHE-775 follow-up fix, legacy exec_command_begin
+// never touched realToolCalls, so this exact scenario was misclassified.
+func TestCodexExecuteLegacyProtocolRealToolCallNotMisclassifiedAsFalseNegative(t *testing.T) {
+	// Not t.Parallel(): this test mutates codexGracefulShutdownTimeoutNanos.
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+	codexGracefulShutdownTimeoutNanos.Store(int64(100 * time.Millisecond))
+	t.Cleanup(func() { codexGracefulShutdownTimeoutNanos.Store(0) })
+
+	fakePath := writeFakeCodexAppServer(t, ""+
+		`DIR="$(dirname "$0")"`+"\n"+
+		`ATTEMPT=$(cat "$DIR/attempts" 2>/dev/null || echo 0)`+"\n"+
+		`ATTEMPT=$((ATTEMPT+1))`+"\n"+
+		`echo "$ATTEMPT" > "$DIR/attempts"`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":1,"result":{}}'`+"\n"+
+		`read line`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thr-legacy-'"$ATTEMPT"'"}}}'`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":3,"result":{}}'`+"\n"+
+		// A genuine legacy exec_command_begin/end pair, then a final message
+		// whose text happens to contain a false-negative trigger phrase (e.g.
+		// the agent summarizing that it confirmed CLI access was unnecessary
+		// for a sub-step). Real tool use must win over the phrase match.
+		`echo '{"jsonrpc":"2.0","method":"codex/event","params":{"msg":{"type":"exec_command_begin","call_id":"c1","command":"ls"}}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"codex/event","params":{"msg":{"type":"exec_command_end","call_id":"c1","output":"file1"}}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"codex/event","params":{"msg":{"type":"agent_message","message":"Listed files; confirmed no terminal escape was needed for this step."}}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"codex/event","params":{"msg":{"type":"task_complete"}}}'`+"\n")
+
+	result := executeFakeCodex(t, fakePath, ExecOptions{
+		Timeout:                   5 * time.Second,
+		SemanticInactivityTimeout: 5 * time.Second,
+	})
+	if result.Status != "completed" {
+		t.Fatalf("expected a genuine legacy-protocol tool call to complete normally, got status=%q error=%q", result.Status, result.Error)
+	}
+	if result.Output != "Listed files; confirmed no terminal escape was needed for this step." {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+	assertCodexAttemptCount(t, fakePath, "1")
 }

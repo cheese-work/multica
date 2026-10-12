@@ -363,6 +363,14 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 		Instructions *string `json:"instructions"`
 		LeaderID     *string `json:"leader_id"`
 		AvatarURL    *string `json:"avatar_url"`
+
+		// ExpectedBeforeDigest drives two guarded paths: CHE-764's Hermes
+		// exception (hermesExceptionMatchesSquadInstructions: this exact
+		// squad, an `instructions` write, from exactly agent
+		// hermesExceptionAgentID) and CHE-1300's owner-only CAS
+		// (governed_instruction_owner_cas.go). Every other caller is refused
+		// when the key is present.
+		ExpectedBeforeDigest string `json:"expected_before_digest"`
 	}
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -382,8 +390,65 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 	// not a raw JSON key lookup, which a case-varied key ("Instructions")
 	// bypasses (encoding/json matches keys to struct fields
 	// case-insensitively).
-	actorType, _ := h.resolveActor(r, uuidToString(member.UserID), workspaceID)
+	actorType, actorID := h.resolveActor(r, uuidToString(member.UserID), workspaceID)
+
+	// CHE-764: a single, human-approved, narrowly-scoped exception to the
+	// CHE-455 rule immediately above — see
+	// governed_instruction_hermes_exception.go for the full predicate and
+	// provenance. Checked BEFORE the default-deny call so the one permitted
+	// (agent, squad, field) triple never reaches the generic guard; every
+	// other request falls through to the unmodified CHE-455 path below.
+	if hermesExceptionIdentityMatches(actorType, actorID) && hermesExceptionMatchesSquadInstructions(uuidToString(squad.ID), req.Instructions != nil) {
+		var rawFields map[string]json.RawMessage
+		if err := json.Unmarshal(bodyBytes, &rawFields); err != nil || !hermesExceptionOnlyAllowedKeys(rawFields, "instructions", "expected_before_digest") {
+			writeError(w, http.StatusBadRequest, "this request may only include instructions and expected_before_digest")
+			return
+		}
+		result, reason, swapErr := h.hermesExceptionVerifyAndSwapSquadInstructions(r.Context(), uuidToString(squad.ID), hermesExceptionRequest{
+			NewContent:           *req.Instructions,
+			ExpectedBeforeDigest: req.ExpectedBeforeDigest,
+		})
+		logHermesExceptionOutcome(r, actorID, "squad.instructions", uuidToString(squad.ID), result, reason, swapErr)
+		if reason != hermesExceptionRejectNone {
+			hermesExceptionWriteRejection(w, r, reason, swapErr)
+			return
+		}
+		updated, err := h.Queries.GetSquadInWorkspace(r.Context(), db.GetSquadInWorkspaceParams{
+			ID:          squad.ID,
+			WorkspaceID: wsUUID,
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to reload squad after hermes exception write")
+			return
+		}
+		resp, err := h.squadToResponseWithPreview(r.Context(), updated)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load squad member preview")
+			return
+		}
+		// Publish the same live-update event the ordinary human path emits
+		// below (h.publish(protocol.EventSquadUpdated, ...)) so UI clients
+		// watching this squad see the change; the exception path returns
+		// before reaching that call (security review finding, CHE-764).
+		h.publish(protocol.EventSquadUpdated, workspaceID, "agent", actorID, map[string]any{"squad": resp})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"squad":         resp,
+			"before_digest": result.BeforeDigest,
+			"after_digest":  result.AfterDigest,
+		})
+		return
+	}
+
 	if rejectGovernedFieldForAgentActor(w, r, actorType, req.Instructions != nil, "instructions") {
+		return
+	}
+
+	// CHE-1300: owner-only atomic CAS, entered by the digest key. After the
+	// guard above so a machine actor never reaches it.
+	var rawFields map[string]json.RawMessage
+	_ = json.Unmarshal(bodyBytes, &rawFields) // body already decoded into req above
+	if ownerCASRequested(rawFields) {
+		h.ownerCASUpdateSquad(w, r, workspaceID, member, squad, actorType, rawFields)
 		return
 	}
 

@@ -11,6 +11,33 @@ import (
 	"time"
 )
 
+func countSystemCommentsOn(t *testing.T, issueID string) int {
+	t.Helper()
+	var count int
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT count(*) FROM comment WHERE issue_id = $1 AND author_type = 'system'`,
+		issueID,
+	).Scan(&count); err != nil {
+		t.Fatalf("count system comments: %v", err)
+	}
+	return count
+}
+
+func parentSystemCommentContent(t *testing.T, issueID string) string {
+	t.Helper()
+	if count := countSystemCommentsOn(t, issueID); count != 1 {
+		t.Fatalf("expected exactly 1 system comment on parent, got %d", count)
+	}
+	var content string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT content FROM comment WHERE issue_id = $1 AND author_type = 'system'`,
+		issueID,
+	).Scan(&content); err != nil {
+		t.Fatalf("read system comment content: %v", err)
+	}
+	return content
+}
+
 // newStageWakeFixture creates a parent assigned to the ready test agent plus
 // n staged (all stage 1) children, so a test can drive completions and assert
 // on stage_completion_wake / stage_generation directly. Mirrors

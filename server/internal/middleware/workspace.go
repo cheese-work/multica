@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/featureflag"
 )
 
 // Context keys for workspace-scoped request data.
@@ -33,10 +34,20 @@ func WorkspaceIDFromContext(ctx context.Context) string {
 // SetMemberContext injects workspace ID and member into the context.
 // This is useful for handlers that resolve the workspace from an entity lookup
 // and want to share the member with downstream code.
+//
+// It also installs the feature-flag targeting context (CHE-621), so a flag
+// evaluated anywhere downstream of a resolved member can target that member's
+// workspace, user, membership or role. Before this, nothing in the server
+// populated featureflag.EvalContext at all: every flag evaluated against the
+// zero value, which matches no targeting rule and buckets percent rollouts to
+// 0. That is why triage_v1 had to ship as a global switch.
+//
+// Request-scoped callers should prefer withRequestEvalContext, which adds the
+// actor attributes that only a *http.Request can supply.
 func SetMemberContext(ctx context.Context, workspaceID string, member db.Member) context.Context {
 	ctx = context.WithValue(ctx, ctxKeyWorkspaceID, workspaceID)
 	ctx = context.WithValue(ctx, ctxKeyMember, member)
-	return ctx
+	return featureflag.WithEvalContext(ctx, evalContextFor(workspaceID, member))
 }
 
 // errWorkspaceNotFound is returned when a slug was provided but doesn't match
@@ -155,6 +166,14 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	w.Write([]byte(`{"error":"` + msg + `"}`))
 }
 
+func writeWorkspaceError(w http.ResponseWriter, r *http.Request, status int, message, proposalProblem string) {
+	if isGovernanceProposalRoute(r) {
+		writeGovernanceProposalProblem(w, r, status, proposalProblem)
+		return
+	}
+	writeError(w, status, message)
+}
+
 // RequireWorkspaceMember resolves the workspace from slug (preferred) or UUID
 // (fallback), validates membership, and injects the member and workspace ID
 // into the request context.
@@ -197,11 +216,11 @@ func buildMiddleware(queries *db.Queries, resolve workspaceResolver, roles []str
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			workspaceID, resolveErr := resolve(r)
 			if resolveErr != nil {
-				writeError(w, http.StatusNotFound, "workspace not found")
+				writeWorkspaceError(w, r, http.StatusNotFound, "workspace not found", "workspace_not_found")
 				return
 			}
 			if workspaceID == "" {
-				writeError(w, http.StatusBadRequest, "workspace_id or workspace_slug is required")
+				writeWorkspaceError(w, r, http.StatusBadRequest, "workspace_id or workspace_slug is required", "workspace_not_found")
 				return
 			}
 
@@ -214,25 +233,25 @@ func buildMiddleware(queries *db.Queries, resolve workspaceResolver, roles []str
 			if r.Header.Get("X-Actor-Source") == "task_token" {
 				bound := r.Header.Get("X-Workspace-ID")
 				if bound == "" || workspaceID != bound {
-					writeError(w, http.StatusForbidden, "task token is bound to a different workspace")
+					writeWorkspaceError(w, r, http.StatusForbidden, "task token is bound to a different workspace", "proposal_token_scope_denied")
 					return
 				}
 			}
 
 			userID := r.Header.Get("X-User-ID")
 			if userID == "" {
-				writeError(w, http.StatusUnauthorized, "user not authenticated")
+				writeWorkspaceError(w, r, http.StatusUnauthorized, "user not authenticated", "unauthorized")
 				return
 			}
 
 			userUUID, err := util.ParseUUID(userID)
 			if err != nil {
-				writeError(w, http.StatusUnauthorized, "user not authenticated")
+				writeWorkspaceError(w, r, http.StatusUnauthorized, "user not authenticated", "unauthorized")
 				return
 			}
 			wsUUID, err := util.ParseUUID(workspaceID)
 			if err != nil {
-				writeError(w, http.StatusBadRequest, "invalid workspace_id")
+				writeWorkspaceError(w, r, http.StatusBadRequest, "invalid workspace_id", "workspace_not_found")
 				return
 			}
 			member, err := queries.GetMemberByUserAndWorkspace(r.Context(), db.GetMemberByUserAndWorkspaceParams{
@@ -240,7 +259,7 @@ func buildMiddleware(queries *db.Queries, resolve workspaceResolver, roles []str
 				WorkspaceID: wsUUID,
 			})
 			if err != nil {
-				writeError(w, http.StatusNotFound, "workspace not found")
+				writeWorkspaceError(w, r, http.StatusNotFound, "workspace not found", "workspace_not_found")
 				return
 			}
 
@@ -253,12 +272,13 @@ func buildMiddleware(queries *db.Queries, resolve workspaceResolver, roles []str
 					}
 				}
 				if !allowed {
-					writeError(w, http.StatusForbidden, "insufficient permissions")
+					writeWorkspaceError(w, r, http.StatusForbidden, "insufficient permissions", "proposal_access_denied")
 					return
 				}
 			}
 
 			ctx := SetMemberContext(r.Context(), workspaceID, member)
+			ctx = withRequestEvalContext(ctx, r, workspaceID, member)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

@@ -1,0 +1,31 @@
+name: C00 deploy queue alarm
+
+on:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/cd-queue-watch.yml
+      - deploy/cd/check-deploy-queue.py
+      - deploy/cd/test-check-deploy-queue.py
+
+permissions:
+  contents: read
+  actions: read
+
+# Deliberately no cd-deploy-c00 concurrency group or self-hosted runner:
+# neither a dead deploy runner nor its held lock may suppress this alarm.
+jobs:
+  queue-alarm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: Verify queue-age regression cases
+        run: python3 deploy/cd/test-check-deploy-queue.py
+      - name: Check active deployment queues (read-only)
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 deploy/cd/check-deploy-queue.py

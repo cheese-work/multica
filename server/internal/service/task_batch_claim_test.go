@@ -270,11 +270,13 @@ func TestClaimTasksForRuntimes_EmptyReclaimDefersHintForRetry(t *testing.T) {
 		t.Fatalf("precondition due runtimes = %v, want [%s]", due, rt1)
 	}
 
+	claimStarted := time.Now().Truncate(time.Millisecond)
 	if claimed, err := svc.ClaimTasksForRuntimes(ctx, []pgtype.UUID{runtimeID}, 5); err != nil {
 		t.Fatalf("batch claim: %v", err)
 	} else if len(claimed) != 0 {
 		t.Fatalf("claimed tasks with stale runtime heartbeat: %v", claimed)
 	}
+	claimFinished := time.Now().Truncate(time.Millisecond)
 	var status string
 	if err := pool.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id = $1`, taskID).Scan(&status); err != nil {
 		t.Fatalf("read task after empty reclaim: %v", err)
@@ -288,8 +290,8 @@ func TestClaimTasksForRuntimes_EmptyReclaimDefersHintForRetry(t *testing.T) {
 		t.Fatalf("read deferred hint: %v", err)
 	}
 	retryAt := time.UnixMilli(int64(score))
-	if retryAt.Before(now.Add(ReclaimCheckRetryInterval)) || retryAt.After(time.Now().Add(ReclaimCheckRetryInterval+time.Second)) {
-		t.Fatalf("retry hint = %v, want approximately one retry interval after the check", retryAt)
+	if retryAt.Before(claimStarted.Add(ReclaimCheckRetryInterval)) || retryAt.After(claimFinished.Add(ReclaimCheckRetryInterval)) {
+		t.Fatalf("retry hint = %v, want one retry interval after the reclaim check", retryAt)
 	}
 	if due := svc.ReclaimCheck.DueRuntimeIDs(ctx, []string{rt1}, retryAt.Add(-time.Millisecond)); len(due) != 0 {
 		t.Fatalf("hint retriggered before retry deadline: %v", due)

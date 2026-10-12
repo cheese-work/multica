@@ -158,6 +158,11 @@ type Config struct {
 	QwenArgs                    []string
 	QwenpawArgs                 []string
 
+	// CodexSQLiteInitRetry enables the one-shot retry after Codex exits during
+	// initialize because its SQLite state runtime could not be opened
+	// (MULTICA_CODEX_SQLITE_INIT_RETRY, default off; CHE-737 canary gate).
+	CodexSQLiteInitRetry bool
+
 	// ProfileCommandOverrides maps a custom runtime profile_id -> the absolute
 	// executable path to use for that profile on THIS machine (MUL-3284).
 	// Sourced from the local CLI config (cli.CLIConfig.ProfileCommandOverrides),
@@ -618,6 +623,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	// operator who installed a build by hand wants the daemon to run it.
 	// Default on for every CLI-launched daemon; Desktop opts out at the loop.
 	autoReloadEnabled := boolFromEnv("MULTICA_DAEMON_AUTO_RELOAD", true)
+	codexSQLiteInitRetry := boolFromEnv("MULTICA_CODEX_SQLITE_INIT_RETRY", false)
 	if overrides.DisableAutoReload {
 		autoReloadEnabled = false
 	}
@@ -659,6 +665,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		CodexHandshakeTimeout:           codexHandshakeTimeout,
 		CodexTurnInterruptTimeout:       codexTurnInterruptTimeout,
 		CodexThreadHandshakeTimeout:     codexThreadHandshakeTimeout,
+		CodexSQLiteInitRetry:            codexSQLiteInitRetry,
 		OpenCodeIdleWatchdog:            openCodeIdleWatchdog,
 		AgentIdleWatchdog:               agentIdleWatchdog,
 		AgentToolWatchdog:               agentToolWatchdog,

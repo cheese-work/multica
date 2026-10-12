@@ -27,7 +27,15 @@
 //     runtime_recovery, timeout, iteration_limit, agent_blocked,
 //     api_invalid_request, skill_bundle_unavailable,
 //     runtime_cli_timeout, environment_prepare_failed,
-//     invalid_task_identity
+//     invalid_task_identity, runtime_access_denied
+//
+//   - A dispatch-blocked value (`dispatch_blocked.` prefix), written at
+//     admission time — before a task row exists — when service.AgentReadiness
+//     refuses to dispatch on policy grounds rather than availability:
+//     dispatch_blocked.provider_hold (CHE-588). Its own prefix, not
+//     `agent_error.` and not bare like the platform-side group above, because
+//     it is neither: nothing the agent did caused it, and it is not the
+//     scheduler/runtime layer failing — it is a deliberate refusal.
 //
 //   - 14 agent-side values (with `agent_error.` prefix) produced by
 //     Classify(rawError) when the agent process surfaced an error string.
@@ -176,6 +184,60 @@ const (
 	// only repeat an isolation failure.
 	ReasonInvalidTaskIdentity Reason = "invalid_task_identity"
 
+	// ReasonRuntimeAccessDenied: the daemon refused a claimed task because
+	// a private runtime does not authorize the task's agent — the runtime
+	// owner and the agent owner differ, a private owned runtime was paired
+	// with an ownerless agent, or the runtime owner needed for
+	// authorization was missing at the delivery gate. The agent process is
+	// never launched. Unlike ReasonInvalidTaskIdentity the task's persisted
+	// identity is intact; what fails is ownership authorization. Permanent
+	// and non-retryable: retrying the same runtime/agent pair reproduces
+	// the denial, so recovery is user configuration (make the runtime
+	// public, or rebind the agent to a runtime its owner may use), not
+	// another attempt. Written by the daemon claim settlement paths in
+	// handler/daemon.go. Shares the runtime_access_denied wire value with
+	// dispatch.ReasonRuntimeAccessDenied so admission blocks and persisted
+	// settlement failures surface the same recovery guidance.
+	ReasonRuntimeAccessDenied Reason = "runtime_access_denied"
+
+	// Dispatch-blocked side: a NEW top-level namespace (dispatch_blocked.*),
+	// deliberately NOT platform-side and NOT agent_error.*. service.AgentReadiness
+	// refuses these before a task is ever created, so unlike every reason above
+	// (all written once a task row exists and something happened to it), this
+	// value is written at admission time to whatever the caller persists as the
+	// refusal record. It gets its own namespace rather than reusing
+	// ReasonTargetUnavailable or ReasonAgentBlocked because those both mean "the
+	// platform/agent could not proceed"; this means "the platform chose not to,
+	// on purpose". Folding a policy refusal into either bucket makes an
+	// intentional hold look like a fault to fix, which is backwards for
+	// something a human has to lift deliberately.
+
+	// ReasonDispatchBlockedProviderHold: dispatch was refused because the
+	// target agent resolves to a model provider a workspace policy has put on
+	// hold (CHE-588) — service.AgentReadiness's provider-hold check, run before
+	// the runtime lookup so no network call to the held provider ever happens.
+	//
+	// Deliberately NOT under agent_error.* — the same argument
+	// ReasonEnvironmentPrepareFailed makes above (#7913), applied to the layer
+	// before that one: the agent process was never launched, no provider was
+	// contacted, so no value in the agent_error.* namespace could be correct.
+	// Before this reason existed, a held OpenAI agent's dispatch surfaced as
+	// agent_error.provider_server_error with a 503 — indistinguishable from a
+	// real provider outage, which cost 4 issues and ~7h of wasted dispatch
+	// cycles and a recovery run pointed at a healthy backend (CHE-588). A fleet
+	// health read grouping by agent_error.* must not count a policy refusal as
+	// a provider fault, and IsAgentError() must return false here for exactly
+	// that reason — pinned in provider_hold_test.go so a future refactor that
+	// merges the two "the provider didn't answer" buckets cannot silently
+	// re-create the bug this reason exists to fix.
+	//
+	// Deliberately NOT retryable: the policy is still in force on the next
+	// attempt, so a retry re-issues the same violation instead of recovering
+	// from a transient condition. There is no automatic backoff that fixes a
+	// standing hold — only a human lifting it does, which is a workspace
+	// settings change, not a dispatch outcome.
+	ReasonDispatchBlockedProviderHold Reason = "dispatch_blocked.provider_hold"
+
 	// Agent process side: failure surfaced by the agent CLI / SDK as
 	// an error string. Classify(rawError) is responsible for picking
 	// the right sub-reason from the string. IsAgentError returns true
@@ -251,14 +313,15 @@ const (
 	ReasonAgentUnknown Reason = "agent_error.unknown"
 )
 
-// allReasons is the canonical ordered list of the 26 reasons. Order is
+// allReasons is the canonical ordered list of the 27 reasons. Order is
 // stable so callers (e.g. Prometheus collectors that pre-warm series via
 // AllReasons) can build deterministic label sets across restarts.
 //
 // Ordering:
 //  1. Platform-side reasons in the same order they tend to fire in a
 //     task lifecycle (queue → dispatch → run → post-run).
-//  2. Agent-side reasons grouped by responsibility area (provider /
+//  2. Dispatch-blocked reasons — refused at admission, before a task exists.
+//  3. Agent-side reasons grouped by responsibility area (provider /
 //     agent process / config / runtime), then unknown last.
 var allReasons = []Reason{
 	// Platform / scheduler side.
@@ -274,6 +337,10 @@ var allReasons = []Reason{
 	ReasonRuntimeCLITimeout,
 	ReasonEnvironmentPrepareFailed,
 	ReasonInvalidTaskIdentity,
+	ReasonRuntimeAccessDenied,
+
+	// Dispatch-blocked side: admission-time policy refusals.
+	ReasonDispatchBlockedProviderHold,
 
 	// Agent process side: provider errors.
 	ReasonAgentProviderAuthOrAccess,

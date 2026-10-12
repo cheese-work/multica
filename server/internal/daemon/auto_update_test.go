@@ -34,9 +34,10 @@ func newAutoUpdateTestDaemon(t *testing.T, currentVersion string) (*Daemon, *ato
 
 func withStubRelease(t *testing.T, release *cli.GitHubRelease, err error) {
 	t.Helper()
-	prev := fetchLatestRelease
+	prev, prevFork := fetchLatestRelease, forkUpdateSource
 	fetchLatestRelease = func() (*cli.GitHubRelease, error) { return release, err }
-	t.Cleanup(func() { fetchLatestRelease = prev })
+	forkUpdateSource = func() bool { return false } // these tests pin the upstream-release path (Windows)
+	t.Cleanup(func() { fetchLatestRelease, forkUpdateSource = prev, prevFork })
 }
 
 func TestTryAutoUpdate_SkipsWhenUpdating(t *testing.T) {

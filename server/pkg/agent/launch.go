@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os/exec"
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/multica-ai/multica/server/pkg/credentialexec"
 )
 
 const redactedAgentCommandArg = "<redacted>"
@@ -315,6 +318,26 @@ func (c Config) commandAt(path string) Command {
 	return Command{Path: path, Prefix: c.LaunchPrefix, logger: c.Logger}
 }
 
+func (config Config) validateCredentialOptions(opts ExecOptions) error {
+	if !config.RequireCredentialIsolation && config.CredentialBoundary == nil {
+		return nil
+	}
+	if err := config.CredentialBoundary.Validate(config.TaskID, config.provider, config.ExecutablePath); err != nil {
+		return err
+	}
+	if opts.Cwd != config.CredentialBoundary.WorkDir() || len(opts.ExtraArgs) != 0 || len(opts.CustomArgs) != 0 || len(opts.McpConfig) != 0 || opts.ClaudeSettingsPath != "" || opts.EnableTaskSupplement || opts.CodexSQLiteInitRetry {
+		return fmt.Errorf("%w: unsupported argument, profile, hook or MCP route", credentialexec.ErrUnavailable)
+	}
+	return nil
+}
+
+func (config Config) wrapCredentialCommand(cmd *exec.Cmd) (func(), error) {
+	if config.CredentialBoundary == nil {
+		return func() {}, nil
+	}
+	return config.CredentialBoundary.Wrap(cmd)
+}
+
 // logAgentCommand is the only boundary allowed to record runtime process
 // arguments. It works from the final exec.Cmd so launch prefixes and
 // platform-specific rewrites are represented, but never records argument
@@ -473,6 +496,9 @@ var launchPrefixBlockedArgs = map[string]map[string]blockedArgMode{
 // Without it a `--version` probe and a task launch would disagree about what
 // the runtime's prefix is.
 func FilterLaunchPrefix(agentType string, prefix []string, logger *slog.Logger) []string {
+	if family, ok := RuntimeProtocolFamily(agentType); ok {
+		agentType = family
+	}
 	return filterLaunchPrefix(prefix, agentType, logger)
 }
 

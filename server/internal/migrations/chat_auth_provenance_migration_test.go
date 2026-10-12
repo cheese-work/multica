@@ -33,7 +33,7 @@ func TestChatMessageSentViaMigration(test *testing.T) {
 	if _, err := connection.Exec(ctx, `CREATE TABLE chat_message (id int PRIMARY KEY); INSERT INTO chat_message (id) VALUES (1)`); err != nil {
 		test.Fatal(err)
 	}
-	if _, err := connection.Exec(ctx, readMigrationFile(test, "500_chat_message_auth_provenance.up.sql")); err != nil {
+	if _, err := connection.Exec(ctx, readMigrationFile(test, "593_chat_message_auth_provenance.up.sql")); err != nil {
 		test.Fatal(err)
 	}
 	var legacyIsNull bool
@@ -51,7 +51,7 @@ func TestChatMessageSentViaMigration(test *testing.T) {
 	if _, err := connection.Exec(ctx, `INSERT INTO chat_message (id, sent_via) VALUES (9, 'member')`); err == nil {
 		test.Fatal("unrecognized provenance must be rejected")
 	}
-	if _, err := connection.Exec(ctx, readMigrationFile(test, "500_chat_message_auth_provenance.down.sql")); err != nil {
+	if _, err := connection.Exec(ctx, readMigrationFile(test, "593_chat_message_auth_provenance.down.sql")); err != nil {
 		test.Fatal(err)
 	}
 	var count int

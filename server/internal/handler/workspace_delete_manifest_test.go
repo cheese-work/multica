@@ -2,9 +2,26 @@ package handler
 
 import (
 	"context"
+	"os"
 	"sort"
+	"strings"
 	"testing"
 )
+
+func TestGovernanceWorkspaceDeletionManifestHasExplicitQueries(t *testing.T) {
+	queries, err := os.ReadFile("../../pkg/db/queries/workspace_delete.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for table, action := range workspaceDeletionManifest {
+		if !strings.HasPrefix(table, "governance_") {
+			continue
+		}
+		if action != workspaceDelete || !strings.Contains(string(queries), "DELETE FROM "+table+" WHERE workspace_id = $1") {
+			t.Errorf("governance table %s lacks explicit workspace-scoped teardown", table)
+		}
+	}
+}
 
 type workspaceDeleteAction string
 
@@ -45,6 +62,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"channel_media_pending_object":       workspaceDeleteSettle,
 	"channel_outbound_card_message":      workspaceDelete,
 	"channel_outbound_message":           workspaceDelete,
+	"channel_reply_delivery":             workspaceDelete,
 	"channel_task_delivery":              workspaceDelete,
 	"channel_user_binding":               workspaceDelete,
 	"chat_draft_restore":                 workspaceDelete,
@@ -62,21 +80,44 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"dingtalk_group_route":               workspaceDelete,
 	"feedback":                           workspaceDeleteDetach,
 	"github_installation":                workspaceDelete,
-	"github_merge_announcement":          workspaceDelete,
 	"github_pending_check_suite":         workspaceDelete,
 	"github_pending_installation":        workspaceDeleteKeep,
 	"github_pull_request":                workspaceDelete,
 	"github_pull_request_check_run":      workspaceDelete,
 	"github_pull_request_check_suite":    workspaceDelete,
+	"governance_receipt":                 workspaceDelete, // CHE-685 Jev governance routing receipts; workspace-owned, same shape as issue_checkpoint.
+	"governance_budget_window":           workspaceDelete,
+	"governance_budget_root":             workspaceDelete,
+	"governance_budget_reservation":      workspaceDelete,
+	"governance_budget_journal":          workspaceDelete,
+	"governance_budget_outbox":           workspaceDelete,
+	"governance_concurrency_guard":       workspaceDelete,
+	"governance_concurrency_hold":        workspaceDelete,
+	"governance_jev_credential":          workspaceDelete, // CHE-714 write-only encrypted Jev provider credential; explicit transactional teardown.
+	"governance_workspace_config":        workspaceDelete, // CHE-707 versioned workspace governance gate and control epoch.
+	"governance_workspace_config_audit":  workspaceDelete, // CHE-707 idempotency, rollback, and operating-limit audit history.
+	"governance_case":                    workspaceDelete, // CHE-704 C01 lifecycle authority; no FK/cascade teardown.
+	"governance_case_transition":         workspaceDelete, // CHE-704 immutable CAS/audit trail.
+	"governance_attempt":                 workspaceDelete, // CHE-704 case-bound Jev/agent attempt evidence.
+	"governance_evaluation":              workspaceDelete, // CHE-704 immutable snapshot/vector/candidate/citation map.
+	"governance_evaluation_source":       workspaceDelete, // CHE-704 copied-context source index/redaction lookup.
 	"inbox_item":                         workspaceDelete,
 	"instance_telemetry_state":           workspaceDeleteKeep,
 	"issue":                              workspaceDelete,
+	"issue_checkpoint":                   workspaceDelete,
+	"issue_wakeup":                       workspaceDelete,
+	"issue_wakeup_definition":            workspaceDelete,
+	"issue_wakeup_pr_event":              workspaceDelete,
+	"issue_wakeup_receipt":               workspaceDelete,
+	"issue_child_event":                  workspaceDelete,
 	"issue_view":                         workspaceDelete,
 	"issue_view_preference":              workspaceDelete,
 	"issue_dependency":                   workspaceDelete,
 	"issue_label":                        workspaceDelete,
 	"issue_property":                     workspaceDelete,
+	"issue_pr_automation":                workspaceDelete,
 	"issue_pull_request":                 workspaceDelete,
+	"issue_pull_request_exclusion":       workspaceDelete,
 	"issue_reaction":                     workspaceDelete,
 	"issue_source_context":               workspaceDelete,
 	"issue_source_context_object_intent": workspaceDeleteSettle,
@@ -94,6 +135,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"maintenance_job":                    workspaceDeleteKeep, // Global maintenance audit history, not workspace-owned.
 	"member":                             workspaceDelete,
 	"agent_mcp_server":                   workspaceDelete,
+	"wakeup_aggregate_budget":            workspaceDelete,
+	"wakeup_aggregate_reservation":       workspaceDelete,
 	"workspace_mcp_server":               workspaceDelete,
 	"notification_preference":            workspaceDelete,
 	"personal_access_token":              workspaceDeleteKeep,
@@ -108,9 +151,14 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"plugin_package_file":                workspaceDelete,
 	"project":                            workspaceDelete,
 	"project_resource":                   workspaceDelete,
+	"protocol_lint_run":                  workspaceDeleteKeep, // Cross-workspace protocol-lint audit/reporting data (CHE-552), not workspace-owned.
+	"provenance_export_log":              workspaceDelete,     // CHE-755 provenance export audit rows; workspace-owned leaf.
+	"provider_failure_recovery":          workspaceDeleteKeep,
 	"quick_action":                       workspaceDelete,
 	"runtime_profile":                    workspaceDelete,
 	"schema_migrations":                  workspaceDeleteKeep,
+	"search_index_change":                workspaceDelete,
+	"search_index_prune_mark":            workspaceDeleteKeep,
 	"seat_capacity_outbox":               workspaceDeleteSettle,
 	"skill":                              workspaceDelete,
 	"skill_file":                         workspaceDelete,
@@ -121,6 +169,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"stage_generation":                   workspaceDelete,
 	"sys_cron_executions":                workspaceDeleteKeep,
 	"task_message":                       workspaceDelete,
+	"task_supplement":                    workspaceDelete,
+	"task_supplement_capability":         workspaceDelete,
 	"task_token":                         workspaceDelete,
 	"task_usage":                         workspaceDelete,
 	"task_usage_hourly":                  workspaceDelete,

@@ -197,6 +197,25 @@ func parseLLMMaxRetries(raw string) (*llm.RetryOverride, error) {
 	return override, nil
 }
 
+// parseLLMDisableThinking turns the raw MULTICA_LLM_DISABLE_THINKING value
+// into the bool llm.Config.DisableThinking expects. It follows the
+// parseLLMMaxRetries contract: unset is a valid state (the knob stays off),
+// and anything that does not read as a deliberate true/false stops the boot
+// instead of being coerced — a typo'd "ture" that silently did nothing would
+// leave an operator debugging latency the configuration claims to remove.
+func parseLLMDisableThinking(raw string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "":
+		return false, nil
+	case "1", "true":
+		return true, nil
+	case "0", "false":
+		return false, nil
+	default:
+		return false, fmt.Errorf("must be a boolean (true/false or 1/0), got %q", raw)
+	}
+}
+
 func envPositiveInt64(name string, def int64) int64 {
 	raw := os.Getenv(name)
 	if raw == "" {
@@ -652,6 +671,14 @@ func main() {
 		readRecorder = dbRoutingMetrics
 	}
 
+	// Same contract for the thinking-off hint: an unparseable value must stop
+	// the boot rather than read as "disabled" and look configured.
+	llmDisableThinking, err := parseLLMDisableThinking(os.Getenv("MULTICA_LLM_DISABLE_THINKING"))
+	if err != nil {
+		slog.Error("invalid MULTICA_LLM_DISABLE_THINKING", "error", err)
+		os.Exit(1)
+	}
+
 	r, h := NewRouterWithOptions(pool, hub, bus, analyticsClient, storeRedis, RouterOptions{
 		HTTPMetrics:         httpMetrics,
 		BusinessMetrics:     businessMetrics,
@@ -665,6 +692,7 @@ func main() {
 		FeatureFlags:        flags,
 		HeartbeatScheduler:  heartbeatScheduler,
 		LLMMaxRetries:       llmMaxRetries,
+		LLMDisableThinking:  llmDisableThinking,
 	})
 	var replicaQueries *db.Queries
 	if replicaPool != nil {
@@ -744,9 +772,6 @@ func main() {
 	if h.WebhookDeliveryWorker != nil {
 		go h.WebhookDeliveryWorker.Run(sweepCtx)
 	}
-	if h.MergeAnnouncementWorker != nil {
-		go h.MergeAnnouncementWorker.Run(sweepCtx)
-	}
 	if h.SeatCapacityWorker != nil {
 		go h.SeatCapacityWorker.Run(sweepCtx)
 	}
@@ -800,6 +825,15 @@ func main() {
 	// not fit). Crash recovery, occurrence-level idempotency, lease
 	// theft, and retry are all reused from the manager + sys_cron_executions
 	// — there is no separate goroutine for scheduled Autopilot anymore.
+	if err := schedulerMgr.Register(scheduler.SearchIndexChangePruneJob(queries)); err != nil {
+		slog.Warn("scheduler: failed to register search index change prune job", "error", err)
+	}
+	if err := schedulerMgr.Register(scheduler.IssueWakeupJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
+		slog.Error("scheduler: register issue wakeups", "error", err)
+	}
+	if err := schedulerMgr.Register(scheduler.ChildEventSweepJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
+		slog.Error("scheduler: register child-done sweep", "error", err)
+	}
 	if err := schedulerMgr.Register(scheduler.AutopilotScheduleDispatchJob(pool, queries, autopilotSvc)); err != nil {
 		slog.Warn("scheduler: failed to register autopilot_schedule_dispatch job", "error", err)
 	}
@@ -807,6 +841,15 @@ func main() {
 	// machinery. The job is inert while plugins_v1 is disabled.
 	if err := schedulerMgr.Register(scheduler.PluginHookScheduleDispatchJob(queries, h.PluginService)); err != nil {
 		slog.Warn("scheduler: failed to register plugin_hook_schedule_dispatch job", "error", err)
+	}
+	// CHE-766: scheduled deletion of provenance_export_log rows once they pass
+	// each workspace's own export_manifest_retention_days (default 90), read
+	// live at deletion time with a workspace-scoped receipt per sweep.
+	if err := schedulerMgr.Register(scheduler.ProvenanceExportRetentionJob(queries, pool)); err != nil {
+		slog.Warn("scheduler: failed to register provenance_export_retention job", "error", err)
+	}
+	if err := schedulerMgr.Register(scheduler.GovernanceCaseEvidenceRetentionJob(queries, pool)); err != nil {
+		slog.Warn("scheduler: failed to register governance_case_evidence_retention job", "error", err)
 	}
 	go func() {
 		_ = schedulerMgr.Run(sweepCtx)
@@ -889,9 +932,6 @@ func main() {
 		JoinWebhookWorker: func() {
 			if h.WebhookDeliveryWorker != nil && !h.WebhookDeliveryWorker.WaitWithTimeout(5*time.Second) {
 				slog.Warn("webhook delivery worker did not exit within shutdown timeout")
-			}
-			if h.MergeAnnouncementWorker != nil && !h.MergeAnnouncementWorker.WaitWithTimeout(5*time.Second) {
-				slog.Warn("merge announcement worker did not exit within shutdown timeout")
 			}
 		},
 		JoinTelegram: func() {

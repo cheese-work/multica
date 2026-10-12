@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_provenance_export_log_workspace_created;

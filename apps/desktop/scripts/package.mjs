@@ -33,6 +33,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const desktopRoot = resolve(here, "..");
+const repoRoot = resolve(desktopRoot, "../..");
 const bundleCliScript = resolve(here, "bundle-cli.mjs");
 
 const PLATFORM_CONFIG = {
@@ -153,7 +154,7 @@ export const DESCRIBE_ARGS = [
 // Exported (with an optional cwd) so tests can exercise the real describe
 // invocation against a throwaway repo, not just normalizeGitVersion in
 // isolation — the gap that let the Windows quoting regression through CI.
-export function deriveVersion(cwd) {
+export function deriveVersion(cwd = repoRoot) {
   return normalizeGitVersion(git(DESCRIBE_ARGS, cwd));
 }
 

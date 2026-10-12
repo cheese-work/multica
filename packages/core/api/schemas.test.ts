@@ -14,6 +14,7 @@ import {
   EMPTY_LIST_TELEGRAM_INSTALLATIONS_RESPONSE,
   EMPTY_REDEEM_TELEGRAM_BINDING_TOKEN_RESPONSE,
   AgentTaskListSchema,
+  AgentActivityBucketListSchema,
   TaskMessageListSchema,
   AutopilotQuotaUsageSchema,
   AutopilotRunSchema,
@@ -73,7 +74,6 @@ import {
   EMPTY_LIST_ISSUE_STATUSES_RESPONSE,
   EMPTY_ISSUE_STATUS_ENTRY,
 } from "./schemas";
-import { GitHubMergeAnnouncementSchema, IssuePullRequestsResponseSchema } from "./schemas";
 import { parseWithFallback } from "./schema";
 
 const baseIssue = {
@@ -542,6 +542,25 @@ describe("IssueTriggerPreviewSchema", () => {
 });
 
 describe("TimelineEntriesSchema", () => {
+  it("preserves run-bound supplement delivery receipts", () => {
+    const parsed = TimelineEntriesSchema.parse([{
+      type: "comment",
+      id: "supplement-1",
+      actor_type: "member",
+      actor_id: "user-1",
+      created_at: "2026-01-01T00:00:00Z",
+      content: "also cover rollback",
+      supplement_task_id: "task-1",
+      supplement_status: "delivered",
+      supplement_delivered_at: "2026-01-01T00:00:01Z",
+    }]);
+    expect(parsed[0]).toMatchObject({
+      supplement_task_id: "task-1",
+      supplement_status: "delivered",
+      supplement_delivered_at: "2026-01-01T00:00:01Z",
+    });
+  });
+
   it("preserves source_task_id for agent failure comments", () => {
     const parsed = TimelineEntriesSchema.parse([
       {
@@ -614,6 +633,20 @@ describe("TimelineEntriesSchema", () => {
 });
 
 describe("AgentTaskListSchema", () => {
+  it("preserves negotiated supplement capability, ordered coverage and permission", () => {
+    const parsed = AgentTaskListSchema.parse([{
+      id: "run",
+      supplement_capability: "task-supplement-v1",
+      supplement_comment_ids: ["comment-1", "comment-2"],
+      can_supplement: true,
+    }]);
+    expect(parsed[0]).toMatchObject({
+      supplement_capability: "task-supplement-v1",
+      supplement_comment_ids: ["comment-1", "comment-2"],
+      can_supplement: true,
+    });
+  });
+
   it.each([true, false, undefined, null, "true", 1])("safely parses comment cancellation metadata: %s", (value) => {
     const parsed = AgentTaskListSchema.parse([{ id: "run", cancelled_by_comment_change: value }]);
     expect(parsed).toHaveLength(1);
@@ -1281,6 +1314,26 @@ describe("AppConfigSchema agent_conversation_starters_supported drift", () => {
   });
 });
 
+describe("AppConfigSchema issue_create_properties_supported drift", () => {
+  it("defaults to false when the server predates atomic create properties", () => {
+    expect(AppConfigSchema.parse({}).issue_create_properties_supported).toBe(false);
+  });
+
+  it("coerces a malformed declaration to false", () => {
+    expect(
+      AppConfigSchema.parse({ issue_create_properties_supported: "yes" })
+        .issue_create_properties_supported,
+    ).toBe(false);
+  });
+
+  it("carries a genuine declaration through", () => {
+    expect(
+      AppConfigSchema.parse({ issue_create_properties_supported: true })
+        .issue_create_properties_supported,
+    ).toBe(true);
+  });
+});
+
 describe("AppConfigSchema cdn_signed drift", () => {
   it("defaults cdn_signed to false when the server omits it (pre-MUL-3254 servers)", () => {
     const parsed = AppConfigSchema.parse({ cdn_domain: "cdn.example.com" });
@@ -1322,6 +1375,16 @@ describe("AppConfigSchema cdn_signed drift", () => {
   it("parses server_version and leaves it undefined when the server omits it", () => {
     expect(AppConfigSchema.parse({ server_version: "1.2.3" }).server_version).toBe("1.2.3");
     expect(AppConfigSchema.parse({}).server_version).toBeUndefined();
+  });
+
+  it("preserves plain version and build fields while rejecting malformed values", () => {
+    const parsed = AppConfigSchema.parse({ version: "0.6.0", build: "20261008-1331" });
+    expect(parsed.version).toBe("0.6.0");
+    expect(parsed.build).toBe("20261008-1331");
+    const malformed = AppConfigSchema.parse({ version: 123, build: { stamp: "bad" } });
+    expect(malformed.version).toBeUndefined();
+    expect(malformed.build).toBeUndefined();
+    expect(AppConfigSchema.parse({}).build).toBeUndefined();
   });
 });
 
@@ -2209,6 +2272,23 @@ describe("issue status catalog schemas", () => {
 });
 
 describe("TaskMessageListSchema", () => {
+  it("preserves call IDs and tolerates old or malformed optional identity", () => {
+    const base = { task_id: "task-1", seq: 1, type: "tool_result", output: "ok" };
+    const parsed = parseWithFallback<{ call_id?: string; output?: string }[]>(
+      [
+        { ...base, call_id: "execution:A" },
+        base,
+        { ...base, call_id: null },
+        { ...base, call_id: 42 },
+        { ...base, call_id: {} },
+      ],
+      TaskMessageListSchema, [], { endpoint: "GET /api/tasks/:id/messages" },
+    );
+    expect(parsed).toHaveLength(5);
+    expect(parsed.map((m) => m.call_id)).toEqual(["execution:A", undefined, undefined, undefined, undefined]);
+    expect(parsed.every((m) => m.output === "ok")).toBe(true);
+  });
+
   const row = { task_id: "task-1", issue_id: "issue-1", seq: 1, type: "tool_result", output: "log line" };
 
   // The whole point of the field: a server that never sends it is saying
@@ -2270,63 +2350,17 @@ describe("TaskMessageListSchema", () => {
   });
 });
 
-describe("IssuePullRequestsResponseSchema merge_announcement diagnostics (CHE-384)", () => {
-  const basePR = {
-    id: "pr-1",
-    workspace_id: "ws-1",
-    repo_owner: "cheese-work",
-    repo_name: "multica",
-    number: 17,
-    title: "Test PR",
-    state: "merged",
-    html_url: "https://github.com/cheese-work/multica/pull/17",
-    branch: "feature",
-    author_login: "someone",
-    author_avatar_url: null,
-    merged_at: "2026-09-10T09:54:34Z",
-    closed_at: null,
-    pr_created_at: "2026-09-01T00:00:00Z",
-    pr_updated_at: "2026-09-10T09:54:34Z",
-  };
-
-  it("parses a delivered announcement attached to a PR", () => {
-    const parsed = IssuePullRequestsResponseSchema.parse({
-      pull_requests: [
-        {
-          ...basePR,
-          merge_announcement: {
-            status: "delivered",
-            attempt_count: 0,
-            sent_at: "2026-09-10T09:55:00Z",
-            comment_id: "comment-1",
-          },
-        },
-      ],
-    });
-    expect(parsed.pull_requests[0]?.merge_announcement?.status).toBe("delivered");
-    expect(parsed.pull_requests[0]?.merge_announcement?.comment_id).toBe("comment-1");
+describe("AgentActivityBucketListSchema duration", () => {
+  const bucket = { agent_id: "a", bucket_at: "2026-09-24T00:00:00Z", task_count: 201,
+    completed_count: 201, failed_count: 0, cancelled_count: 0 };
+  it("accepts optional aggregate duration from new and old servers", () => {
+    expect(AgentActivityBucketListSchema.parse([bucket])[0]?.duration_ms).toBeUndefined();
+    expect(AgentActivityBucketListSchema.parse([{ ...bucket, duration_ms: 12600000, duration_count: 201 }])[0]?.duration_count).toBe(201);
   });
-
-  it("defaults merge_announcement to undefined for an older backend that omits it", () => {
-    const parsed = IssuePullRequestsResponseSchema.parse({
-      pull_requests: [basePR],
-    });
-    expect(parsed.pull_requests[0]?.merge_announcement).toBeUndefined();
-  });
-
-  it("keeps the PR while dropping via fallback when the whole response is malformed", () => {
-    const parsed = parseWithFallback(
-      { pull_requests: "nope" },
-      IssuePullRequestsResponseSchema,
-      { pull_requests: [] },
-      { endpoint: "GET /api/issues/:id/pull-requests" },
-    );
-    expect(parsed.pull_requests).toEqual([]);
-  });
-
-  it("rejects a merge_announcement with a non-string status", () => {
-    expect(() =>
-      GitHubMergeAnnouncementSchema.parse({ status: 42, attempt_count: 0 }),
-    ).toThrow();
+  it("does not discard activity counts when duration is malformed", () => {
+    const parsed = AgentActivityBucketListSchema.parse([{ ...bucket, duration_ms: "slow", duration_count: -1 }]);
+    expect(parsed[0]?.task_count).toBe(201);
+    expect(parsed[0]?.duration_ms).toBeUndefined();
+    expect(parsed[0]?.duration_count).toBeUndefined();
   });
 });

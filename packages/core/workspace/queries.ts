@@ -21,6 +21,8 @@ export const workspaceKeys = {
   skills: (wsId: string) => ["workspaces", wsId, "skills"] as const,
   assigneeFrequency: (wsId: string) => ["workspaces", wsId, "assignee-frequency"] as const,
   mcpServers: (wsId: string) => ["workspaces", wsId, "mcp-servers"] as const,
+  exportPrivacy: (wsId: string) =>
+    ["workspaces", wsId, "export-privacy"] as const,
 };
 
 export function workspaceListOptions() {
@@ -210,5 +212,23 @@ export function agentMcpServersOptions(agentId: string) {
     queryKey: ["agents", agentId, "mcp-servers"] as const,
     queryFn: () => api.listAgentMcpServers(agentId),
     enabled: agentId !== "",
+  });
+}
+
+/**
+ * CHE-766 export privacy policy (redaction mode + manifest retention). Owner/
+ * admin + human-actor only server-side — a member or agent request throws a
+ * 403/503 ApiError, which the caller (ExportPrivacyTab) renders as an
+ * unavailable panel rather than retrying. `enabled` is passed in explicitly
+ * (not just `wsId !== ""`) so the caller can additionally gate the request on
+ * the current member already being owner/admin, avoiding a guaranteed-403
+ * request for every other role.
+ */
+export function workspaceExportPrivacyOptions(wsId: string, enabled: boolean) {
+  return queryOptions({
+    queryKey: workspaceKeys.exportPrivacy(wsId),
+    queryFn: () => api.getWorkspaceExportPrivacy(wsId),
+    enabled: enabled && wsId !== "",
+    retry: false,
   });
 }

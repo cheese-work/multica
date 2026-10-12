@@ -12,6 +12,8 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+
+	"github.com/multica-ai/multica/server/pkg/credentialexec"
 )
 
 // Backend is the unified interface for executing prompts via coding agents.
@@ -24,8 +26,11 @@ type Backend interface {
 
 // ExecOptions configures a single execution.
 type ExecOptions struct {
-	Cwd   string
-	Model string
+	// EnableTaskSupplement installs provider hooks only for runs whose daemon/server
+	// capability handshake enabled additional messages.
+	EnableTaskSupplement bool
+	Cwd                  string
+	Model                string
 	// SystemPrompt carries the Multica runtime brief for the few providers
 	// that cannot pick it up from disk. The daemon leaves it empty for every
 	// other provider (see daemon.providerNeedsInlineSystemPrompt), because the
@@ -56,7 +61,7 @@ type ExecOptions struct {
 	// tool continues to use the separate tool watchdog budget.
 	IdleWatchdogTimeout time.Duration
 	// HandshakeTimeout bounds startup RPCs for providers with a long-lived
-	// protocol transport. It is currently consumed by Codex app-server;
+	// protocol transport, including Codex app-server and Claude SDK hooks;
 	// zero uses the provider default rather than disabling the bound.
 	HandshakeTimeout time.Duration
 	// TurnInterruptTimeout bounds how long the Codex backend waits for the
@@ -70,7 +75,11 @@ type ExecOptions struct {
 	// preserves the legacy behavior for callers that explicitly set
 	// HandshakeTimeout; when both are zero Codex uses separate built-in defaults.
 	ThreadHandshakeTimeout time.Duration
-	ResumeSessionID        string // if non-empty, resume a previous agent session
+	// CodexSQLiteInitRetry enables one retry when Codex exits during
+	// initialize with the exact SQLite state-runtime failure for its own
+	// CODEX_HOME (CHE-737). Off by default.
+	CodexSQLiteInitRetry bool
+	ResumeSessionID      string // if non-empty, resume a previous agent session
 	// ResumeExpected records that this task intended to continue a prior
 	// conversation, independent of ResumeSessionID (which a fallback retry may
 	// clear). When it is true but the backend ends up on a fresh thread — the
@@ -147,6 +156,17 @@ func runContext(ctx context.Context, timeout time.Duration) (context.Context, co
 
 // Session represents a running agent execution.
 type Session struct {
+	// Supplement delivers an additional human instruction to the currently
+	// active provider turn. Nil means the backend cannot safely do so.
+	// Adapters bound their own transport calls; a hook-based adapter may wait
+	// for the next provider boundary until ctx or the execution is cancelled.
+	Supplement func(context.Context, string) error
+	// SupplementReady reports whether Supplement currently targets a live,
+	// provider-confirmed turn. The daemon must not claim durable input before
+	// this becomes true: claiming during provider initialization would convert
+	// a transient startup window into a user-visible delivery failure. Nil is
+	// fail-closed and means no run-scoped input may be claimed.
+	SupplementReady func() bool
 	// ToolActivity optionally reports backend-owned tool accounting and its last
 	// transition time, independent of the best-effort transcript. Nil uses the
 	// daemon's message-based accounting. The timestamp gives completed tools a
@@ -210,8 +230,8 @@ type Message struct {
 
 // TokenUsage tracks token consumption for a single model.
 // Its four token counts are mutually exclusive: InputTokens excludes cache
-// reads and writes, and OutputTokens already includes reasoning/thinking.
-// Provider-specific breakdowns must not be added to those totals again.
+// reads and writes, and OutputTokens includes reasoning/thinking.
+// Breakdowns already included in a total must not be added to that total again.
 // Zero counters alone do not establish that the provider reported complete usage.
 type TokenUsage struct {
 	InputTokens      int64
@@ -289,18 +309,32 @@ type Result struct {
 	// its model catalog, and that the process tree was reaped afterwards.
 	// Like codexInitializeRetrySafe it is not part of the public contract.
 	codexStartupRefreshRetrySafe bool
+	// codexStateRuntimeRetrySafe is provider-internal evidence that Codex
+	// exited during initialize because its SQLite state runtime could not be
+	// opened, before semantic activity and after the process tree was reaped.
+	codexStateRuntimeRetrySafe bool
+	// codexZeroToolFalseNegativeRetrySafe is provider-internal evidence that
+	// the turn matched the Codex CLI 0.156.0 multi-agent v2 false-negative
+	// pattern (CHE-775): the model's final message claims no terminal/CLI
+	// access while the turn made zero real (exec_command/patch_apply) tool
+	// calls, whether it called only collaboration.* MCP tools or nothing at
+	// all. Like the other codex*RetrySafe fields it is not part of the
+	// public result contract and only drives Execute's retry loop.
+	codexZeroToolFalseNegativeRetrySafe bool
 }
 
 // Config configures a Backend instance.
 type Config struct {
-	ExecutablePath string            // path to CLI binary (claude, codebuddy, codex, copilot, opencode, codearts, openclaw, hermes, pi, cursor, kimi, reasonix, dsh, kiro-cli, agy, qodercli, qoderclicn, traecli, grok, qwen, qwenpaw, mcode, dim, zeroclaw)
-	CLIVersion     string            // detected version paired with ExecutablePath; vendor-specific usage semantics also require BuiltinRuntime
-	Env            map[string]string // extra environment variables
-	Logger         *slog.Logger
-	TaskID         string
-	RuntimeID      string
-	DaemonVersion  string
-	CodexVersion   string
+	RequireCredentialIsolation bool
+	CredentialBoundary         *credentialexec.Boundary
+	ExecutablePath             string            // path to CLI binary (claude, codebuddy, codex, copilot, opencode, codearts, openclaw, hermes, pi, cursor, kimi, reasonix, dsh, kiro-cli, agy, qodercli, qoderclicn, traecli, grok, qwen, qwenpaw, mcode, dim, zeroclaw)
+	CLIVersion                 string            // detected version paired with ExecutablePath; vendor-specific usage semantics also require BuiltinRuntime
+	Env                        map[string]string // extra environment variables
+	Logger                     *slog.Logger
+	TaskID                     string
+	RuntimeID                  string
+	DaemonVersion              string
+	CodexVersion               string
 	// BuiltinRuntime reports that ExecutablePath is the provider's own
 	// discovered binary rather than a custom runtime profile's command. A
 	// custom profile keeps its protocol family as the provider, so the
@@ -416,6 +450,15 @@ func ResumeRejectionUndetectable(agentType string) bool {
 }
 
 func New(agentType string, cfg Config) (Backend, error) {
+	if cfg.RequireCredentialIsolation || cfg.CredentialBoundary != nil {
+		if !cfg.RequireCredentialIsolation || !cfg.BuiltinRuntime || len(cfg.LaunchPrefix) != 0 || agentType != "claude" && agentType != "codex" {
+			return nil, fmt.Errorf("%w: unsupported credential-exclusive runtime", credentialexec.ErrUnavailable)
+		}
+		if err := cfg.CredentialBoundary.Validate(cfg.TaskID, agentType, cfg.ExecutablePath); err != nil {
+			return nil, err
+		}
+		cfg.Env = cfg.CredentialBoundary.Environment()
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}

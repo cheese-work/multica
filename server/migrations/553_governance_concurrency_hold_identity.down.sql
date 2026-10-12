@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY governance_concurrency_hold_identity_uidx;

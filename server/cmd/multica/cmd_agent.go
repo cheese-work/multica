@@ -109,6 +109,13 @@ var agentEnvSetCmd = &cobra.Command{
 	RunE:  runAgentEnvSet,
 }
 
+var agentEnvPatchCmd = &cobra.Command{
+	Use:   "patch <agent-id>",
+	Short: "Set and/or unset individual custom_env keys without touching the rest (optionally conditional on --if-revision)",
+	Args:  exactArgs(1),
+	RunE:  runAgentEnvPatch,
+}
+
 var agentSkillsListCmd = &cobra.Command{
 	Use:   "list <agent-id>",
 	Short: "List skills assigned to an agent",
@@ -148,6 +155,7 @@ func init() {
 
 	agentEnvCmd.AddCommand(agentEnvGetCmd)
 	agentEnvCmd.AddCommand(agentEnvSetCmd)
+	agentEnvCmd.AddCommand(agentEnvPatchCmd)
 
 	// agent list
 	agentListCmd.Flags().String("output", "table", "Output format: table or json")
@@ -184,6 +192,9 @@ func init() {
 	agentUpdateCmd.Flags().String("name", "", "New name")
 	agentUpdateCmd.Flags().String("description", "", "New description")
 	agentUpdateCmd.Flags().String("instructions", "", "New instructions")
+	agentUpdateCmd.Flags().Bool("instructions-stdin", false, "Read the new instructions byte-for-byte from stdin")
+	agentUpdateCmd.Flags().String("instructions-file", "", "Read the new instructions byte-for-byte from a file")
+	agentUpdateCmd.Flags().String("expected-before-digest", "", "Owner-only guarded write: sha256 hex of the RAW UTF-8 bytes of the instructions you believe are live (no newline stripping; a card-manifest digest that strips one terminal LF does not match a value ending in LF). The server swaps atomically and answers 409 with no write when it is stale. Requires --instructions-stdin or --instructions-file (inline --instructions is refused so the candidate never appears in arguments) and forbids every other update flag. A 5xx or dropped connection is reported as AMBIGUOUS and is never retried.")
 	agentUpdateCmd.Flags().String("conversation-starters", "", "New conversation starters as a JSON array of {\"label\",\"prompt\"} objects (at most 3; label ≤80, prompt ≤4000). Pass '[]' to clear. Omit to leave the stored value unchanged.")
 	agentUpdateCmd.Flags().String("runtime-id", "", "New runtime ID")
 	agentUpdateCmd.Flags().String("runtime-config", "", "New runtime config as JSON string")
@@ -219,6 +230,8 @@ func init() {
 
 	// agent tasks
 	agentTasksCmd.Flags().String("output", "table", "Output format: table or json")
+	agentTasksCmd.Flags().Int("limit", 200, "Maximum runs per page (1-200)")
+	agentTasksCmd.Flags().String("before", "", "Cursor from the previous page")
 
 	// agent avatar
 	agentAvatarCmd.Flags().String("file", "", "Path to the avatar image file (required)")
@@ -245,6 +258,16 @@ func init() {
 	agentEnvSetCmd.Flags().Bool("custom-env-stdin", false, "Read the replacement custom_env JSON object from stdin. Keeps secrets out of shell history and 'ps'. Mutually exclusive with --custom-env and --custom-env-file.")
 	agentEnvSetCmd.Flags().String("custom-env-file", "", "Read the replacement custom_env JSON object from a file path (suggested mode: 0600). Mutually exclusive with --custom-env and --custom-env-stdin.")
 	agentEnvSetCmd.Flags().String("output", "json", "Output format: json or table")
+
+	// agent env patch. The set-map channels are the same secret-safe trio as
+	// `agent env set`, but the map only names keys to write; every other key
+	// is left as stored.
+	agentEnvPatchCmd.Flags().String("custom-env", "", "JSON object of keys to set, e.g. '{\"KEY\":\"value\"}'. Visible to shell history and 'ps'; prefer --custom-env-stdin or --custom-env-file for real secrets. The value '****' is rejected.")
+	agentEnvPatchCmd.Flags().Bool("custom-env-stdin", false, "Read the JSON object of keys to set from stdin. Mutually exclusive with --custom-env and --custom-env-file.")
+	agentEnvPatchCmd.Flags().String("custom-env-file", "", "Read the JSON object of keys to set from a file path. Mutually exclusive with --custom-env and --custom-env-stdin.")
+	agentEnvPatchCmd.Flags().StringSlice("unset", nil, "Key to remove (repeatable or comma-separated)")
+	agentEnvPatchCmd.Flags().String("if-revision", "", "Apply only if the stored env still has this revision (from `agent env get`/`set`/`patch` JSON); otherwise exit non-zero and change nothing")
+	agentEnvPatchCmd.Flags().String("output", "json", "Output format: json or table")
 }
 
 // resolveProfile returns the --profile flag value (empty string means default profile).
@@ -736,6 +759,22 @@ func runAgentUpdate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// --expected-before-digest -> owner-only guarded CAS on exactly
+	// `instructions`; see governed_cas.go.
+	if cmd.Flags().Changed("expected-before-digest") {
+		body, err := buildAgentUpdateDigestBody(cmd)
+		if err != nil {
+			return err
+		}
+		ctx, cancel := cli.APIContext(context.Background())
+		defer cancel()
+		var result map[string]any
+		if err := client.PutJSON(ctx, "/api/agents/"+args[0], body, &result); err != nil {
+			return digestWriteError("update agent", err, bodyText(body, "instructions"), bodyText(body, "expected_before_digest"))
+		}
+		return printDigestSwapResult(cmd, "agent", result)
+	}
+
 	body := map[string]any{}
 	if cmd.Flags().Changed("name") {
 		v, _ := cmd.Flags().GetString("name")
@@ -745,9 +784,10 @@ func runAgentUpdate(cmd *cobra.Command, args []string) error {
 		v, _ := cmd.Flags().GetString("description")
 		body["description"] = v
 	}
-	if cmd.Flags().Changed("instructions") {
-		v, _ := cmd.Flags().GetString("instructions")
-		body["instructions"] = v
+	if instructions, has, err := resolveAgentInstructions(cmd, true); err != nil {
+		return err
+	} else if has {
+		body["instructions"] = instructions
 	}
 	if err := applyConversationStartersFlag(cmd, body); err != nil {
 		return err
@@ -883,17 +923,31 @@ func runAgentTasks(cmd *cobra.Command, args []string) error {
 	}
 
 	output, _ := cmd.Flags().GetString("output")
-	path := "/api/agents/" + args[0] + "/tasks"
-	if output == "json" {
-		path += "?include_usage=true"
+	params := url.Values{}
+	limit, _ := cmd.Flags().GetInt("limit")
+	if limit < 1 {
+		return fmt.Errorf("limit must be a positive integer")
 	}
+	params.Set("limit", fmt.Sprint(limit))
+	before, _ := cmd.Flags().GetString("before")
+	if before != "" {
+		params.Set("before", before)
+	}
+	if output == "json" {
+		params.Set("include_usage", "true")
+	}
+	path := "/api/agents/" + args[0] + "/tasks?" + params.Encode()
 
 	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 
 	var tasks []map[string]any
-	if err := client.GetJSON(ctx, path, &tasks); err != nil {
+	responseHeaders, err := client.GetJSONWithHeaders(ctx, path, &tasks)
+	if err != nil {
 		return fmt.Errorf("list agent runs: %w", err)
+	}
+	if cursor := responseHeaders.Get("X-Agent-Tasks-Next-Cursor"); cursor != "" {
+		fmt.Fprintf(cmd.ErrOrStderr(), "More runs available; use --before %q to fetch the next page.\n", cursor)
 	}
 
 	if output == "json" {
@@ -1198,6 +1252,47 @@ func runAgentEnvSet(cmd *cobra.Command, args []string) error {
 
 	env, _ := result["custom_env"].(map[string]any)
 	fmt.Printf("Env updated for agent %s (%d keys)\n", args[0], len(env))
+	return nil
+}
+
+// runAgentEnvPatch is the key-scoped, optionally conditional counterpart of
+// runAgentEnvSet. The server applies it under a row lock, so unrelated keys
+// written concurrently by other clients are preserved. The response carries
+// masked values and the new revision for chaining a following patch.
+func runAgentEnvPatch(cmd *cobra.Command, args []string) error {
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+
+	set, _, err := resolveCustomEnv(cmd)
+	if err != nil {
+		return err
+	}
+	unset, _ := cmd.Flags().GetStringSlice("unset")
+	if len(set) == 0 && len(unset) == 0 {
+		return fmt.Errorf("specify keys to change via --custom-env/--custom-env-stdin/--custom-env-file and/or --unset")
+	}
+	body := map[string]any{"set": set, "unset": unset}
+	if cmd.Flags().Changed("if-revision") {
+		rev, _ := cmd.Flags().GetString("if-revision")
+		body["if_revision"] = rev
+	}
+
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+
+	var result map[string]any
+	if err := client.PatchJSON(ctx, "/api/agents/"+args[0]+"/env", body, &result); err != nil {
+		return fmt.Errorf("patch agent env: %w", err)
+	}
+
+	output, _ := cmd.Flags().GetString("output")
+	if output == "json" {
+		return cli.PrintJSON(os.Stdout, result)
+	}
+	env, _ := result["custom_env"].(map[string]any)
+	fmt.Printf("Env patched for agent %s (%d keys, revision %v)\n", args[0], len(env), result["revision"])
 	return nil
 }
 

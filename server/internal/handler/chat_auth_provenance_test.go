@@ -85,7 +85,7 @@ func TestChatMessageAuthProvenance(test *testing.T) {
 			request.Header.Set("Authorization", "Bearer "+token)
 			request.Header.Set("X-Actor-Source", "interactive_jwt")
 			var response SendChatMessageResponse
-			protected := middleware.Auth(testHandler.Queries, nil, verifier)(http.HandlerFunc(testHandler.SendChatMessage))
+			protected := middleware.Auth(testHandler.Queries, nil, verifier, nil)(http.HandlerFunc(testHandler.SendChatMessage))
 			testutil.Call(test, protected.ServeHTTP, request).Want(http.StatusCreated).JSON(&response)
 			var sentVia string
 			if err := testPool.QueryRow(context.Background(), `SELECT sent_via FROM chat_message WHERE id = $1`, response.MessageID).Scan(&sentVia); err != nil {
@@ -105,7 +105,7 @@ func TestChatMessageAuthProvenance(test *testing.T) {
 func TestIssueCliTokenProvenance(test *testing.T) {
 	agentID := createHandlerTestAgent(test, "CliTokenProvenance", []byte("[]"))
 	credentials := provenanceCredentials(test, agentID)
-	protected := middleware.Auth(testHandler.Queries, nil, provenanceCloudVerifier(test))(RequireHumanActor(http.HandlerFunc(testHandler.IssueCliToken)))
+	protected := middleware.Auth(testHandler.Queries, nil, provenanceCloudVerifier(test), nil)(RequireHumanActor(http.HandlerFunc(testHandler.IssueCliToken)))
 	for source, token := range credentials {
 		test.Run(source, func(test *testing.T) {
 			request := newRequest(http.MethodPost, "/api/cli-token", nil)
@@ -151,7 +151,7 @@ func TestChatCookieAuthProvenance(test *testing.T) {
 				}
 			}
 			var response SendChatMessageResponse
-			protected := middleware.Auth(testHandler.Queries, nil, nil)(http.HandlerFunc(testHandler.SendChatMessage))
+			protected := middleware.Auth(testHandler.Queries, nil, nil, nil)(http.HandlerFunc(testHandler.SendChatMessage))
 			testutil.Call(test, protected.ServeHTTP, request).Want(http.StatusCreated).JSON(&response)
 			var sentVia string
 			if err := testPool.QueryRow(context.Background(), `SELECT sent_via FROM chat_message WHERE id = $1`, response.MessageID).Scan(&sentVia); err != nil {
@@ -160,7 +160,7 @@ func TestChatCookieAuthProvenance(test *testing.T) {
 			if sentVia != method+"_jwt" {
 				test.Fatalf("cookie provenance = %q, want %s_jwt", sentVia, method)
 			}
-			protected = middleware.Auth(testHandler.Queries, nil, nil)(RequireHumanActor(http.HandlerFunc(testHandler.IssueCliToken)))
+			protected = middleware.Auth(testHandler.Queries, nil, nil, nil)(RequireHumanActor(http.HandlerFunc(testHandler.IssueCliToken)))
 			request = request.Clone(request.Context())
 			request.URL.Path = "/api/cli-token"
 			if method == "cli" {
@@ -200,7 +200,7 @@ func TestCachedPATCannotForgeChatProvenance(test *testing.T) {
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("X-Actor-Source", "interactive_jwt")
 	var response SendChatMessageResponse
-	protected := middleware.Auth(nil, cache, nil)(http.HandlerFunc(testHandler.SendChatMessage))
+	protected := middleware.Auth(nil, cache, nil, nil)(http.HandlerFunc(testHandler.SendChatMessage))
 	testutil.Call(test, protected.ServeHTTP, request).Want(http.StatusCreated).JSON(&response)
 	var sentVia string
 	if err := testPool.QueryRow(context.Background(), `SELECT sent_via FROM chat_message WHERE id = $1`, response.MessageID).Scan(&sentVia); err != nil {
@@ -212,8 +212,37 @@ func TestCachedPATCannotForgeChatProvenance(test *testing.T) {
 	request = newRequest(http.MethodPost, "/api/cli-token", nil)
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("X-Actor-Source", "interactive_jwt")
-	protected = middleware.Auth(nil, cache, nil)(RequireHumanActor(http.HandlerFunc(testHandler.IssueCliToken)))
+	protected = middleware.Auth(nil, cache, nil, nil)(RequireHumanActor(http.HandlerFunc(testHandler.IssueCliToken)))
 	testutil.Call(test, protected.ServeHTTP, request).Want(http.StatusForbidden)
+}
+
+func TestRefreshedBearerAuthProvenance(test *testing.T) {
+	for method, want := range map[string]string{"interactive": "interactive_jwt", "cli": "cli_jwt"} {
+		test.Run(method, func(test *testing.T) {
+			claims := provenanceJWTClaims(test, refreshSessionToken(test, auth.AuthRenewThreshold()/2, "sid-provenance"))
+			claims["amr"] = method
+			token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(auth.JWTSecret())
+			if err != nil {
+				test.Fatal(err)
+			}
+			var response RefreshSessionResponse
+			protected := middleware.Auth(testHandler.Queries, nil, nil, nil)(http.HandlerFunc(testHandler.RefreshSession))
+			testutil.Call(test, protected.ServeHTTP, bearerRefreshRequest(test, token)).Want(http.StatusOK).JSON(&response)
+			if !response.Renewed || response.Token == "" {
+				test.Fatal("bearer session was not renewed")
+			}
+			request := newRequest(http.MethodGet, "/api/me", nil)
+			request.Header.Set("Authorization", "Bearer "+response.Token)
+			request.Header.Set("X-Actor-Source", "interactive_jwt")
+			protected = middleware.Auth(testHandler.Queries, nil, nil, nil)(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if got := request.Header.Get("X-Actor-Source"); got != want {
+					test.Errorf("refreshed auth path = %q, want %q", got, want)
+				}
+				writer.WriteHeader(http.StatusOK)
+			}))
+			testutil.Call(test, protected.ServeHTTP, request).Want(http.StatusOK)
+		})
+	}
 }
 
 func TestAutomatedMessageProvenance(test *testing.T) {

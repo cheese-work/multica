@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS uq_governance_case_identity_generation;

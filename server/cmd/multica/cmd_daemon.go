@@ -1241,7 +1241,12 @@ func runDaemonRestart(cmd *cobra.Command, args []string) error {
 		pid, _ := health["pid"].(float64)
 		if pid > 0 {
 			fmt.Fprintf(os.Stderr, "Stopping daemon (pid %d)...\n", int(pid))
-			if err := requestDaemonShutdown(healthPort); err != nil {
+			if err := requestDaemonShutdown(healthPort, maintenanceTokenFromCmd(cmd)); err != nil {
+				// A refusal or unknown outcome never escalates to a kill.
+				var refused *daemonShutdownRefusedError
+				if errors.As(err, &refused) {
+					return fmt.Errorf("%w; the running daemon was left untouched", err)
+				}
 				if p, perr := os.FindProcess(int(pid)); perr == nil {
 					_ = p.Kill()
 				}
@@ -1261,7 +1266,10 @@ func runDaemonRestart(cmd *cobra.Command, args []string) error {
 	}
 
 	// Start fresh.
-	return runDaemonStart(cmd, args)
+	if err := runDaemonStart(cmd, args); err != nil {
+		return fmt.Errorf("%w (if the old daemon was already stopped, none is running now; confirm with 'multica daemon status')", err)
+	}
+	return nil
 }
 
 // --- daemon stop ---
@@ -1310,7 +1318,11 @@ func runDaemonStop(cmd *cobra.Command, _ []string) error {
 	// GenerateConsoleCtrlEvent can't reach it; HTTP works on both
 	// platforms and triggers the same context-cancel path the daemon
 	// already uses for self-restart.
-	if err := requestDaemonShutdown(healthPort); err != nil {
+	if err := requestDaemonShutdown(healthPort, maintenanceTokenFromCmd(cmd)); err != nil {
+		var refused *daemonShutdownRefusedError
+		if errors.As(err, &refused) {
+			return fmt.Errorf("%w; the running daemon was left untouched", err)
+		}
 		fmt.Fprintf(os.Stderr, "Graceful shutdown request failed: %v — falling back to forced kill.\n", err)
 		if kerr := process.Kill(); kerr != nil {
 			return fmt.Errorf("kill daemon (pid %d): %w", int(pid), kerr)
@@ -1337,25 +1349,59 @@ func runDaemonStop(cmd *cobra.Command, _ []string) error {
 }
 
 // requestDaemonShutdown POSTs to the daemon's /shutdown endpoint to ask it
-// to exit gracefully. Returns an error if the request could not be delivered
-// (network error, non-2xx status, or the endpoint predates this change).
-func requestDaemonShutdown(healthPort int) error {
+// to exit gracefully. It returns nil only when the daemon accepted. Fail
+// closed: every outcome that could mean a live daemon holds a maintenance
+// window we cannot see (refusal, lost response, timeout, 5xx) is a
+// *daemonShutdownRefusedError and must never select the forced-kill fallback.
+// Only 404/405 — a daemon predating /shutdown, which has no windows — returns a
+// plain error that callers may still escalate to a kill.
+func requestDaemonShutdown(healthPort int, maintenanceToken string) error {
 	url := fmt.Sprintf("http://127.0.0.1:%d/shutdown", healthPort)
 	req, err := http.NewRequest(http.MethodPost, url, nil)
 	if err != nil {
 		return err
 	}
+	if maintenanceToken != "" {
+		req.Header.Set("X-Maintenance-Token", maintenanceToken)
+	}
 	client := &http.Client{Timeout: 2 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return &daemonShutdownRefusedError{cause: err}
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		return nil
+	case resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed:
 		return fmt.Errorf("unexpected status %d", resp.StatusCode)
+	case resp.StatusCode == http.StatusConflict || resp.StatusCode == http.StatusForbidden:
+		var body struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&body)
+		return &daemonShutdownRefusedError{reason: body.Error}
 	}
-	return nil
+	return &daemonShutdownRefusedError{cause: fmt.Errorf("unexpected status %d", resp.StatusCode)}
 }
+
+// daemonShutdownRefusedError means the daemon refused /shutdown because of its
+// maintenance window (409/403, reason set), or the outcome is unknown (cause
+// set). Either way ownership is unproven, so it must never fall back to killing
+// the process; the caller reconciles with `multica daemon status`.
+type daemonShutdownRefusedError struct {
+	reason string
+	cause  error
+}
+
+func (e *daemonShutdownRefusedError) Error() string {
+	if e.cause != nil {
+		return "daemon shutdown outcome unknown (" + e.cause.Error() + "); not forcing a kill because a maintenance window may be held — check 'multica daemon status'"
+	}
+	return "daemon refused shutdown (maintenance window: " + e.reason + "); acquire/present the matching --maintenance-token, or release the window"
+}
+
+func (e *daemonShutdownRefusedError) Unwrap() error { return e.cause }
 
 // --- daemon status ---
 
@@ -1493,6 +1539,9 @@ func printDaemonStatusReport(w io.Writer, label string, health map[string]any) {
 	// daemon to go idle, so it reads as an explanation rather than a status line.
 	if reason, ok := health["reload_pending_reason"].(string); ok && reason != "" {
 		rows = append(rows, row{"Restart pending", reason})
+	}
+	if held, _ := health["maintenance_held"].(bool); held {
+		rows = append(rows, row{"Maintenance", fmt.Sprintf("window held until %v (claims paused)", health["maintenance_expires_at"])})
 	}
 	if agents, ok := health["agents"].([]any); ok && len(agents) > 0 {
 		parts := make([]string, len(agents))

@@ -17,11 +17,13 @@ The auth middleware strips client-supplied `X-Actor-Source`, `X-Agent-ID` and `X
 
 Cookie and bearer transport use the same claim classification. Moving a CLI token into an auth cookie does not make it interactive. Existing cookie CSRF checks still apply.
 
+Sliding renewal preserves the signed `amr` claim for browser cookies and explicit bearer refresh through `/api/auth/refresh`. Renewed interactive sessions stay interactive. Renewal does not upgrade CLI, legacy or unrecognized provenance to interactive.
+
 `POST /api/cli-token` requires a human actor **and** an interactive JWT. It returns a token with `amr=cli`. PATs, task tokens, cloud PATs, CLI JWTs and legacy JWTs cannot use this endpoint to mint an interactive token or a new CLI handoff token. A legacy browser session needs a fresh interactive sign-in before obtaining a CLI handoff token.
 
 ## Message Insertion
 
-Migration `500_chat_message_auth_provenance` adds nullable `chat_message.sent_via`. Existing messages remain NULL; there is no authorship backfill. The database limits non-NULL values to `interactive_jwt`, `cli_jwt`, `pat`, `task_token`, `cloud_pat`, `channel` and `system`.
+Migration `593_chat_message_auth_provenance` adds nullable `chat_message.sent_via`. Existing messages remain NULL; there is no authorship backfill. The database limits non-NULL values to `interactive_jwt`, `cli_jwt`, `pat`, `task_token`, `cloud_pat`, `channel` and `system`.
 
 Direct-chat sends carry only the middleware stamp into the transaction that creates the task and its input message. Client JSON fields do not provide provenance. Channel-ingested messages are stamped `channel` by the shared insert query. Other automated messages, including kickoff and assistant messages, default to `system`.
 

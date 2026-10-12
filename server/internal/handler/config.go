@@ -8,6 +8,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/featureflags"
+	"github.com/multica-ai/multica/server/pkg/buildinfo"
 )
 
 type AppConfig struct {
@@ -81,6 +82,12 @@ type AppConfig struct {
 	// must fail closed when this declaration is absent.
 	AgentConversationStartersSupported bool `json:"agent_conversation_starters_supported"`
 
+	// IssueCreatePropertiesSupported tells independently deployed clients that
+	// POST /api/issues validates and persists the optional properties bag.
+	// Older handlers silently ignore unknown fields, so clients with values must
+	// fail closed when this declaration is absent.
+	IssueCreatePropertiesSupported bool `json:"issue_create_properties_supported"`
+
 	// CommentDeleteKeepRepliesSupported tells clients that deleting a comment
 	// removes only that comment and keeps its replies (#8296), and that
 	// DELETE /api/comments/{id}/keep-replies exists. Older servers deleted the
@@ -94,6 +101,8 @@ type AppConfig struct {
 	// which is continuously deployed so its users can't act on the version —
 	// and empty for dev builds that aren't stamped via -X main.version.
 	ServerVersion string `json:"server_version,omitempty"`
+	Version       string `json:"version,omitempty"`
+	Build         string `json:"build,omitempty"`
 }
 
 // GetConfig is mounted on the public (unauthenticated) route group because
@@ -106,6 +115,7 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 		// running, the save gate is running with it.
 		LocalWorktreeSupported:             true,
 		AgentConversationStartersSupported: true,
+		IssueCreatePropertiesSupported:     true,
 		CommentDeleteKeepRepliesSupported:  true,
 		AllowSignup:                        os.Getenv("ALLOW_SIGNUP") != "false",
 		GoogleClientID:                     os.Getenv("GOOGLE_CLIENT_ID"),
@@ -123,6 +133,7 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 	// the Help popover's version row would just be noise there (MUL-4108).
 	if !isOfficialCloudDeployment() {
 		config.ServerVersion = h.cfg.ServerVersion
+		config.Version, config.Build = buildinfo.Split(h.cfg.ServerVersion)
 	}
 
 	// Re-read from env on every request so operators can rotate keys via

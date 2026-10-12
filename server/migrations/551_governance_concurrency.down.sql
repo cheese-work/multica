@@ -1,0 +1,2 @@
+DROP TABLE governance_concurrency_hold;
+DROP TABLE governance_concurrency_guard;

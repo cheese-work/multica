@@ -21,6 +21,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/featureflag"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -41,25 +42,8 @@ const (
 	handlerTestWorkspaceSlug = "handler-tests"
 )
 
-// isHandlerTestDatabase permits destructive suite setup only for an explicitly
-// named test database. A reachable host, loopback address, or test credential
-// is not evidence that the database is safe to truncate.
 func isHandlerTestDatabase(databaseName string) bool {
 	return strings.HasSuffix(strings.ToLower(databaseName), "_test")
-}
-
-func truncateMergeAnnouncementsForHandlerTests(ctx context.Context, pool *pgxpool.Pool) error {
-	var databaseName string
-	if err := pool.QueryRow(ctx, `SELECT current_database()`).Scan(&databaseName); err != nil {
-		return fmt.Errorf("read database name: %w", err)
-	}
-	if !isHandlerTestDatabase(databaseName) {
-		return fmt.Errorf("refusing to truncate github_merge_announcement: database %q is not explicitly a test database", databaseName)
-	}
-	if _, err := pool.Exec(ctx, `TRUNCATE TABLE github_merge_announcement`); err != nil {
-		return fmt.Errorf("truncate github_merge_announcement: %w", err)
-	}
-	return nil
 }
 
 func TestMain(m *testing.M) {
@@ -79,16 +63,20 @@ func TestMain(m *testing.M) {
 		pool.Close()
 		os.Exit(0)
 	}
-	if err := truncateMergeAnnouncementsForHandlerTests(ctx, pool); err != nil {
-		fmt.Printf("Skipping merge-announcement truncate: %v\n", err)
-	}
-
 	queries := db.New(pool)
 	hub := realtime.NewHub()
 	go hub.Run()
 	bus := events.New()
 	emailSvc := service.NewEmailService()
 	testHandler = New(queries, pool, hub, bus, emailSvc, nil, nil, analytics.NoopClient{}, Config{AllowSignup: true})
+	// Production always wires a real *featureflag.Service (cmd/server/main.go);
+	// leaving it nil here would make every flag defaulting to true (currently
+	// only ExportPrivacyControls, CHE-766) silently deny in tests where a
+	// working-but-unconfigured provider should fall through to that default.
+	// An empty StaticProvider has no rules at all, matching "flag wiring
+	// exists, this key just isn't configured" — the same state a self-hosted
+	// deployment with no flag config file would actually be in.
+	testHandler.FeatureFlags = featureflag.NewService(featureflag.NewStaticProvider())
 	// httptest.NewRequest defaults RemoteAddr to 192.0.2.1, so every webhook
 	// test in the suite shares one IP bucket. With the production default
 	// (30/min) the budget runs out partway through the suite and unrelated
@@ -115,9 +103,6 @@ func TestMain(m *testing.M) {
 	dbfx = testutil.New(pool, testWorkspaceID, testUserID)
 
 	code := m.Run()
-	if err := truncateMergeAnnouncementsForHandlerTests(context.Background(), pool); err != nil {
-		fmt.Printf("Skipping merge-announcement teardown truncate: %v\n", err)
-	}
 	if err := cleanupHandlerTestFixture(context.Background(), pool); err != nil {
 		fmt.Printf("Failed to clean up handler test fixture: %v\n", err)
 		if code == 0 {
@@ -195,12 +180,6 @@ func setupHandlerTestFixture(ctx context.Context, pool *pgxpool.Pool) (string, s
 }
 
 func cleanupHandlerTestFixture(ctx context.Context, pool *pgxpool.Pool) error {
-	if _, err := pool.Exec(ctx, `
-		DELETE FROM github_merge_announcement
-		WHERE workspace_id IN (SELECT id FROM workspace WHERE slug = $1)
-	`, handlerTestWorkspaceSlug); err != nil {
-		return err
-	}
 	var hasClientUsageTable bool
 	if err := pool.QueryRow(ctx, `SELECT to_regclass('client_usage_daily') IS NOT NULL`).Scan(&hasClientUsageTable); err != nil {
 		return err

@@ -31,7 +31,67 @@ For install script or manual installs, use:
 multica update
 ```
 
-`multica update` auto-detects your installation method and upgrades accordingly.
+`multica update` uses GitHub Releases by default. Self-hosted installations can
+point the CLI at a GitHub Releases-compatible metadata mirror and an artifact
+mirror without changing the command. To let a daemon poll that source, also
+enable self-update explicitly because self-hosted auto-update is disabled by
+default:
+
+```bash
+export MULTICA_RELEASE_API_BASE_URL=https://updates.example/api
+export MULTICA_RELEASE_DOWNLOAD_BASE_URL=https://updates.example/releases/download
+export MULTICA_DAEMON_AUTO_UPDATE=true
+multica update
+```
+
+The metadata mirror must serve `/repos/multica-ai/multica/releases/latest` and
+`/repos/multica-ai/multica/releases/tags/<tag>`. The artifact mirror must serve
+`/<tag>/<asset-name>` and preserve the published `checksums.txt` contents.
+When these variables are unset, the GitHub defaults remain unchanged.
+
+### Update source on the cheese-work fork (Linux and macOS)
+
+On Linux and macOS, `multica update`, the daemon's auto-update poller, and the
+Runtimes-page update all ignore upstream releases, Homebrew and the
+`MULTICA_RELEASE_*` mirrors. Its API origin is fixed to `https://api.github.com`: no environment variable changes it, and redirects away from HTTPS are refused. They install the daemon artifact that
+`cheese-work/multica`'s `ci.yml` uploads on a push to `main`
+(`multica-daemon-<os>-<arch>`, one file named `multica`). Windows is unchanged.
+
+An artifact is installed only when all of these hold; otherwise the installed
+binary is left untouched and the command or daemon log says why:
+
+- It belongs to the newest CI run on `main` that is `completed`/`success`, for
+  a `push` to `main`, workflow `.github/workflows/ci.yml`, in `cheese-work/multica`
+  itself (not a PR, fork, failed, cancelled or unfinished run).
+- It is unexpired and attributed by GitHub to that same run and commit.
+- CI stamps its version in `git describe` form (for example `v0.6.0-153-ged9f2e94d599`) so the Quick Create capability gates keep accepting the daemon; the exact full commit is stamped separately and checked by the updater.
+- That commit is ahead of the running binary's build commit (GitHub compare).
+- The zip's SHA-256 equals the digest GitHub reports for the artifact, the zip
+  holds exactly one regular file named `multica`, and that file runs on this
+  machine and reports the run's commit in `multica --version`.
+
+The running binary needs a build commit (`multica --version` shows
+`commit: <sha>`). A binary without one, or whose commit is not in the fork's
+history (for example an upstream release build), is not updated automatically:
+install once with `scripts/install-cli-from-ref.sh`.
+
+If the repository is private, give the process a token that can read Actions
+artifacts:
+
+```bash
+export MULTICA_UPDATE_GITHUB_TOKEN=...   # or GH_TOKEN / GITHUB_TOKEN; actions:read
+```
+
+The token is sent only to the GitHub API host, never to the artifact download
+host, and is not logged. Artifacts expire after 30 days; an expired artifact
+means "unavailable" until the next successful `main` run.
+
+**macOS limitation.** macOS daemon CI is halted (no free macOS runners), so no
+macOS artifact is built. macOS updates report "no eligible fork artifact ...
+macOS daemon CI is paused" and change nothing. Resuming them needs a macOS
+build job added to `ci.yml` by the MacBook's owner; the client side already
+accepts `multica-daemon-darwin-<arch>` artifacts. The macOS resolver path is
+covered by mocked tests only; real macOS execution is not tested.
 
 ## Quick Start
 
@@ -152,6 +212,46 @@ availability stays independent of a third party's release cadence.
 
 Desktop-managed daemons ignore both, because the Desktop app owns its bundled
 CLI's lifecycle.
+
+### Maintenance window
+
+An operator replacing the daemon binary or its environment can hold the daemon
+idle first. A window pauses new task claims and takes the daemon's update
+ownership, so auto-reload, auto-update, server-triggered updates and runtime
+demotion all refuse to run while it is held.
+
+```bash
+multica daemon maintenance acquire --ttl 15m     # prints {"token","expires_at"}
+multica daemon maintenance status                # held? expiry? active tasks?
+multica daemon restart --maintenance-token "$TOKEN"   # or `daemon stop`
+multica daemon maintenance release --maintenance-token "$TOKEN"
+```
+
+Contract:
+
+- `acquire` succeeds only if no claim is in flight and no task is running (a
+  claim already in flight is waited out, up to 30s; new claims are refused for
+  the whole wait). Otherwise it exits non-zero and changes nothing. An idle
+  `status` is not ownership.
+- While held, `daemon stop` / `daemon restart` are refused without the token,
+  and neither a refusal nor an unknown outcome (lost response, timeout, 5xx)
+  falls back to a forced kill — the command errors and you reconcile with
+  `daemon status`. Only a daemon predating `/shutdown` (404/405) keeps the kill
+  fallback. A tokenless `/shutdown` arriving while `acquire` is still admitting
+  is refused (409), and `acquire` after an accepted shutdown is refused: the two
+  never both succeed. A token for a window that no
+  longer exists (expired, released, daemon restarted) is also refused: the
+  owner must reconcile, not assume.
+- The window exists only in the daemon process. `--ttl` (default 15m, max 1h)
+  bounds a window whose owner vanished; if the daemon dies the window dies with
+  it. Always confirm with `daemon status` after a restart — `daemon restart`
+  says so when it stopped the old daemon but could not start a replacement.
+- Once a shutdown with the token is accepted the lease no longer expires and
+  `release` is refused, so claims stay paused until the process exits.
+- Limits: the control endpoint is loopback-only and unauthenticated (same
+  boundary as `/shutdown`); the token proves window ownership, not caller
+  identity. A signal sent straight to the process is not an explicit restart and
+  is not gated. Commands are unavailable inside an agent task.
 
 ### Stop
 
@@ -563,9 +663,11 @@ Flags: `--title` (required), `--description`, `--status`, `--priority`, `--assig
 ```bash
 multica issue update <id> --title "New title" --priority urgent
 multica issue update <id> --position 4.5
+multica issue update <id> --attachment revised.png
 ```
 
 `--position` sets the raw ordering value within the board column (lower sorts first). For relative moves, `issue reorder` is easier because it works out the value for you.
+`--attachment` uploads a local file and appends its Markdown reference to the end of the issue description. Repeat the flag to attach multiple files. To replace an existing image, also use `--description-file` to remove the old reference from the description.
 
 ### Reorder Issue
 
@@ -602,6 +704,16 @@ Built-in statuses: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `block
 `cancelled`. A workspace can define custom statuses on top of these; their keys are
 shown in **Settings → Issue Statuses**, and passing an unknown value returns the full
 list.
+
+To cancel an issue because it duplicates another, mark it so the original lists it:
+
+```bash
+multica issue status <id> cancelled --duplicate-of <original>
+```
+
+`--duplicate-of` takes an issue key or full UUID and requires status `cancelled`.
+`issue update <id> --duplicate-of <original>` does the same, but cannot be combined with
+description or attachment changes. Moving the issue to any other status removes the mark.
 
 ### Comments
 
@@ -1101,3 +1213,11 @@ On the API, both endpoints accept `?include=content` and `?include=metadata`.
 A request that sends neither still gets `content`, on both endpoints, so a
 server upgrade never changes what an un-upgraded client receives — it is the
 CLI that asks for the smaller shape.
+
+### Custom runtime compatibility targets
+
+Create custom Oh-My-Pi profiles with `multica runtime profile create --runtime-type omp --command-name omp --display-name "Custom Oh-My-Pi"`.
+The immutable `runtime_type` selects model discovery, skills paths, and launch behavior;
+the server derives `protocol_family` (`pi` for `omp`). Custom command/path overrides and
+fixed arguments still apply, and the runtime retains its custom-profile provenance.
+Existing profiles and the legacy `--protocol-family` flag retain their original target.

@@ -5,6 +5,53 @@ import { spawnSync } from "node:child_process";
 
 const requiredChecks = ["backend", "frontend", "mobile", "cd-qualification"];
 
+// Translate a GitHub Actions path filter into a matcher. Only the subset the
+// workflows actually use is supported — `**`, `*` and literals — and anything
+// unrecognised is rejected by the caller rather than silently mismatched.
+function pathFilterToRegExp(pattern) {
+  if (typeof pattern !== "string" || pattern.length === 0) return null;
+  if (/[?![\]{}]/.test(pattern)) return null;
+  let out = "";
+  for (let i = 0; i < pattern.length; i += 1) {
+    const char = pattern[i];
+    if (char === "*") {
+      if (pattern[i + 1] === "*") {
+        out += ".*";
+        i += 1;
+        if (pattern[i + 1] === "/") i += 1;
+      } else {
+        out += "[^/]*";
+      }
+    } else if (char === ".") {
+      out += "\\.";
+    } else if ("+^$()|\\".includes(char)) {
+      out += `\\${char}`;
+    } else {
+      out += char;
+    }
+  }
+  return new RegExp(`^${out}$`);
+}
+
+// A required check that never ran because its workflow's path filter excluded
+// this commit is not a failure — there is nothing new for it to verify. But
+// "it did not run" must never be taken on trust, so admission re-derives that
+// conclusion from the same raw evidence a human would use: the commit's
+// changed-file list and the filter declared by the workflow itself. Both are
+// recorded in the checks file; neither is a boolean the recorder asserts.
+function isExcludedByPathFilter(name, checks) {
+  const filters = checks.path_filters?.[name];
+  const changed = checks.changed_files;
+  if (!Array.isArray(filters) || filters.length === 0) return false;
+  if (!Array.isArray(changed)) return false;
+  // An incomplete file list cannot prove absence of a match. The commits API
+  // truncates above 300 files, and the recorder flags that.
+  if (checks.changed_files_truncated) return false;
+  const matchers = filters.map(pathFilterToRegExp);
+  if (matchers.some((matcher) => matcher === null)) return false;
+  return !changed.some((file) => matchers.some((matcher) => matcher.test(file)));
+}
+
 function fail(message) {
   throw new Error(message);
 }
@@ -75,16 +122,42 @@ function verify(args) {
   const checks = readJSON(option("--checks", args));
   if (checks.sha !== manifest.source_sha) fail("checks were recorded for a different source SHA");
   for (const name of requiredChecks) {
-    if (checks.contexts?.[name] !== "success") fail(`required check ${name} is not success`);
+    const conclusion = checks.contexts?.[name];
+    if (conclusion === "success") continue;
+    // Absent — and only absent — may be excused, and only when the commit
+    // provably touches nothing the check's own path filter covers. A check
+    // that ran and failed, or is still pending, is always a refusal.
+    if (conclusion === undefined && isExcludedByPathFilter(name, checks)) continue;
+    // The recorder waits for pending checks, so reaching this means it gave
+    // up waiting. Say so rather than calling a running check a failure.
+    if (conclusion === null) fail(`required check ${name} has not completed`);
+    fail(`required check ${name} is not success`);
   }
 
   process.stdout.write(`${JSON.stringify({ admitted: true, source_sha: manifest.source_sha })}\n`);
 }
 
+// Lists the required checks whose result is not yet final, one per line; no
+// output means the checks file is safe to snapshot. A check still running is
+// recorded with a null conclusion, and one whose job has not been created yet
+// (a `needs:`-gated job such as `backend`) is simply absent — so absence
+// counts as pending unless the path filter provably excludes the commit.
+// Terminal results, failures included, are settled: waiting cannot change
+// them, and verify refuses them.
+function pending(args) {
+  const checks = readJSON(option("--checks", args));
+  for (const name of requiredChecks) {
+    const conclusion = checks.contexts?.[name];
+    if (conclusion === null) process.stdout.write(`${name}\n`);
+    if (conclusion === undefined && !isExcludedByPathFilter(name, checks)) process.stdout.write(`${name}\n`);
+  }
+}
+
 try {
   const [command, ...args] = process.argv.slice(2);
-  if (command !== "verify") fail("usage: admission.mjs verify [options]");
-  verify(args);
+  if (command === "verify") verify(args);
+  else if (command === "pending") pending(args);
+  else fail("usage: admission.mjs verify|pending [options]");
 } catch (error) {
   process.stderr.write(`admission: ${error.message}\n`);
   process.exitCode = 1;

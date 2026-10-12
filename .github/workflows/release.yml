@@ -15,12 +15,20 @@ permissions:
 env:
   X99_MIN_FREE_GB: "50"
 
+# Deleting and recreating a tag can enqueue multiple runs for the same ref.
+# Serialize them so publishers never race while replacing same-name assets.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   verify:
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     outputs:
       tag_name: ${{ steps.release_meta.outputs.tag_name }}
       is_stable: ${{ steps.release_meta.outputs.is_stable }}
+      build_stamp: ${{ steps.build_meta.outputs.build_stamp }}
+      display_version: ${{ steps.build_meta.outputs.display_version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -47,6 +55,15 @@ jobs:
           else
             echo "is_stable=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Compute release build stamp
+        id: build_meta
+        shell: bash
+        run: |
+          stamp=$(sh scripts/release-stamp.sh)
+          upstream_version="${GITHUB_REF_NAME#v}"
+          echo "build_stamp=$stamp" >> "$GITHUB_OUTPUT"
+          echo "display_version=$upstream_version-$stamp" >> "$GITHUB_OUTPUT"
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -85,7 +102,7 @@ jobs:
     # tag push fails this job (401 against the upstream tap), which makes
     # downstream CI go red without affecting the actual artifact pipeline.
     if: github.repository_owner == 'multica-ai'
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -112,6 +129,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          RELEASE_BUILD_STAMP: ${{ needs.verify.outputs.build_stamp }}
 
   # The fork builds images on isolated X99 runners. Upstream keeps its native
   # hosted arm64 path because these repo-scoped runners only serve this fork.
@@ -177,7 +195,7 @@ jobs:
           cache-from: type=gha,scope=release-backend-${{ env.PLATFORM_PAIR }}
           cache-to: type=gha,mode=max,scope=release-backend-${{ env.PLATFORM_PAIR }}
           build-args: |
-            VERSION=${{ needs.verify.outputs.tag_name }}
+            VERSION=${{ needs.verify.outputs.display_version }}
             COMMIT=${{ github.sha }}
           outputs: type=image,name=ghcr.io/${{ github.repository_owner }}/multica-backend,push-by-digest=true,name-canonical=true,push=true
 
@@ -233,6 +251,7 @@ jobs:
           tags: |
             type=raw,value=latest,enable=${{ needs.verify.outputs.is_stable == 'true' }}
             type=raw,value=${{ needs.verify.outputs.tag_name }}
+            type=raw,value=${{ needs.verify.outputs.display_version }}
             type=sha,prefix=sha-
 
       - name: Login to GHCR
@@ -317,7 +336,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=release-web-${{ env.PLATFORM_PAIR }}
           build-args: |
             REMOTE_API_URL=http://backend:8080
-            NEXT_PUBLIC_APP_VERSION=${{ needs.verify.outputs.tag_name }}
+            NEXT_PUBLIC_APP_VERSION=${{ needs.verify.outputs.display_version }}
           outputs: type=image,name=ghcr.io/${{ github.repository_owner }}/multica-web,push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest
@@ -372,6 +391,7 @@ jobs:
           tags: |
             type=raw,value=latest,enable=${{ needs.verify.outputs.is_stable == 'true' }}
             type=raw,value=${{ needs.verify.outputs.tag_name }}
+            type=raw,value=${{ needs.verify.outputs.display_version }}
             type=sha,prefix=sha-
 
       - name: Login to GHCR
@@ -396,7 +416,7 @@ jobs:
   helm-chart:
     needs: [verify, docker-backend-merge, docker-web-merge]
     if: github.repository_owner == 'multica-ai'
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     concurrency:
       group: release-helm-chart-${{ github.ref }}
       cancel-in-progress: true
@@ -447,7 +467,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: blacksmith-2vcpu-ubuntu-2404
+          # GitHub-hosted (CHE-748): free on this public repo, no Blacksmith,
+          # no X99-only dependency — plain checkout + electron-builder package.
+          - os: ubuntu-latest
             target: linux
     runs-on: ${{ matrix.os }}
     steps:
@@ -490,7 +512,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # electron-builder's GitHub publisher reads this:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Disable code signing on Linux for now — the public release is
-          # unsigned for this platform, the CLI carries the trust boundary.
+          # Same-tag reruns must also replace Desktop assets after the
+          # publisher's default two-hour safety window has elapsed.
+          EP_GH_IGNORE_TIME: "true"
+          # Disable code signing on Linux/Windows for now — the public
+          # release is unsigned for these platforms, the CLI carries the
+          # trust boundary. Set CSC_LINK in repo secrets to enable
+          # Windows signing later.
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: node scripts/package.mjs --${{ matrix.target }} --x64 --arm64 --publish always

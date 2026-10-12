@@ -2,71 +2,36 @@
 
 Product contracts the runtime brief does not fully encode.
 
-- [PR linking and close intent are two distinct contracts](#pr-linking-and-close-intent-are-two-distinct-contracts)
-- [Reading a linked PR's real state](#reading-a-linked-prs-real-state)
+- [PR linking](#pr-linking)
 - [`issue get` has no structured ETA](#issue-get-has-no-structured-eta)
 - [Custom properties: typed workflow state](#custom-properties-typed-workflow-state)
 - [Status changes have server side effects](#status-changes-have-server-side-effects)
-- [Claim ownership without duplicating a run](#claim-ownership-without-duplicating-a-run)
 - [Who else is running right now](#who-else-is-running-right-now)
 - [Sub-issues: todo starts work now, backlog parks it](#sub-issues-todo-starts-work-now-backlog-parks-it)
+- [Per-issue token usage](#per-issue-token-usage)
+- [Charts and files in a comment](#charts-and-files-in-a-comment)
 - [Incorrect to correct](#incorrect-to-correct)
 
-## PR linking and close intent are two distinct contracts
+To attach a local file to an existing issue description, use `multica issue update <id> --attachment <local-path>`. The CLI appends the file's Markdown reference to the end of the description; to replace an image, also use `--description-file` to remove the old reference. Do not put local filesystem paths in the description.
 
-The GitHub webhook runs two separate scans over an incoming PR. They are not the
-same gate and they read different fields.
+## PR linking
 
-**Linking** scans three places for a routable issue key (`PREFIX-NUMBER`, e.g.
-`MUL-123`): the PR **title**, the **branch name**, and the **body right after a
-closing keyword**. Each match writes an issue to PR link row — the link that
-`multica issue pull-requests` reads back. A key that appears in the body as a
-bare mention, with nothing in the title or branch and no closing keyword, is a
-passing reference and links nothing.
-
-```text
-MUL-123: add the thing the issue asks for        # key anywhere in title → links
-agent/dana/mul-123-add-the-thing             # branch ref   → links
-Closes MUL-123                                   # body + closing keyword → links
-Related to MUL-123                               # body mention only → no link
-```
-
-**Close intent** is stricter and is a separate scan over **title or body only —
-never the branch**. It fires only for a key placed immediately after a closing
-keyword (`Closes` / `Fixes` / `Resolves`, optional `:` then whitespace). That
-adjacency is what sets the link row's close-intent flag, the gate that
-auto-advances the issue to `done` when the PR merges.
+A PR is linked to an issue when its **title** or **branch name** contains a
+routable issue key (`PREFIX-NUMBER`, e.g. `MUL-123`), or when its title or body
+puts the key **right after a closing keyword** (`Closes` / `Fixes` /
+`Resolves`, optional `:` then whitespace). A key that appears in the body as a
+bare mention links nothing. People can also link a PR by URL or remove one on
+the issue page; a removed PR is not linked again by later webhooks.
 
 ```text
-Closes MUL-123                                    # links AND records close intent
-Fixes MUL-123
-Resolves MUL-123
-Fix login MUL-123                                 # in a title: links, no close intent
+MUL-123: add the thing the issue asks for     # key in title  → links
+agent/dana/mul-123-add-the-thing              # key in branch → links
+Closes MUL-123   (body)                       # key after a keyword → links
+Related to MUL-123   (body only)              # no link
 ```
 
-Consequence: a bare key in the title or a branch reference links the PR but does
-not close the issue on merge. A closing keyword immediately adjacent to the issue key
-records close intent; on merge, that close intent can move the linked issue to
-`done`.
-
-**Passing mentions link nothing.** A key that appears **only** as a bare mention
-in the body — no closing keyword, and not in the title or branch — does not link
-the PR at all. This keeps `Related MUL-123` or `Follow up in MUL-123` from
-surfacing an unrelated PR as if it were working on that issue. To make a PR show
-up for an issue, put the key in the title, the branch, or after a closing keyword
-in the body — not as a loose body reference.
-
-While the PR is still open the link follows the live title and body: adding a key
-links it, and downgrading that key to a plain mention drops the link. Once the PR
-has merged or closed, existing links and their close-intent decision are frozen —
-but a PR that was never linked can still be linked by editing it, so a forgotten
-key is repairable after the fact. That late link does not move the issue to
-`done`; close intent is decided at merge time.
-
-```text
-Closes MUL-123 in the body                        # links
-Related to MUL-123 in the body (no title/branch)  # no link
-```
+While a PR is open, its automatic links follow the live title, branch, and
+body: removing the key drops the link. After merge or close, existing links stay.
 
 ### Default for code-changing issue work
 
@@ -79,12 +44,10 @@ instead of pretending the run is complete.
 
 To make the PR show on the issue, put a routable issue key in the PR **title**
 (preferred) or the **branch**. A key that appears only as a bare mention in the
-body links nothing. Do not use a closing keyword (`Closes` / `Fixes` /
-`Resolves`) unless the issue should auto-advance to `done` on merge.
+body links nothing.
 
 ```text
-MUL-123: fix login redirect        # key anywhere in title → links
-Closes MUL-123                     # only when merge should mark the issue done
+MUL-123: fix login redirect        # key in title → links
 Part of MUL-123                    # body mention only → no link at all
 ```
 
@@ -92,91 +55,11 @@ In the final issue comment, include the PR URL when a PR exists. If the task did
 not produce a PR because no code changed or the user asked not to create one, say
 that explicitly.
 
-## Reading a linked PR's real state
-
-When a step depends on PR state, query Multica's link table — do not infer it
-from branch names, GitHub search, memory, or stale values left on the issue by
-an earlier run.
-
-```bash
-multica issue pull-requests <issue-id> --output json
-```
-
-Returns `{"pull_requests": [...]}`. Each element exposes:
-
-- `number`, `html_url`, `title`
-- `state` — the PR lifecycle as a **single enum**, one of `merged`, `closed`,
-  `draft`, `open`. There is no separate `draft` or `merged` boolean in the
-  response; the server folds them into `state` (merged wins, then closed, then
-  draft, else open).
-- `merged_at` — non-null once merged; a second confirmation of `state: merged`.
-- `provider` — `github`, `forgejo`, `gitea`, or `gitlab`.
-- `mergeable_state` — mirrors GitHub (`clean` / `dirty` surfaced; other values
-  round-trip as unknown; retained for compatibility).
-- GitHub API snapshot fields: `snapshot_available`, `mergeable`,
-  `merge_state_status`, `checks_rollup`, `checks_total`, `checks_passed`,
-  `checks_failed`, `checks_running`, `failed_check_names`,
-  `snapshot_fetched_at`, and `snapshot_stale`. `snapshot_available == true`
-  means the feature is enabled and the snapshot matches the PR's current head.
-  Only then does `checks_rollup == null` mean "no checks"; false means the
-  snapshot feature is disabled, has not fetched yet, or only has an old head.
-- `checks_conclusion` — coarse CI compatibility status: `passed`, `failed`,
-  `pending`, or `null`. GitHub derives it from the current API snapshot;
-  Forgejo/Gitea/GitLab derive it from webhook commit statuses. Backed by the
-  provider-appropriate check counts.
-
-So "is it merged?" is `state == "merged"` (or `merged_at != null`); "is it still
-a draft?" is `state == "draft"`; coarse CI status is `checks_conclusion`.
-
-- `merge_announcement` — present only for a GitHub PR that has an enqueued
-  merge-announcement record; absent means none was ever enqueued (never
-  merged while linked, or merged before the feature existed). Fields:
-  `status` (`pending` / `delivered` / `failed` / `skipped`), `attempt_count`,
-  `last_error` (sanitized, no secrets), `next_retry_at` (while `pending`),
-  and `sent_at` / `comment_id` (once `delivered`). Read this instead of
-  scanning comments by hand to check whether a merge's announcement landed.
-
-`--output table` (the default) adds three derived columns on top of `NUMBER` /
-`STATE` / `TITLE` / `URL`:
-
-- `HEAD` — the PR's `branch`, or `unavailable` when absent. The response does
-  not expose a head commit SHA (only branch), so this column identifies the
-  head by branch name, not by commit.
-- `CI` — `unavailable` when no current snapshot exists (`snapshot_available`
-  is not `true`); `no checks` when a snapshot exists but `checks_rollup` is
-  `null` (checks have not reported yet — **never** rendered as `passed`);
-  otherwise the raw `checks_rollup` value.
-- `SNAPSHOT` — `unavailable` with no snapshot; `stale` (with an age) when
-  `snapshot_stale` is `true`; otherwise the age since `snapshot_fetched_at`.
-
-## Recovering a missed merge announcement
-
-A merged, linked GitHub PR is expected to produce exactly one system comment
-on its issue (see `merge_announcement` above). If one merged without ever
-producing that comment — most commonly because it merged before the
-announcement feature existed, or before the workspace had GitHub enabled —
-recover it explicitly:
-
-```bash
-multica issue announce-merge <issue-id> --pr-url <github-pr-url> --output json
-```
-
-This is a narrow, explicit action, never a bulk scan: it targets exactly one
-issue and one already-linked, already-merged PR. It re-fetches the PR's
-current merge identity directly from GitHub — it does not trust any
-merge SHA/time supplied on the command line — so the resulting comment always
-states the PR's real original merge time. Retrying with the same issue and PR
-URL is safe; it returns the existing outcome rather than duplicating the
-comment. It fails closed if GitHub is disabled for the workspace, the PR
-isn't mirrored/linked, the source installation is no longer bound, or the PR
-isn't actually merged. Never fabricate this comment by hand — always go
-through this command so the recorded merge time and commit are authoritative.
-
 If the command returns no linked PRs after a PR was opened, check the syntax
-first: the scanner needs a routable issue key in the PR title or branch, or one
-right after a closing keyword in the body — a bare body mention does not count
-(see the passing-mention rule above). When the syntax is the problem, editing the
-title or adding a closing keyword re-runs the scan.
+first: the key must be in the PR title or branch, or right after a closing
+keyword in the body — a bare body mention does not count. When the syntax is the
+problem, editing the title re-runs the scan. If a person removed
+the PR from the issue, it stays removed until someone links it again.
 
 If the key is already written correctly and the list is still empty, stop editing
 the PR blind: another no-op edit cannot fix an integration that never received the
@@ -189,31 +72,40 @@ comment rather than repeating the edit.
 
 ## Listing and ordering issues
 
-`issue list` reads one page at a time, with a server maximum of 100 issues.
-Advance `--offset` by the number of issues actually returned. If the server
-cannot count matching issues, it returns `failed to count issues` as an error;
-do not treat that failure as an empty or complete list. Older servers can
-substitute the page length for a failed count, so that value alone is not proof
-that all matching issues have been read.
+`issue list` reads one page at a time, server maximum 100 issues per `--limit`
+(default 50). Advance `--offset` by the number actually returned in that same
+response, not by the requested `--limit` — a final partial page returns fewer
+rows than asked for. `--output json` wraps the page as `{"issues": [...],
+"total": N, "limit": N, "offset": N, "has_more": bool}`; check `has_more`
+rather than comparing returned-count to `--limit` to decide whether to fetch
+another page. If the server cannot count matching issues, it returns
+`failed to count issues` as an error; do not treat that failure as an empty or
+complete list. Older servers can substitute the page length for a failed count,
+so that value alone is not proof that all matching issues have been read.
+
+`--fields <name,name,...>` (JSON output only) trims each issue to the named
+top-level fields. Filtering is client-side after the full response is fetched,
+so it shrinks CLI output and agent context cost, not network or server cost.
+Use it when scanning many issues for a few fields (e.g. `--fields
+id,title,status,priority`). No effect on `--output table`.
 
 `issue reorder` reads the issue's project-scoped status column before writing
-its new position. When a legacy total is unavailable or no larger than its
+its new position; when a legacy total is unavailable or no larger than its
 page, it reads through an empty page. A failed request, malformed page, or
-duplicate issue stops the operation before any position write. This protects
-against truncated or repeated pages, but does not promise a snapshot across
-concurrent edits. There is no CLI bulk-export or `--all` mode.
+duplicate issue stops the operation before any position write — protection
+against truncated or repeated pages, not a snapshot across concurrent edits.
+There is no CLI bulk-export or `--all` mode.
 
 ## `issue get` has no structured ETA
 
-`multica issue get <issue-id>` never returns a structured ETA — the issue
-model only has `start_date` and `due_date`; there is no server-side ETA field
-to read, and the CLI does not invent one by parsing `due_date` or the
-description. In `--output table`, the `ETA` column always reads `unknown`,
-distinct from the separate `DUE DATE` column. In JSON, the top-level issue
-object is unchanged; a sibling `status_read` object is added —
-`{"eta": "unknown", "eta_source": "none recorded", "observed_at": <RFC3339>}`
-— so it is clearly a client-side read projection, not a claim that the server
-sent an `eta` field. Do not read `due_date` as if it were an ETA.
+`multica issue get <issue-id>` never returns a structured ETA — the issue model
+has only `start_date` and `due_date`, and the CLI does not invent one by
+parsing `due_date` or the description. In `--output table` the `ETA` column
+always reads `unknown`, distinct from the separate `DUE DATE` column. In JSON
+the issue object is unchanged; a sibling `status_read` object is added —
+`{"eta": "unknown", "eta_source": "none recorded", "observed_at": <RFC3339>}` —
+marking it a client-side projection, not a server-sent `eta`. Do not read
+`due_date` as if it were an ETA.
 
 ## Custom properties: typed workflow state
 
@@ -237,10 +129,10 @@ multica issue property unset <issue-id> --name Environment
 - A validation error lists the legal options — fix the value and retry.
 - `actor` / `multi_actor` properties (Reviewer, Escalation contact, ...) hold
   workspace members only. `--value` takes a member name, email, UUID, short id,
-  or an explicit `member:<uuid>`; `multi_actor` takes a comma-separated list
+  or explicit `member:<uuid>`; `multi_actor` takes a comma-separated list
   (duplicates dropped, order kept, max 20).
-- Definitions may include an optional catalog icon for visual identification;
-  it does not change the property's type or value validation.
+- Definitions may carry an optional catalog icon; it changes neither the
+  property's type nor its value validation.
 - Agents cannot create or edit property definitions (owner/admin humans only).
   If a needed property does not exist, propose it in a comment instead.
 - Where state belongs: workflow state a human should see and filter by goes in
@@ -257,22 +149,20 @@ multica issue list --sort property:Impact --direction desc --output json
 - `--property` takes one `Name=Value` per flag. Repeating the same property
   matches ANY of its values; different properties must ALL match. Values are
   option names or ids (select types), `true`/`false` (checkbox), a member
-  name/email/id (actor types), or the value itself for text, url, number,
-  and date (`YYYY-MM-DD`). The reserved value `__none__` matches
-  issues where the property is unset (works for every type; it is not
-  index-backed, so use it for targeted audits rather than as a default
-  listing filter). Only `=` is supported today; the `>=`, `<=` and `!=`
-  spellings are reserved for comparison filters and are rejected.
-- `--sort property:<name-or-id>` orders select properties by option order —
-  an ordinal scale (Low < Medium < High) sorts by meaning — and number/date/
-  text/url by value; issues without the property sort last either way.
-  Archived properties and types without an order (multi_select, checkbox,
-  actor kinds) are rejected up front.
-- `issue list` and `issue get` return `properties` as a map of definition id
-  to stored value. Add `--resolve-properties` in JSON mode to get the rows
-  `issue property list` prints instead (name, type, stored value, display
-  names); the CLI makes at most one catalog request for the whole page, so
-  no `property list` call is needed:
+  name/email/id (actor types), or the value itself for text, url, number and
+  date (`YYYY-MM-DD`). The reserved `__none__` matches issues where the
+  property is unset (every type; not index-backed, so use it for targeted
+  audits rather than a default listing filter). Only `=` is supported today —
+  `>=`, `<=` and `!=` are reserved for comparison filters and rejected.
+- `--sort property:<name-or-id>` orders select properties by option order — an
+  ordinal scale (Low < Medium < High) sorts by meaning — and number/date/text/
+  url by value; issues without the property sort last either way. Archived
+  properties and unordered types (multi_select, checkbox, actor kinds) are
+  rejected up front.
+- `issue list` and `issue get` return `properties` as a map of definition id to
+  stored value. Add `--resolve-properties` in JSON mode for the rows `issue
+  property list` prints (name, type, stored value, display names); the CLI makes
+  at most one catalog request per page, so no `property list` call is needed:
 
 ```bash
 multica issue list --status in_progress --output json --resolve-properties
@@ -288,20 +178,20 @@ A status change is not cosmetic — the server enqueues or skips agent work base
 on it. These are the contracts, not advice.
 
 The rules below name fixed built-in status keys, not category-wide behaviors.
-Custom statuses have only lifecycle semantics: unstarted, started, done
-(successful terminal), or closed (cancelled terminal). They do not inherit
-Backlog parking, In Review completion, Blocked failure, or In Progress recovery.
-Use the built-in key when its special behavior is needed. Built-in definitions
-cannot be edited or archived.
+Custom statuses carry lifecycle semantics only — unstarted, started, done
+(successful terminal), closed (cancelled terminal) — and do not inherit Backlog
+parking, In Review completion, Blocked failure, or In Progress recovery. Use
+the built-in key when its behavior is needed; built-in definitions cannot be
+edited or archived.
 
-Archive a custom status only after moving every issue off it, including
-completed/canceled issues. An occupied status returns HTTP 409 with code
-`issue_status_in_use` and `issue_count`; it remains active. Use Settings >
-View issues to inspect and move its issues, then retry. For terminal-status
-replacement, preserve the lifecycle meaning (`done` to `done`, `closed` to
-`closed`); do not reopen or cancel completed work just to retire a status.
-Archival does not move issues automatically. Historical issues on previously
-archived statuses remain readable via an explicit status filter.
+Archive a custom status only after moving every issue off it, completed and
+canceled included. An occupied status returns HTTP 409 with code
+`issue_status_in_use` and `issue_count`, and stays active; use Settings > View
+issues to move them, then retry. When replacing a terminal status preserve the
+lifecycle meaning (`done` to `done`, `closed` to `closed`) — never reopen or
+cancel completed work just to retire a status. Archival moves nothing
+automatically; historical issues on archived statuses stay readable via an
+explicit status filter.
 
 - **`backlog`** parks an agent-assigned issue: the assignee is set but no task
   fires. Moving `backlog → todo` (or any non-done/non-cancelled status) enqueues
@@ -322,21 +212,32 @@ archived statuses remain readable via an explicit status filter.
   planning, and review all count as the work exactly when they are what the
   issue asks for (a review-the-PR issue is being worked the moment reviewing
   starts). Questions, discussion, or acknowledgements never move the status.
-  Squad leaders: dispatching members is not delivery — a dispatch turn
-  leaves the parent `in_progress`, and it moves to `in_review` only when a
-  later re-trigger confirms the overall goal is met.
+  Squad leaders: dispatching members is not delivery — a dispatch turn leaves
+  the parent `in_progress`, moving to `in_review` only when a later re-trigger
+  confirms the overall goal is met.
 - **`in_review`** is an accepted issue status. Some workflows use it while a PR
   is open and awaiting review; moving to it is an explicit mutation.
-- **`done`** on a child issue posts a system comment on its parent. If a PR
-  carries close intent (`Closes MUL-XXXX`), it advances the issue to `done`
-  itself on merge — you do not also need to flip it manually.
+- **`done`** on a child issue can wake its parent's assignee (see Stages).
 - **`cancelled`** is a terminal, user-driven decision to close the issue. Like
   `done` it enqueues no new agent work, but it does **not** stop tasks already in
   flight — a run in progress keeps going. To stop a running task, cancel the
   task itself.
+  A cancelled issue may also be marked as a **duplicate** of another issue.
+  When you cancel an issue because the work already exists elsewhere, mark it
+  with `multica issue status <id> cancelled --duplicate-of <original>` rather
+  than cancelling and explaining in a comment: only the mark links the two.
+  The original must not itself be a duplicate, and an issue that others are
+  marked as duplicates of cannot be marked; the command reports both refusals.
+  (`GET /api/issues/<id>/duplicates` shows both sides; issue responses carry
+  the original as `duplicate_of` with its id, identifier, title and status
+  while the mark counts). Moving it to any
+  status other than `cancelled` removes the mark, so reopen a duplicate only
+  when it is really separate work. Marking logs `duplicate_marked` on the
+  duplicate and `duplicate_added` on the original; removing the mark logs
+  `duplicate_unmarked` / `duplicate_removed` (`multica issue timeline --action`).
 - **Failed issue-triggered tasks** may roll an issue from `in_progress` back to
-  `todo` when no active task / retry remains — that is the main server-owned
-  status write on the agent-run path.
+  `todo` when no active task / retry remains — the main server-owned status
+  write on the agent-run path.
 
 ## Claim ownership without duplicating a run
 
@@ -352,47 +253,43 @@ multica issue status <issue-id> in_progress --no-start
 
 Before self-assigning, check the target issue's comment history for an existing
 claim. The server also suppresses a trusted self-assignment when the exact
-target `(issue, agent)` pair already has a non-terminal task, but it
-deliberately keeps same-agent handoffs to a fresh issue starting runs:
-cross-issue serial chains and triage batches rely on that.
-
+`(issue, agent)` pair already has a non-terminal task, but deliberately keeps
+same-agent handoffs to a fresh issue starting runs — cross-issue serial chains
+and triage batches rely on that.
 ## Who else is running right now
 
 Nothing about concurrent runs is pushed into your prompt: the answer changes
-while a turn is running, and most turns never need it. Ask the server on the
-turns that do — before opening a PR against code a sibling issue also touches:
+mid-turn and most turns never need it. Ask the server on the turns that do —
+before opening a PR against code a sibling issue also touches:
 
 ```bash
 multica issue runs <issue-id> --active --output json     # in-flight runs on this issue
 multica issue runs <issue-id> --siblings --output json   # ...and across the sub-issue family
 ```
 
-`--active` drops the execution history and returns only `queued` / `dispatched`
-/ `running` / `waiting_local_directory` runs. `--siblings` widens the same read
-to the issue's family — its parent (or itself, when it has no parent) plus every
-child of that parent — and labels each row with the issue it belongs to, which
-is how you find another agent already working on a sibling sub-issue before you
-open a second PR against the same code.
-
-The family read returns a compact row — task, issue, agent, status, started —
-not the full execution-log record. If you need a run's detail, follow the task
-id with `multica issue run-messages`.
+`--active` drops execution history and returns only `queued` / `dispatched` /
+`running` / `waiting_local_directory` runs. `--siblings` widens the read to the
+issue's family — its parent (or itself, when it has none) plus every child of
+that parent — labelling each row with the issue it belongs to. That is how you
+find an agent already working a sibling sub-issue before opening a second PR
+against the same code. The family read returns a compact row (task, issue,
+agent, status, started), not the full execution-log record; for a run's detail
+follow the task id with `multica issue run-messages`.
 
 Rows come back running-first, newest-first within a status, and the family read
 is capped at 20. When the cap truncates the answer the CLI prints a warning on
 stderr — read it. Without that warning a short list means "nobody else is
 there"; with it, the list proves nothing about the runs it did not return.
 
-The CLI also prints an `Observed at <RFC3339 timestamp>` note to stderr on
-every read: "who's running right now" is a moving target, and this is when
-your read happened, not a server-recorded field. `--active` is read-only —
-it always reaches the server with `GET`, never a write, so asking never
-enqueues or affects a run.
+The CLI also prints an `Observed at <RFC3339 timestamp>` note to stderr on every
+read: "who's running right now" is a moving target, and that is when your read
+happened, not a server-recorded field. `--active` is read-only — always a `GET`,
+never a write — so asking never enqueues or affects a run.
 
 Both are advisory reads. Nothing here reserves an issue or serialises anything:
-a run you see may finish a second later, and one you don't see may start a
-second later. Coordinate through the issue's comments — the reads tell you whom
-to coordinate with.
+a run you see may finish a second later, and one you don't see may start one.
+Coordinate through the issue's comments — the reads tell you whom to coordinate
+with.
 
 ## Sub-issues: todo starts work now, backlog parks it
 
@@ -418,12 +315,13 @@ Creating every serial step as `todo` enqueues the whole chain at once.
 ### Stages: order sub-issues into barrier groups
 
 `--stage <N>` (N >= 1) groups sub-issues under the same parent into ordered
-stages. The server **tries once to wake the parent assignee when a whole stage
-finishes** — i.e. every sub-issue in the lowest unfinished stage has reached a
-terminal status (`done`/`cancelled`); a notification that fails is not replayed.
-A completion that does not close a stage is silent (no comment, no wake). A
-sibling set with **no** stages is one implicit stage, so the parent is woken
-once when the *last* sub-issue finishes — not on every child.
+stages. The platform's sub-issue wakeup **wakes the parent assignee when a stage
+closes while a later stage is waiting** — every sub-issue up to that stage has
+reached a terminal status (`done`/`cancelled`) — and **once more when every
+sub-issue, staged or not, is closed**. A completion that closes nothing is
+silent. A sibling set with **no** stages wakes the parent once, when the *last*
+sub-issue finishes. A parent in `backlog` is not woken; it catches up once it
+leaves backlog. A member assignee gets an inbox notification instead of a run.
 
 Advancement is agent-driven: the server only detects the closed barrier and
 wakes the parent assignee, who then decides whether to promote the next stage's
@@ -437,8 +335,9 @@ multica issue create --title "Build"      --parent <id> --assignee <agent> --sta
 multica issue create --title "Ship"       --parent <id> --assignee <agent> --stage 3 --status backlog
 ```
 
-When both Stage 1 sub-issues finish you (the parent assignee) are woken with a
-"Stage 1 complete" comment. Inspect the layout, then promote the next stage:
+When both Stage 1 sub-issues finish you (the parent assignee) are woken by the
+sub-issue wakeup; its `[WAKEUP]` block lists every stage and names the next one.
+Inspect the layout, then promote the next stage:
 
 ```bash
 multica issue children <parent-id>             # sub-issues grouped by stage
@@ -458,6 +357,51 @@ terminal children.
 Read each sub-issue's description before promoting and only promote items whose
 stated dependencies are met; if a description conflicts with the parent's
 breakdown, leave it `backlog` and comment to confirm first.
+
+## Per-issue token usage
+
+```bash
+multica issue usage <issue-id> --output json
+```
+
+Returns aggregated token usage across the issue's runs. In table output `RUNS`
+counts terminal runs only — one still in flight is not yet reflected. A total
+prefixed with `>=` is a lower bound, not the real total: one or more terminal
+runs did not report usage (aborted or infra-failed), so the true figure is at
+least that but unknown above it. Do not compare an unprefixed total with a
+`>=`-prefixed one without checking which you have.
+## Charts and files in a comment
+
+Where content goes decides how it shows:
+
+- **In the body, rendered in place** — a fenced ` ```html ` or ` ```mermaid `
+  block in the comment content. It renders inside the comment with a title
+  bar (Preview / Source, fullscreen, copy) and takes its content's height;
+  anything taller than 480px collapses behind "Show all". Name it with
+  `title="..."` on the fence line. HTML runs in a scripts-only sandbox (no
+  cookies, storage or parent access; CDN `<script src>` works).
+- **An attached file** — `--attachment <path>`. Every non-image file shows as
+  a file card that opens in the viewer, **HTML included**: an uploaded
+  `report.html` is a deliverable to open, not an inline chart. Use it for
+  something the reader keeps or downloads.
+
+For HTML that should follow light / dark mode, style it with the page's theme
+variables: `var(--background)`, `var(--foreground)`, `var(--muted)`,
+`var(--muted-foreground)`, `var(--border)`, `var(--primary)`,
+`var(--chart-1)` … `var(--chart-5)`, `var(--font-sans)`. Using any of them opts
+the block into the app's color scheme, so also set the page background
+(`body { background: var(--background); color: var(--foreground) }`). HTML
+that uses none keeps its own look. Size to the content, not the viewport:
+`100vh` heights have no fixed viewport to fill here.
+
+````markdown
+```html title="p95 latency, last 7 days"
+<canvas id="c"></canvas>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>/* draw with getComputedStyle(document.documentElement)
+  .getPropertyValue("--chart-1") so it follows the theme */</script>
+```
+````
 
 ## Incorrect to correct
 
@@ -482,3 +426,8 @@ multica issue create --title "Step 1" --parent <issue-id> --assignee <agent> --s
 multica issue create --title "Step 2" --parent <issue-id> --assignee <agent> --stage 2 --status backlog
 multica issue create --title "Step 3" --parent <issue-id> --assignee <agent> --stage 3 --status backlog
 ```
+
+## Issue wakeups
+
+`multica issue wakeup` persists event/time work. See [wakeups.md](wakeups.md)
+for commands, conditions, and lifecycle behavior.

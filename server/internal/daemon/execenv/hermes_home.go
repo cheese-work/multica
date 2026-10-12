@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/multica-ai/multica/server/internal/util"
 )
 
 // Hermes discovers skills from exactly two places (verified against the bundled
@@ -54,8 +56,8 @@ import (
 //     host that cannot create the link;
 //   - disables the external `memory.provider` in the derived config so a
 //     host-configured Supermemory/Hindsight/etc. backend isn't shared across
-//     tasks. This is the on-disk + external-backend memory isolation; a managed,
-//     agent-scoped memory backend is a separate future product decision.
+//     tasks. This is the on-disk + external-backend memory isolation; an agent
+//     opts back into the host backend with custom_env HERMES_EXTERNAL_MEMORY=inherit.
 //
 // The shared ~/.hermes/ is never modified by this setup. Note however that
 // mirrored entries are writable symlinks, so if Hermes writes through one at
@@ -278,30 +280,17 @@ func hermesRootFromHomeFor(base, native string) string {
 // resolvePathBestEffort resolves symlinks like Python's Path.resolve(strict=False):
 // it follows every symlink in the existing prefix of p and appends the remaining
 // non-existent tail unchanged, rather than failing (as filepath.EvalSymlinks does)
-// when p doesn't fully exist. The result is absolute.
+// when p doesn't fully exist. The result is absolute. When the kernel's own
+// resolution cannot be determined (util.ErrUnresolvablePath — an unknown
+// redirecting reparse point, an unobservable drive), the input is returned
+// unchanged: the containment comparison downstream then fails to relate it and
+// treats it as under nothing, which is the conservative answer.
 func resolvePathBestEffort(p string) string {
-	if p == "" {
+	resolved, err := util.ResolveSymlinksBestEffort(p)
+	if err != nil {
 		return p
 	}
-	if abs, err := filepath.Abs(p); err == nil {
-		p = abs
-	}
-	if resolved, err := filepath.EvalSymlinks(p); err == nil {
-		return resolved
-	}
-	dir := p
-	var tail []string
-	for {
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return p // reached the root without an existing ancestor
-		}
-		tail = append([]string{filepath.Base(dir)}, tail...)
-		dir = parent
-		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
-			return filepath.Join(append([]string{resolved}, tail...)...)
-		}
-	}
+	return resolved
 }
 
 // isPathUnder reports whether child is parent or nested under it.
@@ -683,9 +672,23 @@ func writeDerivedHermesConfig(sharedHome, hermesHome string, env map[string]stri
 	}
 	// Disable any host-configured external memory backend (memory.provider) so a
 	// Supermemory/Hindsight/etc. bank isn't shared across managed tasks; the
-	// built-in per-task memories/ dir is already isolated above.
-	disableHermesMemoryProvider(&doc)
+	// built-in per-task memories/ dir is already isolated above. An agent can
+	// opt back in through its custom_env (see hermesInheritsMemoryProvider).
+	if !hermesInheritsMemoryProvider(env) {
+		disableHermesMemoryProvider(&doc)
+	}
 	return marshalYAMLToFile(&doc, dstConfig)
+}
+
+// HermesExternalMemoryEnv is the per-agent custom_env opt-in that keeps the
+// host's memory.provider in the derived config. Only the value "inherit" opts
+// in; anything else (or unset) keeps the default isolation. It is per-agent by
+// construction: env is that agent's sanitized custom_env, and only agent owners
+// or workspace admins can set it.
+const HermesExternalMemoryEnv = "HERMES_EXTERNAL_MEMORY"
+
+func hermesInheritsMemoryProvider(env map[string]string) bool {
+	return strings.EqualFold(strings.TrimSpace(env[HermesExternalMemoryEnv]), "inherit")
 }
 
 // disableHermesMemoryProvider forces skills-adjacent `memory.provider` to empty

@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS wakeup_aggregate_reservation_age_idx ON wakeup_aggregate_reservation(reserved_at);

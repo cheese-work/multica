@@ -10,6 +10,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
+	"github.com/multica-ai/multica/server/pkg/credentialexec"
 )
 
 var (
@@ -38,6 +39,7 @@ func init() {
 	// Tag every CLI HTTP request with this binary's build version so the
 	// server can split logs/metrics by client version.
 	cli.ClientVersion = version
+	cli.ClientCommit = commit
 
 	rootCmd.PersistentFlags().String("server-url", "", "Multica server URL (env: MULTICA_SERVER_URL)")
 	rootCmd.PersistentFlags().String("workspace-id", "", "Workspace ID (env: MULTICA_WORKSPACE_ID)")
@@ -67,6 +69,7 @@ func init() {
 	loginCmd.GroupID = groupAdditional
 	setupCmd.GroupID = groupAdditional
 	attachmentCmd.GroupID = groupAdditional
+	provenanceCmd.GroupID = groupAdditional
 	configCmd.GroupID = groupAdditional
 	updateCmd.GroupID = groupAdditional
 	versionCmd.GroupID = groupAdditional
@@ -89,6 +92,7 @@ func init() {
 	rootCmd.AddCommand(loginCmd)
 	rootCmd.AddCommand(setupCmd)
 	rootCmd.AddCommand(attachmentCmd)
+	rootCmd.AddCommand(provenanceCmd)
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(versionCmd)
@@ -97,6 +101,13 @@ func init() {
 }
 
 func main() {
+	if len(os.Args) > 2 && os.Args[1] == credentialexec.HelperArg {
+		if err := credentialexec.RunHelper(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) == 2 && os.Args[1] == execenv.PreparationHelperArg {
 		logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 		if err := execenv.RunPreparationHelper(os.Stdin, os.Stdout, logger); err != nil {

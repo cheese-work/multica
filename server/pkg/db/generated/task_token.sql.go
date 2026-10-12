@@ -11,10 +11,88 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const createGovernanceProposalTaskToken = `-- name: CreateGovernanceProposalTaskToken :one
+INSERT INTO task_token (
+    token_hash, task_id, agent_id, workspace_id, user_id, expires_at,
+    purpose, governance_case_id, governance_attempt_id,
+    governance_attempt_fence, governance_evidence_epoch
+)
+SELECT $1::text, attempt.task_id, attempt.candidate_id,
+       case_record.workspace_id, $2::uuid, $3::timestamptz,
+       'governance_proposal', case_record.id, attempt.id, attempt.attempt_fence,
+       case_record.evidence_epoch
+FROM governance_attempt AS attempt
+JOIN governance_case AS case_record
+  ON case_record.workspace_id = attempt.workspace_id
+ AND case_record.id = attempt.case_id
+JOIN governance_evaluation AS evaluation
+  ON evaluation.workspace_id = case_record.workspace_id
+ AND evaluation.case_id = case_record.id
+ AND evaluation.attempt_id = attempt.id
+JOIN governance_workspace_config AS control
+  ON control.workspace_id = case_record.workspace_id
+WHERE case_record.workspace_id = $4::uuid
+  AND case_record.id = $5::uuid
+  AND attempt.id = $6::uuid
+  AND attempt.task_id = $7::uuid
+  AND attempt.candidate_id = $8::uuid
+  AND attempt.kind = 'agent'
+  AND attempt.redacted_at IS NULL
+  AND attempt.terminal_at IS NULL
+  AND attempt.deadline_at > now()
+  AND case_record.current_attempt_id = attempt.id
+  AND case_record.state = 'agent_attempt'
+  AND case_record.control_epoch = control.control_epoch
+  AND evaluation.redacted_at IS NULL
+  AND control.settings->>'jev_governance_enabled' = 'true'
+RETURNING id, token_hash, task_id, agent_id, workspace_id, user_id, expires_at, created_at, purpose, governance_case_id, governance_attempt_id, governance_attempt_fence, governance_evidence_epoch
+`
+
+type CreateGovernanceProposalTaskTokenParams struct {
+	TokenHash   string             `json:"token_hash"`
+	UserID      pgtype.UUID        `json:"user_id"`
+	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	CaseID      pgtype.UUID        `json:"case_id"`
+	AttemptID   pgtype.UUID        `json:"attempt_id"`
+	TaskID      pgtype.UUID        `json:"task_id"`
+	AgentID     pgtype.UUID        `json:"agent_id"`
+}
+
+func (q *Queries) CreateGovernanceProposalTaskToken(ctx context.Context, arg CreateGovernanceProposalTaskTokenParams) (TaskToken, error) {
+	row := q.db.QueryRow(ctx, createGovernanceProposalTaskToken,
+		arg.TokenHash,
+		arg.UserID,
+		arg.ExpiresAt,
+		arg.WorkspaceID,
+		arg.CaseID,
+		arg.AttemptID,
+		arg.TaskID,
+		arg.AgentID,
+	)
+	var i TaskToken
+	err := row.Scan(
+		&i.ID,
+		&i.TokenHash,
+		&i.TaskID,
+		&i.AgentID,
+		&i.WorkspaceID,
+		&i.UserID,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.Purpose,
+		&i.GovernanceCaseID,
+		&i.GovernanceAttemptID,
+		&i.GovernanceAttemptFence,
+		&i.GovernanceEvidenceEpoch,
+	)
+	return i, err
+}
+
 const createTaskToken = `-- name: CreateTaskToken :one
 INSERT INTO task_token (token_hash, task_id, agent_id, workspace_id, user_id, expires_at, id)
 VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::uuid, gen_random_uuid()))
-RETURNING id, token_hash, task_id, agent_id, workspace_id, user_id, expires_at, created_at
+RETURNING id, token_hash, task_id, agent_id, workspace_id, user_id, expires_at, created_at, purpose, governance_case_id, governance_attempt_id, governance_attempt_fence, governance_evidence_epoch
 `
 
 type CreateTaskTokenParams struct {
@@ -47,6 +125,11 @@ func (q *Queries) CreateTaskToken(ctx context.Context, arg CreateTaskTokenParams
 		&i.UserID,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.Purpose,
+		&i.GovernanceCaseID,
+		&i.GovernanceAttemptID,
+		&i.GovernanceAttemptFence,
+		&i.GovernanceEvidenceEpoch,
 	)
 	return i, err
 }
@@ -70,7 +153,7 @@ func (q *Queries) DeleteTaskTokensByTask(ctx context.Context, taskID pgtype.UUID
 }
 
 const getTaskTokenByHash = `-- name: GetTaskTokenByHash :one
-SELECT id, token_hash, task_id, agent_id, workspace_id, user_id, expires_at, created_at FROM task_token
+SELECT id, token_hash, task_id, agent_id, workspace_id, user_id, expires_at, created_at, purpose, governance_case_id, governance_attempt_id, governance_attempt_fence, governance_evidence_epoch FROM task_token
 WHERE token_hash = $1 AND expires_at > now()
 `
 
@@ -86,6 +169,11 @@ func (q *Queries) GetTaskTokenByHash(ctx context.Context, tokenHash string) (Tas
 		&i.UserID,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.Purpose,
+		&i.GovernanceCaseID,
+		&i.GovernanceAttemptID,
+		&i.GovernanceAttemptFence,
+		&i.GovernanceEvidenceEpoch,
 	)
 	return i, err
 }

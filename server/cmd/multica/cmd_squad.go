@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"text/tabwriter"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -178,6 +180,26 @@ func runSquadUpdate(cmd *cobra.Command, args []string) error {
 	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 
+	// --expected-before-digest present -> conditional compare-and-swap on
+	// exactly `instructions`, single-field body. Absent -> the existing
+	// unconditional update path below, completely unchanged.
+	if cmd.Flags().Changed("expected-before-digest") {
+		body, err := buildSquadUpdateDigestBody(cmd)
+		if err != nil {
+			return err
+		}
+		var result map[string]any
+		if err := client.PutJSON(ctx, "/api/squads/"+args[0], body, &result); err != nil {
+			return digestWriteError("update squad", err, bodyText(body, "instructions"), bodyText(body, "expected_before_digest"))
+		}
+		return printDigestSwapResult(cmd, "squad", result)
+	}
+
+	instructions, hasInstructions, err := resolveSquadInstructions(cmd)
+	if err != nil {
+		return err
+	}
+
 	body := map[string]any{}
 	if cmd.Flags().Changed("name") {
 		v, _ := cmd.Flags().GetString("name")
@@ -187,9 +209,8 @@ func runSquadUpdate(cmd *cobra.Command, args []string) error {
 		v, _ := cmd.Flags().GetString("description")
 		body["description"] = v
 	}
-	if cmd.Flags().Changed("instructions") {
-		v, _ := cmd.Flags().GetString("instructions")
-		body["instructions"] = v
+	if hasInstructions {
+		body["instructions"] = instructions
 	}
 	if cmd.Flags().Changed("leader") {
 		v, _ := cmd.Flags().GetString("leader")
@@ -219,6 +240,95 @@ func runSquadUpdate(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("Squad updated: %s (%s)\n", strVal(result, "name"), strVal(result, "id"))
 	return nil
+}
+
+// buildSquadUpdateDigestBody assembles the digest-mode PUT payload: exactly
+// {"instructions": ..., "expected_before_digest": ...} and nothing else,
+// mirroring buildWorkspaceUpdateDigestBody. The server's
+// hermesExceptionOnlyAllowedKeys 400s on any other key, so this must not
+// reuse the general update body builder above, which can accumulate
+// name/description/leader_id/avatar_url.
+func buildSquadUpdateDigestBody(cmd *cobra.Command) (map[string]any, error) {
+	digest, _ := cmd.Flags().GetString("expected-before-digest")
+	if !isWellFormedDigestHex(digest) {
+		return nil, fmt.Errorf("--expected-before-digest must be exactly 64 hex characters (sha256), got %d", len(digest))
+	}
+
+	conflicting := []string{"name", "description", "leader", "avatar-url"}
+	for _, name := range conflicting {
+		if cmd.Flags().Changed(name) {
+			return nil, fmt.Errorf("--expected-before-digest cannot be combined with --%s; digest-mode updates exactly one field (instructions)", name)
+		}
+	}
+
+	if cmd.Flags().Changed("instructions") {
+		return nil, errInlineCandidate("instructions")
+	}
+	instructions, hasInstructions, err := resolveSquadInstructions(cmd)
+	if err != nil {
+		return nil, err
+	}
+	if !hasInstructions {
+		return nil, fmt.Errorf("--expected-before-digest requires the new instructions to be set via --instructions-stdin or --instructions-file")
+	}
+
+	return map[string]any{
+		"instructions":           instructions,
+		"expected_before_digest": digest,
+	}, nil
+}
+
+// resolveSquadInstructions keeps instruction input byte-for-byte intact.
+// The API body is JSON, so invalid UTF-8 is rejected instead of being silently
+// replaced during JSON encoding.
+func resolveSquadInstructions(cmd *cobra.Command) (string, bool, error) {
+	inline, _ := cmd.Flags().GetString("instructions")
+	fromStdin, _ := cmd.Flags().GetBool("instructions-stdin")
+	filePath, _ := cmd.Flags().GetString("instructions-file")
+	inlineSet := cmd.Flags().Changed("instructions")
+	fileSet := cmd.Flags().Changed("instructions-file")
+
+	sources := 0
+	if inlineSet {
+		sources++
+	}
+	if fromStdin {
+		sources++
+	}
+	if fileSet {
+		sources++
+	}
+	if sources > 1 {
+		return "", false, fmt.Errorf("--instructions, --instructions-stdin, and --instructions-file are mutually exclusive")
+	}
+	if inlineSet {
+		if !utf8.Valid([]byte(inline)) {
+			return "", false, fmt.Errorf("squad instructions must be valid UTF-8")
+		}
+		return inline, true, nil
+	}
+
+	var data []byte
+	var err error
+	switch {
+	case fromStdin:
+		data, err = io.ReadAll(cmd.InOrStdin())
+	case fileSet:
+		if filePath == "" {
+			return "", false, fmt.Errorf("--instructions-file: path must not be empty")
+		}
+		data, err = os.ReadFile(filePath)
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("read squad instructions: %w", err)
+	}
+	if sources == 0 {
+		return "", false, nil
+	}
+	if !utf8.Valid(data) {
+		return "", false, fmt.Errorf("squad instructions must be valid UTF-8")
+	}
+	return string(data), true, nil
 }
 
 // ── Delete ──────────────────────────────────────────────────────────────────
@@ -521,8 +631,11 @@ func init() {
 	squadUpdateCmd.Flags().String("name", "", "New name")
 	squadUpdateCmd.Flags().String("description", "", "New description")
 	squadUpdateCmd.Flags().String("instructions", "", "New instructions")
+	squadUpdateCmd.Flags().Bool("instructions-stdin", false, "Read instructions from stdin")
+	squadUpdateCmd.Flags().String("instructions-file", "", "Read instructions from a file")
 	squadUpdateCmd.Flags().String("leader", "", "New leader agent (name or ID)")
 	squadUpdateCmd.Flags().String("avatar-url", "", "New avatar URL")
+	squadUpdateCmd.Flags().String("expected-before-digest", "", "sha256 hex digest of the instructions value the caller believes is currently live; enables a conditional compare-and-swap write instead of an unconditional update. Requires instructions to be set via --instructions-stdin or --instructions-file (inline --instructions is refused so the candidate never appears in arguments), and forbids combining with any other update flag. The digest is over the RAW UTF-8 bytes of the live value (no newline stripping; a card-manifest digest that strips one terminal LF does not match a value ending in LF). A 5xx or dropped connection is reported as AMBIGUOUS and is never retried.")
 	squadUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 
 	// delete

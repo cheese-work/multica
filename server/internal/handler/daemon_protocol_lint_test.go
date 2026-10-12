@@ -11,10 +11,10 @@ import (
 // regression: a member's waiver grant posted BEFORE task.StartedAt — the
 // normal case, since that is how an agent would know to cite it — must still
 // surface for checkUnsupportedWaivers. windowComments (the since-StartedAt
-// read) does not contain the grant at all; only allComments (the full-history
-// read) does. If buildProtocolLintInput built OtherComments from
-// windowComments instead of allComments, this run's own waiver claim would
-// wrongly report CodeUnsupportedWaiver.
+// read) does not contain the grant at all; only memberComments (the
+// full-history, member-authored read) does. If buildProtocolLintInput built
+// OtherComments from windowComments instead of memberComments, this run's own
+// waiver claim would wrongly report CodeUnsupportedWaiver.
 func TestBuildProtocolLintInput_WaiverGrantedBeforeRunStartIsFound(t *testing.T) {
 	t.Parallel()
 
@@ -36,9 +36,9 @@ func TestBuildProtocolLintInput_WaiverGrantedBeforeRunStartIsFound(t *testing.T)
 	}
 
 	windowComments := []db.Comment{replyComment}
-	allComments := []db.Comment{grantComment, replyComment}
+	memberComments := []db.Comment{grantComment, replyComment}
 
-	in := buildProtocolLintInput(task, "", windowComments, allComments)
+	in := buildProtocolLintInput(task, "", windowComments, memberComments)
 
 	violations := protocollint.Check(in)
 	for _, v := range violations {
@@ -65,9 +65,9 @@ func TestBuildProtocolLintInput_UnsupportedWaiverStillCaught(t *testing.T) {
 	}
 
 	windowComments := []db.Comment{replyComment}
-	allComments := []db.Comment{replyComment}
+	memberComments := []db.Comment{replyComment}
 
-	in := buildProtocolLintInput(task, "", windowComments, allComments)
+	in := buildProtocolLintInput(task, "", windowComments, memberComments)
 
 	violations := protocollint.Check(in)
 	found := false
@@ -83,7 +83,7 @@ func TestBuildProtocolLintInput_UnsupportedWaiverStillCaught(t *testing.T) {
 
 // TestBuildProtocolLintInput_ReplyParentStaysWindowScoped ensures the CHE-551
 // widening is confined to the waiver-grant scan: PostedComments must still
-// come from windowComments only, not allComments, so a comment from a
+// come from windowComments only, not memberComments, so a comment from a
 // DIFFERENT, older run does not get misattributed as this run's own reply.
 func TestBuildProtocolLintInput_ReplyParentStaysWindowScoped(t *testing.T) {
 	t.Parallel()
@@ -108,9 +108,9 @@ func TestBuildProtocolLintInput_ReplyParentStaysWindowScoped(t *testing.T) {
 	}
 
 	windowComments := []db.Comment{validReply}
-	allComments := []db.Comment{oldOwnComment, validReply}
+	memberComments := []db.Comment{oldOwnComment, validReply}
 
-	in := buildProtocolLintInput(task, "", windowComments, allComments)
+	in := buildProtocolLintInput(task, "", windowComments, memberComments)
 
 	if len(in.PostedComments) != 1 || in.PostedComments[0].ID != uuidToString(validReply.ID) {
 		t.Fatalf("PostedComments = %v, want only the window-scoped reply (stale full-history-only comment must not leak in)", in.PostedComments)
@@ -119,7 +119,7 @@ func TestBuildProtocolLintInput_ReplyParentStaysWindowScoped(t *testing.T) {
 	violations := protocollint.Check(in)
 	for _, v := range violations {
 		if v.Code == protocollint.CodeReplyParentMismatch {
-			t.Fatalf("Check() = %v, want no %q violation: the stale comment from allComments must not be checked as a posted reply", violations, protocollint.CodeReplyParentMismatch)
+			t.Fatalf("Check() = %v, want no %q violation: the stale comment from memberComments must not be checked as a posted reply", violations, protocollint.CodeReplyParentMismatch)
 		}
 	}
 }

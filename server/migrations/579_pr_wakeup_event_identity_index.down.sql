@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS issue_wakeup_pr_event_identity_idx;

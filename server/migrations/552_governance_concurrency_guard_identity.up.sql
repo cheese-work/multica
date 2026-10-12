@@ -1,0 +1,2 @@
+CREATE UNIQUE INDEX CONCURRENTLY governance_concurrency_guard_identity_uidx
+ON governance_concurrency_guard (workspace_id, resource);

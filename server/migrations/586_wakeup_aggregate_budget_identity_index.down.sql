@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS wakeup_aggregate_budget_identity_idx;

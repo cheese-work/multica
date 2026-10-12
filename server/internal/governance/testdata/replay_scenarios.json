@@ -1,0 +1,289 @@
+{
+  "scenarios": [
+    {
+      "id": "synthetic-plain-agent-work",
+      "description": "Public-safe synthetic case with the CHE-499-no-op failure shape: a comment names a squad in prose, with an eligible candidate the deterministic router did not already cover. Historical facts are not observed here; this is a scripted fixture, not a replayed incident.",
+      "input": {
+        "state": "Synthetic issue snapshot: a completed agent turn's comment reads 'Dev team squad, please review the attached patch.'",
+        "candidates": [
+          {
+            "id": "00000000-0000-0000-0000-0000000000a1",
+            "is_squad": true,
+            "display_name": "synthetic-dev-team",
+            "description": "current issue's squad assignee, named in the comment text"
+          }
+        ],
+        "spans": [
+          {
+            "text": "Dev team squad, please review the attached patch.",
+            "start_offset": 0,
+            "end_offset": 50
+          }
+        ],
+        "mechanical_preparation_eligible": false,
+        "accountable_index": 0
+      },
+      "answers": {
+        "handoff_kind": {
+          "type": "choice",
+          "choice": "agent_work",
+          "confidence": 0.98,
+          "probabilities": {"agent_work": 0.98, "agent_preparation": 0.005, "human_decision": 0.005, "no_followup": 0.005, "unclear": 0.005}
+        },
+        "next_owner": {
+          "type": "choice",
+          "choice": "candidate_01",
+          "confidence": 0.97,
+          "probabilities": {"candidate_01": 0.97, "none": 0.02, "ambiguous": 0.01}
+        },
+        "evidence": {
+          "type": "choice",
+          "choice": "span_01",
+          "confidence": 0.99,
+          "probabilities": {"span_01": 0.99, "none": 0.005, "ambiguous": 0.005}
+        },
+        "correction": {
+          "type": "choice",
+          "choice": "mention_owner",
+          "confidence": 0.98,
+          "probabilities": {"mention_owner": 0.98, "return_mechanical_step_to_assignee": 0.01, "no_correction": 0.005, "unclear": 0.005}
+        }
+      },
+      "want": {
+        "action": "mention_owner",
+        "candidate_id": "00000000-0000-0000-0000-0000000000a1"
+      }
+    },
+    {
+      "id": "synthetic-agent-preparation-eligible",
+      "description": "Public-safe synthetic case with the CHE-576-class failure shape: a member mention routes routine agent prep work to a person ahead of a genuine human decision, and native mechanical-preparation eligibility is already established.",
+      "input": {
+        "state": "Synthetic issue snapshot: comment reads 'Cheese, please mark #41 ready and merge it once the current agent assignee finishes.'",
+        "candidates": [
+          {
+            "id": "00000000-0000-0000-0000-0000000000b1",
+            "is_squad": false,
+            "display_name": "synthetic-agent-x",
+            "description": "current issue's accountable agent assignee"
+          }
+        ],
+        "spans": [
+          {
+            "text": "please mark #41 ready and merge it once the current agent assignee finishes",
+            "start_offset": 8,
+            "end_offset": 85
+          }
+        ],
+        "mechanical_preparation_eligible": true,
+        "accountable_index": 0
+      },
+      "answers": {
+        "handoff_kind": {
+          "type": "choice",
+          "choice": "agent_preparation",
+          "confidence": 0.96,
+          "probabilities": {"agent_work": 0.02, "agent_preparation": 0.96, "human_decision": 0.01, "no_followup": 0.005, "unclear": 0.005}
+        },
+        "next_owner": {
+          "type": "choice",
+          "choice": "candidate_01",
+          "confidence": 0.97,
+          "probabilities": {"candidate_01": 0.97, "none": 0.02, "ambiguous": 0.01}
+        },
+        "evidence": {
+          "type": "choice",
+          "choice": "span_01",
+          "confidence": 0.98,
+          "probabilities": {"span_01": 0.98, "none": 0.01, "ambiguous": 0.01}
+        },
+        "correction": {
+          "type": "choice",
+          "choice": "return_mechanical_step_to_assignee",
+          "confidence": 0.96,
+          "probabilities": {"mention_owner": 0.02, "return_mechanical_step_to_assignee": 0.96, "no_correction": 0.01, "unclear": 0.01}
+        }
+      },
+      "want": {
+        "action": "return_mechanical_step_to_assignee",
+        "candidate_id": "00000000-0000-0000-0000-0000000000b1"
+      }
+    },
+    {
+      "id": "synthetic-no-followup-negative",
+      "description": "Public-safe synthetic negative: a thank-you comment with no follow-up request. Mirrors the class of comment the spec excludes from repair.",
+      "input": {
+        "state": "Synthetic issue snapshot: comment reads 'Thanks, this looks good!'",
+        "candidates": [
+          {"id": "00000000-0000-0000-0000-0000000000c1", "is_squad": false, "display_name": "synthetic-agent-y", "description": "current issue's agent assignee"}
+        ],
+        "spans": [
+          {"text": "Thanks, this looks good!", "start_offset": 0, "end_offset": 24}
+        ],
+        "mechanical_preparation_eligible": false,
+        "accountable_index": 0
+      },
+      "answers": {
+        "handoff_kind": {
+          "type": "choice",
+          "choice": "no_followup",
+          "confidence": 0.99,
+          "probabilities": {"agent_work": 0.002, "agent_preparation": 0.002, "human_decision": 0.002, "no_followup": 0.992, "unclear": 0.002}
+        },
+        "next_owner": {
+          "type": "choice",
+          "choice": "none",
+          "confidence": 0.98,
+          "probabilities": {"candidate_01": 0.01, "none": 0.98, "ambiguous": 0.01}
+        },
+        "evidence": {
+          "type": "choice",
+          "choice": "none",
+          "confidence": 0.98,
+          "probabilities": {"span_01": 0.01, "none": 0.98, "ambiguous": 0.01}
+        },
+        "correction": {
+          "type": "choice",
+          "choice": "no_correction",
+          "confidence": 0.99,
+          "probabilities": {"mention_owner": 0.003, "return_mechanical_step_to_assignee": 0.003, "no_correction": 0.99, "unclear": 0.004}
+        }
+      },
+      "want": {
+        "abstain_reason": "no_followup"
+      }
+    },
+    {
+      "id": "synthetic-capacity-negative",
+      "description": "Public-safe synthetic negative with the CHE-584-class shape: the only listed candidate is disabled/unavailable, so no eligible recipient exists and the deterministic layer (not Jev) is responsible for that exclusion. This fixture models the evaluator's abstention once code has already reduced the candidate set to none.",
+      "input": {
+        "state": "Synthetic issue snapshot: comment requests follow-up work, but code-side eligibility filtering found no available candidate.",
+        "candidates": [
+          {"id": "00000000-0000-0000-0000-0000000000d1", "is_squad": false, "display_name": "synthetic-agent-z", "description": "listed but code-side filtering marks this candidate unavailable"}
+        ],
+        "spans": [
+          {"text": "Please pick this up next.", "start_offset": 0, "end_offset": 26}
+        ],
+        "mechanical_preparation_eligible": false,
+        "accountable_index": -1
+      },
+      "answers": {
+        "handoff_kind": {
+          "type": "choice",
+          "choice": "agent_work",
+          "confidence": 0.97,
+          "probabilities": {"agent_work": 0.97, "agent_preparation": 0.01, "human_decision": 0.01, "no_followup": 0.005, "unclear": 0.005}
+        },
+        "next_owner": {
+          "type": "choice",
+          "choice": "none",
+          "confidence": 0.96,
+          "probabilities": {"candidate_01": 0.03, "none": 0.96, "ambiguous": 0.01}
+        },
+        "evidence": {
+          "type": "choice",
+          "choice": "span_01",
+          "confidence": 0.98,
+          "probabilities": {"span_01": 0.98, "none": 0.01, "ambiguous": 0.01}
+        },
+        "correction": {
+          "type": "choice",
+          "choice": "mention_owner",
+          "confidence": 0.97,
+          "probabilities": {"mention_owner": 0.97, "return_mechanical_step_to_assignee": 0.01, "no_correction": 0.01, "unclear": 0.01}
+        }
+      },
+      "want": {
+        "abstain_reason": "no_eligible_owner"
+      }
+    },
+    {
+      "id": "synthetic-dead-target-negative",
+      "description": "Public-safe synthetic negative with the CHE-659-class shape: an unassigned/archived owner yields ambiguity rather than a confident pick.",
+      "input": {
+        "state": "Synthetic issue snapshot: comment asks for follow-up, but the recorded owner is archived; two remaining candidates are equally plausible.",
+        "candidates": [
+          {"id": "00000000-0000-0000-0000-0000000000e1", "is_squad": false, "display_name": "synthetic-agent-p", "description": "one of two equally plausible candidates"},
+          {"id": "00000000-0000-0000-0000-0000000000e2", "is_squad": false, "display_name": "synthetic-agent-q", "description": "one of two equally plausible candidates"}
+        ],
+        "spans": [
+          {"text": "Someone should pick this up.", "start_offset": 0, "end_offset": 29}
+        ],
+        "mechanical_preparation_eligible": false,
+        "accountable_index": -1
+      },
+      "answers": {
+        "handoff_kind": {
+          "type": "choice",
+          "choice": "agent_work",
+          "confidence": 0.96,
+          "probabilities": {"agent_work": 0.96, "agent_preparation": 0.01, "human_decision": 0.01, "no_followup": 0.01, "unclear": 0.01}
+        },
+        "next_owner": {
+          "type": "choice",
+          "choice": "ambiguous",
+          "confidence": 0.95,
+          "probabilities": {"candidate_01": 0.03, "candidate_02": 0.02, "none": 0, "ambiguous": 0.95}
+        },
+        "evidence": {
+          "type": "choice",
+          "choice": "span_01",
+          "confidence": 0.97,
+          "probabilities": {"span_01": 0.97, "none": 0.02, "ambiguous": 0.01}
+        },
+        "correction": {
+          "type": "choice",
+          "choice": "mention_owner",
+          "confidence": 0.97,
+          "probabilities": {"mention_owner": 0.97, "return_mechanical_step_to_assignee": 0.01, "no_correction": 0.01, "unclear": 0.01}
+        }
+      },
+      "want": {
+        "abstain_reason": "ambiguous_owner"
+      }
+    },
+    {
+      "id": "synthetic-low-confidence-negative",
+      "description": "Public-safe synthetic negative demonstrating the 0.95 confidence floor: an otherwise clean agent_work answer whose confidence sits just under the threshold must abstain rather than dispatch.",
+      "input": {
+        "state": "Synthetic issue snapshot: an agent_work comment where the model's own confidence is marginal.",
+        "candidates": [
+          {"id": "00000000-0000-0000-0000-0000000000f1", "is_squad": false, "display_name": "synthetic-agent-m", "description": "current issue's agent assignee"}
+        ],
+        "spans": [
+          {"text": "Could someone take a look at this next?", "start_offset": 0, "end_offset": 40}
+        ],
+        "mechanical_preparation_eligible": false,
+        "accountable_index": 0
+      },
+      "answers": {
+        "handoff_kind": {
+          "type": "choice",
+          "choice": "agent_work",
+          "confidence": 0.94,
+          "probabilities": {"agent_work": 0.94, "agent_preparation": 0.02, "human_decision": 0.02, "no_followup": 0.01, "unclear": 0.01}
+        },
+        "next_owner": {
+          "type": "choice",
+          "choice": "candidate_01",
+          "confidence": 0.97,
+          "probabilities": {"candidate_01": 0.97, "none": 0.02, "ambiguous": 0.01}
+        },
+        "evidence": {
+          "type": "choice",
+          "choice": "span_01",
+          "confidence": 0.98,
+          "probabilities": {"span_01": 0.98, "none": 0.01, "ambiguous": 0.01}
+        },
+        "correction": {
+          "type": "choice",
+          "choice": "mention_owner",
+          "confidence": 0.97,
+          "probabilities": {"mention_owner": 0.97, "return_mechanical_step_to_assignee": 0.01, "no_correction": 0.01, "unclear": 0.01}
+        }
+      },
+      "want": {
+        "abstain_reason": "low_confidence"
+      }
+    }
+  ]
+}

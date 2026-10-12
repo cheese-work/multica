@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS governance_budget_reservation_receipt_uidx;

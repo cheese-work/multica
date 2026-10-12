@@ -129,6 +129,28 @@ check_service_args() {
   done
 }
 
+if [ "$1" = "login" ]; then
+  # login ghcr.io -u token --password-stdin — deploy.sh's GHCR_PULL_TOKEN
+  # gate (CHE-549). Consume stdin so the real password-stdin protocol is
+  # exercised. Check the forced-failure flag BEFORE logging the password: a
+  # real failed login is exactly the case where the caller must not be able
+  # to prove the registry ever saw the token, so a passing "login failed"
+  # scenario must not find its password in this log either.
+  password="$(cat)"
+  if [ -f "$control_dir/fail-ghcr-login" ]; then
+    printf 'login %s <rejected>\n' "$2" >>"$control_dir/registry-auth.log"
+    echo "mock docker: forced failure (fail-ghcr-login)" >&2
+    exit 1
+  fi
+  printf 'login %s password=%s\n' "$2" "$password" >>"$control_dir/registry-auth.log"
+  exit 0
+fi
+
+if [ "$1" = "logout" ]; then
+  printf 'logout %s\n' "$2" >>"$control_dir/registry-auth.log"
+  exit 0
+fi
+
 if [ "$1" = "compose" ]; then
   shift
   # shift off "-f docker-compose.selfhost.yml"
@@ -708,5 +730,206 @@ tuple_json="$(cat "$tuple")"
 expect_not_contains "$tuple_json" "0000000000000000000000000000000000000000000000000000000000000" deployed-tuple-is-admissible
 expect_contains "$tuple_json" "$backend_digest" deployed-tuple-is-admissible
 expect_contains "$tuple_json" "\"application_sha\": \"$source_sha\"" deployed-tuple-is-admissible
+
+
+# ---------------------------------------------------------------------------
+# Scenario 12 (CHE-549): GHCR_PULL_TOKEN set -> deploy.sh logs in to
+# ghcr.io with the real token before pulling, and logs out on the normal
+# success exit path.
+# ---------------------------------------------------------------------------
+state_dir="$(fresh_scenario_dir ghcr-login-happy-path)"
+control_dir="$state_dir/control"
+mkdir -p "$control_dir"
+touch "$control_dir/inspect-resolves"
+export GHCR_PULL_TOKEN=super-secret-pat
+output="$(run_deploy "$state_dir" 2>&1)"
+status=$?
+unset GHCR_PULL_TOKEN
+expect_exit 0 "$status" ghcr-login-happy-path
+expect_contains "$output" "logging in to ghcr.io" ghcr-login-happy-path
+
+auth_log="$(cat "$control_dir/registry-auth.log")"
+expect_contains "$auth_log" "login ghcr.io password=super-secret-pat" ghcr-login-happy-path
+expect_contains "$auth_log" "logout ghcr.io" ghcr-login-happy-path
+expect_not_contains "$output" "super-secret-pat" ghcr-login-happy-path
+
+# ---------------------------------------------------------------------------
+# Scenario 13 (CHE-549): GHCR login itself fails -> treated as a deploy
+# failure (rollback path), and the EXIT trap still logs out even though the
+# failure happened before the pull step ever ran.
+# ---------------------------------------------------------------------------
+state_dir="$(fresh_scenario_dir ghcr-login-fails)"
+control_dir="$state_dir/control"
+mkdir -p "$control_dir"
+touch "$control_dir/inspect-resolves"
+touch "$control_dir/fail-ghcr-login"
+export GHCR_PULL_TOKEN=super-secret-pat
+set +e
+output="$(run_deploy "$state_dir" 2>&1)"
+status=$?
+set -e
+unset GHCR_PULL_TOKEN
+expect_exit 1 "$status" ghcr-login-fails
+expect_contains "$output" "ghcr.io login failed" ghcr-login-fails
+expect_contains "$output" "no previous tuple to roll back to" ghcr-login-fails
+
+auth_log="$(cat "$control_dir/registry-auth.log")"
+expect_not_contains "$auth_log" "login ghcr.io password=" ghcr-login-fails
+expect_contains "$auth_log" "logout ghcr.io" ghcr-login-fails
+
+# ---------------------------------------------------------------------------
+# Deployment tuple state and A/B cutover state are separate durable roots.
+# The automatic release-candidate path must use the explicit cutover root for
+# active_colour instead of assuming C00_STATE_DIR contains both contracts.
+workflow_text="$(cat "$root_dir/.github/workflows/cd-deploy.yml")"
+expect_contains "$workflow_text" 'C00_CUTOVER_STATE_DIR: ${{ secrets.C00_CUTOVER_STATE_DIR }}' workflow-active-colour-path
+expect_contains "$workflow_text" '${C00_CUTOVER_STATE_DIR%/}/cutover-state.json' workflow-active-colour-path
+expect_not_contains "$workflow_text" '${C00_STATE_DIR%/}/cutover-state.json' workflow-active-colour-path
+expect_not_contains "$workflow_text" '/deploy/cd/router/state/active.json' workflow-active-colour-path
+
+# D2 must invoke the installed A/B controller, not the legacy single-slot
+# controller. Base backend/frontend services stay stopped because cutover.sh
+# refuses while either is running and only starts colour-suffixed services.
+expect_contains "$workflow_text" 'deploy/cd/cutover.sh' workflow-ab-deploy-route
+expect_contains "$workflow_text" 'C00_CUTOVER_STATE_DIR: ${{ secrets.C00_CUTOVER_STATE_DIR }}' workflow-ab-deploy-route
+expect_contains "$workflow_text" "cutover-controller/evidence/release-packet.json" workflow-ab-deploy-route
+expect_contains "$workflow_text" 'capture-release-state.sh' workflow-release-packet
+expect_contains "$workflow_text" 'cp "$MANIFEST_PATH" cutover-input/manifest.json' workflow-release-packet
+expect_contains "$workflow_text" 'cp "$BASELINE_TUPLE_PATH" cutover-input/baseline-tuple.json' workflow-release-packet
+expect_contains "$workflow_text" 'path: cutover-input' workflow-release-packet
+expect_contains "$workflow_text" 'build-cutover-bundle.sh' workflow-release-packet
+expect_contains "$workflow_text" 'verify-cutover-bundle.sh' workflow-release-packet
+expect_contains "$workflow_text" 'sha256sum -c cutover-controller.tar.sha256' workflow-release-packet
+expect_contains "$workflow_text" 'router_state_dir="${C00_ROUTER_STATE_DIR%/}"' workflow-router-state
+expect_contains "$workflow_text" 'C00_ROUTER_STATE_DIR: ${{ secrets.C00_ROUTER_STATE_DIR }}' workflow-router-state
+expect_not_contains "$workflow_text" 'router_state_dir="${C00_COMPOSE_DIR%/}/deploy/cd/router/state"' workflow-router-state
+expect_contains "$workflow_text" 'render-cutover-remote-script.sh' workflow-router-state
+remote_script="$(GHCR_PULL_TOKEN=test-token bash deploy/cd/render-cutover-remote-script.sh --router-state-dir '/durable router/state' -- bash -c 'printf %s "$ROUTER_STATE_DIR"')"
+expect_contains "$remote_script" 'export ROUTER_STATE_DIR=' workflow-router-state
+output="$(env -i PATH="$PATH" bash -s <<<"$remote_script")"
+expect_contains "$output" '/durable router/state' workflow-router-state
+
+# CHE-768: docker-compose.router.yml's state bind mount is wherever the
+# router container was first adopted on the host, a one-time host-side
+# choice, NOT necessarily anywhere under C00_COMPOSE_DIR. Deriving
+# router_state_dir from C00_COMPOSE_DIR silently pointed at a directory with
+# no active.json while the router's real state (with a real active.json)
+# sat elsewhere entirely (CD run 36083685740) -- `cutover`'s own drain
+# refused, not because of a missing generation, but because it was looking
+# in the wrong directory. Prove C00_ROUTER_STATE_DIR is read as its own,
+# independent value: point it somewhere that shares no path segment with
+# C00_COMPOSE_DIR, and confirm the rendered remote script's ROUTER_STATE_DIR
+# is exactly that value, never a compose-dir-derived guess.
+mismatch_dir="$(fresh_scenario_dir router-state-mismatch)"
+compose_checkout_dir="$mismatch_dir/checkout/compose-dir-guess/deploy/cd/router/state"
+real_mounted_dir="$mismatch_dir/dotmultica/ab/deploy/cd/router/state"
+mkdir -p "$compose_checkout_dir" "$real_mounted_dir"
+# Only the real mounted directory has an active.json -- the compose-dir
+# guess is a plausible-looking but empty directory, exactly what a
+# derived-not-configured path produced on C00.
+printf '{"backend_port":18091,"frontend_port":13001}\n' >"$real_mounted_dir/active.json"
+[ ! -e "$compose_checkout_dir/active.json" ] || { echo "scenario workflow-router-state-mismatch: fixture setup is wrong -- the compose-dir guess must NOT have active.json" >&2; exit 1; }
+mismatch_remote_script="$(GHCR_PULL_TOKEN=test-token bash deploy/cd/render-cutover-remote-script.sh \
+  --router-state-dir "$real_mounted_dir" -- bash -c 'test -f "$ROUTER_STATE_DIR/active.json" && printf %s "$ROUTER_STATE_DIR"')"
+mismatch_output="$(env -i PATH="$PATH" bash -s <<<"$mismatch_remote_script")"
+expect_contains "$mismatch_output" "$real_mounted_dir" workflow-router-state-mismatch
+# The old formula would have produced $compose_checkout_dir here; assert the
+# rendered script never contains it, so a regression back to deriving from
+# C00_COMPOSE_DIR fails this test even if the happy-path check above did not.
+expect_not_contains "$mismatch_remote_script" "$compose_checkout_dir" workflow-router-state-mismatch
+
+# CHE-768 review: C00_ROUTER_STATE_DIR crosses the SSH boundary through
+# render-cutover-remote-script.sh's `printf '%q'`, which escapes a leading
+# `~` into a literal backslash-tilde rather than letting the remote shell
+# expand it. A secret provisioned as the shorthand "~/.multica/..." this
+# fix's own first draft documented would silently resolve to a directory
+# that can never exist -- the same missing-active.json symptom all over
+# again, just moved one secret over. The workflow's own `run:` step now
+# validates C00_ROUTER_STATE_DIR is an absolute path and refuses anything
+# else before ever contacting SSH; extract and execute that exact guard
+# (not a reimplementation of it) against both the documented tilde form and
+# a real absolute path.
+path_guard_lines="$(awk '
+  /case "\$C00_ROUTER_STATE_DIR" in/ { capture=1 }
+  capture { print }
+  capture && /esac/ { exit }
+' "$root_dir/.github/workflows/cd-deploy.yml")"
+[ -n "$path_guard_lines" ] || { echo "scenario workflow-router-state-absolute: could not extract the C00_ROUTER_STATE_DIR path guard from cd-deploy.yml" >&2; exit 1; }
+
+run_path_guard() {
+  C00_ROUTER_STATE_DIR="$1" bash -c "set -euo pipefail; $path_guard_lines" 2>&1
+}
+
+tilde_guard_exit=0
+tilde_guard_output="$(run_path_guard '~/.multica/ab/deploy/cd/router/state')" || tilde_guard_exit=$?
+if [ "$tilde_guard_exit" -eq 0 ]; then
+  echo "scenario workflow-router-state-absolute: the documented tilde form must be rejected before SSH, but the guard accepted it" >&2
+  exit 1
+fi
+expect_contains "$tilde_guard_output" "must be an absolute path" workflow-router-state-absolute
+
+absolute_guard_exit=0
+absolute_guard_output="$(run_path_guard '/home/deploy/.multica/ab/deploy/cd/router/state')" || absolute_guard_exit=$?
+if [ "$absolute_guard_exit" -ne 0 ]; then
+  echo "scenario workflow-router-state-absolute: a real absolute path must pass the guard, got exit $absolute_guard_exit: $absolute_guard_output" >&2
+  exit 1
+fi
+
+expect_not_contains "$workflow_text" 'local_packet="cd-deploy-manifest/release-packet.json"' workflow-release-packet
+expect_contains "$workflow_text" 'CUTOVER_DATABASE_URL=' workflow-ab-deploy-route
+expect_not_contains "$workflow_text" "bash '%s/deploy.sh' --manifest" workflow-ab-deploy-route
+expect_not_contains "$workflow_text" 'deploy/cd/deploy.sh deploy/cd/deploy-lib.sh' workflow-ab-deploy-route
+expect_not_contains "$workflow_text" 'compose up -d --no-deps backend frontend' workflow-ab-deploy-route
+
+# ---------------------------------------------------------------------------
+# The `-- bash -c "..."` cutover command is one big double-quoted string
+# nested inside the workflow's own `run: |` block; `expect_contains` above
+# only proves substrings are present, not that the nested string is still
+# balanced quote-for-quote. A 2026-09-24 edit dropped `-multica}` out of
+# `${POSTGRES_USER:-multica}`, leaving `${POSTGRES_USER:***@postgres` — one
+# unclosed `${` that swallowed the rest of the line, including the intended
+# closing `\"`, and produced `bash: -c: line 1: unexpected EOF while looking
+# for matching '"'` only once C00's SSH session tried to parse it (CD run
+# 35978855184). Nothing that greps the YAML text catches this: the outer
+# `-c "<whole string>"` argument is itself well-formed either way. Reproduce
+# the actual failure by rendering the real line through
+# render-cutover-remote-script.sh (the same renderer the workflow calls) and
+# executing it, exactly like the SSH session does.
+remote_cmd_line="$(grep -F -f <(printf '%s' '-- bash -c "cd '"'"'$remote_dir'"'"'') "$root_dir/.github/workflows/cd-deploy.yml")"
+remote_cmd_inner="${remote_cmd_line#*-- bash -c \"}"
+remote_cmd_inner="${remote_cmd_inner%\\}"
+remote_cmd_inner="${remote_cmd_inner% }"
+remote_cmd_inner="${remote_cmd_inner%\"}"
+[ -n "$remote_cmd_inner" ] || { echo "scenario workflow-cutover-quoting: could not extract the -- bash -c command from cd-deploy.yml" >&2; exit 1; }
+
+cutover_quoting_dir="$(fresh_scenario_dir cutover-quoting)"
+remote_dir="$cutover_quoting_dir/remote"
+C00_COMPOSE_DIR="$cutover_quoting_dir/compose"
+C00_CUTOVER_STATE_DIR="$cutover_quoting_dir/state"
+router_state_dir="$cutover_quoting_dir/router"
+mkdir -p "$remote_dir" "$C00_COMPOSE_DIR" "$router_state_dir"
+
+# Expand the workflow's own shell variables the same way bash's double-quote
+# interpolation does when the job runs — this is what actually reaches
+# render-cutover-remote-script.sh as its command argument, not a second
+# re-parse of literal text.
+expanded_remote_cmd="$(eval "printf '%s' \"$remote_cmd_inner\"")"
+rendered_cutover_script="$(GHCR_PULL_TOKEN=test-token bash deploy/cd/render-cutover-remote-script.sh --router-state-dir "$router_state_dir" -- bash -c "$expanded_remote_cmd")"
+printf '%s' "$rendered_cutover_script" >"$cutover_quoting_dir/rendered.sh"
+
+set +e
+cutover_quoting_output="$(bash "$cutover_quoting_dir/rendered.sh" 2>&1)"
+cutover_quoting_status=$?
+set -e
+
+# A quoting break fails immediately with bash's own parse error, before any
+# real command in the string ever runs. A sound command instead reaches and
+# fails on the first real, expected precondition (the sha256 fixture this
+# scenario deliberately never creates) — proving the nested `-c "..."`
+# argument parsed as one well-formed command.
+expect_not_contains "$cutover_quoting_output" "unexpected EOF" workflow-cutover-quoting
+expect_not_contains "$cutover_quoting_output" "unexpected end of file" workflow-cutover-quoting
+expect_exit 1 "$cutover_quoting_status" workflow-cutover-quoting
+expect_contains "$cutover_quoting_output" "cutover-controller.tar.sha256" workflow-cutover-quoting
 
 echo "deploy.sh control-flow fixtures passed"

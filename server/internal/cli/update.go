@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +21,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/multica-ai/multica/server/pkg/buildinfo"
 
 	"github.com/multica-ai/multica/server/internal/selfexec"
 )
@@ -30,7 +33,34 @@ import (
 // changes one place.
 const ChecksumManifestName = "checksums.txt"
 
+const defaultReleaseAPIBaseURL = "https://api.github.com"
+
+// MULTICA_RELEASE_API_BASE_URL points at a GitHub Releases API-compatible
+// mirror. MULTICA_RELEASE_DOWNLOAD_BASE_URL points at an artifact mirror
+// serving /<tag>/<asset-name>; when unset, the release-provided URLs win.
+const releaseAPIBaseURLEnv = "MULTICA_RELEASE_API_BASE_URL"
+const releaseDownloadBaseURLEnv = "MULTICA_RELEASE_DOWNLOAD_BASE_URL"
+
 const DefaultUpdateDownloadTimeout = 120 * time.Second
+
+func releaseAPIBaseURL() string {
+	if value := strings.TrimRight(strings.TrimSpace(os.Getenv(releaseAPIBaseURLEnv)), "/"); value != "" {
+		return value
+	}
+	return defaultReleaseAPIBaseURL
+}
+
+func releaseDownloadBaseURL() string {
+	return strings.TrimRight(strings.TrimSpace(os.Getenv(releaseDownloadBaseURLEnv)), "/")
+}
+
+func releaseAssetDownloadURL(assetName, targetVersion, fallback string) string {
+	base := releaseDownloadBaseURL()
+	if base == "" {
+		return fallback
+	}
+	return fmt.Sprintf("%s/%s/%s", base, url.PathEscape(normalizeReleaseTag(targetVersion)), url.PathEscape(assetName))
+}
 
 // GitHubRelease is the subset of the GitHub releases API response we need.
 type GitHubRelease struct {
@@ -45,7 +75,8 @@ type GitHubRelease struct {
 // uses this to skip self-update for source builds, where downgrading to a
 // public release would clobber unreleased changes.
 func IsReleaseVersion(v string) bool {
-	s := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(v), "v"))
+	plainVersion, _ := buildinfo.Split(v)
+	s := strings.TrimSpace(strings.TrimPrefix(plainVersion, "v"))
 	if s == "" {
 		return false
 	}
@@ -95,7 +126,8 @@ func IsNewerVersion(latest, current string) bool {
 // downgrade a developer build to a public release just because the
 // dev-describe patch happened to look numeric after trimming.
 func parseReleaseVersion(v string) ([3]int, bool) {
-	s := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(v), "v"))
+	plainVersion, _ := buildinfo.Split(v)
+	s := strings.TrimSpace(strings.TrimPrefix(plainVersion, "v"))
 	if s == "" {
 		return [3]int{}, false
 	}
@@ -226,7 +258,7 @@ func verifyAssetSHA256(data []byte, expectedHex, assetName string) error {
 
 func fetchReleaseByTag(tag string) (*GitHubRelease, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
-	req, err := http.NewRequest(http.MethodGet, "https://api.github.com/repos/multica-ai/multica/releases/tags/"+tag, nil)
+	req, err := http.NewRequest(http.MethodGet, releaseAPIBaseURL()+"/repos/multica-ai/multica/releases/tags/"+url.PathEscape(tag), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -239,7 +271,7 @@ func fetchReleaseByTag(tag string) (*GitHubRelease, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
+		return nil, fmt.Errorf("release API returned %d", resp.StatusCode)
 	}
 
 	var release GitHubRelease
@@ -252,7 +284,7 @@ func fetchReleaseByTag(tag string) (*GitHubRelease, error) {
 // FetchLatestRelease fetches the latest release tag from the multica GitHub repo.
 func FetchLatestRelease() (*GitHubRelease, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
-	req, err := http.NewRequest(http.MethodGet, "https://api.github.com/repos/multica-ai/multica/releases/latest", nil)
+	req, err := http.NewRequest(http.MethodGet, releaseAPIBaseURL()+"/repos/multica-ai/multica/releases/latest", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -265,7 +297,7 @@ func FetchLatestRelease() (*GitHubRelease, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
+		return nil, fmt.Errorf("release API returned %d", resp.StatusCode)
 	}
 
 	var release GitHubRelease
@@ -392,14 +424,15 @@ func UpdateViaDownloadWithTimeout(targetVersion string, downloadTimeout time.Dur
 	if err != nil {
 		return "", err
 	}
-	downloadURL := asset.BrowserDownloadURL
+	downloadURL := releaseAssetDownloadURL(asset.Name, tag, asset.BrowserDownloadURL)
 	assetName := asset.Name
 
 	// Pull the checksum manifest first so a release that is half-published
 	// (archives uploaded but checksums.txt not yet) fails before we eat the
 	// archive's bandwidth.
 	timeout := updateDownloadTimeoutOrDefault(downloadTimeout)
-	manifestData, err := fetchURLBytes(manifestAsset.BrowserDownloadURL, timeout)
+	manifestURL := releaseAssetDownloadURL(manifestAsset.Name, tag, manifestAsset.BrowserDownloadURL)
+	manifestData, err := fetchURLBytes(manifestURL, timeout)
 	if err != nil {
 		return "", fmt.Errorf("download checksum manifest: %w", err)
 	}
@@ -442,18 +475,29 @@ func UpdateViaDownloadWithTimeout(targetVersion string, downloadTimeout time.Dur
 		return "", fmt.Errorf("extract binary: %w", err)
 	}
 
+	if err := installBinary(exePath, binaryData); err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("Downloaded %s and replaced %s", assetName, exePath), nil
+}
+
+// installBinary atomically replaces exePath with data: temp file in the same
+// directory (so the rename stays on one filesystem), original permissions,
+// then rename. A failure at any step leaves the installed binary untouched.
+func installBinary(exePath string, data []byte) error {
 	// Atomic replace: write to temp file, then rename over the original.
 	dir := filepath.Dir(exePath)
 	tmpFile, err := os.CreateTemp(dir, "multica-update-*")
 	if err != nil {
-		return "", fmt.Errorf("create temp file: %w", err)
+		return fmt.Errorf("create temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
 
-	if _, err := tmpFile.Write(binaryData); err != nil {
+	if _, err := tmpFile.Write(data); err != nil {
 		tmpFile.Close()
 		os.Remove(tmpPath)
-		return "", fmt.Errorf("write temp file: %w", err)
+		return fmt.Errorf("write temp file: %w", err)
 	}
 	tmpFile.Close()
 
@@ -461,21 +505,21 @@ func UpdateViaDownloadWithTimeout(targetVersion string, downloadTimeout time.Dur
 	info, err := os.Stat(exePath)
 	if err != nil {
 		os.Remove(tmpPath)
-		return "", fmt.Errorf("stat original binary: %w", err)
+		return fmt.Errorf("stat original binary: %w", err)
 	}
 	if err := os.Chmod(tmpPath, info.Mode()); err != nil {
 		os.Remove(tmpPath)
-		return "", fmt.Errorf("chmod temp file: %w", err)
+		return fmt.Errorf("chmod temp file: %w", err)
 	}
 
 	// Replace the original binary. On Windows this moves the running executable
 	// aside first; on Unix a plain rename over the running inode is fine.
 	if err := replaceBinary(tmpPath, exePath); err != nil {
 		os.Remove(tmpPath)
-		return "", fmt.Errorf("replace binary: %w", err)
+		return fmt.Errorf("replace binary: %w", err)
 	}
 
-	return fmt.Sprintf("Downloaded %s and replaced %s", assetName, exePath), nil
+	return nil
 }
 
 // extractBinaryFromTarGz reads a .tar.gz stream and returns the contents of the

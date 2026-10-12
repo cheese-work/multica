@@ -57,6 +57,43 @@ export interface GitHubInstallation {
   connected_by?: string;
 }
 
+/** Why a PR is on an issue: linked by hand, or matched in its title / branch.
+ * "auto" is any other automatic link, such as "Closes MUL-1" in the body. */
+export type PullRequestLinkSource = "manual" | "title" | "branch" | "auto";
+
+/** What "every linked PR merged → move the issue to the workspace's target
+ * status" will do for one issue. The server computes it; the issue page only
+ * renders it. Older backends may still send `no_close_intent`. */
+export type PRAutoCompleteState =
+  | "none"
+  | "workspace_disabled"
+  | "issue_disabled"
+  | "terminal"
+  | "triage"
+  | "at_target"
+  | "waiting"
+  | "not_merged"
+  | "all_merged";
+
+export interface PRAutoComplete {
+  /** Unknown future states are kept as strings; the UI renders nothing for them. */
+  state: PRAutoCompleteState | (string & {});
+  /** PRs the state is about: still open for `waiting`, closed without merging
+   * for `not_merged`, every linked PR for `all_merged`. */
+  pull_request_ids: string[];
+  issue_disabled: boolean;
+  workspace_enabled: boolean;
+  /** Status key a merge moves the issue to, or "none". Older backends omit
+   * it; they only ever moved issues to Done. */
+  target_status?: string;
+}
+
+export interface IssuePullRequestsResponse {
+  pull_requests: GitHubPullRequest[];
+  /** Absent on older backends. */
+  auto_complete: PRAutoComplete | null;
+}
+
 export interface GitHubPullRequest {
   id: string;
   /** Source provider. Older GitHub-only backends omit it. */
@@ -75,6 +112,8 @@ export interface GitHubPullRequest {
   closed_at: string | null;
   pr_created_at: string;
   pr_updated_at: string;
+  /** Only set on an issue's PR list. Older backends omit it. */
+  link_source?: PullRequestLinkSource;
   /** Conflict verdict from the GitHub API snapshot. Answers ONLY
    * "is there a conflict"; older backends omit it. */
   mergeable?: GitHubPullRequestMergeable | null;
@@ -115,34 +154,6 @@ export interface GitHubPullRequest {
   additions?: number;
   deletions?: number;
   changed_files?: number;
-  /** Merge-announcement delivery diagnostics for this PR on this issue
-   * (CHE-374/CHE-384). Absent when no announcement was ever enqueued (PR
-   * never merged while linked, or merged before the feature existed).
-   * Older backends omit it entirely. */
-  merge_announcement?: GitHubMergeAnnouncement | null;
-}
-
-/** Sanitized delivery diagnostics for one merge-announcement record. Never
- * carries more than a message-only sanitized error — see the backend's
- * retryOrFail — and never a lease token or other internal delivery handle. */
-export interface GitHubMergeAnnouncement {
-  status: "pending" | "delivered" | "failed" | "skipped";
-  /** GitHub delivery id that first enqueued this record, when known. Audit
-   * trail only — not the dedup identity. */
-  delivery_guid?: string | null;
-  attempt_count: number;
-  /** Sanitized reason from the most recent attempt. Present for `failed` /
-   * `skipped`, and for a `pending` record that has already retried once. */
-  last_error?: string | null;
-  /** When a `pending` record becomes claimable again. Absent once the record
-   * leaves `pending`. */
-  next_retry_at?: string | null;
-  /** When the announcement comment was actually created. Present only once
-   * `status` is `delivered`. */
-  sent_at?: string | null;
-  /** The system comment id this announcement produced. Present only once
-   * `status` is `delivered`. */
-  comment_id?: string | null;
 }
 
 export interface ListGitHubInstallationsResponse {

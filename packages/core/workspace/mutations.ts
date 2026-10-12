@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { forgetLocalSearchIndex } from "../search-index/instance";
 import type { Workspace } from "../types";
 import { api } from "../api";
 import { defaultStorage } from "../platform/storage";
@@ -44,6 +45,9 @@ export function useLeaveWorkspace() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (workspaceId: string) => api.leaveWorkspace(workspaceId),
+    onSuccess: (_data, workspaceId) => {
+      void forgetLocalSearchIndex(workspaceId);
+    },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: workspaceKeys.list() });
     },
@@ -74,8 +78,9 @@ export function useDeleteWorkspace() {
     // `${key}:${slug}` namespace — a failed DELETE means the workspace still
     // exists and its drafts/view state must survive. The realtime handler
     // skips self-initiated deletes, so cleanup has to happen here.
-    onSuccess: (_data, _workspaceId, ctx) => {
+    onSuccess: (_data, workspaceId, ctx) => {
       if (ctx?.slug) clearWorkspaceStorage(defaultStorage, ctx.slug);
+      void forgetLocalSearchIndex(workspaceId);
     },
     // The workspace still exists after a failed DELETE, so a later external
     // delete of the same ID must be handled by the realtime handler again.
@@ -162,4 +167,25 @@ export function useSetAgentMcpServerEnabled(agentId: string) {
 export function useRemoveAgentMcpServer(agentId: string) {
   return useAgentMcpMutation(agentId, (serverId: string) =>
     api.removeAgentMcpServer(agentId, serverId));
+}
+
+/**
+ * CHE-766: updates the workspace export privacy policy. No optimistic write —
+ * this gates what an export can read and how long its audit trail survives,
+ * so the panel must show the server's confirmed value, not a guess. On
+ * success the response is seeded directly into the query cache (the PATCH
+ * response is the authoritative new row); on any failure the cache is left
+ * untouched and the caller surfaces the thrown ApiError.
+ */
+export function useUpdateWorkspaceExportPrivacy(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: {
+      redaction_mode?: string;
+      manifest_retention_days?: number;
+    }) => api.updateWorkspaceExportPrivacy(wsId, data),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(workspaceKeys.exportPrivacy(wsId), updated);
+    },
+  });
 }

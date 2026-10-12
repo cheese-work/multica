@@ -1,7 +1,8 @@
 -- name: ListWorkspaces :many
 SELECT w.id, w.name, w.slug, w.description, w.settings,
        w.created_at, w.updated_at, w.context, w.repos,
-       w.issue_prefix, w.issue_counter, w.avatar_url, w.attribution_fail_closed
+       w.issue_prefix, w.issue_counter, w.avatar_url, w.attribution_fail_closed,
+       w.export_redaction_mode, w.export_manifest_retention_days
 FROM member m
 JOIN workspace w ON w.id = m.workspace_id
 WHERE m.user_id = $1
@@ -38,6 +39,36 @@ WHERE slug = $1;
 -- (MUL-4302 §3.5), avoiding a full workspace-row fetch.
 SELECT attribution_fail_closed FROM workspace
 WHERE id = $1;
+
+-- name: GetWorkspaceExportPrivacy :one
+-- CHE-766: lean read of the export privacy policy for the CHE-755 export
+-- handler's fail-closed mode check, avoiding a full workspace-row fetch.
+SELECT export_redaction_mode, export_manifest_retention_days FROM workspace
+WHERE id = $1;
+
+-- name: GetWorkspaceExportPrivacyForUpdate :one
+-- CHE-766: same lean projection as GetWorkspaceExportPrivacy, but FOR UPDATE
+-- so UpdateWorkspaceExportPrivacy's read-modify-write is atomic against a
+-- second concurrent PATCH: two admins racing a partial update (one setting
+-- only redaction_mode, the other only manifest_retention_days) cannot each
+-- read the pre-update row and clobber the other's field. Call inside the same
+-- transaction as the subsequent UpdateWorkspaceExportPrivacy.
+SELECT export_redaction_mode, export_manifest_retention_days FROM workspace
+WHERE id = $1
+FOR UPDATE;
+
+-- name: UpdateWorkspaceExportPrivacy :one
+-- CHE-766: dedicated, validated write path for the export privacy policy.
+-- Deliberately separate from UpdateWorkspace's generic settings blob: mode
+-- and retention_days are security-relevant and must go through the
+-- handler's own CHECK-backed validation and owner/admin ACL, never through
+-- an unvalidated settings overwrite.
+UPDATE workspace SET
+    export_redaction_mode = $2,
+    export_manifest_retention_days = $3,
+    updated_at = now()
+WHERE id = $1
+RETURNING export_redaction_mode, export_manifest_retention_days;
 
 -- name: CreateWorkspace :one
 INSERT INTO workspace (name, slug, description, context, issue_prefix)
@@ -90,6 +121,13 @@ SELECT id FROM workspace WHERE id = $1 FOR UPDATE;
 -- implicit FOR KEY SHARE, which would vanish if that FK is dropped.
 SELECT id FROM workspace WHERE id = $1 FOR KEY SHARE;
 
+-- name: LockWorkspaceForJevCredentialWrite :one
+-- Credential writes and key rotation must take the workspace row lock in their
+-- own transaction. It conflicts with DeleteWorkspace's FOR UPDATE lock: a
+-- write that wins commits before teardown and is swept, while a write that
+-- loses sees no workspace row after teardown commits and fails closed.
+SELECT id FROM workspace WHERE id = $1 FOR KEY SHARE;
+
 -- name: DeleteWorkspace :exec
 -- The channel_* tables (MUL-3515 §4), resource-label junctions, custom issue
 -- property definitions, and quick actions carry NO FK to workspace, so — unlike the CASCADE-backed
@@ -119,6 +157,9 @@ cleared_channel_task_deliveries AS (
 ),
 cleared_channel_outbound_messages AS (
     DELETE FROM channel_outbound_message WHERE installation_id IN (SELECT id FROM ws_installations)
+),
+cleared_channel_reply_deliveries AS (
+    DELETE FROM channel_reply_delivery WHERE installation_id IN (SELECT id FROM ws_installations)
 ),
 cleared_chat_sessions AS (
     DELETE FROM channel_chat_session_binding WHERE installation_id IN (SELECT id FROM ws_installations)

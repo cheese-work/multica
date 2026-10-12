@@ -25,6 +25,12 @@ deleted_task_messages AS (
 deleted_task_tokens AS (
     DELETE FROM task_token WHERE task_id IN (SELECT id FROM batch)
 ),
+deleted_task_supplements AS (
+    DELETE FROM task_supplement WHERE task_id IN (SELECT id FROM batch)
+),
+deleted_task_supplement_capabilities AS (
+    DELETE FROM task_supplement_capability WHERE task_id IN (SELECT id FROM batch)
+),
 deleted_channel_outbound_cards AS (
     DELETE FROM channel_outbound_card_message WHERE task_id IN (SELECT id FROM batch)
 ),
@@ -227,7 +233,22 @@ func (q *Queries) DeleteWorkspaceConnections(ctx context.Context, workspaceID pg
 }
 
 const deleteWorkspaceIssueRoots = `-- name: DeleteWorkspaceIssueRoots :exec
-WITH
+WITH deleted_wakeup_pr_events AS (
+ DELETE FROM issue_wakeup_pr_event WHERE wakeup_id IN (SELECT id FROM issue_wakeup WHERE workspace_id=$1)
+), deleted_wakeup_receipts AS (
+ DELETE FROM issue_wakeup_receipt WHERE wakeup_id IN (SELECT id FROM issue_wakeup WHERE workspace_id=$1)
+), deleted_wakeups AS (
+ DELETE FROM issue_wakeup WHERE workspace_id=$1
+), deleted_wakeup_definitions AS (
+ DELETE FROM issue_wakeup_definition WHERE workspace_id=$1
+), deleted_wakeup_aggregate_reservations AS (
+ DELETE FROM wakeup_aggregate_reservation WHERE workspace_id=$1
+), deleted_wakeup_aggregate_budgets AS (
+ DELETE FROM wakeup_aggregate_budget WHERE workspace_id=$1
+),
+deleted_child_events AS (
+ DELETE FROM issue_child_event WHERE workspace_id=$1
+),
 deleted_issues AS (
     DELETE FROM issue WHERE issue.workspace_id = $1
 ),
@@ -294,6 +315,12 @@ deleted_task_tokens AS (
     DELETE FROM task_token
     WHERE workspace_id = $1
 ),
+deleted_orphan_task_supplements AS (
+    DELETE FROM task_supplement WHERE workspace_id = $1
+),
+deleted_orphan_task_supplement_capabilities AS (
+    DELETE FROM task_supplement_capability WHERE workspace_id = $1
+),
 deleted_hourly_dirty AS (
     DELETE FROM task_usage_hourly_dirty WHERE workspace_id = $1
 ),
@@ -329,6 +356,60 @@ deleted_stage_completion_wakes AS (
 ),
 deleted_stage_generations AS (
     DELETE FROM stage_generation WHERE workspace_id = $1
+),
+deleted_issue_checkpoints AS (
+    DELETE FROM issue_checkpoint WHERE workspace_id = $1
+),
+deleted_governance_receipts AS (
+    DELETE FROM governance_receipt WHERE workspace_id = $1
+),
+deleted_governance_budget_outbox AS (
+    DELETE FROM governance_budget_outbox WHERE workspace_id = $1
+),
+deleted_governance_budget_journal AS (
+    DELETE FROM governance_budget_journal WHERE workspace_id = $1
+),
+deleted_governance_budget_reservations AS (
+    DELETE FROM governance_budget_reservation WHERE workspace_id = $1
+),
+deleted_governance_budget_roots AS (
+    DELETE FROM governance_budget_root WHERE workspace_id = $1
+),
+deleted_governance_budget_windows AS (
+    DELETE FROM governance_budget_window WHERE workspace_id = $1
+),
+deleted_governance_concurrency_holds AS (
+    DELETE FROM governance_concurrency_hold WHERE workspace_id = $1
+),
+deleted_governance_concurrency_guards AS (
+    DELETE FROM governance_concurrency_guard WHERE workspace_id = $1
+),
+deleted_governance_jev_credentials AS (
+    DELETE FROM governance_jev_credential WHERE workspace_id = $1
+),
+deleted_governance_config_audit AS (
+    DELETE FROM governance_workspace_config_audit WHERE workspace_id = $1
+),
+deleted_governance_configs AS (
+    DELETE FROM governance_workspace_config WHERE workspace_id = $1
+),
+deleted_governance_evaluation_sources AS (
+    DELETE FROM governance_evaluation_source WHERE workspace_id = $1
+),
+deleted_governance_evaluations AS (
+    DELETE FROM governance_evaluation WHERE workspace_id = $1
+),
+deleted_governance_attempts AS (
+    DELETE FROM governance_attempt WHERE workspace_id = $1
+),
+deleted_governance_case_transitions AS (
+    DELETE FROM governance_case_transition WHERE workspace_id = $1
+),
+deleted_governance_cases AS (
+    DELETE FROM governance_case WHERE workspace_id = $1
+),
+deleted_provenance_export_logs AS (
+    DELETE FROM provenance_export_log WHERE workspace_id = $1
 ),
 deleted_activity AS (
     DELETE FROM activity_log WHERE workspace_id = $1
@@ -369,6 +450,12 @@ deleted_issue_vcs_links AS (
     DELETE FROM issue_vcs_pull_request
     WHERE issue_id IN (SELECT id FROM ws_issues)
        OR pull_request_id IN (SELECT id FROM ws_vcs_prs)
+),
+deleted_issue_pr_automation AS (
+    DELETE FROM issue_pr_automation WHERE workspace_id = $1
+),
+deleted_issue_pr_exclusions AS (
+    DELETE FROM issue_pull_request_exclusion WHERE workspace_id = $1
 ),
 deleted_agent_invocation_targets AS (
     DELETE FROM agent_invocation_target
@@ -422,6 +509,10 @@ deleted_channel_task_deliveries AS (
 ),
 deleted_channel_outbound_messages AS (
     DELETE FROM channel_outbound_message
+    WHERE installation_id IN (SELECT id FROM ws_channel_installations)
+),
+deleted_channel_reply_deliveries AS (
+    DELETE FROM channel_reply_delivery
     WHERE installation_id IN (SELECT id FROM ws_channel_installations)
 ),
 deleted_channel_chat_contexts AS (
@@ -500,6 +591,15 @@ WHERE channel_media_pending_object.workspace_id = $1
 // CHE-488 durable stage-completion-wake bookkeeping (stage_generation,
 // stage_completion_wake). Deleted before the parent issues below so neither
 // statement depends on FK cascade ordering.
+// CHE-685 Jev governance routing receipts: workspace-owned observation
+// history, same leaf shape as issue_checkpoint above (no dependents, no FK).
+// CHE-714 Jev provider credentials are workspace-owned encrypted material.
+// Keep the explicit application teardown (rather than an FK cascade) in this
+// transaction so it commits or rolls back with the workspace row.
+// CHE-704 / C01 durable MJ cases and immutable captured evidence. These have
+// no database cascades by design, so every workspace-owned table is removed
+// explicitly before its workspace row.
+// CHE-755 provenance export audit rows: workspace-owned leaf, no dependents.
 // Keep the two-system cleanup ledger until object storage has been settled.
 // Moving every row out of pending also prevents a concurrent media bind from
 // attaching an object after the workspace teardown commits. The reconciler
@@ -569,18 +669,10 @@ const deleteWorkspacePullRequests = `-- name: DeleteWorkspacePullRequests :exec
 WITH deleted_github_prs AS (
     DELETE FROM github_pull_request
     WHERE github_pull_request.workspace_id = $1
-),
-deleted_github_merge_announcements AS (
-    DELETE FROM github_merge_announcement
-    WHERE github_merge_announcement.workspace_id = $1
 )
 DELETE FROM vcs_pull_request WHERE vcs_pull_request.workspace_id = $1
 `
 
-// github_merge_announcement has no FK to github_pull_request (no cascades
-// allowed, per repo convention) so it's deleted here directly by
-// workspace_id, alongside its sibling github_* mirror tables (CHE-374 review
-// fix N2 — a new public-schema table must be covered by workspace deletion).
 func (q *Queries) DeleteWorkspacePullRequests(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteWorkspacePullRequests, workspaceID)
 	return err

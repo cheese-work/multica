@@ -24,6 +24,23 @@ SELECT * FROM (
 ) AS recent
 ORDER BY created_at ASC, id ASC;
 
+-- name: ListMemberCommentsForIssue :many
+-- The OLDEST $3 member-authored comments for an issue, in chronological order.
+--
+-- Powers protocollint's waiver-grant scan (checkUnsupportedWaivers, CHE-551,
+-- CHE-556): a waiver grant predates the run that cites it and only a human
+-- ("member") can post one, so a newest-N cap is exactly backwards here — it is
+-- the OLD rows that must survive, not the recent chatter. This is deliberately
+-- the mirror image of ListCommentsForIssue's newest-N window, not a reuse of it.
+--
+-- author_type is filtered in SQL rather than in Go so the row cap applies to
+-- the candidate grant rows themselves, not to a mixed page that could still
+-- push a real grant out before the Go filter ever sees it.
+SELECT * FROM comment
+WHERE issue_id = $1 AND workspace_id = $2 AND author_type = 'member'
+ORDER BY created_at ASC, id ASC
+LIMIT $3;
+
 -- name: ListCommentsByIDsForIssue :many
 -- The subset of @ids that exists within this issue and workspace.
 --
@@ -375,25 +392,37 @@ LIMIT 1;
 -- recorded in this run's planned inputs. Timestamp-only implicit agent replies
 -- remain excluded. Replays are scoped to the completing agent, never a fan-out.
 -- Ordered ASC so later comments coalesce onto the follow-up created by the first.
-SELECT * FROM comment
-WHERE issue_id = @issue_id
-  AND (id = ANY(@planned_comment_ids::uuid[])
-       OR comment_thread_root_id(id) = sqlc.narg('comment_thread_id')::uuid)
+SELECT c.* FROM comment c
+WHERE c.issue_id = @issue_id
+  AND (c.id = ANY(@planned_comment_ids::uuid[])
+       OR comment_thread_root_id(c.id) = sqlc.narg('comment_thread_id')::uuid)
   -- A deleted comment is no longer input, even when replies keep its row.
-  AND deleted_at IS NULL
+  AND c.deleted_at IS NULL
+  -- A comment that steered this agent's running turn belongs to that turn,
+  -- regardless of delivery status: failed delivery must not become an automatic
+  -- new run. The same comment still reconciles normally for any other agent
+  -- it addressed without steering.
+  AND NOT EXISTS (
+      SELECT 1 FROM task_supplement s
+      JOIN agent_task_queue bound ON bound.id = s.task_id
+      WHERE s.comment_id = c.id AND s.workspace_id = c.workspace_id
+        AND bound.agent_id = @agent_id
+  )
+  -- Nor does a comment whose author chose not to start this agent for it.
+  AND NOT COALESCE(@agent_id::uuid = ANY(c.suppressed_agent_ids), false)
   AND (
       (
-          author_type IN ('member', 'agent')
-          AND (created_at > @since OR id = ANY(@planned_comment_ids::uuid[]))
+          c.author_type IN ('member', 'agent')
+          AND (c.created_at > @since OR c.id = ANY(@planned_comment_ids::uuid[]))
       )
       OR (
-          author_type = 'system'
-          AND type = 'progress_update'
-          AND source_task_id IS NOT NULL
-          AND id = ANY(@planned_comment_ids::uuid[])
+          c.author_type = 'system'
+          AND c.type = 'progress_update'
+          AND c.source_task_id IS NOT NULL
+          AND c.id = ANY(@planned_comment_ids::uuid[])
       )
   )
-ORDER BY created_at ASC, id ASC;
+ORDER BY c.created_at ASC, c.id ASC;
 
 -- name: GetComment :one
 SELECT * FROM comment
@@ -445,8 +474,8 @@ WITH touched_issue AS (
     WHERE issue.id = sqlc.arg(issue_id) AND issue.workspace_id = sqlc.arg(workspace_id)
     RETURNING issue.id, issue.workspace_id, issue.revision
 ), inserted_comment AS (
-    INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, parent_id, source_task_id, quick_action_id, via_plugin_id, id)
-    SELECT ti.id, ti.workspace_id, sqlc.arg(author_type), sqlc.arg(author_id), sqlc.arg(content), sqlc.arg(type), sqlc.narg(parent_id), sqlc.narg(source_task_id), sqlc.narg(quick_action_id), sqlc.narg(via_plugin_id), COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
+    INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, parent_id, source_task_id, quick_action_id, via_plugin_id, suppressed_agent_ids, id)
+    SELECT ti.id, ti.workspace_id, sqlc.arg(author_type), sqlc.arg(author_id), sqlc.arg(content), sqlc.arg(type), sqlc.narg(parent_id), sqlc.narg(source_task_id), sqlc.narg(quick_action_id), sqlc.narg(via_plugin_id), sqlc.narg(suppressed_agent_ids)::uuid[], COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
     FROM touched_issue ti
     RETURNING *
 )
@@ -520,6 +549,11 @@ WITH locked_issue AS MATERIALIZED (
     UPDATE comment SET
         content = $2,
         source_task_id = sqlc.narg(source_task_id)::uuid,
+        -- New text re-decides which agents it must not start, under the same
+        -- revision check as the text itself.
+        suppressed_agent_ids = CASE WHEN target.content IS DISTINCT FROM $2
+                                    THEN sqlc.narg(suppressed_agent_ids)::uuid[]
+                                    ELSE comment.suppressed_agent_ids END,
         revision = comment.revision + CASE WHEN target.did_change THEN 1 ELSE 0 END,
         updated_at = CASE WHEN target.did_change THEN now() ELSE comment.updated_at END
     FROM target
@@ -939,3 +973,16 @@ FROM comment c
 JOIN ancestor_ids path ON path.id = c.id
 ORDER BY c.id
 FOR UPDATE OF c;
+
+-- name: ListCommentsForIssueUpTo :many
+-- CHE-755 provenance export: the OLDEST @row_limit comments on an issue created
+-- at or before @cutoff, chronological with UUID tiebreak. Unlike
+-- ListCommentsForIssue this is a prefix, so a caller asking for limit+1 rows can
+-- detect overflow and report it instead of silently truncating. Tombstoned
+-- rows are included so the caller can classify them rather than lose them.
+SELECT * FROM comment
+WHERE issue_id = @issue_id
+  AND workspace_id = @workspace_id
+  AND created_at <= @cutoff
+ORDER BY created_at ASC, id ASC
+LIMIT @row_limit;

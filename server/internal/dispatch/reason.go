@@ -19,6 +19,8 @@ const (
 	ReasonQueued    ReasonCode = "queued"
 	ReasonCoalesced ReasonCode = "coalesced"
 	ReasonDeferred  ReasonCode = "deferred"
+	// ReasonSteered: the comment went into the target's running turn.
+	ReasonSteered ReasonCode = "steered"
 
 	// ReasonInvocationNotAllowed: the acting principal may not trigger this
 	// target under the invocation-permission model. Deliberately generic — it
@@ -39,6 +41,11 @@ const (
 	// machine is already on, and the fix is a command the user runs on it, which
 	// the daemon reports with this verdict so clients can show it.
 	ReasonRuntimeUnusable ReasonCode = "runtime_unusable"
+	// ReasonRuntimeAccessDenied: the target is permitted, but its agent owner
+	// cannot execute it on the private runtime selected for the task. This is
+	// distinct from invocation_not_allowed: the caller may invoke the agent,
+	// while the runtime/agent ownership binding still prevents execution.
+	ReasonRuntimeAccessDenied ReasonCode = "runtime_access_denied"
 	// ReasonRuntimeProfileMissing: the target is bound to a reachable runtime
 	// whose agent CLI runs fine, but a runtime profile that CLI needs in order
 	// to speak Multica's protocol is not installed on that machine — DeepSeek
@@ -85,9 +92,31 @@ const (
 	// ReasonQuotaExceeded is a policy-neutral refusal for an exhausted
 	// Cloud-provided autopilot interval.
 	ReasonQuotaExceeded ReasonCode = "quota_exceeded"
+	// ReasonProviderFailureCooldown means a recurring trigger was withheld after
+	// its latest provider server failure because no unused, healthy recovery was
+	// established before dispatch.
+	ReasonProviderFailureCooldown ReasonCode = "provider_failure_cooldown"
 	// ReasonIssueLimitReached means a create_issue Autopilot was admitted for a
 	// run, but Cloud's effective workspace issue-count limit blocked the issue.
 	ReasonIssueLimitReached ReasonCode = "issue_limit_reached"
 	// ReasonInternalError: an unexpected server error prevented a clean decision.
 	ReasonInternalError ReasonCode = "internal_error"
+	// ReasonProviderHold: the target resolves to a model provider a workspace
+	// policy has put on hold (CHE-588) — e.g. "stop routing to OpenAI-based
+	// agents" — so the trigger is refused before any runtime or network work
+	// happens. Kept APART from every runtime_* / agent_runtime_required code
+	// above and from ReasonTargetUnavailable, on purpose: those all mean "this
+	// cannot run" (broken machine, missing CLI, unbound runtime) and their
+	// remedies live on the machine or the agent's runtime binding. A provider
+	// hold means the opposite — the machine, the CLI, and the runtime binding
+	// are all fine, and running it anyway is exactly what must not happen. A
+	// client that collapses this into runtime_unusable or
+	// agent_runtime_required tells the user to reinstall a CLI or rebind a
+	// runtime that was never broken, sends them chasing a healthy machine, and
+	// hides the one fact that actually explains the refusal: a human decided
+	// this provider does not run right now. Without its own code the failure
+	// is indistinguishable from a live provider outage until someone reads the
+	// hold text by hand — see taskfailure.ReasonDispatchBlockedProviderHold for
+	// the matching failure_reason story once dispatch has already happened.
+	ReasonProviderHold ReasonCode = "provider_hold"
 )

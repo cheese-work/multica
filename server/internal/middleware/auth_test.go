@@ -61,7 +61,7 @@ func validClaims() jwt.MapClaims {
 
 // authMiddleware returns the Auth middleware with nil queries (JWT-only tests).
 func authMiddleware(next http.Handler) http.Handler {
-	return Auth(nil, nil, nil)(next)
+	return Auth(nil, nil, nil, nil)(next)
 }
 
 func TestAuth_MissingHeader(t *testing.T) {
@@ -112,6 +112,19 @@ func TestAuth_InvalidToken(t *testing.T) {
 
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestAuth_CookieCSRFErrorRemainsLegacyOutsideProposalRoutes(t *testing.T) {
+	handler := Auth(nil, nil, nil, nil)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler should not be called")
+	}))
+	request := httptest.NewRequest(http.MethodPost, "/api/me", nil)
+	request.AddCookie(&http.Cookie{Name: auth.AuthCookieName, Value: "invalid-jwt"})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || response.Body.String() != "{\"error\":\"CSRF validation failed\"}\n" {
+		t.Fatalf("non-proposal CSRF error changed: HTTP %d: %s", response.Code, response.Body.String())
 	}
 }
 
@@ -280,7 +293,7 @@ func TestAuth_InvalidPAT(t *testing.T) {
 // boundary MUL-2600 introduces.
 func TestAuth_StripsClientSuppliedActorSource(t *testing.T) {
 	var gotActorSource string
-	mw := Auth(nil, nil, nil)
+	mw := Auth(nil, nil, nil, nil)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotActorSource = r.Header.Get("X-Actor-Source")
 		w.WriteHeader(http.StatusOK)
@@ -314,7 +327,7 @@ func TestAuth_StripsClientSuppliedActorSource(t *testing.T) {
 // since MUL-6951, act with the authority of that run's originator. MUL-3428.
 func TestAuth_StripsForgedAgentIdentityHeaders(t *testing.T) {
 	var gotAgentID, gotTaskID string
-	mw := Auth(nil, nil, nil)
+	mw := Auth(nil, nil, nil, nil)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAgentID = r.Header.Get("X-Agent-ID")
 		gotTaskID = r.Header.Get("X-Task-ID")
@@ -357,7 +370,7 @@ func TestAuth_PATCacheHit(t *testing.T) {
 	cache.Set(context.Background(), hash, "cached-user-id", auth.AuthCacheTTL)
 
 	var gotUserID string
-	mw := Auth(nil, cache, nil) // nil queries — only safe on cache hit
+	mw := Auth(nil, cache, nil, nil) // nil queries — only safe on cache hit
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotUserID = r.Header.Get("X-User-ID")
 		w.WriteHeader(http.StatusOK)
@@ -382,7 +395,7 @@ func TestAuth_PATCacheHit(t *testing.T) {
 // We don't fall through — an mcn_ string can't be a valid mul_ PAT or
 // JWT, so any fall-through would be wasted work.
 func TestAuth_MCN_NoVerifierConfigured(t *testing.T) {
-	mw := Auth(nil, nil, nil)
+	mw := Auth(nil, nil, nil, nil)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("next must not be called when verifier is unconfigured")
 	}))
@@ -411,7 +424,7 @@ func TestAuth_MCN_ValidTokenSetsUserID(t *testing.T) {
 	verifier := auth.NewCloudPATVerifier(auth.CloudPATVerifierConfig{FleetBaseURL: srv.URL})
 
 	var gotUser, gotActorSource string
-	mw := Auth(nil, nil, verifier)
+	mw := Auth(nil, nil, verifier, nil)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotUser = r.Header.Get("X-User-ID")
 		gotActorSource = r.Header.Get("X-Actor-Source")
@@ -449,7 +462,7 @@ func TestAuth_MCN_InvalidReturns401(t *testing.T) {
 	defer srv.Close()
 
 	verifier := auth.NewCloudPATVerifier(auth.CloudPATVerifierConfig{FleetBaseURL: srv.URL})
-	mw := Auth(nil, nil, verifier)
+	mw := Auth(nil, nil, verifier, nil)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("next must not be called when token is invalid")
 	}))
@@ -473,7 +486,7 @@ func TestAuth_MCN_FleetUnreachableReturns503(t *testing.T) {
 	defer srv.Close()
 
 	verifier := auth.NewCloudPATVerifier(auth.CloudPATVerifierConfig{FleetBaseURL: srv.URL})
-	mw := Auth(nil, nil, verifier)
+	mw := Auth(nil, nil, verifier, nil)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("next must not be called when fleet is unavailable")
 	}))

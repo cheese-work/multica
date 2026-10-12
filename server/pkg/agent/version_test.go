@@ -5,6 +5,22 @@ import (
 	"testing"
 )
 
+func TestTaskSupplementVersionGate(t *testing.T) {
+	for _, tc := range []struct {
+		provider, version string
+		want              bool
+	}{
+		{"codex", "codex-cli 0.100.0", true}, {"codex", "0.99.0", false},
+		{"claude", "2.1.110 (Claude Code)", true}, {"claude", "2.1.109", false},
+		{"grok", "1.0.14", true}, {"grok", "1.0.13", false}, {"grok", "0.2.120", false},
+		{"codex", "", false}, {"claude", "dev", false}, {"kimi", "9.0.0", false},
+	} {
+		if got := SupportsTaskSupplement(tc.provider, tc.version); got != tc.want {
+			t.Errorf("%s %q: supported=%v, want %v", tc.provider, tc.version, got, tc.want)
+		}
+	}
+}
+
 func TestParseSemver(t *testing.T) {
 	tests := []struct {
 		input   string
@@ -16,6 +32,7 @@ func TestParseSemver(t *testing.T) {
 		{"2.1.100 (Claude Code)", semver{2, 1, 100}, false},
 		{"codex-cli 0.118.0", semver{0, 118, 0}, false},
 		{"1.0.20", semver{1, 0, 20}, false},
+		{"v0.6.0-20261008-1331", semver{0, 6, 0}, false},
 		{"invalid", semver{}, true},
 		{"", semver{}, true},
 	}
@@ -62,6 +79,9 @@ func TestCheckMinCLIVersion(t *testing.T) {
 		{"tagged release above minimum", "0.3.1", nil},
 		{"previous tagged release below minimum", "v0.2.20", ErrCLIVersionTooOld},
 		{"tagged release below minimum", "v0.2.15", ErrCLIVersionTooOld},
+		{"stamped release at minimum", "v0.2.21-20261008-1331", nil},
+		{"stamped release above minimum", "0.6.0-20261008-1331", nil},
+		{"stamped release below minimum", "v0.2.20-20261008-1331", ErrCLIVersionTooOld},
 		{"empty string", "", ErrCLIVersionMissing},
 		{"unparsable", "not-a-version", ErrCLIVersionMissing},
 		{"git-describe dev build past old tag", "v0.2.15-235-gdaf0e935", nil},
@@ -88,6 +108,15 @@ func TestCheckMinCLIVersionForQuickCreateFields(t *testing.T) {
 	}
 	if err := CheckMinCLIVersionFor("v0.4.2-7-gabc1234", MinQuickCreateFieldsCLIVersion); err != nil {
 		t.Fatalf("dev build error = %v, want nil", err)
+	}
+}
+
+func TestCheckMinCLIVersionForStampedFieldsRelease(test *testing.T) {
+	if err := CheckMinCLIVersionFor("0.4.2-20261008-1331", MinQuickCreateFieldsCLIVersion); !errors.Is(err, ErrCLIVersionTooOld) {
+		test.Fatalf("stamped older release error = %v, want ErrCLIVersionTooOld", err)
+	}
+	if err := CheckMinCLIVersionFor("0.4.3-20261008-1331", MinQuickCreateFieldsCLIVersion); err != nil {
+		test.Fatalf("stamped release at minimum error = %v, want nil", err)
 	}
 }
 
@@ -215,6 +244,16 @@ func TestCheckMinVersion(t *testing.T) {
 		{"zeroclaw", "invalid", true},
 		{"dim", "0.2.99", true},
 		{"dim", "invalid", true},
+		// opencode: 1.1.54 is the first build that honors TMPDIR/TMP/TEMP for
+		// Bun native-module extraction. 1.1.53 and 1.1.49 are the versions
+		// actually measured leaking into the shared temp dir (#8392); the CLI
+		// prints a bare semver, so there is no prefix to strip.
+		{"opencode", "1.1.54", false},
+		{"opencode", "1.1.55", false},
+		{"opencode", "1.18.30", false},
+		{"opencode", "1.1.53", true},
+		{"opencode", "1.1.49", true},
+		{"opencode", "0.15.0", true},
 		{"unknown", "1.0.0", false},
 	}
 	for _, tt := range tests {

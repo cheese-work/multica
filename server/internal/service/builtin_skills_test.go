@@ -335,12 +335,12 @@ func TestLegacyRedirectsFollowTheDaemonsBrief(t *testing.T) {
 }
 
 // TestPlatformSkillDescriptionNamesEveryDomain is the recall guard for the
-// nine-into-one merge (MUL-6986).
+// ten-into-one merge (MUL-6986).
 //
 // Before the merge, each domain advertised its own description in the
 // always-loaded listing, so an agent looking for "how does squad routing work"
-// matched on the word "squad". Collapsing to one skill removes seven of those
-// eight surfaces, and the remaining description is the only thing an agent sees
+// matched on the word "squad". Collapsing to one skill removes nine of those
+// ten surfaces, and the remaining description is the only thing an agent sees
 // before deciding to open the skill. If a domain's trigger word is not in it,
 // that domain became strictly harder to find than it was before — which is the
 // one regression this merge is not allowed to cause.
@@ -352,14 +352,16 @@ func TestPlatformSkillDescriptionNamesEveryDomain(t *testing.T) {
 	// These are task nouns, not section headings: a task arrives as "set up an
 	// autopilot", never as "Core model".
 	triggerWords := map[string]string{
-		"references/issues.md":       "issue",
-		"references/mentions.md":     "mention",
-		"references/agents.md":       "agent",
-		"references/squads.md":       "squad",
-		"references/autopilots.md":   "autopilot",
-		"references/projects.md":     "project",
-		"references/runtimes.md":     "runtime",
-		"references/skill-import.md": "skill import",
+		"references/issues.md":        "issue",
+		"references/pull-requests.md": "pr",
+		"references/mentions.md":      "mention",
+		"references/agents.md":        "agent",
+		"references/squads.md":        "squad",
+		"references/autopilots.md":    "autopilot",
+		"references/projects.md":      "project",
+		"references/runtimes.md":      "runtime",
+		"references/wakeups.md":       "wakeup",
+		"references/skill-import.md":  "skill import",
 	}
 
 	skill, ok := findSkill(t, PlatformSkillName)
@@ -425,6 +427,7 @@ func TestPlatformSkillCoversPlatformContracts(t *testing.T) {
 				"Do not read them all",
 				// The router's whole job: name every domain and its file.
 				"references/issues.md",
+				"references/pull-requests.md",
 				"references/mentions.md",
 				"references/agents.md",
 				"references/squads.md",
@@ -437,12 +440,15 @@ func TestPlatformSkillCoversPlatformContracts(t *testing.T) {
 				// home, so losing one here loses it everywhere.
 				"A name is not an id",
 				"`--output json` writes to stdout",
-				"`--no-start` when you are only recording",
 				"categories describe lifecycle only",
 				"Custom statuses do not inherit built-in automation behavior",
 				"Comment reads stay bounded",
 				"--roots-only --summary --compact",
 				"--thread <thread-id> --tail 30",
+				// MUL-7344: the per-turn `--since` delta IS a bounded read, so
+				// the bounded-reads rule must name it rather than leave an
+				// agent choosing between two contradicting instructions.
+				"that read is the bounded scan",
 			},
 			notWant: []string{
 				// The singular forms this replaced.
@@ -451,9 +457,17 @@ func TestPlatformSkillCoversPlatformContracts(t *testing.T) {
 			},
 		},
 		{
-			file: "references/issues.md",
+			file: "references/pull-requests.md",
 			want: []string{
 				"multica issue pull-requests <issue-id> --output json",
+				"stale values left on the issue by an earlier run",
+				"checks_conclusion",
+				"failed_check_names",
+			},
+		},
+		{
+			file: "references/issues.md",
+			want: []string{
 				"Default for code-changing issue work",
 				"open or update a PR before posting the final Multica issue comment",
 				"This is a default, not",
@@ -463,26 +477,19 @@ func TestPlatformSkillCoversPlatformContracts(t *testing.T) {
 				// both halves of it are pinned: a syntax problem is repairable
 				// by editing the PR, and an integration problem is not — an
 				// agent that keeps editing burns deliveries on a no-op.
-				"editing the title or adding a closing keyword re-runs the scan",
+				"editing the title re-runs the scan",
 				"stop editing the PR blind",
 				"whether the installation is bound to this workspace",
 				"redelivered once the receiving side is fixed",
-				"unless the issue should auto-advance",
 				"include the PR URL when a PR exists",
 				"Closes MUL-123",
 				"--status backlog",
-				// The link table is the only sanctioned source of PR state,
-				// and the guard against stale data survives MUL-6966 without
-				// naming the key it used to name: `issue get` still returns
-				// whatever an older run left on the issue, but a warning that
-				// spells out a metadata key teaches the key.
-				"stale values left on the issue by an earlier run",
 				// MUL-5442: the brief's Sub-issue Creation section is a
 				// one-line map pointing here. These anchors are the demoted
 				// playbook — if they leave, the brief pointer dangles.
 				"todo starts work now, backlog parks it",
 				"`--stage <N>`",
-				"when a whole stage finishes",
+				"wakes the parent assignee when a stage",
 				"multica issue status <child-id> todo",
 				// MUL-6966 phase 1 retired the metadata write discipline
 				// along with the brief section that pointed here. What the
@@ -593,6 +600,10 @@ func TestPlatformSkillCoversPlatformContracts(t *testing.T) {
 				"--roots-only --summary",
 				"--thread <thread-id> --tail 30",
 				"scan the roots first, then open the threads",
+				// MUL-5850: the reads carry --compact, matching the brief and
+				// the router's bounded-reads rule.
+				"--roots-only --summary --compact --output json",
+				"--thread <thread-id> --tail 30 --compact --output json",
 			},
 			notWant: []string{
 				// MUL-5696: no unbounded comment pull. Both shapes contradict

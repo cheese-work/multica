@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
+	"github.com/multica-ai/multica/server/internal/util"
 )
 
 // HealthResponse is returned by the daemon's local health endpoint.
@@ -58,9 +59,16 @@ type HealthResponse struct {
 	// Repo maintenance stays a liveness-safe background activity, so health
 	// remains HTTP 200/running. These additive counters explain degraded repo
 	// checkout capacity to operators without exposing local cache paths.
-	RepoMaintenanceActive int      `json:"repo_maintenance_active,omitempty"`
-	RepoCheckoutWaiters   int      `json:"repo_checkout_waiters,omitempty"`
-	Agents                []string `json:"agents"`
+	RepoMaintenanceActive int `json:"repo_maintenance_active,omitempty"`
+	RepoCheckoutWaiters   int `json:"repo_checkout_waiters,omitempty"`
+	// Terminal report queue diagnostics are additive and expose only counts and
+	// bytes, never payloads or local paths. Failed records require operator
+	// attention; pending records are still being replayed automatically.
+	PendingTerminalReportCount int      `json:"pending_terminal_report_count"`
+	PendingTerminalReportBytes int64    `json:"pending_terminal_report_bytes"`
+	FailedTerminalReportCount  int      `json:"failed_terminal_report_count"`
+	FailedTerminalReportBytes  int64    `json:"failed_terminal_report_bytes"`
+	Agents                     []string `json:"agents"`
 	// SkippedAgents maps a provider that WAS discovered on this machine to the
 	// reason the last registration round dropped it (version undetectable,
 	// below the minimum supported version). Purely diagnostic, and omitted when
@@ -74,8 +82,13 @@ type HealthResponse struct {
 	// version change on disk but hasn't restarted into it yet — it was busy at
 	// the last barrier check and will retry when idle. Omitted when empty, so
 	// older consumers see no change. Diagnostic only: nothing keys off it.
-	ReloadPendingReason string            `json:"reload_pending_reason,omitempty"`
-	Workspaces          []healthWorkspace `json:"workspaces"`
+	ReloadPendingReason string `json:"reload_pending_reason,omitempty"`
+	// MaintenanceHeld is true while an owner maintenance window holds update
+	// ownership and the claim barrier; MaintenanceExpiresAt is its lease
+	// expiry (RFC 3339). The window token is never reported. See maintenance.go.
+	MaintenanceHeld      bool              `json:"maintenance_held,omitempty"`
+	MaintenanceExpiresAt string            `json:"maintenance_expires_at,omitempty"`
+	Workspaces           []healthWorkspace `json:"workspaces"`
 }
 
 type healthWorkspace struct {
@@ -267,26 +280,32 @@ func (d *Daemon) writeRepoCheckoutAuthError(w http.ResponseWriter, result repoCh
 	http.Error(w, message, http.StatusUnauthorized)
 }
 
+// authorizeRepoCheckoutWorkDir proves the requested checkout directory lies
+// inside the active task's workdir and returns its resolved form. Both sides
+// are resolved the way the kernel opens them — util.ResolveSymlinks, not
+// filepath.EvalSymlinks, which on Windows cannot pass through a directory
+// junction: a workspaces root moved to another drive and left behind as a
+// junction made every checkout fail here (#8946). Any path that cannot be
+// resolved is refused; the error says which side and why, because the caller
+// surfaces it instead of a bare "not owned".
 func authorizeRepoCheckoutWorkDir(activeRoot, requested string) (string, error) {
 	root, err := filepath.Abs(activeRoot)
-	if err != nil {
-		return "", err
+	if err == nil {
+		root, err = util.ResolveSymlinks(root)
 	}
-	root, err = filepath.EvalSymlinks(root)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("resolve active task workdir: %w", err)
 	}
 	workdir, err := filepath.Abs(requested)
-	if err != nil {
-		return "", err
+	if err == nil {
+		workdir, err = util.ResolveSymlinks(workdir)
 	}
-	workdir, err = filepath.EvalSymlinks(workdir)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("resolve requested workdir: %w", err)
 	}
 	rel, err := filepath.Rel(root, workdir)
 	if err != nil || !filepath.IsLocal(rel) {
-		return "", errors.New("workdir is outside the active task workdir")
+		return "", fmt.Errorf("%s is outside the active task workdir %s", workdir, root)
 	}
 	return workdir, nil
 }
@@ -348,10 +367,22 @@ func (d *Daemon) healthHandler(startedAt time.Time) http.HandlerFunc {
 			ReloadPendingReason: d.reloadPending(),
 			Workspaces:          wsList,
 		}
+		if held, expires := d.maintenanceStatus(); held {
+			resp.MaintenanceHeld = true
+			resp.MaintenanceExpiresAt = expires.UTC().Format(time.RFC3339)
+		}
 		if reporter, ok := d.repoCache.(interface{ Activity() repocache.Activity }); ok {
 			activity := reporter.Activity()
 			resp.RepoMaintenanceActive = activity.MaintenanceActive
 			resp.RepoCheckoutWaiters = activity.ForegroundWaiters
+		}
+		if stats, err := d.terminalReports.stats(); err != nil {
+			d.logger.Warn("health: scan terminal report queue", "error", err)
+		} else {
+			resp.PendingTerminalReportCount = stats.PendingCount
+			resp.PendingTerminalReportBytes = stats.PendingBytes
+			resp.FailedTerminalReportCount = stats.FailedCount
+			resp.FailedTerminalReportBytes = stats.FailedBytes
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -371,6 +402,12 @@ func (d *Daemon) shutdownHandler() http.HandlerFunc {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		// An owner maintenance window gates explicit stop/restart: no token
+		// while one is held, or a token for a window that is gone, is refused.
+		if err := d.authorizeShutdown(r.Header.Get(maintenanceTokenHeader)); err != nil {
+			writeMaintenanceError(w, err)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "shutting down"})
 		if d.cancelFunc != nil {
@@ -381,15 +418,20 @@ func (d *Daemon) shutdownHandler() http.HandlerFunc {
 	}
 }
 
-// serveHealth runs the health HTTP server on the given listener.
-// Blocks until ctx is cancelled.
-func (d *Daemon) serveHealth(ctx context.Context, ln net.Listener, startedAt time.Time) {
+func (d *Daemon) healthMux(startedAt time.Time) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", d.healthHandler(startedAt))
 	mux.HandleFunc("/shutdown", d.shutdownHandler())
+	mux.HandleFunc("/maintenance/acquire", d.maintenanceAcquireHandler())
+	mux.HandleFunc("/maintenance/release", d.maintenanceReleaseHandler())
 	mux.HandleFunc("/repo/checkout", d.repoCheckoutHandler())
+	return mux
+}
 
-	srv := &http.Server{Handler: mux}
+// serveHealth runs the health HTTP server on the given listener.
+// Blocks until ctx is cancelled.
+func (d *Daemon) serveHealth(ctx context.Context, ln net.Listener, startedAt time.Time) {
+	srv := &http.Server{Handler: d.healthMux(startedAt)}
 
 	go func() {
 		<-ctx.Done()
@@ -442,7 +484,17 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 		}
 		authorizedWorkDir, authErr := authorizeRepoCheckoutWorkDir(activeTask.WorkDir, req.WorkDir)
 		if authErr != nil {
-			http.Error(w, "repo checkout workdir is not owned by the active task", http.StatusForbidden)
+			// The reason goes to both the agent and daemon.log: a refusal that
+			// says only "not owned" sent #8946 looking at ownership when the
+			// real failure was resolving a junctioned path. Both paths come from
+			// the requesting task — its own workdir and the path it sent — so
+			// the message tells it nothing it could not read for itself.
+			d.logger.Warn("repo checkout rejected",
+				"reason", "workdir_not_owned",
+				"task_id", activeTask.TaskID,
+				"error", authErr,
+			)
+			http.Error(w, "repo checkout workdir is not owned by the active task: "+authErr.Error(), http.StatusForbidden)
 			return
 		}
 		// Identity is derived from the token-bound active task. AgentName and the
