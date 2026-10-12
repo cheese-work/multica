@@ -2583,6 +2583,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/{id}/unarchive", h.UnarchiveInboxItem)
 			})
 
+			r.Route("/api/decisions", func(r chi.Router) {
+				r.Post("/", h.RequestDecision)
+				r.Get("/", h.ListDecisions)
+				r.Get("/{id}", h.GetDecision)
+			})
+
 			// Notification preferences
 			r.Route("/api/notification-preferences", func(r chi.Router) {
 				r.Get("/", h.GetNotificationPreferences)

@@ -61,6 +61,19 @@ SELECT * FROM decision_request
 WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')
 ORDER BY created_at, id;
 
+-- name: ListDecisionPingRetries :many
+SELECT * FROM decision_request
+WHERE origin = 'asked' AND ping_notified_at IS NULL
+ORDER BY created_at, id
+LIMIT $1;
+
+-- name: MarkDecisionPingNotified :one
+UPDATE decision_request
+SET ping_notified_at = clock_timestamp()
+WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
+  AND ping_notified_at IS NULL
+RETURNING *;
+
 -- name: ConsumeDecisionIntentTarget :execrows
 UPDATE decision_intent_target target
 SET consumed_at = clock_timestamp(), consumed_by_request_id = sqlc.arg('request_id')
