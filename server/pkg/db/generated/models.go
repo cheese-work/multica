@@ -526,24 +526,26 @@ type ChatPinnedAgent struct {
 }
 
 type ChatSession struct {
-	ID                  pgtype.UUID        `json:"id"`
-	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
-	AgentID             pgtype.UUID        `json:"agent_id"`
-	CreatorID           pgtype.UUID        `json:"creator_id"`
-	Title               string             `json:"title"`
-	SessionID           pgtype.Text        `json:"session_id"`
-	WorkDir             pgtype.Text        `json:"work_dir"`
-	Status              string             `json:"status"`
-	CreatedAt           pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
-	UnreadSince         pgtype.Timestamptz `json:"unread_since"`
-	RuntimeID           pgtype.UUID        `json:"runtime_id"`
-	LastReadAt          pgtype.Timestamptz `json:"last_read_at"`
-	IsAgentIntro        bool               `json:"is_agent_intro"`
-	PinnedAt            pgtype.Timestamptz `json:"pinned_at"`
-	ProjectID           pgtype.UUID        `json:"project_id"`
-	ExplicitlyCreatedAt pgtype.Timestamptz `json:"explicitly_created_at"`
-	ChannelOriginAt     pgtype.Timestamptz `json:"channel_origin_at"`
+	ID                   pgtype.UUID        `json:"id"`
+	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
+	AgentID              pgtype.UUID        `json:"agent_id"`
+	CreatorID            pgtype.UUID        `json:"creator_id"`
+	Title                string             `json:"title"`
+	SessionID            pgtype.Text        `json:"session_id"`
+	WorkDir              pgtype.Text        `json:"work_dir"`
+	Status               string             `json:"status"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+	UnreadSince          pgtype.Timestamptz `json:"unread_since"`
+	RuntimeID            pgtype.UUID        `json:"runtime_id"`
+	LastReadAt           pgtype.Timestamptz `json:"last_read_at"`
+	IsAgentIntro         bool               `json:"is_agent_intro"`
+	PinnedAt             pgtype.Timestamptz `json:"pinned_at"`
+	ProjectID            pgtype.UUID        `json:"project_id"`
+	ExplicitlyCreatedAt  pgtype.Timestamptz `json:"explicitly_created_at"`
+	ChannelOriginAt      pgtype.Timestamptz `json:"channel_origin_at"`
+	LaneSummary          string             `json:"lane_summary"`
+	LaneSummaryUpdatedAt pgtype.Timestamptz `json:"lane_summary_updated_at"`
 }
 
 type ClientUsageDaily struct {

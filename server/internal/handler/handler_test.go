@@ -1686,6 +1686,7 @@ func TestCreateCommentRejectsMalformedParentID(t *testing.T) {
 
 func TestGetChatSessionRejectsMalformedSessionID(t *testing.T) {
 	req := newRequest("GET", "/api/chat/sessions/not-a-uuid", nil)
+	req.Header.Set("X-Actor-Source", "interactive_jwt")
 	req = withURLParam(req, "sessionId", "not-a-uuid")
 	testutil.Call(t, testHandler.GetChatSession, req).Want(http.StatusBadRequest)
 }
