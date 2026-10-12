@@ -95,6 +95,7 @@ import type {
   TaskMessagePayload,
   Attachment,
   ChatSession,
+  ChatContinueResponse,
   ChatPinnedAgent,
   ChatMessage,
   ChatMessagesPage,
@@ -262,6 +263,8 @@ import {
   ChatPendingTaskSchema,
   ChatSessionListSchema,
   ChatSessionSchema,
+  ChatContinueResponseSchema,
+  EMPTY_CHAT_CONTINUE_RESPONSE,
   PrioritizeQueuedChatTaskResponseSchema,
   SendChatMessageResponseSchema,
   StartMikaOnboardingResponseSchema,
@@ -3754,6 +3757,16 @@ export class ApiClient {
     const raw: unknown = await this.fetch(`/api/chat/sessions/${id}`);
     return parseWithFallback(raw, ChatSessionSchema, EMPTY_CHAT_SESSION, {
       endpoint: "GET /api/chat/sessions/:id",
+    });
+  }
+
+  async continueChatSession(id: string, summary: string): Promise<ChatContinueResponse> {
+    const raw: unknown = await this.fetch(`/api/chat/sessions/${id}/continue`, {
+      method: "POST",
+      body: JSON.stringify({ summary }),
+    });
+    return parseWithFallback(raw, ChatContinueResponseSchema, EMPTY_CHAT_CONTINUE_RESPONSE, {
+      endpoint: "POST /api/chat/sessions/:id/continue",
     });
   }
 
