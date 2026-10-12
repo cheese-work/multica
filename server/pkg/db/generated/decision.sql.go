@@ -241,6 +241,77 @@ func (q *Queries) DecisionIntentRefusal(ctx context.Context, arg DecisionIntentR
 	return reason, err
 }
 
+const decisionLaneWindowOpen = `-- name: DecisionLaneWindowOpen :one
+SELECT EXISTS (
+    SELECT 1 FROM decision_intent intent
+    JOIN decision_intent_target target ON target.decision_intent_id = intent.id
+    JOIN comment tag ON tag.id = intent.comment_id AND tag.issue_id = intent.issue_id AND tag.workspace_id = intent.workspace_id
+    JOIN agent_task_queue task ON task.id = intent.task_id AND task.agent_id = intent.agent_id AND task.issue_id = intent.issue_id
+    JOIN agent asking ON asking.id = intent.agent_id AND asking.workspace_id = intent.workspace_id
+    JOIN member human ON human.user_id = target.human_user_id AND human.workspace_id = intent.workspace_id
+    WHERE intent.workspace_id = $1 AND intent.id = $2
+      AND target.human_user_id = $3 AND target.consumed_at IS NULL
+      AND intent.sealed_at IS NULL AND intent.closed_at IS NULL AND intent.consumed_at IS NULL
+      AND tag.deleted_at IS NULL AND task.status = 'running' AND task.chat_session_id IS NULL
+      AND asking.archived_at IS NULL AND clock_timestamp() < intent.expires_at
+)::boolean AS open
+`
+
+type DecisionLaneWindowOpenParams struct {
+	WorkspaceID      pgtype.UUID `json:"workspace_id"`
+	DecisionIntentID pgtype.UUID `json:"decision_intent_id"`
+	HumanUserID      pgtype.UUID `json:"human_user_id"`
+}
+
+func (q *Queries) DecisionLaneWindowOpen(ctx context.Context, arg DecisionLaneWindowOpenParams) (bool, error) {
+	row := q.db.QueryRow(ctx, decisionLaneWindowOpen, arg.WorkspaceID, arg.DecisionIntentID, arg.HumanUserID)
+	var open bool
+	err := row.Scan(&open)
+	return open, err
+}
+
+const getDecisionIntentForTask = `-- name: GetDecisionIntentForTask :one
+SELECT id, workspace_id, issue_id, task_id, agent_id, comment_id, opened_at, expires_at, consumed_at, consumed_by_request_id, closed_at, close_reason, sealed_at, group_woken_at FROM decision_intent
+WHERE workspace_id = $1 AND issue_id = $2
+  AND task_id = $3 AND agent_id = $4
+ORDER BY opened_at DESC, id DESC
+LIMIT 1
+`
+
+type GetDecisionIntentForTaskParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	TaskID      pgtype.UUID `json:"task_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+}
+
+func (q *Queries) GetDecisionIntentForTask(ctx context.Context, arg GetDecisionIntentForTaskParams) (DecisionIntent, error) {
+	row := q.db.QueryRow(ctx, getDecisionIntentForTask,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.TaskID,
+		arg.AgentID,
+	)
+	var i DecisionIntent
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.TaskID,
+		&i.AgentID,
+		&i.CommentID,
+		&i.OpenedAt,
+		&i.ExpiresAt,
+		&i.ConsumedAt,
+		&i.ConsumedByRequestID,
+		&i.ClosedAt,
+		&i.CloseReason,
+		&i.SealedAt,
+		&i.GroupWokenAt,
+	)
+	return i, err
+}
+
 const getDecisionRequest = `-- name: GetDecisionRequest :one
 SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at FROM decision_request
 WHERE workspace_id = $1 AND id = $2
@@ -276,6 +347,93 @@ func (q *Queries) GetDecisionRequest(ctx context.Context, arg GetDecisionRequest
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const listDecisionIntentTargets = `-- name: ListDecisionIntentTargets :many
+SELECT target.decision_intent_id, target.human_user_id, target.consumed_at, target.consumed_by_request_id FROM decision_intent_target target
+JOIN decision_intent intent ON intent.id = target.decision_intent_id
+WHERE intent.workspace_id = $1 AND intent.id = $2
+ORDER BY target.human_user_id
+`
+
+type ListDecisionIntentTargetsParams struct {
+	WorkspaceID      pgtype.UUID `json:"workspace_id"`
+	DecisionIntentID pgtype.UUID `json:"decision_intent_id"`
+}
+
+func (q *Queries) ListDecisionIntentTargets(ctx context.Context, arg ListDecisionIntentTargetsParams) ([]DecisionIntentTarget, error) {
+	rows, err := q.db.Query(ctx, listDecisionIntentTargets, arg.WorkspaceID, arg.DecisionIntentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DecisionIntentTarget{}
+	for rows.Next() {
+		var i DecisionIntentTarget
+		if err := rows.Scan(
+			&i.DecisionIntentID,
+			&i.HumanUserID,
+			&i.ConsumedAt,
+			&i.ConsumedByRequestID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDecisionLanes = `-- name: ListDecisionLanes :many
+SELECT session.id, session.title, session.lane_summary, session.lane_summary_updated_at, session.updated_at
+FROM chat_session session
+WHERE session.workspace_id = $1 AND session.agent_id = $2
+  AND session.creator_id = $3 AND session.status = 'active'
+  AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
+  AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
+ORDER BY session.updated_at DESC, session.id DESC
+`
+
+type ListDecisionLanesParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+	CreatorID   pgtype.UUID `json:"creator_id"`
+}
+
+type ListDecisionLanesRow struct {
+	ID                   pgtype.UUID        `json:"id"`
+	Title                string             `json:"title"`
+	LaneSummary          string             `json:"lane_summary"`
+	LaneSummaryUpdatedAt pgtype.Timestamptz `json:"lane_summary_updated_at"`
+	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) ListDecisionLanes(ctx context.Context, arg ListDecisionLanesParams) ([]ListDecisionLanesRow, error) {
+	rows, err := q.db.Query(ctx, listDecisionLanes, arg.WorkspaceID, arg.AgentID, arg.CreatorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDecisionLanesRow{}
+	for rows.Next() {
+		var i ListDecisionLanesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Title,
+			&i.LaneSummary,
+			&i.LaneSummaryUpdatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listDecisionRequestsByIssue = `-- name: ListDecisionRequestsByIssue :many

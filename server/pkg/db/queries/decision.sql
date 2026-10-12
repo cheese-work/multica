@@ -61,6 +61,43 @@ SELECT * FROM decision_request
 WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')
 ORDER BY created_at, id;
 
+-- name: GetDecisionIntentForTask :one
+SELECT * FROM decision_intent
+WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')
+  AND task_id = sqlc.arg('task_id') AND agent_id = sqlc.arg('agent_id')
+ORDER BY opened_at DESC, id DESC
+LIMIT 1;
+
+-- name: ListDecisionIntentTargets :many
+SELECT target.* FROM decision_intent_target target
+JOIN decision_intent intent ON intent.id = target.decision_intent_id
+WHERE intent.workspace_id = sqlc.arg('workspace_id') AND intent.id = sqlc.arg('decision_intent_id')
+ORDER BY target.human_user_id;
+
+-- name: ListDecisionLanes :many
+SELECT session.id, session.title, session.lane_summary, session.lane_summary_updated_at, session.updated_at
+FROM chat_session session
+WHERE session.workspace_id = sqlc.arg('workspace_id') AND session.agent_id = sqlc.arg('agent_id')
+  AND session.creator_id = sqlc.arg('creator_id') AND session.status = 'active'
+  AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
+  AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
+ORDER BY session.updated_at DESC, session.id DESC;
+
+-- name: DecisionLaneWindowOpen :one
+SELECT EXISTS (
+    SELECT 1 FROM decision_intent intent
+    JOIN decision_intent_target target ON target.decision_intent_id = intent.id
+    JOIN comment tag ON tag.id = intent.comment_id AND tag.issue_id = intent.issue_id AND tag.workspace_id = intent.workspace_id
+    JOIN agent_task_queue task ON task.id = intent.task_id AND task.agent_id = intent.agent_id AND task.issue_id = intent.issue_id
+    JOIN agent asking ON asking.id = intent.agent_id AND asking.workspace_id = intent.workspace_id
+    JOIN member human ON human.user_id = target.human_user_id AND human.workspace_id = intent.workspace_id
+    WHERE intent.workspace_id = sqlc.arg('workspace_id') AND intent.id = sqlc.arg('decision_intent_id')
+      AND target.human_user_id = sqlc.arg('human_user_id') AND target.consumed_at IS NULL
+      AND intent.sealed_at IS NULL AND intent.closed_at IS NULL AND intent.consumed_at IS NULL
+      AND tag.deleted_at IS NULL AND task.status = 'running' AND task.chat_session_id IS NULL
+      AND asking.archived_at IS NULL AND clock_timestamp() < intent.expires_at
+)::boolean AS open;
+
 -- name: LockDecisionSession :one
 SELECT id FROM chat_session
 WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
