@@ -43,7 +43,7 @@ func claudeCompactionTokens(window int64, env []string, cwd string, args []strin
 	if window <= 0 {
 		return 0
 	}
-	compactWindow := window
+	compactWindow := min(window, int64(1000000))
 	if value, found := lastClaudeEnvValue(env, "CLAUDE_CODE_MAX_CONTEXT_TOKENS"); found && value != "" {
 		return 0
 	}
@@ -55,6 +55,22 @@ func claudeCompactionTokens(window int64, env []string, cwd string, args []strin
 		if _, err := strconv.ParseUint(canonicalModel[separator+1:], 10, 32); err == nil {
 			canonicalModel = canonicalModel[:separator]
 		}
+	}
+	selectedModel := ""
+	for index, arg := range args {
+		if arg == "--model" && index+1 < len(args) {
+			selectedModel = args[index+1]
+		}
+		if value, found := strings.CutPrefix(arg, "--model="); found {
+			selectedModel = value
+		}
+	}
+	nativeExtended := false
+	for _, prefix := range []string{"claude-opus-4-7", "claude-opus-4-8", "claude-opus-5", "claude-sonnet-5", "claude-haiku-5-5", "claude-fable"} {
+		nativeExtended = nativeExtended || strings.HasPrefix(canonicalModel, prefix)
+	}
+	if !nativeExtended && !strings.Contains(selectedModel, "[1m]") {
+		compactWindow = min(compactWindow, int64(200000))
 	}
 	configDir, err := claudeConfigDir(env, cwd)
 	if err != nil {

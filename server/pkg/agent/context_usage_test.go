@@ -31,7 +31,7 @@ func TestCodexLastRequestIsNotTurnTotal(t *testing.T) {
 func TestCompactionPointsHonorLowerCLIOverrides(t *testing.T) {
 	root := t.TempDir()
 	env := []string{"CLAUDE_CONFIG_DIR=" + root, "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50"}
-	if got := claudeCompactionTokens(1000000, env, root, nil, "claude-sonnet-4-6"); got != 500000 {
+	if got := claudeCompactionTokens(1000000, env, root, nil, "claude-opus-5-5"); got != 500000 {
 		t.Fatalf("Claude override = %d", got)
 	}
 	env = append(env, "CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000")
@@ -71,24 +71,47 @@ func TestClaudeCompactionGuardReservesSmallWindowHeadroom(t *testing.T) {
 	}
 }
 
+func TestClaudeCompactionGuardRequiresLegacyExtendedOptIn(t *testing.T) {
+	root := t.TempDir()
+	env := []string{"CLAUDE_CONFIG_DIR=" + root}
+	for _, testCase := range []struct {
+		name, model string
+		args        []string
+		want        int64
+	}{
+		{"legacy default", "claude-sonnet-4-6", nil, 167000},
+		{"legacy dated default", "claude-opus-4-6-20260217", nil, 167000},
+		{"explicit extended", "claude-sonnet-4-6", []string{"--model", "sonnet[1m]"}, 950000},
+		{"last model flag wins", "claude-sonnet-4-6", []string{"--model", "sonnet[1m]", "--model=sonnet"}, 167000},
+		{"native extended", "claude-opus-5-5", nil, 950000},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := claudeCompactionTokens(1000000, env, root, testCase.args, testCase.model); got != testCase.want {
+				t.Fatalf("guard = %d, want %d", got, testCase.want)
+			}
+		})
+	}
+}
+
 func TestClaudeCompactionGuardHonorsPerModelWindow(t *testing.T) {
 	root := t.TempDir()
 	env := []string{"CLAUDE_CONFIG_DIR=" + root}
+	args := []string{"--model", "sonnet[1m]"}
 	settings := `{"modelSettings":{"claude-sonnet-4-6":{"autoCompactWindow":200000},"claude-opus-4-6":{"autoCompactWindow":500000}}}`
 	if err := os.WriteFile(filepath.Join(root, "settings.json"), []byte(settings), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if got := claudeCompactionTokens(1000000, env, root, nil, "claude-sonnet-4-6"); got != 167000 {
+	if got := claudeCompactionTokens(1000000, env, root, args, "claude-sonnet-4-6"); got != 167000 {
 		t.Fatalf("per-model guard = %d, want 167000", got)
 	}
-	if got := claudeCompactionTokens(1000000, env, root, nil, "claude-opus-4-6"); got != 467000 {
+	if got := claudeCompactionTokens(1000000, env, root, args, "claude-opus-4-6"); got != 467000 {
 		t.Fatalf("other model guard = %d, want 467000", got)
 	}
-	if got := claudeCompactionTokens(1000000, env, root, nil, "claude-sonnet-4-6-20260217"); got != 167000 {
+	if got := claudeCompactionTokens(1000000, env, root, args, "claude-sonnet-4-6-20260217"); got != 167000 {
 		t.Fatalf("dated model guard = %d, want 167000", got)
 	}
 	env = append(env, "CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000")
-	if got := claudeCompactionTokens(1000000, env, root, nil, "claude-sonnet-4-6"); got != 167000 {
+	if got := claudeCompactionTokens(1000000, env, root, args, "claude-sonnet-4-6"); got != 167000 {
 		t.Fatalf("conservative saved lower limit was raised, got %d", got)
 	}
 }
