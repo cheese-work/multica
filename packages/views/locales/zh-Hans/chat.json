@@ -1,6 +1,7 @@
 {
   "page": {
     "interactive_login_required": "请重新登录以使用聊天。",
+    "interactive_login_action": "登录",
     "title": "聊天",
     "select_prompt": "选择一个对话，或点 + 新建",
     "agent_link_no_access": "你没有权限与该智能体聊天。"

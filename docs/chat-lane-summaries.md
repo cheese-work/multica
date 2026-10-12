@@ -37,7 +37,10 @@ in the subsequent decision-request slice.
 
 CLI, legacy and unknown JWT provenance receives the stable refusal code
 `interactive_login_required`. Web and desktop Chat prompt **Sign in again to
-use Chat** without automatically logging out. Sliding renewal does not add
+use Chat** with a **Sign in** button, without automatically logging out.
+The Chat page and floating Chat window share this action. Only clicking the
+button invokes the existing shared logout flow and opens the platform's
+login screen for a fresh interactive sign-in. Sliding renewal does not add
 `amr` to legacy tokens, so an active legacy session stays locked out until
 actual re-login, with no automatic migration deadline. Existing desktop
 tokens minted by `/api/cli-token` also need replacement.

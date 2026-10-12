@@ -14,6 +14,9 @@ import {
 } from "../navigation";
 
 const TEST_RESOURCES = { en: { common: enCommon, chat: enChat } };
+const mockSignIn = vi.hoisted(() => vi.fn());
+
+vi.mock("../auth/use-logout", () => ({ useLogout: () => mockSignIn }));
 
 // These tests target the page-level URL wiring (`?agent=` / `?session=`), so
 // the conversation internals are stubbed and the controller is replaced with
@@ -273,6 +276,9 @@ describe("ChatPage URL synchronization", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Sign in again to use Chat");
     expect(storeRef.current.activeSessionId).toBe("preserved-session");
     expect(page.replace).not.toHaveBeenCalled();
+    expect(mockSignIn).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(mockSignIn).toHaveBeenCalledTimes(1);
   });
   it.each(["/globex/issues", "/acme/issues"])(
     "does not redirect back to chat when the retained page observes %s",
