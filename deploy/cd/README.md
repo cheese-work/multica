@@ -700,6 +700,8 @@ unconfirmed.
 - The deployed build is the `main` head at the time of that push, not the
   skipped commit. Check the served commit on C00 `/health` against the merged
   SHA after `cd-deploy` finishes.
-- The X99 CLI and daemon are not updated by CD. Update them separately from the
-  deployed fork SHA with `scripts/install-cli-from-ref.sh`. Do not use
-  `multica update`, which fetches the upstream release.
+- The X99 CLI and daemon are not updated by CD. `scripts/install-cli-from-ref.sh`
+  builds the CLI from the deployed fork SHA and replaces only the CLI
+  executable. It does not replace or restart a running daemon; the X99 owner
+  routes that separately. Do not use `multica update`, which fetches the
+  upstream release.
