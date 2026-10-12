@@ -10,6 +10,38 @@ INSERT INTO decision_intent_target (decision_intent_id, human_user_id)
 VALUES (sqlc.arg('decision_intent_id'), sqlc.arg('human_user_id'))
 RETURNING *;
 
+-- name: StampCommentDecisionIntent :exec
+UPDATE comment SET decision_intent_id = sqlc.arg('decision_intent_id')
+WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('comment_id');
+
+-- name: CloseDecisionIntent :exec
+UPDATE decision_intent
+SET closed_at = COALESCE(closed_at, clock_timestamp()), close_reason = sqlc.arg('close_reason'),
+    sealed_at = COALESCE(sealed_at, clock_timestamp())
+WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id');
+
+-- name: SealDecisionIntent :exec
+UPDATE decision_intent SET sealed_at = COALESCE(sealed_at, clock_timestamp())
+WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id');
+
+-- name: DecisionIntentRefusal :one
+SELECT CASE
+    WHEN intent.sealed_at IS NOT NULL THEN 'sealed'
+    WHEN intent.closed_at IS NOT NULL THEN 'closed'
+    WHEN tag.id IS NULL OR tag.deleted_at IS NOT NULL THEN 'comment_deleted'
+    WHEN task.id IS NULL OR task.status <> 'running' THEN 'task_stopped'
+    WHEN clock_timestamp() >= intent.expires_at THEN 'expired'
+    WHEN intent.consumed_at IS NOT NULL OR NOT EXISTS (
+        SELECT 1 FROM decision_intent_target target
+        WHERE target.decision_intent_id = intent.id AND target.consumed_at IS NULL
+    ) THEN 'consumed'
+    ELSE ''
+END::text AS reason
+FROM decision_intent intent
+LEFT JOIN comment tag ON tag.id = intent.comment_id AND tag.issue_id = intent.issue_id AND tag.workspace_id = intent.workspace_id
+LEFT JOIN agent_task_queue task ON task.id = intent.task_id
+WHERE intent.workspace_id = sqlc.arg('workspace_id') AND intent.id = sqlc.arg('id');
+
 -- name: CreateDecisionRequest :one
 INSERT INTO decision_request (workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, origin, decision_intent_id)
 VALUES (sqlc.arg('workspace_id'), sqlc.arg('issue_id'), sqlc.arg('asking_agent_id'), sqlc.arg('human_user_id'), sqlc.arg('chat_session_id'), sqlc.narg('ping_message_id'), sqlc.narg('issue_comment_id'), sqlc.arg('ask'), sqlc.arg('escalation_class'), sqlc.arg('origin'), sqlc.narg('decision_intent_id'))

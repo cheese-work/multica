@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/commentguard"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/governance/receipt"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
@@ -1498,6 +1499,7 @@ func keepRootConnected(byID map[string]db.Comment) []db.Comment {
 
 type CreateCommentRequest struct {
 	Content          string   `json:"content"`
+	DecisionIntent   bool     `json:"decision_intent"`
 	Type             string   `json:"type"`
 	ParentID         *string  `json:"parent_id"`
 	AttachmentIDs    []string `json:"attachment_ids"`
@@ -1733,6 +1735,11 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.DecisionIntent && r.Header.Get("X-Actor-Source") != "task_token" {
+		writeError(w, http.StatusForbidden, "decision intent requires an issue task token")
+		return
+	}
+
 	// Strip bytes PostgreSQL's TEXT column rejects before the empty check. The
 	// case reachable over the JSON API is an embedded NUL (0x00, SQLSTATE
 	// 22021) that survives a JSON round trip; sanitizeNullBytes also drops
@@ -1933,29 +1940,60 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// cleanup. Inside this transaction the row is not yet visible to a delete,
 	// so there is no window at all. Mirrors the attachment-set edit in
 	// UpdateComment.
-	tx, err := h.beginWakeupWrite(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create comment")
-		return
-	}
-	defer tx.Rollback(r.Context())
-	qtx := h.Queries.WithTx(tx)
+	var tx pgx.Tx
+	var qtx *db.Queries
+	var cleared []db.Comment
+	var err error
+	var intentTargets []pgtype.UUID
 	// LockThreadForReplyAndClearResolution takes the thread lock and, still
 	// inside this transaction, clears any resolution held by the root or any
 	// reply in the thread — so a reply landing in a resolved thread reopens it
 	// atomically with its own insert instead of via a separate post-commit
 	// write through an unlocked handle (see commentguard package doc).
-	_, cleared, err := commentguard.LockThreadForReplyAndClearResolution(r.Context(), qtx, issue.WorkspaceID, parentID)
-	if err != nil {
-		slog.Warn("lock comment thread failed", append(logger.RequestAttrs(r), "error", err, "issue_id", issueID)...)
-		writeError(w, http.StatusInternalServerError, "failed to create comment")
+	for attempt := 0; ; attempt++ {
+		tx, err = h.beginWakeupWrite(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to create comment")
+			return
+		}
+		qtx = h.Queries.WithTx(tx)
+		if req.DecisionIntent {
+			_, err = qtx.LockWorkspaceForChatSessionCreate(r.Context(), issue.WorkspaceID)
+		}
+		if err == nil {
+			_, cleared, err = commentguard.LockThreadForReplyAndClearResolution(r.Context(), qtx, issue.WorkspaceID, parentID)
+		}
+		if err == nil && req.DecisionIntent {
+			issue, intentTargets, err = h.prepareDecisionIntent(r, qtx, issue, authorType, createParams.AuthorID, req.Content)
+		}
+		if err == nil {
+			break
+		}
+		_ = tx.Rollback(r.Context())
+		if req.DecisionIntent && decisiontx.IsRetryable(err) && attempt < 2 {
+			select {
+			case <-time.After(20 * time.Millisecond):
+				continue
+			case <-r.Context().Done():
+			}
+		}
+		if req.DecisionIntent {
+			writeDecisionIntentError(w, err)
+		} else {
+			slog.Warn("lock comment thread failed", append(logger.RequestAttrs(r), "error", err, "issue_id", issueID)...)
+			writeError(w, http.StatusInternalServerError, "failed to create comment")
+		}
 		return
 	}
+	defer tx.Rollback(r.Context())
 	created, err := qtx.CreateComment(r.Context(), createParams)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// The issue was deleted, possibly while this waited for its row lock.
 		writeError(w, http.StatusNotFound, "issue not found")
 		return
+	}
+	if err == nil && req.DecisionIntent {
+		err = createCommentDecisionIntent(r, qtx, created.Comment(), intentTargets)
 	}
 	if err == nil && len(attachmentIDs) > 0 {
 		// Owner first: the CreateComment statement above took the issue row, and
@@ -1999,14 +2037,22 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	resp := commentToResponse(comment, nil, groupedAtt[uuidToString(comment.ID)])
 	resp.IssueRevision = created.IssueRevision
 	slog.Info("comment created", append(logger.RequestAttrs(r), "comment_id", uuidToString(comment.ID), "issue_id", issueID)...)
-	h.publish(protocol.EventCommentCreated, uuidToString(issue.WorkspaceID), authorType, authorID, map[string]any{
+	commentEvent := map[string]any{
 		"comment":             resp,
 		"issue_title":         issue.Title,
 		"issue_assignee_type": textToPtr(issue.AssigneeType),
 		"issue_assignee_id":   uuidToPtr(issue.AssigneeID),
 		"issue_status":        issue.Status,
 		"issue_revision":      created.IssueRevision,
-	})
+	}
+	if req.DecisionIntent {
+		targets := make([]string, len(intentTargets))
+		for index, humanID := range intentTargets {
+			targets[index] = uuidToString(humanID)
+		}
+		commentEvent["decision_intent_targets"] = targets
+	}
+	h.publish(protocol.EventCommentCreated, uuidToString(issue.WorkspaceID), authorType, authorID, commentEvent)
 
 	// The resolution clear itself already committed inside the transaction
 	// above; this only publishes comment:unresolved for it, after commit, same

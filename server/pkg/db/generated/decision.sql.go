@@ -11,6 +11,24 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const closeDecisionIntent = `-- name: CloseDecisionIntent :exec
+UPDATE decision_intent
+SET closed_at = COALESCE(closed_at, clock_timestamp()), close_reason = $1,
+    sealed_at = COALESCE(sealed_at, clock_timestamp())
+WHERE workspace_id = $2 AND id = $3
+`
+
+type CloseDecisionIntentParams struct {
+	CloseReason pgtype.Text `json:"close_reason"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) CloseDecisionIntent(ctx context.Context, arg CloseDecisionIntentParams) error {
+	_, err := q.db.Exec(ctx, closeDecisionIntent, arg.CloseReason, arg.WorkspaceID, arg.ID)
+	return err
+}
+
 const createDecisionAnswer = `-- name: CreateDecisionAnswer :one
 INSERT INTO decision_answer (decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, content_snapshot, effective_at, issue_comment_id)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -190,6 +208,37 @@ func (q *Queries) CreateDecisionRequest(ctx context.Context, arg CreateDecisionR
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const decisionIntentRefusal = `-- name: DecisionIntentRefusal :one
+SELECT CASE
+    WHEN intent.sealed_at IS NOT NULL THEN 'sealed'
+    WHEN intent.closed_at IS NOT NULL THEN 'closed'
+    WHEN tag.id IS NULL OR tag.deleted_at IS NOT NULL THEN 'comment_deleted'
+    WHEN task.id IS NULL OR task.status <> 'running' THEN 'task_stopped'
+    WHEN clock_timestamp() >= intent.expires_at THEN 'expired'
+    WHEN intent.consumed_at IS NOT NULL OR NOT EXISTS (
+        SELECT 1 FROM decision_intent_target target
+        WHERE target.decision_intent_id = intent.id AND target.consumed_at IS NULL
+    ) THEN 'consumed'
+    ELSE ''
+END::text AS reason
+FROM decision_intent intent
+LEFT JOIN comment tag ON tag.id = intent.comment_id AND tag.issue_id = intent.issue_id AND tag.workspace_id = intent.workspace_id
+LEFT JOIN agent_task_queue task ON task.id = intent.task_id
+WHERE intent.workspace_id = $1 AND intent.id = $2
+`
+
+type DecisionIntentRefusalParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) DecisionIntentRefusal(ctx context.Context, arg DecisionIntentRefusalParams) (string, error) {
+	row := q.db.QueryRow(ctx, decisionIntentRefusal, arg.WorkspaceID, arg.ID)
+	var reason string
+	err := row.Scan(&reason)
+	return reason, err
 }
 
 const getDecisionRequest = `-- name: GetDecisionRequest :one
@@ -594,4 +643,35 @@ func (q *Queries) LockDecisionSourceMessages(ctx context.Context, arg LockDecisi
 		return nil, err
 	}
 	return items, nil
+}
+
+const sealDecisionIntent = `-- name: SealDecisionIntent :exec
+UPDATE decision_intent SET sealed_at = COALESCE(sealed_at, clock_timestamp())
+WHERE workspace_id = $1 AND id = $2
+`
+
+type SealDecisionIntentParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) SealDecisionIntent(ctx context.Context, arg SealDecisionIntentParams) error {
+	_, err := q.db.Exec(ctx, sealDecisionIntent, arg.WorkspaceID, arg.ID)
+	return err
+}
+
+const stampCommentDecisionIntent = `-- name: StampCommentDecisionIntent :exec
+UPDATE comment SET decision_intent_id = $1
+WHERE workspace_id = $2 AND id = $3
+`
+
+type StampCommentDecisionIntentParams struct {
+	DecisionIntentID pgtype.UUID `json:"decision_intent_id"`
+	WorkspaceID      pgtype.UUID `json:"workspace_id"`
+	CommentID        pgtype.UUID `json:"comment_id"`
+}
+
+func (q *Queries) StampCommentDecisionIntent(ctx context.Context, arg StampCommentDecisionIntentParams) error {
+	_, err := q.db.Exec(ctx, stampCommentDecisionIntent, arg.DecisionIntentID, arg.WorkspaceID, arg.CommentID)
+	return err
 }

@@ -447,6 +447,38 @@ func TestNotification_CommentCreated(t *testing.T) {
 	}
 }
 
+func TestNotification_DecisionIntentSuppressesNamedPeople(test *testing.T) {
+	const agentID = "11111111-1111-4111-8111-111111111111"
+	queries := db.New(testPool)
+	bus := newNotificationBus(test, queries)
+	humanEmail := "notif-intent@multica.ai"
+	humanID := createTestUser(test, humanEmail)
+	test.Cleanup(func() { cleanupTestUser(test, humanEmail) })
+	issueID := createTestIssue(test, testWorkspaceID, testUserID)
+	test.Cleanup(func() {
+		cleanupInboxForIssue(test, issueID)
+		cleanupTestIssue(test, issueID)
+	})
+	addTestSubscriber(test, issueID, "member", humanID, "mentioned")
+	addTestSubscriber(test, issueID, "member", testUserID, "creator")
+	bus.Publish(events.Event{
+		Type: protocol.EventCommentCreated, WorkspaceID: testWorkspaceID, ActorType: "agent", ActorID: agentID,
+		Payload: map[string]any{
+			"comment": handler.CommentResponse{
+				ID: "00000000-0000-0000-0000-000000000000", IssueID: issueID, AuthorType: "agent", AuthorID: agentID,
+				Content: "[@Human](mention://member/" + humanID + ")", Type: "comment",
+			},
+			"issue_title": "intent notification", "issue_status": "todo", "decision_intent_targets": []string{humanID},
+		},
+	})
+	if items := inboxItemsForRecipient(test, queries, humanID); len(items) != 0 {
+		test.Fatalf("named person got %d notifications before ping", len(items))
+	}
+	if items := inboxItemsForRecipient(test, queries, testUserID); len(items) != 1 || items[0].Type != "new_comment" {
+		test.Fatalf("unrelated subscriber notifications = %v", items)
+	}
+}
+
 // TestNotification_SystemCommentSkipsInboxAndMentions guards the MUL-2538
 // must-fix: a comment with author_type='system' (the platform-generated
 // child-done parent notify) must NOT create any inbox rows for parent
