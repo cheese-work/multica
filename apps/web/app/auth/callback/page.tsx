@@ -80,12 +80,12 @@ function CallbackContent() {
         : null;
 
     if (cliCallback) {
-      // CLI login flow: exchange the Google code for a JWT, then redirect the
-      // token back to the CLI's local HTTP listener (e.g. WSL2 host).
       api
         .googleLogin(code, redirectUri)
-        .then(({ token }) => {
-          redirectToCliCallback(cliCallback, token, cliState);
+        .then(async ({ token }) => {
+          api.setToken(token);
+          const { token: cliToken } = await api.issueCliToken();
+          redirectToCliCallback(cliCallback, cliToken, cliState);
         })
         .catch((err) => {
           authLogger.error("CLI Google OAuth callback failed", err);
