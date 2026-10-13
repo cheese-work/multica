@@ -560,9 +560,9 @@ export function ChatInput({
           if (key !== keyAtSend) clearInputDraft(key);
         }
       };
-      const command = content.trim();
+      const command = onRename ? editorRef.current?.getText().trim() ?? "" : "";
       if (onRename && /^\/rename(?:\s|$)/.test(command)) {
-        const title = command.slice("/rename".length).trim();
+        const title = command.slice("/rename".length).replace(/\s*[\r\n]+\s*/g, " ").trim();
         if (!await onRename(title)) return false;
         commitInput({ clearEditor: editorDraftKeyRef.current === keyAtSend });
         if (!title) editorScrubbedRef.current = false;
@@ -716,6 +716,7 @@ export function ChatInput({
             mentionMode={contextItems ? "context" : "default"}
             mentionContextItems={contextItems}
             enableSlashCommands
+            enableRenameCommand={!!onRename}
             // The bubble menu carries the only affordance that can strip
             // formatting — "Normal text" (setParagraph) plus the mark/list
             // toggles. Once a `# ` input rule or a Markdown/HTML paste turns a

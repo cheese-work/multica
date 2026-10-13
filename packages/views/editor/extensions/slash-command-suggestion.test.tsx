@@ -97,7 +97,7 @@ function fakeQc(data: {
 }
 
 function items(qc: QueryClient, query = "", before = ""): SlashCommandItem[] {
-  const config = createSlashCommandSuggestion(qc);
+  const config = createSlashCommandSuggestion(qc, () => true);
   const editor = new Editor({
     extensions: [StarterKit],
     content: {

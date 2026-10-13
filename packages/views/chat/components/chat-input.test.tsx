@@ -113,6 +113,7 @@ vi.mock("../../editor", async () => ({
     }, [value]);
     useImperativeHandle(ref, () => ({
       getMarkdown: () => valueRef.current,
+      getText: () => valueRef.current,
       clearContent: () => {
         editorState.cleared += 1;
         valueRef.current = "";

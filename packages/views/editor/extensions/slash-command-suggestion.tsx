@@ -220,6 +220,7 @@ function buildItems(
   qc: QueryClient,
   query: string,
   firstWord: boolean,
+  canRename: boolean,
 ): SlashCommandItem[] {
   const wsId = getCurrentWsId();
   if (!wsId) return [];
@@ -248,13 +249,13 @@ function buildItems(
     .map((s) => ({ id: s.id, label: s.name, description: s.description ?? "" }));
   const commands: SlashCommandItem[] = firstWord
     ? (["compact", "rename"] as const)
-        .filter((command) => command.startsWith(q))
+        .filter((command) => (command !== "rename" || canRename) && command.startsWith(q))
         .map((command) => ({ id: command, label: command, descriptionKey: command }))
     : [];
   return [...commands, ...skills].slice(0, MAX_ITEMS);
 }
 
-export function createSlashCommandSuggestion(qc: QueryClient): Omit<
+export function createSlashCommandSuggestion(qc: QueryClient, canRename = () => false): Omit<
   SuggestionOptions<SlashCommandItem>,
   "editor"
 > {
@@ -275,7 +276,7 @@ export function createSlashCommandSuggestion(qc: QueryClient): Omit<
       const firstWord = before.trim() === ""
         && position.depth === 1
         && position.parent.type.name === "paragraph";
-      return buildItems(qc, query, firstWord);
+      return buildItems(qc, query, firstWord, canRename());
     },
     command: ({ editor, range, props }) => {
       const nodeAfter = editor.view.state.selection.$to.nodeAfter;
