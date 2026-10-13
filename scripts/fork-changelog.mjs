@@ -1,10 +1,328 @@
 #!/usr/bin/env node
-// Skeleton so the contract tests fail on behaviour, not on a missing module (CHE-1634).
-const inert = () => ({ status: "missing", text: null, override: null, warnings: [] });
-export const parseChangelogLine = inert;
-export const sectionFor = () => "Improvements";
-export const evaluatePr = () => ({ kind: "hidden", reason: "missing", warnings: [] });
-export const formatCheck = () => ({ line: "", failing: false, warnings: [] });
-export const generateEntries = () => ({ entries: [], hidden: [], warnings: [], counts: {} });
-export const serializeEntries = () => "";
-export const optionsFromEnv = () => ({});
+// Fork changelog line generator (CHE-1631 line contract, CHE-1634 layer 2). Pure
+// functions plus two CLI modes:
+//   PR check (CI):  node scripts/fork-changelog.mjs --event "$GITHUB_EVENT_PATH"
+//     Prints `Entry: [<Section>] "<text>"` or `Hidden: <reason> — add ...` to the
+//     job summary and fails a feat/fix/perf PR without a valid Changelog line.
+//   Local preview:  node scripts/fork-changelog.mjs --fixture <file> --out <path>
+//     (or `pnpm changelog:preview`) writes the entries for a fixture, with no
+//     credentials and no network. The default output is git-ignored.
+// Optional flags/env: --start / FORK_CHANGELOG_START (YYYY-MM-DD, 00:00 ICT) and
+// --sync-prefix / FORK_CHANGELOG_SYNC_PREFIX.
+import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { pathToFileURL } from "node:url";
+
+const DEFAULT_START = "2026-10-11";
+const DEFAULT_SYNC_PREFIX = "upstream-sync/";
+const MAX_CODE_POINTS = 140;
+const ICT_OFFSET_MS = 7 * 60 * 60 * 1000;
+
+const LINE = /^Changelog(?:\((feat|fix|perf)\))?:\s?(.*)$/;
+const SECTIONS = { feat: "New Features", fix: "Bug Fixes", perf: "Improvements" };
+const REQUIRES_LINE = new Set(["feat", "fix", "perf"]);
+
+// Control, bidi and zero-width characters. U+200D (joiner) stays: emoji sequences
+// need it. Token detection runs on a copy with U+200D removed as well.
+const STRIP = /[\u0000-\u001f\u007f-\u009f\u200b\u200c\u200e\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g;
+const JOINER = /\u200d/g;
+const TOKENS = [
+  /ghp_[A-Za-z0-9]{10,}/,
+  /github_pat_[A-Za-z0-9_]{10,}/,
+  /\bsk-[A-Za-z0-9_-]{10,}/,
+  /\bAKIA[0-9A-Z]{12,}/,
+  /\beyJ[\w-]+\.[\w-]+\.[\w-]+/,
+];
+
+// Drops HTML comments (an unclosed one runs to the end) and fenced code.
+function liveLines(body) {
+  const text = body.replace(/\r\n?/g, "\n").replace(/<!--[\s\S]*?(-->|$)/g, "");
+  let fenced = false;
+  return text.split("\n").filter((line) => {
+    if (/^\s*(```|~~~)/.test(line)) {
+      fenced = !fenced;
+      return false;
+    }
+    return !fenced;
+  });
+}
+
+function truncateGraphemes(text, limit) {
+  let used = 0;
+  let out = "";
+  for (const { segment } of new Intl.Segmenter("en", { granularity: "grapheme" }).segment(text)) {
+    used += [...segment].length;
+    if (used > limit) break;
+    out += segment;
+  }
+  return out;
+}
+
+const result = (status, text, override, warnings) => ({ status, text, override, warnings });
+
+export function parseChangelogLine(body) {
+  const matches = liveLines(typeof body === "string" ? body : "")
+    .map((line) => LINE.exec(line))
+    .filter(Boolean);
+  if (matches.length === 0) return result("missing", null, null, []);
+  const warnings = [];
+  if (matches.length > 1) warnings.push("More than one Changelog line: the first one is used.");
+
+  const [, override, raw] = matches[0];
+  const value = raw.trim();
+  if (value === "") return result("missing", null, null, warnings);
+  if (/^<.*>$/.test(value)) {
+    warnings.push("The Changelog line is still the template placeholder.");
+    return result("missing", null, null, warnings);
+  }
+
+  const spaced = value.replace(/[\t\v\f]/g, " ");
+  const stripped = spaced.replace(STRIP, "");
+  const cleaned = stripped.replace(/\s+/g, " ").trim();
+  if (stripped !== spaced) warnings.push("Stripped control, bidi or zero-width characters from the sentence.");
+  if (cleaned === "") return result("missing", null, null, warnings);
+  if (cleaned.toLowerCase() === "none") return result("none", null, null, warnings);
+  const probe = cleaned.replace(JOINER, "");
+  if (TOKENS.some((token) => token.test(probe))) {
+    warnings.push("The sentence looks like a credential and is hidden.");
+    return result("parse-error", null, null, warnings);
+  }
+  if (/\bCHE-\d+\b/.test(cleaned)) warnings.push("The sentence names an issue id; users cannot open it.");
+
+  let text = cleaned;
+  if ([...text].length > MAX_CODE_POINTS) {
+    text = truncateGraphemes(text, MAX_CODE_POINTS).trimEnd();
+    warnings.push(`Truncated to ${MAX_CODE_POINTS} characters.`);
+  }
+  return result("text", text, override ?? null, warnings);
+}
+
+const titleType = (title) => /^([a-z]+)(?:\([^)]*\))?!?:/i.exec(title ?? "")?.[1].toLowerCase() ?? null;
+
+export function sectionFor(title, override) {
+  return SECTIONS[override] ?? SECTIONS[titleType(title)] ?? "Improvements";
+}
+
+// --- revert detection -------------------------------------------------------
+
+const REVERT_TITLE = /^Revert\s+"(.+)"(?:\s*\(#\d+\))?\s*$/i;
+const REVERT_BODY = /Reverts\s+cheese-work\/multica#(\d+)/gi;
+
+const isRevertPr = (pr) =>
+  REVERT_TITLE.test(pr.title ?? "") || /Reverts\s+cheese-work\/multica#\d+/i.test(pr.body ?? "");
+
+// PR numbers a revert PR points at: body line, then the quoted title.
+function revertTargets(pr, prs) {
+  const targets = new Set([...(pr.body ?? "").matchAll(REVERT_BODY)].map((m) => Number(m[1])));
+  const inner = REVERT_TITLE.exec(pr.title ?? "")?.[1];
+  if (inner) {
+    const numbered = /\(#(\d+)\)\s*$/.exec(inner);
+    const stripped = inner.replace(/\s*\(#\d+\)\s*$/, "");
+    const byTitle = prs.find((p) => p !== pr && (p.title === inner || p.title === stripped));
+    if (numbered) targets.add(Number(numbered[1]));
+    else if (byTitle) targets.add(byTitle.number);
+  }
+  return targets;
+}
+
+// Edges point from a reverting commit to the commit it reverts. A revert that is
+// itself reverted no longer hides its target.
+function revertedShas(prs, commits) {
+  const shas = new Set([...commits.map((c) => c.sha), ...prs.map((p) => p.mergeSha)]);
+  const byNumber = new Map(prs.map((p) => [p.number, p]));
+  const reverters = new Map(); // target sha -> Set of reverting shas
+  const link = (from, to) => {
+    if (!from || !to || from === to) return;
+    if (!reverters.has(to)) reverters.set(to, new Set());
+    reverters.get(to).add(from);
+  };
+  for (const pr of prs) {
+    for (const n of revertTargets(pr, prs)) link(pr.mergeSha, byNumber.get(n)?.mergeSha);
+  }
+  for (const commit of commits) {
+    for (const [, prefix] of (commit.message ?? "").matchAll(/This reverts commit ([0-9a-f]{7,40})/gi)) {
+      link(commit.sha, [...shas].find((s) => s.startsWith(prefix.toLowerCase())));
+    }
+  }
+  const memo = new Map();
+  const isReverted = (sha) => {
+    if (memo.has(sha)) return memo.get(sha);
+    memo.set(sha, false); // cycle guard
+    const value = [...(reverters.get(sha) ?? [])].some((by) => !isReverted(by));
+    memo.set(sha, value);
+    return value;
+  };
+  return (sha) => isReverted(sha);
+}
+
+// --- evaluation -------------------------------------------------------------
+
+export function optionsFromEnv(env) {
+  const options = {};
+  if (env.FORK_CHANGELOG_START) options.startDate = env.FORK_CHANGELOG_START;
+  if (env.FORK_CHANGELOG_SYNC_PREFIX) options.syncPrefix = env.FORK_CHANGELOG_SYNC_PREFIX;
+  return options;
+}
+
+const hidden = (reason, warnings = [], type = null) => ({ kind: "hidden", reason, warnings, type });
+
+// One PR on its own: what the PR check prints and the generator's per-PR step.
+export function evaluatePr(pr, options = {}) {
+  const prefix = options.syncPrefix ?? DEFAULT_SYNC_PREFIX;
+  const type = titleType(pr.title);
+  if ((pr.headRef ?? "").startsWith(prefix)) return hidden("upstream-sync", [], type);
+  if (isRevertPr(pr)) return hidden("reverted", [], type);
+  const parsed = parseChangelogLine(pr.body);
+  if (parsed.status !== "text") return hidden(parsed.status, parsed.warnings, type);
+  return {
+    kind: "entry",
+    section: sectionFor(pr.title, parsed.override),
+    text: parsed.text,
+    warnings: parsed.warnings,
+  };
+}
+
+export function formatCheck(evaluation) {
+  if (evaluation.kind === "entry") {
+    return { line: `Entry: [${evaluation.section}] "${evaluation.text}"`, failing: false, warnings: evaluation.warnings };
+  }
+  const missingLine = evaluation.reason === "missing" || evaluation.reason === "parse-error";
+  return {
+    line: `Hidden: ${evaluation.reason} — add "Changelog: <sentence>" to publish`,
+    failing: missingLine && REQUIRES_LINE.has(evaluation.type),
+    warnings: evaluation.warnings,
+  };
+}
+
+const startMs = (startDate) => {
+  const ms = Date.parse(`${startDate}T00:00:00+07:00`);
+  if (Number.isNaN(ms)) throw new Error(`Invalid start date: ${startDate}`);
+  return ms;
+};
+const ictDate = (ms) => new Date(ms + ICT_OFFSET_MS).toISOString().slice(0, 10);
+
+export function generateEntries({ prs, firstParent = null }, options = {}) {
+  const start = startMs(options.startDate ?? DEFAULT_START);
+  const commits = (firstParent ?? []).map((c) => (typeof c === "string" ? { sha: c, message: "" } : c));
+  const onMain = firstParent ? new Set(commits.map((c) => c.sha)) : null;
+  const considered = prs.filter((pr) => !onMain || onMain.has(pr.mergeSha));
+  const isReverted = revertedShas(considered, commits);
+
+  const entries = [];
+  const hiddenList = [];
+  const warnings = [];
+  for (const pr of considered) {
+    const mergedMs = Date.parse(pr.mergedAt);
+    let hide = null;
+    if ((pr.headRef ?? "").startsWith(options.syncPrefix ?? DEFAULT_SYNC_PREFIX)) hide = "upstream-sync";
+    else if (Number.isNaN(mergedMs)) hide = "parse-error";
+    else if (mergedMs < start) hide = "before-start-date";
+    else if (isRevertPr(pr) || isReverted(pr.mergeSha)) hide = "reverted";
+    if (hide) {
+      hiddenList.push({ number: pr.number, reason: hide });
+      continue;
+    }
+    const evaluation = evaluatePr(pr, options);
+    for (const message of evaluation.warnings) warnings.push({ number: pr.number, message });
+    if (evaluation.kind === "hidden") {
+      hiddenList.push({ number: pr.number, reason: evaluation.reason });
+      continue;
+    }
+    entries.push({
+      id: `fork-pr-${pr.number}`,
+      number: pr.number,
+      mergedAt: new Date(mergedMs).toISOString(),
+      date: ictDate(mergedMs),
+      section: evaluation.section,
+      text: evaluation.text,
+    });
+  }
+  entries.sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt) || b.number - a.number);
+
+  const byReason = {};
+  for (const { reason } of hiddenList) byReason[reason] = (byReason[reason] ?? 0) + 1;
+  return {
+    entries,
+    hidden: hiddenList,
+    warnings,
+    counts: { shown: entries.length, hidden: hiddenList.length, byReason },
+  };
+}
+
+export const serializeEntries = ({ entries }) => `${JSON.stringify({ entries }, null, 2)}\n`;
+
+// Delete the target, write a temp file, rename on success: a failure leaves no file.
+export function writeAtomically(path, text) {
+  rmSync(path, { force: true });
+  mkdirSync(dirname(path), { recursive: true });
+  const temp = `${path}.${process.pid}.tmp`;
+  try {
+    writeFileSync(temp, text);
+    renameSync(temp, path);
+  } catch (error) {
+    rmSync(temp, { force: true });
+    throw error;
+  }
+}
+
+// --- CLI --------------------------------------------------------------------
+
+function parseArgs(argv) {
+  const args = {};
+  for (let i = 0; i < argv.length; i += 2) {
+    const key = argv[i];
+    if (!key.startsWith("--") || argv[i + 1] === undefined) throw new Error(`Bad argument: ${key}`);
+    args[key.slice(2)] = argv[i + 1];
+  }
+  return args;
+}
+
+function runCheck(eventPath, options, env) {
+  const { pull_request: pr } = JSON.parse(readFileSync(eventPath, "utf8"));
+  if (!pr) throw new Error("The event has no pull_request");
+  if (pr.state === "closed") {
+    console.log("Skipped: the PR is closed.");
+    return 0;
+  }
+  const input = { number: pr.number, title: pr.title ?? "", body: pr.body ?? "", headRef: pr.head?.ref ?? "" };
+  const check = formatCheck(evaluatePr(input, options));
+  console.log(check.line);
+  for (const message of check.warnings) console.log(`::warning::${message}`);
+  if (check.failing) {
+    console.log('::error::This feat/fix/perf PR has no valid Changelog line. Add "Changelog: <sentence>" or "Changelog: none".');
+  }
+  if (env.GITHUB_STEP_SUMMARY) {
+    const lines = ["### Fork changelog", "", "```text", check.line.replace(/`/g, "'"), "```"];
+    for (const message of check.warnings) lines.push("", `- Warning: ${message}`);
+    appendFileSync(env.GITHUB_STEP_SUMMARY, `${lines.join("\n")}\n`);
+  }
+  return check.failing ? 1 : 0;
+}
+
+function runPreview(fixturePath, outPath, options) {
+  const fixture = JSON.parse(readFileSync(fixturePath, "utf8"));
+  const generated = generateEntries(fixture, options);
+  writeAtomically(outPath, serializeEntries(generated));
+  const { shown, hidden: count } = generated.counts;
+  console.log(`Wrote ${outPath}: ${shown} shown, ${count} hidden.`);
+  return 0;
+}
+
+export function main(argv, env) {
+  try {
+    const args = parseArgs(argv);
+    const options = { ...optionsFromEnv(env) };
+    if (args.start) options.startDate = args.start;
+    if (args["sync-prefix"]) options.syncPrefix = args["sync-prefix"];
+    if (args.event) return runCheck(args.event, options, env);
+    if (args.fixture && args.out) return runPreview(args.fixture, args.out, options);
+    throw new Error("Use --event <file> or --fixture <file> --out <path>");
+  } catch (error) {
+    console.error(`fork-changelog: ${error.message}`);
+    return 1;
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  process.exitCode = main(process.argv.slice(2), process.env);
+}
