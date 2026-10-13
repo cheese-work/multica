@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -659,5 +660,38 @@ func TestForkChatSessionSharedAttachmentFileSurvivesDelete(test *testing.T) {
 	}
 	if deleteAttachment(copyID).Code != http.StatusNoContent || stored() {
 		test.Fatal("deleting the last row kept the stored file")
+	}
+}
+
+func TestForkChatSessionListsNewForkFirstAndKeepsTitle(test *testing.T) {
+	ctx := context.Background()
+	withStubLLM(test, stubLLMCompletion(test, http.StatusOK, "Generated Title"))
+	agentID, sourceID, _, _ := setupDirectChatSession(test, ctx, "Old DM")
+	forkMessage(test, sourceID, testutil.Cols{"role": "assistant", "content": "Hello from last week", "created_at": testutil.Raw("now() - interval '7 days'")})
+	recentID := dbfx.ChatSession(test, agentID, testutil.Cols{"title": "Recent DM"})
+	forkMessage(test, recentID, testutil.Cols{"role": "user", "content": "Recent", "created_at": testutil.Raw("now() - interval '1 hour'")})
+
+	var child ChatForkResponse
+	testutil.Call(test, testHandler.ForkChatSession, forkChatRequest(test, sourceID, "list-order")).Want(http.StatusCreated).JSON(&child)
+	cleanupChatFork(test, child.Session.ID)
+	for _, status := range []string{"active", "all"} {
+		var sessions []ChatSessionResponse
+		request := withChatTestWorkspaceCtx(test, newRequest(http.MethodGet, "/?status="+status, nil))
+		testutil.Call(test, testHandler.ListChatSessions, request).Want(http.StatusOK).JSON(&sessions)
+		position := map[string]int{}
+		for index, session := range sessions {
+			position[session.ID] = index
+		}
+		if position[child.Session.ID] > position[recentID] {
+			test.Fatalf("%s list put the new fork below an older DM: %v", status, position)
+		}
+	}
+
+	request := newRequest(http.MethodPost, "/api/chat/sessions/"+child.Session.ID+"/messages", map[string]any{"content": "First question in the fork"})
+	testutil.Call(test, testHandler.SendChatMessage, withChatTestWorkspaceCtx(test, withURLParam(request, "sessionId", child.Session.ID))).Want(http.StatusCreated)
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if title := chatSessionTitleFromDB(test, parseUUID(child.Session.ID)); title != "Old DM (fork)" {
+			test.Fatalf("first send auto-titled the fork: %q", title)
+		}
 	}
 }

@@ -221,7 +221,9 @@ WHERE cs.workspace_id = $1 AND cs.creator_id = $2 AND cs.status = 'active'
     OR
     lm.created_at IS NOT NULL
   )
-ORDER BY (cs.pinned_at IS NOT NULL) DESC, cs.pinned_at DESC, COALESCE(lm.created_at, cs.updated_at) DESC;
+-- GREATEST with created_at: a new fork of an old DM carries old copied times
+-- and must still list as new.
+ORDER BY (cs.pinned_at IS NOT NULL) DESC, cs.pinned_at DESC, GREATEST(COALESCE(lm.created_at, cs.updated_at), cs.created_at) DESC;
 
 -- name: ListAllChatSessionsByCreator :many
 -- Unlike ListChatSessionsByCreator this returns archived sessions too (for the
@@ -258,7 +260,9 @@ WHERE cs.workspace_id = $1 AND cs.creator_id = $2
     OR
     lm.created_at IS NOT NULL
   )
-ORDER BY (cs.pinned_at IS NOT NULL) DESC, cs.pinned_at DESC, COALESCE(lm.created_at, cs.updated_at) DESC;
+-- GREATEST with created_at: a new fork of an old DM carries old copied times
+-- and must still list as new.
+ORDER BY (cs.pinned_at IS NOT NULL) DESC, cs.pinned_at DESC, GREATEST(COALESCE(lm.created_at, cs.updated_at), cs.created_at) DESC;
 
 -- name: ListAgentBuilderSessionsByCreator :many
 -- The caller's unfinished agent-creation conversations.

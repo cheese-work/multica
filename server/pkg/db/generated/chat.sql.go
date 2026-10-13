@@ -2020,7 +2020,7 @@ WHERE cs.workspace_id = $1 AND cs.creator_id = $2
     OR
     lm.created_at IS NOT NULL
   )
-ORDER BY (cs.pinned_at IS NOT NULL) DESC, cs.pinned_at DESC, COALESCE(lm.created_at, cs.updated_at) DESC
+ORDER BY (cs.pinned_at IS NOT NULL) DESC, cs.pinned_at DESC, GREATEST(COALESCE(lm.created_at, cs.updated_at), cs.created_at) DESC
 `
 
 type ListAllChatSessionsByCreatorParams struct {
@@ -2068,6 +2068,8 @@ type ListAllChatSessionsByCreatorRow struct {
 // so any residual unread is uncleanable and must not light up any badge. Gating
 // on status here is the single source of truth for all unread surfaces (FAB,
 // sidebar Chat tab, chat-window header) — see MUL-4360.
+// GREATEST with created_at: a new fork of an old DM carries old copied times
+// and must still list as new.
 func (q *Queries) ListAllChatSessionsByCreator(ctx context.Context, arg ListAllChatSessionsByCreatorParams) ([]ListAllChatSessionsByCreatorRow, error) {
 	rows, err := q.db.Query(ctx, listAllChatSessionsByCreator, arg.WorkspaceID, arg.CreatorID)
 	if err != nil {
@@ -2706,7 +2708,7 @@ WHERE cs.workspace_id = $1 AND cs.creator_id = $2 AND cs.status = 'active'
     OR
     lm.created_at IS NOT NULL
   )
-ORDER BY (cs.pinned_at IS NOT NULL) DESC, cs.pinned_at DESC, COALESCE(lm.created_at, cs.updated_at) DESC
+ORDER BY (cs.pinned_at IS NOT NULL) DESC, cs.pinned_at DESC, GREATEST(COALESCE(lm.created_at, cs.updated_at), cs.created_at) DESC
 `
 
 type ListChatSessionsByCreatorParams struct {
@@ -2750,6 +2752,8 @@ type ListChatSessionsByCreatorRow struct {
 // IM-style list: each active session with its unread *count* (assistant
 // messages after the read cursor), a preview of the latest message, and
 // ordered by most-recent activity so a new reply bumps a session to the top.
+// GREATEST with created_at: a new fork of an old DM carries old copied times
+// and must still list as new.
 func (q *Queries) ListChatSessionsByCreator(ctx context.Context, arg ListChatSessionsByCreatorParams) ([]ListChatSessionsByCreatorRow, error) {
 	rows, err := q.db.Query(ctx, listChatSessionsByCreator, arg.WorkspaceID, arg.CreatorID)
 	if err != nil {
