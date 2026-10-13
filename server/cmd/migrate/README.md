@@ -1,5 +1,26 @@
 # Migration runner operations
 
+## Squad leader failure marker renumbering
+
+Migration `614_squad_leader_failure_marker` replaces the later-merged
+`593_squad_leader_failure_marker` filename to remove its numeric-prefix
+collision with `593_chat_continuation`. The chat-continuation migration is
+unchanged. Numbers 594 through 613 are reserved by the channel-origin stack;
+none of those migrations or the draft chat-auto-compaction migration replaces
+`capture_issue_collaboration_wakeup`.
+
+Migration versions are file basenames, not numeric prefixes. A database that
+already recorded `593_squad_leader_failure_marker` therefore runs the identical
+SQL again and records `614_squad_leader_failure_marker` as a new version. Leave
+the historical version row intact. The up migration contains only
+`CREATE OR REPLACE FUNCTION`, so reapplication preserves the function identity
+and existing trigger while continuing to exclude `squad_leader_failed` from
+collaboration wakeup capture. No migration-runner name map entry is needed.
+
+The down migration restores capture of marker changes; reapplying the up
+migration suppresses them again. Application rollback alone does not require
+rolling back this function. Production deployment remains gated on Cheese.
+
 ## Prebuild the chat-session delete lookup index
 
 Migration 472 builds `idx_agent_task_queue_chat_session`, which keeps the
