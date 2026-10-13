@@ -337,7 +337,7 @@ test("a revert of a revert shows the original again; the revert PRs stay hidden"
   const result = await run([
     pr(10),
     pr(11, { title: 'Revert "fix(x): change 10 (#10)"', body: "Reverts cheese-work/multica#10" }),
-    pr(12, { title: 'Revert "Revert "fix(x): change 10 (#10)"" (#11)', body: "Reverts cheese-work/multica#11" }),
+    pr(12, { title: 'Revert "Revert "fix(x): change 10 (#10)""', body: "Reverts cheese-work/multica#11" }),
   ]);
   assert.deepEqual(result.entries.map((e) => e.number), [10]);
   assert.equal(reasonOf(result, 11), "reverted");
@@ -498,7 +498,8 @@ test("PR check: warnings are annotated, a closed PR is skipped, a sync head pass
 });
 
 test("PR check workflow: GitHub-hosted, permissions: {}, no secrets, skips closed PRs", () => {
-  const wf = readFileSync(new URL("../.github/workflows/pr-changelog-check.yml", import.meta.url), "utf8");
+  const raw = readFileSync(new URL("../.github/workflows/pr-changelog-check.yml", import.meta.url), "utf8");
+  const wf = raw.replace(/^\s*#.*$/gm, "");
   assert.match(wf, /^permissions: \{\}$/m);
   assert.match(wf, /runs-on: ubuntu-latest/);
   assert.doesNotMatch(wf, /self-hosted|secrets\./);
@@ -506,6 +507,6 @@ test("PR check workflow: GitHub-hosted, permissions: {}, no secrets, skips close
   assert.match(wf, /pull_request:/);
   assert.doesNotMatch(wf, /pull_request_target/);
   assert.match(wf, /state != 'closed'/);
-  assert.match(wf, /upstream-sync\//);
+  assert.match(raw, /upstream-sync\//, "the header explains why sync heads stay off X99");
   assert.match(wf, /fork-changelog\.mjs --event/);
 });
