@@ -233,11 +233,19 @@ func TestDecisionSchemaV14(test *testing.T) {
 			test.Fatalf("want SQLSTATE %s, got %v", code, err)
 		}
 	}
-	test.Run("comment_kind_requires_request", func(test *testing.T) {
+	test.Run("comment_kind_requires_matching_stamp", func(test *testing.T) {
 		for _, kind := range []string{"ask", "quote", "disclaim", "delivery", "cancel", "veto"} {
 			test.Run(kind, func(test *testing.T) {
 				expectCode(test, "23514", `INSERT INTO comment (decision_comment_kind) VALUES ($1)`, kind)
-				fixture.Insert(test, "comment", testutil.Cols{"decision_request_id": uuid.NewString(), "decision_comment_kind": kind})
+				if kind == "ask" || kind == "cancel" {
+					fixture.Insert(test, "comment", testutil.Cols{"decision_request_id": uuid.NewString(), "decision_comment_kind": kind})
+					expectCode(test, "23514", `INSERT INTO comment (decision_answer_id, decision_comment_kind) VALUES ($1, $2)`, uuid.NewString(), kind)
+					expectCode(test, "23514", `INSERT INTO comment (decision_request_id, decision_answer_id, decision_comment_kind) VALUES ($1, $2, $3)`, uuid.NewString(), uuid.NewString(), kind)
+				} else {
+					fixture.Insert(test, "comment", testutil.Cols{"decision_answer_id": uuid.NewString(), "decision_comment_kind": kind})
+					expectCode(test, "23514", `INSERT INTO comment (decision_request_id, decision_comment_kind) VALUES ($1, $2)`, uuid.NewString(), kind)
+					fixture.Insert(test, "comment", testutil.Cols{"decision_request_id": uuid.NewString(), "decision_answer_id": uuid.NewString(), "decision_comment_kind": kind})
+				}
 			})
 		}
 		fixture.Insert(test, "comment", testutil.Cols{"decision_intent_id": uuid.NewString()})
@@ -375,7 +383,7 @@ func TestDecisionCommentConstraintMigrationStructure(test *testing.T) {
 		test.Error("the separate validation migration must acquire only the validation lock with a local timeout")
 	}
 	requestCheck := strings.Join(strings.Fields(readMigrationFile(test, "617_decision_comment_request_check.up.sql")), " ")
-	if requestCheck != "SET LOCAL lock_timeout = '2s'; ALTER TABLE comment ADD CONSTRAINT comment_decision_request_check CHECK (decision_comment_kind IS NULL OR decision_request_id IS NOT NULL) NOT VALID;" {
+	if requestCheck != "SET LOCAL lock_timeout = '2s'; ALTER TABLE comment ADD CONSTRAINT comment_decision_request_check CHECK ( decision_comment_kind IS NULL OR (decision_comment_kind IN ('ask', 'cancel') AND decision_request_id IS NOT NULL AND decision_answer_id IS NULL) OR (decision_comment_kind IN ('quote', 'disclaim', 'delivery', 'veto') AND decision_answer_id IS NOT NULL) ) NOT VALID;" {
 		test.Error("comment request CHECK must be added as NOT VALID with a local lock timeout")
 	}
 	requestValidation := strings.Join(strings.Fields(readMigrationFile(test, "618_decision_comment_request_validate.up.sql")), " ")

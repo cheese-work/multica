@@ -197,13 +197,18 @@ func TestDecisionCommentRequestValidationRejectsInvalidRows(test *testing.T) {
 	if _, err := pool.Exec(ctx, `INSERT INTO comment (content, decision_comment_kind) VALUES ('invalid', 'ask')`); err != nil {
 		test.Fatal(err)
 	}
+	for _, kind := range []string{"quote", "disclaim", "delivery", "veto"} {
+		if _, err := pool.Exec(ctx, `INSERT INTO comment (content, decision_answer_id, decision_comment_kind) VALUES ('valid answer', gen_random_uuid(), $1)`, kind); err != nil {
+			test.Fatal(err)
+		}
+	}
 	if err := run("617_decision_comment_request_check"); err != nil {
 		test.Fatal(err)
 	}
 	err := run("618_decision_comment_request_validate")
 	var pgError *pgconn.PgError
 	if !errors.As(err, &pgError) || pgError.Code != "23514" || pgError.ConstraintName != "comment_decision_request_check" {
-		test.Fatalf("validation must reject existing kind without request: %v", err)
+		test.Fatalf("validation must reject existing kind without a matching stamp: %v", err)
 	}
 	var recorded int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = '618_decision_comment_request_validate'`).Scan(&recorded); err != nil || recorded != 0 {
@@ -214,5 +219,9 @@ func TestDecisionCommentRequestValidationRejectsInvalidRows(test *testing.T) {
 	}
 	if err := run("618_decision_comment_request_validate"); err != nil {
 		test.Fatalf("validation retry after repairing the fixture: %v", err)
+	}
+	var answerComments int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM comment WHERE content = 'valid answer' AND decision_answer_id IS NOT NULL AND decision_request_id IS NULL`).Scan(&answerComments); err != nil || answerComments != 4 {
+		test.Fatalf("validation must preserve answer-only comments: count=%d err=%v", answerComments, err)
 	}
 }
