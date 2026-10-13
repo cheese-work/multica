@@ -15,9 +15,10 @@ const claimWakeupScopedEvents = `-- name: ClaimWakeupScopedEvents :many
 SELECT id, workspace_id, issue_id, project_id, event_type, event_key, agent_id, source_task_id, actor_type, actor_id, payload, delivered, chain, captured_at, retry_at, handled_at, outcome FROM wakeup_scoped_event
 WHERE handled_at IS NULL AND captured_at >= $1::timestamptz AND (retry_at IS NULL OR retry_at <= $2::timestamptz)
  AND (captured_at, id) > ($3::timestamptz, $4::uuid)
- AND ($5::uuid[] IS NULL OR workspace_id = ANY($5::uuid[]))
- AND issue_id <> ALL($6::uuid[])
-ORDER BY captured_at, id LIMIT $7
+ AND (captured_at, id) <= ($5::timestamptz, $6::uuid)
+ AND ($7::uuid[] IS NULL OR workspace_id = ANY($7::uuid[]))
+ AND issue_id <> ALL(COALESCE($8::uuid[], '{}'::uuid[]))
+ORDER BY captured_at, id LIMIT $9
 FOR UPDATE SKIP LOCKED
 `
 
@@ -26,6 +27,8 @@ type ClaimWakeupScopedEventsParams struct {
 	Now          pgtype.Timestamptz `json:"now"`
 	AfterAt      pgtype.Timestamptz `json:"after_at"`
 	AfterID      pgtype.UUID        `json:"after_id"`
+	UntilAt      pgtype.Timestamptz `json:"until_at"`
+	UntilID      pgtype.UUID        `json:"until_id"`
 	WorkspaceIds []pgtype.UUID      `json:"workspace_ids"`
 	SkipIssues   []pgtype.UUID      `json:"skip_issues"`
 	BatchSize    int32              `json:"batch_size"`
@@ -37,15 +40,19 @@ type ClaimWakeupScopedEventsParams struct {
 // is past retention: it is never claimed, so it can only expire, and neither the
 // size of an expired backlog nor the order of the prune can make it deliver.
 // @skip_issues are the issues this pass found busy. The scan starts after
-// (@after_at, @after_id), the drain's fair position: a pass that finds busy
-// issues moves it past them, so the next pass reaches the work behind them, and
-// an empty scan wraps it to the start, so every input is reached in turn.
+// (@after_at, @after_id), the drain's fair position, and stops at the sweep's
+// horizon (@until_at, @until_id): a pass moves the position past what it tried,
+// so the next pass reaches the work behind it, and a sweep ends at its horizon,
+// so inputs that arrive during it wait for the next sweep instead of extending
+// it, and every older input is reached again.
 func (q *Queries) ClaimWakeupScopedEvents(ctx context.Context, arg ClaimWakeupScopedEventsParams) ([]WakeupScopedEvent, error) {
 	rows, err := q.db.Query(ctx, claimWakeupScopedEvents,
 		arg.Oldest,
 		arg.Now,
 		arg.AfterAt,
 		arg.AfterID,
+		arg.UntilAt,
+		arg.UntilID,
 		arg.WorkspaceIds,
 		arg.SkipIssues,
 		arg.BatchSize,
@@ -294,8 +301,10 @@ func (q *Queries) DeferWakeupScopedEvent(ctx context.Context, arg DeferWakeupSco
 }
 
 const deleteHandledWakeupScopedEvents = `-- name: DeleteHandledWakeupScopedEvents :execrows
-DELETE FROM wakeup_scoped_event
-WHERE id IN (SELECT e.id FROM wakeup_scoped_event e WHERE e.handled_at IS NOT NULL AND e.handled_at < $1::timestamptz ORDER BY e.handled_at LIMIT $2 FOR UPDATE SKIP LOCKED)
+WITH picked AS MATERIALIZED (
+ SELECT e.id FROM wakeup_scoped_event e WHERE e.handled_at IS NOT NULL AND e.handled_at < $1::timestamptz
+ ORDER BY e.handled_at, e.id LIMIT $2 FOR UPDATE SKIP LOCKED)
+DELETE FROM wakeup_scoped_event w USING picked WHERE w.id=picked.id
 `
 
 type DeleteHandledWakeupScopedEventsParams struct {
@@ -303,6 +312,7 @@ type DeleteHandledWakeupScopedEventsParams struct {
 	BatchSize int32              `json:"batch_size"`
 }
 
+// Same materialized pick, for the same reason.
 func (q *Queries) DeleteHandledWakeupScopedEvents(ctx context.Context, arg DeleteHandledWakeupScopedEventsParams) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteHandledWakeupScopedEvents, arg.Before, arg.BatchSize)
 	if err != nil {
@@ -312,8 +322,11 @@ func (q *Queries) DeleteHandledWakeupScopedEvents(ctx context.Context, arg Delet
 }
 
 const expireWakeupScopedEvents = `-- name: ExpireWakeupScopedEvents :execrows
-UPDATE wakeup_scoped_event SET handled_at= $1::timestamptz,outcome='expired',retry_at=NULL
-WHERE handled_at IS NULL AND id IN (SELECT e.id FROM wakeup_scoped_event e WHERE e.handled_at IS NULL AND e.captured_at < $2::timestamptz ORDER BY e.captured_at LIMIT $3 FOR UPDATE SKIP LOCKED)
+WITH picked AS MATERIALIZED (
+ SELECT e.id FROM wakeup_scoped_event e WHERE e.handled_at IS NULL AND e.captured_at < $2::timestamptz
+ ORDER BY e.captured_at, e.id LIMIT $3 FOR UPDATE SKIP LOCKED)
+UPDATE wakeup_scoped_event w SET handled_at= $1::timestamptz,outcome='expired',retry_at=NULL
+FROM picked WHERE w.id=picked.id AND w.handled_at IS NULL
 `
 
 type ExpireWakeupScopedEventsParams struct {
@@ -325,7 +338,9 @@ type ExpireWakeupScopedEventsParams struct {
 // Pending inputs past retention are closed with a visible outcome, never
 // dropped silently and never promised. A row a drain holds is skipped, and the
 // outer statement rechecks that it is still pending, so an input delivered at
-// this moment keeps its outcome.
+// this moment keeps its outcome. The picked ids are materialized first: a plain
+// IN (subquery ... LIMIT) lets the planner run the subquery once per outer row,
+// which does not bound the batch.
 func (q *Queries) ExpireWakeupScopedEvents(ctx context.Context, arg ExpireWakeupScopedEventsParams) (int64, error) {
 	result, err := q.db.Exec(ctx, expireWakeupScopedEvents, arg.Now, arg.Before, arg.BatchSize)
 	if err != nil {
@@ -411,6 +426,23 @@ type MarkWakeupScopedEventHandledParams struct {
 func (q *Queries) MarkWakeupScopedEventHandled(ctx context.Context, arg MarkWakeupScopedEventHandledParams) error {
 	_, err := q.db.Exec(ctx, markWakeupScopedEventHandled, arg.Now, arg.Outcome, arg.ID)
 	return err
+}
+
+const newestPendingWakeupScopedEvent = `-- name: NewestPendingWakeupScopedEvent :one
+SELECT captured_at,id FROM wakeup_scoped_event WHERE handled_at IS NULL ORDER BY captured_at DESC,id DESC LIMIT 1
+`
+
+type NewestPendingWakeupScopedEventRow struct {
+	CapturedAt pgtype.Timestamptz `json:"captured_at"`
+	ID         pgtype.UUID        `json:"id"`
+}
+
+// The newest pending input: the horizon of a new sweep.
+func (q *Queries) NewestPendingWakeupScopedEvent(ctx context.Context) (NewestPendingWakeupScopedEventRow, error) {
+	row := q.db.QueryRow(ctx, newestPendingWakeupScopedEvent)
+	var i NewestPendingWakeupScopedEventRow
+	err := row.Scan(&i.CapturedAt, &i.ID)
+	return i, err
 }
 
 const rebaseDefaultWakeupInstance = `-- name: RebaseDefaultWakeupInstance :one
