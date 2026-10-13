@@ -266,10 +266,12 @@ export function ChatPage() {
       )}
       {c.showSkeleton ? (
         <ChatMessageSkeleton />
-      ) : c.hasMessages ? (
+      ) : c.hasMessages || c.currentSession?.continued_from_session_id || c.currentSession?.continued_into_session_id ? (
         <ChatMessageList
           key={c.activeSessionId}
           messages={c.messages}
+          continuedFromSessionId={c.currentSession?.continued_from_session_id}
+          continuedIntoSessionId={c.currentSession?.continued_into_session_id}
           pendingTask={c.pendingTask}
           availability={c.availability}
           firstItemIndex={c.firstItemIndex}

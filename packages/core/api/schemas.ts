@@ -2041,6 +2041,7 @@ const ChatChannelSourceSchema = z.object({
 export const ChatSessionSchema: z.ZodType<ChatSession> = z.object({
   id: z.string(),
   continued_into_session_id: z.string().uuid().nullable().optional().catch(undefined),
+  continued_from_session_id: z.string().uuid().nullable().optional().catch(undefined),
   workspace_id: z.string().default(""),
   agent_id: z.string().default(""),
   creator_id: z.string().default(""),

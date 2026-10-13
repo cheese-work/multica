@@ -929,10 +929,12 @@ export function ChatWindow() {
         <InteractiveLoginBanner />
       ) : showSkeleton ? (
         <ChatMessageSkeleton />
-      ) : hasMessages ? (
+      ) : hasMessages || currentSession?.continued_from_session_id || currentSession?.continued_into_session_id ? (
         <ChatMessageList
           key={activeSessionId}
           messages={messages}
+          continuedFromSessionId={currentSession?.continued_from_session_id}
+          continuedIntoSessionId={currentSession?.continued_into_session_id}
           pendingTask={pendingTask}
           availability={availability}
           firstItemIndex={firstItemIndex}

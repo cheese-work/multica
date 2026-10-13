@@ -49,6 +49,10 @@
     "action_failed_toast": "无法更新排队消息"
   },
   "message_list": {
+    "continued_from": "续接自",
+    "previous_dm": "之前的私信",
+    "continued_in": "继续于 →",
+    "continuation_summary": "对话摘要",
     "show_details": "查看详情",
     "replied_in": "{{elapsed}} 内回复",
     "failed_after": "{{elapsed}} 后失败",
