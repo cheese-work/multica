@@ -23,16 +23,22 @@ const SECTIONS = { feat: "New Features", fix: "Bug Fixes", perf: "Improvements" 
 const REQUIRES_LINE = new Set(["feat", "fix", "perf"]);
 
 // Everything invisible is stripped by Unicode property, not by list: default-ignorable
-// (zero-width, bidi, fillers, variation selectors, tags), control, unassigned, private
-// use, surrogates and line/paragraph separators. An emoji base keeps its skin tone, one
-// VS16 and a joiner that leads into another pictograph, so valid emoji survive.
+// (zero-width, bidi, fillers, variation selectors, tags), format, control, unassigned,
+// private use, surrogates and line/paragraph separators. Valid emoji survive: a base
+// keeps its skin tone, one VS16 and a joiner that leads into another pictograph; a
+// keycap keeps its VS16; the three tag flags (England, Scotland, Wales) stay whole.
 const INVISIBLE = "\\p{Default_Ignorable_Code_Point}\\p{Cf}\\p{Cc}\\p{Cn}\\p{Co}\\p{Cs}\\p{Zl}\\p{Zp}";
+const tagFlag = (code) => `\u{1F3F4}${[...code].map((ch) => String.fromCodePoint(0xe0000 + ch.charCodeAt(0))).join("")}\u{E007F}`;
+const TAG_FLAGS = ["gbeng", "gbsct", "gbwls"].map(tagFlag).join("|");
 const STRIP_INVISIBLE = new RegExp(
-  `(\\p{Extended_Pictographic}[\\u{1F3FB}-\\u{1F3FF}]*)(\\ufe0f)?(\\u200d(?=\\p{Extended_Pictographic}))?|[${INVISIBLE}]`,
+  `(${TAG_FLAGS}|[0-9#*]\\ufe0f\\u20e3)|(\\p{Extended_Pictographic}[\\u{1F3FB}-\\u{1F3FF}]*)(\\ufe0f)?(\\u200d(?=\\p{Extended_Pictographic}))?|[${INVISIBLE}]`,
   "gu",
 );
-// Credential and issue-id probe only: NFKC folds look-alikes (full-width letters), then
-// format and combining marks are dropped so no mark can split a pattern.
+// Credential and issue-id probe only: NFKD folds look-alikes (full-width letters) and
+// splits accented letters into base plus mark, then every mark is dropped so no mark can
+// split a pattern or compose into a different letter first.
+// Dash look-alikes fold to a hyphen (NFKD already folds U+2011 and U+FF0D).
+const DASHES = /[\u2010-\u2015\u2212\ufe58\ufe63]/g;
 const PROBE_MARKS = /[\p{Cf}\p{Mn}\p{Me}]/gu;
 const TOKENS = [
   /ghp_[A-Za-z0-9]{10,}/,
@@ -85,9 +91,10 @@ export function parseChangelogLine(body) {
 
   const [, override, raw] = matches[0];
   const spaced = raw.trim().replace(/[\t\v\f]/g, " ");
-  const stripped = spaced.replace(STRIP_INVISIBLE, (match, base, selector, joiner) =>
-    base ? `${base}${selector ?? ""}${joiner ?? ""}` : "",
-  );
+  const stripped = spaced.replace(STRIP_INVISIBLE, (match, whole, base, selector, joiner) => {
+    if (whole) return whole;
+    return base ? `${base}${selector ?? ""}${joiner ?? ""}` : "";
+  });
   const cleaned = stripped.replace(/\s+/g, " ").trim();
   if (stripped !== spaced) warnings.push("Stripped invisible or control characters from the sentence.");
   if (cleaned === "") return result("missing", null, null, warnings);
@@ -96,7 +103,7 @@ export function parseChangelogLine(body) {
     return result("missing", null, null, warnings);
   }
   if (cleaned.toLowerCase() === "none") return result("none", null, null, warnings);
-  const probe = cleaned.normalize("NFKC").replace(PROBE_MARKS, "");
+  const probe = cleaned.normalize("NFKD").replace(PROBE_MARKS, "").replace(DASHES, "-");
   if (TOKENS.some((token) => token.test(probe))) {
     warnings.push("The sentence looks like a credential and is hidden.");
     return result("parse-error", null, null, warnings);
