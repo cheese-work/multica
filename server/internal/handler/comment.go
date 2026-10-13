@@ -31,21 +31,25 @@ import (
 )
 
 type CommentResponse struct {
-	ID             string  `json:"id"`
-	IssueID        string  `json:"issue_id"`
-	AuthorType     string  `json:"author_type"`
-	AuthorID       string  `json:"author_id"`
-	Content        string  `json:"content"`
-	Type           string  `json:"type"`
-	ParentID       *string `json:"parent_id"`
-	CreatedAt      string  `json:"created_at"`
-	UpdatedAt      string  `json:"updated_at"`
-	Revision       int64   `json:"revision"`
-	IssueRevision  int64   `json:"issue_revision,omitempty"`
-	ResolvedAt     *string `json:"resolved_at"`
-	ResolvedByType *string `json:"resolved_by_type"`
-	ResolvedByID   *string `json:"resolved_by_id"`
-	SourceTaskID   *string `json:"source_task_id,omitempty"`
+	ID                  string  `json:"id"`
+	IssueID             string  `json:"issue_id"`
+	AuthorType          string  `json:"author_type"`
+	AuthorID            string  `json:"author_id"`
+	Content             string  `json:"content"`
+	Type                string  `json:"type"`
+	ParentID            *string `json:"parent_id"`
+	CreatedAt           string  `json:"created_at"`
+	UpdatedAt           string  `json:"updated_at"`
+	Revision            int64   `json:"revision"`
+	IssueRevision       int64   `json:"issue_revision,omitempty"`
+	ResolvedAt          *string `json:"resolved_at"`
+	ResolvedByType      *string `json:"resolved_by_type"`
+	ResolvedByID        *string `json:"resolved_by_id"`
+	SourceTaskID        *string `json:"source_task_id,omitempty"`
+	DecisionIntentID    *string `json:"decision_intent_id,omitempty"`
+	DecisionRequestID   *string `json:"decision_request_id,omitempty"`
+	DecisionAnswerID    *string `json:"decision_answer_id,omitempty"`
+	DecisionCommentKind *string `json:"decision_comment_kind,omitempty"`
 	// DeletedAt marks a tombstone: a comment deleted while it still had
 	// replies (#8296). Its content is empty and it carries no attachments or
 	// reactions; it stays only so the replies keep their direct parent.
@@ -126,24 +130,28 @@ func commentToResponse(c db.Comment, reactions []ReactionResponse, attachments [
 		attachments = []AttachmentResponse{}
 	}
 	return CommentResponse{
-		ID:             uuidToString(c.ID),
-		IssueID:        uuidToString(c.IssueID),
-		AuthorType:     c.AuthorType,
-		AuthorID:       uuidToString(c.AuthorID),
-		Content:        c.Content,
-		Type:           c.Type,
-		ParentID:       uuidToPtr(c.ParentID),
-		CreatedAt:      timestampToString(c.CreatedAt),
-		UpdatedAt:      timestampToString(c.UpdatedAt),
-		Revision:       c.Revision,
-		ResolvedAt:     timestampToPtr(c.ResolvedAt),
-		ResolvedByType: textToPtr(c.ResolvedByType),
-		ResolvedByID:   uuidToPtr(c.ResolvedByID),
-		SourceTaskID:   uuidToPtr(c.SourceTaskID),
-		DeletedAt:      timestampToPtr(c.DeletedAt),
-		QuickActionID:  uuidToPtr(c.QuickActionID),
-		Reactions:      reactions,
-		Attachments:    attachments,
+		ID:                  uuidToString(c.ID),
+		IssueID:             uuidToString(c.IssueID),
+		AuthorType:          c.AuthorType,
+		AuthorID:            uuidToString(c.AuthorID),
+		Content:             c.Content,
+		Type:                c.Type,
+		ParentID:            uuidToPtr(c.ParentID),
+		CreatedAt:           timestampToString(c.CreatedAt),
+		UpdatedAt:           timestampToString(c.UpdatedAt),
+		Revision:            c.Revision,
+		ResolvedAt:          timestampToPtr(c.ResolvedAt),
+		ResolvedByType:      textToPtr(c.ResolvedByType),
+		ResolvedByID:        uuidToPtr(c.ResolvedByID),
+		SourceTaskID:        uuidToPtr(c.SourceTaskID),
+		DecisionIntentID:    uuidToPtr(c.DecisionIntentID),
+		DecisionRequestID:   uuidToPtr(c.DecisionRequestID),
+		DecisionAnswerID:    uuidToPtr(c.DecisionAnswerID),
+		DecisionCommentKind: textToPtr(c.DecisionCommentKind),
+		DeletedAt:           timestampToPtr(c.DeletedAt),
+		QuickActionID:       uuidToPtr(c.QuickActionID),
+		Reactions:           reactions,
+		Attachments:         attachments,
 	}
 }
 
@@ -1500,6 +1508,9 @@ func keepRootConnected(byID map[string]db.Comment) []db.Comment {
 type CreateCommentRequest struct {
 	Content          string   `json:"content"`
 	DecisionIntent   bool     `json:"decision_intent"`
+	DecisionRecord   bool     `json:"decision_record"`
+	MessageIDs       []string `json:"message_ids"`
+	EscalationClass  string   `json:"escalation_class"`
 	Type             string   `json:"type"`
 	ParentID         *string  `json:"parent_id"`
 	AttachmentIDs    []string `json:"attachment_ids"`
@@ -1735,7 +1746,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.DecisionIntent && r.Header.Get("X-Actor-Source") != "task_token" {
+	if (req.DecisionIntent || req.DecisionRecord) && r.Header.Get("X-Actor-Source") != "task_token" {
 		writeError(w, http.StatusForbidden, "decision intent requires an issue task token")
 		return
 	}
@@ -1749,7 +1760,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// the plausible cause of GH #5388. Mirrors the skill-import sanitization;
 	// normalizing first means all-NUL content is correctly treated as empty.
 	req.Content = sanitizeNullBytes(req.Content)
-	if req.Content == "" {
+	if req.Content == "" && !req.DecisionRecord {
 		writeError(w, http.StatusBadRequest, "content is required")
 		return
 	}
@@ -1764,6 +1775,14 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// something the system generated.
 	if !isClientAuthorableCommentType(req.Type) {
 		writeError(w, http.StatusBadRequest, "invalid comment type")
+		return
+	}
+	if req.DecisionRecord {
+		h.createDecisionRecordComment(w, r, issue, req)
+		return
+	}
+	if len(req.MessageIDs) != 0 || req.EscalationClass != "" {
+		writeError(w, http.StatusBadRequest, "message_ids and escalation_class require decision_record")
 		return
 	}
 

@@ -1102,6 +1102,14 @@ export const CommentSchema = z.object({
   updated_at: z.string(),
   revision: z.number().int().positive().optional(),
   source_task_id: z.string().nullable().optional(),
+  decision_intent_id: z.string().nullable().optional().catch(undefined),
+  decision_request_id: z.string().nullable().optional().catch(undefined),
+  decision_answer_id: z.string().nullable().optional().catch(undefined),
+  decision_comment_kind: z
+    .enum(["ask", "quote", "disclaim", "delivery", "cancel", "veto"])
+    .nullable()
+    .optional()
+    .catch(undefined),
   supplements: CommentSupplementReceiptsSchema,
   supplement_task_id: z.string().optional().catch(undefined),
   supplement_status: z.enum(["pending", "delivering", "delivered", "failed"]).optional().catch(undefined),
