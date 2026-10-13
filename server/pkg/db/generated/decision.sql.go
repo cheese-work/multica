@@ -438,14 +438,100 @@ func (q *Queries) ListDecisionIntentTargets(ctx context.Context, arg ListDecisio
 	return items, nil
 }
 
+const listDecisionLaneMentions = `-- name: ListDecisionLaneMentions :many
+WITH scoped_mentions AS MATERIALIZED (
+    SELECT message.chat_session_id, message.id AS message_id, message.created_at AS mentioned_at,
+        session.workspace_id, message.content, mention.parts
+    FROM chat_message message
+    JOIN chat_session session ON session.id = message.chat_session_id
+    CROSS JOIN LATERAL regexp_matches(message.content, '(\[((?:(?!\]\()[^\n])+?)\]\(mention://issue/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\))', 'g') AS mention(parts)
+    WHERE session.workspace_id = $1
+      AND session.agent_id = $2 AND session.creator_id = $3
+      AND session.id = ANY($4::uuid[])
+      AND session.status = 'active' AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
+      AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
+      AND message.role IN ('user', 'assistant') AND message.message_kind = 'message'
+      AND message.content LIKE '%](mention://issue/%'
+      AND message.failure_reason IS NULL
+      AND NOT EXISTS (SELECT 1 FROM decision_request WHERE ping_message_id = message.id)
+), newest AS (
+    SELECT DISTINCT ON (mention.chat_session_id, issue.id)
+        mention.chat_session_id, issue.id AS issue_id,
+        (workspace.issue_prefix || '-' || issue.number::text)::text AS issue_key,
+        issue.title AS issue_title, mention.mentioned_at, mention.message_id,
+        mention.content, mention.parts[1] AS mention_link
+    FROM scoped_mentions mention
+    JOIN workspace ON workspace.id = mention.workspace_id
+    JOIN issue ON issue.id = mention.parts[3]::uuid AND issue.workspace_id = mention.workspace_id
+    ORDER BY mention.chat_session_id, issue.id, mention.mentioned_at DESC, mention.message_id DESC
+), ranked AS (
+    SELECT chat_session_id, issue_id, issue_key, issue_title, mentioned_at, message_id, content, mention_link, row_number() OVER (PARTITION BY chat_session_id ORDER BY mentioned_at DESC, message_id DESC, issue_id DESC) AS mention_rank
+    FROM newest
+)
+SELECT chat_session_id, issue_id, issue_key, issue_title, mentioned_at,
+    (right(regexp_replace(split_part(content, mention_link, 1), '\[((?:(?!\]\()[^\n])+?)\]\([^)]*\)', '\1', 'g'), 40)
+     || left(regexp_replace(substring(content FROM strpos(content, mention_link) + char_length(mention_link)), '\[((?:(?!\]\()[^\n])+?)\]\([^)]*\)', '\1', 'g'), 60))::text AS snippet
+FROM ranked WHERE mention_rank <= 20
+ORDER BY chat_session_id, mention_rank
+`
+
+type ListDecisionLaneMentionsParams struct {
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+	AgentID     pgtype.UUID   `json:"agent_id"`
+	CreatorID   pgtype.UUID   `json:"creator_id"`
+	SessionIds  []pgtype.UUID `json:"session_ids"`
+}
+
+type ListDecisionLaneMentionsRow struct {
+	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	IssueKey      string             `json:"issue_key"`
+	IssueTitle    string             `json:"issue_title"`
+	MentionedAt   pgtype.Timestamptz `json:"mentioned_at"`
+	Snippet       string             `json:"snippet"`
+}
+
+func (q *Queries) ListDecisionLaneMentions(ctx context.Context, arg ListDecisionLaneMentionsParams) ([]ListDecisionLaneMentionsRow, error) {
+	rows, err := q.db.Query(ctx, listDecisionLaneMentions,
+		arg.WorkspaceID,
+		arg.AgentID,
+		arg.CreatorID,
+		arg.SessionIds,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDecisionLaneMentionsRow{}
+	for rows.Next() {
+		var i ListDecisionLaneMentionsRow
+		if err := rows.Scan(
+			&i.ChatSessionID,
+			&i.IssueID,
+			&i.IssueKey,
+			&i.IssueTitle,
+			&i.MentionedAt,
+			&i.Snippet,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDecisionLanes = `-- name: ListDecisionLanes :many
-SELECT session.id, session.title, session.lane_summary, session.lane_summary_updated_at, session.updated_at
+SELECT session.id, session.title, session.updated_at
 FROM chat_session session
 WHERE session.workspace_id = $1 AND session.agent_id = $2
   AND session.creator_id = $3 AND session.status = 'active'
   AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
   AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
 ORDER BY session.updated_at DESC, session.id DESC
+LIMIT 10
 `
 
 type ListDecisionLanesParams struct {
@@ -455,11 +541,9 @@ type ListDecisionLanesParams struct {
 }
 
 type ListDecisionLanesRow struct {
-	ID                   pgtype.UUID        `json:"id"`
-	Title                string             `json:"title"`
-	LaneSummary          string             `json:"lane_summary"`
-	LaneSummaryUpdatedAt pgtype.Timestamptz `json:"lane_summary_updated_at"`
-	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+	ID        pgtype.UUID        `json:"id"`
+	Title     string             `json:"title"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
 func (q *Queries) ListDecisionLanes(ctx context.Context, arg ListDecisionLanesParams) ([]ListDecisionLanesRow, error) {
@@ -471,13 +555,7 @@ func (q *Queries) ListDecisionLanes(ctx context.Context, arg ListDecisionLanesPa
 	items := []ListDecisionLanesRow{}
 	for rows.Next() {
 		var i ListDecisionLanesRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.Title,
-			&i.LaneSummary,
-			&i.LaneSummaryUpdatedAt,
-			&i.UpdatedAt,
-		); err != nil {
+		if err := rows.Scan(&i.ID, &i.Title, &i.UpdatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

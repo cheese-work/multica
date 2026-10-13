@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/multica-ai/multica/server/internal/cli"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/spf13/cobra"
 )
 
@@ -39,7 +40,7 @@ func runChatSessions(command *cobra.Command, _ []string) error {
 	if target != "" || command.Flags().Changed("for") {
 		query.Set("for", target)
 	}
-	var lanes []map[string]any
+	var lanes []protocol.DecisionLane
 	if err := client.GetJSON(ctx, "/api/chat/sessions?"+query.Encode(), &lanes); err != nil {
 		return fmt.Errorf("list decision lanes: %w", err)
 	}
@@ -49,8 +50,13 @@ func runChatSessions(command *cobra.Command, _ []string) error {
 	}
 	rows := make([][]string, 0, len(lanes))
 	for _, lane := range lanes {
-		rows = append(rows, []string{strVal(lane, "id"), strVal(lane, "title"), strVal(lane, "lane_summary"), strVal(lane, "lane_summary_updated_at"), strVal(lane, "updated_at")})
+		if len(lane.IssueMentions) == 0 {
+			rows = append(rows, []string{lane.ID, lane.Title, lane.UpdatedAt, "", "", "", ""})
+		}
+		for _, mention := range lane.IssueMentions {
+			rows = append(rows, []string{lane.ID, lane.Title, lane.UpdatedAt, mention.IssueKey, mention.IssueTitle, mention.RelativeTime, mention.Snippet})
+		}
 	}
-	cli.PrintTable(os.Stdout, []string{"ID", "TITLE", "LANE_SUMMARY", "SUMMARY_UPDATED_AT", "UPDATED_AT"}, rows)
+	cli.PrintTable(os.Stdout, []string{"ID", "TITLE", "UPDATED_AT", "ISSUE", "ISSUE_TITLE", "MENTIONED", "SNIPPET"}, rows)
 	return nil
 }

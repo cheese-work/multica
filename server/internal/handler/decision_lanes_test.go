@@ -15,6 +15,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 func openLaneIntent(test *testing.T, fixture intentFixture, content string) (string, string) {
@@ -38,7 +39,7 @@ func TestDecisionLanesScopeAndNoTranscripts(test *testing.T) {
 	fixture := newIntentFixture(test)
 	intentID, _ := openLaneIntent(test, fixture, fixture.mention())
 	older := dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": fixture.humanID, "title": "older", "updated_at": time.Now().Add(-time.Hour)})
-	newer := dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": fixture.humanID, "title": "newer", "lane_summary": "Release decisions", "lane_summary_updated_at": time.Now()})
+	newer := dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": fixture.humanID, "title": "newer"})
 	dbfx.Insert(test, "chat_message", testutil.Cols{"chat_session_id": newer, "role": "user", "content": "PRIVATE TRANSCRIPT"})
 	for _, excluded := range []string{"creator", "agent", "workspace", "archive", "channel", "channel_origin", "intro"} {
 		cols := testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": fixture.humanID, "title": excluded}
@@ -66,14 +67,14 @@ func TestDecisionLanesScopeAndNoTranscripts(test *testing.T) {
 		var lanes []map[string]any
 		response := testutil.Call(test, testHandler.ListChatSessions, laneRequest(fixture, target)).Want(http.StatusOK)
 		response.JSON(&lanes)
-		if len(lanes) != 2 || lanes[0]["id"] != newer || lanes[1]["id"] != older || lanes[0]["lane_summary"] != "Release decisions" {
+		if len(lanes) != 2 || lanes[0]["id"] != newer || lanes[1]["id"] != older {
 			test.Fatalf("wrong lanes: %+v", lanes)
 		}
 		for _, lane := range lanes {
-			if len(lane) != 5 {
-				test.Fatalf("lane must expose only five metadata fields: %+v", lane)
+			if len(lane) != 4 {
+				test.Fatalf("lane must expose only four bounded metadata fields: %+v", lane)
 			}
-			for _, key := range []string{"id", "title", "lane_summary", "lane_summary_updated_at", "updated_at"} {
+			for _, key := range []string{"id", "title", "issue_mentions", "updated_at"} {
 				if _, exists := lane[key]; !exists {
 					test.Fatalf("missing metadata field %s: %+v", key, lane)
 				}
@@ -190,92 +191,38 @@ func TestDecisionLanesSquadAndAuthProvenance(test *testing.T) {
 	testutil.Call(test, testHandler.ListChatSessions, laneRequest(fixture, "")).Want(http.StatusForbidden)
 }
 
-type laneFenceStarter struct {
-	base                         txStarter
-	intentID                     string
-	staleNowAllows, clockRefuses bool
-}
-
-type laneTargetStarter struct {
-	base    txStarter
+type laneWindowFenceDB struct {
+	db.DBTX
 	fences  int
 	consume func()
 }
 
-func (starter *laneTargetStarter) Begin(ctx context.Context) (pgx.Tx, error) {
-	transaction, err := starter.base.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return laneTargetTransaction{Tx: transaction, starter: starter}, nil
-}
-
-type laneTargetTransaction struct {
-	pgx.Tx
-	starter *laneTargetStarter
-}
-
-func (transaction laneTargetTransaction) QueryRow(ctx context.Context, query string, args ...any) pgx.Row {
+func (database *laneWindowFenceDB) QueryRow(ctx context.Context, query string, args ...any) pgx.Row {
 	if strings.Contains(query, "DecisionLaneWindowOpen") {
-		transaction.starter.fences++
-		if transaction.starter.fences == 2 {
-			transaction.starter.consume()
+		database.fences++
+		if database.fences == 2 {
+			database.consume()
 		}
 	}
-	return transaction.Tx.QueryRow(ctx, query, args...)
+	return database.DBTX.QueryRow(ctx, query, args...)
 }
 
 func TestDecisionLanesTargetConsumptionFence(test *testing.T) {
 	fixture := newIntentFixture(test)
 	intentID, _ := openLaneIntent(test, fixture, fixture.mention()+" [@Owner](mention://member/"+testUserID+")")
-	originalStarter := testHandler.TxStarter
-	starter := &laneTargetStarter{base: originalStarter, consume: func() {
+	originalQueries := testHandler.Queries
+	database := &laneWindowFenceDB{DBTX: testPool, consume: func() {
 		dbfx.Exec(test, `UPDATE decision_intent_target SET consumed_at = clock_timestamp() WHERE decision_intent_id = $1 AND human_user_id = $2`, intentID, fixture.humanID)
 	}}
-	testHandler.TxStarter = starter
-	test.Cleanup(func() { testHandler.TxStarter = originalStarter })
+	testHandler.Queries = db.New(database)
+	test.Cleanup(func() { testHandler.Queries = originalQueries })
 	testutil.Call(test, testHandler.ListChatSessions, laneRequest(fixture, "&for="+fixture.humanID)).Want(http.StatusForbidden)
-	if starter.fences != 2 || dbfx.Count(test, `SELECT count(*) FROM chat_session WHERE agent_id = $1`, fixture.agentID) != 0 {
-		test.Fatalf("consumption during final fence did not roll back creation: fences=%d", starter.fences)
+	if database.fences != 2 || dbfx.Count(test, `SELECT count(*) FROM chat_session WHERE agent_id = $1`, fixture.agentID) != 0 {
+		test.Fatalf("consumption during final fence leaked metadata or created a lane: fences=%d", database.fences)
 	}
 	if count := dbfx.Count(test, `SELECT count(*) FROM decision_intent_target WHERE decision_intent_id = $1 AND consumed_at IS NULL`, intentID); count != 1 {
 		test.Fatalf("wrong remaining group size: %d", count)
 	}
-}
-
-func (starter *laneFenceStarter) Begin(ctx context.Context) (pgx.Tx, error) {
-	transaction, err := starter.base.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return laneFenceTransaction{Tx: transaction, starter: starter}, nil
-}
-
-type laneFenceTransaction struct {
-	pgx.Tx
-	starter *laneFenceStarter
-}
-
-func (transaction laneFenceTransaction) QueryRow(ctx context.Context, query string, args ...any) pgx.Row {
-	row := transaction.Tx.QueryRow(ctx, query, args...)
-	if strings.Contains(query, "LockWorkspaceForChatSessionCreate") {
-		return laneFenceRow{Row: row, transaction: transaction, ctx: ctx}
-	}
-	return row
-}
-
-type laneFenceRow struct {
-	pgx.Row
-	transaction laneFenceTransaction
-	ctx         context.Context
-}
-
-func (row laneFenceRow) Scan(values ...any) error {
-	if err := row.Row.Scan(values...); err != nil {
-		return err
-	}
-	starter := row.transaction.starter
-	return row.transaction.Tx.QueryRow(row.ctx, `SELECT now() < expires_at, clock_timestamp() >= expires_at FROM decision_intent WHERE id = $1`, starter.intentID).Scan(&starter.staleNowAllows, &starter.clockRefuses)
 }
 
 func TestDecisionLanesGroupTargets(test *testing.T) {
@@ -312,62 +259,26 @@ func TestDecisionLanesDefaultHasNoDecisionLocks(test *testing.T) {
 	var lanes []map[string]any
 	request := laneRequest(fixture, "").WithContext(ctx)
 	testutil.Call(test, testHandler.ListChatSessions, request).Want(http.StatusOK).JSON(&lanes)
-	if len(lanes) != 1 || lanes[0]["title"] != "Decisions: decision-intent" {
-		test.Fatalf("wrong default lane: %+v", lanes)
+	if len(lanes) != 0 {
+		test.Fatalf("empty listing created a default lane: %+v", lanes)
 	}
-	if count := dbfx.Count(test, `SELECT count(*) FROM chat_session WHERE id = $1 AND creator_id = $2 AND explicitly_created_at IS NOT NULL AND channel_origin_at IS NULL`, lanes[0]["id"], fixture.humanID); count != 1 {
-		test.Fatal("default lane is not an explicitly created web DM for the named person")
+	if count := dbfx.Count(test, `SELECT count(*) FROM chat_session WHERE agent_id = $1`, fixture.agentID); count != 0 {
+		test.Fatal("listing mutated chat sessions")
 	}
 }
 
-func TestDecisionLanesFenceAfterWorkspaceWait(test *testing.T) {
+func TestDecisionLanesExpiryAfterListing(test *testing.T) {
 	fixture := newIntentFixture(test)
 	intentID, _ := openLaneIntent(test, fixture, fixture.mention())
-	originalStarter := testHandler.TxStarter
-	starter := &laneFenceStarter{base: originalStarter, intentID: intentID}
-	testHandler.TxStarter = starter
-	test.Cleanup(func() { testHandler.TxStarter = originalStarter })
-	dbfx.Exec(test, `UPDATE decision_intent SET expires_at = clock_timestamp() + interval '500 milliseconds' WHERE id = $1`, intentID)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	holder, err := testPool.Begin(ctx)
-	if err != nil {
-		test.Fatal(err)
-	}
-	defer holder.Rollback(context.Background())
-	if _, err := holder.Exec(ctx, `SELECT id FROM workspace WHERE id = $1 FOR UPDATE`, testWorkspaceID); err != nil {
-		test.Fatal(err)
-	}
-	writer := httptest.NewRecorder()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		testHandler.ListChatSessions(writer, laneRequest(fixture, "").WithContext(ctx))
-	}()
-	blocked := false
-	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
-		var count int
-		if err := testPool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%FOR KEY SHARE%'`).Scan(&count); err != nil {
-			test.Fatal(err)
-		}
-		if count > 0 {
-			blocked = true
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if _, err := holder.Exec(ctx, `SELECT pg_sleep(0.6)`); err != nil {
-		test.Fatal(err)
-	}
-	if err := holder.Commit(ctx); err != nil {
-		test.Fatal(err)
-	}
-	<-done
-	if !blocked || !starter.staleNowAllows || !starter.clockRefuses || writer.Code != http.StatusForbidden {
-		test.Fatalf("post-wait fence: blocked=%t stale-now-allows=%t clock-refuses=%t status=%d body=%s", blocked, starter.staleNowAllows, starter.clockRefuses, writer.Code, writer.Body)
-	}
-	if count := dbfx.Count(test, `SELECT count(*) FROM chat_session WHERE agent_id = $1`, fixture.agentID); count != 0 {
-		test.Fatalf("expired window created %d lanes", count)
+	originalQueries := testHandler.Queries
+	database := &laneWindowFenceDB{DBTX: testPool, consume: func() {
+		dbfx.Exec(test, `UPDATE decision_intent SET expires_at = clock_timestamp() - interval '1 second' WHERE id = $1`, intentID)
+	}}
+	testHandler.Queries = db.New(database)
+	test.Cleanup(func() { testHandler.Queries = originalQueries })
+	testutil.Call(test, testHandler.ListChatSessions, laneRequest(fixture, "")).Want(http.StatusForbidden)
+	if database.fences != 2 {
+		test.Fatalf("wrong fence count: %d", database.fences)
 	}
 }
 
@@ -391,7 +302,7 @@ func TestDecisionLanesDeleteAfterListing(test *testing.T) {
 				dbfx.Exec(test, `UPDATE comment SET deleted_at = now() WHERE id = $1`, commentID)
 			}
 			testutil.Call(test, testHandler.ListChatSessions, laneRequest(fixture, "")).Want(http.StatusForbidden)
-			if len(lanes) != 1 || strings.Contains(writer.Body.String(), "messages") {
+			if len(lanes) != 0 || strings.Contains(writer.Body.String(), "messages") {
 				test.Fatalf("metadata-only listing: %s", writer.Body)
 			}
 		})

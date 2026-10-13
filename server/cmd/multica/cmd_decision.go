@@ -32,9 +32,11 @@ func init() {
 		_ = command.MarkFlagRequired("issue")
 	}
 	decisionRequestCmd.Flags().String("session", "", "DM lane UUID from chat sessions --issue")
+	decisionRequestCmd.Flags().Bool("new-dm", false, "Explicitly create a Decisions DM instead of selecting a listed lane")
+	decisionRequestCmd.Flags().String("for", "", "Named person's user ID (required with --new-dm)")
 	decisionRequestCmd.Flags().String("class", "", "reversible, spend, deploy, publish, irreversible, or product_direction")
 	decisionRequestCmd.Flags().String("ask-file", "", "UTF-8 file containing the exact ask")
-	for _, flag := range []string{"session", "class", "ask-file"} {
+	for _, flag := range []string{"class", "ask-file"} {
 		_ = decisionRequestCmd.MarkFlagRequired(flag)
 	}
 	for _, command := range []*cobra.Command{decisionRequestCmd, decisionGetCmd, decisionListCmd} {
@@ -47,10 +49,15 @@ func init() {
 func runDecisionRequest(command *cobra.Command, _ []string) error {
 	issueRef, _ := command.Flags().GetString("issue")
 	sessionID, _ := command.Flags().GetString("session")
+	newDM, _ := command.Flags().GetBool("new-dm")
+	humanID, _ := command.Flags().GetString("for")
 	class, _ := command.Flags().GetString("class")
 	askPath, _ := command.Flags().GetString("ask-file")
-	if issueRef == "" || sessionID == "" || class == "" || askPath == "" {
-		return fmt.Errorf("--issue, --session, --class, and --ask-file are required")
+	if issueRef == "" || class == "" || askPath == "" {
+		return fmt.Errorf("--issue, --class, and --ask-file are required")
+	}
+	if newDM == (sessionID != "") || newDM && humanID == "" || !newDM && humanID != "" {
+		return fmt.Errorf("choose --session or --new-dm with --for")
 	}
 	ask, err := os.ReadFile(askPath)
 	if err != nil {
@@ -74,7 +81,7 @@ func runDecisionRequest(command *cobra.Command, _ []string) error {
 	}
 	var result map[string]any
 	if err := client.PostJSON(ctx, "/api/decisions", map[string]any{
-		"issue_id": issue.ID, "session_id": sessionID, "ask": string(ask), "escalation_class": class,
+		"issue_id": issue.ID, "session_id": sessionID, "new_dm": newDM, "for": humanID, "ask": string(ask), "escalation_class": class,
 	}, &result); err != nil {
 		return fmt.Errorf("request decision: %w", err)
 	}

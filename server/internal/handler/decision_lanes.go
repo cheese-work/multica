@@ -2,23 +2,23 @@ package handler
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
+	"regexp"
+	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
-	"github.com/multica-ai/multica/server/pkg/dbid"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
-type decisionLaneResponse struct {
-	ID                   string  `json:"id"`
-	Title                string  `json:"title"`
-	LaneSummary          string  `json:"lane_summary"`
-	LaneSummaryUpdatedAt *string `json:"lane_summary_updated_at"`
-	UpdatedAt            string  `json:"updated_at"`
-}
+type decisionLaneResponse = protocol.DecisionLane
+
+var decisionSnippetURL = regexp.MustCompile(`mention://[^\s)\]]+|/issue/[0-9a-fA-F-]+`)
 
 func (handler *Handler) decisionLaneWindow(request *http.Request, queries *db.Queries, issue db.Issue, targetID pgtype.UUID) (db.Agent, pgtype.UUID, error) {
 	ctx := request.Context()
@@ -141,10 +141,29 @@ func (handler *Handler) listDecisionLanes(writer http.ResponseWriter, request *h
 	if err == nil {
 		var rows []db.ListDecisionLanesRow
 		rows, err = handler.Queries.ListDecisionLanes(request.Context(), db.ListDecisionLanesParams{WorkspaceID: issue.WorkspaceID, AgentID: agent.ID, CreatorID: targetID})
-		if err == nil && len(rows) == 0 {
-			err = handler.createDecisionDefaultLane(request, issue, requestedTarget, targetID)
-			if err == nil {
-				rows, err = handler.Queries.ListDecisionLanes(request.Context(), db.ListDecisionLanesParams{WorkspaceID: issue.WorkspaceID, AgentID: agent.ID, CreatorID: targetID})
+		response := make([]decisionLaneResponse, 0, len(rows))
+		if err == nil {
+			sessionIDs := make([]pgtype.UUID, 0, len(rows))
+			for _, row := range rows {
+				sessionIDs = append(sessionIDs, row.ID)
+			}
+			var mentions []db.ListDecisionLaneMentionsRow
+			if len(sessionIDs) > 0 {
+				mentions, err = handler.Queries.ListDecisionLaneMentions(request.Context(), db.ListDecisionLaneMentionsParams{WorkspaceID: issue.WorkspaceID, AgentID: agent.ID, CreatorID: targetID, SessionIds: sessionIDs})
+			}
+			bySession := make(map[pgtype.UUID][]protocol.DecisionIssueMention)
+			now := time.Now()
+			for _, mention := range mentions {
+				snippet := decisionSnippetURL.ReplaceAllString(mention.Snippet, "")
+				snippet = strings.ReplaceAll(strings.ReplaceAll(snippet, mention.IssueKey, ""), mention.IssueTitle, "")
+				bySession[mention.ChatSessionID] = append(bySession[mention.ChatSessionID], protocol.DecisionIssueMention{IssueID: uuidToString(mention.IssueID), IssueKey: mention.IssueKey, IssueTitle: mention.IssueTitle, MentionedAt: timestampToString(mention.MentionedAt), RelativeTime: decisionMentionAge(now.Sub(mention.MentionedAt.Time)), Snippet: strings.Join(strings.Fields(snippet), " ")})
+			}
+			for _, row := range rows {
+				issueMentions := bySession[row.ID]
+				if issueMentions == nil {
+					issueMentions = []protocol.DecisionIssueMention{}
+				}
+				response = append(response, decisionLaneResponse{ID: uuidToString(row.ID), Title: row.Title, UpdatedAt: timestampToString(row.UpdatedAt), IssueMentions: issueMentions})
 			}
 		}
 		if err == nil {
@@ -155,10 +174,6 @@ func (handler *Handler) listDecisionLanes(writer http.ResponseWriter, request *h
 			}
 		}
 		if err == nil {
-			response := make([]decisionLaneResponse, 0, len(rows))
-			for _, row := range rows {
-				response = append(response, decisionLaneResponse{ID: uuidToString(row.ID), Title: row.Title, LaneSummary: row.LaneSummary, LaneSummaryUpdatedAt: timestampToPtr(row.LaneSummaryUpdatedAt), UpdatedAt: timestampToString(row.UpdatedAt)})
-			}
 			writeJSON(writer, http.StatusOK, response)
 			return
 		}
@@ -171,43 +186,17 @@ func (handler *Handler) listDecisionLanes(writer http.ResponseWriter, request *h
 	}
 }
 
-func (handler *Handler) createDecisionDefaultLane(request *http.Request, issue db.Issue, requestedTarget, expectedTarget pgtype.UUID) error {
-	ctx := request.Context()
-	transaction, err := handler.TxStarter.Begin(ctx)
-	if err != nil {
-		return err
+func decisionMentionAge(age time.Duration) string {
+	if age < time.Minute {
+		return "just now"
 	}
-	defer transaction.Rollback(ctx)
-	queries := handler.Queries.WithTx(transaction)
-	if _, err := queries.LockWorkspaceForChatSessionCreate(ctx, issue.WorkspaceID); err != nil {
-		return err
-	}
-	agent, targetID, err := handler.decisionLaneWindow(request, queries, issue, requestedTarget)
-	if err != nil {
-		return err
-	}
-	if targetID != expectedTarget {
-		return decisionIntentRefusal{http.StatusForbidden, "lane window target changed"}
-	}
-	lanes, err := queries.ListDecisionLanes(ctx, db.ListDecisionLanesParams{WorkspaceID: issue.WorkspaceID, AgentID: agent.ID, CreatorID: targetID})
-	if err != nil {
-		return err
-	}
-	if len(lanes) == 0 {
-		session, err := queries.CreateChatSession(ctx, db.CreateChatSessionParams{ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, AgentID: agent.ID, CreatorID: targetID, Title: "Decisions: " + agent.Name})
-		if err != nil {
-			return err
-		}
-		if _, err := queries.MarkChatSessionExplicitlyCreated(ctx, session.ID); err != nil {
-			return err
+	for _, unit := range []struct {
+		duration time.Duration
+		label    string
+	}{{24 * time.Hour, "d"}, {time.Hour, "h"}, {time.Minute, "m"}} {
+		if age >= unit.duration {
+			return fmt.Sprintf("%d%s ago", age/unit.duration, unit.label)
 		}
 	}
-	_, currentTarget, err := handler.decisionLaneWindow(request, queries, issue, requestedTarget)
-	if err != nil {
-		return err
-	}
-	if currentTarget != expectedTarget {
-		return decisionIntentRefusal{http.StatusForbidden, "lane window target changed"}
-	}
-	return transaction.Commit(ctx)
+	return "just now"
 }
