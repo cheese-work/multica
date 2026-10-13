@@ -109,10 +109,13 @@
     "group_cancelled": "已取消"
   },
   "slash_command": {
+    "client_command": "Multica",
+    "focus_hint": "[focus]",
     "no_skills_configured": "暂无配置的技能",
     "no_results": "没有匹配的技能",
     "commands": {
-      "note": "添加备注——不触发任何智能体"
+      "note": "添加备注——不触发任何智能体",
+      "compact": "总结当前私聊并在新私聊中继续"
     }
   },
   "code_block": {
