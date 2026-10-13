@@ -17,7 +17,7 @@ import (
 // become eligible later. The sweep walks a definition's scope in keyset order,
 // wakeupSweepBatch issues per scheduler pass, each issue in its own short
 // transaction under that issue's row lock and no workspace-wide lock. Its state
-// is on the definition (migration 598): the revision it belongs to, a persisted
+// is on the definition (migration 629): the revision it belongs to, a persisted
 // cursor, and the lease and retry bookkeeping. A revised or deleted definition
 // ends the old sweep by revision alone; the old cursor is never reused. Issues
 // that become eligible after the sweep has passed them reach the rule through
