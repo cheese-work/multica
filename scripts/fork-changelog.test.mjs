@@ -688,3 +688,53 @@ test("F1c: valid emoji and accents survive the stripping", async () => {
     assert.ok(!got.warnings.some((w) => /strip/i.test(w)), JSON.stringify(sample));
   }
 });
+
+// --- review round 4 (x99-codex-sol, PR 229): F1d composed marks, F5 flags and keycaps ---
+
+test("F1d: combining marks that compose into accented letters cannot hide a credential or id", async () => {
+  const { parseChangelogLine } = await load();
+  const token = "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6";
+  const marks = ["̀", "́", "̂", "̈", "̌", "̧"];
+  const families = [
+    (m) => `g${m}hp_${token}`,
+    (m) => `ghp_${token.slice(0, 8)}${token.slice(8, 9)}${m}${token.slice(9)}`,
+    (m) => `github_pat_${token.slice(0, 4)}${m}${token.slice(4)}`,
+    (m) => `s${m}k-proj1234567890abcdefghijkl`,
+    (m) => `A${m}KIAIOSFODNN7EXAMPLE`,
+    (m) => `eyJ${m}hbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r`,
+    (m) => `C${m}HE-123`,
+    (m) => `CHE-1${m}23`,
+    (m) => `c${m}he-123`,
+  ];
+  const bad = [];
+  for (const [index, family] of families.entries()) {
+    for (const mark of marks) {
+      const got = parseChangelogLine(`Changelog: Rotated ${family(mark)} today.`);
+      if (got.status !== "parse-error") bad.push(`${index}:${mark.codePointAt(0).toString(16)}`);
+    }
+  }
+  assert.deepEqual(bad, []);
+  assert.equal(parseChangelogLine("Changelog: Café menus and naïve users keep accents.").text, "Café menus and naïve users keep accents.");
+});
+
+test("F5: recognized tag flags and fully qualified keycaps survive unchanged", async () => {
+  const { parseChangelogLine } = await load();
+  const tag = (word) => [...word].map((ch) => String.fromCodePoint(0xe0000 + ch.codePointAt(0))).join("") + "\u{e007f}";
+  const flags = ["gbeng", "gbsct", "gbwls"].map((code) => `\u{1f3f4}${tag(code)}`);
+  const keycaps = ["1", "#", "*"].map((ch) => `${ch}️⃣`);
+  for (const sample of [...flags, ...keycaps]) {
+    const got = parseChangelogLine(`Changelog: Shows ${sample} correctly.`);
+    assert.equal(got.text, `Shows ${sample} correctly.`, JSON.stringify(sample));
+    assert.ok(!got.warnings.some((w) => /strip/i.test(w)), JSON.stringify(sample));
+  }
+});
+
+test("F5: tag characters outside a recognized flag are still stripped", async () => {
+  const { parseChangelogLine } = await load();
+  const smuggled = [..."hidden"].map((ch) => String.fromCodePoint(0xe0000 + ch.codePointAt(0))).join("");
+  for (const text of [`Plain ${smuggled} text.`, `Flag \u{1f3f4}${smuggled}\u{e007f} text.`]) {
+    const got = parseChangelogLine(`Changelog: ${text}`);
+    assert.doesNotMatch(got.text, /[\u{e0000}-\u{e007f}]/u);
+    assert.ok(got.warnings.some((w) => /strip/i.test(w)));
+  }
+});
