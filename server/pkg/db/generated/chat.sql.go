@@ -3505,7 +3505,8 @@ func (q *Queries) ReplaceImplicitChatSessionTitle(ctx context.Context, arg Repla
 const setChatContinuationSource = `-- name: SetChatContinuationSource :one
 UPDATE chat_session
 SET continued_from_session_id = $2,
-    last_read_at = $3::timestamptz - interval '1 microsecond'
+    last_read_at = $3::timestamptz - interval '1 microsecond',
+    pinned_at = $4
 WHERE id = $1
 RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, lane_summary, lane_summary_updated_at
 `
@@ -3514,10 +3515,16 @@ type SetChatContinuationSourceParams struct {
 	ID                     pgtype.UUID        `json:"id"`
 	ContinuedFromSessionID pgtype.UUID        `json:"continued_from_session_id"`
 	SummaryCreatedAt       pgtype.Timestamptz `json:"summary_created_at"`
+	PinnedAt               pgtype.Timestamptz `json:"pinned_at"`
 }
 
 func (q *Queries) SetChatContinuationSource(ctx context.Context, arg SetChatContinuationSourceParams) (ChatSession, error) {
-	row := q.db.QueryRow(ctx, setChatContinuationSource, arg.ID, arg.ContinuedFromSessionID, arg.SummaryCreatedAt)
+	row := q.db.QueryRow(ctx, setChatContinuationSource,
+		arg.ID,
+		arg.ContinuedFromSessionID,
+		arg.SummaryCreatedAt,
+		arg.PinnedAt,
+	)
 	var i ChatSession
 	err := row.Scan(
 		&i.ID,
