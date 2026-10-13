@@ -113,10 +113,13 @@
     "group_cancelled": "Annulés"
   },
   "slash_command": {
+    "client_command": "Multica",
+    "focus_hint": "[focus]",
     "no_skills_configured": "Aucun skill configuré",
     "no_results": "Aucun skill correspondant",
     "commands": {
-      "note": "Ajouter une note — ne déclenchera aucun agent"
+      "note": "Ajouter une note — ne déclenchera aucun agent",
+      "compact": "Résumer cette conversation et continuer dans une nouvelle"
     }
   },
   "code_block": {
