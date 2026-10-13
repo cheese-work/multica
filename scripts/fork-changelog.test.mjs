@@ -611,3 +611,80 @@ test("F1: token detection ignores variation selectors, format and combining char
     assert.equal(parseChangelogLine(`Changelog: Rotated ${late} today.`).status, "parse-error", JSON.stringify(mark));
   }
 });
+
+// --- review round 3 (x99-codex-sol, PR 229): F1a-F1c invisible characters --------
+
+// Every default-ignorable, format, control and line/paragraph separator code point,
+// plus samples of unassigned and private-use ones, found by property instead of a list.
+function invisibleCodePoints() {
+  const property = /[\p{Default_Ignorable_Code_Point}\p{Cf}\p{Cc}\p{Zl}\p{Zp}]/u;
+  const found = [];
+  for (let cp = 0; cp <= 0x10ffff; cp += 1) {
+    if (cp >= 0xd800 && cp <= 0xdfff) continue;
+    if (cp >= 0x09 && cp <= 0x0d) continue; // ordinary whitespace, collapsed not stripped
+    if (property.test(String.fromCodePoint(cp))) found.push(cp);
+  }
+  return [...found, 0x2065, 0x0378, 0xfff0, 0xe0fff, 0xe000, 0xf8ff, 0xf0000];
+}
+const hex = (cp) => `U+${cp.toString(16).toUpperCase()}`;
+
+test("F1a: no invisible character hides a credential, in any position", async () => {
+  const { parseChangelogLine } = await load();
+  const token = "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6";
+  const forms = (c) => [
+    `gh${c}p_${token}`,
+    `ghp_${token.slice(0, 8)}${c}${token.slice(8)}`,
+    `github${c}_pat_${token}`,
+    `s${c}k-proj1234567890abcdefghijkl`,
+    `AK${c}IAIOSFODNN7EXAMPLE`,
+    `eyJhbGciOiJIUzI1NiJ9${c}.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r`,
+  ];
+  const bad = [];
+  for (const cp of invisibleCodePoints()) {
+    for (const form of forms(String.fromCodePoint(cp))) {
+      if (parseChangelogLine(`Changelog: Rotated ${form} today.`).status !== "parse-error") bad.push(hex(cp));
+    }
+  }
+  assert.deepEqual([...new Set(bad)], []);
+});
+
+test("F1b: no invisible character hides an issue id", async () => {
+  const { parseChangelogLine } = await load();
+  const bad = [];
+  for (const cp of invisibleCodePoints()) {
+    const c = String.fromCodePoint(cp);
+    for (const id of [`C${c}HE-123`, `CHE${c}-123`, `CHE-1${c}23`]) {
+      if (parseChangelogLine(`Changelog: Fixed ${id} today.`).status !== "parse-error") bad.push(hex(cp));
+    }
+  }
+  assert.deepEqual([...new Set(bad)], []);
+  assert.equal(parseChangelogLine("Changelog: Fixed \uff23\uff28\uff25-\uff11\uff12\uff13 today.").status, "parse-error");
+});
+
+test("F1c: no invisible character survives in published text, and it warns", async () => {
+  const { parseChangelogLine } = await load();
+  const bad = [];
+  for (const cp of invisibleCodePoints()) {
+    const got = parseChangelogLine(`Changelog: Plain${String.fromCodePoint(cp)} words stay.`);
+    const clean = got.status === "text" && got.text === "Plain words stay.";
+    const warned = got.warnings.some((w) => /strip/i.test(w));
+    if (!clean || !warned) bad.push(hex(cp));
+  }
+  assert.deepEqual([...new Set(bad)], []);
+});
+
+test("F1c: valid emoji and accents survive the stripping", async () => {
+  const { parseChangelogLine } = await load();
+  const samples = [
+    "\u{1F468}\u200d\u{1F469}\u200d\u{1F467}",
+    "\u{1F469}\u{1F3FD}\u200d\u{1F4BB}",
+    "\u2764\ufe0f\u200d\u{1F525}",
+    "\u{1F44D}\u{1F3FB}",
+    "caf\u00e9 e\u0301",
+  ];
+  for (const sample of samples) {
+    const got = parseChangelogLine(`Changelog: Keeps ${sample} intact.`);
+    assert.equal(got.text, `Keeps ${sample} intact.`);
+    assert.ok(!got.warnings.some((w) => /strip/i.test(w)), JSON.stringify(sample));
+  }
+});
