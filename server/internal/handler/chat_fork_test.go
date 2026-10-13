@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -594,5 +595,69 @@ func TestForkChatSessionConcurrentRetry(test *testing.T) {
 	}
 	if count := dbfx.Count(test, `SELECT count(*) FROM chat_message m JOIN chat_session s ON s.id = m.chat_session_id WHERE s.forked_from_session_id = $1`, sourceID); count != 2 {
 		test.Fatalf("concurrent forks copied %d rows, want one per child", count)
+	}
+}
+
+func TestForkChatSessionSharedAttachmentFileSurvivesDelete(test *testing.T) {
+	store := &mockStorage{files: map[string][]byte{}}
+	original := testHandler.Storage
+	testHandler.Storage = store
+	test.Cleanup(func() { testHandler.Storage = original })
+	agentID := createHandlerTestAgent(test, "fork-delete", []byte("[]"))
+	sourceID := dbfx.ChatSession(test, agentID)
+	withFile := forkMessage(test, sourceID, testutil.Cols{"role": "user", "content": "file"})
+	key := "fork/" + uuid.NewString() + "/shared.txt"
+	store.files[key] = []byte("data")
+	sourceAttachment := dbfx.Insert(test, "attachment", testutil.Cols{
+		"workspace_id": testWorkspaceID, "chat_session_id": sourceID, "chat_message_id": withFile, "uploader_type": "member",
+		"uploader_id": testUserID, "filename": "shared.txt", "url": "https://cdn.example.com/" + key, "content_type": "text/plain", "size_bytes": 4,
+	})
+	deleteAttachment := func(id string) *testutil.Response {
+		return testutil.Call(test, testHandler.DeleteAttachment, withURLParam(newRequest(http.MethodDelete, "/api/attachments/"+id, nil), "id", id))
+	}
+	stored := func() bool {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		_, ok := store.files[key]
+		return ok
+	}
+
+	// A delete that races a fork waits for the fork's share lock, then sees
+	// the copy and keeps the file.
+	ctx := context.Background()
+	holder, err := testPool.Begin(ctx)
+	if err != nil {
+		test.Fatal(err)
+	}
+	defer holder.Rollback(ctx)
+	childID := dbfx.ChatSession(test, agentID)
+	childMessage := forkMessage(test, childID, testutil.Cols{"role": "user", "content": "file"})
+	queries := testHandler.Queries.WithTx(holder)
+	locked, err := queries.LockChatAttachmentsForFork(ctx, db.LockChatAttachmentsForForkParams{WorkspaceID: parseUUID(testWorkspaceID), ChatMessageIds: []pgtype.UUID{parseUUID(withFile)}})
+	if err != nil || len(locked) != 1 {
+		test.Fatalf("fork lock = %d rows, %v", len(locked), err)
+	}
+	copyID := uuid.NewString()
+	if err := queries.InsertForkChatAttachments(ctx, db.InsertForkChatAttachmentsParams{
+		Ids: []pgtype.UUID{parseUUID(copyID)}, ChatSessionID: parseUUID(childID), ChatMessageIds: []pgtype.UUID{parseUUID(childMessage)}, SourceIds: []pgtype.UUID{parseUUID(sourceAttachment)},
+	}); err != nil {
+		test.Fatal(err)
+	}
+	done := make(chan error, 1)
+	var response *testutil.Response
+	go func() {
+		response = deleteAttachment(sourceAttachment)
+		done <- nil
+	}()
+	waitForCommentMutationLock(test, "LockAttachmentRow", done)
+	if err := holder.Commit(ctx); err != nil {
+		test.Fatal(err)
+	}
+	<-done
+	if response.Code != http.StatusNoContent || !stored() {
+		test.Fatalf("delete during fork: status %d, file kept %v", response.Code, stored())
+	}
+	if deleteAttachment(copyID).Code != http.StatusNoContent || stored() {
+		test.Fatal("deleting the last row kept the stored file")
 	}
 }
