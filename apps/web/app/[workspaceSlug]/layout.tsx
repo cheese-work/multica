@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useEffect } from "react";
+import { use, useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter, usePathname } from "next/navigation";
 import { WorkspaceSlugProvider, paths } from "@multica/core/paths";
@@ -25,13 +25,19 @@ export default function WorkspaceLayout({
   const isAuthLoading = useAuthStore((s) => s.isLoading);
   const router = useRouter();
   const pathname = usePathname();
+  const hadVerifiedSession = useRef(false);
 
   // Workspace routes require auth. If user is unauthenticated (initial visit
   // without a session, token expired, another tab logged out, etc.), bounce
   // to /login. Without this, the layout renders null and the user sees a
   // blank page stuck on /{slug}/...
   useEffect(() => {
-    if (!isAuthLoading && !user) {
+    if (isAuthLoading) return;
+    if (user) {
+      hadVerifiedSession.current = true;
+    } else if (hadVerifiedSession.current) {
+      router.replace(paths.login());
+    } else {
       const nextUrl = pathname + window.location.search;
       router.replace(`${paths.login()}?next=${encodeURIComponent(nextUrl)}`);
     }
