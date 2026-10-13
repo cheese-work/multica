@@ -103,17 +103,29 @@ SELECT * FROM chat_session
 WHERE forked_from_session_id = $1 AND fork_idempotency_key = $2;
 
 -- name: GetChatForkFirstMessage :one
--- The first message a fork sent. It is written in the fork's own transaction,
--- so it shares the child's creation time (now() is per transaction); a later
--- send has a later time.
+-- The first message a fork sent. Its task is created in the fork's own
+-- transaction, so the task shares the child's creation time (now() is per
+-- transaction); a later send's task has a later time.
 SELECT message.* FROM chat_message AS message
 JOIN chat_session AS session ON session.id = message.chat_session_id
+JOIN agent_task_queue AS task ON task.id = message.task_id
 WHERE session.id = $1
   AND message.role = 'user'
-  AND message.task_id IS NOT NULL
-  AND message.created_at = session.created_at
-ORDER BY message.id
+  AND task.created_at = session.created_at
+ORDER BY message.created_at, message.id
 LIMIT 1;
+
+-- name: PlaceForkFirstMessage :one
+-- A source send that committed after the fork transaction began is copied
+-- with a time later than the transaction-start now() the first message got.
+-- Move the first message just after the newest copied row.
+UPDATE chat_message AS message
+SET created_at = GREATEST(message.created_at, (
+    SELECT max(copied.created_at) FROM chat_message AS copied
+    WHERE copied.chat_session_id = message.chat_session_id AND copied.id <> message.id
+  ) + interval '1 microsecond')
+WHERE message.id = $1
+RETURNING *;
 
 -- name: CountChatMessagesForForkBlock :one
 -- The fork block's N: the rows ListChatMessagesPage can return (keep the

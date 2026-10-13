@@ -205,6 +205,9 @@ func (h *Handler) ForkChatSession(w http.ResponseWriter, r *http.Request) {
 	var sent service.DirectChatSendResult
 	if err == nil && message != "" {
 		sent, err = h.TaskService.SendDirectChatMessageTx(r.Context(), qtx, plan, child, parseUUID(userID), message, nil, "member", parseUUID(userID), r.Header.Get("X-Actor-Source"))
+		if err == nil {
+			sent.Message, err = qtx.PlaceForkFirstMessage(r.Context(), sent.Message.ID)
+		}
 	}
 	if err != nil {
 		slog.Error("chat fork failed", "source_session_id", uuidToString(session.ID), "error", err)

@@ -998,17 +998,17 @@ func (q *Queries) GetChatForkByOperation(ctx context.Context, arg GetChatForkByO
 const getChatForkFirstMessage = `-- name: GetChatForkFirstMessage :one
 SELECT message.id, message.chat_session_id, message.role, message.content, message.task_id, message.created_at, message.failure_reason, message.elapsed_ms, message.message_kind, message.channel_media_pending_until, message.channel_ingested, message.quick_actions, message.channel_context_revision, message.channel_outbound_type, message.channel_outbound_installation_id, message.channel_outbound_chat_id, message.channel_outbound_message_ids, message.sent_via FROM chat_message AS message
 JOIN chat_session AS session ON session.id = message.chat_session_id
+JOIN agent_task_queue AS task ON task.id = message.task_id
 WHERE session.id = $1
   AND message.role = 'user'
-  AND message.task_id IS NOT NULL
-  AND message.created_at = session.created_at
-ORDER BY message.id
+  AND task.created_at = session.created_at
+ORDER BY message.created_at, message.id
 LIMIT 1
 `
 
-// The first message a fork sent. It is written in the fork's own transaction,
-// so it shares the child's creation time (now() is per transaction); a later
-// send has a later time.
+// The first message a fork sent. Its task is created in the fork's own
+// transaction, so the task shares the child's creation time (now() is per
+// transaction); a later send's task has a later time.
 func (q *Queries) GetChatForkFirstMessage(ctx context.Context, id pgtype.UUID) (ChatMessage, error) {
 	row := q.db.QueryRow(ctx, getChatForkFirstMessage, id)
 	var i ChatMessage
@@ -3388,6 +3388,45 @@ WHERE id = $1
 func (q *Queries) MarkChatSessionRead(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, markChatSessionRead, id)
 	return err
+}
+
+const placeForkFirstMessage = `-- name: PlaceForkFirstMessage :one
+UPDATE chat_message AS message
+SET created_at = GREATEST(message.created_at, (
+    SELECT max(copied.created_at) FROM chat_message AS copied
+    WHERE copied.chat_session_id = message.chat_session_id AND copied.id <> message.id
+  ) + interval '1 microsecond')
+WHERE message.id = $1
+RETURNING id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, sent_via
+`
+
+// A source send that committed after the fork transaction began is copied
+// with a time later than the transaction-start now() the first message got.
+// Move the first message just after the newest copied row.
+func (q *Queries) PlaceForkFirstMessage(ctx context.Context, id pgtype.UUID) (ChatMessage, error) {
+	row := q.db.QueryRow(ctx, placeForkFirstMessage, id)
+	var i ChatMessage
+	err := row.Scan(
+		&i.ID,
+		&i.ChatSessionID,
+		&i.Role,
+		&i.Content,
+		&i.TaskID,
+		&i.CreatedAt,
+		&i.FailureReason,
+		&i.ElapsedMs,
+		&i.MessageKind,
+		&i.ChannelMediaPendingUntil,
+		&i.ChannelIngested,
+		&i.QuickActions,
+		&i.ChannelContextRevision,
+		&i.ChannelOutboundType,
+		&i.ChannelOutboundInstallationID,
+		&i.ChannelOutboundChatID,
+		&i.ChannelOutboundMessageIds,
+		&i.SentVia,
+	)
+	return i, err
 }
 
 const prioritizeQueuedChatTask = `-- name: PrioritizeQueuedChatTask :one

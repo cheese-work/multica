@@ -356,7 +356,7 @@ func TestForkChatSessionRollsBackFailedSteps(test *testing.T) {
 	ctx := context.Background()
 	agentID, sourceID, _, _ := setupDirectChatSession(test, ctx, "Rollback")
 	forkMessage(test, sourceID, testutil.Cols{"role": "user", "content": "Keep this"})
-	for _, name := range []string{"InsertForkChatMessages", "SetChatForkSource", "CreateChatTask", "CreateChatMessage"} {
+	for _, name := range []string{"InsertForkChatMessages", "SetChatForkSource", "CreateChatTask", "CreateChatMessage", "PlaceForkFirstMessage"} {
 		test.Run(name, func(test *testing.T) {
 			handler := *testHandler
 			handler.TxStarter = failingQueryStarter{inner: testHandler.TxStarter, name: name}
@@ -717,4 +717,24 @@ func TestForkChatSessionCopiesLargeDM(test *testing.T) {
 		test.Fatalf("large copy incomplete: %+v", child.Session)
 	}
 	test.Logf("fork copy of 2000 messages (4 KiB) and 200 attachments took %s", elapsed)
+}
+
+func TestForkChatSessionFirstMessageSortsAfterCopiedHistory(test *testing.T) {
+	ctx := context.Background()
+	_, sourceID, _, _ := setupDirectChatSession(test, ctx, "Late source")
+	// A source send that commits after the fork transaction starts carries a
+	// later time than the fork's transaction-start now(); this row stands in
+	// for it.
+	forkMessage(test, sourceID, testutil.Cols{"role": "assistant", "content": "Committed during the fork", "created_at": testutil.Raw("now() + interval '1 minute'")})
+	var child, replay ChatForkResponse
+	testutil.Call(test, testHandler.ForkChatSession, forkChatRequest(test, sourceID, "late", map[string]any{"message": "After the copy"})).Want(http.StatusCreated).JSON(&child)
+	cleanupChatFork(test, child.Session.ID)
+	rows := forkRows(test, `chat_session_id = $1`, child.Session.ID)
+	if len(rows) != 2 || rows[0].Content != "Committed during the fork" || rows[1].Content != "After the copy" || child.Message == nil || child.Message.ID != rows[1].ID {
+		test.Fatalf("first message does not sort after the copied history: %+v", rows)
+	}
+	testutil.Call(test, testHandler.ForkChatSession, forkChatRequest(test, sourceID, "late", map[string]any{"message": "After the copy"})).Want(http.StatusOK).JSON(&replay)
+	if replay.Message == nil || replay.Message.ID != child.Message.ID {
+		test.Fatalf("replay lost the first message: %+v", replay.Message)
+	}
 }
