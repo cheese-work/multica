@@ -158,8 +158,9 @@ for (const surface of ["page", "window"] as const) {
       if (surface === "page") {
         // The DM list ranks the new idle fork above the more recently active
         // unrelated DM, also after the list refetches.
-        const forkRow = page.getByRole("link").filter({ hasText: "Storage engine choice (fork)" });
-        const otherRow = page.getByRole("link").filter({ hasText: "Unrelated recent DM" });
+        // DM list titles; the list renders before the DM header that repeats the title.
+        const forkRow = page.getByText("Storage engine choice (fork)", { exact: true }).first();
+        const otherRow = page.getByText("Unrelated recent DM", { exact: true });
         await page.reload({ waitUntil: "domcontentloaded" });
         await expect(otherRow).toBeVisible({ timeout: 30_000 });
         await expect(forkRow).toBeVisible();
