@@ -2748,6 +2748,7 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "Comment added to issue %s.\n", issueRef.Display)
+	warnBlockedTriggerOutcomes(os.Stderr, result)
 
 	output, _ := cmd.Flags().GetString("output")
 	if output == "table" {
@@ -2795,6 +2796,7 @@ func runIssueCommentUpdate(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "Comment %s updated.\n", commentID)
+	warnBlockedTriggerOutcomes(os.Stderr, result)
 	output, _ := cmd.Flags().GetString("output")
 	if output == "table" {
 		return nil
