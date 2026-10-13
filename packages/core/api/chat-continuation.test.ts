@@ -11,6 +11,14 @@ import {
 } from "./schemas";
 
 describe("chat continuation contracts", () => {
+  it("retains a fork source and drops malformed fork sources", () => {
+    const sourceID = "11111111-1111-4111-8111-111111111111";
+    expect(ChatSessionSchema.parse({ id: "fork", forked_from_session_id: sourceID }).forked_from_session_id).toBe(sourceID);
+    for (const value of [123, "../../other", {}]) {
+      expect(ChatSessionSchema.parse({ id: "fork", forked_from_session_id: value }).forked_from_session_id).toBeUndefined();
+    }
+    expect(ChatSessionSchema.parse({ id: "source" }).forked_from_session_id).toBeUndefined();
+  });
   it("preserves a continuation summary and ignores an unknown future kind", () => {
     const message = { id: "message", chat_session_id: "chat", role: "assistant", message_kind: "continuation_summary" };
     expect(ChatMessageSchema.parse(message).message_kind).toBe("continuation_summary");

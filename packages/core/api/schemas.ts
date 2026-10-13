@@ -2039,6 +2039,7 @@ const ChatChannelSourceSchema = z.object({
 }).loose();
 
 export const ChatSessionSchema: z.ZodType<ChatSession> = z.object({
+  forked_from_session_id: z.string().uuid().nullable().optional().catch(undefined),
   id: z.string(),
   continued_into_session_id: z.string().uuid().nullable().optional().catch(undefined),
   workspace_id: z.string().default(""),

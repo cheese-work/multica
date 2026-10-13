@@ -29,6 +29,19 @@ SET status = 'archived', continued_into_session_id = $2, updated_at = now()
 WHERE id = $1
 RETURNING *;
 
+-- name: SetChatForkSource :one
+UPDATE chat_session
+SET forked_from_session_id = $2,
+    fork_idempotency_key = $3,
+    runtime_id = NULL,
+    last_read_at = sqlc.arg('summary_created_at')::timestamptz - interval '1 microsecond'
+WHERE id = $1
+RETURNING *;
+
+-- name: GetChatForkByOperation :one
+SELECT * FROM chat_session
+WHERE forked_from_session_id = $1 AND fork_idempotency_key = $2;
+
 -- name: GetChatContinuationSummary :one
 SELECT * FROM chat_message
 WHERE chat_session_id = $1 AND message_kind = 'continuation_summary'

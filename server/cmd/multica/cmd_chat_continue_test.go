@@ -65,3 +65,40 @@ func TestChatContinueRejectsInvalidSummaryWithoutHTTP(t *testing.T) {
 		t.Fatal("missing file was accepted")
 	}
 }
+
+func TestChatContinueForkFlagPostsToForkAPI(t *testing.T) {
+	clearAmbientDaemonTaskEnv(t)
+	flag := chatContinueCmd.Flags().Lookup("fork")
+	if flag == nil || flag.DefValue != "false" {
+		t.Fatal("chat continue must expose --fork, disabled by default")
+	}
+	summaryFile := filepath.Join(t.TempDir(), "summary.md")
+	if err := os.WriteFile(summaryFile, []byte("Goal: explore a fork."), 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/api/chat/fork" {
+			t.Errorf("unexpected fork request: %s %s", request.Method, request.URL.Path)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body["summary"] != "Goal: explore a fork." || body["idempotency_key"] != "retryable-operation" {
+			t.Errorf("fork request: %v %v", body, err)
+		}
+		response.Header().Set("Content-Type", "application/json")
+		response.WriteHeader(http.StatusCreated)
+		_, _ = response.Write([]byte(`{"url":"/workspace/chat?session=fork","session":{"id":"fork"}}`))
+	}))
+	t.Cleanup(server.Close)
+	setCLITestServerEnv(t, server.URL)
+	command := chatContinueTestCommand(summaryFile)
+	command.Flags().Bool("fork", true, "")
+	command.Flags().String("idempotency-key", "retryable-operation", "")
+	var output bytes.Buffer
+	command.SetOut(&output)
+	if err := runChatContinue(command, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "/workspace/chat?session=fork") {
+		t.Fatalf("missing fork URL: %s", output.String())
+	}
+}

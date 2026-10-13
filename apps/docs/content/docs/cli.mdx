@@ -117,6 +117,24 @@ multica issue run-messages <task-id> --issue MUL-123
 multica issue cancel-task <task-id> --issue MUL-123
 ```
 
+## Forking a web DM
+
+From the source DM's running chat task, create a child DM seeded with a UTF-8 summary:
+
+```bash
+multica chat continue --fork --summary-file summary.md
+```
+
+The source stays active. The child keeps the same agent, creator and project, with a title ending in ` (fork)` and a fresh agent workspace. Decisions, approvals, task tokens and lane summaries stay with the source.
+
+The current chat task ID is the default fork operation key. Repeating the command in the same task returns the same child. To create another fork in that task, use a different explicit key; reuse that key when retrying:
+
+```bash
+multica chat continue --fork --summary-file summary.md --idempotency-key explore-alternative
+```
+
+The session-human API is `POST /api/chat/sessions/{sessionId}/fork`, with `summary` and `idempotency_key` in the JSON body. The task-scoped API is `POST /api/chat/fork`. Session responses expose `forked_from_session_id` on children. Only web DMs can be forked. Without `--fork`, `chat continue` still archives the source; `/compact` is unchanged.
+
 ## Agents and skills
 
 ```bash

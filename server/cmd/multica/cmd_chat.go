@@ -58,6 +58,8 @@ channel.`,
 
 func init() {
 	chatContinueCmd.Flags().String("summary-file", "", "UTF-8 handoff summary file (required)")
+	chatContinueCmd.Flags().Bool("fork", false, "Create a child DM without archiving this DM")
+	chatContinueCmd.Flags().String("idempotency-key", "", "Fork operation key (defaults to the current chat task ID)")
 	chatContinueCmd.Flags().String("output", "json", "Output format: table or json")
 	chatCmd.AddCommand(chatContinueCmd)
 	for _, c := range []*cobra.Command{chatHistoryCmd, chatThreadCmd} {
@@ -88,7 +90,20 @@ func runChatContinue(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 	var response map[string]any
-	if err := client.PostJSON(ctx, "/api/chat/continue", map[string]string{"summary": string(summary)}, &response); err != nil {
+	endpoint := "/api/chat/continue"
+	body := map[string]string{"summary": string(summary)}
+	fork, _ := cmd.Flags().GetBool("fork")
+	key, _ := cmd.Flags().GetString("idempotency-key")
+	if key != "" && !fork {
+		return fmt.Errorf("--idempotency-key requires --fork")
+	}
+	if fork {
+		endpoint = "/api/chat/fork"
+		if key != "" {
+			body["idempotency_key"] = key
+		}
+	}
+	if err := client.PostJSON(ctx, endpoint, body, &response); err != nil {
 		return fmt.Errorf("continue chat: %w", err)
 	}
 	output, _ := cmd.Flags().GetString("output")

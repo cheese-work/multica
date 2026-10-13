@@ -3335,7 +3335,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}
 		}
 
-		if cs.ContinuedFromSessionID.Valid && resp.PriorSessionID == "" {
+		if (cs.ContinuedFromSessionID.Valid || cs.ForkedFromSessionID.Valid) && resp.PriorSessionID == "" {
 			summary, err := h.Queries.GetChatContinuationSummary(r.Context(), cs.ID)
 			if err != nil {
 				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, &claimBuildFailure{
