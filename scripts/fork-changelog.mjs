@@ -22,10 +22,13 @@ const LINE = /^Changelog(?:\((feat|fix|perf)\))?:\s?(.*)$/;
 const SECTIONS = { feat: "New Features", fix: "Bug Fixes", perf: "Improvements" };
 const REQUIRES_LINE = new Set(["feat", "fix", "perf"]);
 
-// Control, bidi and zero-width characters. U+200D (joiner) stays: emoji sequences
-// need it. Token detection runs on a copy with U+200D removed as well.
+// Control, bidi and zero-width characters. U+200D (joiner) is handled apart: it stays
+// only between two emoji. Token detection runs on a copy without any joiner.
 const STRIP = /[\u0000-\u001f\u007f-\u009f\u200b\u200c\u200e\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g;
 const JOINER = /\u200d/g;
+const PICTO = "\\p{Extended_Pictographic}";
+// A joiner that does not sit between two pictographs (modifiers and VS16 may precede it).
+const LOOSE_JOINER = new RegExp(`(?<![${PICTO}\\ufe0f\\u{1F3FB}-\\u{1F3FF}])\\u200d|\\u200d(?![${PICTO}])`, "gu");
 const TOKENS = [
   /ghp_[A-Za-z0-9]{10,}/,
   /github_pat_[A-Za-z0-9_]{10,}/,
@@ -34,16 +37,23 @@ const TOKENS = [
   /\beyJ[\w-]+\.[\w-]+\.[\w-]+/,
 ];
 
-// Drops HTML comments (an unclosed one runs to the end) and fenced code.
+// Drops HTML comments (an unclosed one runs to the end) and fenced code. A fence
+// closes only on the same character, at least as long, with nothing else on the line.
 function liveLines(body) {
   const text = body.replace(/\r\n?/g, "\n").replace(/<!--[\s\S]*?(-->|$)/g, "");
-  let fenced = false;
+  let fence = null;
   return text.split("\n").filter((line) => {
-    if (/^\s*(```|~~~)/.test(line)) {
-      fenced = !fenced;
+    if (fence) {
+      const close = /^ {0,3}(`{3,}|~{3,})\s*$/.exec(line);
+      if (close && close[1][0] === fence[0] && close[1].length >= fence.length) fence = null;
       return false;
     }
-    return !fenced;
+    const open = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (open) {
+      fence = open[1];
+      return false;
+    }
+    return true;
   });
 }
 
@@ -71,13 +81,13 @@ export function parseChangelogLine(body) {
   const [, override, raw] = matches[0];
   const value = raw.trim();
   if (value === "") return result("missing", null, null, warnings);
-  if (/^<.*>$/.test(value)) {
-    warnings.push("The Changelog line is still the template placeholder.");
+  if (/<[^\s<>][^<>]*>/.test(value)) {
+    warnings.push("The Changelog line holds a <placeholder>.");
     return result("missing", null, null, warnings);
   }
 
   const spaced = value.replace(/[\t\v\f]/g, " ");
-  const stripped = spaced.replace(STRIP, "");
+  const stripped = spaced.replace(STRIP, "").replace(LOOSE_JOINER, "");
   const cleaned = stripped.replace(/\s+/g, " ").trim();
   if (stripped !== spaced) warnings.push("Stripped control, bidi or zero-width characters from the sentence.");
   if (cleaned === "") return result("missing", null, null, warnings);
@@ -87,7 +97,10 @@ export function parseChangelogLine(body) {
     warnings.push("The sentence looks like a credential and is hidden.");
     return result("parse-error", null, null, warnings);
   }
-  if (/\bCHE-\d+\b/.test(cleaned)) warnings.push("The sentence names an issue id; users cannot open it.");
+  if (/\bCHE-\d+\b/i.test(cleaned)) {
+    warnings.push("The sentence names an issue id and is hidden: users cannot open it.");
+    return result("parse-error", null, null, warnings);
+  }
 
   let text = cleaned;
   if ([...text].length > MAX_CODE_POINTS) {
@@ -152,7 +165,8 @@ function revertedShas(prs, commits) {
     memo.set(sha, value);
     return value;
   };
-  return (sha) => isReverted(sha);
+  const isReverter = (sha) => [...reverters.values()].some((from) => from.has(sha));
+  return { isReverted, isReverter };
 }
 
 // --- evaluation -------------------------------------------------------------
@@ -206,7 +220,7 @@ export function generateEntries({ prs, firstParent = null }, options = {}) {
   const commits = (firstParent ?? []).map((c) => (typeof c === "string" ? { sha: c, message: "" } : c));
   const onMain = firstParent ? new Set(commits.map((c) => c.sha)) : null;
   const considered = prs.filter((pr) => !onMain || onMain.has(pr.mergeSha));
-  const isReverted = revertedShas(considered, commits);
+  const { isReverted, isReverter } = revertedShas(considered, commits);
 
   const entries = [];
   const hiddenList = [];
@@ -217,7 +231,7 @@ export function generateEntries({ prs, firstParent = null }, options = {}) {
     if ((pr.headRef ?? "").startsWith(options.syncPrefix ?? DEFAULT_SYNC_PREFIX)) hide = "upstream-sync";
     else if (Number.isNaN(mergedMs)) hide = "parse-error";
     else if (mergedMs < start) hide = "before-start-date";
-    else if (isRevertPr(pr) || isReverted(pr.mergeSha)) hide = "reverted";
+    else if (isRevertPr(pr) || isReverter(pr.mergeSha) || isReverted(pr.mergeSha)) hide = "reverted";
     if (hide) {
       hiddenList.push({ number: pr.number, reason: hide });
       continue;
