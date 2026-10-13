@@ -578,14 +578,15 @@ func (q *Queries) CreateChatTask(ctx context.Context, arg CreateChatTaskParams) 
 }
 
 const createMikaOnboardingOpening = `-- name: CreateMikaOnboardingOpening :one
-INSERT INTO chat_message (chat_session_id, role, content, message_kind, created_at, id)
+INSERT INTO chat_message (chat_session_id, role, content, message_kind, created_at, id, sent_via)
 VALUES (
     $1,
     'assistant',
     $2,
     'onboarding_opening',
     $3::timestamptz + interval '1 microsecond',
-    COALESCE($4::uuid, gen_random_uuid())
+    COALESCE($4::uuid, gen_random_uuid()),
+    'system'
 )
 RETURNING id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, sent_via
 `
