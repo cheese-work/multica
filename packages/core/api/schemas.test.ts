@@ -113,24 +113,20 @@ describe("ChatSessionSchema", () => {
     updated_at: "2026-08-18T00:00:00Z",
   };
 
-  it("preserves lane summaries in single-session and list responses", () => {
-    const session = {
-      ...baseSession,
-      lane_summary: "Deployments and release decisions",
-      lane_summary_updated_at: "2026-10-12T01:00:00Z",
-    };
-    expect(ChatSessionSchema.parse(session)).toMatchObject(session);
-    expect(ChatSessionListSchema.parse([session])).toEqual([
-      expect.objectContaining(session),
-    ]);
+  it("does not add removed lane-summary defaults to session responses", () => {
+    const parsed = ChatSessionSchema.parse(baseSession);
+    expect(parsed).not.toHaveProperty("lane_summary");
+    expect(parsed).not.toHaveProperty("lane_summary_updated_at");
+    expect(ChatSessionListSchema.parse([baseSession])[0]).toEqual(parsed);
   });
 
-  it("defaults missing or malformed lane summaries without dropping the session", () => {
-    for (const summary of [{}, { lane_summary: null, lane_summary_updated_at: 42 }]) {
+  it("keeps sessions readable when older servers send lane-summary data", () => {
+    for (const summary of [
+      { lane_summary: "Legacy private lane", lane_summary_updated_at: "2026-10-12T01:00:00Z" },
+      { lane_summary: null, lane_summary_updated_at: 42 },
+    ]) {
       const parsed = ChatSessionSchema.parse({ ...baseSession, ...summary });
-      expect(parsed.id).toBe(baseSession.id);
-      expect(parsed.lane_summary).toBe("");
-      expect(parsed.lane_summary_updated_at).toBeNull();
+      expect(parsed).toMatchObject(baseSession);
       expect(ChatSessionListSchema.parse([{ ...baseSession, ...summary }])[0]).toEqual(parsed);
     }
   });

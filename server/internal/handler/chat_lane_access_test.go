@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"context"
 	"net/http"
 	"testing"
 	"time"
@@ -76,7 +75,6 @@ func TestChatLaneAuthCannotBeForged(test *testing.T) {
 	})
 	credentials["own_chat"] = chatToken
 	verifier := provenanceCloudVerifier(test)
-	dbfx.Exec(test, `UPDATE chat_session SET lane_summary = 'private lane' WHERE id = $1`, sessionID)
 	for _, endpoint := range []struct {
 		name, method string
 		handler      http.HandlerFunc
@@ -85,11 +83,10 @@ func TestChatLaneAuthCannotBeForged(test *testing.T) {
 		{"get", http.MethodGet, testHandler.GetChatSession},
 		{"messages", http.MethodGet, testHandler.ListChatMessages},
 		{"page", http.MethodGet, testHandler.ListChatMessagesPage},
-		{"summary", http.MethodPut, testHandler.SetChatLaneSummary},
 	} {
 		for caller, token := range credentials {
 			test.Run(endpoint.name+"/"+caller, func(test *testing.T) {
-				req := withChatTestWorkspaceCtx(test, newRequest(endpoint.method, "/api/chat/sessions", map[string]string{"lane_summary": "allowed"}))
+				req := withChatTestWorkspaceCtx(test, newRequest(endpoint.method, "/api/chat/sessions", nil))
 				req = withURLParam(req, "sessionId", sessionID)
 				req.Header.Set("Authorization", "Bearer "+token)
 				req.Header.Set("X-Actor-Source", "interactive_jwt")
@@ -101,18 +98,11 @@ func TestChatLaneAuthCannotBeForged(test *testing.T) {
 				}
 				protected := middleware.Auth(testHandler.Queries, nil, verifier, nil)(endpoint.handler)
 				response := testutil.Call(test, protected.ServeHTTP, req).Want(want)
-				if endpoint.name != "summary" && (caller == "cli_jwt" || caller == "legacy_jwt" || caller == "unknown_jwt") {
+				if caller == "cli_jwt" || caller == "legacy_jwt" || caller == "unknown_jwt" {
 					var refusal map[string]string
 					response.JSON(&refusal)
 					if refusal["code"] != "interactive_login_required" {
 						test.Fatalf("chat refusal = %v, want interactive_login_required", refusal)
-					}
-				}
-				if caller == "own_chat" && endpoint.name == "get" {
-					var session ChatSessionResponse
-					response.JSON(&session)
-					if session.LaneSummary != "" || session.LaneSummaryUpdatedAt != nil {
-						test.Fatal("lane summary leaked outside its dedicated agent projection")
 					}
 				}
 				if caller == "own_chat" && endpoint.name != "list" {
@@ -121,9 +111,5 @@ func TestChatLaneAuthCannotBeForged(test *testing.T) {
 				}
 			})
 		}
-	}
-	stored, err := testHandler.Queries.GetChatSession(context.Background(), parseUUID(otherID))
-	if err != nil || stored.LaneSummary != "" {
-		test.Fatalf("forged caller wrote another lane: %+v, %v", stored, err)
 	}
 }

@@ -546,8 +546,6 @@ type ChatSession struct {
 	ContinuedFromSessionID pgtype.UUID        `json:"continued_from_session_id"`
 	ContinuedIntoSessionID pgtype.UUID        `json:"continued_into_session_id"`
 	ChannelOriginAt        pgtype.Timestamptz `json:"channel_origin_at"`
-	LaneSummary            string             `json:"lane_summary"`
-	LaneSummaryUpdatedAt   pgtype.Timestamptz `json:"lane_summary_updated_at"`
 }
 
 type ClientUsageDaily struct {

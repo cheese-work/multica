@@ -1,37 +1,25 @@
 package daemon
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
 
-func TestChatLaneSummaryPrompt(test *testing.T) {
-	for _, scenario := range []struct {
-		name, summary string
-		count         int64
-		want          string
-	}{
-		{"empty", "", 0, "The lane summary is empty"},
-		{"recent", "Release planning", 19, "if the lane's topic changed this turn"},
-		{"due", "Release planning", 20, "20 messages have arrived"},
-		{"overdue", "Release planning", 21, "21 messages have arrived"},
-	} {
-		test.Run(scenario.name, func(test *testing.T) {
-			prompt := buildChatPrompt(Task{ChatSessionID: "chat", ChatLaneSummaryEnabled: true, ChatLaneSummary: scenario.summary, ChatLaneSummaryMessageCount: scenario.count})
-			for _, expected := range []string{scenario.want, "multica chat summary set --file", "600 Unicode characters", "not the conversation log"} {
-				if !strings.Contains(prompt, expected) {
-					test.Fatalf("prompt missing %q:\n%s", expected, prompt)
+func TestChatPromptHasNoLaneSummary(test *testing.T) {
+	for _, issueID := range []string{"", "issue"} {
+		test.Run("issue="+issueID, func(test *testing.T) {
+			var task Task
+			if err := json.Unmarshal([]byte(`{"chat_session_id":"chat","chat_lane_summary_enabled":true,"chat_lane_summary":"Legacy private lane","chat_lane_summary_updated_at":"2026-10-13T00:00:00Z","chat_lane_summary_message_count":20}`), &task); err != nil {
+				test.Fatal(err)
+			}
+			task.IssueID = issueID
+			prompt := buildChatPrompt(task)
+			for _, forbidden := range []string{"DM lane summary", "Legacy private lane", "chat summary set", "messages have arrived since the last summary update"} {
+				if strings.Contains(prompt, forbidden) {
+					test.Fatalf("DM prompt contains removed lane-summary content %q", forbidden)
 				}
 			}
-			if scenario.summary != "" && !strings.Contains(prompt, scenario.summary) {
-				test.Fatal("current summary missing")
-			}
-			if scenario.count < 20 && strings.Contains(prompt, "messages have arrived") {
-				test.Fatal("cadence reminder fired early")
-			}
 		})
-	}
-	if strings.Contains(buildChatPrompt(Task{ChatSessionID: "channel", ChatChannelType: "slack"}), "chat summary set") {
-		test.Fatal("summary upkeep enabled for a channel task")
 	}
 }

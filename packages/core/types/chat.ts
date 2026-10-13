@@ -94,8 +94,6 @@ export interface ChatSession {
    *  conversation uses workspace context only; optional for older servers. */
   project_id?: string | null;
   title: string;
-  lane_summary?: string;
-  lane_summary_updated_at?: string | null;
   status: "active" | "archived";
   /** True when the session has any unread assistant replies. List-only.
    *  Convenience for `unread_count > 0`. */

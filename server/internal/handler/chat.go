@@ -149,7 +149,7 @@ func (h *Handler) CreateChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, chatSessionReadResponse(r, session))
+	writeJSON(w, http.StatusCreated, chatSessionToResponse(session))
 }
 
 func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
@@ -165,7 +165,7 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 		}
 		responses := make([]ChatSessionResponse, 0, 1)
 		if session.Status == "active" || r.URL.Query().Get("status") == "all" {
-			responses = append(responses, chatSessionReadResponse(r, session))
+			responses = append(responses, chatSessionToResponse(session))
 		}
 		writeJSON(w, http.StatusOK, responses)
 		return
@@ -215,8 +215,6 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 				CreatorID:              uuidToString(s.CreatorID),
 				ProjectID:              uuidToPtr(s.ProjectID),
 				Title:                  s.Title,
-				LaneSummary:            s.LaneSummary,
-				LaneSummaryUpdatedAt:   timestampToPtr(s.LaneSummaryUpdatedAt),
 				Status:                 s.Status,
 				HasUnread:              s.UnreadCount > 0,
 				UnreadCount:            int(s.UnreadCount),
@@ -248,8 +246,6 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 				CreatorID:              uuidToString(s.CreatorID),
 				ProjectID:              uuidToPtr(s.ProjectID),
 				Title:                  s.Title,
-				LaneSummary:            s.LaneSummary,
-				LaneSummaryUpdatedAt:   timestampToPtr(s.LaneSummaryUpdatedAt),
 				Status:                 s.Status,
 				HasUnread:              s.UnreadCount > 0,
 				UnreadCount:            int(s.UnreadCount),
@@ -346,7 +342,7 @@ func (h *Handler) GetChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := chatSessionReadResponse(r, session)
+	resp := chatSessionToResponse(session)
 	// hydrateChatSessionChannelMetadata mutates the slice element, so retain a
 	// concrete slice here rather than passing a temporary value to writeJSON.
 	responses := []ChatSessionResponse{resp}
@@ -479,7 +475,7 @@ func (h *Handler) UpdateChatSession(w http.ResponseWriter, r *http.Request) {
 	}
 	h.publishChat(protocol.EventChatSessionUpdated, workspaceID, "member", userID, resolvedSessionID, payload)
 
-	writeJSON(w, http.StatusOK, chatSessionReadResponse(r, updated))
+	writeJSON(w, http.StatusOK, chatSessionToResponse(updated))
 }
 
 type SetChatSessionPinnedRequest struct {
@@ -527,7 +523,7 @@ func (h *Handler) SetChatSessionPinned(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:     timestampToString(updated.UpdatedAt),
 	})
 
-	writeJSON(w, http.StatusOK, chatSessionReadResponse(r, updated))
+	writeJSON(w, http.StatusOK, chatSessionToResponse(updated))
 }
 
 type SetChatSessionArchivedRequest struct {
@@ -681,7 +677,7 @@ func (h *Handler) SetChatSessionArchived(w http.ResponseWriter, r *http.Request)
 		UpdatedAt:     timestampToString(updated.UpdatedAt),
 	})
 
-	writeJSON(w, http.StatusOK, chatSessionReadResponse(r, updated))
+	writeJSON(w, http.StatusOK, chatSessionToResponse(updated))
 }
 
 // DeleteChatSession hard-deletes a chat session owned by the caller. The
@@ -1926,8 +1922,6 @@ type ChatSessionResponse struct {
 	CreatorID              string  `json:"creator_id"`
 	ProjectID              *string `json:"project_id"`
 	Title                  string  `json:"title"`
-	LaneSummary            string  `json:"lane_summary"`
-	LaneSummaryUpdatedAt   *string `json:"lane_summary_updated_at"`
 	Status                 string  `json:"status"`
 	// Only populated by list endpoints — single-session fetches return 0/false/nil.
 	// HasUnread is kept as a convenience (== UnreadCount > 0) for existing consumers.
@@ -2046,8 +2040,6 @@ func chatSessionToResponse(s db.ChatSession) ChatSessionResponse {
 		CreatorID:              uuidToString(s.CreatorID),
 		ProjectID:              uuidToPtr(s.ProjectID),
 		Title:                  s.Title,
-		LaneSummary:            s.LaneSummary,
-		LaneSummaryUpdatedAt:   timestampToPtr(s.LaneSummaryUpdatedAt),
 		Status:                 s.Status,
 		Pinned:                 s.PinnedAt.Valid,
 		CreatedAt:              timestampToString(s.CreatedAt),
