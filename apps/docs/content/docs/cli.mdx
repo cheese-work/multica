@@ -205,7 +205,7 @@ multica chat sessions --issue MUL-123 --for <user-id> --output json
 
 Omit `--for` only when the window names exactly one person. The person must still be an active workspace member who can invoke the asking agent, and their target must be unconsumed. A listing does not consume the window. Another run of the same agent, a chat task, PATs and JWTs cannot use this command.
 
-The response contains only `id`, `title` and `updated_at`, newest lane first. It never includes messages, unread counts or transcript previews. Archived sessions and channel-origin sessions are excluded. If no lane exists, the server creates a web DM titled `Decisions: <agent name>` for the named person. Expired, closed, deleted-tag and consumed windows are refused.
+The response contains only `id`, `title`, `updated_at` and `issue_mentions`, newest lane first. It never includes messages, unread counts or transcript previews. Archived sessions and channel-origin sessions are excluded. If no lane exists, the server creates a web DM titled `Decisions: <agent name>` for the named person. Expired, closed, deleted-tag and consumed windows are refused.
 
 ## IDs and output formats
 
