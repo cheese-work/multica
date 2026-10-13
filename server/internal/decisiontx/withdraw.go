@@ -1,0 +1,66 @@
+package decisiontx
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/jackc/pgx/v5/pgtype"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
+)
+
+type Withdrawal struct {
+	Request         db.DecisionRequest
+	Answer          db.DecisionAnswer
+	Comments        []db.Comment
+	ClearedComments []db.Comment
+}
+
+func Withdraw(ctx context.Context, queries *db.Queries, request db.DecisionRequest, answer db.DecisionAnswer, sessionStatus, reason string, userID pgtype.UUID) (Withdrawal, error) {
+	result := Withdrawal{Request: request, Answer: answer}
+	if answer.DecisionRequestID != request.ID {
+		return Withdrawal{}, fmt.Errorf("withdrawal answer belongs to another request")
+	}
+	if answer.DisclaimedAt.Valid {
+		return result, nil
+	}
+	authorType, authorID := "agent", request.AskingAgentID
+	if userID.Valid {
+		authorType, authorID = "member", userID
+	}
+	commentID := dbid.NewV7()
+	comment, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: commentID, WorkspaceID: request.WorkspaceID, IssueID: request.IssueID, ParentID: request.IssueCommentID, AuthorType: authorType, AuthorID: authorID, Type: "comment", Content: "Decision withdrawn: " + reason + ".", DecisionAnswerID: answer.ID, DecisionCommentKind: pgtype.Text{String: "disclaim", Valid: true}})
+	if err != nil {
+		return Withdrawal{}, err
+	}
+	result.Comments = append(result.Comments, comment.Comment())
+	result.Answer, err = queries.WithdrawDecisionAnswer(ctx, db.WithdrawDecisionAnswerParams{WorkspaceID: request.WorkspaceID, ID: answer.ID, DisclaimReason: pgtype.Text{String: reason, Valid: true}, DisclaimedByUserID: userID, WithdrawalCommentID: commentID})
+	if err != nil {
+		return Withdrawal{}, err
+	}
+	if request.Status != "answered" {
+		return result, nil
+	}
+	cancelReason := ""
+	if request.Origin == "unprompted" {
+		cancelReason = "record_disclaimed"
+	} else if sessionStatus == "archived" {
+		cancelReason = "lane_archived"
+	}
+	if cancelReason == "" {
+		result.Request, err = queries.ReopenDecisionRequest(ctx, db.ReopenDecisionRequestParams{WorkspaceID: request.WorkspaceID, ID: request.ID})
+	} else {
+		if cancelReason == "lane_archived" {
+			cancel, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: dbid.NewV7(), WorkspaceID: request.WorkspaceID, IssueID: request.IssueID, ParentID: request.IssueCommentID, AuthorType: authorType, AuthorID: authorID, Type: "comment", Content: "The decision was withdrawn and its DM is archived. A new decision request is required.", DecisionRequestID: request.ID, DecisionCommentKind: pgtype.Text{String: "cancel", Valid: true}})
+			if err != nil {
+				return Withdrawal{}, err
+			}
+			result.Comments = append(result.Comments, cancel.Comment())
+		}
+		result.Request, err = queries.CancelWithdrawnDecisionRequest(ctx, db.CancelWithdrawnDecisionRequestParams{WorkspaceID: request.WorkspaceID, ID: request.ID, CancelReason: pgtype.Text{String: cancelReason, Valid: true}})
+	}
+	if err != nil {
+		return Withdrawal{}, err
+	}
+	return result, nil
+}

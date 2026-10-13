@@ -70,6 +70,28 @@ RETURNING *;
 SELECT (clock_timestamp() + CASE WHEN escalation_class = 'reversible' THEN interval '0 seconds' ELSE interval '10 minutes' END)::timestamptz AS effective_at
 FROM decision_request WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id');
 
+-- name: WithdrawDecisionAnswer :one
+UPDATE decision_answer answer
+SET disclaimed_at = clock_timestamp(), disclaim_reason = sqlc.arg('disclaim_reason'),
+    disclaimed_by_user_id = sqlc.narg('disclaimed_by_user_id'),
+    disclaim_comment_posted_at = clock_timestamp(), withdrawal_comment_id = sqlc.arg('withdrawal_comment_id'),
+    wake_at = CASE WHEN woken_at IS NULL THEN NULL ELSE wake_at END
+FROM decision_request request
+WHERE request.id = answer.decision_request_id AND request.workspace_id = sqlc.arg('workspace_id')
+  AND answer.id = sqlc.arg('id') AND answer.disclaimed_at IS NULL
+RETURNING answer.*;
+
+-- name: ReopenDecisionRequest :one
+UPDATE decision_request SET status = 'open'
+WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') AND status = 'answered'
+RETURNING *;
+
+-- name: CancelWithdrawnDecisionRequest :one
+UPDATE decision_request SET status = 'cancelled', cancel_reason = sqlc.arg('cancel_reason'),
+    cancel_notice_posted_at = clock_timestamp()
+WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') AND status = 'answered'
+RETURNING *;
+
 -- name: DecisionOpenLaneExists :one
 SELECT EXISTS (
     SELECT 1 FROM decision_request

@@ -706,6 +706,9 @@ func init() {
 
 	// issue comment add
 	issueCommentAddCmd.Flags().Bool("decision-intent", false, "Open a 3-minute decision window for the named people (running assigned issue tasks only)")
+	issueCommentAddCmd.Flags().Bool("decision-record", false, "Record this DM human's decision from attested messages (running chat tasks only)")
+	issueCommentAddCmd.Flags().StringArray("message", nil, "Source DM message UUID (repeatable; requires --decision-record)")
+	issueCommentAddCmd.Flags().String("class", "", "Unprompted record class: reversible, spend, deploy, publish, irreversible, product_direction; when unsure choose a held class, never reversible")
 	issueCommentAddCmd.Flags().String("content", "", "Comment content (decodes \\n, \\r, \\t, \\\\; pipe via --content-stdin for multi-line bodies or to preserve literal backslashes)")
 	issueCommentAddCmd.Flags().Bool("content-stdin", false, "Read comment content from stdin (preserves multi-line content verbatim)")
 	issueCommentAddCmd.Flags().String("content-file", "", "Read comment content from a UTF-8 file (preserves multi-line content verbatim; use this on Windows when stdin piping mangles non-ASCII bytes). The path must be inside the current working directory unless --allow-external-file is set.")
@@ -2677,11 +2680,18 @@ func runIssueCommentList(cmd *cobra.Command, args []string) error {
 }
 
 func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
+	decisionRecord, _ := cmd.Flags().GetBool("decision-record")
+	decisionIntent, _ := cmd.Flags().GetBool("decision-intent")
+	messageIDs, _ := cmd.Flags().GetStringArray("message")
+	escalationClass, _ := cmd.Flags().GetString("class")
+	if decisionRecord && (decisionIntent || len(messageIDs) == 0) || !decisionRecord && (len(messageIDs) > 0 || escalationClass != "") {
+		return fmt.Errorf("--decision-record requires --message and cannot combine with --decision-intent; --message and --class require --decision-record")
+	}
 	content, hasContent, err := resolveTextFlag(cmd, "content")
 	if err != nil {
 		return err
 	}
-	if !hasContent {
+	if !hasContent && !decisionRecord {
 		return fmt.Errorf("--content, --content-stdin, or --content-file is required")
 	}
 	if err := guardLocalPathLinks(content, "comment body",
@@ -2700,6 +2710,9 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	// Use a longer timeout when attachments are present (file uploads can be slow).
 	timeout := cli.APITimeout()
 	attachments, _ := cmd.Flags().GetStringSlice("attachment")
+	if decisionRecord && len(attachments) > 0 {
+		return fmt.Errorf("--decision-record cannot combine with --attachment")
+	}
 	if len(attachments) > 0 {
 		timeout = cli.AtLeastAPITimeout(60 * time.Second)
 	}
@@ -2733,6 +2746,13 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	body := map[string]any{"content": content}
+	if decisionRecord {
+		body["decision_record"] = true
+		body["message_ids"] = messageIDs
+		if escalationClass != "" {
+			body["escalation_class"] = escalationClass
+		}
+	}
 	if parentID, _ := cmd.Flags().GetString("parent"); parentID != "" {
 		body["parent_id"] = parentID
 	}
