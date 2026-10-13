@@ -17,7 +17,7 @@ WHERE id = $1;
 
 -- name: SetChatContinuationSource :one
 UPDATE chat_session
-SET continued_from_session_id = $2
+SET continued_from_session_id = $2, pinned_at = sqlc.narg('pinned_at')
 WHERE id = $1
 RETURNING *;
 

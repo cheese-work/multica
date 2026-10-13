@@ -126,7 +126,7 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 		CreatorID: session.CreatorID, Title: session.Title, ProjectID: session.ProjectID,
 	})
 	if err == nil {
-		next, err = qtx.SetChatContinuationSource(r.Context(), db.SetChatContinuationSourceParams{ID: next.ID, ContinuedFromSessionID: session.ID})
+		next, err = qtx.SetChatContinuationSource(r.Context(), db.SetChatContinuationSourceParams{ID: next.ID, ContinuedFromSessionID: session.ID, PinnedAt: session.PinnedAt})
 	}
 	if err == nil {
 		_, err = qtx.CreateChatMessage(r.Context(), db.CreateChatMessageParams{
