@@ -526,6 +526,7 @@ var concurrentDownIndexCleanups = map[string]string{
 	"473_drop_agent_task_queue_chat_with_session_index":     "idx_agent_task_queue_chat_with_session_created_at",
 	"574_drop_github_merge_announcement_identity_index":     "uq_github_merge_announcement_identity",
 	"575_drop_github_merge_announcement_pending_index":      "idx_github_merge_announcement_pending_claim",
+	"612_decision_target_primary_key":                       "decision_intent_target_uidx",
 }
 
 var preMigrationHooks = func() map[string]preMigrationHook {
@@ -552,6 +553,15 @@ var preRollbackHooks = func() map[string]preMigrationHook {
 		hooks[version] = ensureSourceContextRollbackSafe
 	}
 	hooks["430_channel_outbound_message_binding_index"] = refuseChannelChatRouteHistoryRollback
+	hooks["612_decision_target_primary_key"] = func(ctx context.Context, pool *pgxpool.Pool) error {
+		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, "SET LOCAL lock_timeout = '2s'; ALTER TABLE IF EXISTS decision_intent_target DROP CONSTRAINT IF EXISTS decision_intent_target_pkey")
+			return err
+		}); err != nil {
+			return err
+		}
+		return cleanupInvalidConcurrentIndexHook("decision_intent_target_uidx")(ctx, pool)
+	}
 	return hooks
 }()
 

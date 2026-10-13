@@ -20,7 +20,7 @@ func TestDecisionMigrationsUpDownUp(test *testing.T) {
 	if _, err := pool.Exec(ctx, `CREATE TABLE comment (id uuid PRIMARY KEY, content text NOT NULL); INSERT INTO comment VALUES (gen_random_uuid(), 'legacy')`); err != nil {
 		test.Fatal(err)
 	}
-	for _, direction := range []string{"up", "down", "up"} {
+	for step, direction := range []string{"up", "down", "up"} {
 		versions := []string{
 			"597_decision_parents", "598_decision_request_id_index", "599_decision_intent_id_index",
 			"600_decision_dependents", "601_decision_answer_id_index", "602_decision_target_identity_index",
@@ -41,6 +41,36 @@ func TestDecisionMigrationsUpDownUp(test *testing.T) {
 			Conditions:            conditionsForDirection(direction),
 		}); err != nil {
 			test.Fatalf("migrate %s: %v", direction, err)
+		}
+		if step == 0 {
+			for _, target := range []string{"612_decision_target_primary_key", "611_decision_answer_request_index"} {
+				test.Run("bounded_to_"+target, func(test *testing.T) {
+					downVersions := append([]string(nil), versions...)
+					slices.Reverse(downVersions)
+					files, err := boundDownFiles(realMigrationFiles(test, downVersions, "down"), target)
+					if err != nil {
+						test.Fatal(err)
+					}
+					if err := runMigrations(ctx, pool, runOptions{
+						Direction: "down", Files: files, SchemaMigrationsTable: schema + ".schema_migrations",
+						AdvisoryLockKey: int64(rand.Uint64()&0x7fffffffffffffff) | 1,
+						Hooks:           hooksForDirection("down"), Conditions: conditionsForDirection("down"),
+					}); err != nil {
+						test.Fatalf("bounded rollback to %s: %v", target, err)
+					}
+					if err := runMigrations(ctx, pool, runOptions{
+						Direction: "up", Files: realMigrationFiles(test, versions, "up"), SchemaMigrationsTable: schema + ".schema_migrations",
+						AdvisoryLockKey: int64(rand.Uint64()&0x7fffffffffffffff) | 1,
+						Hooks:           hooksForDirection("up"), Conditions: conditionsForDirection("up"),
+					}); err != nil {
+						test.Fatalf("reapply after bounded rollback to %s: %v", target, err)
+					}
+					var primaryKeys int
+					if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_constraint WHERE conrelid = 'decision_intent_target'::regclass AND contype = 'p'`).Scan(&primaryKeys); err != nil || primaryKeys != 1 {
+						test.Fatalf("primary key not restored: count=%d err=%v", primaryKeys, err)
+					}
+				})
+			}
 		}
 		var indexes, comments int
 		if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_index index_row JOIN pg_class index_name ON index_name.oid = index_row.indexrelid JOIN pg_namespace namespace ON namespace.oid = index_name.relnamespace WHERE namespace.nspname = $1 AND index_row.indisvalid AND (index_name.relname LIKE 'decision_%' OR index_name.relname LIKE 'comment_decision_%')`, schema).Scan(&indexes); err != nil {
