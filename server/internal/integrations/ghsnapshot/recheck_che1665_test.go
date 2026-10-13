@@ -2,6 +2,7 @@ package ghsnapshot
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -26,7 +27,9 @@ func recheckManager(t *testing.T, pool *pgxpool.Pool, now time.Time) *Manager {
 }
 
 // drain pops every queued address, keeps the ones under installs, and
-// refreshes them with a decided CLEAN snapshot for their current head.
+// refreshes them with a decided CLEAN snapshot for their current head. An
+// address with an empty head fails its fetch, like a repository the app can
+// no longer read.
 func drain(t *testing.T, m *Manager, heads map[address]string, installs ...int64) []address {
 	t.Helper()
 	keep := map[int64]bool{}
@@ -35,6 +38,9 @@ func drain(t *testing.T, m *Manager, heads map[address]string, installs ...int64
 	}
 	m.fetch = func(_ context.Context, _ *Client, inst int64, owner, repo string, n int32) (*PRSnapshot, error) {
 		head := heads[address{InstallationID: inst, Owner: owner, Repo: repo, Number: n}]
+		if head == "" {
+			return nil, errors.New("not found")
+		}
 		return &PRSnapshot{HeadSHA: head, BaseRef: "main", Mergeable: "MERGEABLE", MergeStateStatus: "CLEAN"}, nil
 	}
 	var got []address
@@ -157,5 +163,59 @@ func TestSweepCatchUpDrainsOldSnapshotsInBoundedFairBatches(t *testing.T) {
 	m.sweepOnce(context.Background())
 	if rest := drain(t, m, heads, busy, quiet); len(rest) != 0 {
 		t.Fatalf("drained snapshots were re-checked again before the TTL: %+v", rest)
+	}
+}
+
+// Old addresses whose fetch keeps failing must not hold the per-installation
+// or the global batch cap: selection moves past them, so a healthy decided PR
+// in the same installation, and one in another installation, still get
+// re-checked.
+func TestSweepRecheckMovesPastFailingAddresses(t *testing.T) {
+	pool := testDBPool(t)
+	q := db.New(pool)
+	now := time.Unix(1_200_200_000, 0)
+	installs := []int64{1665011, 1665012, 1665013, 1665014}
+	const other int64 = 1665015
+
+	var failing []db.GithubPullRequest
+	for _, inst := range installs {
+		failing = append(failing, seedPRAt(t, pool, q, inst, "gone", 1, "F"))
+	}
+	healthySame := seedPRAt(t, pool, q, installs[0], "live", 2, "H1")
+	healthyOther := seedPRAt(t, pool, q, other, "live", 3, "H2")
+	cleanupPRs(t, pool, append(failing, healthySame, healthyOther)...)
+	heads := map[address]string{addrOf(healthySame): "H1", addrOf(healthyOther): "H2"}
+	for _, pr := range failing {
+		heads[addrOf(pr)] = "" // fetch fails
+		setSnapshotAt(t, pool, pr, now.Add(-72*time.Hour), "MERGEABLE", "SUCCESS")
+	}
+	setSnapshotAt(t, pool, healthySame, now.Add(-24*time.Hour), "MERGEABLE", "SUCCESS")
+	setSnapshotAt(t, pool, healthyOther, now.Add(-24*time.Hour), "MERGEABLE", "SUCCESS")
+
+	m := recheckManager(t, pool, now)
+	m.sweepMaxRows = 4 // one address per installation, four per batch
+	all := append([]int64{other}, installs...)
+
+	m.sweepOnce(context.Background())
+	first := drain(t, m, heads, all...)
+	if len(first) != 4 {
+		t.Fatalf("first batch = %+v, want the four oldest (failing) addresses", first)
+	}
+
+	m.sweepOnce(context.Background())
+	second := map[address]bool{}
+	for _, a := range drain(t, m, heads, all...) {
+		second[a] = true
+	}
+	if !second[addrOf(healthySame)] {
+		t.Errorf("healthy PR behind a failing address in its installation was not re-checked: %+v", second)
+	}
+	if !second[addrOf(healthyOther)] {
+		t.Errorf("healthy PR in another installation was not re-checked while failing addresses filled the batch: %+v", second)
+	}
+	for _, pr := range failing {
+		if second[addrOf(pr)] {
+			t.Errorf("failing address %+v was selected again before its re-check TTL", addrOf(pr))
+		}
 	}
 }
