@@ -70,6 +70,9 @@ func ValidateRuntimeAgentWorkspaces(runtime db.AgentRuntime, agents []db.Agent) 
 // non-FK dependencies are pruned; their runtime-local builder drafts and chat
 // draft restores are deleted with them. Task history is detached before runtime
 // deletion so the legacy ON DELETE CASCADE cannot erase it.
+// The lock-relevant sequence is runtime, user agents, task cancellation when
+// requested, user-agent unbind, task-history detach, then system-session
+// lock/delete. Runtime deletion finally clears retained user-session runtime IDs.
 func TeardownRuntime(ctx context.Context, qtx *db.Queries, runtimeID pgtype.UUID, opts RuntimeTeardownOptions) (RuntimeTeardownResult, error) {
 	var out RuntimeTeardownResult
 

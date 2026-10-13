@@ -731,6 +731,11 @@ RETURNING id, chat_session_id, installation_id, channel_type, channel_chat_id, c
 ), generation AS (
     INSERT INTO channel_chat_context_generation (chat_session_id, revision)
     SELECT chat_session_id, context_revision FROM binding
+), origin AS (
+    UPDATE chat_session AS session
+    SET channel_origin_at = binding.created_at
+    FROM binding
+    WHERE session.id = binding.chat_session_id AND session.channel_origin_at IS NULL
 )
 SELECT id, chat_session_id, installation_id, channel_type, channel_chat_id, chat_type, last_message_id, last_thread_id, config, created_at, pending_fresh, context_revision, route_revision, retired_at, history_start_message_id, history_end_message_id, history_boundary_pending FROM binding
 `
@@ -829,6 +834,11 @@ RETURNING id, chat_session_id, installation_id, channel_type, channel_chat_id, c
     )
     SELECT chat_session_id, context_revision, history_start_message_id, history_boundary_pending
     FROM binding
+), origin AS (
+    UPDATE chat_session AS session
+    SET channel_origin_at = binding.created_at
+    FROM binding
+    WHERE session.id = binding.chat_session_id AND session.channel_origin_at IS NULL
 )
 SELECT id, chat_session_id, installation_id, channel_type, channel_chat_id, chat_type, last_message_id, last_thread_id, config, created_at, pending_fresh, context_revision, route_revision, retired_at, history_start_message_id, history_end_message_id, history_boundary_pending FROM binding
 `
