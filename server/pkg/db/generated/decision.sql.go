@@ -488,6 +488,53 @@ func (q *Queries) ListDecisionLanes(ctx context.Context, arg ListDecisionLanesPa
 	return items, nil
 }
 
+const listDecisionPingRetries = `-- name: ListDecisionPingRetries :many
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at FROM decision_request
+WHERE origin = 'asked' AND ping_notified_at IS NULL
+ORDER BY created_at, id
+LIMIT $1
+`
+
+func (q *Queries) ListDecisionPingRetries(ctx context.Context, limit int32) ([]DecisionRequest, error) {
+	rows, err := q.db.Query(ctx, listDecisionPingRetries, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DecisionRequest{}
+	for rows.Next() {
+		var i DecisionRequest
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.AskingAgentID,
+			&i.HumanUserID,
+			&i.ChatSessionID,
+			&i.PingMessageID,
+			&i.IssueCommentID,
+			&i.Ask,
+			&i.EscalationClass,
+			&i.Status,
+			&i.Origin,
+			&i.DecisionIntentID,
+			&i.CancelReason,
+			&i.CancelNoticePostedAt,
+			&i.PingNotifiedAt,
+			&i.ReaskDeliveredAt,
+			&i.ReaskOutcome,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDecisionRequestsByIssue = `-- name: ListDecisionRequestsByIssue :many
 SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at FROM decision_request
 WHERE workspace_id = $1 AND issue_id = $2
@@ -853,6 +900,46 @@ func (q *Queries) LockDecisionSourceMessages(ctx context.Context, arg LockDecisi
 		return nil, err
 	}
 	return items, nil
+}
+
+const markDecisionPingNotified = `-- name: MarkDecisionPingNotified :one
+UPDATE decision_request
+SET ping_notified_at = clock_timestamp()
+WHERE workspace_id = $1 AND id = $2
+  AND ping_notified_at IS NULL
+RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at
+`
+
+type MarkDecisionPingNotifiedParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) MarkDecisionPingNotified(ctx context.Context, arg MarkDecisionPingNotifiedParams) (DecisionRequest, error) {
+	row := q.db.QueryRow(ctx, markDecisionPingNotified, arg.WorkspaceID, arg.ID)
+	var i DecisionRequest
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.AskingAgentID,
+		&i.HumanUserID,
+		&i.ChatSessionID,
+		&i.PingMessageID,
+		&i.IssueCommentID,
+		&i.Ask,
+		&i.EscalationClass,
+		&i.Status,
+		&i.Origin,
+		&i.DecisionIntentID,
+		&i.CancelReason,
+		&i.CancelNoticePostedAt,
+		&i.PingNotifiedAt,
+		&i.ReaskDeliveredAt,
+		&i.ReaskOutcome,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const sealDecisionIntent = `-- name: SealDecisionIntent :exec

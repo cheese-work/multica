@@ -198,6 +198,9 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 	if err != nil {
 		return empty, err
 	}
+	if err := queries.TouchChatSession(ctx, session.ID); err != nil {
+		return empty, err
+	}
 	consumed, err := queries.ConsumeDecisionIntentTarget(ctx, db.ConsumeDecisionIntentTargetParams{WorkspaceID: issue.WorkspaceID, DecisionIntentID: intent.ID, HumanUserID: session.CreatorID, RequestID: created.ID})
 	if err != nil {
 		return empty, err

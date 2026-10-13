@@ -21,13 +21,17 @@ type decisionIntentRefusal struct {
 func (refusal decisionIntentRefusal) Error() string { return refusal.message }
 
 func writeDecisionIntentError(writer http.ResponseWriter, err error) {
+	writeDecisionError(writer, err, "decision intent")
+}
+
+func writeDecisionError(writer http.ResponseWriter, err error, operation string) {
 	var refusal decisionIntentRefusal
 	if errors.As(err, &refusal) {
 		writeError(writer, refusal.status, refusal.message)
 	} else if decisiontx.IsRetryable(err) {
-		writeError(writer, http.StatusServiceUnavailable, "decision intent is busy; retry")
+		writeError(writer, http.StatusServiceUnavailable, operation+" is busy; retry")
 	} else {
-		writeError(writer, http.StatusInternalServerError, "failed to create decision intent")
+		writeError(writer, http.StatusInternalServerError, "failed to create "+operation)
 	}
 }
 
