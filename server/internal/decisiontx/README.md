@@ -61,7 +61,27 @@ Lock contention gets at most three attempts; the named deadlock gets at most
 one retry. Retryable database errors remain recognizable to the later API's
 503 mapper.
 
-The core performs no post-commit side effect. The public request handler calls
+CHE-1549 adds the private asked-record core in the handler package. It resolves
+the nearest stamped parent before filtering status, then locks workspace,
+session, thread, issue, calling task (`FOR SHARE NOWAIT`), and request. Under
+those locks it re-checks the running chat task, asked/open request, human and
+DM lane, and interactive human source messages after the ping and before the
+turn started. Snapshot, stamped quote, DM reference, and answered state commit
+together; failure leaves no partial result. One source may answer several
+requests, but a second answer to the same request is refused. `wake_at` stays
+NULL. The database clock sets the effective time, with the ten-minute hold
+for non-reversible classes. Lock contention has three attempts; a deadlock has
+at most one retry. The core has no post-commit effects.
+
+Both archive paths read the open-lane guard after locking the session and
+before continuation side effects. Hard delete refuses open lanes and messages
+referenced by any answer, including withdrawn answers, and identifies the
+referencing issues. These baseline paths use plain decision reads only;
+comment deletion and task completion do not write a decision consequence.
+Public record CLI/API and unprompted records are deferred to CHE-1628, with
+worker finalization, delivery and source checks invoked by CHE-1550.
+
+The request core performs no post-commit side effect. The public request handler calls
 it before the inbox consumer or any subscriber/mention/realtime event.
 `POST /api/decisions` accepts `issue_id`, `session_id`, `ask`, and
 `escalation_class`. Only the running issue-task provenance admitted by the core
