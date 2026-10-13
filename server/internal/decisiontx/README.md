@@ -57,14 +57,21 @@ prerequisite as successfully applied.
 
 Comment stamps are nullable server-side insert parameters. Ordinary callers
 leave them unset; no HTTP request field or decision command is added here.
-Migration 596 adds the comment columns without inline checks and installs the
+Migration 597 adds the comment columns without inline checks and installs the
 kind constraint `NOT VALID` with a transaction-local 2-second lock timeout.
-Migration 612 validates it in a separate transaction, so the validation scan
+Migration 613 validates it in a separate transaction, so the validation scan
 does not hold the column-addition lock. New writes are checked before validation.
-An already-applied 596 retains its existing constraint; 612 can validate it
-without replaying 596. Validation rollback is a no-op; 596 rollback drops the
+An already-applied 597 retains its existing constraint; 613 can validate it
+without replaying 597. Validation rollback is a no-op; 597 rollback drops the
 columns and their constraint. A lock-timeout failure leaves the migration
 unrecorded; retry after the conflicting transaction ends.
 Edits preserve stamps without reassigning them. Existing message provenance
 (`sent_via`, `message_kind`) is inherited unchanged from the predecessor; the
 three decision message kinds fit the existing unconstrained text column.
+
+Migration 612 rollback drops the primary key in a transaction-local 2-second
+lock-timeout hook, then recreates its original unique index concurrently in the
+single-statement down file. The hook also removes an invalid index from an
+interrupted rebuild before retrying. Bounded rollback keeps its named target
+applied: `down --to 612_decision_target_primary_key` retains the primary key;
+`down --to 611_decision_answer_request_index` exercises the 612 rollback.
