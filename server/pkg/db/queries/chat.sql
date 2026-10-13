@@ -30,17 +30,90 @@ WHERE id = $1
 RETURNING *;
 
 -- name: SetChatForkSource :one
+-- Runs after the copy, so the read cursor is the newest copied time and the
+-- copied history counts as read.
 UPDATE chat_session
-SET forked_from_session_id = $2,
-    fork_idempotency_key = $3,
+SET forked_from_session_id = sqlc.arg(forked_from_session_id),
+    fork_idempotency_key = sqlc.arg(fork_idempotency_key),
+    fork_last_message_id = sqlc.arg(fork_last_message_id),
+    fork_message_count = sqlc.arg(fork_message_count),
     runtime_id = NULL,
-    last_read_at = sqlc.arg('summary_created_at')::timestamptz - interval '1 microsecond'
-WHERE id = $1
+    last_read_at = (SELECT max(m.created_at) FROM chat_message m WHERE m.chat_session_id = sqlc.arg(id))
+WHERE id = sqlc.arg(id)
 RETURNING *;
+
+-- name: ListChatMessagesForFork :many
+-- The rows a fork copies: the member-visible rows of ListChatMessages (keep the
+-- queued follow-up selector identical), minus the hidden onboarding kickoff and
+-- rows that would render empty without their task (no text, no failure text,
+-- no attachments).
+SELECT message.* FROM chat_message AS message
+WHERE message.chat_session_id = $1
+  AND message.message_kind NOT IN ('channel_command', 'onboarding_kickoff')
+  AND (
+    btrim(message.content, E' \t\r\n') <> ''
+    OR COALESCE(message.failure_reason, '') <> ''
+    OR EXISTS (SELECT 1 FROM attachment AS a WHERE a.chat_message_id = message.id)
+  )
+  AND NOT (
+    message.role = 'user'
+    AND EXISTS (
+      SELECT 1
+      FROM agent_task_queue AS task
+      WHERE task.chat_session_id = message.chat_session_id
+        AND task.status = 'queued'
+        AND task.id = message.task_id
+        AND task.id <> (
+          SELECT head.id
+          FROM agent_task_queue AS head
+          WHERE head.chat_session_id = $1
+            AND head.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+            AND head.regenerate_quick_actions_for IS NULL
+          ORDER BY
+            CASE
+              WHEN head.status IN ('dispatched', 'running', 'waiting_local_directory') THEN 0
+              WHEN head.status = 'deferred' THEN 1
+              ELSE 2
+            END,
+            head.priority DESC,
+            head.created_at ASC,
+            head.id ASC
+          LIMIT 1
+        )
+    )
+  )
+ORDER BY message.created_at ASC, message.id ASC;
+
+-- name: InsertForkChatMessages :exec
+-- Copies source rows as history: original role, time, elapsed time and failure
+-- text; no task, no quick actions, no channel fields. The caller supplies new
+-- ids in source order and the (possibly link-rewritten) content and kind.
+INSERT INTO chat_message (
+    id, chat_session_id, role, content, task_id, created_at, failure_reason,
+    elapsed_ms, message_kind, quick_actions, sent_via
+)
+SELECT (sqlc.arg(ids)::uuid[])[i], sqlc.arg(chat_session_id)::uuid, source.role,
+       (sqlc.arg(contents)::text[])[i], NULL, source.created_at, source.failure_reason,
+       source.elapsed_ms, (sqlc.arg(message_kinds)::text[])[i], '[]'::jsonb, source.sent_via
+FROM generate_subscripts(sqlc.arg(ids)::uuid[], 1) AS i
+JOIN chat_message AS source ON source.id = (sqlc.arg(source_ids)::uuid[])[i];
 
 -- name: GetChatForkByOperation :one
 SELECT * FROM chat_session
 WHERE forked_from_session_id = $1 AND fork_idempotency_key = $2;
+
+-- name: GetChatForkFirstMessage :one
+-- The first message a fork sent. It is written in the fork's own transaction,
+-- so it shares the child's creation time (now() is per transaction); a later
+-- send has a later time.
+SELECT message.* FROM chat_message AS message
+JOIN chat_session AS session ON session.id = message.chat_session_id
+WHERE session.id = $1
+  AND message.role = 'user'
+  AND message.task_id IS NOT NULL
+  AND message.created_at = session.created_at
+ORDER BY message.id
+LIMIT 1;
 
 -- name: GetChatContinuationSummary :one
 SELECT * FROM chat_message

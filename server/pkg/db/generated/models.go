@@ -548,6 +548,8 @@ type ChatSession struct {
 	ChannelOriginAt        pgtype.Timestamptz `json:"channel_origin_at"`
 	ForkedFromSessionID    pgtype.UUID        `json:"forked_from_session_id"`
 	ForkIdempotencyKey     pgtype.Text        `json:"fork_idempotency_key"`
+	ForkLastMessageID      pgtype.UUID        `json:"fork_last_message_id"`
+	ForkMessageCount       pgtype.Int4        `json:"fork_message_count"`
 }
 
 type ClientUsageDaily struct {

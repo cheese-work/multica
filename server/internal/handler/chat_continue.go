@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -25,15 +24,7 @@ type ChatContinueResponse struct {
 	URL               string              `json:"url"`
 }
 
-func (handler *Handler) ForkChatSession(writer http.ResponseWriter, request *http.Request) {
-	handler.createSummaryChatSession(writer, request, true)
-}
-
 func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
-	h.createSummaryChatSession(w, r, false)
-}
-
-func (h *Handler) createSummaryChatSession(w http.ResponseWriter, r *http.Request, fork bool) {
 	userID, ok := requireUserID(w, r)
 	if !ok {
 		return
@@ -41,7 +32,6 @@ func (h *Handler) createSummaryChatSession(w http.ResponseWriter, r *http.Reques
 	workspaceID := ctxWorkspaceID(r.Context())
 	sessionID := chi.URLParam(r, "sessionId")
 	var session db.ChatSession
-	operationKey := ""
 	if r.Header.Get("X-Actor-Source") == "task_token" {
 		taskID, err := util.ParseUUID(r.Header.Get("X-Task-ID"))
 		if err != nil {
@@ -62,7 +52,6 @@ func (h *Handler) createSummaryChatSession(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusForbidden, "task does not belong to this chat session")
 			return
 		}
-		operationKey = uuidToString(task.ID)
 	} else {
 		if r.Header.Get("X-Agent-ID") != "" {
 			writeError(w, http.StatusForbidden, "only the session human or its chat task can continue")
@@ -74,26 +63,12 @@ func (h *Handler) createSummaryChatSession(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	var request struct {
-		Summary        string `json:"summary"`
-		IdempotencyKey string `json:"idempotency_key"`
+		Summary string `json:"summary"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 128<<10)
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || strings.TrimSpace(request.Summary) == "" || len(request.Summary) > 64<<10 {
 		writeError(w, http.StatusBadRequest, "a non-empty summary of at most 65536 bytes is required")
 		return
-	}
-	if fork {
-		if request.IdempotencyKey != "" {
-			operationKey = request.IdempotencyKey
-		}
-		if strings.TrimSpace(operationKey) == "" || len(operationKey) > 128 || !utf8.ValidString(operationKey) || strings.ContainsRune(operationKey, '\x00') {
-			writeError(w, http.StatusBadRequest, "an idempotency_key of at most 128 bytes is required")
-			return
-		}
-		if !utf8.ValidString(request.Summary) || strings.ContainsRune(request.Summary, '\x00') {
-			writeError(w, http.StatusBadRequest, "summary must be UTF-8 without NUL characters")
-			return
-		}
 	}
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
@@ -125,23 +100,7 @@ func (h *Handler) createSummaryChatSession(w http.ResponseWriter, r *http.Reques
 	chatURL := func(id pgtype.UUID) string {
 		return "/" + url.PathEscape(workspace.Slug) + "/chat?session=" + uuidToString(id)
 	}
-	if fork {
-		next, err := qtx.GetChatForkByOperation(r.Context(), db.GetChatForkByOperationParams{
-			ForkedFromSessionID: session.ID, ForkIdempotencyKey: pgtype.Text{String: operationKey, Valid: true},
-		})
-		if err == nil {
-			if next.CreatorID != session.CreatorID || next.WorkspaceID != session.WorkspaceID {
-				writeError(w, http.StatusConflict, "the fork is no longer available")
-				return
-			}
-			writeJSON(w, http.StatusOK, ChatContinueResponse{Session: chatSessionToResponse(next), PreviousSessionID: uuidToString(session.ID), URL: chatURL(next.ID)})
-			return
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, http.StatusInternalServerError, "failed to check fork operation")
-			return
-		}
-	} else if session.ContinuedIntoSessionID.Valid {
+	if session.ContinuedIntoSessionID.Valid {
 		next, err := qtx.GetChatSessionInWorkspace(r.Context(), db.GetChatSessionInWorkspaceParams{ID: session.ContinuedIntoSessionID, WorkspaceID: session.WorkspaceID})
 		if err != nil || next.CreatorID != session.CreatorID {
 			writeError(w, http.StatusConflict, "the continuation is no longer available")
@@ -154,10 +113,6 @@ func (h *Handler) createSummaryChatSession(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusConflict, "only an active DM can be continued")
 		return
 	}
-	if fork && session.ChannelOriginAt.Valid {
-		writeError(w, http.StatusConflict, "fork is only available for web DMs")
-		return
-	}
 	if _, err := qtx.GetChannelChatSessionBindingBySessionAny(r.Context(), session.ID); !errors.Is(err, pgx.ErrNoRows) {
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to check DM source")
@@ -166,13 +121,9 @@ func (h *Handler) createSummaryChatSession(w http.ResponseWriter, r *http.Reques
 		}
 		return
 	}
-	title := session.Title
-	if fork {
-		title += " (fork)"
-	}
 	next, err := qtx.CreateChatSession(r.Context(), db.CreateChatSessionParams{
 		ID: dbid.NewV7(), WorkspaceID: session.WorkspaceID, AgentID: session.AgentID,
-		CreatorID: session.CreatorID, Title: title, ProjectID: session.ProjectID,
+		CreatorID: session.CreatorID, Title: session.Title, ProjectID: session.ProjectID,
 	})
 	var summary db.ChatMessage
 	if err == nil {
@@ -182,17 +133,12 @@ func (h *Handler) createSummaryChatSession(w http.ResponseWriter, r *http.Reques
 			MessageKind: pgtype.Text{String: protocol.ChatMessageKindContinuationSummary, Valid: true},
 		})
 	}
-	if err == nil && fork {
-		next, err = qtx.SetChatForkSource(r.Context(), db.SetChatForkSourceParams{
-			ID: next.ID, ForkedFromSessionID: session.ID,
-			ForkIdempotencyKey: pgtype.Text{String: operationKey, Valid: true}, SummaryCreatedAt: summary.CreatedAt,
-		})
-	} else if err == nil {
+	if err == nil {
 		next, err = qtx.SetChatContinuationSource(r.Context(), db.SetChatContinuationSourceParams{
 			ID: next.ID, ContinuedFromSessionID: session.ID, SummaryCreatedAt: summary.CreatedAt, PinnedAt: session.PinnedAt,
 		})
 	}
-	if err == nil && !fork {
+	if err == nil {
 		session, err = qtx.ArchiveContinuedChatSession(r.Context(), db.ArchiveContinuedChatSessionParams{ID: session.ID, ContinuedIntoSessionID: next.ID})
 	}
 	if err != nil {
@@ -207,12 +153,10 @@ func (h *Handler) createSummaryChatSession(w http.ResponseWriter, r *http.Reques
 	h.publishChat(protocol.EventChatSessionCreated, workspaceID, "member", creatorID, uuidToString(next.ID), protocol.ChatSessionCreatedPayload{
 		WorkspaceID: workspaceID, ChatSessionID: uuidToString(next.ID), AgentID: uuidToString(next.AgentID), CreatorID: creatorID, Title: next.Title,
 	})
-	if !fork {
-		status := session.Status
-		h.publishChat(protocol.EventChatSessionUpdated, workspaceID, "member", creatorID, uuidToString(session.ID), protocol.ChatSessionUpdatedPayload{
-			ChatSessionID: uuidToString(session.ID), Title: session.Title, Status: &status,
-			UpdatedAt: timestampToString(session.UpdatedAt), ContinuedIntoSessionID: uuidToString(next.ID),
-		})
-	}
+	status := session.Status
+	h.publishChat(protocol.EventChatSessionUpdated, workspaceID, "member", creatorID, uuidToString(session.ID), protocol.ChatSessionUpdatedPayload{
+		ChatSessionID: uuidToString(session.ID), Title: session.Title, Status: &status,
+		UpdatedAt: timestampToString(session.UpdatedAt), ContinuedIntoSessionID: uuidToString(next.ID),
+	})
 	writeJSON(w, http.StatusCreated, ChatContinueResponse{Session: chatSessionToResponse(next), PreviousSessionID: uuidToString(session.ID), URL: chatURL(next.ID)})
 }

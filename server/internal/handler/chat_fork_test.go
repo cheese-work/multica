@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -10,129 +11,423 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-func forkChatRequest(test *testing.T, sessionID, key string) *http.Request {
+func forkChatRequest(test *testing.T, sessionID, key string, extra ...map[string]any) *http.Request {
 	test.Helper()
-	request := newRequest(http.MethodPost, "/api/chat/sessions/"+sessionID+"/fork", map[string]string{
-		"summary": "Goal: explore another approach. Evidence: retained.", "idempotency_key": key,
-	})
+	body := map[string]any{"idempotency_key": key}
+	for _, fields := range extra {
+		for name, value := range fields {
+			body[name] = value
+		}
+	}
+	request := newRequest(http.MethodPost, "/api/chat/sessions/"+sessionID+"/fork", body)
 	return withChatTestWorkspaceCtx(test, withURLParam(request, "sessionId", sessionID))
 }
 
 func cleanupChatFork(test *testing.T, childID string) {
 	test.Helper()
 	dbfx.Cleanup(test, `DELETE FROM chat_session WHERE id = $1`, childID)
+	dbfx.Cleanup(test, `DELETE FROM agent_task_queue WHERE chat_session_id = $1`, childID)
+	dbfx.Cleanup(test, `DELETE FROM attachment WHERE chat_session_id = $1`, childID)
 	dbfx.Cleanup(test, `DELETE FROM chat_message WHERE chat_session_id = $1`, childID)
 }
 
-func TestForkChatSessionPreservesSourceAndStartsFresh(test *testing.T) {
-	agentID := createHandlerTestAgent(test, "fork-chat", []byte("[]"))
-	runtimeID := handlerTestRuntimeID(test)
-	projectID := dbfx.Project(test, "Fork project")
-	dbfx.Exec(test, `UPDATE agent SET runtime_id = $2 WHERE id = $1`, agentID, runtimeID)
-	sourceID := dbfx.ChatSession(test, agentID, testutil.Cols{
-		"title": "Explore", "project_id": projectID, "session_id": "provider-source", "work_dir": "/tmp/fork-source",
-		"runtime_id": runtimeID,
+func forkMessage(test *testing.T, sessionID string, columns testutil.Cols) string {
+	test.Helper()
+	columns["chat_session_id"] = sessionID
+	return dbfx.Insert(test, "chat_message", columns)
+}
+
+func forkAttachment(test *testing.T, sessionID, messageID, name string) string {
+	test.Helper()
+	return dbfx.Insert(test, "attachment", testutil.Cols{
+		"workspace_id": testWorkspaceID, "chat_session_id": sessionID, "chat_message_id": messageID,
+		"uploader_type": "member", "uploader_id": testUserID, "filename": name,
+		"url": "https://cdn.example.test/" + uuid.NewString() + "/" + name, "content_type": "text/plain", "size_bytes": 12,
 	})
-	dbfx.Insert(test, "chat_message", testutil.Cols{"chat_session_id": sourceID, "role": "user", "content": "Source goal"})
-	before, err := testHandler.Queries.GetChatSession(context.Background(), parseUUID(sourceID))
+}
+
+// seedForkHistory writes one sentence per row kind a fork must copy or skip,
+// and returns the source rows the fork copies, in list order.
+func seedForkHistory(test *testing.T, agentID, sourceID string) (copied []string, attachmentID string) {
+	test.Helper()
+	at := func(ago string) testutil.Cols {
+		return testutil.Cols{"created_at": testutil.Raw("now() - interval '" + ago + "'")}
+	}
+	row := func(ago, role, content string, extra testutil.Cols) string {
+		columns := at(ago)
+		columns["role"], columns["content"] = role, content
+		for name, value := range extra {
+			columns[name] = value
+		}
+		return forkMessage(test, sourceID, columns)
+	}
+	copied = append(copied, row("10 minutes", "user", "Source goal", nil))
+	row("9 minutes", "user", "hidden kickoff", testutil.Cols{"message_kind": "onboarding_kickoff"})
+	copied = append(copied, row("8 minutes", "assistant", "Welcome", testutil.Cols{"message_kind": "onboarding_opening"}))
+	copied = append(copied, row("7 minutes", "assistant", "", testutil.Cols{"failure_reason": "agent crashed", "elapsed_ms": 1200}))
+	row("6 minutes", "assistant", "", testutil.Cols{"message_kind": "no_response"})
+	row("5 minutes 30 seconds", "user", "/new", testutil.Cols{"message_kind": "channel_command"})
+	equalTime := testutil.Cols{"created_at": testutil.Raw("date_trunc('second', now()) - interval '5 minutes'")}
+	first := forkMessage(test, sourceID, testutil.Cols{"role": "assistant", "content": "equal one", "created_at": equalTime["created_at"]})
+	second := forkMessage(test, sourceID, testutil.Cols{"role": "assistant", "content": "equal two", "created_at": equalTime["created_at"]})
+	var equalOrder []string
+	rows, err := testPool.Query(context.Background(), `SELECT id FROM chat_message WHERE id IN ($1, $2) ORDER BY created_at, id`, first, second)
 	if err != nil {
 		test.Fatal(err)
 	}
-	var sourceSnapshot string
-	dbfx.QueryRow(test, `SELECT row_to_json(session)::text FROM chat_session session WHERE id = $1`, sourceID).Scan(&sourceSnapshot)
-	var result ChatContinueResponse
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			test.Fatal(err)
+		}
+		equalOrder = append(equalOrder, id)
+	}
+	rows.Close()
+	copied = append(copied, equalOrder...)
+	doneTask := dbfx.Task(test, agentID, testutil.Cols{"chat_session_id": sourceID, "status": "completed", "runtime_id": handlerTestRuntimeID(test)})
+	copied = append(copied, row("4 minutes", "assistant", "Reply with actions", testutil.Cols{
+		"task_id": doneTask, "quick_actions": `[{"label":"Next","prompt":"next"}]`,
+	}))
+	copied = append(copied, row("3 minutes", "assistant", "Earlier summary", testutil.Cols{"message_kind": "continuation_summary"}))
+	withLink := row("2 minutes", "user", "placeholder", nil)
+	attachmentID = forkAttachment(test, sourceID, withLink, "notes.txt")
+	dbfx.Exec(test, `UPDATE chat_message SET content = $2 WHERE id = $1`, withLink,
+		"See [notes](/api/attachments/"+attachmentID+"/download) please")
+	copied = append(copied, withLink)
+	attachmentOnly := row("1 minute 30 seconds", "user", "", nil)
+	forkAttachment(test, sourceID, attachmentOnly, "image.png")
+	copied = append(copied, attachmentOnly)
+	running := dbfx.Task(test, agentID, testutil.Cols{"chat_session_id": sourceID, "status": "running", "runtime_id": handlerTestRuntimeID(test)})
+	queued := dbfx.Task(test, agentID, testutil.Cols{"chat_session_id": sourceID, "status": "queued", "runtime_id": handlerTestRuntimeID(test)})
+	copied = append(copied, row("1 minute 10 seconds", "user", "current turn", testutil.Cols{"task_id": running}))
+	row("1 minute", "user", "queued follow-up", testutil.Cols{"task_id": queued})
+	return copied, attachmentID
+}
+
+type forkedRow struct {
+	ID, Role, Content, Kind, QuickActions string
+	CreatedAt                             string
+	FailureReason                         *string
+	ElapsedMs                             *int64
+	HasTask                               bool
+}
+
+func forkRows(test *testing.T, where string, argument any) []forkedRow {
+	test.Helper()
+	rows, err := testPool.Query(context.Background(), `
+		SELECT id::text, role, content, message_kind, quick_actions::text, created_at::text, failure_reason, elapsed_ms, task_id IS NOT NULL
+		FROM chat_message WHERE `+where+` ORDER BY created_at, id`, argument)
+	if err != nil {
+		test.Fatal(err)
+	}
+	defer rows.Close()
+	var result []forkedRow
+	for rows.Next() {
+		var row forkedRow
+		if err := rows.Scan(&row.ID, &row.Role, &row.Content, &row.Kind, &row.QuickActions, &row.CreatedAt, &row.FailureReason, &row.ElapsedMs, &row.HasTask); err != nil {
+			test.Fatal(err)
+		}
+		result = append(result, row)
+	}
+	return result
+}
+
+func TestForkChatSessionCopiesVisibleHistory(test *testing.T) {
+	agentID := createHandlerTestAgent(test, "fork-copy", []byte("[]"))
+	runtimeID := handlerTestRuntimeID(test)
+	projectID := dbfx.Project(test, "Fork project")
+	sourceID := dbfx.ChatSession(test, agentID, testutil.Cols{
+		"title": "Explore", "project_id": projectID, "session_id": "provider-source", "work_dir": "/tmp/fork-source", "runtime_id": runtimeID,
+	})
+	copied, sourceAttachmentID := seedForkHistory(test, agentID, sourceID)
+	var sourceBefore string
+	dbfx.QueryRow(test, `SELECT row_to_json(session)::text FROM chat_session session WHERE id = $1`, sourceID).Scan(&sourceBefore)
+	sourceMessages := dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1`, sourceID)
+
+	var result ChatForkResponse
 	testutil.Call(test, testHandler.ForkChatSession, forkChatRequest(test, sourceID, "operation-one")).Want(http.StatusCreated).JSON(&result)
 	cleanupChatFork(test, result.Session.ID)
-	after, err := testHandler.Queries.GetChatSession(context.Background(), parseUUID(sourceID))
-	if err != nil || before != after {
-		test.Fatalf("fork changed the source DM: before=%+v after=%+v error=%v", before, after, err)
-	}
+
 	var sourceAfter string
 	dbfx.QueryRow(test, `SELECT row_to_json(session)::text FROM chat_session session WHERE id = $1`, sourceID).Scan(&sourceAfter)
-	if sourceSnapshot != sourceAfter {
-		test.Fatal("fork changed a source column outside the session projection")
+	if sourceBefore != sourceAfter || dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1`, sourceID) != sourceMessages {
+		test.Fatal("fork changed the source DM")
 	}
 	child, err := testHandler.Queries.GetChatSession(context.Background(), parseUUID(result.Session.ID))
 	if err != nil {
 		test.Fatal(err)
 	}
-	if child.ID == before.ID || child.AgentID != before.AgentID || child.CreatorID != before.CreatorID || child.ProjectID != before.ProjectID || child.Title != "Explore (fork)" || child.Status != "active" || child.SessionID.Valid || child.WorkDir.Valid || child.RuntimeID.Valid || child.ContinuedFromSessionID.Valid || child.ContinuedIntoSessionID.Valid {
-		test.Fatalf("fork did not start fresh: %+v", child)
+	if child.Title != "Explore (fork)" || child.Status != "active" || child.SessionID.Valid || child.WorkDir.Valid || child.RuntimeID.Valid ||
+		child.ContinuedFromSessionID.Valid || uuidToString(child.ForkedFromSessionID) != sourceID || uuidToString(child.ProjectID) != projectID {
+		test.Fatalf("fork child did not start fresh: %+v", child)
 	}
-	messages, err := testHandler.Queries.ListChatMessages(context.Background(), child.ID)
-	if err != nil || len(messages) != 1 || messages[0].MessageKind != "continuation_summary" || !strings.Contains(messages[0].Content, "Goal: explore another approach.") || !strings.Contains(messages[0].Content, sourceID) || messages[0].TaskID.Valid {
-		test.Fatalf("fork summary = %+v, error=%v", messages, err)
+
+	sourceRows := forkRows(test, `id = ANY($1::uuid[])`, copied)
+	childRows := forkRows(test, `chat_session_id = $1`, result.Session.ID)
+	if len(childRows) != len(copied) {
+		test.Fatalf("copied %d rows, want %d: %+v", len(childRows), len(copied), childRows)
 	}
-	if result.PreviousSessionID != sourceID || !strings.Contains(result.URL, result.Session.ID) {
-		test.Fatalf("fork response missing source or destination: %+v", result)
+	for index, source := range sourceRows {
+		copy := childRows[index]
+		wantKind := source.Kind
+		if wantKind == "onboarding_opening" {
+			wantKind = "message"
+		}
+		wantContent := source.Content
+		if strings.Contains(wantContent, "/api/attachments/") {
+			wantContent = copy.Content
+			if strings.Contains(copy.Content, sourceAttachmentID) || !strings.Contains(copy.Content, "/api/attachments/") {
+				test.Fatalf("attachment link was not rewritten: %q", copy.Content)
+			}
+		}
+		if copy.Role != source.Role || copy.Content != wantContent || copy.Kind != wantKind || copy.CreatedAt != source.CreatedAt ||
+			!reflect.DeepEqual(copy.FailureReason, source.FailureReason) || !reflect.DeepEqual(copy.ElapsedMs, source.ElapsedMs) ||
+			copy.HasTask || copy.QuickActions != "[]" {
+			test.Fatalf("row %d copy = %+v, source = %+v", index, copy, source)
+		}
 	}
-	if child.ForkedFromSessionID != before.ID || result.Session.ForkedFromSessionID == nil || *result.Session.ForkedFromSessionID != sourceID {
-		test.Fatalf("fork source link missing: %+v", result.Session)
+	var byID []string
+	dbfx.QueryRow(test, `SELECT array_agg(id::text ORDER BY id) FROM chat_message WHERE chat_session_id = $1`, result.Session.ID).Scan(&byID)
+	for index, row := range childRows {
+		if byID[index] != row.ID {
+			test.Fatal("copied ids are not generated in source order")
+		}
 	}
+	last := childRows[len(childRows)-1].ID
+	if uuidToString(child.ForkLastMessageID) != last || !child.ForkMessageCount.Valid || int(child.ForkMessageCount.Int32) != len(copied) {
+		test.Fatalf("fork fields = last %s count %+v, want %s and %d", uuidToString(child.ForkLastMessageID), child.ForkMessageCount, last, len(copied))
+	}
+	if result.Session.ForkLastMessageID == nil || *result.Session.ForkLastMessageID != last || result.Session.ForkMessageCount == nil ||
+		int(*result.Session.ForkMessageCount) != len(copied) || result.Session.ForkedFromSessionID == nil || *result.Session.ForkedFromSessionID != sourceID {
+		test.Fatalf("response fork fields = %+v", result.Session)
+	}
+	if count := dbfx.Count(test, `SELECT count(*) FROM chat_session WHERE id = $1 AND last_read_at = (SELECT max(created_at) FROM chat_message WHERE chat_session_id = $1)`, result.Session.ID); count != 1 {
+		test.Fatal("last_read_at is not the newest copied time")
+	}
+	if result.PreviousSessionID != sourceID || !strings.Contains(result.URL, result.Session.ID) || result.Message != nil {
+		test.Fatalf("fork response = %+v", result)
+	}
+
+	var attachments []struct{ URL, MessageID string }
+	rows, err := testPool.Query(context.Background(), `
+		SELECT url, chat_message_id::text FROM attachment
+		WHERE chat_session_id = $1 AND task_id IS NULL AND chat_message_id IN (SELECT id FROM chat_message WHERE chat_session_id = $1)
+		ORDER BY created_at, id`, result.Session.ID)
+	if err != nil {
+		test.Fatal(err)
+	}
+	for rows.Next() {
+		var attachment struct{ URL, MessageID string }
+		if err := rows.Scan(&attachment.URL, &attachment.MessageID); err != nil {
+			test.Fatal(err)
+		}
+		attachments = append(attachments, attachment)
+	}
+	rows.Close()
+	if len(attachments) != 2 || dbfx.Count(test, `SELECT count(*) FROM attachment a JOIN attachment s ON s.url = a.url WHERE a.chat_session_id = $1 AND s.chat_session_id = $2`, result.Session.ID, sourceID) != 2 {
+		test.Fatalf("attachments not copied onto the same stored files: %+v", attachments)
+	}
+	var linked string
+	dbfx.QueryRow(test, `SELECT id::text FROM attachment WHERE chat_session_id = $1 AND filename = 'notes.txt'`, result.Session.ID).Scan(&linked)
+	if dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1 AND content LIKE '%/api/attachments/' || $2 || '/download%'`, result.Session.ID, linked) != 1 {
+		test.Fatal("copied text does not link the new attachment id")
+	}
+
 	for _, status := range []string{"active", "all"} {
 		var sessions []ChatSessionResponse
 		request := withChatTestWorkspaceCtx(test, newRequest(http.MethodGet, "/?status="+status, nil))
 		testutil.Call(test, testHandler.ListChatSessions, request).Want(http.StatusOK).JSON(&sessions)
-		foundSource, foundChild := false, false
+		found := false
 		for _, session := range sessions {
-			if session.ID == sourceID {
-				foundSource = true
-			}
 			if session.ID == result.Session.ID {
-				foundChild = true
-				if session.ForkedFromSessionID == nil || *session.ForkedFromSessionID != sourceID || session.UnreadCount != 1 {
-					test.Fatalf("list dropped fork source or unread summary: %+v", session)
+				found = true
+				if session.UnreadCount != 0 || session.ForkMessageCount == nil || session.ForkLastMessageID == nil {
+					test.Fatalf("%s list shows the fork wrong: %+v", status, session)
 				}
 			}
 		}
-		if !foundSource || !foundChild {
-			test.Fatalf("%s list lost source or child: source=%v child=%v", status, foundSource, foundChild)
+		if !found {
+			test.Fatalf("%s list lost the fork", status)
 		}
-	}
-	var fetched ChatSessionResponse
-	request := withChatTestWorkspaceCtx(test, withURLParam(newRequest(http.MethodGet, "/", nil), "sessionId", result.Session.ID))
-	testutil.Call(test, testHandler.GetChatSession, request).Want(http.StatusOK).JSON(&fetched)
-	if fetched.ForkedFromSessionID == nil || *fetched.ForkedFromSessionID != sourceID {
-		test.Fatalf("get dropped fork source: %+v", fetched)
 	}
 }
 
-func TestForkChatSessionTaskDefaultKey(test *testing.T) {
-	agentID := createHandlerTestAgent(test, "fork-task-key", []byte("[]"))
-	sourceID := dbfx.ChatSession(test, agentID)
-	var children []string
-	for _, status := range []string{"running", "dispatched"} {
-		taskID := dbfx.Task(test, agentID, testutil.Cols{"chat_session_id": sourceID, "status": status, "runtime_id": handlerTestRuntimeID(test)})
-		request := func() *http.Request {
-			request := forkChatRequest(test, "", "")
-			request.Header.Set("X-Actor-Source", "task_token")
-			request.Header.Set("X-Task-ID", taskID)
-			return request
-		}
-		var child, repeated ChatContinueResponse
-		testutil.Call(test, testHandler.ForkChatSession, request()).Want(http.StatusCreated).JSON(&child)
-		cleanupChatFork(test, child.Session.ID)
-		testutil.Call(test, testHandler.ForkChatSession, request()).Want(http.StatusOK).JSON(&repeated)
-		if repeated.Session.ID != child.Session.ID {
-			test.Fatalf("task retry changed identity: %+v", repeated)
-		}
-		children = append(children, child.Session.ID)
+func TestForkChatSessionWithMessageStartsFirstTurn(test *testing.T) {
+	ctx := context.Background()
+	agentID, sourceID, _, _ := setupDirectChatSession(test, ctx, "Src")
+	forkMessage(test, sourceID, testutil.Cols{"role": "user", "content": "Plan the schema", "created_at": testutil.Raw("now() - interval '2 minutes'")})
+	forkMessage(test, sourceID, testutil.Cols{"role": "assistant", "content": "Use Postgres", "created_at": testutil.Raw("now() - interval '1 minute'")})
+	sourceTasks := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE chat_session_id = $1`, sourceID)
+	message := "  try   the SQLite\n variant instead of postgres today  "
+
+	var result, replay, otherText ChatForkResponse
+	testutil.Call(test, testHandler.ForkChatSession, forkChatRequest(test, sourceID, "with-message", map[string]any{"message": message})).Want(http.StatusCreated).JSON(&result)
+	cleanupChatFork(test, result.Session.ID)
+	if result.Session.Title != "Src (fork: try the SQLite variant instead of postgr…)" {
+		test.Fatalf("title = %q", result.Session.Title)
 	}
-	if children[0] == children[1] {
-		test.Fatal("different tasks reused a single-successor fork")
+	rows := forkRows(test, `chat_session_id = $1`, result.Session.ID)
+	if len(rows) != 3 || rows[2].Role != "user" || rows[2].Content != strings.TrimSpace(message) || !rows[2].HasTask || rows[2].Kind != "message" {
+		test.Fatalf("child rows = %+v", rows)
+	}
+	if result.Message == nil || result.Message.ID != rows[2].ID || result.Session.ForkLastMessageID == nil || *result.Session.ForkLastMessageID != rows[1].ID || *result.Session.ForkMessageCount != 2 {
+		test.Fatalf("fork point or response message wrong: %+v", result)
+	}
+	if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE chat_session_id = $1 AND chat_input_task_id = id AND status = 'queued'`, result.Session.ID); count != 1 {
+		test.Fatalf("child turns = %d, want 1", count)
+	}
+	if count := dbfx.Count(test, `SELECT count(*) FROM chat_message m JOIN agent_task_queue t ON t.id = m.task_id WHERE m.chat_session_id = $1 AND t.chat_session_id = $1`, result.Session.ID); count != 1 {
+		test.Fatal("the first message is not the input of the child turn")
+	}
+	if dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE chat_session_id = $1`, sourceID) != sourceTasks ||
+		dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1`, sourceID) != 2 {
+		test.Fatal("the fork sent something in the source")
+	}
+
+	testutil.Call(test, testHandler.ForkChatSession, forkChatRequest(test, sourceID, "with-message", map[string]any{"message": message})).Want(http.StatusOK).JSON(&replay)
+	testutil.Call(test, testHandler.ForkChatSession, forkChatRequest(test, sourceID, "with-message", map[string]any{"message": "something else"})).Want(http.StatusOK).JSON(&otherText)
+	for _, again := range []ChatForkResponse{replay, otherText} {
+		if again.Session.ID != result.Session.ID || again.Message == nil || again.Message.ID != result.Message.ID {
+			test.Fatalf("replay = %+v, want child %s message %s", again, result.Session.ID, result.Message.ID)
+		}
+	}
+	if dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1`, result.Session.ID) != 3 ||
+		dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE chat_session_id = $1`, result.Session.ID) != 1 {
+		test.Fatal("a replay copied or sent again")
+	}
+
+	var short, blank ChatForkResponse
+	testutil.Call(test, testHandler.ForkChatSession, forkChatRequest(test, sourceID, "short", map[string]any{"message": "hi there"})).Want(http.StatusCreated).JSON(&short)
+	cleanupChatFork(test, short.Session.ID)
+	testutil.Call(test, testHandler.ForkChatSession, forkChatRequest(test, sourceID, "blank", map[string]any{"message": " \n\t "})).Want(http.StatusCreated).JSON(&blank)
+	cleanupChatFork(test, blank.Session.ID)
+	if short.Session.Title != "Src (fork: hi there)" || blank.Session.Title != "Src (fork)" || blank.Message != nil {
+		test.Fatalf("titles = %q / %q, blank message = %+v", short.Session.Title, blank.Session.Title, blank.Message)
+	}
+	if dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE chat_session_id = $1`, blank.Session.ID) != 0 ||
+		dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1`, blank.Session.ID) != 2 {
+		test.Fatal("a fork without a message sent something")
+	}
+	_ = agentID
+}
+
+type failingQueryStarter struct {
+	inner txStarter
+	name  string
+}
+
+func (starter failingQueryStarter) Begin(ctx context.Context) (pgx.Tx, error) {
+	transaction, err := starter.inner.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return failingQueryTx{Tx: transaction, name: starter.name}, nil
+}
+
+type failingQueryTx struct {
+	pgx.Tx
+	name string
+}
+
+func (transaction failingQueryTx) QueryRow(ctx context.Context, query string, arguments ...any) pgx.Row {
+	if strings.Contains(query, "-- name: "+transaction.name+" ") {
+		return continuationFailureRow{}
+	}
+	return transaction.Tx.QueryRow(ctx, query, arguments...)
+}
+
+func (transaction failingQueryTx) Exec(ctx context.Context, query string, arguments ...any) (pgconn.CommandTag, error) {
+	if strings.Contains(query, "-- name: "+transaction.name+" ") {
+		return pgconn.CommandTag{}, errors.New("injected " + transaction.name + " failure")
+	}
+	return transaction.Tx.Exec(ctx, query, arguments...)
+}
+
+func TestForkChatSessionRollsBackFailedSteps(test *testing.T) {
+	ctx := context.Background()
+	agentID, sourceID, _, _ := setupDirectChatSession(test, ctx, "Rollback")
+	forkMessage(test, sourceID, testutil.Cols{"role": "user", "content": "Keep this"})
+	for _, name := range []string{"InsertForkChatMessages", "SetChatForkSource", "CreateChatTask", "CreateChatMessage"} {
+		test.Run(name, func(test *testing.T) {
+			handler := *testHandler
+			handler.TxStarter = failingQueryStarter{inner: testHandler.TxStarter, name: name}
+			testutil.Call(test, handler.ForkChatSession, forkChatRequest(test, sourceID, "failed-"+name, map[string]any{"message": "go"})).Want(http.StatusInternalServerError)
+			if count := dbfx.Count(test, `SELECT count(*) FROM chat_session WHERE agent_id = $1`, agentID); count != 1 {
+				test.Fatalf("failed fork left a child: %d sessions", count)
+			}
+			if count := dbfx.Count(test, `SELECT count(*) FROM chat_message m JOIN chat_session s ON s.id = m.chat_session_id WHERE s.agent_id = $1`, agentID); count != 1 {
+				test.Fatalf("failed fork left copies: %d messages", count)
+			}
+		})
+	}
+}
+
+func TestForkChatSessionTaskKeyUsesInputOwner(test *testing.T) {
+	ctx := context.Background()
+	agentID, sourceID, _, _ := setupDirectChatSession(test, ctx, "Task key")
+	original := sendDirectChat(test, ctx, agentID, sourceID, "Fork this for me")
+	markTaskRunning(test, ctx, original)
+	taskRequest := func(taskID string, extra ...map[string]any) *http.Request {
+		request := forkChatRequest(test, "", "", extra...)
+		request.Header.Set("X-Actor-Source", "task_token")
+		request.Header.Set("X-Task-ID", taskID)
+		return request
+	}
+	var first, retried, other ChatForkResponse
+	testutil.Call(test, testHandler.ForkChatSession, taskRequest(original)).Want(http.StatusCreated).JSON(&first)
+	cleanupChatFork(test, first.Session.ID)
+
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'failed', failure_reason = 'timeout', completed_at = now() WHERE id = $1`, original)
+	parent, err := testHandler.Queries.GetAgentTask(ctx, parseUUID(original))
+	if err != nil {
+		test.Fatal(err)
+	}
+	retry, err := testHandler.TaskService.MaybeRetryFailedTask(ctx, parent)
+	if err != nil || retry == nil || uuidToString(retry.ChatInputTaskID) != original {
+		test.Fatalf("auto-retry clone = %+v, %v", retry, err)
+	}
+	markTaskRunning(test, ctx, uuidToString(retry.ID))
+	testutil.Call(test, testHandler.ForkChatSession, taskRequest(uuidToString(retry.ID))).Want(http.StatusOK).JSON(&retried)
+	if retried.Session.ID != first.Session.ID {
+		test.Fatalf("auto-retry created a second child: %s vs %s", retried.Session.ID, first.Session.ID)
+	}
+	if count := dbfx.Count(test, `SELECT count(*) FROM chat_session WHERE forked_from_session_id = $1`, sourceID); count != 1 {
+		test.Fatalf("children = %d, want 1", count)
+	}
+	testutil.Call(test, testHandler.ForkChatSession, taskRequest(uuidToString(retry.ID), map[string]any{"message": "agent text"})).Want(http.StatusBadRequest)
+
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE id = $1`, uuidToString(retry.ID))
+	next := sendDirectChat(test, ctx, agentID, sourceID, "Fork again")
+	markTaskRunning(test, ctx, next)
+	testutil.Call(test, testHandler.ForkChatSession, taskRequest(next)).Want(http.StatusCreated).JSON(&other)
+	cleanupChatFork(test, other.Session.ID)
+	if other.Session.ID == first.Session.ID {
+		test.Fatal("a new turn reused the earlier turn's fork")
 	}
 }
 
 func TestForkChatSessionAuthorizationAndValidation(test *testing.T) {
 	agentID := createHandlerTestAgent(test, "fork-auth", []byte("[]"))
-	for _, name := range []string{"other-human", "agent", "other-chat", "issue-task", "completed-task", "wrong-agent", "wrong-workspace", "malformed-task", "missing-key", "long-key", "nul-key", "blank-summary", "long-summary", "nul-summary", "archived", "channel"} {
+	builderID := createHandlerTestAgent(test, "fork-builder", []byte("[]"))
+	dbfx.Exec(test, `UPDATE agent SET kind = 'system', system_key = 'agent_builder:' || id::text WHERE id = $1`, builderID)
+	for _, name := range []string{"other-human", "agent", "other-chat", "issue-task", "completed-task", "wrong-agent", "wrong-workspace", "malformed-task",
+		"missing-key", "long-key", "nul-key", "summary", "nul-message", "long-message", "task-message", "archived", "channel", "empty", "builder"} {
 		test.Run(name, func(test *testing.T) {
-			sourceID := dbfx.ChatSession(test, agentID)
+			owner := agentID
+			if name == "builder" {
+				owner = builderID
+			}
+			sourceID := dbfx.ChatSession(test, owner)
+			if name != "empty" {
+				forkMessage(test, sourceID, testutil.Cols{"role": "user", "content": "Something to copy"})
+			}
 			request := forkChatRequest(test, sourceID, "operation")
 			want := http.StatusForbidden
 			switch name {
@@ -140,19 +435,23 @@ func TestForkChatSessionAuthorizationAndValidation(test *testing.T) {
 				request.Header.Set("X-User-ID", uuid.NewString())
 			case "agent":
 				request.Header.Set("X-Agent-ID", agentID)
-			case "other-chat", "issue-task", "completed-task", "wrong-agent", "wrong-workspace":
+			case "other-chat", "issue-task", "completed-task", "wrong-agent", "wrong-workspace", "task-message":
 				columns := testutil.Cols{"status": "running", "chat_session_id": sourceID, "runtime_id": handlerTestRuntimeID(test)}
 				taskAgentID := agentID
-				if name == "other-chat" {
+				switch name {
+				case "other-chat":
 					columns["chat_session_id"] = dbfx.ChatSession(test, agentID)
-				} else if name == "issue-task" {
+				case "issue-task":
 					delete(columns, "chat_session_id")
-				} else if name == "completed-task" {
+				case "completed-task":
 					columns["status"] = "completed"
-				} else if name == "wrong-agent" {
+				case "wrong-agent":
 					taskAgentID = createHandlerTestAgent(test, "fork-wrong-agent", []byte("[]"))
-				} else {
+				case "wrong-workspace":
 					request = request.WithContext(middleware.SetMemberContext(request.Context(), uuid.NewString(), db.Member{}))
+				case "task-message":
+					request = forkChatRequest(test, sourceID, "operation", map[string]any{"message": "from the agent"})
+					want = http.StatusBadRequest
 				}
 				taskID := dbfx.Task(test, taskAgentID, columns)
 				request.Header.Set("X-Actor-Source", "task_token")
@@ -164,9 +463,13 @@ func TestForkChatSessionAuthorizationAndValidation(test *testing.T) {
 				key := map[string]string{"missing-key": "", "long-key": strings.Repeat("x", 129), "nul-key": "key\x00"}[name]
 				request = forkChatRequest(test, sourceID, key)
 				want = http.StatusBadRequest
-			case "blank-summary", "long-summary", "nul-summary":
-				summary := map[string]string{"blank-summary": " \n", "long-summary": strings.Repeat("x", 65537), "nul-summary": "summary\x00"}[name]
-				request = withChatTestWorkspaceCtx(test, withURLParam(newRequest(http.MethodPost, "/fork", map[string]string{"summary": summary, "idempotency_key": "operation"}), "sessionId", sourceID))
+			case "summary", "nul-message", "long-message":
+				extra := map[string]map[string]any{
+					"summary":      {"summary": "Goal: keep going."},
+					"nul-message":  {"message": "go\x00"},
+					"long-message": {"message": strings.Repeat("x", forkRequestMaxBytes)},
+				}[name]
+				request = forkChatRequest(test, sourceID, "operation", extra)
 				want = http.StatusBadRequest
 			case "archived":
 				dbfx.Exec(test, `UPDATE chat_session SET status = 'archived' WHERE id = $1`, sourceID)
@@ -174,12 +477,20 @@ func TestForkChatSessionAuthorizationAndValidation(test *testing.T) {
 			case "channel":
 				dbfx.Exec(test, `UPDATE chat_session SET channel_origin_at = now() WHERE id = $1`, sourceID)
 				want = http.StatusConflict
+			case "empty", "builder":
+				want = http.StatusConflict
 			}
 			before, err := testHandler.Queries.GetChatSession(context.Background(), parseUUID(sourceID))
 			if err != nil {
 				test.Fatal(err)
 			}
-			testutil.Call(test, testHandler.ForkChatSession, request).Want(want)
+			response := testutil.Call(test, testHandler.ForkChatSession, request).Want(want)
+			if name == "summary" && !strings.Contains(response.Text(), "summary is not accepted") {
+				test.Fatalf("summary rejection = %s", response.Text())
+			}
+			if name == "empty" && !strings.Contains(response.Text(), "nothing to fork yet") {
+				test.Fatalf("empty rejection = %s", response.Text())
+			}
 			after, err := testHandler.Queries.GetChatSession(context.Background(), parseUUID(sourceID))
 			if err != nil || before != after || dbfx.Count(test, `SELECT count(*) FROM chat_session WHERE forked_from_session_id = $1`, sourceID) != 0 {
 				test.Fatalf("rejected fork changed source or created a child: %+v, %v", after, err)
@@ -194,6 +505,7 @@ func TestForkChatSessionLeavesDecisionAndTaskOwnership(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
+	forkMessage(test, fixture.sessionID, testutil.Cols{"role": "user", "content": "Context"})
 	taskID := dbfx.Task(test, fixture.agentID, testutil.Cols{"chat_session_id": fixture.sessionID, "status": "running", "runtime_id": handlerTestRuntimeID(test)})
 	answerID := dbfx.Insert(test, "decision_answer", testutil.Cols{
 		"decision_request_id": decision.Request.ID, "answered_by_task_id": taskID, "source_chat_session_id": fixture.sessionID,
@@ -213,7 +525,7 @@ func TestForkChatSessionLeavesDecisionAndTaskOwnership(test *testing.T) {
 	request := forkChatRequest(test, fixture.sessionID, "decision-fork")
 	request.Header.Set("X-Actor-Source", "task_token")
 	request.Header.Set("X-Task-ID", taskID)
-	var child ChatContinueResponse
+	var child ChatForkResponse
 	testutil.Call(test, testHandler.ForkChatSession, request).Want(http.StatusCreated).JSON(&child)
 	cleanupChatFork(test, child.Session.ID)
 	stored, err := testHandler.Queries.GetDecisionRequest(context.Background(), db.GetDecisionRequestParams{WorkspaceID: fixture.issue.WorkspaceID, ID: decision.Request.ID})
@@ -245,6 +557,7 @@ func TestForkChatSessionLeavesDecisionAndTaskOwnership(test *testing.T) {
 func TestForkChatSessionConcurrentRetry(test *testing.T) {
 	agentID := createHandlerTestAgent(test, "fork-concurrent", []byte("[]"))
 	sourceID := dbfx.ChatSession(test, agentID)
+	forkMessage(test, sourceID, testutil.Cols{"role": "user", "content": "Race me"})
 	requests := []*http.Request{forkChatRequest(test, sourceID, "same"), forkChatRequest(test, sourceID, "same"), forkChatRequest(test, sourceID, "different")}
 	responses := make(chan *httptest.ResponseRecorder, len(requests))
 	for _, request := range requests {
@@ -266,7 +579,7 @@ func TestForkChatSessionConcurrentRetry(test *testing.T) {
 			test.Errorf("concurrent fork: %d %s", response.Code, response.Body.String())
 			continue
 		}
-		var child ChatContinueResponse
+		var child ChatForkResponse
 		if err := json.Unmarshal(response.Body.Bytes(), &child); err != nil {
 			test.Error(err)
 			continue
@@ -279,57 +592,7 @@ func TestForkChatSessionConcurrentRetry(test *testing.T) {
 	if created != 2 || replayed != 1 || len(children) != 2 || dbfx.Count(test, `SELECT count(*) FROM chat_session WHERE forked_from_session_id = $1`, sourceID) != 2 {
 		test.Fatalf("concurrent operation counts: created=%d replayed=%d children=%d", created, replayed, len(children))
 	}
-}
-
-func TestForkChatSessionFirstClaimUsesSummary(test *testing.T) {
-	ctx := context.Background()
-	agentID, sourceID, runtimeID, daemonID := setupDirectChatSession(test, ctx, "Fork claim")
-	dbfx.Exec(test, `UPDATE chat_session SET session_id = 'provider-source', work_dir = '/tmp/fork-source' WHERE id = $1`, sourceID)
-	var child ChatContinueResponse
-	testutil.Call(test, testHandler.ForkChatSession, forkChatRequest(test, sourceID, "claim-operation")).Want(http.StatusCreated).JSON(&child)
-	cleanupChatFork(test, child.Session.ID)
-	taskID := sendDirectChat(test, ctx, agentID, child.Session.ID, "Take the next action")
-	request := newDaemonTokenRequest(http.MethodPost, "/api/daemon/runtimes/"+runtimeID+"/claim", nil, testWorkspaceID, daemonID)
-	request = withURLParam(request, "runtimeId", runtimeID)
-	var response struct {
-		Task *AgentTaskResponse `json:"task"`
-	}
-	testutil.Call(test, testHandler.ClaimTaskByRuntime, request).Want(http.StatusOK).JSON(&response)
-	if response.Task == nil {
-		test.Fatal("no fork task was claimed")
-	}
-	if response.Task.ID != taskID || response.Task.PriorSessionID != "" || response.Task.PriorWorkDir != "" || !strings.Contains(response.Task.ChatMessage, "Goal: explore another approach.") || !strings.Contains(response.Task.ChatMessage, "Take the next action") {
-		test.Fatalf("fork claim did not start fresh with the summary: task=%s prior_session=%q prior_work_dir=%q message=%q", response.Task.ID, response.Task.PriorSessionID, response.Task.PriorWorkDir, response.Task.ChatMessage)
-	}
-}
-
-func TestForkChatSessionRollsBackFailedSummary(test *testing.T) {
-	agentID := createHandlerTestAgent(test, "fork-rollback", []byte("[]"))
-	sourceID := dbfx.ChatSession(test, agentID)
-	handler := *testHandler
-	handler.TxStarter = failContinuationSummaryStarter{inner: testHandler.TxStarter}
-	testutil.Call(test, handler.ForkChatSession, forkChatRequest(test, sourceID, "failed-operation")).Want(http.StatusInternalServerError)
-	if count := dbfx.Count(test, `SELECT count(*) FROM chat_session WHERE agent_id = $1`, agentID); count != 1 {
-		test.Fatalf("failed fork left a child: %d", count)
-	}
-	if count := dbfx.Count(test, `SELECT count(*) FROM chat_session WHERE id = $1 AND status = 'active' AND continued_into_session_id IS NULL`, sourceID); count != 1 {
-		test.Fatal("failed fork changed the source")
-	}
-}
-
-func TestForkChatSessionOperationRetryAndMultipleChildren(test *testing.T) {
-	agentID := createHandlerTestAgent(test, "fork-retry", []byte("[]"))
-	sourceID := dbfx.ChatSession(test, agentID)
-	var first, retry, second ChatContinueResponse
-	testutil.Call(test, testHandler.ForkChatSession, forkChatRequest(test, sourceID, "first")).Want(http.StatusCreated).JSON(&first)
-	cleanupChatFork(test, first.Session.ID)
-	testutil.Call(test, testHandler.ForkChatSession, forkChatRequest(test, sourceID, "first")).Want(http.StatusOK).JSON(&retry)
-	testutil.Call(test, testHandler.ForkChatSession, forkChatRequest(test, sourceID, "second")).Want(http.StatusCreated).JSON(&second)
-	cleanupChatFork(test, second.Session.ID)
-	if retry.Session.ID != first.Session.ID || second.Session.ID == first.Session.ID {
-		test.Fatalf("per-operation identity violated: first=%s retry=%s second=%s", first.Session.ID, retry.Session.ID, second.Session.ID)
-	}
-	if count := dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id IN ($1, $2)`, first.Session.ID, second.Session.ID); count != 2 {
-		test.Fatalf("fork retries duplicated summaries: %d", count)
+	if count := dbfx.Count(test, `SELECT count(*) FROM chat_message m JOIN chat_session s ON s.id = m.chat_session_id WHERE s.forked_from_session_id = $1`, sourceID); count != 2 {
+		test.Fatalf("concurrent forks copied %d rows, want one per child", count)
 	}
 }

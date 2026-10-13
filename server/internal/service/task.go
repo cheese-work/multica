@@ -2370,24 +2370,75 @@ func (s *TaskService) SendDirectChatMessage(
 	uploaderID pgtype.UUID,
 	sentVia string,
 ) (*DirectChatSendResult, error) {
+	plan, err := s.PlanDirectChatSend(ctx, session.ID, agent, initiatorUserID)
+	if err != nil {
+		return nil, err
+	}
+	var out DirectChatSendResult
+	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		var err error
+		out, err = s.SendDirectChatMessageTx(ctx, qtx, plan, session, initiatorUserID, content, attachmentIDs, uploaderType, uploaderID, sentVia)
+		return err
+	}); err != nil {
+		slog.Error("direct chat send failed",
+			"chat_session_id", util.UUIDToString(session.ID),
+			"agent_id", util.UUIDToString(session.AgentID),
+			"error", err)
+		return nil, err
+	}
+	s.NotifyDirectChatSent(ctx, out.Task)
+	return &out, nil
+}
+
+// DirectChatSendPlan holds the parts of a direct-chat send that must be
+// resolved before a transaction opens.
+type DirectChatSendPlan struct {
+	overlay          runtimeMCPOverlayData
+	attr             attribution.Result
+	attrSource       pgtype.Text
+	attrEvidenceKind pgtype.Text
+	attrEvidenceRef  pgtype.UUID
+}
+
+// PlanDirectChatSend resolves the overlay and attribution of a direct-chat send
+// for sessionID. It runs outside any transaction.
+func (s *TaskService) PlanDirectChatSend(ctx context.Context, sessionID pgtype.UUID, agent db.Agent, initiatorUserID pgtype.UUID) (DirectChatSendPlan, error) {
 	// Build the per-task Composio overlay before the transaction — it can do
 	// network I/O and must not run with a DB transaction open.
-	overlay := s.buildRuntimeMCPOverlay(ctx, initiatorUserID, agent)
+	plan := DirectChatSendPlan{overlay: s.buildRuntimeMCPOverlay(ctx, initiatorUserID, agent)}
 
 	// Full attribution for the chat sender, resolved before the tx (the policy read
 	// + fallback must not run with a transaction open) — the same direct_human stamp
 	// EnqueueChatTask writes. Without this the direct-chat path was a bypass: it set
 	// originator_user_id but left accountable_user_id / source / evidence NULL,
 	// violating the one-way invariant and dropping the audit source (MUL-4302 §2).
-	attr := attribution.DirectHumanRun(initiatorUserID, attribution.EvidenceChat, session.ID)
-	attr, err := s.applyAttributionFallback(ctx, attr, agent)
+	attr, err := s.applyAttributionFallback(ctx, attribution.DirectHumanRun(initiatorUserID, attribution.EvidenceChat, sessionID), agent)
 	if err != nil {
-		return nil, err
+		return plan, err
 	}
-	attrSource, _, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
+	plan.attr = attr
+	plan.attrSource, _, plan.attrEvidenceKind, plan.attrEvidenceRef = attributionCreateParams(attr)
+	return plan, nil
+}
 
+// SendDirectChatMessageTx writes one direct-chat turn inside the caller's
+// transaction. Call NotifyDirectChatSent with the task after the commit.
+func (s *TaskService) SendDirectChatMessageTx(
+	ctx context.Context,
+	qtx *db.Queries,
+	plan DirectChatSendPlan,
+	session db.ChatSession,
+	initiatorUserID pgtype.UUID,
+	content string,
+	attachmentIDs []pgtype.UUID,
+	uploaderType string,
+	uploaderID pgtype.UUID,
+	sentVia string,
+) (DirectChatSendResult, error) {
+	overlay, attr := plan.overlay, plan.attr
+	attrSource, attrEvidenceKind, attrEvidenceRef := plan.attrSource, plan.attrEvidenceKind, plan.attrEvidenceRef
 	var out DirectChatSendResult
-	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
+	err := func() error {
 		// Serialise this send against a concurrent runtime rebind of the same
 		// session (MUL-5163). The lock must be taken first and the agent re-read
 		// under it: the runtime_id the caller loaded can already be stale by the
@@ -2544,22 +2595,19 @@ func (s *TaskService) SendDirectChatMessage(
 			return fmt.Errorf("touch chat session: %w", err)
 		}
 		return nil
-	}); err != nil {
-		slog.Error("direct chat send failed",
-			"chat_session_id", util.UUIDToString(session.ID),
-			"agent_id", util.UUIDToString(session.AgentID),
-			"error", err)
-		return nil, err
-	}
+	}()
+	return out, err
+}
 
+// NotifyDirectChatSent announces a committed direct-chat task.
+func (s *TaskService) NotifyDirectChatSent(ctx context.Context, task db.AgentTaskQueue) {
 	slog.Info("direct chat task enqueued",
-		"task_id", util.UUIDToString(out.Task.ID),
-		"chat_session_id", util.UUIDToString(session.ID),
-		"agent_id", util.UUIDToString(session.AgentID))
+		"task_id", util.UUIDToString(task.ID),
+		"chat_session_id", util.UUIDToString(task.ChatSessionID),
+		"agent_id", util.UUIDToString(task.AgentID))
 	// Notify only after commit. See EnqueueTaskForIssue for ordering rationale.
-	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, out.Task)
-	s.NotifyTaskEnqueued(ctx, out.Task)
-	return &out, nil
+	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
+	s.NotifyTaskEnqueued(ctx, task)
 }
 
 // MikaOnboardingOpenResult carries the two rows that open a Mika conversation.
