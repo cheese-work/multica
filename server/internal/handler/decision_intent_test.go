@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -53,6 +54,33 @@ func (fixture intentFixture) post(test *testing.T, source, taskID, content strin
 	request.Header.Set("X-Agent-ID", fixture.agentID)
 	request.Header.Set("X-Task-ID", taskID)
 	return testutil.Call(test, testHandler.CreateComment, request)
+}
+
+func TestDecisionIntentIssueDeletedBeforeLock(test *testing.T) {
+	fixture := newIntentFixture(test)
+	ctx := context.Background()
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(fixture.issueID))
+	if err != nil {
+		test.Fatal(err)
+	}
+	dbfx.Exec(test, `DELETE FROM issue WHERE id = $1`, fixture.issueID)
+	tx, err := decisiontx.Begin(ctx, testPool, parseUUID(testWorkspaceID))
+	if err != nil {
+		test.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	request := newRequest(http.MethodPost, "/", nil)
+	request.Header.Set("X-Actor-Source", "task_token")
+	request.Header.Set("X-Task-ID", fixture.taskID)
+	_, targets, err := testHandler.prepareDecisionIntent(request, testHandler.Queries.WithTx(tx), issue, "agent", parseUUID(fixture.agentID), fixture.mention())
+	if err == nil || len(targets) != 0 {
+		test.Fatalf("deleted issue was accepted: targets=%v err=%v", targets, err)
+	}
+	response := httptest.NewRecorder()
+	writeDecisionIntentError(response, err)
+	if response.Code != http.StatusNotFound {
+		test.Fatalf("deleted issue status = %d, want 404; body=%s", response.Code, response.Body.String())
+	}
 }
 
 func TestDecisionIntentAllowAndStamp(test *testing.T) {
