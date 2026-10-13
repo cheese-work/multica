@@ -52,6 +52,10 @@
     "action_failed_toast": "キュー内のメッセージを更新できませんでした"
   },
   "message_list": {
+    "continued_from": "継続元：",
+    "previous_dm": "前のDM",
+    "continued_in": "継続先 →",
+    "continuation_summary": "会話の要約",
     "show_details": "詳細を表示",
     "replied_in": "{{elapsed}}で返信",
     "failed_after": "{{elapsed}}後に失敗",

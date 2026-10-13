@@ -86,6 +86,7 @@ export interface ChatChannelSource {
 
 export interface ChatSession {
   continued_into_session_id?: string | null;
+  continued_from_session_id?: string | null;
   id: string;
   workspace_id: string;
   agent_id: string;
@@ -94,8 +95,6 @@ export interface ChatSession {
    *  conversation uses workspace context only; optional for older servers. */
   project_id?: string | null;
   title: string;
-  lane_summary?: string;
-  lane_summary_updated_at?: string | null;
   status: "active" | "archived";
   /** True when the session has any unread assistant replies. List-only.
    *  Convenience for `unread_count > 0`. */

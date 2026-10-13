@@ -18,7 +18,8 @@ WHERE id = $1;
 -- name: SetChatContinuationSource :one
 UPDATE chat_session
 SET continued_from_session_id = $2,
-    last_read_at = sqlc.arg('summary_created_at')::timestamptz - interval '1 microsecond'
+    last_read_at = sqlc.arg('summary_created_at')::timestamptz - interval '1 microsecond',
+    pinned_at = sqlc.narg('pinned_at')
 WHERE id = $1
 RETURNING *;
 
@@ -37,18 +38,6 @@ LIMIT 1;
 -- name: GetChatSessionInWorkspace :one
 SELECT * FROM chat_session
 WHERE id = $1 AND workspace_id = $2;
-
--- name: UpdateChatSessionLaneSummary :one
-UPDATE chat_session
-SET lane_summary = $3, lane_summary_updated_at = clock_timestamp()
-WHERE id = $1 AND workspace_id = $2 AND status = 'active'
-RETURNING *;
-
--- name: CountChatMessagesSinceLaneSummary :one
-SELECT count(*) FROM chat_message AS message
-WHERE message.chat_session_id = $1
-  AND message.message_kind != 'channel_command'
-  AND (sqlc.narg('summary_updated_at')::timestamptz IS NULL OR message.created_at > sqlc.narg('summary_updated_at'));
 
 -- name: GetPublicChatSessionInWorkspace :one
 -- A channel command is a durable control-plane record, not a public chat turn.

@@ -613,14 +613,12 @@ func buildChatPrompt(task Task) string {
 	if task.ChatIntro {
 		var b strings.Builder
 		b.WriteString("You are running as a chat assistant for a Multica workspace.\n")
-		writeChatLaneSummaryPrompt(&b, task)
 		b.WriteString("You were just created, and this is the very first message in a direct chat with the person who created you. They have not written anything yet — you are opening the conversation. Send a short, warm, first-person introduction: who you are, what you're good at, and how they can work with you. Do NOT phrase it as an answer to a question or repeat any prompt back; just introduce yourself as if you reached out first.\n")
 		return b.String()
 	}
 
 	var b strings.Builder
 	b.WriteString("You are running as a chat assistant for a Multica workspace.\n")
-	writeChatLaneSummaryPrompt(&b, task)
 	// Audience is per-session context, so keep it out of the cached runtime
 	// brief. The compact anchors here preserve the non-inferable boundaries: a
 	// group reply is not private to its sender and people not otherwise present
