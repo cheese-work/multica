@@ -2039,6 +2039,9 @@ const ChatChannelSourceSchema = z.object({
 }).loose();
 
 export const ChatSessionSchema: z.ZodType<ChatSession> = z.object({
+  forked_from_session_id: z.string().uuid().nullable().optional().catch(undefined),
+  fork_last_message_id: z.string().uuid().nullable().optional().catch(undefined),
+  fork_message_count: z.number().int().nonnegative().nullable().optional().catch(undefined),
   id: z.string(),
   continued_into_session_id: z.string().uuid().nullable().optional().catch(undefined),
   continued_from_session_id: z.string().uuid().nullable().optional().catch(undefined),

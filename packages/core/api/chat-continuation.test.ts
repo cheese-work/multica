@@ -11,6 +11,25 @@ import {
 } from "./schemas";
 
 describe("chat continuation contracts", () => {
+  it("retains a fork source and drops malformed fork sources", () => {
+    const sourceID = "11111111-1111-4111-8111-111111111111";
+    expect(ChatSessionSchema.parse({ id: "fork", forked_from_session_id: sourceID }).forked_from_session_id).toBe(sourceID);
+    for (const value of [123, "../../other", {}]) {
+      expect(ChatSessionSchema.parse({ id: "fork", forked_from_session_id: value }).forked_from_session_id).toBeUndefined();
+    }
+    expect(ChatSessionSchema.parse({ id: "source" }).forked_from_session_id).toBeUndefined();
+  });
+  it("retains the fork point and copy count and drops malformed values", () => {
+    const messageID = "22222222-2222-4222-8222-222222222222";
+    const fork = ChatSessionSchema.parse({ id: "fork", fork_last_message_id: messageID, fork_message_count: 12 });
+    expect(fork.fork_last_message_id).toBe(messageID);
+    expect(fork.fork_message_count).toBe(12);
+    for (const value of ["../../other", -1, 1.5, "12", {}]) {
+      const parsed = ChatSessionSchema.parse({ id: "fork", fork_last_message_id: value, fork_message_count: value });
+      expect(parsed.fork_last_message_id).toBeUndefined();
+      expect(parsed.fork_message_count).toBeUndefined();
+    }
+  });
   it("preserves a continuation summary and ignores an unknown future kind", () => {
     const message = { id: "message", chat_session_id: "chat", role: "assistant", message_kind: "continuation_summary" };
     expect(ChatMessageSchema.parse(message).message_kind).toBe("continuation_summary");

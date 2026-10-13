@@ -65,3 +65,60 @@ func TestChatContinueRejectsInvalidSummaryWithoutHTTP(t *testing.T) {
 		t.Fatal("missing file was accepted")
 	}
 }
+
+func chatForkTestCommand(summaryFile, key string) *cobra.Command {
+	command := chatContinueTestCommand(summaryFile)
+	command.Flags().Bool("fork", true, "")
+	command.Flags().String("idempotency-key", key, "")
+	return command
+}
+
+func TestChatContinueForkFlagPostsToForkAPI(t *testing.T) {
+	clearAmbientDaemonTaskEnv(t)
+	flag := chatContinueCmd.Flags().Lookup("fork")
+	if flag == nil || flag.DefValue != "false" {
+		t.Fatal("chat continue must expose --fork, disabled by default")
+	}
+	if !strings.Contains(chatContinueCmd.Long, "archives") || !strings.Contains(chatContinueCmd.Long, "--fork") {
+		t.Fatalf("help does not contrast archive and --fork: %q", chatContinueCmd.Long)
+	}
+	status := http.StatusCreated
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/api/chat/fork" {
+			t.Errorf("unexpected fork request: %s %s", request.Method, request.URL.Path)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body["idempotency_key"] != "retryable-operation" || len(body) != 1 {
+			t.Errorf("fork request: %v %v", body, err)
+		}
+		response.Header().Set("Content-Type", "application/json")
+		response.WriteHeader(status)
+		_, _ = response.Write([]byte(`{"url":"/workspace/chat?session=fork","session":{"id":"fork"}}`))
+	}))
+	t.Cleanup(server.Close)
+	setCLITestServerEnv(t, server.URL)
+	command := chatForkTestCommand("", "retryable-operation")
+	var output bytes.Buffer
+	command.SetOut(&output)
+	if err := runChatContinue(command, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "/workspace/chat?session=fork") {
+		t.Fatalf("missing fork URL: %s", output.String())
+	}
+	status = http.StatusConflict
+	if err := runChatContinue(chatForkTestCommand("", "retryable-operation"), nil); err == nil || !strings.HasPrefix(err.Error(), "fork chat:") {
+		t.Fatalf("fork error = %v, want a fork chat: prefix", err)
+	}
+}
+
+func TestChatContinueForkRejectsSummaryWithoutHTTP(t *testing.T) {
+	summaryFile := filepath.Join(t.TempDir(), "summary.md")
+	if err := os.WriteFile(summaryFile, []byte("Goal"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	err := runChatContinue(chatForkTestCommand(summaryFile, ""), nil)
+	if err == nil || !strings.HasPrefix(err.Error(), "fork chat:") || !strings.Contains(err.Error(), "--summary-file") {
+		t.Fatalf("fork with a summary = %v", err)
+	}
+}
