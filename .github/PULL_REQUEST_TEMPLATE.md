@@ -2,6 +2,20 @@
 
 <!-- Describe the change clearly. What problem does it solve? Why is this approach the right one? -->
 
+Changelog: <user-facing sentence, or none>
+
+<!-- A PR without a valid line is hidden from the fork changelog (UC-1).
+     Replace the placeholder; a blank value or any <…> placeholder counts as missing.
+     Write one plain-text, user-facing sentence (at most 140 code points), or none to hide the PR.
+     Keep the line outside HTML comments and code fences. Changelog(fix): overrides the section.
+     Good examples:
+     - Changelog: You can see which build is running on the changelog page.
+     - Changelog: none
+     - Changelog(fix): Your task list stays up to date after reconnecting.
+     Bad examples (internal plumbing or issue IDs, not user-facing sentences):
+     - Changelog: Refactor X store
+     - Changelog: CHE-123 add Y -->
+
 
 
 ## Related Issue

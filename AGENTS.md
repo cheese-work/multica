@@ -125,3 +125,18 @@ Workspace-scoped queries filter by `workspace_id`; membership gates access and `
 - Do not add internal compatibility shims, dual writes, fallback paths, or legacy adapters unless requested. This does not relax API response compatibility above.
 - New global pre-workspace routes use a single word or `/{noun}/{verb}`, not hyphenated root names. Update `server/internal/handler/reserved_slugs.json`, run `pnpm generate:reserved-slugs`, and commit `packages/core/paths/reserved-slugs.ts` when changing reserved slugs.
 - Use atomic conventional commits and the repository PR template. For releases, follow [.github/RELEASING.md](.github/RELEASING.md); default to a patch bump unless specified otherwise.
+
+## Fork Changelog PR Rule
+
+- Include a `Changelog:` line in every `cheese-work/multica` PR description, including drafts. Write one plain-text, user-facing English sentence of at most 140 code points, or `Changelog: none` to hide the PR. A PR without a valid line is hidden from the fork changelog; there is no title fallback.
+- Use a line starting with `Changelog:` or `Changelog(feat):`, `Changelog(fix):`, or `Changelog(perf):`. An override selects the section; otherwise the PR title type selects it. The first line wins. Put the line outside HTML comments and code fences. A blank value or any `<…>` placeholder counts as missing.
+- Keep the line verbatim when writing or rewriting a PR description, like `Closes`/`Refs` lines. When applying the `multica-cheese-work-ste-writing` PR format, put the line immediately before the final `Closes`/`Refs` lines; do not rewrite or lint it as prose.
+- The PR that lands a stack on `main` carries the line for the whole stack. Upstream-sync PRs use `Changelog: none`.
+
+Use the same examples as the [PR template](.github/PULL_REQUEST_TEMPLATE.md):
+
+| Good | Bad |
+| --- | --- |
+| `Changelog: You can see which build is running on the changelog page.` | `Changelog: Refactor X store` |
+| `Changelog: none` | `Changelog: CHE-123 add Y` |
+| `Changelog(fix): Your task list stays up to date after reconnecting.` | |
