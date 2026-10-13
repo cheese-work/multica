@@ -583,3 +583,31 @@ test("F4: a commit-level revert of a revert PR still shows the original and keep
   assert.deepEqual(result.entries.map((e) => e.number), [10]);
   assert.equal(reasonOf(result, 11), "reverted");
 });
+
+// --- review round 2 (x99-codex-sol, PR 229): F1 Unicode cases ---------------------
+
+test("F1: a joiner needs an emoji base before it; a bare selector or modifier is not one", async () => {
+  const { parseChangelogLine } = await load();
+  for (const lead of ["A️", "\u{1F3FB}", "️", "A"]) {
+    const got = parseChangelogLine(`Changelog: Odd ${lead}‍\u{1F600} sequence.`);
+    assert.doesNotMatch(got.text, /‍/, JSON.stringify(lead));
+    assert.ok(got.warnings.some((w) => /strip/i.test(w)), JSON.stringify(lead));
+  }
+  const family = "\u{1F468}‍\u{1F469}‍\u{1F467}";
+  const modified = "\u{1F469}\u{1F3FD}‍\u{1F4BB}";
+  const heart = "❤️‍\u{1F525}";
+  for (const emoji of [family, modified, heart]) {
+    assert.equal(parseChangelogLine(`Changelog: Keeps ${emoji} intact.`).text, `Keeps ${emoji} intact.`);
+  }
+});
+
+test("F1: token detection ignores variation selectors, format and combining characters", async () => {
+  const { parseChangelogLine } = await load();
+  const token = "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6";
+  for (const mark of ["️", "­", "͏", "́", "\u{E0020}"]) {
+    const split = `gh${mark}p_${token}`;
+    assert.equal(parseChangelogLine(`Changelog: Rotated ${split} today.`).status, "parse-error", JSON.stringify(mark));
+    const late = `ghp_${token.slice(0, 8)}${mark}${token.slice(8)}`;
+    assert.equal(parseChangelogLine(`Changelog: Rotated ${late} today.`).status, "parse-error", JSON.stringify(mark));
+  }
+});
