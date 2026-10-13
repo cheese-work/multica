@@ -695,3 +695,26 @@ func TestForkChatSessionListsNewForkFirstAndKeepsTitle(test *testing.T) {
 		}
 	}
 }
+
+func TestForkChatSessionCopiesLargeDM(test *testing.T) {
+	agentID := createHandlerTestAgent(test, "fork-large", []byte("[]"))
+	sourceID := dbfx.ChatSession(test, agentID, testutil.Cols{"title": "Large"})
+	dbfx.Exec(test, `
+		INSERT INTO chat_message (chat_session_id, role, content, created_at)
+		SELECT $1, CASE WHEN n % 2 = 0 THEN 'user' ELSE 'assistant' END, repeat('x', 4096), now() - make_interval(secs => 4000 - n)
+		FROM generate_series(1, 2000) AS n`, sourceID)
+	dbfx.Exec(test, `
+		INSERT INTO attachment (workspace_id, chat_session_id, chat_message_id, uploader_type, uploader_id, filename, url, content_type, size_bytes)
+		SELECT $2, $1, m.id, 'member', $3, 'file.txt', 'https://cdn.example.com/large/' || m.id, 'text/plain', 1
+		FROM (SELECT id FROM chat_message WHERE chat_session_id = $1 ORDER BY created_at LIMIT 200) AS m`, sourceID, testWorkspaceID, testUserID)
+	started := time.Now()
+	var child ChatForkResponse
+	testutil.Call(test, testHandler.ForkChatSession, forkChatRequest(test, sourceID, "large")).Want(http.StatusCreated).JSON(&child)
+	elapsed := time.Since(started)
+	cleanupChatFork(test, child.Session.ID)
+	if child.Session.ForkMessageCount == nil || *child.Session.ForkMessageCount != 2000 ||
+		dbfx.Count(test, `SELECT count(*) FROM attachment WHERE chat_session_id = $1`, child.Session.ID) != 200 {
+		test.Fatalf("large copy incomplete: %+v", child.Session)
+	}
+	test.Logf("fork copy of 2000 messages (4 KiB) and 200 attachments took %s", elapsed)
+}
