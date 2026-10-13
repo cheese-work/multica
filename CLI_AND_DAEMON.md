@@ -24,6 +24,39 @@ Set the workspace default with `PATCH /api/workspaces/{id}` in `settings.compact
 
 `/compact [focus]` uses the saved summary requirements and appends the focus for that invocation only. Saved prompts do not replace the continuation instructions or the secret-handling restrictions. There is no new button or quick action.
 
+## Fork a web DM
+
+Type `/fork` as the first word of a message in an active web DM. Text after `/fork` is optional; it becomes your first message in the new DM, for example `/fork try the SQLite variant instead`.
+
+The web app does not send `/fork` to the agent. It forks the DM directly, with no agent turn:
+
+- The new DM is a full copy of the messages and attachments you can see in the source, with their original times. The copy counts as read.
+- It has the same agent, creator and project. Its title is `<source title> (fork: <first 40 characters of your message>)`, or `<source title> (fork)` without a message. Rename it with `/rename`.
+- A dimmed divider "Forked from <source title> · <N> messages copied" marks where the copy ends.
+- You land in the new DM. With a message, the agent answers at once. Without a message, the new DM stays idle and shows a hint until you send a first message.
+- The source DM stays active. Its footer shows "Forked into" links to every fork. You can fork it again.
+
+What the agent in the new DM gets: a fresh agent session. No provider session, managed checkout or task work directory is carried over, and the agent's private tool memory from the source (files it read, commands it ran, tool output) is not copied. On its first turn, and on any turn with no session to resume, the server adds a fork context block with this DM's transcript. The block is capped at 64 KiB and keeps the newest messages; the agent reads earlier ones with `multica chat history`. When the project binds a local directory, the source and the fork work in that same directory; a fork does not isolate files.
+
+Decision requests, approvals and task tokens stay with the source. Agent-builder DMs and DMs from an external channel cannot be forked; `/fork` typed in an external channel (for example Telegram) stays literal text. Attachments cannot be sent with `/fork`.
+
+There is no fork prompt setting, and `compact_prompt` does not apply: a fork copies the conversation, so no summary is written.
+
+An agent running a chat turn can fork the DM it works in:
+
+```bash
+multica chat continue --fork --message "Try the SQLite variant"
+```
+
+A human can fork through the API with an explicit key; reuse the key when retrying, and the server returns the same fork without sending the message twice:
+
+```bash
+curl -X POST "$MULTICA_URL/api/chat/sessions/<id>/fork" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Workspace-ID: <workspace-id>" \
+  -H "Content-Type: application/json" \
+  -d '{"idempotency_key":"try-sqlite","message":"Try the SQLite variant"}'
+```
+
 ## Installation
 
 ### Homebrew (macOS/Linux)

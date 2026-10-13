@@ -139,6 +139,10 @@ A task fork does not send a message. `--summary-file` is not accepted with `--fo
 
 The session-human API is `POST /api/chat/sessions/{sessionId}/fork` with a required `idempotency_key` and an optional `message` in the JSON body. With a message, the server sends it as the person's first message in the child and starts the agent's first turn in the same transaction; without one, the child is idle. A retry with the same key returns the same child (HTTP 200) and sends nothing twice. The task-scoped API is `POST /api/chat/fork`. Session responses expose `forked_from_session_id`, `fork_last_message_id` and `fork_message_count` on children. Only web DMs with at least one message can be forked. Without `--fork`, `chat continue` still archives the source and requires `--summary-file`; `/compact` is unchanged.
 
+### `/fork` in the web app
+
+Type `/fork [message]` as the first word of a web DM message. The web app forks the DM directly, with no agent turn: the new DM is a full copy of the visible messages and attachments, and the source stays active with a "Forked into" link. You land in the new DM. With a message, the agent answers it at once; without one, the new DM is idle until you send a first message. The agent in the new DM starts a fresh session and gets the transcript in a context block capped at 64 KiB (newest messages first); it reads earlier ones with `multica chat history`. The agent's private tool memory is not copied. Agent-builder DMs cannot be forked, and there is no fork prompt setting.
+
 ## Agents and skills
 
 ```bash
