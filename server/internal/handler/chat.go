@@ -214,6 +214,7 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 			resp = append(resp, ChatSessionResponse{
 				ID:                     uuidToString(s.ID),
 				ContinuedIntoSessionID: uuidToPtr(s.ContinuedIntoSessionID),
+				ContinuedFromSessionID: uuidToPtr(s.ContinuedFromSessionID),
 				WorkspaceID:            uuidToString(s.WorkspaceID),
 				AgentID:                uuidToString(s.AgentID),
 				CreatorID:              uuidToString(s.CreatorID),
@@ -245,6 +246,7 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 			resp = append(resp, ChatSessionResponse{
 				ID:                     uuidToString(s.ID),
 				ContinuedIntoSessionID: uuidToPtr(s.ContinuedIntoSessionID),
+				ContinuedFromSessionID: uuidToPtr(s.ContinuedFromSessionID),
 				WorkspaceID:            uuidToString(s.WorkspaceID),
 				AgentID:                uuidToString(s.AgentID),
 				CreatorID:              uuidToString(s.CreatorID),
@@ -1938,6 +1940,7 @@ func (h *Handler) CancelTaskByUser(w http.ResponseWriter, r *http.Request) {
 type ChatSessionResponse struct {
 	ID                     string  `json:"id"`
 	ContinuedIntoSessionID *string `json:"continued_into_session_id,omitempty"`
+	ContinuedFromSessionID *string `json:"continued_from_session_id,omitempty"`
 	WorkspaceID            string  `json:"workspace_id"`
 	AgentID                string  `json:"agent_id"`
 	CreatorID              string  `json:"creator_id"`
@@ -2056,6 +2059,7 @@ func chatSessionToResponse(s db.ChatSession) ChatSessionResponse {
 	return ChatSessionResponse{
 		ID:                     uuidToString(s.ID),
 		ContinuedIntoSessionID: uuidToPtr(s.ContinuedIntoSessionID),
+		ContinuedFromSessionID: uuidToPtr(s.ContinuedFromSessionID),
 		WorkspaceID:            uuidToString(s.WorkspaceID),
 		AgentID:                uuidToString(s.AgentID),
 		CreatorID:              uuidToString(s.CreatorID),
