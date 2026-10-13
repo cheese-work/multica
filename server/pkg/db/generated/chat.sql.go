@@ -246,6 +246,54 @@ func (q *Queries) ClearChatSessionSessionIfMatches(ctx context.Context, arg Clea
 	return err
 }
 
+const countChatMessagesForForkBlock = `-- name: CountChatMessagesForForkBlock :one
+SELECT count(*)::int FROM chat_message AS message
+WHERE message.chat_session_id = $1
+  AND message.message_kind != 'channel_command'
+  AND NOT (message.id = ANY($2::uuid[]))
+  AND NOT (
+    message.role = 'user'
+    AND EXISTS (
+      SELECT 1
+      FROM agent_task_queue AS task
+      WHERE task.chat_session_id = message.chat_session_id
+        AND task.status = 'queued'
+        AND task.id = message.task_id
+        AND task.id <> (
+          SELECT head.id
+          FROM agent_task_queue AS head
+          WHERE head.chat_session_id = $1
+            AND head.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+            AND head.regenerate_quick_actions_for IS NULL
+          ORDER BY
+            CASE
+              WHEN head.status IN ('dispatched', 'running', 'waiting_local_directory') THEN 0
+              WHEN head.status = 'deferred' THEN 1
+              ELSE 2
+            END,
+            head.priority DESC,
+            head.created_at ASC,
+            head.id ASC
+          LIMIT 1
+        )
+    )
+  )
+`
+
+type CountChatMessagesForForkBlockParams struct {
+	ChatSessionID pgtype.UUID   `json:"chat_session_id"`
+	ExcludedIds   []pgtype.UUID `json:"excluded_ids"`
+}
+
+// The fork block's N: the rows ListChatMessagesPage can return (keep the
+// queued follow-up selector identical), minus the current turn's input.
+func (q *Queries) CountChatMessagesForForkBlock(ctx context.Context, arg CountChatMessagesForForkBlockParams) (int32, error) {
+	row := q.db.QueryRow(ctx, countChatMessagesForForkBlock, arg.ChatSessionID, arg.ExcludedIds)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const createChatDraftRestore = `-- name: CreateChatDraftRestore :one
 INSERT INTO chat_draft_restore (id, chat_session_id, task_id, content, attachment_ids)
 VALUES ($1, $2, $3, $4, $5)
@@ -2742,6 +2790,58 @@ func (q *Queries) ListChatSessionsByCreator(ctx context.Context, arg ListChatSes
 			&i.LastMessageAt,
 			&i.LastMessageFailureReason,
 			&i.LastMessageKind,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listForkAttachmentIndex = `-- name: ListForkAttachmentIndex :many
+SELECT a.id, a.filename, m.created_at AS message_created_at, count(*) OVER ()::int AS total
+FROM attachment AS a
+JOIN chat_message AS m ON m.id = a.chat_message_id
+JOIN chat_message AS fork_point ON fork_point.id = $1::uuid
+WHERE m.chat_session_id = $2::uuid
+  AND a.workspace_id = $3::uuid
+  AND (m.created_at, m.id) <= (fork_point.created_at, fork_point.id)
+ORDER BY m.created_at DESC, m.id DESC, a.created_at DESC, a.id DESC
+LIMIT 100
+`
+
+type ListForkAttachmentIndexParams struct {
+	ForkLastMessageID pgtype.UUID `json:"fork_last_message_id"`
+	ChatSessionID     pgtype.UUID `json:"chat_session_id"`
+	WorkspaceID       pgtype.UUID `json:"workspace_id"`
+}
+
+type ListForkAttachmentIndexRow struct {
+	ID               pgtype.UUID        `json:"id"`
+	Filename         string             `json:"filename"`
+	MessageCreatedAt pgtype.Timestamptz `json:"message_created_at"`
+	Total            int32              `json:"total"`
+}
+
+// Attachments of a fork child's copied rows (at or before the fork point),
+// newest first, with the total for the "and N more" line.
+func (q *Queries) ListForkAttachmentIndex(ctx context.Context, arg ListForkAttachmentIndexParams) ([]ListForkAttachmentIndexRow, error) {
+	rows, err := q.db.Query(ctx, listForkAttachmentIndex, arg.ForkLastMessageID, arg.ChatSessionID, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListForkAttachmentIndexRow{}
+	for rows.Next() {
+		var i ListForkAttachmentIndexRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Filename,
+			&i.MessageCreatedAt,
+			&i.Total,
 		); err != nil {
 			return nil, err
 		}

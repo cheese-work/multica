@@ -3335,7 +3335,19 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}
 		}
 
-		if (cs.ContinuedFromSessionID.Valid || cs.ForkedFromSessionID.Valid) && resp.PriorSessionID == "" {
+		if cs.ForkedFromSessionID.Valid && resp.PriorSessionID == "" {
+			block, inlined, err := h.forkContextBlock(r.Context(), cs, unanswered, hasLocalDirectory(resp.ProjectResources))
+			if err != nil {
+				slog.Error("chat claim: build fork context block failed; preserving task for redelivery",
+					"task_id", uuidToString(task.ID), "chat_session_id", uuidToString(cs.ID), "error", err)
+				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+					outcome: "error_chat_fork_context", status: http.StatusInternalServerError, message: "failed to build fork context",
+				}
+			}
+			slog.Info("chat claim: fork context block added",
+				"task_id", uuidToString(task.ID), "chat_session_id", uuidToString(cs.ID), "inlined_messages", inlined)
+			resp.ChatMessage = block + "\n\nCurrent message:\n\n" + resp.ChatMessage
+		} else if cs.ContinuedFromSessionID.Valid && resp.PriorSessionID == "" {
 			summary, err := h.Queries.GetChatContinuationSummary(r.Context(), cs.ID)
 			if err != nil {
 				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, &claimBuildFailure{

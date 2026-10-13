@@ -115,6 +115,54 @@ WHERE session.id = $1
 ORDER BY message.id
 LIMIT 1;
 
+-- name: CountChatMessagesForForkBlock :one
+-- The fork block's N: the rows ListChatMessagesPage can return (keep the
+-- queued follow-up selector identical), minus the current turn's input.
+SELECT count(*)::int FROM chat_message AS message
+WHERE message.chat_session_id = $1
+  AND message.message_kind != 'channel_command'
+  AND NOT (message.id = ANY(sqlc.arg(excluded_ids)::uuid[]))
+  AND NOT (
+    message.role = 'user'
+    AND EXISTS (
+      SELECT 1
+      FROM agent_task_queue AS task
+      WHERE task.chat_session_id = message.chat_session_id
+        AND task.status = 'queued'
+        AND task.id = message.task_id
+        AND task.id <> (
+          SELECT head.id
+          FROM agent_task_queue AS head
+          WHERE head.chat_session_id = $1
+            AND head.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+            AND head.regenerate_quick_actions_for IS NULL
+          ORDER BY
+            CASE
+              WHEN head.status IN ('dispatched', 'running', 'waiting_local_directory') THEN 0
+              WHEN head.status = 'deferred' THEN 1
+              ELSE 2
+            END,
+            head.priority DESC,
+            head.created_at ASC,
+            head.id ASC
+          LIMIT 1
+        )
+    )
+  );
+
+-- name: ListForkAttachmentIndex :many
+-- Attachments of a fork child's copied rows (at or before the fork point),
+-- newest first, with the total for the "and N more" line.
+SELECT a.id, a.filename, m.created_at AS message_created_at, count(*) OVER ()::int AS total
+FROM attachment AS a
+JOIN chat_message AS m ON m.id = a.chat_message_id
+JOIN chat_message AS fork_point ON fork_point.id = sqlc.arg(fork_last_message_id)::uuid
+WHERE m.chat_session_id = sqlc.arg(chat_session_id)::uuid
+  AND a.workspace_id = sqlc.arg(workspace_id)::uuid
+  AND (m.created_at, m.id) <= (fork_point.created_at, fork_point.id)
+ORDER BY m.created_at DESC, m.id DESC, a.created_at DESC, a.id DESC
+LIMIT 100;
+
 -- name: GetChatContinuationSummary :one
 SELECT * FROM chat_message
 WHERE chat_session_id = $1 AND message_kind = 'continuation_summary'
