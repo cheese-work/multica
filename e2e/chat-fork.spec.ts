@@ -33,7 +33,18 @@ async function seedSourceDM(database: pg.Client, api: Awaited<ReturnType<typeof 
      ($1, 'assistant', 'Postgres fits the current deployment; SQLite is worth a spike.', now() - interval '1 day' + interval '1 minute')`,
     [source.rows[0]!.id],
   );
-  return { workspace, sourceId: source.rows[0]!.id, agentId: agent.rows[0]!.id, runtimeId: runtime.rows[0]!.id };
+  // An unrelated DM with more recent activity than the source: a new fork must
+  // still list above it, because the server and client rank by creation time too.
+  const other = await database.query<{ id: string }>(
+    `INSERT INTO chat_session (workspace_id, agent_id, creator_id, title, status, explicitly_created_at, created_at)
+     VALUES ($1, $2, $3, 'Unrelated recent DM', 'active', now() - interval '1 day', now() - interval '1 day') RETURNING id::text`,
+    [workspace.id, agent.rows[0]!.id, user.rows[0]!.id],
+  );
+  await database.query(
+    `INSERT INTO chat_message (chat_session_id, role, content, created_at) VALUES ($1, 'assistant', 'Recent unrelated answer', now() - interval '1 hour')`,
+    [other.rows[0]!.id],
+  );
+  return { workspace, sourceId: source.rows[0]!.id, otherId: other.rows[0]!.id, agentId: agent.rows[0]!.id, runtimeId: runtime.rows[0]!.id };
 }
 
 async function cleanup(database: pg.Client, seed: { agentId: string; runtimeId: string }) {
@@ -144,6 +155,16 @@ for (const surface of ["page", "window"] as const) {
       );
       expect(child.rows).toHaveLength(1);
       expect(Number((await database.query(`SELECT count(*) FROM agent_task_queue WHERE chat_session_id = $1`, [child.rows[0]!.id])).rows[0].count)).toBe(0);
+      if (surface === "page") {
+        // The DM list ranks the new idle fork above the more recently active
+        // unrelated DM, also after the list refetches.
+        const forkRow = page.locator(`a[href$="session=${child.rows[0]!.id}"]`).first();
+        const otherRow = page.locator(`a[href$="session=${seed.otherId}"]`).first();
+        await page.reload({ waitUntil: "domcontentloaded" });
+        await expect(otherRow).toBeVisible({ timeout: 30_000 });
+        await expect(forkRow).toBeVisible();
+        expect((await forkRow.boundingBox())!.y).toBeLessThan((await otherRow.boundingBox())!.y);
+      }
       await shot(page, testInfo, `${surface}-idle-fork`);
 
       await forkedFrom.click();
