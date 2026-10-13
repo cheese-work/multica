@@ -117,17 +117,12 @@ ORDER BY session.updated_at DESC, session.id DESC
 LIMIT 10;
 
 -- name: ListDecisionLaneMentions :many
-WITH newest AS (
-    SELECT DISTINCT ON (message.chat_session_id, issue.id)
-        message.chat_session_id, issue.id AS issue_id,
-        (workspace.issue_prefix || '-' || issue.number::text)::text AS issue_key,
-        issue.title AS issue_title, message.created_at AS mentioned_at, message.id AS message_id,
-        message.content, mention.parts[1] AS mention_link
+WITH scoped_mentions AS MATERIALIZED (
+    SELECT message.chat_session_id, message.id AS message_id, message.created_at AS mentioned_at,
+        session.workspace_id, message.content, mention.parts
     FROM chat_message message
     JOIN chat_session session ON session.id = message.chat_session_id
-    JOIN workspace ON workspace.id = session.workspace_id
     CROSS JOIN LATERAL regexp_matches(message.content, '(\[((?:(?!\]\()[^\n])+?)\]\(mention://issue/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\))', 'g') AS mention(parts)
-    JOIN issue ON issue.id = mention.parts[3]::uuid AND issue.workspace_id = session.workspace_id
     WHERE session.workspace_id = sqlc.arg('workspace_id')
       AND session.agent_id = sqlc.arg('agent_id') AND session.creator_id = sqlc.arg('creator_id')
       AND session.id = ANY(sqlc.arg('session_ids')::uuid[])
@@ -137,7 +132,16 @@ WITH newest AS (
       AND message.content LIKE '%](mention://issue/%'
       AND message.failure_reason IS NULL
       AND NOT EXISTS (SELECT 1 FROM decision_request WHERE ping_message_id = message.id)
-    ORDER BY message.chat_session_id, issue.id, message.created_at DESC, message.id DESC
+), newest AS (
+    SELECT DISTINCT ON (mention.chat_session_id, issue.id)
+        mention.chat_session_id, issue.id AS issue_id,
+        (workspace.issue_prefix || '-' || issue.number::text)::text AS issue_key,
+        issue.title AS issue_title, mention.mentioned_at, mention.message_id,
+        mention.content, mention.parts[1] AS mention_link
+    FROM scoped_mentions mention
+    JOIN workspace ON workspace.id = mention.workspace_id
+    JOIN issue ON issue.id = mention.parts[3]::uuid AND issue.workspace_id = mention.workspace_id
+    ORDER BY mention.chat_session_id, issue.id, mention.mentioned_at DESC, mention.message_id DESC
 ), ranked AS (
     SELECT *, row_number() OVER (PARTITION BY chat_session_id ORDER BY mentioned_at DESC, message_id DESC, issue_id DESC) AS mention_rank
     FROM newest
