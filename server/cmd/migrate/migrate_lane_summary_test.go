@@ -3,10 +3,22 @@ package main
 import (
 	"context"
 	"math/rand/v2"
+	"os"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestLaneSummaryMigrationLockTimeout(test *testing.T) {
+	files := realMigrationFiles(test, []string{"596_chat_session_lane_summary"}, "up")
+	sql, err := os.ReadFile(files[0])
+	if err != nil {
+		test.Fatal(err)
+	}
+	if !strings.HasPrefix(string(sql), "SET LOCAL lock_timeout = '2s';") {
+		test.Fatal("lane-summary DDL must set a transaction-local 2-second lock timeout before altering chat_session")
+	}
+}
 
 func TestLaneSummaryMigrationUpDownUp(test *testing.T) {
 	base := openTestPool(test)
