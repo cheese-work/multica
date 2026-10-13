@@ -135,7 +135,7 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 	}
 	if err == nil {
 		next, err = qtx.SetChatContinuationSource(r.Context(), db.SetChatContinuationSourceParams{
-			ID: next.ID, ContinuedFromSessionID: session.ID, SummaryCreatedAt: summary.CreatedAt,
+			ID: next.ID, ContinuedFromSessionID: session.ID, SummaryCreatedAt: summary.CreatedAt, PinnedAt: session.PinnedAt,
 		})
 	}
 	if err == nil {
