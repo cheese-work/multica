@@ -23,12 +23,14 @@ const SECTIONS = { feat: "New Features", fix: "Bug Fixes", perf: "Improvements" 
 const REQUIRES_LINE = new Set(["feat", "fix", "perf"]);
 
 // Control, bidi and zero-width characters. U+200D (joiner) is handled apart: it stays
-// only between two emoji. Token detection runs on a copy without any joiner.
+// only between two emoji. Token detection runs on a copy without invisible marks.
 const STRIP = /[\u0000-\u001f\u007f-\u009f\u200b\u200c\u200e\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g;
-const JOINER = /\u200d/g;
-const PICTO = "\\p{Extended_Pictographic}";
-// A joiner that does not sit between two pictographs (modifiers and VS16 may precede it).
-const LOOSE_JOINER = new RegExp(`(?<![${PICTO}\\ufe0f\\u{1F3FB}-\\u{1F3FF}])\\u200d|\\u200d(?![${PICTO}])`, "gu");
+// A joiner stays only after an emoji base (plus optional VS16 or skin tone) and before
+// another pictograph; any other joiner is invisible padding and is stripped.
+const EMOJI_JOIN = /(\p{Extended_Pictographic}[\ufe0f\u{1F3FB}-\u{1F3FF}]*)\u200d(?=\p{Extended_Pictographic})|\u200d/gu;
+// Token probe only: also drops format (Cf) and combining (Mn/Me) characters, which
+// include variation selectors and tag characters.
+const INVISIBLE = /[\p{Cf}\p{Mn}\p{Me}]/gu;
 const TOKENS = [
   /ghp_[A-Za-z0-9]{10,}/,
   /github_pat_[A-Za-z0-9_]{10,}/,
@@ -87,12 +89,12 @@ export function parseChangelogLine(body) {
   }
 
   const spaced = value.replace(/[\t\v\f]/g, " ");
-  const stripped = spaced.replace(STRIP, "").replace(LOOSE_JOINER, "");
+  const stripped = spaced.replace(STRIP, "").replace(EMOJI_JOIN, (match, base) => (base ? match : ""));
   const cleaned = stripped.replace(/\s+/g, " ").trim();
   if (stripped !== spaced) warnings.push("Stripped control, bidi or zero-width characters from the sentence.");
   if (cleaned === "") return result("missing", null, null, warnings);
   if (cleaned.toLowerCase() === "none") return result("none", null, null, warnings);
-  const probe = cleaned.replace(JOINER, "");
+  const probe = cleaned.replace(INVISIBLE, "");
   if (TOKENS.some((token) => token.test(probe))) {
     warnings.push("The sentence looks like a credential and is hidden.");
     return result("parse-error", null, null, warnings);
