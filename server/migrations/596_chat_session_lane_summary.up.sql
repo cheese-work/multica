@@ -1,3 +1,5 @@
+SET LOCAL lock_timeout = '2s';
+
 ALTER TABLE chat_session
     ADD COLUMN lane_summary text NOT NULL DEFAULT '',
     ADD COLUMN lane_summary_updated_at timestamptz,
