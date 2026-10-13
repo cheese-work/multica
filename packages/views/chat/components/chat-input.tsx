@@ -55,6 +55,7 @@ function isAttachmentReferenced(content: string, attachment: Attachment): boolea
 }
 
 interface ChatInputProps {
+  onRename?: (title: string) => Promise<boolean>;
   onSend: (
     content: string,
     attachmentIds: string[] | undefined,
@@ -148,6 +149,7 @@ interface ChatInputProps {
 
 export function ChatInput({
   onSend,
+  onRename,
   restoreDraftRequest,
   conversationStarterRequest,
   onConversationStarterApplied,
@@ -558,6 +560,14 @@ export function ChatInput({
           if (key !== keyAtSend) clearInputDraft(key);
         }
       };
+      const command = content.trim();
+      if (onRename && /^\/rename(?:\s|$)/.test(command)) {
+        const title = command.slice("/rename".length).trim();
+        if (!await onRename(title)) return false;
+        commitInput({ clearEditor: editorDraftKeyRef.current === keyAtSend });
+        if (!title) editorScrubbedRef.current = false;
+        return true;
+      }
       logger.info("input.send", {
         contentLength: content.length,
         draftKey: keyAtSend,

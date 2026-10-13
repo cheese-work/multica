@@ -89,6 +89,10 @@ vi.mock("@multica/core/paths", () => ({
   useRequiredWorkspaceSlug: () => "acme",
   useWorkspacePaths: () => ({ chat: () => "/acme/chat" }),
 }));
+vi.mock("@multica/core/hooks", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/hooks")>()),
+  useWorkspaceId: () => "ws-1",
+}));
 const platformWorkspace = vi.hoisted(() => ({ slug: "acme" }));
 vi.mock("@multica/core/platform", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@multica/core/platform")>()),
