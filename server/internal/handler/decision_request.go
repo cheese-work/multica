@@ -19,6 +19,8 @@ import (
 
 type decisionRequestInput struct {
 	SessionID       pgtype.UUID
+	NewDM           bool
+	HumanUserID     pgtype.UUID
 	Ask             string
 	EscalationClass string
 }
@@ -28,6 +30,7 @@ type decisionRequestResult struct {
 	Comment         db.Comment
 	Message         db.ChatMessage
 	ClearedComments []db.Comment
+	CreatedSession  *db.ChatSession
 }
 
 func (handler *Handler) createDecisionRequest(request *http.Request, issue db.Issue, input decisionRequestInput) (decisionRequestResult, error) {
@@ -44,8 +47,8 @@ func (handler *Handler) createDecisionRequest(request *http.Request, issue db.Is
 	if err != nil {
 		return empty, deny
 	}
-	if !input.SessionID.Valid || strings.TrimSpace(input.Ask) == "" {
-		return empty, decisionIntentRefusal{http.StatusBadRequest, "a lane and a nonempty ask are required"}
+	if input.SessionID.Valid == input.NewDM || input.NewDM && !input.HumanUserID.Valid || strings.TrimSpace(input.Ask) == "" {
+		return empty, decisionIntentRefusal{http.StatusBadRequest, "a listed lane or an explicit new DM for a person, and a nonempty ask, are required"}
 	}
 	switch input.EscalationClass {
 	case "reversible", "spend", "deploy", "publish", "irreversible", "product_direction":
@@ -90,29 +93,52 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 	}
 	defer transaction.Rollback(ctx)
 	queries := handler.Queries.WithTx(transaction)
+	var createdSession *db.ChatSession
+	var session db.ChatSession
 	if _, err := queries.LockWorkspaceForChatSessionCreate(ctx, issue.WorkspaceID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return empty, deny
 		}
 		return empty, err
 	}
-	if _, err := queries.LockDecisionSession(ctx, db.LockDecisionSessionParams{WorkspaceID: issue.WorkspaceID, ID: input.SessionID}); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+	if input.NewDM {
+		agent, targetID, err := handler.decisionLaneWindow(request, queries, issue, input.HumanUserID)
+		if err != nil {
+			return empty, err
+		}
+		session = db.ChatSession{AgentID: agent.ID, CreatorID: targetID, Title: "Decisions: " + agent.Name}
+	} else {
+		if _, err := queries.LockDecisionSession(ctx, db.LockDecisionSessionParams{WorkspaceID: issue.WorkspaceID, ID: input.SessionID}); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return empty, deny
+			}
+			return empty, err
+		}
+		session, err = queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{ID: input.SessionID, WorkspaceID: issue.WorkspaceID})
+		if err != nil {
+			return empty, err
+		}
+		if session.AgentID != located.AgentID || session.Status != "active" || session.ChannelOriginAt.Valid || session.IsAgentIntro {
 			return empty, deny
 		}
-		return empty, err
-	}
-	session, err := queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{ID: input.SessionID, WorkspaceID: issue.WorkspaceID})
-	if err != nil {
-		return empty, err
-	}
-	if session.AgentID != located.AgentID || session.Status != "active" || session.ChannelOriginAt.Valid || session.IsAgentIntro {
-		return empty, deny
-	}
-	if _, err := queries.GetChannelChatSessionBindingBySessionAny(ctx, session.ID); err == nil {
-		return empty, deny
-	} else if !errors.Is(err, pgx.ErrNoRows) {
-		return empty, err
+		lanes, err := queries.ListDecisionLanes(ctx, db.ListDecisionLanesParams{WorkspaceID: issue.WorkspaceID, AgentID: located.AgentID, CreatorID: session.CreatorID})
+		if err != nil {
+			return empty, err
+		}
+		listed := false
+		for _, lane := range lanes {
+			if lane.ID == session.ID {
+				listed = true
+			}
+		}
+		if !listed {
+			return empty, deny
+		}
+		if _, err := queries.GetChannelChatSessionBindingBySessionAny(ctx, session.ID); err == nil {
+			return empty, deny
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return empty, err
+		}
 	}
 	root, err := commentguard.LockThreadForReplyAndLoadRoot(ctx, queries, issue.WorkspaceID, located.CommentID)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -181,6 +207,16 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 	if err != nil {
 		return empty, err
 	}
+	if input.NewDM {
+		session, err = queries.CreateChatSession(ctx, db.CreateChatSessionParams{ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, AgentID: session.AgentID, CreatorID: session.CreatorID, Title: session.Title})
+		if err != nil {
+			return empty, err
+		}
+		if _, err := queries.MarkChatSessionExplicitlyCreated(ctx, session.ID); err != nil {
+			return empty, err
+		}
+		createdSession = &session
+	}
 	commentID, messageID := dbid.NewV7(), dbid.NewV7()
 	created, err := queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: intent.AgentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, PingMessageID: messageID, IssueCommentID: commentID, Ask: input.Ask, EscalationClass: input.EscalationClass, Origin: "asked", DecisionIntentID: intent.ID})
 	if err != nil {
@@ -214,5 +250,5 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 	if err := transaction.Commit(ctx); err != nil {
 		return empty, err
 	}
-	return decisionRequestResult{Request: created, Comment: comment.Comment(), Message: message, ClearedComments: cleared}, nil
+	return decisionRequestResult{Request: created, Comment: comment.Comment(), Message: message, ClearedComments: cleared, CreatedSession: createdSession}, nil
 }

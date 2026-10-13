@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -17,6 +18,8 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 	var input struct {
 		IssueID         string `json:"issue_id"`
 		SessionID       string `json:"session_id"`
+		NewDM           bool   `json:"new_dm"`
+		For             string `json:"for"`
 		Ask             string `json:"ask"`
 		EscalationClass string `json:"escalation_class"`
 	}
@@ -35,16 +38,31 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 	if _, ok := handler.requireWorkspaceMember(writer, request, uuidToString(issue.WorkspaceID), "workspace not found"); !ok {
 		return
 	}
-	sessionID, ok := parseUUIDOrBadRequest(writer, input.SessionID, "session_id")
+	if input.NewDM == (input.SessionID != "") || input.NewDM && input.For == "" || !input.NewDM && input.For != "" {
+		writeError(writer, http.StatusBadRequest, "choose session_id or new_dm with for")
+		return
+	}
+	var sessionID, humanID pgtype.UUID
+	if input.NewDM {
+		humanID, ok = parseUUIDOrBadRequest(writer, input.For, "for")
+	} else {
+		sessionID, ok = parseUUIDOrBadRequest(writer, input.SessionID, "session_id")
+	}
 	if !ok {
 		return
 	}
-	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{SessionID: sessionID, Ask: input.Ask, EscalationClass: input.EscalationClass})
+	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: input.Ask, EscalationClass: input.EscalationClass})
 	if err != nil {
 		writeDecisionError(writer, err, "decision request")
 		return
 	}
 	workspaceID, agentID := uuidToString(issue.WorkspaceID), uuidToString(result.Request.AskingAgentID)
+	if result.CreatedSession != nil {
+		session := result.CreatedSession
+		handler.publishChat(protocol.EventChatSessionCreated, workspaceID, "agent", agentID, uuidToString(session.ID), protocol.ChatSessionCreatedPayload{
+			WorkspaceID: workspaceID, ChatSessionID: uuidToString(session.ID), AgentID: agentID, CreatorID: uuidToString(session.CreatorID), Title: session.Title,
+		})
+	}
 	item, err := decisiontx.NotifyPing(request.Context(), handler.TxStarter, handler.Queries, issue.WorkspaceID, result.Request.ID)
 	if err != nil {
 		slog.Warn("decision ping inbox pending retry", "decision_request_id", uuidToString(result.Request.ID), "error", err)

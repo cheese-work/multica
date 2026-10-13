@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -18,7 +19,7 @@ func TestChatSessionsWindowCommand(test *testing.T) {
 				if request.Method != http.MethodGet || request.URL.Path != "/api/chat/sessions" || request.URL.Query().Get("issue") != "CHE-1559" || request.URL.Query().Get("for") != target {
 					test.Errorf("unexpected request: %s %s", request.Method, request.URL)
 				}
-				_ = json.NewEncoder(writer).Encode([]map[string]any{{"id": "lane-id", "title": "Decisions", "lane_summary": "Release"}})
+				_ = json.NewEncoder(writer).Encode([]map[string]any{{"id": "lane-id", "title": "Decisions", "issue_mentions": []map[string]any{{"issue_key": "CHE-1611", "issue_title": "Release", "relative_time": "2m ago", "snippet": "Choose this lane"}}}})
 			}))
 			defer server.Close()
 			test.Setenv("MULTICA_SERVER_URL", server.URL)
@@ -35,6 +36,11 @@ func TestChatSessionsWindowCommand(test *testing.T) {
 			var lanes []map[string]any
 			if err := json.Unmarshal([]byte(output), &lanes); err != nil || len(lanes) != 1 || lanes[0]["id"] != "lane-id" {
 				test.Fatalf("wrong output: %s error=%v", output, err)
+			}
+			_ = command.Flags().Set("output", "table")
+			output, err = captureStdout(test, func() error { return command.RunE(command, nil) })
+			if err != nil || !strings.Contains(output, "CHE-1611") || !strings.Contains(output, "Choose this lane") || strings.Contains(output, "LANE_SUMMARY") {
+				test.Fatalf("wrong table output: %s error=%v", output, err)
 			}
 		})
 	}
