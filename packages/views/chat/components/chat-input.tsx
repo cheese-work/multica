@@ -13,6 +13,8 @@ import {
   useComposerSubmit,
 } from "../../editor";
 import { PASTE_AS_FILE_THRESHOLD } from "../../editor/paste-as-file";
+import { parseForkCommand } from "../../editor/extensions/parse-fork-command";
+import type { ForkResult } from "./use-chat-fork";
 import {
   useCoordinatedUploads,
   type UploadDraftBinding,
@@ -56,6 +58,12 @@ function isAttachmentReferenced(content: string, attachment: Attachment): boolea
 
 interface ChatInputProps {
   onRename?: (title: string) => Promise<boolean>;
+  /**
+   * Handles `/fork` (the server copies the DM — nothing is sent to the agent).
+   * Pass it only for a saved, active web DM; without it `/fork` is an ordinary
+   * message. Resolves with the outcome so the composer can show one error line.
+   */
+  onFork?: (message: string) => Promise<ForkResult>;
   onSend: (
     content: string,
     attachmentIds: string[] | undefined,
@@ -150,6 +158,7 @@ interface ChatInputProps {
 export function ChatInput({
   onSend,
   onRename,
+  onFork,
   restoreDraftRequest,
   conversationStarterRequest,
   onConversationStarterApplied,
@@ -219,6 +228,14 @@ export function ChatInput({
   const setInputDraftAttachments = useChatStore((s) => s.setInputDraftAttachments);
   const clearInputDraft = useChatStore((s) => s.clearInputDraft);
   const [isEmpty, setIsEmpty] = useState(!inputDraft.trim());
+  // One inline line for the last failed `/fork`; edits and DM switches retire it.
+  const [forkError, setForkError] = useState<string | null>(null);
+  useEffect(() => {
+    setForkError(null);
+  }, [draftKey]);
+  // A fork input keeps the Send action even while a turn runs: a fork never
+  // joins the agent's queue, so it is not gated by queue support.
+  const isForkInput = !!onFork && parseForkCommand(inputDraft) !== null;
   // `isEmpty` tracks the LIVE editor, which the persisted draft lags by a
   // debounce, so the send affordance cannot be derived from `inputDraft` alone.
   // But `isEmpty` is never re-derived when the composer switches draft slots
@@ -483,7 +500,8 @@ export function ChatInput({
       editorScrubbedRef.current = false;
       // These states disable the SubmitButton, but Mod+Enter bypasses it — so a
       // read-only or busy composer must still refuse the keyboard path.
-      if (disabled || noAgent || (isRunning && !allowSubmitWhileRunning)) {
+      const fork = onFork ? parseForkCommand(content) : null;
+      if (disabled || noAgent || (isRunning && !allowSubmitWhileRunning && !fork)) {
         logger.debug("input.send skipped", {
           disabled,
           noAgent,
@@ -560,6 +578,20 @@ export function ChatInput({
           if (key !== keyAtSend) clearInputDraft(key);
         }
       };
+      if (fork && onFork) {
+        if (uniqueActiveIds.length > 0) {
+          setForkError(t(($) => $.input.fork_attachments_blocked));
+          return false;
+        }
+        setForkError(null);
+        const result = await onFork(fork.message);
+        if (!result.ok) {
+          setForkError(result.error);
+          return false;
+        }
+        commitInput({ clearEditor: editorDraftKeyRef.current === keyAtSend });
+        return true;
+      }
       const command = onRename ? editorRef.current?.getText().trim() ?? "" : "";
       if (onRename && /^\/rename(?:\s|$)/.test(command)) {
         const title = command.slice("/rename".length).replace(/\s*[\r\n]+\s*/g, " ").trim();
@@ -702,6 +734,7 @@ export function ChatInput({
             placeholder={placeholder}
             onUpdate={(md) => {
               setIsEmpty(!md.trim());
+              setForkError(null);
               // The LOADED key, not the selected one: while an upload pins the
               // document this fires for the source draft's body — including the
               // upload's own completion dispatch.
@@ -717,6 +750,7 @@ export function ChatInput({
             mentionContextItems={contextItems}
             enableSlashCommands
             enableRenameCommand={!!onRename}
+            enableForkCommand={!!onFork}
             // The bubble menu carries the only affordance that can strip
             // formatting — "Normal text" (setParagraph) plus the mark/list
             // toggles. Once a `# ` input rule or a Markdown/HTML paste turns a
@@ -756,19 +790,20 @@ export function ChatInput({
             // remains the visible upload-progress surface in the editor.
             running={
               !!isRunning &&
+              !isForkInput &&
               (!allowSubmitWhileRunning || hasNothingToSend || gate.uploading)
             }
             onStop={onStop}
             tooltip={gate.uploading
               ? tEditor(($) => $.upload.in_progress)
-              : isRunning
+              : isRunning && !isForkInput
                 ? t(($) => $.input.queue_send_tooltip)
                 : sendShortcut
                   ? `${t(($) => $.input.send_tooltip)} · ${formatShortcut(sendShortcut)}`
                   : t(($) => $.input.send_tooltip)}
             ariaLabel={gate.uploading
               ? tEditor(($) => $.upload.in_progress)
-              : isRunning
+              : isRunning && !isForkInput
                 ? t(($) => $.input.queue_send_tooltip)
               : t(($) => $.input.send_tooltip)}
             stopTooltip={t(($) => $.input.stop_tooltip)}
@@ -777,6 +812,11 @@ export function ChatInput({
         </div>
         {uploadEnabled && isDragOver && <FileDropOverlay />}
       </div>
+      {forkError && (
+        <p role="alert" className={cn(CHAT_COLUMN, "px-1 pt-1.5 text-caption text-destructive")}>
+          {forkError}
+        </p>
+      )}
     </div>
   );
 }

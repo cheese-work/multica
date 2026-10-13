@@ -2084,6 +2084,13 @@ export const ChatContinueResponseSchema = z.object({
   url: z.string().default(""),
 }).loose();
 
+export const ChatForkResponseSchema = z.object({
+  session: ChatSessionSchema,
+  previous_session_id: z.string().default(""),
+  url: z.string().default(""),
+  message: ChatMessageSchema.nullable().optional().catch(undefined),
+}).loose();
+
 export const ChatSessionUpdatedPayloadSchema = z.object({
   chat_session_id: z.string().uuid(),
   title: z.string().optional().catch(undefined),
@@ -2095,6 +2102,12 @@ export const ChatSessionUpdatedPayloadSchema = z.object({
 }).loose();
 
 export const EMPTY_CHAT_CONTINUE_RESPONSE = {
+  session: EMPTY_CHAT_SESSION,
+  previous_session_id: "",
+  url: "",
+};
+
+export const EMPTY_CHAT_FORK_RESPONSE = {
   session: EMPTY_CHAT_SESSION,
   previous_session_id: "",
   url: "",

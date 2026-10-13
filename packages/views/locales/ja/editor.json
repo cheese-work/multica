@@ -162,12 +162,14 @@
     "client_command": "Multica",
     "focus_hint": "[focus]",
     "title_hint": "[タイトル]",
+    "message_hint": "[メッセージ]",
     "no_skills_configured": "設定済みスキルなし",
     "no_results": "一致するスキルなし",
     "commands": {
       "note": "メモを追加 — エージェントをトリガーしません",
       "compact": "この DM を要約して新しい DM で続ける",
-      "rename": "エージェントを実行せずにこの DM の名前を変更"
+      "rename": "エージェントを実行せずにこの DM の名前を変更",
+      "fork": "この DM を新しい DM にコピー（任意のメッセージは新しい DM に送信）"
     }
   }
 }
