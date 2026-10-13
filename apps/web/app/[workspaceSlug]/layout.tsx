@@ -131,6 +131,14 @@ export default function WorkspaceLayout({
 
   return (
     <WorkspaceSlugProvider slug={workspaceSlug}>
+      {user && workspaceSlug === workspaceSlugFromPathname(pathname) && (
+        <link
+          rel="search"
+          type="application/opensearchdescription+xml"
+          href={`/${workspaceSlug}/opensearch.xml`}
+          title={`Multica ${workspaceSlug}`.slice(0, 16)}
+        />
+      )}
       {children}
       {/* Reads the welcome-store transient signal parked by
        *  OnboardingFlow.handleRuntimeNext. Runtime path → loading veil →
