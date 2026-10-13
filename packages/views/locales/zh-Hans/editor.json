@@ -111,11 +111,13 @@
   "slash_command": {
     "client_command": "Multica",
     "focus_hint": "[focus]",
+    "title_hint": "[标题]",
     "no_skills_configured": "暂无配置的技能",
     "no_results": "没有匹配的技能",
     "commands": {
       "note": "添加备注——不触发任何智能体",
-      "compact": "总结当前私聊并在新私聊中继续"
+      "compact": "总结当前私聊并在新私聊中继续",
+      "rename": "重命名当前私聊，不启动智能体运行"
     }
   },
   "code_block": {

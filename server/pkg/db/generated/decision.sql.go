@@ -11,6 +11,76 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const closeDecisionIntent = `-- name: CloseDecisionIntent :exec
+UPDATE decision_intent
+SET closed_at = COALESCE(closed_at, clock_timestamp()), close_reason = $1,
+    sealed_at = COALESCE(sealed_at, clock_timestamp())
+WHERE workspace_id = $2 AND id = $3
+`
+
+type CloseDecisionIntentParams struct {
+	CloseReason pgtype.Text `json:"close_reason"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) CloseDecisionIntent(ctx context.Context, arg CloseDecisionIntentParams) error {
+	_, err := q.db.Exec(ctx, closeDecisionIntent, arg.CloseReason, arg.WorkspaceID, arg.ID)
+	return err
+}
+
+const completeDecisionIntent = `-- name: CompleteDecisionIntent :exec
+UPDATE decision_intent intent
+SET consumed_at = clock_timestamp(), consumed_by_request_id = $1,
+    sealed_at = clock_timestamp()
+WHERE intent.workspace_id = $2 AND intent.id = $3
+  AND intent.consumed_at IS NULL AND intent.sealed_at IS NULL AND intent.closed_at IS NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM decision_intent_target target
+      WHERE target.decision_intent_id = intent.id AND target.consumed_at IS NULL
+  )
+`
+
+type CompleteDecisionIntentParams struct {
+	RequestID   pgtype.UUID `json:"request_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) CompleteDecisionIntent(ctx context.Context, arg CompleteDecisionIntentParams) error {
+	_, err := q.db.Exec(ctx, completeDecisionIntent, arg.RequestID, arg.WorkspaceID, arg.ID)
+	return err
+}
+
+const consumeDecisionIntentTarget = `-- name: ConsumeDecisionIntentTarget :execrows
+UPDATE decision_intent_target target
+SET consumed_at = clock_timestamp(), consumed_by_request_id = $1
+FROM decision_intent intent
+WHERE intent.id = target.decision_intent_id AND intent.workspace_id = $2
+  AND intent.id = $3 AND target.human_user_id = $4
+  AND target.consumed_at IS NULL
+`
+
+type ConsumeDecisionIntentTargetParams struct {
+	RequestID        pgtype.UUID `json:"request_id"`
+	WorkspaceID      pgtype.UUID `json:"workspace_id"`
+	DecisionIntentID pgtype.UUID `json:"decision_intent_id"`
+	HumanUserID      pgtype.UUID `json:"human_user_id"`
+}
+
+func (q *Queries) ConsumeDecisionIntentTarget(ctx context.Context, arg ConsumeDecisionIntentTargetParams) (int64, error) {
+	result, err := q.db.Exec(ctx, consumeDecisionIntentTarget,
+		arg.RequestID,
+		arg.WorkspaceID,
+		arg.DecisionIntentID,
+		arg.HumanUserID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const createDecisionAnswer = `-- name: CreateDecisionAnswer :one
 INSERT INTO decision_answer (decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, content_snapshot, effective_at, issue_comment_id)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -192,6 +262,108 @@ func (q *Queries) CreateDecisionRequest(ctx context.Context, arg CreateDecisionR
 	return i, err
 }
 
+const decisionIntentRefusal = `-- name: DecisionIntentRefusal :one
+SELECT CASE
+    WHEN intent.sealed_at IS NOT NULL THEN 'sealed'
+    WHEN intent.closed_at IS NOT NULL THEN 'closed'
+    WHEN tag.id IS NULL OR tag.deleted_at IS NOT NULL THEN 'comment_deleted'
+    WHEN task.id IS NULL OR task.status <> 'running' THEN 'task_stopped'
+    WHEN clock_timestamp() >= intent.expires_at THEN 'expired'
+    WHEN intent.consumed_at IS NOT NULL OR NOT EXISTS (
+        SELECT 1 FROM decision_intent_target target
+        WHERE target.decision_intent_id = intent.id AND target.consumed_at IS NULL
+    ) THEN 'consumed'
+    ELSE ''
+END::text AS reason
+FROM decision_intent intent
+LEFT JOIN comment tag ON tag.id = intent.comment_id AND tag.issue_id = intent.issue_id AND tag.workspace_id = intent.workspace_id
+LEFT JOIN agent_task_queue task ON task.id = intent.task_id
+WHERE intent.workspace_id = $1 AND intent.id = $2
+`
+
+type DecisionIntentRefusalParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) DecisionIntentRefusal(ctx context.Context, arg DecisionIntentRefusalParams) (string, error) {
+	row := q.db.QueryRow(ctx, decisionIntentRefusal, arg.WorkspaceID, arg.ID)
+	var reason string
+	err := row.Scan(&reason)
+	return reason, err
+}
+
+const decisionLaneWindowOpen = `-- name: DecisionLaneWindowOpen :one
+SELECT EXISTS (
+    SELECT 1 FROM decision_intent intent
+    JOIN decision_intent_target target ON target.decision_intent_id = intent.id
+    JOIN comment tag ON tag.id = intent.comment_id AND tag.issue_id = intent.issue_id AND tag.workspace_id = intent.workspace_id
+    JOIN agent_task_queue task ON task.id = intent.task_id AND task.agent_id = intent.agent_id AND task.issue_id = intent.issue_id
+    JOIN agent asking ON asking.id = intent.agent_id AND asking.workspace_id = intent.workspace_id
+    JOIN member human ON human.user_id = target.human_user_id AND human.workspace_id = intent.workspace_id
+    WHERE intent.workspace_id = $1 AND intent.id = $2
+      AND target.human_user_id = $3 AND target.consumed_at IS NULL
+      AND intent.sealed_at IS NULL AND intent.closed_at IS NULL AND intent.consumed_at IS NULL
+      AND tag.deleted_at IS NULL AND task.status = 'running' AND task.chat_session_id IS NULL
+      AND asking.archived_at IS NULL AND clock_timestamp() < intent.expires_at
+)::boolean AS open
+`
+
+type DecisionLaneWindowOpenParams struct {
+	WorkspaceID      pgtype.UUID `json:"workspace_id"`
+	DecisionIntentID pgtype.UUID `json:"decision_intent_id"`
+	HumanUserID      pgtype.UUID `json:"human_user_id"`
+}
+
+func (q *Queries) DecisionLaneWindowOpen(ctx context.Context, arg DecisionLaneWindowOpenParams) (bool, error) {
+	row := q.db.QueryRow(ctx, decisionLaneWindowOpen, arg.WorkspaceID, arg.DecisionIntentID, arg.HumanUserID)
+	var open bool
+	err := row.Scan(&open)
+	return open, err
+}
+
+const getDecisionIntentForTask = `-- name: GetDecisionIntentForTask :one
+SELECT id, workspace_id, issue_id, task_id, agent_id, comment_id, opened_at, expires_at, consumed_at, consumed_by_request_id, closed_at, close_reason, sealed_at, group_woken_at FROM decision_intent
+WHERE workspace_id = $1 AND issue_id = $2
+  AND task_id = $3 AND agent_id = $4
+ORDER BY opened_at DESC, id DESC
+LIMIT 1
+`
+
+type GetDecisionIntentForTaskParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	TaskID      pgtype.UUID `json:"task_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+}
+
+func (q *Queries) GetDecisionIntentForTask(ctx context.Context, arg GetDecisionIntentForTaskParams) (DecisionIntent, error) {
+	row := q.db.QueryRow(ctx, getDecisionIntentForTask,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.TaskID,
+		arg.AgentID,
+	)
+	var i DecisionIntent
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.TaskID,
+		&i.AgentID,
+		&i.CommentID,
+		&i.OpenedAt,
+		&i.ExpiresAt,
+		&i.ConsumedAt,
+		&i.ConsumedByRequestID,
+		&i.ClosedAt,
+		&i.CloseReason,
+		&i.SealedAt,
+		&i.GroupWokenAt,
+	)
+	return i, err
+}
+
 const getDecisionRequest = `-- name: GetDecisionRequest :one
 SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at FROM decision_request
 WHERE workspace_id = $1 AND id = $2
@@ -227,6 +399,218 @@ func (q *Queries) GetDecisionRequest(ctx context.Context, arg GetDecisionRequest
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const listDecisionIntentTargets = `-- name: ListDecisionIntentTargets :many
+SELECT target.decision_intent_id, target.human_user_id, target.consumed_at, target.consumed_by_request_id FROM decision_intent_target target
+JOIN decision_intent intent ON intent.id = target.decision_intent_id
+WHERE intent.workspace_id = $1 AND intent.id = $2
+ORDER BY target.human_user_id
+`
+
+type ListDecisionIntentTargetsParams struct {
+	WorkspaceID      pgtype.UUID `json:"workspace_id"`
+	DecisionIntentID pgtype.UUID `json:"decision_intent_id"`
+}
+
+func (q *Queries) ListDecisionIntentTargets(ctx context.Context, arg ListDecisionIntentTargetsParams) ([]DecisionIntentTarget, error) {
+	rows, err := q.db.Query(ctx, listDecisionIntentTargets, arg.WorkspaceID, arg.DecisionIntentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DecisionIntentTarget{}
+	for rows.Next() {
+		var i DecisionIntentTarget
+		if err := rows.Scan(
+			&i.DecisionIntentID,
+			&i.HumanUserID,
+			&i.ConsumedAt,
+			&i.ConsumedByRequestID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDecisionLaneMentions = `-- name: ListDecisionLaneMentions :many
+WITH scoped_mentions AS MATERIALIZED (
+    SELECT message.chat_session_id, message.id AS message_id, message.created_at AS mentioned_at,
+        session.workspace_id, message.content, mention.parts
+    FROM chat_message message
+    JOIN chat_session session ON session.id = message.chat_session_id
+    CROSS JOIN LATERAL regexp_matches(message.content, '(\[((?:(?!\]\()[^\n])+?)\]\(mention://issue/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\))', 'g') AS mention(parts)
+    WHERE session.workspace_id = $1
+      AND session.agent_id = $2 AND session.creator_id = $3
+      AND session.id = ANY($4::uuid[])
+      AND session.status = 'active' AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
+      AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
+      AND message.role IN ('user', 'assistant') AND message.message_kind = 'message'
+      AND message.content LIKE '%](mention://issue/%'
+      AND message.failure_reason IS NULL
+      AND NOT EXISTS (SELECT 1 FROM decision_request WHERE ping_message_id = message.id)
+), newest AS (
+    SELECT DISTINCT ON (mention.chat_session_id, issue.id)
+        mention.chat_session_id, issue.id AS issue_id,
+        (workspace.issue_prefix || '-' || issue.number::text)::text AS issue_key,
+        issue.title AS issue_title, mention.mentioned_at, mention.message_id,
+        mention.content, mention.parts[1] AS mention_link
+    FROM scoped_mentions mention
+    JOIN workspace ON workspace.id = mention.workspace_id
+    JOIN issue ON issue.id = mention.parts[3]::uuid AND issue.workspace_id = mention.workspace_id
+    ORDER BY mention.chat_session_id, issue.id, mention.mentioned_at DESC, mention.message_id DESC
+), ranked AS (
+    SELECT chat_session_id, issue_id, issue_key, issue_title, mentioned_at, message_id, content, mention_link, row_number() OVER (PARTITION BY chat_session_id ORDER BY mentioned_at DESC, message_id DESC, issue_id DESC) AS mention_rank
+    FROM newest
+)
+SELECT chat_session_id, issue_id, issue_key, issue_title, mentioned_at,
+    (right(regexp_replace(split_part(content, mention_link, 1), '\[((?:(?!\]\()[^\n])+?)\]\([^)]*\)', '\1', 'g'), 40)
+     || left(regexp_replace(substring(content FROM strpos(content, mention_link) + char_length(mention_link)), '\[((?:(?!\]\()[^\n])+?)\]\([^)]*\)', '\1', 'g'), 60))::text AS snippet
+FROM ranked WHERE mention_rank <= 20
+ORDER BY chat_session_id, mention_rank
+`
+
+type ListDecisionLaneMentionsParams struct {
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+	AgentID     pgtype.UUID   `json:"agent_id"`
+	CreatorID   pgtype.UUID   `json:"creator_id"`
+	SessionIds  []pgtype.UUID `json:"session_ids"`
+}
+
+type ListDecisionLaneMentionsRow struct {
+	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	IssueKey      string             `json:"issue_key"`
+	IssueTitle    string             `json:"issue_title"`
+	MentionedAt   pgtype.Timestamptz `json:"mentioned_at"`
+	Snippet       string             `json:"snippet"`
+}
+
+func (q *Queries) ListDecisionLaneMentions(ctx context.Context, arg ListDecisionLaneMentionsParams) ([]ListDecisionLaneMentionsRow, error) {
+	rows, err := q.db.Query(ctx, listDecisionLaneMentions,
+		arg.WorkspaceID,
+		arg.AgentID,
+		arg.CreatorID,
+		arg.SessionIds,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDecisionLaneMentionsRow{}
+	for rows.Next() {
+		var i ListDecisionLaneMentionsRow
+		if err := rows.Scan(
+			&i.ChatSessionID,
+			&i.IssueID,
+			&i.IssueKey,
+			&i.IssueTitle,
+			&i.MentionedAt,
+			&i.Snippet,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDecisionLanes = `-- name: ListDecisionLanes :many
+SELECT session.id, session.title, session.updated_at
+FROM chat_session session
+WHERE session.workspace_id = $1 AND session.agent_id = $2
+  AND session.creator_id = $3 AND session.status = 'active'
+  AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
+  AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
+ORDER BY session.updated_at DESC, session.id DESC
+LIMIT 10
+`
+
+type ListDecisionLanesParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+	CreatorID   pgtype.UUID `json:"creator_id"`
+}
+
+type ListDecisionLanesRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	Title     string             `json:"title"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) ListDecisionLanes(ctx context.Context, arg ListDecisionLanesParams) ([]ListDecisionLanesRow, error) {
+	rows, err := q.db.Query(ctx, listDecisionLanes, arg.WorkspaceID, arg.AgentID, arg.CreatorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDecisionLanesRow{}
+	for rows.Next() {
+		var i ListDecisionLanesRow
+		if err := rows.Scan(&i.ID, &i.Title, &i.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDecisionPingRetries = `-- name: ListDecisionPingRetries :many
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at FROM decision_request
+WHERE origin = 'asked' AND ping_notified_at IS NULL
+ORDER BY created_at, id
+LIMIT $1
+`
+
+func (q *Queries) ListDecisionPingRetries(ctx context.Context, limit int32) ([]DecisionRequest, error) {
+	rows, err := q.db.Query(ctx, listDecisionPingRetries, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DecisionRequest{}
+	for rows.Next() {
+		var i DecisionRequest
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.AskingAgentID,
+			&i.HumanUserID,
+			&i.ChatSessionID,
+			&i.PingMessageID,
+			&i.IssueCommentID,
+			&i.Ask,
+			&i.EscalationClass,
+			&i.Status,
+			&i.Origin,
+			&i.DecisionIntentID,
+			&i.CancelReason,
+			&i.CancelNoticePostedAt,
+			&i.PingNotifiedAt,
+			&i.ReaskDeliveredAt,
+			&i.ReaskOutcome,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listDecisionRequestsByIssue = `-- name: ListDecisionRequestsByIssue :many
@@ -594,4 +978,75 @@ func (q *Queries) LockDecisionSourceMessages(ctx context.Context, arg LockDecisi
 		return nil, err
 	}
 	return items, nil
+}
+
+const markDecisionPingNotified = `-- name: MarkDecisionPingNotified :one
+UPDATE decision_request
+SET ping_notified_at = clock_timestamp()
+WHERE workspace_id = $1 AND id = $2
+  AND ping_notified_at IS NULL
+RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at
+`
+
+type MarkDecisionPingNotifiedParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) MarkDecisionPingNotified(ctx context.Context, arg MarkDecisionPingNotifiedParams) (DecisionRequest, error) {
+	row := q.db.QueryRow(ctx, markDecisionPingNotified, arg.WorkspaceID, arg.ID)
+	var i DecisionRequest
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.AskingAgentID,
+		&i.HumanUserID,
+		&i.ChatSessionID,
+		&i.PingMessageID,
+		&i.IssueCommentID,
+		&i.Ask,
+		&i.EscalationClass,
+		&i.Status,
+		&i.Origin,
+		&i.DecisionIntentID,
+		&i.CancelReason,
+		&i.CancelNoticePostedAt,
+		&i.PingNotifiedAt,
+		&i.ReaskDeliveredAt,
+		&i.ReaskOutcome,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const sealDecisionIntent = `-- name: SealDecisionIntent :exec
+UPDATE decision_intent SET sealed_at = COALESCE(sealed_at, clock_timestamp())
+WHERE workspace_id = $1 AND id = $2
+`
+
+type SealDecisionIntentParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) SealDecisionIntent(ctx context.Context, arg SealDecisionIntentParams) error {
+	_, err := q.db.Exec(ctx, sealDecisionIntent, arg.WorkspaceID, arg.ID)
+	return err
+}
+
+const stampCommentDecisionIntent = `-- name: StampCommentDecisionIntent :exec
+UPDATE comment SET decision_intent_id = $1
+WHERE workspace_id = $2 AND id = $3
+`
+
+type StampCommentDecisionIntentParams struct {
+	DecisionIntentID pgtype.UUID `json:"decision_intent_id"`
+	WorkspaceID      pgtype.UUID `json:"workspace_id"`
+	CommentID        pgtype.UUID `json:"comment_id"`
+}
+
+func (q *Queries) StampCommentDecisionIntent(ctx context.Context, arg StampCommentDecisionIntentParams) error {
+	_, err := q.db.Exec(ctx, stampCommentDecisionIntent, arg.DecisionIntentID, arg.WorkspaceID, arg.CommentID)
+	return err
 }

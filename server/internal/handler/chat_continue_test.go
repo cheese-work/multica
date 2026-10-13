@@ -30,6 +30,88 @@ func continueChatRequest(t *testing.T, sessionID, summary, taskID string) *httpt
 	return response
 }
 
+func assertContinuedChatUnread(t *testing.T, sourceID, successorID string, wantUnread int) {
+	t.Helper()
+	for _, status := range []string{"active", "all"} {
+		request := withChatTestWorkspaceCtx(t, newRequest(http.MethodGet, "/api/chat/sessions?status="+status, nil))
+		var sessions []ChatSessionResponse
+		testutil.Call(t, testHandler.ListChatSessions, request).Want(http.StatusOK).JSON(&sessions)
+		foundSuccessor, foundSource := false, false
+		for _, session := range sessions {
+			switch session.ID {
+			case successorID:
+				foundSuccessor = true
+				if session.UnreadCount != wantUnread || session.HasUnread != (wantUnread > 0) {
+					t.Errorf("%s successor unread: count=%d has_unread=%v, want count=%d", status, session.UnreadCount, session.HasUnread, wantUnread)
+				}
+			case sourceID:
+				foundSource = true
+				if session.Status != "archived" || session.UnreadCount != 0 || session.HasUnread {
+					t.Errorf("%s archived source unread: %+v", status, session)
+				}
+			}
+		}
+		if !foundSuccessor || foundSource != (status == "all") {
+			t.Errorf("%s list: successor found=%v, source found=%v", status, foundSuccessor, foundSource)
+		}
+	}
+}
+
+func TestContinueChatSessionSummaryUnreadUntilRead(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	for _, taskScoped := range []bool{false, true} {
+		name := "web continuation"
+		if taskScoped {
+			name = "multica chat continue"
+		}
+		t.Run(name, func(t *testing.T) {
+			agentID := createHandlerTestAgent(t, "continue-unread", []byte("[]"))
+			sourceID := dbfx.ChatSession(t, agentID, testutil.Cols{"last_read_at": "epoch"})
+			dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": sourceID, "role": "assistant", "content": "Unread source reply"})
+			path := "/api/chat/sessions/" + sourceID + "/continue"
+			if taskScoped {
+				path = "/api/chat/continue"
+			}
+			taskID := ""
+			if taskScoped {
+				taskID = dbfx.Task(t, agentID, testutil.Cols{"status": "running", "runtime_id": handlerTestRuntimeID(t), "chat_session_id": sourceID})
+			}
+			request := func() *http.Request {
+				request := withChatTestWorkspaceCtx(t, newRequest(http.MethodPost, path, map[string]any{"summary": "Goal: retain the context."}))
+				if taskScoped {
+					request.Header.Set("X-Actor-Source", "task_token")
+					request.Header.Set("X-Task-ID", taskID)
+					request.Header.Set("X-Agent-ID", agentID)
+				} else {
+					request = withURLParam(request, "sessionId", sourceID)
+				}
+				return request
+			}
+			var result ChatContinueResponse
+			testutil.Call(t, testHandler.ContinueChatSession, request()).Want(http.StatusCreated).JSON(&result)
+			dbfx.Cleanup(t, `DELETE FROM chat_message WHERE chat_session_id = $1`, result.Session.ID)
+			dbfx.Cleanup(t, `DELETE FROM chat_session WHERE id = $1`, result.Session.ID)
+			assertContinuedChatUnread(t, sourceID, result.Session.ID, 1)
+			var replay ChatContinueResponse
+			testutil.Call(t, testHandler.ContinueChatSession, request()).Want(http.StatusOK).JSON(&replay)
+			if replay.Session.ID != result.Session.ID {
+				t.Fatalf("replay created another successor: %s", replay.Session.ID)
+			}
+			assertContinuedChatUnread(t, sourceID, result.Session.ID, 1)
+			readRequest := withChatTestWorkspaceCtx(t, withURLParam(newRequest(http.MethodPost, "/api/chat/sessions/"+result.Session.ID+"/read", nil), "sessionId", result.Session.ID))
+			testutil.Call(t, testHandler.MarkChatSessionRead, readRequest).Want(http.StatusNoContent)
+			assertContinuedChatUnread(t, sourceID, result.Session.ID, 0)
+			testutil.Call(t, testHandler.ContinueChatSession, request()).Want(http.StatusOK).JSON(&replay)
+			assertContinuedChatUnread(t, sourceID, result.Session.ID, 0)
+			if count := dbfx.Count(t, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1`, result.Session.ID); count != 1 {
+				t.Fatalf("replay duplicated the summary: %d", count)
+			}
+		})
+	}
+}
+
 func TestContinueChatSessionArchivesAndSeedsFreshDM(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
@@ -268,6 +350,7 @@ func TestCompactWebDMContinuesAndNextClaimUsesSummary(t *testing.T) {
 	if count := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE id = $1 AND status = 'completed'`, taskID); count != 1 {
 		t.Fatal("the source task did not complete after continuation")
 	}
+	assertContinuedChatUnread(t, sessionID, continuation.Session.ID, 1)
 	nextTaskID := sendDirectChat(t, ctx, agentID, continuation.Session.ID, "Take the next action")
 	next := claim()
 	if next.ID != nextTaskID || next.PriorSessionID != "" || next.PriorSessionResumeUnavailable || !strings.Contains(next.ChatMessage, "Goal: deploy safely.") || !strings.Contains(next.ChatMessage, "Take the next action") {

@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -31,6 +32,10 @@ describe("diagnostic route", () => {
 });
 
 describe("bucketDiagnosticPath", () => {
+  it("recognizes site search without retaining the workspace or private query", () => {
+    expect(bucketDiagnosticPath("/private-workspace/search?q=private%20query#private-fragment")).toBe("/:slug/search");
+  });
+
   it("replaces the workspace slug", () => {
     expect(bucketDiagnosticPath("/acme/issues")).toBe("/:slug/issues");
   });

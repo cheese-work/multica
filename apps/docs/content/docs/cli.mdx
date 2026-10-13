@@ -195,6 +195,18 @@ See [Daemon and runtimes](/daemon-runtimes) for how it works and for custom prof
 
 `multica chat` reads **the external chat session an agent is currently handling**; it is mainly for agents in chat integrations, not a general command for browsing arbitrary workspace conversations.
 
+### Decision lane metadata
+
+A running assigned issue task can open a three-minute decision window by posting a comment with `--decision-intent` and member mentions. Only that task can list active web DM lanes for the people named in the window:
+
+```bash
+multica chat sessions --issue MUL-123 --for <user-id> --output json
+```
+
+Omit `--for` only when the window names exactly one person. The person must still be an active workspace member who can invoke the asking agent, and their target must be unconsumed. A listing does not consume the window. Another run of the same agent, a chat task, PATs and JWTs cannot use this command.
+
+The response contains only `id`, `title`, `lane_summary`, `lane_summary_updated_at` and `updated_at`, newest lane first. It never includes messages, unread counts or transcript previews. Archived sessions and channel-origin sessions are excluded. If no lane exists, the server creates a web DM titled `Decisions: <agent name>` for the named person. Expired, closed, deleted-tag and consumed windows are refused.
+
 ## IDs and output formats
 
 Issues use keys like `MUL-123` or full UUIDs; short UUID prefixes are not accepted.
@@ -298,6 +310,7 @@ The tables below cover every current top-level command, grouped the way the CLI 
 | | `member list/add/set-role/remove` | Manage squad members | |
 | | `activity <issue-id> <outcome>` | Record a leader evaluation | |
 | `chat` | `history`, `thread [id]` | Read the external chat session an agent is currently handling | `--limit`, `--before` |
+| | `sessions` | List metadata-only web DM lanes within the calling issue task's decision window | `--issue`, `--for`, `--output` |
 
 ### Runtime
 

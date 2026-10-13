@@ -95,9 +95,10 @@ func TestStartMikaOnboarding_WritesTheOpeningWithoutRunningAnAgent(t *testing.T)
 		kind    string
 		content string
 		hasTask bool
+		sentVia string
 	}
 	rows, err := testPool.Query(context.Background(),
-		`SELECT role, message_kind, content, task_id IS NOT NULL
+		`SELECT role, message_kind, content, task_id IS NOT NULL, COALESCE(sent_via, '')
 		   FROM chat_message WHERE chat_session_id = $1
 		  ORDER BY created_at ASC, id ASC`, sessionID)
 	if err != nil {
@@ -107,7 +108,7 @@ func TestStartMikaOnboarding_WritesTheOpeningWithoutRunningAnAgent(t *testing.T)
 	var got []row
 	for rows.Next() {
 		var r row
-		if err := rows.Scan(&r.role, &r.kind, &r.content, &r.hasTask); err != nil {
+		if err := rows.Scan(&r.role, &r.kind, &r.content, &r.hasTask, &r.sentVia); err != nil {
 			t.Fatalf("scan onboarding row: %v", err)
 		}
 		got = append(got, r)
@@ -134,6 +135,9 @@ func TestStartMikaOnboarding_WritesTheOpeningWithoutRunningAnAgent(t *testing.T)
 	}
 	if opening.hasTask {
 		t.Error("no agent produced the opening, so it must carry no task id")
+	}
+	if opening.sentVia != "system" {
+		t.Errorf("server-authored opening sent_via = %q, want system", opening.sentVia)
 	}
 	if !strings.Contains(opening.content, "Multica") {
 		t.Errorf("the opening does not read like the product copy: %q", opening.content)

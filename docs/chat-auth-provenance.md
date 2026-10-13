@@ -21,6 +21,8 @@ Sliding renewal preserves the signed `amr` claim for browser cookies and explici
 
 `POST /api/cli-token` requires a human actor **and** an interactive JWT. It returns a token with `amr=cli`. PATs, task tokens, cloud PATs, CLI JWTs and legacy JWTs cannot use this endpoint to mint an interactive token or a new CLI handoff token. A legacy browser session needs a fresh interactive sign-in before obtaining a CLI handoff token.
 
+Every browser CLI callback exchanges the browser's interactive session through `/api/cli-token` before redirecting. This includes email-code sign-in, Google sign-in and existing cookie or localStorage sessions. Only the exchanged CLI token reaches the callback URL; the email-code and Google issuers remain interactive, and the browser retains its interactive session. Failed CLI issuance displays an error and never falls back to forwarding the browser token.
+
 `POST /api/auth/desktop-token` requires a human actor and a verified interactive JWT. Cookie-authenticated requests must pass the existing CSRF check. It issues `amr=interactive` with a new `sid`; non-interactive credentials cannot upgrade through this endpoint. `/api/cli-token` remains CLI-only.
 
 Browser email-code sign-in and already-signed-in desktop handoffs call the desktop endpoint only after the person clicks **Open Multica Desktop**. The Google desktop callback retains its interactive `GoogleLogin` token and also waits for that click before sending the `multica://auth/callback` deep link. Neither page sends a deep link on page load. Native desktop email-code sign-in still uses `VerifyCode` directly and already receives an interactive token; it does not use a browser handoff.

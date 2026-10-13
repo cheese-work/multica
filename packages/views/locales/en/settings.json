@@ -1,4 +1,12 @@
 {
+  "site_search": {
+    "title": "Site search",
+    "url": "Search URL",
+    "hint": "Add in brave://settings/search → Site search → Add",
+    "copy": "Copy",
+    "copied": "Search URL copied",
+    "copy_failed": "Could not copy search URL"
+  },
   "issue_statuses": {
     "title": "Issue Statuses",
     "loading": "Loading statuses…",
