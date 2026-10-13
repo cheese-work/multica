@@ -741,7 +741,7 @@ test("F5: tag characters outside a recognized flag are still stripped", async ()
 
 test("F1d: dash look-alikes cannot split an issue id or an sk- key", async () => {
   const { parseChangelogLine } = await load();
-  for (const dash of ["‐", "‑", "‒", "–", "—", "−", "－"]) {
+  for (const dash of ["\u2010", "\u2011", "\u2012", "\u2013", "\u2014", "\u2212", "\uff0d"]) {
     assert.equal(parseChangelogLine(`Changelog: Fixed CHE${dash}123 today.`).status, "parse-error", dash.codePointAt(0).toString(16));
     assert.equal(parseChangelogLine(`Changelog: Rotated sk${dash}proj1234567890abcdefghijkl today.`).status, "parse-error");
   }
