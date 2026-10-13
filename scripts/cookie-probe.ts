@@ -12,15 +12,20 @@ if (!["http:", "https:"].includes(origin.protocol) || origin.username || origin.
 const port = Number(process.env.COOKIE_PROBE_PORT ?? "19693");
 const workspaceSlug = "cheese-work";
 const context = { params: Promise.resolve({ workspaceSlug }) };
-const counts = { withCookie: 0, withoutCookie: 0 };
+const counts = {
+  withCookie: 0, withoutCookie: 0, controlWithCookie: 0, controlWithoutCookie: 0,
+  controlCookiePresent: false, errors: 0,
+};
 const page = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Multica cookie probe</title>
 <link rel="search" type="application/opensearchdescription+xml" title="Multica cookie probe" href="/${workspaceSlug}/opensearch.xml">
 </head><body><h1>Multica cookie probe</h1>
 <p>Sign in to Multica on this same hostname in a separate tab first. Do not copy or paste any cookie.</p>
+<p id="control">CONTROL_RESULT</p>
+<p>Only activate the shortcut if this landing-page cookie eligibility control passes. Otherwise report INCONCLUSIVE; do not infer that Brave strips suggestion cookies.</p>
 <ol><li>Note the counts below.</li><li>Activate this origin under Inactive shortcuts in Brave's Search engine settings. Set its shortcut to mcprobe.</li>
 <li>Type mcprobe, press Tab, type cookieprobe without pressing Enter, and return to this tab.</li></ol>
-<p>Report the before/after counts, Brave version from brave://version, and the date on CHE-1593.</p>
+<p>Report the control result, before/after counts including errors, Brave version from brave://version, and the date on CHE-1593. Any new error makes the measurement INCONCLUSIVE.</p>
 <p>The probe records only session-cookie presence. No cookie values, queries, account data or workspace data are recorded.</p>
 <pre id="counts" role="status">Loading counts</pre>
 <script>async function refresh() { try { const response = await fetch('/probe-status', {cache: 'no-store'}); const counts = await response.json(); document.getElementById('counts').textContent = JSON.stringify(counts, null, 2); } catch { document.getElementById('counts').textContent = 'Probe unavailable'; } } refresh(); setInterval(refresh, 1000);</script>
@@ -36,7 +41,18 @@ const server = createServer(async (incoming, outgoing) => {
     const url = new URL(incoming.url ?? "/", origin);
     let response: Response;
     if (url.pathname === "/" || url.pathname === `/${workspaceSlug}/issues`) {
-      response = new Response(page, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+      const present = /(?:^|;)\s*multica_auth=/.test(incoming.headers.cookie ?? "");
+      if (incoming.method === "GET") {
+        counts.controlCookiePresent = present;
+        if (present) counts.controlWithCookie++;
+        else counts.controlWithoutCookie++;
+        console.info("Cookie probe control: session cookie present", present);
+      }
+      response = new Response(page.replace("CONTROL_RESULT", present
+        ? "Cookie eligibility control: PASS"
+        : "Cookie eligibility control: INCONCLUSIVE (session cookie absent on this navigation)"), {
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+      });
     } else if (url.pathname === "/probe-status") {
       response = Response.json(counts);
     } else if (url.pathname === `/${workspaceSlug}/opensearch.xml`) {
@@ -57,11 +73,16 @@ const server = createServer(async (incoming, outgoing) => {
     outgoing.writeHead(response.status, Object.fromEntries(response.headers));
     outgoing.end(incoming.method === "HEAD" ? undefined : await response.text());
   } catch {
+    counts.errors++;
+    console.error("Cookie probe request failed");
     outgoing.writeHead(500, { "Cache-Control": "no-store" });
     outgoing.end("Probe unavailable");
   }
 });
 
-server.listen(port, "127.0.0.1", () => console.info(`Cookie probe listening on loopback port ${port}`));
+server.listen(port, "127.0.0.1", () => {
+  const address = server.address();
+  if (address && typeof address !== "string") console.info(`Cookie probe listening on loopback port ${address.port}`);
+});
 process.on("SIGTERM", () => server.close());
 process.on("SIGINT", () => server.close());
