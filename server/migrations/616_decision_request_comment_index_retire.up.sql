@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS comment_decision_request_kind_uidx;

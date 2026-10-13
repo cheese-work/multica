@@ -144,6 +144,7 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
+	"615_decision_request_comment_v2_index":                     "comment_decision_request_kind_v2_uidx",
 	"598_decision_request_id_index":                             "decision_request_id_uidx",
 	"599_decision_intent_id_index":                              "decision_intent_id_uidx",
 	"601_decision_answer_id_index":                              "decision_answer_id_uidx",
@@ -419,6 +420,13 @@ type requiredConcurrentIndex struct {
 }
 
 var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
+	"615_decision_request_comment_v2_index": {
+		IndexRegclass: "comment_decision_request_kind_v2_uidx",
+		TableRegclass: "comment",
+		Unique:        true,
+		Columns:       []string{"decision_request_id", "decision_comment_kind"},
+		Predicate:     "decision_answer_id IS NULL AND decision_request_id IS NOT NULL",
+	},
 	"582_wakeup_definition_identity_index": {
 		IndexRegclass: "issue_wakeup_definition_identity_idx",
 		TableRegclass: "issue_wakeup_definition",
@@ -501,6 +509,7 @@ var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
 // the retry, while a bare CREATE would stay wedged on "already exists"; both
 // cases need direction-specific cleanup before the rollback can retry safely.
 var concurrentDownIndexCleanups = map[string]string{
+	"616_decision_request_comment_index_retire":             "comment_decision_request_kind_uidx",
 	"144_drop_agent_task_queue_chat_pending_v1":             "idx_agent_task_queue_chat_pending",
 	"171_drop_legacy_label_namespace_index":                 "issue_label_workspace_name_lower_idx",
 	"256_drop_agent_task_queue_chat_pending_v2":             "idx_agent_task_queue_chat_pending_v2",

@@ -28,6 +28,8 @@ func TestDecisionMigrationsUpDownUp(test *testing.T) {
 			"606_decision_request_comment_index", "607_decision_answer_messages_index", "608_decision_request_scope_index",
 			"609_decision_worker_lease_name_index", "610_decision_class_change_request_index", "611_decision_answer_request_index",
 			"612_decision_target_primary_key", "613_decision_comment_kind_validate",
+			"615_decision_request_comment_v2_index", "616_decision_request_comment_index_retire",
+			"617_decision_comment_request_check", "618_decision_comment_request_validate",
 		}
 		if direction == "down" {
 			slices.Reverse(versions)
@@ -118,5 +120,69 @@ func TestDecisionCommentMigrationLockTimeout(test *testing.T) {
 	}
 	if err := run("613_decision_comment_kind_validate"); err != nil {
 		test.Fatalf("separate CHECK validation must coexist with an ordinary reader: %v", err)
+	}
+	err = run("617_decision_comment_request_check")
+	if !errors.As(err, &pgError) || pgError.Code != "55P03" {
+		test.Fatalf("comment request CHECK must fail at its local lock timeout: %v", err)
+	}
+	if err := validationReader.Rollback(ctx); err != nil {
+		test.Fatal(err)
+	}
+	if err := run("617_decision_comment_request_check"); err != nil {
+		test.Fatalf("request CHECK retry after releasing the reader: %v", err)
+	}
+	requestReader, err := readerPool.Begin(ctx)
+	if err != nil {
+		test.Fatal(err)
+	}
+	defer requestReader.Rollback(test.Context())
+	if _, err := requestReader.Exec(ctx, "SELECT * FROM comment"); err != nil {
+		test.Fatal(err)
+	}
+	if err := run("618_decision_comment_request_validate"); err != nil {
+		test.Fatalf("separate request CHECK validation must coexist with an ordinary reader: %v", err)
+	}
+}
+
+func TestDecisionCommentRequestValidationRejectsInvalidRows(test *testing.T) {
+	base := openTestPool(test)
+	ctx, cancel := context.WithTimeout(test.Context(), 10*time.Second)
+	defer cancel()
+	schema := createScratchSchema(test, ctx, base, "decision_comment_validation_")
+	pool := openTestPoolWithSearchPath(test, schema)
+	if _, err := pool.Exec(ctx, `CREATE TABLE comment (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), content text NOT NULL)`); err != nil {
+		test.Fatal(err)
+	}
+	run := func(versions ...string) error {
+		return runMigrations(ctx, pool, runOptions{
+			Direction:             "up",
+			Files:                 realMigrationFiles(test, versions, "up"),
+			SchemaMigrationsTable: schema + ".schema_migrations",
+			AdvisoryLockKey:       int64(rand.Uint64()&0x7fffffffffffffff) | 1,
+		})
+	}
+	if err := run("597_decision_parents", "613_decision_comment_kind_validate"); err != nil {
+		test.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO comment (content, decision_comment_kind) VALUES ('invalid', 'ask')`); err != nil {
+		test.Fatal(err)
+	}
+	if err := run("617_decision_comment_request_check"); err != nil {
+		test.Fatal(err)
+	}
+	err := run("618_decision_comment_request_validate")
+	var pgError *pgconn.PgError
+	if !errors.As(err, &pgError) || pgError.Code != "23514" || pgError.ConstraintName != "comment_decision_request_check" {
+		test.Fatalf("validation must reject existing kind without request: %v", err)
+	}
+	var recorded int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = '618_decision_comment_request_validate'`).Scan(&recorded); err != nil || recorded != 0 {
+		test.Fatalf("failed validation must remain unrecorded: count=%d err=%v", recorded, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE comment SET decision_request_id = gen_random_uuid() WHERE content = 'invalid'`); err != nil {
+		test.Fatal(err)
+	}
+	if err := run("618_decision_comment_request_validate"); err != nil {
+		test.Fatalf("validation retry after repairing the fixture: %v", err)
 	}
 }
