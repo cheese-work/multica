@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math/rand/v2"
+	"os"
 	"slices"
 	"testing"
 	"time"
@@ -171,6 +172,57 @@ func TestDecisionCommentMigrationLockTimeout(test *testing.T) {
 	}
 	if err := run("618_decision_comment_request_validate"); err != nil {
 		test.Fatalf("separate request CHECK validation must coexist with an ordinary reader: %v", err)
+	}
+}
+
+func TestDecisionCommentRequestCheckReplaysAfterUnrecordedCommit(test *testing.T) {
+	base := openTestPool(test)
+	ctx, cancel := context.WithTimeout(test.Context(), 10*time.Second)
+	defer cancel()
+	schema := createScratchSchema(test, ctx, base, "decision_comment_replay_")
+	pool := openTestPoolWithSearchPath(test, schema)
+	if _, err := pool.Exec(ctx, `CREATE TABLE comment (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), content text NOT NULL)`); err != nil {
+		test.Fatal(err)
+	}
+	run := func(versions ...string) error {
+		return runMigrations(ctx, pool, runOptions{
+			Direction:             "up",
+			Files:                 realMigrationFiles(test, versions, "up"),
+			SchemaMigrationsTable: schema + ".schema_migrations",
+			AdvisoryLockKey:       int64(rand.Uint64()&0x7fffffffffffffff) | 1,
+		})
+	}
+	if err := run("597_decision_parents", "613_decision_comment_kind_validate"); err != nil {
+		test.Fatal(err)
+	}
+	checkSQL, err := os.ReadFile(realMigrationFiles(test, []string{"617_decision_comment_request_check"}, "up")[0])
+	if err != nil {
+		test.Fatal(err)
+	}
+	transaction, err := pool.Begin(ctx)
+	if err != nil {
+		test.Fatal(err)
+	}
+	defer transaction.Rollback(test.Context())
+	if _, err := transaction.Exec(ctx, string(checkSQL)); err != nil {
+		test.Fatal(err)
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		test.Fatal(err)
+	}
+	var recorded int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = '617_decision_comment_request_check'`).Scan(&recorded); err != nil || recorded != 0 {
+		test.Fatalf("DDL-only commit must remain unrecorded: count=%d err=%v", recorded, err)
+	}
+	if err := run("617_decision_comment_request_check", "618_decision_comment_request_validate"); err != nil {
+		test.Fatalf("replay after an unrecorded DDL commit: %v", err)
+	}
+	var constraints int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_constraint WHERE conrelid = 'comment'::regclass AND conname = 'comment_decision_request_check' AND convalidated`).Scan(&constraints); err != nil || constraints != 1 {
+		test.Fatalf("replay must retain one validated CHECK: count=%d err=%v", constraints, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version IN ('617_decision_comment_request_check', '618_decision_comment_request_validate')`).Scan(&recorded); err != nil || recorded != 2 {
+		test.Fatalf("replay must record both migrations: count=%d err=%v", recorded, err)
 	}
 }
 

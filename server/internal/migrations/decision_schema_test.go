@@ -383,7 +383,7 @@ func TestDecisionCommentConstraintMigrationStructure(test *testing.T) {
 		test.Error("the separate validation migration must acquire only the validation lock with a local timeout")
 	}
 	requestCheck := strings.Join(strings.Fields(readMigrationFile(test, "617_decision_comment_request_check.up.sql")), " ")
-	if requestCheck != "SET LOCAL lock_timeout = '2s'; ALTER TABLE comment ADD CONSTRAINT comment_decision_request_check CHECK ( decision_comment_kind IS NULL OR (decision_comment_kind IN ('ask', 'cancel') AND decision_request_id IS NOT NULL AND decision_answer_id IS NULL) OR (decision_comment_kind IN ('quote', 'disclaim', 'delivery', 'veto') AND decision_answer_id IS NOT NULL) ) NOT VALID;" {
+	if requestCheck != "SET LOCAL lock_timeout = '2s'; DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'comment'::regclass AND conname = 'comment_decision_request_check') THEN ALTER TABLE comment ADD CONSTRAINT comment_decision_request_check CHECK ( decision_comment_kind IS NULL OR (decision_comment_kind IN ('ask', 'cancel') AND decision_request_id IS NOT NULL AND decision_answer_id IS NULL) OR (decision_comment_kind IN ('quote', 'disclaim', 'delivery', 'veto') AND decision_answer_id IS NOT NULL) ) NOT VALID; END IF; END; $$;" {
 		test.Error("comment request CHECK must be added as NOT VALID with a local lock timeout")
 	}
 	requestValidation := strings.Join(strings.Fields(readMigrationFile(test, "618_decision_comment_request_validate.up.sql")), " ")
