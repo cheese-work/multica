@@ -31,7 +31,7 @@ import { isTriggerArmedAt } from "./suggestion-trigger-arming";
 const MAX_ITEMS = 20;
 
 /** Known built-in command ids — the keys under editor `slash_command.commands`. */
-export type BuiltinCommandKey = "note" | "compact";
+export type BuiltinCommandKey = "note" | "compact" | "rename";
 
 export interface SlashCommandItem {
   id: string;
@@ -132,7 +132,9 @@ export const SlashCommandList = forwardRef<
       ? t(($) => $.slash_command.commands.note)
       : item.descriptionKey === "compact"
         ? t(($) => $.slash_command.commands.compact)
-        : item.description;
+        : item.descriptionKey === "rename"
+          ? t(($) => $.slash_command.commands.rename)
+          : item.description;
 
   return (
     // Height budget clamps to min(design max, viewport-aware
@@ -153,12 +155,14 @@ export const SlashCommandList = forwardRef<
             }`}
             onClick={() => selectItem(index)}
           >
-            {item.descriptionKey === "compact" ? (
+            {item.descriptionKey === "compact" || item.descriptionKey === "rename" ? (
               <span className="flex w-full items-center justify-between gap-2 font-medium">
                 <span className="font-mono">
                   /{item.label}{" "}
                   <span className="text-muted-foreground">
-                    {t(($) => $.slash_command.focus_hint)}
+                    {item.descriptionKey === "rename"
+                      ? t(($) => $.slash_command.title_hint)
+                      : t(($) => $.slash_command.focus_hint)}
                   </span>
                 </span>
                 <span className="shrink-0 rounded-sm border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-primary">
@@ -170,7 +174,7 @@ export const SlashCommandList = forwardRef<
             )}
             {description && (
               <span
-                className={item.descriptionKey === "compact"
+                className={item.descriptionKey === "compact" || item.descriptionKey === "rename"
                   ? "text-muted-foreground"
                   : "truncate text-muted-foreground"}
               >
@@ -216,6 +220,7 @@ function buildItems(
   qc: QueryClient,
   query: string,
   firstWord: boolean,
+  canRename: boolean,
 ): SlashCommandItem[] {
   const wsId = getCurrentWsId();
   if (!wsId) return [];
@@ -242,13 +247,15 @@ function buildItems(
   const q = query.toLowerCase();
   const skills = rankSkillMatches(activeAgent?.skills ?? [], q)
     .map((s) => ({ id: s.id, label: s.name, description: s.description ?? "" }));
-  const commands: SlashCommandItem[] = firstWord && "compact".startsWith(q)
-    ? [{ id: "compact", label: "compact", descriptionKey: "compact" }]
+  const commands: SlashCommandItem[] = firstWord
+    ? (["compact", "rename"] as const)
+        .filter((command) => (command !== "rename" || canRename) && command.startsWith(q))
+        .map((command) => ({ id: command, label: command, descriptionKey: command }))
     : [];
   return [...commands, ...skills].slice(0, MAX_ITEMS);
 }
 
-export function createSlashCommandSuggestion(qc: QueryClient): Omit<
+export function createSlashCommandSuggestion(qc: QueryClient, canRename = () => false): Omit<
   SuggestionOptions<SlashCommandItem>,
   "editor"
 > {
@@ -269,7 +276,7 @@ export function createSlashCommandSuggestion(qc: QueryClient): Omit<
       const firstWord = before.trim() === ""
         && position.depth === 1
         && position.parent.type.name === "paragraph";
-      return buildItems(qc, query, firstWord);
+      return buildItems(qc, query, firstWord, canRename());
     },
     command: ({ editor, range, props }) => {
       const nodeAfter = editor.view.state.selection.$to.nodeAfter;
@@ -278,11 +285,11 @@ export function createSlashCommandSuggestion(qc: QueryClient): Omit<
         range.to += 1;
       }
 
-      if (props.descriptionKey === "compact") {
+      if (props.descriptionKey === "compact" || props.descriptionKey === "rename") {
         editor
           .chain()
           .focus()
-          .insertContentAt(range, [{ type: "text", text: "/compact " }])
+          .insertContentAt(range, [{ type: "text", text: `/${props.descriptionKey} ` }])
           .run();
         window.getSelection()?.collapseToEnd();
         return;

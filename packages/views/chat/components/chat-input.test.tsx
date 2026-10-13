@@ -113,6 +113,7 @@ vi.mock("../../editor", async () => ({
     }, [value]);
     useImperativeHandle(ref, () => ({
       getMarkdown: () => valueRef.current,
+      getText: () => valueRef.current,
       clearContent: () => {
         editorState.cleared += 1;
         valueRef.current = "";
@@ -498,6 +499,85 @@ describe("ChatInput focusRequest", () => {
   it("does not focus on mount when focusRequest is undefined or 0", () => {
     renderInput();
     expect(editorState.focused).toBe(0);
+  });
+});
+
+describe("ChatInput rename command", () => {
+  it.each(["/rename   New title  ", "  /rename\tNew title  "])("intercepts %j without sending a message and clears on success", async (content) => {
+    const onRename = vi.fn().mockResolvedValue(true);
+    const { onSend } = renderInput({ onRename });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: content } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onRename).toHaveBeenCalledWith("New title"));
+    expect(editorState.cleared).toBe(1);
+    expect(onRename).toHaveBeenCalledWith("New title");
+    expect(onSend).not.toHaveBeenCalled();
+    expect(useChatStore.getState().clearInputDraft).toHaveBeenCalled();
+  });
+
+  it("keeps the command in the composer when rename fails", async () => {
+    const onRename = vi.fn().mockResolvedValue(false);
+    const { onSend } = renderInput({ onRename });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "/rename New title" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onRename).toHaveBeenCalled());
+    expect(screen.getByTestId("editor")).toHaveValue("/rename New title");
+    expect(useChatStore.getState().clearInputDraft).not.toHaveBeenCalled();
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("routes bare rename to inline editing without refocusing the composer", async () => {
+    const onRename = vi.fn().mockResolvedValue(true);
+    const { onSend } = renderInput({ onRename });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "/rename  " } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onRename).toHaveBeenCalledWith(""));
+    expect(editorState.cleared).toBe(1);
+    expect(onRename).toHaveBeenCalledWith("");
+    expect(editorState.focused).toBe(0);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it.each(["/compact focus", "Please /rename New title", "/renamex New title"])("preserves normal sending for %j", async (content) => {
+    const onRename = vi.fn();
+    const { onSend } = renderInput({ onRename });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: content } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalled());
+    expect(onRename).not.toHaveBeenCalled();
+  });
+
+  it("preserves text typed while a rename is pending", async () => {
+    let acceptRename!: (accepted: boolean) => void;
+    const onRename = vi.fn(() => new Promise<boolean>((resolve) => { acceptRename = resolve; }));
+    const { onSend } = renderInput({ onRename });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "/rename New title" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onRename).toHaveBeenCalled());
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "Next message" } });
+    await act(async () => { acceptRename(true); });
+    expect(editorState.cleared).toBe(0);
+    expect(useChatStore.getState().inputDrafts.__draft_new__).toBe("Next message");
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("does not clear another session's composer when a rename finishes", async () => {
+    const state = useChatStore.getState();
+    state.activeSessionId = "session-a";
+    state.inputDrafts["session-b"] = "Other draft";
+    let acceptRename!: (accepted: boolean) => void;
+    const onRename = vi.fn(() => new Promise<boolean>((resolve) => { acceptRename = resolve; }));
+    const { onSend, rerender } = renderInput({ onRename });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "/rename New title" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onRename).toHaveBeenCalled());
+    state.activeSessionId = "session-b";
+    rerender(element({ onRename, onSend }));
+    await act(async () => { acceptRename(true); });
+    expect(editorState.cleared).toBe(0);
+    expect(state.inputDrafts["session-a"]).toBeUndefined();
+    expect(state.inputDrafts["session-b"]).toBe("Other draft");
+    expect(onSend).not.toHaveBeenCalled();
   });
 });
 

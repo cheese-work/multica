@@ -68,6 +68,25 @@ describe("ChatSessionHeader rename keyboard behavior", () => {
     updateMutate.mockReset();
   });
 
+  it("opens inline rename with the current title selected on a command request", () => {
+    const view = render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <ChatSessionHeader session={session} agent={null} renameRequest={0} />
+      </I18nProvider>,
+    );
+    view.rerender(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <ChatSessionHeader session={session} agent={null} renameRequest={1} />
+      </I18nProvider>,
+    );
+    const input = screen.getByRole<HTMLInputElement>("textbox", { name: RENAME_LABEL });
+    expect(input).toHaveFocus();
+    expect(input).toHaveValue(session.title);
+    expect(input.selectionStart).toBe(0);
+    expect(input.selectionEnd).toBe(session.title?.length);
+    expect(updateMutate).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["standard composition signal", { isComposing: true, keyCode: 13 }],
     ["Safari composition signal", { isComposing: false, keyCode: 229 }],
