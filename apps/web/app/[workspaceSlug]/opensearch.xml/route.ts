@@ -24,6 +24,9 @@ export async function GET(
     .replaceAll('"', "&quot;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;");
+  const probe = process.env.MULTICA_COOKIE_PROBE === "1"
+    ? `\n  <Url type="application/x-suggestions+json" template="${template.replace("/search?q=", "/suggestions-probe?q=")}" />`
+    : "";
 
   return new Response(
     `<?xml version="1.0" encoding="UTF-8"?>
@@ -31,7 +34,7 @@ export async function GET(
   <ShortName>${`Multica ${workspaceSlug}`.slice(0, 16)}</ShortName>
   <Description>Search issues, projects and agents in Multica.</Description>
   <InputEncoding>UTF-8</InputEncoding>
-  <Url type="text/html" template="${template}" />
+  <Url type="text/html" template="${template}" />${probe}
 </OpenSearchDescription>`,
     {
       headers: {

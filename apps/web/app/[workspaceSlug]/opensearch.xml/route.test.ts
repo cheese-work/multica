@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { GET } from "./route";
+
+afterEach(() => vi.unstubAllEnvs());
 
 async function getDocument(slug = "acme", origin = "https://app.multica.test") {
   return GET(new Request(`${origin}/${encodeURIComponent(slug)}/opensearch.xml`), {
@@ -8,6 +10,22 @@ async function getDocument(slug = "acme", origin = "https://app.multica.test") {
 }
 
 describe("workspace OpenSearch description", () => {
+  it("advertises the temporary suggestions probe only when explicitly enabled", async () => {
+    vi.stubEnv("MULTICA_COOKIE_PROBE", "1");
+    const response = await getDocument();
+    const document = new DOMParser().parseFromString(await response.text(), "application/xml");
+    const suggestions = document.querySelector('Url[type="application/x-suggestions+json"]');
+    expect(suggestions?.getAttribute("template")).toBe(
+      "https://app.multica.test/acme/suggestions-probe?q={searchTerms}",
+    );
+    expect(document.querySelectorAll("Url")).toHaveLength(2);
+  });
+
+  it.each([undefined, "0", "true"])("keeps the probe disabled for %j", async (enabled) => {
+    vi.stubEnv("MULTICA_COOKIE_PROBE", enabled);
+    expect(await (await getDocument()).text()).not.toContain("application/x-suggestions+json");
+  });
+
   it("serves a public UTF-8 XML description without authentication", async () => {
     const response = await getDocument();
     expect(response.status).toBe(200);
