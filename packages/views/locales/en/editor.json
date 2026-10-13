@@ -115,11 +115,13 @@
   "slash_command": {
     "client_command": "Multica",
     "focus_hint": "[focus]",
+    "title_hint": "[title]",
     "no_skills_configured": "No skills configured",
     "no_results": "No matching skills",
     "commands": {
       "note": "Add a note — won't trigger any agents",
-      "compact": "Summarize this DM and continue in a new one"
+      "compact": "Summarize this DM and continue in a new one",
+      "rename": "Rename this DM without starting an agent turn"
     }
   },
   "code_block": {

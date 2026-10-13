@@ -28,6 +28,7 @@ import { ChatInput } from "./components/chat-input";
 import { ChatQueue } from "./components/chat-queue";
 import { ChatThreadList } from "./components/chat-thread-list";
 import { ChatSessionHeader } from "./components/chat-session-header";
+import { useChatRename } from "./components/use-chat-rename";
 import { EmptyState } from "./components/chat-empty-state";
 import { NewChatButton } from "./components/new-chat-button";
 import { useChatController } from "./components/use-chat-controller";
@@ -89,6 +90,7 @@ export function ChatPage() {
   // conversation pane is always mounted so it only needs to reset itself once a
   // real session takes over.
   const [composingNew, setComposingNew] = useState(false);
+  const { handleRename, renameRequest } = useChatRename(c.currentSession);
   useEffect(() => {
     // Read the LIVE store value for the same reason as the session sync
     // effects below: under StrictMode's double-invoke this effect replays
@@ -262,6 +264,7 @@ export function ChatPage() {
           session={c.currentSession}
           agent={c.activeAgent}
           onArchive={handleArchive}
+          renameRequest={renameRequest}
         />
       )}
       {c.showSkeleton ? (
@@ -333,6 +336,7 @@ export function ChatPage() {
 
       <ChatInput
         onSend={c.handleSend}
+        onRename={handleRename}
         restoreDraftRequest={c.restoreDraftRequest}
         conversationStarterRequest={c.conversationStarterRequest}
         onConversationStarterApplied={c.handleConversationStarterApplied}

@@ -153,6 +153,10 @@ func (h *Handler) CreateChatSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Has("issue") {
+		h.listDecisionLanes(w, r)
+		return
+	}
 	userID, ok := requireUserID(w, r)
 	if !ok {
 		return

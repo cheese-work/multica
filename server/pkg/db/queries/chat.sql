@@ -17,7 +17,9 @@ WHERE id = $1;
 
 -- name: SetChatContinuationSource :one
 UPDATE chat_session
-SET continued_from_session_id = $2, pinned_at = sqlc.narg('pinned_at')
+SET continued_from_session_id = $2,
+    last_read_at = sqlc.arg('summary_created_at')::timestamptz - interval '1 microsecond',
+    pinned_at = sqlc.narg('pinned_at')
 WHERE id = $1
 RETURNING *;
 
@@ -1693,14 +1695,15 @@ SELECT
 --
 -- task_id stays NULL: no agent run produced this row, and nothing may treat it
 -- as a turn to regenerate or resume.
-INSERT INTO chat_message (chat_session_id, role, content, message_kind, created_at, id)
+INSERT INTO chat_message (chat_session_id, role, content, message_kind, created_at, id, sent_via)
 VALUES (
     sqlc.arg(chat_session_id),
     'assistant',
     sqlc.arg(content),
     'onboarding_opening',
     sqlc.arg(kickoff_created_at)::timestamptz + interval '1 microsecond',
-    COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
+    COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()),
+    'system'
 )
 RETURNING *;
 

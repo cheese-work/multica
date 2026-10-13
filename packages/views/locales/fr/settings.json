@@ -1,4 +1,12 @@
 {
+  "site_search": {
+    "title": "Recherche sur le site",
+    "url": "URL de recherche",
+    "hint": "Ajoutez dans brave://settings/search → Recherche sur les sites → Ajouter",
+    "copy": "Copier",
+    "copied": "URL de recherche copiée",
+    "copy_failed": "Impossible de copier l’URL de recherche"
+  },
   "issue_statuses": {
     "title": "États des tâches",
     "loading": "Chargement des états…",

@@ -76,6 +76,7 @@ import { ChatInput } from "./chat-input";
 import { ChatQueue } from "./chat-queue";
 import { EmptyState } from "./chat-empty-state";
 import { SessionRenameInput } from "./session-rename-input";
+import { useChatRename } from "./use-chat-rename";
 import { ChatResizeHandles } from "./chat-resize-handles";
 import { useChatContextItems } from "./use-chat-context-items";
 import { useChatResize } from "./use-chat-resize";
@@ -220,6 +221,7 @@ export function ChatWindow() {
     ? sessions.find((s) => s.id === activeSessionId)
     : null;
   const isSessionArchived = currentSession?.status === "archived";
+  const { handleRename, renameRequest } = useChatRename(currentSession);
   const candidateProjectId = currentSession
     ? currentSession.project_id ?? null
     : selectedProjectId;
@@ -879,6 +881,7 @@ export function ChatWindow() {
           </Tooltip>
           <SessionDropdown
             sessions={sessions}
+            renameRequest={renameRequest}
             // Use the full agent list (incl. archived) so historical
             // sessions can still resolve their avatar.
             agents={agents}
@@ -1008,6 +1011,7 @@ export function ChatWindow() {
        *  no agent (the EmptyState above carries the CTA). */}
       <ChatInput
         onSend={handleSend}
+        onRename={handleRename}
         restoreDraftRequest={restoreDraftRequest}
         conversationStarterRequest={conversationStarterRequest}
         onConversationStarterApplied={handleConversationStarterApplied}
@@ -1214,11 +1218,13 @@ function SessionDropdown({
   agents,
   activeSessionId,
   onSelectSession,
+  renameRequest,
 }: {
   sessions: ChatSession[];
   agents: Agent[];
   activeSessionId: string | null;
   onSelectSession: (session: ChatSession) => void;
+  renameRequest: number;
 }) {
   const { t } = useT("chat");
   const wsId = useWorkspaceId();
@@ -1244,6 +1250,14 @@ function SessionDropdown({
   // session id (not the full session) so a stale closure can't overwrite a
   // newer rename pulled in via WS.
   const [renamingId, setRenamingId] = useState<string | null>(null);
+  const handledRenameRequest = useRef(renameRequest);
+  useEffect(() => {
+    if (renameRequest === handledRenameRequest.current) return;
+    handledRenameRequest.current = renameRequest;
+    if (!activeSessionId) return;
+    setRenamingId(activeSessionId);
+    setIsHistoryOpen(true);
+  }, [renameRequest, activeSessionId]);
   const setArchived = useSetChatSessionArchived();
   const updateSession = useUpdateChatSession();
   const setActiveSession = useChatStore((s) => s.setActiveSession);

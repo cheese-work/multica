@@ -97,7 +97,7 @@ function fakeQc(data: {
 }
 
 function items(qc: QueryClient, query = "", before = ""): SlashCommandItem[] {
-  const config = createSlashCommandSuggestion(qc);
+  const config = createSlashCommandSuggestion(qc, () => true);
   const editor = new Editor({
     extensions: [StarterKit],
     content: {
@@ -136,7 +136,7 @@ describe("slash command suggestion items", () => {
       ],
     });
 
-    expect(items(qc).map((i) => i.label)).toEqual(["compact", "deploy", "review"]);
+    expect(items(qc).map((i) => i.label)).toEqual(["compact", "rename", "deploy", "review"]);
   });
 
   it("filters skills by name case-insensitively", () => {
@@ -299,7 +299,7 @@ describe("slash command suggestion items", () => {
       agents: [agent({ id: "agent-1", skills: [] })],
     });
 
-    expect(items(qc).map((item) => item.label)).toEqual(["compact"]);
+    expect(items(qc).map((item) => item.label)).toEqual(["compact", "rename"]);
   });
 
   it("caps results at 20", () => {
@@ -333,7 +333,7 @@ describe("slash command suggestion items", () => {
       ],
     });
 
-    expect(items(qc).map((i) => i.label)).toEqual(["compact", "deploy"]);
+    expect(items(qc).map((i) => i.label)).toEqual(["compact", "rename", "deploy"]);
   });
 
   it("offers only compact when no agents exist", () => {
@@ -342,7 +342,7 @@ describe("slash command suggestion items", () => {
       agents: [],
     });
 
-    expect(items(qc).map((item) => item.label)).toEqual(["compact"]);
+    expect(items(qc).map((item) => item.label)).toEqual(["compact", "rename"]);
   });
 
   it("excludes skills from private agents the user cannot access", () => {
@@ -364,7 +364,49 @@ describe("slash command suggestion items", () => {
       ],
     });
 
-    expect(items(qc).map((item) => item.label)).toEqual(["compact"]);
+    expect(items(qc).map((item) => item.label)).toEqual(["compact", "rename"]);
+  });
+});
+
+describe("DM rename command", () => {
+  const rename: SlashCommandItem = { id: "rename", label: "rename", descriptionKey: "rename" };
+
+  it("offers rename next to compact with a localized description and client styling", () => {
+    expect(items(fakeQc({})).slice(0, 2).map((item) => item.id)).toEqual(["compact", "rename"]);
+    const { getByRole } = render(
+      <I18nWrapper><SlashCommandList items={[rename]} query="" command={vi.fn()} /></I18nWrapper>,
+    );
+    const row = getByRole("button", { name: /\/rename \[title\]/ });
+    expect(row).toHaveTextContent(enEditor.slash_command.client_command);
+    expect(row).toHaveTextContent(enEditor.slash_command.commands.rename);
+  });
+
+  it.each(["re", "RENAME"])("matches the label prefix %j", (query) => {
+    expect(items(fakeQc({}), query)).toEqual([rename]);
+  });
+
+  it.each(["Hello ", "Hello\n"])("omits rename after message content %j", (before) => {
+    expect(items(fakeQc({}), "re", before)).toEqual([]);
+  });
+
+  it("inserts plain rename text without a skill node or the display hint", () => {
+    const element = document.body.appendChild(document.createElement("div"));
+    const editor = new Editor({ element, extensions: [StarterKit, Markdown, SlashCommandExtension], content: "<p>/re</p>" });
+    editor.commands.setTextSelection(4);
+    window.getSelection()?.selectAllChildren(editor.view.dom);
+    try {
+      createSlashCommandSuggestion(fakeQc({})).command!({ editor, range: { from: 1, to: 4 }, props: rename });
+      expect(editor.getMarkdown()).toBe("/rename ");
+      expect(editor.getJSON().content?.[0]?.content?.[0]?.type).toBe("text");
+    } finally {
+      editor.destroy();
+      element.remove();
+    }
+  });
+
+  it.each([enEditor, frEditor, jaEditor, koEditor, zhEditor])("localizes rename in every locale", (locale) => {
+    expect(locale.slash_command.commands).toHaveProperty("rename", expect.any(String));
+    expect(locale.slash_command).toHaveProperty("title_hint", expect.any(String));
   });
 });
 
@@ -380,7 +422,7 @@ describe("DM compact command", () => {
       members: [{ user_id: "u1", name: "Alice", role: "member" }],
       agents: [agent({ skills: [{ id: "s1", name: "compact-skill", description: "" }] })],
     });
-    expect(items(qc, query).map((item) => item.id)).toEqual(["compact", "s1"]);
+    expect(items(qc, query).map((item) => item.id)).toEqual(query ? ["compact", "s1"] : ["compact", "rename", "s1"]);
   });
 
   it.each(["omp", "focus", "summarize", "compactx"])("does not match %j", (query) => {
