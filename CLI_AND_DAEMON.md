@@ -42,10 +42,10 @@ Decision requests, approvals and task tokens stay with the source. Agent-builder
 
 There is no fork prompt setting, and `compact_prompt` does not apply: a fork copies the conversation, so no summary is written.
 
-An agent running a chat turn can fork the DM it works in:
+An agent running a chat turn can fork the DM it works in. A task fork sends no message, so the new DM is idle:
 
 ```bash
-multica chat continue --fork --message "Try the SQLite variant"
+multica chat continue --fork
 ```
 
 A human can fork through the API with an explicit key; reuse the key when retrying, and the server returns the same fork without sending the message twice:
