@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { SupportedLocale } from "@multica/core/i18n";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { paths } from "@multica/core/paths";
@@ -58,6 +58,10 @@ const makeUser = (
   avatar_url: null,
   onboarded_at: null,
   onboarding_questionnaire: { source: ["search"] },
+  starter_content_state: null,
+  language: null,
+  profile_description: "",
+  timezone: null,
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
   ...overrides,
@@ -148,6 +152,43 @@ describe("CallbackPage", () => {
     expect(await screen.findByText("登录失败")).toBeInTheDocument();
     expect(screen.getByText("缺少授权码")).toBeInTheDocument();
     expect(screen.getByText("返回登录")).toBeInTheDocument();
+  });
+
+  it("keeps the Google desktop token but waits for a click before deep-linking", async () => {
+    const { api } = await import("@multica/core/api");
+    vi.mocked(api.googleLogin).mockResolvedValue({
+      token: "google-desktop-token",
+      user: makeUser(),
+    });
+    mockSearchParams.set("state", "platform:desktop");
+    const hrefSetter = vi.fn();
+    const originalLocation = window.location;
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: {
+        ...originalLocation,
+        set href(value: string) {
+          hrefSetter(value);
+        },
+      },
+    });
+    try {
+      renderCallback();
+      const openButton = await screen.findByRole("button", {
+        name: "Open Multica Desktop",
+      });
+      expect(api.googleLogin).toHaveBeenCalledTimes(1);
+      expect(hrefSetter).not.toHaveBeenCalled();
+      fireEvent.click(openButton);
+      expect(hrefSetter).toHaveBeenCalledWith(
+        "multica://auth/callback?token=google-desktop-token",
+      );
+    } finally {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: originalLocation,
+      });
+    }
   });
 
   it("shows access denied before checking for a missing authorization code", async () => {

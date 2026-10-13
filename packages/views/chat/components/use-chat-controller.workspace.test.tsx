@@ -4,6 +4,7 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createChatStore, registerChatStore } from "@multica/core/chat";
 import { setCurrentWorkspace } from "@multica/core/platform";
+import { ApiError } from "@multica/core/api";
 import type { ChatSession, Project, StorageAdapter } from "@multica/core/types";
 import { useChatController } from "./use-chat-controller";
 
@@ -11,6 +12,8 @@ const route = vi.hoisted(() => ({ workspaceId: "ws-source", isActive: true }));
 const data = vi.hoisted(() => ({
   sessions: {} as Record<string, ChatSession[]>,
   projects: {} as Record<string, Project[]>,
+  sessionsError: null as unknown,
+  messagesError: null as unknown,
 }));
 
 vi.mock("@multica/core/hooks", () => ({
@@ -35,7 +38,11 @@ vi.mock("@tanstack/react-query", async (importOriginal) => ({
   useQuery: ({ queryKey }: { queryKey: readonly unknown[] }) => {
     const wsId = queryKey[1] as string;
     if (queryKey.includes("sessions")) {
-      return { data: data.sessions[wsId] ?? [], isSuccess: true };
+      return {
+        data: data.sessions[wsId] ?? [],
+        isSuccess: !data.sessionsError,
+        error: data.sessionsError,
+      };
     }
     if (queryKey[0] === "projects") {
       return { data: data.projects[wsId] ?? [], isSuccess: true };
@@ -48,6 +55,7 @@ vi.mock("@tanstack/react-query", async (importOriginal) => ({
   useInfiniteQuery: () => ({
     data: undefined,
     isLoading: false,
+    error: data.messagesError,
     fetchNextPage: vi.fn(),
     hasNextPage: false,
     isFetchingNextPage: false,
@@ -84,6 +92,8 @@ describe("useChatController workspace rehydration", () => {
   }
 
   beforeEach(async () => {
+    data.sessionsError = null;
+    data.messagesError = null;
     route.workspaceId = "ws-source";
     route.isActive = true;
     data.sessions = { "ws-source": [sourceSession], "ws-target": [targetSession] };
@@ -117,6 +127,24 @@ describe("useChatController workspace rehydration", () => {
     expect(storage.getItem("multica:chat:selectedProjectId:target")).toBe(targetProject.id);
     expect(storage.getItem("multica:chat:activeSessionId:source")).toBe(sourceSession.id);
   }
+
+  it.each(["sessionsError", "messagesError"] as const)(
+    "requires re-login only for the stable refusal code from %s",
+    async (source) => {
+      data[source] = new ApiError("Sign in again to use Chat", 403, "Forbidden", {
+        code: "interactive_login_required",
+      });
+      const { result, rerender } = renderHook(() => useChatController(), { wrapper });
+      expect(result.current.interactiveLoginRequired).toBe(true);
+      expect(result.current.user?.id).toBe("user-1");
+      expect(store.getState().activeSessionId).toBe(sourceSession.id);
+
+      data[source] = new ApiError("Forbidden", 403, "Forbidden");
+      await act(async () => rerender());
+      expect(result.current.interactiveLoginRequired).toBe(false);
+      expect(result.current.user?.id).toBe("user-1");
+    },
+  );
 
   it.each([false, true])("preserves the target selection while the source controller remains mounted (isActive=%s)", async (isActive) => {
     const { result } = renderHook(() => useChatController({ isActive: route.isActive }), { wrapper });

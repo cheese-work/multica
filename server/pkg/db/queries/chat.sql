@@ -37,6 +37,18 @@ LIMIT 1;
 SELECT * FROM chat_session
 WHERE id = $1 AND workspace_id = $2;
 
+-- name: UpdateChatSessionLaneSummary :one
+UPDATE chat_session
+SET lane_summary = $3, lane_summary_updated_at = clock_timestamp()
+WHERE id = $1 AND workspace_id = $2 AND status = 'active'
+RETURNING *;
+
+-- name: CountChatMessagesSinceLaneSummary :one
+SELECT count(*) FROM chat_message AS message
+WHERE message.chat_session_id = $1
+  AND message.message_kind != 'channel_command'
+  AND (sqlc.narg('summary_updated_at')::timestamptz IS NULL OR message.created_at > sqlc.narg('summary_updated_at'));
+
 -- name: GetPublicChatSessionInWorkspace :one
 -- A channel command is a durable control-plane record, not a public chat turn.
 -- Channel-created sessions therefore become public only after they contain a

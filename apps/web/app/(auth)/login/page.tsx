@@ -78,6 +78,7 @@ function LoginPageContent() {
 
   const [desktopToken, setDesktopToken] = useState<string | null>(null);
   const [desktopError, setDesktopError] = useState("");
+  const [desktopPreparing, setDesktopPreparing] = useState(false);
   const hasOnboarded = useHasOnboarded();
 
   // Latched once auth has been observed settled as logged-out on this page.
@@ -95,25 +96,7 @@ function LoginPageContent() {
       return;
     }
     if (cliCallbackRaw) return;
-    if (isDesktopHandoff) {
-      // Desktop opened the browser for login but the web session is already
-      // authenticated — mint a bearer token from the cookie session and hand
-      // it off via deep link instead of silently redirecting to the workspace.
-      api
-        .issueCliToken()
-        .then(({ token }) => {
-          setDesktopToken(token);
-          window.location.href = `multica://auth/callback?token=${encodeURIComponent(token)}`;
-        })
-        .catch((err) => {
-          setDesktopError(
-            err instanceof Error
-              ? err.message
-              : t(($) => $.web.desktop_handoff.prepare_failed),
-          );
-        });
-      return;
-    }
+    if (isDesktopHandoff) return;
     // Fresh form login (issue #5009): `user` was written by verifyCode while
     // handleVerify was still fetching the workspace list, so this effect used
     // to read the not-yet-seeded list cache and race handleSuccess with a
@@ -137,6 +120,7 @@ function LoginPageContent() {
   }, [isLoading, user, router, nextUrl, cliCallbackRaw, isDesktopHandoff, hasOnboarded, qc]);
 
   const handleSuccess = async () => {
+    if (isDesktopHandoff) return;
     // Read the latest user snapshot directly — the closure's `hasOnboarded`
     // was captured before login completed and would be stale here.
     const currentUser = useAuthStore.getState().user;
@@ -147,6 +131,25 @@ function LoginPageContent() {
     }
     const list = qc.getQueryData<Workspace[]>(workspaceKeys.list()) ?? [];
     router.push(await resolveLoggedInDestination(qc, onboarded, list));
+  };
+
+  const openDesktop = async () => {
+    if (desktopPreparing) return;
+    setDesktopPreparing(true);
+    setDesktopError("");
+    try {
+      const token = desktopToken ?? (await api.issueDesktopToken()).token;
+      setDesktopToken(token);
+      window.location.href = `multica://auth/callback?token=${encodeURIComponent(token)}`;
+    } catch (error) {
+      setDesktopError(
+        error instanceof Error
+          ? error.message
+          : t(($) => $.web.desktop_handoff.prepare_failed),
+      );
+    } finally {
+      setDesktopPreparing(false);
+    }
   };
 
   // Build Google OAuth state: encode platform, next URL, and CLI callback
@@ -169,46 +172,29 @@ function LoginPageContent() {
   // render a dedicated screen instead of flashing the login form or redirecting
   // away to a workspace page.
   if (isDesktopHandoff && user) {
-    if (desktopError) {
-      return (
-        <div className="flex min-h-screen items-center justify-center">
-          <Card className="w-full max-w-sm">
-            <CardHeader className="text-center">
-              <CardTitle className="text-display-sm">
-                {t(($) => $.web.desktop_handoff.failed_title)}
-              </CardTitle>
-              <CardDescription>{desktopError}</CardDescription>
-            </CardHeader>
-          </Card>
-        </div>
-      );
-    }
     return (
       <div className="flex min-h-screen items-center justify-center">
         <Card className="w-full max-w-sm">
           <CardHeader className="text-center">
             <CardTitle className="text-display-sm">
-              {t(($) => $.web.desktop_handoff.opening_title)}
+              {desktopError
+                ? t(($) => $.web.desktop_handoff.failed_title)
+                : t(($) => $.web.desktop_handoff.opening_title)}
             </CardTitle>
             <CardDescription>
-              {desktopToken
-                ? t(($) => $.web.desktop_handoff.opening_description)
-                : t(($) => $.web.desktop_handoff.preparing)}
+              {desktopError || t(($) => $.web.desktop_handoff.opening_description)}
             </CardDescription>
           </CardHeader>
           <CardContent className="flex justify-center">
-            {desktopToken ? (
-              <Button
-                variant="outline"
-                onClick={() => {
-                  window.location.href = `multica://auth/callback?token=${encodeURIComponent(desktopToken)}`;
-                }}
-              >
-                {t(($) => $.web.desktop_handoff.open_button)}
-              </Button>
-            ) : (
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-            )}
+            <Button
+              variant="outline"
+              disabled={desktopPreparing}
+              aria-busy={desktopPreparing}
+              onClick={() => void openDesktop()}
+            >
+              {desktopPreparing && <Loader2 className="size-4 animate-spin" />}
+              {t(($) => $.web.desktop_handoff.open_button)}
+            </Button>
           </CardContent>
         </Card>
       </div>

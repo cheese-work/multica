@@ -113,6 +113,28 @@ describe("ChatSessionSchema", () => {
     updated_at: "2026-08-18T00:00:00Z",
   };
 
+  it("preserves lane summaries in single-session and list responses", () => {
+    const session = {
+      ...baseSession,
+      lane_summary: "Deployments and release decisions",
+      lane_summary_updated_at: "2026-10-12T01:00:00Z",
+    };
+    expect(ChatSessionSchema.parse(session)).toMatchObject(session);
+    expect(ChatSessionListSchema.parse([session])).toEqual([
+      expect.objectContaining(session),
+    ]);
+  });
+
+  it("defaults missing or malformed lane summaries without dropping the session", () => {
+    for (const summary of [{}, { lane_summary: null, lane_summary_updated_at: 42 }]) {
+      const parsed = ChatSessionSchema.parse({ ...baseSession, ...summary });
+      expect(parsed.id).toBe(baseSession.id);
+      expect(parsed.lane_summary).toBe("");
+      expect(parsed.lane_summary_updated_at).toBeNull();
+      expect(ChatSessionListSchema.parse([{ ...baseSession, ...summary }])[0]).toEqual(parsed);
+    }
+  });
+
   it("accepts channel route metadata and leaves it absent for first-party Chats", () => {
     expect(ChatSessionSchema.parse(baseSession).channel_source).toBeUndefined();
 

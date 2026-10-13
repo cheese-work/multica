@@ -13,7 +13,7 @@ import { getCurrentWsId } from "@multica/core/platform";
 import { agentListOptions, memberListOptions } from "@multica/core/workspace/queries";
 import { projectListOptions } from "@multica/core/projects/queries";
 import { canAssignAgent } from "../../issues/components/pickers/assignee-picker";
-import { api, dispatchReasonCode } from "@multica/core/api";
+import { api, dispatchReasonCode, errorCode } from "@multica/core/api";
 import {
   isAgentRuntimeBound as hasAgentRuntime,
   useAgentPresenceDetail,
@@ -220,7 +220,7 @@ export function useChatController(opts?: { isActive?: boolean }) {
   const { data: members = [], isSuccess: membersLoaded } = useQuery(
     memberListOptions(wsId),
   );
-  const { data: sessions = [], isSuccess: sessionsLoaded } = useQuery(
+  const { data: sessions = [], isSuccess: sessionsLoaded, error: sessionsError } = useQuery(
     chatSessionsOptions(wsId),
   );
   const { data: projects = [], isSuccess: projectsLoaded } = useQuery(
@@ -229,6 +229,7 @@ export function useChatController(opts?: { isActive?: boolean }) {
   const {
     data: rawMessagePages,
     isLoading: messagesLoading,
+    error: messagesError,
     fetchNextPage: fetchOlderMessages,
     hasNextPage: hasOlderMessages,
     isFetchingNextPage: isFetchingOlderMessages,
@@ -831,6 +832,10 @@ export function useChatController(opts?: { isActive?: boolean }) {
   const hasMessages = messages.length > 0 || !!pendingTaskId;
 
   return {
+    interactiveLoginRequired: Boolean(
+      (sessionsError && errorCode(sessionsError) === "interactive_login_required") ||
+      (messagesError && errorCode(messagesError) === "interactive_login_required"),
+    ),
     // identity / lists
     wsId,
     user,

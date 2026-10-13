@@ -3084,6 +3084,19 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, failure
 		}
 		resp.ChatSessionID = uuidToString(cs.ID)
+		if !cs.ChannelOriginAt.Valid {
+			resp.ChatLaneSummaryEnabled = true
+			resp.ChatLaneSummary = cs.LaneSummary
+			resp.ChatLaneSummaryUpdatedAt = timestampToPtr(cs.LaneSummaryUpdatedAt)
+			count, countErr := h.Queries.CountChatMessagesSinceLaneSummary(r.Context(), db.CountChatMessagesSinceLaneSummaryParams{
+				ChatSessionID: cs.ID, SummaryUpdatedAt: cs.LaneSummaryUpdatedAt,
+			})
+			if countErr != nil {
+				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
+					h.rejectClaimSourceLoad(r.Context(), task, countErr, "lane summary message count", uuidToString(cs.ID))
+			}
+			resp.ChatLaneSummaryMessageCount = count
+		}
 		resp.ThreadName = cs.Title
 		// Legacy compatibility: agent creation no longer creates intro chats,
 		// but historical is_agent_intro sessions can still be resumed. Such a

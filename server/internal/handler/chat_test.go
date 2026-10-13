@@ -23,6 +23,9 @@ import (
 // id" on the parseUUIDOrBadRequest call inside SendChatMessage.
 func withChatTestWorkspaceCtx(t *testing.T, req *http.Request) *http.Request {
 	t.Helper()
+	if req.Header.Get("X-Actor-Source") == "" {
+		req.Header.Set("X-Actor-Source", "interactive_jwt")
+	}
 	memberRow, err := testHandler.Queries.GetMemberByUserAndWorkspace(context.Background(), db.GetMemberByUserAndWorkspaceParams{
 		UserID:      util.MustParseUUID(testUserID),
 		WorkspaceID: util.MustParseUUID(testWorkspaceID),

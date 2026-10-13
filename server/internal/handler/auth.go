@@ -748,9 +748,17 @@ func (h *Handler) GoogleLogin(w http.ResponseWriter, r *http.Request) {
 // IssueCliToken returns a fresh JWT for the authenticated user.
 // This allows cookie-authenticated browser sessions to obtain a bearer token
 // that can be handed off to the CLI via the cli_callback redirect.
-func (h *Handler) IssueCliToken(w http.ResponseWriter, r *http.Request) {
+func (handler *Handler) IssueCliToken(writer http.ResponseWriter, request *http.Request) {
+	handler.issueHandoffToken(writer, request, "cli")
+}
+
+func (handler *Handler) IssueDesktopToken(writer http.ResponseWriter, request *http.Request) {
+	handler.issueHandoffToken(writer, request, "interactive")
+}
+
+func (h *Handler) issueHandoffToken(w http.ResponseWriter, r *http.Request, method string) {
 	if r.Header.Get("X-Actor-Source") != "interactive_jwt" {
-		writeError(w, http.StatusForbidden, "an interactive login is required to issue a CLI token")
+		writeError(w, http.StatusForbidden, "an interactive login is required to issue a session handoff token")
 		return
 	}
 	userID, ok := requireUserID(w, r)
@@ -764,13 +772,13 @@ func (h *Handler) IssueCliToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tokenString, err := h.issueJWT(user, "cli")
+	tokenString, err := h.issueJWT(user, method)
 	if err != nil {
 		if errors.Is(err, auth.ErrTemporarilyDisabledUser) {
 			writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
 			return
 		}
-		slog.Warn("cli-token: failed to issue JWT", append(logger.RequestAttrs(r), "error", err, "user_id", userID)...)
+		slog.Warn("auth-token: failed to issue JWT", append(logger.RequestAttrs(r), "error", err, "user_id", userID)...)
 		writeError(w, http.StatusInternalServerError, "failed to generate token")
 		return
 	}

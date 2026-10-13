@@ -149,7 +149,7 @@ func (h *Handler) CreateChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, chatSessionToResponse(session))
+	writeJSON(w, http.StatusCreated, chatSessionReadResponse(r, session))
 }
 
 func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
@@ -158,6 +158,18 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	workspaceID := ctxWorkspaceID(r.Context())
+	if r.Header.Get("X-Actor-Source") != "interactive_jwt" {
+		session, ok := h.callingChatSession(w, r)
+		if !ok {
+			return
+		}
+		responses := make([]ChatSessionResponse, 0, 1)
+		if session.Status == "active" || r.URL.Query().Get("status") == "all" {
+			responses = append(responses, chatSessionReadResponse(r, session))
+		}
+		writeJSON(w, http.StatusOK, responses)
+		return
+	}
 
 	// Compute the accessible-agents set once and use it to drop sessions
 	// whose target agent the caller no longer has access to — without this,
@@ -203,6 +215,8 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 				CreatorID:              uuidToString(s.CreatorID),
 				ProjectID:              uuidToPtr(s.ProjectID),
 				Title:                  s.Title,
+				LaneSummary:            s.LaneSummary,
+				LaneSummaryUpdatedAt:   timestampToPtr(s.LaneSummaryUpdatedAt),
 				Status:                 s.Status,
 				HasUnread:              s.UnreadCount > 0,
 				UnreadCount:            int(s.UnreadCount),
@@ -234,6 +248,8 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 				CreatorID:              uuidToString(s.CreatorID),
 				ProjectID:              uuidToPtr(s.ProjectID),
 				Title:                  s.Title,
+				LaneSummary:            s.LaneSummary,
+				LaneSummaryUpdatedAt:   timestampToPtr(s.LaneSummaryUpdatedAt),
 				Status:                 s.Status,
 				HasUnread:              s.UnreadCount > 0,
 				UnreadCount:            int(s.UnreadCount),
@@ -325,15 +341,12 @@ func (h *Handler) GetChatSession(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	workspaceID := ctxWorkspaceID(r.Context())
-	sessionID := chi.URLParam(r, "sessionId")
-
-	session, ok := h.gatePublicChatSessionForUser(w, r, userID, workspaceID, sessionID)
+	session, ok := h.chatReadSession(w, r, userID)
 	if !ok {
 		return
 	}
 
-	resp := chatSessionToResponse(session)
+	resp := chatSessionReadResponse(r, session)
 	// hydrateChatSessionChannelMetadata mutates the slice element, so retain a
 	// concrete slice here rather than passing a temporary value to writeJSON.
 	responses := []ChatSessionResponse{resp}
@@ -466,7 +479,7 @@ func (h *Handler) UpdateChatSession(w http.ResponseWriter, r *http.Request) {
 	}
 	h.publishChat(protocol.EventChatSessionUpdated, workspaceID, "member", userID, resolvedSessionID, payload)
 
-	writeJSON(w, http.StatusOK, chatSessionToResponse(updated))
+	writeJSON(w, http.StatusOK, chatSessionReadResponse(r, updated))
 }
 
 type SetChatSessionPinnedRequest struct {
@@ -514,7 +527,7 @@ func (h *Handler) SetChatSessionPinned(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:     timestampToString(updated.UpdatedAt),
 	})
 
-	writeJSON(w, http.StatusOK, chatSessionToResponse(updated))
+	writeJSON(w, http.StatusOK, chatSessionReadResponse(r, updated))
 }
 
 type SetChatSessionArchivedRequest struct {
@@ -668,7 +681,7 @@ func (h *Handler) SetChatSessionArchived(w http.ResponseWriter, r *http.Request)
 		UpdatedAt:     timestampToString(updated.UpdatedAt),
 	})
 
-	writeJSON(w, http.StatusOK, chatSessionToResponse(updated))
+	writeJSON(w, http.StatusOK, chatSessionReadResponse(r, updated))
 }
 
 // DeleteChatSession hard-deletes a chat session owned by the caller. The
@@ -1179,9 +1192,7 @@ func (h *Handler) ListChatMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	workspaceID := ctxWorkspaceID(r.Context())
-	sessionID := chi.URLParam(r, "sessionId")
-
-	session, ok := h.gatePublicChatSessionForUser(w, r, userID, workspaceID, sessionID)
+	session, ok := h.chatReadSession(w, r, userID)
 	if !ok {
 		return
 	}
@@ -1212,9 +1223,7 @@ func (h *Handler) ListChatMessagesPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	workspaceID := ctxWorkspaceID(r.Context())
-	sessionID := chi.URLParam(r, "sessionId")
-
-	session, ok := h.gatePublicChatSessionForUser(w, r, userID, workspaceID, sessionID)
+	session, ok := h.chatReadSession(w, r, userID)
 	if !ok {
 		return
 	}
@@ -1917,6 +1926,8 @@ type ChatSessionResponse struct {
 	CreatorID              string  `json:"creator_id"`
 	ProjectID              *string `json:"project_id"`
 	Title                  string  `json:"title"`
+	LaneSummary            string  `json:"lane_summary"`
+	LaneSummaryUpdatedAt   *string `json:"lane_summary_updated_at"`
 	Status                 string  `json:"status"`
 	// Only populated by list endpoints — single-session fetches return 0/false/nil.
 	// HasUnread is kept as a convenience (== UnreadCount > 0) for existing consumers.
@@ -2035,6 +2046,8 @@ func chatSessionToResponse(s db.ChatSession) ChatSessionResponse {
 		CreatorID:              uuidToString(s.CreatorID),
 		ProjectID:              uuidToPtr(s.ProjectID),
 		Title:                  s.Title,
+		LaneSummary:            s.LaneSummary,
+		LaneSummaryUpdatedAt:   timestampToPtr(s.LaneSummaryUpdatedAt),
 		Status:                 s.Status,
 		Pinned:                 s.PinnedAt.Valid,
 		CreatedAt:              timestampToString(s.CreatedAt),

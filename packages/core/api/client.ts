@@ -1004,6 +1004,10 @@ export class ApiClient {
     return this.fetch("/api/cli-token", { method: "POST" });
   }
 
+  async issueDesktopToken(): Promise<{ token: string }> {
+    return this.fetch("/api/auth/desktop-token", { method: "POST" });
+  }
+
   /**
    * Ask the server to extend this session if it has entered its renewal
    * window. The server owns that decision — no client reads `exp` or
