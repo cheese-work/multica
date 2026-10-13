@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"net/http"
 	"strings"
 	"testing"
@@ -123,5 +124,28 @@ func TestForkChatSessionClaimCutsOversizedMessage(test *testing.T) {
 	}
 	if strings.Contains(bigBlock, "share the project's local directory") {
 		test.Fatal("shared-directory sentence without a local directory")
+	}
+}
+
+func TestForkChatSessionClaimBudgetsLongAttachmentNames(test *testing.T) {
+	_, sourceID, runtimeID, daemonID := setupDirectChatSession(test, context.Background(), "Long names")
+	withFiles := forkMessage(test, sourceID, testutil.Cols{"role": "user", "content": "Files attached here"})
+	for index := 0; index < 100; index++ {
+		forkAttachment(test, sourceID, withFiles, fmt.Sprintf("%03d-%s.txt", index, strings.Repeat("n", 1024)))
+	}
+	forkAttachment(test, sourceID, withFiles, "huge-"+strings.Repeat("é", 36<<10)+".txt")
+	var child ChatForkResponse
+	testutil.Call(test, testHandler.ForkChatSession, forkChatRequest(test, sourceID, "names", map[string]any{"message": "Go"})).Want(http.StatusCreated).JSON(&child)
+	cleanupChatFork(test, child.Session.ID)
+	block, current := forkBlock(test, claimForkTask(test, runtimeID, daemonID).ChatMessage)
+	if len(block) > 64<<10 || !utf8.ValidString(block) {
+		test.Fatalf("block with long attachment names is %d bytes (valid UTF-8 %v)", len(block), utf8.ValidString(block))
+	}
+	if !strings.Contains(block, "Files attached here") || !strings.Contains(block, "</fork_history>") || current != "Go" {
+		test.Fatal("long attachment names crowded out the history")
+	}
+	shown := len(regexp.MustCompile(`(?m)^- [0-9a-f-]{36} `).FindAllString(block, -1))
+	if shown == 0 || !strings.Contains(block, fmt.Sprintf("- and %d more", 101-shown)) {
+		test.Fatalf("attachment index shows %d entries without the omitted count", shown)
 	}
 }

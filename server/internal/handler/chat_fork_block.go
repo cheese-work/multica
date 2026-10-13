@@ -20,6 +20,15 @@ const forkBlockPageSize = 100
 
 const forkHistoryClose = "</fork_history>"
 
+// The attachment index gets a fixed share of the block and each file name a
+// fixed length, so long names can never crowd out the history or push the
+// block over forkBlockMaxBytes. ponytail: a fixed 16 KiB share; size it from
+// the history if the index ever needs more room.
+const (
+	forkIndexMaxBytes    = 16 << 10
+	forkFilenameMaxBytes = 255
+)
+
 // forkSlashSkillLink matches the composer's slash-skill links. History renders
 // them as plain labels, so the daemon does not select an old skill again.
 var forkSlashSkillLink = regexp.MustCompile(`\[/((?:[^\]\\]|\\.)+)\]\(slash://skill/[^)]+\)`)
@@ -45,10 +54,17 @@ func (h *Handler) forkContextBlock(ctx context.Context, session db.ChatSession, 
 		}
 		if len(index) > 0 {
 			header.WriteString("\nCopied attachments, newest first (download with `multica attachment download <id>`):\n")
+			used, shown := 0, 0
 			for _, attachment := range index {
-				fmt.Fprintf(&header, "- %s %s (%s)\n", uuidToString(attachment.ID), attachment.Filename, forkTime(attachment.MessageCreatedAt))
+				line := fmt.Sprintf("- %s %s (%s)\n", uuidToString(attachment.ID), cutUTF8(attachment.Filename, forkFilenameMaxBytes), forkTime(attachment.MessageCreatedAt))
+				if used+len(line) > forkIndexMaxBytes {
+					break
+				}
+				header.WriteString(line)
+				used += len(line)
+				shown++
 			}
-			if more := int(index[0].Total) - len(index); more > 0 {
+			if more := int(index[0].Total) - shown; more > 0 {
 				fmt.Fprintf(&header, "- and %d more\n", more)
 			}
 		}
@@ -92,12 +108,8 @@ page:
 			if len(entries) == 0 {
 				// The newest message alone is over the cap: keep its start.
 				const marker = " [message cut]\n"
-				end := budget - len(marker)
-				for end > 0 && !utf8.ValidString(entry[:end]) {
-					end--
-				}
-				if end > 0 {
-					entries = append(entries, entry[:end]+marker)
+				if cutEntry := cutUTF8(entry, budget-len(marker)); cutEntry != "" {
+					entries = append(entries, cutEntry+marker)
 				}
 				cut = true
 			}
@@ -143,4 +155,19 @@ func hasLocalDirectory(resources []ProjectResourceData) bool {
 		}
 	}
 	return false
+}
+
+// cutUTF8 returns the longest prefix of text that is at most limit bytes and
+// ends on a UTF-8 boundary.
+func cutUTF8(text string, limit int) string {
+	if len(text) <= limit {
+		return text
+	}
+	if limit <= 0 {
+		return ""
+	}
+	for limit > 0 && !utf8.RuneStart(text[limit]) {
+		limit--
+	}
+	return text[:limit]
 }
