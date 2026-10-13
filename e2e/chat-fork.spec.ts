@@ -44,7 +44,7 @@ async function seedSourceDM(database: pg.Client, api: Awaited<ReturnType<typeof 
     `INSERT INTO chat_message (chat_session_id, role, content, created_at) VALUES ($1, 'assistant', 'Recent unrelated answer', now() - interval '1 hour')`,
     [other.rows[0]!.id],
   );
-  return { workspace, sourceId: source.rows[0]!.id, otherId: other.rows[0]!.id, agentId: agent.rows[0]!.id, runtimeId: runtime.rows[0]!.id };
+  return { workspace, sourceId: source.rows[0]!.id, agentId: agent.rows[0]!.id, runtimeId: runtime.rows[0]!.id };
 }
 
 async function cleanup(database: pg.Client, seed: { agentId: string; runtimeId: string }) {
@@ -158,8 +158,8 @@ for (const surface of ["page", "window"] as const) {
       if (surface === "page") {
         // The DM list ranks the new idle fork above the more recently active
         // unrelated DM, also after the list refetches.
-        const forkRow = page.locator(`a[href$="session=${child.rows[0]!.id}"]`).first();
-        const otherRow = page.locator(`a[href$="session=${seed.otherId}"]`).first();
+        const forkRow = page.getByRole("link").filter({ hasText: "Storage engine choice (fork)" });
+        const otherRow = page.getByRole("link").filter({ hasText: "Unrelated recent DM" });
         await page.reload({ waitUntil: "domcontentloaded" });
         await expect(otherRow).toBeVisible({ timeout: 30_000 });
         await expect(forkRow).toBeVisible();
