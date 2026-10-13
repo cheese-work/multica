@@ -555,14 +555,15 @@ func (q *Queries) CreateChatTask(ctx context.Context, arg CreateChatTaskParams) 
 }
 
 const createMikaOnboardingOpening = `-- name: CreateMikaOnboardingOpening :one
-INSERT INTO chat_message (chat_session_id, role, content, message_kind, created_at, id)
+INSERT INTO chat_message (chat_session_id, role, content, message_kind, created_at, id, sent_via)
 VALUES (
     $1,
     'assistant',
     $2,
     'onboarding_opening',
     $3::timestamptz + interval '1 microsecond',
-    COALESCE($4::uuid, gen_random_uuid())
+    COALESCE($4::uuid, gen_random_uuid()),
+    'system'
 )
 RETURNING id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, sent_via
 `
@@ -3452,18 +3453,20 @@ func (q *Queries) ReplaceImplicitChatSessionTitle(ctx context.Context, arg Repla
 
 const setChatContinuationSource = `-- name: SetChatContinuationSource :one
 UPDATE chat_session
-SET continued_from_session_id = $2
+SET continued_from_session_id = $2,
+    last_read_at = $3::timestamptz - interval '1 microsecond'
 WHERE id = $1
 RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at
 `
 
 type SetChatContinuationSourceParams struct {
-	ID                     pgtype.UUID `json:"id"`
-	ContinuedFromSessionID pgtype.UUID `json:"continued_from_session_id"`
+	ID                     pgtype.UUID        `json:"id"`
+	ContinuedFromSessionID pgtype.UUID        `json:"continued_from_session_id"`
+	SummaryCreatedAt       pgtype.Timestamptz `json:"summary_created_at"`
 }
 
 func (q *Queries) SetChatContinuationSource(ctx context.Context, arg SetChatContinuationSourceParams) (ChatSession, error) {
-	row := q.db.QueryRow(ctx, setChatContinuationSource, arg.ID, arg.ContinuedFromSessionID)
+	row := q.db.QueryRow(ctx, setChatContinuationSource, arg.ID, arg.ContinuedFromSessionID, arg.SummaryCreatedAt)
 	var i ChatSession
 	err := row.Scan(
 		&i.ID,

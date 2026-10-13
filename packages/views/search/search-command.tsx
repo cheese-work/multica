@@ -311,7 +311,7 @@ const NO_RESULTS: SearchResults = { query: "", issues: [], projects: [] };
 const GROUP_CLASS =
   "p-2 [&_[cmdk-group-heading]]:px-3 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-caption [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted-foreground";
 
-export function SearchCommand() {
+export function SearchCommand({ initialQuery }: { initialQuery?: string } = {}) {
   const { t } = useT("search");
   // Page names come from the sidebar's own namespace rather than a private
   // copy under `search.pages`: one translated string per page, so the palette
@@ -691,6 +691,10 @@ export function SearchCommand() {
     },
     [search],
   );
+
+  useEffect(() => {
+    if (open && initialQuery !== undefined) handleValueChange(initialQuery);
+  }, [open, initialQuery, handleValueChange]);
 
   const handleSelect = useCallback(
     (value: string) => {

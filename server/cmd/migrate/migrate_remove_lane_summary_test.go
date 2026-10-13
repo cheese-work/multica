@@ -11,7 +11,7 @@ import (
 
 func TestRemoveLaneSummaryMigrationLockTimeout(test *testing.T) {
 	for _, direction := range []string{"up", "down"} {
-		files := realMigrationFiles(test, []string{"615_remove_chat_session_lane_summary"}, direction)
+		files := realMigrationFiles(test, []string{"619_remove_chat_session_lane_summary"}, direction)
 		sql, err := os.ReadFile(files[0])
 		if err != nil {
 			test.Fatal(err)
@@ -46,7 +46,7 @@ func TestRemoveLaneSummaryMigrationUpDownUp(test *testing.T) {
 		test.Fatal(err)
 	}
 	for _, direction := range []string{"up", "down", "up"} {
-		apply("615_remove_chat_session_lane_summary", direction)
+		apply("619_remove_chat_session_lane_summary", direction)
 		var count int
 		if err := pool.QueryRow(ctx, `SELECT count(*) FROM chat_session WHERE id = 1`).Scan(&count); err != nil || count != 1 {
 			test.Fatalf("%s lost the session: count=%d, err=%v", direction, count, err)
