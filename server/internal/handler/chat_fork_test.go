@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -736,5 +737,19 @@ func TestForkChatSessionFirstMessageSortsAfterCopiedHistory(test *testing.T) {
 	testutil.Call(test, testHandler.ForkChatSession, forkChatRequest(test, sourceID, "late", map[string]any{"message": "After the copy"})).Want(http.StatusOK).JSON(&replay)
 	if replay.Message == nil || replay.Message.ID != child.Message.ID {
 		test.Fatalf("replay lost the first message: %+v", replay.Message)
+	}
+}
+
+func TestForkChatSessionRejectsBodyPaddedPastTheCap(test *testing.T) {
+	agentID := createHandlerTestAgent(test, "fork-padded", []byte("[]"))
+	sourceID := dbfx.ChatSession(test, agentID)
+	forkMessage(test, sourceID, testutil.Cols{"role": "user", "content": "Something to copy"})
+	request := forkChatRequest(test, sourceID, "padded")
+	body := `{"idempotency_key":"padded"}` + strings.Repeat(" ", forkRequestMaxBytes+1)
+	request.Body = io.NopCloser(strings.NewReader(body))
+	request.ContentLength = int64(len(body))
+	testutil.Call(test, testHandler.ForkChatSession, request).Want(http.StatusBadRequest)
+	if count := dbfx.Count(test, `SELECT count(*) FROM chat_session WHERE forked_from_session_id = $1`, sourceID); count != 0 {
+		test.Fatalf("a padded body created %d children", count)
 	}
 }
