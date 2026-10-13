@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
+import { WorkspaceSlugProvider } from "@multica/core/paths";
+import { NavigationProvider } from "../../navigation";
 import { chatKeys } from "@multica/core/chat/queries";
-import type { Attachment, TaskMessagePayload } from "@multica/core/types";
+import type { Attachment, ChatMessage, TaskMessagePayload } from "@multica/core/types";
 import type { ReactElement } from "react";
 import enChat from "../../locales/en/chat.json";
 import zhHansAgents from "../../locales/zh-Hans/agents.json";
@@ -23,20 +25,25 @@ vi.mock("react-virtuoso", () => ({
     components,
     context,
     followOutput,
+    initialTopMostItemIndex,
   }: {
     data: unknown[];
     itemContent: (i: number, item: unknown) => ReactElement;
     computeItemKey: (i: number, item: unknown) => string;
-    components?: { Footer?: (p: { context?: unknown }) => ReactElement | null };
+    components?: { Header?: (p: { context?: unknown }) => ReactElement | null; Footer?: (p: { context?: unknown }) => ReactElement | null };
     context?: unknown;
     followOutput?: (atBottom: boolean) => "smooth" | "auto" | false;
+    initialTopMostItemIndex?: unknown;
   }) => {
+    const Header = components?.Header;
     const Footer = components?.Footer;
     return (
       <div
         data-follow-at-bottom={String(followOutput?.(true))}
         data-follow-away-from-bottom={String(followOutput?.(false))}
+        data-initial-position={JSON.stringify(initialTopMostItemIndex)}
       >
+        {Header ? <Header context={context} /> : null}
         {data.map((item, i) => (
           <div key={computeItemKey(i, item)} data-row-key={computeItemKey(i, item)}>
             {itemContent(i, item)}
@@ -52,6 +59,66 @@ import { ChatMessageList } from "./chat-message-list";
 
 const TEST_RESOURCES = { en: { chat: enChat } };
 const TASK_ID = "6af44cbe-80ab-4dfe-b07d-bd3cfd588f4d";
+
+describe("ChatMessageList continuation announcements", () => {
+  const previousSessionId = "22222222-2222-4222-8222-222222222222";
+  const nextSessionId = "33333333-3333-4333-8333-333333333333";
+  const summary = {
+    id: "summary", chat_session_id: nextSessionId, role: "assistant" as const,
+    content: "Retained context without a previous DM link. ".repeat(200),
+    message_kind: "continuation_summary" as const, task_id: null, created_at: "2026-10-13T00:00:00Z",
+  };
+
+  function renderContinuation(links: { continuedFromSessionId?: string; continuedIntoSessionId?: string } = {}, messages: ChatMessage[] = [summary]) {
+    return render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <WorkspaceSlugProvider slug="acme">
+          <NavigationProvider value={{ push: vi.fn(), replace: vi.fn(), back: vi.fn(), pathname: "/acme/chat", searchParams: new URLSearchParams(), hash: "", getShareableUrl: (path) => path }}>
+            <QueryClientProvider client={new QueryClient()}>
+              <ChatMessageList messages={messages} pendingTask={null} availability="online" {...links} />
+            </QueryClientProvider>
+          </NavigationProvider>
+        </WorkspaceSlugProvider>
+      </I18nProvider>,
+    );
+  }
+
+  it("puts the metadata-driven source announcement before a collapsed, separate summary and opens at the newest item", () => {
+    const { container } = renderContinuation({ continuedFromSessionId: previousSessionId });
+    const link = screen.getByRole("link", { name: "previous DM" });
+    expect(link).toHaveAttribute("href", `/acme/chat?session=${previousSessionId}`);
+    expect(link.parentElement).toHaveClass("text-muted-foreground");
+    expect(link.parentElement).toHaveTextContent("Continued from previous DM");
+    const disclosure = screen.getByRole("button", { name: "Conversation summary" });
+    expect(link.compareDocumentPosition(disclosure) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText(/Retained context/)).not.toBeInTheDocument();
+    expect(container.querySelector("[data-initial-position]")).toHaveAttribute("data-initial-position", JSON.stringify({ index: "LAST", align: "end" }));
+    fireEvent.click(disclosure);
+    expect(disclosure).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText(/Retained context/)).toBeInTheDocument();
+  });
+
+  it("shows the archived source's successor link at the end of its transcript", () => {
+    renderContinuation({ continuedIntoSessionId: nextSessionId });
+    const link = screen.getByRole("link", { name: "Continued in →" });
+    expect(link).toHaveAttribute("href", `/acme/chat?session=${nextSessionId}`);
+    expect(link.parentElement).toHaveClass("text-muted-foreground");
+    expect(screen.getByRole("button", { name: "Conversation summary" }).compareDocumentPosition(link) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("keeps legacy summaries readable without inventing a continuation link", () => {
+    renderContinuation();
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Conversation summary" }));
+    expect(screen.getByText(/Retained context/)).toBeInTheDocument();
+  });
+
+  it("links forward even when the archived source had no messages", () => {
+    renderContinuation({ continuedIntoSessionId: nextSessionId }, []);
+    expect(screen.getByRole("link", { name: "Continued in →" })).toHaveAttribute("href", `/acme/chat?session=${nextSessionId}`);
+  });
+});
 
 function taskMsg(
   seq: number,
