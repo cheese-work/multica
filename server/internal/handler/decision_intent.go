@@ -42,6 +42,9 @@ func (handler *Handler) prepareDecisionIntent(request *http.Request, queries *db
 		return issue, nil, deny
 	}
 	if _, err := queries.LockDecisionIssue(ctx, db.LockDecisionIssueParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return issue, nil, decisionIntentRefusal{http.StatusNotFound, "issue not found"}
+		}
 		return issue, nil, err
 	}
 	issue, err := queries.GetIssue(ctx, issue.ID)

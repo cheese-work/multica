@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
@@ -62,6 +63,10 @@ func (handler *Handler) SetChatLaneSummary(writer http.ResponseWriter, request *
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 16*1024)).Decode(&body); err != nil || body.LaneSummary == nil {
 		writeError(writer, http.StatusBadRequest, "lane_summary must be a string")
+		return
+	}
+	if strings.ContainsRune(*body.LaneSummary, '\x00') {
+		writeError(writer, http.StatusBadRequest, "lane_summary must not contain NUL characters")
 		return
 	}
 	if utf8.RuneCountInString(*body.LaneSummary) > 600 {

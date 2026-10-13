@@ -72,6 +72,35 @@ func TestSetChatLaneSummary(test *testing.T) {
 	}
 }
 
+func TestSetChatLaneSummaryRejectsNUL(test *testing.T) {
+	agentID := createHandlerTestAgent(test, "lane-summary-nul", []byte("[]"))
+	sessionID := createHandlerTestChatSession(test, agentID)
+	taskID := dbfx.Task(test, agentID, testutil.Cols{"chat_session_id": sessionID, "runtime_id": handlerTestRuntimeID(test), "status": "running"})
+	dbfx.Exec(test, `UPDATE chat_session SET lane_summary = 'unchanged', lane_summary_updated_at = now() WHERE id = $1`, sessionID)
+	before, err := testHandler.Queries.GetChatSession(context.Background(), parseUUID(sessionID))
+	if err != nil {
+		test.Fatal(err)
+	}
+	for _, source := range []string{"interactive_jwt", "task_token"} {
+		test.Run(source, func(test *testing.T) {
+			for _, value := range []string{"\x00", "before\x00after", strings.Repeat("🙂", 599) + "\x00"} {
+				request := withChatTestWorkspaceCtx(test, newRequest(http.MethodPut, "/", map[string]any{"lane_summary": value}))
+				request = withURLParam(request, "sessionId", sessionID)
+				request.Header.Set("X-Actor-Source", source)
+				request.Header.Set("X-Task-ID", taskID)
+				testutil.Call(test, testHandler.SetChatLaneSummary, request).Want(http.StatusBadRequest)
+				after, err := testHandler.Queries.GetChatSession(context.Background(), parseUUID(sessionID))
+				if err != nil {
+					test.Fatal(err)
+				}
+				if after.LaneSummary != before.LaneSummary || after.LaneSummaryUpdatedAt != before.LaneSummaryUpdatedAt {
+					test.Fatal("rejected input changed the stored summary")
+				}
+			}
+		})
+	}
+}
+
 func TestChatLaneSummaryScopeAndLifecycle(test *testing.T) {
 	agentID := createHandlerTestAgent(test, "lane-summary-scope", []byte("[]"))
 	sessionID := createHandlerTestChatSession(test, agentID)
