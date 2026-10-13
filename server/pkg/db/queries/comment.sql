@@ -474,8 +474,8 @@ WITH touched_issue AS (
     WHERE issue.id = sqlc.arg(issue_id) AND issue.workspace_id = sqlc.arg(workspace_id)
     RETURNING issue.id, issue.workspace_id, issue.revision
 ), inserted_comment AS (
-    INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, parent_id, source_task_id, quick_action_id, via_plugin_id, suppressed_agent_ids, id)
-    SELECT ti.id, ti.workspace_id, sqlc.arg(author_type), sqlc.arg(author_id), sqlc.arg(content), sqlc.arg(type), sqlc.narg(parent_id), sqlc.narg(source_task_id), sqlc.narg(quick_action_id), sqlc.narg(via_plugin_id), sqlc.narg(suppressed_agent_ids)::uuid[], COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
+    INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, parent_id, source_task_id, quick_action_id, via_plugin_id, suppressed_agent_ids, id, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind)
+    SELECT ti.id, ti.workspace_id, sqlc.arg(author_type), sqlc.arg(author_id), sqlc.arg(content), sqlc.arg(type), sqlc.narg(parent_id), sqlc.narg(source_task_id), sqlc.narg(quick_action_id), sqlc.narg(via_plugin_id), sqlc.narg(suppressed_agent_ids)::uuid[], COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()), sqlc.narg('decision_request_id')::uuid, sqlc.narg('decision_answer_id')::uuid, sqlc.narg('decision_intent_id')::uuid, sqlc.narg('decision_comment_kind')::text
     FROM touched_issue ti
     RETURNING *
 )
@@ -563,7 +563,8 @@ WITH locked_issue AS MATERIALIZED (
               comment.parent_id, comment.workspace_id, comment.resolved_at,
               comment.resolved_by_type, comment.resolved_by_id, comment.source_task_id,
               comment.quick_action_id, comment.via_plugin_id, comment.revision,
-              comment.deleted_at, target.did_change
+              comment.deleted_at, comment.decision_request_id, comment.decision_answer_id,
+              comment.decision_intent_id, comment.decision_comment_kind, target.did_change
 ), touched_issue AS (
     UPDATE issue
     SET revision = issue.revision + 1,
@@ -582,6 +583,8 @@ SELECT updated_comment.id, updated_comment.issue_id, updated_comment.author_type
        updated_comment.source_task_id, updated_comment.quick_action_id,
        updated_comment.via_plugin_id, updated_comment.revision,
        updated_comment.deleted_at,
+       updated_comment.decision_request_id, updated_comment.decision_answer_id,
+       updated_comment.decision_intent_id, updated_comment.decision_comment_kind,
        COALESCE((SELECT revision FROM touched_issue), 0)::bigint AS issue_revision
 FROM updated_comment;
 
