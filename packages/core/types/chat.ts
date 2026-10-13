@@ -86,6 +86,9 @@ export interface ChatChannelSource {
 
 export interface ChatSession {
   forked_from_session_id?: string | null;
+  /** The last copied message of a fork child; the divider sits below it. */
+  fork_last_message_id?: string | null;
+  fork_message_count?: number | null;
   continued_into_session_id?: string | null;
   continued_from_session_id?: string | null;
   id: string;

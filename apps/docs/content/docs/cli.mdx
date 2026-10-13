@@ -119,21 +119,25 @@ multica issue cancel-task <task-id> --issue MUL-123
 
 ## Forking a web DM
 
-From the source DM's running chat task, create a child DM seeded with a UTF-8 summary:
+From the source DM's running chat task, copy the DM into a new child DM:
 
 ```bash
-multica chat continue --fork --summary-file summary.md
+multica chat continue --fork
 ```
 
-The source stays active. The child keeps the same agent, creator and project, with a title ending in ` (fork)` and a fresh agent workspace. Decisions, approvals, task tokens and lane summaries stay with the source.
+The source stays active and unchanged. The child gets a full copy of the messages the person can see, with their original times, and of their attachments; it holds no summary. It keeps the same agent, creator and project, with a title ending in ` (fork)`, and starts with no provider session and no managed checkout. Decisions, approvals, task tokens and lane summaries stay with the source. The agent's private tool memory is not copied. Agent-builder DMs cannot be forked.
 
-The current chat task ID is the default fork operation key. Repeating the command in the same task returns the same child. To create another fork in that task, use a different explicit key; reuse that key when retrying:
+On the child's first turn, and on any turn with no provider session to resume, the agent receives a fork context block: a notice, an index of the copied attachments, and the newest messages of the DM that fit in 64 KiB. When older messages are left out, the block says so; read them with `multica chat history`.
+
+The default fork operation key is the current turn: an auto-retry of the same turn returns the same child. To create another fork in that turn, use a different explicit key; reuse that key when retrying:
 
 ```bash
-multica chat continue --fork --summary-file summary.md --idempotency-key explore-alternative
+multica chat continue --fork --idempotency-key explore-alternative
 ```
 
-The session-human API is `POST /api/chat/sessions/{sessionId}/fork`, with `summary` and `idempotency_key` in the JSON body. The task-scoped API is `POST /api/chat/fork`. Session responses expose `forked_from_session_id` on children. Only web DMs can be forked. Without `--fork`, `chat continue` still archives the source; `/compact` is unchanged.
+A task fork does not send a message. `--summary-file` is not accepted with `--fork`.
+
+The session-human API is `POST /api/chat/sessions/{sessionId}/fork` with a required `idempotency_key` and an optional `message` in the JSON body. With a message, the server sends it as the person's first message in the child and starts the agent's first turn in the same transaction; without one, the child is idle. A retry with the same key returns the same child (HTTP 200) and sends nothing twice. The task-scoped API is `POST /api/chat/fork`. Session responses expose `forked_from_session_id`, `fork_last_message_id` and `fork_message_count` on children. Only web DMs with at least one message can be forked. Without `--fork`, `chat continue` still archives the source and requires `--summary-file`; `/compact` is unchanged.
 
 ## Agents and skills
 
