@@ -205,4 +205,40 @@ func TestChatLaneSummaryMutationResponseDoesNotBypassReadGate(test *testing.T) {
 			test.Fatalf("%s read a summary through a mutation: %+v", source, response)
 		}
 	}
+	for _, source := range []string{"pat", "cloud_pat", "cli_jwt", "interactive_jwt", "task_token"} {
+		test.Run("continue_"+source, func(test *testing.T) {
+			sessionID := createHandlerTestChatSession(test, agentID)
+			taskID := ""
+			if source == "task_token" {
+				taskID = dbfx.Task(test, agentID, testutil.Cols{"chat_session_id": sessionID, "runtime_id": handlerTestRuntimeID(test), "status": "running"})
+			}
+			request := func() *http.Request {
+				req := withChatTestWorkspaceCtx(test, newRequest(http.MethodPost, "/", map[string]string{"summary": "Continue this DM"}))
+				req = withURLParam(req, "sessionId", sessionID)
+				req.Header.Set("X-Actor-Source", source)
+				req.Header.Set("X-Task-ID", taskID)
+				return req
+			}
+			var created ChatContinueResponse
+			testutil.Call(test, testHandler.ContinueChatSession, request()).Want(http.StatusCreated).JSON(&created)
+			dbfx.Cleanup(test, `DELETE FROM chat_message WHERE chat_session_id = $1`, created.Session.ID)
+			dbfx.Cleanup(test, `DELETE FROM chat_session WHERE id = $1`, created.Session.ID)
+			if created.Session.LaneSummary != "" || created.Session.LaneSummaryUpdatedAt != nil {
+				test.Fatalf("new continuation must start without a lane summary: %+v", created.Session)
+			}
+			dbfx.Exec(test, `UPDATE chat_session SET lane_summary = 'private continuation', lane_summary_updated_at = now() WHERE id = $1`, created.Session.ID)
+			var repeated ChatContinueResponse
+			testutil.Call(test, testHandler.ContinueChatSession, request()).Want(http.StatusOK).JSON(&repeated)
+			if repeated.Session.ID != created.Session.ID || repeated.PreviousSessionID != sessionID {
+				test.Fatalf("continuation identity changed: %+v", repeated)
+			}
+			if source == "interactive_jwt" {
+				if repeated.Session.LaneSummary != "private continuation" || repeated.Session.LaneSummaryUpdatedAt == nil {
+					test.Fatal("interactive continuation dropped summary")
+				}
+			} else if repeated.Session.LaneSummary != "" || repeated.Session.LaneSummaryUpdatedAt != nil {
+				test.Fatalf("%s read a successor summary through continuation: %+v", source, repeated.Session)
+			}
+		})
+	}
 }
