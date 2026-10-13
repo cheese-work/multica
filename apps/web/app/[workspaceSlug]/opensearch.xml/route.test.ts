@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GET } from "./route";
 
 async function getDocument(slug = "acme", origin = "https://app.multica.test") {
@@ -8,6 +8,9 @@ async function getDocument(slug = "acme", origin = "https://app.multica.test") {
 }
 
 describe("workspace OpenSearch description", () => {
+  beforeEach(() => vi.stubEnv("MULTICA_APP_URL", ""));
+  afterEach(() => vi.unstubAllEnvs());
+
   it("serves a public UTF-8 XML description without authentication", async () => {
     const response = await getDocument();
     expect(response.status).toBe(200);
@@ -44,6 +47,58 @@ describe("workspace OpenSearch description", () => {
     expect(await response.text()).toContain(
       'template="https://app.example.com:8443/acme/search?q={searchTerms}"',
     );
+  });
+
+  it("uses the configured C00 public origin despite nginx's internal HTTP headers", async () => {
+    vi.stubEnv("MULTICA_APP_URL", "https://congvc-c00.taila6fa8a.ts.net:19443");
+    const response = await GET(new Request("http://0.0.0.0:3000/cheese-work/opensearch.xml", {
+      headers: { host: "congvc-c00.taila6fa8a.ts.net", "x-forwarded-proto": "http" },
+    }), { params: Promise.resolve({ workspaceSlug: "cheese-work" }) });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain(
+      'template="https://congvc-c00.taila6fa8a.ts.net:19443/cheese-work/search?q={searchTerms}"',
+    );
+  });
+
+  it("does not let request headers override the configured public origin", async () => {
+    vi.stubEnv("MULTICA_APP_URL", "https://app.example.com:8443/");
+    const response = await GET(new Request("http://0.0.0.0:3000/acme/opensearch.xml", {
+      headers: { host: "attacker.test:1234", "x-forwarded-proto": "http" },
+    }), { params: Promise.resolve({ workspaceSlug: "acme" }) });
+    expect(await response.text()).toContain(
+      'template="https://app.example.com:8443/acme/search?q={searchTerms}"',
+    );
+  });
+
+  it("reflects an unconfigured request host only in its own uncached response", async () => {
+    const response = await GET(new Request("http://0.0.0.0:3000/acme/opensearch.xml", {
+      headers: { host: "attacker.test:8443", "x-forwarded-proto": "https" },
+    }), { params: Promise.resolve({ workspaceSlug: "acme" }) });
+    expect(await response.text()).toContain(
+      'template="https://attacker.test:8443/acme/search?q={searchTerms}"',
+    );
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("set-cookie")).toBeNull();
+    const nextResponse = await getDocument();
+    expect(await nextResponse.text()).toContain(
+      'template="https://app.multica.test/acme/search?q={searchTerms}"',
+    );
+  });
+
+  it.each([
+    "ftp://app.example.com", "https://user:pass@app.example.com",
+    "https://app.example.com/path", "https://app.example.com?override=1",
+    "https://app.example.com#fragment", "/relative", "http://",
+  ])("rejects an invalid configured public origin %j", async (origin) => {
+    vi.stubEnv("MULTICA_APP_URL", origin);
+    expect((await getDocument()).status).toBe(400);
+  });
+
+  it.each(["ftp", "https,http"])("rejects an invalid forwarded protocol %j", async (protocol) => {
+    const response = await GET(new Request("http://0.0.0.0:3000/acme/opensearch.xml", {
+      headers: { host: "app.example.com", "x-forwarded-proto": protocol },
+    }), { params: Promise.resolve({ workspaceSlug: "acme" }) });
+    expect(response.status).toBe(400);
   });
 
   it.each(["attacker.test/path", "attacker.test@other.test", "one.test,two.test"])(
