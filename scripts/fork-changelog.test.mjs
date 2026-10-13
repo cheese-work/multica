@@ -510,3 +510,76 @@ test("PR check workflow: GitHub-hosted, permissions: {}, no secrets, skips close
   assert.match(raw, /upstream-sync\//, "the header explains why sync heads stay off X99");
   assert.match(wf, /fork-changelog\.mjs --event/);
 });
+
+// --- review round 1 (x99-codex-sol, PR 229): F1-F4 ----------------------------
+
+test("F1: a sentence that names an issue id is hidden as parse-error, not published", async () => {
+  const { parseChangelogLine, evaluatePr } = await load();
+  for (const text of ["CHE-123 add Y", "Fixed login (CHE-1634) for good.", "see che-12 for details"]) {
+    const got = parseChangelogLine(`Changelog: ${text}`);
+    assert.equal(got.status, "parse-error", text);
+    assert.ok(got.warnings.some((w) => /issue id/i.test(w)), got.warnings.join("|"));
+  }
+  assert.equal(evaluatePr(pr(1, { body: "Changelog: CHE-9 add Y" })).reason, "parse-error");
+  assert.equal(parseChangelogLine("Changelog: The CHEESE-free flow is faster.").status, "text");
+});
+
+test("F1: a zero-width joiner outside an emoji sequence is stripped", async () => {
+  const { parseChangelogLine } = await load();
+  const got = parseChangelogLine("Changelog: Ordinary\u200D text\u200D here.");
+  assert.equal(got.text, "Ordinary text here.");
+  assert.ok(got.warnings.some((w) => /strip/i.test(w)), got.warnings.join("|"));
+  const edge = parseChangelogLine("Changelog: \u200DLeading and \u{1F468}\u200D trailing joiner.");
+  assert.doesNotMatch(edge.text, /\u200d/);
+});
+
+test("F2: a <placeholder> anywhere in the sentence counts as missing", async () => {
+  const { parseChangelogLine, evaluatePr, formatCheck } = await load();
+  const got = parseChangelogLine("Changelog: Fixed the <page name> layout.");
+  assert.equal(got.status, "missing");
+  assert.ok(got.warnings.some((w) => /placeholder/i.test(w)), got.warnings.join("|"));
+  assert.equal(parseChangelogLine("Changelog: Fixed <this> and more").status, "missing");
+  assert.equal(parseChangelogLine("Changelog: Two is less than three, 2 < 3 and 4 > 3.").status, "text");
+  assert.equal(formatCheck(evaluatePr(pr(1, { title: "fix: x", body: "Changelog: Fixed the <page name> layout." }))).failing, true);
+});
+
+test("F3: nested or mixed fence delimiters do not close a fence early", async () => {
+  const { parseChangelogLine } = await load();
+  const nestedMixed = "````md\n~~~\nChangelog: Inside.\n~~~\n````";
+  assert.equal(parseChangelogLine(nestedMixed).status, "missing");
+  const nestedShort = "````md\n```\nChangelog: Inside.\n```\n````";
+  assert.equal(parseChangelogLine(nestedShort).status, "missing");
+  const tildeInBackticks = "```\n~~~\nChangelog: Inside.\n```";
+  assert.equal(parseChangelogLine(tildeInBackticks).status, "missing");
+  const closedThenLive = "```\nChangelog: Inside.\n```\nChangelog: Outside.";
+  assert.equal(parseChangelogLine(closedThenLive).text, "Outside.");
+  const longer = "```\nx\n`````\nChangelog: Outside.";
+  assert.equal(parseChangelogLine(longer).text, "Outside.");
+});
+
+test("F4: the PR whose merge commit says 'This reverts commit' is hidden as well", async () => {
+  const result = await run(
+    [pr(10), pr(11, { body: "Changelog: Undone." }), pr(12)],
+    [
+      { sha: pr(10).mergeSha, message: "change 10" },
+      { sha: pr(11).mergeSha, message: `Undo 10\n\nThis reverts commit ${pr(10).mergeSha}.` },
+      { sha: pr(12).mergeSha, message: "change 12" },
+    ],
+  );
+  assert.equal(reasonOf(result, 10), "reverted");
+  assert.equal(reasonOf(result, 11), "reverted");
+  assert.deepEqual(result.entries.map((e) => e.number), [12]);
+});
+
+test("F4: a commit-level revert of a revert PR still shows the original and keeps the revert PR hidden", async () => {
+  const result = await run(
+    [pr(10), pr(11, { body: "Changelog: Undone." })],
+    [
+      { sha: pr(10).mergeSha, message: "change 10" },
+      { sha: pr(11).mergeSha, message: `Undo 10\n\nThis reverts commit ${pr(10).mergeSha}.` },
+      { sha: sha(98), message: `This reverts commit ${pr(11).mergeSha}.` },
+    ],
+  );
+  assert.deepEqual(result.entries.map((e) => e.number), [10]);
+  assert.equal(reasonOf(result, 11), "reverted");
+});
