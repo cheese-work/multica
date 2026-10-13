@@ -27,6 +27,17 @@ The caller applies the contract's bounded retries and retryable 503 policy;
 constraint, authorization and unrelated connection failures are not classified
 as lock retries.
 
+`ValidateIntent` is the shared guard for synchronous window consumers. Call it
+after the workspace and issue fences, any calling-task/member locks, and the
+intent's `FOR UPDATE` lock, before making any other writes. It reads the tag,
+task and unconsumed targets and compares expiry with `clock_timestamp()`.
+An invalid window is sealed (and a missing or tombstoned tag closes it) and
+committed before `ErrIntentClosed` is returned. This refusal ends the transaction;
+rolling it back afterwards cannot discard the seal. Other errors do not commit.
+A valid window leaves the transaction open for its consumer. The lane/request
+slices wire this guard into their own operations; baseline comment deletion
+continues to run no decision statement.
+
 All decision IDs referencing baseline rows are plain UUIDs. The task-specific
 approval permits exactly three internal cascading FKs: answer/request,
 class-change/request and intent-target/intent. Baseline application transactions

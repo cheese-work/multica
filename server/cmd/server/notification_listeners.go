@@ -943,15 +943,22 @@ func registerNotificationListeners(bus *events.Bus, queries *db.Queries) {
 			})
 		}
 
+		suppressed := make(map[string]bool)
+		if targets, ok := payload["decision_intent_targets"].([]string); ok {
+			for _, humanID := range targets {
+				suppressed[humanID] = true
+			}
+		}
 		notifySubscribers(ctx, queries, bus, issueID, issueStatus, e.WorkspaceID, e,
-			nil, "new_comment", "info",
+			suppressed, "new_comment", "info",
 			issueTitle, commentContent,
 			commentDetails)
 
 		// Notify @mentions in comment content.
 		mentions := parseMentions(commentContent)
 		if len(mentions) > 0 {
-			skip := map[string]bool{e.ActorID: true}
+			skip := suppressed
+			skip[e.ActorID] = true
 			notifyMentionedMembers(bus, queries, e, mentions, issueID, issueTitle, issueStatus,
 				issueTitle, skip, commentDetails)
 		}
