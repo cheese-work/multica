@@ -159,10 +159,13 @@
     "export_source": ".mmd をダウンロード"
   },
   "slash_command": {
+    "client_command": "Multica",
+    "focus_hint": "[focus]",
     "no_skills_configured": "設定済みスキルなし",
     "no_results": "一致するスキルなし",
     "commands": {
-      "note": "メモを追加 — エージェントをトリガーしません"
+      "note": "メモを追加 — エージェントをトリガーしません",
+      "compact": "この DM を要約して新しい DM で続ける"
     }
   }
 }

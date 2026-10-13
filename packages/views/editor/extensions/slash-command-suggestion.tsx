@@ -31,7 +31,7 @@ import { isTriggerArmedAt } from "./suggestion-trigger-arming";
 const MAX_ITEMS = 20;
 
 /** Known built-in command ids — the keys under editor `slash_command.commands`. */
-export type BuiltinCommandKey = "note";
+export type BuiltinCommandKey = "note" | "compact";
 
 export interface SlashCommandItem {
   id: string;
@@ -130,7 +130,9 @@ export const SlashCommandList = forwardRef<
   const describe = (item: SlashCommandItem): string | undefined =>
     item.descriptionKey === "note"
       ? t(($) => $.slash_command.commands.note)
-      : item.description;
+      : item.descriptionKey === "compact"
+        ? t(($) => $.slash_command.commands.compact)
+        : item.description;
 
   return (
     // Height budget clamps to min(design max, viewport-aware
@@ -151,9 +153,27 @@ export const SlashCommandList = forwardRef<
             }`}
             onClick={() => selectItem(index)}
           >
-            <span className="font-medium">/{item.label}</span>
+            {item.descriptionKey === "compact" ? (
+              <span className="flex w-full items-center justify-between gap-2 font-medium">
+                <span className="font-mono">
+                  /{item.label}{" "}
+                  <span className="text-muted-foreground">
+                    {t(($) => $.slash_command.focus_hint)}
+                  </span>
+                </span>
+                <span className="shrink-0 rounded-sm border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-primary">
+                  {t(($) => $.slash_command.client_command)}
+                </span>
+              </span>
+            ) : (
+              <span className="font-medium">/{item.label}</span>
+            )}
             {description && (
-              <span className="truncate text-muted-foreground">
+              <span
+                className={item.descriptionKey === "compact"
+                  ? "text-muted-foreground"
+                  : "truncate text-muted-foreground"}
+              >
                 {description}
               </span>
             )}
@@ -192,7 +212,11 @@ function rankSkillMatches<T extends { name: string; description?: string }>(
     .map((entry) => entry.skill);
 }
 
-function buildItems(qc: QueryClient, query: string): SlashCommandItem[] {
+function buildItems(
+  qc: QueryClient,
+  query: string,
+  firstWord: boolean,
+): SlashCommandItem[] {
   const wsId = getCurrentWsId();
   if (!wsId) return [];
 
@@ -216,9 +240,12 @@ function buildItems(qc: QueryClient, query: string): SlashCommandItem[] {
     null;
 
   const q = query.toLowerCase();
-  return rankSkillMatches(activeAgent?.skills ?? [], q)
-    .slice(0, MAX_ITEMS)
+  const skills = rankSkillMatches(activeAgent?.skills ?? [], q)
     .map((s) => ({ id: s.id, label: s.name, description: s.description ?? "" }));
+  const commands: SlashCommandItem[] = firstWord && "compact".startsWith(q)
+    ? [{ id: "compact", label: "compact", descriptionKey: "compact" }]
+    : [];
+  return [...commands, ...skills].slice(0, MAX_ITEMS);
 }
 
 export function createSlashCommandSuggestion(qc: QueryClient): Omit<
@@ -233,12 +260,32 @@ export function createSlashCommandSuggestion(qc: QueryClient): Omit<
     // Only open over a `/` the user actually typed, so a pasted path
     // (`/usr/local/bin`) never opens the skill picker (MUL-5429).
     shouldShow: ({ editor, range }) => isTriggerArmedAt(editor, range.from),
-    items: ({ query }) => buildItems(qc, query),
+    items: ({ query, editor }) => {
+      const triggerFrom = Math.max(0, editor.state.selection.from - query.length - 1);
+      const before = editor.state.doc.textBetween(0, triggerFrom, "\n", (node) =>
+        node.type.name === "hardBreak" ? "\n" : "\ufffc",
+      );
+      const position = editor.state.selection.$from;
+      const firstWord = before.trim() === ""
+        && position.depth === 1
+        && position.parent.type.name === "paragraph";
+      return buildItems(qc, query, firstWord);
+    },
     command: ({ editor, range, props }) => {
       const nodeAfter = editor.view.state.selection.$to.nodeAfter;
       const overrideSpace = nodeAfter?.text?.startsWith(" ");
       if (overrideSpace) {
         range.to += 1;
+      }
+
+      if (props.descriptionKey === "compact") {
+        editor
+          .chain()
+          .focus()
+          .insertContentAt(range, [{ type: "text", text: "/compact " }])
+          .run();
+        window.getSelection()?.collapseToEnd();
+        return;
       }
 
       editor
