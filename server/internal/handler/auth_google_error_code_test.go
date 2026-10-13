@@ -290,6 +290,9 @@ func TestGoogleLoginSuccessfulExistingUser(t *testing.T) {
 	if requests != 2 || got.Token == "" || got.User.ID != userID || got.User.Email != email {
 		t.Fatalf("unexpected successful login: requests=%d, token present=%t, user=%+v", requests, got.Token != "", got.User)
 	}
+	if claims := provenanceJWTClaims(t, got.Token); claims["amr"] != "interactive" {
+		t.Fatalf("Google login JWT must be interactive: %v", claims)
+	}
 	var authCookie, csrfCookie *http.Cookie
 	for _, cookie := range resp.Result().Cookies() {
 		switch cookie.Name {

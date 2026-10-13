@@ -200,7 +200,7 @@ func SessionIDFromToken(tokenString string) string {
 // RenewSessionToken re-signs the identity carried by claims with a fresh
 // lifetime, returning the new token and its expiry.
 //
-// Only `exp` and `iat` move. `sub`, `email`, `name` and `sid` are copied
+// Only `exp` and `iat` move. `sub`, `email`, `name`, `sid` and `amr` are copied
 // forward verbatim, which is what makes renewal free of any database read:
 // the claims were signed by this server, so they are already authoritative
 // for exactly the fields the auth middleware reads back out.
@@ -245,6 +245,9 @@ func RenewSessionToken(claims jwt.MapClaims) (string, time.Time, error) {
 	}
 	if name, ok := claims["name"].(string); ok && name != "" {
 		next["name"] = name
+	}
+	if method, present := claims["amr"]; present {
+		next["amr"] = method
 	}
 
 	signed, err := jwt.NewWithClaims(jwt.SigningMethodHS256, next).SignedString(JWTSecret())
