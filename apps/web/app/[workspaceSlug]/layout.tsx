@@ -31,8 +31,11 @@ export default function WorkspaceLayout({
   // to /login. Without this, the layout renders null and the user sees a
   // blank page stuck on /{slug}/...
   useEffect(() => {
-    if (!isAuthLoading && !user) router.replace(paths.login());
-  }, [isAuthLoading, user, router]);
+    if (!isAuthLoading && !user) {
+      const nextUrl = pathname + window.location.search;
+      router.replace(`${paths.login()}?next=${encodeURIComponent(nextUrl)}`);
+    }
+  }, [isAuthLoading, user, router, pathname]);
 
   // Hard onboarding gate. Authenticated user but onboarded_at NULL means
   // they bypassed /onboarding (typed the URL, deeplink, etc.). Redirect

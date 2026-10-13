@@ -3,10 +3,11 @@
 import { Suspense } from "react";
 import { DashboardLayout } from "@multica/views/layout";
 import { MulticaIcon } from "@multica/ui/components/common/multica-icon";
-import { SearchCommand, SearchTrigger } from "@multica/views/search";
+import { SearchTrigger } from "@multica/views/search";
 import { FloatingChat } from "@multica/views/chat/floating-chat";
 import { WebNotificationBridge } from "@/components/web-notification-bridge";
 import { WorkspaceDocumentTitle } from "@/platform/workspace-document-title";
+import { WorkspaceSearchCommand } from "@/components/workspace-search-command";
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   return (
@@ -22,7 +23,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         searchSlot={<SearchTrigger />}
         extra={
           <>
-            <SearchCommand />
+            <Suspense fallback={null}>
+              <WorkspaceSearchCommand />
+            </Suspense>
             <WebNotificationBridge />
             <FloatingChat />
           </>
