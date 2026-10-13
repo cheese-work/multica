@@ -694,7 +694,7 @@ test("F1c: valid emoji and accents survive the stripping", async () => {
 test("F1d: combining marks that compose into accented letters cannot hide a credential or id", async () => {
   const { parseChangelogLine } = await load();
   const token = "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6";
-  const marks = ["̀", "́", "̂", "̈", "̌", "̧"];
+  const marks = ["\u0300", "\u0301", "\u0302", "\u0308", "\u030c", "\u0327"];
   const families = [
     (m) => `g${m}hp_${token}`,
     (m) => `ghp_${token.slice(0, 8)}${token.slice(8, 9)}${m}${token.slice(9)}`,
@@ -714,14 +714,14 @@ test("F1d: combining marks that compose into accented letters cannot hide a cred
     }
   }
   assert.deepEqual(bad, []);
-  assert.equal(parseChangelogLine("Changelog: Café menus and naïve users keep accents.").text, "Café menus and naïve users keep accents.");
+  assert.equal(parseChangelogLine("Changelog: Caf\u00e9 menus and na\u00efve users keep accents.").text, "Caf\u00e9 menus and na\u00efve users keep accents.");
 });
 
 test("F5: recognized tag flags and fully qualified keycaps survive unchanged", async () => {
   const { parseChangelogLine } = await load();
   const tag = (word) => [...word].map((ch) => String.fromCodePoint(0xe0000 + ch.codePointAt(0))).join("") + "\u{e007f}";
   const flags = ["gbeng", "gbsct", "gbwls"].map((code) => `\u{1f3f4}${tag(code)}`);
-  const keycaps = ["1", "#", "*"].map((ch) => `${ch}️⃣`);
+  const keycaps = ["1", "#", "*"].map((ch) => `${ch}\ufe0f\u20e3`);
   for (const sample of [...flags, ...keycaps]) {
     const got = parseChangelogLine(`Changelog: Shows ${sample} correctly.`);
     assert.equal(got.text, `Shows ${sample} correctly.`, JSON.stringify(sample));
@@ -736,5 +736,13 @@ test("F5: tag characters outside a recognized flag are still stripped", async ()
     const got = parseChangelogLine(`Changelog: ${text}`);
     assert.doesNotMatch(got.text, /[\u{e0000}-\u{e007f}]/u);
     assert.ok(got.warnings.some((w) => /strip/i.test(w)));
+  }
+});
+
+test("F1d: dash look-alikes cannot split an issue id or an sk- key", async () => {
+  const { parseChangelogLine } = await load();
+  for (const dash of ["‐", "‑", "‒", "–", "—", "−", "－"]) {
+    assert.equal(parseChangelogLine(`Changelog: Fixed CHE${dash}123 today.`).status, "parse-error", dash.codePointAt(0).toString(16));
+    assert.equal(parseChangelogLine(`Changelog: Rotated sk${dash}proj1234567890abcdefghijkl today.`).status, "parse-error");
   }
 });
