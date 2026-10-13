@@ -125,14 +125,17 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 		ID: dbid.NewV7(), WorkspaceID: session.WorkspaceID, AgentID: session.AgentID,
 		CreatorID: session.CreatorID, Title: session.Title, ProjectID: session.ProjectID,
 	})
+	var summary db.ChatMessage
 	if err == nil {
-		next, err = qtx.SetChatContinuationSource(r.Context(), db.SetChatContinuationSourceParams{ID: next.ID, ContinuedFromSessionID: session.ID})
-	}
-	if err == nil {
-		_, err = qtx.CreateChatMessage(r.Context(), db.CreateChatMessageParams{
+		summary, err = qtx.CreateChatMessage(r.Context(), db.CreateChatMessageParams{
 			ID: dbid.NewV7(), ChatSessionID: next.ID, Role: "assistant",
 			Content:     strings.TrimSpace(redact.Text(request.Summary)) + fmt.Sprintf("\n\n[Previous DM](%s)", chatURL(session.ID)),
 			MessageKind: pgtype.Text{String: protocol.ChatMessageKindContinuationSummary, Valid: true},
+		})
+	}
+	if err == nil {
+		next, err = qtx.SetChatContinuationSource(r.Context(), db.SetChatContinuationSourceParams{
+			ID: next.ID, ContinuedFromSessionID: session.ID, SummaryCreatedAt: summary.CreatedAt,
 		})
 	}
 	if err == nil {

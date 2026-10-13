@@ -102,6 +102,7 @@ describe("LoginPage", () => {
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.clearAllMocks();
+    mockApiIssueCliToken.mockReset();
     mockAuthState.expired = false;
     // Default: no existing session (getMe rejects when no auth)
     mockApiGetMe.mockRejectedValue(new Error("unauthorized"));
@@ -477,7 +478,7 @@ describe("LoginPage", () => {
     expect(localStorage.getItem("multica_token")).toBe("existing-jwt");
   });
 
-  it("CLI authorize button redirects to callback URL", async () => {
+  it("CLI authorize exchanges the localStorage session before redirecting", async () => {
     localStorage.setItem("multica_token", "existing-jwt");
     // Cookie attempt fails, localStorage fallback succeeds
     mockApiGetMe
@@ -488,6 +489,7 @@ describe("LoginPage", () => {
         name: "Test User",
       });
     const onTokenObtained = vi.fn();
+    mockApiIssueCliToken.mockResolvedValueOnce({ token: "cli-jwt" });
 
     render(
       <LoginPage
@@ -506,11 +508,51 @@ describe("LoginPage", () => {
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /^authorize$/i }));
 
-    expect(onTokenObtained).toHaveBeenCalled();
-    expect(window.location.href).toContain(
-      "http://localhost:9876/callback?token=existing-jwt&state=abc",
-    );
+    await waitFor(() => {
+      expect(mockApiIssueCliToken).toHaveBeenCalledOnce();
+      expect(onTokenObtained).toHaveBeenCalled();
+      expect(window.location.href).toBe(
+        "http://localhost:9876/callback?token=cli-jwt&state=abc",
+      );
+    });
+    expect(localStorage.getItem("multica_token")).toBe("existing-jwt");
   });
+
+  it.each(["cookie", "localStorage"])(
+    "does not hand off a %s session when CLI issuance fails",
+    async (source) => {
+      if (source === "localStorage") {
+        localStorage.setItem("multica_token", "interactive-jwt");
+        mockApiGetMe.mockRejectedValueOnce(new Error("no cookie"));
+      }
+      mockApiGetMe.mockResolvedValueOnce({
+        id: "u-1",
+        email: "user@example.com",
+        name: "Test User",
+      });
+      mockApiIssueCliToken.mockRejectedValueOnce(new Error("handoff denied"));
+      const onTokenObtained = vi.fn();
+
+      render(
+        <LoginPage
+          onSuccess={onSuccess}
+          onTokenObtained={onTokenObtained}
+          cliCallback={{ url: "http://localhost:9876/callback", state: "abc" }}
+        />,
+      );
+
+      await screen.findByText(/authorize cli/i);
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: /^authorize$/i }));
+
+      expect(
+        await screen.findByText(enAuth.errors.cli_auth_failed),
+      ).toBeInTheDocument();
+      expect(mockApiIssueCliToken).toHaveBeenCalledOnce();
+      expect(window.location.href).toBe("http://localhost:3000");
+      expect(onTokenObtained).not.toHaveBeenCalled();
+    },
+  );
 
   it("'Use a different account' returns to email step", async () => {
     localStorage.setItem("multica_token", "existing-jwt");
@@ -609,9 +651,10 @@ describe("LoginPage", () => {
   // CLI callback — code verification redirects
   // -------------------------------------------------------------------------
 
-  it("CLI code verification redirects to callback URL", async () => {
+  it("CLI code verification exchanges the interactive token before redirecting", async () => {
     mockSendCode.mockResolvedValueOnce(undefined);
     mockApiVerifyCode.mockResolvedValueOnce({ token: "new-jwt-token" });
+    mockApiIssueCliToken.mockResolvedValueOnce({ token: "cli-jwt" });
     const onTokenObtained = vi.fn();
 
     render(
@@ -642,14 +685,43 @@ describe("LoginPage", () => {
       );
       expect(onTokenObtained).toHaveBeenCalled();
       expect(window.location.href).toContain(
-        "http://localhost:9876/callback?token=new-jwt-token&state=xyz",
+        "http://localhost:9876/callback?token=cli-jwt&state=xyz",
       );
     });
 
+    expect(mockApiSetToken).toHaveBeenCalledWith("new-jwt-token");
+    expect(mockApiIssueCliToken).toHaveBeenCalledOnce();
+    expect(localStorage.getItem("multica_token")).toBe("new-jwt-token");
     // Normal verifyCode should NOT be called in CLI path
     expect(mockVerifyCode).not.toHaveBeenCalled();
     // onSuccess should NOT be called in CLI path — redirect handles it
     expect(onSuccess).not.toHaveBeenCalled();
+  });
+
+  it("does not hand off the email login token when CLI issuance fails", async () => {
+    mockSendCode.mockResolvedValueOnce(undefined);
+    mockApiVerifyCode.mockResolvedValueOnce({ token: "interactive-jwt" });
+    mockApiIssueCliToken.mockRejectedValueOnce(new Error("handoff denied"));
+    const onTokenObtained = vi.fn();
+
+    render(
+      <LoginPage
+        onSuccess={onSuccess}
+        onTokenObtained={onTokenObtained}
+        cliCallback={{ url: "http://localhost:9876/callback", state: "xyz" }}
+      />,
+    );
+
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText(/email/i), "cli@example.com");
+    await user.click(screen.getByRole("button", { name: /continue/i }));
+    await user.type(getOTPInput(), "654321");
+
+    expect(await screen.findByText("handoff denied")).toBeInTheDocument();
+    expect(mockApiIssueCliToken).toHaveBeenCalledOnce();
+    expect(window.location.href).toBe("http://localhost:3000");
+    expect(onTokenObtained).not.toHaveBeenCalled();
+    expect(localStorage.getItem("multica_token")).toBe("interactive-jwt");
   });
 
   // -------------------------------------------------------------------------

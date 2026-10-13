@@ -1,0 +1,137 @@
+package handler
+
+import (
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"net/http"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
+)
+
+func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *http.Request) {
+	var input struct {
+		IssueID         string `json:"issue_id"`
+		SessionID       string `json:"session_id"`
+		NewDM           bool   `json:"new_dm"`
+		For             string `json:"for"`
+		Ask             string `json:"ask"`
+		EscalationClass string `json:"escalation_class"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8*maxCommentContentBytes)).Decode(&input); err != nil {
+		writeError(writer, http.StatusBadRequest, "invalid decision request")
+		return
+	}
+	if len(input.Ask) > maxCommentContentBytes {
+		writeError(writer, http.StatusBadRequest, "ask is too long")
+		return
+	}
+	issue, ok := handler.loadIssueForUser(writer, request, input.IssueID)
+	if !ok {
+		return
+	}
+	if _, ok := handler.requireWorkspaceMember(writer, request, uuidToString(issue.WorkspaceID), "workspace not found"); !ok {
+		return
+	}
+	if input.NewDM == (input.SessionID != "") || input.NewDM && input.For == "" || !input.NewDM && input.For != "" {
+		writeError(writer, http.StatusBadRequest, "choose session_id or new_dm with for")
+		return
+	}
+	var sessionID, humanID pgtype.UUID
+	if input.NewDM {
+		humanID, ok = parseUUIDOrBadRequest(writer, input.For, "for")
+	} else {
+		sessionID, ok = parseUUIDOrBadRequest(writer, input.SessionID, "session_id")
+	}
+	if !ok {
+		return
+	}
+	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: input.Ask, EscalationClass: input.EscalationClass})
+	if err != nil {
+		writeDecisionError(writer, err, "decision request")
+		return
+	}
+	workspaceID, agentID := uuidToString(issue.WorkspaceID), uuidToString(result.Request.AskingAgentID)
+	if result.CreatedSession != nil {
+		session := result.CreatedSession
+		handler.publishChat(protocol.EventChatSessionCreated, workspaceID, "agent", agentID, uuidToString(session.ID), protocol.ChatSessionCreatedPayload{
+			WorkspaceID: workspaceID, ChatSessionID: uuidToString(session.ID), AgentID: agentID, CreatorID: uuidToString(session.CreatorID), Title: session.Title,
+		})
+	}
+	item, err := decisiontx.NotifyPing(request.Context(), handler.TxStarter, handler.Queries, issue.WorkspaceID, result.Request.ID)
+	if err != nil {
+		slog.Warn("decision ping inbox pending retry", "decision_request_id", uuidToString(result.Request.ID), "error", err)
+	} else {
+		if stored, err := handler.Queries.GetDecisionRequest(request.Context(), db.GetDecisionRequestParams{WorkspaceID: issue.WorkspaceID, ID: result.Request.ID}); err == nil {
+			result.Request = stored
+		}
+		if item != nil {
+			response := inboxToResponse(*item)
+			response.IssueStatus = &issue.Status
+			response.IssuePriority = &issue.Priority
+			handler.publish(protocol.EventInboxNew, workspaceID, "agent", agentID, map[string]any{"item": response})
+		}
+	}
+	handler.publish(protocol.EventCommentCreated, workspaceID, "agent", agentID, map[string]any{
+		"comment": commentToResponse(result.Comment, nil, nil), "issue_title": issue.Title, "issue_status": issue.Status,
+		"decision_intent_targets": []string{uuidToString(result.Request.HumanUserID)},
+	})
+	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
+	handler.publishChat(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(result.Message.ChatSessionID), protocol.ChatMessagePayload{
+		ChatSessionID: uuidToString(result.Message.ChatSessionID), MessageID: uuidToString(result.Message.ID),
+		Role: result.Message.Role, Content: result.Message.Content, CreatedAt: timestampToString(result.Message.CreatedAt),
+	})
+	writeJSON(writer, http.StatusCreated, result.Request)
+}
+
+func (handler *Handler) GetDecision(writer http.ResponseWriter, request *http.Request) {
+	workspaceID := handler.resolveWorkspaceID(request)
+	if _, ok := handler.requireWorkspaceMember(writer, request, workspaceID, "workspace not found"); !ok {
+		return
+	}
+	workspaceUUID, ok := parseUUIDOrBadRequest(writer, workspaceID, "workspace_id")
+	if !ok {
+		return
+	}
+	requestID, ok := parseUUIDOrBadRequest(writer, chi.URLParam(request, "id"), "id")
+	if !ok {
+		return
+	}
+	stored, err := handler.Queries.GetDecisionRequest(request.Context(), db.GetDecisionRequestParams{WorkspaceID: workspaceUUID, ID: requestID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(writer, http.StatusNotFound, "decision request not found")
+		return
+	}
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, "failed to read decision request")
+		return
+	}
+	if _, ok := handler.loadIssueForUser(writer, request, uuidToString(stored.IssueID)); !ok {
+		return
+	}
+	writeJSON(writer, http.StatusOK, stored)
+}
+
+func (handler *Handler) ListDecisions(writer http.ResponseWriter, request *http.Request) {
+	issue, ok := handler.loadIssueForUser(writer, request, request.URL.Query().Get("issue"))
+	if !ok {
+		return
+	}
+	if _, ok := handler.requireWorkspaceMember(writer, request, uuidToString(issue.WorkspaceID), "workspace not found"); !ok {
+		return
+	}
+	requests, err := handler.Queries.ListDecisionRequestsByIssue(request.Context(), db.ListDecisionRequestsByIssueParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID})
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, "failed to list decision requests")
+		return
+	}
+	if requests == nil {
+		requests = []db.DecisionRequest{}
+	}
+	writeJSON(writer, http.StatusOK, requests)
+}

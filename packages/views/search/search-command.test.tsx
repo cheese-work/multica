@@ -421,6 +421,25 @@ describe("SearchCommand", () => {
     expect(screen.queryByPlaceholderText("Type a command or search...")).not.toBeInTheDocument();
   });
 
+  it("prefills a URL query and searches without typing", async () => {
+    mockSearchIssues.mockResolvedValue({
+      issues: [{ id: "issue-url", identifier: "TEST-1", title: "URL search result", status: "todo" }],
+    });
+    render(<SearchCommand initialQuery="login + 中文" />, { wrapper: I18nWrapper });
+
+    expect(screen.getByPlaceholderText("Type a command or search...")).toHaveValue("login + 中文");
+    expect(await screen.findByText("URL search result")).toBeInTheDocument();
+    expect(mockSearchIssues).toHaveBeenCalledWith(expect.objectContaining({ q: "login + 中文" }));
+  });
+
+  it("updates the prefill when another URL query arrives while open", async () => {
+    const view = render(<SearchCommand initialQuery="first" />, { wrapper: I18nWrapper });
+    await waitFor(() => expect(mockSearchIssues).toHaveBeenCalledWith(expect.objectContaining({ q: "first" })));
+    view.rerender(<SearchCommand initialQuery="second" />);
+    expect(screen.getByPlaceholderText("Type a command or search...")).toHaveValue("second");
+    await waitFor(() => expect(mockSearchIssues).toHaveBeenCalledWith(expect.objectContaining({ q: "second" })));
+  });
+
   it("shows only New Issue by default and hides Pages / low-frequency commands until query", () => {
     renderSearch();
 

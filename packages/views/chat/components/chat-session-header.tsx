@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Archive, ArchiveRestore, MoreHorizontal, Pencil, Trash2, UserRound } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import {
@@ -43,6 +43,7 @@ export function ChatSessionHeader({
   session,
   agent,
   onArchive,
+  renameRequest = 0,
 }: {
   session: ChatSession;
   agent: Agent | null;
@@ -50,6 +51,7 @@ export function ChatSessionHeader({
   // next chat on desktop, back to the list on mobile), so the parent owns it —
   // see ChatPage.handleArchive. Falls back to a plain status flip if unwired.
   onArchive?: (session: ChatSession) => void;
+  renameRequest?: number;
 }) {
   const { t } = useT("chat");
   const wsPaths = useWorkspacePaths();
@@ -69,6 +71,7 @@ export function ChatSessionHeader({
   // that intent so the final composed value is committed, not the draft.
   const commitAfterCompositionRef = useRef(false);
   const blurCommitTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handledRenameRequest = useRef(renameRequest);
 
   const title = session.title?.trim() || t(($) => $.window.untitled);
 
@@ -88,19 +91,25 @@ export function ChatSessionHeader({
     [],
   );
 
-  const clearPendingBlurCommit = () => {
+  const clearPendingBlurCommit = useCallback(() => {
     if (blurCommitTimeoutRef.current === null) return;
     clearTimeout(blurCommitTimeoutRef.current);
     blurCommitTimeoutRef.current = null;
-  };
+  }, []);
 
-  const startRename = () => {
+  const startRename = useCallback(() => {
     clearPendingBlurCommit();
     isComposingRef.current = false;
     commitAfterCompositionRef.current = false;
     setDraft(session.title ?? "");
     setEditing(true);
-  };
+  }, [clearPendingBlurCommit, session.title]);
+
+  useEffect(() => {
+    if (renameRequest === handledRenameRequest.current) return;
+    handledRenameRequest.current = renameRequest;
+    startRename();
+  }, [renameRequest, startRename]);
 
   const commitRename = (raw = draft) => {
     clearPendingBlurCommit();

@@ -705,6 +705,7 @@ func init() {
 	issueRunMessagesCmd.Flags().String("issue", "", "Issue ID/key to scope short run ID prefix resolution")
 
 	// issue comment add
+	issueCommentAddCmd.Flags().Bool("decision-intent", false, "Open a 3-minute decision window for the named people (running assigned issue tasks only)")
 	issueCommentAddCmd.Flags().String("content", "", "Comment content (decodes \\n, \\r, \\t, \\\\; pipe via --content-stdin for multi-line bodies or to preserve literal backslashes)")
 	issueCommentAddCmd.Flags().Bool("content-stdin", false, "Read comment content from stdin (preserves multi-line content verbatim)")
 	issueCommentAddCmd.Flags().String("content-file", "", "Read comment content from a UTF-8 file (preserves multi-line content verbatim; use this on Windows when stdin piping mangles non-ASCII bytes). The path must be inside the current working directory unless --allow-external-file is set.")
@@ -2734,6 +2735,9 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	body := map[string]any{"content": content}
 	if parentID, _ := cmd.Flags().GetString("parent"); parentID != "" {
 		body["parent_id"] = parentID
+	}
+	if decisionIntent, _ := cmd.Flags().GetBool("decision-intent"); decisionIntent {
+		body["decision_intent"] = true
 	}
 	if len(attachmentIDs) > 0 {
 		body["attachment_ids"] = attachmentIDs
