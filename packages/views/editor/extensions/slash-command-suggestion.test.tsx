@@ -5,7 +5,15 @@ import { I18nProvider } from "@multica/core/i18n/react";
 import { workspaceKeys } from "@multica/core/workspace/queries";
 import type { Agent, MemberWithUser } from "@multica/core/types";
 import type { QueryClient } from "@tanstack/react-query";
+import { Editor } from "@tiptap/core";
+import StarterKit from "@tiptap/starter-kit";
+import { Markdown } from "@tiptap/markdown";
+import { SlashCommandExtension } from "./slash-command-extension";
 import enEditor from "../../locales/en/editor.json";
+import frEditor from "../../locales/fr/editor.json";
+import jaEditor from "../../locales/ja/editor.json";
+import koEditor from "../../locales/ko/editor.json";
+import zhEditor from "../../locales/zh-Hans/editor.json";
 
 const TEST_RESOURCES = {
   en: { editor: enEditor },
@@ -88,13 +96,28 @@ function fakeQc(data: {
   } as unknown as QueryClient;
 }
 
-function items(qc: QueryClient, query = ""): SlashCommandItem[] {
+function items(qc: QueryClient, query = "", before = ""): SlashCommandItem[] {
   const config = createSlashCommandSuggestion(qc);
-  return config.items!({
-    query,
-    editor: {} as never,
-    signal: new AbortController().signal,
-  }) as SlashCommandItem[];
+  const editor = new Editor({
+    extensions: [StarterKit],
+    content: {
+      type: "doc",
+      content: `${before}/${query}`.split("\n").map((text) => ({
+        type: "paragraph",
+        content: text ? [{ type: "text", text }] : [],
+      })),
+    },
+  });
+  editor.commands.setTextSelection(editor.state.doc.content.size - 1);
+  try {
+    return config.items!({
+      query,
+      editor,
+      signal: new AbortController().signal,
+    }) as SlashCommandItem[];
+  } finally {
+    editor.destroy();
+  }
 }
 
 describe("slash command suggestion items", () => {
@@ -113,7 +136,7 @@ describe("slash command suggestion items", () => {
       ],
     });
 
-    expect(items(qc).map((i) => i.label)).toEqual(["deploy", "review"]);
+    expect(items(qc).map((i) => i.label)).toEqual(["compact", "deploy", "review"]);
   });
 
   it("filters skills by name case-insensitively", () => {
@@ -269,14 +292,14 @@ describe("slash command suggestion items", () => {
     ]);
   });
 
-  it("returns empty when the active agent has no skills", () => {
+  it("offers compact when the active agent has no skills", () => {
     chatState.selectedAgentId = "agent-1";
     const qc = fakeQc({
       members: [{ user_id: "u1", name: "Alice", role: "member" }],
       agents: [agent({ id: "agent-1", skills: [] })],
     });
 
-    expect(items(qc)).toEqual([]);
+    expect(items(qc).map((item) => item.label)).toEqual(["compact"]);
   });
 
   it("caps results at 20", () => {
@@ -310,16 +333,16 @@ describe("slash command suggestion items", () => {
       ],
     });
 
-    expect(items(qc).map((i) => i.id)).toEqual(["s1"]);
+    expect(items(qc).map((i) => i.label)).toEqual(["compact", "deploy"]);
   });
 
-  it("returns empty when no agents exist", () => {
+  it("offers only compact when no agents exist", () => {
     const qc = fakeQc({
       members: [{ user_id: "u1", name: "Alice", role: "member" }],
       agents: [],
     });
 
-    expect(items(qc)).toEqual([]);
+    expect(items(qc).map((item) => item.label)).toEqual(["compact"]);
   });
 
   it("excludes skills from private agents the user cannot access", () => {
@@ -341,7 +364,134 @@ describe("slash command suggestion items", () => {
       ],
     });
 
-    expect(items(qc)).toEqual([]);
+    expect(items(qc).map((item) => item.label)).toEqual(["compact"]);
+  });
+});
+
+describe("DM compact command", () => {
+  const compact = {
+    id: "compact",
+    label: "compact",
+    descriptionKey: "compact",
+  } as SlashCommandItem;
+
+  it.each(["", "co", "COMPACT"])("matches the label prefix %j ahead of skills", (query) => {
+    const qc = fakeQc({
+      members: [{ user_id: "u1", name: "Alice", role: "member" }],
+      agents: [agent({ skills: [{ id: "s1", name: "compact-skill", description: "" }] })],
+    });
+    expect(items(qc, query).map((item) => item.id)).toEqual(["compact", "s1"]);
+  });
+
+  it.each(["omp", "focus", "summarize", "compactx"])("does not match %j", (query) => {
+    expect(items(fakeQc({}), query)).toEqual([]);
+  });
+
+  it.each(["Hello ", "Hello\n", "\nHello\n"])("omits compact after message content %j without hiding skills", (before) => {
+    const qc = fakeQc({
+      members: [{ user_id: "u1", name: "Alice", role: "member" }],
+      agents: [agent({ skills: [{ id: "s1", name: "compile", description: "" }] })],
+    });
+    expect(items(qc, "co", before).map((item) => item.id)).toEqual(["s1"]);
+  });
+
+  it.each([" ", "\n", "  \n  "])("allows leading whitespace %j", (before) => {
+    expect(items(fakeQc({}), "co", before).map((item) => item.id)).toEqual(["compact"]);
+  });
+
+  it.each([
+    ["<p><br>/co</p>", true],
+    ["<blockquote><p>/co</p></blockquote>", false],
+    ["<ul><li><p>/co</p></li></ul>", false],
+    ["<pre><code>/co</code></pre>", false],
+    ['<p><span data-type="slash-command" data-id="s1" data-label="deploy"></span> /co</p>', false],
+  ])("matches the server's first-word position in %j", (content, offered) => {
+    const editor = new Editor({ extensions: [StarterKit, SlashCommandExtension], content });
+    editor.state.doc.descendants((node, position) => {
+      if (node.isText) editor.commands.setTextSelection(position + node.nodeSize);
+    });
+    try {
+      const result = createSlashCommandSuggestion(fakeQc({})).items!({
+        editor, query: "co", signal: new AbortController().signal,
+      }) as SlashCommandItem[];
+      expect(result.some((item) => item.id === "compact")).toBe(offered);
+    } finally {
+      editor.destroy();
+    }
+  });
+
+  it("keeps compact first within the 20-item cap", () => {
+    const qc = fakeQc({
+      members: [{ user_id: "u1", name: "Alice", role: "member" }],
+      agents: [agent({ skills: Array.from({ length: 25 }, (_, index) => ({
+        id: `s${index}`, name: `skill-${index}`, description: "",
+      })) })],
+    });
+    const result = items(qc);
+    expect(result).toHaveLength(20);
+    expect(result[0]?.id).toBe("compact");
+  });
+
+  it.each(["/co", "/co remaining focus"])("inserts plain compact text into %j, never the display hint or a skill node", (text) => {
+    const element = document.body.appendChild(document.createElement("div"));
+    const editor = new Editor({
+      element,
+      extensions: [StarterKit, Markdown, SlashCommandExtension],
+      content: `<p>${text}</p>`,
+    });
+    editor.commands.setTextSelection(4);
+    window.getSelection()?.selectAllChildren(editor.view.dom);
+    try {
+      createSlashCommandSuggestion(fakeQc({})).command!({
+        editor, range: { from: 1, to: 4 }, props: compact,
+      });
+      const expected = text.replace(/^\/co ?/, "/compact ");
+      expect(editor.getJSON()).toEqual({
+        type: "doc",
+        content: [{ type: "paragraph", content: [{ type: "text", text: expected }] }],
+      });
+      expect(editor.getMarkdown()).toBe(expected);
+    } finally {
+      editor.destroy();
+      element.remove();
+    }
+  });
+
+  it("keeps skill selections as rich slashCommand nodes", () => {
+    const element = document.body.appendChild(document.createElement("div"));
+    const editor = new Editor({
+      element,
+      extensions: [StarterKit, SlashCommandExtension],
+      content: "<p>/de</p>",
+    });
+    editor.commands.setTextSelection(4);
+    window.getSelection()?.selectAllChildren(editor.view.dom);
+    try {
+      createSlashCommandSuggestion(fakeQc({})).command!({
+        editor, range: { from: 1, to: 4 }, props: { id: "s1", label: "deploy" },
+      });
+      expect(editor.getJSON().content?.[0]?.content?.[0]).toMatchObject({
+        type: "slashCommand", attrs: { id: "s1", label: "deploy" },
+      });
+    } finally {
+      editor.destroy();
+      element.remove();
+    }
+  });
+
+  it("renders the display-only focus hint, localized description, and Multica badge", () => {
+    const { getByRole, getByText } = render(
+      <I18nWrapper>
+        <SlashCommandList items={[compact]} query="" command={vi.fn()} />
+      </I18nWrapper>,
+    );
+    expect(getByRole("button", { name: /\/compact \[focus\]/ })).toBeInTheDocument();
+    expect(getByText("Multica")).toBeInTheDocument();
+    expect(getByText("Summarize this DM and continue in a new one")).toBeInTheDocument();
+  });
+
+  it.each([enEditor, frEditor, jaEditor, koEditor, zhEditor])("has a compact description in every locale", (locale) => {
+    expect(locale.slash_command.commands).toHaveProperty("compact", expect.any(String));
   });
 });
 
