@@ -2522,7 +2522,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Route("/{sessionId}", func(r chi.Router) {
 					r.Get("/", h.GetChatSession)
 					r.Patch("/", h.UpdateChatSession)
-					r.Put("/summary", h.SetChatLaneSummary)
 					r.Patch("/pin", h.SetChatSessionPinned)
 					r.Patch("/archive", h.SetChatSessionArchived)
 					r.Delete("/", h.DeleteChatSession)
@@ -2558,7 +2557,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// overview (top-level messages + thread metadata); `thread` reads one
 			// thread (?id for a specific one, else the thread the session is in).
 			r.Get("/api/chat/history", h.GetChatChannelHistory)
-			r.Put("/api/chat/summary", h.SetChatLaneSummary)
 			r.Get("/api/chat/thread", h.GetChatThread)
 			r.Post("/api/chat/continue", h.ContinueChatSession)
 

@@ -1371,6 +1371,20 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 	for _, id := range issueIDs {
 		linked = append(linked, uuidToString(id))
 	}
+	if fresh := pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha; fresh && (pr.State == "open" || pr.State == "draft") &&
+		pr.ApiMergeStateStatus.Valid && (pr.ApiMergeStateStatus.String == "DIRTY" || pr.ApiMergeStateStatus.String == "BEHIND") &&
+		pr.SnapshotBaseRef.Valid && pr.SnapshotBaseRef.String != "" {
+		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
+		for _, issueID := range issueIDs {
+			if err := wakeup.TriggerPullRequestWakeup(ctx, issueID, service.PullRequestWakeupInput{
+				Rule: service.SystemRulePRAttention, Reason: service.PRAttentionMergeability, MergeState: pr.ApiMergeStateStatus.String,
+				RepoOwner: pr.RepoOwner, RepoName: pr.RepoName, Number: pr.PrNumber, URL: pr.HtmlUrl,
+				HeadSHA: pr.SnapshotHeadSha, BaseBranch: pr.SnapshotBaseRef.String, HeadBranch: pr.Branch.String,
+			}); err != nil {
+				slog.Warn("github: failed to dispatch pull request mergeability wakeup", "err", err, "pr_id", uuidToString(pr.ID), "issue_id", uuidToString(issueID))
+			}
+		}
+	}
 	if pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha && pr.ChecksRollupState.Valid &&
 		(pr.ChecksRollupState.String == "FAILURE" || pr.ChecksRollupState.String == "ERROR") {
 		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
@@ -1618,9 +1632,10 @@ type ghPullRequestPayload struct {
 	} `json:"pull_request"`
 	Changes    *ghPRChanges `json:"changes"`
 	Repository struct {
-		ID    int64  `json:"id"`
-		Name  string `json:"name"`
-		Owner struct {
+		ID            int64  `json:"id"`
+		Name          string `json:"name"`
+		DefaultBranch string `json:"default_branch"`
+		Owner         struct {
 			Login string `json:"login"`
 		} `json:"owner"`
 	} `json:"repository"`
@@ -1692,6 +1707,11 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) error
 	// only the doorbell — its own mergeable/checks payload is not used for
 	// display anymore (MUL-5265).
 	h.PRRefresh.Enqueue(p.Installation.ID, p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number)
+	if p.PullRequest.Merged {
+		if err := h.refreshOpenPRsOnBase(ctx, &p); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	if len(errs) > 0 {
 		return errors.Join(errs...)
 	}
@@ -2012,14 +2032,25 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 			h.maybeAutoCompleteIssue(ctx, wsID, issueID, resolver)
 		}
 	}
-	if state == "merged" {
+	// A PR sent back to draft (CHE-1417): the rule itself decides whether the
+	// issue was already accepted. The action, not the mirror's previous state,
+	// identifies the conversion, so a redelivery after a failed capture still
+	// reaches the rule; EventAt separates it from a later conversion.
+	var attention service.PullRequestWakeupInput
+	switch {
+	case state == "merged":
+		attention = service.PullRequestWakeupInput{
+			Rule: service.SystemRulePRMerged, MergeCommit: p.PullRequest.MergeCommitSHA, DefaultBranch: p.Repository.DefaultBranch,
+		}
+	case state == "draft" && p.Action == "converted_to_draft":
+		attention = service.PullRequestWakeupInput{Rule: service.SystemRulePRAttention, Reason: service.PRAttentionDraft, EventAt: p.PullRequest.UpdatedAt}
+	}
+	if attention.Rule != "" {
 		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
+		attention.RepoOwner, attention.RepoName, attention.Number, attention.URL = p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number, p.PullRequest.HTMLURL
+		attention.HeadSHA, attention.BaseBranch, attention.HeadBranch = p.PullRequest.Head.SHA, p.PullRequest.Base.Ref, p.PullRequest.Head.Ref
 		return dispatchMergedPRWakeups(issueIDs, func(issueID pgtype.UUID) error {
-			return wakeup.TriggerPullRequestWakeup(ctx, issueID, service.PullRequestWakeupInput{
-				Rule: service.SystemRulePRMerged, RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name,
-				Number: p.PullRequest.Number, URL: p.PullRequest.HTMLURL, MergeCommit: p.PullRequest.MergeCommitSHA,
-				HeadSHA: p.PullRequest.Head.SHA, BaseBranch: p.PullRequest.Base.Ref, HeadBranch: p.PullRequest.Head.Ref,
-			})
+			return wakeup.TriggerPullRequestWakeup(ctx, issueID, attention)
 		}, func() {
 			h.publish(protocol.EventPullRequestUpdated, workspaceID, "system", "", map[string]any{
 				"pull_request":     githubPullRequestToResponse(pr, h.PRRefresh.Enabled()),
@@ -2031,6 +2062,30 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		"pull_request":     githubPullRequestToResponse(pr, h.PRRefresh.Enabled()),
 		"linked_issue_ids": linkedIssueIDs,
 	})
+	return nil
+}
+
+// refreshOpenPRsOnBase asks for a fresh snapshot of every open PR on the base
+// a merge just moved (CHE-1417). Their merge state can turn DIRTY or BEHIND
+// without a pull_request event of their own; the refresh is what notices it.
+// Their stored merge state is cleared first, so a PR the refresh queue drops
+// is undecided and the snapshot sweep refreshes it. A failed clear is returned:
+// the old decided verdicts would stay outside the sweep, so the delivery must
+// fail and GitHub's redelivery retries it.
+func (h *Handler) refreshOpenPRsOnBase(ctx context.Context, p *ghPullRequestPayload) error {
+	if !h.PRRefresh.Enabled() || p.PullRequest.Base.Ref == "" {
+		return nil
+	}
+	rows, err := h.Queries.InvalidateOpenGitHubPRMergeStateOnBase(ctx, db.InvalidateOpenGitHubPRMergeStateOnBaseParams{
+		InstallationID: p.Installation.ID, RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name,
+		MergedPrNumber: p.PullRequest.Number, BaseRef: pgtype.Text{String: p.PullRequest.Base.Ref, Valid: true},
+	})
+	if err != nil {
+		return fmt.Errorf("github: invalidate merge state of open pull requests on merged base: %w", err)
+	}
+	for _, r := range rows {
+		h.PRRefresh.Enqueue(r.InstallationID, r.RepoOwner, r.RepoName, r.PrNumber)
+	}
 	return nil
 }
 
