@@ -92,6 +92,13 @@ vi.mock("@multica/core/api", () => ({
 
 import LoginPage from "./page";
 
+vi.mock("@multica/views/auth", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/views/auth")>()),
+  LoginPage: ({ onSuccess }: { onSuccess: () => Promise<void> }) => (
+    <button onClick={onSuccess}>Complete sign-in</button>
+  ),
+}));
+
 describe("LoginPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -180,6 +187,17 @@ describe("LoginPage", () => {
       expect(mockListWorkspaces).not.toHaveBeenCalled();
     });
 
+    it("returns a fresh form login to the search URL with its query intact", async () => {
+      const destination = "/acme/search?q=login%20%2B%20%E4%B8%AD%E6%96%87";
+      searchParamsState.params = new URLSearchParams({ next: destination });
+      const view = render(<LoginPage />, { wrapper: createWrapper() });
+      authStateRef.state.user = onboardedUser;
+      view.rerender(<LoginPage />);
+      fireEvent.click(screen.getByRole("button", { name: "Complete sign-in" }));
+      await waitFor(() => expect(mockPush).toHaveBeenCalledWith(destination));
+      expect(mockReplace).not.toHaveBeenCalled();
+    });
+
     it("fetches the workspace list before redirecting a visitor who arrived authenticated", async () => {
       // Cold Query cache on a fresh page load: reading it would say "no
       // workspaces" and misroute to /workspaces/new. The effect must fetch.
@@ -194,16 +212,16 @@ describe("LoginPage", () => {
       expect(mockListWorkspaces).toHaveBeenCalledTimes(1);
     });
 
-    it("still honors ?next= for a visitor who arrived authenticated", async () => {
+    it.each(["/invite/abc", "/acme/search?q=login%20%2B%20%E4%B8%AD%E6%96%87"])("still honors ?next=%s for a visitor who arrived authenticated", async (destination) => {
       searchParamsState.params = new URLSearchParams({
-        next: "/invite/abc",
+        next: destination,
       });
       authStateRef.state.user = onboardedUser;
 
       render(<LoginPage />, { wrapper: createWrapper() });
 
       await waitFor(() => {
-        expect(mockReplace).toHaveBeenCalledWith("/invite/abc");
+        expect(mockReplace).toHaveBeenCalledWith(destination);
       });
       expect(mockListWorkspaces).not.toHaveBeenCalled();
     });

@@ -118,9 +118,63 @@ beforeEach(() => {
   state.workspaceError = false;
   state.hasBeenSeen = false;
   state.pathname = "/acme/issues";
+  window.history.replaceState(null, "", "/acme/issues");
 });
 
 describe("WorkspaceLayout", () => {
+  it("does not attach the old workspace target when a verified session ends", async () => {
+    state.pathname = "/acme/search";
+    state.workspace = { id: "workspace-acme", slug: "acme" };
+    window.history.replaceState(null, "", "/acme/search?q=old-user-query");
+    const view = renderLayout();
+    expect(await screen.findByTestId("workspace-content")).toBeInTheDocument();
+    state.user = null;
+    view.rerender(
+      <Suspense fallback={<div data-testid="route-loading" />}>
+        <WorkspaceLayout params={makeParams("acme")}>
+          <div data-testid="workspace-content" />
+        </WorkspaceLayout>
+      </Suspense>,
+    );
+    await waitFor(() => expect(state.replace).toHaveBeenCalledWith("/login"));
+    expect(state.replace).not.toHaveBeenCalledWith(expect.stringContaining("next="));
+  });
+
+  it("preserves the search target when an unverified cached session is rejected", async () => {
+    state.pathname = "/acme/search";
+    state.isAuthLoading = true;
+    const destination = "/acme/search?q=fresh-visit";
+    window.history.replaceState(null, "", destination);
+    const view = renderLayout();
+    state.user = null;
+    state.isAuthLoading = false;
+    view.rerender(
+      <Suspense fallback={<div data-testid="route-loading" />}>
+        <WorkspaceLayout params={makeParams("acme")}>
+          <div data-testid="workspace-content" />
+        </WorkspaceLayout>
+      </Suspense>,
+    );
+    await waitFor(() => expect(state.replace).toHaveBeenCalledWith(`/login?next=${encodeURIComponent(destination)}`));
+  });
+
+  it("preserves the search URL and encoded query when login is required", async () => {
+    state.user = null;
+    state.pathname = "/acme/search";
+    const destination = "/acme/search?q=login%20%2B%20%E4%B8%AD%E6%96%87";
+    window.history.replaceState(null, "", destination);
+    renderLayout();
+    await waitFor(() => expect(state.replace).toHaveBeenCalledWith(`/login?next=${encodeURIComponent(destination)}`));
+    expect(screen.queryByTestId("workspace-content")).not.toBeInTheDocument();
+  });
+
+  it("does not mount the search route for a workspace outside the membership list", async () => {
+    state.pathname = "/acme/search";
+    renderLayout();
+    expect(await screen.findByTestId("no-access")).toBeInTheDocument();
+    expect(screen.queryByTestId("workspace-content")).not.toBeInTheDocument();
+  });
+
   it("keeps loading instead of showing NoAccess when the initial list request fails", async () => {
     state.workspaceError = true;
     const { queryClient } = renderLayout();

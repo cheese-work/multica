@@ -1,4 +1,12 @@
 {
+  "site_search": {
+    "title": "사이트 검색",
+    "url": "검색 URL",
+    "hint": "brave://settings/search → 사이트 검색 → 추가에서 등록",
+    "copy": "복사",
+    "copied": "검색 URL을 복사했습니다",
+    "copy_failed": "검색 URL을 복사할 수 없습니다"
+  },
   "issue_statuses": {
     "title": "태스크 상태",
     "loading": "상태를 불러오는 중…",

@@ -1,4 +1,12 @@
 {
+  "site_search": {
+    "title": "サイト内検索",
+    "url": "検索 URL",
+    "hint": "brave://settings/search → サイト内検索 → 追加 で登録",
+    "copy": "コピー",
+    "copied": "検索 URL をコピーしました",
+    "copy_failed": "検索 URL をコピーできませんでした"
+  },
   "issue_statuses": {
     "title": "タスクステータス",
     "loading": "ステータスを読み込み中…",
