@@ -107,13 +107,46 @@ WHERE intent.workspace_id = sqlc.arg('workspace_id') AND intent.id = sqlc.arg('d
 ORDER BY target.human_user_id;
 
 -- name: ListDecisionLanes :many
-SELECT session.id, session.title, session.lane_summary, session.lane_summary_updated_at, session.updated_at
+SELECT session.id, session.title, session.updated_at
 FROM chat_session session
 WHERE session.workspace_id = sqlc.arg('workspace_id') AND session.agent_id = sqlc.arg('agent_id')
   AND session.creator_id = sqlc.arg('creator_id') AND session.status = 'active'
   AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
   AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
-ORDER BY session.updated_at DESC, session.id DESC;
+ORDER BY session.updated_at DESC, session.id DESC
+LIMIT 10;
+
+-- name: ListDecisionLaneMentions :many
+WITH newest AS (
+    SELECT DISTINCT ON (message.chat_session_id, issue.id)
+        message.chat_session_id, issue.id AS issue_id,
+        (workspace.issue_prefix || '-' || issue.number::text)::text AS issue_key,
+        issue.title AS issue_title, message.created_at AS mentioned_at, message.id AS message_id,
+        message.content, mention.parts[1] AS mention_link
+    FROM chat_message message
+    JOIN chat_session session ON session.id = message.chat_session_id
+    JOIN workspace ON workspace.id = session.workspace_id
+    CROSS JOIN LATERAL regexp_matches(message.content, '(\[((?:(?!\]\()[^\n])+?)\]\(mention://issue/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\))', 'g') AS mention(parts)
+    JOIN issue ON issue.id = mention.parts[3]::uuid AND issue.workspace_id = session.workspace_id
+    WHERE session.workspace_id = sqlc.arg('workspace_id')
+      AND session.agent_id = sqlc.arg('agent_id') AND session.creator_id = sqlc.arg('creator_id')
+      AND session.id = ANY(sqlc.arg('session_ids')::uuid[])
+      AND session.status = 'active' AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
+      AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
+      AND message.role IN ('user', 'assistant') AND message.message_kind = 'message'
+      AND message.content LIKE '%](mention://issue/%'
+      AND message.failure_reason IS NULL
+      AND NOT EXISTS (SELECT 1 FROM decision_request WHERE ping_message_id = message.id)
+    ORDER BY message.chat_session_id, issue.id, message.created_at DESC, message.id DESC
+), ranked AS (
+    SELECT *, row_number() OVER (PARTITION BY chat_session_id ORDER BY mentioned_at DESC, message_id DESC, issue_id DESC) AS mention_rank
+    FROM newest
+)
+SELECT chat_session_id, issue_id, issue_key, issue_title, mentioned_at,
+    (right(regexp_replace(split_part(content, mention_link, 1), '\[((?:(?!\]\()[^\n])+?)\]\([^)]*\)', '\1', 'g'), 40)
+     || left(regexp_replace(substring(content FROM strpos(content, mention_link) + char_length(mention_link)), '\[((?:(?!\]\()[^\n])+?)\]\([^)]*\)', '\1', 'g'), 60))::text AS snippet
+FROM ranked WHERE mention_rank <= 20
+ORDER BY chat_session_id, mention_rank;
 
 -- name: DecisionLaneWindowOpen :one
 SELECT EXISTS (
