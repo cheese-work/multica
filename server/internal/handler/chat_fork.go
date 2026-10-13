@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -56,7 +57,10 @@ func (h *Handler) ForkChatSession(w http.ResponseWriter, r *http.Request) {
 		Summary        json.RawMessage `json:"summary"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, forkRequestMaxBytes)
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	// The second Decode reads to the end of the body, so the cap covers bytes
+	// after the first JSON value too, and trailing data is rejected.
+	if err := decoder.Decode(&request); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
 		writeError(w, http.StatusBadRequest, "a JSON body of at most 1 MiB is required")
 		return
 	}
