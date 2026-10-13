@@ -280,6 +280,81 @@ func (q *Queries) ListGitHubPRRowsByAddress(ctx context.Context, arg ListGitHubP
 	return items, nil
 }
 
+const listGitHubPRsDueForRecheck = `-- name: ListGitHubPRsDueForRecheck :many
+WITH candidates AS (
+    SELECT pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number,
+           MIN(pr.snapshot_fetched_at)::TIMESTAMPTZ AS oldest_fetched_at
+    FROM github_pull_request AS pr
+    WHERE pr.state IN ('open', 'draft')
+      AND pr.snapshot_fetched_at < $3
+      AND EXISTS (
+          SELECT 1
+          FROM workspace w
+          WHERE w.id = pr.workspace_id
+            AND (w.settings ->> 'github_enabled') IS DISTINCT FROM 'false'
+      )
+    GROUP BY pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number
+), ranked AS (
+    SELECT c.installation_id, c.repo_owner, c.repo_name, c.pr_number, c.oldest_fetched_at, ROW_NUMBER() OVER (
+        PARTITION BY c.installation_id
+        ORDER BY c.oldest_fetched_at, c.repo_owner, c.repo_name, c.pr_number
+    ) AS installation_rank
+    FROM candidates AS c
+)
+SELECT installation_id, repo_owner, repo_name, pr_number, oldest_fetched_at
+FROM ranked
+WHERE installation_rank <= $1::BIGINT
+ORDER BY installation_rank, oldest_fetched_at
+LIMIT $2
+`
+
+type ListGitHubPRsDueForRecheckParams struct {
+	PerInstallation int64              `json:"per_installation"`
+	MaxRows         int32              `json:"max_rows"`
+	OlderThan       pgtype.Timestamptz `json:"older_than"`
+}
+
+type ListGitHubPRsDueForRecheckRow struct {
+	InstallationID  int64              `json:"installation_id"`
+	RepoOwner       string             `json:"repo_owner"`
+	RepoName        string             `json:"repo_name"`
+	PrNumber        int32              `json:"pr_number"`
+	OldestFetchedAt pgtype.Timestamptz `json:"oldest_fetched_at"`
+}
+
+// CHE-1665: slow re-check of open/draft PRs whose snapshot, decided or not, is
+// older than the re-check TTL. A base moved by a direct push sends no
+// pull_request event, so a decided MERGEABLE snapshot can turn DIRTY unseen;
+// this sweep is what notices. Oldest snapshots first, at most per_installation
+// addresses per installation per batch, so one busy installation cannot
+// starve the rest. A successful refresh moves snapshot_fetched_at forward,
+// which is what advances the batch; there is no cursor.
+func (q *Queries) ListGitHubPRsDueForRecheck(ctx context.Context, arg ListGitHubPRsDueForRecheckParams) ([]ListGitHubPRsDueForRecheckRow, error) {
+	rows, err := q.db.Query(ctx, listGitHubPRsDueForRecheck, arg.PerInstallation, arg.MaxRows, arg.OlderThan)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGitHubPRsDueForRecheckRow{}
+	for rows.Next() {
+		var i ListGitHubPRsDueForRecheckRow
+		if err := rows.Scan(
+			&i.InstallationID,
+			&i.RepoOwner,
+			&i.RepoName,
+			&i.PrNumber,
+			&i.OldestFetchedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listStaleUndecidedGitHubPRs = `-- name: ListStaleUndecidedGitHubPRs :many
 WITH candidates AS (
     SELECT pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number
@@ -337,8 +412,8 @@ type ListStaleUndecidedGitHubPRsRow struct {
 }
 
 // TTL / safety-net sweep source. Returns distinct addresses of open/draft PRs
-// whose snapshot is both stale and undecided. A decided snapshot leaves the
-// periodic refresh set; later webhook or view activity can still refresh it.
+// whose snapshot is both stale and undecided. A decided snapshot leaves this
+// fast set; ListGitHubPRsDueForRecheck re-checks it on a slower TTL.
 // The caller advances an address cursor after each bounded batch. Rows after
 // the cursor sort first, followed by a wrap to the start, so even perpetually
 // failing addresses cannot pin the same first LIMIT rows forever.

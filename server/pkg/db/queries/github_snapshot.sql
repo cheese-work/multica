@@ -76,8 +76,8 @@ INSERT INTO github_pull_request_check_run (
 
 -- name: ListStaleUndecidedGitHubPRs :many
 -- TTL / safety-net sweep source. Returns distinct addresses of open/draft PRs
--- whose snapshot is both stale and undecided. A decided snapshot leaves the
--- periodic refresh set; later webhook or view activity can still refresh it.
+-- whose snapshot is both stale and undecided. A decided snapshot leaves this
+-- fast set; ListGitHubPRsDueForRecheck re-checks it on a slower TTL.
 -- The caller advances an address cursor after each bounded batch. Rows after
 -- the cursor sort first, followed by a wrap to the start, so even perpetually
 -- failing addresses cannot pin the same first LIMIT rows forever.
@@ -124,6 +124,40 @@ ORDER BY (
     )
 ) DESC,
 installation_id, repo_owner, repo_name, pr_number
+LIMIT sqlc.arg('max_rows');
+
+-- name: ListGitHubPRsDueForRecheck :many
+-- CHE-1665: slow re-check of open/draft PRs whose snapshot, decided or not, is
+-- older than the re-check TTL. A base moved by a direct push sends no
+-- pull_request event, so a decided MERGEABLE snapshot can turn DIRTY unseen;
+-- this sweep is what notices. Oldest snapshots first, at most per_installation
+-- addresses per installation per batch, so one busy installation cannot
+-- starve the rest. A successful refresh moves snapshot_fetched_at forward,
+-- which is what advances the batch; there is no cursor.
+WITH candidates AS (
+    SELECT pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number,
+           MIN(pr.snapshot_fetched_at)::TIMESTAMPTZ AS oldest_fetched_at
+    FROM github_pull_request AS pr
+    WHERE pr.state IN ('open', 'draft')
+      AND pr.snapshot_fetched_at < sqlc.arg('older_than')
+      AND EXISTS (
+          SELECT 1
+          FROM workspace w
+          WHERE w.id = pr.workspace_id
+            AND (w.settings ->> 'github_enabled') IS DISTINCT FROM 'false'
+      )
+    GROUP BY pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number
+), ranked AS (
+    SELECT c.*, ROW_NUMBER() OVER (
+        PARTITION BY c.installation_id
+        ORDER BY c.oldest_fetched_at, c.repo_owner, c.repo_name, c.pr_number
+    ) AS installation_rank
+    FROM candidates AS c
+)
+SELECT installation_id, repo_owner, repo_name, pr_number, oldest_fetched_at
+FROM ranked
+WHERE installation_rank <= sqlc.arg('per_installation')::BIGINT
+ORDER BY installation_rank, oldest_fetched_at
 LIMIT sqlc.arg('max_rows');
 
 -- name: ListGitHubPRNumbersByHeadSHA :many

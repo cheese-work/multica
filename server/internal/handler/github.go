@@ -1371,13 +1371,20 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 	for _, id := range issueIDs {
 		linked = append(linked, uuidToString(id))
 	}
-	if fresh := pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha; fresh && (pr.State == "open" || pr.State == "draft") &&
-		pr.ApiMergeStateStatus.Valid && (pr.ApiMergeStateStatus.String == "DIRTY" || pr.ApiMergeStateStatus.String == "BEHIND") &&
+	// CHE-1665: a conflict wakes the owner on a draft too; a draft that is only
+	// behind does not. GitHub may report a conflicting draft as DRAFT, so
+	// mergeable=CONFLICTING counts as DIRTY.
+	mergeState := pr.ApiMergeStateStatus.String
+	if pr.ApiMergeable.String == "CONFLICTING" {
+		mergeState = "DIRTY"
+	}
+	if fresh := pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha; fresh &&
+		(mergeState == "DIRTY" && (pr.State == "open" || pr.State == "draft") || mergeState == "BEHIND" && pr.State == "open") &&
 		pr.SnapshotBaseRef.Valid && pr.SnapshotBaseRef.String != "" {
 		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
 		for _, issueID := range issueIDs {
 			if err := wakeup.TriggerPullRequestWakeup(ctx, issueID, service.PullRequestWakeupInput{
-				Rule: service.SystemRulePRAttention, Reason: service.PRAttentionMergeability, MergeState: pr.ApiMergeStateStatus.String,
+				Rule: service.SystemRulePRAttention, Reason: service.PRAttentionMergeability, MergeState: mergeState,
 				RepoOwner: pr.RepoOwner, RepoName: pr.RepoName, Number: pr.PrNumber, URL: pr.HtmlUrl,
 				HeadSHA: pr.SnapshotHeadSha, BaseBranch: pr.SnapshotBaseRef.String, HeadBranch: pr.Branch.String,
 			}); err != nil {

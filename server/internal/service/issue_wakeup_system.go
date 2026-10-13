@@ -130,6 +130,7 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 	}
 	eventType := "pr.merged"
 	eventKey := fmt.Sprintf("github:%s/%s#%d", strings.ToLower(in.RepoOwner), strings.ToLower(in.RepoName), in.Number)
+	var dirtyKey string
 	switch in.Rule {
 	case SystemRulePRMerged:
 		if in.MergeCommit == "" {
@@ -143,11 +144,16 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		eventKey += ":" + in.HeadSHA
 	case SystemRulePRAttention:
 		// Once per head and base pair: DIRTY then BEHIND on the same pair is
-		// one wake; a retarget or a new head is a new pair.
+		// one wake; a retarget or a new head is a new pair. BEHIND has its own
+		// key so it never hides a later DIRTY on the pair (CHE-1665).
 		switch {
 		case in.Reason == PRAttentionMergeability && (in.MergeState == "DIRTY" || in.MergeState == "BEHIND") && in.HeadSHA != "" && in.BaseBranch != "":
 			eventType = "pr.mergeability"
-			eventKey += ":mergeability:" + in.HeadSHA + ":" + in.BaseBranch
+			dirtyKey = eventKey + ":mergeability:" + in.HeadSHA + ":" + in.BaseBranch
+			eventKey = dirtyKey
+			if in.MergeState == "BEHIND" {
+				eventKey += ":behind"
+			}
 		case in.Reason == PRAttentionDraft && in.HeadSHA != "" && in.EventAt != "":
 			eventType = "pr.returned_to_draft"
 			eventKey += ":draft:" + in.HeadSHA + ":" + in.EventAt
@@ -259,7 +265,10 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 			return err
 		}
 	}
-	tag, err := tx.Exec(ctx, `INSERT INTO issue_wakeup_pr_event(wakeup_id,event_key) VALUES($1,$2) ON CONFLICT DO NOTHING`, w.ID, eventKey)
+	// A BEHIND after a DIRTY wake on the same pair is already covered.
+	tag, err := tx.Exec(ctx, `INSERT INTO issue_wakeup_pr_event(wakeup_id,event_key)
+		SELECT $1::uuid,$2::text WHERE $3::text = '' OR $3::text = $2::text OR NOT EXISTS (SELECT 1 FROM issue_wakeup_pr_event WHERE wakeup_id=$1::uuid AND event_key=$3::text)
+		ON CONFLICT DO NOTHING`, w.ID, eventKey, dirtyKey)
 	if err != nil {
 		return err
 	}
