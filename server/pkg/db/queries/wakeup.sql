@@ -83,7 +83,7 @@ WITH candidates AS (
  -- Rate-paused PR rules recover by the clock, on any issue PR dispatch accepts
  -- (everything but the closed category; see systemWakeupIssueActive).
  SELECT w.id FROM issue_wakeup w JOIN issue i ON i.id=w.issue_id AND i.workspace_id=w.workspace_id
- WHERE NOT w.enabled AND w.paused_reason='rate' AND w.system_rule IN ('pr_merged','pr_checks_failed')
+ WHERE NOT w.enabled AND w.paused_reason='rate' AND w.system_rule IN ('pr_merged','pr_checks_failed','pr_needs_attention')
   AND i.status<>'cancelled'
   AND NOT EXISTS(SELECT 1 FROM issue_status s WHERE s.workspace_id=i.workspace_id AND s.key=i.status AND s.category='closed')
 )
@@ -222,7 +222,7 @@ UPDATE issue_wakeup SET enabled=false,next_fire_at=NULL,paused_reason= @paused_r
 -- run block together, and only while the rolling limit has room. Manual,
 -- loop and max_fires pauses never match.
 UPDATE issue_wakeup w SET enabled=true,paused_reason=NULL,disabled_at=NULL,updated_at=clock_timestamp()
-WHERE w.id= @id AND w.system_rule IN ('pr_merged','pr_checks_failed') AND w.paused_reason='rate'
+WHERE w.id= @id AND w.system_rule IN ('pr_merged','pr_checks_failed','pr_needs_attention') AND w.paused_reason='rate'
  AND (SELECT count(*) FROM agent_task_queue t WHERE t.context->>'wakeup_id'=w.id::text AND t.issue_id=w.issue_id AND t.created_at> @since) < @max_runs::bigint;
 
 -- name: CountWakeupFires :exec

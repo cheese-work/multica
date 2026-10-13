@@ -87,6 +87,7 @@ export interface ChatChannelSource {
 export interface ChatSession {
   forked_from_session_id?: string | null;
   continued_into_session_id?: string | null;
+  continued_from_session_id?: string | null;
   id: string;
   workspace_id: string;
   agent_id: string;

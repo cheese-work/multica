@@ -10,6 +10,7 @@ import (
 // prSnapshotQuery is the single GraphQL query behind the whole feature. It
 // returns, in one round trip (Elon measured cost=1):
 //   - headRefOid: the head the snapshot describes (pins the anti-stale write);
+//   - baseRefName: the base the merge state was computed against (CHE-1417);
 //   - mergeable: MERGEABLE / CONFLICTING / UNKNOWN — answers "is there a
 //     conflict" only;
 //   - mergeStateStatus: CLEAN / DIRTY / BLOCKED / BEHIND / UNSTABLE / ... —
@@ -22,6 +23,7 @@ const prSnapshotQuery = `query($owner:String!,$repo:String!,$number:Int!,$cursor
   repository(owner:$owner,name:$repo){
     pullRequest(number:$number){
       headRefOid
+      baseRefName
       mergeable
       mergeStateStatus
       commits(last:1){nodes{commit{
@@ -60,7 +62,9 @@ type CheckContext struct {
 // PRSnapshot is the atomic unit written per fetch. It mirrors exactly what the
 // API returned — no incremental inference.
 type PRSnapshot struct {
-	HeadSHA          string
+	HeadSHA string
+	// BaseRef is the base branch the mergeability verdict was computed against.
+	BaseRef          string
 	Mergeable        string // MERGEABLE / CONFLICTING / UNKNOWN (raw enum)
 	MergeStateStatus string // CLEAN / DIRTY / BLOCKED / BEHIND / UNSTABLE / ... (raw enum)
 	// RollupState is statusCheckRollup.state (SUCCESS/FAILURE/PENDING/ERROR/
@@ -107,6 +111,7 @@ type graphqlRollup struct {
 
 type graphqlPullRequest struct {
 	HeadRefOid       string `json:"headRefOid"`
+	BaseRefName      string `json:"baseRefName"`
 	Mergeable        string `json:"mergeable"`
 	MergeStateStatus string `json:"mergeStateStatus"`
 	Commits          struct {
@@ -165,6 +170,7 @@ func FetchPRSnapshot(ctx context.Context, c *Client, installationID int64, owner
 		}
 		if page == 0 {
 			snap.HeadSHA = pr.HeadRefOid
+			snap.BaseRef = pr.BaseRefName
 			snap.Mergeable = pr.Mergeable
 			snap.MergeStateStatus = pr.MergeStateStatus
 		} else if pr.HeadRefOid != snap.HeadSHA {

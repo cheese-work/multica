@@ -32,6 +32,16 @@ describe("chat continuation contracts", () => {
     expect(ChatSessionSchema.parse({ id: "old" }).continued_into_session_id).toBeUndefined();
   });
 
+  it("validates predecessor links in session and continuation responses", () => {
+    const previousSessionId = "22222222-2222-4222-8222-222222222222";
+    const session = { id: "fresh", continued_from_session_id: previousSessionId };
+    expect(ChatSessionSchema.parse(session).continued_from_session_id).toBe(previousSessionId);
+    expect(ChatContinueResponseSchema.parse({ session, previous_session_id: previousSessionId, url: "/acme/chat?session=fresh" }).session.continued_from_session_id).toBe(previousSessionId);
+    expect(ChatSessionSchema.parse({ ...session, continued_from_session_id: "../../other" }).continued_from_session_id).toBeUndefined();
+    expect(ChatSessionSchema.parse({ ...session, continued_from_session_id: null }).continued_from_session_id).toBeNull();
+    expect(ChatSessionSchema.parse({ id: "legacy" }).continued_from_session_id).toBeUndefined();
+  });
+
   it("validates the continuation response without trusting malformed JSON", () => {
     const response = { session: { id: "fresh" }, previous_session_id: "old", url: "/acme/chat?session=fresh" };
     expect(ChatContinueResponseSchema.parse(response).session.id).toBe("fresh");

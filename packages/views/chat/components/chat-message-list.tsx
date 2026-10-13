@@ -58,11 +58,15 @@ import {
 } from "../lib/copy-text";
 import { stripChatQuickActionsProtocol } from "../lib/quick-actions";
 import { useT } from "../../i18n";
+import { useWorkspacePaths } from "@multica/core/paths";
+import { AppLink } from "../../navigation";
 
 // ─── Public component ────────────────────────────────────────────────────
 
 interface ChatMessageListProps {
   messages: ChatMessage[];
+  continuedFromSessionId?: string | null;
+  continuedIntoSessionId?: string | null;
   /**
    * Server-authoritative pending-task snapshot. `null` / undefined means
    * no in-flight task — list renders without StatusPill.
@@ -108,6 +112,8 @@ interface ChatMessageListProps {
 
 interface ChatListContext {
   isFetchingOlderMessages: boolean;
+  continuedFromSessionId?: string | null;
+  continuedIntoSessionId?: string | null;
   showStatusPill: boolean;
   pendingTask: ChatPendingTask | null | undefined;
   liveTaskMessages: readonly TaskMessagePayload[] | undefined;
@@ -140,6 +146,9 @@ function ChatListHeader({ context }: { context?: ChatListContext }) {
   const { t } = useT("chat");
   return (
     <div className={cn(CHAT_COLUMN, "pt-4")}>
+      {context?.continuedFromSessionId && (
+        <ContinuationAnnouncement sessionId={context.continuedFromSessionId} direction="from" />
+      )}
       {context?.isFetchingOlderMessages && (
         <div className="text-center text-caption text-muted-foreground">
           {t(($) => $.message_list.loading_older)}
@@ -159,6 +168,9 @@ function ChatListHeader({ context }: { context?: ChatListContext }) {
 function ChatListFooter({ context }: { context?: ChatListContext }) {
   return (
     <div className={cn(CHAT_COLUMN, "pb-4 space-y-4")}>
+      {context?.continuedIntoSessionId && (
+        <ContinuationAnnouncement sessionId={context.continuedIntoSessionId} direction="into" />
+      )}
       {context?.showStatusPill && context.pendingTask ? (
         <TaskStatusPill
           pendingTask={context.pendingTask}
@@ -170,6 +182,20 @@ function ChatListFooter({ context }: { context?: ChatListContext }) {
   );
 }
 
+function ContinuationAnnouncement({ sessionId, direction }: { sessionId: string; direction: "from" | "into" }) {
+  const { t } = useT("chat");
+  const wsPaths = useWorkspacePaths();
+  const href = `${wsPaths.chat()}?session=${encodeURIComponent(sessionId)}`;
+  return (
+    <p className="text-caption text-muted-foreground py-2">
+      {direction === "from" ? <>{t(($) => $.message_list.continued_from)}{" "}</> : null}
+      <AppLink href={href} className="underline underline-offset-2 hover:text-foreground">
+        {direction === "from" ? t(($) => $.message_list.previous_dm) : t(($) => $.message_list.continued_in)}
+      </AppLink>
+    </p>
+  );
+}
+
 const LIST_COMPONENTS: Components<ChatRenderItem, ChatListContext> = {
   Header: ChatListHeader,
   Footer: ChatListFooter,
@@ -177,6 +203,8 @@ const LIST_COMPONENTS: Components<ChatRenderItem, ChatListContext> = {
 
 export function ChatMessageList({
   messages,
+  continuedFromSessionId,
+  continuedIntoSessionId,
   pendingTask,
   availability,
   firstItemIndex = 0,
@@ -282,6 +310,8 @@ export function ChatMessageList({
 
   const listContext: ChatListContext = {
     isFetchingOlderMessages,
+    continuedFromSessionId: hasOlderMessages ? null : continuedFromSessionId,
+    continuedIntoSessionId,
     showStatusPill,
     pendingTask,
     liveTaskMessages,
@@ -480,6 +510,10 @@ const MessageBubble = memo(function MessageBubble({
 
   const { message } = item;
 
+  if (message.message_kind === "continuation_summary") {
+    return <ContinuationSummary message={message} />;
+  }
+
   if (message.role === "user") {
     return (
       <div className="flex justify-end">
@@ -520,6 +554,22 @@ const MessageBubble = memo(function MessageBubble({
     />
   );
 });
+
+function ContinuationSummary({ message }: { message: ChatMessage }) {
+  const { t } = useT("chat");
+  const [open, setOpen] = useState(false);
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger className="flex items-center gap-1 text-caption text-muted-foreground hover:text-foreground transition-colors">
+        {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+        {t(($) => $.message_list.continuation_summary)}
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <RichContent content={message.content} attachments={message.attachments} density="compact" />
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
 
 /**
  * Assistant turn body — renders BOTH the in-flight (live) and the persisted
