@@ -25,6 +25,8 @@ var decisionSchemaMigrations = []string{
 	"606_decision_request_comment_index", "607_decision_answer_messages_index", "608_decision_request_scope_index",
 	"609_decision_worker_lease_name_index", "610_decision_class_change_request_index", "611_decision_answer_request_index",
 	"612_decision_target_primary_key", "613_decision_comment_kind_validate",
+	"615_decision_request_comment_v2_index", "616_decision_request_comment_index_retire",
+	"617_decision_comment_request_check", "618_decision_comment_request_validate",
 }
 
 func TestDecisionSchemaV14(test *testing.T) {
@@ -67,7 +69,7 @@ func TestDecisionSchemaV14(test *testing.T) {
 				if count := fixture.Count(test, `SELECT count(*) FROM pg_constraint WHERE conrelid = 'comment'::regclass AND conname = 'comment_decision_comment_kind_check' AND NOT convalidated`); count != 1 {
 					test.Fatal("comment CHECK must be NOT VALID until the separate validation migration")
 				}
-				fixture.Insert(test, "comment", testutil.Cols{"decision_comment_kind": "ask"})
+				fixture.Insert(test, "comment", testutil.Cols{"decision_request_id": uuid.NewString(), "decision_comment_kind": "ask"})
 				_, err := pool.Exec(ctx, `INSERT INTO comment (decision_comment_kind) VALUES ('unknown')`)
 				var pgError *pgconn.PgError
 				if !errors.As(err, &pgError) || pgError.Code != "23514" {
@@ -75,10 +77,25 @@ func TestDecisionSchemaV14(test *testing.T) {
 				}
 			})
 		}
+		if migration == "617_decision_comment_request_check" {
+			test.Run("comment_request_constraint_not_valid", func(test *testing.T) {
+				if count := fixture.Count(test, `SELECT count(*) FROM pg_constraint WHERE conrelid = 'comment'::regclass AND conname = 'comment_decision_request_check' AND NOT convalidated`); count != 1 {
+					test.Fatal("comment request CHECK must be NOT VALID until the separate validation migration")
+				}
+				_, err := pool.Exec(ctx, `INSERT INTO comment (decision_comment_kind) VALUES ('ask')`)
+				var pgError *pgconn.PgError
+				if !errors.As(err, &pgError) || pgError.Code != "23514" || pgError.ConstraintName != "comment_decision_request_check" {
+					test.Fatalf("NOT VALID request CHECK must still enforce new writes: %v", err)
+				}
+			})
+		}
 	}
 	test.Run("comment_constraint_validated", func(test *testing.T) {
 		if count := fixture.Count(test, `SELECT count(*) FROM pg_constraint WHERE conrelid = 'comment'::regclass AND conname = 'comment_decision_comment_kind_check' AND convalidated`); count != 1 {
 			test.Fatal("the separate migration must validate the comment CHECK")
+		}
+		if count := fixture.Count(test, `SELECT count(*) FROM pg_constraint WHERE conrelid = 'comment'::regclass AND conname = 'comment_decision_request_check' AND convalidated`); count != 1 {
+			test.Fatal("comment request CHECK was not validated")
 		}
 	})
 	test.Run("query_round_trip_and_scope", func(test *testing.T) {
@@ -216,6 +233,41 @@ func TestDecisionSchemaV14(test *testing.T) {
 			test.Fatalf("want SQLSTATE %s, got %v", code, err)
 		}
 	}
+	test.Run("comment_kind_requires_matching_stamp", func(test *testing.T) {
+		for _, kind := range []string{"ask", "quote", "disclaim", "delivery", "cancel", "veto"} {
+			test.Run(kind, func(test *testing.T) {
+				expectCode(test, "23514", `INSERT INTO comment (decision_comment_kind) VALUES ($1)`, kind)
+				if kind == "ask" || kind == "cancel" {
+					fixture.Insert(test, "comment", testutil.Cols{"decision_request_id": uuid.NewString(), "decision_comment_kind": kind})
+					expectCode(test, "23514", `INSERT INTO comment (decision_answer_id, decision_comment_kind) VALUES ($1, $2)`, uuid.NewString(), kind)
+					expectCode(test, "23514", `INSERT INTO comment (decision_request_id, decision_answer_id, decision_comment_kind) VALUES ($1, $2, $3)`, uuid.NewString(), uuid.NewString(), kind)
+				} else {
+					fixture.Insert(test, "comment", testutil.Cols{"decision_answer_id": uuid.NewString(), "decision_comment_kind": kind})
+					expectCode(test, "23514", `INSERT INTO comment (decision_request_id, decision_comment_kind) VALUES ($1, $2)`, uuid.NewString(), kind)
+					fixture.Insert(test, "comment", testutil.Cols{"decision_request_id": uuid.NewString(), "decision_answer_id": uuid.NewString(), "decision_comment_kind": kind})
+				}
+			})
+		}
+		fixture.Insert(test, "comment", testutil.Cols{"decision_intent_id": uuid.NewString()})
+		fixture.Insert(test, "comment", testutil.Cols{"decision_answer_id": uuid.NewString()})
+		fixture.Insert(test, "comment", testutil.Cols{"decision_request_id": uuid.NewString()})
+		commentID := fixture.Insert(test, "comment", testutil.Cols{"content": "ordinary"})
+		expectCode(test, "23514", `UPDATE comment SET decision_comment_kind = 'ask' WHERE id = $1`, commentID)
+	})
+	test.Run("request_comment_index_predicate", func(test *testing.T) {
+		var predicate string
+		if err := pool.QueryRow(ctx, `SELECT pg_get_expr(index_row.indpred, index_row.indrelid)
+			FROM pg_index index_row JOIN pg_class index_name ON index_name.oid = index_row.indexrelid
+			WHERE index_row.indrelid = 'comment'::regclass AND index_name.relname = 'comment_decision_request_kind_v2_uidx' AND index_row.indisvalid`).Scan(&predicate); err != nil {
+			test.Fatal(err)
+		}
+		if predicate != "((decision_answer_id IS NULL) AND (decision_request_id IS NOT NULL))" {
+			test.Fatalf("request comment index predicate = %s", predicate)
+		}
+		if count := fixture.Count(test, `SELECT count(*) FROM pg_indexes WHERE schemaname = $1 AND indexname = 'comment_decision_request_kind_uidx'`, schema); count != 0 {
+			test.Fatal("original request comment index was not retired")
+		}
+	})
 	test.Run("live_answer_and_comment_idempotency", func(test *testing.T) {
 		requestID := fixture.Insert(test, "decision_request", requestColumns())
 		answerID := fixture.Insert(test, "decision_answer", answerColumns(requestID))
@@ -264,6 +316,21 @@ func TestDecisionSchemaV14(test *testing.T) {
 	})
 	for index := len(decisionSchemaMigrations) - 1; index >= 0; index-- {
 		fixture.Exec(test, readMigrationFile(test, decisionSchemaMigrations[index]+".down.sql"))
+		if decisionSchemaMigrations[index] == "615_decision_request_comment_v2_index" {
+			test.Run("comment_hardening_rollback", func(test *testing.T) {
+				var predicate string
+				if err := pool.QueryRow(ctx, `SELECT pg_get_expr(indpred, indrelid) FROM pg_index WHERE indexrelid = 'comment_decision_request_kind_uidx'::regclass AND indisvalid`).Scan(&predicate); err != nil {
+					test.Fatal(err)
+				}
+				if predicate != "(decision_answer_id IS NULL)" {
+					test.Fatalf("rollback request comment index predicate = %s", predicate)
+				}
+				if count := fixture.Count(test, `SELECT count(*) FROM pg_constraint WHERE conrelid = 'comment'::regclass AND conname = 'comment_decision_request_check'`); count != 0 {
+					test.Fatal("rollback left comment request CHECK")
+				}
+				fixture.Insert(test, "comment", testutil.Cols{"decision_comment_kind": "ask"})
+			})
+		}
 	}
 	if count := fixture.Count(test, `SELECT count(*) FROM information_schema.tables WHERE table_schema = $1 AND table_name LIKE 'decision_%'`, schema); count != 0 {
 		test.Fatal("rollback left decision tables")
@@ -314,5 +381,13 @@ func TestDecisionCommentConstraintMigrationStructure(test *testing.T) {
 	validation := strings.Join(strings.Fields(readMigrationFile(test, "613_decision_comment_kind_validate.up.sql")), " ")
 	if validation != "SET LOCAL lock_timeout = '2s'; ALTER TABLE comment VALIDATE CONSTRAINT comment_decision_comment_kind_check;" {
 		test.Error("the separate validation migration must acquire only the validation lock with a local timeout")
+	}
+	requestCheck := strings.Join(strings.Fields(readMigrationFile(test, "617_decision_comment_request_check.up.sql")), " ")
+	if requestCheck != "SET LOCAL lock_timeout = '2s'; DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'comment'::regclass AND conname = 'comment_decision_request_check') THEN ALTER TABLE comment ADD CONSTRAINT comment_decision_request_check CHECK ( decision_comment_kind IS NULL OR (decision_comment_kind IN ('ask', 'cancel') AND decision_request_id IS NOT NULL AND decision_answer_id IS NULL) OR (decision_comment_kind IN ('quote', 'disclaim', 'delivery', 'veto') AND decision_answer_id IS NOT NULL) ) NOT VALID; END IF; END; $$;" {
+		test.Error("comment request CHECK must be added as NOT VALID with a local lock timeout")
+	}
+	requestValidation := strings.Join(strings.Fields(readMigrationFile(test, "618_decision_comment_request_validate.up.sql")), " ")
+	if requestValidation != "SET LOCAL lock_timeout = '2s'; ALTER TABLE comment VALIDATE CONSTRAINT comment_decision_request_check;" {
+		test.Error("comment request CHECK must be validated in a separate migration with a local lock timeout")
 	}
 }
