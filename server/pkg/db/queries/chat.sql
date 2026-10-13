@@ -17,7 +17,8 @@ WHERE id = $1;
 
 -- name: SetChatContinuationSource :one
 UPDATE chat_session
-SET continued_from_session_id = $2
+SET continued_from_session_id = $2,
+    last_read_at = sqlc.arg('summary_created_at')::timestamptz - interval '1 microsecond'
 WHERE id = $1
 RETURNING *;
 
