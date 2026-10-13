@@ -130,7 +130,9 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 	}
 	eventType := "pr.merged"
 	eventKey := fmt.Sprintf("github:%s/%s#%d", strings.ToLower(in.RepoOwner), strings.ToLower(in.RepoName), in.Number)
-	var dirtyKey string
+	// pairKey is the one key the build before CHE-1665 recorded for DIRTY and
+	// BEHIND alike on a head and base pair.
+	var pairKey string
 	switch in.Rule {
 	case SystemRulePRMerged:
 		if in.MergeCommit == "" {
@@ -144,16 +146,13 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		eventKey += ":" + in.HeadSHA
 	case SystemRulePRAttention:
 		// Once per head and base pair: DIRTY then BEHIND on the same pair is
-		// one wake; a retarget or a new head is a new pair. BEHIND has its own
-		// key so it never hides a later DIRTY on the pair (CHE-1665).
+		// one wake; a retarget or a new head is a new pair. Each state has its
+		// own key so a BEHIND wake never hides a later DIRTY (CHE-1665).
 		switch {
 		case in.Reason == PRAttentionMergeability && (in.MergeState == "DIRTY" || in.MergeState == "BEHIND") && in.HeadSHA != "" && in.BaseBranch != "":
 			eventType = "pr.mergeability"
-			dirtyKey = eventKey + ":mergeability:" + in.HeadSHA + ":" + in.BaseBranch
-			eventKey = dirtyKey
-			if in.MergeState == "BEHIND" {
-				eventKey += ":behind"
-			}
+			pairKey = eventKey + ":mergeability:" + in.HeadSHA + ":" + in.BaseBranch
+			eventKey = pairKey + ":" + strings.ToLower(in.MergeState)
 		case in.Reason == PRAttentionDraft && in.HeadSHA != "" && in.EventAt != "":
 			eventType = "pr.returned_to_draft"
 			eventKey += ":draft:" + in.HeadSHA + ":" + in.EventAt
@@ -265,10 +264,19 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 			return err
 		}
 	}
-	// A BEHIND after a DIRTY wake on the same pair is already covered.
+	// A BEHIND is covered by any earlier wake on its pair, including a
+	// pre-CHE-1665 entry under the shared pairKey. A DIRTY is covered by an
+	// earlier DIRTY; a shared pairKey entry counts only when its receipt says
+	// DIRTY, so a legacy BEHIND entry never hides a conflict.
+	// ponytail: receipts expire 7 days after processing; a legacy DIRTY entry
+	// past that wakes once more if the pair is still conflicting. A reminder,
+	// never a missed conflict.
 	tag, err := tx.Exec(ctx, `INSERT INTO issue_wakeup_pr_event(wakeup_id,event_key)
-		SELECT $1::uuid,$2::text WHERE $3::text = '' OR $3::text = $2::text OR NOT EXISTS (SELECT 1 FROM issue_wakeup_pr_event WHERE wakeup_id=$1::uuid AND event_key=$3::text)
-		ON CONFLICT DO NOTHING`, w.ID, eventKey, dirtyKey)
+		SELECT $1::uuid,$2::text WHERE $3::text = '' OR NOT CASE WHEN $4::bool
+			THEN EXISTS (SELECT 1 FROM issue_wakeup_pr_event WHERE wakeup_id=$1::uuid AND event_key IN ($3::text, $3::text || ':dirty'))
+			ELSE EXISTS (SELECT 1 FROM issue_wakeup_receipt WHERE wakeup_id=$1::uuid AND event_key=$3::text AND payload->>'merge_state'='DIRTY')
+		END
+		ON CONFLICT DO NOTHING`, w.ID, eventKey, pairKey, in.MergeState == "BEHIND")
 	if err != nil {
 		return err
 	}

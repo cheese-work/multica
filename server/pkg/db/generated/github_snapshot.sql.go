@@ -11,6 +11,105 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const claimGitHubPRsDueForRecheck = `-- name: ClaimGitHubPRsDueForRecheck :many
+WITH candidates AS (
+    SELECT pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number,
+           MIN(GREATEST(pr.snapshot_fetched_at, pr.snapshot_recheck_at))::TIMESTAMPTZ AS last_touched_at,
+           MIN(pr.snapshot_fetched_at)::TIMESTAMPTZ AS oldest_fetched_at
+    FROM github_pull_request AS pr
+    WHERE pr.state IN ('open', 'draft')
+      AND pr.snapshot_fetched_at < $1
+      AND (pr.snapshot_recheck_at IS NULL OR pr.snapshot_recheck_at < $1)
+      AND EXISTS (
+          SELECT 1
+          FROM workspace w
+          WHERE w.id = pr.workspace_id
+            AND (w.settings ->> 'github_enabled') IS DISTINCT FROM 'false'
+      )
+    GROUP BY pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number
+), ranked AS (
+    SELECT c.installation_id, c.repo_owner, c.repo_name, c.pr_number, c.last_touched_at, c.oldest_fetched_at, ROW_NUMBER() OVER (
+        PARTITION BY c.installation_id
+        ORDER BY c.last_touched_at, c.repo_owner, c.repo_name, c.pr_number
+    ) AS installation_rank
+    FROM candidates AS c
+), picked AS (
+    SELECT r.installation_id, r.repo_owner, r.repo_name, r.pr_number, r.last_touched_at, r.oldest_fetched_at, r.installation_rank
+    FROM ranked AS r
+    WHERE r.installation_rank <= $2::BIGINT
+    ORDER BY r.installation_rank, r.last_touched_at
+    LIMIT $3
+), stamped AS (
+    UPDATE github_pull_request AS pr
+    SET snapshot_recheck_at = $4
+    FROM picked AS p
+    WHERE pr.installation_id = p.installation_id
+      AND pr.repo_owner = p.repo_owner
+      AND pr.repo_name = p.repo_name
+      AND pr.pr_number = p.pr_number
+      AND pr.state IN ('open', 'draft')
+    RETURNING pr.id
+)
+SELECT installation_id, repo_owner, repo_name, pr_number, oldest_fetched_at
+FROM picked
+ORDER BY installation_rank, last_touched_at
+`
+
+type ClaimGitHubPRsDueForRecheckParams struct {
+	OlderThan       pgtype.Timestamptz `json:"older_than"`
+	PerInstallation int64              `json:"per_installation"`
+	MaxRows         int32              `json:"max_rows"`
+	PickedAt        pgtype.Timestamptz `json:"picked_at"`
+}
+
+type ClaimGitHubPRsDueForRecheckRow struct {
+	InstallationID  int64              `json:"installation_id"`
+	RepoOwner       string             `json:"repo_owner"`
+	RepoName        string             `json:"repo_name"`
+	PrNumber        int32              `json:"pr_number"`
+	OldestFetchedAt pgtype.Timestamptz `json:"oldest_fetched_at"`
+}
+
+// CHE-1665: slow re-check of open/draft PRs whose snapshot, decided or not, is
+// older than the re-check TTL. A base moved by a direct push sends no
+// pull_request event, so a decided MERGEABLE snapshot can turn DIRTY unseen;
+// this sweep is what notices. A PR is due when both its last snapshot and its
+// last pick (snapshot_recheck_at) are older than the TTL. Picking stamps
+// snapshot_recheck_at, so a PR whose fetch fails waits one TTL before it is
+// picked again and cannot hold the per-installation or global cap. Least
+// recently touched first, at most per_installation addresses per installation
+// per batch, so one busy installation cannot starve the rest.
+func (q *Queries) ClaimGitHubPRsDueForRecheck(ctx context.Context, arg ClaimGitHubPRsDueForRecheckParams) ([]ClaimGitHubPRsDueForRecheckRow, error) {
+	rows, err := q.db.Query(ctx, claimGitHubPRsDueForRecheck,
+		arg.OlderThan,
+		arg.PerInstallation,
+		arg.MaxRows,
+		arg.PickedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ClaimGitHubPRsDueForRecheckRow{}
+	for rows.Next() {
+		var i ClaimGitHubPRsDueForRecheckRow
+		if err := rows.Scan(
+			&i.InstallationID,
+			&i.RepoOwner,
+			&i.RepoName,
+			&i.PrNumber,
+			&i.OldestFetchedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const deleteGitHubPRCheckRuns = `-- name: DeleteGitHubPRCheckRuns :exec
 DELETE FROM github_pull_request_check_run WHERE pr_id = $1
 `
@@ -23,7 +122,7 @@ func (q *Queries) DeleteGitHubPRCheckRuns(ctx context.Context, prID pgtype.UUID)
 }
 
 const getGitHubPullRequestByID = `-- name: GetGitHubPullRequestByID :one
-SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref FROM github_pull_request WHERE id = $1
+SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at FROM github_pull_request WHERE id = $1
 `
 
 func (q *Queries) GetGitHubPullRequestByID(ctx context.Context, id pgtype.UUID) (GithubPullRequest, error) {
@@ -59,6 +158,7 @@ func (q *Queries) GetGitHubPullRequestByID(ctx context.Context, id pgtype.UUID) 
 		&i.SnapshotHeadSha,
 		&i.SnapshotFetchedAt,
 		&i.SnapshotBaseRef,
+		&i.SnapshotRecheckAt,
 	)
 	return i, err
 }
@@ -280,81 +380,6 @@ func (q *Queries) ListGitHubPRRowsByAddress(ctx context.Context, arg ListGitHubP
 	return items, nil
 }
 
-const listGitHubPRsDueForRecheck = `-- name: ListGitHubPRsDueForRecheck :many
-WITH candidates AS (
-    SELECT pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number,
-           MIN(pr.snapshot_fetched_at)::TIMESTAMPTZ AS oldest_fetched_at
-    FROM github_pull_request AS pr
-    WHERE pr.state IN ('open', 'draft')
-      AND pr.snapshot_fetched_at < $3
-      AND EXISTS (
-          SELECT 1
-          FROM workspace w
-          WHERE w.id = pr.workspace_id
-            AND (w.settings ->> 'github_enabled') IS DISTINCT FROM 'false'
-      )
-    GROUP BY pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number
-), ranked AS (
-    SELECT c.installation_id, c.repo_owner, c.repo_name, c.pr_number, c.oldest_fetched_at, ROW_NUMBER() OVER (
-        PARTITION BY c.installation_id
-        ORDER BY c.oldest_fetched_at, c.repo_owner, c.repo_name, c.pr_number
-    ) AS installation_rank
-    FROM candidates AS c
-)
-SELECT installation_id, repo_owner, repo_name, pr_number, oldest_fetched_at
-FROM ranked
-WHERE installation_rank <= $1::BIGINT
-ORDER BY installation_rank, oldest_fetched_at
-LIMIT $2
-`
-
-type ListGitHubPRsDueForRecheckParams struct {
-	PerInstallation int64              `json:"per_installation"`
-	MaxRows         int32              `json:"max_rows"`
-	OlderThan       pgtype.Timestamptz `json:"older_than"`
-}
-
-type ListGitHubPRsDueForRecheckRow struct {
-	InstallationID  int64              `json:"installation_id"`
-	RepoOwner       string             `json:"repo_owner"`
-	RepoName        string             `json:"repo_name"`
-	PrNumber        int32              `json:"pr_number"`
-	OldestFetchedAt pgtype.Timestamptz `json:"oldest_fetched_at"`
-}
-
-// CHE-1665: slow re-check of open/draft PRs whose snapshot, decided or not, is
-// older than the re-check TTL. A base moved by a direct push sends no
-// pull_request event, so a decided MERGEABLE snapshot can turn DIRTY unseen;
-// this sweep is what notices. Oldest snapshots first, at most per_installation
-// addresses per installation per batch, so one busy installation cannot
-// starve the rest. A successful refresh moves snapshot_fetched_at forward,
-// which is what advances the batch; there is no cursor.
-func (q *Queries) ListGitHubPRsDueForRecheck(ctx context.Context, arg ListGitHubPRsDueForRecheckParams) ([]ListGitHubPRsDueForRecheckRow, error) {
-	rows, err := q.db.Query(ctx, listGitHubPRsDueForRecheck, arg.PerInstallation, arg.MaxRows, arg.OlderThan)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListGitHubPRsDueForRecheckRow{}
-	for rows.Next() {
-		var i ListGitHubPRsDueForRecheckRow
-		if err := rows.Scan(
-			&i.InstallationID,
-			&i.RepoOwner,
-			&i.RepoName,
-			&i.PrNumber,
-			&i.OldestFetchedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listStaleUndecidedGitHubPRs = `-- name: ListStaleUndecidedGitHubPRs :many
 WITH candidates AS (
     SELECT pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number
@@ -413,7 +438,7 @@ type ListStaleUndecidedGitHubPRsRow struct {
 
 // TTL / safety-net sweep source. Returns distinct addresses of open/draft PRs
 // whose snapshot is both stale and undecided. A decided snapshot leaves this
-// fast set; ListGitHubPRsDueForRecheck re-checks it on a slower TTL.
+// fast set; ClaimGitHubPRsDueForRecheck re-checks it on a slower TTL.
 // The caller advances an address cursor after each bounded batch. Rows after
 // the cursor sort first, followed by a wrap to the start, so even perpetually
 // failing addresses cannot pin the same first LIMIT rows forever.

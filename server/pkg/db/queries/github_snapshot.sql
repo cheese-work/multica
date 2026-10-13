@@ -77,7 +77,7 @@ INSERT INTO github_pull_request_check_run (
 -- name: ListStaleUndecidedGitHubPRs :many
 -- TTL / safety-net sweep source. Returns distinct addresses of open/draft PRs
 -- whose snapshot is both stale and undecided. A decided snapshot leaves this
--- fast set; ListGitHubPRsDueForRecheck re-checks it on a slower TTL.
+-- fast set; ClaimGitHubPRsDueForRecheck re-checks it on a slower TTL.
 -- The caller advances an address cursor after each bounded batch. Rows after
 -- the cursor sort first, followed by a wrap to the start, so even perpetually
 -- failing addresses cannot pin the same first LIMIT rows forever.
@@ -126,20 +126,24 @@ ORDER BY (
 installation_id, repo_owner, repo_name, pr_number
 LIMIT sqlc.arg('max_rows');
 
--- name: ListGitHubPRsDueForRecheck :many
+-- name: ClaimGitHubPRsDueForRecheck :many
 -- CHE-1665: slow re-check of open/draft PRs whose snapshot, decided or not, is
 -- older than the re-check TTL. A base moved by a direct push sends no
 -- pull_request event, so a decided MERGEABLE snapshot can turn DIRTY unseen;
--- this sweep is what notices. Oldest snapshots first, at most per_installation
--- addresses per installation per batch, so one busy installation cannot
--- starve the rest. A successful refresh moves snapshot_fetched_at forward,
--- which is what advances the batch; there is no cursor.
+-- this sweep is what notices. A PR is due when both its last snapshot and its
+-- last pick (snapshot_recheck_at) are older than the TTL. Picking stamps
+-- snapshot_recheck_at, so a PR whose fetch fails waits one TTL before it is
+-- picked again and cannot hold the per-installation or global cap. Least
+-- recently touched first, at most per_installation addresses per installation
+-- per batch, so one busy installation cannot starve the rest.
 WITH candidates AS (
     SELECT pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number,
+           MIN(GREATEST(pr.snapshot_fetched_at, pr.snapshot_recheck_at))::TIMESTAMPTZ AS last_touched_at,
            MIN(pr.snapshot_fetched_at)::TIMESTAMPTZ AS oldest_fetched_at
     FROM github_pull_request AS pr
     WHERE pr.state IN ('open', 'draft')
       AND pr.snapshot_fetched_at < sqlc.arg('older_than')
+      AND (pr.snapshot_recheck_at IS NULL OR pr.snapshot_recheck_at < sqlc.arg('older_than'))
       AND EXISTS (
           SELECT 1
           FROM workspace w
@@ -150,15 +154,29 @@ WITH candidates AS (
 ), ranked AS (
     SELECT c.*, ROW_NUMBER() OVER (
         PARTITION BY c.installation_id
-        ORDER BY c.oldest_fetched_at, c.repo_owner, c.repo_name, c.pr_number
+        ORDER BY c.last_touched_at, c.repo_owner, c.repo_name, c.pr_number
     ) AS installation_rank
     FROM candidates AS c
+), picked AS (
+    SELECT r.installation_id, r.repo_owner, r.repo_name, r.pr_number, r.last_touched_at, r.oldest_fetched_at, r.installation_rank
+    FROM ranked AS r
+    WHERE r.installation_rank <= sqlc.arg('per_installation')::BIGINT
+    ORDER BY r.installation_rank, r.last_touched_at
+    LIMIT sqlc.arg('max_rows')
+), stamped AS (
+    UPDATE github_pull_request AS pr
+    SET snapshot_recheck_at = sqlc.arg('picked_at')
+    FROM picked AS p
+    WHERE pr.installation_id = p.installation_id
+      AND pr.repo_owner = p.repo_owner
+      AND pr.repo_name = p.repo_name
+      AND pr.pr_number = p.pr_number
+      AND pr.state IN ('open', 'draft')
+    RETURNING pr.id
 )
 SELECT installation_id, repo_owner, repo_name, pr_number, oldest_fetched_at
-FROM ranked
-WHERE installation_rank <= sqlc.arg('per_installation')::BIGINT
-ORDER BY installation_rank, oldest_fetched_at
-LIMIT sqlc.arg('max_rows');
+FROM picked
+ORDER BY installation_rank, last_touched_at;
 
 -- name: ListGitHubPRNumbersByHeadSHA :many
 -- Resolves a commit SHA to the PR numbers whose head it is. `status` webhook

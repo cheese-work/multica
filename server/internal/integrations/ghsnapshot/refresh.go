@@ -604,16 +604,20 @@ func (m *Manager) sweepUndecided(ctx context.Context) {
 	}
 }
 
-// sweepRecheck re-checks the oldest snapshots, at most a quarter of a batch per
-// installation, and logs the oldest snapshot age so a stalled re-check shows.
+// sweepRecheck re-checks the least recently touched snapshots, at most a
+// quarter of a batch per installation, and logs the oldest snapshot age so a
+// stalled re-check shows. A failed fetch still counts as a pick, so it never
+// pins a batch slot.
 // ponytail: an installation re-checks at most sweepMaxRows/4 PRs per sweep
 // interval (300 an hour at the defaults); with more open PRs than that it
 // falls behind the TTL. Raise sweepMaxRows when the logged age keeps climbing.
 func (m *Manager) sweepRecheck(ctx context.Context) {
-	rows, err := m.queries.ListGitHubPRsDueForRecheck(ctx, db.ListGitHubPRsDueForRecheckParams{
-		OlderThan:       tsFromTime(m.now().Add(-m.recheckTTL)),
+	now := m.now()
+	rows, err := m.queries.ClaimGitHubPRsDueForRecheck(ctx, db.ClaimGitHubPRsDueForRecheckParams{
+		OlderThan:       tsFromTime(now.Add(-m.recheckTTL)),
 		PerInstallation: int64(max(1, m.sweepMaxRows/4)),
 		MaxRows:         m.sweepMaxRows,
+		PickedAt:        tsFromTime(now),
 	})
 	if err != nil {
 		slog.Warn("ghsnapshot: re-check query failed", "err", err.Error())
@@ -629,7 +633,7 @@ func (m *Manager) sweepRecheck(ctx context.Context) {
 		}
 		m.Enqueue(r.InstallationID, r.RepoOwner, r.RepoName, r.PrNumber)
 	}
-	slog.Info("ghsnapshot: re-checking decided snapshots", "count", len(rows), "oldest_snapshot_age", m.now().Sub(oldest).Round(time.Second).String())
+	slog.Info("ghsnapshot: re-checking decided snapshots", "count", len(rows), "oldest_snapshot_age", now.Sub(oldest).Round(time.Second).String())
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
