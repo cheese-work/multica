@@ -3,8 +3,8 @@ package handler
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"net/http"
+	"regexp"
 	"strings"
 	"testing"
 	"unicode/utf8"
