@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const shaPattern = /^[a-f0-9]{40}$/;
@@ -35,6 +36,9 @@ function validate(manifest) {
   if (manifest.architecture !== "linux/amd64") fail("architecture must be linux/amd64");
   assertDigest("configuration_sha256", manifest.configuration_sha256);
   assertDigest("migration_inventory_sha256", manifest.migration_inventory_sha256);
+  if (manifest.fork_changelog_sha256 !== "absent") {
+    assertDigest("fork_changelog_sha256", manifest.fork_changelog_sha256);
+  }
   if (manifest.baseline_tuple_sha256 !== undefined) {
     assertDigest("baseline_tuple_sha256", manifest.baseline_tuple_sha256);
   }
@@ -51,10 +55,20 @@ function validate(manifest) {
 }
 
 function create(args) {
+  const entriesPath = optional("--fork-changelog", args);
+  let entriesHash = "absent";
+  if (entriesPath) {
+    try {
+      entriesHash = `sha256:${createHash("sha256").update(readFileSync(entriesPath)).digest("hex")}`;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
   const manifest = {
     architecture: option("--architecture", args),
     baseline_tuple_sha256: optional("--baseline-tuple-sha256", args),
     configuration_sha256: option("--configuration-sha256", args),
+    fork_changelog_sha256: entriesHash,
     image_digests: {},
     images: {
       backend: option("--backend-image", args),
@@ -88,6 +102,7 @@ function verify(args) {
     ["--expected-configuration-sha256", "configuration_sha256"],
     ["--expected-migration-inventory-sha256", "migration_inventory_sha256"],
     ["--expected-baseline-tuple-sha256", "baseline_tuple_sha256"],
+    ["--expected-fork-changelog-sha256", "fork_changelog_sha256"],
   ];
   for (const [flag, property] of expected) {
     const index = args.indexOf(flag);

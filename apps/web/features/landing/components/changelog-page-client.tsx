@@ -11,6 +11,15 @@ import { LandingHeader } from "./landing-header";
 import { LandingFooter } from "./landing-footer";
 import { useLocale } from "../i18n";
 import type { Locale } from "../i18n/types";
+import {
+  type ChangelogRelease as Release,
+  type ForkChangelog,
+  forkCategoryLabels,
+  forkStatusMessage,
+  mergeChangelogReleases,
+  releaseVersionLabel,
+  unavailableFork,
+} from "./fork-changelog";
 
 type ParsedDate = { year: number; month: number; day: number };
 
@@ -57,16 +66,6 @@ export function fullDateLabel(dateStr: string, locale: Locale) {
   }).format(date);
 }
 
-type Release = {
-  version: string;
-  date: string;
-  title: string;
-  changes: string[];
-  features?: string[];
-  improvements?: string[];
-  fixes?: string[];
-};
-
 type MonthGroup = {
   key: string;
   year: number;
@@ -93,12 +92,12 @@ function anchorId(version: string) {
   return `release-${version.replace(/\./g, "-")}`;
 }
 
-function ChangeList({ items }: { items: string[] }) {
+function ChangeList({ items, itemKeys }: { items: string[]; itemKeys?: string[] }) {
   return (
     <ul className="mt-2 space-y-2">
-      {items.map((change) => (
+      {items.map((change, index) => (
         <li
-          key={change}
+          key={itemKeys?.[index] ?? `${index}:${change}`}
           className="flex items-start gap-2.5 text-body leading-[1.7] text-[#0a0d12]/60 sm:text-body-lg"
         >
           <span className="mt-2.5 h-1 w-1 shrink-0 rounded-full bg-[#0a0d12]/30" />
@@ -109,10 +108,9 @@ function ChangeList({ items }: { items: string[] }) {
   );
 }
 
-export function ChangelogPageClient() {
+export function ChangelogPageClient({ fork = unavailableFork, buildStamp = "dev" }: { fork?: ForkChangelog; buildStamp?: string }) {
   const { t, locale } = useLocale();
-  const categoryLabels = t.changelog.categories;
-  const entries = t.changelog.entries;
+  const entries = useMemo(() => mergeChangelogReleases(t.changelog.entries, fork), [t.changelog.entries, fork]);
   const groups = useMemo(() => groupByMonth(entries), [entries]);
 
   const [activeVersion, setActiveVersion] = useState<string>(
@@ -245,7 +243,7 @@ export function ChangelogPageClient() {
                                     {day}
                                   </span>
                                   <span className="tabular-nums text-micro text-[#0a0d12]/35">
-                                    v{release.version}
+                                    {releaseVersionLabel(release)}
                                   </span>
                                 </a>
                               </li>
@@ -266,9 +264,14 @@ export function ChangelogPageClient() {
               <p className="mt-4 text-body-lg leading-7 text-[#0a0d12]/60 sm:text-title-sm">
                 {t.changelog.subtitle}
               </p>
+              <p className="mt-4 text-label text-[#0a0d12]/50">{buildStamp}</p>
+              {forkStatusMessage(fork.status) && (
+                <p className="mt-2 text-body text-[#0a0d12]/60">{forkStatusMessage(fork.status)}</p>
+              )}
 
               <div className="mt-16 space-y-16">
                 {entries.map((release) => {
+                  const categoryLabels = release.version.startsWith("fork-") ? forkCategoryLabels : t.changelog.categories;
                   const hasCategorized =
                     release.features || release.improvements || release.fixes;
                   return (
@@ -280,7 +283,7 @@ export function ChangelogPageClient() {
                     >
                       <div className="flex items-baseline gap-3">
                         <span className="text-label font-semibold tabular-nums">
-                          v{release.version}
+                          {releaseVersionLabel(release)}
                         </span>
                         <span className="text-label text-[#0a0d12]/40">
                           {fullDateLabel(release.date, locale)}
@@ -297,7 +300,7 @@ export function ChangelogPageClient() {
                               <h3 className="text-label font-semibold uppercase tracking-wide text-[#0a0d12]/50">
                                 {categoryLabels.features}
                               </h3>
-                              <ChangeList items={release.features} />
+                              <ChangeList items={release.features} itemKeys={release.changeKeys?.features} />
                             </div>
                           )}
                           {release.improvements &&
@@ -306,7 +309,7 @@ export function ChangelogPageClient() {
                                 <h3 className="text-label font-semibold uppercase tracking-wide text-[#0a0d12]/50">
                                   {categoryLabels.improvements}
                                 </h3>
-                                <ChangeList items={release.improvements} />
+                                <ChangeList items={release.improvements} itemKeys={release.changeKeys?.improvements} />
                               </div>
                             )}
                           {release.fixes && release.fixes.length > 0 && (
@@ -314,7 +317,7 @@ export function ChangelogPageClient() {
                               <h3 className="text-label font-semibold uppercase tracking-wide text-[#0a0d12]/50">
                                 {categoryLabels.fixes}
                               </h3>
-                              <ChangeList items={release.fixes} />
+                              <ChangeList items={release.fixes} itemKeys={release.changeKeys?.fixes} />
                             </div>
                           )}
                         </div>

@@ -16,7 +16,55 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  fork-changelog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    continue-on-error: true
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      FORK_CHANGELOG_START: '2026-10-11'
+    steps:
+      - name: Checkout qualified source without persisted credentials
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Fetch bounded first-parent history and fork entries
+        timeout-minutes: 4
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! timeout 180 git fetch --shallow-since="${FORK_CHANGELOG_START}T00:00:00+07:00" origin "$GITHUB_SHA"; then
+            echo '::warning::Fork entries unavailable for this build: history fetch failed'
+            echo 'Fork entries unavailable for this build.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          node scripts/fork-changelog-fetch.mjs --sha "$GITHUB_SHA" --out apps/web/.fork-changelog/entries.json
+
+      - name: Upload fork entries when available
+        if: ${{ hashFiles('apps/web/.fork-changelog/entries.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: fork-changelog-${{ github.sha }}
+          path: apps/web/.fork-changelog/entries.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 30
+
   cd-qualification:
+    needs: fork-changelog
+    if: ${{ always() && !cancelled() }}
     # This label is reserved for the separate cheese-work runner set on X99;
     # it cannot match the unrelated tevo-web runners labeled tevo-cicd.
     runs-on: [self-hosted, linux, x64, cheese-x99]
@@ -41,6 +89,21 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
+
+      - name: Download optional fork entries
+        id: fork-entries
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: fork-changelog-${{ github.sha }}
+          path: apps/web/.fork-changelog
+
+      - name: Discard incomplete optional artifact
+        if: ${{ steps.fork-entries.outcome != 'success' }}
+        shell: bash
+        run: |
+          rm -f apps/web/.fork-changelog/entries.json
+          echo 'Fork entries unavailable for this build.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run D1 fixture checks
         shell: bash
@@ -89,6 +152,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          build_date="$(git show -s --format=%cI "$GITHUB_SHA")"
           docker buildx build \
             --platform linux/amd64 \
             --provenance=mode=max \
@@ -96,6 +160,7 @@ jobs:
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             --build-arg "NEXT_PUBLIC_APP_VERSION=sha-${GITHUB_SHA}" \
+            --build-arg "NEXT_PUBLIC_BUILD_DATE=${build_date}" \
             --metadata-file web-metadata.json \
             --push \
             --tag "${WEB_IMAGE}:sha-${GITHUB_SHA}" \
@@ -117,6 +182,7 @@ jobs:
             --architecture linux/amd64 \
             --configuration-sha256 "$config_sha" \
             --migration-inventory-sha256 "$migration_sha" \
+            --fork-changelog apps/web/.fork-changelog/entries.json \
             --backend-image "$backend_ref" \
             --web-image "$web_ref" \
             --output cd-build-evidence.json
@@ -128,8 +194,9 @@ jobs:
             --expected-migration-inventory-sha256 "$migration_sha"
           docker buildx imagetools inspect "$backend_ref" | tee backend-inspect.txt
           docker buildx imagetools inspect "$web_ref" | tee web-inspect.txt
+          entries_sha="$(node -p 'JSON.parse(require("node:fs").readFileSync("cd-build-evidence.json", "utf8")).fork_changelog_sha256')"
           cat > cd-image-provenance.json <<EOF
-          {"images":{"backend":{"digest":"$(cat backend.digest)","architecture":"linux/amd64","repository":"${GITHUB_REPOSITORY}","source_sha":"${GITHUB_SHA}"},"web":{"digest":"$(cat web.digest)","architecture":"linux/amd64","repository":"${GITHUB_REPOSITORY}","source_sha":"${GITHUB_SHA}"}}}
+          {"fork_changelog_sha256":"${entries_sha}","images":{"backend":{"digest":"$(cat backend.digest)","architecture":"linux/amd64","repository":"${GITHUB_REPOSITORY}","source_sha":"${GITHUB_SHA}"},"web":{"digest":"$(cat web.digest)","architecture":"linux/amd64","repository":"${GITHUB_REPOSITORY}","source_sha":"${GITHUB_SHA}"}}}
           EOF
 
       - name: Upload D1 build evidence

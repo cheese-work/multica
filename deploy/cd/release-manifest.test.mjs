@@ -35,6 +35,7 @@ test("manifest records the exact entries bytes as sha256", (context) => {
 
 test("manifest records absent when the entries file is unavailable", (context) => {
   assert.equal(fixture(context).manifest.fork_changelog_sha256, "absent");
+  assert.equal(fixture(context, ["--fork-changelog", "ENTRIES.missing"]).manifest.fork_changelog_sha256, "absent");
 });
 
 test("manifest verification rejects an entries hash mismatch", (context) => {
