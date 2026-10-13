@@ -60,6 +60,16 @@ describe("workspace OpenSearch description", () => {
     );
   });
 
+  it("falls back to nginx's internal HTTP origin on C00 when no public origin is configured", async () => {
+    const response = await GET(new Request("http://0.0.0.0:3000/cheese-work/opensearch.xml", {
+      headers: { host: "congvc-c00.taila6fa8a.ts.net", "x-forwarded-proto": "http" },
+    }), { params: Promise.resolve({ workspaceSlug: "cheese-work" }) });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain(
+      'template="http://congvc-c00.taila6fa8a.ts.net/cheese-work/search?q={searchTerms}"',
+    );
+  });
+
   it("does not let request headers override the configured public origin", async () => {
     vi.stubEnv("MULTICA_APP_URL", "https://app.example.com:8443/");
     const response = await GET(new Request("http://0.0.0.0:3000/acme/opensearch.xml", {
