@@ -54,6 +54,10 @@
     "action_failed_toast": "Couldn't update the queued message"
   },
   "message_list": {
+    "continued_from": "Continued from",
+    "previous_dm": "previous DM",
+    "continued_in": "Continued in →",
+    "continuation_summary": "Conversation summary",
     "show_details": "Show details",
     "replied_in": "Replied in {{elapsed}}",
     "failed_after": "Failed after {{elapsed}}",
