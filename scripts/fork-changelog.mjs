@@ -18,19 +18,22 @@ const DEFAULT_SYNC_PREFIX = "upstream-sync/";
 const MAX_CODE_POINTS = 140;
 const ICT_OFFSET_MS = 7 * 60 * 60 * 1000;
 
-const LINE = /^Changelog(?:\((feat|fix|perf)\))?:\s?(.*)$/;
+const LINE = /^Changelog(?:\((feat|fix|perf)\))?:\s?([^\n]*)$/;
 const SECTIONS = { feat: "New Features", fix: "Bug Fixes", perf: "Improvements" };
 const REQUIRES_LINE = new Set(["feat", "fix", "perf"]);
 
-// Control, bidi and zero-width characters. U+200D (joiner) is handled apart: it stays
-// only between two emoji. Token detection runs on a copy without invisible marks.
-const STRIP = /[\u0000-\u001f\u007f-\u009f\u200b\u200c\u200e\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g;
-// A joiner stays only after an emoji base (plus optional VS16 or skin tone) and before
-// another pictograph; any other joiner is invisible padding and is stripped.
-const EMOJI_JOIN = /(\p{Extended_Pictographic}[\ufe0f\u{1F3FB}-\u{1F3FF}]*)\u200d(?=\p{Extended_Pictographic})|\u200d/gu;
-// Token probe only: also drops format (Cf) and combining (Mn/Me) characters, which
-// include variation selectors and tag characters.
-const INVISIBLE = /[\p{Cf}\p{Mn}\p{Me}]/gu;
+// Everything invisible is stripped by Unicode property, not by list: default-ignorable
+// (zero-width, bidi, fillers, variation selectors, tags), control, unassigned, private
+// use, surrogates and line/paragraph separators. An emoji base keeps its skin tone, one
+// VS16 and a joiner that leads into another pictograph, so valid emoji survive.
+const INVISIBLE = "\\p{Default_Ignorable_Code_Point}\\p{Cf}\\p{Cc}\\p{Cn}\\p{Co}\\p{Cs}\\p{Zl}\\p{Zp}";
+const STRIP_INVISIBLE = new RegExp(
+  `(\\p{Extended_Pictographic}[\\u{1F3FB}-\\u{1F3FF}]*)(\\ufe0f)?(\\u200d(?=\\p{Extended_Pictographic}))?|[${INVISIBLE}]`,
+  "gu",
+);
+// Credential and issue-id probe only: NFKC folds look-alikes (full-width letters), then
+// format and combining marks are dropped so no mark can split a pattern.
+const PROBE_MARKS = /[\p{Cf}\p{Mn}\p{Me}]/gu;
 const TOKENS = [
   /ghp_[A-Za-z0-9]{10,}/,
   /github_pat_[A-Za-z0-9_]{10,}/,
@@ -81,25 +84,24 @@ export function parseChangelogLine(body) {
   if (matches.length > 1) warnings.push("More than one Changelog line: the first one is used.");
 
   const [, override, raw] = matches[0];
-  const value = raw.trim();
-  if (value === "") return result("missing", null, null, warnings);
-  if (/<[^\s<>][^<>]*>/.test(value)) {
+  const spaced = raw.trim().replace(/[\t\v\f]/g, " ");
+  const stripped = spaced.replace(STRIP_INVISIBLE, (match, base, selector, joiner) =>
+    base ? `${base}${selector ?? ""}${joiner ?? ""}` : "",
+  );
+  const cleaned = stripped.replace(/\s+/g, " ").trim();
+  if (stripped !== spaced) warnings.push("Stripped invisible or control characters from the sentence.");
+  if (cleaned === "") return result("missing", null, null, warnings);
+  if (/<[^\s<>][^<>]*>/.test(cleaned)) {
     warnings.push("The Changelog line holds a <placeholder>.");
     return result("missing", null, null, warnings);
   }
-
-  const spaced = value.replace(/[\t\v\f]/g, " ");
-  const stripped = spaced.replace(STRIP, "").replace(EMOJI_JOIN, (match, base) => (base ? match : ""));
-  const cleaned = stripped.replace(/\s+/g, " ").trim();
-  if (stripped !== spaced) warnings.push("Stripped control, bidi or zero-width characters from the sentence.");
-  if (cleaned === "") return result("missing", null, null, warnings);
   if (cleaned.toLowerCase() === "none") return result("none", null, null, warnings);
-  const probe = cleaned.replace(INVISIBLE, "");
+  const probe = cleaned.normalize("NFKC").replace(PROBE_MARKS, "");
   if (TOKENS.some((token) => token.test(probe))) {
     warnings.push("The sentence looks like a credential and is hidden.");
     return result("parse-error", null, null, warnings);
   }
-  if (/\bCHE-\d+\b/i.test(cleaned)) {
+  if (/\bCHE-\d+\b/i.test(probe)) {
     warnings.push("The sentence names an issue id and is hidden: users cannot open it.");
     return result("parse-error", null, null, warnings);
   }
