@@ -231,17 +231,22 @@ func antigravityResultStatus(status string) string {
 	}
 }
 
+// antigravityStale404Re matches the one historical error CHE-1710 proved stale.
+// ponytail: matches on error text, so a genuine current 404 with no log entry is
+// also tolerated; widen the proof (transcript turn boundary) if that ever shows.
+var antigravityStale404Re = regexp.MustCompile(`\b404\b`)
+
 // antigravityStaleResumedResultError reports whether a structured result error
 // on a resumed conversation is historical rather than this turn's failure. The
 // result of a resumed conversation can keep an old error (CHE-1710) while the
-// current turn finished: the latest response is DONE with non-empty text, the
-// process exited 0, no current tool failed, and this run's own log carries
-// neither an executor error nor a print timeout. Any current-turn evidence
-// keeps the failure.
+// current turn finished: the error is a 404, the latest response is DONE with
+// non-empty text, the process exited 0, no current tool failed, and this run's
+// own log carries neither an executor error nor a print timeout. Any other
+// error or current-turn evidence keeps the failure.
 func antigravityStaleResumedResultError(resumed bool, status, providerError, response string, agentResponseDone, toolFailed bool, waitErr error, logPath string) bool {
 	return resumed &&
 		antigravityResultStatus(status) == "failed" &&
-		strings.TrimSpace(providerError) != "" &&
+		antigravityStale404Re.MatchString(providerError) &&
 		strings.TrimSpace(response) != "" &&
 		agentResponseDone &&
 		!toolFailed &&
