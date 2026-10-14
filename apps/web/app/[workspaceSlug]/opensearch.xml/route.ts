@@ -29,9 +29,11 @@ export async function GET(
     .replaceAll('"', "&quot;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;");
-  const probe = process.env.MULTICA_COOKIE_PROBE === "1"
-    ? `\n  <Url type="application/x-suggestions+json" template="${template.replace("/search?q=", "/suggestions-probe?q=")}" />`
-    : "";
+  const suggestions = `${origin}/api/search/suggestions?workspace_slug=${workspaceSlug}&q={searchTerms}`
+    .replaceAll("&", "&amp;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
 
   return new Response(
     `<?xml version="1.0" encoding="UTF-8"?>
@@ -39,7 +41,8 @@ export async function GET(
   <ShortName>${`Multica ${workspaceSlug}`.slice(0, 16)}</ShortName>
   <Description>Search issues, projects and agents in Multica.</Description>
   <InputEncoding>UTF-8</InputEncoding>
-  <Url type="text/html" template="${template}" />${probe}
+  <Url type="text/html" template="${template}" />
+  <Url type="application/x-suggestions+json" template="${suggestions}" />
 </OpenSearchDescription>`,
     {
       headers: {

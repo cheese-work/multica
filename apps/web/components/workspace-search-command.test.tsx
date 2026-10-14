@@ -7,11 +7,12 @@ const state = vi.hoisted(() => ({
   pathname: "/acme/search",
   params: new URLSearchParams(),
   router: { replace: vi.fn() },
+  workspace: { slug: "acme", name: "Acme", issue_prefix: "C9" } as { slug: string; name: string; issue_prefix: string } | null,
 }));
 
 vi.mock("@multica/core/paths", async (importOriginal) => ({
   ...await importOriginal<typeof import("@multica/core/paths")>(),
-  useCurrentWorkspace: () => ({ slug: "acme", issue_prefix: "C9" }),
+  useCurrentWorkspace: () => state.workspace,
 }));
 
 vi.mock("next/navigation", () => ({
@@ -40,6 +41,7 @@ function renderCommand() {
 }
 
 beforeEach(() => {
+  state.workspace = { slug: "acme", name: "Acme", issue_prefix: "C9" };
   state.pathname = "/acme/search";
   state.params = new URLSearchParams();
   state.router.replace.mockReset();
@@ -47,6 +49,23 @@ beforeEach(() => {
 });
 
 describe("workspace search URL", () => {
+  it("waits for workspace membership before interpreting an identifier", () => {
+    state.workspace = null;
+    state.params = new URLSearchParams({ q: "C9-123 title" });
+    const view = renderCommand();
+    expect(state.router.replace).not.toHaveBeenCalled();
+    expect(useSearchStore.getState().open).toBe(false);
+    state.workspace = { slug: "acme", name: "Acme", issue_prefix: "C9" };
+    view.rerender(<WorkspaceSearchCommand />);
+    expect(state.router.replace).toHaveBeenCalledExactlyOnceWith("/acme/issues/C9-123");
+  });
+
+  it("uses the existing legacy name prefix for old workspaces", () => {
+    state.workspace = { slug: "acme-team", name: "Acme Team", issue_prefix: "" };
+    state.params = new URLSearchParams({ q: "ACM-123 title" });
+    renderCommand();
+    expect(state.router.replace).toHaveBeenCalledExactlyOnceWith("/acme/issues/ACM-123");
+  });
   it.each(["C9-123 title from suggestions", "c9-123"])("opens the suggested issue for %s", (query) => {
     state.params = new URLSearchParams({ q: query });
     renderCommand();

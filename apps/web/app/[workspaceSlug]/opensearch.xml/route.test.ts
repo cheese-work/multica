@@ -146,7 +146,7 @@ describe("workspace OpenSearch description", () => {
     expect(response.status).toBe(200);
     const document = new DOMParser().parseFromString(await response.text(), "application/xml");
     expect(Array.from(document.documentElement.children, (element) => element.localName)).toEqual([
-      "ShortName", "Description", "InputEncoding", "Url",
+      "ShortName", "Description", "InputEncoding", "Url", "Url",
     ]);
     expect(document.querySelector("ShortName")?.textContent?.length).toBeLessThanOrEqual(16);
     expect(document.querySelector("Url")?.getAttribute("template")).toContain(
