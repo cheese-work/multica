@@ -671,9 +671,7 @@ func TestDeleteCommentCancelsTriggeredTasks(t *testing.T) {
 	})
 }
 
-// TestCommentThreadsQueueSeparatelyFromAssignment verifies that each root
-// comment queues independently of other threads and the assignment task.
-func TestCommentThreadsQueueSeparatelyFromAssignment(t *testing.T) {
+func TestCommentThreadsFoldIntoQueuedAssignment(t *testing.T) {
 	agentID := getAgentID(t)
 	issueID := createIssueAssignedToAgent(t, "Coalescing test", agentID)
 	t.Cleanup(func() {
@@ -682,21 +680,39 @@ func TestCommentThreadsQueueSeparatelyFromAssignment(t *testing.T) {
 		resp.Body.Close()
 	})
 
-	// Distinct root comments must not merge with each other or the assignment.
+	if n := countPendingTasks(t, issueID); n != 1 {
+		t.Fatalf("expected one pending assignment task before comments, got %d", n)
+	}
+	var assignmentTaskID string
+	if err := testPool.QueryRow(context.Background(), `SELECT id::text FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2 AND status='queued'`, issueID, agentID).Scan(&assignmentTaskID); err != nil {
+		t.Fatal(err)
+	}
+
 	first := postComment(t, issueID, "First comment", nil)
+	if n := countPendingTasks(t, issueID); n != 1 {
+		t.Fatalf("expected first comment to fold into the assignment task, got %d pending tasks", n)
+	}
+	if triggerID := latestTriggerCommentID(t, issueID); triggerID != first {
+		t.Fatalf("expected first comment as the assignment task's trigger, got %q", triggerID)
+	}
 	second := postComment(t, issueID, "Second comment", nil)
 
-	if n := countPendingTasks(t, issueID); n != 3 {
-		t.Fatalf("expected assignment plus two independent thread tasks, got %d", n)
+	if n := countPendingTasks(t, issueID); n != 1 {
+		t.Fatalf("expected both comment threads to fold into one pending assignment task, got %d", n)
 	}
-	for _, id := range []string{first, second} {
-		var count int
-		if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2 AND trigger_comment_id=$3 AND cardinality(coalesced_comment_ids)=0`, issueID, agentID, id).Scan(&count); err != nil {
-			t.Fatal(err)
-		}
-		if count != 1 {
-			t.Errorf("comment %s should own exactly one unmerged task, got %d", id, count)
-		}
+	var taskID, triggerID string
+	var coalescedIDs []string
+	if err := testPool.QueryRow(context.Background(), `SELECT id::text, trigger_comment_id::text, coalesced_comment_ids::text[] FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2 AND status='queued'`, issueID, agentID).Scan(&taskID, &triggerID, &coalescedIDs); err != nil {
+		t.Fatal(err)
+	}
+	if taskID != assignmentTaskID {
+		t.Errorf("expected original assignment task %s, got %s", assignmentTaskID, taskID)
+	}
+	if triggerID != second {
+		t.Errorf("expected latest comment %s as trigger, got %s", second, triggerID)
+	}
+	if len(coalescedIDs) != 1 || coalescedIDs[0] != first {
+		t.Errorf("expected only earlier comment %s in coalesced context, got %v", first, coalescedIDs)
 	}
 }
 
