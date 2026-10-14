@@ -152,6 +152,13 @@ func TestAntigravityBackendKeepsResumedFailures(t *testing.T) {
 			errHas: "NOT_FOUND",
 		},
 		{
+			name:   "genuine current 404 without a log entry and without prior-error provenance",
+			fix:    staleResumedFixture{response: "answer"},
+			opts:   resumedOpts(),
+			status: "failed",
+			errHas: "NOT_FOUND",
+		},
+		{
 			name:   "current structured error that is not the stale 404 and is absent from the log",
 			fix:    staleResumedFixture{response: "answer", resultError: "agent executor error: PERMISSION_DENIED (code 403): quota exhausted"},
 			opts:   resumedOpts(),
