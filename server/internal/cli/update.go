@@ -22,6 +22,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/multica-ai/multica/server/pkg/buildinfo"
+
 	"github.com/multica-ai/multica/server/internal/selfexec"
 )
 
@@ -73,7 +75,8 @@ type GitHubRelease struct {
 // uses this to skip self-update for source builds, where downgrading to a
 // public release would clobber unreleased changes.
 func IsReleaseVersion(v string) bool {
-	s := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(v), "v"))
+	plainVersion, _ := buildinfo.Split(v)
+	s := strings.TrimSpace(strings.TrimPrefix(plainVersion, "v"))
 	if s == "" {
 		return false
 	}
@@ -123,7 +126,8 @@ func IsNewerVersion(latest, current string) bool {
 // downgrade a developer build to a public release just because the
 // dev-describe patch happened to look numeric after trimming.
 func parseReleaseVersion(v string) ([3]int, bool) {
-	s := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(v), "v"))
+	plainVersion, _ := buildinfo.Split(v)
+	s := strings.TrimSpace(strings.TrimPrefix(plainVersion, "v"))
 	if s == "" {
 		return [3]int{}, false
 	}

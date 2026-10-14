@@ -144,6 +144,21 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
+	"621_chat_fork_operation_index":                             "chat_session_fork_operation_idx",
+	"615_decision_request_comment_v2_index":                     "comment_decision_request_kind_v2_uidx",
+	"598_decision_request_id_index":                             "decision_request_id_uidx",
+	"599_decision_intent_id_index":                              "decision_intent_id_uidx",
+	"601_decision_answer_id_index":                              "decision_answer_id_uidx",
+	"602_decision_target_identity_index":                        "decision_intent_target_uidx",
+	"603_decision_live_answer_index":                            "decision_answer_live_uidx",
+	"604_decision_open_intent_index":                            "decision_intent_open_task_uidx",
+	"605_decision_answer_comment_index":                         "comment_decision_answer_kind_uidx",
+	"606_decision_request_comment_index":                        "comment_decision_request_kind_uidx",
+	"607_decision_answer_messages_index":                        "decision_answer_messages_idx",
+	"608_decision_request_scope_index":                          "decision_request_scope_idx",
+	"609_decision_worker_lease_name_index":                      "decision_worker_lease_name_uidx",
+	"610_decision_class_change_request_index":                   "decision_class_change_request_idx",
+	"611_decision_answer_request_index":                         "decision_answer_request_idx",
 	"571_search_index_change_changed_at_index":                  "idx_search_index_change_changed_at",
 	"570_search_index_change_workspace_index":                   "idx_search_index_change_workspace_xid",
 	"560_agent_task_history_page_index":                         "idx_agent_task_queue_history_page",
@@ -410,6 +425,20 @@ type requiredConcurrentIndex struct {
 }
 
 var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
+	"621_chat_fork_operation_index": {
+		IndexRegclass: "chat_session_fork_operation_idx",
+		TableRegclass: "chat_session",
+		Unique:        true,
+		Columns:       []string{"forked_from_session_id", "fork_idempotency_key"},
+		Predicate:     "forked_from_session_id IS NOT NULL",
+	},
+	"615_decision_request_comment_v2_index": {
+		IndexRegclass: "comment_decision_request_kind_v2_uidx",
+		TableRegclass: "comment",
+		Unique:        true,
+		Columns:       []string{"decision_request_id", "decision_comment_kind"},
+		Predicate:     "decision_answer_id IS NULL AND decision_request_id IS NOT NULL",
+	},
 	"582_wakeup_definition_identity_index": {
 		IndexRegclass: "issue_wakeup_definition_identity_idx",
 		TableRegclass: "issue_wakeup_definition",
@@ -516,6 +545,7 @@ var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
 // the retry, while a bare CREATE would stay wedged on "already exists"; both
 // cases need direction-specific cleanup before the rollback can retry safely.
 var concurrentDownIndexCleanups = map[string]string{
+	"616_decision_request_comment_index_retire":             "comment_decision_request_kind_uidx",
 	"144_drop_agent_task_queue_chat_pending_v1":             "idx_agent_task_queue_chat_pending",
 	"171_drop_legacy_label_namespace_index":                 "issue_label_workspace_name_lower_idx",
 	"256_drop_agent_task_queue_chat_pending_v2":             "idx_agent_task_queue_chat_pending_v2",
@@ -541,6 +571,7 @@ var concurrentDownIndexCleanups = map[string]string{
 	"473_drop_agent_task_queue_chat_with_session_index":     "idx_agent_task_queue_chat_with_session_created_at",
 	"574_drop_github_merge_announcement_identity_index":     "uq_github_merge_announcement_identity",
 	"575_drop_github_merge_announcement_pending_index":      "idx_github_merge_announcement_pending_claim",
+	"612_decision_target_primary_key":                       "decision_intent_target_uidx",
 }
 
 var preMigrationHooks = func() map[string]preMigrationHook {
@@ -567,6 +598,15 @@ var preRollbackHooks = func() map[string]preMigrationHook {
 		hooks[version] = ensureSourceContextRollbackSafe
 	}
 	hooks["430_channel_outbound_message_binding_index"] = refuseChannelChatRouteHistoryRollback
+	hooks["612_decision_target_primary_key"] = func(ctx context.Context, pool *pgxpool.Pool) error {
+		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, "SET LOCAL lock_timeout = '2s'; ALTER TABLE IF EXISTS decision_intent_target DROP CONSTRAINT IF EXISTS decision_intent_target_pkey")
+			return err
+		}); err != nil {
+			return err
+		}
+		return cleanupInvalidConcurrentIndexHook("decision_intent_target_uidx")(ctx, pool)
+	}
 	return hooks
 }()
 

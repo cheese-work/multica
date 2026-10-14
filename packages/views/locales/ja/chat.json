@@ -1,5 +1,7 @@
 {
   "page": {
+    "interactive_login_required": "チャットを使うには再度ログインしてください",
+    "interactive_login_action": "ログイン",
     "title": "チャット",
     "select_prompt": "会話を選ぶか、＋ で新規作成してください",
     "agent_link_no_access": "このエージェントとチャットする権限がありません。"
@@ -21,6 +23,11 @@
     "queue_send_tooltip": "キューに追加",
     "stop_tooltip": "停止",
     "send_failed_toast": "メッセージを送信できませんでした",
+    "rename_failed_toast": "チャットの名前を変更できませんでした",
+    "fork_unconfirmed": "分岐を確認できませんでした。再試行する前に「分岐先」のリンクを確認してください。",
+    "fork_attachments_blocked": "/fork では添付ファイルを送信できません。",
+    "rename_title_too_long_toast": "チャットのタイトルは200文字以内にしてください",
+    "rename_session_required_toast": "名前を変更する前にチャットを開始してください",
     "send_blocked_toast": "メッセージは送信されませんでした — このエージェントを使用する権限がありません",
     "runtime_required_toast": "メッセージは送信されませんでした — 先にこのエージェントのランタイムを設定してください",
     "runtime_access_denied_toast": "メッセージは送信されませんでした — このエージェントはプライベートランタイムで実行できません。ランタイムを公開にするか、所有者が利用できるランタイムへエージェントを再設定/コピーしてください",
@@ -47,6 +54,17 @@
     "action_failed_toast": "キュー内のメッセージを更新できませんでした"
   },
   "message_list": {
+    "continued_from": "継続元：",
+    "previous_dm": "前のDM",
+    "continued_in": "継続先 →",
+    "forked_from": "分岐元：",
+    "forked_into": "分岐先：",
+    "original_dm": "元の DM",
+    "new_dm": "新しい DM",
+    "forked_from_deleted": "削除された DM から分岐",
+    "copied_count_other": "{{count}} 件のメッセージをコピー",
+    "fork_hint": "メッセージを送信するとこのブランチが始まります。",
+    "continuation_summary": "会話の要約",
     "show_details": "詳細を表示",
     "replied_in": "{{elapsed}}で返信",
     "failed_after": "{{elapsed}}後に失敗",

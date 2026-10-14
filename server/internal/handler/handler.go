@@ -153,6 +153,7 @@ type Config struct {
 	// cmd/server validates the raw value before the boot continues, so a
 	// non-boolean never reaches this struct.
 	LLMDisableThinking bool
+	ProviderRecoveryBaseURL string
 	// ServerVersion is the build version of the running API binary (the same
 	// value main.go stamps via -X main.version and reports on /metrics).
 	// Surfaced through /api/config so self-hosted operators can confirm which
@@ -496,6 +497,12 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	)
 
 	taskSvc := service.NewTaskService(queries, txStarter, hub, bus, daemonHub)
+	probe, probeErr := service.NewHTTPProviderFailureProbe(cfg.ProviderRecoveryBaseURL)
+	if probeErr != nil {
+		slog.Error("provider recovery probe configuration is invalid", "error", probeErr)
+	} else {
+		taskSvc.ProviderFailureProbe = probe
+	}
 	taskSvc.Analytics = analyticsClient
 	taskSvc.SourceContextStorage = store
 	// Chat follow-up suggestions run through the same internal LLM layer that

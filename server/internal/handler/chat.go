@@ -153,11 +153,27 @@ func (h *Handler) CreateChatSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Has("issue") {
+		h.listDecisionLanes(w, r)
+		return
+	}
 	userID, ok := requireUserID(w, r)
 	if !ok {
 		return
 	}
 	workspaceID := ctxWorkspaceID(r.Context())
+	if r.Header.Get("X-Actor-Source") != "interactive_jwt" {
+		session, ok := h.callingChatSession(w, r)
+		if !ok {
+			return
+		}
+		responses := make([]ChatSessionResponse, 0, 1)
+		if session.Status == "active" || r.URL.Query().Get("status") == "all" {
+			responses = append(responses, chatSessionToResponse(session))
+		}
+		writeJSON(w, http.StatusOK, responses)
+		return
+	}
 
 	// Compute the accessible-agents set once and use it to drop sessions
 	// whose target agent the caller no longer has access to — without this,
@@ -196,19 +212,24 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			resp = append(resp, ChatSessionResponse{
-				ID:          uuidToString(s.ID),
-				WorkspaceID: uuidToString(s.WorkspaceID),
-				AgentID:     uuidToString(s.AgentID),
-				CreatorID:   uuidToString(s.CreatorID),
-				ProjectID:   uuidToPtr(s.ProjectID),
-				Title:       s.Title,
-				Status:      s.Status,
-				HasUnread:   s.UnreadCount > 0,
-				UnreadCount: int(s.UnreadCount),
-				LastMessage: buildChatLastMessage(s.LastMessageAt, s.LastMessageContent, s.LastMessageRole, s.LastMessageFailureReason, s.LastMessageKind),
-				Pinned:      s.PinnedAt.Valid,
-				CreatedAt:   timestampToString(s.CreatedAt),
-				UpdatedAt:   timestampToString(s.UpdatedAt),
+				ID:                     uuidToString(s.ID),
+				ContinuedIntoSessionID: uuidToPtr(s.ContinuedIntoSessionID),
+				ContinuedFromSessionID: uuidToPtr(s.ContinuedFromSessionID),
+				ForkedFromSessionID:    uuidToPtr(s.ForkedFromSessionID),
+				ForkLastMessageID:      uuidToPtr(s.ForkLastMessageID),
+				ForkMessageCount:       int4ToPtr(s.ForkMessageCount),
+				WorkspaceID:            uuidToString(s.WorkspaceID),
+				AgentID:                uuidToString(s.AgentID),
+				CreatorID:              uuidToString(s.CreatorID),
+				ProjectID:              uuidToPtr(s.ProjectID),
+				Title:                  s.Title,
+				Status:                 s.Status,
+				HasUnread:              s.UnreadCount > 0,
+				UnreadCount:            int(s.UnreadCount),
+				LastMessage:            buildChatLastMessage(s.LastMessageAt, s.LastMessageContent, s.LastMessageRole, s.LastMessageFailureReason, s.LastMessageKind),
+				Pinned:                 s.PinnedAt.Valid,
+				CreatedAt:              timestampToString(s.CreatedAt),
+				UpdatedAt:              timestampToString(s.UpdatedAt),
 			})
 		}
 	} else {
@@ -226,19 +247,24 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			resp = append(resp, ChatSessionResponse{
-				ID:          uuidToString(s.ID),
-				WorkspaceID: uuidToString(s.WorkspaceID),
-				AgentID:     uuidToString(s.AgentID),
-				CreatorID:   uuidToString(s.CreatorID),
-				ProjectID:   uuidToPtr(s.ProjectID),
-				Title:       s.Title,
-				Status:      s.Status,
-				HasUnread:   s.UnreadCount > 0,
-				UnreadCount: int(s.UnreadCount),
-				LastMessage: buildChatLastMessage(s.LastMessageAt, s.LastMessageContent, s.LastMessageRole, s.LastMessageFailureReason, s.LastMessageKind),
-				Pinned:      s.PinnedAt.Valid,
-				CreatedAt:   timestampToString(s.CreatedAt),
-				UpdatedAt:   timestampToString(s.UpdatedAt),
+				ID:                     uuidToString(s.ID),
+				ContinuedIntoSessionID: uuidToPtr(s.ContinuedIntoSessionID),
+				ContinuedFromSessionID: uuidToPtr(s.ContinuedFromSessionID),
+				ForkedFromSessionID:    uuidToPtr(s.ForkedFromSessionID),
+				ForkLastMessageID:      uuidToPtr(s.ForkLastMessageID),
+				ForkMessageCount:       int4ToPtr(s.ForkMessageCount),
+				WorkspaceID:            uuidToString(s.WorkspaceID),
+				AgentID:                uuidToString(s.AgentID),
+				CreatorID:              uuidToString(s.CreatorID),
+				ProjectID:              uuidToPtr(s.ProjectID),
+				Title:                  s.Title,
+				Status:                 s.Status,
+				HasUnread:              s.UnreadCount > 0,
+				UnreadCount:            int(s.UnreadCount),
+				LastMessage:            buildChatLastMessage(s.LastMessageAt, s.LastMessageContent, s.LastMessageRole, s.LastMessageFailureReason, s.LastMessageKind),
+				Pinned:                 s.PinnedAt.Valid,
+				CreatedAt:              timestampToString(s.CreatedAt),
+				UpdatedAt:              timestampToString(s.UpdatedAt),
 			})
 		}
 	}
@@ -323,10 +349,7 @@ func (h *Handler) GetChatSession(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	workspaceID := ctxWorkspaceID(r.Context())
-	sessionID := chi.URLParam(r, "sessionId")
-
-	session, ok := h.gatePublicChatSessionForUser(w, r, userID, workspaceID, sessionID)
+	session, ok := h.chatReadSession(w, r, userID)
 	if !ok {
 		return
 	}
@@ -873,41 +896,8 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Preflight the agent's enqueue preconditions BEFORE persisting the user
-	// message. EnqueueChatTask (below) rejects an archived or runtime-less agent
-	// with an error; without this check a stale client (agent archived in
-	// another tab) would land the user message, then get a 500, leaving an
-	// orphan message with no task or reply. Fail fast with a 4xx and mutate
-	// nothing. See EnqueueChatTask's ErrChatTaskAgentArchived / NoRuntime.
-	agent, err := h.Queries.GetAgent(r.Context(), session.AgentID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load chat agent")
-		return
-	}
-	if agent.ArchivedAt.Valid {
-		writeError(w, http.StatusConflict, "chat agent is archived")
-		return
-	}
-	// Shared verdict: an unbound agent and a machine whose CLI cannot run are
-	// both refusals here, with their own codes. A merely offline runtime is not
-	// checked at all — chat messages queue for it, as they always have.
-	if verdict, err := service.AgentReadiness(r.Context(), h.runtimeLookup(obsmetrics.RuntimeLookupSourceChat), agent); err == nil && verdict.Blocked() {
-		h.writeDispatchBlocked(w, http.StatusConflict, verdict.Reason)
-		return
-	}
-
-	// Re-run the INVOKE gate on every send, not just the softer view gate in
-	// gatePublicChatSessionForUser (MUL-4525). canAccessPrivateAgent lets a workspace
-	// admin keep reading a transcript, but sending a message enqueues a run and
-	// must satisfy canInvokeAgent — which has no admin bypass. A session created
-	// while the user could invoke the agent must stop enqueuing work the instant
-	// that permission is revoked (agent flipped private, ownership moved, target
-	// removed from the allow-list), and it must fail BEFORE we persist the user
-	// message / attachments / task. Blocked returns a structured, enumeration-safe
-	// reason so the composer can explain it without leaking private-agent details.
-	actorType, actorID := h.resolveActor(r, userID, workspaceID)
-	if !h.canInvokeAgent(r.Context(), agent, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), workspaceID) {
-		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
+	agent, actorType, actorID, ok := h.preflightChatSend(w, r, session, userID, workspaceID)
+	if !ok {
 		return
 	}
 
@@ -942,7 +932,7 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	// creator-only), so they are the task initiator and the run's originator —
 	// surfaced to the agent under `## On Behalf Of`. actorType/actorID were
 	// resolved above for the invoke gate.
-	sent, err := h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID))
+	sent, err := h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), r.Header.Get("X-Actor-Source"))
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrChatSessionArchived):
@@ -1004,7 +994,9 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	// silently keeps the original first-message-derived title. session.Title
 	// is the default/original title observed here and drives the CAS so a
 	// manual rename mid-generation is never clobbered.
-	shouldGenerateTitle := shouldGenerateFirstMessageTitle(hadUserMessage, currentTitle, sent.InitialTitle, channelBacked, channelSourceKnown)
+	// A fork child keeps its fork title; it is not an untitled first message.
+	shouldGenerateTitle := !session.ForkedFromSessionID.Valid &&
+		shouldGenerateFirstMessageTitle(hadUserMessage, currentTitle, sent.InitialTitle, channelBacked, channelSourceKnown)
 	if shouldGenerateTitle {
 		h.maybeGenerateChatTitleAsync(workspaceID, userID, session.ID, currentTitle, req.Content)
 	}
@@ -1017,6 +1009,49 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:     timestampToString(task.CreatedAt),
 		AttachmentIDs: boundAttachmentIDs,
 	})
+}
+
+// preflightChatSend refuses a send the session's agent cannot accept, before
+// anything is written. It returns the agent and the resolved actor.
+func (h *Handler) preflightChatSend(w http.ResponseWriter, r *http.Request, session db.ChatSession, userID, workspaceID string) (db.Agent, string, string, bool) {
+	// Preflight the agent's enqueue preconditions BEFORE persisting the user
+	// message. EnqueueChatTask (below) rejects an archived or runtime-less agent
+	// with an error; without this check a stale client (agent archived in
+	// another tab) would land the user message, then get a 500, leaving an
+	// orphan message with no task or reply. Fail fast with a 4xx and mutate
+	// nothing. See EnqueueChatTask's ErrChatTaskAgentArchived / NoRuntime.
+	agent, err := h.Queries.GetAgent(r.Context(), session.AgentID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load chat agent")
+		return db.Agent{}, "", "", false
+	}
+	if agent.ArchivedAt.Valid {
+		writeError(w, http.StatusConflict, "chat agent is archived")
+		return db.Agent{}, "", "", false
+	}
+	// Shared verdict: an unbound agent and a machine whose CLI cannot run are
+	// both refusals here, with their own codes. A merely offline runtime is not
+	// checked at all — chat messages queue for it, as they always have.
+	if verdict, err := service.AgentReadiness(r.Context(), h.runtimeLookup(obsmetrics.RuntimeLookupSourceChat), agent); err == nil && verdict.Blocked() {
+		h.writeDispatchBlocked(w, http.StatusConflict, verdict.Reason)
+		return db.Agent{}, "", "", false
+	}
+
+	// Re-run the INVOKE gate on every send, not just the softer view gate in
+	// gatePublicChatSessionForUser (MUL-4525). canAccessPrivateAgent lets a workspace
+	// admin keep reading a transcript, but sending a message enqueues a run and
+	// must satisfy canInvokeAgent — which has no admin bypass. A session created
+	// while the user could invoke the agent must stop enqueuing work the instant
+	// that permission is revoked (agent flipped private, ownership moved, target
+	// removed from the allow-list), and it must fail BEFORE we persist the user
+	// message / attachments / task. Blocked returns a structured, enumeration-safe
+	// reason so the composer can explain it without leaking private-agent details.
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	if !h.canInvokeAgent(r.Context(), agent, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), workspaceID) {
+		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
+		return db.Agent{}, "", "", false
+	}
+	return agent, actorType, actorID, true
 }
 
 func shouldGenerateFirstMessageTitle(hadUserMessage bool, currentTitle, initializedTitle string, channelBacked, channelSourceKnown bool) bool {
@@ -1177,9 +1212,7 @@ func (h *Handler) ListChatMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	workspaceID := ctxWorkspaceID(r.Context())
-	sessionID := chi.URLParam(r, "sessionId")
-
-	session, ok := h.gatePublicChatSessionForUser(w, r, userID, workspaceID, sessionID)
+	session, ok := h.chatReadSession(w, r, userID)
 	if !ok {
 		return
 	}
@@ -1210,9 +1243,7 @@ func (h *Handler) ListChatMessagesPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	workspaceID := ctxWorkspaceID(r.Context())
-	sessionID := chi.URLParam(r, "sessionId")
-
-	session, ok := h.gatePublicChatSessionForUser(w, r, userID, workspaceID, sessionID)
+	session, ok := h.chatReadSession(w, r, userID)
 	if !ok {
 		return
 	}
@@ -1908,13 +1939,18 @@ func (h *Handler) CancelTaskByUser(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 type ChatSessionResponse struct {
-	ID          string  `json:"id"`
-	WorkspaceID string  `json:"workspace_id"`
-	AgentID     string  `json:"agent_id"`
-	CreatorID   string  `json:"creator_id"`
-	ProjectID   *string `json:"project_id"`
-	Title       string  `json:"title"`
-	Status      string  `json:"status"`
+	ID                     string  `json:"id"`
+	ContinuedIntoSessionID *string `json:"continued_into_session_id,omitempty"`
+	ContinuedFromSessionID *string `json:"continued_from_session_id,omitempty"`
+	ForkedFromSessionID    *string `json:"forked_from_session_id,omitempty"`
+	ForkLastMessageID      *string `json:"fork_last_message_id,omitempty"`
+	ForkMessageCount       *int32  `json:"fork_message_count,omitempty"`
+	WorkspaceID            string  `json:"workspace_id"`
+	AgentID                string  `json:"agent_id"`
+	CreatorID              string  `json:"creator_id"`
+	ProjectID              *string `json:"project_id"`
+	Title                  string  `json:"title"`
+	Status                 string  `json:"status"`
 	// Only populated by list endpoints — single-session fetches return 0/false/nil.
 	// HasUnread is kept as a convenience (== UnreadCount > 0) for existing consumers.
 	HasUnread   bool             `json:"has_unread"`
@@ -2025,16 +2061,21 @@ type ChatMessageResponse struct {
 
 func chatSessionToResponse(s db.ChatSession) ChatSessionResponse {
 	return ChatSessionResponse{
-		ID:          uuidToString(s.ID),
-		WorkspaceID: uuidToString(s.WorkspaceID),
-		AgentID:     uuidToString(s.AgentID),
-		CreatorID:   uuidToString(s.CreatorID),
-		ProjectID:   uuidToPtr(s.ProjectID),
-		Title:       s.Title,
-		Status:      s.Status,
-		Pinned:      s.PinnedAt.Valid,
-		CreatedAt:   timestampToString(s.CreatedAt),
-		UpdatedAt:   timestampToString(s.UpdatedAt),
+		ID:                     uuidToString(s.ID),
+		ContinuedIntoSessionID: uuidToPtr(s.ContinuedIntoSessionID),
+		ContinuedFromSessionID: uuidToPtr(s.ContinuedFromSessionID),
+		ForkedFromSessionID:    uuidToPtr(s.ForkedFromSessionID),
+		ForkLastMessageID:      uuidToPtr(s.ForkLastMessageID),
+		ForkMessageCount:       int4ToPtr(s.ForkMessageCount),
+		WorkspaceID:            uuidToString(s.WorkspaceID),
+		AgentID:                uuidToString(s.AgentID),
+		CreatorID:              uuidToString(s.CreatorID),
+		ProjectID:              uuidToPtr(s.ProjectID),
+		Title:                  s.Title,
+		Status:                 s.Status,
+		Pinned:                 s.PinnedAt.Valid,
+		CreatedAt:              timestampToString(s.CreatedAt),
+		UpdatedAt:              timestampToString(s.UpdatedAt),
 	}
 }
 
@@ -2093,6 +2134,8 @@ const chatQuickActionResponseLimit = 3
 // never surprises an older client into a broken render (MUL-4351).
 func normalizeMessageKind(kind string) string {
 	switch kind {
+	case protocol.ChatMessageKindContinuationSummary:
+		return protocol.ChatMessageKindContinuationSummary
 	case protocol.ChatMessageKindNoResponse:
 		return protocol.ChatMessageKindNoResponse
 	case protocol.ChatMessageKindOnboardingKickoff:

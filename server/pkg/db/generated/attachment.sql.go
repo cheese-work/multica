@@ -11,6 +11,26 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const attachmentURLInUse = `-- name: AttachmentURLInUse :one
+SELECT EXISTS (
+  SELECT 1 FROM attachment WHERE workspace_id = $1 AND url = $2
+)
+`
+
+type AttachmentURLInUseParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Url         string      `json:"url"`
+}
+
+// ponytail: scans the workspace's attachments by idx_attachment_workspace; add
+// a url index if deletes in very large workspaces get slow.
+func (q *Queries) AttachmentURLInUse(ctx context.Context, arg AttachmentURLInUseParams) (bool, error) {
+	row := q.db.QueryRow(ctx, attachmentURLInUse, arg.WorkspaceID, arg.Url)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const bindChatAttachmentsToMessage = `-- name: BindChatAttachmentsToMessage :many
 UPDATE attachment
 SET chat_message_id = $1
@@ -485,6 +505,37 @@ func (q *Queries) GetAttachmentByIDOnly(ctx context.Context, id pgtype.UUID) (At
 		&i.SourceContextID,
 	)
 	return i, err
+}
+
+const insertForkChatAttachments = `-- name: InsertForkChatAttachments :exec
+INSERT INTO attachment (
+    id, workspace_id, chat_session_id, chat_message_id, uploader_type, uploader_id,
+    filename, url, content_type, size_bytes, created_at
+)
+SELECT ($1::uuid[])[i], source.workspace_id, $2::uuid,
+       ($3::uuid[])[i], source.uploader_type, source.uploader_id,
+       source.filename, source.url, source.content_type, source.size_bytes, source.created_at
+FROM generate_subscripts($1::uuid[], 1) AS i
+JOIN attachment AS source ON source.id = ($4::uuid[])[i]
+`
+
+type InsertForkChatAttachmentsParams struct {
+	Ids            []pgtype.UUID `json:"ids"`
+	ChatSessionID  pgtype.UUID   `json:"chat_session_id"`
+	ChatMessageIds []pgtype.UUID `json:"chat_message_ids"`
+	SourceIds      []pgtype.UUID `json:"source_ids"`
+}
+
+// Copies attachment rows for a fork: same stored file, child session and
+// message, no task.
+func (q *Queries) InsertForkChatAttachments(ctx context.Context, arg InsertForkChatAttachmentsParams) error {
+	_, err := q.db.Exec(ctx, insertForkChatAttachments,
+		arg.Ids,
+		arg.ChatSessionID,
+		arg.ChatMessageIds,
+		arg.SourceIds,
+	)
+	return err
 }
 
 const linkAttachmentsToChatMessage = `-- name: LinkAttachmentsToChatMessage :many
@@ -1238,6 +1289,57 @@ func (q *Queries) LockAttachmentsForIssueLink(ctx context.Context, arg LockAttac
 			return nil, err
 		}
 		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockChatAttachmentsForFork = `-- name: LockChatAttachmentsForFork :many
+SELECT id, workspace_id, issue_id, comment_id, uploader_type, uploader_id, filename, url, content_type, size_bytes, created_at, chat_session_id, chat_message_id, task_id, source_context_id FROM attachment
+WHERE workspace_id = $1
+  AND chat_message_id = ANY($2::uuid[])
+ORDER BY created_at ASC, id ASC
+FOR SHARE
+`
+
+type LockChatAttachmentsForForkParams struct {
+	WorkspaceID    pgtype.UUID   `json:"workspace_id"`
+	ChatMessageIds []pgtype.UUID `json:"chat_message_ids"`
+}
+
+// A share lock: a concurrent DeleteAttachment waits for the fork, then sees
+// the copy and keeps the stored file (AttachmentURLInUse).
+func (q *Queries) LockChatAttachmentsForFork(ctx context.Context, arg LockChatAttachmentsForForkParams) ([]Attachment, error) {
+	rows, err := q.db.Query(ctx, lockChatAttachmentsForFork, arg.WorkspaceID, arg.ChatMessageIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Attachment{}
+	for rows.Next() {
+		var i Attachment
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.CommentID,
+			&i.UploaderType,
+			&i.UploaderID,
+			&i.Filename,
+			&i.Url,
+			&i.ContentType,
+			&i.SizeBytes,
+			&i.CreatedAt,
+			&i.ChatSessionID,
+			&i.ChatMessageID,
+			&i.TaskID,
+			&i.SourceContextID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

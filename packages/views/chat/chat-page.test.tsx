@@ -14,6 +14,9 @@ import {
 } from "../navigation";
 
 const TEST_RESOURCES = { en: { common: enCommon, chat: enChat } };
+const mockSignIn = vi.hoisted(() => vi.fn());
+
+vi.mock("../auth/use-logout", () => ({ useLogout: () => mockSignIn }));
 
 // These tests target the page-level URL wiring (`?agent=` / `?session=`), so
 // the conversation internals are stubbed and the controller is replaced with
@@ -86,6 +89,10 @@ vi.mock("@multica/core/paths", () => ({
   useRequiredWorkspaceSlug: () => "acme",
   useWorkspacePaths: () => ({ chat: () => "/acme/chat" }),
 }));
+vi.mock("@multica/core/hooks", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/hooks")>()),
+  useWorkspaceId: () => "ws-1",
+}));
 const platformWorkspace = vi.hoisted(() => ({ slug: "acme" }));
 vi.mock("@multica/core/platform", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@multica/core/platform")>()),
@@ -104,6 +111,7 @@ const storeRef = vi.hoisted(() => ({
 const storeListeners = vi.hoisted(() => new Set<() => void>());
 const availableAgentsRef = vi.hoisted(() => ({ current: [] as Agent[] }));
 const agentsSettledRef = vi.hoisted(() => ({ current: true }));
+const interactiveLoginRequiredRef = vi.hoisted(() => ({ current: false }));
 const mockStartNewChat = vi.hoisted(() => vi.fn());
 const mockToastError = vi.hoisted(() => vi.fn());
 const mockSetActiveSession = vi.hoisted(() =>
@@ -139,6 +147,7 @@ vi.mock("./components/use-chat-controller", async () => {
       availableAgents: availableAgentsRef.current,
       agentsSettled: agentsSettledRef.current,
       sessions: [],
+      interactiveLoginRequired: interactiveLoginRequiredRef.current,
       activeSessionId: useSyncExternalStore(
         subscribeToStore,
         () => storeRef.current,
@@ -252,6 +261,7 @@ function renderPage(search: string, { strict = false } = {}) {
 }
 
 beforeEach(() => {
+  interactiveLoginRequiredRef.current = false;
   vi.clearAllMocks();
   storeRef.current = { activeSessionId: null };
   storeListeners.clear();
@@ -262,6 +272,18 @@ beforeEach(() => {
 });
 
 describe("ChatPage URL synchronization", () => {
+
+  it("prompts for interactive re-login without navigating or clearing the session", () => {
+    interactiveLoginRequiredRef.current = true;
+    storeRef.current.activeSessionId = "preserved-session";
+    const page = renderPage("?session=preserved-session");
+    expect(screen.getByRole("alert")).toHaveTextContent("Sign in again to use Chat");
+    expect(storeRef.current.activeSessionId).toBe("preserved-session");
+    expect(page.replace).not.toHaveBeenCalled();
+    expect(mockSignIn).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(mockSignIn).toHaveBeenCalledTimes(1);
+  });
   it.each(["/globex/issues", "/acme/issues"])(
     "does not redirect back to chat when the retained page observes %s",
     (pathname) => {

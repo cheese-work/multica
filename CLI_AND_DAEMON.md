@@ -2,6 +2,61 @@
 
 The `multica` CLI connects your local machine to Multica. It handles authentication, workspace management, issue tracking, and runs the agent daemon that executes AI tasks locally.
 
+## Continue a web DM
+
+Type `/compact` as the first line of a web DM message. An optional focus can follow, for example `/compact retain deployment evidence`. The agent writes a handoff summary and continues the conversation in a fresh DM with the same agent, title, creator and project. The old DM is archived, not deleted. The summary links back to its readable transcript.
+
+An agent running a chat task can also write a UTF-8 summary file in its working directory and run:
+
+```bash
+multica chat continue --summary-file ./summary.md
+```
+
+The command returns the new DM's URL. The summary is its first message and seeds the next agent turn without resuming the old provider session. A summary must be non-empty and at most 65536 bytes. Do not include credentials, tokens, or secrets.
+
+The API is `POST /api/chat/sessions/<id>/continue` with `{"summary":"..."}`. Only the session's human or a running chat task of that same session can call it. The task-scoped CLI uses `POST /api/chat/continue`, which resolves the source from the authenticated task rather than accepting another session ID. Retrying a successful continuation returns the same successor.
+
+Continuations do not move decision requests.
+
+### Saved compact prompt
+
+Set the workspace default with `PATCH /api/workspaces/{id}` in `settings.compact_prompt`. Set an optional per-agent override with `PATCH /api/agents/{id}` in `runtime_config.compact_prompt` (also available through `multica agent update --runtime-config`). These existing JSON settings are replaced, not merged; preserve other keys when updating them. Values are strings of at most 16384 bytes. Empty strings or `null` inherit the workspace default, or the built-in handoff criteria if no workspace default exists.
+
+`/compact [focus]` uses the saved summary requirements and appends the focus for that invocation only. Saved prompts do not replace the continuation instructions or the secret-handling restrictions. There is no new button or quick action.
+
+## Fork a web DM
+
+Type `/fork` as the first word of a message in an active web DM. Text after `/fork` is optional; it becomes your first message in the new DM, for example `/fork try the SQLite variant instead`.
+
+The web app does not send `/fork` to the agent. It forks the DM directly, with no agent turn:
+
+- The new DM is a full copy of the messages and attachments you can see in the source, with their original times. The copy counts as read.
+- It has the same agent, creator and project. Its title is `<source title> (fork: <first 40 characters of your message>)`, or `<source title> (fork)` without a message. Rename it with `/rename`.
+- A dimmed divider "Forked from <source title> · <N> messages copied" marks where the copy ends.
+- You land in the new DM. With a message, the agent answers at once. Without a message, the new DM stays idle and shows a hint until you send a first message.
+- The source DM stays active. Its footer shows "Forked into" links to every fork. You can fork it again.
+
+What the agent in the new DM gets: a fresh agent session. No provider session, managed checkout or task work directory is carried over, and the agent's private tool memory from the source (files it read, commands it ran, tool output) is not copied. On its first turn, and on any turn with no session to resume, the server adds a fork context block with this DM's transcript. The block is capped at 64 KiB and keeps the newest messages; the agent reads earlier ones with `multica chat history`. When the project binds a local directory, the source and the fork work in that same directory; a fork does not isolate files.
+
+Decision requests, approvals and task tokens stay with the source. Agent-builder DMs and DMs from an external channel cannot be forked; `/fork` typed in an external channel (for example Telegram) stays literal text. Attachments cannot be sent with `/fork`.
+
+There is no fork prompt setting, and `compact_prompt` does not apply: a fork copies the conversation, so no summary is written.
+
+An agent running a chat turn can fork the DM it works in. A task fork sends no message, so the new DM is idle:
+
+```bash
+multica chat continue --fork
+```
+
+A human can fork through the API with an explicit key; reuse the key when retrying, and the server returns the same fork without sending the message twice:
+
+```bash
+curl -X POST "$MULTICA_URL/api/chat/sessions/<id>/fork" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Workspace-ID: <workspace-id>" \
+  -H "Content-Type: application/json" \
+  -d '{"idempotency_key":"try-sqlite","message":"Try the SQLite variant"}'
+```
+
 ## Installation
 
 ### Homebrew (macOS/Linux)

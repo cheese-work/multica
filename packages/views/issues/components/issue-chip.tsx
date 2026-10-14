@@ -66,6 +66,7 @@ export function IssueChip({
   const { data: detailIssue } = useQuery({
     ...issueDetailOptions(wsId, issueId),
     enabled: !listIssue,
+    refetchOnWindowFocus: true,
   });
 
   const issue = listIssue ?? detailIssue;

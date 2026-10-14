@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/commentguard"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/governance/receipt"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
@@ -1498,6 +1499,7 @@ func keepRootConnected(byID map[string]db.Comment) []db.Comment {
 
 type CreateCommentRequest struct {
 	Content          string   `json:"content"`
+	DecisionIntent   bool     `json:"decision_intent"`
 	Type             string   `json:"type"`
 	ParentID         *string  `json:"parent_id"`
 	AttachmentIDs    []string `json:"attachment_ids"`
@@ -1674,6 +1676,9 @@ func (h *Handler) PreviewCommentTriggers(w http.ResponseWriter, r *http.Request)
 		opts.AuthoringTaskID = h.commentSourceTaskID(r)
 	}
 	triggers, targets := h.computeCommentAgentTriggers(r.Context(), issue, content, parentComment, actorType, actorID, opts)
+	if editingComment != nil {
+		triggers, targets = filterCommentAuthorTriggers(triggers, targets, editingComment.AuthorType, uuidToString(editingComment.AuthorID))
+	}
 	resp := CommentTriggerPreviewResponse{
 		Agents:  make([]CommentTriggerAgentResponse, 0, len(triggers)),
 		Blocked: commentBlockedTargetOutcomes(targets),
@@ -1727,6 +1732,11 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	var req CreateCommentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.DecisionIntent && r.Header.Get("X-Actor-Source") != "task_token" {
+		writeError(w, http.StatusForbidden, "decision intent requires an issue task token")
 		return
 	}
 
@@ -1930,29 +1940,60 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// cleanup. Inside this transaction the row is not yet visible to a delete,
 	// so there is no window at all. Mirrors the attachment-set edit in
 	// UpdateComment.
-	tx, err := h.beginWakeupWrite(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create comment")
-		return
-	}
-	defer tx.Rollback(r.Context())
-	qtx := h.Queries.WithTx(tx)
+	var tx pgx.Tx
+	var qtx *db.Queries
+	var cleared []db.Comment
+	var err error
+	var intentTargets []pgtype.UUID
 	// LockThreadForReplyAndClearResolution takes the thread lock and, still
 	// inside this transaction, clears any resolution held by the root or any
 	// reply in the thread — so a reply landing in a resolved thread reopens it
 	// atomically with its own insert instead of via a separate post-commit
 	// write through an unlocked handle (see commentguard package doc).
-	_, cleared, err := commentguard.LockThreadForReplyAndClearResolution(r.Context(), qtx, issue.WorkspaceID, parentID)
-	if err != nil {
-		slog.Warn("lock comment thread failed", append(logger.RequestAttrs(r), "error", err, "issue_id", issueID)...)
-		writeError(w, http.StatusInternalServerError, "failed to create comment")
+	for attempt := 0; ; attempt++ {
+		tx, err = h.beginWakeupWrite(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to create comment")
+			return
+		}
+		qtx = h.Queries.WithTx(tx)
+		if req.DecisionIntent {
+			_, err = qtx.LockWorkspaceForChatSessionCreate(r.Context(), issue.WorkspaceID)
+		}
+		if err == nil {
+			_, cleared, err = commentguard.LockThreadForReplyAndClearResolution(r.Context(), qtx, issue.WorkspaceID, parentID)
+		}
+		if err == nil && req.DecisionIntent {
+			issue, intentTargets, err = h.prepareDecisionIntent(r, qtx, issue, authorType, createParams.AuthorID, req.Content)
+		}
+		if err == nil {
+			break
+		}
+		_ = tx.Rollback(r.Context())
+		if req.DecisionIntent && decisiontx.IsRetryable(err) && attempt < 2 {
+			select {
+			case <-time.After(20 * time.Millisecond):
+				continue
+			case <-r.Context().Done():
+			}
+		}
+		if req.DecisionIntent {
+			writeDecisionIntentError(w, err)
+		} else {
+			slog.Warn("lock comment thread failed", append(logger.RequestAttrs(r), "error", err, "issue_id", issueID)...)
+			writeError(w, http.StatusInternalServerError, "failed to create comment")
+		}
 		return
 	}
+	defer tx.Rollback(r.Context())
 	created, err := qtx.CreateComment(r.Context(), createParams)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// The issue was deleted, possibly while this waited for its row lock.
 		writeError(w, http.StatusNotFound, "issue not found")
 		return
+	}
+	if err == nil && req.DecisionIntent {
+		err = createCommentDecisionIntent(r, qtx, created.Comment(), intentTargets)
 	}
 	if err == nil && len(attachmentIDs) > 0 {
 		// Owner first: the CreateComment statement above took the issue row, and
@@ -1996,14 +2037,22 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	resp := commentToResponse(comment, nil, groupedAtt[uuidToString(comment.ID)])
 	resp.IssueRevision = created.IssueRevision
 	slog.Info("comment created", append(logger.RequestAttrs(r), "comment_id", uuidToString(comment.ID), "issue_id", issueID)...)
-	h.publish(protocol.EventCommentCreated, uuidToString(issue.WorkspaceID), authorType, authorID, map[string]any{
+	commentEvent := map[string]any{
 		"comment":             resp,
 		"issue_title":         issue.Title,
 		"issue_assignee_type": textToPtr(issue.AssigneeType),
 		"issue_assignee_id":   uuidToPtr(issue.AssigneeID),
 		"issue_status":        issue.Status,
 		"issue_revision":      created.IssueRevision,
-	})
+	}
+	if req.DecisionIntent {
+		targets := make([]string, len(intentTargets))
+		for index, humanID := range intentTargets {
+			targets[index] = uuidToString(humanID)
+		}
+		commentEvent["decision_intent_targets"] = targets
+	}
+	h.publish(protocol.EventCommentCreated, uuidToString(issue.WorkspaceID), authorType, authorID, commentEvent)
 
 	// The resolution clear itself already committed inside the transaction
 	// above; this only publishes comment:unresolved for it, after commit, same
@@ -2099,6 +2148,7 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 		AuthoringTaskID:         comment.SourceTaskID,
 		OriginatorUserID:        originatorUserID,
 	})
+	triggers, targets = filterCommentAuthorTriggers(triggers, targets, comment.AuthorType, uuidToString(comment.AuthorID))
 	triggers = filterSuppressedCommentAgentTriggers(triggers, suppressAgentIDs)
 	h.noteBlockedRuntimeTargets(ctx, issue, targets)
 	triggers, steered := h.steerCommentAgentTriggers(ctx, issue, comment, actorType, triggers, steerTaskIDs)
@@ -2189,6 +2239,60 @@ func (h *Handler) enqueueCommentAgentTriggers(ctx context.Context, issue db.Issu
 		record(trigger, status, reason)
 	}
 	return results
+}
+
+// collapseIntoQueuedSibling cancels a freshly queued task when another queued
+// task of the same agent, squad role and reviewed head exists on the issue, and
+// moves its comments and attribution onto that sibling. Two comments in
+// different threads can each queue a run when neither sees the other's
+// uncommitted insert (SOL-185-2); the later collapse always sees the earlier
+// commit, so one queued run remains. The (issue, agent) advisory lock
+// serializes collapses, and every statement runs on the lock's own
+// transaction, so the lock holder never waits for a second pool connection
+// (OCR-185-2). Any failure keeps the fresh task: a duplicate run, never a lost
+// comment.
+func (h *Handler) collapseIntoQueuedSibling(ctx context.Context, issue db.Issue, task db.AgentTaskQueue) bool {
+	if h.TxStarter == nil || !task.ID.Valid {
+		return false
+	}
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		slog.Warn("collapse queued duplicate: begin failed", "task_id", uuidToString(task.ID), "error", err)
+		return false
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	qtx := h.Queries.WithTx(tx)
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+		"comment-enqueue:"+uuidToString(issue.ID)+":"+uuidToString(task.AgentID)); err != nil {
+		slog.Warn("collapse queued duplicate: lock failed", "task_id", uuidToString(task.ID), "error", err)
+		return false
+	}
+	siblingID, err := qtx.LockQueuedSiblingTask(ctx, task.ID)
+	if err != nil {
+		if !isNotFound(err) {
+			slog.Warn("collapse queued duplicate: sibling lookup failed", "task_id", uuidToString(task.ID), "error", err)
+		}
+		return false
+	}
+	cancelled, err := qtx.CancelQueuedDuplicateTask(ctx, task.ID)
+	if err != nil {
+		if !isNotFound(err) {
+			slog.Warn("collapse queued duplicate: cancel failed", "task_id", uuidToString(task.ID), "error", err)
+		}
+		return false
+	}
+	if _, err := qtx.FoldTaskIntoQueuedSibling(ctx, db.FoldTaskIntoQueuedSiblingParams{SiblingID: siblingID, SourceID: task.ID}); err != nil {
+		slog.Warn("collapse queued duplicate: fold failed", "task_id", uuidToString(task.ID), "error", err)
+		return false
+	}
+	if err := tx.Commit(ctx); err != nil {
+		slog.Warn("collapse queued duplicate: commit failed", "task_id", uuidToString(task.ID), "error", err)
+		return false
+	}
+	h.TaskService.BroadcastCancelledTasks(ctx, uuidToString(issue.WorkspaceID), []db.AgentTaskQueue{cancelled})
+	slog.Info("collapsed queued duplicate into sibling",
+		"task_id", uuidToString(task.ID), "sibling_id", uuidToString(siblingID), "issue_id", uuidToString(issue.ID))
+	return true
 }
 
 // resolveCommentTriggerEnqueue resolves ONE trigger into its final dispatch
@@ -2316,7 +2420,11 @@ func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Iss
 				// no-blocker case; we simply never PROMISE it.)
 			}
 		}
-		if err := h.enqueueSingleCommentTrigger(ctx, issue, triggerCommentID, trigger); err != nil {
+		if h.foldCommentIntoQueuedIssueTask(ctx, issue, trigger, triggerCommentID, getHeadSha()) {
+			return DispatchCoalesced, ReasonCoalesced
+		}
+		task, err := h.enqueueSingleCommentTrigger(ctx, issue, triggerCommentID, trigger)
+		if err != nil {
 			// Lost the enqueue race: a sibling task for this (issue, agent) now
 			// exists. Re-resolve as pending so the next attempt folds this
 			// comment into that sibling (queued) or durably registers it
@@ -2327,6 +2435,9 @@ func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Iss
 				continue
 			}
 			return DispatchBlocked, commentEnqueueFailureReason(err)
+		}
+		if h.collapseIntoQueuedSibling(ctx, issue, task) {
+			return DispatchCoalesced, ReasonCoalesced
 		}
 		return DispatchQueued, ReasonQueued
 	}
@@ -2513,11 +2624,8 @@ func commentMergeTerminalOutcome(result commentMergeResult) (status DispatchStat
 // originator and matching connected-app overlay.
 func (h *Handler) mergeCommentIntoPendingTask(ctx context.Context, issue db.Issue, trigger commentAgentTrigger, newTriggerCommentID pgtype.UUID, headSha pgtype.Text) commentMergeResult {
 	// Re-attribute the coalescing run to the new comment's human atomically: the
-	// whole attribution snapshot moves, not just the person columns (MUL-4302). An
-	// issue-assignee reaction is comment_source; a mention / thread-parent /
-	// conversation hop is delegation.
-	isMention := trigger.Source != commentTriggerSourceIssueAssignee
-	attr, err := h.TaskService.AttributionForMergedComment(ctx, issue.WorkspaceID, newTriggerCommentID, isMention, trigger.Agent)
+	// whole attribution snapshot moves, not just the person columns (MUL-4302).
+	params, err := h.commentMergeParams(ctx, issue, trigger, newTriggerCommentID, headSha)
 	if err != nil {
 		// The new comment cannot be re-attributed. REFUSE the merge — keep the
 		// existing queued task on its original (precise) snapshot rather than
@@ -2534,23 +2642,7 @@ func (h *Handler) mergeCommentIntoPendingTask(ctx context.Context, issue db.Issu
 		}
 		return commentMergeError
 	}
-	overlay, connectedApps := h.TaskService.BuildRuntimeMCPOverlayForMerge(ctx, attr.UserID, trigger.Agent)
-	row, err := h.Queries.MergeCommentIntoPendingTask(ctx, db.MergeCommentIntoPendingTaskParams{
-		IssueID:                 issue.ID,
-		AgentID:                 trigger.Agent.ID,
-		NewTriggerCommentID:     newTriggerCommentID,
-		NewOriginatorUserID:     attr.UserID,
-		NewAccountableUserID:    attr.AccountableUserID,
-		NewOriginatorSource:     pgtype.Text{String: attr.Source.String(), Valid: true},
-		NewDelegatedFromTaskID:  attr.DelegatedFromTaskID,
-		NewRuleVersionID:        attr.RuleVersionID,
-		NewTriggerEvidenceKind:  pgtype.Text{String: string(attr.EvidenceKind), Valid: attr.EvidenceKind != ""},
-		NewTriggerEvidenceRefID: attr.EvidenceRefID,
-		NewTriggerSummary:       h.TaskService.BuildCommentTriggerSummary(ctx, issue.WorkspaceID, newTriggerCommentID),
-		NewRuntimeMcpOverlay:    overlay,
-		NewRuntimeConnectedApps: connectedApps,
-		HeadSha:                 headSha,
-	})
+	row, err := h.Queries.MergeCommentIntoPendingTask(ctx, params)
 	if err != nil {
 		if isNotFound(err) {
 			// No pre-claim (queued/deferred) task to merge into. The caller
@@ -2574,6 +2666,91 @@ func (h *Handler) mergeCommentIntoPendingTask(ctx context.Context, issue db.Issu
 		"new_trigger_comment_id", uuidToString(newTriggerCommentID),
 		"coalesced_count", len(row.CoalescedCommentIds))
 	return commentMergeSucceeded
+}
+
+// commentMergeParams computes the re-attribution a fold stamps on the run. An
+// issue-assignee reaction is comment_source; a mention / thread-parent /
+// conversation hop is delegation (MUL-4302).
+func (h *Handler) commentMergeParams(ctx context.Context, issue db.Issue, trigger commentAgentTrigger, newTriggerCommentID pgtype.UUID, headSha pgtype.Text) (db.MergeCommentIntoPendingTaskParams, error) {
+	isMention := trigger.Source != commentTriggerSourceIssueAssignee
+	attr, err := h.TaskService.AttributionForMergedComment(ctx, issue.WorkspaceID, newTriggerCommentID, isMention, trigger.Agent)
+	if err != nil {
+		return db.MergeCommentIntoPendingTaskParams{}, err
+	}
+	overlay, connectedApps := h.TaskService.BuildRuntimeMCPOverlayForMerge(ctx, attr.UserID, trigger.Agent)
+	return db.MergeCommentIntoPendingTaskParams{
+		IssueID:                 issue.ID,
+		AgentID:                 trigger.Agent.ID,
+		NewTriggerCommentID:     newTriggerCommentID,
+		NewOriginatorUserID:     attr.UserID,
+		NewAccountableUserID:    attr.AccountableUserID,
+		NewOriginatorSource:     pgtype.Text{String: attr.Source.String(), Valid: true},
+		NewDelegatedFromTaskID:  attr.DelegatedFromTaskID,
+		NewRuleVersionID:        attr.RuleVersionID,
+		NewTriggerEvidenceKind:  pgtype.Text{String: string(attr.EvidenceKind), Valid: attr.EvidenceKind != ""},
+		NewTriggerEvidenceRefID: attr.EvidenceRefID,
+		NewTriggerSummary:       h.TaskService.BuildCommentTriggerSummary(ctx, issue.WorkspaceID, newTriggerCommentID),
+		NewRuntimeMcpOverlay:    overlay,
+		NewRuntimeConnectedApps: connectedApps,
+		HeadSha:                 headSha,
+	}, nil
+}
+
+// foldCommentIntoQueuedIssueTask folds the comment into the agent's queued run
+// elsewhere on the issue — another thread, or the assignment run — so one
+// comment never adds a second queued run for the same agent (CHE-1418). It only
+// removes a duplicate: every miss or failure returns false and the per-thread
+// path decides exactly as before.
+func (h *Handler) foldCommentIntoQueuedIssueTask(ctx context.Context, issue db.Issue, trigger commentAgentTrigger, commentID pgtype.UUID, headSha pgtype.Text) bool {
+	pending, err := h.Queries.HasPendingTaskForIssueAndAgent(ctx, db.HasPendingTaskForIssueAndAgentParams{
+		IssueID: issue.ID,
+		AgentID: trigger.Agent.ID,
+		HeadSha: headSha,
+	})
+	if err != nil || !pending {
+		return false
+	}
+	params, err := h.commentMergeParams(ctx, issue, trigger, commentID, headSha)
+	if err != nil {
+		return false
+	}
+	var squadID pgtype.UUID
+	if trigger.Squad != nil {
+		squadID = trigger.Squad.ID
+	}
+	row, err := h.Queries.MergeCommentIntoQueuedIssueTask(ctx, db.MergeCommentIntoQueuedIssueTaskParams{
+		NewTriggerCommentID:     params.NewTriggerCommentID,
+		NewTriggerSummary:       params.NewTriggerSummary,
+		NewOriginatorUserID:     params.NewOriginatorUserID,
+		NewAccountableUserID:    params.NewAccountableUserID,
+		NewOriginatorSource:     params.NewOriginatorSource,
+		NewDelegatedFromTaskID:  params.NewDelegatedFromTaskID,
+		NewRuleVersionID:        params.NewRuleVersionID,
+		NewTriggerEvidenceKind:  params.NewTriggerEvidenceKind,
+		NewTriggerEvidenceRefID: params.NewTriggerEvidenceRefID,
+		NewRuntimeMcpOverlay:    params.NewRuntimeMcpOverlay,
+		NewRuntimeConnectedApps: params.NewRuntimeConnectedApps,
+		IssueID:                 issue.ID,
+		AgentID:                 trigger.Agent.ID,
+		SquadID:                 squadID,
+		HeadSha:                 headSha,
+	})
+	if err != nil {
+		if !isNotFound(err) {
+			slog.Warn("fold comment into queued issue task failed; using the per-thread path",
+				"issue_id", uuidToString(issue.ID),
+				"agent_id", uuidToString(trigger.Agent.ID),
+				"error", err)
+		}
+		return false
+	}
+	slog.Info("folded comment into queued issue task",
+		"task_id", uuidToString(row.ID),
+		"issue_id", uuidToString(issue.ID),
+		"agent_id", uuidToString(trigger.Agent.ID),
+		"new_trigger_comment_id", uuidToString(commentID),
+		"coalesced_count", len(row.CoalescedCommentIds))
+	return true
 }
 
 // registerPlannedCommentForActiveTask durably folds an accepted comment into the
@@ -2655,7 +2832,7 @@ func (h *Handler) propagateUncoveredCommentObligation(ctx context.Context, issue
 		if h.mergeCommentIntoPendingTask(ctx, issue, trigger, commentID, headSha) == commentMergeSucceeded {
 			return true
 		}
-		err = h.enqueueSingleCommentTrigger(ctx, issue, commentID, trigger)
+		_, err = h.enqueueSingleCommentTrigger(ctx, issue, commentID, trigger)
 		if err == nil {
 			return true
 		}
@@ -2688,20 +2865,22 @@ func logCommentEnqueueFailure(msg string, err error, attrs ...any) {
 // enqueueSingleCommentTrigger enqueues one resolved trigger and returns the
 // enqueue error (nil on success) so the caller can surface a
 // trigger_outcome (MUL-4525 §2).
-func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, trigger commentAgentTrigger) error {
+func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, trigger commentAgentTrigger) (db.AgentTaskQueue, error) {
+	var task db.AgentTaskQueue
+	var err error
 	switch trigger.Source {
 	case commentTriggerSourceIssueAssignee:
 		if trigger.Squad != nil {
-			if _, err := h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, service.OriginDerived); err != nil {
+			if task, err = h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, service.OriginDerived); err != nil {
 				logCommentEnqueueFailure("enqueue squad leader task failed", err,
 					"issue_id", uuidToString(issue.ID),
 					"squad_id", uuidToString(trigger.Squad.ID),
 					"leader_id", uuidToString(trigger.Agent.ID))
-				return err
+				return task, err
 			}
-			return nil
+			return task, nil
 		}
-		if _, err := h.TaskService.EnqueueTaskForIssue(ctx, issue, triggerCommentID); err != nil {
+		if task, err = h.TaskService.EnqueueTaskForIssue(ctx, issue, triggerCommentID); err != nil {
 			// EnqueueTaskForIssue now returns ErrDuplicatePendingTask on the
 			// benign duplicate-pending-task race, so use the shared helper that
 			// downgrades that case to debug — matching the squad-leader and
@@ -2709,43 +2888,42 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 			// instead of surfacing a warning (#5914).
 			logCommentEnqueueFailure("enqueue agent task on comment failed", err,
 				"issue_id", uuidToString(issue.ID))
-			return err
+			return task, err
 		}
 	case commentTriggerSourceMentionSquadLeader:
-		if _, err := h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, service.OriginNamed); err != nil {
+		if task, err = h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, service.OriginNamed); err != nil {
 			logCommentEnqueueFailure("enqueue squad leader mention task failed", err,
 				"issue_id", uuidToString(issue.ID),
 				"agent_id", uuidToString(trigger.Agent.ID))
-			return err
+			return task, err
 		}
 	case commentTriggerSourceMentionAgent:
-		if _, err := h.TaskService.EnqueueTaskForMention(ctx, issue, trigger.Agent.ID, triggerCommentID, service.OriginNamed); err != nil {
+		if task, err = h.TaskService.EnqueueTaskForMention(ctx, issue, trigger.Agent.ID, triggerCommentID, service.OriginNamed); err != nil {
 			logCommentEnqueueFailure("enqueue mention agent task failed", err,
 				"issue_id", uuidToString(issue.ID),
 				"agent_id", uuidToString(trigger.Agent.ID))
-			return err
+			return task, err
 		}
 	case commentTriggerSourceThreadParent, commentTriggerSourceConversation:
-		var err error
 		// Squad is set on these two sources only when the routing already
 		// proved a leader role to continue: the thread root's prior task for
 		// the conversation path, the replied-to comment's own authoring task
 		// for the thread-parent path. Gating on the source as well would keep
 		// the thread-parent path demoted for no reason (MUL-7006).
 		if trigger.Squad != nil {
-			_, err = h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, service.OriginNamed)
+			task, err = h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, service.OriginNamed)
 		} else {
-			_, err = h.TaskService.EnqueueTaskForThreadParent(ctx, issue, trigger.Agent.ID, triggerCommentID)
+			task, err = h.TaskService.EnqueueTaskForThreadParent(ctx, issue, trigger.Agent.ID, triggerCommentID)
 		}
 		if err != nil {
 			logCommentEnqueueFailure("enqueue routed comment agent task failed", err,
 				"issue_id", uuidToString(issue.ID),
 				"agent_id", uuidToString(trigger.Agent.ID),
 				"source", trigger.Source)
-			return err
+			return task, err
 		}
 	}
-	return nil
+	return task, nil
 }
 
 // computeCommentAgentTriggers resolves which agents a comment triggers (deduped
@@ -2753,7 +2931,11 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 // @squad mention (MUL-4525 §2). Targets come only from the explicit-mention path
 // — the implicit routing fallbacks (assignee, thread parent, conversation) were
 // never named by the user, so a no-route there is not a silent no-op.
-func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issue, content string, parentComment *db.Comment, actorType, actorID string, opts commentTriggerComputeOptions) ([]commentAgentTrigger, []commentMentionTarget) {
+func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issue, content string, parentComment *db.Comment, actorType, actorID string, opts commentTriggerComputeOptions) (triggers []commentAgentTrigger, targets []commentMentionTarget) {
+	defer func() {
+		triggers, targets = filterCommentAuthorTriggers(triggers, targets, actorType, actorID)
+	}()
+
 	// A persisted comment determines its thread; previews use the parent.
 	// A new top-level preview has no thread yet and cannot merge with a queue.
 	opts.ThreadCommentID = opts.ExcludeTriggerCommentID
@@ -2815,36 +2997,84 @@ func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issu
 		return nil, nil
 	}
 
+	// A member comment on a blocked squad-assigned issue is the input the squad
+	// is waiting on, wherever it sits in the thread tree, so it always reaches
+	// the leader once (CHE-1418: CHE-1048 waited 6.5h on a reply under a worker
+	// comment). Explicit mentions are routed above and keep their meaning.
+	return h.withBlockedSquadLeader(ctx, issue, h.routeMemberCommentTriggers(ctx, issue, parentComment, actorType, actorID, opts), actorType, actorID, opts), nil
+}
+
+// routeMemberCommentTriggers is the implicit routing of a member comment with no
+// mentions: the replied-to agent, the thread's owners, or the issue assignee.
+func (h *Handler) routeMemberCommentTriggers(ctx context.Context, issue db.Issue, parentComment *db.Comment, actorType, actorID string, opts commentTriggerComputeOptions) []commentAgentTrigger {
 	// A deleted parent no longer speaks for its agent author (#8296).
 	if parentComment != nil && parentComment.AuthorType == "agent" && !parentComment.DeletedAt.Valid {
 		trigger, ok := h.routeReplyToParentAuthor(ctx, issue, parentComment, actorType, actorID, opts)
 		if !ok {
-			return nil, nil
+			return nil
 		}
-		return []commentAgentTrigger{trigger}, nil
+		return []commentAgentTrigger{trigger}
 	}
 
 	if parentComment != nil {
 		triggers, handled := h.routeThreadRootOwners(ctx, issue, parentComment, actorID, opts)
 		if handled {
 			if len(triggers) == 0 {
-				return nil, nil
+				return nil
 			}
-			return triggers, nil
+			return triggers
 		}
 		// A plain member-to-member reply must not start the issue assignee just
 		// because the thread has no agent owner. Explicit mentions and existing
 		// conversation owners were already resolved above. The same holds for a
 		// reply under a deleted comment: it is still a reply, not a new request.
 		if parentComment.AuthorType == "member" || parentComment.DeletedAt.Valid {
-			return nil, nil
+			return nil
 		}
 	}
 
 	if trigger, ok := h.routeAssigneeFallback(ctx, issue, actorType, actorID, opts); ok {
-		return []commentAgentTrigger{trigger}, nil
+		return []commentAgentTrigger{trigger}
 	}
-	return nil, nil
+	return nil
+}
+
+// withBlockedSquadLeader adds the assigned squad's leader to a member comment's
+// triggers while the issue is blocked, unless the leader is already there.
+func (h *Handler) withBlockedSquadLeader(ctx context.Context, issue db.Issue, triggers []commentAgentTrigger, actorType, actorID string, opts commentTriggerComputeOptions) []commentAgentTrigger {
+	if issue.Status != "blocked" || !issue.AssigneeType.Valid || issue.AssigneeType.String != "squad" {
+		return triggers
+	}
+	leader, ok := h.routeAssignedSquadLeaderFallback(ctx, issue, actorType, actorID, opts)
+	if !ok {
+		return triggers
+	}
+	for _, trigger := range triggers {
+		if trigger.Agent.ID == leader.Agent.ID {
+			return triggers
+		}
+	}
+	return append(triggers, leader)
+}
+
+func filterCommentAuthorTriggers(triggers []commentAgentTrigger, targets []commentMentionTarget, authorType, authorID string) ([]commentAgentTrigger, []commentMentionTarget) {
+	if authorType != "agent" || authorID == "" {
+		return triggers, targets
+	}
+	filtered := triggers[:0]
+	for _, trigger := range triggers {
+		if !strings.EqualFold(uuidToString(trigger.Agent.ID), authorID) {
+			filtered = append(filtered, trigger)
+		}
+	}
+	for index := range targets {
+		if strings.EqualFold(targets[index].ExecAgentID, authorID) {
+			targets[index].ExecAgentID = ""
+			targets[index].Status = DispatchBlocked
+			targets[index].ReasonCode = ReasonSelfTriggerSuppressed
+		}
+	}
+	return filtered, targets
 }
 
 func hasAgentOrSquadMention(mentions []util.Mention) bool {
@@ -3304,21 +3534,6 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 				continue
 			}
 			leaderID := squad.LeaderID
-			// A2A self-suppression: the author IS this squad's leader and its
-			// most recent task on this issue was a leader/generic role (NOT a
-			// fresh same-squad worker→leader handoff), so we do not re-fire the
-			// leader from its own @mention. The outcome must reflect reality, not
-			// assume success (MUL-4525): `deferred` only when a real non-terminal
-			// task is still active (its reconcile covers this comment); a query
-			// failure is a non-success internal_error, never a fabricated
-			// deferred; otherwise nothing runs → self_trigger_suppressed.
-			if authorType == "agent" && authorID == uuidToString(leaderID) &&
-				h.shouldSuppressSquadLeaderSelfTrigger(ctx, issue.ID, leaderID, squad.ID) {
-				active, activeErr := h.hasActiveTaskForIssueAndAgent(ctx, issue.ID, leaderID, opts.ThreadCommentID)
-				status, reason := decideSuppressedLeaderOutcome(active, activeErr)
-				addTarget(commentMentionTarget{TargetType: "squad", TargetID: m.ID, Status: status, ReasonCode: reason})
-				continue
-			}
 			agent, err := h.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{
 				ID:          leaderID,
 				WorkspaceID: issue.WorkspaceID,

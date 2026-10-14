@@ -2083,8 +2083,15 @@ func (d *Daemon) clearWSHeartbeatAcks() {
 
 // Run starts the daemon: resolves auth, registers runtimes, then polls for tasks.
 func (d *Daemon) Run(ctx context.Context) error {
+	instanceLock, err := acquireDaemonInstanceLock(d.cfg.Profile)
+	if err != nil {
+		return err
+	}
+	defer instanceLock.Close()
+
 	// Wrap context so handleUpdate can cancel the daemon for restart.
 	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	d.cancelFunc = cancel
 	d.setLifecycleCtx(ctx)
 	d.rootCtx = ctx
@@ -2094,6 +2101,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	defer healthLn.Close()
+
+	pidPath := filepath.Join(filepath.Dir(instanceLock.Name()), "daemon.pid")
+	_ = os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())), 0o644)
+	defer os.Remove(pidPath)
 
 	agentNames := make([]string, 0, len(d.agents()))
 	for name := range d.agents() {
@@ -7676,6 +7688,12 @@ func qualifyTaskModel(
 }
 
 func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot int, taskLog *slog.Logger) (taskResult TaskResult, returnErr error) {
+	if task.RequireCredentialIsolation {
+		if task.CredentialExecutionBinding == nil || task.CredentialExecutionBinding.Validate() != nil || task.CredentialExecutionBinding.TaskID != task.ID || task.CredentialExecutionBinding.WorkspaceID != task.WorkspaceID {
+			return TaskResult{}, fmt.Errorf("credential execution boundary unavailable: missing authenticated task/owner binding")
+		}
+		return TaskResult{}, fmt.Errorf("credential execution boundary unavailable: trusted task gateway handoff is not integrated")
+	}
 	phaseRecorder := taskPhaseRecorderFromContext(ctx)
 	phaseRecorder.Mark(taskPhasePrepareStarted)
 	// A claim carries the task-row agent id both at the top level and inside

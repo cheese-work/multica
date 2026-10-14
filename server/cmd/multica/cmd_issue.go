@@ -705,6 +705,7 @@ func init() {
 	issueRunMessagesCmd.Flags().String("issue", "", "Issue ID/key to scope short run ID prefix resolution")
 
 	// issue comment add
+	issueCommentAddCmd.Flags().Bool("decision-intent", false, "Open a 3-minute decision window for the named people (running assigned issue tasks only)")
 	issueCommentAddCmd.Flags().String("content", "", "Comment content (decodes \\n, \\r, \\t, \\\\; pipe via --content-stdin for multi-line bodies or to preserve literal backslashes)")
 	issueCommentAddCmd.Flags().Bool("content-stdin", false, "Read comment content from stdin (preserves multi-line content verbatim)")
 	issueCommentAddCmd.Flags().String("content-file", "", "Read comment content from a UTF-8 file (preserves multi-line content verbatim; use this on Windows when stdin piping mangles non-ASCII bytes). The path must be inside the current working directory unless --allow-external-file is set.")
@@ -2692,6 +2693,9 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := guardCommentSelfMention(content, client.AgentID); err != nil {
+		return err
+	}
 
 	// Use a longer timeout when attachments are present (file uploads can be slow).
 	timeout := cli.APITimeout()
@@ -2732,6 +2736,9 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	if parentID, _ := cmd.Flags().GetString("parent"); parentID != "" {
 		body["parent_id"] = parentID
 	}
+	if decisionIntent, _ := cmd.Flags().GetBool("decision-intent"); decisionIntent {
+		body["decision_intent"] = true
+	}
 	if len(attachmentIDs) > 0 {
 		body["attachment_ids"] = attachmentIDs
 	}
@@ -2741,6 +2748,7 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "Comment added to issue %s.\n", issueRef.Display)
+	warnBlockedTriggerOutcomes(os.Stderr, result)
 
 	output, _ := cmd.Flags().GetString("output")
 	if output == "table" {
@@ -2771,6 +2779,9 @@ func runIssueCommentUpdate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := guardCommentSelfMention(content, client.AgentID); err != nil {
+		return err
+	}
 
 	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
@@ -2785,6 +2796,7 @@ func runIssueCommentUpdate(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "Comment %s updated.\n", commentID)
+	warnBlockedTriggerOutcomes(os.Stderr, result)
 	output, _ := cmd.Flags().GetString("output")
 	if output == "table" {
 		return nil

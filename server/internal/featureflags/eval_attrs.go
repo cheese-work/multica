@@ -36,8 +36,8 @@ const (
 
 	// FlagAttrActorSource distinguishes the kind of caller that produced an
 	// evaluation: "task_token" (agent run), "cloud_pat" (cloud node),
-	// [ActorSourceBackground] (scheduled/background job), or empty (human
-	// HTTP request). Always server-set, never from client input.
+	// [ActorSourceBackground] (scheduled/background job), or "interactive_jwt",
+	// "cli_jwt" or "pat" (human HTTP request). Always server-set, never from client input.
 	FlagAttrActorSource = "actor_source"
 )
 

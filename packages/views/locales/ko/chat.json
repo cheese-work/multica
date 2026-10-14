@@ -1,5 +1,7 @@
 {
   "page": {
+    "interactive_login_required": "채팅을 사용하려면 다시 로그인하세요",
+    "interactive_login_action": "로그인",
     "title": "채팅",
     "select_prompt": "대화를 선택하거나 +로 새로 시작하세요",
     "agent_link_no_access": "이 에이전트와 채팅할 권한이 없습니다."
@@ -21,6 +23,11 @@
     "queue_send_tooltip": "대기열에 추가",
     "stop_tooltip": "중지",
     "send_failed_toast": "메시지를 보내지 못했습니다",
+    "rename_failed_toast": "채팅 이름을 바꾸지 못했습니다",
+    "fork_unconfirmed": "분기를 확인하지 못했습니다. 다시 시도하기 전에 '분기된 대화' 링크를 확인하세요.",
+    "fork_attachments_blocked": "/fork와 함께 첨부 파일을 보낼 수 없습니다.",
+    "rename_title_too_long_toast": "채팅 제목은 200자 이하여야 합니다",
+    "rename_session_required_toast": "이름을 바꾸기 전에 채팅을 시작하세요",
     "send_blocked_toast": "메시지가 전송되지 않았습니다 — 이 에이전트를 사용할 권한이 없습니다",
     "runtime_required_toast": "메시지가 전송되지 않았습니다 — 먼저 이 에이전트에 런타임을 연결하세요",
     "runtime_access_denied_toast": "메시지가 전송되지 않았습니다 — 이 에이전트는 비공개 런타임에서 실행할 수 없습니다. 런타임을 공개로 변경하거나, 소유자가 사용할 수 있는 런타임으로 에이전트를 다시 연결/복사하세요",
@@ -47,6 +54,17 @@
     "action_failed_toast": "대기 중인 메시지를 업데이트하지 못했습니다"
   },
   "message_list": {
+    "continued_from": "이어진 대화:",
+    "previous_dm": "이전 DM",
+    "continued_in": "다음 대화로 계속 →",
+    "forked_from": "분기 원본:",
+    "forked_into": "분기된 대화:",
+    "original_dm": "원본 DM",
+    "new_dm": "새 DM",
+    "forked_from_deleted": "삭제된 DM에서 분기됨",
+    "copied_count_other": "메시지 {{count}}개 복사됨",
+    "fork_hint": "메시지를 보내 이 분기를 시작하세요.",
+    "continuation_summary": "대화 요약",
     "show_details": "세부 정보 보기",
     "replied_in": "{{elapsed}} 만에 답변",
     "failed_after": "{{elapsed}} 후 실패",

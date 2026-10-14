@@ -1461,10 +1461,18 @@ func (h *Handler) DeleteAttachment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var deleted db.DeleteAttachmentRow
+	// A chat fork copies attachment rows that share one stored file. The file
+	// stays while another row in the workspace still refers to it; checking in
+	// the delete transaction orders it against a fork's share lock.
+	fileInUse := false
 	deleteParams := db.DeleteAttachmentParams{ID: att.ID, WorkspaceID: att.WorkspaceID}
 	err = h.withAttachmentOwnerLock(r.Context(), att, func(qtx *db.Queries) error {
 		var deleteErr error
 		deleted, deleteErr = qtx.DeleteAttachment(r.Context(), deleteParams)
+		if deleteErr != nil {
+			return deleteErr
+		}
+		fileInUse, deleteErr = qtx.AttachmentURLInUse(r.Context(), db.AttachmentURLInUseParams{WorkspaceID: att.WorkspaceID, Url: att.Url})
 		return deleteErr
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -1498,7 +1506,9 @@ func (h *Handler) DeleteAttachment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.deleteS3Object(r.Context(), att.Url)
+	if !fileInUse {
+		h.deleteS3Object(r.Context(), att.Url)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

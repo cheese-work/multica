@@ -77,7 +77,8 @@ type TaskService struct {
 	// whole feature off — no pending marker, no pills — which is the expected
 	// state for a self-hosted deployment with no MULTICA_LLM_* configuration.
 	// Wired in router.go from the same *llm.Client that backs chat auto-titling.
-	QuickActions ChatQuickActionsLLM
+	QuickActions         ChatQuickActionsLLM
+	ProviderFailureProbe ProviderFailureProbe
 	// quickActionsInFlight (chat session id -> struct{}{}) and
 	// quickActionsRunning admit suggestion passes: one per session, and a
 	// process-wide ceiling. Both zero values are usable, so a TaskService built
@@ -2367,25 +2368,77 @@ func (s *TaskService) SendDirectChatMessage(
 	attachmentIDs []pgtype.UUID,
 	uploaderType string,
 	uploaderID pgtype.UUID,
+	sentVia string,
 ) (*DirectChatSendResult, error) {
+	plan, err := s.PlanDirectChatSend(ctx, session.ID, agent, initiatorUserID)
+	if err != nil {
+		return nil, err
+	}
+	var out DirectChatSendResult
+	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		var err error
+		out, err = s.SendDirectChatMessageTx(ctx, qtx, plan, session, initiatorUserID, content, attachmentIDs, uploaderType, uploaderID, sentVia)
+		return err
+	}); err != nil {
+		slog.Error("direct chat send failed",
+			"chat_session_id", util.UUIDToString(session.ID),
+			"agent_id", util.UUIDToString(session.AgentID),
+			"error", err)
+		return nil, err
+	}
+	s.NotifyDirectChatSent(ctx, out.Task)
+	return &out, nil
+}
+
+// DirectChatSendPlan holds the parts of a direct-chat send that must be
+// resolved before a transaction opens.
+type DirectChatSendPlan struct {
+	overlay          runtimeMCPOverlayData
+	attr             attribution.Result
+	attrSource       pgtype.Text
+	attrEvidenceKind pgtype.Text
+	attrEvidenceRef  pgtype.UUID
+}
+
+// PlanDirectChatSend resolves the overlay and attribution of a direct-chat send
+// for sessionID. It runs outside any transaction.
+func (s *TaskService) PlanDirectChatSend(ctx context.Context, sessionID pgtype.UUID, agent db.Agent, initiatorUserID pgtype.UUID) (DirectChatSendPlan, error) {
 	// Build the per-task Composio overlay before the transaction — it can do
 	// network I/O and must not run with a DB transaction open.
-	overlay := s.buildRuntimeMCPOverlay(ctx, initiatorUserID, agent)
+	plan := DirectChatSendPlan{overlay: s.buildRuntimeMCPOverlay(ctx, initiatorUserID, agent)}
 
 	// Full attribution for the chat sender, resolved before the tx (the policy read
 	// + fallback must not run with a transaction open) — the same direct_human stamp
 	// EnqueueChatTask writes. Without this the direct-chat path was a bypass: it set
 	// originator_user_id but left accountable_user_id / source / evidence NULL,
 	// violating the one-way invariant and dropping the audit source (MUL-4302 §2).
-	attr := attribution.DirectHumanRun(initiatorUserID, attribution.EvidenceChat, session.ID)
-	attr, err := s.applyAttributionFallback(ctx, attr, agent)
+	attr, err := s.applyAttributionFallback(ctx, attribution.DirectHumanRun(initiatorUserID, attribution.EvidenceChat, sessionID), agent)
 	if err != nil {
-		return nil, err
+		return plan, err
 	}
-	attrSource, _, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
+	plan.attr = attr
+	plan.attrSource, _, plan.attrEvidenceKind, plan.attrEvidenceRef = attributionCreateParams(attr)
+	return plan, nil
+}
 
+// SendDirectChatMessageTx writes one direct-chat turn inside the caller's
+// transaction. Call NotifyDirectChatSent with the task after the commit.
+func (s *TaskService) SendDirectChatMessageTx(
+	ctx context.Context,
+	qtx *db.Queries,
+	plan DirectChatSendPlan,
+	session db.ChatSession,
+	initiatorUserID pgtype.UUID,
+	content string,
+	attachmentIDs []pgtype.UUID,
+	uploaderType string,
+	uploaderID pgtype.UUID,
+	sentVia string,
+) (DirectChatSendResult, error) {
+	overlay, attr := plan.overlay, plan.attr
+	attrSource, attrEvidenceKind, attrEvidenceRef := plan.attrSource, plan.attrEvidenceKind, plan.attrEvidenceRef
 	var out DirectChatSendResult
-	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
+	err := func() error {
 		// Serialise this send against a concurrent runtime rebind of the same
 		// session (MUL-5163). The lock must be taken first and the agent re-read
 		// under it: the runtime_id the caller loaded can already be stale by the
@@ -2489,6 +2542,7 @@ func (s *TaskService) SendDirectChatMessage(
 			Content:       content,
 			TaskID:        task.ID,
 			MessageKind:   pgtype.Text{String: protocol.ChatMessageKindMessage, Valid: true},
+			SentVia:       pgtype.Text{String: sentVia, Valid: sentVia != ""},
 		})
 		if err != nil {
 			return fmt.Errorf("create user chat message: %w", err)
@@ -2541,22 +2595,19 @@ func (s *TaskService) SendDirectChatMessage(
 			return fmt.Errorf("touch chat session: %w", err)
 		}
 		return nil
-	}); err != nil {
-		slog.Error("direct chat send failed",
-			"chat_session_id", util.UUIDToString(session.ID),
-			"agent_id", util.UUIDToString(session.AgentID),
-			"error", err)
-		return nil, err
-	}
+	}()
+	return out, err
+}
 
+// NotifyDirectChatSent announces a committed direct-chat task.
+func (s *TaskService) NotifyDirectChatSent(ctx context.Context, task db.AgentTaskQueue) {
 	slog.Info("direct chat task enqueued",
-		"task_id", util.UUIDToString(out.Task.ID),
-		"chat_session_id", util.UUIDToString(session.ID),
-		"agent_id", util.UUIDToString(session.AgentID))
+		"task_id", util.UUIDToString(task.ID),
+		"chat_session_id", util.UUIDToString(task.ChatSessionID),
+		"agent_id", util.UUIDToString(task.AgentID))
 	// Notify only after commit. See EnqueueTaskForIssue for ordering rationale.
-	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, out.Task)
-	s.NotifyTaskEnqueued(ctx, out.Task)
-	return &out, nil
+	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
+	s.NotifyTaskEnqueued(ctx, task)
 }
 
 // MikaOnboardingOpenResult carries the two rows that open a Mika conversation.
@@ -4286,9 +4337,17 @@ func (s *TaskService) maybeLogClaimSlow(agentID pgtype.UUID, outcome string, sta
 // Issue status is NOT changed here — the agent manages it via the CLI.
 func (s *TaskService) StartTask(ctx context.Context, taskID pgtype.UUID, supplementSupport ...bool) (*db.AgentTaskQueue, error) {
 	enableTaskSupplement := len(supplementSupport) > 0 && supplementSupport[0]
-	task, err := s.Queries.StartAgentTaskWithSupplement(ctx, db.StartAgentTaskWithSupplementParams{
-		TaskID:               taskID,
-		EnableTaskSupplement: enableTaskSupplement,
+	var task db.AgentTaskQueue
+	err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		var err error
+		task, err = qtx.StartAgentTaskWithSupplement(ctx, db.StartAgentTaskWithSupplementParams{
+			TaskID:               taskID,
+			EnableTaskSupplement: enableTaskSupplement,
+		})
+		if err != nil {
+			return err
+		}
+		return clearSquadLeaderFailureMarker(ctx, qtx, task)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("start task: %w", err)
@@ -4322,6 +4381,9 @@ func (s *TaskService) StartTaskForClaim(ctx context.Context, claim db.LockAgentT
 		})
 		if err != nil {
 			return nil, fmt.Errorf("start claimed task: %w", err)
+		}
+		if err := clearSquadLeaderFailureMarker(ctx, qtx, task); err != nil {
+			return nil, err
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -5052,14 +5114,6 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		}
 		task = t
 
-		// Atomic with the status flip, same as the completion path. A failed
-		// coordinator that already received the recovery comment has consumed
-		// the obligation: the pre-existing delivered_comment_ids coverage check
-		// never looked at the covering task's status either.
-		if err := SettleTerminalTaskState(ctx, qtx, t); err != nil {
-			return err
-		}
-
 		// Keep resume-unsafe sessions on the task row for observability, but
 		// do not promote them to the chat-level resume pointer.
 		//
@@ -5262,7 +5316,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 				return fmt.Errorf("write chat failure outcome: %w", err)
 			}
 		}
-		return nil
+		return SettleTerminalTaskState(ctx, qtx, t)
 	}); err != nil {
 		if errors.Is(err, ErrClaimNotUnstarted) {
 			return nil, false, err
@@ -5805,6 +5859,11 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		ChildTaskID: child.ID, ParentTaskID: parent.ID,
 	}); err != nil {
 		return nil, fmt.Errorf("copy auto-retry channel delivery: %w", err)
+	}
+	if child.Status == "queued" {
+		if err := clearSquadLeaderFailureMarker(ctx, qtx, child); err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("task auto-retry: commit: %w", err)
@@ -6548,7 +6607,36 @@ func SettleTerminalTaskState(ctx context.Context, q *db.Queries, tasks ...db.Age
 	if _, err := q.SettleTerminalTaskSupplements(ctx, taskIDs); err != nil {
 		return fmt.Errorf("settle terminal task supplements: %w", err)
 	}
-	return SettleDeliveredDelegatedFailureRecoveries(ctx, q, tasks...)
+	if err := SettleDeliveredDelegatedFailureRecoveries(ctx, q, tasks...); err != nil {
+		return err
+	}
+	var failedTaskIDs, issueIDs []pgtype.UUID
+	for _, task := range tasks {
+		if task.Status == "failed" && task.IssueID.Valid {
+			failedTaskIDs = append(failedTaskIDs, task.ID)
+			issueIDs = append(issueIDs, task.IssueID)
+		}
+	}
+	if len(failedTaskIDs) == 0 {
+		return nil
+	}
+	if err := q.LockIssuesForLeaderFailureMarker(ctx, issueIDs); err != nil {
+		return fmt.Errorf("lock leader failure marker issues: %w", err)
+	}
+	if err := q.SetSquadLeaderFailureMarkers(ctx, failedTaskIDs); err != nil {
+		return fmt.Errorf("set leader failure markers: %w", err)
+	}
+	return nil
+}
+
+func clearSquadLeaderFailureMarker(ctx context.Context, q *db.Queries, task db.AgentTaskQueue) error {
+	if !task.IssueID.Valid {
+		return nil
+	}
+	if err := q.ClearSquadLeaderFailureMarker(ctx, task.IssueID); err != nil {
+		return fmt.Errorf("clear leader failure marker: %w", err)
+	}
+	return nil
 }
 
 // SettleDeliveredDelegatedFailureRecoveries retires every delegated-failure

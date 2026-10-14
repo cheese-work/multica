@@ -22,6 +22,9 @@ import (
 // caller's role from the member context, so a direct handler call needs both.
 func chatPendingCtxAs(t *testing.T, req *http.Request, userID string) *http.Request {
 	t.Helper()
+	if req.Header.Get("X-Actor-Source") == "" {
+		req.Header.Set("X-Actor-Source", "interactive_jwt")
+	}
 	memberRow, err := testHandler.Queries.GetMemberByUserAndWorkspace(context.Background(), db.GetMemberByUserAndWorkspaceParams{
 		UserID:      util.MustParseUUID(userID),
 		WorkspaceID: util.MustParseUUID(testWorkspaceID),

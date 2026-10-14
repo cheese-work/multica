@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS decision_class_change_request_idx;

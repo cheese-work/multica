@@ -95,6 +95,8 @@ import type {
   TaskMessagePayload,
   Attachment,
   ChatSession,
+  ChatContinueResponse,
+  ChatForkResponse,
   ChatPinnedAgent,
   ChatMessage,
   ChatMessagesPage,
@@ -262,6 +264,10 @@ import {
   ChatPendingTaskSchema,
   ChatSessionListSchema,
   ChatSessionSchema,
+  ChatContinueResponseSchema,
+  ChatForkResponseSchema,
+  EMPTY_CHAT_CONTINUE_RESPONSE,
+  EMPTY_CHAT_FORK_RESPONSE,
   PrioritizeQueuedChatTaskResponseSchema,
   SendChatMessageResponseSchema,
   StartMikaOnboardingResponseSchema,
@@ -999,6 +1005,10 @@ export class ApiClient {
 
   async issueCliToken(): Promise<{ token: string }> {
     return this.fetch("/api/cli-token", { method: "POST" });
+  }
+
+  async issueDesktopToken(): Promise<{ token: string }> {
+    return this.fetch("/api/auth/desktop-token", { method: "POST" });
   }
 
   /**
@@ -3750,6 +3760,29 @@ export class ApiClient {
     const raw: unknown = await this.fetch(`/api/chat/sessions/${id}`);
     return parseWithFallback(raw, ChatSessionSchema, EMPTY_CHAT_SESSION, {
       endpoint: "GET /api/chat/sessions/:id",
+    });
+  }
+
+  async continueChatSession(id: string, summary: string): Promise<ChatContinueResponse> {
+    const raw: unknown = await this.fetch(`/api/chat/sessions/${id}/continue`, {
+      method: "POST",
+      body: JSON.stringify({ summary }),
+    });
+    return parseWithFallback(raw, ChatContinueResponseSchema, EMPTY_CHAT_CONTINUE_RESPONSE, {
+      endpoint: "POST /api/chat/sessions/:id/continue",
+    });
+  }
+
+  async forkChatSession(
+    id: string,
+    data: { idempotency_key: string; message?: string },
+  ): Promise<ChatForkResponse> {
+    const raw: unknown = await this.fetch(`/api/chat/sessions/${id}/fork`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, ChatForkResponseSchema, EMPTY_CHAT_FORK_RESPONSE, {
+      endpoint: "POST /api/chat/sessions/:id/fork",
     });
   }
 

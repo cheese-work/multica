@@ -27,6 +27,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/agent"
+	"github.com/multica-ai/multica/server/pkg/credentialexec"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
@@ -358,9 +359,11 @@ type TaskCancellationActor struct {
 }
 
 type AgentTaskResponse struct {
-	StartClaimSupported      bool                   `json:"start_claim_supported,omitempty"`
-	CancelledByCommentChange bool                   `json:"cancelled_by_comment_change,omitempty"`
-	CancelledBy              *TaskCancellationActor `json:"cancelled_by,omitempty"`
+	RequireCredentialIsolation bool                    `json:"require_credential_isolation,omitempty"`
+	CredentialExecutionBinding *credentialexec.Binding `json:"credential_execution_binding,omitempty"`
+	StartClaimSupported        bool                    `json:"start_claim_supported,omitempty"`
+	CancelledByCommentChange   bool                    `json:"cancelled_by_comment_change,omitempty"`
+	CancelledBy                *TaskCancellationActor  `json:"cancelled_by,omitempty"`
 
 	ID                   string                 `json:"id"`
 	AgentID              string                 `json:"agent_id"`
@@ -1534,6 +1537,10 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	// public mask sentinel as gateway.token (e.g. replayed a masked GET body)
 	// drop it rather than persisting a literal "***" as a real bearer token.
 	preserveMaskedGatewayToken(req.RuntimeConfig, nil)
+	if err := validateCompactPromptConfig(req.RuntimeConfig); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	rc, _ := json.Marshal(req.RuntimeConfig)
 	if req.RuntimeConfig == nil {
 		rc = []byte("{}")
@@ -1950,6 +1957,13 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// CHE-1300: owner-only atomic CAS, entered by the digest key. After the
+	// guard above so a machine actor never reaches it.
+	if ownerCASRequested(rawFields) {
+		h.ownerCASUpdateAgent(w, r, existing, actorType, rawFields)
+		return
+	}
+
 	params := db.UpdateAgentParams{
 		ID: existing.ID,
 	}
@@ -1983,6 +1997,10 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		params.AvatarUrl = pgtype.Text{String: avatarURL, Valid: true}
 	}
 	if req.RuntimeConfig != nil {
+		if err := validateCompactPromptConfig(req.RuntimeConfig); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		// Restore the persisted gateway token when the request submitted the
 		// public mask sentinel. Without this, a UI that GETs the agent and
 		// PATCHes the same payload back round-trips "***" into the database
@@ -2342,11 +2360,23 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	resp, ok := h.updatedAgentResponse(w, r, updated)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// updatedAgentResponse builds, broadcasts and redacts the response for an
+// agent that was just updated. Shared by UpdateAgent and the owner CAS path.
+// It writes the error response itself and returns ok=false on failure.
+func (h *Handler) updatedAgentResponse(w http.ResponseWriter, r *http.Request, updated db.Agent) (AgentResponse, bool) {
+	id := uuidToString(updated.ID)
 	resp := h.agentToResponse(updated)
 	if err := h.enrichAgentResponseWithTargets(r.Context(), &resp, updated.ID); err != nil {
 		slog.Warn("update agent: load invocation targets for response failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 		writeError(w, http.StatusInternalServerError, "failed to load agent invocation targets")
-		return
+		return AgentResponse{}, false
 	}
 	// agentToResponse always initialises Skills as []; junction-table rows
 	// are untouched by the SQL update, so we reload them here to keep the
@@ -2356,7 +2386,7 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	if err := h.attachAgentSkills(r.Context(), &resp, updated.ID); err != nil {
 		slog.Warn("load agent skills after update failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 		writeError(w, http.StatusInternalServerError, "failed to load agent skills")
-		return
+		return AgentResponse{}, false
 	}
 	slog.Info("agent updated", append(logger.RequestAttrs(r), "agent_id", id, "workspace_id", uuidToString(updated.WorkspaceID))...)
 	userID := requestUserID(r)
@@ -2372,7 +2402,7 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	} else if uuidToString(updated.OwnerID) != userID {
 		redactComposioToolkitAllowlist(&resp)
 	}
-	writeJSON(w, http.StatusOK, resp)
+	return resp, true
 }
 
 // attachAgentSkills populates resp.Skills from the agent_skill junction
