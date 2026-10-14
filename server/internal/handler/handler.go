@@ -152,7 +152,7 @@ type Config struct {
 	// LLMDisableThinking is the parsed MULTICA_LLM_DISABLE_THINKING switch.
 	// cmd/server validates the raw value before the boot continues, so a
 	// non-boolean never reaches this struct.
-	LLMDisableThinking bool
+	LLMDisableThinking      bool
 	ProviderRecoveryBaseURL string
 	// ServerVersion is the build version of the running API binary (the same
 	// value main.go stamps via -X main.version and reports on /metrics).
@@ -275,7 +275,7 @@ type Handler struct {
 	WebhookIPRateLimiter         WebhookRateLimiter
 	WebhookAbsoluteIPRateLimiter WebhookRateLimiter
 	InvitationRateLimiters       InvitationRateLimiters
-	SearchSuggestions           *SearchSuggestions
+	SearchSuggestions            *SearchSuggestions
 	WebhookDeliveryWorker        *WebhookDeliveryWorker
 	CloudRuntime                 cloudRuntimeProxy
 	// Test-only HTTP override; nil uses the default client in production.

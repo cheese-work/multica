@@ -61,7 +61,7 @@ func writeSuggestions(writer http.ResponseWriter, query string, rows []string, o
 	}
 	writer.Header().Set("Content-Type", "application/x-suggestions+json")
 	writer.Header().Set("X-Search-Suggestions-Outcome", outcome)
-	json.NewEncoder(writer).Encode([]any{query, rows, []string{}, []string{}})
+	_ = json.NewEncoder(writer).Encode([]any{query, rows, []string{}, []string{}})
 }
 
 func (config *SearchSuggestions) Observe(next http.Handler) http.Handler {
@@ -105,7 +105,7 @@ func (config *SearchSuggestions) Observe(next http.Handler) http.Handler {
 		writer.Header().Set("X-Content-Type-Options", "nosniff")
 		writer.Header().Set("X-Search-Suggestions-Outcome", outcome)
 		writer.WriteHeader(response.status)
-		writer.Write(response.body.Bytes())
+		_, _ = writer.Write(response.body.Bytes())
 		duration := time.Since(started)
 		slog.Info("search suggestions", "outcome", outcome, "duration", duration)
 		config.metrics.RecordSearchSuggestions(outcome, duration)
