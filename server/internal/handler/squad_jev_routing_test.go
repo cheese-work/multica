@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -180,6 +179,125 @@ func TestAgentInstructionsCreateTokenLimitHTTP(t *testing.T) {
 	}
 }
 
+func TestSquadInstructionsGrandfatherRule(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("handler test database is unavailable")
+	}
+
+	ctx := context.Background()
+	var leaderID string
+	if err := testPool.QueryRow(ctx, `
+		SELECT id FROM agent WHERE workspace_id = $1 ORDER BY created_at ASC LIMIT 1
+	`, testWorkspaceID).Scan(&leaderID); err != nil {
+		t.Fatalf("load test agent: %v", err)
+	}
+
+	// 1. Insert squad directly with 4000 tokens of existing instructions (> 3000 limit)
+	existingInstructions := strings.Repeat("grandfather squad instructions ", 400) // ~12400 chars, ~4000 tokens
+	var squadID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO squad (workspace_id, name, description, instructions, leader_id, creator_id)
+		VALUES ($1, 'Grandfather Squad', '', $2, $3, $4)
+		RETURNING id
+	`, testWorkspaceID, existingInstructions, leaderID, testUserID).Scan(&squadID); err != nil {
+		t.Fatalf("create grandfather squad: %v", err)
+	}
+	defer testPool.Exec(ctx, `DELETE FROM squad WHERE id = $1`, squadID)
+
+	// 2. Decreasing token count (e.g. 3500 tokens, still > 3000) should be allowed by grandfather rule
+	smallerInstructions := strings.Repeat("grandfather squad instructions ", 350)
+	w := httptest.NewRecorder()
+	req := newRequest("PATCH", "/api/squads/"+squadID+"?workspace_id="+testWorkspaceID, map[string]any{
+		"instructions": smallerInstructions,
+	})
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("workspaceId", testWorkspaceID)
+	rctx.URLParams.Add("id", squadID)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req.Header.Set("X-User-ID", testUserID)
+	testHandler.UpdateSquad(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateSquad with smaller grandfathered instructions = %d, want 200 OK. Body: %s", w.Code, w.Body.String())
+	}
+
+	// 3. Increasing token count (e.g. 4500 tokens > previous 3500) should be rejected
+	largerInstructions := strings.Repeat("grandfather squad instructions ", 450)
+	w = httptest.NewRecorder()
+	req = newRequest("PATCH", "/api/squads/"+squadID+"?workspace_id="+testWorkspaceID, map[string]any{
+		"instructions": largerInstructions,
+	})
+	rctx = chi.NewRouteContext()
+	rctx.URLParams.Add("workspaceId", testWorkspaceID)
+	rctx.URLParams.Add("id", squadID)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req.Header.Set("X-User-ID", testUserID)
+	testHandler.UpdateSquad(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("UpdateSquad increasing over-limit instructions = %d, want 422 Unprocessable Entity. Body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAgentInstructionsGrandfatherRule(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("handler test database is unavailable")
+	}
+
+	ctx := context.Background()
+	wsUUID, _ := util.ParseUUID(testWorkspaceID)
+	rtUUID, _ := util.ParseUUID(testRuntimeID)
+	userUUID, _ := util.ParseUUID(testUserID)
+
+	// 1. Insert agent directly with 5000 tokens of existing instructions (> 4000 limit)
+	existingInstructions := strings.Repeat("grandfather agent instructions ", 500) // ~15500 chars, ~5000 tokens
+	agentID := dbid.NewV7()
+	_, err := testPool.Exec(ctx, `
+		INSERT INTO agent (id, workspace_id, runtime_id, owner_id, name, instructions, status, runtime_mode)
+		VALUES ($1, $2, $3, $4, 'Grandfather Agent', $5, 'idle', 'cloud')
+	`, agentID, wsUUID, rtUUID, userUUID, existingInstructions)
+	if err != nil {
+		t.Fatalf("create grandfather agent: %v", err)
+	}
+	defer testPool.Exec(ctx, `DELETE FROM agent WHERE id = $1`, agentID)
+
+	agentIDStr := util.UUIDToString(agentID)
+
+	// 2. Decreasing token count (e.g. 4500 tokens, still > 4000) should be allowed by grandfather rule
+	smallerInstructions := strings.Repeat("grandfather agent instructions ", 450)
+	w := httptest.NewRecorder()
+	req := newRequest("PATCH", "/api/agents/"+agentIDStr+"?workspace_id="+testWorkspaceID, map[string]any{
+		"instructions": smallerInstructions,
+	})
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("workspaceId", testWorkspaceID)
+	rctx.URLParams.Add("id", agentIDStr)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req.Header.Set("X-User-ID", testUserID)
+	testHandler.UpdateAgent(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateAgent with smaller grandfathered instructions = %d, want 200 OK. Body: %s", w.Code, w.Body.String())
+	}
+
+	// 3. Increasing token count (e.g. 5200 tokens > previous 4500) should be rejected
+	largerInstructions := strings.Repeat("grandfather agent instructions ", 520)
+	w = httptest.NewRecorder()
+	req = newRequest("PATCH", "/api/agents/"+agentIDStr+"?workspace_id="+testWorkspaceID, map[string]any{
+		"instructions": largerInstructions,
+	})
+	rctx = chi.NewRouteContext()
+	rctx.URLParams.Add("workspaceId", testWorkspaceID)
+	rctx.URLParams.Add("id", agentIDStr)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req.Header.Set("X-User-ID", testUserID)
+	testHandler.UpdateAgent(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("UpdateAgent increasing over-limit instructions = %d, want 422 Unprocessable Entity. Body: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestTryJevSquadRouting_FastPathAndFallback(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("handler test database is unavailable")
@@ -206,11 +324,11 @@ func TestTryJevSquadRouting_FastPathAndFallback(t *testing.T) {
 
 	// 2. Create squad with leader and member
 	squadID := dbid.NewV7()
-	squadInstructions := fmt.Sprintf(`
+	squadInstructions := `
 ## Specialist Tier Rankings
 | Member | Tier | Specialization |
 | squad-worker-sol | S | Go backend expert |
-`)
+`
 	_, err = testPool.Exec(ctx, `
 		INSERT INTO squad (id, workspace_id, name, description, instructions, leader_id, creator_id)
 		VALUES ($1, $2, 'Jev Test Squad', '', $3, $4, $5)
@@ -229,8 +347,8 @@ func TestTryJevSquadRouting_FastPathAndFallback(t *testing.T) {
 	}
 
 	// 3. Setup mock Jev server
-	var returnConfidence float64 = 0.95
-	var returnChoice string = util.UUIDToString(memberAgentID)
+	var returnConfidence = 0.95
+	var returnChoice = util.UUIDToString(memberAgentID)
 
 	mockJevServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		probs := map[string]float64{
@@ -255,7 +373,7 @@ func TestTryJevSquadRouting_FastPathAndFallback(t *testing.T) {
 	defer mockJevServer.Close()
 
 	// 4. Configure workspace settings for Jev squad routing
-	var minConf float64 = 0.90
+	var minConf = 0.90
 	settings := governance.WorkspaceSettings{
 		JevSquadRoutingEnabled: true,
 		JevAPIURL:              mockJevServer.URL,
@@ -303,7 +421,7 @@ func TestTryJevSquadRouting_FastPathAndFallback(t *testing.T) {
 		t.Fatalf("load squad: %v", err)
 	}
 
-	routed, advisory := testHandler.tryJevSquadRouting(ctx, issue, squad, "member", testUserID)
+	routed, advisory := testHandler.tryJevSquadRouting(ctx, issue, squad, "member", testUserID, testUserID)
 	if !routed {
 		t.Fatalf("expected fast-path routing = true, got false. Advisory: %s", advisory)
 	}
@@ -369,7 +487,7 @@ func TestTryJevSquadRouting_FastPathAndFallback(t *testing.T) {
 	defer testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, fallbackIssueID)
 
 	fbIssue, _ := testHandler.Queries.GetIssue(ctx, fallbackIssueID)
-	fbRouted, fbAdvisory := testHandler.tryJevSquadRouting(ctx, fbIssue, squad, "member", testUserID)
+	fbRouted, fbAdvisory := testHandler.tryJevSquadRouting(ctx, fbIssue, squad, "member", testUserID, testUserID)
 	if fbRouted {
 		t.Fatalf("expected fallback routing = false, got true")
 	}
@@ -386,15 +504,77 @@ func TestTryJevSquadRouting_FastPathAndFallback(t *testing.T) {
 		t.Errorf("fallback issue status = %q, want backlog", fbIssueAfter.Status)
 	}
 
-	// 7. Test Stale Revision (concurrency conflict)
+	// 7. Test Concurrent Revision Update (concurrency conflict detected by FOR NO KEY UPDATE)
 	returnConfidence = 0.95
-	staleIssue := issue
-	staleIssue.Revision = 999 // mismatched revision
-	staleRouted, staleAdvisory := testHandler.tryJevSquadRouting(ctx, staleIssue, squad, "member", testUserID)
+	concurrencyIssueID := dbid.NewV7()
+	_, err = testPool.Exec(ctx, `
+		INSERT INTO issue (id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, revision, number)
+		VALUES ($1, $2, 'Concurrent routing task', 'Check revision locking', 'backlog', 'high', 'squad', $3, 'member', $4, 1, 1003)
+	`, concurrencyIssueID, wsUUID, squadID, testUserID)
+	if err != nil {
+		t.Fatalf("insert concurrency issue: %v", err)
+	}
+	defer testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, concurrencyIssueID)
+
+	concIssue, _ := testHandler.Queries.GetIssue(ctx, concurrencyIssueID)
+	// Concurrently bump issue revision in DB
+	_, err = testPool.Exec(ctx, `UPDATE issue SET revision = revision + 1 WHERE id = $1`, concurrencyIssueID)
+	if err != nil {
+		t.Fatalf("concurrent update issue revision: %v", err)
+	}
+	// Calling with the stale issue struct (revision 1 vs DB revision 2) should detect the conflict and abort safely
+	staleRouted, staleAdvisory := testHandler.tryJevSquadRouting(ctx, concIssue, squad, "member", testUserID, testUserID)
 	if staleRouted {
-		t.Fatalf("expected stale revision routing = false, got true")
+		t.Fatalf("expected concurrent revision conflict routing = false, got true")
 	}
 	if !strings.Contains(staleAdvisory, "Issue revision changed during evaluation") {
 		t.Errorf("expected revision drift advisory, got: %s", staleAdvisory)
+	}
+}
+
+func TestParseSquadTierListEdgeCases(t *testing.T) {
+	solID := dbid.NewV7()
+	opusID := dbid.NewV7()
+
+	candidates := []db.Agent{
+		{ID: solID, Name: "sol"},
+		{ID: opusID, Name: "x99-claude-opus"},
+	}
+
+	// Case 1: "keep a tier list" should default to C, not match A from "a"
+	txt1 := "Instructions: keep a tier list updated regularly."
+	tiers1 := parseSquadTierList(txt1, candidates)
+	if got := tiers1[util.UUIDToString(solID)]; got != "C" {
+		t.Errorf("case 1 sol tier = %q, want C", got)
+	}
+	if got := tiers1[util.UUIDToString(opusID)]; got != "C" {
+		t.Errorf("case 1 opus tier = %q, want C", got)
+	}
+
+	// Case 2: "console" substring should not match agent "sol"
+	txt2 := "Logs are printed to the console output."
+	tiers2 := parseSquadTierList(txt2, candidates)
+	if got := tiers2[util.UUIDToString(solID)]; got != "C" {
+		t.Errorf("case 2 sol tier = %q, want C (no substring match inside console)", got)
+	}
+
+	// Case 3: Multiple candidates on one line: "x99-claude-opus is Tier S, sol is Tier D"
+	txt3 := "x99-claude-opus is Tier S, sol is Tier D"
+	tiers3 := parseSquadTierList(txt3, candidates)
+	if got := tiers3[util.UUIDToString(opusID)]; got != "S" {
+		t.Errorf("case 3 opus tier = %q, want S", got)
+	}
+	if got := tiers3[util.UUIDToString(solID)]; got != "D" {
+		t.Errorf("case 3 sol tier = %q, want D", got)
+	}
+
+	// Case 4: Lowercase tier letter in table: "| a |" should default to C
+	txt4 := `
+| Member | Tier |
+| sol | a |
+`
+	tiers4 := parseSquadTierList(txt4, candidates)
+	if got := tiers4[util.UUIDToString(solID)]; got != "C" {
+		t.Errorf("case 4 sol tier = %q, want C (lowercase tier letter rejected)", got)
 	}
 }

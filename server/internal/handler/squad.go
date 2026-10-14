@@ -393,9 +393,13 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Instructions != nil {
-		if tokens := jev.EstimateTokens(*req.Instructions); tokens > 3000 {
-			writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("squad instructions exceed limit of 3000 tokens (estimated: %d tokens)", tokens))
-			return
+		newTokens := jev.EstimateTokens(*req.Instructions)
+		existingTokens := jev.EstimateTokens(squad.Instructions)
+		if newTokens > 3000 {
+			if *req.Instructions != squad.Instructions && (existingTokens <= 3000 || newTokens > existingTokens) {
+				writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("squad instructions exceed limit of 3000 tokens (estimated: %d tokens)", newTokens))
+				return
+			}
 		}
 	}
 
@@ -1296,17 +1300,6 @@ func (h *Handler) enqueueSquadLeaderTask(ctx context.Context, issue db.Issue, tr
 		return false
 	}
 
-	// Try Jev Squad Routing (CHE-1708)
-	if routed, advisory := h.tryJevSquadRouting(ctx, issue, squad, authorType, authorID); routed {
-		return true
-	} else if advisory != "" {
-		if strings.TrimSpace(handoffNote) != "" {
-			handoffNote = handoffNote + "\n\n" + advisory
-		} else {
-			handoffNote = advisory
-		}
-	}
-
 	// The gate must judge the SAME top-of-chain human the enqueue path will
 	// persist on the leader task row, or it drifts: an agent-created issue that
 	// correctly inherits its originator (MUL-4305) would still be denied here
@@ -1335,6 +1328,17 @@ func (h *Handler) enqueueSquadLeaderTask(ctx context.Context, issue db.Issue, tr
 	})
 	if err != nil || hasPending {
 		return false
+	}
+
+	// Try Jev Squad Routing (CHE-1708)
+	if routed, advisory := h.tryJevSquadRouting(ctx, issue, squad, authorType, authorID, leaderOriginator); routed {
+		return true
+	} else if advisory != "" {
+		if strings.TrimSpace(handoffNote) != "" {
+			handoffNote = handoffNote + "\n\n" + advisory
+		} else {
+			handoffNote = advisory
+		}
 	}
 
 	// triggerCommentID is always empty on the assign/promote path; legacy

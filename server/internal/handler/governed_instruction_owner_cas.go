@@ -143,18 +143,6 @@ func ownerCASParse(w http.ResponseWriter, raw map[string]json.RawMessage, c owne
 		writeError(w, http.StatusBadRequest, c.field+" must not contain NUL bytes")
 		return "", "", false
 	}
-	if c.kind == "squad.instructions" {
-		if tokens := jev.EstimateTokens(content); tokens > 3000 {
-			writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("squad instructions exceed limit of 3000 tokens (estimated: %d tokens)", tokens))
-			return "", "", false
-		}
-	}
-	if c.kind == "agent.instructions" {
-		if tokens := jev.EstimateTokens(content); tokens > 4000 {
-			writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("agent instructions exceed limit of 4000 tokens (estimated: %d tokens)", tokens))
-			return "", "", false
-		}
-	}
 	digest, _ = ownerCASRawString(raw, ownerCASDigestKey)
 	if !isWellFormedDigestHex(digest) {
 		writeError(w, http.StatusBadRequest, ownerCASDigestKey+" must be a 64-character hex-encoded sha256 digest")
@@ -223,6 +211,24 @@ func (h *Handler) ownerCASApply(w http.ResponseWriter, r *http.Request, actorTyp
 	content, digest, ok := ownerCASParse(w, raw, c)
 	if !ok {
 		return hermesExceptionSwapResult{}, false
+	}
+	if c.kind == "squad.instructions" || c.kind == "agent.instructions" {
+		limit := 3000
+		if c.kind == "agent.instructions" {
+			limit = 4000
+		}
+		newTokens := jev.EstimateTokens(content)
+		if newTokens > limit {
+			var existingContent string
+			wsUUID, _ := util.ParseUUID(workspaceID)
+			idUUID, _ := util.ParseUUID(id)
+			_ = h.DB.QueryRow(r.Context(), fmt.Sprintf("SELECT %s FROM %s WHERE id = $1 AND %s = $2", c.col, c.table, c.scopeCol), idUUID, wsUUID).Scan(&existingContent)
+			existingTokens := jev.EstimateTokens(existingContent)
+			if content != existingContent && (existingTokens <= limit || newTokens > existingTokens) {
+				writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("%s exceed limit of %d tokens (estimated: %d tokens)", c.field, limit, newTokens))
+				return hermesExceptionSwapResult{}, false
+			}
+		}
 	}
 	result, reason, err := h.ownerCASWrite(r.Context(), c, workspaceID, id, content, digest)
 	logOwnerCASOutcome(r, c, id, result, reason, "", err)

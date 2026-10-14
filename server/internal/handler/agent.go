@@ -1951,9 +1951,13 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Instructions != nil {
-		if tokens := jev.EstimateTokens(*req.Instructions); tokens > 4000 {
-			writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("agent instructions exceed limit of 4000 tokens (estimated: %d tokens)", tokens))
-			return
+		newTokens := jev.EstimateTokens(*req.Instructions)
+		existingTokens := jev.EstimateTokens(existing.Instructions)
+		if newTokens > 4000 {
+			if *req.Instructions != existing.Instructions && (existingTokens <= 4000 || newTokens > existingTokens) {
+				writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("agent instructions exceed limit of 4000 tokens (estimated: %d tokens)", newTokens))
+				return
+			}
 		}
 	}
 

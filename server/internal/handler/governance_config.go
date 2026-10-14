@@ -15,7 +15,6 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/governance"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -42,9 +41,9 @@ type governanceConfigPatch struct {
 	RollbackToVersion            *int64                 `json:"rollback_to_version,omitempty"`
 
 	// Jev Squad Routing Settings (CHE-1708)
-	JevSquadRoutingEnabled   *bool    `json:"jev_squad_routing_enabled,omitempty"`
-	JevAPIURL                *string  `json:"jev_api_url,omitempty"`
-	JevMinConfidence         *float64 `json:"jev_min_confidence,omitempty"`
+	JevSquadRoutingEnabled *bool    `json:"jev_squad_routing_enabled,omitempty"`
+	JevAPIURL              *string  `json:"jev_api_url,omitempty"`
+	JevMinConfidence       *float64 `json:"jev_min_confidence,omitempty"`
 }
 
 type governanceLimitsPatch struct {
@@ -365,10 +364,6 @@ func loadGovernanceControl(ctx context.Context, database dbExecutor, workspaceID
 		FOR SHARE
 	`, workspaceID).Scan(&config.Version, &config.ControlEpoch, &settingsJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return config, nil
-	}
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
 		return config, nil
 	}
 	if err != nil {

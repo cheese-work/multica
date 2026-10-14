@@ -5,36 +5,53 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
+	"github.com/multica-ai/multica/server/pkg/featureflag"
 	"github.com/multica-ai/multica/server/pkg/jev"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // tryJevSquadRouting attempts server-side fast-path routing using TypeSafe AI's Jev model.
 // When confidence >= minConfidence (default 0.90) and snapshot freshness validates atomically,
-// it dispatches the task directly to the selected squad worker, updates status (backlog -> in_progress),
-// writes an announcement comment (type='jev_route'), and records squad activity.
+// it dispatches the task directly to the selected squad worker, updates status (backlog/todo -> in_progress,
+// or in_progress -> in_review for reviewer roles), writes an announcement comment (type='jev_route'),
+// and records squad activity.
 // On confidence < minConfidence or error, it returns (false, advisory) where advisory contains
 // pre-computed recommendations to append to the squad leader's handoff note.
-func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad db.Squad, authorType, authorID string) (bool, string) {
+func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad db.Squad, authorType, authorID, leaderOriginator string) (bool, string) {
 	config, err := loadGovernanceControl(ctx, h.DB, issue.WorkspaceID)
 	if err != nil || !config.Settings.JevSquadRoutingEnabled {
 		return false, ""
 	}
 
-	decisionID := fmt.Sprintf("jd_%x", time.Now().UnixNano()&0xffff)
-	apiURL := config.Settings.JevAPIURL
+	decisionID := fmt.Sprintf("jd_%s", strings.ReplaceAll(dbid.NewV7().String()[:8], "-", ""))
+	apiURL := strings.TrimSpace(config.Settings.JevAPIURL)
+	if apiURL != "" {
+		parsedURL, err := url.Parse(apiURL)
+		if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || parsedURL.Host == "" {
+			slog.Warn("jev squad routing: invalid api url", "api_url", apiURL)
+			advisory := fmt.Sprintf("### Jev Pre-Route Advisory\n- Proposed: none\n- Runner-up: none\n- Ambiguity: Configured Jev API URL is invalid: %s\n- Prior State Changes: none\n- Decision ID: %s", apiURL, decisionID)
+			return false, advisory
+		}
+	}
 	minConfidence := 0.90
 	if config.Settings.JevMinConfidence != nil {
 		minConfidence = *config.Settings.JevMinConfidence
+	}
+
+	if featureflag.EvalContextFrom(ctx).WorkspaceID == "" {
+		ctx = featureflag.WithEvalContext(ctx, featureflag.EvalContext{
+			WorkspaceID: uuidToString(issue.WorkspaceID),
+		})
 	}
 
 	var jevClient *jev.Client
@@ -42,6 +59,7 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 		opts := jev.Options{
 			APIKey:  string(apiKeyBytes),
 			BaseURL: apiURL,
+			Gate:    featureflags.JevProductionGate{Flags: h.FeatureFlags},
 		}
 		jevClient, _ = jev.NewClient(opts)
 	} else if h.Jev != nil {
@@ -62,6 +80,7 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 
 	candidates := make([]db.Agent, 0, len(members))
 	candidateMap := make(map[string]db.Agent, len(members))
+	memberRoleMap := make(map[string]string, len(members))
 	for _, m := range members {
 		if m.MemberType != "agent" || uuidToString(m.MemberID) == uuidToString(squad.LeaderID) {
 			continue
@@ -71,7 +90,9 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 			continue
 		}
 		candidates = append(candidates, agent)
-		candidateMap[uuidToString(agent.ID)] = agent
+		cid := uuidToString(agent.ID)
+		candidateMap[cid] = agent
+		memberRoleMap[cid] = m.Role
 	}
 
 	if len(candidates) == 0 {
@@ -107,11 +128,7 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 
 	desc := issue.Description.String
 	if jev.EstimateTokens(desc) > 4000 {
-		maxLen := 12000
-		if len(desc) < maxLen {
-			maxLen = len(desc)
-		}
-		desc = desc[:maxLen] + "\n...[truncated]"
+		desc = truncateRunes(desc, 12000)
 	}
 	stateBuilder.Add("issue", map[string]any{
 		"id":          uuidToString(issue.ID),
@@ -122,32 +139,60 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 		"revision":    issue.Revision,
 	}, jev.PriorityRequired)
 
-	if comments, err := h.Queries.ListCommentsForIssue(ctx, db.ListCommentsForIssueParams{
+	// Filter and budget recent comments (up to 14,000 tokens)
+	if rawComments, err := h.Queries.ListCommentsForIssue(ctx, db.ListCommentsForIssueParams{
 		IssueID:     issue.ID,
 		WorkspaceID: issue.WorkspaceID,
 		Limit:       20,
-	}); err == nil && len(comments) > 0 {
-		formattedComments := make([]map[string]any, 0, len(comments))
-		for _, c := range comments {
-			if c.Type == "jev_route" || strings.TrimSpace(c.Content) == "" {
-				continue
+	}); err == nil && len(rawComments) > 0 {
+		var eligible []db.Comment
+		for _, c := range rawComments {
+			if c.Type != "jev_route" && strings.TrimSpace(c.Content) != "" {
+				eligible = append(eligible, c)
 			}
-			content := c.Content
-			if jev.EstimateTokens(content) > 1000 {
-				maxLen := 3000
-				if len(content) < maxLen {
-					maxLen = len(content)
-				}
-				content = content[:maxLen] + "...[truncated]"
-			}
-			formattedComments = append(formattedComments, map[string]any{
-				"id":          uuidToString(c.ID),
-				"author_type": c.AuthorType,
-				"created_at":  timestampToString(c.CreatedAt),
-				"content":     content,
-			})
 		}
-		stateBuilder.Add("comments", formattedComments, jev.PriorityUseful)
+
+		if len(eligible) > 0 {
+			latestHumanIdx := -1
+			for i, c := range eligible {
+				if c.AuthorType == "member" || c.AuthorType == "user" {
+					latestHumanIdx = i
+					break
+				}
+			}
+
+			if latestHumanIdx >= 0 {
+				latestHuman := &eligible[latestHumanIdx]
+				if jev.EstimateTokens(latestHuman.Content) > 14000 {
+					advisory := fmt.Sprintf("### Jev Pre-Route Advisory\n- Proposed: none\n- Runner-up: none\n- Ambiguity: Latest human comment exceeds comment budget (%d tokens)\n- Prior State Changes: none\n- Decision ID: %s", jev.EstimateTokens(latestHuman.Content), decisionID)
+					return false, advisory
+				}
+			}
+
+			commentTokens := 0
+			formattedComments := make([]map[string]any, 0, len(eligible))
+			for i, c := range eligible {
+				content := c.Content
+				if latestHumanIdx < 0 || i != latestHumanIdx {
+					if jev.EstimateTokens(content) > 1000 {
+						content = truncateRunes(content, 3000)
+					}
+				}
+
+				est := jev.EstimateTokens(content)
+				if commentTokens+est > 14000 && len(formattedComments) > 0 {
+					break
+				}
+				commentTokens += est
+				formattedComments = append(formattedComments, map[string]any{
+					"id":          uuidToString(c.ID),
+					"author_type": c.AuthorType,
+					"created_at":  timestampToString(c.CreatedAt),
+					"content":     content,
+				})
+			}
+			stateBuilder.Add("comments", formattedComments, jev.PriorityUseful)
+		}
 	}
 
 	state, err := stateBuilder.Build()
@@ -223,6 +268,26 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 	winnerAgent := candidateMap[winnerOption]
 	winnerTier := tiers[winnerOption]
 
+	// Access Gate: verify actor is allowed to invoke the chosen worker agent
+	if !h.canInvokeAgent(ctx, winnerAgent, authorType, authorID, leaderOriginator, uuidToString(issue.WorkspaceID)) {
+		slog.Warn("jev squad routing: actor cannot invoke selected worker", "actor", authorID, "agent", winnerAgent.Name)
+		advisory := fmt.Sprintf("### Jev Pre-Route Advisory\n- Proposed: %s · Conf %.2f\n- Runner-up: %s · Conf %.2f\n- Ambiguity: Actor not permitted to invoke selected specialist agent %s\n- Prior State Changes: none\n- Decision ID: %s",
+			winnerLabel, confidence, runnerUpLabel, runnerUpProb, winnerAgent.Name, decisionID)
+		return false, advisory
+	}
+
+	// Dedup: check if chosen worker agent already has a pending task for this issue
+	hasPendingWorker, err := h.Queries.HasPendingTaskForIssueAndAgent(ctx, db.HasPendingTaskForIssueAndAgentParams{
+		IssueID: issue.ID,
+		AgentID: winnerAgent.ID,
+		HeadSha: h.TaskService.ResolveIssueReviewSHAParam(ctx, issue.ID),
+	})
+	if err != nil || hasPendingWorker {
+		advisory := fmt.Sprintf("### Jev Pre-Route Advisory\n- Proposed: %s · Conf %.2f\n- Runner-up: %s · Conf %.2f\n- Ambiguity: Selected specialist %s already has a pending task for this issue\n- Prior State Changes: none\n- Decision ID: %s",
+			winnerLabel, confidence, runnerUpLabel, runnerUpProb, winnerAgent.Name, decisionID)
+		return false, advisory
+	}
+
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
 		slog.Error("jev squad routing: tx begin error", "error", err)
@@ -233,7 +298,7 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 
 	var currentRevision int64
 	var currentStatus string
-	err = tx.QueryRow(ctx, `SELECT revision, status FROM issue WHERE id = $1 FOR UPDATE`, issue.ID).Scan(&currentRevision, &currentStatus)
+	err = tx.QueryRow(ctx, `SELECT revision, status FROM issue WHERE id = $1 FOR NO KEY UPDATE`, issue.ID).Scan(&currentRevision, &currentStatus)
 	if err != nil {
 		return false, fmt.Sprintf("### Jev Pre-Route Advisory\n- Ambiguity: Failed to lock issue: %v\n- Decision ID: %s", err, decisionID)
 	}
@@ -244,18 +309,33 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 	}
 
 	statusChanged := false
-	if currentStatus == "backlog" {
-		_, err = tx.Exec(ctx, `UPDATE issue SET status = 'in_progress', updated_at = now(), revision = revision + 1 WHERE id = $1`, issue.ID)
+	newStatus := currentStatus
+	if currentStatus == "backlog" || currentStatus == "todo" {
+		newStatus = "in_progress"
+		statusChanged = true
+	} else if currentStatus == "in_progress" {
+		if memberRoleMap[winnerOption] == "reviewer" {
+			newStatus = "in_review"
+			statusChanged = true
+		}
+	}
+
+	qtx := h.Queries.WithTx(tx)
+	var updatedIssue db.Issue
+	if statusChanged {
+		updatedIssue, err = qtx.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+			ID:          issue.ID,
+			Status:      newStatus,
+			WorkspaceID: issue.WorkspaceID,
+		})
 		if err != nil {
 			return false, fmt.Sprintf("### Jev Pre-Route Advisory\n- Ambiguity: Failed to update issue status: %v\n- Decision ID: %s", err, decisionID)
 		}
-		statusChanged = true
 	}
 
 	commentID := dbid.NewV7()
 	commentContent := fmt.Sprintf("⚡ Jev routed to %s (Tier %s) · Conf %.2f · Reason: High-confidence specialist match · Decision %s", winnerAgent.Name, winnerTier, confidence, decisionID)
 
-	qtx := h.Queries.WithTx(tx)
 	commentRow, err := qtx.CreateComment(ctx, db.CreateCommentParams{
 		ID:          commentID,
 		IssueID:     issue.ID,
@@ -284,7 +364,7 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 		WorkspaceID: issue.WorkspaceID,
 		IssueID:     issue.ID,
 		ActorType:   pgtype.Text{String: "system", Valid: true},
-		ActorID:     winnerAgent.ID,
+		ActorID:     pgtype.UUID{},
 		Action:      "squad_leader_evaluated",
 		Details:     detailsJSON,
 	})
@@ -297,24 +377,26 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 	}
 
 	if statusChanged {
-		issue.Status = "in_progress"
-		issue.Revision = currentRevision + 1
+		issue.Status = newStatus
+		issue.Revision = updatedIssue.Revision
+		prefix := h.getIssuePrefix(ctx, issue.WorkspaceID)
+		resp := issueToResponse(updatedIssue, prefix)
+		h.fillStatusCategory(ctx, updatedIssue.WorkspaceID, &resp)
 		h.publish(protocol.EventIssueUpdated, uuidToString(issue.WorkspaceID), "system", "", map[string]any{
-			"issue_id": uuidToString(issue.ID),
-			"status":   "in_progress",
+			"issue":          resp,
+			"status_changed": true,
+			"prev_status":    currentStatus,
+			"creator_type":   issue.CreatorType,
+			"creator_id":     uuidToString(issue.CreatorID),
+			"source":         "jev_route",
 		})
 	}
 
 	commentEvent := map[string]any{
-		"comment": map[string]any{
-			"id":          uuidToString(commentRow.ID),
-			"issue_id":    uuidToString(issue.ID),
-			"author_type": "system",
-			"author_id":   nil,
-			"content":     commentContent,
-			"type":        "jev_route",
-			"created_at":  timestampToString(commentRow.CreatedAt),
-		},
+		"comment":        commentToResponse(commentRow.Comment(), nil, nil),
+		"issue_title":    issue.Title,
+		"issue_status":   newStatus,
+		"issue_revision": commentRow.IssueRevision,
 	}
 	h.publish(protocol.EventCommentCreated, uuidToString(issue.WorkspaceID), "system", "", commentEvent)
 
@@ -324,7 +406,7 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 			"type":       "activity",
 			"id":         uuidToString(activity.ID),
 			"actor_type": "system",
-			"actor_id":   uuidToString(winnerAgent.ID),
+			"actor_id":   "",
 			"action":     activity.Action,
 			"details":    json.RawMessage(detailsJSON),
 			"created_at": timestampToString(activity.CreatedAt),
@@ -332,13 +414,25 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 	})
 
 	if _, err = h.TaskService.EnqueueTaskForMention(ctx, issue, winnerAgent.ID, pgtype.UUID{}, service.OriginDerived); err != nil {
-		slog.Warn("jev dispatch: failed to enqueue member task",
+		slog.Error("jev dispatch: failed to enqueue member task, returning advisory to wake leader",
 			"issue_id", uuidToString(issue.ID),
 			"agent_id", uuidToString(winnerAgent.ID),
 			"error", err)
+		advisory := fmt.Sprintf("### Jev Pre-Route Advisory\n- Proposed: %s · Conf %.2f\n- Runner-up: %s · Conf %.2f\n- Ambiguity: Jev selected %s (Tier %s, Conf %.2f), but automated task enqueue failed: %v\n- Prior State Changes: none\n- Decision ID: %s",
+			winnerLabel, confidence, runnerUpLabel, runnerUpProb, winnerAgent.Name, winnerTier, confidence, err, decisionID)
+		return false, advisory
 	}
 
 	return true, ""
+}
+
+// truncateRunes truncates a string to maxRunes, avoiding splitting UTF-8 characters.
+func truncateRunes(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes]) + "\n...[truncated]"
 }
 
 // parseSquadTierList parses S/A/B/C/D tier rankings from squad instructions.
@@ -353,60 +447,107 @@ func parseSquadTierList(instructions string, candidates []db.Agent) map[string]s
 	}
 
 	lines := strings.Split(instructions, "\n")
-	tierRegex := regexp.MustCompile(`(?i)\b(?:Tier\s*([SABCD])\b|([SABCD])\s*Tier\b)`)
+	tierRegex := regexp.MustCompile(`(?:Tier\s*([SABCD])\b|([SABCD])\s*Tier\b)`)
 
-	for _, cand := range candidates {
-		candID := uuidToString(cand.ID)
-		candName := strings.ToLower(cand.Name)
-		aliases := []string{candName, candID}
-		parts := strings.Split(candName, "-")
-		if len(parts) > 1 {
-			aliases = append(aliases, parts[len(parts)-1])
-			if len(parts) > 2 {
-				aliases = append(aliases, parts[len(parts)-2]+"-"+parts[len(parts)-1])
+	tableTierCol := -1
+	tableMemberCol := -1
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, "|") {
+			rawCells := strings.Split(trimmed, "|")
+			var cells []string
+			for _, c := range rawCells {
+				cells = append(cells, strings.TrimSpace(c))
 			}
-		}
+			if len(cells) > 2 && cells[0] == "" && cells[len(cells)-1] == "" {
+				cells = cells[1 : len(cells)-1]
+			}
 
-	LineLoop:
-		for _, line := range lines {
-			lineLower := strings.ToLower(line)
-			matched := false
-			for _, alias := range aliases {
-				if strings.Contains(lineLower, alias) {
-					matched = true
-					break
+			// Check table header
+			var cellsLower []string
+			hasTier := false
+			hasMember := false
+			for _, c := range cells {
+				cl := strings.ToLower(c)
+				cellsLower = append(cellsLower, cl)
+				if strings.Contains(cl, "tier") {
+					hasTier = true
+				}
+				if strings.Contains(cl, "member") || strings.Contains(cl, "agent") || strings.Contains(cl, "specialist") {
+					hasMember = true
 				}
 			}
-			if !matched {
+
+			if hasTier && hasMember {
+				for idx, cl := range cellsLower {
+					if strings.Contains(cl, "tier") {
+						tableTierCol = idx
+					} else if strings.Contains(cl, "member") || strings.Contains(cl, "agent") || strings.Contains(cl, "specialist") {
+						tableMemberCol = idx
+					}
+				}
 				continue
 			}
 
-			if strings.Contains(line, "|") {
-				cells := strings.Split(line, "|")
-				for _, cell := range cells {
-					trimmed := strings.TrimSpace(cell)
-					if len(trimmed) == 1 && strings.ContainsAny(strings.ToUpper(trimmed), "SABCD") {
-						tiers[candID] = strings.ToUpper(trimmed)
-						break LineLoop
-					}
-					if m := tierRegex.FindStringSubmatch(cell); len(m) > 0 {
-						tier := m[1]
-						if tier == "" {
-							tier = m[2]
+			// Table data row
+			if tableTierCol >= 0 && tableMemberCol >= 0 && len(cells) > tableTierCol && len(cells) > tableMemberCol {
+				memberCell := cells[tableMemberCol]
+				tierCell := cells[tableTierCol]
+				for _, cand := range candidates {
+					candID := uuidToString(cand.ID)
+					namePat := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(cand.Name) + `\b`)
+					if namePat.MatchString(memberCell) || strings.Contains(memberCell, candID) {
+						switch tierCell {
+						case "S", "A", "B", "C", "D":
+							tiers[candID] = tierCell
+						default:
+							if m := tierRegex.FindStringSubmatch(tierCell); len(m) > 0 {
+								tier := m[1]
+								if tier == "" {
+									tier = m[2]
+								}
+								tiers[candID] = strings.ToUpper(tier)
+							}
 						}
-						tiers[candID] = strings.ToUpper(tier)
-						break LineLoop
 					}
 				}
+				continue
 			}
+		} else {
+			tableTierCol = -1
+			tableMemberCol = -1
+		}
 
-			if m := tierRegex.FindStringSubmatch(line); len(m) > 0 {
+		// Non-table line or list
+		for _, cand := range candidates {
+			candID := uuidToString(cand.ID)
+			namePat := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(cand.Name) + `\b`)
+			loc := namePat.FindStringIndex(line)
+			if loc == nil {
+				continue
+			}
+			// Search for tier within this candidate's clause
+			sub := line[loc[1]:]
+			endIdx := len(sub)
+			for _, delim := range []string{",", ";", ".", "\n"} {
+				if pos := strings.Index(sub, delim); pos != -1 && pos < endIdx {
+					endIdx = pos
+				}
+			}
+			clause := sub[:endIdx]
+			if m := tierRegex.FindStringSubmatch(clause); len(m) > 0 {
 				tier := m[1]
 				if tier == "" {
 					tier = m[2]
 				}
 				tiers[candID] = strings.ToUpper(tier)
-				break LineLoop
+			} else if m := tierRegex.FindStringSubmatch(line); len(m) > 0 {
+				tier := m[1]
+				if tier == "" {
+					tier = m[2]
+				}
+				tiers[candID] = strings.ToUpper(tier)
 			}
 		}
 	}
