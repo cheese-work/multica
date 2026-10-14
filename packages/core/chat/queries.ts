@@ -82,9 +82,15 @@ export function chatSessionsOptions(wsId: string) {
   });
 }
 
-/** Last-activity timestamp used to rank the IM list (newest first). */
+/**
+ * Last-activity timestamp used to rank the IM list (newest first). Floored at
+ * the session's creation time like the server (chat.sql): a new fork carries
+ * old copied messages and must still list as new.
+ */
 function sessionActivityTime(s: ChatSession): number {
-  return new Date(s.last_message?.created_at ?? s.updated_at).getTime();
+  const activity = new Date(s.last_message?.created_at ?? s.updated_at).getTime();
+  const created = new Date(s.created_at).getTime();
+  return Number.isNaN(created) ? activity : Math.max(activity, created);
 }
 
 /**

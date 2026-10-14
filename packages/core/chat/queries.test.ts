@@ -136,6 +136,25 @@ describe("sortChatSessions", () => {
     expect(sorted.map((s) => s.id)).toEqual(["a", "b"]);
   });
 
+  it("lists an idle fork of an old DM by its creation time, like the server", () => {
+    // A fork copies the source's old messages, so its last message is old; the
+    // server ranks by GREATEST(last activity, created_at) (chat.sql).
+    const idleFork = session({
+      id: "idle-fork",
+      created_at: "2026-06-03T00:00:00Z",
+      updated_at: "2026-06-03T00:00:00Z",
+      forked_from_session_id: "11111111-1111-4111-8111-111111111111",
+      last_message: { content: "copied", role: "assistant", created_at: "2026-01-02T00:00:00Z" },
+    });
+    const otherRecent = session({
+      id: "other-recent-dm",
+      updated_at: "2026-06-02T00:00:00Z",
+      last_message: { content: "x", role: "assistant", created_at: "2026-06-02T00:00:00Z" },
+    });
+
+    expect(sortChatSessions([otherRecent, idleFork]).map((s) => s.id)).toEqual(["idle-fork", "other-recent-dm"]);
+  });
+
   it("does not mutate the input array", () => {
     const input = [session({ id: "1" }), session({ id: "2", pinned: true })];
     const snapshot = input.map((s) => s.id);
