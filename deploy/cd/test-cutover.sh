@@ -361,7 +361,7 @@ case "$port" in
     # Route by the generation file Nginx actually includes, not by the
     # active.json metadata.
     [ -f "$active_conf" ] || exit 7
-    port="$(awk -v l="$port" '/listen/ { hit = index($0, ":" l ";") > 0 } hit && /proxy_pass/ { match($0, /127\.0\.0\.1:[0-9]+/); print substr($0, RSTART + 10, RLENGTH - 10); exit }' "$active_conf")"
+    port="$(awk -v l="$port" '/listen/ { hit = index($0, ":" l ";") > 0 } hit && /proxy_pass[[:space:]]/ { match($0, /127\.0\.0\.1:[0-9]+/); print substr($0, RSTART + 10, RLENGTH - 10); exit }' "$active_conf")"
     ;;
 esac
 service="$(sed -n "s/=$port\$//p" "$control_dir/rendered-ports" 2>/dev/null | head -1)"
