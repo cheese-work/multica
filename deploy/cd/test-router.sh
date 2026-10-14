@@ -14,6 +14,15 @@ set -euo pipefail
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root_dir"
 
+if ! grep -q 'log_format search_privacy' deploy/cd/router/nginx.conf.template; then
+  echo "router must use a path-only log format without query text or referrer" >&2
+  exit 1
+fi
+if [ "$(grep -c 'access_log .* search_privacy;' deploy/cd/router/nginx.conf.template)" != 2 ]; then
+  echo "both router server blocks must use the privacy-safe log format" >&2
+  exit 1
+fi
+
 if ! command -v docker >/dev/null 2>&1; then
   echo "docker not available; skipping test-router.sh (nginx -t validation requires it)" >&2
   exit 0

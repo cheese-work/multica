@@ -9,6 +9,11 @@ const state = vi.hoisted(() => ({
   router: { replace: vi.fn() },
 }));
 
+vi.mock("@multica/core/paths", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@multica/core/paths")>(),
+  useCurrentWorkspace: () => ({ slug: "acme", issue_prefix: "C9" }),
+}));
+
 vi.mock("next/navigation", () => ({
   usePathname: () => state.pathname,
   useSearchParams: () => state.params,
@@ -42,6 +47,19 @@ beforeEach(() => {
 });
 
 describe("workspace search URL", () => {
+  it.each(["C9-123 title from suggestions", "c9-123"])("opens the suggested issue for %s", (query) => {
+    state.params = new URLSearchParams({ q: query });
+    renderCommand();
+    expect(state.router.replace).toHaveBeenCalledExactlyOnceWith("/acme/issues/C9-123");
+    expect(useSearchStore.getState().open).toBe(false);
+  });
+
+  it("keeps another workspace's identifier in the palette", () => {
+    state.params = new URLSearchParams({ q: "OTHER-123 title" });
+    renderCommand();
+    expect(useSearchStore.getState().open).toBe(true);
+    expect(state.router.replace).not.toHaveBeenCalled();
+  });
   it("has a dashboard route", () => {
     expect(SearchPage()).toBeNull();
   });

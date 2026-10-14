@@ -12,20 +12,14 @@ describe("workspace OpenSearch description", () => {
     vi.stubEnv("MULTICA_COOKIE_PROBE", "");
   });
   afterEach(() => vi.unstubAllEnvs());
-  it("advertises the temporary suggestions probe only when explicitly enabled", async () => {
-    vi.stubEnv("MULTICA_COOKIE_PROBE", "1");
+  it("advertises the stable authenticated suggestions endpoint", async () => {
     const response = await getDocument();
     const document = new DOMParser().parseFromString(await response.text(), "application/xml");
     const suggestions = document.querySelector('Url[type="application/x-suggestions+json"]');
     expect(suggestions?.getAttribute("template")).toBe(
-      "https://app.multica.test/acme/suggestions-probe?q={searchTerms}",
+      "https://app.multica.test/api/search/suggestions?workspace_slug=acme&q={searchTerms}",
     );
     expect(document.querySelectorAll("Url")).toHaveLength(2);
-  });
-
-  it.each([undefined, "0", "true"])("keeps the probe disabled for %j", async (enabled) => {
-    vi.stubEnv("MULTICA_COOKIE_PROBE", enabled);
-    expect(await (await getDocument()).text()).not.toContain("application/x-suggestions+json");
   });
 
   it("serves a public UTF-8 XML description without authentication", async () => {
@@ -43,7 +37,7 @@ describe("workspace OpenSearch description", () => {
     expect(document.querySelector("ShortName")?.textContent).toBe("Multica acme");
     expect(document.querySelector("InputEncoding")?.textContent).toBe("UTF-8");
     const urls = document.querySelectorAll("Url");
-    expect(urls).toHaveLength(1);
+    expect(urls).toHaveLength(2);
     expect(urls[0]?.getAttribute("type")).toBe("text/html");
     expect(urls[0]?.getAttribute("template")).toBe(
       "https://app.multica.test/acme/search?q={searchTerms}",
