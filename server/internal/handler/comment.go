@@ -2022,7 +2022,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		slog.Warn("create comment failed", append(logger.RequestAttrs(r), "error", err, "issue_id", issueID)...)
-		writeError(w, http.StatusInternalServerError, "failed to create comment: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to create comment")
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {

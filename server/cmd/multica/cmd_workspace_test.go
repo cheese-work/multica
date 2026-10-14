@@ -89,7 +89,7 @@ func TestRunWorkspaceCreatePostsWorkspaceAndDoesNotSwitchDefault(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	t.Setenv("HOME", t.TempDir())
+	redirectTestHome(t, t.TempDir())
 	t.Setenv("MULTICA_SERVER_URL", srv.URL)
 	t.Setenv("MULTICA_TOKEN", "test-token")
 	t.Setenv("MULTICA_WORKSPACE_ID", "existing-workspace")
@@ -244,7 +244,7 @@ func TestRunWorkspaceCreatePrintsTable(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	t.Setenv("HOME", t.TempDir())
+	redirectTestHome(t, t.TempDir())
 	t.Setenv("MULTICA_SERVER_URL", srv.URL)
 	t.Setenv("MULTICA_TOKEN", "test-token")
 
@@ -281,7 +281,7 @@ func TestRunWorkspaceSwitch(t *testing.T) {
 	defer srv.Close()
 
 	// Isolate HOME so the test never touches the developer's ~/.multica.
-	t.Setenv("HOME", t.TempDir())
+	redirectTestHome(t, t.TempDir())
 	t.Setenv("MULTICA_SERVER_URL", srv.URL)
 	t.Setenv("MULTICA_TOKEN", "test-token")
 	t.Setenv("MULTICA_WORKSPACE_ID", "")
@@ -349,7 +349,7 @@ func TestRunWorkspaceSwitch(t *testing.T) {
 }
 
 func TestRunWorkspaceSwitchFailsClosedInTaskContext(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	redirectTestHome(t, t.TempDir())
 	t.Setenv("MULTICA_AGENT_ID", "agent-test")
 	t.Setenv("MULTICA_TASK_ID", "task-test")
 	t.Setenv("MULTICA_TOKEN", "mat_task_sentinel")
@@ -365,7 +365,7 @@ func TestRunWorkspaceSwitchFailsClosedInTaskContext(t *testing.T) {
 
 func TestFetchWorkspacesExplainsPortOnlyFailClosedContext(t *testing.T) {
 	t.Chdir(t.TempDir())
-	t.Setenv("HOME", t.TempDir())
+	redirectTestHome(t, t.TempDir())
 	t.Setenv("MULTICA_AGENT_ID", "")
 	t.Setenv("MULTICA_TASK_ID", "")
 	t.Setenv(cli.TaskConfigRootEnv, "")
@@ -690,7 +690,7 @@ func newWorkspaceMemberInviteTestCmd() *cobra.Command {
 }
 
 func TestRunWorkspaceMemberInvitePostsInvitation(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	redirectTestHome(t, t.TempDir())
 	t.Setenv("MULTICA_TOKEN", "test-token")
 	t.Setenv("MULTICA_WORKSPACE_ID", "workspace-123")
 
@@ -735,7 +735,7 @@ func TestRunWorkspaceMemberInvitePostsInvitation(t *testing.T) {
 }
 
 func TestRunWorkspaceMemberInviteUsesWorkspaceArgAndRoleFlag(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	redirectTestHome(t, t.TempDir())
 	t.Setenv("MULTICA_TOKEN", "test-token")
 
 	const wsUUID = "11111111-1111-1111-1111-111111111111"
@@ -767,7 +767,7 @@ func TestRunWorkspaceMemberInviteUsesWorkspaceArgAndRoleFlag(t *testing.T) {
 }
 
 func TestRunWorkspaceMemberInviteRejectsOwnerRole(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	redirectTestHome(t, t.TempDir())
 	t.Setenv("MULTICA_TOKEN", "test-token")
 	t.Setenv("MULTICA_WORKSPACE_ID", "workspace-123")
 
@@ -789,7 +789,7 @@ func TestRunWorkspaceMemberInviteRejectsOwnerRole(t *testing.T) {
 }
 
 func TestRunWorkspaceMemberInviteRejectsUnknownRole(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	redirectTestHome(t, t.TempDir())
 	t.Setenv("MULTICA_TOKEN", "test-token")
 	t.Setenv("MULTICA_WORKSPACE_ID", "workspace-123")
 
