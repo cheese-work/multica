@@ -20,6 +20,7 @@ const (
 type staleResumedFixture struct {
 	responseState string // state of the current agent_response step
 	response      string // result.response
+	resultError   string // result.error; defaults to the stale 404
 	toolError     bool   // current turn has a failed tool step
 	logLines      string // glog lines for the current run
 	exitCode      int
@@ -29,6 +30,9 @@ type staleResumedFixture struct {
 func (f staleResumedFixture) script() string {
 	if f.responseState == "" {
 		f.responseState = "DONE"
+	}
+	if f.resultError == "" {
+		f.resultError = staleResumedError
 	}
 	tool := ""
 	if f.toolError {
@@ -49,7 +53,7 @@ printf '%%s\n' '{"event":"result","result":{"conversation_id":"%s","status":"ERR
 %s
 exit %d
 `, f.logLines, tool, staleResumedConversationID, f.responseState, f.response,
-		staleResumedConversationID, f.response, staleResumedError, f.tail, f.exitCode)
+		staleResumedConversationID, f.response, f.resultError, f.tail, f.exitCode)
 }
 
 func runStaleResumed(t *testing.T, ctx context.Context, f staleResumedFixture, opts ExecOptions) Result {
@@ -146,6 +150,13 @@ func TestAntigravityBackendKeepsResumedFailures(t *testing.T) {
 			opts:   resumedOpts(),
 			status: "failed",
 			errHas: "NOT_FOUND",
+		},
+		{
+			name:   "current structured error that is not the stale 404 and is absent from the log",
+			fix:    staleResumedFixture{response: "answer", resultError: "agent executor error: PERMISSION_DENIED (code 403): quota exhausted"},
+			opts:   resumedOpts(),
+			status: "failed",
+			errHas: "PERMISSION_DENIED",
 		},
 		{
 			name:   "fresh conversation keeps the structured error",
