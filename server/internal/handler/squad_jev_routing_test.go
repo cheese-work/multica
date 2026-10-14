@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -1978,7 +1979,7 @@ func TestComment_SquadMentionTriggersJevRouting(t *testing.T) {
 	}
 
 	_, err = testHandler.enqueueSingleCommentTrigger(ctx, issue, commentID, trigger)
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrJevRouted) {
 		t.Fatalf("enqueueSingleCommentTrigger failed: %v", err)
 	}
 
@@ -2007,5 +2008,617 @@ func TestComment_SquadMentionTriggersJevRouting(t *testing.T) {
 	`, issueID).Scan(&commentType)
 	if err != nil || commentType != "jev_route" {
 		t.Errorf("expected jev_route comment on issue, got err=%v, type=%s", err, commentType)
+	}
+}
+
+type fallbackFailingDB struct {
+	db.DBTX
+}
+
+type fallbackFailingRow struct {
+	err error
+}
+
+func (r *fallbackFailingRow) Scan(dest ...any) error { return r.err }
+
+func (f fallbackFailingDB) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	if strings.Contains(sql, "author_type IN ('member', 'user')") {
+		return &fallbackFailingRow{err: errors.New("simulated fallback query error")}
+	}
+	return f.DBTX.QueryRow(ctx, sql, args...)
+}
+
+func TestCreateComment_SquadMentionTriggersJevRouting_RealFlow(t *testing.T) {
+	ctx := context.Background()
+	wsUUID := util.MustParseUUID(testWorkspaceID)
+	userUUID := util.MustParseUUID(testUserID)
+	rtUUID, _ := util.ParseUUID(testRuntimeID)
+
+	leaderAgentID := dbid.NewV7()
+	_, err := testPool.Exec(ctx, `
+		INSERT INTO agent (id, workspace_id, runtime_id, owner_id, name, status, runtime_mode)
+		VALUES ($1, $2, $3, $4, 'realflow-leader', 'idle', 'cloud')
+	`, leaderAgentID, wsUUID, rtUUID, userUUID)
+	if err != nil {
+		t.Fatalf("insert leader agent: %v", err)
+	}
+	defer testPool.Exec(ctx, `DELETE FROM agent WHERE id = $1`, leaderAgentID)
+
+	memberAgentID := dbid.NewV7()
+	_, err = testPool.Exec(ctx, `
+		INSERT INTO agent (id, workspace_id, runtime_id, owner_id, name, status, runtime_mode)
+		VALUES ($1, $2, $3, $4, 'realflow-worker', 'idle', 'cloud')
+	`, memberAgentID, wsUUID, rtUUID, userUUID)
+	if err != nil {
+		t.Fatalf("insert member agent: %v", err)
+	}
+	defer testPool.Exec(ctx, `DELETE FROM agent WHERE id = $1`, memberAgentID)
+
+	squadID := dbid.NewV7()
+	_, err = testPool.Exec(ctx, `
+		INSERT INTO squad (id, workspace_id, name, description, instructions, leader_id, creator_id)
+		VALUES ($1, $2, 'Realflow Squad', 'Squad for real comment flow testing', 'Tier S: realflow-worker', $3, $4)
+	`, squadID, wsUUID, leaderAgentID, userUUID)
+	if err != nil {
+		t.Fatalf("insert squad: %v", err)
+	}
+	defer testPool.Exec(ctx, `DELETE FROM squad WHERE id = $1`, squadID)
+
+	_, err = testPool.Exec(ctx, `
+		INSERT INTO squad_member (id, squad_id, member_type, member_id, role)
+		VALUES ($1, $2, 'agent', $3, 'worker')
+	`, dbid.NewV7(), squadID, memberAgentID)
+	if err != nil {
+		t.Fatalf("insert squad member: %v", err)
+	}
+
+	mockJevServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := jev.Response{
+			Model: "jev-1.13.0",
+			Answers: map[string]jev.Answer{
+				"route_squad_member": {
+					Type:       jev.TypeChoice,
+					Choice:     util.UUIDToString(memberAgentID),
+					Confidence: 0.95,
+					Probabilities: map[string]float64{
+						util.UUIDToString(memberAgentID): 0.95,
+						"escalate_to_leader":             0.05,
+					},
+				},
+			},
+			Usage: jev.Usage{InputTokens: 500, OutputTokens: 10},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer mockJevServer.Close()
+
+	var minConf = 0.90
+	settings := governance.WorkspaceSettings{
+		JevSquadRoutingEnabled: true,
+		JevAPIURL:              mockJevServer.URL,
+		JevMinConfidence:       &minConf,
+	}
+	settingsJSON, _ := json.Marshal(settings)
+	_, _ = testPool.Exec(ctx, `
+		INSERT INTO governance_workspace_config (workspace_id, config_version, control_epoch, settings)
+		VALUES ($1, 1, 1, $2)
+		ON CONFLICT (workspace_id) DO UPDATE SET settings = EXCLUDED.settings
+	`, wsUUID, settingsJSON)
+
+	jevClient, _ := jev.NewClient(jev.Options{
+		APIKey:  "test-jev-key",
+		BaseURL: mockJevServer.URL,
+	})
+	origJev := testHandler.Jev
+	testHandler.Jev = jevClient
+	defer func() { testHandler.Jev = origJev }()
+
+	issueID := dbid.NewV7()
+	_, _ = testPool.Exec(ctx, `
+		INSERT INTO issue (id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, revision, number)
+		VALUES ($1, $2, 'Comment Real Flow Issue', 'Issue testing CreateComment real flow', 'todo', 'high', 'squad', $3, 'member', $4, 1, 4009)
+	`, issueID, wsUUID, squadID, testUserID)
+	defer testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
+
+	squad, _ := testHandler.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: squadID, WorkspaceID: wsUUID})
+
+	// Post comment through real CreateComment HTTP handler
+	w := httptest.NewRecorder()
+	content := fmt.Sprintf("Hey @[%s](mention://squad/%s) please handle this real flow task", squad.Name, util.UUIDToString(squadID))
+	reqBody := map[string]any{"content": content}
+	r := newRequest("POST", "/api/issues/"+util.UUIDToString(issueID)+"/comments", reqBody)
+	r = withURLParam(r, "id", util.UUIDToString(issueID))
+	testHandler.CreateComment(w, r)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateComment expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp CommentResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode comment response: %v", err)
+	}
+
+	// Verify revision was bumped by comment insert and updated in handler
+	if resp.IssueRevision < 2 {
+		t.Errorf("resp.IssueRevision = %d, expected >= 2", resp.IssueRevision)
+	}
+
+	// Verify TriggerOutcomes reports ReasonJevRouted
+	var foundSquadOutcome bool
+	for _, outcome := range resp.TriggerOutcomes {
+		if outcome.TargetType == "squad" && outcome.TargetID == util.UUIDToString(squadID) {
+			foundSquadOutcome = true
+			if outcome.ReasonCode != ReasonJevRouted {
+				t.Errorf("squad trigger outcome reason_code = %q, want %q", outcome.ReasonCode, ReasonJevRouted)
+			}
+			if outcome.Status != DispatchQueued {
+				t.Errorf("squad trigger outcome status = %q, want %q", outcome.Status, DispatchQueued)
+			}
+		}
+	}
+	if !foundSquadOutcome {
+		t.Errorf("squad trigger outcome not found in resp.TriggerOutcomes: %+v", resp.TriggerOutcomes)
+	}
+
+	// Verify issue was promoted to in_progress with no revision conflict
+	freshIssue, _ := testHandler.Queries.GetIssue(ctx, issueID)
+	if freshIssue.Status != "in_progress" {
+		t.Errorf("freshIssue.Status = %q, want in_progress", freshIssue.Status)
+	}
+
+	// Verify task in queue is for the specialist member agent
+	var enqueuedAgentID string
+	err = testPool.QueryRow(ctx, `
+		SELECT agent_id FROM agent_task_queue WHERE issue_id = $1 ORDER BY created_at DESC LIMIT 1
+	`, issueID).Scan(&enqueuedAgentID)
+	if err != nil {
+		t.Fatalf("task not found in queue: %v", err)
+	}
+	if enqueuedAgentID != util.UUIDToString(memberAgentID) {
+		t.Errorf("enqueued task agent_id = %s, want worker %s", enqueuedAgentID, util.UUIDToString(memberAgentID))
+	}
+}
+
+func TestCreateComment_AgentReplyDoesNotRouteThroughJev(t *testing.T) {
+	ctx := context.Background()
+	wsUUID := util.MustParseUUID(testWorkspaceID)
+	userUUID := util.MustParseUUID(testUserID)
+	rtUUID, _ := util.ParseUUID(testRuntimeID)
+
+	leaderAgentID := dbid.NewV7()
+	_, err := testPool.Exec(ctx, `
+		INSERT INTO agent (id, workspace_id, runtime_id, owner_id, name, status, runtime_mode)
+		VALUES ($1, $2, $3, $4, 'agent-reply-leader', 'idle', 'cloud')
+	`, leaderAgentID, wsUUID, rtUUID, userUUID)
+	if err != nil {
+		t.Fatalf("insert leader agent: %v", err)
+	}
+	defer testPool.Exec(ctx, `DELETE FROM agent WHERE id = $1`, leaderAgentID)
+
+	memberAgentID := dbid.NewV7()
+	_, err = testPool.Exec(ctx, `
+		INSERT INTO agent (id, workspace_id, runtime_id, owner_id, name, status, runtime_mode)
+		VALUES ($1, $2, $3, $4, 'agent-reply-worker', 'idle', 'cloud')
+	`, memberAgentID, wsUUID, rtUUID, userUUID)
+	if err != nil {
+		t.Fatalf("insert member agent: %v", err)
+	}
+	defer testPool.Exec(ctx, `DELETE FROM agent WHERE id = $1`, memberAgentID)
+
+	squadID := dbid.NewV7()
+	_, err = testPool.Exec(ctx, `
+		INSERT INTO squad (id, workspace_id, name, description, instructions, leader_id, creator_id)
+		VALUES ($1, $2, 'Agent Reply Squad', 'Squad testing agent replies', 'Tier S: agent-reply-worker', $3, $4)
+	`, squadID, wsUUID, leaderAgentID, userUUID)
+	if err != nil {
+		t.Fatalf("insert squad: %v", err)
+	}
+	defer testPool.Exec(ctx, `DELETE FROM squad WHERE id = $1`, squadID)
+
+	_, err = testPool.Exec(ctx, `
+		INSERT INTO squad_member (id, squad_id, member_type, member_id, role)
+		VALUES ($1, $2, 'agent', $3, 'worker')
+	`, dbid.NewV7(), squadID, memberAgentID)
+	if err != nil {
+		t.Fatalf("insert squad member: %v", err)
+	}
+
+	jevCallCount := 0
+	mockJevServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		jevCallCount++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(jev.Response{})
+	}))
+	defer mockJevServer.Close()
+
+	var minConf = 0.90
+	settings := governance.WorkspaceSettings{
+		JevSquadRoutingEnabled: true,
+		JevAPIURL:              mockJevServer.URL,
+		JevMinConfidence:       &minConf,
+	}
+	settingsJSON, _ := json.Marshal(settings)
+	_, _ = testPool.Exec(ctx, `
+		INSERT INTO governance_workspace_config (workspace_id, config_version, control_epoch, settings)
+		VALUES ($1, 1, 1, $2)
+		ON CONFLICT (workspace_id) DO UPDATE SET settings = EXCLUDED.settings
+	`, wsUUID, settingsJSON)
+
+	jevClient, _ := jev.NewClient(jev.Options{
+		APIKey:  "test-jev-key",
+		BaseURL: mockJevServer.URL,
+	})
+	origJev := testHandler.Jev
+	testHandler.Jev = jevClient
+	defer func() { testHandler.Jev = origJev }()
+
+	issueID := dbid.NewV7()
+	_, _ = testPool.Exec(ctx, `
+		INSERT INTO issue (id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, revision, number)
+		VALUES ($1, $2, 'Worker Done Issue', 'Issue testing worker report return', 'in_progress', 'high', 'squad', $3, 'member', $4, 1, 4010)
+	`, issueID, wsUUID, squadID, testUserID)
+	defer testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
+
+	var workerTaskID string
+	err = testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, is_leader_task, originator_user_id, accountable_user_id)
+		VALUES ($1, $2, $3, 'running', FALSE, $4, $4)
+		RETURNING id
+	`, memberAgentID, rtUUID, issueID, testUserID).Scan(&workerTaskID)
+	if err != nil {
+		t.Fatalf("seed worker task: %v", err)
+	}
+	defer testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, workerTaskID)
+
+	// Worker agent posts comment
+	w := httptest.NewRecorder()
+	content := "Task finished; returning report to squad leader."
+	reqBody := map[string]any{"content": content}
+	r := newRequest("POST", "/api/issues/"+util.UUIDToString(issueID)+"/comments", reqBody)
+	r.Header.Set("X-Agent-ID", util.UUIDToString(memberAgentID))
+	r.Header.Set("X-Task-ID", workerTaskID)
+	r = withURLParam(r, "id", util.UUIDToString(issueID))
+	testHandler.CreateComment(w, r)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateComment expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify Jev was NOT called for agent comment
+	if jevCallCount > 0 {
+		t.Errorf("Jev was called %d times for agent comment, want 0", jevCallCount)
+	}
+
+	// Verify task in queue is enqueued for squad LEADER, not worker
+	var enqueuedAgentID string
+	var isLeaderTask bool
+	err = testPool.QueryRow(ctx, `
+		SELECT agent_id, is_leader_task FROM agent_task_queue WHERE issue_id = $1 ORDER BY created_at DESC LIMIT 1
+	`, issueID).Scan(&enqueuedAgentID, &isLeaderTask)
+	if err != nil {
+		t.Fatalf("task not found in queue: %v", err)
+	}
+	if enqueuedAgentID != util.UUIDToString(leaderAgentID) {
+		t.Errorf("enqueued task agent_id = %s, want leader %s", enqueuedAgentID, util.UUIDToString(leaderAgentID))
+	}
+	if !isLeaderTask {
+		t.Errorf("is_leader_task = false, want true")
+	}
+}
+
+func TestCreateIssue_SquadAssigneeTriggersJevRouting_RealService(t *testing.T) {
+	ctx := context.Background()
+	wsUUID := util.MustParseUUID(testWorkspaceID)
+	userUUID := util.MustParseUUID(testUserID)
+	rtUUID, _ := util.ParseUUID(testRuntimeID)
+
+	leaderAgentID := dbid.NewV7()
+	_, err := testPool.Exec(ctx, `
+		INSERT INTO agent (id, workspace_id, runtime_id, owner_id, name, status, runtime_mode)
+		VALUES ($1, $2, $3, $4, 'create-issue-leader', 'idle', 'cloud')
+	`, leaderAgentID, wsUUID, rtUUID, userUUID)
+	if err != nil {
+		t.Fatalf("insert leader agent: %v", err)
+	}
+	defer testPool.Exec(ctx, `DELETE FROM agent WHERE id = $1`, leaderAgentID)
+
+	memberAgentID := dbid.NewV7()
+	_, err = testPool.Exec(ctx, `
+		INSERT INTO agent (id, workspace_id, runtime_id, owner_id, name, status, runtime_mode)
+		VALUES ($1, $2, $3, $4, 'create-issue-worker', 'idle', 'cloud')
+	`, memberAgentID, wsUUID, rtUUID, userUUID)
+	if err != nil {
+		t.Fatalf("insert member agent: %v", err)
+	}
+	defer testPool.Exec(ctx, `DELETE FROM agent WHERE id = $1`, memberAgentID)
+
+	squadID := dbid.NewV7()
+	_, err = testPool.Exec(ctx, `
+		INSERT INTO squad (id, workspace_id, name, description, instructions, leader_id, creator_id)
+		VALUES ($1, $2, 'Create Issue Squad', 'Squad testing real CreateIssue service', 'Tier S: create-issue-worker', $3, $4)
+	`, squadID, wsUUID, leaderAgentID, userUUID)
+	if err != nil {
+		t.Fatalf("insert squad: %v", err)
+	}
+	defer testPool.Exec(ctx, `DELETE FROM squad WHERE id = $1`, squadID)
+
+	_, err = testPool.Exec(ctx, `
+		INSERT INTO squad_member (id, squad_id, member_type, member_id, role)
+		VALUES ($1, $2, 'agent', $3, 'worker')
+	`, dbid.NewV7(), squadID, memberAgentID)
+	if err != nil {
+		t.Fatalf("insert squad member: %v", err)
+	}
+
+	labelID := dbid.NewV7()
+	_, err = testPool.Exec(ctx, `
+		INSERT INTO issue_label (id, workspace_id, name, color, resource_type)
+		VALUES ($1, $2, 'service-test-label', '#00ff00', 'issue')
+	`, labelID, wsUUID)
+	if err != nil {
+		t.Fatalf("insert label: %v", err)
+	}
+	defer testPool.Exec(ctx, `DELETE FROM issue_label WHERE id = $1`, labelID)
+
+	attID := dbid.NewV7()
+	_, err = testPool.Exec(ctx, `
+		INSERT INTO attachment (id, workspace_id, uploader_type, uploader_id, filename, url, content_type, size_bytes)
+		VALUES ($1, $2, 'member', $3, 'spec.txt', 'https://example.com/spec.txt', 'text/plain', 128)
+	`, attID, wsUUID, userUUID)
+	if err != nil {
+		t.Fatalf("insert attachment: %v", err)
+	}
+	defer testPool.Exec(ctx, `DELETE FROM attachment WHERE id = $1`, attID)
+
+	mockJevServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := jev.Response{
+			Model: "jev-1.13.0",
+			Answers: map[string]jev.Answer{
+				"route_squad_member": {
+					Type:       jev.TypeChoice,
+					Choice:     util.UUIDToString(memberAgentID),
+					Confidence: 0.95,
+					Probabilities: map[string]float64{
+						util.UUIDToString(memberAgentID): 0.95,
+						"escalate_to_leader":             0.05,
+					},
+				},
+			},
+			Usage: jev.Usage{InputTokens: 500, OutputTokens: 10},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer mockJevServer.Close()
+
+	var minConf = 0.90
+	settings := governance.WorkspaceSettings{
+		JevSquadRoutingEnabled: true,
+		JevAPIURL:              mockJevServer.URL,
+		JevMinConfidence:       &minConf,
+	}
+	settingsJSON, _ := json.Marshal(settings)
+	_, _ = testPool.Exec(ctx, `
+		INSERT INTO governance_workspace_config (workspace_id, config_version, control_epoch, settings)
+		VALUES ($1, 1, 1, $2)
+		ON CONFLICT (workspace_id) DO UPDATE SET settings = EXCLUDED.settings
+	`, wsUUID, settingsJSON)
+
+	jevClient, _ := jev.NewClient(jev.Options{
+		APIKey:  "test-jev-key",
+		BaseURL: mockJevServer.URL,
+	})
+	origJev := testHandler.Jev
+	testHandler.Jev = jevClient
+	defer func() { testHandler.Jev = origJev }()
+
+	createRes, err := testHandler.IssueService.Create(ctx, service.IssueCreateParams{
+		WorkspaceID:   wsUUID,
+		Title:         "Real CreateIssue Test",
+		Description:   pgtype.Text{String: "Issue testing real service Create with labels and attachments", Valid: true},
+		Status:        "todo",
+		Priority:      "high",
+		AssigneeType:  pgtype.Text{String: "squad", Valid: true},
+		AssigneeID:    squadID,
+		CreatorType:   "member",
+		CreatorID:     userUUID,
+		LabelIDs:      []pgtype.UUID{labelID},
+		AttachmentIDs: []pgtype.UUID{attID},
+	}, service.IssueCreateOpts{})
+	if err != nil {
+		t.Fatalf("IssueService.Create failed: %v", err)
+	}
+	defer testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, createRes.Issue.ID)
+
+	// Verify issue was promoted to in_progress via Jev without revision conflict
+	freshIssue, _ := testHandler.Queries.GetIssue(ctx, createRes.Issue.ID)
+	if freshIssue.Status != "in_progress" {
+		t.Errorf("freshIssue.Status = %q, want in_progress", freshIssue.Status)
+	}
+
+	// Verify task exists for worker
+	var enqueuedAgentID string
+	err = testPool.QueryRow(ctx, `
+		SELECT agent_id FROM agent_task_queue WHERE issue_id = $1 ORDER BY created_at DESC LIMIT 1
+	`, createRes.Issue.ID).Scan(&enqueuedAgentID)
+	if err != nil {
+		t.Fatalf("task not found in queue: %v", err)
+	}
+	if enqueuedAgentID != util.UUIDToString(memberAgentID) {
+		t.Errorf("enqueued task agent_id = %s, want worker %s", enqueuedAgentID, util.UUIDToString(memberAgentID))
+	}
+}
+
+func TestTryJevSquadRouting_DBFallbackErrorFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	wsUUID := util.MustParseUUID(testWorkspaceID)
+	userUUID := util.MustParseUUID(testUserID)
+	rtUUID, _ := util.ParseUUID(testRuntimeID)
+
+	leaderAgentID := dbid.NewV7()
+	_, _ = testPool.Exec(ctx, `
+		INSERT INTO agent (id, workspace_id, runtime_id, owner_id, name, status, runtime_mode)
+		VALUES ($1, $2, $3, $4, 'fallback-err-leader', 'idle', 'cloud')
+	`, leaderAgentID, wsUUID, rtUUID, userUUID)
+	defer testPool.Exec(ctx, `DELETE FROM agent WHERE id = $1`, leaderAgentID)
+
+	memberAgentID := dbid.NewV7()
+	_, _ = testPool.Exec(ctx, `
+		INSERT INTO agent (id, workspace_id, runtime_id, owner_id, name, status, runtime_mode)
+		VALUES ($1, $2, $3, $4, 'fallback-err-worker', 'idle', 'cloud')
+	`, memberAgentID, wsUUID, rtUUID, userUUID)
+	defer testPool.Exec(ctx, `DELETE FROM agent WHERE id = $1`, memberAgentID)
+
+	squadID := dbid.NewV7()
+	_, _ = testPool.Exec(ctx, `
+		INSERT INTO squad (id, workspace_id, name, description, instructions, leader_id, creator_id)
+		VALUES ($1, $2, 'Fallback Error Squad', 'Squad testing fallback DB error', 'Tier S: fallback-err-worker', $3, $4)
+	`, squadID, wsUUID, leaderAgentID, userUUID)
+	defer testPool.Exec(ctx, `DELETE FROM squad WHERE id = $1`, squadID)
+
+	_, _ = testPool.Exec(ctx, `
+		INSERT INTO squad_member (id, squad_id, member_type, member_id, role)
+		VALUES ($1, $2, 'agent', $3, 'worker')
+	`, dbid.NewV7(), squadID, memberAgentID)
+
+	mockJevServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(jev.Response{})
+	}))
+	defer mockJevServer.Close()
+
+	var minConf = 0.90
+	settings := governance.WorkspaceSettings{
+		JevSquadRoutingEnabled: true,
+		JevAPIURL:              mockJevServer.URL,
+		JevMinConfidence:       &minConf,
+	}
+	settingsJSON, _ := json.Marshal(settings)
+	_, _ = testPool.Exec(ctx, `
+		INSERT INTO governance_workspace_config (workspace_id, config_version, control_epoch, settings)
+		VALUES ($1, 1, 1, $2)
+		ON CONFLICT (workspace_id) DO UPDATE SET settings = EXCLUDED.settings
+	`, wsUUID, settingsJSON)
+
+	jevClient, _ := jev.NewClient(jev.Options{
+		APIKey:  "test-jev-key",
+		BaseURL: mockJevServer.URL,
+	})
+	origJev := testHandler.Jev
+	testHandler.Jev = jevClient
+	defer func() { testHandler.Jev = origJev }()
+
+	issueID := dbid.NewV7()
+	_, _ = testPool.Exec(ctx, `
+		INSERT INTO issue (id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, revision, number)
+		VALUES ($1, $2, 'Fallback Error Issue', 'Testing DB fallback query fail closed', 'backlog', 'high', 'squad', $3, 'member', $4, 1, 4011)
+	`, issueID, wsUUID, squadID, testUserID)
+	defer testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
+
+	// Insert 20 bot comments (no human comments in the window)
+	for i := 0; i < 20; i++ {
+		_, _ = testPool.Exec(ctx, `
+			INSERT INTO comment (id, workspace_id, issue_id, author_type, author_id, content, created_at, updated_at)
+			VALUES ($1, $2, $3, 'agent', $4, $5, NOW() - ($6 || ' minutes')::interval, NOW())
+		`, dbid.NewV7(), wsUUID, issueID, memberAgentID, fmt.Sprintf("Bot comment %d", i), 20-i)
+	}
+
+	squad, _ := testHandler.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: squadID, WorkspaceID: wsUUID})
+	issue, _ := testHandler.Queries.GetIssue(ctx, issueID)
+
+	// Wrap testHandler.DB with fallbackFailingDB
+	origDB := testHandler.DB
+	testHandler.DB = fallbackFailingDB{DBTX: origDB}
+	defer func() { testHandler.DB = origDB }()
+
+	routed, advisory := testHandler.tryJevSquadRouting(ctx, issue, squad, "member", testUserID, testUserID)
+	if routed {
+		t.Fatalf("expected routing to fail closed on DB query error, got routed=true")
+	}
+	if !strings.Contains(advisory, "Failed to query latest human comment") {
+		t.Errorf("advisory does not mention fallback query failure: %s", advisory)
+	}
+}
+
+func TestTryJevSquadRouting_EvaluationTimeout(t *testing.T) {
+	ctx := context.Background()
+	wsUUID := util.MustParseUUID(testWorkspaceID)
+	userUUID := util.MustParseUUID(testUserID)
+	rtUUID, _ := util.ParseUUID(testRuntimeID)
+
+	leaderAgentID := dbid.NewV7()
+	_, _ = testPool.Exec(ctx, `
+		INSERT INTO agent (id, workspace_id, runtime_id, owner_id, name, status, runtime_mode)
+		VALUES ($1, $2, $3, $4, 'timeout-leader', 'idle', 'cloud')
+	`, leaderAgentID, wsUUID, rtUUID, userUUID)
+	defer testPool.Exec(ctx, `DELETE FROM agent WHERE id = $1`, leaderAgentID)
+
+	memberAgentID := dbid.NewV7()
+	_, _ = testPool.Exec(ctx, `
+		INSERT INTO agent (id, workspace_id, runtime_id, owner_id, name, status, runtime_mode)
+		VALUES ($1, $2, $3, $4, 'timeout-worker', 'idle', 'cloud')
+	`, memberAgentID, wsUUID, rtUUID, userUUID)
+	defer testPool.Exec(ctx, `DELETE FROM agent WHERE id = $1`, memberAgentID)
+
+	squadID := dbid.NewV7()
+	_, _ = testPool.Exec(ctx, `
+		INSERT INTO squad (id, workspace_id, name, description, instructions, leader_id, creator_id)
+		VALUES ($1, $2, 'Timeout Squad', 'Squad testing Jev timeout', 'Tier S: timeout-worker', $3, $4)
+	`, squadID, wsUUID, leaderAgentID, userUUID)
+	defer testPool.Exec(ctx, `DELETE FROM squad WHERE id = $1`, squadID)
+
+	_, _ = testPool.Exec(ctx, `
+		INSERT INTO squad_member (id, squad_id, member_type, member_id, role)
+		VALUES ($1, $2, 'agent', $3, 'worker')
+	`, dbid.NewV7(), squadID, memberAgentID)
+
+	// Mock server sleeps 6 seconds (exceeding 5s timeout)
+	mockJevServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(6 * time.Second)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(jev.Response{})
+	}))
+	defer mockJevServer.Close()
+
+	var minConf = 0.90
+	settings := governance.WorkspaceSettings{
+		JevSquadRoutingEnabled: true,
+		JevAPIURL:              mockJevServer.URL,
+		JevMinConfidence:       &minConf,
+	}
+	settingsJSON, _ := json.Marshal(settings)
+	_, _ = testPool.Exec(ctx, `
+		INSERT INTO governance_workspace_config (workspace_id, config_version, control_epoch, settings)
+		VALUES ($1, 1, 1, $2)
+		ON CONFLICT (workspace_id) DO UPDATE SET settings = EXCLUDED.settings
+	`, wsUUID, settingsJSON)
+
+	// Use shared client path
+	jevClient, _ := jev.NewClient(jev.Options{
+		APIKey:  "test-jev-key",
+		BaseURL: mockJevServer.URL,
+	})
+	origJev := testHandler.Jev
+	testHandler.Jev = jevClient
+	defer func() { testHandler.Jev = origJev }()
+
+	issueID := dbid.NewV7()
+	_, _ = testPool.Exec(ctx, `
+		INSERT INTO issue (id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, revision, number)
+		VALUES ($1, $2, 'Timeout Issue', 'Testing 5s timeout bounds synchronous path', 'backlog', 'high', 'squad', $3, 'member', $4, 1, 4012)
+	`, issueID, wsUUID, squadID, testUserID)
+	defer testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
+
+	squad, _ := testHandler.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: squadID, WorkspaceID: wsUUID})
+	issue, _ := testHandler.Queries.GetIssue(ctx, issueID)
+
+	routed, advisory := testHandler.tryJevSquadRouting(ctx, issue, squad, "member", testUserID, testUserID)
+	if routed {
+		t.Fatalf("expected routing to fail on timeout, got routed=true")
+	}
+	if !strings.Contains(advisory, "context deadline exceeded") {
+		t.Errorf("advisory does not mention timeout/deadline exceeded: %s", advisory)
 	}
 }

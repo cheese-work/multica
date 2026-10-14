@@ -30,6 +30,12 @@ import (
 // On confidence < minConfidence or error, it returns (false, advisory) where advisory contains
 // pre-computed recommendations to append to the squad leader's handoff note.
 func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad db.Squad, authorType, authorID, leaderOriginator string, triggerCommentID ...pgtype.UUID) (bool, string) {
+	// Sol directive & Sonnet Blocker 2: Do not route agent-authored actions through Jev.
+	// Preserve worker-result returns to the squad leader.
+	if authorType == "agent" {
+		return false, ""
+	}
+
 	config, err := loadGovernanceControl(ctx, h.DB, issue.WorkspaceID)
 	if err != nil || !config.Settings.JevSquadRoutingEnabled {
 		return false, ""
@@ -85,7 +91,7 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 	candidateMap := make(map[string]db.Agent, len(members))
 	memberRoleMap := make(map[string]string, len(members))
 	for _, m := range members {
-		if m.MemberType != "agent" || uuidToString(m.MemberID) == uuidToString(squad.LeaderID) {
+		if m.MemberType != "agent" || uuidToString(m.MemberID) == uuidToString(squad.LeaderID) || (authorType == "agent" && uuidToString(m.MemberID) == authorID) {
 			continue
 		}
 		agent, err := h.Queries.GetAgent(ctx, m.MemberID)
@@ -206,6 +212,8 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 			}
 		} else if !errors.Is(err, pgx.ErrNoRows) {
 			slog.Warn("jev squad routing: failed to query latest human comment", "error", err)
+			advisory := fmt.Sprintf("### Jev Pre-Route Advisory\n- Proposed: none\n- Runner-up: none\n- Ambiguity: Failed to query latest human comment: %v\n- Prior State Changes: none\n- Decision ID: %s", err, decisionID)
+			return false, advisory
 		}
 	}
 
@@ -298,7 +306,9 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 		State:     state.Sections,
 		Questions: map[string]jev.Question{questionID: question},
 	}
-	resp, err := jevClient.Evaluate(ctx, req)
+	evalCtx, evalCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer evalCancel()
+	resp, err := jevClient.Evaluate(evalCtx, req)
 	if err != nil {
 		slog.Warn("jev squad routing: evaluation error", "error", err)
 		advisory := fmt.Sprintf("### Jev Pre-Route Advisory\n- Proposed: none\n- Runner-up: none\n- Ambiguity: Jev evaluation failed (%v)\n- Prior State Changes: none\n- Decision ID: %s", err, decisionID)

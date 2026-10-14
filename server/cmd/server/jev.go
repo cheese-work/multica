@@ -2,6 +2,7 @@ package main
 
 import (
 	"strings"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
@@ -23,7 +24,8 @@ func newJevClient(apiKey string, flags *featureflag.Service) (*jev.Client, error
 		return nil, nil
 	}
 	return jev.NewClient(jev.Options{
-		APIKey: apiKey,
-		Gate:   featureflags.JevProductionGate{Flags: flags},
+		APIKey:  apiKey,
+		Timeout: 5 * time.Second,
+		Gate:    featureflags.JevProductionGate{Flags: flags},
 	})
 }
