@@ -64,17 +64,23 @@ http {
     access_log /var/log/nginx/access.log search_privacy;
     server_name _;
 
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Cookie $http_cookie;
+    proxy_pass_header Set-Cookie;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+
+    location = /api/search/suggestions {
+      error_log /dev/null emerg;
+      proxy_pass http://ACTIVE_BACKEND_UPSTREAM;
+    }
+
     location / {
       proxy_pass http://ACTIVE_BACKEND_UPSTREAM;
-      proxy_http_version 1.1;
-      proxy_set_header Host $host;
-      proxy_set_header X-Real-IP $remote_addr;
-      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-      proxy_set_header X-Forwarded-Proto $scheme;
-      proxy_set_header Cookie $http_cookie;
-      proxy_pass_header Set-Cookie;
-      proxy_set_header Upgrade $http_upgrade;
-      proxy_set_header Connection $connection_upgrade;
     }
   }
 
@@ -83,17 +89,23 @@ http {
     access_log /var/log/nginx/access.log search_privacy;
     server_name _;
 
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Cookie $http_cookie;
+    proxy_pass_header Set-Cookie;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+
+    location ~ ^/[^/]+/search(?:/|$) {
+      error_log /dev/null emerg;
+      proxy_pass http://ACTIVE_FRONTEND_UPSTREAM;
+    }
+
     location / {
       proxy_pass http://ACTIVE_FRONTEND_UPSTREAM;
-      proxy_http_version 1.1;
-      proxy_set_header Host $host;
-      proxy_set_header X-Real-IP $remote_addr;
-      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-      proxy_set_header X-Forwarded-Proto $scheme;
-      proxy_set_header Cookie $http_cookie;
-      proxy_pass_header Set-Cookie;
-      proxy_set_header Upgrade $http_upgrade;
-      proxy_set_header Connection $connection_upgrade;
     }
   }
 }
