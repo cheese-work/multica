@@ -546,8 +546,10 @@ type ChatSession struct {
 	ContinuedFromSessionID pgtype.UUID        `json:"continued_from_session_id"`
 	ContinuedIntoSessionID pgtype.UUID        `json:"continued_into_session_id"`
 	ChannelOriginAt        pgtype.Timestamptz `json:"channel_origin_at"`
-	LaneSummary            string             `json:"lane_summary"`
-	LaneSummaryUpdatedAt   pgtype.Timestamptz `json:"lane_summary_updated_at"`
+	ForkedFromSessionID    pgtype.UUID        `json:"forked_from_session_id"`
+	ForkIdempotencyKey     pgtype.Text        `json:"fork_idempotency_key"`
+	ForkLastMessageID      pgtype.UUID        `json:"fork_last_message_id"`
+	ForkMessageCount       pgtype.Int4        `json:"fork_message_count"`
 }
 
 type ClientUsageDaily struct {
@@ -840,6 +842,8 @@ type GithubPullRequest struct {
 	ChecksRollupState   pgtype.Text        `json:"checks_rollup_state"`
 	SnapshotHeadSha     string             `json:"snapshot_head_sha"`
 	SnapshotFetchedAt   pgtype.Timestamptz `json:"snapshot_fetched_at"`
+	SnapshotBaseRef     pgtype.Text        `json:"snapshot_base_ref"`
+	SnapshotRecheckAt   pgtype.Timestamptz `json:"snapshot_recheck_at"`
 }
 
 type GithubPullRequestCheckRun struct {

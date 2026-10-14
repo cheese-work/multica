@@ -1,14 +1,9 @@
 package handler
 
 import (
-	"encoding/json"
-	"errors"
 	"net/http"
-	"strings"
-	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -42,58 +37,6 @@ func (handler *Handler) callingChatSession(writer http.ResponseWriter, request *
 		return db.ChatSession{}, false
 	}
 	return session, true
-}
-
-func (handler *Handler) SetChatLaneSummary(writer http.ResponseWriter, request *http.Request) {
-	userID, ok := requireUserID(writer, request)
-	if !ok {
-		return
-	}
-	var session db.ChatSession
-	if request.Header.Get("X-Actor-Source") == "interactive_jwt" {
-		session, ok = handler.gatePublicChatSessionForUser(writer, request, userID, ctxWorkspaceID(request.Context()), chi.URLParam(request, "sessionId"))
-	} else {
-		session, ok = handler.callingChatSession(writer, request)
-	}
-	if !ok {
-		return
-	}
-	var body struct {
-		LaneSummary *string `json:"lane_summary"`
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 16*1024)).Decode(&body); err != nil || body.LaneSummary == nil {
-		writeError(writer, http.StatusBadRequest, "lane_summary must be a string")
-		return
-	}
-	if strings.ContainsRune(*body.LaneSummary, '\x00') {
-		writeError(writer, http.StatusBadRequest, "lane_summary must not contain NUL characters")
-		return
-	}
-	if utf8.RuneCountInString(*body.LaneSummary) > 600 {
-		writeError(writer, http.StatusBadRequest, "lane_summary must not exceed 600 Unicode characters")
-		return
-	}
-	updated, err := handler.Queries.UpdateChatSessionLaneSummary(request.Context(), db.UpdateChatSessionLaneSummaryParams{
-		ID: session.ID, WorkspaceID: session.WorkspaceID, LaneSummary: *body.LaneSummary,
-	})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(writer, http.StatusConflict, "archived chat sessions are read-only")
-		} else {
-			writeError(writer, http.StatusInternalServerError, "failed to update lane summary")
-		}
-		return
-	}
-	writeJSON(writer, http.StatusOK, chatSessionToResponse(updated))
-}
-
-func chatSessionReadResponse(request *http.Request, session db.ChatSession) ChatSessionResponse {
-	response := chatSessionToResponse(session)
-	if request.Header.Get("X-Actor-Source") != "interactive_jwt" {
-		response.LaneSummary = ""
-		response.LaneSummaryUpdatedAt = nil
-	}
-	return response
 }
 
 func (handler *Handler) chatReadSession(writer http.ResponseWriter, request *http.Request, userID string) (db.ChatSession, bool) {

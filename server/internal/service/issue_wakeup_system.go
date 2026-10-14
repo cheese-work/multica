@@ -34,6 +34,15 @@ const (
 	SystemRulePRChecksFailed  = "pr_checks_failed"
 	WorkspaceSettingPRMerged  = "github_wake_on_pr_merge"
 	WorkspaceSettingPRFailure = "github_wake_on_ci_failure"
+	// SystemRulePRAttention wakes the owner when a linked PR can no longer
+	// merge as is: its merge state turned DIRTY or BEHIND, or it went back to
+	// draft after the issue was accepted (CHE-1417).
+	SystemRulePRAttention       = "pr_needs_attention"
+	WorkspaceSettingPRAttention = "github_wake_on_pr_attention"
+	// PRAttentionMergeability and PRAttentionDraft are the two reasons the
+	// attention rule fires.
+	PRAttentionMergeability = "mergeability"
+	PRAttentionDraft        = "returned_to_draft"
 	// MaxSystemWakeupInstruction bounds per-issue and workspace instructions.
 	MaxSystemWakeupInstruction = 4000
 	// WorkspaceSettingChildDone and WorkspaceSettingChildDoneInstruction hold
@@ -60,7 +69,21 @@ type PullRequestWakeupInput struct {
 	// them; a branch filter never matches a missing one.
 	BaseBranch string
 	HeadBranch string
+	// DefaultBranch is the repository's default branch when known. A merge
+	// into any other branch is a delivered stack layer.
+	DefaultBranch string
+	// Reason and MergeState describe a pr_needs_attention event. EventAt is
+	// when GitHub recorded a draft conversion: a redelivery repeats it, a later
+	// conversion at the same head does not.
+	Reason     string
+	MergeState string
+	EventAt    string
 }
+
+// prAcceptedStatuses are the issue statuses that record an accepted verdict.
+// Other done-category statuses, such as changes_requested or blockings_found,
+// record a rejection, so a draft after them is ordinary rework.
+var prAcceptedStatuses = map[string]bool{issuestatus.Done: true, "agent_accepted": true, "approved": true}
 
 var errMalformedPRWakeupSettings = errors.New("malformed PR wakeup workspace settings")
 
@@ -74,13 +97,15 @@ func prWakeupSetting(rule string) (string, bool) {
 		return WorkspaceSettingPRMerged, true
 	case SystemRulePRChecksFailed:
 		return WorkspaceSettingPRFailure, true
+	case SystemRulePRAttention:
+		return WorkspaceSettingPRAttention, true
 	default:
 		return "", false
 	}
 }
 
 func PRWakeupEnabled(settings []byte, rule string) (bool, error) {
-	setting, ok := prWakeupSetting(rule)
+	_, ok := prWakeupSetting(rule)
 	if !ok {
 		return false, fmt.Errorf("unknown pull request system wakeup rule %q", rule)
 	}
@@ -94,10 +119,7 @@ func PRWakeupEnabled(settings []byte, rule string) (bool, error) {
 	if values.GitHubEnabled != nil && !*values.GitHubEnabled {
 		return false, nil
 	}
-	enabled := values.WakeOnPRMerge
-	if setting == WorkspaceSettingPRFailure {
-		enabled = values.WakeOnCIFailure
-	}
+	enabled := values.ruleSetting(rule)
 	return enabled == nil || *enabled, nil
 }
 
@@ -108,6 +130,9 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 	}
 	eventType := "pr.merged"
 	eventKey := fmt.Sprintf("github:%s/%s#%d", strings.ToLower(in.RepoOwner), strings.ToLower(in.RepoName), in.Number)
+	// pairKey is the one key the build before CHE-1665 recorded for DIRTY and
+	// BEHIND alike on a head and base pair.
+	var pairKey string
 	switch in.Rule {
 	case SystemRulePRMerged:
 		if in.MergeCommit == "" {
@@ -119,6 +144,21 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		}
 		eventType = "pr.checks_failed"
 		eventKey += ":" + in.HeadSHA
+	case SystemRulePRAttention:
+		// Once per head and base pair: DIRTY then BEHIND on the same pair is
+		// one wake; a retarget or a new head is a new pair. Each state has its
+		// own key so a BEHIND wake never hides a later DIRTY (CHE-1665).
+		switch {
+		case in.Reason == PRAttentionMergeability && (in.MergeState == "DIRTY" || in.MergeState == "BEHIND") && in.HeadSHA != "" && in.BaseBranch != "":
+			eventType = "pr.mergeability"
+			pairKey = eventKey + ":mergeability:" + in.HeadSHA + ":" + in.BaseBranch
+			eventKey = pairKey + ":" + strings.ToLower(in.MergeState)
+		case in.Reason == PRAttentionDraft && in.HeadSHA != "" && in.EventAt != "":
+			eventType = "pr.returned_to_draft"
+			eventKey += ":draft:" + in.HeadSHA + ":" + in.EventAt
+		default:
+			return fmt.Errorf("invalid pull request attention input")
+		}
 	}
 
 	tx, err := s.Tasks.TxStarter.Begin(ctx)
@@ -140,6 +180,20 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 	}
 	if !active {
 		return tx.Commit(ctx)
+	}
+	if in.Reason == PRAttentionDraft {
+		// Only a draft after an accepted verdict asks for an answer: a draft
+		// while the issue is still worked on, or after a rejection, is rework.
+		if !prAcceptedStatuses[issue.Status] {
+			return tx.Commit(ctx)
+		}
+		category, err := issuestatus.CategoryWithError(ctx, q, issue.WorkspaceID, issue.Status)
+		if err != nil {
+			return err
+		}
+		if category != issuestatus.CategoryDone {
+			return tx.Commit(ctx)
+		}
 	}
 	ws, err := q.GetWorkspace(ctx, issue.WorkspaceID)
 	if err != nil {
@@ -210,7 +264,19 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 			return err
 		}
 	}
-	tag, err := tx.Exec(ctx, `INSERT INTO issue_wakeup_pr_event(wakeup_id,event_key) VALUES($1,$2) ON CONFLICT DO NOTHING`, w.ID, eventKey)
+	// A BEHIND is covered by any earlier wake on its pair, including a
+	// pre-CHE-1665 entry under the shared pairKey. A DIRTY is covered by an
+	// earlier DIRTY; a shared pairKey entry counts only when its receipt says
+	// DIRTY, so a legacy BEHIND entry never hides a conflict.
+	// ponytail: receipts expire 7 days after processing; a legacy DIRTY entry
+	// past that wakes once more if the pair is still conflicting. A reminder,
+	// never a missed conflict.
+	tag, err := tx.Exec(ctx, `INSERT INTO issue_wakeup_pr_event(wakeup_id,event_key)
+		SELECT $1::uuid,$2::text WHERE $3::text = '' OR NOT CASE WHEN $4::bool
+			THEN EXISTS (SELECT 1 FROM issue_wakeup_pr_event WHERE wakeup_id=$1::uuid AND event_key IN ($3::text, $3::text || ':dirty'))
+			ELSE EXISTS (SELECT 1 FROM issue_wakeup_receipt WHERE wakeup_id=$1::uuid AND event_key=$3::text AND payload->>'merge_state'='DIRTY')
+		END
+		ON CONFLICT DO NOTHING`, w.ID, eventKey, pairKey, in.MergeState == "BEHIND")
 	if err != nil {
 		return err
 	}
@@ -246,11 +312,27 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		"repo_owner": in.RepoOwner, "repo_name": in.RepoName, "pr_number": in.Number,
 		"pr_url": in.URL, "issue_status": issue.Status,
 	}
-	if in.Rule == SystemRulePRMerged {
+	switch in.Rule {
+	case SystemRulePRMerged:
 		payload["merge_commit_sha"] = in.MergeCommit
-	} else {
+		if in.BaseBranch != "" {
+			payload["base_branch"] = in.BaseBranch
+		}
+		if in.DefaultBranch != "" {
+			payload["default_branch"] = in.DefaultBranch
+			payload["layer_delivered"] = in.BaseBranch != "" && in.BaseBranch != in.DefaultBranch
+		}
+	case SystemRulePRChecksFailed:
 		payload["head_sha"] = in.HeadSHA
 		payload["conclusion"] = in.Conclusion
+	case SystemRulePRAttention:
+		payload["reason"], payload["head_sha"], payload["base_branch"] = in.Reason, in.HeadSHA, in.BaseBranch
+		if in.MergeState != "" {
+			payload["merge_state"] = in.MergeState
+		}
+		if in.EventAt != "" {
+			payload["converted_at"] = in.EventAt
+		}
 	}
 	if held {
 		// The filters cannot be read now, so dispatch applies them to these
@@ -706,7 +788,23 @@ func systemWakeupInstruction(w db.IssueWakeup, settings []byte, receipts []db.Is
 	switch w.SystemRule.String {
 	case SystemRulePRMerged:
 		commit, _ := facts["merge_commit_sha"].(string)
-		return fmt.Sprintf("A linked pull request has merged. Review %s at merge commit %s. The issue status when it merged was %s. Read the current issue and repository state, then decide what follow-up is needed.", pr, commit, issueStatus)
+		into := ""
+		if base, _ := facts["base_branch"].(string); base != "" {
+			into = " into " + base
+		}
+		text := fmt.Sprintf("A linked pull request has merged%s. Review %s at merge commit %s. The issue status when it merged was %s. ", into, pr, commit, issueStatus)
+		if layer, _ := facts["layer_delivered"].(bool); layer {
+			text += "This merge into a stack branch, not the default branch, counts as layer delivered. Closing keywords do not act on it, so move this issue yourself and check whether a successor PR needs a new base. "
+		}
+		return text + "Read the current issue and repository state, then decide what follow-up is needed."
+	case SystemRulePRAttention:
+		headSHA, _ := facts["head_sha"].(string)
+		base, _ := facts["base_branch"].(string)
+		if reason, _ := facts["reason"].(string); reason == PRAttentionDraft {
+			return fmt.Sprintf("Linked %s went back to draft at head %s after this issue was accepted (status %s), so re-ready or explain: mark the PR ready for review again, or comment on this issue why it stays in draft.", pr, headSHA, issueStatus)
+		}
+		state, _ := facts["merge_state"].(string)
+		return fmt.Sprintf("Linked %s cannot merge as is: its merge state is %s on head %s against base %s. The issue status then was %s. Update the branch or resolve the conflicts, or say on this issue who owns that. Do not merge.", pr, state, headSHA, base, issueStatus)
 	case SystemRulePRChecksFailed:
 		headSHA, _ := facts["head_sha"].(string)
 		conclusion, _ := facts["conclusion"].(string)
@@ -722,6 +820,8 @@ func systemWakeupTriggerSummary(rule string) string {
 		return "Wakeup: linked PR merged"
 	case SystemRulePRChecksFailed:
 		return "Wakeup: linked PR checks failed"
+	case SystemRulePRAttention:
+		return "Wakeup: linked PR needs attention"
 	default:
 		return "Wakeup: sub-issues closed"
 	}

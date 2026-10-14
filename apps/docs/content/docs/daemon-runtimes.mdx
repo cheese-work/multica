@@ -44,6 +44,10 @@ The daemon runs in the background by default. Common commands:
 | `multica daemon stop` | Stop the daemon |
 | `multica daemon start --foreground` | Run in the current terminal, for debugging |
 
+Only one daemon can run for each CLI profile. Every launch takes an exclusive `daemon.lock` in the profile's state directory before binding the health port. A concurrent start is refused even while the first daemon is still starting. The operating system releases the lock when the daemon exits, including after a crash; a leftover lock file does not block the next start. Do not delete the lock file while a daemon is running. Separate profiles keep separate locks, and existing health-port collision checks still apply.
+
+During shutdown, the health port can close before in-flight tasks finish draining. `daemon stop` and `daemon restart` wait up to 35 seconds for the instance lock and health port to be released. Only the daemon that owns the lock removes its PID file. Run `daemon start` after `daemon stop` reports completion, not while it reports that the daemon is still stopping. If the shutdown wait times out, `daemon restart` returns an error without launching a replacement; wait for the old daemon to exit before retrying.
+
 To place run workspaces on another disk, persist a root for the current profile with `multica config set workspaces_root <path>`, or pass `--workspaces-root <path>` to `daemon start` or `daemon restart`. The flag overrides `MULTICA_WORKSPACES_ROOT`, which overrides the profile config. Existing run directories are not moved when the root changes.
 
 On startup, the daemon detects supported AI coding tools on `PATH` and registers runtimes for the workspaces you are allowed to connect. If a tool was just installed or signed in, restart the daemon to detect it again.

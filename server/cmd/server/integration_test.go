@@ -50,13 +50,11 @@ func TestMain(m *testing.M) {
 
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
-		fmt.Printf("Skipping integration tests: could not connect to database: %v\n", err)
-		os.Exit(0)
+		exitIntegrationTestsWithoutDatabase(err)
 	}
 	if err := pool.Ping(ctx); err != nil {
-		fmt.Printf("Skipping integration tests: database not reachable: %v\n", err)
 		pool.Close()
-		os.Exit(0)
+		exitIntegrationTestsWithoutDatabase(err)
 	}
 
 	testPool = pool
@@ -86,6 +84,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
+	fmt.Println("Integration suite: database connected; running tests")
 	code := m.Run()
 
 	if err := cleanupIntegrationTestFixture(context.Background(), pool); err != nil {
@@ -97,6 +96,15 @@ func TestMain(m *testing.M) {
 	testServer.Close()
 	pool.Close()
 	os.Exit(code)
+}
+
+func exitIntegrationTestsWithoutDatabase(err error) {
+	if os.Getenv("CI") == "true" {
+		fmt.Fprintf(os.Stderr, "ERROR: integration suite did not run: database is required in CI: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "WARNING: integration suite did not run: database unavailable: %v\n", err)
+	os.Exit(0)
 }
 
 func setupIntegrationTestFixture(ctx context.Context, pool *pgxpool.Pool) (string, string, error) {

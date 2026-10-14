@@ -106,7 +106,7 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "the continuation is no longer available")
 			return
 		}
-		writeJSON(w, http.StatusOK, ChatContinueResponse{Session: chatSessionReadResponse(r, next), PreviousSessionID: uuidToString(session.ID), URL: chatURL(next.ID)})
+		writeJSON(w, http.StatusOK, ChatContinueResponse{Session: chatSessionToResponse(next), PreviousSessionID: uuidToString(session.ID), URL: chatURL(next.ID)})
 		return
 	}
 	if session.Status != "active" {
@@ -135,7 +135,7 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 	}
 	if err == nil {
 		next, err = qtx.SetChatContinuationSource(r.Context(), db.SetChatContinuationSourceParams{
-			ID: next.ID, ContinuedFromSessionID: session.ID, SummaryCreatedAt: summary.CreatedAt,
+			ID: next.ID, ContinuedFromSessionID: session.ID, SummaryCreatedAt: summary.CreatedAt, PinnedAt: session.PinnedAt,
 		})
 	}
 	if err == nil {
@@ -158,5 +158,5 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 		ChatSessionID: uuidToString(session.ID), Title: session.Title, Status: &status,
 		UpdatedAt: timestampToString(session.UpdatedAt), ContinuedIntoSessionID: uuidToString(next.ID),
 	})
-	writeJSON(w, http.StatusCreated, ChatContinueResponse{Session: chatSessionReadResponse(r, next), PreviousSessionID: uuidToString(session.ID), URL: chatURL(next.ID)})
+	writeJSON(w, http.StatusCreated, ChatContinueResponse{Session: chatSessionToResponse(next), PreviousSessionID: uuidToString(session.ID), URL: chatURL(next.ID)})
 }

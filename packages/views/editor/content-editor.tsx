@@ -194,6 +194,7 @@ interface ContentEditorBaseProps {
   /** Enable the `/` command picker. Defaults false. */
   enableSlashCommands?: boolean;
   enableRenameCommand?: boolean;
+  enableForkCommand?: boolean;
   /**
    * Which `/` menu to show when enableSlashCommands is true: "skill" (default)
    * lists the active agent's skills (chat); "command" shows the fixed built-in
@@ -381,6 +382,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       mentionContextItems,
       enableSlashCommands = false,
       enableRenameCommand = false,
+      enableForkCommand = false,
       slashCommandMode = "skill",
       quickActionMenu,
       attachments,
@@ -420,6 +422,8 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     const mentionContextItemsRef = useRef<MentionItem[]>(mentionContextItems ?? []);
     const enableRenameCommandRef = useRef(enableRenameCommand);
     enableRenameCommandRef.current = enableRenameCommand;
+    const enableForkCommandRef = useRef(enableForkCommand);
+    enableForkCommandRef.current = enableForkCommand;
     // Kept in a ref for the same reason as mentionContextItems: the extension
     // set is built once at mount, so a directly-captured options object would
     // freeze whatever closures existed then and stop seeing new quick actions.
@@ -638,6 +642,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
         getMentionContextItems: () => mentionContextItemsRef.current,
         enableSlashCommands,
         canRename: () => enableRenameCommandRef.current,
+        canFork: () => enableForkCommandRef.current,
         slashCommandMode,
         quickActionMenu: {
           getQuickActions: () => quickActionMenuRef.current?.getQuickActions?.() ?? [],

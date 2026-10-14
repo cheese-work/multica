@@ -29,6 +29,8 @@ import { ChatQueue } from "./components/chat-queue";
 import { ChatThreadList } from "./components/chat-thread-list";
 import { ChatSessionHeader } from "./components/chat-session-header";
 import { useChatRename } from "./components/use-chat-rename";
+import { useChatFork } from "./components/use-chat-fork";
+import { canForkSession } from "./lib/can-fork-session";
 import { EmptyState } from "./components/chat-empty-state";
 import { NewChatButton } from "./components/new-chat-button";
 import { useChatController } from "./components/use-chat-controller";
@@ -152,6 +154,7 @@ export function ChatPage() {
     c.handleSelectSession(session);
     setComposingNew(false);
   };
+  const { handleFork } = useChatFork(c.currentSession, handleSelect);
 
   // Single archive path for both entry points (thread-list row + conversation
   // header). When the archived chat is the one in view, move the pane off it:
@@ -269,10 +272,17 @@ export function ChatPage() {
       )}
       {c.showSkeleton ? (
         <ChatMessageSkeleton />
-      ) : c.hasMessages ? (
+      ) : c.hasMessages || c.currentSession?.continued_from_session_id || c.currentSession?.continued_into_session_id || c.currentSession?.forked_from_session_id ? (
         <ChatMessageList
           key={c.activeSessionId}
           messages={c.messages}
+          continuedFromSessionId={c.currentSession?.continued_from_session_id}
+          continuedIntoSessionId={c.currentSession?.continued_into_session_id}
+          sessionId={c.activeSessionId}
+          forkedFromSessionId={c.currentSession?.forked_from_session_id}
+          forkLastMessageId={c.currentSession?.fork_last_message_id}
+          forkMessageCount={c.currentSession?.fork_message_count}
+          sessions={c.sessionsLoaded ? c.sessions : undefined}
           pendingTask={c.pendingTask}
           availability={c.availability}
           firstItemIndex={c.firstItemIndex}
@@ -335,6 +345,7 @@ export function ChatPage() {
       <ChatInput
         onSend={c.handleSend}
         onRename={handleRename}
+        onFork={canForkSession(c.currentSession) ? handleFork : undefined}
         restoreDraftRequest={c.restoreDraftRequest}
         conversationStarterRequest={c.conversationStarterRequest}
         onConversationStarterApplied={c.handleConversationStarterApplied}

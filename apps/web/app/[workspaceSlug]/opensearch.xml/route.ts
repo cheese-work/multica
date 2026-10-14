@@ -15,7 +15,12 @@ export async function GET(
   }
   let origin: string;
   try {
-    origin = new URL(`${protocol}://${host}`).origin;
+    const publicUrl = new URL(process.env.MULTICA_APP_URL?.trim() || `${protocol}://${host}`);
+    if (!/^https?:$/.test(publicUrl.protocol) || publicUrl.username || publicUrl.password
+      || publicUrl.pathname !== "/" || publicUrl.search || publicUrl.hash) {
+      return new Response("Invalid origin", { status: 400 });
+    }
+    origin = publicUrl.origin;
   } catch {
     return new Response("Invalid origin", { status: 400 });
   }

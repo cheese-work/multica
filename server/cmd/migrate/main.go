@@ -144,6 +144,7 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
+	"621_chat_fork_operation_index":                             "chat_session_fork_operation_idx",
 	"615_decision_request_comment_v2_index":                     "comment_decision_request_kind_v2_uidx",
 	"598_decision_request_id_index":                             "decision_request_id_uidx",
 	"599_decision_intent_id_index":                              "decision_intent_id_uidx",
@@ -420,6 +421,13 @@ type requiredConcurrentIndex struct {
 }
 
 var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
+	"621_chat_fork_operation_index": {
+		IndexRegclass: "chat_session_fork_operation_idx",
+		TableRegclass: "chat_session",
+		Unique:        true,
+		Columns:       []string{"forked_from_session_id", "fork_idempotency_key"},
+		Predicate:     "forked_from_session_id IS NOT NULL",
+	},
 	"615_decision_request_comment_v2_index": {
 		IndexRegclass: "comment_decision_request_kind_v2_uidx",
 		TableRegclass: "comment",

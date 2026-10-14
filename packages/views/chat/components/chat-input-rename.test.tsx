@@ -104,6 +104,20 @@ describe("ChatInput rename with the real editor", () => {
     expect(commandIds()).toEqual(["compact"]);
   });
 
+  it("offers fork after rename only while the composer has a fork handler", () => {
+    const { editor, element, rerender } = renderInput({ onRename: vi.fn() });
+    const suggestion = editor.extensionManager.extensions.find((extension) => extension.name === "slashCommand")!.options.suggestion;
+    const commandIds = () => suggestion.items({ editor, query: "", signal: new AbortController().signal })
+      .map((item: { id: string }) => item.id);
+    expect(commandIds()).toEqual(["compact", "rename"]);
+
+    rerender(element({ onRename: vi.fn(), onFork: vi.fn() }));
+    expect(commandIds()).toEqual(["compact", "rename", "fork"]);
+
+    rerender(element({ onRename: vi.fn() }));
+    expect(commandIds()).toEqual(["compact", "rename"]);
+  });
+
   it.each(["/compact my_project *v2* <b>", "Please /rename my_project"])("sends %j unchanged", async (text) => {
     const onRename = vi.fn();
     const { editor, onSend } = renderInput({ onRename });

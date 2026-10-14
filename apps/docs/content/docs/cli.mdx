@@ -117,6 +117,32 @@ multica issue run-messages <task-id> --issue MUL-123
 multica issue cancel-task <task-id> --issue MUL-123
 ```
 
+## Forking a web DM
+
+From the source DM's running chat task, copy the DM into a new child DM:
+
+```bash
+multica chat continue --fork
+```
+
+The source stays active and unchanged. The child gets a full copy of the messages the person can see, with their original times, and of their attachments; it holds no summary. It keeps the same agent, creator and project, with a title ending in ` (fork)`, and starts with no provider session and no managed checkout. Decisions, approvals, task tokens and lane summaries stay with the source. The agent's private tool memory is not copied. Agent-builder DMs cannot be forked.
+
+On the child's first turn, and on any turn with no provider session to resume, the agent receives a fork context block: a notice, an index of the copied attachments, and the newest messages of the DM that fit in 64 KiB. When older messages are left out, the block says so; read them with `multica chat history`.
+
+The default fork operation key is the current turn: an auto-retry of the same turn returns the same child. To create another fork in that turn, use a different explicit key; reuse that key when retrying:
+
+```bash
+multica chat continue --fork --idempotency-key explore-alternative
+```
+
+A task fork does not send a message. `--summary-file` is not accepted with `--fork`.
+
+The session-human API is `POST /api/chat/sessions/{sessionId}/fork` with a required `idempotency_key` and an optional `message` in the JSON body. With a message, the server sends it as the person's first message in the child and starts the agent's first turn in the same transaction; without one, the child is idle. A retry with the same key returns the same child (HTTP 200) and sends nothing twice. The task-scoped API is `POST /api/chat/fork`. Session responses expose `forked_from_session_id`, `fork_last_message_id` and `fork_message_count` on children. Only web DMs with at least one message can be forked. Without `--fork`, `chat continue` still archives the source and requires `--summary-file`; `/compact` is unchanged.
+
+### `/fork` in the web app
+
+Type `/fork [message]` as the first word of a web DM message. The web app forks the DM directly, with no agent turn: the new DM is a full copy of the visible messages and attachments, and the source stays active with a "Forked into" link. You land in the new DM. With a message, the agent answers it at once; without one, the new DM is idle until you send a first message. The agent in the new DM starts a fresh session and gets the transcript in a context block capped at 64 KiB (newest messages first); it reads earlier ones with `multica chat history`. The agent's private tool memory is not copied. Agent-builder DMs cannot be forked, and there is no fork prompt setting.
+
 ## Agents and skills
 
 ```bash
@@ -205,7 +231,7 @@ multica chat sessions --issue MUL-123 --for <user-id> --output json
 
 Omit `--for` only when the window names exactly one person. The person must still be an active workspace member who can invoke the asking agent, and their target must be unconsumed. A listing does not consume the window. Another run of the same agent, a chat task, PATs and JWTs cannot use this command.
 
-The response contains only `id`, `title`, `lane_summary`, `lane_summary_updated_at` and `updated_at`, newest lane first. It never includes messages, unread counts or transcript previews. Archived sessions and channel-origin sessions are excluded. If no lane exists, the server creates a web DM titled `Decisions: <agent name>` for the named person. Expired, closed, deleted-tag and consumed windows are refused.
+The response contains only `id`, `title`, `updated_at` and `issue_mentions`, newest lane first. It never includes messages, unread counts or transcript previews. Archived sessions and channel-origin sessions are excluded. If no lane exists, the server creates a web DM titled `Decisions: <agent name>` for the named person. Expired, closed, deleted-tag and consumed windows are refused.
 
 ## IDs and output formats
 

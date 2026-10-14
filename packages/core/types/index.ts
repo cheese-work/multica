@@ -153,6 +153,7 @@ export {
 export type {
   ChatSession,
   ChatContinueResponse,
+  ChatForkResponse,
   ChatLastMessage,
   ChatPinnedAgent,
   ChatMessage,

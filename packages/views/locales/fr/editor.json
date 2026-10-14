@@ -116,12 +116,14 @@
     "client_command": "Multica",
     "focus_hint": "[focus]",
     "title_hint": "[titre]",
+    "message_hint": "[message]",
     "no_skills_configured": "Aucun skill configuré",
     "no_results": "Aucun skill correspondant",
     "commands": {
       "note": "Ajouter une note — ne déclenchera aucun agent",
       "compact": "Résumer cette conversation et continuer dans une nouvelle",
-      "rename": "Renommer cette conversation sans lancer l’agent"
+      "rename": "Renommer cette conversation sans lancer l’agent",
+      "fork": "Copier cette conversation dans une nouvelle ; le message facultatif y est envoyé"
     }
   },
   "code_block": {

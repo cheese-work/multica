@@ -22,8 +22,15 @@ var chatCmd = &cobra.Command{
 var chatContinueCmd = &cobra.Command{
 	Use:   "continue",
 	Short: "Continue this web DM in a fresh session seeded with a summary",
-	Args:  cobra.NoArgs,
-	RunE:  runChatContinue,
+	Long: `Without --fork, continue archives this web DM and moves the conversation to a
+new DM seeded with the --summary-file summary.
+
+With --fork, this DM stays active and unchanged. A new child DM receives a
+copy of its visible messages and attachments, with no summary and no message
+sent. --summary-file is not accepted with --fork. A retry of the same turn
+returns the same child.`,
+	Args: cobra.NoArgs,
+	RunE: runChatContinue,
 }
 
 var chatHistoryCmd = &cobra.Command{
@@ -57,7 +64,9 @@ channel.`,
 }
 
 func init() {
-	chatContinueCmd.Flags().String("summary-file", "", "UTF-8 handoff summary file (required)")
+	chatContinueCmd.Flags().String("summary-file", "", "UTF-8 handoff summary file (required without --fork)")
+	chatContinueCmd.Flags().Bool("fork", false, "Copy this DM into a new child DM and keep this DM active")
+	chatContinueCmd.Flags().String("idempotency-key", "", "Fork operation key (defaults to the current chat task ID)")
 	chatContinueCmd.Flags().String("output", "json", "Output format: table or json")
 	chatCmd.AddCommand(chatContinueCmd)
 	for _, c := range []*cobra.Command{chatHistoryCmd, chatThreadCmd} {
@@ -71,15 +80,31 @@ func init() {
 
 func runChatContinue(cmd *cobra.Command, _ []string) error {
 	path, _ := cmd.Flags().GetString("summary-file")
-	if strings.TrimSpace(path) == "" {
+	fork, _ := cmd.Flags().GetBool("fork")
+	key, _ := cmd.Flags().GetString("idempotency-key")
+	endpoint, action := "/api/chat/continue", "continue chat"
+	body := map[string]string{}
+	switch {
+	case fork && strings.TrimSpace(path) != "":
+		return fmt.Errorf("fork chat: --summary-file is not accepted with --fork; a fork copies the whole DM")
+	case fork:
+		endpoint, action = "/api/chat/fork", "fork chat"
+		if key != "" {
+			body["idempotency_key"] = key
+		}
+	case key != "":
+		return fmt.Errorf("--idempotency-key requires --fork")
+	case strings.TrimSpace(path) == "":
 		return fmt.Errorf("--summary-file is required")
-	}
-	summary, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("read summary file: %w", err)
-	}
-	if !utf8.Valid(summary) || strings.TrimSpace(string(summary)) == "" || len(summary) > 64<<10 {
-		return fmt.Errorf("summary must be UTF-8, non-empty and at most 65536 bytes")
+	default:
+		summary, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read summary file: %w", err)
+		}
+		if !utf8.Valid(summary) || strings.TrimSpace(string(summary)) == "" || len(summary) > 64<<10 {
+			return fmt.Errorf("summary must be UTF-8, non-empty and at most 65536 bytes")
+		}
+		body["summary"] = string(summary)
 	}
 	client, err := newAPIClient(cmd)
 	if err != nil {
@@ -88,8 +113,8 @@ func runChatContinue(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 	var response map[string]any
-	if err := client.PostJSON(ctx, "/api/chat/continue", map[string]string{"summary": string(summary)}, &response); err != nil {
-		return fmt.Errorf("continue chat: %w", err)
+	if err := client.PostJSON(ctx, endpoint, body, &response); err != nil {
+		return fmt.Errorf("%s: %w", action, err)
 	}
 	output, _ := cmd.Flags().GetString("output")
 	if output == "table" {

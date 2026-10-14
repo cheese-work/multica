@@ -301,3 +301,32 @@ ORDER BY id;
 DELETE FROM attachment
 WHERE workspace_id = sqlc.arg(workspace_id)
   AND source_context_id IS NOT NULL;
+
+-- name: LockChatAttachmentsForFork :many
+-- A share lock: a concurrent DeleteAttachment waits for the fork, then sees
+-- the copy and keeps the stored file (AttachmentURLInUse).
+SELECT * FROM attachment
+WHERE workspace_id = sqlc.arg(workspace_id)
+  AND chat_message_id = ANY(sqlc.arg(chat_message_ids)::uuid[])
+ORDER BY created_at ASC, id ASC
+FOR SHARE;
+
+-- name: InsertForkChatAttachments :exec
+-- Copies attachment rows for a fork: same stored file, child session and
+-- message, no task.
+INSERT INTO attachment (
+    id, workspace_id, chat_session_id, chat_message_id, uploader_type, uploader_id,
+    filename, url, content_type, size_bytes, created_at
+)
+SELECT (sqlc.arg(ids)::uuid[])[i], source.workspace_id, sqlc.arg(chat_session_id)::uuid,
+       (sqlc.arg(chat_message_ids)::uuid[])[i], source.uploader_type, source.uploader_id,
+       source.filename, source.url, source.content_type, source.size_bytes, source.created_at
+FROM generate_subscripts(sqlc.arg(ids)::uuid[], 1) AS i
+JOIN attachment AS source ON source.id = (sqlc.arg(source_ids)::uuid[])[i];
+
+-- name: AttachmentURLInUse :one
+-- ponytail: scans the workspace's attachments by idx_attachment_workspace; add
+-- a url index if deletes in very large workspaces get slow.
+SELECT EXISTS (
+  SELECT 1 FROM attachment WHERE workspace_id = $1 AND url = $2
+);

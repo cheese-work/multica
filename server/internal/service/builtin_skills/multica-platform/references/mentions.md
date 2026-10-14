@@ -117,9 +117,10 @@ None of these start a fresh run, and none produce an error response — but they
 are three different things, and the response tells you which. A mention that
 never parsed is a truly silent no-op. One that parsed and was refused comes back
 in `trigger_outcomes` as `status: "blocked"` with a `reason_code`. One whose
-target has a queued task in the same comment thread can come back `coalesced`.
+target already has a queued task on the issue comes back `coalesced`.
 A claim race can return `deferred`: the input is recorded for a follow-up run,
-not injected into an already running prompt. Different threads queue independently. Read that array after posting — it is the only place any of this shows up.
+not injected into an already running prompt. The CLI prints a warning to stderr
+for every `blocked` outcome. Read that array after posting — it is the only place any of this shows up.
 
 - **A name where a UUID belongs.** `mention://member/Alice` is dead. The id
   group accepts only hex+dashes or `all`; the non-hex letters in a typical name
@@ -138,11 +139,12 @@ not injected into an already running prompt. Different threads queue independent
   with `target_unavailable` instead — a non-UUID names no entity anywhere, so
   it conceals nothing. Neither case is ever an error response.
 - **An already-pending task.** Even a correct `@agent`/`@squad` starts no second
-  run when the same target has a mergeable queued task in the **same thread**
-  (the root comment and all descendants), with the same reviewed head. The
-  outcome is `coalesced`; all covered instructions are delivered together.
-  Different root threads and assignment-triggered runs have separate queue
-  slots. Inputs received after execution starts belong to a successor run;
+  run when the same target has a queued task on the issue with the same
+  reviewed head and the same squad role — in this thread, another thread, or
+  the assignment run. The outcome is `coalesced`; all covered instructions are
+  delivered together, and the run replies once per thread. A leader-role
+  trigger and a worker-role task for the same agent keep separate queue slots.
+  Inputs received after execution starts belong to one successor run;
   `deferred` means a claim race durably recorded the follow-up obligation.
   Agent concurrency limits still apply, and runs for the same issue and agent
   execute serially. Stopping or retrying one thread does not cancel another

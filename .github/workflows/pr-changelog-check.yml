@@ -1,0 +1,39 @@
+name: PR Changelog Check
+
+# Prints the /changelog entry this PR will publish (CHE-1631). Fails a feat/fix/perf
+# PR without a valid `Changelog:` line. Runs for any base branch so stack layers see
+# their own result. The PR body comes from the event payload; no token, no secrets.
+# GitHub-hosted only: upstream-sync/* heads never reach the self-hosted X99 runner
+# (the script reports them as `Hidden: upstream-sync` and passes).
+# Making this check required in branch protection is Cheese's call.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions: {}
+
+concurrency:
+  group: pr-changelog-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  changelog-line:
+    name: Changelog line
+    if: github.event.pull_request.state != 'closed'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout the check script
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: scripts/fork-changelog.mjs
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Compute the changelog entry
+        run: node scripts/fork-changelog.mjs --event "$GITHUB_EVENT_PATH"

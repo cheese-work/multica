@@ -149,7 +149,7 @@ func (h *Handler) CreateChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, chatSessionReadResponse(r, session))
+	writeJSON(w, http.StatusCreated, chatSessionToResponse(session))
 }
 
 func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
@@ -169,7 +169,7 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 		}
 		responses := make([]ChatSessionResponse, 0, 1)
 		if session.Status == "active" || r.URL.Query().Get("status") == "all" {
-			responses = append(responses, chatSessionReadResponse(r, session))
+			responses = append(responses, chatSessionToResponse(session))
 		}
 		writeJSON(w, http.StatusOK, responses)
 		return
@@ -214,13 +214,15 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 			resp = append(resp, ChatSessionResponse{
 				ID:                     uuidToString(s.ID),
 				ContinuedIntoSessionID: uuidToPtr(s.ContinuedIntoSessionID),
+				ContinuedFromSessionID: uuidToPtr(s.ContinuedFromSessionID),
+				ForkedFromSessionID:    uuidToPtr(s.ForkedFromSessionID),
+				ForkLastMessageID:      uuidToPtr(s.ForkLastMessageID),
+				ForkMessageCount:       int4ToPtr(s.ForkMessageCount),
 				WorkspaceID:            uuidToString(s.WorkspaceID),
 				AgentID:                uuidToString(s.AgentID),
 				CreatorID:              uuidToString(s.CreatorID),
 				ProjectID:              uuidToPtr(s.ProjectID),
 				Title:                  s.Title,
-				LaneSummary:            s.LaneSummary,
-				LaneSummaryUpdatedAt:   timestampToPtr(s.LaneSummaryUpdatedAt),
 				Status:                 s.Status,
 				HasUnread:              s.UnreadCount > 0,
 				UnreadCount:            int(s.UnreadCount),
@@ -247,13 +249,15 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 			resp = append(resp, ChatSessionResponse{
 				ID:                     uuidToString(s.ID),
 				ContinuedIntoSessionID: uuidToPtr(s.ContinuedIntoSessionID),
+				ContinuedFromSessionID: uuidToPtr(s.ContinuedFromSessionID),
+				ForkedFromSessionID:    uuidToPtr(s.ForkedFromSessionID),
+				ForkLastMessageID:      uuidToPtr(s.ForkLastMessageID),
+				ForkMessageCount:       int4ToPtr(s.ForkMessageCount),
 				WorkspaceID:            uuidToString(s.WorkspaceID),
 				AgentID:                uuidToString(s.AgentID),
 				CreatorID:              uuidToString(s.CreatorID),
 				ProjectID:              uuidToPtr(s.ProjectID),
 				Title:                  s.Title,
-				LaneSummary:            s.LaneSummary,
-				LaneSummaryUpdatedAt:   timestampToPtr(s.LaneSummaryUpdatedAt),
 				Status:                 s.Status,
 				HasUnread:              s.UnreadCount > 0,
 				UnreadCount:            int(s.UnreadCount),
@@ -350,7 +354,7 @@ func (h *Handler) GetChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := chatSessionReadResponse(r, session)
+	resp := chatSessionToResponse(session)
 	// hydrateChatSessionChannelMetadata mutates the slice element, so retain a
 	// concrete slice here rather than passing a temporary value to writeJSON.
 	responses := []ChatSessionResponse{resp}
@@ -483,7 +487,7 @@ func (h *Handler) UpdateChatSession(w http.ResponseWriter, r *http.Request) {
 	}
 	h.publishChat(protocol.EventChatSessionUpdated, workspaceID, "member", userID, resolvedSessionID, payload)
 
-	writeJSON(w, http.StatusOK, chatSessionReadResponse(r, updated))
+	writeJSON(w, http.StatusOK, chatSessionToResponse(updated))
 }
 
 type SetChatSessionPinnedRequest struct {
@@ -531,7 +535,7 @@ func (h *Handler) SetChatSessionPinned(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:     timestampToString(updated.UpdatedAt),
 	})
 
-	writeJSON(w, http.StatusOK, chatSessionReadResponse(r, updated))
+	writeJSON(w, http.StatusOK, chatSessionToResponse(updated))
 }
 
 type SetChatSessionArchivedRequest struct {
@@ -685,7 +689,7 @@ func (h *Handler) SetChatSessionArchived(w http.ResponseWriter, r *http.Request)
 		UpdatedAt:     timestampToString(updated.UpdatedAt),
 	})
 
-	writeJSON(w, http.StatusOK, chatSessionReadResponse(r, updated))
+	writeJSON(w, http.StatusOK, chatSessionToResponse(updated))
 }
 
 // DeleteChatSession hard-deletes a chat session owned by the caller. The
@@ -892,41 +896,8 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Preflight the agent's enqueue preconditions BEFORE persisting the user
-	// message. EnqueueChatTask (below) rejects an archived or runtime-less agent
-	// with an error; without this check a stale client (agent archived in
-	// another tab) would land the user message, then get a 500, leaving an
-	// orphan message with no task or reply. Fail fast with a 4xx and mutate
-	// nothing. See EnqueueChatTask's ErrChatTaskAgentArchived / NoRuntime.
-	agent, err := h.Queries.GetAgent(r.Context(), session.AgentID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load chat agent")
-		return
-	}
-	if agent.ArchivedAt.Valid {
-		writeError(w, http.StatusConflict, "chat agent is archived")
-		return
-	}
-	// Shared verdict: an unbound agent and a machine whose CLI cannot run are
-	// both refusals here, with their own codes. A merely offline runtime is not
-	// checked at all — chat messages queue for it, as they always have.
-	if verdict, err := service.AgentReadiness(r.Context(), h.runtimeLookup(obsmetrics.RuntimeLookupSourceChat), agent); err == nil && verdict.Blocked() {
-		h.writeDispatchBlocked(w, http.StatusConflict, verdict.Reason)
-		return
-	}
-
-	// Re-run the INVOKE gate on every send, not just the softer view gate in
-	// gatePublicChatSessionForUser (MUL-4525). canAccessPrivateAgent lets a workspace
-	// admin keep reading a transcript, but sending a message enqueues a run and
-	// must satisfy canInvokeAgent — which has no admin bypass. A session created
-	// while the user could invoke the agent must stop enqueuing work the instant
-	// that permission is revoked (agent flipped private, ownership moved, target
-	// removed from the allow-list), and it must fail BEFORE we persist the user
-	// message / attachments / task. Blocked returns a structured, enumeration-safe
-	// reason so the composer can explain it without leaking private-agent details.
-	actorType, actorID := h.resolveActor(r, userID, workspaceID)
-	if !h.canInvokeAgent(r.Context(), agent, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), workspaceID) {
-		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
+	agent, actorType, actorID, ok := h.preflightChatSend(w, r, session, userID, workspaceID)
+	if !ok {
 		return
 	}
 
@@ -1023,7 +994,9 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	// silently keeps the original first-message-derived title. session.Title
 	// is the default/original title observed here and drives the CAS so a
 	// manual rename mid-generation is never clobbered.
-	shouldGenerateTitle := shouldGenerateFirstMessageTitle(hadUserMessage, currentTitle, sent.InitialTitle, channelBacked, channelSourceKnown)
+	// A fork child keeps its fork title; it is not an untitled first message.
+	shouldGenerateTitle := !session.ForkedFromSessionID.Valid &&
+		shouldGenerateFirstMessageTitle(hadUserMessage, currentTitle, sent.InitialTitle, channelBacked, channelSourceKnown)
 	if shouldGenerateTitle {
 		h.maybeGenerateChatTitleAsync(workspaceID, userID, session.ID, currentTitle, req.Content)
 	}
@@ -1036,6 +1009,49 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:     timestampToString(task.CreatedAt),
 		AttachmentIDs: boundAttachmentIDs,
 	})
+}
+
+// preflightChatSend refuses a send the session's agent cannot accept, before
+// anything is written. It returns the agent and the resolved actor.
+func (h *Handler) preflightChatSend(w http.ResponseWriter, r *http.Request, session db.ChatSession, userID, workspaceID string) (db.Agent, string, string, bool) {
+	// Preflight the agent's enqueue preconditions BEFORE persisting the user
+	// message. EnqueueChatTask (below) rejects an archived or runtime-less agent
+	// with an error; without this check a stale client (agent archived in
+	// another tab) would land the user message, then get a 500, leaving an
+	// orphan message with no task or reply. Fail fast with a 4xx and mutate
+	// nothing. See EnqueueChatTask's ErrChatTaskAgentArchived / NoRuntime.
+	agent, err := h.Queries.GetAgent(r.Context(), session.AgentID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load chat agent")
+		return db.Agent{}, "", "", false
+	}
+	if agent.ArchivedAt.Valid {
+		writeError(w, http.StatusConflict, "chat agent is archived")
+		return db.Agent{}, "", "", false
+	}
+	// Shared verdict: an unbound agent and a machine whose CLI cannot run are
+	// both refusals here, with their own codes. A merely offline runtime is not
+	// checked at all — chat messages queue for it, as they always have.
+	if verdict, err := service.AgentReadiness(r.Context(), h.runtimeLookup(obsmetrics.RuntimeLookupSourceChat), agent); err == nil && verdict.Blocked() {
+		h.writeDispatchBlocked(w, http.StatusConflict, verdict.Reason)
+		return db.Agent{}, "", "", false
+	}
+
+	// Re-run the INVOKE gate on every send, not just the softer view gate in
+	// gatePublicChatSessionForUser (MUL-4525). canAccessPrivateAgent lets a workspace
+	// admin keep reading a transcript, but sending a message enqueues a run and
+	// must satisfy canInvokeAgent — which has no admin bypass. A session created
+	// while the user could invoke the agent must stop enqueuing work the instant
+	// that permission is revoked (agent flipped private, ownership moved, target
+	// removed from the allow-list), and it must fail BEFORE we persist the user
+	// message / attachments / task. Blocked returns a structured, enumeration-safe
+	// reason so the composer can explain it without leaking private-agent details.
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	if !h.canInvokeAgent(r.Context(), agent, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), workspaceID) {
+		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
+		return db.Agent{}, "", "", false
+	}
+	return agent, actorType, actorID, true
 }
 
 func shouldGenerateFirstMessageTitle(hadUserMessage bool, currentTitle, initializedTitle string, channelBacked, channelSourceKnown bool) bool {
@@ -1925,13 +1941,15 @@ func (h *Handler) CancelTaskByUser(w http.ResponseWriter, r *http.Request) {
 type ChatSessionResponse struct {
 	ID                     string  `json:"id"`
 	ContinuedIntoSessionID *string `json:"continued_into_session_id,omitempty"`
+	ContinuedFromSessionID *string `json:"continued_from_session_id,omitempty"`
+	ForkedFromSessionID    *string `json:"forked_from_session_id,omitempty"`
+	ForkLastMessageID      *string `json:"fork_last_message_id,omitempty"`
+	ForkMessageCount       *int32  `json:"fork_message_count,omitempty"`
 	WorkspaceID            string  `json:"workspace_id"`
 	AgentID                string  `json:"agent_id"`
 	CreatorID              string  `json:"creator_id"`
 	ProjectID              *string `json:"project_id"`
 	Title                  string  `json:"title"`
-	LaneSummary            string  `json:"lane_summary"`
-	LaneSummaryUpdatedAt   *string `json:"lane_summary_updated_at"`
 	Status                 string  `json:"status"`
 	// Only populated by list endpoints — single-session fetches return 0/false/nil.
 	// HasUnread is kept as a convenience (== UnreadCount > 0) for existing consumers.
@@ -2045,13 +2063,15 @@ func chatSessionToResponse(s db.ChatSession) ChatSessionResponse {
 	return ChatSessionResponse{
 		ID:                     uuidToString(s.ID),
 		ContinuedIntoSessionID: uuidToPtr(s.ContinuedIntoSessionID),
+		ContinuedFromSessionID: uuidToPtr(s.ContinuedFromSessionID),
+		ForkedFromSessionID:    uuidToPtr(s.ForkedFromSessionID),
+		ForkLastMessageID:      uuidToPtr(s.ForkLastMessageID),
+		ForkMessageCount:       int4ToPtr(s.ForkMessageCount),
 		WorkspaceID:            uuidToString(s.WorkspaceID),
 		AgentID:                uuidToString(s.AgentID),
 		CreatorID:              uuidToString(s.CreatorID),
 		ProjectID:              uuidToPtr(s.ProjectID),
 		Title:                  s.Title,
-		LaneSummary:            s.LaneSummary,
-		LaneSummaryUpdatedAt:   timestampToPtr(s.LaneSummaryUpdatedAt),
 		Status:                 s.Status,
 		Pinned:                 s.PinnedAt.Valid,
 		CreatedAt:              timestampToString(s.CreatedAt),

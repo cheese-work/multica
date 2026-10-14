@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -27,6 +28,87 @@ func continueChatRequest(t *testing.T, sessionID, summary, taskID string) *httpt
 	response := httptest.NewRecorder()
 	testHandler.ContinueChatSession(response, req)
 	return response
+}
+
+func TestChatContinuationResponseLinks(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	agentID := createHandlerTestAgent(t, "continue-response-links", []byte("[]"))
+	sourceID := dbfx.ChatSession(t, agentID, testutil.Cols{})
+	dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": sourceID, "role": "user", "content": "Original goal."})
+	response := continueChatRequest(t, sourceID, "Retained goal.", "")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("continue: %d %s", response.Code, response.Body.String())
+	}
+	var result ChatContinueResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	dbfx.Cleanup(t, `DELETE FROM chat_message WHERE chat_session_id = $1`, result.Session.ID)
+	dbfx.Cleanup(t, `DELETE FROM chat_session WHERE id = $1`, result.Session.ID)
+	var continuation map[string]json.RawMessage
+	if err := json.Unmarshal(response.Body.Bytes(), &continuation); err != nil {
+		t.Fatal(err)
+	}
+	assertLinks := func(raw json.RawMessage, from, into string) {
+		t.Helper()
+		var session map[string]any
+		if err := json.Unmarshal(raw, &session); err != nil {
+			t.Fatal(err)
+		}
+		for field, want := range map[string]string{"continued_from_session_id": from, "continued_into_session_id": into} {
+			if want != "" && session[field] != want {
+				t.Errorf("%s = %v, want %s", field, session[field], want)
+			}
+			if want == "" && session[field] != nil {
+				t.Errorf("%s = %v, want omitted/null", field, session[field])
+			}
+		}
+	}
+	assertLinks(continuation["session"], sourceID, "")
+	for _, sessionID := range []string{sourceID, result.Session.ID} {
+		request := withChatTestWorkspaceCtx(t, withURLParam(newRequest(http.MethodGet, "/api/chat/sessions/"+sessionID, nil), "sessionId", sessionID))
+		single := httptest.NewRecorder()
+		testHandler.GetChatSession(single, request)
+		if single.Code != http.StatusOK {
+			t.Fatalf("get: %d %s", single.Code, single.Body.String())
+		}
+		if sessionID == sourceID {
+			assertLinks(single.Body.Bytes(), "", result.Session.ID)
+		} else {
+			assertLinks(single.Body.Bytes(), sourceID, "")
+		}
+	}
+	for _, status := range []string{"", "all"} {
+		request := withChatTestWorkspaceCtx(t, newRequest(http.MethodGet, "/api/chat/sessions?status="+status, nil))
+		list := httptest.NewRecorder()
+		testHandler.ListChatSessions(list, request)
+		if list.Code != http.StatusOK {
+			t.Fatalf("list: %d %s", list.Code, list.Body.String())
+		}
+		var sessions []json.RawMessage
+		if err := json.Unmarshal(list.Body.Bytes(), &sessions); err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, raw := range sessions {
+			var session struct{ ID string }
+			if err := json.Unmarshal(raw, &session); err != nil {
+				t.Fatal(err)
+			}
+			if session.ID == result.Session.ID {
+				found = true
+				assertLinks(raw, sourceID, "")
+			}
+			if session.ID == sourceID {
+				assertLinks(raw, "", result.Session.ID)
+			}
+		}
+		if !found {
+			t.Fatal("continued session missing from list")
+		}
+	}
 }
 
 func assertContinuedChatUnread(t *testing.T, sourceID, successorID string, wantUnread int) {
@@ -157,6 +239,89 @@ func TestContinueChatSessionArchivesAndSeedsFreshDM(t *testing.T) {
 	var repeated ChatContinueResponse
 	if err := json.Unmarshal(replay.Body.Bytes(), &repeated); err != nil || repeated.Session.ID != result.Session.ID {
 		t.Fatalf("retry created another DM: %+v %v", repeated, err)
+	}
+}
+
+func TestContinueChatSessionPreservesPin(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	for _, pinned := range []bool{true, false} {
+		name := "unpinned"
+		if pinned {
+			name = "pinned"
+		}
+		t.Run(name, func(t *testing.T) {
+			agentID := createHandlerTestAgent(t, "continue-pin-"+name, []byte("[]"))
+			columns := testutil.Cols{}
+			if pinned {
+				columns["pinned_at"] = time.Date(2025, time.January, 2, 3, 4, 5, 123456000, time.UTC)
+			}
+			sessionID := dbfx.ChatSession(t, agentID, columns)
+			ctx := context.Background()
+			source, err := testHandler.Queries.GetChatSession(ctx, parseUUID(sessionID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := continueChatRequest(t, sessionID, "Retained goal and evidence.", "")
+			if response.Code != http.StatusCreated {
+				t.Fatalf("continue: %d %s", response.Code, response.Body.String())
+			}
+			var result ChatContinueResponse
+			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			dbfx.Cleanup(t, `DELETE FROM chat_message WHERE chat_session_id = $1`, result.Session.ID)
+			dbfx.Cleanup(t, `DELETE FROM chat_session WHERE id = $1`, result.Session.ID)
+			if result.Session.Pinned != pinned {
+				t.Errorf("response pinned = %v, want %v", result.Session.Pinned, pinned)
+			}
+			for _, id := range []string{sessionID, result.Session.ID} {
+				stored, err := testHandler.Queries.GetChatSession(ctx, parseUUID(id))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if stored.PinnedAt.Valid != source.PinnedAt.Valid || !stored.PinnedAt.Time.Equal(source.PinnedAt.Time) {
+					t.Errorf("session %s pinned_at = %+v, want %+v", id, stored.PinnedAt, source.PinnedAt)
+				}
+				if id == sessionID && stored.Status != "archived" {
+					t.Errorf("source status = %s, want archived", stored.Status)
+				}
+			}
+			request := withChatTestWorkspaceCtx(t, newRequest(http.MethodGet, "/api/chat/sessions?status=all", nil))
+			listResponse := httptest.NewRecorder()
+			testHandler.ListChatSessions(listResponse, request)
+			if listResponse.Code != http.StatusOK {
+				t.Fatalf("list: %d %s", listResponse.Code, listResponse.Body.String())
+			}
+			var sessions []ChatSessionResponse
+			if err := json.Unmarshal(listResponse.Body.Bytes(), &sessions); err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, listed := range sessions {
+				if listed.ID == result.Session.ID {
+					found = true
+					if listed.Pinned != pinned {
+						t.Errorf("listed pinned = %v, want %v", listed.Pinned, pinned)
+					}
+				}
+			}
+			if !found {
+				t.Fatal("continued session missing from refetched list")
+			}
+			replay := continueChatRequest(t, sessionID, "Retained goal and evidence.", "")
+			if replay.Code != http.StatusOK {
+				t.Fatalf("replay: %d %s", replay.Code, replay.Body.String())
+			}
+			var repeated ChatContinueResponse
+			if err := json.Unmarshal(replay.Body.Bytes(), &repeated); err != nil {
+				t.Fatal(err)
+			}
+			if repeated.Session.ID != result.Session.ID || repeated.Session.Pinned != pinned {
+				t.Errorf("retry changed continuation: %+v", repeated.Session)
+			}
+		})
 	}
 }
 

@@ -44,6 +44,8 @@ RUN pnpm install --frozen-lockfile --offline
 
 ARG NEXT_PUBLIC_APP_VERSION=dev
 ENV NEXT_PUBLIC_APP_VERSION=$NEXT_PUBLIC_APP_VERSION
+ARG NEXT_PUBLIC_BUILD_DATE
+ENV NEXT_PUBLIC_BUILD_DATE=$NEXT_PUBLIC_BUILD_DATE
 ENV STANDALONE=true
 
 # Build the web app (standalone output for minimal runtime)

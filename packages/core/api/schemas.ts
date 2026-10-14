@@ -2039,15 +2039,17 @@ const ChatChannelSourceSchema = z.object({
 }).loose();
 
 export const ChatSessionSchema: z.ZodType<ChatSession> = z.object({
+  forked_from_session_id: z.string().uuid().nullable().optional().catch(undefined),
+  fork_last_message_id: z.string().uuid().nullable().optional().catch(undefined),
+  fork_message_count: z.number().int().nonnegative().nullable().optional().catch(undefined),
   id: z.string(),
   continued_into_session_id: z.string().uuid().nullable().optional().catch(undefined),
+  continued_from_session_id: z.string().uuid().nullable().optional().catch(undefined),
   workspace_id: z.string().default(""),
   agent_id: z.string().default(""),
   creator_id: z.string().default(""),
   project_id: z.string().nullable().optional(),
   title: z.string().default(""),
-  lane_summary: z.string().catch("").default(""),
-  lane_summary_updated_at: z.string().nullable().catch(null).default(null),
   status: z.enum(["active", "archived"]).catch("active"),
   has_unread: z.boolean().default(false),
   unread_count: z.number().optional(),
@@ -2065,8 +2067,6 @@ export const EMPTY_CHAT_SESSION: ChatSession = {
   agent_id: "",
   creator_id: "",
   title: "",
-  lane_summary: "",
-  lane_summary_updated_at: null,
   status: "active",
   has_unread: false,
   created_at: "",
@@ -2084,6 +2084,13 @@ export const ChatContinueResponseSchema = z.object({
   url: z.string().default(""),
 }).loose();
 
+export const ChatForkResponseSchema = z.object({
+  session: ChatSessionSchema,
+  previous_session_id: z.string().default(""),
+  url: z.string().default(""),
+  message: ChatMessageSchema.nullable().optional().catch(undefined),
+}).loose();
+
 export const ChatSessionUpdatedPayloadSchema = z.object({
   chat_session_id: z.string().uuid(),
   title: z.string().optional().catch(undefined),
@@ -2095,6 +2102,12 @@ export const ChatSessionUpdatedPayloadSchema = z.object({
 }).loose();
 
 export const EMPTY_CHAT_CONTINUE_RESPONSE = {
+  session: EMPTY_CHAT_SESSION,
+  previous_session_id: "",
+  url: "",
+};
+
+export const EMPTY_CHAT_FORK_RESPONSE = {
   session: EMPTY_CHAT_SESSION,
   previous_session_id: "",
   url: "",
