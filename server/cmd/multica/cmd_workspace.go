@@ -642,7 +642,7 @@ func buildWorkspaceUpdateDigestBody(cmd *cobra.Command) (map[string]any, error) 
 	// The exception is single-field-only server-side: reject any other
 	// update flag client-side, naming the conflicting one, rather than
 	// silently dropping it or sending a body the server would 400 on.
-	conflicting := []string{"name", "description", "description-stdin", "issue-prefix"}
+	conflicting := []string{"name", "description", "description-stdin", "issue-prefix", "compact-prompt-file"}
 	for _, name := range conflicting {
 		if cmd.Flags().Changed(name) {
 			return nil, fmt.Errorf("--expected-before-digest cannot be combined with --%s; digest-mode updates exactly one field (context)", name)

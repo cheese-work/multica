@@ -64,6 +64,8 @@ interface WorkspaceDetailsDraft {
   context: string;
 }
 
+const sameText = (left: string, right: string) => left === right;
+
 function workspaceDetailsEqual(
   left: WorkspaceDetailsDraft,
   right: WorkspaceDetailsDraft,
@@ -148,6 +150,16 @@ export function WorkspaceTab() {
       ? workspace.settings.compact_prompt
       : "";
   const [compactPrompt, setCompactPrompt] = useState(savedCompactPrompt);
+  // An untouched field follows a prompt saved elsewhere (the CLI); otherwise
+  // auto-save would write the stale draft back over it.
+  const [lastSavedCompactPrompt, setLastSavedCompactPrompt] =
+    useState(savedCompactPrompt);
+  if (savedCompactPrompt !== lastSavedCompactPrompt) {
+    setLastSavedCompactPrompt(savedCompactPrompt);
+    if (compactPrompt === lastSavedCompactPrompt) {
+      setCompactPrompt(savedCompactPrompt);
+    }
+  }
   const [prefixDraft, setPrefixDraft] = useState<string | null>(null);
   const [prefixSaveStatus, setPrefixSaveStatus] =
     useState<SettingsSaveStatus>("idle");
@@ -254,7 +266,7 @@ export function WorkspaceTab() {
           : t(($) => $.workspace.toast_save_failed),
       ),
     enabled: !!workspace && canManageWorkspace,
-    isEqual: (left, right) => left === right,
+    isEqual: sameText,
   });
 
   const performPrefixSave = async (nextPrefix: string) => {

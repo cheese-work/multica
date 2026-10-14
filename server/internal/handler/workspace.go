@@ -504,9 +504,14 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		params.Settings = s
 	}
 	if req.CompactPrompt != nil {
+		// Only a literal null resets; a value that fails to decode (1e400)
+		// must not fall through as nil.
 		var prompt any
-		_ = json.Unmarshal(req.CompactPrompt, &prompt)
-		if err := validateCompactPromptConfig(map[string]any{"compact_prompt": prompt}); err != nil {
+		err := json.Unmarshal(req.CompactPrompt, &prompt)
+		if err == nil {
+			err = validateCompactPromptConfig(map[string]any{"compact_prompt": prompt})
+		}
+		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
