@@ -529,18 +529,18 @@ bootstrap_incumbent() {
 # Scenario 1: happy path, first-ever cutover (no cutover-state.json) ->
 # treats blue as incumbent, cuts over to green.
 # ---------------------------------------------------------------------------
-state_dir="$(fresh_scenario_dir happy-path)"
+state_dir="$(fresh_scenario_dir che1593-privacy-location-upstreams)"
 output="$(run_cutover "$state_dir" 2>&1)"
 status=$?
-expect_exit 0 "$status" happy-path
-expect_contains "$output" "cutover complete: green is now active" happy-path
+expect_exit 0 "$status" che1593-privacy-location-upstreams
+expect_contains "$output" "cutover complete: green is now active" che1593-privacy-location-upstreams
 if [ ! -f "$state_dir/cutover-state.json" ]; then
-  echo "scenario happy-path: cutover-state.json was not written" >&2
+  echo "scenario che1593-privacy-location-upstreams: cutover-state.json was not written" >&2
   exit 1
 fi
 active="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).active_colour)' "$state_dir/cutover-state.json")"
 if [ "$active" != "green" ]; then
-  echo "scenario happy-path: active_colour is '$active', want green" >&2
+  echo "scenario che1593-privacy-location-upstreams: active_colour is '$active', want green" >&2
   exit 1
 fi
 
