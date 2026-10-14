@@ -1670,6 +1670,13 @@ SELECT EXISTS (
 UPDATE chat_session SET last_read_at = now()
 WHERE id = $1;
 
+-- name: MarkChatSessionReadBefore :exec
+-- Places the read cursor just before a message created in the same
+-- transaction as the session, so that message counts as unread (CHE-1662).
+UPDATE chat_session
+SET last_read_at = sqlc.arg('message_created_at')::timestamptz - interval '1 microsecond'
+WHERE id = $1;
+
 -- name: ChatSessionHasUserMessage :one
 -- Reports whether a session has any human (role='user') message yet. Used to
 -- scope the is_agent_intro self-introduction prompt to the very first,

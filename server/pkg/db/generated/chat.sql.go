@@ -3390,6 +3390,24 @@ func (q *Queries) MarkChatSessionRead(ctx context.Context, id pgtype.UUID) error
 	return err
 }
 
+const markChatSessionReadBefore = `-- name: MarkChatSessionReadBefore :exec
+UPDATE chat_session
+SET last_read_at = $2::timestamptz - interval '1 microsecond'
+WHERE id = $1
+`
+
+type MarkChatSessionReadBeforeParams struct {
+	ID               pgtype.UUID        `json:"id"`
+	MessageCreatedAt pgtype.Timestamptz `json:"message_created_at"`
+}
+
+// Places the read cursor just before a message created in the same
+// transaction as the session, so that message counts as unread (CHE-1662).
+func (q *Queries) MarkChatSessionReadBefore(ctx context.Context, arg MarkChatSessionReadBeforeParams) error {
+	_, err := q.db.Exec(ctx, markChatSessionReadBefore, arg.ID, arg.MessageCreatedAt)
+	return err
+}
+
 const placeForkFirstMessage = `-- name: PlaceForkFirstMessage :one
 UPDATE chat_message AS message
 SET created_at = GREATEST(message.created_at, (
