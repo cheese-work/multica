@@ -29,11 +29,73 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 work_dir="$(mktemp -d)"
-trap 'rm -rf "$work_dir"' EXIT
+router_container=""
+cleanup() {
+  if [[ -n "$router_container" ]]; then
+    docker rm -f "$router_container" >/dev/null 2>&1 || true
+  fi
+  rm -rf "$work_dir"
+}
+trap cleanup EXIT
 
 # router.sh has no port fallback (CHE-773): callers pass the ports Compose
 # publishes. These mirror docker-compose.ab.yml's defaults.
 export BACKEND_BLUE_PORT=18081 BACKEND_GREEN_PORT=18082 FRONTEND_BLUE_PORT=13001 FRONTEND_GREEN_PORT=13002
+
+privacy_config="$work_dir/router-privacy.conf"
+{
+  printf 'error_log /tmp/router-error.log info;\n'
+  cat deploy/cd/router/nginx.conf.template
+} | sed \
+  -e "s/ACTIVE_BACKEND_UPSTREAM/127.0.0.1:${BACKEND_BLUE_PORT}/g" \
+  -e "s/ACTIVE_FRONTEND_UPSTREAM/127.0.0.1:${FRONTEND_BLUE_PORT}/g" \
+  >"$privacy_config"
+router_container="che1593-router-privacy-$$"
+docker run -d --name "$router_container" \
+  -v "$privacy_config:/etc/nginx/nginx.conf:ro" \
+  nginx:1.27-alpine >/dev/null
+
+nginx_request() {
+  local port=$1 path=$2 query=$3 referrer=$4 output
+  output="$(docker exec "$router_container" wget -S -O /dev/null \
+    --header="Referer: $referrer" \
+    "http://127.0.0.1:$port$path?$query" 2>&1 || true)"
+  if [[ "$output" != *"502 Bad Gateway"* ]]; then
+    echo "nginx privacy fixture did not force an upstream 502 for $path" >&2
+    exit 1
+  fi
+}
+
+nginx_request 8081 /api/search/suggestions \
+  'q=NGINX_SUGGESTION_QUERY_MARKER_1593' \
+  'https://referrer.invalid/NGINX_SUGGESTION_REFERRER_MARKER_1593'
+nginx_request 3000 /che1593-preview/search \
+  'q=NGINX_SEARCH_QUERY_MARKER_1593' \
+  'https://referrer.invalid/NGINX_SEARCH_REFERRER_MARKER_1593'
+nginx_request 8081 /api/health \
+  'probe=NGINX_UNRELATED_QUERY_MARKER_1593' \
+  'https://referrer.invalid/NGINX_UNRELATED_REFERRER_MARKER_1593'
+
+nginx_error_log="$(docker exec "$router_container" cat /tmp/router-error.log)"
+if [[ "$nginx_error_log" != *"connect() failed"* || "$nginx_error_log" != *"NGINX_UNRELATED_QUERY_MARKER_1593"* ]]; then
+  echo "nginx error log did not retain unrelated upstream diagnostics" >&2
+  exit 1
+fi
+leaked_markers=()
+for marker in \
+  NGINX_SUGGESTION_QUERY_MARKER_1593 \
+  NGINX_SUGGESTION_REFERRER_MARKER_1593 \
+  NGINX_SEARCH_QUERY_MARKER_1593 \
+  NGINX_SEARCH_REFERRER_MARKER_1593; do
+  if [[ "$nginx_error_log" == *"$marker"* ]]; then
+    leaked_markers+=("$marker")
+  fi
+done
+if ((${#leaked_markers[@]})); then
+  echo "nginx error log includes sensitive markers: ${leaked_markers[*]}" >&2
+  exit 1
+fi
+echo "nginx error-log privacy fixture passed"
 
 expect_exit() {
   local want=$1 got=$2 name=$3
