@@ -682,9 +682,25 @@ func TestCommentThreadsQueueSeparatelyFromAssignment(t *testing.T) {
 		resp.Body.Close()
 	})
 
+	if n := countPendingTasks(t, issueID); n != 1 {
+		t.Fatalf("expected one pending assignment task before comments, got %d", n)
+	}
+	var assignmentTaskID string
+	if err := testPool.QueryRow(context.Background(), `SELECT id::text FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2 AND status='queued'`, issueID, agentID).Scan(&assignmentTaskID); err != nil {
+		t.Fatal(err)
+	}
+
 	// Distinct root comments must not merge with each other or the assignment.
 	first := postComment(t, issueID, "First comment", nil)
 	second := postComment(t, issueID, "Second comment", nil)
+
+	var assignmentCount int
+	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM agent_task_queue WHERE id=$1 AND status='queued'`, assignmentTaskID).Scan(&assignmentCount); err != nil {
+		t.Fatal(err)
+	}
+	if assignmentCount != 1 {
+		t.Fatalf("expected the original assignment task to remain queued, got %d", assignmentCount)
+	}
 
 	if n := countPendingTasks(t, issueID); n != 3 {
 		t.Fatalf("expected assignment plus two independent thread tasks, got %d", n)
