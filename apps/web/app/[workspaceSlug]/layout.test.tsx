@@ -122,6 +122,22 @@ beforeEach(() => {
 });
 
 describe("WorkspaceLayout", () => {
+  it("advertises the workspace OpenSearch document in the document head", async () => {
+    state.workspace = { id: "workspace-acme", slug: "acme" };
+    renderLayout();
+    await screen.findByTestId("workspace-content");
+    const link = document.head.querySelector('link[rel="search"]');
+    expect(link).toHaveAttribute("type", "application/opensearchdescription+xml");
+    expect(link).toHaveAttribute("href", "/acme/opensearch.xml");
+    expect(link).toHaveAttribute("title", "Multica acme");
+  });
+
+  it("does not advertise a workspace outside the membership list", async () => {
+    renderLayout();
+    await screen.findByTestId("no-access");
+    expect(document.head.querySelector('link[rel="search"]')).toBeNull();
+  });
+
   it("does not attach the old workspace target when a verified session ends", async () => {
     state.pathname = "/acme/search";
     state.workspace = { id: "workspace-acme", slug: "acme" };
@@ -270,5 +286,8 @@ describe("WorkspaceLayout workspace singleton", () => {
     for (const call of vi.mocked(setCurrentWorkspace).mock.calls) {
       expect(call).toEqual(["globex", "ws-globex"]);
     }
+    const links = document.head.querySelectorAll('link[rel="search"]');
+    expect(links).toHaveLength(1);
+    expect(links[0]).toHaveAttribute("href", "/globex/opensearch.xml");
   });
 });
