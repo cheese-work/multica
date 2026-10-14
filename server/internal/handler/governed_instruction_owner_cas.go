@@ -217,13 +217,13 @@ func (h *Handler) ownerCASApply(w http.ResponseWriter, r *http.Request, actorTyp
 		if c.kind == "agent.instructions" {
 			limit = 4000
 		}
-		newTokens := jev.EstimateTokens(content)
+		newTokens := jev.EstimateInstructionTokens(content)
 		if newTokens > limit {
 			var existingContent string
 			wsUUID, _ := util.ParseUUID(workspaceID)
 			idUUID, _ := util.ParseUUID(id)
 			_ = h.DB.QueryRow(r.Context(), fmt.Sprintf("SELECT %s FROM %s WHERE id = $1 AND %s = $2", c.col, c.table, c.scopeCol), idUUID, wsUUID).Scan(&existingContent)
-			existingTokens := jev.EstimateTokens(existingContent)
+			existingTokens := jev.EstimateInstructionTokens(existingContent)
 			if content != existingContent && (existingTokens <= limit || newTokens > existingTokens) {
 				writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("%s exceed limit of %d tokens (estimated: %d tokens)", c.field, limit, newTokens))
 				return hermesExceptionSwapResult{}, false

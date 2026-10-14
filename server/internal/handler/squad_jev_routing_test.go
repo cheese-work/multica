@@ -3,12 +3,15 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/multica-ai/multica/server/internal/governance"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -72,26 +75,31 @@ func TestParseSquadTierList(t *testing.T) {
 
 func TestInstructionTokenLimits(t *testing.T) {
 	// 3000 tokens limit for squad = ~9000 chars at 3.0 chars/token
-	// 3001 tokens = ~9004 chars
 	squadOverLimit := strings.Repeat("squad ", 2000) // ~12000 chars, ~4000 tokens
-	if jev.EstimateTokens(squadOverLimit) <= 3000 {
-		t.Fatalf("expected squadOverLimit to exceed 3000 tokens, got %d", jev.EstimateTokens(squadOverLimit))
+	if jev.EstimateInstructionTokens(squadOverLimit) <= 3000 {
+		t.Fatalf("expected squadOverLimit to exceed 3000 tokens, got %d", jev.EstimateInstructionTokens(squadOverLimit))
 	}
 
 	squadUnderLimit := "Short squad instructions"
-	if jev.EstimateTokens(squadUnderLimit) > 3000 {
-		t.Fatalf("expected squadUnderLimit under 3000 tokens, got %d", jev.EstimateTokens(squadUnderLimit))
+	if jev.EstimateInstructionTokens(squadUnderLimit) > 3000 {
+		t.Fatalf("expected squadUnderLimit under 3000 tokens, got %d", jev.EstimateInstructionTokens(squadUnderLimit))
 	}
 
 	// 4000 tokens limit for agent = ~12000 chars at 3.0 chars/token
 	agentOverLimit := strings.Repeat("agent ", 3000) // ~18000 chars, ~6000 tokens
-	if jev.EstimateTokens(agentOverLimit) <= 4000 {
-		t.Fatalf("expected agentOverLimit to exceed 4000 tokens, got %d", jev.EstimateTokens(agentOverLimit))
+	if jev.EstimateInstructionTokens(agentOverLimit) <= 4000 {
+		t.Fatalf("expected agentOverLimit to exceed 4000 tokens, got %d", jev.EstimateInstructionTokens(agentOverLimit))
 	}
 
 	agentUnderLimit := "Short agent instructions"
-	if jev.EstimateTokens(agentUnderLimit) > 4000 {
-		t.Fatalf("expected agentUnderLimit under 4000 tokens, got %d", jev.EstimateTokens(agentUnderLimit))
+	if jev.EstimateInstructionTokens(agentUnderLimit) > 4000 {
+		t.Fatalf("expected agentUnderLimit under 4000 tokens, got %d", jev.EstimateInstructionTokens(agentUnderLimit))
+	}
+
+	// Verify EstimateTokens uses byte length for state builder budgeting
+	multiByteText := "xin chào việt nam 🎉"
+	if jev.EstimateTokens(multiByteText) < jev.EstimateInstructionTokens(multiByteText) {
+		t.Fatalf("expected byte-based EstimateTokens >= rune-based EstimateInstructionTokens for multibyte text")
 	}
 }
 
@@ -576,5 +584,246 @@ func TestParseSquadTierListEdgeCases(t *testing.T) {
 	tiers4 := parseSquadTierList(txt4, candidates)
 	if got := tiers4[util.UUIDToString(solID)]; got != "C" {
 		t.Errorf("case 4 sol tier = %q, want C (lowercase tier letter rejected)", got)
+	}
+}
+
+type failingRow struct{}
+
+func (f *failingRow) Scan(dest ...interface{}) error {
+	return errors.New("simulated task enqueue db failure")
+}
+
+type failingDBTX struct{}
+
+func (f *failingDBTX) Exec(ctx context.Context, sql string, arguments ...interface{}) (pgconn.CommandTag, error) {
+	return pgconn.CommandTag{}, errors.New("simulated task enqueue db failure")
+}
+
+func (f *failingDBTX) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+	return nil, errors.New("simulated task enqueue db failure")
+}
+
+func (f *failingDBTX) QueryRow(ctx context.Context, sql string, args ...interface{}) pgx.Row {
+	return &failingRow{}
+}
+
+func TestTryJevSquadRouting_TodoStatusAndInProgress(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("handler test database is unavailable")
+	}
+
+	ctx := context.Background()
+	wsUUID, _ := util.ParseUUID(testWorkspaceID)
+	rtUUID, _ := util.ParseUUID(testRuntimeID)
+	userUUID, _ := util.ParseUUID(testUserID)
+
+	leaderAgentID := dbid.NewV7()
+	memberAgentID := dbid.NewV7()
+	_, err := testPool.Exec(ctx, `
+		INSERT INTO agent (id, workspace_id, runtime_id, owner_id, name, status, runtime_mode)
+		VALUES ($1, $2, $3, $4, 'todo-test-leader', 'idle', 'cloud'),
+		       ($5, $2, $3, $4, 'todo-test-worker', 'idle', 'cloud')
+	`, leaderAgentID, wsUUID, rtUUID, userUUID, memberAgentID)
+	if err != nil {
+		t.Fatalf("insert test agents: %v", err)
+	}
+	defer testPool.Exec(ctx, `DELETE FROM agent WHERE id IN ($1, $2)`, leaderAgentID, memberAgentID)
+
+	squadID := dbid.NewV7()
+	_, err = testPool.Exec(ctx, `
+		INSERT INTO squad (id, workspace_id, name, description, instructions, leader_id, creator_id)
+		VALUES ($1, $2, 'Todo Test Squad', '', 'Tier S: todo-test-worker', $3, $4)
+	`, squadID, wsUUID, leaderAgentID, userUUID)
+	if err != nil {
+		t.Fatalf("insert squad: %v", err)
+	}
+	defer testPool.Exec(ctx, `DELETE FROM squad WHERE id = $1`, squadID)
+
+	_, err = testPool.Exec(ctx, `
+		INSERT INTO squad_member (id, squad_id, member_type, member_id, role)
+		VALUES ($1, $2, 'agent', $3, 'worker')
+	`, dbid.NewV7(), squadID, memberAgentID)
+	if err != nil {
+		t.Fatalf("insert squad member: %v", err)
+	}
+
+	mockJevServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := jev.Response{
+			Model: "jev-1.13.0",
+			Answers: map[string]jev.Answer{
+				"route_squad_member": {
+					Type:       jev.TypeChoice,
+					Choice:     util.UUIDToString(memberAgentID),
+					Confidence: 0.95,
+					Probabilities: map[string]float64{
+						util.UUIDToString(memberAgentID): 0.95,
+						"escalate_to_leader":             0.05,
+					},
+				},
+			},
+			Usage: jev.Usage{InputTokens: 500, OutputTokens: 10},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer mockJevServer.Close()
+
+	var minConf = 0.90
+	settings := governance.WorkspaceSettings{
+		JevSquadRoutingEnabled: true,
+		JevAPIURL:              mockJevServer.URL,
+		JevMinConfidence:       &minConf,
+	}
+	settingsJSON, _ := json.Marshal(settings)
+	_, _ = testPool.Exec(ctx, `
+		INSERT INTO governance_workspace_config (workspace_id, config_version, control_epoch, settings)
+		VALUES ($1, 1, 1, $2)
+		ON CONFLICT (workspace_id) DO UPDATE SET settings = EXCLUDED.settings
+	`, wsUUID, settingsJSON)
+
+	jevClient, _ := jev.NewClient(jev.Options{
+		APIKey:  "test-jev-key",
+		BaseURL: mockJevServer.URL,
+	})
+	origJev := testHandler.Jev
+	testHandler.Jev = jevClient
+	defer func() { testHandler.Jev = origJev }()
+
+	squad, _ := testHandler.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: squadID, WorkspaceID: wsUUID})
+
+	// 1. Test todo -> in_progress transition
+	todoIssueID := dbid.NewV7()
+	_, _ = testPool.Exec(ctx, `
+		INSERT INTO issue (id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, revision, number)
+		VALUES ($1, $2, 'Todo task', 'Promoted from backlog to todo', 'todo', 'high', 'squad', $3, 'member', $4, 1, 2001)
+	`, todoIssueID, wsUUID, squadID, testUserID)
+	defer testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, todoIssueID)
+
+	todoIssue, _ := testHandler.Queries.GetIssue(ctx, todoIssueID)
+	routed, _ := testHandler.tryJevSquadRouting(ctx, todoIssue, squad, "member", testUserID, testUserID)
+	if !routed {
+		t.Fatalf("expected routing from todo to succeed")
+	}
+	afterTodoIssue, _ := testHandler.Queries.GetIssue(ctx, todoIssueID)
+	if afterTodoIssue.Status != "in_progress" {
+		t.Errorf("status after routing = %q, want in_progress", afterTodoIssue.Status)
+	}
+
+	// 2. Test in_progress status remains in_progress (does NOT jump to in_review)
+	inProgIssueID := dbid.NewV7()
+	_, _ = testPool.Exec(ctx, `
+		INSERT INTO issue (id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, revision, number)
+		VALUES ($1, $2, 'In progress task', 'Already in progress', 'in_progress', 'high', 'squad', $3, 'member', $4, 1, 2002)
+	`, inProgIssueID, wsUUID, squadID, testUserID)
+	defer testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, inProgIssueID)
+
+	inProgIssue, _ := testHandler.Queries.GetIssue(ctx, inProgIssueID)
+	routed2, _ := testHandler.tryJevSquadRouting(ctx, inProgIssue, squad, "member", testUserID, testUserID)
+	if !routed2 {
+		t.Fatalf("expected routing from in_progress to succeed")
+	}
+	afterInProgIssue, _ := testHandler.Queries.GetIssue(ctx, inProgIssueID)
+	if afterInProgIssue.Status != "in_progress" {
+		t.Errorf("status after routing = %q, want in_progress (must not jump to in_review)", afterInProgIssue.Status)
+	}
+}
+
+func TestTryJevSquadRouting_EnqueueFailureAdvisory(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("handler test database is unavailable")
+	}
+
+	ctx := context.Background()
+	wsUUID, _ := util.ParseUUID(testWorkspaceID)
+	rtUUID, _ := util.ParseUUID(testRuntimeID)
+	userUUID, _ := util.ParseUUID(testUserID)
+
+	leaderAgentID := dbid.NewV7()
+	memberAgentID := dbid.NewV7()
+	_, _ = testPool.Exec(ctx, `
+		INSERT INTO agent (id, workspace_id, runtime_id, owner_id, name, status, runtime_mode)
+		VALUES ($1, $2, $3, $4, 'fail-test-leader', 'idle', 'cloud'),
+		       ($5, $2, $3, $4, 'fail-test-worker', 'idle', 'cloud')
+	`, leaderAgentID, wsUUID, rtUUID, userUUID, memberAgentID)
+	defer testPool.Exec(ctx, `DELETE FROM agent WHERE id IN ($1, $2)`, leaderAgentID, memberAgentID)
+
+	squadID := dbid.NewV7()
+	_, _ = testPool.Exec(ctx, `
+		INSERT INTO squad (id, workspace_id, name, description, instructions, leader_id, creator_id)
+		VALUES ($1, $2, 'Fail Test Squad', '', 'Tier S: fail-test-worker', $3, $4)
+	`, squadID, wsUUID, leaderAgentID, userUUID)
+	defer testPool.Exec(ctx, `DELETE FROM squad WHERE id = $1`, squadID)
+
+	_, _ = testPool.Exec(ctx, `
+		INSERT INTO squad_member (id, squad_id, member_type, member_id, role)
+		VALUES ($1, $2, 'agent', $3, 'worker')
+	`, dbid.NewV7(), squadID, memberAgentID)
+
+	mockJevServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := jev.Response{
+			Model: "jev-1.13.0",
+			Answers: map[string]jev.Answer{
+				"route_squad_member": {
+					Type:       jev.TypeChoice,
+					Choice:     util.UUIDToString(memberAgentID),
+					Confidence: 0.95,
+					Probabilities: map[string]float64{
+						util.UUIDToString(memberAgentID): 0.95,
+						"escalate_to_leader":             0.05,
+					},
+				},
+			},
+			Usage: jev.Usage{InputTokens: 500, OutputTokens: 10},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer mockJevServer.Close()
+
+	var minConf = 0.90
+	settings := governance.WorkspaceSettings{
+		JevSquadRoutingEnabled: true,
+		JevAPIURL:              mockJevServer.URL,
+		JevMinConfidence:       &minConf,
+	}
+	settingsJSON, _ := json.Marshal(settings)
+	_, _ = testPool.Exec(ctx, `
+		INSERT INTO governance_workspace_config (workspace_id, config_version, control_epoch, settings)
+		VALUES ($1, 1, 1, $2)
+		ON CONFLICT (workspace_id) DO UPDATE SET settings = EXCLUDED.settings
+	`, wsUUID, settingsJSON)
+
+	jevClient, _ := jev.NewClient(jev.Options{
+		APIKey:  "test-jev-key",
+		BaseURL: mockJevServer.URL,
+	})
+	origJev := testHandler.Jev
+	testHandler.Jev = jevClient
+	defer func() { testHandler.Jev = origJev }()
+
+	squad, _ := testHandler.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: squadID, WorkspaceID: wsUUID})
+
+	// Temporarily simulate task enqueue db failure
+	origQueries := testHandler.TaskService.Queries
+	testHandler.TaskService.Queries = db.New(&failingDBTX{})
+	defer func() { testHandler.TaskService.Queries = origQueries }()
+
+	issueID := dbid.NewV7()
+	_, _ = testPool.Exec(ctx, `
+		INSERT INTO issue (id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, revision, number)
+		VALUES ($1, $2, 'Task with enqueue failure', 'Tests advisory formatting on failure', 'backlog', 'high', 'squad', $3, 'member', $4, 1, 3001)
+	`, issueID, wsUUID, squadID, testUserID)
+	defer testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
+
+	issue, _ := testHandler.Queries.GetIssue(ctx, issueID)
+	routed, advisory := testHandler.tryJevSquadRouting(ctx, issue, squad, "member", testUserID, testUserID)
+	if routed {
+		t.Fatalf("expected routing = false when task enqueue fails")
+	}
+	if !strings.Contains(advisory, "Prior State Changes: status -> in_progress (retained)") {
+		t.Errorf("advisory missing retained status: %s", advisory)
+	}
+	if !strings.Contains(advisory, "simulated task enqueue db failure") {
+		t.Errorf("advisory missing enqueue failure reason: %s", advisory)
 	}
 }

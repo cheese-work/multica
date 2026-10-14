@@ -250,7 +250,7 @@ func (h *Handler) CreateSquad(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Instructions != nil {
-		if tokens := jev.EstimateTokens(*req.Instructions); tokens > 3000 {
+		if tokens := jev.EstimateInstructionTokens(*req.Instructions); tokens > 3000 {
 			writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("squad instructions exceed limit of 3000 tokens (estimated: %d tokens)", tokens))
 			return
 		}
@@ -393,8 +393,8 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Instructions != nil {
-		newTokens := jev.EstimateTokens(*req.Instructions)
-		existingTokens := jev.EstimateTokens(squad.Instructions)
+		newTokens := jev.EstimateInstructionTokens(*req.Instructions)
+		existingTokens := jev.EstimateInstructionTokens(squad.Instructions)
 		if newTokens > 3000 {
 			if *req.Instructions != squad.Instructions && (existingTokens <= 3000 || newTokens > existingTokens) {
 				writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("squad instructions exceed limit of 3000 tokens (estimated: %d tokens)", newTokens))

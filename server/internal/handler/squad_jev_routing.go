@@ -313,11 +313,6 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 	if currentStatus == "backlog" || currentStatus == "todo" {
 		newStatus = "in_progress"
 		statusChanged = true
-	} else if currentStatus == "in_progress" {
-		if memberRoleMap[winnerOption] == "reviewer" {
-			newStatus = "in_review"
-			statusChanged = true
-		}
 	}
 
 	qtx := h.Queries.WithTx(tx)
@@ -418,8 +413,12 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 			"issue_id", uuidToString(issue.ID),
 			"agent_id", uuidToString(winnerAgent.ID),
 			"error", err)
-		advisory := fmt.Sprintf("### Jev Pre-Route Advisory\n- Proposed: %s · Conf %.2f\n- Runner-up: %s · Conf %.2f\n- Ambiguity: Jev selected %s (Tier %s, Conf %.2f), but automated task enqueue failed: %v\n- Prior State Changes: none\n- Decision ID: %s",
-			winnerLabel, confidence, runnerUpLabel, runnerUpProb, winnerAgent.Name, winnerTier, confidence, err, decisionID)
+		priorChanges := "none"
+		if statusChanged {
+			priorChanges = fmt.Sprintf("status -> %s (retained)", newStatus)
+		}
+		advisory := fmt.Sprintf("### Jev Pre-Route Advisory\n- Proposed: %s · Conf %.2f\n- Runner-up: %s · Conf %.2f\n- Ambiguity: Jev selected %s (Tier %s, Conf %.2f), but automated task enqueue failed: %v\n- Prior State Changes: %s\n- Decision ID: %s",
+			winnerLabel, confidence, runnerUpLabel, runnerUpProb, winnerAgent.Name, winnerTier, confidence, err, priorChanges, decisionID)
 		return false, advisory
 	}
 
