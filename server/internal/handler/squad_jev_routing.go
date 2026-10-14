@@ -3,13 +3,16 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -26,7 +29,7 @@ import (
 // writes an announcement comment (type='jev_route'), and records squad activity.
 // On confidence < minConfidence or error, it returns (false, advisory) where advisory contains
 // pre-computed recommendations to append to the squad leader's handoff note.
-func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad db.Squad, authorType, authorID, leaderOriginator string) (bool, string) {
+func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad db.Squad, authorType, authorID, leaderOriginator string, triggerCommentID ...pgtype.UUID) (bool, string) {
 	config, err := loadGovernanceControl(ctx, h.DB, issue.WorkspaceID)
 	if err != nil || !config.Settings.JevSquadRoutingEnabled {
 		return false, ""
@@ -58,6 +61,7 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 		opts := jev.Options{
 			APIKey:  string(apiKeyBytes),
 			BaseURL: apiURL,
+			Timeout: 5 * time.Second,
 			Gate:    featureflags.JevProductionGate{Flags: h.FeatureFlags},
 		}
 		jevClient, _ = jev.NewClient(opts)
@@ -138,82 +142,132 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 		"revision":    issue.Revision,
 	}, jev.PriorityRequired)
 
-	// Filter and budget recent comments (up to 14,000 tokens)
+	// Filter and budget comments (up to 14,000 tokens)
+	// Spec: Mandatory sections (roster tier table or latest human comment) must fit;
+	// if they cannot fit, fail-closed and route to leader.
+	type humanCommentData struct {
+		ID         string
+		AuthorType string
+		CreatedAt  string
+		Content    string
+	}
+	var latestHuman *humanCommentData
+	var eligible []db.Comment
+
 	if rawComments, err := h.Queries.ListCommentsForIssue(ctx, db.ListCommentsForIssueParams{
 		IssueID:     issue.ID,
 		WorkspaceID: issue.WorkspaceID,
 		Limit:       20,
 	}); err == nil && len(rawComments) > 0 {
-		var eligible []db.Comment
 		for _, c := range rawComments {
 			if c.Type != "jev_route" && strings.TrimSpace(c.Content) != "" {
 				eligible = append(eligible, c)
 			}
 		}
+	}
 
-		if len(eligible) > 0 {
-			// Locate the latest human comment (last in chronological order)
-			latestHumanIdx := -1
-			for i := len(eligible) - 1; i >= 0; i-- {
-				if eligible[i].AuthorType == "member" || eligible[i].AuthorType == "user" {
-					latestHumanIdx = i
-					break
-				}
+	latestHumanIdx := -1
+	for i := len(eligible) - 1; i >= 0; i-- {
+		if eligible[i].AuthorType == "member" || eligible[i].AuthorType == "user" {
+			latestHumanIdx = i
+			latestHuman = &humanCommentData{
+				ID:         uuidToString(eligible[i].ID),
+				AuthorType: eligible[i].AuthorType,
+				CreatedAt:  timestampToString(eligible[i].CreatedAt),
+				Content:    eligible[i].Content,
 			}
-
-			if latestHumanIdx >= 0 {
-				latestHuman := &eligible[latestHumanIdx]
-				if jev.EstimateTokens(latestHuman.Content) > 14000 {
-					advisory := fmt.Sprintf("### Jev Pre-Route Advisory\n- Proposed: none\n- Runner-up: none\n- Ambiguity: Latest human comment exceeds comment budget (%d tokens)\n- Prior State Changes: none\n- Decision ID: %s", jev.EstimateTokens(latestHuman.Content), decisionID)
-					return false, advisory
-				}
-			}
-
-			// Budget comments newest-first up to 14,000 tokens, always preserving latest human comment
-			commentTokens := 0
-			var includedIndices []int
-
-			if latestHumanIdx >= 0 {
-				commentTokens += jev.EstimateTokens(eligible[latestHumanIdx].Content)
-				includedIndices = append(includedIndices, latestHumanIdx)
-			}
-
-			// Iterate newest to oldest
-			for i := len(eligible) - 1; i >= 0; i-- {
-				if i == latestHumanIdx {
-					continue
-				}
-				content := eligible[i].Content
-				if jev.EstimateTokens(content) > 1000 {
-					content = truncateRunes(content, 3000)
-				}
-				est := jev.EstimateTokens(content)
-				if commentTokens+est > 14000 {
-					break
-				}
-				commentTokens += est
-				includedIndices = append(includedIndices, i)
-			}
-
-			// Restore chronological order
-			sort.Ints(includedIndices)
-
-			formattedComments := make([]map[string]any, 0, len(includedIndices))
-			for _, idx := range includedIndices {
-				c := eligible[idx]
-				content := c.Content
-				if idx != latestHumanIdx && jev.EstimateTokens(content) > 1000 {
-					content = truncateRunes(content, 3000)
-				}
-				formattedComments = append(formattedComments, map[string]any{
-					"id":          uuidToString(c.ID),
-					"author_type": c.AuthorType,
-					"created_at":  timestampToString(c.CreatedAt),
-					"content":     content,
-				})
-			}
-			stateBuilder.Add("comments", formattedComments, jev.PriorityUseful)
+			break
 		}
+	}
+
+	// Sonnet finding: If 20 newest comments contain no human comment, check if an older
+	// human comment exists on the issue so Jev does not route blind to earlier human instructions.
+	if latestHuman == nil {
+		var outsideID pgtype.UUID
+		var outsideAuthorType string
+		var outsideContent string
+		var outsideCreatedAt pgtype.Timestamptz
+		err := h.DB.QueryRow(ctx, `
+			SELECT id, author_type, content, created_at
+			FROM comment
+			WHERE issue_id = $1 AND workspace_id = $2
+			  AND author_type IN ('member', 'user')
+			  AND type != 'jev_route'
+			  AND TRIM(content) != ''
+			ORDER BY created_at DESC, id DESC
+			LIMIT 1
+		`, issue.ID, issue.WorkspaceID).Scan(&outsideID, &outsideAuthorType, &outsideContent, &outsideCreatedAt)
+		if err == nil {
+			latestHuman = &humanCommentData{
+				ID:         uuidToString(outsideID),
+				AuthorType: outsideAuthorType,
+				CreatedAt:  timestampToString(outsideCreatedAt),
+				Content:    outsideContent,
+			}
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("jev squad routing: failed to query latest human comment", "error", err)
+		}
+	}
+
+	if latestHuman != nil {
+		if jev.EstimateTokens(latestHuman.Content) > 14000 {
+			advisory := fmt.Sprintf("### Jev Pre-Route Advisory\n- Proposed: none\n- Runner-up: none\n- Ambiguity: Latest human comment exceeds comment budget (%d tokens)\n- Prior State Changes: none\n- Decision ID: %s", jev.EstimateTokens(latestHuman.Content), decisionID)
+			return false, advisory
+		}
+		// Opus Blocker 1: Put latest human comment in its own PriorityRequired section
+		// so StateBuilder never evicts it under budget pressure.
+		stateBuilder.Add("latest_human_comment", map[string]any{
+			"id":          latestHuman.ID,
+			"author_type": latestHuman.AuthorType,
+			"created_at":  latestHuman.CreatedAt,
+			"content":     latestHuman.Content,
+		}, jev.PriorityRequired)
+	}
+
+	if len(eligible) > 0 {
+		commentTokens := 0
+		var includedIndices []int
+
+		if latestHumanIdx >= 0 {
+			commentTokens += jev.EstimateTokens(eligible[latestHumanIdx].Content)
+			includedIndices = append(includedIndices, latestHumanIdx)
+		}
+
+		// Iterate newest to oldest
+		for i := len(eligible) - 1; i >= 0; i-- {
+			if i == latestHumanIdx {
+				continue
+			}
+			content := eligible[i].Content
+			if jev.EstimateTokens(content) > 1000 {
+				content = truncateRunes(content, 3000)
+			}
+			est := jev.EstimateTokens(content)
+			if commentTokens+est > 14000 {
+				break
+			}
+			commentTokens += est
+			includedIndices = append(includedIndices, i)
+		}
+
+		// Restore chronological order
+		sort.Ints(includedIndices)
+
+		formattedComments := make([]map[string]any, 0, len(includedIndices))
+		for _, idx := range includedIndices {
+			c := eligible[idx]
+			content := c.Content
+			if idx != latestHumanIdx && jev.EstimateTokens(content) > 1000 {
+				content = truncateRunes(content, 3000)
+			}
+			formattedComments = append(formattedComments, map[string]any{
+				"id":          uuidToString(c.ID),
+				"author_type": c.AuthorType,
+				"created_at":  timestampToString(c.CreatedAt),
+				"content":     content,
+			})
+		}
+		stateBuilder.Add("comments", formattedComments, jev.PriorityUseful)
 	}
 
 	state, err := stateBuilder.Build()
@@ -221,6 +275,12 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 		slog.Warn("jev squad routing: state build failed", "error", err)
 		advisory := fmt.Sprintf("### Jev Pre-Route Advisory\n- Proposed: none\n- Runner-up: none\n- Ambiguity: State exceeded token budget: %v\n- Prior State Changes: none\n- Decision ID: %s", err, decisionID)
 		return false, advisory
+	}
+	for _, d := range state.Dropped {
+		if d == "latest_human_comment" || d == "roster" || d == "squad" || d == "issue" {
+			advisory := fmt.Sprintf("### Jev Pre-Route Advisory\n- Proposed: none\n- Runner-up: none\n- Ambiguity: Mandatory section %s was dropped\n- Prior State Changes: none\n- Decision ID: %s", d, decisionID)
+			return false, advisory
+		}
 	}
 
 	questionID := "route_squad_member"
@@ -429,7 +489,11 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 		},
 	})
 
-	if _, err = h.TaskService.EnqueueTaskForMention(ctx, issue, winnerAgent.ID, pgtype.UUID{}, service.OriginDerived); err != nil {
+	var trigID pgtype.UUID
+	if len(triggerCommentID) > 0 {
+		trigID = triggerCommentID[0]
+	}
+	if _, err = h.TaskService.EnqueueTaskForMention(ctx, issue, winnerAgent.ID, trigID, service.OriginDerived); err != nil {
 		slog.Error("jev dispatch: failed to enqueue member task, returning advisory to wake leader",
 			"issue_id", uuidToString(issue.ID),
 			"agent_id", uuidToString(winnerAgent.ID),

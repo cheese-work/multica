@@ -1331,7 +1331,7 @@ func (h *Handler) enqueueSquadLeaderTask(ctx context.Context, issue db.Issue, tr
 	}
 
 	// Try Jev Squad Routing (CHE-1708)
-	if routed, advisory := h.tryJevSquadRouting(ctx, issue, squad, authorType, authorID, leaderOriginator); routed {
+	if routed, advisory := h.tryJevSquadRouting(ctx, issue, squad, authorType, authorID, leaderOriginator, triggerCommentID); routed {
 		return true
 	} else if advisory != "" {
 		if strings.TrimSpace(handoffNote) != "" {

@@ -2859,6 +2859,21 @@ func logCommentEnqueueFailure(msg string, err error, attrs ...any) {
 	slog.Warn(msg, append(attrs, "error", err)...)
 }
 
+func (h *Handler) resolveCommentTriggerOriginator(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID) (authorType, authorID, leaderOriginator string) {
+	if triggerCommentID.Valid {
+		if c, err := h.Queries.GetComment(ctx, triggerCommentID); err == nil {
+			authorType = c.AuthorType
+			authorID = uuidToString(c.AuthorID)
+		}
+	}
+	if authorType == "member" {
+		leaderOriginator = authorID
+	} else {
+		leaderOriginator = uuidToString(h.TaskService.OriginatorForIssueTask(ctx, issue, triggerCommentID))
+	}
+	return authorType, authorID, leaderOriginator
+}
+
 // enqueueSingleCommentTrigger creates a fresh task for one computed trigger.
 // Split out of enqueueCommentAgentTriggers so the merge-not-drop path
 // (MUL-4195) can fall back to it when a pending task vanished mid-flight.
@@ -2871,7 +2886,19 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 	switch trigger.Source {
 	case commentTriggerSourceIssueAssignee:
 		if trigger.Squad != nil {
-			if task, err = h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, service.OriginDerived); err != nil {
+			var handoffNote string
+			authorType, authorID, leaderOriginator := h.resolveCommentTriggerOriginator(ctx, issue, triggerCommentID)
+			if routed, advisory := h.tryJevSquadRouting(ctx, issue, *trigger.Squad, authorType, authorID, leaderOriginator, triggerCommentID); routed {
+				return db.AgentTaskQueue{}, nil
+			} else if advisory != "" {
+				handoffNote = advisory
+			}
+			if handoffNote != "" {
+				task, err = h.TaskService.EnqueueTaskForSquadLeaderWithHandoffComment(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, handoffNote, memberActorUserID(authorType, authorID), service.OriginDerived)
+			} else {
+				task, err = h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, service.OriginDerived)
+			}
+			if err != nil {
 				logCommentEnqueueFailure("enqueue squad leader task failed", err,
 					"issue_id", uuidToString(issue.ID),
 					"squad_id", uuidToString(trigger.Squad.ID),
@@ -2891,6 +2918,27 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 			return task, err
 		}
 	case commentTriggerSourceMentionSquadLeader:
+		if trigger.Squad != nil {
+			var handoffNote string
+			authorType, authorID, leaderOriginator := h.resolveCommentTriggerOriginator(ctx, issue, triggerCommentID)
+			if routed, advisory := h.tryJevSquadRouting(ctx, issue, *trigger.Squad, authorType, authorID, leaderOriginator, triggerCommentID); routed {
+				return db.AgentTaskQueue{}, nil
+			} else if advisory != "" {
+				handoffNote = advisory
+			}
+			if handoffNote != "" {
+				task, err = h.TaskService.EnqueueTaskForSquadLeaderWithHandoffComment(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, handoffNote, memberActorUserID(authorType, authorID), service.OriginNamed)
+			} else {
+				task, err = h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, service.OriginNamed)
+			}
+			if err != nil {
+				logCommentEnqueueFailure("enqueue squad leader mention task failed", err,
+					"issue_id", uuidToString(issue.ID),
+					"agent_id", uuidToString(trigger.Agent.ID))
+				return task, err
+			}
+			return task, nil
+		}
 		if task, err = h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, service.OriginNamed); err != nil {
 			logCommentEnqueueFailure("enqueue squad leader mention task failed", err,
 				"issue_id", uuidToString(issue.ID),

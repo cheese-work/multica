@@ -152,7 +152,7 @@ type Config struct {
 	// LLMDisableThinking is the parsed MULTICA_LLM_DISABLE_THINKING switch.
 	// cmd/server validates the raw value before the boot continues, so a
 	// non-boolean never reaches this struct.
-	LLMDisableThinking bool
+	LLMDisableThinking      bool
 	ProviderRecoveryBaseURL string
 	// ServerVersion is the build version of the running API binary (the same
 	// value main.go stamps via -X main.version and reports on /metrics).
@@ -563,6 +563,12 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 		slog.Warn("github: PR snapshot pipeline disabled (invalid App private key)", "err", err)
 	}
 	h.PRRefresh = ghsnapshot.NewManager(ghClient, queries, txStarter, h.broadcastPRSnapshotApplied)
+
+	if h.IssueService != nil {
+		h.IssueService.SquadDispatcher = func(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID string) bool {
+			return h.enqueueSquadLeaderTask(ctx, issue, triggerCommentID, authorType, authorID, "")
+		}
+	}
 
 	return h
 }
