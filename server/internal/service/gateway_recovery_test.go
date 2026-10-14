@@ -108,6 +108,10 @@ func TestResponseProtectionLegacySessionSelection(t *testing.T) {
 		t.Fatal(err)
 	}
 	fixture.Task(t, agentID, dbfx.Cols{
+		"runtime_id": runtimeID, "issue_id": issueID, "status": "completed", "session_id": "older-distinct-session",
+		"completed_at": dbfx.Raw("now() - interval '2 minutes'"),
+	})
+	fixture.Task(t, agentID, dbfx.Cols{
 		"runtime_id": runtimeID, "issue_id": issueID, "status": "completed", "session_id": "legacy-poisoned",
 		"completed_at": dbfx.Raw("now() - interval '1 minute'"),
 	})
@@ -172,6 +176,10 @@ func TestResponseProtectionLegacyChatSessionSelection(t *testing.T) {
 	fixture := dbfx.New(pool, workspaceID, userID)
 	chatID := fixture.Insert(t, "chat_session", dbfx.Cols{
 		"workspace_id": workspaceID, "creator_id": userID, "agent_id": agentID, "title": "poisoned chat",
+	})
+	fixture.Task(t, agentID, dbfx.Cols{
+		"chat_session_id": chatID, "status": "completed", "session_id": "older-distinct-chat-session",
+		"completed_at": dbfx.Raw("now() - interval '2 minutes'"),
 	})
 	fixture.Task(t, agentID, dbfx.Cols{
 		"chat_session_id": chatID, "status": "completed", "session_id": "legacy-chat",

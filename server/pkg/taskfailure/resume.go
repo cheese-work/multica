@@ -39,7 +39,12 @@ func UnresumableHistory(errText string) bool {
 	if errText == "" {
 		return false
 	}
-	return emptyContentRe.MatchString(errText) && historyMessageLocatorRe.MatchString(errText)
+	return ResponseProtectionUnavailable(errText) ||
+		(emptyContentRe.MatchString(errText) && historyMessageLocatorRe.MatchString(errText))
+}
+
+func ResponseProtectionUnavailable(errText string) bool {
+	return strings.Contains(strings.ToLower(errText), "response protection is unavailable")
 }
 
 // AuthMethodUnresolved reports whether an agent error is the provider
