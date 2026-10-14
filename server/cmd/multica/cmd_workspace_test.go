@@ -537,7 +537,7 @@ func TestResolveWorkspaceByIDOrSlug(t *testing.T) {
 func resetWorkspaceUpdateFlags(t *testing.T) {
 	t.Helper()
 	flags := workspaceUpdateCmd.Flags()
-	for _, name := range []string{"name", "description", "context", "context-file", "issue-prefix", "expected-before-digest"} {
+	for _, name := range []string{"name", "description", "context", "context-file", "issue-prefix", "expected-before-digest", "compact-prompt-file"} {
 		_ = flags.Set(name, "")
 		if f := flags.Lookup(name); f != nil {
 			f.Changed = false
@@ -1189,5 +1189,34 @@ func TestRunWorkspaceUpdateNonDigestModeUnchanged(t *testing.T) {
 	}
 	if _, present := gotBody["expected_before_digest"]; present {
 		t.Errorf("expected_before_digest must not appear when --expected-before-digest was not set, got %v", gotBody)
+	}
+}
+
+// CHE-1612: --compact-prompt-file sends only compact_prompt; "null" resets it.
+func TestBuildWorkspaceUpdateBodyCompactPrompt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "compact.md")
+	prompt := "Keep exact SHAs.\n\\n stays literal.\n"
+	if err := os.WriteFile(path, []byte(prompt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, testCase := range []struct {
+		value string
+		want  any
+	}{{path, prompt}, {"null", nil}} {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "compact-prompt-file", testCase.value)
+		body, err := buildWorkspaceUpdateBody(workspaceUpdateCmd)
+		if err != nil {
+			t.Fatalf("%s: %v", testCase.value, err)
+		}
+		value, present := body["compact_prompt"]
+		if !present || value != testCase.want || len(body) != 1 {
+			t.Errorf("%s: body = %#v, want only compact_prompt = %#v", testCase.value, body, testCase.want)
+		}
+	}
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "compact-prompt-file", filepath.Join(t.TempDir(), "missing.md"))
+	if _, err := buildWorkspaceUpdateBody(workspaceUpdateCmd); err == nil {
+		t.Fatal("expected an error for a missing prompt file")
 	}
 }

@@ -18,6 +18,7 @@ const workspaceRef = vi.hoisted(() => ({
     context: "",
     issue_prefix: "TES",
     repos: [] as { url: string }[],
+    settings: {} as Record<string, unknown>,
   },
 }));
 const membersRef = vi.hoisted(() => ({
@@ -114,6 +115,7 @@ describe("WorkspaceTab — automatic updates", () => {
       context: "",
       issue_prefix: "TES",
       repos: [],
+      settings: {},
     };
     membersRef.current = [{ user_id: "user-1", role: "owner", name: "Ada" }];
     mockUpdateWorkspace.mockImplementation(
@@ -231,5 +233,42 @@ describe("WorkspaceTab — automatic updates", () => {
     expect(screen.queryByDisplayValue("Test Workspace")).toBeNull();
     expect(screen.getByText("Test Workspace")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Change prefix..." })).toBeNull();
+  });
+
+  // CHE-1612: the compact prompt saves through its own field, never the
+  // settings blob, so other workspace settings cannot be dropped.
+  it("saves only the compact prompt and shows the built-in default as its source", async () => {
+    const user = setupUser();
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+    expect(screen.getByText("Source: built-in default")).toBeInTheDocument();
+
+    await user.type(screen.getByRole("textbox", { name: "Compact prompt" }), "Keep SHAs.");
+    await user.tab();
+
+    await waitFor(() => {
+      expect(mockUpdateWorkspace).toHaveBeenLastCalledWith("workspace-1", {
+        compact_prompt: "Keep SHAs.",
+      });
+    });
+    for (const [, payload] of mockUpdateWorkspace.mock.calls) {
+      expect(Object.keys(payload)).toEqual(["compact_prompt"]);
+    }
+  });
+
+  it("resets a cleared compact prompt to the built-in default", async () => {
+    workspaceRef.current = {
+      ...workspaceRef.current,
+      settings: { compact_prompt: "Old criteria.", other: true },
+    };
+    const user = setupUser();
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+    expect(screen.getByText("Source: workspace")).toBeInTheDocument();
+
+    await user.clear(screen.getByRole("textbox", { name: "Compact prompt" }));
+    await user.tab();
+
+    await waitFor(() => {
+      expect(mockUpdateWorkspace).toHaveBeenCalledWith("workspace-1", { compact_prompt: null });
+    });
   });
 });
