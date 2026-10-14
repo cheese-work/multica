@@ -352,18 +352,6 @@ func buildWorkspaceCreateBody(cmd *cobra.Command) (map[string]any, error) {
 		}
 		body["issue_prefix"] = v
 	}
-	if cmd.Flags().Changed("compact-prompt-file") {
-		path, _ := cmd.Flags().GetString("compact-prompt-file")
-		if path == "null" {
-			body["compact_prompt"] = nil
-		} else {
-			prompt, err := os.ReadFile(path)
-			if err != nil {
-				return nil, fmt.Errorf("read --compact-prompt-file: %w", err)
-			}
-			body["compact_prompt"] = string(prompt)
-		}
-	}
 	return body, nil
 }
 
@@ -711,6 +699,18 @@ func buildWorkspaceUpdateBody(cmd *cobra.Command) (map[string]any, error) {
 			return nil, fmt.Errorf("--issue-prefix cannot be empty; clearing the prefix is not supported")
 		}
 		body["issue_prefix"] = v
+	}
+	if cmd.Flags().Changed("compact-prompt-file") {
+		path, _ := cmd.Flags().GetString("compact-prompt-file")
+		if path == "null" {
+			body["compact_prompt"] = nil
+		} else {
+			prompt, err := os.ReadFile(path)
+			if err != nil {
+				return nil, fmt.Errorf("read --compact-prompt-file: %w", err)
+			}
+			body["compact_prompt"] = string(prompt)
+		}
 	}
 	return body, nil
 }
