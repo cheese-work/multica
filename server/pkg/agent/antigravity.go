@@ -231,6 +231,25 @@ func antigravityResultStatus(status string) string {
 	}
 }
 
+// antigravityStaleResumedResultError reports whether a structured result error
+// on a resumed conversation is historical rather than this turn's failure. The
+// result of a resumed conversation can keep an old error (CHE-1710) while the
+// current turn finished: the latest response is DONE with non-empty text, the
+// process exited 0, no current tool failed, and this run's own log carries
+// neither an executor error nor a print timeout. Any current-turn evidence
+// keeps the failure.
+func antigravityStaleResumedResultError(resumed bool, status, providerError, response string, agentResponseDone, toolFailed bool, waitErr error, logPath string) bool {
+	return resumed &&
+		antigravityResultStatus(status) == "failed" &&
+		strings.TrimSpace(providerError) != "" &&
+		strings.TrimSpace(response) != "" &&
+		agentResponseDone &&
+		!toolFailed &&
+		waitErr == nil &&
+		antigravityProviderError(logPath) == "" &&
+		!antigravityPrintTimedOut(logPath)
+}
+
 func antigravityCompletedDespiteTrailingNetworkError(providerError, response string, agentResponseDone bool) bool {
 	return strings.EqualFold(strings.TrimSpace(providerError), antigravityNetworkIssueError) &&
 		strings.TrimSpace(response) != "" &&
@@ -350,6 +369,7 @@ func (b *antigravityBackend) Execute(ctx context.Context, prompt string, opts Ex
 		streamTools := make(map[int]antigravityToolState)
 		streamLatestAgentResponseStep := -1
 		streamLatestAgentResponseDone := false
+		streamToolFailed := false
 		finalStatus := "completed"
 		var finalError string
 
@@ -372,6 +392,9 @@ func (b *antigravityBackend) Execute(ctx context.Context, prompt string, opts Ex
 					}
 					if event.StepUpdate.ConversationID != "" {
 						streamSessionID = event.StepUpdate.ConversationID
+					}
+					if info := event.StepUpdate.ToolInfo; info != nil && info.Error != nil {
+						streamToolFailed = true
 					}
 					for _, message := range antigravityToolMessages(event.StepUpdate, streamTools) {
 						// Tool lifecycle events also drive the daemon's in-flight
@@ -459,6 +482,10 @@ func (b *antigravityBackend) Execute(ctx context.Context, prompt string, opts Ex
 				// follow-up network operation. Preserve the finished answer instead
 				// of presenting that trailing transport error as a failed turn.
 				b.cfg.Logger.Warn("agy reported a trailing network error after a completed response", "err", streamResultError)
+			} else if antigravityStaleResumedResultError(opts.ResumeSessionID != "", streamResultStatus, streamResultError, streamResponse, streamLatestAgentResponseDone, streamToolFailed, waitErr, logPath) {
+				// A resumed conversation's result can carry an earlier turn's
+				// error after this turn completed cleanly (CHE-1710).
+				b.cfg.Logger.Warn("agy ignored a stale resumed-conversation result error", "err", streamResultError)
 			} else {
 				// Prefer the provider's structured error even when agy also exits
 				// non-zero; the process status alone discards the actionable cause.
