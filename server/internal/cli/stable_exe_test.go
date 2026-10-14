@@ -20,7 +20,7 @@ func TestStableExecutablePath(t *testing.T) {
 		got := StableExecutablePath(keg, "/home/linuxbrew/.linuxbrew", true)
 		// filepath.Join semantics: identical strings on unix (where brew
 		// exists), OS-native separators wherever the test runs.
-		if want := filepath.Join("/home/linuxbrew/.linuxbrew", "bin", "multica"); got != want {
+		if want := filepath.FromSlash("/home/linuxbrew/.linuxbrew/bin/multica"); got != want {
 			t.Errorf("StableExecutablePath = %q, want %q", got, want)
 		}
 	})

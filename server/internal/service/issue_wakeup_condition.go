@@ -62,7 +62,7 @@ var errBadCondition = errors.New("invalid condition")
 // Keep polling so delayed webhooks, snapshots or restored configuration heal.
 var (
 	errPRSnapshotsUnavailable = errors.New("PR checks cannot be evaluated: GitHub snapshot refresh is unavailable on this server; ask the server administrator to configure the GitHub App snapshot client")
-	errPRNotLinked            = errors.New("No pull request is linked to this issue; link the PR to this issue (a parent issue's PR is not included), or wait for the linking webhook")
+	errPRNotLinked            = errors.New("no pull request is linked to this issue; link the PR to this issue (a parent issue's PR is not included), or wait for the linking webhook")
 	errPRSnapshotPending      = errors.New("PR check snapshot is not available yet; inspect this issue's pull-requests snapshot_available field and ask the server administrator to check snapshot refresh if it persists")
 )
 
@@ -394,7 +394,7 @@ func (s *IssueWakeupService) pollCondition(ctx context.Context, tx pgx.Tx, q *db
 	if err != nil && !conditionDiagnostic(err) {
 		return w.NextFireAt, err
 	}
-	if err = saveConditionDiagnostic(ctx, q, w, err); err != nil {
+	if err := saveConditionDiagnostic(ctx, q, w, err); err != nil {
 		return w.NextFireAt, err
 	}
 	// condition_state dedups a satisfied predicate; each new satisfaction
@@ -429,7 +429,7 @@ func (s *IssueWakeupService) baselineCondition(ctx context.Context, tx pgx.Tx, q
 	if err != nil && !conditionDiagnostic(err) {
 		return err
 	}
-	if err = saveConditionDiagnostic(ctx, q, w, err); err != nil {
+	if err := saveConditionDiagnostic(ctx, q, w, err); err != nil {
 		return err
 	}
 	if !met {

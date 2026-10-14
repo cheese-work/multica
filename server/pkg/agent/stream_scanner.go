@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"io"
+	"slices"
 )
 
 // agentStreamMaxLineBytes bounds a single line read from an agent CLI's
@@ -53,7 +54,7 @@ func readAgentStreamLine(r *bufio.Reader) ([]byte, error) {
 	discard := false
 	for {
 		chunk, err := r.ReadSlice('\n')
-		if err == bufio.ErrBufferFull {
+		if errors.Is(err, bufio.ErrBufferFull) {
 			if !discard {
 				line = append(line, chunk...)
 				if discard = len(line) > agentStreamMaxLineBytes; discard {
@@ -69,7 +70,7 @@ func readAgentStreamLine(r *bufio.Reader) ([]byte, error) {
 			if discard {
 				return nil, bufio.ErrTooLong
 			}
-			if tail := append(line, chunk...); len(tail) > 0 {
+			if tail := slices.Concat(line, chunk); len(tail) > 0 {
 				if len(tail) > agentStreamMaxLineBytes {
 					return nil, bufio.ErrTooLong
 				}

@@ -2,6 +2,7 @@ package lark
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -67,7 +68,7 @@ func TestTypingRetentionErasesCredentialsAndStopsRetriesDB(t *testing.T) {
 				t.Fatalf("failed cleanup not preserved distinctly: abandoned=%v redacted=%v cleaned=%v", abandoned, redacted, cleaned)
 			}
 			_, err := f.store.FinishChannelTypingReactionAdd(context.Background(), db.FinishChannelTypingReactionAddParams{ID: uuidFromString(t, id), ReactionID: "late", CleanupRequired: true})
-			if err != pgx.ErrNoRows {
+			if !errors.Is(err, pgx.ErrNoRows) {
 				t.Fatalf("late Add resurrected expired ledger: %v", err)
 			}
 			fresh.Reconcile(context.Background(), f.sessionID)

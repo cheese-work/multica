@@ -51,7 +51,8 @@ func TestAutostartProfileSlug(t *testing.T) {
 		t.Errorf("slugs of team/dev and team-dev collide; the hash suffix must keep them distinct")
 	}
 	// Deterministic: the same profile must map to the same entry forever.
-	if autostartProfileSlug("team/dev") != autostartProfileSlug("team/dev") {
+	first, second := autostartProfileSlug("team/dev"), autostartProfileSlug("team/dev")
+	if first != second {
 		t.Errorf("autostartProfileSlug is not deterministic")
 	}
 }
@@ -893,7 +894,7 @@ func TestAutostartSpecForUsesStableBrewPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("autostartSpecFor = %v", err)
 	}
-	want := filepath.Join("/opt/homebrew", "bin", "multica")
+	want := filepath.FromSlash("/opt/homebrew/bin/multica")
 	if spec.Exe != want {
 		t.Fatalf("autostartSpecFor exe = %q, want the stable brew symlink path %q — a recorded keg path is deleted by the next brew upgrade",
 			spec.Exe, want)

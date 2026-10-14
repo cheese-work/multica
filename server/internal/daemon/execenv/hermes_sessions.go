@@ -223,7 +223,7 @@ func hermesStoreHasSessionDB(storeDir string) bool {
 	if err != nil {
 		return false
 	}
-	defer db.Close()
+	_ = db.Close()
 	return true
 }
 

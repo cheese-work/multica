@@ -575,7 +575,7 @@ func (s *IssueWakeupService) save(ctx context.Context, issueID, member, source, 
 		return out, err
 	}
 	if len(out.Condition) > 0 && conditionFiresOnChange(out.Condition) {
-		if err = s.baselineCondition(ctx, tx, q, out, now); err != nil {
+		if err := s.baselineCondition(ctx, tx, q, out, now); err != nil {
 			return out, err
 		}
 		out, err = q.LockIssueWakeup(ctx, out.ID)

@@ -114,9 +114,9 @@ func bindDaemonHealthPort(preferred int, listen func(string, string) (net.Listen
 		if runtime.GOOS == "windows" {
 			hint = "; inspect reserved ports with 'netsh interface ipv4 show excludedportrange protocol=tcp'"
 		}
-		return nil, 0, fmt.Errorf("bind health port %s: %w; fallback bind: %v%s", addr, preferredErr, err, hint)
+		return nil, 0, fmt.Errorf("bind health port %s: %w; fallback bind: %w%s", addr, preferredErr, err, hint)
 	}
-	port := ln.Addr().(*net.TCPAddr).Port
+	port := ln.Addr().(*net.TCPAddr).Port //nolint:errcheck // listen returns a TCP listener for the "tcp" network
 	fmt.Fprintf(os.Stderr, "Health port %s could not be bound: %v; using 127.0.0.1:%d instead.\n", addr, preferredErr, port)
 	return ln, port, nil
 }

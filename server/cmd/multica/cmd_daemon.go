@@ -1169,7 +1169,7 @@ func runDaemonForeground(cmd *cobra.Command) error {
 		if daemonUnderOwnSystemdUnit(profile) {
 			logger.Info("handing off to systemd for the updated binary",
 				"path", restartBin, "exit_code", daemonSystemdHandoffExitStatus)
-			os.Exit(daemonSystemdHandoffExitStatus)
+			os.Exit(daemonSystemdHandoffExitStatus) //nolint:gocritic // deliberate: systemd must see this exact exit status; deferred cleanup is moot once the successor takes over
 		}
 
 		args := buildDaemonStartArgs(cmd)
