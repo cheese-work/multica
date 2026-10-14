@@ -30,9 +30,11 @@ import (
 // On confidence < minConfidence or error, it returns (false, advisory) where advisory contains
 // pre-computed recommendations to append to the squad leader's handoff note.
 func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad db.Squad, authorType, authorID, leaderOriginator string, triggerCommentID ...pgtype.UUID) (bool, string) {
-	// Sol directive & Sonnet Blocker 2: Do not route agent-authored actions through Jev.
-	// Preserve worker-result returns to the squad leader.
-	if authorType == "agent" {
+	// Sol directive & Sonnet Blocker 2: Do not route agent-authored comments through Jev.
+	// Worker-result returns and agent comment replies stay with the squad leader.
+	// Authorized agent-created issues and agent-originated squad assignments (non-comment paths)
+	// are preserved for Jev routing.
+	if authorType == "agent" && len(triggerCommentID) > 0 && triggerCommentID[0].Valid {
 		return false, ""
 	}
 

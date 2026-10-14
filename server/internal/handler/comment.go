@@ -2038,9 +2038,6 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	groupedAtt := h.groupAttachments(r, []pgtype.UUID{comment.ID})
 	resp := commentToResponse(comment, nil, groupedAtt[uuidToString(comment.ID)])
 	resp.IssueRevision = created.IssueRevision
-	if created.IssueRevision > 0 {
-		issue.Revision = created.IssueRevision
-	}
 	slog.Info("comment created", append(logger.RequestAttrs(r), "comment_id", uuidToString(comment.ID), "issue_id", issueID)...)
 	commentEvent := map[string]any{
 		"comment":             resp,
@@ -2147,6 +2144,14 @@ func isNoteComment(content string) bool {
 func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, comment db.Comment, parentComment *db.Comment, actorType, actorID, originatorUserID string, suppressAgentIDs, steerTaskIDs []pgtype.UUID) []CommentTriggerOutcome {
 	if isNoteComment(comment.Content) || comment.Type == "jev_route" {
 		return nil
+	}
+	// Shared comment-trigger seam: refresh the issue snapshot from DB so evaluation
+	// uses the true post-insert revision and state across all entry points (CreateComment,
+	// RunQuickAction, etc.) without stamping stale snapshots (CHE-1708).
+	if comment.IssueID.Valid && h.Queries != nil {
+		if fresh, err := h.Queries.GetIssue(ctx, comment.IssueID); err == nil {
+			issue = fresh
+		}
 	}
 	triggers, targets := h.computeCommentAgentTriggers(ctx, issue, comment.Content, parentComment, actorType, actorID, commentTriggerComputeOptions{
 		ExcludeTriggerCommentID: comment.ID,
