@@ -25,15 +25,15 @@ Desktop handoffs never call the CLI-only `/api/cli-token` endpoint.
 
 ## Lane-summary removal
 
-Deploy the code removal before merging the separate migration 619 PR.
+Deploy the code removal before merging the separate migration 624 PR.
 The C00 deploy applies migrations before the blue/green cutover. Dropping
 the columns in the code-removal deploy would break the old colour while it
 still serves traffic. The code-removal PR leaves both database columns in
-place and uses `server/pkg/db/schema/retired_chat_session_lane_summary.sql`
-only as sqlc's offline schema input. The runtime migration runner reads
-`server/migrations/`, not this code-generation schema.
+place without referencing them in generated queries. The migration follow-up
+removes the temporary code-generation schema input because the runtime
+schema then matches the generated model.
 
-Migration 619 drops `chat_session.lane_summary` and
+Migration 624 drops `chat_session.lane_summary` and
 `lane_summary_updated_at` only after the column-independent server is
 deployed to C00. The column drop also removes rollback compatibility with
 older servers that select the columns. Before applying the migration to a live database,
