@@ -2,9 +2,7 @@ version: "2"
 sql:
   - engine: "postgresql"
     queries: "pkg/db/queries/"
-    schema:
-      - "migrations/"
-      - "pkg/db/schema/retired_chat_session_lane_summary.sql"
+    schema: "migrations/"
     gen:
       go:
         package: "db"
