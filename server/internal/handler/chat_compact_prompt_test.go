@@ -157,8 +157,13 @@ func TestWorkspaceCompactPromptField(t *testing.T) {
 		t.Fatalf("/compact did not use the saved workspace prompt: %+v", response.Task)
 	}
 
-	for _, invalid := range []any{42, strings.Repeat("x", 16385)} {
-		keepsOthers(patch(map[string]any{"compact_prompt": invalid}, http.StatusBadRequest))
+	// 1e400 overflows float64; it must be rejected, not read as null (review).
+	for _, invalid := range []any{42, strings.Repeat("x", 16385), json.RawMessage("1e400")} {
+		settings := patch(map[string]any{"compact_prompt": invalid}, http.StatusBadRequest)
+		keepsOthers(settings)
+		if settings["compact_prompt"] != "Keep candidate SHAs." {
+			t.Fatalf("invalid %v changed the saved prompt: %v", invalid, settings)
+		}
 	}
 
 	settings = patch(map[string]any{"compact_prompt": nil}, http.StatusOK)

@@ -1220,3 +1220,21 @@ func TestBuildWorkspaceUpdateBodyCompactPrompt(t *testing.T) {
 		t.Fatal("expected an error for a missing prompt file")
 	}
 }
+
+// CHE-1612 review: digest mode updates context only, so the compact prompt
+// flag must be rejected, not silently dropped.
+func TestWorkspaceUpdateDigestRejectsCompactPromptFile(t *testing.T) {
+	resetWorkspaceUpdateFlags(t)
+	t.Cleanup(func() { resetWorkspaceUpdateFlags(t) })
+	path := filepath.Join(t.TempDir(), "prompt.md")
+	if err := os.WriteFile(path, []byte("New value"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	setStringFlag(t, "context-file", path)
+	setStringFlag(t, "expected-before-digest", strings.Repeat("0", 64))
+	setStringFlag(t, "compact-prompt-file", path)
+	_, err := buildWorkspaceUpdateDigestBody(workspaceUpdateCmd)
+	if err == nil || !strings.Contains(err.Error(), "--compact-prompt-file") {
+		t.Fatalf("err = %v, want a conflict naming --compact-prompt-file", err)
+	}
+}

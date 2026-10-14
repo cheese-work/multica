@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../locales/en/common.json";
@@ -270,5 +270,25 @@ describe("WorkspaceTab — automatic updates", () => {
     await waitFor(() => {
       expect(mockUpdateWorkspace).toHaveBeenCalledWith("workspace-1", { compact_prompt: null });
     });
+  });
+
+  // CHE-1612 review: an open, untouched page must follow a prompt saved
+  // elsewhere (the CLI), never write its stale draft back over it.
+  it("shows a compact prompt saved elsewhere without writing the untouched field back", async () => {
+    const view = render(<WorkspaceTab />, { wrapper: I18nWrapper });
+    expect(screen.getByRole("textbox", { name: "Compact prompt" })).toHaveValue("");
+
+    workspaceRef.current = {
+      ...workspaceRef.current,
+      settings: { compact_prompt: "Saved from CLI." },
+    };
+    view.rerender(<WorkspaceTab />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(700);
+    });
+
+    expect(mockUpdateWorkspace).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox", { name: "Compact prompt" })).toHaveValue("Saved from CLI.");
+    expect(screen.getByText("Source: workspace")).toBeInTheDocument();
   });
 });
