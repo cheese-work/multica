@@ -328,6 +328,10 @@ type UpdateWorkspaceRequest struct {
 	Repos       any     `json:"repos"`
 	IssuePrefix *string `json:"issue_prefix"`
 	AvatarURL   *string `json:"avatar_url"`
+	// CompactPrompt sets settings.compact_prompt alone (CHE-1612); null resets
+	// it to the built-in default. Raw so an explicit null is distinguishable
+	// from an absent key.
+	CompactPrompt json.RawMessage `json:"compact_prompt"`
 
 	// ExpectedBeforeDigest drives two guarded paths: CHE-764's Hermes
 	// exception (hermesExceptionMatchesWorkspaceContext: this exact
@@ -498,6 +502,19 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		}
 		s, _ := json.Marshal(req.Settings)
 		params.Settings = s
+	}
+	if req.CompactPrompt != nil {
+		var prompt any
+		_ = json.Unmarshal(req.CompactPrompt, &prompt)
+		if err := validateCompactPromptConfig(map[string]any{"compact_prompt": prompt}); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if text, ok := prompt.(string); ok {
+			params.CompactPrompt = pgtype.Text{String: text, Valid: true}
+		} else {
+			params.CompactPromptReset = pgtype.Bool{Bool: true, Valid: true}
+		}
 	}
 	if req.Repos != nil {
 		reposJSON, err := validateAndNormalizeWorkspaceRepos(req.Repos)

@@ -218,6 +218,7 @@ func init() {
 	workspaceUpdateCmd.Flags().Bool("context-stdin", false, "Read context from stdin (preserves multi-line content verbatim)")
 	workspaceUpdateCmd.Flags().String("context-file", "", "Read context from a file, byte-for-byte (no escape decoding)")
 	workspaceUpdateCmd.Flags().String("issue-prefix", "", "New issue prefix (uppercased server-side)")
+	workspaceUpdateCmd.Flags().String("compact-prompt-file", "", "Set the /compact summary prompt from a file, byte-for-byte; pass null to reset to the built-in default. Changes no other workspace setting")
 	workspaceUpdateCmd.Flags().String("expected-before-digest", "", "sha256 hex digest of the context value the caller believes is currently live; enables a conditional compare-and-swap write instead of an unconditional update. Requires the context to be set via --context-stdin or --context-file (inline --context is refused so the candidate never appears in arguments), and forbids combining with any other update flag. The digest is over the RAW UTF-8 bytes of the live value (no newline stripping; a card-manifest digest that strips one terminal LF does not match a value ending in LF). A 5xx or dropped connection is reported as AMBIGUOUS and is never retried.")
 	workspaceUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 
@@ -350,6 +351,18 @@ func buildWorkspaceCreateBody(cmd *cobra.Command) (map[string]any, error) {
 			return nil, fmt.Errorf("--issue-prefix cannot be empty; omit it to use the server-generated prefix")
 		}
 		body["issue_prefix"] = v
+	}
+	if cmd.Flags().Changed("compact-prompt-file") {
+		path, _ := cmd.Flags().GetString("compact-prompt-file")
+		if path == "null" {
+			body["compact_prompt"] = nil
+		} else {
+			prompt, err := os.ReadFile(path)
+			if err != nil {
+				return nil, fmt.Errorf("read --compact-prompt-file: %w", err)
+			}
+			body["compact_prompt"] = string(prompt)
+		}
 	}
 	return body, nil
 }
@@ -758,7 +771,7 @@ func runWorkspaceUpdate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if len(body) == 0 {
-		return fmt.Errorf("no fields to update; use --name, --description, --context, or --issue-prefix")
+		return fmt.Errorf("no fields to update; use --name, --description, --context, --issue-prefix, or --compact-prompt-file")
 	}
 
 	var ws map[string]any
