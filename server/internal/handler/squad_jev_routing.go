@@ -22,9 +22,8 @@ import (
 
 // tryJevSquadRouting attempts server-side fast-path routing using TypeSafe AI's Jev model.
 // When confidence >= minConfidence (default 0.90) and snapshot freshness validates atomically,
-// it dispatches the task directly to the selected squad worker, updates status (backlog/todo -> in_progress,
-// or in_progress -> in_review for reviewer roles), writes an announcement comment (type='jev_route'),
-// and records squad activity.
+// it dispatches the task directly to the selected squad worker, updates status (backlog/todo -> in_progress),
+// writes an announcement comment (type='jev_route'), and records squad activity.
 // On confidence < minConfidence or error, it returns (false, advisory) where advisory contains
 // pre-computed recommendations to append to the squad leader's handoff note.
 func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad db.Squad, authorType, authorID, leaderOriginator string) (bool, string) {
@@ -33,7 +32,7 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 		return false, ""
 	}
 
-	decisionID := fmt.Sprintf("jd_%s", strings.ReplaceAll(dbid.NewV7().String()[:8], "-", ""))
+	decisionID := fmt.Sprintf("jd_%s", strings.ReplaceAll(dbid.NewV7().String(), "-", "")[24:])
 	apiURL := strings.TrimSpace(config.Settings.JevAPIURL)
 	if apiURL != "" {
 		parsedURL, err := url.Parse(apiURL)
@@ -153,9 +152,10 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 		}
 
 		if len(eligible) > 0 {
+			// Locate the latest human comment (last in chronological order)
 			latestHumanIdx := -1
-			for i, c := range eligible {
-				if c.AuthorType == "member" || c.AuthorType == "user" {
+			for i := len(eligible) - 1; i >= 0; i-- {
+				if eligible[i].AuthorType == "member" || eligible[i].AuthorType == "user" {
 					latestHumanIdx = i
 					break
 				}
@@ -169,21 +169,42 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 				}
 			}
 
+			// Budget comments newest-first up to 14,000 tokens, always preserving latest human comment
 			commentTokens := 0
-			formattedComments := make([]map[string]any, 0, len(eligible))
-			for i, c := range eligible {
-				content := c.Content
-				if latestHumanIdx < 0 || i != latestHumanIdx {
-					if jev.EstimateTokens(content) > 1000 {
-						content = truncateRunes(content, 3000)
-					}
-				}
+			var includedIndices []int
 
+			if latestHumanIdx >= 0 {
+				commentTokens += jev.EstimateTokens(eligible[latestHumanIdx].Content)
+				includedIndices = append(includedIndices, latestHumanIdx)
+			}
+
+			// Iterate newest to oldest
+			for i := len(eligible) - 1; i >= 0; i-- {
+				if i == latestHumanIdx {
+					continue
+				}
+				content := eligible[i].Content
+				if jev.EstimateTokens(content) > 1000 {
+					content = truncateRunes(content, 3000)
+				}
 				est := jev.EstimateTokens(content)
-				if commentTokens+est > 14000 && len(formattedComments) > 0 {
+				if commentTokens+est > 14000 {
 					break
 				}
 				commentTokens += est
+				includedIndices = append(includedIndices, i)
+			}
+
+			// Restore chronological order
+			sort.Ints(includedIndices)
+
+			formattedComments := make([]map[string]any, 0, len(includedIndices))
+			for _, idx := range includedIndices {
+				c := eligible[idx]
+				content := c.Content
+				if idx != latestHumanIdx && jev.EstimateTokens(content) > 1000 {
+					content = truncateRunes(content, 3000)
+				}
 				formattedComments = append(formattedComments, map[string]any{
 					"id":          uuidToString(c.ID),
 					"author_type": c.AuthorType,
@@ -413,10 +434,12 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 			"issue_id", uuidToString(issue.ID),
 			"agent_id", uuidToString(winnerAgent.ID),
 			"error", err)
-		priorChanges := "none"
+		var priorParts []string
 		if statusChanged {
-			priorChanges = fmt.Sprintf("status -> %s (retained)", newStatus)
+			priorParts = append(priorParts, fmt.Sprintf("status -> %s (retained)", newStatus))
 		}
+		priorParts = append(priorParts, "jev_route comment (retained)", "outcome=action activity (retained)")
+		priorChanges := strings.Join(priorParts, ", ")
 		advisory := fmt.Sprintf("### Jev Pre-Route Advisory\n- Proposed: %s · Conf %.2f\n- Runner-up: %s · Conf %.2f\n- Ambiguity: Jev selected %s (Tier %s, Conf %.2f), but automated task enqueue failed: %v\n- Prior State Changes: %s\n- Decision ID: %s",
 			winnerLabel, confidence, runnerUpLabel, runnerUpProb, winnerAgent.Name, winnerTier, confidence, err, priorChanges, decisionID)
 		return false, advisory
@@ -463,30 +486,27 @@ func parseSquadTierList(instructions string, candidates []db.Agent) map[string]s
 				cells = cells[1 : len(cells)-1]
 			}
 
-			// Check table header
-			var cellsLower []string
-			hasTier := false
-			hasMember := false
-			for _, c := range cells {
-				cl := strings.ToLower(c)
-				cellsLower = append(cellsLower, cl)
-				if strings.Contains(cl, "tier") {
-					hasTier = true
-				}
-				if strings.Contains(cl, "member") || strings.Contains(cl, "agent") || strings.Contains(cl, "specialist") {
-					hasMember = true
-				}
+			// Skip markdown table separator rows like |---|---|
+			if strings.Trim(strings.ReplaceAll(trimmed, "|", ""), "-: ") == "" {
+				continue
 			}
 
-			if hasTier && hasMember {
-				for idx, cl := range cellsLower {
-					if strings.Contains(cl, "tier") {
-						tableTierCol = idx
-					} else if strings.Contains(cl, "member") || strings.Contains(cl, "agent") || strings.Contains(cl, "specialist") {
-						tableMemberCol = idx
+			// If not yet in a table, check for table header row
+			if tableTierCol < 0 {
+				var tierIdx, memberIdx = -1, -1
+				for idx, c := range cells {
+					cl := strings.ToLower(c)
+					if cl == "tier" || cl == "rank" || cl == "ranking" || cl == "tier ranking" {
+						tierIdx = idx
+					} else if cl == "member" || cl == "agent" || cl == "specialist" || cl == "name" {
+						memberIdx = idx
 					}
 				}
-				continue
+				if tierIdx >= 0 && memberIdx >= 0 {
+					tableTierCol = tierIdx
+					tableMemberCol = memberIdx
+					continue
+				}
 			}
 
 			// Table data row
@@ -526,7 +546,7 @@ func parseSquadTierList(instructions string, candidates []db.Agent) map[string]s
 			if loc == nil {
 				continue
 			}
-			// Search for tier within this candidate's clause
+			// Search for tier strictly within this candidate's clause
 			sub := line[loc[1]:]
 			endIdx := len(sub)
 			for _, delim := range []string{",", ";", ".", "\n"} {
@@ -536,12 +556,6 @@ func parseSquadTierList(instructions string, candidates []db.Agent) map[string]s
 			}
 			clause := sub[:endIdx]
 			if m := tierRegex.FindStringSubmatch(clause); len(m) > 0 {
-				tier := m[1]
-				if tier == "" {
-					tier = m[2]
-				}
-				tiers[candID] = strings.ToUpper(tier)
-			} else if m := tierRegex.FindStringSubmatch(line); len(m) > 0 {
 				tier := m[1]
 				if tier == "" {
 					tier = m[2]
