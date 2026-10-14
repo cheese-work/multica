@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/governance"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -39,6 +40,11 @@ type governanceConfigPatch struct {
 	RuleMode                     *governance.RuleMode   `json:"rule_mode,omitempty"`
 	Limits                       *governanceLimitsPatch `json:"limits,omitempty"`
 	RollbackToVersion            *int64                 `json:"rollback_to_version,omitempty"`
+
+	// Jev Squad Routing Settings (CHE-1708)
+	JevSquadRoutingEnabled   *bool    `json:"jev_squad_routing_enabled,omitempty"`
+	JevAPIURL                *string  `json:"jev_api_url,omitempty"`
+	JevMinConfidence         *float64 `json:"jev_min_confidence,omitempty"`
 }
 
 type governanceLimitsPatch struct {
@@ -361,6 +367,10 @@ func loadGovernanceControl(ctx context.Context, database dbExecutor, workspaceID
 	if errors.Is(err, pgx.ErrNoRows) {
 		return config, nil
 	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+		return config, nil
+	}
 	if err != nil {
 		return governance.WorkspaceConfig{}, err
 	}
@@ -378,11 +388,15 @@ func validGovernanceConfigPatch(patch governanceConfigPatch) bool {
 		return false
 	}
 	settingsProvided := patch.JevGovernanceEnabled != nil || patch.JevFallbackAgentsEnabled != nil ||
-		patch.GovernanceCorrectionsEnabled != nil || patch.RuleMode != nil || patch.Limits != nil
+		patch.GovernanceCorrectionsEnabled != nil || patch.RuleMode != nil || patch.Limits != nil ||
+		patch.JevSquadRoutingEnabled != nil || patch.JevAPIURL != nil || patch.JevMinConfidence != nil
 	if patch.RollbackToVersion != nil {
 		return !settingsProvided
 	}
 	if !settingsProvided {
+		return false
+	}
+	if patch.JevMinConfidence != nil && (*patch.JevMinConfidence < 0.0 || *patch.JevMinConfidence > 1.0) {
 		return false
 	}
 	if patch.RuleMode != nil && *patch.RuleMode != governance.RuleModeOff && *patch.RuleMode != governance.RuleModeShadow && *patch.RuleMode != governance.RuleModeCorrection {
@@ -419,6 +433,15 @@ func applyGovernanceConfigPatch(settings *governance.WorkspaceSettings, patch go
 	}
 	if patch.RuleMode != nil {
 		settings.RuleMode = *patch.RuleMode
+	}
+	if patch.JevSquadRoutingEnabled != nil {
+		settings.JevSquadRoutingEnabled = *patch.JevSquadRoutingEnabled
+	}
+	if patch.JevAPIURL != nil {
+		settings.JevAPIURL = strings.TrimSpace(*patch.JevAPIURL)
+	}
+	if patch.JevMinConfidence != nil {
+		settings.JevMinConfidence = patch.JevMinConfidence
 	}
 	if patch.Limits != nil {
 		limits := &settings.Limits

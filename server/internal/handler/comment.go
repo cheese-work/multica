@@ -2140,7 +2140,7 @@ func isNoteComment(content string) bool {
 // steerTaskIDs are the running turns the author chose: a recipient whose chosen
 // turn is still running receives this comment there instead of a follow-up run.
 func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, comment db.Comment, parentComment *db.Comment, actorType, actorID, originatorUserID string, suppressAgentIDs, steerTaskIDs []pgtype.UUID) []CommentTriggerOutcome {
-	if isNoteComment(comment.Content) {
+	if isNoteComment(comment.Content) || comment.Type == "jev_route" {
 		return nil
 	}
 	triggers, targets := h.computeCommentAgentTriggers(ctx, issue, comment.Content, parentComment, actorType, actorID, commentTriggerComputeOptions{

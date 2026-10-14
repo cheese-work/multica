@@ -13,6 +13,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/jev"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -141,6 +142,18 @@ func ownerCASParse(w http.ResponseWriter, raw map[string]json.RawMessage, c owne
 	if strings.ContainsRune(content, 0) {
 		writeError(w, http.StatusBadRequest, c.field+" must not contain NUL bytes")
 		return "", "", false
+	}
+	if c.kind == "squad.instructions" {
+		if tokens := jev.EstimateTokens(content); tokens > 3000 {
+			writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("squad instructions exceed limit of 3000 tokens (estimated: %d tokens)", tokens))
+			return "", "", false
+		}
+	}
+	if c.kind == "agent.instructions" {
+		if tokens := jev.EstimateTokens(content); tokens > 4000 {
+			writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("agent instructions exceed limit of 4000 tokens (estimated: %d tokens)", tokens))
+			return "", "", false
+		}
 	}
 	digest, _ = ownerCASRawString(raw, ownerCASDigestKey)
 	if !isWellFormedDigestHex(digest) {

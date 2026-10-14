@@ -3,10 +3,12 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -17,6 +19,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
+	"github.com/multica-ai/multica/server/pkg/jev"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -236,14 +239,21 @@ func (h *Handler) CreateSquad(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name        string  `json:"name"`
-		Description string  `json:"description"`
-		LeaderID    string  `json:"leader_id"`
-		AvatarURL   *string `json:"avatar_url"`
+		Name         string  `json:"name"`
+		Description  string  `json:"description"`
+		LeaderID     string  `json:"leader_id"`
+		AvatarURL    *string `json:"avatar_url"`
+		Instructions *string `json:"instructions"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
+	}
+	if req.Instructions != nil {
+		if tokens := jev.EstimateTokens(*req.Instructions); tokens > 3000 {
+			writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("squad instructions exceed limit of 3000 tokens (estimated: %d tokens)", tokens))
+			return
+		}
 	}
 	if req.Name == "" {
 		writeError(w, http.StatusBadRequest, "name is required")
@@ -380,6 +390,13 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal(bodyBytes, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
+	}
+
+	if req.Instructions != nil {
+		if tokens := jev.EstimateTokens(*req.Instructions); tokens > 3000 {
+			writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("squad instructions exceed limit of 3000 tokens (estimated: %d tokens)", tokens))
+			return
+		}
 	}
 
 	// CHE-455: requireWorkspaceMember above does not reject agent actors —
@@ -1277,6 +1294,17 @@ func (h *Handler) enqueueSquadLeaderTask(ctx context.Context, issue db.Issue, tr
 	})
 	if err != nil {
 		return false
+	}
+
+	// Try Jev Squad Routing (CHE-1708)
+	if routed, advisory := h.tryJevSquadRouting(ctx, issue, squad, authorType, authorID); routed {
+		return true
+	} else if advisory != "" {
+		if strings.TrimSpace(handoffNote) != "" {
+			handoffNote = handoffNote + "\n\n" + advisory
+		} else {
+			handoffNote = advisory
+		}
 	}
 
 	// The gate must judge the SAME top-of-chain human the enqueue path will
