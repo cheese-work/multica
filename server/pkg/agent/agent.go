@@ -80,6 +80,12 @@ type ExecOptions struct {
 	// CODEX_HOME (CHE-737). Off by default.
 	CodexSQLiteInitRetry bool
 	ResumeSessionID      string // if non-empty, resume a previous agent session
+	// ResumePriorError is the error text the server recorded for a failed task
+	// of the ResumeSessionID conversation (CHE-1710). Only the Antigravity
+	// backend reads it, as positive evidence that a resumed result's error is
+	// historical. Empty means no evidence; it must be cleared with
+	// ResumeSessionID.
+	ResumePriorError string
 	// ResumeExpected records that this task intended to continue a prior
 	// conversation, independent of ResumeSessionID (which a fallback retry may
 	// clear). When it is true but the backend ends up on a fresh thread — the

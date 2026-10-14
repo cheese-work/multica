@@ -1997,10 +1997,15 @@ func TestGateResumeToReachableSession(t *testing.T) {
 			}
 			priorDir, envDir := realize(tt.priorDir), realize(tt.envDir)
 
-			task := Task{PriorSessionID: tt.sessionID, PriorWorkDir: priorDir}
+			task := Task{PriorSessionID: tt.sessionID, PriorWorkDir: priorDir, PriorSessionError: "recorded prior error"}
 			taskCtx := execenv.TaskContextForEnv{PriorSessionResumed: tt.sessionID != ""}
 
 			reachable := gateResumeToReachableSession(&task, &taskCtx, "claude", envDir, !tt.sessionHomeUnreachable, false, slog.Default())
+
+			// CHE-1710: the prior-error evidence is cleared with the dropped session.
+			if (task.PriorSessionError != "") != (tt.wantSession != "") && tt.sessionID != "" {
+				t.Fatalf("PriorSessionError = %q with PriorSessionID %q", task.PriorSessionError, tt.wantSession)
+			}
 
 			if reachable != tt.wantReused {
 				t.Fatalf("reachable = %v, want %v", reachable, tt.wantReused)

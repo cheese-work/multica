@@ -3705,6 +3705,18 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		}
 	}
 
+	// CHE-1710: offer the resumed session's recorded failure as evidence, only
+	// for the session this claim actually resumes. Absent on any lookup miss or
+	// error: the adapter then treats a resumed result error as current.
+	if resp.PriorSessionID != "" {
+		if prior, err := h.Queries.GetLastFailedTaskErrorForSession(r.Context(), db.GetLastFailedTaskErrorForSessionParams{
+			AgentID:   task.AgentID,
+			SessionID: pgtype.Text{String: resp.PriorSessionID, Valid: true},
+		}); err == nil && prior.Valid {
+			resp.PriorSessionError = prior.String
+		}
+	}
+
 	// Hydrate attribution only after every source/workspace/version gate has
 	// passed so a rejected claim cannot receive another user's profile data.
 	// The existing flat initiator fields carry the run's authorization human to

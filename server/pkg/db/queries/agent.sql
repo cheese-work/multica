@@ -3032,3 +3032,18 @@ RETURNING *;
 
 -- name: GetCommentThreadRootID :one
 SELECT comment_thread_root_id(@comment_id::uuid)::uuid AS id;
+
+-- name: GetLastFailedTaskErrorForSession :one
+-- CHE-1710: the error text of the agent's most recent failed task that ran the
+-- given provider session. The claim handler offers it next to PriorSessionID as
+-- positive evidence that a resumed Antigravity result error is historical, so
+-- it is keyed on the exact session being resumed and the claiming agent, and
+-- never falls back to another session or agent.
+SELECT error FROM agent_task_queue
+WHERE agent_id = $1
+  AND status = 'failed'
+  AND session_id = $2
+  AND error IS NOT NULL
+  AND error <> ''
+ORDER BY COALESCE(completed_at, started_at, created_at) DESC
+LIMIT 1;

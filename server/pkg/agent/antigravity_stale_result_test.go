@@ -78,8 +78,10 @@ func runStaleResumed(t *testing.T, ctx context.Context, f staleResumedFixture, o
 	return result
 }
 
+// resumedOpts resumes the conversation with the server-recorded prior failure,
+// the positive evidence that the result error is historical.
 func resumedOpts() ExecOptions {
-	return ExecOptions{ResumeSessionID: staleResumedConversationID}
+	return ExecOptions{ResumeSessionID: staleResumedConversationID, ResumePriorError: staleResumedError}
 }
 
 // The stale historical 404 must not fail a resumed turn whose current response
@@ -154,12 +156,33 @@ func TestAntigravityBackendKeepsResumedFailures(t *testing.T) {
 		{
 			name:   "genuine current 404 without a log entry and without prior-error provenance",
 			fix:    staleResumedFixture{response: "answer"},
-			opts:   resumedOpts(),
+			opts:   ExecOptions{ResumeSessionID: staleResumedConversationID},
 			status: "failed",
 			errHas: "NOT_FOUND",
 		},
 		{
-			name:   "current structured error that is not the stale 404 and is absent from the log",
+			name:   "prior error recorded for a different error",
+			fix:    staleResumedFixture{response: "answer"},
+			opts:   ExecOptions{ResumeSessionID: staleResumedConversationID, ResumePriorError: "agent executor error: UNAVAILABLE (code 503)"},
+			status: "failed",
+			errHas: "NOT_FOUND",
+		},
+		{
+			name:   "result names another conversation than the resumed one",
+			fix:    staleResumedFixture{response: "answer"},
+			opts:   ExecOptions{ResumeSessionID: "77a6d8f2-8523-46fc-8fc9-87e630cbe295", ResumePriorError: staleResumedError},
+			status: "failed",
+			errHas: "NOT_FOUND",
+		},
+		{
+			name:   "prior error without a resumed conversation",
+			fix:    staleResumedFixture{response: "answer"},
+			opts:   ExecOptions{ResumePriorError: staleResumedError},
+			status: "failed",
+			errHas: "NOT_FOUND",
+		},
+		{
+			name:   "current structured error that differs from the prior error and is absent from the log",
 			fix:    staleResumedFixture{response: "answer", resultError: "agent executor error: PERMISSION_DENIED (code 403): quota exhausted"},
 			opts:   resumedOpts(),
 			status: "failed",

@@ -4602,6 +4602,34 @@ func (q *Queries) GetCommentThreadRootID(ctx context.Context, commentID pgtype.U
 	return id, err
 }
 
+const getLastFailedTaskErrorForSession = `-- name: GetLastFailedTaskErrorForSession :one
+SELECT error FROM agent_task_queue
+WHERE agent_id = $1
+  AND status = 'failed'
+  AND session_id = $2
+  AND error IS NOT NULL
+  AND error <> ''
+ORDER BY COALESCE(completed_at, started_at, created_at) DESC
+LIMIT 1
+`
+
+type GetLastFailedTaskErrorForSessionParams struct {
+	AgentID   pgtype.UUID `json:"agent_id"`
+	SessionID pgtype.Text `json:"session_id"`
+}
+
+// CHE-1710: the error text of the agent's most recent failed task that ran the
+// given provider session. The claim handler offers it next to PriorSessionID as
+// positive evidence that a resumed Antigravity result error is historical, so
+// it is keyed on the exact session being resumed and the claiming agent, and
+// never falls back to another session or agent.
+func (q *Queries) GetLastFailedTaskErrorForSession(ctx context.Context, arg GetLastFailedTaskErrorForSessionParams) (pgtype.Text, error) {
+	row := q.db.QueryRow(ctx, getLastFailedTaskErrorForSession, arg.AgentID, arg.SessionID)
+	var error pgtype.Text
+	err := row.Scan(&error)
+	return error, err
+}
+
 const getLastTaskSession = `-- name: GetLastTaskSession :one
 WITH retired_sessions AS (
     SELECT DISTINCT r.retired_session_id AS session_id

@@ -6621,6 +6621,7 @@ func gateResumeToReachableSession(task *Task, taskCtx *execenv.TaskContextForEnv
 			"session_home_reachable", sessionHomeReachable,
 		)
 		task.PriorSessionID = ""
+		task.PriorSessionError = ""
 		taskCtx.PriorSessionResumed = false
 		// The user expected this run to continue the prior conversation; surface
 		// the loss instead of silently restarting (MUL-4424). Set it on BOTH
@@ -6918,6 +6919,7 @@ func gateCodexResumeToRolloutPresence(task *Task, taskCtx *execenv.TaskContextFo
 	taskLog.Warn("dropping prior codex session: rollout not present in task CODEX_HOME; starting a fresh thread",
 		"session_id", task.PriorSessionID, "codex_home", codexHome)
 	task.PriorSessionID = ""
+	task.PriorSessionError = ""
 	taskCtx.PriorSessionResumed = false
 	// The user expected this run to continue the prior conversation; surface the
 	// loss instead of silently restarting (MUL-4424). Set it on BOTH carriers:
@@ -8722,6 +8724,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		ThreadHandshakeTimeout:     d.cfg.CodexThreadHandshakeTimeout,
 		CodexSQLiteInitRetry:       d.cfg.CodexSQLiteInitRetry,
 		ResumeSessionID:            task.PriorSessionID,
+		ResumePriorError:           task.PriorSessionError,
 		// Post-gate intent: PriorSessionID here already reflects the pre-flight
 		// resume gates (a dropped resume is surfaced via the prompt instead). If it
 		// survived to here, the backend must disclose the loss when the live
@@ -8857,7 +8860,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// task and taskCtx are local (runTask takes task by value), so these
 		// mutations only affect the retry.
 		execOpts.ResumeSessionID = ""
+		execOpts.ResumePriorError = ""
 		task.PriorSessionID = ""
+		task.PriorSessionError = ""
 		task.PriorSessionResumeUnavailable = true
 		execOpts.ResumeContinuityNotice = ""
 		taskCtx.PriorSessionResumed = false

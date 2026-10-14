@@ -231,22 +231,24 @@ func antigravityResultStatus(status string) string {
 	}
 }
 
-// antigravityStale404Re matches the one historical error CHE-1710 proved stale.
-// ponytail: matches on error text, so a genuine current 404 with no log entry is
-// also tolerated; widen the proof (transcript turn boundary) if that ever shows.
-var antigravityStale404Re = regexp.MustCompile(`\b404\b`)
-
 // antigravityStaleResumedResultError reports whether a structured result error
 // on a resumed conversation is historical rather than this turn's failure. The
 // result of a resumed conversation can keep an old error (CHE-1710) while the
-// current turn finished: the error is a 404, the latest response is DONE with
-// non-empty text, the process exited 0, no current tool failed, and this run's
-// own log carries neither an executor error nor a print timeout. Any other
-// error or current-turn evidence keeps the failure.
-func antigravityStaleResumedResultError(resumed bool, status, providerError, response string, agentResponseDone, toolFailed bool, waitErr error, logPath string) bool {
-	return resumed &&
+// current turn finished. The error counts as historical only with positive
+// evidence: the server recorded the same error on an earlier failed task of the
+// exact conversation being resumed (priorError), and the result names that
+// conversation. Even then the current turn must be complete: the latest
+// response is DONE with non-empty text, the process exited 0, no current tool
+// failed, and this run's own log carries neither an executor error nor a print
+// timeout. No evidence, a different error or any current-turn failure keeps the
+// failure.
+func antigravityStaleResumedResultError(resumeID, priorError, resultSessionID, status, resultError, response string, agentResponseDone, toolFailed bool, waitErr error, logPath string) bool {
+	resultError = strings.TrimSpace(resultError)
+	return resumeID != "" &&
+		resultSessionID == resumeID &&
 		antigravityResultStatus(status) == "failed" &&
-		antigravityStale404Re.MatchString(providerError) &&
+		resultError != "" &&
+		strings.Contains(priorError, resultError) &&
 		strings.TrimSpace(response) != "" &&
 		agentResponseDone &&
 		!toolFailed &&
@@ -487,7 +489,7 @@ func (b *antigravityBackend) Execute(ctx context.Context, prompt string, opts Ex
 				// follow-up network operation. Preserve the finished answer instead
 				// of presenting that trailing transport error as a failed turn.
 				b.cfg.Logger.Warn("agy reported a trailing network error after a completed response", "err", streamResultError)
-			} else if antigravityStaleResumedResultError(opts.ResumeSessionID != "", streamResultStatus, streamResultError, streamResponse, streamLatestAgentResponseDone, streamToolFailed, waitErr, logPath) {
+			} else if antigravityStaleResumedResultError(opts.ResumeSessionID, opts.ResumePriorError, streamSessionID, streamResultStatus, streamResultError, streamResponse, streamLatestAgentResponseDone, streamToolFailed, waitErr, logPath) {
 				// A resumed conversation's result can carry an earlier turn's
 				// error after this turn completed cleanly (CHE-1710).
 				b.cfg.Logger.Warn("agy ignored a stale resumed-conversation result error", "err", streamResultError)
