@@ -1,5 +1,16 @@
 import type { Metadata } from "next";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { ChangelogPageClient } from "@/features/landing/components/changelog-page-client";
+import { forkBuildStamp, parseForkChangelog, unavailableFork } from "@/features/landing/components/fork-changelog";
+
+const fork = (() => {
+  try {
+    return parseForkChangelog(readFileSync(join(process.cwd(), ".fork-changelog/entries.json"), "utf8"));
+  } catch {
+    return unavailableFork;
+  }
+})();
 
 export const metadata: Metadata = {
   title: "Changelog",
@@ -16,5 +27,5 @@ export const metadata: Metadata = {
 };
 
 export default function ChangelogPage() {
-  return <ChangelogPageClient />;
+  return <ChangelogPageClient fork={fork} buildStamp={forkBuildStamp(process.env.NEXT_PUBLIC_APP_VERSION, process.env.NEXT_PUBLIC_BUILD_DATE)} />;
 }
