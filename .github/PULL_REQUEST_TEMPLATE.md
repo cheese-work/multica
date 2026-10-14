@@ -16,6 +16,26 @@
 
 REPLACE-THIS-LINE-WITH-YOUR-DISPOSITION
 
+## Changelog
+
+<!-- Replace the line below with one sentence a user notices, in English, plain text,
+     at most 140 characters. It publishes as this PR's entry on /changelog. Keep the
+     line verbatim, like Closes/Refs. A PR without a valid line is hidden from
+     /changelog; the placeholder below counts as missing.
+     The section follows the title type (feat, fix, perf); override it with
+     Changelog(feat|fix|perf): <sentence>.
+     Good:
+       Changelog: Issue lists now open instantly in large workspaces.
+       Changelog: none
+       Changelog(fix): Comments that end in an emoji no longer lose their last word.
+     Bad (plumbing, not user-facing):
+       Changelog: Refactor X store
+       Changelog: CHE-123 add Y
+     In a stack, only the PR that lands on `main` carries the line, for the whole stack.
+     Upstream-sync PRs use `Changelog: none`. -->
+
+Changelog: <one user-facing sentence, or none>
+
 ## Type of Change
 
 - [ ] Bug fix (non-breaking change that fixes an issue)
