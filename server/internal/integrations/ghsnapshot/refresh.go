@@ -42,6 +42,12 @@ var (
 	defaultSweepMaxRows  = int32(200)
 	maxChaseAttempts     = 12
 	queueBuffer          = 2048
+
+	// CHE-1665: decided snapshots are re-checked once they are this old, and
+	// the first sweep runs this long after start, so snapshots that went stale
+	// while the server was down drain without waiting a whole interval.
+	defaultRecheckTTL = time.Hour
+	defaultCatchUp    = time.Minute
 )
 
 // Manager owns the outbound GitHub API refresh pipeline. A Manager whose client
@@ -61,6 +67,8 @@ type Manager struct {
 	sweepTTL      time.Duration
 	sweepInterval time.Duration
 	sweepMaxRows  int32
+	recheckTTL    time.Duration
+	catchUp       time.Duration
 	chaseBackoff  []time.Duration
 	now           func() time.Time
 	jitter        func() time.Duration
@@ -121,6 +129,8 @@ func newManager(client *Client, queries *db.Queries, pool TxBeginner, fetch func
 		sweepTTL:      defaultSweepTTL,
 		sweepInterval: defaultSweepInterval,
 		sweepMaxRows:  defaultSweepMaxRows,
+		recheckTTL:    defaultRecheckTTL,
+		catchUp:       defaultCatchUp,
 		chaseBackoff:  defaultChaseBackoff,
 		now:           time.Now,
 		jitter:        func() time.Duration { return time.Duration(rand.Int63n(int64(250 * time.Millisecond))) },
@@ -535,6 +545,10 @@ func (m *Manager) scheduleRetry(addr address, delay time.Duration) {
 }
 
 func (m *Manager) sweepLoop(ctx context.Context) {
+	if !sleepCtx(ctx, m.catchUp) {
+		return
+	}
+	m.sweepOnce(ctx)
 	ticker := time.NewTicker(m.sweepInterval)
 	defer ticker.Stop()
 	for {
@@ -548,10 +562,16 @@ func (m *Manager) sweepLoop(ctx context.Context) {
 }
 
 // sweepOnce enqueues a refresh for every open PR whose snapshot is both stale
-// and undecided. Bounded by sweepMaxRows. This is the safety net for an
-// undecided PR whose base branch changes without a pull_request webhook, and
-// for any webhook that was dropped during a deploy.
+// and undecided, then re-checks decided ones older than recheckTTL. Each part
+// is bounded by sweepMaxRows. This is the safety net for a PR whose base
+// branch changes without a pull_request webhook, and for any webhook that was
+// dropped during a deploy.
 func (m *Manager) sweepOnce(ctx context.Context) {
+	m.sweepUndecided(ctx)
+	m.sweepRecheck(ctx)
+}
+
+func (m *Manager) sweepUndecided(ctx context.Context) {
 	m.mu.Lock()
 	after := m.sweepAfter
 	m.mu.Unlock()
@@ -582,6 +602,38 @@ func (m *Manager) sweepOnce(ctx context.Context) {
 	for _, r := range rows {
 		m.Enqueue(r.InstallationID, r.RepoOwner, r.RepoName, r.PrNumber)
 	}
+}
+
+// sweepRecheck re-checks the least recently touched snapshots, at most a
+// quarter of a batch per installation, and logs the oldest snapshot age so a
+// stalled re-check shows. A failed fetch still counts as a pick, so it never
+// pins a batch slot.
+// ponytail: an installation re-checks at most sweepMaxRows/4 PRs per sweep
+// interval (300 an hour at the defaults); with more open PRs than that it
+// falls behind the TTL. Raise sweepMaxRows when the logged age keeps climbing.
+func (m *Manager) sweepRecheck(ctx context.Context) {
+	now := m.now()
+	rows, err := m.queries.ClaimGitHubPRsDueForRecheck(ctx, db.ClaimGitHubPRsDueForRecheckParams{
+		OlderThan:       tsFromTime(now.Add(-m.recheckTTL)),
+		PerInstallation: int64(max(1, m.sweepMaxRows/4)),
+		MaxRows:         m.sweepMaxRows,
+		PickedAt:        tsFromTime(now),
+	})
+	if err != nil {
+		slog.Warn("ghsnapshot: re-check query failed", "err", err.Error())
+		return
+	}
+	if len(rows) == 0 {
+		return
+	}
+	oldest := rows[0].OldestFetchedAt.Time
+	for _, r := range rows {
+		if r.OldestFetchedAt.Time.Before(oldest) {
+			oldest = r.OldestFetchedAt.Time
+		}
+		m.Enqueue(r.InstallationID, r.RepoOwner, r.RepoName, r.PrNumber)
+	}
+	slog.Info("ghsnapshot: re-checking decided snapshots", "count", len(rows), "oldest_snapshot_age", now.Sub(oldest).Round(time.Second).String())
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

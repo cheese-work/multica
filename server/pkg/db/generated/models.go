@@ -843,6 +843,7 @@ type GithubPullRequest struct {
 	SnapshotHeadSha     string             `json:"snapshot_head_sha"`
 	SnapshotFetchedAt   pgtype.Timestamptz `json:"snapshot_fetched_at"`
 	SnapshotBaseRef     pgtype.Text        `json:"snapshot_base_ref"`
+	SnapshotRecheckAt   pgtype.Timestamptz `json:"snapshot_recheck_at"`
 }
 
 type GithubPullRequestCheckRun struct {
