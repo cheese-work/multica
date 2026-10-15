@@ -487,3 +487,103 @@ func TestCustomCapacityRebaseBeforeTheFirstDeferralDoesNotReplayALiveServedRule(
 		t.Fatalf("B: receipts=%d events=%d, want the one event delivered once the pool freed", n, count)
 	}
 }
+
+// ---- review round 5 (signed HOLD 01a13e09-ad7f-7c50-a818-8ada02b5347b) ------
+
+// servedSetup builds the shape every round-5 test starts from: rule A holds the
+// last default slot and is served live by an event, sibling B is defined after
+// it and has no slot. It returns A and B.
+func (k customEnv) servedSetup(t *testing.T, aExtra string) (a, b WakeupDefinitionView) {
+	t.Helper()
+	k.fillIssuePool(t, 31)
+	a = k.mustSave(t, WakeupScopeWorkspace, "", k.eventRule(`["comment.created"]`)+aExtra)
+	k.comment(t, "creates A's instance in the last slot")
+	k.drain(t)
+	if !k.instanceRow(t, a.RuleKey).Enabled {
+		t.Fatal("setup: A's instance is not applied")
+	}
+	b = k.mustSave(t, WakeupScopeWorkspace, "", k.eventRule(`["comment.created"]`))
+	return a, b
+}
+
+func (k customEnv) moveAssignee(t *testing.T) {
+	t.Helper()
+	k.f.Exec(t, `UPDATE issue SET assignee_type='agent',assignee_id=$2 WHERE id=$1`, k.issue, k.agent)
+}
+
+// A rebase in one drain transaction must keep served events served for the
+// inputs that transaction does not reach: here the 51st input of an issue, which
+// the next drain pass claims after A was rebased.
+func TestCustomCapacityServedIdentitySurvivesToInputsBeyondTheBatch(t *testing.T) {
+	k := newCustomEnv(t)
+	a, b := k.servedSetup(t, "")
+	const live = 60 // beyond the 50-input batch of one drain transaction
+	k.f.Exec(t, `INSERT INTO comment(issue_id,workspace_id,author_type,author_id,content,type) SELECT $1,$2,'member',$3,'c '||g,'comment' FROM generate_series(1,$4) g`,
+		k.issue, k.f.WorkspaceID, k.f.UserID, live)
+	k.moveAssignee(t)
+	k.drain(t) // one transaction: 50 inputs, A is rebased
+	k.drain(t) // the rest: a new transaction
+	if n, count := k.receiptCount(t, a.RuleKey); n != 1 || count != live+1 {
+		t.Fatalf("A: receipts=%d events=%d, want all %d live events once, not a replay of the inputs beyond the batch", n, count, live+1)
+	}
+	k.freePool(t)
+	k.sweep(t)
+	for range 4 {
+		k.drain(t)
+	}
+	if n, count := k.receiptCount(t, a.RuleKey); n != 1 || count != live+1 {
+		t.Fatalf("A after the retry: receipts=%d events=%d, want it unchanged", n, count)
+	}
+	if n, count := k.receiptCount(t, b.RuleKey); n != 1 || count != live {
+		t.Fatalf("B: receipts=%d events=%d, want the %d events delivered once", n, count, live)
+	}
+}
+
+// A rebase outside the drain (dispatch resolves the rule again) must not forget
+// which events live capture served either.
+func TestCustomCapacityServedIdentitySurvivesARebaseOutsideTheDrain(t *testing.T) {
+	k := newCustomEnv(t)
+	a, b := k.servedSetup(t, "")
+	k.comment(t, "A is served live; B has no slot")
+	k.moveAssignee(t)
+	before := k.instanceRow(t, a.RuleKey)
+	wakeDispatch(t, k.s, before)
+	if after := k.instanceRow(t, a.RuleKey); after.Revision == before.Revision {
+		t.Fatalf("dispatch did not rebase A (revision %d): the test no longer exercises the rebase", after.Revision)
+	}
+	k.drain(t)
+	if n, count := k.receiptCount(t, a.RuleKey); n != 1 || count != 2 {
+		t.Fatalf("A: receipts=%d events=%d, want its two live events once, not a replay", n, count)
+	}
+	k.freePool(t)
+	k.sweep(t)
+	k.drain(t)
+	if n, count := k.receiptCount(t, b.RuleKey); n != 1 || count != 1 {
+		t.Fatalf("B: receipts=%d events=%d, want the one event delivered once", n, count)
+	}
+}
+
+// A relative expiry is measured from the instance's creation. A rebase that
+// changes nothing the instance runs keeps the expiry it has; it does not
+// recompute it from another clock and call it a configuration change.
+func TestCustomCapacityRebaseKeepsARelativeExpiry(t *testing.T) {
+	k := newCustomEnv(t)
+	a, _ := k.servedSetup(t, `,"expiry":{"after_seconds":3600}`)
+	k.comment(t, "A is served live; B has no slot")
+	before := k.instanceRow(t, a.RuleKey)
+	if !before.ExpiresAt.Valid {
+		t.Fatal("setup: A has no expiry")
+	}
+	k.moveAssignee(t)
+	k.drain(t)
+	after := k.instanceRow(t, a.RuleKey)
+	if after.Revision == before.Revision {
+		t.Fatalf("A was not rebased (revision %d): the test no longer exercises the rebase", after.Revision)
+	}
+	if !after.ExpiresAt.Time.Equal(before.ExpiresAt.Time) {
+		t.Fatalf("expiry moved from %v to %v across a rebase that changed nothing the instance runs", before.ExpiresAt.Time, after.ExpiresAt.Time)
+	}
+	if n, count := k.receiptCount(t, a.RuleKey); n != 1 || count != 2 {
+		t.Fatalf("A: receipts=%d events=%d, want its two live events once, not a replay", n, count)
+	}
+}
