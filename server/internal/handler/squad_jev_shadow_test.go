@@ -3,8 +3,11 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
@@ -410,6 +413,55 @@ func TestJevShadow_MalformedAnswerRecordKeepsBilledUsage(t *testing.T) {
 		t.Fatalf("record[outcome] = %v, want error", rec["outcome"])
 	}
 	assertJevReplayTelemetry(t, rec)
+}
+
+// input_sha256 must identify the request Jev actually received, so it has to
+// match the SHA-256 of the captured wire bytes, including the model the client
+// fills in before sending.
+func TestJevShadow_InputHashMatchesCapturedWireBytes(t *testing.T) {
+	cases := map[string]func(f *jevShadowFixture) http.HandlerFunc{
+		"decision": func(f *jevShadowFixture) http.HandlerFunc { return f.confidentWorkerAnswer(0.95) },
+		"billed missing answer": func(f *jevShadowFixture) http.HandlerFunc {
+			return func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(jev.Response{
+					Model:   "jev-1.13.0",
+					Answers: map[string]jev.Answer{},
+					Usage:   jev.Usage{InputTokens: 500, OutputTokens: 10},
+				})
+			}
+		},
+	}
+	for name, answer := range cases {
+		t.Run(name, func(t *testing.T) {
+			logs := captureSlog(t)
+			f := newJevShadowFixture(t, map[string]any{"jev_squad_routing_mode": "shadow"})
+			var mu sync.Mutex
+			var wire []byte
+			respond := answer(f)
+			f.serve(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				mu.Lock()
+				wire = body
+				mu.Unlock()
+				respond(w, r)
+			})
+			issue := f.insertIssue(t, "todo")
+
+			testHandler.tryJevSquadRouting(context.Background(), issue, f.squad, "member", testUserID, testUserID)
+			rec := logs.waitForShadowRecord(t, issue.ID)
+
+			mu.Lock()
+			defer mu.Unlock()
+			if len(wire) == 0 {
+				t.Fatal("mock Jev API captured no request body")
+			}
+			sum := sha256.Sum256(wire)
+			if got, want := rec["input_sha256"], hex.EncodeToString(sum[:]); got != want {
+				t.Errorf("record[input_sha256] = %v, want SHA-256 of the captured request bytes %s", got, want)
+			}
+		})
+	}
 }
 
 func assertJevReplayTelemetry(t *testing.T, rec map[string]any) {
