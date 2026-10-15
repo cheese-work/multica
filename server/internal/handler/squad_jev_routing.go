@@ -542,6 +542,9 @@ func (h *Handler) evaluateJevSquadRouting(ctx context.Context, issue db.Issue, s
 		State:     state.Sections,
 		Questions: map[string]jev.Question{questionID: question},
 	}
+	// The client fills an empty model before sending, so hash the request with
+	// that model already set: the digest then identifies what Jev receives.
+	req.Model = jevClient.Model()
 	var telemetry jevTelemetry
 	if reqJSON, err := json.Marshal(req); err == nil {
 		sum := sha256.Sum256(reqJSON)
