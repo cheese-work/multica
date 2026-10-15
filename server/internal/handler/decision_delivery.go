@@ -19,6 +19,8 @@ import (
 )
 
 type decisionWakeSnapshot struct {
+	kind      string
+	itemID    pgtype.UUID
 	issue     db.Issue
 	request   db.DecisionRequest
 	intent    db.DecisionIntent
@@ -33,8 +35,12 @@ type decisionWakeSnapshot struct {
 }
 
 func (handler *Handler) DeliverDecisionWake(ctx context.Context, workspaceID, requestID pgtype.UUID) error {
+	return handler.deliverDecisionItem(ctx, workspaceID, requestID, "")
+}
+
+func (handler *Handler) deliverDecisionItem(ctx context.Context, workspaceID, itemID pgtype.UUID, kind string) error {
 	for attempt := 0; attempt < 3; attempt++ {
-		snapshot, err := handler.loadDecisionWake(ctx, handler.Queries, workspaceID, requestID)
+		snapshot, err := handler.loadDecisionItem(ctx, handler.Queries, workspaceID, itemID, kind)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -49,8 +55,17 @@ func (handler *Handler) DeliverDecisionWake(ctx context.Context, workspaceID, re
 	return nil
 }
 
-func (handler *Handler) loadDecisionWake(ctx context.Context, queries *db.Queries, workspaceID, requestID pgtype.UUID) (decisionWakeSnapshot, error) {
-	var snapshot decisionWakeSnapshot
+func (handler *Handler) loadDecisionItem(ctx context.Context, queries *db.Queries, workspaceID, itemID pgtype.UUID, kind string) (decisionWakeSnapshot, error) {
+	snapshot := decisionWakeSnapshot{kind: kind, itemID: itemID}
+	requestID := itemID
+	if kind == "retraction" {
+		answer, err := queries.GetDecisionAnswer(ctx, db.GetDecisionAnswerParams{WorkspaceID: workspaceID, ID: itemID})
+		if err != nil {
+			return snapshot, err
+		}
+		requestID = answer.DecisionRequestID
+		snapshot.answers = []db.DecisionAnswer{answer}
+	}
 	request, err := queries.GetDecisionRequest(ctx, db.GetDecisionRequestParams{WorkspaceID: workspaceID, ID: requestID})
 	if err != nil {
 		return snapshot, err
@@ -64,7 +79,7 @@ func (handler *Handler) loadDecisionWake(ctx context.Context, queries *db.Querie
 		return snapshot, err
 	}
 	params := db.ListDecisionDeliveryRequestsParams{WorkspaceID: workspaceID, RequestID: requestID}
-	if request.DecisionIntentID.Valid {
+	if kind == "" && request.DecisionIntentID.Valid {
 		snapshot.intent, err = queries.GetDecisionIntent(ctx, db.GetDecisionIntentParams{WorkspaceID: workspaceID, ID: request.DecisionIntentID})
 		if err != nil {
 			return snapshot, err
@@ -89,9 +104,11 @@ func (handler *Handler) loadDecisionWake(ctx context.Context, queries *db.Querie
 		}
 		requestIDs = append(requestIDs, member.ID)
 	}
-	snapshot.answers, err = queries.ListDecisionDeliveryAnswers(ctx, db.ListDecisionDeliveryAnswersParams{WorkspaceID: workspaceID, RequestIds: requestIDs})
-	if err != nil {
-		return snapshot, err
+	if kind == "" {
+		snapshot.answers, err = queries.ListDecisionDeliveryAnswers(ctx, db.ListDecisionDeliveryAnswersParams{WorkspaceID: workspaceID, RequestIds: requestIDs})
+		if err != nil {
+			return snapshot, err
+		}
 	}
 	agentID := pgtype.UUID{}
 	switch snapshot.issue.AssigneeType.String {
@@ -131,6 +148,14 @@ func (handler *Handler) loadDecisionWake(ctx context.Context, queries *db.Querie
 }
 
 func decisionWakeReady(snapshot decisionWakeSnapshot, now time.Time) bool {
+	if snapshot.kind == "reask" {
+		request := snapshot.request
+		return request.Status == "cancelled" && (request.CancelReason.String == "human_removed" || request.CancelReason.String == "lane_archived") && request.CancelNoticePostedAt.Valid && !request.ReaskDeliveredAt.Valid
+	}
+	if snapshot.kind == "retraction" {
+		answer := snapshot.answers[0]
+		return answer.DisclaimedAt.Valid && answer.WokenAt.Valid && answer.WakeOutcome.Valid && answer.WakeOutcome.String != "skipped_ineligible" && answer.WithdrawalCommentID.Valid && !answer.RetractionDeliveredAt.Valid
+	}
 	if len(snapshot.answers) == 0 || (snapshot.group && !snapshot.intent.SealedAt.Valid) {
 		return false
 	}
@@ -189,7 +214,7 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 		return false, err
 	}
 	var root *db.Comment
-	if !snapshot.recipient.ID.Valid {
+	if !snapshot.recipient.ID.Valid && snapshot.kind == "" {
 		root, err = commentguard.LockThreadForReplyAndLoadRoot(ctx, queries, workspaceID, snapshot.request.IssueCommentID)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return false, err
@@ -207,8 +232,10 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 	}
 	eligible := true
 	var humans, sources []pgtype.UUID
-	for _, request := range snapshot.requests {
-		humans = append(humans, request.HumanUserID)
+	if snapshot.kind == "" {
+		for _, request := range snapshot.requests {
+			humans = append(humans, request.HumanUserID)
+		}
 	}
 	for _, humanID := range decisionWakeIDs(humans) {
 		if _, err := queries.LockDecisionMember(ctx, db.LockDecisionMemberParams{WorkspaceID: workspaceID, UserID: humanID}); errors.Is(err, pgx.ErrNoRows) {
@@ -217,8 +244,10 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 			return false, err
 		}
 	}
-	for _, answer := range snapshot.answers {
-		sources = append(sources, answer.ChatMessageIds...)
+	if snapshot.kind == "" {
+		for _, answer := range snapshot.answers {
+			sources = append(sources, answer.ChatMessageIds...)
+		}
 	}
 	sources = decisionWakeIDs(sources)
 	locked, err := queries.LockDecisionSourceMessages(ctx, db.LockDecisionSourceMessagesParams{WorkspaceID: workspaceID, MessageIds: sources})
@@ -243,7 +272,7 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 			return false, err
 		}
 	}
-	current, err := handler.loadDecisionWake(ctx, queries, workspaceID, snapshot.request.ID)
+	current, err := handler.loadDecisionItem(ctx, queries, workspaceID, snapshot.itemID, snapshot.kind)
 	if err != nil {
 		return false, err
 	}
@@ -292,12 +321,14 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 			if snapshot.issue.AssigneeType.String == "member" {
 				outcome = "comment_member"
 			}
-			for _, answer := range snapshot.answers {
-				created, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: dbid.NewV7(), WorkspaceID: workspaceID, IssueID: snapshot.issue.ID, ParentID: answer.IssueCommentID, AuthorType: "agent", AuthorID: snapshot.request.AskingAgentID, Type: "comment", Content: "Decision took effect.", DecisionAnswerID: answer.ID, DecisionCommentKind: pgtype.Text{String: "delivery", Valid: true}})
-				if err != nil {
-					return false, err
+			if snapshot.kind == "" {
+				for _, answer := range snapshot.answers {
+					created, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: dbid.NewV7(), WorkspaceID: workspaceID, IssueID: snapshot.issue.ID, ParentID: answer.IssueCommentID, AuthorType: "agent", AuthorID: snapshot.request.AskingAgentID, Type: "comment", Content: "Decision took effect.", DecisionAnswerID: answer.ID, DecisionCommentKind: pgtype.Text{String: "delivery", Valid: true}})
+					if err != nil {
+						return false, err
+					}
+					comments = append(comments, created.Comment())
 				}
-				comments = append(comments, created.Comment())
 			}
 			if root != nil {
 				cleared, err = queries.ClearThreadResolutionForReply(ctx, db.ClearThreadResolutionForReplyParams{WorkspaceID: workspaceID, IssueID: snapshot.issue.ID, ThreadRootID: root.ID})
@@ -307,8 +338,23 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 			}
 		}
 	}
+	if snapshot.kind == "reask" {
+		rows, err := queries.AcknowledgeDecisionReask(ctx, db.AcknowledgeDecisionReaskParams{WorkspaceID: workspaceID, ID: snapshot.request.ID, Outcome: pgtype.Text{String: outcome, Valid: true}})
+		if err != nil {
+			return false, err
+		}
+		if rows != 1 {
+			return false, errors.New("decision re-ask acknowledgement changed")
+		}
+	}
 	for _, answer := range snapshot.answers {
-		rows, err := queries.AcknowledgeDecisionWake(ctx, db.AcknowledgeDecisionWakeParams{WorkspaceID: workspaceID, ID: answer.ID, Outcome: pgtype.Text{String: outcome, Valid: true}})
+		var rows int64
+		var err error
+		if snapshot.kind == "retraction" {
+			rows, err = queries.AcknowledgeDecisionRetraction(ctx, db.AcknowledgeDecisionRetractionParams{WorkspaceID: workspaceID, ID: answer.ID, Outcome: pgtype.Text{String: outcome, Valid: true}})
+		} else {
+			rows, err = queries.AcknowledgeDecisionWake(ctx, db.AcknowledgeDecisionWakeParams{WorkspaceID: workspaceID, ID: answer.ID, Outcome: pgtype.Text{String: outcome, Valid: true}})
+		}
 		if err != nil {
 			return false, err
 		}
@@ -342,15 +388,38 @@ func (handler *Handler) dispatchDecisionWake(ctx context.Context, queries *db.Qu
 	var empty db.AgentTaskQueue
 	var commentIDs []pgtype.UUID
 	var summary strings.Builder
-	summary.WriteString("Decision took effect. Cover every quote in this delivery:\n")
+	switch snapshot.kind {
+	case "retraction":
+		summary.WriteString("Decision withdrawn. Do not rely on the withdrawn quote.\n")
+	case "reask":
+		summary.WriteString("Decision request cancelled. Ask again through a new decision-intent window and a fresh lane listing. No automatic re-ping or server-created DM.\n")
+	default:
+		summary.WriteString("Decision took effect. Cover every quote in this delivery:\n")
+	}
 	var trigger db.Comment
+	if snapshot.kind == "reask" {
+		var err error
+		trigger, err = queries.GetDecisionCancelComment(ctx, db.GetDecisionCancelCommentParams{WorkspaceID: snapshot.issue.WorkspaceID, ID: snapshot.request.ID})
+		if err != nil {
+			return "", empty, err
+		}
+		commentIDs = append(commentIDs, trigger.ID)
+	}
 	for _, answer := range snapshot.answers {
-		quote, err := queries.GetCommentInWorkspace(ctx, db.GetCommentInWorkspaceParams{WorkspaceID: snapshot.issue.WorkspaceID, ID: answer.IssueCommentID})
+		commentID := answer.IssueCommentID
+		if snapshot.kind == "retraction" {
+			commentID = answer.WithdrawalCommentID
+		}
+		quote, err := queries.GetCommentInWorkspace(ctx, db.GetCommentInWorkspaceParams{WorkspaceID: snapshot.issue.WorkspaceID, ID: commentID})
 		if err != nil {
 			return "", empty, err
 		}
 		commentIDs = append(commentIDs, quote.ID)
-		fmt.Fprintf(&summary, "- Quote comment %s (request %s)\n", uuidToString(quote.ID), uuidToString(answer.DecisionRequestID))
+		if snapshot.kind == "retraction" {
+			fmt.Fprintf(&summary, "- Withdrawal comment %s (request %s, reason %s)\n", uuidToString(quote.ID), uuidToString(answer.DecisionRequestID), answer.DisclaimReason.String)
+		} else {
+			fmt.Fprintf(&summary, "- Quote comment %s (request %s)\n", uuidToString(quote.ID), uuidToString(answer.DecisionRequestID))
+		}
 		if !trigger.ID.Valid || quote.CreatedAt.Time.After(trigger.CreatedAt.Time) || (quote.CreatedAt.Time.Equal(trigger.CreatedAt.Time) && uuidToString(quote.ID) > uuidToString(trigger.ID)) {
 			trigger = quote
 		}
