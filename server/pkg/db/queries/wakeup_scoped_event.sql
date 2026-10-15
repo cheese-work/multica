@@ -35,18 +35,23 @@ FOR UPDATE SKIP LOCKED;
 UPDATE wakeup_scoped_event SET handled_at= @now::timestamptz,outcome= @outcome::text,retry_at=NULL WHERE id= @id;
 
 -- name: DeferWakeupScopedEvent :exec
-UPDATE wakeup_scoped_event SET retry_at= @retry_at::timestamptz WHERE id= @id AND handled_at IS NULL;
+-- A database-error backoff. It clears the capacity marker, so freed capacity
+-- never brings this delay forward: only a capacity wait is shortened that way.
+UPDATE wakeup_scoped_event SET retry_at= @retry_at::timestamptz,outcome=NULL WHERE id= @id AND handled_at IS NULL;
 
 -- name: DeferWakeupScopedEventForCapacity :exec
--- An input a full default pool refused stays pending behind a retry time. The
--- instances that were served meanwhile are recorded in delivered, so the retry
--- does not count the event for them twice.
-UPDATE wakeup_scoped_event SET retry_at= @retry_at::timestamptz,
+-- An input a full default pool refused stays pending behind a retry time, marked
+-- with the outcome default_capacity (visible in the accounting; handled_at stays
+-- NULL until it is delivered, closed or expired). The instances that were served
+-- meanwhile are recorded in delivered, so the retry does not count the event for
+-- them twice.
+UPDATE wakeup_scoped_event SET retry_at= @retry_at::timestamptz,outcome='default_capacity',
  delivered=(SELECT COALESCE(array_agg(DISTINCT d),'{}') FROM unnest(delivered || @served::text[]) d)
 WHERE id= @id AND handled_at IS NULL;
 
 -- name: BringForwardCapacityDeferredScopedEvents :execrows
--- A bounded, resumable batch of the delayed inputs whose issue no longer has an
+-- A bounded, resumable batch of the capacity-delayed inputs (a database-error
+-- backoff is left to its own clock) whose issue no longer has an
 -- instance waiting for capacity: their delay has served its purpose, so they are
 -- due now. Oldest first, inside retention (a later input can only expire), and
 -- rows another transaction holds are skipped. Each pass takes at most @batch_size,
@@ -55,7 +60,7 @@ WHERE id= @id AND handled_at IS NULL;
 -- the plan.
 WITH picked AS MATERIALIZED (
  SELECT e.id FROM wakeup_scoped_event e
- WHERE e.handled_at IS NULL AND e.retry_at IS NOT NULL AND e.captured_at >= @oldest::timestamptz
+ WHERE e.handled_at IS NULL AND e.retry_at IS NOT NULL AND e.outcome='default_capacity' AND e.captured_at >= @oldest::timestamptz
   AND (sqlc.narg(workspace_ids)::uuid[] IS NULL OR e.workspace_id = ANY(sqlc.narg(workspace_ids)::uuid[]))
   AND NOT EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.issue_id=e.issue_id AND w.capacity_reason IS NOT NULL AND NOT w.enabled)
  ORDER BY e.captured_at, e.id LIMIT @batch_size FOR UPDATE OF e SKIP LOCKED)

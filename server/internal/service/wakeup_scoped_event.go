@@ -611,11 +611,15 @@ func (b *scopedIssueBatch) resolve(ctx context.Context, ev db.WakeupScopedEvent)
 			if first {
 				reason = why
 			}
-		case slices.Contains(ev.Delivered, id+":"+strconv.FormatInt(inst.Revision, 10)), slices.Contains(ev.Delivered, id):
-			// Live capture delivered it to this configuration of the instance
-			// (id:revision), or an earlier attempt served the instance (its bare id,
-			// which survives a rebase); replaying would count it twice and make an
-			// older event the latest.
+		case slices.Contains(ev.Delivered, id+":"+strconv.FormatInt(inst.Revision, 10)):
+			// Live capture delivered it to this configuration of the instance;
+			// replaying would count it twice and make an older event the latest. The
+			// served identity is also returned bare, so a capacity deferral keeps it
+			// across a rebase that changes the revision.
+			delivered++
+			served = append(served, id)
+		case slices.Contains(ev.Delivered, id):
+			// An earlier attempt served the instance; its bare id survives a rebase.
 			delivered++
 		default:
 			replay = append(replay, inst.ID)

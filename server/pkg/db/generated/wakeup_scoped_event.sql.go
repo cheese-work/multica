@@ -14,7 +14,7 @@ import (
 const bringForwardCapacityDeferredScopedEvents = `-- name: BringForwardCapacityDeferredScopedEvents :execrows
 WITH picked AS MATERIALIZED (
  SELECT e.id FROM wakeup_scoped_event e
- WHERE e.handled_at IS NULL AND e.retry_at IS NOT NULL AND e.captured_at >= $1::timestamptz
+ WHERE e.handled_at IS NULL AND e.retry_at IS NOT NULL AND e.outcome='default_capacity' AND e.captured_at >= $1::timestamptz
   AND ($2::uuid[] IS NULL OR e.workspace_id = ANY($2::uuid[]))
   AND NOT EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.issue_id=e.issue_id AND w.capacity_reason IS NOT NULL AND NOT w.enabled)
  ORDER BY e.captured_at, e.id LIMIT $3 FOR UPDATE OF e SKIP LOCKED)
@@ -28,7 +28,8 @@ type BringForwardCapacityDeferredScopedEventsParams struct {
 	BatchSize    int32              `json:"batch_size"`
 }
 
-// A bounded, resumable batch of the delayed inputs whose issue no longer has an
+// A bounded, resumable batch of the capacity-delayed inputs (a database-error
+// backoff is left to its own clock) whose issue no longer has an
 // instance waiting for capacity: their delay has served its purpose, so they are
 // due now. Oldest first, inside retention (a later input can only expire), and
 // rows another transaction holds are skipped. Each pass takes at most @batch_size,
@@ -319,7 +320,7 @@ func (q *Queries) CreateDefaultWakeupInstance(ctx context.Context, arg CreateDef
 }
 
 const deferWakeupScopedEvent = `-- name: DeferWakeupScopedEvent :exec
-UPDATE wakeup_scoped_event SET retry_at= $1::timestamptz WHERE id= $2 AND handled_at IS NULL
+UPDATE wakeup_scoped_event SET retry_at= $1::timestamptz,outcome=NULL WHERE id= $2 AND handled_at IS NULL
 `
 
 type DeferWakeupScopedEventParams struct {
@@ -327,13 +328,15 @@ type DeferWakeupScopedEventParams struct {
 	ID      pgtype.UUID        `json:"id"`
 }
 
+// A database-error backoff. It clears the capacity marker, so freed capacity
+// never brings this delay forward: only a capacity wait is shortened that way.
 func (q *Queries) DeferWakeupScopedEvent(ctx context.Context, arg DeferWakeupScopedEventParams) error {
 	_, err := q.db.Exec(ctx, deferWakeupScopedEvent, arg.RetryAt, arg.ID)
 	return err
 }
 
 const deferWakeupScopedEventForCapacity = `-- name: DeferWakeupScopedEventForCapacity :exec
-UPDATE wakeup_scoped_event SET retry_at= $1::timestamptz,
+UPDATE wakeup_scoped_event SET retry_at= $1::timestamptz,outcome='default_capacity',
  delivered=(SELECT COALESCE(array_agg(DISTINCT d),'{}') FROM unnest(delivered || $2::text[]) d)
 WHERE id= $3 AND handled_at IS NULL
 `
@@ -344,9 +347,11 @@ type DeferWakeupScopedEventForCapacityParams struct {
 	ID      pgtype.UUID        `json:"id"`
 }
 
-// An input a full default pool refused stays pending behind a retry time. The
-// instances that were served meanwhile are recorded in delivered, so the retry
-// does not count the event for them twice.
+// An input a full default pool refused stays pending behind a retry time, marked
+// with the outcome default_capacity (visible in the accounting; handled_at stays
+// NULL until it is delivered, closed or expired). The instances that were served
+// meanwhile are recorded in delivered, so the retry does not count the event for
+// them twice.
 func (q *Queries) DeferWakeupScopedEventForCapacity(ctx context.Context, arg DeferWakeupScopedEventForCapacityParams) error {
 	_, err := q.db.Exec(ctx, deferWakeupScopedEventForCapacity, arg.RetryAt, arg.Served, arg.ID)
 	return err

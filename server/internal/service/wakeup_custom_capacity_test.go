@@ -371,7 +371,7 @@ func TestCustomCapacityBringForwardQueryUsesTheDelayedIndex(t *testing.T) {
  SELECT gen_random_uuid(),gen_random_uuid(),'comment.created','explain-r2-d'||g,'{}'::jsonb,now(),now()+interval '1 hour' FROM generate_series(1,20) g`)
 	k.f.Exec(t, "ANALYZE wakeup_scoped_event")
 	plan := k.plan(t, `SELECT e.id FROM wakeup_scoped_event e
- WHERE e.handled_at IS NULL AND e.retry_at IS NOT NULL AND e.captured_at >= now()-interval '7 days'
+ WHERE e.handled_at IS NULL AND e.retry_at IS NOT NULL AND e.outcome='default_capacity' AND e.captured_at >= now()-interval '7 days'
   AND ($1::uuid[] IS NULL OR e.workspace_id = ANY($1::uuid[]))
   AND NOT EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.issue_id=e.issue_id AND w.capacity_reason IS NOT NULL AND NOT w.enabled)
  ORDER BY e.captured_at, e.id LIMIT 50`, nil)
