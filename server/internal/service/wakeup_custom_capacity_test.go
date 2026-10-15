@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"errors"
+	"github.com/jackc/pgx/v5/pgtype"
 	"strconv"
 	"strings"
 	"testing"
@@ -689,5 +691,63 @@ func TestCustomCapacityRebaseAppliesAnEditedRelativeExpiry(t *testing.T) {
 				t.Fatalf("expiry = %v, want the edited end %v (created + %ds), off by %v", got.ExpiresAt.Time, want, seconds, d)
 			}
 		})
+	}
+}
+
+// ---- review round 7 (signed HOLD 01a13e8b-cc9e-7ccd-9c6e-6919a7656061) ------
+
+// The definition API accepts an absolute expiry with nanoseconds; the database
+// stores microseconds. A rebase that changes nothing must still read as
+// unchanged, and keep the served identity.
+func TestCustomCapacitySubMicrosecondAbsoluteExpiryAcrossAnUnchangedRebase(t *testing.T) {
+	k := newCustomEnv(t)
+	end := time.Now().Add(2 * time.Hour).Truncate(time.Second).Add(123456789 * time.Nanosecond).UTC().Format(time.RFC3339Nano)
+	a, b := k.servedSetup(t, `,"expiry":{"at":"`+end+`"}`)
+	k.comment(t, "A is served live; B has no slot")
+	before := k.instanceRow(t, a.RuleKey)
+	k.moveAssignee(t)
+	k.drain(t)
+	after := k.instanceRow(t, a.RuleKey)
+	if after.Revision == before.Revision {
+		t.Fatalf("A was not rebased (revision %d): the test no longer exercises the rebase", after.Revision)
+	}
+	if after.ContentRevision != before.ContentRevision {
+		t.Fatalf("content revision moved from %d to %d across a rebase that changed nothing the instance runs", before.ContentRevision, after.ContentRevision)
+	}
+	if n, count := k.receiptCount(t, a.RuleKey); n != 1 || count != 2 {
+		t.Fatalf("A: receipts=%d events=%d, want its two live events once, not a replay", n, count)
+	}
+	k.freePool(t)
+	k.sweep(t)
+	k.drain(t)
+	if n, count := k.receiptCount(t, b.RuleKey); n != 1 || count != 1 {
+		t.Fatalf("B: receipts=%d events=%d, want its one event delivered once", n, count)
+	}
+}
+
+// A person cannot edit or re-enable a default-derived instance as a local
+// wakeup: its configuration belongs to the definitions it resolves from, and an
+// edit here would change what it runs without moving the boundary live capture
+// stamps are judged against.
+func TestCustomCapacityLocalSaveAndEnableOfADefaultInstanceAreRefused(t *testing.T) {
+	k := newCustomEnv(t)
+	a, _ := k.servedSetup(t, "")
+	k.comment(t, "A is served live; B has no slot")
+	before := k.instanceRow(t, a.RuleKey)
+	owner, issue := parseTestUUID(t, k.owner), parseTestUUID(t, k.issue)
+
+	_, err := k.s.Save(context.Background(), issue, owner, pgtype.UUID{}, before.ID, WakeupInput{
+		AgentID: k.agent, Instruction: "edited by hand", Kind: "event", Mode: "continuous", EventTypes: []string{"comment.created"},
+	})
+	if !errors.Is(err, ErrWakeupForbidden) {
+		t.Fatalf("local Save of a default-derived instance: %v, want it refused", err)
+	}
+	_, err = k.s.Enable(context.Background(), issue, owner, pgtype.UUID{}, before.ID, WakeupEnableInput{Revision: before.Revision})
+	if !errors.Is(err, ErrWakeupForbidden) {
+		t.Fatalf("local Enable of a default-derived instance: %v, want it refused", err)
+	}
+	after := k.instanceRow(t, a.RuleKey)
+	if after.Revision != before.Revision || after.Instruction != before.Instruction || after.ContentRevision != before.ContentRevision {
+		t.Fatalf("a refused local edit changed the instance: %+v -> %+v", before, after)
 	}
 }
