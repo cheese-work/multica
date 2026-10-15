@@ -527,8 +527,8 @@ func TestCustomCapacityServedIdentitySurvivesToInputsBeyondTheBatch(t *testing.T
 		t.Fatalf("A: receipts=%d events=%d, want all %d live events once, not a replay of the inputs beyond the batch", n, count, live+1)
 	}
 	k.freePool(t)
-	k.sweep(t)
-	for range 4 {
+	for range 4 { // each sweep pass makes at most 50 delayed inputs due
+		k.sweep(t)
 		k.drain(t)
 	}
 	if n, count := k.receiptCount(t, a.RuleKey); n != 1 || count != live+1 {

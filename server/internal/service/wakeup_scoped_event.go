@@ -444,12 +444,9 @@ type scopedRule struct {
 	events      []string
 	// condition is the normalized predicate of a condition rule, nil for an event rule.
 	condition []byte
-	// carriedRevision is the revision an instance had before a rebase that left
-	// its configuration unchanged; an event live capture served at it stays served.
-	carriedRevision int64
-	ensured         bool
-	instance        db.IssueWakeup
-	reason          string
+	ensured   bool
+	instance  db.IssueWakeup
+	reason    string
 }
 
 // scopedDefinitionStamp is one stored definition as capture records it:
@@ -621,10 +618,10 @@ func (b *scopedIssueBatch) resolve(ctx context.Context, ev db.WakeupScopedEvent)
 			// across a rebase that changes the revision.
 			delivered++
 			served = append(served, id)
-		case slices.Contains(ev.Delivered, id), r.carriedRevision > 0 && slices.Contains(ev.Delivered, id+":"+strconv.FormatInt(r.carriedRevision, 10)):
+		case slices.Contains(ev.Delivered, id), servedAtEarlierRevision(ev.Delivered, inst):
 			// An earlier attempt served the instance (its bare id survives a rebase), or
-			// live capture served it at the revision a configuration-preserving rebase
-			// moved it from. The bare id is persisted if a deferral follows.
+			// live capture served it at a revision whose configuration the instance
+			// still runs (served_revisions). The bare id is persisted if a deferral follows.
 			delivered++
 			served = append(served, id)
 		default:
@@ -765,4 +762,13 @@ func (s *IssueWakeupService) ScopedEventAccounting(ctx context.Context, workspac
 		out[r.Outcome] = r.Total
 	}
 	return out, nil
+}
+
+// servedAtEarlierRevision reports whether live capture stamped the input with a
+// revision of the instance that ran the configuration it runs now.
+func servedAtEarlierRevision(delivered []string, inst db.IssueWakeup) bool {
+	id := util.UUIDToString(inst.ID)
+	return slices.ContainsFunc(inst.ServedRevisions, func(rev int64) bool {
+		return slices.Contains(delivered, id+":"+strconv.FormatInt(rev, 10))
+	})
 }

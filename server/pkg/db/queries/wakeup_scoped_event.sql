@@ -129,9 +129,10 @@ RETURNING *;
 -- moves with it, so inputs captured under the old configuration stop matching;
 -- identity, fire count, pauses and consumed state stay as they are. An
 -- aggregate delay belonged to the old configuration's cap, so it ends too.
+-- served_revisions is the earlier revisions that ran this same configuration.
 UPDATE issue_wakeup SET agent_id= @agent_id,created_by= @created_by,instruction= @instruction,mode= @mode,event_types= @event_types,max_fires=sqlc.narg(max_fires),
  condition=sqlc.narg(condition)::jsonb,condition_state= @condition_state::text,next_fire_at=sqlc.narg(next_fire_at)::timestamptz,expires_at=sqlc.narg(expires_at)::timestamptz,
- config_fingerprint= @fingerprint,revision=revision+1,updated_at=clock_timestamp(),
+ config_fingerprint= @fingerprint,served_revisions= @served_revisions::bigint[],revision=revision+1,updated_at=clock_timestamp(),
  aggregate_blocked_scope_kind=NULL,aggregate_blocked_scope_id=NULL,aggregate_retry_at=NULL
 WHERE id= @id AND default_rule_key IS NOT NULL AND system_rule IS NULL
 RETURNING *;
