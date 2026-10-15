@@ -67,3 +67,12 @@ func TestAGYNotFoundLegacyChatSessionSelection(t *testing.T) {
 		t.Errorf("GetLastChatTaskSession = (%q, %v), want the older healthy session", prior.SessionID.String, err)
 	}
 }
+
+// TestAGYNotFoundIsResumeUnsafe covers Rerun and the chat-pointer clear in
+// FailTask, which both read ResumeUnsafeFailure. Rows carry
+// agent_error.unknown, so only the text check retires the session.
+func TestAGYNotFoundIsResumeUnsafe(t *testing.T) {
+	if !ResumeUnsafeFailure("agent_error.unknown", agyNotFoundRow) {
+		t.Fatal("an AGY NOT_FOUND row must not be resumed by Rerun or a chat follow-up")
+	}
+}
