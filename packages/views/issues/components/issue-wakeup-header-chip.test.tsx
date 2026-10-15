@@ -83,6 +83,7 @@ describe("IssueWakeupHeaderChip", () => {
     const chip = screen.getByRole("button", { name: /Wakeups paused/ });
     expect(chip).toHaveTextContent("Wakeups paused");
     expect(chip).not.toHaveTextContent(/Waiting|Wake at/);
+    expect(screen.getByTestId("wakeups-header-chip")).toBe(chip);
   });
 
   it("renders nothing for a paused workspace when the issue has no wakeups", () => {

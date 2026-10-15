@@ -1,5 +1,5 @@
 issue: CHE-1727
-design: design/wakeups-pause/rev-1/A.html @ pending   # rev-1 is on draft design PR #255; no direction is selected or merged yet. A merge SHA or a Cheese waiver is required before ready.
+design: design/wakeups-pause/rev-2/A.html @ pending   # rev-2 is on draft design PR #255; no direction is selected or merged yet. A merge SHA or a Cheese waiver is required before ready.
 pages:
   - id: settings-wakeups
     url: /<workspace-slug>/settings?tab=wakeups
@@ -19,4 +19,10 @@ pages:
     keep: []
     change:
       - wakeups-paused-banner: "New banner at the top of the Wakeups section while paused"
+    remove: []
+  - id: issue-header
+    url: /<workspace-slug>/issues/<issue-id>
+    keep: []
+    change:
+      - wakeups-header-chip: "Reads Wakeups paused instead of the next due time while the workspace is paused"
     remove: []

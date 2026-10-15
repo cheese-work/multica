@@ -73,6 +73,7 @@ export const IssueWakeupHeaderChip = memo(function IssueWakeupHeaderChip({
   return (
     <button
       type="button"
+      data-testid="wakeups-header-chip"
       onClick={onOpen}
       title={label}
       aria-label={`${label}${primary.count > 1 ? ` +${primary.count - 1}` : ""} · ${t(($) => $.wakeups.wait.open)}`}
