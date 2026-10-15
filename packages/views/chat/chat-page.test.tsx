@@ -4,6 +4,7 @@ import { StrictMode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
+import { useSyncExternalStore } from "react";
 import type { Agent } from "@multica/core/types";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../locales/en/common.json";
@@ -51,7 +52,11 @@ vi.mock("./components/chat-empty-state", () => ({
   EmptyState: () => <div>chat-empty-state</div>,
 }));
 vi.mock("./components/new-chat-button", () => ({
-  NewChatButton: () => <div>new-chat-button</div>,
+  NewChatButton: ({ onStart }: { onStart: (agent: null) => void }) => (
+    <button type="button" onClick={() => onStart(null)}>
+      new-chat
+    </button>
+  ),
 }));
 vi.mock("./components/offline-banner", () => ({
   OfflineBanner: () => null,
@@ -175,9 +180,10 @@ vi.mock("./components/use-chat-controller", async () => {
       handleSend: vi.fn(),
       handleStop: vi.fn(),
       handleUploadFile: vi.fn(),
-      handleNewChat: vi.fn(),
+      handleNewChat: () => mockSetActiveSession(null),
       handleStartNewChat: mockStartNewChat,
-      handleSelectSession: vi.fn(),
+      // Like the real controller: selecting publishes the session to the store.
+      handleSelectSession: (session: { id: string }) => mockSetActiveSession(session.id),
       advanceSelectionAfterArchive: vi.fn(),
       archiveSession: vi.fn(),
       setActiveSession: mockSetActiveSession,
@@ -516,5 +522,163 @@ describe("ChatPage responsive layout", () => {
       screen.getByRole("button", { name: "select-thread" }),
     ).toBeInTheDocument();
     expect(screen.getByText("chat-input")).toBeInTheDocument();
+  });
+});
+
+// A real history stack behind the adapter, so these tests assert where Back
+// lands rather than which adapter method was called. `/acme/inbox` is the
+// start destination Cheese opened chat from.
+function createHistory(...entries: string[]) {
+  let index = entries.length - 1;
+  const listeners = new Set<() => void>();
+  const notify = () => listeners.forEach((l) => l());
+  return {
+    get entries() {
+      return entries;
+    },
+    get url() {
+      return entries[index]!;
+    },
+    subscribe: (cb: () => void) => {
+      listeners.add(cb);
+      return () => listeners.delete(cb);
+    },
+    push(url: string) {
+      entries = [...entries.slice(0, index + 1), url];
+      index = entries.length - 1;
+      notify();
+    },
+    replace(url: string) {
+      entries = entries.map((e, i) => (i === index ? url : e));
+      notify();
+    },
+    back() {
+      if (index > 0) index -= 1;
+      notify();
+    },
+    canGoBack: () => index > 0,
+  };
+}
+
+function renderWithHistory(history: ReturnType<typeof createHistory>) {
+  function Host() {
+    const url = useSyncExternalStore(history.subscribe, () => history.url);
+    const [pathname = "", search = ""] = url.split("?");
+    const navigation: NavigationAdapter = {
+      push: history.push,
+      replace: history.replace,
+      back: history.back,
+      canGoBack: history.canGoBack,
+      pathname,
+      searchParams: new URLSearchParams(search),
+      hash: "",
+      getShareableUrl: (path) => path,
+    };
+    return (
+      <QueryClientProvider client={new QueryClient()}>
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <NavigationProvider value={navigation}>
+            <ChatPage />
+          </NavigationProvider>
+        </I18nProvider>
+      </QueryClientProvider>
+    );
+  }
+  return render(<Host />);
+}
+
+describe("ChatPage back stack", () => {
+  const selectThread = () =>
+    fireEvent.click(screen.getByRole("button", { name: "select-thread" }));
+  const back = () => act(() => history.back());
+  let history: ReturnType<typeof createHistory>;
+
+  it("walks inbox > list > A > linked B back through A, the list and the inbox", () => {
+    history = createHistory("/acme/inbox", "/acme/chat");
+    renderWithHistory(history);
+
+    selectThread();
+    expect(history.url).toBe("/acme/chat?session=session-9");
+    // The "continued from" divider link pushes through AppLink.
+    act(() => history.push("/acme/chat?session=session-10"));
+    expect(storeRef.current.activeSessionId).toBe("session-10");
+
+    back();
+    expect(history.url).toBe("/acme/chat?session=session-9");
+    expect(storeRef.current.activeSessionId).toBe("session-9");
+    back();
+    expect(history.url).toBe("/acme/chat");
+    expect(storeRef.current.activeSessionId).toBeNull();
+    back();
+    expect(history.url).toBe("/acme/inbox");
+  });
+
+  it("pushes a thread selection instead of replacing the list entry", () => {
+    history = createHistory("/acme/inbox", "/acme/chat");
+    renderWithHistory(history);
+
+    selectThread();
+
+    expect(history.entries).toEqual([
+      "/acme/inbox",
+      "/acme/chat",
+      "/acme/chat?session=session-9",
+    ]);
+  });
+
+  it("pushes the list entry when a new chat is started from an open session", () => {
+    history = createHistory("/acme/inbox", "/acme/chat?session=session-9");
+    storeRef.current = { activeSessionId: "session-9" };
+    renderWithHistory(history);
+
+    fireEvent.click(screen.getByRole("button", { name: "new-chat" }));
+
+    expect(history.entries).toEqual([
+      "/acme/inbox",
+      "/acme/chat?session=session-9",
+      "/acme/chat",
+    ]);
+    back();
+    expect(history.url).toBe("/acme/chat?session=session-9");
+    expect(storeRef.current.activeSessionId).toBe("session-9");
+  });
+
+  it("assigns the server ID of a new chat with replace, not push", () => {
+    history = createHistory("/acme/inbox", "/acme/chat");
+    renderWithHistory(history);
+
+    act(() => mockSetActiveSession("new-session"));
+
+    expect(history.entries).toEqual(["/acme/inbox", "/acme/chat?session=new-session"]);
+  });
+
+  describe("compact back button", () => {
+    beforeEach(() => {
+      layout.width = FOLD_INNER;
+    });
+
+    it("steps back to the previous session, then to the list", () => {
+      history = createHistory("/acme/inbox", "/acme/chat");
+      renderWithHistory(history);
+      selectThread();
+      act(() => history.push("/acme/chat?session=session-10"));
+
+      fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+      expect(history.url).toBe("/acme/chat?session=session-9");
+      fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+      expect(history.url).toBe("/acme/chat");
+      expect(screen.getByRole("button", { name: "select-thread" })).toBeInTheDocument();
+    });
+
+    it("lands on the list, not outside Multica, after a cold open of a session", () => {
+      history = createHistory("/acme/chat?session=session-10");
+      storeRef.current = { activeSessionId: "session-10" };
+      renderWithHistory(history);
+
+      fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+
+      expect(history.entries).toEqual(["/acme/chat"]);
+      expect(storeRef.current.activeSessionId).toBeNull();
+    });
   });
 });
