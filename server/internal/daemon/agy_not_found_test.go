@@ -50,3 +50,50 @@ func TestAGYNotFoundStaysFailedWhenFreshRetryWouldComplete(t *testing.T) {
 		t.Fatal("the failed turn must still retire the session")
 	}
 }
+
+// TestAGYNotFoundNeverRetriesFresh closes every branch of the retry gate, not
+// only UnresumableHistory. Antigravity is in the ResumeRejectionUndetectable
+// set, whose fallback retries when the result carries no SessionID — and the
+// AGY adapter's session ID comes from a best-effort stream or log scan that can
+// come back empty. A completed retry there would still turn a genuine current
+// 404 into success (CHE-1710 current-404 control).
+func TestAGYNotFoundNeverRetriesFresh(t *testing.T) {
+	for _, provider := range agent.SupportedTypes {
+		for _, sessionID := range []string{"agy-session", ""} {
+			for _, rejected := range []bool{false, true} {
+				result := agent.Result{Status: "failed", Error: agyNotFound, SessionID: sessionID, ResumeRejected: rejected}
+				if shouldRetryWithFreshSession(result, "agy-session", 0, provider) {
+					t.Errorf("%s (session %q, rejected %v): AGY NOT_FOUND must never take the fresh-session retry", provider, sessionID, rejected)
+				}
+			}
+		}
+	}
+}
+
+// TestAGYNotFoundWithoutSessionIDStaysFailed drives the empty-SessionID case
+// through executeAndDrain: the second attempt would complete, but it must
+// never run.
+func TestAGYNotFoundWithoutSessionIDStaysFailed(t *testing.T) {
+	d := newTestDaemon(t)
+	fb := &fakeBackend{
+		results: []agent.Result{
+			{Status: "failed", Error: agyNotFound},
+			{Status: "completed", Output: "answer", SessionID: "agy-fresh"},
+		},
+	}
+
+	opts := agent.ExecOptions{ResumeSessionID: "agy-session"}
+	result, tools, err := d.executeAndDrain(context.Background(), fb, "p", opts, slog.Default(), "t", "", new(atomic.Int32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shouldRetryWithFreshSession(result, opts.ResumeSessionID, tools, "antigravity") {
+		t.Fatal("an AGY NOT_FOUND with no SessionID must not take the undetectable-provider fresh retry")
+	}
+	if result.Status != "failed" || result.Error != agyNotFound {
+		t.Fatalf("result = (%q, %q), want the 404 reported as failed", result.Status, result.Error)
+	}
+	if n := fb.idx.Load(); n != 1 {
+		t.Fatalf("backend calls = %d, want 1 (no fresh retry)", n)
+	}
+}
