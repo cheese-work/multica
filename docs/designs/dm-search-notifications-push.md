@@ -61,7 +61,7 @@ One PR per layer, stacked. Every code layer starts with a tests-only commit that
 
 ```mermaid
 flowchart LR
-  N1["N1 server: DM notification record"] --> N2["N2 server: channel settings"]
+  N1["N1 server: channel settings"] --> N2["N2 server: DM notification record"]
   N2 --> N3["N3 server: push subscriptions + outbox + VAPID"]
   N3 --> N4["N4 web: service worker, settings UI, banners"]
   N2 --> N5["N5 mobile: settings parity + DM inbox rows"]
@@ -73,7 +73,16 @@ flowchart LR
 
 The notification track (N) and the search track (S) are independent. S2 and S3 wait for the CHE-1755 layers that rebuild the same DM list, to avoid rebuilding it twice.
 
-### N1: DM notification record (server)
+### N1: channel settings (server)
+
+- New table `notification_channel_preference` (workspace_id, user_id, source in {`inbox`, `dm`}, channel in {`in_app`, `push`}, enabled, updated_at). Separate from the legacy JSONB map, so the old replace-all `PUT` cannot erase it.
+- API: `GET /api/notification-channels`, `PATCH` one (source, channel) at a time. zod schemas and malformed-response tests.
+- Defaults: `push` = off for both sources (premise 3). `in_app` for `inbox` = on (today's behaviour). `in_app` for `dm` = see Open Question 1.
+- Settings are per workspace. Push also needs a live subscription on the device (N3).
+- Existing group mutes keep applying on top for inbox sources.
+- N1 ships the table, API and defaults only; N2 and N3 read the switches.
+
+### N2: DM notification record (server)
 
 - Migrations: nullable `chat_session_id`, `chat_message_id`, `dedupe_key` and `updated_at` (default `created_at`) on `inbox_item`; a partial unique index on `(recipient_id, dedupe_key) WHERE dedupe_key IS NOT NULL AND read = false`; the inbox listing index from migration 200 is replaced by one that sorts on `updated_at`. Each index `CONCURRENTLY` in its own file; no foreign keys.
 - New item type `dm_reply`. One unread record per (recipient, DM): `dedupe_key = 'dm:<session_id>'`. A later reply updates `chat_message_id`, `updated_at` and `details.reply_count` instead of inserting a row, and the row moves to the top of the inbox. Once read, the next reply starts a new record.
@@ -81,26 +90,18 @@ The notification track (N) and the search track (S) are independent. S2 and S3 w
 - No record when the DM is channel-bound (the channel already delivers the reply) or archived. Archiving or deleting a DM marks its unread records read in the same transaction.
 - Decision requests: the helper skips messages with `message_kind` `decision_request` or `decision_reference`. `NotifyPing` keeps its transactional dedupe and also sets `chat_session_id`. Resolving the decision marks its record read.
 - Read sync: `POST /api/chat/sessions/{id}/read` marks that DM's unread `dm_reply` records read in the same transaction; marking a `dm_reply` item read advances the DM's `last_read_at` to `chat_message_id`.
-- Channel switches (N2): when both `in_app` and `push` are off for `dm`, no record is created. When `in_app` is off and `push` is on, the record is created for push read-sync but is excluded from the inbox list and unread count.
+- Channel switches (N1): when both `in_app` and `push` are off for `dm`, no record is created. When `in_app` is off and `push` is on, the record is created for push read-sync but is excluded from the inbox list and unread count.
 - Access: the inbox list and unread count exclude records whose DM the user can no longer read (membership, session state, private-agent access), using the same checks as the DM read gate.
 - Clients: the inbox schema already allows `issue_id: null` (`packages/core/types/inbox.ts:56`); add `chat_session_id`, `updated_at` and `details.reply_count` to the zod schema with `parseWithFallback`; a `dm_reply` row or a row with `chat_session_id` opens the DM. Older clients receive the row and must not crash (malformed and unknown-type tests).
 - WS: `inbox:new` on insert, `inbox:updated` on coalesced update.
 
-### N2: channel settings (server)
-
-- New table `notification_channel_preference` (workspace_id, user_id, source in {`inbox`, `dm`}, channel in {`in_app`, `push`}, enabled, updated_at). Separate from the legacy JSONB map, so the old replace-all `PUT` cannot erase it.
-- API: `GET /api/notification-channels`, `PATCH` one (source, channel) at a time. zod schemas and malformed-response tests.
-- Defaults: `push` = off for both sources (premise 3). `in_app` for `inbox` = on (today's behaviour). `in_app` for `dm` = see Open Question 1.
-- Settings are per workspace. Push also needs a live subscription on the device (N3).
-- Existing group mutes keep applying on top for inbox sources.
-
 ### N3: push subscriptions, outbox and VAPID (server)
 
 - Config: `MULTICA_VAPID_PUBLIC_KEY`, `MULTICA_VAPID_PRIVATE_KEY`, `MULTICA_VAPID_SUBJECT`. `SELF_HOSTING.md` documents generating a key pair with an existing tool (no new command). `GET /api/push/config` returns `{enabled, public_key}`; push is disabled when keys are missing.
-- Table `push_subscription` (id, user_id, endpoint unique, p256dh, auth, created_at, last_success_at, failure_count). A subscription belongs to (user, device) across all workspaces. `POST /api/push/subscriptions` upserts by endpoint and reassigns the owner on a new login; `DELETE /api/push/subscriptions/current` removes this device's subscription. Logout calls `pushManager.unsubscribe()` and the `DELETE` before clearing the session.
-- Table `push_delivery` (outbox): one pending row per (record_id, subscription_id). The row is upserted in the same transaction as the N1 record write or update when the recipient's `push` switch is on for that source; a coalesced update moves `next_attempt_at` forward (= now + delay, Open Question 3) instead of adding a row.
+- Table `push_subscription` (id, user_id, endpoint unique, p256dh, auth, created_at, last_success_at, failure_count). A subscription belongs to (user, device) across all workspaces and stores the id of the login session or token that registered it. `POST /api/push/subscriptions` upserts by endpoint and reassigns the owner on a new login; `DELETE /api/push/subscriptions` takes the endpoint in the body. Logout reads the endpoint from `pushManager.getSubscription()`, sends the `DELETE`, then calls `unsubscribe()`, then clears the session. The worker skips a subscription whose registering session is revoked or expired, so a logout that cannot authenticate still stops pushes for the old account.
+- Table `push_delivery` (outbox): one pending row per (record_id, subscription_id). Every inbox item insert or coalesced update goes through one service function, `createInboxItem(tx, item)`, which also upserts the outbox rows when the recipient's `push` switch is on for that source (`inbox` or `dm`) in that workspace. This covers the N2 DM records, `NotifyPing`, and the existing listeners in `notification_listeners.go`, which N3 changes to insert the item and its outbox rows in one transaction. A coalesced update moves `next_attempt_at` forward (= now + delay, Open Question 3) instead of adding a row.
 - Worker: reuses the lease pattern of the leased decision consequence runner (CHE-1753): claim due rows with `claimed_until`, re-claim after lease expiry, stop cleanly on shutdown, keep sent rows for a short retention window. Before each send it re-checks: record still unread, push switch still on, user still a workspace member, DM still readable. It retries with backoff up to a cap and deletes the subscription on 404/410. The read check happens on the server because iOS requires every delivered push to show a notification.
-- Payload (premise 5): `{record_id, workspace_slug, kind, actor_name, title, reply_count, url}`. No message text, no issue body, no decision ask. Encrypted per Web Push (RFC 8291).
+- Payload (premise 5): `{record_id, workspace_slug, kind, actor_name, label, reply_count, url}`. `label` is fixed copy ("New reply", "Decision needed") for DM records, and the issue identifier and title for issue records. A DM title is never sent, because an untouched DM title is derived from the first user message (`chattitle.Derive`), so it counts as message text. No message text, no issue body, no decision ask. Encrypted per Web Push (RFC 8291).
 - The push library needs a dependency health check before it is added (candidate: `SherClockHolmes/webpush-go`; maintenance not yet verified).
 
 ### N4: web client (service worker, settings, banners)
