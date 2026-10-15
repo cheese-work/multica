@@ -399,7 +399,7 @@ describe("ChatPage ?agent= deep link", () => {
     const { replace } = renderPage("agent=agent-1");
     expect(mockStartNewChat).toHaveBeenCalledTimes(1);
     expect(mockStartNewChat).toHaveBeenCalledWith(agent);
-    expect(replace).toHaveBeenCalledWith("/acme/chat");
+    expect(replace).toHaveBeenCalledWith("/acme/chat?new=1");
     // composingNew opened the conversation pane instead of the neutral prompt.
     expect(screen.getByText("chat-input")).toBeInTheDocument();
   });
@@ -433,7 +433,7 @@ describe("ChatPage ?agent= deep link", () => {
     agentsSettledRef.current = true;
     rerender();
     expect(mockStartNewChat).toHaveBeenCalledWith(agent);
-    expect(replace).toHaveBeenCalledWith("/acme/chat");
+    expect(replace).toHaveBeenCalledWith("/acme/chat?new=1");
   });
 
   it("toasts and strips the param once the list settles without the agent", () => {
@@ -473,7 +473,7 @@ describe("ChatPage ?agent= deep link", () => {
     storeRef.current = { activeSessionId: "old-session" };
     const { replace } = renderPage("agent=agent-1", { strict: true });
     expect(mockStartNewChat).toHaveBeenCalledTimes(1);
-    expect(replace).toHaveBeenCalledWith("/acme/chat");
+    expect(replace).toHaveBeenCalledWith("/acme/chat?new=1");
     expect(screen.getByText("chat-input")).toBeInTheDocument();
   });
 });
@@ -849,6 +849,16 @@ describe("ChatPage back stack", () => {
 
       expect(screen.getByText("chat-input")).toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "select-thread" })).not.toBeInTheDocument();
+    });
+
+    it("keeps the compose pane on a refresh of ?new=1 that has a persisted session", () => {
+      storeRef.current = { activeSessionId: "persisted-session" };
+      history = createHistory("/acme/chat?new=1");
+      renderWithHistory(history);
+
+      expect(storeRef.current.activeSessionId).toBeNull();
+      expect(history.url).toBe("/acme/chat?new=1");
+      expect(screen.getByText("chat-input")).toBeInTheDocument();
     });
 
     it("returns to the list on browser back from an unsent new chat", () => {
