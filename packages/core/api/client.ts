@@ -96,6 +96,7 @@ import type {
   Attachment,
   ChatSession,
   ChatContinueResponse,
+  ChatForkResponse,
   ChatPinnedAgent,
   ChatMessage,
   ChatMessagesPage,
@@ -264,7 +265,9 @@ import {
   ChatSessionListSchema,
   ChatSessionSchema,
   ChatContinueResponseSchema,
+  ChatForkResponseSchema,
   EMPTY_CHAT_CONTINUE_RESPONSE,
+  EMPTY_CHAT_FORK_RESPONSE,
   PrioritizeQueuedChatTaskResponseSchema,
   SendChatMessageResponseSchema,
   StartMikaOnboardingResponseSchema,
@@ -3072,7 +3075,7 @@ export class ApiClient {
     });
   }
 
-  async updateWorkspace(id: string, data: { name?: string; description?: string; context?: string; settings?: Record<string, unknown>; repos?: WorkspaceRepo[]; issue_prefix?: string; avatar_url?: string }): Promise<Workspace> {
+  async updateWorkspace(id: string, data: { name?: string; description?: string; context?: string; settings?: Record<string, unknown>; repos?: WorkspaceRepo[]; issue_prefix?: string; avatar_url?: string; compact_prompt?: string | null }): Promise<Workspace> {
     return this.fetch(`/api/workspaces/${id}`, {
       method: "PATCH",
       body: JSON.stringify(data),
@@ -3767,6 +3770,19 @@ export class ApiClient {
     });
     return parseWithFallback(raw, ChatContinueResponseSchema, EMPTY_CHAT_CONTINUE_RESPONSE, {
       endpoint: "POST /api/chat/sessions/:id/continue",
+    });
+  }
+
+  async forkChatSession(
+    id: string,
+    data: { idempotency_key: string; message?: string },
+  ): Promise<ChatForkResponse> {
+    const raw: unknown = await this.fetch(`/api/chat/sessions/${id}/fork`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, ChatForkResponseSchema, EMPTY_CHAT_FORK_RESPONSE, {
+      endpoint: "POST /api/chat/sessions/:id/fork",
     });
   }
 

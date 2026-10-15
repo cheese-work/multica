@@ -1205,6 +1205,7 @@ WITH retired_sessions AS (
       AND t.status = 'failed'
       AND (
         COALESCE(t.failure_reason, '') = 'codex_resume_oversized'
+        OR COALESCE(t.error, '') ILIKE '%response protection is unavailable%'
         OR (COALESCE(t.error, '') ILIKE '%thread/resume failed%' AND COALESCE(t.error, '') ILIKE '%token too long%')
       )
 ), latest_per_session AS (
@@ -1228,6 +1229,7 @@ WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
       status = 'failed'
       AND COALESCE(failure_reason, '') NOT IN ('iteration_limit', 'agent_fallback_message', 'api_invalid_request', 'codex_semantic_inactivity', 'agent_error.context_overflow', 'codex_resume_oversized')
       AND NOT (COALESCE(error, '') ILIKE '%400%' AND COALESCE(error, '') ILIKE '%invalid_request_error%')
+      AND NOT (COALESCE(error, '') ILIKE '%response protection is unavailable%')
       -- Mirrors the GetLastTaskSession auth-resolution guard: a provider that
       -- cannot resolve its auth method fails deterministically on resume, and
       -- the classification is agent_error.unknown (resume-safe), so only this
@@ -3387,6 +3389,24 @@ WHERE id = $1
 // Advances the read cursor to now, dropping the session's unread_count to 0.
 func (q *Queries) MarkChatSessionRead(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, markChatSessionRead, id)
+	return err
+}
+
+const markChatSessionReadBefore = `-- name: MarkChatSessionReadBefore :exec
+UPDATE chat_session
+SET last_read_at = $2::timestamptz - interval '1 microsecond'
+WHERE id = $1
+`
+
+type MarkChatSessionReadBeforeParams struct {
+	ID               pgtype.UUID        `json:"id"`
+	MessageCreatedAt pgtype.Timestamptz `json:"message_created_at"`
+}
+
+// Places the read cursor just before a message created in the same
+// transaction as the session, so that message counts as unread (CHE-1662).
+func (q *Queries) MarkChatSessionReadBefore(ctx context.Context, arg MarkChatSessionReadBeforeParams) error {
+	_, err := q.db.Exec(ctx, markChatSessionReadBefore, arg.ID, arg.MessageCreatedAt)
 	return err
 }
 

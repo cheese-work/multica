@@ -130,6 +130,12 @@ export function useSettingsSearchIndex(
         title: t(($) => $.workspace.context_label),
         description: t(($) => $.workspace.context_hint),
       },
+      {
+        tab: "workspace",
+        anchor: "compact-prompt",
+        title: t(($) => $.workspace.compact_prompt_label),
+        description: t(($) => $.workspace.compact_prompt_hint),
+      },
       { tab: "workspace", anchor: "slug", title: t(($) => $.workspace.slug_label) },
       {
         tab: "workspace",

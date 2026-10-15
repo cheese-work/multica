@@ -56,6 +56,11 @@ require_config "$config" 'published: "9100"'
 require_config "$config" 'FRONTEND_ORIGIN: http://localhost:3100'
 require_config "$config" 'GOOGLE_REDIRECT_URI: http://localhost:3100/auth/callback'
 require_config "$config" 'MULTICA_APP_URL: http://localhost:3100'
+frontend_app_url="$(
+  docker compose --env-file "$tmp_env" -f docker-compose.selfhost.yml config --format json |
+    node -p 'JSON.parse(require("node:fs").readFileSync(0, "utf8")).services.frontend.environment.MULTICA_APP_URL'
+)"
+require_env "$frontend_app_url" 'http://localhost:3100'
 require_config "$config" 'SMTP_FROM_EMAIL: multica@example.com'
 require_config "$config" 'MULTICA_DATABASE_STARTUP_TIMEOUT: 3m'
 require_config "$config" 'MULTICA_DATABASE_CONNECT_TIMEOUT: 5s'

@@ -77,6 +77,8 @@ import { ChatQueue } from "./chat-queue";
 import { EmptyState } from "./chat-empty-state";
 import { SessionRenameInput } from "./session-rename-input";
 import { useChatRename } from "./use-chat-rename";
+import { useChatFork } from "./use-chat-fork";
+import { canForkSession } from "../lib/can-fork-session";
 import { ChatResizeHandles } from "./chat-resize-handles";
 import { useChatContextItems } from "./use-chat-context-items";
 import { useChatResize } from "./use-chat-resize";
@@ -713,6 +715,7 @@ export function ChatWindow() {
     },
     [activeAgent, setSelectedAgentId, setActiveSession],
   );
+  const { handleFork } = useChatFork(currentSession, handleSelectSession);
 
   const handleProjectChange = useCallback(
     (projectId: string | null) => {
@@ -932,12 +935,17 @@ export function ChatWindow() {
         <InteractiveLoginBanner />
       ) : showSkeleton ? (
         <ChatMessageSkeleton />
-      ) : hasMessages || currentSession?.continued_from_session_id || currentSession?.continued_into_session_id ? (
+      ) : hasMessages || currentSession?.continued_from_session_id || currentSession?.continued_into_session_id || currentSession?.forked_from_session_id ? (
         <ChatMessageList
           key={activeSessionId}
           messages={messages}
           continuedFromSessionId={currentSession?.continued_from_session_id}
           continuedIntoSessionId={currentSession?.continued_into_session_id}
+          sessionId={activeSessionId}
+          forkedFromSessionId={currentSession?.forked_from_session_id}
+          forkLastMessageId={currentSession?.fork_last_message_id}
+          forkMessageCount={currentSession?.fork_message_count}
+          sessions={sessionsLoaded ? sessions : undefined}
           pendingTask={pendingTask}
           availability={availability}
           firstItemIndex={firstItemIndex}
@@ -1012,6 +1020,7 @@ export function ChatWindow() {
       <ChatInput
         onSend={handleSend}
         onRename={handleRename}
+        onFork={canForkSession(currentSession) ? handleFork : undefined}
         restoreDraftRequest={restoreDraftRequest}
         conversationStarterRequest={conversationStarterRequest}
         onConversationStarterApplied={handleConversationStarterApplied}

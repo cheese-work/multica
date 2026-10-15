@@ -234,6 +234,11 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 	if err != nil {
 		return empty, err
 	}
+	if createdSession != nil {
+		if err := queries.MarkChatSessionReadBefore(ctx, db.MarkChatSessionReadBeforeParams{ID: session.ID, MessageCreatedAt: message.CreatedAt}); err != nil {
+			return empty, err
+		}
+	}
 	if err := queries.TouchChatSession(ctx, session.ID); err != nil {
 		return empty, err
 	}

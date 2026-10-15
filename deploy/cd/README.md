@@ -240,6 +240,24 @@ deployment. A `release-candidate` manifest requires the fresh Hermes
 configuration and migration snapshot and is the only manifest class that can
 pass admission.
 
+The optional fork changelog fetch runs in a separate job with `contents: read`
+and `pull-requests: read`. Only its fetch step receives `GH_TOKEN`; neither the
+image build nor C00 needs a GitHub credential for changelog entries. History
+is bounded with `--shallow-since` from `FORK_CHANGELOG_START` (default
+`2026-10-11`, midnight ICT), and PR merge commits are filtered against the
+qualified SHA's first-parent history. The fetch summary reports shown and
+hidden counts by reason. Fetch failure leaves no entries artifact and never
+blocks the build.
+
+The web image includes `apps/web/.fork-changelog/entries.json` when available.
+The server page takes a module-load snapshot, preserving request-based locale
+selection for upstream notes. Fork notes stay English. The header uses the
+commit timestamp, displayed in ICT, and the first seven SHA characters; local
+builds show `dev`. `cd-build-evidence.json` and `cd-image-provenance.json` bind
+the exact entries bytes with `fork_changelog_sha256` (`sha256:<hex>`), or
+`"absent"`. `release-manifest.mjs create --fork-changelog <path>` computes that
+value; verification accepts `--expected-fork-changelog-sha256 <value>`.
+
 `PR #20` (`CHE-392`) is an explicit prerequisite for running this workflow on
 the dedicated X99 GitHub Actions runner. This change does not extend or
 replace that pull request.

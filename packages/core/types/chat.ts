@@ -126,6 +126,14 @@ export interface ChatContinueResponse {
   url: string;
 }
 
+export interface ChatForkResponse {
+  session: ChatSession;
+  previous_session_id: string;
+  url: string;
+  /** The first message, present when one was sent with the fork. */
+  message?: ChatMessage | null;
+}
+
 export interface PendingChatTaskItem {
   task_id: string;
   status: string;

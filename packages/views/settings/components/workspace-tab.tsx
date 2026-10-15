@@ -64,6 +64,8 @@ interface WorkspaceDetailsDraft {
   context: string;
 }
 
+const sameText = (left: string, right: string) => left === right;
+
 function workspaceDetailsEqual(
   left: WorkspaceDetailsDraft,
   right: WorkspaceDetailsDraft,
@@ -141,6 +143,23 @@ export function WorkspaceTab() {
   const [name, setName] = useState(workspace?.name ?? "");
   const [description, setDescription] = useState(workspace?.description ?? "");
   const [context, setContext] = useState(workspace?.context ?? "");
+  // CHE-1612: settings.compact_prompt saves through its own request field,
+  // so this form never sends (and never drops) the rest of the settings.
+  const savedCompactPrompt =
+    typeof workspace?.settings?.compact_prompt === "string"
+      ? workspace.settings.compact_prompt
+      : "";
+  const [compactPrompt, setCompactPrompt] = useState(savedCompactPrompt);
+  // An untouched field follows a prompt saved elsewhere (the CLI); otherwise
+  // auto-save would write the stale draft back over it.
+  const [lastSavedCompactPrompt, setLastSavedCompactPrompt] =
+    useState(savedCompactPrompt);
+  if (savedCompactPrompt !== lastSavedCompactPrompt) {
+    setLastSavedCompactPrompt(savedCompactPrompt);
+    if (compactPrompt === lastSavedCompactPrompt) {
+      setCompactPrompt(savedCompactPrompt);
+    }
+  }
   const [prefixDraft, setPrefixDraft] = useState<string | null>(null);
   const [prefixSaveStatus, setPrefixSaveStatus] =
     useState<SettingsSaveStatus>("idle");
@@ -172,6 +191,7 @@ export function WorkspaceTab() {
     setName(workspace?.name ?? "");
     setDescription(workspace?.description ?? "");
     setContext(workspace?.context ?? "");
+    setCompactPrompt(savedCompactPrompt);
     setPrefixDraft(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally keyed on id only; see comment above
   }, [workspace?.id]);
@@ -221,6 +241,32 @@ export function WorkspaceTab() {
       ),
     enabled: !!workspace && canManageWorkspace && !!name.trim(),
     isEqual: workspaceDetailsEqual,
+  });
+
+  const saveCompactPrompt = useCallback(
+    async (next: string) => {
+      if (!workspace) return;
+      const updated = await api.updateWorkspace(workspace.id, {
+        compact_prompt: next.trim() ? next : null,
+      });
+      qc.setQueryData(workspaceKeys.list(), (old: Workspace[] | undefined) =>
+        old?.map((ws) => (ws.id === updated.id ? updated : ws)),
+      );
+    },
+    [qc, workspace],
+  );
+  const compactPromptAutoSave = useAutoSave({
+    value: compactPrompt,
+    savedValue: savedCompactPrompt,
+    onSave: saveCompactPrompt,
+    onError: (error) =>
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t(($) => $.workspace.toast_save_failed),
+      ),
+    enabled: !!workspace && canManageWorkspace,
+    isEqual: sameText,
   });
 
   const performPrefixSave = async (nextPrefix: string) => {
@@ -297,12 +343,16 @@ export function WorkspaceTab() {
       {value || <span className="text-faint-foreground">—</span>}
     </p>
   );
+  const autoSaveStatus =
+    detailsAutoSave.status === "idle"
+      ? compactPromptAutoSave.status
+      : detailsAutoSave.status;
   const saveStatus =
     prefixSaveStatus === "saving" || prefixSaveStatus === "error"
       ? prefixSaveStatus
-      : detailsAutoSave.status === "idle"
+      : autoSaveStatus === "idle"
         ? prefixSaveStatus
-        : detailsAutoSave.status;
+        : autoSaveStatus;
 
   return (
     <SettingsTab title={t(($) => $.page.tabs.general)} scope="workspace">
@@ -425,6 +475,36 @@ export function WorkspaceTab() {
                 placeholder={t(($) => $.workspace.context_placeholder)}
               />
             )}
+          </SettingsRow>
+
+          <SettingsRow
+            anchor="compact-prompt"
+            label={t(($) => $.workspace.compact_prompt_label)}
+            description={t(($) => $.workspace.compact_prompt_hint)}
+            size={readOnly ? undefined : "text"}
+            align="start"
+          >
+            {readOnly ? (
+              readOnlyText(savedCompactPrompt)
+            ) : (
+              <Textarea
+                name="workspace-compact-prompt"
+                autoComplete="off"
+                aria-label={t(($) => $.workspace.compact_prompt_label)}
+                value={compactPrompt}
+                onChange={(event) => setCompactPrompt(event.target.value)}
+                onBlur={compactPromptAutoSave.flush}
+                rows={4}
+                disabled={!canManageWorkspace}
+                className="resize-y"
+                placeholder={t(($) => $.workspace.compact_prompt_placeholder)}
+              />
+            )}
+            <p className="mt-1 text-caption text-muted-foreground sm:text-right">
+              {savedCompactPrompt.trim()
+                ? t(($) => $.workspace.compact_prompt_source_workspace)
+                : t(($) => $.workspace.compact_prompt_source_default)}
+            </p>
           </SettingsRow>
 
           <SettingsRow

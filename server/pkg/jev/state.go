@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"unicode/utf8"
 )
 
 // MaxStateTokens is the published ceiling for the state plus the longest
@@ -192,13 +193,23 @@ func remove(sections []stateSection, key string) []stateSection {
 }
 
 // EstimateTokens approximates the token count of a string using
-// [DefaultCharsPerToken]. It is an estimate for budgeting only; the billed
-// count comes back in [Response.Usage].
+// [DefaultCharsPerToken] based on byte length. It is an estimate for budgeting only;
+// the billed count comes back in [Response.Usage].
 func EstimateTokens(s string) int {
 	if s == "" {
 		return 0
 	}
 	tokens := int(float64(len(s))/DefaultCharsPerToken) + 1
+	return tokens
+}
+
+// EstimateInstructionTokens approximates token count using UTF-8 rune count
+// for instruction limit checks, preventing non-ASCII text from tripping limits prematurely.
+func EstimateInstructionTokens(s string) int {
+	if s == "" {
+		return 0
+	}
+	tokens := int(float64(utf8.RuneCountInString(s))/DefaultCharsPerToken) + 1
 	return tokens
 }
 

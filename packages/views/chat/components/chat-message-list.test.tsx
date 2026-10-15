@@ -5,8 +5,8 @@ import { I18nProvider } from "@multica/core/i18n/react";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
 import { NavigationProvider } from "../../navigation";
 import { chatKeys } from "@multica/core/chat/queries";
-import type { Attachment, ChatMessage, TaskMessagePayload } from "@multica/core/types";
-import type { ReactElement } from "react";
+import type { Attachment, ChatMessage, ChatSession, TaskMessagePayload } from "@multica/core/types";
+import type { ComponentProps, ReactElement } from "react";
 import enChat from "../../locales/en/chat.json";
 import zhHansAgents from "../../locales/zh-Hans/agents.json";
 import zhHansChat from "../../locales/zh-Hans/chat.json";
@@ -117,6 +117,156 @@ describe("ChatMessageList continuation announcements", () => {
   it("links forward even when the archived source had no messages", () => {
     renderContinuation({ continuedIntoSessionId: nextSessionId }, []);
     expect(screen.getByRole("link", { name: "Continued in →" })).toHaveAttribute("href", `/acme/chat?session=${nextSessionId}`);
+  });
+});
+
+describe("ChatMessageList fork links", () => {
+  const sourceId = "44444444-4444-4444-8444-444444444444";
+  const childId = "55555555-5555-4555-8555-555555555555";
+  const otherChildId = "66666666-6666-4666-8666-666666666666";
+  const message = (id: string, role: "user" | "assistant", content: string): ChatMessage => ({
+    id, chat_session_id: childId, role, content, task_id: null, created_at: "2026-10-13T00:00:00Z",
+  });
+  const copiedUser = message("m1", "user", "Copied question");
+  const copiedReply = message("m2", "assistant", "Copied answer");
+  const newUser = message("m3", "user", "First new message");
+  const copied = [copiedUser, copiedReply];
+  const session = (overrides: Partial<ChatSession>): ChatSession => ({
+    id: sourceId, workspace_id: "ws", agent_id: "agent", creator_id: "u", title: "",
+    status: "active", has_unread: false, created_at: "2026-10-13T00:00:00Z",
+    updated_at: "2026-10-13T00:00:00Z", ...overrides,
+  });
+  const forkProps = {
+    sessionId: childId,
+    forkedFromSessionId: sourceId,
+    forkLastMessageId: "m2",
+    forkMessageCount: 2,
+    sessions: [session({ title: "Launch plan" })],
+  };
+
+  function renderFork(props: Partial<ComponentProps<typeof ChatMessageList>>, messages: ChatMessage[] = copied) {
+    return render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <WorkspaceSlugProvider slug="acme">
+          <NavigationProvider value={{ push: vi.fn(), replace: vi.fn(), back: vi.fn(), pathname: "/acme/chat", searchParams: new URLSearchParams(), hash: "", getShareableUrl: (path) => path }}>
+            <QueryClientProvider client={new QueryClient()}>
+              <ChatMessageList messages={messages} pendingTask={null} availability="online" {...props} />
+            </QueryClientProvider>
+          </NavigationProvider>
+        </WorkspaceSlugProvider>
+      </I18nProvider>,
+    );
+  }
+
+  it("draws one dimmed divider inside the last copied message's row, below it", () => {
+    const { container } = renderFork(forkProps, [...copied, newUser]);
+    const separators = screen.getAllByRole("separator");
+    expect(separators).toHaveLength(1);
+    const divider = separators[0]!;
+    const row = divider.closest("[data-row-key]")!;
+    expect(row).toHaveTextContent("Copied answer");
+    expect(row).not.toHaveTextContent("Copied question");
+    expect(row).not.toHaveTextContent("First new message");
+    expect(row.querySelectorAll("[role=separator]")).toHaveLength(1);
+    expect(container.querySelectorAll("[data-row-key]")).toHaveLength(3);
+    expect(screen.getByText("Copied answer").compareDocumentPosition(divider) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(divider.parentElement).toHaveClass("text-muted-foreground");
+    expect(divider).toHaveAccessibleName("Forked from Launch plan · 2 messages copied");
+  });
+
+  it("links the titled source in the app and states how many messages were copied", () => {
+    renderFork(forkProps);
+    const link = screen.getByRole("link", { name: "Launch plan" });
+    expect(link).toHaveAttribute("href", `/acme/chat?session=${sourceId}`);
+    // A separator's children are presentational to assistive tech, so the
+    // link must sit beside the separator, not inside it.
+    expect(screen.getByRole("separator")).not.toContainElement(link);
+    expect(screen.getByRole("separator").parentElement).toHaveTextContent("Forked from Launch plan · 2 messages copied");
+  });
+
+  it("falls back to 'original DM' for an untitled source", () => {
+    renderFork({ ...forkProps, sessions: [session({ title: "  " })] });
+    expect(screen.getByRole("link", { name: "original DM" })).toHaveAttribute("href", `/acme/chat?session=${sourceId}`);
+  });
+
+  it("shows plain text, no link, when the source is not in the loaded list", () => {
+    renderFork({ ...forkProps, sessions: [session({ id: otherChildId })] });
+    expect(screen.getByRole("separator").parentElement).toHaveTextContent("Forked from a deleted DM · 2 messages copied");
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  it("does not call the source deleted while the session list is still loading", () => {
+    renderFork({ ...forkProps, sessions: undefined });
+    expect(screen.queryByText(/deleted DM/)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "original DM" })).toBeInTheDocument();
+  });
+
+  it.each([
+    [1, "Forked from Launch plan · 1 message copied"],
+    [2, "Forked from Launch plan · 2 messages copied"],
+    [120, "Forked from Launch plan · 120 messages copied"],
+    [null, "Forked from Launch plan"],
+  ])("words a copied count of %s", (count, text) => {
+    renderFork({ ...forkProps, forkMessageCount: count });
+    expect(screen.getByRole("separator").parentElement).toHaveTextContent(new RegExp(`^${text}$`));
+  });
+
+  it("draws no divider until the fork point row is loaded", () => {
+    renderFork({ ...forkProps, forkLastMessageId: "m-older", hasOlderMessages: true });
+    expect(screen.queryByRole("separator")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Forked from/)).not.toBeInTheDocument();
+  });
+
+  it("draws no divider on a session that was not forked", () => {
+    renderFork({ sessionId: childId });
+    expect(screen.queryByRole("separator")).not.toBeInTheDocument();
+    expect(screen.queryByText("Send a message to start this branch.")).not.toBeInTheDocument();
+  });
+
+  it("shows the start-branch hint until a user message follows the fork point", () => {
+    const { unmount } = renderFork(forkProps);
+    const hint = screen.getByText("Send a message to start this branch.");
+    expect(hint).toHaveClass("text-muted-foreground");
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    unmount();
+    renderFork(forkProps, [...copied, newUser]);
+    expect(screen.queryByText("Send a message to start this branch.")).not.toBeInTheDocument();
+  });
+
+  it("ignores copied user messages and a reply that follows the fork point", () => {
+    renderFork(forkProps, [...copied, message("m4", "assistant", "Late reply")]);
+    expect(screen.getByText("Send a message to start this branch.")).toBeInTheDocument();
+  });
+
+  it("lists no fork links on a source without children", () => {
+    renderFork({ sessionId: sourceId, sessions: [session({ title: "Launch plan" })] });
+    expect(screen.queryByText(/Forked into/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  it("links a source to its one child and never says 'Continued in'", () => {
+    renderFork({
+      sessionId: sourceId,
+      sessions: [session({}), session({ id: childId, title: "Branch A", forked_from_session_id: sourceId })],
+    });
+    const link = screen.getByRole("link", { name: "Branch A" });
+    expect(link).toHaveAttribute("href", `/acme/chat?session=${childId}`);
+    expect(link.parentElement).toHaveClass("text-muted-foreground");
+    expect(link.parentElement).toHaveTextContent("Forked into Branch A");
+    expect(screen.queryByText(/Continued in/)).not.toBeInTheDocument();
+  });
+
+  it("lists children oldest first with a 'new DM' fallback and ignores other sources' children", () => {
+    renderFork({
+      sessionId: sourceId,
+      sessions: [
+        session({}),
+        session({ id: otherChildId, title: "", forked_from_session_id: sourceId, created_at: "2026-10-13T02:00:00Z" }),
+        session({ id: childId, title: "Branch A", forked_from_session_id: sourceId, created_at: "2026-10-13T01:00:00Z" }),
+        session({ id: "77777777-7777-4777-8777-777777777777", title: "Elsewhere", forked_from_session_id: otherChildId }),
+      ],
+    });
+    expect(screen.getAllByRole("link").map((link) => link.textContent)).toEqual(["Branch A", "new DM"]);
   });
 });
 

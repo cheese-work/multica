@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../locales/en/common.json";
@@ -18,6 +18,7 @@ const workspaceRef = vi.hoisted(() => ({
     context: "",
     issue_prefix: "TES",
     repos: [] as { url: string }[],
+    settings: {} as Record<string, unknown>,
   },
 }));
 const membersRef = vi.hoisted(() => ({
@@ -114,6 +115,7 @@ describe("WorkspaceTab — automatic updates", () => {
       context: "",
       issue_prefix: "TES",
       repos: [],
+      settings: {},
     };
     membersRef.current = [{ user_id: "user-1", role: "owner", name: "Ada" }];
     mockUpdateWorkspace.mockImplementation(
@@ -231,5 +233,62 @@ describe("WorkspaceTab — automatic updates", () => {
     expect(screen.queryByDisplayValue("Test Workspace")).toBeNull();
     expect(screen.getByText("Test Workspace")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Change prefix..." })).toBeNull();
+  });
+
+  // CHE-1612: the compact prompt saves through its own field, never the
+  // settings blob, so other workspace settings cannot be dropped.
+  it("saves only the compact prompt and shows the built-in default as its source", async () => {
+    const user = setupUser();
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+    expect(screen.getByText("Source: built-in default")).toBeInTheDocument();
+
+    await user.type(screen.getByRole("textbox", { name: "Compact prompt" }), "Keep SHAs.");
+    await user.tab();
+
+    await waitFor(() => {
+      expect(mockUpdateWorkspace).toHaveBeenLastCalledWith("workspace-1", {
+        compact_prompt: "Keep SHAs.",
+      });
+    });
+    for (const [, payload] of mockUpdateWorkspace.mock.calls) {
+      expect(Object.keys(payload)).toEqual(["compact_prompt"]);
+    }
+  });
+
+  it("resets a cleared compact prompt to the built-in default", async () => {
+    workspaceRef.current = {
+      ...workspaceRef.current,
+      settings: { compact_prompt: "Old criteria.", other: true },
+    };
+    const user = setupUser();
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+    expect(screen.getByText("Source: workspace")).toBeInTheDocument();
+
+    await user.clear(screen.getByRole("textbox", { name: "Compact prompt" }));
+    await user.tab();
+
+    await waitFor(() => {
+      expect(mockUpdateWorkspace).toHaveBeenCalledWith("workspace-1", { compact_prompt: null });
+    });
+  });
+
+  // CHE-1612 review: an open, untouched page must follow a prompt saved
+  // elsewhere (the CLI), never write its stale draft back over it.
+  it("shows a compact prompt saved elsewhere without writing the untouched field back", async () => {
+    const view = render(<WorkspaceTab />, { wrapper: I18nWrapper });
+    expect(screen.getByRole("textbox", { name: "Compact prompt" })).toHaveValue("");
+
+    workspaceRef.current = {
+      ...workspaceRef.current,
+      settings: { compact_prompt: "Saved from CLI." },
+    };
+    view.rerender(<WorkspaceTab />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(700);
+    });
+
+    expect(mockUpdateWorkspace).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox", { name: "Compact prompt" })).toHaveValue("Saved from CLI.");
+    expect(screen.getByText("Source: workspace")).toBeInTheDocument();
   });
 });

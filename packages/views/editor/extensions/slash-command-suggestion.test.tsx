@@ -96,8 +96,8 @@ function fakeQc(data: {
   } as unknown as QueryClient;
 }
 
-function items(qc: QueryClient, query = "", before = ""): SlashCommandItem[] {
-  const config = createSlashCommandSuggestion(qc, () => true);
+function items(qc: QueryClient, query = "", before = "", canFork = false): SlashCommandItem[] {
+  const config = createSlashCommandSuggestion(qc, () => true, () => canFork);
   const editor = new Editor({
     extensions: [StarterKit],
     content: {
@@ -407,6 +407,54 @@ describe("DM rename command", () => {
   it.each([enEditor, frEditor, jaEditor, koEditor, zhEditor])("localizes rename in every locale", (locale) => {
     expect(locale.slash_command.commands).toHaveProperty("rename", expect.any(String));
     expect(locale.slash_command).toHaveProperty("title_hint", expect.any(String));
+  });
+});
+
+describe("DM fork command", () => {
+  const fork: SlashCommandItem = { id: "fork", label: "fork", descriptionKey: "fork" };
+
+  it("offers fork after compact and rename only when the fork capability is on", () => {
+    expect(items(fakeQc({}), "", "", true).map((item) => item.id)).toEqual(["compact", "rename", "fork"]);
+    expect(items(fakeQc({}), "", "", false).map((item) => item.id)).toEqual(["compact", "rename"]);
+    expect(items(fakeQc({}), "fork", "", false)).toEqual([]);
+  });
+
+  it.each(["f", "fo", "FORK"])("matches the label prefix %j", (query) => {
+    expect(items(fakeQc({}), query, "", true)).toEqual([fork]);
+  });
+
+  it.each(["Hello ", "Hello\n"])("omits fork after message content %j", (before) => {
+    expect(items(fakeQc({}), "fo", before, true)).toEqual([]);
+  });
+
+  it("renders the Multica badge, [message] hint and localized description", () => {
+    const { getByRole, getByText } = render(
+      <I18nWrapper><SlashCommandList items={[fork]} query="" command={vi.fn()} /></I18nWrapper>,
+    );
+    const row = getByRole("button", { name: /\/fork \[message\]/ });
+    expect(row).toHaveTextContent(enEditor.slash_command.commands.fork);
+    expect(getByText("Multica")).toBeInTheDocument();
+    expect(getByText("Copy this DM into a new one; optional message is sent there")).toBeInTheDocument();
+  });
+
+  it("inserts plain fork text without a skill node or the display hint", () => {
+    const element = document.body.appendChild(document.createElement("div"));
+    const editor = new Editor({ element, extensions: [StarterKit, Markdown, SlashCommandExtension], content: "<p>/fo</p>" });
+    editor.commands.setTextSelection(4);
+    window.getSelection()?.selectAllChildren(editor.view.dom);
+    try {
+      createSlashCommandSuggestion(fakeQc({})).command!({ editor, range: { from: 1, to: 4 }, props: fork });
+      expect(editor.getMarkdown()).toBe("/fork ");
+      expect(editor.getJSON().content?.[0]?.content?.[0]?.type).toBe("text");
+    } finally {
+      editor.destroy();
+      element.remove();
+    }
+  });
+
+  it.each([enEditor, frEditor, jaEditor, koEditor, zhEditor])("localizes fork in every locale", (locale) => {
+    expect(locale.slash_command.commands).toHaveProperty("fork", expect.any(String));
+    expect(locale.slash_command).toHaveProperty("message_hint", expect.any(String));
   });
 });
 

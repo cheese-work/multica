@@ -41,6 +41,9 @@ const allowedDevOrigins = process.env.CORS_ALLOWED_ORIGINS
 const nextConfig: NextConfig = {
   ...(process.env.STANDALONE === "true" ? { output: "standalone" as const } : {}),
   transpilePackages: ["@multica/core", "@multica/ui", "@multica/views"],
+  outputFileTracingIncludes: {
+    "/changelog": ["./.fork-changelog/entries.json"],
+  },
   // CI's self-hosted builders run `next build` inside a memory-capped (4GiB,
   // 2-CPU) nested container, and the build OOM-kills there without these.
   // webpackMemoryOptimizations plus a non-persistent production webpack
