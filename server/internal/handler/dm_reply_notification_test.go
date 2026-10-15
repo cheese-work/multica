@@ -6,7 +6,10 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // CHE-1793 (N2): one coalesced inbox record per (recipient, DM). These tests
@@ -366,5 +369,67 @@ func TestDMReplyDecisionRequestMakesOneRecordLinkedToTheDM(t *testing.T) {
 	}
 	if n := dbfx.Count(t, `SELECT count(*) FROM inbox_item WHERE recipient_id = $1 AND type = 'dm_reply'`, fixture.humanID); n != 0 {
 		t.Fatalf("decision messages must not also create a dm_reply record, got %d", n)
+	}
+}
+
+// Retrospective tests: added after the implementation, for behavior the
+// tests-only commit above did not pin.
+
+func TestDMReplyMarkAllInboxReadAdvancesTheDMCursor(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	resetDMInbox(t)
+	agentID, sessionID, _, _ := setupDirectChatSession(t, context.Background(), "mark all")
+	dmReply(t, agentID, sessionID, "hello")
+
+	testutil.Call(t, testHandler.MarkAllInboxRead, withChatTestWorkspaceCtx(t, newRequest(http.MethodPost, "/api/inbox/mark-all-read", nil))).Want(http.StatusOK)
+
+	if unread := dbfx.Count(t, `
+		SELECT count(*) FROM chat_message m JOIN chat_session cs ON cs.id = m.chat_session_id
+		WHERE cs.id = $1 AND m.role = 'assistant' AND m.created_at > cs.last_read_at`, sessionID); unread != 0 {
+		t.Fatalf("DM still has %d unread assistant messages after mark-all-read", unread)
+	}
+	if got := unreadDMInbox(t); got != 0 {
+		t.Fatalf("unread count = %d, want 0", got)
+	}
+}
+
+func TestDMReplyAnsweringTheDecisionReadsItsRecord(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	fixture := newAskedRecordFixture(t)
+	dbfx.Cleanup(t, `DELETE FROM inbox_item WHERE recipient_id = $1`, fixture.humanID)
+	if item, err := decisiontx.NotifyPing(context.Background(), testPool, testHandler.Queries, fixture.decision.WorkspaceID, fixture.decision.ID); err != nil || item == nil {
+		t.Fatalf("ping: item=%v err=%v", item, err)
+	}
+	unread := func() int {
+		return dbfx.Count(t, `SELECT count(*) FROM inbox_item WHERE recipient_id = $1 AND type = 'mentioned' AND read = false`, fixture.humanID)
+	}
+	if unread() != 1 {
+		t.Fatalf("setup: the ping must be unread")
+	}
+	if _, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput()); err != nil {
+		t.Fatal(err)
+	}
+	if unread() != 0 {
+		t.Fatal("answering the decision must read its ping record")
+	}
+}
+
+func TestDMReplyUpdatePublishesInboxUpdated(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	resetDMInbox(t)
+	var types []string
+	testHandler.Bus.Subscribe(protocol.EventInboxNew, func(e events.Event) { types = append(types, e.Type) })
+	testHandler.Bus.Subscribe(protocol.EventInboxUpdated, func(e events.Event) { types = append(types, e.Type) })
+	agentID, sessionID, _, _ := setupDirectChatSession(t, context.Background(), "events")
+	dmReply(t, agentID, sessionID, "one")
+	dmReply(t, agentID, sessionID, "two")
+	if len(types) != 2 || types[0] != protocol.EventInboxNew || types[1] != protocol.EventInboxUpdated {
+		t.Fatalf("events = %v, want [inbox:new inbox:updated]", types)
 	}
 }
