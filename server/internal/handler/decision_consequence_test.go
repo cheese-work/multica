@@ -57,7 +57,7 @@ func TestDecisionSourceConsequence(test *testing.T) {
 			}
 			dbfx.Exec(test, `UPDATE decision_answer SET wake_at = clock_timestamp() WHERE id = $1`, recorded.Answer.ID)
 			if state == "delivered" {
-				dbfx.Exec(test, `UPDATE decision_answer SET woken_at = clock_timestamp(), wake_outcome = 'queued_agent' WHERE id = $1`, recorded.Answer.ID)
+				dbfx.Exec(test, `UPDATE decision_answer SET woken_at = clock_timestamp(), wake_outcome = 'run_enqueued' WHERE id = $1`, recorded.Answer.ID)
 			}
 			worker := consequenceWorker(test, testHandler)
 			for attempt := 0; attempt < 2; attempt++ {
@@ -243,5 +243,77 @@ func TestDecisionConsequenceSelectors(test *testing.T) {
 	intents, err = selectors.ListDecisionSealIntents(ctx, 10)
 	if err != nil || len(intents) != 0 {
 		test.Fatalf("settled intent selected again: %+v error=%v", intents, err)
+	}
+}
+
+func TestDecisionConsequenceScope(test *testing.T) {
+	fixture := newAskedRecordFixture(test)
+	recorded, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
+	if err != nil {
+		test.Fatal(err)
+	}
+	dbfx.Exec(test, `DELETE FROM chat_message WHERE id = $1`, fixture.messageID)
+	openedID, _ := openLaneIntent(test, fixture.intentFixture, fixture.mention())
+	dbfx.Exec(test, `UPDATE decision_intent SET expires_at = clock_timestamp() - interval '1 second' WHERE id = $1`, openedID)
+	worker := consequenceWorker(test, testHandler)
+	otherWorkspace := parseUUID("11111111-1111-4111-8111-111111111111")
+	result, err := worker.CheckDecisionSource(context.Background(), otherWorkspace, recorded.Request.ID)
+	if err != nil || result.Answer.ID.Valid {
+		test.Fatalf("cross-workspace source check: %+v error=%v", result, err)
+	}
+	intent, err := worker.SealDecisionIntent(context.Background(), otherWorkspace, parseUUID(openedID))
+	if err != nil || intent.ID.Valid {
+		test.Fatalf("cross-workspace intent seal: %+v error=%v", intent, err)
+	}
+	if dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE id = $1 AND disclaimed_at IS NULL`, recorded.Answer.ID) != 1 || dbfx.Count(test, `SELECT count(*) FROM decision_intent WHERE id = $1 AND sealed_at IS NULL`, openedID) != 1 {
+		test.Fatal("cross-workspace consequence wrote state")
+	}
+}
+
+func TestDecisionSealDeleteOrdering(test *testing.T) {
+	for _, tombstone := range []bool{false, true} {
+		test.Run(map[bool]string{false: "physical", true: "tombstone"}[tombstone], func(test *testing.T) {
+			fixture := newIntentFixture(test)
+			openedID, tagID := openLaneIntent(test, fixture, fixture.mention())
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cancel()
+			holder, err := testPool.Begin(ctx)
+			if err != nil {
+				test.Fatal(err)
+			}
+			defer holder.Rollback(ctx)
+			var holderPID int
+			if err := holder.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&holderPID); err != nil {
+				test.Fatal(err)
+			}
+			if _, err := holder.Exec(ctx, `SELECT id FROM issue WHERE id = $1 FOR NO KEY UPDATE`, fixture.issueID); err != nil {
+				test.Fatal(err)
+			}
+			statement := `DELETE FROM comment WHERE id = $1`
+			if tombstone {
+				statement = `UPDATE comment SET deleted_at = clock_timestamp() WHERE id = $1`
+			}
+			if _, err := holder.Exec(ctx, statement, tagID); err != nil {
+				test.Fatal(err)
+			}
+			worker := consequenceWorker(test, testHandler)
+			finished := make(chan error, 1)
+			go func() {
+				_, err := worker.SealDecisionIntent(ctx, parseUUID(testWorkspaceID), parseUUID(openedID))
+				finished <- err
+			}()
+			if !waitForWaiterBlockedBy(test, holderPID, 3*time.Second) {
+				test.Fatal("intent seal bypassed comment deletion's issue lock")
+			}
+			if err := holder.Commit(ctx); err != nil {
+				test.Fatal(err)
+			}
+			if err := <-finished; err != nil {
+				test.Fatal(err)
+			}
+			if dbfx.Count(test, `SELECT count(*) FROM decision_intent WHERE id = $1 AND sealed_at IS NOT NULL AND closed_at IS NOT NULL AND close_reason = 'comment_deleted'`, openedID) != 1 {
+				test.Fatal("intent did not recheck deletion after the issue fence")
+			}
+		})
 	}
 }

@@ -38,6 +38,41 @@ A valid window leaves the transaction open for its consumer. The lane/request
 slices wire this guard into their own operations; baseline comment deletion
 continues to run no decision statement.
 
+## CHE-1630 worker-callable consequences
+
+`handler.CheckDecisionSource(ctx, workspaceID, requestID)` runs one source-check
+transaction. It locates the request with a plain read, then locks workspace,
+the current lane, the ask thread, issue, request and live answer in that order.
+It rechecks the located context and source existence under those locks. Missing
+sources invoke `Withdraw` with `source_removed`, including immutable snapshots,
+cancelled-request preservation and archived/unprompted cancellation receipts.
+Source edits alone do not withdraw an answer. Already-withdrawn answers, missing
+owners and intact sources are no-ops. Its committed `Withdrawal` returns comments
+and cleared resolutions for the worker's post-commit publication; errors return
+no uncommitted objects.
+
+`handler.SealDecisionIntent(ctx, workspaceID, intentID)` locks workspace, issue
+and intent, then rechecks the tag, terminal/missing bound task and expiry. It
+seals invalid windows and closes missing/tombstoned tags with `comment_deleted`.
+`SealInvalidIntent` is the shared, non-committing transition used by both this
+transaction and `ValidateIntent`. Callers of the transition must already hold
+the workspace, issue and intent fences. Live windows and sealed retries leave
+timestamps and unconsumed targets unchanged.
+
+`ListDecisionSourceChecks(ctx, batchSize)` returns scoped request rows;
+`ListDecisionSealIntents(ctx, batchSize)` returns intent rows. Both are plain
+reads, deterministically ordered by ID and capped at 100 rows. Non-positive
+limits return no rows. Neither selector takes a decision lock. Missing baseline
+owners are left to CHE-1550's orphan cleanup, not repeatedly selected. Selected
+rows are hints: each transaction independently rechecks eligibility.
+
+CHE-1550 owns the lease, scheduling, retries, post-commit events, Finalize,
+Lifecycle cancel and deferred deliveries. These methods do not notify, enqueue,
+deliver notes or install baseline hooks. SQLSTATE lock/deadlock errors remain
+available to `decisiontx.IsRetryable`; the caller owns bounded retries. The
+runtime-unbind/detach ordering and the merge `trigger_comment_id` FK corrections
+remain unchanged in the record/veto code comments; no protocol change is made.
+
 All decision IDs referencing baseline rows are plain UUIDs. The task-specific
 approval permits exactly three internal cascading FKs: answer/request,
 class-change/request and intent-target/intent. Baseline application transactions

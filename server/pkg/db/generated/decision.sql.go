@@ -328,6 +328,28 @@ func (q *Queries) CreateDecisionRequest(ctx context.Context, arg CreateDecisionR
 	return i, err
 }
 
+const decisionAnswerSourceRemoved = `-- name: DecisionAnswerSourceRemoved :one
+SELECT EXISTS (
+    SELECT 1 FROM unnest(answer.chat_message_ids) AS source(id)
+    WHERE NOT EXISTS (SELECT 1 FROM chat_message message WHERE message.id = source.id)
+)::boolean AS removed
+FROM decision_answer answer
+JOIN decision_request request ON request.id = answer.decision_request_id
+WHERE request.workspace_id = $1 AND answer.id = $2
+`
+
+type DecisionAnswerSourceRemovedParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) DecisionAnswerSourceRemoved(ctx context.Context, arg DecisionAnswerSourceRemovedParams) (bool, error) {
+	row := q.db.QueryRow(ctx, decisionAnswerSourceRemoved, arg.WorkspaceID, arg.ID)
+	var removed bool
+	err := row.Scan(&removed)
+	return removed, err
+}
+
 const decisionIntentRefusal = `-- name: DecisionIntentRefusal :one
 SELECT CASE
     WHEN intent.sealed_at IS NOT NULL THEN 'sealed'
@@ -462,6 +484,38 @@ func (q *Queries) GetDecisionAnswer(ctx context.Context, arg GetDecisionAnswerPa
 		&i.RetractionOutcome,
 		&i.WithdrawalCommentID,
 		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getDecisionIntent = `-- name: GetDecisionIntent :one
+SELECT id, workspace_id, issue_id, task_id, agent_id, comment_id, opened_at, expires_at, consumed_at, consumed_by_request_id, closed_at, close_reason, sealed_at, group_woken_at FROM decision_intent
+WHERE workspace_id = $1 AND id = $2
+`
+
+type GetDecisionIntentParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) GetDecisionIntent(ctx context.Context, arg GetDecisionIntentParams) (DecisionIntent, error) {
+	row := q.db.QueryRow(ctx, getDecisionIntent, arg.WorkspaceID, arg.ID)
+	var i DecisionIntent
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.TaskID,
+		&i.AgentID,
+		&i.CommentID,
+		&i.OpenedAt,
+		&i.ExpiresAt,
+		&i.ConsumedAt,
+		&i.ConsumedByRequestID,
+		&i.ClosedAt,
+		&i.CloseReason,
+		&i.SealedAt,
+		&i.GroupWokenAt,
 	)
 	return i, err
 }
@@ -855,6 +909,54 @@ func (q *Queries) ListDecisionRequestsByIssue(ctx context.Context, arg ListDecis
 	return items, nil
 }
 
+const listDecisionSealIntents = `-- name: ListDecisionSealIntents :many
+SELECT intent.id, intent.workspace_id, intent.issue_id, intent.task_id, intent.agent_id, intent.comment_id, intent.opened_at, intent.expires_at, intent.consumed_at, intent.consumed_by_request_id, intent.closed_at, intent.close_reason, intent.sealed_at, intent.group_woken_at FROM decision_intent intent
+JOIN issue ON issue.id = intent.issue_id AND issue.workspace_id = intent.workspace_id
+LEFT JOIN comment tag ON tag.id = intent.comment_id AND tag.issue_id = intent.issue_id AND tag.workspace_id = intent.workspace_id
+LEFT JOIN agent_task_queue task ON task.id = intent.task_id
+WHERE intent.sealed_at IS NULL AND (
+    clock_timestamp() >= intent.expires_at OR task.id IS NULL OR task.status <> 'running'
+    OR tag.id IS NULL OR tag.deleted_at IS NOT NULL
+)
+ORDER BY intent.id
+LIMIT LEAST(GREATEST($1::int, 0), 100)
+`
+
+func (q *Queries) ListDecisionSealIntents(ctx context.Context, batchSize int32) ([]DecisionIntent, error) {
+	rows, err := q.db.Query(ctx, listDecisionSealIntents, batchSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DecisionIntent{}
+	for rows.Next() {
+		var i DecisionIntent
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.TaskID,
+			&i.AgentID,
+			&i.CommentID,
+			&i.OpenedAt,
+			&i.ExpiresAt,
+			&i.ConsumedAt,
+			&i.ConsumedByRequestID,
+			&i.ClosedAt,
+			&i.CloseReason,
+			&i.SealedAt,
+			&i.GroupWokenAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDecisionSessionReferences = `-- name: ListDecisionSessionReferences :many
 SELECT DISTINCT COALESCE(workspace.issue_prefix || '-' || issue.number::text, request.issue_id::text)::text AS issue_key
 FROM decision_request request
@@ -889,6 +991,62 @@ func (q *Queries) ListDecisionSessionReferences(ctx context.Context, arg ListDec
 			return nil, err
 		}
 		items = append(items, issue_key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDecisionSourceChecks = `-- name: ListDecisionSourceChecks :many
+SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at FROM decision_request request
+JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
+JOIN chat_session session ON session.id = request.chat_session_id AND session.workspace_id = request.workspace_id
+WHERE EXISTS (
+    SELECT 1 FROM decision_answer answer
+    WHERE answer.decision_request_id = request.id AND answer.disclaimed_at IS NULL
+      AND EXISTS (
+          SELECT 1 FROM unnest(answer.chat_message_ids) AS source(id)
+          WHERE NOT EXISTS (SELECT 1 FROM chat_message message WHERE message.id = source.id)
+      )
+)
+ORDER BY request.id
+LIMIT LEAST(GREATEST($1::int, 0), 100)
+`
+
+func (q *Queries) ListDecisionSourceChecks(ctx context.Context, batchSize int32) ([]DecisionRequest, error) {
+	rows, err := q.db.Query(ctx, listDecisionSourceChecks, batchSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DecisionRequest{}
+	for rows.Next() {
+		var i DecisionRequest
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.AskingAgentID,
+			&i.HumanUserID,
+			&i.ChatSessionID,
+			&i.PingMessageID,
+			&i.IssueCommentID,
+			&i.Ask,
+			&i.EscalationClass,
+			&i.Status,
+			&i.Origin,
+			&i.DecisionIntentID,
+			&i.CancelReason,
+			&i.CancelNoticePostedAt,
+			&i.PingNotifiedAt,
+			&i.ReaskDeliveredAt,
+			&i.ReaskOutcome,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
