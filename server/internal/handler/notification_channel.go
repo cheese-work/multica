@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 
@@ -71,7 +72,9 @@ func (h *Handler) PatchNotificationChannel(w http.ResponseWriter, r *http.Reques
 	workspaceID := ctxWorkspaceID(r.Context())
 
 	var req patchNotifChannelRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	dec := json.NewDecoder(r.Body)
+	// A second Decode must hit EOF: trailing JSON or garbage is a malformed body.
+	if err := dec.Decode(&req); err != nil || dec.Decode(&struct{}{}) != io.EOF {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}

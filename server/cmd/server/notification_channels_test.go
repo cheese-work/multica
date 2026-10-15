@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -154,6 +155,38 @@ func TestNotificationChannelsPatchRejectsMalformedBodies(t *testing.T) {
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
 			patchChannel(t, body, http.StatusBadRequest)
+		})
+	}
+
+	// Nothing was written by the rejected requests.
+	wantChannels(t, getChannels(t), defaultChannels)
+}
+
+// authRequest marshals its body, so a body with trailing data needs a raw request.
+func TestNotificationChannelsPatchRejectsTrailingData(t *testing.T) {
+	resetNotificationChannelState(t)
+
+	valid := `{"source":"dm","channel":"push","enabled":true}`
+	for name, body := range map[string]string{
+		"trailing object": valid + `{"source":"dm","channel":"in_app","enabled":false}`,
+		"trailing text":   valid + ` garbage`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPatch, testServer.URL+"/api/notification-channels", strings.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+testToken)
+			req.Header.Set("X-Workspace-ID", testWorkspaceID)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d", resp.StatusCode)
+			}
 		})
 	}
 
