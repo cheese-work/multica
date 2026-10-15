@@ -1,5 +1,5 @@
--- Scoped-event capture (CHE-1082 L9; the outbox and its indexes are 592-596). The ordinary event triggers also write
--- the scoped-event outbox (592) when a definition selecting the event exists, in
+-- Scoped-event capture (CHE-1082 L9; the outbox and its indexes are 627-631). The ordinary event triggers also write
+-- the scoped-event outbox (627) when a definition selecting the event exists, in
 -- the source transaction and with indexed lookups only. capture_issue_wakeup
 -- gains p_only so the drain can replay one event into named instances through
 -- the same receipt, coalescing and idempotency rules, without capturing again

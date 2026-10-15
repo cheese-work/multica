@@ -22,7 +22,7 @@ import (
 // Scoped-event capture and drain (CHE-1082 L9). The ordinary event triggers
 // write a reference-only row to wakeup_scoped_event, in the source transaction,
 // when a definition selecting the event exists in the issue's workspace, current
-// project or issue scope (migration 630). The scheduler drains those rows here:
+// project or issue scope (migration 632). The scheduler drains those rows here:
 // it resolves only the event's issue, ensures that issue's runtime instance of
 // each matching rule and delivers the event into the existing wakeup receipts,
 // atomically with marking the input handled. Nothing here defines an event, an
@@ -401,7 +401,7 @@ type scopedRule struct {
 }
 
 // scopedDefinitionStamp is one stored definition as capture records it:
-// scope:rule:revision:updated-micros (migration 630).
+// scope:rule:revision:updated-micros (migration 632).
 func scopedDefinitionStamp(d *db.IssueWakeupDefinition) string {
 	return d.ScopeKind + ":" + d.RuleKey + ":" + strconv.FormatInt(d.Revision, 10) + ":" + strconv.FormatInt(d.UpdatedAt.Time.UnixMicro(), 10)
 }
