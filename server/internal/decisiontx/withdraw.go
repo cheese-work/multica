@@ -19,6 +19,14 @@ type Withdrawal struct {
 }
 
 func Withdraw(ctx context.Context, queries *db.Queries, request db.DecisionRequest, answer db.DecisionAnswer, sessionStatus, reason string, userID pgtype.UUID) (Withdrawal, error) {
+	return withdraw(ctx, queries, request, answer, sessionStatus, reason, userID, nil, false)
+}
+
+func WithdrawByAgent(ctx context.Context, queries *db.Queries, request db.DecisionRequest, answer db.DecisionAnswer, sessionStatus, reason string, comment db.Comment, suppress bool) (Withdrawal, error) {
+	return withdraw(ctx, queries, request, answer, sessionStatus, reason, pgtype.UUID{}, &comment, suppress)
+}
+
+func withdraw(ctx context.Context, queries *db.Queries, request db.DecisionRequest, answer db.DecisionAnswer, sessionStatus, reason string, userID pgtype.UUID, veto *db.Comment, suppress bool) (Withdrawal, error) {
 	result := Withdrawal{Request: request, Answer: answer}
 	if answer.DecisionRequestID != request.ID {
 		return Withdrawal{}, fmt.Errorf("withdrawal answer belongs to another request")
@@ -34,13 +42,28 @@ func Withdraw(ctx context.Context, queries *db.Queries, request db.DecisionReque
 			return Withdrawal{}, err
 		}
 	}
-	commentID := dbid.NewV7()
-	comment, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: commentID, WorkspaceID: request.WorkspaceID, IssueID: request.IssueID, ParentID: parentID, AuthorType: "agent", AuthorID: request.AskingAgentID, Type: "comment", Content: "Decision withdrawn: " + reason + ".", DecisionAnswerID: answer.ID, DecisionCommentKind: pgtype.Text{String: "disclaim", Valid: true}})
-	if err != nil {
-		return Withdrawal{}, err
+	var comment db.Comment
+	var err error
+	params := db.WithdrawDecisionAnswerParams{WorkspaceID: request.WorkspaceID, ID: answer.ID, DisclaimReason: pgtype.Text{String: reason, Valid: true}, DisclaimedByUserID: userID}
+	if veto == nil {
+		created, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: dbid.NewV7(), WorkspaceID: request.WorkspaceID, IssueID: request.IssueID, ParentID: parentID, AuthorType: "agent", AuthorID: request.AskingAgentID, Type: "comment", Content: "Decision withdrawn: " + reason + ".", DecisionAnswerID: answer.ID, DecisionCommentKind: pgtype.Text{String: "disclaim", Valid: true}})
+		if err != nil {
+			return Withdrawal{}, err
+		}
+		comment = created.Comment()
+	} else {
+		comment = *veto
+		reasonRunes := []rune(comment.Content)
+		if len(reasonRunes) > 600 {
+			reasonRunes = reasonRunes[:600]
+		}
+		params.DisclaimedByAgentID, params.DisclaimedByTaskID = comment.AuthorID, comment.SourceTaskID
+		params.VetoReason = pgtype.Text{String: string(reasonRunes), Valid: true}
+		params.SuppressRetraction = suppress && answer.WokenAt.Valid && answer.WakeOutcome.Valid && answer.WakeOutcome.String != "skipped_ineligible"
 	}
-	result.Comments = append(result.Comments, comment.Comment())
-	result.Answer, err = queries.WithdrawDecisionAnswer(ctx, db.WithdrawDecisionAnswerParams{WorkspaceID: request.WorkspaceID, ID: answer.ID, DisclaimReason: pgtype.Text{String: reason, Valid: true}, DisclaimedByUserID: userID, WithdrawalCommentID: commentID})
+	result.Comments = append(result.Comments, comment)
+	params.WithdrawalCommentID = comment.ID
+	result.Answer, err = queries.WithdrawDecisionAnswer(ctx, params)
 	if err != nil {
 		return Withdrawal{}, err
 	}
@@ -50,6 +73,9 @@ func Withdraw(ctx context.Context, queries *db.Queries, request db.DecisionReque
 	cancelReason := ""
 	if request.Origin == "unprompted" {
 		cancelReason = "record_disclaimed"
+		if veto != nil {
+			cancelReason = "record_vetoed"
+		}
 	} else if sessionStatus == "archived" {
 		cancelReason = "lane_archived"
 	}

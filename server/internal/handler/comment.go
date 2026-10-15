@@ -1511,6 +1511,7 @@ type CreateCommentRequest struct {
 	Content          string   `json:"content"`
 	DecisionIntent   bool     `json:"decision_intent"`
 	DecisionRecord   bool     `json:"decision_record"`
+	DecisionVeto     bool     `json:"decision_veto"`
 	MessageIDs       []string `json:"message_ids"`
 	EscalationClass  string   `json:"escalation_class"`
 	Type             string   `json:"type"`
@@ -1748,7 +1749,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if (req.DecisionIntent || req.DecisionRecord) && r.Header.Get("X-Actor-Source") != "task_token" {
+	if (req.DecisionIntent || req.DecisionRecord || req.DecisionVeto) && r.Header.Get("X-Actor-Source") != "task_token" {
 		writeError(w, http.StatusForbidden, "decision intent requires an issue task token")
 		return
 	}
@@ -1777,6 +1778,10 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// something the system generated.
 	if !isClientAuthorableCommentType(req.Type) {
 		writeError(w, http.StatusBadRequest, "invalid comment type")
+		return
+	}
+	if req.DecisionVeto {
+		h.createDecisionVetoComment(w, r, issue, req)
 		return
 	}
 	if req.DecisionRecord {

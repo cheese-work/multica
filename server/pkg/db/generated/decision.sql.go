@@ -176,6 +176,32 @@ func (q *Queries) CreateDecisionAnswer(ctx context.Context, arg CreateDecisionAn
 	return i, err
 }
 
+const createDecisionClassChange = `-- name: CreateDecisionClassChange :exec
+INSERT INTO decision_class_change (decision_request_id, from_class, to_class, changed_by_user_id)
+SELECT id, $1, $2, $3
+FROM decision_request
+WHERE workspace_id = $4 AND id = $5
+`
+
+type CreateDecisionClassChangeParams struct {
+	FromClass       string      `json:"from_class"`
+	ToClass         string      `json:"to_class"`
+	ChangedByUserID pgtype.UUID `json:"changed_by_user_id"`
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	ID              pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) CreateDecisionClassChange(ctx context.Context, arg CreateDecisionClassChangeParams) error {
+	_, err := q.db.Exec(ctx, createDecisionClassChange,
+		arg.FromClass,
+		arg.ToClass,
+		arg.ChangedByUserID,
+		arg.WorkspaceID,
+		arg.ID,
+	)
+	return err
+}
+
 const createDecisionIntent = `-- name: CreateDecisionIntent :one
 WITH stamp AS (SELECT clock_timestamp() AS opened_at)
 INSERT INTO decision_intent (workspace_id, issue_id, task_id, agent_id, comment_id, opened_at, expires_at)
@@ -514,6 +540,53 @@ func (q *Queries) GetDecisionRequest(ctx context.Context, arg GetDecisionRequest
 		&i.PingNotifiedAt,
 		&i.ReaskDeliveredAt,
 		&i.ReaskOutcome,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const holdDecisionAnswerForClass = `-- name: HoldDecisionAnswerForClass :one
+WITH hold AS (SELECT clock_timestamp() + interval '10 minutes' AS held_until)
+UPDATE decision_answer answer SET
+    effective_at = hold.held_until,
+    wake_at = CASE WHEN wake_at IS NOT NULL THEN hold.held_until ELSE NULL END
+FROM decision_request request, hold
+WHERE request.id = answer.decision_request_id AND request.workspace_id = $1
+  AND answer.id = $2 AND answer.disclaimed_at IS NULL AND answer.woken_at IS NULL
+RETURNING answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at
+`
+
+type HoldDecisionAnswerForClassParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) HoldDecisionAnswerForClass(ctx context.Context, arg HoldDecisionAnswerForClassParams) (DecisionAnswer, error) {
+	row := q.db.QueryRow(ctx, holdDecisionAnswerForClass, arg.WorkspaceID, arg.ID)
+	var i DecisionAnswer
+	err := row.Scan(
+		&i.ID,
+		&i.DecisionRequestID,
+		&i.AnsweredByTaskID,
+		&i.SourceChatSessionID,
+		&i.ChatMessageIds,
+		&i.ContentSnapshot,
+		&i.EffectiveAt,
+		&i.WakeAt,
+		&i.WokenAt,
+		&i.WakeOutcome,
+		&i.IssueCommentID,
+		&i.DisclaimedAt,
+		&i.DisclaimCommentPostedAt,
+		&i.DisclaimedByUserID,
+		&i.DisclaimReason,
+		&i.DisclaimedByAgentID,
+		&i.DisclaimedByTaskID,
+		&i.VetoReason,
+		&i.VetoNotePostedAt,
+		&i.RetractionDeliveredAt,
+		&i.RetractionOutcome,
+		&i.WithdrawalCommentID,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -998,6 +1071,50 @@ func (q *Queries) LockDecisionIssue(ctx context.Context, arg LockDecisionIssuePa
 	return id, err
 }
 
+const lockDecisionLiveAnswer = `-- name: LockDecisionLiveAnswer :one
+SELECT answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at FROM decision_answer answer
+JOIN decision_request request ON request.id = answer.decision_request_id
+WHERE request.workspace_id = $1 AND request.id = $2
+  AND answer.disclaimed_at IS NULL
+FOR UPDATE OF answer
+`
+
+type LockDecisionLiveAnswerParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) LockDecisionLiveAnswer(ctx context.Context, arg LockDecisionLiveAnswerParams) (DecisionAnswer, error) {
+	row := q.db.QueryRow(ctx, lockDecisionLiveAnswer, arg.WorkspaceID, arg.ID)
+	var i DecisionAnswer
+	err := row.Scan(
+		&i.ID,
+		&i.DecisionRequestID,
+		&i.AnsweredByTaskID,
+		&i.SourceChatSessionID,
+		&i.ChatMessageIds,
+		&i.ContentSnapshot,
+		&i.EffectiveAt,
+		&i.WakeAt,
+		&i.WokenAt,
+		&i.WakeOutcome,
+		&i.IssueCommentID,
+		&i.DisclaimedAt,
+		&i.DisclaimCommentPostedAt,
+		&i.DisclaimedByUserID,
+		&i.DisclaimReason,
+		&i.DisclaimedByAgentID,
+		&i.DisclaimedByTaskID,
+		&i.VetoReason,
+		&i.VetoNotePostedAt,
+		&i.RetractionDeliveredAt,
+		&i.RetractionOutcome,
+		&i.WithdrawalCommentID,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const lockDecisionMember = `-- name: LockDecisionMember :one
 SELECT id FROM member
 WHERE workspace_id = $1 AND user_id = $2
@@ -1217,6 +1334,45 @@ func (q *Queries) MarkDecisionRequestAnswered(ctx context.Context, arg MarkDecis
 	return i, err
 }
 
+const raiseDecisionClass = `-- name: RaiseDecisionClass :one
+UPDATE decision_request SET escalation_class = $1
+WHERE workspace_id = $2 AND id = $3
+RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at
+`
+
+type RaiseDecisionClassParams struct {
+	EscalationClass string      `json:"escalation_class"`
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	ID              pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) RaiseDecisionClass(ctx context.Context, arg RaiseDecisionClassParams) (DecisionRequest, error) {
+	row := q.db.QueryRow(ctx, raiseDecisionClass, arg.EscalationClass, arg.WorkspaceID, arg.ID)
+	var i DecisionRequest
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.AskingAgentID,
+		&i.HumanUserID,
+		&i.ChatSessionID,
+		&i.PingMessageID,
+		&i.IssueCommentID,
+		&i.Ask,
+		&i.EscalationClass,
+		&i.Status,
+		&i.Origin,
+		&i.DecisionIntentID,
+		&i.CancelReason,
+		&i.CancelNoticePostedAt,
+		&i.PingNotifiedAt,
+		&i.ReaskDeliveredAt,
+		&i.ReaskOutcome,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const reopenDecisionRequest = `-- name: ReopenDecisionRequest :one
 UPDATE decision_request SET status = 'open'
 WHERE workspace_id = $1 AND id = $2 AND status = 'answered'
@@ -1291,10 +1447,15 @@ UPDATE decision_answer answer
 SET disclaimed_at = clock_timestamp(), disclaim_reason = $1,
     disclaimed_by_user_id = $2,
     disclaim_comment_posted_at = clock_timestamp(), withdrawal_comment_id = $3,
-    wake_at = CASE WHEN woken_at IS NULL THEN NULL ELSE wake_at END
+    wake_at = CASE WHEN woken_at IS NULL THEN NULL ELSE wake_at END,
+    disclaimed_by_agent_id = $4,
+    disclaimed_by_task_id = $5,
+    veto_reason = $6,
+    retraction_delivered_at = CASE WHEN $7::boolean THEN clock_timestamp() ELSE retraction_delivered_at END,
+    retraction_outcome = CASE WHEN $7::boolean THEN 'suppressed_agent_veto' ELSE retraction_outcome END
 FROM decision_request request
-WHERE request.id = answer.decision_request_id AND request.workspace_id = $4
-  AND answer.id = $5 AND answer.disclaimed_at IS NULL
+WHERE request.id = answer.decision_request_id AND request.workspace_id = $8
+  AND answer.id = $9 AND answer.disclaimed_at IS NULL
 RETURNING answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at
 `
 
@@ -1302,6 +1463,10 @@ type WithdrawDecisionAnswerParams struct {
 	DisclaimReason      pgtype.Text `json:"disclaim_reason"`
 	DisclaimedByUserID  pgtype.UUID `json:"disclaimed_by_user_id"`
 	WithdrawalCommentID pgtype.UUID `json:"withdrawal_comment_id"`
+	DisclaimedByAgentID pgtype.UUID `json:"disclaimed_by_agent_id"`
+	DisclaimedByTaskID  pgtype.UUID `json:"disclaimed_by_task_id"`
+	VetoReason          pgtype.Text `json:"veto_reason"`
+	SuppressRetraction  bool        `json:"suppress_retraction"`
 	WorkspaceID         pgtype.UUID `json:"workspace_id"`
 	ID                  pgtype.UUID `json:"id"`
 }
@@ -1311,6 +1476,10 @@ func (q *Queries) WithdrawDecisionAnswer(ctx context.Context, arg WithdrawDecisi
 		arg.DisclaimReason,
 		arg.DisclaimedByUserID,
 		arg.WithdrawalCommentID,
+		arg.DisclaimedByAgentID,
+		arg.DisclaimedByTaskID,
+		arg.VetoReason,
+		arg.SuppressRetraction,
 		arg.WorkspaceID,
 		arg.ID,
 	)
