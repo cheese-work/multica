@@ -1,0 +1,403 @@
+package handler
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
+	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+)
+
+type decisionConsequences interface {
+	CheckDecisionSource(context.Context, pgtype.UUID, pgtype.UUID) (decisiontx.Withdrawal, error)
+	SealDecisionIntent(context.Context, pgtype.UUID, pgtype.UUID) (db.DecisionIntent, error)
+}
+
+type decisionConsequenceProbe struct {
+	handler *Handler
+}
+
+func (probe decisionConsequenceProbe) CheckDecisionSource(ctx context.Context, workspaceID, requestID pgtype.UUID) (decisiontx.Withdrawal, error) {
+	if worker, ok := any(probe.handler).(decisionConsequences); ok {
+		return worker.CheckDecisionSource(ctx, workspaceID, requestID)
+	}
+	return decisiontx.Withdrawal{}, nil
+}
+
+func (probe decisionConsequenceProbe) SealDecisionIntent(ctx context.Context, workspaceID, intentID pgtype.UUID) (db.DecisionIntent, error) {
+	if worker, ok := any(probe.handler).(decisionConsequences); ok {
+		return worker.SealDecisionIntent(ctx, workspaceID, intentID)
+	}
+	return db.DecisionIntent{}, nil
+}
+
+func (probe decisionConsequenceProbe) ListDecisionSourceChecks(ctx context.Context, limit int32) ([]db.DecisionRequest, error) {
+	if selectors, ok := any(probe.handler.Queries).(decisionConsequenceSelectors); ok {
+		return selectors.ListDecisionSourceChecks(ctx, limit)
+	}
+	return nil, nil
+}
+
+func (probe decisionConsequenceProbe) ListDecisionSealIntents(ctx context.Context, limit int32) ([]db.DecisionIntent, error) {
+	if selectors, ok := any(probe.handler.Queries).(decisionConsequenceSelectors); ok {
+		return selectors.ListDecisionSealIntents(ctx, limit)
+	}
+	return nil, nil
+}
+
+func consequenceWorker(test *testing.T, handler *Handler) decisionConsequences {
+	test.Helper()
+	if _, ok := any(handler).(decisionConsequences); !ok {
+		test.Log("baseline has no consequence operations; observe persisted state without running a transition")
+	}
+	return decisionConsequenceProbe{handler: handler}
+}
+
+func consequenceIntent(test *testing.T, intentID pgtype.UUID) db.DecisionIntent {
+	test.Helper()
+	var intent db.DecisionIntent
+	dbfx.QueryRow(test, `SELECT id, sealed_at, closed_at, close_reason, consumed_at FROM decision_intent WHERE workspace_id = $1 AND id = $2`, testWorkspaceID, intentID).Scan(&intent.ID, &intent.SealedAt, &intent.ClosedAt, &intent.CloseReason, &intent.ConsumedAt)
+	return intent
+}
+
+func TestDecisionSourceConsequence(test *testing.T) {
+	for _, state := range []string{"present", "edited", "removed", "partial", "archived", "unprompted", "cancelled", "delivered", "deleted_anchor"} {
+		test.Run(state, func(test *testing.T) {
+			fixture := newAskedRecordFixture(test)
+			recorded, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
+			if err != nil {
+				test.Fatal(err)
+			}
+			if state == "partial" {
+				messageID := dbfx.Insert(test, "chat_message", testutil.Cols{"chat_session_id": fixture.sessionID, "role": "user", "content": "another source", "sent_via": "interactive_jwt"})
+				dbfx.Exec(test, `UPDATE decision_answer SET chat_message_ids = array_append(chat_message_ids, $1::uuid) WHERE id = $2`, messageID, recorded.Answer.ID)
+			}
+			if state == "edited" {
+				dbfx.Exec(test, `UPDATE chat_message SET content = 'edited later' WHERE id = $1`, fixture.messageID)
+			} else if state != "present" {
+				dbfx.Exec(test, `DELETE FROM chat_message WHERE id = $1`, fixture.messageID)
+			}
+			if state == "archived" {
+				dbfx.Exec(test, `UPDATE chat_session SET status = 'archived' WHERE id = $1`, fixture.sessionID)
+			}
+			if state == "unprompted" {
+				dbfx.Exec(test, `UPDATE decision_request SET origin = 'unprompted' WHERE id = $1`, recorded.Request.ID)
+			}
+			if state == "cancelled" {
+				dbfx.Exec(test, `UPDATE decision_request SET status = 'cancelled', cancel_reason = 'issue_closed' WHERE id = $1`, recorded.Request.ID)
+			}
+			if state == "deleted_anchor" {
+				dbfx.Exec(test, `DELETE FROM comment WHERE id = $1`, fixture.parentID)
+			}
+			dbfx.Exec(test, `UPDATE decision_answer SET wake_at = clock_timestamp() WHERE id = $1`, recorded.Answer.ID)
+			if state == "delivered" {
+				dbfx.Exec(test, `UPDATE decision_answer SET woken_at = clock_timestamp(), wake_outcome = 'run_enqueued' WHERE id = $1`, recorded.Answer.ID)
+			}
+			worker := consequenceWorker(test, testHandler)
+			for attempt := 0; attempt < 2; attempt++ {
+				if _, err := worker.CheckDecisionSource(context.Background(), parseUUID(testWorkspaceID), recorded.Request.ID); err != nil {
+					test.Fatal(err)
+				}
+			}
+			answer, err := testHandler.Queries.GetDecisionAnswer(context.Background(), db.GetDecisionAnswerParams{WorkspaceID: parseUUID(testWorkspaceID), ID: recorded.Answer.ID})
+			if err != nil {
+				test.Fatal(err)
+			}
+			missing := state != "present" && state != "edited"
+			if answer.DisclaimedAt.Valid != missing {
+				test.Fatalf("persisted withdrawal=%t, want %t for source state %s", answer.DisclaimedAt.Valid, missing, state)
+			}
+			if answer.ContentSnapshot != recorded.Answer.ContentSnapshot || answer.SourceChatSessionID != recorded.Answer.SourceChatSessionID {
+				test.Fatal("source check changed the immutable snapshot or source session")
+			}
+			if !missing {
+				return
+			}
+			if answer.DisclaimReason.String != "source_removed" || !answer.DisclaimCommentPostedAt.Valid || !answer.WithdrawalCommentID.Valid || answer.DisclaimedByUserID.Valid || answer.DisclaimedByAgentID.Valid || answer.RetractionDeliveredAt.Valid || answer.WakeAt.Valid != (state == "delivered") {
+				test.Fatalf("automatic withdrawal receipts: %+v", answer)
+			}
+			request, err := testHandler.Queries.GetDecisionRequest(context.Background(), db.GetDecisionRequestParams{WorkspaceID: parseUUID(testWorkspaceID), ID: recorded.Request.ID})
+			if err != nil {
+				test.Fatal(err)
+			}
+			wantedStatus, wantedReason := "open", ""
+			if state == "archived" {
+				wantedStatus, wantedReason = "cancelled", "lane_archived"
+			} else if state == "unprompted" {
+				wantedStatus, wantedReason = "cancelled", "record_disclaimed"
+			} else if state == "cancelled" {
+				wantedStatus, wantedReason = "cancelled", "issue_closed"
+			}
+			if request.Status != wantedStatus || request.CancelReason.String != wantedReason {
+				test.Fatalf("request status=%s reason=%s", request.Status, request.CancelReason.String)
+			}
+			if count := dbfx.Count(test, `SELECT count(*) FROM comment WHERE decision_answer_id = $1 AND decision_comment_kind = 'disclaim'`, answer.ID); count != 1 {
+				test.Fatalf("withdrawal comments=%d, want exactly one after retry", count)
+			}
+			wantedCancel := 0
+			if state == "archived" {
+				wantedCancel = 1
+			}
+			if count := dbfx.Count(test, `SELECT count(*) FROM comment WHERE decision_request_id = $1 AND decision_comment_kind = 'cancel'`, request.ID); count != wantedCancel {
+				test.Fatalf("cancel comments=%d, want %d", count, wantedCancel)
+			}
+			if dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1`, fixture.issueID) != 1 {
+				test.Fatal("source check synchronously enqueued delivery")
+			}
+		})
+	}
+}
+
+func TestDecisionSealConsequence(test *testing.T) {
+	for _, state := range []string{"live", "expired", "completed", "cancelled", "failed", "task_deleted", "tag_deleted", "tag_tombstoned", "expired_deleted"} {
+		test.Run(state, func(test *testing.T) {
+			fixture := newIntentFixture(test)
+			openedID, tagID := openLaneIntent(test, fixture, fixture.mention())
+			intentID := parseUUID(openedID)
+			switch state {
+			case "expired", "expired_deleted":
+				dbfx.Exec(test, `UPDATE decision_intent SET expires_at = clock_timestamp() - interval '1 second' WHERE id = $1`, intentID)
+			case "completed", "cancelled", "failed":
+				dbfx.Exec(test, `UPDATE agent_task_queue SET status = $1 WHERE id = $2`, state, fixture.taskID)
+			case "task_deleted":
+				dbfx.Exec(test, `DELETE FROM agent_task_queue WHERE id = $1`, fixture.taskID)
+			case "tag_tombstoned":
+				dbfx.Exec(test, `UPDATE comment SET deleted_at = clock_timestamp() WHERE id = $1`, tagID)
+			}
+			if state == "tag_deleted" || state == "expired_deleted" {
+				dbfx.Exec(test, `DELETE FROM comment WHERE id = $1`, tagID)
+			}
+			worker := consequenceWorker(test, testHandler)
+			_, err := worker.SealDecisionIntent(context.Background(), parseUUID(testWorkspaceID), intentID)
+			if err != nil {
+				test.Fatal(err)
+			}
+			first := consequenceIntent(test, intentID)
+			if _, err := worker.SealDecisionIntent(context.Background(), parseUUID(testWorkspaceID), intentID); err != nil {
+				test.Fatal(err)
+			}
+			second := consequenceIntent(test, intentID)
+			deleted := state == "tag_deleted" || state == "tag_tombstoned" || state == "expired_deleted"
+			if first.SealedAt.Valid != (state != "live") {
+				test.Fatalf("persisted seal=%t, want %t for intent state %s", first.SealedAt.Valid, state != "live", state)
+			}
+			if first.SealedAt.Valid != (state != "live") || first.ClosedAt.Valid != deleted || second.SealedAt != first.SealedAt || second.ClosedAt != first.ClosedAt || first.ConsumedAt.Valid {
+				test.Fatalf("window seal or retry changed: first=%+v second=%+v", first, second)
+			}
+			if deleted && first.CloseReason.String != "comment_deleted" {
+				test.Fatalf("tag deletion reason=%s", first.CloseReason.String)
+			}
+			if dbfx.Count(test, `SELECT count(*) FROM decision_intent_target WHERE decision_intent_id = $1 AND consumed_at IS NOT NULL`, intentID) != 0 {
+				test.Fatal("sealing consumed a target")
+			}
+		})
+	}
+}
+
+func TestDecisionSourceClearsThreadResolution(test *testing.T) {
+	fixture := newAskedRecordFixture(test)
+	recorded, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
+	if err != nil {
+		test.Fatal(err)
+	}
+	dbfx.Exec(test, `UPDATE comment SET resolved_at = clock_timestamp(), resolved_by_type = 'member', resolved_by_id = $1 WHERE id = $2`, testUserID, fixture.parentID)
+	dbfx.Exec(test, `DELETE FROM chat_message WHERE id = $1`, fixture.messageID)
+	result, err := consequenceWorker(test, testHandler).CheckDecisionSource(context.Background(), parseUUID(testWorkspaceID), recorded.Request.ID)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if dbfx.Count(test, `SELECT count(*) FROM comment WHERE id = $1 AND resolved_at IS NOT NULL`, fixture.parentID) != 0 {
+		test.Fatal("source withdrawal left the ask thread resolved")
+	}
+	if len(result.ClearedComments) != 1 || result.ClearedComments[0].ID != parseUUID(fixture.parentID) || result.ClearedComments[0].ResolvedAt.Valid || len(result.Comments) != 1 {
+		test.Fatalf("committed withdrawal omitted its resolution or comment receipts: %+v", result)
+	}
+	retried, err := consequenceWorker(test, testHandler).CheckDecisionSource(context.Background(), parseUUID(testWorkspaceID), recorded.Request.ID)
+	if err != nil || len(retried.Comments) != 0 || len(retried.ClearedComments) != 0 {
+		test.Fatalf("withdrawal retry repeated publication receipts: %+v error=%v", retried, err)
+	}
+}
+
+func TestDecisionConsequenceRollback(test *testing.T) {
+	fixture := newAskedRecordFixture(test)
+	recorded, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
+	if err != nil {
+		test.Fatal(err)
+	}
+	dbfx.Exec(test, `DELETE FROM chat_message WHERE id = $1`, fixture.messageID)
+	failure := errors.New("withdrawal receipt failed")
+	broken := *testHandler
+	broken.TxStarter = &requestCoreStarter{base: testPool, query: "-- name: WithdrawDecisionAnswer", fail: failure}
+	result, err := consequenceWorker(test, &broken).CheckDecisionSource(context.Background(), parseUUID(testWorkspaceID), recorded.Request.ID)
+	if !errors.Is(err, failure) || len(result.Comments) != 0 || dbfx.Count(test, `SELECT count(*) FROM comment WHERE decision_answer_id = $1 AND decision_comment_kind = 'disclaim'`, recorded.Answer.ID) != 0 {
+		test.Fatalf("failed consequence escaped rollback: %+v error=%v", result, err)
+	}
+	bounded, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := consequenceWorker(test, testHandler).CheckDecisionSource(bounded, parseUUID(testWorkspaceID), recorded.Request.ID); err != nil {
+		test.Fatalf("retry after rollback: %v", err)
+	}
+	if dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE id = $1 AND disclaimed_at IS NOT NULL`, recorded.Answer.ID) != 1 {
+		test.Fatal("retry after rollback left the removed-source answer live")
+	}
+}
+
+func TestDecisionSealRollback(test *testing.T) {
+	fixture := newIntentFixture(test)
+	openedID, _ := openLaneIntent(test, fixture, fixture.mention())
+	intentID := parseUUID(openedID)
+	dbfx.Exec(test, `UPDATE decision_intent SET expires_at = clock_timestamp() - interval '1 second' WHERE id = $1`, intentID)
+	failure := errors.New("seal failed")
+	broken := *testHandler
+	broken.TxStarter = &requestCoreStarter{base: testPool, query: "-- name: SealDecisionIntent", fail: failure}
+	result, err := consequenceWorker(test, &broken).SealDecisionIntent(context.Background(), parseUUID(testWorkspaceID), intentID)
+	if !errors.Is(err, failure) || result.ID.Valid || dbfx.Count(test, `SELECT count(*) FROM decision_intent WHERE id = $1 AND sealed_at IS NOT NULL`, intentID) != 0 {
+		test.Fatalf("failed seal escaped rollback: %+v error=%v", result, err)
+	}
+	if _, err := consequenceWorker(test, testHandler).SealDecisionIntent(context.Background(), parseUUID(testWorkspaceID), intentID); err != nil {
+		test.Fatal(err)
+	}
+	if dbfx.Count(test, `SELECT count(*) FROM decision_intent WHERE id = $1 AND sealed_at IS NOT NULL`, intentID) != 1 {
+		test.Fatal("retry after rollback left the expired intent unsealed")
+	}
+}
+
+type decisionConsequenceSelectors interface {
+	ListDecisionSourceChecks(context.Context, int32) ([]db.DecisionRequest, error)
+	ListDecisionSealIntents(context.Context, int32) ([]db.DecisionIntent, error)
+}
+
+func TestDecisionConsequenceSelectors(test *testing.T) {
+	selectors := decisionConsequenceProbe{handler: testHandler}
+	ctx := context.Background()
+	test.Run("source", func(test *testing.T) {
+		fixture := newAskedRecordFixture(test)
+		recorded, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
+		if err != nil {
+			test.Fatal(err)
+		}
+		sources, err := selectors.ListDecisionSourceChecks(ctx, 10)
+		if err != nil || len(sources) != 0 {
+			test.Fatalf("live source selected: %+v error=%v", sources, err)
+		}
+		dbfx.Exec(test, `DELETE FROM chat_message WHERE id = $1`, fixture.messageID)
+		for _, limit := range []int32{-1, 0, 1} {
+			sources, err = selectors.ListDecisionSourceChecks(ctx, limit)
+			if err != nil || len(sources) != int(max(limit, 0)) {
+				test.Fatalf("bounded source selector limit=%d: %+v error=%v", limit, sources, err)
+			}
+		}
+		if sources[0].ID != recorded.Request.ID {
+			test.Fatal("source selector lost candidate scope")
+		}
+		if _, err := consequenceWorker(test, testHandler).CheckDecisionSource(ctx, parseUUID(testWorkspaceID), recorded.Request.ID); err != nil {
+			test.Fatal(err)
+		}
+		sources, err = selectors.ListDecisionSourceChecks(ctx, 10)
+		if err != nil || len(sources) != 0 {
+			test.Fatalf("settled source selected again: %+v error=%v", sources, err)
+		}
+	})
+	test.Run("intent", func(test *testing.T) {
+		fixture := newIntentFixture(test)
+		openedID, _ := openLaneIntent(test, fixture, fixture.mention())
+		intentID := parseUUID(openedID)
+		intents, err := selectors.ListDecisionSealIntents(ctx, 10)
+		if err != nil || len(intents) != 0 {
+			test.Fatalf("live intent selected: %+v error=%v", intents, err)
+		}
+		dbfx.Exec(test, `UPDATE decision_intent SET expires_at = clock_timestamp() - interval '1 second' WHERE id = $1`, intentID)
+		for _, limit := range []int32{-1, 0, 1} {
+			intents, err = selectors.ListDecisionSealIntents(ctx, limit)
+			if err != nil || len(intents) != int(max(limit, 0)) {
+				test.Fatalf("bounded intent selector limit=%d: %+v error=%v", limit, intents, err)
+			}
+		}
+		if intents[0].ID != intentID {
+			test.Fatal("intent selector lost candidate scope")
+		}
+		if _, err := consequenceWorker(test, testHandler).SealDecisionIntent(ctx, parseUUID(testWorkspaceID), intentID); err != nil {
+			test.Fatal(err)
+		}
+		intents, err = selectors.ListDecisionSealIntents(ctx, 10)
+		if err != nil || len(intents) != 0 {
+			test.Fatalf("settled intent selected again: %+v error=%v", intents, err)
+		}
+	})
+}
+
+func TestDecisionConsequenceScope(test *testing.T) {
+	fixture := newAskedRecordFixture(test)
+	recorded, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
+	if err != nil {
+		test.Fatal(err)
+	}
+	dbfx.Exec(test, `DELETE FROM chat_message WHERE id = $1`, fixture.messageID)
+	openedID, _ := openLaneIntent(test, fixture.intentFixture, fixture.mention())
+	dbfx.Exec(test, `UPDATE decision_intent SET expires_at = clock_timestamp() - interval '1 second' WHERE id = $1`, openedID)
+	worker := consequenceWorker(test, testHandler)
+	otherWorkspace := parseUUID("11111111-1111-4111-8111-111111111111")
+	result, err := worker.CheckDecisionSource(context.Background(), otherWorkspace, recorded.Request.ID)
+	if err != nil || result.Answer.ID.Valid {
+		test.Fatalf("cross-workspace source check: %+v error=%v", result, err)
+	}
+	intent, err := worker.SealDecisionIntent(context.Background(), otherWorkspace, parseUUID(openedID))
+	if err != nil || intent.ID.Valid {
+		test.Fatalf("cross-workspace intent seal: %+v error=%v", intent, err)
+	}
+	if dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE id = $1 AND disclaimed_at IS NULL`, recorded.Answer.ID) != 1 || dbfx.Count(test, `SELECT count(*) FROM decision_intent WHERE id = $1 AND sealed_at IS NULL`, openedID) != 1 {
+		test.Fatal("cross-workspace consequence wrote state")
+	}
+}
+
+func TestDecisionSealDeleteOrdering(test *testing.T) {
+	for _, tombstone := range []bool{false, true} {
+		test.Run(map[bool]string{false: "physical", true: "tombstone"}[tombstone], func(test *testing.T) {
+			fixture := newIntentFixture(test)
+			openedID, tagID := openLaneIntent(test, fixture, fixture.mention())
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cancel()
+			holder, err := testPool.Begin(ctx)
+			if err != nil {
+				test.Fatal(err)
+			}
+			defer holder.Rollback(ctx)
+			var holderPID int
+			if err := holder.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&holderPID); err != nil {
+				test.Fatal(err)
+			}
+			if _, err := holder.Exec(ctx, `SELECT id FROM issue WHERE id = $1 FOR NO KEY UPDATE`, fixture.issueID); err != nil {
+				test.Fatal(err)
+			}
+			statement := `DELETE FROM comment WHERE id = $1`
+			if tombstone {
+				statement = `UPDATE comment SET deleted_at = clock_timestamp() WHERE id = $1`
+			}
+			if _, err := holder.Exec(ctx, statement, tagID); err != nil {
+				test.Fatal(err)
+			}
+			worker := consequenceWorker(test, testHandler)
+			finished := make(chan error, 1)
+			go func() {
+				_, err := worker.SealDecisionIntent(ctx, parseUUID(testWorkspaceID), parseUUID(openedID))
+				finished <- err
+			}()
+			if !waitForWaiterBlockedBy(test, holderPID, 3*time.Second) {
+				test.Fatal("intent seal bypassed comment deletion's issue lock")
+			}
+			if err := holder.Commit(ctx); err != nil {
+				test.Fatal(err)
+			}
+			if err := <-finished; err != nil {
+				test.Fatal(err)
+			}
+			if dbfx.Count(test, `SELECT count(*) FROM decision_intent WHERE id = $1 AND sealed_at IS NOT NULL AND closed_at IS NOT NULL AND close_reason = 'comment_deleted'`, openedID) != 1 {
+				test.Fatal("intent did not recheck deletion after the issue fence")
+			}
+		})
+	}
+}
