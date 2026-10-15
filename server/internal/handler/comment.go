@@ -2925,7 +2925,7 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 		if trigger.Squad != nil {
 			var handoffNote string
 			authorType, authorID, leaderOriginator := h.resolveCommentTriggerOriginator(ctx, issue, triggerCommentID)
-			if authorType != "agent" && !trigger.NonLeaderAgentReply {
+			if authorType == "member" && !trigger.NonLeaderAgentReply {
 				if routed, advisory := h.tryJevSquadRouting(ctx, issue, *trigger.Squad, authorType, authorID, leaderOriginator, triggerCommentID); routed {
 					return db.AgentTaskQueue{}, ErrJevRouted
 				} else if advisory != "" {
@@ -2960,7 +2960,7 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 		if trigger.Squad != nil {
 			var handoffNote string
 			authorType, authorID, leaderOriginator := h.resolveCommentTriggerOriginator(ctx, issue, triggerCommentID)
-			if authorType != "agent" {
+			if authorType == "member" {
 				if routed, advisory := h.tryJevSquadRouting(ctx, issue, *trigger.Squad, authorType, authorID, leaderOriginator, triggerCommentID); routed {
 					return db.AgentTaskQueue{}, ErrJevRouted
 				} else if advisory != "" {
