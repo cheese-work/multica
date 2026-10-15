@@ -130,6 +130,52 @@ L3 has no technical dependency and can start in parallel with L1; it does not to
 - C1: `packages/core/chat/commands.ts` with one entry per command: `id`, i18n key, `isAvailable(ctx)` (for example rename and fork flags, archived state), and kind `client` or `prompt` (`/compact` stays a prompt that the server rewrites). Web suggestion list and menus read from it. No behavior change: the L2 tests must pass unchanged.
 - C2: mobile composer shows a `/` suggestion list from the same registry and runs the same handlers. Mobile gains `/compact`, `/rename`, `/fork`, `/archive` and `/statistic`. This is wider than the three titles; Cheese chose C knowing it ("B then C").
 
+## Addendum A1 (approved 2026-10-15): `/pin`, `/agent`, dedicated compaction agent
+
+Request (Cheese, same DM): `feat(multica)`: DM `/pin` command; DM `/agent` command; DM `/compact` uses a dedicated agent instead of front-tier model agents. Decisions: D3 = B (`/agent <name>` hands the DM to another agent), D4 = A (workspace `compact_agent` setting).
+
+### Facts (verified at `cb99a0d5a`)
+
+- DM pin exists on web: `chat_session.pinned_at`, `PATCH /api/chat/sessions/{id}/pin` (`server/internal/handler/chat.go:493-538`), list-row menu (`chat-thread-list.tsx`). Continuation copies the pin (`chat_continue.go:139`). Mobile has no DM pin.
+- A DM's agent is immutable by design (`chat.go:373-377`); continue and fork copy `session.AgentID` (`chat_continue.go:128`, `chat_fork.go:190`).
+- `/compact` runs as the DM's own agent task (same model, resumed provider session). `ContinueChatSession` accepts a task token only from a running task of this session and this session's agent (`chat_continue.go:35-53`); `chatHistorySession` has the same limit (`chat_history.go:245-281`).
+
+### `/pin` (folded into existing layers)
+
+- L2 (web): `/pin` toggles `pinned_at` through the existing mutation; client-only, not sent to the agent. Add a Pin/Unpin item to the session header more menu.
+- L4 (mobile): pin/unpin mutation, pinned-first list order, Pin/Unpin in the more menu.
+- C1/C2: `/pin` is a registry command.
+
+### L6: `/agent <name>` hands the DM to another agent
+
+- Server: `ContinueChatSession` and `POST /api/chat/sessions/{id}/continue` accept optional `agent_id`. When set, the new DM gets that agent and its runtime; the old DM is archived with `continued_into_session_id` as today. Validate: same workspace, agent not archived, and the session creator can use the agent (private-agent rules, same check as creating a chat with it). Fork keeps the session's agent.
+- CLI: `multica chat continue --agent <id-or-name>`.
+- Prompt: `compactChatPrompt` also recognizes `/agent <name>`. The server resolves the name before the task is queued and rejects an unknown or unusable agent with a visible error. The rewritten prompt is the compact prompt plus "continue with `--agent <id>`".
+- Web: `/agent` suggestion with an agent-name argument picker (reuse the mention/agent picker data). The continuation divider in both DMs names the old and new agent.
+- Tests: continue with `agent_id` (happy path, private agent refused, cross-workspace refused, archived agent refused); prompt rewrite for `/agent`; unknown name error.
+
+### L7: dedicated compaction agent
+
+- Setting: `workspace.settings.compact_agent_id` (nullable). Edit paths: Settings > Workspace (next to the compact prompt) and `multica workspace update --compact-agent <id-or-name|none>`. Empty means today's behavior.
+- Flow: when the setting is set and a web DM message starts with `/compact` or `/agent <name>`, the server stores the user message as today but queues the task for the compaction agent instead of the DM's agent. The task carries `target_chat_session_id`. The DM shows a "Compacting with <agent>" status row.
+- Access (security-sensitive, needs a security review): `chatHistorySession` and `ContinueChatSession` also accept a running task whose `target_chat_session_id` equals the session and whose agent equals the workspace's current `compact_agent_id`. No other session is readable. Access ends when the task ends.
+- The compaction agent summarizes from the transcript (`multica chat history`). It does not see the DM agent's provider session context.
+- Tests: target-session read allowed; any other session refused; refused after the setting changes; refused after the task ends; empty setting keeps the DM-agent path; `/agent` through the compaction agent passes the target agent.
+
+```mermaid
+flowchart LR
+  L1 --> L2
+  L1 --> L4
+  L4 --> L5
+  L6["L6 /agent handoff"] --> L7["L7 compaction agent"]
+  L2 --> C1
+  L6 --> C1
+  C1 --> C2
+  L5 --> C2
+```
+
+L6 has no predecessor. L7 builds on L6 (same prompt path). C1 now also waits for L6 so the registry includes `/agent`.
+
 ## Open Questions
 
 1. **Mobile IA (L5):** make the chat tab root a session list screen, or keep the formSheet list and push only detail routes from it? Recommendation: list screen, because a sheet cannot be a back-stack entry. Needs the design-loop mockup.
