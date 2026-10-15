@@ -707,6 +707,7 @@ func init() {
 	// issue comment add
 	issueCommentAddCmd.Flags().Bool("decision-intent", false, "Open a 3-minute decision window for the named people (running assigned issue tasks only)")
 	issueCommentAddCmd.Flags().Bool("decision-record", false, "Record this DM human's decision from attested messages (running chat tasks only)")
+	issueCommentAddCmd.Flags().Bool("decision-veto", false, "Withdraw the stamped answer named by --parent; requires a non-empty --content-file reason")
 	issueCommentAddCmd.Flags().StringArray("message", nil, "Source DM message UUID (repeatable; requires --decision-record)")
 	issueCommentAddCmd.Flags().String("class", "", "Unprompted record class: reversible, spend, deploy, publish, irreversible, product_direction; when unsure choose a held class, never reversible")
 	issueCommentAddCmd.Flags().String("content", "", "Comment content (decodes \\n, \\r, \\t, \\\\; pipe via --content-stdin for multi-line bodies or to preserve literal backslashes)")
@@ -2682,6 +2683,7 @@ func runIssueCommentList(cmd *cobra.Command, args []string) error {
 func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	decisionRecord, _ := cmd.Flags().GetBool("decision-record")
 	decisionIntent, _ := cmd.Flags().GetBool("decision-intent")
+	decisionVeto, _ := cmd.Flags().GetBool("decision-veto")
 	messageIDs, _ := cmd.Flags().GetStringArray("message")
 	escalationClass, _ := cmd.Flags().GetString("class")
 	if decisionRecord && (decisionIntent || len(messageIDs) == 0) || !decisionRecord && (len(messageIDs) > 0 || escalationClass != "") {
@@ -2690,6 +2692,14 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	content, hasContent, err := resolveTextFlag(cmd, "content")
 	if err != nil {
 		return err
+	}
+	if decisionVeto {
+		parent, _ := cmd.Flags().GetString("parent")
+		reasonFile, _ := cmd.Flags().GetString("content-file")
+		attachments, _ := cmd.Flags().GetStringSlice("attachment")
+		if parent == "" || reasonFile == "" || strings.TrimSpace(content) == "" || decisionRecord || decisionIntent || len(messageIDs) > 0 || escalationClass != "" || len(attachments) > 0 {
+			return fmt.Errorf("--decision-veto requires --parent and a non-empty --content-file; it cannot combine with record, intent, messages, class or attachments")
+		}
 	}
 	if !hasContent && !decisionRecord {
 		return fmt.Errorf("--content, --content-stdin, or --content-file is required")
@@ -2746,6 +2756,9 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	body := map[string]any{"content": content}
+	if decisionVeto {
+		body["decision_veto"] = true
+	}
 	if decisionRecord {
 		body["decision_record"] = true
 		body["message_ids"] = messageIDs

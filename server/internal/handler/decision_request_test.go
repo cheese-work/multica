@@ -357,6 +357,13 @@ func (transaction requestCoreTransaction) beforeQuery(query string) error {
 	return nil
 }
 
+func (transaction requestCoreTransaction) Exec(ctx context.Context, query string, arguments ...any) (pgconn.CommandTag, error) {
+	if err := transaction.beforeQuery(query); err != nil {
+		return pgconn.CommandTag{}, err
+	}
+	return transaction.Tx.Exec(ctx, query, arguments...)
+}
+
 func useRequestCoreStarter(test *testing.T, starter txStarter) {
 	test.Helper()
 	original := testHandler.TxStarter

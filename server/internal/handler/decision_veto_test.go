@@ -26,7 +26,7 @@ func vetoDecisionHTTP(handler *Handler, fixture askedRecordFixture, parentID, re
 }
 
 func TestDecisionVetoRoundTrip(test *testing.T) {
-	for _, role := range []string{"issue", "dm", "squad_leader", "squad_member"} {
+	for _, role := range []string{"issue", "dm", "dm_later_turn", "squad_leader", "squad_member"} {
 		for _, origin := range []string{"asked", "unprompted"} {
 			test.Run(role+"/"+origin, func(test *testing.T) {
 				fixture := newAskedRecordFixture(test)
@@ -37,6 +37,10 @@ func TestDecisionVetoRoundTrip(test *testing.T) {
 				record, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, input)
 				if err != nil {
 					test.Fatal(err)
+				}
+				if role == "dm_later_turn" {
+					dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, fixture.chatTaskID)
+					fixture.chatTaskID = dbfx.Task(test, fixture.agentID, testutil.Cols{"status": "running", "chat_session_id": fixture.sessionID, "runtime_id": handlerTestRuntimeID(test)})
 				}
 				if strings.HasPrefix(role, "squad_") {
 					leaderID := fixture.agentID
@@ -49,7 +53,7 @@ func TestDecisionVetoRoundTrip(test *testing.T) {
 				}
 				dbfx.Exec(test, `UPDATE decision_answer SET wake_at = now(), woken_at = now(), wake_outcome = 'run_enqueued' WHERE id = $1`, record.Answer.ID)
 				reason := strings.Repeat("界", 610)
-				response := vetoDecisionHTTP(testHandler, fixture, uuidToString(record.Comment.ID), reason, role != "dm")
+				response := vetoDecisionHTTP(testHandler, fixture, uuidToString(record.Comment.ID), reason, !strings.HasPrefix(role, "dm"))
 				if response.Code != http.StatusCreated {
 					test.Fatalf("veto status=%d body=%s", response.Code, response.Body.String())
 				}
@@ -62,7 +66,7 @@ func TestDecisionVetoRoundTrip(test *testing.T) {
 					test.Fatal(err)
 				}
 				wantedReason, taskID := "agent_veto", fixture.taskID
-				if role == "dm" {
+				if strings.HasPrefix(role, "dm") {
 					wantedReason, taskID = "record_retracted", fixture.chatTaskID
 				}
 				if !answer.DisclaimedAt.Valid || answer.DisclaimReason.String != wantedReason || answer.DisclaimedByAgentID != parseUUID(fixture.agentID) || answer.DisclaimedByTaskID != parseUUID(taskID) || answer.DisclaimedByUserID.Valid || answer.VetoReason.String != strings.Repeat("界", 600) || answer.WithdrawalCommentID != comment.ID {
@@ -91,7 +95,7 @@ func TestDecisionVetoRoundTrip(test *testing.T) {
 }
 
 func TestDecisionVetoRefusals(test *testing.T) {
-	for _, mutation := range []string{"pat", "cloud_pat", "interactive_jwt", "cli_jwt", "completed", "failed", "cancelled", "other_issue", "non_assignee", "other_dm", "wrong_agent", "unstamped", "deleted", "missing", "withdrawn", "empty", "whitespace", "intent", "record", "messages", "class", "attachments", "suppression", "steering"} {
+	for _, mutation := range []string{"pat", "cloud_pat", "interactive_jwt", "cli_jwt", "completed", "failed", "cancelled", "dm_completed", "dm_failed", "dm_cancelled", "other_issue", "non_assignee", "other_dm", "wrong_agent", "unstamped", "deleted", "missing", "withdrawn", "empty", "whitespace", "intent", "record", "messages", "class", "attachments", "suppression", "steering"} {
 		test.Run(mutation, func(test *testing.T) {
 			fixture := newAskedRecordFixture(test)
 			record, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
@@ -106,6 +110,9 @@ func TestDecisionVetoRefusals(test *testing.T) {
 				request.Header.Set("X-Actor-Source", mutation)
 			case "completed", "failed", "cancelled":
 				dbfx.Exec(test, `UPDATE agent_task_queue SET status = $1 WHERE id = $2`, mutation, fixture.taskID)
+			case "dm_completed", "dm_failed", "dm_cancelled":
+				request.Header.Set("X-Task-ID", fixture.chatTaskID)
+				dbfx.Exec(test, `UPDATE agent_task_queue SET status = $1 WHERE id = $2`, strings.TrimPrefix(mutation, "dm_"), fixture.chatTaskID)
 			case "other_issue":
 				dbfx.Exec(test, `UPDATE agent_task_queue SET issue_id = $1 WHERE id = $2`, dbfx.Issue(test, "Another issue"), fixture.taskID)
 			case "non_assignee":

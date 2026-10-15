@@ -29,6 +29,7 @@ func writeDecisionError(writer http.ResponseWriter, err error, operation string)
 	if errors.As(err, &refusal) {
 		writeError(writer, refusal.status, refusal.message)
 	} else if decisiontx.IsRetryable(err) {
+		writer.Header().Set("Retry-After", "1")
 		writeError(writer, http.StatusServiceUnavailable, operation+" is busy; retry")
 	} else {
 		writeError(writer, http.StatusInternalServerError, "failed to create "+operation)

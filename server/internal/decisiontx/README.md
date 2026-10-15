@@ -181,3 +181,43 @@ cancel with `record_disclaimed`; their disclaim comment is the cancellation
 notice, and no re-ask becomes due. Every withdrawal writes its disclaim comment
 and receipts atomically. Pending wakes are cleared; delivered wakes retain
 their history so the worker can select the withdrawal for retraction.
+
+CHE-1629 adds `multica issue comment add --decision-veto --parent <quote-id>
+--content-file <reason>`. Only a running assigned issue task (including an
+assignee squad member) or a running chat task of the immutable source DM can
+withdraw a stamped answer. The transaction locks workspace, current session,
+quote thread, issue, NOWAIT calling task, request and answer, in that order.
+It rechecks the stamp and task under those fences. Task contention gets three
+attempts; a deadlock gets only one retry. Exhaustion returns 503 with
+`Retry-After: 1` and commits nothing.
+
+`WithdrawByAgent` reuses the human/worker withdrawal transition. A veto comment
+retains the full reason; `veto_reason` retains its first 600 Unicode characters.
+Agent and task attribution are separate from human attribution. Asked answers
+reopen only in a live lane; cancelled requests preserve their reason; archived
+lanes cancel with a notice; unprompted records cancel with `record_vetoed`.
+Only an issue-agent veto by the current retraction recipient (agent assignee
+or squad leader) acknowledges an already-delivered wake as
+`suppressed_agent_veto`. A non-leader squad member and a source-DM task never
+suppress that retraction. DM notes, inbox delivery, worker finalization and
+retraction delivery remain CHE-1550; these handlers do not invoke baseline
+comment triggers or enqueue work.
+
+`POST /api/decision-requests/{id}/class` accepts only the request's human.
+Raising means changing `reversible` to one of the five escalation classes;
+those classes are unranked, not an invented severity hierarchy. Same-class,
+sideways and lowering changes return 409, as does any cancelled request.
+Workspace, request and live-answer fences serialize class changes with record,
+withdrawal and worker operations. The class update and `decision_class_change`
+audit commit together. A live, un-woken answer gets a fresh ten-minute hold;
+an existing schedule is recomputed to that same time, but a pending answer's
+NULL `wake_at` remains NULL. Withdrawn and already-woken answers never move.
+
+The scoped regression inventory spans guards, intent/ping, asked/unprompted
+recording, human withdrawal, agent veto and raise-class integration. Run from
+`server/` with the checkout's isolated `DATABASE_URL`:
+
+```sh
+go test -race -p 1 ./internal/handler ./internal/decisiontx ./cmd/server -run 'Decision|AskedDecision|UnpromptedDecision' -count=1
+go test ./cmd/multica -run 'Decision' -count=1
+```

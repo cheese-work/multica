@@ -9,6 +9,12 @@ import (
 	"testing"
 )
 
+func TestIssueCommentDecisionVetoFlag(test *testing.T) {
+	if issueCommentAddCmd.Flags().Lookup("decision-veto") == nil {
+		test.Fatal("comment add lacks --decision-veto")
+	}
+}
+
 func TestIssueCommentDecisionVetoBody(test *testing.T) {
 	const issueID = "11111111-1111-4111-8111-111111111111"
 	var body map[string]any
@@ -29,6 +35,7 @@ func TestIssueCommentDecisionVetoBody(test *testing.T) {
 	command := newIssueCommentAddTestCmd()
 	command.Flags().Bool("decision-veto", true, "")
 	path := filepath.Join(test.TempDir(), "reason.md")
+	test.Chdir(filepath.Dir(path))
 	if err := os.WriteFile(path, []byte("Wrong source message"), 0600); err != nil {
 		test.Fatal(err)
 	}
@@ -61,6 +68,7 @@ func TestIssueCommentDecisionVetoLocalRefusals(test *testing.T) {
 			command.Flags().StringArray("message", nil, "")
 			command.Flags().String("class", "", "")
 			path := filepath.Join(test.TempDir(), "reason.md")
+			test.Chdir(filepath.Dir(path))
 			reason := "Wrong message"
 			if mutation == "empty_reason" {
 				reason = " \n\t"
