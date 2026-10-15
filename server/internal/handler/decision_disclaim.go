@@ -127,5 +127,6 @@ func (handler *Handler) disclaimDecisionAnswerTx(request *http.Request, workspac
 	if err := transaction.Commit(ctx); err != nil {
 		return empty, err
 	}
+	handler.DecisionWorker.Notify()
 	return result, nil
 }

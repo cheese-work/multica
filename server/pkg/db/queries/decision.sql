@@ -323,3 +323,43 @@ SELECT answer.* FROM decision_answer answer
 JOIN decision_request request ON request.id = answer.decision_request_id
 WHERE request.workspace_id = sqlc.arg('workspace_id') AND answer.id = sqlc.arg('id')
 FOR UPDATE OF answer;
+
+-- name: GetDecisionIntent :one
+SELECT * FROM decision_intent
+WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id');
+
+-- name: DecisionAnswerSourceRemoved :one
+SELECT EXISTS (
+    SELECT 1 FROM unnest(answer.chat_message_ids) AS source(id)
+    WHERE NOT EXISTS (SELECT 1 FROM chat_message message WHERE message.id = source.id)
+)::boolean AS removed
+FROM decision_answer answer
+JOIN decision_request request ON request.id = answer.decision_request_id
+WHERE request.workspace_id = sqlc.arg('workspace_id') AND answer.id = sqlc.arg('id');
+
+-- name: ListDecisionSourceChecks :many
+SELECT request.* FROM decision_request request
+JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
+JOIN chat_session session ON session.id = request.chat_session_id AND session.workspace_id = request.workspace_id
+WHERE EXISTS (
+    SELECT 1 FROM decision_answer answer
+    WHERE answer.decision_request_id = request.id AND answer.disclaimed_at IS NULL
+      AND EXISTS (
+          SELECT 1 FROM unnest(answer.chat_message_ids) AS source(id)
+          WHERE NOT EXISTS (SELECT 1 FROM chat_message message WHERE message.id = source.id)
+      )
+)
+ORDER BY request.id
+LIMIT LEAST(GREATEST(sqlc.arg('batch_size')::int, 0), 100);
+
+-- name: ListDecisionSealIntents :many
+SELECT intent.* FROM decision_intent intent
+JOIN issue ON issue.id = intent.issue_id AND issue.workspace_id = intent.workspace_id
+LEFT JOIN comment tag ON tag.id = intent.comment_id AND tag.issue_id = intent.issue_id AND tag.workspace_id = intent.workspace_id
+LEFT JOIN agent_task_queue task ON task.id = intent.task_id
+WHERE intent.sealed_at IS NULL AND (
+    clock_timestamp() >= intent.expires_at OR task.id IS NULL OR task.status <> 'running'
+    OR tag.id IS NULL OR tag.deleted_at IS NOT NULL
+)
+ORDER BY intent.id
+LIMIT LEAST(GREATEST(sqlc.arg('batch_size')::int, 0), 100);
