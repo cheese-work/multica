@@ -486,6 +486,11 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		params.Context = pgtype.Text{String: *req.Context, Valid: true}
 	}
 	if req.Settings != nil {
+		// A non-object body would replace the whole blob, pause switch included.
+		if _, ok := req.Settings.(map[string]any); !ok {
+			writeError(w, http.StatusBadRequest, "settings must be an object")
+			return
+		}
 		if err := validateCompactPromptConfig(req.Settings); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -558,7 +563,12 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		params.AvatarUrl = pgtype.Text{String: accepted, Valid: true}
 	}
 
-	ws, err := h.Queries.UpdateWorkspace(r.Context(), params)
+	var ws db.Workspace
+	if pauseAction == wakeupsResumedAction {
+		ws, err = h.updateWorkspaceResuming(r.Context(), params)
+	} else {
+		ws, err = h.Queries.UpdateWorkspace(r.Context(), params)
+	}
 	if err != nil {
 		slog.Warn("update workspace failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", id)...)
 		writeError(w, http.StatusInternalServerError, "failed to update workspace: "+err.Error())

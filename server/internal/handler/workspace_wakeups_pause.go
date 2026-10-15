@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -56,6 +57,24 @@ func reconcileWakeupsPause(stored, incoming map[string]any, actorID string, now 
 	}
 	incoming[wakeupsPausedByKey], incoming[wakeupsPausedAtKey] = actorID, now.UTC().Format(time.RFC3339)
 	return wakeupsPausedAction, nil
+}
+
+// updateWorkspaceResuming lifts the pause and settles what it held in one
+// transaction, so no tick can replay a dropped input in between.
+func (h *Handler) updateWorkspaceResuming(ctx context.Context, params db.UpdateWorkspaceParams) (db.Workspace, error) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return db.Workspace{}, err
+	}
+	defer tx.Rollback(ctx)
+	ws, err := h.Queries.WithTx(tx).UpdateWorkspace(ctx, params)
+	if err != nil {
+		return ws, err
+	}
+	if err := (&service.IssueWakeupService{Tasks: h.TaskService}).SettleWakeupsOnResume(ctx, tx, ws.ID); err != nil {
+		return ws, err
+	}
+	return ws, tx.Commit(ctx)
 }
 
 // recordWakeupsPauseActivity writes the one audit record of a flip.

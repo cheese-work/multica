@@ -321,3 +321,12 @@ WHERE wakeup_id= @id AND processed_at IS NULL AND event_type<>'wakeup.manual'
  AND NOT (event_type='time.due' AND @one_shot::bool);
 -- name: CountPendingManualWakeupReceipts :one
 SELECT count(*) FROM issue_wakeup_receipt WHERE wakeup_id= @id AND processed_at IS NULL AND event_type='wakeup.manual';
+-- name: DropPausedWorkspaceReceipts :execrows
+-- Resume settles what the pause dropped before any dispatch tick can replay it
+-- (CHE-1727). Same rule as DropPausedWakeupReceipts, for every rule of the workspace.
+UPDATE issue_wakeup_receipt r SET processed_at=now(),payload=r.payload||'{"outcome":"paused"}'::jsonb
+FROM issue_wakeup w
+WHERE r.wakeup_id=w.id AND w.workspace_id= @workspace_id AND r.processed_at IS NULL
+ AND r.event_type<>'wakeup.manual' AND NOT (r.event_type='time.due' AND w.kind='at');
+-- name: ListOverdueRecurringWakeups :many
+SELECT * FROM issue_wakeup WHERE workspace_id= @workspace_id AND enabled AND kind IN ('every','cron') AND next_fire_at<=now();

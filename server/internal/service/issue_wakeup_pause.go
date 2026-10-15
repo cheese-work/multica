@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -43,28 +44,60 @@ func (s *IssueWakeupService) heldByPause(ctx context.Context, prev db.IssueWakeu
 	if _, err = q.DropPausedWakeupReceipts(ctx, db.DropPausedWakeupReceiptsParams{ID: w.ID, OneShot: w.Kind == "at"}); err != nil {
 		return false, err
 	}
-	var now time.Time
-	if err := tx.QueryRow(ctx, "SELECT now()").Scan(&now); err != nil {
+	if err := skipMissedSlots(ctx, tx, q, w); err != nil {
 		return false, err
-	}
-	if w.Enabled && (w.Kind == "every" || w.Kind == "cron") && w.NextFireAt.Valid && !w.NextFireAt.Time.After(now) {
-		next := w.NextFireAt
-		enabled := true
-		if w.Kind == "every" {
-			step := time.Duration(w.IntervalSeconds.Int64) * time.Second
-			next.Time = next.Time.Add((now.Sub(next.Time)/step + 1) * step)
-		} else if next.Time, err = NextOccurrenceAfterUTC(w.CronExpression.String, w.Timezone, now); err != nil {
-			return false, err
-		} else if next.Time.IsZero() {
-			next.Valid, enabled = false, false
-		}
-		if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: enabled, NextFireAt: next}); err != nil {
-			return false, err
-		}
 	}
 	manual, err := q.CountPendingManualWakeupReceipts(ctx, w.ID)
 	if err != nil {
 		return false, err
 	}
 	return manual == 0, tx.Commit(ctx)
+}
+
+// skipMissedSlots moves a recurring rule past every slot that came due while
+// the workspace was paused, so none of them fires.
+func skipMissedSlots(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.IssueWakeup) error {
+	var now time.Time
+	if err := tx.QueryRow(ctx, "SELECT now()").Scan(&now); err != nil {
+		return err
+	}
+	if !w.Enabled || (w.Kind != "every" && w.Kind != "cron") || !w.NextFireAt.Valid || w.NextFireAt.Time.After(now) {
+		return nil
+	}
+	next := w.NextFireAt
+	enabled := true
+	if w.Kind == "every" {
+		step := time.Duration(w.IntervalSeconds.Int64) * time.Second
+		next.Time = next.Time.Add((now.Sub(next.Time)/step + 1) * step)
+	} else {
+		var err error
+		if next.Time, err = NextOccurrenceAfterUTC(w.CronExpression.String, w.Timezone, now); err != nil {
+			return err
+		}
+		if next.Time.IsZero() {
+			next.Valid, enabled = false, false
+		}
+	}
+	return q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: enabled, NextFireAt: next})
+}
+
+// SettleWakeupsOnResume applies the pause to everything it held, in the
+// caller's transaction that also lifts the switch. Without it, inputs that
+// arrived and slots that came due while paused would fire on the first tick
+// after an admin resumes before any tick ran.
+func (s *IssueWakeupService) SettleWakeupsOnResume(ctx context.Context, tx pgx.Tx, workspaceID pgtype.UUID) error {
+	q := s.Tasks.Queries.WithTx(tx)
+	if _, err := q.DropPausedWorkspaceReceipts(ctx, workspaceID); err != nil {
+		return err
+	}
+	overdue, err := q.ListOverdueRecurringWakeups(ctx, workspaceID)
+	if err != nil {
+		return err
+	}
+	for _, w := range overdue {
+		if err := skipMissedSlots(ctx, tx, q, w); err != nil {
+			return err
+		}
+	}
+	return nil
 }
