@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { useDefaultLayout } from "react-resizable-panels";
 import { ArrowLeft, MessageSquare } from "lucide-react";
 import { toast } from "sonner";
@@ -101,34 +101,21 @@ export function ChatPage() {
   const requestNav = (mode: "push" | "replace", newChat: boolean) =>
     useChatStore.getState().requestNav({ mode, newChat });
   const navIntent = useChatStore((s) => s.navIntent);
-  // URL this page wrote and has not yet seen published. The store updates in
-  // the same tick, before the router shows the new URL, so a second effect run
-  // in between must not write it again.
-  const writtenUrl = useRef<string | null>(null);
+  // The write this page made and the router has not published yet. The store
+  // updates in the same tick, so the effect runs again (the consumed intent
+  // is itself a store change) before the URL shows the target. That run must
+  // not read the stale URL as a request to change it back.
+  const pendingWrite = useRef<{ liveSession: string | null } | null>(null);
 
   // "Composing a brand-new chat" — the user hit ⊕ but hasn't sent yet, so no
-  // session exists. At compact widths this decides list-vs-conversation; on desktop the
-  // conversation pane is always mounted so it only needs to reset itself once a
-  // real session takes over.
-  const [composingNew, setComposingNew] = useState(urlNew);
-  // Back/forward and refresh move `?new=1`; follow it only when it changes so
-  // StrictMode's effect replay cannot undo a `?agent=` intent.
-  const seenUrlNew = useRef(urlNew);
-  useEffect(() => {
-    if (seenUrlNew.current === urlNew) return;
-    seenUrlNew.current = urlNew;
-    setComposingNew(urlNew);
-  }, [urlNew]);
+  // session exists. The URL owns it (`?new=1`), so Back, Forward and refresh
+  // agree with the pane. At compact widths it decides list-vs-conversation;
+  // on desktop the conversation pane is always mounted.
+  const composingNew = urlNew;
+  // handleArchive (L2) still calls this. Composing is the URL now, so there is
+  // nothing to set; L2 deletes this and its two calls.
+  const setComposingNew = (composing: boolean) => void composing;
   const { handleRename, renameRequest } = useChatRename(c.currentSession);
-  useEffect(() => {
-    // Read the LIVE store value for the same reason as the session sync
-    // effects below: under StrictMode's double-invoke this effect replays
-    // with the render-captured snapshot, and a stale non-null session (a
-    // persisted chat the URL→store effect already cleared) would revert the
-    // composingNew=true that the later `?agent=` intent effect just set.
-    if (useChatStore.getState().activeSessionId && !urlNew) setComposingNew(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset when the session changes, not when ?new=1 does
-  }, [c.activeSessionId]);
 
   // Two-way sync between the URL (`?session=`) and the chat store's
   // activeSessionId. Both effects read the LIVE store value via
@@ -143,7 +130,7 @@ export function ChatPage() {
   // URL → store: deep link, refresh, notification click, back/forward.
   useEffect(() => {
     if (!isCurrentChatRoute || getCurrentSlug() !== workspaceSlug) return;
-    writtenUrl.current = null;
+    pendingWrite.current = null;
     if (urlSession !== useChatStore.getState().activeSessionId) {
       c.setActiveSession(urlSession);
     }
@@ -166,11 +153,11 @@ export function ChatPage() {
         ? `${base}?new=1`
         : base;
     if (target === current) {
-      writtenUrl.current = null;
+      pendingWrite.current = null;
       return;
     }
-    if (writtenUrl.current === target) return;
-    writtenUrl.current = target;
+    if (!intent && pendingWrite.current?.liveSession === live) return;
+    pendingWrite.current = { liveSession: live };
     if (intent?.mode === "push") push(target);
     else replace(target);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reconcile store/route changes, not URL updates
@@ -196,7 +183,6 @@ export function ChatPage() {
     supersedeAgentIntent();
     if (session.id !== urlSession) requestNav("push", false);
     c.handleSelectSession(session);
-    setComposingNew(false);
   };
   const { handleFork } = useChatFork(c.currentSession, handleSelect);
 
@@ -227,7 +213,6 @@ export function ChatPage() {
     else if (urlSession || !urlNew) requestNav("push", true);
     if (agent) c.handleStartNewChat(agent);
     else c.handleNewChat();
-    setComposingNew(true);
   };
 
   const changeProjectContext = (projectId: string | null) => {
@@ -237,9 +222,8 @@ export function ChatPage() {
     // project for an existing conversation starts a clean session, and a
     // compact layout must stay in the compose pane after activeSessionId is
     // cleared.
-    if (!c.currentSession || projectId !== null) {
-      if (urlSession || !urlNew) requestNav(c.currentSession ? "push" : "replace", true);
-      setComposingNew(true);
+    if ((!c.currentSession || projectId !== null) && (urlSession || !urlNew)) {
+      requestNav(c.currentSession ? "push" : "replace", true);
     }
   };
 
