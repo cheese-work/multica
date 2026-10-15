@@ -48,10 +48,12 @@ function nextWithLocale(req: NextRequest): NextResponse {
 // edge.
 export function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
+  const isSearchApi =
+    pathname === "/api/search/suggestions" ||
+    pathname === "/api/issues/search" ||
+    pathname === "/api/projects/search";
   const runtimeDestination =
-    pathname === "/api/search/suggestions"
-      ? undefined
-      : runtimeRewriteDestination(pathname, process.env);
+    isSearchApi ? undefined : runtimeRewriteDestination(pathname, process.env);
   if (runtimeDestination) {
     const url = new URL(runtimeDestination);
     url.search = req.nextUrl.search;
