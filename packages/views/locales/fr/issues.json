@@ -555,7 +555,20 @@
     "wakeup_checkin_coalesced_one": "{{count}} vérification silencieuse · dernière : {{note}}",
     "wakeup_checkin_coalesced_other": "{{count}} vérifications silencieuses · dernière : {{note}}",
     "wakeup_chip_created_by": "Réveil de {{name}}",
-    "wakeup_chip_system": "Règle système"
+    "wakeup_chip_system": "Règle système",
+    "trigger_comment": "Nouveau commentaire",
+    "trigger_comment_by": "Commentaire de {{name}}",
+    "trigger_status": "Statut modifié",
+    "trigger_status_by": "Statut modifié par {{name}}",
+    "trigger_pr_merged": "{{pr}} fusionnée",
+    "trigger_pr_checks_failed": "Contrôles de {{pr}} en échec",
+    "trigger_pr_needs_attention": "{{pr}} demande une action",
+    "trigger_unknown": "Règle de réveil déclenchée",
+    "wakeup_skipped": "{{condition}} · réveil de {{agent}} ignoré : {{reason}}",
+    "wakeup_skipped_plain": "{{condition}} · réveil de {{agent}} ignoré",
+    "wakeup_link_pr": "PR #{{number}}",
+    "wakeup_link_comment": "Commentaire",
+    "wakeup_link_run": "Voir l'exécution"
   },
   "comment": {
     "add_reaction": "Ajouter une réaction",

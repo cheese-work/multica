@@ -542,7 +542,20 @@
     "wakeup_checkin": "サイレントチェック：{{note}}",
     "wakeup_checkin_coalesced_other": "サイレントチェック {{count}} 回 · 最新：{{note}}",
     "wakeup_chip_created_by": "{{name}} が作成",
-    "wakeup_chip_system": "システムルール"
+    "wakeup_chip_system": "システムルール",
+    "trigger_comment": "新しいコメント",
+    "trigger_comment_by": "{{name}} のコメント",
+    "trigger_status": "ステータス変更",
+    "trigger_status_by": "{{name}} がステータスを変更",
+    "trigger_pr_merged": "{{pr}} がマージ",
+    "trigger_pr_checks_failed": "{{pr}} のチェックが失敗",
+    "trigger_pr_needs_attention": "{{pr}} に対応が必要",
+    "trigger_unknown": "ウェイクアップルールが発火",
+    "wakeup_skipped": "{{condition}} · {{agent}} の起動をスキップ: {{reason}}",
+    "wakeup_skipped_plain": "{{condition}} · {{agent}} の起動をスキップ",
+    "wakeup_link_pr": "PR #{{number}}",
+    "wakeup_link_comment": "コメント",
+    "wakeup_link_run": "実行を表示"
   },
   "comment": {
     "add_reaction": "リアクションを追加",

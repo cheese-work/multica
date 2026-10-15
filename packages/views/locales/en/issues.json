@@ -555,7 +555,20 @@
     "wakeup_checkin_coalesced_one": "{{count}} silent check · latest: {{note}}",
     "wakeup_checkin_coalesced_other": "{{count}} silent checks · latest: {{note}}",
     "wakeup_chip_created_by": "{{name}}'s wakeup",
-    "wakeup_chip_system": "System rule"
+    "wakeup_chip_system": "System rule",
+    "trigger_comment": "New comment",
+    "trigger_comment_by": "Comment by {{name}}",
+    "trigger_status": "Status changed",
+    "trigger_status_by": "Status changed by {{name}}",
+    "trigger_pr_merged": "{{pr}} merged",
+    "trigger_pr_checks_failed": "{{pr}} checks failed",
+    "trigger_pr_needs_attention": "{{pr}} needs attention",
+    "trigger_unknown": "Wakeup rule fired",
+    "wakeup_skipped": "{{condition}} · skipped waking {{agent}}: {{reason}}",
+    "wakeup_skipped_plain": "{{condition}} · skipped waking {{agent}}",
+    "wakeup_link_pr": "PR #{{number}}",
+    "wakeup_link_comment": "Comment",
+    "wakeup_link_run": "View run"
   },
   "comment": {
     "add_reaction": "Add reaction",

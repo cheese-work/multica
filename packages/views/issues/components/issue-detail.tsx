@@ -43,6 +43,7 @@ import { ContentEditor, type ContentEditorRef, TitleEditor, type TitleEditorRef,
 import {
   WAKEUP_ACTIVITY_ACTIONS,
   WakeupActivityIcon,
+  WakeupActivityLinks,
   formatWakeupActivity,
   wakeupActivityChip,
 } from "./wakeup-activity";
@@ -647,6 +648,7 @@ const LAST_ACTIVITY_BLOCK_VISIBLE_LIMIT = 8;
 // usually answers "what just happened?". Expansion state is owned by the
 // parent so it survives Virtuoso's mount/unmount on scroll.
 function ActivityBlock({
+  issueId,
   entries,
   expanded,
   onToggle,
@@ -662,6 +664,7 @@ function ActivityBlock({
   timeAgo,
   locale,
 }: {
+  issueId: string;
   entries: TimelineEntry[];
   expanded: boolean;
   onToggle: () => void;
@@ -800,6 +803,7 @@ function ActivityBlock({
                   }
                 />
               </span>
+              {isWakeup && <WakeupActivityLinks entry={entry} issueId={issueId} getActorName={getActorName} />}
               {chip && (
                 <span className="ml-auto inline-flex max-w-48 shrink-0 items-center gap-1 truncate rounded-xs bg-muted px-1.5 py-0.5 text-micro text-muted-foreground">
                   {chip}
@@ -3856,6 +3860,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     const showOlder = showOlderActivityIds.has(item.id);
     return (
       <ActivityBlock
+        issueId={id}
         entries={item.entries}
         expanded={expanded}
         onToggle={() => toggleActivityBlock(item.id, expanded)}
