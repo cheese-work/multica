@@ -78,7 +78,7 @@ async function stopNext(): Promise<void> {
   }
 }
 
-describe("search suggestions proxy failure logging", () => {
+describe("search proxy privacy", () => {
   beforeAll(async () => {
     upstreamServer = createServer((request, response) => {
       upstreamRequests.push({
@@ -124,50 +124,73 @@ describe("search suggestions proxy failure logging", () => {
     }
   });
 
-  it("redacts query and referrer from failed sensitive proxy logs", async () => {
-    const success = await fetch(
-      `${appUrl}/api/search/suggestions?workspace_slug=che1593-preview&q=SAFE_QUERY_MARKER_1593`,
-      {
+  it("preserves response and credentials for all search APIs", async () => {
+    const paths = ["/api/search/suggestions", "/api/issues/search", "/api/projects/search"];
+    for (const path of paths) {
+      const query =
+        path === "/api/search/suggestions"
+          ? "workspace_slug=che1593-preview&q=SAFE_QUERY_MARKER_1593"
+          : "q=SAFE_QUERY_MARKER_1593";
+      const response = await fetch(`${appUrl}${path}?${query}`, {
         headers: {
           authorization: "Bearer synthetic-pat",
           cookie: "multica_session=synthetic-session",
         },
-      },
-    );
-    expect(success.status).toBe(200);
-    expect(await success.json()).toEqual({
-      url: "/api/search/suggestions?workspace_slug=che1593-preview&q=SAFE_QUERY_MARKER_1593",
-    });
-    expect(upstreamRequests).toEqual([
-      {
-        url: "/api/search/suggestions?workspace_slug=che1593-preview&q=SAFE_QUERY_MARKER_1593",
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ url: `${path}?${query}` });
+    }
+
+    expect(upstreamRequests).toEqual(
+      paths.map((path) => ({
+        url:
+          path === "/api/search/suggestions"
+            ? `${path}?workspace_slug=che1593-preview&q=SAFE_QUERY_MARKER_1593`
+            : `${path}?q=SAFE_QUERY_MARKER_1593`,
         cookie: "multica_session=synthetic-session",
         authorization: "Bearer synthetic-pat",
-      },
-    ]);
+      })),
+    );
+  });
 
+  it("sets an effective referrer policy on workspace search pages", async () => {
+    const response = await fetch(`${appUrl}/che1593-preview/search?q=SEARCH_PAGE_QUERY_MARKER_1593`);
+    expect(response.headers.get("referrer-policy")).toBe("origin");
+  });
+
+  it("redacts failed palette and suggestions proxy logs but keeps unrelated diagnostics", async () => {
     await new Promise<void>((resolveClose, reject) => {
       upstreamServer.close((error) => (error ? reject(error) : resolveClose()));
     });
     upstreamClosed = true;
 
-    const queryMarker = "SUGGESTION_QUERY_MARKER_1593";
-    const referrerMarker = "SUGGESTION_REFERRER_MARKER_1593";
-    const failedSuggestion = await fetch(`${appUrl}/api/search/suggestions?q=${queryMarker}`, {
-      headers: { referer: `https://referrer.invalid/${referrerMarker}` },
-    });
-    expect(failedSuggestion.status).toBeGreaterThanOrEqual(500);
-    expect(failedSuggestion.status).toBeLessThan(600);
+    const referrerMarker = "PALETTE_REFERRER_QUERY_MARKER_1593";
+    const sensitiveRequests = [
+      ["/api/search/suggestions", "SUGGESTION_QUERY_MARKER_1593"],
+      ["/api/issues/search", "PALETTE_ISSUES_QUERY_MARKER_1593"],
+      ["/api/projects/search", "PALETTE_PROJECTS_QUERY_MARKER_1593"],
+    ] as const;
+    for (const [path, queryMarker] of sensitiveRequests) {
+      const failedResponse = await fetch(`${appUrl}${path}?q=${queryMarker}`, {
+        headers: { referer: `${appUrl}/che1593-preview/search?q=${referrerMarker}` },
+      });
+      expect(failedResponse.status).toBeGreaterThanOrEqual(500);
+      expect(failedResponse.status).toBeLessThan(600);
+    }
 
     const unrelatedMarker = "UNRELATED_QUERY_MARKER_1593";
-    const failedUnrelated = await fetch(`${appUrl}/health?q=${unrelatedMarker}`);
+    const unrelatedReferrer = "UNRELATED_REFERRER_MARKER_1593";
+    const failedUnrelated = await fetch(`${appUrl}/health?q=${unrelatedMarker}`, {
+      headers: { referer: `https://referrer.invalid/${unrelatedReferrer}` },
+    });
     expect(failedUnrelated.status).toBeGreaterThanOrEqual(500);
     expect(failedUnrelated.status).toBeLessThan(600);
     await waitForLog(unrelatedMarker);
 
     expect(nextOutput).toContain("ECONNREFUSED");
     expect(nextOutput).toContain(unrelatedMarker);
-    expect(nextOutput).not.toContain(queryMarker);
-    expect(nextOutput).not.toContain(referrerMarker);
+    expect(nextOutput).toContain(unrelatedReferrer);
+    const sensitiveMarkers = [referrerMarker, ...sensitiveRequests.map(([, marker]) => marker)];
+    expect(sensitiveMarkers.filter((marker) => nextOutput.includes(marker))).toEqual([]);
   }, 30_000);
 });

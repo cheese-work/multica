@@ -66,27 +66,54 @@ nginx_request() {
   fi
 }
 
+search_referrer='https://referrer.invalid/che1593-preview/search?q=NGINX_PALETTE_REFERRER_MARKER_1593'
 nginx_request 8081 /api/search/suggestions \
   'q=NGINX_SUGGESTION_QUERY_MARKER_1593' \
-  'https://referrer.invalid/NGINX_SUGGESTION_REFERRER_MARKER_1593'
+  "$search_referrer"
+nginx_request 3000 /api/search/suggestions \
+  'q=NGINX_WEB_SUGGESTION_QUERY_MARKER_1593' \
+  "$search_referrer"
+nginx_request 8081 /api/issues/search \
+  'q=NGINX_BACKEND_ISSUES_QUERY_MARKER_1593' \
+  "$search_referrer"
+nginx_request 8081 /api/projects/search \
+  'q=NGINX_BACKEND_PROJECTS_QUERY_MARKER_1593' \
+  "$search_referrer"
+nginx_request 3000 /api/issues/search \
+  'q=NGINX_WEB_ISSUES_QUERY_MARKER_1593' \
+  "$search_referrer"
+nginx_request 3000 /api/projects/search \
+  'q=NGINX_WEB_PROJECTS_QUERY_MARKER_1593' \
+  "$search_referrer"
 nginx_request 3000 /che1593-preview/search \
   'q=NGINX_SEARCH_QUERY_MARKER_1593' \
-  'https://referrer.invalid/NGINX_SEARCH_REFERRER_MARKER_1593'
+  "$search_referrer"
 nginx_request 8081 /api/health \
   'probe=NGINX_UNRELATED_QUERY_MARKER_1593' \
-  'https://referrer.invalid/NGINX_UNRELATED_REFERRER_MARKER_1593'
+  'https://referrer.invalid/NGINX_UNRELATED_BACKEND_REFERRER_MARKER_1593'
+nginx_request 3000 /health \
+  'probe=NGINX_UNRELATED_WEB_QUERY_MARKER_1593' \
+  'https://referrer.invalid/NGINX_UNRELATED_WEB_REFERRER_MARKER_1593'
 
 nginx_error_log="$(docker exec "$router_container" cat /tmp/router-error.log)"
-if [[ "$nginx_error_log" != *"connect() failed"* || "$nginx_error_log" != *"NGINX_UNRELATED_QUERY_MARKER_1593"* ]]; then
+if [[ "$nginx_error_log" != *"connect() failed"* || \
+      "$nginx_error_log" != *"NGINX_UNRELATED_QUERY_MARKER_1593"* || \
+      "$nginx_error_log" != *"NGINX_UNRELATED_BACKEND_REFERRER_MARKER_1593"* || \
+      "$nginx_error_log" != *"NGINX_UNRELATED_WEB_QUERY_MARKER_1593"* || \
+      "$nginx_error_log" != *"NGINX_UNRELATED_WEB_REFERRER_MARKER_1593"* ]]; then
   echo "nginx error log did not retain unrelated upstream diagnostics" >&2
   exit 1
 fi
 leaked_markers=()
 for marker in \
   NGINX_SUGGESTION_QUERY_MARKER_1593 \
-  NGINX_SUGGESTION_REFERRER_MARKER_1593 \
+  NGINX_WEB_SUGGESTION_QUERY_MARKER_1593 \
+  NGINX_BACKEND_ISSUES_QUERY_MARKER_1593 \
+  NGINX_BACKEND_PROJECTS_QUERY_MARKER_1593 \
+  NGINX_WEB_ISSUES_QUERY_MARKER_1593 \
+  NGINX_WEB_PROJECTS_QUERY_MARKER_1593 \
   NGINX_SEARCH_QUERY_MARKER_1593 \
-  NGINX_SEARCH_REFERRER_MARKER_1593; do
+  NGINX_PALETTE_REFERRER_MARKER_1593; do
   if [[ "$nginx_error_log" == *"$marker"* ]]; then
     leaked_markers+=("$marker")
   fi
