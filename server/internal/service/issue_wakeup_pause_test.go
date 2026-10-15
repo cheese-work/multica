@@ -160,3 +160,22 @@ func TestPausedWorkspaceHoldsSystemPRRules(t *testing.T) {
 		t.Fatalf("after resume a merged PR woke %d times, want 1", n)
 	}
 }
+
+func TestPausedWorkspaceSkipsMissedCronSlots(t *testing.T) {
+	f, s, issue, agent := wakeFixture(t)
+	w := wakeCreate(t, f, s, issue, WakeupInput{AgentID: agent, Kind: "cron", CronExpression: "0 * * * *", Timezone: "UTC", Instruction: "tick"})
+	f.Exec(t, "UPDATE issue_wakeup SET next_fire_at=now()-interval '3 hours' WHERE id=$1", w.ID)
+	setWakeupsPaused(t, f, true)
+	tickWorkspace(t, f, s)
+	if n := wakeRuns(t, f, w.ID); n != 0 {
+		t.Fatalf("paused workspace started %d runs", n)
+	}
+	if n := f.Count(t, "SELECT count(*) FROM issue_wakeup WHERE id=$1 AND enabled AND next_fire_at>now()", w.ID); n != 1 {
+		t.Fatal("missed cron slots must be skipped: next fire belongs in the future")
+	}
+	setWakeupsPaused(t, f, false)
+	tickWorkspace(t, f, s)
+	if n := wakeRuns(t, f, w.ID); n != 0 {
+		t.Fatalf("resume replayed %d skipped cron slots", n)
+	}
+}
