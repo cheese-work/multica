@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -630,5 +631,63 @@ func TestCustomCapacityEventCapturedAfterTheClaimDoesNotReplayToTheRebasedRule(t
 	}
 	if n, count := k.receiptCount(t, b.RuleKey); n != 1 || count != 2 {
 		t.Fatalf("B: receipts=%d events=%d, want the two events it was refused delivered once", n, count)
+	}
+}
+
+// ---- review round 6 (signed HOLD 01a13e4f-337d-757c-8551-8682df0e6709) ------
+
+// Served identity must not depend on how many rebases an instance went through:
+// an input stamped at revision 1 is still served after 33 assignee-only rebases
+// that no input saw.
+func TestCustomCapacityServedIdentitySurvivesManyPreservingRebases(t *testing.T) {
+	k := newCustomEnv(t)
+	a, b := k.servedSetup(t, "")
+	k.comment(t, "A is served live at its first revision; B has no slot")
+	const rebases = 33
+	for i := range rebases {
+		if i%2 == 0 {
+			k.moveAssignee(t)
+		} else {
+			k.f.Exec(t, `UPDATE issue SET assignee_type=NULL,assignee_id=NULL WHERE id=$1`, k.issue)
+		}
+		before := k.instanceRow(t, a.RuleKey)
+		wakeDispatch(t, k.s, before) // a rebase outside the drain: no input is visited
+		if k.instanceRow(t, a.RuleKey).Revision == before.Revision {
+			t.Fatalf("rebase %d did not move A's revision: the test no longer exercises the history", i+1)
+		}
+	}
+	k.drain(t)
+	if n, count := k.receiptCount(t, a.RuleKey); n != 1 || count != 2 {
+		t.Fatalf("A after %d preserving rebases: receipts=%d events=%d, want its two live events once, not a replay", rebases, n, count)
+	}
+	k.freePool(t)
+	k.sweep(t)
+	k.drain(t)
+	if n, count := k.receiptCount(t, b.RuleKey); n != 1 || count != 1 {
+		t.Fatalf("B: receipts=%d events=%d, want its one event delivered once", n, count)
+	}
+	if n, count := k.receiptCount(t, a.RuleKey); n != 1 || count != 2 {
+		t.Fatalf("A after the retry: receipts=%d events=%d, want it unchanged", n, count)
+	}
+}
+
+// An expiry edit of a second is an edit: the instance takes the new end. The
+// comparison is exact, not a tolerance, so a wait that merely differs by a few
+// seconds is not mistaken for the configuration the instance already runs.
+func TestCustomCapacityRebaseAppliesAnEditedRelativeExpiry(t *testing.T) {
+	for _, seconds := range []int{3601, 3599} {
+		t.Run(strconv.Itoa(seconds), func(t *testing.T) {
+			k := newCustomEnv(t)
+			a, _ := k.servedSetup(t, `,"expiry":{"after_seconds":3600}`)
+			created := k.instanceRow(t, a.RuleKey).CreatedAt.Time
+			k.mustSave(t, WakeupScopeWorkspace, a.RuleKey, k.eventRule(`["comment.created"]`)+`,"expiry":{"after_seconds":`+strconv.Itoa(seconds)+`}`)
+			k.comment(t, "after the edit: delivers to the instance and rebases it")
+			k.drain(t)
+			got := k.instanceRow(t, a.RuleKey)
+			want := created.Add(time.Duration(seconds) * time.Second)
+			if d := got.ExpiresAt.Time.Sub(want).Abs(); !got.ExpiresAt.Valid || d > time.Millisecond {
+				t.Fatalf("expiry = %v, want the edited end %v (created + %ds), off by %v", got.ExpiresAt.Time, want, seconds, d)
+			}
+		})
 	}
 }
