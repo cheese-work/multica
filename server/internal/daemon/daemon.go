@@ -9173,6 +9173,15 @@ func shouldRetryWithFreshSession(result agent.Result, priorSessionID string, too
 	if result.Status != "failed" || priorSessionID == "" || tools > 0 {
 		return false
 	}
+	// AGY replays a stored executor NOT_FOUND on every resume, so a stale and a
+	// genuine current 404 look the same (CHE-1715). A completed fresh retry
+	// would turn a genuine one into success, so this never retries — on any
+	// branch below, including the empty-SessionID fallback antigravity reaches.
+	// classifyPoisonedError still retires the session when the failure is
+	// reported.
+	if taskfailure.AGYReplayedNotFound(result.Error) {
+		return false
+	}
 	// Positive evidence: the backend proved the resume was refused.
 	if result.ResumeRejected || result.ResumeRejectedTransient {
 		return true
