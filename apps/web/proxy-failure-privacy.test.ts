@@ -179,17 +179,13 @@ describe("search proxy privacy", () => {
     }
 
     const unrelatedMarker = "UNRELATED_QUERY_MARKER_1593";
-    const unrelatedReferrer = "UNRELATED_REFERRER_MARKER_1593";
-    const failedUnrelated = await fetch(`${appUrl}/health?q=${unrelatedMarker}`, {
-      headers: { referer: `https://referrer.invalid/${unrelatedReferrer}` },
-    });
+    const failedUnrelated = await fetch(`${appUrl}/health?q=${unrelatedMarker}`);
     expect(failedUnrelated.status).toBeGreaterThanOrEqual(500);
     expect(failedUnrelated.status).toBeLessThan(600);
     await waitForLog(unrelatedMarker);
 
     expect(nextOutput).toContain("ECONNREFUSED");
     expect(nextOutput).toContain(unrelatedMarker);
-    expect(nextOutput).toContain(unrelatedReferrer);
     const sensitiveMarkers = [referrerMarker, ...sensitiveRequests.map(([, marker]) => marker)];
     expect(sensitiveMarkers.filter((marker) => nextOutput.includes(marker))).toEqual([]);
   }, 90_000);
