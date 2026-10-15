@@ -60,6 +60,13 @@ func chatRequestAs(t *testing.T, userID string, interactive bool, path string) (
 	if err != nil {
 		t.Fatal(err)
 	}
+	return chatRequestWithToken(t, token, path)
+}
+
+// chatRequestWithToken sends a GET with a raw bearer token (a JWT or a mat_
+// task token) scoped to the fixture workspace.
+func chatRequestWithToken(t *testing.T, token, path string) (int, []byte) {
+	t.Helper()
 	req, err := http.NewRequest(http.MethodGet, testServer.URL+path, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -300,4 +307,107 @@ func TestChatSessionUsageRefusesPrivateAgentCreatorWithoutAccess(t *testing.T) {
 	if status != wantStatus || string(body) != string(wantBody) {
 		t.Errorf("usage = %d %s, session GET = %d %s", status, body, wantStatus, wantBody)
 	}
+}
+
+// usageRefusalMatchesSessionGet asserts a refusal: GET /sessions/{id} must not
+// succeed with token, and /usage must answer with the same status and body.
+func usageRefusalMatchesSessionGet(t *testing.T, token, sessionID string, wantStatus int) {
+	t.Helper()
+	getStatus, getBody := chatRequestWithToken(t, token, "/api/chat/sessions/"+sessionID)
+	if getStatus != wantStatus {
+		t.Fatalf("session GET = %d %s, want %d", getStatus, getBody, wantStatus)
+	}
+	status, body := chatRequestWithToken(t, token, "/api/chat/sessions/"+sessionID+"/usage")
+	if status != getStatus || string(body) != string(getBody) {
+		t.Errorf("usage = %d %s, session GET = %d %s", status, body, getStatus, getBody)
+	}
+}
+
+func interactiveToken(t *testing.T) string {
+	t.Helper()
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub": testUserID, "amr": "interactive", "exp": time.Now().Add(time.Hour).Unix(),
+	}).SignedString(auth.JWTSecret())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return token
+}
+
+func TestChatSessionUsageRefusesCrossWorkspaceLikeSessionGet(t *testing.T) {
+	ctx := context.Background()
+	sessionID := seedChatUsageSession(t, testUserID)
+	var otherWorkspaceID string
+	if err := testPool.QueryRow(ctx, `INSERT INTO workspace (name, slug) VALUES ('Usage Other WS', $1) RETURNING id`, "usage-other-"+uuid.NewString()[:8]).Scan(&otherWorkspaceID); err != nil {
+		t.Fatal(err)
+	}
+	// The session row moves into the new workspace, so delete it before the workspace.
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM chat_session WHERE id = $1`, sessionID)
+		testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id = $1`, otherWorkspaceID)
+	})
+	if _, err := testPool.Exec(ctx, `UPDATE chat_session SET workspace_id = $1 WHERE id = $2`, otherWorkspaceID, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	// The caller created the session but asks through a workspace it does not belong to.
+	usageRefusalMatchesSessionGet(t, interactiveToken(t), sessionID, http.StatusNotFound)
+}
+
+func TestChatSessionUsageHidesNonPublicSessionLikeSessionGet(t *testing.T) {
+	ctx := context.Background()
+	sessionID := seedChatUsageSession(t, testUserID)
+	// A session holding only a channel command is a control-plane record, not a
+	// public chat (GetPublicChatSessionInWorkspace).
+	if _, err := testPool.Exec(ctx, `DELETE FROM chat_message WHERE chat_session_id = $1`, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(ctx, `INSERT INTO chat_message (chat_session_id, role, content, message_kind) VALUES ($1, 'user', 'x', 'channel_command')`, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	usageRefusalMatchesSessionGet(t, interactiveToken(t), sessionID, http.StatusNotFound)
+}
+
+// chatTaskToken mints a mat_ token bound to a task of the given status on
+// sessionID, as the daemon would at claim time.
+func chatTaskToken(t *testing.T, sessionID, taskStatus string) string {
+	t.Helper()
+	ctx := context.Background()
+	var agentID, runtimeID, taskID string
+	if err := testPool.QueryRow(ctx, `SELECT agent_id FROM chat_session WHERE id = $1`, sessionID).Scan(&agentID); err != nil {
+		t.Fatal(err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT runtime_id FROM agent WHERE id = $1`, agentID).Scan(&runtimeID); err != nil {
+		t.Fatal(err)
+	}
+	if err := testPool.QueryRow(ctx, `INSERT INTO agent_task_queue (agent_id, runtime_id, chat_session_id, status) VALUES ($1, $2, $3, $4) RETURNING id`, agentID, runtimeID, sessionID, taskStatus).Scan(&taskID); err != nil {
+		t.Fatal(err)
+	}
+	token := "mat_usage_" + taskID
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO task_token (token_hash, task_id, agent_id, workspace_id, user_id, expires_at)
+		VALUES ($1, $2, $3, $4, $5, now() + interval '1 hour')`, auth.HashToken(token), taskID, agentID, testWorkspaceID, testUserID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM task_token WHERE task_id = $1`, taskID)
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
+	})
+	return token
+}
+
+func TestChatSessionUsageTaskTokenIsBoundToItsOwnSession(t *testing.T) {
+	own := seedChatUsageSession(t, testUserID)
+	other := seedChatUsageSession(t, testUserID)
+	running := chatTaskToken(t, own, "running")
+
+	// A running task reads its own session through both routes.
+	for _, path := range []string{"/api/chat/sessions/" + own, "/api/chat/sessions/" + own + "/usage"} {
+		if status, body := chatRequestWithToken(t, running, path); status != http.StatusOK {
+			t.Fatalf("own-session %s = %d %s, want 200", path, status, body)
+		}
+	}
+	// It cannot read another session, and usage refuses exactly as session GET does.
+	usageRefusalMatchesSessionGet(t, running, other, http.StatusForbidden)
+	// A task that is no longer running loses access to its own session.
+	usageRefusalMatchesSessionGet(t, chatTaskToken(t, own, "completed"), own, http.StatusForbidden)
 }
