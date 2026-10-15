@@ -37,12 +37,12 @@ Three asks:
 2. The trigger runs only after a run finishes. The current answer always completes first.
 3. The reason is visible in the old DM, in the new DM's summary message, and in `/statistic`.
 4. The threshold is editable in Settings > Workspace, next to "Compact prompt", with an optional per-agent override and an Off state.
-5. The rule is "fill at or above the percent threshold (default 80%) OR prompt at or above a token cap (default 200,000), whichever comes first". The cap keeps the CHE-1701 cost intent on 1M-context models, where 80% is 800k tokens per turn. The cap can be cleared.
+5. The rule is percent only: fill at or above the threshold (default 80%). A token cap was proposed and rejected by Cheese (2026-10-16, DM: "No" to "or at least 200k tokens"). On a 1M-context model the trigger is therefore 800k tokens.
 
 ## Approaches considered
 
 - **A: Server auto-compact through the existing `/compact` (chosen).** See below.
-- B: In-place provider compaction (`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, same DM). Rejected: Claude only, provider-written summary that the user never sees, ignores the Compact prompt, does not fit the token cap, conflicts with the CHE-1755 continuation and statistics model.
+- B: In-place provider compaction (`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, same DM). Rejected: Claude only, provider-written summary that the user never sees, ignores the Compact prompt, conflicts with the CHE-1755 continuation and statistics model.
 - C: A plus a live context meter. The meter is accepted as a later layer (M1), not part of the first delivery.
 
 ## Recommended approach (Cheese, 2026-10-16, DM: "A, with the meter from C as a later layer")
@@ -53,7 +53,7 @@ sequenceDiagram
   participant S as Server
   participant A as DM agent
   D->>S: run done + last prompt tokens + context window
-  S->>S: check last prompt vs 80 pct of window and 200k cap
+  S->>S: check last prompt vs 80 pct of window
   alt over threshold
     S->>A: queue /compact task with reason
     A->>S: chat continue --summary-file
@@ -73,11 +73,11 @@ sequenceDiagram
 
 ### Setting (layer A2)
 
-- Workspace `settings.auto_compact`: `{ "enabled": bool, "threshold_pct": int, "token_cap": int|null }`. Missing key means the defaults `{true, 80, 200000}`.
+- Workspace `settings.auto_compact`: `{ "enabled": bool, "threshold_pct": int }`. Missing key means the defaults `{true, 80}`.
 - Per-agent override (premise 4, accepted): `agent.runtime_config.auto_compact`, same shape, every field optional. A present field wins over the workspace value. `null` for the whole key means inherit.
-- Validation (server, same style as `validateCompactPromptConfig`): `threshold_pct` 50 to 90 (above 90 the compaction run itself can overflow); `token_cap` null or 20,000 to 2,000,000. Anything else returns 400 with the field name.
+- Validation (server, same style as `validateCompactPromptConfig`): `threshold_pct` 50 to 90 (above 90 the compaction run itself can overflow). Anything else returns 400 with the field name.
 - Edit paths (per learning `spec-setting-needs-edit-path`):
-  - Workspace: Settings > Workspace > "Auto-compact" section, directly below "Compact prompt", same `canManage` read-only rule, autosave like `saveCompactPrompt`. Fields: Enabled switch, Threshold (%) number, Token cap number with a "No cap" checkbox. Help text states the rule in one sentence.
+  - Workspace: Settings > Workspace > "Auto-compact" section, directly below "Compact prompt", same `canManage` read-only rule, autosave like `saveCompactPrompt`. Fields: Enabled switch, Threshold (%) number. Help text states the rule in one sentence.
   - Per agent: CLI `multica agent update <agent> --runtime-config-file <file>` (existing path). An agent-page UI is out of scope for this feature.
 - API: same `PATCH /api/workspaces/{id}` with a dedicated top-level `auto_compact` field, like `compact_prompt` (`server/internal/handler/workspace.go:331-334`).
 
@@ -89,11 +89,11 @@ sequenceDiagram
   - the task is not a compaction task;
   - the session is active and `continued_into_session_id IS NULL` (the agent may still roll over by itself under CHE-1701 until I1);
   - no compaction task for the session is queued or running.
-- Rule: effective settings = agent override over workspace over defaults. Fire if `enabled` and `context_tokens` is not NULL and (`context_window` is not NULL and `context_tokens >= threshold_pct% of context_window`, or `token_cap` is not NULL and `context_tokens >= token_cap`).
+- Rule: effective settings = agent override over workspace over defaults. Fire if `enabled` and `context_tokens` is not NULL and `context_window` is not NULL and `context_tokens >= threshold_pct% of context_window`. A run with an unknown window never triggers.
 - Action, in one transaction:
   1. Enqueue a task on the same DM and agent with `task_kind = 'compact'`, `compact_reason` and `compact_trigger_tokens = context_tokens`. It has no linked input message. For an automatic compaction task (`task_kind = 'compact'` with no linked input) the claim path skips input loading entirely, including the legacy `trailingUserMessages` path (`daemon.go:3169-3173`) and the empty-input cancel (`daemon.go:3321`), and sets the prompt to `compactChatPrompt("/compact", ...)`, so the workspace and agent Compact prompt apply.
   2. Insert the old-DM notice (below).
-- Reason text, built by the server only (the agent never writes it): `Auto-compacted: context 164k of 200k tokens (82%) reached the 80% threshold.` or `Auto-compacted: context 210k tokens reached the 200k token cap.`
+- Reason text, built by the server only (the agent never writes it): `Auto-compacted: context 164k of 200k tokens (82%) reached the 80% threshold.`
 - Where it shows:
   1. Old DM: an `assistant` message with `message_kind = 'compact_notice'` and content `<reason> Continuing in a new DM.` It is excluded from chat input selection and from the trailing-message selector (`daemon.go:4057`), so it never enters a prompt. Clients that do not know the kind render it as assistant Markdown (A3 verifies this on web and mobile); web renders it as a muted notice row.
   2. New DM: `ContinueChatSession` looks up the calling task's `compact_reason` and puts it as the first line of the `continuation_summary` message, above the agent's summary.
@@ -104,7 +104,7 @@ sequenceDiagram
 
 ### Context meter (layer M1, later)
 
-- Web/desktop DM header: `62% of 200k` from the latest completed run's `context_tokens` and `context_window` (or the cap when the window is NULL). Hidden when NULL.
+- Web/desktop DM header: `62% of 200k` from the latest completed run's `context_tokens` and `context_window`. Hidden when either is NULL.
 - Warning state at 10 percentage points below the threshold: `Will compact after the next reply`.
 - A "Compact now" item sends `/compact`.
 - Mobile meter waits for the CHE-1755 mobile route (CHE-1761); out of scope here.
@@ -137,7 +137,7 @@ flowchart LR
 ## Success criteria
 
 - A web DM on a 200k model compacts after the first completed run whose last prompt is at or above 160k, and never before.
-- A web DM on a 1M model compacts at the 200k cap when the cap is set, and at 800k when the cap is cleared.
+- A web DM on a 1M model compacts at 800k (80%), and never before.
 - A message sent while a compaction runs is refused with the draft kept, never answered in the old DM.
 - The old DM shows the reason note; the new DM's first message starts with the same reason.
 - Changing the threshold in Settings > Workspace changes the next trigger without a restart.
@@ -148,7 +148,7 @@ flowchart LR
 
 - A1: daemon parser tests with a recorded Claude stream (multi-call run with a sub-model call) and a Codex sequence of several `thread/tokenUsage/updated` notifications; assert last-call tokens of the latest call, not sums; handler test for the optional `context` object on `/complete`.
 - A2: handler tests for validation bounds, inherit/override precedence, `canManage`; web test for the Settings section autosave and read-only state.
-- A3: handler tests for: below/at/above percent; cap only; NULL window; NULL tokens; disabled; channel DM ignored; failed task ignored; already-continued DM ignored; compaction task never triggers (manual and automatic); one queued compaction max; claim of a `task_kind = 'compact'` task with no input; notice excluded from input selection; reason in old notice and new summary; 409 on send while compacting; guard on each terminal path and the 1.1x re-arm; manual `/compact` marked at enqueue; cancel of a queued compaction unlocks sends.
+- A3: handler tests for: below/at/above percent; NULL window; NULL tokens; disabled; channel DM ignored; failed task ignored; already-continued DM ignored; compaction task never triggers (manual and automatic); one queued compaction max; claim of a `task_kind = 'compact'` task with no input; notice excluded from input selection; reason in old notice and new summary; 409 on send while compacting; guard on each terminal path and the 1.1x re-arm; manual `/compact` marked at enqueue; cancel of a queued compaction unlocks sends.
 - M1: component tests for hidden, normal, warning states.
 
 ## Open questions
