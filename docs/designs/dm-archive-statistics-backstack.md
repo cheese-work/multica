@@ -157,10 +157,11 @@ Request (Cheese, same DM): `feat(multica)`: DM `/pin` command; DM `/agent` comma
 ### L7: dedicated compaction agent
 
 - Setting: `workspace.settings.compact_agent_id` (nullable). Edit paths: Settings > Workspace (next to the compact prompt) and `multica workspace update --compact-agent <id-or-name|none>`. Empty means today's behavior.
-- Flow: when the setting is set and a web DM message starts with `/compact` or `/agent <name>`, the server stores the user message as today but queues the task for the compaction agent instead of the DM's agent. The task carries `target_chat_session_id`. The DM shows a "Compacting with <agent>" status row.
+- Flow: when the setting is set and a DM message starts with `/compact` or `/agent <name>`, the server stores the user message as today but queues the task for the compaction agent instead of the DM's agent. The task carries `target_chat_session_id`. The DM shows a "Compacting with <agent>" status row.
+- Client scope: routing is decided on the server from the message text, so it applies to every DM client that sends the message: web, desktop, mobile and the CLI. No client-side routing exists. Mobile can send `/compact` or `/agent <name>` as plain text before C2; C2 only adds the suggestion list. The L7 PR adds the "Compacting with <agent>" status row to the web, desktop and mobile chat views.
 - Access (security-sensitive, needs a security review): `chatHistorySession` and `ContinueChatSession` also accept a running task whose `target_chat_session_id` equals the session and whose agent equals the workspace's current `compact_agent_id`. No other session is readable. Access ends when the task ends.
 - The compaction agent summarizes from the transcript (`multica chat history`). It does not see the DM agent's provider session context.
-- Tests: target-session read allowed; any other session refused; refused after the setting changes; refused after the task ends; empty setting keeps the DM-agent path; `/agent` through the compaction agent passes the target agent.
+- Tests: target-session read allowed; any other session refused; refused after the setting changes; refused after the task ends; empty setting keeps the DM-agent path; `/agent` through the compaction agent passes the target agent; a `/compact` message sent through the mobile request path is routed the same as one sent from web.
 
 ```mermaid
 flowchart LR
@@ -188,6 +189,9 @@ L6 has no predecessor. L7 builds on L6 (same prompt path). C1 now also waits for
 - Web and mobile: (i) Statistics and `/statistic` show the same numbers. The L1 handler test asserts the totals equal a direct SQL sum over `task_usage` for that session; both clients render the endpoint values without recomputing them.
 - Web (desktop browser and phone-width browser): list > DM A > linked DM B, back, back: lands on A, then the list.
 - Mobile app: the same path with hardware back or swipe lands on A, then the list.
+- Web and mobile (A1): `/pin` and the Pin/Unpin menu item give the same `pinned_at` result; a pinned DM sorts first in the list on both clients; no message reaches the agent.
+- `/agent <name>` (A1, L6), sent from web, mobile or the CLI: the old DM is archived with `continued_into_session_id`; the new DM runs as the named agent; both continuation dividers name the old and new agent. An unknown name, an archived agent, an agent in another workspace, or a private agent the session creator cannot use is refused with a visible error, and no DM is created.
+- Dedicated compaction agent (A1, L7): with `compact_agent_id` set, `/compact` or `/agent <name>` sent from web, desktop, mobile or the CLI runs as the compaction agent and shows "Compacting with <agent>"; with it empty, the DM's own agent runs, as today. Access boundary: the compaction task reads and continues only its `target_chat_session_id`; every other session is refused; access is refused after the task ends and after the setting changes to another agent. The security review signs before the L7 PR is marked ready.
 - Every layer: tests-first commit with red output in the PR body, then green.
 
 ## Distribution Plan
