@@ -1348,7 +1348,8 @@
       "time": "{{time}} · réveille {{agent}}",
       "header": "{{agent}} : {{what}}",
       "paused": "Réveil en pause",
-      "open": "Voir les réveils"
+      "open": "Voir les réveils",
+      "workspace_paused": "Réveils suspendus"
     },
     "paused": {
       "max_fires": "Arrêté après {{count}} exécutions",

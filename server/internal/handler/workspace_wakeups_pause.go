@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/service"
@@ -59,34 +58,73 @@ func reconcileWakeupsPause(stored, incoming map[string]any, actorID string, now 
 	return wakeupsPausedAction, nil
 }
 
-// updateWorkspaceResuming lifts the pause and settles what it held in one
-// transaction, so no tick can replay a dropped input in between.
-func (h *Handler) updateWorkspaceResuming(ctx context.Context, params db.UpdateWorkspaceParams) (db.Workspace, error) {
+// settingsRejectedError is a settings body the pause guard refuses; the
+// handler answers 400 instead of 500.
+type settingsRejectedError struct{ msg string }
+
+func (e settingsRejectedError) Error() string { return e.msg }
+
+// saveWorkspace writes the update. A settings write runs in one transaction
+// under the workspace row lock: the stored settings are read, the pause is
+// reconciled against them, the row is written, and a resume settles what the
+// pause held. The audit record of a flip commits with it, so a flip that
+// cannot be audited does not happen. A write that cannot read the stored
+// settings fails instead of guessing that they hold no pause.
+func (h *Handler) saveWorkspace(ctx context.Context, params db.UpdateWorkspaceParams, settings any, userID, actorType, actorID string) (db.Workspace, string, db.ActivityLog, error) {
+	var activity db.ActivityLog
+	if settings == nil {
+		ws, err := h.Queries.UpdateWorkspace(ctx, params)
+		return ws, "", activity, err
+	}
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
-		return db.Workspace{}, err
+		return db.Workspace{}, "", activity, err
 	}
 	defer tx.Rollback(ctx)
-	ws, err := h.Queries.WithTx(tx).UpdateWorkspace(ctx, params)
+	q := h.Queries.WithTx(tx)
+	storedJSON, err := q.LockWorkspaceSettings(ctx, params.ID)
 	if err != nil {
-		return ws, err
+		return db.Workspace{}, "", activity, err
 	}
-	if err := (&service.IssueWakeupService{Tasks: h.TaskService}).SettleWakeupsOnResume(ctx, tx, ws.ID); err != nil {
-		return ws, err
+	var stored map[string]any
+	_ = json.Unmarshal(storedJSON, &stored) // stored settings that are not an object hold no pause
+	action := ""
+	if incoming, isObject := settings.(map[string]any); isObject {
+		// Only an old client's flip of the retired PR switch needs the stored
+		// value; see reconcilePRMergeSettings.
+		reconcilePRMergeSettings(stored, incoming)
+		if action, err = reconcileWakeupsPause(stored, incoming, userID, time.Now()); err != nil {
+			return db.Workspace{}, "", activity, settingsRejectedError{err.Error()}
+		}
+	} else if stored[wakeupsPausedKey] == true {
+		// A non-object body would replace the whole blob and clear the pause
+		// with no resume record. Other callers may still store one.
+		return db.Workspace{}, "", activity, settingsRejectedError{"settings must be an object while wakeups are paused"}
 	}
-	return ws, tx.Commit(ctx)
+	params.Settings, _ = json.Marshal(settings)
+	ws, err := q.UpdateWorkspace(ctx, params)
+	if err != nil {
+		return ws, "", activity, err
+	}
+	if action == wakeupsResumedAction {
+		if err := (&service.IssueWakeupService{Tasks: h.TaskService}).SettleWakeupsOnResume(ctx, tx, ws.ID); err != nil {
+			return ws, "", activity, err
+		}
+	}
+	if action != "" {
+		activity, err = q.CreateActivity(ctx, db.CreateActivityParams{
+			ID: dbid.NewV7(), WorkspaceID: ws.ID, ActorType: strToText(actorType), ActorID: optionalActorUUID(actorID),
+			Action: action, Details: []byte(`{}`),
+		})
+		if err != nil {
+			return ws, "", activity, err
+		}
+	}
+	return ws, action, activity, tx.Commit(ctx)
 }
 
-// recordWakeupsPauseActivity writes the one audit record of a flip.
-func (h *Handler) recordWakeupsPauseActivity(ctx context.Context, ws db.Workspace, actorType, actorID, action string) {
-	activity, err := h.Queries.CreateActivity(ctx, db.CreateActivityParams{
-		ID: dbid.NewV7(), WorkspaceID: ws.ID, ActorType: strToText(actorType), ActorID: optionalActorUUID(actorID),
-		Action: action, Details: []byte(`{}`),
-	})
-	if err != nil {
-		slog.Warn("record wakeups pause activity failed", "err", err, "workspace_id", uuidToString(ws.ID))
-		return
-	}
+// publishWakeupsPauseActivity announces a flip's committed audit record.
+func (h *Handler) publishWakeupsPauseActivity(ws db.Workspace, actorType, actorID string, activity db.ActivityLog) {
 	h.publish(protocol.EventActivityCreated, uuidToString(ws.ID), actorType, actorID, map[string]any{
 		"entry": map[string]any{
 			"type": "activity", "id": uuidToString(activity.ID), "actor_type": actorType, "actor_id": actorID,

@@ -93,6 +93,13 @@ UPDATE workspace SET
 WHERE id = $1
 RETURNING *;
 
+-- name: LockWorkspaceSettings :one
+-- CHE-1727: a settings write reads, reconciles and writes the blob under this
+-- lock, so a concurrent pause flip cannot be overwritten by a stale save.
+SELECT settings FROM workspace
+WHERE id = $1
+FOR UPDATE;
+
 -- name: IncrementIssueCounter :one
 UPDATE workspace SET issue_counter = issue_counter + 1
 WHERE id = $1

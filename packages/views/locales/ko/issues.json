@@ -1304,7 +1304,8 @@
       "time": "{{time}}에 {{agent}} 깨우기",
       "header": "{{agent}}: {{what}}",
       "paused": "깨우기 일시중지됨",
-      "open": "깨우기 보기"
+      "open": "깨우기 보기",
+      "workspace_paused": "깨우기 일시 중지됨"
     },
     "paused": {
       "max_fires": "{{count}}회 실행해 한도에 도달해 중지됨",

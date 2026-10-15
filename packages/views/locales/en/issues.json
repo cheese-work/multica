@@ -1348,7 +1348,8 @@
       "time": "{{time}} · wakes {{agent}}",
       "header": "{{agent}}: {{what}}",
       "paused": "Wakeup paused",
-      "open": "Show wakeups"
+      "open": "Show wakeups",
+      "workspace_paused": "Wakeups paused"
     },
     "paused": {
       "max_fires": "Stopped after reaching {{count}} runs",

@@ -470,7 +470,6 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	params := db.UpdateWorkspaceParams{
 		ID: idUUID,
 	}
-	pauseAction := ""
 	if req.Name != nil {
 		name := strings.TrimSpace(*req.Name)
 		if name == "" {
@@ -486,33 +485,12 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		params.Context = pgtype.Text{String: *req.Context, Valid: true}
 	}
 	if req.Settings != nil {
-		var stored map[string]any
-		if existing, err := h.Queries.GetWorkspace(r.Context(), idUUID); err == nil {
-			_ = json.Unmarshal(existing.Settings, &stored)
-		}
-		incoming, isObject := req.Settings.(map[string]any)
-		if !isObject && stored[wakeupsPausedKey] == true {
-			// A non-object body would replace the whole blob and clear the pause
-			// with no resume record. Other callers may still store one.
-			writeError(w, http.StatusBadRequest, "settings must be an object while wakeups are paused")
-			return
-		}
+		// What depends on the stored settings (the pause guard, the PR merge
+		// switch) is decided under the workspace row lock in saveWorkspace.
 		if err := validateCompactPromptConfig(req.Settings); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if isObject {
-			// Only an old client's flip of the retired PR switch needs the
-			// stored value; see reconcilePRMergeSettings.
-			reconcilePRMergeSettings(stored, incoming)
-			var err error
-			if pauseAction, err = reconcileWakeupsPause(stored, incoming, requestUserID(r), time.Now()); err != nil {
-				writeError(w, http.StatusBadRequest, err.Error())
-				return
-			}
-		}
-		s, _ := json.Marshal(req.Settings)
-		params.Settings = s
 	}
 	if req.CompactPrompt != nil {
 		// Only a literal null resets; a value that fails to decode (1e400)
@@ -565,11 +543,11 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		params.AvatarUrl = pgtype.Text{String: accepted, Valid: true}
 	}
 
-	var ws db.Workspace
-	if pauseAction == wakeupsResumedAction {
-		ws, err = h.updateWorkspaceResuming(r.Context(), params)
-	} else {
-		ws, err = h.Queries.UpdateWorkspace(r.Context(), params)
+	ws, pauseAction, activity, err := h.saveWorkspace(r.Context(), params, req.Settings, requestUserID(r), actorType, actorID)
+	var rejected settingsRejectedError
+	if errors.As(err, &rejected) {
+		writeError(w, http.StatusBadRequest, rejected.Error())
+		return
 	}
 	if err != nil {
 		slog.Warn("update workspace failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", id)...)
@@ -579,9 +557,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("workspace updated", append(logger.RequestAttrs(r), "workspace_id", id)...)
 	if pauseAction != "" {
-		// ponytail: the audit row is a second write; fold both into one
-		// transaction if a lost record ever matters.
-		h.recordWakeupsPauseActivity(r.Context(), ws, actorType, actorID, pauseAction)
+		h.publishWakeupsPauseActivity(ws, actorType, actorID, activity)
 	}
 	userID := requestUserID(r)
 	h.publish(protocol.EventWorkspaceUpdated, uuidToString(ws.ID), "member", userID, map[string]any{"workspace": h.workspaceToResponse(ws)})

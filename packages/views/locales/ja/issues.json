@@ -1304,7 +1304,8 @@
       "time": "{{time}} に {{agent}} を起こす",
       "header": "{{agent}}：{{what}}",
       "paused": "起動を一時停止中",
-      "open": "起動を表示"
+      "open": "起動を表示",
+      "workspace_paused": "ウェイクアップは一時停止中"
     },
     "paused": {
       "max_fires": "{{count}} 回起動して上限に達したため停止",
