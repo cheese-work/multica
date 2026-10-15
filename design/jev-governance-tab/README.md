@@ -4,4 +4,4 @@
 
 - Issue: [CHE-1777](mention://issue/01a14080-3be2-751c-8513-960e588418c7)
 - Pages in scope: `settings/jev-governance` (new Settings tab; members read-only, owner/admin edit)
-- Status: rev-1 posted
+- Status: rev-2 posted (rev-1 verdict: CHANGES REQUESTED). No direction is selected.
