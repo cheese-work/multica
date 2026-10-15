@@ -1,0 +1,258 @@
+package service
+
+import (
+	"context"
+	"testing"
+	"time"
+)
+
+// Capacity-refused event inputs (CHE-1200, decision (b) of the L10 review): an
+// input the default pool refused is delayed and retried, never dropped. It is
+// delivered once capacity frees, inside the drain budget and the outbox
+// retention; past retention it expires visibly. Delivery is idempotent and never
+// rearms an instance that ended.
+
+// fillIssuePool takes n of the issue's 32 default slots with instances of
+// unrelated rules, so the next default instance on the issue is refused.
+func (k customEnv) fillIssuePool(t *testing.T, n int) {
+	t.Helper()
+	k.f.Exec(t, `INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,instruction,kind,mode,default_rule_key,default_scope_kind,default_scope_id)
+ SELECT gen_random_uuid(),$1,$2,$3,'filler','event','continuous',gen_random_uuid()::text,'workspace',$1 FROM generate_series(1,$4)`,
+		k.f.WorkspaceID, k.issue, k.agent, n)
+}
+
+func (k customEnv) freePool(t *testing.T) {
+	t.Helper()
+	k.f.Exec(t, `DELETE FROM issue_wakeup WHERE issue_id=$1 AND instruction='filler'`, k.issue)
+}
+
+// inputState reads the outbox inputs of the fixture workspace as (pending, outcome).
+func (k customEnv) inputState(t *testing.T) (pending int, retryInFuture int, outcomes []string) {
+	t.Helper()
+	pending = k.f.Count(t, `SELECT count(*) FROM wakeup_scoped_event WHERE workspace_id=$1 AND handled_at IS NULL`, k.f.WorkspaceID)
+	retryInFuture = k.f.Count(t, `SELECT count(*) FROM wakeup_scoped_event WHERE workspace_id=$1 AND handled_at IS NULL AND retry_at>now()`, k.f.WorkspaceID)
+	return pending, retryInFuture, k.outcomes(t)
+}
+
+func (k customEnv) receiptCount(t *testing.T, rule string) (receipts, coalesced int) {
+	t.Helper()
+	for _, r := range k.receipts(t, rule) {
+		receipts++
+		coalesced += r.Count
+	}
+	return receipts, coalesced
+}
+
+func TestCustomCapacityRefusedEventStaysPendingAndIsDeliveredWhenThePoolFrees(t *testing.T) {
+	k := newCustomEnv(t)
+	k.fillIssuePool(t, 32)
+	view := k.mustSave(t, WakeupScopeWorkspace, "", k.eventRule(`["comment.created"]`))
+	k.comment(t, "refused: the issue's default pool is full")
+	k.drain(t)
+
+	pending, delayed, _ := k.inputState(t)
+	if pending != 1 || delayed != 1 {
+		t.Fatalf("pending=%d delayed=%d, want the refused input kept pending behind a retry time", pending, delayed)
+	}
+	if got := k.instanceRow(t, view.RuleKey); got.Enabled || !got.CapacityReason.Valid {
+		t.Fatalf("instance enabled=%v capacity=%v, want it unapplied with its visible reason", got.Enabled, got.CapacityReason.Valid)
+	}
+	if n, _ := k.receiptCount(t, view.RuleKey); n != 0 {
+		t.Fatalf("a full pool delivered %d receipts", n)
+	}
+
+	// Capacity frees. The scheduler's sweep applies the held instance, which also
+	// brings the delayed input forward; the next drain delivers it.
+	k.freePool(t)
+	k.sweep(t)
+	k.drain(t)
+	if n, count := k.receiptCount(t, view.RuleKey); n != 1 || count != 1 {
+		t.Fatalf("receipts=%d events=%d, want the refused event delivered once", n, count)
+	}
+	if pending, _, outcomes := k.inputState(t); pending != 0 || len(outcomes) != 1 || outcomes[0] != "delivered" {
+		t.Fatalf("pending=%d outcomes=%v, want the input handled as delivered", pending, outcomes)
+	}
+	k.tick(t)
+	k.wantRuns(t, view.RuleKey, 1)
+}
+
+func TestCustomCapacityRetryDelayIsBoundedAndGrowsWithTheInputsAge(t *testing.T) {
+	k := newCustomEnv(t)
+	k.fillIssuePool(t, 32)
+	k.mustSave(t, WakeupScopeWorkspace, "", k.eventRule(`["comment.created"]`))
+	k.comment(t, "fresh")
+	k.drain(t)
+	var fresh time.Duration
+	if err := k.f.Pool.QueryRow(context.Background(), `SELECT retry_at-now() FROM wakeup_scoped_event WHERE workspace_id=$1 AND handled_at IS NULL`, k.f.WorkspaceID).Scan(&fresh); err != nil {
+		t.Fatalf("a refused input must carry a retry time: %v", err)
+	}
+	if fresh < 30*time.Second || fresh > 5*time.Minute {
+		t.Fatalf("fresh input retries in %v, want about a minute", fresh)
+	}
+	// While the pool stays full the input is not attempted again before its time.
+	var before time.Time
+	k.f.Pool.QueryRow(context.Background(), `SELECT retry_at FROM wakeup_scoped_event WHERE workspace_id=$1 AND handled_at IS NULL`, k.f.WorkspaceID).Scan(&before)
+	k.drain(t)
+	k.drain(t)
+	var after time.Time
+	if err := k.f.Pool.QueryRow(context.Background(), `SELECT retry_at FROM wakeup_scoped_event WHERE workspace_id=$1 AND handled_at IS NULL`, k.f.WorkspaceID).Scan(&after); err != nil || !after.Equal(before) {
+		t.Fatalf("retry time moved from %v to %v (%v): a delayed input must not be attempted before its time", before, after, err)
+	}
+
+	// An old input backs off further, up to an hour, so a pool that stays full
+	// costs a handful of attempts over the retention rather than thousands.
+	k.f.Exec(t, `UPDATE wakeup_scoped_event SET captured_at=now()-interval '3 days',retry_at=now()-interval '1 second' WHERE workspace_id=$1 AND handled_at IS NULL`, k.f.WorkspaceID)
+	k.drain(t)
+	var old time.Duration
+	if err := k.f.Pool.QueryRow(context.Background(), `SELECT retry_at-now() FROM wakeup_scoped_event WHERE workspace_id=$1 AND handled_at IS NULL`, k.f.WorkspaceID).Scan(&old); err != nil {
+		t.Fatal(err)
+	}
+	if old < 30*time.Minute || old > 2*time.Hour {
+		t.Fatalf("a 3-day-old input retries in %v, want about an hour", old)
+	}
+}
+
+func TestCustomCapacityRefusedInputExpiresVisiblyPastRetentionAndNeverDelivers(t *testing.T) {
+	k := newCustomEnv(t)
+	k.fillIssuePool(t, 32)
+	view := k.mustSave(t, WakeupScopeWorkspace, "", k.eventRule(`["comment.created"]`))
+	k.comment(t, "refused and never served")
+	k.f.Exec(t, `UPDATE wakeup_scoped_event SET captured_at=now()-interval '6 days' WHERE workspace_id=$1`, k.f.WorkspaceID)
+	k.drain(t)
+	if pending, _, _ := k.inputState(t); pending != 1 {
+		t.Fatalf("pending=%d, want the input still waiting inside retention", pending)
+	}
+
+	// Past retention the input can only expire, even though capacity is free now.
+	k.f.Exec(t, `UPDATE wakeup_scoped_event SET captured_at=now()-interval '8 days',retry_at=NULL WHERE workspace_id=$1`, k.f.WorkspaceID)
+	k.freePool(t)
+	k.sweep(t)
+	if err := k.s.pruneScopedEvents(context.Background(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	k.drain(t)
+	if n, _ := k.receiptCount(t, view.RuleKey); n != 0 {
+		t.Fatalf("an expired input delivered %d receipts", n)
+	}
+	if pending, _, outcomes := k.inputState(t); pending != 0 || len(outcomes) != 1 || outcomes[0] != "expired" {
+		t.Fatalf("pending=%d outcomes=%v, want the input closed as expired", pending, outcomes)
+	}
+}
+
+func TestCustomCapacityRetryDeliversOnceHoweverOftenItIsAttempted(t *testing.T) {
+	k := newCustomEnv(t)
+	k.fillIssuePool(t, 32)
+	view := k.mustSave(t, WakeupScopeWorkspace, "", k.eventRule(`["comment.created"]`))
+	k.comment(t, "first")
+	k.comment(t, "second")
+	k.drain(t)
+	if pending, _, _ := k.inputState(t); pending != 2 {
+		t.Fatalf("pending=%d, want both refused inputs kept", pending)
+	}
+	k.freePool(t)
+	k.sweep(t)
+	k.drain(t)
+	if n, count := k.receiptCount(t, view.RuleKey); n != 1 || count != 2 {
+		t.Fatalf("receipts=%d events=%d, want the two events coalesced into one receipt", n, count)
+	}
+	// A crash between delivery and the mark leaves the inputs pending again; the
+	// replay must not count them twice.
+	k.f.Exec(t, `UPDATE wakeup_scoped_event SET handled_at=NULL,outcome=NULL WHERE workspace_id=$1`, k.f.WorkspaceID)
+	k.drain(t)
+	k.drain(t)
+	if n, count := k.receiptCount(t, view.RuleKey); n != 1 || count != 2 {
+		t.Fatalf("after replay receipts=%d events=%d, want exactly one receipt of two events", n, count)
+	}
+	k.tick(t)
+	k.wantRuns(t, view.RuleKey, 1)
+}
+
+func TestCustomCapacityRetryNeverRearmsAnInstanceThatEnded(t *testing.T) {
+	t.Run("issue closed while the input waited", func(t *testing.T) {
+		k := newCustomEnv(t)
+		k.fillIssuePool(t, 32)
+		view := k.mustSave(t, WakeupScopeWorkspace, "", k.eventRule(`["comment.created"]`))
+		k.comment(t, "waits")
+		k.drain(t)
+		if pending, _, _ := k.inputState(t); pending != 1 {
+			t.Fatalf("pending=%d, want the refused input kept", pending)
+		}
+		wakeSetStatus(t, k.f, parseTestUUID(t, k.issue), "done")
+		k.freePool(t)
+		k.sweep(t)
+		k.f.Exec(t, `UPDATE wakeup_scoped_event SET retry_at=NULL WHERE workspace_id=$1`, k.f.WorkspaceID)
+		k.drain(t)
+		if n, _ := k.receiptCount(t, view.RuleKey); n != 0 {
+			t.Fatalf("an input for a closed issue delivered %d receipts", n)
+		}
+		if w := k.instanceRow(t, view.RuleKey); w.Enabled {
+			t.Fatal("a closed issue's instance was applied again")
+		}
+		if _, _, outcomes := k.inputState(t); len(outcomes) != 1 || outcomes[0] != "issue_closed" {
+			t.Fatalf("outcomes=%v, want the input closed with the issue", outcomes)
+		}
+	})
+	t.Run("consumed once instance", func(t *testing.T) {
+		k := newCustomEnv(t)
+		k.fillIssuePool(t, 32)
+		view := k.mustSave(t, WakeupScopeWorkspace, "", k.eventRule(`["comment.created"]`)+`,"mode":"once"`)
+		k.comment(t, "waits")
+		k.drain(t)
+		if pending, _, _ := k.inputState(t); pending != 1 {
+			t.Fatalf("pending=%d, want the refused input kept", pending)
+		}
+		// The once instance is consumed meanwhile: it rests as ended.
+		k.f.Exec(t, `UPDATE issue_wakeup SET paused_reason='max_fires',fire_count=1 WHERE issue_id=$1 AND default_rule_key=$2`, k.issue, view.RuleKey)
+		k.freePool(t)
+		k.sweep(t)
+		k.f.Exec(t, `UPDATE wakeup_scoped_event SET retry_at=NULL WHERE workspace_id=$1`, k.f.WorkspaceID)
+		k.drain(t)
+		if n, _ := k.receiptCount(t, view.RuleKey); n != 0 {
+			t.Fatalf("a consumed once instance received %d receipts", n)
+		}
+		if w := k.instanceRow(t, view.RuleKey); w.Enabled || !w.PausedReason.Valid {
+			t.Fatalf("instance enabled=%v paused=%v, want it to rest as consumed", w.Enabled, w.PausedReason.Valid)
+		}
+		if _, _, outcomes := k.inputState(t); len(outcomes) != 1 || outcomes[0] != "instance_disabled" {
+			t.Fatalf("outcomes=%v, want the input closed as instance_disabled", outcomes)
+		}
+	})
+}
+
+// One input can reach two rules. The one that was served keeps its delivery; only
+// the refused one waits, and the served one is not counted again when it is retried.
+func TestCustomCapacityRefusalOfOneRuleDoesNotRedeliverToTheOther(t *testing.T) {
+	k := newCustomEnv(t)
+	k.fillIssuePool(t, 31) // one slot left: the first rule takes it, the second is refused
+	first := k.mustSave(t, WakeupScopeWorkspace, "", k.eventRule(`["comment.created"]`))
+	second := k.mustSave(t, WakeupScopeWorkspace, "", k.eventRule(`["comment.created"]`))
+	k.comment(t, "reaches both rules")
+	k.drain(t)
+
+	served, refused := first, second
+	if n, _ := k.receiptCount(t, first.RuleKey); n == 0 {
+		served, refused = second, first
+	}
+	if n, count := k.receiptCount(t, served.RuleKey); n != 1 || count != 1 {
+		t.Fatalf("served rule: receipts=%d events=%d, want one delivery", n, count)
+	}
+	if n, _ := k.receiptCount(t, refused.RuleKey); n != 0 {
+		t.Fatalf("refused rule received %d receipts", n)
+	}
+	if pending, _, _ := k.inputState(t); pending != 1 {
+		t.Fatalf("pending=%d, want the input kept for the refused rule", pending)
+	}
+
+	k.freePool(t)
+	k.sweep(t)
+	k.drain(t)
+	if n, count := k.receiptCount(t, refused.RuleKey); n != 1 || count != 1 {
+		t.Fatalf("refused rule: receipts=%d events=%d, want it delivered once the pool freed", n, count)
+	}
+	if n, count := k.receiptCount(t, served.RuleKey); n != 1 || count != 1 {
+		t.Fatalf("served rule: receipts=%d events=%d, want its delivery not repeated", n, count)
+	}
+	if pending, _, outcomes := k.inputState(t); pending != 0 || len(outcomes) != 1 || outcomes[0] != "delivered" {
+		t.Fatalf("pending=%d outcomes=%v, want the input handled as delivered", pending, outcomes)
+	}
+}
