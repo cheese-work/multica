@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -434,6 +435,66 @@ func TestOwnerCAS_GrandfatherInstructionLimit(t *testing.T) {
 			w2 := tg.do(testUserID, id, largerOverLimit, newDigest)
 			if w2.Code != http.StatusUnprocessableEntity {
 				t.Fatalf("expected 422 Unprocessable Entity for increasing over-limit instructions, got %d: %s", w2.Code, w2.Body.String())
+			}
+		})
+	}
+}
+
+func TestOwnerCAS_ExistingInstructionReadError(t *testing.T) {
+	for _, tg := range ownerCASTargets() {
+		if tg.name != "squad.instructions" && tg.name != "agent.instructions" {
+			continue
+		}
+		t.Run(tg.name+"/MissingRowReturnsNotFoundNot422", func(t *testing.T) {
+			limit := 3000
+			if tg.name == "agent.instructions" {
+				limit = 4000
+			}
+			overLimit := strings.Repeat("over limit instructions for missing row ", (limit/10)+50)
+			nonExistentID := "00000000-0000-7000-8000-000000009999"
+			w := tg.do(testUserID, nonExistentID, overLimit, testDigest("anything"))
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("expected 404 Not Found for missing row, got %d: %s", w.Code, w.Body.String())
+			}
+		})
+
+		t.Run(tg.name+"/DatabaseReadErrorFailsServerStatusNot422", func(t *testing.T) {
+			limit := 3000
+			col := ownerCASSquadInstructions
+			if tg.name == "agent.instructions" {
+				limit = 4000
+				col = ownerCASAgentInstructions
+			}
+			initial := strings.Repeat("initial cas instructions ", (limit / 10))
+			id := tg.seed(t, initial)
+			digest := testDigest(initial)
+
+			overLimit := strings.Repeat("over limit instructions on canceled context ", (limit/10)+50)
+			raw := map[string]json.RawMessage{
+				tg.field:                 json.RawMessage(fmt.Sprintf("%q", overLimit)),
+				"expected_before_digest": json.RawMessage(fmt.Sprintf("%q", digest)),
+			}
+			w := httptest.NewRecorder()
+			req := tg.req(testUserID, id, map[string]any{})
+			ctx, cancel := context.WithCancel(req.Context())
+			cancel() // cancel context so QueryRow in ownerCASApply fails
+			req = req.WithContext(ctx)
+
+			_, ok := testHandler.ownerCASApply(w, req, "member", "owner", raw, col, testWorkspaceID, id)
+			if ok {
+				t.Fatalf("expected ownerCASApply to fail on DB read error")
+			}
+			if w.Code == http.StatusUnprocessableEntity {
+				t.Fatalf("database read error produced misleading 422 Unprocessable Entity: %s", w.Body.String())
+			}
+			if w.Code != http.StatusInternalServerError {
+				t.Fatalf("expected 500 Internal Server Error on database read error, got %d: %s", w.Code, w.Body.String())
+			}
+
+			// Verify no instruction mutation occurred (fail-closed)
+			current := tg.read(t, id)
+			if current != initial {
+				t.Fatalf("instructions were mutated on failed DB read, got %q, want %q", current, initial)
 			}
 		})
 	}

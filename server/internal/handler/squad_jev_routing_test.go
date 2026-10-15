@@ -3110,3 +3110,204 @@ func TestUpdateIssue_AgentAssign_SquadAssigneeTriggersJevRouting(t *testing.T) {
 		t.Errorf("is_leader_task = true, want false")
 	}
 }
+
+func TestEnqueueSingleCommentTrigger_UnknownCommentAuthorDoesNotRouteThroughJev_FallsBackToLeader(t *testing.T) {
+	ctx := context.Background()
+	wsUUID := util.MustParseUUID(testWorkspaceID)
+	userUUID := util.MustParseUUID(testUserID)
+	rtUUID, _ := util.ParseUUID(testRuntimeID)
+
+	leaderAgentID := dbid.NewV7()
+	_, err := testPool.Exec(ctx, `
+		INSERT INTO agent (id, workspace_id, runtime_id, owner_id, name, status, runtime_mode)
+		VALUES ($1, $2, $3, $4, 'unknown-author-leader', 'idle', 'cloud')
+	`, leaderAgentID, wsUUID, rtUUID, userUUID)
+	if err != nil {
+		t.Fatalf("insert leader agent: %v", err)
+	}
+	defer testPool.Exec(ctx, `DELETE FROM agent WHERE id = $1`, leaderAgentID)
+
+	memberAgentID := dbid.NewV7()
+	_, err = testPool.Exec(ctx, `
+		INSERT INTO agent (id, workspace_id, runtime_id, owner_id, name, status, runtime_mode)
+		VALUES ($1, $2, $3, $4, 'unknown-author-worker', 'idle', 'cloud')
+	`, memberAgentID, wsUUID, rtUUID, userUUID)
+	if err != nil {
+		t.Fatalf("insert member agent: %v", err)
+	}
+	defer testPool.Exec(ctx, `DELETE FROM agent WHERE id = $1`, memberAgentID)
+
+	squadID := dbid.NewV7()
+	_, err = testPool.Exec(ctx, `
+		INSERT INTO squad (id, workspace_id, name, description, instructions, leader_id, creator_id)
+		VALUES ($1, $2, 'Unknown Author Squad', 'Testing comment DB read failure bypasses Jev', 'Tier S: unknown-author-worker', $3, $4)
+	`, squadID, wsUUID, leaderAgentID, userUUID)
+	if err != nil {
+		t.Fatalf("insert squad: %v", err)
+	}
+	defer testPool.Exec(ctx, `DELETE FROM squad WHERE id = $1`, squadID)
+
+	_, err = testPool.Exec(ctx, `
+		INSERT INTO squad_member (id, squad_id, member_type, member_id, role)
+		VALUES ($1, $2, 'agent', $3, 'worker')
+	`, dbid.NewV7(), squadID, memberAgentID)
+	if err != nil {
+		t.Fatalf("insert squad member: %v", err)
+	}
+
+	jevCallCount := 0
+	mockJevServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		jevCallCount++
+		resp := jev.Response{
+			Model: "jev-1.13.0",
+			Answers: map[string]jev.Answer{
+				"route_squad_member": {
+					Type:       jev.TypeChoice,
+					Choice:     util.UUIDToString(memberAgentID),
+					Confidence: 0.95,
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer mockJevServer.Close()
+
+	var minConf = 0.90
+	settings := governance.WorkspaceSettings{
+		JevSquadRoutingEnabled: true,
+		JevAPIURL:              mockJevServer.URL,
+		JevMinConfidence:       &minConf,
+	}
+	settingsJSON, _ := json.Marshal(settings)
+	_, _ = testPool.Exec(ctx, `
+		INSERT INTO governance_workspace_config (workspace_id, config_version, control_epoch, settings)
+		VALUES ($1, 1, 1, $2)
+		ON CONFLICT (workspace_id) DO UPDATE SET settings = EXCLUDED.settings
+	`, wsUUID, settingsJSON)
+
+	jevClient, _ := jev.NewClient(jev.Options{
+		APIKey:  "test-jev-key",
+		BaseURL: mockJevServer.URL,
+	})
+	origJev := testHandler.Jev
+	testHandler.Jev = jevClient
+	defer func() { testHandler.Jev = origJev }()
+
+	issueID := dbid.NewV7()
+	_, err = testPool.Exec(ctx, `
+		INSERT INTO issue (id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, revision, number)
+		VALUES ($1, $2, 'Unknown Author Issue', 'Testing unknown comment author', 'todo', 'high', 'squad', $3, 'member', $4, 1, 4016)
+	`, issueID, wsUUID, squadID, testUserID)
+	if err != nil {
+		t.Fatalf("insert issue: %v", err)
+	}
+	defer testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
+
+	issue, _ := testHandler.Queries.GetIssue(ctx, issueID)
+	squad, _ := testHandler.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: squadID, WorkspaceID: wsUUID})
+	leaderAgent, _ := testHandler.Queries.GetAgent(ctx, leaderAgentID)
+	// Insert a valid comment to satisfy foreign key constraints
+	commentID := dbid.NewV7()
+	_, err = testPool.Exec(ctx, `
+		INSERT INTO comment (id, workspace_id, issue_id, author_type, author_id, content, type)
+		VALUES ($1, $2, $3, 'agent', $4, 'agent test comment', 'comment')
+	`, commentID, wsUUID, issueID, memberAgentID)
+	if err != nil {
+		t.Fatalf("insert comment: %v", err)
+	}
+	defer testPool.Exec(ctx, `DELETE FROM comment WHERE id = $1`, commentID)
+
+	// 1. Direct tryJevSquadRouting with unknown authorType="" (simulates failed GetComment leaving authorType empty)
+	routed, advisory := testHandler.tryJevSquadRouting(ctx, issue, squad, "", "", util.UUIDToString(leaderAgentID), commentID)
+	if routed {
+		t.Errorf("tryJevSquadRouting returned routed=true for unknown authorType, want false")
+	}
+	if advisory != "" {
+		t.Errorf("tryJevSquadRouting returned non-empty advisory for unknown authorType: %q", advisory)
+	}
+	if jevCallCount > 0 {
+		t.Errorf("expected 0 Jev calls for unknown comment author in tryJevSquadRouting, got %d", jevCallCount)
+	}
+
+	// 2. Direct tryJevSquadRouting with system authorType="system" on comment trigger
+	jevCallCount = 0
+	routed, advisory = testHandler.tryJevSquadRouting(ctx, issue, squad, "system", "", util.UUIDToString(leaderAgentID), commentID)
+	if routed {
+		t.Errorf("tryJevSquadRouting returned routed=true for system comment, want false")
+	}
+	if advisory != "" {
+		t.Errorf("tryJevSquadRouting returned non-empty advisory for system comment: %q", advisory)
+	}
+	if jevCallCount > 0 {
+		t.Errorf("expected 0 Jev calls for system comment in tryJevSquadRouting, got %d", jevCallCount)
+	}
+
+	// 3. enqueueSingleCommentTrigger with agent comment trigger ensures zero Jev calls and leader fallback
+	jevCallCount = 0
+	trigger := commentAgentTrigger{
+		Source: commentTriggerSourceIssueAssignee,
+		Squad:  &squad,
+		Agent:  leaderAgent,
+	}
+
+	task, err := testHandler.enqueueSingleCommentTrigger(ctx, issue, commentID, trigger)
+	if err != nil {
+		t.Fatalf("enqueueSingleCommentTrigger failed: %v", err)
+	}
+	defer testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, task.ID)
+
+	if jevCallCount > 0 {
+		t.Errorf("expected 0 Jev calls for agent comment trigger, got %d", jevCallCount)
+	}
+	if task.AgentID != leaderAgentID {
+		t.Errorf("enqueued task agent_id = %s, want leader %s", util.UUIDToString(task.AgentID), util.UUIDToString(leaderAgentID))
+	}
+	if !task.IsLeaderTask {
+		t.Errorf("expected is_leader_task = true on normal leader fallback")
+	}
+	// Clean up step 3 task so step 4 can enqueue without duplicate pending task conflict
+	_, _ = testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, task.ID)
+
+	// 4. enqueueSingleCommentTrigger with failed GetComment DB read failure on real comment
+	// Simulates database read error during resolveCommentTriggerOriginator, leaving authorType=""
+	origQueries := testHandler.Queries
+	testHandler.Queries = db.New(errorOnGetCommentDB{DBTX: testPool})
+	defer func() { testHandler.Queries = origQueries }()
+
+	jevCallCount = 0
+	taskFailedComment, err := testHandler.enqueueSingleCommentTrigger(ctx, issue, commentID, trigger)
+	if err != nil {
+		t.Fatalf("enqueueSingleCommentTrigger failed: %v", err)
+	}
+	defer testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, taskFailedComment.ID)
+
+	if jevCallCount > 0 {
+		t.Errorf("expected 0 Jev calls for failed GetComment in enqueueSingleCommentTrigger, got %d", jevCallCount)
+	}
+	if taskFailedComment.AgentID != leaderAgentID {
+		t.Errorf("enqueued task agent_id = %s, want leader %s", util.UUIDToString(taskFailedComment.AgentID), util.UUIDToString(leaderAgentID))
+	}
+	if !taskFailedComment.IsLeaderTask {
+		t.Errorf("expected is_leader_task = true on failed GetComment leader fallback")
+	}
+}
+
+type errorOnGetCommentDB struct {
+	db.DBTX
+}
+
+type errorScanRow struct {
+	err error
+}
+
+func (r errorScanRow) Scan(dest ...any) error {
+	return r.err
+}
+
+func (d errorOnGetCommentDB) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	if strings.Contains(sql, "FROM comment") && strings.Contains(sql, "WHERE id = $1") {
+		return errorScanRow{err: errors.New("simulated GetComment db read failure")}
+	}
+	return d.DBTX.QueryRow(ctx, sql, args...)
+}
