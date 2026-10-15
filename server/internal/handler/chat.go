@@ -521,6 +521,12 @@ func (h *Handler) SetChatSessionPinned(w http.ResponseWriter, r *http.Request) {
 		ID:     session.ID,
 		Pinned: req.Pinned,
 	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The session passed the gate above, so the only row filter that can
+		// miss is the archived-DM pin guard.
+		writeError(w, http.StatusConflict, "archived chats cannot be pinned")
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update chat session")
 		return
@@ -689,10 +695,12 @@ func (h *Handler) SetChatSessionArchived(w http.ResponseWriter, r *http.Request)
 
 	resolvedSessionID := uuidToString(updated.ID)
 	status := updated.Status
+	pinned := updated.PinnedAt.Valid
 	h.publishChat(protocol.EventChatSessionUpdated, workspaceID, "member", userID, resolvedSessionID, protocol.ChatSessionUpdatedPayload{
 		ChatSessionID: resolvedSessionID,
 		Title:         updated.Title,
 		Status:        &status,
+		Pinned:        &pinned,
 		UpdatedAt:     timestampToString(updated.UpdatedAt),
 	})
 
