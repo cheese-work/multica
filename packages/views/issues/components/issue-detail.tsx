@@ -786,14 +786,15 @@ function ActivityBlock({
             <div className="mr-2 flex w-4 shrink-0 justify-center">
               {leadIcon}
             </div>
-            <div className="flex min-w-0 flex-1 items-center gap-1">
+            <div className={cn("flex min-w-0 flex-1 items-center gap-1", isWakeup && "flex-wrap sm:flex-nowrap")}>
               {/* The platform's own entries read as a sentence without an actor. */}
               {!(isWakeup && entry.actor_type === "system") && (
                 <span className="shrink-0 font-medium">
                   {entry.actor_name || getActorName(entry.actor_type, entry.actor_id)}
                 </span>
               )}
-              <span className="truncate">
+              {/* Wakeup sentences name who was woken; on phones they wrap beside the links rather than truncate. */}
+              <span className={cn("min-w-0", isWakeup ? "break-words sm:truncate" : "truncate")}>
                 <ActivityText
                   entry={entry}
                   text={
