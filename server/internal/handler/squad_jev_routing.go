@@ -2,6 +2,8 @@ package handler
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -260,6 +262,17 @@ type jevDecision struct {
 	runnerUpLabel  string
 	candidateMap   map[string]db.Agent
 	tiers          map[string]string
+	telemetry      jevTelemetry
+}
+
+// jevTelemetry is the measured provider-side detail of one Jev call, kept so a
+// shadow record can be replayed and costed (CHE-1412). It is also returned with
+// the reason when a billed call produced no usable decision.
+type jevTelemetry struct {
+	servingModel string
+	inputTokens  int
+	outputTokens int
+	inputSHA256  string
 }
 
 func jevPreRouteAdvisory(decisionID, ambiguity string) string {
@@ -275,7 +288,8 @@ func jevMinConfidence(settings governance.WorkspaceSettings) float64 {
 
 // evaluateJevSquadRouting asks Jev which squad member should take the issue.
 // It has no side effects on issue state. A non-empty reason means no decision
-// was obtained (misconfiguration, provider failure, malformed answer).
+// was obtained (misconfiguration, provider failure, malformed answer); the
+// returned decision may then still carry telemetry of a call that was sent.
 func (h *Handler) evaluateJevSquadRouting(ctx context.Context, issue db.Issue, squad db.Squad, authorType, authorID string, settings governance.WorkspaceSettings, decisionID string) (*jevDecision, string) {
 	apiURL := strings.TrimSpace(settings.JevAPIURL)
 	if apiURL != "" {
@@ -528,17 +542,25 @@ func (h *Handler) evaluateJevSquadRouting(ctx context.Context, issue db.Issue, s
 		State:     state.Sections,
 		Questions: map[string]jev.Question{questionID: question},
 	}
+	var telemetry jevTelemetry
+	if reqJSON, err := json.Marshal(req); err == nil {
+		sum := sha256.Sum256(reqJSON)
+		telemetry.inputSHA256 = hex.EncodeToString(sum[:])
+	}
 	evalCtx, evalCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer evalCancel()
 	resp, err := jevClient.Evaluate(evalCtx, req)
 	if err != nil {
 		slog.Warn("jev squad routing: evaluation error", "error", err)
-		return nil, fmt.Sprintf("Jev evaluation failed (%v)", err)
+		return &jevDecision{telemetry: telemetry}, fmt.Sprintf("Jev evaluation failed (%v)", err)
 	}
+	telemetry.servingModel = resp.Model
+	telemetry.inputTokens = resp.Usage.InputTokens
+	telemetry.outputTokens = resp.Usage.OutputTokens
 
 	answer, ok := resp.Answers[questionID]
 	if !ok {
-		return nil, "Missing Jev answer for routing"
+		return &jevDecision{telemetry: telemetry}, "Missing Jev answer for routing"
 	}
 
 	offered := make([]string, 0, len(options))
@@ -550,7 +572,7 @@ func (h *Handler) evaluateJevSquadRouting(ctx context.Context, issue db.Issue, s
 	winnerOption, confidence, err := answer.AsStrictChoice(offered)
 	if err != nil {
 		slog.Warn("jev squad routing: strict choice error", "error", err)
-		return nil, fmt.Sprintf("Malformed Jev choice answer: %v", err)
+		return &jevDecision{telemetry: telemetry}, fmt.Sprintf("Malformed Jev choice answer: %v", err)
 	}
 
 	var runnerUpOption string
@@ -574,6 +596,7 @@ func (h *Handler) evaluateJevSquadRouting(ctx context.Context, issue db.Issue, s
 		runnerUpLabel:  runnerUpLabel,
 		candidateMap:   candidateMap,
 		tiers:          tiers,
+		telemetry:      telemetry,
 	}, ""
 }
 

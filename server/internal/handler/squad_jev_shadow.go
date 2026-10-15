@@ -51,7 +51,16 @@ func (h *Handler) shadowJevSquadRouting(ctx context.Context, issue db.Issue, squ
 	if len(triggerCommentID) > 0 && triggerCommentID[0].Valid {
 		attrs = append(attrs, "trigger_comment_id", uuidToString(triggerCommentID[0]))
 	}
-	if decision == nil {
+	if decision != nil {
+		t := decision.telemetry
+		if t.inputSHA256 != "" {
+			attrs = append(attrs, "input_sha256", t.inputSHA256)
+		}
+		if t.servingModel != "" || t.inputTokens != 0 || t.outputTokens != 0 {
+			attrs = append(attrs, "serving_model", t.servingModel, "input_tokens", t.inputTokens, "output_tokens", t.outputTokens)
+		}
+	}
+	if reason != "" {
 		slog.Info(jevShadowMessage, append(attrs, "outcome", "error", "error", reason)...)
 		return
 	}
