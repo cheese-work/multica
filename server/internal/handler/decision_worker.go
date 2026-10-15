@@ -200,6 +200,15 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 			return err
 		}))
 	}
+	wakes, err := handler.Queries.ListDecisionWakeCandidates(ctx, decisionBatchSize)
+	if err != nil {
+		return errors.Join(failures, err)
+	}
+	for _, request := range wakes {
+		failures = errors.Join(failures, decisionAttempt(ctx, func() error {
+			return handler.DeliverDecisionWake(ctx, request.WorkspaceID, request.ID)
+		}))
+	}
 	return failures
 }
 
