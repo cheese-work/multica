@@ -2,7 +2,7 @@
 
 This package is the schema/transaction foundation for the revision 14 decision
 contract. HTTP routes and the leased consequence runner live in the handler
-package. Group delivery, lifecycle cancellation and veto notices are later slices.
+package. Veto notices and retention are later slices.
 
 `Begin` acquires the existing workspace `FOR KEY SHARE` fence before returning
 a transaction. A missing workspace or failed fence rolls back and returns no
@@ -318,4 +318,25 @@ normal attribution and overlay recalculation.
 Runtime teardown unbinds user agents before detaching task history. Updating a
 queued task's `trigger_comment_id` takes its FK's key-share lock on the comment;
 the delivery's preceding issue fence serializes baseline comment removal.
-Retractions, lifecycle cancellation and re-asks remain the subsequent slice.
+
+CHE-1751 adds lifecycle cancellation, retractions and re-asks. Lifecycle writers
+remain unchanged: issue status, membership and agent archive changes are durable
+facts for the leased worker, not places to add decision statements. Each
+cancellation locks the workspace, one current lane, asking agent with NOWAIT,
+ask thread, issue, request and live answer. It rechecks current eligibility,
+cancels only an open or answered request, acknowledges an unwoken live answer
+as `skipped_ineligible`, and commits its cancel comment and non-archived-lane
+note together. Restoration before the stable recheck leaves the request alone.
+Cancelled requests keep their original reason through later withdrawals.
+
+Retractions and re-asks reuse the wake delivery transaction and dispatch paths.
+Retractions use their immutable withdrawal comment, independently of the reason;
+only a previously delivered, now withdrawn answer is eligible. Persisted veto
+suppression is final, including after reassignment. A re-ask uses the cancel
+comment for `human_removed` or `lane_archived`. Correction deliveries do not
+require vanished source messages or the removed human's membership: they must
+reach the current assignee to retract or ask again. They still check terminal
+issue status and the asking agent's archive state under the same locks.
+Member and unassigned recipients need no extra comment. Every dispatch and
+acknowledgement is atomic; deferral keeps the acknowledgement NULL. There is
+no automatic ping, new request, or server-created DM on these paths.

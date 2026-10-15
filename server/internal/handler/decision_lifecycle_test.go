@@ -198,3 +198,70 @@ func TestDecisionLifecycleArchiveLockDefers(test *testing.T) {
 		test.Fatal("unarchive before the stable recheck did not preserve the request")
 	}
 }
+
+func TestDecisionLifecycleIssueFenceThroughCommit(test *testing.T) {
+	for _, first := range []string{"delivery", "cancellation"} {
+		test.Run(first, func(test *testing.T) {
+			fixture, recorded := readyDecisionDelivery(test)
+			if first == "cancellation" {
+				dbfx.Exec(test, `UPDATE issue SET status = 'done' WHERE id = $1`, fixture.issueID)
+			}
+			handler, _ := newDecisionRunnerFixture(test)
+			release := make(chan struct{})
+			defer close(release)
+			barrier := &decisionDeliveryBarrier{txStarter: testPool, ready: make(chan int, 1), release: release}
+			handler.TxStarter = barrier
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cancel()
+			completed := make(chan error, 1)
+			go func() {
+				if first == "delivery" {
+					completed <- handler.DeliverDecisionWake(ctx, fixture.issue.WorkspaceID, fixture.decision.ID)
+				} else {
+					_, err := handler.CancelDecisionLifecycle(ctx, fixture.issue.WorkspaceID, fixture.decision.ID)
+					completed <- err
+				}
+			}()
+			var backendPID int
+			select {
+			case backendPID = <-barrier.ready:
+			case err := <-completed:
+				test.Fatalf("transaction ended before the commit barrier: %v", err)
+			case <-ctx.Done():
+				test.Fatal(ctx.Err())
+			}
+			updated := make(chan error, 1)
+			go func() {
+				status := "done"
+				if first == "cancellation" {
+					status = "in_progress"
+				}
+				_, err := testPool.Exec(ctx, `UPDATE issue SET status = $2 WHERE id = $1`, fixture.issueID, status)
+				updated <- err
+			}()
+			if !waitForWaiterBlockedBy(test, backendPID, 3*time.Second) {
+				test.Fatal("issue status writer bypassed the transaction's issue fence")
+			}
+			release <- struct{}{}
+			if err := <-completed; err != nil {
+				test.Fatal(err)
+			}
+			if err := <-updated; err != nil {
+				test.Fatal(err)
+			}
+			handler.TxStarter = testPool
+			if first == "delivery" {
+				if err := cancelDecisionForTest(handler, fixture); err != nil {
+					test.Fatal(err)
+				}
+			}
+			outcome := "run_enqueued"
+			if first == "cancellation" {
+				outcome = "skipped_ineligible"
+			}
+			if dbfx.Count(test, `SELECT count(*) FROM decision_request WHERE id = $1 AND status = 'cancelled' AND cancel_reason = 'issue_closed'`, fixture.decision.ID) != 1 || dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE id = $1 AND wake_outcome = $2`, recorded.Answer.ID, outcome) != 1 {
+				test.Fatalf("concurrent issue writer changed the committed %s outcome", first)
+			}
+		})
+	}
+}

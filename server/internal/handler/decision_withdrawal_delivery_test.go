@@ -105,3 +105,25 @@ func TestDecisionRetractionRollback(test *testing.T) {
 		test.Fatal("retraction did not recover after rollback")
 	}
 }
+
+func TestDecisionRetractionRechecksAssigneeAndRuntime(test *testing.T) {
+	fixture, recorded := readyDecisionDelivery(test)
+	dbfx.Exec(test, `UPDATE decision_answer SET woken_at = clock_timestamp(), wake_outcome = 'run_enqueued' WHERE id = $1`, recorded.Answer.ID)
+	withdrawn, err := testHandler.disclaimDecisionAnswerTx(fixture.request(), fixture.issue.WorkspaceID, recorded.Answer.ID, parseUUID(fixture.humanID))
+	if err != nil {
+		test.Fatal(err)
+	}
+	recipient := createHandlerTestAgent(test, "Changed withdrawal recipient", []byte("[]"))
+	runtimeID := dbfx.Insert(test, "agent_runtime", testutil.Cols{"workspace_id": testWorkspaceID, "name": "Changed withdrawal runtime", "runtime_mode": "local", "provider": "test", "status": "online", "owner_id": testUserID})
+	handler, _ := newDecisionRunnerFixture(test)
+	handler.TxStarter = &decisionDeliveryMutation{txStarter: testPool, mutate: func() {
+		dbfx.Exec(test, `UPDATE agent SET runtime_id = $1 WHERE id = $2`, runtimeID, recipient)
+		dbfx.Exec(test, `UPDATE issue SET assignee_id = $1 WHERE id = $2`, recipient, fixture.issueID)
+	}}
+	if err := handler.deliverDecisionItem(context.Background(), fixture.issue.WorkspaceID, recorded.Answer.ID, "retraction"); err != nil {
+		test.Fatal(err)
+	}
+	if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND runtime_id = $3 AND trigger_comment_id = $4`, fixture.issueID, recipient, runtimeID, withdrawn.Answer.WithdrawalCommentID); count != 1 {
+		test.Fatal("retraction used its stale owner/runtime snapshot")
+	}
+}
