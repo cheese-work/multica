@@ -188,6 +188,15 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 			return err
 		}))
 	}
+	notices, err := handler.Queries.ListDecisionVetoNotices(ctx, decisionBatchSize)
+	if err != nil {
+		return errors.Join(failures, err)
+	}
+	for _, answer := range notices {
+		failures = errors.Join(failures, decisionAttempt(ctx, func() error {
+			return handler.deliverDecisionVetoNotice(ctx, answer.WorkspaceID, answer.ID)
+		}))
+	}
 	requests, err := handler.Queries.ListDecisionPingRetries(ctx, decisionBatchSize)
 	if err != nil {
 		return errors.Join(failures, err)

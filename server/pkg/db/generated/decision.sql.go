@@ -966,8 +966,7 @@ WHERE request.workspace_id = $1 AND (
     (request.status = 'open' AND request.chat_session_id = $2)
     OR EXISTS (
         SELECT 1 FROM decision_answer answer
-        JOIN chat_message message ON message.id = ANY(answer.chat_message_ids)
-        WHERE answer.decision_request_id = request.id AND message.chat_session_id = $2
+        WHERE answer.decision_request_id = request.id AND answer.source_chat_session_id = $2
     )
 )
 ORDER BY issue_key
