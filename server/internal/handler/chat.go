@@ -594,6 +594,13 @@ func (h *Handler) SetChatSessionArchived(w http.ResponseWriter, r *http.Request)
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
 
+	if _, err := qtx.LockChatSessionForDelete(r.Context(), session.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to lock chat session")
+		return
+	}
+	if req.Archived && !decisionLaneArchiveAllowed(w, r, qtx, session) {
+		return
+	}
 	updated, err := qtx.SetChatSessionArchived(r.Context(), db.SetChatSessionArchivedParams{
 		ID:       session.ID,
 		Archived: req.Archived,
@@ -729,6 +736,16 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "failed to lock chat session")
+		return
+	}
+
+	references, err := qtx.ListDecisionSessionReferences(r.Context(), db.ListDecisionSessionReferencesParams{WorkspaceID: session.WorkspaceID, SessionID: session.ID})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to check decision references")
+		return
+	}
+	if len(references) != 0 {
+		writeError(w, http.StatusConflict, "chat session is retained by decisions on "+strings.Join(references, ", "))
 		return
 	}
 
