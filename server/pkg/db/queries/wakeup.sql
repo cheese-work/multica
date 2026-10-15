@@ -91,6 +91,12 @@ SELECT w.* FROM candidates c JOIN issue_wakeup w ON w.id=c.id
 WHERE (sqlc.narg('workspace_ids')::uuid[] IS NULL OR w.workspace_id = ANY(sqlc.narg('workspace_ids')::uuid[]))
  -- An instance a full aggregate counter delayed waits for its retry time.
  AND (w.aggregate_retry_at IS NULL OR w.aggregate_retry_at<=now())
+ -- A paused workspace (CHE-1727) is only scanned for what the pause settles:
+ -- inputs to drop and recurring slots to skip. Overdue one-shots and conditions
+ -- wait for the resume without crowding the bounded batch.
+ AND (NOT EXISTS(SELECT 1 FROM workspace ws WHERE ws.id=w.workspace_id AND ws.settings->>'wakeups_paused'='true')
+  OR EXISTS(SELECT 1 FROM issue_wakeup_receipt r WHERE r.wakeup_id=w.id AND r.processed_at IS NULL AND NOT (w.kind='at' AND r.event_type='time.due'))
+  OR (w.enabled AND w.kind IN ('every','cron') AND w.next_fire_at<=now()))
 ORDER BY w.updated_at,w.id LIMIT 100;
 -- name: ListPendingWakeupReceipts :many
 SELECT * FROM issue_wakeup_receipt WHERE wakeup_id= @wakeup_id AND revision= @revision AND processed_at IS NULL ORDER BY created_at,id LIMIT 100 FOR UPDATE;
@@ -305,3 +311,13 @@ WHERE id= @id AND status='dispatched' AND dispatched_at= @dispatched_at RETURNIN
 -- not finished: the run that made a change still knows about it.
 SELECT count(*) FROM agent_task_queue WHERE id=ANY(@ids::uuid[]) AND agent_id= @agent_id AND issue_id= @issue_id
  AND status IN ('dispatched','running','waiting_local_directory');
+-- name: WorkspaceWakeupsPaused :one
+SELECT COALESCE(settings->>'wakeups_paused'='true',false)::bool FROM workspace WHERE id= @id;
+-- name: DropPausedWakeupReceipts :execrows
+-- A pause consumes what arrives meanwhile and records why. A person's manual
+-- trigger and a one-shot's due time are not dropped.
+UPDATE issue_wakeup_receipt SET processed_at=now(),payload=payload||'{"outcome":"paused"}'::jsonb
+WHERE wakeup_id= @id AND processed_at IS NULL AND event_type<>'wakeup.manual'
+ AND NOT (event_type='time.due' AND @one_shot::bool);
+-- name: CountPendingManualWakeupReceipts :one
+SELECT count(*) FROM issue_wakeup_receipt WHERE wakeup_id= @id AND processed_at IS NULL AND event_type='wakeup.manual';

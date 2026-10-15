@@ -241,6 +241,17 @@ func (q *Queries) CountActiveIssueRunsOfAgent(ctx context.Context, arg CountActi
 	return count, err
 }
 
+const countPendingManualWakeupReceipts = `-- name: CountPendingManualWakeupReceipts :one
+SELECT count(*) FROM issue_wakeup_receipt WHERE wakeup_id= $1 AND processed_at IS NULL AND event_type='wakeup.manual'
+`
+
+func (q *Queries) CountPendingManualWakeupReceipts(ctx context.Context, id pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countPendingManualWakeupReceipts, id)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countRecentWakeupTasks = `-- name: CountRecentWakeupTasks :one
 SELECT count(*) FROM agent_task_queue WHERE context->>'wakeup_id'= $1::text AND issue_id= $2 AND created_at> $3
 `
@@ -621,6 +632,27 @@ UPDATE issue_wakeup_receipt SET processed_at=now() WHERE wakeup_id= $1 AND proce
 func (q *Queries) DiscardWakeupReceipts(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, discardWakeupReceipts, id)
 	return err
+}
+
+const dropPausedWakeupReceipts = `-- name: DropPausedWakeupReceipts :execrows
+UPDATE issue_wakeup_receipt SET processed_at=now(),payload=payload||'{"outcome":"paused"}'::jsonb
+WHERE wakeup_id= $1 AND processed_at IS NULL AND event_type<>'wakeup.manual'
+ AND NOT (event_type='time.due' AND $2::bool)
+`
+
+type DropPausedWakeupReceiptsParams struct {
+	ID      pgtype.UUID `json:"id"`
+	OneShot bool        `json:"one_shot"`
+}
+
+// A pause consumes what arrives meanwhile and records why. A person's manual
+// trigger and a one-shot's due time are not dropped.
+func (q *Queries) DropPausedWakeupReceipts(ctx context.Context, arg DropPausedWakeupReceiptsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, dropPausedWakeupReceipts, arg.ID, arg.OneShot)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const findPendingWakeupTask = `-- name: FindPendingWakeupTask :one
@@ -1022,6 +1054,12 @@ SELECT w.id, w.workspace_id, w.issue_id, w.agent_id, w.created_by, w.source_task
 WHERE ($1::uuid[] IS NULL OR w.workspace_id = ANY($1::uuid[]))
  -- An instance a full aggregate counter delayed waits for its retry time.
  AND (w.aggregate_retry_at IS NULL OR w.aggregate_retry_at<=now())
+ -- A paused workspace (CHE-1727) is only scanned for what the pause settles:
+ -- inputs to drop and recurring slots to skip. Overdue one-shots and conditions
+ -- wait for the resume without crowding the bounded batch.
+ AND (NOT EXISTS(SELECT 1 FROM workspace ws WHERE ws.id=w.workspace_id AND ws.settings->>'wakeups_paused'='true')
+  OR EXISTS(SELECT 1 FROM issue_wakeup_receipt r WHERE r.wakeup_id=w.id AND r.processed_at IS NULL AND NOT (w.kind='at' AND r.event_type='time.due'))
+  OR (w.enabled AND w.kind IN ('every','cron') AND w.next_fire_at<=now()))
 ORDER BY w.updated_at,w.id LIMIT 100
 `
 
@@ -2064,4 +2102,15 @@ func (q *Queries) TryLockIssueWakeup(ctx context.Context, id pgtype.UUID) (Issue
 		&i.AggregateRetryAt,
 	)
 	return i, err
+}
+
+const workspaceWakeupsPaused = `-- name: WorkspaceWakeupsPaused :one
+SELECT COALESCE(settings->>'wakeups_paused'='true',false)::bool FROM workspace WHERE id= $1
+`
+
+func (q *Queries) WorkspaceWakeupsPaused(ctx context.Context, id pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, workspaceWakeupsPaused, id)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
 }

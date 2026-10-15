@@ -470,6 +470,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	params := db.UpdateWorkspaceParams{
 		ID: idUUID,
 	}
+	pauseAction := ""
 	if req.Name != nil {
 		name := strings.TrimSpace(*req.Name)
 		if name == "" {
@@ -490,15 +491,18 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if incoming, ok := req.Settings.(map[string]any); ok {
+			var stored map[string]any
+			if existing, err := h.Queries.GetWorkspace(r.Context(), idUUID); err == nil {
+				_ = json.Unmarshal(existing.Settings, &stored)
+			}
 			// Only an old client's flip of the retired PR switch needs the
 			// stored value; see reconcilePRMergeSettings.
-			var stored map[string]any
-			if _, sent := incoming[prAutoCompleteLegacyKey]; sent {
-				if existing, err := h.Queries.GetWorkspace(r.Context(), idUUID); err == nil {
-					_ = json.Unmarshal(existing.Settings, &stored)
-				}
-			}
 			reconcilePRMergeSettings(stored, incoming)
+			var err error
+			if pauseAction, err = reconcileWakeupsPause(stored, incoming, requestUserID(r), time.Now()); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
 		}
 		s, _ := json.Marshal(req.Settings)
 		params.Settings = s
@@ -562,6 +566,11 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("workspace updated", append(logger.RequestAttrs(r), "workspace_id", id)...)
+	if pauseAction != "" {
+		// ponytail: the audit row is a second write; fold both into one
+		// transaction if a lost record ever matters.
+		h.recordWakeupsPauseActivity(r.Context(), ws, actorType, actorID, pauseAction)
+	}
 	userID := requestUserID(r)
 	h.publish(protocol.EventWorkspaceUpdated, uuidToString(ws.ID), "member", userID, map[string]any{"workspace": h.workspaceToResponse(ws)})
 	// A rename changes what daemons display; a settings edit changes how they

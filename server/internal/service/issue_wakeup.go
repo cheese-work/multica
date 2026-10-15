@@ -709,6 +709,9 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	// batch budget, leaving time to dispatch unrelated issues.
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
+	if held, err := s.heldByPause(ctx, prev); held || err != nil {
+		return err
+	}
 	// Resolve optional connected-app credentials before taking database locks.
 	candidate, readErr := s.Tasks.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: prev.AgentID, WorkspaceID: prev.WorkspaceID})
 	if readErr != nil && !errors.Is(readErr, pgx.ErrNoRows) {

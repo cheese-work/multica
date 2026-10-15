@@ -233,7 +233,7 @@ func (h *Handler) CreateIssueWakeup(w http.ResponseWriter, r *http.Request) {
 	if existingID.Valid {
 		status = http.StatusOK
 	}
-	writeJSON(w, status, result)
+	writeJSON(w, status, h.wakeupWithWarnings(r.Context(), result))
 }
 
 func (h *Handler) DisableIssueWakeup(w http.ResponseWriter, r *http.Request) {
@@ -297,7 +297,7 @@ func (h *Handler) EnableIssueWakeup(w http.ResponseWriter, r *http.Request) {
 		wakeupError(w, err)
 		return
 	}
-	writeJSON(w, 200, result)
+	writeJSON(w, 200, h.wakeupWithWarnings(r.Context(), result))
 }
 
 func (h *Handler) EditIssueWakeupInstruction(w http.ResponseWriter, r *http.Request) {

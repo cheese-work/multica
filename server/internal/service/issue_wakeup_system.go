@@ -844,6 +844,9 @@ func systemWakeupIssueActive(ctx context.Context, q *db.Queries, issue db.Issue,
 func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWakeup) error {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
+	if held, err := s.heldByPause(ctx, prev); held || err != nil {
+		return err
+	}
 	// Resolve the target and optional credentials before taking locks, then
 	// confirm the target under them.
 	snapshot, err := s.Tasks.Queries.GetIssue(ctx, prev.IssueID)
