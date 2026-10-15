@@ -32,6 +32,12 @@ const (
 // and the anchor id would leak them. It runs per readable session (newest
 // first, stopping at the first match) so the cost follows the caller's own
 // DMs, not the size of chat_message.
+//
+// The snippet window starts 40 characters before the first case-insensitive
+// match, found by regex in the original text. Positions from LOWER(content)
+// are not reused: under an ICU database LOWER can change the character count
+// and shift the window. The LOWER position is only the fallback for a match
+// the regex does not fold the same way.
 const chatSearchSQL = `
 WITH readable AS (
   SELECT cs.id, cs.title, cs.agent_id, cs.status, cs.updated_at
@@ -66,7 +72,9 @@ SELECT readable.id, readable.title, readable.agent_id, readable.status, readable
        msg.id,
        CASE WHEN msg.id IS NULL THEN ''
             ELSE regexp_replace(
-                   substr(msg.content, GREATEST(strpos(LOWER(msg.content), LOWER($3)) - 40, 1), 160),
+                   substr(msg.content, GREATEST(COALESCE(
+                     length((regexp_match(msg.content, '^(.*?)' || regexp_replace($3, '[\\.^$|?*+()\[\]{}]', '\\\&', 'g'), 'i'))[1]),
+                     strpos(LOWER(msg.content), LOWER($3)) - 1) + 1 - 40, 1), 160),
                    '\s+', ' ', 'g')
        END
 FROM readable
