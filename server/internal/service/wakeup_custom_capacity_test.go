@@ -256,3 +256,105 @@ func TestCustomCapacityRefusalOfOneRuleDoesNotRedeliverToTheOther(t *testing.T) 
 		t.Fatalf("pending=%d outcomes=%v, want the input handled as delivered", pending, outcomes)
 	}
 }
+
+// ---- review round 2 (OCR receipt 01a13d45-5620-70c7-82e3-bd05a1628e06) ------
+
+// delayedInputs counts the fixture's pending inputs by whether a retry time still holds them back.
+func (k customEnv) delayedInputs(t *testing.T) (delayed, due int) {
+	t.Helper()
+	delayed = k.f.Count(t, `SELECT count(*) FROM wakeup_scoped_event WHERE workspace_id=$1 AND handled_at IS NULL AND retry_at IS NOT NULL`, k.f.WorkspaceID)
+	due = k.f.Count(t, `SELECT count(*) FROM wakeup_scoped_event WHERE workspace_id=$1 AND handled_at IS NULL AND retry_at IS NULL`, k.f.WorkspaceID)
+	return delayed, due
+}
+
+// A served instance is rebased between attempts by something that is not a
+// definition edit (here, the issue's assignee moves: it is part of the
+// configuration fingerprint). The retry must still deliver to the refused rule
+// only, never again to the rule that already received the event.
+func TestCustomCapacityRetryDoesNotRedeliverToAServedInstanceThatWasRebased(t *testing.T) {
+	k := newCustomEnv(t)
+	k.fillIssuePool(t, 31)
+	a := k.mustSave(t, WakeupScopeWorkspace, "", k.eventRule(`["comment.created"]`))
+	b := k.mustSave(t, WakeupScopeWorkspace, "", k.eventRule(`["comment.created"]`))
+	k.comment(t, "reaches both rules; one slot is left")
+	k.drain(t)
+	served, refused := a, b
+	if n, _ := k.receiptCount(t, a.RuleKey); n == 0 {
+		served, refused = b, a
+	}
+	if n, count := k.receiptCount(t, served.RuleKey); n != 1 || count != 1 {
+		t.Fatalf("served rule: receipts=%d events=%d, want one delivery", n, count)
+	}
+	before := k.instanceRow(t, served.RuleKey).Revision
+
+	// The issue's assignee changes; the rule definitions do not.
+	k.f.Exec(t, `UPDATE issue SET assignee_type='agent',assignee_id=$2 WHERE id=$1`, k.issue, k.agent)
+	k.freePool(t)
+	k.sweep(t)
+	k.drain(t)
+
+	if after := k.instanceRow(t, served.RuleKey).Revision; after == before {
+		t.Fatalf("the served instance was not rebased (revision %d): the test no longer exercises the rebase", after)
+	}
+	if n, count := k.receiptCount(t, served.RuleKey); n != 1 || count != 1 {
+		t.Fatalf("served rule after its rebase: receipts=%d events=%d, want its single delivery, not a second one", n, count)
+	}
+	if n, count := k.receiptCount(t, refused.RuleKey); n != 1 || count != 1 {
+		t.Fatalf("refused rule: receipts=%d events=%d, want it delivered once", n, count)
+	}
+	if pending, _, outcomes := k.inputState(t); pending != 0 || len(outcomes) != 1 || outcomes[0] != "delivered" {
+		t.Fatalf("pending=%d outcomes=%v, want the input handled as delivered", pending, outcomes)
+	}
+}
+
+// Freeing capacity must not rewrite an issue's whole delayed backlog in one
+// transaction: a pass brings a bounded batch forward and the next passes resume.
+func TestCustomCapacityBringForwardIsBoundedAndResumable(t *testing.T) {
+	k := newCustomEnv(t)
+	k.fillIssuePool(t, 32)
+	view := k.mustSave(t, WakeupScopeWorkspace, "", k.eventRule(`["comment.created"]`))
+	const events = 120
+	k.f.Exec(t, `INSERT INTO comment(issue_id,workspace_id,author_type,author_id,content,type) SELECT $1,$2,'member',$3,'c '||g,'comment' FROM generate_series(1,$4) g`,
+		k.issue, k.f.WorkspaceID, k.f.UserID, events)
+	for range 6 { // the drain takes 50 inputs a pass; every one is refused and delayed
+		k.drain(t)
+	}
+	if delayed, due := k.delayedInputs(t); delayed != events || due != 0 {
+		t.Fatalf("delayed=%d due=%d, want all %d refused inputs held behind a retry time", delayed, due, events)
+	}
+
+	k.freePool(t)
+	k.sweep(t)
+	delayed, due := k.delayedInputs(t)
+	if due == 0 || due > 50 {
+		t.Fatalf("one pass brought %d inputs forward (delayed %d), want a bounded batch of at most %d", due, delayed, 50)
+	}
+	for range 10 {
+		k.sweep(t)
+	}
+	if delayed, due := k.delayedInputs(t); delayed != 0 || due != events {
+		t.Fatalf("after the passes delayed=%d due=%d, want the backlog resumed to completion", delayed, due)
+	}
+	for range 6 {
+		k.drain(t)
+	}
+	if n, count := k.receiptCount(t, view.RuleKey); n != 1 || count != events {
+		t.Fatalf("receipts=%d events=%d, want all %d events delivered once, coalesced", n, count, events)
+	}
+}
+
+// An input past retention is not brought forward: it can only expire.
+func TestCustomCapacityBringForwardSkipsInputsPastRetention(t *testing.T) {
+	k := newCustomEnv(t)
+	k.fillIssuePool(t, 32)
+	k.mustSave(t, WakeupScopeWorkspace, "", k.eventRule(`["comment.created"]`))
+	k.comment(t, "waits")
+	k.drain(t)
+	k.f.Exec(t, `UPDATE wakeup_scoped_event SET captured_at=now()-interval '8 days' WHERE workspace_id=$1`, k.f.WorkspaceID)
+	k.freePool(t)
+	k.sweep(t)
+	k.sweep(t)
+	if delayed, due := k.delayedInputs(t); delayed != 1 || due != 0 {
+		t.Fatalf("delayed=%d due=%d, want an input past retention left alone for the prune", delayed, due)
+	}
+}
