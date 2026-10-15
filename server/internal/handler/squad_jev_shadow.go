@@ -10,11 +10,18 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
+// jevShadowEvalTimeout bounds one whole detached shadow evaluation: credential
+// lookup, database reads and the Jev call. Without it a blocked query would hold
+// a shared pool connection indefinitely.
+const jevShadowEvalTimeout = 8 * time.Second
+
 // startJevShadowRouting runs the shadow evaluation off the request path so a slow
 // or failing Jev call can never delay or alter the leader enqueue (CHE-1745).
 func (h *Handler) startJevShadowRouting(ctx context.Context, issue db.Issue, squad db.Squad, authorType, authorID string, settings governance.WorkspaceSettings, decisionID string, triggerCommentID ...pgtype.UUID) {
 	ctx = context.WithoutCancel(ctx)
 	go func() {
+		ctx, cancel := context.WithTimeout(ctx, jevShadowEvalTimeout)
+		defer cancel()
 		defer func() {
 			if r := recover(); r != nil {
 				slog.Error("jev squad shadow: panic", "issue_id", uuidToString(issue.ID), "panic", r)
