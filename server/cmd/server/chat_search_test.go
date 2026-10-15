@@ -46,7 +46,7 @@ type chatAroundPage struct {
 	} `json:"next_cursor"`
 }
 
-func interactiveToken(t *testing.T, userID string) string {
+func searchUserToken(t *testing.T, userID string) string {
 	t.Helper()
 	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub": userID,
@@ -90,7 +90,7 @@ func searchChats(t *testing.T, userID, query string, extra ...string) chatSearch
 	for _, e := range extra {
 		path += "&" + e
 	}
-	status, body := chatGet(t, interactiveToken(t, userID), path)
+	status, body := chatGet(t, searchUserToken(t, userID), path)
 	if status != http.StatusOK {
 		t.Fatalf("GET %s: status %d: %s", path, status, body)
 	}
@@ -368,7 +368,7 @@ func TestChatSearch_RejectsNonInteractiveCallersAndEmptyQuery(t *testing.T) {
 	if status != http.StatusForbidden {
 		t.Fatalf("cli_jwt: status %d: %s", status, body)
 	}
-	status, body = chatGet(t, interactiveToken(t, testUserID), "/api/chat/search")
+	status, body = chatGet(t, searchUserToken(t, testUserID), "/api/chat/search")
 	if status != http.StatusBadRequest {
 		t.Fatalf("missing q: status %d: %s", status, body)
 	}
@@ -404,7 +404,7 @@ func seedAroundSession(t *testing.T, f chatSearchFixture) (string, []string) {
 
 func fetchAround(t *testing.T, userID, path string) (int, chatAroundPage, []byte) {
 	t.Helper()
-	status, body := chatGet(t, interactiveToken(t, userID), path)
+	status, body := chatGet(t, searchUserToken(t, userID), path)
 	var page chatAroundPage
 	if status == http.StatusOK {
 		mustDecode(t, body, &page)
