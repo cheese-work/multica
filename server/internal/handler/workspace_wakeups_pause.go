@@ -91,4 +91,3 @@ func (h *Handler) wakeupWithWarnings(ctx context.Context, row db.IssueWakeup) wa
 	}
 	return out
 }
-

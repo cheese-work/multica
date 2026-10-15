@@ -44,7 +44,7 @@ func (s *IssueWakeupService) heldByPause(ctx context.Context, prev db.IssueWakeu
 		return false, err
 	}
 	var now time.Time
-	if err = tx.QueryRow(ctx, "SELECT now()").Scan(&now); err != nil {
+	if err := tx.QueryRow(ctx, "SELECT now()").Scan(&now); err != nil {
 		return false, err
 	}
 	if w.Enabled && (w.Kind == "every" || w.Kind == "cron") && w.NextFireAt.Valid && !w.NextFireAt.Time.After(now) {
@@ -58,7 +58,7 @@ func (s *IssueWakeupService) heldByPause(ctx context.Context, prev db.IssueWakeu
 		} else if next.Time.IsZero() {
 			next.Valid, enabled = false, false
 		}
-		if err = q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: enabled, NextFireAt: next}); err != nil {
+		if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: enabled, NextFireAt: next}); err != nil {
 			return false, err
 		}
 	}
