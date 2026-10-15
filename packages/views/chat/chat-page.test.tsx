@@ -527,54 +527,85 @@ describe("ChatPage responsive layout", () => {
 
 // A real history stack behind the adapter, so these tests assert where Back
 // lands rather than which adapter method was called. `/acme/inbox` is the
-// start destination Cheese opened chat from.
+// start destination Cheese opened chat from. `writes` records only what the
+// page itself pushed or replaced; a test simulating an AppLink calls
+// `history.push` directly and stays out of it. `defer()` holds back the URL
+// the page can read, like a router that publishes a push after the store has
+// already changed.
 function createHistory(...entries: string[]) {
   let index = entries.length - 1;
+  let published = entries[index]!;
+  let deferred = false;
   const listeners = new Set<() => void>();
-  const notify = () => listeners.forEach((l) => l());
+  const publish = () => {
+    if (deferred) return;
+    published = entries[index]!;
+    listeners.forEach((l) => l());
+  };
   return {
+    writes: [] as { kind: "push" | "replace"; url: string }[],
     get entries() {
       return entries;
     },
     get url() {
       return entries[index]!;
     },
+    get publishedUrl() {
+      return published;
+    },
     subscribe: (cb: () => void) => {
       listeners.add(cb);
       return () => listeners.delete(cb);
     },
+    defer() {
+      deferred = true;
+    },
+    flush() {
+      deferred = false;
+      publish();
+    },
     push(url: string) {
       entries = [...entries.slice(0, index + 1), url];
       index = entries.length - 1;
-      notify();
+      publish();
     },
     replace(url: string) {
       entries = entries.map((e, i) => (i === index ? url : e));
-      notify();
+      publish();
     },
     back() {
       if (index > 0) index -= 1;
-      notify();
+      publish();
     },
     canGoBack: () => index > 0,
   };
 }
 
-function renderWithHistory(history: ReturnType<typeof createHistory>) {
+function renderWithHistory(
+  history: ReturnType<typeof createHistory>,
+  { strict = false, navigationApi = true } = {},
+) {
   function Host() {
-    const url = useSyncExternalStore(history.subscribe, () => history.url);
+    const url = useSyncExternalStore(history.subscribe, () => history.publishedUrl);
     const [pathname = "", search = ""] = url.split("?");
     const navigation: NavigationAdapter = {
-      push: history.push,
-      replace: history.replace,
+      push: (to) => {
+        history.writes.push({ kind: "push", url: to });
+        history.push(to);
+      },
+      replace: (to) => {
+        history.writes.push({ kind: "replace", url: to });
+        history.replace(to);
+      },
       back: history.back,
-      canGoBack: history.canGoBack,
+      // Browsers without the Navigation API cannot answer, so the adapter omits it.
+      canGoBack: navigationApi ? history.canGoBack : undefined,
       pathname,
       searchParams: new URLSearchParams(search),
       hash: "",
       getShareableUrl: (path) => path,
     };
-    return (
+    const page = (
       <QueryClientProvider client={new QueryClient()}>
         <I18nProvider locale="en" resources={TEST_RESOURCES}>
           <NavigationProvider value={navigation}>
@@ -583,6 +614,7 @@ function renderWithHistory(history: ReturnType<typeof createHistory>) {
         </I18nProvider>
       </QueryClientProvider>
     );
+    return strict ? <StrictMode>{page}</StrictMode> : page;
   }
   return render(<Host />);
 }
@@ -626,7 +658,7 @@ describe("ChatPage back stack", () => {
     ]);
   });
 
-  it("pushes the list entry when a new chat is started from an open session", () => {
+  it("pushes ?new=1 when a new chat is started from an open session", () => {
     history = createHistory("/acme/inbox", "/acme/chat?session=session-9");
     storeRef.current = { activeSessionId: "session-9" };
     renderWithHistory(history);
@@ -636,7 +668,7 @@ describe("ChatPage back stack", () => {
     expect(history.entries).toEqual([
       "/acme/inbox",
       "/acme/chat?session=session-9",
-      "/acme/chat",
+      "/acme/chat?new=1",
     ]);
     back();
     expect(history.url).toBe("/acme/chat?session=session-9");
@@ -650,6 +682,120 @@ describe("ChatPage back stack", () => {
     act(() => mockSetActiveSession("new-session"));
 
     expect(history.entries).toEqual(["/acme/inbox", "/acme/chat?session=new-session"]);
+  });
+
+  // Corrections from the CHE-1755 /autoplan review (2026-10-16). They assert
+  // history and URL writes, not which call site or store field produced them,
+  // so they hold whichever push/replace mechanism Cheese picks on CHE-1755.
+  describe("one URL write per user transition", () => {
+    it("pushes a list > DM selection once and replaces nothing under StrictMode", () => {
+      history = createHistory("/acme/inbox", "/acme/chat");
+      renderWithHistory(history, { strict: true });
+
+      selectThread();
+
+      expect(history.writes).toEqual([
+        { kind: "push", url: "/acme/chat?session=session-9" },
+      ]);
+    });
+
+    it("does not replace the entry a push is about to create when the router publishes late", () => {
+      history = createHistory("/acme/inbox", "/acme/chat");
+      renderWithHistory(history);
+      history.defer();
+
+      selectThread();
+      // Store already says session-9; the router still shows the list.
+      expect(storeRef.current.activeSessionId).toBe("session-9");
+      act(() => history.flush());
+
+      expect(history.writes).toEqual([
+        { kind: "push", url: "/acme/chat?session=session-9" },
+      ]);
+      expect(history.entries).toEqual([
+        "/acme/inbox",
+        "/acme/chat",
+        "/acme/chat?session=session-9",
+      ]);
+    });
+
+    it("adds no history entry when the open DM is selected again", () => {
+      history = createHistory("/acme/inbox", "/acme/chat");
+      renderWithHistory(history);
+      selectThread();
+      const entries = [...history.entries];
+
+      selectThread();
+
+      expect(history.entries).toEqual(entries);
+      expect(history.writes).toHaveLength(1);
+    });
+
+    it("writes nothing to the URL on browser back and forward", () => {
+      history = createHistory("/acme/inbox", "/acme/chat");
+      renderWithHistory(history);
+      selectThread();
+      act(() => history.push("/acme/chat?session=session-10"));
+      const writes = [...history.writes];
+
+      back();
+      back();
+
+      expect(history.writes).toEqual(writes);
+      expect(storeRef.current.activeSessionId).toBeNull();
+    });
+
+    it.each([
+      // Realtime continuation advancing the open session, a stale or deleted
+      // session being cleared: store-only writers, no user transition.
+      ["advances to a continued session", "session-10", "/acme/chat?session=session-10"],
+      ["clears a stale or deleted session", null, "/acme/chat"],
+    ])("writes the URL exactly once when the store %s", (_label, next, url) => {
+      history = createHistory("/acme/inbox", "/acme/chat");
+      renderWithHistory(history);
+      selectThread();
+      history.writes.length = 0;
+
+      act(() => mockSetActiveSession(next));
+
+      expect(history.writes).toEqual([{ kind: "replace", url }]);
+      expect(history.url).toBe(url);
+    });
+  });
+
+  describe("unsent new chat", () => {
+    it("pushes ?new=1 once when a new chat is started from the list", () => {
+      history = createHistory("/acme/inbox", "/acme/chat");
+      renderWithHistory(history, { strict: true });
+
+      fireEvent.click(screen.getByRole("button", { name: "new-chat" }));
+
+      expect(history.writes).toEqual([{ kind: "push", url: "/acme/chat?new=1" }]);
+      back();
+      expect(history.url).toBe("/acme/chat");
+    });
+
+    it("assigns the server ID over ?new=1 with one replace", () => {
+      history = createHistory("/acme/inbox", "/acme/chat?new=1");
+      renderWithHistory(history);
+
+      act(() => mockSetActiveSession("new-session"));
+
+      expect(history.writes).toEqual([
+        { kind: "replace", url: "/acme/chat?session=new-session" },
+      ]);
+      expect(history.entries).toEqual(["/acme/inbox", "/acme/chat?session=new-session"]);
+    });
+
+    it("turns a ?agent= deep link into ?new=1 by replace, with no push", () => {
+      availableAgentsRef.current = [agent];
+      history = createHistory("/acme/inbox", "/acme/chat?agent=agent-1");
+      renderWithHistory(history, { strict: true });
+
+      expect(mockStartNewChat).toHaveBeenCalledTimes(1);
+      expect(history.writes.filter((w) => w.kind === "push")).toEqual([]);
+      expect(history.entries).toEqual(["/acme/inbox", "/acme/chat?new=1"]);
+    });
   });
 
   describe("compact back button", () => {
@@ -666,6 +812,65 @@ describe("ChatPage back stack", () => {
       fireEvent.click(screen.getByRole("button", { name: "Chat" }));
       expect(history.url).toBe("/acme/chat?session=session-9");
       fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+      expect(history.url).toBe("/acme/chat");
+      expect(screen.getByRole("button", { name: "select-thread" })).toBeInTheDocument();
+    });
+
+    it("walks the repro with the back button, then browser back reaches the inbox", () => {
+      history = createHistory("/acme/inbox", "/acme/chat");
+      renderWithHistory(history);
+      selectThread();
+      act(() => history.push("/acme/chat?session=session-10"));
+
+      fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+      expect(history.url).toBe("/acme/chat?session=session-9");
+      fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+      expect(history.url).toBe("/acme/chat");
+      back();
+
+      expect(history.url).toBe("/acme/inbox");
+    });
+
+    it("falls back to the list when the browser cannot report canGoBack", () => {
+      history = createHistory("/acme/inbox", "/acme/chat");
+      renderWithHistory(history, { navigationApi: false });
+      selectThread();
+
+      fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+
+      expect(history.url).toBe("/acme/chat");
+      expect(storeRef.current.activeSessionId).toBeNull();
+      expect(screen.getByRole("button", { name: "select-thread" })).toBeInTheDocument();
+    });
+
+    it("keeps the compose pane when ?new=1 is opened cold", () => {
+      history = createHistory("/acme/chat?new=1");
+      renderWithHistory(history);
+
+      expect(screen.getByText("chat-input")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "select-thread" })).not.toBeInTheDocument();
+    });
+
+    it("returns to the list on browser back from an unsent new chat", () => {
+      history = createHistory("/acme/inbox", "/acme/chat");
+      renderWithHistory(history);
+      fireEvent.click(screen.getByRole("button", { name: "new-chat" }));
+      expect(screen.getByText("chat-input")).toBeInTheDocument();
+
+      back();
+
+      expect(history.url).toBe("/acme/chat");
+      expect(screen.getByRole("button", { name: "select-thread" })).toBeInTheDocument();
+      expect(screen.queryByText("chat-input")).not.toBeInTheDocument();
+    });
+
+    it("returns to the list on the back button from an unsent new chat", () => {
+      history = createHistory("/acme/inbox", "/acme/chat");
+      renderWithHistory(history);
+      fireEvent.click(screen.getByRole("button", { name: "new-chat" }));
+
+      fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+
       expect(history.url).toBe("/acme/chat");
       expect(screen.getByRole("button", { name: "select-thread" })).toBeInTheDocument();
     });
