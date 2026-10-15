@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +22,11 @@ type chatUsageTokens struct {
 	CacheWrite int64 `json:"cache_write"`
 }
 
+type chatUsageModel struct {
+	Tokens       chatUsageTokens `json:"tokens"`
+	CostUsdTicks int64           `json:"cost_usd_ticks"`
+}
+
 type chatUsageResponse struct {
 	SessionID      string          `json:"session_id"`
 	Tokens         chatUsageTokens `json:"tokens"`
@@ -30,24 +36,27 @@ type chatUsageResponse struct {
 		ByStatus   map[string]int `json:"by_status"`
 		Terminal   int            `json:"terminal"`
 		Metered    int            `json:"metered"`
+		Unreported int            `json:"unreported"`
 		TotalRunMs int64          `json:"total_run_ms"`
 	} `json:"runs"`
 	Messages struct {
 		ByRole map[string]int `json:"by_role"`
 	} `json:"messages"`
-	Models                 []string `json:"models"`
-	ContinuedFromSessionID *string  `json:"continued_from_session_id"`
-	ContinuedIntoSessionID *string  `json:"continued_into_session_id"`
-	ForkedFromSessionID    *string  `json:"forked_from_session_id"`
+	ByModel                map[string]chatUsageModel `json:"by_model"`
+	ContinuedFromSessionID *string                   `json:"continued_from_session_id"`
+	ContinuedIntoSessionID *string                   `json:"continued_into_session_id"`
+	ForkedFromSessionID    *string                   `json:"forked_from_session_id"`
 }
 
-// interactiveChatRequest sends an interactive-provenance request as the fixture
-// user; chat read routes refuse JWTs without the interactive `amr` claim.
-func interactiveChatRequest(t *testing.T, path string) (int, []byte) {
+// chatRequestAs sends a GET as userID. An interactive caller carries the
+// `amr: interactive` claim; chat read routes refuse JWTs without it.
+func chatRequestAs(t *testing.T, userID string, interactive bool, path string) (int, []byte) {
 	t.Helper()
-	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub": testUserID, "amr": "interactive", "exp": time.Now().Add(time.Hour).Unix(),
-	}).SignedString(auth.JWTSecret())
+	claims := jwt.MapClaims{"sub": userID, "exp": time.Now().Add(time.Hour).Unix()}
+	if interactive {
+		claims["amr"] = "interactive"
+	}
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(auth.JWTSecret())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,14 +75,26 @@ func interactiveChatRequest(t *testing.T, path string) (int, []byte) {
 	return resp.StatusCode, body
 }
 
+func interactiveChatRequest(t *testing.T, path string) (int, []byte) {
+	t.Helper()
+	return chatRequestAs(t, testUserID, true, path)
+}
+
 // seedChatUsageSession inserts one session owned by creatorID with runs and
 // usage rows: 2 metered completed runs, 1 unmetered completed run, 1 failed
-// run, plus a queued and a running run that only count by status.
+// run, 1 failed run whose clock ran backwards, plus queued, running, deferred
+// and waiting_local_directory runs that only count by status.
 func seedChatUsageSession(t *testing.T, creatorID string) (sessionID string) {
+	return seedChatUsageSessionWithAgent(t, creatorID, "")
+}
+
+// seedChatUsageSessionWithAgent is seedChatUsageSession on a specific agent
+// ("" picks the workspace's first agent).
+func seedChatUsageSessionWithAgent(t *testing.T, creatorID, wantAgentID string) (sessionID string) {
 	t.Helper()
 	ctx := context.Background()
 	var agentID, runtimeID string
-	if err := testPool.QueryRow(ctx, `SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`, testWorkspaceID).Scan(&agentID, &runtimeID); err != nil {
+	if err := testPool.QueryRow(ctx, `SELECT id, runtime_id FROM agent WHERE workspace_id = $1 AND ($2 = '' OR id::text = $2) LIMIT 1`, testWorkspaceID, wantAgentID).Scan(&agentID, &runtimeID); err != nil {
 		t.Fatal(err)
 	}
 	if err := testPool.QueryRow(ctx, `
@@ -89,12 +110,13 @@ func seedChatUsageSession(t *testing.T, creatorID string) (sessionID string) {
 	})
 
 	run := func(status string, seconds int) string {
+		// A negative duration is a run whose completed_at precedes started_at.
 		var id string
 		if err := testPool.QueryRow(ctx, `
 			INSERT INTO agent_task_queue (agent_id, runtime_id, chat_session_id, status, started_at, completed_at)
 			VALUES ($1, $2, $3, $4,
-				CASE WHEN $5 > 0 THEN now() - make_interval(secs => $5) END,
-				CASE WHEN $5 > 0 THEN now() END)
+				CASE WHEN $5 <> 0 THEN now() - make_interval(secs => GREATEST($5, 0)) END,
+				CASE WHEN $5 <> 0 THEN now() - make_interval(secs => GREATEST(-$5, 0)) END)
 			RETURNING id`, agentID, runtimeID, sessionID, status, seconds).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
@@ -116,12 +138,16 @@ func seedChatUsageSession(t *testing.T, creatorID string) (sessionID string) {
 	usage(second, "m-a", 7, 3, 0, 0, ticks(500))
 	run("completed", 5)
 	run("failed", 3)
+	run("failed", -50)
 	run("queued", 0)
 	run("running", 0)
+	run("dispatched", 0)
+	run("waiting_local_directory", 0)
 
 	for _, m := range []struct{ role, kind string }{
 		{"user", "message"}, {"assistant", "message"}, {"user", "message"},
 		{"assistant", "message"}, {"assistant", "message"}, {"user", "onboarding_kickoff"},
+		{"assistant", "onboarding_opening"}, {"user", "channel_command"},
 	} {
 		if _, err := testPool.Exec(ctx, `INSERT INTO chat_message (chat_session_id, role, content, message_kind) VALUES ($1, $2, 'x', $3)`, sessionID, m.role, m.kind); err != nil {
 			t.Fatal(err)
@@ -165,22 +191,37 @@ func TestChatSessionUsage(t *testing.T) {
 	if got.SessionID != sessionID {
 		t.Errorf("session_id = %q, want %q", got.SessionID, sessionID)
 	}
-	for status, want := range map[string]int{"completed": 3, "failed": 1, "cancelled": 0, "queued": 1, "running": 1} {
+	// by_status is an open map: statuses outside the five terminal/queue ones
+	// (dispatched, waiting_local_directory, ...) must be preserved verbatim.
+	wantStatus := map[string]int{"completed": 3, "failed": 2, "cancelled": 0, "queued": 1, "running": 1, "dispatched": 1, "waiting_local_directory": 1}
+	for status, want := range wantStatus {
 		if got.Runs.ByStatus[status] != want {
 			t.Errorf("runs.by_status[%s] = %d, want %d", status, got.Runs.ByStatus[status], want)
 		}
 	}
-	if got.Runs.Terminal != 4 || got.Runs.Metered != 2 {
-		t.Errorf("terminal/metered = %d/%d, want 4/2", got.Runs.Terminal, got.Runs.Metered)
+	if len(got.Runs.ByStatus) != len(wantStatus) {
+		t.Errorf("runs.by_status = %v, want exactly %v", got.Runs.ByStatus, wantStatus)
+	}
+	if got.Runs.Terminal != 5 || got.Runs.Metered != 2 || got.Runs.Unreported != 3 {
+		t.Errorf("terminal/metered/unreported = %d/%d/%d, want 5/2/3", got.Runs.Terminal, got.Runs.Metered, got.Runs.Unreported)
 	}
 	if got.Runs.TotalRunMs < 38000 || got.Runs.TotalRunMs > 38100 {
-		t.Errorf("total_run_ms = %d, want ~38000", got.Runs.TotalRunMs)
+		t.Errorf("total_run_ms = %d, want ~38000 (the backwards-clock run clamps to 0, not -50000)", got.Runs.TotalRunMs)
 	}
-	if got.Messages.ByRole["user"] != 2 || got.Messages.ByRole["assistant"] != 3 {
-		t.Errorf("messages.by_role = %v, want user 2 assistant 3 (onboarding kickoff hidden)", got.Messages.ByRole)
+	if len(got.Messages.ByRole) != 2 || got.Messages.ByRole["user"] != 2 || got.Messages.ByRole["assistant"] != 3 {
+		t.Errorf("messages.by_role = %v, want only message_kind 'message' rows: user 2 assistant 3", got.Messages.ByRole)
 	}
-	if len(got.Models) != 2 || got.Models[0] != "m-a" || got.Models[1] != "m-b" {
-		t.Errorf("models = %v, want [m-a m-b]", got.Models)
+	wantModels := map[string]chatUsageModel{
+		"m-a": {Tokens: chatUsageTokens{Input: 107, Output: 53, CacheRead: 10, CacheWrite: 5}, CostUsdTicks: 1500},
+		"m-b": {Tokens: chatUsageTokens{Input: 200, Output: 80, CacheRead: 20, CacheWrite: 10}},
+	}
+	if len(got.ByModel) != len(wantModels) {
+		t.Errorf("by_model = %+v, want %+v", got.ByModel, wantModels)
+	}
+	for model, want := range wantModels {
+		if got.ByModel[model] != want {
+			t.Errorf("by_model[%s] = %+v, want %+v", model, got.ByModel[model], want)
+		}
 	}
 	if got.ContinuedFromSessionID == nil || got.ForkedFromSessionID == nil || got.ContinuedIntoSessionID != nil {
 		t.Errorf("continuation ids = %v/%v/%v", got.ContinuedFromSessionID, got.ContinuedIntoSessionID, got.ForkedFromSessionID)
@@ -200,6 +241,62 @@ func TestChatSessionUsageRefusesForeignUserLikeSessionGet(t *testing.T) {
 		t.Fatalf("session GET of a foreign session returned 200: %s", wantBody)
 	}
 	status, body := interactiveChatRequest(t, "/api/chat/sessions/"+sessionID+"/usage")
+	if status != wantStatus || string(body) != string(wantBody) {
+		t.Errorf("usage = %d %s, session GET = %d %s", status, body, wantStatus, wantBody)
+	}
+}
+
+// The usage route sits behind chatReadSession, so a caller GET /sessions/{id}
+// refuses must be refused identically here.
+func TestChatSessionUsageRefusesCLIJWTWithInteractiveLoginRequired(t *testing.T) {
+	sessionID := seedChatUsageSession(t, testUserID)
+
+	wantStatus, wantBody := chatRequestAs(t, testUserID, false, "/api/chat/sessions/"+sessionID)
+	if wantStatus != http.StatusForbidden || !strings.Contains(string(wantBody), "interactive_login_required") {
+		t.Fatalf("session GET with a non-interactive JWT = %d %s, want 403 interactive_login_required", wantStatus, wantBody)
+	}
+	status, body := chatRequestAs(t, testUserID, false, "/api/chat/sessions/"+sessionID+"/usage")
+	if status != wantStatus || string(body) != string(wantBody) {
+		t.Errorf("usage = %d %s, session GET = %d %s", status, body, wantStatus, wantBody)
+	}
+}
+
+func TestChatSessionUsageRefusesPrivateAgentCreatorWithoutAccess(t *testing.T) {
+	ctx := context.Background()
+	var memberID, ownerID, agentID, runtimeID string
+	if err := testPool.QueryRow(ctx, `SELECT runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`, testWorkspaceID).Scan(&runtimeID); err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range []struct {
+		dst  *string
+		name string
+	}{{&ownerID, "Usage Private Owner"}, {&memberID, "Usage Plain Member"}} {
+		if err := testPool.QueryRow(ctx, `INSERT INTO "user" (name, email) VALUES ($1, $2) RETURNING id`, u.name, uuid.NewString()+"@multica.ai").Scan(u.dst); err != nil {
+			t.Fatal(err)
+		}
+		id := *u.dst
+		t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM "user" WHERE id = $1`, id) })
+		if _, err := testPool.Exec(ctx, `INSERT INTO member (workspace_id, user_id, role) VALUES ($1, $2, 'member')`, testWorkspaceID, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent (workspace_id, name, description, runtime_mode, runtime_config, runtime_id, visibility,
+			max_concurrent_tasks, owner_id, instructions, custom_env, custom_args)
+		VALUES ($1, 'usage-private-agent', '', 'cloud', '{}'::jsonb, $2, 'private', 1, $3, '', '{}'::jsonb, '[]'::jsonb)
+		RETURNING id`, testWorkspaceID, runtimeID, ownerID).Scan(&agentID); err != nil {
+		t.Fatal(err)
+	}
+	// Registered after the session cleanup below runs (LIFO), so the sessions go first.
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, agentID) })
+	// The plain member created this session, so only the private-agent gate can refuse it.
+	sessionID := seedChatUsageSessionWithAgent(t, memberID, agentID)
+
+	wantStatus, wantBody := chatRequestAs(t, memberID, true, "/api/chat/sessions/"+sessionID)
+	if wantStatus != http.StatusForbidden {
+		t.Fatalf("session GET of a private-agent session by a plain member = %d %s, want 403", wantStatus, wantBody)
+	}
+	status, body := chatRequestAs(t, memberID, true, "/api/chat/sessions/"+sessionID+"/usage")
 	if status != wantStatus || string(body) != string(wantBody) {
 		t.Errorf("usage = %d %s, session GET = %d %s", status, body, wantStatus, wantBody)
 	}
