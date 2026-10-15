@@ -376,6 +376,58 @@ func TestJevShadow_BlockedDatabaseIsBoundedAndLoggedAsError(t *testing.T) {
 	}
 }
 
+// Replay needs the measured provider telemetry: the serving model, billed
+// token usage and a hash of the exact input sent to Jev (CHE-1412 metrics).
+func TestJevShadow_RecordCarriesServingModelUsageAndInputHash(t *testing.T) {
+	logs := captureSlog(t)
+	f := newJevShadowFixture(t, map[string]any{"jev_squad_routing_mode": "shadow"})
+	f.serve(f.confidentWorkerAnswer(0.95))
+	issue := f.insertIssue(t, "todo")
+
+	testHandler.tryJevSquadRouting(context.Background(), issue, f.squad, "member", testUserID, testUserID)
+	rec := logs.waitForShadowRecord(t, issue.ID)
+	assertJevReplayTelemetry(t, rec)
+}
+
+// A billed call whose answer is unusable still cost tokens, so the error
+// record keeps the usage and input hash too.
+func TestJevShadow_MalformedAnswerRecordKeepsBilledUsage(t *testing.T) {
+	logs := captureSlog(t)
+	f := newJevShadowFixture(t, map[string]any{"jev_squad_routing_mode": "shadow"})
+	f.serve(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(jev.Response{
+			Model:   "jev-1.13.0",
+			Answers: map[string]jev.Answer{},
+			Usage:   jev.Usage{InputTokens: 500, OutputTokens: 10},
+		})
+	})
+	issue := f.insertIssue(t, "todo")
+
+	testHandler.tryJevSquadRouting(context.Background(), issue, f.squad, "member", testUserID, testUserID)
+	rec := logs.waitForShadowRecord(t, issue.ID)
+	if rec["outcome"] != "error" {
+		t.Fatalf("record[outcome] = %v, want error", rec["outcome"])
+	}
+	assertJevReplayTelemetry(t, rec)
+}
+
+func assertJevReplayTelemetry(t *testing.T, rec map[string]any) {
+	t.Helper()
+	for key, want := range map[string]any{
+		"serving_model": "jev-1.13.0",
+		"input_tokens":  float64(500),
+		"output_tokens": float64(10),
+	} {
+		if rec[key] != want {
+			t.Errorf("record[%s] = %v, want %v", key, rec[key], want)
+		}
+	}
+	if sum, _ := rec["input_sha256"].(string); len(sum) != 64 {
+		t.Errorf("record[input_sha256] = %v, want a 64-char hex digest", rec["input_sha256"])
+	}
+}
+
 func TestJevShadow_AgentAuthoredCommentIsNotEvaluated(t *testing.T) {
 	logs := captureSlog(t)
 	var calls int
