@@ -129,7 +129,7 @@ func newJevShadowFixture(t *testing.T, settings map[string]any) *jevShadowFixtur
 		t.Fatalf("insert squad member: %v", err)
 	}
 
-	f.handler.Store(http.HandlerFunc(http.NotFound))
+	f.handler.Store(http.NotFoundHandler())
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.handler.Load().(http.HandlerFunc)(w, r)
 	}))
@@ -479,7 +479,7 @@ func TestGovernanceConfigPatch_AcceptsRoutingMode(t *testing.T) {
 		return patch
 	}
 	for _, mode := range []string{"off", "shadow", "on"} {
-		patch := decode(fmt.Sprintf(`{"request_id":"%s","jev_squad_routing_mode":%q}`, uuid.NewString(), mode))
+		patch := decode(fmt.Sprintf(`{"request_id":%q,"jev_squad_routing_mode":%q}`, uuid.NewString(), mode))
 		if !validGovernanceConfigPatch(patch) {
 			t.Fatalf("mode %q patch rejected", mode)
 		}
@@ -493,7 +493,7 @@ func TestGovernanceConfigPatch_AcceptsRoutingMode(t *testing.T) {
 		}
 	}
 	// Another settings field makes the patch non-empty, so only the mode value can reject it.
-	bad := decode(fmt.Sprintf(`{"request_id":"%s","jev_api_url":"https://jev.example","jev_squad_routing_mode":"bogus"}`, uuid.NewString()))
+	bad := decode(fmt.Sprintf(`{"request_id":%q,"jev_api_url":"https://jev.example","jev_squad_routing_mode":"bogus"}`, uuid.NewString()))
 	if validGovernanceConfigPatch(bad) {
 		t.Error("unknown routing mode was accepted")
 	}
@@ -502,7 +502,7 @@ func TestGovernanceConfigPatch_AcceptsRoutingMode(t *testing.T) {
 func TestGovernanceConfigPatch_LegacyEnabledFlagSetsMode(t *testing.T) {
 	for enabled, want := range map[bool]string{true: "on", false: "off"} {
 		var patch governanceConfigPatch
-		body := fmt.Sprintf(`{"request_id":"%s","jev_squad_routing_enabled":%t}`, uuid.NewString(), enabled)
+		body := fmt.Sprintf(`{"request_id":%q,"jev_squad_routing_enabled":%t}`, uuid.NewString(), enabled)
 		if err := json.Unmarshal([]byte(body), &patch); err != nil {
 			t.Fatalf("decode patch: %v", err)
 		}
