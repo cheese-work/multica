@@ -183,10 +183,10 @@ var concurrentIndexCleanups = map[string]string{
 	"588_wakeup_aggregate_reservation_window_index":             "wakeup_aggregate_reservation_window_idx",
 	"589_wakeup_aggregate_blocked_index":                        "issue_wakeup_aggregate_blocked_idx",
 	"591_wakeup_aggregate_reservation_age_index":                "wakeup_aggregate_reservation_age_idx",
-	"626_wakeup_scoped_event_id_index":                          "wakeup_scoped_event_id_idx",
-	"627_wakeup_scoped_event_pending_index":                     "wakeup_scoped_event_pending_idx",
-	"628_wakeup_scoped_event_handled_index":                     "wakeup_scoped_event_handled_idx",
-	"629_wakeup_scoped_event_issue_index":                       "wakeup_scoped_event_issue_idx",
+	"628_wakeup_scoped_event_id_index":                          "wakeup_scoped_event_id_idx",
+	"629_wakeup_scoped_event_pending_index":                     "wakeup_scoped_event_pending_idx",
+	"630_wakeup_scoped_event_handled_index":                     "wakeup_scoped_event_handled_idx",
+	"631_wakeup_scoped_event_issue_index":                       "wakeup_scoped_event_issue_idx",
 	"641_wakeup_definition_sweep_index":                         "issue_wakeup_definition_sweep_idx",
 	"642_issue_project_keyset_index":                            "idx_issue_project_id_keyset",
 	"643_wakeup_capacity_held_index":                            "issue_wakeup_capacity_held_idx",
@@ -482,25 +482,25 @@ var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
 		TableRegclass: "wakeup_aggregate_reservation",
 		Columns:       []string{"reserved_at"},
 	},
-	"626_wakeup_scoped_event_id_index": {
+	"628_wakeup_scoped_event_id_index": {
 		IndexRegclass: "wakeup_scoped_event_id_idx",
 		TableRegclass: "wakeup_scoped_event",
 		Unique:        true,
 		Columns:       []string{"id"},
 	},
-	"627_wakeup_scoped_event_pending_index": {
+	"629_wakeup_scoped_event_pending_index": {
 		IndexRegclass: "wakeup_scoped_event_pending_idx",
 		TableRegclass: "wakeup_scoped_event",
 		Columns:       []string{"captured_at", "id"},
 		Predicate:     "handled_at IS NULL",
 	},
-	"628_wakeup_scoped_event_handled_index": {
+	"630_wakeup_scoped_event_handled_index": {
 		IndexRegclass: "wakeup_scoped_event_handled_idx",
 		TableRegclass: "wakeup_scoped_event",
 		Columns:       []string{"handled_at"},
 		Predicate:     "handled_at IS NOT NULL",
 	},
-	"629_wakeup_scoped_event_issue_index": {
+	"631_wakeup_scoped_event_issue_index": {
 		IndexRegclass: "wakeup_scoped_event_issue_idx",
 		TableRegclass: "wakeup_scoped_event",
 		Columns:       []string{"issue_id", "captured_at", "id"},

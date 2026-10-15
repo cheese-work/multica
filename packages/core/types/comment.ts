@@ -1,4 +1,4 @@
-export type CommentType = "comment" | "status_change" | "progress_update" | "system";
+export type CommentType = "comment" | "status_change" | "progress_update" | "system" | "jev_route";
 
 // `system` is used by platform-generated rows (e.g. the parent-issue
 // child-done notification, MUL-2538). System rows carry a zero UUID for

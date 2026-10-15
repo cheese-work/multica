@@ -46,6 +46,9 @@ type IssueService struct {
 	// Entitlements supplies Cloud's effective issue-count instruction. Nil is
 	// the self-hosted unlimited path.
 	Entitlements entitlement.Provider
+	// SquadDispatcher overrides default squad leader enqueue on issue create,
+	// allowing handler-level Jev fast-path routing and access gating.
+	SquadDispatcher func(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID string) bool
 }
 
 func NewIssueService(q *db.Queries, tx TxStarter, bus *events.Bus, ac analytics.Client, ts *TaskService) *IssueService {
@@ -946,6 +949,9 @@ func (s *IssueService) isSquadLeaderReady(ctx context.Context, issue db.Issue) b
 }
 
 func (s *IssueService) enqueueSquadLeaderTask(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID string) {
+	if s.SquadDispatcher != nil && s.SquadDispatcher(ctx, issue, triggerCommentID, authorType, authorID) {
+		return
+	}
 	squad, err := s.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{
 		ID:          issue.AssigneeID,
 		WorkspaceID: issue.WorkspaceID,

@@ -1205,6 +1205,7 @@ WITH retired_sessions AS (
       AND t.status = 'failed'
       AND (
         COALESCE(t.failure_reason, '') = 'codex_resume_oversized'
+        OR COALESCE(t.error, '') ILIKE '%response protection is unavailable%'
         OR (COALESCE(t.error, '') ILIKE '%thread/resume failed%' AND COALESCE(t.error, '') ILIKE '%token too long%')
       )
 ), latest_per_session AS (
@@ -1228,6 +1229,7 @@ WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
       status = 'failed'
       AND COALESCE(failure_reason, '') NOT IN ('iteration_limit', 'agent_fallback_message', 'api_invalid_request', 'codex_semantic_inactivity', 'agent_error.context_overflow', 'codex_resume_oversized')
       AND NOT (COALESCE(error, '') ILIKE '%400%' AND COALESCE(error, '') ILIKE '%invalid_request_error%')
+      AND NOT (COALESCE(error, '') ILIKE '%response protection is unavailable%')
       -- Mirrors the GetLastTaskSession auth-resolution guard: a provider that
       -- cannot resolve its auth method fails deterministically on resume, and
       -- the classification is agent_error.unknown (resume-safe), so only this

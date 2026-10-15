@@ -1452,7 +1452,13 @@ func (s *TaskService) EnqueueTaskForSquadLeaderByActor(ctx context.Context, issu
 // EnqueueTaskForSquadLeaderWithHandoff is the squad equivalent of
 // EnqueueTaskForIssueWithHandoff.
 func (s *TaskService) EnqueueTaskForSquadLeaderWithHandoff(ctx context.Context, issue db.Issue, leaderID pgtype.UUID, squadID pgtype.UUID, handoffNote string, actorUserID pgtype.UUID) (db.AgentTaskQueue, error) {
-	return s.enqueueMentionTask(ctx, issue, leaderID, pgtype.UUID{}, true, squadID, false, handoffNote, actorUserID, pgtype.UUID{}, OriginDerived)
+	return s.EnqueueTaskForSquadLeaderWithHandoffComment(ctx, issue, leaderID, squadID, pgtype.UUID{}, handoffNote, actorUserID, OriginDerived)
+}
+
+// EnqueueTaskForSquadLeaderWithHandoffComment enqueues a task for the squad leader with a handoff note,
+// preserving triggerCommentID and run origin.
+func (s *TaskService) EnqueueTaskForSquadLeaderWithHandoffComment(ctx context.Context, issue db.Issue, leaderID pgtype.UUID, squadID pgtype.UUID, triggerCommentID pgtype.UUID, handoffNote string, actorUserID pgtype.UUID, origin RunOrigin) (db.AgentTaskQueue, error) {
+	return s.enqueueMentionTask(ctx, issue, leaderID, triggerCommentID, true, squadID, false, handoffNote, actorUserID, pgtype.UUID{}, origin)
 }
 
 func (s *TaskService) enqueueMentionTask(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin) (db.AgentTaskQueue, error) {
@@ -3678,6 +3684,22 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			return nil
 		}
 
+		coolingDown, err := qtx.HasRecentProviderServerFailure(ctx, db.HasRecentProviderServerFailureParams{
+			AgentID: agentID,
+			FailedSince: pgtype.Timestamptz{
+				Time: time.Now().Add(-gatewayFailureCooldown), Valid: true,
+			},
+		})
+		if err != nil {
+			outcome = "error_gateway_cooldown_check"
+			return fmt.Errorf("check gateway failure cooldown: %w", err)
+		}
+		if coolingDown {
+			outcome = "gateway_failure_cooldown"
+			slog.Debug("task claim skipped: gateway failure cooldown", "agent_id", util.UUIDToString(agentID))
+			return nil
+		}
+
 		t0 = time.Now()
 		running, err := qtx.CountRunningTasks(ctx, agentID)
 		countRunningMs = time.Since(t0).Milliseconds()
@@ -5480,6 +5502,7 @@ var retryableReasons = map[string]bool{
 // final attempt instead of firing back-to-back. Every other retryable reason
 // keeps the task's generic max_attempts ceiling and retries immediately.
 const (
+	gatewayFailureCooldown        = 10 * time.Minute
 	runtimeOfflineRetryDeferral   = time.Second
 	providerNetworkMaxAttempts    = 3
 	providerNetworkFinalRetryWait = 5 * time.Second
@@ -5711,7 +5734,7 @@ func hasRunnableSuccessor(ctx context.Context, q *db.Queries, task db.AgentTaskQ
 // Autopilot tasks are NOT auto-retried here; the autopilot scheduler owns
 // its own re-run cadence and we don't want to double-fire it.
 func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentTaskQueue) (*db.AgentTaskQueue, error) {
-	if parent.Status != "failed" {
+	if parent.Status != "failed" || taskfailure.ResponseProtectionUnavailable(parent.Error.String) {
 		return nil, nil
 	}
 	reason := ""
