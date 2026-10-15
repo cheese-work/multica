@@ -1195,3 +1195,64 @@ func TestWakeupDefinitionCustomTriggersAreAcceptedBehindTheGate(t *testing.T) {
 	withFeatureFlag(t, testHandler, featureflags.WakeupDefinitionWrites, false)
 	k.project().create(body).Want(http.StatusForbidden)
 }
+
+// ---- default-derived instances in the wakeup lists (L10 UI guard) ----------
+
+// The issue and workspace lists return every non-system instance, so a client
+// has to be able to tell a default-derived one from a local rule: the server
+// refuses to save or enable it as a local wakeup.
+func TestWakeupListsExposeTheOriginOfADefaultDerivedInstance(t *testing.T) {
+	issue := dbfx.Issue(t, "origin issue", testutil.Cols{"number": nextWorkspaceIssueNumber(t)})
+	agent := dbfx.Agent(t, "origin agent", testRuntimeID)
+	dbfx.Cleanup(t, "DELETE FROM issue_wakeup WHERE issue_id=$1", issue)
+	const ruleKey = "9c2d7a4e-5b61-4f08-8d3a-1e7f6b2c0a01"
+	dbfx.Exec(t, `INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,created_by,instruction,kind,mode,event_types,enabled,disabled_at,default_rule_key,default_scope_kind,default_scope_id)
+ VALUES(gen_random_uuid(),$1,$2,$3,$4,'derived','event','continuous','{comment.created}',false,now(),$5,'workspace',$1)`, testWorkspaceID, issue, agent, testUserID, ruleKey)
+	dbfx.Exec(t, `INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,created_by,instruction,kind,mode,event_types,enabled)
+ VALUES(gen_random_uuid(),$1,$2,$3,$4,'local','event','continuous','{comment.created}',true)`, testWorkspaceID, issue, agent, testUserID)
+
+	origin := func(items []map[string]any, instruction string) any {
+		t.Helper()
+		for _, it := range items {
+			if it["agent_id"] == agent && (it["instruction"] == instruction || instruction == "") {
+				return it["default_rule_key"]
+			}
+		}
+		return "absent"
+	}
+	list := httptest.NewRecorder()
+	testHandler.ListIssueWakeups(list, withURLParam(newRequest("GET", "/", nil), "id", issue))
+	var issueItems []map[string]any
+	if list.Code != 200 || json.Unmarshal(list.Body.Bytes(), &issueItems) != nil || len(issueItems) != 2 {
+		t.Fatalf("issue list: %d %s", list.Code, list.Body.String())
+	}
+	if got := origin(issueItems, "derived"); got != ruleKey {
+		t.Fatalf("issue list: default-derived instance default_rule_key = %v, want %q", got, ruleKey)
+	}
+	if got := origin(issueItems, "local"); got != nil {
+		t.Fatalf("issue list: local rule default_rule_key = %v, want null", got)
+	}
+
+	ws := httptest.NewRecorder()
+	testHandler.ListWorkspaceWakeups(ws, newRequest("GET", "/api/issue-wakeups?scope=all", nil))
+	var page struct {
+		Items []map[string]any `json:"items"`
+	}
+	if ws.Code != 200 || json.Unmarshal(ws.Body.Bytes(), &page) != nil {
+		t.Fatalf("workspace list: %d %s", ws.Code, ws.Body.String())
+	}
+	var derived, local bool
+	for _, it := range page.Items {
+		if it["issue_id"] != issue {
+			continue
+		}
+		if key, present := it["default_rule_key"]; present && key == ruleKey {
+			derived = true
+		} else if present && key == nil {
+			local = true
+		}
+	}
+	if !derived || !local {
+		t.Fatalf("workspace list: derived=%v local=%v, want the origin on the derived row and null on the local one: %s", derived, local, ws.Body.String())
+	}
+}
