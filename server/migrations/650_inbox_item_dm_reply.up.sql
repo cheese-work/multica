@@ -1,5 +1,5 @@
 -- CHE-1793: DM reply notification records. One unread dm_reply row per
--- (recipient, DM) is coalesced through dedupe_key (index in 630); a decision
+-- (recipient, DM) is coalesced through dedupe_key (index in 651); a decision
 -- ping carries chat_session_id so it opens the DM. updated_at is nullable and
 -- read as COALESCE(updated_at, created_at): adding NOT NULL DEFAULT now() would
 -- re-stamp every existing row with the migration time and reorder the inbox.
