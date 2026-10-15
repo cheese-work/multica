@@ -1914,8 +1914,11 @@ LIMIT 1;
 -- passes (usage rows, then terminal-run coverage) filtered on
 -- agent_task_queue.chat_session_id. "Terminal" runs are finished ones with
 -- both timestamps; "metered" terminal runs have at least one task_usage row.
--- Queued and running runs appear only in status_counts. Hidden onboarding
--- kickoff messages are not counted, matching the visible transcript.
+-- Non-terminal runs appear only in status_counts; "unreported" terminal runs
+-- are the ones with no task_usage row, and each run's duration is clamped at
+-- zero so a backwards clock cannot subtract from the total. by_model buckets
+-- tokens and cost per model. Only message_kind = 'message' rows are counted,
+-- matching the visible transcript; status and role counts are open maps.
 -- agent_task_queue is read through idx_agent_task_queue_chat_session
 -- (migration 472), chat_message through idx_chat_message_session.
 WITH usage AS (
@@ -1928,11 +1931,31 @@ WITH usage AS (
         COALESCE(SUM(tu.input_tokens)       FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_input_tokens,
         COALESCE(SUM(tu.output_tokens)      FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_output_tokens,
         COALESCE(SUM(tu.cache_read_tokens)  FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_read_tokens,
-        COALESCE(SUM(tu.cache_write_tokens) FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_write_tokens,
-        COALESCE(ARRAY_AGG(DISTINCT tu.model ORDER BY tu.model) FILTER (WHERE tu.model <> ''), '{}')::text[] AS models
+        COALESCE(SUM(tu.cache_write_tokens) FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_write_tokens
     FROM task_usage tu
     JOIN agent_task_queue atq ON atq.id = tu.task_id
     WHERE atq.chat_session_id = $1
+), models AS (
+    SELECT COALESCE(
+        jsonb_object_agg(m.model, jsonb_build_object(
+            'tokens', jsonb_build_object(
+                'input', m.input_tokens, 'output', m.output_tokens,
+                'cache_read', m.cache_read_tokens, 'cache_write', m.cache_write_tokens),
+            'cost_usd_ticks', m.cost_usd_ticks)),
+        '{}'::jsonb
+    )::jsonb AS by_model
+    FROM (
+        SELECT tu.model,
+               SUM(tu.input_tokens)::bigint AS input_tokens,
+               SUM(tu.output_tokens)::bigint AS output_tokens,
+               SUM(tu.cache_read_tokens)::bigint AS cache_read_tokens,
+               SUM(tu.cache_write_tokens)::bigint AS cache_write_tokens,
+               COALESCE(SUM(tu.cost_usd_ticks), 0)::bigint AS cost_usd_ticks
+        FROM task_usage tu
+        JOIN agent_task_queue atq ON atq.id = tu.task_id
+        WHERE atq.chat_session_id = $1
+        GROUP BY tu.model
+    ) AS m
 ), runs AS (
     SELECT
         COALESCE(
@@ -1946,19 +1969,26 @@ WITH usage AS (
         COUNT(*) FILTER (WHERE atq.status IN ('completed', 'failed', 'cancelled')
             AND atq.started_at IS NOT NULL AND atq.completed_at IS NOT NULL
             AND EXISTS (SELECT 1 FROM task_usage tu WHERE tu.task_id = atq.id))::int AS metered_runs,
-        COALESCE(SUM(EXTRACT(EPOCH FROM (atq.completed_at - atq.started_at)) * 1000) FILTER (
+        COUNT(*) FILTER (WHERE atq.status IN ('completed', 'failed', 'cancelled')
+            AND atq.started_at IS NOT NULL AND atq.completed_at IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM task_usage tu WHERE tu.task_id = atq.id))::int AS unreported_runs,
+        COALESCE(SUM(GREATEST(EXTRACT(EPOCH FROM (atq.completed_at - atq.started_at)) * 1000, 0)) FILTER (
             WHERE atq.status IN ('completed', 'failed', 'cancelled')
               AND atq.started_at IS NOT NULL AND atq.completed_at IS NOT NULL), 0)::bigint AS total_run_ms
     FROM agent_task_queue atq
     WHERE atq.chat_session_id = $1
 ), messages AS (
-    SELECT
-        COUNT(*) FILTER (WHERE role = 'user')::int AS user_messages,
-        COUNT(*) FILTER (WHERE role = 'assistant')::int AS assistant_messages
-    FROM chat_message
-    WHERE chat_session_id = $1 AND message_kind <> 'onboarding_kickoff'
+    SELECT COALESCE(
+        (SELECT jsonb_object_agg(role, n)
+         FROM (SELECT role, COUNT(*)::int AS n
+               FROM chat_message
+               WHERE chat_session_id = $1 AND message_kind = 'message'
+               GROUP BY role) AS by_role),
+        '{}'::jsonb
+    )::jsonb AS role_counts
 )
 SELECT usage.*, runs.*, messages.*
 FROM usage
+CROSS JOIN models
 CROSS JOIN runs
 CROSS JOIN messages;

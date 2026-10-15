@@ -13,10 +13,17 @@ type ChatUsageTokens struct {
 }
 
 type ChatUsageRuns struct {
-	ByStatus   map[string]int `json:"by_status"`
-	Terminal   int            `json:"terminal"`
-	Metered    int            `json:"metered"`
-	TotalRunMs int64          `json:"total_run_ms"`
+	ByStatus map[string]int `json:"by_status"`
+	// Terminal runs split into Metered (a task_usage row exists) and Unreported (none).
+	Terminal   int   `json:"terminal"`
+	Metered    int   `json:"metered"`
+	Unreported int   `json:"unreported"`
+	TotalRunMs int64 `json:"total_run_ms"`
+}
+
+type ChatUsageModel struct {
+	Tokens       ChatUsageTokens `json:"tokens"`
+	CostUsdTicks int64           `json:"cost_usd_ticks"`
 }
 
 type ChatSessionUsageResponse struct {
@@ -28,10 +35,10 @@ type ChatSessionUsageResponse struct {
 	Messages       struct {
 		ByRole map[string]int `json:"by_role"`
 	} `json:"messages"`
-	Models                 []string `json:"models"`
-	ContinuedFromSessionID *string  `json:"continued_from_session_id"`
-	ContinuedIntoSessionID *string  `json:"continued_into_session_id"`
-	ForkedFromSessionID    *string  `json:"forked_from_session_id"`
+	ByModel                map[string]ChatUsageModel `json:"by_model"`
+	ContinuedFromSessionID *string                   `json:"continued_from_session_id"`
+	ContinuedIntoSessionID *string                   `json:"continued_into_session_id"`
+	ForkedFromSessionID    *string                   `json:"forked_from_session_id"`
 }
 
 // GetChatSessionUsage returns token, cost, run and message totals for one DM.
@@ -52,16 +59,23 @@ func (h *Handler) GetChatSessionUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The five documented statuses are always present; other in-flight
-	// statuses (dispatched, deferred, ...) appear only when the session has them.
+	// by_status and by_role are open maps. The five common statuses and the two
+	// message roles are always present; any other value (dispatched, deferred,
+	// waiting_local_directory, ...) appears only when the session has it.
 	byStatus := map[string]int{"completed": 0, "failed": 0, "cancelled": 0, "queued": 0, "running": 0}
 	if err := json.Unmarshal(row.StatusCounts, &byStatus); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to get chat session usage")
 		return
 	}
-	models := row.Models
-	if models == nil {
-		models = []string{}
+	byModel := map[string]ChatUsageModel{}
+	byRole := map[string]int{"user": 0, "assistant": 0}
+	if err := json.Unmarshal(row.ByModel, &byModel); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get chat session usage")
+		return
+	}
+	if err := json.Unmarshal(row.RoleCounts, &byRole); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get chat session usage")
+		return
 	}
 
 	resp := ChatSessionUsageResponse{
@@ -77,13 +91,13 @@ func (h *Handler) GetChatSessionUsage(w http.ResponseWriter, r *http.Request) {
 		CostUsdTicks: row.CostUsdTicks,
 		Runs: ChatUsageRuns{
 			ByStatus: byStatus, Terminal: int(row.TerminalRuns),
-			Metered: int(row.MeteredRuns), TotalRunMs: row.TotalRunMs,
+			Metered: int(row.MeteredRuns), Unreported: int(row.UnreportedRuns), TotalRunMs: row.TotalRunMs,
 		},
-		Models:                 models,
+		ByModel:                byModel,
 		ContinuedFromSessionID: uuidToPtr(session.ContinuedFromSessionID),
 		ContinuedIntoSessionID: uuidToPtr(session.ContinuedIntoSessionID),
 		ForkedFromSessionID:    uuidToPtr(session.ForkedFromSessionID),
 	}
-	resp.Messages.ByRole = map[string]int{"user": int(row.UserMessages), "assistant": int(row.AssistantMessages)}
+	resp.Messages.ByRole = byRole
 	writeJSON(w, http.StatusOK, resp)
 }
