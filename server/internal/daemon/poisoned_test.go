@@ -389,3 +389,23 @@ func TestClassifyResumeUnsafeTimeout(t *testing.T) {
 		})
 	}
 }
+
+// TestAGYExecutorNotFoundRetiresSession pins both daemon layers for CHE-1715:
+// a resumed AGY turn that reports the stored executor 404 retries fresh when no
+// tool ran, and is classified resume-unsafe at report time when one did.
+func TestAGYExecutorNotFoundRetiresSession(t *testing.T) {
+	t.Parallel()
+
+	const errMsg = "agent executor error: generating and executing: Error 404, Message: Requested entity was not found., Status: NOT_FOUND, Details: []"
+	result := agent.Result{Status: "failed", Error: errMsg, SessionID: "6ff95637"}
+
+	if !shouldRetryWithFreshSession(result, "6ff95637", 0, "antigravity") {
+		t.Fatal("a resumed AGY turn with the stored executor 404 must retry on a fresh session when no tool ran")
+	}
+	if shouldRetryWithFreshSession(result, "6ff95637", 1, "antigravity") {
+		t.Fatal("a run that already used a tool must never be re-run automatically")
+	}
+	if reason, ok := classifyPoisonedError(errMsg); !ok || reason != FailureReasonAPIInvalidRequest {
+		t.Fatalf("classifyPoisonedError = (%q, %v), want (%q, true)", reason, ok, FailureReasonAPIInvalidRequest)
+	}
+}

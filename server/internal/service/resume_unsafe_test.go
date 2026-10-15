@@ -67,6 +67,15 @@ func TestResumeUnsafeFailureEmptyHistoryMessage(t *testing.T) {
 			want:          true,
 		},
 		{
+			// CHE-1715: AGY replays a stored executor 404 on every resume, so a
+			// rerun must start fresh. Already-persisted rows carry
+			// agent_error.unknown, so the text guard has to catch them.
+			name:          "agy executor not-found replays on resume",
+			failureReason: "agent_error.unknown",
+			errorText:     "agent executor error: generating and executing: Error 404, Message: Requested entity was not found., Status: NOT_FOUND, Details: []",
+			want:          true,
+		},
+		{
 			// Transient failures must stay resumable: the whole point of
 			// reusing the session on retry is to keep the conversation.
 			name:          "provider network drop stays resumable",

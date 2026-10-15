@@ -234,3 +234,37 @@ func TestAuthMethodUnresolvedMatchesResumeQueryGuard(t *testing.T) {
 		t.Fatalf("predicate does not match the SQL guard phrase %q — pkg/db/queries and pkg/taskfailure have drifted", sqlGuardPhrase)
 	}
 }
+
+// agyExecutorNotFound is the error x99-agy-gemini persisted on every failed run
+// after an upstream 404 (CHE-1715). AGY 1.3.5 stores the executor error in the
+// conversation and reports it again on every resumed turn, even a successful
+// one, so the session can never be resumed cleanly.
+const agyExecutorNotFound = "agent executor error: generating and executing: Error 404, Message: Requested entity was not found., Status: NOT_FOUND, Details: []"
+
+func TestUnresumableHistoryAGYExecutorNotFound(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		errMsg string
+		want   bool
+	}{
+		{"bare result error", agyExecutorNotFound, true},
+		{"with agy stderr tail", agyExecutorNotFound + `; agy stderr: error: ` + agyExecutorNotFound + "\nAGY_ERROR: {\"status\":\"NOT_FOUND\",\"error_code\":404,\"retryable\":false}", true},
+		{"provider error prefix", "agy provider error: " + agyExecutorNotFound, true},
+		// Other executor failures say nothing about a replayed history.
+		{"executor 503", "agent executor error: generating and executing: Error 503, Message: Service unavailable, Status: UNAVAILABLE", false},
+		{"executor 400 location", "agent executor error: FAILED_PRECONDITION (code 400): User location is not supported for the API use.", false},
+		// The NOT_FOUND phrase alone can come from any tool or API.
+		{"tool not found without executor", "gcloud: ERROR: (gcloud.run.deploy) NOT_FOUND: Requested entity was not found.", false},
+		{"plain 404", "agy exited with error: 404 page not found", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := UnresumableHistory(tc.errMsg); got != tc.want {
+				t.Fatalf("UnresumableHistory(%q) = %v, want %v", tc.errMsg, got, tc.want)
+			}
+		})
+	}
+}

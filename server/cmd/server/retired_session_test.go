@@ -363,3 +363,84 @@ func TestGetLastChatTaskSessionExcludesOverflowedResumeFromOlderCompletedRow(t *
 	prior, err := queries.GetLastChatTaskSession(ctx, lastChatTaskSessionParams(chatSessionID))
 	requireSessionExcluded(t, prior.SessionID, err)
 }
+
+// agyExecutorNotFound is the error x99-agy-gemini persisted after an upstream
+// 404 (CHE-1715). AGY replays it on every resume of the same conversation, and
+// every row carries agent_error.unknown, so only the text guard retires it.
+const agyExecutorNotFound = `agent executor error: generating and executing: Error 404, Message: Requested entity was not found., Status: NOT_FOUND, Details: []`
+
+func TestGetLastTaskSessionExcludesAGYExecutorNotFound(t *testing.T) {
+	if testPool == nil {
+		t.Skip("no database connection")
+	}
+
+	issueID, agentID, runtimeID := setupRerunTestFixture(t)
+	t.Cleanup(func() { cleanupRerunFixture(t, issueID) })
+	ctx := context.Background()
+
+	// The session completed a turn before the 404, then failed with it.
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, started_at, completed_at, session_id, work_dir, failure_reason, error)
+		VALUES ($1, $2, $3, 'completed', 0, now() - interval '2 minutes', now() - interval '2 minutes', 'AGY-404', '/tmp/agy', NULL, NULL),
+		       ($1, $2, $3, 'failed', 0, now() - interval '1 minute', now() - interval '1 minute', 'AGY-404', '/tmp/agy', 'agent_error.unknown', $4)
+	`, agentID, runtimeID, issueID, agyExecutorNotFound); err != nil {
+		t.Fatalf("insert tasks: %v", err)
+	}
+
+	queries := db.New(testPool)
+	prior, err := queries.GetLastTaskSession(ctx, db.GetLastTaskSessionParams{
+		AgentID: pgtype.UUID{Bytes: parseUUIDBytes(agentID), Valid: true},
+		IssueID: pgtype.UUID{Bytes: parseUUIDBytes(issueID), Valid: true},
+	})
+	requireSessionExcluded(t, prior.SessionID, err)
+}
+
+func TestGetLastChatTaskSessionExcludesAGYExecutorNotFound(t *testing.T) {
+	if testPool == nil {
+		t.Skip("no database connection")
+	}
+
+	_, agentID, runtimeID := setupRerunTestFixture(t)
+	chatSessionID := newPoisonTestChatSession(t, agentID, runtimeID, "poison-agy-404")
+	ctx := context.Background()
+
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, chat_session_id, status, priority, started_at, completed_at, session_id, work_dir, failure_reason, error)
+		VALUES ($1, $2, $3, 'failed', 0, now() - interval '1 minute', now() - interval '1 minute', 'AGY-404-CHAT', '/tmp/chat', 'agent_error.unknown', $4)
+	`, agentID, runtimeID, chatSessionID, agyExecutorNotFound); err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+
+	queries := db.New(testPool)
+	prior, err := queries.GetLastChatTaskSession(ctx, lastChatTaskSessionParams(chatSessionID))
+	requireSessionExcluded(t, prior.SessionID, err)
+}
+
+// TestGetLastChatTaskSessionKeepsSessionOnOtherExecutorError is the narrowness
+// half: an executor failure that is not the stored NOT_FOUND keeps the session.
+func TestGetLastChatTaskSessionKeepsSessionOnOtherExecutorError(t *testing.T) {
+	if testPool == nil {
+		t.Skip("no database connection")
+	}
+
+	_, agentID, runtimeID := setupRerunTestFixture(t)
+	chatSessionID := newPoisonTestChatSession(t, agentID, runtimeID, "agy-503")
+	ctx := context.Background()
+
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, chat_session_id, status, priority, started_at, completed_at, session_id, work_dir, failure_reason, error)
+		VALUES ($1, $2, $3, 'failed', 0, now() - interval '1 minute', now() - interval '1 minute', 'AGY-503-CHAT', '/tmp/chat', 'agent_error.unknown',
+		        'agent executor error: generating and executing: Error 503, Message: Service unavailable, Status: UNAVAILABLE')
+	`, agentID, runtimeID, chatSessionID); err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+
+	queries := db.New(testPool)
+	prior, err := queries.GetLastChatTaskSession(ctx, lastChatTaskSessionParams(chatSessionID))
+	if err != nil {
+		t.Fatalf("GetLastChatTaskSession failed: %v", err)
+	}
+	if !prior.SessionID.Valid || prior.SessionID.String != "AGY-503-CHAT" {
+		t.Fatalf("a different executor error must not retire the session, got %+v", prior.SessionID)
+	}
+}
