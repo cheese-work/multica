@@ -486,20 +486,22 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		params.Context = pgtype.Text{String: *req.Context, Valid: true}
 	}
 	if req.Settings != nil {
-		// A non-object body would replace the whole blob, pause switch included.
-		if _, ok := req.Settings.(map[string]any); !ok {
-			writeError(w, http.StatusBadRequest, "settings must be an object")
+		var stored map[string]any
+		if existing, err := h.Queries.GetWorkspace(r.Context(), idUUID); err == nil {
+			_ = json.Unmarshal(existing.Settings, &stored)
+		}
+		incoming, isObject := req.Settings.(map[string]any)
+		if !isObject && stored[wakeupsPausedKey] == true {
+			// A non-object body would replace the whole blob and clear the pause
+			// with no resume record. Other callers may still store one.
+			writeError(w, http.StatusBadRequest, "settings must be an object while wakeups are paused")
 			return
 		}
 		if err := validateCompactPromptConfig(req.Settings); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if incoming, ok := req.Settings.(map[string]any); ok {
-			var stored map[string]any
-			if existing, err := h.Queries.GetWorkspace(r.Context(), idUUID); err == nil {
-				_ = json.Unmarshal(existing.Settings, &stored)
-			}
+		if isObject {
 			// Only an old client's flip of the retired PR switch needs the
 			// stored value; see reconcilePRMergeSettings.
 			reconcilePRMergeSettings(stored, incoming)
