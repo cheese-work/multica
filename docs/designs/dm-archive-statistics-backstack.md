@@ -168,7 +168,6 @@ Request (Cheese, same DM): `feat(multica)`: DM `/pin` command; DM `/agent` comma
 flowchart LR
   L1 --> L2
   L1 --> L4
-  L4 --> L5
   L4 --> L5a["L5a mobile route"]
   L5a --> L5b["L5b mobile IA"]
   L2 --> C1
