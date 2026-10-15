@@ -193,6 +193,8 @@ interface ContentEditorBaseProps {
   mentionContextItems?: MentionItem[];
   /** Enable the `/` command picker. Defaults false. */
   enableSlashCommands?: boolean;
+  enableRenameCommand?: boolean;
+  enableForkCommand?: boolean;
   /**
    * Which `/` menu to show when enableSlashCommands is true: "skill" (default)
    * lists the active agent's skills (chat); "command" shows the fixed built-in
@@ -254,6 +256,7 @@ type ContentEditorProps = ContentEditorBaseProps & ContentEditorValueProps;
 
 interface ContentEditorRef {
   getMarkdown: () => string;
+  getText: () => string;
   clearContent: () => void;
   focus: () => void;
   /**
@@ -378,6 +381,8 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       mentionMode = "default",
       mentionContextItems,
       enableSlashCommands = false,
+      enableRenameCommand = false,
+      enableForkCommand = false,
       slashCommandMode = "skill",
       quickActionMenu,
       attachments,
@@ -415,6 +420,10 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     // live without remounting the editor.
     const pasteAsFileThresholdRef = useRef<number | undefined>(pasteAsFileThreshold);
     const mentionContextItemsRef = useRef<MentionItem[]>(mentionContextItems ?? []);
+    const enableRenameCommandRef = useRef(enableRenameCommand);
+    enableRenameCommandRef.current = enableRenameCommand;
+    const enableForkCommandRef = useRef(enableForkCommand);
+    enableForkCommandRef.current = enableForkCommand;
     // Kept in a ref for the same reason as mentionContextItems: the extension
     // set is built once at mount, so a directly-captured options object would
     // freeze whatever closures existed then and stop seeing new quick actions.
@@ -632,6 +641,8 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
         mentionMode,
         getMentionContextItems: () => mentionContextItemsRef.current,
         enableSlashCommands,
+        canRename: () => enableRenameCommandRef.current,
+        canFork: () => enableForkCommandRef.current,
         slashCommandMode,
         quickActionMenu: {
           getQuickActions: () => quickActionMenuRef.current?.getQuickActions?.() ?? [],
@@ -957,6 +968,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       // placeholder no longer serialises at all, which is strictly stronger
       // than scrubbing it back out afterwards.
       getMarkdown: () => editor?.getMarkdown() ?? "",
+      getText: () => editor?.getText({ blockSeparator: "\n" }) ?? "",
       clearContent: () => {
         if (!editor) return;
         editor.commands.clearContent();

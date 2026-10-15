@@ -821,7 +821,7 @@ const testWorkspaceUUID = "f2b734e0-b6de-4414-8a27-a2f69b0ef843"
 func TestBuildWorkspaceUpdateDigestBody(t *testing.T) {
 	t.Run("builds single-field body with context and digest", func(t *testing.T) {
 		resetWorkspaceUpdateFlags(t)
-		setStringFlag(t, "context", "new context text")
+		setStringFlag(t, "context-file", writeCASFile(t, "new context text"))
 		setStringFlag(t, "expected-before-digest", testDigestHex)
 
 		body, err := buildWorkspaceUpdateDigestBody(workspaceUpdateCmd)
@@ -841,7 +841,7 @@ func TestBuildWorkspaceUpdateDigestBody(t *testing.T) {
 
 	t.Run("malformed digest rejected client-side", func(t *testing.T) {
 		resetWorkspaceUpdateFlags(t)
-		setStringFlag(t, "context", "new context text")
+		setStringFlag(t, "context-file", writeCASFile(t, "new context text"))
 		setStringFlag(t, "expected-before-digest", "not-a-digest")
 
 		_, err := buildWorkspaceUpdateDigestBody(workspaceUpdateCmd)
@@ -862,7 +862,7 @@ func TestBuildWorkspaceUpdateDigestBody(t *testing.T) {
 
 	t.Run("conflicting flag rejected client-side", func(t *testing.T) {
 		resetWorkspaceUpdateFlags(t)
-		setStringFlag(t, "context", "new context text")
+		setStringFlag(t, "context-file", writeCASFile(t, "new context text"))
 		setStringFlag(t, "expected-before-digest", testDigestHex)
 		setStringFlag(t, "name", "New Name")
 
@@ -872,13 +872,13 @@ func TestBuildWorkspaceUpdateDigestBody(t *testing.T) {
 		}
 	})
 
-	t.Run("context-file participates in mutual exclusion with inline context", func(t *testing.T) {
+	t.Run("context-file participates in mutual exclusion with context-stdin", func(t *testing.T) {
 		resetWorkspaceUpdateFlags(t)
 		path := filepath.Join(t.TempDir(), "context.txt")
 		if err := os.WriteFile(path, []byte("file content"), 0o600); err != nil {
 			t.Fatalf("write context file: %v", err)
 		}
-		setStringFlag(t, "context", "inline")
+		setBoolFlag(t, "context-stdin", true)
 		setStringFlag(t, "context-file", path)
 		setStringFlag(t, "expected-before-digest", testDigestHex)
 
@@ -955,7 +955,7 @@ func TestResolveWorkspaceContextLosslessRejectsInvalidUTF8Inline(t *testing.T) {
 	}
 }
 
-func TestRunWorkspaceUpdateDigestModeRejectsInvalidUTF8InlineWithoutHTTPCall(t *testing.T) {
+func TestRunWorkspaceUpdateDigestModeRejectsInvalidUTF8FileWithoutHTTPCall(t *testing.T) {
 	called := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
@@ -964,7 +964,7 @@ func TestRunWorkspaceUpdateDigestModeRejectsInvalidUTF8InlineWithoutHTTPCall(t *
 	setWorkspaceUpdateServerEnv(t, srv.URL)
 
 	resetWorkspaceUpdateFlags(t)
-	setStringFlag(t, "context", string([]byte{0xff, 0xfe}))
+	setStringFlag(t, "context-file", writeCASFile(t, string([]byte{0xff, 0xfe})))
 	setStringFlag(t, "expected-before-digest", testDigestHex)
 
 	err := runWorkspaceUpdate(workspaceUpdateCmd, []string{testWorkspaceUUID})
@@ -972,7 +972,7 @@ func TestRunWorkspaceUpdateDigestModeRejectsInvalidUTF8InlineWithoutHTTPCall(t *
 		t.Fatalf("err = %v, want invalid UTF-8 rejection", err)
 	}
 	if called {
-		t.Fatal("invalid inline UTF-8 must be rejected client-side without an HTTP call")
+		t.Fatal("invalid UTF-8 must be rejected client-side without an HTTP call")
 	}
 }
 
@@ -999,7 +999,7 @@ func TestRunWorkspaceUpdateDigestModeBuildsSingleFieldBody(t *testing.T) {
 	setWorkspaceUpdateServerEnv(t, srv.URL)
 
 	resetWorkspaceUpdateFlags(t)
-	setStringFlag(t, "context", "hermes-applied context")
+	setStringFlag(t, "context-file", writeCASFile(t, "hermes-applied context"))
 	setStringFlag(t, "expected-before-digest", testDigestHex)
 	setStringFlag(t, "output", "json")
 
@@ -1045,7 +1045,7 @@ func TestRunWorkspaceUpdateDigestModeRejectsMalformedDigestWithSlugTargetWithout
 	setWorkspaceUpdateServerEnv(t, srv.URL)
 
 	resetWorkspaceUpdateFlags(t)
-	setStringFlag(t, "context", "new context")
+	setStringFlag(t, "context-file", writeCASFile(t, "new context"))
 	setStringFlag(t, "expected-before-digest", "too-short")
 
 	slugTarget := "my-workspace-slug"
@@ -1071,7 +1071,7 @@ func TestRunWorkspaceUpdateDigestModeRejectsMalformedDigestWithoutHTTPCall(t *te
 	setWorkspaceUpdateServerEnv(t, srv.URL)
 
 	resetWorkspaceUpdateFlags(t)
-	setStringFlag(t, "context", "new context")
+	setStringFlag(t, "context-file", writeCASFile(t, "new context"))
 	setStringFlag(t, "expected-before-digest", "too-short")
 
 	err := runWorkspaceUpdate(workspaceUpdateCmd, []string{testWorkspaceUUID})
@@ -1092,7 +1092,7 @@ func TestRunWorkspaceUpdateDigestModeRejectsConflictingFlagWithoutHTTPCall(t *te
 	setWorkspaceUpdateServerEnv(t, srv.URL)
 
 	resetWorkspaceUpdateFlags(t)
-	setStringFlag(t, "context", "new context")
+	setStringFlag(t, "context-file", writeCASFile(t, "new context"))
 	setStringFlag(t, "expected-before-digest", testDigestHex)
 	setStringFlag(t, "name", "conflicting name")
 
@@ -1116,7 +1116,7 @@ func TestRunWorkspaceUpdateDigestModeSurfaces403WithoutRetry(t *testing.T) {
 	setWorkspaceUpdateServerEnv(t, srv.URL)
 
 	resetWorkspaceUpdateFlags(t)
-	setStringFlag(t, "context", "attempted context")
+	setStringFlag(t, "context-file", writeCASFile(t, "attempted context"))
 	setStringFlag(t, "expected-before-digest", testDigestHex)
 
 	err := runWorkspaceUpdate(workspaceUpdateCmd, []string{testWorkspaceUUID})
@@ -1146,7 +1146,7 @@ func TestRunWorkspaceUpdateDigestModeSurfaces409WithoutRetry(t *testing.T) {
 	setWorkspaceUpdateServerEnv(t, srv.URL)
 
 	resetWorkspaceUpdateFlags(t)
-	setStringFlag(t, "context", "attempted context")
+	setStringFlag(t, "context-file", writeCASFile(t, "attempted context"))
 	setStringFlag(t, "expected-before-digest", testDigestHex)
 
 	err := runWorkspaceUpdate(workspaceUpdateCmd, []string{testWorkspaceUUID})

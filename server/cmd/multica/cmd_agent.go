@@ -192,6 +192,9 @@ func init() {
 	agentUpdateCmd.Flags().String("name", "", "New name")
 	agentUpdateCmd.Flags().String("description", "", "New description")
 	agentUpdateCmd.Flags().String("instructions", "", "New instructions")
+	agentUpdateCmd.Flags().Bool("instructions-stdin", false, "Read the new instructions byte-for-byte from stdin")
+	agentUpdateCmd.Flags().String("instructions-file", "", "Read the new instructions byte-for-byte from a file")
+	agentUpdateCmd.Flags().String("expected-before-digest", "", "Owner-only guarded write: sha256 hex of the RAW UTF-8 bytes of the instructions you believe are live (no newline stripping; a card-manifest digest that strips one terminal LF does not match a value ending in LF). The server swaps atomically and answers 409 with no write when it is stale. Requires --instructions-stdin or --instructions-file (inline --instructions is refused so the candidate never appears in arguments) and forbids every other update flag. A 5xx or dropped connection is reported as AMBIGUOUS and is never retried.")
 	agentUpdateCmd.Flags().String("conversation-starters", "", "New conversation starters as a JSON array of {\"label\",\"prompt\"} objects (at most 3; label ≤80, prompt ≤4000). Pass '[]' to clear. Omit to leave the stored value unchanged.")
 	agentUpdateCmd.Flags().String("runtime-id", "", "New runtime ID")
 	agentUpdateCmd.Flags().String("runtime-config", "", "New runtime config as JSON string")
@@ -756,6 +759,22 @@ func runAgentUpdate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// --expected-before-digest -> owner-only guarded CAS on exactly
+	// `instructions`; see governed_cas.go.
+	if cmd.Flags().Changed("expected-before-digest") {
+		body, err := buildAgentUpdateDigestBody(cmd)
+		if err != nil {
+			return err
+		}
+		ctx, cancel := cli.APIContext(context.Background())
+		defer cancel()
+		var result map[string]any
+		if err := client.PutJSON(ctx, "/api/agents/"+args[0], body, &result); err != nil {
+			return digestWriteError("update agent", err, bodyText(body, "instructions"), bodyText(body, "expected_before_digest"))
+		}
+		return printDigestSwapResult(cmd, "agent", result)
+	}
+
 	body := map[string]any{}
 	if cmd.Flags().Changed("name") {
 		v, _ := cmd.Flags().GetString("name")
@@ -765,9 +784,10 @@ func runAgentUpdate(cmd *cobra.Command, args []string) error {
 		v, _ := cmd.Flags().GetString("description")
 		body["description"] = v
 	}
-	if cmd.Flags().Changed("instructions") {
-		v, _ := cmd.Flags().GetString("instructions")
-		body["instructions"] = v
+	if instructions, has, err := resolveAgentInstructions(cmd, true); err != nil {
+		return err
+	} else if has {
+		body["instructions"] = instructions
 	}
 	if err := applyConversationStartersFlag(cmd, body); err != nil {
 		return err

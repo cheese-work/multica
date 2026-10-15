@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { SupportedLocale } from "@multica/core/i18n";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { paths } from "@multica/core/paths";
@@ -58,10 +58,16 @@ const makeUser = (
   avatar_url: null,
   onboarded_at: null,
   onboarding_questionnaire: { source: ["search"] },
+  starter_content_state: null,
+  language: null,
+  profile_description: "",
+  timezone: null,
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
   ...overrides,
 });
+
+const mockIssueCliToken = vi.hoisted(() => vi.fn());
 
 vi.mock("next/navigation", () => ({
   useRouter: () => mockRouter,
@@ -103,6 +109,8 @@ vi.mock("@multica/core/api", async () => {
       listWorkspaces: mockListWorkspaces,
       listMyInvitations: mockListMyInvitations,
       googleLogin: vi.fn(),
+      setToken: vi.fn(),
+      issueCliToken: mockIssueCliToken,
     },
   };
 });
@@ -119,6 +127,7 @@ function renderCallback(locale: SupportedLocale = "en") {
 
 describe("CallbackPage", () => {
   beforeEach(() => {
+    mockIssueCliToken.mockReset();
     vi.clearAllMocks();
     // Reset the source-backfill dismiss counter so a test that writes
     // it doesn't leak state into the next test (and the next test
@@ -148,6 +157,43 @@ describe("CallbackPage", () => {
     expect(await screen.findByText("登录失败")).toBeInTheDocument();
     expect(screen.getByText("缺少授权码")).toBeInTheDocument();
     expect(screen.getByText("返回登录")).toBeInTheDocument();
+  });
+
+  it("keeps the Google desktop token but waits for a click before deep-linking", async () => {
+    const { api } = await import("@multica/core/api");
+    vi.mocked(api.googleLogin).mockResolvedValue({
+      token: "google-desktop-token",
+      user: makeUser(),
+    });
+    mockSearchParams.set("state", "platform:desktop");
+    const hrefSetter = vi.fn();
+    const originalLocation = window.location;
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: {
+        ...originalLocation,
+        set href(value: string) {
+          hrefSetter(value);
+        },
+      },
+    });
+    try {
+      renderCallback();
+      const openButton = await screen.findByRole("button", {
+        name: "Open Multica Desktop",
+      });
+      expect(api.googleLogin).toHaveBeenCalledTimes(1);
+      expect(hrefSetter).not.toHaveBeenCalled();
+      fireEvent.click(openButton);
+      expect(hrefSetter).toHaveBeenCalledWith(
+        "multica://auth/callback?token=google-desktop-token",
+      );
+    } finally {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: originalLocation,
+      });
+    }
   });
 
   it("shows access denied before checking for a missing authorization code", async () => {
@@ -372,7 +418,10 @@ describe("CallbackPage", () => {
         "state",
         "cli_callback:http://127.0.0.1:46233/callback,cli_state:abc123",
       );
-      mockGoogleLogin.mockResolvedValue({ token: "cli-jwt-token" });
+      mockGoogleLogin.mockResolvedValue({ token: "interactive-jwt-token" });
+      vi.mocked(mockedApi.issueCliToken).mockResolvedValue({
+        token: "cli-jwt-token",
+      });
 
       renderCallback();
 
@@ -388,6 +437,46 @@ describe("CallbackPage", () => {
           "http://127.0.0.1:46233/callback?token=cli-jwt-token&state=abc123",
         );
       });
+      expect(mockedApi.setToken).toHaveBeenCalledWith("interactive-jwt-token");
+      expect(mockedApi.issueCliToken).toHaveBeenCalledOnce();
+    } finally {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: originalLocation,
+      });
+    }
+  });
+
+  it("does not redirect the Google login token when CLI issuance fails", async () => {
+    const { api: mockedApi } = await import("@multica/core/api");
+    const hrefSetter = vi.fn();
+    const originalLocation = window.location;
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: { ...originalLocation, set href(value: string) { hrefSetter(value); } },
+    });
+
+    try {
+      mockSearchParams.set(
+        "state",
+        "cli_callback:http://127.0.0.1:46233/callback,cli_state:abc123",
+      );
+      vi.mocked(mockedApi.googleLogin).mockResolvedValue({
+        token: "interactive-jwt",
+        user: makeUser(),
+      });
+      mockIssueCliToken.mockRejectedValueOnce(
+        new ApiError("handoff denied", 403, "Forbidden"),
+      );
+
+      renderCallback();
+
+      expect(await screen.findByText("handoff denied")).toBeInTheDocument();
+      expect(mockedApi.setToken).toHaveBeenCalledWith("interactive-jwt");
+      expect(mockIssueCliToken).toHaveBeenCalledOnce();
+      expect(hrefSetter).not.toHaveBeenCalled();
+      expect(mockLoginWithGoogle).not.toHaveBeenCalled();
     } finally {
       Object.defineProperty(window, "location", {
         configurable: true,
@@ -433,6 +522,9 @@ describe("CallbackPage", () => {
         "platform:desktop,cli_callback:http://localhost:12345/callback,cli_state:mystate",
       );
       mockGoogleLogin.mockResolvedValue({ token: "mixed-jwt" });
+      vi.mocked(mockedApi.issueCliToken).mockResolvedValue({
+        token: "mixed-cli-jwt",
+      });
 
       renderCallback();
 
@@ -442,7 +534,7 @@ describe("CallbackPage", () => {
 
       await waitFor(() => {
         expect(hrefSetter).toHaveBeenCalledWith(
-          "http://localhost:12345/callback?token=mixed-jwt&state=mystate",
+          "http://localhost:12345/callback?token=mixed-cli-jwt&state=mystate",
         );
       });
     } finally {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
+import { useState, useEffect, useCallback, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Card,
@@ -116,9 +116,6 @@ export function LoginPage({
   const [loading, setLoading] = useState(false);
   const [cooldown, setCooldown] = useState(0);
   const [existingUser, setExistingUser] = useState<User | null>(null);
-  // Tracks how the existing session was detected so handleCliAuthorize
-  // uses the matching token source (cookie → issueCliToken, localStorage → direct).
-  const authSourceRef = useRef<"cookie" | "localStorage">("cookie");
   // The last session ended because the server rejected its credential, not
   // because the user asked to leave. Without saying so, landing here reads as
   // the app having lost their work for no reason.
@@ -142,7 +139,6 @@ export function LoginPage({
     api
       .getMe()
       .then((user) => {
-        authSourceRef.current = "cookie";
         setExistingUser(user);
         setStep("cli_confirm");
       })
@@ -155,7 +151,6 @@ export function LoginPage({
         api
           .getMe()
           .then((user) => {
-            authSourceRef.current = "localStorage";
             setExistingUser(user);
             setStep("cli_confirm");
           })
@@ -207,12 +202,12 @@ export function LoginPage({
       setError("");
       try {
         if (cliCallback) {
-          // CLI path: get token directly for the redirect URL
           const { token } = await api.verifyCode(email, value);
           localStorage.setItem("multica_token", token);
           api.setToken(token);
+          const { token: cliToken } = await api.issueCliToken();
           onTokenObtained?.();
-          redirectToCliCallback(cliCallback.url, token, cliCallback.state);
+          redirectToCliCallback(cliCallback.url, cliToken, cliCallback.state);
           return;
         }
 
@@ -256,18 +251,7 @@ export function LoginPage({
     setLoading(true);
 
     try {
-      let token: string;
-
-      if (authSourceRef.current === "localStorage") {
-        // Session was detected via localStorage — reuse that token directly.
-        const stored = localStorage.getItem("multica_token");
-        if (!stored) throw new Error("token missing");
-        token = stored;
-      } else {
-        // Session was detected via cookie — obtain a bearer token from the server.
-        const res = await api.issueCliToken();
-        token = res.token;
-      }
+      const { token } = await api.issueCliToken();
 
       onTokenObtained?.();
       redirectToCliCallback(cliCallback.url, token, cliCallback.state);

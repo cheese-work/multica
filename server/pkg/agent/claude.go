@@ -40,6 +40,9 @@ type claudeBackend struct {
 }
 
 func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
+	if err := b.cfg.validateCredentialOptions(opts); err != nil {
+		return nil, err
+	}
 	execPath := b.cfg.ExecutablePath
 	if execPath == "" {
 		execPath = "claude"
@@ -52,6 +55,13 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	runCtx, cancel := runContext(ctx, timeout)
 
 	args := buildClaudeArgs(opts, b.cfg.Logger)
+	if b.cfg.RequireCredentialIsolation {
+		for index, argument := range args {
+			if argument == "--permission-mode" && index+1 < len(args) {
+				args[index+1] = "default"
+			}
+		}
+	}
 
 	// If the caller provided an MCP config, write it to a temp file and pass
 	// --mcp-config <path> so the agent uses a controlled set of MCP servers
@@ -95,7 +105,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	}
 
 	var usageSnapshot *claudeUsageSnapshot
-	if opts.ResumeSessionID != "" {
+	if opts.ResumeSessionID != "" && b.cfg.CredentialBoundary == nil {
 		snapshot, snapshotErr := captureClaudeUsageSnapshot(cmd.Env, cmd.Dir, opts.ResumeSessionID)
 		if snapshotErr != nil {
 			b.cfg.Logger.Warn("claude usage baseline unavailable; falling back to reported totals", "error", snapshotErr)
@@ -104,6 +114,12 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		}
 	}
 
+	credentialCleanup, err := b.cfg.wrapCredentialCommand(cmd)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	defer credentialCleanup()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		cancel()

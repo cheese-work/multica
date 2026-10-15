@@ -168,6 +168,8 @@ export interface EditorExtensionsOptions {
   getMentionContextItems?: () => MentionItem[];
   /** When true, attach the `/` picker. Default false. */
   enableSlashCommands?: boolean;
+  canRename?: () => boolean;
+  canFork?: () => boolean;
   /**
    * Which `/` menu to attach when enableSlashCommands is true:
    * - "skill" (default) — the chat picker listing the active agent's skills.
@@ -285,7 +287,7 @@ export function createEditorExtensions(
         : options.slashCommandMode === "command"
           ? createBuiltinCommandSuggestion(options.quickActionMenu)
           : options.queryClient
-            ? createSlashCommandSuggestion(options.queryClient)
+            ? createSlashCommandSuggestion(options.queryClient, options.canRename, options.canFork)
             : { char: "/", allow: () => false },
     }),
     Typography,

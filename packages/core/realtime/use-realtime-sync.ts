@@ -66,6 +66,8 @@ import {
   QUICK_ACTIONS_PENDING_TIMEOUT_MS,
 } from "../chat/queries";
 import { useChatStore } from "../chat";
+import { parseWithFallback } from "../api/schema";
+import { ChatSessionUpdatedPayloadSchema } from "../api/schemas";
 import { upsertChatMessageToCaches } from "../chat/message-cache";
 import {
   promotePendingChatTask,
@@ -344,6 +346,7 @@ export async function applyChatQuickActionsToCache(
 
 type ChatSessionUpdatedPayload = {
   chat_session_id: string;
+  continued_into_session_id?: string;
   title?: string;
   project_id?: string | null;
   pinned?: boolean;
@@ -380,6 +383,7 @@ export function applyChatSessionUpdatedToCache(
         ? {
             ...s,
             title: payload.title ?? s.title,
+            ...(payload.continued_into_session_id ? { continued_into_session_id: payload.continued_into_session_id } : {}),
             ...("project_id" in payload ? { project_id: payload.project_id } : {}),
             pinned: payload.pinned ?? s.pinned,
             status: payload.status ?? s.status,
@@ -1556,6 +1560,7 @@ export function useRealtimeSync(
       // Write the user turn before invalidating so the prompt does not depend
       // on the refetch surviving (MUL-5711) — same shape as chat:done.
       applyChatMessageToCache(qc, payload);
+      if (payload.role !== "user") invalidateSessionLists();
       // NOTE: intentionally does NOT touch the pending aggregate. chat:message
       // fires per streamed message with no status; the aggregate is maintained
       // by the task lifecycle handlers below (MUL-4159).
@@ -1777,11 +1782,22 @@ export function useRealtimeSync(
     // and badges reflect the change without a full sessions-list refetch — see
     // applyChatSessionUpdatedToCache for why archive must also zero unread.
     const unsubChatSessionUpdated = ws.on("chat:session_updated", (p) => {
-      const payload = p as ChatSessionUpdatedPayload;
+      const payload = parseWithFallback<ChatSessionUpdatedPayload>(p, ChatSessionUpdatedPayloadSchema, { chat_session_id: "" }, {
+        endpoint: "chat:session_updated",
+      });
       chatWsLogger.info("chat:session_updated (global)", payload);
       const id = getCurrentWsId();
       if (!id) return;
       applyChatSessionUpdatedToCache(qc, id, payload);
+      if (payload.continued_into_session_id && useChatStore.getState().activeSessionId === payload.chat_session_id) {
+        const nextSessionId = payload.continued_into_session_id;
+        void qc.invalidateQueries({ queryKey: chatKeys.sessions(id) }).then(() => {
+          const sessions = qc.getQueryData<ChatSession[]>(chatKeys.sessions(id));
+          if (getCurrentWsId() === id && useChatStore.getState().activeSessionId === payload.chat_session_id && sessions?.some((session) => session.id === nextSessionId)) {
+            useChatStore.getState().setActiveSession(nextSessionId);
+          }
+        }).catch((error: unknown) => chatWsLogger.warn("continuation session refresh failed", { error }));
+      }
     });
 
     // chat:session_deleted fires after a hard delete. The originating tab has

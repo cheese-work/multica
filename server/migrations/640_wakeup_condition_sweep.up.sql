@@ -10,7 +10,7 @@
 -- old cursor is discarded when the next pass claims it, never reused. Existing
 -- rows are pending until a pass settles them, which for anything that is not a
 -- condition rule is one cheap update. A pending definition is found by the
--- partial index added by 630.
+-- partial index added by 641.
 ALTER TABLE issue_wakeup_definition
  ADD COLUMN IF NOT EXISTS sweep_revision bigint NOT NULL DEFAULT 0,
  ADD COLUMN IF NOT EXISTS sweep_cursor uuid,

@@ -1686,6 +1686,7 @@ func TestCreateCommentRejectsMalformedParentID(t *testing.T) {
 
 func TestGetChatSessionRejectsMalformedSessionID(t *testing.T) {
 	req := newRequest("GET", "/api/chat/sessions/not-a-uuid", nil)
+	req.Header.Set("X-Actor-Source", "interactive_jwt")
 	req = withURLParam(req, "sessionId", "not-a-uuid")
 	testutil.Call(t, testHandler.GetChatSession, req).Want(http.StatusBadRequest)
 }
@@ -2312,6 +2313,9 @@ func TestVerifyCode(t *testing.T) {
 	json.NewDecoder(w.Body).Decode(&resp)
 	if resp.Token == "" {
 		t.Fatal("VerifyCode: expected non-empty token")
+	}
+	if claims := provenanceJWTClaims(t, resp.Token); claims["amr"] != "interactive" {
+		t.Fatalf("VerifyCode JWT must be interactive: %v", claims)
 	}
 	if resp.User.Email != email {
 		t.Fatalf("VerifyCode: expected email '%s', got '%s'", email, resp.User.Email)

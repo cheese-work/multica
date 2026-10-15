@@ -159,7 +159,7 @@ DECLARE source_id uuid; source_agent uuid; fields jsonb; field_name text; event_
 BEGIN
  -- Avoid serializing potentially large issue documents on the ordinary path.
  IF NOT EXISTS (SELECT 1 FROM issue_wakeup WHERE issue_id=NEW.id AND enabled AND kind='event') AND NOT wakeup_scoped_event_wanted(NEW.id,NULL) THEN RETURN NEW; END IF;
- before_row := to_jsonb(OLD); after_row := to_jsonb(NEW); event_key := gen_random_uuid()::text;
+ before_row := jsonb_set(to_jsonb(OLD), '{metadata}', OLD.metadata - 'squad_leader_failed'); after_row := jsonb_set(to_jsonb(NEW), '{metadata}', NEW.metadata - 'squad_leader_failed'); event_key := gen_random_uuid()::text;
  SELECT jsonb_agg(k ORDER BY k) INTO fields FROM unnest(ARRAY[
   'title','description','status','priority','assignee_type','assignee_id','parent_issue_id','project_id',
   'due_date','start_date','stage','properties','metadata','acceptance_criteria','context_refs','triage_state']) k

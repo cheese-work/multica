@@ -1134,3 +1134,27 @@ func TestCreateComment_GovernancePerformanceHeldControlLockIsBounded(t *testing.
 	}
 	testHandler.GovernanceReceipts.WaitForIdle()
 }
+
+// hungRollbackTx blocks Rollback until its context ends, like a hung DB.
+type hungRollbackTx struct {
+	pgx.Tx
+	returned chan error
+}
+
+func (tx hungRollbackTx) Rollback(ctx context.Context) error {
+	<-ctx.Done()
+	tx.returned <- ctx.Err()
+	return ctx.Err()
+}
+
+func TestGovernanceRollbackIsBoundedByBudget(t *testing.T) {
+	returned := make(chan error, 1)
+	start := time.Now()
+	rollbackWithinBudget(context.Background(), hungRollbackTx{returned: returned})
+	if elapsed := time.Since(start); elapsed > 10*receipt.Budget {
+		t.Fatalf("rollback blocked %v, want bounded near %v", elapsed, receipt.Budget)
+	}
+	if err := <-returned; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("rollback ctx err = %v, want DeadlineExceeded", err)
+	}
+}

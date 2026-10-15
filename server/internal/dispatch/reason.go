@@ -92,6 +92,10 @@ const (
 	// ReasonQuotaExceeded is a policy-neutral refusal for an exhausted
 	// Cloud-provided autopilot interval.
 	ReasonQuotaExceeded ReasonCode = "quota_exceeded"
+	// ReasonProviderFailureCooldown means a recurring trigger was withheld after
+	// its latest provider server failure because no unused, healthy recovery was
+	// established before dispatch.
+	ReasonProviderFailureCooldown ReasonCode = "provider_failure_cooldown"
 	// ReasonIssueLimitReached means a create_issue Autopilot was admitted for a
 	// run, but Cloud's effective workspace issue-count limit blocked the issue.
 	ReasonIssueLimitReached ReasonCode = "issue_limit_reached"

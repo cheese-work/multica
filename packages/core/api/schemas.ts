@@ -778,6 +778,8 @@ export interface AppConfigResponse {
    * too, so absent must be treated as false (#8296). */
   comment_delete_keep_replies_supported?: boolean;
   server_version?: string;
+  version?: string;
+  build?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -841,7 +843,7 @@ export const ChatMessageSchema = z.object({
   failure_reason: z.string().nullable().optional(),
   elapsed_ms: z.number().nullable().optional(),
   message_kind: z
-    .enum(["message", "no_response", "onboarding_kickoff", "onboarding_opening"])
+    .enum(["message", "no_response", "onboarding_kickoff", "onboarding_opening", "continuation_summary"])
     .catch("message")
     .optional(),
   // Optional additive data degrades independently: a malformed suggestion
@@ -1039,6 +1041,8 @@ export const AppConfigSchema = z.object({
   issue_create_properties_supported: BooleanWithDefaultSchema(false),
   comment_delete_keep_replies_supported: BooleanWithDefaultSchema(false),
   server_version: OptionalStringSchema,
+  version: OptionalStringSchema,
+  build: OptionalStringSchema,
 }).loose();
 
 export const EMPTY_APP_CONFIG: AppConfigResponse = {
@@ -2024,6 +2028,7 @@ const ChatLastMessageSchema = z.object({
     "no_response",
     "onboarding_kickoff",
     "onboarding_opening",
+    "continuation_summary",
   ]).optional().catch(undefined),
 }).loose();
 
@@ -2034,7 +2039,12 @@ const ChatChannelSourceSchema = z.object({
 }).loose();
 
 export const ChatSessionSchema: z.ZodType<ChatSession> = z.object({
+  forked_from_session_id: z.string().uuid().nullable().optional().catch(undefined),
+  fork_last_message_id: z.string().uuid().nullable().optional().catch(undefined),
+  fork_message_count: z.number().int().nonnegative().nullable().optional().catch(undefined),
   id: z.string(),
+  continued_into_session_id: z.string().uuid().nullable().optional().catch(undefined),
+  continued_from_session_id: z.string().uuid().nullable().optional().catch(undefined),
   workspace_id: z.string().default(""),
   agent_id: z.string().default(""),
   creator_id: z.string().default(""),
@@ -2067,6 +2077,41 @@ export const ChatSessionListSchema = z
   .transform((sessions) => sessions.filter((session) => session.id !== ""))
   .default([]);
 export const EMPTY_CHAT_SESSION_LIST: ChatSession[] = [];
+
+export const ChatContinueResponseSchema = z.object({
+  session: ChatSessionSchema,
+  previous_session_id: z.string().default(""),
+  url: z.string().default(""),
+}).loose();
+
+export const ChatForkResponseSchema = z.object({
+  session: ChatSessionSchema,
+  previous_session_id: z.string().default(""),
+  url: z.string().default(""),
+  message: ChatMessageSchema.nullable().optional().catch(undefined),
+}).loose();
+
+export const ChatSessionUpdatedPayloadSchema = z.object({
+  chat_session_id: z.string().uuid(),
+  title: z.string().optional().catch(undefined),
+  project_id: z.string().nullable().optional().catch(undefined),
+  pinned: z.boolean().optional().catch(undefined),
+  status: z.enum(["active", "archived"]).optional().catch(undefined),
+  continued_into_session_id: z.string().uuid().optional().catch(undefined),
+  updated_at: z.string().optional().catch(undefined),
+}).loose();
+
+export const EMPTY_CHAT_CONTINUE_RESPONSE = {
+  session: EMPTY_CHAT_SESSION,
+  previous_session_id: "",
+  url: "",
+};
+
+export const EMPTY_CHAT_FORK_RESPONSE = {
+  session: EMPTY_CHAT_SESSION,
+  previous_session_id: "",
+  url: "",
+};
 
 // Deferred-cancellation draft restores
 // (`GET /api/chat/sessions/{id}/draft-restores`, #5219) feed the composer

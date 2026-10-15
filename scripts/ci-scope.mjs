@@ -7,7 +7,12 @@ export const filters = JSON.parse(
   readFileSync(new URL("../.github/ci-paths.json", import.meta.url), "utf8"),
 );
 
-export function decideScopes(event, filtered) {
+// Scopes whose jobs run candidate code on the shared self-hosted X99 runner
+// (script-checks, frontend-quality). Untrusted upstream-sync/* heads (CHE-1381)
+// never select them; the aggregate gates then expect "skipped" for both.
+const X99_SCOPES = ["scripts", "quality_only"];
+
+export function decideScopes(event, filtered, headRef = "") {
   const full = event === "schedule" || event === "workflow_dispatch";
   if (!full && event !== "push" && event !== "pull_request") {
     throw new Error(`Unsupported CI event: ${event}`);
@@ -22,6 +27,9 @@ export function decideScopes(event, filtered) {
   // Product builds already install dependencies and run the shared checks.
   // Only allocate a separate runner when quality is the sole frontend work.
   outputs.quality_only = String(outputs.quality === "true" && outputs.frontend === "false");
+  if (headRef.startsWith("upstream-sync/")) {
+    for (const scope of X99_SCOPES) outputs[scope] = "false";
+  }
   return outputs;
 }
 
@@ -61,7 +69,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   try {
     switch (process.argv[2]) {
       case "decide": {
-        const outputs = decideScopes(process.env.EVENT_NAME, JSON.parse(process.env.FILTER_RESULTS));
+        const outputs = decideScopes(process.env.EVENT_NAME, JSON.parse(process.env.FILTER_RESULTS), process.env.HEAD_REF);
         appendFileSync(process.env.GITHUB_OUTPUT,
           Object.entries(outputs).map(([key, value]) => `${key}=${value}\n`).join(""));
         break;

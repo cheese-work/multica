@@ -18,7 +18,8 @@ import { useAuthStore } from "@multica/core/auth";
 import { agentListOptions, memberListOptions } from "@multica/core/workspace/queries";
 import { projectListOptions } from "@multica/core/projects/queries";
 import { canAssignAgent } from "../../issues/components/pickers/assignee-picker";
-import { api, dispatchReasonCode } from "@multica/core/api";
+import { api, dispatchReasonCode, errorCode } from "@multica/core/api";
+import { InteractiveLoginBanner } from "./interactive-login-banner";
 import {
   isAgentRuntimeBound,
   useAgentPresenceDetail,
@@ -75,6 +76,9 @@ import { ChatInput } from "./chat-input";
 import { ChatQueue } from "./chat-queue";
 import { EmptyState } from "./chat-empty-state";
 import { SessionRenameInput } from "./session-rename-input";
+import { useChatRename } from "./use-chat-rename";
+import { useChatFork } from "./use-chat-fork";
+import { canForkSession } from "../lib/can-fork-session";
 import { ChatResizeHandles } from "./chat-resize-handles";
 import { useChatContextItems } from "./use-chat-context-items";
 import { useChatResize } from "./use-chat-resize";
@@ -121,7 +125,7 @@ export function ChatWindow() {
   const { data: members = [] } = useQuery(memberListOptions(wsId));
   // Single sessions cache — eliminates the separate active/all queries
   // that used to drift during the WS-invalidate window.
-  const { data: sessions = [], isSuccess: sessionsLoaded } = useQuery(
+  const { data: sessions = [], isSuccess: sessionsLoaded, error: sessionsError } = useQuery(
     chatSessionsOptions(wsId),
   );
   const { data: projects = [], isSuccess: projectsLoaded } = useQuery(
@@ -130,6 +134,7 @@ export function ChatWindow() {
   const {
     data: rawMessagePages,
     isLoading: messagesLoading,
+    error: messagesError,
     fetchNextPage: fetchOlderMessages,
     hasNextPage: hasOlderMessages,
     isFetchingNextPage: isFetchingOlderMessages,
@@ -218,6 +223,7 @@ export function ChatWindow() {
     ? sessions.find((s) => s.id === activeSessionId)
     : null;
   const isSessionArchived = currentSession?.status === "archived";
+  const { handleRename, renameRequest } = useChatRename(currentSession);
   const candidateProjectId = currentSession
     ? currentSession.project_id ?? null
     : selectedProjectId;
@@ -709,6 +715,7 @@ export function ChatWindow() {
     },
     [activeAgent, setSelectedAgentId, setActiveSession],
   );
+  const { handleFork } = useChatFork(currentSession, handleSelectSession);
 
   const handleProjectChange = useCallback(
     (projectId: string | null) => {
@@ -831,6 +838,10 @@ export function ChatWindow() {
 
   const contextItems = useChatContextItems(wsId);
   const queuedTasks = pendingTask?.queued_tasks ?? [];
+  const interactiveLoginRequired = Boolean(
+    (sessionsError && errorCode(sessionsError) === "interactive_login_required") ||
+    (messagesError && errorCode(messagesError) === "interactive_login_required"),
+  );
 
   return (
     <motion.div
@@ -873,6 +884,7 @@ export function ChatWindow() {
           </Tooltip>
           <SessionDropdown
             sessions={sessions}
+            renameRequest={renameRequest}
             // Use the full agent list (incl. archived) so historical
             // sessions can still resolve their avatar.
             agents={agents}
@@ -919,12 +931,21 @@ export function ChatWindow() {
       </div>
 
       {/* Messages / skeleton / empty state */}
-      {showSkeleton ? (
+      {interactiveLoginRequired ? (
+        <InteractiveLoginBanner />
+      ) : showSkeleton ? (
         <ChatMessageSkeleton />
-      ) : hasMessages ? (
+      ) : hasMessages || currentSession?.continued_from_session_id || currentSession?.continued_into_session_id || currentSession?.forked_from_session_id ? (
         <ChatMessageList
           key={activeSessionId}
           messages={messages}
+          continuedFromSessionId={currentSession?.continued_from_session_id}
+          continuedIntoSessionId={currentSession?.continued_into_session_id}
+          sessionId={activeSessionId}
+          forkedFromSessionId={currentSession?.forked_from_session_id}
+          forkLastMessageId={currentSession?.fork_last_message_id}
+          forkMessageCount={currentSession?.fork_message_count}
+          sessions={sessionsLoaded ? sessions : undefined}
           pendingTask={pendingTask}
           availability={availability}
           firstItemIndex={firstItemIndex}
@@ -998,6 +1019,8 @@ export function ChatWindow() {
        *  no agent (the EmptyState above carries the CTA). */}
       <ChatInput
         onSend={handleSend}
+        onRename={handleRename}
+        onFork={canForkSession(currentSession) ? handleFork : undefined}
         restoreDraftRequest={restoreDraftRequest}
         conversationStarterRequest={conversationStarterRequest}
         onConversationStarterApplied={handleConversationStarterApplied}
@@ -1007,6 +1030,7 @@ export function ChatWindow() {
         isRunning={!!pendingTaskId}
         allowSubmitWhileRunning={pendingTask?.supports_queue === true}
         disabled={
+          interactiveLoginRequired ||
           isSessionArchived ||
           isAgentArchived ||
           isAgentAccessRevoked ||
@@ -1203,11 +1227,13 @@ function SessionDropdown({
   agents,
   activeSessionId,
   onSelectSession,
+  renameRequest,
 }: {
   sessions: ChatSession[];
   agents: Agent[];
   activeSessionId: string | null;
   onSelectSession: (session: ChatSession) => void;
+  renameRequest: number;
 }) {
   const { t } = useT("chat");
   const wsId = useWorkspaceId();
@@ -1233,6 +1259,14 @@ function SessionDropdown({
   // session id (not the full session) so a stale closure can't overwrite a
   // newer rename pulled in via WS.
   const [renamingId, setRenamingId] = useState<string | null>(null);
+  const handledRenameRequest = useRef(renameRequest);
+  useEffect(() => {
+    if (renameRequest === handledRenameRequest.current) return;
+    handledRenameRequest.current = renameRequest;
+    if (!activeSessionId) return;
+    setRenamingId(activeSessionId);
+    setIsHistoryOpen(true);
+  }, [renameRequest, activeSessionId]);
   const setArchived = useSetChatSessionArchived();
   const updateSession = useUpdateChatSession();
   const setActiveSession = useChatStore((s) => s.setActiveSession);

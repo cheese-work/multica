@@ -991,10 +991,16 @@ func isCodexBareTomlKey(s string) bool {
 }
 
 func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
+	if err := b.cfg.validateCredentialOptions(opts); err != nil {
+		return nil, err
+	}
+	if b.cfg.RequireCredentialIsolation {
+		opts.ExtraArgs = []string{"-c", "sandbox_mode=\"workspace-write\"", "-c", "approval_policy=\"on-request\""}
+	}
 	// A thread persisted under multi-agent v2 would resume with the shell
 	// tool hidden, which the catalog override cannot undo. Start fresh and
 	// keep ResumeExpected so the turn carries the continuity notice.
-	if codexResumeKeepsMultiAgentV2(strings.TrimSpace(b.cfg.Env["CODEX_HOME"]), opts.ResumeSessionID) {
+	if b.cfg.CredentialBoundary == nil && codexResumeKeepsMultiAgentV2(strings.TrimSpace(b.cfg.Env["CODEX_HOME"]), opts.ResumeSessionID) {
 		b.cfg.Logger.Warn("codex dropping resume of multi-agent v2 thread; starting fresh",
 			"prior_thread_id", opts.ResumeSessionID,
 		)
@@ -1174,7 +1180,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 	// Writing through config.toml at 0o600 keeps the secret values out of argv
 	// entirely.
 	codexHome := strings.TrimSpace(b.cfg.Env["CODEX_HOME"])
-	if codexHome != "" {
+	if codexHome != "" && b.cfg.CredentialBoundary == nil {
 		if err := ensureCodexMcpConfig(filepath.Join(codexHome, "config.toml"), opts.McpConfig, b.cfg.Logger); err != nil {
 			// Fail closed when we can't materialise the managed config.
 			// Warning-and-launching would silently fall back to the
@@ -1261,6 +1267,13 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 	}
 	cmd.Env = buildEnv(b.cfg.Env)
 
+	credentialCleanup, err := b.cfg.wrapCredentialCommand(cmd)
+	if err != nil {
+		cancel()
+		stopProcess()
+		return nil, err
+	}
+	defer credentialCleanup()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		cancel()
@@ -1916,7 +1929,9 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 		}
 		stderrTail := sanitizeCodexDiagnostic(stderrBuf.Tail())
 		if timeoutDiagnostic.Kind != codexTimeoutNone {
-			timeoutDiagnostic.CodexVersion = detectCodexVersionForDiagnostics(context.Background(), b.cfg.commandAt(execPath), cmd.Env, b.cfg.Logger)
+			if b.cfg.CredentialBoundary == nil {
+				timeoutDiagnostic.CodexVersion = detectCodexVersionForDiagnostics(context.Background(), b.cfg.commandAt(execPath), cmd.Env, b.cfg.Logger)
+			}
 			finalError = buildCodexTimeoutDiagnosticError(timeoutDiagnostic, stderrTail)
 		}
 
@@ -2018,7 +2033,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 		// Codex writes token_count events to $CODEX_HOME/sessions/YYYY/MM/DD/*.jsonl;
 		// scan this backend's per-task CODEX_HOME, since sessions are isolated
 		// there rather than in the shared ~/.codex/sessions (MUL-4424).
-		if u.InputTokens == 0 && u.OutputTokens == 0 {
+		if b.cfg.CredentialBoundary == nil && u.InputTokens == 0 && u.OutputTokens == 0 {
 			taskCodexHome := strings.TrimSpace(b.cfg.Env["CODEX_HOME"])
 			if scanned := scanCodexSessionUsage(startTime, taskCodexHome, threadID, resumed); scanned != nil {
 				u = scanned.usage
@@ -3051,6 +3066,17 @@ func (c *codexClient) handleServerRequest(raw map[string]json.RawMessage) {
 
 	var method string
 	_ = json.Unmarshal(raw["method"], &method)
+	if c.cfg.RequireCredentialIsolation {
+		switch method {
+		case "item/commandExecution/requestApproval", "execCommandApproval", "item/fileChange/requestApproval", "applyPatchApproval":
+			c.respond(id, map[string]any{"decision": "decline"})
+		case "item/permissions/requestApproval":
+			c.respond(id, map[string]any{"permissions": map[string]any{}, "scope": "turn"})
+		default:
+			c.respondError(id, -32601, "credential-exclusive execution does not authorize this approval route")
+		}
+		return
+	}
 
 	// Auto-approve all exec/patch requests in daemon mode
 	switch method {

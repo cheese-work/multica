@@ -18,6 +18,12 @@ describe("checkQuickCreateCliVersion", () => {
     expect(checkQuickCreateCliVersion("v0.2.15").state).toBe("too_old");
   });
 
+  it("compares stamped releases as plain semver without the dev-build exemption", () => {
+    expect(checkQuickCreateCliVersion("v0.2.21-20261008-1331").state).toBe("ok");
+    expect(checkQuickCreateCliVersion("0.6.0-20261008-1331").state).toBe("ok");
+    expect(checkQuickCreateCliVersion("v0.2.20-20261008-1331").state).toBe("too_old");
+  });
+
   it("returns missing for empty or unparsable input", () => {
     expect(checkQuickCreateCliVersion("").state).toBe("missing");
     expect(checkQuickCreateCliVersion(undefined).state).toBe("missing");
@@ -32,6 +38,10 @@ describe("checkQuickCreateCliVersion", () => {
 });
 
 describe("checkQuickCreateFieldsCliVersion", () => {
+  it("compares stamped releases against the fields capability floor", () => {
+    expect(checkQuickCreateFieldsCliVersion("0.4.2-20261008-1331").state).toBe("too_old");
+    expect(checkQuickCreateFieldsCliVersion("0.4.3-20261008-1331").state).toBe("ok");
+  });
   it("requires the first daemon release that transports explicit fields", () => {
     expect(checkQuickCreateFieldsCliVersion("0.4.2").state).toBe("too_old");
     expect(checkQuickCreateFieldsCliVersion("0.4.3").state).toBe("ok");
@@ -40,6 +50,10 @@ describe("checkQuickCreateFieldsCliVersion", () => {
 });
 
 describe("chatProjectContextSupported", () => {
+  it("compares stamped releases against the project context floor", () => {
+    expect(chatProjectContextSupported("0.4.9-20261008-1331")).toBe(false);
+    expect(chatProjectContextSupported("0.4.10-20261008-1331")).toBe(true);
+  });
   it("supports a tagged release at or above the minimum", () => {
     expect(chatProjectContextSupported(MIN_CHAT_PROJECT_CONTEXT_CLI_VERSION)).toBe(true);
     expect(chatProjectContextSupported("v0.4.10")).toBe(true);

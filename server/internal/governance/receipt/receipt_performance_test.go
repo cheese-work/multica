@@ -64,3 +64,19 @@ func TestGovernancePerformanceObserveShedsWhenSharedDeadlineSpent(t *testing.T) 
 		t.Fatalf("ShedBudgetExceededTotal = %d, want 1", got)
 	}
 }
+
+// An oversized caller deadline must be clamped to Budget, never extend it.
+func TestGovernancePerformanceObserveClampsOversizedDeadline(t *testing.T) {
+	provider := &deadlineProvider{}
+	o := testObserver(provider, &fakeStore{})
+	in := testInput()
+	in.Deadline = time.Now().Add(time.Hour)
+
+	o.Observe(context.Background(), in)
+	latest := time.Now().Add(Budget)
+
+	got, ok := provider.deadline.Load().(time.Time)
+	if !ok || got.After(latest) {
+		t.Fatalf("provider context deadline = %v (set=%v), want <= %v", got, ok, latest)
+	}
+}

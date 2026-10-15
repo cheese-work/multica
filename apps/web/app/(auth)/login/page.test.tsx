@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "@multica/views/locales/en/common.json";
@@ -22,6 +22,7 @@ function createWrapper() {
 
 const {
   mockIssueCliToken,
+  mockIssueDesktopToken,
   mockListWorkspaces,
   mockListMyInvitations,
   mockPush,
@@ -30,6 +31,7 @@ const {
   authStateRef,
 } = vi.hoisted(() => ({
   mockIssueCliToken: vi.fn(),
+  mockIssueDesktopToken: vi.fn(),
   mockListWorkspaces: vi.fn(),
   mockListMyInvitations: vi.fn(),
   mockPush: vi.fn(),
@@ -84,10 +86,18 @@ vi.mock("@multica/core/api", () => ({
     setToken: vi.fn(),
     getMe: vi.fn(),
     issueCliToken: mockIssueCliToken,
+    issueDesktopToken: mockIssueDesktopToken,
   },
 }));
 
 import LoginPage from "./page";
+
+vi.mock("@multica/views/auth", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/views/auth")>()),
+  LoginPage: ({ onSuccess }: { onSuccess: () => Promise<void> }) => (
+    <button onClick={onSuccess}>Complete sign-in</button>
+  ),
+}));
 
 describe("LoginPage", () => {
   beforeEach(() => {
@@ -103,14 +113,12 @@ describe("LoginPage", () => {
   // packages/views/auth/login-page.test.tsx. This wrapper suite only owns web
   // platform handoff and redirect behavior.
 
-  // Regression: MUL-1080 — if the user is already authenticated on the web
-  // and the Desktop app redirects them to /login?platform=desktop, the web
-  // must exchange the cookie session for a bearer token and hand it off via
-  // the multica:// deep link, not silently redirect to the workspace page.
-  it("mints a token and deep-links to Desktop when already logged in with platform=desktop", async () => {
+  it.each(["existing session", "fresh email login"])("requires a click before desktop mint and handoff for %s", async (path) => {
     searchParamsState.params = new URLSearchParams({ platform: "desktop" });
-    authStateRef.state.user = { id: "u1", email: "test@multica.ai" };
-    mockIssueCliToken.mockImplementation(() =>
+    if (path === "existing session") {
+      authStateRef.state.user = { id: "u1", email: "test@multica.ai" };
+    }
+    mockIssueDesktopToken.mockImplementation(() =>
       Promise.resolve({ token: "handoff-jwt" }),
     );
 
@@ -122,19 +130,25 @@ describe("LoginPage", () => {
     });
 
     try {
-      render(<LoginPage />, { wrapper: createWrapper() });
-
-      await waitFor(() => {
-        expect(mockIssueCliToken).toHaveBeenCalledTimes(1);
-      });
+      const page = render(<LoginPage />, { wrapper: createWrapper() });
+      if (path === "fresh email login") {
+        await act(async () => {
+          authStateRef.state.user = { id: "u1", email: "test@multica.ai" };
+          page.rerender(<LoginPage />);
+        });
+      }
+      const openButton = await screen.findByRole("button", { name: "Open Multica Desktop" });
+      expect(mockIssueDesktopToken).not.toHaveBeenCalled();
+      expect(mockIssueCliToken).not.toHaveBeenCalled();
+      expect(hrefSetter).not.toHaveBeenCalled();
+      fireEvent.click(openButton);
       await waitFor(() => {
         expect(hrefSetter).toHaveBeenCalledWith(
           "multica://auth/callback?token=handoff-jwt",
         );
       });
-      expect(
-        await screen.findByRole("button", { name: "Open Multica Desktop" }),
-      ).toBeInTheDocument();
+      expect(mockIssueDesktopToken).toHaveBeenCalledTimes(1);
+      expect(mockIssueCliToken).not.toHaveBeenCalled();
     } finally {
       Object.defineProperty(window, "location", {
         configurable: true,
@@ -173,6 +187,17 @@ describe("LoginPage", () => {
       expect(mockListWorkspaces).not.toHaveBeenCalled();
     });
 
+    it("returns a fresh form login to the search URL with its query intact", async () => {
+      const destination = "/acme/search?q=login%20%2B%20%E4%B8%AD%E6%96%87";
+      searchParamsState.params = new URLSearchParams({ next: destination });
+      const view = render(<LoginPage />, { wrapper: createWrapper() });
+      authStateRef.state.user = onboardedUser;
+      view.rerender(<LoginPage />);
+      fireEvent.click(screen.getByRole("button", { name: "Complete sign-in" }));
+      await waitFor(() => expect(mockPush).toHaveBeenCalledWith(destination));
+      expect(mockReplace).not.toHaveBeenCalled();
+    });
+
     it("fetches the workspace list before redirecting a visitor who arrived authenticated", async () => {
       // Cold Query cache on a fresh page load: reading it would say "no
       // workspaces" and misroute to /workspaces/new. The effect must fetch.
@@ -187,16 +212,16 @@ describe("LoginPage", () => {
       expect(mockListWorkspaces).toHaveBeenCalledTimes(1);
     });
 
-    it("still honors ?next= for a visitor who arrived authenticated", async () => {
+    it.each(["/invite/abc", "/acme/search?q=login%20%2B%20%E4%B8%AD%E6%96%87"])("still honors ?next=%s for a visitor who arrived authenticated", async (destination) => {
       searchParamsState.params = new URLSearchParams({
-        next: "/invite/abc",
+        next: destination,
       });
       authStateRef.state.user = onboardedUser;
 
       render(<LoginPage />, { wrapper: createWrapper() });
 
       await waitFor(() => {
-        expect(mockReplace).toHaveBeenCalledWith("/invite/abc");
+        expect(mockReplace).toHaveBeenCalledWith(destination);
       });
       expect(mockListWorkspaces).not.toHaveBeenCalled();
     });

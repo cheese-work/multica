@@ -88,7 +88,7 @@ jobs:
           node-version: 22
 
       - name: Test CI selection and gates
-        run: node --test scripts/ci-scope.test.mjs scripts/check-image-budget.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs
+        run: node --test scripts/ci-scope.test.mjs scripts/check-image-budget.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/pr-changelog-line.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs deploy/cd/release-manifest.test.mjs
 
       - name: Filter paths
         id: filter
@@ -105,6 +105,9 @@ jobs:
         id: decide
         env:
           EVENT_NAME: ${{ github.event_name }}
+          # PR head branch, else the pushed/dispatched ref: upstream-sync/* heads
+          # must not select the X99 self-hosted jobs (CHE-1381).
+          HEAD_REF: ${{ github.head_ref || github.ref_name }}
           FILTER_RESULTS: ${{ toJSON(steps.filter.outputs) }}
         run: node scripts/ci-scope.mjs decide
 
@@ -406,6 +409,7 @@ jobs:
           --health-retries 10
     env:
       DATABASE_URL: postgres://multica:multica@localhost:5432/multica_test?sslmode=disable
+      CI: "true"
       # Wires up the RedisLocalSkill*_test.go suite. Distinct from REDIS_URL
       # (which would flip the server binary itself onto the Redis-backed
       # realtime relay + request stores); the tests talk to this Redis
@@ -471,7 +475,12 @@ jobs:
       - name: Verify Go test wrapper
         run: bash scripts/test-go.test.sh
 
+      - name: Verify integration database startup policy
+        run: bash server/cmd/server/integration_startup.test.sh
+
       - name: Test
+        env:
+          GOFLAGS: -count=1 -v
         # pkg/agent runs on its own runner: backend-agent-tests below.
         run: bash scripts/test-go.sh --race --only regular
 
@@ -758,7 +767,9 @@ jobs:
 
   script-checks:
     needs: changes
-    if: ${{ needs.changes.outputs.scripts == 'true' }}
+    # X99 job: the sync-head exclusion lives here, not only in candidate-controlled
+    # scripts/ci-scope.mjs (CHE-1381).
+    if: ${{ needs.changes.outputs.scripts == 'true' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') }}
     runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
     steps:
       - uses: actions/checkout@v6
@@ -832,7 +843,9 @@ jobs:
 
   frontend-quality:
     needs: changes
-    if: ${{ needs.changes.outputs.quality_only == 'true' }}
+    # X99 job: the sync-head exclusion lives here, not only in candidate-controlled
+    # scripts/ci-scope.mjs (CHE-1381).
+    if: ${{ needs.changes.outputs.quality_only == 'true' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') }}
     runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
     steps:
       - uses: actions/checkout@v6

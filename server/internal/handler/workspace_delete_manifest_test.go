@@ -30,6 +30,7 @@ const (
 	workspaceDeleteDetach workspaceDeleteAction = "detach"
 	workspaceDeleteKeep   workspaceDeleteAction = "keep"
 	workspaceDeleteSettle workspaceDeleteAction = "settle"
+	workspaceDeleteWorker workspaceDeleteAction = "decision-worker"
 )
 
 // workspaceDeletionManifest is the schema coverage contract for workspace
@@ -75,6 +76,12 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"contact_sales_inquiry":              workspaceDeleteKeep,
 	"daemon_connection":                  workspaceDelete,
 	"daemon_token":                       workspaceDelete,
+	"decision_answer":                    workspaceDeleteWorker,
+	"decision_class_change":              workspaceDeleteWorker,
+	"decision_intent":                    workspaceDeleteWorker,
+	"decision_intent_target":             workspaceDeleteWorker,
+	"decision_request":                   workspaceDeleteWorker,
+	"decision_worker_lease":              workspaceDeleteKeep,
 	"dingtalk_group_presence":            workspaceDelete,
 	"dingtalk_bot_identity":              workspaceDelete,
 	"dingtalk_group_route":               workspaceDelete,
@@ -154,6 +161,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"project_resource":                   workspaceDelete,
 	"protocol_lint_run":                  workspaceDeleteKeep, // Cross-workspace protocol-lint audit/reporting data (CHE-552), not workspace-owned.
 	"provenance_export_log":              workspaceDelete,     // CHE-755 provenance export audit rows; workspace-owned leaf.
+	"provider_failure_recovery":          workspaceDeleteKeep,
 	"quick_action":                       workspaceDelete,
 	"runtime_profile":                    workspaceDelete,
 	"schema_migrations":                  workspaceDeleteKeep,
@@ -268,5 +276,23 @@ WHERE table_schema = 'public'
 				t.Errorf("%s table %s lost workspace_id; update its teardown selector", action, table)
 			}
 		}
+	}
+}
+
+func TestDecisionWorkspaceDeletionRemainsWorkerOwned(test *testing.T) {
+	for _, table := range []string{"decision_answer", "decision_class_change", "decision_intent", "decision_intent_target", "decision_request"} {
+		if workspaceDeletionManifest[table] != workspaceDeleteWorker {
+			test.Errorf("%s must leave orphan cleanup to the decision worker", table)
+		}
+	}
+	if workspaceDeletionManifest["decision_worker_lease"] != workspaceDeleteKeep {
+		test.Error("the global worker lease is not workspace-owned")
+	}
+	queries, err := os.ReadFile("../../pkg/db/queries/workspace_delete.sql")
+	if err != nil {
+		test.Fatal(err)
+	}
+	if strings.Contains(string(queries), "decision_") {
+		test.Error("baseline workspace deletion must not run a decision statement")
 	}
 }

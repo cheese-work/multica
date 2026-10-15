@@ -1,0 +1,13 @@
+{
+  "prs": [
+    {
+      "number": 1,
+      "title": "feat(issues): faster issue lists",
+      "body": "## What does this PR do?\n\nPreview fixture.\n\n## Changelog\n\nChangelog: Issue lists now open instantly in large workspaces.\n",
+      "headRef": "agent/preview/1",
+      "mergeSha": "1111111111111111111111111111111111111111",
+      "mergedAt": "2026-10-13T08:00:00Z"
+    }
+  ],
+  "firstParent": ["1111111111111111111111111111111111111111"]
+}

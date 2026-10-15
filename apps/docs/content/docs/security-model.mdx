@@ -48,6 +48,14 @@ These are real, but they are conveniences and blast-radius reduction — not a s
 On Linux, Codex runs previously ran under the `workspace-write` sandbox with a redirected per-run `HOME`. That was removed: it left host CLIs unconfigured inside runs, and because it restricted writes only, it never prevented a run from reading and exfiltrating credentials. Linux now matches the macOS and Windows default.
 </Callout>
 
+## Credential-exclusive quota source lane
+
+The opt-in credential-exclusive runner source uses an OS-enforced Linux/amd64 boundary for Claude/OpenAI adapters. It does not change ordinary launches or activate quota-managed execution. The current daemon refuses opted-in claims before preparation until the trusted provisioning and native transport handoff is integrated.
+
+This source snapshots only approved native ELF code and libraries. It gives the complete CLI/tool process tree a private mount, user, PID and network view, task-only state, and one task-scoped gateway broker. Shared authentication, host services and inherited credentials are not mounted or passed through. Unsupported platforms, wrappers, profiles and failed boundary controls refuse execution instead of falling back.
+
+Owned production-adapter fixtures prove the credential visibility boundary. They do not prove real native transport, gateway/worker acceptance, deployment or a supported general-purpose host-tool environment. Operators must continue treating existing launches as shared-user and unsandboxed. No live setting in this source release admits shared-credential quota execution.
+
 ## Checking what a run ran with
 
 The daemon logs the effective sandbox mode at warn level when a run starts unsandboxed:

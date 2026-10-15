@@ -1,5 +1,7 @@
 {
   "page": {
+    "interactive_login_required": "请重新登录以使用聊天。",
+    "interactive_login_action": "登录",
     "title": "聊天",
     "select_prompt": "选择一个对话，或点 + 新建",
     "agent_link_no_access": "你没有权限与该智能体聊天。"
@@ -21,6 +23,11 @@
     "queue_send_tooltip": "排队发送",
     "stop_tooltip": "停止",
     "send_failed_toast": "发送消息失败",
+    "rename_failed_toast": "重命名对话失败",
+    "fork_unconfirmed": "无法确认分支是否成功。重试前请先查看“已分支到”链接。",
+    "fork_attachments_blocked": "/fork 不能附带附件。",
+    "rename_title_too_long_toast": "对话标题不能超过 200 个字符",
+    "rename_session_required_toast": "开始对话后才能重命名",
     "send_blocked_toast": "消息未发送——你已没有该智能体的使用权限",
     "runtime_required_toast": "消息未发送——请先为该智能体绑定运行时",
     "runtime_access_denied_toast": "消息未发送——该智能体无法在其私有运行时上运行。请将该运行时设为公开，或将智能体重新绑定/复制到其所有者可用的运行时",
@@ -47,6 +54,17 @@
     "action_failed_toast": "无法更新排队消息"
   },
   "message_list": {
+    "continued_from": "续接自",
+    "previous_dm": "之前的私信",
+    "continued_in": "继续于 →",
+    "forked_from": "分支自",
+    "forked_into": "已分支到",
+    "original_dm": "原私聊",
+    "new_dm": "新私聊",
+    "forked_from_deleted": "分支自已删除的私聊",
+    "copied_count_other": "已复制 {{count}} 条消息",
+    "fork_hint": "发送一条消息即可开始此分支。",
+    "continuation_summary": "对话摘要",
     "show_details": "查看详情",
     "replied_in": "{{elapsed}} 内回复",
     "failed_after": "{{elapsed}} 后失败",

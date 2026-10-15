@@ -160,6 +160,23 @@ describe("UpdateSection non-release versions", () => {
     expect(screen.queryByText("Local build")).not.toBeInTheDocument();
   });
 
+  it.each(["v0.4.17-20261008-1331", "0.4.17+20261008-1331"])(
+    "offers an update for an older stamped release %s",
+    async (currentVersion) => {
+      renderSection({ runtimeId: "runtime-1", currentVersion });
+
+      expect(await screen.findByRole("button", { name: "Update" })).toBeInTheDocument();
+      expect(screen.queryByText("Local build")).not.toBeInTheDocument();
+    },
+  );
+
+  it("reports the stamped latest release as Latest", async () => {
+    renderSection({ runtimeId: "runtime-1", currentVersion: "v0.4.20-20261008-1331" });
+
+    expect(await screen.findByText("Latest")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Update" })).not.toBeInTheDocument();
+  });
+
   it("reports a release version on the latest tag as Latest", async () => {
     renderSection({ runtimeId: "runtime-1", currentVersion: LATEST });
 

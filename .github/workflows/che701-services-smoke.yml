@@ -6,6 +6,8 @@ on:
 
 jobs:
   services-localhost:
+    # Manual dispatch can name any ref; keep untrusted upstream-sync/* heads off X99 (CHE-1381).
+    if: ${{ !startsWith(github.ref_name, 'upstream-sync/') }}
     runs-on: [self-hosted, linux, x64, cheese-x99]
     timeout-minutes: 10
     services:

@@ -1,5 +1,7 @@
 {
   "page": {
+    "interactive_login_required": "Sign in again to use Chat",
+    "interactive_login_action": "Sign in",
     "title": "Chat",
     "select_prompt": "Pick a conversation, or start a new one with +",
     "agent_link_no_access": "You don't have access to chat with this agent."
@@ -22,6 +24,11 @@
     "queue_send_tooltip": "Queue message",
     "stop_tooltip": "Stop",
     "send_failed_toast": "Failed to send message",
+    "rename_failed_toast": "Failed to rename chat",
+    "fork_unconfirmed": "Fork could not be confirmed. Check the Forked into links before trying again.",
+    "fork_attachments_blocked": "Attachments cannot be sent with /fork.",
+    "rename_title_too_long_toast": "Chat titles must be 200 characters or fewer",
+    "rename_session_required_toast": "Start a chat before renaming it",
     "send_blocked_toast": "Message not sent — you no longer have permission to use this agent",
     "runtime_required_toast": "Message not sent — bind a runtime to this agent first",
     "runtime_access_denied_toast": "Message not sent — this agent can't run on its private runtime. Make the runtime public, or rebind/copy the agent to a runtime its owner can use",
@@ -49,6 +56,18 @@
     "action_failed_toast": "Couldn't update the queued message"
   },
   "message_list": {
+    "continued_from": "Continued from",
+    "previous_dm": "previous DM",
+    "continued_in": "Continued in →",
+    "forked_from": "Forked from",
+    "forked_into": "Forked into",
+    "original_dm": "original DM",
+    "new_dm": "new DM",
+    "forked_from_deleted": "Forked from a deleted DM",
+    "copied_count_one": "{{count}} message copied",
+    "copied_count_other": "{{count}} messages copied",
+    "fork_hint": "Send a message to start this branch.",
+    "continuation_summary": "Conversation summary",
     "show_details": "Show details",
     "replied_in": "Replied in {{elapsed}}",
     "failed_after": "Failed after {{elapsed}}",

@@ -127,6 +127,42 @@ export function useCreateChatSession() {
 }
 
 /**
+ * Forks a DM: the server copies it into a new one, optionally sending a first
+ * message there. Callers own the idempotency key so a retry of the same
+ * submission replays instead of forking twice. The child is written straight
+ * into the cached list so it (and the source's "Forked into" link) shows
+ * without waiting for the realtime event.
+ */
+export function useForkChatSession() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+
+  return useMutation({
+    mutationFn: (data: { sessionId: string; idempotencyKey: string; message?: string }) => {
+      logger.info("forkChatSession.start", { sessionId: data.sessionId });
+      return api.forkChatSession(data.sessionId, {
+        idempotency_key: data.idempotencyKey,
+        ...(data.message ? { message: data.message } : {}),
+      });
+    },
+    onSuccess: ({ session }) => {
+      // An unreadable success body falls back to an empty session; nothing to cache.
+      if (!session.id) return;
+      logger.info("forkChatSession.success", { sessionId: session.id });
+      qc.setQueryData<ChatSession[]>(chatKeys.sessions(wsId), (old) =>
+        old && sortChatSessions([session, ...old.filter((s) => s.id !== session.id)]),
+      );
+    },
+    onError: (err) => {
+      logger.error("forkChatSession.error", err);
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: chatKeys.sessions(wsId) });
+    },
+  });
+}
+
+/**
  * Clears the session's unread state server-side. Optimistically flips
  * has_unread to false in the cached list so the FAB badge drops
  * immediately. The server broadcasts chat:session_read so other devices

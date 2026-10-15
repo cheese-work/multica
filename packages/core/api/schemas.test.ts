@@ -113,6 +113,24 @@ describe("ChatSessionSchema", () => {
     updated_at: "2026-08-18T00:00:00Z",
   };
 
+  it("does not add removed lane-summary defaults to session responses", () => {
+    const parsed = ChatSessionSchema.parse(baseSession);
+    expect(parsed).not.toHaveProperty("lane_summary");
+    expect(parsed).not.toHaveProperty("lane_summary_updated_at");
+    expect(ChatSessionListSchema.parse([baseSession])[0]).toEqual(parsed);
+  });
+
+  it("keeps sessions readable when older servers send lane-summary data", () => {
+    for (const summary of [
+      { lane_summary: "Legacy private lane", lane_summary_updated_at: "2026-10-12T01:00:00Z" },
+      { lane_summary: null, lane_summary_updated_at: 42 },
+    ]) {
+      const parsed = ChatSessionSchema.parse({ ...baseSession, ...summary });
+      expect(parsed).toMatchObject(baseSession);
+      expect(ChatSessionListSchema.parse([{ ...baseSession, ...summary }])[0]).toEqual(parsed);
+    }
+  });
+
   it("accepts channel route metadata and leaves it absent for first-party Chats", () => {
     expect(ChatSessionSchema.parse(baseSession).channel_source).toBeUndefined();
 
@@ -1375,6 +1393,16 @@ describe("AppConfigSchema cdn_signed drift", () => {
   it("parses server_version and leaves it undefined when the server omits it", () => {
     expect(AppConfigSchema.parse({ server_version: "1.2.3" }).server_version).toBe("1.2.3");
     expect(AppConfigSchema.parse({}).server_version).toBeUndefined();
+  });
+
+  it("preserves plain version and build fields while rejecting malformed values", () => {
+    const parsed = AppConfigSchema.parse({ version: "0.6.0", build: "20261008-1331" });
+    expect(parsed.version).toBe("0.6.0");
+    expect(parsed.build).toBe("20261008-1331");
+    const malformed = AppConfigSchema.parse({ version: 123, build: { stamp: "bad" } });
+    expect(malformed.version).toBeUndefined();
+    expect(malformed.build).toBeUndefined();
+    expect(AppConfigSchema.parse({}).build).toBeUndefined();
   });
 });
 

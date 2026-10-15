@@ -15,6 +15,172 @@ WHERE project_id = $1 AND workspace_id = $2;
 SELECT * FROM chat_session
 WHERE id = $1;
 
+-- name: SetChatContinuationSource :one
+UPDATE chat_session
+SET continued_from_session_id = $2,
+    last_read_at = sqlc.arg('summary_created_at')::timestamptz - interval '1 microsecond',
+    pinned_at = sqlc.narg('pinned_at')
+WHERE id = $1
+RETURNING *;
+
+-- name: ArchiveContinuedChatSession :one
+UPDATE chat_session
+SET status = 'archived', continued_into_session_id = $2, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: SetChatForkSource :one
+-- Runs after the copy, so the read cursor is the newest copied time and the
+-- copied history counts as read.
+UPDATE chat_session
+SET forked_from_session_id = sqlc.arg(forked_from_session_id),
+    fork_idempotency_key = sqlc.arg(fork_idempotency_key),
+    fork_last_message_id = sqlc.arg(fork_last_message_id),
+    fork_message_count = sqlc.arg(fork_message_count),
+    runtime_id = NULL,
+    last_read_at = (SELECT max(m.created_at) FROM chat_message m WHERE m.chat_session_id = sqlc.arg(id))
+WHERE id = sqlc.arg(id)
+RETURNING *;
+
+-- name: ListChatMessagesForFork :many
+-- The rows a fork copies: the member-visible rows of ListChatMessages (keep the
+-- queued follow-up selector identical), minus the hidden onboarding kickoff and
+-- rows that would render empty without their task (no text, no failure text,
+-- no attachments).
+SELECT message.* FROM chat_message AS message
+WHERE message.chat_session_id = $1
+  AND message.message_kind NOT IN ('channel_command', 'onboarding_kickoff')
+  AND (
+    btrim(message.content, E' \t\r\n') <> ''
+    OR COALESCE(message.failure_reason, '') <> ''
+    OR EXISTS (SELECT 1 FROM attachment AS a WHERE a.chat_message_id = message.id)
+  )
+  AND NOT (
+    message.role = 'user'
+    AND EXISTS (
+      SELECT 1
+      FROM agent_task_queue AS task
+      WHERE task.chat_session_id = message.chat_session_id
+        AND task.status = 'queued'
+        AND task.id = message.task_id
+        AND task.id <> (
+          SELECT head.id
+          FROM agent_task_queue AS head
+          WHERE head.chat_session_id = $1
+            AND head.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+            AND head.regenerate_quick_actions_for IS NULL
+          ORDER BY
+            CASE
+              WHEN head.status IN ('dispatched', 'running', 'waiting_local_directory') THEN 0
+              WHEN head.status = 'deferred' THEN 1
+              ELSE 2
+            END,
+            head.priority DESC,
+            head.created_at ASC,
+            head.id ASC
+          LIMIT 1
+        )
+    )
+  )
+ORDER BY message.created_at ASC, message.id ASC;
+
+-- name: InsertForkChatMessages :exec
+-- Copies source rows as history: original role, time, elapsed time and failure
+-- text; no task, no quick actions, no channel fields. The caller supplies new
+-- ids in source order and the (possibly link-rewritten) content and kind.
+INSERT INTO chat_message (
+    id, chat_session_id, role, content, task_id, created_at, failure_reason,
+    elapsed_ms, message_kind, quick_actions, sent_via
+)
+SELECT (sqlc.arg(ids)::uuid[])[i], sqlc.arg(chat_session_id)::uuid, source.role,
+       (sqlc.arg(contents)::text[])[i], NULL, source.created_at, source.failure_reason,
+       source.elapsed_ms, (sqlc.arg(message_kinds)::text[])[i], '[]'::jsonb, source.sent_via
+FROM generate_subscripts(sqlc.arg(ids)::uuid[], 1) AS i
+JOIN chat_message AS source ON source.id = (sqlc.arg(source_ids)::uuid[])[i];
+
+-- name: GetChatForkByOperation :one
+SELECT * FROM chat_session
+WHERE forked_from_session_id = $1 AND fork_idempotency_key = $2;
+
+-- name: GetChatForkFirstMessage :one
+-- The first message a fork sent. Its task is created in the fork's own
+-- transaction, so the task shares the child's creation time (now() is per
+-- transaction); a later send's task has a later time.
+SELECT message.* FROM chat_message AS message
+JOIN chat_session AS session ON session.id = message.chat_session_id
+JOIN agent_task_queue AS task ON task.id = message.task_id
+WHERE session.id = $1
+  AND message.role = 'user'
+  AND task.created_at = session.created_at
+ORDER BY message.created_at, message.id
+LIMIT 1;
+
+-- name: PlaceForkFirstMessage :one
+-- A source send that committed after the fork transaction began is copied
+-- with a time later than the transaction-start now() the first message got.
+-- Move the first message just after the newest copied row.
+UPDATE chat_message AS message
+SET created_at = GREATEST(message.created_at, (
+    SELECT max(copied.created_at) FROM chat_message AS copied
+    WHERE copied.chat_session_id = message.chat_session_id AND copied.id <> message.id
+  ) + interval '1 microsecond')
+WHERE message.id = $1
+RETURNING *;
+
+-- name: CountChatMessagesForForkBlock :one
+-- The fork block's N: the rows ListChatMessagesPage can return (keep the
+-- queued follow-up selector identical), minus the current turn's input.
+SELECT count(*)::int FROM chat_message AS message
+WHERE message.chat_session_id = $1
+  AND message.message_kind != 'channel_command'
+  AND NOT (message.id = ANY(sqlc.arg(excluded_ids)::uuid[]))
+  AND NOT (
+    message.role = 'user'
+    AND EXISTS (
+      SELECT 1
+      FROM agent_task_queue AS task
+      WHERE task.chat_session_id = message.chat_session_id
+        AND task.status = 'queued'
+        AND task.id = message.task_id
+        AND task.id <> (
+          SELECT head.id
+          FROM agent_task_queue AS head
+          WHERE head.chat_session_id = $1
+            AND head.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+            AND head.regenerate_quick_actions_for IS NULL
+          ORDER BY
+            CASE
+              WHEN head.status IN ('dispatched', 'running', 'waiting_local_directory') THEN 0
+              WHEN head.status = 'deferred' THEN 1
+              ELSE 2
+            END,
+            head.priority DESC,
+            head.created_at ASC,
+            head.id ASC
+          LIMIT 1
+        )
+    )
+  );
+
+-- name: ListForkAttachmentIndex :many
+-- Attachments of a fork child's copied rows (at or before the fork point),
+-- newest first, with the total for the "and N more" line.
+SELECT a.id, a.filename, m.created_at AS message_created_at, count(*) OVER ()::int AS total
+FROM attachment AS a
+JOIN chat_message AS m ON m.id = a.chat_message_id
+JOIN chat_message AS fork_point ON fork_point.id = sqlc.arg(fork_last_message_id)::uuid
+WHERE m.chat_session_id = sqlc.arg(chat_session_id)::uuid
+  AND a.workspace_id = sqlc.arg(workspace_id)::uuid
+  AND (m.created_at, m.id) <= (fork_point.created_at, fork_point.id)
+ORDER BY m.created_at DESC, m.id DESC, a.created_at DESC, a.id DESC
+LIMIT 100;
+
+-- name: GetChatContinuationSummary :one
+SELECT * FROM chat_message
+WHERE chat_session_id = $1 AND message_kind = 'continuation_summary'
+ORDER BY created_at, id
+LIMIT 1;
+
 -- name: GetChatSessionInWorkspace :one
 SELECT * FROM chat_session
 WHERE id = $1 AND workspace_id = $2;
@@ -67,7 +233,9 @@ WHERE cs.workspace_id = $1 AND cs.creator_id = $2 AND cs.status = 'active'
     OR
     lm.created_at IS NOT NULL
   )
-ORDER BY (cs.pinned_at IS NOT NULL) DESC, cs.pinned_at DESC, COALESCE(lm.created_at, cs.updated_at) DESC;
+-- GREATEST with created_at: a new fork of an old DM carries old copied times
+-- and must still list as new.
+ORDER BY (cs.pinned_at IS NOT NULL) DESC, cs.pinned_at DESC, GREATEST(COALESCE(lm.created_at, cs.updated_at), cs.created_at) DESC;
 
 -- name: ListAllChatSessionsByCreator :many
 -- Unlike ListChatSessionsByCreator this returns archived sessions too (for the
@@ -104,7 +272,9 @@ WHERE cs.workspace_id = $1 AND cs.creator_id = $2
     OR
     lm.created_at IS NOT NULL
   )
-ORDER BY (cs.pinned_at IS NOT NULL) DESC, cs.pinned_at DESC, COALESCE(lm.created_at, cs.updated_at) DESC;
+-- GREATEST with created_at: a new fork of an old DM carries old copied times
+-- and must still list as new.
+ORDER BY (cs.pinned_at IS NOT NULL) DESC, cs.pinned_at DESC, GREATEST(COALESCE(lm.created_at, cs.updated_at), cs.created_at) DESC;
 
 -- name: ListAgentBuilderSessionsByCreator :many
 -- The caller's unfinished agent-creation conversations.
@@ -485,7 +655,7 @@ WHERE id = $1;
 INSERT INTO chat_message (
     chat_session_id, role, content, task_id, failure_reason, elapsed_ms,
     message_kind, quick_actions, channel_media_pending_until, channel_ingested,
-    channel_context_revision, id
+    channel_context_revision, id, sent_via
 )
 VALUES (
     $1, $2, $3, sqlc.narg(task_id), sqlc.narg(failure_reason), sqlc.narg(elapsed_ms),
@@ -501,7 +671,9 @@ VALUES (
          ELSE now() + make_interval(secs => sqlc.narg(channel_media_pending_secs)::float8) END,
     COALESCE(sqlc.narg(channel_ingested)::boolean, FALSE),
     sqlc.narg(channel_context_revision),
-    COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
+    COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()),
+    CASE WHEN COALESCE(sqlc.narg(channel_ingested)::boolean, FALSE) THEN 'channel'
+         ELSE COALESCE(NULLIF(sqlc.narg(sent_via)::text, ''), 'system') END
 )
 RETURNING *;
 
@@ -1498,6 +1670,13 @@ SELECT EXISTS (
 UPDATE chat_session SET last_read_at = now()
 WHERE id = $1;
 
+-- name: MarkChatSessionReadBefore :exec
+-- Places the read cursor just before a message created in the same
+-- transaction as the session, so that message counts as unread (CHE-1662).
+UPDATE chat_session
+SET last_read_at = sqlc.arg('message_created_at')::timestamptz - interval '1 microsecond'
+WHERE id = $1;
+
 -- name: ChatSessionHasUserMessage :one
 -- Reports whether a session has any human (role='user') message yet. Used to
 -- scope the is_agent_intro self-introduction prompt to the very first,
@@ -1661,14 +1840,15 @@ SELECT
 --
 -- task_id stays NULL: no agent run produced this row, and nothing may treat it
 -- as a turn to regenerate or resume.
-INSERT INTO chat_message (chat_session_id, role, content, message_kind, created_at, id)
+INSERT INTO chat_message (chat_session_id, role, content, message_kind, created_at, id, sent_via)
 VALUES (
     sqlc.arg(chat_session_id),
     'assistant',
     sqlc.arg(content),
     'onboarding_opening',
     sqlc.arg(kickoff_created_at)::timestamptz + interval '1 microsecond',
-    COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
+    COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()),
+    'system'
 )
 RETURNING *;
 

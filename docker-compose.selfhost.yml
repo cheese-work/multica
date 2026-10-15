@@ -243,6 +243,7 @@ services:
       - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
     environment:
       HOSTNAME: "0.0.0.0"
+      MULTICA_APP_URL: ${MULTICA_APP_URL:-}
       REMOTE_API_URL: ${REMOTE_API_URL:-http://backend:8080}
       DOCS_URL: ${DOCS_URL:-}
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}

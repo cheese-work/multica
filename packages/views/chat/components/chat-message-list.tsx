@@ -40,6 +40,7 @@ import type {
   ChatMessage,
   ChatPendingTask,
   ChatQuickAction,
+  ChatSession,
   TaskMessagePayload,
 } from "@multica/core/types";
 import type { ChatTimelineItem } from "@multica/core/chat";
@@ -58,11 +59,26 @@ import {
 } from "../lib/copy-text";
 import { stripChatQuickActionsProtocol } from "../lib/quick-actions";
 import { useT } from "../../i18n";
+import { useWorkspacePaths } from "@multica/core/paths";
+import { AppLink } from "../../navigation";
 
 // ─── Public component ────────────────────────────────────────────────────
 
 interface ChatMessageListProps {
   messages: ChatMessage[];
+  continuedFromSessionId?: string | null;
+  continuedIntoSessionId?: string | null;
+  /** This session's id, to find the fork children that name it as their source. */
+  sessionId?: string | null;
+  forkedFromSessionId?: string | null;
+  /** Last message copied from the source DM; the "Forked from" divider sits below it. */
+  forkLastMessageId?: string | null;
+  forkMessageCount?: number | null;
+  /**
+   * Session list cache (includes archived), the title source for fork links.
+   * Leave undefined while it is loading so a source isn't mistaken for deleted.
+   */
+  sessions?: ChatSession[];
   /**
    * Server-authoritative pending-task snapshot. `null` / undefined means
    * no in-flight task — list renders without StatusPill.
@@ -108,6 +124,10 @@ interface ChatMessageListProps {
 
 interface ChatListContext {
   isFetchingOlderMessages: boolean;
+  continuedFromSessionId?: string | null;
+  continuedIntoSessionId?: string | null;
+  forkChildren: ChatSession[];
+  showForkHint: boolean;
   showStatusPill: boolean;
   pendingTask: ChatPendingTask | null | undefined;
   liveTaskMessages: readonly TaskMessagePayload[] | undefined;
@@ -140,6 +160,9 @@ function ChatListHeader({ context }: { context?: ChatListContext }) {
   const { t } = useT("chat");
   return (
     <div className={cn(CHAT_COLUMN, "pt-4")}>
+      {context?.continuedFromSessionId && (
+        <ContinuationAnnouncement sessionId={context.continuedFromSessionId} direction="from" />
+      )}
       {context?.isFetchingOlderMessages && (
         <div className="text-center text-caption text-muted-foreground">
           {t(($) => $.message_list.loading_older)}
@@ -157,8 +180,18 @@ function ChatListHeader({ context }: { context?: ChatListContext }) {
 // constant bottom inset: without it the last row's own py-2 was the only gap
 // between the final reply (and its follow-up pills) and the composer.
 function ChatListFooter({ context }: { context?: ChatListContext }) {
+  const { t } = useT("chat");
   return (
     <div className={cn(CHAT_COLUMN, "pb-4 space-y-4")}>
+      {context?.continuedIntoSessionId && (
+        <ContinuationAnnouncement sessionId={context.continuedIntoSessionId} direction="into" />
+      )}
+      {context?.forkChildren.map((child) => (
+        <ForkedIntoAnnouncement key={child.id} child={child} />
+      ))}
+      {context?.showForkHint && (
+        <p className="text-caption text-muted-foreground">{t(($) => $.message_list.fork_hint)}</p>
+      )}
       {context?.showStatusPill && context.pendingTask ? (
         <TaskStatusPill
           pendingTask={context.pendingTask}
@@ -170,6 +203,84 @@ function ChatListFooter({ context }: { context?: ChatListContext }) {
   );
 }
 
+function ContinuationAnnouncement({ sessionId, direction }: { sessionId: string; direction: "from" | "into" }) {
+  const { t } = useT("chat");
+  const wsPaths = useWorkspacePaths();
+  const href = `${wsPaths.chat()}?session=${encodeURIComponent(sessionId)}`;
+  return (
+    <p className="text-caption text-muted-foreground py-2">
+      {direction === "from" ? <>{t(($) => $.message_list.continued_from)}{" "}</> : null}
+      <AppLink href={href} className="underline underline-offset-2 hover:text-foreground">
+        {direction === "from" ? t(($) => $.message_list.previous_dm) : t(($) => $.message_list.continued_in)}
+      </AppLink>
+    </p>
+  );
+}
+
+function chatSessionHref(wsPaths: ReturnType<typeof useWorkspacePaths>, sessionId: string) {
+  return `${wsPaths.chat()}?session=${encodeURIComponent(sessionId)}`;
+}
+
+// Dimmed divider drawn inside the row of the last copied message. `source`
+// undefined = session list not loaded yet; null = loaded but the source isn't
+// in it (deleted / no access), so there is nothing to link to.
+function ForkDivider({
+  sourceId,
+  source,
+  copiedCount,
+}: {
+  sourceId: string;
+  source: ChatSession | null | undefined;
+  copiedCount?: number | null;
+}) {
+  const { t } = useT("chat");
+  const wsPaths = useWorkspacePaths();
+  const sourceTitle = source === null
+    ? t(($) => $.message_list.forked_from_deleted)
+    : `${t(($) => $.message_list.forked_from)} ${source?.title.trim() || t(($) => $.message_list.original_dm)}`;
+  const copied = typeof copiedCount === "number"
+    ? t(($) => $.message_list.copied_count, { count: copiedCount })
+    : null;
+  return (
+    <div className="mt-4 flex items-center gap-3 text-caption text-muted-foreground">
+      {/* Only the rule is the separator: a separator's children are
+          presentational, which would hide the source link. */}
+      <span
+        role="separator"
+        aria-label={copied ? `${sourceTitle} · ${copied}` : sourceTitle}
+        className="h-px min-w-4 flex-1 bg-border"
+      />
+      <span className="max-w-full text-center">
+        {source === null ? (
+          sourceTitle
+        ) : (
+          <>
+            {t(($) => $.message_list.forked_from)}{" "}
+            <AppLink href={chatSessionHref(wsPaths, sourceId)} className="underline underline-offset-2 hover:text-foreground">
+              {source?.title.trim() || t(($) => $.message_list.original_dm)}
+            </AppLink>
+          </>
+        )}
+        {copied && ` · ${copied}`}
+      </span>
+      <span className="h-px min-w-4 flex-1 bg-border" aria-hidden />
+    </div>
+  );
+}
+
+function ForkedIntoAnnouncement({ child }: { child: ChatSession }) {
+  const { t } = useT("chat");
+  const wsPaths = useWorkspacePaths();
+  return (
+    <p className="text-caption text-muted-foreground py-2">
+      {t(($) => $.message_list.forked_into)}{" "}
+      <AppLink href={chatSessionHref(wsPaths, child.id)} className="underline underline-offset-2 hover:text-foreground">
+        {child.title.trim() || t(($) => $.message_list.new_dm)}
+      </AppLink>
+    </p>
+  );
+}
+
 const LIST_COMPONENTS: Components<ChatRenderItem, ChatListContext> = {
   Header: ChatListHeader,
   Footer: ChatListFooter,
@@ -177,6 +288,13 @@ const LIST_COMPONENTS: Components<ChatRenderItem, ChatListContext> = {
 
 export function ChatMessageList({
   messages,
+  continuedFromSessionId,
+  continuedIntoSessionId,
+  sessionId,
+  forkedFromSessionId,
+  forkLastMessageId,
+  forkMessageCount,
+  sessions,
   pendingTask,
   availability,
   firstItemIndex = 0,
@@ -280,8 +398,31 @@ export function ChatMessageList({
   const firstIndex = renderItems.length > 0 ? firstItemIndex : 0;
   const liveEndKey = renderItems[renderItems.length - 1]?.key ?? null;
 
+  const forkSource = forkedFromSessionId && sessions
+    ? sessions.find((s) => s.id === forkedFromSessionId) ?? null
+    : undefined;
+  // Oldest first, so a new branch lands under the earlier ones.
+  const forkChildren = useMemo(
+    () =>
+      sessionId && sessions
+        ? sessions
+            .filter((s) => s.forked_from_session_id === sessionId)
+            .sort((a, b) => a.created_at.localeCompare(b.created_at))
+        : [],
+    [sessionId, sessions],
+  );
+  // Idle hint until a user message follows the fork point. A fork point that
+  // is not loaded sits above everything loaded, so all loaded rows follow it.
+  const forkPointIndex = forkLastMessageId ? messages.findIndex((m) => m.id === forkLastMessageId) : -1;
+  const showForkHint = !!forkLastMessageId
+    && !messages.slice(forkPointIndex + 1).some((m) => m.role === "user");
+
   const listContext: ChatListContext = {
     isFetchingOlderMessages,
+    continuedFromSessionId: hasOlderMessages ? null : continuedFromSessionId,
+    continuedIntoSessionId,
+    forkChildren,
+    showForkHint,
     showStatusPill,
     pendingTask,
     liveTaskMessages,
@@ -388,6 +529,9 @@ export function ChatMessageList({
               quickActionsPendingMessageId={quickActionsPendingMessageId}
               starterCardsMessageId={starterCardsMessageId}
             />
+            {forkedFromSessionId && item.kind === "message" && item.message.id === forkLastMessageId && (
+              <ForkDivider sourceId={forkedFromSessionId} source={forkSource} copiedCount={forkMessageCount} />
+            )}
           </div>
         )}
       />
@@ -480,6 +624,10 @@ const MessageBubble = memo(function MessageBubble({
 
   const { message } = item;
 
+  if (message.message_kind === "continuation_summary") {
+    return <ContinuationSummary message={message} />;
+  }
+
   if (message.role === "user") {
     return (
       <div className="flex justify-end">
@@ -520,6 +668,22 @@ const MessageBubble = memo(function MessageBubble({
     />
   );
 });
+
+function ContinuationSummary({ message }: { message: ChatMessage }) {
+  const { t } = useT("chat");
+  const [open, setOpen] = useState(false);
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger className="flex items-center gap-1 text-caption text-muted-foreground hover:text-foreground transition-colors">
+        {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+        {t(($) => $.message_list.continuation_summary)}
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <RichContent content={message.content} attachments={message.attachments} density="compact" />
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
 
 /**
  * Assistant turn body — renders BOTH the in-flight (live) and the persisted

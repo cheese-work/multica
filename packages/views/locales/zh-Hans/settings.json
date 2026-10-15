@@ -1,4 +1,12 @@
 {
+  "site_search": {
+    "title": "网站搜索",
+    "url": "搜索网址",
+    "hint": "在 brave://settings/search → 网站搜索 → 添加 中添加",
+    "copy": "复制",
+    "copied": "搜索网址已复制",
+    "copy_failed": "无法复制搜索网址"
+  },
   "issue_statuses": {
     "title": "任务状态",
     "loading": "正在加载状态…",

@@ -1,5 +1,7 @@
 {
   "page": {
+    "interactive_login_required": "Reconnectez-vous pour utiliser la discussion",
+    "interactive_login_action": "Se connecter",
     "title": "Discussion",
     "select_prompt": "Choisissez une conversation, ou démarrez-en une nouvelle avec +",
     "agent_link_no_access": "Vous n'avez pas accès à la discussion avec cet agent."
@@ -22,6 +24,11 @@
     "queue_send_tooltip": "Mettre le message en file d'attente",
     "stop_tooltip": "Arrêter",
     "send_failed_toast": "Échec de l'envoi du message",
+    "rename_failed_toast": "Impossible de renommer la conversation",
+    "fork_unconfirmed": "La dérivation n’a pas pu être confirmée. Vérifiez les liens « Dérivée vers » avant de réessayer.",
+    "fork_attachments_blocked": "Les pièces jointes ne peuvent pas être envoyées avec /fork.",
+    "rename_title_too_long_toast": "Le titre ne doit pas dépasser 200 caractères",
+    "rename_session_required_toast": "Démarrez une conversation avant de la renommer",
     "send_blocked_toast": "Message non envoyé — vous n'avez plus la permission d'utiliser cet agent",
     "runtime_required_toast": "Message non envoyé — associez d'abord un runtime à cet agent",
     "runtime_access_denied_toast": "Message non envoyé — cet agent ne peut pas s'exécuter sur son runtime privé. Passez le runtime en public, ou réassociez/copiez l'agent vers un runtime que son propriétaire peut utiliser.",
@@ -49,6 +56,18 @@
     "action_failed_toast": "Impossible de mettre à jour le message en file d'attente"
   },
   "message_list": {
+    "continued_from": "Suite de",
+    "previous_dm": "la conversation précédente",
+    "continued_in": "Suite dans →",
+    "forked_from": "Dérivée de",
+    "forked_into": "Dérivée vers",
+    "original_dm": "la conversation d’origine",
+    "new_dm": "la nouvelle conversation",
+    "forked_from_deleted": "Dérivée d’une conversation supprimée",
+    "copied_count_one": "{{count}} message copié",
+    "copied_count_other": "{{count}} messages copiés",
+    "fork_hint": "Envoyez un message pour démarrer cette branche.",
+    "continuation_summary": "Résumé de la conversation",
     "show_details": "Afficher les détails",
     "replied_in": "Réponse en {{elapsed}}",
     "failed_after": "Échec après {{elapsed}}",

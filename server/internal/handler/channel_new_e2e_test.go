@@ -360,7 +360,7 @@ func TestChannelChatCommandE2ERotatesRouteAndFreezesTaskDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load agent for direct send: %v", err)
 	}
-	direct, err := testHandler.TaskService.SendDirectChatMessage(ctx, emptySession, agent, util.MustParseUUID(testUserID), "continue from the web client", nil, "member", util.MustParseUUID(testUserID))
+	direct, err := testHandler.TaskService.SendDirectChatMessage(ctx, emptySession, agent, util.MustParseUUID(testUserID), "continue from the web client", nil, "member", util.MustParseUUID(testUserID), "interactive_jwt")
 	if err != nil {
 		t.Fatalf("direct send to channel-created Chat: %v", err)
 	}
@@ -403,7 +403,7 @@ func TestChannelChatCommandE2ERotatesRouteAndFreezesTaskDelivery(t *testing.T) {
 	}
 	attachmentSend, err := testHandler.TaskService.SendDirectChatMessage(
 		ctx, attachmentSession, agent, util.MustParseUUID(testUserID), "", []pgtype.UUID{attachmentID},
-		"member", util.MustParseUUID(testUserID),
+		"member", util.MustParseUUID(testUserID), "interactive_jwt",
 	)
 	if err != nil {
 		t.Fatalf("send attachment-only first message: %v", err)
