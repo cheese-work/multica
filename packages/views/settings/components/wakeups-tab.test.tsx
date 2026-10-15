@@ -72,7 +72,10 @@ it("shows the defaults read-only to members who cannot change them", async () =>
 
 it("lets an admin pause every wakeup and keeps the rest of the settings", async () => {
   mount();
-  fireEvent.click(await screen.findByRole("switch", { name: "Pause all wakeups" }));
+  const toggle = await screen.findByRole("switch", { name: "Pause all wakeups" });
+  // The switch stays disabled until the member list says the viewer is an admin.
+  await waitFor(() => expect(toggle).not.toHaveAttribute("aria-disabled", "true"));
+  fireEvent.click(toggle);
   await waitFor(() =>
     expect(updateWorkspace).toHaveBeenCalledWith("ws", { settings: { github_enabled: true, wakeups_paused: true } }),
   );

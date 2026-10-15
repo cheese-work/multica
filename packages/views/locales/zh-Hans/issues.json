@@ -1333,7 +1333,9 @@
       "max_fires": "达到 {{count}} 次上限",
       "loop": "与其他唤醒规则互相触发",
       "rate": "1 小时内触发超过 12 次"
-    }
+    },
+    "paused_banner": "{{name}} 已于 {{time}} 暂停唤醒",
+    "paused_banner_anonymous": "唤醒已于 {{time}} 暂停"
   },
   "duplicates": {
     "banner_prefix": "重复于",

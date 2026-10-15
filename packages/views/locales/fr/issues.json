@@ -1378,7 +1378,9 @@
       "max_fires": "limite de {{count}} exécutions atteinte",
       "loop": "il réveillait des règles qui le réveillaient à leur tour",
       "rate": "plus de 12 exécutions en une heure"
-    }
+    },
+    "paused_banner": "Réveils suspendus par {{name}} à {{time}}",
+    "paused_banner_anonymous": "Réveils suspendus à {{time}}"
   },
   "duplicates": {
     "banner_prefix": "Doublon de",

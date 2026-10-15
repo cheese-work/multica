@@ -1,16 +1,20 @@
 "use client";
 
 import { useEffect, useId, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { api } from "@multica/core/api";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useAuthStore } from "@multica/core/auth";
-import { memberListOptions } from "@multica/core/workspace/queries";
+import { useCurrentWorkspace } from "@multica/core/paths";
+import { memberListOptions, workspaceKeys } from "@multica/core/workspace/queries";
+import { deriveWakeupsPause } from "@multica/core/workspace/wakeups-pause";
 import { useUpdateWorkspaceSystemWakeup, workspaceSystemWakeupsOptions } from "@multica/core/issues";
-import type { WorkspaceSystemWakeup } from "@multica/core/types";
+import type { Workspace, WorkspaceSystemWakeup } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
 import { Switch } from "@multica/ui/components/ui/switch";
 import { Textarea } from "@multica/ui/components/ui/textarea";
+import { WakeupsPausedBanner } from "../../issues/components/wakeups-paused-banner";
 import { useT } from "../../i18n";
 import { SettingsCard, SettingsRow, SettingsSection, SettingsTab } from "./settings-layout";
 
@@ -32,6 +36,7 @@ export function WakeupsTab() {
     return role === "owner" || role === "admin";
   }, [members, currentUser]);
   const childDone = rules.find((rule) => rule.rule === "child_done");
+  const paused = deriveWakeupsPause(useCurrentWorkspace()).paused;
   return (
     <SettingsTab title={t(($) => $.page.tabs.wakeups)} description={t(($) => $.wakeups.description)}>
       {isError && (
@@ -39,13 +44,58 @@ export function WakeupsTab() {
           {t(($) => $.wakeups.load_error)}
         </p>
       )}
-      {childDone && <ChildDoneDefault rule={childDone} canManage={canManage} />}
+      <PauseSwitch canManage={canManage} />
+      {childDone && <ChildDoneDefault rule={childDone} canManage={canManage} paused={paused} />}
       {childDone && !canManage && <p className="text-caption text-muted-foreground">{t(($) => $.wakeups.admin_only)}</p>}
     </SettingsTab>
   );
 }
 
-function ChildDoneDefault({ rule, canManage }: { rule: WorkspaceSystemWakeup; canManage: boolean }) {
+/** The master switch: while on, no wakeup of this workspace fires. */
+function PauseSwitch({ canManage }: { canManage: boolean }) {
+  const { t } = useT("settings");
+  const workspace = useCurrentWorkspace();
+  const qc = useQueryClient();
+  const id = useId();
+  const [saving, setSaving] = useState(false);
+  const paused = deriveWakeupsPause(workspace).paused;
+  const toggle = async (next: boolean) => {
+    if (!workspace || saving) return;
+    setSaving(true);
+    try {
+      // The server stamps who and when; it also keeps the pause when a save omits it.
+      const updated = await api.updateWorkspace(workspace.id, { settings: { ...workspace.settings, wakeups_paused: next } });
+      qc.setQueryData(workspaceKeys.list(), (old: Workspace[] | undefined) =>
+        old?.map((ws) => (ws.id === updated.id ? updated : ws)),
+      );
+    } catch {
+      toast.error(t(($) => $.wakeups.pause_error));
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <SettingsSection anchor="pause">
+      <SettingsCard>
+        <SettingsRow
+          label={<label htmlFor={`${id}-paused`}>{t(($) => $.wakeups.pause_label)}</label>}
+          description={t(($) => $.wakeups.pause_description)}
+        >
+          <Switch
+            id={`${id}-paused`}
+            checked={paused}
+            disabled={!canManage || saving}
+            aria-busy={saving || undefined}
+            onCheckedChange={(next) => void toggle(next)}
+          />
+        </SettingsRow>
+      </SettingsCard>
+      <WakeupsPausedBanner />
+    </SettingsSection>
+  );
+}
+
+function ChildDoneDefault({ rule, canManage, paused }: { rule: WorkspaceSystemWakeup; canManage: boolean; paused: boolean }) {
   const { t } = useT("settings");
   const wsId = useWorkspaceId();
   const update = useUpdateWorkspaceSystemWakeup(wsId);
@@ -72,12 +122,18 @@ function ChildDoneDefault({ rule, canManage }: { rule: WorkspaceSystemWakeup; ca
       <SettingsCard>
         <SettingsRow
           label={<label htmlFor={`${id}-enabled`}>{t(($) => $.wakeups.enabled)}</label>}
-          description={rule.customized > 0 ? t(($) => $.wakeups.customized, { count: rule.customized }) : undefined}
+          description={
+            paused
+              ? t(($) => $.wakeups.overridden)
+              : rule.customized > 0
+                ? t(($) => $.wakeups.customized, { count: rule.customized })
+                : undefined
+          }
         >
           <Switch
             id={`${id}-enabled`}
             checked={rule.enabled}
-            disabled={!canManage || update.isPending}
+            disabled={!canManage || paused || update.isPending}
             aria-busy={update.isPending || undefined}
             onCheckedChange={(enabled) => void save({ enabled }).catch(() => undefined)}
           />

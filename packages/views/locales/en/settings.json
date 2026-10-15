@@ -105,7 +105,11 @@
     "customized_one": "{{count}} open issue has its own setting and ignores this default.",
     "customized_other": "{{count}} open issues have their own setting and ignore this default.",
     "admin_only": "Only owners and admins can change these defaults.",
-    "load_error": "Could not load wakeup defaults."
+    "load_error": "Could not load wakeup defaults.",
+    "pause_label": "Pause all wakeups",
+    "pause_description": "Nothing fires while paused. Events that arrive meanwhile are dropped, not replayed.",
+    "pause_error": "Could not change the pause.",
+    "overridden": "Overridden while wakeups are paused."
   },
   "quick_actions": {
     "title": "Quick Actions",

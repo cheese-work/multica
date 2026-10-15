@@ -1378,7 +1378,9 @@
       "max_fires": "reached its limit of {{count}} runs",
       "loop": "it kept waking rules that woke it again",
       "rate": "more than 12 runs in an hour"
-    }
+    },
+    "paused_banner": "Wakeups paused by {{name}} at {{time}}",
+    "paused_banner_anonymous": "Wakeups paused at {{time}}"
   },
   "duplicates": {
     "banner_prefix": "Duplicate of",
