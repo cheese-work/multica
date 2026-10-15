@@ -2,11 +2,13 @@ package handler
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -127,7 +129,12 @@ func TestDecisionDeliveryRollbackAndRestart(test *testing.T) {
 			}
 			handler, _ := newDecisionRunnerFixture(test)
 			handler.TxStarter = decisionFailCommit{testPool}
+			var published atomic.Int32
+			handler.Bus.SubscribeAll(func(events.Event) { published.Add(1) })
 			_ = deliverDecisionForTest(handler, fixture)
+			if published.Load() != 0 {
+				test.Fatal("rolled-back delivery published events")
+			}
 			if count := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE id = $1 AND woken_at IS NOT NULL`, recorded.Answer.ID); count != 0 {
 				test.Fatal("rollback acknowledged the answer")
 			}
@@ -266,6 +273,9 @@ func TestDecisionDeliveryCompleteGroupAndReanswer(test *testing.T) {
 		if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND status = 'queued' AND (trigger_comment_id = $2 OR $2 = ANY(coalesced_comment_ids))`, fixture.issueID, record.Comment.ID); count != 1 {
 			test.Fatalf("group quote not in the single run: %d", count)
 		}
+		if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND handoff_note LIKE $2`, fixture.issueID, "%"+uuidToString(record.Comment.ID)+"%"); count != 1 {
+			test.Fatalf("group prompt omitted quote %s", uuidToString(record.Comment.ID))
+		}
 	}
 	dbfx.Exec(test, `UPDATE decision_answer SET disclaimed_at = clock_timestamp() WHERE id = $1`, records[0].Answer.ID)
 	dbfx.Exec(test, `UPDATE decision_request SET status = 'open' WHERE id = $1`, records[0].Request.ID)
@@ -286,6 +296,99 @@ func TestDecisionDeliveryCompleteGroupAndReanswer(test *testing.T) {
 	}
 }
 
+type decisionDeliveryBarrier struct {
+	txStarter
+	ready   chan int
+	release <-chan struct{}
+}
+
+type decisionDeliveryBarrierTx struct {
+	pgx.Tx
+	starter *decisionDeliveryBarrier
+}
+
+func (starter *decisionDeliveryBarrier) Begin(ctx context.Context) (pgx.Tx, error) {
+	transaction, err := starter.txStarter.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return decisionDeliveryBarrierTx{transaction, starter}, nil
+}
+
+func (transaction decisionDeliveryBarrierTx) Commit(ctx context.Context) error {
+	var backendPID int
+	if err := transaction.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&backendPID); err != nil {
+		return err
+	}
+	transaction.starter.ready <- backendPID
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-transaction.starter.release:
+		return transaction.Tx.Commit(ctx)
+	}
+}
+
+func TestDecisionDeliveryBlocksSourceDeleteThroughCommit(test *testing.T) {
+	fixture, recorded := readyDecisionDelivery(test)
+	handler, _ := newDecisionRunnerFixture(test)
+	release := make(chan struct{})
+	defer close(release)
+	starter := &decisionDeliveryBarrier{txStarter: testPool, ready: make(chan int, 1), release: release}
+	handler.TxStarter = starter
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	completed := make(chan error, 1)
+	go func() { completed <- handler.DeliverDecisionWake(ctx, fixture.issue.WorkspaceID, fixture.decision.ID) }()
+	var backendPID int
+	select {
+	case backendPID = <-starter.ready:
+	case err := <-completed:
+		test.Fatalf("delivery ended before source fence: %v", err)
+	case <-ctx.Done():
+		test.Fatal(ctx.Err())
+	}
+	deleted := make(chan error, 1)
+	go func() {
+		_, err := testPool.Exec(ctx, `DELETE FROM chat_message WHERE id = $1`, fixture.messageID)
+		deleted <- err
+	}()
+	if !waitForWaiterBlockedBy(test, backendPID, 3*time.Second) {
+		test.Fatal("source delete bypassed the delivery transaction")
+	}
+	release <- struct{}{}
+	if err := <-completed; err != nil {
+		test.Fatal(err)
+	}
+	if err := <-deleted; err != nil {
+		test.Fatal(err)
+	}
+	if count := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE id = $1 AND wake_outcome = 'run_enqueued'`, recorded.Answer.ID); count != 1 {
+		test.Fatal("source-fenced delivery did not commit its receipt")
+	}
+}
+
+func TestDecisionDeliveryPreservesAttribution(test *testing.T) {
+	for _, queued := range []bool{false, true} {
+		test.Run(map[bool]string{false: "enqueue", true: "merge"}[queued], func(test *testing.T) {
+			fixture, recorded := readyDecisionDelivery(test)
+			dbfx.Exec(test, `UPDATE agent_task_queue SET originator_user_id = $1, accountable_user_id = $1, originator_source = 'direct_human' WHERE id = $2`, fixture.humanID, fixture.chatTaskID)
+			if queued {
+				dbfx.Task(test, fixture.agentID, testutil.Cols{"issue_id": fixture.issueID, "status": "queued", "runtime_id": handlerTestRuntimeID(test), "originator_user_id": testUserID, "accountable_user_id": testUserID})
+			}
+			handler, _ := newDecisionRunnerFixture(test)
+			if err := deliverDecisionForTest(handler, fixture); err != nil {
+				test.Fatal(err)
+			}
+			var originator, accountable, source string
+			dbfx.QueryRow(test, `SELECT originator_user_id::text, accountable_user_id::text, originator_source FROM agent_task_queue WHERE issue_id = $1 AND trigger_comment_id = $2`, fixture.issueID, recorded.Comment.ID).Scan(&originator, &accountable, &source)
+			if originator != fixture.humanID || accountable != fixture.humanID || source != "comment_source" {
+				test.Fatalf("decision attribution=%s/%s/%s, want asking turn's human", originator, accountable, source)
+			}
+		})
+	}
+}
+
 func TestDecisionDeliveryGroupReadiness(test *testing.T) {
 	for _, hold := range []string{"unsealed", "held", "open", "reopened", "complete", "unasked_target", "cancelled"} {
 		test.Run(hold, func(test *testing.T) {
@@ -298,6 +401,10 @@ func TestDecisionDeliveryGroupReadiness(test *testing.T) {
 			dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, fixture.chatTaskID)
 			if hold != "unsealed" {
 				dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, fixture.taskID)
+			} else {
+				dbfx.Exec(test, `INSERT INTO decision_intent_target (decision_intent_id, human_user_id) VALUES ($1, $2)`, fixture.intentID, testUserID)
+				dbfx.Exec(test, `UPDATE decision_intent SET sealed_at = NULL, consumed_at = NULL WHERE id = $1`, fixture.intentID)
+				dbfx.Exec(test, `UPDATE agent_task_queue SET comment_thread_id = $1 WHERE id = $2`, fixture.tagID, fixture.taskID)
 			}
 			if hold == "held" {
 				dbfx.Exec(test, `UPDATE decision_answer SET effective_at = clock_timestamp() + interval '10 minutes' WHERE id = $1`, recorded.Answer.ID)
@@ -324,6 +431,47 @@ func TestDecisionDeliveryGroupReadiness(test *testing.T) {
 			if count := dbfx.Count(test, `SELECT count(*) FROM decision_intent WHERE id = $1 AND group_woken_at IS NOT NULL`, fixture.intentID); count != want {
 				test.Fatalf("group receipts=%d, want %d", count, want)
 			}
+			if hold == "unasked_target" || hold == "cancelled" {
+				label := "%Target not asked: user " + testUserID + "%"
+				if hold == "cancelled" {
+					label = "%Cancelled request %"
+				}
+				if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND status = 'queued' AND handoff_note LIKE $2`, fixture.issueID, label); count != 1 {
+					test.Fatal("group prompt omitted an unasked target or cancelled request")
+				}
+			}
 		})
+	}
+}
+
+func TestDecisionDeliveryUnprompted(test *testing.T) {
+	fixture, recorded := readyDecisionDelivery(test)
+	dbfx.Exec(test, `UPDATE decision_request SET origin = 'unprompted', decision_intent_id = NULL, ping_message_id = NULL, issue_comment_id = $1 WHERE id = $2`, recorded.Comment.ID, fixture.decision.ID)
+	dbfx.Exec(test, `UPDATE decision_intent SET sealed_at = NULL WHERE id = $1`, fixture.intentID)
+	handler, _ := newDecisionRunnerFixture(test)
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := deliverDecisionForTest(handler, fixture); err != nil {
+			test.Fatal(err)
+		}
+	}
+	if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND trigger_comment_id = $2`, fixture.issueID, recorded.Comment.ID); count != 1 {
+		test.Fatalf("unprompted runs=%d, want 1", count)
+	}
+	if count := dbfx.Count(test, `SELECT count(*) FROM decision_intent WHERE id = $1 AND group_woken_at IS NOT NULL`, fixture.intentID); count != 0 {
+		test.Fatal("unprompted delivery acknowledged an unrelated intent")
+	}
+}
+
+func TestDecisionDeliveryCandidatesDoNotStarveCompleteGroups(test *testing.T) {
+	blocked, _ := readyDecisionDelivery(test)
+	dbfx.Exec(test, `UPDATE agent SET name = $1 WHERE id = $2`, "blocked-"+blocked.agentID, blocked.agentID)
+	dbfx.Insert(test, "decision_request", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": blocked.issueID, "asking_agent_id": blocked.agentID, "human_user_id": testUserID, "chat_session_id": blocked.sessionID, "issue_comment_id": blocked.tagID, "ask": "Still open", "escalation_class": "reversible", "status": "open", "origin": "asked", "decision_intent_id": blocked.intentID})
+	ready, _ := readyDecisionDelivery(test)
+	candidates, err := testHandler.Queries.ListDecisionWakeCandidates(context.Background(), 1)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].ID != ready.decision.ID {
+		test.Fatalf("old incomplete group starved the ready group: %+v", candidates)
 	}
 }

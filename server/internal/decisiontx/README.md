@@ -294,3 +294,28 @@ recording, human withdrawal, agent veto and raise-class integration. Run from
 go test -race -p 1 ./internal/handler ./internal/decisiontx ./cmd/server -run 'Decision|AskedDecision|UnpromptedDecision' -count=1
 go test ./cmd/multica -run 'Decision' -count=1
 ```
+
+CHE-1750 adds atomic wake delivery to the leased worker. A sealed group waits
+for every non-cancelled request and every live answer's hold. The transaction
+locks workspace, recipient runtime and agent, asking agent, issue, target task,
+asked members, source messages, then the intent, targets, requests and answers.
+Task, member, asking-agent and source contention uses NOWAIT. Reassignment or
+a changed dispatch target restarts from the plain-read snapshot, at most three
+times per item. A source deleted first prevents delivery; a source delete
+started after the fence waits through the delivery commit.
+
+Enqueue accepts caller-owned queries through `EnqueueDecisionTaskInTx`. Queued
+merge and active-task registration accept an optional exact target task ID.
+These writes and all answer/group acknowledgements commit together. Events and
+daemon hints publish only after commit. There is no notice outbox and no
+ordinary comment trigger. A deferred item keeps its acknowledgement NULL.
+Terminal issues, removed asked members and archived asking agents produce
+`skipped_ineligible` without dispatch. Later re-answers acknowledge individually
+without repeating the group wake. Group inputs retain every quote, cancelled
+request and unasked target in the task's handoff; queued merges preserve the
+normal attribution and overlay recalculation.
+
+Runtime teardown unbinds user agents before detaching task history. Updating a
+queued task's `trigger_comment_id` takes its FK's key-share lock on the comment;
+the delivery's preceding issue fence serializes baseline comment removal.
+Retractions, lifecycle cancellation and re-asks remain the subsequent slice.
