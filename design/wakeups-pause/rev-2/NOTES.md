@@ -9,7 +9,7 @@ Answers to the independent UX verdict on rev-1 (x99-codex-luna-2, gpt-6-luna, Op
 - A state coverage: "No resuming state appears". Resuming and pausing states are added to every direction.
 - B consistency and density: "A button replaces the requested switch" and "Pause/Resume labels wrap at 390 px". The running state is now the same switch as A. The Resume button sits under the text on a phone. The red Pause button is gone.
 - C state coverage and consistency: "the member example omits the promised global strip" and "the page-level pill duplicates it". The strip shows to members. The pill is removed.
-- Accessibility, all directions: keyboard focus was unverified. Interactive elements now carry a visible `:focus-visible` outline. Computed contrast: warning text on the warning background 10.5:1, error text on the error background 5.9:1 (it was 4.3:1), muted text on surface 5.9:1.
+- Accessibility, all directions: keyboard focus was unverified. Interactive elements now carry a visible `:focus-visible` outline. Computed contrast: warning text on the warning background 10.5:1, error text on the error background 7.4:1 (it was 4.3:1), muted text on surface 5.9:1.
 - Density, phone: the sub-issue block now appears only in the running and paused states, not in every state.
 - Header chip: the issue header shows "Wakeups paused" instead of the next due time (the code review finding on PR #254).
 
