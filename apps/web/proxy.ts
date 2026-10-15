@@ -111,7 +111,11 @@ export function proxy(req: NextRequest) {
 
   // --- Default: forward locale header to RSC, no redirect/rewrite ---
   // Covers logged-out root path, /login, /:slug/*, and everything else.
-  return nextWithLocale(req);
+  const response = nextWithLocale(req);
+  if (/^\/[^/]+\/search\/?$/.test(pathname)) {
+    response.headers.set("Referrer-Policy", "origin");
+  }
+  return response;
 }
 
 export const config = {

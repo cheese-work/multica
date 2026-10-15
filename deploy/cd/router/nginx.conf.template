@@ -79,6 +79,11 @@ http {
       proxy_pass http://ACTIVE_BACKEND_UPSTREAM;
     }
 
+    location ~ ^/api/(?:issues|projects)/search$ {
+      error_log /dev/null emerg;
+      proxy_pass http://ACTIVE_BACKEND_UPSTREAM;
+    }
+
     location / {
       proxy_pass http://ACTIVE_BACKEND_UPSTREAM;
     }
@@ -100,6 +105,16 @@ http {
     proxy_set_header Connection $connection_upgrade;
 
     location ~ ^/[^/]+/search(?:/|$) {
+      error_log /dev/null emerg;
+      proxy_pass http://ACTIVE_FRONTEND_UPSTREAM;
+    }
+
+    location = /api/search/suggestions {
+      error_log /dev/null emerg;
+      proxy_pass http://ACTIVE_FRONTEND_UPSTREAM;
+    }
+
+    location ~ ^/api/(?:issues|projects)/search$ {
       error_log /dev/null emerg;
       proxy_pass http://ACTIVE_FRONTEND_UPSTREAM;
     }
