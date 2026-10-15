@@ -80,7 +80,12 @@ UPDATE workspace SET
     name = COALESCE(sqlc.narg('name'), name),
     description = COALESCE(sqlc.narg('description'), description),
     context = COALESCE(sqlc.narg('context'), context),
-    settings = COALESCE(sqlc.narg('settings'), settings),
+    -- CHE-1612: compact_prompt patches one settings key; every other key survives.
+    settings = CASE
+        WHEN sqlc.narg('compact_prompt_reset')::bool THEN COALESCE(sqlc.narg('settings')::jsonb, settings) - 'compact_prompt'
+        WHEN sqlc.narg('compact_prompt')::text IS NOT NULL THEN jsonb_set(COALESCE(sqlc.narg('settings')::jsonb, settings), '{compact_prompt}', to_jsonb(sqlc.narg('compact_prompt')::text))
+        ELSE COALESCE(sqlc.narg('settings')::jsonb, settings)
+    END,
     repos = COALESCE(sqlc.narg('repos'), repos),
     issue_prefix = COALESCE(sqlc.narg('issue_prefix'), issue_prefix),
     avatar_url = COALESCE(sqlc.narg('avatar_url'), avatar_url),

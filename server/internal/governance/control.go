@@ -41,6 +41,11 @@ type WorkspaceSettings struct {
 	GovernanceCorrectionsEnabled bool            `json:"governance_corrections_enabled"`
 	RuleMode                     RuleMode        `json:"rule_mode"`
 	Limits                       OperatingLimits `json:"limits"`
+
+	// Jev Squad Routing Settings (CHE-1708)
+	JevSquadRoutingEnabled bool     `json:"jev_squad_routing_enabled"`
+	JevAPIURL              string   `json:"jev_api_url,omitempty"`
+	JevMinConfidence       *float64 `json:"jev_min_confidence,omitempty"`
 }
 
 type OperatingLimits struct {
@@ -122,6 +127,11 @@ func ValidateWorkspaceSettings(settings WorkspaceSettings) error {
 			policy.InputMicroUSDPerMillionTokens != nil && *policy.InputMicroUSDPerMillionTokens < 0 ||
 			policy.OutputMicroUSDPerMillionTokens != nil && *policy.OutputMicroUSDPerMillionTokens < 0 {
 			return errors.New("invalid governance pricing policy")
+		}
+	}
+	if settings.JevMinConfidence != nil {
+		if *settings.JevMinConfidence < 0.0 || *settings.JevMinConfidence > 1.0 {
+			return errors.New("jev min confidence must be between 0.0 and 1.0")
 		}
 	}
 	return nil

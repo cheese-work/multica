@@ -505,24 +505,31 @@ UPDATE workspace SET
     name = COALESCE($2, name),
     description = COALESCE($3, description),
     context = COALESCE($4, context),
-    settings = COALESCE($5, settings),
-    repos = COALESCE($6, repos),
-    issue_prefix = COALESCE($7, issue_prefix),
-    avatar_url = COALESCE($8, avatar_url),
+    -- CHE-1612: compact_prompt patches one settings key; every other key survives.
+    settings = CASE
+        WHEN $5::bool THEN COALESCE($6::jsonb, settings) - 'compact_prompt'
+        WHEN $7::text IS NOT NULL THEN jsonb_set(COALESCE($6::jsonb, settings), '{compact_prompt}', to_jsonb($7::text))
+        ELSE COALESCE($6::jsonb, settings)
+    END,
+    repos = COALESCE($8, repos),
+    issue_prefix = COALESCE($9, issue_prefix),
+    avatar_url = COALESCE($10, avatar_url),
     updated_at = now()
 WHERE id = $1
 RETURNING id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days
 `
 
 type UpdateWorkspaceParams struct {
-	ID          pgtype.UUID `json:"id"`
-	Name        pgtype.Text `json:"name"`
-	Description pgtype.Text `json:"description"`
-	Context     pgtype.Text `json:"context"`
-	Settings    []byte      `json:"settings"`
-	Repos       []byte      `json:"repos"`
-	IssuePrefix pgtype.Text `json:"issue_prefix"`
-	AvatarUrl   pgtype.Text `json:"avatar_url"`
+	ID                 pgtype.UUID `json:"id"`
+	Name               pgtype.Text `json:"name"`
+	Description        pgtype.Text `json:"description"`
+	Context            pgtype.Text `json:"context"`
+	CompactPromptReset pgtype.Bool `json:"compact_prompt_reset"`
+	Settings           []byte      `json:"settings"`
+	CompactPrompt      pgtype.Text `json:"compact_prompt"`
+	Repos              []byte      `json:"repos"`
+	IssuePrefix        pgtype.Text `json:"issue_prefix"`
+	AvatarUrl          pgtype.Text `json:"avatar_url"`
 }
 
 func (q *Queries) UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams) (Workspace, error) {
@@ -531,7 +538,9 @@ func (q *Queries) UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams
 		arg.Name,
 		arg.Description,
 		arg.Context,
+		arg.CompactPromptReset,
 		arg.Settings,
+		arg.CompactPrompt,
 		arg.Repos,
 		arg.IssuePrefix,
 		arg.AvatarUrl,
