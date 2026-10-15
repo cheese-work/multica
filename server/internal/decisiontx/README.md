@@ -1,7 +1,8 @@
 # Decision transaction primitives
 
 This package is the schema/transaction foundation for the revision 14 decision
-contract. HTTP routes live in the handler package; the worker is a later slice.
+contract. HTTP routes and the leased consequence runner live in the handler
+package. Group delivery, lifecycle cancellation and veto notices are later slices.
 
 `Begin` acquires the existing workspace `FOR KEY SHARE` fence before returning
 a transaction. A missing workspace or failed fence rolls back and returns no
@@ -77,6 +78,38 @@ deliver notes or install baseline hooks. SQLSTATE lock/deadlock errors remain
 available to `decisiontx.IsRetryable`; the caller owns bounded retries. The
 runtime-unbind/detach ordering and the merge `trigger_comment_id` FK corrections
 remain unchanged in the record/veto code comments; no protocol change is made.
+
+## CHE-1753 leased consequence runner
+
+`handler.DecisionWorker` runs beside the other server workers and joins shutdown
+after cancellation. `Notify()` coalesces local post-commit hints; the five-second
+tick recovers work after restarts or remote commits. `ProcessPass(ctx)` is the
+synchronous entry point for database-backed tests. It claims one CAS lease with
+a unique holder/token and a 30-second expiry, renews an in-flight pass every ten
+seconds, and cancels that pass if renewal fails or loses ownership. Shutdown
+releases only its own token. The lease limits duplicate work; transaction locks
+and eligibility rechecks provide correctness after expiry or takeover.
+
+Each pass cleans decision-only orphans, checks missing sources, finalizes
+terminal answering turns, seals invalid intents and retries original ping inbox
+delivery through `NotifyPing`. Selectors are bounded at 100 candidates. Each
+item gets at most two attempts for the named retryable lock/deadlock errors;
+other failures are reported and remain eligible for a later pass.
+
+`FinalizeDecisionAnswer(ctx, workspaceID, requestID)` shares the Source Check
+lock order and withdrawal primitive. Only a completed answering task on an
+answered request sets `wake_at = max(effective_at, now)`. Failed/cancelled turns
+withdraw in the same transaction as their comments. Running turns remain
+pending, archived lanes cancel with `lane_archived`, unprompted records do not
+reopen, and an already-cancelled request keeps its original cancellation.
+
+Orphan cleanup locks the surviving workspace, then intents/targets and
+requests/answers in ID order. Only decision parents are deleted; the existing
+decision-only cascading FKs remove their children. Every delete rechecks the
+missing issue/workspace. Missing lane sessions alone never cause cleanup.
+Withdrawal comments, cleared resolutions and inbox events publish only after
+the corresponding transaction commits. No task delivery or notice outbox is
+introduced, and baseline terminal/deletion transactions gain no decision SQL.
 
 All decision IDs referencing baseline rows are plain UUIDs. The task-specific
 approval permits exactly three internal cascading FKs: answer/request,

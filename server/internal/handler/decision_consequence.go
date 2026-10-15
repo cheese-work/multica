@@ -12,6 +12,14 @@ import (
 )
 
 func (handler *Handler) CheckDecisionSource(ctx context.Context, workspaceID, requestID pgtype.UUID) (decisiontx.Withdrawal, error) {
+	return handler.checkDecisionAnswer(ctx, workspaceID, requestID, false)
+}
+
+func (handler *Handler) FinalizeDecisionAnswer(ctx context.Context, workspaceID, requestID pgtype.UUID) (decisiontx.Withdrawal, error) {
+	return handler.checkDecisionAnswer(ctx, workspaceID, requestID, true)
+}
+
+func (handler *Handler) checkDecisionAnswer(ctx context.Context, workspaceID, requestID pgtype.UUID, finalize bool) (decisiontx.Withdrawal, error) {
 	empty := decisiontx.Withdrawal{}
 	located, err := handler.Queries.GetDecisionRequest(ctx, db.GetDecisionRequestParams{WorkspaceID: workspaceID, ID: requestID})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -60,18 +68,50 @@ func (handler *Handler) CheckDecisionSource(ctx context.Context, workspaceID, re
 	if err != nil {
 		return empty, err
 	}
-	removed, err := queries.DecisionAnswerSourceRemoved(ctx, db.DecisionAnswerSourceRemovedParams{WorkspaceID: workspaceID, ID: answer.ID})
-	if err != nil {
-		return empty, err
-	}
-	if !removed {
-		return decisiontx.Withdrawal{Request: current, Answer: answer}, nil
+	reason := "source_removed"
+	if finalize {
+		if answer.WakeAt.Valid {
+			return empty, nil
+		}
+		task, err := queries.GetAgentTask(ctx, answer.AnsweredByTaskID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return empty, nil
+		}
+		if err != nil {
+			return empty, err
+		}
+		switch task.Status {
+		case "completed":
+			if current.Status != "answered" {
+				return empty, nil
+			}
+			answer, err = queries.ScheduleDecisionAnswer(ctx, db.ScheduleDecisionAnswerParams{WorkspaceID: workspaceID, ID: answer.ID})
+			if err != nil {
+				return empty, err
+			}
+			if err := transaction.Commit(ctx); err != nil {
+				return empty, err
+			}
+			return decisiontx.Withdrawal{Request: current, Answer: answer}, nil
+		case "failed", "cancelled":
+			reason = "answering_turn_" + task.Status
+		default:
+			return empty, nil
+		}
+	} else {
+		removed, err := queries.DecisionAnswerSourceRemoved(ctx, db.DecisionAnswerSourceRemovedParams{WorkspaceID: workspaceID, ID: answer.ID})
+		if err != nil {
+			return empty, err
+		}
+		if !removed {
+			return decisiontx.Withdrawal{Request: current, Answer: answer}, nil
+		}
 	}
 	session, err := queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{WorkspaceID: workspaceID, ID: current.ChatSessionID})
 	if err != nil {
 		return empty, err
 	}
-	result, err := decisiontx.Withdraw(ctx, queries, current, answer, session.Status, "source_removed", pgtype.UUID{})
+	result, err := decisiontx.Withdraw(ctx, queries, current, answer, session.Status, reason, pgtype.UUID{})
 	if err != nil {
 		return empty, err
 	}

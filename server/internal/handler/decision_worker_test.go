@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -331,6 +332,9 @@ func TestDecisionWorkerNotifyAndShutdown(test *testing.T) {
 		if !runner.WaitWithTimeout(time.Second) {
 			test.Error("worker did not join on shutdown")
 		}
+		if count := dbfx.Count(test, `SELECT count(*) FROM decision_worker_lease WHERE expires_at > clock_timestamp()`); count != 0 {
+			test.Error("shutdown did not release the worker's lease")
+		}
 	}()
 	fixture := newAskedRecordFixture(test)
 	recorded, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
@@ -349,5 +353,50 @@ func TestDecisionWorkerNotifyAndShutdown(test *testing.T) {
 			test.Fatal("Notify did not start a pass before the 5-second tick")
 		case <-time.After(10 * time.Millisecond):
 		}
+	}
+}
+
+func TestDecisionWorkerRetryBound(test *testing.T) {
+	for _, code := range []string{"55P03", "40P01", "23505", "08006"} {
+		test.Run(code, func(test *testing.T) {
+			attempts := 0
+			failure := &pgconn.PgError{Code: code}
+			err := decisionAttempt(context.Background(), func() error { attempts++; return failure })
+			wanted := 1
+			if code == "55P03" || code == "40P01" {
+				wanted = 2
+			}
+			if attempts != wanted || !errors.Is(err, failure) {
+				test.Fatalf("attempts=%d want=%d err=%v", attempts, wanted, err)
+			}
+		})
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := decisionAttempt(ctx, func() error { test.Fatal("cancelled pass ran another item"); return nil })
+	if !errors.Is(err, context.Canceled) {
+		test.Fatalf("cancellation was not preserved: %v", err)
+	}
+}
+
+func TestDecisionWorkerNotifiedOnlyAfterCommit(test *testing.T) {
+	for _, fail := range []bool{false, true} {
+		test.Run(map[bool]string{false: "commit", true: "rollback"}[fail], func(test *testing.T) {
+			fixture := newAskedRecordFixture(test)
+			for len(testHandler.DecisionWorker.notify) > 0 {
+				<-testHandler.DecisionWorker.notify
+			}
+			if fail {
+				testHandler.TxStarter = decisionFailCommit{testPool}
+				defer func() { testHandler.TxStarter = testPool }()
+			}
+			_, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
+			if (err != nil) != fail {
+				test.Fatalf("wrong commit result: %v", err)
+			}
+			if notified := len(testHandler.DecisionWorker.notify) > 0; notified == fail {
+				test.Fatalf("post-commit hint=%v after rollback=%v", notified, fail)
+			}
+		})
 	}
 }

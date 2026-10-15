@@ -44,8 +44,9 @@ type shutdownSequence struct {
 	// StopHeartbeats flushes the final batch of queued heartbeat bumps.
 	StopHeartbeats func()
 
-	JoinWebhookWorker func()
-	JoinTelegram      func()
+	JoinWebhookWorker  func()
+	JoinDecisionWorker func()
+	JoinTelegram       func()
 
 	// JoinChannelSupervisor waits for the per-installation goroutines so the
 	// lease renewer can issue a final release before exit; without it the next
@@ -70,6 +71,7 @@ func (s shutdownSequence) run() {
 		s.CancelWorkers,
 		s.StopHeartbeats,
 		s.JoinWebhookWorker,
+		s.JoinDecisionWorker,
 		s.JoinTelegram,
 		s.JoinChannelSupervisor,
 		s.DrainChannelRouter,
