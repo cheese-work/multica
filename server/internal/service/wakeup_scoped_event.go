@@ -41,6 +41,12 @@ const (
 	// scopedRetryDelay keeps an input that hit a real database error from being
 	// reclaimed every pass and starving the rest of the batch.
 	scopedRetryDelay = time.Minute
+	// A capacity-refused input is retried after a quarter of its age, between
+	// scopedCapacityRetryMin and scopedCapacityRetryMax: capacity that frees is
+	// picked up within a minute or so, and a pool that stays full costs a few dozen
+	// attempts over the retention rather than thousands.
+	scopedCapacityRetryMin = time.Minute
+	scopedCapacityRetryMax = time.Hour
 )
 
 // The outcome recorded on a handled outbox input.
@@ -57,8 +63,11 @@ const (
 	scopedOutcomeInvalid          = "invalid_definition"
 	scopedOutcomeNoTarget         = "no_target"
 	scopedOutcomeNoInstruction    = "no_instruction"
-	scopedOutcomeCapacity         = "default_capacity"
-	scopedOutcomeInstanceOff      = "instance_disabled"
+	// scopedOutcomeCapacity is not a final outcome of an event input: the pool was
+	// full, so the input stays pending and is retried (scopedCapacityDelay). Only an
+	// activation signal, which the held instance's own retry serves, closes with it.
+	scopedOutcomeCapacity    = "default_capacity"
+	scopedOutcomeInstanceOff = "instance_disabled"
 )
 
 const (
@@ -339,8 +348,15 @@ func (s *IssueWakeupService) drainOneScopedIssue(ctx context.Context, workspaceI
 		return pass, fmt.Errorf("scoped event %s: %w", util.UUIDToString(first[0].ID), err)
 	}
 	for _, ev := range events {
-		outcome, err := batch.resolve(ctx, ev)
-		if err == nil {
+		outcome, served, err := batch.resolve(ctx, ev)
+		switch {
+		case err != nil:
+		case outcome == scopedOutcomeCapacity && ev.EventType != wakeupActivateEvent:
+			// A full default pool delays the input; it is retried until retention.
+			err = q.DeferWakeupScopedEventForCapacity(ctx, db.DeferWakeupScopedEventForCapacityParams{
+				ID: ev.ID, RetryAt: pgtype.Timestamptz{Time: now.Add(scopedCapacityDelay(now, ev.CapturedAt.Time)), Valid: true}, Served: served,
+			})
+		default:
 			err = q.MarkWakeupScopedEventHandled(ctx, db.MarkWakeupScopedEventHandledParams{ID: ev.ID, Now: stamp, Outcome: outcome})
 		}
 		if err != nil {
@@ -355,6 +371,12 @@ func (s *IssueWakeupService) drainOneScopedIssue(ctx context.Context, workspaceI
 	s.publishWithdrawn(ctx, batch.withdrawn)
 	pass.handled = len(events)
 	return pass, nil
+}
+
+// scopedCapacityDelay is how long a capacity-refused input waits for its next
+// attempt: a quarter of its age, within [scopedCapacityRetryMin, scopedCapacityRetryMax].
+func scopedCapacityDelay(now, captured time.Time) time.Duration {
+	return min(max(now.Sub(captured)/4, scopedCapacityRetryMin), scopedCapacityRetryMax)
 }
 
 func scopedText(s string) pgtype.Text { return pgtype.Text{String: s, Valid: true} }
@@ -553,24 +575,26 @@ func newScopedRule(issue db.Issue, key string, chain *scopedRuleChain) *scopedRu
 // resolve decides what one captured event is worth now and delivers it into the
 // issue's instances. It returns the outcome to record; a non-nil error is a real
 // failure that leaves the input pending.
-func (b *scopedIssueBatch) resolve(ctx context.Context, ev db.WakeupScopedEvent) (string, error) {
+func (b *scopedIssueBatch) resolve(ctx context.Context, ev db.WakeupScopedEvent) (outcome string, served []string, err error) {
 	if b.outcome != "" {
-		return b.outcome, nil
+		return b.outcome, nil, nil
 	}
 	// The event was captured under the project the issue was in. Another project's
 	// rules never inherit it.
 	if b.issue.ProjectID != ev.ProjectID {
-		return scopedOutcomeScopeChanged, nil
+		return scopedOutcomeScopeChanged, nil, nil
 	}
 	if ev.EventType == wakeupActivateEvent {
-		return b.resolveActivation(ctx)
+		outcome, err = b.resolveActivation(ctx)
+		return outcome, nil, err
 	}
 	// One input may reach several rules; one that is refused does not stop the
-	// others. When none is delivered the first reason is recorded.
+	// others. When none is delivered the first reason is recorded. A rule the
+	// default pool refused keeps the input pending (outcome default_capacity); the
+	// instances served meanwhile are returned so the retry skips them.
 	var replay []pgtype.UUID
-	served := 0
 	reason := scopedOutcomeNoRule
-	first := true
+	first, capacityHeld, delivered := true, false, 0
 	for _, key := range b.keys {
 		r := b.rules[key]
 		if !r.chain.selects(ev.EventType) {
@@ -578,19 +602,23 @@ func (b *scopedIssueBatch) resolve(ctx context.Context, ev db.WakeupScopedEvent)
 		}
 		inst, why, err := b.deliverable(ctx, r, ev)
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
+		stamp := util.UUIDToString(inst.ID) + ":" + strconv.FormatInt(inst.Revision, 10)
 		switch {
 		case !inst.ID.Valid:
+			capacityHeld = capacityHeld || why == scopedOutcomeCapacity
 			if first {
 				reason = why
 			}
-		case slices.Contains(ev.Delivered, util.UUIDToString(inst.ID)+":"+strconv.FormatInt(inst.Revision, 10)):
+		case slices.Contains(ev.Delivered, stamp):
 			// Live capture delivered it to this configuration of the instance;
 			// replaying would count it twice and make an older event the latest.
-			served++
+			delivered++
 		default:
 			replay = append(replay, inst.ID)
+			served = append(served, stamp)
+			delivered++
 		}
 		first = false
 	}
@@ -599,13 +627,16 @@ func (b *scopedIssueBatch) resolve(ctx context.Context, ev db.WakeupScopedEvent)
 			IssueID: ev.IssueID, EventType: ev.EventType, EventKey: ev.EventKey, AgentID: ev.AgentID, SourceTaskID: ev.SourceTaskID,
 			Payload: ev.Payload, CapturedAt: ev.CapturedAt, ActorType: ev.ActorType, ActorID: ev.ActorID, InstanceIds: replay,
 		}); err != nil {
-			return "", err
+			return "", nil, err
 		}
 	}
-	if len(replay)+served == 0 {
-		return reason, nil
+	switch {
+	case capacityHeld:
+		return scopedOutcomeCapacity, served, nil
+	case delivered == 0:
+		return reason, nil, nil
 	}
-	return scopedOutcomeDelivered, nil
+	return scopedOutcomeDelivered, nil, nil
 }
 
 // resolveActivation handles the signal that the issue became eligible for

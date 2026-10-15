@@ -276,8 +276,15 @@ func (s *IssueWakeupService) retryCapacityHeldOne(ctx context.Context, issueID, 
 		}
 		return tx.Commit(ctx)
 	}
-	if _, err := ApplyDefaultWakeupInstance(ctx, tx, w.ID); err != nil {
+	admission, err := ApplyDefaultWakeupInstance(ctx, tx, w.ID)
+	if err != nil {
 		return err
+	}
+	if admission.Applied {
+		// Inputs that waited for this capacity are due now.
+		if err := q.BringForwardCapacityDeferredScopedEvents(ctx, issueID); err != nil {
+			return err
+		}
 	}
 	return tx.Commit(ctx)
 }

@@ -323,7 +323,9 @@ func TestScopedDrainDefaultCapacityIsAnOutcomeNotAnError(t *testing.T) {
  SELECT gen_random_uuid(),$1,$2,$3,'default','event','continuous',gen_random_uuid()::text,'workspace',$1 FROM generate_series(1,32)`, k.f.WorkspaceID, k.issue, k.agent)
 	k.comment(t, "the source write is unaffected")
 	k.drain(t)
-	k.wantOutcomes(t, "default_capacity")
+	// Refusal is not an end: the input stays pending behind a retry time and is
+	// delivered when capacity frees (wakeup_custom_capacity_test.go).
+	k.wantOutcomes(t, "pending")
 	var enabled bool
 	var reason *string
 	if err := k.f.Pool.QueryRow(context.Background(), `SELECT enabled,capacity_reason FROM issue_wakeup WHERE issue_id=$1 AND default_rule_key=$2`, k.issue, scopedRuleA).Scan(&enabled, &reason); err != nil {

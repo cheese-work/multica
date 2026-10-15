@@ -37,6 +37,19 @@ UPDATE wakeup_scoped_event SET handled_at= @now::timestamptz,outcome= @outcome::
 -- name: DeferWakeupScopedEvent :exec
 UPDATE wakeup_scoped_event SET retry_at= @retry_at::timestamptz WHERE id= @id AND handled_at IS NULL;
 
+-- name: DeferWakeupScopedEventForCapacity :exec
+-- An input a full default pool refused stays pending behind a retry time. The
+-- instances that were served meanwhile are recorded in delivered, so the retry
+-- does not count the event for them twice.
+UPDATE wakeup_scoped_event SET retry_at= @retry_at::timestamptz,
+ delivered=(SELECT COALESCE(array_agg(DISTINCT d),'{}') FROM unnest(delivered || @served::text[]) d)
+WHERE id= @id AND handled_at IS NULL;
+
+-- name: BringForwardCapacityDeferredScopedEvents :exec
+-- Capacity freed for an issue's instance: its delayed inputs are due now.
+UPDATE wakeup_scoped_event SET retry_at=NULL
+WHERE issue_id= @issue_id AND handled_at IS NULL AND retry_at IS NOT NULL;
+
 -- name: TryLockWakeupIssue :one
 -- The drain's issue lock never waits: a held issue yields no row, and the caller
 -- tells it from a deleted one with WakeupIssueExists.

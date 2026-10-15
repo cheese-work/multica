@@ -11,6 +11,17 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const bringForwardCapacityDeferredScopedEvents = `-- name: BringForwardCapacityDeferredScopedEvents :exec
+UPDATE wakeup_scoped_event SET retry_at=NULL
+WHERE issue_id= $1 AND handled_at IS NULL AND retry_at IS NOT NULL
+`
+
+// Capacity freed for an issue's instance: its delayed inputs are due now.
+func (q *Queries) BringForwardCapacityDeferredScopedEvents(ctx context.Context, issueID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, bringForwardCapacityDeferredScopedEvents, issueID)
+	return err
+}
+
 const claimWakeupScopedEvents = `-- name: ClaimWakeupScopedEvents :many
 SELECT id, workspace_id, issue_id, project_id, event_type, event_key, agent_id, source_task_id, actor_type, actor_id, payload, delivered, chain, captured_at, retry_at, handled_at, outcome FROM wakeup_scoped_event
 WHERE handled_at IS NULL AND captured_at >= $1::timestamptz AND (retry_at IS NULL OR retry_at <= $2::timestamptz)
@@ -297,6 +308,26 @@ type DeferWakeupScopedEventParams struct {
 
 func (q *Queries) DeferWakeupScopedEvent(ctx context.Context, arg DeferWakeupScopedEventParams) error {
 	_, err := q.db.Exec(ctx, deferWakeupScopedEvent, arg.RetryAt, arg.ID)
+	return err
+}
+
+const deferWakeupScopedEventForCapacity = `-- name: DeferWakeupScopedEventForCapacity :exec
+UPDATE wakeup_scoped_event SET retry_at= $1::timestamptz,
+ delivered=(SELECT COALESCE(array_agg(DISTINCT d),'{}') FROM unnest(delivered || $2::text[]) d)
+WHERE id= $3 AND handled_at IS NULL
+`
+
+type DeferWakeupScopedEventForCapacityParams struct {
+	RetryAt pgtype.Timestamptz `json:"retry_at"`
+	Served  []string           `json:"served"`
+	ID      pgtype.UUID        `json:"id"`
+}
+
+// An input a full default pool refused stays pending behind a retry time. The
+// instances that were served meanwhile are recorded in delivered, so the retry
+// does not count the event for them twice.
+func (q *Queries) DeferWakeupScopedEventForCapacity(ctx context.Context, arg DeferWakeupScopedEventForCapacityParams) error {
+	_, err := q.db.Exec(ctx, deferWakeupScopedEventForCapacity, arg.RetryAt, arg.Served, arg.ID)
 	return err
 }
 
