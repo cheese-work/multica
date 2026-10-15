@@ -3701,6 +3701,8 @@ export const IssueWakeupSchema = z.object({
   condition: WakeupConditionSchema.nullish().catch(null),
   max_fires: z.number().int().nullish(), fire_count: z.number().int().nonnegative().optional().catch(undefined),
   paused_reason: z.enum(["max_fires", "loop", "rate"]).nullish().catch(null),
+  // Set for an instance a scoped default created; absent from older servers.
+  default_rule_key: z.string().nullish().catch(null),
 });
 
 export const SystemWakeupSchema = z.object({

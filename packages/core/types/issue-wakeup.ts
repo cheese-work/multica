@@ -42,6 +42,13 @@ export interface IssueWakeup {
   fire_count?: number;
   /** Why the platform, not a person, stopped the rule. */
   paused_reason?: WakeupPausedReason | null;
+  /**
+   * The key of the scoped default rule this instance was created from. Such an
+   * instance runs what its definitions resolve to: it cannot be saved or enabled
+   * as a local wakeup (the server answers 403). Null for a local rule; absent on
+   * older servers.
+   */
+  default_rule_key?: string | null;
 }
 
 export type WakeupPausedReason = "max_fires" | "loop" | "rate";
