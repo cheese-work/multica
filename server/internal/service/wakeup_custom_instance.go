@@ -79,7 +79,9 @@ func (s *IssueWakeupService) ensureScopedInstance(ctx context.Context, b *scoped
 	if cfg.MaxFires.Set {
 		maxFires = pgtype.Int4{Int32: int32(cfg.MaxFires.Value), Valid: true}
 	}
-	now := time.Now()
+	// created_at is set here, to the microsecond the database stores, so a relative
+	// end computed now and one recomputed later from created_at agree exactly.
+	now := time.Now().Truncate(time.Microsecond)
 	var next pgtype.Timestamptz
 	if r.condition != nil {
 		next = pgtype.Timestamptz{Time: now, Valid: true}
@@ -92,7 +94,7 @@ func (s *IssueWakeupService) ensureScopedInstance(ctx context.Context, b *scoped
 			ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AgentID: target.Agent.ID, CreatedBy: r.member,
 			Instruction: cfg.Instruction.Value, Mode: mode, EventTypes: r.events, MaxFires: maxFires,
 			RuleKey: scopedText(r.key), ScopeKind: scopedText(string(r.root.Scope)), ScopeID: r.root.ScopeID, Fingerprint: scopedText(r.eff.Fingerprint),
-			Condition: r.condition, NextFireAt: next, ExpiresAt: customExpiry(cfg, now),
+			Condition: r.condition, NextFireAt: next, ExpiresAt: customExpiry(cfg, now), CreatedAt: pgtype.Timestamptz{Time: now, Valid: true},
 		})
 		if err != nil {
 			return db.IssueWakeup{}, "", err
@@ -140,29 +142,21 @@ func (b *scopedIssueBatch) rebase(ctx context.Context, w db.IssueWakeup, r *scop
 	if r.condition != nil {
 		next = pgtype.Timestamptz{Time: now, Valid: true}
 	}
-	// An expiry that still says the same keeps the end it has: a relative one is
-	// measured from the instance's creation and must not be recomputed from another
-	// clock (the database created_at against the application time of creation).
+	// An expiry that still says the same keeps the end it has: the end an instance
+	// would get from this configuration is compared exactly, with no tolerance (the
+	// instance's created_at is the basis of a relative end, see create).
 	expires := customExpiry(cfg, w.CreatedAt.Time)
-	keepExpiry := expiryUnchanged(w, cfg)
-	if keepExpiry {
-		expires = w.ExpiresAt
-	}
+	keepExpiry := w.ExpiresAt.Valid == expires.Valid && (!expires.Valid || w.ExpiresAt.Time.Equal(expires.Time))
 	// When nothing the instance runs changes (only the fingerprint moved: the
-	// issue's assignee, say), the revisions it had stay equivalent: an event live
-	// capture served at one of them is still served, in every transaction. A changed
-	// configuration starts the list over, and delivers afresh.
-	served := []int64{}
-	if keepExpiry && w.AgentID == target.Agent.ID && w.CreatedBy == r.member && w.Instruction == cfg.Instruction.Value && w.Mode == mode &&
-		slices.Equal(w.EventTypes, r.events) && w.MaxFires == maxFires && sameInstanceCondition(w.Condition, r.condition) {
-		served = append(append(served, w.ServedRevisions...), w.Revision)
-		if len(served) > maxServedRevisions {
-			served = served[len(served)-maxServedRevisions:]
-		}
-	}
+	// issue's assignee, say), content_revision stays: every revision since it ran
+	// this configuration, so an event live capture served at any of them is still
+	// served, in every transaction. A changed configuration moves it to the new
+	// revision, and delivers afresh.
+	preserved := keepExpiry && w.AgentID == target.Agent.ID && w.CreatedBy == r.member && w.Instruction == cfg.Instruction.Value && w.Mode == mode &&
+		slices.Equal(w.EventTypes, r.events) && w.MaxFires == maxFires && sameInstanceCondition(w.Condition, r.condition)
 	out, err := b.q.RebaseDefaultWakeupInstance(ctx, db.RebaseDefaultWakeupInstanceParams{
 		ID: w.ID, AgentID: target.Agent.ID, CreatedBy: r.member, Instruction: cfg.Instruction.Value, Mode: mode,
-		EventTypes: r.events, MaxFires: maxFires, Fingerprint: scopedText(r.eff.Fingerprint), ServedRevisions: served,
+		EventTypes: r.events, MaxFires: maxFires, Fingerprint: scopedText(r.eff.Fingerprint), Preserved: preserved,
 		Condition: r.condition, ConditionState: state, NextFireAt: next, ExpiresAt: expires,
 	})
 	if err != nil {
@@ -179,31 +173,11 @@ func (b *scopedIssueBatch) rebase(ctx context.Context, w db.IssueWakeup, r *scop
 	return out, err
 }
 
-// maxServedRevisions bounds the equivalent earlier revisions an instance keeps.
-const maxServedRevisions = 32
-
 func sameInstanceCondition(a, b []byte) bool {
 	if len(a) == 0 || len(b) == 0 {
 		return len(a) == len(b)
 	}
 	return sameCondition(a, b)
-}
-
-// expiryUnchanged reports whether the instance's end still matches what the
-// configuration says: none, the same instant, or the same wait from creation.
-func expiryUnchanged(w db.IssueWakeup, c WakeupConfigPatch) bool {
-	var spec wakeupExpirySpec
-	if c.Expiry.Set && !c.Expiry.Null && decodeWakeupSpec(c.Expiry.Value, &spec) != nil {
-		return false
-	}
-	switch {
-	case !c.Expiry.Set || c.Expiry.Null || spec.At == nil && spec.AfterSeconds == nil:
-		return !w.ExpiresAt.Valid
-	case spec.At != nil:
-		return w.ExpiresAt.Valid && w.ExpiresAt.Time.Sub(*spec.At).Abs() < time.Millisecond
-	}
-	want := w.CreatedAt.Time.Add(time.Duration(*spec.AfterSeconds) * time.Second)
-	return w.ExpiresAt.Valid && w.ExpiresAt.Time.Sub(want).Abs() < 5*time.Second
 }
 
 // retire takes an instance whose rule no longer runs for the issue (disabled,

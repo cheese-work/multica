@@ -211,7 +211,7 @@ func (q *Queries) InsertWakeupDefinitionIfAbsent(ctx context.Context, arg Insert
 }
 
 const listCustomizedSystemWakeupsAfter = `-- name: ListCustomizedSystemWakeupsAfter :many
-SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, served_revisions FROM issue_wakeup
+SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, content_revision FROM issue_wakeup
 WHERE system_rule IS NOT NULL AND customized_at IS NOT NULL AND id> $1
  AND ($2::uuid IS NULL OR workspace_id= $2::uuid)
 ORDER BY id LIMIT $3
@@ -280,7 +280,7 @@ func (q *Queries) ListCustomizedSystemWakeupsAfter(ctx context.Context, arg List
 			&i.AggregateBlockedScopeKind,
 			&i.AggregateBlockedScopeID,
 			&i.AggregateRetryAt,
-			&i.ServedRevisions,
+			&i.ContentRevision,
 		); err != nil {
 			return nil, err
 		}
@@ -465,7 +465,7 @@ const rebaseSystemWakeupConfig = `-- name: RebaseSystemWakeupConfig :one
 UPDATE issue_wakeup SET revision=revision+1,config_fingerprint=NULLIF($1::text,''),updated_at=clock_timestamp(),
  aggregate_blocked_scope_kind=NULL,aggregate_blocked_scope_id=NULL,aggregate_retry_at=NULL
 WHERE id= $2 AND system_rule IS NOT NULL
-RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, served_revisions
+RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, content_revision
 `
 
 type RebaseSystemWakeupConfigParams struct {
@@ -527,7 +527,7 @@ func (q *Queries) RebaseSystemWakeupConfig(ctx context.Context, arg RebaseSystem
 		&i.AggregateBlockedScopeKind,
 		&i.AggregateBlockedScopeID,
 		&i.AggregateRetryAt,
-		&i.ServedRevisions,
+		&i.ContentRevision,
 	)
 	return i, err
 }
@@ -537,7 +537,7 @@ UPDATE issue_wakeup SET customized_at=NULL,instruction='',
  enabled=CASE WHEN paused_reason IS NULL AND disabled_at IS NULL THEN $1::bool ELSE enabled END,
  updated_at=clock_timestamp()
 WHERE id= $2 AND customized_at IS NOT NULL
-RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, served_revisions
+RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, content_revision
 `
 
 type RetireCustomizedSystemWakeupParams struct {
@@ -597,7 +597,7 @@ func (q *Queries) RetireCustomizedSystemWakeup(ctx context.Context, arg RetireCu
 		&i.AggregateBlockedScopeKind,
 		&i.AggregateBlockedScopeID,
 		&i.AggregateRetryAt,
-		&i.ServedRevisions,
+		&i.ContentRevision,
 	)
 	return i, err
 }

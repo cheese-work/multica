@@ -621,7 +621,7 @@ func (b *scopedIssueBatch) resolve(ctx context.Context, ev db.WakeupScopedEvent)
 		case slices.Contains(ev.Delivered, id), servedAtEarlierRevision(ev.Delivered, inst):
 			// An earlier attempt served the instance (its bare id survives a rebase), or
 			// live capture served it at a revision whose configuration the instance
-			// still runs (served_revisions). The bare id is persisted if a deferral follows.
+			// still runs (content_revision..revision). The bare id is persisted if a deferral follows.
 			delivered++
 			served = append(served, id)
 		default:
@@ -765,10 +765,16 @@ func (s *IssueWakeupService) ScopedEventAccounting(ctx context.Context, workspac
 }
 
 // servedAtEarlierRevision reports whether live capture stamped the input with a
-// revision of the instance that ran the configuration it runs now.
+// revision of the instance that ran the configuration it runs now: any revision
+// from content_revision (0 reads as 1) up to the current one.
 func servedAtEarlierRevision(delivered []string, inst db.IssueWakeup) bool {
-	id := util.UUIDToString(inst.ID)
-	return slices.ContainsFunc(inst.ServedRevisions, func(rev int64) bool {
-		return slices.Contains(delivered, id+":"+strconv.FormatInt(rev, 10))
+	prefix := util.UUIDToString(inst.ID) + ":"
+	return slices.ContainsFunc(delivered, func(stamp string) bool {
+		rev, ok := strings.CutPrefix(stamp, prefix)
+		if !ok {
+			return false
+		}
+		n, err := strconv.ParseInt(rev, 10, 64)
+		return err == nil && n >= max(inst.ContentRevision, 1) && n <= inst.Revision
 	})
 }
