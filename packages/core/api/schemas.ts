@@ -17,6 +17,7 @@ import type {
   ChatDraftRestoresResponse,
   ChatPendingTask,
   ChatSession,
+  ChatSessionUsage,
   PrioritizeQueuedChatTaskResponse,
   SendChatMessageResponse,
   StartMikaOnboardingResponse,
@@ -2108,6 +2109,55 @@ export const ChatSessionUpdatedPayloadSchema = z.object({
   continued_into_session_id: z.string().uuid().optional().catch(undefined),
   updated_at: z.string().optional().catch(undefined),
 }).loose();
+
+const ChatUsageTokensSchema = z.object({
+  input: z.number().default(0),
+  output: z.number().default(0),
+  cache_read: z.number().default(0),
+  cache_write: z.number().default(0),
+}).loose();
+
+const EMPTY_CHAT_USAGE_TOKENS = { input: 0, output: 0, cache_read: 0, cache_write: 0 };
+
+const ChatUsageModelSchema = z.object({
+  tokens: ChatUsageTokensSchema.default(EMPTY_CHAT_USAGE_TOKENS),
+  cost_usd_ticks: z.number().default(0),
+}).loose();
+
+// cost_usd_ticks (here and per model) is in ticks of 1e-10 USD: 1 USD = 1e10 ticks.
+export const ChatSessionUsageSchema = z.object({
+  session_id: z.string(),
+  tokens: ChatUsageTokensSchema.default(EMPTY_CHAT_USAGE_TOKENS),
+  uncosted_tokens: ChatUsageTokensSchema.default(EMPTY_CHAT_USAGE_TOKENS),
+  cost_usd_ticks: z.number().default(0),
+  runs: z.object({
+    by_status: z.record(z.string(), z.number()).default({}),
+    terminal: z.number().default(0),
+    metered: z.number().default(0),
+    unreported: z.number().default(0),
+    total_run_ms: z.number().default(0),
+  }).loose().default({ by_status: {}, terminal: 0, metered: 0, unreported: 0, total_run_ms: 0 }),
+  messages: z.object({
+    by_role: z.record(z.string(), z.number()).default({}),
+  }).loose().default({ by_role: {} }),
+  by_model: z.record(z.string(), ChatUsageModelSchema).default({}),
+  continued_from_session_id: z.string().nullable().default(null),
+  continued_into_session_id: z.string().nullable().default(null),
+  forked_from_session_id: z.string().nullable().default(null),
+}).loose();
+
+export const EMPTY_CHAT_SESSION_USAGE: ChatSessionUsage = {
+  session_id: "",
+  tokens: EMPTY_CHAT_USAGE_TOKENS,
+  uncosted_tokens: EMPTY_CHAT_USAGE_TOKENS,
+  cost_usd_ticks: 0,
+  runs: { by_status: {}, terminal: 0, metered: 0, unreported: 0, total_run_ms: 0 },
+  messages: { by_role: {} },
+  by_model: {},
+  continued_from_session_id: null,
+  continued_into_session_id: null,
+  forked_from_session_id: null,
+};
 
 export const EMPTY_CHAT_CONTINUE_RESPONSE = {
   session: EMPTY_CHAT_SESSION,
