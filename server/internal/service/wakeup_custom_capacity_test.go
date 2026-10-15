@@ -379,3 +379,69 @@ func TestCustomCapacityBringForwardQueryUsesTheDelayedIndex(t *testing.T) {
 		t.Fatalf("the pick must use the delayed-input index:\n%s", plan)
 	}
 }
+
+// ---- review round 3 (signed HOLD 01a13d8d-8565-715e-acb5-ee622e12a1b0) ------
+
+// A rule that live capture served keeps its served identity when another rule's
+// capacity refusal defers the input, so an assignee-driven rebase of the served
+// instance does not make the retry deliver the event to it again.
+func TestCustomCapacityRetryDoesNotRedeliverToAnInstanceLiveCaptureServed(t *testing.T) {
+	k := newCustomEnv(t)
+	k.fillIssuePool(t, 31)
+	a := k.mustSave(t, WakeupScopeWorkspace, "", k.eventRule(`["comment.created"]`))
+	k.comment(t, "creates A's instance in the last slot")
+	k.drain(t)
+	if !k.instanceRow(t, a.RuleKey).Enabled {
+		t.Fatal("setup: A's instance is not applied")
+	}
+	b := k.mustSave(t, WakeupScopeWorkspace, "", k.eventRule(`["comment.created"]`))
+	k.comment(t, "A is served live; B has no slot")
+	k.drain(t)
+	if n, count := k.receiptCount(t, a.RuleKey); n != 1 || count != 2 {
+		t.Fatalf("setup: A receipts=%d events=%d, want both events on one receipt", n, count)
+	}
+	if n, _ := k.receiptCount(t, b.RuleKey); n != 0 {
+		t.Fatalf("setup: B received %d receipts while the pool is full", n)
+	}
+	before := k.instanceRow(t, a.RuleKey).Revision
+
+	k.f.Exec(t, `UPDATE issue SET assignee_type='agent',assignee_id=$2 WHERE id=$1`, k.issue, k.agent)
+	k.freePool(t)
+	k.sweep(t)
+	k.drain(t)
+
+	if after := k.instanceRow(t, a.RuleKey).Revision; after == before {
+		t.Fatalf("A was not rebased (revision %d): the test no longer exercises the rebase", after)
+	}
+	if n, count := k.receiptCount(t, a.RuleKey); n != 1 || count != 2 {
+		t.Fatalf("A after its rebase: receipts=%d events=%d, want its two events once, not a replay", n, count)
+	}
+	if n, count := k.receiptCount(t, b.RuleKey); n != 1 || count != 1 {
+		t.Fatalf("B: receipts=%d events=%d, want the one event delivered", n, count)
+	}
+}
+
+// A delay a database error caused is not a capacity wait: bringing capacity
+// deferred inputs forward leaves it to its own backoff.
+func TestCustomCapacityBringForwardLeavesADatabaseErrorBackoffAlone(t *testing.T) {
+	k := newCustomEnv(t)
+	view := k.mustSave(t, WakeupScopeWorkspace, "", k.eventRule(`["comment.created"]`))
+	k.comment(t, "hits a database error")
+	heal := k.failInstanceWrites(t)
+	_ = k.s.DrainScopedEvents(context.Background(), parseTestUUID(t, k.f.WorkspaceID)) // reports the injected error
+	heal()
+	if delayed, due := k.delayedInputs(t); delayed != 1 || due != 0 {
+		t.Fatalf("delayed=%d due=%d, want the failed input held behind the error backoff", delayed, due)
+	}
+	k.sweep(t)
+	k.sweep(t)
+	if delayed, due := k.delayedInputs(t); delayed != 1 || due != 0 {
+		t.Fatalf("delayed=%d due=%d after the sweeps, want the error backoff kept (only capacity waits are brought forward)", delayed, due)
+	}
+	// The backoff ends on its own clock and the input is delivered.
+	k.f.Exec(t, `UPDATE wakeup_scoped_event SET retry_at=now()-interval '1 second' WHERE workspace_id=$1 AND handled_at IS NULL`, k.f.WorkspaceID)
+	k.drain(t)
+	if n, count := k.receiptCount(t, view.RuleKey); n != 1 || count != 1 {
+		t.Fatalf("receipts=%d events=%d, want the input delivered once its backoff ended", n, count)
+	}
+}
