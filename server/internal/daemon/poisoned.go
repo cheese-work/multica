@@ -166,6 +166,13 @@ func classifyPoisonedError(errMsg string) (string, bool) {
 	if taskfailure.UnresumableHistory(errMsg) {
 		return FailureReasonAPIInvalidRequest, true
 	}
+	// AGY replays a stored executor NOT_FOUND on every resume (CHE-1715).
+	// Retire the session here, at report time, rather than through
+	// UnresumableHistory, so a genuine current 404 never takes the in-turn
+	// fresh retry and becomes a success.
+	if taskfailure.AGYReplayedNotFound(errMsg) {
+		return FailureReasonAPIInvalidRequest, true
+	}
 	return "", false
 }
 

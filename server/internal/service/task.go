@@ -5604,7 +5604,10 @@ func ResumeUnsafeFailure(failureReason, errorText string) bool {
 	// a daemon too old to carry classifyPoisonedError's new branch reports
 	// agent_error.unknown, and without this the manual-retry path would
 	// happily resume the transcript the provider just refused (GH #6066).
-	return taskfailure.UnresumableHistory(errorText)
+	// AGY replays a stored executor NOT_FOUND on every resume (CHE-1715). It
+	// is kept out of UnresumableHistory so it never opens the in-turn fresh
+	// retry, so it needs its own clause here.
+	return taskfailure.UnresumableHistory(errorText) || taskfailure.AGYReplayedNotFound(errorText)
 }
 
 // retryEligible reports whether a failed task qualifies for an automatic retry
