@@ -6,19 +6,26 @@ import { renderWithI18n } from "../../test/i18n";
 import { WakeupsTab } from "./wakeups-tab";
 
 vi.mock("@multica/core/api", () => ({
-  api: { listWorkspaceSystemWakeups: vi.fn(), updateWorkspaceSystemWakeup: vi.fn() },
+  api: { listWorkspaceSystemWakeups: vi.fn(), updateWorkspaceSystemWakeup: vi.fn(), updateWorkspace: vi.fn() },
 }));
+let settings: Record<string, unknown> = {};
+vi.mock("@multica/core/paths", () => ({
+  useCurrentWorkspace: () => ({ id: "ws", settings }),
+}));
+vi.mock("../../common/use-viewing-timezone", () => ({ useViewingTimezone: () => "UTC" }));
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws" }));
 vi.mock("@multica/core/auth", () => ({
   useAuthStore: (selector: (s: unknown) => unknown) => selector({ user: { id: "u" } }),
 }));
 let role = "admin";
 vi.mock("@multica/core/workspace/queries", () => ({
-  memberListOptions: () => ({ queryKey: ["members", "ws"], queryFn: async () => [{ user_id: "u", role }] }),
+  memberListOptions: () => ({ queryKey: ["members", "ws"], queryFn: async () => [{ user_id: "u", name: "Ada", role }] }),
+  workspaceKeys: { list: () => ["workspaces"] },
 }));
 
 const list = vi.mocked(api.listWorkspaceSystemWakeups);
 const update = vi.mocked(api.updateWorkspaceSystemWakeup);
+const updateWorkspace = vi.mocked(api.updateWorkspace);
 
 function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
@@ -31,6 +38,8 @@ function mount() {
 
 beforeEach(() => {
   role = "admin";
+  settings = { github_enabled: true };
+  updateWorkspace.mockReset().mockResolvedValue({ id: "ws" } as never);
   list.mockReset().mockResolvedValue([
     { rule: "child_done", enabled: true, instruction: "", builtin_instruction: "Advance the next stage.", customized: 2 },
   ]);
@@ -59,4 +68,32 @@ it("shows the defaults read-only to members who cannot change them", async () =>
   expect(screen.getByRole("switch", { name: "On by default" })).toHaveAttribute("aria-disabled", "true");
   expect(screen.getByRole("textbox", { name: "Default instruction" })).toBeDisabled();
   expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+});
+
+it("lets an admin pause every wakeup and keeps the rest of the settings", async () => {
+  mount();
+  fireEvent.click(await screen.findByRole("switch", { name: "Pause all wakeups" }));
+  await waitFor(() =>
+    expect(updateWorkspace).toHaveBeenCalledWith("ws", { settings: { github_enabled: true, wakeups_paused: true } }),
+  );
+});
+
+it("names who paused the workspace and shows the per-rule switch as overridden", async () => {
+  settings = { wakeups_paused: true, wakeups_paused_by: "u", wakeups_paused_at: "2026-10-15T08:00:00Z" };
+  mount();
+  expect(await screen.findByText(/Wakeups paused by Ada at /)).toBeVisible();
+  expect(screen.getByRole("switch", { name: "Pause all wakeups" })).toBeChecked();
+  expect(screen.getByRole("switch", { name: "On by default" })).toHaveAttribute("aria-disabled", "true");
+  expect(screen.getByText("Overridden while wakeups are paused.")).toBeVisible();
+  fireEvent.click(screen.getByRole("switch", { name: "Pause all wakeups" }));
+  await waitFor(() =>
+    expect(updateWorkspace).toHaveBeenCalledWith("ws", expect.objectContaining({ settings: expect.objectContaining({ wakeups_paused: false }) })),
+  );
+});
+
+it("shows no pause switch to members who cannot change it", async () => {
+  role = "member";
+  mount();
+  await screen.findByRole("switch", { name: "On by default" });
+  expect(screen.getByRole("switch", { name: "Pause all wakeups" })).toHaveAttribute("aria-disabled", "true");
 });
