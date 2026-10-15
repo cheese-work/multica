@@ -39,12 +39,26 @@ func UnresumableHistory(errText string) bool {
 	if errText == "" {
 		return false
 	}
-	return ResponseProtectionUnavailable(errText) ||
+	return ResponseProtectionUnavailable(errText) || ExecutorEntityNotFound(errText) ||
 		(emptyContentRe.MatchString(errText) && historyMessageLocatorRe.MatchString(errText))
 }
 
 func ResponseProtectionUnavailable(errText string) bool {
 	return strings.Contains(strings.ToLower(errText), "response protection is unavailable")
+}
+
+// ExecutorEntityNotFound reports the AGY executor NOT_FOUND error. AGY stores
+// it in the conversation and reports it again on every resumed turn, even one
+// whose model call succeeds (CHE-1715), so the session cannot be resumed
+// cleanly whether the 404 is stale or current. Both phrases are required: the
+// NOT_FOUND message alone can come from any tool or API.
+//
+// Keep in sync with the GetLastTaskSession / GetLastChatTaskSession resume
+// queries (pkg/db/queries).
+func ExecutorEntityNotFound(errText string) bool {
+	lower := strings.ToLower(errText)
+	return strings.Contains(lower, "agent executor error") &&
+		strings.Contains(lower, "requested entity was not found")
 }
 
 // AuthMethodUnresolved reports whether an agent error is the provider
