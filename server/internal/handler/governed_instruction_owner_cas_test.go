@@ -405,3 +405,36 @@ func TestOwnerCAS_LogsCarryNoCandidateText(t *testing.T) {
 		}
 	})
 }
+
+func TestOwnerCAS_GrandfatherInstructionLimit(t *testing.T) {
+	for _, tg := range ownerCASTargets() {
+		if tg.name != "squad.instructions" && tg.name != "agent.instructions" {
+			continue
+		}
+		t.Run(tg.name, func(t *testing.T) {
+			limit := 3000
+			if tg.name == "agent.instructions" {
+				limit = 4000
+			}
+			// 1. Seed initial content exceeding the limit by ~500 tokens
+			initialOverLimit := strings.Repeat("grandfather test cas instructions ", (limit/10)+50)
+			id := tg.seed(t, initialOverLimit)
+			initialDigest := testDigest(initialOverLimit)
+
+			// 2. Decreasing token count should succeed (HTTP 200) under grandfather rule
+			smallerOverLimit := strings.Repeat("grandfather test cas instructions ", (limit/10)+20)
+			w := tg.do(testUserID, id, smallerOverLimit, initialDigest)
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200 OK for decreasing over-limit instructions, got %d: %s", w.Code, w.Body.String())
+			}
+
+			// 3. Increasing token count should be rejected (HTTP 422)
+			newDigest := testDigest(smallerOverLimit)
+			largerOverLimit := strings.Repeat("grandfather test cas instructions ", (limit/10)+60)
+			w2 := tg.do(testUserID, id, largerOverLimit, newDigest)
+			if w2.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("expected 422 Unprocessable Entity for increasing over-limit instructions, got %d: %s", w2.Code, w2.Body.String())
+			}
+		})
+	}
+}

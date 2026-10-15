@@ -29,6 +29,7 @@ import (
 	"github.com/multica-ai/multica/server/pkg/agent"
 	"github.com/multica-ai/multica/server/pkg/credentialexec"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/jev"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
 )
@@ -1424,6 +1425,13 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.Instructions != "" {
+		if tokens := jev.EstimateInstructionTokens(req.Instructions); tokens > 4000 {
+			writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("agent instructions exceed limit of 4000 tokens (estimated: %d tokens)", tokens))
+			return
+		}
+	}
+
 	if req.Name == "" {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
@@ -1940,6 +1948,17 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	if _, ok := rawFields["custom_env"]; ok {
 		writeError(w, http.StatusBadRequest, "custom_env is no longer accepted on this endpoint; use PUT /api/agents/{id}/env (or `multica agent env set`)")
 		return
+	}
+
+	if req.Instructions != nil {
+		newTokens := jev.EstimateInstructionTokens(*req.Instructions)
+		existingTokens := jev.EstimateInstructionTokens(existing.Instructions)
+		if newTokens > 4000 {
+			if *req.Instructions != existing.Instructions && (existingTokens <= 4000 || newTokens > existingTokens) {
+				writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("agent instructions exceed limit of 4000 tokens (estimated: %d tokens)", newTokens))
+				return
+			}
+		}
 	}
 
 	// CHE-455: agent actors may never persist a change to an agent's
