@@ -1987,7 +1987,7 @@ WITH usage AS (
         '{}'::jsonb
     )::jsonb AS role_counts
 )
-SELECT usage.*, runs.*, messages.*
+SELECT usage.*, models.*, runs.*, messages.*
 FROM usage
 CROSS JOIN models
 CROSS JOIN runs
