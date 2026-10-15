@@ -334,6 +334,48 @@ func TestJevShadow_MissingCredentialIsLoggedAndNonFatal(t *testing.T) {
 	f.assertNoJevSideEffects(t, issue)
 }
 
+// A shadow evaluation that cannot get a database answer must give up and log
+// an error record instead of holding a pool connection forever (CHE-1745).
+func TestJevShadow_BlockedDatabaseIsBoundedAndLoggedAsError(t *testing.T) {
+	logs := captureSlog(t)
+	f := newJevShadowFixture(t, map[string]any{"jev_squad_routing_mode": "shadow"})
+	f.serve(f.confidentWorkerAnswer(0.95))
+	issue := f.insertIssue(t, "todo")
+
+	ctx := context.Background()
+	lockTx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin lock tx: %v", err)
+	}
+	t.Cleanup(func() { _ = lockTx.Rollback(ctx) })
+	if _, err := lockTx.Exec(ctx, `LOCK TABLE squad_member IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatalf("lock squad_member: %v", err)
+	}
+
+	routed, advisory := testHandler.tryJevSquadRouting(ctx, issue, f.squad, "member", testUserID, testUserID)
+	if routed || advisory != "" {
+		t.Fatalf("blocked shadow evaluation leaked into the leader path: routed=%v advisory=%q", routed, advisory)
+	}
+
+	want := util.UUIDToString(issue.ID)
+	deadline := time.Now().Add(12 * time.Second)
+	var rec map[string]any
+	for rec == nil && time.Now().Before(deadline) {
+		for _, r := range logs.records() {
+			if r["issue_id"] == want {
+				rec = r
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if rec == nil {
+		t.Fatal("blocked database: evaluation neither finished nor timed out within 12s; it still holds a pool connection")
+	}
+	if rec["outcome"] != "error" {
+		t.Errorf("record[outcome] = %v, want error", rec["outcome"])
+	}
+}
+
 func TestJevShadow_AgentAuthoredCommentIsNotEvaluated(t *testing.T) {
 	logs := captureSlog(t)
 	var calls int
