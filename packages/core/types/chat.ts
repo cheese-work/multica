@@ -120,6 +120,34 @@ export interface ChatSession {
   updated_at: string;
 }
 
+export interface ChatUsageTokens {
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+}
+
+/** `GET /api/chat/sessions/{id}/usage`: totals for this session only. */
+export interface ChatSessionUsage {
+  session_id: string;
+  tokens: ChatUsageTokens;
+  /** Tokens from rows the provider did not price; the only ones a client estimates. */
+  uncosted_tokens: ChatUsageTokens;
+  cost_usd_ticks: number;
+  runs: {
+    by_status: Record<string, number>;
+    /** Finished runs; `metered` is the subset that reported usage. */
+    terminal: number;
+    metered: number;
+    total_run_ms: number;
+  };
+  messages: { by_role: Record<string, number> };
+  models: string[];
+  continued_from_session_id: string | null;
+  continued_into_session_id: string | null;
+  forked_from_session_id: string | null;
+}
+
 export interface ChatContinueResponse {
   session: ChatSession;
   previous_session_id: string;

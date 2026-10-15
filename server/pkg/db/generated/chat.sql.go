@@ -1180,6 +1180,104 @@ func (q *Queries) GetChatSessionInWorkspace(ctx context.Context, arg GetChatSess
 	return i, err
 }
 
+const getChatSessionUsageSummary = `-- name: GetChatSessionUsageSummary :one
+WITH usage AS (
+    SELECT
+        COALESCE(SUM(tu.input_tokens), 0)::bigint AS input_tokens,
+        COALESCE(SUM(tu.output_tokens), 0)::bigint AS output_tokens,
+        COALESCE(SUM(tu.cache_read_tokens), 0)::bigint AS cache_read_tokens,
+        COALESCE(SUM(tu.cache_write_tokens), 0)::bigint AS cache_write_tokens,
+        COALESCE(SUM(tu.cost_usd_ticks), 0)::bigint AS cost_usd_ticks,
+        COALESCE(SUM(tu.input_tokens)       FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_input_tokens,
+        COALESCE(SUM(tu.output_tokens)      FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_output_tokens,
+        COALESCE(SUM(tu.cache_read_tokens)  FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_read_tokens,
+        COALESCE(SUM(tu.cache_write_tokens) FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_write_tokens,
+        COALESCE(ARRAY_AGG(DISTINCT tu.model ORDER BY tu.model) FILTER (WHERE tu.model <> ''), '{}')::text[] AS models
+    FROM task_usage tu
+    JOIN agent_task_queue atq ON atq.id = tu.task_id
+    WHERE atq.chat_session_id = $1
+), runs AS (
+    SELECT
+        COALESCE(
+            (SELECT jsonb_object_agg(status, n)
+             FROM (SELECT status, COUNT(*)::int AS n
+                   FROM agent_task_queue WHERE chat_session_id = $1 GROUP BY status) AS by_status),
+            '{}'::jsonb
+        )::jsonb AS status_counts,
+        COUNT(*) FILTER (WHERE atq.status IN ('completed', 'failed', 'cancelled')
+            AND atq.started_at IS NOT NULL AND atq.completed_at IS NOT NULL)::int AS terminal_runs,
+        COUNT(*) FILTER (WHERE atq.status IN ('completed', 'failed', 'cancelled')
+            AND atq.started_at IS NOT NULL AND atq.completed_at IS NOT NULL
+            AND EXISTS (SELECT 1 FROM task_usage tu WHERE tu.task_id = atq.id))::int AS metered_runs,
+        COALESCE(SUM(EXTRACT(EPOCH FROM (atq.completed_at - atq.started_at)) * 1000) FILTER (
+            WHERE atq.status IN ('completed', 'failed', 'cancelled')
+              AND atq.started_at IS NOT NULL AND atq.completed_at IS NOT NULL), 0)::bigint AS total_run_ms
+    FROM agent_task_queue atq
+    WHERE atq.chat_session_id = $1
+), messages AS (
+    SELECT
+        COUNT(*) FILTER (WHERE role = 'user')::int AS user_messages,
+        COUNT(*) FILTER (WHERE role = 'assistant')::int AS assistant_messages
+    FROM chat_message
+    WHERE chat_session_id = $1 AND message_kind <> 'onboarding_kickoff'
+)
+SELECT usage.input_tokens, usage.output_tokens, usage.cache_read_tokens, usage.cache_write_tokens, usage.cost_usd_ticks, usage.uncosted_input_tokens, usage.uncosted_output_tokens, usage.uncosted_cache_read_tokens, usage.uncosted_cache_write_tokens, usage.models, runs.status_counts, runs.terminal_runs, runs.metered_runs, runs.total_run_ms, messages.user_messages, messages.assistant_messages
+FROM usage
+CROSS JOIN runs
+CROSS JOIN messages
+`
+
+type GetChatSessionUsageSummaryRow struct {
+	InputTokens              int64    `json:"input_tokens"`
+	OutputTokens             int64    `json:"output_tokens"`
+	CacheReadTokens          int64    `json:"cache_read_tokens"`
+	CacheWriteTokens         int64    `json:"cache_write_tokens"`
+	CostUsdTicks             int64    `json:"cost_usd_ticks"`
+	UncostedInputTokens      int64    `json:"uncosted_input_tokens"`
+	UncostedOutputTokens     int64    `json:"uncosted_output_tokens"`
+	UncostedCacheReadTokens  int64    `json:"uncosted_cache_read_tokens"`
+	UncostedCacheWriteTokens int64    `json:"uncosted_cache_write_tokens"`
+	Models                   []string `json:"models"`
+	StatusCounts             []byte   `json:"status_counts"`
+	TerminalRuns             int32    `json:"terminal_runs"`
+	MeteredRuns              int32    `json:"metered_runs"`
+	TotalRunMs               int64    `json:"total_run_ms"`
+	UserMessages             int32    `json:"user_messages"`
+	AssistantMessages        int32    `json:"assistant_messages"`
+}
+
+// Usage totals for one DM, adapted from GetIssueUsageSummary: the same two
+// passes (usage rows, then terminal-run coverage) filtered on
+// agent_task_queue.chat_session_id. "Terminal" runs are finished ones with
+// both timestamps; "metered" terminal runs have at least one task_usage row.
+// Queued and running runs appear only in status_counts. Hidden onboarding
+// kickoff messages are not counted, matching the visible transcript.
+// agent_task_queue is read through idx_agent_task_queue_chat_session
+// (migration 472), chat_message through idx_chat_message_session.
+func (q *Queries) GetChatSessionUsageSummary(ctx context.Context, chatSessionID pgtype.UUID) (GetChatSessionUsageSummaryRow, error) {
+	row := q.db.QueryRow(ctx, getChatSessionUsageSummary, chatSessionID)
+	var i GetChatSessionUsageSummaryRow
+	err := row.Scan(
+		&i.InputTokens,
+		&i.OutputTokens,
+		&i.CacheReadTokens,
+		&i.CacheWriteTokens,
+		&i.CostUsdTicks,
+		&i.UncostedInputTokens,
+		&i.UncostedOutputTokens,
+		&i.UncostedCacheReadTokens,
+		&i.UncostedCacheWriteTokens,
+		&i.Models,
+		&i.StatusCounts,
+		&i.TerminalRuns,
+		&i.MeteredRuns,
+		&i.TotalRunMs,
+		&i.UserMessages,
+		&i.AssistantMessages,
+	)
+	return i, err
+}
+
 const getLastChatTaskSession = `-- name: GetLastChatTaskSession :one
 WITH retired_sessions AS (
     SELECT DISTINCT r.retired_session_id AS session_id
