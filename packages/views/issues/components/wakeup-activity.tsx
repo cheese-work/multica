@@ -276,16 +276,20 @@ export function WakeupActivityLinks({ entry, issueId, getActorName }: { entry: T
   return (
     <>
       {pr && (
-        <a href={pr.url} target="_blank" rel="noopener noreferrer" className={link}>
+        <a href={pr.url} target="_blank" rel="noopener noreferrer" className={link} data-testid="wakeup-activity-pr-link">
           {t(($) => $.activity.wakeup_link_pr, { number: pr.number })}
         </a>
       )}
       {commentId && (
-        <AppLink href={`${paths.issueDetail(issueId)}#comment-${commentId}`} className={link}>
+        <AppLink href={`${paths.issueDetail(issueId)}#comment-${commentId}`} className={link} data-testid="wakeup-activity-comment-link">
           {t(($) => $.activity.wakeup_link_comment)}
         </AppLink>
       )}
-      {task && <TranscriptButton task={task} agentName={getActorName("agent", task.agent_id)} title={t(($) => $.activity.wakeup_link_run)} />}
+      {task && (
+        <span className="contents" data-testid="wakeup-activity-run-link">
+          <TranscriptButton task={task} agentName={getActorName("agent", task.agent_id)} title={t(($) => $.activity.wakeup_link_run)} />
+        </span>
+      )}
     </>
   );
 }

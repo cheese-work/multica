@@ -794,7 +794,7 @@ function ActivityBlock({
                 </span>
               )}
               {/* Wakeup sentences name who was woken; on phones they wrap beside the links rather than truncate. */}
-              <span className={cn("min-w-0", isWakeup ? "break-words sm:truncate" : "truncate")}>
+              <span className={cn("min-w-0", isWakeup ? "break-words sm:truncate" : "truncate")} data-testid={isWakeup ? "wakeup-activity-sentence" : undefined}>
                 <ActivityText
                   entry={entry}
                   text={
@@ -806,7 +806,7 @@ function ActivityBlock({
               </span>
               {isWakeup && <WakeupActivityLinks entry={entry} issueId={issueId} getActorName={getActorName} />}
               {chip && (
-                <span className="ml-auto inline-flex max-w-48 shrink-0 items-center gap-1 truncate rounded-xs bg-muted px-1.5 py-0.5 text-micro text-muted-foreground">
+                <span className="ml-auto inline-flex max-w-48 shrink-0 items-center gap-1 truncate rounded-xs bg-muted px-1.5 py-0.5 text-micro text-muted-foreground" data-testid={isWakeup ? "wakeup-activity-chip" : undefined}>
                   {chip}
                 </span>
               )}

@@ -1,0 +1,16 @@
+# DRAFT, reconstructed after implementation (PR #253). Not an admit-time artifact:
+# the sheet did not exist when CHE-1726 was admitted.
+# Unresolved: design value. No merged design revision covers this change and no
+# Cheese waiver is recorded. The admission gate has NOT passed.
+issue: CHE-1726
+design: UNRESOLVED   # needs: design/<topic>/rev-<n>/<X>.html @ <merge-sha>, or: waiver <comment link>
+pages:
+  - id: issue-timeline-wakeup-rows
+    url: /<workspace-slug>/issues/<issue-id>   # activity block, wakeup_* rows; same path on base and preview
+    keep:   [wakeup-activity-chip]
+    change:
+      - wakeup-activity-sentence: "names what fired and who was woken; wraps below sm instead of truncating"
+      - wakeup-activity-pr-link: "new: PR #n link, https URLs only"
+      - wakeup-activity-comment-link: "new: link to the triggering comment"
+      - wakeup-activity-run-link: "new: transcript button for the started run"
+    remove: []
