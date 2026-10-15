@@ -2,11 +2,14 @@ package handler
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -118,6 +121,47 @@ func readyDecisionDelivery(test *testing.T) (askedRecordFixture, decisionRecordR
 	dbfx.Exec(test, `UPDATE decision_answer SET wake_at = clock_timestamp() WHERE id = $1`, recorded.Answer.ID)
 	dbfx.Exec(test, `UPDATE decision_intent SET sealed_at = clock_timestamp() WHERE id = $1`, fixture.intentID)
 	return fixture, recorded
+}
+
+type decisionDeliveryGroupFixture struct {
+	core    requestCoreFixture
+	members []askedRecordFixture
+	records []decisionRecordResult
+}
+
+func readyDecisionDeliveryGroup(test *testing.T) decisionDeliveryGroupFixture {
+	test.Helper()
+	core := newRequestCoreFixture(test, true)
+	group := decisionDeliveryGroupFixture{core: core}
+	for _, humanID := range []string{core.humanID, testUserID} {
+		person := core
+		person.sessionID = dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": core.agentID, "creator_id": humanID, "title": "Concurrent group answer"})
+		request, err := testHandler.createDecisionRequest(person.request(), core.issue, person.input())
+		if err != nil {
+			test.Fatal(err)
+		}
+		messageID := dbfx.Insert(test, "chat_message", testutil.Cols{"chat_session_id": person.sessionID, "role": "user", "content": "Answer from " + humanID, "sent_via": "interactive_jwt"})
+		chatTaskID := dbfx.Task(test, core.agentID, testutil.Cols{"chat_session_id": person.sessionID, "status": "running", "runtime_id": handlerTestRuntimeID(test)})
+		dbfx.Exec(test, `UPDATE agent_task_queue SET started_at = clock_timestamp() WHERE id = $1`, chatTaskID)
+		member := askedRecordFixture{
+			requestCoreFixture: person,
+			decision:           request.Request,
+			parentID:           uuidToString(request.Comment.ID),
+			messageID:          messageID,
+			chatTaskID:         chatTaskID,
+		}
+		recorded, err := testHandler.createAskedDecisionRecord(member.recordRequest(), core.issue, member.recordInput())
+		if err != nil {
+			test.Fatal(err)
+		}
+		dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, chatTaskID)
+		dbfx.Exec(test, `UPDATE decision_answer SET wake_at = clock_timestamp() WHERE id = $1`, recorded.Answer.ID)
+		group.members = append(group.members, member)
+		group.records = append(group.records, recorded)
+	}
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, core.taskID)
+	dbfx.Exec(test, `UPDATE decision_intent SET sealed_at = clock_timestamp() WHERE id = $1`, core.intentID)
+	return group
 }
 
 func TestDecisionDeliveryRollbackAndRestart(test *testing.T) {
@@ -326,6 +370,392 @@ func (transaction decisionDeliveryBarrierTx) Commit(ctx context.Context) error {
 		return ctx.Err()
 	case <-transaction.starter.release:
 		return transaction.Tx.Commit(ctx)
+	}
+}
+
+type decisionDeliveryTransaction struct {
+	name string
+	pid  int
+}
+
+type decisionDeliveryScheduleStarter struct {
+	txStarter
+	name       string
+	started    chan<- decisionDeliveryTransaction
+	committing chan<- decisionDeliveryTransaction
+	release    <-chan struct{}
+}
+
+type decisionDeliveryScheduleTx struct {
+	pgx.Tx
+	starter decisionDeliveryScheduleStarter
+	pid     int
+}
+
+func (starter decisionDeliveryScheduleStarter) Begin(ctx context.Context) (pgx.Tx, error) {
+	transaction, err := starter.txStarter.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var pid int
+	if err := transaction.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		_ = transaction.Rollback(ctx)
+		return nil, err
+	}
+	if starter.started != nil {
+		select {
+		case starter.started <- decisionDeliveryTransaction{name: starter.name, pid: pid}:
+		default:
+		}
+	}
+	return decisionDeliveryScheduleTx{Tx: transaction, starter: starter, pid: pid}, nil
+}
+
+func (transaction decisionDeliveryScheduleTx) Commit(ctx context.Context) error {
+	if transaction.starter.committing != nil {
+		select {
+		case transaction.starter.committing <- decisionDeliveryTransaction{name: transaction.starter.name, pid: transaction.pid}:
+		default:
+		}
+	}
+	if transaction.starter.release != nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-transaction.starter.release:
+		}
+	}
+	return transaction.Tx.Commit(ctx)
+}
+
+func (transaction decisionDeliveryScheduleTx) Rollback(context.Context) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return transaction.Tx.Rollback(ctx)
+}
+
+func awaitDecisionDeliveryEvent(test *testing.T, events <-chan decisionDeliveryTransaction, description string) decisionDeliveryTransaction {
+	test.Helper()
+	timer := time.NewTimer(8 * time.Second)
+	defer timer.Stop()
+	select {
+	case event := <-events:
+		return event
+	case <-timer.C:
+		test.Fatalf("timed out waiting for %s", description)
+		return decisionDeliveryTransaction{}
+	}
+}
+
+func waitForDecisionWaiterBlockedBy(test *testing.T, waiterPID, blockerPID int, timeout time.Duration) bool {
+	test.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		var blocked bool
+		if err := testPool.QueryRow(context.Background(), `
+			SELECT EXISTS (
+				SELECT 1 FROM pg_stat_activity
+				WHERE datname = current_database()
+				  AND pid = $1
+				  AND state = 'active'
+				  AND wait_event_type = 'Lock'
+				  AND wait_event IN ('transactionid', 'tuple', 'advisory')
+				  AND $2::int = ANY(pg_blocking_pids(pid))
+			)
+		`, waiterPID, blockerPID).Scan(&blocked); err != nil {
+			test.Fatalf("probe decision delivery wait from pid %d to pid %d: %v", waiterPID, blockerPID, err)
+		}
+		if blocked {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestDecisionDeliveryGroupSourceFenceConcurrent(test *testing.T) {
+	for _, order := range []string{"delete_first", "delivery_first"} {
+		test.Run(order, func(test *testing.T) {
+			group := readyDecisionDeliveryGroup(test)
+			handler, _ := newDecisionRunnerFixture(test)
+			requestIDs := []pgtype.UUID{group.records[0].Request.ID, group.records[1].Request.ID}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if order == "delete_first" {
+				deleteTx, err := testPool.Begin(ctx)
+				if err != nil {
+					test.Fatal(err)
+				}
+				defer deleteTx.Rollback(context.Background())
+				if _, err := deleteTx.Exec(ctx, `DELETE FROM chat_message WHERE id = $1`, group.members[0].messageID); err != nil {
+					test.Fatal(err)
+				}
+				blockedDelivery := make(chan error, 1)
+				go func() {
+					blockedDelivery <- handler.DeliverDecisionWake(ctx, group.core.issue.WorkspaceID, group.members[0].decision.ID)
+				}()
+				select {
+				case err := <-blockedDelivery:
+					var postgresError *pgconn.PgError
+					if !errors.As(err, &postgresError) || postgresError.Code != "55P03" {
+						test.Fatalf("delivery while source delete was uncommitted returned %v, want NOWAIT 55P03", err)
+					}
+				case <-ctx.Done():
+					test.Fatal("delivery did not reach the held source fence before deadline")
+				}
+				if err := deleteTx.Commit(ctx); err != nil {
+					test.Fatal(err)
+				}
+				if err := handler.DeliverDecisionWake(ctx, group.core.issue.WorkspaceID, group.members[0].decision.ID); err != nil {
+					test.Fatal(err)
+				}
+				if count := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = ANY($1::uuid[]) AND woken_at IS NOT NULL`, requestIDs); count != 0 {
+					test.Fatalf("delete-first partially acknowledged %d answers", count)
+				}
+				if count := dbfx.Count(test, `SELECT count(*) FROM decision_intent WHERE id = $1 AND group_woken_at IS NOT NULL`, group.core.intentID); count != 0 {
+					test.Fatal("delete-first recorded a group wake")
+				}
+				if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND trigger_comment_id = ANY($2::uuid[])`, group.core.issueID, []pgtype.UUID{group.records[0].Comment.ID, group.records[1].Comment.ID}); count != 0 {
+					test.Fatalf("delete-first delivered %d stale group sources", count)
+				}
+				return
+			}
+
+			release := make(chan struct{})
+			var releaseOnce sync.Once
+			unblock := func() { releaseOnce.Do(func() { close(release) }) }
+			defer unblock()
+			committing := make(chan decisionDeliveryTransaction, 1)
+			handler.TxStarter = decisionDeliveryScheduleStarter{txStarter: testPool, name: "delivery", committing: committing, release: release}
+			deliveryDone := make(chan error, 1)
+			go func() {
+				deliveryDone <- handler.DeliverDecisionWake(ctx, group.core.issue.WorkspaceID, group.members[0].decision.ID)
+			}()
+			delivery := awaitDecisionDeliveryEvent(test, committing, "group delivery commit barrier")
+			deleteDone := make(chan error, 1)
+			go func() {
+				_, err := testPool.Exec(ctx, `DELETE FROM chat_message WHERE id = $1`, group.members[0].messageID)
+				deleteDone <- err
+			}()
+			if !waitForWaiterBlockedBy(test, delivery.pid, 3*time.Second) {
+				test.Fatal("source delete did not wait behind the two-answer group delivery")
+			}
+			unblock()
+			if err := <-deliveryDone; err != nil {
+				test.Fatal(err)
+			}
+			if err := <-deleteDone; err != nil {
+				test.Fatal(err)
+			}
+			if count := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = ANY($1::uuid[]) AND wake_outcome = 'run_enqueued' AND woken_at IS NOT NULL`, requestIDs); count != 2 {
+				test.Fatalf("delivery-first acknowledged %d of 2 answers", count)
+			}
+			if count := dbfx.Count(test, `SELECT count(*) FROM decision_intent WHERE id = $1 AND group_woken_at IS NOT NULL`, group.core.intentID); count != 1 {
+				test.Fatalf("delivery-first group wake receipts=%d, want 1", count)
+			}
+			for _, record := range group.records {
+				if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND status = 'queued' AND (trigger_comment_id = $2 OR $2 = ANY(coalesced_comment_ids)) AND handoff_note LIKE $3`, group.core.issueID, record.Comment.ID, "%"+uuidToString(record.Comment.ID)+"%"); count != 1 {
+					test.Fatalf("delivered group contains source %s %d times", uuidToString(record.Comment.ID), count)
+				}
+			}
+			if err := handler.DeliverDecisionWake(ctx, group.core.issue.WorkspaceID, group.members[1].decision.ID); err != nil {
+				test.Fatal(err)
+			}
+			if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND status = 'queued'`, group.core.issueID); count != 1 {
+				test.Fatalf("replayed group created %d wakes, want 1", count)
+			}
+			withdrawal, err := handler.CheckDecisionSource(ctx, group.core.issue.WorkspaceID, group.members[0].decision.ID)
+			if err != nil {
+				test.Fatal(err)
+			}
+			if len(withdrawal.Comments) != 1 || withdrawal.Answer.ID != group.records[0].Answer.ID {
+				test.Fatalf("deleted delivered source was not retracted once: %+v", withdrawal)
+			}
+		})
+	}
+}
+
+func TestDecisionDeliveryLeaseTakeoverConcurrentGroup(test *testing.T) {
+	resetDecisionLease(test)
+	group := readyDecisionDeliveryGroup(test)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	started := make(chan decisionDeliveryTransaction, 2)
+	committing := make(chan decisionDeliveryTransaction, 2)
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	firstHandler, first := newDecisionRunnerFixture(test)
+	firstHandler.TxStarter = decisionDeliveryScheduleStarter{txStarter: testPool, name: "old", started: started, committing: committing, release: release}
+	type passResult struct {
+		acquired bool
+		err      error
+	}
+	firstDone := make(chan passResult, 1)
+	go func() {
+		acquired, err := first.ProcessPass(ctx)
+		firstDone <- passResult{acquired: acquired, err: err}
+	}()
+	oldStart := awaitDecisionDeliveryEvent(test, started, "old worker transaction start")
+	if oldStart.name != "old" {
+		test.Fatalf("unexpected transaction start %q, want old worker", oldStart.name)
+	}
+	oldTransaction := awaitDecisionDeliveryEvent(test, committing, "old worker delivery commit barrier")
+	if _, err := testPool.Exec(ctx, `UPDATE decision_worker_lease SET expires_at = clock_timestamp() - interval '1 second'`); err != nil {
+		test.Fatal(err)
+	}
+	secondHandler, second := newDecisionRunnerFixture(test)
+	secondHandler.TxStarter = decisionDeliveryScheduleStarter{txStarter: testPool, name: "new", started: started}
+	secondDone := make(chan passResult, 1)
+	go func() {
+		acquired, err := second.ProcessPass(ctx)
+		secondDone <- passResult{acquired: acquired, err: err}
+	}()
+	var newTransaction decisionDeliveryTransaction
+	select {
+	case newTransaction = <-started:
+	case result := <-secondDone:
+		test.Fatalf("new worker pass ended before delivery transaction: acquired=%v err=%v", result.acquired, result.err)
+	case <-ctx.Done():
+		test.Fatalf("new worker did not start its delivery transaction: %v", ctx.Err())
+	}
+	if newTransaction.name != "new" {
+		test.Fatalf("unexpected transaction start %q, want new worker", newTransaction.name)
+	}
+	if !waitForDecisionWaiterBlockedBy(test, newTransaction.pid, oldTransaction.pid, 4*time.Second) {
+		test.Fatalf("new worker pid %d did not overlap and wait at the old worker transaction boundary pid %d", newTransaction.pid, oldTransaction.pid)
+	}
+	unblock()
+	if result := <-firstDone; !result.acquired || result.err != nil {
+		test.Fatalf("old worker pass: acquired=%v err=%v", result.acquired, result.err)
+	}
+	if result := <-secondDone; !result.acquired || result.err != nil {
+		test.Fatalf("new worker pass after takeover: acquired=%v err=%v", result.acquired, result.err)
+	}
+	if count := dbfx.Count(test, `SELECT count(*) FROM decision_intent WHERE id = $1 AND group_woken_at IS NOT NULL`, group.core.intentID); count != 1 {
+		test.Fatalf("takeover group wake receipts=%d, want 1", count)
+	}
+	if count := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = ANY($1::uuid[]) AND wake_outcome = 'run_enqueued' AND woken_at IS NOT NULL`, []pgtype.UUID{group.records[0].Request.ID, group.records[1].Request.ID}); count != 2 {
+		test.Fatalf("takeover durably acknowledged %d of 2 answers", count)
+	}
+	if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND status = 'queued'`, group.core.issueID); count != 1 {
+		test.Fatalf("takeover created %d group wakes, want 1", count)
+	}
+	for _, record := range group.records {
+		if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND status = 'queued' AND (trigger_comment_id = $2 OR $2 = ANY(coalesced_comment_ids)) AND handoff_note LIKE $3`, group.core.issueID, record.Comment.ID, "%"+uuidToString(record.Comment.ID)+"%"); count != 1 {
+			test.Fatalf("takeover lost or duplicated answer source %s: %d", uuidToString(record.Comment.ID), count)
+		}
+	}
+}
+
+func TestDecisionDeliveryCrossDMMemberLockOrderConcurrent(test *testing.T) {
+	core := newRequestCoreFixture(test, false)
+	firstRequest, err := testHandler.createDecisionRequest(core.request(), core.issue, core.input())
+	if err != nil {
+		test.Fatal(err)
+	}
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, core.taskID)
+	secondTaskID := dbfx.Task(test, core.agentID, testutil.Cols{"issue_id": core.issueID, "status": "running", "runtime_id": handlerTestRuntimeID(test)})
+	secondTag := core.intentFixture.post(test, "task_token", secondTaskID, "[@Owner](mention://member/"+testUserID+")", nil)
+	var secondTagComment CommentResponse
+	secondTag.JSON(&secondTagComment)
+	var secondIntentID string
+	dbfx.QueryRow(test, `SELECT decision_intent_id FROM comment WHERE id = $1`, secondTagComment.ID).Scan(&secondIntentID)
+	secondPerson := core
+	secondPerson.taskID, secondPerson.intentID, secondPerson.tagID = secondTaskID, secondIntentID, secondTagComment.ID
+	secondPerson.humanID = testUserID
+	secondPerson.sessionID = dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": core.agentID, "creator_id": testUserID, "title": "Second decision DM"})
+	secondRequestContext := laneRequest(core.intentFixture, "")
+	secondRequestContext.Header.Set("X-Task-ID", secondTaskID)
+	secondRequest, err := testHandler.createDecisionRequest(secondRequestContext, core.issue, secondPerson.input())
+	if err != nil {
+		test.Fatal(err)
+	}
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, secondTaskID)
+	makeAnswer := func(person requestCoreFixture, request db.DecisionRequest, askComment db.Comment) askedRecordFixture {
+		test.Helper()
+		messageID := dbfx.Insert(test, "chat_message", testutil.Cols{"chat_session_id": person.sessionID, "role": "user", "content": "One decision from " + person.humanID, "sent_via": "interactive_jwt"})
+		chatTaskID := dbfx.Task(test, core.agentID, testutil.Cols{"chat_session_id": person.sessionID, "status": "running", "runtime_id": handlerTestRuntimeID(test)})
+		dbfx.Exec(test, `UPDATE agent_task_queue SET started_at = clock_timestamp() WHERE id = $1`, chatTaskID)
+		member := askedRecordFixture{requestCoreFixture: person, decision: request, parentID: uuidToString(askComment.ID), messageID: messageID, chatTaskID: chatTaskID}
+		recorded, err := testHandler.createAskedDecisionRecord(member.recordRequest(), core.issue, member.recordInput())
+		if err != nil {
+			test.Fatal(err)
+		}
+		dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, chatTaskID)
+		dbfx.Exec(test, `UPDATE decision_answer SET wake_at = clock_timestamp() WHERE id = $1`, recorded.Answer.ID)
+		return member
+	}
+	first := makeAnswer(core, firstRequest.Request, firstRequest.Comment)
+	second := makeAnswer(secondPerson, secondRequest.Request, secondRequest.Comment)
+	dbfx.Exec(test, `UPDATE issue SET assignee_type = 'member', assignee_id = $1 WHERE id = $2`, testUserID, core.issueID)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	started := make(chan decisionDeliveryTransaction, 2)
+	committing := make(chan decisionDeliveryTransaction, 2)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	firstHandler, _ := newDecisionRunnerFixture(test)
+	secondHandler, _ := newDecisionRunnerFixture(test)
+	firstHandler.TxStarter = decisionDeliveryScheduleStarter{txStarter: testPool, name: "first-dm", started: started, committing: committing, release: release}
+	secondHandler.TxStarter = decisionDeliveryScheduleStarter{txStarter: testPool, name: "second-dm", started: started, committing: committing, release: release}
+	start := make(chan struct{})
+	done := make(chan error, 2)
+	for _, attempt := range []struct {
+		handler *Handler
+		member  askedRecordFixture
+	}{{firstHandler, first}, {secondHandler, second}} {
+		go func(handler *Handler, member askedRecordFixture) {
+			<-start
+			done <- handler.DeliverDecisionWake(ctx, member.issue.WorkspaceID, member.decision.ID)
+		}(attempt.handler, attempt.member)
+	}
+	close(start)
+	transactions := map[string]int{}
+	for range 2 {
+		transaction := awaitDecisionDeliveryEvent(test, started, "concurrent cross-DM transaction start")
+		transactions[transaction.name] = transaction.pid
+	}
+	winner := awaitDecisionDeliveryEvent(test, committing, "first cross-DM commit barrier")
+	var waiterName string
+	for name, pid := range transactions {
+		if pid != winner.pid {
+			waiterName = name
+			if !waitForDecisionWaiterBlockedBy(test, pid, winner.pid, 4*time.Second) {
+				test.Fatalf("%s delivery pid %d did not overlap at the shared issue lock held by pid %d", name, pid, winner.pid)
+			}
+			break
+		}
+	}
+	unblock()
+	var failures []error
+	for range 2 {
+		if err := <-done; err != nil {
+			failures = append(failures, err)
+		}
+	}
+	for _, err := range failures {
+		var postgresError *pgconn.PgError
+		if errors.As(err, &postgresError) && postgresError.Code == "40P01" {
+			test.Fatalf("cross-DM member delivery deadlocked with PostgreSQL 40P01: %v", err)
+		}
+		test.Errorf("cross-DM delivery failed: %v", err)
+	}
+	if waiterName == "" {
+		test.Fatal("the cross-DM issue-lock waiter was not observed")
+	}
+	for _, member := range []askedRecordFixture{first, second} {
+		if count := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE id IN (SELECT id FROM decision_answer WHERE decision_request_id = $1) AND wake_outcome = 'comment_member' AND woken_at IS NOT NULL`, member.decision.ID); count != 1 {
+			test.Fatalf("member delivery for request %s acknowledged %d times", uuidToString(member.decision.ID), count)
+		}
+		if count := dbfx.Count(test, `SELECT count(*) FROM comment WHERE decision_answer_id = (SELECT id FROM decision_answer WHERE decision_request_id = $1) AND decision_comment_kind = 'delivery'`, member.decision.ID); count != 1 {
+			test.Fatalf("member delivery for request %s wrote %d comments", uuidToString(member.decision.ID), count)
+		}
 	}
 }
 
