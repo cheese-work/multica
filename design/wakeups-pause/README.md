@@ -5,6 +5,6 @@ CHE-1727 description, Cheese's decision of 15 October 2026 (DM, about 14:25 ICT)
 - Issue: [CHE-1727](mention://issue/01a13e77-dcc3-79ab-8fee-4bfebf784441)
 - Pages in scope: Settings → Wakeups (`packages/views/settings/components/wakeups-tab.tsx`), the issue wakeup panel (`packages/views/issues/components/wakeups-section.tsx`)
 - Tokens: `packages/ui/styles/tokens.css`. The repo has no `DESIGN.md` yet; the first approved row creates it.
-- Status: rev-2 posted for UX review (rev-1 scored by x99-codex-luna-2; scores are advisory). No direction selected.
+- Status: rev-3 posted for UX review (rev-2 scored by x99-codex-luna-2; scores are advisory). No direction selected.
 
 The implementation on PR #254 follows direction A.
