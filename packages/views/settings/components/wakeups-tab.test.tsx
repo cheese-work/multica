@@ -88,6 +88,9 @@ it("names who paused the workspace and shows the per-rule switch as overridden",
   expect(screen.getByRole("switch", { name: "Pause all wakeups" })).toBeChecked();
   expect(screen.getByRole("switch", { name: "On by default" })).toHaveAttribute("aria-disabled", "true");
   expect(screen.getByText("Overridden while wakeups are paused.")).toBeVisible();
+  expect(screen.getByTestId("wakeups-paused-banner")).toBeVisible();
+  expect(screen.getByTestId("wakeups-pause-switch")).toBe(screen.getByRole("switch", { name: "Pause all wakeups" }));
+  expect(screen.getByTestId("wakeups-child-done-switch")).toBe(screen.getByRole("switch", { name: "On by default" }));
   fireEvent.click(screen.getByRole("switch", { name: "Pause all wakeups" }));
   await waitFor(() =>
     expect(updateWorkspace).toHaveBeenCalledWith("ws", expect.objectContaining({ settings: expect.objectContaining({ wakeups_paused: false }) })),

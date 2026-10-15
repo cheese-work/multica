@@ -83,6 +83,7 @@ function PauseSwitch({ canManage }: { canManage: boolean }) {
         >
           <Switch
             id={`${id}-paused`}
+            data-testid="wakeups-pause-switch"
             checked={paused}
             disabled={!canManage || saving}
             aria-busy={saving || undefined}
@@ -132,6 +133,7 @@ function ChildDoneDefault({ rule, canManage, paused }: { rule: WorkspaceSystemWa
         >
           <Switch
             id={`${id}-enabled`}
+            data-testid="wakeups-child-done-switch"
             checked={rule.enabled}
             disabled={!canManage || paused || update.isPending}
             aria-busy={update.isPending || undefined}
@@ -158,6 +160,7 @@ function ChildDoneDefault({ rule, canManage, paused }: { rule: WorkspaceSystemWa
           </p>
           <Textarea
             id={`${id}-instruction`}
+            data-testid="wakeups-child-done-instruction"
             rows={3}
             value={instruction}
             placeholder={t(($) => $.wakeups.instruction_placeholder)}

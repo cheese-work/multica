@@ -23,6 +23,7 @@ export function WakeupsPausedBanner({ className = "" }: { className?: string }) 
   return (
     <p
       role="status"
+      data-testid="wakeups-paused-banner"
       className={`flex items-start gap-1.5 rounded-md bg-muted/60 px-3 py-2 text-caption leading-5 text-muted-foreground ${className}`}
     >
       <PauseCircle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
