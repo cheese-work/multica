@@ -96,7 +96,9 @@ WITH picked AS MATERIALIZED (
 DELETE FROM wakeup_scoped_event w USING picked WHERE w.id=picked.id;
 
 -- name: CountWakeupScopedEventsByOutcome :many
--- Accounting of one workspace's retained inputs; an input not yet handled counts as pending.
+-- Accounting of one workspace's retained inputs by outcome. An input not yet handled
+-- counts as pending, except one a full default pool delayed: it stays unhandled
+-- (handled_at NULL) and counts as default_capacity until it is delivered, closed or expired.
 SELECT COALESCE(outcome,'pending')::text AS outcome,count(*) AS total FROM wakeup_scoped_event WHERE workspace_id= @workspace_id GROUP BY 1;
 
 -- name: ReplayScopedWakeupEvent :exec

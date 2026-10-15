@@ -444,9 +444,12 @@ type scopedRule struct {
 	events      []string
 	// condition is the normalized predicate of a condition rule, nil for an event rule.
 	condition []byte
-	ensured   bool
-	instance  db.IssueWakeup
-	reason    string
+	// carriedRevision is the revision an instance had before a rebase that left
+	// its configuration unchanged; an event live capture served at it stays served.
+	carriedRevision int64
+	ensured         bool
+	instance        db.IssueWakeup
+	reason          string
 }
 
 // scopedDefinitionStamp is one stored definition as capture records it:
@@ -618,9 +621,12 @@ func (b *scopedIssueBatch) resolve(ctx context.Context, ev db.WakeupScopedEvent)
 			// across a rebase that changes the revision.
 			delivered++
 			served = append(served, id)
-		case slices.Contains(ev.Delivered, id):
-			// An earlier attempt served the instance; its bare id survives a rebase.
+		case slices.Contains(ev.Delivered, id), r.carriedRevision > 0 && slices.Contains(ev.Delivered, id+":"+strconv.FormatInt(r.carriedRevision, 10)):
+			// An earlier attempt served the instance (its bare id survives a rebase), or
+			// live capture served it at the revision a configuration-preserving rebase
+			// moved it from. The bare id is persisted if a deferral follows.
 			delivered++
+			served = append(served, id)
 		default:
 			replay = append(replay, inst.ID)
 			served = append(served, id)
@@ -745,8 +751,10 @@ func (s *IssueWakeupService) pruneScopedEvents(ctx context.Context, now time.Tim
 	return errors.Join(expireErr, deleteErr)
 }
 
-// ScopedEventAccounting counts a workspace's retained outbox inputs by outcome;
-// an input not yet handled counts as "pending".
+// ScopedEventAccounting counts a workspace's retained outbox inputs by outcome.
+// An input not yet handled counts as "pending", except one a full default pool
+// delayed: it stays unhandled (handled_at NULL) and counts as "default_capacity"
+// until it is delivered, closed or expired.
 func (s *IssueWakeupService) ScopedEventAccounting(ctx context.Context, workspaceID pgtype.UUID) (map[string]int64, error) {
 	rows, err := s.Tasks.Queries.CountWakeupScopedEventsByOutcome(ctx, workspaceID)
 	if err != nil {

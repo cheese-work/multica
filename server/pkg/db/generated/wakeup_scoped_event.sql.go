@@ -196,7 +196,9 @@ type CountWakeupScopedEventsByOutcomeRow struct {
 	Total   int64  `json:"total"`
 }
 
-// Accounting of one workspace's retained inputs; an input not yet handled counts as pending.
+// Accounting of one workspace's retained inputs by outcome. An input not yet handled
+// counts as pending, except one a full default pool delayed: it stays unhandled
+// (handled_at NULL) and counts as default_capacity until it is delivered, closed or expired.
 func (q *Queries) CountWakeupScopedEventsByOutcome(ctx context.Context, workspaceID pgtype.UUID) ([]CountWakeupScopedEventsByOutcomeRow, error) {
 	rows, err := q.db.Query(ctx, countWakeupScopedEventsByOutcome, workspaceID)
 	if err != nil {

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -152,6 +153,12 @@ func (b *scopedIssueBatch) rebase(ctx context.Context, w db.IssueWakeup, r *scop
 		return w, err
 	}
 	b.withdrawn = append(b.withdrawn, cancelled...)
+	if sameInstanceContent(w, out) {
+		// Only the fingerprint moved (the issue's assignee, say): the instance runs the
+		// same configuration, so an event live capture served at the old revision
+		// stays served for it.
+		r.carriedRevision = w.Revision
+	}
 	if rebaseline {
 		err = baselineCondition(ctx, b.tx, b.q, out, now)
 	}
@@ -182,4 +189,15 @@ func (s *IssueWakeupService) publishWithdrawn(ctx context.Context, tasks []db.Ag
 	for _, task := range tasks {
 		s.Tasks.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, task)
 	}
+}
+
+// sameInstanceContent reports whether a rebase left everything an instance runs
+// unchanged: its agent and author, instruction, mode, subscribed events, fire
+// cap, condition and end. Only then is an event served at the old revision still
+// served at the new one; a changed configuration is delivered afresh.
+func sameInstanceContent(old, now db.IssueWakeup) bool {
+	return old.AgentID == now.AgentID && old.CreatedBy == now.CreatedBy && old.Instruction == now.Instruction && old.Mode == now.Mode &&
+		slices.Equal(old.EventTypes, now.EventTypes) && old.MaxFires == now.MaxFires &&
+		(len(old.Condition) == 0 && len(now.Condition) == 0 || len(old.Condition) > 0 && len(now.Condition) > 0 && sameCondition(old.Condition, now.Condition)) &&
+		old.ExpiresAt == now.ExpiresAt
 }
