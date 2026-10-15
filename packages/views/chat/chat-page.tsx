@@ -50,9 +50,10 @@ import { InteractiveLoginBanner } from "./components/interactive-login-banner";
  * Selection is URL-addressable via `?session=<id>` so a thread can be
  * deep-linked, opened from a notification, and survive refresh. The chat
  * store's `activeSessionId` stays the source of truth (both surfaces read
- * it); the URL is kept in sync in both directions. Selection and "new chat"
- * push a history entry at the call site so Back walks list > A > B; the
- * store → URL effect only `replace`s, for a new chat receiving its server ID.
+ * it); the URL is kept in sync in both directions. One store → URL effect is
+ * the only writer: user selection and "new chat" record a `push` intent in the
+ * store first so Back walks list > A > B, and every other change (a new chat
+ * receiving its server ID, archive, delete, realtime) replaces the entry.
  * An unsent new chat is `?new=1`. `?agent=<id>` is the
  * complementary one-shot deep link for a NEW chat: it starts a fresh compose
  * bound to that agent and is then stripped from the URL.
@@ -92,17 +93,18 @@ export function ChatPage() {
   const urlAgent = searchParams.get("agent") || null;
   // `?new=1` is an unsent new chat, so Back from it and a refresh behave.
   const urlNew = searchParams.get("new") === "1";
-  const newChatUrl = `${wsPaths.chat()}?new=1`;
 
-  // Target of a push this page just made. The store updates in the same tick,
-  // before the router publishes the new URL, so the store → URL effect below
-  // would otherwise `replace` the entry the push is about to create.
-  const pushedTarget = useRef<{ id: string | null } | null>(null);
-  const pushSelection = (id: string | null, isNew = false) => {
-    if (id === urlSession && isNew === urlNew) return;
-    pushedTarget.current = { id };
-    push(id ? `${wsPaths.chat()}?session=${id}` : isNew ? newChatUrl : wsPaths.chat());
-  };
+  // A user navigation asks for a history entry; anything else replaces the
+  // current one. The intent is one-shot: the store → URL effect consumes it.
+  // A change to the URL the user is already on records nothing, so the intent
+  // cannot outlive the effect that would consume it.
+  const requestNav = (mode: "push" | "replace", newChat: boolean) =>
+    useChatStore.getState().requestNav({ mode, newChat });
+  const navIntent = useChatStore((s) => s.navIntent);
+  // URL this page wrote and has not yet seen published. The store updates in
+  // the same tick, before the router shows the new URL, so a second effect run
+  // in between must not write it again.
+  const writtenUrl = useRef<string | null>(null);
 
   // "Composing a brand-new chat" — the user hit ⊕ but hasn't sent yet, so no
   // session exists. At compact widths this decides list-vs-conversation; on desktop the
@@ -141,28 +143,38 @@ export function ChatPage() {
   // URL → store: deep link, refresh, notification click, back/forward.
   useEffect(() => {
     if (!isCurrentChatRoute || getCurrentSlug() !== workspaceSlug) return;
-    if (pushedTarget.current?.id === urlSession) pushedTarget.current = null;
+    writtenUrl.current = null;
     if (urlSession !== useChatStore.getState().activeSessionId) {
       c.setActiveSession(urlSession);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reconcile URL/route changes, not store updates
-  }, [isCurrentChatRoute, workspaceSlug, urlSession]);
+  }, [isCurrentChatRoute, workspaceSlug, urlSession, urlNew]);
 
-  // store → URL: a session created by sending, and store-only changes such as
-  // archive advancing the selection. Selection and new chat push at the call
-  // site instead (see pushSelection).
+  // store → URL: the single URL writer. A user selection or new chat arrives
+  // with a `push` intent; a session created by sending, archive advancing the
+  // selection, a delete and realtime changes carry none and replace.
   useEffect(() => {
+    const intent = useChatStore.getState().consumeNavIntent();
     if (!isCurrentChatRoute || getCurrentSlug() !== workspaceSlug) return;
+    const base = wsPaths.chat();
     const live = useChatStore.getState().activeSessionId;
-    const current = searchParams.get("session") || null;
-    const pushed = pushedTarget.current;
-    pushedTarget.current = null;
-    if (live !== current && pushed?.id !== live) {
-      const base = wsPaths.chat();
-      replace(live ? `${base}?session=${live}` : base);
+    const keepNewChat = intent ? intent.newChat : urlNew;
+    const target = live ? `${base}?session=${live}` : keepNewChat ? `${base}?new=1` : base;
+    const current = urlSession
+      ? `${base}?session=${urlSession}`
+      : urlNew
+        ? `${base}?new=1`
+        : base;
+    if (target === current) {
+      writtenUrl.current = null;
+      return;
     }
+    if (writtenUrl.current === target) return;
+    writtenUrl.current = target;
+    if (intent?.mode === "push") push(target);
+    else replace(target);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reconcile store/route changes, not URL updates
-  }, [isCurrentChatRoute, workspaceSlug, c.activeSessionId]);
+  }, [isCurrentChatRoute, workspaceSlug, c.activeSessionId, navIntent]);
 
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
     id: "multica_chat_layout",
@@ -182,7 +194,7 @@ export function ChatPage() {
 
   const handleSelect = (session: ChatSession) => {
     supersedeAgentIntent();
-    pushSelection(session.id);
+    if (session.id !== urlSession) requestNav("push", false);
     c.handleSelectSession(session);
     setComposingNew(false);
   };
@@ -211,8 +223,8 @@ export function ChatPage() {
     // intent effect the ref is already set to this param, so this is a no-op.
     supersedeAgentIntent();
     // The deep link already owns the current entry: it becomes `?new=1`.
-    if (fromIntent) replace(newChatUrl);
-    else pushSelection(null, true);
+    if (fromIntent) requestNav("replace", true);
+    else if (urlSession || !urlNew) requestNav("push", true);
     if (agent) c.handleStartNewChat(agent);
     else c.handleNewChat();
     setComposingNew(true);
@@ -225,7 +237,10 @@ export function ChatPage() {
     // project for an existing conversation starts a clean session, and a
     // compact layout must stay in the compose pane after activeSessionId is
     // cleared.
-    if (!c.currentSession || projectId !== null) setComposingNew(true);
+    if (!c.currentSession || projectId !== null) {
+      if (urlSession || !urlNew) requestNav(c.currentSession ? "push" : "replace", true);
+      setComposingNew(true);
+    }
   };
 
   // URL → new chat: `?agent=<id>` is the deep link used by "DM" entry points
