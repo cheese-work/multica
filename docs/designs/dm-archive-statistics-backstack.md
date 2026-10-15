@@ -5,6 +5,7 @@ Branch: agent/x99-claude-opus/21497bbd6afd
 Repo: cheese-work/multica
 Status: APPROVED (Cheese, 2026-10-15, DM: "D2 A")
 Autoplan gate (D5): APPROVED with every recommendation (Cheese, 2026-10-16, DM: "D5 accept recommendation"); see Gate decision (D5)
+Addendum A2: APPROVED (Cheese, 2026-10-16, DM: "D1 A", "D2 A")
 Mode: Intrapreneurship (plan supplied by Cheese; diagnostic skipped)
 
 ## Problem Statement
@@ -98,7 +99,7 @@ L3 has no technical dependency and can start in parallel with L1; it does not to
 - Surfaces: the full Chat page on web and desktop (`ChatPage` is also mounted in `apps/desktop/src/renderer/src/routes.tsx`) and the floating chat window (`chat-window.tsx`), which passes the same two props.
 - `/archive` failure (for example a decision-lane block from `decisionLaneArchiveAllowed`): today all three archive paths move the selection first and archive fire-and-forget: `chat-page.tsx` compact (`setActiveSession(null)`), `chat-page.tsx` desktop (`advanceSelectionAfterArchive`) and `handleArchive` in `chat-window.tsx` (~L1348). L2 changes all three to await the mutation (`mutateAsync`) before navigating, in line with AGENTS.md "await the server before navigation". On failure: show the server error in a toast and keep the session open. Tests cover the page and the floating window.
 - L2 also owns the compact archive navigation: after a successful archive, call `useBackOrReplace()(wsPaths.chat())` instead of `setActiveSession(null)`, so L3 does not edit `handleArchive`.
-- On an archived session the composer is not offered (sending already returns 409), so `/archive` cannot be typed. Unarchive stays a menu item only; no `/unarchive` in v1.
+- Superseded by Addendum A2: an archived DM offers the composer with an unarchive confirmation on send, and `/unarchive` exists. `/archive` is offered only on active DMs.
 - Tests: suggestion list contains both commands; submit of `/archive` calls the archive mutation and sends no message; submit of `/statistic` opens the dialog and sends no message.
 
 ### L3: web back stack
@@ -173,11 +174,44 @@ flowchart LR
   L2 --> C1
   C1 --> C2
   L5b --> C2
+  L1c["L1c archived means unpinned"] --> L2
+  L1c --> L4
   SEC{"different-lab security sign-off"} --> L6["L6 /agent handoff"]
   L6 --> L7["L7 compaction agent"]
 ```
 
 Gate D5 (UC1, T3, TE3): L6 and L7 are out of the main stack. Neither is admitted until a reviewer from a different lab than the author signs the security review (CEO-9(f), ENG-2, ENG-8). L7 builds on L6 (same prompt path). C1 does not wait for L6; L6 registers `/agent` in the registry when it lands. L5 is split into L5a (stack route) and L5b (list IA, decided by the L5 design loop).
+
+## Addendum A2 (approved 2026-10-16): send from an archived DM, archived means unpinned, `/unarchive`
+
+Request (Cheese, web DM, verbatim): "Feat: allow user sent message from a archived DM with confirmation dialog to unarchive the DM first"; "Feat: archived DMs dont have pinned categories. They all unpinned"; "Feat: add /unarchive command". Decisions: D1 = A (premises below), D2 = A (fold into this stack; no new server send flag).
+
+### Facts (verified at `87ba6ff24`)
+
+- `SendChatMessage` refuses an archived session with 409 (`server/internal/handler/chat.go:956`); web does not offer the composer on an archived DM.
+- Two archive write paths: `SetChatSessionArchived` (`chat.go:570`, query `SetChatSessionArchived`) and `ArchiveContinuedChatSession` (continuation, `server/internal/handler/chat_continue.go`, which copies `pinned_at` to the new DM). Neither clears `pinned_at`.
+- The Archived view sorts pinned-first and shows the pin icon (`packages/views/chat/components/chat-thread-list.tsx:114-125`).
+
+### Premises (D1 = A)
+
+1. The composer is offered on an archived DM. Send opens "This DM is archived. Unarchive it and send?" with Unarchive and send / Cancel. Confirm awaits the unarchive, then sends. Cancel changes nothing and keeps the draft. An unarchive failure keeps the draft and shows the error.
+2. When the archived DM has `continued_into_session_id`, the dialog's primary action is Open the newer DM (pushes the newer DM); Unarchive and send stays as the secondary action.
+3. Archiving clears the pin in the same statement on both archive paths. A one-time migration unpins DMs that are already archived. Pin is hidden and refused (409) on archived DMs. Unarchive returns the DM unpinned. Pins on DMs archived before the migration are not restored.
+4. `/unarchive` is available only in an archived DM's composer, unarchives immediately without the dialog (typing the command is the confirmation) and sends nothing to the agent. Web, desktop and mobile, through the command registry.
+
+### L1c: server, archived means unpinned (new layer, no predecessor)
+
+- `SetChatSessionArchived` sets `pinned_at = NULL` when archiving; `ArchiveContinuedChatSession` sets `pinned_at = NULL` on the source DM (the new DM keeps the copied pin).
+- `PATCH /api/chat/sessions/{id}/pin` with `pinned: true` on an archived DM returns 409 "chat session is archived"; unpinning stays allowed.
+- Migration: `UPDATE chat_session SET pinned_at = NULL WHERE status = 'archived' AND pinned_at IS NOT NULL` (single statement, no index).
+- Send to an archived DM keeps returning 409; the client unarchives first (D2 = A).
+- Tests: archive clears the pin; unarchive leaves it unpinned; continuation unpins the source and keeps the pin on the new DM; pin on an archived DM is refused; unpin on an archived DM succeeds; the migration unpins archived rows only.
+
+### Client changes (folded into L2, L4, C1, C2)
+
+- L2 (web/desktop, page and floating window): composer on archived DMs; the dialog of premises 1 and 2 (one shared component); Pin/Unpin hidden in menus and rows of archived DMs; the Archived view sorts by activity only and shows no pin icon; `/unarchive` intercepted like `/archive` (client-only). The per-session pending guard (DES-3) also covers unarchive. Tests: confirm sends exactly once after unarchive; cancel sends nothing and keeps the draft; unarchive failure keeps the draft; continued DM shows Open the newer DM as primary; `/unarchive` unarchives and sends nothing; `/unarchive` is not suggested on an active DM.
+- L4 (mobile): same composer, dialog (native alert with the same actions), hidden pin, and Archived section without pin ordering.
+- C1/C2: `/unarchive` is a registry command, kind `client`, args `none`, available only when the DM is archived; `/archive` and `/pin` are available only when it is active.
 
 ## Open Questions
 
@@ -194,6 +228,7 @@ Gate D5 (UC1, T3, TE3): L6 and L7 are out of the main stack. Neither is admitted
 - Web and mobile (A1): `/pin` and the Pin/Unpin menu item give the same `pinned_at` result; a pinned DM sorts first in the list on both clients; no message reaches the agent.
 - `/agent <name>` (A1, L6), sent from web, mobile or the CLI: the old DM is archived with `continued_into_session_id`; the new DM runs as the named agent; both continuation dividers name the old and new agent. An unknown name, an archived agent, an agent in another workspace, or a private agent the session creator cannot use is refused with a visible error, and no DM is created.
 - Dedicated compaction agent (A1, L7): with `compact_agent_id` set, `/compact` or `/agent <name>` sent from web, desktop, mobile or the CLI runs as the compaction agent and shows "Compacting with <agent>"; with it empty, the DM's own agent runs, as today. Access boundary: the compaction task (`purpose = 'compaction'`) reads and continues only its own `chat_session_id`; every other session is refused; access is refused after the task ends and after the setting changes to another agent. The security review signs before the L7 PR is marked ready.
+- Web and mobile (A2): sending in an archived DM asks to unarchive first; confirm unarchives and sends once; cancel sends nothing and keeps the draft; a continued DM offers Open the newer DM first. `/unarchive` unarchives without a dialog and sends nothing. No archived DM is pinned, and an archived DM cannot be pinned.
 - Every layer: tests-first commit with red output in the PR body, then green.
 
 ## Distribution Plan
