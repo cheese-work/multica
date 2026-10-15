@@ -587,3 +587,48 @@ func TestCustomCapacityRebaseKeepsARelativeExpiry(t *testing.T) {
 		t.Fatalf("A: receipts=%d events=%d, want its two live events once, not a replay", n, count)
 	}
 }
+
+// An event is live-captured for rule A after a drain transaction has claimed its
+// issue's batch and rebased A (a configuration-preserving rebase), and before
+// that transaction commits. The next transaction reaches the new input: A, which
+// live capture served, must not receive it again, and B gets its one delivery
+// once the pool frees.
+func TestCustomCapacityEventCapturedAfterTheClaimDoesNotReplayToTheRebasedRule(t *testing.T) {
+	k := newCustomEnv(t)
+	a, b := k.servedSetup(t, "")
+	k.comment(t, "live-served for A before the claim; B has no slot")
+	k.moveAssignee(t)
+
+	probe := &sqlProbe{hookQuery: "CancelUnstartedWakeupTasks"} // the statement right after A's rebase
+	probe.hook = func() {
+		if got := k.instanceRow(t, a.RuleKey).Revision; got == 0 {
+			t.Error("A has no revision")
+		}
+		k.comment(t, "captured after the claim, while A's rebase is uncommitted")
+	}
+	if err := k.probed(probe).DrainScopedEvents(context.Background(), parseTestUUID(t, k.f.WorkspaceID)); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if probe.hook != nil {
+		t.Fatal("the hook never ran: the drain did not rebase A, so the test no longer exercises the race")
+	}
+	if n := k.f.Count(t, `SELECT count(*) FROM wakeup_scoped_event WHERE workspace_id=$1 AND handled_at IS NULL`, k.f.WorkspaceID); n != 2 {
+		t.Fatalf("pending inputs = %d, want the deferred input and the one captured after the claim", n)
+	}
+
+	k.drain(t) // the next transaction reaches the new input
+	if n, count := k.receiptCount(t, a.RuleKey); n != 1 || count != 3 {
+		t.Fatalf("A: receipts=%d events=%d, want its three live events once, not a replay of the one captured after the claim", n, count)
+	}
+	k.freePool(t)
+	for range 3 {
+		k.sweep(t)
+		k.drain(t)
+	}
+	if n, count := k.receiptCount(t, a.RuleKey); n != 1 || count != 3 {
+		t.Fatalf("A after the retry: receipts=%d events=%d, want it unchanged", n, count)
+	}
+	if n, count := k.receiptCount(t, b.RuleKey); n != 1 || count != 2 {
+		t.Fatalf("B: receipts=%d events=%d, want the two events it was refused delivered once", n, count)
+	}
+}

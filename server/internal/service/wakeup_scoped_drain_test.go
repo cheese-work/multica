@@ -440,6 +440,11 @@ type sqlProbe struct {
 	failQuery string
 	failArg   string
 	err       error
+	// hook, when set, runs once when the named query is seen, before it executes,
+	// in the goroutine that issues it: a test can act between two statements of a
+	// drain transaction.
+	hookQuery string
+	hook      func()
 }
 
 func (p *sqlProbe) seen(sql string) {
@@ -451,6 +456,13 @@ func (p *sqlProbe) seen(sql string) {
 	if i := strings.Index(sql, "-- name: "); i >= 0 {
 		name := strings.Fields(sql[i+len("-- name: "):])[0]
 		p.counts[name]++
+		if p.hook != nil && name == p.hookQuery {
+			hook := p.hook
+			p.hook = nil
+			p.mu.Unlock()
+			hook()
+			p.mu.Lock()
+		}
 	}
 }
 
