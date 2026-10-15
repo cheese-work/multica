@@ -30,6 +30,8 @@ const (
 	// wakeupSweepSettle bounds how many definitions that need no walk (events,
 	// built-ins) one pass settles before it looks at the next real batch.
 	wakeupSweepSettle = 20
+	// wakeupBringForwardBatch bounds the delayed outbox inputs one pass makes due.
+	wakeupBringForwardBatch = 50
 	// wakeupCapacityRetryBatch bounds the held-back instances one pass retries.
 	wakeupCapacityRetryBatch = 50
 )
@@ -61,6 +63,9 @@ func (s *IssueWakeupService) sweepDefinitions(ctx context.Context, workspaceIDs 
 		}
 	}
 	if err := s.retryCapacityHeld(ctx, workspaceIDs); err != nil {
+		errs = append(errs, err)
+	}
+	if err := s.bringForwardDelayedInputs(ctx, workspaceIDs, time.Now()); err != nil {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
@@ -276,15 +281,19 @@ func (s *IssueWakeupService) retryCapacityHeldOne(ctx context.Context, issueID, 
 		}
 		return tx.Commit(ctx)
 	}
-	admission, err := ApplyDefaultWakeupInstance(ctx, tx, w.ID)
-	if err != nil {
+	if _, err := ApplyDefaultWakeupInstance(ctx, tx, w.ID); err != nil {
 		return err
 	}
-	if admission.Applied {
-		// Inputs that waited for this capacity are due now.
-		if err := q.BringForwardCapacityDeferredScopedEvents(ctx, issueID); err != nil {
-			return err
-		}
-	}
 	return tx.Commit(ctx)
+}
+
+// bringForwardDelayedInputs makes due a bounded batch of the outbox inputs a full
+// default pool delayed, once nothing of their issue waits for capacity any more.
+// Each pass takes the oldest inputs inside retention, so a large backlog resumes
+// over the next passes without one transaction rewriting all of it.
+func (s *IssueWakeupService) bringForwardDelayedInputs(ctx context.Context, workspaceIDs []pgtype.UUID, now time.Time) error {
+	_, err := s.Tasks.Queries.BringForwardCapacityDeferredScopedEvents(ctx, db.BringForwardCapacityDeferredScopedEventsParams{
+		Oldest: pgtype.Timestamptz{Time: now.Add(-scopedEventRetention), Valid: true}, WorkspaceIds: workspaceIDs, BatchSize: wakeupBringForwardBatch,
+	})
+	return err
 }

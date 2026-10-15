@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -356,5 +357,25 @@ func TestCustomCapacityBringForwardSkipsInputsPastRetention(t *testing.T) {
 	k.sweep(t)
 	if delayed, due := k.delayedInputs(t); delayed != 1 || due != 0 {
 		t.Fatalf("delayed=%d due=%d, want an input past retention left alone for the prune", delayed, due)
+	}
+}
+
+// The bring-forward pick reads the partial index of delayed inputs, not the
+// outbox or the whole workspace, on a fixture where most inputs are not delayed.
+func TestCustomCapacityBringForwardQueryUsesTheDelayedIndex(t *testing.T) {
+	k := newCustomEnv(t)
+	k.f.Cleanup(t, "DELETE FROM wakeup_scoped_event WHERE event_key LIKE 'explain-r2-%'")
+	k.f.Exec(t, `INSERT INTO wakeup_scoped_event(workspace_id,issue_id,event_type,event_key,payload,captured_at)
+ SELECT gen_random_uuid(),gen_random_uuid(),'comment.created','explain-r2-'||g,'{}'::jsonb,now() FROM generate_series(1,6000) g`)
+	k.f.Exec(t, `INSERT INTO wakeup_scoped_event(workspace_id,issue_id,event_type,event_key,payload,captured_at,retry_at)
+ SELECT gen_random_uuid(),gen_random_uuid(),'comment.created','explain-r2-d'||g,'{}'::jsonb,now(),now()+interval '1 hour' FROM generate_series(1,20) g`)
+	k.f.Exec(t, "ANALYZE wakeup_scoped_event")
+	plan := k.plan(t, `SELECT e.id FROM wakeup_scoped_event e
+ WHERE e.handled_at IS NULL AND e.retry_at IS NOT NULL AND e.captured_at >= now()-interval '7 days'
+  AND ($1::uuid[] IS NULL OR e.workspace_id = ANY($1::uuid[]))
+  AND NOT EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.issue_id=e.issue_id AND w.capacity_reason IS NOT NULL AND NOT w.enabled)
+ ORDER BY e.captured_at, e.id LIMIT 50`, nil)
+	if !strings.Contains(plan, "wakeup_scoped_event_delayed_idx") || strings.Contains(plan, "Seq Scan on wakeup_scoped_event") {
+		t.Fatalf("the pick must use the delayed-input index:\n%s", plan)
 	}
 }

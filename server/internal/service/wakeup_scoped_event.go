@@ -604,20 +604,22 @@ func (b *scopedIssueBatch) resolve(ctx context.Context, ev db.WakeupScopedEvent)
 		if err != nil {
 			return "", nil, err
 		}
-		stamp := util.UUIDToString(inst.ID) + ":" + strconv.FormatInt(inst.Revision, 10)
+		id := util.UUIDToString(inst.ID)
 		switch {
 		case !inst.ID.Valid:
 			capacityHeld = capacityHeld || why == scopedOutcomeCapacity
 			if first {
 				reason = why
 			}
-		case slices.Contains(ev.Delivered, stamp):
-			// Live capture delivered it to this configuration of the instance;
-			// replaying would count it twice and make an older event the latest.
+		case slices.Contains(ev.Delivered, id+":"+strconv.FormatInt(inst.Revision, 10)), slices.Contains(ev.Delivered, id):
+			// Live capture delivered it to this configuration of the instance
+			// (id:revision), or an earlier attempt served the instance (its bare id,
+			// which survives a rebase); replaying would count it twice and make an
+			// older event the latest.
 			delivered++
 		default:
 			replay = append(replay, inst.ID)
-			served = append(served, stamp)
+			served = append(served, id)
 			delivered++
 		}
 		first = false

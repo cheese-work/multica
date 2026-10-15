@@ -11,15 +11,36 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const bringForwardCapacityDeferredScopedEvents = `-- name: BringForwardCapacityDeferredScopedEvents :exec
-UPDATE wakeup_scoped_event SET retry_at=NULL
-WHERE issue_id= $1 AND handled_at IS NULL AND retry_at IS NOT NULL
+const bringForwardCapacityDeferredScopedEvents = `-- name: BringForwardCapacityDeferredScopedEvents :execrows
+WITH picked AS MATERIALIZED (
+ SELECT e.id FROM wakeup_scoped_event e
+ WHERE e.handled_at IS NULL AND e.retry_at IS NOT NULL AND e.captured_at >= $1::timestamptz
+  AND ($2::uuid[] IS NULL OR e.workspace_id = ANY($2::uuid[]))
+  AND NOT EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.issue_id=e.issue_id AND w.capacity_reason IS NOT NULL AND NOT w.enabled)
+ ORDER BY e.captured_at, e.id LIMIT $3 FOR UPDATE OF e SKIP LOCKED)
+UPDATE wakeup_scoped_event w SET retry_at=NULL
+FROM picked WHERE w.id=picked.id AND w.handled_at IS NULL
 `
 
-// Capacity freed for an issue's instance: its delayed inputs are due now.
-func (q *Queries) BringForwardCapacityDeferredScopedEvents(ctx context.Context, issueID pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, bringForwardCapacityDeferredScopedEvents, issueID)
-	return err
+type BringForwardCapacityDeferredScopedEventsParams struct {
+	Oldest       pgtype.Timestamptz `json:"oldest"`
+	WorkspaceIds []pgtype.UUID      `json:"workspace_ids"`
+	BatchSize    int32              `json:"batch_size"`
+}
+
+// A bounded, resumable batch of the delayed inputs whose issue no longer has an
+// instance waiting for capacity: their delay has served its purpose, so they are
+// due now. Oldest first, inside retention (a later input can only expire), and
+// rows another transaction holds are skipped. Each pass takes at most @batch_size,
+// so a large backlog is brought forward over several passes, never in one
+// transaction. The picked ids are materialized so the batch is bounded whatever
+// the plan.
+func (q *Queries) BringForwardCapacityDeferredScopedEvents(ctx context.Context, arg BringForwardCapacityDeferredScopedEventsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, bringForwardCapacityDeferredScopedEvents, arg.Oldest, arg.WorkspaceIds, arg.BatchSize)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const claimWakeupScopedEvents = `-- name: ClaimWakeupScopedEvents :many
