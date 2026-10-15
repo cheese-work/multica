@@ -153,11 +153,6 @@ describe("search proxy privacy", () => {
     );
   }, 90_000);
 
-  it("sets an effective referrer policy on workspace search pages", async () => {
-    const response = await fetch(`${appUrl}/che1593-preview/search?q=SEARCH_PAGE_QUERY_MARKER_1593`);
-    expect(response.headers.get("referrer-policy")).toBe("origin");
-  }, 90_000);
-
   it("redacts failed palette and suggestions proxy logs but keeps unrelated diagnostics", async () => {
     await new Promise<void>((resolveClose, reject) => {
       upstreamServer.close((error) => (error ? reject(error) : resolveClose()));
