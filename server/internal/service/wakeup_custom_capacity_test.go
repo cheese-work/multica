@@ -445,3 +445,45 @@ func TestCustomCapacityBringForwardLeavesADatabaseErrorBackoffAlone(t *testing.T
 		t.Fatalf("receipts=%d events=%d, want the input delivered once its backoff ended", n, count)
 	}
 }
+
+// ---- review round 4 (signed HOLD 01a13dcb-a828-7593-9ef2-011e0b3048ac) ------
+
+// Live capture serves rule A, then the issue's assignee moves (A's definition
+// is unchanged), and only then does the first drain run, refusing sibling B for
+// capacity. A's rebase must not make the drain replay the event to A: the rule's
+// configuration did not change, so the event stays served for it. (A definition
+// edit is different and stays covered by TestScopedDrainDeliversToTheNewRevisionAfterLiveCapture.)
+func TestCustomCapacityRebaseBeforeTheFirstDeferralDoesNotReplayALiveServedRule(t *testing.T) {
+	k := newCustomEnv(t)
+	k.fillIssuePool(t, 31)
+	a := k.mustSave(t, WakeupScopeWorkspace, "", k.eventRule(`["comment.created"]`))
+	k.comment(t, "creates A's instance in the last slot")
+	k.drain(t)
+	b := k.mustSave(t, WakeupScopeWorkspace, "", k.eventRule(`["comment.created"]`))
+	k.comment(t, "A is served live; B has no slot")
+	before := k.instanceRow(t, a.RuleKey).Revision
+
+	// The assignee moves after live capture and before the first drain of this event.
+	k.f.Exec(t, `UPDATE issue SET assignee_type='agent',assignee_id=$2 WHERE id=$1`, k.issue, k.agent)
+	k.drain(t)
+
+	if after := k.instanceRow(t, a.RuleKey).Revision; after == before {
+		t.Fatalf("A was not rebased (revision %d): the test no longer exercises the rebase", after)
+	}
+	if n, count := k.receiptCount(t, a.RuleKey); n != 1 || count != 2 {
+		t.Fatalf("A after the rebase: receipts=%d events=%d, want its two live-captured events once, not a replay", n, count)
+	}
+	if n, _ := k.receiptCount(t, b.RuleKey); n != 0 {
+		t.Fatalf("B received %d receipts while the pool is full", n)
+	}
+
+	k.freePool(t)
+	k.sweep(t)
+	k.drain(t)
+	if n, count := k.receiptCount(t, a.RuleKey); n != 1 || count != 2 {
+		t.Fatalf("A after the retry: receipts=%d events=%d, want it unchanged", n, count)
+	}
+	if n, count := k.receiptCount(t, b.RuleKey); n != 1 || count != 1 {
+		t.Fatalf("B: receipts=%d events=%d, want the one event delivered once the pool freed", n, count)
+	}
+}
