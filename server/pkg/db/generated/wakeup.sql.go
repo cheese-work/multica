@@ -2201,3 +2201,17 @@ func (q *Queries) WorkspaceWakeupsPaused(ctx context.Context, id pgtype.UUID) (b
 	err := row.Scan(&column_1)
 	return column_1, err
 }
+
+const workspaceWakeupsPausedShared = `-- name: WorkspaceWakeupsPausedShared :one
+SELECT COALESCE(settings->>'wakeups_paused'='true',false)::bool FROM workspace WHERE id= $1 FOR KEY SHARE
+`
+
+// Reads the pause under a KEY SHARE lock on the workspace row, held to the end
+// of the dispatch transaction: a pause or resume writer takes FOR UPDATE, so the
+// answer cannot go stale before the enqueue (CHE-1727).
+func (q *Queries) WorkspaceWakeupsPausedShared(ctx context.Context, id pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, workspaceWakeupsPausedShared, id)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}

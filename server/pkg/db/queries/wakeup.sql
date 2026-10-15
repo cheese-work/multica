@@ -330,3 +330,8 @@ WHERE r.wakeup_id=w.id AND w.workspace_id= @workspace_id AND r.processed_at IS N
  AND r.event_type<>'wakeup.manual' AND NOT (r.event_type='time.due' AND w.kind='at');
 -- name: ListOverdueRecurringWakeups :many
 SELECT * FROM issue_wakeup WHERE workspace_id= @workspace_id AND enabled AND kind IN ('every','cron') AND next_fire_at<=now();
+-- name: WorkspaceWakeupsPausedShared :one
+-- Reads the pause under a KEY SHARE lock on the workspace row, held to the end
+-- of the dispatch transaction: a pause or resume writer takes FOR UPDATE, so the
+-- answer cannot go stale before the enqueue (CHE-1727).
+SELECT COALESCE(settings->>'wakeups_paused'='true',false)::bool FROM workspace WHERE id= @id FOR KEY SHARE;

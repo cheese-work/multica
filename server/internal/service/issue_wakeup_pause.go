@@ -18,40 +18,27 @@ func WorkspaceWakeupsPaused(ctx context.Context, q *db.Queries, workspaceID pgty
 	return q.WorkspaceWakeupsPaused(ctx, workspaceID)
 }
 
-// heldByPause settles a rule of a paused workspace and reports whether dispatch
-// must stop. Inputs that arrived meanwhile are consumed with outcome "paused"
-// and never replayed; recurring schedules skip their missed slots. A one-shot
-// that came due and a condition keep their state, so they fire once on resume
-// if they still hold. Only an explicit person's trigger (wakeup.manual) goes on
-// to dispatch.
+// settlePaused settles a rule of a paused workspace and reports whether
+// dispatch must stop. Inputs that arrived meanwhile are consumed with outcome
+// "paused" and never replayed; recurring schedules skip their missed slots. A
+// one-shot that came due and a condition keep their state, so they fire once on
+// resume if they still hold. Only an explicit person's trigger (wakeup.manual)
+// goes on to dispatch.
+//
+// The caller holds the workspace row (KEY SHARE, which is also where it read
+// the pause) and the wakeup row, in the lock order workspace, issue, wakeup that
+// the pause and resume writers share.
 // ponytail: a manual trigger on a paused one-shot that is also due fires both
 // together, as one run; split them if that matters.
-func (s *IssueWakeupService) heldByPause(ctx context.Context, prev db.IssueWakeup) (bool, error) {
-	paused, err := s.Tasks.Queries.WorkspaceWakeupsPaused(ctx, prev.WorkspaceID)
-	if err != nil || !paused {
-		return false, err
-	}
-	tx, err := s.Tasks.TxStarter.Begin(ctx)
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback(ctx)
-	q := s.Tasks.Queries.WithTx(tx)
-	w, err := q.LockIssueWakeup(ctx, prev.ID)
-	if err != nil {
-		return false, err
-	}
-	if _, err = q.DropPausedWakeupReceipts(ctx, db.DropPausedWakeupReceiptsParams{ID: w.ID, OneShot: w.Kind == "at"}); err != nil {
+func settlePaused(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.IssueWakeup) (bool, error) {
+	if _, err := q.DropPausedWakeupReceipts(ctx, db.DropPausedWakeupReceiptsParams{ID: w.ID, OneShot: w.Kind == "at"}); err != nil {
 		return false, err
 	}
 	if err := skipMissedSlots(ctx, tx, q, w); err != nil {
 		return false, err
 	}
 	manual, err := q.CountPendingManualWakeupReceipts(ctx, w.ID)
-	if err != nil {
-		return false, err
-	}
-	return manual == 0, tx.Commit(ctx)
+	return manual == 0, err
 }
 
 // skipMissedSlots moves a recurring rule past every slot that came due while

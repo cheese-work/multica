@@ -709,9 +709,6 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	// batch budget, leaving time to dispatch unrelated issues.
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	if held, err := s.heldByPause(ctx, prev); held || err != nil {
-		return err
-	}
 	// Resolve optional connected-app credentials before taking database locks.
 	candidate, readErr := s.Tasks.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: prev.AgentID, WorkspaceID: prev.WorkspaceID})
 	if readErr != nil && !errors.Is(readErr, pgx.ErrNoRows) {
@@ -730,6 +727,12 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		return err
 	}
 	q := s.Tasks.Queries.WithTx(tx)
+	// The workspace row comes first, as in the pause and resume writers, and the
+	// pause is read under that lock so it cannot change before the enqueue below.
+	paused, err := q.WorkspaceWakeupsPausedShared(ctx, prev.WorkspaceID)
+	if err != nil {
+		return err
+	}
 	var fenced bool
 	if candidate.ID.Valid {
 		if err := tx.QueryRow(ctx, "SELECT lock_task_owner_rows($1,$2,$3)", candidate.ID, prev.IssueID, candidate.RuntimeID).Scan(&fenced); err != nil {
@@ -756,6 +759,15 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	}
 	if w.Revision != prev.Revision {
 		return tx.Commit(ctx)
+	}
+	if paused {
+		held, err := settlePaused(ctx, tx, q, w)
+		if err != nil {
+			return err
+		}
+		if held {
+			return tx.Commit(ctx)
+		}
 	}
 	// A default-derived instance is held, its inputs left pending.
 	if defaultDerivedHeld(ctx, issue, w) {

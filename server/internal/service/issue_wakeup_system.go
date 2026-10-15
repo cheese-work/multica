@@ -844,9 +844,6 @@ func systemWakeupIssueActive(ctx context.Context, q *db.Queries, issue db.Issue,
 func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWakeup) error {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	if held, err := s.heldByPause(ctx, prev); held || err != nil {
-		return err
-	}
 	// Resolve the target and optional credentials before taking locks, then
 	// confirm the target under them.
 	snapshot, err := s.Tasks.Queries.GetIssue(ctx, prev.IssueID)
@@ -871,6 +868,12 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		return err
 	}
 	q := s.Tasks.Queries.WithTx(tx)
+	// The workspace row comes first, as in the pause and resume writers, and the
+	// pause is read under that lock so it cannot change before the enqueue below.
+	paused, err := q.WorkspaceWakeupsPausedShared(ctx, prev.WorkspaceID)
+	if err != nil {
+		return err
+	}
 	if target.Agent.ID.Valid {
 		var fenced bool
 		if err := tx.QueryRow(ctx, "SELECT lock_task_owner_rows($1,$2,$3)", target.Agent.ID, prev.IssueID, target.Agent.RuntimeID).Scan(&fenced); err != nil {
@@ -895,6 +898,15 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	}
 	if w.Revision != prev.Revision {
 		return tx.Commit(ctx)
+	}
+	if paused {
+		held, err := settlePaused(ctx, tx, q, w)
+		if err != nil {
+			return err
+		}
+		if held {
+			return tx.Commit(ctx)
+		}
 	}
 	_, isPRWakeup := prWakeupSetting(w.SystemRule.String)
 	discardMalformed := func(err error) error {
