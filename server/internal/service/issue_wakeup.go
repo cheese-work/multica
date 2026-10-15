@@ -384,7 +384,7 @@ func (s *IssueWakeupService) save(ctx context.Context, issueID, member, source, 
 		if old.IssueID != issueID || old.WorkspaceID != issue.WorkspaceID {
 			return out, pgx.ErrNoRows
 		}
-		if old.SystemRule.Valid {
+		if old.SystemRule.Valid || isDefaultDerivedWakeup(old) {
 			return out, ErrWakeupForbidden
 		}
 		if enable.Revision < 1 {
@@ -529,7 +529,9 @@ func (s *IssueWakeupService) save(ctx context.Context, issueID, member, source, 
 		if old.IssueID != issueID || old.WorkspaceID != issue.WorkspaceID {
 			return out, pgx.ErrNoRows
 		}
-		if old.SystemRule.Valid {
+		// A default-derived instance runs what its definitions resolve to; a person
+		// changes it by editing or overriding the definition, never as a local rule.
+		if old.SystemRule.Valid || isDefaultDerivedWakeup(old) {
 			return out, ErrWakeupForbidden
 		}
 		membership, e := q.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: member, WorkspaceID: issue.WorkspaceID})

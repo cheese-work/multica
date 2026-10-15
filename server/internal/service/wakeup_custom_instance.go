@@ -40,7 +40,10 @@ func customExpiry(c WakeupConfigPatch, created time.Time) pgtype.Timestamptz {
 	}
 	switch {
 	case spec.At != nil:
-		return pgtype.Timestamptz{Time: *spec.At, Valid: true}
+		// The database stores microseconds. The end is held at that precision from
+		// the start, so the end an instance was given and the end its configuration
+		// gives later compare equal.
+		return pgtype.Timestamptz{Time: spec.At.Truncate(time.Microsecond), Valid: true}
 	case spec.AfterSeconds != nil:
 		return pgtype.Timestamptz{Time: created.Add(time.Duration(*spec.AfterSeconds) * time.Second), Valid: true}
 	}

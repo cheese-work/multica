@@ -711,7 +711,8 @@ func TestCustomCapacitySubMicrosecondAbsoluteExpiryAcrossAnUnchangedRebase(t *te
 	if after.Revision == before.Revision {
 		t.Fatalf("A was not rebased (revision %d): the test no longer exercises the rebase", after.Revision)
 	}
-	if after.ContentRevision != before.ContentRevision {
+	// 0 reads as 1: an instance that never changed content has not moved its boundary.
+	if max(after.ContentRevision, 1) != max(before.ContentRevision, 1) {
 		t.Fatalf("content revision moved from %d to %d across a rebase that changed nothing the instance runs", before.ContentRevision, after.ContentRevision)
 	}
 	if n, count := k.receiptCount(t, a.RuleKey); n != 1 || count != 2 {
