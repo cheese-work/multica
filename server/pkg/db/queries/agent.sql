@@ -733,6 +733,15 @@ RETURNING *;
 SELECT * FROM agent_task_queue
 WHERE id = $1;
 
+-- name: HasRecentProviderServerFailure :one
+SELECT EXISTS (
+    SELECT 1 FROM agent_task_queue
+    WHERE agent_id = sqlc.arg('agent_id')
+      AND status = 'failed'
+      AND failure_reason = 'agent_error.provider_server_error'
+      AND completed_at > sqlc.arg('failed_since')::timestamptz
+);
+
 -- name: GetAgentTaskStatus :one
 -- Hot-path status polling needs only the task status and the owning agent's
 -- workspace for authorization. Keep this independent of optional source links
@@ -1186,6 +1195,7 @@ WITH retired_sessions AS (
       AND t.status = 'failed'
       AND (
         COALESCE(t.failure_reason, '') = 'codex_resume_oversized'
+        OR COALESCE(t.error, '') ILIKE '%response protection is unavailable%'
         OR (COALESCE(t.error, '') ILIKE '%thread/resume failed%' AND COALESCE(t.error, '') ILIKE '%token too long%')
       )
 ), latest_per_session AS (
@@ -1219,6 +1229,7 @@ WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
       status = 'failed'
       AND COALESCE(failure_reason, '') NOT IN ('iteration_limit', 'agent_fallback_message', 'api_invalid_request', 'codex_semantic_inactivity', 'agent_error.context_overflow', 'codex_resume_oversized')
       AND NOT (COALESCE(error, '') ILIKE '%400%' AND COALESCE(error, '') ILIKE '%invalid_request_error%')
+      AND NOT (COALESCE(error, '') ILIKE '%response protection is unavailable%')
       AND NOT (COALESCE(error, '') ILIKE '%image dimensions exceed max allowed size%' AND COALESCE(error, '') ILIKE '%image.source.base64.data%')
       -- A provider credential-resolution failure ("Could not resolve
       -- authentication method...") is deterministic on resume: the missing

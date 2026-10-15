@@ -3684,6 +3684,22 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			return nil
 		}
 
+		coolingDown, err := qtx.HasRecentProviderServerFailure(ctx, db.HasRecentProviderServerFailureParams{
+			AgentID: agentID,
+			FailedSince: pgtype.Timestamptz{
+				Time: time.Now().Add(-gatewayFailureCooldown), Valid: true,
+			},
+		})
+		if err != nil {
+			outcome = "error_gateway_cooldown_check"
+			return fmt.Errorf("check gateway failure cooldown: %w", err)
+		}
+		if coolingDown {
+			outcome = "gateway_failure_cooldown"
+			slog.Debug("task claim skipped: gateway failure cooldown", "agent_id", util.UUIDToString(agentID))
+			return nil
+		}
+
 		t0 = time.Now()
 		running, err := qtx.CountRunningTasks(ctx, agentID)
 		countRunningMs = time.Since(t0).Milliseconds()
@@ -5486,6 +5502,7 @@ var retryableReasons = map[string]bool{
 // final attempt instead of firing back-to-back. Every other retryable reason
 // keeps the task's generic max_attempts ceiling and retries immediately.
 const (
+	gatewayFailureCooldown        = 10 * time.Minute
 	runtimeOfflineRetryDeferral   = time.Second
 	providerNetworkMaxAttempts    = 3
 	providerNetworkFinalRetryWait = 5 * time.Second
@@ -5717,7 +5734,7 @@ func hasRunnableSuccessor(ctx context.Context, q *db.Queries, task db.AgentTaskQ
 // Autopilot tasks are NOT auto-retried here; the autopilot scheduler owns
 // its own re-run cadence and we don't want to double-fire it.
 func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentTaskQueue) (*db.AgentTaskQueue, error) {
-	if parent.Status != "failed" {
+	if parent.Status != "failed" || taskfailure.ResponseProtectionUnavailable(parent.Error.String) {
 		return nil, nil
 	}
 	reason := ""
