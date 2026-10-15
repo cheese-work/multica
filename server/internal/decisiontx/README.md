@@ -1,7 +1,7 @@
 # Decision transaction primitives
 
 This package is the schema/transaction foundation for the revision 14 decision
-contract. It does not implement intent, lane, request, answer or worker routes.
+contract. HTTP routes live in the handler package; the worker is a later slice.
 
 `Begin` acquires the existing workspace `FOR KEY SHARE` fence before returning
 a transaction. A missing workspace or failed fence rolls back and returns no
@@ -149,3 +149,35 @@ single-statement down file. The hook also removes an invalid index from an
 interrupted rebuild before retrying. Bounded rollback keeps its named target
 applied: `down --to 612_decision_target_primary_key` retains the primary key;
 `down --to 611_decision_answer_request_index` exercises the 612 rollback.
+
+CHE-1628 wires `issue comment add --decision-record --message <id>` to the
+record transaction. No stamped parent means an unprompted request and answer
+commit together; an ordinary parent controls placement without becoming an
+ask. Unprompted records require an explicit class and an active member on an
+eligible same-workspace issue. When unsure of the class, the DM agent must
+choose a held class, never `reversible`. A pending quote never triggers a task.
+The DM reference includes the class, issue link and answer-specific disclaim
+endpoint. Wake finalization and worker notification remain the worker slice.
+
+`POST /api/decision-answers/{id}/disclaim` accepts only the request's human.
+The handler fences workspace, current session, ask thread and issue, then
+locks request and answer. It re-checks the immutable request context and reads
+archive state under the session fence. It takes no task lock and never
+rebinds, creates a DM, re-pings or delivers a re-ask itself.
+An already-withdrawn answer returns 409 from this human endpoint. The worker
+helper remains idempotent. A physically deleted anchor needs no thread lock;
+the withdrawal comments are top-level instead. Server-written disclaim and
+cancel comments use the asking agent; `disclaimed_by_user_id` retains the human.
+
+`Withdraw` is the shared human/worker transition. Call it with transactional
+queries and freshly loaded request/answer rows after those same locks and any
+caller-specific authorization. The caller commits or rolls back all results
+together and publishes comments only after commit. The helper never opens its
+own transaction. It preserves source IDs, snapshot, quote and prior cancelled
+reason. A repeated withdrawal is a no-op. A live asked answer reopens only in
+an active lane; an archived lane cancels with `lane_archived`, a cancel comment
+and a durable notice receipt for the later worker's re-ask. Unprompted answers
+cancel with `record_disclaimed`; their disclaim comment is the cancellation
+notice, and no re-ask becomes due. Every withdrawal writes its disclaim comment
+and receipts atomically. Pending wakes are cleared; delivered wakes retain
+their history so the worker can select the withdrawal for retraction.
