@@ -2,7 +2,25 @@
 
 This package is the schema/transaction foundation for the revision 14 decision
 contract. HTTP routes and the leased consequence runner live in the handler
-package. Veto notices and retention are later slices.
+package. Veto notices and immutable source-session retention are delivered by
+the consequence worker and the baseline session-delete guard respectively.
+
+The veto-notice worker selects only agent vetoes and record retractions without
+`veto_note_posted_at`. Its source step locks workspace, one source session,
+issue, request and answer. An active source receives the note. Otherwise that
+transaction rolls back without writes, and a separate current-lane step takes
+the same fences for that one destination and rechecks the lane. An active lane
+receives the note; an archived or missing lane receives no message. Every
+successful notice atomically inserts exactly one human inbox item and records
+`veto_note_posted_at`. Events publish only after commit. There is no new outbox,
+automatic ping or server-created DM, and no transaction locks two sessions.
+
+Hard deletion checks immutable `decision_answer.source_chat_session_id`, not
+surviving transcript rows. An answer therefore retains its source session even
+after task cancellation, transcript deletion and withdrawal. Migration 627
+separately validates `chat_message_sent_via_check` with a two-second lock timeout;
+its down migration is a no-op. Runtime teardown still unbinds user agents before
+runtime detachment. Delivery merges can change the `trigger_comment_id` FK.
 
 `Begin` acquires the existing workspace `FOR KEY SHARE` fence before returning
 a transaction. A missing workspace or failed fence rolls back and returns no
@@ -249,7 +267,7 @@ together and publishes comments only after commit. The helper never opens its
 own transaction. It preserves source IDs, snapshot, quote and prior cancelled
 reason. A repeated withdrawal is a no-op. A live asked answer reopens only in
 an active lane; an archived lane cancels with `lane_archived`, a cancel comment
-and a durable notice receipt for the later worker's re-ask. Unprompted answers
+and a durable notice receipt for the worker's re-ask. Unprompted answers
 cancel with `record_disclaimed`; their disclaim comment is the cancellation
 notice, and no re-ask becomes due. Every withdrawal writes its disclaim comment
 and receipts atomically. Pending wakes are cleared; delivered wakes retain
@@ -272,9 +290,9 @@ lanes cancel with a notice; unprompted records cancel with `record_vetoed`.
 Only an issue-agent veto by the current retraction recipient (agent assignee
 or squad leader) acknowledges an already-delivered wake as
 `suppressed_agent_veto`. A non-leader squad member and a source-DM task never
-suppress that retraction. DM notes, inbox delivery, worker finalization and
-retraction delivery remain CHE-1550; these handlers do not invoke baseline
-comment triggers or enqueue work.
+suppress that retraction. These handlers do not invoke baseline comment
+triggers or enqueue work; the consequence worker delivers notes, inbox items
+and retractions after commit.
 
 `POST /api/decision-requests/{id}/class` accepts only the request's human.
 Raising means changing `reversible` to one of the five escalation classes;
