@@ -160,8 +160,10 @@ import type {
   ListAutopilotRunsResponse,
   ListWebhookDeliveriesResponse,
   WebhookDelivery,
+  NotificationChannelsResponse,
   NotificationPreferenceResponse,
   NotificationPreferences,
+  UpdateNotificationChannelRequest,
   PluginHookResult,
   PluginInstallation,
   PluginInstallationListResponse,
@@ -409,6 +411,8 @@ import {
   ArchivedInboxPageSchema,
   ArchivedInboxFacetsSchema,
   EMPTY_INBOX_ITEMS,
+  NotificationChannelsResponseSchema,
+  EMPTY_NOTIFICATION_CHANNELS_RESPONSE,
   NotificationPreferenceResponseSchema,
   EMPTY_NOTIFICATION_PREFERENCE_RESPONSE,
   LabelSchema,
@@ -3048,6 +3052,35 @@ export class ApiClient {
       NotificationPreferenceResponseSchema,
       EMPTY_NOTIFICATION_PREFERENCE_RESPONSE,
       { endpoint: "PATCH /api/notification-preferences" },
+    );
+  }
+
+  async getNotificationChannels(workspaceSlug?: string): Promise<NotificationChannelsResponse> {
+    const raw = await this.fetch<unknown>("/api/notification-channels", {
+      headers: workspaceHeader(workspaceSlug),
+    });
+    return parseWithFallback(
+      raw,
+      NotificationChannelsResponseSchema,
+      EMPTY_NOTIFICATION_CHANNELS_RESPONSE,
+      { endpoint: "GET /api/notification-channels" },
+    );
+  }
+
+  async updateNotificationChannel(
+    req: UpdateNotificationChannelRequest,
+    workspaceSlug?: string,
+  ): Promise<NotificationChannelsResponse> {
+    const raw = await this.fetch<unknown>("/api/notification-channels", {
+      method: "PATCH",
+      headers: workspaceHeader(workspaceSlug),
+      body: JSON.stringify(req),
+    });
+    return parseWithFallback(
+      raw,
+      NotificationChannelsResponseSchema,
+      EMPTY_NOTIFICATION_CHANNELS_RESPONSE,
+      { endpoint: "PATCH /api/notification-channels" },
     );
   }
 

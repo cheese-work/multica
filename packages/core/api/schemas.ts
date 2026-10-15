@@ -68,6 +68,7 @@ import type {
   ListWebhookDeliveriesResponse,
   IssueStatusEntry,
   ListIssueStatusesResponse,
+  NotificationChannelsResponse,
   NotificationPreferenceResponse,
   PluginInstallation,
   PluginInstallationListResponse,
@@ -1072,6 +1073,29 @@ export const NotificationPreferenceResponseSchema = z.object({
   workspace_id: z.string(),
   preferences: z.record(z.string(), z.string()).default({}),
 }).loose();
+
+// Missing sources or switches take the server defaults (in-app on, push off),
+// so an older server that predates a source never reads as "everything off".
+const NotificationChannelSwitchesSchema = z.object({
+  in_app: z.boolean().default(true),
+  push: z.boolean().default(false),
+}).loose();
+
+export const NotificationChannelsResponseSchema = z.object({
+  workspace_id: z.string(),
+  channels: z.object({
+    inbox: NotificationChannelSwitchesSchema.default({ in_app: true, push: false }),
+    dm: NotificationChannelSwitchesSchema.default({ in_app: true, push: false }),
+  }).default({ inbox: { in_app: true, push: false }, dm: { in_app: true, push: false } }),
+}).loose();
+
+export const EMPTY_NOTIFICATION_CHANNELS_RESPONSE: NotificationChannelsResponse = {
+  workspace_id: "",
+  channels: {
+    inbox: { in_app: true, push: false },
+    dm: { in_app: true, push: false },
+  },
+};
 
 export const EMPTY_NOTIFICATION_PREFERENCE_RESPONSE: NotificationPreferenceResponse = {
   workspace_id: "",
