@@ -8,11 +8,19 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	chimw "github.com/go-chi/chi/v5/middleware"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
+	"github.com/multica-ai/multica/server/internal/auth"
 )
 
 type chatUsageChain struct {
@@ -206,14 +214,37 @@ func TestChatUsageChainStopsAtOneHundredHops(t *testing.T) {
 		t.Errorf("head chain tokens/cost = %+v/%d, direct sum over the first 101 = %+v/%d (sessions past the limit leaked in or out)", head.Chain.Tokens, head.Chain.CostUsdTicks, wantTokens, wantCost)
 	}
 
-	// From the middle, 100 hops reach both ends of 103 sessions: complete.
+	// From the middle the 100-hop cap is a total, not per direction: 100 hops
+	// are spent breadth-first, 50 each way, so sessions 1..101 are in and the
+	// two ends (0 and 102) are not.
 	middle, _ := getChatUsageChain(t, testUserID, ids[51])
-	allTokens, allCost := directChainSum(t, ids...)
-	if middle.Chain == nil || middle.Chain.SessionCount != length || middle.Chain.Partial {
-		t.Fatalf("middle chain = %+v, want %d sessions and not partial", middle.Chain, length)
+	midTokens, midCost := directChainSum(t, ids[1:102]...)
+	if middle.Chain == nil || middle.Chain.SessionCount != 101 || !middle.Chain.Partial {
+		t.Fatalf("middle chain = %+v, want 101 sessions (100 hops in total) and partial", middle.Chain)
 	}
-	if middle.Chain.Tokens != allTokens || middle.Chain.CostUsdTicks != allCost {
-		t.Errorf("middle chain tokens/cost = %+v/%d, direct sum = %+v/%d", middle.Chain.Tokens, middle.Chain.CostUsdTicks, allTokens, allCost)
+	if middle.Chain.Tokens != midTokens || middle.Chain.CostUsdTicks != midCost {
+		t.Errorf("middle chain tokens/cost = %+v/%d, direct sum over sessions 1..101 = %+v/%d", middle.Chain.Tokens, middle.Chain.CostUsdTicks, midTokens, midCost)
+	}
+}
+
+func TestChatUsageChainIsCompleteAtExactlyOneHundredHops(t *testing.T) {
+	ids := make([]string, 101)
+	for i := range ids {
+		ids[i] = chainSession(t, testUserID, testWorkspaceID, "", "m-a", int64(i+1), true)
+		if i > 0 {
+			linkContinuation(t, ids[i-1], ids[i])
+		}
+	}
+	allTokens, allCost := directChainSum(t, ids...)
+	// From either end the walk is exactly 100 hops; from the middle it is 50 + 50.
+	for _, viewed := range []int{0, 50, 100} {
+		got, _ := getChatUsageChain(t, testUserID, ids[viewed])
+		if got.Chain == nil || got.Chain.SessionCount != 101 || got.Chain.Partial {
+			t.Fatalf("viewing session %d: chain = %+v, want all 101 sessions and not partial", viewed, got.Chain)
+		}
+		if got.Chain.Tokens != allTokens || got.Chain.CostUsdTicks != allCost {
+			t.Errorf("viewing session %d: chain tokens/cost = %+v/%d, direct sum = %+v/%d", viewed, got.Chain.Tokens, got.Chain.CostUsdTicks, allTokens, allCost)
+		}
 	}
 }
 
@@ -340,5 +371,200 @@ func TestChatUsageChainIsNotShownToATaskToken(t *testing.T) {
 	// An interactive caller still gets it.
 	if got, _ := getChatUsageChain(t, testUserID, a); got.Chain == nil || got.Chain.SessionCount != 2 {
 		t.Errorf("interactive chain = %+v, want 2 sessions", got.Chain)
+	}
+}
+
+// requestQueryTrace records the SQL each HTTP request issues, keyed by the
+// request id chi's RequestID middleware read from X-Request-Id.
+type requestQueryTrace struct {
+	mu    sync.Mutex
+	byReq map[string][]string
+}
+
+var requestQueries = &requestQueryTrace{byReq: map[string][]string{}}
+
+func (q *requestQueryTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryStartData) context.Context {
+	if id := chimw.GetReqID(ctx); id != "" {
+		q.mu.Lock()
+		q.byReq[id] = append(q.byReq[id], d.SQL)
+		q.mu.Unlock()
+	}
+	return ctx
+}
+
+func (q *requestQueryTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+func (q *requestQueryTrace) take(id string) []string {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	sqls := q.byReq[id]
+	delete(q.byReq, id)
+	return sqls
+}
+
+// usageStatements runs one interactive usage request as userID and returns the
+// statements it issued and how long it took.
+func usageStatements(t *testing.T, userID, sessionID string) ([]string, time.Duration) {
+	t.Helper()
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub": userID, "amr": "interactive", "exp": time.Now().Add(time.Hour).Unix(),
+	}).SignedString(auth.JWTSecret())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := "usage-" + uuid.NewString()
+	req, err := http.NewRequest(http.MethodGet, testServer.URL+"/api/chat/sessions/"+sessionID+"/usage", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Workspace-ID", testWorkspaceID)
+	req.Header.Set(chimw.RequestIDHeader, id)
+	start := time.Now()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	elapsed := time.Since(start)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("usage: %d %s", resp.StatusCode, body)
+	}
+	return requestQueries.take(id), elapsed
+}
+
+// chainMember inserts a plain workspace member.
+func chainMember(t *testing.T, role string) string {
+	t.Helper()
+	ctx := context.Background()
+	var id string
+	if err := testPool.QueryRow(ctx, `INSERT INTO "user" (name, email) VALUES ('Chain Member', $1) RETURNING id`, uuid.NewString()+"@multica.ai").Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM "user" WHERE id = $1`, id) })
+	if _, err := testPool.Exec(ctx, `INSERT INTO member (workspace_id, user_id, role) VALUES ($1, $2, $3)`, testWorkspaceID, id, role); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// chainAgent inserts an agent owned by ownerID. mode is the permission mode;
+// target is "workspace", "member" (an allow-list entry for memberID) or "".
+func chainAgent(t *testing.T, ownerID, mode, target, memberID string) string {
+	t.Helper()
+	ctx := context.Background()
+	var runtimeID, agentID string
+	if err := testPool.QueryRow(ctx, `SELECT runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`, testWorkspaceID).Scan(&runtimeID); err != nil {
+		t.Fatal(err)
+	}
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent (workspace_id, name, description, runtime_mode, runtime_config, runtime_id, visibility,
+			max_concurrent_tasks, owner_id, instructions, custom_env, custom_args, permission_mode)
+		VALUES ($1, $2, '', 'cloud', '{}'::jsonb, $3, 'workspace', 1, $4, '', '{}'::jsonb, '[]'::jsonb, $5)
+		RETURNING id`, testWorkspaceID, "chain-agent-"+uuid.NewString()[:8], runtimeID, ownerID, mode).Scan(&agentID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_invocation_target WHERE agent_id = $1`, agentID)
+		testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, agentID)
+	})
+	switch target {
+	case "workspace":
+		if _, err := testPool.Exec(ctx, `INSERT INTO agent_invocation_target (agent_id, target_type, target_id) VALUES ($1, 'workspace', $2)`, agentID, testWorkspaceID); err != nil {
+			t.Fatal(err)
+		}
+	case "member":
+		if _, err := testPool.Exec(ctx, `INSERT INTO agent_invocation_target (agent_id, target_type, target_id) VALUES ($1, 'member', $2)`, agentID, memberID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return agentID
+}
+
+// chainOnAgents builds a chain with one session per agent and returns the
+// first session id.
+func chainOnAgents(t *testing.T, creatorID string, agents []string) string {
+	t.Helper()
+	ids := make([]string, len(agents))
+	for i, agent := range agents {
+		ids[i] = chainSession(t, creatorID, testWorkspaceID, agent, "m-a", int64(i+1), true)
+		if i > 0 {
+			linkContinuation(t, ids[i-1], ids[i])
+		}
+	}
+	return ids[0]
+}
+
+func TestChatUsageChainAuthorizationQueriesDoNotGrowWithTheChain(t *testing.T) {
+	member := chainMember(t, "member")
+	owner := chainMember(t, "member")
+	agentsFor := func(n int) []string {
+		agents := make([]string, n)
+		for i := range agents {
+			// Each agent needs the invocation-target lookup to be readable.
+			agents[i] = chainAgent(t, owner, "public_to", "workspace", "")
+		}
+		return agents
+	}
+	small := chainOnAgents(t, member, agentsFor(2))
+	large := chainOnAgents(t, member, agentsFor(40))
+
+	smallSQL, _ := usageStatements(t, member, small)
+	largeSQL, elapsed := usageStatements(t, member, large)
+
+	t.Logf("2 distinct agents: %d statements; 40 distinct agents: %d statements in %s", len(smallSQL), len(largeSQL), elapsed)
+	if len(largeSQL) != len(smallSQL) {
+		t.Errorf("a chain of 40 distinct agents issued %d statements, a chain of 2 issued %d: authorization queries grow with the chain (N+1)", len(largeSQL), len(smallSQL))
+	}
+	const budget = 14
+	if len(largeSQL) > budget {
+		t.Errorf("usage request issued %d statements for a 40-agent chain, want at most %d", len(largeSQL), budget)
+	}
+}
+
+func TestChatUsageChainAgentReadabilityMatrix(t *testing.T) {
+	// Which chain members each kind of viewer may include, via the same rules
+	// as the single-session private-agent gate.
+	owner := chainMember(t, "member")
+	type viewerCase struct {
+		name, role string
+		readable   map[string]bool
+	}
+	for _, tc := range []viewerCase{
+		{"plain member", "member", map[string]bool{"own": true, "workspace-target": true, "member-target": true, "private": false, "public-no-target": false}},
+		{"workspace admin", "admin", map[string]bool{"own": true, "workspace-target": true, "member-target": true, "private": true, "public-no-target": true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			viewer := chainMember(t, tc.role)
+			agents := map[string]string{
+				"own":              chainAgent(t, viewer, "private", "", ""),
+				"workspace-target": chainAgent(t, owner, "public_to", "workspace", ""),
+				"member-target":    chainAgent(t, owner, "public_to", "member", viewer),
+				"private":          chainAgent(t, owner, "private", "", ""),
+				"public-no-target": chainAgent(t, owner, "public_to", "", ""),
+			}
+			order := []string{"own", "workspace-target", "member-target", "private", "public-no-target"}
+			list := make([]string, len(order))
+			for i, k := range order {
+				list[i] = agents[k]
+			}
+			head := chainOnAgents(t, viewer, list)
+			// The viewed session's own agent must be readable (the session gate), so
+			// view the first session and read the rest through the chain.
+			got, _ := getChatUsageChain(t, viewer, head)
+			want := 0
+			for _, k := range order {
+				if tc.readable[k] {
+					want++
+				}
+			}
+			if got.Chain == nil || got.Chain.SessionCount != want {
+				t.Fatalf("chain = %+v, want %d readable sessions", got.Chain, want)
+			}
+			if wantPartial := want < len(order); got.Chain.Partial != wantPartial {
+				t.Errorf("chain.partial = %v, want %v", got.Chain.Partial, wantPartial)
+			}
+		})
 	}
 }
