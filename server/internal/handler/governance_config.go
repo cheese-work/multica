@@ -41,9 +41,10 @@ type governanceConfigPatch struct {
 	RollbackToVersion            *int64                 `json:"rollback_to_version,omitempty"`
 
 	// Jev Squad Routing Settings (CHE-1708)
-	JevSquadRoutingEnabled *bool    `json:"jev_squad_routing_enabled,omitempty"`
-	JevAPIURL              *string  `json:"jev_api_url,omitempty"`
-	JevMinConfidence       *float64 `json:"jev_min_confidence,omitempty"`
+	JevSquadRoutingEnabled *bool                        `json:"jev_squad_routing_enabled,omitempty"`
+	JevSquadRoutingMode    *governance.SquadRoutingMode `json:"jev_squad_routing_mode,omitempty"`
+	JevAPIURL              *string                      `json:"jev_api_url,omitempty"`
+	JevMinConfidence       *float64                     `json:"jev_min_confidence,omitempty"`
 }
 
 type governanceLimitsPatch struct {
@@ -384,7 +385,7 @@ func validGovernanceConfigPatch(patch governanceConfigPatch) bool {
 	}
 	settingsProvided := patch.JevGovernanceEnabled != nil || patch.JevFallbackAgentsEnabled != nil ||
 		patch.GovernanceCorrectionsEnabled != nil || patch.RuleMode != nil || patch.Limits != nil ||
-		patch.JevSquadRoutingEnabled != nil || patch.JevAPIURL != nil || patch.JevMinConfidence != nil
+		patch.JevSquadRoutingEnabled != nil || patch.JevSquadRoutingMode != nil || patch.JevAPIURL != nil || patch.JevMinConfidence != nil
 	if patch.RollbackToVersion != nil {
 		return !settingsProvided
 	}
@@ -392,6 +393,9 @@ func validGovernanceConfigPatch(patch governanceConfigPatch) bool {
 		return false
 	}
 	if patch.JevMinConfidence != nil && (*patch.JevMinConfidence < 0.0 || *patch.JevMinConfidence > 1.0) {
+		return false
+	}
+	if mode := patch.JevSquadRoutingMode; mode != nil && *mode != governance.SquadRoutingOff && *mode != governance.SquadRoutingShadow && *mode != governance.SquadRoutingOn {
 		return false
 	}
 	if patch.RuleMode != nil && *patch.RuleMode != governance.RuleModeOff && *patch.RuleMode != governance.RuleModeShadow && *patch.RuleMode != governance.RuleModeCorrection {
@@ -431,6 +435,15 @@ func applyGovernanceConfigPatch(settings *governance.WorkspaceSettings, patch go
 	}
 	if patch.JevSquadRoutingEnabled != nil {
 		settings.JevSquadRoutingEnabled = *patch.JevSquadRoutingEnabled
+		// The legacy flag keeps working by writing the mode it stands for;
+		// otherwise a stored mode would silently outrank it.
+		settings.JevSquadRoutingMode = governance.SquadRoutingOff
+		if *patch.JevSquadRoutingEnabled {
+			settings.JevSquadRoutingMode = governance.SquadRoutingOn
+		}
+	}
+	if patch.JevSquadRoutingMode != nil {
+		settings.JevSquadRoutingMode = *patch.JevSquadRoutingMode
 	}
 	if patch.JevAPIURL != nil {
 		settings.JevAPIURL = strings.TrimSpace(*patch.JevAPIURL)

@@ -47,6 +47,21 @@ func ResponseProtectionUnavailable(errText string) bool {
 	return strings.Contains(strings.ToLower(errText), "response protection is unavailable")
 }
 
+// AGYReplayedNotFound reports the Antigravity CLI executor 404. AGY stores an
+// executor error in its conversation and reports it again on every later
+// resumed turn, even when that turn succeeds, so stale and current errors are
+// indistinguishable and the session can never be resumed (CHE-1715). Keep the
+// phrases in sync with the GetLastTaskSession / GetLastChatTaskSession guards.
+//
+// Deliberately NOT part of UnresumableHistory: that predicate opens the
+// daemon's in-turn fresh-session retry, and a completed retry would replace a
+// genuine current 404 with success (CHE-1710). The turn fails once; the
+// session is retired by classifyPoisonedError and ResumeUnsafeFailure.
+func AGYReplayedNotFound(errText string) bool {
+	lower := strings.ToLower(errText)
+	return strings.Contains(lower, "agent executor error") && strings.Contains(lower, "requested entity was not found")
+}
+
 // AuthMethodUnresolved reports whether an agent error is the provider
 // SDK refusing to resolve its own credentials — no api_key, no auth_token, and
 // no explicitly-omitted auth header. On a RESUMED session this is
