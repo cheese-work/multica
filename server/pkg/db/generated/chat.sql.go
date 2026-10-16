@@ -98,7 +98,7 @@ func (q *Queries) AdvanceCancelledChatSessionPointer(ctx context.Context, taskID
 
 const archiveContinuedChatSession = `-- name: ArchiveContinuedChatSession :one
 UPDATE chat_session
-SET status = 'archived', continued_into_session_id = $2, updated_at = now()
+SET status = 'archived', continued_into_session_id = $2, pinned_at = NULL, updated_at = now()
 WHERE id = $1
 RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
 `
@@ -4217,6 +4217,7 @@ func (q *Queries) SetChatMessageQuickActionsByTask(ctx context.Context, arg SetC
 const setChatSessionArchived = `-- name: SetChatSessionArchived :one
 UPDATE chat_session
 SET status = CASE WHEN $2::bool THEN 'archived' ELSE 'active' END,
+    pinned_at = CASE WHEN $2::bool THEN NULL ELSE pinned_at END,
     updated_at = now()
 WHERE id = $1
 RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
@@ -4230,7 +4231,8 @@ type SetChatSessionArchivedParams struct {
 // Archive/unarchive a chat session by flipping status between 'active' and
 // 'archived'. Bumps updated_at so the row re-sorts on the receiving list. The
 // send-message path refuses archived sessions (see SendChatMessage), so the
-// conversation is effectively read-only until it is unarchived.
+// conversation is effectively read-only until it is unarchived. Archiving also
+// clears the pin (archived means unpinned); unarchive leaves it unpinned.
 func (q *Queries) SetChatSessionArchived(ctx context.Context, arg SetChatSessionArchivedParams) (ChatSession, error) {
 	row := q.db.QueryRow(ctx, setChatSessionArchived, arg.ID, arg.Archived)
 	var i ChatSession
@@ -4267,6 +4269,7 @@ const setChatSessionPinned = `-- name: SetChatSessionPinned :one
 UPDATE chat_session
 SET pinned_at = CASE WHEN $2::bool THEN COALESCE(pinned_at, now()) ELSE NULL END
 WHERE id = $1
+  AND (NOT $2::bool OR status <> 'archived')
 RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
 `
 
@@ -4279,7 +4282,9 @@ type SetChatSessionPinnedParams struct {
 // list-ordering preference, not activity, so it must not bump the session's
 // last-activity sort key (which would make an unpinned chat jump the list).
 // pinned = true stamps pinned_at only when it was NULL, so re-pinning keeps
-// the original pin order; pinned = false clears it.
+// the original pin order; pinned = false clears it. An archived chat is never
+// pinned: a pin request on one matches no row (the caller answers 409), while
+// an unpin still goes through.
 func (q *Queries) SetChatSessionPinned(ctx context.Context, arg SetChatSessionPinnedParams) (ChatSession, error) {
 	row := q.db.QueryRow(ctx, setChatSessionPinned, arg.ID, arg.Pinned)
 	var i ChatSession
