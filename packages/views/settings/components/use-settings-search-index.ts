@@ -136,6 +136,12 @@ export function useSettingsSearchIndex(
         title: t(($) => $.workspace.compact_prompt_label),
         description: t(($) => $.workspace.compact_prompt_hint),
       },
+      {
+        tab: "workspace",
+        anchor: "auto-compact",
+        title: t(($) => $.workspace.auto_compact_label),
+        description: t(($) => $.workspace.auto_compact_hint),
+      },
       { tab: "workspace", anchor: "slug", title: t(($) => $.workspace.slug_label) },
       {
         tab: "workspace",

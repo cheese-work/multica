@@ -3097,6 +3097,69 @@ describe("IssueDetail (shared)", () => {
     expect(screen.getByText(/changed priority/i)).toBeInTheDocument();
   });
 
+  // CHE-1728: at 390 px a truncating sentence cut the woken agent's name while
+  // the PR/comment/run links stayed visible. jsdom has no layout, so the guard
+  // is the rule itself: below `sm` the sentence wraps instead of truncating.
+  it("lets a wakeup row wrap on phones instead of truncating who was woken", async () => {
+    mockApiObj.listTimeline.mockResolvedValue([
+      {
+        type: "activity",
+        id: "act-wakeup",
+        actor_type: "system",
+        actor_id: "",
+        action: "wakeup_triggered",
+        details: {
+          rule: "pr_merged",
+          pr_number: 252,
+          pr_url: "https://github.com/o/r/pull/252",
+          target_type: "agent",
+          target_id: "agent-1",
+          outcome: "woke",
+        },
+        created_at: "2026-01-18T00:00:00Z",
+      },
+    ] as TimelineEntry[]);
+
+    renderIssueDetail();
+
+    const sentence = await screen.findByText(/PR #252 merged/);
+    const text = sentence.closest("span.min-w-0, span.truncate, span.break-words") as HTMLElement;
+    const classes = text.className.split(/\s+/);
+    expect(classes).not.toContain("truncate");
+    expect(classes).toContain("sm:truncate");
+    expect(text.parentElement!.className.split(/\s+/)).toContain("flex-wrap");
+  });
+
+  // CHE-1726 admit sheet (docs/ux/CHE-1726.yml) names these wakeup row elements.
+  it("exposes the stable ids the CHE-1726 admit sheet names on a wakeup row", async () => {
+    mockApiObj.listTimeline.mockResolvedValue([
+      {
+        type: "activity",
+        id: "act-wakeup-ids",
+        actor_type: "system",
+        actor_id: "",
+        action: "wakeup_triggered",
+        details: {
+          rule: "pr_merged",
+          pr_number: 252,
+          pr_url: "https://github.com/o/r/pull/252",
+          comment_id: "c1",
+          target_type: "agent",
+          target_id: "agent-1",
+          outcome: "woke",
+        },
+        created_at: "2026-01-18T00:00:00Z",
+      },
+    ] as TimelineEntry[]);
+
+    renderIssueDetail();
+
+    expect(await screen.findByTestId("wakeup-activity-sentence")).toHaveTextContent(/PR #252 merged/);
+    expect(screen.getByTestId("wakeup-activity-chip")).toHaveTextContent("System rule");
+    expect(screen.getByTestId("wakeup-activity-pr-link")).toHaveAttribute("href", "https://github.com/o/r/pull/252");
+    expect(screen.getByTestId("wakeup-activity-comment-link")).toHaveAttribute("href", expect.stringContaining("#comment-c1"));
+  });
+
   // Duplicate marks (MUL-7349) name another issue; the identifier is a link
   // to it, and a mark removed because its original was deleted is plain text.
   it("links a duplicate mark to the issue it names", async () => {

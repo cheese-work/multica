@@ -2104,6 +2104,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 		var usageMap map[string]TokenUsage
 		c.usageMu.Lock()
 		u := c.usage
+		contextTokens, contextWindow := c.contextTokens, c.contextWindow
 		c.usageMu.Unlock()
 
 		// Fallback: if no usage from JSON-RPC, scan Codex session JSONL logs.
@@ -2135,6 +2136,8 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 			SessionID:                           threadID,
 			DurationMs:                          duration.Milliseconds(),
 			Usage:                               usageMap,
+			ContextTokens:                       contextTokens,
+			ContextWindow:                       contextWindow,
 			codexStartupRefreshRetrySafe:        startupRefreshRetrySafe,
 			codexZeroToolFalseNegativeRetrySafe: zeroToolFalseNegative,
 		}
@@ -2646,6 +2649,11 @@ type codexClient struct {
 	// duplicate delivery idempotent while retaining multi-response turns.
 	usageTotal    codexRawTokenUsage
 	usageTotalSet bool
+	// contextTokens / contextWindow come from the latest accepted snapshot:
+	// last.inputTokens (already inclusive of cached input) and
+	// modelContextWindow. Zero until a snapshot arrives.
+	contextTokens int64
+	contextWindow int64
 
 	turnErrorMu sync.Mutex
 	turnError   string // captured from turn/completed status=failed or terminal error notifications
@@ -4093,6 +4101,8 @@ func (c *codexClient) updateThreadTokenUsage(params map[string]any) {
 	}
 	c.usageTotal = total
 	c.usageTotalSet = true
+	c.contextTokens = codexRawTokenUsageFromV2(last).InputTokens
+	c.contextWindow = codexInt64(tokenUsage, "modelContextWindow")
 	u := codexTokenUsage(delta)
 	c.usage.InputTokens += u.InputTokens
 	c.usage.OutputTokens += u.OutputTokens
