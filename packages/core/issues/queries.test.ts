@@ -686,6 +686,51 @@ describe("issueIdentifierOptions", () => {
     },
   );
 
+  describe("seeding the issue-detail cache", () => {
+    const detailKey = issueKeys.detail(WS_ID, "issue-7");
+
+    // Start a lookup, let `settle` run while it is in flight, then resolve it
+    // with `response`. Returns the detail cache entry afterwards.
+    async function lookupSettlingAfter(
+      cached: Issue | undefined,
+      settle: () => void,
+      response: Issue,
+    ) {
+      let resolveLookup!: (issue: Issue) => void;
+      const getIssue = vi
+        .fn<(id: string) => Promise<Issue>>()
+        .mockImplementation(() => new Promise((resolve) => (resolveLookup = resolve)));
+      installFakeIssueApi(getIssue);
+      if (cached) qc.setQueryData(detailKey, cached);
+
+      const lookup = qc.fetchQuery(issueIdentifierOptions(WS_ID, "MUL-7"));
+      settle();
+      resolveLookup(response);
+      await lookup;
+      return qc.getQueryData<Issue>(detailKey);
+    }
+
+    it("does not let a delayed lookup overwrite a newer authoritative revision", async () => {
+      const detail = await lookupSettlingAfter(
+        makeIssue(7, { title: "base", revision: 1 }),
+        () => onIssueUpdated(qc, WS_ID, makeIssue(7, { title: "newer", revision: 3 })),
+        makeIssue(7, { title: "older lookup", revision: 2 }),
+      );
+
+      expect(detail).toMatchObject({ title: "newer", revision: 3 });
+    });
+
+    it("seeds an empty cache and replaces an older revision", async () => {
+      const response = makeIssue(7, { title: "looked up", revision: 2 });
+
+      expect(await lookupSettlingAfter(undefined, () => {}, response)).toEqual(response);
+
+      qc.clear();
+      const older = makeIssue(7, { title: "older", revision: 1 });
+      expect(await lookupSettlingAfter(older, () => {}, response)).toEqual(response);
+    });
+  });
+
   it("keys the query by workspace and identifier", () => {
     expect(issueKeys.identifier(WS_ID, "MUL-7")).toEqual([
       "issues",
