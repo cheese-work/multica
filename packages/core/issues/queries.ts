@@ -18,6 +18,7 @@ import type {
   ListIssuesParams,
   ListIssuesCache,
 } from "../types";
+import { freshestCachedIssueRevision } from "./cache-coordinator";
 import { ALL_STATUSES } from "./config";
 import { issueColumnCategory } from "./status-category";
 
@@ -477,15 +478,17 @@ export function issueIdentifierOptions(wsId: string, identifier: string) {
         // Seed the detail cache so the chip that renders next reads this
         // issue instead of firing a second `getIssue(uuid)` and painting a
         // label-only chip until it lands. A lookup that started before a
-        // mutation or realtime update may land after it; keep the newer
-        // revision, same ordering rule as `onIssueUpdated`.
-        client.setQueryData<Issue>(issueKeys.detail(wsId, issue.id), (old) =>
-          old?.revision !== undefined &&
-          issue.revision !== undefined &&
-          issue.revision < old.revision
-            ? old
-            : issue,
-        );
+        // mutation or realtime update may land after it, so seed only when no
+        // cached projection holds a newer revision (equal is admissible, an
+        // unversioned response never displaces ordered data) — the same
+        // ordering `onIssueUpdated` applies.
+        const cached = freshestCachedIssueRevision(client, wsId, issue.id);
+        if (
+          cached === undefined ||
+          (issue.revision !== undefined && issue.revision >= cached)
+        ) {
+          client.setQueryData(issueKeys.detail(wsId, issue.id), issue);
+        }
         return issue;
       } catch (err) {
         // Unknown identifier / wrong workspace prefix → render as plain text.
