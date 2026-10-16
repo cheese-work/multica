@@ -6,6 +6,7 @@ import { Input } from "@multica/ui/components/ui/input";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { Button } from "@multica/ui/components/ui/button";
 import { Label } from "@multica/ui/components/ui/label";
+import { Switch } from "@multica/ui/components/ui/switch";
 import {
   Dialog,
   DialogContent,
@@ -42,6 +43,12 @@ import {
   useHasOnboarded,
 } from "@multica/core/paths";
 import { setCurrentWorkspace } from "@multica/core/platform";
+import {
+  AUTO_COMPACT_MAX_PCT,
+  AUTO_COMPACT_MIN_PCT,
+  isValidAutoCompactPct,
+  readAutoCompact,
+} from "@multica/core/workspace/auto-compact";
 import type { Workspace } from "@multica/core/types";
 import { AvatarUploadControl } from "../../common/avatar-upload-control";
 import { useNavigation } from "../../navigation";
@@ -160,6 +167,15 @@ export function WorkspaceTab() {
       setCompactPrompt(savedCompactPrompt);
     }
   }
+  // CHE-1806: settings.auto_compact also saves through its own request field.
+  // A null draft follows the saved value; an invalid draft is never sent.
+  const autoCompact = readAutoCompact(workspace?.settings);
+  const [thresholdDraft, setThresholdDraft] = useState<string | null>(null);
+  const thresholdText = thresholdDraft ?? String(autoCompact.threshold_pct);
+  const thresholdValue = Number(thresholdText);
+  const thresholdInvalid =
+    thresholdDraft !== null &&
+    (thresholdText.trim() === "" || !isValidAutoCompactPct(thresholdValue));
   const [prefixDraft, setPrefixDraft] = useState<string | null>(null);
   const [prefixSaveStatus, setPrefixSaveStatus] =
     useState<SettingsSaveStatus>("idle");
@@ -192,6 +208,7 @@ export function WorkspaceTab() {
     setDescription(workspace?.description ?? "");
     setContext(workspace?.context ?? "");
     setCompactPrompt(savedCompactPrompt);
+    setThresholdDraft(null);
     setPrefixDraft(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally keyed on id only; see comment above
   }, [workspace?.id]);
@@ -269,6 +286,33 @@ export function WorkspaceTab() {
     isEqual: sameText,
   });
 
+  const saveAutoCompact = useCallback(
+    async (next: { enabled?: boolean; threshold_pct?: number }) => {
+      if (!workspace) return;
+      const updated = await api.updateWorkspace(workspace.id, {
+        auto_compact: next,
+      });
+      qc.setQueryData(workspaceKeys.list(), (old: Workspace[] | undefined) =>
+        old?.map((ws) => (ws.id === updated.id ? updated : ws)),
+      );
+    },
+    [qc, workspace],
+  );
+  const thresholdAutoSave = useAutoSave({
+    value: thresholdInvalid ? autoCompact.threshold_pct : thresholdValue,
+    savedValue: autoCompact.threshold_pct,
+    onSave: (next: number) => saveAutoCompact({ threshold_pct: next }),
+    onSuccess: () => setThresholdDraft(null),
+    onError: (error) =>
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t(($) => $.workspace.toast_save_failed),
+      ),
+    enabled: !!workspace && canManageWorkspace,
+    isEqual: (left, right) => left === right,
+  });
+
   const performPrefixSave = async (nextPrefix: string) => {
     if (!workspace) return;
     setPrefixSaveStatus("saving");
@@ -344,9 +388,11 @@ export function WorkspaceTab() {
     </p>
   );
   const autoSaveStatus =
-    detailsAutoSave.status === "idle"
-      ? compactPromptAutoSave.status
-      : detailsAutoSave.status;
+    detailsAutoSave.status !== "idle"
+      ? detailsAutoSave.status
+      : compactPromptAutoSave.status !== "idle"
+        ? compactPromptAutoSave.status
+        : thresholdAutoSave.status;
   const saveStatus =
     prefixSaveStatus === "saving" || prefixSaveStatus === "error"
       ? prefixSaveStatus
@@ -506,6 +552,64 @@ export function WorkspaceTab() {
                 : t(($) => $.workspace.compact_prompt_source_default)}
             </p>
           </SettingsRow>
+
+          <SettingsRow
+            anchor="auto-compact"
+            label={t(($) => $.workspace.auto_compact_label)}
+            description={t(($) => $.workspace.auto_compact_hint)}
+          >
+            {readOnly ? (
+              <p className="text-body text-foreground">
+                {autoCompact.enabled
+                  ? t(($) => $.workspace.auto_compact_readonly_on, {
+                      threshold: autoCompact.threshold_pct,
+                    })
+                  : t(($) => $.workspace.auto_compact_readonly_off)}
+              </p>
+            ) : (
+              <Switch
+                checked={autoCompact.enabled}
+                disabled={!canManageWorkspace}
+                onCheckedChange={(enabled) => {
+                  saveAutoCompact({ enabled }).catch((error: unknown) =>
+                    toast.error(
+                      error instanceof Error
+                        ? error.message
+                        : t(($) => $.workspace.toast_save_failed),
+                    ),
+                  );
+                }}
+                aria-label={t(($) => $.workspace.auto_compact_label)}
+              />
+            )}
+          </SettingsRow>
+
+          {readOnly ? null : (
+            <SettingsRow
+              label={t(($) => $.workspace.auto_compact_threshold_label)}
+              size="code"
+            >
+              <Input
+                type="number"
+                inputMode="numeric"
+                min={AUTO_COMPACT_MIN_PCT}
+                max={AUTO_COMPACT_MAX_PCT}
+                step={1}
+                name="workspace-auto-compact-threshold"
+                aria-label={t(($) => $.workspace.auto_compact_threshold_label)}
+                aria-invalid={thresholdInvalid || undefined}
+                value={thresholdText}
+                onChange={(event) => setThresholdDraft(event.target.value)}
+                onBlur={thresholdAutoSave.flush}
+                disabled={!canManageWorkspace}
+              />
+              {thresholdInvalid ? (
+                <p className="mt-1 text-caption text-destructive">
+                  {t(($) => $.workspace.auto_compact_threshold_invalid)}
+                </p>
+              ) : null}
+            </SettingsRow>
+          )}
 
           <SettingsRow
             anchor="slug"
