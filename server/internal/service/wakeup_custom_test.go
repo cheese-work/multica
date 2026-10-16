@@ -286,6 +286,21 @@ func TestCustomPreviewCountsTheIssuesAlreadySatisfied(t *testing.T) {
 	}
 }
 
+// Since MUL-7794 a pull-request condition on an issue with no linked PR is a
+// pending diagnostic, not "not met". The preview counts such an issue as
+// examined and unsatisfied; it does not fail the whole preview.
+func TestCustomPreviewCountsAnUnlinkedPullRequestAsUnsatisfied(t *testing.T) {
+	k := newCustomEnv(t)
+	k.bulkIssues(t, 1, k.project, "todo")
+	eff, err := k.s.EffectiveWakeupRule(context.Background(), k.scopeRef(t, WakeupScopeProject), parseTestUUID(t, k.owner), "", &WakeupDefinitionWrite{Patch: patchOf(t, k.conditionRule(`{"type":"pull_request","event":"merged"}`))})
+	if err != nil {
+		t.Fatalf("preview of a pull-request rule over issues without a PR: %v", err)
+	}
+	if got := eff.AlreadySatisfied; got == nil || got.Satisfied != 0 || got.Examined != 2 || got.Truncated {
+		t.Fatalf("already satisfied = %+v, want 0 of 2 eligible issues", got)
+	}
+}
+
 func TestCustomPreviewCountIsBounded(t *testing.T) {
 	k := newCustomEnv(t)
 	k.bulkIssues(t, wakeupPreviewExamineLimit+20, k.project, "todo")
