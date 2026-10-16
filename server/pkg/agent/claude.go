@@ -216,6 +216,8 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		terminalReasonError := ""
 		var sessionID string
 		var lastUsageResult *claudeSDKMessage
+		var contextModel string
+		var contextTokens, contextWindow int64
 		sawAsyncLaunch := false
 		usage := make(map[string]TokenUsage)
 		seenUsage := make(map[string]struct{})
@@ -279,6 +281,9 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				assistantEventCount++
 				turn := b.handleAssistant(msg, msgCh, usage, seenUsage)
 				toolUseCount += turn.toolUses
+				if turn.callModel != "" {
+					contextModel, contextTokens = turn.callModel, turn.callTokens
+				}
 				if !turn.understood {
 					unreadableAssistantCount++
 				}
@@ -307,6 +312,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 					usageMsg := msg
 					lastUsageResult = &usageMsg
 				}
+				contextWindow = claudeContextWindow(msg.ModelUsage, contextModel)
 				closeStdin()
 			case "log":
 				if msg.Log != nil {
@@ -464,6 +470,8 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			SessionID:      reportedSessionID,
 			Usage:          usage,
 			ResumeRejected: resumeRejected,
+			ContextTokens:  contextTokens,
+			ContextWindow:  contextWindow,
 		}
 	}()
 
@@ -505,6 +513,8 @@ func (b *claudeBackend) handleAssistant(msg claudeSDKMessage, ch chan<- Message,
 		u.CacheReadTokens += content.Usage.CacheReadInputTokens
 		u.CacheWriteTokens += content.Usage.CacheCreationInputTokens
 		usage[content.Model] = u
+		turn.callModel = content.Model
+		turn.callTokens = content.Usage.InputTokens + content.Usage.CacheReadInputTokens + content.Usage.CacheCreationInputTokens
 	}
 
 	for _, block := range content.Content {
@@ -709,6 +719,7 @@ type claudeUsage struct {
 }
 
 type claudeResultModelUsage struct {
+	ContextWindow            int64 `json:"contextWindow"`
 	InputTokens              int64 `json:"inputTokens"`
 	OutputTokens             int64 `json:"outputTokens"`
 	CacheReadInputTokens     int64 `json:"cacheReadInputTokens"`
@@ -745,6 +756,24 @@ func claudeTerminalReasonFailure(terminalReason, resultText string) string {
 		msg += " (" + detail + ")"
 	}
 	return msg
+}
+
+// claudeContextWindow returns the context window the result's modelUsage
+// reports for the model that made the run's last main-loop call, 0 if unknown.
+func claudeContextWindow(modelUsage map[string]claudeResultModelUsage, model string) int64 {
+	if model == "" {
+		return 0
+	}
+	if u, ok := modelUsage[model]; ok {
+		return u.ContextWindow
+	}
+	// Claude Code keys long-context models as "<model>[1m]".
+	for key, u := range modelUsage {
+		if strings.HasPrefix(key, model+"[") {
+			return u.ContextWindow
+		}
+	}
+	return 0
 }
 
 func claudeResultUsage(msg claudeSDKMessage, fallbackModel string) map[string]TokenUsage {

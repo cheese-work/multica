@@ -161,8 +161,10 @@ import type {
   ListAutopilotRunsResponse,
   ListWebhookDeliveriesResponse,
   WebhookDelivery,
+  NotificationChannelsResponse,
   NotificationPreferenceResponse,
   NotificationPreferences,
+  UpdateNotificationChannelRequest,
   PluginHookResult,
   PluginInstallation,
   PluginInstallationListResponse,
@@ -412,6 +414,8 @@ import {
   ArchivedInboxPageSchema,
   ArchivedInboxFacetsSchema,
   EMPTY_INBOX_ITEMS,
+  NotificationChannelsResponseSchema,
+  EMPTY_NOTIFICATION_CHANNELS_RESPONSE,
   NotificationPreferenceResponseSchema,
   EMPTY_NOTIFICATION_PREFERENCE_RESPONSE,
   LabelSchema,
@@ -3054,6 +3058,35 @@ export class ApiClient {
     );
   }
 
+  async getNotificationChannels(workspaceSlug?: string): Promise<NotificationChannelsResponse> {
+    const raw = await this.fetch<unknown>("/api/notification-channels", {
+      headers: workspaceHeader(workspaceSlug),
+    });
+    return parseWithFallback(
+      raw,
+      NotificationChannelsResponseSchema,
+      EMPTY_NOTIFICATION_CHANNELS_RESPONSE,
+      { endpoint: "GET /api/notification-channels" },
+    );
+  }
+
+  async updateNotificationChannel(
+    req: UpdateNotificationChannelRequest,
+    workspaceSlug?: string,
+  ): Promise<NotificationChannelsResponse> {
+    const raw = await this.fetch<unknown>("/api/notification-channels", {
+      method: "PATCH",
+      headers: workspaceHeader(workspaceSlug),
+      body: JSON.stringify(req),
+    });
+    return parseWithFallback(
+      raw,
+      NotificationChannelsResponseSchema,
+      EMPTY_NOTIFICATION_CHANNELS_RESPONSE,
+      { endpoint: "PATCH /api/notification-channels" },
+    );
+  }
+
   // App Config
   async getConfig(): Promise<AppConfigResponse> {
     const raw = await this.fetch<unknown>("/api/config");
@@ -3078,7 +3111,7 @@ export class ApiClient {
     });
   }
 
-  async updateWorkspace(id: string, data: { name?: string; description?: string; context?: string; settings?: Record<string, unknown>; repos?: WorkspaceRepo[]; issue_prefix?: string; avatar_url?: string; compact_prompt?: string | null }): Promise<Workspace> {
+  async updateWorkspace(id: string, data: { name?: string; description?: string; context?: string; settings?: Record<string, unknown>; repos?: WorkspaceRepo[]; issue_prefix?: string; avatar_url?: string; compact_prompt?: string | null; auto_compact?: { enabled?: boolean; threshold_pct?: number } | null }): Promise<Workspace> {
     return this.fetch(`/api/workspaces/${id}`, {
       method: "PATCH",
       body: JSON.stringify(data),
