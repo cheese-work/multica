@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 export const AUTO_COMPACT_MIN_PCT = 50;
 export const AUTO_COMPACT_MAX_PCT = 90;
 const AUTO_COMPACT_DEFAULT_PCT = 80;
@@ -15,26 +17,29 @@ export function isValidAutoCompactPct(value: number): boolean {
   );
 }
 
+const DEFAULT_AUTO_COMPACT: AutoCompactSettings = {
+  enabled: true,
+  threshold_pct: AUTO_COMPACT_DEFAULT_PCT,
+};
+
 /**
- * Reads settings.auto_compact from the workspace settings blob. The server
- * validates on write, but the blob is untyped JSON: a missing or malformed
- * field falls back to its default so the UI never renders a value the server
- * would reject.
+ * Lenient schema for settings.auto_compact. The server validates on write,
+ * but the settings blob is untyped JSON: each malformed field falls back to
+ * its own default and a non-object value falls back to all defaults, so the
+ * UI never renders a value the server would reject.
  */
+export const AutoCompactSchema = z
+  .object({
+    enabled: z.boolean().catch(DEFAULT_AUTO_COMPACT.enabled),
+    threshold_pct: z
+      .number()
+      .refine(isValidAutoCompactPct)
+      .catch(DEFAULT_AUTO_COMPACT.threshold_pct),
+  })
+  .catch(DEFAULT_AUTO_COMPACT);
+
 export function readAutoCompact(
   settings: Record<string, unknown> | undefined,
 ): AutoCompactSettings {
-  const raw = settings?.auto_compact;
-  const saved =
-    raw !== null && typeof raw === "object"
-      ? (raw as Record<string, unknown>)
-      : {};
-  return {
-    enabled: typeof saved.enabled === "boolean" ? saved.enabled : true,
-    threshold_pct:
-      typeof saved.threshold_pct === "number" &&
-      isValidAutoCompactPct(saved.threshold_pct)
-        ? saved.threshold_pct
-        : AUTO_COMPACT_DEFAULT_PCT,
-  };
+  return AutoCompactSchema.parse(settings?.auto_compact);
 }
