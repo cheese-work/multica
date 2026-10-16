@@ -330,17 +330,38 @@ type requestCoreErrorRow struct{ err error }
 func (row requestCoreErrorRow) Scan(_ ...any) error { return row.err }
 
 func (transaction requestCoreTransaction) QueryRow(ctx context.Context, query string, arguments ...any) pgx.Row {
+	if err := transaction.beforeQuery(query); err != nil {
+		return requestCoreErrorRow{err: err}
+	}
+	return transaction.Tx.QueryRow(ctx, query, arguments...)
+}
+
+func (transaction requestCoreTransaction) Query(ctx context.Context, query string, arguments ...any) (pgx.Rows, error) {
+	if err := transaction.beforeQuery(query); err != nil {
+		return nil, err
+	}
+	return transaction.Tx.Query(ctx, query, arguments...)
+}
+
+func (transaction requestCoreTransaction) beforeQuery(query string) error {
 	if strings.Contains(query, transaction.starter.query) {
 		if transaction.starter.fail != nil {
-			return requestCoreErrorRow{err: transaction.starter.fail}
+			return transaction.starter.fail
 		}
 		var hookError error
 		transaction.starter.once.Do(func() { hookError = transaction.starter.before(transaction.Tx) })
 		if hookError != nil {
-			return requestCoreErrorRow{err: hookError}
+			return hookError
 		}
 	}
-	return transaction.Tx.QueryRow(ctx, query, arguments...)
+	return nil
+}
+
+func (transaction requestCoreTransaction) Exec(ctx context.Context, query string, arguments ...any) (pgconn.CommandTag, error) {
+	if err := transaction.beforeQuery(query); err != nil {
+		return pgconn.CommandTag{}, err
+	}
+	return transaction.Tx.Exec(ctx, query, arguments...)
 }
 
 func useRequestCoreStarter(test *testing.T, starter txStarter) {

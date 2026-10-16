@@ -222,11 +222,17 @@ func (h *Handler) ownerCASApply(w http.ResponseWriter, r *http.Request, actorTyp
 			var existingContent string
 			wsUUID, _ := util.ParseUUID(workspaceID)
 			idUUID, _ := util.ParseUUID(id)
-			_ = h.DB.QueryRow(r.Context(), fmt.Sprintf("SELECT %s FROM %s WHERE id = $1 AND %s = $2", c.col, c.table, c.scopeCol), idUUID, wsUUID).Scan(&existingContent)
-			existingTokens := jev.EstimateInstructionTokens(existingContent)
-			if content != existingContent && (existingTokens <= limit || newTokens > existingTokens) {
-				writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("%s exceed limit of %d tokens (estimated: %d tokens)", c.field, limit, newTokens))
+			err := h.DB.QueryRow(r.Context(), fmt.Sprintf("SELECT %s FROM %s WHERE id = $1 AND %s = $2", c.col, c.table, c.scopeCol), idUUID, wsUUID).Scan(&existingContent)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				writeError(w, http.StatusInternalServerError, "failed to read existing instructions")
 				return hermesExceptionSwapResult{}, false
+			}
+			if err == nil {
+				existingTokens := jev.EstimateInstructionTokens(existingContent)
+				if content != existingContent && (existingTokens <= limit || newTokens > existingTokens) {
+					writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("%s exceed limit of %d tokens (estimated: %d tokens)", c.field, limit, newTokens))
+					return hermesExceptionSwapResult{}, false
+				}
 			}
 		}
 	}

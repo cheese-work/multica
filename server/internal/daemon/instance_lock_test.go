@@ -65,6 +65,9 @@ func TestDaemonInstanceProcess(t *testing.T) {
 	if os.Getenv("MULTICA_TEST_INSTANCE_PROCESS") != "1" {
 		return
 	}
+	// TestMain clears MULTICA_TASK_CONFIG_ROOT for every test binary run,
+	// this re-exec included, so the parent passes the root separately.
+	t.Setenv(cli.TaskConfigRootEnv, os.Getenv("MULTICA_TEST_INSTANCE_CONFIG_ROOT"))
 	var start [1]byte
 	if _, err := io.ReadFull(os.Stdin, start[:]); err != nil {
 		t.Fatal(err)
@@ -127,7 +130,7 @@ func startInstanceProcess(t *testing.T, root, serverURL, profile string) *instan
 	command := exec.Command(os.Args[0], "-test.run=^TestDaemonInstanceProcess$")
 	command.Env = append(os.Environ(),
 		"MULTICA_TEST_INSTANCE_PROCESS=1",
-		cli.TaskConfigRootEnv+"="+root,
+		"MULTICA_TEST_INSTANCE_CONFIG_ROOT="+root,
 		"MULTICA_TEST_INSTANCE_SERVER="+serverURL,
 		"MULTICA_TEST_INSTANCE_PROFILE="+profile,
 		"MULTICA_TEST_INSTANCE_WORKSPACES="+t.TempDir(),
@@ -266,7 +269,7 @@ func TestDaemonInstanceHealthPortCollision(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := New(Config{HealthPort: listener.Addr().(*net.TCPAddr).Port}, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if err := d.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "another daemon is already running on") {
+	if err := d.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "bind health port") {
 		t.Fatalf("expected existing health-port collision, got %v", err)
 	}
 	pid, err := os.ReadFile(pidPath)

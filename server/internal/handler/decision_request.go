@@ -183,6 +183,7 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 	agent, _, windowError := handler.decisionLaneWindow(request, queries, issue, session.CreatorID)
 	if err := decisiontx.ValidateIntent(ctx, transaction, intent); err != nil {
 		if errors.Is(err, decisiontx.ErrIntentClosed) {
+			handler.DecisionWorker.Notify()
 			return empty, decisionIntentRefusal{http.StatusForbidden, err.Error()}
 		}
 		return empty, err
@@ -255,5 +256,6 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 	if err := transaction.Commit(ctx); err != nil {
 		return empty, err
 	}
+	handler.DecisionWorker.Notify()
 	return decisionRequestResult{Request: created, Comment: comment.Comment(), Message: message, ClearedComments: cleared, CreatedSession: createdSession}, nil
 }
