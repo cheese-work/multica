@@ -133,8 +133,11 @@ func TestProviderFailureRecoveryEffectShapesPreserveLegacyRows(t *testing.T) {
 			})
 			if _, err := insertProviderFailureReservation(ctx, pool, test.reservation, false); err == nil {
 				t.Fatal("invalid reservation shape was accepted")
-			} else if pgErr, ok := err.(*pgconn.PgError); !ok || pgErr.Code != "23514" {
-				t.Fatalf("invalid shape error = %v, want check-constraint violation", err)
+			} else {
+				var pgErr *pgconn.PgError
+				if !errors.As(err, &pgErr) || pgErr.Code != "23514" {
+					t.Fatalf("invalid shape error = %v, want check-constraint violation", err)
+				}
 			}
 		})
 	}
@@ -191,8 +194,11 @@ func TestProviderFailureRecoveryAllowsOnlyOneRearmPerWakeup(t *testing.T) {
 	}
 	if _, err := insertProviderFailureReservation(ctx, pool, second, false); err == nil {
 		t.Fatal("second rearm reservation for the same wakeup was accepted")
-	} else if pgErr, ok := err.(*pgconn.PgError); !ok || pgErr.Code != "23505" {
-		t.Fatalf("second rearm error = %v, want unique violation", err)
+	} else {
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+			t.Fatalf("second rearm error = %v, want unique violation", err)
+		}
 	}
 }
 
