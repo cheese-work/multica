@@ -300,11 +300,24 @@ export interface PendingSendRestore {
   sessionId: string;
 }
 
+/**
+ * How the next session change should reach the web URL. Written by the caller
+ * that knows whether a change is a user navigation (`push`) or a correction of
+ * the current entry (`replace`); read once by the chat page's single
+ * store → URL effect. `newChat` marks an unsent new chat (`?new=1`).
+ */
+export interface ChatNavIntent {
+  mode: "push" | "replace";
+  newChat: boolean;
+}
+
 export interface ChatState {
   isOpen: boolean;
   /** Settings preference: is the floating chat window available at all. */
   floatingChatEnabled: boolean;
   activeSessionId: string | null;
+  /** One-shot URL-write intent for the next session change. Never persisted. */
+  navIntent: ChatNavIntent | null;
   selectedAgentId: string | null;
   /** Project context for the next session. Existing sessions remain bound to
    *  their server-persisted project_id. */
@@ -326,6 +339,10 @@ export interface ChatState {
   toggle: () => void;
   setFloatingChatEnabled: (enabled: boolean) => void;
   setActiveSession: (id: string | null) => void;
+  /** Record how the next session change reaches the URL; the latest request wins. */
+  requestNav: (intent: ChatNavIntent) => void;
+  /** Return the recorded intent and clear it, so it applies to one URL write. */
+  consumeNavIntent: () => ChatNavIntent | null;
   setSelectedAgentId: (id: string) => void;
   setSelectedProjectId: (id: string | null) => void;
   /** sessionId accepts a real session UUID or DRAFT_NEW_SESSION. */
@@ -392,6 +409,7 @@ export function createChatStore(options: ChatStoreOptions) {
     isOpen: initialIsOpen,
     floatingChatEnabled: initialFloatingEnabled,
     activeSessionId: storage.getItem(wsKey(SESSION_STORAGE_KEY)),
+    navIntent: null,
     selectedAgentId: initialAgentId,
     selectedProjectId: storage.getItem(wsKey(PROJECT_STORAGE_KEY)),
     inputDrafts: initialDraftSlots.inputDrafts,
@@ -428,6 +446,12 @@ export function createChatStore(options: ChatStoreOptions) {
         storage.removeItem(wsKey(SESSION_STORAGE_KEY));
       }
       set({ activeSessionId: id });
+    },
+    requestNav: (intent) => set({ navIntent: intent }),
+    consumeNavIntent: () => {
+      const intent = get().navIntent;
+      if (intent) set({ navIntent: null });
+      return intent;
     },
     setSelectedAgentId: (id) => {
       logger.info("setSelectedAgentId", { from: get().selectedAgentId, to: id });

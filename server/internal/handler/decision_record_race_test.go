@@ -116,6 +116,10 @@ func TestAskedDecisionRecordSourceDeleteOrders(test *testing.T) {
 					test.Fatalf("removed source was recorded: %v", outcome.err)
 				}
 				fixture.assertRecordCounts(test, 0)
+				if _, err := consequenceWorker(test, testHandler).CheckDecisionSource(ctx, parseUUID(testWorkspaceID), fixture.decision.ID); err != nil {
+					test.Fatal(err)
+				}
+				fixture.assertRecordCounts(test, 0)
 				return
 			}
 			paused, unblock := pauseDecisionTransaction(test, "-- name: CreateDecisionAnswer")
@@ -148,6 +152,12 @@ func TestAskedDecisionRecordSourceDeleteOrders(test *testing.T) {
 			}
 			if err := <-deleted; err != nil {
 				test.Fatal(err)
+			}
+			if _, err := consequenceWorker(test, testHandler).CheckDecisionSource(ctx, parseUUID(testWorkspaceID), fixture.decision.ID); err != nil {
+				test.Fatal(err)
+			}
+			if dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE id = $1 AND disclaimed_at IS NOT NULL AND disclaim_reason = 'source_removed'`, outcome.result.Answer.ID) != 1 {
+				test.Fatal("record-first source deletion left a live answer")
 			}
 			fixture.assertRecordCounts(test, 1)
 			if outcome.result.Answer.ContentSnapshot == "" || outcome.result.Answer.WakeAt.Valid || dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE id = $1`, fixture.messageID) != 0 {

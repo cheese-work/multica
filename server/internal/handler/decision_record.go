@@ -309,5 +309,6 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 	if err := transaction.Commit(ctx); err != nil {
 		return empty, err
 	}
+	handler.DecisionWorker.Notify()
 	return decisionRecordResult{Request: decision, Answer: answer, Comment: comment.Comment(), Message: message, ClearedComments: cleared}, nil
 }
