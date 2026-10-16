@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { issueIdentifierOptions } from "@multica/core/issues/queries";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { isIssueIdentifier } from "@multica/ui/markdown";
@@ -20,8 +20,13 @@ import type { Issue } from "@multica/core/types";
  *
  * When the prefix is unknown (workspace list still loading) we fall through to
  * the query and let the exact-match filter in `issueIdentifierOptions` decide.
+ *
+ * Returns `undefined` while the lookup is in flight, `null` once it settled
+ * without an issue (404, exhausted retries, or short-circuited), and the issue
+ * otherwise. Callers reserve space for `undefined` and render plain text for
+ * `null`.
  */
-export function useResolveIssueIdentifier(identifier: string): Issue | null {
+export function useResolveIssueIdentifier(identifier: string): Issue | null | undefined {
   const workspace = useCurrentWorkspace();
   const wsId = workspace?.id ?? "";
   const prefix = workspace?.issue_prefix;
@@ -29,10 +34,17 @@ export function useResolveIssueIdentifier(identifier: string): Issue | null {
     !prefix ||
     identifier.toUpperCase().startsWith(`${prefix.toUpperCase()}-`);
 
-  const { data } = useQuery({
+  const { data, isLoading } = useQuery({
     ...issueIdentifierOptions(wsId, identifier),
     enabled: Boolean(wsId) && isIssueIdentifier(identifier) && prefixMatches,
+    // Keep known content across a key change, but only the same issue: the
+    // previous result of a different identifier or workspace must never paint.
+    placeholderData: (previous) =>
+      previous?.identifier === identifier && previous.workspace_id === wsId
+        ? keepPreviousData(previous)
+        : undefined,
   });
 
-  return data ?? null;
+  if (data) return data;
+  return isLoading ? undefined : null;
 }

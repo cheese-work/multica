@@ -58,6 +58,7 @@ import {
 } from "../navigation";
 import { IssueMentionCard } from "../issues/components/issue-mention-card";
 import { useResolveIssueIdentifier } from "../issues/hooks";
+import { IssueChipLoading } from "../issues/components/issue-chip-loading";
 import { ProjectMentionCard } from "../projects/components/project-mention-card";
 import { useLinkHover, LinkHoverCard } from "../editor/link-hover-card";
 import {
@@ -141,16 +142,24 @@ function IssueMentionLink({ issueId, label }: { issueId: string; label?: string 
  *     author wrote a link; degrading it to text would strip a working link off
  *     an issue this workspace simply cannot see.
  *
- * A miss covers not-found, still-loading, and cross-workspace alike.
+ * A miss covers not-found, failed, and cross-workspace alike. While loading,
+ * the autolink entry shows a chip-shaped box instead of the fallback.
  */
 function IdentifierIssueMentionLink({
   identifier,
   fallback,
+  reserveWhileLoading = false,
 }: {
   identifier: string;
   fallback: ReactNode;
+  /** Show the chip-shaped loading box while the lookup is in flight. Only the
+   *  autolink entry sets it; an authored URL keeps its anchor throughout. */
+  reserveWhileLoading?: boolean;
 }) {
   const issue = useResolveIssueIdentifier(identifier);
+  if (issue === undefined && reserveWhileLoading) {
+    return <IssueChipLoading identifier={identifier} />;
+  }
   if (!issue) return <>{fallback}</>;
   return <IssueMentionLink issueId={issue.id} label={identifier} />;
 }
@@ -280,6 +289,7 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
           <IdentifierIssueMentionLink
             identifier={match[2]}
             fallback={match[2]}
+            reserveWhileLoading
           />
         );
       }
