@@ -1315,6 +1315,109 @@ func (q *Queries) GetChatSessionUsageSummary(ctx context.Context, chatSessionID 
 	return i, err
 }
 
+const getChatSessionsUsageSummary = `-- name: GetChatSessionsUsageSummary :one
+WITH runs AS (
+    SELECT atq.id, atq.status, atq.started_at, atq.completed_at
+    FROM agent_task_queue atq
+    WHERE atq.chat_session_id = ANY($1::uuid[])
+), usage AS (
+    SELECT
+        COALESCE(SUM(tu.input_tokens), 0)::bigint AS input_tokens,
+        COALESCE(SUM(tu.output_tokens), 0)::bigint AS output_tokens,
+        COALESCE(SUM(tu.cache_read_tokens), 0)::bigint AS cache_read_tokens,
+        COALESCE(SUM(tu.cache_write_tokens), 0)::bigint AS cache_write_tokens,
+        COALESCE(SUM(tu.cost_usd_ticks), 0)::bigint AS cost_usd_ticks,
+        COALESCE(SUM(tu.input_tokens)       FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_input_tokens,
+        COALESCE(SUM(tu.output_tokens)      FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_output_tokens,
+        COALESCE(SUM(tu.cache_read_tokens)  FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_read_tokens,
+        COALESCE(SUM(tu.cache_write_tokens) FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_write_tokens
+    FROM task_usage tu
+    JOIN agent_task_queue atq ON atq.id = tu.task_id
+    WHERE atq.chat_session_id = ANY($1::uuid[])
+), models AS (
+    SELECT COALESCE(
+        jsonb_object_agg(m.model, jsonb_build_object(
+            'tokens', jsonb_build_object(
+                'input', m.input_tokens, 'output', m.output_tokens,
+                'cache_read', m.cache_read_tokens, 'cache_write', m.cache_write_tokens),
+            'cost_usd_ticks', m.cost_usd_ticks)),
+        '{}'::jsonb
+    )::jsonb AS by_model
+    FROM (
+        SELECT tu.model,
+               SUM(tu.input_tokens)::bigint AS input_tokens,
+               SUM(tu.output_tokens)::bigint AS output_tokens,
+               SUM(tu.cache_read_tokens)::bigint AS cache_read_tokens,
+               SUM(tu.cache_write_tokens)::bigint AS cache_write_tokens,
+               COALESCE(SUM(tu.cost_usd_ticks), 0)::bigint AS cost_usd_ticks
+        FROM task_usage tu
+        JOIN agent_task_queue atq ON atq.id = tu.task_id
+        WHERE atq.chat_session_id = ANY($1::uuid[])
+        GROUP BY tu.model
+    ) AS m
+), coverage AS (
+    SELECT
+        COUNT(*) FILTER (WHERE status IN ('completed', 'failed', 'cancelled')
+            AND started_at IS NOT NULL AND completed_at IS NOT NULL)::int AS terminal_runs,
+        COUNT(*) FILTER (WHERE status IN ('completed', 'failed', 'cancelled')
+            AND started_at IS NOT NULL AND completed_at IS NOT NULL
+            AND EXISTS (SELECT 1 FROM task_usage tu WHERE tu.task_id = runs.id))::int AS metered_runs,
+        COUNT(*) FILTER (WHERE status IN ('completed', 'failed', 'cancelled')
+            AND started_at IS NOT NULL AND completed_at IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM task_usage tu WHERE tu.task_id = runs.id))::int AS unreported_runs,
+        COALESCE(SUM(GREATEST(EXTRACT(EPOCH FROM (completed_at - started_at)) * 1000, 0)) FILTER (
+            WHERE status IN ('completed', 'failed', 'cancelled')
+              AND started_at IS NOT NULL AND completed_at IS NOT NULL), 0)::bigint AS total_run_ms
+    FROM runs
+)
+SELECT usage.input_tokens, usage.output_tokens, usage.cache_read_tokens, usage.cache_write_tokens, usage.cost_usd_ticks, usage.uncosted_input_tokens, usage.uncosted_output_tokens, usage.uncosted_cache_read_tokens, usage.uncosted_cache_write_tokens, models.by_model, coverage.terminal_runs, coverage.metered_runs, coverage.unreported_runs, coverage.total_run_ms
+FROM usage
+CROSS JOIN models
+CROSS JOIN coverage
+`
+
+type GetChatSessionsUsageSummaryRow struct {
+	InputTokens              int64  `json:"input_tokens"`
+	OutputTokens             int64  `json:"output_tokens"`
+	CacheReadTokens          int64  `json:"cache_read_tokens"`
+	CacheWriteTokens         int64  `json:"cache_write_tokens"`
+	CostUsdTicks             int64  `json:"cost_usd_ticks"`
+	UncostedInputTokens      int64  `json:"uncosted_input_tokens"`
+	UncostedOutputTokens     int64  `json:"uncosted_output_tokens"`
+	UncostedCacheReadTokens  int64  `json:"uncosted_cache_read_tokens"`
+	UncostedCacheWriteTokens int64  `json:"uncosted_cache_write_tokens"`
+	ByModel                  []byte `json:"by_model"`
+	TerminalRuns             int32  `json:"terminal_runs"`
+	MeteredRuns              int32  `json:"metered_runs"`
+	UnreportedRuns           int32  `json:"unreported_runs"`
+	TotalRunMs               int64  `json:"total_run_ms"`
+}
+
+// GetChatSessionUsageSummary's token, cost, model and run totals summed over a
+// set of sessions (the readable members of one continuation chain). Reads
+// agent_task_queue through idx_agent_task_queue_chat_session per session id.
+func (q *Queries) GetChatSessionsUsageSummary(ctx context.Context, sessionIds []pgtype.UUID) (GetChatSessionsUsageSummaryRow, error) {
+	row := q.db.QueryRow(ctx, getChatSessionsUsageSummary, sessionIds)
+	var i GetChatSessionsUsageSummaryRow
+	err := row.Scan(
+		&i.InputTokens,
+		&i.OutputTokens,
+		&i.CacheReadTokens,
+		&i.CacheWriteTokens,
+		&i.CostUsdTicks,
+		&i.UncostedInputTokens,
+		&i.UncostedOutputTokens,
+		&i.UncostedCacheReadTokens,
+		&i.UncostedCacheWriteTokens,
+		&i.ByModel,
+		&i.TerminalRuns,
+		&i.MeteredRuns,
+		&i.UnreportedRuns,
+		&i.TotalRunMs,
+	)
+	return i, err
+}
+
 const getLastChatTaskSession = `-- name: GetLastChatTaskSession :one
 WITH retired_sessions AS (
     SELECT DISTINCT r.retired_session_id AS session_id
@@ -2817,6 +2920,78 @@ func (q *Queries) ListChatMessagesPageForChannelContext(ctx context.Context, arg
 			&i.ChannelTypingSettled,
 			&i.SentVia,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChatSessionChain = `-- name: ListChatSessionChain :many
+WITH RECURSIVE back AS (
+    SELECT s.id, s.agent_id, s.continued_from_session_id AS next_id, 0 AS depth, ARRAY[s.id] AS path
+    FROM chat_session s
+    WHERE s.id = $2 AND s.workspace_id = $3 AND s.creator_id = $4
+    UNION ALL
+    SELECT n.id, n.agent_id, n.continued_from_session_id, b.depth + 1, b.path || n.id
+    FROM back b
+    JOIN chat_session n ON n.id = b.next_id
+        AND n.workspace_id = $3 AND n.creator_id = $4
+    WHERE b.depth <= $1::int AND NOT n.id = ANY(b.path)
+), fwd AS (
+    SELECT s.id, s.agent_id, s.continued_into_session_id AS next_id, 0 AS depth, ARRAY[s.id] AS path
+    FROM chat_session s
+    WHERE s.id = $2 AND s.workspace_id = $3 AND s.creator_id = $4
+    UNION ALL
+    SELECT n.id, n.agent_id, n.continued_into_session_id, f.depth + 1, f.path || n.id
+    FROM fwd f
+    JOIN chat_session n ON n.id = f.next_id
+        AND n.workspace_id = $3 AND n.creator_id = $4
+    WHERE f.depth <= $1::int AND NOT n.id = ANY(f.path)
+)
+SELECT DISTINCT ON (id) id, agent_id, (depth > $1::int) AS beyond
+FROM (SELECT id, agent_id, depth FROM back UNION ALL SELECT id, agent_id, depth FROM fwd) AS chain
+ORDER BY id, depth
+`
+
+type ListChatSessionChainParams struct {
+	MaxHops     int32       `json:"max_hops"`
+	SessionID   pgtype.UUID `json:"session_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	CreatorID   pgtype.UUID `json:"creator_id"`
+}
+
+type ListChatSessionChainRow struct {
+	ID      pgtype.UUID `json:"id"`
+	AgentID pgtype.UUID `json:"agent_id"`
+	Beyond  bool        `json:"beyond"`
+}
+
+// The continuation chain around one DM, for the "whole conversation" usage
+// total. Follows the continued_from / continued_into pointers (never forks) up
+// to max_hops in each direction, and only through sessions of the same
+// workspace and creator, so a stray or corrupt link cannot pull another user's
+// or workspace's session in. The path array stops a cyclic link. Rows one hop
+// past the limit come back with beyond = true so the caller can mark the total
+// partial without counting them.
+func (q *Queries) ListChatSessionChain(ctx context.Context, arg ListChatSessionChainParams) ([]ListChatSessionChainRow, error) {
+	rows, err := q.db.Query(ctx, listChatSessionChain,
+		arg.MaxHops,
+		arg.SessionID,
+		arg.WorkspaceID,
+		arg.CreatorID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListChatSessionChainRow{}
+	for rows.Next() {
+		var i ListChatSessionChainRow
+		if err := rows.Scan(&i.ID, &i.AgentID, &i.Beyond); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
