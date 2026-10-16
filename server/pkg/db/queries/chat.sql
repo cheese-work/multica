@@ -25,7 +25,7 @@ RETURNING *;
 
 -- name: ArchiveContinuedChatSession :one
 UPDATE chat_session
-SET status = 'archived', continued_into_session_id = $2, updated_at = now()
+SET status = 'archived', continued_into_session_id = $2, pinned_at = NULL, updated_at = now()
 WHERE id = $1
 RETURNING *;
 
@@ -424,19 +424,24 @@ RETURNING *;
 -- list-ordering preference, not activity, so it must not bump the session's
 -- last-activity sort key (which would make an unpinned chat jump the list).
 -- pinned = true stamps pinned_at only when it was NULL, so re-pinning keeps
--- the original pin order; pinned = false clears it.
+-- the original pin order; pinned = false clears it. An archived chat is never
+-- pinned: a pin request on one matches no row (the caller answers 409), while
+-- an unpin still goes through.
 UPDATE chat_session
 SET pinned_at = CASE WHEN @pinned::bool THEN COALESCE(pinned_at, now()) ELSE NULL END
 WHERE id = $1
+  AND (NOT @pinned::bool OR status <> 'archived')
 RETURNING *;
 
 -- name: SetChatSessionArchived :one
 -- Archive/unarchive a chat session by flipping status between 'active' and
 -- 'archived'. Bumps updated_at so the row re-sorts on the receiving list. The
 -- send-message path refuses archived sessions (see SendChatMessage), so the
--- conversation is effectively read-only until it is unarchived.
+-- conversation is effectively read-only until it is unarchived. Archiving also
+-- clears the pin (archived means unpinned); unarchive leaves it unpinned.
 UPDATE chat_session
 SET status = CASE WHEN @archived::bool THEN 'archived' ELSE 'active' END,
+    pinned_at = CASE WHEN @archived::bool THEN NULL ELSE pinned_at END,
     updated_at = now()
 WHERE id = $1
 RETURNING *;
