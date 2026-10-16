@@ -272,7 +272,8 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "workspace slug already exists")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "failed to create workspace: "+err.Error())
+		slog.Warn("create workspace failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to create workspace")
 		return
 	}
 
@@ -282,7 +283,8 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		Role:        "owner",
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to add owner: "+err.Error())
+		slog.Warn("add owner failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to add owner")
 		return
 	}
 
@@ -290,7 +292,8 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	// workspace is never visible without its status catalog — an issue cannot
 	// be created before its status can be resolved. (MUL-6243)
 	if err := issuestatus.Ensure(r.Context(), qtx, ws.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to seed issue statuses: "+err.Error())
+		slog.Warn("seed issue statuses failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to seed issue statuses")
 		return
 	}
 
@@ -332,6 +335,10 @@ type UpdateWorkspaceRequest struct {
 	// it to the built-in default. Raw so an explicit null is distinguishable
 	// from an absent key.
 	CompactPrompt json.RawMessage `json:"compact_prompt"`
+	// AutoCompact patches settings.auto_compact alone (CHE-1806): named fields
+	// overwrite, absent fields keep their saved value, null resets to the
+	// defaults. Raw for the same reason as CompactPrompt.
+	AutoCompact json.RawMessage `json:"auto_compact"`
 
 	// ExpectedBeforeDigest drives two guarded paths: CHE-764's Hermes
 	// exception (hermesExceptionMatchesWorkspaceContext: this exact
@@ -485,7 +492,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		params.Context = pgtype.Text{String: *req.Context, Valid: true}
 	}
 	if req.Settings != nil {
-		if err := validateCompactPromptConfig(req.Settings); err != nil {
+		if err := validateCompactConfig(req.Settings); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -519,6 +526,24 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 			params.CompactPrompt = pgtype.Text{String: text, Valid: true}
 		} else {
 			params.CompactPromptReset = pgtype.Bool{Bool: true, Valid: true}
+		}
+	}
+	if req.AutoCompact != nil {
+		var incoming any
+		err := json.Unmarshal(req.AutoCompact, &incoming)
+		if err != nil {
+			err = errAutoCompactShape
+		} else {
+			err = validateAutoCompactConfig(map[string]any{"auto_compact": incoming})
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if incoming == nil {
+			params.AutoCompactReset = pgtype.Bool{Bool: true, Valid: true}
+		} else {
+			params.AutoCompact = req.AutoCompact
 		}
 	}
 	if req.Repos != nil {
@@ -557,7 +582,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	ws, err := h.Queries.UpdateWorkspace(r.Context(), params)
 	if err != nil {
 		slog.Warn("update workspace failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", id)...)
-		writeError(w, http.StatusInternalServerError, "failed to update workspace: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to update workspace")
 		return
 	}
 

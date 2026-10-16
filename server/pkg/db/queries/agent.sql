@@ -1067,6 +1067,8 @@ SET status = 'completed', completed_at = now(), result = $2,
     branch_name = COALESCE(sqlc.narg('branch_name'), branch_name),
     session_rollout_missing = sqlc.arg('session_rollout_missing'),
     retired_session_id = COALESCE(sqlc.narg('retired_session_id'), retired_session_id),
+    context_tokens = sqlc.narg('context_tokens'),
+    context_window = sqlc.narg('context_window'),
     prepare_lease_expires_at = NULL
 WHERE id = $1 AND status = 'running'
 RETURNING *;

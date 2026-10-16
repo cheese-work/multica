@@ -25,6 +25,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
@@ -541,7 +542,8 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 					"db_error",
 					true,
 				))
-				writeError(w, http.StatusInternalServerError, "failed to register runtime: "+err.Error())
+				slog.Warn("register runtime failed", append(logger.RequestAttrs(r), "error", err)...)
+				writeError(w, http.StatusInternalServerError, "failed to register runtime")
 				return
 			}
 			provider = agent.ProfileRuntimeType(profile.RuntimeType, profile.ProtocolFamily)
@@ -587,7 +589,8 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 					"db_error",
 					true,
 				))
-				writeError(w, http.StatusInternalServerError, "failed to register runtime: "+err.Error())
+				slog.Warn("register runtime failed", append(logger.RequestAttrs(r), "error", err)...)
+				writeError(w, http.StatusInternalServerError, "failed to register runtime")
 				return
 			}
 			inserted = row.Inserted
@@ -1827,7 +1830,8 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 
 	claimed, err := h.TaskService.ClaimTasksForRuntimes(r.Context(), authorized, maxTasks)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to claim tasks: "+err.Error())
+		slog.Warn("claim tasks failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to claim tasks")
 		return
 	}
 
@@ -3805,7 +3809,8 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 	claimMs = time.Since(claimStart).Milliseconds()
 	if err != nil {
 		outcome = "error_claim"
-		writeError(w, http.StatusInternalServerError, "failed to claim task: "+err.Error())
+		slog.Warn("claim task failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to claim task")
 		return
 	}
 
@@ -4343,6 +4348,13 @@ type TaskCompleteRequest struct {
 	// to report" — this says "never hand this id to a later run". Older
 	// daemons omit it, which is exactly the pre-fix behaviour.
 	RetiredSessionID string `json:"retired_session_id,omitempty"`
+	// Context is the prompt size of the run's last model call and the model's
+	// context window. Optional: daemons that predate it omit it, which leaves
+	// the task's context columns NULL.
+	Context *struct {
+		Tokens int64 `json:"tokens"`
+		Window int64 `json:"window"`
+	} `json:"context,omitempty"`
 }
 
 // sanitizeTaskCompleteRequest / sanitizeTaskFailRequest scrub every
@@ -4433,7 +4445,11 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	// transaction (force session_id NULL + flag the row), so an auto-retry the
 	// same commit creates and wakes can never observe the withheld pointer or a
 	// missing continuity-gap flag.
-	task, transitioned, err := h.TaskService.CompleteTaskWithTransition(r.Context(), parseUUID(taskID), result, req.SessionID, req.WorkDir, req.BranchName, req.SessionRolloutMissing, req.RetiredSessionID, req.DurableWorkDir)
+	var runContext *service.RunContext
+	if req.Context != nil {
+		runContext = &service.RunContext{Tokens: req.Context.Tokens, Window: req.Context.Window}
+	}
+	task, transitioned, err := h.TaskService.CompleteTaskWithRunContext(r.Context(), parseUUID(taskID), result, req.SessionID, req.WorkDir, req.BranchName, req.SessionRolloutMissing, req.RetiredSessionID, req.DurableWorkDir, runContext)
 	if err != nil {
 		// A CompleteTask error is an infrastructure failure (transaction /
 		// assistant-outcome write), not a bad request: an already-finalized
@@ -4441,7 +4457,7 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 		// 5xx so the daemon retries the terminal callback and the completion —
 		// including the single chat outcome row — lands exactly once (MUL-4351).
 		slog.Warn("complete task failed", "task_id", taskID, "error", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to complete task")
 		return
 	}
 	if !transitioned {
@@ -5359,7 +5375,7 @@ func (h *Handler) failTask(w http.ResponseWriter, r *http.Request, taskID, works
 		// isTransientError) — retries and the fail, gap flag, and retry land
 		// exactly once (MUL-5305). An invalid request body still returns 400 above.
 		slog.Warn("fail task failed", "task_id", taskID, "error", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to fail task")
 		return
 	}
 	if !transitioned {

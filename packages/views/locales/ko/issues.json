@@ -542,7 +542,20 @@
     "wakeup_checkin": "조용한 확인: {{note}}",
     "wakeup_checkin_coalesced_other": "조용한 확인 {{count}}회 · 최근: {{note}}",
     "wakeup_chip_created_by": "{{name}} 생성",
-    "wakeup_chip_system": "시스템 규칙"
+    "wakeup_chip_system": "시스템 규칙",
+    "trigger_comment": "새 댓글",
+    "trigger_comment_by": "{{name}}의 댓글",
+    "trigger_status": "상태 변경",
+    "trigger_status_by": "{{name}}이(가) 상태 변경",
+    "trigger_pr_merged": "{{pr}} 병합됨",
+    "trigger_pr_checks_failed": "{{pr}} 검사 실패",
+    "trigger_pr_needs_attention": "{{pr}} 확인 필요",
+    "trigger_unknown": "깨우기 규칙 실행됨",
+    "wakeup_skipped": "{{condition}} · {{agent}} 깨우기 건너뜀: {{reason}}",
+    "wakeup_skipped_plain": "{{condition}} · {{agent}} 깨우기 건너뜀",
+    "wakeup_link_pr": "PR #{{number}}",
+    "wakeup_link_comment": "댓글",
+    "wakeup_link_run": "실행 보기"
   },
   "comment": {
     "add_reaction": "반응 추가",
@@ -841,9 +854,11 @@
       "false_label": "아니요",
       "value_placeholder": "값 입력…",
       "url_placeholder": "https://…",
+      "url_scheme_required": "URL은 http:// 또는 https://로 시작해야 합니다.",
       "number_placeholder": "0",
       "actor_search_placeholder": "멤버 검색…",
       "open_link": "링크 열기",
+      "remove_item": "{{value}} 제거",
       "archived_hint": "보관된 속성 — 값은 읽기 전용입니다",
       "unknown_value": "표시할 수 없음",
       "unknown_value_hint": "이 값은 최신 버전의 Multica에서 설정되어 여기서는 편집할 수 없습니다. 앱을 업데이트하거나 값을 지우세요"

@@ -549,7 +549,9 @@
       "checkbox": "勾选",
       "url": "链接",
       "actor": "成员",
-      "multi_actor": "成员（多选）"
+      "multi_actor": "成员（多选）",
+      "multi_text": "文本列表",
+      "multi_url": "链接列表"
     },
     "actions": {
       "open": "{{name}} 的操作",
@@ -775,6 +777,12 @@
     "compact_prompt_placeholder": "以交接格式总结本次会话的目标、决策、证据、待办事项、确切的 ID 和 URL 以及下一步行动。",
     "compact_prompt_source_default": "来源：内置默认值",
     "compact_prompt_source_workspace": "来源：工作区",
+    "auto_compact_label": "自动压缩",
+    "auto_compact_hint": "网页私信的上下文达到阈值后，会在一次回复之后转入新的私信。",
+    "auto_compact_threshold_label": "阈值 (%)",
+    "auto_compact_threshold_invalid": "请输入 50 到 90 的整数。",
+    "auto_compact_readonly_on": "开启，阈值 {{threshold}}%",
+    "auto_compact_readonly_off": "关闭",
     "slug_hint": "用于所有工作区链接，创建后不能修改。",
     "copy_slug": "复制 slug",
     "copy_failed": "复制失败",
