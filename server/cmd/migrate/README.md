@@ -205,19 +205,31 @@ Confirm the statistics landed:
 SELECT count(*) FROM pg_statistic WHERE starelid = 'idx_issue_properties_bigm'::regclass;
 ```
 
-## Agent task queue context renumbering
+## Migration 627 renumbering
 
-Migration `630_agent_task_queue_context` replaces the later-merged
-`627_agent_task_queue_context` filename to remove its numeric-prefix collision
-with `627_unpin_archived_chat_sessions` (CHE-1824). The unpin migration is
-unchanged. Numbers 628 and 629 are left free for migrations that open pull
-requests already claim.
+Three migrations were merged with prefix 627, which fails
+`TestMigrationNumericPrefixesAreUnique` (CHE-1824). Only one keeps 627:
 
-Migration versions are file basenames, not numeric prefixes. A database that
-already recorded `627_agent_task_queue_context` therefore runs the identical
-SQL again and records `630_agent_task_queue_context` as a new version. Leave
-the historical version row intact. The up migration contains only
-`ADD COLUMN IF NOT EXISTS` for two nullable columns, so reapplication is a
-no-op that keeps every stored value. The down migration is `DROP COLUMN IF
-EXISTS` for the same columns. No migration-runner name map entry is needed.
-Production deployment remains gated on Cheese.
+- `627_notification_channel_preference` keeps its number. `628_notification_channel_preference_index`
+  builds an index on its table, so it must stay before 628.
+- `627_agent_task_queue_context` is now `630_agent_task_queue_context`.
+- `627_unpin_archived_chat_sessions` is now `653_unpin_archived_chat_sessions`.
+
+Migration versions are file basenames, not numeric prefixes, and the runner
+applies every file whose version is not in `schema_migrations`, in sorted
+order, with no check against the highest applied number. A database that
+already recorded an old name therefore runs the identical SQL again under the
+new name and records the new version. Leave the historical version rows intact.
+
+Reapplication is a no-op for both renamed files:
+
+- the context migration is `ADD COLUMN IF NOT EXISTS` for two nullable columns,
+  and its down is `DROP COLUMN IF EXISTS`;
+- the unpin migration is one `UPDATE ... SET pinned_at = NULL WHERE status =
+  'archived'`. Handlers keep archived rows unpinned, so a rerun changes nothing
+  that a normal write would not. Its down is `SELECT 1`.
+
+The SQL bytes are unchanged. No migration-runner name map entry is needed.
+Numbers 631 to 649 are claimed or reserved by open pull requests (wakeups,
+inbox) and 650 to 652 by the DM reply record, so 653 is the next free number
+on 2026-10-16. Production deployment remains gated on Cheese.
