@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
@@ -68,6 +69,23 @@ func newProviderFailureReservation(changed string) providerFailureReservation {
 		failedTaskID: dbid.NewV7(),
 		triggerID:    dbid.NewV7(),
 		changed:      changed,
+	}
+}
+
+func providerFailureReservationParams(reservation providerFailureReservation) db.RecordProviderFailureRecoveryParams {
+	return db.RecordProviderFailureRecoveryParams{
+		FailedTaskID:           reservation.failedTaskID,
+		TriggerKind:            "issue_wakeup",
+		TriggerID:              reservation.triggerID,
+		ConditionKey:           "",
+		FailedAt:               pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
+		ProbeAt:                reservation.probeAt,
+		ProbeStatus:            reservation.probeStatus,
+		ChangedCondition:       reservation.changed,
+		RecoveryRunID:          reservation.runID,
+		RecoveryTaskID:         reservation.taskID,
+		RecoveryWakeupID:       reservation.wakeupID,
+		RecoveryWakeupRevision: reservation.wakeupRev,
 	}
 }
 
@@ -219,16 +237,13 @@ func TestProviderFailureRecoveryReservationRollsBackWithFailedApply(t *testing.T
 		_ = tx.Rollback(ctx)
 		t.Fatal(err)
 	}
-	if _, err := insertProviderFailureReservation(ctx, tx, reservation, false); err != nil {
-		_ = tx.Rollback(ctx)
-		t.Fatalf("reserve before apply: %v", err)
-	}
-	if _, err := tx.Exec(ctx, `INSERT INTO recovery_apply_test(value) VALUES ('fail')`); err == nil {
-		_ = tx.Rollback(ctx)
-		t.Fatal("fixture apply unexpectedly succeeded")
-	}
-	if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
-		t.Fatalf("rollback failed apply: %v", err)
+	applied := false
+	if inserted, err := reserveProviderFailureRecoveryAndApply(ctx, tx, providerFailureReservationParams(reservation), func(ctx context.Context, tx pgx.Tx) error {
+		applied = true
+		_, err := tx.Exec(ctx, `INSERT INTO recovery_apply_test(value) VALUES ('fail')`)
+		return err
+	}); err == nil || inserted || !applied {
+		t.Fatalf("failed apply returned inserted=%t, applied=%t, err=%v", inserted, applied, err)
 	}
 	var count int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM provider_failure_recovery WHERE failed_task_id=$1`, reservation.failedTaskID).Scan(&count); err != nil {
@@ -246,11 +261,11 @@ func TestProviderFailureRecoveryReservationRollsBackWithFailedApply(t *testing.T
 	if _, err := tx.Exec(ctx, `CREATE TEMP TABLE recovery_apply_test (value text NOT NULL CHECK (value <> 'fail')) ON COMMIT DROP`); err != nil {
 		t.Fatal(err)
 	}
-	if rows, err := insertProviderFailureReservation(ctx, tx, reservation, false); err != nil || rows != 1 {
-		t.Fatalf("later reservation retry inserted rows=%d, err=%v", rows, err)
-	}
-	if _, err := tx.Exec(ctx, `INSERT INTO recovery_apply_test(value) VALUES ('ok')`); err != nil {
-		t.Fatal(err)
+	if inserted, err := reserveProviderFailureRecoveryAndApply(ctx, tx, providerFailureReservationParams(reservation), func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO recovery_apply_test(value) VALUES ('ok')`)
+		return err
+	}); err != nil || !inserted {
+		t.Fatalf("later reservation retry inserted=%t, err=%v", inserted, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
@@ -260,6 +275,19 @@ func TestProviderFailureRecoveryReservationRollsBackWithFailedApply(t *testing.T
 	}
 	if count != 1 {
 		t.Fatalf("successful retry left %d reservation rows, want one", count)
+	}
+
+	tx, err = pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	applyCalled := false
+	if inserted, err := reserveProviderFailureRecoveryAndApply(ctx, tx, providerFailureReservationParams(reservation), func(context.Context, pgx.Tx) error {
+		applyCalled = true
+		return nil
+	}); err != nil || inserted || applyCalled {
+		t.Fatalf("duplicate reservation returned inserted=%t, applyCalled=%t, err=%v", inserted, applyCalled, err)
 	}
 }
 
