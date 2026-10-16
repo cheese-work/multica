@@ -125,7 +125,8 @@ func (s *IssueWakeupService) previewSatisfied(ctx context.Context, ref WakeupSco
 		}
 		out.Examined++
 		met, _, _, err := s.evaluateCondition(ctx, tx, q, db.IssueWakeup{IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, Condition: cond})
-		if err != nil {
+		// A pending diagnostic (no linked PR, no snapshot yet) is not met.
+		if err != nil && !conditionDiagnostic(err) {
 			return nil, err
 		}
 		if met {
