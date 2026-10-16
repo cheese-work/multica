@@ -316,14 +316,14 @@ func TestScopedDrainDisposesEventsOfUnavailableIssues(t *testing.T) {
 	}
 }
 
-func TestScopedDrainDefaultCapacityIsAnOutcomeNotAnError(t *testing.T) {
+func TestScopedDrainDefaultCapacityStaysPendingNotAnError(t *testing.T) {
 	k := newDrainKit(t)
 	k.defineRoot(t, "workspace", k.f.WorkspaceID, scopedRuleA, "comment.created")
 	k.f.Exec(t, `INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,instruction,kind,mode,default_rule_key,default_scope_kind,default_scope_id)
  SELECT gen_random_uuid(),$1,$2,$3,'default','event','continuous',gen_random_uuid()::text,'workspace',$1 FROM generate_series(1,32)`, k.f.WorkspaceID, k.issue, k.agent)
 	k.comment(t, "the source write is unaffected")
 	k.drain(t)
-	k.wantOutcomes(t, "default_capacity")
+	k.wantOutcomes(t, "pending")
 	var enabled bool
 	var reason *string
 	if err := k.f.Pool.QueryRow(context.Background(), `SELECT enabled,capacity_reason FROM issue_wakeup WHERE issue_id=$1 AND default_rule_key=$2`, k.issue, scopedRuleA).Scan(&enabled, &reason); err != nil {
