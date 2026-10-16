@@ -160,8 +160,8 @@ func agyWorktreePrepare(t *testing.T, repo string, config json.RawMessage) (*Env
 func TestAntigravityManagedMcpWorktreeCleanupKeepsExistingCustomizations(t *testing.T) {
 	t.Parallel()
 	repo := newTestRepo(t)
-	writeFile(t, filepath.Join(repo, ".agents/plugins/team-kit/plugin.json"), `{"name":"team-kit"}`)
-	writeFile(t, filepath.Join(repo, ".agents/plugins/team-kit/mcp_config.json"), `{"mcpServers":{"team":{"command":"true"}}}`)
+	writeFile(t, filepath.Join(repo, ".agents", "plugins", "team-kit", "plugin.json"), `{"name":"team-kit"}`)
+	writeFile(t, filepath.Join(repo, ".agents", "plugins", "team-kit", "mcp_config.json"), `{"mcpServers":{"team":{"command":"true"}}}`)
 	gitRun(t, repo, "add", ".agents")
 	gitRun(t, repo, "commit", "-m", "team plugin")
 
@@ -216,7 +216,7 @@ func TestReuseAntigravityRefreshesAndDropsManagedMcp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
-	mine := filepath.Join(env.WorkDir, ".agents/plugins/mine/plugin.json")
+	mine := filepath.Join(env.WorkDir, ".agents", "plugins", "mine", "plugin.json")
 	writeFile(t, mine, `{"name":"mine"}`)
 	ours := filepath.Join(env.WorkDir, filepath.FromSlash(agyPluginRel), "mcp_config.json")
 	reuse := func(config json.RawMessage) {
@@ -242,5 +242,95 @@ func TestReuseAntigravityRefreshesAndDropsManagedMcp(t *testing.T) {
 	}
 	if _, statErr := os.Stat(mine); statErr != nil {
 		t.Fatalf("Reuse deleted the agent's own plugin: %v", statErr)
+	}
+}
+
+// A tracked symlink in the repo can point .agents, .agents/plugins or the
+// plugin directory itself at a directory shared with other runs. Following it
+// would write the agent's header and env secrets outside the private worktree
+// (CWE-61), where a second run could load them. Every component must be a real
+// directory, and nothing may be written through a link.
+func TestAntigravityManagedMcpWorktreeRefusesSymlinkEscape(t *testing.T) {
+	t.Parallel()
+	for name, linkRel := range map[string]string{
+		"agents dir":    ".agents",
+		"plugins dir":   filepath.Join(".agents", "plugins"),
+		"plugin dir":    filepath.Join(".agents", "plugins", "multica-mcp"),
+		"dangling link": filepath.Join(".agents", "plugins", "multica-mcp"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			repo := newTestRepo(t)
+			shared := t.TempDir()
+			if name == "dangling link" {
+				shared = filepath.Join(shared, "not-created-yet")
+			}
+			link := filepath.Join(repo, linkRel)
+			if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(shared, link); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+			writeFile(t, filepath.Join(repo, "keep.txt"), "x")
+			gitRun(t, repo, "add", "-A", "-f")
+			gitRun(t, repo, "commit", "-m", "tracked symlink")
+
+			_, err := agyWorktreePrepare(t, repo, agyMcpConfig)
+			if err == nil {
+				t.Fatal("Prepare accepted a tracked symlink that escapes the task-private worktree")
+			}
+			if strings.Contains(err.Error(), agyMcpSentinel) {
+				t.Errorf("error leaks an MCP secret: %v", err)
+			}
+			var leaked []string
+			_ = filepath.WalkDir(shared, func(path string, d os.DirEntry, walkErr error) error {
+				if walkErr == nil && !d.IsDir() {
+					leaked = append(leaked, path)
+				}
+				return nil
+			})
+			if name == "dangling link" {
+				leaked = nil
+				if _, statErr := os.Lstat(shared); statErr == nil {
+					leaked = append(leaked, shared)
+				}
+			}
+			if len(leaked) != 0 {
+				t.Fatalf("managed MCP config was written through the link: %v", leaked)
+			}
+		})
+	}
+}
+
+// Reuse re-materialises on a workdir an agent may have edited, so a link
+// planted between runs must be refused there too.
+func TestReuseAntigravityRefusesSymlinkEscape(t *testing.T) {
+	t.Parallel()
+	env, err := agyPrepare(t, PrepareParams{McpConfig: agyMcpConfig}, discardLogger())
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if err := CleanupSidecars(env.RootDir); err != nil {
+		t.Fatal(err)
+	}
+	shared := t.TempDir()
+	if err := os.RemoveAll(filepath.Join(env.WorkDir, ".agents")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(shared, filepath.Join(env.WorkDir, ".agents")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	reused := Reuse(ReuseParams{
+		WorkDir:   env.WorkDir,
+		Provider:  "antigravity",
+		McpConfig: agyMcpConfig,
+		Task:      TaskContextForEnv{IssueID: "agy-mcp-issue", AgentName: "Agy"},
+	}, discardLogger())
+	if reused != nil {
+		t.Fatal("Reuse accepted a symlinked .agents")
+	}
+	if entries, _ := os.ReadDir(shared); len(entries) != 0 {
+		t.Fatalf("managed MCP config was written through the link: %d entries", len(entries))
 	}
 }
