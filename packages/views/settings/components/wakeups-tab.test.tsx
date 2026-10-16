@@ -103,3 +103,26 @@ it("shows no pause switch to members who cannot change it", async () => {
   await screen.findByRole("switch", { name: "On by default" });
   expect(screen.getByRole("switch", { name: "Pause all wakeups" })).toHaveAttribute("aria-disabled", "true");
 });
+
+it("confirms a saved pause and a saved resume (approved rev-3 A: Saved and Resumed states)", async () => {
+  mount();
+  const toggle = await screen.findByRole("switch", { name: "Pause all wakeups" });
+  await waitFor(() => expect(toggle).not.toHaveAttribute("aria-disabled", "true"));
+  fireEvent.click(toggle);
+  expect(await screen.findByText("Wakeups paused.")).toBeVisible();
+  fireEvent.click(screen.getByRole("switch", { name: "Pause all wakeups" }));
+  expect(await screen.findByText("Wakeups resumed.")).toBeVisible();
+  expect(screen.queryByText("Wakeups paused.")).toBeNull();
+});
+
+it("offers Retry when the defaults cannot be loaded (approved rev-3 A: load-error state)", async () => {
+  list.mockReset().mockRejectedValueOnce(new Error("boom")).mockResolvedValue([
+    { rule: "child_done", enabled: true, instruction: "", builtin_instruction: "", customized: 0 },
+  ]);
+  mount();
+  expect(await screen.findByRole("alert")).toHaveTextContent("Could not load wakeup defaults.");
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+  expect(await screen.findByRole("switch", { name: "On by default" })).toBeVisible();
+  expect(screen.queryByRole("alert")).toBeNull();
+});
