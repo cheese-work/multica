@@ -21,6 +21,11 @@ type assistantTurn struct {
 	// the backend cannot tell whether the model delivered its answer inside
 	// that event, so an earlier fallback must not outlive it.
 	understood bool
+	// callModel and callTokens describe the prompt of the main-loop model call
+	// behind this event (input + cache read + cache write). Zero when the
+	// backend does not report it or the call came from a sub-agent.
+	callModel  string
+	callTokens int64
 }
 
 // resolveFallback returns the empty-result fallback after this turn, given the
