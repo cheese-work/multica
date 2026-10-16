@@ -47,7 +47,7 @@ func TestReportTaskResult_SendsContextOnComplete(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
 		tokens, window int64
-		want           map[string]any
+		want           any
 	}{
 		{"known", 164000, 200000, map[string]any{"tokens": float64(164000), "window": float64(200000)}},
 		{"unknown_window", 164000, 0, nil},

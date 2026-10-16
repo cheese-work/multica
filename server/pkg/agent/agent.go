@@ -263,6 +263,11 @@ type Result struct {
 	DurationMs int64
 	SessionID  string
 	Usage      map[string]TokenUsage // keyed by model name
+	// ContextTokens is the prompt size of the run's LAST model call and
+	// ContextWindow the model's context window. Zero means unknown; backends
+	// that cannot report them leave both zero.
+	ContextTokens int64
+	ContextWindow int64
 	// ResumeRejected is positive evidence that this run's requested resume
 	// was permanently refused — the transcript is gone, the session belongs to
 	// another provider account, OR the session still exists but its history

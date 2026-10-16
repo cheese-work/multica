@@ -245,6 +245,9 @@ type terminalTaskReport struct {
 	// run on the issue or chat can select it again, however many clean rows
 	// still reference it.
 	retiredSessionID string
+	// contextTokens / contextWindow: see TaskResult. Complete reports only.
+	contextTokens int64
+	contextWindow int64
 }
 
 type terminalReportSendFunc func(context.Context, terminalTaskReport, []time.Duration) error
@@ -6294,6 +6297,8 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 			durableWorkDir:        result.DurableWorkDir,
 			sessionRolloutMissing: result.SessionRolloutMissing,
 			retiredSessionID:      result.RetiredSessionID,
+			contextTokens:         result.ContextTokens,
+			contextWindow:         result.ContextWindow,
 		})
 		if err == nil {
 			return
@@ -6437,7 +6442,7 @@ func (d *Daemon) sendTerminalTaskReport(ctx context.Context, report terminalTask
 	}
 	switch report.kind {
 	case terminalTaskReportComplete:
-		return d.client.completeTaskWithRetrySchedule(ctx, report.taskID, report.output, report.branchName, report.sessionID, report.workDir, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir, schedule)
+		return d.client.completeTaskWithRetrySchedule(ctx, report.taskID, report.output, report.branchName, report.sessionID, report.workDir, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir, report.contextTokens, report.contextWindow, schedule)
 	case terminalTaskReportFail:
 		return d.client.failTaskWithRetrySchedule(ctx, report.taskID, report.errorMessage, report.sessionID, report.workDir, report.branchName, report.failureReason, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir, schedule)
 	default:
@@ -8941,7 +8946,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Stamp the withhold flag onto whichever TaskResult the status switch below
 	// returns (SessionID is already blanked above); reportTaskResult forwards it
 	// as session_rollout_missing on the terminal callback (MUL-5305).
-	defer func() { taskResult.SessionRolloutMissing = sessionRolloutMissing }()
+	defer func() {
+		taskResult.SessionRolloutMissing = sessionRolloutMissing
+		taskResult.ContextTokens, taskResult.ContextWindow = result.ContextTokens, result.ContextWindow
+	}()
 
 	switch result.Status {
 	case "completed":
