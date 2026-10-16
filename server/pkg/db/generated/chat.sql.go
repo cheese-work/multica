@@ -2648,7 +2648,7 @@ func (q *Queries) ListChatMessagesForLegacyTask(ctx context.Context, chatSession
 }
 
 const listChatMessagesNewerPage = `-- name: ListChatMessagesNewerPage :many
-SELECT message.id, message.chat_session_id, message.role, message.content, message.task_id, message.created_at, message.failure_reason, message.elapsed_ms, message.message_kind, message.channel_media_pending_until, message.channel_ingested, message.quick_actions, message.channel_context_revision, message.channel_outbound_type, message.channel_outbound_installation_id, message.channel_outbound_chat_id, message.channel_outbound_message_ids, message.sent_via FROM chat_message AS message
+SELECT message.id, message.chat_session_id, message.role, message.content, message.task_id, message.created_at, message.failure_reason, message.elapsed_ms, message.message_kind, message.channel_media_pending_until, message.channel_ingested, message.quick_actions, message.channel_context_revision, message.channel_outbound_type, message.channel_outbound_installation_id, message.channel_outbound_chat_id, message.channel_outbound_message_ids, message.channel_typing_settled, message.sent_via FROM chat_message AS message
 WHERE message.chat_session_id = $1
   AND message.message_kind NOT IN ('channel_command', 'onboarding_kickoff')
   AND NOT (
@@ -2727,6 +2727,7 @@ func (q *Queries) ListChatMessagesNewerPage(ctx context.Context, arg ListChatMes
 			&i.ChannelOutboundInstallationID,
 			&i.ChannelOutboundChatID,
 			&i.ChannelOutboundMessageIds,
+			&i.ChannelTypingSettled,
 			&i.SentVia,
 		); err != nil {
 			return nil, err
