@@ -42,10 +42,15 @@ function listen(server) {
 
 describe("isolation: the fixture refuses before any write", () => {
   let pgPort;
+  let otherPgPort;
   let apiPort;
   let pgConnections = 0;
   let apiRequests = 0;
   const pg = net.createServer((socket) => {
+    pgConnections += 1;
+    socket.destroy();
+  });
+  const otherPg = net.createServer((socket) => {
     pgConnections += 1;
     socket.destroy();
   });
@@ -57,15 +62,18 @@ describe("isolation: the fixture refuses before any write", () => {
 
   before(async () => {
     pgPort = await listen(pg);
+    otherPgPort = await listen(otherPg);
     apiPort = await listen(api);
   });
   after(() => {
     pg.close();
+    otherPg.close();
     api.close();
     fs.rmSync(devHome, { recursive: true, force: true });
   });
 
-  function register({ name, owner = "agent", dir = repoRoot, db, backendPort }) {
+  function register({ name, owner = "agent", dir = repoRoot, db, backendPort, ttlHours = 24, expiresAt, dbPort = pgPort, dbHost = "127.0.0.1" }) {
+    const expiry = expiresAt ?? (ttlHours > 0 ? new Date(Date.now() + ttlHours * 3_600_000).toISOString().replace(/\.\d+Z$/, "Z") : "");
     const envDir = path.join(devHome, "envs", name);
     fs.mkdirSync(path.join(envDir, "logs"), { recursive: true });
     fs.writeFileSync(
@@ -75,13 +83,14 @@ describe("isolation: the fixture refuses before any write", () => {
         `DIR=${dir}`,
         "CREATED_AT=2026-01-01T00:00:00Z",
         `OWNER=${owner}`,
-        "TTL_HOURS=0",
+        `TTL_HOURS=${ttlHours}`,
+        `EXPIRES_AT=${expiry}`,
         "ENV_FILE=.env.example",
         "OFFSET=901",
         `BACKEND_PORT=${backendPort}`,
         "FRONTEND_PORT=13901",
         `DB_NAME=${db}`,
-        `DATABASE_URL=postgres://multica:multica@127.0.0.1:${pgPort}/${db}?sslmode=disable`,
+        `DATABASE_URL=postgres://multica:multica@${dbHost}:${dbPort}/${db}?sslmode=disable`,
         "PROFILE=dev-streaming-keys-test",
         "WORKSPACES_ROOT=/nonexistent",
         "DESKTOP_RENDERER_PORT=5901",
@@ -92,13 +101,13 @@ describe("isolation: the fixture refuses before any write", () => {
     return () => fs.rmSync(envDir, { recursive: true, force: true });
   }
 
-  async function expectRefusal(database, reason) {
+  async function expectRefusal(database, reason, apiUrl = `http://127.0.0.1:${apiPort}`) {
     pgConnections = 0;
     apiRequests = 0;
     const { code, output } = await runSpec({
       MULTICA_DEV_HOME: devHome,
       DATABASE_URL: database ?? "",
-      NEXT_PUBLIC_API_URL: `http://127.0.0.1:${apiPort}`,
+      NEXT_PUBLIC_API_URL: apiUrl,
       PORT: String(apiPort),
     });
     assert.equal(pgConnections, 0, `${reason}: the spec connected to PostgreSQL before refusing`);
@@ -155,6 +164,55 @@ describe("isolation: the fixture refuses before any write", () => {
     const unregister = register({ name: "remote-host", db: "multica_route_906", backendPort: apiPort });
     try {
       await expectRefusal("postgres://multica:multica@db.example.invalid:5432/multica_route_906", "remote host");
+    } finally {
+      unregister();
+    }
+  });
+
+  test("database on another local port than the registered one", async () => {
+    const unregister = register({ name: "db-endpoint", db: "multica_route_908", backendPort: apiPort });
+    try {
+      await expectRefusal(`postgres://multica:multica@127.0.0.1:${otherPgPort}/multica_route_908`, "database endpoint mismatch");
+    } finally {
+      unregister();
+    }
+  });
+
+  test("registered database on another local host", async () => {
+    const unregister = register({ name: "db-host", db: "multica_route_909", backendPort: apiPort, dbHost: "127.0.0.2" });
+    try {
+      await expectRefusal(`postgres://multica:multica@127.0.0.1:${pgPort}/multica_route_909`, "database host mismatch");
+    } finally {
+      unregister();
+    }
+  });
+
+  test("remote API origin at the registered port", async () => {
+    const unregister = register({ name: "api-origin", db: "multica_route_910", backendPort: apiPort });
+    try {
+      await expectRefusal(
+        `postgres://multica:multica@127.0.0.1:${pgPort}/multica_route_910`,
+        "remote API origin",
+        `http://api.example.invalid:${apiPort}`,
+      );
+    } finally {
+      unregister();
+    }
+  });
+
+  test("agent-owned environment that is not ephemeral", async () => {
+    const unregister = register({ name: "not-ephemeral", db: "multica_route_911", backendPort: apiPort, ttlHours: 0 });
+    try {
+      await expectRefusal(`postgres://multica:multica@127.0.0.1:${pgPort}/multica_route_911`, "no TTL");
+    } finally {
+      unregister();
+    }
+  });
+
+  test("ephemeral environment that has expired", async () => {
+    const unregister = register({ name: "expired", db: "multica_route_912", backendPort: apiPort, expiresAt: "2026-01-02T00:00:00Z" });
+    try {
+      await expectRefusal(`postgres://multica:multica@127.0.0.1:${pgPort}/multica_route_912`, "expired");
     } finally {
       unregister();
     }
@@ -229,17 +287,36 @@ describe("cleanup: the fixture leaves nothing behind", { skip: DISPOSABLE ? fals
     }
   }
 
+  // The child sees an exported DATABASE_URL before .env.worktree (dotenv does
+  // not override), so the leftover check must read the same database, and the
+  // child gets it explicitly.
+  const databaseUrl = () => process.env.DATABASE_URL || envFile().DATABASE_URL;
+
   test("after a passing run", async () => {
     const runId = `safety-pass-${Date.now().toString(36)}`;
-    const { code, output } = await runSpec({ E2E_RUN_ID: runId });
+    const { code, output } = await runSpec({ E2E_RUN_ID: runId, DATABASE_URL: databaseUrl() });
     assert.equal(code, 0, output);
-    assertClean(await leftovers(envFile().DATABASE_URL, runId), "passing run");
+    assertClean(await leftovers(databaseUrl(), runId), "passing run");
   });
 
-  test("after a run that fails right after seeding", async () => {
-    const runId = `safety-fail-${Date.now().toString(36)}`;
-    const { code, output } = await runSpec({ E2E_RUN_ID: runId, STREAMING_ISSUE_KEYS_FAIL_AFTER_SEED: "1" });
-    assert.notEqual(code, 0, `the injected failure did not fail the run\n${output}`);
-    assertClean(await leftovers(envFile().DATABASE_URL, runId), "failed run");
-  });
+  // Each point fails the run on purpose at a different stage of setup. The
+  // marker proves the intended failure ran, not some other error.
+  for (const point of ["after-api-client", "after-db-connect", "mid-seed", "after-seed"]) {
+    test(`after an injected failure at ${point}`, async () => {
+      const runId = `safety-${point}-${Date.now().toString(36)}`;
+      const { code, output } = await runSpec({
+        E2E_RUN_ID: runId,
+        DATABASE_URL: databaseUrl(),
+        STREAMING_ISSUE_KEYS_FAIL_AT: point,
+      });
+      assert.notEqual(code, 0, `the injected failure did not fail the run\n${output}`);
+      assert.match(output, new RegExp(`injected failure at ${point}`), `the failure at ${point} did not run\n${output}`);
+      assert.doesNotMatch(output, /cleanup left rows behind/, output);
+      const counts = await leftovers(databaseUrl(), runId);
+      // A failure right after the API client exists happens before the
+      // fixture touches the workspace; the helper's user and workspace are
+      // removed with the task-owned database, not by the fixture.
+      assertClean(counts, `failure at ${point}`);
+    });
+  }
 });

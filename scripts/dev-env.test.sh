@@ -331,6 +331,15 @@ assert_port_lookup two-listeners-across-tools '' busy '4250' \
 assert_port_lookup unknown-owner '' busy '' \
   'LISTEN 0 511 0.0.0.0:13000 0.0.0.0:*'
 assert_port_lookup nothing '' free '' ''
+# One visible pid plus a listener whose owner is hidden is not a proved owner.
+assert_port_lookup visible-and-hidden-lsof '' busy '4252' \
+  'LISTEN 0 511 0.0.0.0:13000 0.0.0.0:*'
+assert_port_lookup visible-and-hidden-ss '' busy '' \
+  'LISTEN 0 511 [::]:13000 [::]:* users:(("node",pid=4253,fd=20))
+LISTEN 0 511 0.0.0.0:13000 0.0.0.0:*'
+assert_port_lookup one-owner-two-families 4254 busy '' \
+  'LISTEN 0 511 [::]:13000 [::]:* users:(("node",pid=4254,fd=20))
+LISTEN 0 511 0.0.0.0:13000 0.0.0.0:* users:(("node",pid=4254,fd=21))'
 
 # Stopping first records an owned nested listener before killing the launcher's
 # process group. An unrelated port occupant never receives a signal.
