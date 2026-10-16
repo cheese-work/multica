@@ -6,6 +6,19 @@ import { useCurrentWorkspace } from "@multica/core/paths";
 import { isIssueIdentifier } from "@multica/ui/markdown";
 import type { Issue } from "@multica/core/types";
 
+const IDENTIFIER_PARTS = /^([A-Z][A-Z0-9]*)-(\d+)$/;
+
+/** True when `identifier` names `issue`. The server reads the number as an
+ *  integer, so `MUL-007` and `MUL-7` are the same issue. */
+function namesSameIssue(issue: Issue, identifier: string): boolean {
+  const parts = IDENTIFIER_PARTS.exec(identifier);
+  return (
+    parts !== null &&
+    issue.identifier.startsWith(`${parts[1]}-`) &&
+    issue.number === Number(parts[2])
+  );
+}
+
 /**
  * Resolve a bare issue identifier ("MUL-123") to a real issue in the current
  * workspace, or `null`. Backs the Linear-style autolink render path.
@@ -38,9 +51,9 @@ export function useResolveIssueIdentifier(identifier: string): Issue | null | un
     ...issueIdentifierOptions(wsId, identifier),
     enabled: Boolean(wsId) && isIssueIdentifier(identifier) && prefixMatches,
     // Keep known content across a key change, but only the same issue: the
-    // previous result of a different identifier or workspace must never paint.
+    // previous result of a different issue or workspace must never paint.
     placeholderData: (previous) =>
-      previous?.identifier === identifier && previous.workspace_id === wsId
+      previous && previous.workspace_id === wsId && namesSameIssue(previous, identifier)
         ? keepPreviousData(previous)
         : undefined,
   });
