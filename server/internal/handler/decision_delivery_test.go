@@ -874,6 +874,41 @@ func TestDecisionDeliveryGroupReadiness(test *testing.T) {
 	}
 }
 
+func TestDecisionDeliveryGroupIgnoresCancelledNonmember(test *testing.T) {
+	group := readyDecisionDeliveryGroup(test)
+	cancelled := group.members[0]
+	remaining := group.members[1]
+	dbfx.Exec(test, `DELETE FROM member WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, group.core.humanID)
+	handler, _ := newDecisionRunnerFixture(test)
+	if err := cancelDecisionForTest(handler, cancelled); err != nil {
+		test.Fatal(err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := deliverDecisionForTest(handler, remaining); err != nil {
+			test.Fatal(err)
+		}
+	}
+	answer, err := handler.Queries.GetDecisionAnswer(context.Background(), db.GetDecisionAnswerParams{WorkspaceID: remaining.issue.WorkspaceID, ID: group.records[1].Answer.ID})
+	if err != nil {
+		test.Fatal(err)
+	}
+	if !answer.WokenAt.Valid || answer.WakeOutcome.String != "run_enqueued" {
+		test.Fatalf("remaining answer woken=%v outcome=%q, want run_enqueued", answer.WokenAt.Valid, answer.WakeOutcome.String)
+	}
+	if count := dbfx.Count(test, `SELECT count(*) FROM decision_intent WHERE id = $1 AND group_woken_at IS NOT NULL`, group.core.intentID); count != 1 {
+		test.Fatalf("group receipts=%d, want 1", count)
+	}
+	if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND status = 'queued'`, group.core.issueID); count != 1 {
+		test.Fatalf("group wakes=%d, want 1", count)
+	}
+	if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND status = 'queued' AND handoff_note LIKE '%Cancelled request %'`, group.core.issueID); count != 1 {
+		test.Fatal("group prompt omitted the cancelled request")
+	}
+	if count := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE id = $1 AND wake_outcome = 'skipped_ineligible'`, group.records[0].Answer.ID); count != 1 {
+		test.Fatal("cancelled person's answer lost its skipped outcome")
+	}
+}
+
 func TestDecisionDeliveryUnprompted(test *testing.T) {
 	fixture, recorded := readyDecisionDelivery(test)
 	dbfx.Exec(test, `UPDATE decision_request SET origin = 'unprompted', decision_intent_id = NULL, ping_message_id = NULL, issue_comment_id = $1 WHERE id = $2`, recorded.Comment.ID, fixture.decision.ID)
