@@ -96,6 +96,7 @@ import type {
   Attachment,
   ChatSession,
   ChatContinueResponse,
+  ChatSessionUsage,
   ChatForkResponse,
   ChatPinnedAgent,
   ChatMessage,
@@ -267,6 +268,8 @@ import {
   ChatSessionListSchema,
   ChatSessionSchema,
   ChatContinueResponseSchema,
+  ChatSessionUsageSchema,
+  EMPTY_CHAT_SESSION_USAGE,
   ChatForkResponseSchema,
   EMPTY_CHAT_CONTINUE_RESPONSE,
   EMPTY_CHAT_FORK_RESPONSE,
@@ -3796,6 +3799,13 @@ export class ApiClient {
     });
   }
 
+  async getChatSessionUsage(id: string): Promise<ChatSessionUsage> {
+    const raw: unknown = await this.fetch(`/api/chat/sessions/${id}/usage`);
+    return parseWithFallback(raw, ChatSessionUsageSchema, EMPTY_CHAT_SESSION_USAGE, {
+      endpoint: "GET /api/chat/sessions/:id/usage",
+    });
+  }
+
   async continueChatSession(id: string, summary: string): Promise<ChatContinueResponse> {
     const raw: unknown = await this.fetch(`/api/chat/sessions/${id}/continue`, {
       method: "POST",
@@ -4095,6 +4105,15 @@ export class ApiClient {
     const raw = await this.fetch<unknown>(`/api/attachments/${id}`);
     return parseWithFallback(raw, AttachmentResponseSchema, EMPTY_ATTACHMENT, {
       endpoint: "GET /api/attachments/{id}",
+    });
+  }
+
+  // The Markdown download path resolves the attachment's own workspace and
+  // checks membership there. Its link may be pasted into another workspace.
+  async getAttachmentForDownload(id: string): Promise<Attachment> {
+    const raw = await this.fetch<unknown>(`/api/attachments/${id}/download-metadata`);
+    return parseWithFallback(raw, AttachmentResponseSchema, EMPTY_ATTACHMENT, {
+      endpoint: "GET /api/attachments/{id}/download-metadata",
     });
   }
 
