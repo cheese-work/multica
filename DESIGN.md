@@ -18,6 +18,8 @@ Use semantic tokens from `packages/ui/styles/tokens.css`: surface, border, muted
 - Settings tab: a section title, an optional one-line description, then a card of rows. A row has a label, an optional description and one control on the right.
 - Notices inside a tab or panel use the muted notice for information and the warning tone for a state that stops work.
 - Admin-only controls stay visible to members, disabled, with a one-line reason.
+- Mobile notification settings (`apps/mobile`, `dm-notifications-mobile` rev-1 A): one section per source (Inbox notifications, Direct messages), each led by an In-app switch row. With Inbox In-app off, the event rows are dimmed and locked. While disconnected, the switches are locked under a warning banner.
+- Mobile Inbox DM rows (same revision): the issue-row layout with a chat glyph where the status icon sits, a "New reply" / "N new replies" / "Decision needed" second line, and filter chips under the header (All, Unread, Direct messages).
 
 ## Required states
 
@@ -28,5 +30,6 @@ Every control that saves shows: idle, saving, saved, save failed (with recovery)
 | Topic | Revision | Direction | Design PR | Revision commit |
 | --- | --- | --- | --- | --- |
 | wakeups-pause | 3 | A | 255 | `de646d2bb8c50bb93653d98395f17f3dc2e0ceee` |
+| dm-notifications-mobile | 1 | A | 277 | `a768e4532ac3f193ece7b552308a95eabe97619b` |
 
-The row is written before the merge, as the standard requires. The design is approved when Cheese merges PR 255. The merge commit is read from GitHub and is not written here.
+The rows are written before the merge, as the standard requires. A design is approved when Cheese merges its PR (255, 277). The merge commit is read from GitHub and is not written here.
