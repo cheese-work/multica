@@ -57,8 +57,11 @@ func TestDaemonInstanceBackgroundRejectsConcurrentWinner(t *testing.T) {
 	}
 	donePath := filepath.Join(root, "child-exited")
 	t.Setenv("MULTICA_TEST_CHILD_DONE", donePath)
+	// A real child that loses the race fails acquireDaemonProfileLock with
+	// this line on stderr; the launcher must surface it, never report the
+	// winner as its own child.
 	executable := filepath.Join(root, "fake-daemon")
-	if err := os.WriteFile(executable, []byte("#!/bin/sh\nsleep 1\nprintf done > \"$MULTICA_TEST_CHILD_DONE\"\nexit 1\n"), 0o755); err != nil {
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\nsleep 1\necho 'Error: daemon profile \""+profile+"\" is already running or starting' >&2\nprintf done > \"$MULTICA_TEST_CHILD_DONE\"\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	original := daemonExecutable
@@ -78,7 +81,7 @@ func TestDaemonInstanceBackgroundRejectsConcurrentWinner(t *testing.T) {
 	command.Flags().String("profile", profile, "")
 	command.Flags().String("server-url", "", "")
 	err = runDaemonBackground(command)
-	if err == nil || !strings.Contains(err.Error(), "another daemon is already running") {
+	if err == nil || !strings.Contains(err.Error(), "is already running or starting") {
 		t.Errorf("concurrent winner must not be reported as this child: %v", err)
 	}
 	pid, err := os.ReadFile(pidPath)

@@ -215,5 +215,6 @@ func (handler *Handler) vetoDecisionAnswerTx(request *http.Request, issue db.Iss
 	if err := transaction.Commit(ctx); err != nil {
 		return empty, err
 	}
+	handler.DecisionWorker.Notify()
 	return result, nil
 }
