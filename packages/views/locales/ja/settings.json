@@ -549,7 +549,9 @@
       "checkbox": "チェックボックス",
       "url": "URL",
       "actor": "メンバー",
-      "multi_actor": "メンバー（複数選択）"
+      "multi_actor": "メンバー（複数選択）",
+      "multi_text": "テキストリスト",
+      "multi_url": "URLリスト"
     },
     "actions": {
       "open": "{{name}} の操作",
@@ -775,6 +777,12 @@
     "compact_prompt_placeholder": "このセッションの目標、決定事項、根拠、未完了項目、正確な ID と URL、次のアクションを引き継ぎ形式で要約してください。",
     "compact_prompt_source_default": "ソース: 組み込みのデフォルト",
     "compact_prompt_source_workspace": "ソース: ワークスペース",
+    "auto_compact_label": "自動コンパクト",
+    "auto_compact_hint": "Web の DM は、コンテキストがしきい値に達した後の返信のあとで、新しい DM に引き継がれます。",
+    "auto_compact_threshold_label": "しきい値 (%)",
+    "auto_compact_threshold_invalid": "50 から 90 の整数を入力してください。",
+    "auto_compact_readonly_on": "オン（{{threshold}}%）",
+    "auto_compact_readonly_off": "オフ",
     "slug_hint": "ワークスペースの URL に使われます。作成後は変更できません。",
     "copy_slug": "slug をコピー",
     "copy_failed": "コピーできませんでした",

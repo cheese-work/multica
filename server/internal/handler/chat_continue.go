@@ -157,8 +157,9 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID: workspaceID, ChatSessionID: uuidToString(next.ID), AgentID: uuidToString(next.AgentID), CreatorID: creatorID, Title: next.Title,
 	})
 	status := session.Status
+	pinned := session.PinnedAt.Valid
 	h.publishChat(protocol.EventChatSessionUpdated, workspaceID, "member", creatorID, uuidToString(session.ID), protocol.ChatSessionUpdatedPayload{
-		ChatSessionID: uuidToString(session.ID), Title: session.Title, Status: &status,
+		ChatSessionID: uuidToString(session.ID), Title: session.Title, Status: &status, Pinned: &pinned,
 		UpdatedAt: timestampToString(session.UpdatedAt), ContinuedIntoSessionID: uuidToString(next.ID),
 	})
 	writeJSON(w, http.StatusCreated, ChatContinueResponse{Session: chatSessionToResponse(next), PreviousSessionID: uuidToString(session.ID), URL: chatURL(next.ID)})

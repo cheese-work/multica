@@ -69,6 +69,7 @@ import type {
   ListWebhookDeliveriesResponse,
   IssueStatusEntry,
   ListIssueStatusesResponse,
+  NotificationChannelsResponse,
   NotificationPreferenceResponse,
   PluginInstallation,
   PluginInstallationListResponse,
@@ -742,6 +743,7 @@ export const EMPTY_ISSUE_PROPERTIES_RESPONSE: IssuePropertiesResponse = {
 
 export interface AppConfigResponse {
   cdn_domain: string;
+  attachment_public_url?: string;
   // True when the CDN domain serves private content via time-bounded signed
   // URLs (CloudFront signing) — raw storage URLs on that domain are NOT
   // publicly fetchable and must not be used as native media sources
@@ -1026,6 +1028,7 @@ export const EMPTY_REFRESH_SESSION_RESPONSE: RefreshSessionResponse = {
 
 export const AppConfigSchema = z.object({
   cdn_domain: z.string().default(""),
+  attachment_public_url: OptionalStringSchema,
   cdn_signed: BooleanWithDefaultSchema(false),
   allow_signup: BooleanWithDefaultSchema(true),
   google_client_id: OptionalStringSchema,
@@ -1048,6 +1051,7 @@ export const AppConfigSchema = z.object({
 
 export const EMPTY_APP_CONFIG: AppConfigResponse = {
   cdn_domain: "",
+  attachment_public_url: "",
   cdn_signed: false,
   allow_signup: true,
   google_client_id: "",
@@ -1073,6 +1077,29 @@ export const NotificationPreferenceResponseSchema = z.object({
   workspace_id: z.string(),
   preferences: z.record(z.string(), z.string()).default({}),
 }).loose();
+
+// Missing sources or switches take the server defaults (in-app on, push off),
+// so an older server that predates a source never reads as "everything off".
+const NotificationChannelSwitchesSchema = z.object({
+  in_app: z.boolean().default(true),
+  push: z.boolean().default(false),
+}).loose();
+
+export const NotificationChannelsResponseSchema = z.object({
+  workspace_id: z.string(),
+  channels: z.object({
+    inbox: NotificationChannelSwitchesSchema.default({ in_app: true, push: false }),
+    dm: NotificationChannelSwitchesSchema.default({ in_app: true, push: false }),
+  }).default({ inbox: { in_app: true, push: false }, dm: { in_app: true, push: false } }),
+}).loose();
+
+export const EMPTY_NOTIFICATION_CHANNELS_RESPONSE: NotificationChannelsResponse = {
+  workspace_id: "",
+  channels: {
+    inbox: { in_app: true, push: false },
+    dm: { in_app: true, push: false },
+  },
+};
 
 export const EMPTY_NOTIFICATION_PREFERENCE_RESPONSE: NotificationPreferenceResponse = {
   workspace_id: "",

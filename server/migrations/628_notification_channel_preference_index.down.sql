@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS notification_channel_preference_key_uidx;
