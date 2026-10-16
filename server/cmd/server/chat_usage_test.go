@@ -342,7 +342,11 @@ func TestChatSessionUsageRefusesCrossWorkspaceLikeSessionGet(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The session row moves into the new workspace, so delete it before the workspace.
+	// Delete its tasks first: deleting the session nulls their chat_session_id
+	// (ON DELETE SET NULL), which would hide them from the seed's own cleanup and
+	// leave active tasks on the shared agent for later tests.
 	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE chat_session_id = $1`, sessionID)
 		testPool.Exec(context.Background(), `DELETE FROM chat_session WHERE id = $1`, sessionID)
 		testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id = $1`, otherWorkspaceID)
 	})
