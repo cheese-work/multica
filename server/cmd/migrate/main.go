@@ -185,10 +185,10 @@ var concurrentIndexCleanups = map[string]string{
 	"588_wakeup_aggregate_reservation_window_index":             "wakeup_aggregate_reservation_window_idx",
 	"589_wakeup_aggregate_blocked_index":                        "issue_wakeup_aggregate_blocked_idx",
 	"591_wakeup_aggregate_reservation_age_index":                "wakeup_aggregate_reservation_age_idx",
-	"628_wakeup_scoped_event_id_index":                          "wakeup_scoped_event_id_idx",
-	"629_wakeup_scoped_event_pending_index":                     "wakeup_scoped_event_pending_idx",
-	"630_wakeup_scoped_event_handled_index":                     "wakeup_scoped_event_handled_idx",
-	"631_wakeup_scoped_event_issue_index":                       "wakeup_scoped_event_issue_idx",
+	"632_wakeup_scoped_event_id_index":                          "wakeup_scoped_event_id_idx",
+	"633_wakeup_scoped_event_pending_index":                     "wakeup_scoped_event_pending_idx",
+	"634_wakeup_scoped_event_handled_index":                     "wakeup_scoped_event_handled_idx",
+	"635_wakeup_scoped_event_issue_index":                       "wakeup_scoped_event_issue_idx",
 	"558_governance_budget_reservation_attempt_obligation_uidx": "governance_budget_reservation_attempt_obligation_uidx",
 	"557_governance_budget_outbox_due_idx":                      "governance_budget_outbox_due_idx",
 	"556_governance_budget_reservation_root_window_idx":         "governance_budget_reservation_root_window_idx",
@@ -487,25 +487,25 @@ var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
 		TableRegclass: "wakeup_aggregate_reservation",
 		Columns:       []string{"reserved_at"},
 	},
-	"628_wakeup_scoped_event_id_index": {
+	"632_wakeup_scoped_event_id_index": {
 		IndexRegclass: "wakeup_scoped_event_id_idx",
 		TableRegclass: "wakeup_scoped_event",
 		Unique:        true,
 		Columns:       []string{"id"},
 	},
-	"629_wakeup_scoped_event_pending_index": {
+	"633_wakeup_scoped_event_pending_index": {
 		IndexRegclass: "wakeup_scoped_event_pending_idx",
 		TableRegclass: "wakeup_scoped_event",
 		Columns:       []string{"captured_at", "id"},
 		Predicate:     "handled_at IS NULL",
 	},
-	"630_wakeup_scoped_event_handled_index": {
+	"634_wakeup_scoped_event_handled_index": {
 		IndexRegclass: "wakeup_scoped_event_handled_idx",
 		TableRegclass: "wakeup_scoped_event",
 		Columns:       []string{"handled_at"},
 		Predicate:     "handled_at IS NOT NULL",
 	},
-	"631_wakeup_scoped_event_issue_index": {
+	"635_wakeup_scoped_event_issue_index": {
 		IndexRegclass: "wakeup_scoped_event_issue_idx",
 		TableRegclass: "wakeup_scoped_event",
 		Columns:       []string{"issue_id", "captured_at", "id"},
