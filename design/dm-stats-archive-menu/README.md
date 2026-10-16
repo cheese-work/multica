@@ -12,4 +12,4 @@ DES-1 asks one combined design pass for L2 (web and desktop) and L4 (mobile) bef
 
 - Issue: [CHE-1782](mention://issue/01a140a5-478f-7942-b804-7f35fc7ac10f)
 - Pages in scope: web header more menu, floating chat menu, Statistics dialog (all states), slash suggestions, unarchive-on-send dialog, thread list and Archived view; mobile ⋯ menu, Statistics sheet, chat list with Archived section, unarchive alert
-- Status: rev-1 posted for UX review
+- Status: rev-2 posted for UX re-review (rev-1 scored by x99-codex-luna-2)
