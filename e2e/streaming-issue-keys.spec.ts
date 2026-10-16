@@ -112,7 +112,16 @@ async function measureChips(page: Page, scope: string) {
 
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
-type DevEnvironment = { name: string; dir: string; owner: string; database: string; backend_port: number };
+type DevEnvironment = {
+  name: string;
+  dir: string;
+  owner: string;
+  database: string;
+  databaseUrl: string;
+  backend_port: number;
+  ttlHours: number;
+  expiresAt: string;
+};
 
 // Reads the dev-env registry the way scripts/dev-env.sh loads a manifest
 // (sourcing it), but without `dev-env.sh list`, which probes each registered
@@ -127,19 +136,50 @@ function readDevEnvironments(): DevEnvironment[] {
     if (!fs.existsSync(manifest)) continue;
     const fields = execFileSync(
       "bash",
-      ["-c", 'set -e; . "$1"; printf "%s\\0" "$NAME" "$DIR" "$OWNER" "$DB_NAME" "$BACKEND_PORT"', "_", manifest],
+      [
+        "-c",
+        'set -e; . "$1"; printf "%s\\0" "$NAME" "$DIR" "$OWNER" "$DB_NAME" "$DATABASE_URL" "$BACKEND_PORT" "${TTL_HOURS:-0}" "${EXPIRES_AT:-}"',
+        "_",
+        manifest,
+      ],
       { encoding: "utf8" },
     ).split("\0");
-    const [envName, dir, owner, database, backendPort] = fields;
+    const [envName, dir, owner, database, databaseUrl, backendPort, ttlHours, expiresAt] = fields;
     if (envName !== name) continue;
-    environments.push({ name: envName, dir: dir!, owner: owner!, database: database!, backend_port: Number(backendPort) });
+    environments.push({
+      name: envName,
+      dir: dir!,
+      owner: owner!,
+      database: database!,
+      databaseUrl: databaseUrl!,
+      backend_port: Number(backendPort),
+      ttlHours: Number(ttlHours),
+      expiresAt: expiresAt!,
+    });
   }
   return environments;
 }
 
-// Proves, before anything is written, that DATABASE_URL and the API belong to a
-// task-owned (agent) environment registered for this checkout. A blacklist of
-// database names cannot prove that; the dev-env registry can.
+// One spelling for the loopback address, so `localhost` and `127.0.0.1` name the
+// same endpoint and any other host stays distinct.
+function endpointHost(hostname: string) {
+  return LOCAL_HOSTS.has(hostname) ? "loopback" : hostname;
+}
+
+// The identity of a PostgreSQL endpoint and database: host, port, user, name.
+function databaseIdentity(raw: string) {
+  const url = new URL(raw);
+  return [endpointHost(url.hostname), url.port || "5432", decodeURIComponent(url.username), decodeURIComponent(url.pathname.slice(1))].join(
+    " ",
+  );
+}
+
+// Proves, before any API client or database connection exists, that
+// DATABASE_URL and the API are the services of a disposable environment of
+// this checkout: an agent-owned, ephemeral (TTL, not expired) dev-env
+// registration with the same database endpoint, user and name, and a local API
+// on its backend port. A blacklist of database names cannot prove that; the
+// dev-env registry can.
 function requireTaskOwnedEnvironment(repoRoot: string): DevEnvironment {
   const refuse = (reason: string): never => {
     throw new Error(
@@ -148,15 +188,22 @@ function requireTaskOwnedEnvironment(repoRoot: string): DevEnvironment {
   };
   const raw = process.env.DATABASE_URL;
   if (!raw) return refuse("DATABASE_URL is not set");
-  let url: URL;
+  let database: string;
   try {
-    url = new URL(raw);
+    const url = new URL(raw);
+    if (!LOCAL_HOSTS.has(url.hostname)) return refuse(`database host ${url.hostname} is not local`);
+    database = databaseIdentity(raw);
   } catch {
     return refuse("DATABASE_URL is not a URL");
   }
-  if (!LOCAL_HOSTS.has(url.hostname)) return refuse(`database host ${url.hostname} is not local`);
-  const database = decodeURIComponent(url.pathname.slice(1));
-  const apiPort = new URL(API_URL).port;
+  let api: URL;
+  try {
+    api = new URL(API_URL);
+  } catch {
+    return refuse(`API URL ${API_URL} is not a URL`);
+  }
+  if (!LOCAL_HOSTS.has(api.hostname)) return refuse(`API host ${api.hostname} is not local`);
+  const apiPort = api.port || (api.protocol === "https:" ? "443" : "80");
 
   let environments: DevEnvironment[];
   try {
@@ -173,12 +220,26 @@ function requireTaskOwnedEnvironment(repoRoot: string): DevEnvironment {
     }
   });
   if (mine.length === 0) return refuse(`no environment is registered for ${root}`);
-  const match = mine.find(
-    (env) => env.owner === "agent" && env.database === database && String(env.backend_port) === apiPort,
-  );
+  const now = Date.now();
+  const problems = (env: DevEnvironment) => {
+    const found: string[] = [];
+    if (env.owner !== "agent") found.push(`owner ${env.owner}`);
+    if (!(env.ttlHours > 0) || !env.expiresAt) found.push("not ephemeral");
+    else if (!(Date.parse(env.expiresAt) > now)) found.push(`expired ${env.expiresAt}`);
+    let registered = "";
+    try {
+      registered = databaseIdentity(env.databaseUrl);
+    } catch {
+      found.push("registered DATABASE_URL unreadable");
+    }
+    if (registered && registered !== database) found.push(`database ${registered}`);
+    if (String(env.backend_port) !== apiPort) found.push(`api :${env.backend_port}`);
+    return found;
+  };
+  const match = mine.find((env) => problems(env).length === 0);
   if (!match) {
-    const registered = mine.map((env) => `${env.name} (owner ${env.owner}, database ${env.database}, api :${env.backend_port})`);
-    return refuse(`registered ${registered.join("; ")}, requested database ${database}, api :${apiPort}`);
+    const registered = mine.map((env) => `${env.name} (${problems(env).join(", ")})`);
+    return refuse(`requested database ${database}, api :${apiPort}; registered ${registered.join("; ")}`);
   }
   return match;
 }
@@ -289,50 +350,70 @@ test.describe("streaming bare issue keys", () => {
     test(`streamed bare issue keys never chip a partial key (${viewport.name})`, async ({ page }, testInfo) => {
       // A dev server compiles each route on first visit.
       test.setTimeout(240_000);
-      if (!environment) throw new Error("ownership check did not run");
+        if (!environment) throw new Error("ownership check did not run");
 
-      const api = await createTestApi();
-      const db = new pg.Client(process.env.DATABASE_URL);
-      await db.connect();
-      const ledger = new SeedLedger(db);
+      // Test hook for e2e/streaming-issue-keys.safety.mjs: fail on purpose at
+      // one stage of setup, with a marker the safety test looks for.
+      const failAt = (point: string) => {
+        if (process.env.STREAMING_ISSUE_KEYS_FAIL_AT === point) throw new Error(`injected failure at ${point}`);
+      };
+
+      // Everything acquired below is released on success, failure and partial
+      // setup alike. The helper's E2E user and workspace are not removed here:
+      // they live only in the task-owned database, which dev-env destroy drops.
+      let api: Awaited<ReturnType<typeof createTestApi>> | undefined;
+      let db: pg.Client | undefined;
+      let connected = false;
+      let ledger: SeedLedger | undefined;
       const lookups: string[] = [];
       let runtimeId: string | undefined;
       let failure: unknown;
       try {
-        const workspace = (await api.getWorkspaces())[0];
+        api = await createTestApi();
+        failAt("after-api-client");
+        db = new pg.Client(process.env.DATABASE_URL);
+        await db.connect();
+        connected = true;
+        ledger = new SeedLedger(db);
+        failAt("after-db-connect");
+        const client = db;
+        const seeds = ledger;
+        const apiClient = api;
+        const workspace = (await apiClient.getWorkspaces())[0];
         if (!workspace) throw new Error("E2E workspace missing");
-        api.setWorkspaceId(workspace.id);
-        api.setWorkspaceSlug(workspace.slug);
-        const token = api.getToken();
+        apiClient.setWorkspaceId(workspace.id);
+        apiClient.setWorkspaceSlug(workspace.slug);
+        const token = apiClient.getToken();
         if (!token) throw new Error("E2E token missing");
         const userId = (
-          await db.query<{ id: string }>(`SELECT id::text FROM "user" WHERE email = $1`, [api.getEmail()])
+          await client.query<{ id: string }>(`SELECT id::text FROM "user" WHERE email = $1`, [apiClient.getEmail()])
         ).rows[0]!.id;
 
         // The workspace belongs to this run only (both viewports share it), so its
         // prefix and counter can be set to make CHE-1 … CHE-1824 real issues.
-        await ledger.rememberWorkspace(workspace.id);
-        await db.query(`UPDATE workspace SET issue_prefix = 'CHE', issue_counter = GREATEST(issue_counter, 1824) WHERE id = $1`, [workspace.id]);
+        await seeds.rememberWorkspace(workspace.id);
+        await client.query(`UPDATE workspace SET issue_prefix = 'CHE', issue_counter = GREATEST(issue_counter, 1824) WHERE id = $1`, [workspace.id]);
         const titles: Record<number, string> = { 1: SHORT_TITLE, 18: "Partial key eighteen", 182: "Partial key one eight two", 1824: LONG_TITLE };
         for (const [number, title] of Object.entries(titles)) {
-          const inserted = await db.query<{ id: string }>(
+          const inserted = await client.query<{ id: string }>(
             `INSERT INTO issue (workspace_id, title, status, priority, creator_type, creator_id, position, number)
              VALUES ($1, $2, 'todo', 'none', 'member', $3, $4::double precision, $5::integer)
              ON CONFLICT (workspace_id, number) DO NOTHING RETURNING id::text`,
             [workspace.id, title, userId, Number(number), Number(number)],
           );
-          ledger.track("issue", inserted.rows[0]?.id);
+          seeds.track("issue", inserted.rows[0]?.id);
         }
+        failAt("mid-seed");
 
-        runtimeId = ledger.track("agent_runtime", (
-          await db.query<{ id: string }>(
+        runtimeId = seeds.track("agent_runtime", (
+          await client.query<{ id: string }>(
             `INSERT INTO agent_runtime (workspace_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at)
              VALUES ($1, $2, 'cloud', 'e2e_streaming_keys', 'online', 'Streaming keys E2E', '{}'::jsonb, now()) RETURNING id::text`,
             [workspace.id, `Streaming keys E2E ${viewport.name}`],
           )
         ).rows[0]!.id)!;
-        const agentId = ledger.track("agent", (
-          await db.query<{ id: string }>(
+        const agentId = seeds.track("agent", (
+          await client.query<{ id: string }>(
             `INSERT INTO agent (workspace_id, name, description, instructions, runtime_mode, runtime_config, runtime_id, visibility, max_concurrent_tasks, owner_id)
              VALUES ($1, $4, '', '', 'cloud', '{}'::jsonb, $2, 'workspace', 1, $3) RETURNING id::text`,
             [workspace.id, runtimeId, userId, `Stream Fixture ${viewport.name}`],
@@ -340,25 +421,25 @@ test.describe("streaming bare issue keys", () => {
         ).rows[0]!.id)!;
 
         async function seedRunningTurn(title: string, prompt: string, firstChunk: string) {
-          const sessionId = ledger.track("chat_session", (
-            await db.query<{ id: string }>(
+          const sessionId = seeds.track("chat_session", (
+            await client.query<{ id: string }>(
               `INSERT INTO chat_session (workspace_id, agent_id, creator_id, title, status, explicitly_created_at)
                VALUES ($1, $2, $3, $4, 'active', now()) RETURNING id::text`,
               [workspace!.id, agentId, userId, title],
             )
           ).rows[0]!.id)!;
-          const taskId = ledger.track("agent_task_queue", (
-            await db.query<{ id: string }>(
+          const taskId = seeds.track("agent_task_queue", (
+            await client.query<{ id: string }>(
               `INSERT INTO agent_task_queue (agent_id, runtime_id, chat_session_id, status, dispatched_at, started_at)
                VALUES ($1, $2, $3, 'running', now(), now()) RETURNING id::text`,
               [agentId, runtimeId, sessionId],
             )
           ).rows[0]!.id)!;
-          await db.query(
+          await client.query(
             `INSERT INTO chat_message (chat_session_id, role, content, task_id) VALUES ($1, 'user', $2, $3)`,
             [sessionId, prompt, taskId],
           );
-          await db.query(`INSERT INTO task_message (task_id, seq, type, content) VALUES ($1, 1, 'text', $2)`, [taskId, firstChunk]);
+          await client.query(`INSERT INTO task_message (task_id, seq, type, content) VALUES ($1, 1, 'text', $2)`, [taskId, firstChunk]);
           return { sessionId, taskId, seq: 1 };
         }
 
@@ -398,8 +479,7 @@ test.describe("streaming bare issue keys", () => {
         // 1. Streaming, then a boundary: the full key links only once it is
         //    followed by a boundary character.
         const boundary = await seedRunningTurn("Streaming keys boundary", "Which change fixed the login?", "Fixed in ");
-        // Test hook for e2e/streaming-issue-keys.safety.mjs: fail with seeded rows in place.
-        if (process.env.STREAMING_ISSUE_KEYS_FAIL_AFTER_SEED === "1") throw new Error("injected failure after seeding");
+        failAt("after-seed");
         await page.goto(`/${workspace.slug}/chat?session=${boundary.sessionId}`, { waitUntil: "domcontentloaded" });
         await waitForText("Fixed in", 90_000);
         let streamed = "Fixed in ";
@@ -443,16 +523,16 @@ test.describe("streaming bare issue keys", () => {
         // 3. Settled description-size text: an issue comment rendered through
         //    the same RichContent, with a short and a long title.
         const chatLookups = [...lookups];
-        const host = await api.createIssue("Streaming keys description host", {
+        const host = await apiClient.createIssue("Streaming keys description host", {
           description: `Related: CHE-1, CHE-18, CHE-182 and ${FULL_KEY}.`,
         });
-        ledger.track("issue", host.id);
-        const comment = await db.query<{ id: string }>(
+        seeds.track("issue", host.id);
+        const comment = await client.query<{ id: string }>(
           `INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content)
            VALUES ($1, $2, 'member', $3, $4) RETURNING id::text`,
           [workspace.id, host.id, userId, `Short CHE-1 and long ${FULL_KEY} in a sentence that wraps on narrow screens.`],
         );
-        ledger.track("comment", comment.rows[0]?.id);
+        seeds.track("comment", comment.rows[0]?.id);
         await page.goto(`/${workspace.slug}/issues/${host.id}`, { waitUntil: "domcontentloaded" });
         await expect(page.locator("a.issue-mention", { hasText: FULL_KEY }).first()).toBeVisible({ timeout: 20_000 });
         await page.waitForTimeout(600 + LOOKUP_DELAY_MS);
@@ -486,17 +566,22 @@ test.describe("streaming bare issue keys", () => {
         failure = error;
       }
       // Cleanup runs after a failure too, and its own failure is never hidden.
-      const cleanupError = await ledger.cleanup().then(
-        () => undefined,
-        (error: unknown) => error,
-      );
-      await db.end();
-      await api.cleanup();
-      if (failure !== undefined) {
-        if (cleanupError !== undefined) throw new AggregateError([failure, cleanupError], "fixture and its cleanup both failed");
-        throw failure;
+      const cleanupErrors: unknown[] = [];
+      const release = async (step: () => Promise<unknown>) => {
+        try {
+          await step();
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      };
+      if (ledger) await release(() => ledger!.cleanup());
+      if (db && connected) await release(() => db!.end());
+      if (api) await release(() => api!.cleanup());
+      if (failure !== undefined && cleanupErrors.length > 0) {
+        throw new AggregateError([failure, ...cleanupErrors], "fixture and its cleanup both failed");
       }
-      if (cleanupError !== undefined) throw cleanupError;
+      if (failure !== undefined) throw failure;
+      if (cleanupErrors.length > 0) throw new AggregateError(cleanupErrors, "fixture cleanup failed");
     });
   }
 });

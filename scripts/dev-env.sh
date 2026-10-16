@@ -222,12 +222,14 @@ port_listener_pids() {
   } | awk 'NF && !seen[$0]++'
 }
 
-# One pid, or nothing. Two distinct listeners are ambiguous, so ownership checks
-# built on this lookup fail closed instead of trusting an arbitrary one.
+# One pid, or nothing. Two distinct listeners are ambiguous, and so is a visible
+# pid next to a listener whose owner is hidden (another user's socket), so
+# ownership checks built on this lookup fail closed instead of trusting one.
 port_listener_pid() {
   local pids
   pids="$(port_listener_pids "$1")"
   [ -n "$pids" ] && [ "$(printf '%s\n' "$pids" | wc -l)" -eq 1 ] || return 0
+  [ -z "$(ss_listening_rows "$1" p | grep -v 'pid=' || true)" ] || return 0
   printf '%s\n' "$pids"
 }
 
