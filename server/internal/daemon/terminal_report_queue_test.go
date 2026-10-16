@@ -35,6 +35,8 @@ func TestTerminalReportStoreRoundTripAndPermissions(t *testing.T) {
 		durableWorkDir:        "/private/project",
 		sessionRolloutMissing: true,
 		retiredSessionID:      "retired-private",
+		contextTokens:         164000,
+		contextWindow:         200000,
 	}
 	if err := store.enqueue(report); err != nil {
 		t.Fatalf("enqueue terminal report: %v", err)

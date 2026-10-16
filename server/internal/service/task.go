@@ -4589,6 +4589,23 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 // must only run them when transitioned is true; a replay against an already
 // terminal task is still an idempotent success but must not emit them again.
 func (s *TaskService) CompleteTaskWithTransition(ctx context.Context, taskID pgtype.UUID, result []byte, sessionID, workDir, branchName string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) (*db.AgentTaskQueue, bool, error) {
+	return s.CompleteTaskWithRunContext(ctx, taskID, result, sessionID, workDir, branchName, sessionRolloutMissing, retiredSessionID, durableWorkDir, nil)
+}
+
+// RunContext is the prompt size of a run's last model call and the model's
+// context window, as the daemon measured them. nil means unknown.
+type RunContext struct{ Tokens, Window int64 }
+
+// CompleteTaskWithRunContext is CompleteTaskWithTransition that also records
+// the run's context size in the same terminal transaction. A context that
+// cannot be trusted (nil, negative tokens, non-positive window) is stored as
+// NULL rather than failing the completion.
+func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgtype.UUID, result []byte, sessionID, workDir, branchName string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string, runContext *RunContext) (*db.AgentTaskQueue, bool, error) {
+	var contextTokens, contextWindow pgtype.Int8
+	if runContext != nil && runContext.Tokens >= 0 && runContext.Window > 0 {
+		contextTokens = pgtype.Int8{Int64: runContext.Tokens, Valid: true}
+		contextWindow = pgtype.Int8{Int64: runContext.Window, Valid: true}
+	}
 	var task db.AgentTaskQueue
 	// chatAssistantMsg is the single assistant outcome row written for a chat
 	// task inside the completion transaction below. It is broadcast (chat:done)
@@ -4607,6 +4624,8 @@ func (s *TaskService) CompleteTaskWithTransition(ctx context.Context, taskID pgt
 			BranchName:            pgtype.Text{String: branchName, Valid: branchName != ""},
 			SessionRolloutMissing: sessionRolloutMissing,
 			RetiredSessionID:      pgtype.Text{String: retiredSessionID, Valid: retiredSessionID != ""},
+			ContextTokens:         contextTokens,
+			ContextWindow:         contextWindow,
 		})
 		if err != nil {
 			return err
