@@ -124,7 +124,7 @@ func (s *IssueWakeupService) previewSatisfied(ctx context.Context, ref WakeupSco
 			continue
 		}
 		out.Examined++
-		met, _, _, err := evaluateCondition(ctx, tx, q, db.IssueWakeup{IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, Condition: cond})
+		met, _, _, err := s.evaluateCondition(ctx, tx, q, db.IssueWakeup{IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, Condition: cond})
 		if err != nil {
 			return nil, err
 		}

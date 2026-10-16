@@ -11,6 +11,46 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const cancelWithdrawnDecisionRequest = `-- name: CancelWithdrawnDecisionRequest :one
+UPDATE decision_request SET status = 'cancelled', cancel_reason = $1,
+    cancel_notice_posted_at = clock_timestamp()
+WHERE workspace_id = $2 AND id = $3 AND status = 'answered'
+RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at
+`
+
+type CancelWithdrawnDecisionRequestParams struct {
+	CancelReason pgtype.Text `json:"cancel_reason"`
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+	ID           pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) CancelWithdrawnDecisionRequest(ctx context.Context, arg CancelWithdrawnDecisionRequestParams) (DecisionRequest, error) {
+	row := q.db.QueryRow(ctx, cancelWithdrawnDecisionRequest, arg.CancelReason, arg.WorkspaceID, arg.ID)
+	var i DecisionRequest
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.AskingAgentID,
+		&i.HumanUserID,
+		&i.ChatSessionID,
+		&i.PingMessageID,
+		&i.IssueCommentID,
+		&i.Ask,
+		&i.EscalationClass,
+		&i.Status,
+		&i.Origin,
+		&i.DecisionIntentID,
+		&i.CancelReason,
+		&i.CancelNoticePostedAt,
+		&i.PingNotifiedAt,
+		&i.ReaskDeliveredAt,
+		&i.ReaskOutcome,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const closeDecisionIntent = `-- name: CloseDecisionIntent :exec
 UPDATE decision_intent
 SET closed_at = COALESCE(closed_at, clock_timestamp()), close_reason = $1,
@@ -134,6 +174,32 @@ func (q *Queries) CreateDecisionAnswer(ctx context.Context, arg CreateDecisionAn
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const createDecisionClassChange = `-- name: CreateDecisionClassChange :exec
+INSERT INTO decision_class_change (decision_request_id, from_class, to_class, changed_by_user_id)
+SELECT id, $1, $2, $3
+FROM decision_request
+WHERE workspace_id = $4 AND id = $5
+`
+
+type CreateDecisionClassChangeParams struct {
+	FromClass       string      `json:"from_class"`
+	ToClass         string      `json:"to_class"`
+	ChangedByUserID pgtype.UUID `json:"changed_by_user_id"`
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	ID              pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) CreateDecisionClassChange(ctx context.Context, arg CreateDecisionClassChangeParams) error {
+	_, err := q.db.Exec(ctx, createDecisionClassChange,
+		arg.FromClass,
+		arg.ToClass,
+		arg.ChangedByUserID,
+		arg.WorkspaceID,
+		arg.ID,
+	)
+	return err
 }
 
 const createDecisionIntent = `-- name: CreateDecisionIntent :one
@@ -262,6 +328,28 @@ func (q *Queries) CreateDecisionRequest(ctx context.Context, arg CreateDecisionR
 	return i, err
 }
 
+const decisionAnswerSourceRemoved = `-- name: DecisionAnswerSourceRemoved :one
+SELECT EXISTS (
+    SELECT 1 FROM unnest(answer.chat_message_ids) AS source(id)
+    WHERE NOT EXISTS (SELECT 1 FROM chat_message message WHERE message.id = source.id)
+)::boolean AS removed
+FROM decision_answer answer
+JOIN decision_request request ON request.id = answer.decision_request_id
+WHERE request.workspace_id = $1 AND answer.id = $2
+`
+
+type DecisionAnswerSourceRemovedParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) DecisionAnswerSourceRemoved(ctx context.Context, arg DecisionAnswerSourceRemovedParams) (bool, error) {
+	row := q.db.QueryRow(ctx, decisionAnswerSourceRemoved, arg.WorkspaceID, arg.ID)
+	var removed bool
+	err := row.Scan(&removed)
+	return removed, err
+}
+
 const decisionIntentRefusal = `-- name: DecisionIntentRefusal :one
 SELECT CASE
     WHEN intent.sealed_at IS NOT NULL THEN 'sealed'
@@ -320,6 +408,116 @@ func (q *Queries) DecisionLaneWindowOpen(ctx context.Context, arg DecisionLaneWi
 	var open bool
 	err := row.Scan(&open)
 	return open, err
+}
+
+const decisionOpenLaneExists = `-- name: DecisionOpenLaneExists :one
+SELECT EXISTS (
+    SELECT 1 FROM decision_request
+    WHERE workspace_id = $1 AND chat_session_id = $2 AND status = 'open'
+)::boolean AS present
+`
+
+type DecisionOpenLaneExistsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	SessionID   pgtype.UUID `json:"session_id"`
+}
+
+func (q *Queries) DecisionOpenLaneExists(ctx context.Context, arg DecisionOpenLaneExistsParams) (bool, error) {
+	row := q.db.QueryRow(ctx, decisionOpenLaneExists, arg.WorkspaceID, arg.SessionID)
+	var present bool
+	err := row.Scan(&present)
+	return present, err
+}
+
+const decisionRecordEffectiveAt = `-- name: DecisionRecordEffectiveAt :one
+SELECT (clock_timestamp() + CASE WHEN escalation_class = 'reversible' THEN interval '0 seconds' ELSE interval '10 minutes' END)::timestamptz AS effective_at
+FROM decision_request WHERE workspace_id = $1 AND id = $2
+`
+
+type DecisionRecordEffectiveAtParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) DecisionRecordEffectiveAt(ctx context.Context, arg DecisionRecordEffectiveAtParams) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, decisionRecordEffectiveAt, arg.WorkspaceID, arg.ID)
+	var effective_at pgtype.Timestamptz
+	err := row.Scan(&effective_at)
+	return effective_at, err
+}
+
+const getDecisionAnswer = `-- name: GetDecisionAnswer :one
+SELECT answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at FROM decision_answer answer
+JOIN decision_request request ON request.id = answer.decision_request_id
+WHERE request.workspace_id = $1 AND answer.id = $2
+`
+
+type GetDecisionAnswerParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) GetDecisionAnswer(ctx context.Context, arg GetDecisionAnswerParams) (DecisionAnswer, error) {
+	row := q.db.QueryRow(ctx, getDecisionAnswer, arg.WorkspaceID, arg.ID)
+	var i DecisionAnswer
+	err := row.Scan(
+		&i.ID,
+		&i.DecisionRequestID,
+		&i.AnsweredByTaskID,
+		&i.SourceChatSessionID,
+		&i.ChatMessageIds,
+		&i.ContentSnapshot,
+		&i.EffectiveAt,
+		&i.WakeAt,
+		&i.WokenAt,
+		&i.WakeOutcome,
+		&i.IssueCommentID,
+		&i.DisclaimedAt,
+		&i.DisclaimCommentPostedAt,
+		&i.DisclaimedByUserID,
+		&i.DisclaimReason,
+		&i.DisclaimedByAgentID,
+		&i.DisclaimedByTaskID,
+		&i.VetoReason,
+		&i.VetoNotePostedAt,
+		&i.RetractionDeliveredAt,
+		&i.RetractionOutcome,
+		&i.WithdrawalCommentID,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getDecisionIntent = `-- name: GetDecisionIntent :one
+SELECT id, workspace_id, issue_id, task_id, agent_id, comment_id, opened_at, expires_at, consumed_at, consumed_by_request_id, closed_at, close_reason, sealed_at, group_woken_at FROM decision_intent
+WHERE workspace_id = $1 AND id = $2
+`
+
+type GetDecisionIntentParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) GetDecisionIntent(ctx context.Context, arg GetDecisionIntentParams) (DecisionIntent, error) {
+	row := q.db.QueryRow(ctx, getDecisionIntent, arg.WorkspaceID, arg.ID)
+	var i DecisionIntent
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.TaskID,
+		&i.AgentID,
+		&i.CommentID,
+		&i.OpenedAt,
+		&i.ExpiresAt,
+		&i.ConsumedAt,
+		&i.ConsumedByRequestID,
+		&i.ClosedAt,
+		&i.CloseReason,
+		&i.SealedAt,
+		&i.GroupWokenAt,
+	)
+	return i, err
 }
 
 const getDecisionIntentForTask = `-- name: GetDecisionIntentForTask :one
@@ -396,6 +594,53 @@ func (q *Queries) GetDecisionRequest(ctx context.Context, arg GetDecisionRequest
 		&i.PingNotifiedAt,
 		&i.ReaskDeliveredAt,
 		&i.ReaskOutcome,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const holdDecisionAnswerForClass = `-- name: HoldDecisionAnswerForClass :one
+WITH hold AS (SELECT clock_timestamp() + interval '10 minutes' AS held_until)
+UPDATE decision_answer answer SET
+    effective_at = hold.held_until,
+    wake_at = CASE WHEN wake_at IS NOT NULL THEN hold.held_until ELSE NULL END
+FROM decision_request request, hold
+WHERE request.id = answer.decision_request_id AND request.workspace_id = $1
+  AND answer.id = $2 AND answer.disclaimed_at IS NULL AND answer.woken_at IS NULL
+RETURNING answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at
+`
+
+type HoldDecisionAnswerForClassParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) HoldDecisionAnswerForClass(ctx context.Context, arg HoldDecisionAnswerForClassParams) (DecisionAnswer, error) {
+	row := q.db.QueryRow(ctx, holdDecisionAnswerForClass, arg.WorkspaceID, arg.ID)
+	var i DecisionAnswer
+	err := row.Scan(
+		&i.ID,
+		&i.DecisionRequestID,
+		&i.AnsweredByTaskID,
+		&i.SourceChatSessionID,
+		&i.ChatMessageIds,
+		&i.ContentSnapshot,
+		&i.EffectiveAt,
+		&i.WakeAt,
+		&i.WokenAt,
+		&i.WakeOutcome,
+		&i.IssueCommentID,
+		&i.DisclaimedAt,
+		&i.DisclaimCommentPostedAt,
+		&i.DisclaimedByUserID,
+		&i.DisclaimReason,
+		&i.DisclaimedByAgentID,
+		&i.DisclaimedByTaskID,
+		&i.VetoReason,
+		&i.VetoNotePostedAt,
+		&i.RetractionDeliveredAt,
+		&i.RetractionOutcome,
+		&i.WithdrawalCommentID,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -664,6 +909,151 @@ func (q *Queries) ListDecisionRequestsByIssue(ctx context.Context, arg ListDecis
 	return items, nil
 }
 
+const listDecisionSealIntents = `-- name: ListDecisionSealIntents :many
+SELECT intent.id, intent.workspace_id, intent.issue_id, intent.task_id, intent.agent_id, intent.comment_id, intent.opened_at, intent.expires_at, intent.consumed_at, intent.consumed_by_request_id, intent.closed_at, intent.close_reason, intent.sealed_at, intent.group_woken_at FROM decision_intent intent
+JOIN issue ON issue.id = intent.issue_id AND issue.workspace_id = intent.workspace_id
+LEFT JOIN comment tag ON tag.id = intent.comment_id AND tag.issue_id = intent.issue_id AND tag.workspace_id = intent.workspace_id
+LEFT JOIN agent_task_queue task ON task.id = intent.task_id
+WHERE intent.sealed_at IS NULL AND (
+    clock_timestamp() >= intent.expires_at OR task.id IS NULL OR task.status <> 'running'
+    OR tag.id IS NULL OR tag.deleted_at IS NOT NULL
+)
+ORDER BY intent.id
+LIMIT LEAST(GREATEST($1::int, 0), 100)
+`
+
+func (q *Queries) ListDecisionSealIntents(ctx context.Context, batchSize int32) ([]DecisionIntent, error) {
+	rows, err := q.db.Query(ctx, listDecisionSealIntents, batchSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DecisionIntent{}
+	for rows.Next() {
+		var i DecisionIntent
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.TaskID,
+			&i.AgentID,
+			&i.CommentID,
+			&i.OpenedAt,
+			&i.ExpiresAt,
+			&i.ConsumedAt,
+			&i.ConsumedByRequestID,
+			&i.ClosedAt,
+			&i.CloseReason,
+			&i.SealedAt,
+			&i.GroupWokenAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDecisionSessionReferences = `-- name: ListDecisionSessionReferences :many
+SELECT DISTINCT COALESCE(workspace.issue_prefix || '-' || issue.number::text, request.issue_id::text)::text AS issue_key
+FROM decision_request request
+LEFT JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
+LEFT JOIN workspace ON workspace.id = request.workspace_id
+WHERE request.workspace_id = $1 AND (
+    (request.status = 'open' AND request.chat_session_id = $2)
+    OR EXISTS (
+        SELECT 1 FROM decision_answer answer
+        JOIN chat_message message ON message.id = ANY(answer.chat_message_ids)
+        WHERE answer.decision_request_id = request.id AND message.chat_session_id = $2
+    )
+)
+ORDER BY issue_key
+`
+
+type ListDecisionSessionReferencesParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	SessionID   pgtype.UUID `json:"session_id"`
+}
+
+func (q *Queries) ListDecisionSessionReferences(ctx context.Context, arg ListDecisionSessionReferencesParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listDecisionSessionReferences, arg.WorkspaceID, arg.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var issue_key string
+		if err := rows.Scan(&issue_key); err != nil {
+			return nil, err
+		}
+		items = append(items, issue_key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDecisionSourceChecks = `-- name: ListDecisionSourceChecks :many
+SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at FROM decision_request request
+JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
+JOIN chat_session session ON session.id = request.chat_session_id AND session.workspace_id = request.workspace_id
+WHERE EXISTS (
+    SELECT 1 FROM decision_answer answer
+    WHERE answer.decision_request_id = request.id AND answer.disclaimed_at IS NULL
+      AND EXISTS (
+          SELECT 1 FROM unnest(answer.chat_message_ids) AS source(id)
+          WHERE NOT EXISTS (SELECT 1 FROM chat_message message WHERE message.id = source.id)
+      )
+)
+ORDER BY request.id
+LIMIT LEAST(GREATEST($1::int, 0), 100)
+`
+
+func (q *Queries) ListDecisionSourceChecks(ctx context.Context, batchSize int32) ([]DecisionRequest, error) {
+	rows, err := q.db.Query(ctx, listDecisionSourceChecks, batchSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DecisionRequest{}
+	for rows.Next() {
+		var i DecisionRequest
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.AskingAgentID,
+			&i.HumanUserID,
+			&i.ChatSessionID,
+			&i.PingMessageID,
+			&i.IssueCommentID,
+			&i.Ask,
+			&i.EscalationClass,
+			&i.Status,
+			&i.Origin,
+			&i.DecisionIntentID,
+			&i.CancelReason,
+			&i.CancelNoticePostedAt,
+			&i.PingNotifiedAt,
+			&i.ReaskDeliveredAt,
+			&i.ReaskOutcome,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockDecisionAnswer = `-- name: LockDecisionAnswer :one
 SELECT answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at FROM decision_answer answer
 JOIN decision_request request ON request.id = answer.decision_request_id
@@ -837,6 +1227,50 @@ func (q *Queries) LockDecisionIssue(ctx context.Context, arg LockDecisionIssuePa
 	var id pgtype.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const lockDecisionLiveAnswer = `-- name: LockDecisionLiveAnswer :one
+SELECT answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at FROM decision_answer answer
+JOIN decision_request request ON request.id = answer.decision_request_id
+WHERE request.workspace_id = $1 AND request.id = $2
+  AND answer.disclaimed_at IS NULL
+FOR UPDATE OF answer
+`
+
+type LockDecisionLiveAnswerParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) LockDecisionLiveAnswer(ctx context.Context, arg LockDecisionLiveAnswerParams) (DecisionAnswer, error) {
+	row := q.db.QueryRow(ctx, lockDecisionLiveAnswer, arg.WorkspaceID, arg.ID)
+	var i DecisionAnswer
+	err := row.Scan(
+		&i.ID,
+		&i.DecisionRequestID,
+		&i.AnsweredByTaskID,
+		&i.SourceChatSessionID,
+		&i.ChatMessageIds,
+		&i.ContentSnapshot,
+		&i.EffectiveAt,
+		&i.WakeAt,
+		&i.WokenAt,
+		&i.WakeOutcome,
+		&i.IssueCommentID,
+		&i.DisclaimedAt,
+		&i.DisclaimCommentPostedAt,
+		&i.DisclaimedByUserID,
+		&i.DisclaimReason,
+		&i.DisclaimedByAgentID,
+		&i.DisclaimedByTaskID,
+		&i.VetoReason,
+		&i.VetoNotePostedAt,
+		&i.RetractionDeliveredAt,
+		&i.RetractionOutcome,
+		&i.WithdrawalCommentID,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const lockDecisionMember = `-- name: LockDecisionMember :one
@@ -1020,6 +1454,121 @@ func (q *Queries) MarkDecisionPingNotified(ctx context.Context, arg MarkDecision
 	return i, err
 }
 
+const markDecisionRequestAnswered = `-- name: MarkDecisionRequestAnswered :one
+UPDATE decision_request SET status = 'answered'
+WHERE workspace_id = $1 AND id = $2 AND status = 'open'
+RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at
+`
+
+type MarkDecisionRequestAnsweredParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) MarkDecisionRequestAnswered(ctx context.Context, arg MarkDecisionRequestAnsweredParams) (DecisionRequest, error) {
+	row := q.db.QueryRow(ctx, markDecisionRequestAnswered, arg.WorkspaceID, arg.ID)
+	var i DecisionRequest
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.AskingAgentID,
+		&i.HumanUserID,
+		&i.ChatSessionID,
+		&i.PingMessageID,
+		&i.IssueCommentID,
+		&i.Ask,
+		&i.EscalationClass,
+		&i.Status,
+		&i.Origin,
+		&i.DecisionIntentID,
+		&i.CancelReason,
+		&i.CancelNoticePostedAt,
+		&i.PingNotifiedAt,
+		&i.ReaskDeliveredAt,
+		&i.ReaskOutcome,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const raiseDecisionClass = `-- name: RaiseDecisionClass :one
+UPDATE decision_request SET escalation_class = $1
+WHERE workspace_id = $2 AND id = $3
+RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at
+`
+
+type RaiseDecisionClassParams struct {
+	EscalationClass string      `json:"escalation_class"`
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	ID              pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) RaiseDecisionClass(ctx context.Context, arg RaiseDecisionClassParams) (DecisionRequest, error) {
+	row := q.db.QueryRow(ctx, raiseDecisionClass, arg.EscalationClass, arg.WorkspaceID, arg.ID)
+	var i DecisionRequest
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.AskingAgentID,
+		&i.HumanUserID,
+		&i.ChatSessionID,
+		&i.PingMessageID,
+		&i.IssueCommentID,
+		&i.Ask,
+		&i.EscalationClass,
+		&i.Status,
+		&i.Origin,
+		&i.DecisionIntentID,
+		&i.CancelReason,
+		&i.CancelNoticePostedAt,
+		&i.PingNotifiedAt,
+		&i.ReaskDeliveredAt,
+		&i.ReaskOutcome,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const reopenDecisionRequest = `-- name: ReopenDecisionRequest :one
+UPDATE decision_request SET status = 'open'
+WHERE workspace_id = $1 AND id = $2 AND status = 'answered'
+RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at
+`
+
+type ReopenDecisionRequestParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) ReopenDecisionRequest(ctx context.Context, arg ReopenDecisionRequestParams) (DecisionRequest, error) {
+	row := q.db.QueryRow(ctx, reopenDecisionRequest, arg.WorkspaceID, arg.ID)
+	var i DecisionRequest
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.AskingAgentID,
+		&i.HumanUserID,
+		&i.ChatSessionID,
+		&i.PingMessageID,
+		&i.IssueCommentID,
+		&i.Ask,
+		&i.EscalationClass,
+		&i.Status,
+		&i.Origin,
+		&i.DecisionIntentID,
+		&i.CancelReason,
+		&i.CancelNoticePostedAt,
+		&i.PingNotifiedAt,
+		&i.ReaskDeliveredAt,
+		&i.ReaskOutcome,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const sealDecisionIntent = `-- name: SealDecisionIntent :exec
 UPDATE decision_intent SET sealed_at = COALESCE(sealed_at, clock_timestamp())
 WHERE workspace_id = $1 AND id = $2
@@ -1049,4 +1598,74 @@ type StampCommentDecisionIntentParams struct {
 func (q *Queries) StampCommentDecisionIntent(ctx context.Context, arg StampCommentDecisionIntentParams) error {
 	_, err := q.db.Exec(ctx, stampCommentDecisionIntent, arg.DecisionIntentID, arg.WorkspaceID, arg.CommentID)
 	return err
+}
+
+const withdrawDecisionAnswer = `-- name: WithdrawDecisionAnswer :one
+UPDATE decision_answer answer
+SET disclaimed_at = clock_timestamp(), disclaim_reason = $1,
+    disclaimed_by_user_id = $2,
+    disclaim_comment_posted_at = clock_timestamp(), withdrawal_comment_id = $3,
+    wake_at = CASE WHEN woken_at IS NULL THEN NULL ELSE wake_at END,
+    disclaimed_by_agent_id = $4,
+    disclaimed_by_task_id = $5,
+    veto_reason = $6,
+    retraction_delivered_at = CASE WHEN $7::boolean THEN clock_timestamp() ELSE retraction_delivered_at END,
+    retraction_outcome = CASE WHEN $7::boolean THEN 'suppressed_agent_veto' ELSE retraction_outcome END
+FROM decision_request request
+WHERE request.id = answer.decision_request_id AND request.workspace_id = $8
+  AND answer.id = $9 AND answer.disclaimed_at IS NULL
+RETURNING answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at
+`
+
+type WithdrawDecisionAnswerParams struct {
+	DisclaimReason      pgtype.Text `json:"disclaim_reason"`
+	DisclaimedByUserID  pgtype.UUID `json:"disclaimed_by_user_id"`
+	WithdrawalCommentID pgtype.UUID `json:"withdrawal_comment_id"`
+	DisclaimedByAgentID pgtype.UUID `json:"disclaimed_by_agent_id"`
+	DisclaimedByTaskID  pgtype.UUID `json:"disclaimed_by_task_id"`
+	VetoReason          pgtype.Text `json:"veto_reason"`
+	SuppressRetraction  bool        `json:"suppress_retraction"`
+	WorkspaceID         pgtype.UUID `json:"workspace_id"`
+	ID                  pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) WithdrawDecisionAnswer(ctx context.Context, arg WithdrawDecisionAnswerParams) (DecisionAnswer, error) {
+	row := q.db.QueryRow(ctx, withdrawDecisionAnswer,
+		arg.DisclaimReason,
+		arg.DisclaimedByUserID,
+		arg.WithdrawalCommentID,
+		arg.DisclaimedByAgentID,
+		arg.DisclaimedByTaskID,
+		arg.VetoReason,
+		arg.SuppressRetraction,
+		arg.WorkspaceID,
+		arg.ID,
+	)
+	var i DecisionAnswer
+	err := row.Scan(
+		&i.ID,
+		&i.DecisionRequestID,
+		&i.AnsweredByTaskID,
+		&i.SourceChatSessionID,
+		&i.ChatMessageIds,
+		&i.ContentSnapshot,
+		&i.EffectiveAt,
+		&i.WakeAt,
+		&i.WokenAt,
+		&i.WakeOutcome,
+		&i.IssueCommentID,
+		&i.DisclaimedAt,
+		&i.DisclaimCommentPostedAt,
+		&i.DisclaimedByUserID,
+		&i.DisclaimReason,
+		&i.DisclaimedByAgentID,
+		&i.DisclaimedByTaskID,
+		&i.VetoReason,
+		&i.VetoNotePostedAt,
+		&i.RetractionDeliveredAt,
+		&i.RetractionOutcome,
+		&i.WithdrawalCommentID,
+		&i.CreatedAt,
+	)
+	return i, err
 }

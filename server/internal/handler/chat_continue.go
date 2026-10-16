@@ -92,6 +92,9 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "chat session not found")
 		return
 	}
+	if !decisionLaneArchiveAllowed(w, r, qtx, session) {
+		return
+	}
 	workspace, err := qtx.GetWorkspace(r.Context(), session.WorkspaceID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load workspace")

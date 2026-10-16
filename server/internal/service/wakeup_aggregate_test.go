@@ -387,19 +387,14 @@ func TestAggregateBlockedProjectDoesNotStarveOthers(t *testing.T) {
 		}
 	}
 	// Blocked instances leave the scheduler's candidate list until they are due.
-	ready, err := e.f.q.ListReadyWakeups(context.Background(), []pgtype.UUID{parseTestUUID(t, e.f.WorkspaceID)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	ready := e.schedulerCandidates(t)
 	for _, w := range ready {
 		if w.IssueID == blocked[1] || w.IssueID == blocked[2] {
 			t.Fatalf("a blocked instance is a scheduler candidate before its retry time")
 		}
 	}
 	e.f.Exec(t, `UPDATE issue_wakeup SET aggregate_retry_at=now()-interval '1 second' WHERE issue_id=ANY($1)`, []pgtype.UUID{blocked[1], blocked[2]})
-	if ready, err = e.f.q.ListReadyWakeups(context.Background(), []pgtype.UUID{parseTestUUID(t, e.f.WorkspaceID)}); err != nil {
-		t.Fatal(err)
-	}
+	ready = e.schedulerCandidates(t)
 	found := 0
 	for _, w := range ready {
 		if w.IssueID == blocked[1] || w.IssueID == blocked[2] {
@@ -409,6 +404,22 @@ func TestAggregateBlockedProjectDoesNotStarveOthers(t *testing.T) {
 	if found != 2 {
 		t.Fatalf("due blocked instances are not scheduler candidates (%d of 2)", found)
 	}
+}
+
+// schedulerCandidates is everything a scheduler pass could visit in this
+// workspace: both lanes (pending inputs, and due checks).
+func (e *builtinEnv) schedulerCandidates(t *testing.T) []db.IssueWakeup {
+	t.Helper()
+	ws := []pgtype.UUID{parseTestUUID(t, e.f.WorkspaceID)}
+	inputs, err := e.f.q.ListInputWakeups(context.Background(), db.ListInputWakeupsParams{WorkspaceIds: ws, SkipIds: []pgtype.UUID{}, RowLimit: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	due, err := e.f.q.ListDueWakeups(context.Background(), db.ListDueWakeupsParams{WorkspaceIds: ws, SkipIds: []pgtype.UUID{}, RowLimit: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(inputs, due...)
 }
 
 // The backlog and earliest retry of a counter are plain data for the UI layers.

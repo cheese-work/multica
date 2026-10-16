@@ -104,7 +104,7 @@ func (s *IssueWakeupService) ensureScopedInstance(ctx context.Context, b *scoped
 		}
 		existing = created
 		if r.condition != nil && (baseline || conditionFiresOnChange(r.condition)) {
-			if err := baselineCondition(ctx, tx, q, existing, now); err != nil {
+			if err := s.baselineCondition(ctx, tx, q, existing, now); err != nil {
 				return db.IssueWakeup{}, "", err
 			}
 		}
@@ -171,7 +171,7 @@ func (b *scopedIssueBatch) rebase(ctx context.Context, w db.IssueWakeup, r *scop
 	}
 	b.withdrawn = append(b.withdrawn, cancelled...)
 	if rebaseline {
-		err = baselineCondition(ctx, b.tx, b.q, out, now)
+		err = b.s.baselineCondition(ctx, b.tx, b.q, out, now)
 	}
 	return out, err
 }

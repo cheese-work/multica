@@ -402,4 +402,31 @@ describe("chat store — draft upload ops", () => {
       "[doc.pdf](/api/attachments/att-2/download)",
     );
   });
+
+  // Web chat routes one writer per URL transition: a caller states how the
+  // next session change reaches the URL, and the page's single store → URL
+  // effect writes it (CHE-1755 TE2).
+  describe("navIntent", () => {
+    it("starts empty", () => {
+      const { store } = freshStore();
+      expect(store.getState().navIntent).toBeNull();
+    });
+
+    it("hands back a recorded intent once and then clears it", () => {
+      const { store } = freshStore();
+      store.getState().requestNav({ mode: "push", newChat: false });
+      expect(store.getState().navIntent).toEqual({ mode: "push", newChat: false });
+
+      expect(store.getState().consumeNavIntent()).toEqual({ mode: "push", newChat: false });
+      expect(store.getState().navIntent).toBeNull();
+      expect(store.getState().consumeNavIntent()).toBeNull();
+    });
+
+    it("keeps only the latest request", () => {
+      const { store } = freshStore();
+      store.getState().requestNav({ mode: "push", newChat: false });
+      store.getState().requestNav({ mode: "replace", newChat: true });
+      expect(store.getState().consumeNavIntent()).toEqual({ mode: "replace", newChat: true });
+    });
+  });
 });

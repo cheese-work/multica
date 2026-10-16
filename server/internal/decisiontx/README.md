@@ -1,7 +1,8 @@
 # Decision transaction primitives
 
 This package is the schema/transaction foundation for the revision 14 decision
-contract. It does not implement intent, lane, request, answer or worker routes.
+contract. HTTP routes and the leased consequence runner live in the handler
+package. Group delivery, lifecycle cancellation and veto notices are later slices.
 
 `Begin` acquires the existing workspace `FOR KEY SHARE` fence before returning
 a transaction. A missing workspace or failed fence rolls back and returns no
@@ -38,6 +39,78 @@ A valid window leaves the transaction open for its consumer. The lane/request
 slices wire this guard into their own operations; baseline comment deletion
 continues to run no decision statement.
 
+## CHE-1630 worker-callable consequences
+
+`handler.CheckDecisionSource(ctx, workspaceID, requestID)` runs one source-check
+transaction. It locates the request with a plain read, then locks workspace,
+the current lane, the ask thread, issue, request and live answer in that order.
+It rechecks the located context and source existence under those locks. Missing
+sources invoke `Withdraw` with `source_removed`, including immutable snapshots,
+cancelled-request preservation and archived/unprompted cancellation receipts.
+Source edits alone do not withdraw an answer. Already-withdrawn answers, missing
+owners and intact sources are no-ops. Its committed `Withdrawal` returns comments
+and cleared resolutions for the worker's post-commit publication; errors return
+no uncommitted objects.
+
+Use `len(result.Comments) > 0` as the source-check action signal. An intact
+source can return the current request and answer with empty `Comments`; nonzero
+request or answer IDs do not signal a withdrawal. A settled retry returns no
+comments or cleared resolutions to publish again.
+
+`handler.SealDecisionIntent(ctx, workspaceID, intentID)` locks workspace, issue
+and intent, then rechecks the tag, terminal/missing bound task and expiry. It
+seals invalid windows and closes missing/tombstoned tags with `comment_deleted`.
+`SealInvalidIntent` is the shared, non-committing transition used by both this
+transaction and `ValidateIntent`. Callers of the transition must already hold
+the workspace, issue and intent fences. Live windows and sealed retries leave
+timestamps and unconsumed targets unchanged.
+
+`ListDecisionSourceChecks(ctx, batchSize)` returns scoped request rows;
+`ListDecisionSealIntents(ctx, batchSize)` returns intent rows. Both are plain
+reads, deterministically ordered by ID and capped at 100 rows. Non-positive
+limits return no rows. Neither selector takes a decision lock. Missing baseline
+owners are left to CHE-1550's orphan cleanup, not repeatedly selected. Selected
+rows are hints: each transaction independently rechecks eligibility.
+
+CHE-1550 owns the lease, scheduling, retries, post-commit events, Finalize,
+Lifecycle cancel and deferred deliveries. These methods do not notify, enqueue,
+deliver notes or install baseline hooks. SQLSTATE lock/deadlock errors remain
+available to `decisiontx.IsRetryable`; the caller owns bounded retries. The
+runtime-unbind/detach ordering and the merge `trigger_comment_id` FK corrections
+remain unchanged in the record/veto code comments; no protocol change is made.
+
+## CHE-1753 leased consequence runner
+
+`handler.DecisionWorker` runs beside the other server workers and joins shutdown
+after cancellation. `Notify()` coalesces local post-commit hints; the five-second
+tick recovers work after restarts or remote commits. `ProcessPass(ctx)` is the
+synchronous entry point for database-backed tests. It claims one CAS lease with
+a unique holder/token and a 30-second expiry, renews an in-flight pass every ten
+seconds, and cancels that pass if renewal fails or loses ownership. Shutdown
+releases only its own token. The lease limits duplicate work; transaction locks
+and eligibility rechecks provide correctness after expiry or takeover.
+
+Each pass cleans decision-only orphans, checks missing sources, finalizes
+terminal answering turns, seals invalid intents and retries original ping inbox
+delivery through `NotifyPing`. Selectors are bounded at 100 candidates. Each
+item gets at most two attempts for the named retryable lock/deadlock errors;
+other failures are reported and remain eligible for a later pass.
+
+`FinalizeDecisionAnswer(ctx, workspaceID, requestID)` shares the Source Check
+lock order and withdrawal primitive. Only a completed answering task on an
+answered request sets `wake_at = max(effective_at, now)`. Failed/cancelled turns
+withdraw in the same transaction as their comments. Running turns remain
+pending, archived lanes cancel with `lane_archived`, unprompted records do not
+reopen, and an already-cancelled request keeps its original cancellation.
+
+Orphan cleanup locks the surviving workspace, then intents/targets and
+requests/answers in ID order. Only decision parents are deleted; the existing
+decision-only cascading FKs remove their children. Every delete rechecks the
+missing issue/workspace. Missing lane sessions alone never cause cleanup.
+Withdrawal comments, cleared resolutions and inbox events publish only after
+the corresponding transaction commits. No task delivery or notice outbox is
+introduced, and baseline terminal/deletion transactions gain no decision SQL.
+
 All decision IDs referencing baseline rows are plain UUIDs. The task-specific
 approval permits exactly three internal cascading FKs: answer/request,
 class-change/request and intent-target/intent. Baseline application transactions
@@ -61,7 +134,27 @@ Lock contention gets at most three attempts; the named deadlock gets at most
 one retry. Retryable database errors remain recognizable to the later API's
 503 mapper.
 
-The core performs no post-commit side effect. The public request handler calls
+CHE-1549 adds the private asked-record core in the handler package. It resolves
+the nearest stamped parent before filtering status, then locks workspace,
+session, thread, issue, calling task (`FOR SHARE NOWAIT`), and request. Under
+those locks it re-checks the running chat task, asked/open request, human and
+DM lane, and interactive human source messages after the ping and before the
+turn started. Snapshot, stamped quote, DM reference, and answered state commit
+together; failure leaves no partial result. One source may answer several
+requests, but a second answer to the same request is refused. `wake_at` stays
+NULL. The database clock sets the effective time, with the ten-minute hold
+for non-reversible classes. Lock contention has three attempts; a deadlock has
+at most one retry. The core has no post-commit effects.
+
+Both archive paths read the open-lane guard after locking the session and
+before continuation side effects. Hard delete refuses open lanes and messages
+referenced by any answer, including withdrawn answers, and identifies the
+referencing issues. These baseline paths use plain decision reads only;
+comment deletion and task completion do not write a decision consequence.
+Public record CLI/API and unprompted records are deferred to CHE-1628, with
+worker finalization, delivery and source checks invoked by CHE-1550.
+
+The request core performs no post-commit side effect. The public request handler calls
 it before the inbox consumer or any subscriber/mention/realtime event.
 `POST /api/decisions` accepts `issue_id`, `session_id`, `ask`, and
 `escalation_class`. Only the running issue-task provenance admitted by the core
@@ -129,3 +222,75 @@ single-statement down file. The hook also removes an invalid index from an
 interrupted rebuild before retrying. Bounded rollback keeps its named target
 applied: `down --to 612_decision_target_primary_key` retains the primary key;
 `down --to 611_decision_answer_request_index` exercises the 612 rollback.
+
+CHE-1628 wires `issue comment add --decision-record --message <id>` to the
+record transaction. No stamped parent means an unprompted request and answer
+commit together; an ordinary parent controls placement without becoming an
+ask. Unprompted records require an explicit class and an active member on an
+eligible same-workspace issue. When unsure of the class, the DM agent must
+choose a held class, never `reversible`. A pending quote never triggers a task.
+The DM reference includes the class, issue link and answer-specific disclaim
+endpoint. Wake finalization and worker notification remain the worker slice.
+
+`POST /api/decision-answers/{id}/disclaim` accepts only the request's human.
+The handler fences workspace, current session, ask thread and issue, then
+locks request and answer. It re-checks the immutable request context and reads
+archive state under the session fence. It takes no task lock and never
+rebinds, creates a DM, re-pings or delivers a re-ask itself.
+An already-withdrawn answer returns 409 from this human endpoint. The worker
+helper remains idempotent. A physically deleted anchor needs no thread lock;
+the withdrawal comments are top-level instead. Server-written disclaim and
+cancel comments use the asking agent; `disclaimed_by_user_id` retains the human.
+
+`Withdraw` is the shared human/worker transition. Call it with transactional
+queries and freshly loaded request/answer rows after those same locks and any
+caller-specific authorization. The caller commits or rolls back all results
+together and publishes comments only after commit. The helper never opens its
+own transaction. It preserves source IDs, snapshot, quote and prior cancelled
+reason. A repeated withdrawal is a no-op. A live asked answer reopens only in
+an active lane; an archived lane cancels with `lane_archived`, a cancel comment
+and a durable notice receipt for the later worker's re-ask. Unprompted answers
+cancel with `record_disclaimed`; their disclaim comment is the cancellation
+notice, and no re-ask becomes due. Every withdrawal writes its disclaim comment
+and receipts atomically. Pending wakes are cleared; delivered wakes retain
+their history so the worker can select the withdrawal for retraction.
+
+CHE-1629 adds `multica issue comment add --decision-veto --parent <quote-id>
+--content-file <reason>`. Only a running assigned issue task (including an
+assignee squad member) or a running chat task of the immutable source DM can
+withdraw a stamped answer. The transaction locks workspace, current session,
+quote thread, issue, NOWAIT calling task, request and answer, in that order.
+It rechecks the stamp and task under those fences. Task contention gets three
+attempts; a deadlock gets only one retry. Exhaustion returns 503 with
+`Retry-After: 1` and commits nothing.
+
+`WithdrawByAgent` reuses the human/worker withdrawal transition. A veto comment
+retains the full reason; `veto_reason` retains its first 600 Unicode characters.
+Agent and task attribution are separate from human attribution. Asked answers
+reopen only in a live lane; cancelled requests preserve their reason; archived
+lanes cancel with a notice; unprompted records cancel with `record_vetoed`.
+Only an issue-agent veto by the current retraction recipient (agent assignee
+or squad leader) acknowledges an already-delivered wake as
+`suppressed_agent_veto`. A non-leader squad member and a source-DM task never
+suppress that retraction. DM notes, inbox delivery, worker finalization and
+retraction delivery remain CHE-1550; these handlers do not invoke baseline
+comment triggers or enqueue work.
+
+`POST /api/decision-requests/{id}/class` accepts only the request's human.
+Raising means changing `reversible` to one of the five escalation classes;
+those classes are unranked, not an invented severity hierarchy. Same-class,
+sideways and lowering changes return 409, as does any cancelled request.
+Workspace, request and live-answer fences serialize class changes with record,
+withdrawal and worker operations. The class update and `decision_class_change`
+audit commit together. A live, un-woken answer gets a fresh ten-minute hold;
+an existing schedule is recomputed to that same time, but a pending answer's
+NULL `wake_at` remains NULL. Withdrawn and already-woken answers never move.
+
+The scoped regression inventory spans guards, intent/ping, asked/unprompted
+recording, human withdrawal, agent veto and raise-class integration. Run from
+`server/` with the checkout's isolated `DATABASE_URL`:
+
+```sh
+go test -race -p 1 ./internal/handler ./internal/decisiontx ./cmd/server -run 'Decision|AskedDecision|UnpromptedDecision' -count=1
+go test ./cmd/multica -run 'Decision' -count=1
+```

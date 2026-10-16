@@ -17,6 +17,7 @@ import type {
   ChatDraftRestoresResponse,
   ChatPendingTask,
   ChatSession,
+  ChatSessionUsage,
   PrioritizeQueuedChatTaskResponse,
   SendChatMessageResponse,
   StartMikaOnboardingResponse,
@@ -741,6 +742,7 @@ export const EMPTY_ISSUE_PROPERTIES_RESPONSE: IssuePropertiesResponse = {
 
 export interface AppConfigResponse {
   cdn_domain: string;
+  attachment_public_url?: string;
   // True when the CDN domain serves private content via time-bounded signed
   // URLs (CloudFront signing) — raw storage URLs on that domain are NOT
   // publicly fetchable and must not be used as native media sources
@@ -1025,6 +1027,7 @@ export const EMPTY_REFRESH_SESSION_RESPONSE: RefreshSessionResponse = {
 
 export const AppConfigSchema = z.object({
   cdn_domain: z.string().default(""),
+  attachment_public_url: OptionalStringSchema,
   cdn_signed: BooleanWithDefaultSchema(false),
   allow_signup: BooleanWithDefaultSchema(true),
   google_client_id: OptionalStringSchema,
@@ -1047,6 +1050,7 @@ export const AppConfigSchema = z.object({
 
 export const EMPTY_APP_CONFIG: AppConfigResponse = {
   cdn_domain: "",
+  attachment_public_url: "",
   cdn_signed: false,
   allow_signup: true,
   google_client_id: "",
@@ -1102,6 +1106,14 @@ export const CommentSchema = z.object({
   updated_at: z.string(),
   revision: z.number().int().positive().optional(),
   source_task_id: z.string().nullable().optional(),
+  decision_intent_id: z.string().nullable().optional().catch(undefined),
+  decision_request_id: z.string().nullable().optional().catch(undefined),
+  decision_answer_id: z.string().nullable().optional().catch(undefined),
+  decision_comment_kind: z
+    .enum(["ask", "quote", "disclaim", "delivery", "cancel", "veto"])
+    .nullable()
+    .optional()
+    .catch(undefined),
   supplements: CommentSupplementReceiptsSchema,
   supplement_task_id: z.string().optional().catch(undefined),
   supplement_status: z.enum(["pending", "delivering", "delivered", "failed"]).optional().catch(undefined),
@@ -2100,6 +2112,55 @@ export const ChatSessionUpdatedPayloadSchema = z.object({
   continued_into_session_id: z.string().uuid().optional().catch(undefined),
   updated_at: z.string().optional().catch(undefined),
 }).loose();
+
+const ChatUsageTokensSchema = z.object({
+  input: z.number().default(0),
+  output: z.number().default(0),
+  cache_read: z.number().default(0),
+  cache_write: z.number().default(0),
+}).loose();
+
+const EMPTY_CHAT_USAGE_TOKENS = { input: 0, output: 0, cache_read: 0, cache_write: 0 };
+
+const ChatUsageModelSchema = z.object({
+  tokens: ChatUsageTokensSchema.default(EMPTY_CHAT_USAGE_TOKENS),
+  cost_usd_ticks: z.number().default(0),
+}).loose();
+
+// cost_usd_ticks (here and per model) is in ticks of 1e-10 USD: 1 USD = 1e10 ticks.
+export const ChatSessionUsageSchema = z.object({
+  session_id: z.string(),
+  tokens: ChatUsageTokensSchema.default(EMPTY_CHAT_USAGE_TOKENS),
+  uncosted_tokens: ChatUsageTokensSchema.default(EMPTY_CHAT_USAGE_TOKENS),
+  cost_usd_ticks: z.number().default(0),
+  runs: z.object({
+    by_status: z.record(z.string(), z.number()).default({}),
+    terminal: z.number().default(0),
+    metered: z.number().default(0),
+    unreported: z.number().default(0),
+    total_run_ms: z.number().default(0),
+  }).loose().default({ by_status: {}, terminal: 0, metered: 0, unreported: 0, total_run_ms: 0 }),
+  messages: z.object({
+    by_role: z.record(z.string(), z.number()).default({}),
+  }).loose().default({ by_role: {} }),
+  by_model: z.record(z.string(), ChatUsageModelSchema).default({}),
+  continued_from_session_id: z.string().nullable().default(null),
+  continued_into_session_id: z.string().nullable().default(null),
+  forked_from_session_id: z.string().nullable().default(null),
+}).loose();
+
+export const EMPTY_CHAT_SESSION_USAGE: ChatSessionUsage = {
+  session_id: "",
+  tokens: EMPTY_CHAT_USAGE_TOKENS,
+  uncosted_tokens: EMPTY_CHAT_USAGE_TOKENS,
+  cost_usd_ticks: 0,
+  runs: { by_status: {}, terminal: 0, metered: 0, unreported: 0, total_run_ms: 0 },
+  messages: { by_role: {} },
+  by_model: {},
+  continued_from_session_id: null,
+  continued_into_session_id: null,
+  forked_from_session_id: null,
+};
 
 export const EMPTY_CHAT_CONTINUE_RESPONSE = {
   session: EMPTY_CHAT_SESSION,
