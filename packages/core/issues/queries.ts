@@ -471,9 +471,14 @@ export function issueIdentifierOptions(wsId: string, identifier: string) {
     queryKey: issueKeys.identifier(wsId, identifier),
     // Keep this small, cacheable lookup alive when the last mention unmounts.
     // A remount can then share its request instead of aborting and restarting it.
-    queryFn: async () => {
+    queryFn: async ({ client }) => {
       try {
-        return await api.getIssue(identifier);
+        const issue = await api.getIssue(identifier);
+        // Seed the detail cache so the chip that renders next reads this
+        // issue instead of firing a second `getIssue(uuid)` and painting a
+        // label-only chip until it lands.
+        client.setQueryData(issueKeys.detail(wsId, issue.id), issue);
+        return issue;
       } catch (err) {
         // Unknown identifier / wrong workspace prefix → render as plain text.
         // Any other failure (401/5xx) must keep propagating so the query
