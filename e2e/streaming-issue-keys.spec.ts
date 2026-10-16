@@ -107,6 +107,8 @@ async function measureChips(page: Page, scope: string) {
 for (const viewport of VIEWPORTS) {
   test(`streamed bare issue keys never chip a partial key (${viewport.name})`, async ({ page }, testInfo) => {
     test.skip(!ENABLED, "Set MULTICA_E2E_STREAMING_ISSUE_KEYS=1 against an isolated environment");
+    // A dev server compiles each route on first visit.
+    test.setTimeout(240_000);
     const databaseUrl = process.env.DATABASE_URL;
     if (!databaseUrl || new URL(databaseUrl).pathname === "/multica") {
       throw new Error("Streaming issue-key E2E requires an isolated, non-default database");
@@ -128,30 +130,31 @@ for (const viewport of VIEWPORTS) {
         await db.query<{ id: string }>(`SELECT id::text FROM "user" WHERE email = $1`, [api.getEmail()])
       ).rows[0]!.id;
 
-      // The workspace belongs to this run only, so its prefix and counter can
-      // be set to make CHE-1 … CHE-1824 real issues.
+      // The workspace belongs to this run only (both viewports share it), so its
+      // prefix and counter can be set to make CHE-1 … CHE-1824 real issues.
       await db.query(`UPDATE workspace SET issue_prefix = 'CHE', issue_counter = GREATEST(issue_counter, 1824) WHERE id = $1`, [workspace.id]);
       const titles: Record<number, string> = { 1: SHORT_TITLE, 18: "Partial key eighteen", 182: "Partial key one eight two", 1824: LONG_TITLE };
       for (const [number, title] of Object.entries(titles)) {
         await db.query(
           `INSERT INTO issue (workspace_id, title, status, priority, creator_type, creator_id, position, number)
-           VALUES ($1, $2, 'todo', 'none', 'member', $3, $4, $4)`,
-          [workspace.id, title, userId, Number(number)],
+           VALUES ($1, $2, 'todo', 'none', 'member', $3, $4::double precision, $5::integer)
+           ON CONFLICT (workspace_id, number) DO NOTHING`,
+          [workspace.id, title, userId, Number(number), Number(number)],
         );
       }
 
       runtimeId = (
         await db.query<{ id: string }>(
           `INSERT INTO agent_runtime (workspace_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at)
-           VALUES ($1, 'Streaming keys E2E', 'cloud', 'e2e_streaming_keys', 'online', 'Streaming keys E2E', '{}'::jsonb, now()) RETURNING id::text`,
-          [workspace.id],
+           VALUES ($1, $2, 'cloud', 'e2e_streaming_keys', 'online', 'Streaming keys E2E', '{}'::jsonb, now()) RETURNING id::text`,
+          [workspace.id, `Streaming keys E2E ${viewport.name}`],
         )
       ).rows[0]!.id;
       const agentId = (
         await db.query<{ id: string }>(
           `INSERT INTO agent (workspace_id, name, description, instructions, runtime_mode, runtime_config, runtime_id, visibility, max_concurrent_tasks, owner_id)
-           VALUES ($1, 'Stream Fixture', '', '', 'cloud', '{}'::jsonb, $2, 'workspace', 1, $3) RETURNING id::text`,
-          [workspace.id, runtimeId, userId],
+           VALUES ($1, $4, '', '', 'cloud', '{}'::jsonb, $2, 'workspace', 1, $3) RETURNING id::text`,
+          [workspace.id, runtimeId, userId, `Stream Fixture ${viewport.name}`],
         )
       ).rows[0]!.id;
 
@@ -187,9 +190,9 @@ for (const viewport of VIEWPORTS) {
         expect(response.status(), await response.text()).toBe(200);
       }
 
-      async function waitForText(text: string) {
+      async function waitForText(text: string, timeout = 20_000) {
         await page.waitForFunction((expected) => document.body.innerText.replace(/\s+/g, " ").includes(expected), text, {
-          timeout: 20_000,
+          timeout,
         });
         // Give lookups and chip renders time to land before the next chunk.
         await page.waitForTimeout(600 + LOOKUP_DELAY_MS);
@@ -215,7 +218,7 @@ for (const viewport of VIEWPORTS) {
       //    followed by a boundary character.
       const boundary = await seedRunningTurn("Streaming keys boundary", "Which change fixed the login?", "Fixed in ");
       await page.goto(`/${workspace.slug}/chat?session=${boundary.sessionId}`, { waitUntil: "domcontentloaded" });
-      await waitForText("Fixed in");
+      await waitForText("Fixed in", 90_000);
       let streamed = "Fixed in ";
       for (const chunk of ["CHE-1", "8", "2", "4"]) {
         await appendChunk(boundary, chunk);
@@ -234,7 +237,7 @@ for (const viewport of VIEWPORTS) {
       //    chip while it streams, the full chip once the task completes.
       const settle = await seedRunningTurn("Streaming keys settle", "Where is it tracked?", "Tracked as ");
       await page.goto(`/${workspace.slug}/chat?session=${settle.sessionId}`, { waitUntil: "domcontentloaded" });
-      await waitForText("Tracked as");
+      await waitForText("Tracked as", 90_000);
       streamed = "Tracked as ";
       for (const chunk of ["CHE-1", "8", "2", "4"]) {
         await appendChunk(settle, chunk);
