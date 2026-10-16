@@ -39,6 +39,10 @@ const (
 	// scopedRetryDelay keeps an input that hit a real database error from being
 	// reclaimed every pass and starving the rest of the batch.
 	scopedRetryDelay = time.Minute
+	// scopedCapacityRetryDelay is how long an input refused by a full default
+	// pool waits before the drain tries it again. The input stays inside
+	// scopedEventRetention, so the wait is bounded by expiry.
+	scopedCapacityRetryDelay = 5 * time.Minute
 )
 
 // The outcome recorded on a handled outbox input.
@@ -315,9 +319,16 @@ func (s *IssueWakeupService) drainOneScopedIssue(ctx context.Context, workspaceI
 		return pass, fmt.Errorf("scoped event %s: %w", util.UUIDToString(first[0].ID), err)
 	}
 	for _, ev := range events {
-		outcome, err := batch.resolve(ctx, ev)
-		if err == nil {
-			err = q.MarkWakeupScopedEventHandled(ctx, db.MarkWakeupScopedEventHandledParams{ID: ev.ID, Now: stamp, Outcome: outcome})
+		res, err := batch.resolve(ctx, ev)
+		switch {
+		case err != nil:
+		case res.held:
+			// A full default pool is not a verdict: the input waits for capacity.
+			err = q.HoldWakeupScopedEventForCapacity(ctx, db.HoldWakeupScopedEventForCapacityParams{
+				ID: ev.ID, RetryAt: pgtype.Timestamptz{Time: now.Add(scopedCapacityRetryDelay), Valid: true}, Served: res.served,
+			})
+		default:
+			err = q.MarkWakeupScopedEventHandled(ctx, db.MarkWakeupScopedEventHandledParams{ID: ev.ID, Now: stamp, Outcome: res.outcome})
 		}
 		if err != nil {
 			// Keep pass.at and pass.pos: the position survives.
@@ -520,22 +531,36 @@ func newScopedRule(issue db.Issue, key string, chain *scopedRuleChain) *scopedRu
 	return r
 }
 
+// scopedResolution is what one captured event came to. held means a matching
+// rule was refused by a full default pool: the input stays pending and served
+// lists the rules it has already reached, so the retry skips them.
+type scopedResolution struct {
+	outcome string
+	held    bool
+	served  []string
+}
+
+// scopedServed is the marker of a rule the input has been delivered to. Unlike
+// the instance revision capture records, it survives a rebase of the instance.
+func scopedServed(rule string) string { return "rule:" + rule }
+
 // resolve decides what one captured event is worth now and delivers it into the
-// issue's instances. It returns the outcome to record; a non-nil error is a real
-// failure that leaves the input pending.
-func (b *scopedIssueBatch) resolve(ctx context.Context, ev db.WakeupScopedEvent) (string, error) {
+// issue's instances. A non-nil error is a real failure that leaves the input
+// pending.
+func (b *scopedIssueBatch) resolve(ctx context.Context, ev db.WakeupScopedEvent) (scopedResolution, error) {
 	if b.outcome != "" {
-		return b.outcome, nil
+		return scopedResolution{outcome: b.outcome}, nil
 	}
 	// The event was captured under the project the issue was in. Another project's
 	// rules never inherit it.
 	if b.issue.ProjectID != ev.ProjectID {
-		return scopedOutcomeScopeChanged, nil
+		return scopedResolution{outcome: scopedOutcomeScopeChanged}, nil
 	}
 	// One input may reach several rules; one that is refused does not stop the
 	// others. When none is delivered the first reason is recorded.
 	var replay []pgtype.UUID
-	served := 0
+	var reached []string
+	served, held := 0, false
 	reason := scopedOutcomeNoRule
 	first := true
 	for _, key := range b.keys {
@@ -543,21 +568,29 @@ func (b *scopedIssueBatch) resolve(ctx context.Context, ev db.WakeupScopedEvent)
 		if !r.chain.selects(ev.EventType) {
 			continue
 		}
+		if slices.Contains(ev.Delivered, scopedServed(key)) {
+			// A pass that held the input for another rule already delivered it here.
+			served++
+			continue
+		}
 		inst, why, err := b.deliverable(ctx, r, ev)
 		if err != nil {
-			return "", err
+			return scopedResolution{}, err
 		}
 		switch {
 		case !inst.ID.Valid:
 			if first {
 				reason = why
 			}
+			held = held || why == scopedOutcomeCapacity
 		case slices.Contains(ev.Delivered, util.UUIDToString(inst.ID)+":"+strconv.FormatInt(inst.Revision, 10)):
 			// Live capture delivered it to this configuration of the instance;
 			// replaying would count it twice and make an older event the latest.
 			served++
+			reached = append(reached, scopedServed(key))
 		default:
 			replay = append(replay, inst.ID)
+			reached = append(reached, scopedServed(key))
 		}
 		first = false
 	}
@@ -566,13 +599,16 @@ func (b *scopedIssueBatch) resolve(ctx context.Context, ev db.WakeupScopedEvent)
 			IssueID: ev.IssueID, EventType: ev.EventType, EventKey: ev.EventKey, AgentID: ev.AgentID, SourceTaskID: ev.SourceTaskID,
 			Payload: ev.Payload, CapturedAt: ev.CapturedAt, ActorType: ev.ActorType, ActorID: ev.ActorID, InstanceIds: replay,
 		}); err != nil {
-			return "", err
+			return scopedResolution{}, err
 		}
 	}
-	if len(replay)+served == 0 {
-		return reason, nil
+	switch {
+	case held:
+		return scopedResolution{held: true, served: append([]string{}, reached...)}, nil
+	case len(replay)+served == 0:
+		return scopedResolution{outcome: reason}, nil
 	}
-	return scopedOutcomeDelivered, nil
+	return scopedResolution{outcome: scopedOutcomeDelivered}, nil
 }
 
 // deliverable returns the instance an event may be delivered to for one rule,

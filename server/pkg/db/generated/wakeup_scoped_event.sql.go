@@ -401,6 +401,24 @@ func (q *Queries) GetDefaultWakeupInstance(ctx context.Context, arg GetDefaultWa
 	return i, err
 }
 
+const holdWakeupScopedEventForCapacity = `-- name: HoldWakeupScopedEventForCapacity :exec
+UPDATE wakeup_scoped_event SET retry_at= $1::timestamptz,delivered=delivered || $2::text[] WHERE id= $3 AND handled_at IS NULL
+`
+
+type HoldWakeupScopedEventForCapacityParams struct {
+	RetryAt pgtype.Timestamptz `json:"retry_at"`
+	Served  []string           `json:"served"`
+	ID      pgtype.UUID        `json:"id"`
+}
+
+// A default pool with no free slot is not a verdict on the input: it stays
+// pending until @retry_at, and @served names the rules it already reached
+// ("rule:<key>"), so the retry delivers only to the rules still waiting.
+func (q *Queries) HoldWakeupScopedEventForCapacity(ctx context.Context, arg HoldWakeupScopedEventForCapacityParams) error {
+	_, err := q.db.Exec(ctx, holdWakeupScopedEventForCapacity, arg.RetryAt, arg.Served, arg.ID)
+	return err
+}
+
 const markWakeupScopedEventHandled = `-- name: MarkWakeupScopedEventHandled :exec
 UPDATE wakeup_scoped_event SET handled_at= $1::timestamptz,outcome= $2::text,retry_at=NULL WHERE id= $3
 `

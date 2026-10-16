@@ -37,6 +37,12 @@ UPDATE wakeup_scoped_event SET handled_at= @now::timestamptz,outcome= @outcome::
 -- name: DeferWakeupScopedEvent :exec
 UPDATE wakeup_scoped_event SET retry_at= @retry_at::timestamptz WHERE id= @id AND handled_at IS NULL;
 
+-- name: HoldWakeupScopedEventForCapacity :exec
+-- A default pool with no free slot is not a verdict on the input: it stays
+-- pending until @retry_at, and @served names the rules it already reached
+-- ("rule:<key>"), so the retry delivers only to the rules still waiting.
+UPDATE wakeup_scoped_event SET retry_at= @retry_at::timestamptz,delivered=delivered || @served::text[] WHERE id= @id AND handled_at IS NULL;
+
 -- name: TryLockWakeupIssue :one
 -- The drain's issue lock never waits: a held issue yields no row, and the caller
 -- tells it from a deleted one with WakeupIssueExists.
