@@ -234,7 +234,9 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 	var humans, sources []pgtype.UUID
 	if snapshot.kind == "" {
 		for _, request := range snapshot.requests {
-			humans = append(humans, request.HumanUserID)
+			if request.Status != "cancelled" {
+				humans = append(humans, request.HumanUserID)
+			}
 		}
 	}
 	for _, humanID := range decisionWakeIDs(humans) {

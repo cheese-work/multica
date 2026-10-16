@@ -327,11 +327,17 @@ merge and active-task registration accept an optional exact target task ID.
 These writes and all answer/group acknowledgements commit together. Events and
 daemon hints publish only after commit. There is no notice outbox and no
 ordinary comment trigger. A deferred item keeps its acknowledgement NULL.
-Terminal issues, removed asked members and archived asking agents produce
-`skipped_ineligible` without dispatch. Later re-answers acknowledge individually
-without repeating the group wake. Group inputs retain every quote, cancelled
+Terminal issues, removed asked members with non-cancelled requests and archived
+asking agents produce `skipped_ineligible` without dispatch. Cancelled requests
+do not participate in membership eligibility. Later re-answers acknowledge
+individually without repeating the group wake. Group inputs retain every quote, cancelled
 request and unasked target in the task's handoff; queued merges preserve the
 normal attribution and overlay recalculation.
+
+Member and unassigned recipients receive one `delivery` comment per live answer,
+each replying to that answer's quote. The per-answer comment key makes retries
+idempotent. These rules include Cheese's approved R1: B and C: A amendments to
+design revision 14, recorded on CHE-1811 on October 16, 2026.
 
 Runtime teardown unbinds user agents before detaching task history. Updating a
 queued task's `trigger_comment_id` takes its FK's key-share lock on the comment;
