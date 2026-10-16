@@ -2605,6 +2605,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Patch("/", h.PatchNotificationPreferences)
 				r.Put("/", h.UpdateNotificationPreferences)
 			})
+			r.Route("/api/notification-channels", func(r chi.Router) {
+				r.Get("/", h.GetNotificationChannels)
+				r.Patch("/", h.PatchNotificationChannel)
+			})
 		})
 	})
 
