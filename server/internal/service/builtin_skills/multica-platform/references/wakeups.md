@@ -17,7 +17,7 @@ multica issue wakeup create <issue> --until-children-done --stage 2 --instructio
 multica issue wakeup create <issue> --until-issue <other-issue-id> --until-issue-state done --instruction-file ./instruction.md
 ```
 
-- `--until-status KEY` waits for this issue's status. `--until-pr checks` waits for linked PR checks to finish on the current head, passing or failing; `merged` waits for any linked PR to merge.
+- `--until-status KEY` waits for this issue's status. `--until-pr checks` waits for linked PR checks to finish on the current head, passing or failing; `merged` waits for any linked PR to merge. Both inspect only PRs linked directly to this issue, not a parent's. Check evaluation needs server-side GitHub snapshots; a missing link or snapshot is recorded in the rule's `last_error` and retried automatically instead of rejecting the rule.
 - `--until-children-done` waits for all sub-issues to close (`done` or `cancelled`). With `--stage N`, it waits for staged sub-issues through N; stage N must exist. A parent with no sub-issues never fires. The parent assignee already receives the stage wake, so do not add the same condition.
 - `--until-issue ISSUE` waits for another workspace issue to reach `done` (default), `ended` (`done` or `cancelled`), or `in_review`. Conditions also support `--until-assignee member|agent|squad:ID`, `--until-label LABEL_ID`, and `--until-property PROPERTY_ID=VALUE` (including JSON); see `multica issue wakeup create --help`.
 - `wakeup create <issue> --kind at --after 10m --instruction-file ./instruction.md` schedules one run. Alternatively use `--at <RFC3339>`.

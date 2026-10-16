@@ -112,8 +112,8 @@ marking it a client-side projection, not a server-sent `eta`. Do not read
 Workspaces may define custom issue properties (Severity, Environment, QA
 Status, Reviewer, ...). They are the place for durable, typed issue state:
 values are validated against the definition (select options, date format,
-http(s) URL, member reference), visible in the issue sidebar, and addressed
-by name.
+http(s) URL, member reference, free-form text/URL lists), visible in the
+issue sidebar, and addressed by name.
 
 - Read what exists before writing: `multica property list` shows the catalog;
   `multica issue property list <issue-id>` shows values set on the issue.
@@ -131,6 +131,14 @@ multica issue property unset <issue-id> --name Environment
   workspace members only. `--value` takes a member name, email, UUID, short id,
   or explicit `member:<uuid>`; `multi_actor` takes a comma-separated list
   (duplicates dropped, order kept, max 20).
+- `multi_text` / `multi_url` properties hold free-form lists: `--value` is a
+  comma-separated list of strings / http(s) URLs (empty entries skipped,
+  duplicates dropped, order kept, max 20). They take no options. An entry that
+  itself contains a comma cannot survive that form — pass a JSON array instead:
+  `--value '["Smith, John","https://en.wikipedia.org/wiki/Washington,_D.C."]'`.
+  The array form is always safe; use it whenever any entry has a comma or the
+  input starts with `[`, for example `--value '["[draft] spec"]'`. The same
+  forms work during creation: `--property 'Aliases=["Smith, John","[draft] spec"]'`.
 - Definitions may carry an optional catalog icon; it changes neither the
   property's type nor its value validation.
 - Agents cannot create or edit property definitions (owner/admin humans only).
@@ -150,15 +158,16 @@ multica issue list --sort property:Impact --direction desc --output json
   matches ANY of its values; different properties must ALL match. Values are
   option names or ids (select types), `true`/`false` (checkbox), a member
   name/email/id (actor types), or the value itself for text, url, number and
-  date (`YYYY-MM-DD`). The reserved `__none__` matches issues where the
-  property is unset (every type; not index-backed, so use it for targeted
-  audits rather than a default listing filter). Only `=` is supported today —
-  `>=`, `<=` and `!=` are reserved for comparison filters and rejected.
+  date (`YYYY-MM-DD`); for `multi_text` / `multi_url` the value matches any
+  single element of the list exactly. The reserved `__none__` matches issues
+  where the property is unset (every type; not index-backed, so use it for
+  targeted audits rather than a default listing filter). Only `=` is supported
+  today — `>=`, `<=` and `!=` are reserved for comparison filters and rejected.
 - `--sort property:<name-or-id>` orders select properties by option order — an
   ordinal scale (Low < Medium < High) sorts by meaning — and number/date/text/
   url by value; issues without the property sort last either way. Archived
-  properties and unordered types (multi_select, checkbox, actor kinds) are
-  rejected up front.
+  properties and unordered types (multi_select, checkbox, actor kinds, list
+  types) are rejected up front.
 - `issue list` and `issue get` return `properties` as a map of definition id to
   stored value. Add `--resolve-properties` in JSON mode for the rows `issue
   property list` prints (name, type, stored value, display names); the CLI makes
@@ -169,8 +178,9 @@ multica issue list --status in_progress --output json --resolve-properties
 multica issue get <issue-id> --resolve-properties
 ```
 
-  Read `display` for a single value and `display_values` for a multi_select
-  or multi_actor value; `value` keeps the stored ids.
+  Read `display` for a single value and `display_values` for a multi-value
+  property (multi_select, multi_actor, multi_text, multi_url); `value` keeps
+  the stored ids / strings.
 
 ## Status changes have server side effects
 
