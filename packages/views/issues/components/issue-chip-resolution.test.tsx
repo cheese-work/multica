@@ -6,11 +6,17 @@ import { createQueryClient } from "@multica/core/query-client";
 import { issueKeys } from "@multica/core/issues/queries";
 import { onIssueCreated } from "@multica/core/issues/ws-updaters";
 import type { Issue, ListIssuesCache } from "@multica/core/types";
+import { useResolveIssueIdentifier } from "../hooks/use-resolve-issue-identifier";
 import { IssueChip } from "./issue-chip";
 
 vi.mock("@multica/core/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@multica/core/api")>()),
   api: { getIssue: vi.fn() },
+}));
+
+vi.mock("@multica/core/paths", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/paths")>()),
+  useCurrentWorkspace: () => ({ id: "workspace-1", issue_prefix: "MUL" }),
 }));
 
 vi.mock("@multica/core/hooks", () => ({
@@ -158,5 +164,60 @@ describe("IssueChip resolution", () => {
     await screen.findByText(issue.title);
     expect(screen.getByTestId("status-icon")).toBeInTheDocument();
     expect(api.getIssue).toHaveBeenCalledTimes(3);
+  });
+
+  describe("bare identifier lookup", () => {
+    // The shape rich-content renders for an autolinked key: resolve the
+    // identifier, then hand the resolved UUID to the chip.
+    function IdentifierChip({ identifier }: { identifier: string }) {
+      const resolved = useResolveIssueIdentifier(identifier);
+      if (!resolved) return <>{identifier}</>;
+      return <IssueChip issueId={resolved.id} fallbackLabel={identifier} />;
+    }
+
+    beforeEach(() => {
+      vi.mocked(api.getIssue).mockImplementation(async (idOrIdentifier) => {
+        if (idOrIdentifier === issue.identifier || idOrIdentifier === issue.id) {
+          return issue;
+        }
+        throw new ApiError("Not found", 404, "Not Found");
+      });
+    });
+
+    it("renders title and status once, from a single getIssue request", async () => {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <IdentifierChip identifier={issue.identifier} />
+        </QueryClientProvider>,
+      );
+
+      await screen.findByText(issue.title);
+      expect(screen.getByTestId("status-icon")).toBeInTheDocument();
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(api.getIssue).toHaveBeenCalledExactlyOnceWith(issue.identifier);
+    });
+
+    it("paints the full chip in the same commit that resolves the identifier", async () => {
+      const labelOnlyPaints: string[] = [];
+      const observer = new MutationObserver(() => {
+        const chipEl = document.querySelector(".issue-mention");
+        if (chipEl && !chipEl.textContent?.includes(issue.title)) {
+          labelOnlyPaints.push(chipEl.textContent ?? "");
+        }
+      });
+      observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+
+      render(
+        <QueryClientProvider client={queryClient}>
+          <IdentifierChip identifier={issue.identifier} />
+        </QueryClientProvider>,
+      );
+      await screen.findByText(issue.title);
+      observer.disconnect();
+
+      expect(labelOnlyPaints).toEqual([]);
+    });
   });
 });
