@@ -120,10 +120,18 @@ function useClosedFence(offset: number | undefined): ClosedFence | undefined {
  * IssueMentionCard; the wrapper only shields surrounding click handlers
  * (e.g. collapsed-comment expanders) from mention clicks.
  */
-function IssueMentionLink({ issueId, label }: { issueId: string; label?: string }) {
+function IssueMentionLink({
+  issueId,
+  label,
+  stableWidth,
+}: {
+  issueId: string;
+  label?: string;
+  stableWidth?: boolean;
+}) {
   return (
     <span className="inline align-middle" onClick={(e) => e.stopPropagation()}>
-      <IssueMentionCard issueId={issueId} fallbackLabel={label} />
+      <IssueMentionCard issueId={issueId} fallbackLabel={label} stableWidth={stableWidth} />
     </span>
   );
 }
@@ -148,20 +156,21 @@ function IssueMentionLink({ issueId, label }: { issueId: string; label?: string 
 function IdentifierIssueMentionLink({
   identifier,
   fallback,
-  reserveWhileLoading = false,
+  stableBox = false,
 }: {
   identifier: string;
   fallback: ReactNode;
-  /** Show the chip-shaped loading box while the lookup is in flight. Only the
-   *  autolink entry sets it; an authored URL keeps its anchor throughout. */
-  reserveWhileLoading?: boolean;
+  /** Show a chip-sized loading box while the lookup is in flight, and a chip of
+   *  the same width once it resolves. Only the autolink entry sets it; an
+   *  authored URL keeps its anchor and the chip's content width throughout. */
+  stableBox?: boolean;
 }) {
   const issue = useResolveIssueIdentifier(identifier);
-  if (issue === undefined && reserveWhileLoading) {
+  if (issue === undefined && stableBox) {
     return <IssueChipLoading identifier={identifier} />;
   }
   if (!issue) return <>{fallback}</>;
-  return <IssueMentionLink issueId={issue.id} label={identifier} />;
+  return <IssueMentionLink issueId={issue.id} label={identifier} stableWidth={stableBox} />;
 }
 
 /**
@@ -289,7 +298,7 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
           <IdentifierIssueMentionLink
             identifier={match[2]}
             fallback={match[2]}
-            reserveWhileLoading
+            stableBox
           />
         );
       }

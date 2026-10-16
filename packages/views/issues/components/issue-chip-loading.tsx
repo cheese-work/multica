@@ -1,11 +1,12 @@
-import { ISSUE_CHIP_BASE_CLASS } from "./issue-chip-shell";
+import { ISSUE_CHIP_BASE_CLASS, ISSUE_CHIP_STABLE_WIDTH_CLASS } from "./issue-chip-shell";
 
 /**
  * Box shown for a bare issue key while its lookup is in flight. It wears the
  * resolved chip's shell, including an empty slot where the status icon goes
  * (the icon is the chip's first flex item and sets its baseline), so the line
- * keeps the chip's height and vertical position when the lookup lands; only
- * the title segment is added to the width.
+ * keeps the chip's height and vertical position when the lookup lands. Its
+ * width is the chip's cap, the same as the resolved bare-key chip's, so nothing
+ * on the line moves.
  *
  * Deliberately not a link: the key is unverified until the lookup settles, and
  * a miss (404) turns back into the plain text the author typed.
@@ -17,7 +18,7 @@ export function IssueChipLoading({ identifier }: { identifier: string }) {
         <span
           data-issue-chip-loading=""
           aria-busy="true"
-          className={ISSUE_CHIP_BASE_CLASS}
+          className={`${ISSUE_CHIP_BASE_CLASS} ${ISSUE_CHIP_STABLE_WIDTH_CLASS}`}
         >
           <span aria-hidden className="h-3.5 w-3.5 shrink-0" />
           <span className="font-medium text-muted-foreground shrink-0">
