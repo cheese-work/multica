@@ -3,10 +3,12 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/logger"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -309,6 +311,14 @@ func (h *Handler) MarkInboxUnread(w http.ResponseWriter, r *http.Request) {
 	}
 	item, err := h.Queries.MarkInboxUnread(r.Context(), prev.ID)
 	if err != nil {
+		// A DM holds at most one unread dm_reply record (partial unique index).
+		// A newer unread record already keeps the DM unread, so the older one
+		// stays read.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "idx_inbox_item_dedupe_unread" {
+			writeError(w, http.StatusConflict, "this DM already has a newer unread notification")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to mark unread")
 		return
 	}
