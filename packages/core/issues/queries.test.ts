@@ -729,6 +729,99 @@ describe("issueIdentifierOptions", () => {
       const older = makeIssue(7, { title: "older", revision: 1 });
       expect(await lookupSettlingAfter(older, () => {}, response)).toEqual(response);
     });
+
+    // A newer revision can live only in a list projection while the detail
+    // entry is absent; the lookup must not seed a stale detail entry.
+    const rowsQuery = {
+      scope: { kind: "workspace" },
+      filters: {},
+      sort: { field: "position", direction: "asc" },
+    } as const;
+    const projections = {
+      list: {
+        key: issueKeys.list(WS_ID),
+        seed: (issue: Issue) => ({ byStatus: { unstarted: { issues: [issue], total: 1 } } }),
+        read: (data: ListIssuesCache) => data.byStatus.unstarted?.issues[0],
+      },
+      flat: {
+        key: issueKeys.flat(WS_ID, "workspace:all", {}, { sort_by: "position" }),
+        seed: (issue: Issue) => ({ pages: [{ issues: [issue], total: 1 }], pageParams: [0] }),
+        read: (data: { pages: { issues: Issue[] }[] }) => data.pages[0]?.issues[0],
+      },
+      table: {
+        key: [
+          ...issueKeys.tableRows(WS_ID, rowsQuery, { kind: "none" }, null, false, null),
+          "page",
+          null,
+        ],
+        seed: (issue: Issue) => ({
+          query_fingerprint: "sha256:table",
+          group_key: null,
+          parent_id: null,
+          total: 1,
+          rows: [{ issue, direct_child_count: 0 }],
+          branch_total: 1,
+          next_cursor: null,
+        }),
+        read: (data: IssueTableRowsResponse) => data.rows[0]?.issue,
+      },
+    } as const;
+
+    it.each(Object.keys(projections) as (keyof typeof projections)[])(
+      "does not seed a stale detail entry over newer %s-only data",
+      async (name) => {
+        const { key, seed, read } = projections[name] as {
+          key: readonly unknown[];
+          seed: (issue: Issue) => unknown;
+          read: (data: never) => Issue | undefined;
+        };
+        qc.setQueryData(key, seed(makeIssue(7, { title: "base", revision: 1 })));
+
+        const detail = await lookupSettlingAfter(
+          undefined,
+          () => onIssueUpdated(qc, WS_ID, makeIssue(7, { title: "newer", revision: 3 })),
+          makeIssue(7, { title: "older lookup", revision: 2 }),
+        );
+
+        expect(read(qc.getQueryData(key) as never)).toMatchObject({ title: "newer", revision: 3 });
+        expect(detail).toBeUndefined();
+      },
+    );
+
+    it("keeps populated detail data when the lookup response carries no revision", async () => {
+      const detail = await lookupSettlingAfter(
+        makeIssue(7, { title: "authoritative", revision: 3 }),
+        () => {},
+        makeIssue(7, { title: "unversioned lookup", revision: undefined }),
+      );
+
+      expect(detail).toMatchObject({ title: "authoritative", revision: 3 });
+    });
+
+    it("does not seed detail from a response with no revision over ordered list data", async () => {
+      qc.setQueryData(
+        projections.list.key,
+        projections.list.seed(makeIssue(7, { title: "ordered", revision: 3 })),
+      );
+
+      const detail = await lookupSettlingAfter(
+        undefined,
+        () => {},
+        makeIssue(7, { title: "unversioned lookup", revision: undefined }),
+      );
+
+      expect(detail).toBeUndefined();
+    });
+
+    it("still seeds detail when the lookup revision equals the cached one", async () => {
+      qc.setQueryData(
+        projections.list.key,
+        projections.list.seed(makeIssue(7, { title: "listed", revision: 3 })),
+      );
+      const response = makeIssue(7, { title: "looked up", revision: 3 });
+
+      expect(await lookupSettlingAfter(undefined, () => {}, response)).toEqual(response);
+    });
   });
 
   it("keys the query by workspace and identifier", () => {
