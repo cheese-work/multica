@@ -4348,6 +4348,13 @@ type TaskCompleteRequest struct {
 	// to report" — this says "never hand this id to a later run". Older
 	// daemons omit it, which is exactly the pre-fix behaviour.
 	RetiredSessionID string `json:"retired_session_id,omitempty"`
+	// Context is the prompt size of the run's last model call and the model's
+	// context window. Optional: daemons that predate it omit it, which leaves
+	// the task's context columns NULL.
+	Context *struct {
+		Tokens int64 `json:"tokens"`
+		Window int64 `json:"window"`
+	} `json:"context,omitempty"`
 }
 
 // sanitizeTaskCompleteRequest / sanitizeTaskFailRequest scrub every
@@ -4438,7 +4445,11 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	// transaction (force session_id NULL + flag the row), so an auto-retry the
 	// same commit creates and wakes can never observe the withheld pointer or a
 	// missing continuity-gap flag.
-	task, transitioned, err := h.TaskService.CompleteTaskWithTransition(r.Context(), parseUUID(taskID), result, req.SessionID, req.WorkDir, req.BranchName, req.SessionRolloutMissing, req.RetiredSessionID, req.DurableWorkDir)
+	var runContext *service.RunContext
+	if req.Context != nil {
+		runContext = &service.RunContext{Tokens: req.Context.Tokens, Window: req.Context.Window}
+	}
+	task, transitioned, err := h.TaskService.CompleteTaskWithRunContext(r.Context(), parseUUID(taskID), result, req.SessionID, req.WorkDir, req.BranchName, req.SessionRolloutMissing, req.RetiredSessionID, req.DurableWorkDir, runContext)
 	if err != nil {
 		// A CompleteTask error is an infrastructure failure (transaction /
 		// assistant-outcome write), not a bad request: an already-finalized

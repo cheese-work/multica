@@ -145,6 +145,7 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
 	"621_chat_fork_operation_index":                             "chat_session_fork_operation_idx",
+	"628_notification_channel_preference_index":                 "notification_channel_preference_key_uidx",
 	"615_decision_request_comment_v2_index":                     "comment_decision_request_kind_v2_uidx",
 	"598_decision_request_id_index":                             "decision_request_id_uidx",
 	"599_decision_intent_id_index":                              "decision_intent_id_uidx",
@@ -159,6 +160,7 @@ var concurrentIndexCleanups = map[string]string{
 	"609_decision_worker_lease_name_index":                      "decision_worker_lease_name_uidx",
 	"610_decision_class_change_request_index":                   "decision_class_change_request_idx",
 	"611_decision_answer_request_index":                         "decision_answer_request_idx",
+	"629_chat_session_title_trgm_index":                         "idx_chat_session_title_trgm",
 	"571_search_index_change_changed_at_index":                  "idx_search_index_change_changed_at",
 	"570_search_index_change_workspace_index":                   "idx_search_index_change_workspace_xid",
 	"560_agent_task_history_page_index":                         "idx_agent_task_queue_history_page",
@@ -183,10 +185,10 @@ var concurrentIndexCleanups = map[string]string{
 	"588_wakeup_aggregate_reservation_window_index":             "wakeup_aggregate_reservation_window_idx",
 	"589_wakeup_aggregate_blocked_index":                        "issue_wakeup_aggregate_blocked_idx",
 	"591_wakeup_aggregate_reservation_age_index":                "wakeup_aggregate_reservation_age_idx",
-	"628_wakeup_scoped_event_id_index":                          "wakeup_scoped_event_id_idx",
-	"629_wakeup_scoped_event_pending_index":                     "wakeup_scoped_event_pending_idx",
-	"630_wakeup_scoped_event_handled_index":                     "wakeup_scoped_event_handled_idx",
-	"631_wakeup_scoped_event_issue_index":                       "wakeup_scoped_event_issue_idx",
+	"632_wakeup_scoped_event_id_index":                          "wakeup_scoped_event_id_idx",
+	"633_wakeup_scoped_event_pending_index":                     "wakeup_scoped_event_pending_idx",
+	"634_wakeup_scoped_event_handled_index":                     "wakeup_scoped_event_handled_idx",
+	"635_wakeup_scoped_event_issue_index":                       "wakeup_scoped_event_issue_idx",
 	"641_wakeup_definition_sweep_index":                         "issue_wakeup_definition_sweep_idx",
 	"642_issue_project_keyset_index":                            "idx_issue_project_id_keyset",
 	"643_wakeup_capacity_held_index":                            "issue_wakeup_capacity_held_idx",
@@ -489,25 +491,25 @@ var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
 		TableRegclass: "wakeup_aggregate_reservation",
 		Columns:       []string{"reserved_at"},
 	},
-	"628_wakeup_scoped_event_id_index": {
+	"632_wakeup_scoped_event_id_index": {
 		IndexRegclass: "wakeup_scoped_event_id_idx",
 		TableRegclass: "wakeup_scoped_event",
 		Unique:        true,
 		Columns:       []string{"id"},
 	},
-	"629_wakeup_scoped_event_pending_index": {
+	"633_wakeup_scoped_event_pending_index": {
 		IndexRegclass: "wakeup_scoped_event_pending_idx",
 		TableRegclass: "wakeup_scoped_event",
 		Columns:       []string{"captured_at", "id"},
 		Predicate:     "handled_at IS NULL",
 	},
-	"630_wakeup_scoped_event_handled_index": {
+	"634_wakeup_scoped_event_handled_index": {
 		IndexRegclass: "wakeup_scoped_event_handled_idx",
 		TableRegclass: "wakeup_scoped_event",
 		Columns:       []string{"handled_at"},
 		Predicate:     "handled_at IS NOT NULL",
 	},
-	"631_wakeup_scoped_event_issue_index": {
+	"635_wakeup_scoped_event_issue_index": {
 		IndexRegclass: "wakeup_scoped_event_issue_idx",
 		TableRegclass: "wakeup_scoped_event",
 		Columns:       []string{"issue_id", "captured_at", "id"},

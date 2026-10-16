@@ -1,4 +1,4 @@
--- Restore the L9 probe (migration 597) and drop the activation capture.
+-- Restore the L9 probe (migration 636) and drop the activation capture.
 DROP TRIGGER IF EXISTS capture_issue_activation_wakeup ON issue;
 DROP FUNCTION IF EXISTS capture_issue_activation_wakeup();
 CREATE OR REPLACE FUNCTION wakeup_scoped_event_probe(uuid, text, uuid, text) RETURNS boolean LANGUAGE plpgsql STABLE AS $$

@@ -281,8 +281,13 @@ func TestContinueChatSessionPreservesPin(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if stored.PinnedAt.Valid != source.PinnedAt.Valid || !stored.PinnedAt.Time.Equal(source.PinnedAt.Time) {
-					t.Errorf("session %s pinned_at = %+v, want %+v", id, stored.PinnedAt, source.PinnedAt)
+				// The new DM keeps the copied pin; the archived source is unpinned (Addendum A2).
+				want := source.PinnedAt
+				if id == sessionID {
+					want = pgtype.Timestamptz{}
+				}
+				if stored.PinnedAt.Valid != want.Valid || !stored.PinnedAt.Time.Equal(want.Time) {
+					t.Errorf("session %s pinned_at = %+v, want %+v", id, stored.PinnedAt, want)
 				}
 				if id == sessionID && stored.Status != "archived" {
 					t.Errorf("source status = %s, want archived", stored.Status)

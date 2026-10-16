@@ -147,6 +147,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"wakeup_aggregate_reservation":       workspaceDelete,
 	"wakeup_scoped_event":                workspaceDelete,
 	"workspace_mcp_server":               workspaceDelete,
+	"notification_channel_preference":    workspaceDelete,
 	"notification_preference":            workspaceDelete,
 	"personal_access_token":              workspaceDeleteKeep,
 	"pinned_item":                        workspaceDelete,

@@ -1067,6 +1067,8 @@ SET status = 'completed', completed_at = now(), result = $2,
     branch_name = COALESCE(sqlc.narg('branch_name'), branch_name),
     session_rollout_missing = sqlc.arg('session_rollout_missing'),
     retired_session_id = COALESCE(sqlc.narg('retired_session_id'), retired_session_id),
+    context_tokens = sqlc.narg('context_tokens'),
+    context_window = sqlc.narg('context_window'),
     prepare_lease_expires_at = NULL
 WHERE id = $1 AND status = 'running'
 RETURNING *;
@@ -1231,6 +1233,7 @@ WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
       AND NOT (COALESCE(error, '') ILIKE '%400%' AND COALESCE(error, '') ILIKE '%invalid_request_error%')
       AND NOT (COALESCE(error, '') ILIKE '%response protection is unavailable%')
       AND NOT (COALESCE(error, '') ILIKE '%agent executor error%' AND COALESCE(error, '') ILIKE '%requested entity was not found%')
+      AND NOT (COALESCE(error, '') ILIKE '%improperly formatted function call%')
       AND NOT (COALESCE(error, '') ILIKE '%image dimensions exceed max allowed size%' AND COALESCE(error, '') ILIKE '%image.source.base64.data%')
       -- A provider credential-resolution failure ("Could not resolve
       -- authentication method...") is deterministic on resume: the missing
