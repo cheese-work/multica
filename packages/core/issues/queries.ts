@@ -476,8 +476,16 @@ export function issueIdentifierOptions(wsId: string, identifier: string) {
         const issue = await api.getIssue(identifier);
         // Seed the detail cache so the chip that renders next reads this
         // issue instead of firing a second `getIssue(uuid)` and painting a
-        // label-only chip until it lands.
-        client.setQueryData(issueKeys.detail(wsId, issue.id), issue);
+        // label-only chip until it lands. A lookup that started before a
+        // mutation or realtime update may land after it; keep the newer
+        // revision, same ordering rule as `onIssueUpdated`.
+        client.setQueryData<Issue>(issueKeys.detail(wsId, issue.id), (old) =>
+          old?.revision !== undefined &&
+          issue.revision !== undefined &&
+          issue.revision < old.revision
+            ? old
+            : issue,
+        );
         return issue;
       } catch (err) {
         // Unknown identifier / wrong workspace prefix → render as plain text.
