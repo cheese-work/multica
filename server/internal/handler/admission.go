@@ -56,6 +56,7 @@ const (
 	ReasonQueued                = dispatch.ReasonQueued
 	ReasonCoalesced             = dispatch.ReasonCoalesced
 	ReasonDeferred              = dispatch.ReasonDeferred
+	ReasonJevRouted             = dispatch.ReasonJevRouted
 	ReasonSteered               = dispatch.ReasonSteered
 	ReasonInvocationNotAllowed  = dispatch.ReasonInvocationNotAllowed
 	ReasonTargetUnavailable     = dispatch.ReasonTargetUnavailable

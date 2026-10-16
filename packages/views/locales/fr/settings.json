@@ -553,7 +553,9 @@
       "checkbox": "Case à cocher",
       "url": "URL",
       "actor": "Membre",
-      "multi_actor": "Membres"
+      "multi_actor": "Membres",
+      "multi_text": "Liste de textes",
+      "multi_url": "Liste d'URL"
     },
     "actions": {
       "open": "Actions pour {{name}}",
@@ -774,6 +776,11 @@
     "confirm_cancel": "Annuler",
     "confirm_action": "Confirmer",
     "context_hint": "Transmis à chaque agent de cet espace de travail à chaque exécution.",
+    "compact_prompt_label": "Prompt de compactage",
+    "compact_prompt_hint": "Exigences de résumé pour /compact dans les messages privés. Laissez vide pour utiliser la valeur intégrée par défaut.",
+    "compact_prompt_placeholder": "Rédigez un résumé au format passation : objectif de la session, décisions, preuves, points ouverts, identifiants et URL exacts, et prochaine action.",
+    "compact_prompt_source_default": "Source : valeur intégrée par défaut",
+    "compact_prompt_source_workspace": "Source : espace de travail",
     "slug_hint": "Utilisé dans toutes les URL de l'espace de travail. Il ne peut pas être modifié.",
     "copy_slug": "Copier le slug",
     "copy_failed": "Impossible de copier",

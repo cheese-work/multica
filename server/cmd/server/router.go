@@ -648,10 +648,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				patcher.Register(bus)
 
 				// Typing indicator: shows a "processing" reaction on the user's
-				// message while the agent is working, then removes it before the
-				// reply is sent. Best-effort; failures are logged only.
+				// message while the agent is working. Terminal cleanup has its own
+				// budget, with a durable retry worker for failed or missed cleanup.
 				typingIndicator := lark.NewTypingIndicatorManager(larkClient, installSvc, cs, slog.Default())
 				patcher.SetTypingIndicatorManager(typingIndicator)
+				h.LarkTyping = typingIndicator
 
 				// Inbound pipeline seams: lark_inbound_audit logger and the
 				// shared channel-agnostic chat-session service. They back the
@@ -1763,6 +1764,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// because they are JSON-API consumers that always have
 		// workspace context.
 		r.Get("/api/attachments/{id}/download", h.DownloadAttachment)
+		// Markdown links may point to an attachment in a different workspace.
+		// Resolve that workspace from the row and check membership before minting
+		// a fresh URL; the workspace-scoped metadata route stays unchanged.
+		r.Get("/api/attachments/{id}/download-metadata", h.GetAttachmentForDownload)
 
 		r.Route("/api/workspaces", func(r chi.Router) {
 			r.Get("/", h.ListWorkspaces)
@@ -2527,6 +2532,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Patch("/", h.UpdateChatSession)
 					r.Patch("/pin", h.SetChatSessionPinned)
 					r.Patch("/archive", h.SetChatSessionArchived)
+					r.Get("/usage", h.GetChatSessionUsage)
 					r.Delete("/", h.DeleteChatSession)
 					r.Post("/messages", h.SendChatMessage)
 					r.Post("/continue", h.ContinueChatSession)
@@ -2593,6 +2599,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/", h.ListDecisions)
 				r.Get("/{id}", h.GetDecision)
 			})
+			r.With(handler.RequireHumanActor).Post("/api/decision-answers/{id}/disclaim", h.DisclaimDecisionAnswer)
+			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/class", h.RaiseDecisionClass)
 
 			// Notification preferences
 			r.Route("/api/notification-preferences", func(r chi.Router) {

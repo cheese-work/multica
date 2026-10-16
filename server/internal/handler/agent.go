@@ -29,6 +29,7 @@ import (
 	"github.com/multica-ai/multica/server/pkg/agent"
 	"github.com/multica-ai/multica/server/pkg/credentialexec"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/jev"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
 )
@@ -1424,6 +1425,13 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.Instructions != "" {
+		if tokens := jev.EstimateInstructionTokens(req.Instructions); tokens > 4000 {
+			writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("agent instructions exceed limit of 4000 tokens (estimated: %d tokens)", tokens))
+			return
+		}
+	}
+
 	if req.Name == "" {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
@@ -1632,7 +1640,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		slog.Warn("create agent failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
-		writeError(w, http.StatusInternalServerError, "failed to create agent: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to create agent")
 		return
 	}
 	if err := replaceInvocationTargetsWithQueries(r.Context(), qtx, created.ID, parseUUID(ownerID), perm.targets); err != nil {
@@ -1940,6 +1948,17 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	if _, ok := rawFields["custom_env"]; ok {
 		writeError(w, http.StatusBadRequest, "custom_env is no longer accepted on this endpoint; use PUT /api/agents/{id}/env (or `multica agent env set`)")
 		return
+	}
+
+	if req.Instructions != nil {
+		newTokens := jev.EstimateInstructionTokens(*req.Instructions)
+		existingTokens := jev.EstimateInstructionTokens(existing.Instructions)
+		if newTokens > 4000 {
+			if *req.Instructions != existing.Instructions && (existingTokens <= 4000 || newTokens > existingTokens) {
+				writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("agent instructions exceed limit of 4000 tokens (estimated: %d tokens)", newTokens))
+				return
+			}
+		}
 	}
 
 	// CHE-455: agent actors may never persist a change to an agent's
@@ -2309,7 +2328,7 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		slog.Warn("update agent failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
-		writeError(w, http.StatusInternalServerError, "failed to update agent: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to update agent")
 		return
 	}
 
@@ -2320,7 +2339,7 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		updated, err = h.Queries.ClearAgentMcpConfig(r.Context(), updated.ID)
 		if err != nil {
 			slog.Warn("clear agent mcp_config failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
-			writeError(w, http.StatusInternalServerError, "failed to clear mcp_config: "+err.Error())
+			writeError(w, http.StatusInternalServerError, "failed to clear mcp_config")
 			return
 		}
 	}
@@ -2328,7 +2347,7 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		updated, err = h.Queries.ClearAgentThinkingLevel(r.Context(), updated.ID)
 		if err != nil {
 			slog.Warn("clear agent thinking_level failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
-			writeError(w, http.StatusInternalServerError, "failed to clear thinking_level: "+err.Error())
+			writeError(w, http.StatusInternalServerError, "failed to clear thinking_level")
 			return
 		}
 	}
@@ -2336,7 +2355,7 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		updated, err = h.Queries.ClearAgentServiceTier(r.Context(), updated.ID)
 		if err != nil {
 			slog.Warn("clear agent service_tier failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
-			writeError(w, http.StatusInternalServerError, "failed to clear service_tier: "+err.Error())
+			writeError(w, http.StatusInternalServerError, "failed to clear service_tier")
 			return
 		}
 	}
@@ -2344,7 +2363,7 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		updated, err = h.Queries.ClearAgentComposioToolkitAllowlist(r.Context(), updated.ID)
 		if err != nil {
 			slog.Warn("clear agent composio_toolkit_allowlist failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
-			writeError(w, http.StatusInternalServerError, "failed to clear composio_toolkit_allowlist: "+err.Error())
+			writeError(w, http.StatusInternalServerError, "failed to clear composio_toolkit_allowlist")
 			return
 		}
 	}
@@ -2355,7 +2374,7 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	if replacePermissionTargets {
 		if err := h.replaceInvocationTargets(r.Context(), updated.ID, parseUUID(requestUserID(r)), resolvedPerm.targets); err != nil {
 			slog.Warn("update agent: persist invocation targets failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
-			writeError(w, http.StatusInternalServerError, "failed to update invocation targets: "+err.Error())
+			writeError(w, http.StatusInternalServerError, "failed to update invocation targets")
 			return
 		}
 	}

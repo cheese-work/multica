@@ -31,21 +31,25 @@ import (
 )
 
 type CommentResponse struct {
-	ID             string  `json:"id"`
-	IssueID        string  `json:"issue_id"`
-	AuthorType     string  `json:"author_type"`
-	AuthorID       string  `json:"author_id"`
-	Content        string  `json:"content"`
-	Type           string  `json:"type"`
-	ParentID       *string `json:"parent_id"`
-	CreatedAt      string  `json:"created_at"`
-	UpdatedAt      string  `json:"updated_at"`
-	Revision       int64   `json:"revision"`
-	IssueRevision  int64   `json:"issue_revision,omitempty"`
-	ResolvedAt     *string `json:"resolved_at"`
-	ResolvedByType *string `json:"resolved_by_type"`
-	ResolvedByID   *string `json:"resolved_by_id"`
-	SourceTaskID   *string `json:"source_task_id,omitempty"`
+	ID                  string  `json:"id"`
+	IssueID             string  `json:"issue_id"`
+	AuthorType          string  `json:"author_type"`
+	AuthorID            string  `json:"author_id"`
+	Content             string  `json:"content"`
+	Type                string  `json:"type"`
+	ParentID            *string `json:"parent_id"`
+	CreatedAt           string  `json:"created_at"`
+	UpdatedAt           string  `json:"updated_at"`
+	Revision            int64   `json:"revision"`
+	IssueRevision       int64   `json:"issue_revision,omitempty"`
+	ResolvedAt          *string `json:"resolved_at"`
+	ResolvedByType      *string `json:"resolved_by_type"`
+	ResolvedByID        *string `json:"resolved_by_id"`
+	SourceTaskID        *string `json:"source_task_id,omitempty"`
+	DecisionIntentID    *string `json:"decision_intent_id,omitempty"`
+	DecisionRequestID   *string `json:"decision_request_id,omitempty"`
+	DecisionAnswerID    *string `json:"decision_answer_id,omitempty"`
+	DecisionCommentKind *string `json:"decision_comment_kind,omitempty"`
 	// DeletedAt marks a tombstone: a comment deleted while it still had
 	// replies (#8296). Its content is empty and it carries no attachments or
 	// reactions; it stays only so the replies keep their direct parent.
@@ -118,6 +122,8 @@ type CommentTriggerOutcome struct {
 	ReasonCode DispatchReasonCode `json:"reason_code"`
 }
 
+var ErrJevRouted = errors.New("jev routed")
+
 func commentToResponse(c db.Comment, reactions []ReactionResponse, attachments []AttachmentResponse) CommentResponse {
 	if reactions == nil {
 		reactions = []ReactionResponse{}
@@ -126,24 +132,28 @@ func commentToResponse(c db.Comment, reactions []ReactionResponse, attachments [
 		attachments = []AttachmentResponse{}
 	}
 	return CommentResponse{
-		ID:             uuidToString(c.ID),
-		IssueID:        uuidToString(c.IssueID),
-		AuthorType:     c.AuthorType,
-		AuthorID:       uuidToString(c.AuthorID),
-		Content:        c.Content,
-		Type:           c.Type,
-		ParentID:       uuidToPtr(c.ParentID),
-		CreatedAt:      timestampToString(c.CreatedAt),
-		UpdatedAt:      timestampToString(c.UpdatedAt),
-		Revision:       c.Revision,
-		ResolvedAt:     timestampToPtr(c.ResolvedAt),
-		ResolvedByType: textToPtr(c.ResolvedByType),
-		ResolvedByID:   uuidToPtr(c.ResolvedByID),
-		SourceTaskID:   uuidToPtr(c.SourceTaskID),
-		DeletedAt:      timestampToPtr(c.DeletedAt),
-		QuickActionID:  uuidToPtr(c.QuickActionID),
-		Reactions:      reactions,
-		Attachments:    attachments,
+		ID:                  uuidToString(c.ID),
+		IssueID:             uuidToString(c.IssueID),
+		AuthorType:          c.AuthorType,
+		AuthorID:            uuidToString(c.AuthorID),
+		Content:             c.Content,
+		Type:                c.Type,
+		ParentID:            uuidToPtr(c.ParentID),
+		CreatedAt:           timestampToString(c.CreatedAt),
+		UpdatedAt:           timestampToString(c.UpdatedAt),
+		Revision:            c.Revision,
+		ResolvedAt:          timestampToPtr(c.ResolvedAt),
+		ResolvedByType:      textToPtr(c.ResolvedByType),
+		ResolvedByID:        uuidToPtr(c.ResolvedByID),
+		SourceTaskID:        uuidToPtr(c.SourceTaskID),
+		DecisionIntentID:    uuidToPtr(c.DecisionIntentID),
+		DecisionRequestID:   uuidToPtr(c.DecisionRequestID),
+		DecisionAnswerID:    uuidToPtr(c.DecisionAnswerID),
+		DecisionCommentKind: textToPtr(c.DecisionCommentKind),
+		DeletedAt:           timestampToPtr(c.DeletedAt),
+		QuickActionID:       uuidToPtr(c.QuickActionID),
+		Reactions:           reactions,
+		Attachments:         attachments,
 	}
 }
 
@@ -1500,6 +1510,10 @@ func keepRootConnected(byID map[string]db.Comment) []db.Comment {
 type CreateCommentRequest struct {
 	Content          string   `json:"content"`
 	DecisionIntent   bool     `json:"decision_intent"`
+	DecisionRecord   bool     `json:"decision_record"`
+	DecisionVeto     bool     `json:"decision_veto"`
+	MessageIDs       []string `json:"message_ids"`
+	EscalationClass  string   `json:"escalation_class"`
 	Type             string   `json:"type"`
 	ParentID         *string  `json:"parent_id"`
 	AttachmentIDs    []string `json:"attachment_ids"`
@@ -1735,7 +1749,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.DecisionIntent && r.Header.Get("X-Actor-Source") != "task_token" {
+	if (req.DecisionIntent || req.DecisionRecord || req.DecisionVeto) && r.Header.Get("X-Actor-Source") != "task_token" {
 		writeError(w, http.StatusForbidden, "decision intent requires an issue task token")
 		return
 	}
@@ -1749,7 +1763,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// the plausible cause of GH #5388. Mirrors the skill-import sanitization;
 	// normalizing first means all-NUL content is correctly treated as empty.
 	req.Content = sanitizeNullBytes(req.Content)
-	if req.Content == "" {
+	if req.Content == "" && !req.DecisionRecord {
 		writeError(w, http.StatusBadRequest, "content is required")
 		return
 	}
@@ -1764,6 +1778,18 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// something the system generated.
 	if !isClientAuthorableCommentType(req.Type) {
 		writeError(w, http.StatusBadRequest, "invalid comment type")
+		return
+	}
+	if req.DecisionVeto {
+		h.createDecisionVetoComment(w, r, issue, req)
+		return
+	}
+	if req.DecisionRecord {
+		h.createDecisionRecordComment(w, r, issue, req)
+		return
+	}
+	if len(req.MessageIDs) != 0 || req.EscalationClass != "" {
+		writeError(w, http.StatusBadRequest, "message_ids and escalation_class require decision_record")
 		return
 	}
 
@@ -2022,7 +2048,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		slog.Warn("create comment failed", append(logger.RequestAttrs(r), "error", err, "issue_id", issueID)...)
-		writeError(w, http.StatusInternalServerError, "failed to create comment: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to create comment")
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
@@ -2031,6 +2057,9 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	comment := created.Comment()
+	if req.DecisionIntent {
+		h.DecisionWorker.Notify()
+	}
 
 	// Fetch linked attachments so the response includes them.
 	groupedAtt := h.groupAttachments(r, []pgtype.UUID{comment.ID})
@@ -2140,8 +2169,16 @@ func isNoteComment(content string) bool {
 // steerTaskIDs are the running turns the author chose: a recipient whose chosen
 // turn is still running receives this comment there instead of a follow-up run.
 func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, comment db.Comment, parentComment *db.Comment, actorType, actorID, originatorUserID string, suppressAgentIDs, steerTaskIDs []pgtype.UUID) []CommentTriggerOutcome {
-	if isNoteComment(comment.Content) {
+	if isNoteComment(comment.Content) || comment.Type == "jev_route" {
 		return nil
+	}
+	// Shared comment-trigger seam: refresh the issue snapshot from DB so evaluation
+	// uses the true post-insert revision and state across all entry points (CreateComment,
+	// RunQuickAction, etc.) without stamping stale snapshots (CHE-1708).
+	if comment.IssueID.Valid && h.Queries != nil {
+		if fresh, err := h.Queries.GetIssue(ctx, comment.IssueID); err == nil {
+			issue = fresh
+		}
 	}
 	triggers, targets := h.computeCommentAgentTriggers(ctx, issue, comment.Content, parentComment, actorType, actorID, commentTriggerComputeOptions{
 		ExcludeTriggerCommentID: comment.ID,
@@ -2425,6 +2462,9 @@ func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Iss
 		}
 		task, err := h.enqueueSingleCommentTrigger(ctx, issue, triggerCommentID, trigger)
 		if err != nil {
+			if errors.Is(err, ErrJevRouted) {
+				return DispatchQueued, ReasonJevRouted
+			}
 			// Lost the enqueue race: a sibling task for this (issue, agent) now
 			// exists. Re-resolve as pending so the next attempt folds this
 			// comment into that sibling (queued) or durably registers it
@@ -2833,7 +2873,7 @@ func (h *Handler) propagateUncoveredCommentObligation(ctx context.Context, issue
 			return true
 		}
 		_, err = h.enqueueSingleCommentTrigger(ctx, issue, commentID, trigger)
-		if err == nil {
+		if err == nil || errors.Is(err, ErrJevRouted) {
 			return true
 		}
 		if !errors.Is(err, service.ErrDuplicatePendingTask) {
@@ -2859,6 +2899,21 @@ func logCommentEnqueueFailure(msg string, err error, attrs ...any) {
 	slog.Warn(msg, append(attrs, "error", err)...)
 }
 
+func (h *Handler) resolveCommentTriggerOriginator(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID) (authorType, authorID, leaderOriginator string) {
+	if triggerCommentID.Valid {
+		if c, err := h.Queries.GetComment(ctx, triggerCommentID); err == nil {
+			authorType = c.AuthorType
+			authorID = uuidToString(c.AuthorID)
+		}
+	}
+	if authorType == "member" {
+		leaderOriginator = authorID
+	} else {
+		leaderOriginator = uuidToString(h.TaskService.OriginatorForIssueTask(ctx, issue, triggerCommentID))
+	}
+	return authorType, authorID, leaderOriginator
+}
+
 // enqueueSingleCommentTrigger creates a fresh task for one computed trigger.
 // Split out of enqueueCommentAgentTriggers so the merge-not-drop path
 // (MUL-4195) can fall back to it when a pending task vanished mid-flight.
@@ -2871,7 +2926,21 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 	switch trigger.Source {
 	case commentTriggerSourceIssueAssignee:
 		if trigger.Squad != nil {
-			if task, err = h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, service.OriginDerived); err != nil {
+			var handoffNote string
+			authorType, authorID, leaderOriginator := h.resolveCommentTriggerOriginator(ctx, issue, triggerCommentID)
+			if authorType == "member" && !trigger.NonLeaderAgentReply {
+				if routed, advisory := h.tryJevSquadRouting(ctx, issue, *trigger.Squad, authorType, authorID, leaderOriginator, triggerCommentID); routed {
+					return db.AgentTaskQueue{}, ErrJevRouted
+				} else if advisory != "" {
+					handoffNote = advisory
+				}
+			}
+			if handoffNote != "" {
+				task, err = h.TaskService.EnqueueTaskForSquadLeaderWithHandoffComment(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, handoffNote, memberActorUserID(authorType, authorID), service.OriginDerived)
+			} else {
+				task, err = h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, service.OriginDerived)
+			}
+			if err != nil {
 				logCommentEnqueueFailure("enqueue squad leader task failed", err,
 					"issue_id", uuidToString(issue.ID),
 					"squad_id", uuidToString(trigger.Squad.ID),
@@ -2891,6 +2960,29 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 			return task, err
 		}
 	case commentTriggerSourceMentionSquadLeader:
+		if trigger.Squad != nil {
+			var handoffNote string
+			authorType, authorID, leaderOriginator := h.resolveCommentTriggerOriginator(ctx, issue, triggerCommentID)
+			if authorType == "member" {
+				if routed, advisory := h.tryJevSquadRouting(ctx, issue, *trigger.Squad, authorType, authorID, leaderOriginator, triggerCommentID); routed {
+					return db.AgentTaskQueue{}, ErrJevRouted
+				} else if advisory != "" {
+					handoffNote = advisory
+				}
+			}
+			if handoffNote != "" {
+				task, err = h.TaskService.EnqueueTaskForSquadLeaderWithHandoffComment(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, handoffNote, memberActorUserID(authorType, authorID), service.OriginNamed)
+			} else {
+				task, err = h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, service.OriginNamed)
+			}
+			if err != nil {
+				logCommentEnqueueFailure("enqueue squad leader mention task failed", err,
+					"issue_id", uuidToString(issue.ID),
+					"agent_id", uuidToString(trigger.Agent.ID))
+				return task, err
+			}
+			return task, nil
+		}
 		if task, err = h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, service.OriginNamed); err != nil {
 			logCommentEnqueueFailure("enqueue squad leader mention task failed", err,
 				"issue_id", uuidToString(issue.ID),

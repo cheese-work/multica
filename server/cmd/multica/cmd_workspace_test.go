@@ -89,7 +89,7 @@ func TestRunWorkspaceCreatePostsWorkspaceAndDoesNotSwitchDefault(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	t.Setenv("HOME", t.TempDir())
+	redirectTestHome(t, t.TempDir())
 	t.Setenv("MULTICA_SERVER_URL", srv.URL)
 	t.Setenv("MULTICA_TOKEN", "test-token")
 	t.Setenv("MULTICA_WORKSPACE_ID", "existing-workspace")
@@ -244,7 +244,7 @@ func TestRunWorkspaceCreatePrintsTable(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	t.Setenv("HOME", t.TempDir())
+	redirectTestHome(t, t.TempDir())
 	t.Setenv("MULTICA_SERVER_URL", srv.URL)
 	t.Setenv("MULTICA_TOKEN", "test-token")
 
@@ -281,7 +281,7 @@ func TestRunWorkspaceSwitch(t *testing.T) {
 	defer srv.Close()
 
 	// Isolate HOME so the test never touches the developer's ~/.multica.
-	t.Setenv("HOME", t.TempDir())
+	redirectTestHome(t, t.TempDir())
 	t.Setenv("MULTICA_SERVER_URL", srv.URL)
 	t.Setenv("MULTICA_TOKEN", "test-token")
 	t.Setenv("MULTICA_WORKSPACE_ID", "")
@@ -349,7 +349,7 @@ func TestRunWorkspaceSwitch(t *testing.T) {
 }
 
 func TestRunWorkspaceSwitchFailsClosedInTaskContext(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	redirectTestHome(t, t.TempDir())
 	t.Setenv("MULTICA_AGENT_ID", "agent-test")
 	t.Setenv("MULTICA_TASK_ID", "task-test")
 	t.Setenv("MULTICA_TOKEN", "mat_task_sentinel")
@@ -365,7 +365,7 @@ func TestRunWorkspaceSwitchFailsClosedInTaskContext(t *testing.T) {
 
 func TestFetchWorkspacesExplainsPortOnlyFailClosedContext(t *testing.T) {
 	t.Chdir(t.TempDir())
-	t.Setenv("HOME", t.TempDir())
+	redirectTestHome(t, t.TempDir())
 	t.Setenv("MULTICA_AGENT_ID", "")
 	t.Setenv("MULTICA_TASK_ID", "")
 	t.Setenv(cli.TaskConfigRootEnv, "")
@@ -537,7 +537,7 @@ func TestResolveWorkspaceByIDOrSlug(t *testing.T) {
 func resetWorkspaceUpdateFlags(t *testing.T) {
 	t.Helper()
 	flags := workspaceUpdateCmd.Flags()
-	for _, name := range []string{"name", "description", "context", "context-file", "issue-prefix", "expected-before-digest"} {
+	for _, name := range []string{"name", "description", "context", "context-file", "issue-prefix", "expected-before-digest", "compact-prompt-file"} {
 		_ = flags.Set(name, "")
 		if f := flags.Lookup(name); f != nil {
 			f.Changed = false
@@ -690,7 +690,7 @@ func newWorkspaceMemberInviteTestCmd() *cobra.Command {
 }
 
 func TestRunWorkspaceMemberInvitePostsInvitation(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	redirectTestHome(t, t.TempDir())
 	t.Setenv("MULTICA_TOKEN", "test-token")
 	t.Setenv("MULTICA_WORKSPACE_ID", "workspace-123")
 
@@ -735,7 +735,7 @@ func TestRunWorkspaceMemberInvitePostsInvitation(t *testing.T) {
 }
 
 func TestRunWorkspaceMemberInviteUsesWorkspaceArgAndRoleFlag(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	redirectTestHome(t, t.TempDir())
 	t.Setenv("MULTICA_TOKEN", "test-token")
 
 	const wsUUID = "11111111-1111-1111-1111-111111111111"
@@ -767,7 +767,7 @@ func TestRunWorkspaceMemberInviteUsesWorkspaceArgAndRoleFlag(t *testing.T) {
 }
 
 func TestRunWorkspaceMemberInviteRejectsOwnerRole(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	redirectTestHome(t, t.TempDir())
 	t.Setenv("MULTICA_TOKEN", "test-token")
 	t.Setenv("MULTICA_WORKSPACE_ID", "workspace-123")
 
@@ -789,7 +789,7 @@ func TestRunWorkspaceMemberInviteRejectsOwnerRole(t *testing.T) {
 }
 
 func TestRunWorkspaceMemberInviteRejectsUnknownRole(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	redirectTestHome(t, t.TempDir())
 	t.Setenv("MULTICA_TOKEN", "test-token")
 	t.Setenv("MULTICA_WORKSPACE_ID", "workspace-123")
 
@@ -1189,5 +1189,52 @@ func TestRunWorkspaceUpdateNonDigestModeUnchanged(t *testing.T) {
 	}
 	if _, present := gotBody["expected_before_digest"]; present {
 		t.Errorf("expected_before_digest must not appear when --expected-before-digest was not set, got %v", gotBody)
+	}
+}
+
+// CHE-1612: --compact-prompt-file sends only compact_prompt; "null" resets it.
+func TestBuildWorkspaceUpdateBodyCompactPrompt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "compact.md")
+	prompt := "Keep exact SHAs.\n\\n stays literal.\n"
+	if err := os.WriteFile(path, []byte(prompt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, testCase := range []struct {
+		value string
+		want  any
+	}{{path, prompt}, {"null", nil}} {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "compact-prompt-file", testCase.value)
+		body, err := buildWorkspaceUpdateBody(workspaceUpdateCmd)
+		if err != nil {
+			t.Fatalf("%s: %v", testCase.value, err)
+		}
+		value, present := body["compact_prompt"]
+		if !present || value != testCase.want || len(body) != 1 {
+			t.Errorf("%s: body = %#v, want only compact_prompt = %#v", testCase.value, body, testCase.want)
+		}
+	}
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "compact-prompt-file", filepath.Join(t.TempDir(), "missing.md"))
+	if _, err := buildWorkspaceUpdateBody(workspaceUpdateCmd); err == nil {
+		t.Fatal("expected an error for a missing prompt file")
+	}
+}
+
+// CHE-1612 review: digest mode updates context only, so the compact prompt
+// flag must be rejected, not silently dropped.
+func TestWorkspaceUpdateDigestRejectsCompactPromptFile(t *testing.T) {
+	resetWorkspaceUpdateFlags(t)
+	t.Cleanup(func() { resetWorkspaceUpdateFlags(t) })
+	path := filepath.Join(t.TempDir(), "prompt.md")
+	if err := os.WriteFile(path, []byte("New value"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	setStringFlag(t, "context-file", path)
+	setStringFlag(t, "expected-before-digest", strings.Repeat("0", 64))
+	setStringFlag(t, "compact-prompt-file", path)
+	_, err := buildWorkspaceUpdateDigestBody(workspaceUpdateCmd)
+	if err == nil || !strings.Contains(err.Error(), "--compact-prompt-file") {
+		t.Fatalf("err = %v, want a conflict naming --compact-prompt-file", err)
 	}
 }

@@ -272,7 +272,8 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "workspace slug already exists")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "failed to create workspace: "+err.Error())
+		slog.Warn("create workspace failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to create workspace")
 		return
 	}
 
@@ -282,7 +283,8 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		Role:        "owner",
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to add owner: "+err.Error())
+		slog.Warn("add owner failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to add owner")
 		return
 	}
 
@@ -290,7 +292,8 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	// workspace is never visible without its status catalog — an issue cannot
 	// be created before its status can be resolved. (MUL-6243)
 	if err := issuestatus.Ensure(r.Context(), qtx, ws.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to seed issue statuses: "+err.Error())
+		slog.Warn("seed issue statuses failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to seed issue statuses")
 		return
 	}
 
@@ -328,6 +331,10 @@ type UpdateWorkspaceRequest struct {
 	Repos       any     `json:"repos"`
 	IssuePrefix *string `json:"issue_prefix"`
 	AvatarURL   *string `json:"avatar_url"`
+	// CompactPrompt sets settings.compact_prompt alone (CHE-1612); null resets
+	// it to the built-in default. Raw so an explicit null is distinguishable
+	// from an absent key.
+	CompactPrompt json.RawMessage `json:"compact_prompt"`
 
 	// ExpectedBeforeDigest drives two guarded paths: CHE-764's Hermes
 	// exception (hermesExceptionMatchesWorkspaceContext: this exact
@@ -499,6 +506,24 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		s, _ := json.Marshal(req.Settings)
 		params.Settings = s
 	}
+	if req.CompactPrompt != nil {
+		// Only a literal null resets; a value that fails to decode (1e400)
+		// must not fall through as nil.
+		var prompt any
+		err := json.Unmarshal(req.CompactPrompt, &prompt)
+		if err == nil {
+			err = validateCompactPromptConfig(map[string]any{"compact_prompt": prompt})
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if text, ok := prompt.(string); ok {
+			params.CompactPrompt = pgtype.Text{String: text, Valid: true}
+		} else {
+			params.CompactPromptReset = pgtype.Bool{Bool: true, Valid: true}
+		}
+	}
 	if req.Repos != nil {
 		reposJSON, err := validateAndNormalizeWorkspaceRepos(req.Repos)
 		if err != nil {
@@ -535,7 +560,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	ws, err := h.Queries.UpdateWorkspace(r.Context(), params)
 	if err != nil {
 		slog.Warn("update workspace failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", id)...)
-		writeError(w, http.StatusInternalServerError, "failed to update workspace: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to update workspace")
 		return
 	}
 

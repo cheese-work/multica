@@ -5,6 +5,16 @@ import (
 	"strings"
 )
 
+// SquadRoutingMode selects how Jev squad routing acts: off skips Jev, shadow
+// records the Jev decision only, on dispatches to the chosen squad worker.
+type SquadRoutingMode string
+
+const (
+	SquadRoutingOff    SquadRoutingMode = "off"
+	SquadRoutingShadow SquadRoutingMode = "shadow"
+	SquadRoutingOn     SquadRoutingMode = "on"
+)
+
 type RuleMode string
 
 const (
@@ -41,6 +51,12 @@ type WorkspaceSettings struct {
 	GovernanceCorrectionsEnabled bool            `json:"governance_corrections_enabled"`
 	RuleMode                     RuleMode        `json:"rule_mode"`
 	Limits                       OperatingLimits `json:"limits"`
+
+	// Jev Squad Routing Settings (CHE-1708)
+	JevSquadRoutingEnabled bool             `json:"jev_squad_routing_enabled"`
+	JevSquadRoutingMode    SquadRoutingMode `json:"jev_squad_routing_mode,omitempty"`
+	JevAPIURL              string           `json:"jev_api_url,omitempty"`
+	JevMinConfidence       *float64         `json:"jev_min_confidence,omitempty"`
 }
 
 type OperatingLimits struct {
@@ -55,6 +71,21 @@ type PricingPolicy struct {
 	Version                        string `json:"version"`
 	InputMicroUSDPerMillionTokens  *int64 `json:"input_micro_usd_per_million_tokens,omitempty"`
 	OutputMicroUSDPerMillionTokens *int64 `json:"output_micro_usd_per_million_tokens,omitempty"`
+}
+
+// SquadRoutingMode resolves the effective mode. An explicit mode wins; an
+// unrecognised value fails safe to off. Without one, the legacy
+// jev_squad_routing_enabled flag keeps meaning on.
+func (settings WorkspaceSettings) SquadRoutingMode() SquadRoutingMode {
+	switch settings.JevSquadRoutingMode {
+	case SquadRoutingOff, SquadRoutingShadow, SquadRoutingOn:
+		return settings.JevSquadRoutingMode
+	case "":
+		if settings.JevSquadRoutingEnabled {
+			return SquadRoutingOn
+		}
+	}
+	return SquadRoutingOff
 }
 
 func DefaultWorkspaceConfig() WorkspaceConfig {
@@ -122,6 +153,11 @@ func ValidateWorkspaceSettings(settings WorkspaceSettings) error {
 			policy.InputMicroUSDPerMillionTokens != nil && *policy.InputMicroUSDPerMillionTokens < 0 ||
 			policy.OutputMicroUSDPerMillionTokens != nil && *policy.OutputMicroUSDPerMillionTokens < 0 {
 			return errors.New("invalid governance pricing policy")
+		}
+	}
+	if settings.JevMinConfidence != nil {
+		if *settings.JevMinConfidence < 0.0 || *settings.JevMinConfidence > 1.0 {
+			return errors.New("jev min confidence must be between 0.0 and 1.0")
 		}
 	}
 	return nil

@@ -45,6 +45,8 @@ type TaskService struct {
 	Analytics analytics.Client
 	Metrics   *obsmetrics.BusinessMetrics
 	Wakeup    TaskWakeupNotifier
+	// PRSnapshotsEnabled reports whether the server can refresh GitHub check snapshots.
+	PRSnapshotsEnabled bool
 	// Entitlements supplies Cloud's workspace-scoped issue-count instruction.
 	// Nil keeps self-hosted and isolated test services unlimited.
 	Entitlements entitlement.Provider
@@ -568,12 +570,16 @@ func (s *TaskService) attributionForIssueTask(ctx context.Context, issue db.Issu
 	// it. Resolved the same way
 	// run_only dispatch resolves it, so both autopilot execution modes attribute
 	// identically. (A manual trigger carries an actor and is already handled above.)
-	// The issue only stores the autopilot id, so bridge issue → active run →
-	// trigger_id to find the trigger.
+	// The issue only stores the autopilot id, so bridge issue → latest run →
+	// trigger_id, including terminal runs so later handoffs retain the principal.
 	if s != nil && s.Queries != nil && issue.OriginType.Valid &&
 		issue.OriginType.String == "autopilot" && issue.OriginID.Valid {
 		var triggerID pgtype.UUID
-		if run, err := s.Queries.GetAutopilotRunByIssue(ctx, issue.ID); err == nil {
+		if run, err := s.Queries.GetLatestAutopilotRunForIssueAttribution(ctx, db.GetLatestAutopilotRunForIssueAttributionParams{
+			IssueID:     issue.ID,
+			AutopilotID: issue.OriginID,
+			WorkspaceID: issue.WorkspaceID,
+		}); err == nil {
 			triggerID = run.TriggerID
 		}
 		return triggerOwnerAttribution(ctx, s.Queries, triggerID, issue.WorkspaceID, issue.OriginID, attribution.EvidenceIssueAssignment, issue.ID)
@@ -1452,7 +1458,13 @@ func (s *TaskService) EnqueueTaskForSquadLeaderByActor(ctx context.Context, issu
 // EnqueueTaskForSquadLeaderWithHandoff is the squad equivalent of
 // EnqueueTaskForIssueWithHandoff.
 func (s *TaskService) EnqueueTaskForSquadLeaderWithHandoff(ctx context.Context, issue db.Issue, leaderID pgtype.UUID, squadID pgtype.UUID, handoffNote string, actorUserID pgtype.UUID) (db.AgentTaskQueue, error) {
-	return s.enqueueMentionTask(ctx, issue, leaderID, pgtype.UUID{}, true, squadID, false, handoffNote, actorUserID, pgtype.UUID{}, OriginDerived)
+	return s.EnqueueTaskForSquadLeaderWithHandoffComment(ctx, issue, leaderID, squadID, pgtype.UUID{}, handoffNote, actorUserID, OriginDerived)
+}
+
+// EnqueueTaskForSquadLeaderWithHandoffComment enqueues a task for the squad leader with a handoff note,
+// preserving triggerCommentID and run origin.
+func (s *TaskService) EnqueueTaskForSquadLeaderWithHandoffComment(ctx context.Context, issue db.Issue, leaderID pgtype.UUID, squadID pgtype.UUID, triggerCommentID pgtype.UUID, handoffNote string, actorUserID pgtype.UUID, origin RunOrigin) (db.AgentTaskQueue, error) {
+	return s.enqueueMentionTask(ctx, issue, leaderID, triggerCommentID, true, squadID, false, handoffNote, actorUserID, pgtype.UUID{}, origin)
 }
 
 func (s *TaskService) enqueueMentionTask(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin) (db.AgentTaskQueue, error) {
@@ -2835,11 +2847,20 @@ func (s *TaskService) CancelTasksByTriggerComment(ctx context.Context, commentID
 // showing a run that no longer exists. Each caller already knows the workspace
 // — it is the one whose session, member or runtime is being torn down — so the
 // lookup is not needed and cannot fail.
-func (s *TaskService) BroadcastCancelledTasks(ctx context.Context, workspaceID string, cancelled []db.AgentTaskQueue) {
+//
+// reactionTargets optionally carries anchors captured before deleting the
+// channel delivery rows. They stay on the internal event, outside its payload.
+func (s *TaskService) BroadcastCancelledTasks(ctx context.Context, workspaceID string, cancelled []db.AgentTaskQueue, reactionTargets ...map[string]*events.ChannelReactionTarget) {
 	for _, t := range cancelled {
 		s.captureTaskCancelled(ctx, t)
 		s.ReconcileAgentStatus(ctx, t.AgentID)
-		s.publishTaskEvent(protocol.EventTaskCancelled, workspaceID, t)
+		if workspaceID != "" {
+			e := taskEvent(protocol.EventTaskCancelled, workspaceID, t)
+			if len(reactionTargets) > 0 {
+				e.ChannelReactionTarget = reactionTargets[0][util.UUIDToString(t.ID)]
+			}
+			s.Bus.Publish(e)
+		}
 	}
 	s.notifyTasksFinished(cancelled)
 }
@@ -3675,6 +3696,22 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			// fast, so it would otherwise say nothing at all.
 			slog.Debug("task claim skipped: provider hold", "agent_id", util.UUIDToString(agentID))
 			outcome = "provider_hold"
+			return nil
+		}
+
+		coolingDown, err := qtx.HasRecentProviderServerFailure(ctx, db.HasRecentProviderServerFailureParams{
+			AgentID: agentID,
+			FailedSince: pgtype.Timestamptz{
+				Time: time.Now().Add(-gatewayFailureCooldown), Valid: true,
+			},
+		})
+		if err != nil {
+			outcome = "error_gateway_cooldown_check"
+			return fmt.Errorf("check gateway failure cooldown: %w", err)
+		}
+		if coolingDown {
+			outcome = "gateway_failure_cooldown"
+			slog.Debug("task claim skipped: gateway failure cooldown", "agent_id", util.UUIDToString(agentID))
 			return nil
 		}
 
@@ -5480,6 +5517,7 @@ var retryableReasons = map[string]bool{
 // final attempt instead of firing back-to-back. Every other retryable reason
 // keeps the task's generic max_attempts ceiling and retries immediately.
 const (
+	gatewayFailureCooldown        = 10 * time.Minute
 	runtimeOfflineRetryDeferral   = time.Second
 	providerNetworkMaxAttempts    = 3
 	providerNetworkFinalRetryWait = 5 * time.Second
@@ -5581,7 +5619,10 @@ func ResumeUnsafeFailure(failureReason, errorText string) bool {
 	// a daemon too old to carry classifyPoisonedError's new branch reports
 	// agent_error.unknown, and without this the manual-retry path would
 	// happily resume the transcript the provider just refused (GH #6066).
-	return taskfailure.UnresumableHistory(errorText)
+	// AGY replays a stored executor NOT_FOUND on every resume (CHE-1715). It
+	// is kept out of UnresumableHistory so it never opens the in-turn fresh
+	// retry, so it needs its own clause here.
+	return taskfailure.UnresumableHistory(errorText) || taskfailure.AGYReplayedNotFound(errorText)
 }
 
 // retryEligible reports whether a failed task qualifies for an automatic retry
@@ -5711,7 +5752,7 @@ func hasRunnableSuccessor(ctx context.Context, q *db.Queries, task db.AgentTaskQ
 // Autopilot tasks are NOT auto-retried here; the autopilot scheduler owns
 // its own re-run cadence and we don't want to double-fire it.
 func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentTaskQueue) (*db.AgentTaskQueue, error) {
-	if parent.Status != "failed" {
+	if parent.Status != "failed" || taskfailure.ResponseProtectionUnavailable(parent.Error.String) {
 		return nil, nil
 	}
 	reason := ""

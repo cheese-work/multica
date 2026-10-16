@@ -227,6 +227,7 @@ type Handler struct {
 	SeatCapacity          seatcapacity.Executor
 	SeatCapacityLocker    seatcapacity.WorkspaceLocker
 	SeatCapacityWorker    *seatcapacity.Worker
+	DecisionWorker        *DecisionWorker
 	EmailService          *service.EmailService
 	UpdateStore           UpdateStore
 	ModelListStore        ModelListStore
@@ -342,6 +343,8 @@ type Handler struct {
 	// where the storage backend exists; main.go starts it as an independent
 	// worker goroutine. Nil when no storage backend is configured.
 	ChannelMediaReconciler *service.ChannelMediaReconciler
+	// LarkTyping owns the durable reaction cleanup worker, started under sweepCtx.
+	LarkTyping *lark.TypingIndicatorManager
 	// SlackInstall owns the bring-your-own-app Slack install lifecycle (register
 	// pasted tokens / list / revoke) and the at-rest encryption of each app's bot
 	// + app tokens (MUL-3666). Nil unless MULTICA_SLACK_SECRET_KEY is set.
@@ -548,6 +551,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 		cfg: cfg,
 	}
 	h.WebhookDeliveryWorker = NewWebhookDeliveryWorker(h)
+	h.DecisionWorker = NewDecisionWorker(h)
 	// The default passthrough scheduler reports sweeper-race recoveries so the
 	// daemon:register refresh fires even without the production batched wiring.
 	if passthrough, ok := h.HeartbeatScheduler.(*PassthroughHeartbeatScheduler); ok {
@@ -564,6 +568,13 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 		slog.Warn("github: PR snapshot pipeline disabled (invalid App private key)", "err", err)
 	}
 	h.PRRefresh = ghsnapshot.NewManager(ghClient, queries, txStarter, h.broadcastPRSnapshotApplied)
+	taskSvc.PRSnapshotsEnabled = h.PRRefresh.Enabled()
+
+	if h.IssueService != nil {
+		h.IssueService.SquadDispatcher = func(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID string) bool {
+			return h.enqueueSquadLeaderTask(ctx, issue, triggerCommentID, authorType, authorID, "")
+		}
+	}
 
 	return h
 }
