@@ -105,6 +105,11 @@ it("shows no pause switch to members who cannot change it", async () => {
 });
 
 it("confirms a saved pause and a saved resume (approved rev-3 A: Saved and Resumed states)", async () => {
+  // The saved workspace comes back with the switch as the server stamps it.
+  updateWorkspace.mockImplementation((async (_id: string, body: { settings: Record<string, unknown> }) => {
+    settings = body.settings;
+    return { id: "ws" };
+  }) as never);
   mount();
   const toggle = await screen.findByRole("switch", { name: "Pause all wakeups" });
   await waitFor(() => expect(toggle).not.toHaveAttribute("aria-disabled", "true"));
