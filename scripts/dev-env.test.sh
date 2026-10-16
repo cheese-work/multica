@@ -344,4 +344,91 @@ printf 'n\n' | dev_env destroy orphan-902 > "$out" 2>&1 || fail "declining destr
 require_contains "$out" "Cancelled."
 [ -d "$MULTICA_DEV_HOME/envs/orphan-902" ] || fail "declined destroy removed the environment anyway"
 
+# ---------------------------------------------------------------------------
+# Startup must never run destructive global GC on its own. `up` only starts
+# THIS checkout's environment; collecting other registered environments (their
+# profile, daemon workspaces, Desktop userData and database) is an explicit
+# `gc` or `up --gc`, because the collector cannot tell a stale environment from
+# one whose checkout is merely on an unmounted disk or a path a runner reuses.
+#
+# Everything below runs in a copy of the script inside a throwaway "repo", with
+# synthetic environments and stub commands, so a regression deletes only
+# fixtures under $tmp_dir.
+# ---------------------------------------------------------------------------
+fake_repo="$tmp_dir/fake-repo"
+stub_go_dir="$tmp_dir/stub-go"
+mkdir -p "$fake_repo/scripts" "$stub_go_dir"
+cp "$root_dir/scripts/dev-env.sh" "$fake_repo/scripts/dev-env.sh"
+cp "$root_dir/scripts/local-env.sh" "$fake_repo/scripts/local-env.sh"
+cp "$root_dir/.env.example" "$fake_repo/.env.example"
+# `go` fails fast so `up` stops at the migration step, after GC has had its
+# chance to run and before any service would start.
+cat > "$stub_go_dir/go" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+chmod +x "$stub_go_dir/go"
+
+make_stale_env() {
+  local name=$1 offset=$2 profile
+  write_manifest "$name" "$tmp_dir/gone-$name" "$offset"
+  profile="dev-dev-env-test-$offset"
+  mkdir -p "$MULTICA_DEV_PROFILES_HOME/$profile" \
+    "$MULTICA_DEV_WORKSPACES_PARENT/multica_workspaces_$profile" \
+    "$MULTICA_DEV_DESKTOP_APP_DATA/Multica Canary $name"
+}
+
+stale_env_intact() {
+  local name=$1 offset=$2 profile="dev-dev-env-test-$2"
+  [ -f "$MULTICA_DEV_HOME/envs/$name/manifest.env" ] \
+    && [ -d "$MULTICA_DEV_PROFILES_HOME/$profile" ] \
+    && [ -d "$MULTICA_DEV_WORKSPACES_PARENT/multica_workspaces_$profile" ] \
+    && [ -d "$MULTICA_DEV_DESKTOP_APP_DATA/Multica Canary $name" ]
+}
+
+# HOME and the dev tmp dir point into $tmp_dir too, so no default path in the
+# script can resolve to the real home directory.
+fake_up() {
+  (cd "$fake_repo" && HOME="$tmp_dir/home" MULTICA_DEV_TMPDIR="$tmp_dir/dev-tmp" \
+    PATH="$stub_go_dir:$PATH" bash scripts/dev-env.sh up --components api "$@")
+}
+
+make_stale_env "stale-910" 910
+
+status=0
+fake_up > "$out" 2>&1 || status=$?
+[ "$status" -ne 0 ] || fail "stubbed up unexpectedly succeeded; the migration stub should stop it"
+require_contains "$out" "Migrations failed"
+stale_env_intact stale-910 910 \
+  || fail "default up destroyed another environment's manifest, profile, workspaces or userData"
+if grep -Fq "Destroying" "$out"; then
+  fail "default up ran destroy"
+fi
+# The stale environment is still worth telling the user about.
+require_contains "$out" "stale-910 would be collected"
+require_contains "$out" "up --gc"
+
+# gc --dry-run reports and touches nothing, including profile and userData.
+dev_env gc --dry-run > "$out" 2>&1 || fail "gc --dry-run must succeed"
+require_contains "$out" "stale-910 would be collected"
+stale_env_intact stale-910 910 || fail "gc --dry-run deleted environment state"
+
+# The explicit opt-in still collects, and only the stale environment.
+mkdir -p "$tmp_dir/live-checkout"
+write_manifest "live-911" "$tmp_dir/live-checkout" 911
+status=0
+fake_up --gc > "$out" 2>&1 || status=$?
+require_contains "$out" "stale-910: its checkout directory is gone"
+[ ! -e "$MULTICA_DEV_HOME/envs/stale-910" ] || fail "up --gc left the stale manifest"
+[ ! -e "$MULTICA_DEV_PROFILES_HOME/dev-dev-env-test-910" ] || fail "up --gc left the stale profile"
+[ ! -e "$MULTICA_DEV_WORKSPACES_PARENT/multica_workspaces_dev-dev-env-test-910" ] || fail "up --gc left the stale workspaces"
+[ ! -e "$MULTICA_DEV_DESKTOP_APP_DATA/Multica Canary stale-910" ] || fail "up --gc left the stale userData"
+[ -f "$MULTICA_DEV_HOME/envs/live-911/manifest.env" ] || fail "up --gc collected an environment whose checkout exists"
+
+# Manual gc is unchanged.
+make_stale_env "stale-912" 912
+dev_env gc > "$out" 2>&1 || fail "manual gc must succeed"
+require_contains "$out" "stale-912: its checkout directory is gone"
+[ ! -e "$MULTICA_DEV_HOME/envs/stale-912" ] || fail "manual gc left the stale manifest"
+
 echo "✓ dev-env.sh registry behaviour verified"
