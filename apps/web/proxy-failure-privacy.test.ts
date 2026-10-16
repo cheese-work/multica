@@ -1,5 +1,6 @@
 // @vitest-environment node
-import { createServer } from "node:http";
+import { randomUUID } from "node:crypto";
+import { createServer, type ServerResponse } from "node:http";
 import { spawn, type ChildProcess } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +17,36 @@ const upstreamRequests: Array<{
   cookie: string | undefined;
   authorization: string | undefined;
 }> = [];
+type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void };
+type SlowUpstreamRequest = {
+  started: Deferred<void>;
+  closedEarly: Deferred<boolean>;
+  response?: ServerResponse;
+  timer?: ReturnType<typeof setTimeout>;
+};
+const slowUpstreamRequests = new Map<string, SlowUpstreamRequest>();
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => (resolve = resolvePromise));
+  return { promise, resolve };
+}
+
+function waitWithDeadline<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
 
 async function listen(server: ReturnType<typeof createServer>): Promise<number> {
   await new Promise<void>((resolveListen, reject) => {
@@ -86,6 +117,23 @@ describe("search proxy privacy", () => {
         cookie: request.headers.cookie,
         authorization: request.headers.authorization,
       });
+      const cancellationId = new URL(request.url ?? "/", "http://localhost").searchParams.get(
+        "abort_case",
+      );
+      const slowRequest = cancellationId ? slowUpstreamRequests.get(cancellationId) : undefined;
+      if (slowRequest) {
+        slowRequest.response = response;
+        response.once("close", () => {
+          if (slowRequest.timer) clearTimeout(slowRequest.timer);
+          slowRequest.closedEarly.resolve(!response.writableEnded);
+        });
+        slowRequest.started.resolve();
+        slowRequest.timer = setTimeout(() => {
+          response.writeHead(200, { "content-type": "text/plain" });
+          response.end("normal completion");
+        }, 30_000);
+        return;
+      }
       response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
       response.end(JSON.stringify({ url: request.url }));
     });
@@ -153,6 +201,48 @@ describe("search proxy privacy", () => {
     );
   }, 90_000);
 
+  it.each(["/api/search/suggestions", "/api/issues/search", "/api/projects/search"])(
+    "closes the upstream request after a client abort for %s",
+    async (path) => {
+      const cancellationId = randomUUID();
+      const state: SlowUpstreamRequest = {
+        started: deferred<void>(),
+        closedEarly: deferred<boolean>(),
+      };
+      slowUpstreamRequests.set(cancellationId, state);
+      const controller = new AbortController();
+      const logOffset = nextOutput.length;
+      const requestUrl = new URL(`${appUrl}${path}`);
+      requestUrl.searchParams.set("q", "cancel-test");
+      requestUrl.searchParams.set("abort_case", cancellationId);
+      if (path === "/api/search/suggestions") {
+        requestUrl.searchParams.set("workspace_slug", "che1593-preview");
+      }
+      const clientRequest = fetch(requestUrl, { signal: controller.signal });
+
+      try {
+        await waitWithDeadline(state.started.promise, 5_000, "The controlled upstream did not start");
+        controller.abort();
+        await expect(clientRequest).rejects.toMatchObject({ name: "AbortError" });
+        await expect(
+          waitWithDeadline(
+            state.closedEarly.promise,
+            2_000,
+            "The upstream stayed open after the client aborted",
+          ),
+        ).resolves.toBe(true);
+        await new Promise<void>((resolveImmediate) => setImmediate(resolveImmediate));
+        expect(nextOutput.slice(logOffset)).not.toContain("Search proxy failed");
+      } finally {
+        controller.abort();
+        if (state.timer) clearTimeout(state.timer);
+        state.response?.destroy();
+        slowUpstreamRequests.delete(cancellationId);
+      }
+    },
+    15_000,
+  );
+
   it("redacts failed palette and suggestions proxy logs but keeps unrelated diagnostics", async () => {
     await new Promise<void>((resolveClose, reject) => {
       upstreamServer.close((error) => (error ? reject(error) : resolveClose()));
@@ -169,8 +259,8 @@ describe("search proxy privacy", () => {
       const failedResponse = await fetch(`${appUrl}${path}?q=${queryMarker}`, {
         headers: { referer: `${appUrl}/che1593-preview/search?q=${referrerMarker}` },
       });
-      expect(failedResponse.status).toBeGreaterThanOrEqual(500);
-      expect(failedResponse.status).toBeLessThan(600);
+      expect(failedResponse.status).toBe(502);
+      expect(failedResponse.headers.get("cache-control")).toBe("no-store");
     }
 
     const unrelatedMarker = "UNRELATED_QUERY_MARKER_1593";
