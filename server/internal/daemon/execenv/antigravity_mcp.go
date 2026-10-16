@@ -3,7 +3,11 @@ package execenv
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
+	"strings"
 )
 
 // prepareAntigravityMcpConfig materialises an agent's managed mcp_config as an
@@ -34,6 +38,9 @@ func prepareAntigravityMcpConfig(workDir, provider string, raw json.RawMessage, 
 		return errors.New("managed mcp_config requires a working directory")
 	}
 	dir := filepath.Join(workDir, ".agents", "plugins", "multica-mcp")
+	if err := refuseSymlinkedComponents(workDir, dir); err != nil {
+		return err
+	}
 	if err := recordMkdirAll(dir, 0o700, manifest); err != nil {
 		return err
 	}
@@ -51,6 +58,35 @@ func prepareAntigravityMcpConfig(workDir, provider string, raw json.RawMessage, 
 				return errors.New("managed mcp_config would overwrite existing " + path)
 			}
 			return err
+		}
+	}
+	return nil
+}
+
+// refuseSymlinkedComponents fails when any existing path component between
+// workDir and dir is a symlink. recordMkdirAll and os.WriteFile follow links
+// in ancestors, so a link tracked in the repo (.agents, .agents/plugins or the
+// plugin dir) would carry the managed servers' header and env secrets out of
+// the private tree to a directory other runs can read. A check-then-write race
+// needs a concurrent writer inside the task's own private tree; the guard
+// closes the static, repo-planted case.
+func refuseSymlinkedComponents(workDir, dir string) error {
+	rel, err := filepath.Rel(workDir, dir)
+	if err != nil {
+		return err
+	}
+	current := workDir
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil // nothing below this point exists yet; recordMkdirAll creates real directories.
+		}
+		if err != nil {
+			return fmt.Errorf("stat %s: %w", current, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("managed mcp_config refused: %s is not a plain directory inside the task workdir", current)
 		}
 	}
 	return nil
