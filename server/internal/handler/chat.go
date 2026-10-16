@@ -1137,6 +1137,8 @@ type ChatMessagesPageResponse struct {
 	Limit      int                         `json:"limit"`
 	HasMore    bool                        `json:"has_more"`
 	NextCursor *ChatMessagesCursorResponse `json:"next_cursor,omitempty"`
+	// HasNewer is set only on ?around= windows: messages exist after the window.
+	HasNewer bool `json:"has_newer,omitempty"`
 }
 
 func parseChatMessagesPageParams(r *http.Request) (int, pgtype.Timestamptz, pgtype.UUID, error) {
@@ -1277,24 +1279,32 @@ func (h *Handler) ListChatMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ?around= is the anchor window; it shares the page response shape.
+	if anchor := r.URL.Query().Get("around"); anchor != "" {
+		h.listChatMessagesAround(w, r, session, workspaceID, anchor)
+		return
+	}
+
 	messages, err := h.Queries.ListChatMessages(r.Context(), session.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list chat messages")
 		return
 	}
-	messages = visibleChatMessages(messages)
+	writeJSON(w, http.StatusOK, h.chatMessageResponses(r.Context(), workspaceID, visibleChatMessages(messages)))
+}
 
+func (h *Handler) chatMessageResponses(ctx context.Context, workspaceID string, messages []db.ChatMessage) []ChatMessageResponse {
 	messageIDs := make([]pgtype.UUID, len(messages))
 	for i, m := range messages {
 		messageIDs[i] = m.ID
 	}
-	groupedAtt := h.groupChatMessageAttachments(r.Context(), workspaceID, messageIDs)
+	groupedAtt := h.groupChatMessageAttachments(ctx, workspaceID, messageIDs)
 
 	resp := make([]ChatMessageResponse, len(messages))
 	for i, m := range messages {
 		resp[i] = chatMessageToResponse(m, groupedAtt[uuidToString(m.ID)])
 	}
-	writeJSON(w, http.StatusOK, resp)
+	return resp
 }
 
 func (h *Handler) ListChatMessagesPage(w http.ResponseWriter, r *http.Request) {
@@ -1305,6 +1315,11 @@ func (h *Handler) ListChatMessagesPage(w http.ResponseWriter, r *http.Request) {
 	workspaceID := ctxWorkspaceID(r.Context())
 	session, ok := h.chatReadSession(w, r, userID)
 	if !ok {
+		return
+	}
+
+	if anchor := r.URL.Query().Get("around"); anchor != "" {
+		h.listChatMessagesAround(w, r, session, workspaceID, anchor)
 		return
 	}
 
@@ -1347,18 +1362,8 @@ func (h *Handler) ListChatMessagesPage(w http.ResponseWriter, r *http.Request) {
 		messages[i], messages[j] = messages[j], messages[i]
 	}
 
-	messageIDs := make([]pgtype.UUID, len(messages))
-	for i, m := range messages {
-		messageIDs[i] = m.ID
-	}
-	groupedAtt := h.groupChatMessageAttachments(r.Context(), workspaceID, messageIDs)
-
-	resp := make([]ChatMessageResponse, len(messages))
-	for i, m := range messages {
-		resp[i] = chatMessageToResponse(m, groupedAtt[uuidToString(m.ID)])
-	}
 	writeJSON(w, http.StatusOK, ChatMessagesPageResponse{
-		Messages:   resp,
+		Messages:   h.chatMessageResponses(r.Context(), workspaceID, messages),
 		Limit:      limit,
 		HasMore:    hasMore,
 		NextCursor: nextCursor,

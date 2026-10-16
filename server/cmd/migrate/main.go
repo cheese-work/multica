@@ -162,6 +162,7 @@ var concurrentIndexCleanups = map[string]string{
 	"609_decision_worker_lease_name_index":                      "decision_worker_lease_name_uidx",
 	"610_decision_class_change_request_index":                   "decision_class_change_request_idx",
 	"611_decision_answer_request_index":                         "decision_answer_request_idx",
+	"629_chat_session_title_trgm_index":                         "idx_chat_session_title_trgm",
 	"571_search_index_change_changed_at_index":                  "idx_search_index_change_changed_at",
 	"570_search_index_change_workspace_index":                   "idx_search_index_change_workspace_xid",
 	"560_agent_task_history_page_index":                         "idx_agent_task_queue_history_page",
