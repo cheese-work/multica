@@ -28,7 +28,7 @@ const MAX_INSTRUCTION_BYTES = 4000;
 export function WakeupsTab() {
   const { t } = useT("settings");
   const wsId = useWorkspaceId();
-  const { data: rules = [], isError } = useQuery(workspaceSystemWakeupsOptions(wsId));
+  const { data: rules = [], isError, refetch } = useQuery(workspaceSystemWakeupsOptions(wsId));
   const { data: members = [] } = useQuery(memberListOptions(wsId));
   const currentUser = useAuthStore((s) => s.user);
   const canManage = useMemo(() => {
@@ -40,9 +40,12 @@ export function WakeupsTab() {
   return (
     <SettingsTab title={t(($) => $.page.tabs.wakeups)} description={t(($) => $.wakeups.description)}>
       {isError && (
-        <p role="alert" className="text-caption text-destructive">
-          {t(($) => $.wakeups.load_error)}
-        </p>
+        <div role="alert" className="flex items-center justify-between gap-3 text-caption text-destructive">
+          <span>{t(($) => $.wakeups.load_error)}</span>
+          <Button type="button" size="sm" variant="outline" data-testid="wakeups-load-retry" onClick={() => void refetch()}>
+            {t(($) => $.wakeups.retry)}
+          </Button>
+        </div>
       )}
       <PauseSwitch canManage={canManage} />
       {childDone && <ChildDoneDefault rule={childDone} canManage={canManage} paused={paused} />}
@@ -58,16 +61,20 @@ function PauseSwitch({ canManage }: { canManage: boolean }) {
   const qc = useQueryClient();
   const id = useId();
   const [saving, setSaving] = useState(false);
+  // What the last save did; shown until the next one starts.
+  const [saved, setSaved] = useState<"paused" | "resumed" | null>(null);
   const paused = deriveWakeupsPause(workspace).paused;
   const toggle = async (next: boolean) => {
     if (!workspace || saving) return;
     setSaving(true);
+    setSaved(null);
     try {
       // The server stamps who and when; it also keeps the pause when a save omits it.
       const updated = await api.updateWorkspace(workspace.id, { settings: { ...workspace.settings, wakeups_paused: next } });
       qc.setQueryData(workspaceKeys.list(), (old: Workspace[] | undefined) =>
         old?.map((ws) => (ws.id === updated.id ? updated : ws)),
       );
+      setSaved(next ? "paused" : "resumed");
     } catch {
       toast.error(t(($) => $.wakeups.pause_error));
     } finally {
@@ -91,6 +98,11 @@ function PauseSwitch({ canManage }: { canManage: boolean }) {
           />
         </SettingsRow>
       </SettingsCard>
+      {saved && (
+        <p role="status" data-testid="wakeups-pause-status" className="px-0.5 text-caption text-muted-foreground">
+          {saved === "paused" ? t(($) => $.wakeups.pause_saved) : t(($) => $.wakeups.pause_resumed)}
+        </p>
+      )}
       <WakeupsPausedBanner />
     </SettingsSection>
   );

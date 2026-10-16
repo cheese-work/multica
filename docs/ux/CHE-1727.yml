@@ -1,5 +1,5 @@
 issue: CHE-1727
-design: design/wakeups-pause/rev-2/A.html @ pending   # rev-2 is on draft design PR #255; no direction is selected or merged yet. A merge SHA or a Cheese waiver is required before ready.
+design: design/wakeups-pause/rev-3/A.html @ 82c8a7700d40c3aa007aac4cc9dc0b63f7442db9   # approved: Cheese merged design PR #255
 pages:
   - id: settings-wakeups
     url: /<workspace-slug>/settings?tab=wakeups
@@ -13,6 +13,8 @@ pages:
     change:
       - wakeups-pause-switch: "New admin master switch above the sub-issue rule"
       - wakeups-paused-banner: "New banner naming who paused and when"
+      - wakeups-pause-status: "New Saved and Resumed confirmation under the switch"
+      - wakeups-load-retry: "New Retry button on the load-error notice"
     remove: []
   - id: issue-wakeup-panel
     url: /<workspace-slug>/issues/<issue-id>

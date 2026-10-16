@@ -115,6 +115,7 @@ it("confirms a saved pause and a saved resume (approved rev-3 A: Saved and Resum
   await waitFor(() => expect(toggle).not.toHaveAttribute("aria-disabled", "true"));
   fireEvent.click(toggle);
   expect(await screen.findByText("Wakeups paused.")).toBeVisible();
+  expect(screen.getByTestId("wakeups-pause-status")).toHaveTextContent("Wakeups paused.");
   fireEvent.click(screen.getByRole("switch", { name: "Pause all wakeups" }));
   expect(await screen.findByText("Wakeups resumed.")).toBeVisible();
   expect(screen.queryByText("Wakeups paused.")).toBeNull();
@@ -126,6 +127,7 @@ it("offers Retry when the defaults cannot be loaded (approved rev-3 A: load-erro
   ]);
   mount();
   expect(await screen.findByRole("alert")).toHaveTextContent("Could not load wakeup defaults.");
+  expect(screen.getByTestId("wakeups-load-retry")).toBe(screen.getByRole("button", { name: "Retry" }));
   fireEvent.click(screen.getByRole("button", { name: "Retry" }));
   await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
   expect(await screen.findByRole("switch", { name: "On by default" })).toBeVisible();
