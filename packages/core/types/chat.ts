@@ -22,7 +22,8 @@ export type ChatMessageKind =
   | "no_response"
   | "onboarding_kickoff"
   | "onboarding_opening"
-  | "continuation_summary";
+  | "continuation_summary"
+  | "compact_notice";
 
 /**
  * A concise follow-up offered by an assistant reply. `label` is rendered in
@@ -114,6 +115,9 @@ export interface ChatSession {
   /** Present for Chats created by an external Channel. Historical Chats keep
    *  their source even after a newer route generation becomes current. */
   channel_source?: ChatChannelSource;
+  /** True while a compaction task is active for this DM; sends are refused
+   *  (409 chat_compacting) until it ends. Optional for older servers. */
+  compacting?: boolean;
   /** Absent for first-party Chats. */
   is_current_channel_route?: boolean;
   created_at: string;

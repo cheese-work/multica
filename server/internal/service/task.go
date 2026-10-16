@@ -2479,6 +2479,16 @@ func (s *TaskService) SendDirectChatMessageTx(
 		if !carrier.RuntimeID.Valid {
 			return ErrChatTaskAgentNoRuntime
 		}
+		// A DM that is being compacted takes no new turn: the answer would land
+		// in a conversation about to be archived. Checked under the session lock
+		// so it cannot race the compaction enqueue.
+		compacting, err := qtx.HasActiveCompactionTaskForSession(ctx, session.ID)
+		if err != nil {
+			return fmt.Errorf("check active compaction: %w", err)
+		}
+		if compacting {
+			return ErrChatCompacting
+		}
 
 		// The database status of every newly-created task is "queued" until a
 		// daemon claims it. Product queue semantics are positional instead: this
@@ -2516,6 +2526,14 @@ func (s *TaskService) SendDirectChatMessageTx(
 		task, err = qtx.SetChatTaskInputOwnerSelf(ctx, task.ID)
 		if err != nil {
 			return fmt.Errorf("stamp direct chat input owner: %w", err)
+		}
+		// A manual /compact is a compaction run from the moment it is queued, so
+		// sends are refused while it runs. It carries no reason (CHE-1807).
+		if IsCompactCommand(content) {
+			task, err = qtx.MarkChatTaskCompact(ctx, db.MarkChatTaskCompactParams{ID: task.ID})
+			if err != nil {
+				return fmt.Errorf("mark compact chat task: %w", err)
+			}
 		}
 		out.Task = task
 
@@ -4812,6 +4830,9 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 	// Broadcast
 	s.broadcastTaskEvent(ctx, protocol.EventTaskCompleted, task)
 
+	// DM auto-compact (CHE-1803): after the completion is final and announced.
+	s.maybeAutoCompact(ctx, task, runContext)
+
 	return &task, true, nil
 }
 
@@ -6663,6 +6684,9 @@ func SettleTerminalTaskState(ctx context.Context, q *db.Queries, tasks ...db.Age
 	taskIDs := make([]pgtype.UUID, 0, len(tasks))
 	for _, task := range tasks {
 		taskIDs = append(taskIDs, task.ID)
+		if err := settleCompactionTask(ctx, q, task); err != nil {
+			return err
+		}
 	}
 	if _, err := q.SettleTerminalTaskSupplements(ctx, taskIDs); err != nil {
 		return fmt.Errorf("settle terminal task supplements: %w", err)
@@ -7865,6 +7889,9 @@ func (s *TaskService) publishTaskEvent(eventType, workspaceID string, task db.Ag
 		return
 	}
 	s.Bus.Publish(taskEvent(eventType, workspaceID, task, extra...))
+	if task.TaskKind.String == CompactTaskKind && task.ChatSessionID.Valid {
+		s.syncChatCompacting(workspaceID, task)
+	}
 }
 
 func (s *TaskService) broadcastTaskEvent(ctx context.Context, eventType string, task db.AgentTaskQueue, extra ...map[string]any) {

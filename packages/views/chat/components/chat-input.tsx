@@ -126,6 +126,9 @@ interface ChatInputProps {
    *  one, both are true and "create an agent" would be the wrong instruction. */
   agentAccessRevoked?: boolean;
   agentRuntimeRequired?: boolean;
+  /** True while the DM is being compacted: `disabled` is set by the owner, and
+   *  this swaps the placeholder to name the reason. The draft is kept. */
+  compacting?: boolean;
   /** Name of the currently selected agent, used in the placeholder. */
   agentName?: string;
   /** Rendered at the bottom-left of the input bar — typically the agent picker. */
@@ -173,6 +176,7 @@ export function ChatInput({
   agentArchived,
   agentAccessRevoked,
   agentRuntimeRequired,
+  compacting,
   agentName,
   leftAdornment,
   contextItems,
@@ -649,6 +653,8 @@ export function ChatInput({
     ? t(($) => $.input.placeholder_access_revoked)
     : noAgent
     ? t(($) => $.input.placeholder_no_agent)
+    : compacting
+    ? t(($) => $.input.placeholder_compacting)
     : disabled
       ? agentArchived
         ? t(($) => $.input.placeholder_archived_agent)

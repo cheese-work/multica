@@ -32,6 +32,9 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 	workspaceID := ctxWorkspaceID(r.Context())
 	sessionID := chi.URLParam(r, "sessionId")
 	var session db.ChatSession
+	// compactReason is the server-built reason of an automatic compaction: it
+	// leads the new DM's summary so the person sees why the DM moved.
+	var compactReason string
 	if r.Header.Get("X-Actor-Source") == "task_token" {
 		taskID, err := util.ParseUUID(r.Header.Get("X-Task-ID"))
 		if err != nil {
@@ -52,6 +55,7 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, "task does not belong to this chat session")
 			return
 		}
+		compactReason = task.CompactReason.String
 	} else {
 		if r.Header.Get("X-Agent-ID") != "" {
 			writeError(w, http.StatusForbidden, "only the session human or its chat task can continue")
@@ -132,7 +136,7 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		summary, err = qtx.CreateChatMessage(r.Context(), db.CreateChatMessageParams{
 			ID: dbid.NewV7(), ChatSessionID: next.ID, Role: "assistant",
-			Content:     strings.TrimSpace(redact.Text(request.Summary)) + fmt.Sprintf("\n\n[Previous DM](%s)", chatURL(session.ID)),
+			Content:     compactSummaryContent(compactReason, request.Summary, chatURL(session.ID)),
 			MessageKind: pgtype.Text{String: protocol.ChatMessageKindContinuationSummary, Valid: true},
 		})
 	}
@@ -162,4 +166,14 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt: timestampToString(session.UpdatedAt), ContinuedIntoSessionID: uuidToString(next.ID),
 	})
 	writeJSON(w, http.StatusCreated, ChatContinueResponse{Session: chatSessionToResponse(next), PreviousSessionID: uuidToString(session.ID), URL: chatURL(next.ID)})
+}
+
+// compactSummaryContent is the new DM's first message: the agent's summary and
+// the link back, led by the automatic compaction's reason when there is one.
+func compactSummaryContent(reason, summary, previousURL string) string {
+	content := strings.TrimSpace(redact.Text(summary)) + fmt.Sprintf("\n\n[Previous DM](%s)", previousURL)
+	if reason == "" {
+		return content
+	}
+	return reason + "\n\n" + content
 }

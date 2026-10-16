@@ -845,7 +845,7 @@ export const ChatMessageSchema = z.object({
   failure_reason: z.string().nullable().optional(),
   elapsed_ms: z.number().nullable().optional(),
   message_kind: z
-    .enum(["message", "no_response", "onboarding_kickoff", "onboarding_opening", "continuation_summary"])
+    .enum(["message", "no_response", "onboarding_kickoff", "onboarding_opening", "continuation_summary", "compact_notice"])
     .catch("message")
     .optional(),
   // Optional additive data degrades independently: a malformed suggestion
@@ -2041,6 +2041,7 @@ const ChatLastMessageSchema = z.object({
     "onboarding_kickoff",
     "onboarding_opening",
     "continuation_summary",
+    "compact_notice",
   ]).optional().catch(undefined),
 }).loose();
 
@@ -2068,6 +2069,7 @@ export const ChatSessionSchema: z.ZodType<ChatSession> = z.object({
   last_message: ChatLastMessageSchema.nullable().optional().catch(undefined),
   pinned: z.boolean().optional(),
   channel_source: ChatChannelSourceSchema.optional().catch(undefined),
+  compacting: z.boolean().optional().catch(undefined),
   is_current_channel_route: z.boolean().optional().catch(undefined),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
@@ -2110,6 +2112,7 @@ export const ChatSessionUpdatedPayloadSchema = z.object({
   pinned: z.boolean().optional().catch(undefined),
   status: z.enum(["active", "archived"]).optional().catch(undefined),
   continued_into_session_id: z.string().uuid().optional().catch(undefined),
+  compacting: z.boolean().optional().catch(undefined),
   updated_at: z.string().optional().catch(undefined),
 }).loose();
 

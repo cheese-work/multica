@@ -15,6 +15,7 @@
   "input": {
     "placeholder_no_agent": "Create an agent to start chatting",
     "placeholder_archived": "This session is archived",
+    "placeholder_compacting": "Compacting…",
     "placeholder_archived_agent": "This agent has been archived",
     "placeholder_runtime_required": "Bind a runtime to continue",
     "placeholder_access_revoked": "You no longer have permission to run this agent",
@@ -24,6 +25,7 @@
     "queue_send_tooltip": "Queue message",
     "stop_tooltip": "Stop",
     "send_failed_toast": "Failed to send message",
+    "compacting_toast": "This DM is compacting. Send again when it finishes.",
     "rename_failed_toast": "Failed to rename chat",
     "fork_unconfirmed": "Fork could not be confirmed. Check the Forked into links before trying again.",
     "fork_attachments_blocked": "Attachments cannot be sent with /fork.",

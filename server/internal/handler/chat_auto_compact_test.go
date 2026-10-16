@@ -346,11 +346,13 @@ func TestManualCompactIsMarkedAtEnqueueAndLocksSends(t *testing.T) {
 		t.Fatalf("send during a manual compaction: %d, want 409", w.Code)
 	}
 	// Not a compaction: the command word must be the first word of the message.
-	other := newAutoCompactDM(t, `{}`, `{}`)
-	sendDirectChat(t, context.Background(), other.agentID, other.sessionID, "please /compact later")
-	if n := len(other.compactionTasks(t)); n != 0 {
-		t.Fatalf("a message that only mentions /compact created %d compaction tasks", n)
-	}
+	t.Run("a message that only mentions /compact", func(t *testing.T) {
+		other := newAutoCompactDM(t, `{}`, `{}`)
+		sendDirectChat(t, context.Background(), other.agentID, other.sessionID, "please /compact later")
+		if n := len(other.compactionTasks(t)); n != 0 {
+			t.Fatalf("a message that only mentions /compact created %d compaction tasks", n)
+		}
+	})
 }
 
 func TestClaimedAutoCompactionRunsTheCompactPromptWithoutUserInput(t *testing.T) {

@@ -14,6 +14,7 @@
   "input": {
     "placeholder_no_agent": "创建一个智能体后才能开始对话",
     "placeholder_archived": "此会话已归档",
+    "placeholder_compacting": "正在压缩…",
     "placeholder_archived_agent": "该智能体已归档",
     "placeholder_runtime_required": "绑定运行时后继续",
     "placeholder_access_revoked": "你已没有运行该智能体的权限",
@@ -23,6 +24,7 @@
     "queue_send_tooltip": "排队发送",
     "stop_tooltip": "停止",
     "send_failed_toast": "发送消息失败",
+    "compacting_toast": "此私信正在压缩。完成后请重新发送。",
     "rename_failed_toast": "重命名对话失败",
     "fork_unconfirmed": "无法确认分支是否成功。重试前请先查看“已分支到”链接。",
     "fork_attachments_blocked": "/fork 不能附带附件。",
