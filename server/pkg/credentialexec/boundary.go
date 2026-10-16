@@ -23,8 +23,11 @@ import (
 
 const HelperArg = "__multica_credential_runner"
 const NativePlaceholder = "multica-task-gateway-only"
+const toolBin = "/multica-tools/bin"
 
 var ErrUnavailable = errors.New("credential execution boundary unavailable")
+var ErrQuotaExhausted = fmt.Errorf("%w: task quota exhausted", ErrUnavailable)
+var ErrOutcomeUnknown = fmt.Errorf("%w: task gateway outcome unknown", ErrUnavailable)
 
 type Binding struct {
 	TaskID      string `json:"task_id"`
@@ -38,6 +41,8 @@ type Spec struct {
 	Provider         string
 	Executable       string
 	HelperExecutable string
+	Inputs           map[string][]byte
+	ToolExecutables  map[string]string
 }
 
 type GatewayCredential struct {
@@ -47,18 +52,23 @@ type GatewayCredential struct {
 }
 
 type Boundary struct {
-	spec        Spec
-	state       string
-	runtimeRoot string
-	bwrap       string
-	mutex       sync.Mutex
-	server      *http.Server
-	listener    net.Listener
-	socket      string
-	credential  GatewayCredential
-	closed      bool
-	serveDone   chan struct{}
-	transport   *http.Transport
+	spec          Spec
+	state         string
+	runtimeRoot   string
+	bwrap         string
+	mutex         sync.Mutex
+	server        *http.Server
+	listener      net.Listener
+	socket        string
+	credential    GatewayCredential
+	closed        bool
+	serveDone     chan struct{}
+	transport     *http.Transport
+	requestMutex  sync.Mutex
+	stopErr       error
+	stopped       chan struct{}
+	usage         map[string]GatewayUsage
+	requestActive bool
 }
 
 func (binding Binding) Validate() error {
@@ -80,6 +90,9 @@ func (boundary *Boundary) Validate(taskID, provider, executable string) error {
 	}
 	boundary.mutex.Lock()
 	defer boundary.mutex.Unlock()
+	if err := boundary.stopErrorLocked(); err != nil {
+		return err
+	}
 	if boundary.closed || boundary.spec.Binding.TaskID != taskID || boundary.spec.Provider != provider || boundary.spec.Executable != executable {
 		return fmt.Errorf("%w: launch binding mismatch or closed boundary", ErrUnavailable)
 	}
@@ -87,8 +100,12 @@ func (boundary *Boundary) Validate(taskID, provider, executable string) error {
 }
 
 func (boundary *Boundary) Environment() map[string]string {
+	path := "/bin"
+	if len(boundary.spec.ToolExecutables) != 0 {
+		path = toolBin + ":/bin"
+	}
 	return map[string]string{
-		"HOME": boundary.Home(), "PATH": "/bin", "LANG": "C.UTF-8",
+		"HOME": boundary.Home(), "PATH": path, "LANG": "C.UTF-8",
 		"XDG_CONFIG_HOME":   filepath.Join(boundary.Home(), ".config"),
 		"XDG_CACHE_HOME":    filepath.Join(boundary.Home(), ".cache"),
 		"XDG_DATA_HOME":     filepath.Join(boundary.Home(), ".data"),
@@ -166,7 +183,7 @@ func (boundary *Boundary) BindGateway(ctx context.Context, credential GatewayCre
 		_ = os.Remove(brokerDir)
 		return fmt.Errorf("%w: secure gateway socket", ErrUnavailable)
 	}
-	transport := &http.Transport{Proxy: nil, MaxIdleConnsPerHost: 4}
+	transport := &http.Transport{Proxy: nil, DisableKeepAlives: true}
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(request *httputil.ProxyRequest) {
 			request.SetURL(upstream)
@@ -181,7 +198,7 @@ func (boundary *Boundary) BindGateway(ctx context.Context, credential GatewayCre
 				request.Out.Header.Set("Authorization", "Bearer "+credential.Key)
 			}
 		},
-		Transport: transport,
+		Transport: &gatewayTransport{boundary: boundary, transport: transport},
 		ErrorHandler: func(writer http.ResponseWriter, _ *http.Request, _ error) {
 			http.Error(writer, "task gateway unavailable", http.StatusBadGateway)
 		},
@@ -214,7 +231,7 @@ func allowedGatewayRequest(provider string, request *http.Request) bool {
 	if provider == "claude" {
 		return request.URL.Path == "/v1/messages" || request.URL.Path == "/v1/messages/count_tokens"
 	}
-	return request.URL.Path == "/v1/responses" || request.URL.Path == "/v1/chat/completions"
+	return request.URL.Path == "/v1/responses"
 }
 
 func (boundary *Boundary) Close() error {

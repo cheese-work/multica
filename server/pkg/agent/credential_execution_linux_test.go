@@ -46,6 +46,9 @@ type credentialProbe struct {
 	AbstractSocket  string
 }
 
+const ownedClaudeGatewayResponse = `{"id":"msg_owned","type":"message","role":"assistant","model":"owned-model","content":[],"stop_reason":"end_turn","usage":{"input_tokens":7,"cache_creation_input_tokens":2,"cache_read_input_tokens":3,"output_tokens":5}}`
+const ownedResponsesGatewayResponse = `{"id":"resp_owned","object":"response","model":"owned-model","status":"completed","output":[],"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":3,"cache_write_tokens":2},"output_tokens":5,"output_tokens_details":{"reasoning_tokens":2},"total_tokens":17}}`
+
 type credentialObservation struct {
 	Readable       map[string]bool
 	Inherited      bool
@@ -60,6 +63,7 @@ type credentialObservation struct {
 	DescriptorLeak bool
 	NativeControl  bool
 	AdminDenied    bool
+	StagedInputs   bool
 }
 
 func credentialFixtureAgent() {
@@ -88,6 +92,9 @@ func credentialFixtureAgent() {
 	data, _ := os.ReadFile("probe.json")
 	_ = json.Unmarshal(data, &probe)
 	observation := credentialObservation{Readable: make(map[string]bool)}
+	stagedPrompt, promptErr := os.ReadFile("multica-input/prompt.md")
+	stagedSkill, skillErr := os.ReadFile("multica-input/skills/owned/SKILL.md")
+	observation.StagedInputs = promptErr == nil && skillErr == nil && string(stagedPrompt) == "owned authenticated prompt" && string(stagedSkill) == "owned authenticated skill"
 	for name, path := range map[string]string{"direct": probe.Outside, "symlink": "escape", "cross-task": probe.OtherTask, "peer-env": probe.PeerEnvironment, "peer-fd": probe.PeerDescriptor} {
 		data, err := os.ReadFile(path)
 		observation.Readable[name] = err == nil && strings.Contains(string(data), "owned-unlimited")
@@ -159,7 +166,7 @@ func credentialFixtureAgent() {
 		if err == nil {
 			payload, _ := io.ReadAll(response.Body)
 			_ = response.Body.Close()
-			observation.Gateway = response.StatusCode == http.StatusOK && string(payload) == "owned-scoped"
+			observation.Gateway = response.StatusCode == http.StatusOK && (string(payload) == ownedClaudeGatewayResponse || string(payload) == ownedResponsesGatewayResponse)
 		}
 		adminResponse, err := client.Get(base + "/admin/credentials")
 		if err == nil {
@@ -287,6 +294,7 @@ func TestCredentialExclusiveProductionAdapters(test *testing.T) {
 			test.Log("NEGATIVE CONTROL: ordinary production adapter reads owned unlimited sentinel and inherited credential")
 			binding := credentialexec.Binding{TaskID: "00000000-0000-4000-8000-000000000001", OwnerID: "00000000-0000-4000-8000-000000000002", WorkspaceID: "00000000-0000-4000-8000-000000000003"}
 			spec := credentialexec.Spec{Root: filepath.Join(root, "private"), Binding: binding, Provider: provider, Executable: executable, HelperExecutable: current}
+			spec.Inputs = map[string][]byte{"multica-input/prompt.md": []byte("owned authenticated prompt"), "multica-input/skills/owned/SKILL.md": []byte("owned authenticated skill")}
 			boundary, err := credentialexec.Prepare(context.Background(), spec)
 			if err != nil {
 				test.Fatal(err)
@@ -310,7 +318,12 @@ func TestCredentialExclusiveProductionAdapters(test *testing.T) {
 					writer.WriteHeader(403)
 					return
 				}
-				_, _ = io.WriteString(writer, "owned-scoped")
+				writer.Header().Set("Content-Type", "application/json")
+				if provider == "claude" {
+					_, _ = io.WriteString(writer, ownedClaudeGatewayResponse)
+				} else {
+					_, _ = io.WriteString(writer, ownedResponsesGatewayResponse)
+				}
 			}))
 			defer gateway.Close()
 			if err := boundary.BindGateway(context.Background(), credentialexec.GatewayCredential{Binding: binding, BaseURL: gateway.URL, Key: "owned-scoped"}); err != nil {
@@ -328,7 +341,7 @@ func TestCredentialExclusiveProductionAdapters(test *testing.T) {
 						test.Errorf("isolated %s reads %s", provider, route)
 					}
 				}
-				if isolated.Inherited || isolated.Helper || isolated.DescriptorLeak || isolated.HostNetwork || isolated.UnixPeer || isolated.AbstractPeer || isolated.ParentLeak || !isolated.Scoped || !isolated.Gateway || !isolated.AdminDenied || !isolated.NativeControl || isolated.Count != attempt {
+				if isolated.Inherited || isolated.Helper || isolated.DescriptorLeak || isolated.HostNetwork || isolated.UnixPeer || isolated.AbstractPeer || isolated.ParentLeak || !isolated.Scoped || !isolated.Gateway || !isolated.AdminDenied || !isolated.NativeControl || !isolated.StagedInputs || isolated.Count != attempt {
 					test.Fatalf("isolated control: %+v, attempt %d", isolated, attempt)
 				}
 			}
@@ -387,6 +400,17 @@ func observeCredentialExecution(test *testing.T, provider string, config Config,
 	result := <-session.Result
 	if result.Status != "completed" {
 		test.Fatalf("adapter failed: %+v", result)
+	}
+	if config.CredentialBoundary != nil {
+		if result.GatewayUsage == nil || !result.GatewayUsage.Complete || len(result.GatewayUsage.Models) != 1 {
+			test.Fatal("opted-in launch/resume lost trusted final usage")
+		}
+		usage := result.GatewayUsage.Models["owned-model"]
+		if usage.InputTokens == 0 || usage.InputTokens%7 != 0 || usage.OutputTokens != usage.InputTokens/7*5 || usage.CacheReadTokens != usage.InputTokens/7*3 || usage.CacheWriteTokens != usage.InputTokens/7*2 {
+			test.Fatalf("provider-inclusive input/reasoning was double-counted: %+v", usage)
+		}
+	} else if result.GatewayUsage != nil {
+		test.Fatal("unmanaged result gained inferred trusted usage")
 	}
 	var observation credentialObservation
 	if err := json.Unmarshal([]byte(result.Output), &observation); err != nil {

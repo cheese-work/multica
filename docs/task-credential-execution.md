@@ -22,7 +22,244 @@ Claude opted-in launches use `default`, not `bypassPermissions`. Codex opted-in 
 4. Call `BindGateway` with exactly that binding, task key and fixed gateway origin. It reruns the namespace control before exposing a broker. The task ID pins owner/workspace/runtime digests; a persisted non-secret gateway fingerprint rejects changed keys/origins, including after same-task re-preparation. Repeated preparation preserves native state. This is not quota-ledger persistence or recovery of unknown spend.
 5. Use `agent.Config{RequireCredentialIsolation: true, CredentialBoundary: boundary, TaskID: binding.TaskID, BuiltinRuntime: true, ExecutablePath: pinnedPath}` and `ExecOptions.Cwd = boundary.WorkDir()`. Custom/extra arguments, launch profiles, unmanaged settings, MCP/hook routes, mismatched directories and inherited descriptors refuse before native launch. `Close` ends the broker and collects its service loop; scoped native state is retained for authorized same-task retry. The parent must replace the current daemon refusal only after its complete trusted handoff, supported native transport, task tooling and failure contracts are implemented and tested.
 
+## Authenticated input staging source
+
+The authenticated daemon helper stages only the claim's generated prompt, agent instructions,
+workspace context and embedded or claim-pinned skill text under `WorkDir/multica-input` before grant delivery.
+Caller-supplied input manifests refuse. Unavailable or changed skill references refuse; no host cache, repository,
+shared authentication/configuration, socket, hard link or runtime directory is imported.
+Only explicit in-memory bytes are supported. Input staging is not credential-exclusive task tooling.
+The namespace control succeeds before staging; staging succeeds before every grant request.
+Anchored `openat2` operations refuse symlinks, non-regular files, multiple links and non-private paths.
+Canonical paths, directory/file collisions and finite file/count/aggregate limits are validated.
+Same-task preparation checks exact existing bytes rather than overwriting changed input or native state.
+Changed/unsafe input refuses before credential delivery. Authorized instruction/context updates use the
+explicit authenticated refresh path below; same-task preparation never imports changed disk contents.
+Owned fixtures cover these refusals and both production adapters' launch/resume visibility.
+
+Opted-in native wrapping reopens and verifies each declared input through the anchored workdir.
+The same verified read-only descriptors become deterministic per-file read-only namespace mounts.
+Changed bytes, unsafe paths or modes and missing input refuse even on direct boundary wrapping.
+Native launch/resume cannot overwrite or unlink these declared files; task work and native home remain writable.
+Descriptor pinning survives replacement of the host pathname after verification, without a path-based reread.
+Only declared inputs receive these mounts. Namespace probes and input-free wrapping retain their original behavior.
+This adds immutable native input visibility, not complete task tooling.
+
+### Claim-pinned server skill resolution
+
+The prepared helper resolves workspace, builtin and plugin references through the existing authenticated
+runtime/task skill-bundle endpoint. It uses the claim's owning-daemon credential, not the general client token.
+The request stays on the validated fixed Multica origin, with no inherited proxy, redirect or retry.
+The response must contain exactly the requested bundles, in claim order, with matching source, ID,
+claim-time manifest hash, file count and recomputed byte size. A current but changed server bundle refuses;
+the ordinary unmanaged resolver's refresh/cache behavior does not apply to this route.
+
+Resolution uses only bounded in-memory responses. It imports no daemon skill cache or host files.
+The request is at most 1 MiB and the response is at most 8 MiB, with a 25-second HTTP timeout.
+Existing canonical-path, file/count/aggregate input limits still apply before staging or grant delivery.
+The helper leaves the original claim unchanged and uses the same resolved snapshot for staged and native prompts.
+Exact same-task input reuses native state; changed pins or bytes never overwrite the retained state.
+Unavailable resolution, hard 429, malformed/trailing/unknown-field JSON and wrong bundles refuse without a grant.
+
+The existing server endpoint still serves unmanaged preparing tasks without changing their authorization.
+Running-task resolution additionally requires the owning-daemon token and the exact frozen gateway policy.
+The current runtime owner, workspace, task, agent/runtime association, private-agent owner, builtin profile,
+finite dispatch timestamp and `task-gateway-v1` capability must agree. PAT/JWT, foreign daemons,
+unmanaged running tasks, changed bindings and terminal tasks refuse. No operator or provider call occurs.
+This is pinned input source support, not native skill registration or complete tooling.
+Database/native/full gateway acceptance remains NOT-RUN. The daemon's early opt-in refusal remains.
+
+### Authenticated instruction/context refresh
+
+Prepared executions retain a copied claim, canonical binding, fixed Multica origin and original skill pins.
+`Refresh` accepts no caller-supplied text, filenames, credentials, configuration or replacement claim.
+Every prepared `Run` uses the same authenticated refresh before native launch or same-task resume.
+An unavailable or invalid snapshot refuses before spawning the native executable, without another grant.
+The owning-daemon `gateway-inputs` endpoint additionally requires the original task token and dispatch
+timestamp. It locks runtime, task, agent and token, reads current agent instructions/workspace context,
+rechecks authorization and commits before delivery. Unsupported nonempty custom/runtime/MCP configuration
+refuses. Refresh does not call the operator, provision a grant, contact a provider or alter task counters.
+Responses use `Cache-Control: no-store`, canonical binding/runtime/agent identities, UTF-8 text bounded
+to 1 MiB per field and a 3 MiB frame. Unknown, duplicate, trailing, missing/null text and malformed fields refuse.
+
+The daemon re-resolves the original skill pins and validates the complete replacement snapshot.
+`Boundary.RefreshInputs` requires the same binding and filenames, an unchanged private input tree and
+an idle, open, unstopped broker. Private staging and a second verification precede atomic directory exchange.
+Staging is outside native home/workdir and is removed synchronously. Native state, mutable work,
+gateway fingerprint and observed usage stay unchanged. Tampered/missing input, new filenames, changed
+skill pins, cancellation and active/stopped execution refuse without repair or credential delivery.
+Run and refresh share one active-operation guard; close cancels and joins either operation.
+Close also cancels and joins a launch blocked in its mandatory refresh, before any native process exists.
+The refreshed native prompt uses the same authenticated snapshot as the staged files.
+
+Owned row/HTTP/ELF fixtures cover authenticated refresh, both adapters' launch/resume, cancellation,
+concurrency, close, state/usage preservation and hard-429 refusal. Both adapters' launch/resume require
+the latest authenticated snapshot and refuse malformed/mismatched input without a native spawn.
+These are not PostgreSQL transactions, installed native compatibility or full acceptance.
+Production daemon refresh, expanded task inputs, native skill
+registration, credential-exclusive tooling and production `runTask` integration remain unfinished.
+
 ## Evidence and explicit limits
+
+The broker treats an upstream HTTP 429 as a terminal task-quota refusal. A transport failure before
+response headers, an unsupported protocol upgrade or any other HTTP status of 300 or greater records
+an unknown outcome and refuses. Forwarding is serialized until the streamed body reaches EOF and
+closes successfully. A body read error, cancellation, premature close or close error records an unknown
+outcome before releasing admission. Body errors become the fixed local failure, not raw upstream errors.
+Concurrent body close unblocks a reader and releases admission exactly once. After a refusal, queued
+and later requests return a fixed local 429 or 503 without reaching the gateway. Successful SSE bodies
+remain streamed one validated frame at a time; JSON bodies wait for bounded completion validation.
+Only supported provider completion, explicit final usage, EOF and successful close permit another request.
+The upstream transport uses no proxy or reused keepalive connection, so it cannot transparently retry
+a request on a reused connection. Already admitted streams are not refunded or reset.
+
+The trusted daemon records `gateway-stop` in the task state with exclusive creation, mode 0600 and
+file/directory sync. Only `quota` or `unknown` is valid. Malformed or unavailable markers refuse.
+Preparation and launch reject a stopped task before another provisioning call or native launch.
+Persistence errors stop the current boundary with an unavailable outcome. No automatic removal,
+reset, expiry or release exists. Native session/cache/home state remains intact. This local refusal
+marker is not a quota ledger, crash-durable failed-outcome retry queue or recovery of unknown spend.
+
+Both production adapters cancel an active opted-in native process when the broker stops. The trusted
+stop overrides native success/cancellation text with a fixed failed result and suppresses every native
+resume/fresh-session retry flag before Codex retry selection. The result keeps the session ID and any
+already observed usage. Missing usage remains unknown, not zero. Unmanaged adapters remain unchanged.
+
+`TestCredentialGatewayStopIsTerminal` uses a real OS boundary and local HTTP fixtures. Twelve concurrent
+requests after a 429, 502 or transport disconnect cause exactly one upstream request. Persisted stop
+state refuses same-task preparation without clearing native state. Marker unit tests cover malformed,
+public, symlink and directory state. `TestCredentialExclusiveQuotaStopAtProductionAdapters` covers both
+production adapter launch/resume seams with owned ELF fixtures that try three requests and forged success.
+`TestCredentialGatewayStreamLifecycle` covers complete streams, refused empty inference, truncation, cancellation,
+premature close and unsupported upgrade with owned local HTTP fixtures. Additional race tests cover
+concurrent read/close and redacted close failures. Admission remains locked through body close.
+`TestCredentialExclusiveStreamStopAtProductionAdapters` exercises the same owned ELF launch/resume
+seams for both providers after an upstream body truncates. The unknown stop persists before a queued
+request or same-task preparation can pass. Session identity and already observed usage remain.
+The isolated path stops after one gateway request and one native launch. Its ordinary negative control
+forwards all three requests and accepts forged success; the denial assertion fails as intended.
+
+These checks prove terminal refusal at owned broker/adapter seams only. Installed Claude/OpenAI native
+transport and end-to-end billable-attempt acceptance remain NOT-RUN. Byte-level EOF alone does not establish
+provider-protocol completion or normalized final usage. The bounded protocol guard below checks supported
+local provider fixtures, not installed native transport, durable accounting or gateway/worker settlement.
+Unknown usage is not zero.
+The daemon still does not advertise `task-gateway-v1` and still refuses opted-in launch before preparation.
+Prepared daemon launch/resume, complete authorized task inputs and credential-exclusive tooling remain unfinished.
+
+## Bounded provider-protocol guard
+
+The broker supports HTTP 200 UTF-8 JSON or SSE on Claude `/v1/messages` and OpenAI `/v1/responses`.
+Text content, Claude client `tool_use` blocks and direct OpenAI `function_call` items are supported.
+Claude thinking/server-tool blocks and OpenAI custom/async/program/namespaced tools, refusal and reasoning
+items or events refuse; this subset is not complete native CLI compatibility. Chat Completions refuses
+before forwarding. `/v1/models` and Claude `/v1/messages/count_tokens` have bounded JSON metadata guards,
+not inference usage defaults. Other statuses, media types, protocol upgrades and declared/late trailers refuse.
+
+JSON bodies and individual SSE frames are bounded to 1 MiB with at most 32 JSON nesting levels.
+Duplicate JSON keys, including escaped/case-folded names, refuse. LF/CRLF and multiline `data` are supported.
+SSE `id`/`retry`, `[DONE]`, partial frames and unknown event variants refuse. Invalid/error frames are not
+forwarded, even when fragmented. Successful frames preserve exact wire bytes; the whole SSE response is
+not buffered. Closing before the validated output is consumed also records an unknown outcome.
+
+Claude requires message identity/model, supported terminal stop reason and explicit input/cache-write/
+cache-read/output counts. SSE block lifecycle must close before a single final delta and `message_stop`.
+Cumulative delta counts overwrite monotonically; omitted optional counts retain known start values.
+Client tool blocks require unique nonempty IDs, nonempty names and object-valued input. A streamed tool
+starts with an empty input object and accepts only `input_json_delta` arguments for that block.
+The broker accumulates at most 1 MiB across active tool arguments and validates the complete JSON object
+at block stop, including the existing depth and duplicate-field limits. Closed argument buffers are discarded.
+Empty-input tools are supported. A response with client tool blocks must terminate with `tool_use`;
+that stop reason without a tool block refuses. Malformed or incomplete arguments, unknown usage and
+unsupported tool variants retain the existing same-task unknown-outcome stop and prevent another attempt.
+Owned JSON/SSE fixtures verify wire preservation, usage and refusal. These are not installed native-tool
+or gateway/worker acceptance. The primary protocol reference is the Anthropic streaming documentation.
+OpenAI requires stable response identity/model, consecutive event sequence, closed supported items and
+`response.completed` with completed status and final usage. The supported streamed message has at most one
+text part; SHA-256 digests verify text deltas against text/part/item/final snapshots without retaining the
+whole response. Unsupported output, changed identity, incomplete status or terminal error refuses.
+
+Direct OpenAI functions require unique nonempty item and call IDs, nonempty names and JSON-object
+arguments. Optional function status must match the item lifecycle. A streamed function starts with empty
+arguments, accepts only matching `response.function_call_arguments.delta` events, and requires matching
+`response.function_call_arguments.done`, `response.output_item.done` and terminal response snapshots.
+The broker accumulates at most 1 MiB across active function arguments, applying the same JSON depth and
+duplicate-field guards as Claude tools. Closed argument buffers are discarded; SHA-256 digests retain
+the verified arguments for terminal comparison. Interleaved functions preserve output-index identity.
+Malformed functions retain the unknown-outcome stop, suppress another upstream request and preserve native state.
+Owned fragmented JSON/SSE and local HTTP fixtures verify wire preservation, disjoint usage and refusal.
+These are not installed native-tool or gateway/worker acceptance. The primary schema is
+`openai/openai-node` revision `37af8fc9c78bd5c4d2979c5d51870dd38964e156`,
+`src/resources/responses/responses.ts`: `ResponseFunctionToolCallItem` and the argument delta/done events.
+
+All required counters are finite nonnegative decimal int64 values. Missing/null counts are unknown, not
+zero. Explicit zero counts remain valid. OpenAI total must equal input plus output without overflow;
+cache-read plus cache-write must fit input and reasoning must fit output. The private disjoint buckets
+are uncached input, cache creation, cache read and inclusive output. Cache and reasoning are not added
+again. These values feed observed broker usage snapshots; no platform usage-reporting, durable settlement,
+quota refund or reset API is added. Real provider protocol compatibility and full accounting acceptance remain NOT-RUN.
+
+### Observed usage handoff
+
+`Boundary.UsageSnapshot` returns a defensive per-model copy of the four disjoint counts.
+Both production adapters attach that snapshot to `Result.GatewayUsage` for opted-in launch/resume.
+Unmanaged results remain unchanged. Native-reported `Result.Usage` and session identity remain unchanged;
+native-reported counters are not the trusted gateway snapshot and cannot establish settlement.
+
+The broker records an inference only after supported terminal protocol validation, byte EOF, consumed
+validated output and successful upstream body close. Repeated close does not count another inference.
+Snapshot completeness is false while a request is in flight, after a stopped/ambiguous outcome, or when
+no inference has been observed. Explicit zero counts can be complete; absent counts are not zero.
+Previously observed counts survive later quota/unknown outcomes. Metadata requests contribute no tokens.
+Per-model accumulation checks the combined four buckets for int64 overflow before changing any counter.
+Overflow or exceeding 128 distinct models or a 1024-byte model name records unknown outcome before
+another request is admitted. Those are source memory/representation limits, not production quota caps.
+
+Snapshots measure only requests observed by the current prepared broker. They are process-local,
+not crash-durable task-wide accounting, quota settlement, reconciliation, or a reset/recovery mechanism.
+Re-preparation does not reconstruct earlier observations or change the gateway ledger/native state.
+
+### Prepared daemon execution source
+
+The daemon's `prepareTaskGatewayExecution` connects the authenticated claim, OS/input preparation,
+trusted grant, bound broker and existing Claude/Codex production adapters in one owned source path.
+It refuses custom arguments, environment, MCP/runtime configuration and unsupported execution options.
+The resume session must match the authenticated claim; unavailable resume context refuses rather than
+selecting a new session. Model, thinking level and service tier come from that claim, not caller options.
+The caller still supplies daemon-owned pinned executable/helper paths and the private root.
+
+`Boundary.VerifyInputs` rechecks the staged bytes and anchored private regular files before each native
+launch. Verification is read-only: changed, missing, linked, public or otherwise unsafe inputs refuse.
+It never recreates missing files or directories, overwrites input, refreshes a manifest or resets state.
+Only one run or refresh may use a prepared execution at a time. Close cancels and joins its active operation before
+closing the broker; repeated close cannot launch another native process. Gateway stops prevent another
+run or grant. Results retain the adapters' separately observed gateway usage and native session identity.
+
+Owned ELF/local-HTTP fixtures exercise both adapters' prepared launch/resume, input tampering, override
+refusal, single-run/close lifecycle and hard-429/no-new-launch/no-new-grant behavior. They are not installed
+native CLI compatibility, PostgreSQL transactions, durable accounting or full gateway acceptance.
+This helper remains outside `runTask`. Early opt-in refusal and the unadvertised capability remain.
+Production daemon input refresh, remaining authorized task inputs, credential-exclusive tooling, complete native
+transport/protocol support and gateway/worker settlement integration remain unfinished.
+The daemon's early refusal and unsupported protocol refusals remain. No launch capability is enabled.
+
+The prepared helper reuses the unmanaged runtime-brief and project-resource renderers without importing
+host files or caches. Bounded claim-derived `multica-input/runtime.md` and
+`multica-input/project/resources.json` accompany the existing prompt, instruction, workspace and skill
+files. Verified descriptors project the brief read-only at Claude's `CLAUDE.md` or Codex's `AGENTS.md`,
+skills at `.claude/skills` or `.agents/skills`, and project metadata at `.multica/project/resources.json`.
+Every projected file is pinned separately; replacing a host path after wrapping cannot replace its bytes.
+Pre-existing symlink or mismatched-type native destinations refuse before wrapping. No host credential,
+runtime configuration or skill cache is imported. Native home/session/cache and ordinary work remain mutable.
+Mandatory authenticated refresh updates the rendered brief with the latest instructions/workspace context
+while preserving original claim metadata and skill pins. These paths are tested with owned ELF fixtures,
+not installed provider discovery, credential-exclusive tooling or production `runTask` integration.
+
+`TestCredentialGatewayProtocolCompletion`, fragmentation/usage and malformed-outcome tests exercise
+valid terminal JSON/SSE, incomplete clean EOF, missing/invalid counters, unsupported events, changed
+identities, ordering, bounds, trailers and split error redaction. Both production adapters' owned ELF
+launch/resume fixtures stop after one gateway call and one native launch for incomplete/error outcomes.
+Existing native state, session identity and already observed usage remain; retry flags clear.
 
 `TestCredentialExclusiveProductionAdapters` uses only owned copies of the test executable at the real Claude/Codex production adapter seam. Its ordinary negative control reads an owned unlimited sentinel via direct paths, symlinks, inherited environment, an owned peer's environment/descriptor, a shell helper and owned host TCP/pathname/abstract Unix services. The isolated runs deny those routes, exclude another prepared task, reach only the scoped fixture gateway, override forged request credentials/task headers, preserve same-task home state and exercise resume. Override routes and extra descriptors refuse before launch.
 
@@ -37,3 +274,28 @@ go test ./pkg/credentialexec ./pkg/agent ./internal/daemon ./internal/handler -r
 ```
 
 The existing handler `TestMain` requires its configured test database even for pure helper tests. Do not point broad DB-backed tests at an unrelated or protected database. This source prerequisite does not authorize creating live containers or mutating protected PostgreSQL data to make a test gate green.
+
+### Pinned native tool source
+
+The trusted daemon's optional `credentialexec.Spec.ToolExecutables` maps explicit command aliases to
+absolute native ELF source paths. No task prompt, custom environment, native profile or shared home
+selects the manifest. At most 16 aliases are supported, each up to 64 bytes using lowercase ASCII
+letters, digits, hyphens or underscores, with an alphanumeric first character. Shell/probe, provider
+and internal helper names cannot be shadowed. Relative, unclean, missing and non-ELF sources refuse
+before creating private task state or requesting a grant. ELF loaders/libraries use the existing
+explicit native-asset collector; no host directory, credential/config file or shared CLI home is imported.
+
+Preparation copies the manifest and snapshots its binaries read-only under `/multica-tools/bin`.
+The clean child `PATH` is `/multica-tools/bin:/bin` only when tools are explicitly selected; the default
+remains `/bin`. The task's persisted source identity includes the alias/source mapping and asset
+digests. Same-task changes to aliases, source paths or binary bytes refuse without rewriting that
+identity or resetting native state. Caller mutation or later removal of the original source cannot
+change an already-prepared snapshot. The tools inherit only the existing isolated environment and
+namespace, with placeholder provider keys and the canonical task ID, not daemon/operator/gateway keys.
+
+Owned ELF fixtures establish ordinary-access negative controls, isolated tool execution, read-only
+snapshots, source/manifest replay refusal and both production adapters' prepared launch/resume.
+This adds no tool network route or task-platform token. Complete Multica CLI authentication/transport,
+remaining authorized task inputs, complete native compatibility and production `runTask` integration
+remain unfinished. The early opt-in refusal and unadvertised capability remain. Installed provider
+CLI smoke tests, real provider calls, database tests and full gateway/worker acceptance remain NOT-RUN.

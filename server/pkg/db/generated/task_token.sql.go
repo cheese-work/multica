@@ -177,3 +177,30 @@ func (q *Queries) GetTaskTokenByHash(ctx context.Context, tokenHash string) (Tas
 	)
 	return i, err
 }
+
+const lockTaskTokenByHash = `-- name: LockTaskTokenByHash :one
+SELECT id, token_hash, task_id, agent_id, workspace_id, user_id, expires_at, created_at, purpose, governance_case_id, governance_attempt_id, governance_attempt_fence, governance_evidence_epoch FROM task_token
+WHERE token_hash = $1 AND expires_at > now()
+FOR UPDATE
+`
+
+func (q *Queries) LockTaskTokenByHash(ctx context.Context, tokenHash string) (TaskToken, error) {
+	row := q.db.QueryRow(ctx, lockTaskTokenByHash, tokenHash)
+	var i TaskToken
+	err := row.Scan(
+		&i.ID,
+		&i.TokenHash,
+		&i.TaskID,
+		&i.AgentID,
+		&i.WorkspaceID,
+		&i.UserID,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.Purpose,
+		&i.GovernanceCaseID,
+		&i.GovernanceAttemptID,
+		&i.GovernanceAttemptFence,
+		&i.GovernanceEvidenceEpoch,
+	)
+	return i, err
+}

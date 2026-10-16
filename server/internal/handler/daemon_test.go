@@ -100,9 +100,9 @@ func TestRemoteMCPDaemonTokenForClaim(t *testing.T) {
 		WorkspaceID: parseUUID(testWorkspaceID),
 		DaemonID:    strToText("daemon-remote-mcp"),
 	}
-	raw, params, err := remoteMCPDaemonTokenForClaim(AgentTaskResponse{
+	raw, params, err := daemonTokenForClaim(AgentTaskResponse{
 		RemoteMCPConnections: []remotemcp.Connection{{ContributionKey: "mobbin"}},
-	}, runtime)
+	}, runtime, false)
 	if err != nil {
 		t.Fatalf("remoteMCPDaemonTokenForClaim: %v", err)
 	}

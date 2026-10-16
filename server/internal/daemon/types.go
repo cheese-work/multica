@@ -69,6 +69,7 @@ type IssueStatusData struct {
 // Task represents a claimed task from the server.
 // Agent data (name, skills) is populated by the claim endpoint.
 type Task struct {
+	TaskGatewayDaemonToken     string                  `json:"task_gateway_daemon_token,omitempty"`
 	RequireCredentialIsolation bool                    `json:"require_credential_isolation,omitempty"`
 	CredentialExecutionBinding *credentialexec.Binding `json:"credential_execution_binding,omitempty"`
 	// StartClaimSupported gates retries when talking to older servers.

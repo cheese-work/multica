@@ -43,6 +43,11 @@ RETURNING *;
 SELECT * FROM task_token
 WHERE token_hash = $1 AND expires_at > now();
 
+-- name: LockTaskTokenByHash :one
+SELECT * FROM task_token
+WHERE token_hash = $1 AND expires_at > now()
+FOR UPDATE;
+
 -- name: DeleteTaskTokensByTask :exec
 DELETE FROM task_token WHERE task_id = $1;
 
