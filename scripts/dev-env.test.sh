@@ -357,7 +357,7 @@ require_contains "$out" "Cancelled."
 # ---------------------------------------------------------------------------
 fake_repo="$tmp_dir/fake-repo"
 stub_go_dir="$tmp_dir/stub-go"
-mkdir -p "$fake_repo/scripts" "$stub_go_dir"
+mkdir -p "$fake_repo/scripts" "$fake_repo/server" "$stub_go_dir"
 cp "$root_dir/scripts/dev-env.sh" "$fake_repo/scripts/dev-env.sh"
 cp "$root_dir/scripts/local-env.sh" "$fake_repo/scripts/local-env.sh"
 cp "$root_dir/.env.example" "$fake_repo/.env.example"

@@ -153,6 +153,7 @@ selfhost-stop: ## Stop the self-hosted Docker Compose stack
 #   make up C=api,web,daemon    add the agent daemon
 #   make up C=desktop           Electron against this environment's backend
 #   make up ARGS=--ephemeral    agent-owned, expires, collected by `make gc`
+#   make up ARGS=--gc           also collect stale environments (never the default)
 
 up: ## Start this checkout's environment (C=api,web,daemon,desktop; default api,web)
 	@bash scripts/dev-env.sh up $(if $(C),--components $(C)) $(ARGS)

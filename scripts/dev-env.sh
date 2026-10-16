@@ -1100,7 +1100,7 @@ save_manifest() {
 }
 
 cmd_up() {
-  local requested="$DEFAULT_COMPONENTS" name="" owner=human ttl=0 lifecycle_requested=0 comp
+  local requested="$DEFAULT_COMPONENTS" name="" owner=human ttl=0 lifecycle_requested=0 gc_requested=0 comp
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1109,6 +1109,7 @@ cmd_up() {
       --name) name="$2"; shift 2 ;;
       --ephemeral) owner=agent; lifecycle_requested=1; [ "$ttl" != 0 ] || ttl=24; shift ;;
       --ttl) ttl="$2"; owner=agent; lifecycle_requested=1; shift 2 ;;
+      --gc) gc_requested=1; shift ;;
       *) die "Unknown flag for up: $1" ;;
     esac
   done
@@ -1124,9 +1125,21 @@ cmd_up() {
   case " $requested " in *" api "*) ;; *) requested="api $requested" ;; esac
   COMPONENTS="$requested"
 
-  # No resident cleanup service is required: every future environment start is
-  # a safe opportunity to collect expired or directory-less environments.
-  cmd_gc --auto
+  # Starting this environment never collects other environments: collection
+  # destroys their profile, daemon workspaces, Desktop userData and database, and
+  # "its checkout directory is gone" also describes a checkout on an unmounted
+  # disk. So startup only reports what `gc` would collect; deleting is an
+  # explicit `make gc` or `up --gc`.
+  if [ "$gc_requested" = 1 ]; then
+    cmd_gc --auto
+  else
+    local stale
+    stale="$(cmd_gc --dry-run 2>/dev/null || true)"
+    if [ -n "$stale" ]; then
+      printf '%s\n' "$stale"
+      info "Not collected: startup never deletes other environments. Run 'make gc' to collect them, or start with 'up --gc' (make up ARGS=--gc)."
+    fi
+  fi
 
   step "Prerequisites"
   local missing=() tool needed="node go curl"
@@ -1488,7 +1501,7 @@ usage() {
 Local development environments: named, listable, deletable.
 
   dev-env.sh up      [--components api,web,daemon,desktop] [--all]
-                     [--name N] [--ephemeral] [--ttl HOURS]
+                     [--name N] [--ephemeral] [--ttl HOURS] [--gc]
   dev-env.sh status  [name] [--json]
   dev-env.sh list    [--json]
   dev-env.sh down    [name] [--components ...]
@@ -1501,6 +1514,7 @@ desktop (Electron). Anything selected implies api.
 
 down keeps the database, the CLI profile and the allocated slot.
 destroy consumes them.
+up only reports stale environments; up --gc (or gc) collects them.
 EOF
 }
 
