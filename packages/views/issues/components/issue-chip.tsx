@@ -7,6 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { issueListOptions, issueDetailOptions } from "@multica/core/issues/queries";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { StatusIcon } from "./status-icon";
+import { ISSUE_CHIP_BASE_CLASS } from "./issue-chip-shell";
 
 /**
  * Compact, presentation-only representation of an issue —
@@ -48,8 +49,7 @@ export interface IssueChipProps {
   className?: string;
 }
 
-const BASE_CLASS =
-  "issue-mention inline-flex min-w-0 max-w-[min(18rem,100%)] items-center gap-1.5 rounded-md border mx-0.5 px-2 py-0.5 text-caption";
+const BASE_CLASS = ISSUE_CHIP_BASE_CLASS;
 
 export function IssueChip({
   issueId,
