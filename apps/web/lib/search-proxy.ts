@@ -36,6 +36,7 @@ export async function proxySearchApi(request: Request, pathname: SearchApiPath):
       cache: "no-store",
       headers: requestHeaders,
       redirect: "manual",
+      signal: request.signal,
     });
     const responseHeaders = new Headers(upstream.headers);
     for (const header of hopByHopHeaders) responseHeaders.delete(header);
@@ -45,6 +46,9 @@ export async function proxySearchApi(request: Request, pathname: SearchApiPath):
       headers: responseHeaders,
     });
   } catch (error) {
+    if (request.signal.aborted) {
+      return new Response(null, { status: 499, headers: { "cache-control": "no-store" } });
+    }
     console.error("Search proxy failed", pathname, errorCode(error));
     return new Response(null, { status: 502, headers: { "cache-control": "no-store" } });
   }
