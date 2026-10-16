@@ -1,0 +1,20 @@
+# Reconstructed after implementation (PR #253). Not an admit-time artifact:
+# the sheet did not exist when CHE-1726 was admitted.
+# Design gate: scoped waiver recorded 2026-10-16 08:04 ICT. It covers the missing merged
+# design baseline and the late sheet for the wakeup labels, links and phone wrapping in
+# this PR only. The workspace pause switch and every other UI change are excluded.
+# Locales: machine-drafted zh-Hans, ja, ko and fr ship now. Native review is deferred to
+# CHE-1819 and is NOT-RUN, not PASS.
+issue: CHE-1726
+design: waived   # waiver: CHE-1811 comment 01a14243-3674-7796-aaf2-b9354a94065e item D; clarification on CHE-1726 comment 01a14242-f949-7525-a8b5-7a973ab76263
+locales: follow-up   # CHE-1819, native review NOT-RUN
+pages:
+  - id: issue-timeline-wakeup-rows
+    url: /<workspace-slug>/issues/<issue-id>   # activity block, wakeup_* rows; same path on base and preview
+    keep:   [wakeup-activity-chip]
+    change:
+      - wakeup-activity-sentence: "names what fired and who was woken; wraps below sm instead of truncating"
+      - wakeup-activity-pr-link: "new: PR #n link, https URLs only"
+      - wakeup-activity-comment-link: "new: link to the triggering comment"
+      - wakeup-activity-run-link: "new: transcript button for the started run"
+    remove: []
