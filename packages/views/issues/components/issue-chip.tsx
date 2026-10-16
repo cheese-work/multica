@@ -7,7 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { issueListOptions, issueDetailOptions } from "@multica/core/issues/queries";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { StatusIcon } from "./status-icon";
-import { ISSUE_CHIP_BASE_CLASS } from "./issue-chip-shell";
+import { ISSUE_CHIP_BASE_CLASS, ISSUE_CHIP_STABLE_WIDTH_CLASS } from "./issue-chip-shell";
 
 /**
  * Compact, presentation-only representation of an issue —
@@ -47,6 +47,9 @@ export interface IssueChipProps {
   /** Extra classes — callers layer interaction hints here
    *  (e.g. `hover:bg-accent cursor-pointer` for navigable variants). */
   className?: string;
+  /** Fix the width at the chip's cap rather than its content. Set for a bare
+   *  key, whose loading box is the same width. */
+  stableWidth?: boolean;
 }
 
 const BASE_CLASS = ISSUE_CHIP_BASE_CLASS;
@@ -56,6 +59,7 @@ export function IssueChip({
   fallbackLabel,
   children,
   className,
+  stableWidth,
 }: IssueChipProps) {
   const wsId = useWorkspaceId();
   const { colorOf: statusColorOf, iconOf: statusIconOf } = useIssueStatuses(wsId);
@@ -71,7 +75,9 @@ export function IssueChip({
   });
 
   const issue = listIssue ?? detailIssue;
-  const cls = className ? `${BASE_CLASS} ${className}` : BASE_CLASS;
+  const cls = [BASE_CLASS, stableWidth && ISSUE_CHIP_STABLE_WIDTH_CLASS, className]
+    .filter(Boolean)
+    .join(" ");
 
   if (children !== undefined) {
     return <span className={cls}>{children}</span>;
