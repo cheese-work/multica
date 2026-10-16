@@ -156,20 +156,22 @@ func (h *Handler) chatUsageChain(r *http.Request, userID string, session db.Chat
 	}
 	workspaceID := uuidToString(session.WorkspaceID)
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
-	readable := map[pgtype.UUID]bool{}
+	agentIDs := make([]pgtype.UUID, 0, len(members))
+	seen := map[pgtype.UUID]bool{}
+	for _, m := range members {
+		if !m.Beyond && !seen[m.AgentID] {
+			seen[m.AgentID] = true
+			agentIDs = append(agentIDs, m.AgentID)
+		}
+	}
+	readable, err := h.readableChainAgents(ctx, agentIDs, actorType, actorID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
 	ids := make([]pgtype.UUID, 0, len(members))
 	partial := false
 	for _, m := range members {
-		if m.Beyond {
-			partial = true
-			continue
-		}
-		ok, seen := readable[m.AgentID]
-		if !seen {
-			ok = h.canReadChainAgent(ctx, m.AgentID, actorType, actorID, workspaceID)
-			readable[m.AgentID] = ok
-		}
-		if !ok {
+		if m.Beyond || !readable[m.AgentID] {
 			partial = true
 			continue
 		}
@@ -202,9 +204,68 @@ func (h *Handler) chatUsageChain(r *http.Request, userID string, session db.Chat
 	return chain, nil
 }
 
-// canReadChainAgent applies the private-agent gate GetChatSession uses to one
-// chain member's agent.
-func (h *Handler) canReadChainAgent(ctx context.Context, agentID pgtype.UUID, actorType, actorID, workspaceID string) bool {
-	agent, err := h.Queries.GetAgent(ctx, agentID)
-	return err == nil && h.canAccessPrivateAgent(ctx, agent, actorType, actorID, workspaceID)
+// readableChainAgents is canAccessPrivateAgent for a whole set of agents in a
+// fixed number of queries (agents, the caller's membership, invocation targets),
+// however long the chain is. The rules are the same: agent actors and an
+// agent's owner pass, workspace owners and admins pass, and any other member
+// passes only on a public_to agent whose targets include them. An agent that no
+// longer exists is not readable.
+func (h *Handler) readableChainAgents(ctx context.Context, agentIDs []pgtype.UUID, actorType, actorID, workspaceID string) (map[pgtype.UUID]bool, error) {
+	readable := make(map[pgtype.UUID]bool, len(agentIDs))
+	if len(agentIDs) == 0 {
+		return readable, nil
+	}
+	if actorType == "agent" {
+		for _, id := range agentIDs {
+			readable[id] = true
+		}
+		return readable, nil
+	}
+	agents, err := h.Queries.ListAgentsByIDsIncludingArchived(ctx, agentIDs)
+	if err != nil {
+		return nil, err
+	}
+	var needMember bool
+	for _, agent := range agents {
+		if uuidToString(agent.OwnerID) == actorID {
+			readable[agent.ID] = true
+		} else {
+			needMember = true
+		}
+	}
+	if !needMember {
+		return readable, nil
+	}
+	member, err := h.getWorkspaceMember(ctx, actorID, workspaceID)
+	if err != nil {
+		// Not a member: only agents the caller owns stay readable, as in the single gate.
+		return readable, nil
+	}
+	var needTargets []pgtype.UUID
+	for _, agent := range agents {
+		switch {
+		case readable[agent.ID]:
+		case roleAllowed(member.Role, "owner", "admin"):
+			readable[agent.ID] = true
+		case agent.PermissionMode == "public_to":
+			needTargets = append(needTargets, agent.ID)
+		}
+	}
+	if len(needTargets) == 0 {
+		return readable, nil
+	}
+	targets, err := h.Queries.ListAgentInvocationTargetsByAgentIDs(ctx, needTargets)
+	if err != nil {
+		return nil, err
+	}
+	byAgent := map[pgtype.UUID][]db.AgentInvocationTarget{}
+	for _, t := range targets {
+		byAgent[t.AgentID] = append(byAgent[t.AgentID], t)
+	}
+	for _, id := range needTargets {
+		if memberHitsInvocationTargets(byAgent[id], actorID) {
+			readable[id] = true
+		}
+	}
+	return readable, nil
 }

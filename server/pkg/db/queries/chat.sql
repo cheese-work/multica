@@ -1995,12 +1995,15 @@ CROSS JOIN messages;
 
 -- name: ListChatSessionChain :many
 -- The continuation chain around one DM, for the "whole conversation" usage
--- total. Follows the continued_from / continued_into pointers (never forks) up
--- to max_hops in each direction, and only through sessions of the same
--- workspace and creator, so a stray or corrupt link cannot pull another user's
--- or workspace's session in. The path array stops a cyclic link. Rows one hop
--- past the limit come back with beyond = true so the caller can mark the total
--- partial without counting them.
+-- total. Follows the continued_from / continued_into pointers (never forks)
+-- and only through sessions of the same workspace and creator, so a stray or
+-- corrupt link cannot pull another user's or workspace's session in. The path
+-- array stops a cyclic link.
+--
+-- max_hops is one cap over the whole chain: the viewed session plus at most
+-- max_hops others, taken breadth-first (nearest first, earlier before later at
+-- equal distance). The row after the last one kept comes back with
+-- beyond = true so the caller can mark the total partial without counting it.
 WITH RECURSIVE back AS (
     SELECT s.id, s.agent_id, s.continued_from_session_id AS next_id, 0 AS depth, ARRAY[s.id] AS path
     FROM chat_session s
@@ -2021,10 +2024,24 @@ WITH RECURSIVE back AS (
     JOIN chat_session n ON n.id = f.next_id
         AND n.workspace_id = sqlc.arg('workspace_id') AND n.creator_id = sqlc.arg('creator_id')
     WHERE f.depth <= sqlc.arg('max_hops')::int AND NOT n.id = ANY(f.path)
+), nodes AS (
+    SELECT DISTINCT ON (id) id, agent_id, depth, dir
+    FROM (
+        SELECT id, agent_id, depth, 0 AS dir FROM back
+        UNION ALL
+        SELECT id, agent_id, depth, 1 AS dir FROM fwd
+    ) AS both_directions
+    ORDER BY id, depth, dir
+), ranked AS (
+    SELECT id, agent_id, row_number() OVER (ORDER BY depth, dir, id) AS rn
+    FROM nodes
+    WHERE depth > 0 AND id <> sqlc.arg('session_id')
 )
-SELECT DISTINCT ON (id) id, agent_id, (depth > sqlc.arg('max_hops')::int) AS beyond
-FROM (SELECT id, agent_id, depth FROM back UNION ALL SELECT id, agent_id, depth FROM fwd) AS chain
-ORDER BY id, depth;
+SELECT nodes.id, nodes.agent_id, false AS beyond FROM nodes WHERE nodes.id = sqlc.arg('session_id')
+UNION ALL
+SELECT ranked.id, ranked.agent_id, (ranked.rn > sqlc.arg('max_hops')::int) AS beyond
+FROM ranked
+WHERE ranked.rn <= sqlc.arg('max_hops')::int + 1;
 
 -- name: GetChatSessionsUsageSummary :one
 -- GetChatSessionUsageSummary's token, cost, model and run totals summed over a

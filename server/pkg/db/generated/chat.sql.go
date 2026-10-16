@@ -2934,34 +2934,48 @@ const listChatSessionChain = `-- name: ListChatSessionChain :many
 WITH RECURSIVE back AS (
     SELECT s.id, s.agent_id, s.continued_from_session_id AS next_id, 0 AS depth, ARRAY[s.id] AS path
     FROM chat_session s
-    WHERE s.id = $2 AND s.workspace_id = $3 AND s.creator_id = $4
+    WHERE s.id = $1 AND s.workspace_id = $2 AND s.creator_id = $3
     UNION ALL
     SELECT n.id, n.agent_id, n.continued_from_session_id, b.depth + 1, b.path || n.id
     FROM back b
     JOIN chat_session n ON n.id = b.next_id
-        AND n.workspace_id = $3 AND n.creator_id = $4
-    WHERE b.depth <= $1::int AND NOT n.id = ANY(b.path)
+        AND n.workspace_id = $2 AND n.creator_id = $3
+    WHERE b.depth <= $4::int AND NOT n.id = ANY(b.path)
 ), fwd AS (
     SELECT s.id, s.agent_id, s.continued_into_session_id AS next_id, 0 AS depth, ARRAY[s.id] AS path
     FROM chat_session s
-    WHERE s.id = $2 AND s.workspace_id = $3 AND s.creator_id = $4
+    WHERE s.id = $1 AND s.workspace_id = $2 AND s.creator_id = $3
     UNION ALL
     SELECT n.id, n.agent_id, n.continued_into_session_id, f.depth + 1, f.path || n.id
     FROM fwd f
     JOIN chat_session n ON n.id = f.next_id
-        AND n.workspace_id = $3 AND n.creator_id = $4
-    WHERE f.depth <= $1::int AND NOT n.id = ANY(f.path)
+        AND n.workspace_id = $2 AND n.creator_id = $3
+    WHERE f.depth <= $4::int AND NOT n.id = ANY(f.path)
+), nodes AS (
+    SELECT DISTINCT ON (id) id, agent_id, depth, dir
+    FROM (
+        SELECT id, agent_id, depth, 0 AS dir FROM back
+        UNION ALL
+        SELECT id, agent_id, depth, 1 AS dir FROM fwd
+    ) AS both_directions
+    ORDER BY id, depth, dir
+), ranked AS (
+    SELECT id, agent_id, row_number() OVER (ORDER BY depth, dir, id) AS rn
+    FROM nodes
+    WHERE depth > 0 AND id <> $1
 )
-SELECT DISTINCT ON (id) id, agent_id, (depth > $1::int) AS beyond
-FROM (SELECT id, agent_id, depth FROM back UNION ALL SELECT id, agent_id, depth FROM fwd) AS chain
-ORDER BY id, depth
+SELECT nodes.id, nodes.agent_id, false AS beyond FROM nodes WHERE nodes.id = $1
+UNION ALL
+SELECT ranked.id, ranked.agent_id, (ranked.rn > $4::int) AS beyond
+FROM ranked
+WHERE ranked.rn <= $4::int + 1
 `
 
 type ListChatSessionChainParams struct {
-	MaxHops     int32       `json:"max_hops"`
 	SessionID   pgtype.UUID `json:"session_id"`
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 	CreatorID   pgtype.UUID `json:"creator_id"`
+	MaxHops     int32       `json:"max_hops"`
 }
 
 type ListChatSessionChainRow struct {
@@ -2971,18 +2985,21 @@ type ListChatSessionChainRow struct {
 }
 
 // The continuation chain around one DM, for the "whole conversation" usage
-// total. Follows the continued_from / continued_into pointers (never forks) up
-// to max_hops in each direction, and only through sessions of the same
-// workspace and creator, so a stray or corrupt link cannot pull another user's
-// or workspace's session in. The path array stops a cyclic link. Rows one hop
-// past the limit come back with beyond = true so the caller can mark the total
-// partial without counting them.
+// total. Follows the continued_from / continued_into pointers (never forks)
+// and only through sessions of the same workspace and creator, so a stray or
+// corrupt link cannot pull another user's or workspace's session in. The path
+// array stops a cyclic link.
+//
+// max_hops is one cap over the whole chain: the viewed session plus at most
+// max_hops others, taken breadth-first (nearest first, earlier before later at
+// equal distance). The row after the last one kept comes back with
+// beyond = true so the caller can mark the total partial without counting it.
 func (q *Queries) ListChatSessionChain(ctx context.Context, arg ListChatSessionChainParams) ([]ListChatSessionChainRow, error) {
 	rows, err := q.db.Query(ctx, listChatSessionChain,
-		arg.MaxHops,
 		arg.SessionID,
 		arg.WorkspaceID,
 		arg.CreatorID,
+		arg.MaxHops,
 	)
 	if err != nil {
 		return nil, err
