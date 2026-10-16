@@ -1731,3 +1731,27 @@ describe("ChatInput revoked-access placeholder", () => {
     expect(editorProps.last?.placeholder).toBe("Message Multica…");
   });
 });
+
+// CHE-1807: while the DM compacts, the composer is disabled with its own reason
+// and the draft stays where it is.
+describe("ChatInput compacting placeholder", () => {
+  it("names the compaction instead of the archived-session reason", () => {
+    renderInput({ disabled: true, compacting: true } as Partial<React.ComponentProps<typeof ChatInput>>);
+
+    expect(editorProps.last?.placeholder).toBe("Compacting…");
+  });
+
+  it("keeps the draft and does not send while compacting", async () => {
+    const { onSend } = renderInput({ disabled: true, compacting: true } as Partial<React.ComponentProps<typeof ChatInput>>);
+
+    act(() => {
+      (editorProps.last?.onUpdate as (md: string) => void)("keep this draft");
+    });
+    await act(async () => {
+      (editorProps.last?.onSubmit as () => void)();
+    });
+
+    expect(onSend).not.toHaveBeenCalled();
+    expect(editorState.cleared).toBe(0);
+  });
+});
