@@ -204,6 +204,22 @@ WHERE cs.id = $1
     )
   );
 
+-- name: ListPublicChatSessionIDsInWorkspace :many
+-- GetPublicChatSessionInWorkspace for a set of sessions: the ids of those that
+-- are public chats. Keep the predicate identical to that query.
+SELECT cs.id FROM chat_session AS cs
+WHERE cs.id = ANY(sqlc.arg('session_ids')::uuid[])
+  AND cs.workspace_id = sqlc.arg('workspace_id')
+  AND (
+    cs.explicitly_created_at IS NOT NULL
+    OR
+    EXISTS (
+      SELECT 1 FROM chat_message AS public_message
+      WHERE public_message.chat_session_id = cs.id
+        AND public_message.message_kind != 'channel_command'
+    )
+  );
+
 -- name: ListChatSessionsByCreator :many
 -- IM-style list: each active session with its unread *count* (assistant
 -- messages after the read cursor), a preview of the latest message, and

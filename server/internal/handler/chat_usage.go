@@ -168,10 +168,23 @@ func (h *Handler) chatUsageChain(r *http.Request, userID string, session db.Chat
 	if err != nil {
 		return nil, err
 	}
+	// The viewed session passed the public-chat gate; every other member must
+	// pass it too, so a command-only channel session that was continued into a
+	// visible DM cannot feed its usage into the total.
+	candidates := make([]pgtype.UUID, 0, len(members))
+	for _, m := range members {
+		if !m.Beyond && readable[m.AgentID] {
+			candidates = append(candidates, m.ID)
+		}
+	}
+	publicIDs, err := h.publicChatSessionIDs(ctx, candidates, session.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
 	ids := make([]pgtype.UUID, 0, len(members))
 	partial := false
 	for _, m := range members {
-		if m.Beyond || !readable[m.AgentID] {
+		if m.Beyond || !readable[m.AgentID] || !publicIDs[m.ID] {
 			partial = true
 			continue
 		}
@@ -268,4 +281,21 @@ func (h *Handler) readableChainAgents(ctx context.Context, agentIDs []pgtype.UUI
 		}
 	}
 	return readable, nil
+}
+
+// publicChatSessionIDs answers GetPublicChatSessionInWorkspace for a set of
+// sessions in one query.
+func (h *Handler) publicChatSessionIDs(ctx context.Context, ids []pgtype.UUID, workspaceID pgtype.UUID) (map[pgtype.UUID]bool, error) {
+	public := make(map[pgtype.UUID]bool, len(ids))
+	if len(ids) == 0 {
+		return public, nil
+	}
+	rows, err := h.Queries.ListPublicChatSessionIDsInWorkspace(ctx, db.ListPublicChatSessionIDsInWorkspaceParams{SessionIds: ids, WorkspaceID: workspaceID})
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range rows {
+		public[id] = true
+	}
+	return public, nil
 }

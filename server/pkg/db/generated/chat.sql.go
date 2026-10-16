@@ -3335,6 +3335,48 @@ func (q *Queries) ListPendingChatTasksForSession(ctx context.Context, chatSessio
 	return items, nil
 }
 
+const listPublicChatSessionIDsInWorkspace = `-- name: ListPublicChatSessionIDsInWorkspace :many
+SELECT cs.id FROM chat_session AS cs
+WHERE cs.id = ANY($1::uuid[])
+  AND cs.workspace_id = $2
+  AND (
+    cs.explicitly_created_at IS NOT NULL
+    OR
+    EXISTS (
+      SELECT 1 FROM chat_message AS public_message
+      WHERE public_message.chat_session_id = cs.id
+        AND public_message.message_kind != 'channel_command'
+    )
+  )
+`
+
+type ListPublicChatSessionIDsInWorkspaceParams struct {
+	SessionIds  []pgtype.UUID `json:"session_ids"`
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+}
+
+// GetPublicChatSessionInWorkspace for a set of sessions: the ids of those that
+// are public chats. Keep the predicate identical to that query.
+func (q *Queries) ListPublicChatSessionIDsInWorkspace(ctx context.Context, arg ListPublicChatSessionIDsInWorkspaceParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listPublicChatSessionIDsInWorkspace, arg.SessionIds, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUnownedChannelChatContextRevisions = `-- name: ListUnownedChannelChatContextRevisions :many
 WITH pending AS (
     SELECT DISTINCT COALESCE(channel_context_revision, 1)::bigint AS context_revision
