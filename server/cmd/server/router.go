@@ -2521,6 +2521,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// Workspace-wide 30-day run counts per agent for the Agents-list RUNS column.
 			r.Get("/api/agent-run-counts", h.GetWorkspaceAgentRunCounts)
 
+			r.Get("/api/chat/search", h.SearchChats)
 			r.Route("/api/chat/sessions", func(r chi.Router) {
 				r.Post("/", h.CreateChatSession)
 				r.Get("/", h.ListChatSessions)
@@ -2604,6 +2605,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/", h.GetNotificationPreferences)
 				r.Patch("/", h.PatchNotificationPreferences)
 				r.Put("/", h.UpdateNotificationPreferences)
+			})
+			r.Route("/api/notification-channels", func(r chi.Router) {
+				r.Get("/", h.GetNotificationChannels)
+				r.Patch("/", h.PatchNotificationChannel)
 			})
 		})
 	})
