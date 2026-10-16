@@ -27,5 +27,6 @@ Every control that saves shows: idle, saving, saved, save failed (with recovery)
 
 | Topic | Revision | Direction | Design PR | Revision commit |
 | --- | --- | --- | --- | --- |
+| wakeups-pause | 3 | A | 255 | `de646d2bb8c50bb93653d98395f17f3dc2e0ceee` |
 
-No revision is approved yet. A row is added in the design PR when Cheese picks a direction.
+The row is written before the merge, as the standard requires. The design is approved when Cheese merges PR 255. The merge commit is read from GitHub and is not written here.
