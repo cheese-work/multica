@@ -586,3 +586,111 @@ func TestChatUsageChainAgentReadabilityMatrix(t *testing.T) {
 		})
 	}
 }
+
+// postContinue continues sessionID as userID through the real endpoint and
+// returns the new session's id.
+func postContinue(t *testing.T, userID, sessionID string) string {
+	t.Helper()
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub": userID, "amr": "interactive", "exp": time.Now().Add(time.Hour).Unix(),
+	}).SignedString(auth.JWTSecret())
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, testServer.URL+"/api/chat/sessions/"+sessionID+"/continue", strings.NewReader(`{"summary":"Carried over."}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Workspace-ID", testWorkspaceID)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("continue %s: %d %s", sessionID, resp.StatusCode, body)
+	}
+	var out struct {
+		Session struct {
+			ID string `json:"id"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatal(err)
+	}
+	next := out.Session.ID
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM chat_message WHERE chat_session_id = $1`, next)
+		testPool.Exec(context.Background(), `DELETE FROM chat_session WHERE id = $1`, next)
+	})
+	return next
+}
+
+// commandOnlyChannelSession turns a chain member into what a channel session
+// looks like once its binding is retired: channel-origin, never explicitly
+// created by a member, holding only a control-plane command (not a public
+// chat, GetPublicChatSessionInWorkspace).
+func commandOnlyChannelSession(t *testing.T, sessionID string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := testPool.Exec(ctx, `UPDATE chat_session SET explicitly_created_at = NULL, channel_origin_at = now() WHERE id = $1`, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(ctx, `DELETE FROM chat_message WHERE chat_session_id = $1`, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(ctx, `INSERT INTO chat_message (chat_session_id, role, content, message_kind) VALUES ($1, 'user', '/new', 'channel_command')`, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM chat_message WHERE chat_session_id = $1`, sessionID)
+	})
+}
+
+func TestChatUsageChainLeavesOutACommandOnlyChannelSessionContinuedIntoAVisibleDM(t *testing.T) {
+	hidden := chainSession(t, testUserID, testWorkspaceID, "", "m-hidden-channel", 9000, true)
+	commandOnlyChannelSession(t, hidden)
+	// The source is not a public chat: its own session GET and usage are refused.
+	if status, _ := chatRequestAs(t, testUserID, true, "/api/chat/sessions/"+hidden); status != http.StatusNotFound {
+		t.Fatalf("session GET of a command-only channel session = %d, want 404", status)
+	}
+	// Continue still works on it once the binding is gone (it passes only the
+	// ownership gate), which is how its usage reaches a visible successor.
+	visible := postContinue(t, testUserID, hidden)
+	tail := chainSession(t, testUserID, testWorkspaceID, "", "m-tail", 7, true)
+	linkContinuation(t, visible, tail)
+
+	got, body := getChatUsageChain(t, testUserID, visible)
+	wantTokens, _ := directChainSum(t, tail)
+	if got.Chain == nil || got.Chain.SessionCount != 2 || !got.Chain.Partial {
+		t.Fatalf("chain = %+v, want the visible DM and its tail (2 sessions), partial", got.Chain)
+	}
+	if got.Chain.Tokens != wantTokens {
+		t.Errorf("chain tokens = %+v, want only the public sessions' %+v", got.Chain.Tokens, wantTokens)
+	}
+	if strings.Contains(body, "m-hidden-channel") {
+		t.Errorf("response leaks the command-only session's model: %s", body)
+	}
+}
+
+func TestChatUsageChainKeepsAChannelSessionOnceItHoldsAPublicMessage(t *testing.T) {
+	// The same shape, but the channel-origin source also holds a normal
+	// message, so it is a public chat and belongs in the total.
+	source := chainSession(t, testUserID, testWorkspaceID, "", "m-source", 40, true)
+	commandOnlyChannelSession(t, source)
+	if _, err := testPool.Exec(context.Background(), `INSERT INTO chat_message (chat_session_id, role, content, message_kind) VALUES ($1, 'user', 'hello', 'message')`, source); err != nil {
+		t.Fatal(err)
+	}
+	visible := postContinue(t, testUserID, source)
+	got, _ := getChatUsageChain(t, testUserID, visible)
+	wantTokens, _ := directChainSum(t, source)
+	if got.Chain == nil || got.Chain.SessionCount != 2 || got.Chain.Partial {
+		t.Fatalf("chain = %+v, want both sessions and not partial", got.Chain)
+	}
+	if got.Chain.Tokens != wantTokens {
+		t.Errorf("chain tokens = %+v, want the public source's %+v", got.Chain.Tokens, wantTokens)
+	}
+}
