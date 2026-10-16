@@ -123,6 +123,27 @@ describe("useResolveIssueIdentifier", () => {
     await waitFor(() => expect(result.current?.identifier).toBe("MUL-8"));
   });
 
+  it("keeps the issue on screen while an alias of the same issue loads", async () => {
+    // The server reads `MUL-007` as number 7, so it is the same issue as `MUL-7`
+    // under a different query key.
+    delayedLookup((id) => makeIssue(Number(id.slice(4))));
+    const { result, rerender } = renderHook(
+      ({ identifier }) => useResolveIssueIdentifier(identifier),
+      { wrapper, initialProps: { identifier: "MUL-7" } },
+    );
+    await waitFor(() => expect(release).toHaveLength(1));
+    await act(async () => release[0]!());
+    await waitFor(() => expect(result.current?.identifier).toBe("MUL-7"));
+
+    rerender({ identifier: "MUL-007" });
+
+    await waitFor(() => expect(release).toHaveLength(2));
+    expect(result.current?.identifier).toBe("MUL-7");
+    await act(async () => release[1]!());
+    await waitFor(() => expect(queryClient.getQueryState(["issues", "workspace-1", "identifier", "MUL-007"])?.status).toBe("success"));
+    expect(result.current?.identifier).toBe("MUL-7");
+  });
+
   it("never shows another workspace's issue after a workspace switch", async () => {
     delayedLookup((id) => makeIssue(Number(id.slice(4)), workspace.current.id));
     const { result, rerender } = renderHook(() => useResolveIssueIdentifier("MUL-7"), {
