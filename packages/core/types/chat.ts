@@ -120,6 +120,45 @@ export interface ChatSession {
   updated_at: string;
 }
 
+export interface ChatUsageTokens {
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+}
+
+export interface ChatUsageModel {
+  tokens: ChatUsageTokens;
+  /** Ticks of 1e-10 USD; 0 when the provider priced none of this model's rows. */
+  cost_usd_ticks: number;
+}
+
+/** `GET /api/chat/sessions/{id}/usage`: totals for this session only. */
+export interface ChatSessionUsage {
+  session_id: string;
+  tokens: ChatUsageTokens;
+  /** Tokens from rows the provider did not price; the only ones a client estimates. */
+  uncosted_tokens: ChatUsageTokens;
+  /** Cost in ticks of 1e-10 USD (1 USD = 1e10 ticks). */
+  cost_usd_ticks: number;
+  runs: {
+    /** Open map: statuses such as `deferred` or `waiting_local_directory` appear as the server adds them. */
+    by_status: Record<string, number>;
+    /** Finished runs; `metered` reported usage, `unreported` did not (terminal = metered + unreported). */
+    terminal: number;
+    metered: number;
+    unreported: number;
+    /** Sum of per-run durations, each clamped at zero. */
+    total_run_ms: number;
+  };
+  /** Open map of visible (`message_kind = 'message'`) chat messages by role. */
+  messages: { by_role: Record<string, number> };
+  by_model: Record<string, ChatUsageModel>;
+  continued_from_session_id: string | null;
+  continued_into_session_id: string | null;
+  forked_from_session_id: string | null;
+}
+
 export interface ChatContinueResponse {
   session: ChatSession;
   previous_session_id: string;

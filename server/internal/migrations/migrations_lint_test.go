@@ -52,6 +52,16 @@ func TestMigrationNumericPrefixesAreUnique(t *testing.T) {
 		"548_governance_workspace_control":                      "548_task_supplement_comment_task_index",
 		"549_governance_jev_credential":                         "549_task_supplement_comment_task_primary_key",
 		"550_comment_suppressed_agents":                         "550_governance_proposal_task_tokens",
+		// Upstream v0.6.2 (CHE-1673) beside fork migrations already applied.
+		"564_issue_property_list_types":         "564_wakeup_system_rule_index",
+		"565_channel_typing_cleanup":            "565_wakeup_conditions",
+		"566_channel_typing_reaction_id_idx":    "566_issue_child_event",
+		"567_channel_typing_reaction_retry_idx": "567_issue_child_event_id",
+		"568_channel_typing_reaction_gc_idx":    "568_issue_child_event_pending",
+		"569_channel_typing_limits":             "569_search_index_change",
+		"570_channel_typing_quota_idx":          "570_search_index_change_workspace_index",
+		"571_channel_typing_expiry_idx":         "571_search_index_change_changed_at_index",
+		"572_channel_typing_abandoned_idx":      "572_governance_budget_window_overlap_idx",
 	}
 	stemByNumber := make(map[int]string)
 	for _, file := range files {
