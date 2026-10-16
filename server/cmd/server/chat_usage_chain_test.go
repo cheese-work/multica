@@ -550,6 +550,21 @@ func TestChatUsageChainAgentReadabilityMatrix(t *testing.T) {
 				list[i] = agents[k]
 			}
 			head := chainOnAgents(t, viewer, list)
+			// Parity with the single-session gate: a member session is in the
+			// chain exactly when GET /api/chat/sessions/{id} lets the viewer read it.
+			var memberSessions []string
+			if err := testPool.QueryRow(context.Background(), `
+				WITH RECURSIVE c AS (SELECT id, continued_into_session_id AS next FROM chat_session WHERE id = $1
+				  UNION ALL SELECT s.id, s.continued_into_session_id FROM c JOIN chat_session s ON s.id = c.next)
+				SELECT array_agg(id::text ) FROM c`, head).Scan(&memberSessions); err != nil {
+				t.Fatal(err)
+			}
+			gateAllows := 0
+			for _, id := range memberSessions {
+				if status, _ := chatRequestAs(t, viewer, true, "/api/chat/sessions/"+id); status == http.StatusOK {
+					gateAllows++
+				}
+			}
 			// The viewed session's own agent must be readable (the session gate), so
 			// view the first session and read the rest through the chain.
 			got, _ := getChatUsageChain(t, viewer, head)
@@ -561,6 +576,9 @@ func TestChatUsageChainAgentReadabilityMatrix(t *testing.T) {
 			}
 			if got.Chain == nil || got.Chain.SessionCount != want {
 				t.Fatalf("chain = %+v, want %d readable sessions", got.Chain, want)
+			}
+			if gateAllows != want {
+				t.Errorf("single-session gate allows %d of %d sessions, chain includes %d: the two must agree", gateAllows, len(memberSessions), want)
 			}
 			if wantPartial := want < len(order); got.Chain.Partial != wantPartial {
 				t.Errorf("chain.partial = %v, want %v", got.Chain.Partial, wantPartial)
