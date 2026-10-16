@@ -2032,3 +2032,13 @@ SELECT DISTINCT chat_session_id FROM agent_task_queue
 WHERE chat_session_id = ANY($1::uuid[])
   AND task_kind = 'compact'
   AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred');
+
+-- name: ListLatestRunContextForChatSessions :many
+-- CHE-1808: the context meter reads the LATEST completed run of each DM. A run
+-- that reported nothing stays in the result with NULL columns, so the meter
+-- hides instead of showing an older run's stale numbers.
+SELECT DISTINCT ON (chat_session_id) chat_session_id, context_tokens, context_window
+FROM agent_task_queue
+WHERE chat_session_id = ANY($1::uuid[])
+  AND status = 'completed'
+ORDER BY chat_session_id, completed_at DESC, id DESC;

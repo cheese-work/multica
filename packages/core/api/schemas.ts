@@ -2070,6 +2070,8 @@ export const ChatSessionSchema: z.ZodType<ChatSession> = z.object({
   pinned: z.boolean().optional(),
   channel_source: ChatChannelSourceSchema.optional().catch(undefined),
   compacting: z.boolean().optional().catch(undefined),
+  context_tokens: z.number().nullable().optional().catch(undefined),
+  context_window: z.number().nullable().optional().catch(undefined),
   is_current_channel_route: z.boolean().optional().catch(undefined),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),

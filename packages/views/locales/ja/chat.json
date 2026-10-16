@@ -262,6 +262,10 @@
     "row_actions_aria": "チャットの操作"
   },
   "header": {
+    "context_meter": "{{window}} 中 {{pct}}%",
+    "context_meter_warning": "次の返信のあとにコンパクトします",
+    "compact_now": "今すぐコンパクト",
+    "more_actions": "その他の操作",
     "view_profile": "Agent のプロフィール",
     "rename": "名前を変更",
     "delete": "チャットを削除",

@@ -109,6 +109,7 @@ vi.mock("@multica/ui/hooks/use-mobile", () => ({
 }));
 vi.mock("@multica/core/paths", () => ({
   useRequiredWorkspaceSlug: () => "acme",
+  useCurrentWorkspace: () => ({ settings: {} }),
   useWorkspacePaths: () => ({ chat: () => "/acme/chat" }),
 }));
 vi.mock("@multica/core/hooks", async (importOriginal) => ({
