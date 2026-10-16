@@ -204,3 +204,20 @@ Confirm the statistics landed:
 ```sql
 SELECT count(*) FROM pg_statistic WHERE starelid = 'idx_issue_properties_bigm'::regclass;
 ```
+
+## Agent task queue context renumbering
+
+Migration `630_agent_task_queue_context` replaces the later-merged
+`627_agent_task_queue_context` filename to remove its numeric-prefix collision
+with `627_unpin_archived_chat_sessions` (CHE-1824). The unpin migration is
+unchanged. Numbers 628 and 629 are left free for migrations that open pull
+requests already claim.
+
+Migration versions are file basenames, not numeric prefixes. A database that
+already recorded `627_agent_task_queue_context` therefore runs the identical
+SQL again and records `630_agent_task_queue_context` as a new version. Leave
+the historical version row intact. The up migration contains only
+`ADD COLUMN IF NOT EXISTS` for two nullable columns, so reapplication is a
+no-op that keeps every stored value. The down migration is `DROP COLUMN IF
+EXISTS` for the same columns. No migration-runner name map entry is needed.
+Production deployment remains gated on Cheese.
