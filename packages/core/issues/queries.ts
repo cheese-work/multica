@@ -1,5 +1,4 @@
 import {
-  hashKey,
   infiniteQueryOptions,
   keepPreviousData,
   queryOptions,
@@ -484,38 +483,42 @@ class StaleIssueResponseError extends Error {
   }
 }
 
+/**
+ * TanStack marks a query fresh when its fetch resolves (or is cancelled and
+ * reverted), after `queryFn` has returned, and `staleTime: Infinity` then keeps
+ * whatever it holds. Once that has happened, give detail back the obligations
+ * that fresh mark erased: an auxiliary event proved a newer revision exists, or
+ * another projection already holds one. The second case is only flagged, not
+ * refetched, so a server that stays behind cannot cause a refetch loop.
+ * A timer, not a cache listener: it fires exactly once whatever the fetch's
+ * fate, so a cancelled attempt cannot leave anything attached.
+ */
+function restoreDetailObligations(qc: QueryClient, wsId: string, id: string) {
+  setTimeout(() => {
+    const detailKey = issueKeys.detail(wsId, id);
+    const detail = qc.getQueryData<Issue>(detailKey);
+    if (detail?.revision === undefined) return;
+    reconcileIssueFullSnapshotRevision(qc, wsId, id, detail.revision);
+    const freshest = freshestCachedIssueRevision(qc, wsId, id);
+    if (freshest !== undefined && detail.revision < freshest) {
+      qc.invalidateQueries({ queryKey: detailKey, exact: true, refetchType: "none" });
+    }
+  }, 0);
+}
+
 export function issueDetailOptions(wsId: string, id: string) {
   return queryOptions({
     queryKey: issueKeys.detail(wsId, id),
     queryFn: async ({ client }) => {
       const issue = await api.getIssue(id);
-      if (!admitsFullIssue(client, wsId, issue)) {
-        // Keep what the cache has. With no detail entry there is nothing to
-        // keep: fail this attempt so the query retries against the server
-        // instead of storing a response known to be behind.
-        const cached = client.getQueryData<Issue>(issueKeys.detail(wsId, id));
-        if (cached) return cached;
-        throw new StaleIssueResponseError();
-      }
-      // A successful fetch clears the stale flag. Give it back when an
-      // auxiliary event already proved a newer revision exists, once the
-      // response is stored.
-      const detailKey = issueKeys.detail(wsId, id);
-      const unsubscribe = client.getQueryCache().subscribe((event) => {
-        if (event.type !== "updated" || event.query.queryHash !== hashKey(detailKey)) return;
-        const type = event.action.type;
-        if (type !== "success" && type !== "error" && type !== "setState") return;
-        unsubscribe();
-        if (type === "success") {
-          reconcileIssueFullSnapshotRevision(
-            client,
-            wsId,
-            id,
-            (event.query.state.data as Issue | undefined)?.revision,
-          );
-        }
-      });
-      return issue;
+      restoreDetailObligations(client, wsId, id);
+      if (admitsFullIssue(client, wsId, issue)) return issue;
+      // Keep what the cache has. With no detail entry there is nothing to
+      // keep: fail this attempt so the query retries against the server
+      // instead of storing a response known to be behind.
+      const cached = client.getQueryData<Issue>(issueKeys.detail(wsId, id));
+      if (cached) return cached;
+      throw new StaleIssueResponseError();
     },
   });
 }
