@@ -819,10 +819,13 @@ export function ChatInput({
             // upload blocks submit, so it also falls back to Stop rather than
             // removing chat's only cancellation path; the attachment node
             // remains the visible upload-progress surface in the editor.
+            // While the DM compacts the composer cannot send (queued or not), so
+            // Stop is the only available action whatever the draft holds.
             running={
               !!isRunning &&
-              !isForkInput &&
-              (!allowSubmitWhileRunning || hasNothingToSend || gate.uploading)
+              (!!compacting ||
+                (!isForkInput &&
+                  (!allowSubmitWhileRunning || hasNothingToSend || gate.uploading)))
             }
             onStop={onStop}
             tooltip={gate.uploading
