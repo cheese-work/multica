@@ -1401,7 +1401,8 @@
       "time": "{{time}} · wakes {{agent}}",
       "header": "{{agent}}: {{what}}",
       "paused": "Wakeup paused",
-      "open": "Show wakeups"
+      "open": "Show wakeups",
+      "workspace_paused": "Wakeups paused"
     },
     "paused": {
       "max_fires": "Stopped after reaching {{count}} runs",
@@ -1431,7 +1432,9 @@
       "max_fires": "reached its limit of {{count}} runs",
       "loop": "it kept waking rules that woke it again",
       "rate": "more than 12 runs in an hour"
-    }
+    },
+    "paused_banner": "Wakeups paused by {{name}} at {{time}}",
+    "paused_banner_anonymous": "Wakeups paused at {{time}}"
   },
   "duplicates": {
     "banner_prefix": "Duplicate of",

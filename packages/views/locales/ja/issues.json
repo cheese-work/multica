@@ -1355,7 +1355,8 @@
       "time": "{{time}} に {{agent}} を起こす",
       "header": "{{agent}}：{{what}}",
       "paused": "起動を一時停止中",
-      "open": "起動を表示"
+      "open": "起動を表示",
+      "workspace_paused": "ウェイクアップは一時停止中"
     },
     "paused": {
       "max_fires": "{{count}} 回起動して上限に達したため停止",
@@ -1384,7 +1385,9 @@
       "max_fires": "上限の {{count}} 回に到達",
       "loop": "別のルールと互いに起こし合っていました",
       "rate": "1 時間に 12 回を超えて起動"
-    }
+    },
+    "paused_banner": "{{name}} が {{time}} にウェイクアップを一時停止しました",
+    "paused_banner_anonymous": "ウェイクアップは {{time}} に一時停止されました"
   },
   "duplicates": {
     "banner_prefix": "重複元:",

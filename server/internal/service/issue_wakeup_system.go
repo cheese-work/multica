@@ -168,6 +168,16 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 	}
 	defer tx.Rollback(ctx)
 	q := s.Tasks.Queries.WithTx(tx)
+	// The workspace row comes first, as in dispatch and in the pause and resume
+	// writers. Its KEY SHARE lock lasts to the commit, so a resume (FOR UPDATE)
+	// either waits for this receipt and sweeps it, or runs first and this event
+	// arrives after the resume (CHE-1727).
+	var workspace pgtype.UUID
+	if err := tx.QueryRow(ctx, "SELECT w.id FROM workspace w JOIN issue i ON i.workspace_id=w.id WHERE i.id=$1 FOR KEY SHARE OF w", issueID).Scan(&workspace); errors.Is(err, pgx.ErrNoRows) {
+		return tx.Commit(ctx)
+	} else if err != nil {
+		return err
+	}
 	issue, err := q.LockWakeupIssue(ctx, issueID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return tx.Commit(ctx)
@@ -869,6 +879,12 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		return err
 	}
 	q := s.Tasks.Queries.WithTx(tx)
+	// The workspace row comes first, as in the pause and resume writers, and the
+	// pause is read under that lock so it cannot change before the enqueue below.
+	pauseState, err := q.WorkspaceWakeupsPausedShared(ctx, prev.WorkspaceID)
+	if err != nil {
+		return err
+	}
 	if target.Agent.ID.Valid {
 		var fenced bool
 		if err := tx.QueryRow(ctx, "SELECT lock_task_owner_rows($1,$2,$3)", target.Agent.ID, prev.IssueID, target.Agent.RuntimeID).Scan(&fenced); err != nil {
@@ -893,6 +909,18 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	}
 	if w.Revision != prev.Revision {
 		return tx.Commit(ctx)
+	}
+	if pauseState.Paused {
+		held, err := settlePaused(ctx, tx, q, w)
+		if err != nil {
+			return err
+		}
+		if held {
+			return tx.Commit(ctx)
+		}
+	}
+	if err := dropLateIfResumed(ctx, q, w, pauseState); err != nil {
+		return err
 	}
 	_, isPRWakeup := prWakeupSetting(w.SystemRule.String)
 	discardMalformed := func(err error) error {

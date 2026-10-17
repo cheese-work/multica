@@ -107,7 +107,14 @@
     "save_error": "无法保存默认值。",
     "customized_other": "{{count}} 个进行中的任务使用了自己的设置，不跟随此默认值。",
     "admin_only": "只有所有者和管理员可以修改默认值。",
-    "load_error": "无法加载唤醒默认值。"
+    "load_error": "无法加载唤醒默认值。",
+    "pause_label": "暂停所有唤醒",
+    "pause_description": "暂停期间不会触发任何唤醒。期间收到的事件会被丢弃，恢复后不会补发。已到期的一次性唤醒和条件唤醒会在恢复后运行一次。",
+    "pause_error": "无法更改暂停状态。",
+    "overridden": "唤醒已暂停，此开关暂不生效。",
+    "pause_saved": "唤醒已暂停。",
+    "pause_resumed": "唤醒已恢复。",
+    "retry": "重试"
   },
   "quick_actions": {
     "title": "快捷操作",

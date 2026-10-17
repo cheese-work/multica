@@ -154,6 +154,12 @@ export function useSettingsSearchIndex(
       { tab: "members", anchor: "links", title: t(($) => $.members.share_links_label) },
       {
         tab: "wakeups",
+        anchor: "pause",
+        title: t(($) => $.wakeups.pause_label),
+        description: t(($) => $.wakeups.pause_description),
+      },
+      {
+        tab: "wakeups",
         anchor: "child-done",
         title: t(($) => $.wakeups.child_done_title),
         description: t(($) => $.wakeups.child_done_description),

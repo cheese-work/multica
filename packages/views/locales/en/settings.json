@@ -109,7 +109,14 @@
     "customized_one": "{{count}} open issue has its own setting and ignores this default.",
     "customized_other": "{{count}} open issues have their own setting and ignore this default.",
     "admin_only": "Only owners and admins can change these defaults.",
-    "load_error": "Could not load wakeup defaults."
+    "load_error": "Could not load wakeup defaults.",
+    "pause_label": "Pause all wakeups",
+    "pause_description": "Nothing fires while paused. Events that arrive meanwhile are dropped, not replayed. One-shot and condition wakeups that came due run once after you resume.",
+    "pause_error": "Could not change the pause.",
+    "overridden": "Overridden while wakeups are paused.",
+    "pause_saved": "Wakeups paused.",
+    "pause_resumed": "Wakeups resumed.",
+    "retry": "Retry"
   },
   "quick_actions": {
     "title": "Quick Actions",
