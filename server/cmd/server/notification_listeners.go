@@ -1093,6 +1093,7 @@ func inboxItemToResponse(item db.InboxItem) map[string]any {
 		"read":           item.Read,
 		"archived":       item.Archived,
 		"created_at":     util.TimestampToString(item.CreatedAt),
+		"updated_at":     util.TimestampToString(item.CreatedAt),
 		"actor_type":     util.TextToPtr(item.ActorType),
 		"actor_id":       util.UUIDToPtr(item.ActorID),
 		"details":        json.RawMessage(item.Details),
