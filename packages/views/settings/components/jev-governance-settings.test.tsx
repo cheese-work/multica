@@ -331,3 +331,44 @@ describe("Jev / Governance states", () => {
     expect(screen.getByRole("radio", { name: "Off" })).toBeEnabled();
   });
 });
+
+// OCR-1 and OCR-2 of the CHE-1839 review (receipt 01a148e4-2e32-7752-8e5c-44233e04f9f6).
+describe("Jev / Governance review corrections", () => {
+  it("keeps the edit and the conflict recovery when Reload latest itself fails", async () => {
+    fake.patchGovernanceConfig.mockRejectedValue(new fake.FakeApiError("conflict", 409, "Conflict"));
+    mount();
+    const input = await screen.findByRole("textbox", { name: "Min confidence" });
+    fireEvent.change(input, { target: { value: "0.85" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    const alert = await screen.findByRole("alert");
+
+    fake.getGovernanceConfig.mockRejectedValue(
+      new fake.FakeApiError("unavailable", 503, "Service Unavailable"),
+    );
+    fireEvent.click(within(alert).getByRole("button", { name: "Reload latest" }));
+    await waitFor(() => expect(fake.getGovernanceConfig).toHaveBeenCalledTimes(2));
+
+    expect(await screen.findByRole("alert")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Reload latest" })).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "Min confidence" })).toHaveValue("0.85");
+  });
+
+  it.each([
+    [0.905, "0.905"],
+    [0.904, "0.904"],
+  ])("does not change a stored confidence of %s when only the mode is saved", async (stored, shown) => {
+    fake.getGovernanceConfig.mockResolvedValue(config(14, { jev_min_confidence: stored }));
+    fake.patchGovernanceConfig.mockResolvedValue(
+      config(15, { jev_squad_routing_mode: "off", jev_min_confidence: stored }),
+    );
+    mount();
+    const input = await screen.findByRole("textbox", { name: "Min confidence" });
+    fireEvent.click(screen.getByRole("radio", { name: "Off" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(fake.patchGovernanceConfig).toHaveBeenCalledTimes(1));
+    const body = fake.patchGovernanceConfig.mock.calls[0]![1] as Record<string, unknown>;
+    expect(body).toMatchObject({ expected_version: 14, jev_squad_routing_mode: "off" });
+    expect(body).not.toHaveProperty("jev_min_confidence");
+    expect(input).toHaveValue(shown);
+  });
+});
