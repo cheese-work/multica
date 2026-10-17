@@ -7647,11 +7647,12 @@ WHERE id = (
     WHERE t.context->>'wakeup_id' IS NULL AND t.issue_id = $12
       AND t.agent_id = $13
       AND t.status = 'queued'
-      AND t.is_leader_task = ($14::uuid IS NOT NULL)
-      AND t.squad_id IS NOT DISTINCT FROM $14::uuid
+      AND ($14::uuid IS NULL OR t.id = $14::uuid)
+      AND t.is_leader_task = ($15::uuid IS NOT NULL)
+      AND t.squad_id IS NOT DISTINCT FROM $15::uuid
       AND (
-          COALESCE($15::text, '') = ''
-          OR t.context->>'head_sha' = $15::text
+          COALESCE($16::text, '') = ''
+          OR t.context->>'head_sha' = $16::text
       )
     ORDER BY t.created_at DESC
     LIMIT 1
@@ -7674,6 +7675,7 @@ type MergeCommentIntoQueuedIssueTaskParams struct {
 	NewRuntimeConnectedApps []byte      `json:"new_runtime_connected_apps"`
 	IssueID                 pgtype.UUID `json:"issue_id"`
 	AgentID                 pgtype.UUID `json:"agent_id"`
+	TargetTaskID            pgtype.UUID `json:"target_task_id"`
 	SquadID                 pgtype.UUID `json:"squad_id"`
 	HeadSha                 pgtype.Text `json:"head_sha"`
 }
@@ -7714,6 +7716,7 @@ func (q *Queries) MergeCommentIntoQueuedIssueTask(ctx context.Context, arg Merge
 		arg.NewRuntimeConnectedApps,
 		arg.IssueID,
 		arg.AgentID,
+		arg.TargetTaskID,
 		arg.SquadID,
 		arg.HeadSha,
 	)
@@ -8743,9 +8746,10 @@ WHERE id = (
       AND t.agent_id = $3
       AND t.comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id($1::uuid)
       AND t.status IN ('dispatched', 'running', 'waiting_local_directory')
+      AND ($4::uuid IS NULL OR t.id = $4::uuid)
       AND (
-          COALESCE($4::text, '') = ''
-          OR t.context->>'head_sha' = $4::text
+          COALESCE($5::text, '') = ''
+          OR t.context->>'head_sha' = $5::text
       )
     ORDER BY t.created_at DESC
     LIMIT 1
@@ -8755,10 +8759,11 @@ RETURNING id, coalesced_comment_ids
 `
 
 type RegisterPlannedCommentForActiveTaskParams struct {
-	CommentID pgtype.UUID `json:"comment_id"`
-	IssueID   pgtype.UUID `json:"issue_id"`
-	AgentID   pgtype.UUID `json:"agent_id"`
-	HeadSha   pgtype.Text `json:"head_sha"`
+	CommentID    pgtype.UUID `json:"comment_id"`
+	IssueID      pgtype.UUID `json:"issue_id"`
+	AgentID      pgtype.UUID `json:"agent_id"`
+	TargetTaskID pgtype.UUID `json:"target_task_id"`
+	HeadSha      pgtype.Text `json:"head_sha"`
 }
 
 type RegisterPlannedCommentForActiveTaskRow struct {
@@ -8797,6 +8802,7 @@ func (q *Queries) RegisterPlannedCommentForActiveTask(ctx context.Context, arg R
 		arg.CommentID,
 		arg.IssueID,
 		arg.AgentID,
+		arg.TargetTaskID,
 		arg.HeadSha,
 	)
 	var i RegisterPlannedCommentForActiveTaskRow
