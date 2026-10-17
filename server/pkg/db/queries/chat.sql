@@ -1297,6 +1297,46 @@ WHERE message.chat_session_id = $1
 ORDER BY message.created_at DESC, message.id DESC
 LIMIT $2;
 
+-- name: ListChatMessagesNewerPage :many
+-- Oldest-first page starting at (after_created_at, after_id), inclusive. Same
+-- member-visible rows as ListChatMessagesPage, with the onboarding kickoff
+-- filtered in SQL (the cursor page filters it in Go). A hidden anchor is
+-- therefore not the first row. Keep the queued follow-up selector identical to
+-- ListChatMessagesPage and to the DM search predicate in chat_search.go.
+SELECT message.* FROM chat_message AS message
+WHERE message.chat_session_id = $1
+  AND message.message_kind NOT IN ('channel_command', 'onboarding_kickoff')
+  AND NOT (
+    message.role = 'user'
+    AND EXISTS (
+      SELECT 1
+      FROM agent_task_queue AS task
+      WHERE task.chat_session_id = message.chat_session_id
+        AND task.status = 'queued'
+        AND task.id = message.task_id
+        AND task.id <> (
+          SELECT head.id
+          FROM agent_task_queue AS head
+          WHERE head.chat_session_id = $1
+            AND head.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+            AND head.regenerate_quick_actions_for IS NULL
+          ORDER BY
+            CASE
+              WHEN head.status IN ('dispatched', 'running', 'waiting_local_directory') THEN 0
+              WHEN head.status = 'deferred' THEN 1
+              ELSE 2
+            END,
+            head.priority DESC,
+            head.created_at ASC,
+            head.id ASC
+          LIMIT 1
+        )
+    )
+  )
+  AND (message.created_at, message.id) >= (sqlc.arg('after_created_at')::timestamptz, sqlc.arg('after_id')::uuid)
+ORDER BY message.created_at ASC, message.id ASC
+LIMIT $2;
+
 -- name: GetChatMessage :one
 SELECT * FROM chat_message
 WHERE id = $1;
@@ -1460,6 +1500,7 @@ WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
       AND NOT (COALESCE(error, '') ILIKE '%400%' AND COALESCE(error, '') ILIKE '%invalid_request_error%')
       AND NOT (COALESCE(error, '') ILIKE '%response protection is unavailable%')
       AND NOT (COALESCE(error, '') ILIKE '%agent executor error%' AND COALESCE(error, '') ILIKE '%requested entity was not found%')
+      AND NOT (COALESCE(error, '') ILIKE '%improperly formatted function call%')
       -- Mirrors the GetLastTaskSession auth-resolution guard: a provider that
       -- cannot resolve its auth method fails deterministically on resume, and
       -- the classification is agent_error.unknown (resume-safe), so only this
