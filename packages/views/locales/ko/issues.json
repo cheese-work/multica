@@ -1319,7 +1319,8 @@
       "time": "{{time}}에 {{agent}} 깨우기",
       "header": "{{agent}}: {{what}}",
       "paused": "깨우기 일시중지됨",
-      "open": "깨우기 보기"
+      "open": "깨우기 보기",
+      "workspace_paused": "깨우기 일시 중지됨"
     },
     "paused": {
       "max_fires": "{{count}}회 실행해 한도에 도달해 중지됨",
@@ -1348,7 +1349,9 @@
       "max_fires": "한도 {{count}}회에 도달",
       "loop": "다른 규칙과 서로 깨우고 있었습니다",
       "rate": "1시간에 12회 넘게 실행됨"
-    }
+    },
+    "paused_banner": "{{name}}님이 {{time}}에 깨우기를 일시 중지했습니다",
+    "paused_banner_anonymous": "{{time}}에 깨우기가 일시 중지되었습니다"
   },
   "duplicates": {
     "banner_prefix": "중복 원본:",
