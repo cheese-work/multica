@@ -276,42 +276,10 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 		}
 	}
 
-	// Project workflow (MUL-7420): an issue created in a project whose named
-	// workflow does not list the requested status starts on todo instead.
-	// The HTTP create path already rejects an explicit status outside the
-	// workflow; this keeps the other creators (channels, captured comments)
-	// inside it too. Resolved before the custom-status guard below so that
-	// guard checks the status actually written.
-	if def, err := s.createWorkflow(ctx, qtx, p); err != nil {
-		return IssueCreateResult{}, err
-	} else if def != nil && !def.IsDefault && !def.Has(p.Status) {
-		p.Status = issueworkflow.StartStatus
-	}
-
-	// A create landing on a CUSTOM status takes the shared catalog lock AND
-	// re-resolves the status inside this transaction. The caller validated the
-	// status before the transaction opened, which is early enough to return a
-	// clean 400 but too early to be safe: an archive can commit in between.
-	// Re-checking under the lock is what makes the status provably active at
-	// the moment the row is written. Built-in statuses skip both — they can
-	// never be archived, so the common path is unchanged. (MUL-6243)
-	if !issuestatus.IsBuiltIn(p.Status) {
-		if err := qtx.LockIssueStatusCatalogShared(ctx, p.WorkspaceID); err != nil {
-			return IssueCreateResult{}, err
-		}
-		if _, err := issuestatus.Resolve(ctx, qtx, p.WorkspaceID, p.Status); err != nil {
-			if errors.Is(err, issuestatus.ErrUnknownStatus) {
-				return IssueCreateResult{}, ErrIssueStatusUnavailable
-			}
-			return IssueCreateResult{}, err
-		}
-	}
-
-	// Resolve and validate parent / project before reading from the
-	// duplicate guard so a forged parent or project ID is rejected
-	// before we touch the issue counter. Both checks scope by
-	// WorkspaceID — there is no path from this service to a row in a
-	// foreign workspace.
+	// Resolve the project the issue lands in once, and validate it, before any
+	// decision depends on it. Both checks scope by WorkspaceID — there is no
+	// path from this service to a row in a foreign workspace. A forged parent or
+	// project ID is rejected before we touch the issue counter.
 	projectID := p.ProjectID
 	if p.ParentIssueID.Valid {
 		parent, err := qtx.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
@@ -328,12 +296,49 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 			projectID = parent.ProjectID
 		}
 	}
+
+	// A create takes the shared status-catalog lock and the project's
+	// key-share lock before it reads the workflow, and holds both through the
+	// insert. A workflow edit holds the catalog exclusively and a workflow
+	// switch holds the project row for update, so neither can commit between
+	// the decision below and the row it decides for, whatever the status.
+	// A custom status takes the catalog lock too, to re-resolve it: the caller
+	// validated it before the transaction opened, early enough for a clean 400
+	// but too early to be safe, because an archive can commit in between.
+	// (MUL-6243, MUL-7420)
+	if projectID.Valid || !issuestatus.IsBuiltIn(p.Status) {
+		if err := qtx.LockIssueStatusCatalogShared(ctx, p.WorkspaceID); err != nil {
+			return IssueCreateResult{}, err
+		}
+	}
 	if projectID.Valid {
-		if _, err := qtx.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{
-			ID:          projectID,
-			WorkspaceID: p.WorkspaceID,
-		}); err != nil {
-			return IssueCreateResult{}, ErrProjectNotFound
+		if _, err := qtx.LockProjectForIssueWrite(ctx, db.LockProjectForIssueWriteParams{ID: projectID, WorkspaceID: p.WorkspaceID}); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return IssueCreateResult{}, ErrProjectNotFound
+			}
+			return IssueCreateResult{}, err
+		}
+	}
+
+	// Project workflow (MUL-7420): an issue created in a project whose named
+	// workflow does not list the requested status starts on todo instead.
+	// The HTTP create path already rejects an explicit status outside the
+	// workflow; this keeps the other creators (channels, captured comments)
+	// inside it too, and the project switches that commit after that check.
+	// Resolved before the custom-status guard below so that guard checks the
+	// status actually written.
+	if def, _, err := issueworkflow.ForProject(ctx, qtx, p.WorkspaceID, projectID); err != nil {
+		return IssueCreateResult{}, err
+	} else if def != nil && !def.IsDefault && !def.Has(p.Status) {
+		p.Status = issueworkflow.StartStatus
+	}
+
+	if !issuestatus.IsBuiltIn(p.Status) {
+		if _, err := issuestatus.Resolve(ctx, qtx, p.WorkspaceID, p.Status); err != nil {
+			if errors.Is(err, issuestatus.ErrUnknownStatus) {
+				return IssueCreateResult{}, ErrIssueStatusUnavailable
+			}
+			return IssueCreateResult{}, err
 		}
 	}
 
@@ -839,22 +844,6 @@ func classifyOrigin(issue db.Issue, opts IssueCreateOpts) (source, taskID, autop
 		)
 		return analytics.SourceManual, "", ""
 	}
-}
-
-// createWorkflow resolves the workflow of the project a new issue lands in:
-// its own project, or its parent's when it names none.
-func (s *IssueService) createWorkflow(ctx context.Context, qtx *db.Queries, p IssueCreateParams) (*issueworkflow.Definition, error) {
-	projectID := p.ProjectID
-	if !projectID.Valid && p.ParentIssueID.Valid {
-		parent, err := qtx.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: p.ParentIssueID, WorkspaceID: p.WorkspaceID})
-		if err != nil {
-			// The parent check below reports a missing parent.
-			return nil, nil
-		}
-		projectID = parent.ProjectID
-	}
-	def, _, err := issueworkflow.ForProject(ctx, qtx, p.WorkspaceID, projectID)
-	return def, err
 }
 
 func (s *IssueService) maybeEnqueueOnAssign(ctx context.Context, issue db.Issue, creatorType, actorID string, agentRunFireAt time.Time) pgtype.UUID {

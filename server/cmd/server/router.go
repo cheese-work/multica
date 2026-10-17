@@ -1727,6 +1727,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Patch("/api/me/onboarding", h.PatchOnboarding)
 		r.Post("/api/me/onboarding/complete", h.CompleteOnboarding)
 		r.Post("/api/me/onboarding/cloud-waitlist", h.JoinCloudWaitlist)
+		// DEPRECATED — shim routes for desktop < v3 during the rollout
+		// window. v3 frontend creates the Helper agent + starter issue
+		// via generic CreateAgent / CreateIssue and only calls /complete
+		// here. Remove once X-Client-Version telemetry confirms zero
+		// pre-v3 desktops are still calling these. Handlers live in
+		// server/internal/handler/onboarding_shim.go.
+		r.Post("/api/me/onboarding/runtime-bootstrap", h.BootstrapOnboardingRuntime)
+		r.Post("/api/me/onboarding/no-runtime-bootstrap", h.BootstrapOnboardingNoRuntime)
 		r.With(handler.RequireHumanActor).Post("/api/cli-token", h.IssueCliToken)
 		r.With(handler.RequireHumanActor).Post("/api/auth/desktop-token", h.IssueDesktopToken)
 		// Sliding session renewal for clients that hold the session as a

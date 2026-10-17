@@ -257,6 +257,14 @@ migrations follow the new names. `allowedForkCollisions` gains no entry. A later
 upstream sync must delete these nine upstream filenames when it re-adds them,
 or the workflow tables would be created twice.
 
+Migration `665_wakeup_handoff_write_tag` is fork-only. It replaces
+`capture_issue_wakeup` from `662_wakeup_skip_handed_to_agent` so a write that
+hands an issue to an agent no longer drops that agent's issue-event receipts at
+capture (CHE-1837). The receipts carry the write's id and the handler consumes
+them once the agent's run exists, so a stop between commit and enqueue cannot
+lose the change. A later upstream sync keeps `665` after the re-added upstream
+function body, or the zero-delivery window returns.
+
 ## Agent task queue compaction columns
 
 Migration `655_agent_task_queue_compact` adds `task_kind`, `compact_reason` and

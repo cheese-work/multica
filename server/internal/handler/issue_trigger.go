@@ -83,24 +83,25 @@ func (h *Handler) shouldSuppressActiveSelfAssignment(ctx context.Context, actorT
 // clients and travels only with a run that actually starts. The squad path
 // still flows through enqueueSquadLeaderTask so the leader access gate and
 // pending dedup stay in one place.
-func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger service.IssueRunTrigger, actorType, actorID, handoffNote string) {
+func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger service.IssueRunTrigger, actorType, actorID, handoffNote string) (started bool) {
 	switch trigger.AssigneeType {
 	case "agent":
 		// The member who performed this assign/promote is the accountable human
 		// for the run (MUL-4302 §4). An agent actor is not a human, so only a
 		// member actor is threaded; otherwise attribution falls back to the chain.
-		if _, err := h.TaskService.EnqueueTaskForIssueWithHandoff(ctx, issue, handoffNote, memberActorUserID(actorType, actorID)); err != nil {
-			// ErrDuplicatePendingTask is the expected coalesce outcome (a
-			// sibling run already covers this target); anything else is a
-			// real enqueue failure that was previously discarded silently
-			// (CHE-486).
-			if !errors.Is(err, service.ErrDuplicatePendingTask) {
-				slog.Error("dispatch issue run failed", "issue_id", uuidToString(issue.ID), "agent_id", uuidToString(trigger.AgentID), "error", err)
-			}
+		_, err := h.TaskService.EnqueueTaskForIssueWithHandoff(ctx, issue, handoffNote, memberActorUserID(actorType, actorID))
+		// ErrDuplicatePendingTask is the expected coalesce outcome (a sibling
+		// run already covers this target); anything else is a real enqueue
+		// failure that was previously discarded silently (CHE-486).
+		if err != nil && !errors.Is(err, service.ErrDuplicatePendingTask) {
+			slog.Error("dispatch issue run failed", "issue_id", uuidToString(issue.ID), "agent_id", uuidToString(trigger.AgentID), "error", err)
+			return false
 		}
+		return true
 	case "squad":
-		h.enqueueSquadLeaderTask(ctx, issue, pgtype.UUID{}, actorType, actorID, handoffNote)
+		return h.enqueueSquadLeaderTask(ctx, issue, pgtype.UUID{}, actorType, actorID, handoffNote)
 	}
+	return false
 }
 
 // memberActorUserID returns the acting member's user id as a pgtype.UUID when the

@@ -2,24 +2,52 @@ package handler
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
 type wakeupActorKey struct{}
 type wakeupActor struct{ kind, id, task string }
-type wakeupHandedToKey struct{}
+type wakeupHandoffKey struct{}
 
-// withWakeupHandedTo names the agent a write hands the issue to. That agent
-// gets the change as its own run, so the write's issue events skip its event
-// wakeups (migration 558, MUL-7420).
-func withWakeupHandedTo(ctx context.Context, agentID string) context.Context {
+// wakeupHandoff names a write that hands an issue to an agent, and the agent.
+type wakeupHandoff struct{ agent, write string }
+
+// withWakeupHandedTo marks a write that hands the issue to agentID, whose run
+// will deliver the change. The write's issue events are still captured for that
+// agent, tagged with a write id (migration 665): the receipts are the agent's
+// only copy until its run exists, so a stop between commit and enqueue loses
+// nothing. consumeHandedWakeups settles them once the run is enqueued.
+func withWakeupHandedTo(ctx context.Context, agentID string) (context.Context, wakeupHandoff) {
 	if agentID == "" {
-		return ctx
+		return ctx, wakeupHandoff{}
 	}
-	return context.WithValue(ctx, wakeupHandedToKey{}, agentID)
+	handoff := wakeupHandoff{agent: agentID, write: dbid.NewV7().String()}
+	return context.WithValue(ctx, wakeupHandoffKey{}, handoff), handoff
+}
+
+// consumeHandedWakeups marks the handed agent's issue-event receipts of this
+// write handled, because the run it was handed now exists. A receipt merged
+// with earlier pending events stays: it carries facts the run does not.
+func (h *Handler) consumeHandedWakeups(ctx context.Context, issueID pgtype.UUID, handoff wakeupHandoff) {
+	if handoff.agent == "" {
+		return
+	}
+	err := h.Queries.ConsumeHandoffWakeupReceipts(ctx, db.ConsumeHandoffWakeupReceiptsParams{
+		IssueID: issueID,
+		AgentID: parseUUID(handoff.agent),
+		Write:   handoff.write,
+	})
+	if err != nil {
+		// The run exists, so a receipt left pending delivers the change again:
+		// a duplicate, never a loss.
+		slog.Warn("settle handed-to-agent wakeups failed", "issue_id", uuidToString(issueID), "agent_id", handoff.agent, "error", err)
+	}
 }
 
 // Carry only server-resolved request identity into transaction-local settings.
@@ -50,8 +78,8 @@ func (h *Handler) beginWakeupWrite(ctx context.Context) (pgx.Tx, error) {
 			return nil, err
 		}
 	}
-	if agent, ok := ctx.Value(wakeupHandedToKey{}).(string); ok {
-		if _, err = tx.Exec(ctx, `SELECT set_config('multica.handed_to_agent',$1,true)`, agent); err != nil {
+	if handoff, ok := ctx.Value(wakeupHandoffKey{}).(wakeupHandoff); ok {
+		if _, err = tx.Exec(ctx, `SELECT set_config('multica.handoff_write',$1,true)`, handoff.write); err != nil {
 			_ = tx.Rollback(ctx)
 			return nil, err
 		}

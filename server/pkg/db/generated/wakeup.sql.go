@@ -219,6 +219,31 @@ func (q *Queries) CancelUnstartedWakeupTasks(ctx context.Context, wakeupID strin
 	return items, nil
 }
 
+const consumeHandoffWakeupReceipts = `-- name: ConsumeHandoffWakeupReceipts :exec
+UPDATE issue_wakeup_receipt r SET processed_at=now()
+FROM issue_wakeup w
+WHERE w.id=r.wakeup_id AND w.issue_id= $1 AND w.agent_id= $2
+  AND r.processed_at IS NULL AND r.task_id IS NULL
+  AND r.event_type LIKE 'issue.%'
+  AND r.payload->>'handoff_write'= $3::text
+  AND COALESCE((r.payload->>'coalesced_count')::bigint,1)=1
+`
+
+type ConsumeHandoffWakeupReceiptsParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	AgentID pgtype.UUID `json:"agent_id"`
+	Write   string      `json:"write"`
+}
+
+// A write that handed the issue to an agent starts that agent's run after it
+// commits. Once the run exists, the agent's issue-event receipts from the same
+// write are handled. A receipt that merged with earlier pending events keeps
+// its place, and a receipt already reserved by a run is left to that run.
+func (q *Queries) ConsumeHandoffWakeupReceipts(ctx context.Context, arg ConsumeHandoffWakeupReceiptsParams) error {
+	_, err := q.db.Exec(ctx, consumeHandoffWakeupReceipts, arg.IssueID, arg.AgentID, arg.Write)
+	return err
+}
+
 const consumeWakeupReceipts = `-- name: ConsumeWakeupReceipts :exec
 UPDATE issue_wakeup_receipt SET task_id=$1,processed_at=now() WHERE id=ANY($2::uuid[])
 `

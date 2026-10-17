@@ -280,13 +280,16 @@ func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pg
 	var issue db.Issue
 	var cancelledWakeups []db.AgentTaskQueue
 	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil, func(q *db.Queries) error {
-		if err := wf.lockAndVerify(ctx, h, q); err != nil {
+		if err := wf.lockProject(ctx, q); err != nil {
 			return err
 		}
 		if params.DuplicateOfIssueID.Valid {
 			if err := lockAndCheckDuplicateMark(ctx, q, workspaceID, params.ID, params.DuplicateOfIssueID); err != nil {
 				return err
 			}
+		}
+		if err := wf.lockIssueAndVerify(ctx, h, q); err != nil {
+			return err
 		}
 		var innerErr error
 		issue, cancelledWakeups, innerErr = updateIssueStoppingWakeups(ctx, q, params)
@@ -4118,7 +4121,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// not also through its event wakeups. When no run will start (backlog,
 	// suppress_run, an unready agent), the wakeup is the only delivery left.
 	assigneeSupplied := req.AssigneeType != nil || req.AssigneeID != nil
-	writeCtx := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, req.SuppressRun))
+	writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, req.SuppressRun))
 	var issue db.Issue
 	attachmentsChanged := false
 	if req.Description != nil || req.TitleBase != nil || req.DescriptionBase != nil || len(attachmentIDs) > 0 {
@@ -4268,7 +4271,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		if handoff != nil {
 			h.IssueService.CancelStaleStepRuns(r.Context(), issue, trigger.AgentID)
 		}
-		h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, handoffNote)
+		if h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, handoffNote) {
+			h.consumeHandedWakeups(r.Context(), issue.ID, handed)
+		}
 	}
 
 	// Sub-issue rules on the parent (the child_done system rule and sub-issue
@@ -4958,7 +4963,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		}
 
 		assigneeSupplied := req.Updates.AssigneeType != nil || req.Updates.AssigneeID != nil
-		writeCtx := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, req.Updates.SuppressRun))
+		writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, req.Updates.SuppressRun))
 		var issue db.Issue
 		if req.Updates.Description != nil {
 			// One batch-level base cannot describe multiple issue documents.
@@ -5038,7 +5043,9 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			if handoff != nil {
 				h.IssueService.CancelStaleStepRuns(r.Context(), issue, trigger.AgentID)
 			}
-			h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, batchHandoffNote)
+			if h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, batchHandoffNote) {
+				h.consumeHandedWakeups(r.Context(), issue.ID, handed)
+			}
 		}
 
 		if statusChanged && issue.ParentIssueID.Valid {
