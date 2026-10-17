@@ -166,6 +166,7 @@ export type {
   ChatSessionUsage,
   ChatUsageModel,
   ChatUsageTokens,
+  ChatUsageChain,
   ChatForkResponse,
   ChatLastMessage,
   ChatPinnedAgent,

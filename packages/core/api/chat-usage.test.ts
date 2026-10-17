@@ -28,6 +28,20 @@ const usage = {
   continued_from_session_id: null,
   continued_into_session_id: null,
   forked_from_session_id: null,
+  chain: null,
+};
+
+const chain = {
+  session_count: 3,
+  partial: false,
+  tokens: { input: 70, output: 140, cache_read: 210, cache_write: 280 },
+  uncosted_tokens: { input: 20, output: 40, cache_read: 60, cache_write: 80 },
+  cost_usd_ticks: 50,
+  by_model: {
+    "m-a": { tokens: { input: 50, output: 100, cache_read: 150, cache_write: 200 }, cost_usd_ticks: 50 },
+    "m-b": { tokens: { input: 20, output: 40, cache_read: 60, cache_write: 80 }, cost_usd_ticks: 0 },
+  },
+  runs: { terminal: 3, metered: 3, unreported: 0, total_run_ms: 3000 },
 };
 
 function stubFetch(body: unknown) {
@@ -79,5 +93,36 @@ describe("getChatSessionUsage", () => {
     stubFetch({ ...usage, by_model: { "m-a": { tokens: "lots" } } });
     const result = await new ApiClient("https://api.example.test").getChatSessionUsage(sessionId);
     expect(result).toEqual(EMPTY_CHAT_SESSION_USAGE);
+  });
+
+  it("keeps the whole-conversation chain total next to the session totals", async () => {
+    stubFetch({ ...usage, chain });
+    const result = await new ApiClient("https://api.example.test").getChatSessionUsage(sessionId);
+    expect(result.chain).toEqual(chain);
+    expect(result.tokens).toEqual(usage.tokens);
+  });
+
+  it("reads a missing chain as null and defaults the fields of a sparse chain", async () => {
+    stubFetch({ session_id: sessionId });
+    const missing = await new ApiClient("https://api.example.test").getChatSessionUsage(sessionId);
+    expect(missing.chain).toBeNull();
+
+    stubFetch({ ...usage, chain: { session_count: 2, future_field: true } });
+    const sparse = await new ApiClient("https://api.example.test").getChatSessionUsage(sessionId);
+    expect(sparse.chain).toMatchObject({
+      session_count: 2,
+      partial: false,
+      tokens: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+      cost_usd_ticks: 0,
+      by_model: {},
+    });
+  });
+
+  it("drops a malformed chain without losing the session totals", async () => {
+    stubFetch({ ...usage, chain: { ...chain, tokens: "lots" } });
+    const result = await new ApiClient("https://api.example.test").getChatSessionUsage(sessionId);
+    expect(result.chain).toBeNull();
+    expect(result.tokens).toEqual(usage.tokens);
+    expect(result.by_model).toEqual(usage.by_model);
   });
 });

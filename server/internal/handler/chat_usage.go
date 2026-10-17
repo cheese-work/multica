@@ -1,9 +1,17 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+
+	"github.com/jackc/pgx/v5/pgtype"
+
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
+
+// maxChatUsageChainHops bounds the continuation walk in each direction.
+const maxChatUsageChainHops = 100
 
 type ChatUsageTokens struct {
 	Input      int64 `json:"input"`
@@ -26,6 +34,26 @@ type ChatUsageModel struct {
 	CostUsdTicks int64           `json:"cost_usd_ticks"`
 }
 
+// ChatUsageChain is the "whole conversation" total across a continuation
+// chain: the viewed DM plus every readable DM linked by continued_from /
+// continued_into, /agent handoff hops included. Forks are not part of it.
+type ChatUsageChain struct {
+	SessionCount int `json:"session_count"`
+	// Partial is true when the walk stopped at the hop limit or a session in
+	// the chain was left out because the caller cannot read it.
+	Partial        bool                      `json:"partial"`
+	Tokens         ChatUsageTokens           `json:"tokens"`
+	UncostedTokens ChatUsageTokens           `json:"uncosted_tokens"`
+	CostUsdTicks   int64                     `json:"cost_usd_ticks"`
+	ByModel        map[string]ChatUsageModel `json:"by_model"`
+	Runs           struct {
+		Terminal   int   `json:"terminal"`
+		Metered    int   `json:"metered"`
+		Unreported int   `json:"unreported"`
+		TotalRunMs int64 `json:"total_run_ms"`
+	} `json:"runs"`
+}
+
 type ChatSessionUsageResponse struct {
 	SessionID      string          `json:"session_id"`
 	Tokens         ChatUsageTokens `json:"tokens"`
@@ -39,6 +67,9 @@ type ChatSessionUsageResponse struct {
 	ContinuedFromSessionID *string                   `json:"continued_from_session_id"`
 	ContinuedIntoSessionID *string                   `json:"continued_into_session_id"`
 	ForkedFromSessionID    *string                   `json:"forked_from_session_id"`
+	// Chain is null for a DM with no readable continuation link, and for any
+	// caller that is not an interactive user session.
+	Chain *ChatUsageChain `json:"chain"`
 }
 
 // GetChatSessionUsage returns token, cost, run and message totals for one DM.
@@ -99,5 +130,172 @@ func (h *Handler) GetChatSessionUsage(w http.ResponseWriter, r *http.Request) {
 		ForkedFromSessionID:    uuidToPtr(session.ForkedFromSessionID),
 	}
 	resp.Messages.ByRole = byRole
+	// A running chat task may read its own session, but the other sessions in
+	// the chain are not its to see: only an interactive user gets the total.
+	if r.Header.Get("X-Actor-Source") == "interactive_jwt" {
+		chain, err := h.chatUsageChain(r, userID, session)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to get chat session usage")
+			return
+		}
+		resp.Chain = chain
+	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// chatUsageChain sums usage over the readable sessions of session's
+// continuation chain. It returns nil when fewer than two are readable.
+func (h *Handler) chatUsageChain(r *http.Request, userID string, session db.ChatSession) (*ChatUsageChain, error) {
+	ctx := r.Context()
+	members, err := h.Queries.ListChatSessionChain(ctx, db.ListChatSessionChainParams{
+		SessionID: session.ID, WorkspaceID: session.WorkspaceID, CreatorID: session.CreatorID,
+		MaxHops: maxChatUsageChainHops,
+	})
+	if err != nil {
+		return nil, err
+	}
+	workspaceID := uuidToString(session.WorkspaceID)
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	agentIDs := make([]pgtype.UUID, 0, len(members))
+	seen := map[pgtype.UUID]bool{}
+	for _, m := range members {
+		if !m.Beyond && !seen[m.AgentID] {
+			seen[m.AgentID] = true
+			agentIDs = append(agentIDs, m.AgentID)
+		}
+	}
+	readable, err := h.readableChainAgents(ctx, agentIDs, actorType, actorID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	// The viewed session passed the public-chat gate; every other member must
+	// pass it too, so a command-only channel session that was continued into a
+	// visible DM cannot feed its usage into the total.
+	candidates := make([]pgtype.UUID, 0, len(members))
+	for _, m := range members {
+		if !m.Beyond && readable[m.AgentID] {
+			candidates = append(candidates, m.ID)
+		}
+	}
+	publicIDs, err := h.publicChatSessionIDs(ctx, candidates, session.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]pgtype.UUID, 0, len(members))
+	partial := false
+	for _, m := range members {
+		if m.Beyond || !readable[m.AgentID] || !publicIDs[m.ID] {
+			partial = true
+			continue
+		}
+		ids = append(ids, m.ID)
+	}
+	if len(ids) < 2 {
+		return nil, nil
+	}
+	row, err := h.Queries.GetChatSessionsUsageSummary(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	byModel := map[string]ChatUsageModel{}
+	if err := json.Unmarshal(row.ByModel, &byModel); err != nil {
+		return nil, err
+	}
+	chain := &ChatUsageChain{
+		SessionCount: len(ids), Partial: partial, ByModel: byModel, CostUsdTicks: row.CostUsdTicks,
+		Tokens: ChatUsageTokens{
+			Input: row.InputTokens, Output: row.OutputTokens,
+			CacheRead: row.CacheReadTokens, CacheWrite: row.CacheWriteTokens,
+		},
+		UncostedTokens: ChatUsageTokens{
+			Input: row.UncostedInputTokens, Output: row.UncostedOutputTokens,
+			CacheRead: row.UncostedCacheReadTokens, CacheWrite: row.UncostedCacheWriteTokens,
+		},
+	}
+	chain.Runs.Terminal, chain.Runs.Metered = int(row.TerminalRuns), int(row.MeteredRuns)
+	chain.Runs.Unreported, chain.Runs.TotalRunMs = int(row.UnreportedRuns), row.TotalRunMs
+	return chain, nil
+}
+
+// readableChainAgents is canAccessPrivateAgent for a whole set of agents in a
+// fixed number of queries (agents, the caller's membership, invocation targets),
+// however long the chain is. The rules are the same: agent actors and an
+// agent's owner pass, workspace owners and admins pass, and any other member
+// passes only on a public_to agent whose targets include them. An agent that no
+// longer exists is not readable.
+func (h *Handler) readableChainAgents(ctx context.Context, agentIDs []pgtype.UUID, actorType, actorID, workspaceID string) (map[pgtype.UUID]bool, error) {
+	readable := make(map[pgtype.UUID]bool, len(agentIDs))
+	if len(agentIDs) == 0 {
+		return readable, nil
+	}
+	if actorType == "agent" {
+		for _, id := range agentIDs {
+			readable[id] = true
+		}
+		return readable, nil
+	}
+	agents, err := h.Queries.ListAgentsByIDsIncludingArchived(ctx, agentIDs)
+	if err != nil {
+		return nil, err
+	}
+	var needMember bool
+	for _, agent := range agents {
+		if uuidToString(agent.OwnerID) == actorID {
+			readable[agent.ID] = true
+		} else {
+			needMember = true
+		}
+	}
+	if !needMember {
+		return readable, nil
+	}
+	member, err := h.getWorkspaceMember(ctx, actorID, workspaceID)
+	if err != nil {
+		// Not a member: only agents the caller owns stay readable, as in the single gate.
+		return readable, nil
+	}
+	var needTargets []pgtype.UUID
+	for _, agent := range agents {
+		switch {
+		case readable[agent.ID]:
+		case roleAllowed(member.Role, "owner", "admin"):
+			readable[agent.ID] = true
+		case agent.PermissionMode == "public_to":
+			needTargets = append(needTargets, agent.ID)
+		}
+	}
+	if len(needTargets) == 0 {
+		return readable, nil
+	}
+	targets, err := h.Queries.ListAgentInvocationTargetsByAgentIDs(ctx, needTargets)
+	if err != nil {
+		return nil, err
+	}
+	byAgent := map[pgtype.UUID][]db.AgentInvocationTarget{}
+	for _, t := range targets {
+		byAgent[t.AgentID] = append(byAgent[t.AgentID], t)
+	}
+	for _, id := range needTargets {
+		if memberHitsInvocationTargets(byAgent[id], actorID) {
+			readable[id] = true
+		}
+	}
+	return readable, nil
+}
+
+// publicChatSessionIDs answers GetPublicChatSessionInWorkspace for a set of
+// sessions in one query.
+func (h *Handler) publicChatSessionIDs(ctx context.Context, ids []pgtype.UUID, workspaceID pgtype.UUID) (map[pgtype.UUID]bool, error) {
+	public := make(map[pgtype.UUID]bool, len(ids))
+	if len(ids) == 0 {
+		return public, nil
+	}
+	rows, err := h.Queries.ListPublicChatSessionIDsInWorkspace(ctx, db.ListPublicChatSessionIDsInWorkspaceParams{SessionIds: ids, WorkspaceID: workspaceID})
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range rows {
+		public[id] = true
+	}
+	return public, nil
 }
