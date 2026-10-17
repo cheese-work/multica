@@ -1034,8 +1034,10 @@ export function ChatWindow() {
           isSessionArchived ||
           isAgentArchived ||
           isAgentAccessRevoked ||
-          !activeAgentRuntimeBound
+          !activeAgentRuntimeBound ||
+          currentSession?.compacting === true
         }
+        compacting={currentSession?.compacting === true}
         noAgent={noAgent}
         agentArchived={isAgentArchived}
         agentAccessRevoked={isAgentAccessRevoked}

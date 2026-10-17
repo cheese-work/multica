@@ -274,6 +274,10 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to load chat channel metadata")
 		return
 	}
+	if err := h.hydrateChatSessionCompacting(r.Context(), resp); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load chat compaction state")
+		return
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -362,6 +366,10 @@ func (h *Handler) GetChatSession(w http.ResponseWriter, r *http.Request) {
 	responses := []ChatSessionResponse{resp}
 	if err := h.hydrateChatSessionChannelMetadata(r.Context(), responses); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load chat channel metadata")
+		return
+	}
+	if err := h.hydrateChatSessionCompacting(r.Context(), responses); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load chat compaction state")
 		return
 	}
 	writeJSON(w, http.StatusOK, responses[0])
@@ -609,6 +617,17 @@ func (h *Handler) SetChatSessionArchived(w http.ResponseWriter, r *http.Request)
 	if req.Archived && !decisionLaneArchiveAllowed(w, r, qtx, session) {
 		return
 	}
+	// An archived DM is read-only and gets no more notifications, so the ones
+	// it already raised close with it.
+	var closedRecords []db.InboxItem
+	if req.Archived {
+		var err error
+		closedRecords, err = qtx.MarkDMRepliesRead(r.Context(), db.MarkDMRepliesReadParams{ChatSessionID: session.ID, RecipientID: session.CreatorID})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to close chat notifications")
+			return
+		}
+	}
 	updated, err := qtx.SetChatSessionArchived(r.Context(), db.SetChatSessionArchivedParams{
 		ID:       session.ID,
 		Archived: req.Archived,
@@ -700,6 +719,7 @@ func (h *Handler) SetChatSessionArchived(w http.ResponseWriter, r *http.Request)
 	// refresh, and wakes the runtime so a queued successor is claimed now
 	// rather than at the daemon's next poll.
 	h.TaskService.BroadcastCancelledTasks(r.Context(), workspaceID, cancelled, reactionTargets)
+	h.publishDMRepliesRead(workspaceID, userID, closedRecords)
 
 	resolvedSessionID := uuidToString(updated.ID)
 	status := updated.Status
@@ -821,6 +841,13 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The DM is going away, so the notifications it raised close with it.
+	closedRecords, err := qtx.MarkDMRepliesRead(r.Context(), db.MarkDMRepliesReadParams{ChatSessionID: session.ID, RecipientID: session.CreatorID})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to close chat notifications")
+		return
+	}
+
 	if err := qtx.DeleteChatSession(r.Context(), db.DeleteChatSessionParams{
 		ID:          session.ID,
 		WorkspaceID: session.WorkspaceID,
@@ -850,6 +877,7 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 	// cancelled and returned before the delete, so they still carry its id, but
 	// the row they would be resolved through is gone by now.
 	h.TaskService.BroadcastCancelledTasks(r.Context(), workspaceID, cancelled, reactionTargets)
+	h.publishDMRepliesRead(workspaceID, userID, closedRecords)
 
 	resolvedSessionID := uuidToString(session.ID)
 	h.publishChat(protocol.EventChatSessionDeleted, workspaceID, "member", userID, resolvedSessionID, protocol.ChatSessionDeletedPayload{
@@ -980,6 +1008,10 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "chat agent is archived")
 		case errors.Is(err, service.ErrChatTaskAgentNoRuntime):
 			writeError(w, http.StatusConflict, "chat agent has no runtime")
+		case errors.Is(err, service.ErrChatCompacting):
+			// Both keys: `code` for API consumers, `reason_code` for the web
+			// client's existing send-error mapping.
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "chat is compacting", "code": "chat_compacting", "reason_code": "chat_compacting"})
 		default:
 			slog.Warn("send chat message failed", append(logger.RequestAttrs(r), "error", err)...)
 			writeError(w, http.StatusInternalServerError, "failed to send chat message")
@@ -1395,6 +1427,23 @@ type PrioritizeQueuedChatTaskResponse struct {
 	ActiveTaskID string `json:"active_task_id,omitempty"`
 }
 
+func (h *Handler) markChatSessionRead(ctx context.Context, session db.ChatSession) ([]db.InboxItem, error) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	qtx := h.Queries.WithTx(tx)
+	if err := qtx.MarkChatSessionRead(ctx, session.ID); err != nil {
+		return nil, err
+	}
+	closed, err := qtx.MarkDMRepliesRead(ctx, db.MarkDMRepliesReadParams{ChatSessionID: session.ID, RecipientID: session.CreatorID})
+	if err != nil {
+		return nil, err
+	}
+	return closed, tx.Commit(ctx)
+}
+
 // MarkChatSessionRead clears the session's unread_since (→ has_unread=false)
 // and broadcasts chat:session_read so other devices of the same user drop
 // their badges.
@@ -1411,10 +1460,14 @@ func (h *Handler) MarkChatSessionRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.Queries.MarkChatSessionRead(r.Context(), session.ID); err != nil {
+	// Reading the DM reads its notification records: one transaction, so the
+	// DM badge and the inbox never disagree.
+	closedRecords, err := h.markChatSessionRead(r.Context(), session)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to mark session read")
 		return
 	}
+	h.publishDMRepliesRead(workspaceID, userID, closedRecords)
 
 	resolvedSessionID := uuidToString(session.ID)
 	h.publishChat(protocol.EventChatSessionRead, workspaceID, "member", userID, resolvedSessionID, protocol.ChatSessionReadPayload{
@@ -2009,14 +2062,56 @@ type ChatSessionResponse struct {
 	// older Chat that remains readable and writable in Multica.
 	ChannelSource         *ChatSessionChannelSourceResponse `json:"channel_source,omitempty"`
 	IsCurrentChannelRoute *bool                             `json:"is_current_channel_route,omitempty"`
-	CreatedAt             string                            `json:"created_at"`
-	UpdatedAt             string                            `json:"updated_at"`
+	// Compacting is true while a compaction task (manual or automatic) is
+	// active for this DM: sends are refused with 409 chat_compacting.
+	Compacting bool `json:"compacting"`
+	// ContextTokens / ContextWindow: the latest completed run's last prompt size
+	// and the model's context window, for the context meter. Absent when that
+	// run reported neither (CHE-1808).
+	ContextTokens *int64 `json:"context_tokens,omitempty"`
+	ContextWindow *int64 `json:"context_window,omitempty"`
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
 }
 
 type ChatSessionChannelSourceResponse struct {
 	ChannelType    string `json:"channel_type"`
 	InstallationID string `json:"installation_id"`
 	RouteRevision  int64  `json:"route_revision"`
+}
+
+func (h *Handler) hydrateChatSessionCompacting(ctx context.Context, sessions []ChatSessionResponse) error {
+	if len(sessions) == 0 {
+		return nil
+	}
+	ids := make([]pgtype.UUID, 0, len(sessions))
+	for _, session := range sessions {
+		ids = append(ids, parseUUID(session.ID))
+	}
+	compacting, err := h.Queries.ListCompactingChatSessionIDs(ctx, ids)
+	if err != nil {
+		return err
+	}
+	byID := make(map[string]bool, len(compacting))
+	for _, id := range compacting {
+		byID[uuidToString(id)] = true
+	}
+	latest, err := h.Queries.ListLatestRunContextForChatSessions(ctx, ids)
+	if err != nil {
+		return err
+	}
+	runContext := make(map[string]db.ListLatestRunContextForChatSessionsRow, len(latest))
+	for _, row := range latest {
+		runContext[uuidToString(row.ChatSessionID)] = row
+	}
+	for i := range sessions {
+		sessions[i].Compacting = byID[sessions[i].ID]
+		if row, ok := runContext[sessions[i].ID]; ok && row.ContextTokens.Valid && row.ContextWindow.Valid {
+			sessions[i].ContextTokens = &row.ContextTokens.Int64
+			sessions[i].ContextWindow = &row.ContextWindow.Int64
+		}
+	}
+	return nil
 }
 
 func (h *Handler) hydrateChatSessionChannelMetadata(ctx context.Context, sessions []ChatSessionResponse) error {
@@ -2181,6 +2276,8 @@ func normalizeMessageKind(kind string) string {
 	switch kind {
 	case protocol.ChatMessageKindContinuationSummary:
 		return protocol.ChatMessageKindContinuationSummary
+	case protocol.ChatMessageKindCompactNotice:
+		return protocol.ChatMessageKindCompactNotice
 	case protocol.ChatMessageKindNoResponse:
 		return protocol.ChatMessageKindNoResponse
 	case protocol.ChatMessageKindOnboardingKickoff:
