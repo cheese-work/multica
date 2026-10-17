@@ -178,12 +178,12 @@ type AgentTaskQueue struct {
 	CancelledByID             pgtype.UUID `json:"cancelled_by_id"`
 	CancelledByName           pgtype.Text `json:"cancelled_by_name"`
 	IssueSnapshot             []byte      `json:"issue_snapshot"`
-	WorkflowStep              pgtype.Text `json:"workflow_step"`
 	ContextTokens             pgtype.Int8 `json:"context_tokens"`
 	ContextWindow             pgtype.Int8 `json:"context_window"`
 	TaskKind                  pgtype.Text `json:"task_kind"`
 	CompactReason             pgtype.Text `json:"compact_reason"`
 	CompactTriggerTokens      pgtype.Int8 `json:"compact_trigger_tokens"`
+	WorkflowStep              pgtype.Text `json:"workflow_step"`
 }
 
 type AgentToLabel struct {
