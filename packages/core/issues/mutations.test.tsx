@@ -3,7 +3,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, QueryObserver, useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import { setApiInstance } from "../api";
@@ -20,6 +20,7 @@ import {
   useUpdateIssue,
 } from "./mutations";
 import {
+  issueDetailOptions,
   issueIdentifierOptions,
   issueKeys,
   type IssueSortParam,
@@ -1571,5 +1572,117 @@ describe("identifier lookup landing during an optimistic issue update", () => {
 
     await waitFor(() => expect(qc.getQueryState(detailKey)?.isInvalidated).toBe(true));
     expect(qc.getQueryData<Issue>(detailKey)).toMatchObject({ title: "base", revision: 5 });
+  });
+});
+
+// Same race with the detail entry ABSENT: the write patches only the loaded
+// list projection, so an equal-revision lookup that was already in flight must
+// not seed the pre-write full fields into detail while the write is pending.
+describe("identifier lookup landing during an optimistic update with no detail entry", () => {
+  const detailKey = issueKeys.detail(WS_ID, "issue-1");
+  const listKey = issueKeys.list(WS_ID);
+  let qc: QueryClient;
+  let resolveLookup: (issue: Issue) => void;
+  let resolveUpdate: (issue: Issue) => void;
+  let rejectUpdate: (error: Error) => void;
+  let getIssue: ReturnType<typeof vi.fn>;
+
+  const listedTitle = () =>
+    qc.getQueryData<ListIssuesCache>(listKey)?.byStatus.unstarted?.issues[0]?.title;
+
+  beforeEach(() => {
+    qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    getIssue = vi.fn((id: string) =>
+      // The detail query by uuid never answers, so only a seed can fill detail.
+      id === "MUL-1"
+        ? new Promise<Issue>((resolve) => (resolveLookup = resolve))
+        : new Promise<Issue>(() => {}),
+    );
+    setApiInstance({
+      getIssue,
+      updateIssue: () =>
+        new Promise<Issue>((resolve, reject) => {
+          resolveUpdate = resolve;
+          rejectUpdate = reject;
+        }),
+    } as unknown as ApiClient);
+    qc.setQueryData<ListIssuesCache>(listKey, {
+      byStatus: {
+        unstarted: { issues: [makeIssue(1, { title: "base", revision: 5 })], total: 1 },
+      },
+    });
+  });
+
+  afterEach(() => {
+    qc.clear();
+    vi.restoreAllMocks();
+  });
+
+  async function landLookupDuringPendingWrite() {
+    const lookup = qc.fetchQuery(issueIdentifierOptions(WS_ID, "MUL-1"));
+    const { result } = renderHook(() => useUpdateIssue(), { wrapper: createWrapper(qc) });
+    act(() => {
+      result.current.mutate({ id: "issue-1", title: "optimistic" });
+    });
+    await waitFor(() => expect(listedTitle()).toBe("optimistic"));
+    // A detail consumer opened before the write settles.
+    const observer = new QueryObserver(qc, issueDetailOptions(WS_ID, "issue-1"));
+    const unsubscribe = observer.subscribe(() => {});
+    await act(async () => {
+      resolveLookup(makeIssue(1, { title: "base", revision: 5 }));
+      await lookup;
+    });
+    return { observer, unsubscribe };
+  }
+
+  it("does not show pre-write fields in detail while the write is pending", async () => {
+    const { observer, unsubscribe } = await landLookupDuringPendingWrite();
+
+    expect(qc.getQueryData<Issue>(detailKey)).toBeUndefined();
+    expect(observer.getCurrentResult().data).toBeUndefined();
+    expect(listedTitle()).toBe("optimistic");
+    unsubscribe();
+  });
+
+  it("settles on the committed fields once the write succeeds", async () => {
+    const { unsubscribe } = await landLookupDuringPendingWrite();
+
+    await act(async () => {
+      resolveUpdate(makeIssue(1, { title: "optimistic", revision: 6 }));
+    });
+
+    await waitFor(() => expect(listedTitle()).toBe("optimistic"));
+    expect(qc.getQueryData<Issue>(detailKey)?.title).not.toBe("base");
+    unsubscribe();
+  });
+
+  it("rolls the list back and leaves detail unseeded when the write fails", async () => {
+    const { unsubscribe } = await landLookupDuringPendingWrite();
+
+    await act(async () => {
+      rejectUpdate(new Error("boom"));
+    });
+
+    await waitFor(() => expect(listedTitle()).toBe("base"));
+    expect(qc.getQueryData<Issue>(detailKey)?.title).not.toBe("optimistic");
+    unsubscribe();
+  });
+
+  it("seeds an equal-revision lookup again once no write is pending", async () => {
+    const { unsubscribe } = await landLookupDuringPendingWrite();
+    await act(async () => {
+      resolveUpdate(makeIssue(1, { title: "optimistic", revision: 6 }));
+    });
+    await waitFor(() => expect(qc.isMutating()).toBe(0));
+    unsubscribe();
+    qc.removeQueries({ queryKey: issueKeys.detail(WS_ID, "issue-1") });
+
+    const next = qc.fetchQuery({ ...issueIdentifierOptions(WS_ID, "MUL-1"), staleTime: 0 });
+    await act(async () => {
+      resolveLookup(makeIssue(1, { title: "optimistic", revision: 6 }));
+      await next;
+    });
+
+    expect(qc.getQueryData<Issue>(detailKey)).toMatchObject({ title: "optimistic", revision: 6 });
   });
 });
