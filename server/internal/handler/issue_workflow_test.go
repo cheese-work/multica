@@ -1064,3 +1064,35 @@ func TestHandoffDoesNotAlsoWakeTheHandler(t *testing.T) {
 		t.Fatal("another agent's wakeup missed the assignment")
 	}
 }
+
+// A status change that also edits the description takes the atomic update
+// path, which must keep the workflow-selected handler rather than restoring
+// the prior assignee.
+func TestWorkflowHandoffSurvivesCombinedStatusAndDescriptionUpdate(t *testing.T) {
+	seedTestCatalog(t)
+	agentID := seededReadyAgentID(t)
+	projectID := deliveryProject(t, "Workflow combined update project", agentID)
+
+	t.Run("single update", func(t *testing.T) {
+		issueID := dbfx.Issue(t, "combined single", testutil.Cols{"project_id": projectID, "status": "todo"})
+		updateIssueForTest(t, issueID, map[string]any{"status": "in_progress", "description": "edited with the status"}).Want(http.StatusOK)
+
+		status, assigneeType, assigneeID := issueStatusAndAssignee(t, issueID)
+		if status != "in_progress" || assigneeType != "agent" || assigneeID != agentID {
+			t.Fatalf("status/assignee = %s/%s/%s, want in_progress handed to agent %s", status, assigneeType, assigneeID, agentID)
+		}
+	})
+
+	t.Run("batch update", func(t *testing.T) {
+		issueID := dbfx.Issue(t, "combined batch", testutil.Cols{"project_id": projectID, "status": "todo"})
+		testutil.Call(t, testHandler.BatchUpdateIssues, newRequest("POST", "/api/issues/batch?workspace_id="+testWorkspaceID, map[string]any{
+			"issue_ids": []string{issueID},
+			"updates":   map[string]any{"status": "in_progress", "description": "edited with the status"},
+		})).Want(http.StatusOK)
+
+		status, assigneeType, assigneeID := issueStatusAndAssignee(t, issueID)
+		if status != "in_progress" || assigneeType != "agent" || assigneeID != agentID {
+			t.Fatalf("status/assignee = %s/%s/%s, want in_progress handed to agent %s", status, assigneeType, assigneeID, agentID)
+		}
+	})
+}
