@@ -15,6 +15,7 @@
   "input": {
     "placeholder_no_agent": "Créez un agent pour commencer à discuter",
     "placeholder_archived": "Cette session est archivée",
+    "placeholder_compacting": "Compactage en cours…",
     "placeholder_archived_agent": "Cet agent a été archivé",
     "placeholder_runtime_required": "Associez un runtime pour continuer",
     "placeholder_access_revoked": "Vous n'avez plus l'autorisation d'exécuter cet agent",
@@ -24,6 +25,7 @@
     "queue_send_tooltip": "Mettre le message en file d'attente",
     "stop_tooltip": "Arrêter",
     "send_failed_toast": "Échec de l'envoi du message",
+    "compacting_toast": "Ce message privé est en cours de compactage. Renvoyez-le une fois terminé.",
     "rename_failed_toast": "Impossible de renommer la conversation",
     "fork_unconfirmed": "La dérivation n’a pas pu être confirmée. Vérifiez les liens « Dérivée vers » avant de réessayer.",
     "fork_attachments_blocked": "Les pièces jointes ne peuvent pas être envoyées avec /fork.",

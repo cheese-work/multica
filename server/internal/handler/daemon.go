@@ -3237,7 +3237,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		// signed + 30-min expiring on the CDN).
 		var unanswered []db.ChatMessage
 		var inputLoadErr error
-		if task.ChatInputTaskID.Valid {
+		// An automatic compaction owns no user message (CHE-1807): its prompt is
+		// the compact command itself, so it skips input loading entirely,
+		// including the legacy trailing-message path below.
+		autoCompact := task.TaskKind.String == service.CompactTaskKind && task.CompactReason.Valid
+		if autoCompact {
+			// no input to load
+		} else if task.ChatInputTaskID.Valid {
 			unanswered, inputLoadErr = h.Queries.ListChatInputMessages(r.Context(), task.ChatInputTaskID)
 		} else if msgs, err := h.Queries.ListChatMessagesForLegacyTask(r.Context(), cs.ID); err == nil {
 			unanswered = trailingUserMessages(msgs)
@@ -3373,6 +3379,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}
 		}
 		resp.ChatMessage = strings.Join(parts, "\n\n")
+		if autoCompact {
+			resp.ChatMessage = "/compact"
+		}
 		if resp.ChatChannelType == "" {
 			workspace, err := h.Queries.GetWorkspace(r.Context(), cs.WorkspaceID)
 			if err != nil {
@@ -3389,7 +3398,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		// same transaction as the task, so this only fires on genuinely
 		// corrupt state — cancel the just-dispatched task and reject the claim
 		// rather than run the agent with nothing to answer (MUL-4351).
-		if task.ChatInputTaskID.Valid && !resp.ChatIntro && strings.TrimSpace(resp.ChatMessage) == "" {
+		if task.ChatInputTaskID.Valid && !autoCompact && !resp.ChatIntro && strings.TrimSpace(resp.ChatMessage) == "" {
 			slog.Error("chat claim: task-owned direct task has no user input; cancelling",
 				"task_id", uuidToString(task.ID),
 				"chat_session_id", uuidToString(cs.ID),
@@ -4124,6 +4133,11 @@ func (h *Handler) ResolveTaskSkillBundles(w http.ResponseWriter, r *http.Request
 // run cannot consume a placeholder that has not been bound yet. New channel
 // tasks use task-owned input batches and do not depend on this fallback.
 func trailingUserMessages(msgs []db.ChatMessage) []db.ChatMessage {
+	// A compact notice is server-authored context for the reader, not a turn: it
+	// never ends the unanswered run and never reaches a prompt (CHE-1807).
+	msgs = slices.DeleteFunc(slices.Clone(msgs), func(m db.ChatMessage) bool {
+		return m.MessageKind == protocol.ChatMessageKindCompactNotice
+	})
 	start := 0
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role != "user" {

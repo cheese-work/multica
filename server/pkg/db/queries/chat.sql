@@ -2038,3 +2038,43 @@ FROM usage
 CROSS JOIN models
 CROSS JOIN runs
 CROSS JOIN messages;
+
+-- name: MarkChatTaskCompact :one
+-- CHE-1807: flags a chat task as a compaction run. An automatic compaction
+-- carries the server-built reason and the prompt size that triggered it; a
+-- manual /compact carries neither.
+UPDATE agent_task_queue
+SET task_kind = 'compact',
+    compact_reason = sqlc.narg('compact_reason'),
+    compact_trigger_tokens = sqlc.narg('compact_trigger_tokens')
+WHERE id = $1
+RETURNING *;
+
+-- name: HasActiveCompactionTaskForSession :one
+-- True while a compaction task (manual or automatic) is in any of the five
+-- states HasActiveChatTaskForSession treats as active. Deferred and
+-- waiting_local_directory are included: a send must not pass, and a second
+-- compaction must not queue, while a retry or a local-directory wait is armed.
+SELECT EXISTS (
+  SELECT 1 FROM agent_task_queue
+  WHERE chat_session_id = $1
+    AND task_kind = 'compact'
+    AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+) AS compacting;
+
+-- name: GetLastAutoCompactTriggerForSession :one
+-- Prompt size that triggered the most recent automatic compaction of a DM, for
+-- the 1.1x re-arm rule after a failed attempt. Manual compactions carry no
+-- trigger size and are ignored.
+SELECT compact_trigger_tokens FROM agent_task_queue
+WHERE chat_session_id = $1
+  AND task_kind = 'compact'
+  AND compact_trigger_tokens IS NOT NULL
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
+
+-- name: ListCompactingChatSessionIDs :many
+SELECT DISTINCT chat_session_id FROM agent_task_queue
+WHERE chat_session_id = ANY($1::uuid[])
+  AND task_kind = 'compact'
+  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred');
