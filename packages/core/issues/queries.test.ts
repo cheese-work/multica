@@ -919,6 +919,124 @@ describe("issueIdentifierOptions", () => {
       expect(qc.getQueryData<Issue>(detailKey)).toMatchObject({ revision: 4 });
     });
 
+    // The uuid detail response is the shared boundary: every consumer of
+    // `issueDetailOptions` reads it, so it must order against every cached
+    // projection, not only against the detail entry.
+    describe("uuid detail response ordering", () => {
+      const fetchDetailAfter = async (settle: () => void, response: Issue) => {
+        let resolveDetail!: (issue: Issue) => void;
+        installFakeIssueApi(
+          vi.fn<(id: string) => Promise<Issue>>().mockImplementation(
+            () => new Promise((resolve) => (resolveDetail = resolve)),
+          ),
+        );
+        const fetched = qc
+          .fetchQuery({ ...issueDetailOptions(WS_ID, "issue-7"), staleTime: 0 })
+          .catch(() => undefined);
+        settle();
+        resolveDetail(response);
+        await fetched;
+        return qc.getQueryData<Issue>(detailKey);
+      };
+
+      it.each(Object.keys(projections) as (keyof typeof projections)[])(
+        "does not let an older response land over a newer %s-only revision",
+        async (name) => {
+          const { key, seed } = projections[name];
+
+          const detail = await fetchDetailAfter(
+            () => qc.setQueryData(key, seed(makeIssue(7, { title: "newer", revision: 3 }))),
+            makeIssue(7, { title: "older response", revision: 2 }),
+          );
+
+          expect(detail).toBeUndefined();
+        },
+      );
+
+      it("keeps older detail rather than replace it with an older response", async () => {
+        qc.setQueryData(detailKey, makeIssue(7, { title: "cached", revision: 1 }));
+
+        const detail = await fetchDetailAfter(
+          () =>
+            qc.setQueryData(
+              projections.list.key,
+              projections.list.seed(makeIssue(7, { title: "newer", revision: 3 })),
+            ),
+          makeIssue(7, { title: "older response", revision: 2 }),
+        );
+
+        expect(detail?.title).not.toBe("older response");
+      });
+
+      it("takes a response newer than every projection", async () => {
+        const detail = await fetchDetailAfter(
+          () =>
+            qc.setQueryData(
+              projections.list.key,
+              projections.list.seed(makeIssue(7, { revision: 3 })),
+            ),
+          makeIssue(7, { title: "newest", revision: 4 }),
+        );
+
+        expect(detail).toMatchObject({ title: "newest", revision: 4 });
+      });
+
+      it("does not let an unversioned response displace versioned data", async () => {
+        const detail = await fetchDetailAfter(
+          () => qc.setQueryData(detailKey, makeIssue(7, { title: "ordered", revision: 3 })),
+          makeIssue(7, { title: "unversioned", revision: undefined }),
+        );
+
+        expect(detail).toMatchObject({ title: "ordered", revision: 3 });
+      });
+
+      it("does not seed detail from an unversioned response over versioned list data", async () => {
+        const detail = await fetchDetailAfter(
+          () =>
+            qc.setQueryData(
+              projections.list.key,
+              projections.list.seed(makeIssue(7, { revision: 3 })),
+            ),
+          makeIssue(7, { title: "unversioned", revision: undefined }),
+        );
+
+        expect(detail).toBeUndefined();
+      });
+
+      it("accepts a response into an empty or unversioned cache", async () => {
+        const empty = await fetchDetailAfter(() => {}, makeIssue(7, { title: "first", revision: 2 }));
+        expect(empty).toMatchObject({ title: "first" });
+
+        qc.clear();
+        const unversioned = await fetchDetailAfter(
+          () => qc.setQueryData(detailKey, makeIssue(7, { title: "old", revision: undefined })),
+          makeIssue(7, { title: "new", revision: undefined }),
+        );
+        expect(unversioned).toMatchObject({ title: "new" });
+      });
+
+      it("leaves detail owing a refetch while a pending auxiliary revision is ahead", async () => {
+        qc.setQueryData(detailKey, makeIssue(7, { title: "base", revision: 10 }));
+        const getIssue = vi.fn<(id: string) => Promise<Issue>>();
+        getIssue.mockResolvedValueOnce(makeIssue(7, { title: "behind", revision: 11 }));
+        installFakeIssueApi(getIssue);
+        onIssueAuxiliaryRevision(qc, WS_ID, "issue-7", 12);
+
+        await qc.fetchQuery({ ...issueDetailOptions(WS_ID, "issue-7"), staleTime: 0 });
+
+        expect(qc.getQueryData<Issue>(detailKey)).toMatchObject({ revision: 11 });
+        expect(qc.getQueryState(detailKey)?.isInvalidated).toBe(true);
+        getIssue.mockResolvedValueOnce(makeIssue(7, { title: "caught up", revision: 12 }));
+        const observer = new QueryObserver(qc, {
+          ...issueDetailOptions(WS_ID, "issue-7"),
+          staleTime: Infinity,
+        });
+        const unsubscribe = observer.subscribe(() => {});
+        await vi.waitFor(() => expect(observer.getCurrentResult().data?.revision).toBe(12));
+        unsubscribe();
+      });
+    });
+
     it("still seeds detail when the lookup revision equals the cached one", async () => {
       qc.setQueryData(
         projections.list.key,

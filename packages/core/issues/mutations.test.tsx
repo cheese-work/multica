@@ -1686,3 +1686,106 @@ describe("identifier lookup landing during an optimistic update with no detail e
     expect(qc.getQueryData<Issue>(detailKey)).toMatchObject({ title: "optimistic", revision: 6 });
   });
 });
+
+// The uuid detail response is the other writer of the detail entry. An equal
+// revision response that was already in flight carries the pre-write fields,
+// so it must not land over a pending write's optimistic patch.
+describe("uuid detail response landing during a pending write", () => {
+  const detailKey = issueKeys.detail(WS_ID, "issue-1");
+  const listKey = issueKeys.list(WS_ID);
+  let qc: QueryClient;
+  let resolveDetail: (issue: Issue) => void;
+  let resolveUpdate: (issue: Issue) => void;
+
+  const listedTitle = () =>
+    qc.getQueryData<ListIssuesCache>(listKey)?.byStatus.unstarted?.issues[0]?.title;
+
+  beforeEach(() => {
+    qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    setApiInstance({
+      getIssue: () => new Promise<Issue>((resolve) => (resolveDetail = resolve)),
+      updateIssue: () => new Promise<Issue>((resolve) => (resolveUpdate = resolve)),
+      batchUpdateIssues: () => new Promise((resolve) => (resolveUpdate = resolve as never)),
+    } as unknown as ApiClient);
+    qc.setQueryData<ListIssuesCache>(listKey, {
+      byStatus: {
+        unstarted: { issues: [makeIssue(1, { title: "base", revision: 5 })], total: 1 },
+      },
+    });
+  });
+
+  afterEach(() => {
+    qc.clear();
+    vi.restoreAllMocks();
+  });
+
+  async function landDetailDuringWrite(
+    write: "single" | "batch",
+    hasDetail: boolean,
+    response: Issue,
+  ) {
+    if (hasDetail) qc.setQueryData<Issue>(detailKey, makeIssue(1, { title: "base", revision: 5 }));
+    const fetched = qc
+      .fetchQuery({ ...issueDetailOptions(WS_ID, "issue-1"), staleTime: 0 })
+      .catch(() => undefined);
+    const single = renderHook(() => useUpdateIssue(), { wrapper: createWrapper(qc) });
+    const batch = renderHook(() => useBatchUpdateIssues(), { wrapper: createWrapper(qc) });
+    act(() => {
+      if (write === "single") single.result.current.mutate({ id: "issue-1", title: "optimistic" });
+      else batch.result.current.mutate({ ids: ["issue-1"], updates: { title: "optimistic" } });
+    });
+    await waitFor(() => expect(listedTitle()).toBe("optimistic"));
+    await act(async () => {
+      resolveDetail(response);
+      await fetched;
+    });
+  }
+
+  it.each(["single", "batch"] as const)(
+    "keeps optimistic detail fields when an equal-revision response lands during a %s write",
+    async (write) => {
+      await landDetailDuringWrite(write, true, makeIssue(1, { title: "base", revision: 5 }));
+
+      expect(qc.getQueryData<Issue>(detailKey)).toMatchObject({ title: "optimistic" });
+    },
+  );
+
+  it.each(["single", "batch"] as const)(
+    "does not seed absent detail with pre-write fields during a %s write",
+    async (write) => {
+      await landDetailDuringWrite(write, false, makeIssue(1, { title: "base", revision: 5 }));
+
+      expect(qc.getQueryData<Issue>(detailKey)).toBeUndefined();
+    },
+  );
+
+  it("still takes a strictly newer response during the write, and the write then settles", async () => {
+    await landDetailDuringWrite("single", true, makeIssue(1, { title: "remote", revision: 7 }));
+    expect(qc.getQueryData<Issue>(detailKey)).toMatchObject({ title: "remote", revision: 7 });
+
+    await act(async () => {
+      resolveUpdate(makeIssue(1, { title: "optimistic", revision: 8 }));
+    });
+
+    await waitFor(() =>
+      expect(qc.getQueryData<Issue>(detailKey)).toMatchObject({ title: "optimistic", revision: 8 }),
+    );
+  });
+
+  it("is not blocked by a write for another issue", async () => {
+    qc.setQueryData<Issue>(detailKey, makeIssue(1, { title: "base", revision: 5 }));
+    const fetched = qc.fetchQuery({ ...issueDetailOptions(WS_ID, "issue-1"), staleTime: 0 });
+    const { result } = renderHook(() => useUpdateIssue(), { wrapper: createWrapper(qc) });
+    act(() => {
+      result.current.mutate({ id: "issue-2", title: "elsewhere" });
+    });
+    await waitFor(() => expect(qc.isMutating()).toBe(1));
+
+    await act(async () => {
+      resolveDetail(makeIssue(1, { title: "fresh", revision: 5 }));
+      await fetched;
+    });
+
+    expect(qc.getQueryData<Issue>(detailKey)).toMatchObject({ title: "fresh" });
+  });
+});
