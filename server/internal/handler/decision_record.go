@@ -306,6 +306,10 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 	if err != nil {
 		return empty, err
 	}
+	// The ping that announced this request has done its job.
+	if _, err := queries.MarkInboxReadByDecisionRequest(ctx, db.MarkInboxReadByDecisionRequestParams{WorkspaceID: issue.WorkspaceID, DecisionRequestID: uuidToString(decision.ID)}); err != nil {
+		return empty, err
+	}
 	if err := transaction.Commit(ctx); err != nil {
 		return empty, err
 	}

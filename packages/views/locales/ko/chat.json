@@ -14,6 +14,7 @@
   "input": {
     "placeholder_no_agent": "채팅을 시작하려면 에이전트를 만드세요",
     "placeholder_archived": "보관된 세션입니다",
+    "placeholder_compacting": "압축 중…",
     "placeholder_archived_agent": "보관된 에이전트입니다",
     "placeholder_runtime_required": "런타임을 연결한 후 계속하세요",
     "placeholder_access_revoked": "이 에이전트를 실행할 권한이 없습니다",
@@ -23,6 +24,7 @@
     "queue_send_tooltip": "대기열에 추가",
     "stop_tooltip": "중지",
     "send_failed_toast": "메시지를 보내지 못했습니다",
+    "compacting_toast": "이 DM을 압축하는 중입니다. 끝난 뒤 다시 보내세요.",
     "rename_failed_toast": "채팅 이름을 바꾸지 못했습니다",
     "fork_unconfirmed": "분기를 확인하지 못했습니다. 다시 시도하기 전에 '분기된 대화' 링크를 확인하세요.",
     "fork_attachments_blocked": "/fork와 함께 첨부 파일을 보낼 수 없습니다.",
@@ -260,6 +262,10 @@
     "row_actions_aria": "채팅 작업"
   },
   "header": {
+    "context_meter": "{{window}} 중 {{pct}}%",
+    "context_meter_warning": "다음 답변 후 압축됩니다",
+    "compact_now": "지금 압축",
+    "more_actions": "더 보기",
     "view_profile": "Agent 프로필 보기",
     "rename": "이름 변경",
     "delete": "채팅 삭제",

@@ -1170,3 +1170,31 @@ describe("ChatMessageList onboarding starter cards", () => {
     expect(screen.getByRole("button", { name: "Later chip" })).toBeEnabled();
   });
 });
+
+// CHE-1807: the server-authored reason for an automatic compaction renders as a
+// muted note, never as an assistant reply.
+describe("ChatMessageList compact notice", () => {
+  const notice = {
+    id: "notice", chat_session_id: "44444444-4444-4444-8444-444444444444", role: "assistant" as const,
+    content: "Auto-compacted: context 164k of 200k tokens (82%) reached the 80% threshold. Continuing in a new DM.",
+    message_kind: "compact_notice", task_id: null, created_at: "2026-10-16T00:00:00Z",
+  } as unknown as ChatMessage;
+
+  it("shows the reason as a muted note", () => {
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <WorkspaceSlugProvider slug="acme">
+          <NavigationProvider value={{ push: vi.fn(), replace: vi.fn(), back: vi.fn(), pathname: "/acme/chat", searchParams: new URLSearchParams(), hash: "", getShareableUrl: (path) => path }}>
+            <QueryClientProvider client={new QueryClient()}>
+              <ChatMessageList messages={[notice]} pendingTask={null} availability="online" />
+            </QueryClientProvider>
+          </NavigationProvider>
+        </WorkspaceSlugProvider>
+      </I18nProvider>,
+    );
+
+    const note = screen.getByRole("note");
+    expect(note).toHaveTextContent("Auto-compacted: context 164k of 200k tokens (82%) reached the 80% threshold. Continuing in a new DM.");
+    expect(note).toHaveClass("text-muted-foreground");
+  });
+});

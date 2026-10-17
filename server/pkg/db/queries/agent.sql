@@ -2069,6 +2069,7 @@ WHERE id = (
     WHERE t.context->>'wakeup_id' IS NULL AND t.issue_id = @issue_id
       AND t.agent_id = @agent_id
       AND t.status = 'queued'
+      AND (sqlc.narg('target_task_id')::uuid IS NULL OR t.id = sqlc.narg('target_task_id')::uuid)
       AND t.is_leader_task = (sqlc.narg('squad_id')::uuid IS NOT NULL)
       AND t.squad_id IS NOT DISTINCT FROM sqlc.narg('squad_id')::uuid
       AND (
@@ -2177,6 +2178,7 @@ WHERE id = (
       AND t.agent_id = @agent_id
       AND t.comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id(@comment_id::uuid)
       AND t.status IN ('dispatched', 'running', 'waiting_local_directory')
+      AND (sqlc.narg('target_task_id')::uuid IS NULL OR t.id = sqlc.narg('target_task_id')::uuid)
       AND (
           COALESCE(sqlc.narg('head_sha')::text, '') = ''
           OR t.context->>'head_sha' = sqlc.narg('head_sha')::text
