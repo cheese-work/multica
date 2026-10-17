@@ -3172,6 +3172,43 @@ func (q *Queries) ListForkAttachmentIndex(ctx context.Context, arg ListForkAttac
 	return items, nil
 }
 
+const listLatestRunContextForChatSessions = `-- name: ListLatestRunContextForChatSessions :many
+SELECT DISTINCT ON (chat_session_id) chat_session_id, context_tokens, context_window
+FROM agent_task_queue
+WHERE chat_session_id = ANY($1::uuid[])
+  AND status = 'completed'
+ORDER BY chat_session_id, completed_at DESC, id DESC
+`
+
+type ListLatestRunContextForChatSessionsRow struct {
+	ChatSessionID pgtype.UUID `json:"chat_session_id"`
+	ContextTokens pgtype.Int8 `json:"context_tokens"`
+	ContextWindow pgtype.Int8 `json:"context_window"`
+}
+
+// CHE-1808: the context meter reads the LATEST completed run of each DM. A run
+// that reported nothing stays in the result with NULL columns, so the meter
+// hides instead of showing an older run's stale numbers.
+func (q *Queries) ListLatestRunContextForChatSessions(ctx context.Context, dollar_1 []pgtype.UUID) ([]ListLatestRunContextForChatSessionsRow, error) {
+	rows, err := q.db.Query(ctx, listLatestRunContextForChatSessions, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListLatestRunContextForChatSessionsRow{}
+	for rows.Next() {
+		var i ListLatestRunContextForChatSessionsRow
+		if err := rows.Scan(&i.ChatSessionID, &i.ContextTokens, &i.ContextWindow); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPendingChatTasksByCreator = `-- name: ListPendingChatTasksByCreator :many
 SELECT atq.id AS task_id, atq.status, atq.chat_session_id, cs.agent_id
 FROM agent_task_queue atq

@@ -267,6 +267,10 @@
     "row_actions_aria": "Chat actions"
   },
   "header": {
+    "context_meter": "{{pct}}% of {{window}}",
+    "context_meter_warning": "Will compact after the next reply",
+    "compact_now": "Compact now",
+    "more_actions": "More actions",
     "view_profile": "View agent profile",
     "rename": "Rename chat",
     "archive": "Archive chat",

@@ -267,6 +267,10 @@
     "row_actions_aria": "Actions de discussion"
   },
   "header": {
+    "context_meter": "{{pct}} % de {{window}}",
+    "context_meter_warning": "Sera compactée après la prochaine réponse",
+    "compact_now": "Compacter maintenant",
+    "more_actions": "Plus d'actions",
     "view_profile": "Voir le profil de l'agent",
     "rename": "Renommer la discussion",
     "archive": "Archiver la discussion",

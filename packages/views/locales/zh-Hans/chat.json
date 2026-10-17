@@ -262,6 +262,10 @@
     "row_actions_aria": "聊天操作"
   },
   "header": {
+    "context_meter": "{{window}} 中的 {{pct}}%",
+    "context_meter_warning": "下一次回复后将压缩",
+    "compact_now": "立即压缩",
+    "more_actions": "更多操作",
     "view_profile": "查看智能体资料",
     "rename": "重命名会话",
     "delete": "删除会话",

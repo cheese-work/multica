@@ -262,6 +262,10 @@
     "row_actions_aria": "채팅 작업"
   },
   "header": {
+    "context_meter": "{{window}} 중 {{pct}}%",
+    "context_meter_warning": "다음 답변 후 압축됩니다",
+    "compact_now": "지금 압축",
+    "more_actions": "더 보기",
     "view_profile": "Agent 프로필 보기",
     "rename": "이름 변경",
     "delete": "채팅 삭제",
