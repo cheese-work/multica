@@ -291,4 +291,102 @@ describe("WorkspaceTab — automatic updates", () => {
     expect(screen.getByRole("textbox", { name: "Compact prompt" })).toHaveValue("Saved from CLI.");
     expect(screen.getByText("Source: workspace")).toBeInTheDocument();
   });
+
+  // CHE-1806: settings.auto_compact saves through its own request field.
+  it("shows the auto-compact defaults when nothing is saved", () => {
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    expect(screen.getByRole("switch", { name: "Auto-compact" })).toBeChecked();
+    expect(screen.getByRole("spinbutton", { name: "Threshold (%)" })).toHaveValue(80);
+  });
+
+  it("shows a saved auto-compact setting", () => {
+    workspaceRef.current = {
+      ...workspaceRef.current,
+      settings: { auto_compact: { enabled: false, threshold_pct: 60 } },
+    };
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    expect(screen.getByRole("switch", { name: "Auto-compact" })).not.toBeChecked();
+    expect(screen.getByRole("spinbutton", { name: "Threshold (%)" })).toHaveValue(60);
+  });
+
+  it("falls back to the defaults for a malformed saved auto-compact setting", () => {
+    workspaceRef.current = {
+      ...workspaceRef.current,
+      settings: { auto_compact: { enabled: "yes", threshold_pct: 12 } },
+    };
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    expect(screen.getByRole("switch", { name: "Auto-compact" })).toBeChecked();
+    expect(screen.getByRole("spinbutton", { name: "Threshold (%)" })).toHaveValue(80);
+  });
+
+  it("saves only the Enabled switch, without waiting for a blur", async () => {
+    const user = setupUser();
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    await user.click(screen.getByRole("switch", { name: "Auto-compact" }));
+
+    await waitFor(() => {
+      expect(mockUpdateWorkspace).toHaveBeenCalledWith("workspace-1", {
+        auto_compact: { enabled: false },
+      });
+    });
+    for (const [, payload] of mockUpdateWorkspace.mock.calls) {
+      expect(Object.keys(payload)).toEqual(["auto_compact"]);
+    }
+  });
+
+  it("saves only the threshold after the field loses focus", async () => {
+    const user = setupUser();
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+    const input = screen.getByRole("spinbutton", { name: "Threshold (%)" });
+
+    await user.clear(input);
+    await user.type(input, "70");
+    await user.tab();
+
+    await waitFor(() => {
+      expect(mockUpdateWorkspace).toHaveBeenLastCalledWith("workspace-1", {
+        auto_compact: { threshold_pct: 70 },
+      });
+    });
+    for (const [, payload] of mockUpdateWorkspace.mock.calls) {
+      expect(Object.keys(payload)).toEqual(["auto_compact"]);
+    }
+  });
+
+  it("never sends a threshold outside 50 to 90", async () => {
+    const user = setupUser();
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+    const input = screen.getByRole("spinbutton", { name: "Threshold (%)" });
+
+    await user.clear(input);
+    await user.type(input, "95");
+    await user.tab();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(700);
+    });
+
+    expect(mockUpdateWorkspace).not.toHaveBeenCalled();
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByText("Enter a whole number from 50 to 90.")).toBeInTheDocument();
+  });
+
+  it("shows regular members the auto-compact setting read-only", () => {
+    membersRef.current = [
+      { user_id: "user-1", role: "member" },
+      { user_id: "user-2", role: "owner", name: "Grace Hopper" },
+    ];
+    workspaceRef.current = {
+      ...workspaceRef.current,
+      settings: { auto_compact: { threshold_pct: 70 } },
+    };
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    expect(screen.queryByRole("switch", { name: "Auto-compact" })).toBeNull();
+    expect(screen.queryByRole("spinbutton", { name: "Threshold (%)" })).toBeNull();
+    expect(screen.getByText("On, at 70%")).toBeInTheDocument();
+  });
 });

@@ -192,8 +192,8 @@ func wakeupChain(ctx context.Context, q *db.Queries, w db.IssueWakeup, receipts 
 }
 
 // wakeupTriggerDetails summarizes what woke the rule for its timeline entry:
-// the event types, how many facts were merged, the condition observation and,
-// for "wake now", who asked. References only, like the receipts themselves.
+// the event types, how many facts were merged, the condition observation, the
+// latest triggering comment and, for "wake now", who asked. References only, like the receipts themselves.
 func wakeupTriggerDetails(task db.AgentTaskQueue, receipts []db.IssueWakeupReceipt) map[string]any {
 	details := map[string]any{"task_id": util.UUIDToString(task.ID)}
 	events := []string{}
@@ -209,11 +209,15 @@ func wakeupTriggerDetails(task db.AgentTaskQueue, receipts []db.IssueWakeupRecei
 			Observed  json.RawMessage `json:"observed"`
 			ActorType string          `json:"actor_type"`
 			ActorID   string          `json:"actor_id"`
+			CommentID string          `json:"comment_id"`
 		}
 		_ = json.Unmarshal(r.Payload, &payload)
 		count += max(payload.Count, 1)
 		if len(payload.Observed) > 0 {
 			details["observed"] = payload.Observed
+		}
+		if payload.CommentID != "" {
+			details["comment_id"] = payload.CommentID
 		}
 		if payload.ActorType == "member" || payload.ActorType == "agent" {
 			details["actor_type"], details["actor_id"] = payload.ActorType, payload.ActorID

@@ -335,6 +335,10 @@ type UpdateWorkspaceRequest struct {
 	// it to the built-in default. Raw so an explicit null is distinguishable
 	// from an absent key.
 	CompactPrompt json.RawMessage `json:"compact_prompt"`
+	// AutoCompact patches settings.auto_compact alone (CHE-1806): named fields
+	// overwrite, absent fields keep their saved value, null resets to the
+	// defaults. Raw for the same reason as CompactPrompt.
+	AutoCompact json.RawMessage `json:"auto_compact"`
 
 	// ExpectedBeforeDigest drives two guarded paths: CHE-764's Hermes
 	// exception (hermesExceptionMatchesWorkspaceContext: this exact
@@ -488,7 +492,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		params.Context = pgtype.Text{String: *req.Context, Valid: true}
 	}
 	if req.Settings != nil {
-		if err := validateCompactPromptConfig(req.Settings); err != nil {
+		if err := validateCompactConfig(req.Settings); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -522,6 +526,24 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 			params.CompactPrompt = pgtype.Text{String: text, Valid: true}
 		} else {
 			params.CompactPromptReset = pgtype.Bool{Bool: true, Valid: true}
+		}
+	}
+	if req.AutoCompact != nil {
+		var incoming any
+		err := json.Unmarshal(req.AutoCompact, &incoming)
+		if err != nil {
+			err = errAutoCompactShape
+		} else {
+			err = validateAutoCompactConfig(map[string]any{"auto_compact": incoming})
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if incoming == nil {
+			params.AutoCompactReset = pgtype.Bool{Bool: true, Valid: true}
+		} else {
+			params.AutoCompact = req.AutoCompact
 		}
 	}
 	if req.Repos != nil {
