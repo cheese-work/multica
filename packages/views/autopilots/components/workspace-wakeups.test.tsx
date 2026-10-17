@@ -366,3 +366,20 @@ it("opens the create form for the picked issue", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
   expect(onOpenChange).toHaveBeenCalledWith(false);
 });
+
+// The workspace list can reach a default-derived instance too (the server lists
+// every non-system row); it must not offer the Enable that the server refuses.
+it("does not offer to enable a default-derived wakeup in the workspace list", async () => {
+  rows[0] = {
+    ...rows[0]!,
+    enabled: false,
+    disabled_at: "2026-09-16T00:00:00Z",
+    default_rule_key: "9c2d7a4e-5b61-4f08-8d3a-1e7f6b2c0a01",
+  };
+  mount();
+  const row = await screen.findByRole("row", { name: /Issue a/ });
+  const toggle = within(row).getByRole("switch", { name: /Agent a/ });
+  expect(toggle).toHaveAttribute("aria-disabled", "true");
+  fireEvent.click(toggle);
+  expect(enable).not.toHaveBeenCalled();
+});

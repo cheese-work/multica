@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS issue_wakeup_definition_sweep_idx;

@@ -47,7 +47,12 @@ export function WakeupControl({
     (!wakeup.next_fire_at ||
       new Date(wakeup.next_fire_at).getTime() <= Date.now());
   const needsRearm = !wakeup.enabled && (consumed || expired);
-  const canEnable = !closed && (!activeRun || wakeup.mode === "continuous");
+  // A default-derived instance runs what its definitions resolve to; the server
+  // refuses to enable it as a local wakeup, so the control does not offer it.
+  const canEnable =
+    !closed &&
+    !wakeup.default_rule_key &&
+    (!activeRun || wakeup.mode === "continuous");
   return (
     <div className="flex min-h-11 shrink-0 items-center px-2">
       {wakeup.enabled || (!needsRearm && !canDisable) ? (

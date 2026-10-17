@@ -16,8 +16,8 @@ import (
 // does not say gets) or defers it: the fact stays pending, the running prompt
 // is never edited, and the next pass that finds the target idle makes one
 // follow-up attempt through the usual gates (rate, aggregate, fire limit).
-// Nothing selects defer implicitly; the plan's default of defer for new custom
-// rules lives with custom-rule execution, not here.
+// A built-in selects defer only explicitly; a custom rule that names no choice
+// defers (builtinWakeup.customDefers).
 const (
 	wakeupActiveRunSuppress = "suppress"
 	wakeupActiveRunDefer    = "defer"

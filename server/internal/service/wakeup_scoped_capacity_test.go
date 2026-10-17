@@ -27,6 +27,16 @@ func (k drainKit) makePendingDue(t *testing.T) {
 	k.f.Exec(t, `UPDATE wakeup_scoped_event SET retry_at=now()-interval '1 second' WHERE workspace_id=$1 AND handled_at IS NULL`, k.f.WorkspaceID)
 }
 
+// wantHeld checks the only input is pending for capacity. L10 records the
+// refusal as outcome default_capacity on the still-pending row.
+func (k drainKit) wantHeld(t *testing.T) {
+	t.Helper()
+	k.wantOutcomes(t, "default_capacity")
+	if k.pending(t) != 1 {
+		t.Fatal("a capacity-refused input must stay pending")
+	}
+}
+
 // retryDelay is how far ahead the only pending input's retry time lies.
 func (k drainKit) retryDelay(t *testing.T) time.Duration {
 	t.Helper()
@@ -46,7 +56,7 @@ func TestScopedDrainCapacityRefusedInputStaysPendingAndDeliversWhenCapacityFrees
 	k.fillDefaultPool(t, 0)
 	k.comment(t, "the pool is full")
 	k.drain(t)
-	k.wantOutcomes(t, "pending")
+	k.wantHeld(t)
 	if d := k.retryDelay(t); d <= 0 || d > time.Hour {
 		t.Fatalf("retry time is %v ahead, want a bounded delay in the future", d)
 	}
@@ -54,11 +64,9 @@ func TestScopedDrainCapacityRefusedInputStaysPendingAndDeliversWhenCapacityFrees
 		t.Fatalf("a full pool delivered %+v", got)
 	}
 
-	// Capacity frees, but the retry time has not come: the drain leaves it alone.
+	// Capacity frees. L10 brings a held input forward when the pool frees
+	// (wakeup_custom_capacity_test.go), so make it due either way.
 	k.freeDefaultPool(t)
-	k.drain(t)
-	k.wantOutcomes(t, "pending")
-
 	k.makePendingDue(t)
 	k.drain(t)
 	k.wantOutcomes(t, "delivered")
@@ -76,7 +84,7 @@ func TestScopedDrainCapacityRefusedInputExpiresVisiblyAtRetention(t *testing.T) 
 	k.fillDefaultPool(t, 0)
 	k.comment(t, "the pool stays full")
 	k.drain(t)
-	k.wantOutcomes(t, "pending")
+	k.wantHeld(t)
 
 	k.f.Exec(t, `UPDATE wakeup_scoped_event SET captured_at=now()-interval '8 days',retry_at=now()-interval '1 second' WHERE workspace_id=$1`, k.f.WorkspaceID)
 	k.freeDefaultPool(t)
@@ -96,7 +104,7 @@ func TestScopedDrainPartialCapacityRefusalKeepsTheInputForTheRefusedRule(t *test
 	k.fillDefaultPool(t, 1) // rule A takes the last slot, rule B is refused
 	k.comment(t, "one slot for two rules")
 	k.drain(t)
-	k.wantOutcomes(t, "pending")
+	k.wantHeld(t)
 	if got := k.receipts(t, scopedRuleA); len(got) != 1 || got[0].Count != 1 {
 		t.Fatalf("rule A receipts = %+v, want the event delivered", got)
 	}
@@ -123,7 +131,7 @@ func TestScopedDrainRetryNeverRepeatsDeliveryAfterTheServedInstanceIsRebased(t *
 	k.fillDefaultPool(t, 1)
 	k.comment(t, "one slot for two rules")
 	k.drain(t)
-	k.wantOutcomes(t, "pending")
+	k.wantHeld(t)
 
 	// Rule A's instance moves to another configuration between the passes.
 	k.f.Exec(t, `UPDATE issue_wakeup SET revision=revision+1,config_fingerprint='rebased' WHERE issue_id=$1 AND default_rule_key=$2`, k.issue, scopedRuleA)
