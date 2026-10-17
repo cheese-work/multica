@@ -1773,7 +1773,7 @@ describe("ChatInput Stop while compacting", () => {
       onSend,
       ...extra,
     } as Partial<React.ComponentProps<typeof ChatInput>>);
-    return { onStop, onSend, ...view };
+    return { ...view, onStop, onSend };
   };
 
   it("offers Stop for an empty composer", () => {
