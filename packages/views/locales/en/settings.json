@@ -121,7 +121,7 @@
       "shadow": "Jev picks a worker but nothing is dispatched. Each pick is logged for review.",
       "on": "Jev's pick is dispatched to the squad worker."
     },
-    "on_locked": "Needs shadow data: ≤ 2% confident-wrong over 200+ verified items.",
+    "on_locked": "needs shadow data: <= 2% confident-wrong over 200+ verified items",
     "confidence_label": "Min confidence",
     "confidence_hint": "Default 0.90.",
     "confidence_invalid": "Enter a number from 0 to 1.",
