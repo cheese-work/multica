@@ -922,6 +922,9 @@ describe("issueIdentifierOptions", () => {
     // The uuid detail response is the shared boundary: every consumer of
     // `issueDetailOptions` reads it, so it must order against every cached
     // projection, not only against the detail entry.
+    // The stale flag is restored on the macrotask after a fetch resolves.
+    const flushTimers = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
     describe("uuid detail response ordering", () => {
       const fetchDetailAfter = async (settle: () => void, response: Issue) => {
         let resolveDetail!: (issue: Issue) => void;
@@ -1023,6 +1026,7 @@ describe("issueIdentifierOptions", () => {
         onIssueAuxiliaryRevision(qc, WS_ID, "issue-7", 12);
 
         await qc.fetchQuery({ ...issueDetailOptions(WS_ID, "issue-7"), staleTime: 0 });
+        await flushTimers();
 
         expect(qc.getQueryData<Issue>(detailKey)).toMatchObject({ revision: 11 });
         expect(qc.getQueryState(detailKey)?.isInvalidated).toBe(true);
@@ -1034,6 +1038,165 @@ describe("issueIdentifierOptions", () => {
         const unsubscribe = observer.subscribe(() => {});
         await vi.waitFor(() => expect(observer.getCurrentResult().data?.revision).toBe(12));
         unsubscribe();
+      });
+    });
+
+    // A rejected or cancelled detail fetch must neither mark behind data fresh
+    // (`staleTime: Infinity` would keep it) nor leave a cache listener behind.
+    describe("uuid detail fetch lifecycle", () => {
+      const detailFetch = (extra: object = {}) => ({
+        ...issueDetailOptions(WS_ID, "issue-7"),
+        staleTime: 0,
+        retry: false,
+        ...extra,
+      });
+
+      // Counts cache listeners opened and released by the fetch under test.
+      function watchCacheListeners() {
+        const cache = qc.getQueryCache();
+        const subscribe = cache.subscribe.bind(cache);
+        let opened = 0;
+        let released = 0;
+        vi.spyOn(cache, "subscribe").mockImplementation((listener) => {
+          opened += 1;
+          const release = subscribe(listener);
+          return () => {
+            released += 1;
+            release();
+          };
+        });
+        return { leaked: () => opened - released };
+      }
+
+      it("keeps behind detail invalidated when a response is rejected beside a newer projection", async () => {
+        qc.setQueryData(detailKey, makeIssue(7, { title: "older detail", revision: 5 }));
+        qc.setQueryData(projections.list.key, projections.list.seed(makeIssue(7, { revision: 7 })));
+        installFakeIssueApi(vi.fn().mockResolvedValue(makeIssue(7, { title: "behind list", revision: 6 })));
+
+        const result = await qc.fetchQuery(detailFetch());
+        await flushTimers();
+
+        expect(result).toMatchObject({ revision: 5 });
+        expect(qc.getQueryState(detailKey)?.isInvalidated).toBe(true);
+      });
+
+      it("keeps detail invalidated when a rejected response meets a pending auxiliary revision", async () => {
+        qc.setQueryData(detailKey, makeIssue(7, { title: "cached", revision: 5 }));
+        let resolveResponse!: (issue: Issue) => void;
+        installFakeIssueApi(
+          vi.fn().mockImplementation(() => new Promise((resolve) => (resolveResponse = resolve))),
+        );
+        const pending = qc.fetchQuery(detailFetch());
+        await vi.waitFor(() => expect(resolveResponse).toBeDefined());
+        onIssueAuxiliaryRevision(qc, WS_ID, "issue-7", 6);
+
+        resolveResponse(makeIssue(7, { title: "too old", revision: 4 }));
+        const result = await pending;
+        await flushTimers();
+
+        expect(result).toMatchObject({ revision: 5, title: "cached" });
+        expect(qc.getQueryState(detailKey)?.isInvalidated).toBe(true);
+      });
+
+      it("keeps the refetch obligation when the fetch is cancelled after an auxiliary event", async () => {
+        qc.setQueryData(detailKey, makeIssue(7, { title: "cached", revision: 5 }));
+        let resolveResponse!: (issue: Issue) => void;
+        installFakeIssueApi(
+          vi.fn().mockImplementation(() => new Promise((resolve) => (resolveResponse = resolve))),
+        );
+        const pending = qc.fetchQuery(detailFetch()).catch(() => undefined);
+        await vi.waitFor(() => expect(resolveResponse).toBeDefined());
+        onIssueAuxiliaryRevision(qc, WS_ID, "issue-7", 6);
+        await qc.cancelQueries({ queryKey: detailKey, exact: true });
+
+        resolveResponse(makeIssue(7, { title: "late", revision: 5 }));
+        await pending;
+        await flushTimers();
+
+        expect(qc.getQueryData<Issue>(detailKey)).toMatchObject({ revision: 5, title: "cached" });
+        expect(qc.getQueryState(detailKey)?.isInvalidated).toBe(true);
+      });
+
+      it("releases its cache listener when cancelled before a late response", async () => {
+        const listeners = watchCacheListeners();
+        let resolveResponse!: (issue: Issue) => void;
+        installFakeIssueApi(
+          vi.fn().mockImplementation(() => new Promise((resolve) => (resolveResponse = resolve))),
+        );
+        const pending = qc.fetchQuery(detailFetch()).catch(() => undefined);
+        await vi.waitFor(() => expect(resolveResponse).toBeDefined());
+        await qc.cancelQueries({ queryKey: detailKey, exact: true });
+
+        resolveResponse(makeIssue(7, { title: "late", revision: 7 }));
+        await pending;
+        await flushTimers();
+
+        expect(listeners.leaked()).toBe(0);
+      });
+
+      it.each([
+        ["an ordinary success", () => vi.fn().mockResolvedValue(makeIssue(7, { revision: 7 }))],
+        ["an API failure", () => vi.fn().mockRejectedValue(new Error("network failure"))],
+      ])("releases its cache listener after %s", async (_name, api) => {
+        const listeners = watchCacheListeners();
+        installFakeIssueApi(api());
+
+        await qc.fetchQuery(detailFetch()).catch(() => undefined);
+        await flushTimers();
+
+        expect(listeners.leaked()).toBe(0);
+      });
+
+      it("releases its cache listener after an accepted retry and with two observers", async () => {
+        const listeners = watchCacheListeners();
+        qc.setQueryData(projections.list.key, projections.list.seed(makeIssue(7, { revision: 7 })));
+        const getIssue = vi
+          .fn<(id: string) => Promise<Issue>>()
+          .mockResolvedValueOnce(makeIssue(7, { title: "stale", revision: 6 }))
+          .mockResolvedValue(makeIssue(7, { title: "caught up", revision: 7 }));
+        installFakeIssueApi(getIssue);
+
+        const result = await qc.fetchQuery(detailFetch({ retry: 1, retryDelay: 0 }));
+        expect(result).toMatchObject({ title: "caught up", revision: 7 });
+
+        const first = new QueryObserver(qc, issueDetailOptions(WS_ID, "issue-8"));
+        const second = new QueryObserver(qc, issueDetailOptions(WS_ID, "issue-8"));
+        const stops = [first.subscribe(() => {}), second.subscribe(() => {})];
+        await vi.waitFor(() => expect(first.getCurrentResult().status).not.toBe("pending"));
+        await flushTimers();
+        stops.forEach((stop) => stop());
+
+        expect(listeners.leaked()).toBe(0);
+        expect(getIssue.mock.calls.filter(([id]) => id === "issue-8")).toHaveLength(1);
+      });
+
+      it("does not refetch in a loop while the server stays behind", async () => {
+        qc.setQueryData(detailKey, makeIssue(7, { title: "older detail", revision: 5 }));
+        qc.setQueryData(projections.list.key, projections.list.seed(makeIssue(7, { revision: 7 })));
+        const getIssue = vi.fn().mockResolvedValue(makeIssue(7, { title: "behind", revision: 6 }));
+        installFakeIssueApi(getIssue);
+        const observer = new QueryObserver(qc, { ...issueDetailOptions(WS_ID, "issue-7"), staleTime: 0, retry: false });
+        const stop = observer.subscribe(() => {});
+
+        await vi.waitFor(() => expect(getIssue).toHaveBeenCalledTimes(1));
+        await flushTimers();
+        await flushTimers();
+
+        expect(getIssue).toHaveBeenCalledTimes(1);
+        stop();
+      });
+
+      it("fails a no-detail rejection once with retry disabled, then accepts a later fetch", async () => {
+        qc.setQueryData(projections.list.key, projections.list.seed(makeIssue(7, { revision: 7 })));
+        const getIssue = vi
+          .fn<(id: string) => Promise<Issue>>()
+          .mockResolvedValueOnce(makeIssue(7, { title: "stale", revision: 6 }))
+          .mockResolvedValueOnce(makeIssue(7, { title: "caught up", revision: 7 }));
+        installFakeIssueApi(getIssue);
+
+        await expect(qc.fetchQuery(detailFetch())).rejects.toThrow("older than cached data");
+        expect(qc.getQueryData(detailKey)).toBeUndefined();
+        await expect(qc.fetchQuery(detailFetch())).resolves.toMatchObject({ revision: 7 });
       });
     });
 
