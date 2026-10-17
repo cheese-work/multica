@@ -11,6 +11,8 @@ interface IssueMentionCardProps {
   issueId: string;
   /** Fallback text when issue is not in store (e.g. "MUL-7") */
   fallbackLabel?: string;
+  /** Pin the chip to its cap width. See `IssueChip`. */
+  stableWidth?: boolean;
 }
 
 function CurrentIssueChipContent({ identifier }: { identifier: string }) {
@@ -39,7 +41,7 @@ function CurrentIssueChipContent({ identifier }: { identifier: string }) {
  * `fallbackLabel` the chip degrades to names the card when the detail fetch
  * fails.
  */
-export function IssueMentionCard({ issueId, fallbackLabel }: IssueMentionCardProps) {
+export function IssueMentionCard({ issueId, fallbackLabel, stableWidth }: IssueMentionCardProps) {
   const p = useWorkspacePaths();
   const currentIssue = useCurrentIssueRenderContext();
   const currentIdentifier =
@@ -56,6 +58,7 @@ export function IssueMentionCard({ issueId, fallbackLabel }: IssueMentionCardPro
         <IssueChip
           issueId={issueId}
           fallbackLabel={fallbackLabel}
+          stableWidth={stableWidth}
           className="cursor-pointer hover:bg-accent transition-colors"
         >
           {currentIdentifier ? (

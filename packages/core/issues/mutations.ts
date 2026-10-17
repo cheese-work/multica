@@ -7,7 +7,7 @@ import {
   type QueryKey,
 } from "@tanstack/react-query";
 import { api } from "../api";
-import { issueKeys } from "./queries";
+import { issueKeys, issueWriteMutationKey } from "./queries";
 import { projectKeys } from "../projects/queries";
 import { inboxKeys, type ArchivedInboxCache } from "../inbox/queries";
 import {
@@ -92,7 +92,6 @@ export type UpdateIssueMutationInput = {
 // Shared by the single and batch update hooks, so the inbox re-read can wait
 // for the last of them (see `owedInboxRereads`).
 const ISSUE_WRITE = "issue-write";
-const issueWriteMutationKey = (wsId: string) => [ISSUE_WRITE, wsId] as const;
 
 // Workspaces whose inbox lists owe a re-read, per client.
 const inboxRereadsOwed = new WeakMap<QueryClient, Set<string>>();
