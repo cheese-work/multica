@@ -119,4 +119,24 @@ describe("RichContent bare-key loading box", () => {
     expect(container.textContent).toContain("see MUL-7 now");
     expect(container.querySelector("a")).toBeNull();
   });
+
+  // jsdom has no layout: this checks the label's classes, not painted geometry.
+  it("lets a long zero-padded alias shrink and truncate inside the capped box", async () => {
+    const alias = `MUL-${"0".repeat(60)}7`;
+    const { container } = renderWithI18n(
+      <QueryClientProvider client={queryClient}>
+        <NavigationProvider value={navigation}>
+          <RichContent content={`see ${alias} now`} phase="settled" />
+        </NavigationProvider>
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(api.getIssue).toHaveBeenCalledTimes(1));
+
+    const label = container.querySelector("[data-issue-chip-loading] > span:last-child")!;
+
+    expect(label.textContent).toBe(alias);
+    expect(label.classList).toContain("min-w-0");
+    expect(label.classList).toContain("truncate");
+    expect(label.classList).not.toContain("shrink-0");
+  });
 });

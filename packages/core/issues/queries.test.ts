@@ -874,6 +874,51 @@ describe("issueIdentifierOptions", () => {
       });
     });
 
+    // The detail query (by uuid) can already be in flight when the lookup
+    // seeds. Its older response must not land over the newer seed: detail
+    // returns the raw response and `staleTime: Infinity` would keep it.
+    it("does not let an older in-flight uuid detail response overwrite the seed", async () => {
+      let resolveDetail!: (issue: Issue) => void;
+      let resolveLookup!: (issue: Issue) => void;
+      const getIssue = vi.fn<(id: string) => Promise<Issue>>().mockImplementation(
+        (id) =>
+          new Promise((resolve) => {
+            if (id === "issue-7") resolveDetail = resolve;
+            else resolveLookup = resolve;
+          }),
+      );
+      installFakeIssueApi(getIssue);
+
+      const observer = new QueryObserver(qc, {
+        ...issueDetailOptions(WS_ID, "issue-7"),
+        staleTime: Infinity,
+      });
+      const unsubscribe = observer.subscribe(() => {});
+      await vi.waitFor(() => expect(getIssue).toHaveBeenCalledWith("issue-7"));
+
+      const lookup = qc.fetchQuery(issueIdentifierOptions(WS_ID, "MUL-7"));
+      resolveLookup(makeIssue(7, { title: "newer seed", revision: 3 }));
+      await lookup;
+      expect(qc.getQueryData<Issue>(detailKey)).toMatchObject({ revision: 3 });
+
+      resolveDetail(makeIssue(7, { title: "older detail", revision: 2 }));
+      await vi.waitFor(() => expect(observer.getCurrentResult().isFetching).toBe(false));
+
+      expect(qc.getQueryData<Issue>(detailKey)).toMatchObject({ title: "newer seed", revision: 3 });
+      expect(observer.getCurrentResult().data).toMatchObject({ title: "newer seed", revision: 3 });
+      unsubscribe();
+    });
+
+    it("still takes a detail response that is newer than the cached entry", async () => {
+      installFakeIssueApi(vi.fn().mockResolvedValue(makeIssue(7, { title: "newer", revision: 4 })));
+      qc.setQueryData(detailKey, makeIssue(7, { title: "cached", revision: 3 }));
+
+      const detail = await qc.fetchQuery({ ...issueDetailOptions(WS_ID, "issue-7"), staleTime: 0 });
+
+      expect(detail).toMatchObject({ title: "newer", revision: 4 });
+      expect(qc.getQueryData<Issue>(detailKey)).toMatchObject({ revision: 4 });
+    });
+
     it("still seeds detail when the lookup revision equals the cached one", async () => {
       qc.setQueryData(
         projections.list.key,

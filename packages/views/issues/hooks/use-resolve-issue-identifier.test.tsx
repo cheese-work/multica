@@ -1,5 +1,5 @@
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, onlineManager } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError } from "@multica/core/api";
@@ -68,6 +68,7 @@ describe("useResolveIssueIdentifier", () => {
   afterEach(() => {
     cleanup();
     queryClient.clear();
+    onlineManager.setOnline(true);
   });
 
   it("reports loading, not a miss, while the lookup is in flight", async () => {
@@ -160,5 +161,38 @@ describe("useResolveIssueIdentifier", () => {
     expect(result.current).toBeUndefined();
     await act(async () => release[1]!());
     await waitFor(() => expect(result.current?.workspace_id).toBe("workspace-2"));
+  });
+
+  describe("while the browser is offline", () => {
+    beforeEach(() => onlineManager.setOnline(false));
+
+    it("keeps a valid key unresolved, then resolves it after reconnect", async () => {
+      delayedLookup((id) => makeIssue(Number(id.slice(4))));
+      const { result } = renderHook(() => useResolveIssueIdentifier("MUL-7"), { wrapper });
+
+      // The request is paused, not settled: plain text here would flip to the
+      // loading box on reconnect.
+      await waitFor(() =>
+        expect(queryClient.getQueryState(["issues", "workspace-1", "identifier", "MUL-7"])?.fetchStatus)
+          .toBe("paused"),
+      );
+      expect(api.getIssue).not.toHaveBeenCalled();
+      expect(result.current).toBeUndefined();
+
+      act(() => onlineManager.setOnline(true));
+      await waitFor(() => expect(release).toHaveLength(1));
+      expect(result.current).toBeUndefined();
+      await act(async () => release[0]!());
+      await waitFor(() => expect(result.current?.identifier).toBe("MUL-7"));
+    });
+
+    it("still renders a wrong-prefix or malformed key as plain text", () => {
+      const wrongPrefix = renderHook(() => useResolveIssueIdentifier("TES-7"), { wrapper });
+      const malformed = renderHook(() => useResolveIssueIdentifier("not-a-key"), { wrapper });
+
+      expect(wrongPrefix.result.current).toBeNull();
+      expect(malformed.result.current).toBeNull();
+      expect(api.getIssue).not.toHaveBeenCalled();
+    });
   });
 });
