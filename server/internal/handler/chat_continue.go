@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/dmnotify"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -148,6 +149,19 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		session, err = qtx.ArchiveContinuedChatSession(r.Context(), db.ArchiveContinuedChatSessionParams{ID: session.ID, ContinuedIntoSessionID: next.ID})
 	}
+	// An agent rollover archives the DM the run was replying in, so that reply
+	// cannot notify. The summary is the agent's message: notify in the new DM.
+	// A continue the DM creator submitted stays silent.
+	// The archived source DM gets no more notifications, so the ones it already
+	// raised close with it, whoever asked for the continuation.
+	var closedRecords []db.InboxItem
+	if err == nil {
+		closedRecords, err = qtx.MarkDMRepliesRead(r.Context(), db.MarkDMRepliesReadParams{ChatSessionID: session.ID, RecipientID: session.CreatorID})
+	}
+	var dmNotified *dmnotify.Notified
+	if err == nil && r.Header.Get("X-Actor-Source") == "task_token" {
+		dmNotified, err = dmnotify.Reply(r.Context(), qtx, next.ID, summary)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to continue chat session")
 		return
@@ -156,7 +170,9 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to commit continuation")
 		return
 	}
+	dmnotify.Publish(h.Bus, dmNotified)
 	creatorID := uuidToString(session.CreatorID)
+	h.publishDMRepliesRead(workspaceID, creatorID, closedRecords)
 	h.publishChat(protocol.EventChatSessionCreated, workspaceID, "member", creatorID, uuidToString(next.ID), protocol.ChatSessionCreatedPayload{
 		WorkspaceID: workspaceID, ChatSessionID: uuidToString(next.ID), AgentID: uuidToString(next.AgentID), CreatorID: creatorID, Title: next.Title,
 	})

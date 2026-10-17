@@ -1157,6 +1157,10 @@ type InboxItem struct {
 	ActorType     pgtype.Text        `json:"actor_type"`
 	ActorID       pgtype.UUID        `json:"actor_id"`
 	Details       []byte             `json:"details"`
+	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
+	ChatMessageID pgtype.UUID        `json:"chat_message_id"`
+	DedupeKey     pgtype.Text        `json:"dedupe_key"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 }
 
 type InstanceTelemetryState struct {

@@ -62,7 +62,7 @@ type PrepareParams struct {
 	OpenclawBin     string // resolved openclaw CLI path (only used when Provider == "openclaw"); empty = look up on PATH
 	// McpConfig is the agent's saved `mcp_config` JSON, forwarded to the
 	// provider-specific config preparer when that provider materialises MCP
-	// via a per-task config file. Cursor, OpenClaw, and OMP consume it here;
+	// via a per-task config file. Cursor, OpenClaw, OMP, and Antigravity consume it here;
 	// other providers wire MCP via ExecOptions.McpConfig in the agent backend.
 	McpConfig json.RawMessage
 	// CursorMcpAuthSource is an explicit opt-in path to a Cursor mcp-auth.json
@@ -606,6 +606,9 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	if err := prepareOmpMcpConfig(workDir, params.Provider, params.McpConfig, manifest); err != nil {
 		return nil, fmt.Errorf("execenv: prepare omp mcp config: %w", err)
 	}
+	if err := prepareAntigravityMcpConfig(workDir, params.Provider, params.McpConfig, params.LocalWorkDir != "", manifest); err != nil {
+		return nil, fmt.Errorf("execenv: prepare antigravity mcp config: %w", err)
+	}
 
 	// Persist managed-env provenance for non-local resumable envs at Prepare time
 	// (not on completion, where .gc_meta.json is written). A same-issue
@@ -909,6 +912,10 @@ func Reuse(params ReuseParams, logger *slog.Logger) *Environment {
 	}
 	if err := prepareOmpMcpConfig(params.WorkDir, params.Provider, params.McpConfig, manifest); err != nil {
 		logger.Warn("execenv: refresh omp mcp config failed; forcing fresh prepare", "error", err)
+		return nil
+	}
+	if err := prepareAntigravityMcpConfig(params.WorkDir, params.Provider, params.McpConfig, params.LocalDirectory, manifest); err != nil {
+		logger.Warn("execenv: refresh antigravity mcp config failed; forcing fresh prepare", "error", err)
 		return nil
 	}
 

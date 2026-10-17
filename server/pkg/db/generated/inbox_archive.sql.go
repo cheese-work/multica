@@ -22,6 +22,7 @@ WITH newest AS MATERIALIZED (
       AND i.recipient_type = 'member'
       AND i.recipient_id = $2::uuid
       AND i.archived = true
+      AND inbox_item_visible(i.type, i.chat_session_id, i.workspace_id, i.recipient_id)
       AND (i.issue_id IS NULL OR NOT EXISTS (
           SELECT 1 FROM inbox_item active
           WHERE active.workspace_id = i.workspace_id
@@ -114,6 +115,7 @@ WITH newest AS MATERIALIZED (
       AND i.recipient_type = 'member'
       AND i.recipient_id = $2::uuid
       AND i.archived = true
+      AND inbox_item_visible(i.type, i.chat_session_id, i.workspace_id, i.recipient_id)
       AND ($3::uuid IS NULL OR i.issue_id = $3::uuid
            OR (i.issue_id IS NULL AND i.id = $3::uuid))
       AND (i.issue_id IS NULL OR NOT EXISTS (
@@ -145,7 +147,7 @@ WITH newest AS MATERIALIZED (
     ORDER BY created_at DESC, id DESC
     LIMIT $10::int
 )
-SELECT i.id, i.workspace_id, i.recipient_type, i.recipient_id, i.type, i.severity, i.issue_id, i.title, i.body, i.read, i.archived, i.created_at, i.actor_type, i.actor_id, i.details, selected.issue_status, selected.issue_priority,
+SELECT i.id, i.workspace_id, i.recipient_type, i.recipient_id, i.type, i.severity, i.issue_id, i.title, i.body, i.read, i.archived, i.created_at, i.actor_type, i.actor_id, i.details, i.chat_session_id, i.chat_message_id, i.dedupe_key, i.updated_at, selected.issue_status, selected.issue_priority,
        COALESCE(anchor.comment_id, '')::text AS comment_id
 FROM selected
 JOIN inbox_item i ON i.id = selected.id
@@ -218,6 +220,10 @@ func (q *Queries) ListArchivedInboxPage(ctx context.Context, arg ListArchivedInb
 			&i.InboxItem.ActorType,
 			&i.InboxItem.ActorID,
 			&i.InboxItem.Details,
+			&i.InboxItem.ChatSessionID,
+			&i.InboxItem.ChatMessageID,
+			&i.InboxItem.DedupeKey,
+			&i.InboxItem.UpdatedAt,
 			&i.IssueStatus,
 			&i.IssuePriority,
 			&i.CommentID,
