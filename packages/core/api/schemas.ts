@@ -2772,6 +2772,10 @@ export const InboxItemListSchema = z.array(
       read: z.boolean(),
       archived: z.boolean(),
       created_at: z.string(),
+      // DM notification records (CHE-1793). A wrong-typed value reads as null
+      // rather than discarding the whole list: these two are additive hints.
+      chat_session_id: z.string().nullish().catch(null),
+      updated_at: z.string().nullish().catch(null),
     })
     .loose(),
 );
