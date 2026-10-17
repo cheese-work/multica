@@ -27,7 +27,8 @@ function runSpec(env) {
   return new Promise((resolve) => {
     const child = spawn("pnpm", ["exec", "playwright", "test", SPEC, "--reporter=line", "--project=chromium"], {
       cwd: repoRoot,
-      env: { ...process.env, MULTICA_E2E_STREAMING_ISSUE_KEYS: "1", ...env },
+      // A failure marker reaches the child only when a case passes one.
+      env: { ...process.env, MULTICA_E2E_STREAMING_ISSUE_KEYS: "1", STREAMING_ISSUE_KEYS_FAIL_AT: "", ...env },
     });
     let output = "";
     child.stdout.on("data", (chunk) => (output += chunk));
