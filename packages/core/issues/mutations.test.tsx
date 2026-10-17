@@ -20,6 +20,7 @@ import {
   useUpdateIssue,
 } from "./mutations";
 import {
+  issueIdentifierOptions,
   issueKeys,
   type IssueSortParam,
 } from "./queries";
@@ -1488,5 +1489,87 @@ describe("useCreateComment — sibling caches under a shared key prefix", () => 
     expect(
       qc.getQueryData<TimelineEntry[]>(issueKeys.timeline(ISSUE_ID))?.map((e) => e.id),
     ).toEqual(["comment-1"]);
+  });
+});
+
+// A bare-key lookup seeds the detail cache. `useUpdateIssue` patches that same
+// entry optimistically WITHOUT advancing its revision, and it cancels the list
+// queries but not the identifier lookup, so a lookup that was already in
+// flight can land while the write is pending.
+describe("identifier lookup landing during an optimistic issue update", () => {
+  const detailKey = issueKeys.detail(WS_ID, "issue-1");
+  let qc: QueryClient;
+  let resolveLookup: (issue: Issue) => void;
+  let resolveUpdate: (issue: Issue) => void;
+  let rejectUpdate: (error: Error) => void;
+
+  beforeEach(() => {
+    qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    setApiInstance({
+      getIssue: () => new Promise<Issue>((resolve) => (resolveLookup = resolve)),
+      updateIssue: () =>
+        new Promise<Issue>((resolve, reject) => {
+          resolveUpdate = resolve;
+          rejectUpdate = reject;
+        }),
+    } as unknown as ApiClient);
+    qc.setQueryData<Issue>(detailKey, makeIssue(1, { title: "base", revision: 5 }));
+  });
+
+  afterEach(() => {
+    qc.clear();
+    vi.restoreAllMocks();
+  });
+
+  async function startWriteWithLookupInFlight() {
+    const lookup = qc.fetchQuery(issueIdentifierOptions(WS_ID, "MUL-1"));
+    const { result } = renderHook(() => useUpdateIssue(), { wrapper: createWrapper(qc) });
+    act(() => {
+      result.current.mutate({ id: "issue-1", title: "optimistic" });
+    });
+    await waitFor(() => expect(qc.getQueryData<Issue>(detailKey)?.title).toBe("optimistic"));
+    return { lookup };
+  }
+
+  it("keeps the optimistic fields when the lookup returns the same revision", async () => {
+    const { lookup } = await startWriteWithLookupInFlight();
+
+    await act(async () => {
+      resolveLookup(makeIssue(1, { title: "base", revision: 5 }));
+      await lookup;
+    });
+
+    expect(qc.getQueryData<Issue>(detailKey)).toMatchObject({ title: "optimistic", revision: 5 });
+  });
+
+  it("settles onto the committed revision once the write succeeds", async () => {
+    const { lookup } = await startWriteWithLookupInFlight();
+    await act(async () => {
+      resolveLookup(makeIssue(1, { title: "base", revision: 5 }));
+      await lookup;
+    });
+
+    await act(async () => {
+      resolveUpdate(makeIssue(1, { title: "optimistic", revision: 6 }));
+    });
+
+    await waitFor(() =>
+      expect(qc.getQueryData<Issue>(detailKey)).toMatchObject({ title: "optimistic", revision: 6 }),
+    );
+  });
+
+  it("rolls back and refetches when the write fails", async () => {
+    const { lookup } = await startWriteWithLookupInFlight();
+    await act(async () => {
+      resolveLookup(makeIssue(1, { title: "base", revision: 5 }));
+      await lookup;
+    });
+
+    await act(async () => {
+      rejectUpdate(new Error("boom"));
+    });
+
+    await waitFor(() => expect(qc.getQueryState(detailKey)?.isInvalidated).toBe(true));
+    expect(qc.getQueryData<Issue>(detailKey)).toMatchObject({ title: "base", revision: 5 });
   });
 });

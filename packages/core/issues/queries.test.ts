@@ -21,6 +21,7 @@ import {
   childrenByParentsOptions,
   childIssuesOptions,
   flattenIssueBuckets,
+  issueDetailOptions,
   issueIdentifierOptions,
   issueKeys,
   issueListOptions,
@@ -28,7 +29,7 @@ import {
   projectGanttIssuesOptions,
   sourceContextPreviewOptions,
 } from "./queries";
-import { onIssueUpdated } from "./ws-updaters";
+import { onIssueAuxiliaryRevision, onIssueUpdated } from "./ws-updaters";
 
 const WS_ID = "ws-1";
 const PROJECT_ID = "project-1";
@@ -811,6 +812,66 @@ describe("issueIdentifierOptions", () => {
       );
 
       expect(detail).toBeUndefined();
+    });
+
+    // An auxiliary event (comment, label, ...) proves a newer owner revision
+    // exists without carrying its snapshot. A lookup landing afterwards must
+    // leave the detail projection owing a refetch: with `staleTime: Infinity`
+    // an entry that lost its invalidation is never read from the server again.
+    describe("with a pending auxiliary revision", () => {
+      const lookupThenOpenDetail = async (
+        seed: () => void,
+        response: Issue,
+      ) => {
+        let resolveLookup!: (issue: Issue) => void;
+        const getIssue = vi
+          .fn<(id: string) => Promise<Issue>>()
+          .mockImplementation(
+            (id) =>
+              new Promise((resolve) => {
+                if (id === "MUL-7") resolveLookup = resolve;
+              }),
+          );
+        installFakeIssueApi(getIssue);
+        seed();
+
+        const lookup = qc.fetchQuery(issueIdentifierOptions(WS_ID, "MUL-7"));
+        onIssueAuxiliaryRevision(qc, WS_ID, "issue-7", 12);
+        resolveLookup(response);
+        await lookup;
+
+        const observer = new QueryObserver(qc, {
+          ...issueDetailOptions(WS_ID, "issue-7"),
+          staleTime: Infinity,
+        });
+        const unsubscribe = observer.subscribe(() => {});
+        const refetched = getIssue.mock.calls.some(([id]) => id === "issue-7");
+        unsubscribe();
+        return { refetched, state: qc.getQueryState(detailKey) };
+      };
+
+      it.each([
+        ["a newer", 11],
+        ["an equal", 10],
+      ])("keeps populated detail owing a refetch after %s revision lookup", async (_name, revision) => {
+        const { refetched, state } = await lookupThenOpenDetail(
+          () => qc.setQueryData(detailKey, makeIssue(7, { title: "base", revision: 10 })),
+          makeIssue(7, { title: "looked up", revision }),
+        );
+
+        expect(state?.isInvalidated).toBe(true);
+        expect(refetched).toBe(true);
+      });
+
+      it("makes a detail entry seeded from another projection owe a refetch", async () => {
+        const { refetched } = await lookupThenOpenDetail(
+          () =>
+            qc.setQueryData(projections.list.key, projections.list.seed(makeIssue(7, { revision: 10 }))),
+          makeIssue(7, { title: "looked up", revision: 10 }),
+        );
+
+        expect(refetched).toBe(true);
+      });
     });
 
     it("still seeds detail when the lookup revision equals the cached one", async () => {
