@@ -2,6 +2,7 @@ import {
   infiniteQueryOptions,
   keepPreviousData,
   queryOptions,
+  type Query,
   type QueryClient,
 } from "@tanstack/react-query";
 import { api, ApiError } from "../api";
@@ -484,34 +485,63 @@ class StaleIssueResponseError extends Error {
 }
 
 /**
- * TanStack marks a query fresh when its fetch resolves (or is cancelled and
- * reverted), after `queryFn` has returned, and `staleTime: Infinity` then keeps
- * whatever it holds. Once that has happened, give detail back the obligations
- * that fresh mark erased: an auxiliary event proved a newer revision exists, or
- * another projection already holds one. The second case is only flagged, not
- * refetched, so a server that stays behind cannot cause a refetch loop.
- * A timer, not a cache listener: it fires exactly once whatever the fetch's
- * fate, so a cancelled attempt cannot leave anything attached.
+ * TanStack marks a query fresh when its fetch ends (resolved, rejected, or
+ * cancelled and reverted to the state it had when the fetch began), and
+ * `staleTime: Infinity` then keeps whatever it holds. Once that has happened,
+ * give detail back the obligations that fresh mark erased: an auxiliary event
+ * proved a newer revision exists, or another projection already holds one. The
+ * second case is only flagged, not refetched, so a server that stays behind
+ * cannot cause a refetch loop.
+ *
+ * The end of the fetch is observed through a cache listener that exists only
+ * while this query is fetching: it releases itself on the first event that
+ * finds the query idle or removed, which every outcome produces (including a
+ * cancel whose request never answers). The restoration itself runs on a timer,
+ * after TanStack has finished writing the outcome, never inside the listener.
  */
+const detailFetchWatchers = new WeakMap<Query, () => void>();
+
+function restoreDetailObligationsWhenFetchEnds(qc: QueryClient, wsId: string, id: string) {
+  const cache = qc.getQueryCache();
+  const detailKey = issueKeys.detail(wsId, id);
+  const query = cache.find({ queryKey: detailKey, exact: true });
+  if (!query || detailFetchWatchers.has(query)) return;
+  const release = cache.subscribe((event) => {
+    if (event.query !== query) return;
+    if (event.type !== "removed" && query.state.fetchStatus === "fetching") return;
+    release();
+    detailFetchWatchers.delete(query);
+    if (event.type !== "removed") setTimeout(() => restoreDetailObligations(qc, wsId, id), 0);
+  });
+  detailFetchWatchers.set(query, release);
+}
+
 function restoreDetailObligations(qc: QueryClient, wsId: string, id: string) {
-  setTimeout(() => {
-    const detailKey = issueKeys.detail(wsId, id);
-    const detail = qc.getQueryData<Issue>(detailKey);
-    if (detail?.revision === undefined) return;
-    reconcileIssueFullSnapshotRevision(qc, wsId, id, detail.revision);
-    const freshest = freshestCachedIssueRevision(qc, wsId, id);
-    if (freshest !== undefined && detail.revision < freshest) {
-      qc.invalidateQueries({ queryKey: detailKey, exact: true, refetchType: "none" });
-    }
-  }, 0);
+  const detailKey = issueKeys.detail(wsId, id);
+  const detail = qc.getQueryData<Issue>(detailKey);
+  if (!detail) return;
+  // An unversioned detail entry is behind any versioned projection, and behind
+  // any recorded auxiliary revision: -Infinity orders it below all of them.
+  reconcileIssueFullSnapshotRevision(
+    qc,
+    wsId,
+    id,
+    detail.revision ?? Number.NEGATIVE_INFINITY,
+  );
+  const freshest = freshestCachedIssueRevision(qc, wsId, id);
+  const behind =
+    freshest !== undefined && (detail.revision === undefined || detail.revision < freshest);
+  if (behind) {
+    qc.invalidateQueries({ queryKey: detailKey, exact: true, refetchType: "none" });
+  }
 }
 
 export function issueDetailOptions(wsId: string, id: string) {
   return queryOptions({
     queryKey: issueKeys.detail(wsId, id),
     queryFn: async ({ client }) => {
+      restoreDetailObligationsWhenFetchEnds(client, wsId, id);
       const issue = await api.getIssue(id);
-      restoreDetailObligations(client, wsId, id);
       if (admitsFullIssue(client, wsId, issue)) return issue;
       // Keep what the cache has. With no detail entry there is nothing to
       // keep: fail this attempt so the query retries against the server
