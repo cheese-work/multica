@@ -99,7 +99,8 @@ vi.mock("@multica/ui/hooks/use-mobile", () => ({
 
 import { SettingsPage } from "./settings-page";
 
-const REASON = "Needs shadow data: ≤ 2% confident-wrong over 200+ verified items.";
+// AC2 of CHE-1839, exact literal (ASCII "<=", lower case, no full stop).
+const REASON = "needs shadow data: <= 2% confident-wrong over 200+ verified items";
 
 function config(version: number, settings: Record<string, unknown> = {}) {
   return {
