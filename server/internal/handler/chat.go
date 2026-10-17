@@ -2054,9 +2054,14 @@ type ChatSessionResponse struct {
 	IsCurrentChannelRoute *bool                             `json:"is_current_channel_route,omitempty"`
 	// Compacting is true while a compaction task (manual or automatic) is
 	// active for this DM: sends are refused with 409 chat_compacting.
-	Compacting bool   `json:"compacting"`
-	CreatedAt  string `json:"created_at"`
-	UpdatedAt  string `json:"updated_at"`
+	Compacting bool `json:"compacting"`
+	// ContextTokens / ContextWindow: the latest completed run's last prompt size
+	// and the model's context window, for the context meter. Absent when that
+	// run reported neither (CHE-1808).
+	ContextTokens *int64 `json:"context_tokens,omitempty"`
+	ContextWindow *int64 `json:"context_window,omitempty"`
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
 }
 
 type ChatSessionChannelSourceResponse struct {
@@ -2081,8 +2086,20 @@ func (h *Handler) hydrateChatSessionCompacting(ctx context.Context, sessions []C
 	for _, id := range compacting {
 		byID[uuidToString(id)] = true
 	}
+	latest, err := h.Queries.ListLatestRunContextForChatSessions(ctx, ids)
+	if err != nil {
+		return err
+	}
+	runContext := make(map[string]db.ListLatestRunContextForChatSessionsRow, len(latest))
+	for _, row := range latest {
+		runContext[uuidToString(row.ChatSessionID)] = row
+	}
 	for i := range sessions {
 		sessions[i].Compacting = byID[sessions[i].ID]
+		if row, ok := runContext[sessions[i].ID]; ok && row.ContextTokens.Valid && row.ContextWindow.Valid {
+			sessions[i].ContextTokens = &row.ContextTokens.Int64
+			sessions[i].ContextWindow = &row.ContextWindow.Int64
+		}
 	}
 	return nil
 }
