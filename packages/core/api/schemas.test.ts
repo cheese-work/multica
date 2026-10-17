@@ -1545,6 +1545,48 @@ describe("InboxItemListSchema", () => {
       ),
     ).toBe(EMPTY_INBOX_ITEMS);
   });
+
+  describe("DM reply records (CHE-1793)", () => {
+    const dmRow = (overrides: Record<string, unknown> = {}) =>
+      row({
+        type: "dm_reply",
+        issue_id: null,
+        archived: false,
+        chat_session_id: "session-1",
+        updated_at: "2026-06-15T08:05:00Z",
+        details: { reply_count: 3 },
+        ...overrides,
+      });
+
+    it("keeps the DM link, updated_at and reply_count of a dm_reply row", () => {
+      const parsed = parseWithFallback([dmRow()], InboxItemListSchema, EMPTY_INBOX_ITEMS, ENDPOINT);
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0]).toMatchObject({
+        type: "dm_reply",
+        issue_id: null,
+        chat_session_id: "session-1",
+        updated_at: "2026-06-15T08:05:00Z",
+        details: { reply_count: 3 },
+      });
+    });
+
+    it("normalizes a wrong-typed chat_session_id or updated_at to null instead of blanking the inbox", () => {
+      const parsed = parseWithFallback(
+        [dmRow({ chat_session_id: 42, updated_at: 7 })],
+        InboxItemListSchema,
+        EMPTY_INBOX_ITEMS,
+        ENDPOINT,
+      );
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0]).toMatchObject({ chat_session_id: null, updated_at: null });
+    });
+
+    it("accepts rows from a backend that predates the DM fields", () => {
+      const parsed = parseWithFallback([row()], InboxItemListSchema, EMPTY_INBOX_ITEMS, ENDPOINT);
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0]?.chat_session_id ?? null).toBeNull();
+    });
+  });
 });
 
 describe("SearchProjectsResponseSchema date drift", () => {
