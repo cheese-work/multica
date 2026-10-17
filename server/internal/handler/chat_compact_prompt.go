@@ -4,15 +4,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/multica-ai/multica/server/internal/service"
 )
 
 func compactChatPrompt(content string, workspaceSettings, agentConfig []byte) string {
-	trimmed := strings.TrimSpace(content)
-	firstLine, _, _ := strings.Cut(trimmed, "\n")
-	words := strings.Fields(firstLine)
-	if len(words) == 0 || words[0] != "/compact" {
+	if !service.IsCompactCommand(content) {
 		return content
 	}
+	trimmed := strings.TrimSpace(content)
 	focus := strings.TrimSpace(strings.TrimPrefix(trimmed, "/compact"))
 	criteria := "Write a handoff-format summary of this session's goal, decisions, evidence, open items, exact IDs and URLs, and next action."
 	for _, raw := range [][]byte{workspaceSettings, agentConfig} {

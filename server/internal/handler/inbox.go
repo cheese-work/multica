@@ -3,10 +3,12 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/logger"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -26,6 +28,8 @@ type InboxItemResponse struct {
 	Read          bool            `json:"read"`
 	Archived      bool            `json:"archived"`
 	CreatedAt     string          `json:"created_at"`
+	UpdatedAt     string          `json:"updated_at"`
+	ChatSessionID *string         `json:"chat_session_id"`
 	IssueStatus   *string         `json:"issue_status"`
 	IssuePriority *string         `json:"issue_priority"`
 	ActorType     *string         `json:"actor_type"`
@@ -47,10 +51,21 @@ func inboxToResponse(i db.InboxItem) InboxItemResponse {
 		Read:          i.Read,
 		Archived:      i.Archived,
 		CreatedAt:     timestampToString(i.CreatedAt),
+		UpdatedAt:     inboxUpdatedAt(i.UpdatedAt, i.CreatedAt),
+		ChatSessionID: uuidToPtr(i.ChatSessionID),
 		ActorType:     textToPtr(i.ActorType),
 		ActorID:       uuidToPtr(i.ActorID),
 		Details:       json.RawMessage(i.Details),
 	}
+}
+
+// inboxUpdatedAt reads a row that predates updated_at as last touched when it
+// was created.
+func inboxUpdatedAt(updatedAt, createdAt pgtype.Timestamptz) string {
+	if updatedAt.Valid {
+		return timestampToString(updatedAt)
+	}
+	return timestampToString(createdAt)
 }
 
 // inboxListBodyPreviewLimit caps, in characters, the body a comment
@@ -123,6 +138,8 @@ func inboxRowToResponse(r db.ListInboxItemsRow) InboxItemResponse {
 		Read:          r.Read,
 		Archived:      r.Archived,
 		CreatedAt:     timestampToString(r.CreatedAt),
+		UpdatedAt:     inboxUpdatedAt(r.UpdatedAt, r.CreatedAt),
+		ChatSessionID: uuidToPtr(r.ChatSessionID),
 		IssueStatus:   textToPtr(r.IssueStatus),
 		IssuePriority: textToPtr(r.IssuePriority),
 		ActorType:     textToPtr(r.ActorType),
@@ -226,7 +243,7 @@ func (h *Handler) MarkInboxRead(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	item, err := h.Queries.MarkInboxRead(r.Context(), prev.ID)
+	item, err := h.markInboxItemRead(r.Context(), prev)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to mark read")
 		return
@@ -238,9 +255,46 @@ func (h *Handler) MarkInboxRead(w http.ResponseWriter, r *http.Request) {
 		"item_id":      uuidToString(item.ID),
 		"recipient_id": uuidToString(item.RecipientID),
 	})
+	if item.Type == "dm_reply" && item.ChatSessionID.Valid {
+		sessionID := uuidToString(item.ChatSessionID)
+		h.publishChat(protocol.EventChatSessionRead, workspaceID, "member", userID, sessionID, protocol.ChatSessionReadPayload{ChatSessionID: sessionID})
+	}
 
 	resp := h.enrichInboxResponse(r.Context(), inboxToResponse(item), item.IssueID)
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// markInboxItemRead reads one item. A DM reply record reads its DM too, in the
+// same transaction, so the inbox and the DM badge never disagree.
+func (h *Handler) markInboxItemRead(ctx context.Context, prev db.InboxItem) (db.InboxItem, error) {
+	if prev.Type != "dm_reply" || !prev.ChatSessionID.Valid {
+		return h.Queries.MarkInboxRead(ctx, prev.ID)
+	}
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return db.InboxItem{}, err
+	}
+	defer tx.Rollback(ctx)
+	qtx := h.Queries.WithTx(tx)
+	item, err := qtx.MarkInboxRead(ctx, prev.ID)
+	if err != nil {
+		return db.InboxItem{}, err
+	}
+	if err := qtx.AdvanceChatSessionReadTo(ctx, db.AdvanceChatSessionReadToParams{SessionID: item.ChatSessionID, MessageID: item.ChatMessageID}); err != nil {
+		return db.InboxItem{}, err
+	}
+	return item, tx.Commit(ctx)
+}
+
+// publishDMRepliesRead tells the recipient's other clients that DM reply
+// records were read by something other than the inbox itself.
+func (h *Handler) publishDMRepliesRead(workspaceID, userID string, items []db.InboxItem) {
+	for _, item := range items {
+		h.publish(protocol.EventInboxRead, workspaceID, "member", userID, map[string]any{
+			"item_id":      uuidToString(item.ID),
+			"recipient_id": uuidToString(item.RecipientID),
+		})
+	}
 }
 
 // MarkInboxUnread flips a notification back to unread, the inverse of
@@ -257,6 +311,14 @@ func (h *Handler) MarkInboxUnread(w http.ResponseWriter, r *http.Request) {
 	}
 	item, err := h.Queries.MarkInboxUnread(r.Context(), prev.ID)
 	if err != nil {
+		// A DM holds at most one unread dm_reply record (partial unique index).
+		// A newer unread record already keeps the DM unread, so the older one
+		// stays read.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "idx_inbox_item_dedupe_unread" {
+			writeError(w, http.StatusConflict, "this DM already has a newer unread notification")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to mark unread")
 		return
 	}

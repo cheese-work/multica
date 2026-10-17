@@ -628,6 +628,16 @@ const MessageBubble = memo(function MessageBubble({
     return <ContinuationSummary message={message} />;
   }
 
+  // The server-authored reason for an automatic compaction (or its failure):
+  // a muted note, not a reply from the agent.
+  if (message.message_kind === "compact_notice") {
+    return (
+      <p role="note" className="text-caption text-muted-foreground">
+        {message.content}
+      </p>
+    );
+  }
+
   if (message.role === "user") {
     return (
       <div className="flex justify-end">

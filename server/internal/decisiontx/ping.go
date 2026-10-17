@@ -58,6 +58,8 @@ func NotifyPing(ctx context.Context, starter interface {
 			Type: "mentioned", Severity: "info", IssueID: request.IssueID, Title: issue.Title,
 			Body: pgtype.Text{String: request.Ask, Valid: true}, ActorType: pgtype.Text{String: "agent", Valid: true},
 			ActorID: request.AskingAgentID, Details: details,
+			// The ask lives in a DM; the item opens it.
+			ChatSessionID: request.ChatSessionID, ChatMessageID: request.PingMessageID,
 		})
 		if err != nil {
 			return nil, err

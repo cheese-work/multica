@@ -146,6 +146,8 @@ var pgBigmOperatorClass = extensionOperatorClass{
 var concurrentIndexCleanups = map[string]string{
 	"621_chat_fork_operation_index":                             "chat_session_fork_operation_idx",
 	"628_notification_channel_preference_index":                 "notification_channel_preference_key_uidx",
+	"651_inbox_item_dedupe_index":                               "idx_inbox_item_dedupe_unread",
+	"652_inbox_item_updated_listing_index":                      "idx_inbox_item_active_updated",
 	"615_decision_request_comment_v2_index":                     "comment_decision_request_kind_v2_uidx",
 	"598_decision_request_id_index":                             "decision_request_id_uidx",
 	"599_decision_intent_id_index":                              "decision_intent_id_uidx",
