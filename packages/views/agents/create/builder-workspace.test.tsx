@@ -277,6 +277,35 @@ describe("builder draft recovery wiring", () => {
     expect(h.save).not.toHaveBeenCalled();
   });
 
+  // A closed draft A was applied. A later reply B holds an unclosed block, and
+  // a reply after B holds none, so B is superseded. The user then edited and
+  // saved. Reopening must not read B as new and merge it over those edits.
+  it.each([
+    ["a plain reply", { ...reply("Anything else?", "reply-c") }],
+    ["a failed reply", { ...reply("", "reply-c"), failure_reason: "agent_error" }],
+  ])("keeps saved manual edits when a superseded unclosed reply is followed by %s", async (_name, last) => {
+    h.messages = [
+      reply('<agent_draft>{"name":"First draft"}</agent_draft>', "reply-a"),
+      reply(unclosed, "reply-b"),
+      last as ChatMessage,
+    ];
+    h.session = savedSession(toStoredAgentDraft({ ...EMPTY_AGENT_DRAFT, name: "Saved edit" }, "reply-a"));
+    mount();
+    await waitFor(() => expect(screen.getByLabelText("Agent name")).toHaveValue("Saved edit"));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(h.save).not.toHaveBeenCalled();
+  });
+
+  it("still recovers an unclosed final reply that was never applied", async () => {
+    h.messages = [
+      reply('<agent_draft>{"name":"First draft"}</agent_draft>', "reply-a"),
+      reply(unclosed, "reply-b"),
+    ];
+    h.session = savedSession(toStoredAgentDraft({ ...EMPTY_AGENT_DRAFT, name: "First draft" }, "reply-a"));
+    mount();
+    await waitFor(() => expect(screen.getByLabelText("Agent name")).toHaveValue("Poet"));
+  });
+
   it("waits for history and stored configuration before recovering a draft", async () => {
     h.messages = [reply(unclosed)];
     h.loading = true;

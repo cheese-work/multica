@@ -29,7 +29,9 @@ func raceAgainst(t *testing.T, hold func(tx pgx.Tx), write func() *testutil.Resp
 }
 
 // raceUntilBlocked is raceAgainst for a write that returns no HTTP response.
-func raceUntilBlocked(t *testing.T, hold func(tx pgx.Tx), write func()) {
+// whileBlocked, when given, runs in the competing transaction once the write is
+// blocked and before that transaction commits.
+func raceUntilBlocked(t *testing.T, hold func(tx pgx.Tx), write func(), whileBlocked ...func(tx pgx.Tx)) {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := testPool.Begin(ctx)
@@ -57,6 +59,9 @@ func raceUntilBlocked(t *testing.T, hold func(tx pgx.Tx), write func()) {
 		if !blocked {
 			time.Sleep(10 * time.Millisecond)
 		}
+	}
+	for _, step := range whileBlocked {
+		step(tx)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
