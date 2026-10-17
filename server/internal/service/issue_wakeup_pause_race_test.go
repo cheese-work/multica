@@ -9,7 +9,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // CHE-1727 review (round 3): the pause decision must be serialized with the
@@ -242,5 +245,102 @@ func TestPullRequestEventCommittingAfterResumeSweepDoesNotFire(t *testing.T) {
 	}
 	if n := e.tasks(t, SystemRulePRMerged); n != 0 {
 		t.Fatalf("an event that arrived while paused started %d runs after the resume", n)
+	}
+}
+
+// CHE-1727 review (round 5): every receipt producer must honor the no-replay
+// rule without a lock the producer cannot take safely, and sub-issue hints must
+// keep prompting an evaluation of what still holds.
+
+func childDoneRule(t *testing.T, f principalFixture, issue pgtype.UUID) db.IssueWakeup {
+	t.Helper()
+	w, err := f.q.GetSystemWakeup(context.Background(), db.GetSystemWakeupParams{IssueID: issue, SystemRule: systemRuleText(SystemRuleChildDone)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return w
+}
+
+// The last sub-issue closing while paused is a state that still holds on
+// resume. Its hint only prompts an evaluation, so the pause must not drop it.
+func TestChildDoneHintRecordedWhilePausedEvaluatesOnResume(t *testing.T) {
+	f, s, issue, agent := conditionFixture(t)
+	ctx := context.Background()
+	f.Exec(t, "UPDATE issue SET status='in_progress',assignee_type='agent',assignee_id=$2 WHERE id=$1", issue, agent)
+	child := f.Issue(t, "child", testutil.Cols{"parent_issue_id": issue, "status": "in_progress"})
+	f.Cleanup(t, "DELETE FROM issue_child_event WHERE parent_id=$1", issue)
+	if err := s.ProcessChildEvents(ctx, issue); err != nil {
+		t.Fatal(err)
+	}
+	if err := flipPause(t, f, s, true); err != nil {
+		t.Fatal(err)
+	}
+	f.Exec(t, "UPDATE issue SET status='done' WHERE id=$1", child)
+	if err := s.ProcessChildEvents(ctx, issue); err != nil {
+		t.Fatal(err)
+	}
+	rule := childDoneRule(t, f, issue)
+	if n := wakeRuns(t, f, rule.ID); n != 0 {
+		t.Fatalf("paused workspace started %d runs for a sub-issue closing", n)
+	}
+	if err := flipPause(t, f, s, false); err != nil {
+		t.Fatal(err)
+	}
+	tickWorkspace(t, f, s)
+	if n := wakeRuns(t, f, rule.ID); n != 1 {
+		t.Fatalf("a closing that still holds started %d runs after the resume, want 1", n)
+	}
+}
+
+// A receipt a producer inserted while the workspace was paused, but committed
+// after the resume swept, is still a paused-era input. The producer here is an
+// issue update: unlike a comment insert, whose foreign key to the workspace
+// already makes a resume wait for it, an issue update takes no workspace lock.
+func pausedIssueUpdateCommittingAfterResume(t *testing.T, f principalFixture, s *IssueWakeupService, issue pgtype.UUID, afterResume func()) {
+	t.Helper()
+	ctx := context.Background()
+	if err := flipPause(t, f, s, true); err != nil {
+		t.Fatal(err)
+	}
+	producer, err := f.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer producer.Rollback(ctx)
+	if _, err := producer.Exec(ctx, "UPDATE issue SET status='in_progress' WHERE id=$1", issue); err != nil {
+		t.Fatal(err)
+	}
+	// The resume runs while the producer's transaction is still open, so its
+	// sweep cannot see the receipt the update's trigger wrote.
+	if err := flipPause(t, f, s, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := producer.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	afterResume()
+}
+
+func TestEventInsertedWhilePausedAndCommittedAfterResumeIsDropped(t *testing.T) {
+	f, s, issue, agent := wakeFixture(t)
+	w := wakeCreate(t, f, s, issue, WakeupInput{AgentID: agent, Kind: "event", Mode: "continuous", EventTypes: []string{"issue.status_changed"}, Instruction: "look"})
+	pausedIssueUpdateCommittingAfterResume(t, f, s, issue, func() {})
+	wakeDispatch(t, s, w)
+	if n := wakeRuns(t, f, w.ID); n != 0 {
+		t.Fatalf("an event produced while paused started %d runs after the resume", n)
+	}
+}
+
+// A later event merges into the late paused-era receipt. It is a real post-resume
+// event, so exactly one run starts for it.
+func TestEventAfterResumeStillFiresWhenItMergesIntoALatePausedReceipt(t *testing.T) {
+	f, s, issue, agent := wakeFixture(t)
+	w := wakeCreate(t, f, s, issue, WakeupInput{AgentID: agent, Kind: "event", Mode: "continuous", EventTypes: []string{"issue.status_changed"}, Instruction: "look"})
+	pausedIssueUpdateCommittingAfterResume(t, f, s, issue, func() {
+		f.Exec(t, "UPDATE issue SET status='in_review' WHERE id=$1", issue)
+	})
+	wakeDispatch(t, s, w)
+	if n := wakeRuns(t, f, w.ID); n != 1 {
+		t.Fatalf("an event after the resume started %d runs, want 1", n)
 	}
 }
