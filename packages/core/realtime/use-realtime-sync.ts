@@ -351,6 +351,7 @@ type ChatSessionUpdatedPayload = {
   project_id?: string | null;
   pinned?: boolean;
   status?: "active" | "archived";
+  compacting?: boolean;
   updated_at?: string;
 };
 
@@ -387,6 +388,7 @@ export function applyChatSessionUpdatedToCache(
             ...("project_id" in payload ? { project_id: payload.project_id } : {}),
             pinned: payload.pinned ?? s.pinned,
             status: payload.status ?? s.status,
+            ...(payload.compacting === undefined ? {} : { compacting: payload.compacting }),
             updated_at: payload.updated_at ?? s.updated_at,
             ...(payload.status === "archived"
               ? { unread_count: 0, has_unread: false }

@@ -42,7 +42,11 @@ vi.mock("./components/chat-message-list", async () => {
   };
 });
 vi.mock("./components/chat-input", () => ({
-  ChatInput: () => <div>chat-input</div>,
+  ChatInput: ({ disabled, compacting }: { disabled?: boolean; compacting?: boolean }) => (
+    <div data-disabled={String(!!disabled)} data-compacting={String(!!compacting)}>
+      chat-input
+    </div>
+  ),
 }));
 vi.mock("./components/chat-thread-list", () => ({
   ChatThreadList: ({
@@ -165,7 +169,9 @@ vi.mock("./components/use-chat-controller", async () => {
       // session-9 is the DM whose transcript ends with a "continued into" link.
       currentSession: activeSession === "session-9"
         ? { id: "session-9", continued_into_session_id: "session-10" }
-        : null,
+        : activeSession === "session-compacting"
+          ? { id: "session-compacting", compacting: true }
+          : null,
       isSessionArchived: false,
       isAgentArchived: false,
       isAgentRuntimeBound: true,
@@ -407,6 +413,23 @@ describe("ChatPage URL synchronization", () => {
       expect(replace).not.toHaveBeenCalled();
     },
   );
+});
+
+// CHE-1807: while a DM compacts, the page's composer is disabled and says why.
+describe("ChatPage compacting composer", () => {
+  it("disables the composer for a compacting DM and leaves other DMs alone", () => {
+    seedSession("session-compacting");
+    renderPage("session=session-compacting");
+    expect(screen.getByText("chat-input")).toHaveAttribute("data-disabled", "true");
+    expect(screen.getByText("chat-input")).toHaveAttribute("data-compacting", "true");
+  });
+
+  it("keeps the composer enabled for a DM that is not compacting", () => {
+    seedSession("session-9");
+    renderPage("session=session-9");
+    expect(screen.getByText("chat-input")).toHaveAttribute("data-disabled", "false");
+    expect(screen.getByText("chat-input")).toHaveAttribute("data-compacting", "false");
+  });
 });
 
 describe("ChatPage ?agent= deep link", () => {

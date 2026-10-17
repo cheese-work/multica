@@ -274,6 +274,10 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to load chat channel metadata")
 		return
 	}
+	if err := h.hydrateChatSessionCompacting(r.Context(), resp); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load chat compaction state")
+		return
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -362,6 +366,10 @@ func (h *Handler) GetChatSession(w http.ResponseWriter, r *http.Request) {
 	responses := []ChatSessionResponse{resp}
 	if err := h.hydrateChatSessionChannelMetadata(r.Context(), responses); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load chat channel metadata")
+		return
+	}
+	if err := h.hydrateChatSessionCompacting(r.Context(), responses); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load chat compaction state")
 		return
 	}
 	writeJSON(w, http.StatusOK, responses[0])
@@ -1000,6 +1008,10 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "chat agent is archived")
 		case errors.Is(err, service.ErrChatTaskAgentNoRuntime):
 			writeError(w, http.StatusConflict, "chat agent has no runtime")
+		case errors.Is(err, service.ErrChatCompacting):
+			// Both keys: `code` for API consumers, `reason_code` for the web
+			// client's existing send-error mapping.
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "chat is compacting", "code": "chat_compacting", "reason_code": "chat_compacting"})
 		default:
 			slog.Warn("send chat message failed", append(logger.RequestAttrs(r), "error", err)...)
 			writeError(w, http.StatusInternalServerError, "failed to send chat message")
@@ -2050,14 +2062,39 @@ type ChatSessionResponse struct {
 	// older Chat that remains readable and writable in Multica.
 	ChannelSource         *ChatSessionChannelSourceResponse `json:"channel_source,omitempty"`
 	IsCurrentChannelRoute *bool                             `json:"is_current_channel_route,omitempty"`
-	CreatedAt             string                            `json:"created_at"`
-	UpdatedAt             string                            `json:"updated_at"`
+	// Compacting is true while a compaction task (manual or automatic) is
+	// active for this DM: sends are refused with 409 chat_compacting.
+	Compacting bool   `json:"compacting"`
+	CreatedAt  string `json:"created_at"`
+	UpdatedAt  string `json:"updated_at"`
 }
 
 type ChatSessionChannelSourceResponse struct {
 	ChannelType    string `json:"channel_type"`
 	InstallationID string `json:"installation_id"`
 	RouteRevision  int64  `json:"route_revision"`
+}
+
+func (h *Handler) hydrateChatSessionCompacting(ctx context.Context, sessions []ChatSessionResponse) error {
+	if len(sessions) == 0 {
+		return nil
+	}
+	ids := make([]pgtype.UUID, 0, len(sessions))
+	for _, session := range sessions {
+		ids = append(ids, parseUUID(session.ID))
+	}
+	compacting, err := h.Queries.ListCompactingChatSessionIDs(ctx, ids)
+	if err != nil {
+		return err
+	}
+	byID := make(map[string]bool, len(compacting))
+	for _, id := range compacting {
+		byID[uuidToString(id)] = true
+	}
+	for i := range sessions {
+		sessions[i].Compacting = byID[sessions[i].ID]
+	}
+	return nil
 }
 
 func (h *Handler) hydrateChatSessionChannelMetadata(ctx context.Context, sessions []ChatSessionResponse) error {
@@ -2222,6 +2259,8 @@ func normalizeMessageKind(kind string) string {
 	switch kind {
 	case protocol.ChatMessageKindContinuationSummary:
 		return protocol.ChatMessageKindContinuationSummary
+	case protocol.ChatMessageKindCompactNotice:
+		return protocol.ChatMessageKindCompactNotice
 	case protocol.ChatMessageKindNoResponse:
 		return protocol.ChatMessageKindNoResponse
 	case protocol.ChatMessageKindOnboardingKickoff:

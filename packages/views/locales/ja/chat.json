@@ -14,6 +14,7 @@
   "input": {
     "placeholder_no_agent": "チャットを始めるにはエージェントを作成してください",
     "placeholder_archived": "このセッションはアーカイブされています",
+    "placeholder_compacting": "コンパクト中…",
     "placeholder_archived_agent": "このエージェントはアーカイブされています",
     "placeholder_runtime_required": "ランタイムを設定して続ける",
     "placeholder_access_revoked": "このエージェントを実行する権限がありません",
@@ -23,6 +24,7 @@
     "queue_send_tooltip": "キューに追加",
     "stop_tooltip": "停止",
     "send_failed_toast": "メッセージを送信できませんでした",
+    "compacting_toast": "この DM はコンパクト中です。完了してからもう一度送信してください。",
     "rename_failed_toast": "チャットの名前を変更できませんでした",
     "fork_unconfirmed": "分岐を確認できませんでした。再試行する前に「分岐先」のリンクを確認してください。",
     "fork_attachments_blocked": "/fork では添付ファイルを送信できません。",

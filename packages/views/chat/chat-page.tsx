@@ -391,8 +391,10 @@ export function ChatPage() {
           c.isSessionArchived ||
           c.isAgentArchived ||
           c.isAgentAccessRevoked ||
-          !c.isAgentRuntimeBound
+          !c.isAgentRuntimeBound ||
+          c.currentSession?.compacting === true
         }
+        compacting={c.currentSession?.compacting === true}
         noAgent={c.noAgent}
         agentArchived={c.isAgentArchived}
         agentAccessRevoked={c.isAgentAccessRevoked}

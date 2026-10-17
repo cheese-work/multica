@@ -233,3 +233,14 @@ The SQL bytes are unchanged. No migration-runner name map entry is needed.
 Numbers 631 to 649 are claimed or reserved by open pull requests (wakeups,
 inbox) and 650 to 652 by the DM reply record, so 653 is the next free number
 on 2026-10-16. Production deployment remains gated on Cheese.
+
+## Agent task queue compaction columns
+
+Migration `655_agent_task_queue_compact` adds `task_kind`, `compact_reason` and
+`compact_trigger_tokens` to `agent_task_queue` (CHE-1807). It was `629_` on the
+PR branch, which collided with `629_chat_session_title_trgm_index` on `main`.
+It never reached `main`, so no ledger row exists under the old name. It does not
+depend on `630_agent_task_queue_context`. Numbers 631 to 649 are claimed by open
+wakeup and inbox pull requests, 650 to 652 by the DM reply record, 653 by the
+unpin migration and 654 by the chat message `sent_via` validation, so 655 is the
+next free number on 2026-10-17. Production deployment remains gated on Cheese.

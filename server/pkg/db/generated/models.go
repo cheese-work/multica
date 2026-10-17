@@ -180,6 +180,9 @@ type AgentTaskQueue struct {
 	IssueSnapshot             []byte      `json:"issue_snapshot"`
 	ContextTokens             pgtype.Int8 `json:"context_tokens"`
 	ContextWindow             pgtype.Int8 `json:"context_window"`
+	TaskKind                  pgtype.Text `json:"task_kind"`
+	CompactReason             pgtype.Text `json:"compact_reason"`
+	CompactTriggerTokens      pgtype.Int8 `json:"compact_trigger_tokens"`
 }
 
 type AgentToLabel struct {

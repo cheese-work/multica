@@ -588,7 +588,9 @@ export function useChatController(opts?: { isActive?: boolean }) {
         toast.error(
           reason === "invocation_not_allowed"
             ? t(($) => $.input.send_blocked_toast)
-            : reason === "agent_runtime_required"
+            : reason === "chat_compacting"
+              ? t(($) => $.input.compacting_toast)
+              : reason === "agent_runtime_required"
               ? t(($) => $.input.runtime_required_toast)
               : reason === "runtime_access_denied"
                 ? t(($) => $.input.runtime_access_denied_toast)
