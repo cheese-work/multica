@@ -344,3 +344,73 @@ func TestEventAfterResumeStillFiresWhenItMergesIntoALatePausedReceipt(t *testing
 		t.Fatalf("an event after the resume started %d runs, want 1", n)
 	}
 }
+
+// CHE-1727 review (round 6): a run being claimed takes the inputs of the wakeup
+// rules that waited for it (JoinWaitingWakeups). That is a firing too, so it
+// must honor the pause and the no-replay rule.
+
+func TestPausedWorkspaceDoesNotJoinWakeupInputsIntoAClaim(t *testing.T) {
+	f, s, issue, agent := conditionFixture(t)
+	w := wakeCreate(t, f, s, issue, WakeupInput{AgentID: agent, Kind: "event", Mode: "continuous", EventTypes: []string{"comment.created"}, Instruction: "Review the latest comment"})
+	waiting := wakeWaitingRun(t, f, issue, agent, f.UserID)
+	f.Comment(t, util.UUIDToString(issue), "arrived before the pause")
+	if err := flipPause(t, f, s, true); err != nil {
+		t.Fatal(err)
+	}
+	if notes := wakeClaim(t, f, s, waiting); notes != "" {
+		t.Fatalf("a claim while paused got the wakeup inputs: %q", notes)
+	}
+	if err := flipPause(t, f, s, false); err != nil {
+		t.Fatal(err)
+	}
+	wakeRequeue(t, f, s, waiting)
+	if notes := wakeClaim(t, f, s, waiting); notes != "" {
+		t.Fatalf("a claim after the resume replayed a paused-era input: %q", notes)
+	}
+	if n := wakeRuns(t, f, w.ID); n != 0 {
+		t.Fatalf("the wakeup started %d runs of its own", n)
+	}
+}
+
+func TestResumeThenClaimDoesNotJoinALatePausedEraReceipt(t *testing.T) {
+	f, s, issue, agent := wakeFixture(t)
+	wakeCreate(t, f, s, issue, WakeupInput{AgentID: agent, Kind: "event", Mode: "continuous", EventTypes: []string{"issue.status_changed"}, Instruction: "Review the status change"})
+	waiting := wakeWaitingRun(t, f, issue, agent, f.UserID)
+	pausedIssueUpdateCommittingAfterResume(t, f, s, issue, func() {})
+	if notes := wakeClaim(t, f, s, waiting); notes != "" {
+		t.Fatalf("a claim after the resume got a receipt produced while paused: %q", notes)
+	}
+}
+
+// Controls, passing before the fix: a person's manual trigger is exempt from the
+// pause, and an event after the resume joins as usual.
+func TestManualTriggerStillJoinsAClaimWhilePaused(t *testing.T) {
+	f, s, issue, agent := wakeFixture(t)
+	w := wakeCreate(t, f, s, issue, WakeupInput{AgentID: agent, Kind: "event", Mode: "continuous", EventTypes: []string{"comment.created"}, Instruction: "Look at it now"})
+	waiting := wakeWaitingRun(t, f, issue, agent, f.UserID)
+	if err := flipPause(t, f, s, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Trigger(context.Background(), issue, w.ID, parseTestUUID(t, f.UserID)); err != nil {
+		t.Fatal(err)
+	}
+	if notes := wakeClaim(t, f, s, waiting); !strings.Contains(notes, "Look at it now") {
+		t.Fatalf("the manual trigger did not reach the claim while paused: %q", notes)
+	}
+}
+
+func TestEventAfterResumeStillJoinsAClaim(t *testing.T) {
+	f, s, issue, agent := wakeFixture(t)
+	wakeCreate(t, f, s, issue, WakeupInput{AgentID: agent, Kind: "event", Mode: "continuous", EventTypes: []string{"comment.created"}, Instruction: "Review the new comment"})
+	waiting := wakeWaitingRun(t, f, issue, agent, f.UserID)
+	if err := flipPause(t, f, s, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := flipPause(t, f, s, false); err != nil {
+		t.Fatal(err)
+	}
+	f.Comment(t, util.UUIDToString(issue), "arrives after the resume")
+	if notes := wakeClaim(t, f, s, waiting); !strings.Contains(notes, "Review the new comment") {
+		t.Fatalf("an event after the resume did not join: %q", notes)
+	}
+}
