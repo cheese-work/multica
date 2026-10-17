@@ -2444,7 +2444,7 @@ func (q *Queries) WorkspaceWakeupsPaused(ctx context.Context, id pgtype.UUID) (b
 
 const workspaceWakeupsPausedShared = `-- name: WorkspaceWakeupsPausedShared :one
 SELECT COALESCE(settings->>'wakeups_paused'='true',false)::bool AS paused,
- (settings->>'wakeups_resumed_at')::timestamptz AS resumed_at
+ (CASE WHEN settings->>'wakeups_resumed_at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T' THEN (settings->>'wakeups_resumed_at')::timestamptz END)::timestamptz AS resumed_at
 FROM workspace WHERE id= $1 FOR KEY SHARE
 `
 

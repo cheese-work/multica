@@ -387,7 +387,7 @@ SELECT * FROM issue_wakeup WHERE workspace_id= @workspace_id AND enabled AND kin
 -- writer takes FOR UPDATE, so the answer cannot go stale before the enqueue
 -- (CHE-1727).
 SELECT COALESCE(settings->>'wakeups_paused'='true',false)::bool AS paused,
- (CASE WHEN settings->>'wakeups_resumed_at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T' THEN (settings->>'wakeups_resumed_at')::timestamptz END) AS resumed_at
+ (CASE WHEN settings->>'wakeups_resumed_at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T' THEN (settings->>'wakeups_resumed_at')::timestamptz END)::timestamptz AS resumed_at
 FROM workspace WHERE id= @id FOR KEY SHARE;
 -- name: DropLatePausedReceipts :execrows
 -- A producer that takes no workspace lock (an issue or task update) can commit
