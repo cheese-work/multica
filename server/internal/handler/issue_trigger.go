@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -81,25 +82,32 @@ func (h *Handler) shouldSuppressActiveSelfAssignment(ctx context.Context, actorT
 // WillEnqueueRun. handoffNote is a legacy API input retained for installed
 // clients and travels only with a run that actually starts. The squad path
 // still flows through enqueueSquadLeaderTask so the leader access gate and
-// pending dedup stay in one place.
-func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger service.IssueRunTrigger, actorType, actorID, handoffNote string) {
+// pending dedup stay in one place. It reports whether an executable run now
+// carries the write: a run it started, or an unstarted one that held the slot.
+func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger service.IssueRunTrigger, actorType, actorID, handoffNote string) (started bool) {
 	switch trigger.AssigneeType {
 	case "agent":
 		// The member who performed this assign/promote is the accountable human
 		// for the run (MUL-4302 §4). An agent actor is not a human, so only a
 		// member actor is threaded; otherwise attribution falls back to the chain.
-		if _, err := h.TaskService.EnqueueTaskForIssueWithHandoff(ctx, issue, handoffNote, memberActorUserID(actorType, actorID)); err != nil {
-			// ErrDuplicatePendingTask is the expected coalesce outcome (a
-			// sibling run already covers this target); anything else is a
-			// real enqueue failure that was previously discarded silently
-			// (CHE-486).
-			if !errors.Is(err, service.ErrDuplicatePendingTask) {
-				slog.Error("dispatch issue run failed", "issue_id", uuidToString(issue.ID), "agent_id", uuidToString(trigger.AgentID), "error", err)
-			}
+		_, err := h.TaskService.EnqueueTaskForIssueWithHandoff(ctx, issue, handoffNote, memberActorUserID(actorType, actorID))
+		if errors.Is(err, service.ErrDuplicatePendingTask) {
+			// A sibling run holds the slot. It delivers this write only if it has
+			// not started: a dispatched run read the issue before the write.
+			queued, queuedErr := h.Queries.HasQueuedTaskForIssueAndAgent(ctx, db.HasQueuedTaskForIssueAndAgentParams{IssueID: issue.ID, AgentID: trigger.AgentID})
+			return queuedErr == nil && queued
 		}
+		// Anything else is a real enqueue failure that was previously
+		// discarded silently (CHE-486).
+		if err != nil {
+			slog.Error("dispatch issue run failed", "issue_id", uuidToString(issue.ID), "agent_id", uuidToString(trigger.AgentID), "error", err)
+			return false
+		}
+		return true
 	case "squad":
-		h.enqueueSquadLeaderTask(ctx, issue, pgtype.UUID{}, actorType, actorID, handoffNote)
+		return h.enqueueSquadLeaderTask(ctx, issue, pgtype.UUID{}, actorType, actorID, handoffNote)
 	}
+	return false
 }
 
 // memberActorUserID returns the acting member's user id as a pgtype.UUID when the
@@ -129,6 +137,9 @@ type IssueTriggerPreviewRequest struct {
 	AssigneeType *string `json:"assignee_type"`
 	AssigneeID   *string `json:"assignee_id"`
 	Status       *string `json:"status"`
+	// ProjectID places a create preview in a project, so its workflow's
+	// starting status and starting-step handoff apply. (MUL-7420)
+	ProjectID *string `json:"project_id,omitempty"`
 }
 
 // IssueTriggerPreviewItem is one issue that WILL start a run under the
@@ -220,6 +231,20 @@ func (h *Handler) PreviewIssueTrigger(w http.ResponseWriter, r *http.Request) {
 			AssigneeType: newAssigneeType,
 			AssigneeID:   newAssigneeID,
 		}
+		// Mirror CreateIssue's workflow handling: the starting column's
+		// handoff when no assignee was picked. (MUL-7420)
+		if req.ProjectID != nil && *req.ProjectID != "" {
+			if projectUUID, err := util.ParseUUID(*req.ProjectID); err == nil {
+				if def, project, err := issueworkflow.ForProject(r.Context(), h.Queries, wsUUID, projectUUID); err == nil && def != nil {
+					if step, ok := def.Step(candidate.Status); ok && step.HandsOff() && !hasNewAssignee {
+						if t, id, ok := issueworkflow.ResolveHandler(step, project, actorType, parseUUID(actorID)); ok {
+							candidate.AssigneeType = pgtype.Text{String: t, Valid: true}
+							candidate.AssigneeID = id
+						}
+					}
+				}
+			}
+		}
 		appendTrigger(candidate, service.IssueTriggerInput{Issue: candidate, IsCreate: true})
 		resp.TotalCount = len(resp.Triggers)
 		writeJSON(w, http.StatusOK, resp)
@@ -250,6 +275,22 @@ func (h *Handler) PreviewIssueTrigger(w http.ResponseWriter, r *http.Request) {
 		if req.Status != nil && *req.Status != "" {
 			post.Status = *req.Status
 			in.StatusChanged = loaded.Status != *req.Status
+			// A status that enters a workflow handoff step reassigns the
+			// issue, exactly as UpdateIssue will. (MUL-7420)
+			if !hasNewAssignee {
+				params := db.UpdateIssueParams{
+					ProjectID:    loaded.ProjectID,
+					Status:       pgtype.Text{String: *req.Status, Valid: true},
+					AssigneeType: loaded.AssigneeType,
+					AssigneeID:   loaded.AssigneeID,
+				}
+				if hand, err := h.applyIssueWorkflow(r.Context(), h.Queries, loaded, &params, true, false, false, nil); err == nil && hand != nil {
+					post.AssigneeType = params.AssigneeType
+					post.AssigneeID = params.AssigneeID
+					in.AssigneeChanged = true
+					in.EnteredHandoffStep = true
+				}
+			}
 		}
 		in.Issue = post
 		appendTrigger(post, in)

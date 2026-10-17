@@ -2,9 +2,11 @@ package service
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -55,6 +57,11 @@ type IssueTriggerInput struct {
 	IsCreate        bool
 	AssigneeChanged bool
 	StatusChanged   bool
+	// EnteredHandoffStep marks a write that moved the issue into a project
+	// workflow column with a handler (MUL-7420). The step is new work even
+	// when its handler is the agent whose run made the move, so the
+	// self-assignment suppression does not apply.
+	EnteredHandoffStep bool
 }
 
 // IssueRunTrigger is the resolved decision shared by preview and the write
@@ -153,11 +160,19 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 		if !canAccess(agent) {
 			return IssueRunTrigger{}, false
 		}
-		if source == RunSourceAssign && !in.IsCreate && probe.SuppressActiveSelfAssignment != nil &&
+		if source == RunSourceAssign && !in.IsCreate && !in.EnteredHandoffStep && probe.SuppressActiveSelfAssignment != nil &&
 			probe.SuppressActiveSelfAssignment(issue.AssigneeID) {
 			return IssueRunTrigger{}, false
 		}
-		if source == RunSourceStatus && s.hasPendingRun(ctx, issue.ID, issue.AssigneeID) {
+		// A step entered under the agent's own run queues behind it. A run
+		// already queued covers a new step only when it works that step: one
+		// stamped for a step the issue has left would be refused the moment it
+		// moved the issue, so it must not suppress the run the new step needs.
+		if in.EnteredHandoffStep {
+			if s.hasPendingStepRun(ctx, issue, issue.AssigneeID) {
+				return IssueRunTrigger{}, false
+			}
+		} else if source == RunSourceStatus && s.hasPendingRun(ctx, issue.ID, issue.AssigneeID) {
 			return IssueRunTrigger{}, false
 		}
 		return IssueRunTrigger{
@@ -220,4 +235,42 @@ func (s *IssueService) hasPendingRun(ctx context.Context, issueID, agentID pgtyp
 		return true
 	}
 	return pending
+}
+
+// hasPendingStepRun is hasPendingRun for a workflow handoff: a pending run
+// stamped for a step the issue has left does not count. Errors fail closed to
+// "pending", like hasPendingRun.
+func (s *IssueService) hasPendingStepRun(ctx context.Context, issue db.Issue, agentID pgtype.UUID) bool {
+	pending, err := s.Queries.HasPendingTaskForIssueAndAgentAtStep(ctx, db.HasPendingTaskForIssueAndAgentAtStepParams{
+		IssueID: issue.ID,
+		AgentID: agentID,
+		HeadSha: headShaText(s.TaskService.ResolveIssueReviewSHA(ctx, issue.ID)),
+		Step:    issue.Status,
+	})
+	if err != nil {
+		return true
+	}
+	return pending
+}
+
+// CancelStaleStepRuns cancels the agent's pending runs on the issue that are
+// stamped for a step the issue has left, before the run for the step it
+// entered is queued. The pending-run unique index admits one per issue and
+// agent, so the stale run would otherwise block its replacement.
+func (s *IssueService) CancelStaleStepRuns(ctx context.Context, issue db.Issue, agentID pgtype.UUID) {
+	stale, err := s.Queries.ListStalePendingStepTasks(ctx, db.ListStalePendingStepTasksParams{
+		IssueID: issue.ID,
+		AgentID: agentID,
+		Step:    issue.Status,
+	})
+	if err != nil {
+		slog.Warn("workflow: list stale step runs failed", "issue_id", util.UUIDToString(issue.ID), "error", err)
+		return
+	}
+	for _, task := range stale {
+		if _, err := s.TaskService.CancelTask(ctx, task.ID); err != nil {
+			slog.Warn("workflow: cancel stale step run failed",
+				"issue_id", util.UUIDToString(issue.ID), "task_id", util.UUIDToString(task.ID), "error", err)
+		}
+	}
 }
