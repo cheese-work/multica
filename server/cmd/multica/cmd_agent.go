@@ -532,9 +532,7 @@ func requireWorkspaceID(cmd *cobra.Command) (string, error) {
 	return id, nil
 }
 
-// ---------------------------------------------------------------------------
 // Agent commands
-// ---------------------------------------------------------------------------
 
 func runAgentList(cmd *cobra.Command, _ []string) error {
 	client, err := newAPIClient(cmd)
@@ -1048,9 +1046,7 @@ func runAgentAvatar(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// ---------------------------------------------------------------------------
 // Agent skills subcommands
-// ---------------------------------------------------------------------------
 
 func runAgentSkillsList(cmd *cobra.Command, args []string) error {
 	client, err := newAPIClient(cmd)
@@ -1178,9 +1174,7 @@ func printAgentSkillsMutationResult(cmd *cobra.Command, agentID string, result j
 	return nil
 }
 
-// ---------------------------------------------------------------------------
 // Agent env subcommands
-// ---------------------------------------------------------------------------
 
 // runAgentEnvGet fetches the plaintext custom_env for a single agent
 // via the audited `/env` endpoint. The CLI prints raw JSON in JSON
@@ -1296,9 +1290,7 @@ func runAgentEnvPatch(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 // parseCustomEnv parses the --custom-env flag value (a JSON object literal)
 // into a string map suitable for the request body. The clear-all signal is
