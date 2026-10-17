@@ -54,8 +54,11 @@ function parseConfidence(text: string): number | null {
   return Number.isFinite(value) && value >= 0 && value <= 1 ? value : null;
 }
 
+/** Two decimals, unless that would round the stored value: an untouched confidence is never rewritten. */
 function formatConfidence(value: number | null) {
-  return (value ?? DEFAULT_MIN_CONFIDENCE).toFixed(2);
+  const v = value ?? DEFAULT_MIN_CONFIDENCE;
+  const fixed = v.toFixed(2);
+  return Number(fixed) === v ? fixed : String(v);
 }
 
 /** What the user is editing, and the version they started from. */
@@ -88,9 +91,7 @@ export function JevGovernanceTab() {
         <RoutingPane
           config={config}
           canManage={role === "owner" || role === "admin"}
-          reload={async () => {
-            await query.refetch();
-          }}
+          reload={async () => (await query.refetch()).isSuccess}
         />
       ) : query.isError ? (
         <div
@@ -128,7 +129,8 @@ function RoutingPane({
 }: {
   config: WorkspaceJevGovernance;
   canManage: boolean;
-  reload: () => Promise<void>;
+  /** Resolves true only when the latest config loaded. */
+  reload: () => Promise<boolean>;
 }) {
   const { t } = useT("settings");
   const wsId = useWorkspaceId();
@@ -193,8 +195,8 @@ function RoutingPane({
   };
 
   const reloadLatest = async () => {
-    await reload();
-    discard();
+    // A failed reload keeps the edit and the conflict recovery on screen.
+    if (await reload()) discard();
   };
 
   const modeLabel = t(($) => $.jev_governance.mode[mode]);
