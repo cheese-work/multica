@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // CHE-1807 (A3): a web DM compacts itself after a completed run whose last
@@ -543,5 +544,137 @@ func TestChatSessionReportsCompacting(t *testing.T) {
 	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'cancelled', completed_at = now() WHERE id = $1`, tasks[0].ID)
 	if compacting() {
 		t.Fatal("a DM whose compaction ended still reports compacting")
+	}
+}
+
+// Retrospective tests (added after the first red/green, closing the acceptance
+// coverage the design requires at docs/designs/dm-auto-compact.md: cancel
+// unlock in each active state, and the guard on the swept-stale terminal path).
+
+func (dm autoCompactDM) startAutoCompaction(t *testing.T, state string) compactionTask {
+	t.Helper()
+	dm.complete(t, dm.sendRunning(t, "hello"), 170_000, 200_000)
+	tasks := dm.compactionTasks(t)
+	if len(tasks) != 1 {
+		t.Fatalf("%d compaction tasks, want 1", len(tasks))
+	}
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = $2,
+		dispatched_at = CASE WHEN $2 IN ('dispatched', 'running') THEN now() - interval '30 minutes' END,
+		started_at = CASE WHEN $2 = 'running' THEN now() - interval '30 minutes' END
+		WHERE id = $1`, tasks[0].ID, state)
+	return tasks[0]
+}
+
+// sendRunningAfterUnlock queues the next user turn and marks it running. The
+// turn "unlocked" sent earlier is still queued; settle it first so the agent's
+// concurrency does not matter.
+func (dm autoCompactDM) sendRunningAfterUnlock(t *testing.T, content string) string {
+	t.Helper()
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'cancelled', completed_at = now() WHERE chat_session_id = $1 AND status = 'queued' AND task_kind IS DISTINCT FROM 'compact'`, dm.sessionID)
+	return dm.sendRunning(t, content)
+}
+
+func (dm autoCompactDM) failureNotices(t *testing.T) []string {
+	t.Helper()
+	var out []string
+	for _, content := range dm.messages(t, "compact_notice") {
+		if strings.HasPrefix(content, "Auto-compact failed") {
+			out = append(out, content)
+		}
+	}
+	return out
+}
+
+func TestCancellingTheCompactionUnlocksSendsInEveryActiveState(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	for _, state := range activeTaskStates {
+		t.Run(state, func(t *testing.T) {
+			dm := newAutoCompactDM(t, `{}`, `{}`)
+			task := dm.startAutoCompaction(t, state)
+			if w := dm.send(t, "blocked"); w.Code != http.StatusConflict {
+				t.Fatalf("send while compaction is %q: %d, want 409", state, w.Code)
+			}
+
+			if _, err := testHandler.TaskService.CancelTask(context.Background(), parseUUID(task.ID)); err != nil {
+				t.Fatalf("cancel a %q compaction: %v", state, err)
+			}
+
+			if w := dm.send(t, "now allowed"); w.Code != http.StatusCreated && w.Code != http.StatusOK {
+				t.Fatalf("send after cancelling a %q compaction: %d %s, want success", state, w.Code, w.Body.String())
+			}
+			want := "Auto-compact failed (cancelled). Type /compact to retry."
+			if got := dm.failureNotices(t); len(got) != 1 || got[0] != want {
+				t.Fatalf("failure notices = %q, want one %q", got, want)
+			}
+		})
+	}
+}
+
+// The stuck-task sweeper fails a dispatched or running compaction. The guard
+// must post the failure notice, unlock sends, and hold the 1.1x re-arm rule,
+// exactly as for a worker-reported failure.
+func TestSweptStaleCompactionRunsTheFailureGuard(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	for _, state := range []string{"queued", "dispatched", "running"} {
+		t.Run(state, func(t *testing.T) {
+			dm := newAutoCompactDM(t, `{}`, `{}`)
+			task := dm.startAutoCompaction(t, state)
+			if state != "dispatched" {
+				// A running or queued task is only swept once its runtime's heartbeat
+				// has been absent past the reconnect grace (a queued one also needs
+				// to have waited that long).
+				dbfx.Exec(t, `UPDATE agent_runtime SET status = 'offline', last_seen_at = now() - interval '1 hour' WHERE id = $1`, dm.runtimeID)
+				dbfx.Exec(t, `UPDATE agent_task_queue SET created_at = now() - interval '1 hour' WHERE id = $1`, task.ID)
+			}
+
+			var failed []db.AgentTaskQueue
+			var err error
+			if state == "queued" {
+				failed, err = testHandler.TaskService.ExpireStaleQueuedTasks(context.Background(), db.ExpireStaleQueuedTasksParams{ReconnectGraceSecs: 60, MaxPerTick: 100})
+			} else {
+				failed, err = testHandler.TaskService.FailStaleTasks(context.Background(), db.FailStaleTasksParams{
+					DispatchTimeoutSecs:       60,
+					RunningTimeoutSecs:        60,
+					RuntimeStaleSecs:          86400,
+					RuntimeReconnectGraceSecs: 60,
+				})
+			}
+			if err != nil {
+				t.Fatalf("sweep: %v", err)
+			}
+			swept := false
+			for _, f := range failed {
+				swept = swept || uuidToString(f.ID) == task.ID
+			}
+			if !swept {
+				t.Fatalf("the sweeper did not fail the %q compaction task", state)
+			}
+			testHandler.TaskService.HandleFailedTasks(context.Background(), failed)
+
+			want := "Auto-compact failed (failed). Type /compact to retry."
+			if got := dm.failureNotices(t); len(got) != 1 || got[0] != want {
+				t.Fatalf("failure notices = %q, want one %q", got, want)
+			}
+			if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE chat_session_id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred') AND task_kind = 'compact'`, dm.sessionID); n != 0 {
+				t.Fatalf("%d compaction tasks still active after the sweep (a retry would loop)", n)
+			}
+			if w := dm.send(t, "unlocked"); w.Code != http.StatusCreated && w.Code != http.StatusOK {
+				t.Fatalf("send after the sweep: %d %s, want success", w.Code, w.Body.String())
+			}
+
+			// 1.1 x 170000 = 187000: below it nothing re-arms, at it the next run does.
+			dm.complete(t, dm.sendRunningAfterUnlock(t, "two"), 186_999, 200_000)
+			if n := len(dm.compactionTasks(t)); n != 1 {
+				t.Fatalf("%d compaction tasks below the re-arm point, want 1", n)
+			}
+			dm.complete(t, dm.sendRunningAfterUnlock(t, "three"), 187_000, 200_000)
+			if n := len(dm.compactionTasks(t)); n != 2 {
+				t.Fatalf("%d compaction tasks at the re-arm point, want 2", n)
+			}
+		})
 	}
 }
