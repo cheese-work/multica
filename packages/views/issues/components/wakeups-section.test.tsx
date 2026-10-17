@@ -101,6 +101,13 @@ describe("Wakeups sidebar", () => {
     renderWithI18n(<WakeupsSection issueId="issue" />);
     expect(screen.getByText(/Wakeups paused by Ada at /)).toBeVisible();
   });
+  it("shows the panel banner in the warning tone (approved rev-3 A)", () => {
+    settings = { wakeups_paused: true, wakeups_paused_by: "u", wakeups_paused_at: "2026-10-15T08:00:00Z" };
+    renderWithI18n(<WakeupsSection issueId="issue" />);
+    const banner = screen.getByTestId("wakeups-paused-banner");
+    expect(banner).toHaveClass("bg-warning/10", "border-warning/30", "text-foreground");
+    expect(banner).not.toHaveClass("bg-muted/60");
+  });
   it("shows no pause banner while the workspace is running", () => {
     renderWithI18n(<WakeupsSection issueId="issue" />);
     expect(screen.queryByText(/Wakeups paused/)).toBeNull();

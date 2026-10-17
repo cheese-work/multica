@@ -133,3 +133,30 @@ it("offers Retry when the defaults cannot be loaded (approved rev-3 A: load-erro
   expect(await screen.findByRole("switch", { name: "On by default" })).toBeVisible();
   expect(screen.queryByRole("alert")).toBeNull();
 });
+
+it("shows the paused banner in the warning tone and Saved/Resumed in the success tone (approved rev-3 A)", async () => {
+  updateWorkspace.mockImplementation((async (_id: string, body: { settings: Record<string, unknown> }) => {
+    settings = body.settings;
+    return { id: "ws" };
+  }) as never);
+  settings = { wakeups_paused: true, wakeups_paused_by: "u", wakeups_paused_at: "2026-10-15T08:00:00Z" };
+  mount();
+  const banner = await screen.findByTestId("wakeups-paused-banner");
+  // Warning surface and border from the semantic token, not the neutral muted gray.
+  expect(banner).toHaveClass("bg-warning/10", "border-warning/30");
+  expect(banner).not.toHaveClass("bg-muted/60");
+  // Text stays on the foreground token so contrast holds in the light and dark themes.
+  expect(banner).toHaveClass("text-foreground");
+  expect(banner.querySelector("svg")).toHaveClass("text-warning");
+  expect(banner.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+
+  const toggle = screen.getByRole("switch", { name: "Pause all wakeups" });
+  await waitFor(() => expect(toggle).not.toHaveAttribute("aria-disabled", "true"));
+  fireEvent.click(toggle);
+  const saved = await screen.findByTestId("wakeups-pause-status");
+  expect(saved).toHaveTextContent("Wakeups resumed.");
+  expect(saved).toHaveClass("bg-success/10", "border-success/30", "text-foreground");
+  expect(saved).not.toHaveClass("text-muted-foreground");
+  expect(saved.querySelector("svg")).toHaveClass("text-success");
+  expect(saved.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+});
