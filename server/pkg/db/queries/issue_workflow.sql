@@ -146,6 +146,16 @@ WHERE id = sqlc.arg('id')::uuid
   AND workspace_id = sqlc.arg('workspace_id')::uuid
 FOR UPDATE;
 
+-- name: LockProjectForIssueWrite :one
+-- Held by an issue write that applies the project's workflow. A workflow
+-- switch takes the row FOR UPDATE, which conflicts with this lock, so the write
+-- either sees the switch or finishes before it starts. KEY SHARE leaves project
+-- renames and other row updates unblocked.
+SELECT id FROM project
+WHERE id = sqlc.arg('id')::uuid
+  AND workspace_id = sqlc.arg('workspace_id')::uuid
+FOR KEY SHARE;
+
 -- name: SetProjectWorkflow :one
 UPDATE project SET
     workflow_id = sqlc.narg('workflow_id')::uuid,

@@ -251,9 +251,11 @@ func assertIssueStatusStillActive(ctx context.Context, qtx *db.Queries, workspac
 // inside a transaction that re-verifies the status under the shared catalog
 // lock (see assertIssueStatusStillActive). Request writes also carry trusted
 // wakeup actor identity in transaction-local settings, including built-in targets.
-func (h *Handler) runWithIssueStatusGuard(ctx context.Context, workspaceID pgtype.UUID, statusKey string, fn func(q *db.Queries) error) error {
+// inTx forces the transaction for a write that re-checks its workflow decision
+// under locks, whatever the status.
+func (h *Handler) runWithIssueStatusGuard(ctx context.Context, workspaceID pgtype.UUID, statusKey string, inTx bool, fn func(q *db.Queries) error) error {
 	_, hasActor := ctx.Value(wakeupActorKey{}).(wakeupActor)
-	if !hasActor && (statusKey == "" || issuestatus.IsBuiltIn(statusKey)) {
+	if !inTx && !hasActor && (statusKey == "" || issuestatus.IsBuiltIn(statusKey)) {
 		return fn(h.Queries)
 	}
 	tx, err := h.beginWakeupWrite(ctx)
@@ -273,10 +275,14 @@ func (h *Handler) runWithIssueStatusGuard(ctx context.Context, workspaceID pgtyp
 }
 
 // updateIssueWithStatusGuard writes params under the status-archive guard.
-func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pgtype.UUID, statusKey string, params db.UpdateIssueParams) (db.Issue, error) {
+// A non-nil wf re-checks the write's workflow decision under locks first.
+func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pgtype.UUID, statusKey string, params db.UpdateIssueParams, wf *workflowWrite) (db.Issue, error) {
 	var issue db.Issue
 	var cancelledWakeups []db.AgentTaskQueue
-	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, func(q *db.Queries) error {
+	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil, func(q *db.Queries) error {
+		if err := wf.lockAndVerify(ctx, h, q); err != nil {
+			return err
+		}
 		if params.DuplicateOfIssueID.Valid {
 			if err := lockAndCheckDuplicateMark(ctx, q, workspaceID, params.ID, params.DuplicateOfIssueID); err != nil {
 				return err
@@ -3728,7 +3734,7 @@ func withWorkflowAssignee(rawFields map[string]json.RawMessage, handoff *workflo
 
 var errIssueFieldConflict = errors.New("issue text field conflict")
 
-func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.UUID, params db.UpdateIssueParams, rawFields map[string]json.RawMessage, titleBase, descriptionBase *string, attachmentIDs []pgtype.UUID, statusKey string) (db.Issue, db.Issue, bool, error) {
+func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.UUID, params db.UpdateIssueParams, rawFields map[string]json.RawMessage, titleBase, descriptionBase *string, attachmentIDs []pgtype.UUID, statusKey string, wf *workflowWrite) (db.Issue, db.Issue, bool, error) {
 	if h.TxStarter == nil {
 		return db.Issue{}, db.Issue{}, false, errors.New("atomic issue update requires transaction starter")
 	}
@@ -3745,6 +3751,9 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 	if err := assertIssueStatusStillActive(ctx, qtx, workspaceID, statusKey); err != nil {
 		return db.Issue{}, db.Issue{}, false, err
 	}
+	if err := wf.lockProject(ctx, qtx); err != nil {
+		return db.Issue{}, db.Issue{}, false, err
+	}
 	if len(attachmentIDs) > 0 {
 		if _, err := qtx.LockAttachmentsForIssueLink(ctx, db.LockAttachmentsForIssueLinkParams{
 			WorkspaceID:   workspaceID,
@@ -3759,6 +3768,9 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 	})
 	if err != nil {
 		return db.Issue{}, db.Issue{}, false, fmt.Errorf("lock issue for update: %w", err)
+	}
+	if err := wf.verify(ctx, h, qtx, current); err != nil {
+		return db.Issue{}, current, false, err
 	}
 
 	if params.Title.Valid && titleBase != nil && current.Title != *titleBase && current.Title != params.Title.String {
@@ -4075,9 +4087,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// workflow, and hand the issue off when it enters a step with a handler.
 	// A handoff assignee passes the same gate as a hand-picked one.
 	// An agent's run may only move the issue from the step it works on.
-	callerType, _ := h.resolveActor(r, userID, workspaceID)
-	callerRun := h.agentRunOnIssue(r, callerType, prevIssue)
-	handoff, err := h.applyIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, callerRun)
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	callerRun := h.agentRunOnIssue(r, actorType, prevIssue)
+	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, callerRun)
 	if err != nil {
 		if writeIssueWorkflowError(w, err) {
 			return
@@ -4103,23 +4115,25 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The agent this write hands the issue to gets the change as its own run,
-	// not also through its event wakeups.
-	writeCtx := withWakeupHandedTo(r.Context(), h.handedToAgent(r.Context(), prevIssue, params, handoff != nil))
+	// not also through its event wakeups. When no run will start (backlog,
+	// suppress_run, an unready agent), the wakeup is the only delivery left.
+	assigneeSupplied := req.AssigneeType != nil || req.AssigneeID != nil
+	writeCtx := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, req.SuppressRun))
 	var issue db.Issue
 	attachmentsChanged := false
 	if req.Description != nil || req.TitleBase != nil || req.DescriptionBase != nil || len(attachmentIDs) > 0 {
 		var lockedPrev db.Issue
 		issue, lockedPrev, attachmentsChanged, err = h.updateIssueAtomically(
-			writeCtx, prevIssue.WorkspaceID, params, withWorkflowAssignee(rawFields, handoff), req.TitleBase, req.DescriptionBase, attachmentIDs, statusKeyForGuard,
+			writeCtx, prevIssue.WorkspaceID, params, withWorkflowAssignee(rawFields, handoff), req.TitleBase, req.DescriptionBase, attachmentIDs, statusKeyForGuard, workflowWrite,
 		)
 		if lockedPrev.ID.Valid {
 			prevIssue = lockedPrev
 		}
 	} else {
-		issue, err = h.updateIssueWithStatusGuard(writeCtx, prevIssue.WorkspaceID, statusKeyForGuard, params)
+		issue, err = h.updateIssueWithStatusGuard(writeCtx, prevIssue.WorkspaceID, statusKeyForGuard, params, workflowWrite)
 	}
 	if err != nil {
-		if writeIssueStatusRaceError(w, err) {
+		if writeIssueStatusRaceError(w, err) || writeIssueWorkflowError(w, err) {
 			return
 		}
 		if writeDuplicateMarkError(w, err) {
@@ -4141,8 +4155,6 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Determine actor identity: agent (via X-Agent-ID header) or member.
-	actorType, actorID := h.resolveActor(r, userID, workspaceID)
 	h.advanceRunStep(r.Context(), callerRun, prevIssue, issue)
 
 	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
@@ -4174,6 +4186,12 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// run gets that brief from its claim; its handoff note stays the
 	// caller's own.
 	handoffNote := req.HandoffNote
+	// The previous assignee's runs stop before the enqueue decision: a pending
+	// run of theirs that is also the new handler's would otherwise suppress the
+	// handler's run and then be cancelled, leaving no run at all.
+	if handoff != nil && req.StopPreviousAssigneeRuns {
+		h.stopPreviousAssigneeRuns(r.Context(), prevIssue, issue, actorType, actorID)
+	}
 	trigger, willRun := h.IssueService.WillEnqueueRun(r.Context(),
 		service.IssueTriggerInput{
 			Issue:              issue,
@@ -4246,10 +4264,10 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// A workflow handoff counts as a fresh assignment even when the step's
 	// handler already owns the issue: entering the step is the handler's cue
 	// to work on it, with the step's brief as the handoff note. (MUL-7420)
-	if handoff != nil && req.StopPreviousAssigneeRuns {
-		h.stopPreviousAssigneeRuns(r.Context(), prevIssue, issue, actorType, actorID)
-	}
 	if willRun {
+		if handoff != nil {
+			h.IssueService.CancelStaleStepRuns(r.Context(), issue, trigger.AgentID)
+		}
 		h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, handoffNote)
 	}
 
@@ -4923,9 +4941,9 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		// Project workflow (MUL-7420), per issue: an issue whose workflow does
 		// not list the batch status is skipped like the other per-item guards;
 		// entering a handoff step reassigns this issue to the step's handler.
-		callerType, _ := h.resolveActor(r, userID, workspaceID)
-		callerRun := h.agentRunOnIssue(r, callerType, prevIssue)
-		handoff, err := h.applyIssueWorkflow(r.Context(), prevIssue, &params, req.Updates.Status != nil, batchTouchedType || batchTouchedID, false, callerRun)
+		actorType, actorID := h.resolveActor(r, userID, workspaceID)
+		callerRun := h.agentRunOnIssue(r, actorType, prevIssue)
+		handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Updates.Status != nil, batchTouchedType || batchTouchedID, false, callerRun)
 		if err != nil {
 			continue
 		}
@@ -4939,7 +4957,8 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		writeCtx := withWakeupHandedTo(r.Context(), h.handedToAgent(r.Context(), prevIssue, params, handoff != nil))
+		assigneeSupplied := req.Updates.AssigneeType != nil || req.Updates.AssigneeID != nil
+		writeCtx := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, req.Updates.SuppressRun))
 		var issue db.Issue
 		if req.Updates.Description != nil {
 			// One batch-level base cannot describe multiple issue documents.
@@ -4947,13 +4966,13 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			// legacy single-update clients that omit description_base.
 			var lockedPrev db.Issue
 			issue, lockedPrev, _, err = h.updateIssueAtomically(
-				writeCtx, prevIssue.WorkspaceID, params, withWorkflowAssignee(rawUpdates, handoff), nil, nil, nil, issueStatusGuard,
+				writeCtx, prevIssue.WorkspaceID, params, withWorkflowAssignee(rawUpdates, handoff), nil, nil, nil, issueStatusGuard, workflowWrite,
 			)
 			if err == nil {
 				prevIssue = lockedPrev
 			}
 		} else {
-			issue, err = h.updateIssueWithStatusGuard(writeCtx, wsUUID, issueStatusGuard, params)
+			issue, err = h.updateIssueWithStatusGuard(writeCtx, wsUUID, issueStatusGuard, params, workflowWrite)
 		}
 		if err != nil {
 			// The archive race is a property of the batch's shared target
@@ -4968,7 +4987,6 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 
 		prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
 		resp := issueToResponse(issue, prefix)
-		actorType, actorID := h.resolveActor(r, userID, workspaceID)
 		h.advanceRunStep(r.Context(), callerRun, prevIssue, issue)
 
 		fillBatch(&resp)
@@ -4979,6 +4997,11 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		projectChanged := req.Updates.ProjectID != nil && uuidToString(prevIssue.ProjectID) != uuidToString(issue.ProjectID)
 
 		batchHandoffNote := req.Updates.HandoffNote
+		// Stop the previous assignee's runs before deciding whether to enqueue;
+		// see UpdateIssue.
+		if handoff != nil && req.Updates.StopPreviousAssigneeRuns {
+			h.stopPreviousAssigneeRuns(r.Context(), prevIssue, issue, actorType, actorID)
+		}
 		trigger, willRun := h.IssueService.WillEnqueueRun(r.Context(),
 			service.IssueTriggerInput{
 				Issue:              issue,
@@ -5011,10 +5034,10 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		// Same single predicate as UpdateIssue — batch must not grow its own
 		// copy of the enqueue rule (the historical source of four-entry-point
 		// drift, MUL-3375). suppress_run applies batch-wide.
-		if handoff != nil && req.Updates.StopPreviousAssigneeRuns {
-			h.stopPreviousAssigneeRuns(r.Context(), prevIssue, issue, actorType, actorID)
-		}
 		if willRun {
+			if handoff != nil {
+				h.IssueService.CancelStaleStepRuns(r.Context(), issue, trigger.AgentID)
+			}
 			h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, batchHandoffNote)
 		}
 

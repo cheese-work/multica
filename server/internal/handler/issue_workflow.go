@@ -1202,11 +1202,12 @@ func projectCopyName(workflow, project string, taken map[string]bool) string {
 			suffix = " (" + project + " " + strconv.Itoa(n) + ")"
 		}
 		base := []rune(workflow)
-		if room := issueworkflow.MaxNameRunes - utf8.RuneCountInString(suffix); room < len(base) {
-			if room < 1 {
-				suffix = " " + strconv.Itoa(n)
-				room = issueworkflow.MaxNameRunes - len(suffix)
-			}
+		room := issueworkflow.MaxNameRunes - utf8.RuneCountInString(suffix)
+		if room < 1 {
+			suffix = " " + strconv.Itoa(n)
+			room = issueworkflow.MaxNameRunes - len(suffix)
+		}
+		if room < len(base) {
 			base = base[:room]
 		}
 		name := strings.TrimSpace(string(base)) + suffix
@@ -1366,7 +1367,7 @@ func (h *Handler) PreviewWorkflowHandoff(w http.ResponseWriter, r *http.Request)
 		params.ProjectID = projectID
 		enterOnMove = true
 	}
-	hand, err := h.applyIssueWorkflow(r.Context(), issue, &params, status != "", false, enterOnMove, nil)
+	hand, err := h.applyIssueWorkflow(r.Context(), h.Queries, issue, &params, status != "", false, enterOnMove, nil)
 	if err != nil {
 		if writeIssueWorkflowError(w, err) {
 			return

@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/inbox"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -130,7 +131,7 @@ func (handler *Handler) decisionVetoNoticeStep(ctx context.Context, located db.D
 	if err != nil {
 		return false, err
 	}
-	item, err := queries.CreateInboxItem(ctx, db.CreateInboxItemParams{ID: dbid.NewV7(), WorkspaceID: request.WorkspaceID, RecipientType: "member", RecipientID: request.HumanUserID, Type: "mentioned", Severity: "info", IssueID: issue.ID, Title: issue.Title, Body: pgtype.Text{String: content, Valid: true}, ActorType: pgtype.Text{String: "agent", Valid: true}, ActorID: answer.DisclaimedByAgentID, Details: details})
+	item, inserted, err := inbox.CreateIfEligible(ctx, queries, db.CreateInboxItemParams{ID: dbid.NewV7(), WorkspaceID: request.WorkspaceID, RecipientType: "member", RecipientID: request.HumanUserID, Type: "mentioned", Severity: "info", IssueID: issue.ID, Title: issue.Title, Body: pgtype.Text{String: content, Valid: true}, ActorType: pgtype.Text{String: "agent", Valid: true}, ActorID: answer.DisclaimedByAgentID, Details: details})
 	if err != nil {
 		return false, err
 	}
@@ -144,6 +145,8 @@ func (handler *Handler) decisionVetoNoticeStep(ctx context.Context, located db.D
 	if message.ID.Valid {
 		handler.publishChat(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(message.ChatSessionID), protocol.ChatMessagePayload{ChatSessionID: uuidToString(message.ChatSessionID), MessageID: uuidToString(message.ID), Role: message.Role, Content: message.Content, CreatedAt: timestampToString(message.CreatedAt)})
 	}
-	handler.publish(protocol.EventInboxNew, workspaceID, "agent", agentID, map[string]any{"item": inboxToResponse(item)})
+	if inserted {
+		handler.publish(protocol.EventInboxNew, workspaceID, "agent", agentID, map[string]any{"item": inboxToResponse(item)})
+	}
 	return true, nil
 }

@@ -1675,6 +1675,37 @@ WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
     OR context->>'head_sha' = sqlc.narg('head_sha')::text
   );
 
+-- name: HasPendingTaskForIssueAndAgentAtStep :one
+-- HasPendingTaskForIssueAndAgent for a workflow handoff (MUL-7420): an
+-- assignment-level run stamped for a step the issue has left does not count,
+-- because its status changes would be refused as workflow_step_moved and it
+-- cannot finish the step being entered. Runs tied to a comment keep counting.
+SELECT count(*) > 0 AS has_pending FROM agent_task_queue
+WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
+  AND (
+    status IN ('queued', 'dispatched')
+    OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+  )
+  AND (
+    COALESCE(sqlc.narg('head_sha')::text, '') = ''
+    OR context->>'head_sha' = sqlc.narg('head_sha')::text
+  )
+  AND NOT (
+    trigger_comment_id IS NULL
+    AND workflow_step IS NOT NULL
+    AND workflow_step <> sqlc.arg('step')::text
+  );
+
+-- name: ListStalePendingStepTasks :many
+-- The runs HasPendingTaskForIssueAndAgentAtStep ignores: queued or dispatched
+-- assignment-level runs of one agent stamped for a step the issue has left.
+SELECT * FROM agent_task_queue
+WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
+  AND status IN ('queued', 'dispatched')
+  AND trigger_comment_id IS NULL
+  AND workflow_step IS NOT NULL
+  AND workflow_step <> sqlc.arg('step')::text;
+
 -- name: HasPendingTaskForIssueAndAgentInThread :one
 -- Same pending/head rules as HasPendingTaskForIssueAndAgent, scoped to one
 -- root comment and all descendants. NULL selects assignment-level work.

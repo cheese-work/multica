@@ -45,15 +45,15 @@ type workflowHandoff struct {
 // run is the calling agent's run on this issue (nil for members): it may only
 // move the issue from the step it works on. It returns the handoff that write
 // triggers, or nil.
-func (h *Handler) applyIssueWorkflow(ctx context.Context, prev db.Issue, params *db.UpdateIssueParams, statusExplicit, assigneeTouched, enterOnMove bool, run *db.AgentTaskQueue) (*workflowHandoff, error) {
-	def, project, err := issueworkflow.ForProject(ctx, h.Queries, prev.WorkspaceID, params.ProjectID)
+func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, statusExplicit, assigneeTouched, enterOnMove bool, run *db.AgentTaskQueue) (*workflowHandoff, error) {
+	def, project, err := issueworkflow.ForProject(ctx, q, prev.WorkspaceID, params.ProjectID)
 	if err != nil || def == nil {
 		return nil, err
 	}
 	projectMoving := params.ProjectID != prev.ProjectID
 	if projectMoving && !statusExplicit && !def.IsDefault && !def.Has(prev.Status) {
 		target := issueworkflow.MoveTarget(*def, prev.Status, func(key string) string {
-			return issuestatus.Category(ctx, h.Queries, prev.WorkspaceID, key)
+			return issuestatus.Category(ctx, q, prev.WorkspaceID, key)
 		})
 		params.Status = pgtype.Text{String: target, Valid: true}
 	}
@@ -130,6 +130,13 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
 		})
 		return true
 	}
+	if errors.Is(err, errWorkflowChanged) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": err.Error() + "; retry",
+			"code":  "workflow_changed",
+		})
+		return true
+	}
 	var moved *issueworkflow.StepMovedError
 	if errors.As(err, &moved) {
 		writeJSON(w, http.StatusConflict, map[string]any{
@@ -182,6 +189,40 @@ func (h *Handler) handedToAgent(ctx context.Context, prev db.Issue, params db.Up
 		}
 	}
 	return ""
+}
+
+// handedToAgentIfRun is handedToAgent, kept only when the write will start the
+// agent's run. Naming the agent makes the write's issue events skip its event
+// wakeups, which is right only when the run delivers the change instead: a
+// backlog assignment, a suppressed run or an agent that cannot run would
+// otherwise reach the agent through neither. It decides before the write, on
+// the issue as the write will leave it.
+func (h *Handler) handedToAgentIfRun(r *http.Request, actorType, actorID string, prev db.Issue, params db.UpdateIssueParams, assigneeSupplied, handoff, suppressRun bool) string {
+	agent := h.handedToAgent(r.Context(), prev, params, handoff)
+	if agent == "" || suppressRun {
+		return ""
+	}
+	next := prev
+	next.AssigneeType, next.AssigneeID = params.AssigneeType, params.AssigneeID
+	if params.Status.Valid {
+		next.Status = params.Status.String
+	}
+	assigneeChanged := (assigneeSupplied || handoff) &&
+		(prev.AssigneeType.String != next.AssigneeType.String || uuidToString(prev.AssigneeID) != uuidToString(next.AssigneeID))
+	_, willRun := h.IssueService.WillEnqueueRun(r.Context(),
+		service.IssueTriggerInput{
+			Issue:              next,
+			PrevStatus:         prev.Status,
+			AssigneeChanged:    assigneeChanged || handoff,
+			StatusChanged:      prev.Status != next.Status,
+			EnteredHandoffStep: handoff,
+		},
+		h.issueTriggerWriteProbe(r, actorType, actorID, next),
+	)
+	if !willRun {
+		return ""
+	}
+	return agent
 }
 
 // advanceRunStep moves a run's workflow step along with a status change the

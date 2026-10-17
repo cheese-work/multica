@@ -418,6 +418,29 @@ func (q *Queries) ListProjectsUsingIssueWorkflow(ctx context.Context, arg ListPr
 	return items, nil
 }
 
+const lockProjectForIssueWrite = `-- name: LockProjectForIssueWrite :one
+SELECT id FROM project
+WHERE id = $1::uuid
+  AND workspace_id = $2::uuid
+FOR KEY SHARE
+`
+
+type LockProjectForIssueWriteParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Held by an issue write that applies the project's workflow. A workflow
+// switch takes the row FOR UPDATE, which conflicts with this lock, so the write
+// either sees the switch or finishes before it starts. KEY SHARE leaves project
+// renames and other row updates unblocked.
+func (q *Queries) LockProjectForIssueWrite(ctx context.Context, arg LockProjectForIssueWriteParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockProjectForIssueWrite, arg.ID, arg.WorkspaceID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const lockProjectForWorkflowChange = `-- name: LockProjectForWorkflowChange :one
 SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id FROM project
 WHERE id = $1::uuid
