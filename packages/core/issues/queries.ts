@@ -441,6 +441,23 @@ export function projectGanttIssuesOptions(
   });
 }
 
+/** Mutation key shared by the single and batch issue update hooks. */
+export const issueWriteMutationKey = (wsId: string) =>
+  ["issue-write", wsId] as const;
+
+/** An update for `issueId` is in flight: it has patched loaded projections
+ *  optimistically without advancing their revision. */
+function hasPendingIssueWrite(qc: QueryClient, wsId: string, issueId: string) {
+  return qc.getMutationCache().findAll({
+    mutationKey: issueWriteMutationKey(wsId),
+    status: "pending",
+    predicate: ({ state }) => {
+      const vars = state.variables as { id?: string; ids?: string[] } | undefined;
+      return vars?.id === issueId || !!vars?.ids?.includes(issueId);
+    },
+  }).length > 0;
+}
+
 export function issueDetailOptions(wsId: string, id: string) {
   return queryOptions({
     queryKey: issueKeys.detail(wsId, id),
@@ -482,18 +499,20 @@ export function issueIdentifierOptions(wsId: string, identifier: string) {
         // mutation or realtime update may land after it, so seed only when no
         // cached projection holds a newer revision (an unversioned response
         // never displaces ordered data) — the same ordering `onIssueUpdated`
-        // applies. An entry already at this revision is kept as is: it can
-        // carry an in-flight optimistic patch that does not advance the
-        // revision.
+        // applies. An entry already at this revision is kept as is, and so is
+        // any projection while a write for this issue is pending: both can
+        // carry an optimistic patch that does not advance the revision. The
+        // chip then reads the loaded projection, or fetches detail itself.
         const cached = freshestCachedIssueRevision(client, wsId, issue.id);
         const detailRevision = client.getQueryData<Issue>(
           issueKeys.detail(wsId, issue.id),
         )?.revision;
         if (
-          cached === undefined ||
+          !hasPendingIssueWrite(client, wsId, issue.id) &&
+          (cached === undefined ||
           (issue.revision !== undefined &&
             issue.revision >= cached &&
-            (detailRevision === undefined || issue.revision > detailRevision))
+            (detailRevision === undefined || issue.revision > detailRevision)))
         ) {
           client.setQueryData(issueKeys.detail(wsId, issue.id), issue);
           // `setQueryData` clears the stale flag; give it back when an
