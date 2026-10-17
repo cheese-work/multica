@@ -1114,8 +1114,8 @@ func (c *Client) writePump() {
 			if !ok {
 				c.writeMu.Lock()
 				if !c.stopped.Load() {
-					c.conn.SetWriteDeadline(time.Now().Add(writeWait))
-					c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+					_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+					_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				}
 				c.writeMu.Unlock()
 				return

@@ -1489,7 +1489,7 @@ func TestCleanTaskArtifacts_RemovesOnlyMatchedDirs(t *testing.T) {
 
 	mustMkdir("workdir/repo/src")
 	mustWrite("workdir/repo/src/index.ts", "console.log('hi')")
-	if out, err := exec.Command("git", "-C", filepath.Join(taskDir, "workdir/repo"), "init").CombinedOutput(); err != nil {
+	if out, err := exec.Command("git", "-C", filepath.Join(taskDir, "workdir", "repo"), "init").CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, out)
 	}
 	mustWrite("workdir/repo/.git/objects/pack/test.pack", "binary")
