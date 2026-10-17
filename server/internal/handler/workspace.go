@@ -335,6 +335,10 @@ type UpdateWorkspaceRequest struct {
 	// it to the built-in default. Raw so an explicit null is distinguishable
 	// from an absent key.
 	CompactPrompt json.RawMessage `json:"compact_prompt"`
+	// WakeupsPaused flips the workspace wakeup pause alone (CHE-1727). The
+	// server applies it to the settings it reads under the workspace lock, so a
+	// client never sends, and never overwrites with, a snapshot of the blob.
+	WakeupsPaused *bool `json:"wakeups_paused"`
 	// AutoCompact patches settings.auto_compact alone (CHE-1806): named fields
 	// overwrite, absent fields keep their saved value, null resets to the
 	// defaults. Raw for the same reason as CompactPrompt.
@@ -568,7 +572,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		params.AvatarUrl = pgtype.Text{String: accepted, Valid: true}
 	}
 
-	ws, pauseAction, activity, err := h.saveWorkspace(r.Context(), params, req.Settings, requestUserID(r), actorType, actorID)
+	ws, pauseAction, activity, err := h.saveWorkspace(r.Context(), params, req.Settings, req.WakeupsPaused, requestUserID(r), actorType, actorID)
 	var rejected settingsRejectedError
 	if errors.As(err, &rejected) {
 		writeError(w, http.StatusBadRequest, rejected.Error())

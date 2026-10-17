@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/service"
@@ -70,9 +71,9 @@ func (e settingsRejectedError) Error() string { return e.msg }
 // pause held. The audit record of a flip commits with it, so a flip that
 // cannot be audited does not happen. A write that cannot read the stored
 // settings fails instead of guessing that they hold no pause.
-func (h *Handler) saveWorkspace(ctx context.Context, params db.UpdateWorkspaceParams, settings any, userID, actorType, actorID string) (db.Workspace, string, db.ActivityLog, error) {
+func (h *Handler) saveWorkspace(ctx context.Context, params db.UpdateWorkspaceParams, settings any, pause *bool, userID, actorType, actorID string) (db.Workspace, string, db.ActivityLog, error) {
 	var activity db.ActivityLog
-	if settings == nil {
+	if settings == nil && pause == nil {
 		ws, err := h.Queries.UpdateWorkspace(ctx, params)
 		return ws, "", activity, err
 	}
@@ -89,7 +90,18 @@ func (h *Handler) saveWorkspace(ctx context.Context, params db.UpdateWorkspacePa
 	var stored map[string]any
 	_ = json.Unmarshal(storedJSON, &stored) // stored settings that are not an object hold no pause
 	action := ""
+	if settings == nil {
+		// A pause-only patch: start from what is stored, not from the client.
+		clone := maps.Clone(stored)
+		if clone == nil {
+			clone = map[string]any{}
+		}
+		settings = clone
+	}
 	if incoming, isObject := settings.(map[string]any); isObject {
+		if pause != nil {
+			incoming[wakeupsPausedKey] = *pause
+		}
 		// Only an old client's flip of the retired PR switch needs the stored
 		// value; see reconcilePRMergeSettings.
 		reconcilePRMergeSettings(stored, incoming)

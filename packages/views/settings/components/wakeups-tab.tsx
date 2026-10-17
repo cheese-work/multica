@@ -70,8 +70,10 @@ function PauseSwitch({ canManage }: { canManage: boolean }) {
     setSaving(true);
     setSaved(null);
     try {
-      // The server stamps who and when; it also keeps the pause when a save omits it.
-      const updated = await api.updateWorkspace(workspace.id, { settings: { ...workspace.settings, wakeups_paused: next } });
+      // Only the switch travels: the server applies it to the settings it reads
+      // under the workspace lock and stamps who and when, so a stale snapshot of
+      // the whole blob can never overwrite a concurrent change.
+      const updated = await api.updateWorkspace(workspace.id, { wakeups_paused: next });
       qc.setQueryData(workspaceKeys.list(), (old: Workspace[] | undefined) =>
         old?.map((ws) => (ws.id === updated.id ? updated : ws)),
       );

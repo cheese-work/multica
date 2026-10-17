@@ -167,6 +167,16 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 	}
 	defer tx.Rollback(ctx)
 	q := s.Tasks.Queries.WithTx(tx)
+	// The workspace row comes first, as in dispatch and in the pause and resume
+	// writers. Its KEY SHARE lock lasts to the commit, so a resume (FOR UPDATE)
+	// either waits for this receipt and sweeps it, or runs first and this event
+	// arrives after the resume (CHE-1727).
+	var workspace pgtype.UUID
+	if err := tx.QueryRow(ctx, "SELECT w.id FROM workspace w JOIN issue i ON i.workspace_id=w.id WHERE i.id=$1 FOR KEY SHARE OF w", issueID).Scan(&workspace); errors.Is(err, pgx.ErrNoRows) {
+		return tx.Commit(ctx)
+	} else if err != nil {
+		return err
+	}
 	issue, err := q.LockWakeupIssue(ctx, issueID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return tx.Commit(ctx)
