@@ -3710,6 +3710,22 @@ func refreshUntouchedNullableIssueParams(params *db.UpdateIssueParams, current d
 	}
 }
 
+// withWorkflowAssignee marks the assignee as supplied when a workflow handoff
+// chose it, so the atomic update keeps it instead of restoring the old owner.
+// It copies the map: a batch shares one rawFields across its issues.
+func withWorkflowAssignee(rawFields map[string]json.RawMessage, handoff *workflowHandoff) map[string]json.RawMessage {
+	if handoff == nil {
+		return rawFields
+	}
+	out := make(map[string]json.RawMessage, len(rawFields)+2)
+	for key, value := range rawFields {
+		out[key] = value
+	}
+	out["assignee_type"] = nil
+	out["assignee_id"] = nil
+	return out
+}
+
 var errIssueFieldConflict = errors.New("issue text field conflict")
 
 func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.UUID, params db.UpdateIssueParams, rawFields map[string]json.RawMessage, titleBase, descriptionBase *string, attachmentIDs []pgtype.UUID, statusKey string) (db.Issue, db.Issue, bool, error) {
@@ -4094,7 +4110,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if req.Description != nil || req.TitleBase != nil || req.DescriptionBase != nil || len(attachmentIDs) > 0 {
 		var lockedPrev db.Issue
 		issue, lockedPrev, attachmentsChanged, err = h.updateIssueAtomically(
-			writeCtx, prevIssue.WorkspaceID, params, rawFields, req.TitleBase, req.DescriptionBase, attachmentIDs, statusKeyForGuard,
+			writeCtx, prevIssue.WorkspaceID, params, withWorkflowAssignee(rawFields, handoff), req.TitleBase, req.DescriptionBase, attachmentIDs, statusKeyForGuard,
 		)
 		if lockedPrev.ID.Valid {
 			prevIssue = lockedPrev
@@ -4931,7 +4947,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			// legacy single-update clients that omit description_base.
 			var lockedPrev db.Issue
 			issue, lockedPrev, _, err = h.updateIssueAtomically(
-				writeCtx, prevIssue.WorkspaceID, params, rawUpdates, nil, nil, nil, issueStatusGuard,
+				writeCtx, prevIssue.WorkspaceID, params, withWorkflowAssignee(rawUpdates, handoff), nil, nil, nil, issueStatusGuard,
 			)
 			if err == nil {
 				prevIssue = lockedPrev
