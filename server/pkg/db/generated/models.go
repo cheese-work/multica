@@ -178,6 +178,8 @@ type AgentTaskQueue struct {
 	CancelledByID             pgtype.UUID `json:"cancelled_by_id"`
 	CancelledByName           pgtype.Text `json:"cancelled_by_name"`
 	IssueSnapshot             []byte      `json:"issue_snapshot"`
+	ContextTokens             pgtype.Int8 `json:"context_tokens"`
+	ContextWindow             pgtype.Int8 `json:"context_window"`
 }
 
 type AgentToLabel struct {
@@ -1584,6 +1586,16 @@ type Member struct {
 	UserID      pgtype.UUID        `json:"user_id"`
 	Role        string             `json:"role"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type NotificationChannelPreference struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	UserID      pgtype.UUID        `json:"user_id"`
+	Source      string             `json:"source"`
+	Channel     string             `json:"channel"`
+	Enabled     bool               `json:"enabled"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 }
 
 type NotificationPreference struct {
