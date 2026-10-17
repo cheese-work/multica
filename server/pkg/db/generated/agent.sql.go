@@ -5337,6 +5337,25 @@ func (q *Queries) HasPendingTaskForIssueAndAgentInThread(ctx context.Context, ar
 	return has_pending, err
 }
 
+const hasQueuedTaskForIssueAndAgent = `-- name: HasQueuedTaskForIssueAndAgent :one
+SELECT count(*) > 0 AS has_queued FROM agent_task_queue
+WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'
+`
+
+type HasQueuedTaskForIssueAndAgentParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	AgentID pgtype.UUID `json:"agent_id"`
+}
+
+// A queued run has not started, so it reads the issue when it is claimed and
+// carries any write made since. A dispatched run read the issue earlier.
+func (q *Queries) HasQueuedTaskForIssueAndAgent(ctx context.Context, arg HasQueuedTaskForIssueAndAgentParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasQueuedTaskForIssueAndAgent, arg.IssueID, arg.AgentID)
+	var has_queued bool
+	err := row.Scan(&has_queued)
+	return has_queued, err
+}
+
 const hasRecentProviderServerFailure = `-- name: HasRecentProviderServerFailure :one
 SELECT EXISTS (
     SELECT 1 FROM agent_task_queue
@@ -6651,7 +6670,10 @@ func (q *Queries) ListQueuedClaimCandidatesByRuntimes(ctx context.Context, runti
 const listStalePendingStepTasks = `-- name: ListStalePendingStepTasks :many
 SELECT id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step FROM agent_task_queue
 WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
-  AND status IN ('queued', 'dispatched')
+  AND (
+    status IN ('queued', 'dispatched')
+    OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+  )
   AND trigger_comment_id IS NULL
   AND workflow_step IS NOT NULL
   AND workflow_step <> $3::text
@@ -6663,8 +6685,11 @@ type ListStalePendingStepTasksParams struct {
 	Step    string      `json:"step"`
 }
 
-// The runs HasPendingTaskForIssueAndAgentAtStep ignores: queued or dispatched
+// The runs HasPendingTaskForIssueAndAgentAtStep ignores: pending
 // assignment-level runs of one agent stamped for a step the issue has left.
+// Pending is the same set as the unique pending-task index: queued, dispatched,
+// or deferred behind channel media. A media-deferred run left out here would
+// keep the slot and make the next step's run deduplicate against it.
 func (q *Queries) ListStalePendingStepTasks(ctx context.Context, arg ListStalePendingStepTasksParams) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, listStalePendingStepTasks, arg.IssueID, arg.AgentID, arg.Step)
 	if err != nil {

@@ -202,13 +202,18 @@ export function BuilderWorkspace({
     latestMessage.message_kind !== "no_response" &&
     latestMessage.content.includes("<agent_draft>") &&
     !parseBuilderDraft(latestMessage.content, { completed });
+  // An unclosed block is recovered only from the final reply. Older replies
+  // were already superseded: reading their unclosed blocks again would merge a
+  // stale draft over configuration the user saved after it.
   const latestDraftMessage = [...builder.messages]
     .reverse()
     .find(
       (message) =>
         message.role === "assistant" &&
         !message.failure_reason &&
-        parseBuilderDraft(message.content, { completed }),
+        parseBuilderDraft(message.content, {
+          completed: completed && message.id === latestMessage?.id,
+        }),
     );
   const latestDraftMessageId = latestDraftMessage?.id;
   const latestDraftMessageContent = latestDraftMessage?.content;

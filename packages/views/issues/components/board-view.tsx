@@ -650,6 +650,31 @@ function BoardViewImpl({
         return;
       }
 
+      // Judge the column the pointer was released over, not the one the card is
+      // mirrored in: dragOver stops mirroring at a column the card may not enter,
+      // so after allowed B and blocked C the mirror still sits in B. Committing
+      // from the mirror would move (or hand off) the card to a column the user
+      // did not choose.
+      const overGroup = groupMap.get(overCol);
+      const draggedIssue = issueMapRef.current.get(activeId);
+      if (overGroup?.status && draggedIssue && draggedIssue.status !== overGroup.status) {
+        const draggedWorkflow = workflowOfIssue(draggedIssue);
+        if (catalog.entryOf(overGroup.status)?.archived_at) {
+          resetColumns();
+          return;
+        }
+        if (draggedWorkflow && !workflowAllowsStatus(draggedWorkflow, overGroup.status)) {
+          resetColumns();
+          toast.info(
+            t(($) => $.workflows.drop_blocked, {
+              status: labelOf(overGroup.status),
+              name: draggedWorkflow.name,
+            }),
+          );
+          return;
+        }
+      }
+
       // Same-column reorder (manual sort only)
       let finalColumns = cols;
       if (activeCol === overCol && sortBy === "position") {

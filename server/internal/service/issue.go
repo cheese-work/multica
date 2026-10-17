@@ -248,34 +248,6 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 		return IssueCreateResult{}, err
 	}
 
-	if p.SourceContext != nil {
-		if _, err := qtx.LockIssueForDescriptionUpdate(ctx, db.LockIssueForDescriptionUpdateParams{
-			ID: p.SourceContext.SourceIssueID, WorkspaceID: p.WorkspaceID,
-		}); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return IssueCreateResult{}, ErrSourceIssueDeleted
-			}
-			return IssueCreateResult{}, fmt.Errorf("lock source issue: %w", err)
-		}
-		locked, err := qtx.LockCommentAncestorPath(ctx, db.LockCommentAncestorPathParams{
-			CommentID: p.SourceContext.AnchorCommentID, WorkspaceID: p.WorkspaceID,
-			IssueID: p.SourceContext.SourceIssueID,
-		})
-		if err != nil {
-			return IssueCreateResult{}, fmt.Errorf("lock anchor comment thread: %w", err)
-		}
-		if len(locked) == 0 {
-			return IssueCreateResult{}, ErrAnchorCommentDeleted
-		}
-		current, err := BuildSourceContext(ctx, qtx, p.WorkspaceID, p.SourceContext.AnchorCommentID)
-		if err != nil {
-			return IssueCreateResult{}, err
-		}
-		if current.Digest != p.SourceContext.Digest {
-			return IssueCreateResult{}, ErrSourceContextChanged
-		}
-	}
-
 	// Resolve the project the issue lands in once, and validate it, before any
 	// decision depends on it. Both checks scope by WorkspaceID — there is no
 	// path from this service to a row in a foreign workspace. A forged parent or
@@ -317,6 +289,38 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 				return IssueCreateResult{}, ErrProjectNotFound
 			}
 			return IssueCreateResult{}, err
+		}
+	}
+
+	// The source issue is locked after the catalog and project locks, never
+	// before: a workflow switch holds the project row and then remaps the
+	// project's issues, the source issue among them, so the opposite order
+	// deadlocks the two.
+	if p.SourceContext != nil {
+		if _, err := qtx.LockIssueForDescriptionUpdate(ctx, db.LockIssueForDescriptionUpdateParams{
+			ID: p.SourceContext.SourceIssueID, WorkspaceID: p.WorkspaceID,
+		}); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return IssueCreateResult{}, ErrSourceIssueDeleted
+			}
+			return IssueCreateResult{}, fmt.Errorf("lock source issue: %w", err)
+		}
+		locked, err := qtx.LockCommentAncestorPath(ctx, db.LockCommentAncestorPathParams{
+			CommentID: p.SourceContext.AnchorCommentID, WorkspaceID: p.WorkspaceID,
+			IssueID: p.SourceContext.SourceIssueID,
+		})
+		if err != nil {
+			return IssueCreateResult{}, fmt.Errorf("lock anchor comment thread: %w", err)
+		}
+		if len(locked) == 0 {
+			return IssueCreateResult{}, ErrAnchorCommentDeleted
+		}
+		current, err := BuildSourceContext(ctx, qtx, p.WorkspaceID, p.SourceContext.AnchorCommentID)
+		if err != nil {
+			return IssueCreateResult{}, err
+		}
+		if current.Digest != p.SourceContext.Digest {
+			return IssueCreateResult{}, ErrSourceContextChanged
 		}
 	}
 

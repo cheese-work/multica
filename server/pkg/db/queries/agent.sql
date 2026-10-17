@@ -1697,14 +1697,26 @@ WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
   );
 
 -- name: ListStalePendingStepTasks :many
--- The runs HasPendingTaskForIssueAndAgentAtStep ignores: queued or dispatched
+-- The runs HasPendingTaskForIssueAndAgentAtStep ignores: pending
 -- assignment-level runs of one agent stamped for a step the issue has left.
+-- Pending is the same set as the unique pending-task index: queued, dispatched,
+-- or deferred behind channel media. A media-deferred run left out here would
+-- keep the slot and make the next step's run deduplicate against it.
 SELECT * FROM agent_task_queue
 WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
-  AND status IN ('queued', 'dispatched')
+  AND (
+    status IN ('queued', 'dispatched')
+    OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+  )
   AND trigger_comment_id IS NULL
   AND workflow_step IS NOT NULL
   AND workflow_step <> sqlc.arg('step')::text;
+
+-- name: HasQueuedTaskForIssueAndAgent :one
+-- A queued run has not started, so it reads the issue when it is claimed and
+-- carries any write made since. A dispatched run read the issue earlier.
+SELECT count(*) > 0 AS has_queued FROM agent_task_queue
+WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued';
 
 -- name: HasPendingTaskForIssueAndAgentInThread :one
 -- Same pending/head rules as HasPendingTaskForIssueAndAgent, scoped to one

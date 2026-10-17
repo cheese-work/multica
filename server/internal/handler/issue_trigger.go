@@ -82,7 +82,8 @@ func (h *Handler) shouldSuppressActiveSelfAssignment(ctx context.Context, actorT
 // WillEnqueueRun. handoffNote is a legacy API input retained for installed
 // clients and travels only with a run that actually starts. The squad path
 // still flows through enqueueSquadLeaderTask so the leader access gate and
-// pending dedup stay in one place.
+// pending dedup stay in one place. It reports whether an executable run now
+// carries the write: a run it started, or an unstarted one that held the slot.
 func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger service.IssueRunTrigger, actorType, actorID, handoffNote string) (started bool) {
 	switch trigger.AssigneeType {
 	case "agent":
@@ -90,10 +91,15 @@ func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger 
 		// for the run (MUL-4302 §4). An agent actor is not a human, so only a
 		// member actor is threaded; otherwise attribution falls back to the chain.
 		_, err := h.TaskService.EnqueueTaskForIssueWithHandoff(ctx, issue, handoffNote, memberActorUserID(actorType, actorID))
-		// ErrDuplicatePendingTask is the expected coalesce outcome (a sibling
-		// run already covers this target); anything else is a real enqueue
-		// failure that was previously discarded silently (CHE-486).
-		if err != nil && !errors.Is(err, service.ErrDuplicatePendingTask) {
+		if errors.Is(err, service.ErrDuplicatePendingTask) {
+			// A sibling run holds the slot. It delivers this write only if it has
+			// not started: a dispatched run read the issue before the write.
+			queued, queuedErr := h.Queries.HasQueuedTaskForIssueAndAgent(ctx, db.HasQueuedTaskForIssueAndAgentParams{IssueID: issue.ID, AgentID: trigger.AgentID})
+			return queuedErr == nil && queued
+		}
+		// Anything else is a real enqueue failure that was previously
+		// discarded silently (CHE-486).
+		if err != nil {
 			slog.Error("dispatch issue run failed", "issue_id", uuidToString(issue.ID), "agent_id", uuidToString(trigger.AgentID), "error", err)
 			return false
 		}
