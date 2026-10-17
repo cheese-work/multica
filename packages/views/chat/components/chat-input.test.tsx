@@ -1755,3 +1755,51 @@ describe("ChatInput compacting placeholder", () => {
     expect(editorState.cleared).toBe(0);
   });
 });
+
+// CHE-1807 correction (Sol's verdict on PR #285): while a DM compacts the
+// composer is disabled and the pending task is the compaction itself, so a
+// preserved draft must never hide Stop. Queue Send cannot send, so Stop is the
+// only available control and the draft stays where it is.
+describe("ChatInput Stop while compacting", () => {
+  const compacting = (extra: Partial<React.ComponentProps<typeof ChatInput>> = {}) => {
+    const onStop = vi.fn();
+    const onSend = vi.fn<ChatInputOnSend>(async () => true);
+    const view = renderInput({
+      isRunning: true,
+      allowSubmitWhileRunning: true,
+      disabled: true,
+      compacting: true,
+      onStop,
+      onSend,
+      ...extra,
+    } as Partial<React.ComponentProps<typeof ChatInput>>);
+    return { onStop, onSend, ...view };
+  };
+
+  it("offers Stop for an empty composer", () => {
+    const { onStop } = compacting();
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+
+    expect(onStop).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["an ordinary", "follow-up", undefined],
+    ["a /fork", "/fork plan b", vi.fn()],
+  ])("keeps Stop and %s draft together", (_name, draft, onFork) => {
+    const { onStop, onSend } = compacting(onFork ? { onFork } : {});
+    const editor = screen.getByTestId("editor");
+
+    fireEvent.change(editor, { target: { value: draft } });
+
+    const stop = screen.getByRole("button", { name: "Stop" });
+    expect(stop).not.toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Queue message" })).not.toBeInTheDocument();
+    fireEvent.click(stop);
+    expect(onStop).toHaveBeenCalledTimes(1);
+    expect(onSend).not.toHaveBeenCalled();
+    expect(editor).toHaveValue(draft);
+  });
+});
+
