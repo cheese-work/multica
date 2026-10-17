@@ -166,12 +166,25 @@ function endpointHost(hostname: string) {
   return LOCAL_HOSTS.has(hostname) ? "loopback" : hostname;
 }
 
+// Query parameters pg may read from the URL without changing which server,
+// user or database it connects to.
+const NEUTRAL_QUERY_PARAMS = new Set(["sslmode"]);
+
 // The identity of a PostgreSQL endpoint and database: host, port, user, name.
+// It must be the identity pg actually connects with, so every part has to come
+// from the URL authority: pg lets query parameters (host, port, user, ...)
+// override the authority, and fills a missing port or user from PGPORT/PGUSER.
 function databaseIdentity(raw: string) {
   const url = new URL(raw);
-  return [endpointHost(url.hostname), url.port || "5432", decodeURIComponent(url.username), decodeURIComponent(url.pathname.slice(1))].join(
-    " ",
-  );
+  for (const key of url.searchParams.keys()) {
+    if (!NEUTRAL_QUERY_PARAMS.has(key)) throw new Error(`query parameter ${key} can change the connection`);
+  }
+  const user = decodeURIComponent(url.username);
+  const database = decodeURIComponent(url.pathname.slice(1));
+  if (!url.hostname || !url.port || !user || !database) {
+    throw new Error("host, port, user and database must all be explicit");
+  }
+  return [endpointHost(url.hostname), url.port, user, database].join(" ");
 }
 
 // Proves, before any API client or database connection exists, that
@@ -193,8 +206,8 @@ function requireTaskOwnedEnvironment(repoRoot: string): DevEnvironment {
     const url = new URL(raw);
     if (!LOCAL_HOSTS.has(url.hostname)) return refuse(`database host ${url.hostname} is not local`);
     database = databaseIdentity(raw);
-  } catch {
-    return refuse("DATABASE_URL is not a URL");
+  } catch (error) {
+    return refuse(`DATABASE_URL cannot be verified: ${error instanceof Error ? error.message : String(error)}`);
   }
   let api: URL;
   try {
