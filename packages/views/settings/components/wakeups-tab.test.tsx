@@ -77,7 +77,7 @@ it("lets an admin pause every wakeup and keeps the rest of the settings", async 
   await waitFor(() => expect(toggle).not.toHaveAttribute("aria-disabled", "true"));
   fireEvent.click(toggle);
   await waitFor(() =>
-    expect(updateWorkspace).toHaveBeenCalledWith("ws", { settings: { github_enabled: true, wakeups_paused: true } }),
+    expect(updateWorkspace).toHaveBeenCalledWith("ws", { wakeups_paused: true }),
   );
 });
 
@@ -93,7 +93,7 @@ it("names who paused the workspace and shows the per-rule switch as overridden",
   expect(screen.getByTestId("wakeups-child-done-switch")).toBe(screen.getByRole("switch", { name: "On by default" }));
   fireEvent.click(screen.getByRole("switch", { name: "Pause all wakeups" }));
   await waitFor(() =>
-    expect(updateWorkspace).toHaveBeenCalledWith("ws", expect.objectContaining({ settings: expect.objectContaining({ wakeups_paused: false }) })),
+    expect(updateWorkspace).toHaveBeenCalledWith("ws", { wakeups_paused: false }),
   );
 });
 
@@ -106,8 +106,8 @@ it("shows no pause switch to members who cannot change it", async () => {
 
 it("confirms a saved pause and a saved resume (approved rev-3 A: Saved and Resumed states)", async () => {
   // The saved workspace comes back with the switch as the server stamps it.
-  updateWorkspace.mockImplementation((async (_id: string, body: { settings: Record<string, unknown> }) => {
-    settings = body.settings;
+  updateWorkspace.mockImplementation((async (_id: string, body: { wakeups_paused: boolean }) => {
+    settings = { ...settings, wakeups_paused: body.wakeups_paused };
     return { id: "ws" };
   }) as never);
   mount();
@@ -135,8 +135,8 @@ it("offers Retry when the defaults cannot be loaded (approved rev-3 A: load-erro
 });
 
 it("shows the paused banner in the warning tone and Saved/Resumed in the success tone (approved rev-3 A)", async () => {
-  updateWorkspace.mockImplementation((async (_id: string, body: { settings: Record<string, unknown> }) => {
-    settings = body.settings;
+  updateWorkspace.mockImplementation((async (_id: string, body: { wakeups_paused: boolean }) => {
+    settings = { ...settings, wakeups_paused: body.wakeups_paused };
     return { id: "ws" };
   }) as never);
   settings = { wakeups_paused: true, wakeups_paused_by: "u", wakeups_paused_at: "2026-10-15T08:00:00Z" };

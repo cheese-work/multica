@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -183,5 +184,39 @@ func TestResumeBeforeNextTickSkipsMissedCronSlots(t *testing.T) {
 	dbfx.QueryRow(t, `SELECT next_fire_at>now() FROM issue_wakeup WHERE id=$1`, w.ID).Scan(&future)
 	if !future {
 		t.Fatal("the next cron slot must be in the future after resume")
+	}
+}
+
+// The pause switch sends only itself. The server applies it to the settings it
+// reads under the workspace lock, so a client's cached snapshot of the whole blob
+// can never overwrite a concurrent unrelated change.
+func TestPauseSwitchPatchKeepsUnrelatedSettings(t *testing.T) {
+	ws := pauseWorkspaceFixture(t, "wakeup-pause-partial")
+	dbfx.Exec(t, `UPDATE workspace SET settings='{"github_pr_sidebar_enabled":false,"co_authored_by_enabled":false}'::jsonb WHERE id=$1`, ws)
+	patch := func(paused bool) map[string]any {
+		t.Helper()
+		req := withURLParam(newRequest("PATCH", "/api/workspaces/"+ws, map[string]any{"wakeups_paused": paused}), "id", ws)
+		var out struct {
+			Settings map[string]any `json:"settings"`
+		}
+		testutil.Call(t, testHandler.UpdateWorkspace, req).Want(http.StatusOK).JSON(&out)
+		return out.Settings
+	}
+	got := patch(true)
+	if got["wakeups_paused"] != true || got["wakeups_paused_by"] != testUserID || got["wakeups_paused_at"] == nil {
+		t.Fatalf("pause not applied and stamped: %v", got)
+	}
+	if got["github_pr_sidebar_enabled"] != false || got["co_authored_by_enabled"] != false {
+		t.Fatalf("pause patch dropped unrelated settings: %v", got)
+	}
+	if n := pauseActivities(t, ws, "wakeups_paused"); n != 1 {
+		t.Fatalf("pause activity records = %d, want 1", n)
+	}
+	resumed := patch(false)
+	if _, paused := resumed["wakeups_paused"]; paused || resumed["github_pr_sidebar_enabled"] != false {
+		t.Fatalf("resume patch result: %v", resumed)
+	}
+	if n := pauseActivities(t, ws, "wakeups_resumed"); n != 1 {
+		t.Fatalf("resume activity records = %d, want 1", n)
 	}
 }

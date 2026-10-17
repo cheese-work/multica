@@ -2,10 +2,13 @@ package service
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/multica-ai/multica/server/internal/util"
 )
 
@@ -137,5 +140,107 @@ func TestResumeBeforeAStalePausedReadDoesNotDropLaterInputs(t *testing.T) {
 	wakeDispatch(t, s, w)
 	if n := wakeRuns(t, f, w.ID); n != 1 {
 		t.Fatalf("an input that arrived after the resume started %d runs, want 1", n)
+	}
+}
+
+// gatedInsertTx parks the first receipt insert of a transaction until the test
+// lets it go, so a pull request event can be frozen between its read of the
+// workspace and its commit.
+type gatedInsertTx struct {
+	pgx.Tx
+	once    *sync.Once
+	reached chan struct{}
+	release chan struct{}
+}
+
+func (g gatedInsertTx) gate(sql string) {
+	if strings.Contains(sql, "INSERT INTO issue_wakeup_receipt") {
+		g.once.Do(func() {
+			close(g.reached)
+			<-g.release
+		})
+	}
+}
+
+func (g gatedInsertTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	g.gate(sql)
+	return g.Tx.QueryRow(ctx, sql, args...)
+}
+
+func (g gatedInsertTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	g.gate(sql)
+	return g.Tx.Exec(ctx, sql, args...)
+}
+
+type gatedInsertStarter struct {
+	inner TxStarter
+	once  *sync.Once
+	reach chan struct{}
+	free  chan struct{}
+}
+
+func (g gatedInsertStarter) Begin(ctx context.Context) (pgx.Tx, error) {
+	tx, err := g.inner.Begin(ctx)
+	return gatedInsertTx{Tx: tx, once: g.once, reached: g.reach, release: g.free}, err
+}
+
+// A pull request event whose receipt commits after the admin's resume swept the
+// receipts must not fire: the event arrived while the workspace was paused.
+func TestPullRequestEventCommittingAfterResumeSweepDoesNotFire(t *testing.T) {
+	e := newBuiltinEnv(t)
+	if err := flipPause(t, e.f, e.s, true); err != nil {
+		t.Fatal(err)
+	}
+	starter := gatedInsertStarter{inner: e.s.Tasks.TxStarter, once: &sync.Once{}, reach: make(chan struct{}), free: make(chan struct{})}
+	original := e.s.Tasks.TxStarter
+	e.s.Tasks.TxStarter = starter
+	t.Cleanup(func() { e.s.Tasks.TxStarter = original })
+	triggerErr := make(chan error, 1)
+	go func() {
+		triggerErr <- e.s.TriggerPullRequestWakeup(context.Background(), e.issue, PullRequestWakeupInput{Rule: SystemRulePRMerged, RepoOwner: "acme", RepoName: "widget",
+			Number: 88, URL: "https://github.com/acme/widget/pull/88", MergeCommit: "merge-88", BaseBranch: "main", HeadBranch: "feature"})
+	}()
+	select {
+	case <-starter.reach:
+	case err := <-triggerErr:
+		t.Fatalf("trigger ended before it recorded its receipt: %v", err)
+	}
+	// The admin resumes while the event is in flight. The resume either finishes
+	// first (the bug) or waits for the event's transaction (the fix).
+	resumeErr := make(chan error, 1)
+	go func() { resumeErr <- flipPause(t, e.f, e.s, false) }()
+	resumeSettled := false
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline) && !resumeSettled; {
+		select {
+		case err := <-resumeErr:
+			if err != nil {
+				t.Fatal(err)
+			}
+			resumeSettled, resumeErr = true, nil
+		default:
+			// Observed state, not a delay: the resume is parked on a lock.
+			if e.f.Count(t, `SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query ILIKE '%FROM workspace WHERE id=%FOR UPDATE%'`) > 0 {
+				resumeSettled = true
+			}
+		}
+	}
+	if !resumeSettled {
+		t.Fatal("the resume neither finished nor waited on a lock")
+	}
+	close(starter.free)
+	if err := <-triggerErr; err != nil {
+		t.Fatal(err)
+	}
+	if resumeErr != nil {
+		if err := <-resumeErr; err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.s.Tasks.TxStarter = original
+	if err := e.s.TickWorkspaces(context.Background(), parseTestUUID(t, e.f.WorkspaceID)); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.tasks(t, SystemRulePRMerged); n != 0 {
+		t.Fatalf("an event that arrived while paused started %d runs after the resume", n)
 	}
 }
