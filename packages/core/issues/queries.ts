@@ -1,4 +1,5 @@
 import {
+  hashKey,
   infiniteQueryOptions,
   keepPreviousData,
   queryOptions,
@@ -458,20 +459,63 @@ function hasPendingIssueWrite(qc: QueryClient, wsId: string, issueId: string) {
   }).length > 0;
 }
 
+/**
+ * Whether a full-issue response may become the detail entry. Both writers of
+ * that entry (the uuid detail query and the bare-key lookup seed) ask this, so
+ * a response that started before a newer write reached ANY projection cannot
+ * land over it: with `staleTime: Infinity` the older data is never re-read.
+ * The ordering is `onIssueUpdated`'s, widened to every cached projection.
+ *  - an unversioned response never displaces ordered data;
+ *  - a pending write for the issue has patched projections without advancing
+ *    their revision, so only a strictly newer response is admissible;
+ *  - otherwise an equal or newer revision is.
+ */
+function admitsFullIssue(qc: QueryClient, wsId: string, issue: Issue) {
+  const freshest = freshestCachedIssueRevision(qc, wsId, issue.id);
+  const pendingWrite = hasPendingIssueWrite(qc, wsId, issue.id);
+  if (issue.revision === undefined) return freshest === undefined && !pendingWrite;
+  if (freshest === undefined) return !pendingWrite;
+  return pendingWrite ? issue.revision > freshest : issue.revision >= freshest;
+}
+
+class StaleIssueResponseError extends Error {
+  constructor() {
+    super("Issue response is older than cached data");
+  }
+}
+
 export function issueDetailOptions(wsId: string, id: string) {
   return queryOptions({
     queryKey: issueKeys.detail(wsId, id),
-    // A response that started before a newer snapshot reached the cache (a
-    // bare-key lookup seed, a mutation, realtime) must not replace it: with
-    // `staleTime: Infinity` the older data would never be re-read.
     queryFn: async ({ client }) => {
       const issue = await api.getIssue(id);
-      const cached = client.getQueryData<Issue>(issueKeys.detail(wsId, id));
-      return cached?.revision !== undefined &&
-        issue.revision !== undefined &&
-        issue.revision < cached.revision
-        ? cached
-        : issue;
+      if (!admitsFullIssue(client, wsId, issue)) {
+        // Keep what the cache has. With no detail entry there is nothing to
+        // keep: fail this attempt so the query retries against the server
+        // instead of storing a response known to be behind.
+        const cached = client.getQueryData<Issue>(issueKeys.detail(wsId, id));
+        if (cached) return cached;
+        throw new StaleIssueResponseError();
+      }
+      // A successful fetch clears the stale flag. Give it back when an
+      // auxiliary event already proved a newer revision exists, once the
+      // response is stored.
+      const detailKey = issueKeys.detail(wsId, id);
+      const unsubscribe = client.getQueryCache().subscribe((event) => {
+        if (event.type !== "updated" || event.query.queryHash !== hashKey(detailKey)) return;
+        const type = event.action.type;
+        if (type !== "success" && type !== "error" && type !== "setState") return;
+        unsubscribe();
+        if (type === "success") {
+          reconcileIssueFullSnapshotRevision(
+            client,
+            wsId,
+            id,
+            (event.query.state.data as Issue | undefined)?.revision,
+          );
+        }
+      });
+      return issue;
     },
   });
 }
@@ -506,25 +550,11 @@ export function issueIdentifierOptions(wsId: string, identifier: string) {
         const issue = await api.getIssue(identifier);
         // Seed the detail cache so the chip that renders next reads this
         // issue instead of firing a second `getIssue(uuid)` and painting a
-        // label-only chip until it lands. A lookup that started before a
-        // mutation or realtime update may land after it, so seed only when no
-        // cached projection holds a newer revision (an unversioned response
-        // never displaces ordered data) — the same ordering `onIssueUpdated`
-        // applies. An entry already at this revision is kept as is, and so is
-        // any projection while a write for this issue is pending: both can
-        // carry an optimistic patch that does not advance the revision. The
-        // chip then reads the loaded projection, or fetches detail itself.
-        const cached = freshestCachedIssueRevision(client, wsId, issue.id);
-        const detailRevision = client.getQueryData<Issue>(
-          issueKeys.detail(wsId, issue.id),
-        )?.revision;
-        if (
-          !hasPendingIssueWrite(client, wsId, issue.id) &&
-          (cached === undefined ||
-          (issue.revision !== undefined &&
-            issue.revision >= cached &&
-            (detailRevision === undefined || issue.revision > detailRevision)))
-        ) {
+        // label-only chip until it lands. Same admission as the uuid detail
+        // response: a lookup that started before a newer write must not seed
+        // over it, and the chip then reads the loaded projection or fetches
+        // detail itself.
+        if (admitsFullIssue(client, wsId, issue)) {
           client.setQueryData(issueKeys.detail(wsId, issue.id), issue);
           // `setQueryData` clears the stale flag; give it back when an
           // auxiliary event already proved a newer revision exists.
