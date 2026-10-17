@@ -248,7 +248,7 @@ describe("Jev / Governance states", () => {
     mount();
     expect(await screen.findByText("v14 · Shadow")).toBeVisible();
     expect(screen.getByText("View only")).toBeVisible();
-    expect(screen.getByText("Only owners and admins can change these settings.")).toBeVisible();
+    expect(screen.getByText("Only workspace owners and admins can change these settings.")).toBeVisible();
     for (const radio of screen.getAllByRole("radio")) expect(radio).toBeDisabled();
     expect(screen.getByRole("textbox", { name: "Min confidence" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();

@@ -3751,6 +3751,20 @@ export const WorkspaceExportPrivacySchema = z
     }),
   );
 
+// CHE-1839: governance config, reduced to what the Jev tab reads. Parsed
+// strictly (no fallback): the version is the concurrency token of the next
+// write and the mode is state an admin acts on, so a malformed response must
+// surface as a load error rather than as a plausible default. Unknown fields
+// are dropped, so nothing else the server adds is cached by this tab.
+export const WorkspaceGovernanceConfigSchema = z.object({
+  version: z.number().int().nonnegative(),
+  settings: z.object({
+    jev_squad_routing_mode: z.string().nullish(),
+    jev_squad_routing_enabled: z.boolean().nullish(),
+    jev_min_confidence: z.number().nullish(),
+  }),
+});
+
 export const WakeupConditionSchema = z.union([
   z.object({ type: z.literal("issue_field"), field: z.literal("status"), value: z.string() }),
   z.object({ type: z.literal("issue_field"), field: z.literal("assignee"), assignee_type: z.enum(["member", "agent", "squad"]), assignee_id: z.string() }),
