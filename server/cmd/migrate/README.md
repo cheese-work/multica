@@ -204,3 +204,32 @@ Confirm the statistics landed:
 ```sql
 SELECT count(*) FROM pg_statistic WHERE starelid = 'idx_issue_properties_bigm'::regclass;
 ```
+
+## Migration 627 renumbering
+
+Three migrations were merged with prefix 627, which fails
+`TestMigrationNumericPrefixesAreUnique` (CHE-1824). Only one keeps 627:
+
+- `627_notification_channel_preference` keeps its number. `628_notification_channel_preference_index`
+  builds an index on its table, so it must stay before 628.
+- `627_agent_task_queue_context` is now `630_agent_task_queue_context`.
+- `627_unpin_archived_chat_sessions` is now `653_unpin_archived_chat_sessions`.
+
+Migration versions are file basenames, not numeric prefixes, and the runner
+applies every file whose version is not in `schema_migrations`, in sorted
+order, with no check against the highest applied number. A database that
+already recorded an old name therefore runs the identical SQL again under the
+new name and records the new version. Leave the historical version rows intact.
+
+Reapplication is a no-op for both renamed files:
+
+- the context migration is `ADD COLUMN IF NOT EXISTS` for two nullable columns,
+  and its down is `DROP COLUMN IF EXISTS`;
+- the unpin migration is one `UPDATE ... SET pinned_at = NULL WHERE status =
+  'archived'`. Handlers keep archived rows unpinned, so a rerun changes nothing
+  that a normal write would not. Its down is `SELECT 1`.
+
+The SQL bytes are unchanged. No migration-runner name map entry is needed.
+Numbers 631 to 649 are claimed or reserved by open pull requests (wakeups,
+inbox) and 650 to 652 by the DM reply record, so 653 is the next free number
+on 2026-10-16. Production deployment remains gated on Cheese.
