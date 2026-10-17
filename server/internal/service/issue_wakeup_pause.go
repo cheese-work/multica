@@ -31,7 +31,7 @@ func WorkspaceWakeupsPaused(ctx context.Context, q *db.Queries, workspaceID pgty
 // ponytail: a manual trigger on a paused one-shot that is also due fires both
 // together, as one run; split them if that matters.
 func settlePaused(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.IssueWakeup) (bool, error) {
-	if _, err := q.DropPausedWakeupReceipts(ctx, db.DropPausedWakeupReceiptsParams{ID: w.ID, OneShot: w.Kind == "at"}); err != nil {
+	if _, err := q.DropPausedWakeupReceipts(ctx, w.ID); err != nil {
 		return false, err
 	}
 	if err := skipMissedSlots(ctx, tx, q, w); err != nil {
@@ -77,6 +77,11 @@ func (s *IssueWakeupService) SettleWakeupsOnResume(ctx context.Context, tx pgx.T
 	if _, err := q.DropPausedWorkspaceReceipts(ctx, workspaceID); err != nil {
 		return err
 	}
+	// Receipts that a lock-free producer inserted before this moment but commits
+	// after it are dropped at dispatch by their event time (dropLateIfResumed).
+	if err := q.StampWakeupsResumed(ctx, workspaceID); err != nil {
+		return err
+	}
 	overdue, err := q.ListOverdueRecurringWakeups(ctx, workspaceID)
 	if err != nil {
 		return err
@@ -87,4 +92,17 @@ func (s *IssueWakeupService) SettleWakeupsOnResume(ctx context.Context, tx pgx.T
 		}
 	}
 	return nil
+}
+
+// dropLateIfResumed drops the receipts of a workspace that is not paused any
+// more but whose event time falls before its last resume. The producers that
+// take no workspace lock (issue, task, label and delete triggers) can commit
+// such a receipt after the resume swept; it arrived while paused. The caller
+// holds the workspace row (KEY SHARE) it read state from, and the wakeup row.
+func dropLateIfResumed(ctx context.Context, q *db.Queries, w db.IssueWakeup, state db.WorkspaceWakeupsPausedSharedRow) error {
+	if state.Paused || !state.ResumedAt.Valid {
+		return nil
+	}
+	_, err := q.DropLatePausedReceipts(ctx, db.DropLatePausedReceiptsParams{ID: w.ID, ResumedAt: state.ResumedAt})
+	return err
 }

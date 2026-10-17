@@ -220,3 +220,29 @@ func TestPauseSwitchPatchKeepsUnrelatedSettings(t *testing.T) {
 		t.Fatalf("resume activity records = %d, want 1", n)
 	}
 }
+
+// Retrospective (written with the fix, not before it): the resume time the
+// server stamps survives a client's full-settings save, even one built from a
+// snapshot that never had the key.
+func TestResumeStampSurvivesAFullSettingsSave(t *testing.T) {
+	ws := pauseWorkspaceFixture(t, "wakeup-resume-stamp")
+	patch := func(body map[string]any) map[string]any {
+		t.Helper()
+		req := withURLParam(newRequest("PATCH", "/api/workspaces/"+ws, body), "id", ws)
+		var out struct {
+			Settings map[string]any `json:"settings"`
+		}
+		testutil.Call(t, testHandler.UpdateWorkspace, req).Want(http.StatusOK).JSON(&out)
+		return out.Settings
+	}
+	patch(map[string]any{"wakeups_paused": true})
+	resumed := patch(map[string]any{"wakeups_paused": false})
+	stamp, _ := resumed["wakeups_resumed_at"].(string)
+	if stamp == "" {
+		t.Fatalf("resume did not stamp the resume time: %v", resumed)
+	}
+	forged := patch(map[string]any{"settings": map[string]any{"github_pr_sidebar_enabled": false, "wakeups_resumed_at": "2001-01-01T00:00:00Z"}})
+	if forged["wakeups_resumed_at"] != stamp {
+		t.Fatalf("a full settings save changed the server-owned resume time: %v", forged)
+	}
+}

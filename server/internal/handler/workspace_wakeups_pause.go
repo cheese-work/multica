@@ -20,6 +20,9 @@ const (
 	wakeupsPausedKey   = "wakeups_paused"
 	wakeupsPausedByKey = "wakeups_paused_by"
 	wakeupsPausedAtKey = "wakeups_paused_at"
+	// wakeupsResumedAtKey is stamped by the resume from the database clock and
+	// owned by the server: a client snapshot never sets or loses it.
+	wakeupsResumedAtKey = "wakeups_resumed_at"
 
 	wakeupsPausedAction  = "wakeups_paused"
 	wakeupsResumedAction = "wakeups_resumed"
@@ -40,6 +43,10 @@ func reconcileWakeupsPause(stored, incoming map[string]any, actorID string, now 
 			return "", errWakeupsPausedNotBool
 		}
 		want = b
+	}
+	delete(incoming, wakeupsResumedAtKey)
+	if v, ok := stored[wakeupsResumedAtKey]; ok {
+		incoming[wakeupsResumedAtKey] = v
 	}
 	delete(incoming, wakeupsPausedKey)
 	delete(incoming, wakeupsPausedByKey)
@@ -120,6 +127,10 @@ func (h *Handler) saveWorkspace(ctx context.Context, params db.UpdateWorkspacePa
 	}
 	if action == wakeupsResumedAction {
 		if err := (&service.IssueWakeupService{Tasks: h.TaskService}).SettleWakeupsOnResume(ctx, tx, ws.ID); err != nil {
+			return ws, "", activity, err
+		}
+		// Return the row with the resume time the settle stamped.
+		if ws, err = q.GetWorkspace(ctx, ws.ID); err != nil {
 			return ws, "", activity, err
 		}
 	}

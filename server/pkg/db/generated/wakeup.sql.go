@@ -640,21 +640,46 @@ func (q *Queries) DiscardWakeupReceipts(ctx context.Context, id pgtype.UUID) err
 	return err
 }
 
-const dropPausedWakeupReceipts = `-- name: DropPausedWakeupReceipts :execrows
-UPDATE issue_wakeup_receipt SET processed_at=now(),payload=payload||'{"outcome":"paused"}'::jsonb
-WHERE wakeup_id= $1 AND processed_at IS NULL AND event_type<>'wakeup.manual'
- AND NOT (event_type='time.due' AND $2::bool)
+const dropLatePausedReceipts = `-- name: DropLatePausedReceipts :execrows
+UPDATE issue_wakeup_receipt r SET processed_at=now(),payload=r.payload||'{"outcome":"paused"}'::jsonb
+FROM issue_wakeup w
+WHERE r.wakeup_id=w.id AND w.id= $1 AND r.processed_at IS NULL AND r.event_type<>'wakeup.manual'
+ AND NOT (r.event_type='time.due' AND w.kind='at')
+ AND NOT (w.condition IS NOT NULL AND r.event_type NOT IN ('condition.met','wakeup.timeout','wakeup.manual'))
+ AND GREATEST(r.created_at, CASE WHEN r.payload->>'occurred_at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ]' THEN (r.payload->>'occurred_at')::timestamptz END) < $2::timestamptz
 `
 
-type DropPausedWakeupReceiptsParams struct {
-	ID      pgtype.UUID `json:"id"`
-	OneShot bool        `json:"one_shot"`
+type DropLatePausedReceiptsParams struct {
+	ID        pgtype.UUID        `json:"id"`
+	ResumedAt pgtype.Timestamptz `json:"resumed_at"`
 }
 
+// A producer that takes no workspace lock (an issue or task update) can commit
+// a receipt after the resume swept. Its event time says it arrived while the
+// workspace was paused, so it is dropped like the others. The event time is the
+// later of the insert and the payload's occurred_at, which a merged receipt
+// carries for its latest event, so a real event after the resume that merged
+// into a late paused receipt is kept (CHE-1727).
+func (q *Queries) DropLatePausedReceipts(ctx context.Context, arg DropLatePausedReceiptsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, dropLatePausedReceipts, arg.ID, arg.ResumedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const dropPausedWakeupReceipts = `-- name: DropPausedWakeupReceipts :execrows
+UPDATE issue_wakeup_receipt r SET processed_at=now(),payload=r.payload||'{"outcome":"paused"}'::jsonb
+FROM issue_wakeup w
+WHERE r.wakeup_id=w.id AND w.id= $1 AND r.processed_at IS NULL AND r.event_type<>'wakeup.manual'
+ AND NOT (r.event_type='time.due' AND w.kind='at') AND NOT (w.condition IS NOT NULL AND r.event_type NOT IN ('condition.met','wakeup.timeout','wakeup.manual'))
+`
+
 // A pause consumes what arrives meanwhile and records why. A person's manual
-// trigger and a one-shot's due time are not dropped.
-func (q *Queries) DropPausedWakeupReceipts(ctx context.Context, arg DropPausedWakeupReceiptsParams) (int64, error) {
-	result, err := q.db.Exec(ctx, dropPausedWakeupReceipts, arg.ID, arg.OneShot)
+// trigger, a one-shot's due time and the hints of a condition rule are not
+// dropped: a hint only prompts an evaluation of what still holds.
+func (q *Queries) DropPausedWakeupReceipts(ctx context.Context, id pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, dropPausedWakeupReceipts, id)
 	if err != nil {
 		return 0, err
 	}
@@ -666,6 +691,7 @@ UPDATE issue_wakeup_receipt r SET processed_at=now(),payload=r.payload||'{"outco
 FROM issue_wakeup w
 WHERE r.wakeup_id=w.id AND w.workspace_id= $1 AND r.processed_at IS NULL
  AND r.event_type<>'wakeup.manual' AND NOT (r.event_type='time.due' AND w.kind='at')
+ AND NOT (w.condition IS NOT NULL AND r.event_type NOT IN ('condition.met','wakeup.timeout','wakeup.manual'))
 `
 
 // Resume settles what the pause dropped before any dispatch tick can replay it
@@ -858,7 +884,9 @@ WHERE ($1::uuid[] IS NULL OR w.workspace_id = ANY($1::uuid[]))
  -- inputs to drop and recurring slots to skip. Overdue one-shots and conditions
  -- wait for the resume without crowding the bounded batch.
  AND (NOT EXISTS(SELECT 1 FROM workspace ws WHERE ws.id=w.workspace_id AND ws.settings->>'wakeups_paused'='true')
-  OR EXISTS(SELECT 1 FROM issue_wakeup_receipt r WHERE r.wakeup_id=w.id AND r.processed_at IS NULL AND NOT (w.kind='at' AND r.event_type='time.due'))
+  -- Sub-issue and other condition hints stay pending through a pause: they only
+  -- prompt an evaluation of what still holds on resume.
+  OR EXISTS(SELECT 1 FROM issue_wakeup_receipt r WHERE r.wakeup_id=w.id AND r.processed_at IS NULL AND NOT (w.kind='at' AND r.event_type='time.due') AND NOT (w.condition IS NOT NULL AND r.event_type NOT IN ('condition.met','wakeup.timeout','wakeup.manual')))
   OR (w.enabled AND w.kind IN ('every','cron') AND w.next_fire_at<=now()))
 ORDER BY w.updated_at,w.id LIMIT $3
 `
@@ -2322,6 +2350,18 @@ func (q *Queries) SetWakeupMutationSource(ctx context.Context, arg SetWakeupMuta
 	return err
 }
 
+const stampWakeupsResumed = `-- name: StampWakeupsResumed :exec
+UPDATE workspace SET settings=jsonb_set(settings,'{wakeups_resumed_at}',to_jsonb(to_char(clock_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')))
+WHERE id= $1 AND jsonb_typeof(settings)='object'
+`
+
+// The resume time, from the database clock, that DropLatePausedReceipts compares
+// against. The settings blob may not be an object in a legacy workspace.
+func (q *Queries) StampWakeupsResumed(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, stampWakeupsResumed, id)
+	return err
+}
+
 const touchWakeupDispatch = `-- name: TouchWakeupDispatch :exec
 UPDATE issue_wakeup SET updated_at=clock_timestamp() WHERE id= $1
 `
@@ -2403,15 +2443,23 @@ func (q *Queries) WorkspaceWakeupsPaused(ctx context.Context, id pgtype.UUID) (b
 }
 
 const workspaceWakeupsPausedShared = `-- name: WorkspaceWakeupsPausedShared :one
-SELECT COALESCE(settings->>'wakeups_paused'='true',false)::bool FROM workspace WHERE id= $1 FOR KEY SHARE
+SELECT COALESCE(settings->>'wakeups_paused'='true',false)::bool AS paused,
+ (settings->>'wakeups_resumed_at')::timestamptz AS resumed_at
+FROM workspace WHERE id= $1 FOR KEY SHARE
 `
 
-// Reads the pause under a KEY SHARE lock on the workspace row, held to the end
-// of the dispatch transaction: a pause or resume writer takes FOR UPDATE, so the
-// answer cannot go stale before the enqueue (CHE-1727).
-func (q *Queries) WorkspaceWakeupsPausedShared(ctx context.Context, id pgtype.UUID) (bool, error) {
+type WorkspaceWakeupsPausedSharedRow struct {
+	Paused    bool               `json:"paused"`
+	ResumedAt pgtype.Timestamptz `json:"resumed_at"`
+}
+
+// Reads the pause and the last resume time under a KEY SHARE lock on the
+// workspace row, held to the end of the dispatch transaction: a pause or resume
+// writer takes FOR UPDATE, so the answer cannot go stale before the enqueue
+// (CHE-1727).
+func (q *Queries) WorkspaceWakeupsPausedShared(ctx context.Context, id pgtype.UUID) (WorkspaceWakeupsPausedSharedRow, error) {
 	row := q.db.QueryRow(ctx, workspaceWakeupsPausedShared, id)
-	var column_1 bool
-	err := row.Scan(&column_1)
-	return column_1, err
+	var i WorkspaceWakeupsPausedSharedRow
+	err := row.Scan(&i.Paused, &i.ResumedAt)
+	return i, err
 }

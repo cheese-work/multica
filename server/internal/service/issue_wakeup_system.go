@@ -880,7 +880,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	q := s.Tasks.Queries.WithTx(tx)
 	// The workspace row comes first, as in the pause and resume writers, and the
 	// pause is read under that lock so it cannot change before the enqueue below.
-	paused, err := q.WorkspaceWakeupsPausedShared(ctx, prev.WorkspaceID)
+	pauseState, err := q.WorkspaceWakeupsPausedShared(ctx, prev.WorkspaceID)
 	if err != nil {
 		return err
 	}
@@ -909,7 +909,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	if w.Revision != prev.Revision {
 		return tx.Commit(ctx)
 	}
-	if paused {
+	if pauseState.Paused {
 		held, err := settlePaused(ctx, tx, q, w)
 		if err != nil {
 			return err
@@ -917,6 +917,9 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		if held {
 			return tx.Commit(ctx)
 		}
+	}
+	if err := dropLateIfResumed(ctx, q, w, pauseState); err != nil {
+		return err
 	}
 	_, isPRWakeup := prWakeupSetting(w.SystemRule.String)
 	discardMalformed := func(err error) error {
