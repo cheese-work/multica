@@ -218,6 +218,59 @@ describe("isolation: the fixture refuses before any write", () => {
     }
   });
 
+  // pg reads host, port and user from the query string too, and they win over
+  // the URL authority; a URL without a port falls back to PGPORT. Each case
+  // points the effective connection at the second fake PostgreSQL, so a guard
+  // that only checks the authority shows up as traffic there.
+  test("query port overrides the registered endpoint", async () => {
+    const unregister = register({ name: "query-port", db: "multica_route_913", backendPort: apiPort });
+    try {
+      await expectRefusal(
+        `postgres://multica:multica@127.0.0.1:${pgPort}/multica_route_913?sslmode=disable&port=${otherPgPort}`,
+        "query port override",
+      );
+    } finally {
+      unregister();
+    }
+  });
+
+  test("query host overrides the registered endpoint", async () => {
+    const unregister = register({ name: "query-host", db: "multica_route_914", backendPort: apiPort });
+    try {
+      await expectRefusal(
+        `postgres://multica:multica@127.0.0.1:${pgPort}/multica_route_914?host=db.example.invalid`,
+        "query host override",
+      );
+    } finally {
+      unregister();
+    }
+  });
+
+  test("query user overrides the registered user", async () => {
+    const unregister = register({ name: "query-user", db: "multica_route_915", backendPort: apiPort });
+    try {
+      await expectRefusal(
+        `postgres://multica:multica@127.0.0.1:${pgPort}/multica_route_915?user=postgres`,
+        "query user override",
+      );
+    } finally {
+      unregister();
+    }
+  });
+
+  test("URL without a port falls back to PGPORT", async () => {
+    const unregister = register({ name: "no-port", db: "multica_route_916", backendPort: apiPort, dbPort: 5432 });
+    const previous = process.env.PGPORT;
+    process.env.PGPORT = String(otherPgPort);
+    try {
+      await expectRefusal("postgres://multica:multica@127.0.0.1/multica_route_916", "implicit port");
+    } finally {
+      if (previous === undefined) delete process.env.PGPORT;
+      else process.env.PGPORT = previous;
+      unregister();
+    }
+  });
+
   test("positive control: a matching task-owned environment gets past the check", async () => {
     const unregister = register({ name: "matching", db: "multica_route_907", backendPort: apiPort });
     try {
@@ -297,6 +350,23 @@ describe("cleanup: the fixture leaves nothing behind", { skip: DISPOSABLE ? fals
     const { code, output } = await runSpec({ E2E_RUN_ID: runId, DATABASE_URL: databaseUrl() });
     assert.equal(code, 0, output);
     assertClean(await leftovers(databaseUrl(), runId), "passing run");
+  });
+
+  // A failure marker left in the caller's environment must not leak into a
+  // run that did not ask for one.
+  test("after a passing run with an ambient failure marker", async () => {
+    const runId = `safety-ambient-${Date.now().toString(36)}`;
+    const previous = process.env.STREAMING_ISSUE_KEYS_FAIL_AT;
+    process.env.STREAMING_ISSUE_KEYS_FAIL_AT = "after-seed";
+    try {
+      const { code, output } = await runSpec({ E2E_RUN_ID: runId, DATABASE_URL: databaseUrl() });
+      assert.doesNotMatch(output, /injected failure at/, output);
+      assert.equal(code, 0, output);
+    } finally {
+      if (previous === undefined) delete process.env.STREAMING_ISSUE_KEYS_FAIL_AT;
+      else process.env.STREAMING_ISSUE_KEYS_FAIL_AT = previous;
+    }
+    assertClean(await leftovers(databaseUrl(), runId), "passing run with an ambient marker");
   });
 
   // Each point fails the run on purpose at a different stage of setup. The

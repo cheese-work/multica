@@ -341,6 +341,14 @@ assert_port_lookup one-owner-two-families 4254 busy '' \
   'LISTEN 0 511 [::]:13000 [::]:* users:(("node",pid=4254,fd=20))
 LISTEN 0 511 0.0.0.0:13000 0.0.0.0:* users:(("node",pid=4254,fd=21))'
 
+# Only LISTEN rows count. An established connection on the port, even one owned
+# by another process, is neither a listener nor a reason to call the port busy.
+assert_port_lookup established-only '' free '' \
+  'ESTAB 0 0 127.0.0.1:13000 127.0.0.1:52344 users:(("node",pid=4255,fd=30))'
+assert_port_lookup listen-and-established 4256 busy '' \
+  'LISTEN 0 511 *:13000 *:* users:(("node",pid=4256,fd=20))
+ESTAB 0 0 127.0.0.1:13000 127.0.0.1:52345 users:(("curl",pid=4257,fd=3))'
+
 # Stopping first records an owned nested listener before killing the launcher's
 # process group. An unrelated port occupant never receives a signal.
 assert_stop_handles_listener nested 420 310 200 "" 420
