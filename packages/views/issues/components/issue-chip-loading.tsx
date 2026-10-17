@@ -21,7 +21,7 @@ export function IssueChipLoading({ identifier }: { identifier: string }) {
           className={`${ISSUE_CHIP_BASE_CLASS} ${ISSUE_CHIP_STABLE_WIDTH_CLASS}`}
         >
           <span aria-hidden className="h-3.5 w-3.5 shrink-0" />
-          <span className="font-medium text-muted-foreground shrink-0">
+          <span className="font-medium text-muted-foreground min-w-0 truncate">
             {identifier}
           </span>
         </span>

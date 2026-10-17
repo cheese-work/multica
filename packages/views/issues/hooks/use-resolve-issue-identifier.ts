@@ -35,7 +35,8 @@ function namesSameIssue(issue: Issue, identifier: string): boolean {
  * the query and let the exact-match filter in `issueIdentifierOptions` decide.
  *
  * Returns `undefined` while the lookup is in flight, `null` once it settled
- * without an issue (404, exhausted retries, or short-circuited), and the issue
+ * without an issue (404, exhausted retries, or short-circuited); a lookup
+ * paused offline is still `undefined`, and the issue
  * otherwise. Callers reserve space for `undefined` and render plain text for
  * `null`.
  */
@@ -47,9 +48,10 @@ export function useResolveIssueIdentifier(identifier: string): Issue | null | un
     !prefix ||
     identifier.toUpperCase().startsWith(`${prefix.toUpperCase()}-`);
 
-  const { data, isLoading } = useQuery({
+  const enabled = Boolean(wsId) && isIssueIdentifier(identifier) && prefixMatches;
+  const { data, isPending } = useQuery({
     ...issueIdentifierOptions(wsId, identifier),
-    enabled: Boolean(wsId) && isIssueIdentifier(identifier) && prefixMatches,
+    enabled,
     // Keep known content across a key change, but only the same issue: the
     // previous result of a different issue or workspace must never paint.
     placeholderData: (previous) =>
@@ -59,5 +61,7 @@ export function useResolveIssueIdentifier(identifier: string): Issue | null | un
   });
 
   if (data) return data;
-  return isLoading ? undefined : null;
+  // `isPending`, not `isLoading`: a lookup paused while offline is unresolved
+  // too. A disabled query stays pending forever, so it must not count.
+  return enabled && isPending ? undefined : null;
 }

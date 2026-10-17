@@ -461,7 +461,18 @@ function hasPendingIssueWrite(qc: QueryClient, wsId: string, issueId: string) {
 export function issueDetailOptions(wsId: string, id: string) {
   return queryOptions({
     queryKey: issueKeys.detail(wsId, id),
-    queryFn: () => api.getIssue(id),
+    // A response that started before a newer snapshot reached the cache (a
+    // bare-key lookup seed, a mutation, realtime) must not replace it: with
+    // `staleTime: Infinity` the older data would never be re-read.
+    queryFn: async ({ client }) => {
+      const issue = await api.getIssue(id);
+      const cached = client.getQueryData<Issue>(issueKeys.detail(wsId, id));
+      return cached?.revision !== undefined &&
+        issue.revision !== undefined &&
+        issue.revision < cached.revision
+        ? cached
+        : issue;
+    },
   });
 }
 
