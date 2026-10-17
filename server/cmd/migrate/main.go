@@ -145,6 +145,7 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
 	"621_chat_fork_operation_index":                             "chat_session_fork_operation_idx",
+	"628_notification_channel_preference_index":                 "notification_channel_preference_key_uidx",
 	"615_decision_request_comment_v2_index":                     "comment_decision_request_kind_v2_uidx",
 	"598_decision_request_id_index":                             "decision_request_id_uidx",
 	"599_decision_intent_id_index":                              "decision_intent_id_uidx",
@@ -159,6 +160,7 @@ var concurrentIndexCleanups = map[string]string{
 	"609_decision_worker_lease_name_index":                      "decision_worker_lease_name_uidx",
 	"610_decision_class_change_request_index":                   "decision_class_change_request_idx",
 	"611_decision_answer_request_index":                         "decision_answer_request_idx",
+	"629_chat_session_title_trgm_index":                         "idx_chat_session_title_trgm",
 	"571_search_index_change_changed_at_index":                  "idx_search_index_change_changed_at",
 	"570_search_index_change_workspace_index":                   "idx_search_index_change_workspace_xid",
 	"560_agent_task_history_page_index":                         "idx_agent_task_queue_history_page",
