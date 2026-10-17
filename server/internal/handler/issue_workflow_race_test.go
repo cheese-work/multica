@@ -23,6 +23,14 @@ import (
 // wait for the competing writer decided on state that writer is changing.
 func raceAgainst(t *testing.T, hold func(tx pgx.Tx), write func() *testutil.Response) *testutil.Response {
 	t.Helper()
+	var resp *testutil.Response
+	raceUntilBlocked(t, hold, func() { resp = write() })
+	return resp
+}
+
+// raceUntilBlocked is raceAgainst for a write that returns no HTTP response.
+func raceUntilBlocked(t *testing.T, hold func(tx pgx.Tx), write func()) {
+	t.Helper()
 	ctx := context.Background()
 	tx, err := testPool.Begin(ctx)
 	if err != nil {
@@ -31,14 +39,14 @@ func raceAgainst(t *testing.T, hold func(tx pgx.Tx), write func() *testutil.Resp
 	defer tx.Rollback(ctx)
 	hold(tx)
 
-	done := make(chan *testutil.Response, 1)
-	go func() { done <- write() }()
+	done := make(chan struct{})
+	go func() { write(); close(done) }()
 
 	deadline := time.Now().Add(10 * time.Second)
 	for blocked := false; !blocked; {
 		select {
-		case resp := <-done:
-			t.Fatalf("the write finished (%d: %s) while a competing workflow or issue writer was uncommitted", resp.Code, resp.Body.String())
+		case <-done:
+			t.Fatal("the write finished while a competing workflow or issue writer was uncommitted")
 		default:
 		}
 		if time.Now().After(deadline) {
@@ -54,11 +62,9 @@ func raceAgainst(t *testing.T, hold func(tx pgx.Tx), write func() *testutil.Resp
 		t.Fatal(err)
 	}
 	select {
-	case resp := <-done:
-		return resp
+	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the write never finished after the competing writer committed")
-		return nil
 	}
 }
 
