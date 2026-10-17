@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Check } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@multica/core/api";
 import { useWorkspaceId } from "@multica/core/hooks";
@@ -99,8 +100,13 @@ function PauseSwitch({ canManage }: { canManage: boolean }) {
         </SettingsRow>
       </SettingsCard>
       {saved && (
-        <p role="status" data-testid="wakeups-pause-status" className="px-0.5 text-caption text-muted-foreground">
-          {saved === "paused" ? t(($) => $.wakeups.pause_saved) : t(($) => $.wakeups.pause_resumed)}
+        <p
+          role="status"
+          data-testid="wakeups-pause-status"
+          className="flex items-center gap-1.5 rounded-md border border-success/30 bg-success/10 px-3 py-2 text-caption leading-5 text-foreground"
+        >
+          <Check className="size-3.5 shrink-0 text-success" aria-hidden="true" />
+          <span>{saved === "paused" ? t(($) => $.wakeups.pause_saved) : t(($) => $.wakeups.pause_resumed)}</span>
         </p>
       )}
       <WakeupsPausedBanner />

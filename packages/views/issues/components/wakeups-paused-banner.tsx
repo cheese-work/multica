@@ -24,9 +24,9 @@ export function WakeupsPausedBanner({ className = "" }: { className?: string }) 
     <p
       role="status"
       data-testid="wakeups-paused-banner"
-      className={`flex items-start gap-1.5 rounded-md bg-muted/60 px-3 py-2 text-caption leading-5 text-muted-foreground ${className}`}
+      className={`flex items-start gap-1.5 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-caption leading-5 text-foreground ${className}`}
     >
-      <PauseCircle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+      <PauseCircle className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden="true" />
       <span className="min-w-0 break-words">
         {name
           ? t(($) => $.wakeups.paused_banner, { name, time })
