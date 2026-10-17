@@ -607,6 +607,17 @@ func (h *Handler) SetChatSessionArchived(w http.ResponseWriter, r *http.Request)
 	if req.Archived && !decisionLaneArchiveAllowed(w, r, qtx, session) {
 		return
 	}
+	// An archived DM is read-only and gets no more notifications, so the ones
+	// it already raised close with it.
+	var closedRecords []db.InboxItem
+	if req.Archived {
+		var err error
+		closedRecords, err = qtx.MarkDMRepliesRead(r.Context(), db.MarkDMRepliesReadParams{ChatSessionID: session.ID, RecipientID: session.CreatorID})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to close chat notifications")
+			return
+		}
+	}
 	updated, err := qtx.SetChatSessionArchived(r.Context(), db.SetChatSessionArchivedParams{
 		ID:       session.ID,
 		Archived: req.Archived,
@@ -698,6 +709,7 @@ func (h *Handler) SetChatSessionArchived(w http.ResponseWriter, r *http.Request)
 	// refresh, and wakes the runtime so a queued successor is claimed now
 	// rather than at the daemon's next poll.
 	h.TaskService.BroadcastCancelledTasks(r.Context(), workspaceID, cancelled, reactionTargets)
+	h.publishDMRepliesRead(workspaceID, userID, closedRecords)
 
 	resolvedSessionID := uuidToString(updated.ID)
 	status := updated.Status
@@ -819,6 +831,13 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The DM is going away, so the notifications it raised close with it.
+	closedRecords, err := qtx.MarkDMRepliesRead(r.Context(), db.MarkDMRepliesReadParams{ChatSessionID: session.ID, RecipientID: session.CreatorID})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to close chat notifications")
+		return
+	}
+
 	if err := qtx.DeleteChatSession(r.Context(), db.DeleteChatSessionParams{
 		ID:          session.ID,
 		WorkspaceID: session.WorkspaceID,
@@ -848,6 +867,7 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 	// cancelled and returned before the delete, so they still carry its id, but
 	// the row they would be resolved through is gone by now.
 	h.TaskService.BroadcastCancelledTasks(r.Context(), workspaceID, cancelled, reactionTargets)
+	h.publishDMRepliesRead(workspaceID, userID, closedRecords)
 
 	resolvedSessionID := uuidToString(session.ID)
 	h.publishChat(protocol.EventChatSessionDeleted, workspaceID, "member", userID, resolvedSessionID, protocol.ChatSessionDeletedPayload{
@@ -1391,6 +1411,23 @@ type PrioritizeQueuedChatTaskResponse struct {
 	ActiveTaskID string `json:"active_task_id,omitempty"`
 }
 
+func (h *Handler) markChatSessionRead(ctx context.Context, session db.ChatSession) ([]db.InboxItem, error) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	qtx := h.Queries.WithTx(tx)
+	if err := qtx.MarkChatSessionRead(ctx, session.ID); err != nil {
+		return nil, err
+	}
+	closed, err := qtx.MarkDMRepliesRead(ctx, db.MarkDMRepliesReadParams{ChatSessionID: session.ID, RecipientID: session.CreatorID})
+	if err != nil {
+		return nil, err
+	}
+	return closed, tx.Commit(ctx)
+}
+
 // MarkChatSessionRead clears the session's unread_since (→ has_unread=false)
 // and broadcasts chat:session_read so other devices of the same user drop
 // their badges.
@@ -1407,10 +1444,14 @@ func (h *Handler) MarkChatSessionRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.Queries.MarkChatSessionRead(r.Context(), session.ID); err != nil {
+	// Reading the DM reads its notification records: one transaction, so the
+	// DM badge and the inbox never disagree.
+	closedRecords, err := h.markChatSessionRead(r.Context(), session)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to mark session read")
 		return
 	}
+	h.publishDMRepliesRead(workspaceID, userID, closedRecords)
 
 	resolvedSessionID := uuidToString(session.ID)
 	h.publishChat(protocol.EventChatSessionRead, workspaceID, "member", userID, resolvedSessionID, protocol.ChatSessionReadPayload{

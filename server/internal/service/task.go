@@ -20,6 +20,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/attribution"
 	"github.com/multica-ai/multica/server/internal/chattitle"
 	"github.com/multica-ai/multica/server/internal/commentguard"
+	"github.com/multica-ai/multica/server/internal/dmnotify"
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
@@ -4612,6 +4613,9 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 	// task inside the completion transaction below. It is broadcast (chat:done)
 	// only after the transaction commits.
 	var chatAssistantMsg *db.ChatMessage
+	// dmNotified is the DM's coalesced inbox record, written in the same
+	// transaction as the reply and announced only after the commit.
+	var dmNotified *dmnotify.Notified
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		if err := lockChatSessionForTaskWrite(ctx, qtx, taskID); err != nil {
 			return err
@@ -4686,6 +4690,11 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 				return fmt.Errorf("write chat assistant outcome: %w", err)
 			}
 			chatAssistantMsg = msg
+			if msg != nil {
+				if dmNotified, err = dmnotify.Reply(ctx, qtx, t.ChatSessionID, *msg); err != nil {
+					return fmt.Errorf("notify DM reply: %w", err)
+				}
+			}
 		}
 		return nil
 	}); err != nil {
@@ -4800,6 +4809,7 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 		// actually about to run.
 		suggest := s.chatQuickActionsEligible(ctx, task, chatAssistantMsg)
 		s.broadcastChatDone(ctx, task, chatAssistantMsg, suggest)
+		dmnotify.Publish(s.Bus, dmNotified)
 		if suggest {
 			// Detached: the reply is already delivered and the user's next turn
 			// must never wait on suggestions.
@@ -5132,6 +5142,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 
 	var task db.AgentTaskQueue
 	var retried *db.AgentTaskQueue
+	var dmNotified *dmnotify.Notified
 	// retryProviderHoldNotice: set inside the transaction below when a retry
 	// child was minted then immediately cancelled for a provider hold, read
 	// after commit to post the same post-commit issue comment
@@ -5361,7 +5372,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			if err := qtx.ReleaseOnboardingKickoffFromTask(ctx, chatInputOwnerID(t)); err != nil {
 				return fmt.Errorf("release onboarding kickoff: %w", err)
 			}
-			if _, err := createAssistantChatMessage(ctx, qtx, db.CreateChatMessageParams{
+			failure, err := createAssistantChatMessage(ctx, qtx, db.CreateChatMessageParams{
 				ID:            dbid.NewV7(),
 				ChatSessionID: t.ChatSessionID,
 				Role:          "assistant",
@@ -5369,8 +5380,12 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 				TaskID:        t.ID,
 				FailureReason: pgtype.Text{String: failureReason, Valid: failureReason != ""},
 				ElapsedMs:     computeChatElapsedMs(t),
-			}); err != nil {
+			})
+			if err != nil {
 				return fmt.Errorf("write chat failure outcome: %w", err)
+			}
+			if dmNotified, err = dmnotify.Reply(ctx, qtx, t.ChatSessionID, failure); err != nil {
+				return fmt.Errorf("notify DM failure: %w", err)
 			}
 		}
 		return SettleTerminalTaskState(ctx, qtx, t)
@@ -5406,6 +5421,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 
 	slog.Warn("task failed", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID), "error", errMsg, "failure_reason", failureReason)
 	s.captureTaskFailed(ctx, task)
+	dmnotify.Publish(s.Bus, dmNotified)
 
 	// The auto-retry child (if any) was created inside the transaction above so
 	// no newer chat task could jump ahead of it. Surface it now: broadcast

@@ -43,6 +43,7 @@ const (
 
 	// Inbox events
 	EventInboxNew           = "inbox:new"
+	EventInboxUpdated       = "inbox:updated" // an unread record gained another reply
 	EventInboxRead          = "inbox:read"
 	EventInboxUnread        = "inbox:unread"
 	EventInboxArchived      = "inbox:archived"

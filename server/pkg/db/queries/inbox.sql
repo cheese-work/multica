@@ -5,7 +5,10 @@ SELECT i.*,
 FROM inbox_item i
 LEFT JOIN issue iss ON iss.id = i.issue_id
 WHERE i.workspace_id = $1 AND i.recipient_type = $2 AND i.recipient_id = $3 AND i.archived = false
-ORDER BY i.created_at DESC;
+  -- DM records vanish once the recipient can no longer read the DM (CHE-1793).
+  AND inbox_item_visible(i.type, i.chat_session_id, i.workspace_id, i.recipient_id)
+-- A coalesced DM record moves to the top when a new reply updates it.
+ORDER BY COALESCE(i.updated_at, i.created_at) DESC;
 
 -- name: ListArchivedInboxItems :many
 -- Archived counterpart of ListInboxItems, backing the inbox's "Archived"
@@ -39,6 +42,7 @@ WITH eligible_archived AS MATERIALIZED (
       AND i.recipient_type = $2
       AND i.recipient_id = $3
       AND i.archived = true
+      AND inbox_item_visible(i.type, i.chat_session_id, i.workspace_id, i.recipient_id)
       AND (i.issue_id IS NULL OR NOT EXISTS (
           SELECT 1
           FROM inbox_item active
@@ -95,9 +99,11 @@ WHERE id = $1 AND workspace_id = $2;
 INSERT INTO inbox_item (
     workspace_id, recipient_type, recipient_id,
     type, severity, issue_id, title, body,
-    actor_type, actor_id, details, id
+    actor_type, actor_id, details, id,
+    chat_session_id, chat_message_id
 )
-SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
+SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()),
+    sqlc.narg('chat_session_id')::uuid, sqlc.narg('chat_message_id')::uuid
 WHERE ($2::text = 'member' AND EXISTS (
     SELECT 1 FROM member WHERE workspace_id = $1 AND user_id = $3
 )) OR ($2::text = 'agent' AND EXISTS (
@@ -152,7 +158,8 @@ RETURNING recipient_type, recipient_id;
 
 -- name: CountUnreadInbox :one
 SELECT count(*) FROM inbox_item
-WHERE workspace_id = $1 AND recipient_type = $2 AND recipient_id = $3 AND read = false AND archived = false;
+WHERE workspace_id = $1 AND recipient_type = $2 AND recipient_id = $3 AND read = false AND archived = false
+  AND inbox_item_visible(type, chat_session_id, workspace_id, recipient_id);
 
 -- name: CountUnreadInboxByWorkspace :many
 -- Per-workspace unread inbox counts for a recipient member, matching the
@@ -174,14 +181,27 @@ FROM (
     WHERE i.recipient_type = 'member'
       AND i.recipient_id = $1
       AND i.archived = false
+      AND inbox_item_visible(i.type, i.chat_session_id, i.workspace_id, i.recipient_id)
     ORDER BY i.workspace_id, COALESCE(i.issue_id, i.id), i.created_at DESC
 ) newest
 WHERE newest.read = false
 GROUP BY newest.workspace_id;
 
--- name: MarkAllInboxRead :execrows
-UPDATE inbox_item SET read = true
-WHERE workspace_id = $1 AND recipient_type = 'member' AND recipient_id = $2 AND archived = false AND read = false;
+-- name: MarkAllInboxRead :one
+-- Reading a DM reply record reads the DM (CHE-1793), so the cursor of every DM
+-- whose record flips here advances in the same statement.
+WITH marked AS (
+    UPDATE inbox_item i SET read = true
+    WHERE i.workspace_id = $1 AND i.recipient_type = 'member' AND i.recipient_id = $2 AND i.archived = false AND i.read = false
+    RETURNING i.type, i.chat_session_id, i.chat_message_id
+), advanced AS (
+    UPDATE chat_session cs SET last_read_at = GREATEST(cs.last_read_at, m.created_at)
+    FROM marked
+    JOIN chat_message m ON m.id = marked.chat_message_id
+    WHERE marked.type = 'dm_reply' AND cs.id = marked.chat_session_id AND cs.creator_id = $2
+    RETURNING cs.id
+)
+SELECT count(*)::bigint FROM marked;
 
 -- name: ArchiveAllInbox :execrows
 UPDATE inbox_item SET archived = true
@@ -224,3 +244,58 @@ WHERE i.workspace_id = $1 AND i.recipient_type = 'member' AND i.recipient_id = $
     WHERE workspace_id = $1
       AND status = ANY(sqlc.arg('terminal_status_keys')::text[])
   );
+
+-- name: UpsertDMReplyInboxItem :one
+-- One unread record per (recipient, DM): the partial unique index on
+-- (recipient_id, dedupe_key) WHERE unread turns a later reply into an update
+-- that bumps reply_count, moves the row to the top and revives it from the
+-- archive. Once the record is read the next reply inserts a fresh one. The body
+-- stays NULL on purpose: a notification never carries message text.
+INSERT INTO inbox_item (
+    id, workspace_id, recipient_type, recipient_id, type, severity, title,
+    actor_type, actor_id, details, chat_session_id, chat_message_id, dedupe_key, updated_at
+) VALUES (
+    @id, @workspace_id, 'member', @recipient_id, 'dm_reply', 'info', @title,
+    'agent', @agent_id, '{"reply_count": 1}'::jsonb, @chat_session_id, @chat_message_id, @dedupe_key, now()
+)
+ON CONFLICT (recipient_id, dedupe_key) WHERE dedupe_key IS NOT NULL AND read = false
+DO UPDATE SET
+    title = EXCLUDED.title,
+    actor_id = EXCLUDED.actor_id,
+    chat_message_id = EXCLUDED.chat_message_id,
+    archived = false,
+    updated_at = now(),
+    details = jsonb_set(
+        inbox_item.details, '{reply_count}',
+        to_jsonb(COALESCE((inbox_item.details->>'reply_count')::int, 1) + 1))
+RETURNING *;
+
+-- name: MarkDMRepliesRead :many
+-- Reads every unread dm_reply record of one DM for its creator. Decision
+-- records linked to the same DM are left alone; they close when the decision
+-- is resolved.
+UPDATE inbox_item SET read = true
+WHERE chat_session_id = $1 AND recipient_id = $2 AND type = 'dm_reply' AND read = false
+RETURNING *;
+
+-- name: MarkInboxReadByDecisionRequest :many
+UPDATE inbox_item SET read = true
+WHERE workspace_id = $1 AND details->>'decision_request_id' = sqlc.arg('decision_request_id')::text AND read = false
+RETURNING *;
+
+-- name: AdvanceChatSessionReadTo :exec
+-- Moves the DM read cursor up to a message (never back), so marking its inbox
+-- record read leaves the DM with no unread replies up to that message.
+UPDATE chat_session cs SET last_read_at = GREATEST(cs.last_read_at, m.created_at)
+FROM chat_message m
+WHERE cs.id = sqlc.arg('session_id') AND m.id = sqlc.arg('message_id') AND m.chat_session_id = cs.id;
+
+-- name: GetDMChannelSwitches :one
+SELECT dm_channel_enabled(@workspace_id::uuid, @user_id::uuid, 'in_app') AS in_app,
+       dm_channel_enabled(@workspace_id::uuid, @user_id::uuid, 'push') AS push;
+
+-- name: ChatSessionHasCurrentChannelBinding :one
+SELECT EXISTS (
+    SELECT 1 FROM channel_chat_session_binding
+    WHERE chat_session_id = $1 AND retired_at IS NULL
+) AS bound;
