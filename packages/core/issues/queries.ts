@@ -19,6 +19,7 @@ import type {
   ListIssuesCache,
 } from "../types";
 import { freshestCachedIssueRevision } from "./cache-coordinator";
+import { reconcileIssueFullSnapshotRevision } from "./ws-updaters";
 import { ALL_STATUSES } from "./config";
 import { issueColumnCategory } from "./status-category";
 
@@ -479,15 +480,25 @@ export function issueIdentifierOptions(wsId: string, identifier: string) {
         // issue instead of firing a second `getIssue(uuid)` and painting a
         // label-only chip until it lands. A lookup that started before a
         // mutation or realtime update may land after it, so seed only when no
-        // cached projection holds a newer revision (equal is admissible, an
-        // unversioned response never displaces ordered data) — the same
-        // ordering `onIssueUpdated` applies.
+        // cached projection holds a newer revision (an unversioned response
+        // never displaces ordered data) — the same ordering `onIssueUpdated`
+        // applies. An entry already at this revision is kept as is: it can
+        // carry an in-flight optimistic patch that does not advance the
+        // revision.
         const cached = freshestCachedIssueRevision(client, wsId, issue.id);
+        const detailRevision = client.getQueryData<Issue>(
+          issueKeys.detail(wsId, issue.id),
+        )?.revision;
         if (
           cached === undefined ||
-          (issue.revision !== undefined && issue.revision >= cached)
+          (issue.revision !== undefined &&
+            issue.revision >= cached &&
+            (detailRevision === undefined || issue.revision > detailRevision))
         ) {
           client.setQueryData(issueKeys.detail(wsId, issue.id), issue);
+          // `setQueryData` clears the stale flag; give it back when an
+          // auxiliary event already proved a newer revision exists.
+          reconcileIssueFullSnapshotRevision(client, wsId, issue.id, issue.revision);
         }
         return issue;
       } catch (err) {
