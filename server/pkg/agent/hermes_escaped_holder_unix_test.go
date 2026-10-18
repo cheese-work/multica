@@ -55,8 +55,14 @@ func TestHermesEscapedPipeHolderHelper(t *testing.T) {
 	if _, err := syscall.Setsid(); err != nil {
 		t.Fatalf("setsid: %v", err)
 	}
-	if err := os.WriteFile(statePath, []byte(fmt.Sprintf("%d %d", os.Getpid(), syscall.Getpgrp())), 0o600); err != nil {
+	// Written to a sibling and renamed into place, so a reader that polls for
+	// the file never sees it empty or half-written.
+	staging := statePath + ".tmp"
+	if err := os.WriteFile(staging, []byte(fmt.Sprintf("%d %d", os.Getpid(), syscall.Getpgrp())), 0o600); err != nil {
 		t.Fatalf("record holder identity: %v", err)
+	}
+	if err := os.Rename(staging, statePath); err != nil {
+		t.Fatalf("publish holder identity: %v", err)
 	}
 	time.Sleep(hermesEscapedHolderLifetime)
 }
@@ -232,16 +238,22 @@ func awaitHermesMessagesClosed(t *testing.T, messagesClosed <-chan struct{}) {
 func readEscapedHolderIdentity(t *testing.T, path string) (pid, pgid int) {
 	t.Helper()
 	deadline := time.Now().Add(hermesEscapedHolderReady)
+	var lastErr error
 	for {
 		raw, err := os.ReadFile(path)
+		lastErr = err
 		if err == nil {
-			if _, scanErr := fmt.Sscan(strings.TrimSpace(string(raw)), &pid, &pgid); scanErr != nil {
-				t.Fatalf("holder state %q: %v", raw, scanErr)
+			// A state that does not parse yet is a holder still recording, not a
+			// broken one: keep waiting, and fail on it only once the budget is
+			// spent.
+			_, scanErr := fmt.Sscan(strings.TrimSpace(string(raw)), &pid, &pgid)
+			if scanErr == nil {
+				return pid, pgid
 			}
-			return pid, pgid
+			lastErr = fmt.Errorf("holder state %q: %w", raw, scanErr)
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("holder never recorded its identity at %s: %v", path, err)
+			t.Fatalf("holder never recorded its identity at %s: %v", path, lastErr)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
