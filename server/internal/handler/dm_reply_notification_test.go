@@ -36,6 +36,9 @@ func resetDMInbox(t *testing.T) {
 	}
 	clean()
 	t.Cleanup(clean)
+	// DM replies stay out of the inbox unless the user opts in; these tests
+	// cover the opted-in path.
+	setDMChannel(t, "in_app", true)
 }
 
 func listDMInbox(t *testing.T) []dmInboxRow {
@@ -93,8 +96,51 @@ func controlDM(t *testing.T, agentID string) {
 
 func setDMChannel(t *testing.T, channel string, enabled bool) {
 	t.Helper()
-	dbfx.Exec(t, `INSERT INTO notification_channel_preference (workspace_id, user_id, source, channel, enabled) VALUES ($1, $2, 'dm', $3, $4)`,
+	dbfx.Exec(t, `INSERT INTO notification_channel_preference (workspace_id, user_id, source, channel, enabled) VALUES ($1, $2, 'dm', $3, $4)
+		ON CONFLICT (workspace_id, user_id, source, channel) DO UPDATE SET enabled = EXCLUDED.enabled`,
 		testWorkspaceID, testUserID, channel, enabled)
+}
+
+// Cheese, 2026-10-18: DM replies do not go to the inbox by default. A user who
+// never set the dm in_app switch gets no record, and records made while the
+// switch was on stop showing once it falls back to the default.
+func TestDMReplyStaysOutOfTheInboxByDefault(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	resetDMInbox(t)
+	agentID, sessionID, _, _ := setupDirectChatSession(t, ctx, "opted in")
+	dmReply(t, agentID, sessionID, "before")
+	if len(dmRecords(t)) != 1 {
+		t.Fatalf("setup: an opted-in reply must show first")
+	}
+
+	testPool.Exec(ctx, `DELETE FROM notification_channel_preference WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, testUserID)
+	if records := dmRecords(t); len(records) != 0 {
+		t.Fatalf("existing DM records must leave the inbox at the default: %+v", records)
+	}
+	if got := unreadDMInbox(t); got != 0 {
+		t.Fatalf("unread count = %d, want 0", got)
+	}
+
+	before := dmRecordCountInDB(t)
+	otherAgent, other, _, _ := setupDirectChatSession(t, ctx, "default")
+	dmReply(t, otherAgent, other, "after")
+	if n := dmRecordCountInDB(t); n != before {
+		t.Fatalf("a reply at the default must create no record: records %d -> %d", before, n)
+	}
+
+	var out struct {
+		Channels map[string]map[string]bool `json:"channels"`
+	}
+	testutil.Call(t, testHandler.GetNotificationChannels, withChatTestWorkspaceCtx(t, newRequest(http.MethodGet, "/api/notification-channels", nil))).Want(http.StatusOK).JSON(&out)
+	if out.Channels["dm"]["in_app"] || out.Channels["dm"]["push"] {
+		t.Fatalf("dm switches default = %+v, want both off", out.Channels["dm"])
+	}
+	if !out.Channels["inbox"]["in_app"] {
+		t.Fatalf("inbox in_app default must stay on: %+v", out.Channels["inbox"])
+	}
 }
 
 func TestDMReplyTenRepliesCoalesceIntoOneUnreadRecord(t *testing.T) {
@@ -262,7 +308,7 @@ func TestDMReplyHonoursChannelSwitches(t *testing.T) {
 		if n := dmRecordCountInDB(t); n != 0 {
 			t.Fatalf("records = %d, want 0", n)
 		}
-		testPool.Exec(ctx, `DELETE FROM notification_channel_preference WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, testUserID)
+		setDMChannel(t, "in_app", true)
 		controlDM(t, agentID)
 		if n := dmRecordCountInDB(t); n != 1 {
 			t.Fatalf("with the switches restored a reply must notify, records = %d", n)
