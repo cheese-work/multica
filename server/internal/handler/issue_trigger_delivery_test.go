@@ -59,6 +59,56 @@ func TestDispatchIssueRunCountsOnlyAnUnstartedDuplicateAsDelivery(t *testing.T) 
 	}
 }
 
+// The run that holds the slot must carry THIS write: assignment-level, and
+// stamped for the step the issue is in now. A queued run left over from a step
+// the issue has left, or one without a step while the current step hands off,
+// reads the issue at claim but not the step's brief and permissions, so it is
+// not delivery.
+func TestDispatchIssueRunDuplicateMustMatchTheCurrentStep(t *testing.T) {
+	seedTestCatalog(t)
+	agentID := seededReadyAgentID(t)
+	var runtimeID string
+	dbfx.QueryRow(t, `SELECT runtime_id::text FROM agent WHERE id = $1`, agentID).Scan(&runtimeID)
+	cases := []struct {
+		name string
+		step any
+		want bool
+	}{
+		{"queued run stamped for the current step", "in_review", true},
+		{"queued run stamped for a step the issue left", "in_progress", false},
+		{"queued run without a step while the step hands off", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			projectID := createWorkflowTestProject(t, "Duplicate step project")
+			setColumnHandoff(t, projectID, "in_review", handToAgent(agentID, "Review it.")).Want(http.StatusOK)
+			issueID := dbfx.Issue(t, "duplicate step", testutil.Cols{
+				"project_id": projectID, "status": "in_review", "assignee_type": "agent", "assignee_id": agentID,
+			})
+			t.Cleanup(func() {
+				testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID)
+			})
+			cols := testutil.Cols{"issue_id": issueID, "runtime_id": runtimeID, "status": "queued"}
+			if tc.step != nil {
+				cols["workflow_step"] = tc.step
+			}
+			dbfx.Task(t, agentID, cols)
+			issue, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(issueID))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			got := testHandler.dispatchIssueRun(context.Background(), issue,
+				service.IssueRunTrigger{IssueID: issue.ID, AgentID: parseUUID(agentID), AssigneeType: "agent"},
+				"member", testUserID, "")
+
+			if got != tc.want {
+				t.Fatalf("dispatchIssueRun = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // A media-gated run that the issue's earlier step left behind still holds the
 // unique pending slot. The write that enters the next step must cancel it and
 // queue the run for the new step, or the replacement deduplicates against the

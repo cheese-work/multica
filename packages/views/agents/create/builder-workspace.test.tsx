@@ -296,6 +296,57 @@ describe("builder draft recovery wiring", () => {
     expect(h.save).not.toHaveBeenCalled();
   });
 
+  // Closed draft A is applied, unclosed final draft B is recovered over it, the
+  // user edits, then a reply C without a draft arrives. B is no longer the final
+  // reply, so only A remains readable. A is older than the applied B: applying it
+  // would roll the form back and autosave the rollback over the edits.
+  it.each([
+    ["a plain reply", reply("Anything else?", "reply-c")],
+    ["a failed reply", { ...reply("", "reply-c"), failure_reason: "agent_error" } as ChatMessage],
+    ["an invalid draft reply", reply('<agent_draft>{"name":"Unfinished', "reply-c")],
+  ])("does not roll the form back to an older draft when %s follows a recovered one", async (_name, last) => {
+    const closed = reply('<agent_draft>{"name":"First draft"}</agent_draft>', "reply-a");
+    h.messages = [closed];
+    const view = mount();
+    await waitFor(() => expect(screen.getByLabelText("Agent name")).toHaveValue("First draft"));
+
+    h.messages = [closed, reply(unclosed, "reply-b")];
+    view.refresh();
+    await waitFor(() => expect(screen.getByLabelText("Agent name")).toHaveValue("Poet"));
+    fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "Edited poet" } });
+
+    h.messages = [closed, reply(unclosed, "reply-b"), last];
+    view.refresh();
+    expect(screen.getByLabelText("Agent name")).toHaveValue("Edited poet");
+    view.unmount();
+    expect(h.save).toHaveBeenLastCalledWith("session-1", expect.objectContaining({
+      name: "Edited poet", applied_message_id: "reply-b",
+    }));
+  });
+
+  it("does not roll saved edits back to an older draft when reopening after the applied unclosed reply", async () => {
+    h.messages = [
+      reply('<agent_draft>{"name":"First draft"}</agent_draft>', "reply-a"),
+      reply(unclosed, "reply-b"),
+      reply("Anything else?", "reply-c"),
+    ];
+    h.session = savedSession(toStoredAgentDraft({ ...EMPTY_AGENT_DRAFT, name: "Saved edit" }, "reply-b"));
+    mount();
+    await waitFor(() => expect(screen.getByLabelText("Agent name")).toHaveValue("Saved edit"));
+    expect(h.save).not.toHaveBeenCalled();
+  });
+
+  it("applies a newer closed draft after an applied one", async () => {
+    const first = reply('<agent_draft>{"name":"First draft"}</agent_draft>', "reply-a");
+    h.messages = [first];
+    const view = mount();
+    await waitFor(() => expect(screen.getByLabelText("Agent name")).toHaveValue("First draft"));
+
+    h.messages = [first, reply("Tweaking.", "reply-b"), reply('<agent_draft>{"name":"Second draft"}</agent_draft>', "reply-c")];
+    view.refresh();
+    await waitFor(() => expect(screen.getByLabelText("Agent name")).toHaveValue("Second draft"));
+  });
+
   it("still recovers an unclosed final reply that was never applied", async () => {
     h.messages = [
       reply('<agent_draft>{"name":"First draft"}</agent_draft>', "reply-a"),
