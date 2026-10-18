@@ -516,18 +516,26 @@ function restoreDetailObligationsWhenFetchEnds(qc: QueryClient, wsId: string, id
   detailFetchWatchers.set(query, release);
 }
 
+/**
+ * `reconcileIssueFullSnapshotRevision`, for a snapshot that may carry no
+ * revision. An unversioned snapshot is behind every recorded auxiliary
+ * revision, so -Infinity orders it below all of them; passing `undefined`
+ * would return early and leave a freshly written entry fresh forever.
+ */
+function reconcileDetailSnapshot(
+  qc: QueryClient,
+  wsId: string,
+  id: string,
+  revision: number | undefined,
+) {
+  reconcileIssueFullSnapshotRevision(qc, wsId, id, revision ?? Number.NEGATIVE_INFINITY);
+}
+
 function restoreDetailObligations(qc: QueryClient, wsId: string, id: string) {
   const detailKey = issueKeys.detail(wsId, id);
   const detail = qc.getQueryData<Issue>(detailKey);
   if (!detail) return;
-  // An unversioned detail entry is behind any versioned projection, and behind
-  // any recorded auxiliary revision: -Infinity orders it below all of them.
-  reconcileIssueFullSnapshotRevision(
-    qc,
-    wsId,
-    id,
-    detail.revision ?? Number.NEGATIVE_INFINITY,
-  );
+  reconcileDetailSnapshot(qc, wsId, id, detail.revision);
   const freshest = freshestCachedIssueRevision(qc, wsId, id);
   const behind =
     freshest !== undefined && (detail.revision === undefined || detail.revision < freshest);
@@ -591,7 +599,7 @@ export function issueIdentifierOptions(wsId: string, identifier: string) {
           client.setQueryData(issueKeys.detail(wsId, issue.id), issue);
           // `setQueryData` clears the stale flag; give it back when an
           // auxiliary event already proved a newer revision exists.
-          reconcileIssueFullSnapshotRevision(client, wsId, issue.id, issue.revision);
+          reconcileDetailSnapshot(client, wsId, issue.id, issue.revision);
         }
         return issue;
       } catch (err) {
