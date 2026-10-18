@@ -28,7 +28,16 @@ type dmInboxRow struct {
 	Details       map[string]any `json:"details"`
 }
 
+// resetDMInbox starts from an opted-in user: DM switches are off by default
+// (CHE-1848), and these tests cover the opted-in behavior of CHE-1793.
 func resetDMInbox(t *testing.T) {
+	t.Helper()
+	clearDMInbox(t)
+	setDMChannel(t, "in_app", true)
+}
+
+// clearDMInbox leaves the user with no DM switch rows, i.e. the defaults.
+func clearDMInbox(t *testing.T) {
 	t.Helper()
 	clean := func() {
 		testPool.Exec(context.Background(), `DELETE FROM inbox_item WHERE workspace_id = $1 AND recipient_id = $2 AND type IN ('dm_reply', 'mentioned')`, testWorkspaceID, testUserID)
@@ -93,7 +102,8 @@ func controlDM(t *testing.T, agentID string) {
 
 func setDMChannel(t *testing.T, channel string, enabled bool) {
 	t.Helper()
-	dbfx.Exec(t, `INSERT INTO notification_channel_preference (workspace_id, user_id, source, channel, enabled) VALUES ($1, $2, 'dm', $3, $4)`,
+	dbfx.Exec(t, `INSERT INTO notification_channel_preference (workspace_id, user_id, source, channel, enabled) VALUES ($1, $2, 'dm', $3, $4)
+		ON CONFLICT (workspace_id, user_id, source, channel) DO UPDATE SET enabled = EXCLUDED.enabled`,
 		testWorkspaceID, testUserID, channel, enabled)
 }
 
@@ -262,7 +272,7 @@ func TestDMReplyHonoursChannelSwitches(t *testing.T) {
 		if n := dmRecordCountInDB(t); n != 0 {
 			t.Fatalf("records = %d, want 0", n)
 		}
-		testPool.Exec(ctx, `DELETE FROM notification_channel_preference WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, testUserID)
+		setDMChannel(t, "in_app", true)
 		controlDM(t, agentID)
 		if n := dmRecordCountInDB(t); n != 1 {
 			t.Fatalf("with the switches restored a reply must notify, records = %d", n)
@@ -283,6 +293,54 @@ func TestDMReplyHonoursChannelSwitches(t *testing.T) {
 		}
 		if got := unreadDMInbox(t); got != 0 {
 			t.Fatalf("unread count = %d, want 0", got)
+		}
+	})
+}
+
+// CHE-1848: with no DM switch row a reply creates no record, and a record made
+// while opted in leaves the inbox once the user is back on the defaults.
+func TestDMReplyOffByDefault(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	t.Run("no switch row creates nothing", func(t *testing.T) {
+		clearDMInbox(t)
+		agentID, sessionID, _, _ := setupDirectChatSession(t, ctx, "default off")
+		dmReply(t, agentID, sessionID, "unasked")
+		if n := dmRecordCountInDB(t); n != 0 {
+			t.Fatalf("records = %d, want 0 without an opt-in", n)
+		}
+		if records := dmRecords(t); len(records) != 0 {
+			t.Fatalf("inbox list must show no dm_reply rows: %+v", records)
+		}
+		if got := unreadDMInbox(t); got != 0 {
+			t.Fatalf("unread count = %d, want 0", got)
+		}
+		setDMChannel(t, "in_app", true)
+		controlDM(t, agentID)
+		if n := dmRecordCountInDB(t); n != 1 {
+			t.Fatalf("after opting in a reply must notify, records = %d", n)
+		}
+	})
+
+	t.Run("existing record hides on the defaults", func(t *testing.T) {
+		resetDMInbox(t)
+		agentID, sessionID, _, _ := setupDirectChatSession(t, ctx, "legacy row")
+		dmReply(t, agentID, sessionID, "before the change")
+		if records := dmRecords(t); len(records) != 1 {
+			t.Fatalf("opted-in reply must show one record: %+v", records)
+		}
+		testPool.Exec(ctx, `DELETE FROM notification_channel_preference WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, testUserID)
+		if records := dmRecords(t); len(records) != 0 {
+			t.Fatalf("inbox list must hide the record on the defaults: %+v", records)
+		}
+		if got := unreadDMInbox(t); got != 0 {
+			t.Fatalf("unread count = %d, want 0", got)
+		}
+		if n := dmRecordCountInDB(t); n != 1 {
+			t.Fatalf("records = %d, want the row kept (no data change)", n)
 		}
 	})
 }
