@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   DndContext,
@@ -225,11 +225,37 @@ export function WorkflowEditorPage({
   const [newName, setNewName] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
-  useEffect(() => setDraft(baseline), [baseline]);
+  // The saved workflow refreshes under the editor: updated_at moves, the status
+  // catalog grows, another admin saves. A clean editor follows it. An editor with
+  // unsaved edits keeps them. When the refresh changed the workflow's content,
+  // saving would overwrite that change, so the editor says so and holds Save until
+  // the editor picks a version.
+  const [changedElsewhere, setChangedElsewhere] = useState(false);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const targetKey = `${workflowId ?? ""}|${seed?.id ?? ""}|${template ?? ""}`;
+  const synced = useRef({ targetKey, baseline });
+  useEffect(() => {
+    const previous = synced.current;
+    synced.current = { targetKey, baseline };
+    if (previous.targetKey !== targetKey) {
+      setDraft(baseline);
+      setChangedElsewhere(false);
+      return;
+    }
+    if (previous.baseline === baseline) return;
+    const current = draftRef.current;
+    if (sameDraft(current, previous.baseline) || sameDraft(current, baseline)) {
+      setDraft(baseline);
+      setChangedElsewhere(false);
+      return;
+    }
+    if (workflowId && !sameDraft(previous.baseline, baseline)) setChangedElsewhere(true);
+  }, [baseline, targetKey, workflowId]);
 
   const dirty = !workflowId || !sameDraft(draft, baseline);
   const pending = createWorkflow.isPending || updateWorkflow.isPending;
-  const canSave = canEdit && dirty && draft.name.trim().length > 0 && !pending;
+  const canSave = canEdit && dirty && !changedElsewhere && draft.name.trim().length > 0 && !pending;
   const usedBy = saved
     ? projects.filter((p) => (saved.is_default ? !p.workflow_id : saved.project_ids.includes(p.id)))
     : [];
@@ -462,6 +488,27 @@ export function WorkflowEditorPage({
             </div>
           )}
         </div>
+        {changedElsewhere && canEdit && (
+          <div
+            role="alert"
+            className="flex flex-wrap items-center gap-3 rounded-md border bg-muted/50 px-3 py-2 text-body"
+          >
+            <span className="min-w-0 flex-1">{t(($) => $.workflows.editor.changed_elsewhere)}</span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setDraft(baseline);
+                setChangedElsewhere(false);
+              }}
+            >
+              {t(($) => $.workflows.editor.load_latest)}
+            </Button>
+            <Button size="sm" onClick={() => setChangedElsewhere(false)}>
+              {t(($) => $.workflows.editor.keep_edits)}
+            </Button>
+          </div>
+        )}
       </div>
 
       <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)]">

@@ -31,6 +31,11 @@ func raceAgainst(t *testing.T, hold func(tx pgx.Tx), write func() *testutil.Resp
 // raceUntilBlocked is raceAgainst for a write that returns no HTTP response.
 // whileBlocked, when given, runs in the competing transaction once the write is
 // blocked and before that transaction commits.
+//
+// "Blocked" means a backend is waiting on a lock the competing transaction
+// holds, which pg_blocking_pids reports for that transaction's own backend. A
+// lock waiter held up by anyone else does not count, so the hook cannot fire
+// before the write has reached the lock under test.
 func raceUntilBlocked(t *testing.T, hold func(tx pgx.Tx), write func(), whileBlocked ...func(tx pgx.Tx)) {
 	t.Helper()
 	ctx := context.Background()
@@ -39,6 +44,10 @@ func raceUntilBlocked(t *testing.T, hold func(tx pgx.Tx), write func(), whileBlo
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
+	var holderPID int
+	if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&holderPID); err != nil {
+		t.Fatal(err)
+	}
 	hold(tx)
 
 	done := make(chan struct{})
@@ -52,10 +61,11 @@ func raceUntilBlocked(t *testing.T, hold func(tx pgx.Tx), write func(), whileBlo
 		default:
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("the write neither finished nor blocked on a lock")
+			t.Fatal("the write neither finished nor blocked on the competing transaction")
 		}
-		dbfx.QueryRow(t, `SELECT count(*) > 0 FROM pg_stat_activity
-			WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&blocked)
+		dbfx.QueryRow(t, `SELECT EXISTS (
+			SELECT 1 FROM pg_stat_activity
+			WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid)))`, holderPID).Scan(&blocked)
 		if !blocked {
 			time.Sleep(10 * time.Millisecond)
 		}

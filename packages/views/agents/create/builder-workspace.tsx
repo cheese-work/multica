@@ -202,19 +202,26 @@ export function BuilderWorkspace({
     latestMessage.message_kind !== "no_response" &&
     latestMessage.content.includes("<agent_draft>") &&
     !parseBuilderDraft(latestMessage.content, { completed });
-  // An unclosed block is recovered only from the final reply. Older replies
-  // were already superseded: reading their unclosed blocks again would merge a
-  // stale draft over configuration the user saved after it.
-  const latestDraftMessage = [...builder.messages]
-    .reverse()
-    .find(
-      (message) =>
-        message.role === "assistant" &&
-        !message.failure_reason &&
-        parseBuilderDraft(message.content, {
-          completed: completed && message.id === latestMessage?.id,
-        }),
-    );
+  // Only a reply newer than the applied one can be new. Older replies were
+  // either applied already or superseded by it, and reading them again would
+  // roll the form back and autosave the rollback over edits made since. An
+  // unclosed block is recovered only from the final reply: an older one was
+  // superseded before it could complete.
+  const appliedIndex = appliedMessageId
+    ? builder.messages.findIndex((message) => message.id === appliedMessageId)
+    : -1;
+  let latestDraftMessage: (typeof builder.messages)[number] | undefined;
+  for (let i = builder.messages.length - 1; i > appliedIndex; i--) {
+    const message = builder.messages[i]!;
+    if (
+      message.role === "assistant" &&
+      !message.failure_reason &&
+      parseBuilderDraft(message.content, { completed: completed && message.id === latestMessage?.id })
+    ) {
+      latestDraftMessage = message;
+      break;
+    }
+  }
   const latestDraftMessageId = latestDraftMessage?.id;
   const latestDraftMessageContent = latestDraftMessage?.content;
 

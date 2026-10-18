@@ -2964,6 +2964,11 @@ type CancelTaskOptions struct {
 	ErrorMessage  string
 	FailureReason string
 	CancelledBy   TaskCancellationActor
+	// StaleStep, when set, makes the cancellation conditional at the statement:
+	// the task is cancelled only while it is still a pending assignment-level
+	// run stamped for a step other than StaleStep. A task that started in the
+	// meantime is left alone. Not for user cancellation.
+	StaleStep string
 	// UserInitiated distinguishes the issue UI/API cancel action from automatic
 	// server repairs. An explicit user cancellation terminally acknowledges any
 	// delegated-failure recovery signal planned into the task; automatic
@@ -3085,7 +3090,9 @@ func (s *TaskService) CancelTaskWithResult(ctx context.Context, taskID pgtype.UU
 				cancelled db.AgentTaskQueue
 				err       error
 			)
-			if opts.UserInitiated {
+			if opts.StaleStep != "" {
+				cancelled, err = qtx.CancelStalePendingStepTask(ctx, db.CancelStalePendingStepTaskParams{ID: taskID, Step: opts.StaleStep})
+			} else if opts.UserInitiated {
 				cancelled, err = qtx.CancelAgentTaskByUser(ctx, db.CancelAgentTaskByUserParams{
 					ID:              taskID,
 					CancelledByType: pgtype.Text{String: opts.CancelledBy.Type, Valid: true},

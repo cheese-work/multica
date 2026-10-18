@@ -92,10 +92,10 @@ func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger 
 		// member actor is threaded; otherwise attribution falls back to the chain.
 		_, err := h.TaskService.EnqueueTaskForIssueWithHandoff(ctx, issue, handoffNote, memberActorUserID(actorType, actorID))
 		if errors.Is(err, service.ErrDuplicatePendingTask) {
-			// A sibling run holds the slot. It delivers this write only if it has
-			// not started: a dispatched run read the issue before the write.
-			queued, queuedErr := h.Queries.HasQueuedTaskForIssueAndAgent(ctx, db.HasQueuedTaskForIssueAndAgentParams{IssueID: issue.ID, AgentID: trigger.AgentID})
-			return queuedErr == nil && queued
+			// A sibling run holds the slot. It delivers this write only if it
+			// is queued and is the assignment-level run for the step the issue
+			// is in now; see HasQueuedRunCarryingIssueWrite.
+			return h.queuedRunCarriesWrite(ctx, issue, trigger.AgentID)
 		}
 		// Anything else is a real enqueue failure that was previously
 		// discarded silently (CHE-486).
@@ -108,6 +108,24 @@ func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger 
 		return h.enqueueSquadLeaderTask(ctx, issue, pgtype.UUID{}, actorType, actorID, handoffNote)
 	}
 	return false
+}
+
+// queuedRunCarriesWrite reports whether a queued run of the agent can stand in
+// for the run a write lost to the pending-task unique index.
+func (h *Handler) queuedRunCarriesWrite(ctx context.Context, issue db.Issue, agentID pgtype.UUID) bool {
+	stepHandsOff := false
+	if def, _, err := issueworkflow.ForProject(ctx, h.Queries, issue.WorkspaceID, issue.ProjectID); err == nil && def != nil {
+		step, ok := def.Step(issue.Status)
+		stepHandsOff = ok && step.HandsOff()
+	}
+	carries, err := h.Queries.HasQueuedRunCarryingIssueWrite(ctx, db.HasQueuedRunCarryingIssueWriteParams{
+		IssueID:      issue.ID,
+		AgentID:      agentID,
+		HeadSha:      h.TaskService.ResolveIssueReviewSHAParam(ctx, issue.ID),
+		StepHandsOff: stepHandsOff,
+		Step:         issue.Status,
+	})
+	return err == nil && carries
 }
 
 // memberActorUserID returns the acting member's user id as a pgtype.UUID when the

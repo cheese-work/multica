@@ -1712,11 +1712,46 @@ WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
   AND workflow_step IS NOT NULL
   AND workflow_step <> sqlc.arg('step')::text;
 
--- name: HasQueuedTaskForIssueAndAgent :one
--- A queued run has not started, so it reads the issue when it is claimed and
--- carries any write made since. A dispatched run read the issue earlier.
+-- name: HasQueuedRunCarryingIssueWrite :one
+-- Whether a queued run of the agent can stand in for the run a write wanted
+-- but lost to the pending-task unique index. A queued run has not started, so
+-- it reads the issue when it is claimed. It carries the write only if it is
+-- assignment-level (no wakeup, no trigger comment), keyed on the same reviewed
+-- head, and stamped for the step the issue is in now. When that step hands the
+-- issue off, a run without a step is not enough: the brief and the permission
+-- to move the issue come from the step stamp.
 SELECT count(*) > 0 AS has_queued FROM agent_task_queue
-WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued';
+WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'
+  AND context->>'wakeup_id' IS NULL
+  AND trigger_comment_id IS NULL
+  AND (
+    COALESCE(sqlc.narg('head_sha')::text, '') = ''
+    OR context->>'head_sha' = sqlc.narg('head_sha')::text
+  )
+  AND CASE
+    WHEN sqlc.arg('step_hands_off')::bool THEN workflow_step = sqlc.arg('step')::text
+    ELSE workflow_step IS NULL OR workflow_step = sqlc.arg('step')::text
+  END;
+
+-- name: CancelStalePendingStepTask :one
+-- Cancels one run only while it is still what ListStalePendingStepTasks
+-- selected: pending, assignment-level and stamped for a step the issue has
+-- left. The selection and this statement are separate, and a dispatched run
+-- the daemon starts in between is work in flight that a handoff must not
+-- cancel. Unlike CancelAgentTask, running is not cancellable here.
+UPDATE agent_task_queue
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
+    cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL
+WHERE id = $1
+  AND context->>'wakeup_id' IS NULL
+  AND trigger_comment_id IS NULL
+  AND workflow_step IS NOT NULL
+  AND workflow_step <> sqlc.arg('step')::text
+  AND (
+    status IN ('queued', 'dispatched')
+    OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+  )
+RETURNING *;
 
 -- name: HasPendingTaskForIssueAndAgentInThread :one
 -- Same pending/head rules as HasPendingTaskForIssueAndAgent, scoped to one

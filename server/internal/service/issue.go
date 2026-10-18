@@ -297,13 +297,22 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	// project's issues, the source issue among them, so the opposite order
 	// deadlocks the two.
 	if p.SourceContext != nil {
-		if _, err := qtx.LockIssueForDescriptionUpdate(ctx, db.LockIssueForDescriptionUpdateParams{
+		source, err := qtx.LockIssueForDescriptionUpdate(ctx, db.LockIssueForDescriptionUpdateParams{
 			ID: p.SourceContext.SourceIssueID, WorkspaceID: p.WorkspaceID,
-		}); err != nil {
+		})
+		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return IssueCreateResult{}, ErrSourceIssueDeleted
 			}
 			return IssueCreateResult{}, fmt.Errorf("lock source issue: %w", err)
+		}
+		// The project was resolved from the parent before this lock. The locked
+		// row is authoritative: a parent moved since then means the project and
+		// workflow decided above are the former ones. Taking the new project's
+		// lock here would invert the lock order, so the create is refused and
+		// the caller retries against the parent's current project.
+		if !p.ProjectID.Valid && p.ParentIssueID == p.SourceContext.SourceIssueID && source.ProjectID != projectID {
+			return IssueCreateResult{}, ErrSourceContextChanged
 		}
 		locked, err := qtx.LockCommentAncestorPath(ctx, db.LockCommentAncestorPathParams{
 			CommentID: p.SourceContext.AnchorCommentID, WorkspaceID: p.WorkspaceID,

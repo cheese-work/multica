@@ -1594,6 +1594,105 @@ func (q *Queries) CancelQueuedDuplicateTask(ctx context.Context, taskID pgtype.U
 	return i, err
 }
 
+const cancelStalePendingStepTask = `-- name: CancelStalePendingStepTask :one
+UPDATE agent_task_queue
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
+    cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL
+WHERE id = $1
+  AND context->>'wakeup_id' IS NULL
+  AND trigger_comment_id IS NULL
+  AND workflow_step IS NOT NULL
+  AND workflow_step <> $2::text
+  AND (
+    status IN ('queued', 'dispatched')
+    OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+  )
+RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step
+`
+
+type CancelStalePendingStepTaskParams struct {
+	ID   pgtype.UUID `json:"id"`
+	Step string      `json:"step"`
+}
+
+// Cancels one run only while it is still what ListStalePendingStepTasks
+// selected: pending, assignment-level and stamped for a step the issue has
+// left. The selection and this statement are separate, and a dispatched run
+// the daemon starts in between is work in flight that a handoff must not
+// cancel. Unlike CancelAgentTask, running is not cancellable here.
+func (q *Queries) CancelStalePendingStepTask(ctx context.Context, arg CancelStalePendingStepTaskParams) (AgentTaskQueue, error) {
+	row := q.db.QueryRow(ctx, cancelStalePendingStepTask, arg.ID, arg.Step)
+	var i AgentTaskQueue
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.IssueID,
+		&i.Status,
+		&i.Priority,
+		&i.DispatchedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.Result,
+		&i.Error,
+		&i.CreatedAt,
+		&i.Context,
+		&i.RuntimeID,
+		&i.SessionID,
+		&i.WorkDir,
+		&i.TriggerCommentID,
+		&i.ChatSessionID,
+		&i.AutopilotRunID,
+		&i.Attempt,
+		&i.MaxAttempts,
+		&i.ParentTaskID,
+		&i.FailureReason,
+		&i.TriggerSummary,
+		&i.ForceFreshSession,
+		&i.IsLeaderTask,
+		&i.WaitReason,
+		&i.InitiatorUserID,
+		&i.HandoffNote,
+		&i.PrepareLeaseExpiresAt,
+		&i.SquadID,
+		&i.RuntimeMcpOverlay,
+		&i.EscalationForTaskID,
+		&i.FireAt,
+		&i.OriginatorUserID,
+		&i.RuntimeConnectedApps,
+		&i.CoalescedCommentIds,
+		&i.DeliveredCommentIds,
+		&i.ChatInputTaskID,
+		&i.ChatFinalizeDeferredAt,
+		&i.OriginatorSource,
+		&i.DelegatedFromTaskID,
+		&i.RetryOfTaskID,
+		&i.RerunOfTaskID,
+		&i.RuleVersionID,
+		&i.TriggerEvidenceKind,
+		&i.TriggerEvidenceRefID,
+		&i.AccountableUserID,
+		&i.SessionRolloutMissing,
+		&i.RetiredSessionID,
+		&i.QuickActionsDisabled,
+		&i.RegenerateQuickActionsFor,
+		&i.BranchName,
+		&i.DurableWorkDir,
+		&i.ChannelContextRevision,
+		&i.CommentThreadID,
+		&i.CancelledByType,
+		&i.CancelledByID,
+		&i.CancelledByName,
+		&i.IssueSnapshot,
+		&i.ContextTokens,
+		&i.ContextWindow,
+		&i.TaskKind,
+		&i.CompactReason,
+		&i.CompactTriggerTokens,
+		&i.WorkflowStep,
+	)
+	return i, err
+}
+
 const cancelSupersededDeferredRetriesForRuntimes = `-- name: CancelSupersededDeferredRetriesForRuntimes :many
 UPDATE agent_task_queue r
 SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
@@ -5337,20 +5436,44 @@ func (q *Queries) HasPendingTaskForIssueAndAgentInThread(ctx context.Context, ar
 	return has_pending, err
 }
 
-const hasQueuedTaskForIssueAndAgent = `-- name: HasQueuedTaskForIssueAndAgent :one
+const hasQueuedRunCarryingIssueWrite = `-- name: HasQueuedRunCarryingIssueWrite :one
 SELECT count(*) > 0 AS has_queued FROM agent_task_queue
 WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'
+  AND context->>'wakeup_id' IS NULL
+  AND trigger_comment_id IS NULL
+  AND (
+    COALESCE($3::text, '') = ''
+    OR context->>'head_sha' = $3::text
+  )
+  AND CASE
+    WHEN $4::bool THEN workflow_step = $5::text
+    ELSE workflow_step IS NULL OR workflow_step = $5::text
+  END
 `
 
-type HasQueuedTaskForIssueAndAgentParams struct {
-	IssueID pgtype.UUID `json:"issue_id"`
-	AgentID pgtype.UUID `json:"agent_id"`
+type HasQueuedRunCarryingIssueWriteParams struct {
+	IssueID      pgtype.UUID `json:"issue_id"`
+	AgentID      pgtype.UUID `json:"agent_id"`
+	HeadSha      pgtype.Text `json:"head_sha"`
+	StepHandsOff bool        `json:"step_hands_off"`
+	Step         string      `json:"step"`
 }
 
-// A queued run has not started, so it reads the issue when it is claimed and
-// carries any write made since. A dispatched run read the issue earlier.
-func (q *Queries) HasQueuedTaskForIssueAndAgent(ctx context.Context, arg HasQueuedTaskForIssueAndAgentParams) (bool, error) {
-	row := q.db.QueryRow(ctx, hasQueuedTaskForIssueAndAgent, arg.IssueID, arg.AgentID)
+// Whether a queued run of the agent can stand in for the run a write wanted
+// but lost to the pending-task unique index. A queued run has not started, so
+// it reads the issue when it is claimed. It carries the write only if it is
+// assignment-level (no wakeup, no trigger comment), keyed on the same reviewed
+// head, and stamped for the step the issue is in now. When that step hands the
+// issue off, a run without a step is not enough: the brief and the permission
+// to move the issue come from the step stamp.
+func (q *Queries) HasQueuedRunCarryingIssueWrite(ctx context.Context, arg HasQueuedRunCarryingIssueWriteParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasQueuedRunCarryingIssueWrite,
+		arg.IssueID,
+		arg.AgentID,
+		arg.HeadSha,
+		arg.StepHandsOff,
+		arg.Step,
+	)
 	var has_queued bool
 	err := row.Scan(&has_queued)
 	return has_queued, err

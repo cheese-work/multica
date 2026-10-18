@@ -268,7 +268,12 @@ func (s *IssueService) CancelStaleStepRuns(ctx context.Context, issue db.Issue, 
 		return
 	}
 	for _, task := range stale {
-		if _, err := s.TaskService.CancelTask(ctx, task.ID); err != nil {
+		// Conditional at the statement: a run that started after the selection
+		// is in flight and stays.
+		if _, err := s.TaskService.CancelTaskWithResult(ctx, task.ID, CancelTaskOptions{
+			ClientSupportsDraftRestore: true,
+			StaleStep:                  issue.Status,
+		}); err != nil {
 			slog.Warn("workflow: cancel stale step run failed",
 				"issue_id", util.UUIDToString(issue.ID), "task_id", util.UUIDToString(task.ID), "error", err)
 		}
