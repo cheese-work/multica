@@ -12,13 +12,16 @@ import (
 
 // Channel switches live in their own table so the legacy replace-all
 // notification-preferences PUT cannot erase them. A missing row means the
-// default: in_app on, push off (push needs an explicit per-user opt-in).
+// default: inbox in_app on; every other switch off (push and DM replies in the
+// inbox need an explicit per-user opt-in). dm_channel_enabled in SQL matches.
 var (
 	notifChannelSources  = []string{"inbox", "dm"}
 	notifChannelChannels = []string{"in_app", "push"}
 )
 
-func notifChannelDefault(channel string) bool { return channel == "in_app" }
+func notifChannelDefault(source, channel string) bool {
+	return source == "inbox" && channel == "in_app"
+}
 
 func (h *Handler) writeNotificationChannels(w http.ResponseWriter, r *http.Request, workspaceID, userID string) {
 	rows, err := h.Queries.ListNotificationChannelPreferences(r.Context(), db.ListNotificationChannelPreferencesParams{
@@ -35,7 +38,7 @@ func (h *Handler) writeNotificationChannels(w http.ResponseWriter, r *http.Reque
 	for _, source := range notifChannelSources {
 		channels[source] = map[string]bool{}
 		for _, channel := range notifChannelChannels {
-			channels[source][channel] = notifChannelDefault(channel)
+			channels[source][channel] = notifChannelDefault(source, channel)
 		}
 	}
 	for _, row := range rows {
