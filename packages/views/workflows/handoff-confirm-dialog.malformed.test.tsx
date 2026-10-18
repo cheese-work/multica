@@ -10,13 +10,14 @@ import { WorkflowHandoffConfirmDialog } from "./handoff-confirm-dialog";
 
 // The real client parses the response; only the network is stubbed. A mocked
 // client method would skip the parser this file exists to cover.
-const realApi = vi.hoisted(() => ({ current: null as null | { previewWorkflowHandoff: (...a: unknown[]) => unknown } }));
+const realApi = vi.hoisted(() => ({ current: null as null | Pick<ApiClient, "previewWorkflowHandoff"> }));
 vi.mock("@multica/core/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@multica/core/api")>();
   return {
     ...actual,
     api: {
-      previewWorkflowHandoff: (...args: unknown[]) => realApi.current!.previewWorkflowHandoff(...args),
+      previewWorkflowHandoff: (...args: Parameters<ApiClient["previewWorkflowHandoff"]>) =>
+        realApi.current!.previewWorkflowHandoff(...args),
     },
   };
 });
