@@ -8,7 +8,6 @@ import {
   IssueWorkflowSchema,
   ListIssueWorkflowsResponseSchema,
   WorkflowHandoffPreviewSchema,
-  EMPTY_WORKFLOW_HANDOFF_PREVIEW,
 } from "../api/schemas";
 
 const baseWorkflow = {
@@ -100,13 +99,10 @@ describe("workflow schemas (MUL-7420)", () => {
     expect(WorkflowHandoffPreviewSchema.parse({ handoff: true, handler_type: "robot" }).handler_type).toBeNull();
   });
 
-  it("treats a malformed handoff preview as no handoff", () => {
-    const parsed = parseWithFallback(
-      { handoff: "yes", previous_runs: 3 },
-      WorkflowHandoffPreviewSchema,
-      EMPTY_WORKFLOW_HANDOFF_PREVIEW,
-      { endpoint: "GET /api/issues/{id}/workflow-handoff" },
-    );
-    expect(parsed).toEqual(EMPTY_WORKFLOW_HANDOFF_PREVIEW);
+  it("does not read a malformed handoff preview as no handoff", () => {
+    // A preview the client cannot read must not become "nothing to confirm".
+    for (const bad of [{ handoff: "yes", previous_runs: 3 }, {}, null, []]) {
+      expect(WorkflowHandoffPreviewSchema.safeParse(bad).success).toBe(false);
+    }
   });
 });

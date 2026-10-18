@@ -427,3 +427,148 @@ describe("workflow editor before the row is available", () => {
     expect(apiMock.updateIssueWorkflow).not.toHaveBeenCalled();
   });
 });
+
+// A save is in flight. Refreshes and further edits arrive before its response,
+// and the response can be a conflict, a mapping request or a plain failure.
+// Nothing here may replace unaccepted edits without the editor choosing.
+describe("workflow editor draft preservation during a save", () => {
+  let queryClient: QueryClient;
+  const statuses = ["backlog", "todo", "in_progress", "blocked", "done", "cancelled"].map(statusEntry);
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const publish = (next: IssueWorkflow) =>
+    act(async () => {
+      queryClient.setQueryData(issueWorkflowKeys.list("ws-1"), { workflows: [next], total: 1 });
+      await settle();
+    });
+  const nameField = () => screen.getByDisplayValue(/Delivery/) as HTMLInputElement;
+  const saveButton = () => screen.getByRole("button", { name: "Save" }) as HTMLButtonElement;
+  // A refresh that changes nothing the editor shows: another version, same content.
+  const unrelated = (version: string) =>
+    workflow({ version, updated_at: "2026-01-01T00:00:09Z", project_ids: ["project-9"] });
+
+  function deferredSave() {
+    let resolve!: (value: IssueWorkflow) => void;
+    let reject!: (reason: unknown) => void;
+    apiMock.updateIssueWorkflow.mockReturnValue(
+      new Promise<IssueWorkflow>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      }),
+    );
+    return { resolve, reject };
+  }
+  const startSave = () =>
+    act(async () => {
+      fireEvent.click(saveButton());
+      await settle();
+    });
+
+  beforeEach(() => {
+    apiMock.updateIssueWorkflow.mockReset();
+    apiMock.listIssueWorkflows.mockReset();
+    apiMock.listIssueWorkflows.mockImplementation(async () =>
+      queryClient.getQueryData(issueWorkflowKeys.list("ws-1")),
+    );
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    queryClient.setQueryData(issueStatusKeys.list("ws-1"), { statuses });
+    queryClient.setQueryData(projectListOptions("ws-1").queryKey, { projects: [], total: 0 });
+    queryClient.setQueryData(issueWorkflowKeys.list("ws-1"), { workflows: [workflow()], total: 1 });
+    renderWithI18n(
+      <QueryClientProvider client={queryClient}>
+        <WorkflowEditorPage workflowId="wf-1" seed={null} canEdit onBack={() => {}} onOpen={() => {}} />
+      </QueryClientProvider>,
+    );
+  });
+  afterEach(cleanup);
+
+  it("keeps the draft when an unrelated refresh lands during a save that is then refused as stale", async () => {
+    const save = deferredSave();
+    fireEvent.change(nameField(), { target: { value: "Delivery v2" } });
+    await startSave();
+
+    await publish(unrelated("v-2026-01-01-b"));
+    expect(screen.getByDisplayValue("Delivery v2")).toBeTruthy();
+
+    await act(async () => {
+      save.reject(new ApiError("conflict", 409, "Conflict", { code: "workflow_changed_elsewhere" }));
+      await settle();
+    });
+
+    expect(screen.getByDisplayValue("Delivery v2")).toBeTruthy();
+    expect(screen.getByRole("alert")).toBeTruthy();
+    expect(saveButton().disabled).toBe(true);
+  });
+
+  it("keeps the draft through a refresh after the server asks for a status mapping", async () => {
+    const save = deferredSave();
+    fireEvent.change(nameField(), { target: { value: "Delivery v2" } });
+    await startSave();
+    await act(async () => {
+      save.reject(
+        new ApiError("mapping", 409, "Conflict", {
+          code: "workflow_status_mapping_required",
+          plan: { required: [{ status_key: "in_progress", issue_count: 2, suggested_status_key: "todo" }], unchanged: [] },
+        }),
+      );
+      await settle();
+    });
+
+    await publish(unrelated("v-2026-01-01-b"));
+
+    expect(screen.getByDisplayValue("Delivery v2")).toBeTruthy();
+  });
+
+  it("keeps the draft through a refresh after a plain save failure", async () => {
+    const save = deferredSave();
+    fireEvent.change(nameField(), { target: { value: "Delivery v2" } });
+    await startSave();
+    await act(async () => {
+      save.reject(new ApiError("boom", 500, "Server Error", {}));
+      await settle();
+    });
+
+    await publish(unrelated("v-2026-01-01-b"));
+
+    expect(screen.getByDisplayValue("Delivery v2")).toBeTruthy();
+    expect(saveButton().disabled).toBe(false);
+  });
+
+  it("keeps edits made while the save is pending, and saves them against the response's version", async () => {
+    const save = deferredSave();
+    fireEvent.change(nameField(), { target: { value: "Delivery v2" } });
+    await startSave();
+    fireEvent.change(screen.getByDisplayValue("Delivery v2"), { target: { value: "Delivery v3" } });
+
+    await act(async () => {
+      save.resolve(workflow({ name: "Delivery v2", version: "v-2026-01-01-saved", updated_at: "2026-01-01T00:00:09Z" }));
+      await settle();
+    });
+
+    expect(screen.getByDisplayValue("Delivery v3")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(saveButton().disabled).toBe(false);
+
+    apiMock.updateIssueWorkflow.mockResolvedValue(workflow());
+    await startSave();
+    expect(apiMock.updateIssueWorkflow.mock.calls[1]![1]).toMatchObject({
+      name: "Delivery v3",
+      expected_version: "v-2026-01-01-saved",
+    });
+  });
+
+  it("adopts the response as the baseline when nothing was edited during the save", async () => {
+    const save = deferredSave();
+    fireEvent.change(nameField(), { target: { value: "Delivery v2" } });
+    await startSave();
+
+    await act(async () => {
+      save.resolve(workflow({ name: "Delivery v2", version: "v-2026-01-01-saved", updated_at: "2026-01-01T00:00:09Z" }));
+      await settle();
+    });
+
+    expect(screen.getByDisplayValue("Delivery v2")).toBeTruthy();
+    expect(saveButton().disabled).toBe(true);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
