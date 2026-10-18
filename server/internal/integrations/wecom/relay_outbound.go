@@ -905,8 +905,9 @@ func (r *RelayOutbound) confirmInbox(ctx context.Context, eventID string) relayP
 	// a window it configured elsewhere. A tighter caller deadline shortens the
 	// window; with no deadline the window stands.
 	deadline := time.Now().Add(window)
+	callerBound := false
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
-		deadline = d
+		deadline, callerBound = d, true
 	}
 	// The poll's OWN deadline ends the wait; the context is the backstop that
 	// keeps a claim store which ignores its deadline from outlasting it, so it
@@ -940,10 +941,17 @@ func (r *RelayOutbound) confirmInbox(ctx context.Context, eventID string) relayP
 		if !time.Now().Before(deadline) {
 			break
 		}
-		timer := time.NewTimer(step)
+		// Never sleep past the deadline: a full step started just short of it
+		// ends step-minus-epsilon after it, which leaves the pollCtx backstop
+		// (window/8 + 1ms past the deadline) only the epsilon plus 1ms of
+		// margin. Timer lateness then lets the backstop win the select and the
+		// verdict becomes relayUncertain for a bot nobody holds.
+		timer := time.NewTimer(min(step, time.Until(deadline)))
 		select {
 		case <-timer.C:
-		case <-pollCtx.Done():
+		case <-ctx.Done():
+			// The caller's budget, not the backstop: a stall that lets both fire
+			// before this select runs must not decide the verdict by pick order.
 			timer.Stop()
 			return relayUncertain
 		}
@@ -953,7 +961,9 @@ func (r *RelayOutbound) confirmInbox(ctx context.Context, eventID string) relayP
 	// that the delivery is unknown -- nothing sent, nothing re-routed. In a
 	// production request the 5s budget leaves the 2s window plenty of room, so
 	// this is the backstop rather than the common exit.
-	if err := ctx.Err(); err != nil {
+	// The wait now ends AT the deadline, so a caller-bound wait can finish a
+	// hair before ctx reports it: the caller's deadline is spent either way.
+	if err := ctx.Err(); err != nil || callerBound {
 		r.logger.WarnContext(ctx, "wecom relay: the caller's budget ran out before an inbox push's bot could be confirmed; not re-routing",
 			"error", err, "event_id", eventID)
 		return relayUncertain
