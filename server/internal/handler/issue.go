@@ -3639,6 +3639,11 @@ type UpdateIssueRequest struct {
 	// squad it was taken from. Ignored when the write does not hand off.
 	// (MUL-7420)
 	StopPreviousAssigneeRuns bool `json:"stop_previous_assignee_runs,omitempty"`
+	// HandoffPreview is what the handoff confirmation showed. When the write
+	// hands off, it is refused with 409 handoff_preview_stale unless the issue's
+	// assignee and the resolved handler still match it. Optional; single updates
+	// only. Omitted, the write acts on the issue as it finds it.
+	HandoffPreview *HandoffPreviewBinding `json:"handoff_preview,omitempty"`
 	// EnterWorkflowStep makes a project move enter the destination workflow's
 	// step the issue lands on, handing it off like a status change would. A
 	// project move without it is administrative. Batch updates ignore it.
@@ -4104,6 +4109,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
 	callerRun := h.agentRunOnIssue(r, actorType, prevIssue)
 	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, callerRun)
+	if workflowWrite != nil {
+		workflowWrite.preview = req.HandoffPreview
+	}
 	if err != nil {
 		if writeIssueWorkflowError(w, err) {
 			return

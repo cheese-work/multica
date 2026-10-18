@@ -6,6 +6,7 @@ import { ArrowRight, ChevronDown, ChevronRight, TriangleAlert } from "lucide-rea
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { workflowHandoffPreviewOptions } from "@multica/core/issue-workflows";
+import type { HandoffPreviewBinding } from "@multica/core/types";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { Button } from "@multica/ui/components/ui/button";
 import { Checkbox } from "@multica/ui/components/ui/checkbox";
@@ -23,6 +24,14 @@ import { StatusIcon } from "../issues/components/status-icon";
 import { useStatusLabel } from "../issues/utils/status-label";
 import { useT } from "../i18n";
 import { BriefBlock } from "./handoff-form";
+
+/** What the person confirmed: whether to stop the previous run, and the state they saw. */
+export interface HandoffConfirmOptions {
+  stopPreviousRuns: boolean;
+  /** Present when a handoff was previewed; send it as `handoff_preview` so the
+   *  server refuses a confirmation the issue or workflow has outgrown. */
+  preview?: HandoffPreviewBinding;
+}
 
 const FROM = "⁣from⁣";
 const TO = "⁣to⁣";
@@ -72,7 +81,7 @@ export function WorkflowHandoffConfirmDialog({
   toStatus: string;
   toProject?: { id: string; title: string } | null;
   onCancel: () => void;
-  onConfirm: (options: { stopPreviousRuns: boolean }) => void;
+  onConfirm: (options: HandoffConfirmOptions) => void;
 }) {
   const { t } = useT("issues");
   const wsId = useWorkspaceId();
@@ -83,10 +92,20 @@ export function WorkflowHandoffConfirmDialog({
   const [stop, setStop] = useState(true);
   const [briefOpen, setBriefOpen] = useState(false);
   const open = issue !== null;
-  const { data: preview, isPending, isError, refetch } = useQuery({
+  const { data: fetched, isPending, isError, isFetching, dataUpdatedAt, refetch } = useQuery({
     ...workflowHandoffPreviewOptions(wsId, issue?.id ?? "", toProject ? "" : toStatus, toProject?.id),
     enabled: open,
   });
+  // The preview cache outlives the dialog by 30 seconds, so opening it again can
+  // find a result from before the workflow or the handler changed. Only a preview
+  // fetched since this opening counts: it alone may apply the move on its own,
+  // fill the dialog or enable the confirm button.
+  const openKey = open ? `${issue?.id}|${toStatus}|${toProject?.id ?? ""}` : "";
+  const [opening, setOpening] = useState({ key: "", at: 0 });
+  if (opening.key !== openKey) setOpening({ key: openKey, at: openKey ? Date.now() : 0 });
+  const fresh = open && opening.key === openKey && !isFetching && !isError && dataUpdatedAt >= opening.at;
+  const preview = fresh ? fetched : undefined;
+  const waiting = isPending || (open && !fresh && !isError);
   const target = toProject ? (preview?.to_status ?? "") : toStatus;
 
   useEffect(() => {
@@ -100,7 +119,7 @@ export function WorkflowHandoffConfirmDialog({
   useEffect(() => {
     if (open && preview && !preview.handoff) onConfirm({ stopPreviousRuns: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, preview]);
+  }, [open, preview, dataUpdatedAt]);
 
   const status = (key: string) => (
     <span className="inline-flex items-center gap-1">
@@ -175,7 +194,7 @@ export function WorkflowHandoffConfirmDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {isPending ? (
+        {waiting ? (
           <div className="flex justify-center py-6">
             <Spinner className="size-4" />
           </div>
@@ -236,8 +255,18 @@ export function WorkflowHandoffConfirmDialog({
             {t(($) => $.workflows.confirm.cancel)}
           </Button>
           <Button
-            disabled={isPending || isError}
-            onClick={() => onConfirm({ stopPreviousRuns: stop && runs.length > 0 && !sameHandler })}
+            disabled={waiting || isError}
+            onClick={() =>
+              onConfirm({
+                stopPreviousRuns: stop && runs.length > 0 && !sameHandler,
+                preview: {
+                  previous_assignee_type: prevType,
+                  previous_assignee_id: prevId,
+                  handler_type: handlerType,
+                  handler_id: handlerId,
+                },
+              })
+            }
           >
             {toProject
               ? t(($) => $.workflows.confirm.project_confirm, { project: toProject.title })

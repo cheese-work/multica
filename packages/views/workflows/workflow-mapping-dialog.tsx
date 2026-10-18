@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowRight, Check } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import {
@@ -59,17 +59,35 @@ export function WorkflowMappingDialog({
   const labelOf = useStatusLabel(wsId);
   const [mapping, setMapping] = useState<Record<string, string>>({});
 
+  // The caller may rebuild `targetKeys` on every render, so its identity says
+  // nothing. Its contents do: a destination that leaves the list is replaced,
+  // and every other choice stays.
+  const targetKey = targetKeys.join("\u0000");
+  const targetKeysRef = useRef(targetKeys);
+  targetKeysRef.current = targetKeys;
+  const suggested = (r: IssueWorkflowMappingPlan["required"][number]) =>
+    targetKeysRef.current.includes(r.suggested_status_key) ? r.suggested_status_key : targetKeysRef.current[0] ?? "";
+
+  // A new plan is a new dialog session: start from the suggestions.
   useEffect(() => {
     if (!plan) return;
-    setMapping(
+    setMapping(Object.fromEntries(plan.required.map((r) => [r.status_key, suggested(r)])));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plan]);
+
+  // The destinations changed: keep a choice that is still valid, replace one that is not.
+  useEffect(() => {
+    if (!plan) return;
+    setMapping((current) =>
       Object.fromEntries(
-        plan.required.map((r) => [
-          r.status_key,
-          targetKeys.includes(r.suggested_status_key) ? r.suggested_status_key : targetKeys[0] ?? "",
-        ]),
+        plan.required.map((r) => {
+          const kept = current[r.status_key];
+          return [r.status_key, kept && targetKeysRef.current.includes(kept) ? kept : suggested(r)];
+        }),
       ),
     );
-  }, [plan, targetKeys]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [targetKey]);
 
   const icon = (key: string) => (
     <StatusIcon status={key} category={categoryOf(key)} color={colorOf(key)} icon={iconOf(key)} className="h-3.5 w-3.5 shrink-0" />

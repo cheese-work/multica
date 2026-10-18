@@ -26,6 +26,9 @@ var issueMoveFields = map[string]struct{}{
 	// A drag onto a workflow handoff step can stop the previous agent's run,
 	// exactly as the same status change through UpdateIssue can. (MUL-7420)
 	"stop_previous_assignee_runs": {},
+	// The previewed assignee and handler the confirmation named; UpdateIssue
+	// refuses the move when they no longer match.
+	"handoff_preview": {},
 }
 
 // MoveIssue accepts relative neighbors instead of a client-authored canonical

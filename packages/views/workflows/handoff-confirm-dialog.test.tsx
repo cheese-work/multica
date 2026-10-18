@@ -86,7 +86,8 @@ describe("WorkflowHandoffConfirmDialog (MUL-7420)", () => {
   it("hands the previewed assignee and handler along with the confirmation", async () => {
     previewWorkflowHandoff.mockResolvedValue(handoff);
     const { onConfirm } = renderDialog();
-    fireEvent.click(await screen.findByRole("button", { name: "Move to Code review" }));
+    await screen.findByText(/who starts working right away/);
+    fireEvent.click(screen.getByRole("button", { name: "Move to Code review" }));
 
     expect(onConfirm).toHaveBeenCalledWith({
       stopPreviousRuns: true,

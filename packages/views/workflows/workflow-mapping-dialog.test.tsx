@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildIssueStatusCatalog } from "@multica/core/issue-statuses";
 import type { IssueWorkflowMappingPlan } from "@multica/core/types";
@@ -45,8 +46,10 @@ function Harness({ onConfirm, plan: p = plan }: { onConfirm: (m: Record<string, 
 }
 
 async function pick(label: string) {
-  fireEvent.click(screen.getByRole("combobox"));
-  fireEvent.click(await screen.findByRole("option", { name: new RegExp(label, "i") }));
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("combobox"));
+  await user.click(await screen.findByRole("option", { name: new RegExp(label, "i") }));
+  await waitFor(() => expect(screen.getByRole("combobox").textContent).toMatch(new RegExp(label, "i")));
 }
 
 describe("WorkflowMappingDialog", () => {

@@ -494,7 +494,7 @@ function BoardViewImpl({
 
   // Project workflows (MUL-7420): a card can only move to a status its
   // project's workflow lists, and a project board names each step's handler.
-  const { workflows } = useIssueWorkflows(boardWsId);
+  const { workflows, isLoaded: workflowsLoaded } = useIssueWorkflows(boardWsId);
   const { data: workspaceProjects } = useQuery(projectListOptions(boardWsId));
   const workflowOfIssue = useCallback(
     (issue: Issue | null | undefined) => {
@@ -724,6 +724,13 @@ function BoardViewImpl({
         resetColumns();
         return;
       }
+      // Before the workflows have loaded, a project card's handoff step cannot be
+      // told from a plain one, and the server applies the handoff either way.
+      // Leave the card where it is rather than move it unconfirmed.
+      if (!workflowsLoaded && map.get(activeId)?.project_id && map.get(activeId)?.status !== finalGroup.status) {
+        resetColumns();
+        return;
+      }
       const movingWorkflow = workflowOfIssue(map.get(activeId));
       if (
         finalGroup.status &&
@@ -844,7 +851,7 @@ function BoardViewImpl({
       );
       applyPropertyGroupValue(finalGroup, activeId);
     },
-    [groupedIssues, groups, grouping, groupingOptionIds, onMoveIssue, groupIds, groupMap, sortBy, beginSettle, columnsRef, isDraggingRef, setColumns, applyPropertyGroupValue, catalog, labelOf, t, workflowOfIssue],
+    [groupedIssues, groups, grouping, groupingOptionIds, onMoveIssue, groupIds, groupMap, sortBy, beginSettle, columnsRef, isDraggingRef, setColumns, applyPropertyGroupValue, catalog, labelOf, t, workflowOfIssue, workflowsLoaded],
   );
 
   // An aborted drag (pointercancel, window resize, tab hide, Escape) fires
@@ -980,7 +987,7 @@ function BoardViewImpl({
       issue={pendingHandoff?.issue ?? null}
       toStatus={pendingHandoff?.status ?? ""}
       onCancel={() => setPendingHandoff(null)}
-      onConfirm={({ stopPreviousRuns }) => {
+      onConfirm={({ stopPreviousRuns, preview }) => {
         const pending = pendingHandoff;
         setPendingHandoff(null);
         if (!pending) return;
@@ -990,6 +997,7 @@ function BoardViewImpl({
             ...pending.updates,
             ...pending.anchors,
             ...(stopPreviousRuns ? { stop_previous_assignee_runs: true } : {}),
+            ...(preview ? { handoff_preview: preview } : {}),
           },
           beginSettle(),
         );

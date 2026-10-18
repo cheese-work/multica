@@ -94,11 +94,11 @@ export function useStatusOptions(
 export function useIssueStatusOptions(
   wsId: string,
   projectId: string | null | undefined,
-): { options: StatusOption[]; workflow: IssueWorkflow | null; project: Project | null } {
+): { options: StatusOption[]; workflow: IssueWorkflow | null; project: Project | null; resolved: boolean } {
   const catalogOptions = useStatusOptions(wsId);
   const { categoryOf, colorOf, iconOf } = useIssueStatuses(wsId);
   const labelOf = useStatusLabel(wsId);
-  const { workflow, project } = useProjectWithWorkflow(wsId, projectId);
+  const { workflow, project, resolved: workflowResolved } = useProjectWithWorkflow(wsId, projectId);
   const options = useMemo<StatusOption[]>(() => {
     if (!workflow) return catalogOptions;
     const byKey = new Map(catalogOptions.map((o) => [o.key, o]));
@@ -113,5 +113,7 @@ export function useIssueStatusOptions(
         },
     );
   }, [catalogOptions, categoryOf, colorOf, iconOf, labelOf, workflow]);
-  return { options, workflow, project };
+  // Only an explicit `false` is unresolved: a caller that supplies no signal keeps
+  // the earlier behavior. The real hook always supplies it.
+  return { options, workflow, project, resolved: workflowResolved !== false };
 }

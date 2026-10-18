@@ -112,9 +112,11 @@ export function IssueActionsMenuItems({
   const wsId = useWorkspaceId();
   // Only the statuses the issue's workflow allows; entering a step that hands
   // the issue off confirms first, as in the status picker. (MUL-7420)
-  const { options: statusOptions, workflow } = useIssueStatusOptions(wsId, issue.project_id);
+  const { options: statusOptions, workflow, resolved: workflowResolved } = useIssueStatusOptions(wsId, issue.project_id);
   const openModal = useModalStore((s) => s.open);
   const setStatus = (status: string) => {
+    // A workflow that is merely unloaded reads as "no handoff"; wait for it.
+    if (issue.project_id && !workflowResolved) return;
     if (workflow && status !== issue.status && stepHandsOff(workflowStep(workflow, status))) {
       openModal("issue-workflow-handoff", { issueId: issue.id, identifier: issue.identifier, status });
       return;

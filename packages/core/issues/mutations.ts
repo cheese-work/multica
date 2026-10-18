@@ -201,6 +201,7 @@ export function useUpdateIssue() {
       const {
         suppress_run: _suppressRun,
         stop_previous_assignee_runs: _stopPreviousAssigneeRuns,
+        handoff_preview: _handoffPreview,
         enter_workflow_step: _enterWorkflowStep,
         duplicate_of_issue_id: _duplicateOfIssueId,
         description: _description,
@@ -315,6 +316,7 @@ export function useUpdateIssue() {
       const {
         suppress_run: _suppressRun,
         stop_previous_assignee_runs: _stopPreviousAssigneeRuns,
+        handoff_preview: _handoffPreview,
         enter_workflow_step: _enterWorkflowStep,
         duplicate_of_issue_id: _duplicateOfIssueId,
         description_base: _descriptionBase,
@@ -542,6 +544,7 @@ export function useBatchUpdateIssues() {
       const {
         suppress_run: _suppressRun,
         stop_previous_assignee_runs: _stopPreviousAssigneeRuns,
+        handoff_preview: _handoffPreview,
         enter_workflow_step: _enterWorkflowStep,
         description: _description,
         description_base: _descriptionBase,

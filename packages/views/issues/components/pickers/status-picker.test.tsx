@@ -299,7 +299,10 @@ describe("StatusPicker confirmed handoff", () => {
       <StatusPicker status="todo" projectId="project-1" issue={{ id: "issue-1", identifier: "TES-1" }} onUpdate={onUpdate} open onOpenChange={() => {}} />,
     );
 
-    fireEvent.click(optionRow("In Review"));
+    const row = Array.from(document.querySelectorAll<HTMLElement>("button[data-picker-item]")).find((el) =>
+      el.textContent?.includes("In Review"),
+    );
+    fireEvent.click(row!);
     fireEvent.click(screen.getByText("confirm handoff"));
 
     expect(onUpdate).toHaveBeenCalledWith({

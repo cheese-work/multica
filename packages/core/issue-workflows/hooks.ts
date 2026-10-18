@@ -29,22 +29,30 @@ export function useIssueWorkflows(wsId: string): {
 
 /**
  * A project and the workflow it uses. `workflow` is null for the Default
- * workflow — including while either list is still loading, which renders the
- * Default behavior rather than an empty board.
+ * workflow, and also while either list is still loading or has failed: a board
+ * must keep rendering. `resolved` tells the two apart. It is true when the
+ * issue has no project, or when both the project list and the workflow list
+ * have loaded; a consequential write (a status change that can hand the issue
+ * off) must wait for it, because a null workflow that is merely unresolved looks
+ * exactly like "no handoff" and would skip the confirmation.
  */
 export function useProjectWithWorkflow(
   wsId: string,
   projectId: string | null | undefined,
-): { project: Project | null; workflow: IssueWorkflow | null } {
-  const { workflows } = useIssueWorkflows(wsId);
-  const { data: projects } = useQuery({
+): { project: Project | null; workflow: IssueWorkflow | null; resolved: boolean } {
+  const { workflows, isLoaded: workflowsLoaded } = useIssueWorkflows(wsId);
+  const { data: projects, isSuccess: projectsLoaded } = useQuery({
     ...projectListOptions(wsId),
     enabled: Boolean(wsId) && Boolean(projectId),
   });
   return useMemo(() => {
     const project = projectId ? projects?.find((p) => p.id === projectId) ?? null : null;
-    return { project, workflow: resolveProjectWorkflow(workflows, project) };
-  }, [projectId, projects, workflows]);
+    return {
+      project,
+      workflow: resolveProjectWorkflow(workflows, project),
+      resolved: !projectId || (workflowsLoaded && projectsLoaded),
+    };
+  }, [projectId, projects, workflows, workflowsLoaded, projectsLoaded]);
 }
 
 /** The workflow a project uses, or null for the Default workflow. */

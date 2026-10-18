@@ -156,6 +156,13 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
 		})
 		return true
 	}
+	if errors.Is(err, errHandoffPreviewStale) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": err.Error() + "; review the move again",
+			"code":  "handoff_preview_stale",
+		})
+		return true
+	}
 	if errors.Is(err, errWorkflowChanged) {
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"error": err.Error() + "; retry",

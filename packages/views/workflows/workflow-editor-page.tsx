@@ -238,6 +238,10 @@ export function WorkflowEditorPage({
   // saving would overwrite that change, so the editor says so and holds Save until
   // the editor picks a version.
   const [changedElsewhere, setChangedElsewhere] = useState(false);
+  // Read by the refresh effect and by every save entrypoint, which must see the
+  // conflict the moment it is set rather than on the next render.
+  const conflictRef = useRef(false);
+  conflictRef.current = changedElsewhere;
   const draftRef = useRef(draft);
   draftRef.current = draft;
   const targetKey = `${workflowId ?? ""}|${seed?.id ?? ""}|${template ?? ""}`;
@@ -279,8 +283,10 @@ export function WorkflowEditorPage({
       return;
     }
     // The refresh changed nothing the editor shows, so the edits sit on the same
-    // content as the new version: follow its token.
-    acceptedVersion.current = latestVersion;
+    // content as the new version: follow its token. While a conflict is open the
+    // content the edits sit on is the version the editor started from, not this
+    // one; only the explicit choices move the token then.
+    if (!conflictRef.current) acceptedVersion.current = latestVersion;
   }, [baseline, targetKey, workflowId, latestVersion]);
 
   const dirty = !workflowId || !sameDraft(draft, baseline);
@@ -326,6 +332,12 @@ export function WorkflowEditorPage({
   const save = async (mapping?: Record<string, string>) => {
     // Never write an existing workflow from defaults the row has not replaced.
     if (workflowId && !saved) return;
+    // An unresolved conflict holds every save, including the mapping dialog's:
+    // the draft sits on a version another admin has since replaced.
+    if (workflowId && conflictRef.current) {
+      toast.error(t(($) => $.workflows.editor.changed_elsewhere));
+      return;
+    }
     const listed = new Set(targetKeys);
     const steps: IssueWorkflowStepInput[] = columns.map((c) => {
       const raw = draft.handoffs[c.id];
@@ -578,6 +590,8 @@ export function WorkflowEditorPage({
               onClick={() => {
                 setDraft(baseline);
                 acceptedVersion.current = latestVersion;
+                // A mapping plan was computed for the draft being dropped.
+                setMappingPlan(null);
                 setChangedElsewhere(false);
               }}
             >

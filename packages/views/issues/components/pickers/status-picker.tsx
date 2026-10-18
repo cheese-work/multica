@@ -87,7 +87,7 @@ export function StatusPicker({
 
   // The project workflow's steps, or the catalog in canonical category order
   // without archived statuses (MUL-6243).
-  const { options: projectOptions, workflow, project } = useIssueStatusOptions(wsId, projectId);
+  const { options: projectOptions, workflow, project, resolved: workflowResolved } = useIssueStatusOptions(wsId, projectId);
   const allOptions = useMemo(
     () => (allowedStatuses ? projectOptions.filter((o) => allowedStatuses.has(o.key)) : projectOptions),
     [projectOptions, allowedStatuses],
@@ -171,6 +171,10 @@ export function StatusPicker({
           onClick={() => {
             setOpen(false);
             setQuery("");
+            // For an existing issue in a project, wait until the workflow has resolved:
+            // a workflow that is merely unloaded reads as "no handoff", and the server
+            // would still apply the real one with no confirmation shown.
+            if (issue && projectId && !workflowResolved) return;
             if (workflow && issue && option.key !== status && stepHandsOff(workflowStep(workflow, option.key))) {
               setPendingStatus(option.key);
               return;
@@ -197,10 +201,16 @@ export function StatusPicker({
         issue={pendingStatus ? issue : null}
         toStatus={pendingStatus ?? ""}
         onCancel={() => setPendingStatus(null)}
-        onConfirm={({ stopPreviousRuns }) => {
+        onConfirm={({ stopPreviousRuns, preview }) => {
           const next = pendingStatus;
           setPendingStatus(null);
-          if (next) onUpdate({ status: next, ...(stopPreviousRuns ? { stop_previous_assignee_runs: true } : {}) });
+          if (next) {
+            onUpdate({
+              status: next,
+              ...(stopPreviousRuns ? { stop_previous_assignee_runs: true } : {}),
+              ...(preview ? { handoff_preview: preview } : {}),
+            });
+          }
         }}
       />
     )}

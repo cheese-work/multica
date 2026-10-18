@@ -13,6 +13,29 @@ import (
 // request was valid when it arrived; retrying decides against the new state.
 var errWorkflowChanged = errors.New("the project workflow changed while the write was in flight")
 
+// errHandoffPreviewStale signals that the issue or its workflow no longer match
+// what the person saw when they confirmed a handoff: who the issue is taken
+// from, or who it goes to. The write is refused whole; a fresh preview decides.
+var errHandoffPreviewStale = errors.New("the issue or its workflow changed since the handoff was previewed")
+
+// HandoffPreviewBinding is what a handoff confirmation was shown: the issue's
+// assignee at preview time and the handler the workflow resolved. A client
+// sends it with `handoff_preview`; absent, the write keeps its earlier
+// behavior and acts on the issue as it finds it.
+type HandoffPreviewBinding struct {
+	PreviousAssigneeType *string `json:"previous_assignee_type"`
+	PreviousAssigneeID   *string `json:"previous_assignee_id"`
+	HandlerType          *string `json:"handler_type"`
+	HandlerID            *string `json:"handler_id"`
+}
+
+func sameOptional(a *string, b string) bool {
+	if a == nil {
+		return b == ""
+	}
+	return *a == b
+}
+
 // workflowWrite is the workflow decision of one issue write, kept so the write
 // transaction can check it again under locks. The decision runs before the
 // transaction, on an unlocked read: a workflow edit or project switch can
@@ -29,6 +52,8 @@ type workflowWrite struct {
 	handoff                                  *workflowHandoff
 	statusExplicit, assigneeTouched, enterOn bool
 	run                                      *db.AgentTaskQueue
+	// preview is what the person confirmed, when the client sent it.
+	preview *HandoffPreviewBinding
 }
 
 // decideIssueWorkflow applies the project's workflow to params, like
@@ -89,6 +114,18 @@ func (w *workflowWrite) verify(ctx context.Context, h *Handler, q *db.Queries, l
 	if params.Status != w.got.Status || params.AssigneeType != w.got.AssigneeType || params.AssigneeID != w.got.AssigneeID ||
 		(handoff == nil) != (w.handoff == nil) {
 		return errWorkflowChanged
+	}
+	// The confirmation named who the issue was taken from and who it goes to.
+	// Checked against the locked row and the workflow as it stands, so a
+	// reassignment or a handler edit after the preview cannot make the write
+	// stop, or start, a run the person never saw.
+	if w.preview != nil && handoff != nil {
+		if !sameOptional(w.preview.PreviousAssigneeType, locked.AssigneeType.String) ||
+			!sameOptional(w.preview.PreviousAssigneeID, uuidToString(locked.AssigneeID)) ||
+			!sameOptional(w.preview.HandlerType, params.AssigneeType.String) ||
+			!sameOptional(w.preview.HandlerID, uuidToString(params.AssigneeID)) {
+			return errHandoffPreviewStale
+		}
 	}
 	return nil
 }

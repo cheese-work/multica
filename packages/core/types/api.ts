@@ -84,6 +84,11 @@ export interface UpdateIssueRequest {
    *  also stop the active runs of the agent it was taken from (MUL-7420).
    *  Control field — strip from optimistic cache patches. */
   stop_previous_assignee_runs?: boolean;
+  /** What the handoff confirmation showed: the issue's assignee and the handler
+   *  the workflow resolved. The server answers 409 `handoff_preview_stale` when
+   *  the write would hand off and either no longer matches. Control field —
+   *  strip from optimistic cache patches. */
+  handoff_preview?: HandoffPreviewBinding;
   /** With a project move: enter the destination workflow's column the issue
    *  lands on, handing it off like a status change (MUL-7420). Without it a
    *  project move is administrative. Control field — strip from optimistic
@@ -109,6 +114,14 @@ export interface IssueDuplicates {
  * optimistic animation, but the canonical position is derived from these
  * workspace-scoped neighbors by `POST /api/issues/:id/move`.
  */
+/** The assignee and handler a handoff confirmation was shown for. */
+export interface HandoffPreviewBinding {
+  previous_assignee_type: string | null;
+  previous_assignee_id: string | null;
+  handler_type: string | null;
+  handler_id: string | null;
+}
+
 export interface MoveIssueRequest
   extends Pick<
     UpdateIssueRequest,
@@ -118,6 +131,7 @@ export interface MoveIssueRequest
     | "parent_issue_id"
     | "project_id"
     | "stop_previous_assignee_runs"
+    | "handoff_preview"
   > {
   before_id: string | null;
   after_id: string | null;

@@ -28,10 +28,15 @@ export function WorkflowHandoffModal({
       issue={{ id: issueId, identifier }}
       toStatus={status}
       onCancel={onClose}
-      onConfirm={({ stopPreviousRuns }) => {
+      onConfirm={({ stopPreviousRuns, preview }) => {
         onClose();
         updateIssue.mutate(
-          { id: issueId, status, ...(stopPreviousRuns ? { stop_previous_assignee_runs: true } : {}) },
+          {
+            id: issueId,
+            status,
+            ...(stopPreviousRuns ? { stop_previous_assignee_runs: true } : {}),
+            ...(preview ? { handoff_preview: preview } : {}),
+          },
           {
             onError: (err) =>
               toast.error(err instanceof Error && err.message ? err.message : t(($) => $.detail.update_failed)),
