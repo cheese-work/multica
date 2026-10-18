@@ -245,10 +245,9 @@ export function WorkflowEditorPage({
   // unedited parts, came from. A save names this one and no other, so the token
   // and the steps it travels with always belong to the same accepted revision.
   const acceptedVersion = useRef<string | undefined>(saved?.version || undefined);
-  // Set when this editor's own save succeeds: the response is the new accepted
-  // revision, and the next baseline replaces the draft whatever the server
-  // normalized.
-  const adoptNextBaseline = useRef(false);
+  // The version this editor's own last successful save produced. Its refresh is
+  // not another admin's change, so it raises no alert.
+  const ownSavedVersion = useRef<string | undefined>(undefined);
   const latestVersion = saved?.version || undefined;
   const synced = useRef({ targetKey, baseline });
   useEffect(() => {
@@ -258,14 +257,20 @@ export function WorkflowEditorPage({
       setDraft(baseline);
       setChangedElsewhere(false);
       acceptedVersion.current = latestVersion;
+      ownSavedVersion.current = undefined;
       return;
     }
     if (previous.baseline === baseline) return;
     const current = draftRef.current;
-    if (adoptNextBaseline.current || sameDraft(current, previous.baseline) || sameDraft(current, baseline)) {
-      adoptNextBaseline.current = false;
+    if (sameDraft(current, previous.baseline) || sameDraft(current, baseline)) {
       setDraft(baseline);
       setChangedElsewhere(false);
+      acceptedVersion.current = latestVersion;
+      return;
+    }
+    if (workflowId && latestVersion && latestVersion === ownSavedVersion.current) {
+      // This editor's own save arrived and the draft carries edits made after
+      // it was sent: they sit on the saved content.
       acceptedVersion.current = latestVersion;
       return;
     }
@@ -347,9 +352,24 @@ export function WorkflowEditorPage({
     };
     try {
       if (workflowId) {
-        adoptNextBaseline.current = true;
-        await updateWorkflow.mutateAsync({ id: workflowId, ...body });
+        const submitted = draft;
+        const startedOn = targetKey;
+        const response = await updateWorkflow.mutateAsync({ id: workflowId, ...body });
         toast.success(t(($) => $.workflows.editor.saved));
+        // A late response for another target changes nothing here.
+        if (synced.current.targetKey === startedOn) {
+          if (response?.version) {
+            ownSavedVersion.current = response.version;
+            acceptedVersion.current = response.version;
+          }
+          // Adopt the saved revision only when nothing was typed since the save
+          // began. Edits made while it was in flight stay, on top of the revision
+          // the server accepted.
+          if (response?.steps && sameDraft(draftRef.current, submitted)) {
+            setDraft(draftFrom(response));
+            setChangedElsewhere(false);
+          }
+        }
       } else {
         const created = await createWorkflow.mutateAsync({ ...body, name: draft.name.trim() });
         toast.success(t(($) => $.workflows.editor.created));
@@ -362,7 +382,6 @@ export function WorkflowEditorPage({
         setMappingPlan(plan);
         return;
       }
-      adoptNextBaseline.current = false;
       if (workflowId && isChangedElsewhere(err)) {
         // The mutation refreshes the workflow list. The edits stay, and the
         // editor chooses between them and the other admin's version.

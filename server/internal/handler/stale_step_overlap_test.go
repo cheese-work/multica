@@ -64,13 +64,15 @@ func TestStaleStepCancelWaitsForTheNewerStepAndThenSkips(t *testing.T) {
 	}, func() {
 		testHandler.IssueService.CancelStaleStepRuns(context.Background(), issueB, parseUUID(agentID))
 	}, func(tx pgx.Tx) {
-		// Still before B commits: C's run is queued, and B's old run is gone.
+		// Still before B commits: B's old run is gone and C's run is queued. The
+		// pending-run index admits one run per issue and agent, so the old one
+		// goes first.
+		if _, err := tx.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, util.MustParseUUID(staleB)); err != nil {
+			t.Fatal(err)
+		}
 		if err := tx.QueryRow(context.Background(), `INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, workflow_step)
 			VALUES ($1, $2, $3, 'queued', 0, 'in_progress') RETURNING id::text`,
 			util.MustParseUUID(agentID), util.MustParseUUID(runtimeID), util.MustParseUUID(issueID)).Scan(&currentID); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, util.MustParseUUID(staleB)); err != nil {
 			t.Fatal(err)
 		}
 	})

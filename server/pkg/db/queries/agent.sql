@@ -1735,14 +1735,26 @@ WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'
 
 -- name: CancelStalePendingStepTask :one
 -- Cancels one run only while it is still what ListStalePendingStepTasks
--- selected: pending, assignment-level and stamped for a step the issue has
--- left. The selection and this statement are separate, and a dispatched run
--- the daemon starts in between is work in flight that a handoff must not
--- cancel. Unlike CancelAgentTask, running is not cancellable here.
+-- selected: pending, assignment-level and stamped for a step the issue has left.
+-- The selection and this statement are separate, and a dispatched run the
+-- daemon starts in between is work in flight that a handoff must not cancel.
+-- Unlike CancelAgentTask, running is not cancellable here.
+--
+-- The step is also checked against the issue as it stands NOW. A request that
+-- captured step B can resume after another request moved the issue to C and
+-- queued the same agent's run for C; judged against B, that run looks stale.
+-- The issue row is read FOR SHARE, so a move to C that is still uncommitted
+-- is waited for, and the status read is the committed one.
+WITH current_issue AS (
+    SELECT i.status FROM issue i
+    WHERE i.id = (SELECT t.issue_id FROM agent_task_queue t WHERE t.id = $1)
+    FOR SHARE OF i
+)
 UPDATE agent_task_queue
 SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
     cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL
-WHERE id = $1
+WHERE agent_task_queue.id = $1
+  AND EXISTS (SELECT 1 FROM current_issue WHERE current_issue.status = sqlc.arg('step')::text)
   AND context->>'wakeup_id' IS NULL
   AND trigger_comment_id IS NULL
   AND workflow_step IS NOT NULL

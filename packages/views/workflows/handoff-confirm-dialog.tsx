@@ -83,7 +83,7 @@ export function WorkflowHandoffConfirmDialog({
   const [stop, setStop] = useState(true);
   const [briefOpen, setBriefOpen] = useState(false);
   const open = issue !== null;
-  const { data: preview, isPending, isError } = useQuery({
+  const { data: preview, isPending, isError, refetch } = useQuery({
     ...workflowHandoffPreviewOptions(wsId, issue?.id ?? "", toProject ? "" : toStatus, toProject?.id),
     enabled: open,
   });
@@ -180,7 +180,12 @@ export function WorkflowHandoffConfirmDialog({
             <Spinner className="size-4" />
           </div>
         ) : isError ? (
-          <p className="text-body text-destructive">{t(($) => $.workflows.confirm.error)}</p>
+          <div role="alert" className="flex flex-wrap items-center gap-3">
+            <p className="text-body text-destructive">{t(($) => $.workflows.confirm.error)}</p>
+            <Button variant="outline" size="sm" onClick={() => void refetch()}>
+              {t(($) => $.workflows.editor.retry)}
+            </Button>
+          </div>
         ) : (
           <div className="space-y-4">
             {sentence && <div className="text-body leading-7">{sentence}</div>}

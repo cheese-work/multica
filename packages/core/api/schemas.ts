@@ -634,8 +634,12 @@ export const IssueWorkflowBriefPreviewSchema = z.object({
 
 const HANDOFF_HANDLER_TYPES = new Set(["agent", "squad", "member"]);
 
+// A preview the client cannot read is an error, never "no handoff": the dialog
+// applies a no-handoff preview on its own, and the server then applies the
+// workflow's handoff with no confirmation shown. The server always sends
+// `handoff`, so a missing or mistyped flag is malformed.
 export const WorkflowHandoffPreviewSchema = z.object({
-  handoff: z.boolean().default(false),
+  handoff: z.boolean(),
   workflow_name: z.string().default(""),
   from_status: z.string().default(""),
   to_status: z.string().default(""),
@@ -653,21 +657,6 @@ export const WorkflowHandoffPreviewSchema = z.object({
   }).loose()).default([]),
   brief: z.string().default(""),
 }).loose();
-
-// A preview the client cannot read says "no handoff": the write path still
-// applies the workflow, it only loses the confirmation.
-export const EMPTY_WORKFLOW_HANDOFF_PREVIEW: WorkflowHandoffPreview = {
-  handoff: false,
-  workflow_name: "",
-  from_status: "",
-  to_status: "",
-  handler_type: null,
-  handler_id: null,
-  previous_assignee_type: null,
-  previous_assignee_id: null,
-  previous_runs: [],
-  brief: "",
-};
 
 export const ResourceLabelsResponseSchema = z.object({
   labels: z.array(LabelSchema).default([]),

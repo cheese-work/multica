@@ -436,7 +436,6 @@ import {
   EMPTY_ISSUE_WORKFLOW,
   EMPTY_ISSUE_WORKFLOW_DRY_RUN,
   WorkflowHandoffPreviewSchema,
-  EMPTY_WORKFLOW_HANDOFF_PREVIEW,
   IssueWorkflowBriefPreviewSchema,
   IssuePropertySchema,
   ListPropertiesResponseSchema,
@@ -4396,9 +4395,12 @@ export class ApiClient {
     if (status) query.set("status", status);
     if (projectId) query.set("project_id", projectId);
     const raw = await this.fetch<unknown>(`/api/issues/${issueId}/workflow-handoff?${query.toString()}`);
-    return parseWithFallback(raw, WorkflowHandoffPreviewSchema, EMPTY_WORKFLOW_HANDOFF_PREVIEW, {
+    const parsed = parseWithFallback<WorkflowHandoffPreview | null>(raw, WorkflowHandoffPreviewSchema, null, {
       endpoint: "GET /api/issues/{id}/workflow-handoff",
     });
+    // Fail closed: the caller shows an error and a retry instead of applying a move.
+    if (!parsed) throw new Error("workflow handoff preview is malformed");
+    return parsed;
   }
 
   /**

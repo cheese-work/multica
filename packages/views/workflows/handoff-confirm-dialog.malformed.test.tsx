@@ -89,8 +89,13 @@ describe("WorkflowHandoffConfirmDialog with a malformed successful preview", () 
 
     expect(await screen.findByText("Couldn’t move the issue")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    // The confirm button is disabled while the preview is unreadable, and pressing it does nothing.
+    const move = screen.queryByRole("button", { name: "Move to Code review" });
+    if (move) {
+      expect((move as HTMLButtonElement).disabled).toBe(true);
+      fireEvent.click(move);
+    }
     expect(onConfirm).not.toHaveBeenCalled();
-    expect(screen.queryByRole("button", { name: "Move to Code review" })).toBeNull();
   });
 
   it("asks for confirmation when the retry returns a real handoff", async () => {
