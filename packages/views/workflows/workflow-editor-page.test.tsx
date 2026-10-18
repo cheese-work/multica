@@ -21,6 +21,7 @@ import { WorkflowEditorPage } from "./workflow-editor-page";
 const apiMock = vi.hoisted(() => ({
   updateIssueWorkflow: vi.fn(),
   listIssueWorkflows: vi.fn(),
+  createIssueWorkflow: vi.fn(),
 }));
 vi.mock("@multica/core/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@multica/core/api")>()),
@@ -221,5 +222,208 @@ describe("workflow editor baseline refresh", () => {
       expect(update).toHaveBeenCalledTimes(2);
       expect(update.mock.calls[1]![1]).toMatchObject({ expected_version: "v-2026-01-02" });
     });
+  });
+});
+
+// updated_at has one-second resolution and version has full precision, so two
+// saves inside one second share updated_at and differ in version. The token the
+// editor submits must belong to the same accepted revision as the steps it
+// submits.
+describe("workflow editor version binding", () => {
+  let queryClient: QueryClient;
+  const statuses = ["backlog", "todo", "in_progress", "blocked", "done", "cancelled"].map(statusEntry);
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const publish = (next: IssueWorkflow) =>
+    act(async () => {
+      queryClient.setQueryData(issueWorkflowKeys.list("ws-1"), { workflows: [next], total: 1 });
+      await settle();
+    });
+  const sameSecond = { updated_at: "2026-01-01T00:00:05Z" };
+  const nameField = () => screen.getByDisplayValue(/Delivery/) as HTMLInputElement;
+  const saveButton = () => screen.getByRole("button", { name: "Save" }) as HTMLButtonElement;
+  const save = () =>
+    act(async () => {
+      fireEvent.click(saveButton());
+      await settle();
+    });
+
+  beforeEach(() => {
+    apiMock.updateIssueWorkflow.mockReset();
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    queryClient.setQueryData(issueStatusKeys.list("ws-1"), { statuses });
+    queryClient.setQueryData(projectListOptions("ws-1").queryKey, { projects: [], total: 0 });
+    queryClient.setQueryData(issueWorkflowKeys.list("ws-1"), {
+      workflows: [workflow({ ...sameSecond, version: "2026-01-01T00:00:05.100000Z" })],
+      total: 1,
+    });
+    renderWithI18n(
+      <QueryClientProvider client={queryClient}>
+        <WorkflowEditorPage workflowId="wf-1" seed={null} canEdit onBack={() => {}} onOpen={() => {}} />
+      </QueryClientProvider>,
+    );
+  });
+
+  afterEach(cleanup);
+
+  it("holds Save when another admin saves within the same second with different content", async () => {
+    fireEvent.change(nameField(), { target: { value: "Delivery v2" } });
+
+    await publish(
+      workflow({ ...sameSecond, version: "2026-01-01T00:00:05.700000Z", description: "Changed in the same second" }),
+    );
+
+    expect(screen.getByRole("alert")).toBeTruthy();
+    expect(screen.getByDisplayValue("Delivery v2")).toBeTruthy();
+    expect(saveButton().disabled).toBe(true);
+    expect(apiMock.updateIssueWorkflow).not.toHaveBeenCalled();
+  });
+
+  it("saves kept edits against the version of the content the editor kept them over", async () => {
+    apiMock.updateIssueWorkflow.mockResolvedValue(workflow());
+    fireEvent.change(nameField(), { target: { value: "Delivery v2" } });
+    await publish(
+      workflow({ ...sameSecond, version: "2026-01-01T00:00:05.700000Z", description: "Changed in the same second" }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Keep my edits" }));
+    await save();
+
+    expect(apiMock.updateIssueWorkflow).toHaveBeenCalledTimes(1);
+    expect(apiMock.updateIssueWorkflow.mock.calls[0]![1]).toMatchObject({
+      expected_version: "2026-01-01T00:00:05.700000Z",
+    });
+  });
+
+  it("reseeds a clean editor from a same-second save", async () => {
+    await publish(
+      workflow({ ...sameSecond, version: "2026-01-01T00:00:05.700000Z", name: "Delivery by admin" }),
+    );
+
+    expect(screen.getByDisplayValue("Delivery by admin")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("follows a same-second refresh that changed nothing the editor shows, and saves against it", async () => {
+    apiMock.updateIssueWorkflow.mockResolvedValue(workflow());
+    fireEvent.change(nameField(), { target: { value: "Delivery v2" } });
+
+    await publish(workflow({ ...sameSecond, version: "2026-01-01T00:00:05.700000Z" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    await save();
+
+    expect(apiMock.updateIssueWorkflow.mock.calls[0]![1]).toMatchObject({
+      expected_version: "2026-01-01T00:00:05.700000Z",
+    });
+  });
+
+  it("names the new version on a second save after the first succeeds", async () => {
+    apiMock.updateIssueWorkflow.mockImplementation(async (_id: string, body: { name?: string }) =>
+      workflow({ ...sameSecond, name: body.name ?? "Delivery", version: "2026-01-01T00:00:05.900000Z" }),
+    );
+    fireEvent.change(nameField(), { target: { value: "Delivery v2" } });
+    await save();
+    fireEvent.change(screen.getByDisplayValue("Delivery v2"), { target: { value: "Delivery v3" } });
+    await save();
+
+    expect(apiMock.updateIssueWorkflow).toHaveBeenCalledTimes(2);
+    expect(apiMock.updateIssueWorkflow.mock.calls[1]![1]).toMatchObject({
+      expected_version: "2026-01-01T00:00:05.900000Z",
+    });
+  });
+});
+
+// An existing workflow's row is not there until its query loads. Until then the
+// editor holds defaults, and saving them by workflow id would replace the saved
+// columns and handoffs the editor never saw.
+describe("workflow editor before the row is available", () => {
+  const statuses = ["backlog", "todo", "in_progress", "blocked", "done", "cancelled"].map(statusEntry);
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+  let queryClient: QueryClient;
+
+  function mount(workflowId: string | null) {
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    queryClient.setQueryData(issueStatusKeys.list("ws-1"), { statuses });
+    queryClient.setQueryData(projectListOptions("ws-1").queryKey, { projects: [], total: 0 });
+    renderWithI18n(
+      <QueryClientProvider client={queryClient}>
+        <WorkflowEditorPage workflowId={workflowId} seed={null} canEdit onBack={() => {}} onOpen={() => {}} />
+      </QueryClientProvider>,
+    );
+  }
+
+  beforeEach(() => {
+    apiMock.updateIssueWorkflow.mockReset();
+    apiMock.listIssueWorkflows.mockReset();
+    apiMock.createIssueWorkflow.mockReset();
+  });
+  afterEach(cleanup);
+
+  it("offers no editable fields and no Save while the workflow is loading", async () => {
+    apiMock.listIssueWorkflows.mockReturnValue(new Promise(() => {}));
+    mount("wf-1");
+    await act(async () => settle());
+
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(apiMock.updateIssueWorkflow).not.toHaveBeenCalled();
+  });
+
+  it("becomes editable and saves against the loaded row once it arrives", async () => {
+    apiMock.listIssueWorkflows.mockResolvedValue({ workflows: [workflow()], total: 1 });
+    apiMock.updateIssueWorkflow.mockResolvedValue(workflow());
+    mount("wf-1");
+    await waitFor(() => expect(screen.getByDisplayValue("Delivery")).toBeTruthy());
+
+    fireEvent.change(screen.getByDisplayValue("Delivery"), { target: { value: "Delivery v2" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      await settle();
+    });
+
+    expect(apiMock.updateIssueWorkflow).toHaveBeenCalledTimes(1);
+    expect(apiMock.updateIssueWorkflow.mock.calls[0]![1]).toMatchObject({
+      name: "Delivery v2",
+      expected_version: "v-2026-01-01",
+    });
+    expect((apiMock.updateIssueWorkflow.mock.calls[0]![1] as { steps: unknown[] }).steps.length).toBeGreaterThan(0);
+  });
+
+  it("shows an error with a retry, and no Save, when the workflow list fails to load", async () => {
+    apiMock.listIssueWorkflows.mockRejectedValue(new Error("network down"));
+    mount("wf-1");
+
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(apiMock.updateIssueWorkflow).not.toHaveBeenCalled();
+
+    apiMock.listIssueWorkflows.mockResolvedValue({ workflows: [workflow()], total: 1 });
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getByDisplayValue("Delivery")).toBeTruthy());
+  });
+
+  it("shows not-found, with no Save, when the workflow does not exist", async () => {
+    apiMock.listIssueWorkflows.mockResolvedValue({ workflows: [], total: 0 });
+    mount("wf-missing");
+
+    await waitFor(() => expect(screen.getByText("This workflow no longer exists.")).toBeTruthy());
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(apiMock.updateIssueWorkflow).not.toHaveBeenCalled();
+  });
+
+  it("still creates a new workflow without waiting for any row", async () => {
+    apiMock.listIssueWorkflows.mockReturnValue(new Promise(() => {}));
+    apiMock.createIssueWorkflow.mockResolvedValue(workflow({ id: "wf-new" }));
+    mount(null);
+
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Brand new" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Create" }));
+      await settle();
+    });
+
+    expect(apiMock.createIssueWorkflow).toHaveBeenCalledTimes(1);
+    expect(apiMock.updateIssueWorkflow).not.toHaveBeenCalled();
   });
 });
