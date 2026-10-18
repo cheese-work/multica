@@ -1,4 +1,4 @@
--- Migration 662 skipped the handed agent's issue.* wakeups at capture because
+-- Migration 663 skipped the handed agent's issue.* wakeups at capture because
 -- the write starts that agent's run. The run is enqueued after the write
 -- commits, so a stop between the two lost the change twice over: no receipt and
 -- no run. Capture keeps every receipt again. A write that hands an issue to an

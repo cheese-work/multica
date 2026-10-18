@@ -1,4 +1,4 @@
--- Restore capture that skips the handed agent (migration 662).
+-- Restore capture that skips the handed agent (migration 663).
 CREATE OR REPLACE FUNCTION capture_issue_wakeup(p_issue uuid, p_type text, p_key text, p_agent uuid, p_task uuid, p_payload jsonb)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE w issue_wakeup; owner_workspace uuid; evidence jsonb; violated_constraint text;

@@ -242,27 +242,33 @@ databases. The fork files keep their names. The nine upstream files are new to
 this fork, so no database has recorded them, and they take the next free
 numbers in their original order (CHE-1837):
 
-- `573_issue_workflow` is now `656_issue_workflow`
-- `574_issue_workflow_pkey_index` is now `657_issue_workflow_pkey_index`
-- `575_issue_workflow_primary_key` is now `658_issue_workflow_primary_key`
-- `576_issue_workflow_workspace_name_index` is now `659_issue_workflow_workspace_name_index`
-- `577_project_workflow_id` is now `660_project_workflow_id`
-- `578_agent_task_workflow_step` is now `661_agent_task_workflow_step`
-- `579_wakeup_skip_handed_to_agent` is now `662_wakeup_skip_handed_to_agent`
-- `581_issue_workflow_is_default` is now `663_issue_workflow_is_default`
-- `582_issue_workflow_default_index` is now `664_issue_workflow_default_index`
+- `573_issue_workflow` is now `657_issue_workflow`
+- `574_issue_workflow_pkey_index` is now `658_issue_workflow_pkey_index`
+- `575_issue_workflow_primary_key` is now `659_issue_workflow_primary_key`
+- `576_issue_workflow_workspace_name_index` is now `660_issue_workflow_workspace_name_index`
+- `577_project_workflow_id` is now `661_project_workflow_id`
+- `578_agent_task_workflow_step` is now `662_agent_task_workflow_step`
+- `579_wakeup_skip_handed_to_agent` is now `663_wakeup_skip_handed_to_agent`
+- `581_issue_workflow_is_default` is now `664_issue_workflow_is_default`
+- `582_issue_workflow_default_index` is now `665_issue_workflow_default_index`
+
+These nine were first renumbered to `656`–`664`. Fork `main` then took
+`656_dm_channel_default_off` (CHE-1848). That migration is published, so it
+keeps its name, and the nine unmerged workflow migrations moved up by one, to
+`657`–`665` in the same order. No database has recorded either set of names.
+The rename is pure: the up and down SQL bytes of the nine match upstream.
 
 The SQL bytes are unchanged. The runner name map entries for the three index
 migrations follow the new names. `allowedForkCollisions` gains no entry. A later
 upstream sync must delete these nine upstream filenames when it re-adds them,
 or the workflow tables would be created twice.
 
-Migration `665_wakeup_handoff_write_tag` is fork-only. It replaces
-`capture_issue_wakeup` from `662_wakeup_skip_handed_to_agent` so a write that
+Migration `666_wakeup_handoff_write_tag` is fork-only. It replaces
+`capture_issue_wakeup` from `663_wakeup_skip_handed_to_agent` so a write that
 hands an issue to an agent no longer drops that agent's issue-event receipts at
 capture (CHE-1837). The receipts carry the write's id and the handler consumes
 them once the agent's run exists, so a stop between commit and enqueue cannot
-lose the change. A later upstream sync keeps `665` after the re-added upstream
+lose the change. A later upstream sync keeps `666` after the re-added upstream
 function body, or the zero-delivery window returns.
 
 ## Agent task queue compaction columns

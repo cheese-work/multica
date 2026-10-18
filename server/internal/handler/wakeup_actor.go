@@ -20,7 +20,7 @@ type wakeupHandoff struct{ agent, write string }
 
 // withWakeupHandedTo marks a write that hands the issue to agentID, whose run
 // will deliver the change. The write's issue events are still captured for that
-// agent, tagged with a write id (migration 665): the receipts are the agent's
+// agent, tagged with a write id (migration 666): the receipts are the agent's
 // only copy until its run exists, so a stop between commit and enqueue loses
 // nothing. consumeHandedWakeups settles them once the run is enqueued.
 func withWakeupHandedTo(ctx context.Context, agentID string) (context.Context, wakeupHandoff) {
