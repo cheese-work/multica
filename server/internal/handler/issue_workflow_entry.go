@@ -101,6 +101,32 @@ func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db
 	return &workflowHandoff{def: *def, step: step, project: project}, nil
 }
 
+// createHandoffError is a handoff handler the caller may not use, found while
+// a create resolved it under the workflow locks.
+type createHandoffError struct {
+	status  int
+	message string
+}
+
+func (e *createHandoffError) Error() string { return e.message }
+
+// createHandoffResolver resolves a step's handler for a new issue and applies
+// the same permission gate a hand-picked assignee passes. IssueService.Create
+// calls it under the catalog and project locks.
+func (h *Handler) createHandoffResolver(r *http.Request, workspaceID, creatorType string, creatorID pgtype.UUID) service.CreateHandoffResolver {
+	return func(ctx context.Context, step issueworkflow.Step, project db.Project) (pgtype.Text, pgtype.UUID, error) {
+		assigneeType, assigneeID, ok := issueworkflow.ResolveHandler(step, project, creatorType, creatorID)
+		if !ok {
+			return pgtype.Text{}, pgtype.UUID{}, nil
+		}
+		assignee := pgtype.Text{String: assigneeType, Valid: true}
+		if status, msg := h.validateAssigneePair(ctx, r, workspaceID, assignee, assigneeID); status != 0 {
+			return pgtype.Text{}, pgtype.UUID{}, &createHandoffError{status: status, message: msg}
+		}
+		return assignee, assigneeID, nil
+	}
+}
+
 // workflowHandoffPayload describes a handoff on the issue:updated event, so
 // the activity log can record the status change and the handoff as one
 // timeline entry.

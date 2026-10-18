@@ -105,7 +105,10 @@ func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger 
 		}
 		return true
 	case "squad":
-		return h.enqueueSquadLeaderTask(ctx, issue, pgtype.UUID{}, actorType, actorID, handoffNote)
+		// Delivery only when the leader's run was queued. Jev can route the work
+		// to a specialist instead: the specialist's run carries the write, not
+		// the leader's, so the leader's receipts stay pending.
+		return h.enqueueSquadLeaderTaskOutcome(ctx, issue, pgtype.UUID{}, actorType, actorID, handoffNote) == squadEnqueueLeader
 	}
 	return false
 }

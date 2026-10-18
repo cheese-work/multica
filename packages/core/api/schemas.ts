@@ -576,6 +576,9 @@ export const IssueWorkflowSchema = z.object({
   project_ids: z.array(z.string()).default([]),
   created_at: z.string(),
   updated_at: z.string(),
+  // Full-precision updated_at; a save names the version it edited. Absent from
+  // an older server, which then keeps last-writer-wins.
+  version: z.string().default(""),
 }).loose();
 
 export const ListIssueWorkflowsResponseSchema = z.object({
@@ -598,6 +601,7 @@ export const EMPTY_ISSUE_WORKFLOW: IssueWorkflow = {
   project_ids: [],
   created_at: "",
   updated_at: "",
+  version: "",
 };
 
 export const IssueWorkflowMappingPlanSchema = z.object({

@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
@@ -82,6 +83,10 @@ type IssueWorkflowResponse struct {
 	ProjectIDs  []string                   `json:"project_ids"`
 	CreatedAt   string                     `json:"created_at"`
 	UpdatedAt   string                     `json:"updated_at"`
+	// Version is updated_at at full precision. updated_at has one-second
+	// resolution, which two quick saves can share. A save names the version it
+	// edited in expected_version.
+	Version string `json:"version"`
 }
 
 // StatusMappingRequirement names a status some issues are on that the target
@@ -144,7 +149,13 @@ func issueWorkflowToResponse(row db.IssueWorkflow, def issueworkflow.Definition,
 		ProjectIDs:  projectIDs,
 		CreatedAt:   timestampToString(row.CreatedAt),
 		UpdatedAt:   timestampToString(row.UpdatedAt),
+		Version:     issueWorkflowVersion(row.UpdatedAt),
 	}
+}
+
+// issueWorkflowVersion is the token a save sends back to say which version it edited.
+func issueWorkflowVersion(updatedAt pgtype.Timestamptz) string {
+	return updatedAt.Time.UTC().Format(time.RFC3339Nano)
 }
 
 // projectIDsByWorkflow groups the workspace's projects by the workflow row
@@ -318,6 +329,11 @@ type IssueWorkflowWriteRequest struct {
 	StatusMapping map[string]string `json:"status_mapping,omitempty"`
 	// DryRun validates the edit and returns the mapping plan without writing.
 	DryRun bool `json:"dry_run,omitempty"`
+	// ExpectedVersion is the version of the workflow the editor started from.
+	// When set and the stored workflow has moved on, the edit is refused with
+	// 409 workflow_changed_elsewhere instead of replacing the newer one. Clients
+	// that predate the field omit it and keep last-writer-wins.
+	ExpectedVersion *string `json:"expected_version,omitempty"`
 }
 
 var newStatusDefaultColor = map[string]string{
@@ -657,6 +673,12 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	current, err := qtx.GetIssueWorkflow(ctx, db.GetIssueWorkflowParams{ID: idUUID, WorkspaceID: wsUUID})
 	if err != nil {
 		writeError(w, http.StatusNotFound, "workflow not found")
+		return
+	}
+	// Read under the exclusive catalog lock, so no other save can slip between
+	// this check and the write below.
+	if req.ExpectedVersion != nil && *req.ExpectedVersion != issueWorkflowVersion(current.UpdatedAt) {
+		writeErrorCode(w, http.StatusConflict, "workflow_changed_elsewhere", "the workflow was changed by someone else since you opened it")
 		return
 	}
 	var projects []db.Project

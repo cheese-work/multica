@@ -141,6 +141,11 @@ function sameDraft(a: Draft, b: Draft): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+function isChangedElsewhere(err: unknown): boolean {
+  if (!(err instanceof ApiError) || err.status !== 409 || !err.body || typeof err.body !== "object") return false;
+  return (err.body as { code?: unknown }).code === "workflow_changed_elsewhere";
+}
+
 function mappingPlanFrom(err: unknown): IssueWorkflowMappingPlan | null {
   if (!(err instanceof ApiError) || err.status !== 409 || !err.body || typeof err.body !== "object") return null;
   const body = err.body as { code?: unknown; plan?: IssueWorkflowMappingPlan };
@@ -312,6 +317,9 @@ export function WorkflowEditorPage({
       description: draft.description.trim(),
       steps,
       ...(mapping ? { status_mapping: mapping } : {}),
+      // Save against the version the editor started from, so a save that
+      // arrives after another admin's cannot replace it.
+      ...(workflowId && saved?.version ? { expected_version: saved.version } : {}),
     };
     try {
       if (workflowId) {
@@ -327,6 +335,13 @@ export function WorkflowEditorPage({
       const plan = mappingPlanFrom(err);
       if (plan) {
         setMappingPlan(plan);
+        return;
+      }
+      if (workflowId && isChangedElsewhere(err)) {
+        // The mutation refreshes the workflow list. The edits stay, and the
+        // editor chooses between them and the other admin's version.
+        setMappingPlan(null);
+        setChangedElsewhere(true);
         return;
       }
       toast.error(clientErrorMessage(err) ?? t(($) => $.workflows.editor.error));

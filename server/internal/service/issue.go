@@ -94,11 +94,22 @@ type IssueCreateParams struct {
 	// Stage groups this issue into an ordered barrier group under its parent
 	// (NULL = unstaged). See issue_wakeup_system.go for the staged-barrier wake.
 	Stage pgtype.Int4
+	// HandoffResolver, when set, decides the assignee a workflow step hands the
+	// new issue to. Set it only when the caller chose no assignee. The service
+	// calls it under the catalog and project locks, with the step the issue
+	// actually lands on, and its answer replaces any assignee the caller
+	// resolved earlier from an unlocked read.
+	HandoffResolver CreateHandoffResolver
 	// SourceContext is set only by the comment-scoped manual create endpoint.
 	// Its immutable snapshot and cloned attachment rows commit in the same
 	// transaction as the new issue.
 	SourceContext *SourceContextCapture
 }
+
+// CreateHandoffResolver resolves, and checks the caller may use, the handler of
+// the workflow step a new issue enters. It returns no assignee when the step
+// resolves to nobody.
+type CreateHandoffResolver func(ctx context.Context, step issueworkflow.Step, project db.Project) (assigneeType pgtype.Text, assigneeID pgtype.UUID, err error)
 
 // IssueCreateOpts groups optional knobs for IssueService.Create. Most
 // callers leave it zero-valued.
@@ -340,10 +351,27 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	// inside it too, and the project switches that commit after that check.
 	// Resolved before the custom-status guard below so that guard checks the
 	// status actually written.
-	if def, _, err := issueworkflow.ForProject(ctx, qtx, p.WorkspaceID, projectID); err != nil {
+	def, workflowProject, err := issueworkflow.ForProject(ctx, qtx, p.WorkspaceID, projectID)
+	if err != nil {
 		return IssueCreateResult{}, err
-	} else if def != nil && !def.IsDefault && !def.Has(p.Status) {
+	}
+	if def != nil && !def.IsDefault && !def.Has(p.Status) {
 		p.Status = issueworkflow.StartStatus
+	}
+	// The handler of the step the issue lands on comes from the workflow as it
+	// stands under the locks. An earlier unlocked read can name the former
+	// workflow's handler, or none, after a switch.
+	if p.HandoffResolver != nil {
+		p.AssigneeType, p.AssigneeID = pgtype.Text{}, pgtype.UUID{}
+		if def != nil {
+			if step, ok := def.Step(p.Status); ok && step.HandsOff() {
+				assigneeType, assigneeID, err := p.HandoffResolver(ctx, step, workflowProject)
+				if err != nil {
+					return IssueCreateResult{}, err
+				}
+				p.AssigneeType, p.AssigneeID = assigneeType, assigneeID
+			}
+		}
 	}
 
 	if !issuestatus.IsBuiltIn(p.Status) {

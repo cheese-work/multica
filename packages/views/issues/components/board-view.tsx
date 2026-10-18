@@ -607,7 +607,16 @@ function BoardViewImpl({
         if (!activeCol || !overCol || activeCol === overCol) return prev;
         const targetStatus = groups.find((group) => group.id === overCol)?.status;
         if (targetStatus && catalog.entryOf(targetStatus)?.archived_at) return prev;
-        if (targetStatus && !workflowAllowsStatus(workflowOfIssue(issueMapRef.current.get(activeId)), targetStatus)) {
+        // The card's own status may be one its workflow omits (the workflow
+        // changed under it). Going back to its own column is not entering a
+        // blocked one, and refusing it would leave the mirror in the last
+        // allowed column the pointer crossed.
+        const draggedIssue = issueMapRef.current.get(activeId);
+        if (
+          targetStatus &&
+          draggedIssue?.status !== targetStatus &&
+          !workflowAllowsStatus(workflowOfIssue(draggedIssue), targetStatus)
+        ) {
           return prev;
         }
 
@@ -673,6 +682,15 @@ function BoardViewImpl({
           );
           return;
         }
+      }
+
+      // Released over the column the card started in, while the mirror sits
+      // elsewhere (it passed over an allowed column and the pointer came back,
+      // or the throttled drag-over never mirrored the return): that is a drop
+      // where it started, not a move to the mirrored column.
+      if (overGroup?.status && draggedIssue?.status === overGroup.status && activeCol !== overCol) {
+        resetColumns();
+        return;
       }
 
       // Same-column reorder (manual sort only)

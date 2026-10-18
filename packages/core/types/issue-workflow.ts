@@ -47,6 +47,8 @@ export interface IssueWorkflow {
   project_ids: string[];
   created_at: string;
   updated_at: string;
+  /** Full-precision updated_at; empty from a server that predates it. */
+  version?: string;
 }
 
 export interface ListIssueWorkflowsResponse {
@@ -77,6 +79,11 @@ export interface IssueWorkflowWriteRequest {
   /** Destination for issues on statuses an edit removes, keyed by removed status. */
   status_mapping?: Record<string, string>;
   dry_run?: boolean;
+  /**
+   * The `version` of the workflow the edit started from. The server refuses the
+   * save with 409 `workflow_changed_elsewhere` when the workflow has moved on.
+   */
+  expected_version?: string;
 }
 
 /** A status some issues are on that the target workflow does not list. */

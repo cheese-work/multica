@@ -38,6 +38,16 @@ export function useUpdateIssueWorkflow() {
   return useMutation({
     mutationFn: ({ id, ...data }: { id: string } & IssueWorkflowWriteRequest) =>
       api.updateIssueWorkflow(id, data),
+    onSuccess: (saved, variables) => {
+      // The next save names this version. Waiting for the refetch or the
+      // realtime event would leave a quick second save naming the old one and
+      // refused as a conflict with the editor's own write. A dry run saved
+      // nothing.
+      if (variables.dry_run || !saved?.id) return;
+      qc.setQueryData<ListIssueWorkflowsResponse>(issueWorkflowKeys.list(wsId), (previous) =>
+        previous ? { ...previous, workflows: previous.workflows.map((w) => (w.id === saved.id ? saved : w)) } : previous,
+      );
+    },
     onError: () => {
       qc.invalidateQueries({ queryKey: issueWorkflowKeys.all(wsId) });
     },
