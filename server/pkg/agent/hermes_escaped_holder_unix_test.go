@@ -246,3 +246,26 @@ func readEscapedHolderIdentity(t *testing.T, path string) (pid, pgid int) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// The holder records its identity with os.WriteFile, which creates the file
+// empty and then writes it, so the state file can be visible before it has any
+// content. A reader that polls for the file's existence can catch it in that
+// window. An empty or half-written state means the holder has not finished
+// recording yet, not that it is broken: the wait must go on until its budget
+// runs out, and only then fail.
+func TestReadEscapedHolderIdentityWaitsOutAnEmptyStateFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "holder-state")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		_ = os.WriteFile(path, []byte("4242 4242"), 0o600)
+	}()
+
+	pid, pgid := readEscapedHolderIdentity(t, path)
+
+	if pid != 4242 || pgid != 4242 {
+		t.Fatalf("identity = %d %d, want 4242 4242", pid, pgid)
+	}
+}
