@@ -125,8 +125,11 @@ func TestDMReplyStaysOutOfTheInboxByDefault(t *testing.T) {
 	}
 
 	before := dmRecordCountInDB(t)
-	otherAgent, other, _, _ := setupDirectChatSession(t, ctx, "default")
-	dmReply(t, otherAgent, other, "after")
+	var other string
+	dbfx.QueryRow(t, `INSERT INTO chat_session (workspace_id, agent_id, creator_id, title, explicitly_created_at) VALUES ($1, $2, $3, 'default', now()) RETURNING id`,
+		testWorkspaceID, agentID, testUserID).Scan(&other)
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM chat_session WHERE id = $1`, other) })
+	dmReply(t, agentID, other, "after")
 	if n := dmRecordCountInDB(t); n != before {
 		t.Fatalf("a reply at the default must create no record: records %d -> %d", before, n)
 	}
