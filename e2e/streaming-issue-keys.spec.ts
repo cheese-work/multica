@@ -359,242 +359,254 @@ test.describe("streaming bare issue keys", () => {
     environment = requireTaskOwnedEnvironment(path.resolve(test.info().project.testDir, ".."));
   });
 
+  // Each phase is its own test with its own setup and cleanup, so a run can
+  // select the streaming phases alone with `--grep @streaming` and leave the
+  // issue-page capture out. The issue-page phase renders an issue comment
+  // through RichContent; it is not a saved (Tiptap) issue description.
+  const PHASES = [
+    { phase: "boundary", title: "streaming boundary links the key only after a boundary", tag: " @streaming" },
+    { phase: "settle", title: "streaming settle links the key only once settled", tag: " @streaming" },
+    { phase: "issue-page", title: "issue page comment shows resolved chips", tag: "" },
+  ] as const;
+
   for (const viewport of VIEWPORTS) {
-    test(`streamed bare issue keys never chip a partial key (${viewport.name})`, async ({ page }, testInfo) => {
-      // A dev server compiles each route on first visit.
-      test.setTimeout(240_000);
-        if (!environment) throw new Error("ownership check did not run");
+    for (const { phase, title, tag } of PHASES) {
+      test(`${title} (${viewport.name})${tag}`, async ({ page }, testInfo) => {
+        // A dev server compiles each route on first visit.
+        test.setTimeout(240_000);
+          if (!environment) throw new Error("ownership check did not run");
 
-      // Test hook for e2e/streaming-issue-keys.safety.mjs: fail on purpose at
-      // one stage of setup, with a marker the safety test looks for.
-      const failAt = (point: string) => {
-        if (process.env.STREAMING_ISSUE_KEYS_FAIL_AT === point) throw new Error(`injected failure at ${point}`);
-      };
-
-      // Everything acquired below is released on success, failure and partial
-      // setup alike. The helper's E2E user and workspace are not removed here:
-      // they live only in the task-owned database, which dev-env destroy drops.
-      let api: Awaited<ReturnType<typeof createTestApi>> | undefined;
-      let db: pg.Client | undefined;
-      let connected = false;
-      let ledger: SeedLedger | undefined;
-      const lookups: string[] = [];
-      let runtimeId: string | undefined;
-      let failure: unknown;
-      try {
-        api = await createTestApi();
-        failAt("after-api-client");
-        db = new pg.Client(process.env.DATABASE_URL);
-        await db.connect();
-        connected = true;
-        ledger = new SeedLedger(db);
-        failAt("after-db-connect");
-        const client = db;
-        const seeds = ledger;
-        const apiClient = api;
-        const workspace = (await apiClient.getWorkspaces())[0];
-        if (!workspace) throw new Error("E2E workspace missing");
-        apiClient.setWorkspaceId(workspace.id);
-        apiClient.setWorkspaceSlug(workspace.slug);
-        const token = apiClient.getToken();
-        if (!token) throw new Error("E2E token missing");
-        const userId = (
-          await client.query<{ id: string }>(`SELECT id::text FROM "user" WHERE email = $1`, [apiClient.getEmail()])
-        ).rows[0]!.id;
-
-        // The workspace belongs to this run only (both viewports share it), so its
-        // prefix and counter can be set to make CHE-1 … CHE-1824 real issues.
-        await seeds.rememberWorkspace(workspace.id);
-        await client.query(`UPDATE workspace SET issue_prefix = 'CHE', issue_counter = GREATEST(issue_counter, 1824) WHERE id = $1`, [workspace.id]);
-        const titles: Record<number, string> = { 1: SHORT_TITLE, 18: "Partial key eighteen", 182: "Partial key one eight two", 1824: LONG_TITLE };
-        for (const [number, title] of Object.entries(titles)) {
-          const inserted = await client.query<{ id: string }>(
-            `INSERT INTO issue (workspace_id, title, status, priority, creator_type, creator_id, position, number)
-             VALUES ($1, $2, 'todo', 'none', 'member', $3, $4::double precision, $5::integer)
-             ON CONFLICT (workspace_id, number) DO NOTHING RETURNING id::text`,
-            [workspace.id, title, userId, Number(number), Number(number)],
-          );
-          seeds.track("issue", inserted.rows[0]?.id);
-        }
-        failAt("mid-seed");
-
-        runtimeId = seeds.track("agent_runtime", (
-          await client.query<{ id: string }>(
-            `INSERT INTO agent_runtime (workspace_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at)
-             VALUES ($1, $2, 'cloud', 'e2e_streaming_keys', 'online', 'Streaming keys E2E', '{}'::jsonb, now()) RETURNING id::text`,
-            [workspace.id, `Streaming keys E2E ${viewport.name}`],
-          )
-        ).rows[0]!.id)!;
-        const agentId = seeds.track("agent", (
-          await client.query<{ id: string }>(
-            `INSERT INTO agent (workspace_id, name, description, instructions, runtime_mode, runtime_config, runtime_id, visibility, max_concurrent_tasks, owner_id)
-             VALUES ($1, $4, '', '', 'cloud', '{}'::jsonb, $2, 'workspace', 1, $3) RETURNING id::text`,
-            [workspace.id, runtimeId, userId, `Stream Fixture ${viewport.name}`],
-          )
-        ).rows[0]!.id)!;
-
-        async function seedRunningTurn(title: string, prompt: string, firstChunk: string) {
-          const sessionId = seeds.track("chat_session", (
-            await client.query<{ id: string }>(
-              `INSERT INTO chat_session (workspace_id, agent_id, creator_id, title, status, explicitly_created_at)
-               VALUES ($1, $2, $3, $4, 'active', now()) RETURNING id::text`,
-              [workspace!.id, agentId, userId, title],
-            )
-          ).rows[0]!.id)!;
-          const taskId = seeds.track("agent_task_queue", (
-            await client.query<{ id: string }>(
-              `INSERT INTO agent_task_queue (agent_id, runtime_id, chat_session_id, status, dispatched_at, started_at)
-               VALUES ($1, $2, $3, 'running', now(), now()) RETURNING id::text`,
-              [agentId, runtimeId, sessionId],
-            )
-          ).rows[0]!.id)!;
-          await client.query(
-            `INSERT INTO chat_message (chat_session_id, role, content, task_id) VALUES ($1, 'user', $2, $3)`,
-            [sessionId, prompt, taskId],
-          );
-          await client.query(`INSERT INTO task_message (task_id, seq, type, content) VALUES ($1, 1, 'text', $2)`, [taskId, firstChunk]);
-          return { sessionId, taskId, seq: 1 };
-        }
-
-        async function appendChunk(turn: { taskId: string; seq: number }, content: string) {
-          turn.seq += 1;
-          const response = await page.request.post(`${API_URL}/api/daemon/tasks/${turn.taskId}/messages`, {
-            headers: { Authorization: `Bearer ${token}` },
-            data: { messages: [{ seq: turn.seq, type: "text", content }] },
-          });
-          expect(response.status(), await response.text()).toBe(200);
-        }
-
-        async function waitForText(text: string, timeout = 20_000) {
-          await page.waitForFunction((expected) => document.body.innerText.replace(/\s+/g, " ").includes(expected), text, {
-            timeout,
-          });
-          // Give lookups and chip renders time to land before the next chunk.
-          await page.waitForTimeout(600 + LOOKUP_DELAY_MS);
-        }
-
-        await page.setViewportSize({ width: viewport.width, height: viewport.height });
-        await page.addInitScript((authToken) => {
-          localStorage.setItem("multica_token", authToken);
-        }, token);
-        await page.addInitScript(installChipRecorder);
-        page.on("request", (request) => {
-          const match = /\/api\/issues\/([A-Z][A-Z0-9]*-\d+)(?:[/?]|$)/.exec(new URL(request.url()).pathname);
-          if (match) lookups.push(match[1]!);
-        });
-        if (LOOKUP_DELAY_MS > 0) {
-          await page.route(/\/api\/issues\/[A-Z][A-Z0-9]*-\d+$/, async (route) => {
-            await new Promise((resolve) => setTimeout(resolve, LOOKUP_DELAY_MS));
-            await route.continue();
-          });
-        }
-
-        // 1. Streaming, then a boundary: the full key links only once it is
-        //    followed by a boundary character.
-        const boundary = await seedRunningTurn("Streaming keys boundary", "Which change fixed the login?", "Fixed in ");
-        failAt("after-seed");
-        await page.goto(`/${workspace.slug}/chat?session=${boundary.sessionId}`, { waitUntil: "domcontentloaded" });
-        await waitForText("Fixed in", 90_000);
-        let streamed = "Fixed in ";
-        for (const chunk of ["CHE-1", "8", "2", "4"]) {
-          await appendChunk(boundary, chunk);
-          streamed += chunk;
-          await waitForText(streamed.trim());
-          await page.screenshot({ path: testInfo.outputPath(`stream-${streamed.trim().split(" ").pop()}.png`) });
-        }
-        await appendChunk(boundary, " and its follow-up.");
-        await expect(page.locator("a.issue-mention", { hasText: FULL_KEY })).toBeVisible({ timeout: 20_000 });
-        await page.waitForTimeout(600 + LOOKUP_DELAY_MS);
-        await page.screenshot({ path: testInfo.outputPath("stream-boundary.png") });
-        const boundaryFrames = await page.evaluate(() => window.__chipFrames ?? []);
-        const boundaryMeasure = await measureChips(page, "body");
-
-        // 2. Streaming that ends on the key with no delimiter, then settling: no
-        //    chip while it streams, the full chip once the task completes.
-        const settle = await seedRunningTurn("Streaming keys settle", "Where is it tracked?", "Tracked as ");
-        await page.goto(`/${workspace.slug}/chat?session=${settle.sessionId}`, { waitUntil: "domcontentloaded" });
-        await waitForText("Tracked as", 90_000);
-        streamed = "Tracked as ";
-        for (const chunk of ["CHE-1", "8", "2", "4"]) {
-          await appendChunk(settle, chunk);
-          streamed += chunk;
-          await waitForText(streamed.trim());
-        }
-        await page.screenshot({ path: testInfo.outputPath("settle-before.png") });
-        const streamingOnlyFrames = await page.evaluate(() => window.__chipFrames ?? []);
-        const completed = await page.request.post(`${API_URL}/api/daemon/tasks/${settle.taskId}/complete`, {
-          headers: { Authorization: `Bearer ${token}` },
-          data: { output: "Tracked as CHE-1824" },
-        });
-        expect(completed.status(), await completed.text()).toBe(200);
-        await expect(page.locator("a.issue-mention", { hasText: FULL_KEY })).toBeVisible({ timeout: 20_000 });
-        await page.waitForTimeout(600 + LOOKUP_DELAY_MS);
-        await page.screenshot({ path: testInfo.outputPath("settle-after.png") });
-        const settleFrames = await page.evaluate(() => window.__chipFrames ?? []);
-        const settleMeasure = await measureChips(page, "body");
-
-        // 3. Settled description-size text: an issue comment rendered through
-        //    the same RichContent, with a short and a long title.
-        const chatLookups = [...lookups];
-        const host = await apiClient.createIssue("Streaming keys description host", {
-          description: `Related: CHE-1, CHE-18, CHE-182 and ${FULL_KEY}.`,
-        });
-        seeds.track("issue", host.id);
-        const comment = await client.query<{ id: string }>(
-          `INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content)
-           VALUES ($1, $2, 'member', $3, $4) RETURNING id::text`,
-          [workspace.id, host.id, userId, `Short CHE-1 and long ${FULL_KEY} in a sentence that wraps on narrow screens.`],
-        );
-        seeds.track("comment", comment.rows[0]?.id);
-        await page.goto(`/${workspace.slug}/issues/${host.id}`, { waitUntil: "domcontentloaded" });
-        await expect(page.locator("a.issue-mention", { hasText: FULL_KEY }).first()).toBeVisible({ timeout: 20_000 });
-        await page.waitForTimeout(600 + LOOKUP_DELAY_MS);
-        await page.screenshot({ path: testInfo.outputPath("description.png"), fullPage: true });
-        const descriptionMeasure = await measureChips(page, "body");
-
-        const trace = {
-          viewport,
-          lookupDelayMs: LOOKUP_DELAY_MS,
-          boundary: { frames: boundaryFrames, chips: boundaryMeasure },
-          settle: { streamingFrames: streamingOnlyFrames, frames: settleFrames, chips: settleMeasure },
-          description: { chips: descriptionMeasure },
-          chatLookups,
-          lookups,
+        // Test hook for e2e/streaming-issue-keys.safety.mjs: fail on purpose at
+        // one stage of setup, with a marker the safety test looks for.
+        const failAt = (point: string) => {
+          if (process.env.STREAMING_ISSUE_KEYS_FAIL_AT === point) throw new Error(`injected failure at ${point}`);
         };
-        await saveArtifact(testInfo, "trace.json", JSON.stringify(trace, null, 2));
-        for (const shot of fs.readdirSync(testInfo.outputDir).filter((name) => name.endsWith(".png"))) {
-          await saveArtifact(testInfo, shot, fs.readFileSync(testInfo.outputPath(shot)));
-        }
 
-        // The chat page never showed a chip for a partial key, and never looked
-        // one up. Lookups after the chat steps belong to the settled comment.
-        const chatSeen = chipKeysSeen([...boundaryFrames, ...settleFrames]);
-        for (const key of PARTIAL_KEYS) {
-          expect(chatSeen.has(key), `chip for ${key} while streaming`).toBe(false);
-          expect(chatLookups, `lookup of ${key} while streaming`).not.toContain(key);
-        }
-        expect(chipKeysSeen(streamingOnlyFrames).size, "chip while the reply still ended on the key").toBe(0);
-        expect(chatSeen.has(FULL_KEY)).toBe(true);
-      } catch (error) {
-        failure = error;
-      }
-      // Cleanup runs after a failure too, and its own failure is never hidden.
-      const cleanupErrors: unknown[] = [];
-      const release = async (step: () => Promise<unknown>) => {
+        // Everything acquired below is released on success, failure and partial
+        // setup alike. The helper's E2E user and workspace are not removed here:
+        // they live only in the task-owned database, which dev-env destroy drops.
+        let api: Awaited<ReturnType<typeof createTestApi>> | undefined;
+        let db: pg.Client | undefined;
+        let connected = false;
+        let ledger: SeedLedger | undefined;
+        const lookups: string[] = [];
+        let runtimeId: string | undefined;
+        let failure: unknown;
         try {
-          await step();
+          api = await createTestApi();
+          failAt("after-api-client");
+          db = new pg.Client(process.env.DATABASE_URL);
+          await db.connect();
+          connected = true;
+          ledger = new SeedLedger(db);
+          failAt("after-db-connect");
+          const client = db;
+          const seeds = ledger;
+          const apiClient = api;
+          const workspace = (await apiClient.getWorkspaces())[0];
+          if (!workspace) throw new Error("E2E workspace missing");
+          apiClient.setWorkspaceId(workspace.id);
+          apiClient.setWorkspaceSlug(workspace.slug);
+          const token = apiClient.getToken();
+          if (!token) throw new Error("E2E token missing");
+          const userId = (
+            await client.query<{ id: string }>(`SELECT id::text FROM "user" WHERE email = $1`, [apiClient.getEmail()])
+          ).rows[0]!.id;
+
+          // The workspace belongs to this run only (both viewports share it), so its
+          // prefix and counter can be set to make CHE-1 … CHE-1824 real issues.
+          await seeds.rememberWorkspace(workspace.id);
+          await client.query(`UPDATE workspace SET issue_prefix = 'CHE', issue_counter = GREATEST(issue_counter, 1824) WHERE id = $1`, [workspace.id]);
+          const titles: Record<number, string> = { 1: SHORT_TITLE, 18: "Partial key eighteen", 182: "Partial key one eight two", 1824: LONG_TITLE };
+          for (const [number, title] of Object.entries(titles)) {
+            const inserted = await client.query<{ id: string }>(
+              `INSERT INTO issue (workspace_id, title, status, priority, creator_type, creator_id, position, number)
+               VALUES ($1, $2, 'todo', 'none', 'member', $3, $4::double precision, $5::integer)
+               ON CONFLICT (workspace_id, number) DO NOTHING RETURNING id::text`,
+              [workspace.id, title, userId, Number(number), Number(number)],
+            );
+            seeds.track("issue", inserted.rows[0]?.id);
+          }
+          failAt("mid-seed");
+
+          runtimeId = seeds.track("agent_runtime", (
+            await client.query<{ id: string }>(
+              `INSERT INTO agent_runtime (workspace_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at)
+               VALUES ($1, $2, 'cloud', 'e2e_streaming_keys', 'online', 'Streaming keys E2E', '{}'::jsonb, now()) RETURNING id::text`,
+              [workspace.id, `Streaming keys E2E ${viewport.name} ${phase}`],
+            )
+          ).rows[0]!.id)!;
+          const agentId = seeds.track("agent", (
+            await client.query<{ id: string }>(
+              `INSERT INTO agent (workspace_id, name, description, instructions, runtime_mode, runtime_config, runtime_id, visibility, max_concurrent_tasks, owner_id)
+               VALUES ($1, $4, '', '', 'cloud', '{}'::jsonb, $2, 'workspace', 1, $3) RETURNING id::text`,
+              [workspace.id, runtimeId, userId, `Stream Fixture ${viewport.name} ${phase}`],
+            )
+          ).rows[0]!.id)!;
+
+          async function seedRunningTurn(title: string, prompt: string, firstChunk: string) {
+            const sessionId = seeds.track("chat_session", (
+              await client.query<{ id: string }>(
+                `INSERT INTO chat_session (workspace_id, agent_id, creator_id, title, status, explicitly_created_at)
+                 VALUES ($1, $2, $3, $4, 'active', now()) RETURNING id::text`,
+                [workspace!.id, agentId, userId, title],
+              )
+            ).rows[0]!.id)!;
+            const taskId = seeds.track("agent_task_queue", (
+              await client.query<{ id: string }>(
+                `INSERT INTO agent_task_queue (agent_id, runtime_id, chat_session_id, status, dispatched_at, started_at)
+                 VALUES ($1, $2, $3, 'running', now(), now()) RETURNING id::text`,
+                [agentId, runtimeId, sessionId],
+              )
+            ).rows[0]!.id)!;
+            await client.query(
+              `INSERT INTO chat_message (chat_session_id, role, content, task_id) VALUES ($1, 'user', $2, $3)`,
+              [sessionId, prompt, taskId],
+            );
+            await client.query(`INSERT INTO task_message (task_id, seq, type, content) VALUES ($1, 1, 'text', $2)`, [taskId, firstChunk]);
+            return { sessionId, taskId, seq: 1 };
+          }
+
+          async function appendChunk(turn: { taskId: string; seq: number }, content: string) {
+            turn.seq += 1;
+            const response = await page.request.post(`${API_URL}/api/daemon/tasks/${turn.taskId}/messages`, {
+              headers: { Authorization: `Bearer ${token}` },
+              data: { messages: [{ seq: turn.seq, type: "text", content }] },
+            });
+            expect(response.status(), await response.text()).toBe(200);
+          }
+
+          async function waitForText(text: string, timeout = 20_000) {
+            await page.waitForFunction((expected) => document.body.innerText.replace(/\s+/g, " ").includes(expected), text, {
+              timeout,
+            });
+            // Give lookups and chip renders time to land before the next chunk.
+            await page.waitForTimeout(600 + LOOKUP_DELAY_MS);
+          }
+
+          await page.setViewportSize({ width: viewport.width, height: viewport.height });
+          await page.addInitScript((authToken) => {
+            localStorage.setItem("multica_token", authToken);
+          }, token);
+          await page.addInitScript(installChipRecorder);
+          page.on("request", (request) => {
+            const match = /\/api\/issues\/([A-Z][A-Z0-9]*-\d+)(?:[/?]|$)/.exec(new URL(request.url()).pathname);
+            if (match) lookups.push(match[1]!);
+          });
+          if (LOOKUP_DELAY_MS > 0) {
+            await page.route(/\/api\/issues\/[A-Z][A-Z0-9]*-\d+$/, async (route) => {
+              await new Promise((resolve) => setTimeout(resolve, LOOKUP_DELAY_MS));
+              await route.continue();
+            });
+          }
+
+          if (phase === "boundary") {
+            // 1. Streaming, then a boundary: the full key links only once it is
+            //    followed by a boundary character.
+            const boundary = await seedRunningTurn("Streaming keys boundary", "Which change fixed the login?", "Fixed in ");
+            failAt("after-seed");
+            await page.goto(`/${workspace.slug}/chat?session=${boundary.sessionId}`, { waitUntil: "domcontentloaded" });
+            await waitForText("Fixed in", 90_000);
+            let streamed = "Fixed in ";
+            for (const chunk of ["CHE-1", "8", "2", "4"]) {
+              await appendChunk(boundary, chunk);
+              streamed += chunk;
+              await waitForText(streamed.trim());
+              await page.screenshot({ path: testInfo.outputPath(`stream-${streamed.trim().split(" ").pop()}.png`) });
+            }
+            await appendChunk(boundary, " and its follow-up.");
+            await expect(page.locator("a.issue-mention", { hasText: FULL_KEY })).toBeVisible({ timeout: 20_000 });
+            await page.waitForTimeout(600 + LOOKUP_DELAY_MS);
+            await page.screenshot({ path: testInfo.outputPath("stream-boundary.png") });
+            const boundaryFrames = await page.evaluate(() => window.__chipFrames ?? []);
+            const boundaryMeasure = await measureChips(page, "body");
+            const chatSeen = chipKeysSeen(boundaryFrames);
+            await saveArtifact(testInfo, "trace.json", JSON.stringify({ viewport, phase, lookupDelayMs: LOOKUP_DELAY_MS, frames: boundaryFrames, chips: boundaryMeasure, lookups }, null, 2));
+            // The chat page never showed a chip for a partial key and never looked
+            // one up; the full key links once a boundary follows it.
+            for (const key of PARTIAL_KEYS) {
+              expect(chatSeen.has(key), `chip for ${key} while streaming`).toBe(false);
+              expect(lookups, `lookup of ${key} while streaming`).not.toContain(key);
+            }
+            expect(chatSeen.has(FULL_KEY)).toBe(true);
+          } else if (phase === "settle") {
+            // 2. Streaming that ends on the key with no delimiter, then settling: no
+            //    chip while it streams, the full chip once the task completes.
+            const settle = await seedRunningTurn("Streaming keys settle", "Where is it tracked?", "Tracked as ");
+            await page.goto(`/${workspace.slug}/chat?session=${settle.sessionId}`, { waitUntil: "domcontentloaded" });
+            await waitForText("Tracked as", 90_000);
+            let streamed = "Tracked as ";
+            for (const chunk of ["CHE-1", "8", "2", "4"]) {
+              await appendChunk(settle, chunk);
+              streamed += chunk;
+              await waitForText(streamed.trim());
+            }
+            await page.screenshot({ path: testInfo.outputPath("settle-before.png") });
+            const streamingOnlyFrames = await page.evaluate(() => window.__chipFrames ?? []);
+            const completed = await page.request.post(`${API_URL}/api/daemon/tasks/${settle.taskId}/complete`, {
+              headers: { Authorization: `Bearer ${token}` },
+              data: { output: "Tracked as CHE-1824" },
+            });
+            expect(completed.status(), await completed.text()).toBe(200);
+            await expect(page.locator("a.issue-mention", { hasText: FULL_KEY })).toBeVisible({ timeout: 20_000 });
+            await page.waitForTimeout(600 + LOOKUP_DELAY_MS);
+            await page.screenshot({ path: testInfo.outputPath("settle-after.png") });
+            const settleFrames = await page.evaluate(() => window.__chipFrames ?? []);
+            const settleMeasure = await measureChips(page, "body");
+            const chatSeen = chipKeysSeen(settleFrames);
+            await saveArtifact(testInfo, "trace.json", JSON.stringify({ viewport, phase, lookupDelayMs: LOOKUP_DELAY_MS, streamingFrames: streamingOnlyFrames, frames: settleFrames, chips: settleMeasure, lookups }, null, 2));
+            // No chip while the reply still ended on the key, no partial-key chip or
+            // lookup at any point, and the full key links once the task settles.
+            expect(chipKeysSeen(streamingOnlyFrames).size, "chip while the reply still ended on the key").toBe(0);
+            for (const key of PARTIAL_KEYS) {
+              expect(chatSeen.has(key), `chip for ${key} while streaming`).toBe(false);
+              expect(lookups, `lookup of ${key} while streaming`).not.toContain(key);
+            }
+            expect(chatSeen.has(FULL_KEY)).toBe(true);
+          } else {
+            // 3. Settled description-size text: an issue comment rendered through
+            //    the same RichContent, with a short and a long title.
+            const host = await apiClient.createIssue("Streaming keys description host", {
+              description: `Related: CHE-1, CHE-18, CHE-182 and ${FULL_KEY}.`,
+            });
+            seeds.track("issue", host.id);
+            const comment = await client.query<{ id: string }>(
+              `INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content)
+               VALUES ($1, $2, 'member', $3, $4) RETURNING id::text`,
+              [workspace.id, host.id, userId, `Short CHE-1 and long ${FULL_KEY} in a sentence that wraps on narrow screens.`],
+            );
+            seeds.track("comment", comment.rows[0]?.id);
+            await page.goto(`/${workspace.slug}/issues/${host.id}`, { waitUntil: "domcontentloaded" });
+            await expect(page.locator("a.issue-mention", { hasText: FULL_KEY }).first()).toBeVisible({ timeout: 20_000 });
+            await page.waitForTimeout(600 + LOOKUP_DELAY_MS);
+            await page.screenshot({ path: testInfo.outputPath("description.png"), fullPage: true });
+            const descriptionMeasure = await measureChips(page, "body");
+            await saveArtifact(testInfo, "trace.json", JSON.stringify({ viewport, phase, lookupDelayMs: LOOKUP_DELAY_MS, chips: descriptionMeasure, lookups }, null, 2));
+          }
+          for (const shot of fs.readdirSync(testInfo.outputDir).filter((name) => name.endsWith(".png"))) {
+            await saveArtifact(testInfo, shot, fs.readFileSync(testInfo.outputPath(shot)));
+          }
         } catch (error) {
-          cleanupErrors.push(error);
+          failure = error;
         }
-      };
-      if (ledger) await release(() => ledger!.cleanup());
-      if (db && connected) await release(() => db!.end());
-      if (api) await release(() => api!.cleanup());
-      if (failure !== undefined && cleanupErrors.length > 0) {
-        throw new AggregateError([failure, ...cleanupErrors], "fixture and its cleanup both failed");
-      }
-      if (failure !== undefined) throw failure;
-      if (cleanupErrors.length > 0) throw new AggregateError(cleanupErrors, "fixture cleanup failed");
-    });
+        // Cleanup runs after a failure too, and its own failure is never hidden.
+        const cleanupErrors: unknown[] = [];
+        const release = async (step: () => Promise<unknown>) => {
+          try {
+            await step();
+          } catch (error) {
+            cleanupErrors.push(error);
+          }
+        };
+        if (ledger) await release(() => ledger!.cleanup());
+        if (db && connected) await release(() => db!.end());
+        if (api) await release(() => api!.cleanup());
+        if (failure !== undefined && cleanupErrors.length > 0) {
+          throw new AggregateError([failure, ...cleanupErrors], "fixture and its cleanup both failed");
+        }
+        if (failure !== undefined) throw failure;
+        if (cleanupErrors.length > 0) throw new AggregateError(cleanupErrors, "fixture cleanup failed");
+      });
+    }
   }
 });
