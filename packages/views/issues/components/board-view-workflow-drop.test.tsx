@@ -209,7 +209,7 @@ describe("board drop over a column the workflow omits", () => {
     vi.unstubAllGlobals();
   });
 
-  function mount() {
+  function mount(issue: Issue = ISSUE) {
     const store = getIssueSurfaceViewStore(`board-workflow-drop-${Math.floor(Math.random() * 1e9)}`);
     // Manual ordering is where the card is mirrored into the column it passes.
     store.getState().setSortBy("position");
@@ -218,7 +218,7 @@ describe("board drop over a column the workflow omits", () => {
         <ViewStoreProvider store={store}>
           <IssueContextMenuProvider>
             <BoardView
-              issues={[ISSUE]}
+              issues={[issue]}
               visibleStatuses={["todo", "in_progress", "in_review"]}
               hiddenStatuses={[]}
               onMoveIssue={onMoveIssue}
@@ -270,5 +270,43 @@ describe("board drop over a column the workflow omits", () => {
 
     expect(onMoveIssue).not.toHaveBeenCalled();
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  // The card's own status is not in its workflow, so a return to its column is
+  // not a "move into a blocked column". The mirror must follow the pointer back
+  // there, and a release over that column is a drop where it started.
+  describe("an issue whose own status the workflow omits", () => {
+    const STRANDED = { ...ISSUE, status: "in_review" } as Issue;
+
+    it("does not commit the allowed column it passed over when released back on its own column", () => {
+      mount(STRANDED);
+      drag(["in_progress", "in_review"]);
+
+      expect(onMoveIssue).not.toHaveBeenCalled();
+    });
+
+    it("does not start the passed column's handoff when released back on its own column", () => {
+      workflowState.workflows = [
+        {
+          ...WORKFLOW,
+          steps: WORKFLOW.steps.map((step) =>
+            step.status_key === "in_progress" ? { ...step, handler: { type: "creator" } } : step,
+          ),
+        },
+      ];
+      mount(STRANDED);
+      drag(["in_progress", "in_review"]);
+
+      expect(onMoveIssue).not.toHaveBeenCalled();
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+
+    it("still moves the card to an allowed column it is released over", () => {
+      mount(STRANDED);
+      drag(["in_progress"]);
+
+      expect(onMoveIssue).toHaveBeenCalledTimes(1);
+      expect(onMoveIssue.mock.calls[0]![1]).toMatchObject({ status: "in_progress" });
+    });
   });
 });

@@ -8,8 +8,9 @@
  * the editor chooses between the two versions.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ApiError } from "@multica/core/api";
 import { issueStatusKeys } from "@multica/core/issue-statuses/queries";
 import { issueWorkflowKeys } from "@multica/core/issue-workflows";
 import { projectListOptions } from "@multica/core/projects/queries";
@@ -17,6 +18,14 @@ import type { IssueStatusEntry, IssueWorkflow } from "@multica/core/types";
 import { renderWithI18n } from "../test/i18n";
 import { WorkflowEditorPage } from "./workflow-editor-page";
 
+const apiMock = vi.hoisted(() => ({
+  updateIssueWorkflow: vi.fn(),
+  listIssueWorkflows: vi.fn(),
+}));
+vi.mock("@multica/core/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/api")>()),
+  api: apiMock,
+}));
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
 vi.mock("@multica/core/paths", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@multica/core/paths")>()),
@@ -43,6 +52,7 @@ function workflow(overrides: Partial<IssueWorkflow> = {}): IssueWorkflow {
     project_ids: [],
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
+    version: "v-2026-01-01",
     ...overrides,
   } as IssueWorkflow;
 }
@@ -109,7 +119,7 @@ describe("workflow editor baseline refresh", () => {
   it("keeps dirty edits and holds Save when another admin changes the workflow", async () => {
     fireEvent.change(nameField(), { target: { value: "Delivery v2" } });
 
-    await publish(workflow({ description: "Changed elsewhere", updated_at: "2026-01-02T00:00:00Z" }));
+    await publish(workflow({ description: "Changed elsewhere", updated_at: "2026-01-02T00:00:00Z", version: "v-2026-01-02" }));
 
     expect(screen.getByDisplayValue("Delivery v2")).toBeTruthy();
     expect(screen.getByRole("alert")).toBeTruthy();
@@ -128,7 +138,7 @@ describe("workflow editor baseline refresh", () => {
 
   it("keeps the edits on request and re-enables Save", async () => {
     fireEvent.change(nameField(), { target: { value: "Delivery v2" } });
-    await publish(workflow({ description: "Changed elsewhere", updated_at: "2026-01-02T00:00:00Z" }));
+    await publish(workflow({ description: "Changed elsewhere", updated_at: "2026-01-02T00:00:00Z", version: "v-2026-01-02" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Keep my edits" }));
 
@@ -142,5 +152,74 @@ describe("workflow editor baseline refresh", () => {
 
     expect(screen.getByDisplayValue("Delivery by admin")).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  // The server serializes workflow writes but a whole-workflow payload still
+  // replaces whatever another admin saved first, unless the save names the
+  // version it edited.
+  describe("saving against a version", () => {
+    afterEach(() => {
+      apiMock.updateIssueWorkflow.mockReset();
+      apiMock.listIssueWorkflows.mockReset();
+    });
+
+    it("sends the version of the workflow the editor started from", async () => {
+      const update = apiMock.updateIssueWorkflow.mockResolvedValue(workflow());
+      fireEvent.change(nameField(), { target: { value: "Delivery v2" } });
+
+      await act(async () => {
+        fireEvent.click(saveButton());
+        await settle();
+      });
+
+      expect(update).toHaveBeenCalledTimes(1);
+      expect(update.mock.calls[0]![0]).toBe("wf-1");
+      expect(update.mock.calls[0]![1]).toMatchObject({ expected_version: "v-2026-01-01" });
+    });
+
+    it("keeps the edits and offers the choice when the server says another admin saved first", async () => {
+      apiMock.updateIssueWorkflow.mockRejectedValue(
+        new ApiError("conflict", 409, "Conflict", { code: "workflow_changed_elsewhere" }),
+      );
+      apiMock.listIssueWorkflows.mockResolvedValue({
+        workflows: [workflow({ description: "Changed elsewhere", updated_at: "2026-01-02T00:00:00Z", version: "v-2026-01-02" })],
+        total: 1,
+      });
+      fireEvent.change(nameField(), { target: { value: "Delivery v2" } });
+
+      await act(async () => {
+        fireEvent.click(saveButton());
+        await settle();
+      });
+
+      await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+      expect(screen.getByDisplayValue("Delivery v2")).toBeTruthy();
+      expect(saveButton().disabled).toBe(true);
+    });
+
+    it("saves the kept edits against the latest version after the editor chooses to keep them", async () => {
+      const update = apiMock.updateIssueWorkflow
+        .mockRejectedValueOnce(new ApiError("conflict", 409, "Conflict", { code: "workflow_changed_elsewhere" }))
+        .mockResolvedValue(workflow());
+      apiMock.listIssueWorkflows.mockResolvedValue({
+        workflows: [workflow({ description: "Changed elsewhere", updated_at: "2026-01-02T00:00:00Z", version: "v-2026-01-02" })],
+        total: 1,
+      });
+      fireEvent.change(nameField(), { target: { value: "Delivery v2" } });
+      await act(async () => {
+        fireEvent.click(saveButton());
+        await settle();
+      });
+      await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+
+      fireEvent.click(screen.getByRole("button", { name: "Keep my edits" }));
+      await act(async () => {
+        fireEvent.click(saveButton());
+        await settle();
+      });
+
+      expect(update).toHaveBeenCalledTimes(2);
+      expect(update.mock.calls[1]![1]).toMatchObject({ expected_version: "v-2026-01-02" });
+    });
   });
 });
