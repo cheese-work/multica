@@ -291,6 +291,67 @@ describe("isolation: the fixture refuses before any write", () => {
   });
 });
 
+// Test selection, checked by listing only: no browser (an empty browser
+// directory), no database URL and an unreachable API. The streaming phases must
+// be selectable on their own at both viewports, without the issue-page capture,
+// and the default run must still list every phase.
+describe("selection: streaming phases list on their own, without services", () => {
+  const noBrowsers = fs.mkdtempSync(path.join(os.tmpdir(), "streaming-keys-no-browsers-"));
+  after(() => fs.rmSync(noBrowsers, { recursive: true, force: true }));
+
+  function listTests(extraArgs) {
+    return new Promise((resolve) => {
+      const child = spawn("pnpm", ["exec", "playwright", "test", SPEC, "--list", "--project=chromium", ...extraArgs], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          MULTICA_E2E_STREAMING_ISSUE_KEYS: "1",
+          DATABASE_URL: "",
+          NEXT_PUBLIC_API_URL: "http://127.0.0.1:9",
+          PLAYWRIGHT_BROWSERS_PATH: noBrowsers,
+        },
+      });
+      let output = "";
+      child.stdout.on("data", (chunk) => (output += chunk));
+      child.stderr.on("data", (chunk) => (output += chunk));
+      child.on("close", (code) => {
+        const titles = output.split("\n").filter((line) => line.includes(" › ")).map((line) => line.trim());
+        resolve({ code, output, titles });
+      });
+    });
+  }
+
+  test("@streaming selects only the boundary and settle phases, at both viewports", async () => {
+    const { code, output, titles } = await listTests(["--grep", "@streaming"]);
+    assert.equal(code, 0, output);
+    assert.doesNotMatch(output, /task-owned/, "listing must not run the ownership check");
+    assert.equal(titles.length, 4, output);
+    for (const phase of ["streaming boundary", "streaming settle"]) {
+      for (const viewport of ["desktop", "mobile"]) {
+        assert.ok(
+          titles.some((title) => title.includes(phase) && title.includes(`(${viewport})`)),
+          `${phase} (${viewport}) is not selected\n${output}`,
+        );
+      }
+    }
+    assert.ok(titles.every((title) => !/issue page|description/i.test(title)), output);
+  });
+
+  test("the default run still lists every phase at both viewports", async () => {
+    const { code, output, titles } = await listTests([]);
+    assert.equal(code, 0, output);
+    assert.equal(titles.length, 6, output);
+    for (const viewport of ["desktop", "mobile"]) {
+      for (const phase of ["streaming boundary", "streaming settle", "issue page"]) {
+        assert.ok(
+          titles.some((title) => title.includes(phase) && title.includes(`(${viewport})`)),
+          `${phase} (${viewport}) is missing from the default run\n${output}`,
+        );
+      }
+    }
+  });
+});
+
 // Leftover rows of one fixture run, found through the run's own workspace.
 async function leftovers(databaseUrl, runId) {
   const { default: pg } = await import("pg");
