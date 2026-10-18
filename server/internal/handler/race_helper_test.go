@@ -22,7 +22,10 @@ func TestRaceHelperIgnoresAnUnrelatedLockWaiter(t *testing.T) {
 	rowB := dbfx.Issue(t, "race helper held row", testutil.Cols{"status": "todo"})
 
 	// An unrelated waiter: blocked by a transaction the helper knows nothing of.
-	other, err := testPool.Begin(ctx)
+	// Both sides use their own connections, so the pool stays free for the helper.
+	monitor := dedicatedConn(t)
+	otherConn := dedicatedConn(t)
+	other, err := otherConn.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,14 +33,17 @@ func TestRaceHelperIgnoresAnUnrelatedLockWaiter(t *testing.T) {
 	if _, err := other.Exec(ctx, `UPDATE issue SET title = title WHERE id = $1`, util.MustParseUUID(rowA)); err != nil {
 		t.Fatal(err)
 	}
+	waiterConn := dedicatedConn(t)
 	waiterDone := make(chan struct{})
 	go func() {
 		defer close(waiterDone)
-		testPool.Exec(ctx, `UPDATE issue SET title = title WHERE id = $1`, util.MustParseUUID(rowA))
+		waiterConn.Exec(ctx, `UPDATE issue SET title = title WHERE id = $1`, util.MustParseUUID(rowA))
 	}()
 	for deadline := time.Now().Add(5 * time.Second); ; {
 		var waiting bool
-		dbfx.QueryRow(t, `SELECT count(*) > 0 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting)
+		if err := monitor.QueryRow(ctx, `SELECT count(*) > 0 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
 		if waiting {
 			break
 		}

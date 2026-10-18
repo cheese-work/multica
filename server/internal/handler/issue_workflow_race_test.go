@@ -39,6 +39,9 @@ func raceAgainst(t *testing.T, hold func(tx pgx.Tx), write func() *testutil.Resp
 func raceUntilBlocked(t *testing.T, hold func(tx pgx.Tx), write func(), whileBlocked ...func(tx pgx.Tx)) {
 	t.Helper()
 	ctx := context.Background()
+	// The poll uses its own connection: the test holds and blocks pool
+	// connections, and a pool with every connection taken would hang the poll.
+	monitor := dedicatedConn(t)
 	tx, err := testPool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -63,9 +66,11 @@ func raceUntilBlocked(t *testing.T, hold func(tx pgx.Tx), write func(), whileBlo
 		if time.Now().After(deadline) {
 			t.Fatal("the write neither finished nor blocked on the competing transaction")
 		}
-		dbfx.QueryRow(t, `SELECT EXISTS (
+		if err := monitor.QueryRow(ctx, `SELECT EXISTS (
 			SELECT 1 FROM pg_stat_activity
-			WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid)))`, holderPID).Scan(&blocked)
+			WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid)))`, holderPID).Scan(&blocked); err != nil {
+			t.Fatal(err)
+		}
 		if !blocked {
 			time.Sleep(10 * time.Millisecond)
 		}
@@ -81,6 +86,17 @@ func raceUntilBlocked(t *testing.T, hold func(tx pgx.Tx), write func(), whileBlo
 	case <-time.After(10 * time.Second):
 		t.Fatal("the write never finished after the competing writer committed")
 	}
+}
+
+// dedicatedConn opens a connection outside the test pool, closed with the test.
+func dedicatedConn(t *testing.T) *pgx.Conn {
+	t.Helper()
+	conn, err := pgx.ConnectConfig(context.Background(), testPool.Config().ConnConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close(context.Background()) })
+	return conn
 }
 
 // issueWriters are the two entry points that apply a workflow to an issue
