@@ -1603,6 +1603,8 @@
       "description_placeholder": "Add a description",
       "select_step": "Select a column to set who it hands issues to.",
       "unsaved": "Unsaved changes",
+      "load_error": "Couldn’t load this workflow.",
+      "retry": "Retry",
       "changed_elsewhere": "This workflow was changed by someone else while you were editing. Your edits are kept.",
       "load_latest": "Load latest",
       "keep_edits": "Keep my edits",

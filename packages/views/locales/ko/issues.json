@@ -1546,6 +1546,8 @@
       "description_placeholder": "설명 추가",
       "select_step": "열을 선택해 이슈를 누구에게 넘길지 설정하세요.",
       "unsaved": "저장하지 않은 변경 사항",
+      "load_error": "이 워크플로를 불러오지 못했습니다.",
+      "retry": "다시 시도",
       "changed_elsewhere": "편집하는 동안 다른 사람이 이 워크플로를 변경했습니다. 편집한 내용은 유지됩니다.",
       "load_latest": "최신 버전 불러오기",
       "keep_edits": "내 편집 유지",

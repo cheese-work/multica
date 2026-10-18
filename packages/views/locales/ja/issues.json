@@ -1546,6 +1546,8 @@
       "description_placeholder": "説明を追加",
       "select_step": "列を選択して、課題の引き継ぎ先を設定します。",
       "unsaved": "未保存の変更があります",
+      "load_error": "このワークフローを読み込めませんでした。",
+      "retry": "再試行",
       "changed_elsewhere": "編集中に他のユーザーがこのワークフローを変更しました。編集内容は保持されています。",
       "load_latest": "最新を読み込む",
       "keep_edits": "自分の編集を維持",

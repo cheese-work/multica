@@ -1603,6 +1603,8 @@
       "description_placeholder": "Ajouter une description",
       "select_step": "Sélectionnez une colonne pour choisir à qui elle transmet les tickets.",
       "unsaved": "Modifications non enregistrées",
+      "load_error": "Impossible de charger ce workflow.",
+      "retry": "Réessayer",
       "changed_elsewhere": "Ce workflow a été modifié par quelqu’un d’autre pendant votre édition. Vos modifications sont conservées.",
       "load_latest": "Charger la dernière version",
       "keep_edits": "Garder mes modifications",

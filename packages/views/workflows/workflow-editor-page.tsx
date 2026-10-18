@@ -182,7 +182,7 @@ export function WorkflowEditorPage({
   const wsId = useWorkspaceId();
   const catalog = useIssueStatuses(wsId);
   const labelOf = useStatusLabel(wsId);
-  const { workflows, isLoaded } = useIssueWorkflows(wsId);
+  const { workflows, isLoaded, isError: loadFailed, retry: retryLoad } = useIssueWorkflows(wsId);
   const { data: projects = [] } = useQuery(projectListOptions(wsId));
   const createWorkflow = useCreateIssueWorkflow();
   const updateWorkflow = useUpdateIssueWorkflow();
@@ -221,9 +221,11 @@ export function WorkflowEditorPage({
       middle: NEW_WORKFLOW_MIDDLE.map((key) => ({ id: key, status_key: key })),
       handoffs: {},
     };
-    // Re-seed only when the target changes or the saved row is refreshed.
+    // Re-seed when the target changes or the saved row is refreshed. The version
+    // is in the key because updated_at has one-second resolution: two saves in a
+    // second share it and differ only in version.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [saved?.updated_at, workflowId, seed?.id, template, catalog.activeStatuses.length]);
+  }, [saved?.version, saved?.updated_at, workflowId, seed?.id, template, catalog.activeStatuses.length]);
 
   const [draft, setDraft] = useState<Draft>(baseline);
   const [mappingPlan, setMappingPlan] = useState<IssueWorkflowMappingPlan | null>(null);
@@ -239,6 +241,15 @@ export function WorkflowEditorPage({
   const draftRef = useRef(draft);
   draftRef.current = draft;
   const targetKey = `${workflowId ?? ""}|${seed?.id ?? ""}|${template ?? ""}`;
+  // The version of the saved workflow that the baseline, and so the draft's
+  // unedited parts, came from. A save names this one and no other, so the token
+  // and the steps it travels with always belong to the same accepted revision.
+  const acceptedVersion = useRef<string | undefined>(saved?.version || undefined);
+  // Set when this editor's own save succeeds: the response is the new accepted
+  // revision, and the next baseline replaces the draft whatever the server
+  // normalized.
+  const adoptNextBaseline = useRef(false);
+  const latestVersion = saved?.version || undefined;
   const synced = useRef({ targetKey, baseline });
   useEffect(() => {
     const previous = synced.current;
@@ -246,21 +257,32 @@ export function WorkflowEditorPage({
     if (previous.targetKey !== targetKey) {
       setDraft(baseline);
       setChangedElsewhere(false);
+      acceptedVersion.current = latestVersion;
       return;
     }
     if (previous.baseline === baseline) return;
     const current = draftRef.current;
-    if (sameDraft(current, previous.baseline) || sameDraft(current, baseline)) {
+    if (adoptNextBaseline.current || sameDraft(current, previous.baseline) || sameDraft(current, baseline)) {
+      adoptNextBaseline.current = false;
       setDraft(baseline);
       setChangedElsewhere(false);
+      acceptedVersion.current = latestVersion;
       return;
     }
-    if (workflowId && !sameDraft(previous.baseline, baseline)) setChangedElsewhere(true);
-  }, [baseline, targetKey, workflowId]);
+    if (workflowId && !sameDraft(previous.baseline, baseline)) {
+      setChangedElsewhere(true);
+      return;
+    }
+    // The refresh changed nothing the editor shows, so the edits sit on the same
+    // content as the new version: follow its token.
+    acceptedVersion.current = latestVersion;
+  }, [baseline, targetKey, workflowId, latestVersion]);
 
   const dirty = !workflowId || !sameDraft(draft, baseline);
   const pending = createWorkflow.isPending || updateWorkflow.isPending;
-  const canSave = canEdit && dirty && !changedElsewhere && draft.name.trim().length > 0 && !pending;
+  // An existing workflow is edited and saved only from its loaded row.
+  const rowReady = !workflowId || !!saved;
+  const canSave = canEdit && rowReady && dirty && !changedElsewhere && draft.name.trim().length > 0 && !pending;
   const usedBy = saved
     ? projects.filter((p) => (saved.is_default ? !p.workflow_id : saved.project_ids.includes(p.id)))
     : [];
@@ -297,6 +319,8 @@ export function WorkflowEditorPage({
   };
 
   const save = async (mapping?: Record<string, string>) => {
+    // Never write an existing workflow from defaults the row has not replaced.
+    if (workflowId && !saved) return;
     const listed = new Set(targetKeys);
     const steps: IssueWorkflowStepInput[] = columns.map((c) => {
       const raw = draft.handoffs[c.id];
@@ -319,10 +343,11 @@ export function WorkflowEditorPage({
       ...(mapping ? { status_mapping: mapping } : {}),
       // Save against the version the editor started from, so a save that
       // arrives after another admin's cannot replace it.
-      ...(workflowId && saved?.version ? { expected_version: saved.version } : {}),
+      ...(workflowId && acceptedVersion.current ? { expected_version: acceptedVersion.current } : {}),
     };
     try {
       if (workflowId) {
+        adoptNextBaseline.current = true;
         await updateWorkflow.mutateAsync({ id: workflowId, ...body });
         toast.success(t(($) => $.workflows.editor.saved));
       } else {
@@ -337,6 +362,7 @@ export function WorkflowEditorPage({
         setMappingPlan(plan);
         return;
       }
+      adoptNextBaseline.current = false;
       if (workflowId && isChangedElsewhere(err)) {
         // The mutation refreshes the workflow list. The edits stay, and the
         // editor chooses between them and the other admin's version.
@@ -358,6 +384,24 @@ export function WorkflowEditorPage({
       toast.error(clientErrorMessage(err) ?? t(($) => $.workflows.settings.delete_error));
     }
   };
+
+  if (workflowId && !saved && !isLoaded) {
+    return (
+      <div className="space-y-4" aria-busy={!loadFailed}>
+        <Breadcrumb onBack={onBack} current="" />
+        {loadFailed ? (
+          <div role="alert" className="flex flex-wrap items-center gap-3 text-body text-muted-foreground">
+            <span>{t(($) => $.workflows.editor.load_error)}</span>
+            <Button variant="outline" size="sm" onClick={retryLoad}>
+              {t(($) => $.workflows.editor.retry)}
+            </Button>
+          </div>
+        ) : (
+          <Spinner className="size-4" />
+        )}
+      </div>
+    );
+  }
 
   if (workflowId && isLoaded && !saved) {
     return (
@@ -514,12 +558,20 @@ export function WorkflowEditorPage({
               size="sm"
               onClick={() => {
                 setDraft(baseline);
+                acceptedVersion.current = latestVersion;
                 setChangedElsewhere(false);
               }}
             >
               {t(($) => $.workflows.editor.load_latest)}
             </Button>
-            <Button size="sm" onClick={() => setChangedElsewhere(false)}>
+            <Button
+              size="sm"
+              onClick={() => {
+                // Explicit choice: these edits replace the version now showing.
+                acceptedVersion.current = latestVersion;
+                setChangedElsewhere(false);
+              }}
+            >
               {t(($) => $.workflows.editor.keep_edits)}
             </Button>
           </div>

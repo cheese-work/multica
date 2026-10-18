@@ -1546,6 +1546,8 @@
       "description_placeholder": "添加描述",
       "select_step": "选择一列，设置任务进入时交给谁。",
       "unsaved": "有未保存的修改",
+      "load_error": "无法加载此工作流。",
+      "retry": "重试",
       "changed_elsewhere": "编辑期间其他人修改了此工作流。你的修改已保留。",
       "load_latest": "加载最新版本",
       "keep_edits": "保留我的修改",

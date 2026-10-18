@@ -1,15 +1,30 @@
 import { useQuery } from "@tanstack/react-query";
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import { projectListOptions } from "../projects/queries";
 import type { IssueWorkflow, Project } from "../types";
 import { issueWorkflowListOptions, resolveProjectWorkflow } from "./queries";
 
 const EMPTY: IssueWorkflow[] = [];
 
-/** The workspace's workflows, in name order. Empty until loaded. */
-export function useIssueWorkflows(wsId: string): { workflows: IssueWorkflow[]; isLoaded: boolean } {
-  const { data } = useQuery({ ...issueWorkflowListOptions(wsId), enabled: Boolean(wsId) });
-  return useMemo(() => ({ workflows: data ?? EMPTY, isLoaded: data !== undefined }), [data]);
+/**
+ * The workspace's workflows, in name order. Empty until loaded. `isError` is
+ * true only while there is no data to show, so a failed background refetch
+ * never replaces a list already on screen. `retry` refetches.
+ */
+export function useIssueWorkflows(wsId: string): {
+  workflows: IssueWorkflow[];
+  isLoaded: boolean;
+  isError: boolean;
+  retry: () => void;
+} {
+  const { data, isError, refetch } = useQuery({ ...issueWorkflowListOptions(wsId), enabled: Boolean(wsId) });
+  const retry = useCallback(() => {
+    void refetch();
+  }, [refetch]);
+  return useMemo(
+    () => ({ workflows: data ?? EMPTY, isLoaded: data !== undefined, isError: isError && data === undefined, retry }),
+    [data, isError, retry],
+  );
 }
 
 /**
