@@ -8,7 +8,7 @@
  * a column the user never chose.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ViewStoreProvider } from "@multica/core/issues/stores/view-store-context";
 import { getIssueSurfaceViewStore } from "@multica/core/issues/stores/surface-view-store";
@@ -18,6 +18,17 @@ import { renderWithI18n } from "../../test/i18n";
 import { IssueContextMenuProvider } from "../actions/issue-actions-context-menu";
 import { statusGroupId } from "../utils/drag-utils";
 import { BoardView } from "./board-view";
+
+const PREVIEW = {
+  previous_assignee_type: null,
+  previous_assignee_id: null,
+  handler_type: "member",
+  handler_id: "member-1",
+};
+vi.mock("../../workflows/handoff-confirm-dialog", () => ({
+  WorkflowHandoffConfirmDialog: ({ issue, onConfirm }: { issue: unknown; onConfirm: (o: unknown) => void }) =>
+    issue ? <button onClick={() => onConfirm({ stopPreviousRuns: true, preview: PREVIEW })}>confirm handoff</button> : null,
+}));
 
 const mockToastInfo = vi.hoisted(() => vi.fn());
 vi.mock("sonner", () => ({ toast: { info: mockToastInfo, error: vi.fn() } }));
@@ -40,11 +51,11 @@ const WORKFLOW: IssueWorkflow = {
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
 } as IssueWorkflow;
-const workflowState = vi.hoisted(() => ({ workflows: [] as unknown[] }));
+const workflowState = vi.hoisted(() => ({ workflows: [] as unknown[], loaded: true }));
 
 vi.mock("@multica/core/issue-workflows", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@multica/core/issue-workflows")>()),
-  useIssueWorkflows: () => ({ workflows: workflowState.workflows, isLoaded: true }),
+  useIssueWorkflows: () => ({ workflows: workflowState.workflows, isLoaded: workflowState.loaded, isError: false, retry: () => {} }),
 }));
 
 vi.mock("@multica/core/properties", async (importOriginal) => ({
@@ -200,6 +211,7 @@ describe("board drop over a column the workflow omits", () => {
     onMoveIssue.mockClear();
     mockToastInfo.mockClear();
     workflowState.workflows = [WORKFLOW];
+    workflowState.loaded = true;
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
     queryClient.setQueryData(projectListOptions("ws-1").queryKey, { projects: [makeProject()], total: 1 });
   });
@@ -307,6 +319,54 @@ describe("board drop over a column the workflow omits", () => {
 
       expect(onMoveIssue).toHaveBeenCalledTimes(1);
       expect(onMoveIssue.mock.calls[0]![1]).toMatchObject({ status: "in_progress" });
+    });
+  });
+
+  // A board that has not loaded the workflows cannot tell a handoff step from a
+  // plain one. The server applies the workflow's handoff either way, so a drop
+  // that is not confirmed here would reassign the issue and start a run unseen.
+  describe("before the workflows have loaded", () => {
+    it("does not move a project card across statuses", () => {
+      workflowState.loaded = false;
+      workflowState.workflows = [];
+      mount();
+      drag(["in_progress"]);
+
+      expect(onMoveIssue).not.toHaveBeenCalled();
+    });
+
+    it("still moves a card that belongs to no project", () => {
+      workflowState.loaded = false;
+      workflowState.workflows = [];
+      mount({ ...ISSUE, project_id: null } as unknown as Issue);
+      drag(["in_progress"]);
+
+      expect(onMoveIssue).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // The confirmation names what the person previewed. The move must carry it, so
+  // the server can refuse a confirmation the issue or workflow has outgrown.
+  it("sends the previewed binding with a confirmed handoff move", () => {
+    workflowState.workflows = [
+      {
+        ...WORKFLOW,
+        steps: WORKFLOW.steps.map((step) =>
+          step.status_key === "in_progress" ? { ...step, handler: { type: "creator" } } : step,
+        ),
+      },
+    ];
+    mount();
+    drag(["in_progress"]);
+    expect(onMoveIssue).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByText("confirm handoff"));
+
+    expect(onMoveIssue).toHaveBeenCalledTimes(1);
+    expect(onMoveIssue.mock.calls[0]![1]).toMatchObject({
+      status: "in_progress",
+      stop_previous_assignee_runs: true,
+      handoff_preview: PREVIEW,
     });
   });
 });

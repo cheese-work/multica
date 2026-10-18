@@ -24,10 +24,22 @@ vi.mock("@multica/core/issue-statuses/hooks", () => ({
 // Project workflows (MUL-7420): the picker resolves the issue's project and its
 // workflow through one hook, fed directly here like the catalog.
 let projectWorkflow: IssueWorkflow | null = null;
+let projectResolved = true;
 
 vi.mock("@multica/core/issue-workflows", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@multica/core/issue-workflows")>()),
-  useProjectWithWorkflow: () => ({ project: null, workflow: projectWorkflow }),
+  useProjectWithWorkflow: () => ({ project: null, workflow: projectWorkflow, resolved: projectResolved }),
+}));
+
+const HANDOFF_PREVIEW = {
+  previous_assignee_type: "agent",
+  previous_assignee_id: "forge",
+  handler_type: "agent",
+  handler_id: "agent-1",
+};
+vi.mock("../../../workflows/handoff-confirm-dialog", () => ({
+  WorkflowHandoffConfirmDialog: ({ issue, onConfirm }: { issue: unknown; onConfirm: (o: unknown) => void }) =>
+    issue ? <button onClick={() => onConfirm({ stopPreviousRuns: true, preview: HANDOFF_PREVIEW })}>confirm handoff</button> : null,
 }));
 
 vi.mock("../../../common/actor-avatar", () => ({
@@ -89,6 +101,7 @@ afterEach(() => {
   cleanup();
   catalogEntries = undefined;
   projectWorkflow = null;
+  projectResolved = true;
 });
 
 describe("StatusPicker trigger color", () => {
@@ -227,3 +240,73 @@ describe("StatusPicker in a project that uses a workflow", () => {
     expect(screen.queryByText(/Hands off to/)).toBeNull();
   });
 });
+
+// With a project, "no workflow" and "the workflow has not loaded" both read as
+// a null workflow. A click while it is unresolved must not write the status:
+// the server would apply the workflow's handoff without the confirmation.
+describe("StatusPicker while the project's workflow is unresolved", () => {
+  const issue = { id: "issue-1", identifier: "TES-1" };
+
+  it("does not write a status for an existing issue", () => {
+    projectResolved = false;
+    const onUpdate = vi.fn();
+    renderWithI18n(
+      <StatusPicker status="todo" projectId="project-1" issue={issue} onUpdate={onUpdate} open onOpenChange={() => {}} />,
+    );
+
+    fireEvent.click(optionRow("In Review"));
+
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+
+  it("still writes once the workflow has resolved to none", () => {
+    const onUpdate = vi.fn();
+    renderWithI18n(
+      <StatusPicker status="todo" projectId="project-1" issue={issue} onUpdate={onUpdate} open onOpenChange={() => {}} />,
+    );
+
+    fireEvent.click(optionRow("In Review"));
+
+    expect(onUpdate).toHaveBeenCalledWith({ status: "in_review" });
+  });
+
+  it("is unaffected on surfaces that edit no single issue", () => {
+    projectResolved = false;
+    const onUpdate = vi.fn();
+    renderWithI18n(
+      <StatusPicker status="todo" projectId="project-1" onUpdate={onUpdate} open onOpenChange={() => {}} />,
+    );
+
+    fireEvent.click(optionRow("In Review"));
+
+    expect(onUpdate).toHaveBeenCalledWith({ status: "in_review" });
+  });
+});
+
+describe("StatusPicker confirmed handoff", () => {
+  it("sends the previewed binding with the status change", () => {
+    catalogEntries = [IN_REVIEW];
+    projectWorkflow = {
+      id: "wf", workspace_id: "workspace-1", name: "Delivery", description: "", is_default: false, project_ids: [],
+      created_at: "", updated_at: "",
+      steps: [
+        { status_key: "todo", handler: { type: "none" }, instructions: "" },
+        { status_key: "in_review", handler: { type: "agent", id: "agent-1" }, instructions: "" },
+      ],
+    } as IssueWorkflow;
+    const onUpdate = vi.fn();
+    renderWithI18n(
+      <StatusPicker status="todo" projectId="project-1" issue={{ id: "issue-1", identifier: "TES-1" }} onUpdate={onUpdate} open onOpenChange={() => {}} />,
+    );
+
+    fireEvent.click(optionRow("In Review"));
+    fireEvent.click(screen.getByText("confirm handoff"));
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      status: "in_review",
+      stop_previous_assignee_runs: true,
+      handoff_preview: HANDOFF_PREVIEW,
+    });
+  });
+});
+

@@ -71,8 +71,9 @@ vi.mock("@multica/core/pins", () => ({
   useDeletePin: () => ({ mutate: vi.fn() }),
 }));
 
+const { updateMutate } = vi.hoisted(() => ({ updateMutate: vi.fn() }));
 vi.mock("@multica/core/issues/mutations", () => ({
-  useUpdateIssue: () => ({ mutate: vi.fn() }),
+  useUpdateIssue: () => ({ mutate: updateMutate }),
 }));
 
 vi.mock("@multica/core/paths", async () => {
@@ -191,6 +192,7 @@ beforeEach(() => {
   apiMocks.listIssueWorkflows.mockResolvedValue({ workflows: [] });
   apiMocks.listProjects.mockReset();
   apiMocks.listProjects.mockResolvedValue({ projects: [] });
+  updateMutate.mockReset();
 });
 
 describe("IssueActionsDropdown", () => {
@@ -489,3 +491,52 @@ describe("Status in a workflow project (MUL-7420)", () => {
     });
   });
 });
+
+// An issue in a project: the status menu cannot tell "no workflow" from "the
+// workflow list has not loaded". Reading the second as the first lets a click
+// write the status directly, and the server then applies the workflow's
+// handoff (reassigns the issue, starts a run) with no confirmation shown.
+describe("Status while the project's workflow is unresolved", () => {
+  const projectIssue = { ...mockIssue, project_id: "proj-1" } as Issue;
+  const open = async () => {
+    render(wrap(<IssueActionsDropdown issue={projectIssue} trigger={<button data-testid="trigger">Menu</button>} />));
+    fireEvent.click(screen.getByTestId("trigger"));
+    fireEvent.click(await screen.findByText("Status"));
+    return screen.findByText("In Progress");
+  };
+
+  beforeEach(() => {
+    apiMocks.listProjects.mockResolvedValue({
+      projects: [{ id: "proj-1", title: "App", workflow_id: "wf-1", lead_type: null, lead_id: null }],
+    });
+  });
+
+  it("does not write a status while the workflow list is still loading", async () => {
+    apiMocks.listIssueWorkflows.mockReturnValue(new Promise(() => {}));
+    fireEvent.click(await open());
+
+    expect(updateMutate).not.toHaveBeenCalled();
+    expect(mockOpenModal).not.toHaveBeenCalled();
+  });
+
+  it("does not write a status after the workflow list failed to load", async () => {
+    apiMocks.listIssueWorkflows.mockRejectedValue(new Error("network down"));
+    const item = await open();
+    await waitFor(() => expect(apiMocks.listIssueWorkflows).toHaveBeenCalled());
+    fireEvent.click(item);
+
+    expect(updateMutate).not.toHaveBeenCalled();
+    expect(mockOpenModal).not.toHaveBeenCalled();
+  });
+
+  it("writes a status directly once the workflows have loaded and the project has none that hands off", async () => {
+    apiMocks.listIssueWorkflows.mockResolvedValue({ workflows: [] });
+    const item = await open();
+    await waitFor(() => expect(apiMocks.listIssueWorkflows).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    fireEvent.click(item);
+
+    await waitFor(() => expect(updateMutate).toHaveBeenCalledTimes(1));
+  });
+});
+

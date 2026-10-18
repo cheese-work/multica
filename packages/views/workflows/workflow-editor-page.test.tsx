@@ -8,7 +8,7 @@
  * the editor chooses between the two versions.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ApiError } from "@multica/core/api";
 import { issueStatusKeys } from "@multica/core/issue-statuses/queries";
@@ -569,6 +569,97 @@ describe("workflow editor draft preservation during a save", () => {
     expect(screen.getByDisplayValue("Delivery v2")).toBeTruthy();
     expect(saveButton().disabled).toBe(true);
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+// A save that needs a status mapping leaves the mapping dialog open on the
+// whole-workflow draft. Another admin then changes the workflow, and the editor
+// holds Save behind its conflict choice. The still-open dialog is another way
+// to save, and a later unrelated refresh must not slide the accepted version
+// forward to the other admin's token.
+describe("workflow editor conflict with the mapping dialog open", () => {
+  let queryClient: QueryClient;
+  const statuses = ["backlog", "todo", "in_progress", "blocked", "done", "cancelled"].map(statusEntry);
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const publish = (next: IssueWorkflow) =>
+    act(async () => {
+      queryClient.setQueryData(issueWorkflowKeys.list("ws-1"), { workflows: [next], total: 1 });
+      await settle();
+    });
+
+  beforeEach(() => {
+    apiMock.updateIssueWorkflow.mockReset();
+    apiMock.listIssueWorkflows.mockReset();
+    apiMock.listIssueWorkflows.mockImplementation(async () => queryClient.getQueryData(issueWorkflowKeys.list("ws-1")));
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    queryClient.setQueryData(issueStatusKeys.list("ws-1"), { statuses });
+    queryClient.setQueryData(projectListOptions("ws-1").queryKey, { projects: [], total: 0 });
+    queryClient.setQueryData(issueWorkflowKeys.list("ws-1"), { workflows: [workflow()], total: 1 });
+    renderWithI18n(
+      <QueryClientProvider client={queryClient}>
+        <WorkflowEditorPage workflowId="wf-1" seed={null} canEdit onBack={() => {}} onOpen={() => {}} />
+      </QueryClientProvider>,
+    );
+  });
+  afterEach(cleanup);
+
+  async function openMappingDialog() {
+    apiMock.updateIssueWorkflow.mockRejectedValueOnce(
+      new ApiError("mapping", 409, "Conflict", {
+        code: "workflow_status_mapping_required",
+        plan: {
+          required: [{ status_key: "in_progress", issue_count: 2, suggested_status_key: "todo" }],
+          unchanged: [],
+          total_issues: 2,
+          affected_issues: 2,
+        },
+      }),
+    );
+    fireEvent.change(screen.getByDisplayValue(/Delivery/), { target: { value: "Delivery v2" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      await settle();
+    });
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
+  }
+
+  it("does not save the old draft from the dialog after another admin's change and a catalog refresh", async () => {
+    await openMappingDialog();
+    expect(apiMock.updateIssueWorkflow).toHaveBeenCalledTimes(1);
+
+    await publish(workflow({ description: "Changed by the other admin", version: "v-2026-01-01-b", updated_at: "2026-01-01T00:00:09Z" }));
+    await act(async () => {
+      queryClient.setQueryData(issueStatusKeys.list("ws-1"), { statuses: [...statuses, statusEntry("in_review")] });
+      await settle();
+    });
+
+    apiMock.updateIssueWorkflow.mockResolvedValue(workflow());
+    await act(async () => {
+      fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /Save/ }));
+      await settle();
+    });
+
+    expect(apiMock.updateIssueWorkflow).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not move the accepted version to the other admin's token on a refresh while the conflict is open", async () => {
+    await openMappingDialog();
+    await publish(workflow({ description: "Changed by the other admin", version: "v-2026-01-01-b", updated_at: "2026-01-01T00:00:09Z" }));
+    await act(async () => {
+      queryClient.setQueryData(issueStatusKeys.list("ws-1"), { statuses: [...statuses, statusEntry("in_review")] });
+      await settle();
+    });
+
+    // Choosing to keep the edits is the only way the token moves.
+    apiMock.updateIssueWorkflow.mockResolvedValue(workflow());
+    fireEvent.click(screen.getByText("Keep my edits"));
+    await act(async () => {
+      fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /Save/ }));
+      await settle();
+    });
+
+    expect(apiMock.updateIssueWorkflow).toHaveBeenCalledTimes(2);
+    expect(apiMock.updateIssueWorkflow.mock.calls[1]![1]).toMatchObject({ expected_version: "v-2026-01-01-b" });
   });
 });
 
