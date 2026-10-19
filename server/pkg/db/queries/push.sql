@@ -52,6 +52,10 @@ RETURNING d.id, d.attempts, now()::timestamptz AS claimed_at;
 -- registering session is alive, the user is still a member and the push switch
 -- is on. A DM must still be readable; the in_app switch is not part of that, so
 -- the type passed to inbox_item_visible is deliberately not dm_reply.
+-- The device row stays locked (FOR NO KEY UPDATE) until the caller's transaction
+-- ends, and the caller sends inside it: re-registering the endpoint for another
+-- account, logging out and pruning all wait for the send, so no push starts
+-- after the device changes hands and no stale outcome lands on the new owner.
 SELECT s.id AS subscription_id, s.endpoint, s.p256dh, s.auth,
        i.id AS record_id, i.type, i.title, i.details, i.chat_session_id,
        w.slug AS workspace_slug,
@@ -74,7 +78,8 @@ WHERE d.id = @id
          AND p.source = CASE WHEN i.chat_session_id IS NULL THEN 'inbox' ELSE 'dm' END
   ), false)
   AND (i.chat_session_id IS NULL
-       OR inbox_item_visible('push', i.chat_session_id, i.workspace_id, i.recipient_id));
+       OR inbox_item_visible('push', i.chat_session_id, i.workspace_id, i.recipient_id))
+FOR NO KEY UPDATE OF s;
 
 -- name: FinishPushDelivery :exec
 -- A reply that re-armed the row while the push was in flight (next_attempt_at

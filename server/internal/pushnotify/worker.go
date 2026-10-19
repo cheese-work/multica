@@ -20,11 +20,12 @@ const (
 	MaxAttempts   = 6
 	SentRetention = time.Hour
 
-	workerTick    = 2 * time.Second
-	batchSize     = 32
-	parallelSends = 8
+	workerTick = 2 * time.Second
+	batchSize  = 32
+	// Each in-flight send holds a transaction, so this is also its share of the pool.
+	parallelSends = 4
 	// Long enough for a full batch of slow sends (batchSize/parallelSends x sendTimeout).
-	leaseDuration = 2 * time.Minute
+	leaseDuration = 3 * time.Minute
 	sendTimeout   = 15 * time.Second
 	retryBase     = 30 * time.Second
 	retryCap      = time.Hour
@@ -35,12 +36,18 @@ const (
 // notification, so a record read in the meantime must never be sent.
 type Worker struct {
 	q      *db.Queries
+	tx     TxStarter
 	sender Sender
 	done   chan struct{}
 }
 
-func NewWorker(q *db.Queries, sender Sender) *Worker {
-	return &Worker{q: q, sender: sender, done: make(chan struct{})}
+// TxStarter is the pool; *pgxpool.Pool satisfies it.
+type TxStarter interface {
+	Begin(context.Context) (pgx.Tx, error)
+}
+
+func NewWorker(q *db.Queries, tx TxStarter, sender Sender) *Worker {
+	return &Worker{q: q, tx: tx, sender: sender, done: make(chan struct{})}
 }
 
 func (w *Worker) Run(ctx context.Context) {
@@ -92,46 +99,65 @@ func (w *Worker) ProcessOnce(ctx context.Context) error {
 	return nil
 }
 
+// deliver checks, sends and records one claimed row in a single transaction.
+// The check locks the device row (see GetPushDeliveryContext) and the send
+// happens before the commit, so a device cannot change hands between the
+// ownership check and the send, and the outcome below is only ever written for
+// the owner the check saw. ponytail: a registration or logout for a device with
+// a send in flight waits for that send, at most sendTimeout; per-device locks
+// with a shorter wait if that stall ever matters.
 func (w *Worker) deliver(ctx context.Context, claim db.ClaimPushDeliveriesRow) {
-	row, err := w.q.GetPushDeliveryContext(ctx, claim.ID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		w.log(w.q.DropPushDelivery(ctx, db.DropPushDeliveryParams{ID: claim.ID, ClaimedAt: claim.ClaimedAt}))
-		return
-	}
+	tx, err := w.tx.Begin(ctx)
 	if err != nil {
-		// Leave the lease to run out; the row is claimed again afterwards.
-		slog.Warn("push delivery context failed", "delivery_id", util.UUIDToString(claim.ID), "error", err)
+		slog.Warn("push delivery transaction failed", "delivery_id", util.UUIDToString(claim.ID), "error", err)
 		return
 	}
-	body, err := json.Marshal(buildPayload(row))
-	if err != nil {
-		w.log(w.q.DropPushDelivery(ctx, db.DropPushDeliveryParams{ID: claim.ID, ClaimedAt: claim.ClaimedAt}))
+	defer tx.Rollback(ctx)
+	if err := w.deliverLocked(ctx, w.q.WithTx(tx), claim); err != nil {
+		// Rolled back: the row keeps its claim and is retried when the lease runs out.
+		slog.Warn("push delivery failed", "delivery_id", util.UUIDToString(claim.ID), "error", err)
 		return
 	}
-	sendCtx, cancel := context.WithTimeout(ctx, sendTimeout)
-	status, err := w.sender.Send(sendCtx, Subscription{Endpoint: row.Endpoint, P256dh: row.P256dh, Auth: row.Auth}, body)
-	cancel()
-	if ctx.Err() != nil {
-		return // shutting down; the lease expires and the row is retried
-	}
-	switch {
-	case err == nil && status >= 200 && status < 300:
-		w.log(w.q.FinishPushDelivery(ctx, db.FinishPushDeliveryParams{ID: claim.ID, ClaimedAt: claim.ClaimedAt}))
-		w.log(w.q.TouchPushSubscription(ctx, row.SubscriptionID))
-	case err == nil && (status == 404 || status == 410):
-		w.log(w.q.DeletePushSubscription(ctx, row.SubscriptionID))
-	case claim.Attempts >= MaxAttempts:
-		slog.Warn("push delivery given up", "delivery_id", util.UUIDToString(claim.ID), "status", status, "error", err)
-		w.log(w.q.DropPushDelivery(ctx, db.DropPushDeliveryParams{ID: claim.ID, ClaimedAt: claim.ClaimedAt}))
-	default:
-		slog.Info("push delivery will retry", "delivery_id", util.UUIDToString(claim.ID), "attempt", claim.Attempts, "status", status, "error", err)
-		w.log(w.q.RetryPushDelivery(ctx, db.RetryPushDeliveryParams{ID: claim.ID, ClaimedAt: claim.ClaimedAt, BackoffSecs: backoff(claim.Attempts).Seconds()}))
+	if err := tx.Commit(ctx); err != nil {
+		slog.Warn("push delivery commit failed", "delivery_id", util.UUIDToString(claim.ID), "error", err)
 	}
 }
 
-func (w *Worker) log(err error) {
+func (w *Worker) deliverLocked(ctx context.Context, q *db.Queries, claim db.ClaimPushDeliveriesRow) error {
+	drop := func() error {
+		return q.DropPushDelivery(ctx, db.DropPushDeliveryParams{ID: claim.ID, ClaimedAt: claim.ClaimedAt})
+	}
+	row, err := q.GetPushDeliveryContext(ctx, claim.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return drop()
+	}
 	if err != nil {
-		slog.Warn("push worker write failed", "error", err)
+		return err
+	}
+	body, err := json.Marshal(buildPayload(row))
+	if err != nil {
+		return drop()
+	}
+	sendCtx, cancel := context.WithTimeout(ctx, sendTimeout)
+	status, sendErr := w.sender.Send(sendCtx, Subscription{Endpoint: row.Endpoint, P256dh: row.P256dh, Auth: row.Auth}, body)
+	cancel()
+	if ctx.Err() != nil {
+		return ctx.Err() // shutting down; the lease expires and the row is retried
+	}
+	switch {
+	case sendErr == nil && status >= 200 && status < 300:
+		if err := q.FinishPushDelivery(ctx, db.FinishPushDeliveryParams{ID: claim.ID, ClaimedAt: claim.ClaimedAt}); err != nil {
+			return err
+		}
+		return q.TouchPushSubscription(ctx, row.SubscriptionID)
+	case sendErr == nil && (status == 404 || status == 410):
+		return q.DeletePushSubscription(ctx, row.SubscriptionID)
+	case claim.Attempts >= MaxAttempts:
+		slog.Warn("push delivery given up", "delivery_id", util.UUIDToString(claim.ID), "status", status, "error", sendErr)
+		return drop()
+	default:
+		slog.Info("push delivery will retry", "delivery_id", util.UUIDToString(claim.ID), "attempt", claim.Attempts, "status", status, "error", sendErr)
+		return q.RetryPushDelivery(ctx, db.RetryPushDeliveryParams{ID: claim.ID, ClaimedAt: claim.ClaimedAt, BackoffSecs: backoff(claim.Attempts).Seconds()})
 	}
 }
 

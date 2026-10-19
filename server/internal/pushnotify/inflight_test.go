@@ -54,7 +54,7 @@ func inFlightTransfer(t *testing.T, w *world, gate *gateSender) (newOwner string
 	w.due()
 	newOwner = w.fx.User(t, "Push New Owner", fmt.Sprintf("push-new-owner-%d@multica.ai", time.Now().UnixNano()))
 
-	worker := pushnotify.NewWorker(w.q, gate)
+	worker := pushnotify.NewWorker(w.q, testPool, gate)
 	pass := make(chan error, 1)
 	go func() { pass <- worker.ProcessOnce(context.Background()) }()
 	select {

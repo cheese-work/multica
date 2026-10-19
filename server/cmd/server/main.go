@@ -775,7 +775,7 @@ func main() {
 	if h.DecisionWorker != nil {
 		go h.DecisionWorker.Run(sweepCtx)
 	}
-	pushWorker := startPushWorker(sweepCtx, queries)
+	pushWorker := startPushWorker(sweepCtx, pool, queries)
 	if h.SeatCapacityWorker != nil {
 		go h.SeatCapacityWorker.Run(sweepCtx)
 	}

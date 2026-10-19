@@ -102,7 +102,7 @@ func newWorld(t *testing.T) *world {
 	sessionID := fx.ChatSession(t, agentID, dbfx.Cols{"title": "how do I rotate the production key?", "explicitly_created_at": dbfx.Raw("now()")})
 
 	w := &world{t: t, fx: fx, q: db.New(testPool), sender: &fakeSender{}, userID: userID, workspace: workspaceID, slug: slug, agentID: agentID, sessionID: sessionID}
-	w.worker = pushnotify.NewWorker(w.q, w.sender)
+	w.worker = pushnotify.NewWorker(w.q, testPool, w.sender)
 	t.Cleanup(func() {
 		ctx := context.Background()
 		testPool.Exec(ctx, `DELETE FROM push_delivery WHERE subscription_id IN (SELECT id FROM push_subscription WHERE user_id = $1)`, userID)
@@ -504,7 +504,7 @@ func TestConcurrentPassesSendOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := pushnotify.NewWorker(w.q, w.sender).ProcessOnce(context.Background()); err != nil {
+			if err := pushnotify.NewWorker(w.q, testPool, w.sender).ProcessOnce(context.Background()); err != nil {
 				t.Errorf("process pass: %v", err)
 			}
 		}()
