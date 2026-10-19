@@ -8,10 +8,11 @@
  * a column the user never chose.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ViewStoreProvider } from "@multica/core/issues/stores/view-store-context";
 import { getIssueSurfaceViewStore } from "@multica/core/issues/stores/surface-view-store";
+import { setApiInstance } from "@multica/core/api";
 import { projectListOptions } from "@multica/core/projects/queries";
 import type { Issue, IssueWorkflow, Project } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
@@ -339,6 +340,67 @@ describe("board drop over a column the workflow omits", () => {
       workflowState.loaded = false;
       workflowState.workflows = [];
       mount({ ...ISSUE, project_id: null } as unknown as Issue);
+      drag(["in_progress"]);
+
+      expect(onMoveIssue).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // The workflow list can be loaded while the project list is not. Which workflow
+  // a card follows comes from its project, so an unresolved project reads as "no
+  // workflow" exactly like an unloaded workflow list does.
+  describe("before the project list has resolved", () => {
+    const handoffWorkflow = () => [
+      {
+        ...WORKFLOW,
+        steps: WORKFLOW.steps.map((step) =>
+          step.status_key === "in_progress" ? { ...step, handler: { type: "creator" } } : step,
+        ),
+      },
+    ];
+
+    afterEach(() => setApiInstance(undefined as never));
+
+    // The board reads the project list through the shared client.
+    const useProjectList = (listProjects: () => Promise<unknown>) => {
+      setApiInstance({ listProjects } as never);
+      queryClient.removeQueries({ queryKey: projectListOptions("ws-1").queryKey });
+      return listProjects;
+    };
+
+    it("does not move or hand off a project card while the project list is pending", () => {
+      workflowState.workflows = handoffWorkflow();
+      useProjectList(() => new Promise(() => {}));
+      mount();
+      drag(["in_progress"]);
+
+      expect(onMoveIssue).not.toHaveBeenCalled();
+      expect(screen.queryByText("confirm handoff")).toBeNull();
+    });
+
+    it("does not move a project card after the project list failed", async () => {
+      const listProjects = vi.fn().mockRejectedValue(new Error("projects down"));
+      useProjectList(listProjects);
+      mount();
+      await waitFor(() => expect(listProjects).toHaveBeenCalled());
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+      drag(["in_progress"]);
+
+      expect(onMoveIssue).not.toHaveBeenCalled();
+    });
+
+    it("still moves a card that belongs to no project", () => {
+      useProjectList(() => new Promise(() => {}));
+      mount({ ...ISSUE, project_id: null } as unknown as Issue);
+      drag(["in_progress"]);
+
+      expect(onMoveIssue).toHaveBeenCalledTimes(1);
+    });
+
+    it("moves a project card once the project list has loaded", () => {
+      mount();
       drag(["in_progress"]);
 
       expect(onMoveIssue).toHaveBeenCalledTimes(1);

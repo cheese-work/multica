@@ -135,3 +135,40 @@ describe("runConfirmIntent — promote", () => {
     expect(runConfirmIntent(issue(from as Partial<GateIssue>), { status: to }, CATALOG)).toBeNull();
   });
 });
+
+// A handoff the person confirmed first carries a stop-the-previous-run choice
+// and the preview it was confirmed against. The promotion confirmation comes
+// second, and the write it makes is the one that has to carry both.
+describe("runConfirmIntent — confirmed handoff", () => {
+  const binding = {
+    previous_assignee_type: "agent",
+    previous_assignee_id: "agent-0",
+    handler_type: "agent",
+    handler_id: "agent-1",
+  };
+
+  it("carries the stop choice and the binding through a promotion", () => {
+    expect(
+      runConfirmIntent(
+        issue({ status: "backlog" }),
+        { status: "qa", stop_previous_assignee_runs: true, handoff_preview: binding },
+        CATALOG,
+      ),
+    ).toEqual({
+      issueIds: ["issue-1"],
+      mode: "promote",
+      status: "qa",
+      assigneeType: "agent",
+      assigneeId: "agent-1",
+      stopPreviousAssigneeRuns: true,
+      handoffPreview: binding,
+    });
+  });
+
+  it("carries a binding that bound a no-handoff result", () => {
+    const negative = { ...binding, handler_type: null, handler_id: null };
+    expect(
+      runConfirmIntent(issue({ status: "backlog" }), { status: "qa", handoff_preview: negative }, CATALOG),
+    ).toMatchObject({ mode: "promote", handoffPreview: negative });
+  });
+});

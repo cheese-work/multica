@@ -122,10 +122,47 @@ describe("WorkflowHandoffConfirmDialog (MUL-7420)", () => {
     expect(onConfirm).toHaveBeenCalledWith(expect.objectContaining({ stopPreviousRuns: true }));
   });
 
-  it("applies without asking when the server finds no handoff", async () => {
+  // The move applies on its own, but the write still names what the person's
+  // client was told: no handoff. A handler that became resolvable since is then
+  // refused by the server instead of taking the issue unconfirmed.
+  it("applies without asking when the server finds no handoff, bound to that result", async () => {
     previewWorkflowHandoff.mockResolvedValue({ ...handoff, handoff: false, handler_type: null, handler_id: null });
     const { onConfirm } = renderDialog();
-    await waitFor(() => expect(onConfirm).toHaveBeenCalledWith({ stopPreviousRuns: false }));
+    await waitFor(() =>
+      expect(onConfirm).toHaveBeenCalledWith({
+        stopPreviousRuns: false,
+        preview: {
+          previous_assignee_type: "agent",
+          previous_assignee_id: "forge",
+          handler_type: null,
+          handler_id: null,
+        },
+      }),
+    );
     expect(screen.queryByText(/Move MUL-8121/)).toBeNull();
+  });
+
+  it("binds a no-handoff result for an unassigned issue to no assignee and no handler", async () => {
+    previewWorkflowHandoff.mockResolvedValue({
+      ...handoff,
+      handoff: false,
+      handler_type: undefined,
+      handler_id: undefined,
+      previous_assignee_type: null,
+      previous_assignee_id: null,
+      previous_runs: [],
+    } as unknown as WorkflowHandoffPreview);
+    const { onConfirm } = renderDialog();
+    await waitFor(() =>
+      expect(onConfirm).toHaveBeenCalledWith({
+        stopPreviousRuns: false,
+        preview: {
+          previous_assignee_type: null,
+          previous_assignee_id: null,
+          handler_type: null,
+          handler_id: null,
+        },
+      }),
+    );
   });
 });
