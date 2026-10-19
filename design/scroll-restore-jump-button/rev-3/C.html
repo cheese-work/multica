@@ -1,0 +1,354 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>rev-3 — C — Quiet translucent</title><style>
+:root{--destructive:oklch(0.577 0.245 27.325);--app-shell:oklch(0.964435 0.001327 286.375);--page-canvas:oklch(0.988087 0 0);--surface:oklch(1 0 0);--surface-raised:oklch(1 0 0);--surface-hover:oklch(0.967 0.001 286.375);--surface-border:oklch(0.92 0.004 286.32);--foreground:oklch(0.141 0.005 285.823);--muted:oklch(0.967 0.001 286.375);--muted-foreground:oklch(0.505 0.016 285.938);--primary:oklch(0.21 0.006 285.885);--primary-foreground:oklch(0.985 0 0);--ring:oklch(0.705 0.015 286.067);--brand:oklch(0.56079497 0.19449888 256.41258418);--brand-foreground:oklch(0.985 0 0);--warning:oklch(0.8 0.15 85);--menu-shadow:0 8px 24px rgb(15 23 42/.08),0 2px 6px rgb(15 23 42/.05);--floating-shadow:0 16px 40px rgb(15 23 42/.14),0 3px 10px rgb(15 23 42/.08);--surface-shadow:0 1px 2px rgb(15 23 42/.04),0 1px 1px rgb(15 23 42/.03)}
+.dark{--destructive:oklch(0.704 0.191 22.216);--app-shell:oklch(0.155 0.005 285.823);--page-canvas:oklch(0.18 0.005 285.823);--surface:oklch(0.21 0.006 285.885);--surface-raised:oklch(0.235 0.007 285.885);--surface-hover:oklch(0.274 0.006 286.033);--surface-border:oklch(1 0 0/10%);--foreground:oklch(0.985 0 0);--muted:oklch(0.274 0.006 286.033);--muted-foreground:oklch(0.705 0.015 286.067);--primary:oklch(0.92 0.004 286.32);--primary-foreground:oklch(0.21 0.006 285.885);--ring:oklch(0.552 0.016 285.938);--brand:oklch(0.65 0.16 255);--menu-shadow:0 10px 28px rgb(0 0 0/.3),0 2px 8px rgb(0 0 0/.18);--floating-shadow:0 20px 48px rgb(0 0 0/.46),0 4px 12px rgb(0 0 0/.28)}
+*{box-sizing:border-box}body{margin:0;background:#e9e9ec;color:#111;font:14px/20px -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;padding:24px}
+h1{font-size:18px;line-height:28px;margin:0 0 2px}.lead{margin:0 0 4px;color:#555;max-width:880px}
+h2.grp{font-size:12px;line-height:16px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#555;margin:28px 0 8px}
+.grid{display:flex;flex-wrap:wrap;gap:20px 24px;align-items:flex-start}.cell{max-width:100%}
+.cap{font-size:12px;line-height:16px;font-weight:600;color:#333;margin:0 0 6px}.cap span{font-weight:400;color:#666}
+@media(max-width:700px){.desk{display:none}}
+.spec{margin:0;padding-left:20px;color:#333;max-width:880px}code{font:12px ui-monospace,monospace;background:rgba(127,127,127,.15);padding:0 3px;border-radius:3px}
+.fr{display:flex;background:var(--page-canvas);color:var(--foreground);border:1px solid #c9c9cf;overflow:hidden;position:relative;max-width:100%}
+.fr.web,.fr.native{flex-direction:column;border-radius:28px}.fr.desktop{border-radius:10px}
+.sb{height:47px;flex:none;display:flex;justify-content:space-between;align-items:flex-end;padding:0 28px 6px;font-size:15px}.sb i{font-style:normal;font-size:11px}
+.side{width:240px;flex:none;background:var(--app-shell);padding:16px;display:flex;flex-direction:column;gap:8px;border-right:1px solid var(--surface-border)}.side span{padding:4px 8px;border-radius:6px;color:var(--muted-foreground)}.side .on{background:var(--surface-hover);color:var(--foreground)}
+.chat{flex:1;min-width:0;display:flex;flex-direction:column;position:relative}
+.hd{flex:none;padding:10px 20px;border-bottom:1px solid var(--surface-border);background:var(--page-canvas)}.hd b{display:block;font-size:16px;line-height:24px}.hd small{font-size:12px;line-height:16px;color:var(--muted-foreground)}
+.list{flex:1;overflow:hidden;position:relative;padding:12px 20px 0}.col{max-width:896px;margin:0 auto;display:flex;flex-direction:column;gap:12px;position:relative}
+.m{display:flex}.m.u{justify-content:flex-end}.m .b{max-width:78%;padding:8px 12px;border-radius:12px;background:var(--muted);font-size:14px;line-height:20px}.m.u .b{background:var(--primary);color:var(--primary-foreground)}
+.m.hi .b{outline:2px solid var(--brand);outline-offset:2px}.anchorTag{font-size:11px;line-height:15px;color:var(--brand)}
+.sk{display:flex;flex-direction:column;gap:14px;padding-top:6px}.sk i{display:block;height:34px;border-radius:12px;background:var(--muted)}
+.warn{flex:none;margin:8px 20px 0;padding:6px 12px;border-radius:8px;background:color-mix(in oklch,var(--warning) 22%,var(--surface));font-size:12px;line-height:16px}
+.dock{flex:none;position:relative;padding:0 20px 14px}.fr.native .dock{padding-bottom:6px}
+.comp{max-width:896px;margin:0 auto;border:1px solid var(--surface-border);background:var(--surface);border-radius:12px;padding:12px;min-height:76px;display:flex;justify-content:space-between;align-items:flex-end;color:var(--muted-foreground);box-shadow:var(--surface-shadow)}
+.comp u{width:28px;height:28px;border-radius:50%;background:var(--primary);color:var(--primary-foreground);display:flex;align-items:center;justify-content:center;text-decoration:none}
+.jb{position:absolute;left:50%;bottom:calc(100% + 12px);transform:translateX(-50%);width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;background:radial-gradient(circle,var(--surface) 0 12.5px,transparent 13px),color-mix(in oklch,var(--surface) 78%,transparent);backdrop-filter:blur(8px);color:var(--muted-foreground);border:1px solid var(--muted-foreground);box-shadow:none}
+.fr.web:not(.desktop) .jb,.fr.native .jb{width:44px;height:44px}
+.jb.focus{outline:2px solid var(--foreground);outline-offset:2px}
+.home{flex:none;height:22px;display:flex;justify-content:center;align-items:flex-start}.home::after{content:"";width:134px;height:5px;border-radius:3px;background:var(--foreground);opacity:.8;margin-top:8px}
+.state{display:flex;flex-direction:column;align-items:center;text-align:center;gap:6px;padding:72px 24px 0}.state b{font-size:16px;line-height:24px}.state p{margin:0;max-width:320px;color:var(--muted-foreground)}.state .ic{color:var(--muted-foreground);margin-bottom:4px}.state .ic.er{color:var(--destructive)}
+.rt{min-height:36px;padding:0 16px;border-radius:8px;border:0;background:var(--primary);color:var(--primary-foreground);font-size:14px;line-height:20px;font-weight:500;font-family:inherit;cursor:pointer;margin-top:10px}.fr.web:not(.desktop) .rt,.fr.native .rt{min-height:44px}.warn.er .rt{margin:0 0 0 auto;min-height:36px;padding:0 12px}.fr.web:not(.desktop) .warn.er .rt,.fr.native .warn.er .rt{min-height:44px}
+.warn.er{display:flex;align-items:center;gap:8px;background:color-mix(in oklch,var(--destructive) 12%,var(--surface));border:1px solid color-mix(in oklch,var(--destructive) 40%,transparent)}.warn.er svg{color:var(--destructive);flex:none}
+.why{display:block;font-size:12px;line-height:16px;font-style:normal;color:var(--muted-foreground);margin-top:2px}
+.rt[disabled]{background:var(--muted);color:var(--muted-foreground);cursor:not-allowed;display:inline-flex;align-items:center;gap:8px}
+.warn.er>span{display:flex;flex-direction:column}
+.ro{display:flex;align-items:center;gap:6px;margin:0 0 6px;padding:6px 10px;border-radius:6px;background:var(--muted);color:var(--muted-foreground);box-shadow:0 0 0 1px var(--surface-border);font-size:12px;line-height:16px;max-width:896px;margin-left:auto;margin-right:auto}.ro svg{flex:none}
+.comp.dis{background:var(--muted)}.comp.dis u{background:var(--muted);color:var(--muted-foreground)}.comp .draft{color:var(--foreground)}
+.toast{position:absolute;left:50%;top:76px;transform:translateX(-50%);max-width:340px;padding:10px 14px;border-radius:8px;background:var(--surface-raised);color:var(--foreground);border:1px solid var(--surface-border);box-shadow:var(--menu-shadow);font-size:13px;line-height:18px;z-index:2}
+.na{margin:0;max-width:390px;color:#333}
+</style></head><body>
+<h1>C — Quiet translucent <small style="font-weight:400;color:#666">rev-3</small></h1><p class="lead">Translucent blurred disc, muted arrow, no shadow. Lowest emphasis; icon-only boundary is faint. Decided, not up for choice: round, bottom middle, above the composer, inside the safe area, shown more than one viewport above the newest message, tap scrolls to newest and turns auto-follow on.</p>
+<div class="desk"><h2 class="grp">Desktop (web, shared packages/views chat)</h2><div class="grid"><div class="cell" style="width:1392px"><p class="cap">Desktop 1392 px <span>scrolled up, light</span></p>
+<div class="fr desktop " style="width:1392px;height:520px">
+<aside class="side"><b>Multica</b><span>Inbox</span><span class="on">Chat</span><span>Issues</span></aside>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+
+<div class="list"><div class="col"><div class="m u" data-id="m3"><div class="b">Thanks. Did the typecheck pass too?</div></div><div class="m a" data-id="m4"><div class="b">Typecheck passes. Unit tests for the chat package pass: 214 of 214.</div></div><div class="m u" data-id="m5"><div class="b">Good. Next, add a test for the empty DM state.</div></div><div class="m a" data-id="m6"><div class="b">Added <code>chat-empty-state.test.tsx</code> with two cases: no messages, and no agent selected.</div></div><div class="m u" data-id="m7"><div class="b">Which agent runs the review?</div></div></div></div>
+<div class="dock"><button class="jb" data-testid="chat-jump-to-latest" aria-label="Jump to latest messages" type="button"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg></button><div class="comp"><span>Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+
+</section></div></div><div class="cell" style="width:1392px"><p class="cap">Desktop, live end <span>button hidden</span></p>
+<div class="fr desktop dark" style="width:1392px;height:520px">
+<aside class="side"><b>Multica</b><span>Inbox</span><span class="on">Chat</span><span>Issues</span></aside>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+
+<div class="list"><div class="col"><div class="m u" data-id="m5"><div class="b">Good. Next, add a test for the empty DM state.</div></div><div class="m a" data-id="m6"><div class="b">Added <code>chat-empty-state.test.tsx</code> with two cases: no messages, and no agent selected.</div></div><div class="m u" data-id="m7"><div class="b">Which agent runs the review?</div></div><div class="m a" data-id="m8"><div class="b">The review goes to the different-lab reviewer. I will mention them on the issue when the PR is ready.</div></div><div class="m u" data-id="m9"><div class="b">Okay. Ping me when the checks are green.</div></div><div class="m a" data-id="m10"><div class="b">Checks are green on the latest commit. Marking the PR ready now.</div></div></div></div>
+<div class="dock"><div class="comp"><span>Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+
+</section></div></div></div></div>
+<div class="desk"><h2 class="grp">Desktop — empty and error states</h2><div class="grid"><div class="cell" style="width:1392px"><p class="cap">Desktop 1392 px <span>empty DM: no button</span></p>
+<div class="fr desktop" style="width:1392px;height:420px">
+<aside class="side"><b>Multica</b><span>Inbox</span><span class="on">Chat</span><span>Issues</span></aside>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+
+<div class="list"><div class="col"><div class="state emp"><div class="ic"><svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div><b>No messages yet</b><p>Send a message to start this DM with x99-claude-sonnet.</p></div></div></div>
+<div class="dock"><div class="comp"><span>Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+
+</section></div></div><div class="cell" style="width:1392px"><p class="cap">Desktop, dark <span>load failed: Retry, no button</span></p>
+<div class="fr desktop dark" style="width:1392px;height:420px">
+<aside class="side"><b>Multica</b><span>Inbox</span><span class="on">Chat</span><span>Issues</span></aside>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+
+<div class="list"><div class="col"><div class="state errs" role="alert"><div class="ic er"><svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg></div><b>Couldn’t load messages</b><p>Check your connection, then try again.</p><button class="rt" data-testid="chat-retry" type="button">Retry</button></div></div></div>
+<div class="dock"><div class="comp"><span>Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+
+</section></div></div><div class="cell" style="width:1392px"><p class="cap">Desktop 1392 px <span>jump failed: Retry strip, button stays</span></p>
+<div class="fr desktop" style="width:1392px;height:520px">
+<aside class="side"><b>Multica</b><span>Inbox</span><span class="on">Chat</span><span>Issues</span></aside>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+<div class="warn er" role="alert"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg><span>Couldn’t load the latest messages.</span><button class="rt" data-testid="chat-retry" type="button">Retry</button></div>
+<div class="list"><div class="col"><div class="m u" data-id="m3"><div class="b">Thanks. Did the typecheck pass too?</div></div><div class="m a" data-id="m4"><div class="b">Typecheck passes. Unit tests for the chat package pass: 214 of 214.</div></div><div class="m u" data-id="m5"><div class="b">Good. Next, add a test for the empty DM state.</div></div><div class="m a" data-id="m6"><div class="b">Added <code>chat-empty-state.test.tsx</code> with two cases: no messages, and no agent selected.</div></div><div class="m u" data-id="m7"><div class="b">Which agent runs the review?</div></div></div></div>
+<div class="dock"><button class="jb" data-testid="chat-jump-to-latest" aria-label="Jump to latest messages" type="button"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg></button><div class="comp"><span>Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+
+</section></div></div></div></div>
+<h2 class="grp">Phone 390 × 844 (web and native) — every state</h2><div class="grid"><div class="cell" style="width:390px"><p class="cap">Web phone <span>scrolled up, light</span></p>
+<div class="fr web " style="width:390px;height:760px">
+<div class="sb"><b>9:41</b><i>●●● ▮</i></div>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+
+<div class="list"><div class="col"><div class="m u" data-id="m3"><div class="b">Thanks. Did the typecheck pass too?</div></div><div class="m a" data-id="m4"><div class="b">Typecheck passes. Unit tests for the chat package pass: 214 of 214.</div></div><div class="m u" data-id="m5"><div class="b">Good. Next, add a test for the empty DM state.</div></div><div class="m a" data-id="m6"><div class="b">Added <code>chat-empty-state.test.tsx</code> with two cases: no messages, and no agent selected.</div></div><div class="m u" data-id="m7"><div class="b">Which agent runs the review?</div></div></div></div>
+<div class="dock"><button class="jb" data-testid="chat-jump-to-latest" aria-label="Jump to latest messages" type="button"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg></button><div class="comp"><span>Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+
+</section></div></div><div class="cell" style="width:390px"><p class="cap">Web phone <span>scrolled up, dark</span></p>
+<div class="fr web dark" style="width:390px;height:760px">
+<div class="sb"><b>9:41</b><i>●●● ▮</i></div>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+
+<div class="list"><div class="col"><div class="m u" data-id="m3"><div class="b">Thanks. Did the typecheck pass too?</div></div><div class="m a" data-id="m4"><div class="b">Typecheck passes. Unit tests for the chat package pass: 214 of 214.</div></div><div class="m u" data-id="m5"><div class="b">Good. Next, add a test for the empty DM state.</div></div><div class="m a" data-id="m6"><div class="b">Added <code>chat-empty-state.test.tsx</code> with two cases: no messages, and no agent selected.</div></div><div class="m u" data-id="m7"><div class="b">Which agent runs the review?</div></div></div></div>
+<div class="dock"><button class="jb" data-testid="chat-jump-to-latest" aria-label="Jump to latest messages" type="button"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg></button><div class="comp"><span>Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+
+</section></div></div><div class="cell" style="width:390px"><p class="cap">Web phone <span>live end: hidden</span></p>
+<div class="fr web " style="width:390px;height:760px">
+<div class="sb"><b>9:41</b><i>●●● ▮</i></div>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+
+<div class="list"><div class="col"><div class="m u" data-id="m5"><div class="b">Good. Next, add a test for the empty DM state.</div></div><div class="m a" data-id="m6"><div class="b">Added <code>chat-empty-state.test.tsx</code> with two cases: no messages, and no agent selected.</div></div><div class="m u" data-id="m7"><div class="b">Which agent runs the review?</div></div><div class="m a" data-id="m8"><div class="b">The review goes to the different-lab reviewer. I will mention them on the issue when the PR is ready.</div></div><div class="m u" data-id="m9"><div class="b">Okay. Ping me when the checks are green.</div></div><div class="m a" data-id="m10"><div class="b">Checks are green on the latest commit. Marking the PR ready now.</div></div></div></div>
+<div class="dock"><div class="comp"><span>Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+
+</section></div></div><div class="cell" style="width:390px"><p class="cap">Web phone <span>restored at anchor</span></p>
+<div class="fr web " style="width:390px;height:760px">
+<div class="sb"><b>9:41</b><i>●●● ▮</i></div>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+
+<div class="list"><div class="col"><div class="m a hi" data-id="m4"><div class="b">Typecheck passes. Unit tests for the chat package pass: 214 of 214.</div></div><div class="m u" data-id="m5"><div class="b">Good. Next, add a test for the empty DM state.</div></div><div class="m a" data-id="m6"><div class="b">Added <code>chat-empty-state.test.tsx</code> with two cases: no messages, and no agent selected.</div></div><div class="m u" data-id="m7"><div class="b">Which agent runs the review?</div></div><div class="anchorTag">Top item = saved anchor (m4)</div></div></div>
+<div class="dock"><button class="jb" data-testid="chat-jump-to-latest" aria-label="Jump to latest messages" type="button"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg></button><div class="comp"><span>Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+
+</section></div></div><div class="cell" style="width:390px"><p class="cap">Web phone <span>anchor not loaded: newest + button</span></p>
+<div class="fr web " style="width:390px;height:760px">
+<div class="sb"><b>9:41</b><i>●●● ▮</i></div>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+
+<div class="list"><div class="col"><div class="m u" data-id="m5"><div class="b">Good. Next, add a test for the empty DM state.</div></div><div class="m a" data-id="m6"><div class="b">Added <code>chat-empty-state.test.tsx</code> with two cases: no messages, and no agent selected.</div></div><div class="m u" data-id="m7"><div class="b">Which agent runs the review?</div></div><div class="m a" data-id="m8"><div class="b">The review goes to the different-lab reviewer. I will mention them on the issue when the PR is ready.</div></div><div class="m u" data-id="m9"><div class="b">Okay. Ping me when the checks are green.</div></div><div class="m a" data-id="m10"><div class="b">Checks are green on the latest commit. Marking the PR ready now.</div></div></div></div>
+<div class="dock"><button class="jb" data-testid="chat-jump-to-latest" aria-label="Jump to latest messages" type="button"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg></button><div class="comp"><span>Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+
+</section></div></div><div class="cell" style="width:390px"><p class="cap">Web phone <span>keyboard focus ring</span></p>
+<div class="fr web " style="width:390px;height:760px">
+<div class="sb"><b>9:41</b><i>●●● ▮</i></div>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+
+<div class="list"><div class="col"><div class="m u" data-id="m3"><div class="b">Thanks. Did the typecheck pass too?</div></div><div class="m a" data-id="m4"><div class="b">Typecheck passes. Unit tests for the chat package pass: 214 of 214.</div></div><div class="m u" data-id="m5"><div class="b">Good. Next, add a test for the empty DM state.</div></div><div class="m a" data-id="m6"><div class="b">Added <code>chat-empty-state.test.tsx</code> with two cases: no messages, and no agent selected.</div></div><div class="m u" data-id="m7"><div class="b">Which agent runs the review?</div></div></div></div>
+<div class="dock"><button class="jb focus" data-testid="chat-jump-to-latest" aria-label="Jump to latest messages" type="button"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg></button><div class="comp"><span>Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+
+</section></div></div><div class="cell" style="width:390px"><p class="cap">Web phone <span>disconnected</span></p>
+<div class="fr web " style="width:390px;height:760px">
+<div class="sb"><b>9:41</b><i>●●● ▮</i></div>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+<div class="warn" role="status">Disconnected. Reconnecting…</div>
+<div class="list"><div class="col"><div class="m u" data-id="m5"><div class="b">Good. Next, add a test for the empty DM state.</div></div><div class="m a" data-id="m6"><div class="b">Added <code>chat-empty-state.test.tsx</code> with two cases: no messages, and no agent selected.</div></div><div class="m u" data-id="m7"><div class="b">Which agent runs the review?</div></div><div class="m a" data-id="m8"><div class="b">The review goes to the different-lab reviewer. I will mention them on the issue when the PR is ready.</div></div><div class="m u" data-id="m9"><div class="b">Okay. Ping me when the checks are green.</div></div><div class="m a" data-id="m10"><div class="b">Checks are green on the latest commit. Marking the PR ready now.</div></div></div></div>
+<div class="dock"><button class="jb" data-testid="chat-jump-to-latest" aria-label="Jump to latest messages" type="button"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg></button><div class="comp"><span>Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+
+</section></div></div><div class="cell" style="width:390px"><p class="cap">Web phone <span>loading: no button</span></p>
+<div class="fr web " style="width:390px;height:760px">
+<div class="sb"><b>9:41</b><i>●●● ▮</i></div>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+
+<div class="list"><div class="col"><div class="sk"><i style="width:55%"></i><i style="width:80%"></i><i style="width:40%"></i><i style="width:70%"></i><i style="width:60%"></i></div></div></div>
+<div class="dock"><div class="comp"><span>Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+
+</section></div></div><div class="cell" style="width:390px"><p class="cap">Native phone <span>scrolled up, light</span></p>
+<div class="fr native " style="width:390px;height:760px">
+<div class="sb"><b>9:41</b><i>●●● ▮</i></div>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+
+<div class="list"><div class="col"><div class="m u" data-id="m3"><div class="b">Thanks. Did the typecheck pass too?</div></div><div class="m a" data-id="m4"><div class="b">Typecheck passes. Unit tests for the chat package pass: 214 of 214.</div></div><div class="m u" data-id="m5"><div class="b">Good. Next, add a test for the empty DM state.</div></div><div class="m a" data-id="m6"><div class="b">Added <code>chat-empty-state.test.tsx</code> with two cases: no messages, and no agent selected.</div></div><div class="m u" data-id="m7"><div class="b">Which agent runs the review?</div></div></div></div>
+<div class="dock"><button class="jb" data-testid="chat-jump-to-latest" aria-label="Jump to latest messages" type="button"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg></button><div class="comp"><span>Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+<div class="home"></div>
+</section></div></div><div class="cell" style="width:390px"><p class="cap">Native phone <span>scrolled up, dark</span></p>
+<div class="fr native dark" style="width:390px;height:760px">
+<div class="sb"><b>9:41</b><i>●●● ▮</i></div>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+
+<div class="list"><div class="col"><div class="m u" data-id="m3"><div class="b">Thanks. Did the typecheck pass too?</div></div><div class="m a" data-id="m4"><div class="b">Typecheck passes. Unit tests for the chat package pass: 214 of 214.</div></div><div class="m u" data-id="m5"><div class="b">Good. Next, add a test for the empty DM state.</div></div><div class="m a" data-id="m6"><div class="b">Added <code>chat-empty-state.test.tsx</code> with two cases: no messages, and no agent selected.</div></div><div class="m u" data-id="m7"><div class="b">Which agent runs the review?</div></div></div></div>
+<div class="dock"><button class="jb" data-testid="chat-jump-to-latest" aria-label="Jump to latest messages" type="button"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg></button><div class="comp"><span>Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+<div class="home"></div>
+</section></div></div><div class="cell" style="width:390px"><p class="cap">Native phone <span>restored at anchor</span></p>
+<div class="fr native " style="width:390px;height:760px">
+<div class="sb"><b>9:41</b><i>●●● ▮</i></div>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+
+<div class="list"><div class="col"><div class="m a hi" data-id="m4"><div class="b">Typecheck passes. Unit tests for the chat package pass: 214 of 214.</div></div><div class="m u" data-id="m5"><div class="b">Good. Next, add a test for the empty DM state.</div></div><div class="m a" data-id="m6"><div class="b">Added <code>chat-empty-state.test.tsx</code> with two cases: no messages, and no agent selected.</div></div><div class="m u" data-id="m7"><div class="b">Which agent runs the review?</div></div><div class="anchorTag">Top item = saved anchor (m4)</div></div></div>
+<div class="dock"><button class="jb" data-testid="chat-jump-to-latest" aria-label="Jump to latest messages" type="button"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg></button><div class="comp"><span>Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+<div class="home"></div>
+</section></div></div><div class="cell" style="width:390px"><p class="cap">Native phone <span>disconnected</span></p>
+<div class="fr native " style="width:390px;height:760px">
+<div class="sb"><b>9:41</b><i>●●● ▮</i></div>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+<div class="warn" role="status">Disconnected. Reconnecting…</div>
+<div class="list"><div class="col"><div class="m u" data-id="m5"><div class="b">Good. Next, add a test for the empty DM state.</div></div><div class="m a" data-id="m6"><div class="b">Added <code>chat-empty-state.test.tsx</code> with two cases: no messages, and no agent selected.</div></div><div class="m u" data-id="m7"><div class="b">Which agent runs the review?</div></div><div class="m a" data-id="m8"><div class="b">The review goes to the different-lab reviewer. I will mention them on the issue when the PR is ready.</div></div><div class="m u" data-id="m9"><div class="b">Okay. Ping me when the checks are green.</div></div><div class="m a" data-id="m10"><div class="b">Checks are green on the latest commit. Marking the PR ready now.</div></div></div></div>
+<div class="dock"><button class="jb" data-testid="chat-jump-to-latest" aria-label="Jump to latest messages" type="button"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg></button><div class="comp"><span>Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+<div class="home"></div>
+</section></div></div></div>
+<div class="desk"><h2 class="grp">Desktop — rev-3: retry in progress, read-only, conflict</h2><div class="grid"><div class="cell" style="width:1392px"><p class="cap">Load retry in progress <span>aria-busy, Retry off with reason, no jump button</span></p>
+<div class="fr desktop" style="width:1392px;height:520px">
+<aside class="side"><b>Multica</b><span>Inbox</span><span class="on">Chat</span><span>Issues</span></aside>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+
+<div class="list"><div class="col"><div class="state errs" role="alert" aria-busy="true"><div class="ic er"><svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg></div><b>Couldn’t load messages</b><p>Check your connection, then try again.</p><button class="rt" data-testid="chat-retry" type="button" disabled aria-disabled="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" opacity=".25"/><path d="M21 12a9 9 0 0 0-9-9"/></svg>Retrying…</button><p class="why">Retry is off until this attempt ends.</p></div><div class="sk"><i style="width:55%"></i><i style="width:80%"></i><i style="width:40%"></i></div></div></div>
+<div class="dock"><div class="comp"><span class="">Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+
+</section></div></div><div class="cell" style="width:1392px"><p class="cap">Jump retry in progress <span>strip and button aria-busy, Retry off with reason</span></p>
+<div class="fr desktop" style="width:1392px;height:520px">
+<aside class="side"><b>Multica</b><span>Inbox</span><span class="on">Chat</span><span>Issues</span></aside>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+<div class="warn er" role="alert" aria-busy="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg><span>Retrying the latest messages…<em class="why">Retry is off until this attempt ends.</em></span><button class="rt" data-testid="chat-retry" type="button" disabled aria-disabled="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" opacity=".25"/><path d="M21 12a9 9 0 0 0-9-9"/></svg>Retrying…</button></div>
+<div class="list"><div class="col"><div class="m u" data-id="m3"><div class="b">Thanks. Did the typecheck pass too?</div></div><div class="m a" data-id="m4"><div class="b">Typecheck passes. Unit tests for the chat package pass: 214 of 214.</div></div><div class="m u" data-id="m5"><div class="b">Good. Next, add a test for the empty DM state.</div></div><div class="m a" data-id="m6"><div class="b">Added <code>chat-empty-state.test.tsx</code> with two cases: no messages, and no agent selected.</div></div><div class="m u" data-id="m7"><div class="b">Which agent runs the review?</div></div></div></div>
+<div class="dock"><button class="jb" data-testid="chat-jump-to-latest" aria-label="Jump to latest messages" aria-busy="true" aria-disabled="true" type="button"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" opacity=".25"/><path d="M21 12a9 9 0 0 0-9-9"/></svg></button><div class="comp"><span class="">Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+
+</section></div></div><div class="cell" style="width:1392px"><p class="cap">Read-only (member) <span>agent archived, composer off with reason, button stays</span></p>
+<div class="fr desktop" style="width:1392px;height:520px">
+<aside class="side"><b>Multica</b><span>Inbox</span><span class="on">Chat</span><span>Issues</span></aside>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+
+<div class="list"><div class="col"><div class="m u" data-id="m3"><div class="b">Thanks. Did the typecheck pass too?</div></div><div class="m a" data-id="m4"><div class="b">Typecheck passes. Unit tests for the chat package pass: 214 of 214.</div></div><div class="m u" data-id="m5"><div class="b">Good. Next, add a test for the empty DM state.</div></div><div class="m a" data-id="m6"><div class="b">Added <code>chat-empty-state.test.tsx</code> with two cases: no messages, and no agent selected.</div></div><div class="m u" data-id="m7"><div class="b">Which agent runs the review?</div></div></div></div>
+<div class="dock"><button class="jb" data-testid="chat-jump-to-latest" aria-label="Jump to latest messages" type="button"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg></button><div class="ro" role="status"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="5" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg><span>x99-claude-sonnet has been archived — this conversation is read-only.</span></div><div class="comp dis"><span class="">This agent has been archived</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+
+</section></div></div><div class="cell" style="width:1392px"><p class="cap">Conflict (409 chat_compacting) <span>toast, draft kept, composer off with reason</span></p>
+<div class="fr desktop dark" style="width:1392px;height:520px">
+<aside class="side"><b>Multica</b><span>Inbox</span><span class="on">Chat</span><span>Issues</span></aside>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+
+<div class="list"><div class="col"><div class="m u" data-id="m3"><div class="b">Thanks. Did the typecheck pass too?</div></div><div class="m a" data-id="m4"><div class="b">Typecheck passes. Unit tests for the chat package pass: 214 of 214.</div></div><div class="m u" data-id="m5"><div class="b">Good. Next, add a test for the empty DM state.</div></div><div class="m a" data-id="m6"><div class="b">Added <code>chat-empty-state.test.tsx</code> with two cases: no messages, and no agent selected.</div></div><div class="m u" data-id="m7"><div class="b">Which agent runs the review?</div></div></div></div><div class="toast" role="status">This DM is compacting. Send again when it finishes.</div>
+<div class="dock"><button class="jb" data-testid="chat-jump-to-latest" aria-label="Jump to latest messages" type="button"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg></button><div class="comp dis"><span class="draft">Can you rerun the checks?</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+
+</section></div></div></div></div>
+<h2 class="grp">Phone 390 × 844 — empty and error states (web and native)</h2><div class="grid"><div class="cell" style="width:390px"><p class="cap">Web phone <span>empty DM: no button</span></p>
+<div class="fr web" style="width:390px;height:760px">
+<div class="sb"><b>9:41</b><i>●●● ▮</i></div>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+
+<div class="list"><div class="col"><div class="state emp"><div class="ic"><svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div><b>No messages yet</b><p>Send a message to start this DM with x99-claude-sonnet.</p></div></div></div>
+<div class="dock"><div class="comp"><span>Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+
+</section></div></div><div class="cell" style="width:390px"><p class="cap">Web phone <span>load failed: Retry, no button</span></p>
+<div class="fr web" style="width:390px;height:760px">
+<div class="sb"><b>9:41</b><i>●●● ▮</i></div>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+
+<div class="list"><div class="col"><div class="state errs" role="alert"><div class="ic er"><svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg></div><b>Couldn’t load messages</b><p>Check your connection, then try again.</p><button class="rt" data-testid="chat-retry" type="button">Retry</button></div></div></div>
+<div class="dock"><div class="comp"><span>Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+
+</section></div></div><div class="cell" style="width:390px"><p class="cap">Web phone <span>jump failed: Retry strip, button stays</span></p>
+<div class="fr web" style="width:390px;height:760px">
+<div class="sb"><b>9:41</b><i>●●● ▮</i></div>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+<div class="warn er" role="alert"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg><span>Couldn’t load the latest messages.</span><button class="rt" data-testid="chat-retry" type="button">Retry</button></div>
+<div class="list"><div class="col"><div class="m u" data-id="m3"><div class="b">Thanks. Did the typecheck pass too?</div></div><div class="m a" data-id="m4"><div class="b">Typecheck passes. Unit tests for the chat package pass: 214 of 214.</div></div><div class="m u" data-id="m5"><div class="b">Good. Next, add a test for the empty DM state.</div></div><div class="m a" data-id="m6"><div class="b">Added <code>chat-empty-state.test.tsx</code> with two cases: no messages, and no agent selected.</div></div><div class="m u" data-id="m7"><div class="b">Which agent runs the review?</div></div></div></div>
+<div class="dock"><button class="jb" data-testid="chat-jump-to-latest" aria-label="Jump to latest messages" type="button"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg></button><div class="comp"><span>Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+
+</section></div></div><div class="cell" style="width:390px"><p class="cap">Native phone <span>empty DM, dark: no button</span></p>
+<div class="fr native dark" style="width:390px;height:760px">
+<div class="sb"><b>9:41</b><i>●●● ▮</i></div>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+
+<div class="list"><div class="col"><div class="state emp"><div class="ic"><svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div><b>No messages yet</b><p>Send a message to start this DM with x99-claude-sonnet.</p></div></div></div>
+<div class="dock"><div class="comp"><span>Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+<div class="home"></div>
+</section></div></div><div class="cell" style="width:390px"><p class="cap">Native phone <span>load failed: Retry, no button</span></p>
+<div class="fr native" style="width:390px;height:760px">
+<div class="sb"><b>9:41</b><i>●●● ▮</i></div>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+
+<div class="list"><div class="col"><div class="state errs" role="alert"><div class="ic er"><svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg></div><b>Couldn’t load messages</b><p>Check your connection, then try again.</p><button class="rt" data-testid="chat-retry" type="button">Retry</button></div></div></div>
+<div class="dock"><div class="comp"><span>Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+<div class="home"></div>
+</section></div></div><div class="cell" style="width:390px"><p class="cap">Native phone <span>jump failed, dark: Retry strip, button stays</span></p>
+<div class="fr native dark" style="width:390px;height:760px">
+<div class="sb"><b>9:41</b><i>●●● ▮</i></div>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+<div class="warn er" role="alert"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg><span>Couldn’t load the latest messages.</span><button class="rt" data-testid="chat-retry" type="button">Retry</button></div>
+<div class="list"><div class="col"><div class="m u" data-id="m3"><div class="b">Thanks. Did the typecheck pass too?</div></div><div class="m a" data-id="m4"><div class="b">Typecheck passes. Unit tests for the chat package pass: 214 of 214.</div></div><div class="m u" data-id="m5"><div class="b">Good. Next, add a test for the empty DM state.</div></div><div class="m a" data-id="m6"><div class="b">Added <code>chat-empty-state.test.tsx</code> with two cases: no messages, and no agent selected.</div></div><div class="m u" data-id="m7"><div class="b">Which agent runs the review?</div></div></div></div>
+<div class="dock"><button class="jb" data-testid="chat-jump-to-latest" aria-label="Jump to latest messages" type="button"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg></button><div class="comp"><span>Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+<div class="home"></div>
+</section></div></div></div>
+<h2 class="grp">Phone 390 × 844 — rev-3: retry in progress, read-only, conflict</h2><div class="grid"><div class="cell" style="width:390px"><p class="cap">Load retry in progress <span>aria-busy, Retry off with reason, no jump button</span></p>
+<div class="fr web" style="width:390px;height:760px">
+<div class="sb"><b>9:41</b><i>●●● ▮</i></div>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+
+<div class="list"><div class="col"><div class="state errs" role="alert" aria-busy="true"><div class="ic er"><svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg></div><b>Couldn’t load messages</b><p>Check your connection, then try again.</p><button class="rt" data-testid="chat-retry" type="button" disabled aria-disabled="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" opacity=".25"/><path d="M21 12a9 9 0 0 0-9-9"/></svg>Retrying…</button><p class="why">Retry is off until this attempt ends.</p></div><div class="sk"><i style="width:55%"></i><i style="width:80%"></i><i style="width:40%"></i></div></div></div>
+<div class="dock"><div class="comp"><span class="">Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+
+</section></div></div><div class="cell" style="width:390px"><p class="cap">Jump retry in progress <span>strip and button aria-busy, Retry off with reason</span></p>
+<div class="fr web" style="width:390px;height:760px">
+<div class="sb"><b>9:41</b><i>●●● ▮</i></div>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+<div class="warn er" role="alert" aria-busy="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg><span>Retrying the latest messages…<em class="why">Retry is off until this attempt ends.</em></span><button class="rt" data-testid="chat-retry" type="button" disabled aria-disabled="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" opacity=".25"/><path d="M21 12a9 9 0 0 0-9-9"/></svg>Retrying…</button></div>
+<div class="list"><div class="col"><div class="m u" data-id="m3"><div class="b">Thanks. Did the typecheck pass too?</div></div><div class="m a" data-id="m4"><div class="b">Typecheck passes. Unit tests for the chat package pass: 214 of 214.</div></div><div class="m u" data-id="m5"><div class="b">Good. Next, add a test for the empty DM state.</div></div><div class="m a" data-id="m6"><div class="b">Added <code>chat-empty-state.test.tsx</code> with two cases: no messages, and no agent selected.</div></div><div class="m u" data-id="m7"><div class="b">Which agent runs the review?</div></div></div></div>
+<div class="dock"><button class="jb" data-testid="chat-jump-to-latest" aria-label="Jump to latest messages" aria-busy="true" aria-disabled="true" type="button"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" opacity=".25"/><path d="M21 12a9 9 0 0 0-9-9"/></svg></button><div class="comp"><span class="">Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+
+</section></div></div><div class="cell" style="width:390px"><p class="cap">Read-only (member) <span>access revoked, composer off with reason, button stays</span></p>
+<div class="fr web" style="width:390px;height:760px">
+<div class="sb"><b>9:41</b><i>●●● ▮</i></div>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+
+<div class="list"><div class="col"><div class="m u" data-id="m3"><div class="b">Thanks. Did the typecheck pass too?</div></div><div class="m a" data-id="m4"><div class="b">Typecheck passes. Unit tests for the chat package pass: 214 of 214.</div></div><div class="m u" data-id="m5"><div class="b">Good. Next, add a test for the empty DM state.</div></div><div class="m a" data-id="m6"><div class="b">Added <code>chat-empty-state.test.tsx</code> with two cases: no messages, and no agent selected.</div></div><div class="m u" data-id="m7"><div class="b">Which agent runs the review?</div></div></div></div>
+<div class="dock"><button class="jb" data-testid="chat-jump-to-latest" aria-label="Jump to latest messages" type="button"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg></button><div class="ro" role="status"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg><span>You no longer have permission to run x99-claude-sonnet — this conversation is read-only.</span></div><div class="comp dis"><span class="">You no longer have permission to run this agent</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+
+</section></div></div><div class="cell" style="width:390px"><p class="cap">Conflict (409 chat_compacting) <span>toast, draft kept, composer off with reason</span></p>
+<div class="fr web dark" style="width:390px;height:760px">
+<div class="sb"><b>9:41</b><i>●●● ▮</i></div>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+
+<div class="list"><div class="col"><div class="m u" data-id="m3"><div class="b">Thanks. Did the typecheck pass too?</div></div><div class="m a" data-id="m4"><div class="b">Typecheck passes. Unit tests for the chat package pass: 214 of 214.</div></div><div class="m u" data-id="m5"><div class="b">Good. Next, add a test for the empty DM state.</div></div><div class="m a" data-id="m6"><div class="b">Added <code>chat-empty-state.test.tsx</code> with two cases: no messages, and no agent selected.</div></div><div class="m u" data-id="m7"><div class="b">Which agent runs the review?</div></div></div></div><div class="toast" role="status">This DM is compacting. Send again when it finishes.</div>
+<div class="dock"><button class="jb" data-testid="chat-jump-to-latest" aria-label="Jump to latest messages" type="button"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg></button><div class="comp dis"><span class="draft">Can you rerun the checks?</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+
+</section></div></div><div class="cell" style="width:390px"><p class="cap">Native phone <span>load retry in progress, dark</span></p>
+<div class="fr native dark" style="width:390px;height:760px">
+<div class="sb"><b>9:41</b><i>●●● ▮</i></div>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+
+<div class="list"><div class="col"><div class="state errs" role="alert" aria-busy="true"><div class="ic er"><svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg></div><b>Couldn’t load messages</b><p>Check your connection, then try again.</p><button class="rt" data-testid="chat-retry" type="button" disabled aria-disabled="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" opacity=".25"/><path d="M21 12a9 9 0 0 0-9-9"/></svg>Retrying…</button><p class="why">Retry is off until this attempt ends.</p></div><div class="sk"><i style="width:55%"></i><i style="width:80%"></i><i style="width:40%"></i></div></div></div>
+<div class="dock"><div class="comp"><span class="">Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+<div class="home"></div>
+</section></div></div><div class="cell" style="width:390px"><p class="cap">Native phone <span>jump retry in progress</span></p>
+<div class="fr native" style="width:390px;height:760px">
+<div class="sb"><b>9:41</b><i>●●● ▮</i></div>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+<div class="warn er" role="alert" aria-busy="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg><span>Retrying the latest messages…<em class="why">Retry is off until this attempt ends.</em></span><button class="rt" data-testid="chat-retry" type="button" disabled aria-disabled="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" opacity=".25"/><path d="M21 12a9 9 0 0 0-9-9"/></svg>Retrying…</button></div>
+<div class="list"><div class="col"><div class="m u" data-id="m3"><div class="b">Thanks. Did the typecheck pass too?</div></div><div class="m a" data-id="m4"><div class="b">Typecheck passes. Unit tests for the chat package pass: 214 of 214.</div></div><div class="m u" data-id="m5"><div class="b">Good. Next, add a test for the empty DM state.</div></div><div class="m a" data-id="m6"><div class="b">Added <code>chat-empty-state.test.tsx</code> with two cases: no messages, and no agent selected.</div></div><div class="m u" data-id="m7"><div class="b">Which agent runs the review?</div></div></div></div>
+<div class="dock"><button class="jb" data-testid="chat-jump-to-latest" aria-label="Jump to latest messages" aria-busy="true" aria-disabled="true" type="button"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" opacity=".25"/><path d="M21 12a9 9 0 0 0-9-9"/></svg></button><div class="comp"><span class="">Message x99-claude-sonnet…</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+<div class="home"></div>
+</section></div></div><div class="cell" style="width:390px"><p class="cap">Native phone <span>read-only: archived chat, composer off with reason, button stays</span></p>
+<div class="fr native" style="width:390px;height:760px">
+<div class="sb"><b>9:41</b><i>●●● ▮</i></div>
+<section class="chat">
+<header class="hd"><b>Review the lint fix</b><small>x99-claude-sonnet · DM</small></header>
+
+<div class="list"><div class="col"><div class="m u" data-id="m3"><div class="b">Thanks. Did the typecheck pass too?</div></div><div class="m a" data-id="m4"><div class="b">Typecheck passes. Unit tests for the chat package pass: 214 of 214.</div></div><div class="m u" data-id="m5"><div class="b">Good. Next, add a test for the empty DM state.</div></div><div class="m a" data-id="m6"><div class="b">Added <code>chat-empty-state.test.tsx</code> with two cases: no messages, and no agent selected.</div></div><div class="m u" data-id="m7"><div class="b">Which agent runs the review?</div></div></div></div>
+<div class="dock"><button class="jb" data-testid="chat-jump-to-latest" aria-label="Jump to latest messages" type="button"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg></button><div class="comp dis"><span class="">This chat is archived</span><u><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></u></div></div>
+<div class="home"></div>
+</section></div></div><div class="cell" style="width:390px"><p class="cap">Native phone <span>conflict (409 chat_compacting): not applicable</span></p><p class="na">The native chat composer has no compacting state and no <code>chat_compacting</code> handling: <code>apps/mobile/components/chat/chat-composer.tsx</code> has only <code>disabled</code> and <code>disabledReason</code>, and <code>apps/mobile/app/(app)/[workspace]/(tabs)/chat.tsx</code> sets them for a missing agent or an archived session. No frame drawn. Disposition for the independent reviewer.</p></div></div>
+<h2 class="grp">Spec</h2><ul class="spec"><li>Name: <b>Jump to latest messages</b> (aria-label, tooltip on hover/focus on desktop).</li><li>Size: 36 px on desktop (<code>--button-height-lg</code>), 44 px on a coarse pointer and on native.</li><li>Position: horizontally centered on the reading column, 12 px above the composer card, never inside the safe-area inset.</li><li>Motion: fade 120 ms; scroll is instant when <code>prefers-reduced-motion</code> is set.</li><li>No count badge (out of scope).</li><li>Empty DM: no messages, so no button. Copy “No messages yet / Send a message to start this DM with {agent}.” The composer stays enabled.</li><li>Load failed: <code>role="alert"</code> block with a visible Retry button; no jump button (no list to jump in). Retry shows <code>aria-busy</code> and keeps the skeleton frame from the loading state.</li><li>Jump failed (latest page did not load): the button stays visible and <code>aria-busy</code> while retrying; a <code>role="alert"</code> strip under the header carries a Retry button. Either control retries the same load.</li><li>Rev-2 contrast: button boundary (A and C) uses <code>--muted-foreground</code> (5.70:1 light, 7.15:1 dark against the page); focus ring uses <code>--foreground</code> (the <code>--ring</code> token is 2.54:1 on light). Measurements in NOTES.md.</li><li>Retry in progress: Retry is replaced by a disabled “Retrying…” button with a rotating arc (static here). The block or strip carries <code>aria-busy="true"</code>; the jump button gets <code>aria-busy="true"</code> and <code>aria-disabled="true"</code> with the arc in place of the arrow. Visible text says why: “Retry is off until this attempt ends.”</li><li>Retry size: 36 px on desktop in the block and in the strip; 44 px on a coarse pointer and on native.</li><li>Read-only: copy and disabled composer follow current code (<code>archived-agent-banner.tsx</code>, <code>agent-access-revoked-banner.tsx</code>, <code>chat.json</code> placeholders). The transcript stays readable, so the jump button stays. It sits 12 px above the whole bottom stack (banner and composer).</li><li>Conflict: a send refused with 409 <code>chat_compacting</code> shows the existing toast “This DM is compacting. Send again when it finishes.” The composer is disabled with the “Compacting…” placeholder and keeps the restored draft. Toast position is owned by <code>&lt;Toaster /&gt;</code>; the build checks that it does not cover the jump button.</li><li>B: a 2 px <code>--page-canvas</code> ring surrounds the disc so its edge stays visible over a light user bubble in dark mode (measured 2.56:1 without it).</li><li>C: the arrow sits on an opaque 25 px <code>--surface</code> backing inside the translucent halo. Underlay measurements: <code>contrast-check.html</code> and NOTES.md.</li></ul>
+</body></html>

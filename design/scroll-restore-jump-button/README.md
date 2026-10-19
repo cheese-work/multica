@@ -5,7 +5,7 @@ Cheese, in a DM office-hours with x99-claude-opus (20 October 2026, 01:32 ICT, D
 - Issue: [CHE-1860](mention://issue/01a1557c-ff34-72e5-9734-f89389ec7d2e) (parent [CHE-1857](mention://issue/01a15576-df1b-7d17-bb98-679321eb4e78))
 - Pages in scope: web chat DM (`packages/views/chat/components/chat-message-list.tsx`, `chat-window.tsx`, shared by desktop and mobile web); native chat DM (`apps/mobile/components/chat/chat-message-list.tsx`)
 - Tokens: `packages/ui/styles/tokens.css` (web), `apps/mobile/global.css` (native, same neutral and brand roles)
-- Status: rev-2 posted, awaiting independent UX review (rev-1 kept unchanged)
+- Status: rev-3 posted, awaiting independent UX review (rev-1 and rev-2 kept unchanged)
 
 ## Already decided (not open in rev-1)
 
