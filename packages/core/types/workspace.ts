@@ -151,3 +151,35 @@ export interface WorkspaceExportPrivacy {
   redaction_mode: string;
   manifest_retention_days: number;
 }
+
+/** How Jev squad routing acts: off skips Jev, shadow logs a pick without dispatching it, on dispatches it. */
+export type JevRoutingMode = "off" | "shadow" | "on";
+
+/**
+ * CHE-1839: the slice of the workspace governance config the Jev / Governance
+ * tab reads. Fields stay raw (a newer server may add modes), see
+ * `resolveJevGovernance` for how the tab interprets them.
+ */
+export interface WorkspaceGovernanceConfig {
+  version: number;
+  settings: {
+    jev_squad_routing_mode?: string | null;
+    jev_squad_routing_enabled?: boolean | null;
+    jev_min_confidence?: number | null;
+  };
+}
+
+/** What the tab shows: the effective routing mode and the confidence, with the version a write is based on. `min_confidence` is null when the workspace never set one (the server then uses 0.90). */
+export interface WorkspaceJevGovernance {
+  version: number;
+  routing_mode: JevRoutingMode;
+  min_confidence: number | null;
+}
+
+/** A write is always based on the version the user saw. Omitted fields stay as they are. */
+export interface WorkspaceJevGovernancePatch {
+  expected_version: number;
+  request_id: string;
+  jev_squad_routing_mode?: "off" | "shadow";
+  jev_min_confidence?: number;
+}

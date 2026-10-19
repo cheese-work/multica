@@ -62,6 +62,8 @@ import type {
   Workspace,
   WorkspaceRepo,
   WorkspaceExportPrivacy,
+  WorkspaceGovernanceConfig,
+  WorkspaceJevGovernancePatch,
   WorkspaceMcpServer,
   MemberWithUser,
   User,
@@ -376,6 +378,7 @@ import {
   PurchaseWorkspaceSeatsResponseSchema,
   CreateWorkspaceSubscriptionPortalResponseSchema,
   WorkspaceExportPrivacySchema,
+  WorkspaceGovernanceConfigSchema,
   DingTalkInstallationSchema,
   ListDingTalkInstallationsResponseSchema,
   ListDingTalkGroupsResponseSchema,
@@ -3146,6 +3149,25 @@ export class ApiClient {
       { method: "PATCH", body: JSON.stringify(data) },
     );
     return WorkspaceExportPrivacySchema.parse(raw);
+  }
+
+  // CHE-1839: the Jev / Governance tab reads and writes the workspace governance
+  // config. Any member may read; only owners and admins may write (the server
+  // enforces both). Responses parse strictly, see WorkspaceGovernanceConfigSchema.
+  async getGovernanceConfig(id: string): Promise<WorkspaceGovernanceConfig> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${id}/governance/config`);
+    return WorkspaceGovernanceConfigSchema.parse(raw);
+  }
+
+  async patchGovernanceConfig(
+    id: string,
+    patch: WorkspaceJevGovernancePatch,
+  ): Promise<WorkspaceGovernanceConfig> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${id}/governance/config`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+    return WorkspaceGovernanceConfigSchema.parse(raw);
   }
 
   async listPluginInstallations(workspaceId: string): Promise<PluginInstallationListResponse> {

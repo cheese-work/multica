@@ -113,6 +113,42 @@
     "pause_resumed": "唤醒已恢复。",
     "retry": "重试"
   },
+  "jev_governance": {
+    "search_description": "Jev 的小队路由模式和最低置信度。",
+    "routing_title": "小队路由",
+    "mode_label": "模式",
+    "mode": {
+      "off": "关闭",
+      "shadow": "影子",
+      "on": "开启"
+    },
+    "mode_hint": {
+      "off": "跳过 Jev。小队按原有方式路由。",
+      "shadow": "Jev 会挑选执行者，但不会分派任何任务。每次挑选都会记录下来供审查。",
+      "on": "Jev 的挑选会分派给小队执行者。"
+    },
+    "on_locked": "需要影子数据：200 多个已验证项中，自信但错误的比例不超过 2%。",
+    "confidence_label": "最低置信度",
+    "confidence_hint": "默认值为 0.90。",
+    "confidence_invalid": "请输入 0 到 1 之间的数字。",
+    "summary": "v{{version}} · {{mode}}",
+    "based_on": "基于 v{{version}}",
+    "cancel": "取消",
+    "save": "保存更改",
+    "saving": "正在保存…",
+    "saved": "已保存",
+    "save_error": "无法保存。你的更改已保留。",
+    "conflict_title": "未保存：设置已变更",
+    "conflict_body": "有人保存了更新的版本。你的修改保留在下方。请重新加载查看，然后再次应用。",
+    "conflict_reload": "重新加载最新版本",
+    "conflict_keep": "继续编辑",
+    "loading": "正在加载治理设置",
+    "load_error": "无法加载治理设置",
+    "load_error_body": "服务器无法读取这些设置。",
+    "retry": "重试",
+    "offline_title": "你已离线",
+    "offline_body": "显示的是最后加载的 v{{version}}。恢复连接前暂停编辑。"
+  },
   "quick_actions": {
     "title": "快捷操作",
     "description": "在任务侧栏运行预设的智能体和提示词。",
@@ -420,7 +456,8 @@
       "billing": "账单与套餐",
       "code": "代码",
       "channels": "消息渠道",
-      "apps": "已连接应用"
+      "apps": "已连接应用",
+      "jev_governance": "Jev / 治理"
     },
     "groups": {
       "personal": "个人",

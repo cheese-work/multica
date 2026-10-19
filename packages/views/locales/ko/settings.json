@@ -113,6 +113,42 @@
     "pause_resumed": "깨우기를 재개했습니다.",
     "retry": "다시 시도"
   },
+  "jev_governance": {
+    "search_description": "Jev의 스쿼드 라우팅 모드와 최소 신뢰도.",
+    "routing_title": "스쿼드 라우팅",
+    "mode_label": "모드",
+    "mode": {
+      "off": "끔",
+      "shadow": "섀도",
+      "on": "켬"
+    },
+    "mode_hint": {
+      "off": "Jev를 건너뜁니다. 스쿼드는 이전처럼 라우팅합니다.",
+      "shadow": "Jev가 담당자를 고르지만 아무것도 배정되지 않습니다. 선택은 검토를 위해 기록됩니다.",
+      "on": "Jev의 선택이 스쿼드 담당자에게 배정됩니다."
+    },
+    "on_locked": "섀도 데이터가 필요합니다: 검증된 항목 200건 이상에서 확신한 오답 2% 이하.",
+    "confidence_label": "최소 신뢰도",
+    "confidence_hint": "기본값은 0.90입니다.",
+    "confidence_invalid": "0에서 1 사이의 숫자를 입력하세요.",
+    "summary": "v{{version}} · {{mode}}",
+    "based_on": "v{{version}} 기준",
+    "cancel": "취소",
+    "save": "변경 사항 저장",
+    "saving": "저장 중…",
+    "saved": "저장됨",
+    "save_error": "저장하지 못했습니다. 변경 사항은 유지됩니다.",
+    "conflict_title": "저장되지 않음: 설정이 변경되었습니다",
+    "conflict_body": "다른 사람이 더 최신 버전을 저장했습니다. 편집 내용은 아래에 유지됩니다. 새로 고쳐 확인한 뒤 다시 적용하세요.",
+    "conflict_reload": "최신 버전 다시 불러오기",
+    "conflict_keep": "계속 편집",
+    "loading": "거버넌스 설정 불러오는 중",
+    "load_error": "거버넌스 설정을 불러올 수 없습니다",
+    "load_error_body": "서버가 설정을 읽지 못했습니다.",
+    "retry": "다시 시도",
+    "offline_title": "오프라인 상태입니다",
+    "offline_body": "마지막으로 불러온 v{{version}}을 표시합니다. 연결이 돌아올 때까지 편집이 일시 중지됩니다."
+  },
   "quick_actions": {
     "title": "퀵 액션",
     "description": "태스크 사이드바에서 미리 설정한 에이전트와 프롬프트를 실행합니다.",
@@ -420,7 +456,8 @@
       "billing": "결제 및 요금제",
       "code": "코드",
       "channels": "메신저",
-      "apps": "연결된 앱"
+      "apps": "연결된 앱",
+      "jev_governance": "Jev / 거버넌스"
     },
     "groups": {
       "personal": "개인",

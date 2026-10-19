@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { forgetLocalSearchIndex } from "../search-index/instance";
-import type { Workspace } from "../types";
+import type { Workspace, WorkspaceJevGovernancePatch } from "../types";
 import { api } from "../api";
 import { defaultStorage } from "../platform/storage";
 import { clearWorkspaceStorage } from "../platform/storage-cleanup";
@@ -186,6 +186,22 @@ export function useUpdateWorkspaceExportPrivacy(wsId: string) {
     }) => api.updateWorkspaceExportPrivacy(wsId, data),
     onSuccess: (updated) => {
       queryClient.setQueryData(workspaceKeys.exportPrivacy(wsId), updated);
+    },
+  });
+}
+
+/**
+ * CHE-1839: save the Jev routing mode and confidence. The response is the new
+ * confirmed config, so it replaces the cached one directly; a failed or
+ * conflicting write leaves the cache alone and the caller keeps its draft.
+ */
+export function useUpdateWorkspaceJevGovernance(wsId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: WorkspaceJevGovernancePatch) =>
+      api.patchGovernanceConfig(wsId, patch),
+    onSuccess: (config) => {
+      qc.setQueryData(workspaceKeys.jevGovernance(wsId), config);
     },
   });
 }
