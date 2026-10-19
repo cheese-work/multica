@@ -1,0 +1,5 @@
+jev_enabled:
+  default: false
+  allow_by: workspace_id
+  allow: ["00000000-0000-4000-8000-000000000001", 'b']
+  deny: []
