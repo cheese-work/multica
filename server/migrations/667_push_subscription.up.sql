@@ -2,7 +2,7 @@
 -- user across all workspaces. session_id is the `sid` of the login that
 -- registered it and session_valid_until that session's expiry; logout (or
 -- expiry) ends it, so a device whose DELETE never arrived still stops getting
--- pushes. The unique endpoint index follows in 658, the owner index in 659.
+-- pushes. The unique endpoint index follows in 668, the owner index in 669.
 -- No foreign keys; dependents are cleaned in application code.
 CREATE TABLE IF NOT EXISTS push_subscription (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
