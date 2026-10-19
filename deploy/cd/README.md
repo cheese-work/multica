@@ -424,19 +424,26 @@ repository, CI, logs or PR evidence):
 
 The flag file decides which workspace may use Jev. Shape (workspace ID is
 yours, default stays `false`): `deploy/cd/fixtures/jev-feature-flags.synthetic.yaml`.
+`flagfile-check.mjs` admits only a documented subset of the backend schema (the
+shape in the file header; unknown fields, anchors, `yes`/`no` and unquoted
+numeric list items are refused even though the backend would accept some of
+them). It runs before the first drain because both colours mount the same file
+and the backend exits on a malformed one, so a restart of the incumbent could
+not recover. The Go loader classifies the same corpus
+(`deploy/cd/fixtures/flags`) in `server/internal/featureflags`.
 Edit the file in place: replacing it by rename leaves a running colour on the
 old inode until recreation.
 
 Once either path or network is set, all three must hold. Before the first
 drain, pull, migration or start, `cutover` and `rollback` refuse and name the
 failing variable (never its value) when the key is not base64 of 32 bytes,
-the flag file is not an absolute readable non-empty file, or the network does
-not exist. A refusal leaves the incumbent serving.
+the flag file is not an absolute readable non-empty file that
+`flagfile-check.mjs` admits, or the network does not exist. A refusal leaves the incumbent serving.
 
 Joining the gateway network adds a second `postgres` to the backend's DNS
-path. The overlay therefore reaches the database as `multica-postgres-1`
-(`<project>-postgres-1`; the project is `multica`), which exists only on the
-project network. No IP pin or `extra_hosts` entry is used, so a changed
+path. The overlay therefore reaches the database as `<project>-postgres-1`
+(the effective Compose project: `-p`, `COMPOSE_PROJECT_NAME`, else `multica`),
+which exists only on the project network. No IP pin or `extra_hosts` entry is used, so a changed
 container address needs no edit. Ports, volumes, the blue/green routing,
 the deploy lock, rollback and the one-active-backend rule are untouched.
 

@@ -156,7 +156,10 @@ jev_overlay_prepare() {
     exit 1
   }
   case "$flags" in
-    /*) [ -f "$flags" ] && [ -r "$flags" ] && [ -s "$flags" ] || jev_refuse MULTICA_JEV_FLAGS_FILE "is not a readable, non-empty file" ;;
+    /*) [ -f "$flags" ] && [ -r "$flags" ] && [ -s "$flags" ] || jev_refuse MULTICA_JEV_FLAGS_FILE "is not a readable, non-empty file"
+      # Both colours mount this file and the backend refuses to start on a
+      # malformed one, so a bad file must stop us before the incumbent drains.
+      node "$script_dir/flagfile-check.mjs" "$flags" || jev_refuse MULTICA_JEV_FLAGS_FILE "is not a valid feature-flag file (see the line above)" ;;
     *) jev_refuse MULTICA_JEV_FLAGS_FILE "is unset or not an absolute path" ;;
   esac
   [ -n "$network" ] || jev_refuse MULTICA_JEV_GATEWAY_NETWORK "is unset"
