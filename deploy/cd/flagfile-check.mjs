@@ -15,7 +15,7 @@
 //     variant|allow_by|deny_by: <string>
 //     allow|deny: ["a", b]       # or a block list of `- <string>` at 4 spaces
 //     percent:
-//       percent: <integer>
+//       percent: <integer 0..9223372036854775807, no leading zeros>
 //       by: <string>
 // Strings are "double-quoted" (no backslash), 'single-quoted' (no inner quote)
 // or plain tokens that are not booleans, null, numbers or dates.
@@ -132,8 +132,11 @@ for (const raw of lines) {
       if (percentKeys.has(m[1])) refuse(`duplicate field ${m[1]}`);
       percentKeys.add(m[1]);
       if (m[1] === "percent") {
-        const n = /^(\d+)(?=\s|$)/.exec(m[2]);
-        if (!n) refuse("percent must be an integer");
+        // Canonical decimal only: the loader reads a leading zero as octal (or
+        // wraps a long zero-padded value), and values past Go's int64 fail to load.
+        const n = /^(0|[1-9]\d*)(?=\s|$)/.exec(m[2]);
+        if (!n) refuse("percent must be a plain decimal integer without leading zeros");
+        if (BigInt(n[1]) > 9223372036854775807n) refuse("percent exceeds the 64-bit integer range");
         tail(m[2].slice(n[1].length));
       } else {
         tail(scalar(m[2])[1]);

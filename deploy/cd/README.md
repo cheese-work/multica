@@ -426,7 +426,7 @@ The flag file decides which workspace may use Jev. Shape (workspace ID is
 yours, default stays `false`): `deploy/cd/fixtures/jev-feature-flags.synthetic.yaml`.
 `flagfile-check.mjs` admits only a documented subset of the backend schema (the
 shape in the file header; unknown fields, anchors, `yes`/`no` and unquoted
-numeric list items are refused even though the backend would accept some of
+numeric list items, and `percent` values with leading zeros are refused; `percent` must also fit 64 bits even though the backend would accept some of
 them). It runs before the first drain because both colours mount the same file
 and the backend exits on a malformed one, so a restart of the incumbent could
 not recover. The Go loader classifies the same corpus
