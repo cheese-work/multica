@@ -264,18 +264,115 @@ func TestLogoutEndsTheRegisteringSessionsSubscriptions(t *testing.T) {
 		t.Fatalf("POST /auth/logout: expected 200, got %d", resp.StatusCode)
 	}
 
-	valid := func(endpoint string) bool {
-		var until time.Time
-		if err := testPool.QueryRow(context.Background(), `SELECT session_valid_until FROM push_subscription WHERE endpoint = $1`, endpoint).Scan(&until); err != nil {
-			t.Fatalf("read %s: %v", endpoint, err)
+	ended := func(sessionID string) bool {
+		return dbfx.New(testPool, testWorkspaceID, testUserID).Count(t, `SELECT count(*) FROM push_session_end WHERE session_id = $1`, sessionID) == 1
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM push_session_end WHERE session_id IN ('sid-logout', 'sid-other-device')`)
+	})
+	if !ended("sid-logout") {
+		t.Fatal("the logged-out session is not marked ended")
+	}
+	if ended("sid-other-device") {
+		t.Fatal("logout of one session ended another session")
+	}
+}
+
+// lockDevice holds the device row the way an in-flight send does.
+func lockDevice(t *testing.T, endpoint string) (release func()) {
+	t.Helper()
+	tx, err := testPool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if _, err := tx.Exec(context.Background(), `SELECT 1 FROM push_subscription WHERE endpoint = $1 FOR NO KEY UPDATE`, endpoint); err != nil {
+		t.Fatalf("lock device: %v", err)
+	}
+	done := false
+	release = func() {
+		if !done {
+			done = true
+			_ = tx.Commit(context.Background())
 		}
-		return until.After(time.Now())
 	}
-	if valid("https://push.example.com/send/logout") {
-		t.Fatal("subscription of the logged-out session is still valid")
+	t.Cleanup(release)
+	return release
+}
+
+// CHE-1795 P2 (Luna): registration and logout do not get an end-to-end 15 s
+// guarantee from the send timeout. Contract under test: a registration or
+// delete that cannot get the device row quickly fails with 503 and Retry-After,
+// and logout never waits behind a send.
+
+func TestPushRegistrationFailsFastWhenTheDeviceIsBusy(t *testing.T) {
+	enablePush(t)
+	fx := dbfx.New(testPool, testWorkspaceID, testUserID)
+	other := fx.User(t, "Push Busy Other", fmt.Sprintf("push-busy-%d@multica.ai", time.Now().UnixNano()))
+	cleanPushState(t, testUserID, other)
+	endpoint := "https://push.example.com/send/busy"
+	registerPush(t, sessionJWT(t, testUserID, "sid-busy", time.Now().Add(time.Hour)), pushSubscriptionBody(t, endpoint), http.StatusOK)
+	release := lockDevice(t, endpoint)
+
+	type result struct {
+		status     int
+		retryAfter string
 	}
-	if !valid("https://push.example.com/send/stays") {
-		t.Fatal("logout of one session ended another session's subscription")
+	call := func(method string, token string, body any) <-chan result {
+		out := make(chan result, 1)
+		go func() {
+			resp := pushRequest(t, method, "/api/push/subscriptions", token, body)
+			resp.Body.Close()
+			out <- result{resp.StatusCode, resp.Header.Get("Retry-After")}
+		}()
+		return out
+	}
+	transfer := call(http.MethodPost, sessionJWT(t, other, "sid-busy-other", time.Now().Add(time.Hour)), pushSubscriptionBody(t, endpoint))
+	remove := call(http.MethodDelete, sessionJWT(t, testUserID, "sid-busy", time.Now().Add(time.Hour)), map[string]string{"endpoint": endpoint})
+
+	for name, ch := range map[string]<-chan result{"transfer": transfer, "delete": remove} {
+		select {
+		case r := <-ch:
+			if r.status != http.StatusServiceUnavailable || r.retryAfter == "" {
+				t.Errorf("%s on a busy device: status %d, Retry-After %q, want 503 with Retry-After", name, r.status, r.retryAfter)
+			}
+		case <-time.After(6 * time.Second):
+			release()
+			t.Errorf("%s still waiting on a busy device after 6 s: it must fail fast instead of queueing behind the send", name)
+		}
+	}
+	release()
+}
+
+func TestLogoutIsNotBlockedByAnInFlightSend(t *testing.T) {
+	enablePush(t)
+	cleanPushState(t, testUserID)
+	token := sessionJWT(t, testUserID, "sid-logout-busy", time.Now().Add(time.Hour))
+	endpoint := "https://push.example.com/send/logout-busy"
+	registerPush(t, token, pushSubscriptionBody(t, endpoint), http.StatusOK)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM push_session_end WHERE session_id = 'sid-logout-busy'`)
+	})
+	release := lockDevice(t, endpoint)
+
+	done := make(chan int, 1)
+	go func() {
+		resp := pushRequest(t, http.MethodPost, "/auth/logout", token, nil)
+		resp.Body.Close()
+		done <- resp.StatusCode
+	}()
+	select {
+	case status := <-done:
+		if status != http.StatusOK {
+			t.Errorf("logout: status %d, want 200", status)
+		}
+	case <-time.After(2 * time.Second):
+		release()
+		<-done
+		t.Fatal("logout waited behind an in-flight send: ending a session must not need the device row")
+	}
+	release()
+	if n := dbfx.New(testPool, testWorkspaceID, testUserID).Count(t, `SELECT count(*) FROM push_session_end WHERE session_id = 'sid-logout-busy'`); n != 1 {
+		t.Fatal("logout did not mark the session ended")
 	}
 }
 
