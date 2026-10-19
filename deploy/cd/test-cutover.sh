@@ -1423,6 +1423,8 @@ jev_refusals=(
   "MULTICA_JEV_FLAGS_FILE|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$root_dir/deploy/cd/fixtures/flags/invalid/duplicate-key.yaml,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
   "MULTICA_JEV_FLAGS_FILE|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$root_dir/deploy/cd/fixtures/flags/invalid/unclosed-flow.yaml,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
   "MULTICA_JEV_FLAGS_FILE|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$root_dir/deploy/cd/fixtures/flags/invalid/flag-not-map.yaml,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
+  "MULTICA_JEV_FLAGS_FILE|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$root_dir/deploy/cd/fixtures/flags/invalid/percent-overflow-by-one.yaml,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
+  "MULTICA_JEV_FLAGS_FILE|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$root_dir/deploy/cd/fixtures/flags/invalid/percent-overflow-uint64.yaml,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
   "MULTICA_JEV_GATEWAY_NETWORK|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$jev_flags|"
   "MULTICA_JEV_GATEWAY_NETWORK|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$jev_flags,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|missing-gateway-network"
 )
