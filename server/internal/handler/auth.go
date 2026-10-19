@@ -787,6 +787,7 @@ func (h *Handler) issueHandoffToken(w http.ResponseWriter, r *http.Request, meth
 }
 
 func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
+	h.endPushSession(r)
 	auth.ClearAuthCookies(w)
 	writeJSON(w, http.StatusOK, map[string]string{"message": "logged out"})
 }

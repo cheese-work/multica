@@ -438,7 +438,8 @@ func TestDMTheUserCanNoLongerReadGetsNoPush(t *testing.T) {
 	w := newWorld(t)
 	w.setPush("dm", true)
 	w.dmReply()
-	w.fx.Exec(t, `UPDATE chat_session SET creator_id = $2 WHERE id = $1`, w.sessionID, dbid.NewV7())
+	stranger := w.fx.User(t, "Push Stranger", fmt.Sprintf("push-stranger-%d@multica.ai", time.Now().UnixNano()))
+	w.fx.Exec(t, `UPDATE chat_session SET creator_id = $2 WHERE id = $1`, w.sessionID, stranger)
 	w.due()
 	w.run()
 

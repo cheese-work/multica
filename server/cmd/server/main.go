@@ -775,6 +775,7 @@ func main() {
 	if h.DecisionWorker != nil {
 		go h.DecisionWorker.Run(sweepCtx)
 	}
+	pushWorker := startPushWorker(sweepCtx, queries)
 	if h.SeatCapacityWorker != nil {
 		go h.SeatCapacityWorker.Run(sweepCtx)
 	}
@@ -944,6 +945,11 @@ func main() {
 		JoinDecisionWorker: func() {
 			if h.DecisionWorker != nil && !h.DecisionWorker.WaitWithTimeout(5*time.Second) {
 				slog.Warn("decision worker did not exit within shutdown timeout")
+			}
+		},
+		JoinPushWorker: func() {
+			if pushWorker != nil && !pushWorker.WaitWithTimeout(5*time.Second) {
+				slog.Warn("push worker did not exit within shutdown timeout")
 			}
 		},
 		JoinTelegram: func() {
