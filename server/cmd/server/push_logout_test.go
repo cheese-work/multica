@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/pushnotify"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -114,28 +115,54 @@ func TestLogoutWaitsForASendAdmittedBeforeIt(t *testing.T) {
 	}
 }
 
-// A send that outlasts the drain does not hold logout hostage: the marker is
-// already recorded, so no later send starts, and the send in flight cannot be
-// recalled.
-func TestLogoutAnswersWithinTheDrainBudgetWhenASendIsSlow(t *testing.T) {
+// CHE-1795 P1 (Luna, exact-pair review of 11cb9a671): when the drain cannot
+// show that no admitted send is left, logout must not report success. The
+// marker stays recorded, the cookie stays, and a retry after the worker is
+// done completes. Holding the sender gate at Send entry stands for a worker
+// that is admitted (it holds the shared session lock) and has not yet sent.
+func TestLogoutRefusesToSucceedWhileAnAdmittedSendOutlastsTheDrain(t *testing.T) {
 	token, gate, pass := startAdmittedSend(t, "sid-slow")
 
 	started := time.Now()
 	resp := pushRequest(t, http.MethodPost, "/auth/logout", token, nil)
 	resp.Body.Close()
 	elapsed := time.Since(started)
-	gate.open()
-	<-pass
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("logout: status %d, want 200", resp.StatusCode)
+	if resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Retry-After") == "" {
+		gate.open()
+		<-pass
+		t.Fatalf("logout behind a send that outlasts the drain: status %d, Retry-After %q, want 503 with Retry-After", resp.StatusCode, resp.Header.Get("Retry-After"))
 	}
-	if elapsed > 6*time.Second {
-		t.Fatalf("logout took %v behind a slow send, want it bounded by the drain budget", elapsed)
+	if clearsAuthCookie(resp) {
+		t.Error("the auth cookie was cleared although the drain did not finish: the client could no longer retry")
+	}
+	if elapsed > 8*time.Second {
+		t.Errorf("logout took %v behind a slow send, want it bounded by the drain budget plus teardown", elapsed)
 	}
 	if !endedSession(t, "sid-slow") {
-		t.Fatal("the session is not marked ended")
+		t.Error("the marker was not kept: later deliveries would be admitted again")
 	}
+
+	gate.open() // the admitted worker finishes
+	if err := <-pass; err != nil {
+		t.Fatalf("process pass: %v", err)
+	}
+	retry := pushRequest(t, http.MethodPost, "/auth/logout", token, nil)
+	retry.Body.Close()
+	if retry.StatusCode != http.StatusOK || !clearsAuthCookie(retry) {
+		t.Fatalf("retry after the worker finished: status %d, cookie cleared %v, want 200 and the cookie cleared", retry.StatusCode, clearsAuthCookie(retry))
+	}
+}
+
+// clearsAuthCookie reports whether the response expires the auth cookie, the
+// signal that the client is logged out.
+func clearsAuthCookie(resp *http.Response) bool {
+	for _, cookie := range resp.Cookies() {
+		if cookie.Name == auth.AuthCookieName && (cookie.MaxAge < 0 || cookie.Value == "") {
+			return true
+		}
+	}
+	return false
 }
 
 func TestEndedSessionCannotRegisterAgain(t *testing.T) {

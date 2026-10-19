@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -176,4 +177,114 @@ func TestBusyDeviceRequestRollsBackWithinADeadline(t *testing.T) {
 			t.Errorf("a rollback ran with %v left; teardown needs its own short deadline, outside the request budget", left)
 		}
 	}
+}
+
+// drainFaultStarter lets the logout drain fail at each step it has: Begin, the
+// SET LOCAL, the exclusive lock, the commit.
+type drainFaultStarter struct {
+	pool                                      pushTxPool
+	failBegin, failSet, failDrain, failCommit error
+}
+
+type drainFaultTx struct {
+	pgx.Tx
+	owner *drainFaultStarter
+}
+
+func (s *drainFaultStarter) Begin(ctx context.Context) (pgx.Tx, error) {
+	if s.failBegin != nil {
+		return nil, s.failBegin
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return drainFaultTx{Tx: tx, owner: s}, nil
+}
+
+func (t drainFaultTx) Exec(ctx context.Context, sql string, args ...interface{}) (pgconn.CommandTag, error) {
+	switch {
+	case t.owner.failSet != nil && strings.Contains(sql, "lock_timeout"):
+		return pgconn.CommandTag{}, t.owner.failSet
+	case t.owner.failDrain != nil && strings.Contains(sql, "pg_advisory_xact_lock("):
+		return pgconn.CommandTag{}, t.owner.failDrain
+	}
+	return t.Tx.Exec(ctx, sql, args...)
+}
+
+func (t drainFaultTx) Commit(ctx context.Context) error {
+	if t.owner.failCommit != nil {
+		_ = t.Tx.Rollback(ctx)
+		return t.owner.failCommit
+	}
+	return t.Tx.Commit(ctx)
+}
+
+// CHE-1795 P1 (Luna, exact-pair review of 11cb9a671): the drain is what shows
+// that no admitted send is left, so any failure of it, whatever the step, is a
+// failed logout: 503 with Retry-After, the cookie kept, the marker kept.
+func TestLogoutFailsClosedOnEveryDrainFailure(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	pushHandlerEnv(t)
+	lockTimeout := &pgconn.PgError{Code: "55P03", Message: "canceling statement due to lock timeout"}
+	cases := []struct {
+		name  string
+		fault drainFaultStarter
+	}{
+		{"begin", drainFaultStarter{failBegin: errors.New("pool is exhausted")}},
+		{"set local", drainFaultStarter{failSet: errors.New("cannot set lock_timeout")}},
+		{"drain error", drainFaultStarter{failDrain: errors.New("lock manager unavailable")}},
+		{"drain lock timeout", drainFaultStarter{failDrain: lockTimeout}},
+		{"drain deadline", drainFaultStarter{failDrain: context.DeadlineExceeded}},
+		{"drain cancelled", drainFaultStarter{failDrain: context.Canceled}},
+		{"commit", drainFaultStarter{failCommit: errors.New("commit failed")}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sid := "sid-drain-" + strings.ReplaceAll(tc.name, " ", "-")
+			t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM push_session_end WHERE session_id = $1`, sid) })
+			starter := tc.fault
+			starter.pool = testPool
+			saved := testHandler.TxStarter
+			testHandler.TxStarter = &starter
+			t.Cleanup(func() { testHandler.TxStarter = saved })
+
+			req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+			req.Header.Set("Authorization", "Bearer "+pushSessionToken(t, sid))
+			rec := httptest.NewRecorder()
+			testHandler.Logout(rec, req)
+
+			if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
+				t.Errorf("logout with a failing drain: status %d, Retry-After %q, want 503 with Retry-After", rec.Code, rec.Header().Get("Retry-After"))
+			}
+			for _, cookie := range rec.Result().Cookies() {
+				if cookie.Name == auth.AuthCookieName {
+					t.Error("the auth cookie was cleared after a failed drain: the client could no longer retry")
+				}
+			}
+			var n int
+			if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM push_session_end WHERE session_id = $1`, sid).Scan(&n); err != nil || n != 1 {
+				t.Errorf("marker rows = %d (err %v), want the marker kept and durable", n, err)
+			}
+		})
+	}
+
+	t.Run("no fault", func(t *testing.T) {
+		sid := "sid-drain-ok"
+		t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM push_session_end WHERE session_id = $1`, sid) })
+		saved := testHandler.TxStarter
+		testHandler.TxStarter = &drainFaultStarter{pool: testPool}
+		t.Cleanup(func() { testHandler.TxStarter = saved })
+
+		req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+		req.Header.Set("Authorization", "Bearer "+pushSessionToken(t, sid))
+		rec := httptest.NewRecorder()
+		testHandler.Logout(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("logout with a healthy drain: status %d, want 200", rec.Code)
+		}
+	})
 }
