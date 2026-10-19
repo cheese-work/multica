@@ -1619,7 +1619,12 @@
       "under_minute": "不到 1 分钟",
       "error": "无法移动任务",
       "project_title": "将 {{issue}} 移到「{{project}}」？",
-      "project_confirm": "移到{{project}}"
+      "project_confirm": "移到{{project}}",
+      "batch_title_other": "将 {{count}} 个任务移到「{{status}}」？",
+      "batch_summary_other": "{{count}} 个任务会更换负责人。",
+      "batch_stop_label": "停止原负责人的运行",
+      "batch_confirm_other": "移动 {{count}} 个任务",
+      "batch_error": "无法检查交接"
     },
     "board": {
       "drop_hint_run": "松开后交给 {{name}}，并开始运行",

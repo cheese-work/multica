@@ -394,6 +394,12 @@ func (q *Queries) CancelAgentTask(ctx context.Context, id pgtype.UUID) (AgentTas
 }
 
 const cancelAgentTaskByUser = `-- name: CancelAgentTaskByUser :one
+WITH current_issue AS (
+    SELECT i.assignee_type, i.assignee_id FROM issue i
+    WHERE i.id = (SELECT t.issue_id FROM agent_task_queue t WHERE t.id = $1)
+      AND $6::uuid IS NOT NULL
+    FOR SHARE OF i
+)
 UPDATE agent_task_queue AS task
 SET status = 'cancelled',
     completed_at = now(),
@@ -450,26 +456,42 @@ SET status = 'cancelled',
     END
 WHERE task.id = $1
   AND task.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+  AND NOT EXISTS (
+    SELECT 1 FROM current_issue
+    WHERE current_issue.assignee_type = $5::text
+      AND current_issue.assignee_id = $6::uuid
+  )
 RETURNING task.id, task.agent_id, task.issue_id, task.status, task.priority, task.dispatched_at, task.started_at, task.completed_at, task.result, task.error, task.created_at, task.context, task.runtime_id, task.session_id, task.work_dir, task.trigger_comment_id, task.chat_session_id, task.autopilot_run_id, task.attempt, task.max_attempts, task.parent_task_id, task.failure_reason, task.trigger_summary, task.force_fresh_session, task.is_leader_task, task.wait_reason, task.initiator_user_id, task.handoff_note, task.prepare_lease_expires_at, task.squad_id, task.runtime_mcp_overlay, task.escalation_for_task_id, task.fire_at, task.originator_user_id, task.runtime_connected_apps, task.coalesced_comment_ids, task.delivered_comment_ids, task.chat_input_task_id, task.chat_finalize_deferred_at, task.originator_source, task.delegated_from_task_id, task.retry_of_task_id, task.rerun_of_task_id, task.rule_version_id, task.trigger_evidence_kind, task.trigger_evidence_ref_id, task.accountable_user_id, task.session_rollout_missing, task.retired_session_id, task.quick_actions_disabled, task.regenerate_quick_actions_for, task.branch_name, task.durable_work_dir, task.channel_context_revision, task.comment_thread_id, task.cancelled_by_type, task.cancelled_by_id, task.cancelled_by_name, task.issue_snapshot, task.context_tokens, task.context_window, task.task_kind, task.compact_reason, task.compact_trigger_tokens, task.workflow_step
 `
 
 type CancelAgentTaskByUserParams struct {
-	ID              pgtype.UUID `json:"id"`
-	CancelledByType pgtype.Text `json:"cancelled_by_type"`
-	CancelledByID   pgtype.UUID `json:"cancelled_by_id"`
-	CancelledByName pgtype.Text `json:"cancelled_by_name"`
+	ID                 pgtype.UUID `json:"id"`
+	CancelledByType    pgtype.Text `json:"cancelled_by_type"`
+	CancelledByID      pgtype.UUID `json:"cancelled_by_id"`
+	CancelledByName    pgtype.Text `json:"cancelled_by_name"`
+	UnlessAssigneeType pgtype.Text `json:"unless_assignee_type"`
+	UnlessAssigneeID   pgtype.UUID `json:"unless_assignee_id"`
 }
 
 // An explicit user cancellation is a terminal acknowledgement for any
 // delegated-failure recovery signal planned into this task. Server-initiated
 // cancellations keep using CancelAgentTask / CancelAgentTaskWithReason so a
 // stale plan, claim failure, or other automatic repair can still be replayed.
+//
+// unless_assignee_* make the cancellation conditional on the issue as it stands
+// NOW: a handoff that stopped the previous assignee's run decided that for an
+// issue that had left them, and another request can hand the issue back before
+// the cancellation lands. The issue row is read FOR SHARE, so a reassignment
+// that is still uncommitted is waited for. Both null: no condition, and the
+// issue row is not touched.
 func (q *Queries) CancelAgentTaskByUser(ctx context.Context, arg CancelAgentTaskByUserParams) (AgentTaskQueue, error) {
 	row := q.db.QueryRow(ctx, cancelAgentTaskByUser,
 		arg.ID,
 		arg.CancelledByType,
 		arg.CancelledByID,
 		arg.CancelledByName,
+		arg.UnlessAssigneeType,
+		arg.UnlessAssigneeID,
 	)
 	var i AgentTaskQueue
 	err := row.Scan(

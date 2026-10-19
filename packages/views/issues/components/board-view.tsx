@@ -496,6 +496,7 @@ function BoardViewImpl({
   // project's workflow lists, and a project board names each step's handler.
   const { workflows, isLoaded: workflowsLoaded } = useIssueWorkflows(boardWsId);
   const { data: workspaceProjects } = useQuery(projectListOptions(boardWsId));
+  const projectsLoaded = workspaceProjects !== undefined;
   const workflowOfIssue = useCallback(
     (issue: Issue | null | undefined) => {
       if (!issue?.project_id) return null;
@@ -724,10 +725,11 @@ function BoardViewImpl({
         resetColumns();
         return;
       }
-      // Before the workflows have loaded, a project card's handoff step cannot be
-      // told from a plain one, and the server applies the handoff either way.
-      // Leave the card where it is rather than move it unconfirmed.
-      if (!workflowsLoaded && map.get(activeId)?.project_id && map.get(activeId)?.status !== finalGroup.status) {
+      // Before the workflows and the projects have loaded, a project card's
+      // handoff step cannot be told from a plain one, and the server applies the
+      // handoff either way. A failed load stays unresolved. Leave the card where
+      // it is rather than move it unconfirmed.
+      if (!(workflowsLoaded && projectsLoaded) && map.get(activeId)?.project_id && map.get(activeId)?.status !== finalGroup.status) {
         resetColumns();
         return;
       }
@@ -851,7 +853,7 @@ function BoardViewImpl({
       );
       applyPropertyGroupValue(finalGroup, activeId);
     },
-    [groupedIssues, groups, grouping, groupingOptionIds, onMoveIssue, groupIds, groupMap, sortBy, beginSettle, columnsRef, isDraggingRef, setColumns, applyPropertyGroupValue, catalog, labelOf, t, workflowOfIssue, workflowsLoaded],
+    [groupedIssues, groups, grouping, groupingOptionIds, onMoveIssue, groupIds, groupMap, sortBy, beginSettle, columnsRef, isDraggingRef, setColumns, applyPropertyGroupValue, catalog, labelOf, t, workflowOfIssue, workflowsLoaded, projectsLoaded],
   );
 
   // An aborted drag (pointercancel, window resize, tab hide, Escape) fires

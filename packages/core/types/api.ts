@@ -86,8 +86,10 @@ export interface UpdateIssueRequest {
   stop_previous_assignee_runs?: boolean;
   /** What the handoff confirmation showed: the issue's assignee and the handler
    *  the workflow resolved. The server answers 409 `handoff_preview_stale` when
-   *  the write would hand off and either no longer matches. Control field —
-   *  strip from optimistic cache patches. */
+   *  the write would hand off and either no longer matches. A preview that
+   *  found no handoff is sent with a null handler, which refuses a handler that
+   *  became resolvable since. Control field — strip from optimistic cache
+   *  patches. */
   handoff_preview?: HandoffPreviewBinding;
   /** With a project move: enter the destination workflow's column the issue
    *  lands on, handing it off like a status change (MUL-7420). Without it a

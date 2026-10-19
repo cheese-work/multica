@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -21,7 +22,8 @@ var errHandoffPreviewStale = errors.New("the issue or its workflow changed since
 // HandoffPreviewBinding is what a handoff confirmation was shown: the issue's
 // assignee at preview time and the handler the workflow resolved. A client
 // sends it with `handoff_preview`; absent, the write keeps its earlier
-// behavior and acts on the issue as it finds it.
+// behavior and acts on the issue as it finds it. A null handler binds a preview
+// that found no handoff.
 type HandoffPreviewBinding struct {
 	PreviousAssigneeType *string `json:"previous_assignee_type"`
 	PreviousAssigneeID   *string `json:"previous_assignee_id"`
@@ -54,6 +56,13 @@ type workflowWrite struct {
 	run                                      *db.AgentTaskQueue
 	// preview is what the person confirmed, when the client sent it.
 	preview *HandoffPreviewBinding
+	// stopPrevious is the caller's request to stop the previous assignee's runs.
+	// verify then records, under the issue lock, the runs that existed and who
+	// held the issue, so the cancellation after the commit reaches those runs
+	// and no later ones.
+	stopPrevious bool
+	stopRuns     []db.AgentTaskQueue
+	stopFrom     service.TaskAssignee
 }
 
 // decideIssueWorkflow applies the project's workflow to params, like
@@ -126,6 +135,12 @@ func (w *workflowWrite) verify(ctx context.Context, h *Handler, q *db.Queries, l
 			!sameOptional(w.preview.HandlerID, uuidToString(params.AssigneeID)) {
 			return errHandoffPreviewStale
 		}
+	}
+	w.stopRuns, w.stopFrom = nil, service.TaskAssignee{}
+	if w.stopPrevious && handoff != nil &&
+		(locked.AssigneeType != params.AssigneeType || locked.AssigneeID != params.AssigneeID) {
+		w.stopRuns = h.assigneeActiveRuns(ctx, q, locked)
+		w.stopFrom = service.TaskAssignee{Type: locked.AssigneeType.String, ID: locked.AssigneeID}
 	}
 	return nil
 }

@@ -1685,7 +1685,15 @@
       "under_minute": "under a minute",
       "error": "Couldn’t move the issue",
       "project_title": "Move {{issue}} to {{project}}?",
-      "project_confirm": "Move to {{project}}"
+      "project_confirm": "Move to {{project}}",
+      "batch_title_one": "Move {{count}} issue to “{{status}}”?",
+      "batch_title_other": "Move {{count}} issues to “{{status}}”?",
+      "batch_summary_one": "{{count}} issue changes assignee.",
+      "batch_summary_other": "{{count}} issues change assignee.",
+      "batch_stop_label": "Stop the previous assignees’ runs",
+      "batch_confirm_one": "Move {{count}} issue",
+      "batch_confirm_other": "Move {{count}} issues",
+      "batch_error": "Couldn’t check the handoffs"
     },
     "board": {
       "drop_hint_run": "Drop to hand to {{name}} and start the run",

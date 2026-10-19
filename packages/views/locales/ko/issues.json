@@ -1619,7 +1619,12 @@
       "under_minute": "1분 미만",
       "error": "태스크를 옮기지 못했습니다",
       "project_title": "{{issue}}을(를) {{project}}(으)로 옮길까요?",
-      "project_confirm": "{{project}}(으)로 이동"
+      "project_confirm": "{{project}}(으)로 이동",
+      "batch_title_other": "태스크 {{count}}개를 “{{status}}”(으)로 옮길까요?",
+      "batch_summary_other": "태스크 {{count}}개의 담당자가 바뀝니다.",
+      "batch_stop_label": "이전 담당자의 실행 중지",
+      "batch_confirm_other": "{{count}}개 이동",
+      "batch_error": "인계를 확인하지 못했습니다"
     },
     "board": {
       "drop_hint_run": "놓으면 {{name}}에게 인계하고 실행을 시작합니다",

@@ -2933,6 +2933,12 @@ type CancelTaskResult struct {
 
 var ErrTaskNoLongerQueued = errors.New("task is no longer queued")
 
+// TaskAssignee names an issue assignee: an agent or a squad.
+type TaskAssignee struct {
+	Type string
+	ID   pgtype.UUID
+}
+
 // TaskCancellationActor is the point-in-time identity written onto a task when
 // an authenticated member or agent explicitly stops it. Automatic paths leave
 // this empty and the SQL transition records the system actor instead.
@@ -2969,6 +2975,11 @@ type CancelTaskOptions struct {
 	// run stamped for a step other than StaleStep. A task that started in the
 	// meantime is left alone. Not for user cancellation.
 	StaleStep string
+	// UnlessAssignee, when set, makes a user cancellation conditional at the
+	// statement: the task is left alone while the issue is assigned to this
+	// agent or squad. A handoff that stops its previous assignee's runs sets it,
+	// because the issue can be handed back before the cancellation lands.
+	UnlessAssignee TaskAssignee
 	// UserInitiated distinguishes the issue UI/API cancel action from automatic
 	// server repairs. An explicit user cancellation terminally acknowledges any
 	// delegated-failure recovery signal planned into the task; automatic
@@ -3048,6 +3059,9 @@ func (s *TaskService) CancelTaskWithResult(ctx context.Context, taskID pgtype.UU
 	if opts.UserInitiated && !opts.CancelledBy.ID.Valid {
 		return nil, errors.New("user-initiated cancellation requires an actor id")
 	}
+	if opts.UnlessAssignee.ID.Valid && !opts.UserInitiated {
+		return nil, errors.New("an assignee condition applies to user-initiated cancellation only")
+	}
 	var (
 		task                 db.AgentTaskQueue
 		cancelledChatMessage *CancelledChatMessageResult
@@ -3094,10 +3108,12 @@ func (s *TaskService) CancelTaskWithResult(ctx context.Context, taskID pgtype.UU
 				cancelled, err = qtx.CancelStalePendingStepTask(ctx, db.CancelStalePendingStepTaskParams{ID: taskID, Step: opts.StaleStep})
 			} else if opts.UserInitiated {
 				cancelled, err = qtx.CancelAgentTaskByUser(ctx, db.CancelAgentTaskByUserParams{
-					ID:              taskID,
-					CancelledByType: pgtype.Text{String: opts.CancelledBy.Type, Valid: true},
-					CancelledByID:   opts.CancelledBy.ID,
-					CancelledByName: pgtype.Text{String: opts.CancelledBy.Name, Valid: opts.CancelledBy.Name != ""},
+					ID:                 taskID,
+					CancelledByType:    pgtype.Text{String: opts.CancelledBy.Type, Valid: true},
+					CancelledByID:      opts.CancelledBy.ID,
+					CancelledByName:    pgtype.Text{String: opts.CancelledBy.Name, Valid: opts.CancelledBy.Name != ""},
+					UnlessAssigneeType: pgtype.Text{String: opts.UnlessAssignee.Type, Valid: opts.UnlessAssignee.ID.Valid},
+					UnlessAssigneeID:   opts.UnlessAssignee.ID,
 				})
 			} else if opts.ErrorMessage != "" || opts.FailureReason != "" {
 				cancelled, err = qtx.CancelAgentTaskWithReason(ctx, db.CancelAgentTaskWithReasonParams{

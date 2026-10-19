@@ -19,10 +19,20 @@ import { useQuery } from "@tanstack/react-query";
 import type { Issue, UpdateIssueRequest } from "@multica/core/types";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { commonIssueFields } from "@multica/core/issues/batch";
-import { sharedWorkflowStatusKeys, useIssueWorkflows } from "@multica/core/issue-workflows";
+import {
+  resolveProjectWorkflow,
+  sharedWorkflowStatusKeys,
+  stepHandsOff,
+  useIssueWorkflows,
+  workflowStep,
+} from "@multica/core/issue-workflows";
 import { projectListOptions } from "@multica/core/projects/queries";
-import { useBatchUpdateIssues, useBatchDeleteIssues } from "@multica/core/issues/mutations";
+import { useBatchUpdateIssues, useBatchDeleteIssues, useUpdateIssue } from "@multica/core/issues/mutations";
 import { useModalStore } from "@multica/core/modals";
+import {
+  BatchHandoffConfirmDialog,
+  type BatchHandoffChoice,
+} from "../../workflows/batch-handoff-confirm-dialog";
 import { StatusPicker, PriorityPicker, AssigneePicker } from "./pickers";
 import { useT } from "../../i18n";
 import { cn } from "@multica/ui/lib/utils";
@@ -85,8 +95,13 @@ export function BatchActionToolbar({
     return first && selectedIssues.every((i) => i.project_id === first) ? first : null;
   }, [selectedIssues]);
   const wsId = useWorkspaceId();
-  const { workflows } = useIssueWorkflows(wsId);
-  const { data: projects } = useQuery({ ...projectListOptions(wsId), enabled: count > 0 && !sharedProjectId });
+  const { workflows, isLoaded: workflowsLoaded } = useIssueWorkflows(wsId);
+  // The projects tell which workflow each selected issue follows, so a selection
+  // with any project issue needs them, whether or not it shares one project.
+  const { data: projects } = useQuery({
+    ...projectListOptions(wsId),
+    enabled: count > 0 && selectedIssues.some((i) => i.project_id !== null),
+  });
   const allowedStatuses = useMemo(
     () => (sharedProjectId ? null : sharedWorkflowStatusKeys(workflows, projects, selectedIssues)),
     [sharedProjectId, workflows, projects, selectedIssues],
@@ -96,8 +111,14 @@ export function BatchActionToolbar({
   const [priorityOpen, setPriorityOpen] = useState(false);
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [pendingHandoff, setPendingHandoff] = useState<{
+    updates: Partial<UpdateIssueRequest>;
+    ids: string[];
+    handingOff: Issue[];
+  } | null>(null);
   const surfaceActions = useIssueSurfaceActionsOptional();
   const batchUpdate = useBatchUpdateIssues();
+  const updateIssue = useUpdateIssue();
   const batchDelete = useBatchDeleteIssues();
   const openModal = useModalStore((s) => s.open);
   const loading =
@@ -112,37 +133,89 @@ export function BatchActionToolbar({
     setDeleteOpen(false);
   }, [count]);
 
-  const handleBatchUpdate = async (updates: Partial<UpdateIssueRequest>) => {
-    try {
-      const { updated } = surfaceActions
-        ? await surfaceActions.batchUpdate(ids, updates)
-        : await batchUpdate.mutateAsync({ ids, updates });
-      if (updated < count) {
-        toast.warning(t(($) => $.batch.update_partial, { updated, count }));
-      } else {
-        toast.success(t(($) => $.batch.update_success, { count }));
-      }
-    } catch (err) {
-      toast.error(
-        err instanceof Error && err.message
-          ? err.message
-          : t(($) => $.batch.update_failed),
-      );
+  const applyBatch = (batchIds: string[], updates: Partial<UpdateIssueRequest>) =>
+    surfaceActions
+      ? surfaceActions.batchUpdate(batchIds, updates)
+      : batchUpdate.mutateAsync({ ids: batchIds, updates });
+
+  const reportUpdated = (updated: number) => {
+    if (updated < count) {
+      toast.warning(t(($) => $.batch.update_partial, { updated, count }));
+    } else {
+      toast.success(t(($) => $.batch.update_success, { count }));
     }
   };
 
-  // Batch status changes apply directly — no run-confirm modal (MUL-4155).
-  // done/cancelled can never start a run, and a backlog → active promotion now
-  // starts its run the same way a single-issue status change or the CLI does,
-  // without an extra confirmation step (product decision on MUL-4155). The
-  // status change was previously routed through the pre-trigger modal, which for
-  // the common done/cancelled case only rendered a misleading "现在开始处理？ →
-  // 不会开始处理" box. Agent/squad assignment still confirms via
-  // handleBatchAssignee — that is the only batch action that should preview a
-  // run fan-out.
+  const reportFailure = (err: unknown) =>
+    toast.error(
+      err instanceof Error && err.message
+        ? err.message
+        : t(($) => $.batch.update_failed),
+    );
+
+  const handleBatchUpdate = async (updates: Partial<UpdateIssueRequest>) => {
+    try {
+      reportUpdated((await applyBatch(ids, updates)).updated);
+    } catch (err) {
+      reportFailure(err);
+    }
+  };
+
+  // A batch status change applies directly (MUL-4155) except where it enters a
+  // workflow step that hands an issue off (MUL-7420): that needs the same
+  // confirmation a single status change gets, and the write then carries what
+  // was confirmed. Issues that hand nothing off still move in the one batch
+  // call, only after the confirmation. done/cancelled can never start a run,
+  // and a backlog → active promotion starts its run the same way a single-issue
+  // status change or the CLI does, without an extra confirmation step (product
+  // decision on MUL-4155). Agent/squad assignment still confirms via
+  // handleBatchAssignee.
   const handleBatchStatus = (updates: Partial<UpdateIssueRequest>) => {
-    if (!updates.status) return;
+    const status = updates.status;
+    if (!status) return;
+    const inProjects = selectedIssues.filter((i) => i.project_id && i.status !== status);
+    if (inProjects.length > 0) {
+      // A workflow that is merely unloaded, or failed to load, reads as "no
+      // handoff"; the server would still apply the real one unconfirmed.
+      if (!workflowsLoaded || projects === undefined) return;
+      const handingOff = inProjects.filter((i) =>
+        stepHandsOff(
+          workflowStep(resolveProjectWorkflow(workflows, projects.find((p) => p.id === i.project_id)), status),
+        ),
+      );
+      if (handingOff.length > 0) {
+        setPendingHandoff({ updates, ids, handingOff });
+        return;
+      }
+    }
     void handleBatchUpdate(updates);
+  };
+
+  const confirmHandoff = async (choices: Map<string, BatchHandoffChoice>) => {
+    const pending = pendingHandoff;
+    setPendingHandoff(null);
+    if (!pending) return;
+    const handed = new Set(pending.handingOff.map((i) => i.id));
+    const rest = pending.ids.filter((id) => !handed.has(id));
+    const writes = [
+      ...pending.handingOff.map((i) => {
+        const choice = choices.get(i.id)!;
+        return updateIssue
+          .mutateAsync({
+            id: i.id,
+            ...pending.updates,
+            ...(choice.stopPreviousRuns ? { stop_previous_assignee_runs: true } : {}),
+            handoff_preview: choice.preview,
+          })
+          .then(() => 1);
+      }),
+      ...(rest.length > 0 ? [applyBatch(rest, pending.updates).then((r) => r.updated)] : []),
+    ];
+    const settled = await Promise.allSettled(writes);
+    const updated = settled.reduce((sum, r) => sum + (r.status === "fulfilled" ? r.value : 0), 0);
+    const failure = settled.find((r): r is PromiseRejectedResult => r.status === "rejected");
+    if (failure && updated === 0) reportFailure(failure.reason);
+    else reportUpdated(updated);
   };
 
   const handleBatchAssignee = (updates: Partial<UpdateIssueRequest>) => {
@@ -292,6 +365,16 @@ export function BatchActionToolbar({
           </div>
         )}
       </AnimatePresence>
+
+      {pendingHandoff && (
+        <BatchHandoffConfirmDialog
+          issues={pendingHandoff.handingOff}
+          status={pendingHandoff.updates.status ?? ""}
+          total={pendingHandoff.ids.length}
+          onCancel={() => setPendingHandoff(null)}
+          onConfirm={(choices) => void confirmHandoff(choices)}
+        />
+      )}
 
       {count > 0 && <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <AlertDialogContent>

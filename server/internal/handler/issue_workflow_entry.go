@@ -350,12 +350,14 @@ func (h *Handler) actorDisplayName(ctx context.Context, wsUUID pgtype.UUID, acto
 // when the caller asked for it. A handoff back to the same handler keeps its
 // run, and the agent making the handoff keeps its own: that run is the one
 // making this write.
-func (h *Handler) stopPreviousAssigneeRuns(ctx context.Context, prev, issue db.Issue, actorType, actorID string) {
-	if issue.AssigneeType == prev.AssigneeType && issue.AssigneeID == prev.AssigneeID {
-		return
-	}
-	tasks := h.assigneeActiveRuns(ctx, prev)
-	if len(tasks) == 0 {
+//
+// It cancels the runs the write found under the issue lock, not the ones it
+// finds now: a run the previous assignee got after the commit is work the
+// person never saw. Each cancellation is also conditional on the issue not
+// belonging to the previous assignee again, so a request that handed the issue
+// back in between keeps its run.
+func (h *Handler) stopPreviousAssigneeRuns(ctx context.Context, w *workflowWrite, issue db.Issue, actorType, actorID string) {
+	if w == nil || len(w.stopRuns) == 0 {
 		return
 	}
 	actor := service.TaskCancellationActor{Type: actorType}
@@ -363,11 +365,16 @@ func (h *Handler) stopPreviousAssigneeRuns(ctx context.Context, prev, issue db.I
 		actor.ID = id
 		actor.Name = h.actorDisplayName(ctx, issue.WorkspaceID, actorType, id)
 	}
-	for _, task := range tasks {
+	for _, task := range w.stopRuns {
 		if actorType == "agent" && uuidToString(task.AgentID) == actorID {
 			continue
 		}
-		if _, err := h.TaskService.CancelTaskByUser(ctx, task.ID, actor); err != nil {
+		if _, err := h.TaskService.CancelTaskWithResult(ctx, task.ID, service.CancelTaskOptions{
+			ClientSupportsDraftRestore: true,
+			CancelledBy:                actor,
+			UserInitiated:              true,
+			UnlessAssignee:             w.stopFrom,
+		}); err != nil {
 			slog.Warn("workflow: cancel previous run failed",
 				"issue_id", uuidToString(issue.ID), "task_id", uuidToString(task.ID), "error", err)
 		}
@@ -377,7 +384,7 @@ func (h *Handler) stopPreviousAssigneeRuns(ctx context.Context, prev, issue db.I
 // assigneeActiveRuns lists the active runs of an issue's assignee on it: the
 // agent's own runs, or every run made on a squad's behalf. Members run
 // nothing.
-func (h *Handler) assigneeActiveRuns(ctx context.Context, issue db.Issue) []db.AgentTaskQueue {
+func (h *Handler) assigneeActiveRuns(ctx context.Context, q *db.Queries, issue db.Issue) []db.AgentTaskQueue {
 	if !issue.AssigneeID.Valid {
 		return nil
 	}
@@ -385,7 +392,7 @@ func (h *Handler) assigneeActiveRuns(ctx context.Context, issue db.Issue) []db.A
 	if assigneeType != "agent" && assigneeType != "squad" {
 		return nil
 	}
-	tasks, err := h.Queries.ListActiveTasksByIssue(ctx, issue.ID)
+	tasks, err := q.ListActiveTasksByIssue(ctx, issue.ID)
 	if err != nil {
 		slog.Warn("workflow: list active tasks failed", "issue_id", uuidToString(issue.ID), "error", err)
 		return nil

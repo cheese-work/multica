@@ -1685,7 +1685,15 @@
       "under_minute": "moins d’une minute",
       "error": "Impossible de déplacer la tâche",
       "project_title": "Déplacer {{issue}} vers {{project}} ?",
-      "project_confirm": "Déplacer vers {{project}}"
+      "project_confirm": "Déplacer vers {{project}}",
+      "batch_title_one": "Déplacer {{count}} tâche vers « {{status}} » ?",
+      "batch_title_other": "Déplacer {{count}} tâches vers « {{status}} » ?",
+      "batch_summary_one": "{{count}} tâche change d’assigné.",
+      "batch_summary_other": "{{count}} tâches changent d’assigné.",
+      "batch_stop_label": "Arrêter les exécutions des assignés précédents",
+      "batch_confirm_one": "Déplacer {{count}} tâche",
+      "batch_confirm_other": "Déplacer {{count}} tâches",
+      "batch_error": "Impossible de vérifier les transferts"
     },
     "board": {
       "drop_hint_run": "Déposer pour confier à {{name}} et lancer l’exécution",

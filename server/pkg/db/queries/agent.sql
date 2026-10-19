@@ -1433,6 +1433,19 @@ RETURNING *;
 -- delegated-failure recovery signal planned into this task. Server-initiated
 -- cancellations keep using CancelAgentTask / CancelAgentTaskWithReason so a
 -- stale plan, claim failure, or other automatic repair can still be replayed.
+--
+-- unless_assignee_* make the cancellation conditional on the issue as it stands
+-- NOW: a handoff that stopped the previous assignee's run decided that for an
+-- issue that had left them, and another request can hand the issue back before
+-- the cancellation lands. The issue row is read FOR SHARE, so a reassignment
+-- that is still uncommitted is waited for. Both null: no condition, and the
+-- issue row is not touched.
+WITH current_issue AS (
+    SELECT i.assignee_type, i.assignee_id FROM issue i
+    WHERE i.id = (SELECT t.issue_id FROM agent_task_queue t WHERE t.id = $1)
+      AND sqlc.narg('unless_assignee_id')::uuid IS NOT NULL
+    FOR SHARE OF i
+)
 UPDATE agent_task_queue AS task
 SET status = 'cancelled',
     completed_at = now(),
@@ -1489,6 +1502,11 @@ SET status = 'cancelled',
     END
 WHERE task.id = $1
   AND task.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+  AND NOT EXISTS (
+    SELECT 1 FROM current_issue
+    WHERE current_issue.assignee_type = sqlc.narg('unless_assignee_type')::text
+      AND current_issue.assignee_id = sqlc.narg('unless_assignee_id')::uuid
+  )
 RETURNING task.*;
 
 -- name: SetAgentTaskBranchName :exec

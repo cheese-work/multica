@@ -1619,7 +1619,12 @@
       "under_minute": "1 分未満",
       "error": "タスクを移動できませんでした",
       "project_title": "{{issue}} を「{{project}}」に移動しますか？",
-      "project_confirm": "{{project}} に移動"
+      "project_confirm": "{{project}} に移動",
+      "batch_title_other": "{{count}} 件のタスクを「{{status}}」に移動しますか？",
+      "batch_summary_other": "{{count}} 件のタスクで担当者が変わります。",
+      "batch_stop_label": "以前の担当者の実行を停止",
+      "batch_confirm_other": "{{count}} 件を移動",
+      "batch_error": "引き継ぎを確認できませんでした"
     },
     "board": {
       "drop_hint_run": "ドロップすると {{name}} に引き継いで実行を開始",

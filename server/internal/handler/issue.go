@@ -3641,8 +3641,10 @@ type UpdateIssueRequest struct {
 	StopPreviousAssigneeRuns bool `json:"stop_previous_assignee_runs,omitempty"`
 	// HandoffPreview is what the handoff confirmation showed. When the write
 	// hands off, it is refused with 409 handoff_preview_stale unless the issue's
-	// assignee and the resolved handler still match it. Optional; single updates
-	// only. Omitted, the write acts on the issue as it finds it.
+	// assignee and the resolved handler still match it. A binding with a null
+	// handler records a preview that found no handoff, so a handler that became
+	// resolvable since is refused too. Optional; single updates only. Omitted,
+	// the write acts on the issue as it finds it.
 	HandoffPreview *HandoffPreviewBinding `json:"handoff_preview,omitempty"`
 	// EnterWorkflowStep makes a project move enter the destination workflow's
 	// step the issue lands on, handing it off like a status change would. A
@@ -4111,6 +4113,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, callerRun)
 	if workflowWrite != nil {
 		workflowWrite.preview = req.HandoffPreview
+		workflowWrite.stopPrevious = req.StopPreviousAssigneeRuns
 	}
 	if err != nil {
 		if writeIssueWorkflowError(w, err) {
@@ -4212,7 +4215,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// run of theirs that is also the new handler's would otherwise suppress the
 	// handler's run and then be cancelled, leaving no run at all.
 	if handoff != nil && req.StopPreviousAssigneeRuns {
-		h.stopPreviousAssigneeRuns(r.Context(), prevIssue, issue, actorType, actorID)
+		h.stopPreviousAssigneeRuns(r.Context(), workflowWrite, issue, actorType, actorID)
 	}
 	trigger, willRun := h.IssueService.WillEnqueueRun(r.Context(),
 		service.IssueTriggerInput{
@@ -4971,6 +4974,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
+		workflowWrite.stopPrevious = req.Updates.StopPreviousAssigneeRuns
 		issueStatusGuard := batchStatusKey
 		if params.Status.Valid {
 			issueStatusGuard = params.Status.String
@@ -5024,7 +5028,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		// Stop the previous assignee's runs before deciding whether to enqueue;
 		// see UpdateIssue.
 		if handoff != nil && req.Updates.StopPreviousAssigneeRuns {
-			h.stopPreviousAssigneeRuns(r.Context(), prevIssue, issue, actorType, actorID)
+			h.stopPreviousAssigneeRuns(r.Context(), workflowWrite, issue, actorType, actorID)
 		}
 		trigger, willRun := h.IssueService.WillEnqueueRun(r.Context(),
 			service.IssueTriggerInput{

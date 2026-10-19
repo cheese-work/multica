@@ -6,7 +6,7 @@ import { ArrowRight, ChevronDown, ChevronRight, TriangleAlert } from "lucide-rea
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { workflowHandoffPreviewOptions } from "@multica/core/issue-workflows";
-import type { HandoffPreviewBinding } from "@multica/core/types";
+import type { HandoffPreviewBinding, WorkflowHandoffPreview } from "@multica/core/types";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { Button } from "@multica/ui/components/ui/button";
 import { Checkbox } from "@multica/ui/components/ui/checkbox";
@@ -31,6 +31,21 @@ export interface HandoffConfirmOptions {
   /** Present when a handoff was previewed; send it as `handoff_preview` so the
    *  server refuses a confirmation the issue or workflow has outgrown. */
   preview?: HandoffPreviewBinding;
+}
+
+/**
+ * What a preview showed, as the binding the write is checked against: who the
+ * issue was taken from and who it goes to. A preview that found no handoff
+ * binds that result — no handler — so a handler that became resolvable since
+ * is refused instead of taking the issue unconfirmed.
+ */
+export function previewBinding(preview: WorkflowHandoffPreview): HandoffPreviewBinding {
+  return {
+    previous_assignee_type: preview.previous_assignee_type ?? null,
+    previous_assignee_id: preview.previous_assignee_id ?? null,
+    handler_type: preview.handoff ? preview.handler_type ?? null : null,
+    handler_id: preview.handoff ? preview.handler_id ?? null : null,
+  };
 }
 
 const FROM = "⁣from⁣";
@@ -115,9 +130,9 @@ export function WorkflowHandoffConfirmDialog({
     }
   }, [open, issue?.id, toStatus, toProject?.id]);
 
-  // Nothing to confirm: apply as an ordinary status change.
+  // Nothing to confirm: apply as an ordinary status change, bound to that result.
   useEffect(() => {
-    if (open && preview && !preview.handoff) onConfirm({ stopPreviousRuns: false });
+    if (open && preview && !preview.handoff) onConfirm({ stopPreviousRuns: false, preview: previewBinding(preview) });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, preview, dataUpdatedAt]);
 
@@ -259,12 +274,7 @@ export function WorkflowHandoffConfirmDialog({
             onClick={() =>
               onConfirm({
                 stopPreviousRuns: stop && runs.length > 0 && !sameHandler,
-                preview: {
-                  previous_assignee_type: prevType,
-                  previous_assignee_id: prevId,
-                  handler_type: handlerType,
-                  handler_id: handlerId,
-                },
+                preview: preview ? previewBinding(preview) : undefined,
               })
             }
           >

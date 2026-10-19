@@ -1424,7 +1424,7 @@ func (h *Handler) PreviewWorkflowHandoff(w http.ResponseWriter, r *http.Request)
 	next.AssigneeID = params.AssigneeID
 	resp.Brief = h.workflowHandoffBrief(r.Context(), next, hand)
 	if issue.AssigneeType != params.AssigneeType || issue.AssigneeID != params.AssigneeID {
-		for _, task := range h.assigneeActiveRuns(r.Context(), issue) {
+		for _, task := range h.assigneeActiveRuns(r.Context(), h.Queries, issue) {
 			started := task.StartedAt
 			if !started.Valid {
 				started = task.CreatedAt
