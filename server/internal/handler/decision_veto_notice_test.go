@@ -193,3 +193,21 @@ func TestDecisionVetoNoticeSessionRaces(test *testing.T) {
 		}
 	}
 }
+
+// A human who left the workspace cannot receive the notice. The worker records
+// the notice as handled instead of failing on the missing inbox row every pass.
+func TestDecisionVetoNoticeToFormerMemberIsRecordedNotRetried(test *testing.T) {
+	fixture, answer := vetoNoticeFixture(test)
+	dbfx.Exec(test, `DELETE FROM member WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, fixture.humanID)
+	before := dbfx.Count(test, `SELECT count(*) FROM inbox_item WHERE issue_id = $1 AND recipient_id = $2`, fixture.issueID, fixture.humanID)
+
+	_, runner := newDecisionRunnerFixture(test)
+	decisionPass(test, runner)
+
+	if dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE id = $1 AND veto_note_posted_at IS NOT NULL`, answer.ID) != 1 {
+		test.Fatal("the notice for a former member stayed unhandled, so the worker retries it every pass")
+	}
+	if count := dbfx.Count(test, `SELECT count(*) FROM inbox_item WHERE issue_id = $1 AND recipient_id = $2`, fixture.issueID, fixture.humanID); count != before {
+		test.Fatalf("inbox items for the former member = %d, want %d", count, before)
+	}
+}

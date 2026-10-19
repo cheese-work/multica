@@ -18,6 +18,8 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/governance"
+	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -111,6 +113,21 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 	}
 	defer tx.Rollback(ctx)
 
+	qtx := h.Queries.WithTx(tx)
+
+	// Routing writes the issue's status, so it takes the same locks as every
+	// issue write in a project, in the same order: the status catalog, the
+	// project, then the issue row. A workflow switch or edit cannot commit
+	// between the membership check below and the write.
+	if issue.ProjectID.Valid {
+		if err := qtx.LockIssueStatusCatalogShared(ctx, issue.WorkspaceID); err != nil {
+			return false, fmt.Sprintf("### Jev Pre-Route Advisory\n- Ambiguity: Failed to lock the status catalog: %v\n- Decision ID: %s", err, decisionID)
+		}
+		if _, err := qtx.LockProjectForIssueWrite(ctx, db.LockProjectForIssueWriteParams{ID: issue.ProjectID, WorkspaceID: issue.WorkspaceID}); err != nil {
+			return false, fmt.Sprintf("### Jev Pre-Route Advisory\n- Ambiguity: Failed to lock the issue's project: %v\n- Decision ID: %s", err, decisionID)
+		}
+	}
+
 	var currentRevision int64
 	var currentStatus string
 	err = tx.QueryRow(ctx, `SELECT revision, status FROM issue WHERE id = $1 FOR NO KEY UPDATE`, issue.ID).Scan(&currentRevision, &currentStatus)
@@ -123,14 +140,23 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 		return false, fmt.Sprintf("### Jev Pre-Route Advisory\n- Ambiguity: Issue revision changed during evaluation (expected %d, found %d)\n- Prior State Changes: none\n- Decision ID: %s", issue.Revision, currentRevision, decisionID)
 	}
 
+	// A named workflow may leave in_progress out. Routing then dispatches the
+	// worker and keeps the status, so the issue never sits outside its
+	// project's workflow. The revision check above means the project is the one
+	// locked.
 	statusChanged := false
 	newStatus := currentStatus
 	if currentStatus == "backlog" || currentStatus == "todo" {
-		newStatus = "in_progress"
-		statusChanged = true
+		workflow, _, err := issueworkflow.ForProject(ctx, qtx, issue.WorkspaceID, issue.ProjectID)
+		if err != nil {
+			return false, fmt.Sprintf("### Jev Pre-Route Advisory\n- Ambiguity: Failed to read the project workflow: %v\n- Decision ID: %s", err, decisionID)
+		}
+		if issueworkflow.CheckStatus(workflow, issuestatus.InProgress) == nil {
+			newStatus = issuestatus.InProgress
+			statusChanged = true
+		}
 	}
 
-	qtx := h.Queries.WithTx(tx)
 	var updatedIssue db.Issue
 	if statusChanged {
 		updatedIssue, err = qtx.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{

@@ -24,6 +24,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
+	"github.com/multica-ai/multica/server/internal/inbox"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/realtime"
@@ -2932,6 +2933,12 @@ type CancelTaskResult struct {
 
 var ErrTaskNoLongerQueued = errors.New("task is no longer queued")
 
+// TaskAssignee names an issue assignee: an agent or a squad.
+type TaskAssignee struct {
+	Type string
+	ID   pgtype.UUID
+}
+
 // TaskCancellationActor is the point-in-time identity written onto a task when
 // an authenticated member or agent explicitly stops it. Automatic paths leave
 // this empty and the SQL transition records the system actor instead.
@@ -2963,6 +2970,16 @@ type CancelTaskOptions struct {
 	ErrorMessage  string
 	FailureReason string
 	CancelledBy   TaskCancellationActor
+	// StaleStep, when set, makes the cancellation conditional at the statement:
+	// the task is cancelled only while it is still a pending assignment-level
+	// run stamped for a step other than StaleStep. A task that started in the
+	// meantime is left alone. Not for user cancellation.
+	StaleStep string
+	// UnlessAssignee, when set, makes a user cancellation conditional at the
+	// statement: the task is left alone while the issue is assigned to this
+	// agent or squad. A handoff that stops its previous assignee's runs sets it,
+	// because the issue can be handed back before the cancellation lands.
+	UnlessAssignee TaskAssignee
 	// UserInitiated distinguishes the issue UI/API cancel action from automatic
 	// server repairs. An explicit user cancellation terminally acknowledges any
 	// delegated-failure recovery signal planned into the task; automatic
@@ -3042,6 +3059,9 @@ func (s *TaskService) CancelTaskWithResult(ctx context.Context, taskID pgtype.UU
 	if opts.UserInitiated && !opts.CancelledBy.ID.Valid {
 		return nil, errors.New("user-initiated cancellation requires an actor id")
 	}
+	if opts.UnlessAssignee.ID.Valid && !opts.UserInitiated {
+		return nil, errors.New("an assignee condition applies to user-initiated cancellation only")
+	}
 	var (
 		task                 db.AgentTaskQueue
 		cancelledChatMessage *CancelledChatMessageResult
@@ -3084,12 +3104,16 @@ func (s *TaskService) CancelTaskWithResult(ctx context.Context, taskID pgtype.UU
 				cancelled db.AgentTaskQueue
 				err       error
 			)
-			if opts.UserInitiated {
+			if opts.StaleStep != "" {
+				cancelled, err = qtx.CancelStalePendingStepTask(ctx, db.CancelStalePendingStepTaskParams{ID: taskID, Step: opts.StaleStep})
+			} else if opts.UserInitiated {
 				cancelled, err = qtx.CancelAgentTaskByUser(ctx, db.CancelAgentTaskByUserParams{
-					ID:              taskID,
-					CancelledByType: pgtype.Text{String: opts.CancelledBy.Type, Valid: true},
-					CancelledByID:   opts.CancelledBy.ID,
-					CancelledByName: pgtype.Text{String: opts.CancelledBy.Name, Valid: opts.CancelledBy.Name != ""},
+					ID:                 taskID,
+					CancelledByType:    pgtype.Text{String: opts.CancelledBy.Type, Valid: true},
+					CancelledByID:      opts.CancelledBy.ID,
+					CancelledByName:    pgtype.Text{String: opts.CancelledBy.Name, Valid: opts.CancelledBy.Name != ""},
+					UnlessAssigneeType: pgtype.Text{String: opts.UnlessAssignee.Type, Valid: opts.UnlessAssignee.ID.Valid},
+					UnlessAssigneeID:   opts.UnlessAssignee.ID,
 				})
 			} else if opts.ErrorMessage != "" || opts.FailureReason != "" {
 				cancelled, err = qtx.CancelAgentTaskWithReason(ctx, db.CancelAgentTaskWithReasonParams{
@@ -7122,7 +7146,7 @@ func (s *TaskService) exhaustDelegatedFailureRecovery(ctx context.Context, targe
 			if err != nil {
 				return fmt.Errorf("encode delegated failure exhaustion details: %w", err)
 			}
-			exhaustedInbox, err = qtx.CreateInboxItem(ctx, db.CreateInboxItemParams{
+			exhaustedInbox, inboxCreated, err = inbox.CreateIfEligible(ctx, qtx, db.CreateInboxItemParams{
 				ID:            dbid.NewV7(),
 				WorkspaceID:   target.issue.WorkspaceID,
 				RecipientType: "member",
@@ -7139,7 +7163,6 @@ func (s *TaskService) exhaustDelegatedFailureRecovery(ctx context.Context, targe
 			if err != nil {
 				return fmt.Errorf("create delegated failure exhaustion inbox item: %w", err)
 			}
-			inboxCreated = true
 		}
 		return nil
 	}); err != nil {
@@ -8571,7 +8594,7 @@ func (s *TaskService) notifyQuickCreateCompleted(ctx context.Context, task db.Ag
 		"identifier":      identifier,
 		"original_prompt": qc.Prompt,
 	})
-	item, err := s.Queries.CreateInboxItem(ctx, db.CreateInboxItemParams{
+	item, inserted, err := inbox.CreateIfEligible(ctx, s.Queries, db.CreateInboxItemParams{
 		ID:            dbid.NewV7(),
 		WorkspaceID:   workspaceID,
 		RecipientType: "member",
@@ -8587,6 +8610,9 @@ func (s *TaskService) notifyQuickCreateCompleted(ctx context.Context, task db.Ag
 	})
 	if err != nil {
 		slog.Error("quick-create completion: inbox write failed", "task_id", util.UUIDToString(task.ID), "error", err)
+		return
+	}
+	if !inserted {
 		return
 	}
 	s.publishQuickCreateInbox(item, qc.WorkspaceID, util.UUIDToString(task.AgentID), issue.Status)
@@ -8672,7 +8698,7 @@ func (s *TaskService) writeQuickCreateOutcomeInbox(ctx context.Context, task db.
 		"error":             redact.Text(errMsg),
 		"source_context_id": qc.SourceContextID,
 	})
-	item, err := s.Queries.CreateInboxItem(ctx, db.CreateInboxItemParams{
+	item, inserted, err := inbox.CreateIfEligible(ctx, s.Queries, db.CreateInboxItemParams{
 		ID:            dbid.NewV7(),
 		WorkspaceID:   workspaceID,
 		RecipientType: "member",
@@ -8688,6 +8714,9 @@ func (s *TaskService) writeQuickCreateOutcomeInbox(ctx context.Context, task db.
 	})
 	if err != nil {
 		slog.Error("quick-create failure: inbox write failed", "task_id", util.UUIDToString(task.ID), "error", err)
+		return
+	}
+	if !inserted {
 		return
 	}
 	s.publishQuickCreateInbox(item, qc.WorkspaceID, util.UUIDToString(task.AgentID), "")
