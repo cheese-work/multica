@@ -28,12 +28,11 @@ import (
 var testPool *pgxpool.Pool
 
 func TestMain(m *testing.M) {
-	url := os.Getenv("DATABASE_URL")
-	if url == "" {
-		url = "postgres://multica:multica@localhost:5432/multica?sslmode=disable"
-	}
-	if pool, err := pgxpool.New(context.Background(), url); err == nil && pool.Ping(context.Background()) == nil {
-		testPool = pool
+	// No default URL: a missing DATABASE_URL must skip, never fall back to a shared service.
+	if url := os.Getenv("DATABASE_URL"); url != "" {
+		if pool, err := pgxpool.New(context.Background(), url); err == nil && pool.Ping(context.Background()) == nil {
+			testPool = pool
+		}
 	}
 	os.Exit(m.Run())
 }
