@@ -59,4 +59,5 @@ Unchanged from rev-2. The chat page needs a signed-in session that X99 does not 
 - Error, banner and toast copy come from current locale files where one exists. Retrying and disabled-reason copy are new placeholders.
 - Contrast was measured on the static mockup, not on product render.
 - Keyboard behavior, scroll motion and reduced-motion behavior are described in the page text and not drawn.
+- The six direction PNGs are palette-reduced to 256 colours so the upload fits. `contrast-check.png` is lossless and is the file the ratios were measured on.
 - `visual diff: NOT-RUN`.
