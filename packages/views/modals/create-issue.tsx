@@ -63,8 +63,7 @@ import { useActorName } from "@multica/core/workspace/hooks";
 import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
-import { useProjectWorkflow, workflowAllowsStatus, workflowStep } from "@multica/core/issue-workflows";
-import { projectListOptions } from "@multica/core/projects/queries";
+import { useProjectWithWorkflow, useProjectWorkflow, workflowAllowsStatus, workflowStep } from "@multica/core/issue-workflows";
 import { stepHandlerActor, useStepHandlerLabel } from "../workflows/step-handler";
 import { useIssueDraftStore, type IssueCreateDraft } from "@multica/core/issues/stores/draft-store";
 import { useCreateModeStore } from "@multica/core/issues/stores/create-mode-store";
@@ -204,12 +203,22 @@ function CreateRunHint({
 function WorkflowHandoffHint({ projectId, status }: { projectId?: string; status: IssueStatus }) {
   const { t } = useT("issues");
   const wsId = useWorkspaceId();
-  const workflow = useProjectWorkflow(wsId, projectId);
-  const { data: projects } = useQuery({ ...projectListOptions(wsId), enabled: !!workflow });
-  const project = projects?.find((p) => p.id === projectId);
+  const { workflow, project, resolved, loading, retry } = useProjectWithWorkflow(wsId, projectId);
   const handlerLabel = useStepHandlerLabel(project);
   const step = workflowStep(workflow, status);
   const label = handlerLabel(step);
+  // The server hands the new issue to the workflow's handler whatever this form
+  // shows, so a catalog that cannot say must not read as "nobody gets it".
+  if (projectId && !resolved && !loading) {
+    return (
+      <div aria-live="polite" className="flex items-center gap-1.5 px-4 pb-1 pt-0.5 text-micro text-muted-foreground">
+        <span className="truncate">{t(($) => $.workflows.create_handoff_unchecked)}</span>
+        <button type="button" onClick={retry} className="shrink-0 underline underline-offset-2 hover:text-foreground">
+          {t(($) => $.workflows.catalog_retry)}
+        </button>
+      </div>
+    );
+  }
   if (!label) return null;
   const actor = stepHandlerActor(step, project);
   return (

@@ -836,6 +836,8 @@
     "update_success_other": "已更新 {{count}} 个任务",
     "update_failed": "更新任务失败",
     "update_partial_other": "已更新 {{updated}}/{{count}} 个任务，其余任务不支持这项修改，保持不变。",
+    "update_partial_named_other": "已更新 {{updated}}/{{count}} 个任务。未更新：{{issues}}",
+    "retry_not_updated": "重试",
     "delete_success_other": "已删除 {{count}} 个任务",
     "delete_failed": "删除任务失败",
     "delete_dialog_title_other": "删除 {{count}} 个任务？",
@@ -1462,6 +1464,9 @@
     "not_in_workflow": "「{{name}}」里没有这个状态",
     "drop_blocked": "「{{status}}」不在「{{name}}」工作流中",
     "create_handoff_hint": "创建后交给 {{name}}",
+    "create_handoff_unchecked": "无法确认该项目是否会交接任务",
+    "catalog_unresolved": "暂时无法确认这项修改是否会交接任务，因此没有做任何修改。",
+    "catalog_retry": "重试",
     "handler": {
       "none": "负责人不变",
       "agent": "智能体",

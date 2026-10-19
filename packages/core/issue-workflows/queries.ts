@@ -1,6 +1,6 @@
 import { queryOptions } from "@tanstack/react-query";
 import { api } from "../api";
-import type { IssueWorkflow, IssueWorkflowStep, Project } from "../types";
+import type { HandoffPreviewBinding, IssueWorkflow, IssueWorkflowStep, Project } from "../types";
 
 /**
  * Workspace workflows (MUL-7420).
@@ -103,6 +103,54 @@ export function resolveProjectWorkflow(
   if (!project || !workflows) return null;
   const named = project.workflow_id ? workflows.find((w) => w.id === project.workflow_id) : undefined;
   return named ?? defaultWorkflow(workflows);
+}
+
+/**
+ * The binding of a write the client expects to hand nothing off: no handler.
+ * The server refuses the write, or skips the issue in a batch, when it would
+ * hand off after all.
+ */
+export const NO_HANDOFF_BINDING: HandoffPreviewBinding = {
+  previous_assignee_type: null,
+  previous_assignee_id: null,
+  handler_type: null,
+  handler_id: null,
+};
+
+/** A project and its workflow, and whether the answer can be trusted. */
+export interface IssueWorkflowResolution {
+  project: Project | null;
+  workflow: IssueWorkflow | null;
+  /**
+   * False while the lists cannot say which workflow the issue follows: one is
+   * still loading or failed, the project is missing from the project list, or
+   * the project names a workflow the workflow list lacks. A null workflow then
+   * means "unknown", not "hands off to no one"; a consequential write waits.
+   * True with a null workflow is authoritative: no project, or no workflow is
+   * stored and the project names none (the built-in Default hands off to no one).
+   */
+  resolved: boolean;
+}
+
+/**
+ * Resolves the project and workflow of an issue in `projectId` against the two
+ * lists, with `undefined` meaning "not loaded". The server resolves a workflow
+ * for any project it knows, so a lookup that comes up empty only counts as
+ * absence when the lists could have answered it.
+ */
+export function resolveIssueWorkflow(
+  workflows: readonly IssueWorkflow[] | undefined,
+  projects: readonly Project[] | undefined,
+  projectId: string | null | undefined,
+): IssueWorkflowResolution {
+  if (!projectId) return { project: null, workflow: null, resolved: true };
+  const project = projects?.find((p) => p.id === projectId) ?? null;
+  const namedMissing = !!project?.workflow_id && !workflows?.some((w) => w.id === project.workflow_id);
+  return {
+    project,
+    workflow: resolveProjectWorkflow(workflows, project),
+    resolved: !!workflows && !!project && !namedMissing,
+  };
 }
 
 /**

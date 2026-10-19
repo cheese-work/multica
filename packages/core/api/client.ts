@@ -11,6 +11,7 @@ import type {
   CreateIssueRequest,
   MoveIssueRequest,
   UpdateIssueRequest,
+  BatchUpdateIssuesResponse,
   IssueDuplicates,
   GroupedIssuesResponse,
   ListIssuesResponse,
@@ -432,7 +433,6 @@ import {
   ListIssueWorkflowsResponseSchema,
   IssueWorkflowSchema,
   IssueWorkflowDryRunResponseSchema,
-  EMPTY_LIST_ISSUE_WORKFLOWS_RESPONSE,
   EMPTY_ISSUE_WORKFLOW,
   EMPTY_ISSUE_WORKFLOW_DRY_RUN,
   WorkflowHandoffPreviewSchema,
@@ -1705,7 +1705,7 @@ export class ApiClient {
     await this.fetch(`/api/issues/${id}`, { method: "DELETE" });
   }
 
-  async batchUpdateIssues(issueIds: string[], updates: UpdateIssueRequest): Promise<{ updated: number }> {
+  async batchUpdateIssues(issueIds: string[], updates: UpdateIssueRequest): Promise<BatchUpdateIssuesResponse> {
     return this.fetch("/api/issues/batch-update", {
       method: "POST",
       body: JSON.stringify({ issue_ids: issueIds, updates }),
@@ -4298,9 +4298,14 @@ export class ApiClient {
   // the project_workflows_v1 flag and returns 403 when it is off.
   async listIssueWorkflows(): Promise<ListIssueWorkflowsResponse> {
     const raw = await this.fetch<unknown>(`/api/issue-workflows`);
-    return parseWithFallback(raw, ListIssueWorkflowsResponseSchema, EMPTY_LIST_ISSUE_WORKFLOWS_RESPONSE, {
-      endpoint: "GET /api/issue-workflows",
-    });
+    // An empty list is an answer ("no workflow is stored"), and callers let a
+    // status change skip its handoff confirmation on it. Fail closed on a body
+    // that is not a workflow list instead of falling back to an empty one.
+    const list = ListIssueWorkflowsResponseSchema.safeParse(raw);
+    if (!list.success || !Array.isArray((raw as { workflows?: unknown } | null)?.workflows)) {
+      throw new Error("malformed GET /api/issue-workflows response");
+    }
+    return list.data as ListIssueWorkflowsResponse;
   }
 
   async createIssueWorkflow(data: IssueWorkflowWriteRequest): Promise<IssueWorkflow> {

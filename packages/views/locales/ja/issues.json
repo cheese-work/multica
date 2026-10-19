@@ -836,6 +836,8 @@
     "update_success_other": "タスク {{count}} 件を更新しました",
     "update_failed": "タスクを更新できませんでした",
     "update_partial_other": "{{count}} 件中 {{updated}} 件のタスクを更新しました。残りはこの変更に対応していないため、そのままです。",
+    "update_partial_named_other": "{{count}} 件中 {{updated}} 件のタスクを更新しました。未更新: {{issues}}",
+    "retry_not_updated": "再試行",
     "delete_success_other": "タスク {{count}} 件を削除しました",
     "delete_failed": "タスクを削除できませんでした",
     "delete_dialog_title_other": "タスク {{count}} 件を削除しますか？",
@@ -1462,6 +1464,9 @@
     "not_in_workflow": "「{{name}}」にこのステータスはありません",
     "drop_blocked": "「{{status}}」はワークフロー「{{name}}」に含まれていません",
     "create_handoff_hint": "作成後に {{name}} に引き継ぎます",
+    "create_handoff_unchecked": "このプロジェクトが引き継ぎを行うか確認できませんでした",
+    "catalog_unresolved": "この変更でタスクが引き継がれるかまだ確認できないため、何も変更していません。",
+    "catalog_retry": "再試行",
     "handler": {
       "none": "担当者を変更しない",
       "agent": "エージェント",

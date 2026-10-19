@@ -4764,6 +4764,13 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// One binding covers every issue in the batch, and the issues were taken
+	// from different assignees, so a batch can bind only the result "no
+	// handoff". Issues that would hand off are confirmed and written one by one.
+	if p := req.Updates.HandoffPreview; p != nil && (p.HandlerType != nil || p.HandlerID != nil) {
+		writeError(w, http.StatusBadRequest, "handoff_preview in a batch update must bind no handoff (null handler)")
+		return
+	}
 
 	workspaceID := h.resolveWorkspaceID(r)
 	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace_id")
@@ -4810,6 +4817,8 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	}
 
 	updated := 0
+	// The issues this batch wrote; the rest were skipped by a per-issue guard.
+	updatedIDs := []string{}
 	// One Resolver for the whole batch — a per-issue filler would query the
 	// catalog once per custom-status row. (MUL-6243)
 	fillBatch := h.newStatusCategoryFiller(r.Context(), wsUUID)
@@ -4975,6 +4984,13 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		workflowWrite.stopPrevious = req.Updates.StopPreviousAssigneeRuns
+		// The client previewed no handoff for this batch. An issue that would
+		// hand off now is skipped: nobody confirmed it. verify checks again under
+		// the locks, for a handler that appears between here and the write.
+		workflowWrite.preview = req.Updates.HandoffPreview
+		if handoff != nil && workflowWrite.preview != nil {
+			continue
+		}
 		issueStatusGuard := batchStatusKey
 		if params.Status.Valid {
 			issueStatusGuard = params.Status.String
@@ -5090,6 +5106,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			changedParents = append(changedParents, issue.ParentIssueID, prevIssue.ParentIssueID)
 		}
 		updated++
+		updatedIDs = append(updatedIDs, uuidToString(issue.ID))
 	}
 
 	// Each write recorded its sub-issue change; processing claims them per
@@ -5104,7 +5121,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	h.notifyParentsOfBatchChildDone(r.Context(), childDoneCompleted)
 
 	slog.Info("batch update issues", append(logger.RequestAttrs(r), "count", updated)...)
-	writeJSON(w, http.StatusOK, map[string]any{"updated": updated})
+	writeJSON(w, http.StatusOK, map[string]any{"updated": updated, "updated_ids": updatedIDs})
 }
 
 type BatchDeleteIssuesRequest struct {

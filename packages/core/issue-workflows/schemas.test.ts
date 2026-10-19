@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import { parseWithFallback } from "../api/schema";
 import {
   EMPTY_ISSUE_WORKFLOW_DRY_RUN,
-  EMPTY_LIST_ISSUE_WORKFLOWS_RESPONSE,
   IssueWorkflowDryRunResponseSchema,
   IssueWorkflowSchema,
   ListIssueWorkflowsResponseSchema,
@@ -36,16 +35,6 @@ describe("workflow schemas (MUL-7420)", () => {
     const parsed = ListIssueWorkflowsResponseSchema.parse({ workflows: [baseWorkflow], total: 1 });
     expect(parsed.workflows[0]?.steps[1]?.handler).toEqual({ type: "agent", id: "agent-1" });
     expect(parsed.workflows[0]?.project_ids).toEqual(["project-1"]);
-  });
-
-  it("falls back to an empty list on a malformed response", () => {
-    const parsed = parseWithFallback(
-      { workflows: "nope" },
-      ListIssueWorkflowsResponseSchema,
-      EMPTY_LIST_ISSUE_WORKFLOWS_RESPONSE,
-      { endpoint: "GET /api/issue-workflows" },
-    );
-    expect(parsed).toEqual(EMPTY_LIST_ISSUE_WORKFLOWS_RESPONSE);
   });
 
   it("degrades an unknown handler type to a manual step", () => {

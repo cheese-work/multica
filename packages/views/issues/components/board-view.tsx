@@ -33,6 +33,7 @@ import { useActorName } from "@multica/core/workspace/hooks";
 import { BoardColumn, BOARD_CARD_WIDTH, type BoardColumnGroup } from "./board-column";
 import { BoardWorkflowContext, type BoardWorkflowContextValue } from "./board-workflow-context";
 import {
+  resolveIssueWorkflow,
   resolveProjectWorkflow,
   stepHandsOff,
   useIssueWorkflows,
@@ -40,6 +41,7 @@ import {
   workflowStep,
 } from "@multica/core/issue-workflows";
 import { WorkflowHandoffConfirmDialog } from "../../workflows/handoff-confirm-dialog";
+import { useNotifyCatalogUnresolved } from "../../workflows/use-notify-catalog-unresolved";
 import { stepHandlerActor, useStepHandlerLabel } from "../../workflows/step-handler";
 import { projectListOptions } from "@multica/core/projects/queries";
 import { BoardCardContent } from "./board-card";
@@ -494,19 +496,18 @@ function BoardViewImpl({
 
   // Project workflows (MUL-7420): a card can only move to a status its
   // project's workflow lists, and a project board names each step's handler.
-  const { workflows, isLoaded: workflowsLoaded } = useIssueWorkflows(boardWsId);
-  const { data: workspaceProjects } = useQuery(projectListOptions(boardWsId));
-  const projectsLoaded = workspaceProjects !== undefined;
-  const workflowOfIssue = useCallback(
-    (issue: Issue | null | undefined) => {
-      if (!issue?.project_id) return null;
-      return resolveProjectWorkflow(
-        workflows,
-        workspaceProjects?.find((p) => p.id === issue.project_id),
-      );
-    },
-    [workflows, workspaceProjects],
+  const { workflows, isLoaded: workflowsLoaded, retry: retryWorkflows } = useIssueWorkflows(boardWsId);
+  const { data: workspaceProjects, refetch: refetchProjects } = useQuery(projectListOptions(boardWsId));
+  const notifyCatalogUnresolved = useNotifyCatalogUnresolved();
+  // What a card's project and workflow resolve to against the two lists, and
+  // whether they can say: a loaded list that omits the project or its workflow
+  // is as unresolved as one still loading.
+  const resolveIssue = useCallback(
+    (issue: Issue | null | undefined) =>
+      resolveIssueWorkflow(workflowsLoaded ? workflows : undefined, workspaceProjects, issue?.project_id),
+    [workflows, workflowsLoaded, workspaceProjects],
   );
+  const workflowOfIssue = useCallback((issue: Issue | null | undefined) => resolveIssue(issue).workflow, [resolveIssue]);
   const scopeProject = projectId ? workspaceProjects?.find((p) => p.id === projectId) ?? null : null;
   const activeWorkflow = workflowOfIssue(activeIssue);
   const activeProject = activeIssue?.project_id
@@ -725,12 +726,16 @@ function BoardViewImpl({
         resetColumns();
         return;
       }
-      // Before the workflows and the projects have loaded, a project card's
-      // handoff step cannot be told from a plain one, and the server applies the
-      // handoff either way. A failed load stays unresolved. Leave the card where
-      // it is rather than move it unconfirmed.
-      if (!(workflowsLoaded && projectsLoaded) && map.get(activeId)?.project_id && map.get(activeId)?.status !== finalGroup.status) {
+      // While the workflows and the projects cannot say which workflow a project
+      // card follows (not loaded, failed, or loaded without it), its handoff step
+      // cannot be told from a plain one, and the server applies the handoff either
+      // way. Leave the card where it is rather than move it unconfirmed.
+      if (map.get(activeId)?.project_id && map.get(activeId)?.status !== finalGroup.status && !resolveIssue(map.get(activeId)).resolved) {
         resetColumns();
+        notifyCatalogUnresolved(() => {
+          retryWorkflows();
+          void refetchProjects();
+        });
         return;
       }
       const movingWorkflow = workflowOfIssue(map.get(activeId));
@@ -853,7 +858,7 @@ function BoardViewImpl({
       );
       applyPropertyGroupValue(finalGroup, activeId);
     },
-    [groupedIssues, groups, grouping, groupingOptionIds, onMoveIssue, groupIds, groupMap, sortBy, beginSettle, columnsRef, isDraggingRef, setColumns, applyPropertyGroupValue, catalog, labelOf, t, workflowOfIssue, workflowsLoaded, projectsLoaded],
+    [groupedIssues, groups, grouping, groupingOptionIds, onMoveIssue, groupIds, groupMap, sortBy, beginSettle, columnsRef, isDraggingRef, setColumns, applyPropertyGroupValue, catalog, labelOf, t, workflowOfIssue, resolveIssue, notifyCatalogUnresolved, retryWorkflows, refetchProjects],
   );
 
   // An aborted drag (pointercancel, window resize, tab hide, Escape) fires

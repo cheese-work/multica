@@ -33,6 +33,7 @@ import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { stepHandsOff, workflowAllowsStatus, workflowStep } from "@multica/core/issue-workflows";
 import { useModalStore } from "@multica/core/modals";
 import { useIssueStatusOptions } from "../utils/status-options";
+import { useNotifyCatalogUnresolved } from "../../workflows/use-notify-catalog-unresolved";
 import { issueKeys } from "@multica/core/issues/queries";
 import { StatusIcon } from "../components/status-icon";
 import { PriorityIcon } from "../components/priority-icon";
@@ -112,11 +113,15 @@ export function IssueActionsMenuItems({
   const wsId = useWorkspaceId();
   // Only the statuses the issue's workflow allows; entering a step that hands
   // the issue off confirms first, as in the status picker. (MUL-7420)
-  const { options: statusOptions, workflow, resolved: workflowResolved } = useIssueStatusOptions(wsId, issue.project_id);
+  const { options: statusOptions, workflow, resolved: workflowResolved, retry: retryCatalog } = useIssueStatusOptions(wsId, issue.project_id);
+  const notifyCatalogUnresolved = useNotifyCatalogUnresolved();
   const openModal = useModalStore((s) => s.open);
   const setStatus = (status: string) => {
     // A workflow that is merely unloaded reads as "no handoff"; wait for it.
-    if (issue.project_id && !workflowResolved) return;
+    if (issue.project_id && !workflowResolved) {
+      notifyCatalogUnresolved(() => retryCatalog?.());
+      return;
+    }
     if (workflow && status !== issue.status && stepHandsOff(workflowStep(workflow, status))) {
       openModal("issue-workflow-handoff", { issueId: issue.id, identifier: issue.identifier, status });
       return;

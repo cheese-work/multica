@@ -124,6 +124,16 @@ export interface HandoffPreviewBinding {
   handler_id: string | null;
 }
 
+/**
+ * What a batch update wrote. `updated_ids` names the issues it wrote; the server
+ * skips an issue its per-issue guards refuse (a handoff the client did not
+ * preview, a status its workflow omits). Absent from a server that predates it.
+ */
+export interface BatchUpdateIssuesResponse {
+  updated: number;
+  updated_ids?: string[];
+}
+
 export interface MoveIssueRequest
   extends Pick<
     UpdateIssueRequest,

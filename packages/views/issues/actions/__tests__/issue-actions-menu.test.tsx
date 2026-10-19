@@ -530,6 +530,11 @@ describe("Status while the project's workflow is unresolved", () => {
   });
 
   it("writes a status directly once the workflows have loaded and the project has none that hands off", async () => {
+    // No workflow is stored and the project names none: authoritative absence.
+    // (A project that names a workflow the list lacks stays unresolved.)
+    apiMocks.listProjects.mockResolvedValue({
+      projects: [{ id: "proj-1", title: "App", workflow_id: null, lead_type: null, lead_id: null }],
+    });
     apiMocks.listIssueWorkflows.mockResolvedValue({ workflows: [] });
     const item = await open();
     await waitFor(() => expect(apiMocks.listIssueWorkflows).toHaveBeenCalled());

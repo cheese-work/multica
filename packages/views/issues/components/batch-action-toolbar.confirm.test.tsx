@@ -27,7 +27,8 @@ vi.mock("@multica/core/issues/mutations", () => ({
 }));
 
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
-vi.mock("@multica/core/issue-workflows", () => ({
+vi.mock("@multica/core/issue-workflows", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/issue-workflows")>()),
   useIssueWorkflows: () => ({ workflows: [] }),
   sharedWorkflowStatusKeys: () => null,
 }));
@@ -123,7 +124,13 @@ describe("BatchActionToolbar status routing (MUL-4155)", () => {
       const { unmount } = render(<BatchActionToolbar issues={[makeIssue({ status: "backlog" })]} />);
       fireEvent.click(screen.getByTestId(`status-${status}`));
       expect(openModal).not.toHaveBeenCalled();
-      expect(batchUpdate).toHaveBeenCalledWith({ ids: ["a"], updates: { status } });
+      expect(batchUpdate).toHaveBeenCalledWith({
+        ids: ["a"],
+        updates: {
+          status,
+          handoff_preview: { previous_assignee_type: null, previous_assignee_id: null, handler_type: null, handler_id: null },
+        },
+      });
       unmount();
     }
   });

@@ -5,7 +5,6 @@ import type {
   IssueWorkflow,
   IssueWorkflowDryRunResponse,
   IssueWorkflowHandlerType,
-  ListIssueWorkflowsResponse,
   AgentBuilderRuntimeSwitch,
   AgentBuilderSession,
   AgentBuilderSessionSummary,
@@ -585,11 +584,6 @@ export const ListIssueWorkflowsResponseSchema = z.object({
   workflows: z.array(IssueWorkflowSchema).default([]),
   total: z.number().default(0),
 }).loose();
-
-export const EMPTY_LIST_ISSUE_WORKFLOWS_RESPONSE: ListIssueWorkflowsResponse = {
-  workflows: [],
-  total: 0,
-};
 
 export const EMPTY_ISSUE_WORKFLOW: IssueWorkflow = {
   id: "",

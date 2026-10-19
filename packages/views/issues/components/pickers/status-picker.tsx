@@ -15,6 +15,7 @@ import { useStatusLabel } from "../../utils/status-label";
 import { useIssueStatusOptions } from "../../utils/status-options";
 import { stepHandlerActor, useStepHandlerLabel } from "../../../workflows/step-handler";
 import { WorkflowHandoffConfirmDialog } from "../../../workflows/handoff-confirm-dialog";
+import { useNotifyCatalogUnresolved } from "../../../workflows/use-notify-catalog-unresolved";
 import { ActorAvatar } from "../../../common/actor-avatar";
 
 /** Above this many options the flat list stops being scannable. */
@@ -87,7 +88,8 @@ export function StatusPicker({
 
   // The project workflow's steps, or the catalog in canonical category order
   // without archived statuses (MUL-6243).
-  const { options: projectOptions, workflow, project, resolved: workflowResolved } = useIssueStatusOptions(wsId, projectId);
+  const { options: projectOptions, workflow, project, resolved: workflowResolved, retry: retryCatalog } = useIssueStatusOptions(wsId, projectId);
+  const notifyCatalogUnresolved = useNotifyCatalogUnresolved();
   const allOptions = useMemo(
     () => (allowedStatuses ? projectOptions.filter((o) => allowedStatuses.has(o.key)) : projectOptions),
     [projectOptions, allowedStatuses],
@@ -174,7 +176,10 @@ export function StatusPicker({
             // For an existing issue in a project, wait until the workflow has resolved:
             // a workflow that is merely unloaded reads as "no handoff", and the server
             // would still apply the real one with no confirmation shown.
-            if (issue && projectId && !workflowResolved) return;
+            if (issue && projectId && !workflowResolved) {
+              notifyCatalogUnresolved(() => retryCatalog?.());
+              return;
+            }
             if (workflow && issue && option.key !== status && stepHandsOff(workflowStep(workflow, option.key))) {
               setPendingStatus(option.key);
               return;
