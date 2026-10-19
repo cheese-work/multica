@@ -200,14 +200,21 @@ func sessionFromRequest(r *http.Request) (pushSession, bool) {
 const pushLogoutDrain = 3 * time.Second
 
 // endPushSession ends the session for push, in two steps. First a marker row,
-// committed: from then on no delivery passes its check. Then a bounded wait for
-// the deliveries that took their shared session lock before the marker was
-// visible; once that wait is over, none of them is left to start. A send that is
-// already on the wire cannot be recalled, and a send that outlasts the drain is
-// left to finish: it was admitted before the end, and the marker is recorded.
-// The marker is the part that must not fail, so its error is returned and logout
-// reports it (the cookie stays, so the client can retry). Nothing is recorded
-// when push is not configured: there are no subscriptions to end.
+// committed: from then on no delivery passes its check. Then the drain: an
+// exclusive session lock, which waits for every delivery that took its shared
+// session lock before the marker was visible. Once the drain has finished, no
+// admitted delivery is left to start a send.
+//
+// Both steps must succeed for logout to succeed. A drain that cannot show that,
+// for any reason (the pool, the SET, the lock wait running out, the deadline,
+// the commit), is returned as an error and logout answers 503 with the cookie
+// kept. The marker stays, and a retry repeats both steps without harm. A push
+// already on the wire cannot be recalled, and nothing here promises that.
+//
+// The budgets are separate, not one: the marker has pushRequestBudget, the
+// drain has its own pushRequestBudget with a pushLogoutDrain lock wait, and each
+// rollback has pushnotify.TeardownBudget. Nothing is recorded when push is not
+// configured: there are no subscriptions to end.
 func (h *Handler) endPushSession(r *http.Request) error {
 	if !pushnotify.ConfigFromEnv().Enabled() {
 		return nil
@@ -216,31 +223,30 @@ func (h *Handler) endPushSession(r *http.Request) error {
 	if !ok {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), pushRequestBudget)
-	defer cancel()
-	if err := h.Queries.EndPushSession(ctx, session.id); err != nil {
-		return err
+	markerCtx, cancelMarker := context.WithTimeout(context.WithoutCancel(r.Context()), pushRequestBudget)
+	defer cancelMarker()
+	if err := h.Queries.EndPushSession(markerCtx, session.id); err != nil {
+		return fmt.Errorf("record the session end: %w", err)
 	}
-	h.drainPushSession(r, session.id)
-	return nil
+	return h.drainPushSession(r, session.id)
 }
 
-func (h *Handler) drainPushSession(r *http.Request, sessionID string) {
+func (h *Handler) drainPushSession(r *http.Request, sessionID string) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), pushRequestBudget)
 	defer cancel()
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
-		slog.Warn("push session drain failed", append(logger.RequestAttrs(r), "error", err)...)
-		return
+		return fmt.Errorf("begin the drain: %w", err)
 	}
 	defer pushnotify.RollbackBounded(ctx, tx)
-	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL lock_timeout = '%dms'", pushLogoutDrain.Milliseconds())); err == nil {
-		err = h.Queries.WithTx(tx).DrainPushSession(ctx, sessionID)
-		if err == nil {
-			err = tx.Commit(ctx)
-		}
-		if err != nil {
-			slog.Info("push session drain gave up; the marker is recorded", append(logger.RequestAttrs(r), "error", err)...)
-		}
+	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL lock_timeout = '%dms'", pushLogoutDrain.Milliseconds())); err != nil {
+		return fmt.Errorf("bound the drain: %w", err)
 	}
+	if err := h.Queries.WithTx(tx).DrainPushSession(ctx, sessionID); err != nil {
+		return fmt.Errorf("drain admitted sends: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("finish the drain: %w", err)
+	}
+	return nil
 }
