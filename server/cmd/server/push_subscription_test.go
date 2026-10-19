@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -47,12 +50,28 @@ func sessionJWT(t *testing.T, userID, sessionID string, exp time.Time) string {
 	return token
 }
 
+// pushRequest authenticates with the given token only for this call, so
+// concurrent requests of different users do not share state.
 func pushRequest(t *testing.T, method, path, token string, body any) *http.Response {
 	t.Helper()
-	old := testToken
-	testToken = token
-	defer func() { testToken = old }()
-	return authRequest(t, method, path, body)
+	var reader io.Reader
+	if body != nil {
+		raw, _ := json.Marshal(body)
+		reader = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequest(method, testServer.URL+path, reader)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Workspace-ID", testWorkspaceID)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Errorf("request failed: %v", err)
+		return &http.Response{StatusCode: 0, Body: http.NoBody, Header: http.Header{}}
+	}
+	return resp
 }
 
 func pushSubscriptionBody(t *testing.T, endpoint string) map[string]any {
@@ -329,9 +348,11 @@ func TestPushRegistrationFailsFastWhenTheDeviceIsBusy(t *testing.T) {
 	transfer := call(http.MethodPost, sessionJWT(t, other, "sid-busy-other", time.Now().Add(time.Hour)), pushSubscriptionBody(t, endpoint))
 	remove := call(http.MethodDelete, sessionJWT(t, testUserID, "sid-busy", time.Now().Add(time.Hour)), map[string]string{"endpoint": endpoint})
 
+	started := time.Now()
 	for name, ch := range map[string]<-chan result{"transfer": transfer, "delete": remove} {
 		select {
 		case r := <-ch:
+			t.Logf("%s answered %d after %v", name, r.status, time.Since(started).Round(100*time.Millisecond))
 			if r.status != http.StatusServiceUnavailable || r.retryAfter == "" {
 				t.Errorf("%s on a busy device: status %d, Retry-After %q, want 503 with Retry-After", name, r.status, r.retryAfter)
 			}

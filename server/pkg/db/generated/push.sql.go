@@ -21,10 +21,11 @@ WITH due AS (
 )
 UPDATE push_delivery d SET
     claimed_until = now() + make_interval(secs => $1::float8),
-    attempts = d.attempts + 1
+    attempts = d.attempts + 1,
+    claim_token = gen_random_uuid()
 FROM due
 WHERE d.id = due.id
-RETURNING d.id, d.attempts, now()::timestamptz AS claimed_at
+RETURNING d.id, d.subscription_id, d.attempts, d.claim_token, now()::timestamptz AS claimed_at
 `
 
 type ClaimPushDeliveriesParams struct {
@@ -33,13 +34,16 @@ type ClaimPushDeliveriesParams struct {
 }
 
 type ClaimPushDeliveriesRow struct {
-	ID        pgtype.UUID        `json:"id"`
-	Attempts  int32              `json:"attempts"`
-	ClaimedAt pgtype.Timestamptz `json:"claimed_at"`
+	ID             pgtype.UUID        `json:"id"`
+	SubscriptionID pgtype.UUID        `json:"subscription_id"`
+	Attempts       int32              `json:"attempts"`
+	ClaimToken     pgtype.UUID        `json:"claim_token"`
+	ClaimedAt      pgtype.Timestamptz `json:"claimed_at"`
 }
 
 // Leased claim (SKIP LOCKED): another worker cannot take a row until the lease
 // runs out. attempts counts claims, so a crashed holder still uses one up.
+// claim_token identifies this claim: later statements must present it.
 // claimed_at is the claim's own transaction time; the finishing statements
 // compare next_attempt_at with it to tell "re-armed by a newer reply" apart.
 func (q *Queries) ClaimPushDeliveries(ctx context.Context, arg ClaimPushDeliveriesParams) ([]ClaimPushDeliveriesRow, error) {
@@ -51,7 +55,13 @@ func (q *Queries) ClaimPushDeliveries(ctx context.Context, arg ClaimPushDeliveri
 	items := []ClaimPushDeliveriesRow{}
 	for rows.Next() {
 		var i ClaimPushDeliveriesRow
-		if err := rows.Scan(&i.ID, &i.Attempts, &i.ClaimedAt); err != nil {
+		if err := rows.Scan(
+			&i.ID,
+			&i.SubscriptionID,
+			&i.Attempts,
+			&i.ClaimToken,
+			&i.ClaimedAt,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -62,15 +72,12 @@ func (q *Queries) ClaimPushDeliveries(ctx context.Context, arg ClaimPushDeliveri
 	return items, nil
 }
 
-const deletePushSubscription = `-- name: DeletePushSubscription :exec
-WITH gone AS (
-    DELETE FROM push_subscription WHERE id = $1 RETURNING id
-)
-DELETE FROM push_delivery WHERE subscription_id = $1
+const deleteOldPushSessionEnds = `-- name: DeleteOldPushSessionEnds :exec
+DELETE FROM push_session_end WHERE ended_at < now() - make_interval(secs => $1::float8)
 `
 
-func (q *Queries) DeletePushSubscription(ctx context.Context, id pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, deletePushSubscription, id)
+func (q *Queries) DeleteOldPushSessionEnds(ctx context.Context, retentionSecs float64) error {
+	_, err := q.db.Exec(ctx, deleteOldPushSessionEnds, retentionSecs)
 	return err
 }
 
@@ -100,52 +107,59 @@ func (q *Queries) DeleteSentPushDeliveries(ctx context.Context, retentionSecs fl
 	return err
 }
 
-const dropPushDelivery = `-- name: DropPushDelivery :exec
-DELETE FROM push_delivery WHERE id = $1 AND next_attempt_at <= $2
+const dropPushDelivery = `-- name: DropPushDelivery :execrows
+DELETE FROM push_delivery WHERE id = $1 AND claim_token = $2::uuid AND next_attempt_at <= $3
 `
 
 type DropPushDeliveryParams struct {
-	ID        pgtype.UUID        `json:"id"`
-	ClaimedAt pgtype.Timestamptz `json:"claimed_at"`
+	ID         pgtype.UUID        `json:"id"`
+	ClaimToken pgtype.UUID        `json:"claim_token"`
+	ClaimedAt  pgtype.Timestamptz `json:"claimed_at"`
 }
 
-func (q *Queries) DropPushDelivery(ctx context.Context, arg DropPushDeliveryParams) error {
-	_, err := q.db.Exec(ctx, dropPushDelivery, arg.ID, arg.ClaimedAt)
-	return err
+func (q *Queries) DropPushDelivery(ctx context.Context, arg DropPushDeliveryParams) (int64, error) {
+	result, err := q.db.Exec(ctx, dropPushDelivery, arg.ID, arg.ClaimToken, arg.ClaimedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const endPushSession = `-- name: EndPushSession :exec
-UPDATE push_subscription SET session_valid_until = now()
-WHERE user_id = $1 AND session_id = $2
+INSERT INTO push_session_end (session_id) VALUES ($1)
+ON CONFLICT (session_id) DO NOTHING
 `
 
-type EndPushSessionParams struct {
-	UserID    pgtype.UUID `json:"user_id"`
-	SessionID string      `json:"session_id"`
-}
-
-func (q *Queries) EndPushSession(ctx context.Context, arg EndPushSessionParams) error {
-	_, err := q.db.Exec(ctx, endPushSession, arg.UserID, arg.SessionID)
+// A marker row, not an update of the device rows: logout must not wait behind a
+// send that holds a device (see GetPushDeliveryContext).
+func (q *Queries) EndPushSession(ctx context.Context, sessionID string) error {
+	_, err := q.db.Exec(ctx, endPushSession, sessionID)
 	return err
 }
 
-const finishPushDelivery = `-- name: FinishPushDelivery :exec
+const finishPushDelivery = `-- name: FinishPushDelivery :execrows
 UPDATE push_delivery SET
     claimed_until = NULL,
+    claim_token = NULL,
     sent_at = CASE WHEN next_attempt_at <= $1 THEN now() ELSE NULL END
-WHERE id = $2
+WHERE id = $2 AND claim_token = $3::uuid
 `
 
 type FinishPushDeliveryParams struct {
-	ClaimedAt pgtype.Timestamptz `json:"claimed_at"`
-	ID        pgtype.UUID        `json:"id"`
+	ClaimedAt  pgtype.Timestamptz `json:"claimed_at"`
+	ID         pgtype.UUID        `json:"id"`
+	ClaimToken pgtype.UUID        `json:"claim_token"`
 }
 
 // A reply that re-armed the row while the push was in flight (next_attempt_at
-// moved past the claim) keeps its schedule and is sent again.
-func (q *Queries) FinishPushDelivery(ctx context.Context, arg FinishPushDeliveryParams) error {
-	_, err := q.db.Exec(ctx, finishPushDelivery, arg.ClaimedAt, arg.ID)
-	return err
+// moved past the claim) keeps its schedule and is sent again. Zero rows: the
+// claim is no longer ours and nothing was written.
+func (q *Queries) FinishPushDelivery(ctx context.Context, arg FinishPushDeliveryParams) (int64, error) {
+	result, err := q.db.Exec(ctx, finishPushDelivery, arg.ClaimedAt, arg.ID, arg.ClaimToken)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const getPushDeliveryContext = `-- name: GetPushDeliveryContext :one
@@ -153,7 +167,8 @@ SELECT s.id AS subscription_id, s.endpoint, s.p256dh, s.auth,
        i.id AS record_id, i.type, i.title, i.details, i.chat_session_id,
        w.slug AS workspace_slug,
        COALESCE(w.issue_prefix || '-' || iss.number::text, '')::text AS issue_key,
-       COALESCE(a.name, u.name, '')::text AS actor_name
+       COALESCE(a.name, u.name, '')::text AS actor_name,
+       (d.claimed_until - clock_timestamp() > make_interval(secs => $1::float8))::boolean AS lease_ok
 FROM push_delivery d
 JOIN push_subscription s ON s.id = d.subscription_id
 JOIN inbox_item i ON i.id = d.record_id AND i.recipient_id = s.user_id AND i.recipient_type = 'member'
@@ -162,9 +177,11 @@ JOIN member m ON m.workspace_id = i.workspace_id AND m.user_id = i.recipient_id
 LEFT JOIN issue iss ON iss.id = i.issue_id
 LEFT JOIN agent a ON i.actor_type = 'agent' AND a.id = i.actor_id
 LEFT JOIN "user" u ON i.actor_type = 'member' AND u.id = i.actor_id
-WHERE d.id = $1
+WHERE d.id = $2
+  AND d.claim_token = $3::uuid AND d.sent_at IS NULL
   AND NOT i.read AND NOT i.archived
   AND s.session_valid_until > now()
+  AND NOT EXISTS (SELECT 1 FROM push_session_end e WHERE e.session_id = s.session_id)
   AND COALESCE((
       SELECT p.enabled FROM notification_channel_preference p
        WHERE p.workspace_id = i.workspace_id AND p.user_id = i.recipient_id AND p.channel = 'push'
@@ -172,8 +189,13 @@ WHERE d.id = $1
   ), false)
   AND (i.chat_session_id IS NULL
        OR inbox_item_visible('push', i.chat_session_id, i.workspace_id, i.recipient_id))
-FOR NO KEY UPDATE OF s
 `
+
+type GetPushDeliveryContextParams struct {
+	MinLeaseSecs float64     `json:"min_lease_secs"`
+	ID           pgtype.UUID `json:"id"`
+	ClaimToken   pgtype.UUID `json:"claim_token"`
+}
 
 type GetPushDeliveryContextRow struct {
 	SubscriptionID pgtype.UUID `json:"subscription_id"`
@@ -188,20 +210,22 @@ type GetPushDeliveryContextRow struct {
 	WorkspaceSlug  string      `json:"workspace_slug"`
 	IssueKey       string      `json:"issue_key"`
 	ActorName      string      `json:"actor_name"`
+	LeaseOk        bool        `json:"lease_ok"`
 }
 
 // Everything a send needs, and every condition that must still hold: no row
-// means the push is no longer owed. The record is unread, its recipient owns the
-// device (a re-registered device never gets the previous owner's records), the
-// registering session is alive, the user is still a member and the push switch
-// is on. A DM must still be readable; the in_app switch is not part of that, so
-// the type passed to inbox_item_visible is deliberately not dm_reply.
-// The device row stays locked (FOR NO KEY UPDATE) until the caller's transaction
-// ends, and the caller sends inside it: re-registering the endpoint for another
-// account, logging out and pruning all wait for the send, so no push starts
-// after the device changes hands and no stale outcome lands on the new owner.
-func (q *Queries) GetPushDeliveryContext(ctx context.Context, id pgtype.UUID) (GetPushDeliveryContextRow, error) {
-	row := q.db.QueryRow(ctx, getPushDeliveryContext, id)
+// means the push is no longer owed. The delivery is unsent and carries the
+// caller's claim token (a claimant whose lease ran out gets nothing). The record
+// is unread, its recipient owns the device (a re-registered device never gets the
+// previous owner's records), the registering session was not ended or expired,
+// the user is still a member and the push switch is on. A DM must still be
+// readable; the in_app switch is not part of that, so the type passed to
+// inbox_item_visible is deliberately not dm_reply.
+// lease_ok: the claim still has min_lease_secs left, enough to finish the send
+// and the writes before anyone else may reclaim the row (clock_timestamp, not
+// now(): the transaction started before the lock wait).
+func (q *Queries) GetPushDeliveryContext(ctx context.Context, arg GetPushDeliveryContextParams) (GetPushDeliveryContextRow, error) {
+	row := q.db.QueryRow(ctx, getPushDeliveryContext, arg.MinLeaseSecs, arg.ID, arg.ClaimToken)
 	var i GetPushDeliveryContextRow
 	err := row.Scan(
 		&i.SubscriptionID,
@@ -216,26 +240,82 @@ func (q *Queries) GetPushDeliveryContext(ctx context.Context, id pgtype.UUID) (G
 		&i.WorkspaceSlug,
 		&i.IssueKey,
 		&i.ActorName,
+		&i.LeaseOk,
 	)
 	return i, err
 }
 
-const retryPushDelivery = `-- name: RetryPushDelivery :exec
+const lockPushSubscription = `-- name: LockPushSubscription :one
+SELECT id FROM push_subscription WHERE id = $1 FOR NO KEY UPDATE
+`
+
+// Taken first, in its own statement, so the context below is read after the
+// wait: a statement that waits for a row lock only re-checks that row, not the
+// others it joined. The device row stays locked (FOR NO KEY UPDATE) until the
+// caller's transaction ends, and the caller sends inside it: re-registering the
+// endpoint for another account and pruning wait for the send, so no push starts
+// after the device changes hands and no stale outcome lands on the new owner.
+func (q *Queries) LockPushSubscription(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockPushSubscription, id)
+	var id_2 pgtype.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
+const prunePushSubscription = `-- name: PrunePushSubscription :exec
+WITH claimed AS (
+    SELECT 1 FROM push_delivery d WHERE d.id = $1 AND d.claim_token = $2::uuid
+), gone AS (
+    DELETE FROM push_subscription s WHERE s.id = $3 AND EXISTS (SELECT 1 FROM claimed) RETURNING s.id
+)
+DELETE FROM push_delivery WHERE subscription_id IN (SELECT id FROM gone)
+`
+
+type PrunePushSubscriptionParams struct {
+	DeliveryID pgtype.UUID `json:"delivery_id"`
+	ClaimToken pgtype.UUID `json:"claim_token"`
+	ID         pgtype.UUID `json:"id"`
+}
+
+// The push service said the endpoint is gone. Only the current claimant of the
+// delivery may act on that: a claimant whose lease expired learned it too late
+// to know what the subscription is now.
+func (q *Queries) PrunePushSubscription(ctx context.Context, arg PrunePushSubscriptionParams) error {
+	_, err := q.db.Exec(ctx, prunePushSubscription, arg.DeliveryID, arg.ClaimToken, arg.ID)
+	return err
+}
+
+const retryPushDelivery = `-- name: RetryPushDelivery :execrows
 UPDATE push_delivery SET
     claimed_until = NULL,
-    next_attempt_at = CASE WHEN next_attempt_at <= $1 THEN now() + make_interval(secs => $2::float8) ELSE next_attempt_at END
-WHERE id = $3
+    claim_token = NULL,
+    attempts = GREATEST(attempts - $1::int, 0),
+    next_attempt_at = CASE WHEN next_attempt_at <= $2 THEN now() + make_interval(secs => $3::float8) ELSE next_attempt_at END
+WHERE id = $4 AND claim_token = $5::uuid
 `
 
 type RetryPushDeliveryParams struct {
+	Refund      int32              `json:"refund"`
 	ClaimedAt   pgtype.Timestamptz `json:"claimed_at"`
 	BackoffSecs float64            `json:"backoff_secs"`
 	ID          pgtype.UUID        `json:"id"`
+	ClaimToken  pgtype.UUID        `json:"claim_token"`
 }
 
-func (q *Queries) RetryPushDelivery(ctx context.Context, arg RetryPushDeliveryParams) error {
-	_, err := q.db.Exec(ctx, retryPushDelivery, arg.ClaimedAt, arg.BackoffSecs, arg.ID)
-	return err
+// refund: 1 gives the claim's attempt back (the delivery was deferred, not
+// tried), 0 keeps it.
+func (q *Queries) RetryPushDelivery(ctx context.Context, arg RetryPushDeliveryParams) (int64, error) {
+	result, err := q.db.Exec(ctx, retryPushDelivery,
+		arg.Refund,
+		arg.ClaimedAt,
+		arg.BackoffSecs,
+		arg.ID,
+		arg.ClaimToken,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const touchPushSubscription = `-- name: TouchPushSubscription :exec

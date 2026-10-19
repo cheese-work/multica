@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -21,14 +23,25 @@ const (
 	SentRetention = time.Hour
 
 	workerTick = 2 * time.Second
-	batchSize  = 32
-	// Each in-flight send holds a transaction, so this is also its share of the pool.
+	// A batch is claimed in one go and its rows queue behind each other when they
+	// share a device, so batchSize x sendTimeout (the worst case: every row on one
+	// device, every send at its timeout) must stay under leaseDuration.
+	batchSize     = 8
 	parallelSends = 4
-	// Long enough for a full batch of slow sends (batchSize/parallelSends x sendTimeout).
 	leaseDuration = 3 * time.Minute
 	sendTimeout   = 15 * time.Second
-	retryBase     = 30 * time.Second
-	retryCap      = time.Hour
+	// deliveryTimeout bounds one attempt from the pool to the commit: pool
+	// acquisition, the device lock, the send and the outcome writes. It also
+	// bounds how long a delivery holds the device lock, and so how long a
+	// registration for that device can be made to wait.
+	deliveryTimeout = 25 * time.Second
+	// A delivery that cannot get the device within deviceLockWait is deferred
+	// (attempt refunded) rather than queued, so contested devices never pin pool
+	// connections behind another send.
+	deviceLockWait   = 2 * time.Second
+	contestedBackoff = 5 * time.Second
+	retryBase        = 30 * time.Second
+	retryCap         = time.Hour
 )
 
 // Worker sends due outbox rows. Every pass re-checks that the push is still
@@ -55,8 +68,12 @@ func (w *Worker) Run(ctx context.Context) {
 	ticker := time.NewTicker(workerTick)
 	defer ticker.Stop()
 	for ctx.Err() == nil {
-		if err := w.ProcessOnce(ctx); err != nil && ctx.Err() == nil {
+		n, err := w.process(ctx)
+		if err != nil && ctx.Err() == nil {
 			slog.Warn("push worker pass failed", "error", err)
+		}
+		if n == batchSize && err == nil {
+			continue // a full batch: more is probably due
 		}
 		select {
 		case <-ctx.Done():
@@ -78,86 +95,171 @@ func (w *Worker) WaitWithTimeout(timeout time.Duration) bool {
 
 // ProcessOnce claims the due rows and delivers them.
 func (w *Worker) ProcessOnce(ctx context.Context) error {
+	_, err := w.process(ctx)
+	return err
+}
+
+func (w *Worker) process(ctx context.Context) (int, error) {
 	if err := w.q.DeleteSentPushDeliveries(ctx, SentRetention.Seconds()); err != nil {
-		return err
+		return 0, err
+	}
+	// An ended session cannot be valid again once its token lifetime has passed.
+	if err := w.q.DeleteOldPushSessionEnds(ctx, (auth.AuthTokenTTL() + 24*time.Hour).Seconds()); err != nil {
+		return 0, err
 	}
 	claims, err := w.q.ClaimPushDeliveries(ctx, db.ClaimPushDeliveriesParams{Batch: batchSize, LeaseSecs: leaseDuration.Seconds()})
 	if err != nil {
-		return err
+		return 0, err
+	}
+	// Rows of one device go through one goroutine in claim order: they would
+	// serialize on the device lock anyway, and this keeps them from timing out
+	// on each other.
+	var order []string
+	byDevice := map[string][]db.ClaimPushDeliveriesRow{}
+	for _, claim := range claims {
+		key := util.UUIDToString(claim.SubscriptionID)
+		if _, seen := byDevice[key]; !seen {
+			order = append(order, key)
+		}
+		byDevice[key] = append(byDevice[key], claim)
 	}
 	var wg sync.WaitGroup
 	slots := make(chan struct{}, parallelSends)
-	for _, claim := range claims {
+	for _, key := range order {
 		slots <- struct{}{}
 		wg.Add(1)
 		go func() {
 			defer func() { <-slots; wg.Done() }()
-			w.deliver(ctx, claim)
+			for _, claim := range byDevice[key] {
+				if ctx.Err() != nil {
+					return
+				}
+				w.deliver(ctx, claim)
+			}
 		}()
 	}
 	wg.Wait()
-	return nil
+	return len(claims), nil
 }
+
+var (
+	errDeviceBusy = errors.New("device is held by another send")
+	errLeaseShort = errors.New("claim too close to expiry to send")
+)
 
 // deliver checks, sends and records one claimed row in a single transaction.
-// The check locks the device row (see GetPushDeliveryContext) and the send
+// The device row is locked first and the check runs after the lock, the send
 // happens before the commit, so a device cannot change hands between the
 // ownership check and the send, and the outcome below is only ever written for
-// the owner the check saw. ponytail: a registration or logout for a device with
-// a send in flight waits for that send, at most sendTimeout; per-device locks
-// with a shorter wait if that stall ever matters.
+// the owner the check saw. Every statement carries the claim token: a claimant
+// whose lease expired while it queued reads nothing, sends nothing and writes
+// nothing. The whole attempt is bounded by deliveryTimeout.
+//
+// Delivery is at-least-once. If the commit fails after a send, or the process
+// dies between them, the row is claimed again after the lease and sent again;
+// nothing here claims exactly-once across that boundary.
 func (w *Worker) deliver(ctx context.Context, claim db.ClaimPushDeliveriesRow) {
-	tx, err := w.tx.Begin(ctx)
+	attemptCtx, cancel := context.WithTimeout(ctx, deliveryTimeout)
+	defer cancel()
+	id := util.UUIDToString(claim.ID)
+	tx, err := w.tx.Begin(attemptCtx)
 	if err != nil {
-		slog.Warn("push delivery transaction failed", "delivery_id", util.UUIDToString(claim.ID), "error", err)
+		slog.Warn("push delivery transaction failed", "delivery_id", id, "error", err)
 		return
 	}
-	defer tx.Rollback(ctx)
-	if err := w.deliverLocked(ctx, w.q.WithTx(tx), claim); err != nil {
+	// Rolled back on every path that does not commit, even after the attempt expired.
+	defer func() {
+		rollbackCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer stop()
+		_ = tx.Rollback(rollbackCtx)
+	}()
+	if _, err := tx.Exec(attemptCtx, fmt.Sprintf("SET LOCAL lock_timeout = '%dms'", deviceLockWait.Milliseconds())); err != nil {
+		slog.Warn("push delivery lock timeout setup failed", "delivery_id", id, "error", err)
+		return
+	}
+	err = w.deliverLocked(attemptCtx, ctx, w.q.WithTx(tx), claim)
+	switch {
+	case err == nil:
+		if err := tx.Commit(attemptCtx); err != nil {
+			slog.Warn("push delivery commit failed", "delivery_id", id, "error", err)
+		}
+	case errors.Is(err, errDeviceBusy):
+		// The aborted transaction is rolled back first; the deferral is its own statement.
+		_ = tx.Rollback(context.WithoutCancel(ctx))
+		_, rerr := w.q.RetryPushDelivery(attemptCtx, db.RetryPushDeliveryParams{
+			ID: claim.ID, ClaimToken: claim.ClaimToken, ClaimedAt: claim.ClaimedAt, Refund: 1, BackoffSecs: contestedBackoff.Seconds(),
+		})
+		if rerr != nil {
+			slog.Warn("push delivery deferral failed", "delivery_id", id, "error", rerr)
+		}
+	case errors.Is(err, errLeaseShort):
+		slog.Info("push delivery left for reclaim: lease too short to send", "delivery_id", id)
+	default:
 		// Rolled back: the row keeps its claim and is retried when the lease runs out.
-		slog.Warn("push delivery failed", "delivery_id", util.UUIDToString(claim.ID), "error", err)
-		return
-	}
-	if err := tx.Commit(ctx); err != nil {
-		slog.Warn("push delivery commit failed", "delivery_id", util.UUIDToString(claim.ID), "error", err)
+		slog.Warn("push delivery failed", "delivery_id", id, "error", err)
 	}
 }
 
-func (w *Worker) deliverLocked(ctx context.Context, q *db.Queries, claim db.ClaimPushDeliveriesRow) error {
+func isLockTimeout(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "55P03"
+}
+
+// deliverLocked runs inside the transaction. attemptCtx bounds the attempt;
+// shutdownCtx is the worker's own, so a stop is told apart from a timeout.
+func (w *Worker) deliverLocked(attemptCtx, shutdownCtx context.Context, q *db.Queries, claim db.ClaimPushDeliveriesRow) error {
 	drop := func() error {
-		return q.DropPushDelivery(ctx, db.DropPushDeliveryParams{ID: claim.ID, ClaimedAt: claim.ClaimedAt})
+		_, err := q.DropPushDelivery(attemptCtx, db.DropPushDeliveryParams{ID: claim.ID, ClaimToken: claim.ClaimToken, ClaimedAt: claim.ClaimedAt})
+		return err
 	}
-	row, err := q.GetPushDeliveryContext(ctx, claim.ID)
+	if _, err := q.LockPushSubscription(attemptCtx, claim.SubscriptionID); err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return drop() // the device is gone
+		case isLockTimeout(err):
+			return errDeviceBusy
+		default:
+			return err
+		}
+	}
+	row, err := q.GetPushDeliveryContext(attemptCtx, db.GetPushDeliveryContextParams{ID: claim.ID, ClaimToken: claim.ClaimToken, MinLeaseSecs: deliveryTimeout.Seconds()})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return drop()
+		return drop() // no longer owed, or no longer our claim (the drop is fenced)
 	}
 	if err != nil {
 		return err
+	}
+	if !row.LeaseOk {
+		return errLeaseShort
 	}
 	body, err := json.Marshal(buildPayload(row))
 	if err != nil {
 		return drop()
 	}
-	sendCtx, cancel := context.WithTimeout(ctx, sendTimeout)
+	sendCtx, cancel := context.WithTimeout(attemptCtx, sendTimeout)
 	status, sendErr := w.sender.Send(sendCtx, Subscription{Endpoint: row.Endpoint, P256dh: row.P256dh, Auth: row.Auth}, body)
 	cancel()
-	if ctx.Err() != nil {
-		return ctx.Err() // shutting down; the lease expires and the row is retried
+	if shutdownCtx.Err() != nil {
+		return shutdownCtx.Err() // shutting down; the lease expires and the row is retried
 	}
 	switch {
 	case sendErr == nil && status >= 200 && status < 300:
-		if err := q.FinishPushDelivery(ctx, db.FinishPushDeliveryParams{ID: claim.ID, ClaimedAt: claim.ClaimedAt}); err != nil {
+		n, err := q.FinishPushDelivery(attemptCtx, db.FinishPushDeliveryParams{ID: claim.ID, ClaimToken: claim.ClaimToken, ClaimedAt: claim.ClaimedAt})
+		if err != nil || n == 0 {
 			return err
 		}
-		return q.TouchPushSubscription(ctx, row.SubscriptionID)
+		return q.TouchPushSubscription(attemptCtx, row.SubscriptionID)
 	case sendErr == nil && (status == 404 || status == 410):
-		return q.DeletePushSubscription(ctx, row.SubscriptionID)
+		return q.PrunePushSubscription(attemptCtx, db.PrunePushSubscriptionParams{DeliveryID: claim.ID, ClaimToken: claim.ClaimToken, ID: row.SubscriptionID})
 	case claim.Attempts >= MaxAttempts:
 		slog.Warn("push delivery given up", "delivery_id", util.UUIDToString(claim.ID), "status", status, "error", sendErr)
 		return drop()
 	default:
 		slog.Info("push delivery will retry", "delivery_id", util.UUIDToString(claim.ID), "attempt", claim.Attempts, "status", status, "error", sendErr)
-		return q.RetryPushDelivery(ctx, db.RetryPushDeliveryParams{ID: claim.ID, ClaimedAt: claim.ClaimedAt, BackoffSecs: backoff(claim.Attempts).Seconds()})
+		_, err := q.RetryPushDelivery(attemptCtx, db.RetryPushDeliveryParams{
+			ID: claim.ID, ClaimToken: claim.ClaimToken, ClaimedAt: claim.ClaimedAt, BackoffSecs: backoff(claim.Attempts).Seconds(),
+		})
+		return err
 	}
 }
 

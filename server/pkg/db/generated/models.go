@@ -1811,6 +1811,12 @@ type PushDelivery struct {
 	Attempts       int32              `json:"attempts"`
 	SentAt         pgtype.Timestamptz `json:"sent_at"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	ClaimToken     pgtype.UUID        `json:"claim_token"`
+}
+
+type PushSessionEnd struct {
+	SessionID string             `json:"session_id"`
+	EndedAt   pgtype.Timestamptz `json:"ended_at"`
 }
 
 type PushSubscription struct {
