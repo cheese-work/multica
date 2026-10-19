@@ -160,6 +160,15 @@ export type JevRoutingMode = "off" | "shadow" | "on";
  * tab reads. Fields stay raw (a newer server may add modes), see
  * `resolveJevGovernance` for how the tab interprets them.
  */
+/** One saved version of the governance settings: what they were before and what they were after. Settings stay raw: a newer server may add keys. */
+export interface GovernanceAuditEntry {
+  version: number;
+  actor_id: string;
+  previous: Record<string, unknown> | null;
+  effective: Record<string, unknown>;
+  changed_at: string;
+}
+
 export interface WorkspaceGovernanceConfig {
   version: number;
   settings: {
@@ -167,13 +176,16 @@ export interface WorkspaceGovernanceConfig {
     jev_squad_routing_enabled?: boolean | null;
     jev_min_confidence?: number | null;
   };
+  /** Newest first; the server returns at most 50. */
+  audit_history: GovernanceAuditEntry[];
 }
 
-/** What the tab shows: the effective routing mode and the confidence, with the version a write is based on. `min_confidence` is null when the workspace never set one (the server then uses 0.90). */
+/** What the tab shows: the effective routing mode and the confidence, with the version a write is based on, and the saved versions. `min_confidence` is null when the workspace never set one (the server then uses 0.90). */
 export interface WorkspaceJevGovernance {
   version: number;
   routing_mode: JevRoutingMode;
   min_confidence: number | null;
+  history: GovernanceAuditEntry[];
 }
 
 /** A write is always based on the version the user saw. Omitted fields stay as they are. */
@@ -182,4 +194,16 @@ export interface WorkspaceJevGovernancePatch {
   request_id: string;
   jev_squad_routing_mode?: "off" | "shadow";
   jev_min_confidence?: number;
+}
+
+/** Restores every setting to how it was after `rollback_to_version`, saved as a new version. */
+export interface WorkspaceGovernanceRollback {
+  expected_version: number;
+  request_id: string;
+  rollback_to_version: number;
+}
+
+/** Whether a Jev provider key is stored. The key itself is never readable. */
+export interface JevCredentialPresence {
+  present: boolean;
 }

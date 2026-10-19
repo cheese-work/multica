@@ -3760,6 +3760,15 @@ export const WorkspaceExportPrivacySchema = z
 // write and the mode is state an admin acts on, so a malformed response must
 // surface as a load error rather than as a plausible default. Unknown fields
 // are dropped, so nothing else the server adds is cached by this tab.
+const GovernanceSettingsRecordSchema = z.record(z.string(), z.unknown());
+export const GovernanceAuditEntrySchema = z.object({
+  version: z.number().int().positive(),
+  actor_id: z.string().nullish().transform((value) => value ?? ""),
+  previous: GovernanceSettingsRecordSchema.nullish().transform((value) => value ?? null),
+  effective: GovernanceSettingsRecordSchema,
+  changed_at: z.string(),
+});
+
 export const WorkspaceGovernanceConfigSchema = z.object({
   version: z.number().int().nonnegative(),
   settings: z.object({
@@ -3767,7 +3776,14 @@ export const WorkspaceGovernanceConfigSchema = z.object({
     jev_squad_routing_enabled: z.boolean().nullish(),
     jev_min_confidence: z.number().nullish(),
   }),
+  // Strict like the rest: a rollback offered from a history that did not parse
+  // would be a guess about what it restores.
+  audit_history: GovernanceAuditEntrySchema.array().default([]),
 });
+
+// CHE-1853: whether a Jev provider key is stored. Strict: "Not set" must never
+// be what a malformed response turns into.
+export const JevCredentialPresenceSchema = z.object({ present: z.boolean() });
 
 export const WakeupConditionSchema = z.union([
   z.object({ type: z.literal("issue_field"), field: z.literal("status"), value: z.string() }),

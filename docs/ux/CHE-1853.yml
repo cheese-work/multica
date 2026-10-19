@@ -1,0 +1,28 @@
+# Second implementation layer of the Jev / Governance tab (CHE-1777): the Credential and
+# History panes, with the tab group around them. The routing pane is CHE-1839 (merged).
+# Locales: machine-drafted fr, ja, ko and zh-Hans ship now; native review is NOT-RUN.
+issue: CHE-1853
+design: design/jev-governance-tab/rev-4/C.html @ 968d0eab8bf7ff04a92c7ded65d36758b6e304a9
+pages:
+  - id: settings-jev-governance
+    url: /<workspace-slug>/settings?tab=jev-governance   # same path on base and preview
+    keep:
+      - jev-governance-routing
+      - jev-routing-mode
+      - jev-min-confidence
+      - jev-save-bar
+      - jev-conflict-alert
+    change:
+      - jev-governance-tabs: "new tab group Routing | Credential | History n, 44 px tabs on a phone; the routing pane is unchanged and stays mounted"
+      - jev-credential-actions: "new Credential pane: set or not set, and Set key, Replace key or Remove for owners and admins"
+      - jev-key-dialog: "new password dialog; the entered key is cleared on every way out"
+      - jev-remove-key-dialog: "new confirmation for removing the key"
+      - jev-history-list: "new History pane: versions newest first, who, when and what changed; selecting a row shows its detail and a rollback"
+      - jev-rollback-dialog: "new confirmation that lists Now and After before a rollback; a version that would turn routing on cannot be restored"
+    remove: []
+  - id: settings-navigation
+    url: /<workspace-slug>/settings   # navigation and search; same path on base and preview
+    keep:
+      - settings-nav-jev-governance
+    change: []
+    remove: []
