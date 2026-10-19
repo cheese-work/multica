@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -187,4 +189,103 @@ func TestEndedSessionCannotRegisterAgain(t *testing.T) {
 	if _, found := pushSubscriptionOwner(t, "https://push.example.com/send/renewed-second"); found {
 		t.Fatal("a subscription was stored for an ended session")
 	}
+}
+
+// CHE-1795 P1 (Luna, exact-pair review of 0ef14efb2): ending a session must
+// not depend on the current push configuration. Subscriptions registered while
+// push was configured survive a configuration change, and the same keys may
+// come back before the saved session expiry.
+
+// countingSender counts the pushes that would leave the process.
+type countingSender struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (c *countingSender) Send(context.Context, pushnotify.Subscription, []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.n++
+	return 201, nil
+}
+
+func (c *countingSender) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.n
+}
+
+func TestLogoutEndsTheSessionWhateverThePushConfigurationIs(t *testing.T) {
+	gates := map[string][]string{
+		"public key missing":   {"MULTICA_VAPID_PUBLIC_KEY"},
+		"private key missing":  {"MULTICA_VAPID_PRIVATE_KEY"},
+		"subject missing":      {"MULTICA_VAPID_SUBJECT"},
+		"push off":             {"MULTICA_VAPID_PUBLIC_KEY", "MULTICA_VAPID_PRIVATE_KEY", "MULTICA_VAPID_SUBJECT"},
+		"no gate (worker off)": nil,
+	}
+	for name, unset := range gates {
+		t.Run(name, func(t *testing.T) {
+			sid := "sid-cfg-" + strings.ReplaceAll(strings.ReplaceAll(name, " ", "-"), "(", "")
+			sid = strings.ReplaceAll(sid, ")", "")
+			enablePush(t)
+			cleanPushState(t, testUserID)
+			t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM push_session_end WHERE session_id = $1`, sid) })
+			token := sessionJWT(t, testUserID, sid, time.Now().Add(time.Hour))
+			endpoint := "https://push.example.com/send/" + sid
+			registerPush(t, token, pushSubscriptionBody(t, endpoint), http.StatusOK)
+			setChannel(t, "inbox", "push", true)
+			newInboxItem(t, testUserID)
+			if _, err := testPool.Exec(context.Background(),
+				`UPDATE push_delivery d SET next_attempt_at = now() - interval '1 second' FROM push_subscription s WHERE d.subscription_id = s.id AND s.endpoint = $1`, endpoint); err != nil {
+				t.Fatalf("make the push due: %v", err)
+			}
+
+			// Push is misconfigured, or off, only while the user logs out.
+			saved := map[string]string{}
+			for _, key := range unset {
+				saved[key] = os.Getenv(key)
+				os.Unsetenv(key)
+			}
+			resp := pushRequest(t, http.MethodPost, "/auth/logout", token, nil)
+			resp.Body.Close()
+			for key, value := range saved {
+				os.Setenv(key, value)
+			}
+
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("logout: status %d, want 200", resp.StatusCode)
+			}
+			if !endedSession(t, sid) {
+				t.Fatal("logout with push unconfigured did not record the session end: re-enabling push would send to the old session")
+			}
+			// Push is back before the saved session expiry.
+			sender := &countingSender{}
+			if err := pushnotify.NewWorker(db.New(testPool), testPool, sender).ProcessOnce(context.Background()); err != nil {
+				t.Fatalf("process pass: %v", err)
+			}
+			if sender.count() != 0 {
+				t.Fatal("a worker sent to a device of the ended session after push came back")
+			}
+			resp = pushRequest(t, http.MethodPost, "/api/push/subscriptions", sessionJWT(t, testUserID, sid, time.Now().Add(time.Hour)),
+				pushSubscriptionBody(t, endpoint+"-again"))
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("re-registering the ended session: status %d, want 401", resp.StatusCode)
+			}
+		})
+	}
+}
+
+func TestANewLoginRegistersAfterAnotherSessionEnded(t *testing.T) {
+	enablePush(t)
+	cleanPushState(t, testUserID)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM push_session_end WHERE session_id = 'sid-old-login'`)
+	})
+	old := sessionJWT(t, testUserID, "sid-old-login", time.Now().Add(time.Hour))
+	resp := pushRequest(t, http.MethodPost, "/auth/logout", old, nil)
+	resp.Body.Close()
+
+	registerPush(t, sessionJWT(t, testUserID, "sid-new-login", time.Now().Add(time.Hour)),
+		pushSubscriptionBody(t, "https://push.example.com/send/new-login"), http.StatusOK)
 }

@@ -288,3 +288,32 @@ func TestLogoutFailsClosedOnEveryDrainFailure(t *testing.T) {
 		}
 	})
 }
+
+// With push unconfigured the session end is still required. A store that cannot
+// record it (a missing table, a database that is down) is a failed logout, not a
+// skipped step.
+func TestLogoutFailsLoudlyWhenPushIsOffAndTheSessionEndCannotBeRecorded(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	t.Setenv("MULTICA_VAPID_PUBLIC_KEY", "")
+	t.Setenv("MULTICA_VAPID_PRIVATE_KEY", "")
+	t.Setenv("MULTICA_VAPID_SUBJECT", "")
+	saved := testHandler.Queries
+	testHandler.Queries = db.New(pushFailingDB{})
+	t.Cleanup(func() { testHandler.Queries = saved })
+
+	req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	req.Header.Set("Authorization", "Bearer "+pushSessionToken(t, "sid-off-store-down"))
+	rec := httptest.NewRecorder()
+	testHandler.Logout(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("logout with push off and the marker store down: status %d, Retry-After %q, want 503 with Retry-After", rec.Code, rec.Header().Get("Retry-After"))
+	}
+	for _, cookie := range rec.Result().Cookies() {
+		if cookie.Name == auth.AuthCookieName {
+			t.Fatal("the auth cookie was cleared although the session end was not recorded")
+		}
+	}
+}
