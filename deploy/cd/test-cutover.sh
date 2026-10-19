@@ -1420,6 +1420,9 @@ jev_refusals=(
   "MULTICA_JEV_FLAGS_FILE|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$work_dir/absent.yaml,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
   "MULTICA_JEV_FLAGS_FILE|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$work_dir,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
   "MULTICA_JEV_FLAGS_FILE|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=relative.yaml,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
+  "MULTICA_JEV_FLAGS_FILE|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$root_dir/deploy/cd/fixtures/flags/invalid/duplicate-key.yaml,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
+  "MULTICA_JEV_FLAGS_FILE|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$root_dir/deploy/cd/fixtures/flags/invalid/unclosed-flow.yaml,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
+  "MULTICA_JEV_FLAGS_FILE|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$root_dir/deploy/cd/fixtures/flags/invalid/flag-not-map.yaml,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
   "MULTICA_JEV_GATEWAY_NETWORK|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$jev_flags|"
   "MULTICA_JEV_GATEWAY_NETWORK|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$jev_flags,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|missing-gateway-network"
 )
@@ -1451,5 +1454,18 @@ output="$(run_jev "$state_dir" rollback 2>&1)" && status=0 || status=$?
 expect_exit 1 "$status" jev-rollback-refusal
 expect_contains "$output" "MULTICA_JEV_SECRET_KEY" jev-rollback-refusal
 [ "$(wc -l <"$state_dir/control/stop-calls.log")" -eq "$stops_before" ] || { echo "scenario jev-rollback-refusal: drained before refusing" >&2; exit 1; }
+
+# A flag file that turns malformed after a successful cutover refuses the
+# rollback before it drains the active colour (both colours mount the file).
+jev_full_env
+state_dir="$(fresh_scenario_dir jev-rollback-malformed-file)"
+run_jev "$state_dir" cutover >/dev/null 2>&1
+cp "$root_dir/deploy/cd/fixtures/flags/invalid/duplicate-key.yaml" "$jev_flags"
+stops_before="$(wc -l <"$state_dir/control/stop-calls.log")"
+output="$(run_jev "$state_dir" rollback 2>&1)" && status=0 || status=$?
+expect_exit 1 "$status" jev-rollback-malformed-file
+expect_contains "$output" "MULTICA_JEV_FLAGS_FILE" jev-rollback-malformed-file
+[ "$(wc -l <"$state_dir/control/stop-calls.log")" -eq "$stops_before" ] || { echo "scenario jev-rollback-malformed-file: drained before refusing" >&2; exit 1; }
+cp deploy/cd/fixtures/jev-feature-flags.synthetic.yaml "$jev_flags"
 
 echo "cutover.sh control-flow fixtures passed"

@@ -97,4 +97,27 @@ for var in MULTICA_JEV_SECRET_KEY MULTICA_JEV_FLAGS_FILE MULTICA_JEV_GATEWAY_NET
   grep -qF "$synthetic_key" "$work_dir/err" && fail "render error leaks the key"
 done
 
+# The DB host follows the effective Compose project (COMPOSE_PROJECT_NAME or
+# -p), because the generated postgres container name is <project>-postgres-1.
+for form in env flag; do
+  if [ "$form" = env ]; then
+    project_json="$(render 1 "${jev_env[@]}" COMPOSE_PROJECT_NAME=tenant_synthetic)"
+  else
+    project_json="$(env -i HOME="$HOME" PATH="$PATH" JWT_SECRET=synthetic-jwt-secret "${jev_env[@]}" \
+      docker compose -p tenant_synthetic -f docker-compose.selfhost.yml -f deploy/cd/docker-compose.ab.yml -f deploy/cd/docker-compose.jev.yml config --format json)"
+  fi
+  printf '%s' "$project_json" | node -e '
+    let d = ""; process.stdin.on("data", (c) => (d += c)).on("end", () => {
+      const m = JSON.parse(d);
+      for (const c of ["blue", "green"]) {
+        const url = m.services[`backend-${c}`].environment.DATABASE_URL;
+        if (m.name !== "tenant_synthetic" || !url.includes("@tenant_synthetic-postgres-1:5432/")) {
+          console.error(`project ${m.name}: backend-${c} DB host is not tenant_synthetic-postgres-1`);
+          process.exit(1);
+        }
+      }
+    });
+  ' || fail "DB host does not follow the effective project ($form form)"
+done
+
 echo "jev overlay render fixtures passed"
