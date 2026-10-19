@@ -204,6 +204,8 @@ function KeyDialog({
         onUnconfigured();
         return;
       }
+      // The typed key stays in `value` for a retry; drop the mutation's copy.
+      save.reset();
       setFailed(true);
     }
   };

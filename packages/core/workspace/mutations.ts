@@ -210,7 +210,7 @@ export function useUpdateWorkspaceJevGovernance(wsId: string) {
  * CHE-1853: set, replace or remove the Jev provider key. The key is a mutation
  * variable only while the request runs: `gcTime: 0` drops the mutation from the
  * cache as soon as it settles, so nothing keeps it, and callers `reset()` the
- * observer once the dialog is done. The presence cache changes only after the
+ * observer once the dialog is done or the save failed. The presence cache changes only after the
  * server confirmed the write.
  */
 export function useSetJevCredential(wsId: string) {
