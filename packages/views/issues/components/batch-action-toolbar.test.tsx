@@ -19,6 +19,7 @@ vi.mock("@multica/core/issues/stores/selection-store", () => ({
 vi.mock("@multica/core/issues/mutations", () => ({
   useBatchUpdateIssues: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useBatchDeleteIssues: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useUpdateIssue: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 
 const { WORKFLOWS, PROJECTS } = vi.hoisted(() => {

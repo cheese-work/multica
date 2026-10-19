@@ -136,8 +136,8 @@ function mount(issues: Issue[]) {
 
 async function chooseStatus() {
   // The catalogs load first; the picker stub is always on screen.
-  await waitFor(() => expect(api.listProjects).toHaveBeenCalled());
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  await waitFor(() => expect(api.listIssueWorkflows).toHaveBeenCalled());
+  await new Promise((resolve) => setTimeout(resolve, 50));
   fireEvent.click(screen.getByTestId("status-code_review"));
 }
 
@@ -166,8 +166,8 @@ describe("BatchActionToolbar status change that hands issues off", () => {
     expect(await screen.findByText(/Move 2 issues to “Code review”\?/)).toBeTruthy();
     expect(batchUpdate).not.toHaveBeenCalled();
     expect(updateIssue).not.toHaveBeenCalled();
-    expect(api.previewWorkflowHandoff).toHaveBeenCalledWith("a", "code_review");
-    expect(api.previewWorkflowHandoff).not.toHaveBeenCalledWith("b", expect.anything());
+    expect(api.previewWorkflowHandoff).toHaveBeenCalledWith("a", "code_review", undefined);
+    expect(api.previewWorkflowHandoff).not.toHaveBeenCalledWith("b", expect.anything(), undefined);
   });
 
   it("writes each handoff with what was confirmed and the rest as one batch", async () => {
@@ -267,10 +267,10 @@ describe("BatchActionToolbar status change that hands issues off", () => {
     api.listIssueWorkflows.mockReturnValue(new Promise(() => {}));
     mount([HANDING_OFF, PLAIN]);
     await waitFor(() => expect(api.listProjects).toHaveBeenCalled());
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
     fireEvent.click(screen.getByTestId("status-code_review"));
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(batchUpdate).not.toHaveBeenCalled();
     expect(updateIssue).not.toHaveBeenCalled();
@@ -281,10 +281,10 @@ describe("BatchActionToolbar status change that hands issues off", () => {
     api.listProjects.mockReturnValue(new Promise(() => {}));
     mount([HANDING_OFF, PLAIN]);
     await waitFor(() => expect(api.listIssueWorkflows).toHaveBeenCalled());
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
     fireEvent.click(screen.getByTestId("status-code_review"));
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(batchUpdate).not.toHaveBeenCalled();
     expect(updateIssue).not.toHaveBeenCalled();
@@ -297,7 +297,7 @@ describe("BatchActionToolbar status change that hands issues off", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     fireEvent.click(screen.getByTestId("status-code_review"));
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(batchUpdate).not.toHaveBeenCalled();
     expect(updateIssue).not.toHaveBeenCalled();

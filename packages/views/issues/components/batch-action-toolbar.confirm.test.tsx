@@ -23,6 +23,7 @@ const batchDelete = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 vi.mock("@multica/core/issues/mutations", () => ({
   useBatchUpdateIssues: () => ({ mutateAsync: batchUpdate, isPending: false }),
   useBatchDeleteIssues: () => ({ mutateAsync: batchDelete, isPending: false }),
+  useUpdateIssue: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
