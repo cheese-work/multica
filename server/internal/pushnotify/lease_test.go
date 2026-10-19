@@ -10,7 +10,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/pushnotify"
 )
 
-// CHE-1795 P1/P2 (Luna, exact-pair review of 235e55b3c): a claim could outlive
+// CHE-1795: a claim could outlive
 // its lease while queued behind a same-device send, and nothing tied the
 // outcome writes to the claim that made them. Locks are held and released by
 // the test, so no case sleeps through a production lease.

@@ -15,7 +15,7 @@ import (
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
-// CHE-1795 P1 (Luna, exact-pair review of dff195dc2): the ownership check and
+// CHE-1795: the ownership check and
 // the send were two steps, so a device could change hands in between. These
 // tests hold a send open at the push-service boundary and move the device while
 // it is in flight.

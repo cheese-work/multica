@@ -14,7 +14,7 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-// CHE-1795 P1 (Luna, exact-pair review of 7519e7c5f): logout has to end the
+// CHE-1795: logout has to end the
 // session for good, and a send admitted before it must be over, or visibly
 // still running, by the time logout answers.
 
@@ -117,7 +117,7 @@ func TestLogoutWaitsForASendAdmittedBeforeIt(t *testing.T) {
 	}
 }
 
-// CHE-1795 P1 (Luna, exact-pair review of 11cb9a671): when the drain cannot
+// CHE-1795: when the drain cannot
 // show that no admitted send is left, logout must not report success. The
 // marker stays recorded, the cookie stays, and a retry after the worker is
 // done completes. Holding the sender gate at Send entry stands for a worker
@@ -191,7 +191,7 @@ func TestEndedSessionCannotRegisterAgain(t *testing.T) {
 	}
 }
 
-// CHE-1795 P1 (Luna, exact-pair review of 0ef14efb2): ending a session must
+// CHE-1795: ending a session must
 // not depend on the current push configuration. Subscriptions registered while
 // push was configured survive a configuration change, and the same keys may
 // come back before the saved session expiry.

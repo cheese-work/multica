@@ -318,7 +318,7 @@ func lockDevice(t *testing.T, endpoint string) (release func()) {
 	return release
 }
 
-// CHE-1795 P2 (Luna): registration and logout do not get an end-to-end 15 s
+// CHE-1795: registration and logout do not get an end-to-end 15 s
 // guarantee from the send timeout. Contract under test: a registration or
 // delete that cannot get the device row quickly fails with 503 and Retry-After,
 // and logout never waits behind a send.

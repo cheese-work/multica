@@ -11,7 +11,7 @@ import enCommon from "../locales/en/common.json";
 import enAuth from "../locales/en/auth.json";
 import { useLogout } from "./use-logout";
 
-// CHE-1795 P1 (Luna, exact-pair review of 0ef14efb2): with cookie auth the
+// CHE-1795: with cookie auth the
 // server logout is what revokes the session, including its push subscriptions.
 // A failed or slow one must neither report completion nor clean up, so the user
 // can retry. These tests run the real auth store and the real hook; only the

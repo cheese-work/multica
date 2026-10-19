@@ -23,7 +23,7 @@ import (
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
-// CHE-1795 P1/P2 (Luna, exact-pair review of 7519e7c5f): logout must fail
+// CHE-1795: logout must fail
 // loudly when the session end cannot be recorded, and every teardown path of a
 // push request needs its own deadline.
 
@@ -220,7 +220,7 @@ func (t drainFaultTx) Commit(ctx context.Context) error {
 	return t.Tx.Commit(ctx)
 }
 
-// CHE-1795 P1 (Luna, exact-pair review of 11cb9a671): the drain is what shows
+// CHE-1795: the drain is what shows
 // that no admitted send is left, so any failure of it, whatever the step, is a
 // failed logout: 503 with Retry-After, the cookie kept, the marker kept.
 func TestLogoutFailsClosedOnEveryDrainFailure(t *testing.T) {

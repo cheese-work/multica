@@ -2,7 +2,7 @@ package pushnotify
 
 import "testing"
 
-// CHE-1795 P1 (Luna): same-device sends are serialized by the device lock, so
+// CHE-1795: same-device sends are serialized by the device lock, so
 // the worst case for one claimed batch is every row on one device, each send
 // taking the full sendTimeout. The lease has to cover that, otherwise rows
 // queued at the back of the batch outlive their claim.

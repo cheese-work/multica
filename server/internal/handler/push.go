@@ -213,12 +213,14 @@ const pushLogoutDrain = 3 * time.Second
 //
 // The budgets are separate, not one: the marker has pushRequestBudget, the
 // drain has its own pushRequestBudget with a pushLogoutDrain lock wait, and each
-// rollback has pushnotify.TeardownBudget. Nothing is recorded when push is not
-// configured: there are no subscriptions to end.
+// rollback has pushnotify.TeardownBudget.
+//
+// This does not look at the VAPID configuration. Subscriptions registered while
+// push was configured survive a change of keys, and the same keys may come back
+// before the session's saved expiry, so an unconfigured or stopped push must
+// not skip the end. A store that cannot record it (a missing table, a database
+// that is down) is a failed logout, not a skipped step.
 func (h *Handler) endPushSession(r *http.Request) error {
-	if !pushnotify.ConfigFromEnv().Enabled() {
-		return nil
-	}
 	session, ok := sessionFromRequest(r)
 	if !ok {
 		return nil

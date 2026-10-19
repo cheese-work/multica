@@ -12,7 +12,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/pushnotify"
 )
 
-// CHE-1795 P1/P2 (Luna, exact-pair review of 7519e7c5f): the push-session
+// CHE-1795: the push-session
 // lifecycle and the teardown paths.
 
 // recordingStarter wraps the pool and records the context every rollback gets.

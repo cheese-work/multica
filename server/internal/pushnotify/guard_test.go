@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// CHE-1795 P1 (Luna): the connect-time guard let shared address space such as
+// CHE-1795: the connect-time guard let shared address space such as
 // 100.64.0.0/10 through. The table checks the resolved-address policy alone: no
 // connection is attempted and no host is resolved.
 

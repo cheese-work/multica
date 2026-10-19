@@ -188,4 +188,67 @@ describe("authStore", () => {
     expect(store.getState().status).toBe("authenticated");
     expect(store.getState().expired).toBe(false);
   });
+
+  // Retrospective: the cookie-mode logout contract the shared hook relies on.
+  describe("ending the server session", () => {
+    function cookieStore(logout: () => Promise<void>) {
+      const storage = makeStorage();
+      const api = { setToken: vi.fn(), logout: vi.fn(logout) } as unknown as ApiClient;
+      const onLogout = vi.fn();
+      const store = createAuthStore({ api, storage, onLogout, cookieAuth: true });
+      store.setState({ user: fakeUser, status: "authenticated", isLoading: false });
+      return { api, store, onLogout };
+    }
+
+    it("rejects and leaves the session alone when the server cannot end it", async () => {
+      const { store, onLogout } = cookieStore(() => Promise.reject(new Error("503")));
+
+      await expect(store.getState().endServerSession()).rejects.toThrow("503");
+
+      expect(store.getState().status).toBe("authenticated");
+      expect(onLogout).not.toHaveBeenCalled();
+    });
+
+    it("shares one request between concurrent callers and allows a retry after a failure", async () => {
+      let calls = 0;
+      const { api, store } = cookieStore(() => (++calls === 1 ? Promise.reject(new Error("x")) : Promise.resolve()));
+
+      const first = store.getState().endServerSession();
+      const second = store.getState().endServerSession();
+      await expect(first).rejects.toThrow("x");
+      await expect(second).rejects.toThrow("x");
+      expect(api.logout).toHaveBeenCalledTimes(1);
+
+      await store.getState().endServerSession();
+      expect(api.logout).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not ask the server a second time when the teardown follows a confirmation", async () => {
+      const { api, store } = cookieStore(() => Promise.resolve());
+
+      await store.getState().endServerSession();
+      store.getState().logout();
+
+      expect(api.logout).toHaveBeenCalledTimes(1);
+      expect(store.getState().status).toBe("unauthenticated");
+    });
+
+    it("keeps the best-effort request for a caller that never confirmed", () => {
+      const { api, store } = cookieStore(() => Promise.resolve());
+
+      store.getState().logout();
+
+      expect(api.logout).toHaveBeenCalledTimes(1);
+    });
+
+    it("resolves at once in token mode without calling the server", async () => {
+      const storage = makeStorage({ multica_token: "t" });
+      const api = { setToken: vi.fn(), logout: vi.fn() } as unknown as ApiClient;
+      const store = createAuthStore({ api, storage });
+
+      await store.getState().endServerSession();
+
+      expect(api.logout).not.toHaveBeenCalled();
+    });
+  });
 });
