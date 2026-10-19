@@ -183,6 +183,7 @@ type AgentTaskQueue struct {
 	TaskKind                  pgtype.Text `json:"task_kind"`
 	CompactReason             pgtype.Text `json:"compact_reason"`
 	CompactTriggerTokens      pgtype.Int8 `json:"compact_trigger_tokens"`
+	WorkflowStep              pgtype.Text `json:"workflow_step"`
 }
 
 type AgentToLabel struct {
@@ -1485,6 +1486,18 @@ type IssueWakeupReceipt struct {
 	DeferredAt  pgtype.Timestamptz `json:"deferred_at"`
 }
 
+type IssueWorkflow struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	Name             string             `json:"name"`
+	Description      string             `json:"description"`
+	InitialStatusKey string             `json:"initial_status_key"`
+	Steps            []byte             `json:"steps"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	IsDefault        bool               `json:"is_default"`
+}
+
 type LarkBindingToken struct {
 	TokenHash      string             `json:"token_hash"`
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
@@ -1750,6 +1763,7 @@ type Project struct {
 	Priority    string             `json:"priority"`
 	StartDate   pgtype.Date        `json:"start_date"`
 	DueDate     pgtype.Date        `json:"due_date"`
+	WorkflowID  pgtype.UUID        `json:"workflow_id"`
 }
 
 type ProjectResource struct {

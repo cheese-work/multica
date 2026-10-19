@@ -1,0 +1,8 @@
+# two flags, a comment, a trailing comment
+alpha:
+  default: true # global on for a different flag
+beta:
+  default: false
+  deny_by: workspace_id
+  deny:
+    - w1

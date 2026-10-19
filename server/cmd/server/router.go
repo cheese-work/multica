@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
@@ -1518,6 +1520,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 	// WebSocket
 	mc := &membershipChecker{queries: queries}
+	hub.SetMembershipChecker(mc)
 	pr := &patResolver{queries: queries, cache: patCache}
 	slugResolver := realtime.SlugResolver(func(ctx context.Context, slug string) (string, error) {
 		ws, err := queries.GetWorkspaceBySlug(ctx, slug)
@@ -2119,6 +2122,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/comments", h.CreateComment)
 					r.Get("/comments", h.ListComments)
 					r.Get("/timeline", h.ListTimeline)
+					r.Get("/workflow-handoff", h.PreviewWorkflowHandoff)
 					r.Get("/subscribers", h.ListIssueSubscribers)
 					r.Post("/subscribe", h.SubscribeToIssue)
 					r.Post("/unsubscribe", h.UnsubscribeFromIssue)
@@ -2233,6 +2237,21 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				})
 			})
 
+			// Project workflows (MUL-7420). Reads are open to any member; writes
+			// are gated inside the handlers to workspace owners/admins and, for
+			// switching a project's workflow, its lead.
+			r.Route("/api/issue-workflows", func(r chi.Router) {
+				r.Get("/", h.ListIssueWorkflows)
+				r.Post("/", h.CreateIssueWorkflow)
+				r.Route("/{id}", func(r chi.Router) {
+					r.Get("/", h.GetIssueWorkflow)
+					r.Patch("/", h.UpdateIssueWorkflow)
+					r.Delete("/", h.DeleteIssueWorkflow)
+					r.Put("/handoffs/{status}", h.SetIssueWorkflowHandoff)
+					r.Post("/brief", h.PreviewIssueWorkflowBrief)
+				})
+			})
+
 			// Projects
 			r.Route("/api/projects", func(r chi.Router) {
 				r.Get("/search", h.SearchProjects)
@@ -2242,6 +2261,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/", h.GetProject)
 					r.Put("/", h.UpdateProject)
 					r.Delete("/", h.DeleteProject)
+					r.Post("/workflow", h.SetProjectWorkflow)
 					r.Get("/resources", h.ListProjectResources)
 					r.Post("/resources", h.CreateProjectResource)
 					r.Put("/resources/{resourceId}", h.UpdateProjectResource)
@@ -2697,12 +2717,49 @@ type membershipChecker struct {
 	queries *db.Queries
 }
 
-func (mc *membershipChecker) IsMember(ctx context.Context, userID, workspaceID string) bool {
+func (mc *membershipChecker) IsMember(ctx context.Context, userID, workspaceID string) (bool, error) {
 	_, err := mc.queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
 		UserID:      parseUUID(userID),
 		WorkspaceID: parseUUID(workspaceID),
 	})
-	return err == nil
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (mc *membershipChecker) Members(ctx context.Context, identities []realtime.MembershipIdentity) (map[realtime.MembershipIdentity]bool, error) {
+	params := db.GetRealtimeMembershipsParams{}
+	for _, identity := range identities {
+		userID, err := util.ParseUUID(identity.UserID)
+		if err != nil {
+			return nil, err
+		}
+		workspaceID, err := util.ParseUUID(identity.WorkspaceID)
+		if err != nil {
+			return nil, err
+		}
+		params.UserIds = append(params.UserIds, userID)
+		params.WorkspaceIds = append(params.WorkspaceIds, workspaceID)
+	}
+	rows, err := mc.queries.GetRealtimeMemberships(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	type pair struct{ workspaceID, userID pgtype.UUID }
+	current := make(map[pair]bool, len(rows))
+	for _, row := range rows {
+		current[pair{row.WorkspaceID, row.UserID}] = true
+	}
+	// Return the exact request keys, including valid UUID spellings that are
+	// different from the database's canonical lowercase rendering.
+	members := make(map[realtime.MembershipIdentity]bool, len(rows))
+	for i, identity := range identities {
+		if current[pair{params.WorkspaceIds[i], params.UserIds[i]}] {
+			members[identity] = true
+		}
+	}
+	return members, nil
 }
 
 // patResolver implements realtime.PATResolver using database queries.

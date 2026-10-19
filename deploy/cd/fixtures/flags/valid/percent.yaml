@@ -1,0 +1,6 @@
+checkout_algo:
+  default: false
+  variant: experiment-v2
+  percent:
+    percent: 25
+    by: user_id

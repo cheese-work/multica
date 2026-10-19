@@ -204,6 +204,49 @@ describe("RunConfirmModal", () => {
     });
   });
 
+  // The handoff was confirmed before this dialog opened. Its stop choice and the
+  // preview it was confirmed against belong to the write this dialog makes.
+  describe("promotion after a confirmed handoff", () => {
+    const binding = {
+      previous_assignee_type: "agent",
+      previous_assignee_id: "agent-0",
+      handler_type: "agent",
+      handler_id: "agent-1",
+    };
+    const handoff = { ...promote, stopPreviousAssigneeRuns: true, handoffPreview: binding };
+
+    it("sends the stop choice and the binding with the status change", async () => {
+      render(<RunConfirmModal onClose={vi.fn()} data={handoff} />);
+      fireEvent.click(screen.getByRole("button", { name: "Move and start" }));
+      await waitFor(() => expect(mockUpdate).toHaveBeenCalledTimes(1));
+      expect(mockUpdate).toHaveBeenCalledWith({
+        id: "issue-1",
+        status: "rework",
+        stop_previous_assignee_runs: true,
+        handoff_preview: binding,
+      });
+    });
+
+    it("keeps them when the run is not started yet", async () => {
+      render(<RunConfirmModal onClose={vi.fn()} data={handoff} />);
+      fireEvent.click(screen.getByText("Don't start yet"));
+      await waitFor(() => expect(mockUpdate).toHaveBeenCalledTimes(1));
+      expect(mockUpdate).toHaveBeenCalledWith({
+        id: "issue-1",
+        status: "rework",
+        stop_previous_assignee_runs: true,
+        handoff_preview: binding,
+        suppress_run: true,
+      });
+    });
+
+    it("sends nothing until it is confirmed", () => {
+      render(<RunConfirmModal onClose={vi.fn()} data={handoff} />);
+      expect(mockUpdate).not.toHaveBeenCalled();
+      expect(mockBatch).not.toHaveBeenCalled();
+    });
+  });
+
   it("promote names the target status the way the workspace named it", () => {
     // A custom status is only recognisable by its catalog name; built-ins keep
     // resolving through i18n so a zh workspace never reads "In Progress".

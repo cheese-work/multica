@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, type ReactNode } from "react";
-import type { Issue, UpdateIssueRequest } from "@multica/core/types";
+import type { BatchUpdateIssuesResponse, Issue, UpdateIssueRequest } from "@multica/core/types";
 import type { IssueCreateDefaults } from "./types";
 
 export type IssueSurfaceMutationOptions = {
@@ -24,10 +24,11 @@ export interface IssueSurfaceActions {
     updates: Partial<UpdateIssueRequest>,
     options?: IssueSurfaceMutationOptions,
   ) => void;
+  /** Resolves with how many issues the server wrote and which; it skips the ones its per-issue guards refuse. */
   batchUpdate: (
     issueIds: string[],
     updates: Partial<UpdateIssueRequest>,
-  ) => Promise<void>;
+  ) => Promise<BatchUpdateIssuesResponse>;
   batchDelete: (issueIds: string[]) => Promise<void>;
 }
 

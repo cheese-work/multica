@@ -51,6 +51,9 @@ const mockShowIssueLimitUpgradePrompt = vi.hoisted(() => vi.fn());
 // `api.uploadFile(file, ctx, signal)` (MUL-5181 L2). Tests drive uploads by
 // mocking that call; it resolves a plain server Attachment row.
 const mockApiUploadFile = vi.hoisted(() => vi.fn());
+// The create form names the handler a project's workflow would give the new issue.
+const mockListIssueWorkflows = vi.hoisted(() => vi.fn());
+const mockListProjects = vi.hoisted(() => vi.fn());
 
 const sourceContextPanelData = () => ({
   anchor_comment_id: "comment-source",
@@ -328,6 +331,8 @@ vi.mock("@multica/core/api", async () => {
       listProperties: mockListProperties,
       setIssueProperty: mockSetIssueProperty,
       uploadFile: mockApiUploadFile,
+      listIssueWorkflows: mockListIssueWorkflows,
+      listProjects: mockListProjects,
     },
     ApiError,
     parseWithFallback,
@@ -2101,6 +2106,44 @@ describe("CreateIssueModal", () => {
       expect(footer?.className).toContain("sm:flex");
       expect(create.parentElement).toBe(footer);
       expect(create.className).toContain("justify-self-end");
+    });
+  });
+
+  // The server gives a new issue the handler of its project's workflow whatever
+  // the form shows. When the catalogs loaded but cannot say which workflow the
+  // project follows, the form must not read as "nobody is handed this issue".
+  describe("handoff hint on an incomplete workflow catalog", () => {
+    const projectWith = (workflow_id: string | null) => ({ projects: [{ id: "proj-1", workflow_id }], total: 1 });
+    const renderForProject = () =>
+      renderModal(
+        <ManualCreatePanel onClose={vi.fn()} data={{ project_id: "proj-1" }} isExpanded={false} setIsExpanded={vi.fn()} />,
+      );
+
+    it("says the handoff could not be checked when the project is missing from the project list", async () => {
+      mockListIssueWorkflows.mockResolvedValue({ workflows: [], total: 0 });
+      mockListProjects.mockResolvedValue({ projects: [], total: 0 });
+      renderForProject();
+
+      expect(await screen.findByText(/Couldn.t check whether this project hands issues off/)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    });
+
+    it("says it when a successful workflow list is empty but the project names a workflow", async () => {
+      mockListIssueWorkflows.mockResolvedValue({ workflows: [], total: 0 });
+      mockListProjects.mockResolvedValue(projectWith("wf-1"));
+      renderForProject();
+
+      expect(await screen.findByText(/Couldn.t check whether this project hands issues off/)).toBeInTheDocument();
+    });
+
+    it("says nothing for a project that names no workflow when none is stored", async () => {
+      mockListIssueWorkflows.mockResolvedValue({ workflows: [], total: 0 });
+      mockListProjects.mockResolvedValue(projectWith(null));
+      renderForProject();
+
+      await waitFor(() => expect(mockListProjects).toHaveBeenCalled());
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(screen.queryByText(/Couldn.t check whether this project hands issues off/)).toBeNull();
     });
   });
 });

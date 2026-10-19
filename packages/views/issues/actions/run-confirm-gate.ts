@@ -1,4 +1,4 @@
-import type { Issue, IssueStatusCategory, UpdateIssueRequest } from "@multica/core/types";
+import type { HandoffPreviewBinding, Issue, IssueStatusCategory, UpdateIssueRequest } from "@multica/core/types";
 import { issueStatusCategory } from "@multica/core/issues";
 import { normalizeIssueStatusCategory, type IssueStatusCatalog } from "@multica/core/issue-statuses";
 
@@ -22,6 +22,10 @@ export type RunConfirmIntent =
       status: string;
       assigneeType: "agent" | "squad";
       assigneeId: string;
+      /** A handoff confirmed before this gate: its stop choice and the preview
+       *  it was confirmed against ride along to the write the dialog makes. */
+      stopPreviousAssigneeRuns?: true;
+      handoffPreview?: HandoffPreviewBinding;
     };
 
 /**
@@ -108,6 +112,8 @@ export function runConfirmIntent(
         status: updates.status,
         assigneeType: owner,
         assigneeId: issue.assignee_id,
+        ...(updates.stop_previous_assignee_runs ? { stopPreviousAssigneeRuns: true as const } : {}),
+        ...(updates.handoff_preview ? { handoffPreview: updates.handoff_preview } : {}),
       };
     }
   }
