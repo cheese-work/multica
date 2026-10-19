@@ -114,6 +114,42 @@
     "pause_resumed": "Wakeups resumed.",
     "retry": "Retry"
   },
+  "jev_governance": {
+    "search_description": "Squad routing mode and minimum confidence for Jev.",
+    "routing_title": "Squad routing",
+    "mode_label": "Mode",
+    "mode": {
+      "off": "Off",
+      "shadow": "Shadow",
+      "on": "On"
+    },
+    "mode_hint": {
+      "off": "Jev is skipped. Squads route as before.",
+      "shadow": "Jev picks a worker but nothing is dispatched. Each pick is logged for review.",
+      "on": "Jev's pick is dispatched to the squad worker."
+    },
+    "on_locked": "needs shadow data: <= 2% confident-wrong over 200+ verified items",
+    "confidence_label": "Min confidence",
+    "confidence_hint": "Default 0.90.",
+    "confidence_invalid": "Enter a number from 0 to 1.",
+    "summary": "v{{version}} · {{mode}}",
+    "based_on": "Based on v{{version}}",
+    "cancel": "Cancel",
+    "save": "Save changes",
+    "saving": "Saving…",
+    "saved": "Saved",
+    "save_error": "Couldn't save. Your changes are kept.",
+    "conflict_title": "Not saved: settings changed",
+    "conflict_body": "Someone saved a newer version. Your edits are kept below. Reload to see it, then apply them again.",
+    "conflict_reload": "Reload latest",
+    "conflict_keep": "Keep editing",
+    "loading": "Loading governance settings",
+    "load_error": "Can't load governance settings",
+    "load_error_body": "The server could not read them.",
+    "retry": "Try again",
+    "offline_title": "You are offline",
+    "offline_body": "Showing v{{version}} as last loaded. Editing is paused until the connection returns."
+  },
   "quick_actions": {
     "title": "Quick Actions",
     "description": "Run a preset agent and prompt from an issue's sidebar.",
@@ -421,7 +457,8 @@
       "billing": "Billing",
       "code": "Code",
       "channels": "Messaging",
-      "apps": "Connected apps"
+      "apps": "Connected apps",
+      "jev_governance": "Jev / Governance"
     },
     "groups": {
       "personal": "Personal",

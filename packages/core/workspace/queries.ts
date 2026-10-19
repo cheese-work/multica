@@ -1,6 +1,7 @@
 import { queryOptions, type QueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import type { Agent, Squad, Workspace } from "../types";
+import { resolveJevGovernance } from "./jev-governance";
 
 export const workspaceKeys = {
   all: (wsId: string) => ["workspaces", wsId] as const,
@@ -23,6 +24,8 @@ export const workspaceKeys = {
   mcpServers: (wsId: string) => ["workspaces", wsId, "mcp-servers"] as const,
   exportPrivacy: (wsId: string) =>
     ["workspaces", wsId, "export-privacy"] as const,
+  jevGovernance: (wsId: string) =>
+    ["workspaces", wsId, "jev-governance"] as const,
 };
 
 export function workspaceListOptions() {
@@ -229,6 +232,17 @@ export function workspaceExportPrivacyOptions(wsId: string, enabled: boolean) {
     queryKey: workspaceKeys.exportPrivacy(wsId),
     queryFn: () => api.getWorkspaceExportPrivacy(wsId),
     enabled: enabled && wsId !== "",
+    retry: false,
+  });
+}
+
+/** CHE-1839: Jev routing mode and confidence, with the version the next write is based on. */
+export function workspaceJevGovernanceOptions(wsId: string) {
+  return queryOptions({
+    queryKey: workspaceKeys.jevGovernance(wsId),
+    queryFn: () => api.getGovernanceConfig(wsId),
+    select: resolveJevGovernance,
+    enabled: wsId !== "",
     retry: false,
   });
 }
