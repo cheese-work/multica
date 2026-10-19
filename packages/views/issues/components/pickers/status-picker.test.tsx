@@ -25,10 +25,13 @@ vi.mock("@multica/core/issue-statuses/hooks", () => ({
 // workflow through one hook, fed directly here like the catalog.
 let projectWorkflow: IssueWorkflow | null = null;
 let projectResolved = true;
+const retryCatalog = vi.fn();
+const toastError = vi.hoisted(() => vi.fn());
+vi.mock("sonner", () => ({ toast: { error: toastError } }));
 
 vi.mock("@multica/core/issue-workflows", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@multica/core/issue-workflows")>()),
-  useProjectWithWorkflow: () => ({ project: null, workflow: projectWorkflow, resolved: projectResolved }),
+  useProjectWithWorkflow: () => ({ project: null, workflow: projectWorkflow, resolved: projectResolved, retry: retryCatalog }),
 }));
 
 const HANDOFF_PREVIEW = {
@@ -102,6 +105,8 @@ afterEach(() => {
   catalogEntries = undefined;
   projectWorkflow = null;
   projectResolved = true;
+  retryCatalog.mockReset();
+  toastError.mockReset();
 });
 
 describe("StatusPicker trigger color", () => {
@@ -257,6 +262,21 @@ describe("StatusPicker while the project's workflow is unresolved", () => {
     fireEvent.click(optionRow("In Review"));
 
     expect(onUpdate).not.toHaveBeenCalled();
+  });
+
+  it("says why nothing was written and retries the catalog on request", () => {
+    projectResolved = false;
+    renderWithI18n(
+      <StatusPicker status="todo" projectId="project-1" issue={issue} onUpdate={vi.fn()} open onOpenChange={() => {}} />,
+    );
+
+    fireEvent.click(optionRow("In Review"));
+
+    expect(toastError).toHaveBeenCalledTimes(1);
+    const options = toastError.mock.calls[0]![1];
+    expect(options.action.label).toBe("Retry");
+    options.action.onClick();
+    expect(retryCatalog).toHaveBeenCalledTimes(1);
   });
 
   it("still writes once the workflow has resolved to none", () => {

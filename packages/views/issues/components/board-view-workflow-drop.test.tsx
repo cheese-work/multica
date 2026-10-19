@@ -32,7 +32,8 @@ vi.mock("../../workflows/handoff-confirm-dialog", () => ({
 }));
 
 const mockToastInfo = vi.hoisted(() => vi.fn());
-vi.mock("sonner", () => ({ toast: { info: mockToastInfo, error: vi.fn() } }));
+const mockToastError = vi.hoisted(() => vi.fn());
+vi.mock("sonner", () => ({ toast: { info: mockToastInfo, error: mockToastError } }));
 
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
 
@@ -211,6 +212,7 @@ describe("board drop over a column the workflow omits", () => {
     });
     onMoveIssue.mockClear();
     mockToastInfo.mockClear();
+    mockToastError.mockClear();
     workflowState.workflows = [WORKFLOW];
     workflowState.loaded = true;
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
@@ -404,6 +406,53 @@ describe("board drop over a column the workflow omits", () => {
       drag(["in_progress"]);
 
       expect(onMoveIssue).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // Both lists can load and still fail to say which workflow a card follows: the
+  // project list omits its project, the workflow list omits the project's named
+  // workflow or is empty. That reads as "no workflow" while the server resolves
+  // a handler, so the card stays put and the board offers a retry.
+  describe("after a catalog that loaded without the card's workflow", () => {
+    const withProjects = (projects: Project[]) =>
+      queryClient.setQueryData(projectListOptions("ws-1").queryKey, { projects, total: projects.length });
+    const plainDefault = { ...WORKFLOW, id: "wf-default", is_default: true };
+    const retryToast = () => mockToastError.mock.calls.find(([, options]) => options?.action?.label === "Retry");
+
+    it("does not move a card whose project is missing from the project list", () => {
+      withProjects([]);
+      mount();
+      drag(["in_progress"]);
+
+      expect(onMoveIssue).not.toHaveBeenCalled();
+      expect(retryToast()).toBeTruthy();
+    });
+
+    it("does not move a card when the successful workflow list is empty but its project names a workflow", () => {
+      workflowState.workflows = [];
+      mount();
+      drag(["in_progress"]);
+
+      expect(onMoveIssue).not.toHaveBeenCalled();
+      expect(retryToast()).toBeTruthy();
+    });
+
+    it("does not move a card when its project's workflow is missing from a non-empty list", () => {
+      workflowState.workflows = [plainDefault];
+      mount();
+      drag(["in_progress"]);
+
+      expect(onMoveIssue).not.toHaveBeenCalled();
+    });
+
+    it("moves a card whose project names no workflow when none is stored", () => {
+      withProjects([{ ...makeProject(), workflow_id: null } as Project]);
+      workflowState.workflows = [];
+      mount();
+      drag(["in_progress"]);
+
+      expect(onMoveIssue).toHaveBeenCalledTimes(1);
+      expect(retryToast()).toBeUndefined();
     });
   });
 

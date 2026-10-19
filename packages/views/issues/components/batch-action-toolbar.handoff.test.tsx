@@ -80,6 +80,15 @@ const WORKFLOW = {
 } as IssueWorkflow;
 const PROJECT = { id: "p-dev", workflow_id: "dev" } as Project;
 
+// A batch status write binds one result for every issue: none of them hands off.
+// The ones that would are written one by one with their own confirmation.
+const NO_HANDOFF_BINDING = {
+  previous_assignee_type: null,
+  previous_assignee_id: null,
+  handler_type: null,
+  handler_id: null,
+};
+
 const HANDOFF: WorkflowHandoffPreview = {
   handoff: true,
   workflow_name: "Dev",
@@ -190,7 +199,10 @@ describe("BatchActionToolbar status change that hands issues off", () => {
         handler_id: "sentinel",
       },
     });
-    expect(batchUpdate).toHaveBeenCalledWith({ ids: ["b"], updates: { status: "code_review" } });
+    expect(batchUpdate).toHaveBeenCalledWith({
+      ids: ["b"],
+      updates: { status: "code_review", handoff_preview: NO_HANDOFF_BINDING },
+    });
   });
 
   it("keeps the previous run when the stop box is cleared", async () => {
@@ -249,14 +261,22 @@ describe("BatchActionToolbar status change that hands issues off", () => {
         handler_id: null,
       },
     });
-    expect(batchUpdate).toHaveBeenCalledWith({ ids: ["b"], updates: { status: "code_review" } });
+    expect(batchUpdate).toHaveBeenCalledWith({
+      ids: ["b"],
+      updates: { status: "code_review", handoff_preview: NO_HANDOFF_BINDING },
+    });
   });
 
   it("applies a batch with no handoff directly", async () => {
     mount([PLAIN, makeIssue({ id: "c", identifier: "MUL-3", project_id: null })]);
     await chooseStatus();
 
-    await waitFor(() => expect(batchUpdate).toHaveBeenCalledWith({ ids: ["b", "c"], updates: { status: "code_review" } }));
+    await waitFor(() =>
+      expect(batchUpdate).toHaveBeenCalledWith({
+        ids: ["b", "c"],
+        updates: { status: "code_review", handoff_preview: NO_HANDOFF_BINDING },
+      }),
+    );
     expect(api.previewWorkflowHandoff).not.toHaveBeenCalled();
     expect(updateIssue).not.toHaveBeenCalled();
   });
@@ -301,5 +321,100 @@ describe("BatchActionToolbar status change that hands issues off", () => {
 
     expect(batchUpdate).not.toHaveBeenCalled();
     expect(updateIssue).not.toHaveBeenCalled();
+  });
+});
+
+// A catalog that loaded but cannot say which workflow an issue follows is not
+// "no handoff": the server still resolves a handler for that project. The
+// write waits, says why, and offers a retry that reloads both lists.
+describe("BatchActionToolbar status change on an incomplete catalog", () => {
+  const retryAction = () => {
+    const call = toast.error.mock.calls.find(([, options]) => options?.action?.label === "Retry");
+    expect(call, "an error toast with a Retry action").toBeTruthy();
+    return call![1].action as { label: string; onClick: () => void };
+  };
+
+  it("writes nothing when the project list omits a selected issue's project", async () => {
+    api.listProjects.mockResolvedValue({ projects: [], total: 0 });
+    mount([HANDING_OFF, PLAIN]);
+    await chooseStatus();
+
+    expect(batchUpdate).not.toHaveBeenCalled();
+    expect(updateIssue).not.toHaveBeenCalled();
+    const projectLoads = api.listProjects.mock.calls.length;
+    retryAction().onClick();
+    await waitFor(() => expect(api.listProjects.mock.calls.length).toBeGreaterThan(projectLoads));
+  });
+
+  it("writes nothing when a successful workflow list is empty but the project names a workflow", async () => {
+    api.listIssueWorkflows.mockResolvedValue({ workflows: [] });
+    mount([HANDING_OFF, PLAIN]);
+    await chooseStatus();
+
+    expect(batchUpdate).not.toHaveBeenCalled();
+    expect(updateIssue).not.toHaveBeenCalled();
+    retryAction();
+  });
+
+  it("writes nothing when the named workflow is missing from a non-empty list", async () => {
+    // The Default in the list hands off to no one, so falling back to it would write.
+    const plainDefault = { ...WORKFLOW, id: "other", is_default: true, steps: WORKFLOW.steps.map((s) => ({ ...s, handler: { type: "none" } })) };
+    api.listIssueWorkflows.mockResolvedValue({ workflows: [plainDefault] });
+    mount([HANDING_OFF, PLAIN]);
+    await chooseStatus();
+
+    expect(batchUpdate).not.toHaveBeenCalled();
+    expect(updateIssue).not.toHaveBeenCalled();
+  });
+
+  it("applies the batch when the project names no workflow and none is stored", async () => {
+    api.listIssueWorkflows.mockResolvedValue({ workflows: [] });
+    api.listProjects.mockResolvedValue({ projects: [{ id: "p-plain", workflow_id: null }], total: 1 });
+    mount([makeIssue({ id: "d", identifier: "MUL-4", project_id: "p-plain" })]);
+    await chooseStatus();
+
+    await waitFor(() =>
+      expect(batchUpdate).toHaveBeenCalledWith({
+        ids: ["d"],
+        updates: { status: "code_review", handoff_preview: NO_HANDOFF_BINDING },
+      }),
+    );
+  });
+});
+
+// A write the server skips is a partial result. The person needs to know which
+// issues stayed as they were, not only how many, and a way to try those again.
+describe("BatchActionToolbar partial results", () => {
+  const PLAIN_C = makeIssue({ id: "c", identifier: "MUL-3", project_id: null, assignee_type: null, assignee_id: null });
+
+  it("names the issues the batch left unchanged and retries only those", async () => {
+    batchUpdate.mockResolvedValueOnce({ updated: 1, updated_ids: ["b"] });
+    mount([PLAIN, PLAIN_C]);
+    await chooseStatus();
+
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledTimes(1));
+    const [message, options] = toast.warning.mock.calls[0]!;
+    expect(message).toContain("MUL-3");
+    expect(message).not.toContain("MUL-2");
+
+    batchUpdate.mockResolvedValueOnce({ updated: 1, updated_ids: ["c"] });
+    options.action.onClick();
+    await waitFor(() => expect(batchUpdate).toHaveBeenCalledTimes(2));
+    expect(batchUpdate.mock.calls[1]![0]).toEqual({
+      ids: ["c"],
+      updates: { status: "code_review", handoff_preview: NO_HANDOFF_BINDING },
+    });
+  });
+
+  it("names a confirmed handoff the server refused", async () => {
+    updateIssue.mockRejectedValueOnce(new Error("the issue changed since the handoff was previewed"));
+    mount([HANDING_OFF, PLAIN]);
+    await chooseStatus();
+    fireEvent.click(await screen.findByRole("button", { name: "Move 2 issues" }));
+
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledTimes(1));
+    const [message] = toast.warning.mock.calls[0]!;
+    expect(message).toContain("MUL-1");
+    expect(message).not.toContain("MUL-2");
   });
 });
