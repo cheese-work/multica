@@ -1393,6 +1393,14 @@ fi
 expect_not_contains "$output" "$jev_key" jev-configured
 if grep -qF "$jev_key" "$state_dir/control/docker-calls.log"; then echo "scenario jev-configured: key reached docker arguments" >&2; exit 1; fi
 
+# .env quoting, `export` and trailing comments resolve like Compose's.
+write_jev_env "export MULTICA_JEV_SECRET_KEY=\"$jev_key\"" "MULTICA_JEV_FLAGS_FILE='$jev_flags'  # scoped file" "MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway # gateway"
+state_dir="$(fresh_scenario_dir jev-quoted-env)"
+output="$(run_jev "$state_dir" cutover 2>&1)" && status=0 || status=$?
+expect_exit 0 "$status" jev-quoted-env
+expect_contains "$output" "jev overlay enabled" jev-quoted-env
+jev_full_env
+
 # Rollback restarts the predecessor through the same overlay.
 set +e
 output="$(run_jev "$state_dir" rollback 2>&1)"

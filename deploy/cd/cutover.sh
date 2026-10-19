@@ -139,6 +139,40 @@ deploy_lock="$state_dir/deploy.lock"
 source "$script_dir/deploy-lib.sh"
 compose_files=("docker-compose.selfhost.yml" "$script_dir/docker-compose.ab.yml")
 
+# Scoped Jev runtime overlay (CHE-1854). Opt-in per installation: the compose
+# dir's .env sets MULTICA_JEV_FLAGS_FILE and/or MULTICA_JEV_GATEWAY_NETWORK.
+# Once either is set, ALL prerequisites must hold (key, flag file, network);
+# any gap refuses here, before the first drain, pull, migration or start, and
+# names the variable but never its value. Unset = overlay not loaded and every
+# compose call is identical to a plain A/B install.
+jev_overlay_prepare() {
+  local flags network key
+  flags="$(env_setting MULTICA_JEV_FLAGS_FILE)"
+  network="$(env_setting MULTICA_JEV_GATEWAY_NETWORK)"
+  [ -n "$flags$network" ] || return 0
+  key="$(env_setting MULTICA_JEV_SECRET_KEY)"
+  jev_refuse() {
+    echo "!! jev overlay: $1 $2; refusing before any change" >&2
+    exit 1
+  }
+  case "$flags" in
+    /*) [ -f "$flags" ] && [ -r "$flags" ] && [ -s "$flags" ] || jev_refuse MULTICA_JEV_FLAGS_FILE "is not a readable, non-empty file" ;;
+    *) jev_refuse MULTICA_JEV_FLAGS_FILE "is unset or not an absolute path" ;;
+  esac
+  [ -n "$network" ] || jev_refuse MULTICA_JEV_GATEWAY_NETWORK "is unset"
+  docker network inspect "$network" >/dev/null 2>&1 || jev_refuse MULTICA_JEV_GATEWAY_NETWORK "names a network that does not exist"
+  # Same contract as the server's credential.DecodeKey: standard base64 of 32 bytes.
+  printf '%s' "$key" | node -e '
+    let s = "";
+    process.stdin.on("data", (c) => (s += c)).on("end", () => {
+      const b = Buffer.from(s, "base64");
+      process.exit(b.length === 32 && b.toString("base64") === s ? 0 : 1);
+    });
+  ' || jev_refuse MULTICA_JEV_SECRET_KEY "is unset or not base64 of 32 bytes"
+  compose_files+=("$script_dir/docker-compose.jev.yml")
+  echo "==> jev overlay enabled (flag file, deployment key and gateway network verified)"
+}
+
 # ghcr_login/ghcr_logout (deploy-lib.sh, CHE-549) — C00 has no ambient GHCR
 # credential, so an unauthenticated pull of the private multica-backend/
 # multica-web packages fails with 403 the same way deploy.sh's single-slot
@@ -413,6 +447,8 @@ if ! flock -w "$lock_wait_seconds" 9; then
   echo "could not acquire deploy lock within ${lock_wait_seconds}s — another deploy/cutover is running" >&2
   exit 1
 fi
+
+[ "$command" = status ] || jev_overlay_prepare
 
 case "$command" in
   status)

@@ -38,6 +38,7 @@ controller_files=(
   cutover.sh
   deploy-lib.sh
   docker-compose.ab.yml
+  docker-compose.jev.yml
   migration-inventory.mjs
   quiescence.mjs
   release-packet.mjs

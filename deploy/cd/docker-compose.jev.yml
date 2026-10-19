@@ -1,0 +1,45 @@
+# Scoped Jev runtime overlay (CHE-1854). Layered on top of
+# docker-compose.selfhost.yml + docker-compose.ab.yml by cutover.sh ONLY when
+# the compose dir's .env sets MULTICA_JEV_FLAGS_FILE or
+# MULTICA_JEV_GATEWAY_NETWORK; an installation that sets neither never loads
+# this file and renders exactly as before.
+#
+# It keeps three things across blue/green recreation that a bare recreate
+# from the base files would drop:
+#   - the deployment key: MULTICA_JEV_SECRET_KEY, required here so a configured
+#     install can never start a colour with an empty key;
+#   - the workspace-scoped feature-flag file, bind-mounted read-only, with
+#     MULTICA_FEATURE_FLAGS_FILE pointing at it. The file decides which
+#     workspace may use Jev; this overlay sets no FF_JEV_ENABLED override;
+#   - membership of the external gateway network next to the project network.
+#
+# Joining the gateway network puts a second `postgres` on the backend's DNS
+# path, so the bare service name stops being collision-safe. The container name
+# (<project>-postgres-1, project `multica` from the base file's `name:`) exists
+# only on the project network and needs no static IP pin.
+#
+# Required values are `${VAR:?}`: a configured install with a missing value
+# fails to render instead of recreating a colour without it. cutover.sh checks
+# the same prerequisites earlier, before any drain.
+
+services:
+  backend-blue: &jev_backend
+    environment:
+      MULTICA_JEV_SECRET_KEY: ${MULTICA_JEV_SECRET_KEY:?set the Jev deployment key in the compose .env}
+      MULTICA_FEATURE_FLAGS_FILE: /app/feature-flags.yaml
+      DATABASE_URL: postgres://${POSTGRES_USER:-multica}:${POSTGRES_PASSWORD:-multica}@multica-postgres-1:5432/${POSTGRES_DB:-multica}?sslmode=disable
+    volumes:
+      - type: bind
+        source: ${MULTICA_JEV_FLAGS_FILE:?set the absolute path of the Jev feature-flag file}
+        target: /app/feature-flags.yaml
+        read_only: true
+    networks:
+      default: {}
+      jev_gateway: {}
+
+  backend-green: *jev_backend
+
+networks:
+  jev_gateway:
+    name: ${MULTICA_JEV_GATEWAY_NETWORK:?set the external gateway network name}
+    external: true
