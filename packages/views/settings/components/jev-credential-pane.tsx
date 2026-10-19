@@ -81,7 +81,7 @@ export function JevCredentialPane({
   const present = credential.data.present;
   const editable = canManage && online;
   return (
-    <SettingsSection title={t(($) => $.jev_governance.credential.title)} anchor="credential">
+    <SettingsSection anchor="credential">
       <SettingsCard>
         <SettingsRow
           label={

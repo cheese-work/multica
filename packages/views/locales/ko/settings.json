@@ -180,7 +180,6 @@
       "removed": "키 삭제됨"
     },
     "history": {
-      "title": "기록",
       "intro": "거버넌스 설정 버전(최신순).",
       "select_hint": "행을 선택하면 자세히 볼 수 있습니다.",
       "latest_limit": "최근 50개 버전.",
@@ -193,6 +192,7 @@
       "unknown_actor": "멤버",
       "detail_label": "버전 v{{version}}",
       "current_detail": "현재 버전입니다.",
+      "detail_by": "{{name}} 저장 · {{when}}",
       "roll_back": "v{{version}}(으)로 되돌리기",
       "locked_on": "복원할 수 없습니다: 라우팅이 켜집니다.",
       "dialog_title": "v{{version}}(으)로 되돌릴까요?",

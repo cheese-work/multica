@@ -180,7 +180,6 @@
       "removed": "密钥已删除"
     },
     "history": {
-      "title": "历史",
       "intro": "治理设置版本，最新的在前。",
       "select_hint": "选择一行查看详情。",
       "latest_limit": "最近 50 个版本。",
@@ -193,6 +192,7 @@
       "unknown_actor": "某位成员",
       "detail_label": "版本 v{{version}}",
       "current_detail": "这是当前版本。",
+      "detail_by": "{{name}} 保存 · {{when}}",
       "roll_back": "回滚到 v{{version}}",
       "locked_on": "无法恢复：这会开启路由。",
       "dialog_title": "回滚到 v{{version}}？",

@@ -53,7 +53,7 @@ export function JevHistoryPane({
 
   if (history.length === 0) {
     return (
-      <SettingsSection title={t(($) => $.jev_governance.history.title)} anchor="history">
+      <SettingsSection anchor="history">
         <div className="rounded-xl border border-surface-border px-4 py-8 text-center">
           <p className="text-body font-medium">{t(($) => $.jev_governance.history.empty_title)}</p>
           <p className="mt-1 text-caption text-muted-foreground">
@@ -66,7 +66,6 @@ export function JevHistoryPane({
 
   return (
     <SettingsSection
-      title={t(($) => $.jev_governance.history.title)}
       description={`${t(($) => $.jev_governance.history.intro)} ${t(($) => $.jev_governance.history.select_hint)}`}
       anchor="history"
     >
@@ -127,6 +126,9 @@ export function JevHistoryPane({
         >
           <p className="text-body font-medium">
             {t(($) => $.jev_governance.history.detail_label, { version: open.version })}
+          </p>
+          <p className="text-caption text-muted-foreground">
+            {t(($) => $.jev_governance.history.detail_by, { name: who(open), when: when(open) })}
           </p>
           {open.version === config.version ? (
             <p className="text-caption text-muted-foreground">

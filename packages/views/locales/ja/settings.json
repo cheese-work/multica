@@ -180,7 +180,6 @@
       "removed": "キーを削除しました"
     },
     "history": {
-      "title": "履歴",
       "intro": "ガバナンス設定のバージョン（新しい順）。",
       "select_hint": "行を選ぶと詳細が表示されます。",
       "latest_limit": "最新 50 バージョン。",
@@ -193,6 +192,7 @@
       "unknown_actor": "メンバー",
       "detail_label": "バージョン v{{version}}",
       "current_detail": "これは現在のバージョンです。",
+      "detail_by": "{{name}} が保存 · {{when}}",
       "roll_back": "v{{version}} に戻す",
       "locked_on": "復元できません：ルーティングがオンになります。",
       "dialog_title": "v{{version}} に戻しますか？",

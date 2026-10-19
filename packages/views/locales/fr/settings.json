@@ -181,7 +181,6 @@
       "removed": "Clé supprimée"
     },
     "history": {
-      "title": "Historique",
       "intro": "Versions des paramètres de gouvernance, les plus récentes d'abord.",
       "select_hint": "Sélectionnez une ligne pour les détails.",
       "latest_limit": "50 dernières versions.",
@@ -194,6 +193,7 @@
       "unknown_actor": "Un membre",
       "detail_label": "Version v{{version}}",
       "current_detail": "Ceci est la version actuelle.",
+      "detail_by": "Enregistrée par {{name}} · {{when}}",
       "roll_back": "Revenir à v{{version}}",
       "locked_on": "Ne peut pas être restaurée : cela activerait le routage.",
       "dialog_title": "Revenir à v{{version}} ?",

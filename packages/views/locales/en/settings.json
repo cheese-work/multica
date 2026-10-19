@@ -181,7 +181,6 @@
       "removed": "Key removed"
     },
     "history": {
-      "title": "History",
       "intro": "Governance setting versions, newest first.",
       "select_hint": "Select a row for details.",
       "latest_limit": "Latest 50 versions.",
@@ -194,6 +193,7 @@
       "unknown_actor": "A member",
       "detail_label": "Version v{{version}}",
       "current_detail": "This is the current version.",
+      "detail_by": "Saved by {{name}} · {{when}}",
       "roll_back": "Roll back to v{{version}}",
       "locked_on": "Can't be restored: it would turn routing on.",
       "dialog_title": "Roll back to v{{version}}?",
