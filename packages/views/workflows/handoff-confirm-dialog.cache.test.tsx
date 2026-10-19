@@ -63,6 +63,12 @@ afterEach(() => {
   previewWorkflowHandoff.mockReset();
 });
 
+// A preview that found no handoff applies the move bound to that result.
+const NO_HANDOFF_BINDING = {
+  stopPreviousRuns: false,
+  preview: { previous_assignee_type: null, previous_assignee_id: null, handler_type: null, handler_id: null },
+};
+
 describe("WorkflowHandoffConfirmDialog with a cached non-handoff preview", () => {
   it("does not apply the move while the refresh for this opening is pending", async () => {
     previewWorkflowHandoff.mockReturnValue(new Promise(() => {}));
@@ -93,7 +99,7 @@ describe("WorkflowHandoffConfirmDialog with a cached non-handoff preview", () =>
     previewWorkflowHandoff.mockResolvedValue(noHandoff);
     const { onConfirm } = renderWithCachedNoHandoff();
 
-    await waitFor(() => expect(onConfirm).toHaveBeenCalledWith({ stopPreviousRuns: false }));
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledWith(NO_HANDOFF_BINDING));
     expect(onConfirm).toHaveBeenCalledTimes(1);
   });
 
@@ -102,6 +108,6 @@ describe("WorkflowHandoffConfirmDialog with a cached non-handoff preview", () =>
     const { onConfirm } = renderWithCachedNoHandoff();
     fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
 
-    await waitFor(() => expect(onConfirm).toHaveBeenCalledWith({ stopPreviousRuns: false }));
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledWith(NO_HANDOFF_BINDING));
   });
 });

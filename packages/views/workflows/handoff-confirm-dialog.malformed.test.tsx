@@ -79,6 +79,12 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+// A preview that found no handoff applies the move bound to that result.
+const NO_HANDOFF_BINDING = {
+  stopPreviousRuns: false,
+  preview: { previous_assignee_type: null, previous_assignee_id: null, handler_type: null, handler_id: null },
+};
+
 describe("WorkflowHandoffConfirmDialog with a malformed successful preview", () => {
   it.each([
     ["a wrong-typed flag", { handoff: "yes", previous_runs: 3 }],
@@ -119,7 +125,7 @@ describe("WorkflowHandoffConfirmDialog with a malformed successful preview", () 
     stubFetch();
     const { onConfirm } = renderDialog();
 
-    await waitFor(() => expect(onConfirm).toHaveBeenCalledWith({ stopPreviousRuns: false }));
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledWith(NO_HANDOFF_BINDING));
   });
 
   it("still asks before applying a valid handoff", async () => {
