@@ -159,6 +159,12 @@ export function useSettingsSearchIndex(
       },
       {
         tab: "wakeups",
+        anchor: "pause",
+        title: t(($) => $.wakeups.pause_label),
+        description: t(($) => $.wakeups.pause_description),
+      },
+      {
+        tab: "wakeups",
         anchor: "child-done",
         title: t(($) => $.wakeups.child_done_title),
         description: t(($) => $.wakeups.child_done_description),

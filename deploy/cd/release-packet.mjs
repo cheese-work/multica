@@ -23,7 +23,7 @@ function fail(message) {
 }
 
 // KNOWN_LEDGER_RENAMES maps a historical schema_migrations version string to
-// its current on-disk version, across two independent rename events:
+// its current on-disk version, across three independent rename events:
 //
 // 1. The original CHE-548 renumber (6057b2237, R100 content-identical
 //    renames) moved five files from 470-474 to 491-495. The migrator keys
@@ -62,12 +62,19 @@ function fail(message) {
 //   497_stage_completion_wake_unique              -> 510_stage_completion_wake_unique
 //   498_stage_generation_workspace_index           -> 511_stage_generation_workspace_index
 //   499_stage_completion_wake_workspace_index      -> 512_stage_completion_wake_workspace_index
+// 3. CHE-1824 (#290) cleared a duplicate prefix 627 by renumbering
+//    627_unpin_archived_chat_sessions -> 653_unpin_archived_chat_sessions.
+//    C00 at 95314275 had applied it under the 627 name, which is that
+//    baseline tuple's latest version (CD run 39008622980). The migrator keeps
+//    the legacy row (migrate_unpin_archived_chat_sessions_renumber_test.go).
+//    627_notification_channel_preference is a different migration that only
+//    shares the prefix; it is not in this table.
 // The fork's 491-495 and 496-499 old names do not collide with upstream
 // v0.5.0's own, differently-named 491-499 (491_issue_status_category_backfill,
 // 496_chat_session_agent_id_index, and so on) — the version strings differ,
 // so reconcileLedgerVersions cannot conflate them.
 //
-// This is deliberately a fixed fourteen-entry table, not a general remap:
+// This is deliberately a fixed table of exact names, not a general remap:
 // C00's admitted ledger (main's up-set through 501_protocol_lint_run_checked_at_idx,
 // plus 470-474 as orphan rows — the hash-verified 535-row shape above) only
 // reproduces as clean when all fourteen old names are present alongside the
@@ -91,14 +98,19 @@ const KNOWN_LEDGER_RENAMES = new Map([
   ["497_stage_completion_wake_unique", "510_stage_completion_wake_unique"],
   ["498_stage_generation_workspace_index", "511_stage_generation_workspace_index"],
   ["499_stage_completion_wake_workspace_index", "512_stage_completion_wake_workspace_index"],
+  ["627_unpin_archived_chat_sessions", "653_unpin_archived_chat_sessions"],
 ]);
 
 // reconcileLedgerVersions maps known historical version names in an observed
 // ledger to their current on-disk names, so a pre-CHE-548 production ledger
 // verifies against the renumbered candidate without weakening the
 // dirty-ledger check for every other version.
+function reconcileLedgerVersion(version) {
+  return KNOWN_LEDGER_RENAMES.get(version) ?? version;
+}
+
 function reconcileLedgerVersions(versions) {
-  return versions.map((version) => KNOWN_LEDGER_RENAMES.get(version) ?? version);
+  return versions.map(reconcileLedgerVersion);
 }
 
 function option(name, args) {
@@ -203,9 +215,9 @@ function validatePacket(packet, { migrationsDir, manifest }) {
   // the supervised one-shot migrator; this packet records only what the
   // database can actually report.
   //
-  // reconcileLedgerVersions maps the five known pre-CHE-548 renames before
-  // this check, so a production ledger that applied those migrations under
-  // their old filenames still verifies. Every other version passes through
+  // reconcileLedgerVersions maps the known renames (KNOWN_LEDGER_RENAMES)
+  // before this check, so a production ledger that applied those migrations
+  // under their old filenames still verifies. Every other version passes through
   // unchanged and still fails closed as dirty-ledger state below.
   for (const version of reconcileLedgerVersions(observed.ledger.versions)) {
     if (!packetVersions.includes(version)) {
@@ -281,9 +293,13 @@ function create(args) {
     fail("candidate migration inventory does not match manifest.migration_inventory_sha256");
   }
   const ordered = migrationChecksums(migrationsDir);
-  const minimumRollbackVersion = baseline.migration_ledger?.latest?.version;
+  // The baseline's latest row can carry a historical name; the rollback floor
+  // must be the on-disk name, because cutover.sh compares it by position
+  // against server/migrations/ (ledger_at_or_after, deploy-lib.sh).
+  const baselineLatestVersion = baseline.migration_ledger?.latest?.version;
+  const minimumRollbackVersion = baselineLatestVersion && reconcileLedgerVersion(baselineLatestVersion);
   const baselineIndex = ordered.findIndex((entry) => entry.version === minimumRollbackVersion);
-  if (baselineIndex < 0) fail(`baseline migration ${minimumRollbackVersion ?? "<missing>"} is not present in the candidate migration inventory`);
+  if (baselineIndex < 0) fail(`baseline migration ${baselineLatestVersion ?? "<missing>"} is not present in the candidate migration inventory`);
   if (observed.schema_version !== 1) fail("unsupported observed-state schema_version");
   if (observed.ledger?.status !== "complete" || !Array.isArray(observed.ledger?.versions)) {
     fail("observed ledger state is unknown or incomplete");

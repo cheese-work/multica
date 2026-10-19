@@ -68,9 +68,10 @@ func wantChannels(t *testing.T, got channelsJSON, want map[string]channelSwitche
 	}
 }
 
+// DM switches default to off (CHE-1848): DM replies reach the inbox only after an opt-in.
 var defaultChannels = map[string]channelSwitches{
 	"inbox": {InApp: true, Push: false},
-	"dm":    {InApp: true, Push: false},
+	"dm":    {InApp: false, Push: false},
 }
 
 func TestNotificationChannelsDefaults(t *testing.T) {
@@ -89,7 +90,7 @@ func TestNotificationChannelsPatchChangesOnlyOneKey(t *testing.T) {
 	got := patchChannel(t, map[string]any{"source": "dm", "channel": "push", "enabled": true}, http.StatusOK)
 	wantChannels(t, got, map[string]channelSwitches{
 		"inbox": {InApp: true, Push: false},
-		"dm":    {InApp: true, Push: true},
+		"dm":    {InApp: false, Push: true},
 	})
 
 	// The same key twice is idempotent, and a second key leaves the first alone.
@@ -97,7 +98,7 @@ func TestNotificationChannelsPatchChangesOnlyOneKey(t *testing.T) {
 	got = patchChannel(t, map[string]any{"source": "inbox", "channel": "in_app", "enabled": false}, http.StatusOK)
 	want := map[string]channelSwitches{
 		"inbox": {InApp: false, Push: false},
-		"dm":    {InApp: true, Push: true},
+		"dm":    {InApp: false, Push: true},
 	}
 	wantChannels(t, got, want)
 	wantChannels(t, getChannels(t), want)

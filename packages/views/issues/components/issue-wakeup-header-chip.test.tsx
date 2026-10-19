@@ -10,6 +10,8 @@ vi.mock("./wakeup-condition-names", () => ({
   useConditionNames: () => ({ status: (key: string) => key, label: () => undefined, property: () => undefined, actor: (_type: string, id: string) => id }),
 }));
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws" }));
+let settings: Record<string, unknown> = {};
+vi.mock("@multica/core/paths", () => ({ useCurrentWorkspace: () => ({ id: "ws", settings }) }));
 vi.mock("@multica/core/issues", () => ({
   issueWakeupsOptions: () => ({ queryKey: ["wakeups"] }),
   issueSystemWakeupsOptions: () => ({ queryKey: ["system"] }),
@@ -34,6 +36,7 @@ const childDone: SystemWakeup = {
 beforeEach(() => {
   rules = [];
   system = [];
+  settings = {};
 });
 
 describe("primaryWakeup", () => {
@@ -70,6 +73,23 @@ describe("IssueWakeupHeaderChip", () => {
     system = [childDone];
     renderWithI18n(<IssueWakeupHeaderChip issueId="issue" onOpen={() => {}} />, { locale: "zh-Hans" });
     expect(screen.getByRole("button", { name: /Grok 在等第 2 阶段完成/ })).toBeVisible();
+  });
+
+  it("says the wakeups are paused instead of promising a due time while the workspace is paused", () => {
+    settings = { wakeups_paused: true };
+    rules = [rule({ id: "w2", kind: "at", next_fire_at: "2030-01-01T00:00:00Z" })];
+    system = [childDone];
+    renderWithI18n(<IssueWakeupHeaderChip issueId="issue" onOpen={() => {}} />);
+    const chip = screen.getByRole("button", { name: /Wakeups paused/ });
+    expect(chip).toHaveTextContent("Wakeups paused");
+    expect(chip).not.toHaveTextContent(/Waiting|Wake at/);
+    expect(screen.getByTestId("wakeups-header-chip")).toBe(chip);
+  });
+
+  it("renders nothing for a paused workspace when the issue has no wakeups", () => {
+    settings = { wakeups_paused: true };
+    const { container } = renderWithI18n(<IssueWakeupHeaderChip issueId="issue" onOpen={() => {}} />);
+    expect(container).toBeEmptyDOMElement();
   });
 
   it("renders nothing when the issue waits for nothing", () => {

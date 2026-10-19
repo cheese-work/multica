@@ -105,7 +105,14 @@
     "customized_one": "{{count}} tâche ouverte a son propre réglage et ignore cette valeur par défaut.",
     "customized_other": "{{count}} tâches ouvertes ont leur propre réglage et ignorent cette valeur par défaut.",
     "admin_only": "Seuls les propriétaires et administrateurs peuvent modifier ces valeurs.",
-    "load_error": "Impossible de charger les valeurs par défaut des réveils."
+    "load_error": "Impossible de charger les valeurs par défaut des réveils.",
+    "pause_label": "Suspendre tous les réveils",
+    "pause_description": "Rien ne se déclenche pendant la suspension. Les événements reçus entre-temps sont abandonnés, pas rejoués. Les réveils uniques et conditionnels arrivés à échéance s'exécutent une fois à la reprise.",
+    "pause_error": "Impossible de modifier la suspension.",
+    "overridden": "Remplacé tant que les réveils sont suspendus.",
+    "pause_saved": "Réveils suspendus.",
+    "pause_resumed": "Réveils repris.",
+    "retry": "Réessayer"
   },
   "jev_governance": {
     "search_description": "Mode de routage des squads et confiance minimale pour Jev.",
