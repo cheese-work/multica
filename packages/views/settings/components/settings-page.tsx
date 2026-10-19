@@ -13,6 +13,7 @@ import {
   Laptop,
   ListPlus,
   Lock,
+  Scale,
   MessagesSquare,
   Plug,
   Search,
@@ -66,6 +67,7 @@ import { searchSettings } from "./settings-search";
 import { HighlightText } from "../../search/highlight-text";
 import { useSettingsSearchIndex } from "./use-settings-search-index";
 import { WakeupsTab } from "./wakeups-tab";
+import { JevGovernanceTab } from "./jev-governance-tab";
 import { CollapsedNavTrigger } from "../../layout/page-header";
 import { useT } from "../../i18n";
 
@@ -204,6 +206,12 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
                   <ExportPrivacyTab />,
                 )]
               : []),
+            entry(
+              "jev-governance",
+              t(($) => $.page.tabs.jev_governance),
+              Scale,
+              <JevGovernanceTab />,
+            ),
             ...(billingEnabled
               ? [
                   entry(
@@ -374,6 +382,7 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
     <li key={item.value}>
       <AppLink
         href={href(item.value)}
+        data-testid={`settings-nav-${item.value}`}
         aria-current={active.value === item.value ? "page" : undefined}
         className={cn(
           "flex min-h-8 items-center gap-2.5 rounded-lg px-3 py-1.5 text-body transition-colors focus-visible:outline-2 focus-visible:outline-ring",

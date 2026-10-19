@@ -118,6 +118,42 @@
     "pause_resumed": "Réveils repris.",
     "retry": "Réessayer"
   },
+  "jev_governance": {
+    "search_description": "Mode de routage des squads et confiance minimale pour Jev.",
+    "routing_title": "Routage des squads",
+    "mode_label": "Mode",
+    "mode": {
+      "off": "Désactivé",
+      "shadow": "Observation",
+      "on": "Activé"
+    },
+    "mode_hint": {
+      "off": "Jev est ignoré. Les squads routent comme avant.",
+      "shadow": "Jev choisit un exécutant, mais rien n'est distribué. Chaque choix est journalisé pour revue.",
+      "on": "Le choix de Jev est distribué à l'exécutant de la squad."
+    },
+    "on_locked": "Nécessite des données d'observation : ≤ 2 % d'erreurs confiantes sur plus de 200 éléments vérifiés.",
+    "confidence_label": "Confiance minimale",
+    "confidence_hint": "Par défaut : 0,90.",
+    "confidence_invalid": "Saisissez un nombre de 0 à 1.",
+    "summary": "v{{version}} · {{mode}}",
+    "based_on": "Basé sur v{{version}}",
+    "cancel": "Annuler",
+    "save": "Enregistrer",
+    "saving": "Enregistrement…",
+    "saved": "Enregistré",
+    "save_error": "Échec de l'enregistrement. Vos modifications sont conservées.",
+    "conflict_title": "Non enregistré : les paramètres ont changé",
+    "conflict_body": "Quelqu'un a enregistré une version plus récente. Vos modifications sont conservées ci-dessous. Rechargez pour la voir, puis réappliquez-les.",
+    "conflict_reload": "Recharger la dernière version",
+    "conflict_keep": "Continuer à modifier",
+    "loading": "Chargement des paramètres de gouvernance",
+    "load_error": "Impossible de charger les paramètres de gouvernance",
+    "load_error_body": "Le serveur n'a pas pu les lire.",
+    "retry": "Réessayer",
+    "offline_title": "Vous êtes hors ligne",
+    "offline_body": "Affichage de v{{version}} tel que chargé en dernier. La modification est suspendue jusqu'au retour de la connexion."
+  },
   "quick_actions": {
     "title": "Actions rapides",
     "description": "Lancez un agent et un prompt prédéfinis depuis la barre latérale d’une tâche.",
@@ -426,7 +462,8 @@
       "code": "Code",
       "channels": "Messagerie",
       "apps": "Applications connectées",
-      "workflows": "Workflows"
+      "workflows": "Workflows",
+      "jev_governance": "Jev / Gouvernance"
     },
     "groups": {
       "personal": "Personnel",

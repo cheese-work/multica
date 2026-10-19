@@ -116,6 +116,42 @@
     "pause_resumed": "ウェイクアップを再開しました。",
     "retry": "再試行"
   },
+  "jev_governance": {
+    "search_description": "Jev のスクワッドルーティングモードと最小信頼度。",
+    "routing_title": "スクワッドルーティング",
+    "mode_label": "モード",
+    "mode": {
+      "off": "オフ",
+      "shadow": "シャドウ",
+      "on": "オン"
+    },
+    "mode_hint": {
+      "off": "Jev は使われません。スクワッドはこれまでどおりルーティングします。",
+      "shadow": "Jev は担当者を選びますが、何も割り当てません。選択はレビュー用に記録されます。",
+      "on": "Jev の選択がスクワッドの担当者に割り当てられます。"
+    },
+    "on_locked": "シャドウデータが必要です：検証済み 200 件以上で、確信を持った誤りが 2% 以下。",
+    "confidence_label": "最小信頼度",
+    "confidence_hint": "既定値は 0.90 です。",
+    "confidence_invalid": "0 から 1 の数値を入力してください。",
+    "summary": "v{{version}} · {{mode}}",
+    "based_on": "v{{version}} を基準",
+    "cancel": "キャンセル",
+    "save": "変更を保存",
+    "saving": "保存中…",
+    "saved": "保存しました",
+    "save_error": "保存できませんでした。変更は保持されています。",
+    "conflict_title": "保存されませんでした：設定が変更されています",
+    "conflict_body": "他の誰かがより新しいバージョンを保存しました。編集内容は下に保持されています。再読み込みして確認し、もう一度適用してください。",
+    "conflict_reload": "最新を再読み込み",
+    "conflict_keep": "編集を続ける",
+    "loading": "ガバナンス設定を読み込み中",
+    "load_error": "ガバナンス設定を読み込めません",
+    "load_error_body": "サーバーが設定を読み取れませんでした。",
+    "retry": "再試行",
+    "offline_title": "オフラインです",
+    "offline_body": "最後に読み込んだ v{{version}} を表示しています。接続が戻るまで編集は一時停止されます。"
+  },
   "quick_actions": {
     "title": "クイックアクション",
     "description": "タスクのサイドバーから、設定済みのエージェントとプロンプトを実行します。",
@@ -424,7 +460,8 @@
       "code": "コード",
       "channels": "メッセージング",
       "apps": "接続済みアプリ",
-      "workflows": "ワークフロー"
+      "workflows": "ワークフロー",
+      "jev_governance": "Jev / ガバナンス"
     },
     "groups": {
       "personal": "個人",
