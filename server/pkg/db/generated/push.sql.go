@@ -72,15 +72,6 @@ func (q *Queries) ClaimPushDeliveries(ctx context.Context, arg ClaimPushDeliveri
 	return items, nil
 }
 
-const deleteOldPushSessionEnds = `-- name: DeleteOldPushSessionEnds :exec
-DELETE FROM push_session_end WHERE ended_at < now() - make_interval(secs => $1::float8)
-`
-
-func (q *Queries) DeleteOldPushSessionEnds(ctx context.Context, retentionSecs float64) error {
-	_, err := q.db.Exec(ctx, deleteOldPushSessionEnds, retentionSecs)
-	return err
-}
-
 const deletePushSubscriptionByEndpoint = `-- name: DeletePushSubscriptionByEndpoint :exec
 WITH gone AS (
     DELETE FROM push_subscription WHERE endpoint = $1 AND user_id = $2 RETURNING id
@@ -104,6 +95,19 @@ DELETE FROM push_delivery WHERE sent_at < now() - make_interval(secs => $1::floa
 
 func (q *Queries) DeleteSentPushDeliveries(ctx context.Context, retentionSecs float64) error {
 	_, err := q.db.Exec(ctx, deleteSentPushDeliveries, retentionSecs)
+	return err
+}
+
+const drainPushSession = `-- name: DrainPushSession :exec
+SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
+`
+
+// Logout, after its marker is committed: wait until every send that took the
+// shared lock (LockPushSessionShared) before the marker was visible has ended.
+// Past that point no send starts for the session. A send already on the wire
+// cannot be recalled.
+func (q *Queries) DrainPushSession(ctx context.Context, sessionID string) error {
+	_, err := q.db.Exec(ctx, drainPushSession, sessionID)
 	return err
 }
 
@@ -245,9 +249,26 @@ func (q *Queries) GetPushDeliveryContext(ctx context.Context, arg GetPushDeliver
 	return i, err
 }
 
-const lockPushSubscription = `-- name: LockPushSubscription :one
-SELECT id FROM push_subscription WHERE id = $1 FOR NO KEY UPDATE
+const lockPushSessionShared = `-- name: LockPushSessionShared :exec
+SELECT pg_advisory_xact_lock_shared(hashtextextended($1::text, 0))
 `
+
+// Taken by a delivery after the device row and before it reads the context, and
+// held to the end of its transaction, so the marker check and the send form one
+// step as seen by logout (DrainPushSession).
+func (q *Queries) LockPushSessionShared(ctx context.Context, sessionID string) error {
+	_, err := q.db.Exec(ctx, lockPushSessionShared, sessionID)
+	return err
+}
+
+const lockPushSubscription = `-- name: LockPushSubscription :one
+SELECT id, session_id FROM push_subscription WHERE id = $1 FOR NO KEY UPDATE
+`
+
+type LockPushSubscriptionRow struct {
+	ID        pgtype.UUID `json:"id"`
+	SessionID string      `json:"session_id"`
+}
 
 // Taken first, in its own statement, so the context below is read after the
 // wait: a statement that waits for a row lock only re-checks that row, not the
@@ -255,11 +276,11 @@ SELECT id FROM push_subscription WHERE id = $1 FOR NO KEY UPDATE
 // caller's transaction ends, and the caller sends inside it: re-registering the
 // endpoint for another account and pruning wait for the send, so no push starts
 // after the device changes hands and no stale outcome lands on the new owner.
-func (q *Queries) LockPushSubscription(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+func (q *Queries) LockPushSubscription(ctx context.Context, id pgtype.UUID) (LockPushSubscriptionRow, error) {
 	row := q.db.QueryRow(ctx, lockPushSubscription, id)
-	var id_2 pgtype.UUID
-	err := row.Scan(&id_2)
-	return id_2, err
+	var i LockPushSubscriptionRow
+	err := row.Scan(&i.ID, &i.SessionID)
+	return i, err
 }
 
 const prunePushSubscription = `-- name: PrunePushSubscription :exec
@@ -283,6 +304,17 @@ type PrunePushSubscriptionParams struct {
 func (q *Queries) PrunePushSubscription(ctx context.Context, arg PrunePushSubscriptionParams) error {
 	_, err := q.db.Exec(ctx, prunePushSubscription, arg.DeliveryID, arg.ClaimToken, arg.ID)
 	return err
+}
+
+const pushSessionEnded = `-- name: PushSessionEnded :one
+SELECT EXISTS (SELECT 1 FROM push_session_end WHERE session_id = $1)::boolean AS ended
+`
+
+func (q *Queries) PushSessionEnded(ctx context.Context, sessionID string) (bool, error) {
+	row := q.db.QueryRow(ctx, pushSessionEnded, sessionID)
+	var ended bool
+	err := row.Scan(&ended)
+	return ended, err
 }
 
 const retryPushDelivery = `-- name: RetryPushDelivery :execrows

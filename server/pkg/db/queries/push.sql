@@ -22,8 +22,21 @@ DELETE FROM push_delivery WHERE subscription_id IN (SELECT id FROM gone);
 INSERT INTO push_session_end (session_id) VALUES (@session_id)
 ON CONFLICT (session_id) DO NOTHING;
 
--- name: DeleteOldPushSessionEnds :exec
-DELETE FROM push_session_end WHERE ended_at < now() - make_interval(secs => @retention_secs::float8);
+-- name: PushSessionEnded :one
+SELECT EXISTS (SELECT 1 FROM push_session_end WHERE session_id = @session_id)::boolean AS ended;
+
+-- name: DrainPushSession :exec
+-- Logout, after its marker is committed: wait until every send that took the
+-- shared lock (LockPushSessionShared) before the marker was visible has ended.
+-- Past that point no send starts for the session. A send already on the wire
+-- cannot be recalled.
+SELECT pg_advisory_xact_lock(hashtextextended(@session_id::text, 0));
+
+-- name: LockPushSessionShared :exec
+-- Taken by a delivery after the device row and before it reads the context, and
+-- held to the end of its transaction, so the marker check and the send form one
+-- step as seen by logout (DrainPushSession).
+SELECT pg_advisory_xact_lock_shared(hashtextextended(@session_id::text, 0));
 
 -- name: PrunePushSubscription :exec
 -- The push service said the endpoint is gone. Only the current claimant of the
@@ -64,7 +77,7 @@ RETURNING d.id, d.subscription_id, d.attempts, d.claim_token, now()::timestamptz
 -- caller's transaction ends, and the caller sends inside it: re-registering the
 -- endpoint for another account and pruning wait for the send, so no push starts
 -- after the device changes hands and no stale outcome lands on the new owner.
-SELECT id FROM push_subscription WHERE id = @id FOR NO KEY UPDATE;
+SELECT id, session_id FROM push_subscription WHERE id = @id FOR NO KEY UPDATE;
 
 -- name: GetPushDeliveryContext :one
 -- Everything a send needs, and every condition that must still hold: no row

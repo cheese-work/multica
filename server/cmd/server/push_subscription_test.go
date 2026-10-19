@@ -356,9 +356,9 @@ func TestPushRegistrationFailsFastWhenTheDeviceIsBusy(t *testing.T) {
 			if r.status != http.StatusServiceUnavailable || r.retryAfter == "" {
 				t.Errorf("%s on a busy device: status %d, Retry-After %q, want 503 with Retry-After", name, r.status, r.retryAfter)
 			}
-		case <-time.After(6 * time.Second):
+		case <-time.After(8 * time.Second): // 5 s request budget + 2 s teardown budget, with slack
 			release()
-			t.Errorf("%s still waiting on a busy device after 6 s: it must fail fast instead of queueing behind the send", name)
+			t.Errorf("%s still waiting on a busy device after 8 s: it must fail fast instead of queueing behind the send", name)
 		}
 	}
 	release()

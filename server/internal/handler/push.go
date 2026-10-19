@@ -47,7 +47,7 @@ func (h *Handler) withDeviceLock(w http.ResponseWriter, r *http.Request, what st
 	defer cancel()
 	tx, err := h.TxStarter.Begin(ctx)
 	if err == nil {
-		defer tx.Rollback(context.WithoutCancel(ctx))
+		defer pushnotify.RollbackBounded(ctx, tx)
 		_, err = tx.Exec(ctx, fmt.Sprintf("SET LOCAL lock_timeout = '%dms'", pushDeviceLockWait.Milliseconds()))
 	}
 	if err == nil {
@@ -110,6 +110,16 @@ func (h *Handler) UpsertPushSubscription(w http.ResponseWriter, r *http.Request)
 	session, ok := sessionFromRequest(r)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "push needs a signed-in browser session")
+		return
+	}
+	// Sliding renewal keeps a session's id alive, so an ended session is refused
+	// here and not only skipped by the worker.
+	if ended, err := h.Queries.PushSessionEnded(r.Context(), session.id); err != nil {
+		slog.Warn("PushSessionEnded failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to save subscription")
+		return
+	} else if ended {
+		writeError(w, http.StatusUnauthorized, "this session has ended")
 		return
 	}
 	var req pushSubscriptionRequest
@@ -185,17 +195,52 @@ func sessionFromRequest(r *http.Request) (pushSession, bool) {
 	return pushSession{userID: sub, id: sid, expires: expires}, sid != "" && sub != "" && !expires.IsZero()
 }
 
-// endPushSession stops pushes for the devices a logging-out session registered.
-// It writes one marker row and never touches the device rows, so it cannot wait
-// behind a send; the detached context keeps a client that hangs up from losing it.
-func (h *Handler) endPushSession(r *http.Request) {
+// pushLogoutDrain is how long logout waits for sends admitted before the
+// session's end to finish. Healthy push services answer in well under this.
+const pushLogoutDrain = 3 * time.Second
+
+// endPushSession ends the session for push, in two steps. First a marker row,
+// committed: from then on no delivery passes its check. Then a bounded wait for
+// the deliveries that took their shared session lock before the marker was
+// visible; once that wait is over, none of them is left to start. A send that is
+// already on the wire cannot be recalled, and a send that outlasts the drain is
+// left to finish: it was admitted before the end, and the marker is recorded.
+// The marker is the part that must not fail, so its error is returned and logout
+// reports it (the cookie stays, so the client can retry). Nothing is recorded
+// when push is not configured: there are no subscriptions to end.
+func (h *Handler) endPushSession(r *http.Request) error {
+	if !pushnotify.ConfigFromEnv().Enabled() {
+		return nil
+	}
 	session, ok := sessionFromRequest(r)
 	if !ok {
-		return
+		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), pushRequestBudget)
 	defer cancel()
 	if err := h.Queries.EndPushSession(ctx, session.id); err != nil {
-		slog.Warn("EndPushSession failed", append(logger.RequestAttrs(r), "error", err)...)
+		return err
+	}
+	h.drainPushSession(r, session.id)
+	return nil
+}
+
+func (h *Handler) drainPushSession(r *http.Request, sessionID string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), pushRequestBudget)
+	defer cancel()
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		slog.Warn("push session drain failed", append(logger.RequestAttrs(r), "error", err)...)
+		return
+	}
+	defer pushnotify.RollbackBounded(ctx, tx)
+	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL lock_timeout = '%dms'", pushLogoutDrain.Milliseconds())); err == nil {
+		err = h.Queries.WithTx(tx).DrainPushSession(ctx, sessionID)
+		if err == nil {
+			err = tx.Commit(ctx)
+		}
+		if err != nil {
+			slog.Info("push session drain gave up; the marker is recorded", append(logger.RequestAttrs(r), "error", err)...)
+		}
 	}
 }

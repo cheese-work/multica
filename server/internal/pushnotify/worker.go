@@ -12,7 +12,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -38,7 +37,12 @@ const (
 	// A delivery that cannot get the device within deviceLockWait is deferred
 	// (attempt refunded) rather than queued, so contested devices never pin pool
 	// connections behind another send.
-	deviceLockWait   = 2 * time.Second
+	deviceLockWait = 2 * time.Second
+	// TeardownBudget bounds every rollback and error-path write. It sits outside
+	// the operation budgets: an attempt or request that ran out of time still
+	// gets this long to roll back, and a rollback that cannot finish in it closes
+	// the connection, which the pool replaces.
+	TeardownBudget   = 2 * time.Second
 	contestedBackoff = 5 * time.Second
 	retryBase        = 30 * time.Second
 	retryCap         = time.Hour
@@ -103,10 +107,6 @@ func (w *Worker) process(ctx context.Context) (int, error) {
 	if err := w.q.DeleteSentPushDeliveries(ctx, SentRetention.Seconds()); err != nil {
 		return 0, err
 	}
-	// An ended session cannot be valid again once its token lifetime has passed.
-	if err := w.q.DeleteOldPushSessionEnds(ctx, (auth.AuthTokenTTL() + 24*time.Hour).Seconds()); err != nil {
-		return 0, err
-	}
 	claims, err := w.q.ClaimPushDeliveries(ctx, db.ClaimPushDeliveriesParams{Batch: batchSize, LeaseSecs: leaseDuration.Seconds()})
 	if err != nil {
 		return 0, err
@@ -168,11 +168,7 @@ func (w *Worker) deliver(ctx context.Context, claim db.ClaimPushDeliveriesRow) {
 		return
 	}
 	// Rolled back on every path that does not commit, even after the attempt expired.
-	defer func() {
-		rollbackCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer stop()
-		_ = tx.Rollback(rollbackCtx)
-	}()
+	defer RollbackBounded(ctx, tx)
 	if _, err := tx.Exec(attemptCtx, fmt.Sprintf("SET LOCAL lock_timeout = '%dms'", deviceLockWait.Milliseconds())); err != nil {
 		slog.Warn("push delivery lock timeout setup failed", "delivery_id", id, "error", err)
 		return
@@ -184,9 +180,12 @@ func (w *Worker) deliver(ctx context.Context, claim db.ClaimPushDeliveriesRow) {
 			slog.Warn("push delivery commit failed", "delivery_id", id, "error", err)
 		}
 	case errors.Is(err, errDeviceBusy):
-		// The aborted transaction is rolled back first; the deferral is its own statement.
-		_ = tx.Rollback(context.WithoutCancel(ctx))
-		_, rerr := w.q.RetryPushDelivery(attemptCtx, db.RetryPushDeliveryParams{
+		// The aborted transaction is rolled back first; the deferral is its own
+		// statement, with its own deadline because the attempt's may be spent.
+		RollbackBounded(ctx, tx)
+		retryCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), TeardownBudget)
+		defer stop()
+		_, rerr := w.q.RetryPushDelivery(retryCtx, db.RetryPushDeliveryParams{
 			ID: claim.ID, ClaimToken: claim.ClaimToken, ClaimedAt: claim.ClaimedAt, Refund: 1, BackoffSecs: contestedBackoff.Seconds(),
 		})
 		if rerr != nil {
@@ -198,6 +197,14 @@ func (w *Worker) deliver(ctx context.Context, claim db.ClaimPushDeliveriesRow) {
 		// Rolled back: the row keeps its claim and is retried when the lease runs out.
 		slog.Warn("push delivery failed", "delivery_id", id, "error", err)
 	}
+}
+
+// RollbackBounded rolls tx back under its own TeardownBudget, whatever state
+// ctx is in.
+func RollbackBounded(ctx context.Context, tx pgx.Tx) {
+	rollbackCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), TeardownBudget)
+	defer stop()
+	_ = tx.Rollback(rollbackCtx)
 }
 
 func isLockTimeout(err error) bool {
@@ -212,7 +219,14 @@ func (w *Worker) deliverLocked(attemptCtx, shutdownCtx context.Context, q *db.Qu
 		_, err := q.DropPushDelivery(attemptCtx, db.DropPushDeliveryParams{ID: claim.ID, ClaimToken: claim.ClaimToken, ClaimedAt: claim.ClaimedAt})
 		return err
 	}
-	if _, err := q.LockPushSubscription(attemptCtx, claim.SubscriptionID); err != nil {
+	device, err := q.LockPushSubscription(attemptCtx, claim.SubscriptionID)
+	if err == nil {
+		// Shared session lock, held to the end of the transaction: logout takes the
+		// exclusive one after it commits the session's end, so by the time logout
+		// answers, no send admitted before the marker is left to start.
+		err = q.LockPushSessionShared(attemptCtx, device.SessionID)
+	}
+	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 			return drop() // the device is gone

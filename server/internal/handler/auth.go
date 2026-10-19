@@ -787,7 +787,13 @@ func (h *Handler) issueHandoffToken(w http.ResponseWriter, r *http.Request, meth
 }
 
 func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
-	h.endPushSession(r)
+	if err := h.endPushSession(r); err != nil {
+		// The session's end is not recorded: keep the cookie so the client can retry.
+		slog.Warn("Logout: could not record the push session end", append(logger.RequestAttrs(r), "error", err)...)
+		w.Header().Set("Retry-After", "5")
+		writeError(w, http.StatusServiceUnavailable, "could not end this session's push subscriptions; try again")
+		return
+	}
 	auth.ClearAuthCookies(w)
 	writeJSON(w, http.StatusOK, map[string]string{"message": "logged out"})
 }
