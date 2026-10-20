@@ -28,7 +28,6 @@
     "compacting_toast": "Ce message privé est en cours de compactage. Renvoyez-le une fois terminé.",
     "rename_failed_toast": "Impossible de renommer la conversation",
     "fork_unconfirmed": "La dérivation n’a pas pu être confirmée. Vérifiez les liens « Dérivée vers » avant de réessayer.",
-    "fork_attachments_blocked": "Les pièces jointes ne peuvent pas être envoyées avec /fork.",
     "rename_title_too_long_toast": "Le titre ne doit pas dépasser 200 caractères",
     "rename_session_required_toast": "Démarrez une conversation avant de la renommer",
     "send_blocked_toast": "Message non envoyé — vous n'avez plus la permission d'utiliser cet agent",

@@ -138,11 +138,17 @@ export function useForkChatSession() {
   const wsId = useWorkspaceId();
 
   return useMutation({
-    mutationFn: (data: { sessionId: string; idempotencyKey: string; message?: string }) => {
+    mutationFn: (data: {
+      sessionId: string;
+      idempotencyKey: string;
+      message?: string;
+      attachmentIds?: string[];
+    }) => {
       logger.info("forkChatSession.start", { sessionId: data.sessionId });
       return api.forkChatSession(data.sessionId, {
         idempotency_key: data.idempotencyKey,
         ...(data.message ? { message: data.message } : {}),
+        ...(data.attachmentIds?.length ? { attachment_ids: data.attachmentIds } : {}),
       });
     },
     onSuccess: ({ session }) => {
