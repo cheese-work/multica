@@ -149,6 +149,10 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		session, err = qtx.ArchiveContinuedChatSession(r.Context(), db.ArchiveContinuedChatSessionParams{ID: session.ID, ContinuedIntoSessionID: next.ID})
 	}
+	// A wakeup turn queued behind this run would otherwise run in the archived DM.
+	if err == nil {
+		err = qtx.MoveQueuedWakeupTasksToSession(r.Context(), db.MoveQueuedWakeupTasksToSessionParams{FromSessionID: session.ID, ToSessionID: next.ID})
+	}
 	// An agent rollover archives the DM the run was replying in, so that reply
 	// cannot notify. The summary is the agent's message: notify in the new DM.
 	// A continue the DM creator submitted stays silent.

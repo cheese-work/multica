@@ -1421,6 +1421,9 @@ type QueuedChatTaskResponse struct {
 	CreatedAt string `json:"created_at"`
 	MessageID string `json:"message_id,omitempty"`
 	Content   string `json:"content,omitempty"`
+	// TaskKind is "wakeup" for a turn a DM wakeup started; its Content is empty
+	// because the instruction is hidden input. Empty for a member's message.
+	TaskKind string `json:"task_kind,omitempty"`
 }
 
 type PrioritizeQueuedChatTaskResponse struct {
@@ -1770,6 +1773,7 @@ func (h *Handler) GetPendingChatTask(w http.ResponseWriter, r *http.Request) {
 			CreatedAt: timestampToString(task.CreatedAt),
 			MessageID: uuidToString(task.MessageID),
 			Content:   task.Content,
+			TaskKind:  wakeupTaskKind(task.TaskKind),
 		})
 	}
 
@@ -2282,4 +2286,12 @@ func normalizeMessageKind(kind string) string {
 	default:
 		return protocol.ChatMessageKindMessage
 	}
+}
+
+// wakeupTaskKind exposes only the wakeup kind of a task; other kinds stay internal.
+func wakeupTaskKind(kind pgtype.Text) string {
+	if kind.String == service.WakeupTaskKind {
+		return kind.String
+	}
+	return ""
 }
