@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -309,13 +310,34 @@ func forkChatURL(slug string, id pgtype.UUID) string {
 	return "/" + url.PathEscape(slug) + "/chat?session=" + uuidToString(id)
 }
 
-// forkTitle is "<source> (fork: <message>)", the message whitespace-collapsed
-// and cut at forkTitleMessageRunes with "…", or "<source> (fork)" without one.
+var (
+	markdownLink   = regexp.MustCompile(`!?\[([^\]]*)\]\([^)]*\)`)
+	markdownPrefix = regexp.MustCompile(`^(?:>\s*|#{1,6}\s+|[-*+]\s+|\d+[.)]\s+)+`)
+)
+
+// plainText reduces markdown to what a reader sees in a title: link and slash
+// chips become their label; fence lines and leading quote, heading and list
+// markers are dropped.
+func plainText(markdown string) string {
+	var lines []string
+	for _, line := range strings.Split(markdown, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "```") || strings.HasPrefix(line, "~~~") {
+			continue
+		}
+		line = markdownPrefix.ReplaceAllString(line, "")
+		lines = append(lines, markdownLink.ReplaceAllString(line, "$1"))
+	}
+	return strings.Join(lines, " ")
+}
+
+// forkTitle is "<source> (fork: <message>)", the message as plain text,
+// whitespace-collapsed and cut at forkTitleMessageRunes with "…", or "<source> (fork)" without one.
 func forkTitle(source, message string) string {
 	if message == "" {
 		return strings.TrimSpace(source + " (fork)")
 	}
-	label := strings.Join(strings.Fields(message), " ")
+	label := strings.Join(strings.Fields(plainText(message)), " ")
 	if runes := []rune(label); len(runes) > forkTitleMessageRunes {
 		label = string(runes[:forkTitleMessageRunes]) + "…"
 	}

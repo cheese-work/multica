@@ -753,3 +753,21 @@ func TestForkChatSessionRejectsBodyPaddedPastTheCap(test *testing.T) {
 		test.Fatalf("a padded body created %d children", count)
 	}
 }
+
+func TestForkTitleStripsMarkdown(test *testing.T) {
+	cases := map[string]string{
+		"[/office-hours](slash://skill/x) try":    "Src (fork: /office-hours try)",
+		"> docker pull x":                         "Src (fork: docker pull x)",
+		"# Heading text":                          "Src (fork: Heading text)",
+		"- item one":                              "Src (fork: item one)",
+		"1. first":                                "Src (fork: first)",
+		"```sh\ndocker pull x\n```":               "Src (fork: docker pull x)",
+		"see [docs](https://example.com/a_b) now": "Src (fork: see docs now)",
+		"": "Src (fork)",
+	}
+	for in, want := range cases {
+		if got := forkTitle("Src", in); got != want {
+			test.Errorf("forkTitle(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

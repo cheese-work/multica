@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
@@ -267,6 +267,51 @@ describe("ChatMessageList fork links", () => {
       ],
     });
     expect(screen.getAllByRole("link").map((link) => link.textContent)).toEqual(["Branch A", "new DM"]);
+  });
+
+  describe("fork-point rows", () => {
+    const m = (n: number, createdAt: string) => ({
+      ...message(`m${n}`, n % 2 ? "user" : "assistant", `Message ${n}`), created_at: createdAt,
+    });
+    const five = [1, 2, 3, 4, 5].map((n) => m(n, `2026-10-13T00:0${n}:00Z`));
+    const child = (id: string, title: string, extra: Partial<ChatSession>) =>
+      session({ id, title, forked_from_session_id: sourceId, ...extra });
+    const rowOf = (text: string) => screen.getByText(text).closest("[data-row-key]") as HTMLElement;
+    const fork = (overrides: Partial<ChatSession>[]) =>
+      renderFork({
+        sessionId: sourceId,
+        sessions: [session({}), ...overrides.map((o, i) => child(`child-${i}`, `Branch ${i}`, o))],
+      }, five);
+
+    it("renders 'Forked into' under the fork-point message, not at the end", () => {
+      fork([{ fork_last_message_id: "m2", created_at: "2026-10-13T01:00:00Z" }]);
+      const link = screen.getByRole("link", { name: "Branch 0" });
+      expect(rowOf("Message 2")).toContainElement(link);
+      expect(rowOf("Message 5")).not.toContainElement(link);
+      const order = (a: Node, b: Node) => a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING;
+      expect(order(link, screen.getByText("Message 3"))).toBeTruthy();
+    });
+
+    it("stacks several forks from one message oldest first", () => {
+      fork([
+        { fork_last_message_id: "m2", created_at: "2026-10-13T02:00:00Z" },
+        { fork_last_message_id: "m2", created_at: "2026-10-13T01:00:00Z" },
+        { fork_last_message_id: "m4", created_at: "2026-10-13T03:00:00Z" },
+      ]);
+      expect(within(rowOf("Message 2")).getAllByRole("link").map((l) => l.textContent)).toEqual(["Branch 1", "Branch 0"]);
+      expect(within(rowOf("Message 4")).getAllByRole("link").map((l) => l.textContent)).toEqual(["Branch 2"]);
+    });
+
+    it("falls back to created_at when the fork point is not loaded, never the footer", () => {
+      fork([{ fork_last_message_id: "m-older", created_at: "2026-10-13T00:03:30Z" }]);
+      const link = screen.getByRole("link", { name: "Branch 0" });
+      expect(rowOf("Message 3")).toContainElement(link);
+    });
+
+    it("keeps 'Continued in' in the footer", () => {
+      renderFork({ sessionId: sourceId, continuedIntoSessionId: childId, sessions: [session({})] }, five);
+      expect(screen.getByRole("link", { name: /Continued in/ }).closest("[data-row-key]")).toBeNull();
+    });
   });
 });
 
