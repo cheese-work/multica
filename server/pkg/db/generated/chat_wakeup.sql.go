@@ -12,20 +12,28 @@ import (
 )
 
 const cancelChatWakeup = `-- name: CancelChatWakeup :one
+WITH RECURSIVE lineage AS (
+    SELECT cs.id, cs.continued_from_session_id, 1 AS depth FROM chat_session cs WHERE cs.id = $2
+    UNION ALL
+    SELECT s.id, s.continued_from_session_id, l.depth + 1
+    FROM chat_session s JOIN lineage l ON s.id = l.continued_from_session_id
+    WHERE l.depth < 16
+)
 UPDATE chat_wakeup SET status = 'cancelled', updated_at = now()
-WHERE id = $1 AND chat_session_id = $2 AND status = 'pending'
+WHERE chat_wakeup.id = $1 AND chat_session_id IN (SELECT lineage.id FROM lineage) AND status = 'pending'
 RETURNING id, workspace_id, chat_session_id, agent_id, created_by, source_task_id, instruction, fire_at, status, task_id, created_at, updated_at, condition
 `
 
 type CancelChatWakeupParams struct {
-	ID            pgtype.UUID `json:"id"`
+	WakeupID      pgtype.UUID `json:"wakeup_id"`
 	ChatSessionID pgtype.UUID `json:"chat_session_id"`
 }
 
 // Only a pending wakeup cancels; once fired, the turn it started is an
-// ordinary task. Scoped to the DM so one task cannot cancel another DM's.
+// ordinary task. Scoped to the DM and its continuation lineage, so one DM
+// cannot cancel an unrelated DM's wakeup.
 func (q *Queries) CancelChatWakeup(ctx context.Context, arg CancelChatWakeupParams) (ChatWakeup, error) {
-	row := q.db.QueryRow(ctx, cancelChatWakeup, arg.ID, arg.ChatSessionID)
+	row := q.db.QueryRow(ctx, cancelChatWakeup, arg.WakeupID, arg.ChatSessionID)
 	var i ChatWakeup
 	err := row.Scan(
 		&i.ID,
@@ -46,11 +54,20 @@ func (q *Queries) CancelChatWakeup(ctx context.Context, arg CancelChatWakeupPara
 }
 
 const countPendingChatWakeups = `-- name: CountPendingChatWakeups :one
-SELECT count(*) FROM chat_wakeup WHERE chat_session_id = $1 AND status = 'pending'
+WITH RECURSIVE lineage AS (
+    SELECT cs.id, cs.continued_from_session_id, 1 AS depth FROM chat_session cs WHERE cs.id = $1
+    UNION ALL
+    SELECT s.id, s.continued_from_session_id, l.depth + 1
+    FROM chat_session s JOIN lineage l ON s.id = l.continued_from_session_id
+    WHERE l.depth < 16
+)
+SELECT count(*) FROM chat_wakeup WHERE chat_session_id IN (SELECT lineage.id FROM lineage) AND status = 'pending'
 `
 
-func (q *Queries) CountPendingChatWakeups(ctx context.Context, chatSessionID pgtype.UUID) (int64, error) {
-	row := q.db.QueryRow(ctx, countPendingChatWakeups, chatSessionID)
+// Counts the DM and the DMs it was continued from: a wakeup set before a
+// continuation is still pending after it, so it still holds a slot.
+func (q *Queries) CountPendingChatWakeups(ctx context.Context, id pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countPendingChatWakeups, id)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -200,13 +217,21 @@ func (q *Queries) ListDueChatWakeups(ctx context.Context, limit int32) ([]ChatWa
 }
 
 const listPendingChatWakeups = `-- name: ListPendingChatWakeups :many
+WITH RECURSIVE lineage AS (
+    SELECT cs.id, cs.continued_from_session_id, 1 AS depth FROM chat_session cs WHERE cs.id = $1
+    UNION ALL
+    SELECT s.id, s.continued_from_session_id, l.depth + 1
+    FROM chat_session s JOIN lineage l ON s.id = l.continued_from_session_id
+    WHERE l.depth < 16
+)
 SELECT id, workspace_id, chat_session_id, agent_id, created_by, source_task_id, instruction, fire_at, status, task_id, created_at, updated_at, condition FROM chat_wakeup
-WHERE chat_session_id = $1 AND status = 'pending'
-ORDER BY fire_at ASC, id ASC
+WHERE chat_session_id IN (SELECT lineage.id FROM lineage) AND status = 'pending'
+ORDER BY fire_at ASC, chat_wakeup.id ASC
 `
 
-func (q *Queries) ListPendingChatWakeups(ctx context.Context, chatSessionID pgtype.UUID) ([]ChatWakeup, error) {
-	rows, err := q.db.Query(ctx, listPendingChatWakeups, chatSessionID)
+// The DM's pending wakeups, including those set in the DMs it was continued from.
+func (q *Queries) ListPendingChatWakeups(ctx context.Context, id pgtype.UUID) ([]ChatWakeup, error) {
+	rows, err := q.db.Query(ctx, listPendingChatWakeups, id)
 	if err != nil {
 		return nil, err
 	}

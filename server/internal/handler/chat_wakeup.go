@@ -128,7 +128,11 @@ func (h *Handler) ListChatWakeups(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rows, err := h.Queries.ListPendingChatWakeups(r.Context(), task.ChatSessionID)
+	h.writeWakeupList(w, r, task.ChatSessionID)
+}
+
+func (h *Handler) writeWakeupList(w http.ResponseWriter, r *http.Request, sessionID pgtype.UUID) {
+	rows, err := h.Queries.ListPendingChatWakeups(r.Context(), sessionID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list wakeups")
 		return
@@ -145,11 +149,15 @@ func (h *Handler) CancelChatWakeup(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	h.cancelWakeup(w, r, task.ChatSessionID)
+}
+
+func (h *Handler) cancelWakeup(w http.ResponseWriter, r *http.Request, sessionID pgtype.UUID) {
 	id, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "wakeupId"), "wakeup id")
 	if !ok {
 		return
 	}
-	wakeup, err := h.Queries.CancelChatWakeup(r.Context(), db.CancelChatWakeupParams{ID: id, ChatSessionID: task.ChatSessionID})
+	wakeup, err := h.Queries.CancelChatWakeup(r.Context(), db.CancelChatWakeupParams{WakeupID: id, ChatSessionID: sessionID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "no pending wakeup with this id in this DM")
 		return
@@ -169,4 +177,32 @@ func (h *Handler) chatWakeupIssue(r *http.Request, ref string) (pgtype.UUID, boo
 	}
 	id, err := util.ParseUUID(ref)
 	return id, err == nil
+}
+
+// ListChatSessionWakeups is the DM member's view of the pending wakeups of a
+// DM and of the DMs it was continued from. Only the DM's creator may read it.
+func (h *Handler) ListChatSessionWakeups(w http.ResponseWriter, r *http.Request) {
+	session, ok := h.memberWakeupSession(w, r)
+	if !ok {
+		return
+	}
+	h.writeWakeupList(w, r, session.ID)
+}
+
+// CancelChatSessionWakeup lets the DM's creator cancel a pending wakeup of the
+// DM or of a DM it was continued from.
+func (h *Handler) CancelChatSessionWakeup(w http.ResponseWriter, r *http.Request) {
+	session, ok := h.memberWakeupSession(w, r)
+	if !ok {
+		return
+	}
+	h.cancelWakeup(w, r, session.ID)
+}
+
+func (h *Handler) memberWakeupSession(w http.ResponseWriter, r *http.Request) (db.ChatSession, bool) {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return db.ChatSession{}, false
+	}
+	return h.gateChatSessionForUser(w, r, userID, ctxWorkspaceID(r.Context()), chi.URLParam(r, "sessionId"))
 }
