@@ -7,6 +7,8 @@ import type { DraftUpload } from "@multica/core/drafts";
 import enCommon from "../../locales/en/common.json";
 import enChat from "../../locales/en/chat.json";
 import enEditor from "../../locales/en/editor.json";
+import { useCommentDraftStore } from "@multica/core/issues/stores";
+import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 
 // Uploads flow through the module-level coordinator, which calls
 // `api.uploadFile(file, ctx, signal)` (MUL-5181 L2). Tests drive uploads by
@@ -1803,3 +1805,84 @@ describe("ChatInput Stop while compacting", () => {
   });
 });
 
+
+// CHE-1876: comments on an agent reply ride along with the message as Markdown quotes.
+describe("ChatInput DM comments", () => {
+  const draftKey = "chat:session-1" as const;
+  const annotation = (n: number, quote = `Quote ${n}`): ReplyAnnotation => ({
+    id: `a${n}`, sourceCommentId: "m1", sourceActorName: "Multica", quote, note: `Note ${n}`, start: n * 10, prefix: "", suffix: "",
+  });
+  const scope = (extra: Partial<NonNullable<React.ComponentProps<typeof ChatInput>["annotationScope"]>> = {}) =>
+    ({ draftKey, onEditAnnotation: () => true, ...extra });
+  beforeEach(() => {
+    useCommentDraftStore.setState({ drafts: {} });
+    useCommentDraftStore.getState().addAnnotation(draftKey, annotation(1, "The delay (fixed) is 5 s."));
+    useCommentDraftStore.getState().addAnnotation(draftKey, annotation(2));
+  });
+
+  it("shows a count above the composer only when a scope and comments exist", () => {
+    const { unmount } = renderInput({ annotationScope: scope() });
+    expect(screen.getByRole("button", { name: "2 comments" })).toBeInTheDocument();
+    unmount();
+    renderInput();
+    expect(screen.queryByRole("button", { name: /comments?$/ })).not.toBeInTheDocument();
+  });
+
+  it("sends the comments as readable Markdown quotes above the typed text", async () => {
+    const { onSend } = renderInput({ annotationScope: scope() });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "Go with 15 s." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend.mock.calls[0]![0]).toBe(
+      "> The delay (fixed) is 5 s.\n\nNote 1\n\n&nbsp;\n\n> Quote 2\n\nNote 2\n\n---\n\nGo with 15 s.",
+    );
+  });
+
+  it("sends comments alone when no text is typed", async () => {
+    const { onSend } = renderInput({ annotationScope: scope() });
+    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend.mock.calls[0]![0]).toContain("> Quote 2\n\nNote 2");
+    expect(onSend.mock.calls[0]![0]).not.toContain("---");
+  });
+
+  it("clears the comments once the send is committed, and keeps them when it is rejected", async () => {
+    const rejected = vi.fn().mockResolvedValue(false);
+    const { onSend: _ignored, unmount } = renderInput({ annotationScope: scope(), onSend: rejected });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "Try" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(rejected).toHaveBeenCalledTimes(1));
+    expect(useCommentDraftStore.getState().getAnnotations(draftKey)).toHaveLength(2);
+    unmount();
+
+    const { onSend } = renderInput({ annotationScope: scope() });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "Go" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(useCommentDraftStore.getState().getAnnotations(draftKey)).toHaveLength(0));
+  });
+
+  it("leaves a slash command untouched and keeps the comments for the next message", async () => {
+    const { onSend } = renderInput({ annotationScope: scope() });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "/compact" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend.mock.calls[0]![0]).toBe("/compact");
+    expect(useCommentDraftStore.getState().getAnnotations(draftKey)).toHaveLength(2);
+  });
+
+  it("locks the count while the composer is disabled", () => {
+    renderInput({ annotationScope: scope(), disabled: true });
+    expect(screen.getByRole("button", { name: "2 comments" })).toBeDisabled();
+  });
+
+  it("returns focus to the composer when the last comment is removed", async () => {
+    useCommentDraftStore.getState().removeAnnotation(draftKey, "a2");
+    renderInput({ annotationScope: scope() });
+    fireEvent.click(screen.getByRole("button", { name: "1 comment" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Remove comment 1" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "1 comment" })).not.toBeInTheDocument());
+    expect(editorState.focused).toBeGreaterThan(0);
+  });
+});

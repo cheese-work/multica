@@ -32,6 +32,9 @@ import type { Attachment, Project } from "@multica/core/types";
 import { ProjectPicker } from "../../projects/components/project-picker";
 import { ClearablePillButton } from "../../common/pill-button";
 import { useT } from "../../i18n";
+import { useCommentDraftStore } from "@multica/core/issues/stores";
+import { EMPTY_REPLY_ANNOTATIONS, composeAnnotatedReply, hasReplyIntent } from "@multica/core/drafts/reply-annotation";
+import { ChatAnnotationChip, type ChatInputAnnotations } from "./chat-annotations";
 
 const logger = createLogger("chat.ui");
 const EMPTY_UPLOADS: DraftUpload[] = [];
@@ -58,6 +61,8 @@ function isAttachmentReferenced(content: string, attachment: Attachment): boolea
 }
 
 interface ChatInputProps {
+  /** Comments on agent replies for this DM. They are sent with the next message as quotes. */
+  annotationScope?: ChatInputAnnotations;
   onRename?: (title: string) => Promise<boolean>;
   /**
    * Handles `/fork` (the server copies the DM — nothing is sent to the agent).
@@ -160,6 +165,7 @@ interface ChatInputProps {
 }
 
 export function ChatInput({
+  annotationScope,
   onSend,
   onRename,
   onFork,
@@ -250,7 +256,11 @@ export function ChatInput({
   // restored or parked one, or any persisted draft the user typed in another
   // session) still enables the button. A false enable costs nothing: handleSend
   // reads the live editor and bails when it is empty.
-  const hasNothingToSend = isEmpty && !inputDraft.trim();
+  const annotationKey = annotationScope?.draftKey;
+  const annotations = useCommentDraftStore((s) => (annotationKey ? s.getAnnotations(annotationKey) : EMPTY_REPLY_ANNOTATIONS));
+  // Ids of the comments folded into the message being sent. Only those are cleared on commit.
+  const sentAnnotationIdsRef = useRef<string[]>([]);
+  const hasNothingToSend = isEmpty && !inputDraft.trim() && !annotations.some((a) => a.note.trim());
   const appliedRestoreIdRef = useRef<string | null>(null);
   const appliedConversationStarterIdRef = useRef<number | null>(null);
   const editorKey = editorKeyOverride ?? CHAT_COMPOSER_EDITOR_KEY;
@@ -471,6 +481,16 @@ export function ChatInput({
     editorRef,
     uploadGate: gate,
     containerRef: composerRef,
+    normalize: (raw) => {
+      const text = raw.replace(/(\n\s*)+$/, "").trim();
+      const saved = annotationKey ? useCommentDraftStore.getState().getAnnotations(annotationKey) : EMPTY_REPLY_ANNOTATIONS;
+      sentAnnotationIdsRef.current = [];
+      // A slash command is not a message about a reply: leave it and the comments alone.
+      if (!saved.length || /^\/\S/.test(text)) return text;
+      if (!hasReplyIntent(text, saved)) return "";
+      sentAnnotationIdsRef.current = saved.filter((a) => a.note.trim()).map((a) => a.id);
+      return composeAnnotatedReply(text, saved, { plainQuotes: true });
+    },
     // Chat keeps the caret in the box after a send (the next turn is typed in
     // the same place), except when the commit left the editor alone — see
     // `editorScrubbedRef`.
@@ -553,6 +573,11 @@ export function ChatInput({
         // is on its way, but a draft replaced since the snapshot is NEWER work
         // and must not resurface as collateral.
         if (untouched) clearInputDraft(keyAtSend);
+        if (annotationKey) {
+          const store = useCommentDraftStore.getState();
+          for (const id of sentAnnotationIdsRef.current) store.removeAnnotation(annotationKey, id);
+          sentAnnotationIdsRef.current = [];
+        }
         for (const key of options?.extraDraftKeys ?? []) {
           if (key !== keyAtSend) clearInputDraft(key);
         }
@@ -698,6 +723,19 @@ export function ChatInput({
         noAgent && "cursor-not-allowed",
       )}
     >
+      {annotationScope && annotations.length > 0 && (
+        <div className={CHAT_COLUMN}>
+          <ChatAnnotationChip
+            draftKey={annotationScope.draftKey}
+            annotations={annotations}
+            disabled={!!disabled || !!noAgent}
+            onEditAnnotation={annotationScope.onEditAnnotation}
+            activeId={annotationScope.activeId}
+            onActiveChange={annotationScope.onActiveChange}
+            onEmpty={() => editorRef.current?.focus()}
+          />
+        </div>
+      )}
       <div
         data-slot="chat-input-surface"
         {...(uploadEnabled ? dropZoneProps : {})}
@@ -806,6 +844,7 @@ export function ChatInput({
         <div className="absolute bottom-1 right-1.5 flex items-center gap-1">
           <SubmitButton
             onClick={submit}
+            testId="chat-send-button"
             disabled={hasNothingToSend || submitting || !!disabled || !!noAgent}
             loading={submitting}
             busy={gate.uploading}

@@ -9,6 +9,15 @@ import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 import { useT } from "../../i18n";
 import { visibleRowRange } from "../lib/annotation-range";
 
+/** What the composer needs to show and send the comments of one DM draft. */
+export interface ChatInputAnnotations {
+  draftKey: CommentDraftKey;
+  /** Opens the note at its marker. False when the quoted text is no longer in the reply. */
+  onEditAnnotation: (id: string) => boolean;
+  activeId?: string | null;
+  onActiveChange?: (id: string | null) => void;
+}
+
 const focusRing = "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
 
 /**
