@@ -80,6 +80,7 @@ func registerListeners(bus *events.Bus, b realtime.Broadcaster) {
 	// Personal events should NOT be broadcast to the whole workspace.
 	personalEvents := map[string]bool{
 		protocol.EventInboxNew:           true,
+		protocol.EventInboxUpdated:       true,
 		protocol.EventInboxRead:          true,
 		protocol.EventInboxArchived:      true,
 		protocol.EventInboxUnarchived:    true,
@@ -104,19 +105,21 @@ func registerListeners(bus *events.Bus, b realtime.Broadcaster) {
 		b.SendToUser(recipientID, data)
 	}
 
-	// inbox:new — extract recipient from nested item
-	bus.Subscribe(protocol.EventInboxNew, func(e events.Event) {
-		payload, ok := e.Payload.(map[string]any)
-		if !ok {
-			return
-		}
-		item, ok := payload["item"].(map[string]any)
-		if !ok {
-			return
-		}
-		recipientID, _ := item["recipient_id"].(string)
-		sendToRecipient(b, e, recipientID)
-	})
+	// inbox:new / inbox:updated — extract recipient from nested item
+	for _, eventType := range []string{protocol.EventInboxNew, protocol.EventInboxUpdated} {
+		bus.Subscribe(eventType, func(e events.Event) {
+			payload, ok := e.Payload.(map[string]any)
+			if !ok {
+				return
+			}
+			item, ok := payload["item"].(map[string]any)
+			if !ok {
+				return
+			}
+			recipientID, _ := item["recipient_id"].(string)
+			sendToRecipient(b, e, recipientID)
+		})
+	}
 
 	// inbox:read, inbox:archived, inbox:unarchived, inbox:batch-read,
 	// inbox:batch-archived — extract recipient from top-level payload

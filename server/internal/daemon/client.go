@@ -271,7 +271,7 @@ func (c *Client) ResolveRemoteMCPCredential(ctx context.Context, daemonToken, ta
 // starvation; a claim that commits server-side after the client gives up is
 // recovered by ReclaimStaleDispatchedTasksForRuntimes on the next poll. Kept
 // comfortably above p99 claim latency so recovery stays the exception.
-const batchClaimRequestTimeout = 5 * time.Second
+const batchClaimRequestTimeout = protocol.DaemonBatchClaimRequestTimeout
 
 // claimTasksResult carries optional scheduling metadata understood only by
 // daemons advertising claim-poll-hints-v1. A zero-value result is deliberately
@@ -619,10 +619,10 @@ func (c *Client) ReportTaskMessages(ctx context.Context, taskID string, messages
 }
 
 func (c *Client) CompleteTask(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) error {
-	return c.completeTaskWithRetrySchedule(ctx, taskID, output, branchName, sessionID, workDir, sessionRolloutMissing, retiredSessionID, durableWorkDir, defaultTerminalRetrySchedule)
+	return c.completeTaskWithRetrySchedule(ctx, taskID, output, branchName, sessionID, workDir, sessionRolloutMissing, retiredSessionID, durableWorkDir, 0, 0, defaultTerminalRetrySchedule)
 }
 
-func (c *Client) completeTaskWithRetrySchedule(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string, schedule []time.Duration) error {
+func (c *Client) completeTaskWithRetrySchedule(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string, contextTokens, contextWindow int64, schedule []time.Duration) error {
 	body := map[string]any{"output": output}
 	if branchName != "" {
 		body["branch_name"] = branchName
@@ -641,6 +641,9 @@ func (c *Client) completeTaskWithRetrySchedule(ctx context.Context, taskID, outp
 	}
 	if retiredSessionID != "" {
 		body["retired_session_id"] = retiredSessionID
+	}
+	if contextTokens > 0 && contextWindow > 0 {
+		body["context"] = map[string]int64{"tokens": contextTokens, "window": contextWindow}
 	}
 	return c.postJSONWithRetry(ctx, fmt.Sprintf("/api/daemon/tasks/%s/complete", taskID), body, nil, schedule)
 }

@@ -25,7 +25,7 @@ RETURNING *;
 
 -- name: ArchiveContinuedChatSession :one
 UPDATE chat_session
-SET status = 'archived', continued_into_session_id = $2, updated_at = now()
+SET status = 'archived', continued_into_session_id = $2, pinned_at = NULL, updated_at = now()
 WHERE id = $1
 RETURNING *;
 
@@ -424,19 +424,24 @@ RETURNING *;
 -- list-ordering preference, not activity, so it must not bump the session's
 -- last-activity sort key (which would make an unpinned chat jump the list).
 -- pinned = true stamps pinned_at only when it was NULL, so re-pinning keeps
--- the original pin order; pinned = false clears it.
+-- the original pin order; pinned = false clears it. An archived chat is never
+-- pinned: a pin request on one matches no row (the caller answers 409), while
+-- an unpin still goes through.
 UPDATE chat_session
 SET pinned_at = CASE WHEN @pinned::bool THEN COALESCE(pinned_at, now()) ELSE NULL END
 WHERE id = $1
+  AND (NOT @pinned::bool OR status <> 'archived')
 RETURNING *;
 
 -- name: SetChatSessionArchived :one
 -- Archive/unarchive a chat session by flipping status between 'active' and
 -- 'archived'. Bumps updated_at so the row re-sorts on the receiving list. The
 -- send-message path refuses archived sessions (see SendChatMessage), so the
--- conversation is effectively read-only until it is unarchived.
+-- conversation is effectively read-only until it is unarchived. Archiving also
+-- clears the pin (archived means unpinned); unarchive leaves it unpinned.
 UPDATE chat_session
 SET status = CASE WHEN @archived::bool THEN 'archived' ELSE 'active' END,
+    pinned_at = CASE WHEN @archived::bool THEN NULL ELSE pinned_at END,
     updated_at = now()
 WHERE id = $1
 RETURNING *;
@@ -1292,6 +1297,46 @@ WHERE message.chat_session_id = $1
 ORDER BY message.created_at DESC, message.id DESC
 LIMIT $2;
 
+-- name: ListChatMessagesNewerPage :many
+-- Oldest-first page starting at (after_created_at, after_id), inclusive. Same
+-- member-visible rows as ListChatMessagesPage, with the onboarding kickoff
+-- filtered in SQL (the cursor page filters it in Go). A hidden anchor is
+-- therefore not the first row. Keep the queued follow-up selector identical to
+-- ListChatMessagesPage and to the DM search predicate in chat_search.go.
+SELECT message.* FROM chat_message AS message
+WHERE message.chat_session_id = $1
+  AND message.message_kind NOT IN ('channel_command', 'onboarding_kickoff')
+  AND NOT (
+    message.role = 'user'
+    AND EXISTS (
+      SELECT 1
+      FROM agent_task_queue AS task
+      WHERE task.chat_session_id = message.chat_session_id
+        AND task.status = 'queued'
+        AND task.id = message.task_id
+        AND task.id <> (
+          SELECT head.id
+          FROM agent_task_queue AS head
+          WHERE head.chat_session_id = $1
+            AND head.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+            AND head.regenerate_quick_actions_for IS NULL
+          ORDER BY
+            CASE
+              WHEN head.status IN ('dispatched', 'running', 'waiting_local_directory') THEN 0
+              WHEN head.status = 'deferred' THEN 1
+              ELSE 2
+            END,
+            head.priority DESC,
+            head.created_at ASC,
+            head.id ASC
+          LIMIT 1
+        )
+    )
+  )
+  AND (message.created_at, message.id) >= (sqlc.arg('after_created_at')::timestamptz, sqlc.arg('after_id')::uuid)
+ORDER BY message.created_at ASC, message.id ASC
+LIMIT $2;
+
 -- name: GetChatMessage :one
 SELECT * FROM chat_message
 WHERE id = $1;
@@ -1455,6 +1500,7 @@ WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
       AND NOT (COALESCE(error, '') ILIKE '%400%' AND COALESCE(error, '') ILIKE '%invalid_request_error%')
       AND NOT (COALESCE(error, '') ILIKE '%response protection is unavailable%')
       AND NOT (COALESCE(error, '') ILIKE '%agent executor error%' AND COALESCE(error, '') ILIKE '%requested entity was not found%')
+      AND NOT (COALESCE(error, '') ILIKE '%improperly formatted function call%')
       -- Mirrors the GetLastTaskSession auth-resolution guard: a provider that
       -- cannot resolve its auth method fails deterministically on resume, and
       -- the classification is agent_error.unknown (resume-safe), so only this
@@ -1992,3 +2038,53 @@ FROM usage
 CROSS JOIN models
 CROSS JOIN runs
 CROSS JOIN messages;
+
+-- name: MarkChatTaskCompact :one
+-- CHE-1807: flags a chat task as a compaction run. An automatic compaction
+-- carries the server-built reason and the prompt size that triggered it; a
+-- manual /compact carries neither.
+UPDATE agent_task_queue
+SET task_kind = 'compact',
+    compact_reason = sqlc.narg('compact_reason'),
+    compact_trigger_tokens = sqlc.narg('compact_trigger_tokens')
+WHERE id = $1
+RETURNING *;
+
+-- name: HasActiveCompactionTaskForSession :one
+-- True while a compaction task (manual or automatic) is in any of the five
+-- states HasActiveChatTaskForSession treats as active. Deferred and
+-- waiting_local_directory are included: a send must not pass, and a second
+-- compaction must not queue, while a retry or a local-directory wait is armed.
+SELECT EXISTS (
+  SELECT 1 FROM agent_task_queue
+  WHERE chat_session_id = $1
+    AND task_kind = 'compact'
+    AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+) AS compacting;
+
+-- name: GetLastAutoCompactTriggerForSession :one
+-- Prompt size that triggered the most recent automatic compaction of a DM, for
+-- the 1.1x re-arm rule after a failed attempt. Manual compactions carry no
+-- trigger size and are ignored.
+SELECT compact_trigger_tokens FROM agent_task_queue
+WHERE chat_session_id = $1
+  AND task_kind = 'compact'
+  AND compact_trigger_tokens IS NOT NULL
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
+
+-- name: ListCompactingChatSessionIDs :many
+SELECT DISTINCT chat_session_id FROM agent_task_queue
+WHERE chat_session_id = ANY($1::uuid[])
+  AND task_kind = 'compact'
+  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred');
+
+-- name: ListLatestRunContextForChatSessions :many
+-- CHE-1808: the context meter reads the LATEST completed run of each DM. A run
+-- that reported nothing stays in the result with NULL columns, so the meter
+-- hides instead of showing an older run's stale numbers.
+SELECT DISTINCT ON (chat_session_id) chat_session_id, context_tokens, context_window
+FROM agent_task_queue
+WHERE chat_session_id = ANY($1::uuid[])
+  AND status = 'completed'
+ORDER BY chat_session_id, completed_at DESC, id DESC;

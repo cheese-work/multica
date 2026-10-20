@@ -146,10 +146,12 @@ Three properties are worth knowing because the old flow lacked them:
   `destroy` consumes the database, profile, daemon task workspaces, Desktop
   userData and slot. If any deletion fails, it keeps the manifest and exits
   non-zero so cleanup can be retried instead of losing the deletion recipe.
-- **Temporary environments have a best-effort fallback.** `make up
-  ARGS=--ephemeral` records a 24-hour TTL. The next `make up` automatically
-  collects expired and directory-less environments; `make gc` runs the same
-  collection explicitly.
+- **Temporary environments are collected on request.** `make up
+  ARGS=--ephemeral` records a 24-hour TTL. `make up` lists expired and
+  directory-less environments but never deletes them, because collection
+  destroys their profile, daemon workspaces, Desktop userData and database.
+  Run `make gc`, or `make up ARGS=--gc`, to collect them; `make gc ARGS=--dry-run`
+  only reports.
 
 Run any command inside an environment's variables without repeating them:
 

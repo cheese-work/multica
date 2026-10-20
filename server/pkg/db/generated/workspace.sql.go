@@ -500,20 +500,44 @@ func (q *Queries) LockWorkspaceForJevCredentialWrite(ctx context.Context, id pgt
 	return id_2, err
 }
 
+const lockWorkspaceSettings = `-- name: LockWorkspaceSettings :one
+SELECT settings FROM workspace
+WHERE id = $1
+FOR UPDATE
+`
+
+// CHE-1727: a settings write reads, reconciles and writes the blob under this
+// lock, so a concurrent pause flip cannot be overwritten by a stale save.
+func (q *Queries) LockWorkspaceSettings(ctx context.Context, id pgtype.UUID) ([]byte, error) {
+	row := q.db.QueryRow(ctx, lockWorkspaceSettings, id)
+	var settings []byte
+	err := row.Scan(&settings)
+	return settings, err
+}
+
 const updateWorkspace = `-- name: UpdateWorkspace :one
 UPDATE workspace SET
     name = COALESCE($2, name),
     description = COALESCE($3, description),
     context = COALESCE($4, context),
     -- CHE-1612: compact_prompt patches one settings key; every other key survives.
-    settings = CASE
-        WHEN $5::bool THEN COALESCE($6::jsonb, settings) - 'compact_prompt'
-        WHEN $7::text IS NOT NULL THEN jsonb_set(COALESCE($6::jsonb, settings), '{compact_prompt}', to_jsonb($7::text))
-        ELSE COALESCE($6::jsonb, settings)
-    END,
-    repos = COALESCE($8, repos),
-    issue_prefix = COALESCE($9, issue_prefix),
-    avatar_url = COALESCE($10, avatar_url),
+    -- CHE-1806: auto_compact patches one settings key the same way, merging the
+    -- named fields into the saved object so an unnamed field keeps its value.
+    settings = (
+        SELECT CASE
+            WHEN $5::bool THEN base.v - 'auto_compact'
+            WHEN $6::jsonb IS NOT NULL THEN jsonb_set(base.v, '{auto_compact}', COALESCE(base.v -> 'auto_compact', '{}'::jsonb) || $6::jsonb)
+            ELSE base.v
+        END
+        FROM (SELECT CASE
+            WHEN $7::bool THEN COALESCE($8::jsonb, settings) - 'compact_prompt'
+            WHEN $9::text IS NOT NULL THEN jsonb_set(COALESCE($8::jsonb, settings), '{compact_prompt}', to_jsonb($9::text))
+            ELSE COALESCE($8::jsonb, settings)
+        END AS v) AS base
+    ),
+    repos = COALESCE($10, repos),
+    issue_prefix = COALESCE($11, issue_prefix),
+    avatar_url = COALESCE($12, avatar_url),
     updated_at = now()
 WHERE id = $1
 RETURNING id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days
@@ -524,6 +548,8 @@ type UpdateWorkspaceParams struct {
 	Name               pgtype.Text `json:"name"`
 	Description        pgtype.Text `json:"description"`
 	Context            pgtype.Text `json:"context"`
+	AutoCompactReset   pgtype.Bool `json:"auto_compact_reset"`
+	AutoCompact        []byte      `json:"auto_compact"`
 	CompactPromptReset pgtype.Bool `json:"compact_prompt_reset"`
 	Settings           []byte      `json:"settings"`
 	CompactPrompt      pgtype.Text `json:"compact_prompt"`
@@ -538,6 +564,8 @@ func (q *Queries) UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams
 		arg.Name,
 		arg.Description,
 		arg.Context,
+		arg.AutoCompactReset,
+		arg.AutoCompact,
 		arg.CompactPromptReset,
 		arg.Settings,
 		arg.CompactPrompt,

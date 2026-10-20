@@ -126,6 +126,9 @@ interface ChatInputProps {
    *  one, both are true and "create an agent" would be the wrong instruction. */
   agentAccessRevoked?: boolean;
   agentRuntimeRequired?: boolean;
+  /** True while the DM is being compacted: `disabled` is set by the owner, and
+   *  this swaps the placeholder to name the reason. The draft is kept. */
+  compacting?: boolean;
   /** Name of the currently selected agent, used in the placeholder. */
   agentName?: string;
   /** Rendered at the bottom-left of the input bar — typically the agent picker. */
@@ -173,6 +176,7 @@ export function ChatInput({
   agentArchived,
   agentAccessRevoked,
   agentRuntimeRequired,
+  compacting,
   agentName,
   leftAdornment,
   contextItems,
@@ -649,6 +653,8 @@ export function ChatInput({
     ? t(($) => $.input.placeholder_access_revoked)
     : noAgent
     ? t(($) => $.input.placeholder_no_agent)
+    : compacting
+    ? t(($) => $.input.placeholder_compacting)
     : disabled
       ? agentArchived
         ? t(($) => $.input.placeholder_archived_agent)
@@ -813,10 +819,13 @@ export function ChatInput({
             // upload blocks submit, so it also falls back to Stop rather than
             // removing chat's only cancellation path; the attachment node
             // remains the visible upload-progress surface in the editor.
+            // While the DM compacts the composer cannot send (queued or not), so
+            // Stop is the only available action whatever the draft holds.
             running={
               !!isRunning &&
-              !isForkInput &&
-              (!allowSubmitWhileRunning || hasNothingToSend || gate.uploading)
+              (!!compacting ||
+                (!isForkInput &&
+                  (!allowSubmitWhileRunning || hasNothingToSend || gate.uploading)))
             }
             onStop={onStop}
             tooltip={gate.uploading

@@ -14,11 +14,15 @@ let pending = false;
 let wakeup: IssueWakeup;
 let status = "queued";
 let viewTZ = "UTC";
+let settings: Record<string, unknown> = {};
 vi.mock("./wakeup-condition-names", () => ({
   useConditionNames: () => ({ status: (key: string) => key, label: () => undefined, property: () => undefined, actor: (_type: string, id: string) => id }),
 }));
 vi.mock("@multica/core/paths", () => ({
-  useCurrentWorkspace: () => ({ id: "ws" }),
+  useCurrentWorkspace: () => ({ id: "ws", settings }),
+}));
+vi.mock("@multica/core/workspace/queries", () => ({
+  memberListOptions: () => ({ queryKey: ["members"] }),
 }));
 vi.mock("@multica/core/issues", () => ({
   issueWakeupsOptions: () => ({ queryKey: ["wakeups"] }),
@@ -43,7 +47,9 @@ vi.mock("@tanstack/react-query", () => ({
             ? [{ id: "task", status }]
             : queryKey[0] === "runs"
               ? runs
-              : [],
+              : queryKey[0] === "members"
+                ? [{ user_id: "u", name: "Ada" }]
+                : [],
   }),
 }));
 vi.mock("../../common/use-viewing-timezone", () => ({
@@ -66,6 +72,7 @@ beforeEach(() => {
   pending = false;
   status = "queued";
   viewTZ = "UTC";
+  settings = {};
   wakeup = {
     id: "wake",
     revision: 2,
@@ -89,6 +96,22 @@ beforeEach(() => {
   };
 });
 describe("Wakeups sidebar", () => {
+  it("says so in the panel when the workspace paused its wakeups", () => {
+    settings = { wakeups_paused: true, wakeups_paused_by: "u", wakeups_paused_at: "2026-10-15T08:00:00Z" };
+    renderWithI18n(<WakeupsSection issueId="issue" />);
+    expect(screen.getByText(/Wakeups paused by Ada at /)).toBeVisible();
+  });
+  it("shows the panel banner in the warning tone (approved rev-3 A)", () => {
+    settings = { wakeups_paused: true, wakeups_paused_by: "u", wakeups_paused_at: "2026-10-15T08:00:00Z" };
+    renderWithI18n(<WakeupsSection issueId="issue" />);
+    const banner = screen.getByTestId("wakeups-paused-banner");
+    expect(banner).toHaveClass("bg-warning/10", "border-warning/30", "text-foreground");
+    expect(banner).not.toHaveClass("bg-muted/60");
+  });
+  it("shows no pause banner while the workspace is running", () => {
+    renderWithI18n(<WakeupsSection issueId="issue" />);
+    expect(screen.queryByText(/Wakeups paused/)).toBeNull();
+  });
   it("describes hourly schedules without exposing interval seconds", () => {
     renderWithI18n(<WakeupsSection issueId="issue" />, { locale: "zh-Hans" });
     expect(screen.getByRole("button", { name: /唤醒 Emacs/ })).toHaveTextContent("每小时唤醒");

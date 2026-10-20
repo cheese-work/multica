@@ -222,6 +222,14 @@ func runIssueWakeup(cmd *cobra.Command, args []string, action string) error {
 	if err != nil {
 		return err
 	}
+	if row, ok := result.(map[string]any); ok {
+		// The server saved the wakeup but its workspace has paused firing.
+		if warnings, ok := row["warnings"].([]any); ok {
+			for _, warning := range warnings {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v: wakeups in this workspace are paused and will not fire until an admin resumes them\n", warning)
+			}
+		}
+	}
 	output, _ := cmd.Flags().GetString("output")
 	if output == "table" {
 		rows := []map[string]any{}

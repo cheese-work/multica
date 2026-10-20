@@ -335,6 +335,14 @@ type UpdateWorkspaceRequest struct {
 	// it to the built-in default. Raw so an explicit null is distinguishable
 	// from an absent key.
 	CompactPrompt json.RawMessage `json:"compact_prompt"`
+	// WakeupsPaused flips the workspace wakeup pause alone (CHE-1727). The
+	// server applies it to the settings it reads under the workspace lock, so a
+	// client never sends, and never overwrites with, a snapshot of the blob.
+	WakeupsPaused *bool `json:"wakeups_paused"`
+	// AutoCompact patches settings.auto_compact alone (CHE-1806): named fields
+	// overwrite, absent fields keep their saved value, null resets to the
+	// defaults. Raw for the same reason as CompactPrompt.
+	AutoCompact json.RawMessage `json:"auto_compact"`
 
 	// ExpectedBeforeDigest drives two guarded paths: CHE-764's Hermes
 	// exception (hermesExceptionMatchesWorkspaceContext: this exact
@@ -488,23 +496,12 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		params.Context = pgtype.Text{String: *req.Context, Valid: true}
 	}
 	if req.Settings != nil {
-		if err := validateCompactPromptConfig(req.Settings); err != nil {
+		// What depends on the stored settings (the pause guard, the PR merge
+		// switch) is decided under the workspace row lock in saveWorkspace.
+		if err := validateCompactConfig(req.Settings); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if incoming, ok := req.Settings.(map[string]any); ok {
-			// Only an old client's flip of the retired PR switch needs the
-			// stored value; see reconcilePRMergeSettings.
-			var stored map[string]any
-			if _, sent := incoming[prAutoCompleteLegacyKey]; sent {
-				if existing, err := h.Queries.GetWorkspace(r.Context(), idUUID); err == nil {
-					_ = json.Unmarshal(existing.Settings, &stored)
-				}
-			}
-			reconcilePRMergeSettings(stored, incoming)
-		}
-		s, _ := json.Marshal(req.Settings)
-		params.Settings = s
 	}
 	if req.CompactPrompt != nil {
 		// Only a literal null resets; a value that fails to decode (1e400)
@@ -522,6 +519,24 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 			params.CompactPrompt = pgtype.Text{String: text, Valid: true}
 		} else {
 			params.CompactPromptReset = pgtype.Bool{Bool: true, Valid: true}
+		}
+	}
+	if req.AutoCompact != nil {
+		var incoming any
+		err := json.Unmarshal(req.AutoCompact, &incoming)
+		if err != nil {
+			err = errAutoCompactShape
+		} else {
+			err = validateAutoCompactConfig(map[string]any{"auto_compact": incoming})
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if incoming == nil {
+			params.AutoCompactReset = pgtype.Bool{Bool: true, Valid: true}
+		} else {
+			params.AutoCompact = req.AutoCompact
 		}
 	}
 	if req.Repos != nil {
@@ -557,7 +572,12 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		params.AvatarUrl = pgtype.Text{String: accepted, Valid: true}
 	}
 
-	ws, err := h.Queries.UpdateWorkspace(r.Context(), params)
+	ws, pauseAction, activity, err := h.saveWorkspace(r.Context(), params, req.Settings, req.WakeupsPaused, requestUserID(r), actorType, actorID)
+	var rejected settingsRejectedError
+	if errors.As(err, &rejected) {
+		writeError(w, http.StatusBadRequest, rejected.Error())
+		return
+	}
 	if err != nil {
 		slog.Warn("update workspace failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", id)...)
 		writeError(w, http.StatusInternalServerError, "failed to update workspace")
@@ -565,6 +585,9 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("workspace updated", append(logger.RequestAttrs(r), "workspace_id", id)...)
+	if pauseAction != "" {
+		h.publishWakeupsPauseActivity(ws, actorType, actorID, activity)
+	}
 	userID := requestUserID(r)
 	h.publish(protocol.EventWorkspaceUpdated, uuidToString(ws.ID), "member", userID, map[string]any{"workspace": h.workspaceToResponse(ws)})
 	// A rename changes what daemons display; a settings edit changes how they
@@ -800,6 +823,7 @@ func (h *Handler) DeleteMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to delete member")
 		return
 	}
+	h.Hub.DisconnectMember(uuidToString(target.WorkspaceID), uuidToString(target.UserID), uuidToString(target.ID))
 	h.settleMemberCapacityRelease(r.Context(), uuid.UUID(target.WorkspaceID.Bytes), uuid.UUID(target.ID.Bytes))
 
 	h.MembershipCache.Invalidate(r.Context(), uuidToString(target.UserID), workspaceID)
@@ -844,6 +868,7 @@ func (h *Handler) LeaveWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to leave workspace")
 		return
 	}
+	h.Hub.DisconnectMember(uuidToString(member.WorkspaceID), uuidToString(member.UserID), uuidToString(member.ID))
 	h.settleMemberCapacityRelease(r.Context(), uuid.UUID(member.WorkspaceID.Bytes), uuid.UUID(member.ID.Bytes))
 
 	h.MembershipCache.Invalidate(r.Context(), uuidToString(member.UserID), workspaceID)
@@ -1395,6 +1420,14 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			name: "delete issue statuses",
 			run: func() error {
 				return qtx.DeleteIssueStatusEntriesForWorkspace(ctx, requester.WorkspaceID)
+			},
+		},
+		{
+			// issue_workflow references the status catalog and projects by
+			// value only, so it is swept alongside the catalog. (MUL-7420)
+			name: "delete issue workflows",
+			run: func() error {
+				return qtx.DeleteIssueWorkflowsForWorkspace(ctx, requester.WorkspaceID)
 			},
 		},
 		{

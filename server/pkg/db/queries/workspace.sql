@@ -81,17 +81,33 @@ UPDATE workspace SET
     description = COALESCE(sqlc.narg('description'), description),
     context = COALESCE(sqlc.narg('context'), context),
     -- CHE-1612: compact_prompt patches one settings key; every other key survives.
-    settings = CASE
-        WHEN sqlc.narg('compact_prompt_reset')::bool THEN COALESCE(sqlc.narg('settings')::jsonb, settings) - 'compact_prompt'
-        WHEN sqlc.narg('compact_prompt')::text IS NOT NULL THEN jsonb_set(COALESCE(sqlc.narg('settings')::jsonb, settings), '{compact_prompt}', to_jsonb(sqlc.narg('compact_prompt')::text))
-        ELSE COALESCE(sqlc.narg('settings')::jsonb, settings)
-    END,
+    -- CHE-1806: auto_compact patches one settings key the same way, merging the
+    -- named fields into the saved object so an unnamed field keeps its value.
+    settings = (
+        SELECT CASE
+            WHEN sqlc.narg('auto_compact_reset')::bool THEN base.v - 'auto_compact'
+            WHEN sqlc.narg('auto_compact')::jsonb IS NOT NULL THEN jsonb_set(base.v, '{auto_compact}', COALESCE(base.v -> 'auto_compact', '{}'::jsonb) || sqlc.narg('auto_compact')::jsonb)
+            ELSE base.v
+        END
+        FROM (SELECT CASE
+            WHEN sqlc.narg('compact_prompt_reset')::bool THEN COALESCE(sqlc.narg('settings')::jsonb, settings) - 'compact_prompt'
+            WHEN sqlc.narg('compact_prompt')::text IS NOT NULL THEN jsonb_set(COALESCE(sqlc.narg('settings')::jsonb, settings), '{compact_prompt}', to_jsonb(sqlc.narg('compact_prompt')::text))
+            ELSE COALESCE(sqlc.narg('settings')::jsonb, settings)
+        END AS v) AS base
+    ),
     repos = COALESCE(sqlc.narg('repos'), repos),
     issue_prefix = COALESCE(sqlc.narg('issue_prefix'), issue_prefix),
     avatar_url = COALESCE(sqlc.narg('avatar_url'), avatar_url),
     updated_at = now()
 WHERE id = $1
 RETURNING *;
+
+-- name: LockWorkspaceSettings :one
+-- CHE-1727: a settings write reads, reconciles and writes the blob under this
+-- lock, so a concurrent pause flip cannot be overwritten by a stale save.
+SELECT settings FROM workspace
+WHERE id = $1
+FOR UPDATE;
 
 -- name: IncrementIssueCounter :one
 UPDATE workspace SET issue_counter = issue_counter + 1

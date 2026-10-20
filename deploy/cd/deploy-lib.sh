@@ -96,6 +96,28 @@ compose() {
   (cd "$compose_dir" && docker compose "${f_args[@]}" "$@")
 }
 
+# env_setting prints the value Compose would substitute for VAR: the calling
+# environment first, then the last assignment in $compose_dir/.env (optional
+# `export`, surrounding quotes or a trailing ` #` comment removed). A controller
+# started CD-style (`. ./.env` without export) cannot see .env through its
+# environment, so it reads the file the way Compose does. Empty when unset.
+env_setting() {
+  local var=$1 line
+  if [ -n "${!var:-}" ]; then
+    printf '%s' "${!var}"
+    return 0
+  fi
+  [ -f "$compose_dir/.env" ] || return 0
+  line="$(grep -E "^[[:space:]]*(export[[:space:]]+)?${var}=" "$compose_dir/.env" | tail -n 1)" || return 0
+  line="${line#*=}"
+  case "$line" in
+    \"*) line="${line#\"}"; line="${line%%\"*}" ;;
+    \'*) line="${line#\'}"; line="${line%%\'*}" ;;
+    *) line="${line%%[[:space:]]#*}"; line="${line%"${line##*[![:space:]]}"}" ;;
+  esac
+  printf '%s' "$line"
+}
+
 # service_published_port asks Compose what host port it actually published
 # for the given service's container port, the same way the repo's own
 # selfhost installers and `make selfhost` already do (see the port-alias

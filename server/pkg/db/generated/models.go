@@ -178,6 +178,12 @@ type AgentTaskQueue struct {
 	CancelledByID             pgtype.UUID `json:"cancelled_by_id"`
 	CancelledByName           pgtype.Text `json:"cancelled_by_name"`
 	IssueSnapshot             []byte      `json:"issue_snapshot"`
+	ContextTokens             pgtype.Int8 `json:"context_tokens"`
+	ContextWindow             pgtype.Int8 `json:"context_window"`
+	TaskKind                  pgtype.Text `json:"task_kind"`
+	CompactReason             pgtype.Text `json:"compact_reason"`
+	CompactTriggerTokens      pgtype.Int8 `json:"compact_trigger_tokens"`
+	WorkflowStep              pgtype.Text `json:"workflow_step"`
 }
 
 type AgentToLabel struct {
@@ -1152,6 +1158,10 @@ type InboxItem struct {
 	ActorType     pgtype.Text        `json:"actor_type"`
 	ActorID       pgtype.UUID        `json:"actor_id"`
 	Details       []byte             `json:"details"`
+	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
+	ChatMessageID pgtype.UUID        `json:"chat_message_id"`
+	DedupeKey     pgtype.Text        `json:"dedupe_key"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 }
 
 type InstanceTelemetryState struct {
@@ -1476,6 +1486,18 @@ type IssueWakeupReceipt struct {
 	DeferredAt  pgtype.Timestamptz `json:"deferred_at"`
 }
 
+type IssueWorkflow struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	Name             string             `json:"name"`
+	Description      string             `json:"description"`
+	InitialStatusKey string             `json:"initial_status_key"`
+	Steps            []byte             `json:"steps"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	IsDefault        bool               `json:"is_default"`
+}
+
 type LarkBindingToken struct {
 	TokenHash      string             `json:"token_hash"`
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
@@ -1584,6 +1606,16 @@ type Member struct {
 	UserID      pgtype.UUID        `json:"user_id"`
 	Role        string             `json:"role"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type NotificationChannelPreference struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	UserID      pgtype.UUID        `json:"user_id"`
+	Source      string             `json:"source"`
+	Channel     string             `json:"channel"`
+	Enabled     bool               `json:"enabled"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 }
 
 type NotificationPreference struct {
@@ -1731,6 +1763,7 @@ type Project struct {
 	Priority    string             `json:"priority"`
 	StartDate   pgtype.Date        `json:"start_date"`
 	DueDate     pgtype.Date        `json:"due_date"`
+	WorkflowID  pgtype.UUID        `json:"workflow_id"`
 }
 
 type ProjectResource struct {

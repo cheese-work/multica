@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/dmnotify"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -32,6 +33,9 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 	workspaceID := ctxWorkspaceID(r.Context())
 	sessionID := chi.URLParam(r, "sessionId")
 	var session db.ChatSession
+	// compactReason is the server-built reason of an automatic compaction: it
+	// leads the new DM's summary so the person sees why the DM moved.
+	var compactReason string
 	if r.Header.Get("X-Actor-Source") == "task_token" {
 		taskID, err := util.ParseUUID(r.Header.Get("X-Task-ID"))
 		if err != nil {
@@ -52,6 +56,7 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, "task does not belong to this chat session")
 			return
 		}
+		compactReason = task.CompactReason.String
 	} else {
 		if r.Header.Get("X-Agent-ID") != "" {
 			writeError(w, http.StatusForbidden, "only the session human or its chat task can continue")
@@ -132,7 +137,7 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		summary, err = qtx.CreateChatMessage(r.Context(), db.CreateChatMessageParams{
 			ID: dbid.NewV7(), ChatSessionID: next.ID, Role: "assistant",
-			Content:     strings.TrimSpace(redact.Text(request.Summary)) + fmt.Sprintf("\n\n[Previous DM](%s)", chatURL(session.ID)),
+			Content:     compactSummaryContent(compactReason, request.Summary, chatURL(session.ID)),
 			MessageKind: pgtype.Text{String: protocol.ChatMessageKindContinuationSummary, Valid: true},
 		})
 	}
@@ -144,6 +149,19 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		session, err = qtx.ArchiveContinuedChatSession(r.Context(), db.ArchiveContinuedChatSessionParams{ID: session.ID, ContinuedIntoSessionID: next.ID})
 	}
+	// An agent rollover archives the DM the run was replying in, so that reply
+	// cannot notify. The summary is the agent's message: notify in the new DM.
+	// A continue the DM creator submitted stays silent.
+	// The archived source DM gets no more notifications, so the ones it already
+	// raised close with it, whoever asked for the continuation.
+	var closedRecords []db.InboxItem
+	if err == nil {
+		closedRecords, err = qtx.MarkDMRepliesRead(r.Context(), db.MarkDMRepliesReadParams{ChatSessionID: session.ID, RecipientID: session.CreatorID})
+	}
+	var dmNotified *dmnotify.Notified
+	if err == nil && r.Header.Get("X-Actor-Source") == "task_token" {
+		dmNotified, err = dmnotify.Reply(r.Context(), qtx, next.ID, summary)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to continue chat session")
 		return
@@ -152,14 +170,27 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to commit continuation")
 		return
 	}
+	dmnotify.Publish(h.Bus, dmNotified)
 	creatorID := uuidToString(session.CreatorID)
+	h.publishDMRepliesRead(workspaceID, creatorID, closedRecords)
 	h.publishChat(protocol.EventChatSessionCreated, workspaceID, "member", creatorID, uuidToString(next.ID), protocol.ChatSessionCreatedPayload{
 		WorkspaceID: workspaceID, ChatSessionID: uuidToString(next.ID), AgentID: uuidToString(next.AgentID), CreatorID: creatorID, Title: next.Title,
 	})
 	status := session.Status
+	pinned := session.PinnedAt.Valid
 	h.publishChat(protocol.EventChatSessionUpdated, workspaceID, "member", creatorID, uuidToString(session.ID), protocol.ChatSessionUpdatedPayload{
-		ChatSessionID: uuidToString(session.ID), Title: session.Title, Status: &status,
+		ChatSessionID: uuidToString(session.ID), Title: session.Title, Status: &status, Pinned: &pinned,
 		UpdatedAt: timestampToString(session.UpdatedAt), ContinuedIntoSessionID: uuidToString(next.ID),
 	})
 	writeJSON(w, http.StatusCreated, ChatContinueResponse{Session: chatSessionToResponse(next), PreviousSessionID: uuidToString(session.ID), URL: chatURL(next.ID)})
+}
+
+// compactSummaryContent is the new DM's first message: the agent's summary and
+// the link back, led by the automatic compaction's reason when there is one.
+func compactSummaryContent(reason, summary, previousURL string) string {
+	content := strings.TrimSpace(redact.Text(summary)) + fmt.Sprintf("\n\n[Previous DM](%s)", previousURL)
+	if reason == "" {
+		return content
+	}
+	return reason + "\n\n" + content
 }

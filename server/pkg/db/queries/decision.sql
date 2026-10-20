@@ -140,8 +140,7 @@ WHERE request.workspace_id = sqlc.arg('workspace_id') AND (
     (request.status = 'open' AND request.chat_session_id = sqlc.arg('session_id'))
     OR EXISTS (
         SELECT 1 FROM decision_answer answer
-        JOIN chat_message message ON message.id = ANY(answer.chat_message_ids)
-        WHERE answer.decision_request_id = request.id AND message.chat_session_id = sqlc.arg('session_id')
+        WHERE answer.decision_request_id = request.id AND answer.source_chat_session_id = sqlc.arg('session_id')
     )
 )
 ORDER BY issue_key;

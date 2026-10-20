@@ -20,9 +20,11 @@ import (
 	"github.com/multica-ai/multica/server/internal/attribution"
 	"github.com/multica-ai/multica/server/internal/chattitle"
 	"github.com/multica-ai/multica/server/internal/commentguard"
+	"github.com/multica-ai/multica/server/internal/dmnotify"
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
+	"github.com/multica-ai/multica/server/internal/inbox"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/realtime"
@@ -1289,15 +1291,23 @@ func (s *TaskService) enqueueIssueTask(ctx context.Context, issue db.Issue, trig
 }
 
 func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, fireAt pgtype.Timestamptz, origin RunOrigin) (db.AgentTaskQueue, error) {
+	task, err := s.enqueueIssueTaskWithQueries(ctx, s.Queries, issue, triggerCommentID, coalescedCommentIDs, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, fireAt, origin)
+	if err == nil && !fireAt.Valid {
+		s.PublishTaskEnqueued(ctx, task)
+	}
+	return task, err
+}
+
+func (s *TaskService) enqueueIssueTaskWithQueries(ctx context.Context, queries *db.Queries, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, fireAt pgtype.Timestamptz, origin RunOrigin) (db.AgentTaskQueue, error) {
 	if !issue.AssigneeID.Valid {
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "issue has no assignee")
 		return db.AgentTaskQueue{}, fmt.Errorf("issue has no assignee")
 	}
-	if err := guardIssueNotInTriage(ctx, s.Queries, issue.ID, origin); err != nil {
+	if err := guardIssueNotInTriage(ctx, queries, issue.ID, origin); err != nil {
 		return db.AgentTaskQueue{}, err
 	}
 
-	agent, err := s.Queries.GetAgent(ctx, issue.AssigneeID)
+	agent, err := queries.GetAgent(ctx, issue.AssigneeID)
 	if err != nil {
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", err)
 		return db.AgentTaskQueue{}, fmt.Errorf("load agent: %w", err)
@@ -1354,7 +1364,7 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 	}
 	var task db.AgentTaskQueue
 	if fireAt.Valid {
-		task, err = s.Queries.CreateDeferredChannelIssueTask(ctx, db.CreateDeferredChannelIssueTaskParams{
+		task, err = queries.CreateDeferredChannelIssueTask(ctx, db.CreateDeferredChannelIssueTaskParams{
 			ID:                   dbid.NewV7(),
 			AgentID:              createParams.AgentID,
 			RuntimeID:            createParams.RuntimeID,
@@ -1381,7 +1391,7 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 			FireAt:               fireAt,
 		})
 	} else {
-		task, err = s.Queries.CreateAgentTask(ctx, createParams)
+		task, err = queries.CreateAgentTask(ctx, createParams)
 	}
 	if err != nil {
 		// A concurrent enqueue for the same (issue, agent) won the race and the
@@ -1404,18 +1414,19 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 		"agent_id", util.UUIDToString(issue.AssigneeID),
 		"force_fresh_session", forceFreshSession,
 	)
-	if fireAt.Valid {
-		return task, nil
+	return task, nil
+}
+
+func (s *TaskService) EnqueueDecisionTaskInTx(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, squadID, triggerCommentID pgtype.UUID, commentIDs []pgtype.UUID, handoff string) (db.AgentTaskQueue, error) {
+	if squadID.Valid {
+		return s.enqueueMentionTaskWithQueries(ctx, queries, issue, agentID, triggerCommentID, commentIDs, true, squadID, false, handoff, pgtype.UUID{}, pgtype.UUID{}, OriginDerived)
 	}
-	// Order matters: broadcast first, notify daemon second. notifyTaskAvailable
-	// kicks an in-process channel that the daemon picks up over HTTP and
-	// claims; the claim path then emits its own task:dispatch. Doing the
-	// queued broadcast afterwards risks the dispatch event reaching clients
-	// before the queued one (rare but unsafe-by-construction). Publishing
-	// in the desired observe-order makes correctness independent of timing.
+	return s.enqueueIssueTaskWithQueries(ctx, queries, issue, triggerCommentID, commentIDs, false, handoff, pgtype.UUID{}, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived)
+}
+
+func (s *TaskService) PublishTaskEnqueued(ctx context.Context, task db.AgentTaskQueue) {
 	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
 	s.NotifyTaskEnqueued(ctx, task)
-	return task, nil
 }
 
 // EnqueueTaskForMention creates a queued task for a mentioned agent on an issue.
@@ -1472,10 +1483,18 @@ func (s *TaskService) enqueueMentionTask(ctx context.Context, issue db.Issue, ag
 }
 
 func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin) (db.AgentTaskQueue, error) {
-	if err := guardIssueNotInTriage(ctx, s.Queries, issue.ID, origin); err != nil {
+	task, err := s.enqueueMentionTaskWithQueries(ctx, s.Queries, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, origin)
+	if err == nil {
+		s.PublishTaskEnqueued(ctx, task)
+	}
+	return task, err
+}
+
+func (s *TaskService) enqueueMentionTaskWithQueries(ctx context.Context, queries *db.Queries, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin) (db.AgentTaskQueue, error) {
+	if err := guardIssueNotInTriage(ctx, queries, issue.ID, origin); err != nil {
 		return db.AgentTaskQueue{}, err
 	}
-	agent, err := s.Queries.GetAgent(ctx, agentID)
+	agent, err := queries.GetAgent(ctx, agentID)
 	if err != nil {
 		slog.Error("mention task enqueue failed: agent not found", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
 		return db.AgentTaskQueue{}, fmt.Errorf("load agent: %w", err)
@@ -1504,7 +1523,7 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
-	task, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
+	task, err := queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
 		ID:                   dbid.NewV7(),
 		AgentID:              agentID,
 		RuntimeID:            agent.RuntimeID,
@@ -1546,9 +1565,6 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 	}
 
 	slog.Info("mention task enqueued", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "is_leader_task", isLeader)
-	// See EnqueueTaskForIssue for ordering rationale.
-	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
-	s.NotifyTaskEnqueued(ctx, task)
 	return task, nil
 }
 
@@ -2479,6 +2495,16 @@ func (s *TaskService) SendDirectChatMessageTx(
 		if !carrier.RuntimeID.Valid {
 			return ErrChatTaskAgentNoRuntime
 		}
+		// A DM that is being compacted takes no new turn: the answer would land
+		// in a conversation about to be archived. Checked under the session lock
+		// so it cannot race the compaction enqueue.
+		compacting, err := qtx.HasActiveCompactionTaskForSession(ctx, session.ID)
+		if err != nil {
+			return fmt.Errorf("check active compaction: %w", err)
+		}
+		if compacting {
+			return ErrChatCompacting
+		}
 
 		// The database status of every newly-created task is "queued" until a
 		// daemon claims it. Product queue semantics are positional instead: this
@@ -2516,6 +2542,14 @@ func (s *TaskService) SendDirectChatMessageTx(
 		task, err = qtx.SetChatTaskInputOwnerSelf(ctx, task.ID)
 		if err != nil {
 			return fmt.Errorf("stamp direct chat input owner: %w", err)
+		}
+		// A manual /compact is a compaction run from the moment it is queued, so
+		// sends are refused while it runs. It carries no reason (CHE-1807).
+		if IsCompactCommand(content) {
+			task, err = qtx.MarkChatTaskCompact(ctx, db.MarkChatTaskCompactParams{ID: task.ID})
+			if err != nil {
+				return fmt.Errorf("mark compact chat task: %w", err)
+			}
 		}
 		out.Task = task
 
@@ -2899,6 +2933,12 @@ type CancelTaskResult struct {
 
 var ErrTaskNoLongerQueued = errors.New("task is no longer queued")
 
+// TaskAssignee names an issue assignee: an agent or a squad.
+type TaskAssignee struct {
+	Type string
+	ID   pgtype.UUID
+}
+
 // TaskCancellationActor is the point-in-time identity written onto a task when
 // an authenticated member or agent explicitly stops it. Automatic paths leave
 // this empty and the SQL transition records the system actor instead.
@@ -2930,6 +2970,16 @@ type CancelTaskOptions struct {
 	ErrorMessage  string
 	FailureReason string
 	CancelledBy   TaskCancellationActor
+	// StaleStep, when set, makes the cancellation conditional at the statement:
+	// the task is cancelled only while it is still a pending assignment-level
+	// run stamped for a step other than StaleStep. A task that started in the
+	// meantime is left alone. Not for user cancellation.
+	StaleStep string
+	// UnlessAssignee, when set, makes a user cancellation conditional at the
+	// statement: the task is left alone while the issue is assigned to this
+	// agent or squad. A handoff that stops its previous assignee's runs sets it,
+	// because the issue can be handed back before the cancellation lands.
+	UnlessAssignee TaskAssignee
 	// UserInitiated distinguishes the issue UI/API cancel action from automatic
 	// server repairs. An explicit user cancellation terminally acknowledges any
 	// delegated-failure recovery signal planned into the task; automatic
@@ -3009,6 +3059,9 @@ func (s *TaskService) CancelTaskWithResult(ctx context.Context, taskID pgtype.UU
 	if opts.UserInitiated && !opts.CancelledBy.ID.Valid {
 		return nil, errors.New("user-initiated cancellation requires an actor id")
 	}
+	if opts.UnlessAssignee.ID.Valid && !opts.UserInitiated {
+		return nil, errors.New("an assignee condition applies to user-initiated cancellation only")
+	}
 	var (
 		task                 db.AgentTaskQueue
 		cancelledChatMessage *CancelledChatMessageResult
@@ -3051,12 +3104,16 @@ func (s *TaskService) CancelTaskWithResult(ctx context.Context, taskID pgtype.UU
 				cancelled db.AgentTaskQueue
 				err       error
 			)
-			if opts.UserInitiated {
+			if opts.StaleStep != "" {
+				cancelled, err = qtx.CancelStalePendingStepTask(ctx, db.CancelStalePendingStepTaskParams{ID: taskID, Step: opts.StaleStep})
+			} else if opts.UserInitiated {
 				cancelled, err = qtx.CancelAgentTaskByUser(ctx, db.CancelAgentTaskByUserParams{
-					ID:              taskID,
-					CancelledByType: pgtype.Text{String: opts.CancelledBy.Type, Valid: true},
-					CancelledByID:   opts.CancelledBy.ID,
-					CancelledByName: pgtype.Text{String: opts.CancelledBy.Name, Valid: opts.CancelledBy.Name != ""},
+					ID:                 taskID,
+					CancelledByType:    pgtype.Text{String: opts.CancelledBy.Type, Valid: true},
+					CancelledByID:      opts.CancelledBy.ID,
+					CancelledByName:    pgtype.Text{String: opts.CancelledBy.Name, Valid: opts.CancelledBy.Name != ""},
+					UnlessAssigneeType: pgtype.Text{String: opts.UnlessAssignee.Type, Valid: opts.UnlessAssignee.ID.Valid},
+					UnlessAssigneeID:   opts.UnlessAssignee.ID,
 				})
 			} else if opts.ErrorMessage != "" || opts.FailureReason != "" {
 				cancelled, err = qtx.CancelAgentTaskWithReason(ctx, db.CancelAgentTaskWithReasonParams{
@@ -4589,11 +4646,31 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 // must only run them when transitioned is true; a replay against an already
 // terminal task is still an idempotent success but must not emit them again.
 func (s *TaskService) CompleteTaskWithTransition(ctx context.Context, taskID pgtype.UUID, result []byte, sessionID, workDir, branchName string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) (*db.AgentTaskQueue, bool, error) {
+	return s.CompleteTaskWithRunContext(ctx, taskID, result, sessionID, workDir, branchName, sessionRolloutMissing, retiredSessionID, durableWorkDir, nil)
+}
+
+// RunContext is the prompt size of a run's last model call and the model's
+// context window, as the daemon measured them. nil means unknown.
+type RunContext struct{ Tokens, Window int64 }
+
+// CompleteTaskWithRunContext is CompleteTaskWithTransition that also records
+// the run's context size in the same terminal transaction. A context that
+// cannot be trusted (nil, negative tokens, non-positive window) is stored as
+// NULL rather than failing the completion.
+func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgtype.UUID, result []byte, sessionID, workDir, branchName string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string, runContext *RunContext) (*db.AgentTaskQueue, bool, error) {
+	var contextTokens, contextWindow pgtype.Int8
+	if runContext != nil && runContext.Tokens >= 0 && runContext.Window > 0 {
+		contextTokens = pgtype.Int8{Int64: runContext.Tokens, Valid: true}
+		contextWindow = pgtype.Int8{Int64: runContext.Window, Valid: true}
+	}
 	var task db.AgentTaskQueue
 	// chatAssistantMsg is the single assistant outcome row written for a chat
 	// task inside the completion transaction below. It is broadcast (chat:done)
 	// only after the transaction commits.
 	var chatAssistantMsg *db.ChatMessage
+	// dmNotified is the DM's coalesced inbox record, written in the same
+	// transaction as the reply and announced only after the commit.
+	var dmNotified *dmnotify.Notified
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		if err := lockChatSessionForTaskWrite(ctx, qtx, taskID); err != nil {
 			return err
@@ -4607,6 +4684,8 @@ func (s *TaskService) CompleteTaskWithTransition(ctx context.Context, taskID pgt
 			BranchName:            pgtype.Text{String: branchName, Valid: branchName != ""},
 			SessionRolloutMissing: sessionRolloutMissing,
 			RetiredSessionID:      pgtype.Text{String: retiredSessionID, Valid: retiredSessionID != ""},
+			ContextTokens:         contextTokens,
+			ContextWindow:         contextWindow,
 		})
 		if err != nil {
 			return err
@@ -4666,6 +4745,11 @@ func (s *TaskService) CompleteTaskWithTransition(ctx context.Context, taskID pgt
 				return fmt.Errorf("write chat assistant outcome: %w", err)
 			}
 			chatAssistantMsg = msg
+			if msg != nil {
+				if dmNotified, err = dmnotify.Reply(ctx, qtx, t.ChatSessionID, *msg); err != nil {
+					return fmt.Errorf("notify DM reply: %w", err)
+				}
+			}
 		}
 		return nil
 	}); err != nil {
@@ -4780,6 +4864,7 @@ func (s *TaskService) CompleteTaskWithTransition(ctx context.Context, taskID pgt
 		// actually about to run.
 		suggest := s.chatQuickActionsEligible(ctx, task, chatAssistantMsg)
 		s.broadcastChatDone(ctx, task, chatAssistantMsg, suggest)
+		dmnotify.Publish(s.Bus, dmNotified)
 		if suggest {
 			// Detached: the reply is already delivered and the user's next turn
 			// must never wait on suggestions.
@@ -4792,6 +4877,9 @@ func (s *TaskService) CompleteTaskWithTransition(ctx context.Context, taskID pgt
 
 	// Broadcast
 	s.broadcastTaskEvent(ctx, protocol.EventTaskCompleted, task)
+
+	// DM auto-compact (CHE-1803): after the completion is final and announced.
+	s.maybeAutoCompact(ctx, task, runContext)
 
 	return &task, true, nil
 }
@@ -5112,6 +5200,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 
 	var task db.AgentTaskQueue
 	var retried *db.AgentTaskQueue
+	var dmNotified *dmnotify.Notified
 	// retryProviderHoldNotice: set inside the transaction below when a retry
 	// child was minted then immediately cancelled for a provider hold, read
 	// after commit to post the same post-commit issue comment
@@ -5341,7 +5430,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			if err := qtx.ReleaseOnboardingKickoffFromTask(ctx, chatInputOwnerID(t)); err != nil {
 				return fmt.Errorf("release onboarding kickoff: %w", err)
 			}
-			if _, err := createAssistantChatMessage(ctx, qtx, db.CreateChatMessageParams{
+			failure, err := createAssistantChatMessage(ctx, qtx, db.CreateChatMessageParams{
 				ID:            dbid.NewV7(),
 				ChatSessionID: t.ChatSessionID,
 				Role:          "assistant",
@@ -5349,8 +5438,12 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 				TaskID:        t.ID,
 				FailureReason: pgtype.Text{String: failureReason, Valid: failureReason != ""},
 				ElapsedMs:     computeChatElapsedMs(t),
-			}); err != nil {
+			})
+			if err != nil {
 				return fmt.Errorf("write chat failure outcome: %w", err)
+			}
+			if dmNotified, err = dmnotify.Reply(ctx, qtx, t.ChatSessionID, failure); err != nil {
+				return fmt.Errorf("notify DM failure: %w", err)
 			}
 		}
 		return SettleTerminalTaskState(ctx, qtx, t)
@@ -5386,6 +5479,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 
 	slog.Warn("task failed", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID), "error", errMsg, "failure_reason", failureReason)
 	s.captureTaskFailed(ctx, task)
+	dmnotify.Publish(s.Bus, dmNotified)
 
 	// The auto-retry child (if any) was created inside the transaction above so
 	// no newer chat task could jump ahead of it. Surface it now: broadcast
@@ -6644,6 +6738,9 @@ func SettleTerminalTaskState(ctx context.Context, q *db.Queries, tasks ...db.Age
 	taskIDs := make([]pgtype.UUID, 0, len(tasks))
 	for _, task := range tasks {
 		taskIDs = append(taskIDs, task.ID)
+		if err := settleCompactionTask(ctx, q, task); err != nil {
+			return err
+		}
 	}
 	if _, err := q.SettleTerminalTaskSupplements(ctx, taskIDs); err != nil {
 		return fmt.Errorf("settle terminal task supplements: %w", err)
@@ -7049,7 +7146,7 @@ func (s *TaskService) exhaustDelegatedFailureRecovery(ctx context.Context, targe
 			if err != nil {
 				return fmt.Errorf("encode delegated failure exhaustion details: %w", err)
 			}
-			exhaustedInbox, err = qtx.CreateInboxItem(ctx, db.CreateInboxItemParams{
+			exhaustedInbox, inboxCreated, err = inbox.CreateIfEligible(ctx, qtx, db.CreateInboxItemParams{
 				ID:            dbid.NewV7(),
 				WorkspaceID:   target.issue.WorkspaceID,
 				RecipientType: "member",
@@ -7066,7 +7163,6 @@ func (s *TaskService) exhaustDelegatedFailureRecovery(ctx context.Context, targe
 			if err != nil {
 				return fmt.Errorf("create delegated failure exhaustion inbox item: %w", err)
 			}
-			inboxCreated = true
 		}
 		return nil
 	}); err != nil {
@@ -7846,6 +7942,9 @@ func (s *TaskService) publishTaskEvent(eventType, workspaceID string, task db.Ag
 		return
 	}
 	s.Bus.Publish(taskEvent(eventType, workspaceID, task, extra...))
+	if task.TaskKind.String == CompactTaskKind && task.ChatSessionID.Valid {
+		s.syncChatCompacting(workspaceID, task)
+	}
 }
 
 func (s *TaskService) broadcastTaskEvent(ctx context.Context, eventType string, task db.AgentTaskQueue, extra ...map[string]any) {
@@ -8495,7 +8594,7 @@ func (s *TaskService) notifyQuickCreateCompleted(ctx context.Context, task db.Ag
 		"identifier":      identifier,
 		"original_prompt": qc.Prompt,
 	})
-	item, err := s.Queries.CreateInboxItem(ctx, db.CreateInboxItemParams{
+	item, inserted, err := inbox.CreateIfEligible(ctx, s.Queries, db.CreateInboxItemParams{
 		ID:            dbid.NewV7(),
 		WorkspaceID:   workspaceID,
 		RecipientType: "member",
@@ -8511,6 +8610,9 @@ func (s *TaskService) notifyQuickCreateCompleted(ctx context.Context, task db.Ag
 	})
 	if err != nil {
 		slog.Error("quick-create completion: inbox write failed", "task_id", util.UUIDToString(task.ID), "error", err)
+		return
+	}
+	if !inserted {
 		return
 	}
 	s.publishQuickCreateInbox(item, qc.WorkspaceID, util.UUIDToString(task.AgentID), issue.Status)
@@ -8596,7 +8698,7 @@ func (s *TaskService) writeQuickCreateOutcomeInbox(ctx context.Context, task db.
 		"error":             redact.Text(errMsg),
 		"source_context_id": qc.SourceContextID,
 	})
-	item, err := s.Queries.CreateInboxItem(ctx, db.CreateInboxItemParams{
+	item, inserted, err := inbox.CreateIfEligible(ctx, s.Queries, db.CreateInboxItemParams{
 		ID:            dbid.NewV7(),
 		WorkspaceID:   workspaceID,
 		RecipientType: "member",
@@ -8612,6 +8714,9 @@ func (s *TaskService) writeQuickCreateOutcomeInbox(ctx context.Context, task db.
 	})
 	if err != nil {
 		slog.Error("quick-create failure: inbox write failed", "task_id", util.UUIDToString(task.ID), "error", err)
+		return
+	}
+	if !inserted {
 		return
 	}
 	s.publishQuickCreateInbox(item, qc.WorkspaceID, util.UUIDToString(task.AgentID), "")

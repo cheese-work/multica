@@ -777,6 +777,10 @@ deleted_notification_preferences AS (
     DELETE FROM notification_preference
     WHERE notification_preference.workspace_id = $1
 ),
+deleted_notification_channel_preferences AS (
+    DELETE FROM notification_channel_preference
+    WHERE notification_channel_preference.workspace_id = $1
+),
 deleted_pins AS (
     DELETE FROM pinned_item WHERE pinned_item.workspace_id = $1
 ),

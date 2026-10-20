@@ -266,5 +266,18 @@
   "picker.create_label": "创建 \"{{name}}\"",
   "comments.composer_pill": "添加评论，输入 @ 提及...",
   "resources.branch_hint": "运行会从这个分支开始，并针对它创建 Pull Request。留空则使用仓库默认分支。",
-  "resources.commit": "这是提交 ID，不是分支。运行会回传到起始分支。如需一次性修订，请给 multica repo checkout 传入 --ref。"
+  "resources.commit": "这是提交 ID，不是分支。运行会回传到起始分支。如需一次性修订，请给 multica repo checkout 传入 --ref。",
+  "workflow_handoff": {
+    "check_failed_title": "无法确认交接",
+    "check_failed_message": "没有做任何修改。{{message}}",
+    "retry": "重试",
+    "cancel": "取消",
+    "confirm_title": "移到「{{status}}」？",
+    "confirm_message": "这会把任务交给 {{handler}}。",
+    "confirm_message_runs": "这会把任务交给 {{handler}}，并可能停止上一位负责人正在进行的运行。",
+    "move": "移动",
+    "move_and_stop": "移动并停止运行",
+    "failed_title": "无法修改状态",
+    "stale_message": "自预览交接以来，任务或其工作流已变化。没有做任何修改，请重试。"
+  }
 }

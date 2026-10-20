@@ -136,6 +136,12 @@ export function useSettingsSearchIndex(
         title: t(($) => $.workspace.compact_prompt_label),
         description: t(($) => $.workspace.compact_prompt_hint),
       },
+      {
+        tab: "workspace",
+        anchor: "auto-compact",
+        title: t(($) => $.workspace.auto_compact_label),
+        description: t(($) => $.workspace.auto_compact_hint),
+      },
       { tab: "workspace", anchor: "slug", title: t(($) => $.workspace.slug_label) },
       {
         tab: "workspace",
@@ -146,6 +152,17 @@ export function useSettingsSearchIndex(
       { tab: "workspace", anchor: "delete", title: t(($) => $.workspace.delete_title) },
       { tab: "members", anchor: "invitations", title: t(($) => $.members.pending_label) },
       { tab: "members", anchor: "links", title: t(($) => $.members.share_links_label) },
+      {
+        tab: "jev-governance",
+        title: t(($) => $.page.tabs.jev_governance),
+        description: t(($) => $.jev_governance.search_description),
+      },
+      {
+        tab: "wakeups",
+        anchor: "pause",
+        title: t(($) => $.wakeups.pause_label),
+        description: t(($) => $.wakeups.pause_description),
+      },
       {
         tab: "wakeups",
         anchor: "child-done",
