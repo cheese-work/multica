@@ -64,7 +64,7 @@ func newVoteRig(t *testing.T) *voteRig {
 	r.peer, r.peerTok, _ = mk("peer", r.claudeRT, "claude-test")
 	squad := fx.Squad(t, "rig-vote-"+t.Name(), r.leader)
 	r.issueID = fx.Issue(t, "rig vote "+t.Name(), testutil.Cols{"assignee_type": "squad", "assignee_id": squad})
-	r.targetSquad = fx.Squad(t, "rig-target-"+t.Name(), r.leader, testutil.Cols{"instructions": "before\n" + rigHuman})
+	r.targetSquad = fx.Squad(t, "rig-target-"+t.Name(), r.leader, testutil.Cols{"instructions": rigBefore})
 	return r
 }
 
@@ -133,14 +133,14 @@ func (r *voteRig) wantDenied(code int, out string) {
 	if code != http.StatusForbidden {
 		r.t.Fatalf("expected 403, got %d: %s", code, out)
 	}
-	if got := r.squadValue(); got != "before\n"+rigHuman {
+	if got := r.squadValue(); got != rigBefore {
 		r.t.Fatalf("squad instructions must stay unchanged, got %q", got)
 	}
 }
 
 const (
-	rigBefore = "before\n" + rigHuman
-	rigNext   = "after\n" + rigHuman
+	rigBefore = "<!-- governed:agent -->before<!-- /governed:agent -->\n" + rigHuman
+	rigNext   = "<!-- governed:agent -->after<!-- /governed:agent -->\n" + rigHuman
 )
 
 func TestVoteGateRouter_HonestVotesWrite(t *testing.T) {
