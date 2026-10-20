@@ -365,11 +365,15 @@ func (h *Handler) voteApply(w http.ResponseWriter, r *http.Request, writerID str
 	issueID, _ := ownerCASRawString(raw, voteIssueKey)
 	before, _ := ownerCASRawString(raw, voteBeforeKey)
 	after, _ := ownerCASRawString(raw, voteAfterKey)
-	if _, err := util.ParseUUID(issueID); err != nil || !isWellFormedDigestHex(before) || !isWellFormedDigestHex(after) {
+	issueUUID, err := util.ParseUUID(issueID)
+	if err != nil || !isWellFormedDigestHex(before) || !isWellFormedDigestHex(after) {
 		writeError(w, http.StatusBadRequest, voteIssueKey+" must be an issue id and "+voteBeforeKey+"/"+voteAfterKey+" 64-character hex sha256 digests")
 		return hermesExceptionSwapResult{}, false
 	}
 	before, after = strings.ToLower(before), strings.ToLower(after)
+	// One spelling everywhere: the BLOCK trigger locks the issue id as Postgres
+	// prints it, so the writer must lock the parsed id, not the client's text.
+	issueID = uuidToString(issueUUID)
 
 	if !h.instructionTokenLimitOK(w, r, c, workspaceID, id, content) {
 		return hermesExceptionSwapResult{}, false
