@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -23,6 +24,9 @@ type ChatWakeupResponse struct {
 	FireAt        string  `json:"fire_at"`
 	Status        string  `json:"status"`
 	TaskID        *string `json:"task_id"`
+	// Condition is the stored condition, or null for a plain time wakeup; then
+	// FireAt is the deadline.
+	Condition json.RawMessage `json:"condition"`
 }
 
 func chatWakeupToResponse(w db.ChatWakeup) ChatWakeupResponse {
@@ -33,6 +37,7 @@ func chatWakeupToResponse(w db.ChatWakeup) ChatWakeupResponse {
 		FireAt:        timestampToString(w.FireAt),
 		Status:        w.Status,
 		TaskID:        uuidToPtr(w.TaskID),
+		Condition:     w.Condition,
 	}
 }
 
@@ -73,6 +78,12 @@ func (h *Handler) CreateChatWakeup(w http.ResponseWriter, r *http.Request) {
 		Instruction  string     `json:"instruction"`
 		At           *time.Time `json:"at"`
 		AfterSeconds int64      `json:"after_seconds"`
+		Condition    *struct {
+			Issue     string                       `json:"issue"`
+			Status    string                       `json:"status"`
+			PR        string                       `json:"pr"`
+			CommentBy *service.ChatWakeupCommenter `json:"comment_by"`
+		} `json:"condition"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 32<<10)
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -90,7 +101,16 @@ func (h *Handler) CreateChatWakeup(w http.ResponseWriter, r *http.Request) {
 	default:
 		fireAt = now.Add(time.Duration(request.AfterSeconds) * time.Second)
 	}
-	wakeup, err := h.chatWakeups().Create(r.Context(), task.ChatSessionID, task.ID, request.Instruction, fireAt, now)
+	var condition *service.ChatWakeupConditionInput
+	if c := request.Condition; c != nil {
+		issue, ok := h.chatWakeupIssue(r, c.Issue)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "condition: unknown issue")
+			return
+		}
+		condition = &service.ChatWakeupConditionInput{Issue: issue, Status: c.Status, PR: c.PR, CommentBy: c.CommentBy}
+	}
+	wakeup, err := h.chatWakeups().Create(r.Context(), task.ChatSessionID, task.ID, request.Instruction, fireAt, now, condition)
 	switch {
 	case errors.Is(err, service.ErrChatWakeupInput):
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -138,4 +158,15 @@ func (h *Handler) CancelChatWakeup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, chatWakeupToResponse(wakeup))
+}
+
+// chatWakeupIssue resolves a UUID or an identifier such as CHE-12 inside the
+// workspace of the calling task. The service checks the workspace again.
+func (h *Handler) chatWakeupIssue(r *http.Request, ref string) (pgtype.UUID, bool) {
+	workspaceID := ctxWorkspaceID(r.Context())
+	if issue, ok := h.resolveIssueByIdentifier(r.Context(), ref, workspaceID); ok {
+		return issue.ID, true
+	}
+	id, err := util.ParseUUID(ref)
+	return id, err == nil
 }

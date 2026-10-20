@@ -591,6 +591,7 @@ type ChatWakeup struct {
 	TaskID        pgtype.UUID        `json:"task_id"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	Condition     []byte             `json:"condition"`
 }
 
 type ClientUsageDaily struct {

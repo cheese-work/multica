@@ -2,8 +2,8 @@
 SELECT count(*) FROM chat_wakeup WHERE chat_session_id = $1 AND status = 'pending';
 
 -- name: CreateChatWakeup :one
-INSERT INTO chat_wakeup (workspace_id, chat_session_id, agent_id, created_by, source_task_id, instruction, fire_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO chat_wakeup (workspace_id, chat_session_id, agent_id, created_by, source_task_id, instruction, fire_at, condition)
+VALUES ($1, $2, $3, $4, $5, $6, $7, sqlc.narg('condition'))
 RETURNING *;
 
 -- name: ListPendingChatWakeups :many
@@ -25,10 +25,18 @@ ORDER BY fire_at ASC, id ASC
 LIMIT $1;
 
 -- name: LockPendingChatWakeup :one
--- Re-reads a due wakeup under a row lock; a concurrent cancel or tick wins.
+-- Re-reads a pending wakeup under a row lock; a concurrent cancel or tick wins.
+-- The caller decides it is due: the deadline passed or its condition held.
 SELECT * FROM chat_wakeup
-WHERE id = $1 AND status = 'pending' AND fire_at <= now()
+WHERE id = $1 AND status = 'pending'
 FOR UPDATE SKIP LOCKED;
+
+-- name: ListWaitingConditionalChatWakeups :many
+-- Pending wakeups whose condition is still being watched (before the deadline).
+SELECT * FROM chat_wakeup
+WHERE status = 'pending' AND condition IS NOT NULL AND fire_at > now()
+ORDER BY fire_at ASC, id ASC
+LIMIT $1;
 
 -- name: MoveChatWakeupToSession :exec
 UPDATE chat_wakeup SET chat_session_id = $2, updated_at = now() WHERE id = $1;
@@ -43,3 +51,14 @@ DELETE FROM chat_wakeup WHERE chat_session_id = $1;
 -- name: MarkChatTaskWakeup :one
 -- Flags a chat task as the turn a DM wakeup started.
 UPDATE agent_task_queue SET task_kind = 'wakeup' WHERE id = $1 RETURNING *;
+
+-- name: GetChatWakeupIssueIdentifier :one
+SELECT (ws.issue_prefix || '-' || i.number)::text AS identifier
+FROM issue i JOIN workspace ws ON ws.id = i.workspace_id
+WHERE i.id = $1 AND i.workspace_id = $2;
+
+-- name: GetChatWakeupNewComment :one
+-- The newest comment the watched actor wrote on the issue after the wakeup was set.
+SELECT id FROM comment
+WHERE issue_id = $1 AND workspace_id = $2 AND author_type = $3 AND author_id = $4 AND created_at > $5
+ORDER BY created_at DESC LIMIT 1;

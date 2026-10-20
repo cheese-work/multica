@@ -31,6 +31,8 @@ multica chat wakeup cancel <id>
 
 `--at` takes `HH:MM` (next occurrence in `--timezone`, default the host zone) or an RFC3339 time. The time must be in the future and within 24 hours; a DM holds at most 3 pending wakeups; the instruction is at most 12000 bytes. The API is `POST|GET /api/chat/wakeups` and `DELETE /api/chat/wakeups/{id}`, task-token only: the target is the calling task's own DM.
 
+With `--until-issue <id|CHE-n>` the wakeup also waits for a fact, and `--at`/`--after` become the deadline. Pick one: `--until-status <status key>`, `--until-pr checks|merged` (the issue's linked pull request; `checks` needs a new finished result), or `--event comment.created --filter-actor-id <id> [--filter-actor-type member|agent]` (a new comment after the wakeup was set). The turn starts when the fact holds or at the deadline, whichever comes first, and its hidden input says which. Facts are checked on the 30 s tick.
+
 The scheduler (30 s tick) starts an ordinary DM turn in the same DM, with its history. The instruction rides in a hidden `wakeup_trigger` message that members never see, and the reply raises the usual unread badge. The turn queues behind a running turn, waits while the DM compacts, and follows a continuation to the new DM. A channel-bound, archived or deleted DM, or an archived agent, expires the wakeup.
 
 ### Saved compact prompt

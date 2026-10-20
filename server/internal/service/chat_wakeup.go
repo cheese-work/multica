@@ -1,7 +1,9 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -41,9 +43,36 @@ var (
 
 type ChatWakeupService struct{ Tasks *TaskService }
 
+// ChatWakeupConditionInput is what the agent waits for besides the deadline:
+// the watched issue (already resolved by the caller) and exactly one of a
+// status key, a linked pull request event, or a new comment by an actor.
+type ChatWakeupConditionInput struct {
+	Issue     pgtype.UUID
+	Status    string
+	PR        string // checks_finished | merged
+	CommentBy *ChatWakeupCommenter
+}
+
+type ChatWakeupCommenter struct {
+	Type string `json:"type"` // member | agent
+	ID   string `json:"id"`
+}
+
+// chatWakeupCondition is the stored form. Check is a normalized
+// WakeupCondition, so the issue-wakeup evaluators decide status and pull
+// request facts. Baseline is the pull request fingerprint at creation: finished
+// checks that already existed belong to an older push.
+type chatWakeupCondition struct {
+	IssueID    string               `json:"issue_id"`
+	Identifier string               `json:"identifier"`
+	Check      json.RawMessage      `json:"check,omitempty"`
+	CommentBy  *ChatWakeupCommenter `json:"comment_by,omitempty"`
+	Baseline   string               `json:"baseline,omitempty"`
+}
+
 // Create validates and stores a wakeup for the DM, under the session lock so
-// the pending cap cannot be raced past.
-func (s *ChatWakeupService) Create(ctx context.Context, sessionID, sourceTaskID pgtype.UUID, instruction string, fireAt, now time.Time) (db.ChatWakeup, error) {
+// the pending cap cannot be raced past. With a condition, fireAt is the deadline.
+func (s *ChatWakeupService) Create(ctx context.Context, sessionID, sourceTaskID pgtype.UUID, instruction string, fireAt, now time.Time, condition *ChatWakeupConditionInput) (db.ChatWakeup, error) {
 	bad := func(msg string) (db.ChatWakeup, error) {
 		return db.ChatWakeup{}, fmt.Errorf("%w: %s", ErrChatWakeupInput, msg)
 	}
@@ -65,6 +94,12 @@ func (s *ChatWakeupService) Create(ctx context.Context, sessionID, sourceTaskID 
 		if session.Status != "active" || session.ContinuedIntoSessionID.Valid || s.channelBound(ctx, qtx, session.ID) {
 			return ErrChatWakeupUnavailable
 		}
+		var stored []byte
+		if condition != nil {
+			if stored, err = s.buildCondition(ctx, session.WorkspaceID, *condition); err != nil {
+				return err
+			}
+		}
 		pending, err := qtx.CountPendingChatWakeups(ctx, session.ID)
 		if err != nil {
 			return err
@@ -80,10 +115,118 @@ func (s *ChatWakeupService) Create(ctx context.Context, sessionID, sourceTaskID 
 			SourceTaskID:  sourceTaskID,
 			Instruction:   instruction,
 			FireAt:        pgtype.Timestamptz{Time: fireAt.UTC(), Valid: true},
+			Condition:     stored,
 		})
 		return err
 	})
 	return out, err
+}
+
+// buildCondition validates the condition against the workspace and returns its
+// stored JSON. It reads on its own connection: the reads need no lock.
+func (s *ChatWakeupService) buildCondition(ctx context.Context, workspaceID pgtype.UUID, in ChatWakeupConditionInput) ([]byte, error) {
+	bad := func(msg string) ([]byte, error) { return nil, fmt.Errorf("%w: %s", ErrChatWakeupInput, msg) }
+	predicates := 0
+	for _, set := range []bool{in.Status != "", in.PR != "", in.CommentBy != nil} {
+		if set {
+			predicates++
+		}
+	}
+	if predicates != 1 {
+		return bad("a condition needs exactly one of status, pr or comment_by")
+	}
+	issue, err := s.Tasks.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: in.Issue, WorkspaceID: workspaceID})
+	if errors.Is(err, pgx.ErrNoRows) || !in.Issue.Valid {
+		return bad("unknown issue")
+	} else if err != nil {
+		return nil, err
+	}
+	identifier, err := s.Tasks.Queries.GetChatWakeupIssueIdentifier(ctx, db.GetChatWakeupIssueIdentifierParams{ID: issue.ID, WorkspaceID: workspaceID})
+	if err != nil {
+		return nil, err
+	}
+	stored := chatWakeupCondition{IssueID: util.UUIDToString(issue.ID), Identifier: identifier}
+	switch {
+	case in.CommentBy != nil:
+		if _, err := util.ParseUUID(in.CommentBy.ID); err != nil || (in.CommentBy.Type != "member" && in.CommentBy.Type != "agent") {
+			return bad("comment_by needs a member or agent type and a UUID")
+		}
+		stored.CommentBy = in.CommentBy
+	default:
+		raw := map[string]string{"type": "issue_field", "field": "status", "value": in.Status}
+		if in.PR != "" {
+			raw = map[string]string{"type": "pull_request", "event": in.PR}
+		}
+		encoded, _ := json.Marshal(raw)
+		tx, err := s.Tasks.TxStarter.Begin(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer tx.Rollback(ctx)
+		if stored.Check, _, err = validateCondition(ctx, tx, issue, encoded); err != nil {
+			if errors.Is(err, errBadCondition) {
+				return bad(strings.TrimPrefix(err.Error(), ErrWakeupInput.Error()+": "+errBadCondition.Error()+": "))
+			}
+			return nil, err
+		}
+		if in.PR == "checks_finished" {
+			// Best effort: a pull request that is not linked yet has no baseline.
+			if _, fingerprint, _, err := (&IssueWakeupService{Tasks: s.Tasks}).evaluateCondition(ctx, tx, s.Tasks.Queries.WithTx(tx), db.IssueWakeup{IssueID: issue.ID, WorkspaceID: workspaceID, Condition: stored.Check}); err == nil {
+				stored.Baseline = fingerprint
+			}
+		}
+	}
+	return json.Marshal(stored)
+}
+
+// conditionMet reports whether a wakeup's condition holds now, and what was
+// observed. A wakeup without a condition, or one that cannot be evaluated yet
+// (pull request not linked, snapshot pending), is not met.
+func (s *ChatWakeupService) conditionMet(ctx context.Context, w db.ChatWakeup) (bool, string, error) {
+	if len(w.Condition) == 0 {
+		return false, "", nil
+	}
+	var c chatWakeupCondition
+	if err := json.Unmarshal(w.Condition, &c); err != nil {
+		return false, "", err
+	}
+	issueID, err := util.ParseUUID(c.IssueID)
+	if err != nil {
+		return false, "", err
+	}
+	if c.CommentBy != nil {
+		authorID, err := util.ParseUUID(c.CommentBy.ID)
+		if err != nil {
+			return false, "", err
+		}
+		commentID, err := s.Tasks.Queries.GetChatWakeupNewComment(ctx, db.GetChatWakeupNewCommentParams{
+			IssueID: issueID, WorkspaceID: w.WorkspaceID, AuthorType: c.CommentBy.Type, AuthorID: authorID, CreatedAt: w.CreatedAt,
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, "", nil
+		} else if err != nil {
+			return false, "", err
+		}
+		return true, fmt.Sprintf("a new comment (%s) by the %s you named", util.UUIDToString(commentID), c.CommentBy.Type), nil
+	}
+	tx, err := s.Tasks.TxStarter.Begin(ctx)
+	if err != nil {
+		return false, "", err
+	}
+	defer tx.Rollback(ctx)
+	met, fingerprint, observed, err := (&IssueWakeupService{Tasks: s.Tasks}).evaluateCondition(ctx, tx, s.Tasks.Queries.WithTx(tx),
+		db.IssueWakeup{IssueID: issueID, WorkspaceID: w.WorkspaceID, Condition: c.Check})
+	if err != nil {
+		if conditionDiagnostic(err) {
+			return false, "", nil
+		}
+		return false, "", err
+	}
+	if !met || (c.Baseline != "" && fingerprint == c.Baseline) {
+		return false, "", nil
+	}
+	facts, _ := json.Marshal(observed)
+	return true, string(bytes.TrimSpace(facts)), nil
 }
 
 // channelBound is true when an external channel delivers this DM's replies.
@@ -93,25 +236,59 @@ func (s *ChatWakeupService) channelBound(ctx context.Context, q *db.Queries, ses
 	return !errors.Is(err, pgx.ErrNoRows)
 }
 
-// Tick fires every due wakeup. A failure on one is logged and retried next
-// tick; it never blocks the others.
+// Tick fires every wakeup whose deadline passed or whose condition now holds.
+// A failure on one is logged and retried next tick; it never blocks the others.
 func (s *ChatWakeupService) Tick(ctx context.Context) error {
-	due, err := s.Tasks.Queries.ListDueChatWakeups(ctx, chatWakeupTickBatch)
+	q := s.Tasks.Queries
+	due, err := q.ListDueChatWakeups(ctx, chatWakeupTickBatch)
 	if err != nil {
 		return fmt.Errorf("list due chat wakeups: %w", err)
 	}
+	waiting, err := q.ListWaitingConditionalChatWakeups(ctx, chatWakeupTickBatch)
+	if err != nil {
+		return fmt.Errorf("list waiting chat wakeups: %w", err)
+	}
 	for _, w := range due {
-		if err := s.fire(ctx, w); err != nil && !errors.Is(err, errChatWakeupRetry) {
-			slog.Warn("chat wakeup not fired", "wakeup_id", util.UUIDToString(w.ID), "error", err)
+		// At the deadline the condition still gets one look, so the turn says
+		// which of the two ended the wait.
+		reason := ""
+		if len(w.Condition) > 0 {
+			reason = "The deadline you set was reached and the condition had not held."
+			if met, observed, err := s.conditionMet(ctx, w); err == nil && met {
+				reason = conditionReason(w, observed)
+			}
+		}
+		s.fireLogged(ctx, w, reason)
+	}
+	for _, w := range waiting {
+		met, observed, err := s.conditionMet(ctx, w)
+		if err != nil {
+			slog.Warn("chat wakeup condition not evaluated", "wakeup_id", util.UUIDToString(w.ID), "error", err)
+			continue
+		}
+		if met {
+			s.fireLogged(ctx, w, conditionReason(w, observed))
 		}
 	}
 	return nil
 }
 
+func (s *ChatWakeupService) fireLogged(ctx context.Context, w db.ChatWakeup, reason string) {
+	if err := s.fire(ctx, w, reason); err != nil && !errors.Is(err, errChatWakeupRetry) {
+		slog.Warn("chat wakeup not fired", "wakeup_id", util.UUIDToString(w.ID), "error", err)
+	}
+}
+
+func conditionReason(w db.ChatWakeup, observed string) string {
+	var c chatWakeupCondition
+	_ = json.Unmarshal(w.Condition, &c)
+	return fmt.Sprintf("The condition you set held (%s): %s.", c.Identifier, observed)
+}
+
 // fire starts one wakeup's turn in the DM's current session. Preflight reads
 // (continuation chain, agent, attribution) run before the transaction; the
 // transaction re-checks them under the session lock.
-func (s *ChatWakeupService) fire(ctx context.Context, w db.ChatWakeup) error {
+func (s *ChatWakeupService) fire(ctx context.Context, w db.ChatWakeup, reason string) error {
 	q := s.Tasks.Queries
 	expire := func() error {
 		return q.SettleChatWakeup(ctx, db.SettleChatWakeupParams{ID: w.ID, Status: "expired"})
@@ -167,7 +344,7 @@ func (s *ChatWakeupService) fire(ctx context.Context, w db.ChatWakeup) error {
 				return err
 			}
 		}
-		sent, err := s.Tasks.sendDirectChatMessageTx(ctx, qtx, plan, current, current.CreatorID, chatWakeupPrompt(locked), nil, "", pgtype.UUID{}, "system", true)
+		sent, err := s.Tasks.sendDirectChatMessageTx(ctx, qtx, plan, current, current.CreatorID, chatWakeupPrompt(locked, reason), nil, "", pgtype.UUID{}, "system", true)
 		if err != nil {
 			return err
 		}
@@ -190,8 +367,12 @@ func (s *ChatWakeupService) fire(ctx context.Context, w db.ChatWakeup) error {
 
 // chatWakeupPrompt is the hidden input of a wakeup turn: the agent's own
 // instruction, framed so it is not mistaken for something the person typed.
-func chatWakeupPrompt(w db.ChatWakeup) string {
-	return fmt.Sprintf("Scheduled wakeup, not a message from the person. You set it earlier in this DM for %s. "+
+// reason says why the turn starts now when a condition was set.
+func chatWakeupPrompt(w db.ChatWakeup, reason string) string {
+	if reason != "" {
+		reason += " "
+	}
+	return fmt.Sprintf("Scheduled wakeup, not a message from the person. You set it earlier in this DM for %s. %s"+
 		"Carry out your instruction, then reply to the person here.\n\nYour instruction:\n\n%s",
-		w.FireAt.Time.UTC().Format(time.RFC3339), w.Instruction)
+		w.FireAt.Time.UTC().Format(time.RFC3339), reason, w.Instruction)
 }
