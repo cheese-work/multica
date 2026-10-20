@@ -2961,3 +2961,10 @@ RETURNING *;
 
 -- name: GetCommentThreadRootID :one
 SELECT comment_thread_root_id(@comment_id::uuid)::uuid AS id;
+
+-- name: SetTaskClaimedModel :exec
+-- CHE-1862: the model the daemon is told to run for this claim. The vote gate
+-- reads it as the task's lab identity, so an edit of the agent row after the
+-- claim cannot change what a running task is counted as.
+UPDATE agent_task_queue SET claimed_model = @claimed_model
+WHERE id = @id AND status = 'dispatched';

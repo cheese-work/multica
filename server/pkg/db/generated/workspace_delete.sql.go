@@ -364,6 +364,9 @@ deleted_stage_generations AS (
 deleted_issue_checkpoints AS (
     DELETE FROM issue_checkpoint WHERE workspace_id = $1
 ),
+deleted_governed_vote_records AS (
+    DELETE FROM governed_vote_record WHERE workspace_id = $1
+),
 deleted_governance_receipts AS (
     DELETE FROM governance_receipt WHERE workspace_id = $1
 ),
@@ -595,6 +598,7 @@ WHERE channel_media_pending_object.workspace_id = $1
 // CHE-488 durable stage-completion-wake bookkeeping (stage_generation,
 // stage_completion_wake). Deleted before the parent issues below so neither
 // statement depends on FK cascade ordering.
+// CHE-1862 vote-gate ledger: workspace-owned, a leaf with no dependents.
 // CHE-685 Jev governance routing receipts: workspace-owned observation
 // history, same leaf shape as issue_checkpoint above (no dependents, no FK).
 // CHE-714 Jev provider credentials are workspace-owned encrypted material.
