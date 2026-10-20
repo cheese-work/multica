@@ -93,6 +93,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"github_pull_request":                workspaceDelete,
 	"github_pull_request_check_run":      workspaceDelete,
 	"github_pull_request_check_suite":    workspaceDelete,
+	"governed_vote_record":               workspaceDelete, // CHE-1862 vote-gate ledger; workspace-owned leaf.
 	"governance_receipt":                 workspaceDelete, // CHE-685 Jev governance routing receipts; workspace-owned, same shape as issue_checkpoint.
 	"governance_budget_window":           workspaceDelete,
 	"governance_budget_root":             workspaceDelete,
@@ -130,6 +131,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"issue_source_context":               workspaceDelete,
 	"issue_source_context_object_intent": workspaceDeleteSettle,
 	"issue_status":                       workspaceDelete,
+	"issue_workflow":                     workspaceDelete,
 	"issue_subscriber":                   workspaceDelete,
 	"issue_to_label":                     workspaceDelete,
 	"issue_vcs_pull_request":             workspaceDelete,

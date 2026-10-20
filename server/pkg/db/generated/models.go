@@ -183,6 +183,8 @@ type AgentTaskQueue struct {
 	TaskKind                  pgtype.Text `json:"task_kind"`
 	CompactReason             pgtype.Text `json:"compact_reason"`
 	CompactTriggerTokens      pgtype.Int8 `json:"compact_trigger_tokens"`
+	WorkflowStep              pgtype.Text `json:"workflow_step"`
+	ClaimedModel              pgtype.Text `json:"claimed_model"`
 }
 
 type AgentToLabel struct {
@@ -1141,6 +1143,18 @@ type GovernanceWorkspaceConfigAudit struct {
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 }
 
+type GovernedVoteRecord struct {
+	IssueID         pgtype.UUID        `json:"issue_id"`
+	CommentID       pgtype.UUID        `json:"comment_id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	AuthorType      string             `json:"author_type"`
+	AuthorID        pgtype.UUID        `json:"author_id"`
+	VoteLines       string             `json:"vote_lines"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	RuntimeProvider string             `json:"runtime_provider"`
+	Model           string             `json:"model"`
+}
+
 type InboxItem struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
@@ -1485,6 +1499,18 @@ type IssueWakeupReceipt struct {
 	DeferredAt  pgtype.Timestamptz `json:"deferred_at"`
 }
 
+type IssueWorkflow struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	Name             string             `json:"name"`
+	Description      string             `json:"description"`
+	InitialStatusKey string             `json:"initial_status_key"`
+	Steps            []byte             `json:"steps"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	IsDefault        bool               `json:"is_default"`
+}
+
 type LarkBindingToken struct {
 	TokenHash      string             `json:"token_hash"`
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
@@ -1750,6 +1776,7 @@ type Project struct {
 	Priority    string             `json:"priority"`
 	StartDate   pgtype.Date        `json:"start_date"`
 	DueDate     pgtype.Date        `json:"due_date"`
+	WorkflowID  pgtype.UUID        `json:"workflow_id"`
 }
 
 type ProjectResource struct {

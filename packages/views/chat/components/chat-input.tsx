@@ -64,7 +64,7 @@ interface ChatInputProps {
    * Pass it only for a saved, active web DM; without it `/fork` is an ordinary
    * message. Resolves with the outcome so the composer can show one error line.
    */
-  onFork?: (message: string) => Promise<ForkResult>;
+  onFork?: (message: string, attachmentIds: string[]) => Promise<ForkResult>;
   onSend: (
     content: string,
     attachmentIds: string[] | undefined,
@@ -558,12 +558,8 @@ export function ChatInput({
         }
       };
       if (fork && onFork) {
-        if (uniqueActiveIds.length > 0) {
-          setForkError(t(($) => $.input.fork_attachments_blocked));
-          return false;
-        }
         setForkError(null);
-        const result = await onFork(fork.message);
+        const result = await onFork(fork.message, uniqueActiveIds);
         if (!result.ok) {
           setForkError(result.error);
           return false;

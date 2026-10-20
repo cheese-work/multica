@@ -465,16 +465,23 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var rawFields map[string]json.RawMessage
+	_ = json.Unmarshal(bodyBytes, &rawFields) // body already decoded into req above
+
+	// CHE-1862: an agent write backed by a vote receipt skips the denial below.
+	if voteEntered(actorType, req.Context != nil, rawFields) {
+		h.ownerCASUpdateWorkspace(w, r, id, actorType, actorID, rawFields)
+		return
+	}
+
 	if rejectGovernedFieldForAgentActor(w, r, actorType, req.Context != nil, "context") {
 		return
 	}
 
 	// CHE-1300: owner-only atomic CAS, entered by the digest key. After the
 	// guard above so a machine actor never reaches it.
-	var rawFields map[string]json.RawMessage
-	_ = json.Unmarshal(bodyBytes, &rawFields) // body already decoded into req above
 	if ownerCASRequested(rawFields) {
-		h.ownerCASUpdateWorkspace(w, r, id, actorType, rawFields)
+		h.ownerCASUpdateWorkspace(w, r, id, actorType, actorID, rawFields)
 		return
 	}
 
@@ -823,6 +830,7 @@ func (h *Handler) DeleteMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to delete member")
 		return
 	}
+	h.Hub.DisconnectMember(uuidToString(target.WorkspaceID), uuidToString(target.UserID), uuidToString(target.ID))
 	h.settleMemberCapacityRelease(r.Context(), uuid.UUID(target.WorkspaceID.Bytes), uuid.UUID(target.ID.Bytes))
 
 	h.MembershipCache.Invalidate(r.Context(), uuidToString(target.UserID), workspaceID)
@@ -867,6 +875,7 @@ func (h *Handler) LeaveWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to leave workspace")
 		return
 	}
+	h.Hub.DisconnectMember(uuidToString(member.WorkspaceID), uuidToString(member.UserID), uuidToString(member.ID))
 	h.settleMemberCapacityRelease(r.Context(), uuid.UUID(member.WorkspaceID.Bytes), uuid.UUID(member.ID.Bytes))
 
 	h.MembershipCache.Invalidate(r.Context(), uuidToString(member.UserID), workspaceID)
@@ -1418,6 +1427,14 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			name: "delete issue statuses",
 			run: func() error {
 				return qtx.DeleteIssueStatusEntriesForWorkspace(ctx, requester.WorkspaceID)
+			},
+		},
+		{
+			// issue_workflow references the status catalog and projects by
+			// value only, so it is swept alongside the catalog. (MUL-7420)
+			name: "delete issue workflows",
+			run: func() error {
+				return qtx.DeleteIssueWorkflowsForWorkspace(ctx, requester.WorkspaceID)
 			},
 		},
 		{

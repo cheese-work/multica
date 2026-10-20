@@ -1,0 +1,23 @@
+# First implementation layer of the Jev / Governance tab (CHE-1777): routing mode and
+# confidence only. Credential administration and audit history with rollback are later
+# layers and are not in this sheet. This tab is a new page, so there is no base
+# capture of it; the Settings navigation and search each gain one entry.
+issue: CHE-1839
+design: design/jev-governance-tab/rev-4/C.html @ 968d0eab8bf7ff04a92c7ded65d36758b6e304a9
+pages:
+  - id: settings-jev-governance
+    url: /<workspace-slug>/settings?tab=jev-governance   # new on this PR; absent on base
+    keep:   []
+    change:
+      - jev-governance-routing: "new routing pane: version and mode summary, mode control, minimum confidence, save lifecycle"
+      - jev-routing-mode: "new radio group Off | Shadow | On; On is disabled and explains why"
+      - jev-min-confidence: "new input, 0 to 1, default 0.90 shown"
+      - jev-save-bar: "new, appears only while an edit is pending; Based on v<n>, Cancel, Save changes"
+      - jev-conflict-alert: "new, shown on a 409; keeps the edit and offers Reload latest or Keep editing"
+    remove: []
+  - id: settings-navigation
+    url: /<workspace-slug>/settings   # navigation and search; same path on base and preview
+    keep:   []
+    change:
+      - settings-nav-jev-governance: "new Workspace entry 'Jev / Governance' and one search entry; the other entries are unchanged"
+    remove: []
