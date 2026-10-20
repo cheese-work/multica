@@ -294,8 +294,7 @@ func TestVoteGate_FailedChecksStay403(t *testing.T) {
 		{name: "voter reassigned to another family after voting", setup: func(t *testing.T, f voteFixture, label string) {
 			var claude string
 			dbfx.QueryRow(t, `SELECT runtime_id FROM agent WHERE id = $1`, f.writerID).Scan(&claude)
-			var codex string
-			codex = f.runtimeOf(t, f.leaderID)
+			codex := f.runtimeOf(t, f.leaderID)
 			f.retask(t, f.leaderID, claude, "claude-test")
 			f.approve(t, label, testDigest(next))
 			f.retask(t, f.leaderID, codex, "gpt-test")
