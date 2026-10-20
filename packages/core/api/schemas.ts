@@ -3866,6 +3866,7 @@ export const WorkspaceGovernanceConfigSchema = z.object({
     jev_squad_routing_mode: z.string().nullish(),
     jev_squad_routing_enabled: z.boolean().nullish(),
     jev_min_confidence: z.number().nullish(),
+    jev_api_url: z.string().nullish(),
   }),
   // Strict like the rest: a rollback offered from a history that did not parse
   // would be a guess about what it restores.
@@ -3874,7 +3875,12 @@ export const WorkspaceGovernanceConfigSchema = z.object({
 
 // CHE-1853: whether a Jev provider key is stored. Strict: "Not set" must never
 // be what a malformed response turns into.
-export const JevCredentialPresenceSchema = z.object({ present: z.boolean() });
+// `configurable` is absent from older servers; they are assumed able to store a
+// key, and the 403 on save remains the fallback signal.
+export const JevCredentialPresenceSchema = z.object({
+  present: z.boolean(),
+  configurable: z.boolean().default(true),
+});
 
 export const WakeupConditionSchema = z.union([
   z.object({ type: z.literal("issue_field"), field: z.literal("status"), value: z.string() }),

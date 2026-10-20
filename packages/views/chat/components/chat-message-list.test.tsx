@@ -1265,3 +1265,41 @@ describe("ChatMessageList compact notice", () => {
     expect(note).toHaveClass("text-muted-foreground");
   });
 });
+
+describe("ChatMessageList message timestamps (CHE-1871)", () => {
+  const at = (iso: string) => new Date(iso);
+  const clock = (iso: string) => new Intl.DateTimeFormat(undefined, { timeStyle: "short" }).format(at(iso));
+  const msg = (id: string, role: "user" | "assistant", created_at: string): ChatMessage => ({
+    id, chat_session_id: "s1", role, content: `body ${id}`, task_id: null, created_at,
+  });
+
+  function renderStamped(messages: ChatMessage[]) {
+    return render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={new QueryClient()}>
+          <ChatMessageList messages={messages} pendingTask={undefined} availability="online" />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+  }
+
+  it("shows each user and assistant bubble's send time in the client locale", () => {
+    const { container } = renderStamped([
+      msg("u1", "user", "2026-10-20T04:20:00Z"),
+      msg("a1", "assistant", "2026-10-20T04:21:00Z"),
+    ]);
+    const times = Array.from(container.querySelectorAll("time[datetime]"));
+    const bubbleTimes = times.filter((el) => el.hasAttribute("data-message-time"));
+    expect(bubbleTimes.map((el) => el.textContent)).toEqual([clock("2026-10-20T04:20:00Z"), clock("2026-10-20T04:21:00Z")]);
+    expect(bubbleTimes[0]).toHaveAttribute("datetime", "2026-10-20T04:20:00Z");
+  });
+
+  it("puts a day separator between messages from different days only", () => {
+    const { container } = renderStamped([
+      msg("u1", "user", "2020-01-01T04:20:00Z"),
+      msg("u2", "user", "2020-01-01T04:25:00Z"),
+      msg("u3", "user", "2020-01-02T04:20:00Z"),
+    ]);
+    expect(container.querySelectorAll("[data-day-separator]")).toHaveLength(2);
+  });
+});
