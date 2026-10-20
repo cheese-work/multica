@@ -180,6 +180,8 @@ export interface ChatForkResponse {
   url: string;
   /** The first message, present when one was sent with the fork. */
   message?: ChatMessage | null;
+  /** Draft attachment ids the server bound to the first message. */
+  attachment_ids?: string[];
 }
 
 export interface PendingChatTaskItem {

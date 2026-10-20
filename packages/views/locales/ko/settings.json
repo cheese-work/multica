@@ -157,6 +157,18 @@
     "tab_history": "기록 {{count}}",
     "key_set": "키 설정됨",
     "key_not_set": "키 설정 안 됨",
+    "api_url": {
+      "label": "API 주소",
+      "hint": "비워 두면 {{default}}을(를) 사용합니다. 브라우저 전용 Tailscale 주소가 아니라 백엔드 컨테이너에서 접근할 수 있어야 합니다. 예: http://sub2api:8080/v1",
+      "invalid": "호스트가 있는 http:// 또는 https:// 주소를 입력하세요.",
+      "save": "주소 저장",
+      "clear": "주소 지우기",
+      "default_value": "{{url}} (기본값)",
+      "save_failed": "주소를 저장하지 못했습니다. 변경된 내용이 없습니다.",
+      "conflict": "다른 곳에서 설정이 변경되었습니다. 페이지를 새로 고친 뒤 다시 시도하세요.",
+      "saved": "주소 저장됨",
+      "cleared": "주소 지워짐"
+    },
     "credential": {
       "title": "공급자 키",
       "set": "설정됨",

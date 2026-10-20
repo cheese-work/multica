@@ -557,7 +557,14 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	// encoding/json's own struct decoding does; a plain rawFields[...] map
 	// lookup here previously let a case-varied key ("Description") through
 	// both this guard and the identically-keyed write condition below.
-	actorType, _ := h.resolveActor(r, userID, workspaceID)
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+
+	// CHE-1862: an agent write backed by a vote receipt skips the denial below.
+	if voteEntered(actorType, descriptionKeyPresent, rawFields) {
+		h.voteUpdateProject(w, r, workspaceID, prevProject, actorID, rawFields)
+		return
+	}
+
 	if rejectGovernedFieldForAgentActor(w, r, actorType, descriptionKeyPresent, "description") {
 		return
 	}

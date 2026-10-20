@@ -58,6 +58,7 @@ import {
   splitTimeline,
 } from "../lib/copy-text";
 import { stripChatQuickActionsProtocol } from "../lib/quick-actions";
+import { dayKey, formatDayLabel, formatMessageDateTime, formatMessageTime } from "./message-time";
 import { useT } from "../../i18n";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { AppLink } from "../../navigation";
@@ -142,7 +143,14 @@ interface ChatListContext {
  * Mermaid diagram or HTML iframe mounted across task completion.
  */
 type ChatRenderItem =
-  | { key: string; kind: "message"; message: ChatMessage; taskId: string | null }
+  | {
+      key: string;
+      kind: "message";
+      message: ChatMessage;
+      taskId: string | null;
+      /** First message of its (local) calendar day — gets a day separator. */
+      dayStart: boolean;
+    }
   | { key: string; kind: "live"; taskId: string };
 
 /**
@@ -383,11 +391,12 @@ export function ChatMessageList({
   const renderItems: ChatRenderItem[] = useMemo(() => {
     const items: ChatRenderItem[] = messages
       .filter((message) => message.message_kind !== "onboarding_kickoff")
-      .map((message) => ({
+      .map((message, i, visible) => ({
         key: messageRowKey(message),
         kind: "message" as const,
         message,
         taskId: message.task_id ?? null,
+        dayStart: i === 0 || dayKey(message.created_at) !== dayKey(visible[i - 1]!.created_at),
       }));
     if (hasLive && pendingTaskId) {
       items.push({ key: `task:${pendingTaskId}`, kind: "live", taskId: pendingTaskId });
@@ -518,6 +527,13 @@ export function ChatMessageList({
             className={cn(CHAT_COLUMN, "py-2")}
             {...(item.key === liveEndKey ? { [LIVE_END_ROW_ATTR]: "" } : {})}
           >
+            {item.kind === "message" && item.dayStart && (
+              <div data-day-separator="" className="mb-3 flex justify-center">
+                <span className="rounded-full bg-muted px-2.5 py-0.5 text-caption text-muted-foreground">
+                  {formatDayLabel(item.message.created_at)}
+                </span>
+              </div>
+            )}
             <MessageBubble
               item={item}
               isPending={!!pendingTaskId && item.taskId === pendingTaskId}
@@ -640,7 +656,7 @@ const MessageBubble = memo(function MessageBubble({
 
   if (message.role === "user") {
     return (
-      <div className="flex justify-end">
+      <div className="flex flex-col items-end">
         <div className="rounded-2xl bg-muted px-3.5 py-2 text-body max-w-[80%] break-words">
           {/* User messages are authored as markdown in ContentEditor, so they
            * render through the SAME RichContent as assistant replies and as
@@ -659,6 +675,7 @@ const MessageBubble = memo(function MessageBubble({
             className="mt-1.5"
           />
         </div>
+        <MessageTime iso={message.created_at} className="mt-0.5 block text-right" />
       </div>
     );
   }
@@ -1053,7 +1070,6 @@ function MessageFooter({
   const isNoResponse = message.message_kind === "no_response";
   const copyContent = extractCopyText(message, timeline, transformContent);
   const showCopy = !isPending && !isNoResponse && copyContent.trim().length > 0;
-  if (message.elapsed_ms == null && !showCopy) return null;
   return (
     <div className="flex items-center gap-1.5">
       {message.elapsed_ms != null && (
@@ -1062,10 +1078,26 @@ function MessageFooter({
           elapsedMs={message.elapsed_ms}
         />
       )}
+      <MessageTime iso={message.created_at} />
       {showCopy && (
         <MessageCopyButton content={copyContent} />
       )}
     </div>
+  );
+}
+
+// Send time in the browser's locale/zone; the full date + time is the native
+// hover title.
+function MessageTime({ iso, className }: { iso: string; className?: string }) {
+  return (
+    <time
+      data-message-time=""
+      dateTime={iso}
+      title={formatMessageDateTime(iso)}
+      className={cn("text-caption text-muted-foreground", className)}
+    >
+      {formatMessageTime(iso)}
+    </time>
   );
 }
 
