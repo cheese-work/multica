@@ -3936,7 +3936,7 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	grouped := h.groupReactions(r, []pgtype.UUID{comment.ID})
 	groupedAtt := h.groupAttachments(r, []pgtype.UUID{comment.ID})
 	cid := uuidToString(comment.ID)
-	resp := commentToResponse(comment, grouped[cid], groupedAtt[cid])
+	resp := h.withDecisionFields(r.Context(), comment, commentToResponse(comment, grouped[cid], groupedAtt[cid]))
 	resp.IssueRevision = issueRevision
 	slog.Info("comment updated", append(logger.RequestAttrs(r), "comment_id", commentId)...)
 	eventPayload := map[string]any{"comment": resp}
@@ -4570,7 +4570,7 @@ func (h *Handler) ResolveComment(w http.ResponseWriter, r *http.Request) {
 		clearedID := uuidToString(c.ID)
 		clearedReactions := h.groupReactions(r, []pgtype.UUID{c.ID})
 		clearedAtt := h.groupAttachments(r, []pgtype.UUID{c.ID})
-		clearedResp := commentToResponse(c, clearedReactions[clearedID], clearedAtt[clearedID])
+		clearedResp := h.withDecisionFields(r.Context(), c, commentToResponse(c, clearedReactions[clearedID], clearedAtt[clearedID]))
 		slog.Info("comment unresolved (replaced)", append(logger.RequestAttrs(r), "comment_id", clearedID)...)
 		h.publish(protocol.EventCommentUnresolved, workspaceID, actorType, actorID, map[string]any{"comment": clearedResp})
 	}
@@ -4578,7 +4578,7 @@ func (h *Handler) ResolveComment(w http.ResponseWriter, r *http.Request) {
 	grouped := h.groupReactions(r, []pgtype.UUID{updated.ID})
 	groupedAtt := h.groupAttachments(r, []pgtype.UUID{updated.ID})
 	cid := uuidToString(updated.ID)
-	resp := commentToResponse(updated, grouped[cid], groupedAtt[cid])
+	resp := h.withDecisionFields(r.Context(), updated, commentToResponse(updated, grouped[cid], groupedAtt[cid]))
 
 	// Suppress the target event on a re-resolve no-op so consumers do not
 	// re-process an unchanged thread (notifications, log spam). Cleared siblings
@@ -4610,7 +4610,7 @@ func (h *Handler) UnresolveComment(w http.ResponseWriter, r *http.Request) {
 	grouped := h.groupReactions(r, []pgtype.UUID{updated.ID})
 	groupedAtt := h.groupAttachments(r, []pgtype.UUID{updated.ID})
 	cid := uuidToString(updated.ID)
-	resp := commentToResponse(updated, grouped[cid], groupedAtt[cid])
+	resp := h.withDecisionFields(r.Context(), updated, commentToResponse(updated, grouped[cid], groupedAtt[cid]))
 
 	if wasResolved {
 		slog.Info("comment unresolved", append(logger.RequestAttrs(r), "comment_id", cid)...)

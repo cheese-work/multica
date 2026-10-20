@@ -35,7 +35,7 @@ import {
   type ToggleCommentReactionVars,
 } from "@multica/core/issues/mutations";
 import { sortTimelineEntriesAsc } from "@multica/core/issues/timeline-sort";
-import { pickDecisionFields } from "@multica/core/issues/decision-fields";
+import { keepDecisionFields, pickDecisionFields } from "@multica/core/issues/decision-fields";
 import {
   unhandledCommentTriggerOutcomes,
   mentionLabelsByTarget,
@@ -86,7 +86,7 @@ function acceptsCommentRevision(
   );
 }
 
-function applyCommentSnapshot(
+export function applyCommentSnapshot(
   qc: QueryClient,
   issueId: string,
   comment: Comment,
@@ -101,7 +101,7 @@ function applyCommentSnapshot(
       }
       return acceptsCommentRevision(entry, comment)
         ? {
-            ...commentToTimelineEntry(comment),
+            ...keepDecisionFields(commentToTimelineEntry(comment), entry),
             actor_name: entry.actor_name,
             actor_avatar_url: entry.actor_avatar_url,
           }

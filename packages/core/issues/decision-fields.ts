@@ -24,3 +24,12 @@ export function pickDecisionFields(source: DecisionCommentFields): DecisionComme
   }
   return picked;
 }
+
+/**
+ * A comment snapshot (resolve, unresolve, edit) is broadcast, so it can omit
+ * card fields and never carries the owner-only DM pointers. Keep what the
+ * cached entry already holds; the snapshot's own values win.
+ */
+export function keepDecisionFields<T extends DecisionCommentFields>(next: T, prev: DecisionCommentFields): T {
+  return { ...next, ...pickDecisionFields(prev), ...pickDecisionFields(next) };
+}

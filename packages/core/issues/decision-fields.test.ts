@@ -1,7 +1,8 @@
 // @vitest-environment node
 
 import { describe, expect, it } from "vitest";
-import { pickDecisionFields } from "./decision-fields";
+import type { TimelineEntry } from "../types";
+import { keepDecisionFields, pickDecisionFields } from "./decision-fields";
 
 describe("pickDecisionFields", () => {
   it("keeps only defined decision fields", () => {
@@ -13,5 +14,33 @@ describe("pickDecisionFields", () => {
       decision_source_message_id: undefined,
     };
     expect(pickDecisionFields(comment)).toEqual({ decision_answer_id: "answer", decision_state: "pending" });
+  });
+});
+
+const entry = (fields: Partial<TimelineEntry>): TimelineEntry => ({
+  type: "comment",
+  id: "c",
+  actor_type: "agent",
+  actor_id: "agent",
+  created_at: "now",
+  ...fields,
+});
+
+describe("keepDecisionFields", () => {
+  const prev = {
+    decision_answer_id: "answer",
+    decision_state: "pending" as const,
+    decision_source_session_id: "session",
+    decision_source_message_id: "message",
+  };
+
+  it("keeps the fields a sparse snapshot lacks, including the owner-only DM pointers", () => {
+    expect(keepDecisionFields(entry({}), prev)).toMatchObject(prev);
+  });
+
+  it("lets the snapshot's own values win and still keeps pointers it omits", () => {
+    const next = keepDecisionFields(entry({ decision_state: "effective" }), prev);
+    expect(next.decision_state).toBe("effective");
+    expect(next.decision_source_message_id).toBe("message");
   });
 });

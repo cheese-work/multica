@@ -1,11 +1,14 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
+
+	"github.com/google/uuid"
 
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -213,5 +216,40 @@ func TestDecisionAnswerUpdatedEventWhenDecisionTakesEffect(test *testing.T) {
 	}
 	if state := fixture.timelineAs(test, fixture.humanID)["decision_state"]; state != "effective" {
 		test.Fatalf("timeline state after delivery = %v", state)
+	}
+}
+
+func TestResolveAndUnresolveKeepDecisionCardFields(test *testing.T) {
+	fixture := newRecordedCardFixture(test)
+	for _, step := range []string{"resolve", "unresolve"} {
+		request := withURLParam(newRequest(http.MethodPost, "/api/comments/"+fixture.commentID+"/"+step, nil), "commentId", fixture.commentID)
+		handler := testHandler.ResolveComment
+		if step == "unresolve" {
+			handler = testHandler.UnresolveComment
+		}
+		var response map[string]any
+		testutil.Call(test, handler, request).Want(http.StatusOK).JSON(&response)
+		if response["decision_state"] != "pending" || response["decision_class"] != "reversible" || response["decision_human_user_id"] != fixture.humanID {
+			test.Errorf("%s snapshot lost the card fields: %v", step, response)
+		}
+		for _, private := range []string{"decision_source_session_id", "decision_source_message_id"} {
+			if _, leaked := response[private]; leaked {
+				test.Errorf("%s snapshot is broadcast and must not carry %s", step, private)
+			}
+		}
+	}
+}
+
+func TestForkKeepsDecisionReferenceLink(test *testing.T) {
+	_, sourceID, _, _ := setupDirectChatSession(test, context.Background(), "Cards fork")
+	answerID := uuid.NewString()
+	forkMessage(test, sourceID, testutil.Cols{"role": "assistant", "content": "Decision recorded", "message_kind": "decision_reference", "decision_answer_id": answerID})
+	var result ChatForkResponse
+	testutil.Call(test, testHandler.ForkChatSession, forkChatRequest(test, sourceID, "cards-fork")).Want(http.StatusCreated).JSON(&result)
+	cleanupChatFork(test, result.Session.ID)
+	var copied string
+	dbfx.QueryRow(test, `SELECT coalesce(decision_answer_id::text, '') FROM chat_message WHERE chat_session_id = $1 AND message_kind = 'decision_reference'`, result.Session.ID).Scan(&copied)
+	if copied != answerID {
+		test.Fatalf("forked reference decision_answer_id = %q, want %q", copied, answerID)
 	}
 }

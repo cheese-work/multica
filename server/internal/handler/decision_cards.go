@@ -124,6 +124,15 @@ func (handler *Handler) decisionCommentFields(ctx context.Context, workspaceID p
 	return fields
 }
 
+// withDecisionFields adds the card fields to a comment snapshot that is
+// broadcast or returned after a mutation, so a snapshot never erases them from
+// a client's timeline. Broadcast payloads have no single reader, so the DM
+// pointers stay out; clients keep the ones they already hold.
+func (handler *Handler) withDecisionFields(ctx context.Context, comment db.Comment, response CommentResponse) CommentResponse {
+	response.DecisionCommentFields = handler.decisionCommentFields(ctx, comment.WorkspaceID, []db.Comment{comment}, pgtype.UUID{})[response.ID]
+	return response
+}
+
 // decisionCardsForMessages returns, for a page of one DM, the cards that quote
 // each user bubble and the card a reference message announces. The caller has
 // already proven the reader owns the session.
