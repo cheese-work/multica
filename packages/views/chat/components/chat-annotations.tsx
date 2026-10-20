@@ -97,7 +97,8 @@ export function ChatAnnotationChip({ draftKey, annotations, disabled, onEditAnno
         <div ref={setScrollArea} data-testid="chat-annotation-scroll" role="region" tabIndex={0}
           aria-label={t(($) => $.annotations.list_label)}
           onScroll={measure}
-          className={`flex max-h-[272px] flex-col gap-2 overflow-y-auto rounded-md pr-2 max-md:max-h-[248px] ${focusRing}`}>
+          // `relative`: rows measure their offsetTop against this area, not the popup padding around it.
+          className={`relative flex max-h-[272px] flex-col gap-2 overflow-y-auto rounded-md pr-2 max-md:max-h-[248px] ${focusRing}`}>
           {annotations.map((annotation, index) => <div key={annotation.id}
             data-testid="chat-annotation-row" data-index={index} data-active={activeId === annotation.id}
             onMouseEnter={() => onActiveChange?.(annotation.id)} onMouseLeave={() => onActiveChange?.(null)}
