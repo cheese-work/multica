@@ -832,6 +832,11 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := qtx.DeleteChatWakeupsBySession(r.Context(), session.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete chat session wakeups")
+		return
+	}
+
 	// Same no-FK chore, for the agent configuration a builder conversation was
 	// editing. A no-op for ordinary chats, which never have one.
 	if err := qtx.DeleteAgentBuilderDraft(r.Context(), session.ID); err != nil {
@@ -2150,7 +2155,7 @@ type ChatLastMessage struct {
 // buildChatLastMessage assembles the preview from list-row columns; returns nil
 // when there is no last message (the LEFT JOIN produced a NULL timestamp).
 func buildChatLastMessage(at pgtype.Timestamptz, content, role string, failure pgtype.Text, kind string) *ChatLastMessage {
-	if !at.Valid || kind == protocol.ChatMessageKindOnboardingKickoff {
+	if !at.Valid || protocol.HiddenChatMessageKind(kind) {
 		return nil
 	}
 	return &ChatLastMessage{
@@ -2232,7 +2237,7 @@ func chatMessageToResponse(m db.ChatMessage, attachments []AttachmentResponse) C
 func visibleChatMessages(messages []db.ChatMessage) []db.ChatMessage {
 	visible := make([]db.ChatMessage, 0, len(messages))
 	for _, message := range messages {
-		if message.MessageKind == protocol.ChatMessageKindOnboardingKickoff {
+		if protocol.HiddenChatMessageKind(message.MessageKind) {
 			continue
 		}
 		visible = append(visible, message)

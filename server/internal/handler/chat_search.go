@@ -83,7 +83,7 @@ LEFT JOIN LATERAL (
   FROM chat_message AS message
   WHERE message.chat_session_id = readable.id
     AND LOWER(message.content) LIKE LOWER($4)
-    AND message.message_kind NOT IN ('channel_command', 'onboarding_kickoff')
+    AND message.message_kind NOT IN ('channel_command', 'onboarding_kickoff', 'wakeup_trigger')
     AND NOT (
       message.role = 'user'
       AND EXISTS (

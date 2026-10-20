@@ -18,6 +18,21 @@ The API is `POST /api/chat/sessions/<id>/continue` with `{"summary":"..."}`. Onl
 
 Continuations do not move decision requests.
 
+### DM wakeups
+
+An agent running a web DM chat task can schedule its own follow-up turn instead of asking the person to come back:
+
+```bash
+multica chat wakeup create --at 11:40 --timezone Asia/Ho_Chi_Minh --instruction-file ./wakeup.md
+multica chat wakeup create --after 20m --instruction-file ./wakeup.md
+multica chat wakeup list
+multica chat wakeup cancel <id>
+```
+
+`--at` takes `HH:MM` (next occurrence in `--timezone`, default the host zone) or an RFC3339 time. The time must be in the future and within 24 hours; a DM holds at most 3 pending wakeups; the instruction is at most 12000 bytes. The API is `POST|GET /api/chat/wakeups` and `DELETE /api/chat/wakeups/{id}`, task-token only: the target is the calling task's own DM.
+
+The scheduler (30 s tick) starts an ordinary DM turn in the same DM, with its history. The instruction rides in a hidden `wakeup_trigger` message that members never see, and the reply raises the usual unread badge. The turn queues behind a running turn, waits while the DM compacts, and follows a continuation to the new DM. A channel-bound, archived or deleted DM, or an archived agent, expires the wakeup.
+
 ### Saved compact prompt
 
 Set the workspace default with `PATCH /api/workspaces/{id}` in `settings.compact_prompt`. Set an optional per-agent override with `PATCH /api/agents/{id}` in `runtime_config.compact_prompt` (also available through `multica agent update --runtime-config`). These existing JSON settings are replaced, not merged; preserve other keys when updating them. Values are strings of at most 16384 bytes. Empty strings or `null` inherit the workspace default, or the built-in handoff criteria if no workspace default exists.

@@ -578,6 +578,21 @@ type ChatSession struct {
 	ForkMessageCount       pgtype.Int4        `json:"fork_message_count"`
 }
 
+type ChatWakeup struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
+	AgentID       pgtype.UUID        `json:"agent_id"`
+	CreatedBy     pgtype.UUID        `json:"created_by"`
+	SourceTaskID  pgtype.UUID        `json:"source_task_id"`
+	Instruction   string             `json:"instruction"`
+	FireAt        pgtype.Timestamptz `json:"fire_at"`
+	Status        string             `json:"status"`
+	TaskID        pgtype.UUID        `json:"task_id"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
 type ClientUsageDaily struct {
 	UserID          pgtype.UUID        `json:"user_id"`
 	ClientType      string             `json:"client_type"`

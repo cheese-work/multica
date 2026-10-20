@@ -2587,6 +2587,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Get("/api/chat/history", h.GetChatChannelHistory)
 			r.Get("/api/chat/thread", h.GetChatThread)
 			r.Post("/api/chat/continue", h.ContinueChatSession)
+			r.Post("/api/chat/wakeups", h.CreateChatWakeup)
+			r.Get("/api/chat/wakeups", h.ListChatWakeups)
+			r.Delete("/api/chat/wakeups/{wakeupId}", h.CancelChatWakeup)
 			r.Post("/api/chat/fork", h.ForkChatSession)
 
 			// Inbox

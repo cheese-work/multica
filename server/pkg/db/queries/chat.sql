@@ -49,7 +49,7 @@ RETURNING *;
 -- no attachments).
 SELECT message.* FROM chat_message AS message
 WHERE message.chat_session_id = $1
-  AND message.message_kind NOT IN ('channel_command', 'onboarding_kickoff')
+  AND message.message_kind NOT IN ('channel_command', 'onboarding_kickoff', 'wakeup_trigger')
   AND (
     btrim(message.content, E' \t\r\n') <> ''
     OR COALESCE(message.failure_reason, '') <> ''
@@ -955,7 +955,7 @@ RETURNING task.*;
 DELETE FROM chat_message
 WHERE task_id = $1
   AND role = 'user'
-  AND message_kind <> 'onboarding_kickoff'
+  AND message_kind NOT IN ('onboarding_kickoff', 'wakeup_trigger')
 RETURNING *;
 
 -- name: ReleaseOnboardingKickoffFromTask :exec
@@ -1305,7 +1305,7 @@ LIMIT $2;
 -- ListChatMessagesPage and to the DM search predicate in chat_search.go.
 SELECT message.* FROM chat_message AS message
 WHERE message.chat_session_id = $1
-  AND message.message_kind NOT IN ('channel_command', 'onboarding_kickoff')
+  AND message.message_kind NOT IN ('channel_command', 'onboarding_kickoff', 'wakeup_trigger')
   AND NOT (
     message.role = 'user'
     AND EXISTS (
