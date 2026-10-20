@@ -3874,7 +3874,7 @@ export class ApiClient {
 
   async forkChatSession(
     id: string,
-    data: { idempotency_key: string; message?: string },
+    data: { idempotency_key: string; message?: string; attachment_ids?: string[] },
   ): Promise<ChatForkResponse> {
     const raw: unknown = await this.fetch(`/api/chat/sessions/${id}/fork`, {
       method: "POST",

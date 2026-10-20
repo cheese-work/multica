@@ -2237,6 +2237,7 @@ export const ChatForkResponseSchema = z.object({
   previous_session_id: z.string().default(""),
   url: z.string().default(""),
   message: ChatMessageSchema.nullable().optional().catch(undefined),
+  attachment_ids: z.array(z.string()).optional().catch(undefined),
 }).loose();
 
 export const ChatSessionUpdatedPayloadSchema = z.object({
