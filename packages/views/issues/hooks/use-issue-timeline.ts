@@ -35,6 +35,7 @@ import {
   type ToggleCommentReactionVars,
 } from "@multica/core/issues/mutations";
 import { sortTimelineEntriesAsc } from "@multica/core/issues/timeline-sort";
+import { pickDecisionFields } from "@multica/core/issues/decision-fields";
 import {
   unhandledCommentTriggerOutcomes,
   mentionLabelsByTarget,
@@ -71,6 +72,7 @@ function commentToTimelineEntry(c: Comment): TimelineEntry {
     supplement_failure_reason: c.supplement_failure_reason,
     supplement_delivered_at: c.supplement_delivered_at,
     deleted_at: c.deleted_at,
+    ...pickDecisionFields(c),
   };
 }
 

@@ -50,6 +50,7 @@ type CommentResponse struct {
 	DecisionRequestID   *string `json:"decision_request_id,omitempty"`
 	DecisionAnswerID    *string `json:"decision_answer_id,omitempty"`
 	DecisionCommentKind *string `json:"decision_comment_kind,omitempty"`
+	DecisionCommentFields
 	// DeletedAt marks a tombstone: a comment deleted while it still had
 	// replies (#8296). Its content is empty and it carries no attachments or
 	// reactions; it stays only so the replies keep their direct parent.

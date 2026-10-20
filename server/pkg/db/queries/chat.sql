@@ -660,7 +660,7 @@ WHERE id = $1;
 INSERT INTO chat_message (
     chat_session_id, role, content, task_id, failure_reason, elapsed_ms,
     message_kind, quick_actions, channel_media_pending_until, channel_ingested,
-    channel_context_revision, id, sent_via
+    channel_context_revision, id, sent_via, decision_answer_id
 )
 VALUES (
     $1, $2, $3, sqlc.narg(task_id), sqlc.narg(failure_reason), sqlc.narg(elapsed_ms),
@@ -678,7 +678,8 @@ VALUES (
     sqlc.narg(channel_context_revision),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()),
     CASE WHEN COALESCE(sqlc.narg(channel_ingested)::boolean, FALSE) THEN 'channel'
-         ELSE COALESCE(NULLIF(sqlc.narg(sent_via)::text, ''), 'system') END
+         ELSE COALESCE(NULLIF(sqlc.narg(sent_via)::text, ''), 'system') END,
+    sqlc.narg(decision_answer_id)
 )
 RETURNING *;
 

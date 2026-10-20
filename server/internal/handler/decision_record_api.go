@@ -34,8 +34,10 @@ func (handler *Handler) createDecisionRecordComment(writer http.ResponseWriter, 
 	}
 	workspaceID, agentID := uuidToString(issue.WorkspaceID), request.Header.Get("X-Agent-ID")
 	response := commentToResponse(result.Comment, nil, nil)
+	response.DecisionCommentFields = handler.decisionCommentFields(request.Context(), issue.WorkspaceID, []db.Comment{result.Comment}, pgtype.UUID{})[response.ID]
 	handler.publish(protocol.EventCommentCreated, workspaceID, "agent", agentID, map[string]any{"comment": response, "issue_title": issue.Title, "issue_status": issue.Status})
 	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
+	handler.publishDecisionAnswerUpdated(workspaceID, "agent", agentID, result.Answer.ID, issue.ID, decisionAnswerState(result.Answer.WokenAt, result.Answer.DisclaimedAt))
 	handler.publishChat(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(result.Message.ChatSessionID), protocol.ChatMessagePayload{
 		ChatSessionID: uuidToString(result.Message.ChatSessionID), MessageID: uuidToString(result.Message.ID), Role: result.Message.Role, Content: result.Message.Content, CreatedAt: timestampToString(result.Message.CreatedAt),
 	})
