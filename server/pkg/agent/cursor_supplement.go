@@ -156,12 +156,49 @@ func CursorHooksInstallable(cwd string) error {
 	path := filepath.Join(dir, "hooks.json")
 	existing, err := os.ReadFile(path)
 	switch {
-	case err == nil && !bytes.Contains(existing, []byte(CursorHookHelperArg)):
+	case err == nil && !cursorHooksFileIsManaged(existing):
 		return fmt.Errorf("workdir already has an unmanaged %s", path)
 	case err != nil && !errors.Is(err, fs.ErrNotExist):
 		return fmt.Errorf("read cursor hooks: %w", err)
 	}
 	return nil
+}
+
+// cursorHooksFileIsManaged reports whether data holds only hooks Multica wrote:
+// every top-level key, event, entry field and command is Multica's. A file that
+// carries the helper beside anything else is the user's, and replacing it or
+// removing it at cleanup would delete their hooks.
+func cursorHooksFileIsManaged(data []byte) bool {
+	var file map[string]json.RawMessage
+	if json.Unmarshal(data, &file) != nil {
+		return false
+	}
+	for key := range file {
+		if key != "version" && key != "hooks" {
+			return false
+		}
+	}
+	var hooks map[string][]map[string]json.RawMessage
+	if json.Unmarshal(file["hooks"], &hooks) != nil || len(hooks) == 0 {
+		return false
+	}
+	for event, entries := range hooks {
+		if !slices.Contains(cursorSupplementEvents, event) || len(entries) == 0 {
+			return false
+		}
+		for _, entry := range entries {
+			var command string
+			if json.Unmarshal(entry["command"], &command) != nil || !strings.Contains(command, CursorHookHelperArg) {
+				return false
+			}
+			for field := range entry {
+				if field != "command" && field != "timeout" {
+					return false
+				}
+			}
+		}
+	}
+	return true
 }
 
 func (s *cursorSupplementSession) writeHooksFile() error {

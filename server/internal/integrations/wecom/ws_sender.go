@@ -958,6 +958,11 @@ func (s *wsSender) writeCtx(ctx context.Context, frame map[string]any) error {
 		if err := guard(ctx); err != nil {
 			return fmt.Errorf("%w: %w", errNotAttempted, err)
 		}
+		// The guard may wait on something slow while the writer is held, and
+		// the caller can give up in that wait.
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("%w: %w", errNotAttempted, err)
+		}
 	}
 	// The socket deadline stays the connection's own. A caller's deadline
 	// bounded the waits above, but write() has never let it shorten the write

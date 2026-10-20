@@ -1065,15 +1065,18 @@ func (s *ChatSession) bindMediaRefs(ctx context.Context, qtx SessionQueries, in 
 				media.filename,
 				media.ref.Type == channel.MsgTypeImage,
 			)
-			issueMarkdown = append(issueMarkdown, block)
-			// InlineIDOnly markers are left out on purpose. A marker that only
-			// refers to an attachment sits in the adapter's quoted context,
-			// which composeIssueCommandMediaDescription excludes from the
-			// description by contract; materializing it here would put
+			// InlineIDOnly media is left out of the issue Markdown on purpose,
+			// for the replacements and for the append fallback alike. A marker
+			// that only refers to an attachment sits in the adapter's quoted
+			// context, which composeIssueCommandMediaDescription excludes from
+			// the description by contract; materializing it here would put
 			// somebody else's picture into the issue body as if the reporter
-			// had attached it. The attachment itself is still created and
-			// still listed above.
-			if media.ref.InlinePlaceholder != "" && !media.ref.InlineIDOnly {
+			// had attached it. The attachment row itself is still created.
+			if media.ref.InlineIDOnly {
+				continue
+			}
+			issueMarkdown = append(issueMarkdown, block)
+			if media.ref.InlinePlaceholder != "" {
 				replacements = append(replacements, inlineMediaReplacement{
 					placeholder: media.ref.InlinePlaceholder,
 					index:       media.ref.InlineIndex,
@@ -1082,6 +1085,11 @@ func (s *ChatSession) bindMediaRefs(ctx context.Context, qtx SessionQueries, in 
 			}
 		}
 
+		if len(issueMarkdown) == 0 {
+			// Nothing to materialize: appending an empty block would still
+			// bump the issue revision and pad the description.
+			return nil
+		}
 		base := pgtype.Text{}
 		description := pgtype.Text{}
 		if in.IssueDescriptionBase.Valid {

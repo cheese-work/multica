@@ -100,6 +100,7 @@ type fakeSessionQueries struct {
 	updatedMediaContent   string
 	updateMediaRows       int64
 	issueMediaMarkdown    string
+	issueMediaCalls       int
 	issueMediaBase        pgtype.Text
 	issueMediaDescription string
 	reconcilerOwnedKeys   map[string]bool
@@ -276,6 +277,7 @@ func (f *fakeSessionQueries) UpdateChatMessageContentForChannelMedia(_ context.C
 }
 
 func (f *fakeSessionQueries) MaterializeIssueChannelMediaMarkdown(_ context.Context, arg db.MaterializeIssueChannelMediaMarkdownParams) (db.Issue, error) {
+	f.issueMediaCalls++
 	f.issueMediaMarkdown = arg.Markdown.String
 	f.issueMediaBase = arg.BaseDescription
 	f.issueMediaDescription = arg.Description
@@ -1128,6 +1130,68 @@ func TestBindMediaRefs_CreatesIssueOwnedAttachments(t *testing.T) {
 	}
 	if f.mediaCleared != 1 {
 		t.Fatalf("media pending marker clears = %d, want 1", f.mediaCleared)
+	}
+}
+
+// A quoted picture (InlineIDOnly) belongs to somebody else's message. Its
+// attachment row is still created, but the issue description must never carry
+// it as if the reporter attached it, including through the append fallback.
+func TestBindMediaRefs_IssueMarkdownLeavesOutQuotedIDOnlyMedia(t *testing.T) {
+	f := newFake()
+	s := newTestSession(f)
+	err := s.BindMediaRefs(context.Background(), BindMediaInput{
+		MessageID:   uid(42),
+		SessionID:   uid(1),
+		WorkspaceID: uid(9),
+		Sender:      uid(7),
+		IssueID:     uid(8),
+		Body:        "[Image]\n[Image: unavailable]",
+		MediaRefs: []channel.MediaRef{
+			{
+				Type: channel.MsgTypeImage, StorageKey: "wecom/own", StorageURL: "https://cdn.test/own",
+				Filename: "own.png", MimeType: "image/png", InlinePlaceholder: "[Image]",
+			},
+			{
+				Type: channel.MsgTypeImage, StorageKey: "wecom/quoted", StorageURL: "https://cdn.test/quoted",
+				Filename: "quoted.png", MimeType: "image/png", InlinePlaceholder: "[Image: unavailable]", InlineIDOnly: true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("BindMediaRefs: %v", err)
+	}
+	if len(f.attachments) != 2 {
+		t.Fatalf("attachments created = %d, want 2 (the quoted one is still stored)", len(f.attachments))
+	}
+	want := channelmedia.Block(uuidString(f.attachments[0].ID), "own.png", true)
+	if f.issueMediaMarkdown != want {
+		t.Fatalf("issue media markdown = %q, want only the reporter's own image %q", f.issueMediaMarkdown, want)
+	}
+}
+
+func TestBindMediaRefs_QuotedIDOnlyMediaAloneLeavesTheIssueUntouched(t *testing.T) {
+	f := newFake()
+	s := newTestSession(f)
+	err := s.BindMediaRefs(context.Background(), BindMediaInput{
+		MessageID:   uid(42),
+		SessionID:   uid(1),
+		WorkspaceID: uid(9),
+		Sender:      uid(7),
+		IssueID:     uid(8),
+		Body:        "[Image: unavailable]",
+		MediaRefs: []channel.MediaRef{{
+			Type: channel.MsgTypeImage, StorageKey: "wecom/quoted", StorageURL: "https://cdn.test/quoted",
+			Filename: "quoted.png", MimeType: "image/png", InlinePlaceholder: "[Image: unavailable]", InlineIDOnly: true,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("BindMediaRefs: %v", err)
+	}
+	if len(f.attachments) != 1 {
+		t.Fatalf("attachments created = %d, want 1", len(f.attachments))
+	}
+	if f.issueMediaCalls != 0 {
+		t.Fatalf("issue description was rewritten %d time(s) for quoted-only media, want 0 (markdown %q)", f.issueMediaCalls, f.issueMediaMarkdown)
 	}
 }
 

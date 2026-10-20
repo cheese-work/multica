@@ -336,6 +336,41 @@ func TestCursorSupplementKeepsUnmanagedHooksFile(t *testing.T) {
 	s.close()
 }
 
+// A hooks.json that carries Multica's helper beside a hook the user added is
+// not Multica's file: starting over it, or removing it at cleanup, would delete
+// the user's hook for good.
+func TestCursorSupplementKeepsMixedHooksFile(t *testing.T) {
+	managed := `{"command":"'/old/multica' '` + CursorHookHelperArg + `'","timeout":5}`
+	cases := map[string]string{
+		"extra hook in a managed event": `{"version":1,"hooks":{"postToolUse":[` + managed + `,{"command":"./audit.sh"}]}}`,
+		"extra event":                   `{"version":1,"hooks":{"postToolUse":[` + managed + `],"afterFileEdit":[{"command":"./format.sh"}]}}`,
+		"extra top-level setting":       `{"version":1,"theme":"dark","hooks":{"postToolUse":[` + managed + `]}}`,
+		"extra field on a managed hook": `{"version":1,"hooks":{"postToolUse":[{"command":"'/old/multica' '` + CursorHookHelperArg + `'","matcher":"Shell"}]}}`,
+	}
+	for name, content := range cases {
+		t.Run(name, func(t *testing.T) {
+			cwd := t.TempDir()
+			path := filepath.Join(cwd, ".cursor", "hooks.json")
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := CursorHooksInstallable(cwd); err == nil {
+				t.Fatal("CursorHooksInstallable accepted a hooks.json with user content")
+			}
+			if s, err := startCursorSupplementSession(t.Context(), cwd, testCursorHookCommand, slog.Default()); err == nil {
+				s.close()
+				t.Fatal("started over a hooks.json with user content")
+			}
+			if got, _ := os.ReadFile(path); string(got) != content {
+				t.Fatalf("hooks.json changed to %q", got)
+			}
+		})
+	}
+}
+
 func TestCursorHookRelayFailsOpen(t *testing.T) {
 	s, _ := startTestCursorSupplements(t, t.Context())
 	s.activate("conv-main")

@@ -602,6 +602,32 @@ func TestRequest_ACallerThatGivesUpWhileQueuedForTheWriterWritesNothing(t *testi
 	}
 }
 
+// The write guard runs with the writer held and may wait on something slow, a
+// permission lookup for instance. A caller that gives up during that wait has
+// still given up: the frame is not written and the send says nothing was
+// written. The check before the guard cannot see a cancellation that happens
+// inside it.
+func TestRequest_ACallerThatGivesUpDuringTheWriteGuardWritesNothing(t *testing.T) {
+	t.Parallel()
+	conn := newMediaConn()
+	sender := conn.newSender()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	guard := func(context.Context) error {
+		cancel()
+		return nil
+	}
+	_, err := sender.request(withWriteGuard(ctx, guard), cmdSendMsg, map[string]any{"chatid": "C"})
+	if !errors.Is(err, errNotAttempted) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("request = %v, want errNotAttempted wrapping the cancellation", err)
+	}
+	settle()
+	if n := frameCount(conn); n != 0 {
+		t.Errorf("%d frames on the wire from a caller that gave up during the guard, want 0", n)
+	}
+}
+
 // What did NOT change: write() has no context and waits for the writer however
 // long it takes — the ping, the handshake and the pong depend on that.
 func TestWrite_WithoutAContextStillWaitsForTheWriter(t *testing.T) {
