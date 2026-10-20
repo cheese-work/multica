@@ -43,3 +43,20 @@ DELETE FROM chat_wakeup WHERE chat_session_id = $1;
 -- name: MarkChatTaskWakeup :one
 -- Flags a chat task as the turn a DM wakeup started.
 UPDATE agent_task_queue SET task_kind = 'wakeup' WHERE id = $1 RETURNING *;
+
+-- name: MoveQueuedWakeupTasksToSession :exec
+-- A continuation archives the DM the run was replying in. A wakeup turn that is
+-- queued but not started in that DM would run, and notify nobody, in an
+-- archived session, so it moves with the conversation: the task, its hidden
+-- input and the wakeup row that started it.
+WITH moved AS (
+    UPDATE agent_task_queue SET chat_session_id = sqlc.arg('to_session_id')
+    WHERE agent_task_queue.chat_session_id = sqlc.arg('from_session_id') AND agent_task_queue.task_kind = 'wakeup' AND agent_task_queue.status IN ('queued', 'deferred')
+    RETURNING id
+), moved_inputs AS (
+    UPDATE chat_message SET chat_session_id = sqlc.arg('to_session_id')
+    WHERE chat_message.message_kind = 'wakeup_trigger' AND chat_message.task_id IN (SELECT moved.id FROM moved)
+    RETURNING id
+)
+UPDATE chat_wakeup SET chat_session_id = sqlc.arg('to_session_id'), updated_at = now()
+WHERE chat_wakeup.task_id IN (SELECT moved.id FROM moved);

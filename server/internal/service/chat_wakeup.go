@@ -25,6 +25,9 @@ const (
 	ChatWakeupMaxAhead       = 24 * time.Hour
 	ChatWakeupMaxInstruction = 12000
 
+	// WakeupTaskKind marks a DM turn a wakeup started (agent_task_queue.task_kind).
+	WakeupTaskKind = "wakeup"
+
 	chatWakeupTickBatch = 50
 	chatWakeupMaxHops   = 5
 )
@@ -149,18 +152,20 @@ func (s *ChatWakeupService) fire(ctx context.Context, w db.ChatWakeup) error {
 
 	var started *db.AgentTaskQueue
 	err = s.Tasks.runInTx(ctx, func(qtx *db.Queries) error {
-		locked, err := qtx.LockPendingChatWakeup(ctx, w.ID)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil // cancelled or taken by another tick
-		} else if err != nil {
-			return err
-		}
+		// Session first, then the wakeup row: DM deletion takes them in that
+		// order, and the opposite order deadlocks with it.
 		current, err := qtx.LockChatSessionForEnqueue(ctx, session.ID)
 		if err != nil {
 			return err
 		}
 		if current.Status != "active" || current.ContinuedIntoSessionID.Valid {
 			return errChatWakeupRetry // the DM moved since the preflight
+		}
+		locked, err := qtx.LockPendingChatWakeup(ctx, w.ID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil // cancelled or taken by another tick
+		} else if err != nil {
+			return err
 		}
 		if locked.ChatSessionID != current.ID {
 			if err := qtx.MoveChatWakeupToSession(ctx, db.MoveChatWakeupToSessionParams{ID: locked.ID, ChatSessionID: current.ID}); err != nil {
