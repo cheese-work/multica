@@ -64,7 +64,9 @@ import type {
   WorkspaceRepo,
   WorkspaceExportPrivacy,
   WorkspaceGovernanceConfig,
+  WorkspaceGovernanceRollback,
   WorkspaceJevGovernancePatch,
+  JevCredentialPresence,
   WorkspaceMcpServer,
   MemberWithUser,
   User,
@@ -387,6 +389,7 @@ import {
   CreateWorkspaceSubscriptionPortalResponseSchema,
   WorkspaceExportPrivacySchema,
   WorkspaceGovernanceConfigSchema,
+  JevCredentialPresenceSchema,
   DingTalkInstallationSchema,
   ListDingTalkInstallationsResponseSchema,
   ListDingTalkGroupsResponseSchema,
@@ -3172,13 +3175,33 @@ export class ApiClient {
 
   async patchGovernanceConfig(
     id: string,
-    patch: WorkspaceJevGovernancePatch,
+    patch: WorkspaceJevGovernancePatch | WorkspaceGovernanceRollback,
   ): Promise<WorkspaceGovernanceConfig> {
     const raw = await this.fetch<unknown>(`/api/workspaces/${id}/governance/config`, {
       method: "PATCH",
       body: JSON.stringify(patch),
     });
     return WorkspaceGovernanceConfigSchema.parse(raw);
+  }
+
+  // CHE-1853: the Jev provider key. Presence is readable by any member; set,
+  // replace and delete are owner/admin only. There is no read endpoint for the
+  // key, and the key is sent once in a request body that is never logged here.
+  async getJevCredential(id: string): Promise<JevCredentialPresence> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${id}/jev/credential`);
+    return JevCredentialPresenceSchema.parse(raw);
+  }
+
+  async putJevCredential(id: string, apiKey: string): Promise<JevCredentialPresence> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${id}/jev/credential`, {
+      method: "PUT",
+      body: JSON.stringify({ api_key: apiKey }),
+    });
+    return JevCredentialPresenceSchema.parse(raw);
+  }
+
+  async deleteJevCredential(id: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${id}/jev/credential`, { method: "DELETE" });
   }
 
   async listPluginInstallations(workspaceId: string): Promise<PluginInstallationListResponse> {

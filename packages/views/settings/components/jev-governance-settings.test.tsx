@@ -173,10 +173,9 @@ describe("Jev / Governance routing pane", () => {
     expect(screen.getByText(REASON)).toBeVisible();
     expect(screen.getByRole("textbox", { name: "Min confidence" })).toHaveValue("0.80");
     expect(screen.getByText("Default 0.90.")).toBeVisible();
-    // Nothing unfinished is offered: no save bar until something changes, and
-    // no credential or history controls in this layer.
+    // No save bar until something changes. The credential and history panes
+    // arrived with CHE-1853 and have their own tests.
     expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
-    expect(screen.queryByText(/credential|provider key|roll back/i)).toBeNull();
   });
 
   it("saves a changed mode with the version it was based on", async () => {
