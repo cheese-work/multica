@@ -47,8 +47,8 @@ export interface IssueChipProps {
   /** Extra classes — callers layer interaction hints here
    *  (e.g. `hover:bg-accent cursor-pointer` for navigable variants). */
   className?: string;
-  /** Fix the width at the chip's cap rather than its content. Set for a bare
-   *  key, whose loading box is the same width. */
+  /** Fix the width at the shared stable width (14 rem) rather than its content.
+   *  Set for a bare key, whose loading box is the same width. */
   stableWidth?: boolean;
 }
 

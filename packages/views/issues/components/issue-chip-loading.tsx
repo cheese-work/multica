@@ -5,8 +5,8 @@ import { ISSUE_CHIP_BASE_CLASS, ISSUE_CHIP_STABLE_WIDTH_CLASS } from "./issue-ch
  * resolved chip's shell, including an empty slot where the status icon goes
  * (the icon is the chip's first flex item and sets its baseline), so the line
  * keeps the chip's height and vertical position when the lookup lands. Its
- * width is the chip's cap, the same as the resolved bare-key chip's, so nothing
- * on the line moves.
+ * width is the shared fixed width (14 rem), the same as the resolved bare-key
+ * chip's, so nothing on the line moves.
  *
  * Deliberately not a link: the key is unverified until the lookup settles, and
  * a miss (404) turns back into the plain text the author typed.
