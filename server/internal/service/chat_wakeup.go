@@ -55,10 +55,11 @@ type PullRequestAddress struct {
 }
 
 // ChecksNotReadyError refuses a checks condition while a linked pull request's
-// finished check data has no node ids, which only rows written before the ids
-// were stored can lack. A baseline taken from such data could later fire on a
-// metadata-only backfill, or swallow a real change. The caller refreshes the
-// listed pull requests and the agent retries.
+// finished check data has no node ids (rows written before the ids were stored),
+// or has no API snapshot at all. A baseline taken from such data could later fire
+// on a result that finished before the wakeup, on a metadata-only backfill, or
+// swallow a real change. The caller refreshes the listed pull requests and the
+// agent retries.
 type ChecksNotReadyError struct{ PRs []PullRequestAddress }
 
 func (ChecksNotReadyError) Error() string {
@@ -210,13 +211,22 @@ func (s *ChatWakeupService) buildCondition(ctx context.Context, workspaceID pgty
 			var notReady ChecksNotReadyError
 			for _, row := range rows {
 				key := strconv.Itoa(int(row.PrNumber))
+				address := PullRequestAddress{InstallationID: row.InstallationID, Owner: row.RepoOwner, Repo: row.RepoName, Number: row.PrNumber}
 				switch {
+				case !row.Snapshotted:
+					// Nothing is known about its checks. The first snapshot may show a
+					// result that finished before this wakeup or after it, and the data
+					// cannot say which. Wait for the snapshot instead of guessing.
+					notReady.PRs = append(notReady.PRs, address)
 				case checksTerminal(row.HeadSha, row.Checks) && row.ChecksIdentityPartial:
-					notReady.PRs = append(notReady.PRs, PullRequestAddress{InstallationID: row.InstallationID, Owner: row.RepoOwner, Repo: row.RepoName, Number: row.PrNumber})
+					notReady.PRs = append(notReady.PRs, address)
 				case checksTerminal(row.HeadSha, row.Checks):
 					stored.Baseline[key] = checksResultKey(row.HeadSha, row.Checks, row.ChecksIdentity)
 				case row.HeadSha != "":
+					stored.Baseline[key] = "" // snapshotted, no finished result yet
 					stored.Armed = append(stored.Armed, key)
+				default:
+					stored.Baseline[key] = "" // snapshotted, no checks yet
 				}
 			}
 			if len(notReady.PRs) > 0 {

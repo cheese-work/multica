@@ -1,12 +1,15 @@
 package handler
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -96,7 +99,7 @@ func TestChatWakeupPullRequestChecksNeedANewResult(t *testing.T) {
 		"workspace_id": testWorkspaceID, "installation_id": 1, "repo_owner": "multica-ai", "repo_name": "wakeup-test",
 		"pr_number": time.Now().UnixMilli() % 100000, "title": "PR", "state": "open", "html_url": "https://example.test/pr",
 		"pr_created_at": testutil.Raw("now()"), "pr_updated_at": testutil.Raw("now()"),
-		"snapshot_head_sha": "aaa", "checks_rollup_state": "SUCCESS",
+		"snapshot_head_sha": "aaa", "checks_rollup_state": "SUCCESS", "snapshot_fetched_at": testutil.Raw("now()"),
 	})
 	dbfx.Exec(t, `INSERT INTO issue_pull_request(issue_id, pull_request_id) VALUES ($1, $2)`, issue, pr)
 	dbfx.Cleanup(t, `DELETE FROM issue_pull_request WHERE pull_request_id = $1`, pr)
@@ -175,11 +178,33 @@ func linkedPullRequest(t *testing.T, issue, head, checks string) string {
 		"workspace_id": testWorkspaceID, "installation_id": 1, "repo_owner": "multica-ai", "repo_name": "wakeup-test",
 		"pr_number": time.Now().UnixNano() % 1000000, "title": "PR", "state": "open", "html_url": "https://example.test/pr",
 		"pr_created_at": testutil.Raw("now()"), "pr_updated_at": testutil.Raw("now()"),
-		"snapshot_head_sha": head, "checks_rollup_state": checks,
+		"snapshot_head_sha": head, "checks_rollup_state": checks, "snapshot_fetched_at": testutil.Raw("now()"),
 	})
 	dbfx.Exec(t, `INSERT INTO issue_pull_request(issue_id, pull_request_id) VALUES ($1, $2)`, issue, pr)
 	dbfx.Cleanup(t, `DELETE FROM issue_pull_request WHERE pull_request_id = $1`, pr)
 	return pr
+}
+
+// linkedUnsnapshottedPullRequest is a pull request that is linked but has no API
+// snapshot yet: the mirror knows its head, and nothing about its checks.
+func linkedUnsnapshottedPullRequest(t *testing.T, issue string) string {
+	t.Helper()
+	pr := dbfx.Insert(t, "github_pull_request", testutil.Cols{
+		"workspace_id": testWorkspaceID, "installation_id": 1, "repo_owner": "multica-ai", "repo_name": "wakeup-test",
+		"pr_number": time.Now().UnixNano() % 1000000, "title": "PR", "state": "open", "html_url": "https://example.test/pr",
+		"pr_created_at": testutil.Raw("now()"), "pr_updated_at": testutil.Raw("now()"), "head_sha": "aaa",
+	})
+	dbfx.Exec(t, `INSERT INTO issue_pull_request(issue_id, pull_request_id) VALUES ($1, $2)`, issue, pr)
+	dbfx.Cleanup(t, `DELETE FROM issue_pull_request WHERE pull_request_id = $1`, pr)
+	return pr
+}
+
+// snapshotArrives models a successful snapshot refresh: the rollup state, the
+// fetch time and one finished check run with a node id.
+func snapshotArrives(t *testing.T, pr, rollup, externalID string) {
+	t.Helper()
+	dbfx.Exec(t, `UPDATE github_pull_request SET snapshot_head_sha = 'aaa', checks_rollup_state = $2, snapshot_fetched_at = now() WHERE id = $1`, pr, rollup)
+	setContexts(t, pr, "aaa", []int{0}, checkContext{name: "build", url: "https://ci.example/build/1", conclusion: "success", externalID: externalID})
 }
 
 func TestChatWakeupPullRequestChecksSeeARerunOnTheSameHead(t *testing.T) {
@@ -364,5 +389,86 @@ func TestChatWakeupChecksConditionWaitsForCheckDataThatCarriesIds(t *testing.T) 
 	dm.tick(t)
 	if got := dm.wakeupTasks(t, dm.sessionID); len(got) != 1 {
 		t.Fatalf("%d wakeup tasks after a real rerun, want 1", len(got))
+	}
+}
+
+// OCR-1874-7: a checks condition set before the pull request's first snapshot
+// has no baseline. The first snapshot may reveal a result that finished before
+// the wakeup existed, which must not fire it, or one that finished after, which
+// must. The data cannot say which, so the wakeup waits for the snapshot: creating
+// it answers 409 and enqueues a refresh, and the retry takes a precise baseline.
+// With the old behavior the condition was created and fired on the old result.
+func TestChatWakeupCreatedBeforeTheFirstSnapshotDoesNotFireOnAnExistingResult(t *testing.T) {
+	dm := newWakeupDM(t)
+	testHandler.TaskService.PRSnapshotsEnabled = true
+	t.Cleanup(func() { testHandler.TaskService.PRSnapshotsEnabled = false })
+	issue := dbfx.Issue(t, "First snapshot issue")
+	pr := linkedUnsnapshottedPullRequest(t, issue)
+	create := func() *testutil.Response {
+		return dm.createWithCondition(t, map[string]any{"issue": issue, "pr": "checks_finished"})
+	}
+
+	if first := create(); first.Code == http.StatusConflict {
+		if n := dbfx.Count(t, `SELECT count(*) FROM chat_wakeup WHERE chat_session_id = $1`, dm.sessionID); n != 0 {
+			t.Fatalf("a refused wakeup left %d rows", n)
+		}
+		snapshotArrives(t, pr, "SUCCESS", "CR_existing") // the refresh the 409 asked for
+		create().Want(http.StatusCreated)
+	} else {
+		first.Want(http.StatusCreated)
+		snapshotArrives(t, pr, "SUCCESS", "CR_existing") // the old behavior: created first
+	}
+	dm.tick(t)
+	if got := dm.wakeupTasks(t, dm.sessionID); len(got) != 0 {
+		t.Fatalf("%d wakeup task(s) fired from the first snapshot of a result that existed when the wakeup was set, want none", len(got))
+	}
+	// A genuinely new result after that still fires.
+	snapshotArrives(t, pr, "SUCCESS", "CR_rerun")
+	dm.tick(t)
+	if got := dm.wakeupTasks(t, dm.sessionID); len(got) != 1 {
+		t.Fatalf("%d wakeup tasks after a genuine new result, want 1", len(got))
+	}
+}
+
+// A pull request whose snapshot exists but has no checks yet has nothing to
+// adopt: its first finished result is new, and fires.
+func TestChatWakeupOnAPullRequestWithNoChecksYetFiresOnTheFirstResult(t *testing.T) {
+	dm := newWakeupDM(t)
+	testHandler.TaskService.PRSnapshotsEnabled = true
+	t.Cleanup(func() { testHandler.TaskService.PRSnapshotsEnabled = false })
+	issue := dbfx.Issue(t, "No checks yet issue")
+	pr := linkedUnsnapshottedPullRequest(t, issue)
+	// A snapshot was fetched and the pull request has no checks (statusCheckRollup was null).
+	dbfx.Exec(t, `UPDATE github_pull_request SET snapshot_head_sha = 'aaa', snapshot_fetched_at = now() WHERE id = $1`, pr)
+	dm.createWithCondition(t, map[string]any{"issue": issue, "pr": "checks_finished"}).Want(http.StatusCreated)
+	dm.tick(t)
+	if got := dm.wakeupTasks(t, dm.sessionID); len(got) != 0 {
+		t.Fatalf("fired before any check finished: %v", got)
+	}
+	snapshotArrives(t, pr, "SUCCESS", "CR_first")
+	dm.tick(t)
+	if got := dm.wakeupTasks(t, dm.sessionID); len(got) != 1 {
+		t.Fatalf("%d wakeup tasks after the first finished result, want 1", len(got))
+	}
+}
+
+// The 409 names the pull requests to refresh, so the handler can enqueue them.
+// The enqueue itself is not covered: the refresh manager is not enabled in the
+// handler tests, so the handler skips it.
+func TestChecksNotReadyErrorNamesThePullRequestsToRefresh(t *testing.T) {
+	dm := newWakeupDM(t)
+	issue := dbfx.Issue(t, "Refresh address issue")
+	pr := linkedUnsnapshottedPullRequest(t, issue)
+	var number int32
+	dbfx.QueryRow(t, `SELECT pr_number FROM github_pull_request WHERE id = $1`, pr).Scan(&number)
+
+	_, err := testHandler.chatWakeups().Create(context.Background(), parseUUID(dm.sessionID), parseUUID(dm.taskID), "x", time.Now().Add(time.Hour), time.Now(),
+		&service.ChatWakeupConditionInput{Issue: parseUUID(issue), PR: "checks_finished"})
+	var notReady service.ChecksNotReadyError
+	if !errors.As(err, &notReady) || len(notReady.PRs) != 1 {
+		t.Fatalf("err = %v, want a ChecksNotReadyError naming one pull request", err)
+	}
+	if got := notReady.PRs[0]; got.InstallationID != 1 || got.Owner != "multica-ai" || got.Repo != "wakeup-test" || got.Number != number {
+		t.Fatalf("address = %+v", got)
 	}
 }

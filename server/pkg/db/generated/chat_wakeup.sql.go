@@ -177,7 +177,7 @@ func (q *Queries) GetChatWakeupNewComment(ctx context.Context, arg GetChatWakeup
 }
 
 const listChatWakeupLinkedPullRequests = `-- name: ListChatWakeupLinkedPullRequests :many
-SELECT pr.pr_number, pr.installation_id, pr.repo_owner, pr.repo_name, COALESCE(pr.snapshot_head_sha, '')::text AS head_sha, COALESCE(pr.checks_rollup_state, '')::text AS checks,
+SELECT pr.pr_number, pr.installation_id, pr.repo_owner, pr.repo_name, (pr.snapshot_fetched_at IS NOT NULL)::boolean AS snapshotted, COALESCE(pr.snapshot_head_sha, '')::text AS head_sha, COALESCE(pr.checks_rollup_state, '')::text AS checks,
        COALESCE((
            SELECT md5(string_agg(x.t, E'\n' ORDER BY x.t))
            FROM (
@@ -201,6 +201,7 @@ type ListChatWakeupLinkedPullRequestsRow struct {
 	InstallationID        int64  `json:"installation_id"`
 	RepoOwner             string `json:"repo_owner"`
 	RepoName              string `json:"repo_name"`
+	Snapshotted           bool   `json:"snapshotted"`
 	HeadSha               string `json:"head_sha"`
 	Checks                string `json:"checks"`
 	ChecksIdentity        string `json:"checks_identity"`
@@ -214,7 +215,8 @@ type ListChatWakeupLinkedPullRequestsRow struct {
 // the result even when name, state, URL and time match, and even if no poll saw
 // the run in progress. checks_identity_partial is true while a finished run has
 // no node id (rows written before the column existed, until the next snapshot
-// refresh): such data cannot name a result.
+// refresh): such data cannot name a result. snapshotted is false until the first
+// successful API snapshot: before it, nothing is known about the checks.
 func (q *Queries) ListChatWakeupLinkedPullRequests(ctx context.Context, issueID pgtype.UUID) ([]ListChatWakeupLinkedPullRequestsRow, error) {
 	rows, err := q.db.Query(ctx, listChatWakeupLinkedPullRequests, issueID)
 	if err != nil {
@@ -229,6 +231,7 @@ func (q *Queries) ListChatWakeupLinkedPullRequests(ctx context.Context, issueID 
 			&i.InstallationID,
 			&i.RepoOwner,
 			&i.RepoName,
+			&i.Snapshotted,
 			&i.HeadSha,
 			&i.Checks,
 			&i.ChecksIdentity,
