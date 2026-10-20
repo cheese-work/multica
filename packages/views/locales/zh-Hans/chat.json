@@ -27,7 +27,6 @@
     "compacting_toast": "此私信正在压缩。完成后请重新发送。",
     "rename_failed_toast": "重命名对话失败",
     "fork_unconfirmed": "无法确认分支是否成功。重试前请先查看“已分支到”链接。",
-    "fork_attachments_blocked": "/fork 不能附带附件。",
     "rename_title_too_long_toast": "对话标题不能超过 200 个字符",
     "rename_session_required_toast": "开始对话后才能重命名",
     "send_blocked_toast": "消息未发送——你已没有该智能体的使用权限",
@@ -262,6 +261,10 @@
     "row_actions_aria": "聊天操作"
   },
   "header": {
+    "context_meter": "{{window}} 中的 {{pct}}%",
+    "context_meter_warning": "下一次回复后将压缩",
+    "compact_now": "立即压缩",
+    "more_actions": "更多操作",
     "view_profile": "查看智能体资料",
     "rename": "重命名会话",
     "delete": "删除会话",

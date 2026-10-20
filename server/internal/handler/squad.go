@@ -460,16 +460,23 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var rawFields map[string]json.RawMessage
+	_ = json.Unmarshal(bodyBytes, &rawFields) // body already decoded into req above
+
+	// CHE-1862: an agent write backed by a vote receipt skips the denial below.
+	if voteEntered(actorType, req.Instructions != nil, rawFields) {
+		h.ownerCASUpdateSquad(w, r, workspaceID, member, squad, actorType, actorID, rawFields)
+		return
+	}
+
 	if rejectGovernedFieldForAgentActor(w, r, actorType, req.Instructions != nil, "instructions") {
 		return
 	}
 
 	// CHE-1300: owner-only atomic CAS, entered by the digest key. After the
 	// guard above so a machine actor never reaches it.
-	var rawFields map[string]json.RawMessage
-	_ = json.Unmarshal(bodyBytes, &rawFields) // body already decoded into req above
 	if ownerCASRequested(rawFields) {
-		h.ownerCASUpdateSquad(w, r, workspaceID, member, squad, actorType, rawFields)
+		h.ownerCASUpdateSquad(w, r, workspaceID, member, squad, actorType, actorID, rawFields)
 		return
 	}
 
@@ -1292,12 +1299,30 @@ func commentMentionsAnyone(content string) bool {
 // same trigger set.
 // It returns true only when a leader task was actually enqueued.
 func (h *Handler) enqueueSquadLeaderTask(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID, handoffNote string) bool {
+	return h.enqueueSquadLeaderTaskOutcome(ctx, issue, triggerCommentID, authorType, authorID, handoffNote) != squadEnqueueNone
+}
+
+// squadEnqueueOutcome says whose run an enqueue for a squad assignment started.
+type squadEnqueueOutcome int
+
+const (
+	// squadEnqueueNone: no run was started.
+	squadEnqueueNone squadEnqueueOutcome = iota
+	// squadEnqueueLeader: the squad leader's run was queued.
+	squadEnqueueLeader
+	// squadEnqueueSpecialist: Jev routed the work to a specialist; the leader
+	// runs nothing for this write.
+	squadEnqueueSpecialist
+)
+
+// enqueueSquadLeaderTaskOutcome is enqueueSquadLeaderTask reporting who got the run.
+func (h *Handler) enqueueSquadLeaderTaskOutcome(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID, handoffNote string) squadEnqueueOutcome {
 	squad, err := h.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{
 		ID:          issue.AssigneeID,
 		WorkspaceID: issue.WorkspaceID,
 	})
 	if err != nil {
-		return false
+		return squadEnqueueNone
 	}
 
 	// The gate must judge the SAME top-of-chain human the enqueue path will
@@ -1317,7 +1342,7 @@ func (h *Handler) enqueueSquadLeaderTask(ctx context.Context, issue db.Issue, tr
 		leaderOriginator = uuidToString(h.TaskService.OriginatorForIssueTask(ctx, issue, pgtype.UUID{}))
 	}
 	if !h.canEnqueueSquadLeader(ctx, squad.LeaderID, authorType, authorID, leaderOriginator, uuidToString(issue.WorkspaceID)) {
-		return false
+		return squadEnqueueNone
 	}
 
 	hasPending, err := h.Queries.HasPendingTaskForIssueAndAgent(ctx, db.HasPendingTaskForIssueAndAgentParams{
@@ -1327,12 +1352,12 @@ func (h *Handler) enqueueSquadLeaderTask(ctx context.Context, issue db.Issue, tr
 		HeadSha: h.TaskService.ResolveIssueReviewSHAParam(ctx, issue.ID),
 	})
 	if err != nil || hasPending {
-		return false
+		return squadEnqueueNone
 	}
 
 	// Try Jev Squad Routing (CHE-1708)
 	if routed, advisory := h.tryJevSquadRouting(ctx, issue, squad, authorType, authorID, leaderOriginator, triggerCommentID); routed {
-		return true
+		return squadEnqueueSpecialist
 	} else if advisory != "" {
 		if strings.TrimSpace(handoffNote) != "" {
 			handoffNote = handoffNote + "\n\n" + advisory
@@ -1353,7 +1378,7 @@ func (h *Handler) enqueueSquadLeaderTask(ctx context.Context, issue db.Issue, tr
 			"squad_id", uuidToString(squad.ID),
 			"leader_id", uuidToString(squad.LeaderID),
 			"error", err)
-		return false
+		return squadEnqueueNone
 	}
-	return true
+	return squadEnqueueLeader
 }

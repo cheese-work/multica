@@ -29,9 +29,7 @@ import (
 // meaningful summary, short enough to keep the dropdown row scannable.
 const chatSessionTitleMaxLen = 200
 
-// ---------------------------------------------------------------------------
 // Chat Sessions
-// ---------------------------------------------------------------------------
 
 type CreateChatSessionRequest struct {
 	AgentID   string  `json:"agent_id"`
@@ -887,9 +885,7 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// ---------------------------------------------------------------------------
 // Chat Messages
-// ---------------------------------------------------------------------------
 
 type SendChatMessageRequest struct {
 	Content       string   `json:"content"`
@@ -1477,9 +1473,7 @@ func (h *Handler) MarkChatSessionRead(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// ---------------------------------------------------------------------------
 // Deferred-cancellation draft restores (#5219)
-// ---------------------------------------------------------------------------
 
 // ChatDraftRestoreResponse is one recoverable composer draft: a deferred
 // cancellation settled as empty-transcript after the cancel HTTP response
@@ -1882,9 +1876,7 @@ func (h *Handler) ClearQueuedChatTasks(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// ---------------------------------------------------------------------------
 // Task cancellation (user-facing, with ownership check)
-// ---------------------------------------------------------------------------
 
 // CancelTaskByUser cancels a task the caller is allowed to act on within the
 // current workspace.
@@ -2032,9 +2024,7 @@ func (h *Handler) CancelTaskByUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// ---------------------------------------------------------------------------
 // Response types & helpers
-// ---------------------------------------------------------------------------
 
 type ChatSessionResponse struct {
 	ID                     string  `json:"id"`
@@ -2064,9 +2054,14 @@ type ChatSessionResponse struct {
 	IsCurrentChannelRoute *bool                             `json:"is_current_channel_route,omitempty"`
 	// Compacting is true while a compaction task (manual or automatic) is
 	// active for this DM: sends are refused with 409 chat_compacting.
-	Compacting bool   `json:"compacting"`
-	CreatedAt  string `json:"created_at"`
-	UpdatedAt  string `json:"updated_at"`
+	Compacting bool `json:"compacting"`
+	// ContextTokens / ContextWindow: the latest completed run's last prompt size
+	// and the model's context window, for the context meter. Absent when that
+	// run reported neither (CHE-1808).
+	ContextTokens *int64 `json:"context_tokens,omitempty"`
+	ContextWindow *int64 `json:"context_window,omitempty"`
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
 }
 
 type ChatSessionChannelSourceResponse struct {
@@ -2091,8 +2086,20 @@ func (h *Handler) hydrateChatSessionCompacting(ctx context.Context, sessions []C
 	for _, id := range compacting {
 		byID[uuidToString(id)] = true
 	}
+	latest, err := h.Queries.ListLatestRunContextForChatSessions(ctx, ids)
+	if err != nil {
+		return err
+	}
+	runContext := make(map[string]db.ListLatestRunContextForChatSessionsRow, len(latest))
+	for _, row := range latest {
+		runContext[uuidToString(row.ChatSessionID)] = row
+	}
 	for i := range sessions {
 		sessions[i].Compacting = byID[sessions[i].ID]
+		if row, ok := runContext[sessions[i].ID]; ok && row.ContextTokens.Valid && row.ContextWindow.Valid {
+			sessions[i].ContextTokens = &row.ContextTokens.Int64
+			sessions[i].ContextWindow = &row.ContextWindow.Int64
+		}
 	}
 	return nil
 }

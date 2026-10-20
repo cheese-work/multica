@@ -267,5 +267,18 @@
   "summary.chat": "Chat run",
   "summary.direct": "Run",
   "cancel.title": "Cancel run?",
-  "cancel.cancel_task": "Cancel run"
+  "cancel.cancel_task": "Cancel run",
+  "workflow_handoff": {
+    "check_failed_title": "Couldn't check the handoff",
+    "check_failed_message": "Nothing was changed. {{message}}",
+    "retry": "Retry",
+    "cancel": "Cancel",
+    "confirm_title": "Move to {{status}}?",
+    "confirm_message": "This hands the issue to {{handler}}.",
+    "confirm_message_runs": "This hands the issue to {{handler}} and can stop the previous assignee's active runs.",
+    "move": "Move",
+    "move_and_stop": "Move and stop runs",
+    "failed_title": "Couldn't change the status",
+    "stale_message": "The issue or its workflow changed since the handoff was previewed. Nothing was changed; try again."
+  }
 }

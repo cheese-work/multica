@@ -137,7 +137,7 @@ The notification track (N) and the search track (S) are independent. S2 and S3 w
 
 ## Decided Defaults (D4 = A, Cheese, 2026-10-16)
 
-1. **DM in-app default:** `in_app` for `dm` is on by default; `push` is off by default for both sources.
+1. **DM in-app default:** ~~`in_app` for `dm` is on by default~~ superseded by CHE-1848 (Cheese, 2026-10-18, option B): both `dm` switches are off by default, so DM replies reach the Inbox only after an opt-in. `push` is off by default for both sources.
 2. **Inbox placement:** DM records appear in the main Inbox list with a DM icon and an inbox filter chip; the exact layout is decided in the N4 design loop.
 3. **Push delay:** 10 s before sending, skipped if the record is read by then.
 4. **Message content index:** none by default; S1 measures with `EXPLAIN` on the largest workspace and adds a trigram GIN index on `chat_message.content` only if the search timeout budget is exceeded.

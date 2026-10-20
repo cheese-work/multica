@@ -14,9 +14,9 @@ export type ForkResult = { ok: true } | { ok: false; error: string };
 
 /**
  * Handler for the composer's `/fork`. The server copies the DM; this hook owns
- * the idempotency key so retrying the same text in the same DM replays the
- * request instead of forking twice. The key lives in memory only: it is retired
- * on success or as soon as the DM or the text changes.
+ * the idempotency key so retrying the same text and attachments in the same DM
+ * replays the request instead of forking twice. The key lives in memory only: it
+ * is retired on success or as soon as the DM, the text or the attachments change.
  */
 export function useChatFork(
   session: ChatSession | null | undefined,
@@ -24,15 +24,16 @@ export function useChatFork(
 ) {
   const { t } = useT("chat");
   const forkSession = useForkChatSession();
-  const keyRef = useRef<{ sessionId: string; message: string; key: string } | null>(null);
+  const keyRef = useRef<{ sessionId: string; message: string; attachments: string; key: string } | null>(null);
 
-  const handleFork = async (message: string): Promise<ForkResult> => {
+  const handleFork = async (message: string, attachmentIds: string[] = []): Promise<ForkResult> => {
     const unconfirmed = { ok: false, error: t(($) => $.input.fork_unconfirmed) } as const;
     if (!session) return unconfirmed;
     const sessionId = session.id;
     let entry = keyRef.current;
-    if (entry?.sessionId !== sessionId || entry.message !== message) {
-      entry = { sessionId, message, key: newIdempotencyKey() };
+    const attachments = [...attachmentIds].sort().join(",");
+    if (entry?.sessionId !== sessionId || entry.message !== message || entry.attachments !== attachments) {
+      entry = { sessionId, message, attachments, key: newIdempotencyKey() };
       keyRef.current = entry;
     }
     try {
@@ -40,6 +41,7 @@ export function useChatFork(
         sessionId,
         idempotencyKey: entry.key,
         message,
+        attachmentIds,
       });
       // Malformed success body: the fork may have happened, so keep the key.
       if (!response.session.id) return unconfirmed;

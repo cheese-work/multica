@@ -153,6 +153,17 @@ export function useSettingsSearchIndex(
       { tab: "members", anchor: "invitations", title: t(($) => $.members.pending_label) },
       { tab: "members", anchor: "links", title: t(($) => $.members.share_links_label) },
       {
+        tab: "jev-governance",
+        title: t(($) => $.page.tabs.jev_governance),
+        description: t(($) => $.jev_governance.search_description),
+      },
+      {
+        tab: "wakeups",
+        anchor: "pause",
+        title: t(($) => $.wakeups.pause_label),
+        description: t(($) => $.wakeups.pause_description),
+      },
+      {
         tab: "wakeups",
         anchor: "child-done",
         title: t(($) => $.wakeups.child_done_title),

@@ -67,6 +67,20 @@ describe("useChatFork", () => {
     expect(onOpenSession).toHaveBeenCalledWith(child);
   });
 
+  it("sends the attachment ids and keeps the key only for the same attachment set", async () => {
+    mocks.fork.mockRejectedValue(new Error("offline"));
+    const { result } = setup();
+    await act(async () => { await result.current.handleFork("look", ["att-1"]); });
+    await act(async () => { await result.current.handleFork("look", ["att-1"]); });
+    await act(async () => { await result.current.handleFork("look", ["att-1", "att-2"]); });
+
+    const [first, retry, changed] = mocks.fork.mock.calls.map(([, body]) => body);
+    expect(first.attachment_ids).toEqual(["att-1"]);
+    expect(retry.idempotency_key).toBe(first.idempotency_key);
+    expect(changed.attachment_ids).toEqual(["att-1", "att-2"]);
+    expect(changed.idempotency_key).not.toBe(first.idempotency_key);
+  });
+
   it("opens the idle child when no message was given", async () => {
     mocks.fork.mockResolvedValue(response(false));
     const { result, client, onOpenSession } = setup();

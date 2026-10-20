@@ -315,3 +315,31 @@ func TestDecisionRequestAPIMalformedInput(test *testing.T) {
 		})
 	}
 }
+
+// A human who left the workspace cannot receive the ping. The worker must
+// record the ping as handled instead of retrying it every cycle.
+func TestDecisionPingToFormerMemberIsRecordedNotRetried(test *testing.T) {
+	fixture := newRequestCoreFixture(test, false)
+	dbfx.Cleanup(test, `DELETE FROM inbox_item WHERE issue_id = $1`, fixture.issueID)
+	result, err := testHandler.createDecisionRequest(fixture.request(), fixture.issue, fixture.input())
+	if err != nil {
+		test.Fatal(err)
+	}
+	dbfx.Exec(test, `DELETE FROM member WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, fixture.humanID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	item, err := decisiontx.NotifyPing(ctx, testPool, testHandler.Queries, result.Request.WorkspaceID, result.Request.ID)
+	if err != nil || item != nil {
+		test.Fatalf("ping to a former member: item=%+v error=%v, want no item and no error", item, err)
+	}
+	pending, err := testHandler.Queries.ListDecisionPingRetries(ctx, 100)
+	if err != nil {
+		test.Fatal(err)
+	}
+	for _, request := range pending {
+		if request.ID == result.Request.ID {
+			test.Fatal("ping for a former member is still queued for retry")
+		}
+	}
+}

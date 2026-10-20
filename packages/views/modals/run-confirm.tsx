@@ -12,7 +12,7 @@ import {
 } from "@multica/ui/components/ui/dialog";
 import { Button } from "@multica/ui/components/ui/button";
 import { Spinner } from "@multica/ui/components/ui/spinner";
-import type { IssueAssigneeType, IssueStatus, UpdateIssueRequest } from "@multica/core/types";
+import type { HandoffPreviewBinding, IssueAssigneeType, IssueStatus, UpdateIssueRequest } from "@multica/core/types";
 import { useUpdateIssue, useBatchUpdateIssues } from "@multica/core/issues/mutations";
 import { errorCode } from "@multica/core/api";
 import { useActorName } from "@multica/core/workspace/hooks";
@@ -67,6 +67,10 @@ interface RunConfirmData {
   assigneeId?: string;
   assigneeName?: string;
   issueRevision?: number;
+  /** promote only: a handoff confirmed first. The write this dialog makes
+   *  carries its stop choice and the preview it was confirmed against. */
+  stopPreviousAssigneeRuns?: boolean;
+  handoffPreview?: HandoffPreviewBinding;
 }
 
 /**
@@ -121,7 +125,11 @@ export function RunConfirmModal({
 
   const applyTo = (extra: Partial<UpdateIssueRequest>) => {
     const base: UpdateIssueRequest = isPromote
-      ? { status: d.status }
+      ? {
+          status: d.status,
+          ...(d.stopPreviousAssigneeRuns ? { stop_previous_assignee_runs: true } : {}),
+          ...(d.handoffPreview ? { handoff_preview: d.handoffPreview } : {}),
+        }
       : {
           assignee_type: d.assigneeType ?? null,
           assignee_id: d.assigneeId ?? null,

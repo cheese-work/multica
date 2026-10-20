@@ -27,7 +27,6 @@
     "compacting_toast": "이 DM을 압축하는 중입니다. 끝난 뒤 다시 보내세요.",
     "rename_failed_toast": "채팅 이름을 바꾸지 못했습니다",
     "fork_unconfirmed": "분기를 확인하지 못했습니다. 다시 시도하기 전에 '분기된 대화' 링크를 확인하세요.",
-    "fork_attachments_blocked": "/fork와 함께 첨부 파일을 보낼 수 없습니다.",
     "rename_title_too_long_toast": "채팅 제목은 200자 이하여야 합니다",
     "rename_session_required_toast": "이름을 바꾸기 전에 채팅을 시작하세요",
     "send_blocked_toast": "메시지가 전송되지 않았습니다 — 이 에이전트를 사용할 권한이 없습니다",
@@ -262,6 +261,10 @@
     "row_actions_aria": "채팅 작업"
   },
   "header": {
+    "context_meter": "{{window}} 중 {{pct}}%",
+    "context_meter_warning": "다음 답변 후 압축됩니다",
+    "compact_now": "지금 압축",
+    "more_actions": "더 보기",
     "view_profile": "Agent 프로필 보기",
     "rename": "이름 변경",
     "delete": "채팅 삭제",

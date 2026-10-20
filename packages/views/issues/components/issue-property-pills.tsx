@@ -39,6 +39,8 @@ export function IssuePropertyPills({
         onUpdate={onUpdate}
         triggerRender={<PillButton />}
         align="start"
+        projectId={issue.project_id}
+        issue={issue}
         onMarkDuplicate={onMarkDuplicate}
         isDuplicate={isDuplicate}
       />

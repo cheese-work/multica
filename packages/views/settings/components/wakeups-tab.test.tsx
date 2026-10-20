@@ -6,19 +6,26 @@ import { renderWithI18n } from "../../test/i18n";
 import { WakeupsTab } from "./wakeups-tab";
 
 vi.mock("@multica/core/api", () => ({
-  api: { listWorkspaceSystemWakeups: vi.fn(), updateWorkspaceSystemWakeup: vi.fn() },
+  api: { listWorkspaceSystemWakeups: vi.fn(), updateWorkspaceSystemWakeup: vi.fn(), updateWorkspace: vi.fn() },
 }));
+let settings: Record<string, unknown> = {};
+vi.mock("@multica/core/paths", () => ({
+  useCurrentWorkspace: () => ({ id: "ws", settings }),
+}));
+vi.mock("../../common/use-viewing-timezone", () => ({ useViewingTimezone: () => "UTC" }));
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws" }));
 vi.mock("@multica/core/auth", () => ({
   useAuthStore: (selector: (s: unknown) => unknown) => selector({ user: { id: "u" } }),
 }));
 let role = "admin";
 vi.mock("@multica/core/workspace/queries", () => ({
-  memberListOptions: () => ({ queryKey: ["members", "ws"], queryFn: async () => [{ user_id: "u", role }] }),
+  memberListOptions: () => ({ queryKey: ["members", "ws"], queryFn: async () => [{ user_id: "u", name: "Ada", role }] }),
+  workspaceKeys: { list: () => ["workspaces"] },
 }));
 
 const list = vi.mocked(api.listWorkspaceSystemWakeups);
 const update = vi.mocked(api.updateWorkspaceSystemWakeup);
+const updateWorkspace = vi.mocked(api.updateWorkspace);
 
 function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
@@ -31,6 +38,8 @@ function mount() {
 
 beforeEach(() => {
   role = "admin";
+  settings = { github_enabled: true };
+  updateWorkspace.mockReset().mockResolvedValue({ id: "ws" } as never);
   list.mockReset().mockResolvedValue([
     { rule: "child_done", enabled: true, instruction: "", builtin_instruction: "Advance the next stage.", customized: 2 },
   ]);
@@ -59,4 +68,95 @@ it("shows the defaults read-only to members who cannot change them", async () =>
   expect(screen.getByRole("switch", { name: "On by default" })).toHaveAttribute("aria-disabled", "true");
   expect(screen.getByRole("textbox", { name: "Default instruction" })).toBeDisabled();
   expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+});
+
+it("lets an admin pause every wakeup and keeps the rest of the settings", async () => {
+  mount();
+  const toggle = await screen.findByRole("switch", { name: "Pause all wakeups" });
+  // The switch stays disabled until the member list says the viewer is an admin.
+  await waitFor(() => expect(toggle).not.toHaveAttribute("aria-disabled", "true"));
+  fireEvent.click(toggle);
+  await waitFor(() =>
+    expect(updateWorkspace).toHaveBeenCalledWith("ws", { wakeups_paused: true }),
+  );
+});
+
+it("names who paused the workspace and shows the per-rule switch as overridden", async () => {
+  settings = { wakeups_paused: true, wakeups_paused_by: "u", wakeups_paused_at: "2026-10-15T08:00:00Z" };
+  mount();
+  expect(await screen.findByText(/Wakeups paused by Ada at /)).toBeVisible();
+  expect(screen.getByRole("switch", { name: "Pause all wakeups" })).toBeChecked();
+  expect(screen.getByRole("switch", { name: "On by default" })).toHaveAttribute("aria-disabled", "true");
+  expect(screen.getByText("Overridden while wakeups are paused.")).toBeVisible();
+  expect(screen.getByTestId("wakeups-paused-banner")).toBeVisible();
+  expect(screen.getByTestId("wakeups-pause-switch")).toBe(screen.getByRole("switch", { name: "Pause all wakeups" }));
+  expect(screen.getByTestId("wakeups-child-done-switch")).toBe(screen.getByRole("switch", { name: "On by default" }));
+  fireEvent.click(screen.getByRole("switch", { name: "Pause all wakeups" }));
+  await waitFor(() =>
+    expect(updateWorkspace).toHaveBeenCalledWith("ws", { wakeups_paused: false }),
+  );
+});
+
+it("shows no pause switch to members who cannot change it", async () => {
+  role = "member";
+  mount();
+  await screen.findByRole("switch", { name: "On by default" });
+  expect(screen.getByRole("switch", { name: "Pause all wakeups" })).toHaveAttribute("aria-disabled", "true");
+});
+
+it("confirms a saved pause and a saved resume (approved rev-3 A: Saved and Resumed states)", async () => {
+  // The saved workspace comes back with the switch as the server stamps it.
+  updateWorkspace.mockImplementation((async (_id: string, body: { wakeups_paused: boolean }) => {
+    settings = { ...settings, wakeups_paused: body.wakeups_paused };
+    return { id: "ws" };
+  }) as never);
+  mount();
+  const toggle = await screen.findByRole("switch", { name: "Pause all wakeups" });
+  await waitFor(() => expect(toggle).not.toHaveAttribute("aria-disabled", "true"));
+  fireEvent.click(toggle);
+  expect(await screen.findByText("Wakeups paused.")).toBeVisible();
+  expect(screen.getByTestId("wakeups-pause-status")).toHaveTextContent("Wakeups paused.");
+  fireEvent.click(screen.getByRole("switch", { name: "Pause all wakeups" }));
+  expect(await screen.findByText("Wakeups resumed.")).toBeVisible();
+  expect(screen.queryByText("Wakeups paused.")).toBeNull();
+});
+
+it("offers Retry when the defaults cannot be loaded (approved rev-3 A: load-error state)", async () => {
+  list.mockReset().mockRejectedValueOnce(new Error("boom")).mockResolvedValue([
+    { rule: "child_done", enabled: true, instruction: "", builtin_instruction: "", customized: 0 },
+  ]);
+  mount();
+  expect(await screen.findByRole("alert")).toHaveTextContent("Could not load wakeup defaults.");
+  expect(screen.getByTestId("wakeups-load-retry")).toBe(screen.getByRole("button", { name: "Retry" }));
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+  expect(await screen.findByRole("switch", { name: "On by default" })).toBeVisible();
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("shows the paused banner in the warning tone and Saved/Resumed in the success tone (approved rev-3 A)", async () => {
+  updateWorkspace.mockImplementation((async (_id: string, body: { wakeups_paused: boolean }) => {
+    settings = { ...settings, wakeups_paused: body.wakeups_paused };
+    return { id: "ws" };
+  }) as never);
+  settings = { wakeups_paused: true, wakeups_paused_by: "u", wakeups_paused_at: "2026-10-15T08:00:00Z" };
+  mount();
+  const banner = await screen.findByTestId("wakeups-paused-banner");
+  // Warning surface and border from the semantic token, not the neutral muted gray.
+  expect(banner).toHaveClass("bg-warning/10", "border-warning/30");
+  expect(banner).not.toHaveClass("bg-muted/60");
+  // Text stays on the foreground token so contrast holds in the light and dark themes.
+  expect(banner).toHaveClass("text-foreground");
+  expect(banner.querySelector("svg")).toHaveClass("text-warning");
+  expect(banner.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+
+  const toggle = screen.getByRole("switch", { name: "Pause all wakeups" });
+  await waitFor(() => expect(toggle).not.toHaveAttribute("aria-disabled", "true"));
+  fireEvent.click(toggle);
+  const saved = await screen.findByTestId("wakeups-pause-status");
+  expect(saved).toHaveTextContent("Wakeups resumed.");
+  expect(saved).toHaveClass("bg-success/10", "border-success/30", "text-foreground");
+  expect(saved).not.toHaveClass("text-muted-foreground");
+  expect(saved.querySelector("svg")).toHaveClass("text-success");
+  expect(saved.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
 });

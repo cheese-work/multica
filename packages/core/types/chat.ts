@@ -118,6 +118,10 @@ export interface ChatSession {
   /** True while a compaction task is active for this DM; sends are refused
    *  (409 chat_compacting) until it ends. Optional for older servers. */
   compacting?: boolean;
+  /** Prompt size of the latest completed run and the model's context window,
+   *  for the context meter. Absent when that run reported neither. */
+  context_tokens?: number | null;
+  context_window?: number | null;
   /** Absent for first-party Chats. */
   is_current_channel_route?: boolean;
   created_at: string;
@@ -198,6 +202,8 @@ export interface ChatForkResponse {
   url: string;
   /** The first message, present when one was sent with the fork. */
   message?: ChatMessage | null;
+  /** Draft attachment ids the server bound to the first message. */
+  attachment_ids?: string[];
 }
 
 export interface PendingChatTaskItem {
