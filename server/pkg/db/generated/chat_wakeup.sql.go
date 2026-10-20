@@ -21,7 +21,7 @@ WITH RECURSIVE lineage AS (
 )
 UPDATE chat_wakeup SET status = 'cancelled', updated_at = now()
 WHERE chat_wakeup.id = $1 AND chat_session_id IN (SELECT lineage.id FROM lineage) AND status = 'pending'
-RETURNING id, workspace_id, chat_session_id, agent_id, created_by, source_task_id, instruction, fire_at, status, task_id, created_at, updated_at, condition
+RETURNING id, workspace_id, chat_session_id, agent_id, created_by, source_task_id, instruction, fire_at, status, task_id, created_at, updated_at, condition, condition_checked_at
 `
 
 type CancelChatWakeupParams struct {
@@ -49,6 +49,7 @@ func (q *Queries) CancelChatWakeup(ctx context.Context, arg CancelChatWakeupPara
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Condition,
+		&i.ConditionCheckedAt,
 	)
 	return i, err
 }
@@ -76,7 +77,7 @@ func (q *Queries) CountPendingChatWakeups(ctx context.Context, id pgtype.UUID) (
 const createChatWakeup = `-- name: CreateChatWakeup :one
 INSERT INTO chat_wakeup (workspace_id, chat_session_id, agent_id, created_by, source_task_id, instruction, fire_at, condition)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING id, workspace_id, chat_session_id, agent_id, created_by, source_task_id, instruction, fire_at, status, task_id, created_at, updated_at, condition
+RETURNING id, workspace_id, chat_session_id, agent_id, created_by, source_task_id, instruction, fire_at, status, task_id, created_at, updated_at, condition, condition_checked_at
 `
 
 type CreateChatWakeupParams struct {
@@ -116,6 +117,7 @@ func (q *Queries) CreateChatWakeup(ctx context.Context, arg CreateChatWakeupPara
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Condition,
+		&i.ConditionCheckedAt,
 	)
 	return i, err
 }
@@ -175,8 +177,41 @@ func (q *Queries) GetChatWakeupNewComment(ctx context.Context, arg GetChatWakeup
 	return id, err
 }
 
+const listChatWakeupLinkedPullRequests = `-- name: ListChatWakeupLinkedPullRequests :many
+SELECT pr.pr_number, COALESCE(pr.snapshot_head_sha, '')::text AS head_sha, COALESCE(pr.checks_rollup_state, '')::text AS checks
+FROM github_pull_request pr
+JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
+WHERE ipr.issue_id = $1
+`
+
+type ListChatWakeupLinkedPullRequestsRow struct {
+	PrNumber int32  `json:"pr_number"`
+	HeadSha  string `json:"head_sha"`
+	Checks   string `json:"checks"`
+}
+
+func (q *Queries) ListChatWakeupLinkedPullRequests(ctx context.Context, issueID pgtype.UUID) ([]ListChatWakeupLinkedPullRequestsRow, error) {
+	rows, err := q.db.Query(ctx, listChatWakeupLinkedPullRequests, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListChatWakeupLinkedPullRequestsRow{}
+	for rows.Next() {
+		var i ListChatWakeupLinkedPullRequestsRow
+		if err := rows.Scan(&i.PrNumber, &i.HeadSha, &i.Checks); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDueChatWakeups = `-- name: ListDueChatWakeups :many
-SELECT id, workspace_id, chat_session_id, agent_id, created_by, source_task_id, instruction, fire_at, status, task_id, created_at, updated_at, condition FROM chat_wakeup
+SELECT id, workspace_id, chat_session_id, agent_id, created_by, source_task_id, instruction, fire_at, status, task_id, created_at, updated_at, condition, condition_checked_at FROM chat_wakeup
 WHERE status = 'pending' AND fire_at <= now()
 ORDER BY fire_at ASC, id ASC
 LIMIT $1
@@ -205,6 +240,7 @@ func (q *Queries) ListDueChatWakeups(ctx context.Context, limit int32) ([]ChatWa
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.Condition,
+			&i.ConditionCheckedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -224,7 +260,7 @@ WITH RECURSIVE lineage AS (
     FROM chat_session s JOIN lineage l ON s.id = l.continued_from_session_id
     WHERE l.depth < 16
 )
-SELECT id, workspace_id, chat_session_id, agent_id, created_by, source_task_id, instruction, fire_at, status, task_id, created_at, updated_at, condition FROM chat_wakeup
+SELECT id, workspace_id, chat_session_id, agent_id, created_by, source_task_id, instruction, fire_at, status, task_id, created_at, updated_at, condition, condition_checked_at FROM chat_wakeup
 WHERE chat_session_id IN (SELECT lineage.id FROM lineage) AND status = 'pending'
 ORDER BY fire_at ASC, chat_wakeup.id ASC
 `
@@ -253,6 +289,7 @@ func (q *Queries) ListPendingChatWakeups(ctx context.Context, id pgtype.UUID) ([
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.Condition,
+			&i.ConditionCheckedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -265,15 +302,23 @@ func (q *Queries) ListPendingChatWakeups(ctx context.Context, id pgtype.UUID) ([
 }
 
 const listWaitingConditionalChatWakeups = `-- name: ListWaitingConditionalChatWakeups :many
-SELECT id, workspace_id, chat_session_id, agent_id, created_by, source_task_id, instruction, fire_at, status, task_id, created_at, updated_at, condition FROM chat_wakeup
+SELECT id, workspace_id, chat_session_id, agent_id, created_by, source_task_id, instruction, fire_at, status, task_id, created_at, updated_at, condition, condition_checked_at FROM chat_wakeup
 WHERE status = 'pending' AND condition IS NOT NULL AND fire_at > now()
-ORDER BY fire_at ASC, id ASC
-LIMIT $1
+  AND NOT (id = ANY(COALESCE($1::uuid[], '{}'::uuid[])))
+ORDER BY condition_checked_at ASC NULLS FIRST, fire_at ASC, id ASC
+LIMIT $2
 `
 
-// Pending wakeups whose condition is still being watched (before the deadline).
-func (q *Queries) ListWaitingConditionalChatWakeups(ctx context.Context, limit int32) ([]ChatWakeup, error) {
-	rows, err := q.db.Query(ctx, listWaitingConditionalChatWakeups, limit)
+type ListWaitingConditionalChatWakeupsParams struct {
+	Seen  []pgtype.UUID `json:"seen"`
+	Batch int32         `json:"batch"`
+}
+
+// Pending wakeups whose condition is still being watched (before the deadline),
+// least recently checked first. seen holds the ids already evaluated in this
+// tick, so a tick can page through all of them.
+func (q *Queries) ListWaitingConditionalChatWakeups(ctx context.Context, arg ListWaitingConditionalChatWakeupsParams) ([]ChatWakeup, error) {
+	rows, err := q.db.Query(ctx, listWaitingConditionalChatWakeups, arg.Seen, arg.Batch)
 	if err != nil {
 		return nil, err
 	}
@@ -295,6 +340,7 @@ func (q *Queries) ListWaitingConditionalChatWakeups(ctx context.Context, limit i
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.Condition,
+			&i.ConditionCheckedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -307,7 +353,7 @@ func (q *Queries) ListWaitingConditionalChatWakeups(ctx context.Context, limit i
 }
 
 const lockPendingChatWakeup = `-- name: LockPendingChatWakeup :one
-SELECT id, workspace_id, chat_session_id, agent_id, created_by, source_task_id, instruction, fire_at, status, task_id, created_at, updated_at, condition FROM chat_wakeup
+SELECT id, workspace_id, chat_session_id, agent_id, created_by, source_task_id, instruction, fire_at, status, task_id, created_at, updated_at, condition, condition_checked_at FROM chat_wakeup
 WHERE id = $1 AND status = 'pending'
 FOR UPDATE SKIP LOCKED
 `
@@ -331,12 +377,13 @@ func (q *Queries) LockPendingChatWakeup(ctx context.Context, id pgtype.UUID) (Ch
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Condition,
+		&i.ConditionCheckedAt,
 	)
 	return i, err
 }
 
 const markChatTaskWakeup = `-- name: MarkChatTaskWakeup :one
-UPDATE agent_task_queue SET task_kind = 'wakeup' WHERE id = $1 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step
+UPDATE agent_task_queue SET task_kind = 'wakeup' WHERE id = $1 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step, claimed_model
 `
 
 // Flags a chat task as the turn a DM wakeup started.
@@ -409,6 +456,7 @@ func (q *Queries) MarkChatTaskWakeup(ctx context.Context, id pgtype.UUID) (Agent
 		&i.CompactReason,
 		&i.CompactTriggerTokens,
 		&i.WorkflowStep,
+		&i.ClaimedModel,
 	)
 	return i, err
 }
@@ -468,5 +516,28 @@ type SettleChatWakeupParams struct {
 // status is fired (task_id set) or expired (the DM or agent can no longer take a turn).
 func (q *Queries) SettleChatWakeup(ctx context.Context, arg SettleChatWakeupParams) error {
 	_, err := q.db.Exec(ctx, settleChatWakeup, arg.ID, arg.Status, arg.TaskID)
+	return err
+}
+
+const touchChatWakeupConditionChecked = `-- name: TouchChatWakeupConditionChecked :exec
+UPDATE chat_wakeup SET condition_checked_at = now() WHERE id = $1
+`
+
+func (q *Queries) TouchChatWakeupConditionChecked(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, touchChatWakeupConditionChecked, id)
+	return err
+}
+
+const updateChatWakeupCondition = `-- name: UpdateChatWakeupCondition :exec
+UPDATE chat_wakeup SET condition = $2, updated_at = now() WHERE id = $1 AND status = 'pending'
+`
+
+type UpdateChatWakeupConditionParams struct {
+	ID        pgtype.UUID `json:"id"`
+	Condition []byte      `json:"condition"`
+}
+
+func (q *Queries) UpdateChatWakeupCondition(ctx context.Context, arg UpdateChatWakeupConditionParams) error {
+	_, err := q.db.Exec(ctx, updateChatWakeupCondition, arg.ID, arg.Condition)
 	return err
 }

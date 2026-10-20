@@ -184,6 +184,7 @@ type AgentTaskQueue struct {
 	CompactReason             pgtype.Text `json:"compact_reason"`
 	CompactTriggerTokens      pgtype.Int8 `json:"compact_trigger_tokens"`
 	WorkflowStep              pgtype.Text `json:"workflow_step"`
+	ClaimedModel              pgtype.Text `json:"claimed_model"`
 }
 
 type AgentToLabel struct {
@@ -579,19 +580,20 @@ type ChatSession struct {
 }
 
 type ChatWakeup struct {
-	ID            pgtype.UUID        `json:"id"`
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
-	AgentID       pgtype.UUID        `json:"agent_id"`
-	CreatedBy     pgtype.UUID        `json:"created_by"`
-	SourceTaskID  pgtype.UUID        `json:"source_task_id"`
-	Instruction   string             `json:"instruction"`
-	FireAt        pgtype.Timestamptz `json:"fire_at"`
-	Status        string             `json:"status"`
-	TaskID        pgtype.UUID        `json:"task_id"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
-	Condition     []byte             `json:"condition"`
+	ID                 pgtype.UUID        `json:"id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	ChatSessionID      pgtype.UUID        `json:"chat_session_id"`
+	AgentID            pgtype.UUID        `json:"agent_id"`
+	CreatedBy          pgtype.UUID        `json:"created_by"`
+	SourceTaskID       pgtype.UUID        `json:"source_task_id"`
+	Instruction        string             `json:"instruction"`
+	FireAt             pgtype.Timestamptz `json:"fire_at"`
+	Status             string             `json:"status"`
+	TaskID             pgtype.UUID        `json:"task_id"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	Condition          []byte             `json:"condition"`
+	ConditionCheckedAt pgtype.Timestamptz `json:"condition_checked_at"`
 }
 
 type ClientUsageDaily struct {
@@ -1156,6 +1158,18 @@ type GovernanceWorkspaceConfigAudit struct {
 	ControlEpoch      int64              `json:"control_epoch"`
 	RollbackOfVersion pgtype.Int8        `json:"rollback_of_version"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+}
+
+type GovernedVoteRecord struct {
+	IssueID         pgtype.UUID        `json:"issue_id"`
+	CommentID       pgtype.UUID        `json:"comment_id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	AuthorType      string             `json:"author_type"`
+	AuthorID        pgtype.UUID        `json:"author_id"`
+	VoteLines       string             `json:"vote_lines"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	RuntimeProvider string             `json:"runtime_provider"`
+	Model           string             `json:"model"`
 }
 
 type InboxItem struct {

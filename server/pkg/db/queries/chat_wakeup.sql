@@ -57,11 +57,26 @@ WHERE id = $1 AND status = 'pending'
 FOR UPDATE SKIP LOCKED;
 
 -- name: ListWaitingConditionalChatWakeups :many
--- Pending wakeups whose condition is still being watched (before the deadline).
+-- Pending wakeups whose condition is still being watched (before the deadline),
+-- least recently checked first. seen holds the ids already evaluated in this
+-- tick, so a tick can page through all of them.
 SELECT * FROM chat_wakeup
 WHERE status = 'pending' AND condition IS NOT NULL AND fire_at > now()
-ORDER BY fire_at ASC, id ASC
-LIMIT $1;
+  AND NOT (id = ANY(COALESCE(sqlc.arg('seen')::uuid[], '{}'::uuid[])))
+ORDER BY condition_checked_at ASC NULLS FIRST, fire_at ASC, id ASC
+LIMIT sqlc.arg('batch');
+
+-- name: TouchChatWakeupConditionChecked :exec
+UPDATE chat_wakeup SET condition_checked_at = now() WHERE id = $1;
+
+-- name: UpdateChatWakeupCondition :exec
+UPDATE chat_wakeup SET condition = $2, updated_at = now() WHERE id = $1 AND status = 'pending';
+
+-- name: ListChatWakeupLinkedPullRequests :many
+SELECT pr.pr_number, COALESCE(pr.snapshot_head_sha, '')::text AS head_sha, COALESCE(pr.checks_rollup_state, '')::text AS checks
+FROM github_pull_request pr
+JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
+WHERE ipr.issue_id = $1;
 
 -- name: MoveChatWakeupToSession :exec
 UPDATE chat_wakeup SET chat_session_id = $2, updated_at = now() WHERE id = $1;
