@@ -60,6 +60,7 @@ func addOpenRequest(test *testing.T, fixture requestCoreFixture, class string) {
 }
 
 func TestDecisionCancelMessageNamesIssueAndAsk(test *testing.T) {
+	test.Setenv("MULTICA_APP_URL", "https://multica.test")
 	fixture := newRequestCoreFixture(test, false)
 	input := fixture.input()
 	input.Ask = "Approve the spend?\nSecond line must not appear."
@@ -81,7 +82,7 @@ func TestDecisionCancelMessageNamesIssueAndAsk(test *testing.T) {
 		if strings.Contains(content, "Second line") || strings.Contains(content, "issue_closed") {
 			test.Fatalf("cancel message leaks a later ask line or the raw reason:\n%s", content)
 		}
-		if !strings.Contains(content, "/issues/") {
+		if !strings.Contains(content, "](https://multica.test/") || !strings.Contains(content, "/issues/") {
 			test.Fatalf("cancel message has no issue link:\n%s", content)
 		}
 	}
