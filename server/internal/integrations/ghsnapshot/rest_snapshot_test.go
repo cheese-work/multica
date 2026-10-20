@@ -184,7 +184,7 @@ func TestFetchPRSnapshotRESTRejectsPartialResults(t *testing.T) {
 						return
 					}
 					count := 0
-					var runs []map[string]any = []map[string]any{}
+					runs := []map[string]any{}
 					if failure == "check page failed" || failure == "page limit" || failure == "count changed" || failure == "duplicate run" {
 						count = 101
 						if failure == "page limit" {

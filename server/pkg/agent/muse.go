@@ -53,10 +53,7 @@ const museLauncherVersion = "0.1.0"
 var museReaderDrainGrace = 2 * time.Second
 var museHandshakeTimeout = 60 * time.Second
 
-var (
-	errMuseProcessExited = errors.New("muse process exited")
-	errMuseTurnAborted   = errors.New("muse turn aborted")
-)
+var errMuseProcessExited = errors.New("muse process exited")
 
 // museBackend runs Meta Muse Code as an MSP (Muse Session Protocol) host over
 // `muse serve`, the way mcodeBackend runs MiniMax Code as an ACP host over
