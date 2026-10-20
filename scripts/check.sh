@@ -13,9 +13,15 @@ if [ ! -f "$ENV_FILE" ]; then
   exit 1
 fi
 
+# A bare name would make `.` search PATH before the working directory.
+case "$ENV_FILE" in
+  */*) ENV_SOURCE="$ENV_FILE" ;;
+  *) ENV_SOURCE="./$ENV_FILE" ;;
+esac
+
 set -a
 # shellcheck disable=SC1090
-. "$ENV_FILE"
+. "$ENV_SOURCE"
 set +a
 
 # shellcheck disable=SC1091

@@ -103,6 +103,11 @@ run_case 'prerequisite failure' 37 '' PREREQUISITE_STATUS=37
 run_case 'guarded typecheck failure' 1 '' FAIL_PHASE=typecheck
 run_case 'success with existing services' 0 ''
 grep -q '^exec playwright test$' "$TEST_DIR/pnpm-calls" || fail 'did not reach E2E'
+# `. .env` searches PATH before the working directory; a runner PATH entry
+# that holds its own `.env` must not shadow the fixture's.
+mkdir -p "$TEST_DIR/decoy"
+printf 'UNRELATED=1\n' >"$TEST_DIR/decoy/.env"
+run_case 'env file is not looked up on PATH' 0 '' PATH="$TEST_DIR/decoy:$TEST_DIR/bin:$PATH"
 run_case 'success with owned services' 0 'backend
 frontend' START_SERVICES=backend:frontend
 run_case 'E2E failure with owned backend' 1 backend START_SERVICES=backend FAIL_PHASE='exec playwright test'
