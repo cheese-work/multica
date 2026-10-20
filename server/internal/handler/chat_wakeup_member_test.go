@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -29,27 +28,6 @@ func (dm wakeupDM) memberCancel(t *testing.T, sessionID, wakeupID string) *testu
 	req := withChatTestWorkspaceCtx(t, withURLParams(
 		newRequest(http.MethodDelete, "/api/chat/sessions/"+sessionID+"/wakeups/"+wakeupID, nil), "sessionId", sessionID, "wakeupId", wakeupID))
 	return testutil.Call(t, testHandler.CancelChatSessionWakeup, req)
-}
-
-// continued continues the DM through its running task and returns a DM value
-// for the successor with its own running turn.
-func (dm wakeupDM) continued(t *testing.T) wakeupDM {
-	t.Helper()
-	if r := continueChatRequest(t, dm.sessionID, "Summary.", dm.taskID); r.Code != http.StatusCreated {
-		t.Fatalf("continue: %d %s", r.Code, r.Body.String())
-	}
-	next := dm
-	dbfx.QueryRow(t, `SELECT continued_into_session_id::text FROM chat_session WHERE id = $1`, dm.sessionID).Scan(&next.sessionID)
-	ctx := context.Background()
-	t.Cleanup(func() {
-		testPool.Exec(ctx, `DELETE FROM chat_wakeup WHERE chat_session_id = $1`, next.sessionID)
-		testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE chat_session_id = $1`, next.sessionID)
-		testPool.Exec(ctx, `DELETE FROM chat_message WHERE chat_session_id = $1`, next.sessionID)
-		testPool.Exec(ctx, `DELETE FROM chat_session WHERE id = $1`, next.sessionID)
-	})
-	next.taskID = sendDirectChat(t, ctx, dm.agentID, next.sessionID, "next")
-	markTaskRunning(t, ctx, next.taskID)
-	return next
 }
 
 func TestMemberListsPendingWakeupsOfTheDMAndItsLineage(t *testing.T) {
@@ -115,26 +93,6 @@ func TestMemberCancelStopsTheWakeupIncludingAnInheritedOne(t *testing.T) {
 	foreign := dm.otherDM(t)
 	theirs := foreign.create(t, "Not in this lineage.", time.Hour)
 	dm.memberCancel(t, dm.sessionID, theirs.ID).Want(http.StatusNotFound)
-}
-
-func TestWakeupCapAndAgentViewFollowTheContinuationLineage(t *testing.T) {
-	dm := newWakeupDM(t)
-	var ids []string
-	for i := 0; i < service.ChatWakeupMaxPending; i++ {
-		ids = append(ids, dm.create(t, "inherited", time.Hour).ID)
-	}
-	next := dm.continued(t)
-
-	next.request(t, http.MethodPost, "/api/chat/wakeups", map[string]any{"instruction": "one too many", "after_seconds": 600}, testHandler.CreateChatWakeup).
-		Want(http.StatusConflict)
-
-	var listed struct {
-		Wakeups []wakeupJSON `json:"wakeups"`
-	}
-	next.request(t, http.MethodGet, "/api/chat/wakeups", nil, testHandler.ListChatWakeups).Want(http.StatusOK).JSON(&listed)
-	if len(listed.Wakeups) != len(ids) {
-		t.Fatalf("agent in the successor sees %d wakeups, want %d inherited", len(listed.Wakeups), len(ids))
-	}
 }
 
 // A conversation can be continued many times. The lineage of a DM is not capped

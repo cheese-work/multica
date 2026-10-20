@@ -35,7 +35,6 @@ const (
 	chatWakeupTickBatch = 50
 	// chatWakeupConditionBudget bounds the condition pass of one tick; the job's run timeout is 45 s.
 	chatWakeupConditionBudget = 10 * time.Second
-	chatWakeupMaxHops         = 5
 )
 
 var (
@@ -68,7 +67,7 @@ type ChatWakeupCommenter struct {
 // chatWakeupCondition is the stored form. Check is a normalized
 // WakeupCondition, so the issue-wakeup evaluators decide status and merged
 // facts. A checks_finished fact needs a NEW finished result, so it is tracked
-// per pull request: Baseline is each linked pull request's "head:state" at
+// per pull request: Baseline is each linked pull request's "head:state:check-run identity" at
 // creation (finished checks that already existed belong to an older push), and
 // Armed lists the pull requests seen with checks still running since, so a
 // same-head rerun counts when it finishes.
@@ -189,7 +188,7 @@ func (s *ChatWakeupService) buildCondition(ctx context.Context, workspaceID pgty
 			for _, row := range rows {
 				key := strconv.Itoa(int(row.PrNumber))
 				if checksTerminal(row.HeadSha, row.Checks) {
-					stored.Baseline[key] = row.HeadSha + ":" + row.Checks
+					stored.Baseline[key] = row.HeadSha + ":" + row.Checks + ":" + row.ChecksIdentity
 				} else if row.HeadSha != "" {
 					stored.Armed = append(stored.Armed, key)
 				}
@@ -261,10 +260,13 @@ func checksTerminal(head, state string) bool {
 }
 
 // checksFinished holds when a linked pull request has a finished result that is
-// new since the wakeup was set: a different head or result than the baseline, a
-// pull request linked since, or a rerun seen running and now finished. Removing
-// a link is never a new result. A rerun that starts and finishes between two
-// ticks is missed (ponytail: needs a completion timestamp on the snapshot).
+// new since the wakeup was set: a different head, result or check-run identity
+// than the baseline, a pull request linked since, or a rerun seen running and
+// now finished. The check-run identity (names, states and details URLs with job
+// ids) changes on every rerun, so a rerun that starts and finishes between two
+// ticks is still seen. Removing a link is never a new result. ponytail: a rerun
+// whose check runs keep the same details URLs, such as a legacy status context
+// with a fixed target, is seen only if a tick observes it running.
 func (s *ChatWakeupService) checksFinished(ctx context.Context, w db.ChatWakeup, c chatWakeupCondition, issueID pgtype.UUID) (bool, string, error) {
 	if !s.Tasks.PRSnapshotsEnabled {
 		return false, "", nil
@@ -287,7 +289,7 @@ func (s *ChatWakeupService) checksFinished(ctx context.Context, w db.ChatWakeup,
 			}
 			continue
 		}
-		if base, known := c.Baseline[key]; !known || base != row.HeadSha+":"+row.Checks || armed[key] {
+		if base, known := c.Baseline[key]; !known || base != row.HeadSha+":"+row.Checks+":"+row.ChecksIdentity || armed[key] {
 			fresh = append(fresh, map[string]any{"number": row.PrNumber, "head_sha": row.HeadSha, "checks": strings.ToLower(row.Checks)})
 		}
 	}
@@ -386,9 +388,12 @@ func (s *ChatWakeupService) fire(ctx context.Context, w db.ChatWakeup, reason st
 	expire := func() error {
 		return q.SettleChatWakeup(ctx, db.SettleChatWakeupParams{ID: w.ID, Status: "expired"})
 	}
+	// Follow the continuation chain to the DM that is current now. It has no
+	// fixed depth; a session met twice is a corrupt cycle, so the wakeup expires.
 	sessionID := w.ChatSessionID
 	var session db.ChatSession
-	for hop := 0; ; hop++ {
+	visited := map[pgtype.UUID]bool{}
+	for {
 		var err error
 		if session, err = q.GetChatSession(ctx, sessionID); errors.Is(err, pgx.ErrNoRows) {
 			return expire()
@@ -398,9 +403,10 @@ func (s *ChatWakeupService) fire(ctx context.Context, w db.ChatWakeup, reason st
 		if !session.ContinuedIntoSessionID.Valid {
 			break
 		}
-		if hop == chatWakeupMaxHops {
-			return fmt.Errorf("continuation chain longer than %d", chatWakeupMaxHops)
+		if visited[session.ID] {
+			return expire()
 		}
+		visited[session.ID] = true
 		sessionID = session.ContinuedIntoSessionID
 	}
 	if session.Status != "active" || s.channelBound(ctx, q, session.ID) {
