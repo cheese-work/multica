@@ -17,6 +17,13 @@ import (
 
 const voteHuman = "<!-- governed:human -->\nkeep this rule\n<!-- /governed:human -->"
 
+// voteLabs is the operator's provider/model -> lab registry; voteAllFields
+// is the operator's field rollout (setup done for every governed field).
+const (
+	voteLabs      = `{"claude/claude-test":"anthropic","codex/gpt-test":"openai","hermes/anthropic-via-hermes":"anthropic"}`
+	voteAllFields = "workspace.context,agent.instructions,squad.instructions,project.description"
+)
+
 func voteTargets() []ownerCASTarget {
 	targets := ownerCASTargets()
 	return append(targets, ownerCASTarget{
@@ -52,15 +59,15 @@ func newVoteFixture(t *testing.T) voteFixture {
 	name := safeTestName(t)
 	claude := dbfx.Runtime(t, "che1862-claude-"+name, testutil.Cols{"provider": "claude"})
 	codex := dbfx.Runtime(t, "che1862-codex-"+name, testutil.Cols{"provider": "codex"})
-	agentOn := func(role, runtimeID string) string {
+	agentOn := func(role, runtimeID, model string) string {
 		id := createHandlerTestAgent(t, "che1862-"+role+"-"+name, nil)
-		dbfx.Exec(t, `UPDATE agent SET runtime_id = $1 WHERE id = $2`, runtimeID, id)
+		dbfx.Exec(t, `UPDATE agent SET runtime_id = $1, model = $2 WHERE id = $3`, runtimeID, model, id)
 		return id
 	}
 	f := voteFixture{
-		writerID: agentOn("writer", claude),
-		leaderID: agentOn("leader", codex),
-		peerID:   agentOn("peer", claude),
+		writerID: agentOn("writer", claude, "claude-test"),
+		leaderID: agentOn("leader", codex, "gpt-test"),
+		peerID:   agentOn("peer", claude, "claude-test"),
 	}
 	f.taskID = createHandlerTestTaskForAgent(t, f.writerID)
 	squadID := dbfx.Squad(t, "che1862-"+name, f.leaderID)
@@ -113,6 +120,8 @@ func eachVoteCase(t *testing.T, initial, next string, fn func(t *testing.T, tg o
 	}
 	for _, tg := range voteTargets() {
 		t.Run(tg.name, func(t *testing.T) {
+			t.Setenv("MULTICA_VOTE_GATE_LABS", voteLabs)
+			t.Setenv("MULTICA_VOTE_GATE_FIELDS", voteAllFields)
 			f := newVoteFixture(t)
 			id := tg.seed(t, initial)
 			label := tg.field + ":" + id
@@ -150,7 +159,7 @@ func TestVoteGate_ValidReceiptWrites(t *testing.T) {
 }
 
 func TestVoteGate_FailedChecksStay403(t *testing.T) {
-	initial, next := "before\n", "after\n"
+	initial, next := "before\n"+voteHuman, "after\n"+voteHuman
 	cases := []struct {
 		name   string
 		setup  func(t *testing.T, f voteFixture, label string)
@@ -187,7 +196,7 @@ func TestVoteGate_FailedChecksStay403(t *testing.T) {
 		{name: "no cross-lab voter", setup: func(t *testing.T, f voteFixture, label string) {
 			var claude string
 			dbfx.QueryRow(t, `SELECT runtime_id FROM agent WHERE id = $1`, f.writerID).Scan(&claude)
-			dbfx.Exec(t, `UPDATE agent SET runtime_id = $1 WHERE id = $2`, claude, f.leaderID)
+			dbfx.Exec(t, `UPDATE agent SET runtime_id = $1, model = 'claude-test' WHERE id = $2`, claude, f.leaderID)
 			f.approve(t, label, testDigest(next))
 		}},
 		{name: "no squad leader voter", setup: func(t *testing.T, f voteFixture, label string) {
@@ -223,6 +232,52 @@ func TestVoteGate_FailedChecksStay403(t *testing.T) {
 			f.say(t, "agent", f.writerID, 60, "Proposal: "+label+" "+testDigest(next))
 			f.say(t, "agent", f.leaderID, 30, voteLine("PASS", label, testDigest(next))+"\n"+voteLine("PASS", label, testDigest(next)))
 			f.say(t, "agent", f.peerID, 20, voteLine("PASS", label, testDigest(next)))
+		}},
+		{name: "votes forged by editing comments after posting", setup: func(t *testing.T, f voteFixture, label string) {
+			// An owner/admin-backed writer rewrites other authors' comments;
+			// the author and creation time stay the originals.
+			for age, author := range map[int]string{60: f.writerID, 30: f.leaderID, 20: f.peerID} {
+				f.say(t, "agent", author, age, "ack")
+			}
+			dbfx.Exec(t, `UPDATE comment SET content = $3 WHERE issue_id = $1 AND author_id = $2`, f.issueID, f.writerID, "Proposal: "+label+" "+testDigest(next))
+			dbfx.Exec(t, `UPDATE comment SET content = $3 WHERE issue_id = $1 AND author_id = $2`, f.issueID, f.leaderID, voteLine("PASS", label, testDigest(next)))
+			dbfx.Exec(t, `UPDATE comment SET content = $3 WHERE issue_id = $1 AND author_id = $2`, f.issueID, f.peerID, voteLine("PASS", label, testDigest(next)))
+		}},
+		{name: "BLOCK deleted after posting", setup: func(t *testing.T, f voteFixture, label string) {
+			f.approve(t, label, testDigest(next))
+			f.say(t, "member", testUserID, 10, voteLine("BLOCK", label, testDigest(next)))
+			dbfx.Exec(t, `DELETE FROM comment WHERE issue_id = $1 AND content LIKE 'Vote: BLOCK%'`, f.issueID)
+		}},
+		{name: "BLOCK rewritten after posting", setup: func(t *testing.T, f voteFixture, label string) {
+			f.approve(t, label, testDigest(next))
+			f.say(t, "member", testUserID, 10, voteLine("BLOCK", label, testDigest(next)))
+			dbfx.Exec(t, `UPDATE comment SET content = 'withdrawn' WHERE issue_id = $1 AND content LIKE 'Vote: BLOCK%'`, f.issueID)
+		}},
+		{name: "voter model not in the lab registry", setup: func(t *testing.T, f voteFixture, label string) {
+			dbfx.Exec(t, `UPDATE agent SET model = 'gpt-unlisted' WHERE id = $1`, f.leaderID)
+			f.approve(t, label, testDigest(next))
+		}},
+		{name: "voter has no model", setup: func(t *testing.T, f voteFixture, label string) {
+			dbfx.Exec(t, `UPDATE agent SET model = NULL WHERE id = $1`, f.leaderID)
+			f.approve(t, label, testDigest(next))
+		}},
+		{name: "writer model not in the lab registry", setup: func(t *testing.T, f voteFixture, label string) {
+			dbfx.Exec(t, `UPDATE agent SET model = 'claude-unlisted' WHERE id = $1`, f.writerID)
+			f.approve(t, label, testDigest(next))
+		}},
+		{name: "different CLI family, same lab", setup: func(t *testing.T, f voteFixture, label string) {
+			hermes := dbfx.Runtime(t, "che1862-hermes-"+safeTestName(t), testutil.Cols{"provider": "hermes"})
+			dbfx.Exec(t, `UPDATE agent SET runtime_id = $1, model = 'anthropic-via-hermes' WHERE id = $2`, hermes, f.leaderID)
+			f.approve(t, label, testDigest(next))
+		}},
+		{name: "voter reassigned to another family after voting", setup: func(t *testing.T, f voteFixture, label string) {
+			var claude string
+			dbfx.QueryRow(t, `SELECT runtime_id FROM agent WHERE id = $1`, f.writerID).Scan(&claude)
+			var codex string
+			dbfx.QueryRow(t, `SELECT runtime_id FROM agent WHERE id = $1`, f.leaderID).Scan(&codex)
+			dbfx.Exec(t, `UPDATE agent SET runtime_id = $1, model = 'claude-test' WHERE id = $2`, claude, f.leaderID)
+			f.approve(t, label, testDigest(next))
+			dbfx.Exec(t, `UPDATE agent SET runtime_id = $1, model = 'gpt-test' WHERE id = $2`, codex, f.leaderID)
 		}},
 		{name: "unknown vote issue", setup: func(t *testing.T, f voteFixture, label string) { f.approve(t, label, testDigest(next)) },
 			mut: func(b map[string]any) { b["vote_issue"] = "00000000-0000-0000-0000-000000000000" }},
@@ -330,4 +385,51 @@ func TestVoteGate_MemberWriteUnchanged(t *testing.T) {
 			t.Fatalf("member write lost: %q", got)
 		}
 	})
+}
+
+// Until a human completes setup, only squad instructions and project
+// descriptions accept a receipt; workspace context and agent instructions
+// stay denied however good the votes are. Setup is an operator setting, and
+// even then the live value must already hold a governed:human block.
+func TestVoteGate_FieldRollout(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	initial, next := "before\n"+voteHuman, "after\n"+voteHuman
+	unmarkedInitial, unmarkedNext := "before\n", "after\n"
+	type setup struct {
+		name, fields string
+		marked       bool
+		open         map[string]bool
+	}
+	cases := []setup{
+		{"before setup", "", true, map[string]bool{"squad.instructions": true, "project.description": true}},
+		{"after setup", voteAllFields, true, map[string]bool{"workspace.context": true, "agent.instructions": true, "squad.instructions": true, "project.description": true}},
+		{"setup done but value has no marker", voteAllFields, false, map[string]bool{"squad.instructions": true, "project.description": true}},
+	}
+	for _, c := range cases {
+		t.Run(strings.ReplaceAll(c.name, " ", "_"), func(t *testing.T) {
+			for _, tg := range voteTargets() {
+				t.Run(tg.name, func(t *testing.T) {
+					t.Setenv("MULTICA_VOTE_GATE_LABS", voteLabs)
+					t.Setenv("MULTICA_VOTE_GATE_FIELDS", c.fields)
+					before, after := initial, next
+					if !c.marked {
+						before, after = unmarkedInitial, unmarkedNext
+					}
+					f := newVoteFixture(t)
+					id := tg.seed(t, before)
+					f.approve(t, tg.field+":"+id, testDigest(after))
+					w := f.write(tg, id, after, testDigest(before))
+					if c.open[tg.name] {
+						if w.Code != http.StatusOK {
+							t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+						}
+						return
+					}
+					wantDenied(t, tg, id, before, w)
+				})
+			}
+		})
+	}
 }
