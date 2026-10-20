@@ -78,8 +78,9 @@ UPDATE chat_wakeup SET condition = $2, updated_at = now() WHERE id = $1 AND stat
 -- the result even when name, state, URL and time match, and even if no poll saw
 -- the run in progress. checks_identity_partial is true while a finished run has
 -- no node id (rows written before the column existed, until the next snapshot
--- refresh): such data cannot name a result.
-SELECT pr.pr_number, pr.installation_id, pr.repo_owner, pr.repo_name, COALESCE(pr.snapshot_head_sha, '')::text AS head_sha, COALESCE(pr.checks_rollup_state, '')::text AS checks,
+-- refresh): such data cannot name a result. snapshotted is false until the first
+-- successful API snapshot: before it, nothing is known about the checks.
+SELECT pr.pr_number, pr.installation_id, pr.repo_owner, pr.repo_name, (pr.snapshot_fetched_at IS NOT NULL)::boolean AS snapshotted, COALESCE(pr.snapshot_head_sha, '')::text AS head_sha, COALESCE(pr.checks_rollup_state, '')::text AS checks,
        COALESCE((
            SELECT md5(string_agg(x.t, E'\n' ORDER BY x.t))
            FROM (
