@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -335,6 +336,20 @@ func TestVoteGateRouter_ExistingTokenRelabel(t *testing.T) {
 // compare-and-swap, then tries to commit a member BLOCK. Either the BLOCK
 // commits and the write is refused, or the BLOCK waits behind the write.
 func TestVoteGateRouter_BlockCommittedBeforeWriteStopsIt(t *testing.T) {
+	// The server accepts a vote_issue in any UUID spelling pgx parses, so the
+	// BLOCK lock must not depend on how the writer spelled it.
+	spellings := map[string]func(string) string{
+		"canonical":             func(id string) string { return id },
+		"uppercase":             strings.ToUpper,
+		"without hyphens":       func(id string) string { return strings.ReplaceAll(id, "-", "") },
+		"uppercase, no hyphens": func(id string) string { return strings.ToUpper(strings.ReplaceAll(id, "-", "")) },
+	}
+	for name, spell := range spellings {
+		t.Run(name, func(t *testing.T) { blockCommittedBeforeWrite(t, spell) })
+	}
+}
+
+func blockCommittedBeforeWrite(t *testing.T, spell func(string) string) {
 	r := newVoteRig(t)
 	label, after := "instructions:"+r.targetSquad, rigDigest(rigNext)
 	r.honestVotes(label, after)
@@ -355,7 +370,7 @@ func TestVoteGateRouter_BlockCommittedBeforeWriteStopsIt(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		b, _ := json.Marshal(map[string]any{"instructions": rigNext, "vote_issue": r.issueID, "before_sha256": rigDigest(rigBefore), "after_sha256": after})
+		b, _ := json.Marshal(map[string]any{"instructions": rigNext, "vote_issue": spell(r.issueID), "before_sha256": rigDigest(rigBefore), "after_sha256": after})
 		req, _ := http.NewRequest("PUT", testServer.URL+"/api/squads/"+r.targetSquad, bytes.NewReader(b))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+r.writerTok)
