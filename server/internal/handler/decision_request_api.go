@@ -29,7 +29,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusBadRequest, "invalid decision request")
 		return
 	}
-	if len(input.Ask)+len(input.Footer) > maxCommentContentBytes {
+	if len(decisionAskContent(decisionRequestInput{Ask: input.Ask, Footer: input.Footer})) > maxCommentContentBytes {
 		writeError(writer, http.StatusBadRequest, "ask is too long")
 		return
 	}
@@ -69,10 +69,16 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 			WorkspaceID: workspaceID, ChatSessionID: uuidToString(session.ID), AgentID: agentID, CreatorID: uuidToString(session.CreatorID), Title: session.Title,
 		})
 	}
-	item, err := decisiontx.NotifyPing(request.Context(), handler.TxStarter, handler.Queries, issue.WorkspaceID, result.Request.ID)
-	if err != nil {
-		slog.Warn("decision ping inbox pending retry", "decision_request_id", uuidToString(result.Request.ID), "error", err)
-	} else {
+	item, pinged := result.PingItem, result.PingRecorded
+	if !pinged {
+		var err error
+		if item, err = decisiontx.NotifyPing(request.Context(), handler.TxStarter, handler.Queries, issue.WorkspaceID, result.Request.ID); err != nil {
+			slog.Warn("decision ping inbox pending retry", "decision_request_id", uuidToString(result.Request.ID), "error", err)
+		} else {
+			pinged = true
+		}
+	}
+	if pinged {
 		if stored, err := handler.Queries.GetDecisionRequest(request.Context(), db.GetDecisionRequestParams{WorkspaceID: issue.WorkspaceID, ID: result.Request.ID}); err == nil {
 			result.Request = stored
 		}

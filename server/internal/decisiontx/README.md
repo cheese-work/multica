@@ -191,8 +191,8 @@ The CLI provides `multica decision request --issue <id> --session <id>
 whitespace and newlines are preserved. Each command supports JSON and table
 output. A ping never enqueues a DM turn.
 
-`decisiontx.NotifyPing` is shared by the request handler and the later decision
-worker. It locks workspace, issue, then request. A NULL receipt is re-checked
+`decisiontx.NotifyPing` is shared by the legacy request path and the later
+decision worker; it wraps `NotifyPingTx` in its own transaction. It locks workspace, issue, then request. A NULL receipt is re-checked
 under the request lock. The `mentioned` inbox item and `ping_notified_at`
 commit in one transaction; cancellation writes only the receipt. Concurrent
 consumers, repeated retries, or a failed receipt write cannot leave duplicate
@@ -378,12 +378,15 @@ from content. A still-pending intent of the task is closed as `superseded`.
 
 One transaction then creates the new intent (anchored on the ask comment's
 pre-allocated ID), its single target, the request, the ask comment, the DM
-message, and consumes and seals the intent. The ask comment carries
+message, records the ping (`NotifyPingTx`: inbox item and `ping_notified_at`),
+and consumes and seals the intent. A ping failure rolls back the whole call; the
+handler returns a 5xx and nothing is written. The ask comment carries
 `decision_request_id`, `decision_comment_kind = ask` and `decision_intent_id`;
 migration 617 already allows that combination. `locateDecisionRecordContext`
 resolves the request ID before the intent stamp, so a record under the ask binds
 and a record under an intent-only comment still refuses. The comment is
-`ask` plus `\n\n` plus the optional `footer`; the DM message is `ask` only.
+`ask` plus `\n\n` plus the optional `footer`; the DM message is `ask` only. The
+API checks the 64 KiB limit against that composed comment, separator included.
 
 Lane choice without a window: an explicit `session_id` (must be a listed lane of
 the person) or `new_dm` wins; otherwise `defaultDecisionLane` picks the listed

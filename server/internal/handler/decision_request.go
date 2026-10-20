@@ -34,6 +34,11 @@ type decisionRequestResult struct {
 	Message         db.ChatMessage
 	ClearedComments []db.Comment
 	CreatedSession  *db.ChatSession
+	// PingItem is set only when the ping was recorded inside the request
+	// transaction (single-call path); PingRecorded distinguishes "recorded,
+	// no item for a departed recipient" from "not yet recorded".
+	PingItem     *db.InboxItem
+	PingRecorded bool
 }
 
 func (handler *Handler) createDecisionRequest(request *http.Request, issue db.Issue, input decisionRequestInput) (decisionRequestResult, error) {
@@ -440,6 +445,11 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 	if err != nil {
 		return empty, err
 	}
+	// The ping commits with the request: a ping failure refuses the whole call.
+	if result.PingItem, err = decisiontx.NotifyPingTx(ctx, queries, issue.WorkspaceID, result.Request.ID); err != nil {
+		return empty, err
+	}
+	result.PingRecorded = true
 	if err := transaction.Commit(ctx); err != nil {
 		return empty, err
 	}

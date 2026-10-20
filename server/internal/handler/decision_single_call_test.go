@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -279,6 +280,62 @@ func TestDecisionSingleCallAuthCannotBeForged(test *testing.T) {
 			testutil.Call(test, protected.ServeHTTP, request).Want(http.StatusForbidden)
 			if comments, messages, pings := fixture.counts(test); comments != 0 || messages != 0 || pings != 0 {
 				test.Fatalf("forged %s left writes: %d/%d/%d", source, comments, messages, pings)
+			}
+		})
+	}
+}
+
+func (fixture singleCallFixture) assertNoWrites(test *testing.T) {
+	test.Helper()
+	if comments, messages, pings := fixture.counts(test); comments != 0 || messages != 0 || pings != 0 ||
+		dbfx.Count(test, `SELECT count(*) FROM decision_request WHERE issue_id = $1`, fixture.issueID) != 0 ||
+		dbfx.Count(test, `SELECT count(*) FROM decision_intent WHERE issue_id = $1`, fixture.issueID) != 0 ||
+		dbfx.Count(test, `SELECT count(*) FROM chat_session WHERE creator_id = $1 AND agent_id = $2`, fixture.humanID, fixture.agentID) != 0 {
+		test.Fatalf("refusal left writes: comments=%d messages=%d pings=%d", comments, messages, pings)
+	}
+}
+
+// The single-call ping is part of the request transaction: a failed ping must
+// refuse the call and leave nothing behind, not return 201 for a retry later.
+func TestDecisionSingleCallPingFailureRollsBackEverything(test *testing.T) {
+	fixture := newSingleCallFixture(test)
+	useRequestCoreStarter(test, &requestCoreStarter{base: testHandler.TxStarter, query: "-- name: MarkDecisionPingNotified", fail: &pgconn.PgError{Code: "23514", Message: "injected ping receipt failure"}})
+	if status := testutil.Call(test, testHandler.RequestDecision, fixture.call(fixture.body())).Code; status < 500 || status >= 600 {
+		test.Fatalf("status = %d, want a 5xx when the ping cannot be recorded", status)
+	}
+	fixture.assertNoWrites(test)
+}
+
+// The stored ask comment is ask + "\n\n" + footer; the limit applies to that
+// composed text, not to the two fields summed.
+func TestDecisionSingleCallComposedCommentLimit(test *testing.T) {
+	const limit = maxCommentContentBytes
+	cases := []struct {
+		name        string
+		ask, footer int
+		want        int
+	}{
+		{"footer_at_limit", limit - 2 - 10, 10, http.StatusCreated},
+		{"footer_one_over", limit - 2 - 10 + 1, 10, http.StatusBadRequest},
+		{"fields_sum_to_limit_but_separator_overflows", limit - 10, 10, http.StatusBadRequest},
+		{"no_footer_at_limit", limit, 0, http.StatusCreated},
+		{"no_footer_one_over", limit + 1, 0, http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		test.Run(tc.name, func(test *testing.T) {
+			fixture := newSingleCallFixture(test)
+			body := fixture.body()
+			body["ask"] = strings.Repeat("a", tc.ask)
+			body["footer"] = strings.Repeat("f", tc.footer)
+			testutil.Call(test, testHandler.RequestDecision, fixture.call(body)).Want(tc.want)
+			if tc.want == http.StatusBadRequest {
+				fixture.assertNoWrites(test)
+				return
+			}
+			var size int
+			dbfx.QueryRow(test, `SELECT length(content) FROM comment WHERE issue_id = $1`, fixture.issueID).Scan(&size)
+			if size != limit {
+				test.Fatalf("stored comment = %d bytes, want exactly %d", size, limit)
 			}
 		})
 	}
