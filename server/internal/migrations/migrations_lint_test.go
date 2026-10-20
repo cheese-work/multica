@@ -88,6 +88,34 @@ func TestMigrationNumericPrefixesAreUnique(t *testing.T) {
 	}
 }
 
+func TestProviderFailureRecoveryMigrationPrefixIsUnique(t *testing.T) {
+	files := migrationFilesForLint(t, "*.up.sql")
+	targetPrefix := ""
+
+	for _, file := range files {
+		stem, _, ok := splitMigrationFilename(filepath.Base(file))
+		if !ok || !strings.HasSuffix(stem, "_provider_failure_recovery_effects") {
+			continue
+		}
+		targetPrefix, _, _ = strings.Cut(stem, "_")
+		break
+	}
+	if targetPrefix == "" {
+		t.Fatal("provider failure recovery migration is missing")
+	}
+
+	for _, file := range files {
+		stem, _, ok := splitMigrationFilename(filepath.Base(file))
+		if !ok || strings.HasSuffix(stem, "_provider_failure_recovery_effects") {
+			continue
+		}
+		prefix, _, ok := strings.Cut(stem, "_")
+		if ok && prefix == targetPrefix {
+			t.Errorf("migration %s shares numeric prefix %s with provider_failure_recovery_effects", stem, targetPrefix)
+		}
+	}
+}
+
 func TestMigrationFilesHaveMatchingDirections(t *testing.T) {
 	files := migrationFilesForLint(t, "*.sql")
 
