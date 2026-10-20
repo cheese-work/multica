@@ -1,12 +1,12 @@
 -- name: CountPendingChatWakeups :one
--- Counts the DM and the DMs it was continued from: a wakeup set before a
--- continuation is still pending after it, so it still holds a slot.
+-- Counts the DM and every DM it was continued from: a wakeup set before a
+-- continuation is still pending after it, so it still holds a slot. UNION (not
+-- UNION ALL) drops repeated rows, so the walk ends even on a corrupt cycle.
 WITH RECURSIVE lineage AS (
-    SELECT cs.id, cs.continued_from_session_id, 1 AS depth FROM chat_session cs WHERE cs.id = $1
-    UNION ALL
-    SELECT s.id, s.continued_from_session_id, l.depth + 1
+    SELECT cs.id, cs.continued_from_session_id FROM chat_session cs WHERE cs.id = $1
+    UNION
+    SELECT s.id, s.continued_from_session_id
     FROM chat_session s JOIN lineage l ON s.id = l.continued_from_session_id
-    WHERE l.depth < 16
 )
 SELECT count(*) FROM chat_wakeup WHERE chat_session_id IN (SELECT lineage.id FROM lineage) AND status = 'pending';
 
@@ -18,11 +18,10 @@ RETURNING *;
 -- name: ListPendingChatWakeups :many
 -- The DM's pending wakeups, including those set in the DMs it was continued from.
 WITH RECURSIVE lineage AS (
-    SELECT cs.id, cs.continued_from_session_id, 1 AS depth FROM chat_session cs WHERE cs.id = $1
-    UNION ALL
-    SELECT s.id, s.continued_from_session_id, l.depth + 1
+    SELECT cs.id, cs.continued_from_session_id FROM chat_session cs WHERE cs.id = $1
+    UNION
+    SELECT s.id, s.continued_from_session_id
     FROM chat_session s JOIN lineage l ON s.id = l.continued_from_session_id
-    WHERE l.depth < 16
 )
 SELECT * FROM chat_wakeup
 WHERE chat_session_id IN (SELECT lineage.id FROM lineage) AND status = 'pending'
@@ -33,11 +32,10 @@ ORDER BY fire_at ASC, chat_wakeup.id ASC;
 -- ordinary task. Scoped to the DM and its continuation lineage, so one DM
 -- cannot cancel an unrelated DM's wakeup.
 WITH RECURSIVE lineage AS (
-    SELECT cs.id, cs.continued_from_session_id, 1 AS depth FROM chat_session cs WHERE cs.id = sqlc.arg('chat_session_id')
-    UNION ALL
-    SELECT s.id, s.continued_from_session_id, l.depth + 1
+    SELECT cs.id, cs.continued_from_session_id FROM chat_session cs WHERE cs.id = sqlc.arg('chat_session_id')
+    UNION
+    SELECT s.id, s.continued_from_session_id
     FROM chat_session s JOIN lineage l ON s.id = l.continued_from_session_id
-    WHERE l.depth < 16
 )
 UPDATE chat_wakeup SET status = 'cancelled', updated_at = now()
 WHERE chat_wakeup.id = sqlc.arg('wakeup_id') AND chat_session_id IN (SELECT lineage.id FROM lineage) AND status = 'pending'

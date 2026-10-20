@@ -136,3 +136,26 @@ func TestWakeupCapAndAgentViewFollowTheContinuationLineage(t *testing.T) {
 		t.Fatalf("agent in the successor sees %d wakeups, want %d inherited", len(listed.Wakeups), len(ids))
 	}
 }
+
+// A conversation can be continued many times. The lineage of a DM is not capped
+// at a fixed number of ancestors, or an old pending wakeup would drop out of the
+// list, the cancel scope and the pending cap.
+func TestMemberSeesAnInheritedWakeupAcrossALongContinuationChain(t *testing.T) {
+	dm := newWakeupDM(t)
+	w := dm.create(t, "Set in the oldest DM.", time.Hour)
+
+	previous := dm.sessionID
+	for i := 0; i < 20; i++ {
+		var next string
+		dbfx.QueryRow(t, `INSERT INTO chat_session (workspace_id, agent_id, creator_id, title, explicitly_created_at, continued_from_session_id)
+			VALUES ($1, $2, $3, 'Continuation', now(), $4) RETURNING id::text`, testWorkspaceID, dm.agentID, testUserID, previous).Scan(&next)
+		t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM chat_session WHERE id = $1`, next) })
+		previous = next
+	}
+
+	got := dm.memberList(t, previous)
+	if len(got) != 1 || got[0].ID != w.ID {
+		t.Fatalf("the newest DM of a 21-DM chain lists %+v, want the wakeup %s from the oldest", got, w.ID)
+	}
+	dm.memberCancel(t, previous, w.ID).Want(http.StatusOK)
+}

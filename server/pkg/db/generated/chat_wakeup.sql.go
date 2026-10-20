@@ -13,11 +13,10 @@ import (
 
 const cancelChatWakeup = `-- name: CancelChatWakeup :one
 WITH RECURSIVE lineage AS (
-    SELECT cs.id, cs.continued_from_session_id, 1 AS depth FROM chat_session cs WHERE cs.id = $2
-    UNION ALL
-    SELECT s.id, s.continued_from_session_id, l.depth + 1
+    SELECT cs.id, cs.continued_from_session_id FROM chat_session cs WHERE cs.id = $2
+    UNION
+    SELECT s.id, s.continued_from_session_id
     FROM chat_session s JOIN lineage l ON s.id = l.continued_from_session_id
-    WHERE l.depth < 16
 )
 UPDATE chat_wakeup SET status = 'cancelled', updated_at = now()
 WHERE chat_wakeup.id = $1 AND chat_session_id IN (SELECT lineage.id FROM lineage) AND status = 'pending'
@@ -56,17 +55,17 @@ func (q *Queries) CancelChatWakeup(ctx context.Context, arg CancelChatWakeupPara
 
 const countPendingChatWakeups = `-- name: CountPendingChatWakeups :one
 WITH RECURSIVE lineage AS (
-    SELECT cs.id, cs.continued_from_session_id, 1 AS depth FROM chat_session cs WHERE cs.id = $1
-    UNION ALL
-    SELECT s.id, s.continued_from_session_id, l.depth + 1
+    SELECT cs.id, cs.continued_from_session_id FROM chat_session cs WHERE cs.id = $1
+    UNION
+    SELECT s.id, s.continued_from_session_id
     FROM chat_session s JOIN lineage l ON s.id = l.continued_from_session_id
-    WHERE l.depth < 16
 )
 SELECT count(*) FROM chat_wakeup WHERE chat_session_id IN (SELECT lineage.id FROM lineage) AND status = 'pending'
 `
 
-// Counts the DM and the DMs it was continued from: a wakeup set before a
-// continuation is still pending after it, so it still holds a slot.
+// Counts the DM and every DM it was continued from: a wakeup set before a
+// continuation is still pending after it, so it still holds a slot. UNION (not
+// UNION ALL) drops repeated rows, so the walk ends even on a corrupt cycle.
 func (q *Queries) CountPendingChatWakeups(ctx context.Context, id pgtype.UUID) (int64, error) {
 	row := q.db.QueryRow(ctx, countPendingChatWakeups, id)
 	var count int64
@@ -254,11 +253,10 @@ func (q *Queries) ListDueChatWakeups(ctx context.Context, limit int32) ([]ChatWa
 
 const listPendingChatWakeups = `-- name: ListPendingChatWakeups :many
 WITH RECURSIVE lineage AS (
-    SELECT cs.id, cs.continued_from_session_id, 1 AS depth FROM chat_session cs WHERE cs.id = $1
-    UNION ALL
-    SELECT s.id, s.continued_from_session_id, l.depth + 1
+    SELECT cs.id, cs.continued_from_session_id FROM chat_session cs WHERE cs.id = $1
+    UNION
+    SELECT s.id, s.continued_from_session_id
     FROM chat_session s JOIN lineage l ON s.id = l.continued_from_session_id
-    WHERE l.depth < 16
 )
 SELECT id, workspace_id, chat_session_id, agent_id, created_by, source_task_id, instruction, fire_at, status, task_id, created_at, updated_at, condition, condition_checked_at FROM chat_wakeup
 WHERE chat_session_id IN (SELECT lineage.id FROM lineage) AND status = 'pending'
