@@ -720,8 +720,15 @@ func (h *Handler) createManualCommentSubIssue(w http.ResponseWriter, r *http.Req
 		stage = pgtype.Int4{Int32: *input.Stage, Valid: true}
 	}
 	prefix := h.getIssuePrefix(r.Context(), workspaceID)
+	// No assignee chosen: the project's workflow step for the status decides, as
+	// on an ordinary create, resolved under the locks the create takes.
+	var handoffResolver service.CreateHandoffResolver
+	if !assigneeType.Valid && !assigneeID.Valid {
+		handoffResolver = h.createHandoffResolver(r, util.UUIDToString(workspaceID), "member", userID)
+	}
 	result, err := h.IssueService.Create(r.Context(), service.IssueCreateParams{
-		WorkspaceID: workspaceID, Title: title, Description: ptrToText(input.Description), Status: status, Priority: priority,
+		HandoffResolver: handoffResolver,
+		WorkspaceID:     workspaceID, Title: title, Description: ptrToText(input.Description), Status: status, Priority: priority,
 		AssigneeType: assigneeType, AssigneeID: assigneeID, CreatorType: "member", CreatorID: userID,
 		ParentIssueID: capture.SourceIssueID, ProjectID: projectID, StartDate: startDate, DueDate: dueDate,
 		AttachmentIDs: attachmentIDs, LabelIDs: labelIDs, Properties: properties, Stage: stage,
@@ -735,6 +742,11 @@ func (h *Handler) createManualCommentSubIssue(w http.ResponseWriter, r *http.Req
 			return map[string]any{"issue": response}
 		},
 	})
+	var handoffErr *createHandoffError
+	if errors.As(err, &handoffErr) {
+		writeError(w, handoffErr.status, handoffErr.message)
+		return errSourceContextResponseWritten
+	}
 	if err != nil {
 		return err
 	}

@@ -500,6 +500,21 @@ func (q *Queries) LockWorkspaceForJevCredentialWrite(ctx context.Context, id pgt
 	return id_2, err
 }
 
+const lockWorkspaceSettings = `-- name: LockWorkspaceSettings :one
+SELECT settings FROM workspace
+WHERE id = $1
+FOR UPDATE
+`
+
+// CHE-1727: a settings write reads, reconciles and writes the blob under this
+// lock, so a concurrent pause flip cannot be overwritten by a stale save.
+func (q *Queries) LockWorkspaceSettings(ctx context.Context, id pgtype.UUID) ([]byte, error) {
+	row := q.db.QueryRow(ctx, lockWorkspaceSettings, id)
+	var settings []byte
+	err := row.Scan(&settings)
+	return settings, err
+}
+
 const updateWorkspace = `-- name: UpdateWorkspace :one
 UPDATE workspace SET
     name = COALESCE($2, name),

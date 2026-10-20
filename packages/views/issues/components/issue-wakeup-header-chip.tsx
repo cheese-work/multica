@@ -2,10 +2,12 @@
 
 import { memo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Bell, TriangleAlert } from "lucide-react";
+import { Bell, PauseCircle, TriangleAlert } from "lucide-react";
 import { issueSystemWakeupsOptions, issueWakeupsOptions } from "@multica/core/issues";
 import type { IssueWakeup, SystemWakeup } from "@multica/core/types";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { useCurrentWorkspace } from "@multica/core/paths";
+import { deriveWakeupsPause } from "@multica/core/workspace/wakeups-pause";
 import { cn } from "@multica/ui/lib/utils";
 import { useT } from "../../i18n";
 import { useWakeupText } from "./wakeup-presentation";
@@ -49,9 +51,13 @@ export const IssueWakeupHeaderChip = memo(function IssueWakeupHeaderChip({
   const { data: rules = [] } = useQuery(issueWakeupsOptions(wsId, issueId));
   const { data: system = [] } = useQuery(issueSystemWakeupsOptions(wsId, issueId));
   const primary = primaryWakeup(rules, system);
+  const workspacePaused = deriveWakeupsPause(useCurrentWorkspace()).paused;
   if (!primary) return null;
+  // A paused workspace fires nothing, so the chip must not promise a due time.
   const label = String(
-    primary.kind === "rule"
+    workspacePaused
+      ? t(($) => $.wakeups.wait.workspace_paused)
+      : primary.kind === "rule"
       ? text.headline(primary.rule)
       : primary.kind === "system"
         ? t(($) => $.wakeups.wait.header, {
@@ -63,16 +69,17 @@ export const IssueWakeupHeaderChip = memo(function IssueWakeupHeaderChip({
           })
         : t(($) => $.wakeups.wait.paused),
   );
-  const Icon = primary.kind === "paused" ? TriangleAlert : Bell;
+  const Icon = workspacePaused ? PauseCircle : primary.kind === "paused" ? TriangleAlert : Bell;
   return (
     <button
       type="button"
+      data-testid="wakeups-header-chip"
       onClick={onOpen}
       title={label}
       aria-label={`${label}${primary.count > 1 ? ` +${primary.count - 1}` : ""} · ${t(($) => $.wakeups.wait.open)}`}
       className={cn(
         "inline-flex h-7 max-w-72 min-w-0 items-center gap-1.5 rounded-full border border-border px-2.5 text-caption hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring",
-        primary.kind === "paused" ? "text-warning" : "text-foreground",
+        workspacePaused || primary.kind === "paused" ? "text-warning" : "text-foreground",
       )}
     >
       <Icon className="size-3.5 shrink-0" aria-hidden="true" />

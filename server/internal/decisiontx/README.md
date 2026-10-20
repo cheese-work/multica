@@ -2,7 +2,25 @@
 
 This package is the schema/transaction foundation for the revision 14 decision
 contract. HTTP routes and the leased consequence runner live in the handler
-package. Group delivery, lifecycle cancellation and veto notices are later slices.
+package. Veto notices and immutable source-session retention are delivered by
+the consequence worker and the baseline session-delete guard respectively.
+
+The veto-notice worker selects only agent vetoes and record retractions without
+`veto_note_posted_at`. Its source step locks workspace, one source session,
+issue, request and answer. An active source receives the note. Otherwise that
+transaction rolls back without writes, and a separate current-lane step takes
+the same fences for that one destination and rechecks the lane. An active lane
+receives the note; an archived or missing lane receives no message. Every
+successful notice atomically inserts exactly one human inbox item and records
+`veto_note_posted_at`. Events publish only after commit. There is no new outbox,
+automatic ping or server-created DM, and no transaction locks two sessions.
+
+Hard deletion checks immutable `decision_answer.source_chat_session_id`, not
+surviving transcript rows. An answer therefore retains its source session even
+after task cancellation, transcript deletion and withdrawal. Migration 627
+separately validates `chat_message_sent_via_check` with a two-second lock timeout;
+its down migration is a no-op. Runtime teardown still unbinds user agents before
+runtime detachment. Delivery merges can change the `trigger_comment_id` FK.
 
 `Begin` acquires the existing workspace `FOR KEY SHARE` fence before returning
 a transaction. A missing workspace or failed fence rolls back and returns no
@@ -249,7 +267,7 @@ together and publishes comments only after commit. The helper never opens its
 own transaction. It preserves source IDs, snapshot, quote and prior cancelled
 reason. A repeated withdrawal is a no-op. A live asked answer reopens only in
 an active lane; an archived lane cancels with `lane_archived`, a cancel comment
-and a durable notice receipt for the later worker's re-ask. Unprompted answers
+and a durable notice receipt for the worker's re-ask. Unprompted answers
 cancel with `record_disclaimed`; their disclaim comment is the cancellation
 notice, and no re-ask becomes due. Every withdrawal writes its disclaim comment
 and receipts atomically. Pending wakes are cleared; delivered wakes retain
@@ -272,9 +290,9 @@ lanes cancel with a notice; unprompted records cancel with `record_vetoed`.
 Only an issue-agent veto by the current retraction recipient (agent assignee
 or squad leader) acknowledges an already-delivered wake as
 `suppressed_agent_veto`. A non-leader squad member and a source-DM task never
-suppress that retraction. DM notes, inbox delivery, worker finalization and
-retraction delivery remain CHE-1550; these handlers do not invoke baseline
-comment triggers or enqueue work.
+suppress that retraction. These handlers do not invoke baseline comment
+triggers or enqueue work; the consequence worker delivers notes, inbox items
+and retractions after commit.
 
 `POST /api/decision-requests/{id}/class` accepts only the request's human.
 Raising means changing `reversible` to one of the five escalation classes;
@@ -294,3 +312,55 @@ recording, human withdrawal, agent veto and raise-class integration. Run from
 go test -race -p 1 ./internal/handler ./internal/decisiontx ./cmd/server -run 'Decision|AskedDecision|UnpromptedDecision' -count=1
 go test ./cmd/multica -run 'Decision' -count=1
 ```
+
+CHE-1750 adds atomic wake delivery to the leased worker. A sealed group waits
+for every non-cancelled request and every live answer's hold. The transaction
+locks workspace, recipient runtime and agent, asking agent, issue, target task,
+asked members, source messages, then the intent, targets, requests and answers.
+Task, member, asking-agent and source contention uses NOWAIT. Reassignment or
+a changed dispatch target restarts from the plain-read snapshot, at most three
+times per item. A source deleted first prevents delivery; a source delete
+started after the fence waits through the delivery commit.
+
+Enqueue accepts caller-owned queries through `EnqueueDecisionTaskInTx`. Queued
+merge and active-task registration accept an optional exact target task ID.
+These writes and all answer/group acknowledgements commit together. Events and
+daemon hints publish only after commit. There is no notice outbox and no
+ordinary comment trigger. A deferred item keeps its acknowledgement NULL.
+Terminal issues, removed asked members with non-cancelled requests and archived
+asking agents produce `skipped_ineligible` without dispatch. Cancelled requests
+do not participate in membership eligibility. Later re-answers acknowledge
+individually without repeating the group wake. Group inputs retain every quote, cancelled
+request and unasked target in the task's handoff; queued merges preserve the
+normal attribution and overlay recalculation.
+
+Member and unassigned recipients receive one `delivery` comment per live answer,
+each replying to that answer's quote. The per-answer comment key makes retries
+idempotent. These rules include Cheese's approved R1: B and C: A amendments to
+design revision 14, recorded on CHE-1811 on October 16, 2026.
+
+Runtime teardown unbinds user agents before detaching task history. Updating a
+queued task's `trigger_comment_id` takes its FK's key-share lock on the comment;
+the delivery's preceding issue fence serializes baseline comment removal.
+
+CHE-1751 adds lifecycle cancellation, retractions and re-asks. Lifecycle writers
+remain unchanged: issue status, membership and agent archive changes are durable
+facts for the leased worker, not places to add decision statements. Each
+cancellation locks the workspace, one current lane, asking agent with NOWAIT,
+ask thread, issue, request and live answer. It rechecks current eligibility,
+cancels only an open or answered request, acknowledges an unwoken live answer
+as `skipped_ineligible`, and commits its cancel comment and non-archived-lane
+note together. Restoration before the stable recheck leaves the request alone.
+Cancelled requests keep their original reason through later withdrawals.
+
+Retractions and re-asks reuse the wake delivery transaction and dispatch paths.
+Retractions use their immutable withdrawal comment, independently of the reason;
+only a previously delivered, now withdrawn answer is eligible. Persisted veto
+suppression is final, including after reassignment. A re-ask uses the cancel
+comment for `human_removed` or `lane_archived`. Correction deliveries do not
+require vanished source messages or the removed human's membership: they must
+reach the current assignee to retract or ask again. They still check terminal
+issue status and the asking agent's archive state under the same locks.
+Member and unassigned recipients need no extra comment. Every dispatch and
+acknowledgement is atomic; deferral keeps the acknowledgement NULL. There is
+no automatic ping, new request, or server-created DM on these paths.

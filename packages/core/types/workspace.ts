@@ -66,14 +66,6 @@ export interface User {
    * returns an object (defaults to `{}`), never null.
    */
   onboarding_questionnaire: Record<string, unknown>;
-  /**
-   * Legacy column from the removed starter-content dialog. The column is
-   * still written to (always 'imported' for new accounts after the
-   * mark-onboarded paths run) so older desktop builds — which still render
-   * the dialog on NULL — don't show it to anyone created on a newer server.
-   * Kept as `string | null` for forward compatibility.
-   */
-  starter_content_state: string | null;
   /** Preferred UI language. null means "follow client/system". */
   language: string | null;
   /**
@@ -150,4 +142,60 @@ export interface ShareLinkInfo {
 export interface WorkspaceExportPrivacy {
   redaction_mode: string;
   manifest_retention_days: number;
+}
+
+/** How Jev squad routing acts: off skips Jev, shadow logs a pick without dispatching it, on dispatches it. */
+export type JevRoutingMode = "off" | "shadow" | "on";
+
+/**
+ * CHE-1839: the slice of the workspace governance config the Jev / Governance
+ * tab reads. Fields stay raw (a newer server may add modes), see
+ * `resolveJevGovernance` for how the tab interprets them.
+ */
+/** One saved version of the governance settings: what they were before and what they were after. Settings stay raw: a newer server may add keys. */
+export interface GovernanceAuditEntry {
+  version: number;
+  actor_id: string;
+  previous: Record<string, unknown> | null;
+  effective: Record<string, unknown>;
+  changed_at: string;
+}
+
+export interface WorkspaceGovernanceConfig {
+  version: number;
+  settings: {
+    jev_squad_routing_mode?: string | null;
+    jev_squad_routing_enabled?: boolean | null;
+    jev_min_confidence?: number | null;
+  };
+  /** Newest first; the server returns at most 50. */
+  audit_history: GovernanceAuditEntry[];
+}
+
+/** What the tab shows: the effective routing mode and the confidence, with the version a write is based on, and the saved versions. `min_confidence` is null when the workspace never set one (the server then uses 0.90). */
+export interface WorkspaceJevGovernance {
+  version: number;
+  routing_mode: JevRoutingMode;
+  min_confidence: number | null;
+  history: GovernanceAuditEntry[];
+}
+
+/** A write is always based on the version the user saw. Omitted fields stay as they are. */
+export interface WorkspaceJevGovernancePatch {
+  expected_version: number;
+  request_id: string;
+  jev_squad_routing_mode?: "off" | "shadow";
+  jev_min_confidence?: number;
+}
+
+/** Restores every setting to how it was after `rollback_to_version`, saved as a new version. */
+export interface WorkspaceGovernanceRollback {
+  expected_version: number;
+  request_id: string;
+  rollback_to_version: number;
+}
+
+/** Whether a Jev provider key is stored. The key itself is never readable. */
+export interface JevCredentialPresence {
+  present: boolean;
 }

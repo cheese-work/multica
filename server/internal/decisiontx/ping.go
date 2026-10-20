@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/inbox"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
@@ -53,16 +54,22 @@ func NotifyPing(ctx context.Context, starter interface {
 		if err != nil {
 			return nil, err
 		}
-		created, err := locked.CreateInboxItem(ctx, db.CreateInboxItemParams{
+		// A recipient who left the workspace gets no item; the ping is still
+		// recorded as handled below so the worker does not retry it.
+		created, inserted, err := inbox.CreateIfEligible(ctx, locked, db.CreateInboxItemParams{
 			ID: dbid.NewV7(), WorkspaceID: workspaceID, RecipientType: "member", RecipientID: request.HumanUserID,
 			Type: "mentioned", Severity: "info", IssueID: request.IssueID, Title: issue.Title,
 			Body: pgtype.Text{String: request.Ask, Valid: true}, ActorType: pgtype.Text{String: "agent", Valid: true},
 			ActorID: request.AskingAgentID, Details: details,
+			// The ask lives in a DM; the item opens it.
+			ChatSessionID: request.ChatSessionID, ChatMessageID: request.PingMessageID,
 		})
 		if err != nil {
 			return nil, err
 		}
-		item = &created
+		if inserted {
+			item = &created
+		}
 	}
 	if _, err := locked.MarkDecisionPingNotified(ctx, db.MarkDecisionPingNotifiedParams{WorkspaceID: workspaceID, ID: requestID}); err != nil {
 		return nil, err

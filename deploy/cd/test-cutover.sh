@@ -129,6 +129,13 @@ if [ "\$1" = "run" ]; then
   exit 0
 fi
 
+if [ "\$1" = "network" ] && [ "\$2" = "inspect" ]; then
+  # network inspect <name> — the configured Jev gateway network must already
+  # exist (CHE-1854); missing-gateway-network models one that does not.
+  fail_if_flagged missing-gateway-network
+  exit 0
+fi
+
 if [ "\$1" = "login" ]; then
   # login ghcr.io -u token --password-stdin — deploy-lib.sh's shared
   # ghcr_login (CHE-549), mirroring test-deploy.sh's own mock exactly so
@@ -1318,5 +1325,149 @@ if [ "$(pull_calls "$state_dir")" -ne 3 ]; then
   exit 1
 fi
 if drained_before_refusal "$state_dir"; then echo "scenario che823-pull-persistent-failure: blue was drained" >&2; exit 1; fi
+
+# ---------------------------------------------------------------------------
+# CHE-1854: scoped Jev runtime inputs survive recreation. The optional
+# deploy/cd/docker-compose.jev.yml overlay is added to EVERY compose call
+# only when the compose dir's .env configures it; a configured-but-broken
+# prerequisite refuses before the first mutation (drain, pull, migrate).
+# Launched CD-shaped (.env sourced, not exported) with synthetic values only.
+# ---------------------------------------------------------------------------
+jev_dir="$work_dir/compose-jev"
+mkdir -p "$jev_dir"
+touch "$jev_dir/docker-compose.selfhost.yml"
+jev_key="$(printf 'A%.0s' {1..32} | base64)"
+jev_flags="$work_dir/jev-flags.yaml"
+cp deploy/cd/fixtures/jev-feature-flags.synthetic.yaml "$jev_flags"
+
+write_jev_env() { # write_jev_env [KEY=VALUE ...] -> .env holding exactly these lines
+  : >"$jev_dir/.env"
+  local kv
+  for kv in "$@"; do printf '%s\n' "$kv" >>"$jev_dir/.env"; done
+}
+jev_full_env() {
+  write_jev_env "MULTICA_JEV_SECRET_KEY=$jev_key" "MULTICA_JEV_FLAGS_FILE=$jev_flags" "MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway" "$@"
+}
+
+run_jev() { # run_jev <state_dir> <cutover|rollback>
+  local state_dir=$1 command=$2 extra=()
+  [ "$command" = cutover ] && extra=(--manifest "$manifest" --packet "$packet")
+  mkdir -p "$state_dir/control"
+  export CUTOVER_TEST_CONTROL_DIR="$state_dir/control" ROUTER_STATE_DIR="$state_dir/router-state"
+  bootstrap_incumbent "$jev_dir"
+  env -i HOME="$HOME" PATH="$PATH" \
+    CUTOVER_TEST_CONTROL_DIR="$CUTOVER_TEST_CONTROL_DIR" ROUTER_STATE_DIR="$ROUTER_STATE_DIR" \
+    MOCK_BACKEND_DIGEST="$backend_digest" MOCK_WEB_DIGEST="$web_digest" \
+    MOCK_INCUMBENT_BACKEND_DIGEST="$incumbent_backend_digest" MOCK_INCUMBENT_WEB_DIGEST="$incumbent_web_digest" \
+    MOCK_EXPECTED_COMMIT="$source_sha" MOCK_LEDGER_VERSION_AFTER_MIGRATE="${MOCK_LEDGER_VERSION_AFTER_MIGRATE:-}" \
+    bash -c "cd '$jev_dir' && . ./.env && export CUTOVER_DATABASE_URL=postgres://multica:multica@postgres:5432/multica && bash '$root_dir/deploy/cd/cutover.sh' $command ${extra[*]:-} --compose-dir '$jev_dir' --state-dir '$state_dir'"
+}
+
+jev_overlay_calls() { grep -c 'docker-compose.jev.yml' "$1/control/docker-calls.log" || true; }
+compose_calls() { grep -c '^compose ' "$1/control/docker-calls.log" || true; }
+mutated() { [ -f "$1/control/stop-calls.log" ] || grep -qE '^compose .*(pull|up|run) ' "$1/control/docker-calls.log"; }
+
+# Unconfigured: byte-identical compose arguments, no overlay.
+write_jev_env
+state_dir="$(fresh_scenario_dir jev-unconfigured)"
+output="$(run_jev "$state_dir" cutover 2>&1)" && status=0 || status=$?
+expect_exit 0 "$status" jev-unconfigured
+expect_contains "$output" "cutover complete: green is now active" jev-unconfigured
+[ "$(jev_overlay_calls "$state_dir")" -eq 0 ] || { echo "scenario jev-unconfigured: overlay used without configuration" >&2; exit 1; }
+
+# Configured: the overlay rides on every compose call; one candidate up, the
+# incumbent never started; the key never reaches output or docker arguments.
+jev_full_env
+state_dir="$(fresh_scenario_dir jev-configured)"
+output="$(run_jev "$state_dir" cutover 2>&1)" && status=0 || status=$?
+expect_exit 0 "$status" jev-configured
+expect_contains "$output" "cutover complete: green is now active" jev-configured
+if [ "$(jev_overlay_calls "$state_dir")" -ne "$(compose_calls "$state_dir")" ] || [ "$(compose_calls "$state_dir")" -eq 0 ]; then
+  echo "scenario jev-configured: overlay missing from $(( $(compose_calls "$state_dir") - $(jev_overlay_calls "$state_dir") )) compose call(s)" >&2
+  exit 1
+fi
+[ "$(grep -cE 'up -d --no-deps backend-green\b' "$state_dir/control/docker-calls.log")" -eq 1 ] || { echo "scenario jev-configured: want exactly one backend-green up" >&2; exit 1; }
+if grep -qE 'up -d --no-deps backend-blue\b' "$state_dir/control/docker-calls.log"; then
+  echo "scenario jev-configured: incumbent backend-blue was started (two active backends)" >&2; exit 1
+fi
+expect_not_contains "$output" "$jev_key" jev-configured
+if grep -qF "$jev_key" "$state_dir/control/docker-calls.log"; then echo "scenario jev-configured: key reached docker arguments" >&2; exit 1; fi
+
+# .env quoting, `export` and trailing comments resolve like Compose's.
+write_jev_env "export MULTICA_JEV_SECRET_KEY=\"$jev_key\"" "MULTICA_JEV_FLAGS_FILE='$jev_flags'  # scoped file" "MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway # gateway"
+state_dir="$(fresh_scenario_dir jev-quoted-env)"
+output="$(run_jev "$state_dir" cutover 2>&1)" && status=0 || status=$?
+expect_exit 0 "$status" jev-quoted-env
+expect_contains "$output" "jev overlay enabled" jev-quoted-env
+jev_full_env
+
+# Rollback restarts the predecessor through the same overlay.
+set +e
+output="$(run_jev "$state_dir" rollback 2>&1)"
+status=$?
+set -e
+expect_exit 0 "$status" jev-rollback
+expect_contains "$output" "rollback complete: blue restored and healthy" jev-rollback
+grep -E 'up -d --no-deps backend-blue\b' "$state_dir/control/docker-calls.log" | grep -q 'docker-compose.jev.yml' || { echo "scenario jev-rollback: predecessor restarted without the overlay" >&2; exit 1; }
+
+# Missing / invalid configured prerequisites refuse before any mutation, name
+# the variable and never print its value. (name | env lines | control flag)
+jev_refusals=(
+  "MULTICA_JEV_SECRET_KEY|MULTICA_JEV_FLAGS_FILE=$jev_flags,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
+  "MULTICA_JEV_SECRET_KEY|MULTICA_JEV_SECRET_KEY=not-base64-$jev_key,MULTICA_JEV_FLAGS_FILE=$jev_flags,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
+  "MULTICA_JEV_SECRET_KEY|MULTICA_JEV_SECRET_KEY=$(printf 'A%.0s' {1..31} | base64),MULTICA_JEV_FLAGS_FILE=$jev_flags,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
+  "MULTICA_JEV_FLAGS_FILE|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
+  "MULTICA_JEV_FLAGS_FILE|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$work_dir/absent.yaml,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
+  "MULTICA_JEV_FLAGS_FILE|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$work_dir,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
+  "MULTICA_JEV_FLAGS_FILE|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=relative.yaml,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
+  "MULTICA_JEV_FLAGS_FILE|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$root_dir/deploy/cd/fixtures/flags/invalid/duplicate-key.yaml,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
+  "MULTICA_JEV_FLAGS_FILE|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$root_dir/deploy/cd/fixtures/flags/invalid/unclosed-flow.yaml,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
+  "MULTICA_JEV_FLAGS_FILE|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$root_dir/deploy/cd/fixtures/flags/invalid/flag-not-map.yaml,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
+  "MULTICA_JEV_FLAGS_FILE|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$root_dir/deploy/cd/fixtures/flags/invalid/percent-overflow-by-one.yaml,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
+  "MULTICA_JEV_FLAGS_FILE|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$root_dir/deploy/cd/fixtures/flags/invalid/percent-overflow-uint64.yaml,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
+  "MULTICA_JEV_GATEWAY_NETWORK|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$jev_flags|"
+  "MULTICA_JEV_GATEWAY_NETWORK|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$jev_flags,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|missing-gateway-network"
+)
+n=0
+for spec in "${jev_refusals[@]}"; do
+  n=$((n + 1))
+  IFS='|' read -r var lines flag <<<"$spec"
+  IFS=',' read -r -a env_lines <<<"$lines"
+  write_jev_env "${env_lines[@]}"
+  state_dir="$(fresh_scenario_dir "jev-refusal-$n")"
+  mkdir -p "$state_dir/control"
+  [ -z "$flag" ] || touch "$state_dir/control/$flag"
+  output="$(run_jev "$state_dir" cutover 2>&1)" && status=0 || status=$?
+  expect_exit 1 "$status" "jev-refusal-$n"
+  expect_contains "$output" "jev overlay" "jev-refusal-$n"
+  expect_contains "$output" "$var" "jev-refusal-$n"
+  expect_not_contains "$output" "$jev_key" "jev-refusal-$n"
+  if mutated "$state_dir"; then echo "scenario jev-refusal-$n: mutated before refusing ($var)" >&2; exit 1; fi
+done
+
+# A rollback whose prerequisites broke since the cutover refuses before it
+# drains the active colour.
+jev_full_env
+state_dir="$(fresh_scenario_dir jev-rollback-refusal)"
+run_jev "$state_dir" cutover >/dev/null 2>&1
+write_jev_env "MULTICA_JEV_FLAGS_FILE=$jev_flags" "MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway"
+stops_before="$(wc -l <"$state_dir/control/stop-calls.log")"
+output="$(run_jev "$state_dir" rollback 2>&1)" && status=0 || status=$?
+expect_exit 1 "$status" jev-rollback-refusal
+expect_contains "$output" "MULTICA_JEV_SECRET_KEY" jev-rollback-refusal
+[ "$(wc -l <"$state_dir/control/stop-calls.log")" -eq "$stops_before" ] || { echo "scenario jev-rollback-refusal: drained before refusing" >&2; exit 1; }
+
+# A flag file that turns malformed after a successful cutover refuses the
+# rollback before it drains the active colour (both colours mount the file).
+jev_full_env
+state_dir="$(fresh_scenario_dir jev-rollback-malformed-file)"
+run_jev "$state_dir" cutover >/dev/null 2>&1
+cp "$root_dir/deploy/cd/fixtures/flags/invalid/duplicate-key.yaml" "$jev_flags"
+stops_before="$(wc -l <"$state_dir/control/stop-calls.log")"
+output="$(run_jev "$state_dir" rollback 2>&1)" && status=0 || status=$?
+expect_exit 1 "$status" jev-rollback-malformed-file
+expect_contains "$output" "MULTICA_JEV_FLAGS_FILE" jev-rollback-malformed-file
+[ "$(wc -l <"$state_dir/control/stop-calls.log")" -eq "$stops_before" ] || { echo "scenario jev-rollback-malformed-file: drained before refusing" >&2; exit 1; }
+cp deploy/cd/fixtures/jev-feature-flags.synthetic.yaml "$jev_flags"
 
 echo "cutover.sh control-flow fixtures passed"

@@ -1,0 +1,3 @@
+jev_enabled:
+  default: false
+  alow: ["typo"]

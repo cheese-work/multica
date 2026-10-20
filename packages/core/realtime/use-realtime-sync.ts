@@ -18,6 +18,7 @@ import { runtimeKeys } from "../runtimes/queries";
 import { labelKeys } from "../labels/queries";
 import { propertyKeys } from "../properties/queries";
 import { issueStatusKeys } from "../issue-statuses/queries";
+import { issueWorkflowKeys } from "../issue-workflows/queries";
 import {
   agentTaskSnapshotKeys,
   workspaceWorkingAgentsKeys,
@@ -351,6 +352,7 @@ type ChatSessionUpdatedPayload = {
   project_id?: string | null;
   pinned?: boolean;
   status?: "active" | "archived";
+  compacting?: boolean;
   updated_at?: string;
 };
 
@@ -387,6 +389,7 @@ export function applyChatSessionUpdatedToCache(
             ...("project_id" in payload ? { project_id: payload.project_id } : {}),
             pinned: payload.pinned ?? s.pinned,
             status: payload.status ?? s.status,
+            ...(payload.compacting === undefined ? {} : { compacting: payload.compacting }),
             updated_at: payload.updated_at ?? s.updated_at,
             ...(payload.status === "archived"
               ? { unread_count: 0, has_unread: false }
@@ -672,6 +675,7 @@ function invalidateWorkspaceScopedQueries(qc: QueryClient): void {
     // 5-minute staleTime — long enough to offer a status the server already
     // archived, or to keep painting its old name.
     qc.invalidateQueries({ queryKey: issueStatusKeys.all(wsId) });
+    qc.invalidateQueries({ queryKey: issueWorkflowKeys.all(wsId) });
   }
   // Cross-workspace, so outside the wsId guard: a reconnect may have missed
   // inbox events from any workspace, so re-pull the switcher-dot summary.
@@ -831,6 +835,9 @@ export function useRealtimeSync(
         const wsId = getCurrentWsId();
         if (wsId) {
           qc.invalidateQueries({ queryKey: projectKeys.all(wsId) });
+          // Workflow responses include the projects using them. Creating,
+          // deleting or changing a project also changes that usage list.
+          qc.invalidateQueries({ queryKey: issueWorkflowKeys.all(wsId) });
           // The issue table can filter on a project's status, so a
           // project create/update/delete changes which issues a filtered
           // window holds. The payload carries no previous status to compare
@@ -885,6 +892,12 @@ export function useRealtimeSync(
             },
           });
         }
+      },
+      // Workspace workflows (MUL-7420). Same contract as the status catalog:
+      // the event carries no row, so every write answers with one list read.
+      issue_workflow: () => {
+        const wsId = getCurrentWsId();
+        if (wsId) qc.invalidateQueries({ queryKey: issueWorkflowKeys.all(wsId) });
       },
       pin: () => {
         const wsId = getCurrentWsId();

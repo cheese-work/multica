@@ -11,7 +11,8 @@ import {
   ResizableHandle,
 } from "@multica/ui/components/ui/resizable";
 import { useIsCompact } from "@multica/ui/hooks/use-mobile";
-import { useRequiredWorkspaceSlug, useWorkspacePaths } from "@multica/core/paths";
+import { useCurrentWorkspace, useRequiredWorkspaceSlug, useWorkspacePaths } from "@multica/core/paths";
+import { resolveAutoCompact } from "@multica/core/workspace/auto-compact";
 import { getCurrentSlug } from "@multica/core/platform";
 import { useChatStore } from "@multica/core/chat";
 import { chatQuickActionsPendingOptions } from "@multica/core/chat/queries";
@@ -70,6 +71,7 @@ export function ChatPage() {
   const backOrReplace = useBackOrReplace();
   const workspaceSlug = useRequiredWorkspaceSlug();
   const wsPaths = useWorkspacePaths();
+  const workspace = useCurrentWorkspace();
   // App Router can retain this page after navigation. Once the URL belongs
   // to another route, this instance must stop reconciling shared chat state.
   // Also check the live workspace mirror in each effect: the incoming layout
@@ -293,6 +295,8 @@ export function ChatPage() {
   // `@container`: the conversation column's gutter (CHAT_GUTTER) widens with
   // THIS pane, which the user resizes independently of the browser window.
   const queuedTasks = c.pendingTask?.queued_tasks ?? [];
+  const autoCompact = resolveAutoCompact(workspace?.settings, c.activeAgent?.runtime_config);
+  const autoCompactThresholdPct = autoCompact.enabled ? autoCompact.threshold_pct : null;
   const conversation = (
     <div className="flex flex-1 flex-col min-h-0 @container">
       {c.currentSession && (
@@ -301,6 +305,8 @@ export function ChatPage() {
           agent={c.activeAgent}
           onArchive={handleArchive}
           renameRequest={renameRequest}
+          autoCompactThresholdPct={autoCompactThresholdPct}
+          onCompact={() => void c.handleSend("/compact")}
         />
       )}
       {c.showSkeleton ? (
@@ -391,8 +397,10 @@ export function ChatPage() {
           c.isSessionArchived ||
           c.isAgentArchived ||
           c.isAgentAccessRevoked ||
-          !c.isAgentRuntimeBound
+          !c.isAgentRuntimeBound ||
+          c.currentSession?.compacting === true
         }
+        compacting={c.currentSession?.compacting === true}
         noAgent={c.noAgent}
         agentArchived={c.isAgentArchived}
         agentAccessRevoked={c.isAgentAccessRevoked}

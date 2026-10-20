@@ -438,4 +438,101 @@ set -e
 expect_exit 1 "$status" unknown-ledger-rename
 expect_contains "$output" "ledger contains version 999_not_a_migration not present in ordered_migrations — dirty ledger state" unknown-ledger-rename
 
+# create_legacy_unpin_packet runs the real create path against a C00-shape
+# baseline whose ledger was written before CHE-1824 renumbered
+# 627_unpin_archived_chat_sessions to 653_unpin_archived_chat_sessions
+# (CD run 39008622980). Production at 95314275 recorded every on-disk
+# migration through 626_comment_jev_route_validate, then the unpin migration
+# under its legacy 627 name. $2 is the baseline's latest version and $3 an
+# optional extra ledger row, so negative controls reuse the same path.
+create_legacy_unpin_packet() {
+  local dir=$1 latest=$2 extra=${3:-}
+  mkdir -p "$dir"
+  node -e '
+    const fs = require("fs"), c = require("crypto");
+    const [dir, latest, extra] = process.argv.slice(1);
+    const onDisk = fs.readdirSync("server/migrations").filter((f) => f.endsWith(".up.sql")).sort().map((f) => f.replace(/\.up\.sql$/, ""));
+    const floor = onDisk.indexOf("626_comment_jev_route_validate");
+    if (floor === -1) throw new Error("fixture assumption failed: 626_comment_jev_route_validate not on disk");
+    const versions = onDisk.slice(0, floor + 1);
+    if (latest !== "626_comment_jev_route_validate") versions.push(latest);
+    if (extra) versions.push(extra);
+    versions.sort();
+    fs.writeFileSync(`${dir}/observed.json`, JSON.stringify({
+      schema_version: 1,
+      ledger: { status: "complete", versions },
+      indexes: { status: "complete", invalid: [] },
+      hooks: { status: "complete", observations: [{ name: "backfill_example", status: "completed" }] },
+    }));
+    const baseline = JSON.stringify({
+      images: { backend: { digest: "sha256:" + "a".repeat(64) }, web: { digest: "sha256:" + "b".repeat(64) } },
+      migration_ledger: {
+        latest: { version: latest },
+        row_count: versions.length,
+        ordered_sha256: "sha256:" + c.createHash("sha256").update(versions.join("\n") + "\n").digest("hex"),
+      },
+    });
+    fs.writeFileSync(`${dir}/baseline.json`, baseline);
+    fs.writeFileSync(`${dir}/manifest.json`, JSON.stringify({
+      source_sha: "504078f8ea7fa31f342f195659e93a7f6c3e5a91",
+      images: {
+        backend: "ghcr.io/cheese-work/multica-backend@sha256:" + "c".repeat(64),
+        web: "ghcr.io/cheese-work/multica-web@sha256:" + "d".repeat(64),
+      },
+      migration_inventory_sha256: process.env.MIGRATION_INVENTORY,
+      baseline_tuple_sha256: "sha256:" + c.createHash("sha256").update(baseline).digest("hex"),
+    }));
+  ' "$dir" "$latest" "$extra"
+  node deploy/cd/release-packet.mjs create --manifest "$dir/manifest.json" --baseline-tuple "$dir/baseline.json" \
+    --observed-state "$dir/observed.json" --output "$dir/packet.json"
+}
+export MIGRATION_INVENTORY="$create_migration_digest"
+
+# ---------------------------------------------------------------------------
+# Scenario 12: a baseline whose latest ledger row is the legacy
+# 627_unpin_archived_chat_sessions must create and verify through the real
+# packet path. The rollback floor is the on-disk 653 name, because
+# cutover.sh compares it against server/migrations/ by position.
+# ---------------------------------------------------------------------------
+set +e
+output="$(create_legacy_unpin_packet "$work_dir/legacy-unpin" 627_unpin_archived_chat_sessions 2>&1)"
+status=$?
+set -e
+expect_exit 0 "$status" legacy-unpin-create
+output="$(node deploy/cd/release-packet.mjs verify --packet "$work_dir/legacy-unpin/packet.json" --manifest "$work_dir/legacy-unpin/manifest.json" 2>&1)"
+expect_contains "$output" '"ok":true' legacy-unpin-verify
+floor="$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1])).minimum_rollback_version)' "$work_dir/legacy-unpin/packet.json")"
+[ "$floor" = 653_unpin_archived_chat_sessions ] || { echo "scenario legacy-unpin-floor: minimum_rollback_version $floor, want 653_unpin_archived_chat_sessions" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Scenario 13 (control): the unrelated 627_notification_channel_preference
+# keeps its own identity. It shares only the numeric prefix with the legacy
+# unpin name and must never be remapped to 653.
+# ---------------------------------------------------------------------------
+create_legacy_unpin_packet "$work_dir/notification-627" 627_notification_channel_preference
+floor="$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1])).minimum_rollback_version)' "$work_dir/notification-627/packet.json")"
+[ "$floor" = 627_notification_channel_preference ] || { echo "scenario notification-627-floor: minimum_rollback_version $floor, want 627_notification_channel_preference" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Scenario 14 (negative control): an unknown 627 name as the baseline is not
+# aliased by prefix and still fails closed.
+# ---------------------------------------------------------------------------
+set +e
+output="$(create_legacy_unpin_packet "$work_dir/unknown-627-baseline" 627_not_a_migration 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" unknown-627-baseline
+expect_contains "$output" "baseline migration 627_not_a_migration is not present in the candidate migration inventory" unknown-627-baseline
+
+# ---------------------------------------------------------------------------
+# Scenario 15 (negative control): the legacy baseline with an extra unknown
+# 627 ledger row is still dirty-ledger state.
+# ---------------------------------------------------------------------------
+set +e
+output="$(create_legacy_unpin_packet "$work_dir/legacy-unpin-dirty" 627_unpin_archived_chat_sessions 627_not_a_migration 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" legacy-unpin-dirty-ledger
+expect_contains "$output" "ledger contains version 627_not_a_migration not present in ordered_migrations — dirty ledger state" legacy-unpin-dirty-ledger
+
 echo "release-packet.mjs control-flow fixtures passed"

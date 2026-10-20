@@ -66,6 +66,19 @@ export interface InboxItem {
   read: boolean;
   archived: boolean;
   created_at: string;
+  /**
+   * Last time the record changed; a coalesced DM record moves up when it gains
+   * a reply. Optional so a client keeps working against a backend that
+   * predates DM records (fall back to `created_at`).
+   */
+  updated_at?: string | null;
+  /**
+   * The DM this record links to; null for issue notifications. The server also
+   * sends `type: "dm_reply"` rows (one unread record per DM, `details.reply_count`
+   * replies) that no client labels yet, so the type union stays closed until a
+   * client renders them.
+   */
+  chat_session_id?: string | null;
   details: Record<string, string> | null;
 }
 

@@ -403,6 +403,63 @@ writes `<state-dir>/outage-alert.json` and exits 1.
 upstream `/readyz` and the public listeners must answer 2xx for the whole
 `--window`. CD runs it for 120s after every cutover (0s after a failed one).
 
+### Scoped Jev runtime inputs (CHE-1854)
+
+A backend recreated from the base files alone loses three things a scoped Jev
+shadow runtime needs: the deployment key, the workspace-scoped feature-flag
+file and the gateway network. `docker-compose.jev.yml` keeps them. It is
+opt-in per installation: `cutover.sh` loads it only when the compose dir's
+`.env` sets `MULTICA_JEV_FLAGS_FILE` or `MULTICA_JEV_GATEWAY_NETWORK`. With
+neither set, no overlay loads and every Compose call is unchanged. Jev stays
+off everywhere else; the overlay never sets `FF_JEV_ENABLED` or `JEV_API_KEY`.
+
+Protected operator inputs, all in the C00 compose dir's `.env` (never in the
+repository, CI, logs or PR evidence):
+
+| Variable | Meaning |
+| --- | --- |
+| `MULTICA_JEV_SECRET_KEY` | Deployment key: standard base64 of 32 bytes. Already passed through by `docker-compose.selfhost.yml`. |
+| `MULTICA_JEV_FLAGS_FILE` | Absolute host path of a non-empty flag file. Bind-mounted read-only at `/app/feature-flags.yaml`; `MULTICA_FEATURE_FLAGS_FILE` points there. |
+| `MULTICA_JEV_GATEWAY_NETWORK` | Name of the existing external network. Both backends join it next to the project network. |
+
+The flag file decides which workspace may use Jev. Shape (workspace ID is
+yours, default stays `false`): `deploy/cd/fixtures/jev-feature-flags.synthetic.yaml`.
+`flagfile-check.mjs` admits only a documented subset of the backend schema (the
+shape in the file header; unknown fields, anchors, `yes`/`no` and unquoted
+numeric list items, and `percent` values with leading zeros are refused; `percent` must also fit 64 bits even though the backend would accept some of
+them). It runs before the first drain because both colours mount the same file
+and the backend exits on a malformed one, so a restart of the incumbent could
+not recover. The Go loader classifies the same corpus
+(`deploy/cd/fixtures/flags`) in `server/internal/featureflags`.
+Edit the file in place: replacing it by rename leaves a running colour on the
+old inode until recreation.
+
+Once either path or network is set, all three must hold. Before the first
+drain, pull, migration or start, `cutover` and `rollback` refuse and name the
+failing variable (never its value) when the key is not base64 of 32 bytes,
+the flag file is not an absolute readable non-empty file that
+`flagfile-check.mjs` admits, or the network does not exist. A refusal leaves the incumbent serving.
+
+Joining the gateway network adds a second `postgres` to the backend's DNS
+path. The overlay therefore reaches the database as `<project>-postgres-1`
+(the effective Compose project: `-p`, `COMPOSE_PROJECT_NAME`, else `multica`),
+which exists only on the project network. No IP pin or `extra_hosts` entry is used, so a changed
+container address needs no edit. Ports, volumes, the blue/green routing,
+the deploy lock, rollback and the one-active-backend rule are untouched.
+
+Temporary-to-durable transition (operator, on C00; no value is printed):
+1. Copy the key already in the protected backend environment into
+   `.env` as `MULTICA_JEV_SECRET_KEY`, and add the other two variables.
+2. The next CD cutover recreates the candidate colour with the overlay. The
+   hand-made container from the temporary recovery is replaced by it; the
+   original `unless-stopped` policy comes from the base files.
+3. Confirm with `docker inspect` that the new backend lists the gateway
+   network, the read-only flag mount and `MULTICA_FEATURE_FLAGS_FILE`, and
+   that `/health` reports the new revision.
+
+Source tests (`test-jev-overlay.sh`, `test-cutover.sh`) use synthetic values
+and mocked Docker. They are not production or shadow acceptance.
+
 ### A/B outage runbook
 
 For public 502s, a `Multica A/B cutover outage` annotation, or a failing
