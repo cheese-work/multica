@@ -29,7 +29,6 @@ const (
 	WakeupTaskKind = "wakeup"
 
 	chatWakeupTickBatch = 50
-	chatWakeupMaxHops   = 5
 )
 
 var (
@@ -119,9 +118,12 @@ func (s *ChatWakeupService) fire(ctx context.Context, w db.ChatWakeup) error {
 	expire := func() error {
 		return q.SettleChatWakeup(ctx, db.SettleChatWakeupParams{ID: w.ID, Status: "expired"})
 	}
+	// Follow the continuation chain to the DM that is current now. It has no
+	// fixed depth; a session met twice is a corrupt cycle, so the wakeup expires.
 	sessionID := w.ChatSessionID
 	var session db.ChatSession
-	for hop := 0; ; hop++ {
+	visited := map[pgtype.UUID]bool{}
+	for {
 		var err error
 		if session, err = q.GetChatSession(ctx, sessionID); errors.Is(err, pgx.ErrNoRows) {
 			return expire()
@@ -131,9 +133,10 @@ func (s *ChatWakeupService) fire(ctx context.Context, w db.ChatWakeup) error {
 		if !session.ContinuedIntoSessionID.Valid {
 			break
 		}
-		if hop == chatWakeupMaxHops {
-			return fmt.Errorf("continuation chain longer than %d", chatWakeupMaxHops)
+		if visited[session.ID] {
+			return expire()
 		}
+		visited[session.ID] = true
 		sessionID = session.ContinuedIntoSessionID
 	}
 	if session.Status != "active" || s.channelBound(ctx, q, session.ID) {
