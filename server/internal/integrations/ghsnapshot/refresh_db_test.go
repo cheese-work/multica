@@ -303,8 +303,8 @@ func TestApplySnapshotHeadSHAGuard(t *testing.T) {
 	applied, err = m.applySnapshot(ctx, pr.ID, &PRSnapshot{
 		HeadSHA: "B", Mergeable: "MERGEABLE", MergeStateStatus: "CLEAN", HasChecks: true, RollupState: "FAILURE",
 		Contexts: []CheckContext{
-			{Name: "backend", Status: "completed", Conclusion: "failure"},
-			{Name: "vercel", Status: "completed", Conclusion: "success", IsStatusContext: true},
+			{Name: "backend", Status: "completed", Conclusion: "failure", FinishedAt: "2026-10-20T10:00:00Z"},
+			{Name: "vercel", Status: "completed", Conclusion: "success", IsStatusContext: true, FinishedAt: "2026-10-20T10:05:00Z"},
 		},
 	})
 	if err != nil {
@@ -319,6 +319,11 @@ func TestApplySnapshotHeadSHAGuard(t *testing.T) {
 	}
 	if n := checkRunCount(t, pool, pr.ID); n != 2 {
 		t.Fatalf("check runs = %d, want 2", n)
+	}
+	// CHE-1874: the finish time of each check is stored, so a rerun with the same details URL has a new identity.
+	var finished int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM github_pull_request_check_run WHERE pr_id = $1 AND finished_at IS NOT NULL`, pr.ID).Scan(&finished); err != nil || finished != 2 {
+		t.Fatalf("check runs with a finish time = %d (%v), want 2", finished, err)
 	}
 
 	// 3. Head advances to "C" (a new push mirrored by the pull_request webhook);

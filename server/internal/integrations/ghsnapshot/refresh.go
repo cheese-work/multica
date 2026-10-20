@@ -500,6 +500,7 @@ func (m *Manager) applySnapshot(ctx context.Context, prID pgtype.UUID, snap *PRS
 			Status:          c.Status,
 			Conclusion:      textOrNull(c.Conclusion),
 			DetailsUrl:      textOrNull(c.DetailsURL),
+			FinishedAt:      timeOrNull(c.FinishedAt),
 			IsStatusContext: c.IsStatusContext,
 		}); err != nil {
 			return false, err
@@ -651,6 +652,15 @@ func textOrNull(s string) pgtype.Text {
 		return pgtype.Text{}
 	}
 	return pgtype.Text{String: s, Valid: true}
+}
+
+// timeOrNull parses an RFC3339 timestamp from GraphQL; empty or malformed is NULL.
+func timeOrNull(s string) pgtype.Timestamptz {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return pgtype.Timestamptz{}
+	}
+	return pgtype.Timestamptz{Time: t, Valid: true}
 }
 
 func tsFromTime(t time.Time) pgtype.Timestamptz {

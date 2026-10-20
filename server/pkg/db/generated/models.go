@@ -891,14 +891,15 @@ type GithubPullRequest struct {
 }
 
 type GithubPullRequestCheckRun struct {
-	PrID            pgtype.UUID `json:"pr_id"`
-	HeadSha         string      `json:"head_sha"`
-	Ordinal         int32       `json:"ordinal"`
-	Name            string      `json:"name"`
-	Status          string      `json:"status"`
-	Conclusion      pgtype.Text `json:"conclusion"`
-	DetailsUrl      pgtype.Text `json:"details_url"`
-	IsStatusContext bool        `json:"is_status_context"`
+	PrID            pgtype.UUID        `json:"pr_id"`
+	HeadSha         string             `json:"head_sha"`
+	Ordinal         int32              `json:"ordinal"`
+	Name            string             `json:"name"`
+	Status          string             `json:"status"`
+	Conclusion      pgtype.Text        `json:"conclusion"`
+	DetailsUrl      pgtype.Text        `json:"details_url"`
+	IsStatusContext bool               `json:"is_status_context"`
+	FinishedAt      pgtype.Timestamptz `json:"finished_at"`
 }
 
 type GithubPullRequestCheckSuite struct {

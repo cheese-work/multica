@@ -69,9 +69,9 @@ DELETE FROM github_pull_request_check_run WHERE pr_id = $1;
 
 -- name: InsertGitHubPRCheckRun :exec
 INSERT INTO github_pull_request_check_run (
-    pr_id, head_sha, ordinal, name, status, conclusion, details_url, is_status_context
+    pr_id, head_sha, ordinal, name, status, conclusion, details_url, is_status_context, finished_at
 ) VALUES (
-    $1, $2, $3, $4, $5, sqlc.narg('conclusion'), sqlc.narg('details_url'), $6
+    $1, $2, $3, $4, $5, sqlc.narg('conclusion'), sqlc.narg('details_url'), $6, sqlc.narg('finished_at')
 );
 
 -- name: ListStaleUndecidedGitHubPRs :many

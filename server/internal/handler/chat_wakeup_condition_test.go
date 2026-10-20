@@ -254,3 +254,90 @@ func TestChatWakeupPullRequestChecksSeeARerunThatFinishedBetweenPolls(t *testing
 		t.Fatalf("%d wakeup tasks after a same-head rerun finished between ticks, want 1", len(got))
 	}
 }
+
+// OCR-1874-6, second round: the identity of a finished result must not depend
+// on the order GitHub returns the contexts in, and must also change when a
+// rerun keeps the same details URL (a commit status posts a new object with a
+// new creation time).
+type checkContext struct {
+	name, url, conclusion, finishedAt string
+	statusContext                     bool
+}
+
+func setContexts(t *testing.T, pr, head string, order []int, contexts ...checkContext) {
+	t.Helper()
+	dbfx.Exec(t, `DELETE FROM github_pull_request_check_run WHERE pr_id = $1`, pr)
+	for i, c := range contexts {
+		var finished any
+		if c.finishedAt != "" {
+			finished = c.finishedAt
+		}
+		dbfx.Exec(t, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion, details_url, is_status_context, finished_at)
+			VALUES ($1, $2, $3, $4, 'completed', $5, $6, $7, $8::timestamptz)`, pr, head, order[i], c.name, c.conclusion, c.url, c.statusContext, finished)
+	}
+	dbfx.Cleanup(t, `DELETE FROM github_pull_request_check_run WHERE pr_id = $1`, pr)
+}
+
+func newChecksWakeup(t *testing.T, contexts ...checkContext) (dm wakeupDM, pr string, order []int) {
+	t.Helper()
+	dm = newWakeupDM(t)
+	testHandler.TaskService.PRSnapshotsEnabled = true
+	t.Cleanup(func() { testHandler.TaskService.PRSnapshotsEnabled = false })
+	issue := dbfx.Issue(t, "Checks issue")
+	pr = linkedPullRequest(t, issue, "aaa", "SUCCESS")
+	for i := range contexts {
+		order = append(order, i)
+	}
+	setContexts(t, pr, "aaa", order, contexts...)
+	dm.createWithCondition(t, map[string]any{"issue": issue, "pr": "checks_finished"}).Want(http.StatusCreated)
+	dm.tick(t)
+	if got := dm.wakeupTasks(t, dm.sessionID); len(got) != 0 {
+		t.Fatalf("fired on the result that existed when the wakeup was set: %v", got)
+	}
+	return dm, pr, order
+}
+
+func TestChatWakeupPullRequestChecksIgnoreAReorderingOfTheSameContexts(t *testing.T) {
+	a := checkContext{name: "build", url: "https://github.com/o/r/actions/runs/1/job/1", conclusion: "success", finishedAt: "2026-10-20T10:00:00Z"}
+	b := checkContext{name: "test", url: "https://github.com/o/r/actions/runs/1/job/2", conclusion: "success", finishedAt: "2026-10-20T10:01:00Z"}
+	dm, pr, _ := newChecksWakeup(t, a, b)
+	// The same two finished results come back in the other order.
+	setContexts(t, pr, "aaa", []int{1, 0}, a, b)
+	dm.tick(t)
+	if got := dm.wakeupTasks(t, dm.sessionID); len(got) != 0 {
+		t.Fatalf("a reordering of the same finished contexts fired the wakeup: %v", got)
+	}
+}
+
+func TestChatWakeupPullRequestChecksSeeAFixedURLStatusRerunThatFinishedBetweenPolls(t *testing.T) {
+	status := checkContext{name: "ci/legacy", url: "https://ci.example/build/7", conclusion: "success", finishedAt: "2026-10-20T10:00:00Z", statusContext: true}
+	dm, pr, order := newChecksWakeup(t, status)
+	// The commit status is posted again: same context, same target URL, new creation time.
+	status.finishedAt = "2026-10-20T10:20:00Z"
+	setContexts(t, pr, "aaa", order, status)
+	dm.tick(t)
+	if got := dm.wakeupTasks(t, dm.sessionID); len(got) != 1 {
+		t.Fatalf("%d wakeup tasks after a fixed-URL status rerun finished between ticks, want 1", len(got))
+	}
+}
+
+// Rows written before the finished_at column carry no timestamps. When the
+// next snapshot refresh fills them in for the same result, that is not a new result.
+func TestChatWakeupPullRequestChecksAdoptTimestampsThatArriveLater(t *testing.T) {
+	legacy := checkContext{name: "build", url: "https://github.com/o/r/actions/runs/1/job/1", conclusion: "success"}
+	dm, pr, order := newChecksWakeup(t, legacy)
+	filled := legacy
+	filled.finishedAt = "2026-10-20T10:00:00Z"
+	setContexts(t, pr, "aaa", order, filled)
+	dm.tick(t)
+	if got := dm.wakeupTasks(t, dm.sessionID); len(got) != 0 {
+		t.Fatalf("timestamps arriving for the same result fired the wakeup: %v", got)
+	}
+	// A real rerun after that still counts.
+	filled.finishedAt = "2026-10-20T10:30:00Z"
+	setContexts(t, pr, "aaa", order, filled)
+	dm.tick(t)
+	if got := dm.wakeupTasks(t, dm.sessionID); len(got) != 1 {
+		t.Fatalf("%d wakeup tasks after a real rerun, want 1", len(got))
+	}
+}
