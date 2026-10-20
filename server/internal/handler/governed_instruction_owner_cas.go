@@ -157,6 +157,24 @@ func ownerCASParse(w http.ResponseWriter, raw map[string]json.RawMessage, c owne
 // read-then-write window. Zero rows updated means stale or missing, told apart
 // by a read that writes nothing.
 func (h *Handler) ownerCASWrite(ctx context.Context, c ownerCASColumn, workspaceID, id, newContent, expectedDigest string) (hermesExceptionSwapResult, hermesExceptionRejectReason, error) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal, err
+	}
+	defer tx.Rollback(ctx)
+	result, reason, err := ownerCASWriteTx(ctx, tx, c, workspaceID, id, newContent, expectedDigest)
+	if reason != hermesExceptionRejectNone {
+		return result, reason, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal, err
+	}
+	return result, hermesExceptionRejectNone, nil
+}
+
+// ownerCASWriteTx is the compare-and-swap inside the caller's transaction; the
+// caller commits. It returns reason none when the swap is staged.
+func ownerCASWriteTx(ctx context.Context, tx pgx.Tx, c ownerCASColumn, workspaceID, id, newContent, expectedDigest string) (hermesExceptionSwapResult, hermesExceptionRejectReason, error) {
 	wsUUID, err := util.ParseUUID(workspaceID)
 	if err != nil {
 		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal, err
@@ -165,12 +183,6 @@ func (h *Handler) ownerCASWrite(ctx context.Context, c ownerCASColumn, workspace
 	if err != nil {
 		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal, err
 	}
-	tx, err := h.TxStarter.Begin(ctx)
-	if err != nil {
-		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal, err
-	}
-	defer tx.Rollback(ctx)
-
 	var storedDigest string
 	err = tx.QueryRow(ctx, fmt.Sprintf(
 		`UPDATE %[1]s SET %[2]s = $1, updated_at = now() WHERE id = $2 AND %[3]s = $3 AND %[4]s = $4 RETURNING %[5]s`,
@@ -193,9 +205,6 @@ func (h *Handler) ownerCASWrite(ctx context.Context, c ownerCASColumn, workspace
 	if want := hermesExceptionDigest([]byte(newContent)); storedDigest != want {
 		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal,
 			fmt.Errorf("post-write digest mismatch: stored %s, sent %s", storedDigest, want)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal, err
 	}
 	return hermesExceptionSwapResult{BeforeDigest: expectedDigest, AfterDigest: storedDigest}, hermesExceptionRejectNone, nil
 }

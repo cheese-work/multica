@@ -184,6 +184,7 @@ type AgentTaskQueue struct {
 	CompactReason             pgtype.Text `json:"compact_reason"`
 	CompactTriggerTokens      pgtype.Int8 `json:"compact_trigger_tokens"`
 	WorkflowStep              pgtype.Text `json:"workflow_step"`
+	ClaimedModel              pgtype.Text `json:"claimed_model"`
 }
 
 type AgentToLabel struct {

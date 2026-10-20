@@ -36,11 +36,16 @@ import (
 //     cannot forge a PASS and cannot erase a BLOCK. Retract with a BLOCK.
 //  3. The two voters are distinct agents and neither is the writer.
 //  4. One voter is of a different lab than the writer (RGS-1). A lab is looked
-//     up in MULTICA_VOTE_GATE_LABS by runtime provider and model — the voter's
-//     as recorded when it voted, the writer's as configured now. Unlisted
-//     pairs have no lab and are never counted (fail closed).
+//     up in MULTICA_VOTE_GATE_LABS by runtime provider and model. Both come
+//     from the executing task, not the agent row: the runtime the task runs
+//     on and the model recorded when the daemon claimed it (migration 668).
+//     A voter's pair is recorded when its comment is created, from the
+//     comment's source task; the writer's comes from its X-Task-ID task.
+//     Unlisted or unrecorded pairs have no lab and never count (fail closed).
 //  5. One voter leads the squad that owns vote_issue.
 //  6. No `Vote: BLOCK ...` comment for the same line, from an agent or a member.
+//     Rules 2 to 6 and the write run in one transaction under an advisory lock
+//     that a BLOCK also takes, so a BLOCK cannot commit between check and write.
 //  7. Every governed:human block is byte-identical before and after.
 //
 // Rollout: workspace.context and agent.instructions stay denied until the
@@ -210,7 +215,7 @@ func hasGovernedHumanBlock(s string) bool {
 
 // voteReceiptReason returns why the votes on issueID do not authorize the
 // change, or "" when checks 2 to 6 pass.
-func (h *Handler) voteReceiptReason(ctx context.Context, workspaceID, issueID, writerID, label, after string) (string, []string, error) {
+func voteReceiptReason(ctx context.Context, q db.DBTX, workspaceID, issueID, writerID, writerTaskID, label, after string) (string, []string, error) {
 	wsUUID, err := util.ParseUUID(workspaceID)
 	if err != nil {
 		return "", nil, err
@@ -219,7 +224,7 @@ func (h *Handler) voteReceiptReason(ctx context.Context, workspaceID, issueID, w
 	if err != nil {
 		return "", nil, err
 	}
-	rows, err := h.DB.Query(ctx, `
+	rows, err := q.Query(ctx, `
 		SELECT author_type, author_id::text, vote_lines, runtime_provider, model, created_at FROM governed_vote_record
 		WHERE issue_id = $1 AND workspace_id = $2 AND position($3 in vote_lines) > 0`,
 		issueUUID, wsUUID, after)
@@ -243,31 +248,38 @@ func (h *Handler) voteReceiptReason(ctx context.Context, workspaceID, issueID, w
 		return "a BLOCK vote exists", nil, nil
 	}
 
-	// The writer's lab comes from its live configuration, the voters' from the
-	// configuration recorded when they voted. A voter that is no longer a live
-	// agent of this workspace does not count.
+	// The writer's lab is that of the task its token belongs to: the runtime
+	// the task runs on and the model recorded when the daemon claimed it. The
+	// agent row is not read, because the writer can edit it mid-run. Voters'
+	// labs were recorded the same way when they voted. A voter that is no
+	// longer a live agent of this workspace does not count.
+	taskUUID, err := util.ParseUUID(writerTaskID)
+	if err != nil {
+		return "the writing agent's task is unknown", nil, nil
+	}
 	var writerProvider, writerModel string
-	err = h.DB.QueryRow(ctx, `
-		SELECT COALESCE(r.provider, ''), COALESCE(a.model, '') FROM agent a
-		LEFT JOIN agent_runtime r ON r.id = a.runtime_id
-		WHERE a.id = $1 AND a.workspace_id = $2 AND a.archived_at IS NULL`,
-		writerID, wsUUID).Scan(&writerProvider, &writerModel)
+	err = q.QueryRow(ctx, `
+		SELECT COALESCE(r.provider, ''), COALESCE(t.claimed_model, '') FROM agent_task_queue t
+		JOIN agent a ON a.id = t.agent_id AND a.workspace_id = $3 AND a.archived_at IS NULL
+		JOIN agent_runtime r ON r.id = t.runtime_id
+		WHERE t.id = $1 AND t.agent_id = $2 AND t.status IN ('dispatched', 'running')`,
+		taskUUID, writerID, wsUUID).Scan(&writerProvider, &writerModel)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "the writing agent is not a live agent of this workspace", nil, nil
+		return "the writing agent has no live task", nil, nil
 	}
 	if err != nil {
 		return "", nil, err
 	}
 	writerLab := voteLab(writerProvider, writerModel)
 	if writerLab == "" {
-		return "the writing agent's provider and model are not in the lab registry", nil, nil
+		return "the writing task's provider and model are not in the lab registry", nil, nil
 	}
 
 	voterIDs := make([]string, len(voters))
 	for i, v := range voters {
 		voterIDs[i] = v.authorID
 	}
-	liveRows, err := h.DB.Query(ctx, `SELECT id::text FROM agent WHERE workspace_id = $1 AND archived_at IS NULL AND id::text = ANY($2)`, wsUUID, voterIDs)
+	liveRows, err := q.Query(ctx, `SELECT id::text FROM agent WHERE workspace_id = $1 AND archived_at IS NULL AND id::text = ANY($2) FOR SHARE`, wsUUID, voterIDs)
 	if err != nil {
 		return "", nil, err
 	}
@@ -285,10 +297,10 @@ func (h *Handler) voteReceiptReason(ctx context.Context, workspaceID, issueID, w
 	}
 
 	var leaderID string
-	err = h.DB.QueryRow(ctx, `
+	err = q.QueryRow(ctx, `
 		SELECT s.leader_id::text FROM issue i
 		JOIN squad s ON s.id = i.assignee_id AND s.workspace_id = i.workspace_id
-		WHERE i.id = $1 AND i.workspace_id = $2 AND i.assignee_type = 'squad' AND s.archived_at IS NULL`,
+		WHERE i.id = $1 AND i.workspace_id = $2 AND i.assignee_type = 'squad' AND s.archived_at IS NULL FOR SHARE OF s`,
 		issueUUID, wsUUID).Scan(&leaderID)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return "", nil, err
@@ -388,12 +400,29 @@ func (h *Handler) voteApply(w http.ResponseWriter, r *http.Request, writerID str
 	case !protectedBlocksUnchanged(live, content):
 		return deny("a governed:human block changed", nil)
 	}
-	reason, voters, err := h.voteReceiptReason(r.Context(), workspaceID, issueID, writerID, c.field+":"+id, after)
+	// Vote check and write share one transaction under the vote issue's
+	// advisory lock. A BLOCK holds the same lock until its own commit, so a
+	// BLOCK committed before this point is seen here, and a later one waits
+	// until the write has committed. Leader and voter rows are share-locked.
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		return deny("", err)
+	}
+	defer tx.Rollback(r.Context())
+	if _, err := tx.Exec(r.Context(), `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "governed_vote:"+issueID); err != nil {
+		return deny("", err)
+	}
+	reason, voters, err := voteReceiptReason(r.Context(), tx, workspaceID, issueID, writerID, r.Header.Get("X-Task-ID"), c.field+":"+id, after)
 	if err != nil || reason != "" {
 		return deny(reason, err)
 	}
 
-	result, rejected, err := h.ownerCASWrite(r.Context(), c, workspaceID, id, content, before)
+	result, rejected, err := ownerCASWriteTx(r.Context(), tx, c, workspaceID, id, content, before)
+	if rejected == hermesExceptionRejectNone {
+		if err = tx.Commit(r.Context()); err != nil {
+			rejected = hermesExceptionRejectInternal
+		}
+	}
 	logVoteOutcome(r, c, writerID, id, issueID, voters, "", err)
 	if rejected != hermesExceptionRejectNone {
 		hermesExceptionWriteRejection(w, r, rejected, err)

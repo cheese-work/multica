@@ -34,7 +34,7 @@ type voteRig struct {
 	writer, leader, peer          string
 	writerTok, leaderTok, peerTok string
 	claudeRT, codexRT             string
-	leaderTask                    string
+	writerTask, leaderTask        string
 	issueID, targetSquad          string
 }
 
@@ -54,10 +54,11 @@ func newVoteRig(t *testing.T) *voteRig {
 		task := fx.Task(t, id, testutil.Cols{
 			"runtime_id": rt, "status": "running", "originator_user_id": testUserID,
 			"accountable_user_id": testUserID, "originator_source": "direct_human",
+			"claimed_model": model,
 		})
 		return id, mintAgentTaskToken(t, id, task, testUserID), task
 	}
-	r.writer, r.writerTok, _ = mk("writer", r.claudeRT, "claude-test")
+	r.writer, r.writerTok, r.writerTask = mk("writer", r.claudeRT, "claude-test")
 	r.leader, r.leaderTok, r.leaderTask = mk("leader", r.codexRT, "gpt-test")
 	r.peer, r.peerTok, _ = mk("peer", r.claudeRT, "claude-test")
 	squad := fx.Squad(t, "rig-vote-"+t.Name(), r.leader)
@@ -187,7 +188,7 @@ func TestVoteGateRouter_BlockSurvivesDeleteAndEdit(t *testing.T) {
 func TestVoteGateRouter_VoterReassignmentAfterVotingDoesNotCount(t *testing.T) {
 	r := newVoteRig(t)
 	// Same lab at vote time: the leader runs the writer's runtime and model.
-	r.fx.Exec(t, `UPDATE agent SET runtime_id = $1, model = 'claude-test' WHERE id = $2`, r.claudeRT, r.leader)
+	r.leaderToClaude()
 	r.honestVotes("instructions:"+r.targetSquad, rigDigest(rigNext))
 	r.must(http.StatusOK, "PUT", "/api/agents/"+r.leader, r.writerTok, map[string]any{"runtime_id": r.codexRT, "model": "gpt-test"})
 	r.wantDenied(r.writeSquad(rigBefore, rigNext))
@@ -198,14 +199,14 @@ func TestVoteGateRouter_LabIdentity(t *testing.T) {
 	for _, tc := range []struct {
 		name, sql string
 	}{
-		{"leader model unlisted", `UPDATE agent SET model = 'gpt-unlisted' WHERE id = $1`},
-		{"writer model unlisted", `UPDATE agent SET model = 'claude-unlisted' WHERE id = $1`},
+		{"leader model unlisted", `UPDATE agent_task_queue SET claimed_model = 'gpt-unlisted' WHERE id = $1`},
+		{"writer model unlisted", `UPDATE agent_task_queue SET claimed_model = 'claude-unlisted' WHERE id = $1`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newVoteRig(t)
-			id := r.leader
+			id := r.leaderTask
 			if tc.name == "writer model unlisted" {
-				id = r.writer
+				id = r.writerTask
 			}
 			r.fx.Exec(t, tc.sql, id)
 			r.honestVotes("instructions:"+r.targetSquad, rigDigest(rigNext))
@@ -295,7 +296,7 @@ func TestVoteGateRouter_AgentAndWorkspaceFieldsNeedSetup(t *testing.T) {
 func (r *voteRig) leaderToClaude() {
 	r.t.Helper()
 	r.fx.Exec(r.t, `UPDATE agent SET runtime_id = $1, model = 'claude-test' WHERE id = $2`, r.claudeRT, r.leader)
-	r.fx.Exec(r.t, `UPDATE agent_task_queue SET runtime_id = $1 WHERE id = $2`, r.claudeRT, r.leaderTask)
+	r.fx.Exec(r.t, `UPDATE agent_task_queue SET runtime_id = $1, claimed_model = 'claude-test' WHERE id = $2`, r.claudeRT, r.leaderTask)
 }
 
 // relabel is an ordinary agent update with the writer's own task token.

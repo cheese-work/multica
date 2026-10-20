@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -52,6 +53,14 @@ func voteTargets() []ownerCASTarget {
 // (claude), plus an issue owned by the leader's squad.
 type voteFixture struct {
 	writerID, taskID, leaderID, peerID, issueID string
+	tasks                                       map[string]string // agent id -> its running task
+}
+
+// retask sets the runtime and claimed model of an agent's running task: the
+// execution identity a vote or a write is judged by.
+func (f voteFixture) retask(t *testing.T, agentID, runtimeID string, model any) {
+	t.Helper()
+	dbfx.Exec(t, `UPDATE agent_task_queue SET runtime_id = $1, claimed_model = $2 WHERE id = $3`, runtimeID, model, f.tasks[agentID])
 }
 
 func newVoteFixture(t *testing.T) voteFixture {
@@ -59,17 +68,18 @@ func newVoteFixture(t *testing.T) voteFixture {
 	name := safeTestName(t)
 	claude := dbfx.Runtime(t, "che1862-claude-"+name, testutil.Cols{"provider": "claude"})
 	codex := dbfx.Runtime(t, "che1862-codex-"+name, testutil.Cols{"provider": "codex"})
+	f := voteFixture{tasks: map[string]string{}}
 	agentOn := func(role, runtimeID, model string) string {
 		id := createHandlerTestAgent(t, "che1862-"+role+"-"+name, nil)
 		dbfx.Exec(t, `UPDATE agent SET runtime_id = $1, model = $2 WHERE id = $3`, runtimeID, model, id)
+		f.tasks[id] = createHandlerTestTaskForAgent(t, id)
+		f.retask(t, id, runtimeID, model)
 		return id
 	}
-	f := voteFixture{
-		writerID: agentOn("writer", claude, "claude-test"),
-		leaderID: agentOn("leader", codex, "gpt-test"),
-		peerID:   agentOn("peer", claude, "claude-test"),
-	}
-	f.taskID = createHandlerTestTaskForAgent(t, f.writerID)
+	f.writerID = agentOn("writer", claude, "claude-test")
+	f.leaderID = agentOn("leader", codex, "gpt-test")
+	f.peerID = agentOn("peer", claude, "claude-test")
+	f.taskID = f.tasks[f.writerID]
 	squadID := dbfx.Squad(t, "che1862-"+name, f.leaderID)
 	f.issueID = dbfx.Issue(t, "CHE-1862 vote "+name, testutil.Cols{"assignee_type": "squad", "assignee_id": squadID})
 	return f
@@ -78,11 +88,22 @@ func newVoteFixture(t *testing.T) voteFixture {
 // say posts a comment on the vote issue; age is how many seconds old it is.
 func (f voteFixture) say(t *testing.T, authorType, authorID string, age int, content string) {
 	t.Helper()
-	dbfx.Comment(t, f.issueID, content, testutil.Cols{
+	cols := testutil.Cols{
 		"author_type": authorType,
 		"author_id":   authorID,
 		"created_at":  testutil.Raw(fmt.Sprintf("now() - interval '%d seconds'", age)),
-	})
+	}
+	if task := f.tasks[authorID]; authorType == "agent" && task != "" {
+		cols["source_task_id"] = task
+	}
+	dbfx.Comment(t, f.issueID, content, cols)
+}
+
+func (f voteFixture) runtimeOf(t *testing.T, agentID string) string {
+	t.Helper()
+	var rt string
+	dbfx.QueryRow(t, `SELECT runtime_id FROM agent_task_queue WHERE id = $1`, f.tasks[agentID]).Scan(&rt)
+	return rt
 }
 
 func voteLine(verdict, label, after string) string {
@@ -196,7 +217,7 @@ func TestVoteGate_FailedChecksStay403(t *testing.T) {
 		{name: "no cross-lab voter", setup: func(t *testing.T, f voteFixture, label string) {
 			var claude string
 			dbfx.QueryRow(t, `SELECT runtime_id FROM agent WHERE id = $1`, f.writerID).Scan(&claude)
-			dbfx.Exec(t, `UPDATE agent SET runtime_id = $1, model = 'claude-test' WHERE id = $2`, claude, f.leaderID)
+			f.retask(t, f.leaderID, claude, "claude-test")
 			f.approve(t, label, testDigest(next))
 		}},
 		{name: "no squad leader voter", setup: func(t *testing.T, f voteFixture, label string) {
@@ -254,30 +275,30 @@ func TestVoteGate_FailedChecksStay403(t *testing.T) {
 			dbfx.Exec(t, `UPDATE comment SET content = 'withdrawn' WHERE issue_id = $1 AND content LIKE 'Vote: BLOCK%'`, f.issueID)
 		}},
 		{name: "voter model not in the lab registry", setup: func(t *testing.T, f voteFixture, label string) {
-			dbfx.Exec(t, `UPDATE agent SET model = 'gpt-unlisted' WHERE id = $1`, f.leaderID)
+			f.retask(t, f.leaderID, f.runtimeOf(t, f.leaderID), "gpt-unlisted")
 			f.approve(t, label, testDigest(next))
 		}},
 		{name: "voter has no model", setup: func(t *testing.T, f voteFixture, label string) {
-			dbfx.Exec(t, `UPDATE agent SET model = NULL WHERE id = $1`, f.leaderID)
+			f.retask(t, f.leaderID, f.runtimeOf(t, f.leaderID), nil)
 			f.approve(t, label, testDigest(next))
 		}},
 		{name: "writer model not in the lab registry", setup: func(t *testing.T, f voteFixture, label string) {
-			dbfx.Exec(t, `UPDATE agent SET model = 'claude-unlisted' WHERE id = $1`, f.writerID)
+			f.retask(t, f.writerID, f.runtimeOf(t, f.writerID), "claude-unlisted")
 			f.approve(t, label, testDigest(next))
 		}},
 		{name: "different CLI family, same lab", setup: func(t *testing.T, f voteFixture, label string) {
 			hermes := dbfx.Runtime(t, "che1862-hermes-"+safeTestName(t), testutil.Cols{"provider": "hermes"})
-			dbfx.Exec(t, `UPDATE agent SET runtime_id = $1, model = 'anthropic-via-hermes' WHERE id = $2`, hermes, f.leaderID)
+			f.retask(t, f.leaderID, hermes, "anthropic-via-hermes")
 			f.approve(t, label, testDigest(next))
 		}},
 		{name: "voter reassigned to another family after voting", setup: func(t *testing.T, f voteFixture, label string) {
 			var claude string
 			dbfx.QueryRow(t, `SELECT runtime_id FROM agent WHERE id = $1`, f.writerID).Scan(&claude)
 			var codex string
-			dbfx.QueryRow(t, `SELECT runtime_id FROM agent WHERE id = $1`, f.leaderID).Scan(&codex)
-			dbfx.Exec(t, `UPDATE agent SET runtime_id = $1, model = 'claude-test' WHERE id = $2`, claude, f.leaderID)
+			codex = f.runtimeOf(t, f.leaderID)
+			f.retask(t, f.leaderID, claude, "claude-test")
 			f.approve(t, label, testDigest(next))
-			dbfx.Exec(t, `UPDATE agent SET runtime_id = $1, model = 'gpt-test' WHERE id = $2`, codex, f.leaderID)
+			f.retask(t, f.leaderID, codex, "gpt-test")
 		}},
 		{name: "unknown vote issue", setup: func(t *testing.T, f voteFixture, label string) { f.approve(t, label, testDigest(next)) },
 			mut: func(b map[string]any) { b["vote_issue"] = "00000000-0000-0000-0000-000000000000" }},
@@ -431,5 +452,29 @@ func TestVoteGate_FieldRollout(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+// The daemon claim records the model it hands out on the task. Editing the
+// agent afterwards leaves the recorded model, and so the task's lab, alone.
+func TestVoteGate_ClaimRecordsModelOnTheTask(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID, sessionID, runtimeID, daemonID := setupDirectChatSession(t, ctx, "CHE-1862 claim")
+	dbfx.Exec(t, `UPDATE agent SET model = 'claim-model-a' WHERE id = $1`, agentID)
+	sendDirectChat(t, ctx, agentID, sessionID, "hello")
+	claimed := claimForkTask(t, runtimeID, daemonID)
+
+	var recorded *string
+	dbfx.QueryRow(t, `SELECT claimed_model FROM agent_task_queue WHERE id = $1`, claimed.ID).Scan(&recorded)
+	if recorded == nil || *recorded != "claim-model-a" {
+		t.Fatalf("claimed_model = %v, want claim-model-a", recorded)
+	}
+	dbfx.Exec(t, `UPDATE agent SET model = 'claim-model-b' WHERE id = $1`, agentID)
+	dbfx.QueryRow(t, `SELECT claimed_model FROM agent_task_queue WHERE id = $1`, claimed.ID).Scan(&recorded)
+	if recorded == nil || *recorded != "claim-model-a" {
+		t.Fatalf("claimed_model changed with the agent row: %v", recorded)
 	}
 }
