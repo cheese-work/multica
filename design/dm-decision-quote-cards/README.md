@@ -10,4 +10,4 @@ Cheese, in a DM (20 October 2026), recorded as decision quotes on CHE-1870:
 - Issue: [CHE-1870](mention://issue/01a15793-484c-7f2b-80ea-3b120169de04)
 - Pages in scope: issue detail timeline (`packages/views/issues/components/comment-card.tsx`), DM message list (`packages/views/chat/components/chat-message-list.tsx`)
 - Tokens: `packages/ui/styles/tokens.css`.
-- Status: rev-1 posted
+- Status: rev-2 posted (rev-1 scored, not approved)
