@@ -427,6 +427,34 @@ func (q *Queries) MoveChatWakeupToSession(ctx context.Context, arg MoveChatWakeu
 	return err
 }
 
+const moveQueuedWakeupTasksToSession = `-- name: MoveQueuedWakeupTasksToSession :exec
+WITH moved AS (
+    UPDATE agent_task_queue SET chat_session_id = $1
+    WHERE agent_task_queue.chat_session_id = $2 AND agent_task_queue.task_kind = 'wakeup' AND agent_task_queue.status IN ('queued', 'deferred')
+    RETURNING id
+), moved_inputs AS (
+    UPDATE chat_message SET chat_session_id = $1
+    WHERE chat_message.message_kind = 'wakeup_trigger' AND chat_message.task_id IN (SELECT moved.id FROM moved)
+    RETURNING id
+)
+UPDATE chat_wakeup SET chat_session_id = $1, updated_at = now()
+WHERE chat_wakeup.task_id IN (SELECT moved.id FROM moved)
+`
+
+type MoveQueuedWakeupTasksToSessionParams struct {
+	ToSessionID   pgtype.UUID `json:"to_session_id"`
+	FromSessionID pgtype.UUID `json:"from_session_id"`
+}
+
+// A continuation archives the DM the run was replying in. A wakeup turn that is
+// queued but not started in that DM would run, and notify nobody, in an
+// archived session, so it moves with the conversation: the task, its hidden
+// input and the wakeup row that started it.
+func (q *Queries) MoveQueuedWakeupTasksToSession(ctx context.Context, arg MoveQueuedWakeupTasksToSessionParams) error {
+	_, err := q.db.Exec(ctx, moveQueuedWakeupTasksToSession, arg.ToSessionID, arg.FromSessionID)
+	return err
+}
+
 const settleChatWakeup = `-- name: SettleChatWakeup :exec
 UPDATE chat_wakeup SET status = $2, task_id = $3, updated_at = now() WHERE id = $1
 `

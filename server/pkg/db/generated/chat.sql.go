@@ -3283,11 +3283,13 @@ SELECT
     -- StatusPill can say why it is not moving. Stale on any other status; the
     -- renderer reads it only for the waiting one.
     task.wait_reason,
+    task.task_kind,
     message.id AS message_id,
-    COALESCE(message.content, '')::text AS content
+    -- A wakeup turn's input is the agent's own hidden instruction: never a preview.
+    (CASE WHEN message.message_kind = 'wakeup_trigger' THEN '' ELSE COALESCE(message.content, '') END)::text AS content
 FROM agent_task_queue AS task
 LEFT JOIN LATERAL (
-    SELECT input.id, input.content
+    SELECT input.id, input.content, input.message_kind
     FROM chat_message AS input
     WHERE input.task_id = COALESCE(task.chat_input_task_id, task.id)
       AND input.role = 'user'
@@ -3313,6 +3315,7 @@ type ListPendingChatTasksForSessionRow struct {
 	Status     string             `json:"status"`
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 	WaitReason pgtype.Text        `json:"wait_reason"`
+	TaskKind   pgtype.Text        `json:"task_kind"`
 	MessageID  pgtype.UUID        `json:"message_id"`
 	Content    string             `json:"content"`
 }
@@ -3339,6 +3342,7 @@ func (q *Queries) ListPendingChatTasksForSession(ctx context.Context, chatSessio
 			&i.Status,
 			&i.CreatedAt,
 			&i.WaitReason,
+			&i.TaskKind,
 			&i.MessageID,
 			&i.Content,
 		); err != nil {
