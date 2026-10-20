@@ -164,6 +164,49 @@ func CursorHooksInstallable(cwd string) error {
 	return nil
 }
 
+// isManagedCursorHookCommand reports whether command is exactly what
+// cursorHookShellCommand renders for `<binary> CursorHookHelperArg`: two
+// single-quoted words and nothing else. Containing the helper argument is not
+// enough, because a user can extend a managed command with their own.
+func isManagedCursorHookCommand(command string) bool {
+	quoted, rest, ok := cutShellQuoted(command)
+	if !ok || quoted == "" {
+		return false
+	}
+	rest, ok = strings.CutPrefix(rest, " ")
+	if !ok {
+		return false
+	}
+	helper, rest, ok := cutShellQuoted(rest)
+	return ok && rest == "" && helper == CursorHookHelperArg &&
+		command == cursorHookShellCommand([]string{quoted, helper})
+}
+
+// cutShellQuoted reads one word written the way cursorHookShellCommand quotes
+// it, from the front of s: single quotes around the word, and a backslash-
+// escaped quote between two quoted runs for each quote inside it.
+func cutShellQuoted(s string) (word, rest string, ok bool) {
+	var b strings.Builder
+	for {
+		s, ok = strings.CutPrefix(s, "'")
+		if !ok {
+			return "", "", false
+		}
+		end := strings.IndexByte(s, '\'')
+		if end < 0 {
+			return "", "", false
+		}
+		b.WriteString(s[:end])
+		s = s[end+1:]
+		if after, more := strings.CutPrefix(s, `\'`); more && strings.HasPrefix(after, "'") {
+			b.WriteByte('\'')
+			s = after
+			continue
+		}
+		return b.String(), s, true
+	}
+}
+
 // cursorHooksFileIsManaged reports whether data holds only hooks Multica wrote:
 // every top-level key, event, entry field and command is Multica's. A file that
 // carries the helper beside anything else is the user's, and replacing it or
@@ -188,7 +231,7 @@ func cursorHooksFileIsManaged(data []byte) bool {
 		}
 		for _, entry := range entries {
 			var command string
-			if json.Unmarshal(entry["command"], &command) != nil || !strings.Contains(command, CursorHookHelperArg) {
+			if json.Unmarshal(entry["command"], &command) != nil || !isManagedCursorHookCommand(command) {
 				return false
 			}
 			for field := range entry {

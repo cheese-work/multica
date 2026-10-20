@@ -371,6 +371,73 @@ func TestCursorSupplementKeepsMixedHooksFile(t *testing.T) {
 	}
 }
 
+// The helper argument inside a command does not make the command Multica's:
+// a user can extend a managed command with their own, and the file must stay
+// theirs. Only the exact `'<binary>' '<helper>'` command Multica writes counts.
+func TestCursorSupplementKeepsHooksFileWithModifiedCommand(t *testing.T) {
+	canonical := cursorHookShellCommand([]string{"/old/multica", CursorHookHelperArg})
+	cases := map[string]string{
+		"command chained after":  canonical + "; './audit.sh'",
+		"command chained before": "'./audit.sh'; " + canonical,
+		"and-chained":            canonical + " && './audit.sh'",
+		"extra argument":         canonical + " --verbose",
+		"substitution":           "'/old/multica' '$(./audit.sh)" + CursorHookHelperArg + "'",
+		"unquoted":               "/old/multica " + CursorHookHelperArg,
+		"helper only in a path":  "'/opt/" + CursorHookHelperArg + "/audit.sh'",
+	}
+	for name, command := range cases {
+		t.Run(name, func(t *testing.T) {
+			encoded, err := json.Marshal(command)
+			if err != nil {
+				t.Fatal(err)
+			}
+			content := `{"version":1,"hooks":{"postToolUse":[{"command":` + string(encoded) + `,"timeout":5}]}}`
+			cwd := t.TempDir()
+			path := filepath.Join(cwd, ".cursor", "hooks.json")
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := CursorHooksInstallable(cwd); err == nil {
+				t.Fatal("CursorHooksInstallable accepted a modified managed command")
+			}
+			if s, err := startCursorSupplementSession(t.Context(), cwd, testCursorHookCommand, slog.Default()); err == nil {
+				s.close()
+				t.Fatal("started over a hooks.json with a modified command")
+			}
+			if got, _ := os.ReadFile(path); string(got) != content {
+				t.Fatalf("hooks.json changed to %q", got)
+			}
+		})
+	}
+}
+
+// A leftover from an earlier run is still replaced, whatever binary path and
+// quoting that run needed.
+func TestCursorSupplementReplacesLeftoverManagedCommand(t *testing.T) {
+	for _, exe := range []string{"/old/multica", "/opt/multica tools/multica", "/odd/it's/multica"} {
+		t.Run(exe, func(t *testing.T) {
+			data, err := cursorHooksFileData(cursorHookShellCommand([]string{exe, CursorHookHelperArg}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			cwd := t.TempDir()
+			path := filepath.Join(cwd, ".cursor", "hooks.json")
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := CursorHooksInstallable(cwd); err != nil {
+				t.Fatalf("leftover managed hooks.json blocked start: %v", err)
+			}
+		})
+	}
+}
+
 func TestCursorHookRelayFailsOpen(t *testing.T) {
 	s, _ := startTestCursorSupplements(t, t.Context())
 	s.activate("conv-main")
