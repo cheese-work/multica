@@ -1829,7 +1829,8 @@ describe("ChatInput DM comments", () => {
   });
 
   it("sends the comments as readable Markdown quotes above the typed text", async () => {
-    const { onSend } = renderInput({ annotationScope: scope() });
+    const onSend = vi.fn();
+    renderInput({ annotationScope: scope(), onSend });
     fireEvent.change(screen.getByTestId("editor"), { target: { value: "Go with 15 s." } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
@@ -1839,7 +1840,8 @@ describe("ChatInput DM comments", () => {
   });
 
   it("sends comments alone when no text is typed", async () => {
-    const { onSend } = renderInput({ annotationScope: scope() });
+    const onSend = vi.fn();
+    renderInput({ annotationScope: scope(), onSend });
     expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
@@ -1849,14 +1851,15 @@ describe("ChatInput DM comments", () => {
 
   it("clears the comments once the send is committed, and keeps them when it is rejected", async () => {
     const rejected = vi.fn().mockResolvedValue(false);
-    const { onSend: _ignored, unmount } = renderInput({ annotationScope: scope(), onSend: rejected });
+    const { unmount } = renderInput({ annotationScope: scope(), onSend: rejected });
     fireEvent.change(screen.getByTestId("editor"), { target: { value: "Try" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(rejected).toHaveBeenCalledTimes(1));
     expect(useCommentDraftStore.getState().getAnnotations(draftKey)).toHaveLength(2);
     unmount();
 
-    const { onSend } = renderInput({ annotationScope: scope() });
+    const onSend = vi.fn();
+    renderInput({ annotationScope: scope(), onSend });
     fireEvent.change(screen.getByTestId("editor"), { target: { value: "Go" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
@@ -1864,7 +1867,8 @@ describe("ChatInput DM comments", () => {
   });
 
   it("leaves a slash command untouched and keeps the comments for the next message", async () => {
-    const { onSend } = renderInput({ annotationScope: scope() });
+    const onSend = vi.fn();
+    renderInput({ annotationScope: scope(), onSend });
     fireEvent.change(screen.getByTestId("editor"), { target: { value: "/compact" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
