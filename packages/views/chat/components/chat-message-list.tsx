@@ -280,22 +280,24 @@ function ForkedIntoAnnouncement({ child }: { child: ChatSession }) {
 /**
  * Groups fork children under the message they forked at, oldest first. A child
  * whose fork point is not in `messages` (older page, or no pointer) goes under
- * the last message created at or before it — the first message when it
- * predates them all.
+ * the last message created at or before it, or in `before` — rendered above
+ * the first message — when it predates them all.
  */
-function forkChildrenByMessage(messages: ChatMessage[], children: ChatSession[]): Map<string, ChatSession[]> {
-  const byMessage = new Map<string, ChatSession[]>();
-  if (messages.length === 0) return byMessage;
+function forkChildrenByMessage(messages: ChatMessage[], children: ChatSession[]) {
+  const after = new Map<string, ChatSession[]>();
+  const before: ChatSession[] = [];
+  if (messages.length === 0) return { before, after };
   const loaded = new Set(messages.map((m) => m.id));
   const sorted = [...children].sort((a, b) => a.created_at.localeCompare(b.created_at));
   for (const child of sorted) {
     const pointed = child.fork_last_message_id;
     const anchor = pointed && loaded.has(pointed)
       ? pointed
-      : (messages.findLast((m) => m.created_at <= child.created_at) ?? messages[0])!.id;
-    byMessage.set(anchor, [...(byMessage.get(anchor) ?? []), child]);
+      : messages.findLast((m) => m.created_at <= child.created_at)?.id;
+    if (anchor) after.set(anchor, [...(after.get(anchor) ?? []), child]);
+    else before.push(child);
   }
-  return byMessage;
+  return { before, after };
 }
 
 const LIST_COMPONENTS: Components<ChatRenderItem, ChatListContext> = {
@@ -414,12 +416,17 @@ export function ChatMessageList({
 
   const firstIndex = renderItems.length > 0 ? firstItemIndex : 0;
   const liveEndKey = renderItems[renderItems.length - 1]?.key ?? null;
+  const firstItem = renderItems[0];
+  const firstMessageId = firstItem?.kind === "message" ? firstItem.message.id : null;
 
   const forkSource = forkedFromSessionId && sessions
     ? sessions.find((s) => s.id === forkedFromSessionId) ?? null
     : undefined;
-  const forksByMessageId = useMemo(
-    () => forkChildrenByMessage(messages, sessionId && sessions ? sessions.filter((s) => s.forked_from_session_id === sessionId) : []),
+  const { before: forksBeforeFirst, after: forksByMessageId } = useMemo(
+    () => forkChildrenByMessage(
+      messages.filter((m) => m.message_kind !== "onboarding_kickoff"),
+      sessionId && sessions ? sessions.filter((s) => s.forked_from_session_id === sessionId) : [],
+    ),
     [messages, sessionId, sessions],
   );
   // Idle hint until a user message follows the fork point. A fork point that
@@ -528,6 +535,9 @@ export function ChatMessageList({
             className={cn(CHAT_COLUMN, "py-2")}
             {...(item.key === liveEndKey ? { [LIVE_END_ROW_ATTR]: "" } : {})}
           >
+            {item.kind === "message" && item.message.id === firstMessageId && forksBeforeFirst.map((child) => (
+              <ForkedIntoAnnouncement key={child.id} child={child} />
+            ))}
             <MessageBubble
               item={item}
               isPending={!!pendingTaskId && item.taskId === pendingTaskId}

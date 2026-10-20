@@ -321,11 +321,10 @@ var (
 func plainText(markdown string) string {
 	var lines []string
 	for _, line := range strings.Split(markdown, "\n") {
-		line = strings.TrimSpace(line)
+		line = markdownPrefix.ReplaceAllString(strings.TrimSpace(line), "")
 		if strings.HasPrefix(line, "```") || strings.HasPrefix(line, "~~~") {
 			continue
 		}
-		line = markdownPrefix.ReplaceAllString(line, "")
 		lines = append(lines, markdownLink.ReplaceAllString(line, "$1"))
 	}
 	return strings.Join(lines, " ")

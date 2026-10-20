@@ -762,6 +762,7 @@ func TestForkTitleStripsMarkdown(test *testing.T) {
 		"- item one":                              "Src (fork: item one)",
 		"1. first":                                "Src (fork: first)",
 		"```sh\ndocker pull x\n```":               "Src (fork: docker pull x)",
+		"> ```sh\n> docker pull x\n> ```":         "Src (fork: docker pull x)",
 		"see [docs](https://example.com/a_b) now": "Src (fork: see docs now)",
 		"": "Src (fork)",
 	}

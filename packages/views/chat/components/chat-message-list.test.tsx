@@ -308,6 +308,13 @@ describe("ChatMessageList fork links", () => {
       expect(rowOf("Message 3")).toContainElement(link);
     });
 
+    it("puts a fork older than the whole loaded page before the first message", () => {
+      fork([{ fork_last_message_id: "m-older", created_at: "2026-10-13T00:00:30Z" }]);
+      const link = screen.getByRole("link", { name: "Branch 0" });
+      expect(rowOf("Message 1")).toContainElement(link);
+      expect(link.compareDocumentPosition(screen.getByText("Message 1")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
     it("keeps 'Continued in' in the footer", () => {
       renderFork({ sessionId: sourceId, continuedIntoSessionId: childId, sessions: [session({})] }, five);
       expect(screen.getByRole("link", { name: /Continued in/ }).closest("[data-row-key]")).toBeNull();

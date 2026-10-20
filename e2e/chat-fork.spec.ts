@@ -174,5 +174,27 @@ for (const surface of ["page", "window"] as const) {
       await expect(forkedInto).toHaveAttribute("href", `/${workspace.slug}/chat?session=${child.rows[0]!.id}`);
       await shot(page, testInfo, `${surface}-source-after-idle-fork`);
     });
+
+    test("lists a fork under its fork-point message, not at the end of the source", async ({ page }, testInfo) => {
+      const { workspace, sourceId, agentId } = seed;
+      const first = await database.query<{ id: string }>(
+        `SELECT id::text FROM chat_message WHERE chat_session_id = $1 ORDER BY created_at LIMIT 1`, [sourceId],
+      );
+      const user = await database.query<{ id: string }>(`SELECT id::text FROM "user" WHERE email = $1`, [api.getEmail()]);
+      await database.query(
+        `INSERT INTO chat_session (workspace_id, agent_id, creator_id, title, status, explicitly_created_at, forked_from_session_id, fork_last_message_id)
+         VALUES ($1, $2, $3, 'Early branch', 'active', now(), $4, $5)`,
+        [workspace.id, agentId, user.rows[0]!.id, sourceId, first.rows[0]!.id],
+      );
+      await openSource(page, workspace.slug, sourceId, surface, api.getToken()!);
+      const link = page.getByRole("link", { name: "Early branch", exact: true });
+      await expect(link).toBeVisible({ timeout: 30_000 });
+      const rows = page.locator("[data-index]");
+      await expect(rows.filter({ hasText: "Compare Postgres and SQLite" }).getByRole("link", { name: "Early branch", exact: true })).toBeVisible();
+      await expect(rows.filter({ hasText: "Postgres fits the current deployment" }).getByRole("link", { name: "Early branch", exact: true })).toHaveCount(0);
+      const [linkBox, replyBox] = [await link.boundingBox(), await page.getByText("Postgres fits the current deployment").last().boundingBox()];
+      expect(linkBox!.y).toBeLessThan(replyBox!.y);
+      await shot(page, testInfo, `${surface}-fork-at-first-message`);
+    });
   });
 }
