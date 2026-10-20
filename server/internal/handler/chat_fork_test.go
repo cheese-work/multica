@@ -792,3 +792,78 @@ func TestForkTitleStripsMarkdown(test *testing.T) {
 		}
 	}
 }
+
+func forkDraft(test *testing.T, sessionID, uploaderID string, over testutil.Cols) string {
+	test.Helper()
+	columns := testutil.Cols{
+		"workspace_id": testWorkspaceID, "chat_session_id": sessionID, "uploader_type": "member", "uploader_id": uploaderID,
+		"filename": "draft.png", "url": "https://cdn.example.test/" + uuid.NewString() + "/draft.png", "content_type": "image/png", "size_bytes": 12,
+	}
+	for name, value := range over {
+		columns[name] = value
+	}
+	return dbfx.Insert(test, "attachment", columns)
+}
+
+func TestForkChatSessionMovesDraftAttachmentsToTheChild(test *testing.T) {
+	ctx := context.Background()
+	agentID, sourceID, _, _ := setupDirectChatSession(test, ctx, "Src")
+	otherDM := dbfx.ChatSession(test, agentID)
+	history := forkMessage(test, sourceID, testutil.Cols{"role": "user", "content": "earlier"})
+	mine := forkDraft(test, sourceID, testUserID, nil)
+	imageOnly := forkDraft(test, sourceID, testUserID, nil)
+	foreign := forkDraft(test, sourceID, uuid.NewString(), nil)
+	bound := forkDraft(test, sourceID, testUserID, testutil.Cols{"chat_message_id": history})
+	elsewhere := forkDraft(test, otherDM, testUserID, nil)
+
+	var result, replay ChatForkResponse
+	body := map[string]any{"message": "look at this", "attachment_ids": []string{mine, foreign, bound, elsewhere}}
+	testutil.Call(test, testHandler.ForkChatSession, forkChatRequest(test, sourceID, "with-image", body)).Want(http.StatusCreated).JSON(&result)
+	cleanupChatFork(test, result.Session.ID)
+	if !reflect.DeepEqual(result.AttachmentIDs, []string{mine}) || result.Message == nil {
+		test.Fatalf("response = %+v, want only %s bound", result, mine)
+	}
+	if dbfx.Count(test, `SELECT count(*) FROM attachment WHERE id = $1 AND chat_session_id = $2 AND chat_message_id = $3`, mine, result.Session.ID, result.Message.ID) != 1 {
+		test.Fatal("the draft is not bound to the child's first message")
+	}
+	if dbfx.Count(test, `SELECT count(*) FROM attachment WHERE id = ANY($1::uuid[]) AND chat_session_id = $2`, []string{foreign, bound, elsewhere}, result.Session.ID) != 0 ||
+		dbfx.Count(test, `SELECT count(*) FROM attachment WHERE id = $1 AND chat_session_id = $2 AND chat_message_id = $3`, bound, sourceID, history) != 1 {
+		test.Fatal("an attachment the caller does not own as a source draft was moved")
+	}
+
+	testutil.Call(test, testHandler.ForkChatSession, forkChatRequest(test, sourceID, "with-image", body)).Want(http.StatusOK).JSON(&replay)
+	if replay.Session.ID != result.Session.ID || !reflect.DeepEqual(replay.AttachmentIDs, []string{mine}) ||
+		dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1 AND role = 'user'`, result.Session.ID) != 2 {
+		test.Fatalf("replay = %+v, want the same child and no second send", replay)
+	}
+
+	var only ChatForkResponse
+	testutil.Call(test, testHandler.ForkChatSession, forkChatRequest(test, sourceID, "image-only", map[string]any{"attachment_ids": []string{imageOnly}})).Want(http.StatusCreated).JSON(&only)
+	cleanupChatFork(test, only.Session.ID)
+	if only.Message == nil || only.Message.Content != "" || !reflect.DeepEqual(only.AttachmentIDs, []string{imageOnly}) ||
+		dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE chat_session_id = $1`, only.Session.ID) != 1 {
+		test.Fatalf("attachment-only fork = %+v", only)
+	}
+	if dbfx.Count(test, `SELECT count(*) FROM attachment WHERE chat_session_id = $1 AND chat_message_id IS NULL`, sourceID) != 1 {
+		test.Fatal("the source kept a draft that was not the caller's (only the foreign one should remain)")
+	}
+
+	var nothing ChatForkResponse
+	testutil.Call(test, testHandler.ForkChatSession, forkChatRequest(test, sourceID, "unbindable", map[string]any{"attachment_ids": []string{foreign}})).Want(http.StatusCreated).JSON(&nothing)
+	cleanupChatFork(test, nothing.Session.ID)
+	if nothing.Message != nil {
+		test.Fatalf("a fork whose only attachment was unbindable sent an empty message: %+v", nothing.Message)
+	}
+	testutil.Call(test, testHandler.ForkChatSession, forkChatRequest(test, sourceID, "bad-id", map[string]any{"attachment_ids": []string{"nope"}})).Want(http.StatusBadRequest)
+}
+
+func TestForkChatSessionTaskScopedRejectsAttachments(test *testing.T) {
+	ctx := context.Background()
+	agentID, sourceID, _, _ := setupDirectChatSession(test, ctx, "Task attach")
+	original := sendDirectChat(test, ctx, agentID, sourceID, "Fork this for me")
+	markTaskRunning(test, ctx, original)
+	request := forkChatRequest(test, "", "", map[string]any{"attachment_ids": []string{uuid.NewString()}})
+	request.Header.Set("X-Actor-Source", "task_token")
+	request.Header.Set("X-Task-ID", original)
+	testutil.Call(test, testHandler.ForkChatSession, request).Want(http.StatusBadRequest)
+}

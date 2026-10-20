@@ -40,6 +40,25 @@ describe("chat fork contracts", () => {
     expect(result.message?.id).toBe("m10");
   });
 
+  it("posts attachment ids and keeps the bound ids from the response", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      session: { id: childId }, previous_session_id: sourceId, url: "/x", attachment_ids: ["att-1"],
+    }), { status: 201, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await new ApiClient("https://api.example.test").forkChatSession(sourceId, {
+      idempotency_key: "k", attachment_ids: ["att-1"],
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ idempotency_key: "k", attachment_ids: ["att-1"] });
+    expect(result.attachment_ids).toEqual(["att-1"]);
+  });
+
+  it("drops a malformed attachment_ids field and defaults it when absent", () => {
+    for (const value of ["att-1", [1, 2], {}]) {
+      expect(ChatForkResponseSchema.parse({ session: { id: childId }, attachment_ids: value }).attachment_ids).toBeUndefined();
+    }
+    expect(ChatForkResponseSchema.parse({ session: { id: childId } }).attachment_ids).toBeUndefined();
+  });
+
   it("falls back to the empty response when the server body is malformed", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ session: null, url: 7 }), {
       status: 201, headers: { "Content-Type": "application/json" },
