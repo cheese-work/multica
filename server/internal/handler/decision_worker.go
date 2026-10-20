@@ -160,6 +160,7 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 		list  func(context.Context, int32) ([]db.DecisionRequest, error)
 		apply func(context.Context, pgtype.UUID, pgtype.UUID) (decisiontx.Withdrawal, error)
 	}{
+		{handler.Queries.ListDecisionLifecycleCancellations, handler.CancelDecisionLifecycle},
 		{handler.Queries.ListDecisionSourceChecks, handler.CheckDecisionSource},
 		{handler.Queries.ListDecisionFinalizations, handler.FinalizeDecisionAnswer},
 	} {
@@ -187,6 +188,15 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 			return err
 		}))
 	}
+	notices, err := handler.Queries.ListDecisionVetoNotices(ctx, decisionBatchSize)
+	if err != nil {
+		return errors.Join(failures, err)
+	}
+	for _, answer := range notices {
+		failures = errors.Join(failures, decisionAttempt(ctx, func() error {
+			return handler.deliverDecisionVetoNotice(ctx, answer.WorkspaceID, answer.ID)
+		}))
+	}
 	requests, err := handler.Queries.ListDecisionPingRetries(ctx, decisionBatchSize)
 	if err != nil {
 		return errors.Join(failures, err)
@@ -198,6 +208,33 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 				handler.publish(protocol.EventInboxNew, uuidToString(request.WorkspaceID), "agent", uuidToString(request.AskingAgentID), map[string]any{"item": inboxToResponse(*item)})
 			}
 			return err
+		}))
+	}
+	wakes, err := handler.Queries.ListDecisionWakeCandidates(ctx, decisionBatchSize)
+	if err != nil {
+		return errors.Join(failures, err)
+	}
+	for _, request := range wakes {
+		failures = errors.Join(failures, decisionAttempt(ctx, func() error {
+			return handler.DeliverDecisionWake(ctx, request.WorkspaceID, request.ID)
+		}))
+	}
+	retractions, err := handler.Queries.ListDecisionRetractionCandidates(ctx, decisionBatchSize)
+	if err != nil {
+		return errors.Join(failures, err)
+	}
+	for _, answer := range retractions {
+		failures = errors.Join(failures, decisionAttempt(ctx, func() error {
+			return handler.deliverDecisionItem(ctx, answer.WorkspaceID, answer.ID, "retraction")
+		}))
+	}
+	reasks, err := handler.Queries.ListDecisionReaskCandidates(ctx, decisionBatchSize)
+	if err != nil {
+		return errors.Join(failures, err)
+	}
+	for _, request := range reasks {
+		failures = errors.Join(failures, decisionAttempt(ctx, func() error {
+			return handler.deliverDecisionItem(ctx, request.WorkspaceID, request.ID, "reask")
 		}))
 	}
 	return failures

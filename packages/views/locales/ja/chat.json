@@ -14,6 +14,7 @@
   "input": {
     "placeholder_no_agent": "チャットを始めるにはエージェントを作成してください",
     "placeholder_archived": "このセッションはアーカイブされています",
+    "placeholder_compacting": "コンパクト中…",
     "placeholder_archived_agent": "このエージェントはアーカイブされています",
     "placeholder_runtime_required": "ランタイムを設定して続ける",
     "placeholder_access_revoked": "このエージェントを実行する権限がありません",
@@ -23,9 +24,9 @@
     "queue_send_tooltip": "キューに追加",
     "stop_tooltip": "停止",
     "send_failed_toast": "メッセージを送信できませんでした",
+    "compacting_toast": "この DM はコンパクト中です。完了してからもう一度送信してください。",
     "rename_failed_toast": "チャットの名前を変更できませんでした",
     "fork_unconfirmed": "分岐を確認できませんでした。再試行する前に「分岐先」のリンクを確認してください。",
-    "fork_attachments_blocked": "/fork では添付ファイルを送信できません。",
     "rename_title_too_long_toast": "チャットのタイトルは200文字以内にしてください",
     "rename_session_required_toast": "名前を変更する前にチャットを開始してください",
     "send_blocked_toast": "メッセージは送信されませんでした — このエージェントを使用する権限がありません",
@@ -260,6 +261,10 @@
     "row_actions_aria": "チャットの操作"
   },
   "header": {
+    "context_meter": "{{window}} 中 {{pct}}%",
+    "context_meter_warning": "次の返信のあとにコンパクトします",
+    "compact_now": "今すぐコンパクト",
+    "more_actions": "その他の操作",
     "view_profile": "Agent のプロフィール",
     "rename": "名前を変更",
     "delete": "チャットを削除",

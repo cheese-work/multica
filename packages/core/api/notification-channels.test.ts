@@ -10,9 +10,10 @@ function respond(body: unknown) {
   return fetch;
 }
 
+// DM switches default to off (CHE-1848).
 const DEFAULT_CHANNELS = {
   inbox: { in_app: true, push: false },
-  dm: { in_app: true, push: false },
+  dm: { in_app: false, push: false },
 };
 
 describe("notification channel API", () => {
@@ -59,6 +60,6 @@ describe("notification channel API", () => {
     respond({ workspace_id: "ws-1", channels: { dm: { push: true }, sms: { in_app: true } }, extra: 1 });
     const api = new ApiClient("https://api.example.test");
     const got = await api.getNotificationChannels();
-    expect(got.channels).toEqual({ inbox: DEFAULT_CHANNELS.inbox, dm: { in_app: true, push: true } });
+    expect(got.channels).toEqual({ inbox: DEFAULT_CHANNELS.inbox, dm: { in_app: false, push: true } });
   });
 });

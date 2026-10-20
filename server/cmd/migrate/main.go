@@ -146,6 +146,8 @@ var pgBigmOperatorClass = extensionOperatorClass{
 var concurrentIndexCleanups = map[string]string{
 	"621_chat_fork_operation_index":                             "chat_session_fork_operation_idx",
 	"628_notification_channel_preference_index":                 "notification_channel_preference_key_uidx",
+	"651_inbox_item_dedupe_index":                               "idx_inbox_item_dedupe_unread",
+	"652_inbox_item_updated_listing_index":                      "idx_inbox_item_active_updated",
 	"615_decision_request_comment_v2_index":                     "comment_decision_request_kind_v2_uidx",
 	"598_decision_request_id_index":                             "decision_request_id_uidx",
 	"599_decision_intent_id_index":                              "decision_intent_id_uidx",
@@ -173,6 +175,9 @@ var concurrentIndexCleanups = map[string]string{
 	"546_issue_pr_automation_workspace_index":                   "idx_issue_pr_automation_workspace",
 	"547_issue_pull_request_exclusion_workspace_index":          "idx_issue_pull_request_exclusion_workspace",
 	"548_task_supplement_comment_task_index":                    "task_supplement_comment_task_uidx",
+	"658_issue_workflow_pkey_index":                             "issue_workflow_pkey_uidx",
+	"660_issue_workflow_workspace_name_index":                   "idx_issue_workflow_workspace_name",
+	"665_issue_workflow_default_index":                          "idx_issue_workflow_workspace_default",
 	"562_wakeup_expiry_index":                                   "issue_wakeup_expiry_idx",
 	"564_wakeup_system_rule_index":                              "issue_wakeup_system_rule_idx",
 	"567_issue_child_event_id":                                  "issue_child_event_id_idx",

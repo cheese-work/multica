@@ -1,0 +1,30 @@
+issue: CHE-1727
+design: design/wakeups-pause/rev-3/A.html @ 82c8a7700d40c3aa007aac4cc9dc0b63f7442db9   # approved: Cheese merged design PR #255
+pages:
+  - id: settings-wakeups
+    url: /<workspace-slug>/settings?tab=wakeups
+    keep: [wakeups-child-done-switch, wakeups-child-done-instruction]
+    change:
+      - wakeups-child-done-switch: "Shows as overridden and disabled while wakeups are paused"
+    remove: []
+  - id: settings-wakeups-pause
+    url: /<workspace-slug>/settings?tab=wakeups
+    keep: []
+    change:
+      - wakeups-pause-switch: "New admin master switch above the sub-issue rule"
+      - wakeups-paused-banner: "New banner naming who paused and when"
+      - wakeups-pause-status: "New Saved and Resumed confirmation under the switch"
+      - wakeups-load-retry: "New Retry button on the load-error notice"
+    remove: []
+  - id: issue-wakeup-panel
+    url: /<workspace-slug>/issues/<issue-id>
+    keep: []
+    change:
+      - wakeups-paused-banner: "New banner at the top of the Wakeups section while paused"
+    remove: []
+  - id: issue-header
+    url: /<workspace-slug>/issues/<issue-id>
+    keep: []
+    change:
+      - wakeups-header-chip: "Reads Wakeups paused instead of the next due time while the workspace is paused"
+    remove: []

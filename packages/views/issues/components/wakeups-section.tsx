@@ -35,6 +35,7 @@ import {
 } from "@multica/ui/components/ui/alert-dialog";
 import { WakeupInstructionEditor } from "./wakeup-instruction-editor";
 import { WakeupControl } from "./wakeup-control";
+import { WakeupsPausedBanner } from "./wakeups-paused-banner";
 import { WakeupCreate } from "./wakeup-create";
 import { SystemWakeupRow } from "./system-wakeup-row";
 import { TranscriptButton } from "../../common/task-transcript";
@@ -441,6 +442,7 @@ export function WakeupsSection({
       </div>
       {open && (
         <div>
+          <WakeupsPausedBanner className="mb-1" />
           {isError && (
             <button
               type="button"

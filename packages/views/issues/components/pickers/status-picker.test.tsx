@@ -3,7 +3,7 @@
 import { cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildIssueStatusCatalog } from "@multica/core/issue-statuses";
-import type { IssueStatusEntry } from "@multica/core/types";
+import type { IssueStatusEntry, IssueWorkflow } from "@multica/core/types";
 import { renderWithI18n } from "../../../test/i18n";
 import { StatusPicker } from "./status-picker";
 
@@ -19,6 +19,38 @@ vi.mock("@multica/core/hooks", () => ({
 
 vi.mock("@multica/core/issue-statuses/hooks", () => ({
   useIssueStatuses: () => buildIssueStatusCatalog(catalogEntries),
+}));
+
+// Project workflows (MUL-7420): the picker resolves the issue's project and its
+// workflow through one hook, fed directly here like the catalog.
+let projectWorkflow: IssueWorkflow | null = null;
+let projectResolved = true;
+const retryCatalog = vi.fn();
+const toastError = vi.hoisted(() => vi.fn());
+vi.mock("sonner", () => ({ toast: { error: toastError } }));
+
+vi.mock("@multica/core/issue-workflows", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/issue-workflows")>()),
+  useProjectWithWorkflow: () => ({ project: null, workflow: projectWorkflow, resolved: projectResolved, retry: retryCatalog }),
+}));
+
+const HANDOFF_PREVIEW = {
+  previous_assignee_type: "agent",
+  previous_assignee_id: "forge",
+  handler_type: "agent",
+  handler_id: "agent-1",
+};
+vi.mock("../../../workflows/handoff-confirm-dialog", () => ({
+  WorkflowHandoffConfirmDialog: ({ issue, onConfirm }: { issue: unknown; onConfirm: (o: unknown) => void }) =>
+    issue ? <button onClick={() => onConfirm({ stopPreviousRuns: true, preview: HANDOFF_PREVIEW })}>confirm handoff</button> : null,
+}));
+
+vi.mock("../../../common/actor-avatar", () => ({
+  ActorAvatar: ({ actorId }: { actorId: string }) => <span data-testid={`avatar-${actorId}`} />,
+}));
+
+vi.mock("@multica/core/workspace/hooks", () => ({
+  useActorName: () => ({ getActorName: (_type: string, id: string) => (id === "agent-1" ? "Sentinel" : "Unknown") }),
 }));
 
 function entry(overrides: Partial<IssueStatusEntry>): IssueStatusEntry {
@@ -71,6 +103,10 @@ function optionRow(label: string): HTMLElement {
 afterEach(() => {
   cleanup();
   catalogEntries = undefined;
+  projectWorkflow = null;
+  projectResolved = true;
+  retryCatalog.mockReset();
+  toastError.mockReset();
 });
 
 describe("StatusPicker trigger color", () => {
@@ -163,3 +199,137 @@ describe("StatusPicker on an issue that already is a duplicate", () => {
     expect(screen.getByRole("button", { name: "Change original" })).toBeTruthy();
   });
 });
+
+describe("StatusPicker in a project that uses a workflow", () => {
+  const TODO = entry({ id: "todo", key: "todo", name: "Todo", category: "unstarted", is_system: true, position: 0 });
+  const DONE = entry({ id: "done", key: "done", name: "Done", category: "done", is_system: true, position: 0 });
+
+  it("offers only the workflow's steps, in workflow order, naming each handoff", () => {
+    catalogEntries = [TODO, IN_REVIEW, QA, DONE];
+    projectWorkflow = {
+      id: "wf-1",
+      workspace_id: "workspace-1",
+      name: "Delivery",
+      description: "",
+      is_default: false,
+      steps: [
+        { status_key: "todo", handler: { type: "none" }, instructions: "" },
+        { status_key: "qa", handler: { type: "agent", id: "agent-1" }, instructions: "" },
+        { status_key: "done", handler: { type: "none" }, instructions: "" },
+      ],
+      project_ids: ["project-1"],
+      created_at: "",
+      updated_at: "",
+    };
+    renderWithI18n(
+      <StatusPicker status="todo" projectId="project-1" onUpdate={() => {}} open onOpenChange={() => {}} />,
+    );
+
+    const rows = Array.from(document.querySelectorAll("button[data-picker-item]")).map(
+      (el) => el.textContent?.trim(),
+    );
+    // Only a column with a handoff carries its handler's avatar.
+    expect(rows).toEqual(["Todo", "QAHands off to Sentinel", "Done"]);
+    expect(screen.getByText("Hands off to Sentinel").className).toContain("sr-only");
+    expect(screen.getByTestId("avatar-agent-1")).toBeTruthy();
+    expect(screen.getByText("Delivery")).toBeTruthy();
+    expect(screen.queryByText("In Review")).toBeNull();
+  });
+
+  it("offers the whole catalog when the project uses the Default workflow", () => {
+    catalogEntries = [TODO, IN_REVIEW, QA, DONE];
+    renderWithI18n(
+      <StatusPicker status="todo" projectId="project-1" onUpdate={() => {}} open onOpenChange={() => {}} />,
+    );
+    expect(optionRow("In Review")).toBeTruthy();
+    expect(screen.queryByText(/Hands off to/)).toBeNull();
+  });
+});
+
+// With a project, "no workflow" and "the workflow has not loaded" both read as
+// a null workflow. A click while it is unresolved must not write the status:
+// the server would apply the workflow's handoff without the confirmation.
+describe("StatusPicker while the project's workflow is unresolved", () => {
+  const issue = { id: "issue-1", identifier: "TES-1" };
+
+  it("does not write a status for an existing issue", () => {
+    projectResolved = false;
+    const onUpdate = vi.fn();
+    renderWithI18n(
+      <StatusPicker status="todo" projectId="project-1" issue={issue} onUpdate={onUpdate} open onOpenChange={() => {}} />,
+    );
+
+    fireEvent.click(optionRow("In Review"));
+
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+
+  it("says why nothing was written and retries the catalog on request", () => {
+    projectResolved = false;
+    renderWithI18n(
+      <StatusPicker status="todo" projectId="project-1" issue={issue} onUpdate={vi.fn()} open onOpenChange={() => {}} />,
+    );
+
+    fireEvent.click(optionRow("In Review"));
+
+    expect(toastError).toHaveBeenCalledTimes(1);
+    const options = toastError.mock.calls[0]![1];
+    expect(options.action.label).toBe("Retry");
+    options.action.onClick();
+    expect(retryCatalog).toHaveBeenCalledTimes(1);
+  });
+
+  it("still writes once the workflow has resolved to none", () => {
+    const onUpdate = vi.fn();
+    renderWithI18n(
+      <StatusPicker status="todo" projectId="project-1" issue={issue} onUpdate={onUpdate} open onOpenChange={() => {}} />,
+    );
+
+    fireEvent.click(optionRow("In Review"));
+
+    expect(onUpdate).toHaveBeenCalledWith({ status: "in_review" });
+  });
+
+  it("is unaffected on surfaces that edit no single issue", () => {
+    projectResolved = false;
+    const onUpdate = vi.fn();
+    renderWithI18n(
+      <StatusPicker status="todo" projectId="project-1" onUpdate={onUpdate} open onOpenChange={() => {}} />,
+    );
+
+    fireEvent.click(optionRow("In Review"));
+
+    expect(onUpdate).toHaveBeenCalledWith({ status: "in_review" });
+  });
+});
+
+describe("StatusPicker confirmed handoff", () => {
+  it("sends the previewed binding with the status change", () => {
+    catalogEntries = [IN_REVIEW];
+    projectWorkflow = {
+      id: "wf", workspace_id: "workspace-1", name: "Delivery", description: "", is_default: false, project_ids: [],
+      created_at: "", updated_at: "",
+      steps: [
+        { status_key: "todo", handler: { type: "none" }, instructions: "" },
+        { status_key: "in_review", handler: { type: "agent", id: "agent-1" }, instructions: "" },
+      ],
+    } as IssueWorkflow;
+    const onUpdate = vi.fn();
+    renderWithI18n(
+      <StatusPicker status="todo" projectId="project-1" issue={{ id: "issue-1", identifier: "TES-1" }} onUpdate={onUpdate} open onOpenChange={() => {}} />,
+    );
+
+    const row = Array.from(document.querySelectorAll<HTMLElement>("button[data-picker-item]")).find((el) =>
+      el.textContent?.includes("In Review"),
+    );
+    fireEvent.click(row!);
+    fireEvent.click(screen.getByText("confirm handoff"));
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      status: "in_review",
+      stop_previous_assignee_runs: true,
+      handoff_preview: HANDOFF_PREVIEW,
+    });
+  });
+});
+
