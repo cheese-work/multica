@@ -57,8 +57,8 @@ export function JevCredentialPane({
   const { t } = useT("settings");
   const [keyDialog, setKeyDialog] = useState(false);
   const [removeDialog, setRemoveDialog] = useState(false);
-  // The server said it cannot store keys at all: stop offering to.
-  const [unconfigured, setUnconfigured] = useState(false);
+  // Set once a save is refused with 403; the load-time capability covers the rest.
+  const [refused, setRefused] = useState(false);
 
   if (credential.isError && !credential.data) {
     return (
@@ -82,6 +82,8 @@ export function JevCredentialPane({
   }
 
   const present = credential.data.present;
+  // The server said it cannot store keys at all: stop offering to.
+  const unconfigured = refused || credential.data.configurable === false;
   const editable = canManage && online;
   return (
     <SettingsSection anchor="credential">
@@ -130,7 +132,7 @@ export function JevCredentialPane({
         <JevApiUrlRow config={config} canManage={canManage} online={online} onNotice={onNotice} />
       </SettingsCard>
       {unconfigured ? (
-        <p role="note" className="text-caption text-muted-foreground">
+        <p data-testid="jev-credential-unconfigured" role="note" className="text-caption text-muted-foreground">
           {t(($) => $.jev_governance.credential.unconfigured)}
         </p>
       ) : null}
@@ -146,7 +148,7 @@ export function JevCredentialPane({
         }}
         onUnconfigured={() => {
           setKeyDialog(false);
-          setUnconfigured(true);
+          setRefused(true);
         }}
       />
       <RemoveDialog

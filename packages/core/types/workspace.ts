@@ -200,7 +200,11 @@ export interface WorkspaceGovernanceRollback {
   rollback_to_version: number;
 }
 
-/** Whether a Jev provider key is stored. The key itself is never readable. */
+/**
+ * Whether a Jev provider key is stored, and whether this server can store one
+ * (it holds an at-rest encryption key). The key itself is never readable.
+ */
 export interface JevCredentialPresence {
   present: boolean;
+  configurable: boolean;
 }
