@@ -7,8 +7,12 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/multica-ai/multica/server/internal/auth"
+	"github.com/multica-ai/multica/server/internal/middleware"
 
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -33,6 +37,7 @@ func (fixture recordedCardFixture) timelineAs(test *testing.T, userID string) ma
 	test.Helper()
 	request := withURLParam(newRequest(http.MethodGet, "/api/issues/"+fixture.issueID+"/timeline", nil), "id", fixture.issueID)
 	request.Header.Set("X-User-ID", userID)
+	request.Header.Set("X-Actor-Source", "interactive_jwt")
 	var entries []map[string]any
 	testutil.Call(test, testHandler.ListTimeline, request).Want(http.StatusOK).JSON(&entries)
 	for _, entry := range entries {
@@ -251,5 +256,67 @@ func TestForkKeepsDecisionReferenceLink(test *testing.T) {
 	dbfx.QueryRow(test, `SELECT coalesce(decision_answer_id::text, '') FROM chat_message WHERE chat_session_id = $1 AND message_kind = 'decision_reference'`, result.Session.ID).Scan(&copied)
 	if copied != answerID {
 		test.Fatalf("forked reference decision_answer_id = %q, want %q", copied, answerID)
+	}
+}
+
+func humanJWT(test *testing.T, userID, amr string) string {
+	test.Helper()
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{"sub": userID, "amr": amr, "exp": time.Now().Add(time.Hour).Unix()}).SignedString(auth.JWTSecret())
+	if err != nil {
+		test.Fatal(err)
+	}
+	return token
+}
+
+// The DM pointers are for the request's human acting as a human. A task token
+// that carries the same user id (an agent run for that person) is an agent.
+func TestDecisionPointersReachOnlyHumanActorSources(test *testing.T) {
+	fixture := newRecordedCardFixture(test)
+	runtimeID := handlerTestRuntimeID(test)
+	taskID := dbfx.Task(test, fixture.agentID, testutil.Cols{"status": "running", "runtime_id": runtimeID, "issue_id": fixture.issueID})
+	taskToken := "mat_cards_" + taskID
+	dbfx.Insert(test, "task_token", testutil.Cols{
+		"token_hash": auth.HashToken(taskToken), "task_id": taskID, "agent_id": fixture.agentID,
+		"workspace_id": testWorkspaceID, "user_id": fixture.humanID, "expires_at": time.Now().Add(time.Hour),
+	})
+	patToken := "mul_cards_" + taskID
+	dbfx.Insert(test, "personal_access_token", testutil.Cols{"user_id": fixture.humanID, "name": "cards", "token_hash": auth.HashToken(patToken), "token_prefix": "mul_card"})
+	verifier := provenanceCloudVerifier(test)
+
+	for _, caller := range []struct {
+		name, token string
+		pointers    bool
+	}{
+		{"human_interactive_jwt", humanJWT(test, fixture.humanID, "interactive"), true},
+		{"human_cli_jwt", humanJWT(test, fixture.humanID, "cli"), true},
+		{"human_pat", patToken, true},
+		{"task_token_same_user", taskToken, false},
+		{"other_member", humanJWT(test, testUserID, "interactive"), false},
+	} {
+		test.Run(caller.name, func(test *testing.T) {
+			request := withURLParam(newRequest(http.MethodGet, "/api/issues/"+fixture.issueID+"/timeline", nil), "id", fixture.issueID)
+			request.Header.Set("Authorization", "Bearer "+caller.token)
+			request.Header.Del("X-User-ID")
+			protected := middleware.Auth(testHandler.Queries, nil, verifier, nil)(http.HandlerFunc(testHandler.ListTimeline))
+			var entries []map[string]any
+			testutil.Call(test, protected.ServeHTTP, request).Want(http.StatusOK).JSON(&entries)
+			var quote map[string]any
+			for _, entry := range entries {
+				if entry["id"] == fixture.commentID {
+					quote = entry
+				}
+			}
+			if quote == nil {
+				test.Fatal("quote comment missing from the timeline")
+			}
+			_, session := quote["decision_source_session_id"]
+			_, message := quote["decision_source_message_id"]
+			if session != caller.pointers || message != caller.pointers {
+				test.Fatalf("%s: pointers present = session %v message %v, want %v", caller.name, session, message, caller.pointers)
+			}
+			if quote["decision_state"] == nil {
+				test.Fatalf("%s lost the public card fields", caller.name)
+			}
+		})
 	}
 }

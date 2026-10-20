@@ -296,7 +296,7 @@ func (h *Handler) commentsToEntries(r *http.Request, comments []db.Comment) []Ti
 	reactions := h.groupReactions(r, ids)
 	attachments := h.groupAttachments(r, ids)
 	supplements := h.listCommentSupplements(r.Context(), comments[0].WorkspaceID, ids)
-	viewer, _ := util.ParseUUID(requestUserID(r))
+	viewer := decisionViewer(r)
 	decisions := h.decisionCommentFields(r.Context(), comments[0].WorkspaceID, comments, viewer)
 
 	out := make([]TimelineEntry, len(comments))

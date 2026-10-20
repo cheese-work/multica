@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -122,6 +123,19 @@ func (handler *Handler) decisionCommentFields(ctx context.Context, workspaceID p
 		fields[uuidToString(comment.ID)] = entry
 	}
 	return fields
+}
+
+// decisionViewer is the member who may see the owner-only DM pointers, or the
+// zero UUID. Task-token auth sets X-User-ID to the task's user, so the user id
+// alone does not make a human: only the actor sources DisclaimDecisionAnswer
+// accepts for the request's human count.
+func decisionViewer(request *http.Request) pgtype.UUID {
+	switch request.Header.Get("X-Actor-Source") {
+	case "interactive_jwt", "cli_jwt", "pat":
+		viewer, _ := util.ParseUUID(requestUserID(request))
+		return viewer
+	}
+	return pgtype.UUID{}
 }
 
 // withDecisionFields adds the card fields to a comment snapshot that is
