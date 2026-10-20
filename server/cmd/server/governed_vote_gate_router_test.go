@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
@@ -32,6 +34,7 @@ type voteRig struct {
 	writer, leader, peer          string
 	writerTok, leaderTok, peerTok string
 	claudeRT, codexRT             string
+	leaderTask                    string
 	issueID, targetSquad          string
 }
 
@@ -42,7 +45,7 @@ func newVoteRig(t *testing.T) *voteRig {
 	r := &voteRig{t: t, fx: fx}
 	r.claudeRT = fx.Runtime(t, "rig-claude-"+t.Name(), testutil.Cols{"provider": "claude"})
 	r.codexRT = fx.Runtime(t, "rig-codex-"+t.Name(), testutil.Cols{"provider": "codex"})
-	mk := func(role, rt, model string) (string, string) {
+	mk := func(role, rt, model string) (string, string, string) {
 		id := fx.Agent(t, "rig-"+role+"-"+t.Name(), rt, testutil.Cols{
 			"visibility": "workspace", "permission_mode": "public_to", "instructions": "",
 			"custom_env": testutil.Raw("'{}'::jsonb"), "custom_args": testutil.Raw("'[]'::jsonb"), "model": model,
@@ -52,11 +55,11 @@ func newVoteRig(t *testing.T) *voteRig {
 			"runtime_id": rt, "status": "running", "originator_user_id": testUserID,
 			"accountable_user_id": testUserID, "originator_source": "direct_human",
 		})
-		return id, mintAgentTaskToken(t, id, task, testUserID)
+		return id, mintAgentTaskToken(t, id, task, testUserID), task
 	}
-	r.writer, r.writerTok = mk("writer", r.claudeRT, "claude-test")
-	r.leader, r.leaderTok = mk("leader", r.codexRT, "gpt-test")
-	r.peer, r.peerTok = mk("peer", r.claudeRT, "claude-test")
+	r.writer, r.writerTok, _ = mk("writer", r.claudeRT, "claude-test")
+	r.leader, r.leaderTok, r.leaderTask = mk("leader", r.codexRT, "gpt-test")
+	r.peer, r.peerTok, _ = mk("peer", r.claudeRT, "claude-test")
 	squad := fx.Squad(t, "rig-vote-"+t.Name(), r.leader)
 	r.issueID = fx.Issue(t, "rig vote "+t.Name(), testutil.Cols{"assignee_type": "squad", "assignee_id": squad})
 	r.targetSquad = fx.Squad(t, "rig-target-"+t.Name(), r.leader, testutil.Cols{"instructions": "before\n" + rigHuman})
@@ -285,4 +288,113 @@ func TestVoteGateRouter_AgentAndWorkspaceFieldsNeedSetup(t *testing.T) {
 			}
 		}
 	})
+}
+
+// leaderToClaude puts the leader on the writer's lab, agent and running task
+// alike, so that no voter is cross-lab.
+func (r *voteRig) leaderToClaude() {
+	r.t.Helper()
+	r.fx.Exec(r.t, `UPDATE agent SET runtime_id = $1, model = 'claude-test' WHERE id = $2`, r.claudeRT, r.leader)
+	r.fx.Exec(r.t, `UPDATE agent_task_queue SET runtime_id = $1 WHERE id = $2`, r.claudeRT, r.leaderTask)
+}
+
+// relabel is an ordinary agent update with the writer's own task token.
+func (r *voteRig) relabel(agentID string) {
+	r.t.Helper()
+	r.must(http.StatusOK, "PUT", "/api/agents/"+agentID, r.writerTok, map[string]any{"runtime_id": r.codexRT, "model": "gpt-test"})
+}
+
+// R1: every agent runs a Claude task, so no voter is cross-lab. Relabelling
+// the agent row does not change what the running task executes.
+func TestVoteGateRouter_ExistingTokenRelabel(t *testing.T) {
+	t.Run("control, no relabel", func(t *testing.T) {
+		r := newVoteRig(t)
+		r.leaderToClaude()
+		r.honestVotes("instructions:"+r.targetSquad, rigDigest(rigNext))
+		r.wantDenied(r.writeSquad(rigBefore, rigNext))
+	})
+	t.Run("writer relabels itself before writing", func(t *testing.T) {
+		r := newVoteRig(t)
+		r.leaderToClaude()
+		r.honestVotes("instructions:"+r.targetSquad, rigDigest(rigNext))
+		r.relabel(r.writer)
+		r.wantDenied(r.writeSquad(rigBefore, rigNext))
+	})
+	t.Run("writer relabels the leader before the leader votes", func(t *testing.T) {
+		r := newVoteRig(t)
+		r.leaderToClaude()
+		r.relabel(r.leader)
+		r.honestVotes("instructions:"+r.targetSquad, rigDigest(rigNext))
+		r.wantDenied(r.writeSquad(rigBefore, rigNext))
+	})
+}
+
+// R2: a BLOCK that commits while the write waits on the target row must stop
+// the write. The test holds the target row lock so the write parks in its
+// compare-and-swap, then tries to commit a member BLOCK. Either the BLOCK
+// commits and the write is refused, or the BLOCK waits behind the write.
+func TestVoteGateRouter_BlockCommittedBeforeWriteStopsIt(t *testing.T) {
+	r := newVoteRig(t)
+	label, after := "instructions:"+r.targetSquad, rigDigest(rigNext)
+	r.honestVotes(label, after)
+	t.Cleanup(func() { testPool.Exec(t.Context(), `DELETE FROM comment WHERE issue_id = $1`, r.issueID) })
+
+	lock, err := testPool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Rollback(t.Context())
+	if _, err := lock.Exec(t.Context(), `SELECT 1 FROM squad WHERE id = $1 FOR UPDATE`, r.targetSquad); err != nil {
+		t.Fatal(err)
+	}
+
+	type result struct {
+		code int
+		body string
+	}
+	done := make(chan result, 1)
+	go func() {
+		b, _ := json.Marshal(map[string]any{"instructions": rigNext, "vote_issue": r.issueID, "before_sha256": rigDigest(rigBefore), "after_sha256": after})
+		req, _ := http.NewRequest("PUT", testServer.URL+"/api/squads/"+r.targetSquad, bytes.NewReader(b))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+r.writerTok)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			done <- result{-1, err.Error()}
+			return
+		}
+		defer resp.Body.Close()
+		out, _ := io.ReadAll(resp.Body)
+		done <- result{resp.StatusCode, string(out)}
+	}()
+
+	// Wait until the write is parked on the target row lock.
+	parked := false
+	for i := 0; i < 200 && !parked; i++ {
+		var n int
+		testPool.QueryRow(t.Context(), `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()
+			AND wait_event_type = 'Lock' AND query ILIKE 'UPDATE squad%'`).Scan(&n)
+		parked = n > 0
+		if !parked {
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	if !parked {
+		t.Fatal("the write never parked on the target row lock")
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	_, blockErr := testPool.Exec(ctx, `INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type)
+		VALUES ($1, $2, 'member', $3, $4, 'comment')`, r.issueID, testWorkspaceID, testUserID, "Vote: BLOCK "+label+" "+after)
+	cancel()
+	blockCommitted := blockErr == nil
+
+	lock.Rollback(t.Context())
+	res := <-done
+	if blockCommitted && res.code != http.StatusForbidden {
+		t.Fatalf("a BLOCK committed before the write, yet the write returned %d: %s", res.code, res.body)
+	}
+	if blockCommitted && r.squadValue() != rigBefore {
+		t.Fatalf("squad instructions changed after a committed BLOCK: %q", r.squadValue())
+	}
 }
