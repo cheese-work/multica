@@ -10,7 +10,7 @@ import type {
  * off, and with no mode the legacy enabled flag means on.
  */
 export function resolveJevGovernance(config: WorkspaceGovernanceConfig): WorkspaceJevGovernance {
-  const { jev_squad_routing_mode: mode, jev_squad_routing_enabled: legacyOn, jev_min_confidence: confidence } =
+  const { jev_squad_routing_mode: mode, jev_squad_routing_enabled: legacyOn, jev_min_confidence: confidence, jev_api_url: apiUrl } =
     config.settings;
   const routing_mode: JevRoutingMode =
     mode === "off" || mode === "shadow" || mode === "on" ? mode : !mode && legacyOn ? "on" : "off";
@@ -18,6 +18,7 @@ export function resolveJevGovernance(config: WorkspaceGovernanceConfig): Workspa
     version: config.version,
     routing_mode,
     min_confidence: confidence ?? null,
+    api_url: apiUrl ?? "",
     history: config.audit_history,
   };
 }

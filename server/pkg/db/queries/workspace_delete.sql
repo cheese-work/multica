@@ -371,6 +371,10 @@ deleted_stage_generations AS (
 deleted_issue_checkpoints AS (
     DELETE FROM issue_checkpoint WHERE workspace_id = $1
 ),
+-- CHE-1862 vote-gate ledger: workspace-owned, a leaf with no dependents.
+deleted_governed_vote_records AS (
+    DELETE FROM governed_vote_record WHERE workspace_id = $1
+),
 -- CHE-685 Jev governance routing receipts: workspace-owned observation
 -- history, same leaf shape as issue_checkpoint above (no dependents, no FK).
 deleted_governance_receipts AS (

@@ -130,6 +130,23 @@ WHERE workspace_id = sqlc.arg(workspace_id)
   AND id = ANY(sqlc.arg(attachment_ids)::uuid[])
 RETURNING id;
 
+-- name: MoveDraftAttachmentsToForkChild :many
+-- A draft upload carries the source DM's chat_session_id, which
+-- LinkAttachmentsToChatMessage refuses for any other session. Only the
+-- caller's own unbound source-DM drafts move to the fork child.
+UPDATE attachment
+SET chat_session_id = sqlc.arg(child_session_id)
+WHERE workspace_id = sqlc.arg(workspace_id)
+  AND chat_session_id = sqlc.arg(source_session_id)
+  AND chat_message_id IS NULL
+  AND issue_id IS NULL
+  AND comment_id IS NULL
+  AND source_context_id IS NULL
+  AND uploader_type = 'member'
+  AND uploader_id = sqlc.arg(uploader_id)
+  AND id = ANY(sqlc.arg(attachment_ids)::uuid[])
+RETURNING id;
+
 -- name: DetachAttachmentsFromUserChatMessageByTask :many
 -- When an empty chat task is cancelled, its user message is deleted. The
 -- attachment FK is ON DELETE CASCADE, so without this the bound rows would be

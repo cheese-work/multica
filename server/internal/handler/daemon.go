@@ -2609,6 +2609,16 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	if rc := bytes.TrimSpace(agent.RuntimeConfig); len(rc) > 0 && !bytes.Equal(rc, []byte("{}")) && !bytes.Equal(rc, []byte("null")) {
 		runtimeConfig = json.RawMessage(agent.RuntimeConfig)
 	}
+	// CHE-1862: record the model this claim hands the daemon. The vote gate
+	// reads it from the task, so a later edit of the agent row cannot relabel
+	// a run that is already under way. A failure leaves the task unrecorded,
+	// and an unrecorded task never counts as a different lab.
+	if err := h.Queries.SetTaskClaimedModel(r.Context(), db.SetTaskClaimedModelParams{
+		ID: task.ID, ClaimedModel: pgtype.Text{String: agent.Model.String, Valid: true},
+	}); err != nil {
+		slog.Warn("daemon claim: could not record the claimed model",
+			"task_id", uuidToString(task.ID), "error", err)
+	}
 	resp.Agent = &TaskAgentData{
 		ID:                    uuidToString(agent.ID),
 		Name:                  agent.Name,
