@@ -303,6 +303,56 @@ describe("Jev / Governance credential pane", () => {
     expect(screen.getByRole("button", { name: "Set key" })).toBeDisabled();
   });
 
+  it("warns on load and disables Set key when the server reports it cannot store a key", async () => {
+    fake.getJevCredential.mockResolvedValue({ present: false, configurable: false });
+    mount();
+    await openTab(/^Credential/);
+    expect(
+      await screen.findByText("This server has no credential encryption key. Ask a deployment admin to configure one."),
+    ).toBeVisible();
+    expect(screen.getByTestId("jev-credential-unconfigured")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Set key" })).toBeDisabled();
+    expect(fake.putJevCredential).not.toHaveBeenCalled();
+  });
+
+  it("keeps Remove available when a stored key exists but the server cannot store a new one", async () => {
+    fake.getJevCredential.mockResolvedValue({ present: true, configurable: false });
+    mount();
+    await openTab(/^Credential/);
+    expect(
+      await screen.findByText("This server has no credential encryption key. Ask a deployment admin to configure one."),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Replace key" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Remove" })).toBeEnabled();
+  });
+
+  it("shows the note to a member, who has no key actions", async () => {
+    fake.role = "member";
+    fake.getJevCredential.mockResolvedValue({ present: false, configurable: false });
+    mount();
+    await openTab(/^Credential/);
+    expect(
+      await screen.findByText("This server has no credential encryption key. Ask a deployment admin to configure one."),
+    ).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Set key" })).toBeNull();
+  });
+
+  it("offers Set key without a warning when the server can store a key", async () => {
+    fake.getJevCredential.mockResolvedValue({ present: false, configurable: true });
+    mount();
+    await openTab(/^Credential/);
+    expect(await screen.findByRole("button", { name: "Set key" })).toBeEnabled();
+    expect(screen.queryByText(/no credential encryption key/)).toBeNull();
+  });
+
+  it("keeps Set key enabled when an older server does not say whether it can store a key", async () => {
+    fake.getJevCredential.mockResolvedValue({ present: false });
+    mount();
+    await openTab(/^Credential/);
+    expect(await screen.findByRole("button", { name: "Set key" })).toBeEnabled();
+    expect(screen.queryByText(/no credential encryption key/)).toBeNull();
+  });
+
   it("removes the key only after a confirmation that says what stops working", async () => {
     mount();
     await openTab(/^Credential/);

@@ -159,6 +159,18 @@
     "tab_history": "Historique {{count}}",
     "key_set": "clé définie",
     "key_not_set": "clé non définie",
+    "api_url": {
+      "label": "URL de l'API",
+      "hint": "Vide, {{default}} est utilisé. Doit être joignable depuis le conteneur du backend, par exemple http://sub2api:8080/v1, et non une URL Tailscale réservée au navigateur.",
+      "invalid": "Saisissez une URL http:// ou https:// avec un hôte.",
+      "save": "Enregistrer l'URL",
+      "clear": "Effacer l'URL",
+      "default_value": "{{url}} (par défaut)",
+      "save_failed": "Impossible d'enregistrer l'URL. Rien n'a été modifié.",
+      "conflict": "Les paramètres ont changé ailleurs. Rechargez la page, puis réessayez.",
+      "saved": "URL enregistrée",
+      "cleared": "URL effacée"
+    },
     "credential": {
       "title": "Clé du fournisseur",
       "set": "Définie",

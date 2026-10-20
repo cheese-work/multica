@@ -159,6 +159,18 @@
     "tab_history": "History {{count}}",
     "key_set": "key set",
     "key_not_set": "key not set",
+    "api_url": {
+      "label": "API URL",
+      "hint": "Empty uses {{default}}. Must be reachable from the backend container, for example http://sub2api:8080/v1, not a browser-only Tailscale URL.",
+      "invalid": "Enter an http:// or https:// URL with a host.",
+      "save": "Save URL",
+      "clear": "Clear URL",
+      "default_value": "{{url}} (default)",
+      "save_failed": "Couldn't save the URL. Nothing was changed.",
+      "conflict": "Settings changed elsewhere. Reload the page, then try again.",
+      "saved": "URL saved",
+      "cleared": "URL cleared"
+    },
     "credential": {
       "title": "Provider key",
       "set": "Set",
