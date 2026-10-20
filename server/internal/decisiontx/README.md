@@ -175,7 +175,7 @@ worker finalization, delivery and source checks invoked by CHE-1550.
 The request core performs no post-commit side effect. The public request handler calls
 it before the inbox consumer or any subscriber/mention/realtime event.
 `POST /api/decisions` accepts `issue_id`, `session_id`, `ask`, and
-`escalation_class`. Only the running issue-task provenance admitted by the core
+`escalation_class`, plus the single-call fields described below. Only the running issue-task provenance admitted by the core
 can request a decision. `GET /api/decisions/{id}` and
 `GET /api/decisions?issue=<UUID-or-identifier>` require workspace membership and
 an existing issue in that workspace. They expose request metadata, never DM
@@ -364,3 +364,35 @@ issue status and the asking agent's archive state under the same locks.
 Member and unassigned recipients need no extra comment. Every dispatch and
 acknowledgement is atomic; deferral keeps the acknowledgement NULL. There is
 no automatic ping, new request, or server-created DM on these paths.
+
+## CHE-1890 single-call request
+
+`POST /api/decisions` with `for` (a person's user ID) and no pending intent
+for the calling task writes the ask without a separate intent comment. A
+pending intent (unconsumed, unclosed, unsealed) keeps the two-step path above,
+with `parent_id` refused. Otherwise `createSingleCallDecisionTx` locks, in the
+order workspace, lane session, thread, issue and NOWAIT calling task, and member.
+`authorizeDecisionTask` and `checkDecisionTarget` are the same checks the intent
+comment runs (`prepareDecisionIntent`), with the target taken from `for`, never
+from content. A still-pending intent of the task is closed as `superseded`.
+
+One transaction then creates the new intent (anchored on the ask comment's
+pre-allocated ID), its single target, the request, the ask comment, the DM
+message, and consumes and seals the intent. The ask comment carries
+`decision_request_id`, `decision_comment_kind = ask` and `decision_intent_id`;
+migration 617 already allows that combination. `locateDecisionRecordContext`
+resolves the request ID before the intent stamp, so a record under the ask binds
+and a record under an intent-only comment still refuses. The comment is
+`ask` plus `\n\n` plus the optional `footer`; the DM message is `ask` only.
+
+Lane choice without a window: an explicit `session_id` (must be a listed lane of
+the person) or `new_dm` wins; otherwise `defaultDecisionLane` picks the listed
+lane of the latest request to that person on the issue, then the newest listed
+lane whose messages mention the issue, then a new `Decisions: <agent>` DM.
+`ListDecisionLanes` already excludes channel and intro lanes, so a Briefs DM is
+never chosen.
+
+The ask comment is inserted directly and does not run `triggerTasksForComment`,
+so handoff lines in `footer` dispatch no agent; continuation stays with
+wakeups. One call asks one person, so each ask owns its intent and the shared
+`group_woken_at` group wake does not apply. Both are accepted limits.

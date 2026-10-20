@@ -21,13 +21,15 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		NewDM           bool   `json:"new_dm"`
 		For             string `json:"for"`
 		Ask             string `json:"ask"`
+		Footer          string `json:"footer"`
+		ParentID        string `json:"parent_id"`
 		EscalationClass string `json:"escalation_class"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8*maxCommentContentBytes)).Decode(&input); err != nil {
 		writeError(writer, http.StatusBadRequest, "invalid decision request")
 		return
 	}
-	if len(input.Ask) > maxCommentContentBytes {
+	if len(input.Ask)+len(input.Footer) > maxCommentContentBytes {
 		writeError(writer, http.StatusBadRequest, "ask is too long")
 		return
 	}
@@ -38,20 +40,24 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 	if _, ok := handler.requireWorkspaceMember(writer, request, uuidToString(issue.WorkspaceID), "workspace not found"); !ok {
 		return
 	}
-	if input.NewDM == (input.SessionID != "") || input.NewDM && input.For == "" || !input.NewDM && input.For != "" {
-		writeError(writer, http.StatusBadRequest, "choose session_id or new_dm with for")
+	if input.NewDM && (input.SessionID != "" || input.For == "") {
+		writeError(writer, http.StatusBadRequest, "new_dm takes for and no session_id")
 		return
 	}
-	var sessionID, humanID pgtype.UUID
-	if input.NewDM {
-		humanID, ok = parseUUIDOrBadRequest(writer, input.For, "for")
-	} else {
-		sessionID, ok = parseUUIDOrBadRequest(writer, input.SessionID, "session_id")
+	var sessionID, humanID, parentID pgtype.UUID
+	for _, field := range []struct {
+		value string
+		name  string
+		into  *pgtype.UUID
+	}{{input.SessionID, "session_id", &sessionID}, {input.For, "for", &humanID}, {input.ParentID, "parent_id", &parentID}} {
+		if field.value == "" {
+			continue
+		}
+		if *field.into, ok = parseUUIDOrBadRequest(writer, field.value, field.name); !ok {
+			return
+		}
 	}
-	if !ok {
-		return
-	}
-	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: input.Ask, EscalationClass: input.EscalationClass})
+	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: input.Ask, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass})
 	if err != nil {
 		writeDecisionError(writer, err, "decision request")
 		return

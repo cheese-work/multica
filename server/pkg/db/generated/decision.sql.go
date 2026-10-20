@@ -646,6 +646,33 @@ func (q *Queries) HoldDecisionAnswerForClass(ctx context.Context, arg HoldDecisi
 	return i, err
 }
 
+const latestDecisionRequestLane = `-- name: LatestDecisionRequestLane :one
+SELECT chat_session_id FROM decision_request
+WHERE workspace_id = $1 AND issue_id = $2
+  AND asking_agent_id = $3 AND human_user_id = $4
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+type LatestDecisionRequestLaneParams struct {
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	IssueID       pgtype.UUID `json:"issue_id"`
+	AskingAgentID pgtype.UUID `json:"asking_agent_id"`
+	HumanUserID   pgtype.UUID `json:"human_user_id"`
+}
+
+func (q *Queries) LatestDecisionRequestLane(ctx context.Context, arg LatestDecisionRequestLaneParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, latestDecisionRequestLane,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.AskingAgentID,
+		arg.HumanUserID,
+	)
+	var chat_session_id pgtype.UUID
+	err := row.Scan(&chat_session_id)
+	return chat_session_id, err
+}
+
 const listDecisionIntentTargets = `-- name: ListDecisionIntentTargets :many
 SELECT target.decision_intent_id, target.human_user_id, target.consumed_at, target.consumed_by_request_id FROM decision_intent_target target
 JOIN decision_intent intent ON intent.id = target.decision_intent_id
