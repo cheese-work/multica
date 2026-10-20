@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -216,5 +217,40 @@ func TestChatWakeupUnlinkingAnOldPullRequestIsNotANewResult(t *testing.T) {
 	dm.tick(t)
 	if got := dm.wakeupTasks(t, dm.sessionID); len(got) != 0 {
 		t.Fatalf("unlinking an old finished pull request fired the wakeup: %v", got)
+	}
+}
+
+// OCR-1874-6, residual: a rerun on the same head that starts and finishes
+// between two scheduler ticks is never seen running. Every rerun creates new
+// check runs with new job ids, so the details URLs are the durable identity of
+// a finished result.
+func setCheckRuns(t *testing.T, pr, head, conclusion string, jobIDs ...string) {
+	t.Helper()
+	dbfx.Exec(t, `DELETE FROM github_pull_request_check_run WHERE pr_id = $1`, pr)
+	for i, job := range jobIDs {
+		dbfx.Exec(t, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion, details_url)
+			VALUES ($1, $2, $3, $4, 'completed', $5, $6)`, pr, head, i, "job-"+strconv.Itoa(i), conclusion, "https://github.com/o/r/actions/runs/1/job/"+job)
+	}
+	dbfx.Cleanup(t, `DELETE FROM github_pull_request_check_run WHERE pr_id = $1`, pr)
+}
+
+func TestChatWakeupPullRequestChecksSeeARerunThatFinishedBetweenPolls(t *testing.T) {
+	dm := newWakeupDM(t)
+	testHandler.TaskService.PRSnapshotsEnabled = true
+	t.Cleanup(func() { testHandler.TaskService.PRSnapshotsEnabled = false })
+	issue := dbfx.Issue(t, "Fast rerun issue")
+	pr := linkedPullRequest(t, issue, "aaa", "SUCCESS")
+	setCheckRuns(t, pr, "aaa", "success", "111", "112")
+	dm.createWithCondition(t, map[string]any{"issue": issue, "pr": "checks_finished"}).Want(http.StatusCreated)
+
+	dm.tick(t)
+	if got := dm.wakeupTasks(t, dm.sessionID); len(got) != 0 {
+		t.Fatalf("fired on the result that existed when the wakeup was set: %v", got)
+	}
+	// The whole rerun happens between two ticks: new job ids, same head, same SUCCESS.
+	setCheckRuns(t, pr, "aaa", "success", "211", "212")
+	dm.tick(t)
+	if got := dm.wakeupTasks(t, dm.sessionID); len(got) != 1 {
+		t.Fatalf("%d wakeup tasks after a same-head rerun finished between ticks, want 1", len(got))
 	}
 }

@@ -177,18 +177,27 @@ func (q *Queries) GetChatWakeupNewComment(ctx context.Context, arg GetChatWakeup
 }
 
 const listChatWakeupLinkedPullRequests = `-- name: ListChatWakeupLinkedPullRequests :many
-SELECT pr.pr_number, COALESCE(pr.snapshot_head_sha, '')::text AS head_sha, COALESCE(pr.checks_rollup_state, '')::text AS checks
+SELECT pr.pr_number, COALESCE(pr.snapshot_head_sha, '')::text AS head_sha, COALESCE(pr.checks_rollup_state, '')::text AS checks,
+       COALESCE((
+           SELECT md5(string_agg(cr.name || '|' || cr.status || '|' || COALESCE(cr.conclusion, '') || '|' || COALESCE(cr.details_url, ''), E'\n' ORDER BY cr.ordinal))
+           FROM github_pull_request_check_run cr
+           WHERE cr.pr_id = pr.id AND cr.head_sha = pr.snapshot_head_sha
+       ), '')::text AS checks_identity
 FROM github_pull_request pr
 JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
 WHERE ipr.issue_id = $1
 `
 
 type ListChatWakeupLinkedPullRequestsRow struct {
-	PrNumber int32  `json:"pr_number"`
-	HeadSha  string `json:"head_sha"`
-	Checks   string `json:"checks"`
+	PrNumber       int32  `json:"pr_number"`
+	HeadSha        string `json:"head_sha"`
+	Checks         string `json:"checks"`
+	ChecksIdentity string `json:"checks_identity"`
 }
 
+// checks_identity names the finished result: a rerun creates new check runs with
+// new job ids in their details URLs, so the identity changes even when the head
+// and the rollup state do not, and even if no poll saw the run in progress.
 func (q *Queries) ListChatWakeupLinkedPullRequests(ctx context.Context, issueID pgtype.UUID) ([]ListChatWakeupLinkedPullRequestsRow, error) {
 	rows, err := q.db.Query(ctx, listChatWakeupLinkedPullRequests, issueID)
 	if err != nil {
@@ -198,7 +207,12 @@ func (q *Queries) ListChatWakeupLinkedPullRequests(ctx context.Context, issueID 
 	items := []ListChatWakeupLinkedPullRequestsRow{}
 	for rows.Next() {
 		var i ListChatWakeupLinkedPullRequestsRow
-		if err := rows.Scan(&i.PrNumber, &i.HeadSha, &i.Checks); err != nil {
+		if err := rows.Scan(
+			&i.PrNumber,
+			&i.HeadSha,
+			&i.Checks,
+			&i.ChecksIdentity,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
