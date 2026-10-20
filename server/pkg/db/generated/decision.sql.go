@@ -1053,6 +1053,62 @@ func (q *Queries) ListDecisionSourceChecks(ctx context.Context, batchSize int32)
 	return items, nil
 }
 
+const listOpenDecisionRequestsBeforeMessage = `-- name: ListOpenDecisionRequestsBeforeMessage :many
+SELECT request.id, request.issue_id, request.issue_comment_id, request.ask,
+    COALESCE(workspace.issue_prefix || '-' || issue.number::text, request.issue_id::text)::text AS issue_key
+FROM decision_request request
+JOIN chat_message ping ON ping.id = request.ping_message_id AND ping.chat_session_id = request.chat_session_id
+LEFT JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
+LEFT JOIN workspace ON workspace.id = request.workspace_id
+WHERE request.workspace_id = $1 AND request.chat_session_id = $2
+  AND request.status = 'open' AND request.origin = 'asked'
+  AND ping.created_at < $3
+ORDER BY ping.created_at, request.id
+LIMIT 5
+`
+
+type ListOpenDecisionRequestsBeforeMessageParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	SessionID   pgtype.UUID        `json:"session_id"`
+	Before      pgtype.Timestamptz `json:"before"`
+}
+
+type ListOpenDecisionRequestsBeforeMessageRow struct {
+	ID             pgtype.UUID `json:"id"`
+	IssueID        pgtype.UUID `json:"issue_id"`
+	IssueCommentID pgtype.UUID `json:"issue_comment_id"`
+	Ask            string      `json:"ask"`
+	IssueKey       string      `json:"issue_key"`
+}
+
+// Open asked requests in a DM whose ping precedes the given message: what a
+// bare reply in that DM is answering.
+func (q *Queries) ListOpenDecisionRequestsBeforeMessage(ctx context.Context, arg ListOpenDecisionRequestsBeforeMessageParams) ([]ListOpenDecisionRequestsBeforeMessageRow, error) {
+	rows, err := q.db.Query(ctx, listOpenDecisionRequestsBeforeMessage, arg.WorkspaceID, arg.SessionID, arg.Before)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListOpenDecisionRequestsBeforeMessageRow{}
+	for rows.Next() {
+		var i ListOpenDecisionRequestsBeforeMessageRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.IssueID,
+			&i.IssueCommentID,
+			&i.Ask,
+			&i.IssueKey,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockDecisionAnswer = `-- name: LockDecisionAnswer :one
 SELECT answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at FROM decision_answer answer
 JOIN decision_request request ON request.id = answer.decision_request_id

@@ -362,3 +362,18 @@ WHERE intent.sealed_at IS NULL AND (
 )
 ORDER BY intent.id
 LIMIT LEAST(GREATEST(sqlc.arg('batch_size')::int, 0), 100);
+
+-- name: ListOpenDecisionRequestsBeforeMessage :many
+-- Open asked requests in a DM whose ping precedes the given message: what a
+-- bare reply in that DM is answering.
+SELECT request.id, request.issue_id, request.issue_comment_id, request.ask,
+    COALESCE(workspace.issue_prefix || '-' || issue.number::text, request.issue_id::text)::text AS issue_key
+FROM decision_request request
+JOIN chat_message ping ON ping.id = request.ping_message_id AND ping.chat_session_id = request.chat_session_id
+LEFT JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
+LEFT JOIN workspace ON workspace.id = request.workspace_id
+WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.chat_session_id = sqlc.arg('session_id')
+  AND request.status = 'open' AND request.origin = 'asked'
+  AND ping.created_at < sqlc.arg('before')
+ORDER BY ping.created_at, request.id
+LIMIT 5;

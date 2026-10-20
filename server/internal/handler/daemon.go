@@ -3379,6 +3379,17 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}
 		}
 		resp.ChatMessage = strings.Join(parts, "\n\n")
+		if resp.ChatChannelType == "" && !autoCompact && len(unanswered) > 0 {
+			decisionContext, err := chatDecisionContext(r.Context(), h.Queries, cs.WorkspaceID, cs.ID, unanswered[0].CreatedAt)
+			if err != nil {
+				slog.Error("chat claim: load open decision requests failed; preserving task for redelivery",
+					"task_id", uuidToString(task.ID), "chat_session_id", uuidToString(cs.ID), "error", err)
+				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+					outcome: "error_chat_decision_context", status: http.StatusInternalServerError, message: "failed to load decision context",
+				}
+			}
+			resp.ChatDecisionContext = decisionContext
+		}
 		if autoCompact {
 			resp.ChatMessage = "/compact"
 		}
