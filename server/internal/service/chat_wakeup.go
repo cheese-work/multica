@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -31,7 +33,9 @@ const (
 	WakeupTaskKind = "wakeup"
 
 	chatWakeupTickBatch = 50
-	chatWakeupMaxHops   = 5
+	// chatWakeupConditionBudget bounds the condition pass of one tick; the job's run timeout is 45 s.
+	chatWakeupConditionBudget = 10 * time.Second
+	chatWakeupMaxHops         = 5
 )
 
 var (
@@ -62,15 +66,19 @@ type ChatWakeupCommenter struct {
 }
 
 // chatWakeupCondition is the stored form. Check is a normalized
-// WakeupCondition, so the issue-wakeup evaluators decide status and pull
-// request facts. Baseline is the pull request fingerprint at creation: finished
-// checks that already existed belong to an older push.
+// WakeupCondition, so the issue-wakeup evaluators decide status and merged
+// facts. A checks_finished fact needs a NEW finished result, so it is tracked
+// per pull request: Baseline is each linked pull request's "head:state" at
+// creation (finished checks that already existed belong to an older push), and
+// Armed lists the pull requests seen with checks still running since, so a
+// same-head rerun counts when it finishes.
 type chatWakeupCondition struct {
 	IssueID    string               `json:"issue_id"`
 	Identifier string               `json:"identifier"`
 	Check      json.RawMessage      `json:"check,omitempty"`
 	CommentBy  *ChatWakeupCommenter `json:"comment_by,omitempty"`
-	Baseline   string               `json:"baseline,omitempty"`
+	Baseline   map[string]string    `json:"baseline,omitempty"`
+	Armed      []string             `json:"armed,omitempty"`
 }
 
 // Create validates and stores a wakeup for the DM, under the session lock so
@@ -173,9 +181,18 @@ func (s *ChatWakeupService) buildCondition(ctx context.Context, workspaceID pgty
 			return nil, err
 		}
 		if in.PR == "checks_finished" {
-			// Best effort: a pull request that is not linked yet has no baseline.
-			if _, fingerprint, _, err := (&IssueWakeupService{Tasks: s.Tasks}).evaluateCondition(ctx, tx, s.Tasks.Queries.WithTx(tx), db.IssueWakeup{IssueID: issue.ID, WorkspaceID: workspaceID, Condition: stored.Check}); err == nil {
-				stored.Baseline = fingerprint
+			rows, err := s.Tasks.Queries.ListChatWakeupLinkedPullRequests(ctx, issue.ID)
+			if err != nil {
+				return nil, err
+			}
+			stored.Baseline = map[string]string{}
+			for _, row := range rows {
+				key := strconv.Itoa(int(row.PrNumber))
+				if checksTerminal(row.HeadSha, row.Checks) {
+					stored.Baseline[key] = row.HeadSha + ":" + row.Checks
+				} else if row.HeadSha != "" {
+					stored.Armed = append(stored.Armed, key)
+				}
 			}
 		}
 	}
@@ -212,12 +229,19 @@ func (s *ChatWakeupService) conditionMet(ctx context.Context, w db.ChatWakeup) (
 		}
 		return true, fmt.Sprintf("a new comment (%s) by the %s you named", util.UUIDToString(commentID), c.CommentBy.Type), nil
 	}
+	var check WakeupCondition
+	if err := json.Unmarshal(c.Check, &check); err != nil {
+		return false, "", err
+	}
+	if check.Type == "pull_request" && check.Event == "checks_finished" {
+		return s.checksFinished(ctx, w, c, issueID)
+	}
 	tx, err := s.Tasks.TxStarter.Begin(ctx)
 	if err != nil {
 		return false, "", err
 	}
 	defer tx.Rollback(ctx)
-	met, fingerprint, observed, err := (&IssueWakeupService{Tasks: s.Tasks}).evaluateCondition(ctx, tx, s.Tasks.Queries.WithTx(tx),
+	met, _, observed, err := (&IssueWakeupService{Tasks: s.Tasks}).evaluateCondition(ctx, tx, s.Tasks.Queries.WithTx(tx),
 		db.IssueWakeup{IssueID: issueID, WorkspaceID: w.WorkspaceID, Condition: c.Check})
 	if err != nil {
 		if conditionDiagnostic(err) {
@@ -225,11 +249,64 @@ func (s *ChatWakeupService) conditionMet(ctx context.Context, w db.ChatWakeup) (
 		}
 		return false, "", err
 	}
-	if !met || (c.Baseline != "" && fingerprint == c.Baseline) {
+	if !met {
 		return false, "", nil
 	}
 	facts, _ := json.Marshal(observed)
 	return true, string(bytes.TrimSpace(facts)), nil
+}
+
+func checksTerminal(head, state string) bool {
+	return head != "" && (state == "SUCCESS" || state == "FAILURE" || state == "ERROR")
+}
+
+// checksFinished holds when a linked pull request has a finished result that is
+// new since the wakeup was set: a different head or result than the baseline, a
+// pull request linked since, or a rerun seen running and now finished. Removing
+// a link is never a new result. A rerun that starts and finishes between two
+// ticks is missed (ponytail: needs a completion timestamp on the snapshot).
+func (s *ChatWakeupService) checksFinished(ctx context.Context, w db.ChatWakeup, c chatWakeupCondition, issueID pgtype.UUID) (bool, string, error) {
+	if !s.Tasks.PRSnapshotsEnabled {
+		return false, "", nil
+	}
+	rows, err := s.Tasks.Queries.ListChatWakeupLinkedPullRequests(ctx, issueID)
+	if err != nil {
+		return false, "", err
+	}
+	armed := map[string]bool{}
+	for _, key := range c.Armed {
+		armed[key] = true
+	}
+	armedBefore := len(armed)
+	var fresh []map[string]any
+	for _, row := range rows {
+		key := strconv.Itoa(int(row.PrNumber))
+		if !checksTerminal(row.HeadSha, row.Checks) {
+			if row.HeadSha != "" {
+				armed[key] = true
+			}
+			continue
+		}
+		if base, known := c.Baseline[key]; !known || base != row.HeadSha+":"+row.Checks || armed[key] {
+			fresh = append(fresh, map[string]any{"number": row.PrNumber, "head_sha": row.HeadSha, "checks": strings.ToLower(row.Checks)})
+		}
+	}
+	if len(fresh) > 0 {
+		facts, _ := json.Marshal(map[string]any{"pull_requests": fresh})
+		return true, string(facts), nil
+	}
+	if len(armed) != armedBefore {
+		c.Armed = c.Armed[:0]
+		for key := range armed {
+			c.Armed = append(c.Armed, key)
+		}
+		sort.Strings(c.Armed)
+		updated, _ := json.Marshal(c)
+		if err := s.Tasks.Queries.UpdateChatWakeupCondition(ctx, db.UpdateChatWakeupConditionParams{ID: w.ID, Condition: updated}); err != nil {
+			return false, "", err
+		}
+	}
+	return false, "", nil
 }
 
 // channelBound is true when an external channel delivers this DM's replies.
@@ -247,10 +324,6 @@ func (s *ChatWakeupService) Tick(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list due chat wakeups: %w", err)
 	}
-	waiting, err := q.ListWaitingConditionalChatWakeups(ctx, chatWakeupTickBatch)
-	if err != nil {
-		return fmt.Errorf("list waiting chat wakeups: %w", err)
-	}
 	for _, w := range due {
 		// At the deadline the condition still gets one look, so the turn says
 		// which of the two ended the wait.
@@ -263,14 +336,31 @@ func (s *ChatWakeupService) Tick(ctx context.Context) error {
 		}
 		s.fireLogged(ctx, w, reason)
 	}
-	for _, w := range waiting {
-		met, observed, err := s.conditionMet(ctx, w)
+	// Page through every waiting condition, least recently checked first, within
+	// a time budget. A tick that runs out of budget resumes where it stopped on
+	// the next one, because each check stamps the wakeup.
+	var seen []pgtype.UUID
+	budget := time.Now().Add(chatWakeupConditionBudget)
+	for time.Now().Before(budget) {
+		waiting, err := q.ListWaitingConditionalChatWakeups(ctx, db.ListWaitingConditionalChatWakeupsParams{Seen: seen, Batch: chatWakeupTickBatch})
 		if err != nil {
-			slog.Warn("chat wakeup condition not evaluated", "wakeup_id", util.UUIDToString(w.ID), "error", err)
-			continue
+			return fmt.Errorf("list waiting chat wakeups: %w", err)
 		}
-		if met {
-			s.fireLogged(ctx, w, conditionReason(w, observed))
+		if len(waiting) == 0 {
+			break
+		}
+		for _, w := range waiting {
+			seen = append(seen, w.ID)
+			met, observed, err := s.conditionMet(ctx, w)
+			if err != nil {
+				slog.Warn("chat wakeup condition not evaluated", "wakeup_id", util.UUIDToString(w.ID), "error", err)
+			}
+			if err := q.TouchChatWakeupConditionChecked(ctx, w.ID); err != nil {
+				slog.Warn("chat wakeup condition check not stamped", "wakeup_id", util.UUIDToString(w.ID), "error", err)
+			}
+			if err == nil && met {
+				s.fireLogged(ctx, w, conditionReason(w, observed))
+			}
 		}
 	}
 	return nil

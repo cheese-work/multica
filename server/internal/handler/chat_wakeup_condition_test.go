@@ -138,3 +138,83 @@ func TestChatWakeupConditionValidation(t *testing.T) {
 		t.Fatalf("response does not carry the resolved issue id: %s", body)
 	}
 }
+
+// Regressions for OCR-1874-5 and OCR-1874-6.
+
+func TestChatWakeupEvaluatesEveryWaitingConditionNotOnlyTheFirstBatch(t *testing.T) {
+	dm := newWakeupDM(t)
+	unmet := dbfx.Issue(t, "Never done")
+	satisfied := dbfx.Issue(t, "Already done", testutil.Cols{"status": "done"})
+	var identifier string
+	dbfx.QueryRow(t, `SELECT ws.issue_prefix || '-' || i.number FROM issue i JOIN workspace ws ON ws.id = i.workspace_id WHERE i.id = $1`, unmet).Scan(&identifier)
+	// 50 unmet conditions with earlier deadlines than the satisfied one.
+	for i := 0; i < 50; i++ {
+		dbfx.Exec(t, `INSERT INTO chat_wakeup (workspace_id, chat_session_id, agent_id, created_by, instruction, fire_at, condition)
+			VALUES ($1, $2, $3, $4, 'unmet', now() + interval '30 minutes' + make_interval(secs => $5), $6::jsonb)`,
+			testWorkspaceID, dm.sessionID, dm.agentID, testUserID, i,
+			`{"issue_id":"`+unmet+`","identifier":"`+identifier+`","check":{"type":"issue_field","field":"status","value":"done"}}`)
+	}
+	// The satisfied one lives in another DM, so the per-DM cap does not apply.
+	other := dm.otherDM(t)
+	var w wakeupJSON
+	other.createWithCondition(t, map[string]any{"issue": satisfied, "status": "done"}).Want(http.StatusCreated).JSON(&w)
+
+	dm.tick(t)
+	if got := other.wakeupTasks(t, other.sessionID); len(got) != 1 {
+		t.Fatalf("%d wakeup tasks after one tick, want the satisfied 51st condition to fire", len(got))
+	}
+	if status, _ := wakeupStatus(t, w.ID); status != "fired" {
+		t.Fatalf("satisfied wakeup status = %s, want fired", status)
+	}
+}
+
+func linkedPullRequest(t *testing.T, issue, head, checks string) string {
+	t.Helper()
+	pr := dbfx.Insert(t, "github_pull_request", testutil.Cols{
+		"workspace_id": testWorkspaceID, "installation_id": 1, "repo_owner": "multica-ai", "repo_name": "wakeup-test",
+		"pr_number": time.Now().UnixNano() % 1000000, "title": "PR", "state": "open", "html_url": "https://example.test/pr",
+		"pr_created_at": testutil.Raw("now()"), "pr_updated_at": testutil.Raw("now()"),
+		"snapshot_head_sha": head, "checks_rollup_state": checks,
+	})
+	dbfx.Exec(t, `INSERT INTO issue_pull_request(issue_id, pull_request_id) VALUES ($1, $2)`, issue, pr)
+	dbfx.Cleanup(t, `DELETE FROM issue_pull_request WHERE pull_request_id = $1`, pr)
+	return pr
+}
+
+func TestChatWakeupPullRequestChecksSeeARerunOnTheSameHead(t *testing.T) {
+	dm := newWakeupDM(t)
+	testHandler.TaskService.PRSnapshotsEnabled = true
+	t.Cleanup(func() { testHandler.TaskService.PRSnapshotsEnabled = false })
+	issue := dbfx.Issue(t, "Rerun issue")
+	pr := linkedPullRequest(t, issue, "aaa", "SUCCESS")
+	dm.createWithCondition(t, map[string]any{"issue": issue, "pr": "checks_finished"}).Want(http.StatusCreated)
+
+	dm.tick(t)
+	dbfx.Exec(t, `UPDATE github_pull_request SET checks_rollup_state = 'PENDING' WHERE id = $1`, pr)
+	dm.tick(t)
+	if got := dm.wakeupTasks(t, dm.sessionID); len(got) != 0 {
+		t.Fatalf("fired while the rerun was still pending: %v", got)
+	}
+	dbfx.Exec(t, `UPDATE github_pull_request SET checks_rollup_state = 'SUCCESS' WHERE id = $1`, pr)
+	dm.tick(t)
+	if got := dm.wakeupTasks(t, dm.sessionID); len(got) != 1 {
+		t.Fatalf("%d wakeup tasks after the same-head rerun finished, want 1", len(got))
+	}
+}
+
+func TestChatWakeupUnlinkingAnOldPullRequestIsNotANewResult(t *testing.T) {
+	dm := newWakeupDM(t)
+	testHandler.TaskService.PRSnapshotsEnabled = true
+	t.Cleanup(func() { testHandler.TaskService.PRSnapshotsEnabled = false })
+	issue := dbfx.Issue(t, "Unlink issue")
+	first := linkedPullRequest(t, issue, "aaa", "SUCCESS")
+	linkedPullRequest(t, issue, "bbb", "FAILURE")
+	dm.createWithCondition(t, map[string]any{"issue": issue, "pr": "checks_finished"}).Want(http.StatusCreated)
+
+	dm.tick(t)
+	dbfx.Exec(t, `DELETE FROM issue_pull_request WHERE pull_request_id = $1`, first)
+	dm.tick(t)
+	if got := dm.wakeupTasks(t, dm.sessionID); len(got) != 0 {
+		t.Fatalf("unlinking an old finished pull request fired the wakeup: %v", got)
+	}
+}
