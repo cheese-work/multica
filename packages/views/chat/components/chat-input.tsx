@@ -33,7 +33,7 @@ import { ProjectPicker } from "../../projects/components/project-picker";
 import { ClearablePillButton } from "../../common/pill-button";
 import { useT } from "../../i18n";
 import { useCommentDraftStore } from "@multica/core/issues/stores";
-import { EMPTY_REPLY_ANNOTATIONS, composeAnnotatedReply, hasReplyIntent } from "@multica/core/drafts/reply-annotation";
+import { EMPTY_REPLY_ANNOTATIONS, composeAnnotatedReply, hasReplyIntent, type ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 import { ChatAnnotationChip, type ChatInputAnnotations } from "./chat-annotations";
 
 const logger = createLogger("chat.ui");
@@ -164,6 +164,21 @@ interface ChatInputProps {
   editorKeyOverride?: string;
 }
 
+/**
+ * The Markdown a DM send carries, and the comments folded into it as sent
+ * (id and note). A slash command is not a message about a reply: it is left
+ * alone and the comments stay.
+ */
+function prepareDmSend(raw: string, saved: readonly ReplyAnnotation[]): { content: string; sent: { id: string; note: string }[] } {
+  const text = raw.replace(/(\n\s*)+$/, "").trim();
+  if (!saved.length || /^\/\S/.test(text)) return { content: text, sent: [] };
+  if (!hasReplyIntent(text, saved)) return { content: "", sent: [] };
+  return {
+    content: composeAnnotatedReply(text, saved, { plainQuotes: true }),
+    sent: saved.filter((a) => a.note.trim()).map(({ id, note }) => ({ id, note })),
+  };
+}
+
 export function ChatInput({
   annotationScope,
   onSend,
@@ -258,11 +273,6 @@ export function ChatInput({
   // reads the live editor and bails when it is empty.
   const annotationKey = annotationScope?.draftKey;
   const annotations = useCommentDraftStore((s) => (annotationKey ? s.getAnnotations(annotationKey) : EMPTY_REPLY_ANNOTATIONS));
-  // The comments folded into the message being sent, with the note as sent. On commit only
-  // a comment still unchanged is cleared: a note edited, or a comment added or removed, while
-  // the send was pending is newer work (the marker note box, the list's Edit and Remove all
-  // write to the draft store).
-  const sentAnnotationsRef = useRef<{ id: string; note: string }[]>([]);
   const hasNothingToSend = isEmpty && !inputDraft.trim() && !annotations.some((a) => a.note.trim());
   const appliedRestoreIdRef = useRef<string | null>(null);
   const appliedConversationStarterIdRef = useRef<number | null>(null);
@@ -484,22 +494,20 @@ export function ChatInput({
     editorRef,
     uploadGate: gate,
     containerRef: composerRef,
-    normalize: (raw) => {
-      const text = raw.replace(/(\n\s*)+$/, "").trim();
-      const saved = annotationKey ? useCommentDraftStore.getState().getAnnotations(annotationKey) : EMPTY_REPLY_ANNOTATIONS;
-      sentAnnotationsRef.current = [];
-      // A slash command is not a message about a reply: leave it and the comments alone.
-      if (!saved.length || /^\/\S/.test(text)) return text;
-      if (!hasReplyIntent(text, saved)) return "";
-      sentAnnotationsRef.current = saved.filter((a) => a.note.trim()).map(({ id, note }) => ({ id, note }));
-      return composeAnnotatedReply(text, saved, { plainQuotes: true });
-    },
+    // Pure: it runs before the single-flight guard, so a refused second submit
+    // must not leave anything behind that a send already in flight could read.
+    normalize: (raw) => prepareDmSend(raw, annotationKey ? useCommentDraftStore.getState().getAnnotations(annotationKey) : EMPTY_REPLY_ANNOTATIONS).content,
     // Chat keeps the caret in the box after a send (the next turn is typed in
     // the same place), except when the commit left the editor alone — see
     // `editorScrubbedRef`.
     afterAccepted: () => (editorScrubbedRef.current ? "refocus" : "none"),
-    onSubmit: async (content: string): Promise<boolean> => {
+    onSubmit: async (content: string, raw: string): Promise<boolean> => {
       editorScrubbedRef.current = false;
+      // Bound to THIS admitted send: its draft key and the comments exactly as sent,
+      // taken in the same tick `normalize` composed them. Nothing shared is read at commit.
+      const annotationKeyAtSend = annotationKey;
+      const prepared = prepareDmSend(raw, annotationKeyAtSend ? useCommentDraftStore.getState().getAnnotations(annotationKeyAtSend) : EMPTY_REPLY_ANNOTATIONS);
+      const sentAnnotations = prepared.content === content ? prepared.sent : [];
       // These states disable the SubmitButton, but Mod+Enter bypasses it — so a
       // read-only or busy composer must still refuse the keyboard path.
       const fork = onFork ? parseForkCommand(content) : null;
@@ -576,13 +584,15 @@ export function ChatInput({
         // is on its way, but a draft replaced since the snapshot is NEWER work
         // and must not resurface as collateral.
         if (untouched) clearInputDraft(keyAtSend);
-        if (annotationKey) {
+        // Clear a comment only while its note is still the one that was sent. A note edited,
+        // or a comment added or removed, while the send was pending is newer work (the marker
+        // note box and the list's Edit and Remove all write to the draft store).
+        if (annotationKeyAtSend) {
           const store = useCommentDraftStore.getState();
-          const current = store.getAnnotations(annotationKey);
-          for (const sent of sentAnnotationsRef.current) {
-            if (current.find((a) => a.id === sent.id)?.note === sent.note) store.removeAnnotation(annotationKey, sent.id);
+          const current = store.getAnnotations(annotationKeyAtSend);
+          for (const sent of sentAnnotations) {
+            if (current.find((a) => a.id === sent.id)?.note === sent.note) store.removeAnnotation(annotationKeyAtSend, sent.id);
           }
-          sentAnnotationsRef.current = [];
         }
         for (const key of options?.extraDraftKeys ?? []) {
           if (key !== keyAtSend) clearInputDraft(key);
@@ -652,7 +662,9 @@ export function ChatInput({
     if (
       editorRef.current?.getMarkdown().trim() ||
       (draft.inputDrafts[draftKey] ?? "").trim() ||
-      (draft.inputDraftAttachments[draftKey]?.length ?? 0) > 0
+      (draft.inputDraftAttachments[draftKey]?.length ?? 0) > 0 ||
+      // Pending comments are drafted work too: a starter must not consume them.
+      (annotationKey && useCommentDraftStore.getState().getAnnotations(annotationKey).length > 0)
     ) {
       toast.info(t(($) => $.conversation_starters.draft_in_progress));
       return;
@@ -663,6 +675,7 @@ export function ChatInput({
     void submit();
   }, [
     allowSubmitWhileRunning,
+    annotationKey,
     commitDraft,
     conversationStarterRequest,
     disabled,
