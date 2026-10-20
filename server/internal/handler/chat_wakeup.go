@@ -149,7 +149,7 @@ func (h *Handler) CancelChatWakeup(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	wakeup, err := h.Queries.CancelChatWakeup(r.Context(), db.CancelChatWakeupParams{ID: id, ChatSessionID: task.ChatSessionID})
+	wakeup, err := h.Queries.CancelChatWakeup(r.Context(), db.CancelChatWakeupParams{WakeupID: id, ChatSessionID: task.ChatSessionID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "no pending wakeup with this id in this DM")
 		return
