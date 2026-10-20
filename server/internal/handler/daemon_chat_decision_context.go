@@ -18,7 +18,11 @@ func chatDecisionContext(ctx context.Context, queries *db.Queries, workspaceID, 
 		return "", err
 	}
 	var b strings.Builder
-	b.WriteString("Open decision request(s) in this DM, asked before the message below. A short or subject-less reply answers the earliest one:\n")
+	if len(requests) == 1 {
+		b.WriteString("One open decision request in this DM, asked before the message below. A short or subject-less reply answers it.\n")
+	} else {
+		b.WriteString("Several decision requests are open in this DM, asked before the message below. Age does not say which one a short reply answers. Do not guess. Bind the reply only if it names its subject or `multica chat history --output json` shows which ask it follows; otherwise ask the human which request they mean and record nothing yet.\n")
+	}
 	for _, r := range requests {
 		issueID, askID := uuidToString(r.IssueID), uuidToString(r.IssueCommentID)
 		fmt.Fprintf(&b, "- Request %s on %s (issue %s), ask comment %s: %q\n  Record the answer: `multica issue comment add %s --decision-record --message <id> --parent %s`\n", uuidToString(r.ID), r.IssueKey, issueID, askID, r.Ask, issueID, askID)
