@@ -2276,3 +2276,18 @@ func TestPromptCarriesJoinedWakeups(t *testing.T) {
 		t.Errorf("prompt without joined wakeups mentions them:\n%s", out)
 	}
 }
+
+// The claim's chat_decision_context must reach the chat prompt ahead of the
+// user's reply, so a bare "A" keeps its subject (CHE-1868). Built from the wire
+// form because that is the contract between server and daemon.
+func TestBuildChatPromptCarriesDecisionContext(t *testing.T) {
+	var task Task
+	if err := json.Unmarshal([]byte(`{"chat_session_id":"s","chat_message":"A","chat_decision_context":"Open decision request R1 on CHE-1."}`), &task); err != nil {
+		t.Fatal(err)
+	}
+	out := buildChatPrompt(task)
+	ctxAt, msgAt := strings.Index(out, "Open decision request R1 on CHE-1."), strings.Index(out, "User message:")
+	if ctxAt < 0 || msgAt < 0 || ctxAt > msgAt {
+		t.Fatalf("decision context must precede the user message:\n%s", out)
+	}
+}
