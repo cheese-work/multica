@@ -179,25 +179,39 @@ func (q *Queries) GetChatWakeupNewComment(ctx context.Context, arg GetChatWakeup
 const listChatWakeupLinkedPullRequests = `-- name: ListChatWakeupLinkedPullRequests :many
 SELECT pr.pr_number, COALESCE(pr.snapshot_head_sha, '')::text AS head_sha, COALESCE(pr.checks_rollup_state, '')::text AS checks,
        COALESCE((
-           SELECT md5(string_agg(cr.name || '|' || cr.status || '|' || COALESCE(cr.conclusion, '') || '|' || COALESCE(cr.details_url, ''), E'\n' ORDER BY cr.ordinal))
-           FROM github_pull_request_check_run cr
-           WHERE cr.pr_id = pr.id AND cr.head_sha = pr.snapshot_head_sha
-       ), '')::text AS checks_identity
+           SELECT md5(string_agg(x.t, E'\n' ORDER BY x.t))
+           FROM (
+               SELECT cr.name || '|' || cr.status || '|' || COALESCE(cr.conclusion, '') || '|' || COALESCE(cr.details_url, '') || '|'
+                      || COALESCE(to_char(cr.finished_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US'), '') AS t
+               FROM github_pull_request_check_run cr
+               WHERE cr.pr_id = pr.id AND cr.head_sha = pr.snapshot_head_sha
+           ) x
+       ), '')::text AS checks_identity,
+       EXISTS (
+           SELECT 1 FROM github_pull_request_check_run cr
+           WHERE cr.pr_id = pr.id AND cr.head_sha = pr.snapshot_head_sha AND cr.status = 'completed' AND cr.finished_at IS NULL
+       ) AS checks_identity_partial
 FROM github_pull_request pr
 JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
 WHERE ipr.issue_id = $1
 `
 
 type ListChatWakeupLinkedPullRequestsRow struct {
-	PrNumber       int32  `json:"pr_number"`
-	HeadSha        string `json:"head_sha"`
-	Checks         string `json:"checks"`
-	ChecksIdentity string `json:"checks_identity"`
+	PrNumber              int32  `json:"pr_number"`
+	HeadSha               string `json:"head_sha"`
+	Checks                string `json:"checks"`
+	ChecksIdentity        string `json:"checks_identity"`
+	ChecksIdentityPartial bool   `json:"checks_identity_partial"`
 }
 
-// checks_identity names the finished result: a rerun creates new check runs with
-// new job ids in their details URLs, so the identity changes even when the head
-// and the rollup state do not, and even if no poll saw the run in progress.
+// checks_identity names the finished result: a digest of every check run's
+// name, state, details URL and finish time, in a fixed order that does not
+// depend on the order GitHub returned them in. A rerun creates new check runs
+// (new job ids, new completedAt), and a commit status posted again carries a new
+// creation time, so the identity changes even when the head and the rollup state
+// do not, and even if no poll saw the run in progress. checks_identity_partial is
+// true while a finished run has no finish time yet (rows written before the
+// column existed, until the next snapshot refresh).
 func (q *Queries) ListChatWakeupLinkedPullRequests(ctx context.Context, issueID pgtype.UUID) ([]ListChatWakeupLinkedPullRequestsRow, error) {
 	rows, err := q.db.Query(ctx, listChatWakeupLinkedPullRequests, issueID)
 	if err != nil {
@@ -212,6 +226,7 @@ func (q *Queries) ListChatWakeupLinkedPullRequests(ctx context.Context, issueID 
 			&i.HeadSha,
 			&i.Checks,
 			&i.ChecksIdentity,
+			&i.ChecksIdentityPartial,
 		); err != nil {
 			return nil, err
 		}

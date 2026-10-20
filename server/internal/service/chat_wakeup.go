@@ -188,7 +188,7 @@ func (s *ChatWakeupService) buildCondition(ctx context.Context, workspaceID pgty
 			for _, row := range rows {
 				key := strconv.Itoa(int(row.PrNumber))
 				if checksTerminal(row.HeadSha, row.Checks) {
-					stored.Baseline[key] = row.HeadSha + ":" + row.Checks + ":" + row.ChecksIdentity
+					stored.Baseline[key] = checksResultKey(row.HeadSha, row.Checks, row.ChecksIdentity, row.ChecksIdentityPartial)
 				} else if row.HeadSha != "" {
 					stored.Armed = append(stored.Armed, key)
 				}
@@ -255,6 +255,30 @@ func (s *ChatWakeupService) conditionMet(ctx context.Context, w db.ChatWakeup) (
 	return true, string(bytes.TrimSpace(facts)), nil
 }
 
+// checksResultKey names one finished result of a pull request. A trailing "*"
+// marks a result whose finish times are not all known yet.
+func checksResultKey(head, state, identity string, partial bool) string {
+	key := head + ":" + state + ":" + identity
+	if partial {
+		key += "*"
+	}
+	return key
+}
+
+// adoptsFinishTimes reports whether current is the baseline's own result with
+// the finish times now filled in: same head and state, baseline partial,
+// current complete.
+func adoptsFinishTimes(base, current string) bool {
+	if !strings.HasSuffix(base, "*") || strings.HasSuffix(current, "*") {
+		return false
+	}
+	headState := func(k string) string {
+		parts := strings.SplitN(k, ":", 3)
+		return parts[0] + ":" + parts[1]
+	}
+	return headState(base) == headState(current)
+}
+
 func checksTerminal(head, state string) bool {
 	return head != "" && (state == "SUCCESS" || state == "FAILURE" || state == "ERROR")
 }
@@ -280,6 +304,7 @@ func (s *ChatWakeupService) checksFinished(ctx context.Context, w db.ChatWakeup,
 		armed[key] = true
 	}
 	armedBefore := len(armed)
+	baselineChanged := false
 	var fresh []map[string]any
 	for _, row := range rows {
 		key := strconv.Itoa(int(row.PrNumber))
@@ -289,7 +314,16 @@ func (s *ChatWakeupService) checksFinished(ctx context.Context, w db.ChatWakeup,
 			}
 			continue
 		}
-		if base, known := c.Baseline[key]; !known || base != row.HeadSha+":"+row.Checks+":"+row.ChecksIdentity || armed[key] {
+		current := checksResultKey(row.HeadSha, row.Checks, row.ChecksIdentity, row.ChecksIdentityPartial)
+		base, known := c.Baseline[key]
+		if known && base != current && adoptsFinishTimes(base, current) {
+			// The baseline was taken before finish times were stored. The refresh
+			// that filled them in describes the same result, so it is the new baseline.
+			c.Baseline[key] = current
+			baselineChanged = true
+			base = current
+		}
+		if !known || base != current || armed[key] {
 			fresh = append(fresh, map[string]any{"number": row.PrNumber, "head_sha": row.HeadSha, "checks": strings.ToLower(row.Checks)})
 		}
 	}
@@ -297,7 +331,7 @@ func (s *ChatWakeupService) checksFinished(ctx context.Context, w db.ChatWakeup,
 		facts, _ := json.Marshal(map[string]any{"pull_requests": fresh})
 		return true, string(facts), nil
 	}
-	if len(armed) != armedBefore {
+	if len(armed) != armedBefore || baselineChanged {
 		c.Armed = c.Armed[:0]
 		for key := range armed {
 			c.Armed = append(c.Armed, key)

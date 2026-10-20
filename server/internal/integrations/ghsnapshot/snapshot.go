@@ -33,8 +33,8 @@ const prSnapshotQuery = `query($owner:String!,$repo:String!,$number:Int!,$cursor
             pageInfo{hasNextPage endCursor}
             nodes{
               __typename
-              ... on CheckRun{name status conclusion detailsUrl}
-              ... on StatusContext{context state targetUrl}
+              ... on CheckRun{name status conclusion detailsUrl completedAt}
+              ... on StatusContext{context state targetUrl createdAt}
             }
           }
         }
@@ -54,8 +54,13 @@ type CheckContext struct {
 	// Conclusion is the normalized result: "success", "failure", "neutral",
 	// "cancelled", "skipped", "timed_out", "action_required", "startup_failure",
 	// "stale", or "error"; empty while the check is still running.
-	Conclusion      string
-	DetailsURL      string
+	Conclusion string
+	DetailsURL string
+	// FinishedAt is when the result was produced: CheckRun.completedAt, or
+	// StatusContext.createdAt (a new status for the same context is a new
+	// object). Empty while a check is still running. It names a finished result
+	// even when a rerun keeps the same details URL.
+	FinishedAt      string
 	IsStatusContext bool
 }
 
@@ -228,10 +233,11 @@ func normalizeNode(raw json.RawMessage) (CheckContext, bool) {
 	switch probe.Typename {
 	case "CheckRun":
 		var n struct {
-			Name       string `json:"name"`
-			Status     string `json:"status"`
-			Conclusion string `json:"conclusion"`
-			DetailsURL string `json:"detailsUrl"`
+			Name        string `json:"name"`
+			Status      string `json:"status"`
+			Conclusion  string `json:"conclusion"`
+			DetailsURL  string `json:"detailsUrl"`
+			CompletedAt string `json:"completedAt"`
 		}
 		if err := json.Unmarshal(raw, &n); err != nil {
 			return CheckContext{}, false
@@ -241,22 +247,29 @@ func normalizeNode(raw json.RawMessage) (CheckContext, bool) {
 			Status:     normalizeRunStatus(n.Status),
 			Conclusion: strings.ToLower(n.Conclusion),
 			DetailsURL: n.DetailsURL,
+			FinishedAt: n.CompletedAt,
 		}, true
 	case "StatusContext":
 		var n struct {
 			Context   string `json:"context"`
 			State     string `json:"state"`
 			TargetURL string `json:"targetUrl"`
+			CreatedAt string `json:"createdAt"`
 		}
 		if err := json.Unmarshal(raw, &n); err != nil {
 			return CheckContext{}, false
 		}
 		status, conclusion := normalizeStatusState(n.State)
+		finished := ""
+		if status == "completed" {
+			finished = n.CreatedAt
+		}
 		return CheckContext{
 			Name:            n.Context,
 			Status:          status,
 			Conclusion:      conclusion,
 			DetailsURL:      n.TargetURL,
+			FinishedAt:      finished,
 			IsStatusContext: true,
 		}, true
 	default:

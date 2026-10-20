@@ -191,3 +191,20 @@ func TestSnapshotDecided(t *testing.T) {
 		})
 	}
 }
+
+// CHE-1874: the finish time names a finished result. CheckRun uses completedAt;
+// a commit status uses createdAt, and only once the status is terminal.
+func TestNormalizeNodeCarriesTheFinishTime(t *testing.T) {
+	run, ok := normalizeNode([]byte(`{"__typename":"CheckRun","name":"build","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://x/job/1","completedAt":"2026-10-20T10:00:00Z"}`))
+	if !ok || run.FinishedAt != "2026-10-20T10:00:00Z" {
+		t.Fatalf("check run = %+v, %v", run, ok)
+	}
+	done, _ := normalizeNode([]byte(`{"__typename":"StatusContext","context":"ci","state":"SUCCESS","targetUrl":"https://x/7","createdAt":"2026-10-20T10:05:00Z"}`))
+	if done.FinishedAt != "2026-10-20T10:05:00Z" {
+		t.Fatalf("finished status = %+v", done)
+	}
+	pending, _ := normalizeNode([]byte(`{"__typename":"StatusContext","context":"ci","state":"PENDING","targetUrl":"https://x/7","createdAt":"2026-10-20T10:06:00Z"}`))
+	if pending.FinishedAt != "" {
+		t.Fatalf("a pending status has no finish time, got %q", pending.FinishedAt)
+	}
+}

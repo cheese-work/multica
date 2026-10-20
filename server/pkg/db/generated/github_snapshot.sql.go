@@ -165,21 +165,22 @@ func (q *Queries) GetGitHubPullRequestByID(ctx context.Context, id pgtype.UUID) 
 
 const insertGitHubPRCheckRun = `-- name: InsertGitHubPRCheckRun :exec
 INSERT INTO github_pull_request_check_run (
-    pr_id, head_sha, ordinal, name, status, conclusion, details_url, is_status_context
+    pr_id, head_sha, ordinal, name, status, conclusion, details_url, is_status_context, finished_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $7, $8, $6
+    $1, $2, $3, $4, $5, $7, $8, $6, $9
 )
 `
 
 type InsertGitHubPRCheckRunParams struct {
-	PrID            pgtype.UUID `json:"pr_id"`
-	HeadSha         string      `json:"head_sha"`
-	Ordinal         int32       `json:"ordinal"`
-	Name            string      `json:"name"`
-	Status          string      `json:"status"`
-	IsStatusContext bool        `json:"is_status_context"`
-	Conclusion      pgtype.Text `json:"conclusion"`
-	DetailsUrl      pgtype.Text `json:"details_url"`
+	PrID            pgtype.UUID        `json:"pr_id"`
+	HeadSha         string             `json:"head_sha"`
+	Ordinal         int32              `json:"ordinal"`
+	Name            string             `json:"name"`
+	Status          string             `json:"status"`
+	IsStatusContext bool               `json:"is_status_context"`
+	Conclusion      pgtype.Text        `json:"conclusion"`
+	DetailsUrl      pgtype.Text        `json:"details_url"`
+	FinishedAt      pgtype.Timestamptz `json:"finished_at"`
 }
 
 func (q *Queries) InsertGitHubPRCheckRun(ctx context.Context, arg InsertGitHubPRCheckRunParams) error {
@@ -192,6 +193,7 @@ func (q *Queries) InsertGitHubPRCheckRun(ctx context.Context, arg InsertGitHubPR
 		arg.IsStatusContext,
 		arg.Conclusion,
 		arg.DetailsUrl,
+		arg.FinishedAt,
 	)
 	return err
 }
