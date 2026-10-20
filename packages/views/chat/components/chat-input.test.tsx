@@ -1866,6 +1866,30 @@ describe("ChatInput DM comments", () => {
     await waitFor(() => expect(useCommentDraftStore.getState().getAnnotations(draftKey)).toHaveLength(0));
   });
 
+  it("keeps a note edited, and comments added, while the send is pending", async () => {
+    // P1-1: every editing path (marker note box, list Edit, Remove, a new comment) ends in the draft store.
+    // A deferred send must clear only the comments it sent, exactly as sent.
+    useCommentDraftStore.getState().addAnnotation(draftKey, annotation(4));
+    let finish: (accepted: boolean) => void = () => {};
+    const onSend = vi.fn((_content: string) => new Promise<boolean>((resolve) => { finish = resolve; }));
+    renderInput({ annotationScope: scope(), onSend });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "Go" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend.mock.calls[0]![0]).toContain("Note 1");
+
+    const store = useCommentDraftStore.getState();
+    store.updateAnnotation(draftKey, "a1", "Newer note");
+    store.removeAnnotation(draftKey, "a2");
+    store.addAnnotation(draftKey, annotation(3));
+    await act(async () => { finish(true); });
+
+    await waitFor(() => expect(useCommentDraftStore.getState().getAnnotations(draftKey).map((a) => [a.id, a.note])).toEqual([
+      ["a1", "Newer note"],
+      ["a3", "Note 3"],
+    ]));
+  });
+
   it("leaves a slash command untouched and keeps the comments for the next message", async () => {
     const onSend = vi.fn();
     renderInput({ annotationScope: scope(), onSend });

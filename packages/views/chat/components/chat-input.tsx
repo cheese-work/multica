@@ -258,8 +258,11 @@ export function ChatInput({
   // reads the live editor and bails when it is empty.
   const annotationKey = annotationScope?.draftKey;
   const annotations = useCommentDraftStore((s) => (annotationKey ? s.getAnnotations(annotationKey) : EMPTY_REPLY_ANNOTATIONS));
-  // Ids of the comments folded into the message being sent. Only those are cleared on commit.
-  const sentAnnotationIdsRef = useRef<string[]>([]);
+  // The comments folded into the message being sent, with the note as sent. On commit only
+  // a comment still unchanged is cleared: a note edited, or a comment added or removed, while
+  // the send was pending is newer work (the marker note box, the list's Edit and Remove all
+  // write to the draft store).
+  const sentAnnotationsRef = useRef<{ id: string; note: string }[]>([]);
   const hasNothingToSend = isEmpty && !inputDraft.trim() && !annotations.some((a) => a.note.trim());
   const appliedRestoreIdRef = useRef<string | null>(null);
   const appliedConversationStarterIdRef = useRef<number | null>(null);
@@ -484,11 +487,11 @@ export function ChatInput({
     normalize: (raw) => {
       const text = raw.replace(/(\n\s*)+$/, "").trim();
       const saved = annotationKey ? useCommentDraftStore.getState().getAnnotations(annotationKey) : EMPTY_REPLY_ANNOTATIONS;
-      sentAnnotationIdsRef.current = [];
+      sentAnnotationsRef.current = [];
       // A slash command is not a message about a reply: leave it and the comments alone.
       if (!saved.length || /^\/\S/.test(text)) return text;
       if (!hasReplyIntent(text, saved)) return "";
-      sentAnnotationIdsRef.current = saved.filter((a) => a.note.trim()).map((a) => a.id);
+      sentAnnotationsRef.current = saved.filter((a) => a.note.trim()).map(({ id, note }) => ({ id, note }));
       return composeAnnotatedReply(text, saved, { plainQuotes: true });
     },
     // Chat keeps the caret in the box after a send (the next turn is typed in
@@ -575,8 +578,11 @@ export function ChatInput({
         if (untouched) clearInputDraft(keyAtSend);
         if (annotationKey) {
           const store = useCommentDraftStore.getState();
-          for (const id of sentAnnotationIdsRef.current) store.removeAnnotation(annotationKey, id);
-          sentAnnotationIdsRef.current = [];
+          const current = store.getAnnotations(annotationKey);
+          for (const sent of sentAnnotationsRef.current) {
+            if (current.find((a) => a.id === sent.id)?.note === sent.note) store.removeAnnotation(annotationKey, sent.id);
+          }
+          sentAnnotationsRef.current = [];
         }
         for (const key of options?.extraDraftKeys ?? []) {
           if (key !== keyAtSend) clearInputDraft(key);
