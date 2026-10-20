@@ -46,7 +46,9 @@ import (
 //  6. No `Vote: BLOCK ...` comment for the same line, from an agent or a member.
 //     Rules 2 to 6 and the write run in one transaction under an advisory lock
 //     that a BLOCK also takes, so a BLOCK cannot commit between check and write.
-//  7. Every governed:human block is byte-identical before and after.
+//  7. Every governed:human block is byte-identical before and after, and in a
+//     value that holds one, all text around the blocks is unchanged except
+//     inside governed:agent regions (so added text cannot override a block).
 //
 // Rollout: workspace.context and agent.instructions stay denied until the
 // operator lists them in MULTICA_VOTE_GATE_FIELDS, and even then the live
@@ -66,6 +68,8 @@ const (
 
 	governedHumanOpen  = "<!-- governed:human -->"
 	governedHumanClose = "<!-- /governed:human -->"
+	governedAgentOpen  = "<!-- governed:agent -->"
+	governedAgentClose = "<!-- /governed:agent -->"
 )
 
 var ownerCASProjectDescription = ownerCASColumn{"project.description", "description", "project", "description", "workspace_id"}
@@ -84,38 +88,85 @@ func governedPublisher(r *http.Request, actorType, actorID string) (string, stri
 	return "member", requestUserID(r)
 }
 
-// governedHumanBlocks returns every governed:human block in s, markers
-// included. ok is false for an unbalanced, nested or stray marker, so such a
-// value is refused rather than guessed at.
-func governedHumanBlocks(s string) (blocks []string, ok bool) {
+// splitGovernedHuman returns every governed:human block in s, markers
+// included, and the len(blocks)+1 text segments around them. ok is false for
+// an unbalanced, nested or stray marker, so such a value is refused rather
+// than guessed at.
+func splitGovernedHuman(s string) (blocks, segments []string, ok bool) {
 	for {
 		open := strings.Index(s, governedHumanOpen)
 		closeAt := strings.Index(s, governedHumanClose)
 		if open < 0 && closeAt < 0 {
-			return blocks, true
+			return blocks, append(segments, s), true
 		}
 		if open < 0 || (closeAt >= 0 && closeAt < open) {
-			return nil, false
+			return nil, nil, false
 		}
 		rest := s[open+len(governedHumanOpen):]
 		end := strings.Index(rest, governedHumanClose)
 		if end < 0 || strings.Contains(rest[:end], governedHumanOpen) {
-			return nil, false
+			return nil, nil, false
 		}
+		segments = append(segments, s[:open])
 		blocks = append(blocks, s[open:open+len(governedHumanOpen)+end+len(governedHumanClose)])
 		s = rest[end+len(governedHumanClose):]
 	}
 }
 
-// protectedBlocksUnchanged is check 7.
+func governedHumanBlocks(s string) (blocks []string, ok bool) {
+	blocks, _, ok = splitGovernedHuman(s)
+	return blocks, ok
+}
+
+// maskAgentRegions replaces each governed:agent region of a text segment with
+// a fixed token. ok is false for an unbalanced or nested region marker.
+func maskAgentRegions(s string) (masked string, ok bool) {
+	var out strings.Builder
+	for {
+		open := strings.Index(s, governedAgentOpen)
+		closeAt := strings.Index(s, governedAgentClose)
+		if open < 0 && closeAt < 0 {
+			out.WriteString(s)
+			return out.String(), true
+		}
+		if open < 0 || (closeAt >= 0 && closeAt < open) {
+			return "", false
+		}
+		rest := s[open+len(governedAgentOpen):]
+		end := strings.Index(rest, governedAgentClose)
+		if end < 0 || strings.Contains(rest[:end], governedAgentOpen) {
+			return "", false
+		}
+		out.WriteString(s[:open])
+		out.WriteString("\x00agent-region\x00")
+		s = rest[end+len(governedAgentClose):]
+	}
+}
+
+// protectedBlocksUnchanged is check 7. Every governed:human block must stay
+// byte-identical and in order. Keeping the block bytes is not enough, because
+// text added around a block can override it. So when the live value holds any
+// human block, the text around the blocks must be unchanged too, except inside
+// governed:agent regions, whose count and position must also be unchanged.
+// A value with no human block has nothing to protect and may change freely.
 func protectedBlocksUnchanged(before, after string) bool {
-	b, okB := governedHumanBlocks(before)
-	a, okA := governedHumanBlocks(after)
+	b, segB, okB := splitGovernedHuman(before)
+	a, segA, okA := splitGovernedHuman(after)
 	if !okB || !okA || len(a) != len(b) {
 		return false
 	}
 	for i := range b {
 		if a[i] != b[i] {
+			return false
+		}
+	}
+	if len(b) == 0 {
+		return true
+	}
+	for i := range segB {
+		maskedB, okB := maskAgentRegions(segB[i])
+		maskedA, okA := maskAgentRegions(segA[i])
+		if !okB || !okA || maskedB != maskedA {
 			return false
 		}
 	}
