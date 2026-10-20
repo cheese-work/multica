@@ -167,6 +167,7 @@ export interface WorkspaceGovernanceConfig {
     jev_squad_routing_mode?: string | null;
     jev_squad_routing_enabled?: boolean | null;
     jev_min_confidence?: number | null;
+    jev_api_url?: string | null;
   };
   /** Newest first; the server returns at most 50. */
   audit_history: GovernanceAuditEntry[];
@@ -177,6 +178,8 @@ export interface WorkspaceJevGovernance {
   version: number;
   routing_mode: JevRoutingMode;
   min_confidence: number | null;
+  /** The custom Jev endpoint; empty means the default one. */
+  api_url: string;
   history: GovernanceAuditEntry[];
 }
 
@@ -186,6 +189,8 @@ export interface WorkspaceJevGovernancePatch {
   request_id: string;
   jev_squad_routing_mode?: "off" | "shadow";
   jev_min_confidence?: number;
+  /** Empty clears the custom endpoint. */
+  jev_api_url?: string;
 }
 
 /** Restores every setting to how it was after `rollback_to_version`, saved as a new version. */

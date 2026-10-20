@@ -45,6 +45,7 @@ describe("Jev credential key dialog after a failed save", () => {
       <QueryClientProvider client={client}>
         <JevCredentialPane
           credential={{ data: { present: false }, isError: false } as never}
+          config={{ version: 1, routing_mode: "off", min_confidence: null, api_url: "", history: [] }}
           canManage
           online
           onNotice={onNotice}

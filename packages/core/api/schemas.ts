@@ -3864,6 +3864,7 @@ export const WorkspaceGovernanceConfigSchema = z.object({
     jev_squad_routing_mode: z.string().nullish(),
     jev_squad_routing_enabled: z.boolean().nullish(),
     jev_min_confidence: z.number().nullish(),
+    jev_api_url: z.string().nullish(),
   }),
   // Strict like the rest: a rollback offered from a history that did not parse
   // would be a guess about what it restores.
