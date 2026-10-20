@@ -47,6 +47,28 @@ var (
 	errChatWakeupRetry = errors.New("chat wakeup: retry next tick")
 )
 
+// PullRequestAddress locates a mirrored pull request on GitHub.
+type PullRequestAddress struct {
+	InstallationID int64
+	Owner, Repo    string
+	Number         int32
+}
+
+// ChecksNotReadyError refuses a checks condition while a linked pull request's
+// finished check data has no node ids, which only rows written before the ids
+// were stored can lack. A baseline taken from such data could later fire on a
+// metadata-only backfill, or swallow a real change. The caller refreshes the
+// listed pull requests and the agent retries.
+type ChecksNotReadyError struct{ PRs []PullRequestAddress }
+
+func (ChecksNotReadyError) Error() string {
+	return "the pull request's check data is being refreshed; try again in a minute"
+}
+
+func (ChecksNotReadyError) Is(target error) bool { return target == ErrChatWakeupChecksNotReady }
+
+var ErrChatWakeupChecksNotReady = errors.New("chat wakeup: check data is not ready")
+
 type ChatWakeupService struct{ Tasks *TaskService }
 
 // ChatWakeupConditionInput is what the agent waits for besides the deadline:
@@ -185,13 +207,20 @@ func (s *ChatWakeupService) buildCondition(ctx context.Context, workspaceID pgty
 				return nil, err
 			}
 			stored.Baseline = map[string]string{}
+			var notReady ChecksNotReadyError
 			for _, row := range rows {
 				key := strconv.Itoa(int(row.PrNumber))
-				if checksTerminal(row.HeadSha, row.Checks) {
-					stored.Baseline[key] = checksResultKey(row.HeadSha, row.Checks, row.ChecksIdentity, row.ChecksIdentityPartial)
-				} else if row.HeadSha != "" {
+				switch {
+				case checksTerminal(row.HeadSha, row.Checks) && row.ChecksIdentityPartial:
+					notReady.PRs = append(notReady.PRs, PullRequestAddress{InstallationID: row.InstallationID, Owner: row.RepoOwner, Repo: row.RepoName, Number: row.PrNumber})
+				case checksTerminal(row.HeadSha, row.Checks):
+					stored.Baseline[key] = checksResultKey(row.HeadSha, row.Checks, row.ChecksIdentity)
+				case row.HeadSha != "":
 					stored.Armed = append(stored.Armed, key)
 				}
+			}
+			if len(notReady.PRs) > 0 {
+				return nil, notReady
 			}
 		}
 	}
@@ -255,28 +284,10 @@ func (s *ChatWakeupService) conditionMet(ctx context.Context, w db.ChatWakeup) (
 	return true, string(bytes.TrimSpace(facts)), nil
 }
 
-// checksResultKey names one finished result of a pull request. A trailing "*"
-// marks a result whose finish times are not all known yet.
-func checksResultKey(head, state, identity string, partial bool) string {
-	key := head + ":" + state + ":" + identity
-	if partial {
-		key += "*"
-	}
-	return key
-}
-
-// adoptsFinishTimes reports whether current is the baseline's own result with
-// the finish times now filled in: same head and state, baseline partial,
-// current complete.
-func adoptsFinishTimes(base, current string) bool {
-	if !strings.HasSuffix(base, "*") || strings.HasSuffix(current, "*") {
-		return false
-	}
-	headState := func(k string) string {
-		parts := strings.SplitN(k, ":", 3)
-		return parts[0] + ":" + parts[1]
-	}
-	return headState(base) == headState(current)
+// checksResultKey names one finished result of a pull request: its head, its
+// rollup state and the digest of its check runs including their node ids.
+func checksResultKey(head, state, identity string) string {
+	return head + ":" + state + ":" + identity
 }
 
 func checksTerminal(head, state string) bool {
@@ -286,11 +297,13 @@ func checksTerminal(head, state string) bool {
 // checksFinished holds when a linked pull request has a finished result that is
 // new since the wakeup was set: a different head, result or check-run identity
 // than the baseline, a pull request linked since, or a rerun seen running and
-// now finished. The check-run identity (names, states and details URLs with job
-// ids) changes on every rerun, so a rerun that starts and finishes between two
-// ticks is still seen. Removing a link is never a new result. ponytail: a rerun
-// whose check runs keep the same details URLs, such as a legacy status context
-// with a fixed target, is seen only if a tick observes it running.
+// now finished. The check-run identity digests the names, states, details URLs
+// and GraphQL node ids of every check run. Every rerun creates new check runs
+// and every status posted creates a new status object, so the identity changes
+// with each result, also when a rerun starts and finishes between two ticks and
+// also when name, state, URL and timestamp match. Removing a link is never a new
+// result. A pull request whose check data lacks node ids (rows written before
+// they were stored) is skipped until the next snapshot refresh.
 func (s *ChatWakeupService) checksFinished(ctx context.Context, w db.ChatWakeup, c chatWakeupCondition, issueID pgtype.UUID) (bool, string, error) {
 	if !s.Tasks.PRSnapshotsEnabled {
 		return false, "", nil
@@ -304,7 +317,6 @@ func (s *ChatWakeupService) checksFinished(ctx context.Context, w db.ChatWakeup,
 		armed[key] = true
 	}
 	armedBefore := len(armed)
-	baselineChanged := false
 	var fresh []map[string]any
 	for _, row := range rows {
 		key := strconv.Itoa(int(row.PrNumber))
@@ -314,16 +326,11 @@ func (s *ChatWakeupService) checksFinished(ctx context.Context, w db.ChatWakeup,
 			}
 			continue
 		}
-		current := checksResultKey(row.HeadSha, row.Checks, row.ChecksIdentity, row.ChecksIdentityPartial)
-		base, known := c.Baseline[key]
-		if known && base != current && adoptsFinishTimes(base, current) {
-			// The baseline was taken before finish times were stored. The refresh
-			// that filled them in describes the same result, so it is the new baseline.
-			c.Baseline[key] = current
-			baselineChanged = true
-			base = current
+		if row.ChecksIdentityPartial {
+			continue // data without node ids cannot name a result; wait for the next refresh
 		}
-		if !known || base != current || armed[key] {
+		base, known := c.Baseline[key]
+		if !known || base != checksResultKey(row.HeadSha, row.Checks, row.ChecksIdentity) || armed[key] {
 			fresh = append(fresh, map[string]any{"number": row.PrNumber, "head_sha": row.HeadSha, "checks": strings.ToLower(row.Checks)})
 		}
 	}
@@ -331,7 +338,7 @@ func (s *ChatWakeupService) checksFinished(ctx context.Context, w db.ChatWakeup,
 		facts, _ := json.Marshal(map[string]any{"pull_requests": fresh})
 		return true, string(facts), nil
 	}
-	if len(armed) != armedBefore || baselineChanged {
+	if len(armed) != armedBefore {
 		c.Armed = c.Armed[:0]
 		for key := range armed {
 			c.Armed = append(c.Armed, key)
