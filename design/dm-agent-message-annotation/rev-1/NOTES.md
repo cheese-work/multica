@@ -27,3 +27,4 @@ rev-0 is the current DM. An agent reply has one action, Copy, and the composer h
 - Marker and popover positions are drawn by hand. The real ones come from floating-ui and the CSS Custom Highlight API.
 - Dark theme not drawn.
 - `visual diff: NOT-RUN`. No before capture of the current DM.
+- PNGs are 256-colour palette files (131.9 to 140.8 KB) to fit the 300 KB image budget. Same dimensions; antialiased edges and tints shift slightly.
