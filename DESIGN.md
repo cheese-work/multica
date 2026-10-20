@@ -78,9 +78,12 @@ Use semantic tokens from `packages/ui/styles/tokens.css`: surface, border, muted
 | wakeups-pause | 3 | A | 255 | `de646d2bb8c50bb93653d98395f17f3dc2e0ceee` |
 | jev-governance-tab | 4 | C | 268 | `a32ec00a3ee38cbdf9336c3c953f7cf840ace38b` |
 | dm-notifications-mobile | 1 | A | 277 | `a768e4532ac3f193ece7b552308a95eabe97619b` |
+| bare-key-chip-stability | 1 | B | 294 | `849203d51f285ed2807d1f75cf0890d32e5448a4` |
 
 Each row is written before its merge, as the standard requires. A design is approved when Cheese merges its PR: PR 255 for `wakeups-pause`, PR 268 for `jev-governance-tab`, PR 277 for `dm-notifications-mobile`. The merge commit is read from GitHub and is not written here.
 
 The `jev-governance-tab` row records a selection only. Cheese chose direction C at 03:18 ICT on 16 Oct 2026 (CHE-1780 comment `01a14136-ef91-73e1-867f-41c3747e6ad7`: "C  is direction"). The commit in that row is the `rev-4` revision commit. No approval exists until PR 268 merges.
 
 The `dm-notifications-mobile` row records a selection only. Cheese chose direction A on CHE-1811 (comment `01a14243-3674-7796-aaf2-b9354a94065e`). The commit in that row is the `rev-1` revision commit. No approval exists until PR 277 merges.
+
+The `bare-key-chip-stability` row records a selection only. Cheese chose direction B (14 rem, 224 px) in the native quote on CHE-1827, comment `01a15750-f3e6-74f1-9675-771347dc32f2`, item 2. The commit in that row is the scored `rev-1` revision commit, not the commit that records the selection. No approval exists until PR 294 merges.
