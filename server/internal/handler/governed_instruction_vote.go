@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -29,12 +30,23 @@ import (
 //  2. vote_issue holds two PASS votes: a comment by an agent with exactly one
 //     `Vote:` line for this field, entity and after digest —
 //     `Vote: PASS <field>:<entity-id> <after_sha256>` — posted after a
-//     `Proposal: <field>:<entity-id> <after_sha256>` comment.
+//     `Proposal: <field>:<entity-id> <after_sha256>` comment. Votes are read
+//     from governed_vote_record (migration 667), written when the comment is
+//     created. Editing or deleting a comment afterwards changes nothing: it
+//     cannot forge a PASS and cannot erase a BLOCK. Retract with a BLOCK.
 //  3. The two voters are distinct agents and neither is the writer.
-//  4. One voter runs on a different runtime provider than the writer (RGS-1).
+//  4. One voter is of a different lab than the writer (RGS-1). A lab is looked
+//     up in MULTICA_VOTE_GATE_LABS by runtime provider and model — the voter's
+//     as recorded when it voted, the writer's as configured now. Unlisted
+//     pairs have no lab and are never counted (fail closed).
 //  5. One voter leads the squad that owns vote_issue.
 //  6. No `Vote: BLOCK ...` comment for the same line, from an agent or a member.
 //  7. Every governed:human block is byte-identical before and after.
+//
+// Rollout: workspace.context and agent.instructions stay denied until the
+// operator lists them in MULTICA_VOTE_GATE_FIELDS, and even then the live
+// value must already hold a governed:human block. squad.instructions and
+// project.description are open from the start.
 //
 // Only an agent identity (resolveActor "agent") enters; a cloud-node PAT and
 // create endpoints stay denied. The write is the CHE-1300 compare-and-swap
@@ -116,21 +128,23 @@ func voteLines(content string) []string {
 	return out
 }
 
+// voteComment is one governed_vote_record row: the vote and proposal lines of
+// a comment as posted, with the author's runtime provider and model at that time.
 type voteComment struct {
-	authorType, authorID, content string
-	createdAt                     time.Time
+	authorType, authorID, lines, provider, model string
+	createdAt                                    time.Time
 }
 
-// voteTally applies checks 2 (comments only), 3 and 6 to the comments that
-// mention the after digest: it returns the distinct non-writer agents with a
-// valid PASS vote and whether any BLOCK exists.
-func voteTally(comments []voteComment, writerID, label, after string) (voters []string, blocked bool) {
+// voteTally applies checks 2 (lines only), 3 and 6 to the records that mention
+// the after digest: it returns the distinct non-writer agents with a valid PASS
+// vote and whether any BLOCK exists.
+func voteTally(comments []voteComment, writerID, label, after string) (voters []voteComment, blocked bool) {
 	pass := "Vote: PASS " + label + " " + after
 	block := "Vote: BLOCK " + label + " " + after
 	proposal := "Proposal: " + label + " " + after
 	var proposedAt time.Time
 	for _, c := range comments {
-		for _, line := range strings.Split(c.content, "\n") {
+		for _, line := range strings.Split(c.lines, "\n") {
 			if strings.TrimSpace(line) == proposal && (proposedAt.IsZero() || c.createdAt.Before(proposedAt)) {
 				proposedAt = c.createdAt
 			}
@@ -138,7 +152,7 @@ func voteTally(comments []voteComment, writerID, label, after string) (voters []
 	}
 	seen := map[string]bool{}
 	for _, c := range comments {
-		lines := voteLines(c.content)
+		lines := voteLines(c.lines)
 		for _, l := range lines {
 			if l == block {
 				blocked = true
@@ -149,9 +163,49 @@ func voteTally(comments []voteComment, writerID, label, after string) (voters []
 			continue
 		}
 		seen[c.authorID] = true
-		voters = append(voters, c.authorID)
+		voters = append(voters, c)
 	}
 	return voters, blocked
+}
+
+// voteLab is the lab the operator registered for an exact runtime provider and
+// model, or "" when unknown. MULTICA_VOTE_GATE_LABS is a JSON object such as
+// {"codex/gpt-6.1-sol":"openai"}. A provider is a CLI family, not a lab, and no
+// lab is inferred from a name, so an unlisted pair is never independent.
+func voteLab(provider, model string) string {
+	var labs map[string]string
+	if provider == "" || model == "" || json.Unmarshal([]byte(os.Getenv("MULTICA_VOTE_GATE_LABS")), &labs) != nil {
+		return ""
+	}
+	return labs[provider+"/"+model]
+}
+
+// voteFieldEnabled reports whether the vote path may write kind. Squad
+// instructions and project descriptions are always open. Workspace context and
+// agent instructions open only after the operator lists them in
+// MULTICA_VOTE_GATE_FIELDS, which a human sets once the deny-list sections are
+// wrapped in governed:human markers.
+func voteFieldEnabled(kind string) bool {
+	if kind == ownerCASSquadInstructions.kind || kind == ownerCASProjectDescription.kind {
+		return true
+	}
+	for _, f := range strings.Split(os.Getenv("MULTICA_VOTE_GATE_FIELDS"), ",") {
+		if strings.TrimSpace(f) == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// voteNeedsMarker marks the fields that hold the deny-list: their live value
+// must already carry a governed:human block before a vote can change them.
+func voteNeedsMarker(kind string) bool {
+	return kind == ownerCASWorkspaceContext.kind || kind == ownerCASAgentInstructions.kind
+}
+
+func hasGovernedHumanBlock(s string) bool {
+	blocks, ok := governedHumanBlocks(s)
+	return ok && len(blocks) > 0
 }
 
 // voteReceiptReason returns why the votes on issueID do not authorize the
@@ -166,9 +220,8 @@ func (h *Handler) voteReceiptReason(ctx context.Context, workspaceID, issueID, w
 		return "", nil, err
 	}
 	rows, err := h.DB.Query(ctx, `
-		SELECT author_type, author_id::text, content, created_at FROM comment
-		WHERE issue_id = $1 AND workspace_id = $2 AND deleted_at IS NULL
-		  AND author_type IN ('agent', 'member') AND position($3 in content) > 0`,
+		SELECT author_type, author_id::text, vote_lines, runtime_provider, model, created_at FROM governed_vote_record
+		WHERE issue_id = $1 AND workspace_id = $2 AND position($3 in vote_lines) > 0`,
 		issueUUID, wsUUID, after)
 	if err != nil {
 		return "", nil, err
@@ -177,7 +230,7 @@ func (h *Handler) voteReceiptReason(ctx context.Context, workspaceID, issueID, w
 	var comments []voteComment
 	for rows.Next() {
 		var c voteComment
-		if err := rows.Scan(&c.authorType, &c.authorID, &c.content, &c.createdAt); err != nil {
+		if err := rows.Scan(&c.authorType, &c.authorID, &c.lines, &c.provider, &c.model, &c.createdAt); err != nil {
 			return "", nil, err
 		}
 		comments = append(comments, c)
@@ -190,26 +243,44 @@ func (h *Handler) voteReceiptReason(ctx context.Context, workspaceID, issueID, w
 		return "a BLOCK vote exists", nil, nil
 	}
 
-	// Voter and writer providers; a voter that is not a live agent of this
-	// workspace does not count.
-	providers := map[string]string{}
-	arows, err := h.DB.Query(ctx, `
-		SELECT a.id::text, COALESCE(r.provider, '') FROM agent a
+	// The writer's lab comes from its live configuration, the voters' from the
+	// configuration recorded when they voted. A voter that is no longer a live
+	// agent of this workspace does not count.
+	var writerProvider, writerModel string
+	err = h.DB.QueryRow(ctx, `
+		SELECT COALESCE(r.provider, ''), COALESCE(a.model, '') FROM agent a
 		LEFT JOIN agent_runtime r ON r.id = a.runtime_id
-		WHERE a.workspace_id = $1 AND a.archived_at IS NULL AND a.id::text = ANY($2)`,
-		wsUUID, append([]string{writerID}, voters...))
+		WHERE a.id = $1 AND a.workspace_id = $2 AND a.archived_at IS NULL`,
+		writerID, wsUUID).Scan(&writerProvider, &writerModel)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "the writing agent is not a live agent of this workspace", nil, nil
+	}
 	if err != nil {
 		return "", nil, err
 	}
-	defer arows.Close()
-	for arows.Next() {
-		var id, provider string
-		if err := arows.Scan(&id, &provider); err != nil {
+	writerLab := voteLab(writerProvider, writerModel)
+	if writerLab == "" {
+		return "the writing agent's provider and model are not in the lab registry", nil, nil
+	}
+
+	voterIDs := make([]string, len(voters))
+	for i, v := range voters {
+		voterIDs[i] = v.authorID
+	}
+	liveRows, err := h.DB.Query(ctx, `SELECT id::text FROM agent WHERE workspace_id = $1 AND archived_at IS NULL AND id::text = ANY($2)`, wsUUID, voterIDs)
+	if err != nil {
+		return "", nil, err
+	}
+	defer liveRows.Close()
+	liveAgents := map[string]bool{}
+	for liveRows.Next() {
+		var id string
+		if err := liveRows.Scan(&id); err != nil {
 			return "", nil, err
 		}
-		providers[id] = provider
+		liveAgents[id] = true
 	}
-	if err := arows.Err(); err != nil {
+	if err := liveRows.Err(); err != nil {
 		return "", nil, err
 	}
 
@@ -226,19 +297,19 @@ func (h *Handler) voteReceiptReason(ctx context.Context, workspaceID, issueID, w
 	var live []string
 	crossLab, leads := false, false
 	for _, v := range voters {
-		provider, ok := providers[v]
-		if !ok {
+		lab := voteLab(v.provider, v.model)
+		if !liveAgents[v.authorID] || lab == "" {
 			continue
 		}
-		live = append(live, v)
-		crossLab = crossLab || (provider != "" && providers[writerID] != "" && provider != providers[writerID])
-		leads = leads || v == leaderID
+		live = append(live, v.authorID)
+		crossLab = crossLab || lab != writerLab
+		leads = leads || v.authorID == leaderID
 	}
 	switch {
 	case len(live) < 2:
-		return "fewer than two valid PASS votes from distinct non-writer agents", nil, nil
+		return "fewer than two valid PASS votes from distinct non-writer agents of known lab", nil, nil
 	case !crossLab:
-		return "no PASS vote from a different provider than the writer", nil, nil
+		return "no PASS vote from a different lab than the writer", nil, nil
 	case !leads:
 		return "no PASS vote from the leader of the squad that owns the vote issue", nil, nil
 	}
@@ -267,6 +338,9 @@ func (h *Handler) voteApply(w http.ResponseWriter, r *http.Request, writerID str
 		return hermesExceptionSwapResult{}, false
 	}
 
+	if !voteFieldEnabled(c.kind) {
+		return deny("the vote path is not enabled for "+c.kind, nil)
+	}
 	if !hermesExceptionOnlyAllowedKeys(raw, c.field, voteIssueKey, voteBeforeKey, voteAfterKey) {
 		writeError(w, http.StatusBadRequest, "this request may only include "+c.field+", "+voteIssueKey+", "+voteBeforeKey+" and "+voteAfterKey)
 		return hermesExceptionSwapResult{}, false
@@ -309,6 +383,8 @@ func (h *Handler) voteApply(w http.ResponseWriter, r *http.Request, writerID str
 		return deny(voteBeforeKey+" does not match the live value", nil)
 	case hermesExceptionDigest([]byte(content)) != after:
 		return deny(voteAfterKey+" does not match the new value", nil)
+	case voteNeedsMarker(c.kind) && !hasGovernedHumanBlock(live):
+		return deny("the live value has no governed:human block", nil)
 	case !protectedBlocksUnchanged(live, content):
 		return deny("a governed:human block changed", nil)
 	}

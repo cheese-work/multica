@@ -1142,6 +1142,18 @@ type GovernanceWorkspaceConfigAudit struct {
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 }
 
+type GovernedVoteRecord struct {
+	IssueID         pgtype.UUID        `json:"issue_id"`
+	CommentID       pgtype.UUID        `json:"comment_id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	AuthorType      string             `json:"author_type"`
+	AuthorID        pgtype.UUID        `json:"author_id"`
+	VoteLines       string             `json:"vote_lines"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	RuntimeProvider string             `json:"runtime_provider"`
+	Model           string             `json:"model"`
+}
+
 type InboxItem struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
