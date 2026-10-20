@@ -184,6 +184,7 @@ type AgentTaskQueue struct {
 	CompactReason             pgtype.Text `json:"compact_reason"`
 	CompactTriggerTokens      pgtype.Int8 `json:"compact_trigger_tokens"`
 	WorkflowStep              pgtype.Text `json:"workflow_step"`
+	ClaimedModel              pgtype.Text `json:"claimed_model"`
 }
 
 type AgentToLabel struct {
@@ -1140,6 +1141,18 @@ type GovernanceWorkspaceConfigAudit struct {
 	ControlEpoch      int64              `json:"control_epoch"`
 	RollbackOfVersion pgtype.Int8        `json:"rollback_of_version"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+}
+
+type GovernedVoteRecord struct {
+	IssueID         pgtype.UUID        `json:"issue_id"`
+	CommentID       pgtype.UUID        `json:"comment_id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	AuthorType      string             `json:"author_type"`
+	AuthorID        pgtype.UUID        `json:"author_id"`
+	VoteLines       string             `json:"vote_lines"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	RuntimeProvider string             `json:"runtime_provider"`
+	Model           string             `json:"model"`
 }
 
 type InboxItem struct {

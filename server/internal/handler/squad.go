@@ -460,16 +460,23 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var rawFields map[string]json.RawMessage
+	_ = json.Unmarshal(bodyBytes, &rawFields) // body already decoded into req above
+
+	// CHE-1862: an agent write backed by a vote receipt skips the denial below.
+	if voteEntered(actorType, req.Instructions != nil, rawFields) {
+		h.ownerCASUpdateSquad(w, r, workspaceID, member, squad, actorType, actorID, rawFields)
+		return
+	}
+
 	if rejectGovernedFieldForAgentActor(w, r, actorType, req.Instructions != nil, "instructions") {
 		return
 	}
 
 	// CHE-1300: owner-only atomic CAS, entered by the digest key. After the
 	// guard above so a machine actor never reaches it.
-	var rawFields map[string]json.RawMessage
-	_ = json.Unmarshal(bodyBytes, &rawFields) // body already decoded into req above
 	if ownerCASRequested(rawFields) {
-		h.ownerCASUpdateSquad(w, r, workspaceID, member, squad, actorType, rawFields)
+		h.ownerCASUpdateSquad(w, r, workspaceID, member, squad, actorType, actorID, rawFields)
 		return
 	}
 

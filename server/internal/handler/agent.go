@@ -1983,7 +1983,14 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	// case-varied key ("Instructions") bypasses because encoding/json
 	// matches object keys to struct fields case-insensitively.
 	workspaceID := uuidToString(existing.WorkspaceID)
-	actorType, _ := h.resolveActor(r, requestUserID(r), workspaceID)
+	actorType, actorID := h.resolveActor(r, requestUserID(r), workspaceID)
+
+	// CHE-1862: an agent write backed by a vote receipt skips the denial below.
+	if voteEntered(actorType, req.Instructions != nil, rawFields) {
+		h.ownerCASUpdateAgent(w, r, existing, actorType, actorID, rawFields)
+		return
+	}
+
 	if rejectGovernedFieldForAgentActor(w, r, actorType, req.Instructions != nil, "instructions") {
 		return
 	}
@@ -1991,7 +1998,7 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	// CHE-1300: owner-only atomic CAS, entered by the digest key. After the
 	// guard above so a machine actor never reaches it.
 	if ownerCASRequested(rawFields) {
-		h.ownerCASUpdateAgent(w, r, existing, actorType, rawFields)
+		h.ownerCASUpdateAgent(w, r, existing, actorType, actorID, rawFields)
 		return
 	}
 

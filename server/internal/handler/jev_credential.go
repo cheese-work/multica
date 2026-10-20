@@ -17,16 +17,21 @@ const jevCredentialPurpose = "jev-provider-credential"
 
 var ErrJevCredentialUnavailable = errors.New("jev credential unavailable")
 
+// Configurable reports only whether this server holds an at-rest encryption
+// key, so the client can warn before a key is typed. It is capability metadata,
+// never key material.
 type jevCredentialResponse struct {
-	Present bool `json:"present"`
+	Present      bool `json:"present"`
+	Configurable bool `json:"configurable"`
 }
 
 type putJevCredentialRequest struct {
 	APIKey string `json:"api_key"`
 }
 
-// GetJevCredential reports only whether a credential exists. It deliberately
-// has no read endpoint and never returns metadata that could help recover it.
+// GetJevCredential reports whether a credential exists and whether this server
+// can store one. It deliberately has no read endpoint and never returns metadata
+// that could help recover the credential.
 func (h *Handler) GetJevCredential(w http.ResponseWriter, r *http.Request) {
 	workspaceID, _, ok := h.governanceWorkspaceAccess(w, r, false)
 	if !ok {
@@ -38,7 +43,7 @@ func (h *Handler) GetJevCredential(w http.ResponseWriter, r *http.Request) {
 		writeGovernanceProblem(w, r, http.StatusServiceUnavailable, "configuration_unavailable")
 		return
 	}
-	writeJSON(w, http.StatusOK, jevCredentialResponse{Present: present})
+	writeJSON(w, http.StatusOK, jevCredentialResponse{Present: present, Configurable: h.JevCredentials != nil})
 }
 
 // PutJevCredential writes or replaces an encrypted credential. The plaintext
@@ -95,7 +100,7 @@ func (h *Handler) PutJevCredential(w http.ResponseWriter, r *http.Request) {
 		writeGovernanceProblem(w, r, http.StatusServiceUnavailable, "configuration_unavailable")
 		return
 	}
-	writeJSON(w, http.StatusOK, jevCredentialResponse{Present: true})
+	writeJSON(w, http.StatusOK, jevCredentialResponse{Present: true, Configurable: true})
 }
 
 func (h *Handler) DeleteJevCredential(w http.ResponseWriter, r *http.Request) {
