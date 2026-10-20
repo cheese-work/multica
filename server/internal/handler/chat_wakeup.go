@@ -116,6 +116,14 @@ func (h *Handler) CreateChatWakeup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, service.ErrChatWakeupCap), errors.Is(err, service.ErrChatWakeupUnavailable):
 		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, service.ErrChatWakeupChecksNotReady):
+		var notReady service.ChecksNotReadyError
+		if errors.As(err, &notReady) && h.PRRefresh.Enabled() {
+			for _, pr := range notReady.PRs {
+				h.PRRefresh.Enqueue(pr.InstallationID, pr.Owner, pr.Repo, pr.Number)
+			}
+		}
+		writeError(w, http.StatusConflict, err.Error())
 	case err != nil:
 		writeError(w, http.StatusInternalServerError, "failed to schedule wakeup")
 	default:

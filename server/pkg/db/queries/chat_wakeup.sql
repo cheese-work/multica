@@ -71,27 +71,27 @@ UPDATE chat_wakeup SET condition_checked_at = now() WHERE id = $1;
 UPDATE chat_wakeup SET condition = $2, updated_at = now() WHERE id = $1 AND status = 'pending';
 
 -- name: ListChatWakeupLinkedPullRequests :many
--- checks_identity names the finished result: a digest of every check run's
--- name, state, details URL and finish time, in a fixed order that does not
--- depend on the order GitHub returned them in. A rerun creates new check runs
--- (new job ids, new completedAt), and a commit status posted again carries a new
--- creation time, so the identity changes even when the head and the rollup state
--- do not, and even if no poll saw the run in progress. checks_identity_partial is
--- true while a finished run has no finish time yet (rows written before the
--- column existed, until the next snapshot refresh).
-SELECT pr.pr_number, COALESCE(pr.snapshot_head_sha, '')::text AS head_sha, COALESCE(pr.checks_rollup_state, '')::text AS checks,
+-- checks_identity names the finished result: a digest of every check run's name,
+-- state, details URL and GraphQL node id, in a fixed order that does not depend
+-- on the order GitHub returned them in. A rerun creates new check runs and a
+-- status posted again creates a new status object, so the node ids change with
+-- the result even when name, state, URL and time match, and even if no poll saw
+-- the run in progress. checks_identity_partial is true while a finished run has
+-- no node id (rows written before the column existed, until the next snapshot
+-- refresh): such data cannot name a result.
+SELECT pr.pr_number, pr.installation_id, pr.repo_owner, pr.repo_name, COALESCE(pr.snapshot_head_sha, '')::text AS head_sha, COALESCE(pr.checks_rollup_state, '')::text AS checks,
        COALESCE((
            SELECT md5(string_agg(x.t, E'\n' ORDER BY x.t))
            FROM (
                SELECT cr.name || '|' || cr.status || '|' || COALESCE(cr.conclusion, '') || '|' || COALESCE(cr.details_url, '') || '|'
-                      || COALESCE(to_char(cr.finished_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US'), '') AS t
+                      || COALESCE(cr.external_id, '') AS t
                FROM github_pull_request_check_run cr
                WHERE cr.pr_id = pr.id AND cr.head_sha = pr.snapshot_head_sha
            ) x
        ), '')::text AS checks_identity,
        EXISTS (
            SELECT 1 FROM github_pull_request_check_run cr
-           WHERE cr.pr_id = pr.id AND cr.head_sha = pr.snapshot_head_sha AND cr.status = 'completed' AND cr.finished_at IS NULL
+           WHERE cr.pr_id = pr.id AND cr.head_sha = pr.snapshot_head_sha AND cr.status = 'completed' AND cr.external_id IS NULL
        ) AS checks_identity_partial
 FROM github_pull_request pr
 JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id

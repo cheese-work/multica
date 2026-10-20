@@ -228,8 +228,8 @@ func setCheckRuns(t *testing.T, pr, head, conclusion string, jobIDs ...string) {
 	t.Helper()
 	dbfx.Exec(t, `DELETE FROM github_pull_request_check_run WHERE pr_id = $1`, pr)
 	for i, job := range jobIDs {
-		dbfx.Exec(t, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion, details_url)
-			VALUES ($1, $2, $3, $4, 'completed', $5, $6)`, pr, head, i, "job-"+strconv.Itoa(i), conclusion, "https://github.com/o/r/actions/runs/1/job/"+job)
+		dbfx.Exec(t, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion, details_url, external_id)
+			VALUES ($1, $2, $3, $4, 'completed', $5, $6, $7)`, pr, head, i, "job-"+strconv.Itoa(i), conclusion, "https://github.com/o/r/actions/runs/1/job/"+job, "CR_"+job)
 	}
 	dbfx.Cleanup(t, `DELETE FROM github_pull_request_check_run WHERE pr_id = $1`, pr)
 }
@@ -256,11 +256,12 @@ func TestChatWakeupPullRequestChecksSeeARerunThatFinishedBetweenPolls(t *testing
 }
 
 // OCR-1874-6, second round: the identity of a finished result must not depend
-// on the order GitHub returns the contexts in, and must also change when a
-// rerun keeps the same details URL (a commit status posts a new object with a
-// new creation time).
+// on the order GitHub returns the contexts in, and must name a result even when
+// the name, state, URL and timestamp of a rerun match the old one. The GraphQL
+// node id does: every rerun creates new check runs and every status posted
+// creates a new status object.
 type checkContext struct {
-	name, url, conclusion, finishedAt string
+	name, url, conclusion, externalID string
 	statusContext                     bool
 }
 
@@ -268,22 +269,22 @@ func setContexts(t *testing.T, pr, head string, order []int, contexts ...checkCo
 	t.Helper()
 	dbfx.Exec(t, `DELETE FROM github_pull_request_check_run WHERE pr_id = $1`, pr)
 	for i, c := range contexts {
-		var finished any
-		if c.finishedAt != "" {
-			finished = c.finishedAt
+		var external any
+		if c.externalID != "" {
+			external = c.externalID
 		}
-		dbfx.Exec(t, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion, details_url, is_status_context, finished_at)
-			VALUES ($1, $2, $3, $4, 'completed', $5, $6, $7, $8::timestamptz)`, pr, head, order[i], c.name, c.conclusion, c.url, c.statusContext, finished)
+		dbfx.Exec(t, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion, details_url, is_status_context, external_id)
+			VALUES ($1, $2, $3, $4, 'completed', $5, $6, $7, $8)`, pr, head, order[i], c.name, c.conclusion, c.url, c.statusContext, external)
 	}
 	dbfx.Cleanup(t, `DELETE FROM github_pull_request_check_run WHERE pr_id = $1`, pr)
 }
 
-func newChecksWakeup(t *testing.T, contexts ...checkContext) (dm wakeupDM, pr string, order []int) {
+func newChecksWakeup(t *testing.T, contexts ...checkContext) (dm wakeupDM, pr string, order []int, issue string) {
 	t.Helper()
 	dm = newWakeupDM(t)
 	testHandler.TaskService.PRSnapshotsEnabled = true
 	t.Cleanup(func() { testHandler.TaskService.PRSnapshotsEnabled = false })
-	issue := dbfx.Issue(t, "Checks issue")
+	issue = dbfx.Issue(t, "Checks issue")
 	pr = linkedPullRequest(t, issue, "aaa", "SUCCESS")
 	for i := range contexts {
 		order = append(order, i)
@@ -294,13 +295,13 @@ func newChecksWakeup(t *testing.T, contexts ...checkContext) (dm wakeupDM, pr st
 	if got := dm.wakeupTasks(t, dm.sessionID); len(got) != 0 {
 		t.Fatalf("fired on the result that existed when the wakeup was set: %v", got)
 	}
-	return dm, pr, order
+	return dm, pr, order, issue
 }
 
 func TestChatWakeupPullRequestChecksIgnoreAReorderingOfTheSameContexts(t *testing.T) {
-	a := checkContext{name: "build", url: "https://github.com/o/r/actions/runs/1/job/1", conclusion: "success", finishedAt: "2026-10-20T10:00:00Z"}
-	b := checkContext{name: "test", url: "https://github.com/o/r/actions/runs/1/job/2", conclusion: "success", finishedAt: "2026-10-20T10:01:00Z"}
-	dm, pr, _ := newChecksWakeup(t, a, b)
+	a := checkContext{name: "build", url: "https://github.com/o/r/actions/runs/1/job/1", conclusion: "success", externalID: "CR_1"}
+	b := checkContext{name: "test", url: "https://github.com/o/r/actions/runs/1/job/2", conclusion: "success", externalID: "CR_2"}
+	dm, pr, _, _ := newChecksWakeup(t, a, b)
 	// The same two finished results come back in the other order.
 	setContexts(t, pr, "aaa", []int{1, 0}, a, b)
 	dm.tick(t)
@@ -309,33 +310,57 @@ func TestChatWakeupPullRequestChecksIgnoreAReorderingOfTheSameContexts(t *testin
 	}
 }
 
-func TestChatWakeupPullRequestChecksSeeAFixedURLStatusRerunThatFinishedBetweenPolls(t *testing.T) {
-	status := checkContext{name: "ci/legacy", url: "https://ci.example/build/7", conclusion: "success", finishedAt: "2026-10-20T10:00:00Z", statusContext: true}
-	dm, pr, order := newChecksWakeup(t, status)
-	// The commit status is posted again: same context, same target URL, new creation time.
-	status.finishedAt = "2026-10-20T10:20:00Z"
-	setContexts(t, pr, "aaa", order, status)
+// A snapshot refresh that rewrites the same results is not a new result.
+func TestChatWakeupPullRequestChecksIgnoreARefreshThatRewritesTheSameResults(t *testing.T) {
+	a := checkContext{name: "ci/legacy", url: "https://ci.example/build/7", conclusion: "success", externalID: "SC_7", statusContext: true}
+	dm, pr, order, _ := newChecksWakeup(t, a)
+	setContexts(t, pr, "aaa", order, a)
 	dm.tick(t)
-	if got := dm.wakeupTasks(t, dm.sessionID); len(got) != 1 {
-		t.Fatalf("%d wakeup tasks after a fixed-URL status rerun finished between ticks, want 1", len(got))
+	if got := dm.wakeupTasks(t, dm.sessionID); len(got) != 0 {
+		t.Fatalf("a refresh that rewrote the same result fired the wakeup: %v", got)
 	}
 }
 
-// Rows written before the finished_at column carry no timestamps. When the
-// next snapshot refresh fills them in for the same result, that is not a new result.
-func TestChatWakeupPullRequestChecksAdoptTimestampsThatArriveLater(t *testing.T) {
+// The strongest case: the reposted status has the same name, state, target URL
+// and creation second as the old one. Only its node id differs.
+func TestChatWakeupPullRequestChecksSeeAStatusRerunWithTheSameURLAndTimestamp(t *testing.T) {
+	status := checkContext{name: "ci/legacy", url: "https://ci.example/build/7", conclusion: "success", externalID: "SC_7", statusContext: true}
+	dm, pr, order, _ := newChecksWakeup(t, status)
+	status.externalID = "SC_8"
+	setContexts(t, pr, "aaa", order, status)
+	dm.tick(t)
+	if got := dm.wakeupTasks(t, dm.sessionID); len(got) != 1 {
+		t.Fatalf("%d wakeup tasks after a reposted status with identical fields, want 1", len(got))
+	}
+}
+
+// Check data written before node ids were stored cannot name a result, so a
+// baseline taken from it could later either fire on a metadata-only backfill or
+// swallow a real change. The wakeup is refused until a refresh stored the ids.
+func TestChatWakeupChecksConditionWaitsForCheckDataThatCarriesIds(t *testing.T) {
+	dm := newWakeupDM(t)
+	testHandler.TaskService.PRSnapshotsEnabled = true
+	t.Cleanup(func() { testHandler.TaskService.PRSnapshotsEnabled = false })
+	issue := dbfx.Issue(t, "Legacy rows issue")
+	pr := linkedPullRequest(t, issue, "aaa", "SUCCESS")
 	legacy := checkContext{name: "build", url: "https://github.com/o/r/actions/runs/1/job/1", conclusion: "success"}
-	dm, pr, order := newChecksWakeup(t, legacy)
-	filled := legacy
-	filled.finishedAt = "2026-10-20T10:00:00Z"
-	setContexts(t, pr, "aaa", order, filled)
+	setContexts(t, pr, "aaa", []int{0}, legacy)
+
+	dm.createWithCondition(t, map[string]any{"issue": issue, "pr": "checks_finished"}).Want(http.StatusConflict)
+	if n := dbfx.Count(t, `SELECT count(*) FROM chat_wakeup WHERE chat_session_id = $1`, dm.sessionID); n != 0 {
+		t.Fatalf("a refused wakeup left %d rows", n)
+	}
+
+	// The refresh stores the ids. The wakeup can be set now, and a real rerun fires it.
+	legacy.externalID = "CR_1"
+	setContexts(t, pr, "aaa", []int{0}, legacy)
+	dm.createWithCondition(t, map[string]any{"issue": issue, "pr": "checks_finished"}).Want(http.StatusCreated)
 	dm.tick(t)
 	if got := dm.wakeupTasks(t, dm.sessionID); len(got) != 0 {
-		t.Fatalf("timestamps arriving for the same result fired the wakeup: %v", got)
+		t.Fatalf("fired on the result that existed when the wakeup was set: %v", got)
 	}
-	// A real rerun after that still counts.
-	filled.finishedAt = "2026-10-20T10:30:00Z"
-	setContexts(t, pr, "aaa", order, filled)
+	legacy.externalID = "CR_2"
+	setContexts(t, pr, "aaa", []int{0}, legacy)
 	dm.tick(t)
 	if got := dm.wakeupTasks(t, dm.sessionID); len(got) != 1 {
 		t.Fatalf("%d wakeup tasks after a real rerun, want 1", len(got))
