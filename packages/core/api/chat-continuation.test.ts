@@ -75,6 +75,13 @@ describe("chat continuation contracts", () => {
       expect(parsed.fork_message_count).toBeUndefined();
     }
   });
+  it("retains the source message a fork copied up to and drops malformed values", () => {
+    const messageID = "44444444-4444-4444-8444-444444444444";
+    expect(ChatSessionSchema.parse({ id: "fork", fork_source_message_id: messageID }).fork_source_message_id).toBe(messageID);
+    for (const value of ["../../other", 12, {}]) {
+      expect(ChatSessionSchema.parse({ id: "fork", fork_source_message_id: value }).fork_source_message_id).toBeUndefined();
+    }
+  });
   it("preserves a continuation summary and ignores an unknown future kind", () => {
     const message = { id: "message", chat_session_id: "chat", role: "assistant", message_kind: "continuation_summary" };
     expect(ChatMessageSchema.parse(message).message_kind).toBe("continuation_summary");

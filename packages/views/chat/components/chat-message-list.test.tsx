@@ -284,7 +284,7 @@ describe("ChatMessageList fork links", () => {
       }, five);
 
     it("renders 'Forked into' under the fork-point message, not at the end", () => {
-      fork([{ fork_last_message_id: "m2", created_at: "2026-10-13T01:00:00Z" }]);
+      fork([{ fork_source_message_id: "m2", created_at: "2026-10-13T01:00:00Z" }]);
       const link = screen.getByRole("link", { name: "Branch 0" });
       expect(rowOf("Message 2")).toContainElement(link);
       expect(rowOf("Message 5")).not.toContainElement(link);
@@ -294,25 +294,40 @@ describe("ChatMessageList fork links", () => {
 
     it("stacks several forks from one message oldest first", () => {
       fork([
-        { fork_last_message_id: "m2", created_at: "2026-10-13T02:00:00Z" },
-        { fork_last_message_id: "m2", created_at: "2026-10-13T01:00:00Z" },
-        { fork_last_message_id: "m4", created_at: "2026-10-13T03:00:00Z" },
+        { fork_source_message_id: "m2", created_at: "2026-10-13T02:00:00Z" },
+        { fork_source_message_id: "m2", created_at: "2026-10-13T01:00:00Z" },
+        { fork_source_message_id: "m4", created_at: "2026-10-13T03:00:00Z" },
       ]);
       expect(within(rowOf("Message 2")).getAllByRole("link").map((l) => l.textContent)).toEqual(["Branch 1", "Branch 0"]);
       expect(within(rowOf("Message 4")).getAllByRole("link").map((l) => l.textContent)).toEqual(["Branch 2"]);
     });
 
     it("falls back to created_at when the fork point is not loaded, never the footer", () => {
-      fork([{ fork_last_message_id: "m-older", created_at: "2026-10-13T00:03:30Z" }]);
+      fork([{ fork_source_message_id: "m-older", created_at: "2026-10-13T00:03:30Z" }]);
       const link = screen.getByRole("link", { name: "Branch 0" });
       expect(rowOf("Message 3")).toContainElement(link);
     });
 
     it("puts a fork older than the whole loaded page before the first message", () => {
-      fork([{ fork_last_message_id: "m-older", created_at: "2026-10-13T00:00:30Z" }]);
+      fork([{ fork_source_message_id: "m-older", created_at: "2026-10-13T00:00:30Z" }]);
       const link = screen.getByRole("link", { name: "Branch 0" });
       expect(rowOf("Message 1")).toContainElement(link);
       expect(link.compareDocumentPosition(screen.getByText("Message 1")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("anchors on the copied source message, not the child's own copy, past a late-visible queued row", () => {
+      // m3 was queued when the fork copied m1..m2, so it is not copied and
+      // surfaces later with a time before the fork's creation.
+      const withQueued = [m(1, "2026-10-13T00:01:00Z"), m(2, "2026-10-13T00:02:00Z"), m(3, "2026-10-13T00:02:30Z")];
+      renderFork({
+        sessionId: sourceId,
+        sessions: [session({}), child("child-0", "Branch 0", {
+          fork_source_message_id: "m2", fork_last_message_id: "child-copy-of-m2", created_at: "2026-10-13T00:03:00Z",
+        })],
+      }, withQueued);
+      const link = screen.getByRole("link", { name: "Branch 0" });
+      expect(rowOf("Message 2")).toContainElement(link);
+      expect(link.compareDocumentPosition(screen.getByText("Message 3")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
     it("keeps 'Continued in' in the footer", () => {

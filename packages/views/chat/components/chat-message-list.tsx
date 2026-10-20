@@ -278,10 +278,11 @@ function ForkedIntoAnnouncement({ child }: { child: ChatSession }) {
 }
 
 /**
- * Groups fork children under the message they forked at, oldest first. A child
- * whose fork point is not in `messages` (older page, or no pointer) goes under
- * the last message created at or before it, or in `before` — rendered above
- * the first message — when it predates them all.
+ * Groups fork children under the source message they copied up to, oldest
+ * first. A child whose source message is not in `messages` (older page, or a
+ * fork made before the pointer existed) goes under the last message created at
+ * or before it, or in `before` — rendered above the first message — when it
+ * predates them all.
  */
 function forkChildrenByMessage(messages: ChatMessage[], children: ChatSession[]) {
   const after = new Map<string, ChatSession[]>();
@@ -290,7 +291,7 @@ function forkChildrenByMessage(messages: ChatMessage[], children: ChatSession[])
   const loaded = new Set(messages.map((m) => m.id));
   const sorted = [...children].sort((a, b) => a.created_at.localeCompare(b.created_at));
   for (const child of sorted) {
-    const pointed = child.fork_last_message_id;
+    const pointed = child.fork_source_message_id;
     const anchor = pointed && loaded.has(pointed)
       ? pointed
       : messages.findLast((m) => m.created_at <= child.created_at)?.id;

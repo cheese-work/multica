@@ -204,7 +204,7 @@ func (h *Handler) ForkChatSession(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		child, err = qtx.SetChatForkSource(r.Context(), db.SetChatForkSourceParams{
 			ID: child.ID, ForkedFromSessionID: session.ID, ForkIdempotencyKey: key,
-			ForkLastMessageID: copied.ids[len(copied.ids)-1], ForkMessageCount: pgtype.Int4{Int32: int32(len(copied.ids)), Valid: true},
+			ForkLastMessageID: copied.ids[len(copied.ids)-1], ForkSourceMessageID: copied.sourceIDs[len(copied.sourceIDs)-1], ForkMessageCount: pgtype.Int4{Int32: int32(len(copied.ids)), Valid: true},
 		})
 	}
 	var sent service.DirectChatSendResult
