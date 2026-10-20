@@ -59,10 +59,11 @@ Commands:
       commits to it.
 
 State directory layout (under --state-dir, default deploy/cd/router/state):
-  generations/<timestamp>-<colour>.conf   one file per rendered generation
-  generations/<timestamp>-<colour>.json   colour + port metadata for that generation
+  generations/<timestamp>-<colour>.<unique>.conf   one file per rendered generation
+  generations/<timestamp>-<colour>.<unique>.json   colour + port metadata for that generation
   active.conf -> generations/<...>.conf   the symlink Nginx's own config includes
   active.json -> generations/<...>.json
+  previous.sha256                         retained config + metadata checksums for revert
   history.log                              append-only "<timestamp> <colour> <path>" audit trail
   nginx.pid                                the running router's PID (from `docker inspect`/`pidof` at start time)
 EOF
@@ -193,6 +194,38 @@ record_history() {
   printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$colour" "$path" >>"$state_dir/history.log"
 }
 
+check_generation() {
+  local relative=$1
+  if ! [[ "$relative" =~ ^generations/[[:alnum:]_.-]+\.conf$ ]] ||
+    [ ! -f "$state_dir/$relative" ] || [ -L "$state_dir/$relative" ] ||
+    [ ! -f "$state_dir/${relative%.conf}.json" ] || [ -L "$state_dir/${relative%.conf}.json" ]; then
+    echo "!! generation target or metadata is missing or unsafe" >&2
+    return 1
+  fi
+  node - "$state_dir/$relative" "$state_dir/${relative%.conf}.json" <<'NODE'
+const filesystem = require('fs');
+const config = filesystem.readFileSync(process.argv[2], 'utf8');
+const metadata = JSON.parse(filesystem.readFileSync(process.argv[3], 'utf8'));
+const ports = [metadata.backend_port, metadata.frontend_port];
+const expected = ports.map(port => `http://127.0.0.1:${port}`);
+const actual = [...config.matchAll(/^\s*proxy_pass\s+([^;]+);/gm)].map(match => match[1]);
+if (!['blue', 'green'].includes(metadata.colour) || typeof metadata.generated_at !== 'string' ||
+    !ports.every(port => Number.isInteger(port) && port > 0 && port <= 65535) ||
+    !expected.every(upstream => actual.includes(upstream)) ||
+    actual.some(upstream => !expected.includes(upstream))) {
+  throw new Error('generation bytes and metadata disagree');
+}
+NODE
+}
+
+check_retained_generation() {
+  check_generation "$previous_relative" &&
+    (cd "$state_dir" && sha256sum "$previous_relative" "${previous_relative%.conf}.json" | cmp -s previous.sha256 -) || {
+      echo "!! retained generation byte/metadata integrity check failed" >&2
+      return 1
+    }
+}
+
 prune_generations() {
   # Keep the newest $retained_count *.conf/*.json pairs; anything older is
   # removed. `active.conf`/`active.json` are symlinks, not real files under
@@ -200,11 +233,17 @@ prune_generations() {
   # only what they point at can be, and only once it is no longer the
   # newest N.
   local keep=$retained_count
+  local active_target previous_target
+  active_target="$(readlink "$state_dir/active.conf")"
+  previous_target="$(cat "$state_dir/previous.conf.path" 2>/dev/null || true)"
   local -a files
   mapfile -t files < <(find "$generations_dir" -maxdepth 1 -name '*.conf' -printf '%T@ %p\n' | sort -rn | awk '{print $2}')
   local i=0
   for f in "${files[@]}"; do
     i=$((i + 1))
+    if [ "$f" = "$state_dir/$active_target" ] || [ "$f" = "$state_dir/$previous_target" ]; then
+      continue
+    fi
     if [ "$i" -gt "$keep" ]; then
       rm -f "$f" "${f%.conf}.json"
     fi
@@ -219,9 +258,25 @@ case "$command" in
     fi
     case "$colour" in blue | green) ;; *) echo "invalid --colour: $colour (want blue or green)" >&2; exit 2 ;; esac
 
+    previous_target=""
+    previous_checksums=""
+    if [ -L "$state_dir/active.conf" ]; then
+      previous_target="$(readlink "$state_dir/active.conf")"
+      check_generation "$previous_target"
+      if [ "$(readlink "$state_dir/active.json")" != "${previous_target%.conf}.json" ]; then
+        echo "!! active config and metadata targets disagree" >&2
+        exit 1
+      fi
+      previous_checksums="$(cd "$state_dir" && sha256sum "$previous_target" "${previous_target%.conf}.json")"
+    elif [ -e "$state_dir/active.conf" ]; then
+      echo "!! active config is not a generation symlink" >&2
+      exit 1
+    fi
+
     ts="$(date -u +%Y%m%dT%H%M%SZ)"
-    candidate_conf="$generations_dir/${ts}-${colour}.conf"
-    candidate_json="$generations_dir/${ts}-${colour}.json"
+    candidate_conf="$(mktemp "$generations_dir/${ts}-${colour}.XXXXXX.conf")"
+    candidate_json="${candidate_conf%.conf}.json"
+    trap 'rm -f "$candidate_conf"' EXIT
 
     render "$colour" >"$candidate_conf"
     if ! validate_config "$candidate_conf"; then
@@ -230,9 +285,13 @@ case "$command" in
       exit 1
     fi
 
-    cat >"$candidate_json" <<JSON
+    (set -o noclobber; cat >"$candidate_json" <<JSON
 {"colour": "$colour", "generated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)", "backend_port": $(port_for backend "$colour"), "frontend_port": $(port_for frontend "$colour")}
 JSON
+    )
+    trap 'rm -f "$candidate_conf" "$candidate_json"' EXIT
+    check_generation "generations/$(basename "$candidate_conf")"
+    chmod 0444 "$candidate_conf" "$candidate_json"
 
     # Record what was active BEFORE this swap so `revert` has an exact
     # target — reading it off the (about-to-be-replaced) active.conf
@@ -246,10 +305,6 @@ JSON
     # this fix addresses, just one step removed: `revert` would read an
     # absolute path back out of previous.conf.path and hand it straight to
     # `ln -sfn` again.
-    previous_target=""
-    if [ -L "$state_dir/active.conf" ]; then
-      previous_target="$(readlink "$state_dir/active.conf")"
-    fi
 
     # The symlink swap itself: `ln -sfn` unlinks the old symlink and creates
     # the new one via `rename(2)`, which POSIX guarantees is atomic — a
@@ -268,10 +323,12 @@ JSON
     # absolute host path. A relative target resolves correctly under
     # whatever directory the symlink itself lives in, host or container
     # alike.
+    trap - EXIT
     ln -sfn "generations/$(basename "$candidate_conf")" "$state_dir/active.conf"
     ln -sfn "generations/$(basename "$candidate_json")" "$state_dir/active.json"
     if [ -n "$previous_target" ]; then
       printf '%s\n' "$previous_target" >"$state_dir/previous.conf.path"
+      printf '%s\n' "$previous_checksums" >"$state_dir/previous.sha256"
     fi
 
     reload_router "$state_dir"
@@ -293,10 +350,7 @@ JSON
     # both the host state dir and the container's differently-pathed mount.
     previous_relative="$(cat "$state_dir/previous.conf.path")"
     previous_conf="$state_dir/$previous_relative"
-    if [ ! -f "$previous_conf" ]; then
-      echo "recorded previous generation no longer exists: $previous_conf" >&2
-      exit 1
-    fi
+    check_retained_generation
     if ! validate_config "$previous_conf"; then
       echo "!! previous generation failed nginx -t on revert; refusing to activate a config that is now invalid" >&2
       exit 1
@@ -306,7 +360,13 @@ JSON
     ln -sfn "$previous_relative" "$state_dir/active.conf"
     [ -f "$previous_json" ] && ln -sfn "$previous_relative_json" "$state_dir/active.json"
     reload_router "$state_dir"
-    colour_reverted="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).colour)' "$previous_json" 2>/dev/null || echo unknown)"
+    if [ "$(readlink "$state_dir/active.conf")" != "$previous_relative" ] ||
+      [ "$(readlink "$state_dir/active.json")" != "$previous_relative_json" ]; then
+      echo "!! restored generation targets changed during reload" >&2
+      exit 1
+    fi
+    check_retained_generation
+    colour_reverted="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).colour)' "$previous_json")"
     record_history "$colour_reverted" "$previous_conf"
     echo "==> router reverted to previous generation: config=$previous_conf"
     ;;

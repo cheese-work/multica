@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-import hashlib
 import http.client
 import http.server
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import socket
 import subprocess
@@ -150,6 +148,13 @@ class ControllerTests(unittest.TestCase):
         self.state.joinpath("previous.conf.path").write_text("../outside.conf\n")
         result = self.invoke("revert")
         self.assertNotEqual(result.returncode, 0, "revert accepted an unretained target")
+
+    def test_revert_binds_checksums_to_the_recorded_target(self):
+        self.select()
+        self.select("green")
+        self.state.joinpath("previous.conf.path").write_text(str(self.state.joinpath("active.conf").readlink()) + "\n")
+        result = self.invoke("revert")
+        self.assertNotEqual(result.returncode, 0, "revert accepted a different target with unrelated checksums")
 
 
 class Backend(http.server.BaseHTTPRequestHandler):

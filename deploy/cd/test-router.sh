@@ -166,3 +166,4 @@ expect_exit 1 "$status" probe-backend-unreachable
 expect_contains "$output" "green" probe-backend-unreachable
 
 echo "router.sh control-flow fixtures passed"
+python3 deploy/cd/test-router-regressions.py
