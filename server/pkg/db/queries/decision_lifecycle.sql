@@ -61,3 +61,30 @@ WHERE request.id = answer.decision_request_id AND request.workspace_id = sqlc.ar
 UPDATE decision_request SET reask_delivered_at = clock_timestamp(), reask_outcome = sqlc.arg('outcome')
 WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') AND reask_delivered_at IS NULL
   AND status = 'cancelled' AND cancel_reason IN ('human_removed', 'lane_archived') AND cancel_notice_posted_at IS NOT NULL;
+
+-- name: ListDecisionCancelSiblings :many
+SELECT * FROM decision_request
+WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id') AND chat_session_id = sqlc.arg('chat_session_id')
+  AND status IN ('open', 'answered')
+ORDER BY created_at, id;
+
+-- name: DecisionIssueClosedAt :one
+-- Comments bump issue.updated_at, so the close time comes from the status change record;
+-- updated_at only covers an issue whose record is missing or not yet written.
+SELECT COALESCE(
+    (SELECT max(activity.created_at) FROM activity_log activity
+     WHERE activity.workspace_id = issue.workspace_id AND activity.issue_id = issue.id
+       AND activity.action = 'status_changed' AND activity.details->>'to' = issue.status),
+    issue.updated_at
+)::timestamptz AS closed_at
+FROM issue
+WHERE issue.workspace_id = sqlc.arg('workspace_id') AND issue.id = sqlc.arg('id');
+
+-- name: HasDecisionCancelNoticeSinceClose :one
+SELECT EXISTS (
+    SELECT 1 FROM decision_request request
+    WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.issue_id = sqlc.arg('issue_id')
+      AND request.chat_session_id = sqlc.arg('chat_session_id') AND request.id <> sqlc.arg('id')
+      AND request.status = 'cancelled' AND request.cancel_reason = 'issue_closed'
+      AND request.cancel_notice_posted_at >= sqlc.arg('closed_at')::timestamptz
+)::bool AS posted;
