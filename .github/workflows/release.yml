@@ -66,6 +66,16 @@ jobs:
             echo "::error::Invalid UPSTREAM_VERSION: '$upstream_version'."
             exit 1
           fi
+          tag="${GITHUB_REF_NAME}"
+          tag_core="${tag#v}"
+          tag_core="${tag_core%%-*}"
+          if [[ "$tag_core" != "$upstream_version" ]]; then
+            echo "::error::Release tag '$tag' core '$tag_core' does not match UPSTREAM_VERSION '$upstream_version'."
+            exit 1
+          fi
+          if [[ "$tag" == *-* ]]; then
+            echo "::warning::Prerelease tag '$tag' stamps UPSTREAM_VERSION '$upstream_version' (suffix stripped)."
+          fi
           commit_time="$(git show -s --format=%cI "$GITHUB_SHA")"
           stamp="$(sh scripts/release-stamp.sh "$commit_time")"
           echo "upstream_version=$upstream_version" >> "$GITHUB_OUTPUT"

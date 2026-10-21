@@ -62,6 +62,7 @@ test("CD qualification stamps plain upstream version, ICT commit build stamp, an
   assert.match(dockerfileWeb, /^ENV NEXT_PUBLIC_APP_COMMIT=\$NEXT_PUBLIC_APP_COMMIT$/m);
 
   assert.match(cdWorkflow, /tr -d '\[:space:\]' < UPSTREAM_VERSION/);
+  assert.match(cdWorkflow, /if \[\[ ! "\$upstream_version" =~ \^\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\$ \]\]; then/);
   assert.match(cdWorkflow, /git show -s --format=%cI "\$GITHUB_SHA"/);
   assert.match(cdWorkflow, /sh scripts\/release-stamp\.sh "\$build_date"/);
   assert.match(cdWorkflow, /--build-arg "VERSION=\$\{upstream_version\}"/);
@@ -95,6 +96,51 @@ test("release artifacts share one commit-time ICT stamp and UPSTREAM_VERSION fro
   assert.match(workflow, /NEXT_PUBLIC_APP_BUILD=\$\{\{ needs\.verify\.outputs\.build_stamp \}\}/);
   assert.match(workflow, /NEXT_PUBLIC_APP_COMMIT=\$\{\{ github\.sha \}\}/);
   assert.equal(workflow.match(/type=raw,value=\$\{\{ needs\.verify\.outputs\.display_version \}\}/g)?.length, 2);
+});
+
+test("release workflow verifies that tag core version matches UPSTREAM_VERSION and rejects mismatches", () => {
+  const stepMatch = workflow.match(/- name: Compute release build stamp[\s\S]*?run: \|\n([\s\S]*?)\n\n      - name: Setup Go/);
+  assert.ok(stepMatch, "Compute release build stamp step not found in release.yml");
+  const scriptBody = stepMatch[1]
+    .split("\n")
+    .map((line) => line.replace(/^ {10}/, ""))
+    .join("\n");
+
+  const tempDir = mkdtempSync(join(tmpdir(), "multica-release-tag-guard-"));
+  try {
+    const outFile = join(tempDir, "github_output");
+    writeFileSync(outFile, "");
+
+    const mismatch = spawnSync("bash", ["-euo", "pipefail", "-c", scriptBody], {
+      cwd: rootPath,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GITHUB_REF_NAME: "v0.6.4",
+        GITHUB_SHA: "HEAD",
+        GITHUB_OUTPUT: outFile,
+      },
+    });
+    assert.notEqual(mismatch.status, 0, "Expected mismatch between tag v0.6.4 and UPSTREAM_VERSION 0.6.3 to fail");
+    assert.match(`${mismatch.stdout}\n${mismatch.stderr}`, /does not match UPSTREAM_VERSION/);
+
+    const prereleaseMatch = spawnSync("bash", ["-euo", "pipefail", "-c", scriptBody], {
+      cwd: rootPath,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GITHUB_REF_NAME: "v0.6.3-rc1",
+        GITHUB_SHA: "HEAD",
+        GITHUB_OUTPUT: outFile,
+      },
+    });
+    assert.equal(prereleaseMatch.status, 0, prereleaseMatch.stderr);
+    const outContent = readFileSync(outFile, "utf8");
+    assert.match(outContent, /^upstream_version=0\.6\.3$/m);
+    assert.match(outContent, /^display_version=0\.6\.3-\d{8}-\d{4}$/m);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("GoReleaser builds snapshots without a release stamp", { skip: !process.env.GORELEASER_BIN }, () => {

@@ -135,6 +135,10 @@ jobs:
         run: |
           set -euo pipefail
           upstream_version="$(tr -d '[:space:]' < UPSTREAM_VERSION)"
+          if [[ ! "$upstream_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid UPSTREAM_VERSION: '$upstream_version'."
+            exit 1
+          fi
           build_date="$(git show -s --format=%cI "$GITHUB_SHA")"
           build_stamp="$(sh scripts/release-stamp.sh "$build_date")"
           docker buildx build \
@@ -157,6 +161,10 @@ jobs:
         run: |
           set -euo pipefail
           upstream_version="$(tr -d '[:space:]' < UPSTREAM_VERSION)"
+          if [[ ! "$upstream_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid UPSTREAM_VERSION: '$upstream_version'."
+            exit 1
+          fi
           build_date="$(git show -s --format=%cI "$GITHUB_SHA")"
           build_stamp="$(sh scripts/release-stamp.sh "$build_date")"
           docker buildx build \
