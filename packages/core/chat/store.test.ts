@@ -430,3 +430,27 @@ describe("chat store — draft upload ops", () => {
     });
   });
 });
+
+describe("session action guard", () => {
+  it("lets one archive or unarchive run per session at a time", () => {
+    const store = createChatStore({ storage: memStorage() });
+    expect(store.getState().beginSessionAction("s1", "archive")).toBe(true);
+    expect(store.getState().beginSessionAction("s1", "archive")).toBe(false);
+    expect(store.getState().beginSessionAction("s1", "unarchive")).toBe(false);
+    expect(store.getState().sessionActionPending).toEqual({ s1: "archive" });
+  });
+
+  it("keys the guard by session so other sessions are not blocked", () => {
+    const store = createChatStore({ storage: memStorage() });
+    store.getState().beginSessionAction("s1", "archive");
+    expect(store.getState().beginSessionAction("s2", "unarchive")).toBe(true);
+  });
+
+  it("releases the guard when the action ends", () => {
+    const store = createChatStore({ storage: memStorage() });
+    store.getState().beginSessionAction("s1", "archive");
+    store.getState().endSessionAction("s1");
+    expect(store.getState().sessionActionPending).toEqual({});
+    expect(store.getState().beginSessionAction("s1", "unarchive")).toBe(true);
+  });
+});

@@ -263,7 +263,12 @@
     "archive": "Archive",
     "unarchive": "Unarchive",
     "archived_title": "Archived",
-    "row_actions_aria": "Chat actions"
+    "row_actions_aria": "Chat actions",
+    "archived_toast": "Chat archived",
+    "archive_failed": "Couldn't archive this chat",
+    "unarchive_failed": "Couldn't unarchive this chat",
+    "pin_failed": "Couldn't update the pin",
+    "undo": "Undo"
   },
   "header": {
     "context_meter": "{{pct}}% of {{window}}",
