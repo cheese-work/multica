@@ -104,7 +104,7 @@ test.describe("Local search index", () => {
 
     await openWorkspaceMenu(page);
     await page.getByRole("menuitem", { name: "Log out" }).click();
-    await page.waitForURL("**/login", { timeout: 10_000, waitUntil: "domcontentloaded" });
+    await page.waitForURL(/\/login(\?.*)?$/, { timeout: 10_000, waitUntil: "domcontentloaded" });
 
     await expect.poll(() => searchIndexDatabases(page)).toEqual([]);
   });

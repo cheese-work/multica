@@ -57,6 +57,11 @@ test.describe("HTML preview fullscreen", () => {
       await page.goto(`/${workspaceSlug}/issues/${issue.identifier}`, {
         waitUntil: "domcontentloaded",
       });
+      if (location === "description") {
+        // A long description is folded behind "Show more" in this fork, which
+        // leaves nothing to scroll. Unfold it so the issue page has its scroll.
+        await page.getByRole("button", { name: /Show more/ }).first().click();
+      }
       const outer = await scrollContainer(
         page.getByText("Paragraph before the preview.", { exact: true }).first(),
       );

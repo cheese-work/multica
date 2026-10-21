@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { createTestApi, loginAsDefault, waitForPageText } from "./helpers";
+import { clickWhenHydrated, createTestApi, loginAsDefault, waitForPageText } from "./helpers";
 import type { TestApiClient } from "./fixtures";
 
 interface RowMeasurement {
@@ -724,12 +724,15 @@ test.describe("Durable thread fold state through row unmount/remount", () => {
 
     // Start (but do not send) a reply draft on the root thread, so
     // `rootIdsWithActiveReplyDraft` is active for it when Fold All runs.
-    await page.getByTestId("reply-composer-shell").first().click();
     const editor = page
       .locator('.ProseMirror[data-placeholder="Leave a reply..."], .ProseMirror:has([data-placeholder="Leave a reply..."])')
       .first();
+    await clickWhenHydrated(page.getByTestId("reply-composer-shell").first(), editor);
     await editor.fill("A reply I'm still typing when Fold All runs.");
-    await expect(editor).toHaveText("A reply I'm still typing when Fold All runs.");
+    // The placeholder leaves the DOM once there is text, so the empty-editor
+    // locator above no longer matches. Find the draft by what it holds.
+    const draft = page.locator(".ProseMirror", { hasText: "A reply I'm still typing when Fold All runs." });
+    await expect(draft).toHaveText("A reply I'm still typing when Fold All runs.");
 
     await page.keyboard.press("ControlOrMeta+K");
     const commandPalette = page.getByPlaceholder("Type a command or search...");
@@ -741,7 +744,7 @@ test.describe("Durable thread fold state through row unmount/remount", () => {
     // The draft itself must still be reachable — Fold All's pin keeps the
     // thread's composer/content from being ripped out from under active
     // typing (the part of the spec this test is NOT regressing on).
-    await expect(editor).toHaveText("A reply I'm still typing when Fold All runs.");
+    await expect(draft).toHaveText("A reply I'm still typing when Fold All runs.");
 
     // The bug: the latch effect used to see the length-disclosure entry
     // Fold All just cleared as "never expanded" and immediately re-persist
@@ -762,6 +765,8 @@ test.describe("Durable thread fold state through row unmount/remount", () => {
     const posted = page.waitForResponse(
       (response) => response.request().method() === "POST" && response.url().endsWith(`/api/issues/${issueId}/comments`),
     );
+    // Closing the command palette does not hand focus back to the draft.
+    await draft.click();
     await page.keyboard.press("ControlOrMeta+Enter");
     await posted;
 
