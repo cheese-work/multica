@@ -932,4 +932,21 @@ expect_not_contains "$cutover_quoting_output" "unexpected end of file" workflow-
 expect_exit 1 "$cutover_quoting_status" workflow-cutover-quoting
 expect_contains "$cutover_quoting_output" "cutover-controller.tar.sha256" workflow-cutover-quoting
 
+# ---------------------------------------------------------------------------
+# CHE-1923 / CHE-1924: C00 deployment jobs execute directly on the C00
+# self-hosted runner ([self-hosted, linux, x64, cheese-c00-deploy]) under the
+# c00-production environment without writing an SSH key, scanning SSH host keys,
+# or looping back over ssh/scp.
+expect_contains "$workflow_text" 'runs-on: [self-hosted, linux, x64, cheese-c00-deploy]' workflow-local-runner-no-ssh
+expect_contains "$workflow_text" 'environment: c00-production' workflow-local-runner-no-ssh
+expect_not_contains "$workflow_text" 'C00_SSH_HOST' workflow-local-runner-no-ssh
+expect_not_contains "$workflow_text" 'C00_SSH_USER' workflow-local-runner-no-ssh
+expect_not_contains "$workflow_text" 'C00_SSH_KEY' workflow-local-runner-no-ssh
+expect_not_contains "$workflow_text" 'c00_deploy_key' workflow-local-runner-no-ssh
+expect_not_contains "$workflow_text" 'ssh-keyscan' workflow-local-runner-no-ssh
+expect_not_contains "$workflow_text" 'ssh -i' workflow-local-runner-no-ssh
+expect_not_contains "$workflow_text" 'scp -i' workflow-local-runner-no-ssh
+expect_not_contains "$workflow_text" '${ssh_cmd[@]}' workflow-local-runner-no-ssh
+expect_contains "$workflow_text" '| bash -s' workflow-local-runner-no-ssh
+
 echo "deploy.sh control-flow fixtures passed"
