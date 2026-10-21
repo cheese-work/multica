@@ -8,12 +8,8 @@ import {
   aggregateByWeek,
   aggregateCostByModel,
   cacheHitRatePercent,
-  collectUnmappedModels,
   computeCostInWindow,
-  estimateCost,
-  estimateCostBreakdown,
   formatTokens,
-  isModelPriced,
   isSelfHealingRuntime,
   sliceWindow,
   summarizeTaskUsage,
@@ -21,6 +17,12 @@ import {
   todayIso,
   weekStartIso,
 } from "./utils";
+import {
+  collectUnmappedModels,
+  estimateCost,
+  estimateCostBreakdown,
+  isModelPriced,
+} from "@multica/core/runtimes/pricing";
 
 afterEach(() => {
   // Reset overrides so tests don't bleed pricing state into one another.

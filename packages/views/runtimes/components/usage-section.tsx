@@ -23,17 +23,19 @@ import {
   cacheHitRatePercent,
   formatTokens,
   formatUsd,
-  estimateCost,
-  estimateCacheSavings,
   aggregateByDate,
   aggregateByWeek,
   aggregateCostByAgent,
   aggregateCostByModel,
-  collectUnmappedModels,
   pctChange,
   sliceWindow,
   type CostByKey,
 } from "../utils";
+import {
+  estimateCost,
+  estimateCacheSavings,
+  collectUnmappedModels,
+} from "@multica/core/runtimes/pricing";
 import { KpiCard } from "./shared";
 import { ActorAvatar } from "../../common/actor-avatar";
 import {

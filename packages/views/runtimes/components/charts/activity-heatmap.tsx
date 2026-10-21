@@ -1,7 +1,15 @@
 import { useMemo } from "react";
 import type { RuntimeUsage } from "@multica/core/types";
 import { useCustomPricingStore } from "@multica/core/runtimes/custom-pricing-store";
-import { addDaysIso, estimateCost, formatUsd, todayIso, weekStartIso } from "../../utils";
+import {
+  addDaysIso,
+  formatUsd,
+  todayIso,
+  weekStartIso,
+} from "../../utils";
+import {
+  estimateCost,
+} from "@multica/core/runtimes/pricing";
 import { useLocale, useT } from "../../../i18n";
 
 // 26 weeks (~6 months) gives the heatmap real presence in the wider chart
