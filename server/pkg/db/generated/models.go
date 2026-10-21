@@ -577,6 +577,7 @@ type ChatSession struct {
 	ForkIdempotencyKey     pgtype.Text        `json:"fork_idempotency_key"`
 	ForkLastMessageID      pgtype.UUID        `json:"fork_last_message_id"`
 	ForkMessageCount       pgtype.Int4        `json:"fork_message_count"`
+	ForkSourceMessageID    pgtype.UUID        `json:"fork_source_message_id"`
 }
 
 type ChatWakeup struct {
