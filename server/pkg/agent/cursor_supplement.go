@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -221,6 +222,9 @@ func cursorHooksFileIsManaged(data []byte) bool {
 			return false
 		}
 	}
+	if version, ok := file["version"]; ok && string(version) != "1" {
+		return false
+	}
 	var hooks map[string][]map[string]json.RawMessage
 	if json.Unmarshal(file["hooks"], &hooks) != nil || len(hooks) == 0 {
 		return false
@@ -239,10 +243,18 @@ func cursorHooksFileIsManaged(data []byte) bool {
 					return false
 				}
 			}
+			if timeout, ok := entry["timeout"]; ok && string(timeout) != strconv.Itoa(cursorHookTimeoutSeconds) {
+				return false
+			}
 		}
 	}
 	return true
 }
+
+// cursorHooksRaceHook lets a test act at the points where a user editing the
+// workdir could slip in between two steps of the install and cleanup: stages
+// "before-write" and "cleanup-checked". It does nothing in production.
+var cursorHooksRaceHook = func(stage string) {}
 
 func (s *cursorSupplementSession) writeHooksFile() error {
 	if err := CursorHooksInstallable(filepath.Dir(filepath.Dir(s.hooksPath))); err != nil {
@@ -251,19 +263,102 @@ func (s *cursorSupplementSession) writeHooksFile() error {
 	if err := os.MkdirAll(filepath.Dir(s.hooksPath), 0o755); err != nil {
 		return fmt.Errorf("create .cursor dir: %w", err)
 	}
-	if err := os.WriteFile(s.hooksPath, s.hooksData, 0o600); err != nil {
+	cursorHooksRaceHook("before-write")
+	// The check above and this write are two steps, and the user can create or
+	// replace hooks.json between them. Create exclusively so that never loses
+	// their file; a leftover from an earlier run is moved aside first and put
+	// back if it turns out not to be Multica's.
+	err := s.createHooksFile()
+	if errors.Is(err, fs.ErrExist) {
+		if err := s.clearManagedLeftover(); err != nil {
+			return err
+		}
+		err = s.createHooksFile()
+	}
+	if errors.Is(err, fs.ErrExist) {
+		return fmt.Errorf("workdir gained its own %s while the hooks were installed", s.hooksPath)
+	}
+	if err != nil {
 		return fmt.Errorf("write cursor hooks: %w", err)
 	}
 	return nil
 }
 
+// createHooksFile writes the hooks file only if nothing is at the path.
+func (s *cursorSupplementSession) createHooksFile() error {
+	f, err := os.OpenFile(s.hooksPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(s.hooksData); err != nil {
+		_ = f.Close()
+		_ = os.Remove(s.hooksPath)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(s.hooksPath)
+		return err
+	}
+	return nil
+}
+
+// takeAside moves hooks.json out of the way in one atomic step and returns
+// where it went, so what is inspected is exactly what was moved.
+func (s *cursorSupplementSession) takeAside(kind string) (string, error) {
+	aside := s.hooksPath + ".multica-" + s.nonce + "-" + kind
+	if err := os.Rename(s.hooksPath, aside); err != nil {
+		return "", err
+	}
+	return aside, nil
+}
+
+// putBack returns a moved-aside file to hooks.json without replacing anything
+// that appeared there since. If something did, the moved file stays beside it
+// under its own name: nothing the user wrote is ever deleted.
+func (s *cursorSupplementSession) putBack(aside string) error {
+	if err := os.Link(aside, s.hooksPath); err != nil {
+		return fmt.Errorf("%s was replaced while it was set aside; the earlier version is kept at %s", s.hooksPath, aside)
+	}
+	return os.Remove(aside)
+}
+
+// clearManagedLeftover removes a hooks.json left by an earlier run, provided
+// it really is Multica's.
+func (s *cursorSupplementSession) clearManagedLeftover() error {
+	aside, err := s.takeAside("leftover")
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("set aside cursor hooks: %w", err)
+	}
+	data, err := os.ReadFile(aside)
+	if err != nil || !cursorHooksFileIsManaged(data) {
+		if putErr := s.putBack(aside); putErr != nil {
+			return putErr
+		}
+		return fmt.Errorf("workdir already has an unmanaged %s", s.hooksPath)
+	}
+	return os.Remove(aside)
+}
+
 func (s *cursorSupplementSession) removeHooksFile() {
-	current, err := os.ReadFile(s.hooksPath)
-	if err != nil || !bytes.Equal(current, s.hooksData) {
+	// Take the file aside first: what is compared is then exactly what is
+	// deleted, and a file the user writes meanwhile lands at the path untouched.
+	aside, err := s.takeAside("cleanup")
+	if err != nil {
 		return
 	}
-	if err := os.Remove(s.hooksPath); err != nil && s.logger != nil {
-		s.logger.Warn("cursor hooks cleanup failed", "path", s.hooksPath, "error", err)
+	current, readErr := os.ReadFile(aside)
+	cursorHooksRaceHook("cleanup-checked")
+	if readErr == nil && bytes.Equal(current, s.hooksData) {
+		if err := os.Remove(aside); err != nil && s.logger != nil {
+			s.logger.Warn("cursor hooks cleanup failed", "path", s.hooksPath, "error", err)
+		}
+		return
+	}
+	if err := s.putBack(aside); err != nil && s.logger != nil {
+		s.logger.Warn("cursor hooks cleanup kept the user's file", "path", s.hooksPath, "error", err)
 	}
 }
 

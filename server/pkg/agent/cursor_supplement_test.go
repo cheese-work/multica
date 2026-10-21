@@ -438,6 +438,153 @@ func TestCursorSupplementReplacesLeftoverManagedCommand(t *testing.T) {
 	}
 }
 
+// version and timeout are Multica's too. A hooks.json that carries another
+// value for either was written or edited by someone else.
+func TestCursorSupplementKeepsHooksFileWithForeignMetadata(t *testing.T) {
+	command, err := json.Marshal(cursorHookShellCommand([]string{"/old/multica", CursorHookHelperArg}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := func(timeout string) string {
+		return `{"command":` + string(command) + `,"timeout":` + timeout + `}`
+	}
+	cases := map[string]string{
+		"other version":         `{"version":2,"hooks":{"postToolUse":[` + entry("10") + `]}}`,
+		"version as a string":   `{"version":"1","hooks":{"postToolUse":[` + entry("10") + `]}}`,
+		"other timeout":         `{"version":1,"hooks":{"postToolUse":[` + entry("9999") + `]}}`,
+		"timeout as a string":   `{"version":1,"hooks":{"postToolUse":[` + entry(`"10"`) + `]}}`,
+		"empty event list only": `{"version":1,"hooks":{"postToolUse":[]}}`,
+	}
+	for name, content := range cases {
+		t.Run(name, func(t *testing.T) {
+			cwd := t.TempDir()
+			path := filepath.Join(cwd, ".cursor", "hooks.json")
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := CursorHooksInstallable(cwd); err == nil {
+				t.Fatal("CursorHooksInstallable accepted foreign metadata")
+			}
+			if got, _ := os.ReadFile(path); string(got) != content {
+				t.Fatalf("hooks.json changed to %q", got)
+			}
+		})
+	}
+}
+
+func setCursorHooksRaceHook(t *testing.T, hook func(stage string)) {
+	t.Helper()
+	cursorHooksRaceHook = hook
+	t.Cleanup(func() { cursorHooksRaceHook = func(string) {} })
+}
+
+// The check that the workdir has no hooks of its own and the write that
+// follows are two steps. A user who creates hooks.json between them keeps it.
+func TestCursorSupplementInstallDoesNotOverwriteAFileCreatedMeanwhile(t *testing.T) {
+	cwd := t.TempDir()
+	path := filepath.Join(cwd, ".cursor", "hooks.json")
+	user := []byte(`{"version":1,"hooks":{"afterFileEdit":[{"command":"./format.sh"}]}}`)
+	setCursorHooksRaceHook(t, func(stage string) {
+		if stage == "before-write" {
+			if err := os.WriteFile(path, user, 0o644); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	if s, err := startCursorSupplementSession(t.Context(), cwd, testCursorHookCommand, slog.Default()); err == nil {
+		s.close()
+		t.Fatal("started over a hooks.json created after the check")
+	}
+	if got, _ := os.ReadFile(path); string(got) != string(user) {
+		t.Fatalf("the user's hooks.json became %q", got)
+	}
+}
+
+// The same, when an earlier run left a managed file that the user then
+// replaced with their own before the write.
+func TestCursorSupplementInstallDoesNotOverwriteAReplacedLeftover(t *testing.T) {
+	cwd := t.TempDir()
+	path := filepath.Join(cwd, ".cursor", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	leftover, err := cursorHooksFileData(cursorHookShellCommand([]string{"/old/multica", CursorHookHelperArg}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, leftover, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	user := []byte(`{"version":1,"hooks":{"afterFileEdit":[{"command":"./format.sh"}]}}`)
+	setCursorHooksRaceHook(t, func(stage string) {
+		if stage == "before-write" {
+			if err := os.WriteFile(path, user, 0o644); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	if s, err := startCursorSupplementSession(t.Context(), cwd, testCursorHookCommand, slog.Default()); err == nil {
+		s.close()
+		t.Fatal("started over a user file that replaced the leftover")
+	}
+	if got, _ := os.ReadFile(path); string(got) != string(user) {
+		t.Fatalf("the user's hooks.json became %q", got)
+	}
+	entries, _ := os.ReadDir(filepath.Dir(path))
+	if len(entries) != 1 {
+		t.Fatalf(".cursor holds %d entries, want only hooks.json", len(entries))
+	}
+}
+
+// Cleanup removes the file only if it is still Multica's. A user who writes
+// their own hooks.json after cleanup has looked keeps it.
+func TestCursorSupplementCleanupKeepsAFileWrittenMeanwhile(t *testing.T) {
+	cwd := t.TempDir()
+	s, err := startCursorSupplementSession(t.Context(), cwd, testCursorHookCommand, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(cwd, ".cursor", "hooks.json")
+	user := []byte(`{"version":1,"hooks":{"afterFileEdit":[{"command":"./format.sh"}]}}`)
+	setCursorHooksRaceHook(t, func(stage string) {
+		if stage == "cleanup-checked" {
+			if err := os.WriteFile(path, user, 0o644); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	s.close()
+	if got, _ := os.ReadFile(path); string(got) != string(user) {
+		t.Fatalf("cleanup left %q, want the user's file", got)
+	}
+}
+
+// A user who edited the managed file by hand keeps their version, and cleanup
+// leaves nothing behind beside it.
+func TestCursorSupplementCleanupKeepsAnEditedFile(t *testing.T) {
+	cwd := t.TempDir()
+	s, err := startCursorSupplementSession(t.Context(), cwd, testCursorHookCommand, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(cwd, ".cursor", "hooks.json")
+	edited := []byte(`{"version":1,"hooks":{"postToolUse":[{"command":"./mine.sh"}]}}`)
+	if err := os.WriteFile(path, edited, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s.close()
+	if got, _ := os.ReadFile(path); string(got) != string(edited) {
+		t.Fatalf("cleanup left %q, want the edited file", got)
+	}
+	entries, _ := os.ReadDir(filepath.Dir(path))
+	if len(entries) != 1 {
+		t.Fatalf(".cursor holds %d entries, want only hooks.json", len(entries))
+	}
+}
+
 func TestCursorHookRelayFailsOpen(t *testing.T) {
 	s, _ := startTestCursorSupplements(t, t.Context())
 	s.activate("conv-main")
