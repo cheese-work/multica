@@ -95,13 +95,17 @@ export async function openWorkspaceMenu(page: Page) {
  * is dropped without a trace, so the editor never mounts. React tags a node
  * with `__reactProps$…` when it attaches, so wait for that, then click.
  */
-export async function clickWhenHydrated(locator: Locator, expected?: Locator) {
+export async function waitForHydrated(locator: Locator) {
   await expect
     .poll(
       () => locator.evaluate((el) => Object.keys(el).some((key) => key.startsWith("__reactProps"))),
       { timeout: 30000 },
     )
     .toBe(true);
+}
+
+export async function clickWhenHydrated(locator: Locator, expected?: Locator) {
+  await waitForHydrated(locator);
   if (!expected) {
     await locator.click();
     return;
