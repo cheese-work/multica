@@ -351,6 +351,44 @@ export interface ChatQueuedTask {
   created_at: string;
   message_id?: string;
   content?: string;
+  /** "wakeup" for a turn a scheduled follow-up started; its content is hidden. */
+  task_kind?: string;
+}
+
+/**
+ * What a pending follow-up (DM wakeup) waits for besides its deadline. The
+ * server stores more fields than the strip reads; unknown ones are ignored.
+ */
+export interface ChatWakeupCondition {
+  issue_id?: string;
+  /** Display identifier of the watched issue, e.g. "CHE-1812". */
+  identifier?: string;
+  check?: {
+    type?: string;
+    field?: string;
+    value?: unknown;
+    event?: string;
+  };
+  comment_by?: { type: string; id: string };
+}
+
+/**
+ * A pending follow-up an agent scheduled in a DM. `fire_at` is the time, or the
+ * deadline when `condition` is set. `chat_session_id` differs from the open DM
+ * for a follow-up set in an earlier DM of the same conversation.
+ */
+export interface ChatWakeup {
+  id: string;
+  chat_session_id: string;
+  instruction: string;
+  fire_at: string;
+  status: string;
+  task_id?: string | null;
+  condition?: ChatWakeupCondition | null;
+}
+
+export interface ChatWakeupList {
+  wakeups: ChatWakeup[];
 }
 
 export interface PrioritizeQueuedChatTaskResponse {

@@ -208,6 +208,9 @@ export function applyChatMessageToCache(
   }
   invalidateChatMessageQueries(qc, sessionId);
   qc.invalidateQueries({ queryKey: chatKeys.pendingTask(sessionId) });
+  // A turn can schedule a follow-up, and a fired one stops being pending; the
+  // server sends no event of its own for either.
+  qc.invalidateQueries({ queryKey: chatKeys.wakeups(sessionId) });
 }
 
 export function applyChatDoneToCache(
@@ -263,6 +266,9 @@ export function applyChatDoneToCache(
   // that took the fallback branch above.
   invalidateChatMessageQueries(qc, sessionId);
   qc.invalidateQueries({ queryKey: chatKeys.pendingTask(sessionId) });
+  // A turn can schedule a follow-up, and a fired one stops being pending; the
+  // server sends no event of its own for either.
+  qc.invalidateQueries({ queryKey: chatKeys.wakeups(sessionId) });
 }
 
 /**
@@ -700,6 +706,7 @@ function invalidateWorkspaceScopedQueries(qc: QueryClient): void {
   qc.invalidateQueries({ queryKey: chatKeys.messagesAll() });
   qc.invalidateQueries({ queryKey: chatKeys.messagesPageAll() });
   qc.invalidateQueries({ queryKey: chatKeys.pendingTaskAll() });
+  qc.invalidateQueries({ queryKey: chatKeys.wakeupsAll() });
   qc.invalidateQueries({ queryKey: chatKeys.taskMessagesAll() });
   // A chat:cancel_finalized broadcast missed while disconnected is exactly
   // what the durable draft-restore rows exist for (#5219) — re-pull them so

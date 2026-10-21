@@ -20,6 +20,8 @@ import type {
   ChatMessage,
   ChatDraftRestoresResponse,
   ChatPendingTask,
+  ChatWakeup,
+  ChatWakeupList,
   ChatSession,
   ChatSessionUsage,
   PrioritizeQueuedChatTaskResponse,
@@ -2358,6 +2360,48 @@ export const ChatPendingTaskSchema: z.ZodType<ChatPendingTask> = z.object({
 }).loose();
 
 export const EMPTY_CHAT_PENDING_TASK: ChatPendingTask = {};
+
+// A pending follow-up an agent scheduled in a DM. A malformed row is dropped
+// without discarding the valid ones; unknown fields are ignored so a newer
+// server can add to the row.
+const ChatWakeupSchema = z.object({
+  id: z.string().min(1),
+  chat_session_id: z.string().default(""),
+  instruction: z.string().default(""),
+  fire_at: z.string().default(""),
+  status: z.string().default("pending"),
+  task_id: z.string().nullish(),
+  condition: z
+    .object({
+      issue_id: z.string().optional(),
+      identifier: z.string().optional(),
+      check: z
+        .object({
+          type: z.string().optional(),
+          field: z.string().optional(),
+          value: z.unknown().optional(),
+          event: z.string().optional(),
+        })
+        .loose()
+        .optional(),
+      comment_by: z.object({ type: z.string(), id: z.string() }).optional(),
+    })
+    .loose()
+    .nullish(),
+}).loose();
+
+export const ChatWakeupListSchema: z.ZodType<ChatWakeupList> = z.object({
+  wakeups: z
+    .array(z.unknown())
+    .transform((rows) =>
+      rows.flatMap((row) => {
+        const parsed = ChatWakeupSchema.safeParse(row);
+        return parsed.success ? [parsed.data as ChatWakeup] : [];
+      }),
+    ),
+}).loose();
+
+export const EMPTY_CHAT_WAKEUP_LIST: ChatWakeupList = { wakeups: [] };
 
 export const SendChatMessageResponseSchema: z.ZodType<SendChatMessageResponse> = z.object({
   message_id: z.string().min(1),

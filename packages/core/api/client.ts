@@ -108,6 +108,7 @@ import type {
   ChatMessagesPage,
   ChatDraftRestoresResponse,
   ChatPendingTask,
+  ChatWakeupList,
   PrioritizeQueuedChatTaskResponse,
   PendingChatTasksResponse,
   HasPendingChatTasksResponse,
@@ -277,6 +278,7 @@ import {
   ChatMessageListSchema,
   ChatMessagesPageSchema,
   ChatPendingTaskSchema,
+  ChatWakeupListSchema,
   ChatSessionListSchema,
   ChatSessionSchema,
   ChatContinueResponseSchema,
@@ -311,6 +313,7 @@ import {
   EMPTY_ATTACHMENT,
   EMPTY_CHAT_MESSAGE_LIST,
   EMPTY_CHAT_PENDING_TASK,
+  EMPTY_CHAT_WAKEUP_LIST,
   EMPTY_CHAT_SESSION,
   EMPTY_CHAT_SESSION_LIST,
   EMPTY_PRIORITIZE_QUEUED_CHAT_TASK_RESPONSE,
@@ -4054,6 +4057,21 @@ export class ApiClient {
       { started: false },
       { endpoint: "POST /api/chat/sessions/:id/onboarding" },
     );
+  }
+
+  /** Pending follow-ups of a DM and of the DMs it was continued from. Creator only. */
+  async listChatWakeups(sessionId: string): Promise<ChatWakeupList> {
+    const raw = await this.fetch<unknown>(`/api/chat/sessions/${sessionId}/wakeups`);
+    return parseWithFallback(raw, ChatWakeupListSchema, EMPTY_CHAT_WAKEUP_LIST, {
+      endpoint: "GET /api/chat/sessions/:id/wakeups",
+    });
+  }
+
+  /** The body is not read: a 200 is the cancel, a 404 means it is no longer pending. */
+  async cancelChatWakeup(sessionId: string, wakeupId: string): Promise<void> {
+    await this.fetch<unknown>(`/api/chat/sessions/${sessionId}/wakeups/${wakeupId}`, {
+      method: "DELETE",
+    });
   }
 
   async getPendingChatTask(sessionId: string): Promise<ChatPendingTask> {
