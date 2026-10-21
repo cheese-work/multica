@@ -72,9 +72,15 @@ func TestCursorSupplementHookCommandRequiresInstallableHooks(t *testing.T) {
 		t.Fatal("steering offered for a workdir whose own hooks.json blocks the managed hooks")
 	}
 
-	leftover := writeHooks(t, `{"version":1,"hooks":{"postToolUse":[{"command":"'/opt/multica' '`+agent.CursorHookHelperArg+`'"}]}}`)
+	// What Multica writes carries both version and timeout.
+	leftover := writeHooks(t, `{"version":1,"hooks":{"postToolUse":[{"command":"'/opt/multica' '`+agent.CursorHookHelperArg+`'","timeout":10}]}}`)
 	if _, ok := cursorSupplementHookCommand(&execenv.Environment{WorkDir: leftover}); !ok {
 		t.Fatal("steering refused for a workdir holding only Multica's own hooks.json")
+	}
+
+	noTimeout := writeHooks(t, `{"version":1,"hooks":{"postToolUse":[{"command":"'/opt/multica' '`+agent.CursorHookHelperArg+`'"}]}}`)
+	if _, ok := cursorSupplementHookCommand(&execenv.Environment{WorkDir: noTimeout}); ok {
+		t.Fatal("steering offered for a hooks.json that Multica did not write")
 	}
 
 	cursorFile := t.TempDir()
