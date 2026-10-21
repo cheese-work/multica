@@ -1,1 +1,1 @@
-ALTER TABLE chat_message DROP COLUMN IF EXISTS lineage_message_id;
+ALTER TABLE chat_message DROP COLUMN IF EXISTS lineage_message_ids;

@@ -395,3 +395,26 @@ func TestForkInheritsDecisionCardsAsReadOnlyProvenance(test *testing.T) {
 		test.Fatalf("timeline pointers moved: %v %v", owner["decision_source_session_id"], owner["decision_source_message_id"])
 	}
 }
+
+// A decision can be recorded against a message of a fork. A later fork of that
+// fork must still find the card, so lineage keeps every ancestor, not only the root.
+func TestForkOfForkFindsDecisionRecordedOnIntermediateCopy(test *testing.T) {
+	fixture := newRecordedCardFixture(test)
+	first := fixture.forkAsHuman(test, fixture.sessionID, "cards-chain-1")
+	var copyID string
+	dbfx.QueryRow(test, `SELECT id::text FROM chat_message WHERE chat_session_id = $1 AND role = 'user'`, first.Session.ID).Scan(&copyID)
+	dbfx.Exec(test, `UPDATE decision_answer SET chat_message_ids = ARRAY[$1::uuid] WHERE id = $2`, copyID, fixture.answerID)
+
+	second := fixture.forkAsHuman(test, first.Session.ID, "cards-chain-2")
+	for _, message := range fixture.messagesOf(test, second.Session.ID) {
+		if message["role"] != "user" {
+			continue
+		}
+		quotes, _ := message["decision_quotes"].([]any)
+		if len(quotes) != 1 || quotes[0].(map[string]any)["inherited"] != true {
+			test.Fatalf("second fork lost the card recorded on the first fork's copy: %v", message["decision_quotes"])
+		}
+		return
+	}
+	test.Fatal("second fork has no user bubble")
+}

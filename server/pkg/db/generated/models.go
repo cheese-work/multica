@@ -542,7 +542,7 @@ type ChatMessage struct {
 	ChannelTypingSettled          bool               `json:"channel_typing_settled"`
 	SentVia                       pgtype.Text        `json:"sent_via"`
 	DecisionAnswerID              pgtype.UUID        `json:"decision_answer_id"`
-	LineageMessageID              pgtype.UUID        `json:"lineage_message_id"`
+	LineageMessageIds             []pgtype.UUID      `json:"lineage_message_ids"`
 }
 
 type ChatPinnedAgent struct {

@@ -1319,7 +1319,7 @@ func (h *Handler) chatMessageResponses(ctx context.Context, workspaceID string, 
 			resp[i].DecisionQuotes = cards
 		}
 		if card, ok := refs[uuidToString(m.DecisionAnswerID)]; ok && m.MessageKind == protocol.ChatMessageKindDecisionReference {
-			card.Inherited = m.LineageMessageID.Valid
+			card.Inherited = len(m.LineageMessageIds) > 0
 			resp[i].DecisionRef = &card
 		}
 	}

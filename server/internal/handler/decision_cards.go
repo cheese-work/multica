@@ -159,16 +159,14 @@ func (handler *Handler) decisionCardsForMessages(ctx context.Context, workspaceI
 		return nil, nil
 	}
 	var answerIDs, messageIDs []pgtype.UUID
-	// A forked copy is matched through the message it was copied from, because
-	// the decision's source ids are the original DM's.
+	// A forked copy is matched through every message it descends from, because
+	// a decision's source ids are those of the DM it was recorded in.
 	pageByLookup := make(map[pgtype.UUID][]db.ChatMessage, len(messages))
 	for _, message := range messages {
-		lookup := message.ID
-		if message.LineageMessageID.Valid {
-			lookup = message.LineageMessageID
+		for _, lookup := range append([]pgtype.UUID{message.ID}, message.LineageMessageIds...) {
+			messageIDs = append(messageIDs, lookup)
+			pageByLookup[lookup] = append(pageByLookup[lookup], message)
 		}
-		messageIDs = append(messageIDs, lookup)
-		pageByLookup[lookup] = append(pageByLookup[lookup], message)
 		if message.DecisionAnswerID.Valid {
 			answerIDs = append(answerIDs, message.DecisionAnswerID)
 		}
@@ -181,7 +179,7 @@ func (handler *Handler) decisionCardsForMessages(ctx context.Context, workspaceI
 		for _, sourceID := range row.ChatMessageIds {
 			for _, message := range pageByLookup[sourceID] {
 				shown := card
-				shown.Inherited = message.LineageMessageID.Valid
+				shown.Inherited = sourceID != message.ID
 				quotes[uuidToString(message.ID)] = append(quotes[uuidToString(message.ID)], shown)
 			}
 		}
