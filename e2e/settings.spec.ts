@@ -47,6 +47,18 @@ test.describe("Settings", () => {
     // Stateful: connections is empty until the (mocked) connect flow lands.
     let connected = false;
 
+    // The Composio settings sit behind the composio_mcp_apps flag, which is
+    // off unless the deployment turns it on. Keep the real config and flip
+    // only that flag.
+    await page.route("**/api/config", async (route) => {
+      const response = await route.fetch();
+      const config = await response.json();
+      await route.fulfill({
+        response,
+        json: { ...config, feature_flags: { ...config.feature_flags, composio_mcp_apps: true } },
+      });
+    });
+
     await page.route("**/api/integrations/composio/toolkits", (route) =>
       route.fulfill({
         status: 200,
@@ -96,13 +108,13 @@ test.describe("Settings", () => {
     });
 
     await page.goto(settingsUrl, { waitUntil: "domcontentloaded" });
-    await waitForPageText(page, "Composio");
+    await waitForPageText(page, "Connect apps your agents can use.");
 
     // Notion starts disconnected → click Connect.
     await page.getByRole("button", { name: /^Connect$/ }).first().click();
 
     // Success toast from the simulated callback redirect.
-    await expect(page.getByText("Connected").first()).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText("Connected", { exact: true }).first()).toBeVisible({ timeout: 10000 });
 
     // List refreshed without a manual reload: the Notion card now offers
     // Disconnect, and the one-shot ?connected param has been stripped.
