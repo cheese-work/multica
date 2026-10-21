@@ -557,7 +557,7 @@ change as part of D2 work.
 for a `main` commit, and can still be dispatched by hand. The automatic path
 adds one job the manual path does not: `prepare-release-candidate`.
 
-The `deploy` job runs directly on the C00 self-hosted runner (`[self-hosted, linux, x64, cheese-c00-deploy]`) and stages the content-addressed cutover bundle into a fresh `remote_dir` (`${C00_STATE_DIR%/}/cd-deploy-<ts>`), verifies `cutover-controller.tar.sha256` and `verify-cutover-bundle.sh`, and executes `cutover.sh` locally through `render-cutover-remote-script.sh | bash -s` without opening an SSH or SCP session.
+The `deploy` job runs directly on the C00 self-hosted runner (`[self-hosted, linux, x64, cheese-c00-deploy]`) and stages the content-addressed cutover bundle into a fresh `remote_dir` (`${C00_STATE_DIR%/}/cd-deploy-<ts>`), verifies `cutover-controller.tar.sha256` and `verify-cutover-bundle.sh`, and executes `cutover.sh` locally through `render-cutover-remote-script.sh | env -i HOME="$HOME" PATH="$PATH" bash -s` without opening an SSH or SCP session or leaking ambient step environment variables into the cutover shell.
 
 D1's automatic main-push build only ever emits a `build-evidence` manifest,
 which `admission.mjs` refuses. A deployable `release-candidate` additionally
@@ -729,14 +729,22 @@ The fix is a dedicated registry credential rather than any App/org
 permission change: a `read:packages`-only classic PAT, stored as the
 `GHCR_PULL_TOKEN` environment secret on `c00-production` (scoped there, not
 as a repo secret, so D1's `cd-qualification.yml` stays credential-free).
-`deploy.sh` logs in to `ghcr.io` with it immediately before the pull step
-and logs out unconditionally on exit — success, rollback, or an early
-argument/file-check failure — via a single EXIT trap; unset, both steps are
-skipped (local `--dry-run` runs, or a host with its own credential store).
-`cd-deploy.yml`'s `deploy` job forwards the secret to the remote SSH session
-by exporting it inside a script piped over the session's stdin, never as a
-command-line argument or a file written to C00, so it is not visible to
-`ps` or left behind by the `remote_dir` cleanup. Covered by
-`deploy/cd/test-deploy.sh`'s `ghcr-login-happy-path` and `ghcr-login-fails`
-scenarios (mocked `docker login`/`logout`; a real end-to-end pull against
-GHCR is still pending the runner above).
+`deploy.sh` and `cutover.sh` (`deploy-lib.sh`) log in to `ghcr.io` with it
+immediately before the pull step using an isolated run-scoped `0700`
+`DOCKER_CONFIG` temporary directory (never writing to the runner user's shared
+`~/.docker/config.json`) and log out and remove that temporary directory
+unconditionally on exit — success, rollback, or an early argument/file-check
+failure — via a single EXIT trap; unset, both steps are skipped (local
+`--dry-run` runs, or a host with its own credential store). If the runner kills
+the step with `SIGKILL` before the `EXIT` trap runs, `~/.docker/config.json`
+remains untouched; only the `0700` run-scoped `DOCKER_CONFIG` directory under
+`RUNNER_TEMP`/`TMPDIR` can remain until runner temp cleanup.
+`cd-deploy.yml`'s `deploy` job forwards the secret to the isolated cutover
+shell (`env -i HOME="$HOME" PATH="$PATH" bash -s`) by exporting it inside the
+script piped from `render-cutover-remote-script.sh` over stdin, never as a
+command-line argument or a persistent file on C00, so it is not visible to `ps`
+and ambient step environment variables do not leak into the cutover shell.
+Covered by `deploy/cd/test-deploy.sh`'s `ghcr-login-happy-path`,
+`ghcr-login-fails`, and `ghcr-login-isolated-docker-config` scenarios (mocked
+`docker login`/`logout`; a real end-to-end pull against GHCR is still pending
+the runner above).

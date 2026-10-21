@@ -395,9 +395,21 @@ ledger_at_or_after() {
 # e.g. local --dry-run runs, or a host with its own already-configured Docker
 # credential store — so every caller can unconditionally call it before a
 # pull without an extra existence check of its own.
+_multica_temp_docker_config=""
+
 ghcr_login() {
   if [ -z "${GHCR_PULL_TOKEN:-}" ]; then
     return 0
+  fi
+  if [ -z "${DOCKER_CONFIG:-}" ] || [ "${DOCKER_CONFIG%/}" = "${HOME:-}/.docker" ]; then
+    _multica_temp_docker_config="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/multica-docker-config.XXXXXX")"
+    chmod 700 "$_multica_temp_docker_config"
+    if [ -n "${HOME:-}" ] && [ -d "$HOME/.docker/cli-plugins" ]; then
+      ln -s "$HOME/.docker/cli-plugins" "$_multica_temp_docker_config/cli-plugins"
+    fi
+    export DOCKER_CONFIG="$_multica_temp_docker_config"
+  else
+    install -d -m 700 "$DOCKER_CONFIG"
   fi
   echo "==> logging in to ghcr.io"
   printf '%s' "$GHCR_PULL_TOKEN" | docker login ghcr.io -u token --password-stdin >/dev/null
@@ -411,5 +423,9 @@ ghcr_login() {
 ghcr_logout() {
   if [ -n "${GHCR_PULL_TOKEN:-}" ]; then
     docker logout ghcr.io >/dev/null 2>&1 || true
+  fi
+  if [ -n "${_multica_temp_docker_config:-}" ] && [ -d "$_multica_temp_docker_config" ]; then
+    rm -rf "$_multica_temp_docker_config" || true
+    _multica_temp_docker_config=""
   fi
 }

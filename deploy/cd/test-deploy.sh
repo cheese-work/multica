@@ -137,17 +137,23 @@ if [ "$1" = "login" ]; then
   # to prove the registry ever saw the token, so a passing "login failed"
   # scenario must not find its password in this log either.
   password="$(cat)"
+  effective_docker_config="${DOCKER_CONFIG:-$HOME/.docker}"
   if [ -f "$control_dir/fail-ghcr-login" ]; then
-    printf 'login %s <rejected>\n' "$2" >>"$control_dir/registry-auth.log"
+    printf 'login %s <rejected> docker_config=%s\n' "$2" "$effective_docker_config" >>"$control_dir/registry-auth.log"
     echo "mock docker: forced failure (fail-ghcr-login)" >&2
     exit 1
   fi
-  printf 'login %s password=%s\n' "$2" "$password" >>"$control_dir/registry-auth.log"
+  mkdir -p "$effective_docker_config"
+  mode="$(stat -c '%a' "$effective_docker_config" 2>/dev/null || echo unknown)"
+  printf '{"auths":{"%s":{}}}\n' "$2" >"$effective_docker_config/config.json"
+  printf 'login %s password=%s docker_config=%s mode=%s\n' "$2" "$password" "$effective_docker_config" "$mode" >>"$control_dir/registry-auth.log"
   exit 0
 fi
 
 if [ "$1" = "logout" ]; then
-  printf 'logout %s\n' "$2" >>"$control_dir/registry-auth.log"
+  effective_docker_config="${DOCKER_CONFIG:-$HOME/.docker}"
+  rm -f "$effective_docker_config/config.json"
+  printf 'logout %s docker_config=%s\n' "$2" "$effective_docker_config" >>"$control_dir/registry-auth.log"
   exit 0
 fi
 
@@ -937,6 +943,32 @@ expect_contains "$cutover_quoting_output" "cutover-controller.tar.sha256" workfl
 # self-hosted runner ([self-hosted, linux, x64, cheese-c00-deploy]) under the
 # c00-production environment without writing an SSH key, scanning SSH host keys,
 # or looping back over ssh/scp.
+# CHE-1924 M1: ghcr_login isolates Docker credentials in a run-scoped mode-0700
+# DOCKER_CONFIG directory (never writing to the runner user's shared
+# ~/.docker/config.json even if the step is killed before EXIT trap runs), and
+# cleans up that directory on normal exit.
+isolated_home="$work_dir/isolated-runner-home"
+mkdir -p "$isolated_home/.docker"
+printf '{"auths":{"existing.registry.internal":{}}}\n' >"$isolated_home/.docker/config.json"
+state_dir="$(fresh_scenario_dir ghcr-login-isolated-docker-config)"
+control_dir="$state_dir/control"
+mkdir -p "$control_dir"
+touch "$control_dir/inspect-resolves"
+output="$(HOME="$isolated_home" GHCR_PULL_TOKEN=super-secret-pat run_deploy "$state_dir" 2>&1)"
+status=$?
+expect_exit 0 "$status" ghcr-login-isolated-docker-config
+auth_log="$(cat "$control_dir/registry-auth.log")"
+expect_not_contains "$auth_log" "docker_config=$isolated_home/.docker" ghcr-login-isolated-docker-config
+expect_contains "$auth_log" "mode=700" ghcr-login-isolated-docker-config
+expect_contains "$(cat "$isolated_home/.docker/config.json")" "existing.registry.internal" ghcr-login-isolated-docker-config
+expect_not_contains "$(cat "$isolated_home/.docker/config.json")" "ghcr.io" ghcr-login-isolated-docker-config
+logged_docker_config="$(sed -n 's/.*docker_config=\([^ ]*\).*/\1/p' "$control_dir/registry-auth.log" | head -n 1)"
+[ -n "$logged_docker_config" ] || { echo "scenario ghcr-login-isolated-docker-config: missing docker_config in registry-auth.log" >&2; exit 1; }
+if [ -e "$logged_docker_config" ]; then
+  echo "scenario ghcr-login-isolated-docker-config: private DOCKER_CONFIG directory $logged_docker_config was not removed by ghcr_logout" >&2
+  exit 1
+fi
+
 expect_contains "$workflow_text" 'runs-on: [self-hosted, linux, x64, cheese-c00-deploy]' workflow-local-runner-no-ssh
 expect_contains "$workflow_text" 'environment: c00-production' workflow-local-runner-no-ssh
 expect_not_contains "$workflow_text" 'C00_SSH_HOST' workflow-local-runner-no-ssh
@@ -947,6 +979,6 @@ expect_not_contains "$workflow_text" 'ssh-keyscan' workflow-local-runner-no-ssh
 expect_not_contains "$workflow_text" 'ssh -i' workflow-local-runner-no-ssh
 expect_not_contains "$workflow_text" 'scp -i' workflow-local-runner-no-ssh
 expect_not_contains "$workflow_text" '${ssh_cmd[@]}' workflow-local-runner-no-ssh
-expect_contains "$workflow_text" '| bash -s' workflow-local-runner-no-ssh
+expect_contains "$workflow_text" 'env -i HOME="$HOME" PATH="$PATH"' workflow-local-runner-no-ssh
 
 echo "deploy.sh control-flow fixtures passed"
