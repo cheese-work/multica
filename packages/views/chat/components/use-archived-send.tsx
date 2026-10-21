@@ -14,7 +14,7 @@ import {
 import type { ChatSession } from "@multica/core/types";
 import { useT } from "../../i18n";
 
-type SendResult = Promise<boolean> | boolean | void | Promise<void>;
+type SendResult = void | boolean | Promise<void | boolean>;
 
 export interface ArchivedSendOptions<Args extends unknown[]> {
   /** The open DM. Only an archived one is intercepted. */

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { useDefaultLayout } from "react-resizable-panels";
 import { ArrowLeft, MessageSquare } from "lucide-react";
 import { toast } from "sonner";
@@ -31,9 +31,7 @@ import { ChatThreadList } from "./components/chat-thread-list";
 import { ChatSessionHeader } from "./components/chat-session-header";
 import { useChatRename } from "./components/use-chat-rename";
 import { useChatFork } from "./components/use-chat-fork";
-import { useChatSessionActions } from "./components/use-chat-session-actions";
-import { useArchivedSend } from "./components/use-archived-send";
-import { ChatSessionStatsDialog } from "./components/chat-session-stats-dialog";
+import { useDmSessionSurface } from "./components/use-dm-session-surface";
 import { canForkSession } from "./lib/can-fork-session";
 import { EmptyState } from "./components/chat-empty-state";
 import { NewChatButton } from "./components/new-chat-button";
@@ -189,36 +187,29 @@ export function ChatPage() {
     c.handleSelectSession(session);
   };
   const { handleFork } = useChatFork(c.currentSession, handleSelect);
-  const sessionActions = useChatSessionActions();
-  const [statsSessionId, setStatsSessionId] = useState<string | null>(null);
 
   // Single archive path for both entry points (thread-list row + conversation
-  // header). When the archived chat is the one in view, move the pane off it:
-  // on desktop advance to the next chat (Inbox-style); when compact drop back to
-  // the list, which reads more naturally than being thrown into an unrelated
-  // conversation full-screen. Archiving any other chat leaves the view put.
-  // The server accepts the archive first; a failure keeps the session open.
-  const handleArchive = (session: ChatSession) => {
-    supersedeAgentIntent();
-    return sessionActions.archive(session, {
-      onArchived: () => {
-        if (session.id !== useChatStore.getState().activeSessionId) return;
-        if (isCompact) backOrReplace(wsPaths.chat());
-        else c.advanceSelectionAfterArchive(session);
-      },
-    });
-  };
-
-  // An archived DM keeps its composer: sending asks to unarchive first.
-  const archivedSend = useArchivedSend({
+  // header). The server accepts the archive first; a failure keeps the session
+  // open. Then, when the archived chat is the one in view, move the pane off
+  // it: on desktop advance to the next chat (Inbox-style); when compact go back
+  // through history. Archiving any other chat leaves the view put.
+  const dm = useDmSessionSurface({
     session: c.currentSession,
     sessions: c.sessions,
     send: c.handleSend,
-    unarchive: sessionActions.unarchive,
     onOpenSession: handleSelect,
+    onArchived: (session) => {
+      if (session.id !== useChatStore.getState().activeSessionId) return;
+      if (isCompact) backOrReplace(wsPaths.chat());
+      else c.advanceSelectionAfterArchive(session);
+    },
+    onRename: handleRename,
+    onFork: canForkSession(c.currentSession) ? handleFork : undefined,
   });
-  const openedSession = c.currentSession;
-  const isOpenedSessionArchived = openedSession?.status === "archived";
+  const handleArchive = (session: ChatSession) => {
+    supersedeAgentIntent();
+    return dm.archive(session);
+  };
 
   const startNewChat = (agent: Agent | null, { fromIntent = false } = {}) => {
     // A manual ⊕ pick outranks a pending deep link; when called FROM the
@@ -335,9 +326,9 @@ export function ChatPage() {
           session={c.currentSession}
           agent={c.activeAgent}
           onArchive={handleArchive}
-          onUnarchive={sessionActions.unarchive}
-          onTogglePin={sessionActions.togglePin}
-          onOpenStatistics={() => setStatsSessionId(c.currentSession?.id ?? null)}
+          onUnarchive={dm.unarchive}
+          onTogglePin={dm.togglePin}
+          onOpenStatistics={() => dm.openStatistics(c.currentSession?.id ?? "")}
           renameRequest={renameRequest}
           autoCompactThresholdPct={autoCompactThresholdPct}
           onCompact={() => void c.handleSend("/compact")}
@@ -416,28 +407,7 @@ export function ChatPage() {
       />
 
       <ChatInput
-        onSend={archivedSend.guardedSend}
-        onRename={isOpenedSessionArchived ? undefined : handleRename}
-        onFork={canForkSession(c.currentSession) && !isOpenedSessionArchived ? handleFork : undefined}
-        onStatistic={
-          openedSession && !isOpenedSessionArchived
-            ? () => setStatsSessionId(openedSession.id)
-            : undefined
-        }
-        onArchive={
-          openedSession && !isOpenedSessionArchived ? () => handleArchive(openedSession) : undefined
-        }
-        onPin={
-          openedSession && !isOpenedSessionArchived
-            ? () => sessionActions.togglePin(openedSession)
-            : undefined
-        }
-        onUnarchive={
-          openedSession && isOpenedSessionArchived
-            ? () => sessionActions.unarchive(openedSession)
-            : undefined
-        }
-        sessionArchived={isOpenedSessionArchived}
+        {...dm.inputProps}
         restoreDraftRequest={c.restoreDraftRequest}
         conversationStarterRequest={c.conversationStarterRequest}
         onConversationStarterApplied={c.handleConversationStarterApplied}
@@ -467,14 +437,7 @@ export function ChatPage() {
         annotationScope={annotation.input}
       />
     </div>
-    {archivedSend.dialog}
-    <ChatSessionStatsDialog
-      sessionId={statsSessionId}
-      open={statsSessionId !== null}
-      onOpenChange={(open) => !open && setStatsSessionId(null)}
-      sessions={c.sessions}
-      onOpenSession={handleSelect}
-    />
+    {dm.dialogs}
     </ChatAnnotationContext.Provider>
   );
 
