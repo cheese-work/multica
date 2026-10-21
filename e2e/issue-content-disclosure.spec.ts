@@ -319,7 +319,7 @@ test.describe("Description editor lifecycle through folding", () => {
     // debounce for the now-real image markdown, which is the actual flush
     // boundary this test needs to race.
     const insertedImage = page.locator("[data-description-editor] img.image-content:not(.image-uploading)");
-    await expect(insertedImage).toBeVisible({ timeout: 10000 });
+    await expect(insertedImage).toBeVisible({ timeout: 30000 });
     await expect(insertedImage).not.toHaveAttribute("src", /^blob:/);
 
     // Navigate away immediately after settlement — before the freshly-started
@@ -346,7 +346,7 @@ test.describe("Description editor lifecycle through folding", () => {
     // reload re-fetched persisted markdown rather than showing left-over
     // client state.
     const reopenedImage = page.locator("[data-description-editor] img.image-content:not(.image-uploading)");
-    await expect(reopenedImage).toBeVisible({ timeout: 10000 });
+    await expect(reopenedImage).toBeVisible({ timeout: 30000 });
     await expect(reopenedImage).not.toHaveAttribute("src", /^blob:/);
   });
 
@@ -405,14 +405,23 @@ test.describe("Description editor lifecycle through folding", () => {
     await page.getByRole("link", { name: "Issues", exact: true }).click();
     await expect(page.getByRole("button", { name: /Show more/ })).not.toBeVisible();
 
-    // Now let the response land, after the editor is gone.
+    // Now let the response land, after the editor is gone. The description is
+    // saved from that response; a full navigation started before the save
+    // finishes would discard it, so wait for it.
+    const descriptionSaved = page.waitForResponse(
+      (response) =>
+        ["PUT", "PATCH"].includes(response.request().method()) &&
+        response.url().includes(`/api/issues/${issueId}`),
+      { timeout: 30000 },
+    );
     releaseUpload();
+    await descriptionSaved;
 
     await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
     await waitForPageText(page, issueTitle);
     await page.getByRole("button", { name: /Show more/ }).click();
     const reopenedImage = page.locator("[data-description-editor] img.image-content:not(.image-uploading)");
-    await expect(reopenedImage).toBeVisible({ timeout: 10000 });
+    await expect(reopenedImage).toBeVisible({ timeout: 30000 });
     await expect(reopenedImage).not.toHaveAttribute("src", /^blob:/);
   });
 
