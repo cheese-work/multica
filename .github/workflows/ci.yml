@@ -662,7 +662,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0 # git describe needs tags for the version stamp
+          fetch-depth: 0 # commit history for version/commit stamping
       - uses: actions/setup-go@v5
         with:
           go-version: "~1.26.9"
@@ -673,10 +673,10 @@ jobs:
           CGO_ENABLED: "0"
           GOOS: linux
           GOARCH: ${{ matrix.goarch }}
-        # main.version keeps the git-describe shape the capability gates accept
-        # (scripts/daemon-artifact-version.sh fails closed otherwise); the exact
-        # full commit goes separately into main.commit, which the updater
-        # requires the candidate's `--version` to report.
+        # main.version uses <upstream>-YYYYMMDD-hhmm from UPSTREAM_VERSION and
+        # commit timestamp so capability gates accept it (scripts/daemon-artifact-version.sh
+        # fails closed otherwise); the exact full commit goes separately into
+        # main.commit, which the updater requires the candidate's `--version` to report.
         run: |
           mkdir -p ../dist
           version=$(cd .. && scripts/daemon-artifact-version.sh)

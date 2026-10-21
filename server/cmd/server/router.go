@@ -48,6 +48,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
+	"github.com/multica-ai/multica/server/pkg/buildinfo"
 	composiosdk "github.com/multica-ai/multica/server/pkg/composio"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
@@ -210,6 +211,25 @@ func normalizeServerVersion(v string) string {
 		return ""
 	}
 	return v
+}
+
+func normalizeServerBuildInfo(v, b, c string) (string, string, string) {
+	v = normalizeServerVersion(strings.TrimSpace(v))
+	if v == "" {
+		return "", "", ""
+	}
+	plainVersion, splitBuild := buildinfo.Split(v)
+	b = strings.TrimSpace(b)
+	if b == "" {
+		b = splitBuild
+	}
+	c = strings.TrimSpace(c)
+	if c == "unknown" || c == "dev" {
+		c = ""
+	} else if len(c) > 7 {
+		c = c[:7]
+	}
+	return plainVersion, b, c
 }
 
 // NewRouter creates the fully-configured Chi router with all middleware and routes.
@@ -432,6 +452,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 	cfSigner := auth.NewCloudFrontSignerFromEnv()
 	origins := allowedOrigins()
+	serverVersion, serverBuild, serverCommit := normalizeServerBuildInfo(version, build, commit)
 
 	signupConfig := handler.Config{
 		AllowSignup:              os.Getenv("ALLOW_SIGNUP") != "false",
@@ -454,7 +475,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		LLMMaxRetries:            opts.LLMMaxRetries,
 		LLMDisableThinking:       opts.LLMDisableThinking,
 		ProviderRecoveryBaseURL:  strings.TrimSpace(os.Getenv("MULTICA_PROVIDER_RECOVERY_BASE_URL")),
-		ServerVersion:            normalizeServerVersion(version),
+		ServerVersion:            serverVersion,
+		ServerBuild:              serverBuild,
+		ServerCommit:             serverCommit,
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
 	invitationRateLimits := handler.DefaultInvitationRateLimits()
