@@ -93,6 +93,31 @@ func (q *Queries) CancelDecisionLifecycleRequest(ctx context.Context, arg Cancel
 	return i, err
 }
 
+const decisionIssueClosedAt = `-- name: DecisionIssueClosedAt :one
+SELECT COALESCE(
+    (SELECT max(activity.created_at) FROM activity_log activity
+     WHERE activity.workspace_id = issue.workspace_id AND activity.issue_id = issue.id
+       AND activity.action = 'status_changed' AND activity.details->>'to' = issue.status),
+    issue.updated_at
+)::timestamptz AS closed_at
+FROM issue
+WHERE issue.workspace_id = $1 AND issue.id = $2
+`
+
+type DecisionIssueClosedAtParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+// Comments bump issue.updated_at, so the close time comes from the status change record;
+// updated_at only covers an issue whose record is missing or not yet written.
+func (q *Queries) DecisionIssueClosedAt(ctx context.Context, arg DecisionIssueClosedAtParams) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, decisionIssueClosedAt, arg.WorkspaceID, arg.ID)
+	var closed_at pgtype.Timestamptz
+	err := row.Scan(&closed_at)
+	return closed_at, err
+}
+
 const decisionLifecycleReason = `-- name: DecisionLifecycleReason :one
 SELECT CASE
     WHEN issue.status IN ('done', 'cancelled', 'agent_accepted', 'approved') THEN 'issue_closed'
@@ -158,6 +183,90 @@ func (q *Queries) GetDecisionCancelComment(ctx context.Context, arg GetDecisionC
 		&i.DecisionCommentKind,
 	)
 	return i, err
+}
+
+const hasDecisionCancelNoticeSinceClose = `-- name: HasDecisionCancelNoticeSinceClose :one
+SELECT EXISTS (
+    SELECT 1 FROM decision_request request
+    WHERE request.workspace_id = $1 AND request.issue_id = $2
+      AND request.chat_session_id = $3 AND request.id <> $4
+      AND request.status = 'cancelled' AND request.cancel_reason = 'issue_closed'
+      AND request.cancel_notice_posted_at >= $5::timestamptz
+)::bool AS posted
+`
+
+type HasDecisionCancelNoticeSinceCloseParams struct {
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
+	ID            pgtype.UUID        `json:"id"`
+	ClosedAt      pgtype.Timestamptz `json:"closed_at"`
+}
+
+func (q *Queries) HasDecisionCancelNoticeSinceClose(ctx context.Context, arg HasDecisionCancelNoticeSinceCloseParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasDecisionCancelNoticeSinceClose,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.ChatSessionID,
+		arg.ID,
+		arg.ClosedAt,
+	)
+	var posted bool
+	err := row.Scan(&posted)
+	return posted, err
+}
+
+const listDecisionCancelSiblings = `-- name: ListDecisionCancelSiblings :many
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at FROM decision_request
+WHERE workspace_id = $1 AND issue_id = $2 AND chat_session_id = $3
+  AND status IN ('open', 'answered')
+ORDER BY created_at, id
+`
+
+type ListDecisionCancelSiblingsParams struct {
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	IssueID       pgtype.UUID `json:"issue_id"`
+	ChatSessionID pgtype.UUID `json:"chat_session_id"`
+}
+
+func (q *Queries) ListDecisionCancelSiblings(ctx context.Context, arg ListDecisionCancelSiblingsParams) ([]DecisionRequest, error) {
+	rows, err := q.db.Query(ctx, listDecisionCancelSiblings, arg.WorkspaceID, arg.IssueID, arg.ChatSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DecisionRequest{}
+	for rows.Next() {
+		var i DecisionRequest
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.AskingAgentID,
+			&i.HumanUserID,
+			&i.ChatSessionID,
+			&i.PingMessageID,
+			&i.IssueCommentID,
+			&i.Ask,
+			&i.EscalationClass,
+			&i.Status,
+			&i.Origin,
+			&i.DecisionIntentID,
+			&i.CancelReason,
+			&i.CancelNoticePostedAt,
+			&i.PingNotifiedAt,
+			&i.ReaskDeliveredAt,
+			&i.ReaskOutcome,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listDecisionLifecycleCancellations = `-- name: ListDecisionLifecycleCancellations :many

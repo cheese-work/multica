@@ -1,0 +1,25 @@
+workspace capture, agent 492fd3cf-fab1-479f-8cb9-670b3ecc46dd
+1440 before (main): annotatable regions = 0
+1440 after: reply tab stop = 1
+1440 Tab order after the reply: ["Edit comment 1: Why 5 s? Is it set anywhere?","Edit comment 2: Cap at 15 s. Longer looks stuck in the UI.","Copy"]
+1440 after reload: chip = 2 comments, markers = 2
+1440 Edit 2 note value: Cap at 15 s. Longer looks stuck in the UI.
+1440 Esc returned focus to: Edit comment 2: Cap at 15 s. Longer looks stuck in the UI.
+1440 stored user message: "> The delay is fixed at 5 seconds.\n\nWhy 5 s? Is it set anywhere?\n\n&nbsp;\n\n> double up to a 30 s cap\n\nCap at 15 s. Longer looks stuck in the UI.\n\n---\n\nGo with 15 s. Keep the rest."
+1440 chip after send: 0
+1440 20 comments chip: 20 comments
+1440 range at top: Comments 1–4 of 20
+1440 range at end: Comments 17–20 of 20
+1440 Edit/Remove buttons: 20 / 20
+390 before (main): annotatable regions = 0
+390 after: reply tab stop = 1
+390 Tab order after the reply: ["Edit comment 1: Why 5 s? Is it set anywhere?","Edit comment 2: Cap at 15 s. Longer looks stuck in the UI.","Copy"]
+390 after reload: chip = 2 comments, markers = 2
+390 Edit 2 note value: Cap at 15 s. Longer looks stuck in the UI.
+390 Esc returned focus to: Edit comment 2: Cap at 15 s. Longer looks stuck in the UI.
+390 stored user message: "> The delay is fixed at 5 seconds.\n\nWhy 5 s? Is it set anywhere?\n\n&nbsp;\n\n> double up to a 30 s cap\n\nCap at 15 s. Longer looks stuck in the UI.\n\n---\n\nGo with 15 s. Keep the rest."
+390 chip after send: 0
+390 20 comments chip: 20 comments
+390 range at top: Comments 1–3 of 20
+390 range at end: Comments 18–20 of 20
+390 Edit/Remove buttons: 20 / 20
