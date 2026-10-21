@@ -219,14 +219,12 @@ export function parseChatCommandInput(
   const command = CHAT_COMMANDS_BY_ID[commandId];
   const rawArgs = (otherMatch[2] ?? "").trim();
 
-  if (command.id === "rename") {
-    if (options?.hasAttachments) {
-      return { status: "invalid", command, reason: "no_attachments", rawArgs };
-    }
-    if (!rawArgs) {
-      return { status: "invalid", command, reason: "missing_arguments", rawArgs: "" };
-    }
-    return { status: "ok", command, args: rawArgs };
+  if (command.kind === "client" && options?.hasAttachments) {
+    return { status: "invalid", command, reason: "no_attachments", rawArgs };
+  }
+
+  if (command.id === "rename" && !rawArgs) {
+    return { status: "invalid", command, reason: "missing_arguments", rawArgs: "" };
   }
 
   return { status: "ok", command, args: rawArgs };

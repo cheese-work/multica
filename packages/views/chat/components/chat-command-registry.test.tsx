@@ -185,4 +185,45 @@ describe("CHE-1762 web command registry behavior", () => {
     expect(onSend).not.toHaveBeenCalled();
     expect(editor.getText()).toBe("/archive");
   });
+
+  it("rejects /fork with attachments before execution, shows an inline hint, and preserves the draft", async () => {
+    const attachment: Attachment = {
+      id: "att-fork-1",
+      workspace_id: "ws-c1",
+      issue_id: null,
+      comment_id: null,
+      chat_message_id: null,
+      chat_session_id: "session-c1",
+      uploader_type: "member",
+      uploader_id: "u1",
+      filename: "diagram.png",
+      url: "https://cdn.example.com/diagram.png",
+      download_url: "https://cdn.example.com/diagram.png",
+      markdown_url: "https://cdn.example.com/diagram.png",
+      content_type: "image/png",
+      size_bytes: 128,
+      created_at: "2026-10-22T00:00:00Z",
+    };
+    useChatStore.setState({
+      activeSessionId: "session-c1",
+      inputDrafts: { "session-c1": "/fork continue with plan B" },
+      inputDraftAttachments: {
+        "session-c1": [attachmentToDraftUpload(attachment)],
+      },
+    });
+
+    const onFork = vi.fn().mockResolvedValue({ ok: true });
+    const { editor, onSend } = renderInput({ onFork, sessionArchived: false });
+    await waitFor(() => expect(editor.isInitialized).toBe(true));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Send/ })).toBeEnabled());
+
+    fireEvent.click(screen.getByRole("button", { name: /Send/ }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/cannot be sent with attachments/i);
+    expect(onFork).not.toHaveBeenCalled();
+    expect(onSend).not.toHaveBeenCalled();
+    expect(editor.getText()).toBe("/fork continue with plan B");
+    expect(useChatStore.getState().inputDraftAttachments["session-c1"]).toHaveLength(1);
+  });
 });

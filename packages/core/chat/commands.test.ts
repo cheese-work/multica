@@ -130,7 +130,7 @@ describe("chat command registry", () => {
       });
     }
 
-    for (const input of ["/archive", "/unarchive", "/statistic", "/pin", "/rename New title"]) {
+    for (const input of ["/archive", "/unarchive", "/statistic", "/pin", "/rename New title", "/fork", "/fork continue with plan B"]) {
       const parsed = parseChatCommandInput(input, { hasAttachments: true });
       expect(parsed).toMatchObject({
         status: "invalid",
@@ -138,7 +138,7 @@ describe("chat command registry", () => {
       });
     }
 
-    // /compact is a prompt command and /fork supports attachments when forking
+    // /compact is a prompt command and allows attachments
     expect(parseChatCommandInput("/compact focus", { hasAttachments: true })).toMatchObject({
       status: "ok",
       args: "focus",
