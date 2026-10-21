@@ -74,7 +74,7 @@ function completeRunEvents() {
   ];
 }
 
-function testPlan() {
+function testPlan(threshold = 80000) {
   return createPairPlan({
     fixtureSha256: "2ec89b207ebc469831ea7e56be41145048d23b2123bcf175272c8d235815efff",
     inputPrefixSha256: "460f94059f51a5015566539ef410da60ac4c68f13e3e298fb8f9e14385fb96bb",
@@ -83,7 +83,7 @@ function testPlan() {
     cutoffOrdinal: 1544,
     model: "gpt-6.1-sol",
     runtimeId: "bc0835c7-a25d-4a16-a3bc-e2921d092ed9",
-    threshold: 80000,
+    threshold,
   });
 }
 
@@ -137,6 +137,12 @@ function receiptBytes(plan, optionName, option, overrides = {}) {
 function artifactOption(plan, optionName, sessionId, overrides = {}) {
   const option = runOption(sessionId);
   return { ...option, ...receiptBytes(plan, optionName, option, overrides) };
+}
+
+function replaceReceiptFields(option, fields) {
+  const receipt = JSON.parse(option.receiptBytes.toString("utf8"));
+  Object.assign(receipt, fields);
+  option.receiptBytes = Buffer.from(JSON.stringify(receipt));
 }
 
 test("measures each response and verifies the aggregate snapshot delta", () => {
@@ -334,6 +340,83 @@ test("fails closed when the native task readback disagrees with the receipt", ()
   }), /does not match a completed native task readback/);
 });
 
+test("fails closed when the executor receipt plan digest differs", () => {
+  const plan = testPlan();
+  const fresh = artifactOption(plan, "fresh", "fresh-session");
+  replaceReceiptFields(fresh, { planSha256: "d".repeat(64) });
+
+  assert.throws(() => measurePair(plan, {
+    fresh,
+    resume: artifactOption(plan, "resume", "resume-session"),
+  }), /fresh executor receipt planSha256/);
+});
+
+test("fails closed when the executor receipt readback digest differs", () => {
+  const plan = testPlan();
+  const fresh = artifactOption(plan, "fresh", "fresh-session");
+  replaceReceiptFields(fresh, { runtimeReadbackSha256: "d".repeat(64) });
+
+  assert.throws(() => measurePair(plan, {
+    fresh,
+    resume: artifactOption(plan, "resume", "resume-session"),
+  }), /fresh executor receipt runtimeReadbackSha256/);
+});
+
+test("fails closed when the executor receipt option differs", () => {
+  const plan = testPlan();
+  const fresh = artifactOption(plan, "fresh", "fresh-session");
+  replaceReceiptFields(fresh, { option: "resume" });
+
+  assert.throws(() => measurePair(plan, {
+    fresh,
+    resume: artifactOption(plan, "resume", "resume-session"),
+  }), /fresh executor receipt option/);
+});
+
+test("fails closed when the executor receipt strategy differs", () => {
+  const plan = testPlan();
+  const fresh = artifactOption(plan, "fresh", "fresh-session");
+  replaceReceiptFields(fresh, { strategy: "resume-and-compact" });
+
+  assert.throws(() => measurePair(plan, {
+    fresh,
+    resume: artifactOption(plan, "resume", "resume-session"),
+  }), /fresh executor receipt strategy/);
+});
+
+test("fails closed when the native task readback is not completed", () => {
+  const plan = testPlan();
+  const fresh = artifactOption(plan, "fresh", "fresh-session");
+  fresh.runtimeReadbackBytes = Buffer.from(JSON.stringify([{
+    id: "task-fresh",
+    status: "running",
+    runtime_id: plan.shared.runtimeId,
+  }]));
+  replaceReceiptFields(fresh, { runtimeReadbackSha256: sha256(fresh.runtimeReadbackBytes) });
+
+  assert.throws(() => measurePair(plan, {
+    fresh,
+    resume: artifactOption(plan, "resume", "resume-session"),
+  }), /does not match a completed native task readback/);
+});
+
+test("fails closed when the native task readback has duplicate matching records", () => {
+  const plan = testPlan();
+  const fresh = artifactOption(plan, "fresh", "fresh-session");
+  const taskRecord = {
+    id: "task-fresh",
+    status: "completed",
+    runtime_id: plan.shared.runtimeId,
+  };
+  fresh.runtimeReadbackBytes = Buffer.from(JSON.stringify([taskRecord, taskRecord]));
+  replaceReceiptFields(fresh, { runtimeReadbackSha256: sha256(fresh.runtimeReadbackBytes) });
+
+  assert.throws(() => measurePair(plan, {
+    fresh,
+    resume: artifactOption(plan, "resume", "resume-session"),
+  }), /does not match a completed native task readback/);
+});
+
 test("fails closed when receipt prefix or threshold differs from the plan", () => {
   const plan = testPlan();
   const fresh = artifactOption(plan, "fresh", "fresh-session", {
@@ -378,6 +461,18 @@ test("reports recomputed artifact digests and gates the resume cap on binding", 
   assert.equal(result.evidence.fresh.logSha256, sha256(fresh.logBytes));
   assert.equal(result.evidence.fresh.executorReceiptSha256, sha256(fresh.receiptBytes));
   assert.equal(result.evidence.fresh.runtimeReadbackSha256, sha256(fresh.runtimeReadbackBytes));
+});
+
+test("reports resume context cap FAIL when an attested call exceeds the threshold", () => {
+  const plan = testPlan(6);
+  const result = measurePair(plan, {
+    fresh: artifactOption(plan, "fresh", "fresh-session"),
+    resume: artifactOption(plan, "resume", "resume-session"),
+  });
+
+  assert.equal(result.binding.status, "EXECUTOR-ATTESTED");
+  assert.equal(result.resume.maxContextTokens, 7);
+  assert.equal(result.resumeContextCap, "FAIL");
 });
 
 test("binds both strategies to one fixture and readback set", () => {
