@@ -18,8 +18,14 @@ const goreleaser = readFileSync(new URL(".goreleaser.yml", root), "utf8");
 test("UPSTREAM_VERSION tracks the single plain upstream semver at the repo root", () => {
   const upstreamVersion = readFileSync(new URL("UPSTREAM_VERSION", root), "utf8").trim();
   assert.match(upstreamVersion, /^\d+\.\d+\.\d+$/);
-  assert.equal(upstreamVersion, "0.6.3");
+  assert.equal(upstreamVersion, "0.6.4");
 });
+
+// The workflow tests below pick tags relative to the file, so a sync that
+// moves UPSTREAM_VERSION does not break them.
+const currentUpstream = readFileSync(new URL("UPSTREAM_VERSION", root), "utf8").trim();
+const [upMajor, upMinor, upPatch] = currentUpstream.split(".").map(Number);
+const otherTag = `v${upMajor}.${upMinor}.${upPatch + 1}`;
 
 test("release-stamp.sh formats an input commit timestamp in ICT (UTC+7) across day, month, and year rollovers", () => {
   for (const [isoTime, expected] of [
@@ -116,12 +122,12 @@ test("release workflow verifies that tag core version matches UPSTREAM_VERSION a
       encoding: "utf8",
       env: {
         ...process.env,
-        GITHUB_REF_NAME: "v0.6.4",
+        GITHUB_REF_NAME: otherTag,
         GITHUB_SHA: "HEAD",
         GITHUB_OUTPUT: outFile,
       },
     });
-    assert.notEqual(mismatch.status, 0, "Expected mismatch between tag v0.6.4 and UPSTREAM_VERSION 0.6.3 to fail");
+    assert.notEqual(mismatch.status, 0, `Expected mismatch between tag ${otherTag} and UPSTREAM_VERSION ${currentUpstream} to fail`);
     assert.match(`${mismatch.stdout}\n${mismatch.stderr}`, /does not match UPSTREAM_VERSION/);
 
     const prereleaseMatch = spawnSync("bash", ["-euo", "pipefail", "-c", scriptBody], {
@@ -129,15 +135,15 @@ test("release workflow verifies that tag core version matches UPSTREAM_VERSION a
       encoding: "utf8",
       env: {
         ...process.env,
-        GITHUB_REF_NAME: "v0.6.3-rc1",
+        GITHUB_REF_NAME: `v${currentUpstream}-rc1`,
         GITHUB_SHA: "HEAD",
         GITHUB_OUTPUT: outFile,
       },
     });
     assert.equal(prereleaseMatch.status, 0, prereleaseMatch.stderr);
     const outContent = readFileSync(outFile, "utf8");
-    assert.match(outContent, /^upstream_version=0\.6\.3$/m);
-    assert.match(outContent, /^display_version=0\.6\.3-\d{8}-\d{4}$/m);
+    assert.ok(outContent.split("\n").includes(`upstream_version=${currentUpstream}`));
+    assert.match(outContent, new RegExp(`^display_version=${currentUpstream.replaceAll(".", "\\.")}-\\d{8}-\\d{4}$`, "m"));
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
