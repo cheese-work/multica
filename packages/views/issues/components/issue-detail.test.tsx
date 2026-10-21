@@ -1681,6 +1681,87 @@ describe("IssueDetail (shared)", () => {
     expect(within(replyBlock as HTMLElement).getByRole("button", { name: "Open full log" })).toBe(headerLog);
   });
 
+  // CHE-1935: a reply draft must NOT unfold a compact thread. The reply box is
+  // already visible in the compact state, so expanding only pushes it away
+  // from the user (the 9 hidden replies mount above the box).
+  it("keeps a compact thread compact and unlatched while a reply draft is typed and sent (CHE-1935)", async () => {
+    const root = mockTimeline[0]!;
+    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+      ...mockTimeline[1]!,
+      id: `che1935-reply-${i}`,
+      parent_id: root.id,
+      content: `C1935 reply ${i}`,
+      created_at: `2026-01-16T00:0${i}:00Z`,
+    }));
+    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+    renderIssueDetail();
+
+    await screen.findByText("C1935 reply 3");
+    const showMore = await screen.findByRole("button", { name: /Show 1 more repl/ });
+
+    act(() => {
+      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, { content: "a", attachments: [], updatedAt: Date.now() });
+    });
+
+    expect(screen.getByRole("button", { name: /Show 1 more repl/ })).toBe(showMore);
+    expect(screen.queryByText("C1935 reply 0")).not.toBeInTheDocument();
+    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy();
+
+    // Reply sent: draft cleared, thread still compact (latest 3 visible).
+    act(() => {
+      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, undefined);
+    });
+    expect(screen.queryByText("C1935 reply 0")).not.toBeInTheDocument();
+    expect(screen.getByText("C1935 reply 3")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Show 1 more repl/ })).toBeInTheDocument();
+    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy();
+  });
+
+  // CHE-1935 guard: when the length expands for a remaining reason (here an
+  // edit draft on a hidden reply) while focus sits in the reply box, the box
+  // keeps its viewport `top` by compensating the timeline scroll container.
+  it("keeps the focused reply box at the same viewport top when the thread length expands (CHE-1935)", async () => {
+    const root = mockTimeline[0]!;
+    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+      ...mockTimeline[1]!,
+      id: `che1935-guard-reply-${i}`,
+      parent_id: root.id,
+      content: `Guard reply ${i}`,
+      created_at: `2026-01-16T00:0${i}:00Z`,
+    }));
+    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+    const { container } = renderIssueDetail();
+    await screen.findByText("Guard reply 3");
+    await screen.findByRole("button", { name: /Show 1 more repl/ });
+
+    // Model layout: the box sits 500px down, pushed by 120px per mounted
+    // reply above it, minus the scroll offset. jsdom has no layout.
+    const scroller = container.querySelector<HTMLElement>("[data-issue-timeline-scroll]")!;
+    let scrollTop = 0;
+    Object.defineProperty(scroller, "scrollTop", { configurable: true, get: () => scrollTop, set: (v: number) => { scrollTop = v; } });
+    const box = () => document.querySelector<HTMLElement>(`[data-thread-reply-box="${root.id}"]`)!;
+    const mountedReplies = () => document.querySelectorAll('[id^="comment-che1935-guard-reply-"]').length;
+    const rectSpy = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      return { top: this.hasAttribute("data-thread-reply-box") ? 500 + mountedReplies() * 120 - scrollTop : 0 } as DOMRect;
+    });
+
+    const input = box().querySelector<HTMLElement>("[contenteditable], textarea, button")!;
+    act(() => input.focus());
+    expect(box().contains(document.activeElement)).toBe(true);
+    const topBefore = box().getBoundingClientRect().top;
+
+    act(() => {
+      mockDraftStoreState.setDraft(`edit:issue-1:${replies[0]!.id}`, { content: "edited", attachments: [], updatedAt: Date.now() });
+    });
+    await screen.findByText("Guard reply 0");
+
+    try {
+      expect(Math.abs(box().getBoundingClientRect().top - topBefore)).toBeLessThanOrEqual(1);
+    } finally {
+      rectSpy.mockRestore();
+    }
+  });
+
   // Canonical coverage for the latch itself (01-DESIGN "Durable state and
   // transition matrix", "New reply / edit / active run" row): an active
   // interaction must not just force a compact thread open for its duration —
@@ -1688,7 +1769,7 @@ describe("IssueDetail (shared)", () => {
   // after the interaction ends. `issue-disclosure-store.test.ts` only proves
   // `setThreadExpanded` is a correct setter; it cannot prove anything about
   // when the component calls it. This is that proof.
-  it("latches a thread's length-expanded preference when an active reply draft forces it open, surviving after the draft clears", async () => {
+  it("latches a thread's length-expanded preference when an active edit draft on a hidden reply forces it open, surviving after the draft clears", async () => {
     const root = mockTimeline[0]!;
     const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
       ...mockTimeline[1]!,
@@ -1705,10 +1786,10 @@ describe("IssueDetail (shared)", () => {
     expect(screen.queryByText("Reply 0")).not.toBeInTheDocument();
     await screen.findByRole("button", { name: /Show \d+ more repl/ });
 
-    // Introduce an active reply draft on the root — the same draft-store key
-    // (`reply:${issueId}:${rootId}`) `rootIdsWithActiveReplyDraft` reads.
+    // Introduce an active edit draft on the hidden reply — the same draft-store key
+    // (`edit:${issueId}:${replyId}`, CHE-1935: reply drafts no longer latch) `rootIdsWithActiveReplyDraft` reads.
     act(() => {
-      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, {
+      mockDraftStoreState.setDraft(`edit:issue-1:latch-reply-0`, {
         content: "typing a reply...",
         attachments: [],
         updatedAt: Date.now(),
@@ -1727,7 +1808,7 @@ describe("IssueDetail (shared)", () => {
     // Clear the draft — the interaction ends (reply sent), exactly like
     // useCommentDraftStore's clearDraft on a successful submit.
     act(() => {
-      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, undefined);
+      mockDraftStoreState.setDraft(`edit:issue-1:latch-reply-0`, undefined);
     });
 
     // The temporary pin is gone (no active draft), but 01-DESIGN line 56
@@ -1752,7 +1833,7 @@ describe("IssueDetail (shared)", () => {
   // with an active reply draft already present, `!expandedThreadLengths.has(rootId)`
   // read true again and the effect immediately re-latched the root open,
   // silently undoing the fold.
-  it("does not let Fold All be immediately undone by the latch when a reply draft is already active on a folded root (CHE-479)", async () => {
+  it("does not let Fold All be immediately undone by the latch when an edit draft is already active on a folded root (CHE-479)", async () => {
     const root = mockTimeline[0]!;
     const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
       ...mockTimeline[1]!,
@@ -1771,7 +1852,7 @@ describe("IssueDetail (shared)", () => {
     // test above — so forceThreadOpen's pin is active and the latch effect
     // has already persisted the length-expansion for this root.
     act(() => {
-      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, {
+      mockDraftStoreState.setDraft(`edit:issue-1:foldall-latch-reply-0`, {
         content: "typing a reply...",
         attachments: [],
         updatedAt: Date.now(),
@@ -1796,7 +1877,7 @@ describe("IssueDetail (shared)", () => {
     // length preference stays expanded.
     expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy();
     act(() => {
-      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, {
+      mockDraftStoreState.setDraft(`edit:issue-1:foldall-latch-reply-0`, {
         content: "typing a reply... continued",
         attachments: [],
         updatedAt: Date.now(),
@@ -1809,11 +1890,11 @@ describe("IssueDetail (shared)", () => {
     // one starting on the same root — must still latch normally: Fold All's
     // suppression must not permanently block future latching.
     act(() => {
-      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, { content: "", attachments: [], updatedAt: Date.now() });
+      mockDraftStoreState.setDraft(`edit:issue-1:foldall-latch-reply-0`, { content: "", attachments: [], updatedAt: Date.now() });
     });
     await waitFor(() => expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy());
     act(() => {
-      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, {
+      mockDraftStoreState.setDraft(`edit:issue-1:foldall-latch-reply-0`, {
         content: "a brand new reply draft",
         attachments: [],
         updatedAt: Date.now(),
@@ -1871,7 +1952,7 @@ describe("IssueDetail (shared)", () => {
     // the second, unrelated Fold All's justFoldedRoots (naming only `other`)
     // must not carry forward suppression for `root`.
     act(() => {
-      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, {
+      mockDraftStoreState.setDraft(`edit:issue-1:foldall-stale-reply-0`, {
         content: "a fresh reply after an unrelated fold",
         attachments: [],
         updatedAt: Date.now(),

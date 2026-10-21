@@ -1950,6 +1950,13 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // pending upload right now" — reachable without lifting `editing` itself to
   // page level.
   //
+  //
+  // CHE-1935: `rootIdsWithActiveEditDraft` is the edit-only subset. A bare
+  // `reply:` draft pins the thread open (`forceThreadOpen`) but must NOT force
+  // or latch length expansion: the reply box is already visible in the compact
+  // state, so unfolding the hidden replies only pushes it away from the user.
+  // Only an edit can need a hidden reply mounted.
+  //
   // Genuinely NOT covered: focus/selection with no unsaved change yet (e.g.
   // the editor is focused but the user hasn't typed anything, or a caret is
   // placed but no upload started) — that produces no draft-store entry and
@@ -1957,23 +1964,22 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // need new plumbing (a per-row "focused" callback bubbling to the page);
   // that is out of scope for this fix.
   const draftsByKey = useCommentDraftStore((s) => s.drafts);
-  const rootIdsWithActiveReplyDraft = useMemo(() => {
-    const ids = new Set<string>();
+  const { rootIdsWithActiveReplyDraft, rootIdsWithActiveEditDraft } = useMemo(() => {
+    const replyOrEdit = new Set<string>();
+    const edit = new Set<string>();
     const hasDraftContentOrUpload = (key: string) => {
       const draft = draftsByKey[key];
       if (!draft) return false;
       return draft.content.trim().length > 0 || draft.attachments.some((u) => u.status === "uploading");
     };
     for (const [rootId, replies] of timelineView.threadReplies) {
-      if (
-        hasDraftContentOrUpload(`reply:${id}:${rootId}`) ||
+      const hasEdit =
         hasDraftContentOrUpload(`edit:${id}:${rootId}`) ||
-        replies.some((reply) => hasDraftContentOrUpload(`edit:${id}:${reply.id}`))
-      ) {
-        ids.add(rootId);
-      }
+        replies.some((reply) => hasDraftContentOrUpload(`edit:${id}:${reply.id}`));
+      if (hasEdit) edit.add(rootId);
+      if (hasEdit || hasDraftContentOrUpload(`reply:${id}:${rootId}`)) replyOrEdit.add(rootId);
     }
-    return ids;
+    return { rootIdsWithActiveReplyDraft: replyOrEdit, rootIdsWithActiveEditDraft: edit };
   }, [draftsByKey, id, timelineView.threadReplies]);
 
   // Root ids with an active (queued/running) run that has no published reply
@@ -2137,14 +2143,14 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const forceThreadLengthExpand = useCallback((rootId: string): boolean => {
     if (find.open) return true;
     if (targetRootId === rootId) return true;
-    if (rootIdsWithActiveReplyDraft.has(rootId)) return true;
+    if (rootIdsWithActiveEditDraft.has(rootId)) return true;
     if (rootIdsWithActiveRun.has(rootId)) return true;
     const threadRepliesForRoot = timelineView.threadReplies.get(rootId) ?? EMPTY_REPLIES;
     if (highlightedId && (highlightedId === rootId || threadRepliesForRoot.some((r) => r.id === highlightedId))) {
       return true;
     }
     return false;
-  }, [find.open, targetRootId, rootIdsWithActiveReplyDraft, rootIdsWithActiveRun, timelineView.threadReplies, highlightedId]);
+  }, [find.open, targetRootId, rootIdsWithActiveEditDraft, rootIdsWithActiveRun, timelineView.threadReplies, highlightedId]);
 
   // Latch: 01-DESIGN line 56 ("New reply / edit / active run") and line 57
   // ("Target reveal / notification replay") both require that when their
@@ -2234,12 +2240,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     // `justFoldedRoots` itself hasn't changed identity.
     for (const rootId of suppressed) {
       const isActive =
-        rootIdsWithActiveReplyDraft.has(rootId) || rootIdsWithActiveRun.has(rootId) || rootId === targetRootId;
+        rootIdsWithActiveEditDraft.has(rootId) || rootIdsWithActiveRun.has(rootId) || rootId === targetRootId;
       if (!isActive) voided.add(rootId);
     }
     for (const rootId of voided) suppressed.delete(rootId);
 
-    for (const rootId of rootIdsWithActiveReplyDraft) {
+    for (const rootId of rootIdsWithActiveEditDraft) {
       if (suppressed.has(rootId)) continue;
       if (!expandedThreadLengths.has(rootId)) setThreadExpanded(id, rootId, true);
     }
@@ -2251,7 +2257,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       setThreadExpanded(id, targetRootId, true);
     }
   }, [
-    rootIdsWithActiveReplyDraft,
+    rootIdsWithActiveEditDraft,
     rootIdsWithActiveRun,
     targetRootId,
     expandedThreadLengths,

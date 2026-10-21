@@ -1,0 +1,18 @@
+# Bug fix, not a new design: typing in a compact thread's reply box no longer unfolds the thread.
+# Spec: CHE-1935 issue body (Cheese's DM report of 21 Oct 2026). No design revision applies; the
+# change removes an unwanted layout shift. It narrows 01-DESIGN line 56 ("New reply / edit /
+# active run") to edit drafts and active runs; a reply draft no longer forces or latches expansion.
+issue: CHE-1935
+design: none (bug fix; admit waiver is the squad leader's to record)
+pages:
+  - id: issue-detail-comment-thread
+    url: /<workspace-slug>/issues/<issue-id>   # a thread with more than 3 replies, compact
+    keep:
+      - thread-show-more-button
+      - thread-latest-3-replies
+      - thread-reply-box
+    change:
+      - thread-reply-box-typing: "typing in the reply box leaves the thread compact; the Show-more button and its hidden count stay; the box does not move"
+      - thread-after-send: "after the reply is sent the thread stays compact and shows the latest 3 replies, including the new one"
+      - thread-reply-box-guard: "when the thread length expands for another reason (edit draft on a hidden reply, active run, find, target) while focus is in the reply box, the box keeps its viewport position"
+    remove: []
