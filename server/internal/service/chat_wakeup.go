@@ -95,7 +95,7 @@ type ChatWakeupCommenter struct {
 // Armed lists the pull requests seen with checks still running since, so a
 // same-head rerun counts when it finishes. Both are keyed by pullRequestKey,
 // because pull request numbers repeat across repositories. State written before
-// that holds the bare number; checksFinished reads it as described there.
+// that holds the bare number and is never attributed; see checksFinished.
 type chatWakeupCondition struct {
 	IssueID    string               `json:"issue_id"`
 	Identifier string               `json:"identifier"`
@@ -336,24 +336,17 @@ func (s *ChatWakeupService) checksFinished(ctx context.Context, w db.ChatWakeup,
 		armed[key] = true
 	}
 	// State written when the keys were bare numbers names a pull request by
-	// number only. It is read as that pull request's state when exactly one linked
-	// pull request has the number, and is then rewritten under the full key. When
-	// two linked pull requests share the number, the old state cannot say which it
-	// belonged to, so neither is guessed at: that pull request is skipped, and the
-	// deadline still ends the wait.
-	sameNumber := map[int32]int{}
-	for _, row := range rows {
-		sameNumber[row.PrNumber]++
-	}
+	// number only. It cannot say which repository it described, and the pull
+	// requests linked now say nothing about which were linked when it was written
+	// (one may have been unlinked since). So it is never attributed: a pull request
+	// whose number has such state is skipped, and the deadline still ends the wait.
 	dirty := false
 	var fresh []map[string]any
 	for _, row := range rows {
 		key := pullRequestKey(row.RepoOwner, row.RepoName, row.PrNumber)
 		legacy := strconv.Itoa(int(row.PrNumber))
-		if sameNumber[row.PrNumber] == 1 && armed[legacy] {
-			delete(armed, legacy)
-			armed[key] = true
-			dirty = true
+		if _, old := c.Baseline[legacy]; old || armed[legacy] {
+			continue
 		}
 		if !checksTerminal(row.HeadSha, row.Checks) {
 			if row.HeadSha != "" && !armed[key] {
@@ -366,15 +359,6 @@ func (s *ChatWakeupService) checksFinished(ctx context.Context, w db.ChatWakeup,
 			continue // data without node ids cannot name a result; wait for the next refresh
 		}
 		base, known := c.Baseline[key]
-		if legacyBase, old := c.Baseline[legacy]; !known && old {
-			if sameNumber[row.PrNumber] > 1 {
-				continue
-			}
-			base, known = legacyBase, true
-			c.Baseline[key] = legacyBase
-			delete(c.Baseline, legacy)
-			dirty = true
-		}
 		if !known || base != checksResultKey(row.HeadSha, row.Checks, row.ChecksIdentity) || armed[key] {
 			fresh = append(fresh, map[string]any{"number": row.PrNumber, "head_sha": row.HeadSha, "checks": strings.ToLower(row.Checks)})
 		}
