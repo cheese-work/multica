@@ -159,6 +159,12 @@ type Config struct {
 	// Surfaced through /api/config so self-hosted operators can confirm which
 	// server build is deployed. Empty in dev builds.
 	ServerVersion string
+	// ServerBuild is the fork ICT build stamp (YYYYMMDD-hhmm) stamped via
+	// -X main.build on CD/release builds. Empty on upstream/dev builds.
+	ServerBuild string
+	// ServerCommit is the commit SHA stamped via -X main.commit. Normalized to
+	// a 7-char short SHA on /api/config when ServerVersion is present.
+	ServerCommit string
 }
 
 type cloudRuntimeProxy interface {
@@ -503,7 +509,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	probe, probeErr := service.NewHTTPProviderFailureProbe(cfg.ProviderRecoveryBaseURL)
 	if probeErr != nil {
 		slog.Error("provider recovery probe configuration is invalid", "error", probeErr)
-	} else {
+	} else if probe != nil {
 		taskSvc.ProviderFailureProbe = probe
 	}
 	taskSvc.Analytics = analyticsClient
