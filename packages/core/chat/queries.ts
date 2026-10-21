@@ -35,6 +35,8 @@ export const chatKeys = {
   /** Full sessions list (active + archived); the dropdown splits locally. */
   sessions: (wsId: string) => [...chatKeys.all(wsId), "sessions"] as const,
   session: (wsId: string, id: string) => [...chatKeys.all(wsId), "session", id] as const,
+  /** Statistics for one session (`GET /api/chat/sessions/{id}/usage`). */
+  usage: (wsId: string, id: string) => [...chatKeys.all(wsId), "usage", id] as const,
   messagesAll: () => ["chat", "messages"] as const,
   messages: (sessionId: string) => [...chatKeys.messagesAll(), sessionId] as const,
   messagesPageAll: () => ["chat", "messages-page"] as const,
@@ -72,6 +74,20 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 
 export function isTaskMessageTaskId(taskId: string | null | undefined): taskId is string {
   return typeof taskId === "string" && UUID_PATTERN.test(taskId);
+}
+
+/**
+ * Statistics for one session. Always refetched on open: totals move while runs
+ * finish, and the dialog is the only reader.
+ */
+export function chatSessionUsageOptions(wsId: string, sessionId: string | null) {
+  return queryOptions({
+    queryKey: chatKeys.usage(wsId, sessionId ?? ""),
+    queryFn: () => api.getChatSessionUsage(sessionId as string),
+    enabled: !!sessionId,
+    staleTime: 0,
+    gcTime: 60_000,
+  });
 }
 
 export function chatSessionsOptions(wsId: string) {
