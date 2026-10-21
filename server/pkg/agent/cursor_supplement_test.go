@@ -325,7 +325,7 @@ func TestCursorSupplementKeepsUnmanagedHooksFile(t *testing.T) {
 		t.Fatalf("unmanaged hooks.json changed to %q", got)
 	}
 
-	stale := []byte(`{"hooks":{"postToolUse":[{"command":"'/old/multica' '` + CursorHookHelperArg + `'"}]}}`)
+	stale := []byte(`{"version":1,"hooks":{"postToolUse":[{"command":"'/old/multica' '` + CursorHookHelperArg + `'","timeout":10}]}}`)
 	if err := os.WriteFile(path, stale, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -582,6 +582,94 @@ func TestCursorSupplementCleanupKeepsAnEditedFile(t *testing.T) {
 	entries, _ := os.ReadDir(filepath.Dir(path))
 	if len(entries) != 1 {
 		t.Fatalf(".cursor holds %d entries, want only hooks.json", len(entries))
+	}
+}
+
+// Multica always writes both version and timeout, so a file that lacks either
+// was not written by Multica, whatever its command says.
+func TestCursorSupplementKeepsHooksFileWithMissingMetadata(t *testing.T) {
+	command, err := json.Marshal(cursorHookShellCommand([]string{"/old/multica", CursorHookHelperArg}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]string{
+		"no version":                 `{"hooks":{"postToolUse":[{"command":` + string(command) + `,"timeout":10}]}}`,
+		"no timeout":                 `{"version":1,"hooks":{"postToolUse":[{"command":` + string(command) + `}]}}`,
+		"no timeout on a later hook": `{"version":1,"hooks":{"postToolUse":[{"command":` + string(command) + `,"timeout":10}],"postToolUseFailure":[{"command":` + string(command) + `}]}}`,
+	}
+	for name, content := range cases {
+		t.Run(name, func(t *testing.T) {
+			cwd := t.TempDir()
+			path := filepath.Join(cwd, ".cursor", "hooks.json")
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := CursorHooksInstallable(cwd); err == nil {
+				t.Fatal("CursorHooksInstallable accepted a file with missing metadata")
+			}
+			if s, err := startCursorSupplementSession(t.Context(), cwd, testCursorHookCommand, slog.Default()); err == nil {
+				s.close()
+				t.Fatal("started over a hooks.json with missing metadata")
+			}
+			if got, _ := os.ReadFile(path); string(got) != content {
+				t.Fatalf("hooks.json changed to %q", got)
+			}
+		})
+	}
+}
+
+// Two runs in one workdir share one hooks file: each run reaches its own relay
+// through its own environment, not through the file. The file stays until the
+// last of them ends, and neither run removes a file the other still needs.
+func TestCursorSupplementOverlappingSessionsShareTheHooksFile(t *testing.T) {
+	for _, order := range []string{"first ends first", "second ends first"} {
+		t.Run(order, func(t *testing.T) {
+			cwd := t.TempDir()
+			path := filepath.Join(cwd, ".cursor", "hooks.json")
+			first, err := startCursorSupplementSession(t.Context(), cwd, testCursorHookCommand, slog.Default())
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, err := startCursorSupplementSession(t.Context(), cwd, testCursorHookCommand, slog.Default())
+			if err != nil {
+				t.Fatalf("a second run in the same workdir was refused: %v", err)
+			}
+			early, late := first, second
+			if order == "second ends first" {
+				early, late = second, first
+			}
+			early.close()
+			if got, err := os.ReadFile(path); err != nil || string(got) != string(late.hooksData) {
+				t.Fatalf("after one of two runs ended the hooks file is %q (%v), want it kept for the other", got, err)
+			}
+			late.close()
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("after both runs ended the hooks file is still there (%v)", err)
+			}
+		})
+	}
+}
+
+// A second run whose hook command differs cannot reuse the file: the first
+// run's hooks would call the wrong binary.
+func TestCursorSupplementOverlappingSessionWithAnotherCommandIsRefused(t *testing.T) {
+	cwd := t.TempDir()
+	first, err := startCursorSupplementSession(t.Context(), cwd, testCursorHookCommand, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.close()
+	other := []string{"/opt/other/multica", CursorHookHelperArg}
+	if second, err := startCursorSupplementSession(t.Context(), cwd, other, slog.Default()); err == nil {
+		second.close()
+		t.Fatal("a run with another hook command shared the file")
+	}
+	path := filepath.Join(cwd, ".cursor", "hooks.json")
+	if got, _ := os.ReadFile(path); string(got) != string(first.hooksData) {
+		t.Fatalf("the first run's hooks file became %q", got)
 	}
 }
 

@@ -79,6 +79,8 @@ type cursorSupplementSession struct {
 	server    *http.Server
 	hooksPath string
 	hooksData []byte
+	// leaseKeyHeld is set once this run holds a lease on the hooks file.
+	leaseKeyHeld string
 
 	mu        sync.Mutex
 	sessionID string
@@ -222,7 +224,8 @@ func cursorHooksFileIsManaged(data []byte) bool {
 			return false
 		}
 	}
-	if version, ok := file["version"]; ok && string(version) != "1" {
+	// Multica writes both fields, so a file without either is not its own.
+	if string(file["version"]) != "1" {
 		return false
 	}
 	var hooks map[string][]map[string]json.RawMessage
@@ -243,12 +246,36 @@ func cursorHooksFileIsManaged(data []byte) bool {
 					return false
 				}
 			}
-			if timeout, ok := entry["timeout"]; ok && string(timeout) != strconv.Itoa(cursorHookTimeoutSeconds) {
+			if string(entry["timeout"]) != strconv.Itoa(cursorHookTimeoutSeconds) {
 				return false
 			}
 		}
 	}
 	return true
+}
+
+// cursorHooksLeases tracks the hooks files this process has installed and how
+// many runs hold each. Two runs in one workdir share one file: each reaches its
+// own relay through its own environment, not through the file. The file is
+// installed by the first run and removed by the last, so neither run clears or
+// removes a file the other still needs. One mutex orders installs and cleanups.
+var cursorHooksLeases = struct {
+	sync.Mutex
+	held map[string]*cursorHooksLease
+}{held: make(map[string]*cursorHooksLease)}
+
+type cursorHooksLease struct {
+	data    []byte
+	holders int
+}
+
+// leaseKey names the hooks file the same way however the workdir is spelled.
+func (s *cursorSupplementSession) leaseKey() string {
+	dir := filepath.Dir(s.hooksPath)
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = real
+	}
+	return filepath.Join(dir, filepath.Base(s.hooksPath))
 }
 
 // cursorHooksRaceHook lets a test act at the points where a user editing the
@@ -257,6 +284,28 @@ func cursorHooksFileIsManaged(data []byte) bool {
 var cursorHooksRaceHook = func(stage string) {}
 
 func (s *cursorSupplementSession) writeHooksFile() error {
+	cursorHooksLeases.Lock()
+	defer cursorHooksLeases.Unlock()
+	if err := s.installHooksFile(); err != nil {
+		return err
+	}
+	s.leaseKeyHeld = s.leaseKey()
+	if lease, ok := cursorHooksLeases.held[s.leaseKeyHeld]; ok {
+		lease.holders++
+	} else {
+		cursorHooksLeases.held[s.leaseKeyHeld] = &cursorHooksLease{data: s.hooksData, holders: 1}
+	}
+	return nil
+}
+
+func (s *cursorSupplementSession) installHooksFile() error {
+	if lease, ok := cursorHooksLeases.held[s.leaseKey()]; ok {
+		// Another run in this process already installed the file.
+		if !bytes.Equal(lease.data, s.hooksData) {
+			return fmt.Errorf("another run in this workdir already holds %s with a different hook command", s.hooksPath)
+		}
+		return nil
+	}
 	if err := CursorHooksInstallable(filepath.Dir(filepath.Dir(s.hooksPath))); err != nil {
 		return err
 	}
@@ -343,6 +392,15 @@ func (s *cursorSupplementSession) clearManagedLeftover() error {
 }
 
 func (s *cursorSupplementSession) removeHooksFile() {
+	cursorHooksLeases.Lock()
+	defer cursorHooksLeases.Unlock()
+	if lease, ok := cursorHooksLeases.held[s.leaseKeyHeld]; ok && s.leaseKeyHeld != "" {
+		lease.holders--
+		if lease.holders > 0 {
+			return
+		}
+		delete(cursorHooksLeases.held, s.leaseKeyHeld)
+	}
 	// Take the file aside first: what is compared is then exactly what is
 	// deleted, and a file the user writes meanwhile lands at the path untouched.
 	aside, err := s.takeAside("cleanup")
