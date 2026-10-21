@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // CHE-1919: offline 2-, 5- and 10-minute coalescing counterfactuals. They
@@ -182,7 +184,7 @@ func TestBuildRunGateReportJoinsRealRuns(t *testing.T) {
 		c1: DispRunCompletedMutated + "|", c2: DispRunCompletedNoRecordedMutation + "|", c3: DispRunCompletedNoRecordedMutation + "|",
 		c4: DispRunCompletedNoRecordedMutation + "|", c5: DispNoRunBlocked + "|runtime_offline", c6: DispUnknownNoAdmissionRecord + "|",
 		"github:acme/widget#401":      DispRunCompletedMutated + "|",
-		"github:acme/widget#402:h402": DispUnknownReceiptExpired + "|",
+		"github:acme/widget#402:h402": DispUnknownReceiptMissing + "|wakeup_rule_present",
 		"github:acme/widget#403":      DispReceiptConsumedNoRun + "|paused",
 	}
 	for k, v := range want {
@@ -237,5 +239,56 @@ func TestBuildRunGateReportJoinsRealRuns(t *testing.T) {
 	}
 	if total != len(rep.Events) || total != 9 {
 		t.Errorf("sources capture %d events, report lists %d, want 9", total, len(rep.Events))
+	}
+}
+
+// CHE-1919 review round: deleting an issue (and with it the PR wakeup rule)
+// removes the rule's receipts at any age. The ledger row survives. The report
+// must not call that expiry, and must not offer the surviving receipts as a
+// complete denominator.
+func TestBuildRunGateReportRecentRuleDeletionIsNotExpiry(t *testing.T) {
+	f, s, issue, _ := gateFixture(t)
+	ctx := context.Background()
+	for i, in := range []PullRequestWakeupInput{
+		{Rule: SystemRulePRMerged, RepoOwner: "acme", RepoName: "widget", Number: 501, URL: "u", HeadSHA: "h501", MergeCommit: "m501"},
+		{Rule: SystemRulePRChecksFailed, RepoOwner: "acme", RepoName: "widget", Number: 502, URL: "u", HeadSHA: "h502", Conclusion: "FAILURE"},
+	} {
+		if err := s.TriggerPullRequestWakeup(ctx, issue, in); err != nil {
+			t.Fatalf("input %d: %v", i, err)
+		}
+	}
+	if err := f.q.DeleteIssue(ctx, db.DeleteIssueParams{ID: issue, WorkspaceID: parseTestUUID(t, f.WorkspaceID)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Count(t, `SELECT count(*) FROM run_gate_event WHERE workspace_id=$1 AND source <> 'comment_leader'`, f.WorkspaceID); got != 2 {
+		t.Fatalf("ledger rows after issue deletion = %d, want 2 (the ledger has no foreign key)", got)
+	}
+
+	now := time.Now()
+	rep, err := BuildRunGateReport(ctx, f.q, parseTestUUID(t, f.WorkspaceID), now.Add(-time.Hour), now.Add(time.Hour), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range rep.Events {
+		if e.Disposition != "unknown_receipt_missing" || e.Reason != "wakeup_rule_deleted" {
+			t.Errorf("event %s = %s|%s, want unknown_receipt_missing|wakeup_rule_deleted (cause is deletion, not expiry)", e.EventKey, e.Disposition, e.Reason)
+		}
+	}
+	for _, sr := range rep.Sources {
+		if sr.Source == RunGateSourceComment {
+			continue
+		}
+		raw, _ := json.Marshal(sr.Producer)
+		var p map[string]any
+		_ = json.Unmarshal(raw, &p)
+		if p["denominator_complete"] != false {
+			t.Errorf("%s producer = %s, want denominator_complete=false", sr.Source, raw)
+		}
+		if p["evidenced"] != float64(0) || p["ledger_rule_gone"] != float64(1) {
+			t.Errorf("%s producer = %s, want 0 surviving receipts and 1 ledger event whose rule is gone", sr.Source, raw)
+		}
+		if limits, _ := p["limits"].([]any); len(limits) != 1 || limits[0] != "receipts_deleted_with_rule" {
+			t.Errorf("%s producer = %s, want exactly the receipts_deleted_with_rule limit for a recent window", sr.Source, raw)
+		}
 	}
 }

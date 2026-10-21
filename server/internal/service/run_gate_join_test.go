@@ -70,7 +70,7 @@ func TestClassifyRunGateEvent(t *testing.T) {
 		{"no admission and no run", gateEvent("comment_leader", "", "", false), nil, nil, DispUnknownNoAdmissionRecord, "", ""},
 		{"unrecognised admission", gateEvent("comment_leader", "mystery", "x", false), nil, nil, DispUnknownAdmissionValue, "mystery", ""},
 		{"wakeup with no receipt written", gateEvent("wakeup_pr_merged", "", "", false), nil, nil, DispNoRunNoReceipt, "", ""},
-		{"wakeup receipt expired", gateEvent("wakeup_pr_merged", "", "", true), nil, nil, DispUnknownReceiptExpired, "", ""},
+		{"wakeup receipt missing", gateEvent("wakeup_pr_merged", "", "", true), nil, nil, DispUnknownReceiptMissing, "", ""},
 		{"receipt consumed as paused", gateEvent("wakeup_pr_merged", "", "", true), nil,
 			&RunGateReceipt{Processed: true, Outcome: "paused"}, DispReceiptConsumedNoRun, "paused", ""},
 		{"receipt consumed, outcome not on receipt", gateEvent("wakeup_pr_merged", "", "", true), nil,

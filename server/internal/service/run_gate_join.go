@@ -31,7 +31,7 @@ const (
 	DispUnknownNoAdmissionRecord       = "unknown_no_admission_record"
 	DispUnknownAdmissionValue          = "unknown_admission_value"
 	DispUnknownRunMissing              = "unknown_run_missing"
-	DispUnknownReceiptExpired          = "unknown_receipt_expired"
+	DispUnknownReceiptMissing          = "unknown_receipt_missing"
 )
 
 // Mutation kinds and how a mutation was tied to a run.
@@ -150,7 +150,7 @@ func classifyWakeupWithoutRun(ev db.RunGateEvent, r *RunGateReceipt) (string, st
 	case r == nil && !ev.ReceiptID.Valid:
 		return DispNoRunNoReceipt, ""
 	case r == nil:
-		return DispUnknownReceiptExpired, ""
+		return DispUnknownReceiptMissing, ""
 	case r.TaskID != "":
 		return DispUnknownRunMissing, "receipt_task_missing"
 	case r.Processed && r.Outcome != "":

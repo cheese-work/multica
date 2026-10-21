@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -94,9 +95,12 @@ func printReport(r service.RunGateReport) {
 	for _, s := range r.Sources {
 		fmt.Printf("\n%s: %d events (%d observations), %d native-fold eligible\n", s.Source, s.Captured, s.Observations, s.NativeFoldEligible)
 		p := s.Producer
-		fmt.Printf("  Capture completeness: %d of %d producer rows matched, %d missing", p.Captured, p.Evidenced, p.Missing)
-		if p.RetentionLimited {
-			fmt.Print(" (window reaches past the 7-day receipt retention: denominator undercounts)")
+		fmt.Printf("  Capture completeness: %d of %d surviving producer rows matched, %d missing", p.Captured, p.Evidenced, p.Missing)
+		if !p.DenominatorComplete {
+			fmt.Printf(" (denominator INCOMPLETE, a floor not the producer volume: %s)", strings.Join(p.Limits, ", "))
+		}
+		if p.LedgerRuleGone > 0 {
+			fmt.Printf("; %d ledger events whose rule is deleted (their receipts are not counted)", p.LedgerRuleGone)
 		}
 		if p.LedgerWithoutReceipt > 0 {
 			fmt.Printf("; %d ledger events wrote no receipt", p.LedgerWithoutReceipt)

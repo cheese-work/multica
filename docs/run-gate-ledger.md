@@ -72,11 +72,11 @@ Run states: `run_completed_mutated`, `run_completed_mutation_ambiguous` (only an
 
 Explicit evidence of no run: `no_run_blocked` and `no_run_steered` (the producer's own admission), `no_run_no_receipt` (the producer wrote no receipt), `receipt_consumed_no_run` (reason: the receipt outcome, else `outcome_not_on_receipt`), `receipt_pending`, `receipt_deferred_active_run`.
 
-Unknown, kept distinct: `unknown_no_admission_record` (no run joined and the producer returned nothing), `unknown_run_missing` (the producer or receipt names a run that is gone), `unknown_receipt_expired` (receipt deleted after 7 days), `unknown_admission_value`.
+Unknown, kept distinct: `unknown_no_admission_record` (no run joined and the producer returned nothing), `unknown_run_missing` (the producer or receipt names a run that is gone), `unknown_receipt_missing` (the event names a receipt that no longer exists; reason `wakeup_rule_deleted` when the rule row is gone, since deleting a rule or its issue deletes its receipts at any age, else `wakeup_rule_present` with the cause unknown; expiry is never inferred because a missing receipt carries no `processed_at`), `unknown_admission_value`.
 
 ### Completeness and volume
 
-Per source: ledger events, observations (`seen_count` total), native-fold eligible, admission and disposition counts. Producer-side denominator: comments a squad-leader run is recorded against (a floor; a comment that resolved to a leader but made no run is invisible), and surviving PR receipts (undercounts past 7 days; `retention_limited` marks it). `missing` is producer rows with no ledger row. `ledger_first_event_at` marks where capture starts.
+Per source: ledger events, observations (`seen_count` total), native-fold eligible, admission and disposition counts. Producer-side denominator, always a floor and never proof of full capture (`denominator_complete` is false and `limits` says why): comments a squad-leader run is recorded against (`comment_without_run_invisible`: a comment that resolved to a leader but made no run is invisible), and surviving PR receipts (`receipts_deleted_with_rule`: receipts go with their rule or issue at any age, no row records it, so the inputs of a deleted rule leave the denominator even in a recent window; `receipt_retention_7d` is added when the window reaches back past 7 days). `ledger_rule_gone` counts ledger events whose rule no longer exists: they are captured but absent from the denominator. `missing` is surviving producer rows with no ledger row, a lower bound on what was lost. `ledger_first_event_at` marks where capture starts.
 
 ### Counterfactual windows
 

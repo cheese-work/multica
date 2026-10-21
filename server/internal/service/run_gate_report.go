@@ -38,16 +38,33 @@ type RunGateWindowSim struct {
 	FoldedUnknown            int `json:"folded_unknown"`
 }
 
+// Why a producer denominator is not the full producer volume.
+const (
+	// A wakeup rule's receipts go with the rule (rule or issue deletion), at any
+	// age, and no row records that. The inputs of a deleted rule leave the
+	// denominator and cannot be counted back in, recent windows included.
+	RunGateLimitReceiptsDeletedWithRule = "receipts_deleted_with_rule"
+	// Processed receipts are deleted after runGateReceiptRetention.
+	RunGateLimitReceiptRetention = "receipt_retention_7d"
+	// A comment that resolved to a leader but made no run is invisible.
+	RunGateLimitCommentWithoutRun = "comment_without_run_invisible"
+)
+
 // RunGateProducerEvidence is the producer-side denominator a source is measured
-// against. It is a floor: an input the producer dropped before leaving any row
-// is invisible to it.
+// against. It is a floor, never proof of full capture: an input the producer
+// dropped before leaving any row, or whose row was deleted, is invisible to it.
 type RunGateProducerEvidence struct {
 	Evidenced int64 `json:"evidenced"`
 	Captured  int64 `json:"captured"`
 	Missing   int64 `json:"missing"`
-	// RetentionLimited: receipts older than 7 days are deleted, so Evidenced
-	// undercounts for a window that reaches back past that.
-	RetentionLimited bool `json:"retention_limited"`
+	// DenominatorComplete is false whenever Limits is not empty; no source
+	// currently has an empty list, so Missing is a lower bound on what was lost.
+	DenominatorComplete bool     `json:"denominator_complete"`
+	Limits              []string `json:"limits"`
+	// LedgerRuleGone: ledger events in the window whose wakeup rule no longer
+	// exists. Their receipts were deleted with it, so they are in the ledger but
+	// not in Evidenced.
+	LedgerRuleGone int64 `json:"ledger_rule_gone,omitempty"`
 	// LedgerWithoutReceipt: ledger events whose producer wrote no receipt.
 	LedgerWithoutReceipt int64 `json:"ledger_without_receipt,omitempty"`
 }
@@ -104,13 +121,27 @@ func BuildRunGateReport(ctx context.Context, q *db.Queries, workspaceID pgtype.U
 	if err != nil {
 		return report, err
 	}
+	goneRows, err := q.ListRunGateRuleGoneEvents(ctx, db.ListRunGateRuleGoneEventsParams{WorkspaceID: workspaceID, Since: from, Until: to})
+	if err != nil {
+		return report, err
+	}
+	ruleGone := make(map[pgtype.UUID]bool, len(goneRows))
+	for _, id := range goneRows {
+		ruleGone[id] = true
+	}
 	receipts := map[pgtype.UUID]*RunGateReceipt{}
 	for _, r := range receiptRows {
 		receipts[r.EventID] = &RunGateReceipt{TaskID: uuidOrEmpty(r.TaskID), Processed: r.ProcessedAt.Valid, Deferred: r.DeferredAt.Valid, Outcome: r.Outcome}
 	}
 	report.Events = make([]RunGateJoin, 0, len(events))
 	for _, ev := range events {
-		report.Events = append(report.Events, ClassifyRunGateEvent(ev, runs[ev.ID], receipts[ev.ID]))
+		j := ClassifyRunGateEvent(ev, runs[ev.ID], receipts[ev.ID])
+		if j.Disposition == DispUnknownReceiptMissing {
+			// A missing receipt is deletion only when the rule is provably gone;
+			// otherwise the cause stays unknown. Expiry is never inferred.
+			j.Reason = map[bool]string{true: "wakeup_rule_deleted", false: "wakeup_rule_present"}[ruleGone[ev.ID]]
+		}
+		report.Events = append(report.Events, j)
 	}
 	if first, err := q.FirstRunGateEventTime(ctx, workspaceID); err != nil {
 		return report, err
@@ -118,7 +149,7 @@ func BuildRunGateReport(ctx context.Context, q *db.Queries, workspaceID pgtype.U
 		report.LedgerFirstEventAt = &first.Time
 	}
 	for _, source := range []string{RunGateSourceComment, RunGateSourcePRMerged, RunGateSourcePRChecksFailed} {
-		sr, err := sourceReport(ctx, q, workspaceID, source, from, to, since, now, events, report.Events)
+		sr, err := sourceReport(ctx, q, workspaceID, source, from, to, since, now, events, report.Events, ruleGone)
 		if err != nil {
 			return report, err
 		}
@@ -172,7 +203,7 @@ func timePtr(t pgtype.Timestamptz) *time.Time {
 // sourceReport totals one source: volume, admission and disposition counts, the
 // producer-side completeness figure, and the three counterfactual windows.
 func sourceReport(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, source string, from, to pgtype.Timestamptz, since, now time.Time,
-	events []db.RunGateEvent, joins []RunGateJoin) (RunGateSourceReport, error) {
+	events []db.RunGateEvent, joins []RunGateJoin, ruleGone map[pgtype.UUID]bool) (RunGateSourceReport, error) {
 	sr := RunGateSourceReport{Source: source, Admission: map[string]int{}, Dispositions: map[string]int{}, Windows: []RunGateWindowSim{}}
 	var mine []*RunGateJoin
 	for i := range joins {
@@ -191,6 +222,9 @@ func sourceReport(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, s
 		if source != RunGateSourceComment && !events[i].ReceiptID.Valid {
 			sr.Producer.LedgerWithoutReceipt++
 		}
+		if ruleGone[events[i].ID] {
+			sr.Producer.LedgerRuleGone++
+		}
 	}
 	if source == RunGateSourceComment {
 		row, err := q.CountRunGateCommentEvidence(ctx, db.CountRunGateCommentEvidenceParams{WorkspaceID: workspaceID, Since: from, Until: to})
@@ -198,6 +232,7 @@ func sourceReport(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, s
 			return sr, err
 		}
 		sr.Producer.Evidenced, sr.Producer.Captured = row.Evidenced, row.Captured
+		sr.Producer.Limits = []string{RunGateLimitCommentWithoutRun}
 	} else {
 		rows, err := q.CountRunGateWakeupEvidence(ctx, db.CountRunGateWakeupEvidenceParams{WorkspaceID: workspaceID, Since: from, Until: to})
 		if err != nil {
@@ -209,8 +244,12 @@ func sourceReport(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, s
 				sr.Producer.Evidenced, sr.Producer.Captured = r.Evidenced, r.Captured
 			}
 		}
-		sr.Producer.RetentionLimited = since.Before(now.Add(-runGateReceiptRetention))
+		sr.Producer.Limits = []string{RunGateLimitReceiptsDeletedWithRule}
+		if since.Before(now.Add(-runGateReceiptRetention)) {
+			sr.Producer.Limits = append(sr.Producer.Limits, RunGateLimitReceiptRetention)
+		}
 	}
+	sr.Producer.DenominatorComplete = len(sr.Producer.Limits) == 0
 	sr.Producer.Missing = sr.Producer.Evidenced - sr.Producer.Captured
 	// The simulation annotates the joins it is given; hand it this source's own.
 	group := make([]RunGateJoin, len(mine))

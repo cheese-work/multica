@@ -72,8 +72,9 @@ type CountRunGateWakeupEvidenceRow struct {
 }
 
 // Producer-side denominator for the PR wakeup families: receipts still present,
-// and how many have a ledger row. Receipts are deleted 7 days after processing,
-// so a window older than that undercounts.
+// and how many have a ledger row. A floor, never the producer volume: receipts
+// are deleted with their rule (rule or issue deletion, at any age) and 7 days
+// after processing, and no row records either deletion.
 func (q *Queries) CountRunGateWakeupEvidence(ctx context.Context, arg CountRunGateWakeupEvidenceParams) ([]CountRunGateWakeupEvidenceRow, error) {
 	rows, err := q.db.Query(ctx, countRunGateWakeupEvidence, arg.WorkspaceID, arg.Since, arg.Until)
 	if err != nil {
@@ -129,8 +130,8 @@ type ListRunGateReceiptsRow struct {
 	Outcome     string             `json:"outcome"`
 }
 
-// The receipt a wakeup event wrote. Receipts are deleted 7 days after
-// processing: an event with a receipt_id and no row here lost its receipt.
+// The receipt a wakeup event wrote. An event with a receipt_id and no row here
+// lost its receipt; the cause is not recorded (see ListRunGateRuleGoneEvents).
 func (q *Queries) ListRunGateReceipts(ctx context.Context, arg ListRunGateReceiptsParams) ([]ListRunGateReceiptsRow, error) {
 	rows, err := q.db.Query(ctx, listRunGateReceipts, arg.WorkspaceID, arg.Since, arg.Until)
 	if err != nil {
@@ -216,6 +217,43 @@ func (q *Queries) ListRunGateReportEvents(ctx context.Context, arg ListRunGateRe
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRunGateRuleGoneEvents = `-- name: ListRunGateRuleGoneEvents :many
+SELECT e.id AS event_id FROM run_gate_event e
+WHERE e.workspace_id = $1 AND e.source IN ('wakeup_pr_merged', 'wakeup_pr_checks_failed')
+  AND e.event_time >= $2 AND e.event_time < $3
+  AND e.wakeup_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.id = e.wakeup_id)
+`
+
+type ListRunGateRuleGoneEventsParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Since       pgtype.Timestamptz `json:"since"`
+	Until       pgtype.Timestamptz `json:"until"`
+}
+
+// Wakeup events whose rule row no longer exists. Deleting a rule deletes its
+// receipts, so these inputs are missing from the surviving-receipt denominator
+// and their receipt join is lost. The ledger has no foreign key and keeps them.
+func (q *Queries) ListRunGateRuleGoneEvents(ctx context.Context, arg ListRunGateRuleGoneEventsParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listRunGateRuleGoneEvents, arg.WorkspaceID, arg.Since, arg.Until)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var event_id pgtype.UUID
+		if err := rows.Scan(&event_id); err != nil {
+			return nil, err
+		}
+		items = append(items, event_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

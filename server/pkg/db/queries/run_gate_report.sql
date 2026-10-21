@@ -40,14 +40,24 @@ WHERE e.workspace_id = @workspace_id AND e.source IN ('wakeup_pr_merged', 'wakeu
 ORDER BY 1, 3, 2;
 
 -- name: ListRunGateReceipts :many
--- The receipt a wakeup event wrote. Receipts are deleted 7 days after
--- processing: an event with a receipt_id and no row here lost its receipt.
+-- The receipt a wakeup event wrote. An event with a receipt_id and no row here
+-- lost its receipt; the cause is not recorded (see ListRunGateRuleGoneEvents).
 SELECT e.id AS event_id, r.task_id, r.processed_at, r.deferred_at,
        COALESCE(r.payload->>'outcome', '')::text AS outcome
 FROM run_gate_event e
 JOIN issue_wakeup_receipt r ON r.id = e.receipt_id
 WHERE e.workspace_id = @workspace_id AND e.source IN ('wakeup_pr_merged', 'wakeup_pr_checks_failed')
   AND e.event_time >= @since AND e.event_time < @until;
+
+-- name: ListRunGateRuleGoneEvents :many
+-- Wakeup events whose rule row no longer exists. Deleting a rule deletes its
+-- receipts, so these inputs are missing from the surviving-receipt denominator
+-- and their receipt join is lost. The ledger has no foreign key and keeps them.
+SELECT e.id AS event_id FROM run_gate_event e
+WHERE e.workspace_id = @workspace_id AND e.source IN ('wakeup_pr_merged', 'wakeup_pr_checks_failed')
+  AND e.event_time >= @since AND e.event_time < @until
+  AND e.wakeup_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.id = e.wakeup_id);
 
 -- name: ListRunGateRunMutations :many
 -- What a run did. comment_posted, issue_created and wakeup_created are keyed by
@@ -102,8 +112,9 @@ LEFT JOIN run_gate_event e ON e.workspace_id = @workspace_id AND e.source = 'com
 
 -- name: CountRunGateWakeupEvidence :many
 -- Producer-side denominator for the PR wakeup families: receipts still present,
--- and how many have a ledger row. Receipts are deleted 7 days after processing,
--- so a window older than that undercounts.
+-- and how many have a ledger row. A floor, never the producer volume: receipts
+-- are deleted with their rule (rule or issue deletion, at any age) and 7 days
+-- after processing, and no row records either deletion.
 SELECT r.event_type, count(*)::bigint AS evidenced, count(e.id)::bigint AS captured
 FROM issue_wakeup_receipt r
 JOIN issue_wakeup w ON w.id = r.wakeup_id
