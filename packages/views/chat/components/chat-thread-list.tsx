@@ -19,10 +19,14 @@ import { useWorkspaceId } from "@multica/core/hooks";
 import { paths, useWorkspaceSlug } from "@multica/core/paths";
 import { useWorkspacePresenceMap } from "@multica/core/agents";
 import { api } from "@multica/core/api";
-import { pendingChatTasksOptions, chatKeys, sortChatSessions } from "@multica/core/chat/queries";
+import {
+  pendingChatTasksOptions,
+  chatKeys,
+  sortArchivedChatSessions,
+  sortChatSessions,
+} from "@multica/core/chat/queries";
 import {
   useDeleteChatSession,
-  useSetChatSessionArchived,
   useSetChatSessionPinned,
 } from "@multica/core/chat/mutations";
 import { useChatStore } from "@multica/core/chat";
@@ -37,6 +41,7 @@ import { resolveClickIntent, useOptionalNavigation } from "../../navigation";
 import { createLogger } from "@multica/core/logger";
 import { removeChatMessageFromCaches } from "@multica/core/realtime";
 import { useLocale, useT } from "../../i18n";
+import { useChatSessionActions } from "./use-chat-session-actions";
 
 const apiLogger = createLogger("chat.api");
 
@@ -119,7 +124,7 @@ export function ChatThreadList({
     [sessions],
   );
   const archivedSessions = useMemo(
-    () => sortChatSessions(sessions.filter((s) => s.status === "archived")),
+    () => sortArchivedChatSessions(sessions.filter((s) => s.status === "archived")),
     [sessions],
   );
 
@@ -136,7 +141,7 @@ export function ChatThreadList({
   const [stoppingTaskId, setStoppingTaskId] = useState<string | null>(null);
   const deleteSession = useDeleteChatSession();
   const setPinned = useSetChatSessionPinned();
-  const setArchived = useSetChatSessionArchived();
+  const sessionActions = useChatSessionActions();
   const setActiveSession = useChatStore((s) => s.setActiveSession);
   const queryClient = useQueryClient();
 
@@ -277,7 +282,7 @@ export function ChatThreadList({
               icon: <ArchiveRestore className="size-3.5" />,
               label: t(($) => $.list.unarchive),
               onSelect: () =>
-                setArchived.mutate({ sessionId: session.id, archived: false }),
+                void sessionActions.unarchive(session),
             },
             {
               key: "delete",
@@ -376,7 +381,7 @@ export function ChatThreadList({
         <div className="min-w-0 flex-1">
           {/* Line 1: name + time (time stays put; hover actions overlay below) */}
           <div className="flex items-center gap-1.5">
-            {session.pinned && (
+            {session.pinned && session.status !== "archived" && (
               <Pin
                 aria-label={t(($) => $.list.pinned)}
                 className="size-3 shrink-0 -rotate-45 fill-current text-muted-foreground"

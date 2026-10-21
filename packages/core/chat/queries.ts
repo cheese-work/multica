@@ -117,6 +117,14 @@ function sessionActivityTime(s: ChatSession): number {
  * keys (Array.prototype.sort is stable), so pinned rows keep their server
  * order when pin timestamps aren't carried in the list payload.
  */
+/**
+ * Archived chats order by last activity alone. An archived DM is never pinned,
+ * so a stale pin left in a cached row must not lift it above newer ones.
+ */
+export function sortArchivedChatSessions(sessions: ChatSession[]): ChatSession[] {
+  return [...sessions].sort((a, b) => sessionActivityTime(b) - sessionActivityTime(a));
+}
+
 export function sortChatSessions(sessions: ChatSession[]): ChatSession[] {
   return [...sessions].sort((a, b) => {
     const ap = a.pinned ? 1 : 0;
