@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { Component, createRef, memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { CheckCircle2, ChevronRight, CornerUpLeft, ListChevronsDownUp, Copy, Link2, Loader2, MessageSquarePlus, MoreHorizontal, Pencil, RotateCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Card } from "@multica/ui/components/ui/card";
@@ -1179,26 +1179,6 @@ function CommentCardImpl({
   // `CommentCardProps`) — it opens the full list regardless of the durable
   // length choice, without writing it.
   const lengthExpanded = forceThreadLengthExpanded || threadLengthExpanded;
-  // CHE-1935 guard: when the length flips while focus is inside this thread's
-  // reply box, hidden replies mount/unmount above it and would move the box
-  // under the user. Measure its `top` during render (the DOM still shows the
-  // previous commit), then compensate the timeline scroll container in the
-  // layout effect below so the box keeps its viewport position.
-  const replyBoxRef = useRef<HTMLDivElement>(null);
-  const prevLengthExpandedRef = useRef(lengthExpanded);
-  const replyBoxTopBeforeRef = useRef<number | null>(null);
-  if (prevLengthExpandedRef.current !== lengthExpanded) {
-    prevLengthExpandedRef.current = lengthExpanded;
-    const box = replyBoxRef.current;
-    replyBoxTopBeforeRef.current = box?.contains(document.activeElement) ? box.getBoundingClientRect().top : null;
-  }
-  useLayoutEffect(() => {
-    const before = replyBoxTopBeforeRef.current;
-    replyBoxTopBeforeRef.current = null;
-    const box = replyBoxRef.current;
-    const scroller = box?.closest<HTMLElement>("[data-issue-timeline-scroll]");
-    if (before !== null && box && scroller) scroller.scrollTop += box.getBoundingClientRect().top - before;
-  }, [lengthExpanded]);
   // Runs anchored directly to the ROOT keep the pre-existing AgentRunComment
   // rendering identity (below) so a run's DOM node survives the "queued, no
   // reply yet" -> "reply landed" transition without remounting — including
@@ -1758,7 +1738,7 @@ function CommentCardImpl({
               )}
 
               {/* Reply input */}
-              <div ref={replyBoxRef} data-thread-reply-box={entry.id} className="border-t border-border/50 px-4 max-md:px-3 py-2.5">
+              <ReplyBoxScrollAnchor rootId={entry.id} lengthExpanded={lengthExpanded}>
                 <ReplyInput
                   issueId={issueId}
                   parentId={replyTargetId}
@@ -1773,13 +1753,50 @@ function CommentCardImpl({
                   onSubmit={(content, attachmentIds, suppressAgentIds, steerTaskIds) => replyTargetMissing ? Promise.resolve(false) : onReply(replyTargetId, content, attachmentIds, suppressAgentIds, steerTaskIds)}
                   onAccepted={onReplyAccepted}
                 />
-              </div>
+              </ReplyBoxScrollAnchor>
             </>
           )}
           </>
         )}
     </Card>
   );
+}
+
+interface ReplyBoxScrollAnchorProps {
+  rootId: string;
+  lengthExpanded: boolean;
+  children: ReactNode;
+}
+
+// CHE-1935 guard: when a thread's length flips while focus is inside its reply
+// box, hidden replies mount/unmount above it and would move the box under the
+// user. `getSnapshotBeforeUpdate` runs in React's commit before-mutation phase
+// (never during an uncommitted/interrupted render, and before child DOM nodes
+// are inserted or removed), then `componentDidUpdate` compensates the timeline
+// scroll container in the commit layout phase so the box keeps its viewport top.
+class ReplyBoxScrollAnchor extends Component<ReplyBoxScrollAnchorProps> {
+  private readonly boxRef = createRef<HTMLDivElement>();
+
+  override getSnapshotBeforeUpdate(prevProps: ReplyBoxScrollAnchorProps): number | null {
+    if (prevProps.lengthExpanded === this.props.lengthExpanded) return null;
+    const box = this.boxRef.current;
+    return box?.contains(document.activeElement) ? box.getBoundingClientRect().top : null;
+  }
+
+  override componentDidUpdate(_prevProps: ReplyBoxScrollAnchorProps, _prevState: unknown, beforeTop: number | null) {
+    if (beforeTop === null) return;
+    const box = this.boxRef.current;
+    const scroller = box?.closest<HTMLElement>("[data-issue-timeline-scroll]");
+    if (box && scroller) scroller.scrollTop += box.getBoundingClientRect().top - beforeTop;
+  }
+
+  override render() {
+    return (
+      <div ref={this.boxRef} data-thread-reply-box={this.props.rootId} className="border-t border-border/50 px-4 max-md:px-3 py-2.5">
+        {this.props.children}
+      </div>
+    );
+  }
 }
 
 // Memoized so a long timeline (e.g. Inbox-embedded IssueDetail with thousands

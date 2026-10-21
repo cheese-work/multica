@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useRef, useState, useImperativeHandle, useSyncExternalStore } from "react";
+import { forwardRef, startTransition, Suspense, useEffect, useRef, useState, useImperativeHandle } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -12,7 +12,7 @@ import { useResolvedExpandStore } from "@multica/core/issues/stores/resolved-exp
 // same module instance issue-detail.tsx reads through the barrel mock below
 // — the submodule path resolves to a second, disconnected instance under
 // Vitest's mock graph once the barrel is mocked.
-import { useIssueDisclosureStore, useCommentCollapseStore } from "@multica/core/issues/stores";
+import { useIssueDisclosureStore, useCommentCollapseStore, useCommentDraftStore } from "@multica/core/issues/stores";
 import {
   DEFAULT_SUB_ISSUE_ROW_PROPERTIES,
   useSubIssueDisplayStore,
@@ -32,6 +32,7 @@ const contentEditorMounts = vi.hoisted(() => ({ count: 0 }));
 // Every ReadonlyContent render, by content. A comment card renders its body
 // through it, so this counts card renders without reaching into the card.
 const readonlyContentRenders = vi.hoisted(() => [] as string[]);
+const readonlyContentHook = vi.hoisted(() => ({ current: null as ((content: string) => void) | null }));
 const descriptionSelectionAction = vi.hoisted(() => ({ current: undefined as { label: string; onSelect: () => void } | undefined }));
 // Stable empty-attachments reference: the real store returns a shared constant
 // so the `useCommentDraftStore(s => s.getAttachments(key))` selector keeps a
@@ -66,7 +67,9 @@ const mockDraftStoreState = vi.hoisted(() => {
     },
     subscribe: (listener: () => void) => {
       listeners.add(listener);
-      return () => listeners.delete(listener);
+      return () => {
+        listeners.delete(listener);
+      };
     },
   };
 });
@@ -263,6 +266,7 @@ vi.mock("../../editor", async () => ({
   ),
   isPreviewable: () => false,
   ReadonlyContent: ({ content }: { content: string }) => {
+    readonlyContentHook.current?.(content);
     readonlyContentRenders.push(content);
     return <div data-testid="readonly-content">{content}</div>;
   },
@@ -509,37 +513,52 @@ vi.mock("@multica/core/issues/stores", async () => ({
       // mid-test `setDraft`/`reset` call actually schedules a re-render —
       // every other test's `drafts: {}` default behaves identically to
       // before, since the backing store starts (and is reset) empty.
-      const drafts = useSyncExternalStore(mockDraftStoreState.subscribe, mockDraftStoreState.getDrafts);
+      const [drafts, setDrafts] = useState(mockDraftStoreState.getDrafts);
+      useEffect(() => mockDraftStoreState.subscribe(() => setDrafts(mockDraftStoreState.getDrafts())), []);
       const state = {
         drafts,
-        getDraft: () => undefined,
+        getDraft: (key: string) => drafts[key]?.content,
         getAnnotations: () => emptyDraftAttachments,
         getAttachments: () => emptyDraftAttachments,
         getUploads: () => emptyDraftAttachments,
-        setDraft: () => {},
+        setDraft: (key: string, content: string) => {
+          mockDraftStoreState.setDraft(
+            key,
+            content.trim() ? { content, attachments: [], updatedAt: Date.now() } : undefined,
+          );
+        },
         setAttachments: () => {},
         addUpload: () => {},
         settleUpload: () => {},
         failUpload: () => {},
         removeUpload: () => {},
-        clearDraft: () => {},
+        clearDraft: (key: string) => {
+          mockDraftStoreState.setDraft(key, undefined);
+        },
       };
       return selector ? selector(state) : state;
     },
     {
       getState: () => ({
         drafts: mockDraftStoreState.getDrafts(),
-        getDraft: () => undefined,
+        getDraft: (key: string) => mockDraftStoreState.getDrafts()[key]?.content,
         getAnnotations: () => emptyDraftAttachments,
         getAttachments: () => emptyDraftAttachments,
         getUploads: () => emptyDraftAttachments,
-        setDraft: () => {},
+        setDraft: (key: string, content: string) => {
+          mockDraftStoreState.setDraft(
+            key,
+            content.trim() ? { content, attachments: [], updatedAt: Date.now() } : undefined,
+          );
+        },
         setAttachments: () => {},
         addUpload: () => {},
         settleUpload: () => {},
         failUpload: () => {},
         removeUpload: () => {},
-        clearDraft: () => {},
+        clearDraft: (key: string) => {
+          mockDraftStoreState.setDraft(key, undefined);
+        },
       }),
     },
   ),
@@ -616,6 +635,7 @@ beforeEach(() => {
   });
   // Same concern for the useCommentDraftStore mock's backing state.
   mockDraftStoreState.reset();
+  readonlyContentHook.current = null;
   useCommentCollapseStore.setState({ collapsedByIssue: {} });
 });
 
@@ -738,7 +758,9 @@ function renderIssueDetail(issueId = "issue-1") {
   return render(
     <I18nProvider locale="en" resources={TEST_RESOURCES}>
       <QueryClientProvider client={queryClient}>
-        <IssueDetail issueId={issueId} />
+        <Suspense fallback={null}>
+          <IssueDetail issueId={issueId} />
+        </Suspense>
       </QueryClientProvider>
     </I18nProvider>,
   );
@@ -1694,33 +1716,61 @@ describe("IssueDetail (shared)", () => {
       created_at: `2026-01-16T00:0${i}:00Z`,
     }));
     mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
-    renderIssueDetail();
+    mockApiObj.createComment.mockResolvedValue({
+      ...mockTimeline[1]!,
+      id: "che1935-reply-4",
+      parent_id: root.id,
+      content: "C1935 reply 4",
+      created_at: "2026-01-16T00:04:00Z",
+      updated_at: "2026-01-16T00:04:00Z",
+    });
+    const { container } = renderIssueDetail();
 
     await screen.findByText("C1935 reply 3");
     const showMore = await screen.findByRole("button", { name: /Show 1 more repl/ });
+    const replyBox = container.querySelector<HTMLElement>(`[data-thread-reply-box="${root.id}"]`)!;
 
-    act(() => {
-      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, { content: "a", attachments: [], updatedAt: Date.now() });
-    });
+    // Activate the reply composer shell and type a real reply draft.
+    fireEvent.click(within(replyBox).getByTestId("reply-composer-shell"));
+    const replyEditor = await within(replyBox).findByPlaceholderText("Leave a reply...");
+    fireEvent.change(replyEditor, { target: { value: "C1935 reply 4" } });
 
+    expect(useCommentDraftStore.getState().drafts[`reply:issue-1:${root.id}`]?.content).toBe("C1935 reply 4");
     expect(screen.getByRole("button", { name: /Show 1 more repl/ })).toBe(showMore);
     expect(screen.queryByText("C1935 reply 0")).not.toBeInTheDocument();
     expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy();
 
-    // Reply sent: draft cleared, thread still compact (latest 3 visible).
-    act(() => {
-      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, undefined);
-    });
+    // Click Send in the reply composer: draft clears, newly posted reply is
+    // visible in the compact latest-3 window (replies 2, 3, 4), while oldest
+    // replies 0 and 1 stay hidden behind "Show 2 more replies" and unlatched.
+    fireEvent.click(within(replyBox).getByRole("button", { name: "Send" }));
+
+    await screen.findByText("C1935 reply 4");
+    expect(mockApiObj.createComment).toHaveBeenCalledWith(
+      "issue-1",
+      "C1935 reply 4",
+      "comment",
+      root.id,
+      undefined,
+      undefined,
+      undefined,
+    );
+    await waitFor(() => expect(useCommentDraftStore.getState().drafts[`reply:issue-1:${root.id}`]).toBeUndefined());
     expect(screen.queryByText("C1935 reply 0")).not.toBeInTheDocument();
+    expect(screen.queryByText("C1935 reply 1")).not.toBeInTheDocument();
+    expect(screen.getByText("C1935 reply 2")).toBeInTheDocument();
     expect(screen.getByText("C1935 reply 3")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Show 1 more repl/ })).toBeInTheDocument();
+    expect(screen.getByText("C1935 reply 4")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Show 2 more repl/ })).toBeInTheDocument();
     expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy();
   });
 
   // CHE-1935 guard: when the length expands for a remaining reason (here an
   // edit draft on a hidden reply) while focus sits in the reply box, the box
-  // keeps its viewport `top` by compensating the timeline scroll container.
-  it("keeps the focused reply box at the same viewport top when the thread length expands (CHE-1935)", async () => {
+  // keeps its viewport `top` by compensating the timeline scroll container —
+  // including when an earlier expansion render is interrupted before commit and
+  // scroll/focus change before the commit actually lands.
+  it("keeps the focused reply box at the same viewport top when the thread length expands, even after an interrupted render and pre-commit focus/scroll changes (CHE-1935)", async () => {
     const root = mockTimeline[0]!;
     const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
       ...mockTimeline[1]!,
@@ -1745,18 +1795,73 @@ describe("IssueDetail (shared)", () => {
       return { top: this.hasAttribute("data-thread-reply-box") ? 500 + mountedReplies() * 120 - scrollTop : 0 } as DOMRect;
     });
 
-    const input = box().querySelector<HTMLElement>("[contenteditable], textarea, button")!;
-    act(() => input.focus());
-    expect(box().contains(document.activeElement)).toBe(true);
-    const topBefore = box().getBoundingClientRect().top;
-
-    act(() => {
-      mockDraftStoreState.setDraft(`edit:issue-1:${replies[0]!.id}`, { content: "edited", attachments: [], updatedAt: Date.now() });
-    });
-    await screen.findByText("Guard reply 0");
-
     try {
-      expect(Math.abs(box().getBoundingClientRect().top - topBefore)).toBeLessThanOrEqual(1);
+      // Interrupt the first expansion render attempt after CommentCardImpl runs
+      // its render body (by suspending the newly unfolded hidden reply child) so
+      // that render never commits.
+      let resumeSuspendedExpansion!: () => void;
+      const suspendExpansion = new Promise<void>((resolve) => {
+        resumeSuspendedExpansion = resolve;
+      });
+      let shouldSuspend = true;
+      let interruptedOnce = false;
+      readonlyContentHook.current = (content) => {
+        if (content === "Guard reply 0" && shouldSuspend) {
+          interruptedOnce = true;
+          throw suspendExpansion;
+        }
+      };
+
+      // At the time of the interrupted expansion render, focus is NOT in the
+      // reply box and scrollTop is 0 — a render-phase snapshot would record
+      // `null` (or a stale pre-scroll `top`) and advance its render ref before
+      // commit.
+      expect(box().contains(document.activeElement)).toBe(false);
+
+      act(() => {
+        startTransition(() => {
+          mockDraftStoreState.setDraft(`edit:issue-1:${replies[0]!.id}`, { content: "edited", attachments: [], updatedAt: Date.now() });
+        });
+      });
+      expect(interruptedOnce).toBe(true);
+      expect(screen.queryByText("Guard reply 0")).not.toBeInTheDocument();
+
+      // Before the expansion commits, the user scrolls the timeline and focuses
+      // the reply box so the reply box's live pre-commit viewport top is 680.
+      scrollTop = 180;
+      const input = box().querySelector<HTMLElement>("[contenteditable], textarea, button, [role='button']")!;
+      act(() => input.focus());
+      expect(box().contains(document.activeElement)).toBe(true);
+      const topBeforeCommit = box().getBoundingClientRect().top;
+      expect(topBeforeCommit).toBe(680);
+
+      await act(async () => {
+        shouldSuspend = false;
+        resumeSuspendedExpansion();
+        await suspendExpansion;
+      });
+      await screen.findByText("Guard reply 0");
+      expect(Math.abs(box().getBoundingClientRect().top - topBeforeCommit)).toBeLessThanOrEqual(1);
+      expect(scrollTop).toBe(300);
+
+      // Next transition (Fold All collapses the thread length while focus sits
+      // in the reply box after another scroll): verify the second flip also
+      // compensates scrollTop relative to the new pre-collapse viewport top.
+      act(() => {
+        mockDraftStoreState.setDraft(`edit:issue-1:${replies[0]!.id}`, undefined);
+      });
+      scrollTop = 240;
+      act(() => input.focus());
+      expect(box().contains(document.activeElement)).toBe(true);
+      const topBeforeCollapse = box().getBoundingClientRect().top;
+      expect(topBeforeCollapse).toBe(740);
+
+      act(() => {
+        useIssueDisclosureStore.getState().collapseAllThreads("issue-1");
+      });
+      await screen.findByRole("button", { name: /Show 1 more repl/ });
+      expect(Math.abs(box().getBoundingClientRect().top - topBeforeCollapse)).toBeLessThanOrEqual(1);
+      expect(scrollTop).toBe(120);
     } finally {
       rectSpy.mockRestore();
     }
