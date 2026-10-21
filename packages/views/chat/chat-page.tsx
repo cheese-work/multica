@@ -26,6 +26,7 @@ import { useBackOrReplace, useNavigation } from "../navigation";
 import { useT } from "../i18n";
 import { ChatMessageList, ChatMessageSkeleton } from "./components/chat-message-list";
 import { ChatInput } from "./components/chat-input";
+import { ChatFollowUpsPanel } from "./components/chat-followups-panel";
 import { ChatQueue } from "./components/chat-queue";
 import { ChatThreadList } from "./components/chat-thread-list";
 import { ChatSessionHeader } from "./components/chat-session-header";
@@ -389,6 +390,8 @@ export function ChatPage() {
       ) : (
         <OfflineBanner agentName={c.activeAgent?.name} availability={c.availability} />
       )}
+
+      <ChatFollowUpsPanel sessionId={c.activeSessionId} agentName={c.activeAgent?.name} />
 
       <ChatQueue
         tasks={queuedTasks}

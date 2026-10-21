@@ -7,7 +7,8 @@ issue: CHE-1874
 design: design/dm-wakeup-chip/rev-2/A.html @ 1de88837484c950de61639786daaef123bc41c33   # approved by merge of design PR #323 (revision source 89d22f879ac88d4ce2276702f7bdaef5524736ce)
 pages:
   - id: chat-dm
-    url: /<workspace-slug>/chat?session=<session-id>   # same path on base and preview; also the chat window on desktop
+    url: /<workspace-slug>/chat?session=<session-id>   # same path on base and preview; the floating chat window mounts the same strip
+    ids: [chat-followups, chat-followup-row, chat-followup-cancel, chat-followup-cancel-error, chat-followups-load-error, chat-followups-offline]   # data-testid
     keep:
       - chat-user-message
       - assistant-message-copy
