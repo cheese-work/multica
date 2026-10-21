@@ -41,6 +41,8 @@ import { ArchivedAgentBanner } from "./components/archived-agent-banner";
 import { AgentAccessRevokedBanner } from "./components/agent-access-revoked-banner";
 import { RuntimeRequiredBanner } from "./components/runtime-required-banner";
 import { InteractiveLoginBanner } from "./components/interactive-login-banner";
+import { ChatAnnotationContext } from "./components/chat-annotation-context";
+import { useChatAnnotations } from "./components/use-chat-annotations";
 
 /**
  * Chat tab — the first-class two-pane surface (thread list on the left,
@@ -297,8 +299,25 @@ export function ChatPage() {
   const queuedTasks = c.pendingTask?.queued_tasks ?? [];
   const autoCompact = resolveAutoCompact(workspace?.settings, c.activeAgent?.runtime_config);
   const autoCompactThresholdPct = autoCompact.enabled ? autoCompact.threshold_pct : null;
+  const annotation = useChatAnnotations({
+    sessionId: c.activeSessionId,
+    messages: c.messages,
+    agentName: c.activeAgent?.name,
+    enabled:
+      !c.isSessionArchived &&
+      !c.isAgentArchived &&
+      !c.isAgentAccessRevoked &&
+      c.isAgentRuntimeBound &&
+      !c.noAgent,
+  });
   const conversation = (
-    <div className="flex flex-1 flex-col min-h-0 @container">
+    <ChatAnnotationContext.Provider value={annotation.scope}>
+    <div
+      ref={annotation.cardRef}
+      {...annotation.captureProps}
+      className="flex flex-1 flex-col min-h-0 @container"
+    >
+      {annotation.popup}
       {c.currentSession && (
         <ChatSessionHeader
           session={c.currentSession}
@@ -412,8 +431,10 @@ export function ChatPage() {
         onProjectChange={changeProjectContext}
         isProjectUpdating={c.isProjectUpdating}
         focusRequest={c.focusInputRequest}
+        annotationScope={annotation.input}
       />
     </div>
+    </ChatAnnotationContext.Provider>
   );
 
   if (c.interactiveLoginRequired) return <InteractiveLoginBanner />;
