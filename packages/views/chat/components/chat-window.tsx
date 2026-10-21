@@ -3,7 +3,21 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "motion/react";
-import { Minus, Maximize2, Minimize2, ChevronDown, Plus, Check, Archive, Pencil, Loader2, Square } from "lucide-react";
+import {
+  Minus,
+  Maximize2,
+  Minimize2,
+  ChevronDown,
+  Plus,
+  Check,
+  Archive,
+  Info,
+  Pencil,
+  Pin,
+  PinOff,
+  Loader2,
+  Square,
+} from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import { cn } from "@multica/ui/lib/utils";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@multica/ui/components/ui/tooltip";
@@ -57,7 +71,6 @@ import {
   useCreateChatSession,
   useMarkChatSessionRead,
   useRegenerateChatQuickActions,
-  useSetChatSessionArchived,
   useSetChatSessionProject,
   useUpdateChatSession,
 } from "@multica/core/chat/mutations";
@@ -80,6 +93,7 @@ import { EmptyState } from "./chat-empty-state";
 import { SessionRenameInput } from "./session-rename-input";
 import { useChatRename } from "./use-chat-rename";
 import { useChatFork } from "./use-chat-fork";
+import { useDmSessionSurface } from "./use-dm-session-surface";
 import { canForkSession } from "../lib/can-fork-session";
 import { ChatResizeHandles } from "./chat-resize-handles";
 import { useChatContextItems } from "./use-chat-context-items";
@@ -718,6 +732,26 @@ export function ChatWindow() {
     [activeAgent, setSelectedAgentId, setActiveSession],
   );
   const { handleFork } = useChatFork(currentSession, handleSelectSession);
+  // Statistics, the DM commands and the archived-send confirmation, shared with
+  // the Chat page. Archiving the open chat advances to the next one (fall back
+  // to the previous, clear only when none remain) instead of stranding the
+  // composer on a now archived session.
+  const dm = useDmSessionSurface({
+    session: currentSession,
+    sessions,
+    send: handleSend,
+    onOpenSession: handleSelectSession,
+    onArchived: (archivedSession) => {
+      if (useChatStore.getState().activeSessionId !== archivedSession.id) return;
+      const history = sessions.filter((s) => s.status !== "archived");
+      const idx = history.findIndex((s) => s.id === archivedSession.id);
+      const next = history[idx + 1] ?? history[idx - 1] ?? null;
+      if (next) handleSelectSession(next);
+      else setActiveSession(null);
+    },
+    onRename: handleRename,
+    onFork: canForkSession(currentSession) ? handleFork : undefined,
+  });
 
   const handleProjectChange = useCallback(
     (projectId: string | null) => {
@@ -905,6 +939,9 @@ export function ChatWindow() {
             agents={agents}
             activeSessionId={activeSessionId}
             onSelectSession={handleSelectSession}
+            onArchiveSession={dm.archive}
+            onTogglePin={dm.togglePin}
+            onOpenStatistics={(session) => dm.openStatistics(session.id)}
           />
         </div>
         <div className="flex items-center gap-0.5 shrink-0">
@@ -1037,9 +1074,7 @@ export function ChatWindow() {
        *  agent has been archived (read-only); locked out entirely when there's
        *  no agent (the EmptyState above carries the CTA). */}
       <ChatInput
-        onSend={handleSend}
-        onRename={handleRename}
-        onFork={canForkSession(currentSession) ? handleFork : undefined}
+        {...dm.inputProps}
         restoreDraftRequest={restoreDraftRequest}
         conversationStarterRequest={conversationStarterRequest}
         onConversationStarterApplied={handleConversationStarterApplied}
@@ -1050,7 +1085,6 @@ export function ChatWindow() {
         allowSubmitWhileRunning={pendingTask?.supports_queue === true}
         disabled={
           interactiveLoginRequired ||
-          isSessionArchived ||
           isAgentArchived ||
           isAgentAccessRevoked ||
           !activeAgentRuntimeBound ||
@@ -1083,6 +1117,7 @@ export function ChatWindow() {
       />
       </div>
       </ChatAnnotationContext.Provider>
+      {dm.dialogs}
     </motion.div>
   );
 }
@@ -1246,17 +1281,24 @@ interface SessionRowAction extends RowActionItem {
  * (sessions are bound 1:1 to an agent). "New chat" lives in the header's
  * ⊕ button, not inside this dropdown.
  */
-function SessionDropdown({
+export function SessionDropdown({
   sessions,
   agents,
   activeSessionId,
   onSelectSession,
+  onArchiveSession,
+  onTogglePin,
+  onOpenStatistics,
   renameRequest,
 }: {
   sessions: ChatSession[];
   agents: Agent[];
   activeSessionId: string | null;
   onSelectSession: (session: ChatSession) => void;
+  /** Archives through the shared guarded door; the owner advances the selection. */
+  onArchiveSession: (session: ChatSession) => unknown;
+  onTogglePin: (session: ChatSession) => unknown;
+  onOpenStatistics: (session: ChatSession) => void;
   renameRequest: number;
 }) {
   const { t } = useT("chat");
@@ -1291,9 +1333,7 @@ function SessionDropdown({
     setRenamingId(activeSessionId);
     setIsHistoryOpen(true);
   }, [renameRequest, activeSessionId]);
-  const setArchived = useSetChatSessionArchived();
   const updateSession = useUpdateChatSession();
-  const setActiveSession = useChatStore((s) => s.setActiveSession);
   const queryClient = useQueryClient();
   const formatTimeAgo = useFormatTimeAgo();
 
@@ -1370,18 +1410,7 @@ function SessionDropdown({
   // view (reachable via the expand button), so a stale floating dropdown can't
   // bypass the "archive first, delete only from Archived" semantics.
   const handleArchive = (session: ChatSession) => {
-    if (activeSessionId === session.id) {
-      // Archiving the session in view: advance to the next chat (fall back to
-      // the previous, clear only when none remain) instead of stranding the
-      // composer on a now read-only session — mirrors the Chat tab and the
-      // Inbox list. Routing the non-null advance through onSelectSession keeps
-      // selectedAgentId in sync when the next chat belongs to another agent.
-      const idx = historySessions.findIndex((s) => s.id === session.id);
-      const next = historySessions[idx + 1] ?? historySessions[idx - 1] ?? null;
-      if (next) onSelectSession(next);
-      else setActiveSession(null);
-    }
-    setArchived.mutate({ sessionId: session.id, archived: true });
+    void onArchiveSession(session);
   };
 
   const handleSubmitRename = (sessionId: string, raw: string) => {
@@ -1475,6 +1504,25 @@ function SessionDropdown({
           },
         ]
       : [
+          {
+            key: "statistics",
+            icon: <Info className="size-3.5" />,
+            label: t(($) => $.header.statistics),
+            onSelect: () => {
+              setIsHistoryOpen(false);
+              onOpenStatistics(session);
+            },
+          },
+          {
+            key: "pin",
+            icon: session.pinned ? (
+              <PinOff className="size-3.5" />
+            ) : (
+              <Pin className="size-3.5 -rotate-45" />
+            ),
+            label: session.pinned ? t(($) => $.list.unpin) : t(($) => $.list.pin),
+            onSelect: () => void onTogglePin(session),
+          },
           {
             key: "rename",
             icon: <Pencil className="size-3.5" />,
