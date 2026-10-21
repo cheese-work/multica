@@ -31,11 +31,13 @@ RETURNING *;
 
 -- name: SetChatForkSource :one
 -- Runs after the copy, so the read cursor is the newest copied time and the
--- copied history counts as read.
+-- copied history counts as read. fork_last_message_id is the child's own copy
+-- of the last copied message; fork_source_message_id is the source row itself.
 UPDATE chat_session
 SET forked_from_session_id = sqlc.arg(forked_from_session_id),
     fork_idempotency_key = sqlc.arg(fork_idempotency_key),
     fork_last_message_id = sqlc.arg(fork_last_message_id),
+    fork_source_message_id = sqlc.arg(fork_source_message_id),
     fork_message_count = sqlc.arg(fork_message_count),
     runtime_id = NULL,
     last_read_at = (SELECT max(m.created_at) FROM chat_message m WHERE m.chat_session_id = sqlc.arg(id))
