@@ -27,6 +27,7 @@ jobs:
     outputs:
       tag_name: ${{ steps.release_meta.outputs.tag_name }}
       is_stable: ${{ steps.release_meta.outputs.is_stable }}
+      upstream_version: ${{ steps.build_meta.outputs.upstream_version }}
       build_stamp: ${{ steps.build_meta.outputs.build_stamp }}
       display_version: ${{ steps.build_meta.outputs.display_version }}
     steps:
@@ -60,8 +61,14 @@ jobs:
         id: build_meta
         shell: bash
         run: |
-          stamp=$(sh scripts/release-stamp.sh)
-          upstream_version="${GITHUB_REF_NAME#v}"
+          upstream_version="$(tr -d '[:space:]' < UPSTREAM_VERSION)"
+          if [[ ! "$upstream_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid UPSTREAM_VERSION: '$upstream_version'."
+            exit 1
+          fi
+          commit_time="$(git show -s --format=%cI "$GITHUB_SHA")"
+          stamp="$(sh scripts/release-stamp.sh "$commit_time")"
+          echo "upstream_version=$upstream_version" >> "$GITHUB_OUTPUT"
           echo "build_stamp=$stamp" >> "$GITHUB_OUTPUT"
           echo "display_version=$upstream_version-$stamp" >> "$GITHUB_OUTPUT"
 
@@ -129,6 +136,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          UPSTREAM_VERSION: ${{ needs.verify.outputs.upstream_version }}
           RELEASE_BUILD_STAMP: ${{ needs.verify.outputs.build_stamp }}
 
   # The fork builds images on isolated X99 runners. Upstream keeps its native
@@ -195,7 +203,8 @@ jobs:
           cache-from: type=gha,scope=release-backend-${{ env.PLATFORM_PAIR }}
           cache-to: type=gha,mode=max,scope=release-backend-${{ env.PLATFORM_PAIR }}
           build-args: |
-            VERSION=${{ needs.verify.outputs.display_version }}
+            VERSION=${{ needs.verify.outputs.upstream_version }}
+            BUILD=${{ needs.verify.outputs.build_stamp }}
             COMMIT=${{ github.sha }}
           outputs: type=image,name=ghcr.io/${{ github.repository_owner }}/multica-backend,push-by-digest=true,name-canonical=true,push=true
 
@@ -336,7 +345,9 @@ jobs:
           cache-to: type=gha,mode=max,scope=release-web-${{ env.PLATFORM_PAIR }}
           build-args: |
             REMOTE_API_URL=http://backend:8080
-            NEXT_PUBLIC_APP_VERSION=${{ needs.verify.outputs.display_version }}
+            NEXT_PUBLIC_APP_VERSION=${{ needs.verify.outputs.upstream_version }}
+            NEXT_PUBLIC_APP_BUILD=${{ needs.verify.outputs.build_stamp }}
+            NEXT_PUBLIC_APP_COMMIT=${{ github.sha }}
           outputs: type=image,name=ghcr.io/${{ github.repository_owner }}/multica-web,push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest
