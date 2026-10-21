@@ -141,17 +141,23 @@ if [ "\$1" = "login" ]; then
   # ghcr_login (CHE-549), mirroring test-deploy.sh's own mock exactly so
   # both suites exercise the identical login/logout contract.
   password="\$(cat)"
+  effective_docker_config="\${DOCKER_CONFIG:-\$HOME/.docker}"
   if [ -f "\$control_dir/fail-ghcr-login" ]; then
-    printf 'login %s <rejected>\n' "\$2" >>"\$control_dir/registry-auth.log"
+    printf 'login %s <rejected> docker_config=%s\n' "\$2" "\$effective_docker_config" >>"\$control_dir/registry-auth.log"
     echo "mock docker: forced failure (fail-ghcr-login)" >&2
     exit 1
   fi
-  printf 'login %s password=%s\n' "\$2" "\$password" >>"\$control_dir/registry-auth.log"
+  mkdir -p "\$effective_docker_config"
+  mode="\$(stat -c '%a' "\$effective_docker_config" 2>/dev/null || echo unknown)"
+  printf '{"auths":{"%s":{}}}\n' "\$2" >"\$effective_docker_config/config.json"
+  printf 'login %s password=%s docker_config=%s mode=%s\n' "\$2" "\$password" "\$effective_docker_config" "\$mode" >>"\$control_dir/registry-auth.log"
   exit 0
 fi
 
 if [ "\$1" = "logout" ]; then
-  printf 'logout %s\n' "\$2" >>"\$control_dir/registry-auth.log"
+  effective_docker_config="\${DOCKER_CONFIG:-\$HOME/.docker}"
+  rm -f "\$effective_docker_config/config.json"
+  printf 'logout %s docker_config=%s\n' "\$2" "\$effective_docker_config" >>"\$control_dir/registry-auth.log"
   exit 0
 fi
 
@@ -200,8 +206,10 @@ if [ "\$1" = "compose" ]; then
           down) direction="down" ;;
         esac
       done
-      printf 'migrate %s image=%s tag=%s service=%s\n' \\
+      printf 'migrate %s image=%s tag=%s service=%s docker_config=%s ghcr_token=%s docker_config_exists=%s\n' \\
         "\$direction" "\${MULTICA_BACKEND_IMAGE:-}" "\${MULTICA_IMAGE_TAG:-}" "\${*: -2:1}" \\
+        "\${DOCKER_CONFIG:-}" "\${GHCR_PULL_TOKEN:-}" \\
+        "\$(if [ -n "\${DOCKER_CONFIG:-}" ] && [ -e "\${DOCKER_CONFIG}" ]; then echo yes; else echo no; fi)" \\
         >>"\$control_dir/migrate-calls.log"
       fail_if_flagged fail-migrate
       # Genuinely advance the mock ledger on a real "up" run, so the
@@ -988,6 +996,53 @@ if [ -f "$state_dir/control/registry-auth.log" ] && grep -q "^login " "$state_di
 fi
 expect_contains "$(cat "$state_dir/home/.docker/config.json")" "existing.registry.internal" ghcr-login-mktemp-fails
 expect_not_contains "$(cat "$state_dir/home/.docker/config.json")" "ghcr.io" ghcr-login-mktemp-fails
+
+# ---------------------------------------------------------------------------
+# Scenario 13c (CHE-1924 Option B): cutover.sh logs out of ghcr.io and removes
+# its temporary DOCKER_CONFIG directory immediately after verify_pulled_digest
+# (before pre-drain checks, incumbent drain, quiescence final-gate, migration,
+# candidate start, health checks, and router switch), unsetting DOCKER_CONFIG
+# and GHCR_PULL_TOKEN, and sweeps any pre-existing stale multica-docker-config.*
+# directory in tmp_base before allocating its own.
+# ---------------------------------------------------------------------------
+state_dir="$(fresh_scenario_dir ghcr-logout-before-drain-and-stale-sweep)"
+mkdir -p "$state_dir/control" "$state_dir/runner-temp/multica-docker-config.stale99"
+printf '{"auths":{"ghcr.io":{"auth":"c3RhbGU="}}}\n' >"$state_dir/runner-temp/multica-docker-config.stale99/config.json"
+output="$(RUNNER_TEMP="$state_dir/runner-temp" GHCR_PULL_TOKEN=super-secret-pat run_cutover "$state_dir" 2>&1)"
+status=$?
+expect_exit 0 "$status" ghcr-logout-before-drain-and-stale-sweep
+migrate_log="$(cat "$state_dir/control/migrate-calls.log")"
+expect_contains "$migrate_log" "docker_config= ghcr_token= docker_config_exists=no" ghcr-logout-before-drain-and-stale-sweep
+expect_not_contains "$migrate_log" "super-secret-pat" ghcr-logout-before-drain-and-stale-sweep
+logout_line="$(grep -n '^logout ghcr.io$' "$state_dir/control/docker-calls.log" | head -n 1 | cut -d: -f1)"
+stop_line="$(grep -n ' stop backend-blue frontend-blue$' "$state_dir/control/docker-calls.log" | head -n 1 | cut -d: -f1)"
+migrate_line="$(grep -n ' run --rm --no-deps --entrypoint ./migrate ' "$state_dir/control/docker-calls.log" | head -n 1 | cut -d: -f1)"
+if [ -z "$logout_line" ] || [ -z "$stop_line" ] || [ -z "$migrate_line" ] || [ "$logout_line" -ge "$stop_line" ] || [ "$logout_line" -ge "$migrate_line" ]; then
+  echo "scenario ghcr-logout-before-drain-and-stale-sweep: expected docker logout (line ${logout_line:-none}) before drain stop (line ${stop_line:-none}) and migrate (line ${migrate_line:-none})" >&2
+  exit 1
+fi
+if [ -e "$state_dir/runner-temp/multica-docker-config.stale99" ]; then
+  echo "scenario ghcr-logout-before-drain-and-stale-sweep: stale multica-docker-config directory was not swept by ghcr_login" >&2
+  exit 1
+fi
+if [ -n "$(ls -A "$state_dir/runner-temp")" ]; then
+  echo "scenario ghcr-logout-before-drain-and-stale-sweep: runner-temp is not empty after cutover: $(ls -A "$state_dir/runner-temp")" >&2
+  exit 1
+fi
+
+# Manual invocation without RUNNER_TEMP places multica-docker-config.* under
+# $state_dir (never falling back to host /tmp where C00 has PrivateTmp=no).
+state_dir="$(fresh_scenario_dir ghcr-cutover-manual-no-runner-temp-uses-state-dir)"
+mkdir -p "$state_dir/control" "$state_dir/multica-docker-config.stale77"
+unset RUNNER_TEMP
+output="$(TMPDIR=/tmp GHCR_PULL_TOKEN=super-secret-pat run_cutover "$state_dir" 2>&1)"
+status=$?
+expect_exit 0 "$status" ghcr-cutover-manual-no-runner-temp-uses-state-dir
+expect_contains "$(cat "$state_dir/control/registry-auth.log")" "docker_config=$state_dir/multica-docker-config." ghcr-cutover-manual-no-runner-temp-uses-state-dir
+if [ -e "$state_dir/multica-docker-config.stale77" ]; then
+  echo "scenario ghcr-cutover-manual-no-runner-temp-uses-state-dir: stale directory under state_dir was not swept" >&2
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Scenario 14: the reviewed controller runs from a disposable relocated

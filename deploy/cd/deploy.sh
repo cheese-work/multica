@@ -269,6 +269,7 @@ fi
 
 rollback() {
   local reason=$1
+  ghcr_logout
   echo "!! deploy failed: $reason" >&2
   if [ -z "$previous_backend_image" ]; then
     echo "!! no previous tuple to roll back to; leaving the failed stack as-is for manual triage" >&2
@@ -363,6 +364,7 @@ MULTICA_BACKEND_IMAGE="$backend_repo" \
 MULTICA_WEB_IMAGE="$web_repo" \
 MULTICA_IMAGE_TAG="$image_tag" \
   compose pull backend frontend || rollback "image pull failed"
+ghcr_logout
 
 echo "==> verifying pulled images match the admitted manifest's digests"
 if ! verify_pulled_digest "$backend_repo" "$image_tag" "$backend_digest" \

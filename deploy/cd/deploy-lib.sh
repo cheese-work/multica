@@ -405,6 +405,8 @@ ghcr_login() {
     local tmp_base
     if [ -n "${RUNNER_TEMP+x}" ]; then
       tmp_base="$RUNNER_TEMP"
+    elif [ -n "${state_dir:-}" ] && [ -d "$state_dir" ]; then
+      tmp_base="$state_dir"
     elif [ -n "${TMPDIR+x}" ]; then
       tmp_base="$TMPDIR"
     else
@@ -413,6 +415,12 @@ ghcr_login() {
     if [ -z "$tmp_base" ] || [ "$tmp_base" = "/" ]; then
       echo "!! ghcr_login: temporary directory base '${tmp_base}' is invalid" >&2
       return 1
+    fi
+    if [ -d "$tmp_base" ]; then
+      rm -rf "${tmp_base%/}"/multica-docker-config.* 2>/dev/null || true
+    fi
+    if [ -n "${state_dir:-}" ] && [ -d "$state_dir" ] && [ "${state_dir%/}" != "${tmp_base%/}" ]; then
+      rm -rf "${state_dir%/}"/multica-docker-config.* 2>/dev/null || true
     fi
     local tmp_dir=""
     if ! tmp_dir="$(mktemp -d "${tmp_base%/}/multica-docker-config.XXXXXX")" || [ -z "$tmp_dir" ] || [ ! -d "$tmp_dir" ]; then
@@ -458,4 +466,5 @@ ghcr_logout() {
     fi
     _multica_temp_docker_config=""
   fi
+  unset DOCKER_CONFIG GHCR_PULL_TOKEN
 }

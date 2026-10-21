@@ -190,8 +190,10 @@ if [ "$1" = "compose" ]; then
           --to) next_is_to=1 ;;
         esac
       done
-      printf 'migrate %s image=%s tag=%s to=%s\n' \
+      printf 'migrate %s image=%s tag=%s to=%s docker_config=%s ghcr_token=%s docker_config_exists=%s\n' \
         "$direction" "${MULTICA_BACKEND_IMAGE:-}" "${MULTICA_IMAGE_TAG:-}" "$to_target" \
+        "${DOCKER_CONFIG:-}" "${GHCR_PULL_TOKEN:-}" \
+        "$(if [ -n "${DOCKER_CONFIG:-}" ] && [ -e "${DOCKER_CONFIG}" ]; then echo yes; else echo no; fi)" \
         >>"$control_dir/migrate-calls.log"
       if [ "$direction" = "down" ]; then
         fail_if_flagged fail-migrate-down
@@ -1096,5 +1098,149 @@ expect_not_contains "$workflow_text" 'ssh -i' workflow-local-runner-no-ssh
 expect_not_contains "$workflow_text" 'scp -i' workflow-local-runner-no-ssh
 expect_not_contains "$workflow_text" '${ssh_cmd[@]}' workflow-local-runner-no-ssh
 expect_contains "$workflow_text" 'env -i HOME="$HOME" PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" bash -s' workflow-local-runner-no-ssh
+
+# ---------------------------------------------------------------------------
+# CHE-1924 Option B containment:
+#   1. ghcr_logout runs immediately after verify_pulled_digest (before
+#      run_migration_step, container startup, and health checks) and unsets
+#      DOCKER_CONFIG and GHCR_PULL_TOKEN so post-pull subprocesses never
+#      inherit registry credentials or an on-disk config.json, and a SIGKILL
+#      during migration/startup/health-check leaves zero credential residue.
+#   2. ghcr_login sweeps any pre-existing stale multica-docker-config.*
+#      directories under tmp_base before allocating its own mode-0700 temp
+#      directory (under the deploy.lock flock).
+#   3. ghcr_login fails closed when symlink creation for ~/.docker/cli-plugins
+#      fails, cleaning up the allocated temp directory without invoking
+#      docker login.
+#   4. cd-deploy.yml cleans up ${RUNNER_TEMP%/}/multica-docker-config.* both
+#      immediately after the cutover pipe exits and in the if: always() step,
+#      so a SIGKILL of the cutover subshell does not leave credentials until
+#      job-end runner cleanup.
+# ---------------------------------------------------------------------------
+state_dir="$(fresh_scenario_dir ghcr-logout-before-migrate-and-stale-sweep)"
+control_dir="$state_dir/control"
+sweep_home="$state_dir/home"
+sweep_runner_temp="$state_dir/runner-temp"
+stale_config_dir="$sweep_runner_temp/multica-docker-config.stale99"
+mkdir -p "$control_dir" "$sweep_home/.docker" "$stale_config_dir"
+touch "$control_dir/inspect-resolves"
+printf '{"auths":{"ghcr.io":{"auth":"c3RhbGU="}}}\n' >"$stale_config_dir/config.json"
+printf '{"auths":{"existing.registry.internal":{}}}\n' >"$sweep_home/.docker/config.json"
+output="$(HOME="$sweep_home" RUNNER_TEMP="$sweep_runner_temp" GHCR_PULL_TOKEN=super-secret-pat run_deploy "$state_dir" 2>&1)"
+status=$?
+expect_exit 0 "$status" ghcr-logout-before-migrate-and-stale-sweep
+migrate_log="$(cat "$control_dir/migrate-calls.log")"
+expect_contains "$migrate_log" "docker_config= ghcr_token= docker_config_exists=no" ghcr-logout-before-migrate-and-stale-sweep
+expect_not_contains "$migrate_log" "super-secret-pat" ghcr-logout-before-migrate-and-stale-sweep
+# Verify logout occurred before compose run ... migrate in docker-calls.log
+logout_line="$(grep -n '^logout ghcr.io$' "$control_dir/docker-calls.log" | head -n 1 | cut -d: -f1)"
+migrate_line="$(grep -n 'compose -f docker-compose.selfhost.yml run ' "$control_dir/docker-calls.log" | head -n 1 | cut -d: -f1)"
+if [ -z "$logout_line" ] || [ -z "$migrate_line" ] || [ "$logout_line" -ge "$migrate_line" ]; then
+  echo "scenario ghcr-logout-before-migrate-and-stale-sweep: expected docker logout (line ${logout_line:-none}) before migrate run (line ${migrate_line:-none})" >&2
+  exit 1
+fi
+if [ -e "$stale_config_dir" ]; then
+  echo "scenario ghcr-logout-before-migrate-and-stale-sweep: stale directory $stale_config_dir was not swept by ghcr_login" >&2
+  exit 1
+fi
+if [ -n "$(ls -A "$sweep_runner_temp")" ]; then
+  echo "scenario ghcr-logout-before-migrate-and-stale-sweep: runner temp $sweep_runner_temp is not empty after deploy: $(ls -A "$sweep_runner_temp")" >&2
+  exit 1
+fi
+
+# Manual invocation without RUNNER_TEMP places multica-docker-config.* under
+# $state_dir (never falling back to host /tmp where C00 has PrivateTmp=no)
+# and cleans it up before migration runs.
+state_dir="$(fresh_scenario_dir ghcr-manual-no-runner-temp-uses-state-dir)"
+control_dir="$state_dir/control"
+mkdir -p "$control_dir" "$state_dir/multica-docker-config.stale77"
+touch "$control_dir/inspect-resolves"
+unset RUNNER_TEMP
+output="$(TMPDIR=/tmp GHCR_PULL_TOKEN=super-secret-pat run_deploy "$state_dir" 2>&1)"
+status=$?
+expect_exit 0 "$status" ghcr-manual-no-runner-temp-uses-state-dir
+expect_contains "$(cat "$control_dir/registry-auth.log")" "docker_config=$state_dir/multica-docker-config." ghcr-manual-no-runner-temp-uses-state-dir
+if [ -e "$state_dir/multica-docker-config.stale77" ]; then
+  echo "scenario ghcr-manual-no-runner-temp-uses-state-dir: stale directory under state_dir was not swept" >&2
+  exit 1
+fi
+
+# CHE-1924 R1 / Option B: ln -s failure for ~/.docker/cli-plugins must fail
+# closed before docker login and remove the temporary directory.
+state_dir="$(fresh_scenario_dir ghcr-login-ln-fails)"
+control_dir="$state_dir/control"
+ln_fail_home="$state_dir/home"
+ln_fail_runner_temp="$state_dir/runner-temp"
+ln_fail_bin="$state_dir/ln-fail-bin"
+mkdir -p "$control_dir" "$ln_fail_home/.docker/cli-plugins" "$ln_fail_runner_temp" "$ln_fail_bin"
+touch "$control_dir/inspect-resolves"
+printf '{"auths":{"existing.registry.internal":{}}}\n' >"$ln_fail_home/.docker/config.json"
+real_ln="$(command -v ln)"
+cat >"$ln_fail_bin/ln" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = "-s" ] && [[ "\${3:-}" == *multica-docker-config.*/cli-plugins ]]; then
+  echo "mock ln: forced symlink failure on \$3" >&2
+  exit 1
+fi
+exec "$real_ln" "\$@"
+EOF
+chmod +x "$ln_fail_bin/ln"
+set +e
+output="$(PATH="$ln_fail_bin:$PATH" HOME="$ln_fail_home" RUNNER_TEMP="$ln_fail_runner_temp" GHCR_PULL_TOKEN=super-secret-pat run_deploy "$state_dir" 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" ghcr-login-ln-fails
+expect_contains "$output" "ghcr.io login failed" ghcr-login-ln-fails
+expect_not_contains "$output" "logging in to ghcr.io" ghcr-login-ln-fails
+if [ -f "$control_dir/registry-auth.log" ]; then
+  echo "scenario ghcr-login-ln-fails: registry-auth.log should not exist when ln -s fails, got: $(cat "$control_dir/registry-auth.log")" >&2
+  exit 1
+fi
+if [ -n "$(ls -A "$ln_fail_runner_temp")" ]; then
+  echo "scenario ghcr-login-ln-fails: failed ln -s left residual temp directory in $ln_fail_runner_temp" >&2
+  exit 1
+fi
+
+# Workflow-level outer shell and always() cleanup of multica-docker-config.*
+# when the cutover subshell (bash -s) terminates via SIGKILL before its own
+# bash EXIT trap can fire.
+expect_contains "$workflow_text" 'rm -rf "${RUNNER_TEMP%/}"/multica-docker-config.*' workflow-runner-temp-docker-config-cleanup
+expect_contains "$workflow_text" 'rm -rf "${C00_CUTOVER_STATE_DIR%/}"/multica-docker-config.*' workflow-runner-temp-docker-config-cleanup
+
+post_pipe_cleanup_lines="$(awk '
+  /deploy_status=\$\?/ { capture=1; next }
+  capture && /cp deploy\/cd\/ab-health-check\.sh/ { exit }
+  capture { print }
+' "$root_dir/.github/workflows/cd-deploy.yml")"
+[ -n "$post_pipe_cleanup_lines" ] || { echo "scenario workflow-runner-temp-docker-config-cleanup: could not extract post-pipe cleanup from cd-deploy.yml" >&2; exit 1; }
+
+state_dir="$(fresh_scenario_dir workflow-sigkill-parent-cleanup)"
+control_dir="$state_dir/control"
+sigkill_home="$state_dir/home"
+sigkill_runner_temp="$state_dir/runner-temp"
+sigkill_cutover_state="$state_dir/cutover-state"
+mkdir -p "$control_dir" "$sigkill_home/.docker" "$sigkill_runner_temp" "$sigkill_cutover_state/multica-docker-config.stale88"
+printf '{"auths":{"existing.registry.internal":{}}}\n' >"$sigkill_home/.docker/config.json"
+sigkill_probe_cmd="export DEPLOY_TEST_CONTROL_DIR='$control_dir'; . '$root_dir/deploy/cd/deploy-lib.sh'; trap ghcr_logout EXIT; ghcr_login; kill -9 \$\$"
+sigkill_rendered_script="$(GHCR_PULL_TOKEN=super-secret-pat bash deploy/cd/render-cutover-remote-script.sh --router-state-dir "$state_dir/router" -- bash -c "$sigkill_probe_cmd")"
+set +e
+HOME="$sigkill_home" PATH="$mock_bin:$PATH" RUNNER_TEMP="$sigkill_runner_temp" eval "$cutover_env_i_line" <<<"$sigkill_rendered_script" >/dev/null 2>&1
+sigkill_status=$?
+set -e
+# Confirm the child died from SIGKILL (exit 137) and bypassed its EXIT trap,
+# leaving multica-docker-config.* in $sigkill_runner_temp before parent cleanup.
+if [ "$sigkill_status" -ne 137 ]; then
+  echo "scenario workflow-sigkill-parent-cleanup: expected SIGKILL exit 137, got $sigkill_status" >&2
+  exit 1
+fi
+if [ -z "$(ls -A "$sigkill_runner_temp")" ]; then
+  echo "scenario workflow-sigkill-parent-cleanup: expected SIGKILL to bypass child EXIT trap and leave temp dir in $sigkill_runner_temp before parent cleanup" >&2
+  exit 1
+fi
+RUNNER_TEMP="$sigkill_runner_temp" C00_CUTOVER_STATE_DIR="$sigkill_cutover_state" bash -c "set -euo pipefail; $post_pipe_cleanup_lines"
+if [ -n "$(ls -A "$sigkill_runner_temp")" ] || [ -n "$(ls -A "$sigkill_cutover_state")" ]; then
+  echo "scenario workflow-sigkill-parent-cleanup: cd-deploy.yml post-pipe cleanup did not remove SIGKILL residue" >&2
+  exit 1
+fi
 
 echo "deploy.sh control-flow fixtures passed"
