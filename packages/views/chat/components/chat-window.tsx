@@ -72,6 +72,8 @@ import { useChatDraftRestore } from "./use-chat-draft-restore";
 import { useChatTaskActions } from "./use-chat-task-actions";
 import { useChatInputFocus } from "./use-chat-input-focus";
 import { ChatMessageList, ChatMessageSkeleton } from "./chat-message-list";
+import { ChatAnnotationContext } from "./chat-annotation-context";
+import { useChatAnnotations } from "./use-chat-annotations";
 import { ChatInput } from "./chat-input";
 import { ChatQueue } from "./chat-queue";
 import { EmptyState } from "./chat-empty-state";
@@ -843,6 +845,19 @@ export function ChatWindow() {
     (messagesError && errorCode(messagesError) === "interactive_login_required"),
   );
 
+  const annotation = useChatAnnotations({
+    sessionId: activeSessionId,
+    messages,
+    agentName: activeAgent?.name,
+    enabled:
+      !interactiveLoginRequired &&
+      !isSessionArchived &&
+      !isAgentArchived &&
+      !isAgentAccessRevoked &&
+      activeAgentRuntimeBound &&
+      !noAgent,
+  });
+
   return (
     <motion.div
       ref={windowRef}
@@ -930,6 +945,10 @@ export function ChatWindow() {
         </div>
       </div>
 
+      {/* `contents`: no box of its own, it only holds the comment ref and handlers. */}
+      <ChatAnnotationContext.Provider value={annotation.scope}>
+      <div ref={annotation.cardRef} {...annotation.captureProps} className="contents">
+      {annotation.popup}
       {/* Messages / skeleton / empty state */}
       {interactiveLoginRequired ? (
         <InteractiveLoginBanner />
@@ -1034,8 +1053,10 @@ export function ChatWindow() {
           isSessionArchived ||
           isAgentArchived ||
           isAgentAccessRevoked ||
-          !activeAgentRuntimeBound
+          !activeAgentRuntimeBound ||
+          currentSession?.compacting === true
         }
+        compacting={currentSession?.compacting === true}
         noAgent={noAgent}
         agentArchived={isAgentArchived}
         agentAccessRevoked={isAgentAccessRevoked}
@@ -1058,7 +1079,10 @@ export function ChatWindow() {
         }
         contextItems={contextItems}
         focusRequest={focusRequest}
+        annotationScope={annotation.input}
       />
+      </div>
+      </ChatAnnotationContext.Provider>
     </motion.div>
   );
 }

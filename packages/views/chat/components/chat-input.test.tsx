@@ -7,6 +7,8 @@ import type { DraftUpload } from "@multica/core/drafts";
 import enCommon from "../../locales/en/common.json";
 import enChat from "../../locales/en/chat.json";
 import enEditor from "../../locales/en/editor.json";
+import { useCommentDraftStore } from "@multica/core/issues/stores";
+import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 
 // Uploads flow through the module-level coordinator, which calls
 // `api.uploadFile(file, ctx, signal)` (MUL-5181 L2). Tests drive uploads by
@@ -1729,5 +1731,241 @@ describe("ChatInput revoked-access placeholder", () => {
     renderInput({ agentName: "Multica" });
 
     expect(editorProps.last?.placeholder).toBe("Message Multica…");
+  });
+});
+
+// CHE-1807: while the DM compacts, the composer is disabled with its own reason
+// and the draft stays where it is.
+describe("ChatInput compacting placeholder", () => {
+  it("names the compaction instead of the archived-session reason", () => {
+    renderInput({ disabled: true, compacting: true } as Partial<React.ComponentProps<typeof ChatInput>>);
+
+    expect(editorProps.last?.placeholder).toBe("Compacting…");
+  });
+
+  it("keeps the draft and does not send while compacting", async () => {
+    const { onSend } = renderInput({ disabled: true, compacting: true } as Partial<React.ComponentProps<typeof ChatInput>>);
+
+    act(() => {
+      (editorProps.last?.onUpdate as (md: string) => void)("keep this draft");
+    });
+    await act(async () => {
+      (editorProps.last?.onSubmit as () => void)();
+    });
+
+    expect(onSend).not.toHaveBeenCalled();
+    expect(editorState.cleared).toBe(0);
+  });
+});
+
+// CHE-1807 correction (Sol's verdict on PR #285): while a DM compacts the
+// composer is disabled and the pending task is the compaction itself, so a
+// preserved draft must never hide Stop. Queue Send cannot send, so Stop is the
+// only available control and the draft stays where it is.
+describe("ChatInput Stop while compacting", () => {
+  const compacting = (extra: Partial<React.ComponentProps<typeof ChatInput>> = {}) => {
+    const onStop = vi.fn();
+    const onSend = vi.fn<ChatInputOnSend>(async () => true);
+    const view = renderInput({
+      isRunning: true,
+      allowSubmitWhileRunning: true,
+      disabled: true,
+      compacting: true,
+      onStop,
+      onSend,
+      ...extra,
+    } as Partial<React.ComponentProps<typeof ChatInput>>);
+    return { ...view, onStop, onSend };
+  };
+
+  it("offers Stop for an empty composer", () => {
+    const { onStop } = compacting();
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+
+    expect(onStop).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["an ordinary", "follow-up", undefined],
+    ["a /fork", "/fork plan b", vi.fn()],
+  ])("keeps Stop and %s draft together", (_name, draft, onFork) => {
+    const { onStop, onSend } = compacting(onFork ? { onFork } : {});
+    const editor = screen.getByTestId("editor");
+
+    fireEvent.change(editor, { target: { value: draft } });
+
+    const stop = screen.getByRole("button", { name: "Stop" });
+    expect(stop).not.toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Queue message" })).not.toBeInTheDocument();
+    fireEvent.click(stop);
+    expect(onStop).toHaveBeenCalledTimes(1);
+    expect(onSend).not.toHaveBeenCalled();
+    expect(editor).toHaveValue(draft);
+  });
+});
+
+
+// CHE-1876: comments on an agent reply ride along with the message as Markdown quotes.
+describe("ChatInput DM comments", () => {
+  const draftKey = "chat:session-1" as const;
+  const annotation = (n: number, quote = `Quote ${n}`): ReplyAnnotation => ({
+    id: `a${n}`, sourceCommentId: "m1", sourceActorName: "Multica", quote, note: `Note ${n}`, start: n * 10, prefix: "", suffix: "",
+  });
+  const scope = (extra: Partial<NonNullable<React.ComponentProps<typeof ChatInput>["annotationScope"]>> = {}) =>
+    ({ draftKey, onEditAnnotation: () => true, ...extra });
+  beforeEach(() => {
+    useCommentDraftStore.setState({ drafts: {} });
+    useCommentDraftStore.getState().addAnnotation(draftKey, annotation(1, "The delay (fixed) is 5 s."));
+    useCommentDraftStore.getState().addAnnotation(draftKey, annotation(2));
+  });
+
+  it("shows a count above the composer only when a scope and comments exist", () => {
+    const { unmount } = renderInput({ annotationScope: scope() });
+    expect(screen.getByRole("button", { name: "2 comments" })).toBeInTheDocument();
+    unmount();
+    renderInput();
+    expect(screen.queryByRole("button", { name: /comments?$/ })).not.toBeInTheDocument();
+  });
+
+  it("sends the comments as readable Markdown quotes above the typed text", async () => {
+    const onSend = vi.fn();
+    renderInput({ annotationScope: scope(), onSend });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "Go with 15 s." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend.mock.calls[0]![0]).toBe(
+      "> The delay (fixed) is 5 s.\n\nNote 1\n\n&nbsp;\n\n> Quote 2\n\nNote 2\n\n---\n\nGo with 15 s.",
+    );
+  });
+
+  it("sends comments alone when no text is typed", async () => {
+    const onSend = vi.fn();
+    renderInput({ annotationScope: scope(), onSend });
+    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend.mock.calls[0]![0]).toContain("> Quote 2\n\nNote 2");
+    expect(onSend.mock.calls[0]![0]).not.toContain("---");
+  });
+
+  it("clears the comments once the send is committed, and keeps them when it is rejected", async () => {
+    const rejected = vi.fn().mockResolvedValue(false);
+    const { unmount } = renderInput({ annotationScope: scope(), onSend: rejected });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "Try" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(rejected).toHaveBeenCalledTimes(1));
+    expect(useCommentDraftStore.getState().getAnnotations(draftKey)).toHaveLength(2);
+    unmount();
+
+    const onSend = vi.fn();
+    renderInput({ annotationScope: scope(), onSend });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "Go" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(useCommentDraftStore.getState().getAnnotations(draftKey)).toHaveLength(0));
+  });
+
+  it("keeps a note edited, and comments added, while the send is pending", async () => {
+    // P1-1: every editing path (marker note box, list Edit, Remove, a new comment) ends in the draft store.
+    // A deferred send must clear only the comments it sent, exactly as sent.
+    useCommentDraftStore.getState().addAnnotation(draftKey, annotation(4));
+    let finish: (accepted: boolean) => void = () => {};
+    const onSend = vi.fn((_content: string) => new Promise<boolean>((resolve) => { finish = resolve; }));
+    renderInput({ annotationScope: scope(), onSend });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "Go" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend.mock.calls[0]![0]).toContain("Note 1");
+
+    const store = useCommentDraftStore.getState();
+    store.updateAnnotation(draftKey, "a1", "Newer note");
+    store.removeAnnotation(draftKey, "a2");
+    store.addAnnotation(draftKey, annotation(3));
+    await act(async () => { finish(true); });
+
+    await waitFor(() => expect(useCommentDraftStore.getState().getAnnotations(draftKey).map((a) => [a.id, a.note])).toEqual([
+      ["a1", "Newer note"],
+      ["a3", "Note 3"],
+    ]));
+  });
+
+  it("keeps a note edited while a second submit is refused during a pending send", async () => {
+    // P1-1 (verdict 01a15a53): a refused second submit must not replace the first send's snapshot.
+    let finish: (accepted: boolean) => void = () => {};
+    const onSend = vi.fn((_content: string) => new Promise<boolean>((resolve) => { finish = resolve; }));
+    renderInput({ annotationScope: scope(), onSend });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "Go" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+
+    useCommentDraftStore.getState().updateAnnotation(draftKey, "a1", "Newer note");
+    // Cmd/Ctrl+Enter bypasses the disabled Send button. The single-flight guard refuses it.
+    await act(async () => { (editorProps.last as { onSubmit: () => void }).onSubmit(); });
+    expect(onSend).toHaveBeenCalledTimes(1);
+    await act(async () => { finish(true); });
+
+    await waitFor(() => expect(useCommentDraftStore.getState().getAnnotations(draftKey).map((a) => [a.id, a.note])).toEqual([
+      ["a1", "Newer note"],
+    ]));
+  });
+
+  it("clears the sent session's comments, and only those, when the user switches DM during a pending send", async () => {
+    const otherKey = "chat:session-2" as const;
+    useCommentDraftStore.getState().addAnnotation(otherKey, annotation(7));
+    let finish: (accepted: boolean) => void = () => {};
+    const onSend = vi.fn((_content: string) => new Promise<boolean>((resolve) => { finish = resolve; }));
+    const { rerender } = renderInput({ annotationScope: scope(), onSend });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "Go" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+
+    rerender(element({ annotationScope: { draftKey: otherKey, onEditAnnotation: () => true }, onSend }));
+    await act(async () => { (editorProps.last as { onSubmit: () => void }).onSubmit(); });
+    expect(onSend).toHaveBeenCalledTimes(1);
+    await act(async () => { finish(true); });
+
+    await waitFor(() => expect(useCommentDraftStore.getState().getAnnotations(draftKey)).toHaveLength(0));
+    expect(useCommentDraftStore.getState().getAnnotations(otherKey).map((a) => a.id)).toEqual(["a7"]);
+  });
+
+  it("does not send a conversation starter over pending comments, and keeps them", async () => {
+    const onSend = vi.fn().mockResolvedValue(true);
+    const onConversationStarterApplied = vi.fn();
+    const { rerender } = renderInput({ onSend, annotationScope: scope() });
+    rerender(element({
+      onSend, annotationScope: scope(),
+      conversationStarterRequest: { id: 1, content: "Review the release pull request." },
+      onConversationStarterApplied,
+    }));
+    expect(onConversationStarterApplied).toHaveBeenCalledTimes(1);
+    await act(async () => {});
+    expect(onSend).not.toHaveBeenCalled();
+    expect(mockToastInfo).toHaveBeenCalled();
+    expect(useCommentDraftStore.getState().getAnnotations(draftKey)).toHaveLength(2);
+  });
+
+  it("leaves a slash command untouched and keeps the comments for the next message", async () => {
+    const onSend = vi.fn();
+    renderInput({ annotationScope: scope(), onSend });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "/compact" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend.mock.calls[0]![0]).toBe("/compact");
+    expect(useCommentDraftStore.getState().getAnnotations(draftKey)).toHaveLength(2);
+  });
+
+  it("locks the count while the composer is disabled", () => {
+    renderInput({ annotationScope: scope(), disabled: true });
+    expect(screen.getByRole("button", { name: "2 comments" })).toBeDisabled();
+  });
+
+  it("returns focus to the composer when the last comment is removed", async () => {
+    useCommentDraftStore.getState().removeAnnotation(draftKey, "a2");
+    renderInput({ annotationScope: scope() });
+    fireEvent.click(screen.getByRole("button", { name: "1 comment" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Remove comment 1" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "1 comment" })).not.toBeInTheDocument());
+    expect(editorState.focused).toBeGreaterThan(0);
   });
 });

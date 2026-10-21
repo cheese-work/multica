@@ -1,0 +1,7 @@
+# Synthetic workspace-scoped Jev flag file: the shape MULTICA_JEV_FLAGS_FILE
+# points at. The workspace ID is a placeholder, never a real workspace.
+jev_enabled:
+  default: false
+  allow_by: workspace_id
+  allow:
+    - 00000000-0000-4000-8000-000000000001

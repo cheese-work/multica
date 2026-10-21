@@ -13,6 +13,7 @@ import {
   Laptop,
   ListPlus,
   Lock,
+  Scale,
   MessagesSquare,
   Plug,
   Search,
@@ -24,6 +25,7 @@ import {
   User,
   Users,
   X,
+  Workflow,
   Zap,
 } from "lucide-react";
 import { useAuthStore } from "@multica/core/auth";
@@ -33,6 +35,7 @@ import { useCurrentMember } from "@multica/core/permissions";
 import {
   BILLING_WORKSPACE_SUBSCRIPTIONS_FLAG,
   PLUGINS_V1_FLAG,
+  PROJECT_WORKFLOWS_V1_FLAG,
 } from "@multica/core/feature-flags";
 import { resolvePublicFileUrl } from "@multica/core/workspace/avatar-url";
 import { ActorAvatar } from "@multica/ui/components/common/actor-avatar";
@@ -51,6 +54,7 @@ import { ConnectedAppsTab, useComposioAvailable } from "./connected-apps-tab";
 import { NotificationsTab } from "./notifications-tab";
 import { LabelsTab } from "./labels-tab";
 import { IssueStatusesTab } from "./issue-statuses-tab";
+import { WorkflowsTab } from "../../workflows/workflows-tab";
 import { PropertiesTab } from "./properties-tab";
 import { QuickActionsTab } from "./quick-actions-tab";
 import { KeyboardShortcutsTab } from "./keyboard-shortcuts-tab";
@@ -63,6 +67,7 @@ import { searchSettings } from "./settings-search";
 import { HighlightText } from "../../search/highlight-text";
 import { useSettingsSearchIndex } from "./use-settings-search-index";
 import { WakeupsTab } from "./wakeups-tab";
+import { JevGovernanceTab } from "./jev-governance-tab";
 import { CollapsedNavTrigger } from "../../layout/page-header";
 import { useT } from "../../i18n";
 
@@ -113,6 +118,7 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
   const canManageExportPrivacy = role === "owner" || role === "admin";
   const navigation = useNavigation();
   const pluginsEnabled = useFeatureEnabled(PLUGINS_V1_FLAG, false);
+  const workflowsEnabled = useFeatureEnabled(PROJECT_WORKFLOWS_V1_FLAG, false);
   const billingEnabled = useFeatureEnabled(
     BILLING_WORKSPACE_SUBSCRIPTIONS_FLAG,
     false,
@@ -200,6 +206,12 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
                   <ExportPrivacyTab />,
                 )]
               : []),
+            entry(
+              "jev-governance",
+              t(($) => $.page.tabs.jev_governance),
+              Scale,
+              <JevGovernanceTab />,
+            ),
             ...(billingEnabled
               ? [
                   entry(
@@ -216,13 +228,15 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
           key: "issues",
           label: t(($) => $.page.groups.issues),
           entries: [
-            entry(
-              "issue-statuses",
-              t(($) => $.page.tabs.issue_statuses),
-              CircleDot,
-              <IssueStatusesTab />,
-              { wide: true, adminOnly: true },
-            ),
+            ...(workflowsEnabled
+              ? [entry("workflows", t(($) => $.page.tabs.workflows), Workflow, <WorkflowsTab />, {
+                  wide: true,
+                  adminOnly: true,
+                })]
+              : [entry("issue-statuses", t(($) => $.page.tabs.issue_statuses), CircleDot, <IssueStatusesTab />, {
+                  wide: true,
+                  adminOnly: true,
+                })]),
             entry("wakeups", t(($) => $.page.tabs.wakeups), AlarmClock, <WakeupsTab />, {
               wide: true,
               adminOnly: true,
@@ -368,6 +382,7 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
     <li key={item.value}>
       <AppLink
         href={href(item.value)}
+        data-testid={`settings-nav-${item.value}`}
         aria-current={active.value === item.value ? "page" : undefined}
         className={cn(
           "flex min-h-8 items-center gap-2.5 rounded-lg px-3 py-1.5 text-body transition-colors focus-visible:outline-2 focus-visible:outline-ring",

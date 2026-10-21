@@ -1347,6 +1347,58 @@ func (q *Queries) LockChatAttachmentsForFork(ctx context.Context, arg LockChatAt
 	return items, nil
 }
 
+const moveDraftAttachmentsToForkChild = `-- name: MoveDraftAttachmentsToForkChild :many
+UPDATE attachment
+SET chat_session_id = $1
+WHERE workspace_id = $2
+  AND chat_session_id = $3
+  AND chat_message_id IS NULL
+  AND issue_id IS NULL
+  AND comment_id IS NULL
+  AND source_context_id IS NULL
+  AND uploader_type = 'member'
+  AND uploader_id = $4
+  AND id = ANY($5::uuid[])
+RETURNING id
+`
+
+type MoveDraftAttachmentsToForkChildParams struct {
+	ChildSessionID  pgtype.UUID   `json:"child_session_id"`
+	WorkspaceID     pgtype.UUID   `json:"workspace_id"`
+	SourceSessionID pgtype.UUID   `json:"source_session_id"`
+	UploaderID      pgtype.UUID   `json:"uploader_id"`
+	AttachmentIds   []pgtype.UUID `json:"attachment_ids"`
+}
+
+// A draft upload carries the source DM's chat_session_id, which
+// LinkAttachmentsToChatMessage refuses for any other session. Only the
+// caller's own unbound source-DM drafts move to the fork child.
+func (q *Queries) MoveDraftAttachmentsToForkChild(ctx context.Context, arg MoveDraftAttachmentsToForkChildParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, moveDraftAttachmentsToForkChild,
+		arg.ChildSessionID,
+		arg.WorkspaceID,
+		arg.SourceSessionID,
+		arg.UploaderID,
+		arg.AttachmentIds,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const replaceCommentAttachments = `-- name: ReplaceCommentAttachments :execrows
 UPDATE attachment
 SET comment_id = CASE

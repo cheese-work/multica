@@ -233,3 +233,51 @@ The SQL bytes are unchanged. No migration-runner name map entry is needed.
 Numbers 631 to 649 are claimed or reserved by open pull requests (wakeups,
 inbox) and 650 to 652 by the DM reply record, so 653 is the next free number
 on 2026-10-16. Production deployment remains gated on Cheese.
+
+## Upstream v0.6.3 workflow migrations renumbering
+
+Upstream v0.6.3 ships nine project-workflow migrations whose prefixes (573 to
+579, 581, 582) collide with fork migrations already applied on deployed
+databases. The fork files keep their names. The nine upstream files are new to
+this fork, so no database has recorded them, and they take the next free
+numbers in their original order (CHE-1837):
+
+- `573_issue_workflow` is now `657_issue_workflow`
+- `574_issue_workflow_pkey_index` is now `658_issue_workflow_pkey_index`
+- `575_issue_workflow_primary_key` is now `659_issue_workflow_primary_key`
+- `576_issue_workflow_workspace_name_index` is now `660_issue_workflow_workspace_name_index`
+- `577_project_workflow_id` is now `661_project_workflow_id`
+- `578_agent_task_workflow_step` is now `662_agent_task_workflow_step`
+- `579_wakeup_skip_handed_to_agent` is now `663_wakeup_skip_handed_to_agent`
+- `581_issue_workflow_is_default` is now `664_issue_workflow_is_default`
+- `582_issue_workflow_default_index` is now `665_issue_workflow_default_index`
+
+These nine were first renumbered to `656`–`664`. Fork `main` then took
+`656_dm_channel_default_off` (CHE-1848). That migration is published, so it
+keeps its name, and the nine unmerged workflow migrations moved up by one, to
+`657`–`665` in the same order. No database has recorded either set of names.
+The rename is pure: the up and down SQL bytes of the nine match upstream.
+
+The SQL bytes are unchanged. The runner name map entries for the three index
+migrations follow the new names. `allowedForkCollisions` gains no entry. A later
+upstream sync must delete these nine upstream filenames when it re-adds them,
+or the workflow tables would be created twice.
+
+Migration `666_wakeup_handoff_write_tag` is fork-only. It replaces
+`capture_issue_wakeup` from `663_wakeup_skip_handed_to_agent` so a write that
+hands an issue to an agent no longer drops that agent's issue-event receipts at
+capture (CHE-1837). The receipts carry the write's id and the handler consumes
+them once the agent's run exists, so a stop between commit and enqueue cannot
+lose the change. A later upstream sync keeps `666` after the re-added upstream
+function body, or the zero-delivery window returns.
+
+## Agent task queue compaction columns
+
+Migration `655_agent_task_queue_compact` adds `task_kind`, `compact_reason` and
+`compact_trigger_tokens` to `agent_task_queue` (CHE-1807). It was `629_` on the
+PR branch, which collided with `629_chat_session_title_trgm_index` on `main`.
+It never reached `main`, so no ledger row exists under the old name. It does not
+depend on `630_agent_task_queue_context`. Numbers 631 to 649 are claimed by open
+wakeup and inbox pull requests, 650 to 652 by the DM reply record, 653 by the
+unpin migration and 654 by the chat message `sent_via` validation, so 655 is the
+next free number on 2026-10-17. Production deployment remains gated on Cheese.

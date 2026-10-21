@@ -43,3 +43,25 @@ export function readAutoCompact(
 ): AutoCompactSettings {
   return AutoCompactSchema.parse(settings?.auto_compact);
 }
+
+/**
+ * The effective rule for one DM, mirroring the server: the agent's
+ * runtime_config.auto_compact overrides the workspace value field by field,
+ * and a null or malformed override inherits.
+ */
+export function resolveAutoCompact(
+  workspaceSettings: Record<string, unknown> | undefined,
+  agentRuntimeConfig: Record<string, unknown> | undefined,
+): AutoCompactSettings {
+  const rule = readAutoCompact(workspaceSettings);
+  const raw = agentRuntimeConfig?.auto_compact;
+  if (raw === null || typeof raw !== "object") return rule;
+  const override = raw as Record<string, unknown>;
+  return {
+    enabled: typeof override.enabled === "boolean" ? override.enabled : rule.enabled,
+    threshold_pct:
+      typeof override.threshold_pct === "number" && isValidAutoCompactPct(override.threshold_pct)
+        ? override.threshold_pct
+        : rule.threshold_pct,
+  };
+}

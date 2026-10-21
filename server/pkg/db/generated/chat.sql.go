@@ -100,7 +100,7 @@ const archiveContinuedChatSession = `-- name: ArchiveContinuedChatSession :one
 UPDATE chat_session
 SET status = 'archived', continued_into_session_id = $2, pinned_at = NULL, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id
 `
 
 type ArchiveContinuedChatSessionParams struct {
@@ -136,6 +136,7 @@ func (q *Queries) ArchiveContinuedChatSession(ctx context.Context, arg ArchiveCo
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
 	)
 	return i, err
 }
@@ -422,7 +423,7 @@ func (q *Queries) CreateChatMessage(ctx context.Context, arg CreateChatMessagePa
 const createChatSession = `-- name: CreateChatSession :one
 INSERT INTO chat_session (workspace_id, agent_id, creator_id, title, runtime_id, is_agent_intro, project_id, id)
 VALUES ($1, $2, $3, $4, (SELECT runtime_id FROM agent WHERE id = $2), $5, $6, COALESCE($7::uuid, gen_random_uuid()))
-RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id
 `
 
 type CreateChatSessionParams struct {
@@ -471,6 +472,7 @@ func (q *Queries) CreateChatSession(ctx context.Context, arg CreateChatSessionPa
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
 	)
 	return i, err
 }
@@ -498,7 +500,7 @@ SELECT
     $15::bigint,
     COALESCE($16::uuid, gen_random_uuid())
 WHERE lock_task_owner_rows($1, NULL, $2)
-RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window
+RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step, claimed_model
 `
 
 type CreateChatTaskParams struct {
@@ -609,6 +611,11 @@ func (q *Queries) CreateChatTask(ctx context.Context, arg CreateChatTaskParams) 
 		&i.IssueSnapshot,
 		&i.ContextTokens,
 		&i.ContextWindow,
+		&i.TaskKind,
+		&i.CompactReason,
+		&i.CompactTriggerTokens,
+		&i.WorkflowStep,
+		&i.ClaimedModel,
 	)
 	return i, err
 }
@@ -691,7 +698,7 @@ FROM (
 WHERE task.id = $1
   AND pending.max_until IS NOT NULL
   AND (task.fire_at IS NULL OR task.fire_at < pending.max_until)
-RETURNING task.id, task.agent_id, task.issue_id, task.status, task.priority, task.dispatched_at, task.started_at, task.completed_at, task.result, task.error, task.created_at, task.context, task.runtime_id, task.session_id, task.work_dir, task.trigger_comment_id, task.chat_session_id, task.autopilot_run_id, task.attempt, task.max_attempts, task.parent_task_id, task.failure_reason, task.trigger_summary, task.force_fresh_session, task.is_leader_task, task.wait_reason, task.initiator_user_id, task.handoff_note, task.prepare_lease_expires_at, task.squad_id, task.runtime_mcp_overlay, task.escalation_for_task_id, task.fire_at, task.originator_user_id, task.runtime_connected_apps, task.coalesced_comment_ids, task.delivered_comment_ids, task.chat_input_task_id, task.chat_finalize_deferred_at, task.originator_source, task.delegated_from_task_id, task.retry_of_task_id, task.rerun_of_task_id, task.rule_version_id, task.trigger_evidence_kind, task.trigger_evidence_ref_id, task.accountable_user_id, task.session_rollout_missing, task.retired_session_id, task.quick_actions_disabled, task.regenerate_quick_actions_for, task.branch_name, task.durable_work_dir, task.channel_context_revision, task.comment_thread_id, task.cancelled_by_type, task.cancelled_by_id, task.cancelled_by_name, task.issue_snapshot, task.context_tokens, task.context_window
+RETURNING task.id, task.agent_id, task.issue_id, task.status, task.priority, task.dispatched_at, task.started_at, task.completed_at, task.result, task.error, task.created_at, task.context, task.runtime_id, task.session_id, task.work_dir, task.trigger_comment_id, task.chat_session_id, task.autopilot_run_id, task.attempt, task.max_attempts, task.parent_task_id, task.failure_reason, task.trigger_summary, task.force_fresh_session, task.is_leader_task, task.wait_reason, task.initiator_user_id, task.handoff_note, task.prepare_lease_expires_at, task.squad_id, task.runtime_mcp_overlay, task.escalation_for_task_id, task.fire_at, task.originator_user_id, task.runtime_connected_apps, task.coalesced_comment_ids, task.delivered_comment_ids, task.chat_input_task_id, task.chat_finalize_deferred_at, task.originator_source, task.delegated_from_task_id, task.retry_of_task_id, task.rerun_of_task_id, task.rule_version_id, task.trigger_evidence_kind, task.trigger_evidence_ref_id, task.accountable_user_id, task.session_rollout_missing, task.retired_session_id, task.quick_actions_disabled, task.regenerate_quick_actions_for, task.branch_name, task.durable_work_dir, task.channel_context_revision, task.comment_thread_id, task.cancelled_by_type, task.cancelled_by_id, task.cancelled_by_name, task.issue_snapshot, task.context_tokens, task.context_window, task.task_kind, task.compact_reason, task.compact_trigger_tokens, task.workflow_step, task.claimed_model
 `
 
 // Closes the enqueue-vs-append race: under READ COMMITTED a media message can
@@ -765,6 +772,11 @@ func (q *Queries) DeferChatTaskForSealedPendingMedia(ctx context.Context, taskID
 		&i.IssueSnapshot,
 		&i.ContextTokens,
 		&i.ContextWindow,
+		&i.TaskKind,
+		&i.CompactReason,
+		&i.CompactTriggerTokens,
+		&i.WorkflowStep,
+		&i.ClaimedModel,
 	)
 	return i, err
 }
@@ -962,7 +974,7 @@ func (q *Queries) GetChatContinuationSummary(ctx context.Context, chatSessionID 
 }
 
 const getChatForkByOperation = `-- name: GetChatForkByOperation :one
-SELECT id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count FROM chat_session
+SELECT id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id FROM chat_session
 WHERE forked_from_session_id = $1 AND fork_idempotency_key = $2
 `
 
@@ -999,6 +1011,7 @@ func (q *Queries) GetChatForkByOperation(ctx context.Context, arg GetChatForkByO
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
 	)
 	return i, err
 }
@@ -1113,7 +1126,7 @@ func (q *Queries) GetChatMessageByTaskAssistant(ctx context.Context, taskID pgty
 }
 
 const getChatSession = `-- name: GetChatSession :one
-SELECT id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count FROM chat_session
+SELECT id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id FROM chat_session
 WHERE id = $1
 `
 
@@ -1145,12 +1158,13 @@ func (q *Queries) GetChatSession(ctx context.Context, id pgtype.UUID) (ChatSessi
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
 	)
 	return i, err
 }
 
 const getChatSessionInWorkspace = `-- name: GetChatSessionInWorkspace :one
-SELECT id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count FROM chat_session
+SELECT id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id FROM chat_session
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -1187,6 +1201,7 @@ func (q *Queries) GetChatSessionInWorkspace(ctx context.Context, arg GetChatSess
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
 	)
 	return i, err
 }
@@ -1317,6 +1332,25 @@ func (q *Queries) GetChatSessionUsageSummary(ctx context.Context, chatSessionID 
 		&i.RoleCounts,
 	)
 	return i, err
+}
+
+const getLastAutoCompactTriggerForSession = `-- name: GetLastAutoCompactTriggerForSession :one
+SELECT compact_trigger_tokens FROM agent_task_queue
+WHERE chat_session_id = $1
+  AND task_kind = 'compact'
+  AND compact_trigger_tokens IS NOT NULL
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+// Prompt size that triggered the most recent automatic compaction of a DM, for
+// the 1.1x re-arm rule after a failed attempt. Manual compactions carry no
+// trigger size and are ignored.
+func (q *Queries) GetLastAutoCompactTriggerForSession(ctx context.Context, chatSessionID pgtype.UUID) (pgtype.Int8, error) {
+	row := q.db.QueryRow(ctx, getLastAutoCompactTriggerForSession, chatSessionID)
+	var compact_trigger_tokens pgtype.Int8
+	err := row.Scan(&compact_trigger_tokens)
+	return compact_trigger_tokens, err
 }
 
 const getLastChatTaskSession = `-- name: GetLastChatTaskSession :one
@@ -1496,7 +1530,7 @@ func (q *Queries) GetLatestAssistantChatMessageForSession(ctx context.Context, c
 }
 
 const getOldestActiveChatSessionForCreatorAgent = `-- name: GetOldestActiveChatSessionForCreatorAgent :one
-SELECT id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count FROM chat_session
+SELECT id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id FROM chat_session
 WHERE workspace_id = $1
   AND creator_id = $2
   AND agent_id = $3
@@ -1544,6 +1578,7 @@ func (q *Queries) GetOldestActiveChatSessionForCreatorAgent(ctx context.Context,
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
 	)
 	return i, err
 }
@@ -1578,7 +1613,7 @@ func (q *Queries) GetPendingChatTask(ctx context.Context, chatSessionID pgtype.U
 }
 
 const getPublicChatSessionInWorkspace = `-- name: GetPublicChatSessionInWorkspace :one
-SELECT cs.id, cs.workspace_id, cs.agent_id, cs.creator_id, cs.title, cs.session_id, cs.work_dir, cs.status, cs.created_at, cs.updated_at, cs.unread_since, cs.runtime_id, cs.last_read_at, cs.is_agent_intro, cs.pinned_at, cs.project_id, cs.explicitly_created_at, cs.continued_from_session_id, cs.continued_into_session_id, cs.channel_origin_at, cs.forked_from_session_id, cs.fork_idempotency_key, cs.fork_last_message_id, cs.fork_message_count FROM chat_session AS cs
+SELECT cs.id, cs.workspace_id, cs.agent_id, cs.creator_id, cs.title, cs.session_id, cs.work_dir, cs.status, cs.created_at, cs.updated_at, cs.unread_since, cs.runtime_id, cs.last_read_at, cs.is_agent_intro, cs.pinned_at, cs.project_id, cs.explicitly_created_at, cs.continued_from_session_id, cs.continued_into_session_id, cs.channel_origin_at, cs.forked_from_session_id, cs.fork_idempotency_key, cs.fork_last_message_id, cs.fork_message_count, cs.fork_source_message_id FROM chat_session AS cs
 WHERE cs.id = $1
   AND cs.workspace_id = $2
   AND (
@@ -1630,6 +1665,7 @@ func (q *Queries) GetPublicChatSessionInWorkspace(ctx context.Context, arg GetPu
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
 	)
 	return i, err
 }
@@ -1744,6 +1780,26 @@ func (q *Queries) HasActiveChatTaskForSession(ctx context.Context, chatSessionID
 	return has_active, err
 }
 
+const hasActiveCompactionTaskForSession = `-- name: HasActiveCompactionTaskForSession :one
+SELECT EXISTS (
+  SELECT 1 FROM agent_task_queue
+  WHERE chat_session_id = $1
+    AND task_kind = 'compact'
+    AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+) AS compacting
+`
+
+// True while a compaction task (manual or automatic) is in any of the five
+// states HasActiveChatTaskForSession treats as active. Deferred and
+// waiting_local_directory are included: a send must not pass, and a second
+// compaction must not queue, while a retry or a local-directory wait is armed.
+func (q *Queries) HasActiveCompactionTaskForSession(ctx context.Context, chatSessionID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, hasActiveCompactionTaskForSession, chatSessionID)
+	var compacting bool
+	err := row.Scan(&compacting)
+	return compacting, err
+}
+
 const hasPendingChatTasksByCreator = `-- name: HasPendingChatTasksByCreator :one
 SELECT EXISTS (
   SELECT 1
@@ -1822,7 +1878,7 @@ WHERE session.id = $2
       AND other_message.message_kind != 'channel_command'
       AND other_message.id != $3
   )
-RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id
 `
 
 type InitializeChatSessionMediaTitleParams struct {
@@ -1859,6 +1915,7 @@ func (q *Queries) InitializeChatSessionMediaTitle(ctx context.Context, arg Initi
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
 	)
 	return i, err
 }
@@ -1874,7 +1931,7 @@ WHERE session.id = $2
       AND message.role = 'user'
       AND message.message_kind != 'channel_command'
   )
-RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id
 `
 
 type InitializeChatSessionTitleParams struct {
@@ -1910,6 +1967,7 @@ func (q *Queries) InitializeChatSessionTitle(ctx context.Context, arg Initialize
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
 	)
 	return i, err
 }
@@ -2137,7 +2195,7 @@ func (q *Queries) ListAgentBuilderSessionsByCreator(ctx context.Context, arg Lis
 }
 
 const listAllChatSessionsByCreator = `-- name: ListAllChatSessionsByCreator :many
-SELECT cs.id, cs.workspace_id, cs.agent_id, cs.creator_id, cs.title, cs.session_id, cs.work_dir, cs.status, cs.created_at, cs.updated_at, cs.unread_since, cs.runtime_id, cs.last_read_at, cs.is_agent_intro, cs.pinned_at, cs.project_id, cs.explicitly_created_at, cs.continued_from_session_id, cs.continued_into_session_id, cs.channel_origin_at, cs.forked_from_session_id, cs.fork_idempotency_key, cs.fork_last_message_id, cs.fork_message_count,
+SELECT cs.id, cs.workspace_id, cs.agent_id, cs.creator_id, cs.title, cs.session_id, cs.work_dir, cs.status, cs.created_at, cs.updated_at, cs.unread_since, cs.runtime_id, cs.last_read_at, cs.is_agent_intro, cs.pinned_at, cs.project_id, cs.explicitly_created_at, cs.continued_from_session_id, cs.continued_into_session_id, cs.channel_origin_at, cs.forked_from_session_id, cs.fork_idempotency_key, cs.fork_last_message_id, cs.fork_message_count, cs.fork_source_message_id,
        CASE WHEN cs.status = 'archived' THEN 0
             ELSE (SELECT count(*) FROM chat_message m
                     WHERE m.chat_session_id = cs.id
@@ -2197,6 +2255,7 @@ type ListAllChatSessionsByCreatorRow struct {
 	ForkIdempotencyKey       pgtype.Text        `json:"fork_idempotency_key"`
 	ForkLastMessageID        pgtype.UUID        `json:"fork_last_message_id"`
 	ForkMessageCount         pgtype.Int4        `json:"fork_message_count"`
+	ForkSourceMessageID      pgtype.UUID        `json:"fork_source_message_id"`
 	UnreadCount              int32              `json:"unread_count"`
 	LastMessageContent       string             `json:"last_message_content"`
 	LastMessageRole          string             `json:"last_message_role"`
@@ -2248,6 +2307,7 @@ func (q *Queries) ListAllChatSessionsByCreator(ctx context.Context, arg ListAllC
 			&i.ForkIdempotencyKey,
 			&i.ForkLastMessageID,
 			&i.ForkMessageCount,
+			&i.ForkSourceMessageID,
 			&i.UnreadCount,
 			&i.LastMessageContent,
 			&i.LastMessageRole,
@@ -2926,7 +2986,7 @@ func (q *Queries) ListChatMessagesPageForChannelContext(ctx context.Context, arg
 }
 
 const listChatSessionsByCreator = `-- name: ListChatSessionsByCreator :many
-SELECT cs.id, cs.workspace_id, cs.agent_id, cs.creator_id, cs.title, cs.session_id, cs.work_dir, cs.status, cs.created_at, cs.updated_at, cs.unread_since, cs.runtime_id, cs.last_read_at, cs.is_agent_intro, cs.pinned_at, cs.project_id, cs.explicitly_created_at, cs.continued_from_session_id, cs.continued_into_session_id, cs.channel_origin_at, cs.forked_from_session_id, cs.fork_idempotency_key, cs.fork_last_message_id, cs.fork_message_count,
+SELECT cs.id, cs.workspace_id, cs.agent_id, cs.creator_id, cs.title, cs.session_id, cs.work_dir, cs.status, cs.created_at, cs.updated_at, cs.unread_since, cs.runtime_id, cs.last_read_at, cs.is_agent_intro, cs.pinned_at, cs.project_id, cs.explicitly_created_at, cs.continued_from_session_id, cs.continued_into_session_id, cs.channel_origin_at, cs.forked_from_session_id, cs.fork_idempotency_key, cs.fork_last_message_id, cs.fork_message_count, cs.fork_source_message_id,
        (SELECT count(*) FROM chat_message m
           WHERE m.chat_session_id = cs.id
             AND m.role = 'assistant'
@@ -2984,6 +3044,7 @@ type ListChatSessionsByCreatorRow struct {
 	ForkIdempotencyKey       pgtype.Text        `json:"fork_idempotency_key"`
 	ForkLastMessageID        pgtype.UUID        `json:"fork_last_message_id"`
 	ForkMessageCount         pgtype.Int4        `json:"fork_message_count"`
+	ForkSourceMessageID      pgtype.UUID        `json:"fork_source_message_id"`
 	UnreadCount              int32              `json:"unread_count"`
 	LastMessageContent       string             `json:"last_message_content"`
 	LastMessageRole          string             `json:"last_message_role"`
@@ -3031,6 +3092,7 @@ func (q *Queries) ListChatSessionsByCreator(ctx context.Context, arg ListChatSes
 			&i.ForkIdempotencyKey,
 			&i.ForkLastMessageID,
 			&i.ForkMessageCount,
+			&i.ForkSourceMessageID,
 			&i.UnreadCount,
 			&i.LastMessageContent,
 			&i.LastMessageRole,
@@ -3041,6 +3103,33 @@ func (q *Queries) ListChatSessionsByCreator(ctx context.Context, arg ListChatSes
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCompactingChatSessionIDs = `-- name: ListCompactingChatSessionIDs :many
+SELECT DISTINCT chat_session_id FROM agent_task_queue
+WHERE chat_session_id = ANY($1::uuid[])
+  AND task_kind = 'compact'
+  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+`
+
+func (q *Queries) ListCompactingChatSessionIDs(ctx context.Context, dollar_1 []pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listCompactingChatSessionIDs, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var chat_session_id pgtype.UUID
+		if err := rows.Scan(&chat_session_id); err != nil {
+			return nil, err
+		}
+		items = append(items, chat_session_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -3090,6 +3179,43 @@ func (q *Queries) ListForkAttachmentIndex(ctx context.Context, arg ListForkAttac
 			&i.MessageCreatedAt,
 			&i.Total,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLatestRunContextForChatSessions = `-- name: ListLatestRunContextForChatSessions :many
+SELECT DISTINCT ON (chat_session_id) chat_session_id, context_tokens, context_window
+FROM agent_task_queue
+WHERE chat_session_id = ANY($1::uuid[])
+  AND status = 'completed'
+ORDER BY chat_session_id, completed_at DESC, id DESC
+`
+
+type ListLatestRunContextForChatSessionsRow struct {
+	ChatSessionID pgtype.UUID `json:"chat_session_id"`
+	ContextTokens pgtype.Int8 `json:"context_tokens"`
+	ContextWindow pgtype.Int8 `json:"context_window"`
+}
+
+// CHE-1808: the context meter reads the LATEST completed run of each DM. A run
+// that reported nothing stays in the result with NULL columns, so the meter
+// hides instead of showing an older run's stale numbers.
+func (q *Queries) ListLatestRunContextForChatSessions(ctx context.Context, dollar_1 []pgtype.UUID) ([]ListLatestRunContextForChatSessionsRow, error) {
+	rows, err := q.db.Query(ctx, listLatestRunContextForChatSessions, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListLatestRunContextForChatSessionsRow{}
+	for rows.Next() {
+		var i ListLatestRunContextForChatSessionsRow
+		if err := rows.Scan(&i.ChatSessionID, &i.ContextTokens, &i.ContextWindow); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -3324,7 +3450,7 @@ func (q *Queries) LockChatSessionForDelete(ctx context.Context, id pgtype.UUID) 
 }
 
 const lockChatSessionForDraftWrite = `-- name: LockChatSessionForDraftWrite :one
-SELECT id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count FROM chat_session
+SELECT id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id FROM chat_session
 WHERE id = $1
 FOR UPDATE
 `
@@ -3377,12 +3503,13 @@ func (q *Queries) LockChatSessionForDraftWrite(ctx context.Context, id pgtype.UU
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
 	)
 	return i, err
 }
 
 const lockChatSessionForEnqueue = `-- name: LockChatSessionForEnqueue :one
-SELECT id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count FROM chat_session
+SELECT id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id FROM chat_session
 WHERE id = $1
 FOR NO KEY UPDATE
 `
@@ -3451,6 +3578,7 @@ func (q *Queries) LockChatSessionForEnqueue(ctx context.Context, id pgtype.UUID)
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
 	)
 	return i, err
 }
@@ -3587,7 +3715,7 @@ const markChatSessionExplicitlyCreated = `-- name: MarkChatSessionExplicitlyCrea
 UPDATE chat_session
 SET explicitly_created_at = COALESCE(explicitly_created_at, now())
 WHERE id = $1
-RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id
 `
 
 func (q *Queries) MarkChatSessionExplicitlyCreated(ctx context.Context, id pgtype.UUID) (ChatSession, error) {
@@ -3618,6 +3746,7 @@ func (q *Queries) MarkChatSessionExplicitlyCreated(ctx context.Context, id pgtyp
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
 	)
 	return i, err
 }
@@ -3649,6 +3778,98 @@ type MarkChatSessionReadBeforeParams struct {
 func (q *Queries) MarkChatSessionReadBefore(ctx context.Context, arg MarkChatSessionReadBeforeParams) error {
 	_, err := q.db.Exec(ctx, markChatSessionReadBefore, arg.ID, arg.MessageCreatedAt)
 	return err
+}
+
+const markChatTaskCompact = `-- name: MarkChatTaskCompact :one
+UPDATE agent_task_queue
+SET task_kind = 'compact',
+    compact_reason = $2,
+    compact_trigger_tokens = $3
+WHERE id = $1
+RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step, claimed_model
+`
+
+type MarkChatTaskCompactParams struct {
+	ID                   pgtype.UUID `json:"id"`
+	CompactReason        pgtype.Text `json:"compact_reason"`
+	CompactTriggerTokens pgtype.Int8 `json:"compact_trigger_tokens"`
+}
+
+// CHE-1807: flags a chat task as a compaction run. An automatic compaction
+// carries the server-built reason and the prompt size that triggered it; a
+// manual /compact carries neither.
+func (q *Queries) MarkChatTaskCompact(ctx context.Context, arg MarkChatTaskCompactParams) (AgentTaskQueue, error) {
+	row := q.db.QueryRow(ctx, markChatTaskCompact, arg.ID, arg.CompactReason, arg.CompactTriggerTokens)
+	var i AgentTaskQueue
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.IssueID,
+		&i.Status,
+		&i.Priority,
+		&i.DispatchedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.Result,
+		&i.Error,
+		&i.CreatedAt,
+		&i.Context,
+		&i.RuntimeID,
+		&i.SessionID,
+		&i.WorkDir,
+		&i.TriggerCommentID,
+		&i.ChatSessionID,
+		&i.AutopilotRunID,
+		&i.Attempt,
+		&i.MaxAttempts,
+		&i.ParentTaskID,
+		&i.FailureReason,
+		&i.TriggerSummary,
+		&i.ForceFreshSession,
+		&i.IsLeaderTask,
+		&i.WaitReason,
+		&i.InitiatorUserID,
+		&i.HandoffNote,
+		&i.PrepareLeaseExpiresAt,
+		&i.SquadID,
+		&i.RuntimeMcpOverlay,
+		&i.EscalationForTaskID,
+		&i.FireAt,
+		&i.OriginatorUserID,
+		&i.RuntimeConnectedApps,
+		&i.CoalescedCommentIds,
+		&i.DeliveredCommentIds,
+		&i.ChatInputTaskID,
+		&i.ChatFinalizeDeferredAt,
+		&i.OriginatorSource,
+		&i.DelegatedFromTaskID,
+		&i.RetryOfTaskID,
+		&i.RerunOfTaskID,
+		&i.RuleVersionID,
+		&i.TriggerEvidenceKind,
+		&i.TriggerEvidenceRefID,
+		&i.AccountableUserID,
+		&i.SessionRolloutMissing,
+		&i.RetiredSessionID,
+		&i.QuickActionsDisabled,
+		&i.RegenerateQuickActionsFor,
+		&i.BranchName,
+		&i.DurableWorkDir,
+		&i.ChannelContextRevision,
+		&i.CommentThreadID,
+		&i.CancelledByType,
+		&i.CancelledByID,
+		&i.CancelledByName,
+		&i.IssueSnapshot,
+		&i.ContextTokens,
+		&i.ContextWindow,
+		&i.TaskKind,
+		&i.CompactReason,
+		&i.CompactTriggerTokens,
+		&i.WorkflowStep,
+		&i.ClaimedModel,
+	)
+	return i, err
 }
 
 const placeForkFirstMessage = `-- name: PlaceForkFirstMessage :one
@@ -3770,7 +3991,7 @@ WHERE task.chat_session_id = $1
         AND message.role = 'user'
         AND message.channel_media_pending_until > now()
   )
-RETURNING task.id, task.agent_id, task.issue_id, task.status, task.priority, task.dispatched_at, task.started_at, task.completed_at, task.result, task.error, task.created_at, task.context, task.runtime_id, task.session_id, task.work_dir, task.trigger_comment_id, task.chat_session_id, task.autopilot_run_id, task.attempt, task.max_attempts, task.parent_task_id, task.failure_reason, task.trigger_summary, task.force_fresh_session, task.is_leader_task, task.wait_reason, task.initiator_user_id, task.handoff_note, task.prepare_lease_expires_at, task.squad_id, task.runtime_mcp_overlay, task.escalation_for_task_id, task.fire_at, task.originator_user_id, task.runtime_connected_apps, task.coalesced_comment_ids, task.delivered_comment_ids, task.chat_input_task_id, task.chat_finalize_deferred_at, task.originator_source, task.delegated_from_task_id, task.retry_of_task_id, task.rerun_of_task_id, task.rule_version_id, task.trigger_evidence_kind, task.trigger_evidence_ref_id, task.accountable_user_id, task.session_rollout_missing, task.retired_session_id, task.quick_actions_disabled, task.regenerate_quick_actions_for, task.branch_name, task.durable_work_dir, task.channel_context_revision, task.comment_thread_id, task.cancelled_by_type, task.cancelled_by_id, task.cancelled_by_name, task.issue_snapshot, task.context_tokens, task.context_window
+RETURNING task.id, task.agent_id, task.issue_id, task.status, task.priority, task.dispatched_at, task.started_at, task.completed_at, task.result, task.error, task.created_at, task.context, task.runtime_id, task.session_id, task.work_dir, task.trigger_comment_id, task.chat_session_id, task.autopilot_run_id, task.attempt, task.max_attempts, task.parent_task_id, task.failure_reason, task.trigger_summary, task.force_fresh_session, task.is_leader_task, task.wait_reason, task.initiator_user_id, task.handoff_note, task.prepare_lease_expires_at, task.squad_id, task.runtime_mcp_overlay, task.escalation_for_task_id, task.fire_at, task.originator_user_id, task.runtime_connected_apps, task.coalesced_comment_ids, task.delivered_comment_ids, task.chat_input_task_id, task.chat_finalize_deferred_at, task.originator_source, task.delegated_from_task_id, task.retry_of_task_id, task.rerun_of_task_id, task.rule_version_id, task.trigger_evidence_kind, task.trigger_evidence_ref_id, task.accountable_user_id, task.session_rollout_missing, task.retired_session_id, task.quick_actions_disabled, task.regenerate_quick_actions_for, task.branch_name, task.durable_work_dir, task.channel_context_revision, task.comment_thread_id, task.cancelled_by_type, task.cancelled_by_id, task.cancelled_by_name, task.issue_snapshot, task.context_tokens, task.context_window, task.task_kind, task.compact_reason, task.compact_trigger_tokens, task.workflow_step, task.claimed_model
 `
 
 // Media completion may race with the 3s run batcher. Promote every original
@@ -3850,6 +4071,11 @@ func (q *Queries) PromoteChannelChatTasksIfMediaReady(ctx context.Context, chatS
 			&i.IssueSnapshot,
 			&i.ContextTokens,
 			&i.ContextWindow,
+			&i.TaskKind,
+			&i.CompactReason,
+			&i.CompactTriggerTokens,
+			&i.WorkflowStep,
+			&i.ClaimedModel,
 		); err != nil {
 			return nil, err
 		}
@@ -4076,7 +4302,7 @@ WHERE session.id = $2
       AND message.role = 'user'
       AND message.message_kind != 'channel_command'
   )
-RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id
 `
 
 type ReplaceImplicitChatSessionTitleParams struct {
@@ -4116,6 +4342,7 @@ func (q *Queries) ReplaceImplicitChatSessionTitle(ctx context.Context, arg Repla
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
 	)
 	return i, err
 }
@@ -4126,7 +4353,7 @@ SET continued_from_session_id = $2,
     last_read_at = $3::timestamptz - interval '1 microsecond',
     pinned_at = $4
 WHERE id = $1
-RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id
 `
 
 type SetChatContinuationSourceParams struct {
@@ -4169,6 +4396,7 @@ func (q *Queries) SetChatContinuationSource(ctx context.Context, arg SetChatCont
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
 	)
 	return i, err
 }
@@ -4178,28 +4406,32 @@ UPDATE chat_session
 SET forked_from_session_id = $1,
     fork_idempotency_key = $2,
     fork_last_message_id = $3,
-    fork_message_count = $4,
+    fork_source_message_id = $4,
+    fork_message_count = $5,
     runtime_id = NULL,
-    last_read_at = (SELECT max(m.created_at) FROM chat_message m WHERE m.chat_session_id = $5)
-WHERE id = $5
-RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
+    last_read_at = (SELECT max(m.created_at) FROM chat_message m WHERE m.chat_session_id = $6)
+WHERE id = $6
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id
 `
 
 type SetChatForkSourceParams struct {
 	ForkedFromSessionID pgtype.UUID `json:"forked_from_session_id"`
 	ForkIdempotencyKey  pgtype.Text `json:"fork_idempotency_key"`
 	ForkLastMessageID   pgtype.UUID `json:"fork_last_message_id"`
+	ForkSourceMessageID pgtype.UUID `json:"fork_source_message_id"`
 	ForkMessageCount    pgtype.Int4 `json:"fork_message_count"`
 	ID                  pgtype.UUID `json:"id"`
 }
 
 // Runs after the copy, so the read cursor is the newest copied time and the
-// copied history counts as read.
+// copied history counts as read. fork_last_message_id is the child's own copy
+// of the last copied message; fork_source_message_id is the source row itself.
 func (q *Queries) SetChatForkSource(ctx context.Context, arg SetChatForkSourceParams) (ChatSession, error) {
 	row := q.db.QueryRow(ctx, setChatForkSource,
 		arg.ForkedFromSessionID,
 		arg.ForkIdempotencyKey,
 		arg.ForkLastMessageID,
+		arg.ForkSourceMessageID,
 		arg.ForkMessageCount,
 		arg.ID,
 	)
@@ -4229,6 +4461,7 @@ func (q *Queries) SetChatForkSource(ctx context.Context, arg SetChatForkSourcePa
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
 	)
 	return i, err
 }
@@ -4320,7 +4553,7 @@ SET status = CASE WHEN $2::bool THEN 'archived' ELSE 'active' END,
     pinned_at = CASE WHEN $2::bool THEN NULL ELSE pinned_at END,
     updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id
 `
 
 type SetChatSessionArchivedParams struct {
@@ -4361,6 +4594,7 @@ func (q *Queries) SetChatSessionArchived(ctx context.Context, arg SetChatSession
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
 	)
 	return i, err
 }
@@ -4370,7 +4604,7 @@ UPDATE chat_session
 SET pinned_at = CASE WHEN $2::bool THEN COALESCE(pinned_at, now()) ELSE NULL END
 WHERE id = $1
   AND (NOT $2::bool OR status <> 'archived')
-RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id
 `
 
 type SetChatSessionPinnedParams struct {
@@ -4413,6 +4647,7 @@ func (q *Queries) SetChatSessionPinned(ctx context.Context, arg SetChatSessionPi
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
 	)
 	return i, err
 }
@@ -4421,7 +4656,7 @@ const setChatTaskInputOwnerSelf = `-- name: SetChatTaskInputOwnerSelf :one
 UPDATE agent_task_queue
 SET chat_input_task_id = id
 WHERE id = $1
-RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window
+RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step, claimed_model
 `
 
 // Stamps a freshly-created direct-chat task as the owner of its own input batch
@@ -4496,6 +4731,11 @@ func (q *Queries) SetChatTaskInputOwnerSelf(ctx context.Context, id pgtype.UUID)
 		&i.IssueSnapshot,
 		&i.ContextTokens,
 		&i.ContextWindow,
+		&i.TaskKind,
+		&i.CompactReason,
+		&i.CompactTriggerTokens,
+		&i.WorkflowStep,
+		&i.ClaimedModel,
 	)
 	return i, err
 }
@@ -4608,7 +4848,7 @@ const updateChatSessionProject = `-- name: UpdateChatSessionProject :one
 UPDATE chat_session
 SET project_id = $1
 WHERE id = $2 AND workspace_id = $3
-RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id
 `
 
 type UpdateChatSessionProjectParams struct {
@@ -4647,6 +4887,7 @@ func (q *Queries) UpdateChatSessionProject(ctx context.Context, arg UpdateChatSe
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
 	)
 	return i, err
 }
@@ -4685,7 +4926,7 @@ func (q *Queries) UpdateChatSessionSession(ctx context.Context, arg UpdateChatSe
 const updateChatSessionTitle = `-- name: UpdateChatSessionTitle :one
 UPDATE chat_session SET title = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id
 `
 
 type UpdateChatSessionTitleParams struct {
@@ -4721,6 +4962,7 @@ func (q *Queries) UpdateChatSessionTitle(ctx context.Context, arg UpdateChatSess
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
 	)
 	return i, err
 }
@@ -4728,7 +4970,7 @@ func (q *Queries) UpdateChatSessionTitle(ctx context.Context, arg UpdateChatSess
 const updateChatSessionTitleIfCurrent = `-- name: UpdateChatSessionTitleIfCurrent :one
 UPDATE chat_session SET title = $1, updated_at = now()
 WHERE id = $2 AND title = $3
-RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id
 `
 
 type UpdateChatSessionTitleIfCurrentParams struct {
@@ -4773,6 +5015,7 @@ func (q *Queries) UpdateChatSessionTitleIfCurrent(ctx context.Context, arg Updat
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
 	)
 	return i, err
 }

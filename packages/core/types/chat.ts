@@ -22,7 +22,8 @@ export type ChatMessageKind =
   | "no_response"
   | "onboarding_kickoff"
   | "onboarding_opening"
-  | "continuation_summary";
+  | "continuation_summary"
+  | "compact_notice";
 
 /**
  * A concise follow-up offered by an assistant reply. `label` is rendered in
@@ -88,6 +89,8 @@ export interface ChatSession {
   forked_from_session_id?: string | null;
   /** The last copied message of a fork child; the divider sits below it. */
   fork_last_message_id?: string | null;
+  /** The source message a fork copied up to; the source DM lists the fork under it. */
+  fork_source_message_id?: string | null;
   fork_message_count?: number | null;
   continued_into_session_id?: string | null;
   continued_from_session_id?: string | null;
@@ -114,6 +117,13 @@ export interface ChatSession {
   /** Present for Chats created by an external Channel. Historical Chats keep
    *  their source even after a newer route generation becomes current. */
   channel_source?: ChatChannelSource;
+  /** True while a compaction task is active for this DM; sends are refused
+   *  (409 chat_compacting) until it ends. Optional for older servers. */
+  compacting?: boolean;
+  /** Prompt size of the latest completed run and the model's context window,
+   *  for the context meter. Absent when that run reported neither. */
+  context_tokens?: number | null;
+  context_window?: number | null;
   /** Absent for first-party Chats. */
   is_current_channel_route?: boolean;
   created_at: string;
@@ -171,6 +181,8 @@ export interface ChatForkResponse {
   url: string;
   /** The first message, present when one was sent with the fork. */
   message?: ChatMessage | null;
+  /** Draft attachment ids the server bound to the first message. */
+  attachment_ids?: string[];
 }
 
 export interface PendingChatTaskItem {

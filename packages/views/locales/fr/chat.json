@@ -15,6 +15,7 @@
   "input": {
     "placeholder_no_agent": "Créez un agent pour commencer à discuter",
     "placeholder_archived": "Cette session est archivée",
+    "placeholder_compacting": "Compactage en cours…",
     "placeholder_archived_agent": "Cet agent a été archivé",
     "placeholder_runtime_required": "Associez un runtime pour continuer",
     "placeholder_access_revoked": "Vous n'avez plus l'autorisation d'exécuter cet agent",
@@ -24,9 +25,9 @@
     "queue_send_tooltip": "Mettre le message en file d'attente",
     "stop_tooltip": "Arrêter",
     "send_failed_toast": "Échec de l'envoi du message",
+    "compacting_toast": "Ce message privé est en cours de compactage. Renvoyez-le une fois terminé.",
     "rename_failed_toast": "Impossible de renommer la conversation",
     "fork_unconfirmed": "La dérivation n’a pas pu être confirmée. Vérifiez les liens « Dérivée vers » avant de réessayer.",
-    "fork_attachments_blocked": "Les pièces jointes ne peuvent pas être envoyées avec /fork.",
     "rename_title_too_long_toast": "Le titre ne doit pas dépasser 200 caractères",
     "rename_session_required_toast": "Démarrez une conversation avant de la renommer",
     "send_blocked_toast": "Message non envoyé — vous n'avez plus la permission d'utiliser cet agent",
@@ -265,10 +266,34 @@
     "row_actions_aria": "Actions de discussion"
   },
   "header": {
+    "context_meter": "{{pct}} % de {{window}}",
+    "context_meter_warning": "Sera compactée après la prochaine réponse",
+    "compact_now": "Compacter maintenant",
+    "more_actions": "Plus d'actions",
     "view_profile": "Voir le profil de l'agent",
     "rename": "Renommer la discussion",
     "archive": "Archiver la discussion",
     "unarchive": "Désarchiver la discussion",
     "delete": "Supprimer la discussion"
+  },
+  "annotations": {
+    "source_label": "Message de {{name}}",
+    "add": "Ajouter un commentaire",
+    "confirm_add": "Ajouter",
+    "save": "Enregistrer",
+    "note_label": "Commentaire {{number}}",
+    "note_placeholder": "Ajouter un commentaire…",
+    "edit": "Modifier le commentaire {{number}} : {{note}}",
+    "edit_row": "Modifier le commentaire {{number}}",
+    "remove": "Supprimer le commentaire {{number}}",
+    "count_one": "{{count}} commentaire",
+    "count_other": "{{count}} commentaires",
+    "list_label": "Commentaires",
+    "range": "Commentaires {{from}}–{{to}} sur {{total}}",
+    "quote_limit": "Sélectionnez au maximum {{count}} caractères à la fois.",
+    "count_limit": "Un message peut contenir jusqu'à {{count}} commentaires.",
+    "selection_failed": "Impossible de capturer la sélection. Sélectionnez du texte dans une seule réponse, puis réessayez.",
+    "source_changed": "La source a changé ou est indisponible. Votre citation enregistrée est conservée.",
+    "removed": "Commentaire {{number}} supprimé"
   }
 }

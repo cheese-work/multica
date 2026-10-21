@@ -15,6 +15,7 @@
   "input": {
     "placeholder_no_agent": "Create an agent to start chatting",
     "placeholder_archived": "This session is archived",
+    "placeholder_compacting": "Compacting…",
     "placeholder_archived_agent": "This agent has been archived",
     "placeholder_runtime_required": "Bind a runtime to continue",
     "placeholder_access_revoked": "You no longer have permission to run this agent",
@@ -24,9 +25,9 @@
     "queue_send_tooltip": "Queue message",
     "stop_tooltip": "Stop",
     "send_failed_toast": "Failed to send message",
+    "compacting_toast": "This DM is compacting. Send again when it finishes.",
     "rename_failed_toast": "Failed to rename chat",
     "fork_unconfirmed": "Fork could not be confirmed. Check the Forked into links before trying again.",
-    "fork_attachments_blocked": "Attachments cannot be sent with /fork.",
     "rename_title_too_long_toast": "Chat titles must be 200 characters or fewer",
     "rename_session_required_toast": "Start a chat before renaming it",
     "send_blocked_toast": "Message not sent — you no longer have permission to use this agent",
@@ -265,10 +266,34 @@
     "row_actions_aria": "Chat actions"
   },
   "header": {
+    "context_meter": "{{pct}}% of {{window}}",
+    "context_meter_warning": "Will compact after the next reply",
+    "compact_now": "Compact now",
+    "more_actions": "More actions",
     "view_profile": "View agent profile",
     "rename": "Rename chat",
     "archive": "Archive chat",
     "unarchive": "Unarchive chat",
     "delete": "Delete chat"
+  },
+  "annotations": {
+    "source_label": "Message from {{name}}",
+    "add": "Add comment",
+    "confirm_add": "Add",
+    "save": "Save",
+    "note_label": "Comment {{number}}",
+    "note_placeholder": "Add a comment…",
+    "edit": "Edit comment {{number}}: {{note}}",
+    "edit_row": "Edit comment {{number}}",
+    "remove": "Remove comment {{number}}",
+    "count_one": "{{count}} comment",
+    "count_other": "{{count}} comments",
+    "list_label": "Comments",
+    "range": "Comments {{from}}–{{to}} of {{total}}",
+    "quote_limit": "Select up to {{count}} characters at a time.",
+    "count_limit": "A message can contain up to {{count}} comments.",
+    "selection_failed": "Could not capture the selection. Select text inside one reply and try again.",
+    "source_changed": "The source changed or is unavailable. Your saved quote is kept.",
+    "removed": "Comment {{number}} removed"
   }
 }

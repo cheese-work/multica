@@ -31,11 +31,13 @@ RETURNING *;
 
 -- name: SetChatForkSource :one
 -- Runs after the copy, so the read cursor is the newest copied time and the
--- copied history counts as read.
+-- copied history counts as read. fork_last_message_id is the child's own copy
+-- of the last copied message; fork_source_message_id is the source row itself.
 UPDATE chat_session
 SET forked_from_session_id = sqlc.arg(forked_from_session_id),
     fork_idempotency_key = sqlc.arg(fork_idempotency_key),
     fork_last_message_id = sqlc.arg(fork_last_message_id),
+    fork_source_message_id = sqlc.arg(fork_source_message_id),
     fork_message_count = sqlc.arg(fork_message_count),
     runtime_id = NULL,
     last_read_at = (SELECT max(m.created_at) FROM chat_message m WHERE m.chat_session_id = sqlc.arg(id))
@@ -2038,3 +2040,53 @@ FROM usage
 CROSS JOIN models
 CROSS JOIN runs
 CROSS JOIN messages;
+
+-- name: MarkChatTaskCompact :one
+-- CHE-1807: flags a chat task as a compaction run. An automatic compaction
+-- carries the server-built reason and the prompt size that triggered it; a
+-- manual /compact carries neither.
+UPDATE agent_task_queue
+SET task_kind = 'compact',
+    compact_reason = sqlc.narg('compact_reason'),
+    compact_trigger_tokens = sqlc.narg('compact_trigger_tokens')
+WHERE id = $1
+RETURNING *;
+
+-- name: HasActiveCompactionTaskForSession :one
+-- True while a compaction task (manual or automatic) is in any of the five
+-- states HasActiveChatTaskForSession treats as active. Deferred and
+-- waiting_local_directory are included: a send must not pass, and a second
+-- compaction must not queue, while a retry or a local-directory wait is armed.
+SELECT EXISTS (
+  SELECT 1 FROM agent_task_queue
+  WHERE chat_session_id = $1
+    AND task_kind = 'compact'
+    AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+) AS compacting;
+
+-- name: GetLastAutoCompactTriggerForSession :one
+-- Prompt size that triggered the most recent automatic compaction of a DM, for
+-- the 1.1x re-arm rule after a failed attempt. Manual compactions carry no
+-- trigger size and are ignored.
+SELECT compact_trigger_tokens FROM agent_task_queue
+WHERE chat_session_id = $1
+  AND task_kind = 'compact'
+  AND compact_trigger_tokens IS NOT NULL
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
+
+-- name: ListCompactingChatSessionIDs :many
+SELECT DISTINCT chat_session_id FROM agent_task_queue
+WHERE chat_session_id = ANY($1::uuid[])
+  AND task_kind = 'compact'
+  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred');
+
+-- name: ListLatestRunContextForChatSessions :many
+-- CHE-1808: the context meter reads the LATEST completed run of each DM. A run
+-- that reported nothing stays in the result with NULL columns, so the meter
+-- hides instead of showing an older run's stale numbers.
+SELECT DISTINCT ON (chat_session_id) chat_session_id, context_tokens, context_window
+FROM agent_task_queue
+WHERE chat_session_id = ANY($1::uuid[])
+  AND status = 'completed'
+ORDER BY chat_session_id, completed_at DESC, id DESC;

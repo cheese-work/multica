@@ -263,6 +263,10 @@ const (
 	// ChatMessageKindMessage is an ordinary user/assistant message.
 	ChatMessageKindMessage             = "message"
 	ChatMessageKindContinuationSummary = "continuation_summary"
+	// ChatMessageKindCompactNotice is the server-authored note that a DM was (or
+	// failed to be) automatically compacted. It is an assistant row that never
+	// enters a prompt.
+	ChatMessageKindCompactNotice = "compact_notice"
 	// ChatMessageKindNoResponse marks a direct-chat turn the agent completed
 	// without any text reply — a visible, deliberate terminal outcome rather
 	// than a silently-dropped turn (MUL-4351).
@@ -391,8 +395,11 @@ type ChatSessionUpdatedPayload struct {
 	Pinned *bool `json:"pinned,omitempty"`
 	// Status is set only by the archive/unarchive path ("active"/"archived");
 	// nil on rename/pin so a receiver leaves the existing status untouched.
-	Status    *string `json:"status,omitempty"`
-	UpdatedAt string  `json:"updated_at"`
+	Status *string `json:"status,omitempty"`
+	// Compacting is set only when a compaction task starts or ends; nil leaves
+	// the receiver's value untouched.
+	Compacting *bool  `json:"compacting,omitempty"`
+	UpdatedAt  string `json:"updated_at"`
 }
 
 // DaemonHeartbeatRequestPayload is sent from daemon to server over WebSocket

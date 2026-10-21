@@ -989,6 +989,12 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		return err
 	}
 	q := s.Tasks.Queries.WithTx(tx)
+	// The workspace row comes first, as in the pause and resume writers, and the
+	// pause is read under that lock so it cannot change before the enqueue below.
+	pauseState, err := q.WorkspaceWakeupsPausedShared(ctx, prev.WorkspaceID)
+	if err != nil {
+		return err
+	}
 	var fenced bool
 	if candidate.ID.Valid {
 		if err := tx.QueryRow(ctx, "SELECT lock_task_owner_rows($1,$2,$3)", candidate.ID, prev.IssueID, candidate.RuntimeID).Scan(&fenced); err != nil {
@@ -1015,6 +1021,18 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	}
 	if w.Revision != prev.Revision {
 		return tx.Commit(ctx)
+	}
+	if pauseState.Paused {
+		held, err := settlePaused(ctx, tx, q, w)
+		if err != nil {
+			return err
+		}
+		if held {
+			return tx.Commit(ctx)
+		}
+	}
+	if err := dropLateIfResumed(ctx, q, w, pauseState); err != nil {
+		return err
 	}
 	// A default-derived instance is held, its inputs left pending.
 	if defaultDerivedHeld(ctx, issue, w) {

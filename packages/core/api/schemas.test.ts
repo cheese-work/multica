@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AppConfigSchema,
+  JevCredentialPresenceSchema,
   WecomInstallationSchema,
   ListWecomInstallationsResponseSchema,
   RedeemWecomBindingTokenResponseSchema,
@@ -1545,6 +1546,48 @@ describe("InboxItemListSchema", () => {
       ),
     ).toBe(EMPTY_INBOX_ITEMS);
   });
+
+  describe("DM reply records (CHE-1793)", () => {
+    const dmRow = (overrides: Record<string, unknown> = {}) =>
+      row({
+        type: "dm_reply",
+        issue_id: null,
+        archived: false,
+        chat_session_id: "session-1",
+        updated_at: "2026-06-15T08:05:00Z",
+        details: { reply_count: 3 },
+        ...overrides,
+      });
+
+    it("keeps the DM link, updated_at and reply_count of a dm_reply row", () => {
+      const parsed = parseWithFallback([dmRow()], InboxItemListSchema, EMPTY_INBOX_ITEMS, ENDPOINT);
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0]).toMatchObject({
+        type: "dm_reply",
+        issue_id: null,
+        chat_session_id: "session-1",
+        updated_at: "2026-06-15T08:05:00Z",
+        details: { reply_count: 3 },
+      });
+    });
+
+    it("normalizes a wrong-typed chat_session_id or updated_at to null instead of blanking the inbox", () => {
+      const parsed = parseWithFallback(
+        [dmRow({ chat_session_id: 42, updated_at: 7 })],
+        InboxItemListSchema,
+        EMPTY_INBOX_ITEMS,
+        ENDPOINT,
+      );
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0]).toMatchObject({ chat_session_id: null, updated_at: null });
+    });
+
+    it("accepts rows from a backend that predates the DM fields", () => {
+      const parsed = parseWithFallback([row()], InboxItemListSchema, EMPTY_INBOX_ITEMS, ENDPOINT);
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0]?.chat_session_id ?? null).toBeNull();
+    });
+  });
 });
 
 describe("SearchProjectsResponseSchema date drift", () => {
@@ -2380,5 +2423,26 @@ describe("AgentActivityBucketListSchema duration", () => {
     expect(parsed[0]?.task_count).toBe(201);
     expect(parsed[0]?.duration_ms).toBeUndefined();
     expect(parsed[0]?.duration_count).toBeUndefined();
+  });
+});
+
+describe("JevCredentialPresenceSchema", () => {
+  it("carries the storage capability the server reports", () => {
+    expect(JevCredentialPresenceSchema.parse({ present: false, configurable: false })).toEqual({
+      present: false,
+      configurable: false,
+    });
+    expect(JevCredentialPresenceSchema.parse({ present: true, configurable: true })).toEqual({
+      present: true,
+      configurable: true,
+    });
+  });
+
+  it("assumes a server that omits the capability can store a key", () => {
+    expect(JevCredentialPresenceSchema.parse({ present: false })).toEqual({ present: false, configurable: true });
+  });
+
+  it("rejects a response without the presence flag", () => {
+    expect(JevCredentialPresenceSchema.safeParse({ configurable: true }).success).toBe(false);
   });
 });

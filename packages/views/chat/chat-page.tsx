@@ -11,7 +11,8 @@ import {
   ResizableHandle,
 } from "@multica/ui/components/ui/resizable";
 import { useIsCompact } from "@multica/ui/hooks/use-mobile";
-import { useRequiredWorkspaceSlug, useWorkspacePaths } from "@multica/core/paths";
+import { useCurrentWorkspace, useRequiredWorkspaceSlug, useWorkspacePaths } from "@multica/core/paths";
+import { resolveAutoCompact } from "@multica/core/workspace/auto-compact";
 import { getCurrentSlug } from "@multica/core/platform";
 import { useChatStore } from "@multica/core/chat";
 import { chatQuickActionsPendingOptions } from "@multica/core/chat/queries";
@@ -40,6 +41,8 @@ import { ArchivedAgentBanner } from "./components/archived-agent-banner";
 import { AgentAccessRevokedBanner } from "./components/agent-access-revoked-banner";
 import { RuntimeRequiredBanner } from "./components/runtime-required-banner";
 import { InteractiveLoginBanner } from "./components/interactive-login-banner";
+import { ChatAnnotationContext } from "./components/chat-annotation-context";
+import { useChatAnnotations } from "./components/use-chat-annotations";
 
 /**
  * Chat tab — the first-class two-pane surface (thread list on the left,
@@ -70,6 +73,7 @@ export function ChatPage() {
   const backOrReplace = useBackOrReplace();
   const workspaceSlug = useRequiredWorkspaceSlug();
   const wsPaths = useWorkspacePaths();
+  const workspace = useCurrentWorkspace();
   // App Router can retain this page after navigation. Once the URL belongs
   // to another route, this instance must stop reconciling shared chat state.
   // Also check the live workspace mirror in each effect: the incoming layout
@@ -293,14 +297,35 @@ export function ChatPage() {
   // `@container`: the conversation column's gutter (CHAT_GUTTER) widens with
   // THIS pane, which the user resizes independently of the browser window.
   const queuedTasks = c.pendingTask?.queued_tasks ?? [];
+  const autoCompact = resolveAutoCompact(workspace?.settings, c.activeAgent?.runtime_config);
+  const autoCompactThresholdPct = autoCompact.enabled ? autoCompact.threshold_pct : null;
+  const annotation = useChatAnnotations({
+    sessionId: c.activeSessionId,
+    messages: c.messages,
+    agentName: c.activeAgent?.name,
+    enabled:
+      !c.isSessionArchived &&
+      !c.isAgentArchived &&
+      !c.isAgentAccessRevoked &&
+      c.isAgentRuntimeBound &&
+      !c.noAgent,
+  });
   const conversation = (
-    <div className="flex flex-1 flex-col min-h-0 @container">
+    <ChatAnnotationContext.Provider value={annotation.scope}>
+    <div
+      ref={annotation.cardRef}
+      {...annotation.captureProps}
+      className="flex flex-1 flex-col min-h-0 @container"
+    >
+      {annotation.popup}
       {c.currentSession && (
         <ChatSessionHeader
           session={c.currentSession}
           agent={c.activeAgent}
           onArchive={handleArchive}
           renameRequest={renameRequest}
+          autoCompactThresholdPct={autoCompactThresholdPct}
+          onCompact={() => void c.handleSend("/compact")}
         />
       )}
       {c.showSkeleton ? (
@@ -391,8 +416,10 @@ export function ChatPage() {
           c.isSessionArchived ||
           c.isAgentArchived ||
           c.isAgentAccessRevoked ||
-          !c.isAgentRuntimeBound
+          !c.isAgentRuntimeBound ||
+          c.currentSession?.compacting === true
         }
+        compacting={c.currentSession?.compacting === true}
         noAgent={c.noAgent}
         agentArchived={c.isAgentArchived}
         agentAccessRevoked={c.isAgentAccessRevoked}
@@ -404,8 +431,10 @@ export function ChatPage() {
         onProjectChange={changeProjectContext}
         isProjectUpdating={c.isProjectUpdating}
         focusRequest={c.focusInputRequest}
+        annotationScope={annotation.input}
       />
     </div>
+    </ChatAnnotationContext.Provider>
   );
 
   if (c.interactiveLoginRequired) return <InteractiveLoginBanner />;
