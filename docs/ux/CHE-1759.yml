@@ -35,7 +35,6 @@ pages:
     keep: []
     change:
       - chat-stats-dialog: "new dialog: this DM's cost labelled Estimated (Partial when usage is missing), tokens, runs, agent run time, messages, by-model table, related DMs, Close"
-      - chat-stats-chain-total: "new summary row with the whole-conversation total only when the endpoint returns a chain; Show details and Hide details button with aria-expanded and aria-controls"
       - chat-stats-state-loading: "new skeleton in the final layout"
       - chat-stats-state-empty: "new: cost shows a dash, never $0; messages and links still show"
       - chat-stats-state-error: "new: 'Statistics could not be loaded. Nothing was recorded as zero.' with Retry; a malformed response shows this and never zeros"

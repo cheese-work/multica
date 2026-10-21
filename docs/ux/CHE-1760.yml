@@ -37,7 +37,6 @@ pages:
     keep: []
     change:
       - mobile-stats-sheet: "new formSheet with the same order and copy as the web dialog; cost labelled Estimated, Partial when usage is missing; 44 pt targets"
-      - mobile-stats-chain-total: "new summary row with the whole-conversation total only when the endpoint returns a chain; Show details and Hide details button"
       - mobile-stats-state-loading: "new skeleton"
       - mobile-stats-state-empty: "new: cost shows a dash, never zero"
       - mobile-stats-state-error: "new: could-not-load message with Retry; never zeros"
