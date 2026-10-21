@@ -646,6 +646,74 @@ func (q *Queries) HoldDecisionAnswerForClass(ctx context.Context, arg HoldDecisi
 	return i, err
 }
 
+const listChatDecisionContext = `-- name: ListChatDecisionContext :many
+SELECT request.id, request.issue_id, request.issue_comment_id, request.ping_message_id, request.ask, request.status, request.created_at,
+       issue.number AS issue_number, issue.title AS issue_title, workspace.issue_prefix
+FROM decision_request request
+JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
+JOIN workspace ON workspace.id = request.workspace_id
+WHERE request.workspace_id = $1 AND request.chat_session_id = $2 AND request.origin = 'asked'
+  AND (request.status = 'open' OR EXISTS (
+    SELECT 1 FROM chat_message ping
+    WHERE ping.id = request.ping_message_id
+      AND ping.created_at > COALESCE((SELECT max(turn.created_at) FROM chat_message turn WHERE turn.chat_session_id = request.chat_session_id AND turn.role = 'assistant' AND turn.task_id IS NOT NULL), '-infinity')))
+ORDER BY request.created_at DESC, request.id DESC
+LIMIT $3
+`
+
+type ListChatDecisionContextParams struct {
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	ChatSessionID pgtype.UUID `json:"chat_session_id"`
+	RowLimit      int32       `json:"row_limit"`
+}
+
+type ListChatDecisionContextRow struct {
+	ID             pgtype.UUID        `json:"id"`
+	IssueID        pgtype.UUID        `json:"issue_id"`
+	IssueCommentID pgtype.UUID        `json:"issue_comment_id"`
+	PingMessageID  pgtype.UUID        `json:"ping_message_id"`
+	Ask            string             `json:"ask"`
+	Status         string             `json:"status"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	IssueNumber    int32              `json:"issue_number"`
+	IssueTitle     string             `json:"issue_title"`
+	IssuePrefix    string             `json:"issue_prefix"`
+}
+
+// The asked requests a DM agent has not seen: still open, or pinged after the
+// agent's last turn. The ping is an assistant row no task produced, so it is
+// in neither the resumed provider session nor the user-only prompt input.
+func (q *Queries) ListChatDecisionContext(ctx context.Context, arg ListChatDecisionContextParams) ([]ListChatDecisionContextRow, error) {
+	rows, err := q.db.Query(ctx, listChatDecisionContext, arg.WorkspaceID, arg.ChatSessionID, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListChatDecisionContextRow{}
+	for rows.Next() {
+		var i ListChatDecisionContextRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.IssueID,
+			&i.IssueCommentID,
+			&i.PingMessageID,
+			&i.Ask,
+			&i.Status,
+			&i.CreatedAt,
+			&i.IssueNumber,
+			&i.IssueTitle,
+			&i.IssuePrefix,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDecisionIntentTargets = `-- name: ListDecisionIntentTargets :many
 SELECT target.decision_intent_id, target.human_user_id, target.consumed_at, target.consumed_by_request_id FROM decision_intent_target target
 JOIN decision_intent intent ON intent.id = target.decision_intent_id

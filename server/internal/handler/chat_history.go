@@ -18,6 +18,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // ChatChannelHistoryReader reads a chat session's bound IM-channel history. The
@@ -112,12 +113,17 @@ func (h *Handler) chatMessageHistory(r *http.Request, scope chatHistoryScope) (c
 		if m.Role == "assistant" {
 			role = channel.HistoryRoleAssistant
 		}
+		kind := m.MessageKind
+		if kind == protocol.ChatMessageKindMessage {
+			kind = ""
+		}
 		out = append(out, channel.HistoryMessage{
-			ID:     uuidToString(m.ID),
-			Role:   role,
-			Text:   m.Content,
-			Author: transcriptAuthor(role),
-			TS:     m.CreatedAt.Time.UTC().Format(time.RFC3339Nano),
+			ID:          uuidToString(m.ID),
+			Role:        role,
+			Text:        m.Content,
+			Author:      transcriptAuthor(role),
+			TS:          m.CreatedAt.Time.UTC().Format(time.RFC3339Nano),
+			MessageKind: kind,
 		})
 	}
 	// Name the platform the transcript came from. HistoryPage.ChannelType is
@@ -204,12 +210,18 @@ func (h *Handler) GetChatThread(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// A session with no Slack thread to read (a web DM) serves its stored
+	// transcript, as GetChatChannelHistory does, instead of a dead-end note.
+	var page channel.HistoryPage
+	var err error
 	if h.SlackHistory == nil {
-		h.writeNoChannelIntegration(w)
-		return
+		page, err = h.chatMessageHistory(r, scope)
+	} else {
+		page, err = h.SlackHistory.Thread(r.Context(), scope.sessionID, r.URL.Query().Get("id"), scope.historyOptions(r))
+		if errors.Is(err, slack.ErrNoSlackSession) {
+			page, err = h.chatMessageHistory(r, scope)
+		}
 	}
-	threadID := r.URL.Query().Get("id")
-	page, err := h.SlackHistory.Thread(r.Context(), scope.sessionID, threadID, scope.historyOptions(r))
 	h.respondChatHistory(w, r, scope.sessionID, page, err)
 }
 

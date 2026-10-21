@@ -554,8 +554,11 @@ func TestBuildChatPromptChannelAwareness(t *testing.T) {
 			ChatSessionID: "sess-1",
 			ChatMessage:   "hi",
 		})
-		if strings.Contains(out, "multica chat history") {
-			t.Fatalf("web-only chat prompt should not mention channel history, got:\n%s", out)
+		if strings.Contains(out, "operating inside") {
+			t.Fatalf("web-only chat prompt should not carry the channel block, got:\n%s", out)
+		}
+		if !strings.Contains(out, "decision requests appear in `multica chat history`") {
+			t.Fatalf("web-only chat prompt lacks the decision-request history hint, got:\n%s", out)
 		}
 	})
 
@@ -787,7 +790,9 @@ func TestBuildChatPromptTwoLayerChannelPolicy(t *testing.T) {
 			if got := strings.Contains(out, uploadGuidance); got != tc.wantUpload {
 				t.Errorf("upload guidance present=%v, want %v\n--- output ---\n%s", got, tc.wantUpload, out)
 			}
-			if got := strings.Contains(out, historyGuidance); got != tc.wantHistory {
+			// The web-DM decision-request hint also names the command.
+			channelOut := strings.ReplaceAll(out, "decision requests appear in `multica chat history`", "")
+			if got := strings.Contains(channelOut, historyGuidance); got != tc.wantHistory {
 				t.Errorf("history guidance present=%v, want %v\n--- output ---\n%s", got, tc.wantHistory, out)
 			}
 			for _, phrase := range tc.wantPhrases {

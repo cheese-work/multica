@@ -362,3 +362,20 @@ WHERE intent.sealed_at IS NULL AND (
 )
 ORDER BY intent.id
 LIMIT LEAST(GREATEST(sqlc.arg('batch_size')::int, 0), 100);
+
+-- name: ListChatDecisionContext :many
+-- The asked requests a DM agent has not seen: still open, or pinged after the
+-- agent's last turn. The ping is an assistant row no task produced, so it is
+-- in neither the resumed provider session nor the user-only prompt input.
+SELECT request.id, request.issue_id, request.issue_comment_id, request.ping_message_id, request.ask, request.status, request.created_at,
+       issue.number AS issue_number, issue.title AS issue_title, workspace.issue_prefix
+FROM decision_request request
+JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
+JOIN workspace ON workspace.id = request.workspace_id
+WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.chat_session_id = sqlc.arg('chat_session_id') AND request.origin = 'asked'
+  AND (request.status = 'open' OR EXISTS (
+    SELECT 1 FROM chat_message ping
+    WHERE ping.id = request.ping_message_id
+      AND ping.created_at > COALESCE((SELECT max(turn.created_at) FROM chat_message turn WHERE turn.chat_session_id = request.chat_session_id AND turn.role = 'assistant' AND turn.task_id IS NOT NULL), '-infinity')))
+ORDER BY request.created_at DESC, request.id DESC
+LIMIT sqlc.arg('row_limit');

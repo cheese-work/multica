@@ -3425,6 +3425,25 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}
 		}
 
+		if !autoCompact {
+			// ThreadName names the DM after the user's text, so it is set before
+			// the block is prepended.
+			if strings.TrimSpace(resp.ThreadName) == "" && resp.ChatMessage != "" {
+				resp.ThreadName = resp.ChatMessage
+			}
+			decisions, err := h.decisionContextBlock(r.Context(), cs, unanswered)
+			if err != nil {
+				slog.Error("chat claim: build decision context failed; preserving task for redelivery",
+					"task_id", uuidToString(task.ID), "chat_session_id", uuidToString(cs.ID), "error", err)
+				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+					outcome: "error_chat_decision_context", status: http.StatusInternalServerError, message: "failed to load decision context",
+				}
+			}
+			if decisions != "" {
+				resp.ChatMessage = decisions + "\n\n" + resp.ChatMessage
+			}
+		}
+
 		if cs.ForkedFromSessionID.Valid && resp.PriorSessionID == "" {
 			block, inlined, err := h.forkContextBlock(r.Context(), cs, unanswered, hasLocalDirectory(resp.ProjectResources))
 			if err != nil {
