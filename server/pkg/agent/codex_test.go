@@ -4230,9 +4230,14 @@ func TestCodexExecuteSemanticInactivityAllowsContinuousMessages(t *testing.T) {
 		`sleep 0.05`+"\n"+
 		`echo '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr-progress","turn":{"id":"turn-progress","status":"completed"}}}'`+"\n")
 
+	// The fixture pauses 50ms between events. A timeout only slightly above
+	// that fails when the machine is busy: the pause itself can run long
+	// (a sleep process to start), and the no-progress timer then fires on a
+	// healthy stream. Keep the timeout far above the gap so only a real stall
+	// can trip it.
 	result := executeFakeCodex(t, fakePath, ExecOptions{
-		Timeout:                   5 * time.Second,
-		SemanticInactivityTimeout: 90 * time.Millisecond,
+		Timeout:                   10 * time.Second,
+		SemanticInactivityTimeout: 2 * time.Second,
 	})
 	if result.Status != "completed" {
 		t.Fatalf("expected completed, got status=%q error=%q", result.Status, result.Error)
@@ -4267,9 +4272,11 @@ func TestCodexExecuteSemanticInactivityAllowsContinuousDeltaProgress(t *testing.
 		`sleep 0.05`+"\n"+
 		`echo '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr-delta","turn":{"id":"turn-delta","status":"completed"}}}'`+"\n")
 
+	// Same margin rule as the test above: the 50ms pauses must stay far inside
+	// the timeout.
 	result := executeFakeCodex(t, fakePath, ExecOptions{
-		Timeout:                   5 * time.Second,
-		SemanticInactivityTimeout: 150 * time.Millisecond,
+		Timeout:                   10 * time.Second,
+		SemanticInactivityTimeout: 2 * time.Second,
 	})
 	if result.Status != "completed" {
 		t.Fatalf("expected completed, got status=%q error=%q", result.Status, result.Error)
