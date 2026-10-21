@@ -201,6 +201,16 @@ test("the CLI rejects the operational-parent fixture and accepts the child fixtu
   assert.match(correctTarget.stdout, /CHE-1926/);
 });
 
+test("the CLI skips upstream-sync heads", () => {
+  const result = spawnSync(
+    "node",
+    [script, "--event", `${fixtures}upstream-sync.json`],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /skipped.*upstream-sync/i);
+});
+
 test("the workflow runs the trusted workflow checker on X99 without PR code", () => {
   const content = readFileSync(workflow, "utf8");
   assert.match(content, /pull_request_target:/);

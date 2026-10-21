@@ -81,6 +81,11 @@ function issueKeys(text) {
 }
 
 export function checkCloseTarget({ title = "", body = "", headRef = "" } = {}) {
+  const normalizedHeadRef = typeof headRef === "string" ? headRef : "";
+  if (normalizedHeadRef.startsWith("upstream-sync/")) {
+    return { closeTargets: [], strays: [], skipped: true };
+  }
+
   const closeTargets = new Set();
   const visibleTitle = withoutMarkdownCode(typeof title === "string" ? title : "");
   const visibleBody = withoutMarkdownCode(typeof body === "string" ? body : "");
@@ -95,7 +100,7 @@ export function checkCloseTarget({ title = "", body = "", headRef = "" } = {}) {
   const hasExplicitCloseTarget = closeTargets.size > 0;
   for (const { value, where } of [
     { value: typeof title === "string" ? title : "", where: "title" },
-    { value: typeof headRef === "string" ? headRef : "", where: "branch" },
+    { value: normalizedHeadRef, where: "branch" },
   ]) {
     for (const key of issueKeys(value)) {
       if (!linkedKeys.has(key)) linkedEntries.push({ key, where });
@@ -148,6 +153,11 @@ function run(args) {
     body: typeof pullRequest.body === "string" ? pullRequest.body : "",
     headRef: pullRequest.head.ref,
   });
+
+  if (result.skipped) {
+    console.log("Close-target check skipped for upstream-sync head");
+    return 0;
+  }
 
   if (result.strays.length > 0) {
     const declared = result.closeTargets.length > 0
