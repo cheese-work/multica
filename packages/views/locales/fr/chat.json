@@ -276,5 +276,25 @@
     "archive": "Archiver la discussion",
     "unarchive": "Désarchiver la discussion",
     "delete": "Supprimer la discussion"
+  },
+  "annotations": {
+    "source_label": "Message de {{name}}",
+    "add": "Ajouter un commentaire",
+    "confirm_add": "Ajouter",
+    "save": "Enregistrer",
+    "note_label": "Commentaire {{number}}",
+    "note_placeholder": "Ajouter un commentaire…",
+    "edit": "Modifier le commentaire {{number}} : {{note}}",
+    "edit_row": "Modifier le commentaire {{number}}",
+    "remove": "Supprimer le commentaire {{number}}",
+    "count_one": "{{count}} commentaire",
+    "count_other": "{{count}} commentaires",
+    "list_label": "Commentaires",
+    "range": "Commentaires {{from}}–{{to}} sur {{total}}",
+    "quote_limit": "Sélectionnez au maximum {{count}} caractères à la fois.",
+    "count_limit": "Un message peut contenir jusqu'à {{count}} commentaires.",
+    "selection_failed": "Impossible de capturer la sélection. Sélectionnez du texte dans une seule réponse, puis réessayez.",
+    "source_changed": "La source a changé ou est indisponible. Votre citation enregistrée est conservée.",
+    "removed": "Commentaire {{number}} supprimé"
   }
 }

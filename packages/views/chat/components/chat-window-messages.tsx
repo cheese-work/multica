@@ -1,11 +1,11 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { motion, useIsPresent } from "motion/react";
 import type { AgentAvailability } from "@multica/core/agents";
 import { errorCode } from "@multica/core/api";
-import type { ChatPendingTask, ChatQuickAction, ChatSession } from "@multica/core/types";
+import type { ChatMessage, ChatPendingTask, ChatQuickAction, ChatSession } from "@multica/core/types";
 import { chatMessagesPageOptions } from "@multica/core/chat/queries";
 import { hideQueuedChatMessages } from "@multica/core/chat/pending";
 import { useRegenerateChatQuickActions } from "@multica/core/chat/mutations";
@@ -20,6 +20,7 @@ export function ChatWindowMessages({
   session,
   sessions,
   interactiveLoginRequired,
+  onMessages,
   pendingTask,
   pendingTaskLoading,
   availability,
@@ -35,6 +36,12 @@ export function ChatWindowMessages({
   sessions?: ChatSession[];
   /** The session list already failed with `interactive_login_required`. */
   interactiveLoginRequired: boolean;
+  /**
+   * The messages this list shows, for the window's annotations. They are
+   * reported up because the observer that reads them must leave with the list;
+   * an empty list is reported when it unmounts.
+   */
+  onMessages?: (messages: ChatMessage[]) => void;
   pendingTask: ChatPendingTask | null | undefined;
   pendingTaskLoading: boolean;
   availability: AgentAvailability | undefined;
@@ -63,6 +70,15 @@ export function ChatWindowMessages({
     (count, page) => count + page.messages.length,
     0,
   );
+
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  // Only a change of the message set is news; a re-render with the same rows is not.
+  const messageSet = messages.map((m) => `${m.id}:${m.role}`).join(",");
+  useEffect(() => {
+    onMessages?.(messagesRef.current);
+  }, [messageSet, onMessages]);
+  useEffect(() => () => onMessages?.([]), [onMessages]);
 
   const loginRequired =
     interactiveLoginRequired || errorCode(error) === "interactive_login_required";

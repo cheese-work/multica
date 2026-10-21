@@ -68,6 +68,8 @@ import { useChatDraftRestore } from "./use-chat-draft-restore";
 import { useChatTaskActions } from "./use-chat-task-actions";
 import { useChatInputFocus } from "./use-chat-input-focus";
 import { ChatWindowMessages } from "./chat-window-messages";
+import { ChatAnnotationContext } from "./chat-annotation-context";
+import { useChatAnnotations } from "./use-chat-annotations";
 import { ChatInput } from "./chat-input";
 import { ChatQueue } from "./chat-queue";
 import { EmptyState } from "./chat-empty-state";
@@ -799,8 +801,23 @@ export function ChatWindow() {
 
   const contextItems = useChatContextItems(wsId);
   const queuedTasks = pendingTask?.queued_tasks ?? [];
+  // Reported by the message list while it is mounted; empty while the window is closed.
+  const [listedMessages, setListedMessages] = useState<ChatMessage[]>([]);
   const interactiveLoginRequired =
     !!sessionsError && errorCode(sessionsError) === "interactive_login_required";
+
+  const annotation = useChatAnnotations({
+    sessionId: activeSessionId,
+    messages: listedMessages,
+    agentName: activeAgent?.name,
+    enabled:
+      !interactiveLoginRequired &&
+      !isSessionArchived &&
+      !isAgentArchived &&
+      !isAgentAccessRevoked &&
+      activeAgentRuntimeBound &&
+      !noAgent,
+  });
 
   return (
     <motion.div
@@ -887,6 +904,10 @@ export function ChatWindow() {
         </div>
       </div>
 
+      {/* `contents`: no box of its own, it only holds the comment ref and handlers. */}
+      <ChatAnnotationContext.Provider value={annotation.scope}>
+      <div ref={annotation.cardRef} {...annotation.captureProps} className="contents">
+      {annotation.popup}
       {/* Messages / skeleton / empty state */}
       <AnimatePresence initial={false}>
         {isOpen && (
@@ -895,6 +916,7 @@ export function ChatWindow() {
             session={currentSession}
             sessions={sessionsLoaded ? sessions : undefined}
             interactiveLoginRequired={interactiveLoginRequired}
+            onMessages={setListedMessages}
             pendingTask={pendingTask}
             pendingTaskLoading={pendingTaskLoading}
             availability={availability}
@@ -999,7 +1021,10 @@ export function ChatWindow() {
         }
         contextItems={contextItems}
         focusRequest={focusRequest}
+        annotationScope={annotation.input}
       />
+      </div>
+      </ChatAnnotationContext.Provider>
     </motion.div>
   );
 }

@@ -45,6 +45,7 @@ function renderWindow(
     session?: Partial<ChatSession>;
     interactiveLoginRequired?: boolean;
     seed?: (qc: QueryClient, key: readonly unknown[]) => void;
+    onMessages?: (messages: ChatMessage[]) => void;
   } = {},
 ) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -59,6 +60,7 @@ function renderWindow(
             sessionId="session-1"
             session={opts.session as ChatSession | undefined}
             interactiveLoginRequired={opts.interactiveLoginRequired ?? false}
+            onMessages={opts.onMessages}
             pendingTask={undefined}
             pendingTaskLoading={false}
             availability={undefined}
@@ -161,5 +163,23 @@ describe("fork session links and interactive login", () => {
     renderWindow(true, { seed: () => {} });
     expect(await screen.findByTestId("login-banner")).toBeInTheDocument();
     expect(screen.queryByText("empty")).not.toBeInTheDocument();
+  });
+});
+
+// The window's annotation hook needs the message ids, but the observer that
+// reads them must leave with the fading list (the floating-chat lifetime), so
+// the list reports them upward instead of the window subscribing itself.
+describe("message report for annotations", () => {
+  it("reports the loaded messages while mounted and an empty list once it leaves", async () => {
+    const seen: string[][] = [];
+    const { setOpen } = renderWindow(true, {
+      initial: [{ ...message("a1"), role: "assistant" }],
+      onMessages: (messages) => seen.push(messages.map((m) => m.id)),
+    });
+    await waitFor(() => expect(seen.at(-1)).toEqual(["a1"]));
+
+    setOpen(false);
+    await waitFor(() => expect(screen.queryByTestId("messages")).not.toBeInTheDocument());
+    await waitFor(() => expect(seen.at(-1)).toEqual([]));
   });
 });

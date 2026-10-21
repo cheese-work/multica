@@ -276,5 +276,25 @@
     "archive": "Archive chat",
     "unarchive": "Unarchive chat",
     "delete": "Delete chat"
+  },
+  "annotations": {
+    "source_label": "Message from {{name}}",
+    "add": "Add comment",
+    "confirm_add": "Add",
+    "save": "Save",
+    "note_label": "Comment {{number}}",
+    "note_placeholder": "Add a comment…",
+    "edit": "Edit comment {{number}}: {{note}}",
+    "edit_row": "Edit comment {{number}}",
+    "remove": "Remove comment {{number}}",
+    "count_one": "{{count}} comment",
+    "count_other": "{{count}} comments",
+    "list_label": "Comments",
+    "range": "Comments {{from}}–{{to}} of {{total}}",
+    "quote_limit": "Select up to {{count}} characters at a time.",
+    "count_limit": "A message can contain up to {{count}} comments.",
+    "selection_failed": "Could not capture the selection. Select text inside one reply and try again.",
+    "source_changed": "The source changed or is unavailable. Your saved quote is kept.",
+    "removed": "Comment {{number}} removed"
   }
 }

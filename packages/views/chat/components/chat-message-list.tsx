@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { useQuery } from "@tanstack/react-query";
 import { Virtuoso, type Components, type VirtuosoHandle } from "react-virtuoso";
@@ -60,6 +60,7 @@ import {
 import { stripChatQuickActionsProtocol } from "../lib/quick-actions";
 import { dayKey, formatDayLabel, formatMessageDateTime, formatMessageTime } from "./message-time";
 import { useT } from "../../i18n";
+import { useChatAnnotationScope } from "./chat-annotation-context";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { AppLink } from "../../navigation";
 
@@ -661,7 +662,7 @@ const MessageBubble = memo(function MessageBubble({
   if (message.role === "user") {
     return (
       <div className="flex flex-col items-end">
-        <div className="rounded-2xl bg-muted px-3.5 py-2 text-body max-w-[80%] break-words">
+        <div data-testid="chat-user-message" className="rounded-2xl bg-muted px-3.5 py-2 text-body max-w-[80%] break-words">
           {/* User messages are authored as markdown in ContentEditor, so they
            * render through the SAME RichContent as assistant replies and as
            * Issue/Comment — a Mermaid fence a user pastes is a diagram here
@@ -733,6 +734,34 @@ function ContinuationSummary({ message }: { message: ChatMessage }) {
  * the same cache entry useRealtimeSync seeds during execution — so no refetch
  * and no data discontinuity happens at the handoff either.
  */
+/**
+ * The answer text of an agent reply. Once the reply is persisted (`messageId`)
+ * it is a named tab stop that readers can select from, and markers for saved
+ * comments render in the slot right after it, so Tab reaches them before the
+ * footer (reading order). While the reply streams the same wrapper renders
+ * without the selection attributes, so the answer node keeps its identity at
+ * the live to settled handoff.
+ */
+function AnnotatableAnswer({ messageId, children }: { messageId?: string; children: ReactNode }) {
+  const { t } = useT("chat");
+  const { enabled, agentName } = useChatAnnotationScope();
+  if (!enabled) return <>{children}</>;
+  return (
+    <div data-annotation-overlay-host>
+      <div
+        data-comment-content={messageId}
+        tabIndex={messageId ? 0 : undefined}
+        role={messageId ? "group" : undefined}
+        aria-label={messageId ? t(($) => $.annotations.source_label, { name: agentName ?? "" }) : undefined}
+        className="rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+      >
+        {children}
+      </div>
+      <div data-annotation-overlay-slot />
+    </div>
+  );
+}
+
 function AssistantMessage({
   taskId,
   message,
@@ -816,18 +845,21 @@ function AssistantMessage({
           phase={phase}
           isStreaming={!message}
           settledContent={canonicalAnswer}
+          annotateMessageId={message?.id}
         />
       )}
       {isNoResponse ? (
         <NoResponseNotice />
       ) : message && timeline.length === 0 ? (
-        <RichContent
-          content={settledContent ?? message.content}
-          attachments={message.attachments}
-          density="compact"
-          phase="settled"
-          className="leading-relaxed"
-        />
+        <AnnotatableAnswer messageId={message.id}>
+          <RichContent
+            content={settledContent ?? message.content}
+            attachments={message.attachments}
+            density="compact"
+            phase="settled"
+            className="leading-relaxed"
+          />
+        </AnnotatableAnswer>
       ) : null}
       {message && (
         <>
@@ -1126,6 +1158,7 @@ function MessageCopyButton({
             variant="ghost"
             size="icon-xs"
             className="text-faint-foreground hover:text-foreground"
+            data-testid="assistant-message-copy"
             onClick={handleCopy}
             aria-label={t(($) => $.message_list.copy_action)}
           />
@@ -1289,12 +1322,15 @@ function TimelineView({
   attachments,
   phase = "settled",
   settledContent,
+  annotateMessageId,
 }: {
   items: ChatTimelineItem[];
   isStreaming?: boolean;
   attachments?: import("@multica/core/types").Attachment[];
   phase?: "streaming" | "settled";
   settledContent?: string;
+  /** Persisted message whose settled answer readers can annotate. */
+  annotateMessageId?: string;
 }) {
   if (phase === "settled" && settledContent !== undefined) {
     const { preface, middle } = splitTimeline(items);
@@ -1311,14 +1347,15 @@ function TimelineView({
             stepCount={middle.length}
           />
         )}
-        <RichContent
-          key="answer"
-          content={settledContent}
-          attachments={attachments}
-          density="compact"
-          phase="settled"
-          className="leading-relaxed"
-        />
+        <AnnotatableAnswer key="answer" messageId={annotateMessageId}>
+          <RichContent
+            content={settledContent}
+            attachments={attachments}
+            density="compact"
+            phase="settled"
+            className="leading-relaxed"
+          />
+        </AnnotatableAnswer>
       </>
     );
   }
@@ -1347,14 +1384,15 @@ function TimelineView({
         />
       )}
       {final.length > 0 && (
-        <RichContent
-          key="answer"
-          content={final.map((t) => t.content ?? "").join("")}
-          attachments={attachments}
-          density="compact"
-          phase={phase}
-          className="leading-relaxed"
-        />
+        <AnnotatableAnswer key="answer">
+          <RichContent
+            content={final.map((t) => t.content ?? "").join("")}
+            attachments={attachments}
+            density="compact"
+            phase={phase}
+            className="leading-relaxed"
+          />
+        </AnnotatableAnswer>
       )}
     </>
   );
