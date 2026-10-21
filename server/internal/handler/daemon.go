@@ -3066,7 +3066,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				AgentID: task.AgentID,
 				IssueID: task.IssueID,
 			}); err == nil && prior.SessionID.Valid {
-				if prior.RuntimeID == task.RuntimeID {
+				// A leader run starts a fresh session (CHE-1931): a resumed leader
+				// session re-reads its whole history on every model call, and the
+				// leader rebuilds state from readbacks anyway. The workdir is kept.
+				if prior.RuntimeID == task.RuntimeID && !task.IsLeaderTask {
 					resp.PriorSessionID = prior.SessionID.String
 					// Same rule as the rerun path: date the deltas from the run
 					// this session belongs to. GetLastTaskSession skips poisoned
@@ -3089,7 +3092,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			if missing, err := h.Queries.GetLatestTaskRolloutMissing(r.Context(), db.GetLatestTaskRolloutMissingParams{
 				AgentID: task.AgentID,
 				IssueID: task.IssueID,
-			}); err == nil && missing {
+			}); err == nil && missing && !task.IsLeaderTask {
 				resp.PriorSessionResumeUnavailable = true
 			}
 		} else if task.RetryOfTaskID.Valid {
