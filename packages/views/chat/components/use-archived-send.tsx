@@ -16,7 +16,7 @@ import { useT } from "../../i18n";
 
 type SendResult = void | boolean | Promise<void | boolean>;
 
-export interface ArchivedSendOptions<Args extends unknown[]> {
+interface ArchivedSendOptions<Args extends unknown[]> {
   /** The open DM. Only an archived one is intercepted. */
   session: ChatSession | null | undefined;
   /** Resolves the continuation target's title and opens it. */

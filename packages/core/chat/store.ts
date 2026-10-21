@@ -311,7 +311,7 @@ export interface ChatNavIntent {
   newChat: boolean;
 }
 
-export type ChatSessionAction = "archive" | "unarchive";
+type ChatSessionAction = "archive" | "unarchive";
 
 export interface ChatState {
   isOpen: boolean;

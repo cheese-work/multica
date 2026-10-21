@@ -1,5 +1,5 @@
 /** DM commands the surface answers itself; none takes an argument. */
-export type DmClientCommandName = "statistic" | "archive" | "pin" | "unarchive";
+type DmClientCommandName = "statistic" | "archive" | "pin" | "unarchive";
 
 /**
  * Classifies composer text as one of the argument-less DM commands: the whole

@@ -12,7 +12,7 @@ import { useT } from "../../i18n";
 
 const UNDO_WINDOW_MS = 5000;
 
-export interface ChatSessionActions {
+interface ChatSessionActions {
   /**
    * Archives after the server accepts it, then runs `onArchived` (the caller
    * moves the pane off the session). On failure the session stays open and the

@@ -5,7 +5,7 @@ import {
   isModelPriced,
 } from "../runtimes/pricing";
 
-export interface ChatSessionUsageSummary {
+interface ChatSessionUsageSummary {
   /** Dollars. Null when no recorded usage can be priced; never 0 for "unknown". */
   costUsd: number | null;
   /** True when part of the usage has no price or some finished runs reported none. */
