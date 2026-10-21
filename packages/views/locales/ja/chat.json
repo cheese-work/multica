@@ -39,7 +39,8 @@
     "change_project_context": "プロジェクトコンテキストを変更",
     "remove_project_context": "プロジェクトコンテキストを削除",
     "no_projects": "プロジェクトがまだありません",
-    "project_context_unsupported": "プロジェクトの説明は適用されません——このエージェントのデーモンのアップグレードが必要です"
+    "project_context_unsupported": "プロジェクトの説明は適用されません——このエージェントのデーモンのアップグレードが必要です",
+    "placeholder_archived_send": "この DM はアーカイブされています。送信するとまずアーカイブを解除します…"
   },
   "queue": {
     "title_other": "キュー内のメッセージ {{count}} 件",
@@ -258,7 +259,12 @@
     "archive": "アーカイブ",
     "unarchive": "アーカイブ解除",
     "archived_title": "アーカイブ済み",
-    "row_actions_aria": "チャットの操作"
+    "row_actions_aria": "チャットの操作",
+    "archived_toast": "チャットをアーカイブしました",
+    "archive_failed": "このチャットをアーカイブできませんでした",
+    "unarchive_failed": "このチャットのアーカイブを解除できませんでした",
+    "pin_failed": "ピン留めを更新できませんでした",
+    "undo": "元に戻す"
   },
   "header": {
     "context_meter": "{{window}} 中 {{pct}}%",
@@ -269,7 +275,10 @@
     "rename": "名前を変更",
     "delete": "チャットを削除",
     "archive": "チャットをアーカイブ",
-    "unarchive": "アーカイブを解除"
+    "unarchive": "アーカイブを解除",
+    "statistics": "統計",
+    "pin": "チャットをピン留め",
+    "unpin": "チャットのピン留めを解除"
   },
   "annotations": {
     "source_label": "{{name}} のメッセージ",
@@ -289,5 +298,44 @@
     "selection_failed": "選択範囲を取得できませんでした。同じ返信の中で文字を選び直してください。",
     "source_changed": "原文が変更されたか、利用できません。保存した引用は保持されます。",
     "removed": "コメント {{number}} を削除しました"
+  },
+  "stats": {
+    "title": "統計",
+    "scope": "この DM のみ",
+    "estimated": "概算",
+    "partial": "一部のみ",
+    "tokens": "{{tokens}} トークン",
+    "usage_missing_other": "完了した {{count}} 件の実行で使用量が未記録",
+    "in_progress_other": "実行中 {{count}} 件 — 完了すると合計が更新されます",
+    "runs": "実行",
+    "runs_value": "完了 {{completed}} 件 · 失敗 {{failed}} 件",
+    "runs_cancelled": " · キャンセル {{cancelled}} 件",
+    "run_time": "Agent の実行時間",
+    "messages": "メッセージ",
+    "messages_value": "あなた {{user}} · Agent {{agent}}",
+    "by_model": "モデル別",
+    "col_model": "モデル",
+    "col_tokens": "トークン",
+    "col_cost": "コスト",
+    "no_value": "—",
+    "no_cost": "コスト情報なし",
+    "no_runs": "実行はまだありません。",
+    "related": "関連する DM",
+    "continued_from": "継続元",
+    "forked_from": "コピー元",
+    "error": "統計を読み込めませんでした。0 として記録されたものはありません。",
+    "offline": "オフラインです。この数値は {{time}} に統計を開いた時点のものです。再接続すると更新されます。",
+    "retry": "再試行",
+    "close": "閉じる",
+    "less_than_a_minute": "1分未満"
+  },
+  "archived_send": {
+    "title": "この DM はアーカイブされています",
+    "question": "アーカイブを解除して送信しますか？",
+    "kept": "メッセージは保持されます。アーカイブ解除後に送信されます。",
+    "newer": "新しい DM がこの会話を続けています：{{title}}。",
+    "confirm": "解除して送信",
+    "cancel": "キャンセル",
+    "open_newer": "新しい DM を開く"
   }
 }
