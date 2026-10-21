@@ -503,7 +503,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	probe, probeErr := service.NewHTTPProviderFailureProbe(cfg.ProviderRecoveryBaseURL)
 	if probeErr != nil {
 		slog.Error("provider recovery probe configuration is invalid", "error", probeErr)
-	} else {
+	} else if probe != nil {
 		taskSvc.ProviderFailureProbe = probe
 	}
 	taskSvc.Analytics = analyticsClient
