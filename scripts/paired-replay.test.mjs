@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
-import { assertReplayActionAllowed, createPairPlan, measureRun } from "./paired-replay.mjs";
+import { assertReplayActionAllowed, createPairPlan, measurePair, measureRun } from "./paired-replay.mjs";
 
 const metrics = [
   "input_tokens",
@@ -60,7 +61,6 @@ function completeRunEvents() {
       ordinal: 0,
       payload: {
         session_id: "session-1",
-        runtime_id: "runtime-1",
         cli_version: "0.155.1",
         history_mode: "paginated",
       },
@@ -74,13 +74,77 @@ function completeRunEvents() {
   ];
 }
 
+function testPlan() {
+  return createPairPlan({
+    fixtureSha256: "2ec89b207ebc469831ea7e56be41145048d23b2123bcf175272c8d235815efff",
+    inputPrefixSha256: "460f94059f51a5015566539ef410da60ac4c68f13e3e298fb8f9e14385fb96bb",
+    readbacksSha256: "c".repeat(64),
+    promptId: "msg_01a15d32-e835-7153-a81c-0c3015e3f834",
+    cutoffOrdinal: 1544,
+    model: "gpt-6.1-sol",
+    runtimeId: "bc0835c7-a25d-4a16-a3bc-e2921d092ed9",
+    threshold: 80000,
+  });
+}
+
+function runOption(sessionId) {
+  const events = completeRunEvents().map((event) => {
+    if (event.type === "session_meta" || event.type === "token_usage_record") {
+      return { ...event, payload: { ...event.payload, session_id: sessionId } };
+    }
+    return event;
+  });
+  return { events, sessionId, rootTurnId: "root-1", startOrdinal: 1 };
+}
+
+function sha256(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function logBytes(option) {
+  return Buffer.from(`${option.events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+}
+
+function receiptBytes(plan, optionName, option, overrides = {}) {
+  const log = logBytes(option);
+  const taskId = `task-${optionName}`;
+  const runtimeReadbackBytes = Buffer.from(JSON.stringify([{
+    id: taskId,
+    status: "completed",
+    runtime_id: plan.shared.runtimeId,
+  }]));
+  return {
+    logBytes: log,
+    runtimeReadbackBytes,
+    receiptBytes: Buffer.from(JSON.stringify({
+      schemaVersion: 1,
+      planSha256: plan.planSha256,
+      option: optionName,
+      strategy: plan.options[optionName].strategy,
+      sessionId: option.sessionId,
+      logSha256: sha256(log),
+      runtimeId: plan.shared.runtimeId,
+      runtimeSource: "executor-attested",
+      taskId,
+      runtimeReadbackSha256: sha256(runtimeReadbackBytes),
+      inputPrefixSha256: plan.shared.inputPrefixSha256,
+      ...(optionName === "resume" ? { threshold: plan.threshold } : {}),
+      ...overrides,
+    })),
+  };
+}
+
+function artifactOption(plan, optionName, sessionId, overrides = {}) {
+  const option = runOption(sessionId);
+  return { ...option, ...receiptBytes(plan, optionName, option, overrides) };
+}
+
 test("measures each response and verifies the aggregate snapshot delta", () => {
   const result = measureRun(completeRunEvents(), {
     rootTurnId: "root-1",
     sessionId: "session-1",
     model: "gpt-6.1-sol",
     startOrdinal: 1,
-    runtimeId: "runtime-1",
     cliVersion: "0.155.1",
     historyMode: "paginated",
   });
@@ -103,7 +167,6 @@ test("fails closed when a response usage record is missing", () => {
     sessionId: "session-1",
     model: "gpt-6.1-sol",
     startOrdinal: 1,
-    runtimeId: "runtime-1",
     cliVersion: "0.155.1",
     historyMode: "paginated",
   }), /snapshot delta/);
@@ -118,7 +181,6 @@ test("fails closed on duplicate response records", () => {
     sessionId: "session-1",
     model: "gpt-6.1-sol",
     startOrdinal: 1,
-    runtimeId: "runtime-1",
     cliVersion: "0.155.1",
     historyMode: "paginated",
   }), /duplicate response_id/);
@@ -140,7 +202,6 @@ test("fails closed on unbound response records", () => {
     sessionId: "session-1",
     model: "gpt-6.1-sol",
     startOrdinal: 1,
-    runtimeId: "runtime-1",
     cliVersion: "0.155.1",
     historyMode: "paginated",
   }), /session_id/);
@@ -158,7 +219,6 @@ test("fails closed when a replay log uses another model", () => {
     sessionId: "session-1",
     model: "gpt-6.1-sol",
     startOrdinal: 1,
-    runtimeId: "runtime-1",
     cliVersion: "0.155.1",
     historyMode: "paginated",
   }), /model identity/);
@@ -173,7 +233,6 @@ test("does not add repeated token_count heartbeats", () => {
     sessionId: "session-1",
     model: "gpt-6.1-sol",
     startOrdinal: 1,
-    runtimeId: "runtime-1",
     cliVersion: "0.155.1",
     historyMode: "paginated",
   });
@@ -200,23 +259,8 @@ test("fails closed when a token_count counter resets during a run", () => {
   }), /token_count counter reset/);
 });
 
-test("fails closed when session metadata uses another runtime", () => {
-  const events = completeRunEvents();
-  events[0].payload.runtime_id = "operator-claimed-runtime";
-
-  assert.throws(() => measureRun(events, {
-    rootTurnId: "root-1",
-    sessionId: "session-1",
-    model: "gpt-6.1-sol",
-    startOrdinal: 1,
-    runtimeId: "runtime-1",
-    cliVersion: "0.155.1",
-    historyMode: "paginated",
-  }), /runtime_id/);
-});
-
 test("fails closed when qualified session provenance is missing", () => {
-  for (const field of ["runtime_id", "cli_version", "history_mode"]) {
+  for (const field of ["cli_version", "history_mode"]) {
     const events = completeRunEvents();
     delete events[0].payload[field];
 
@@ -225,11 +269,115 @@ test("fails closed when qualified session provenance is missing", () => {
       sessionId: "session-1",
       model: "gpt-6.1-sol",
       startOrdinal: 1,
-      runtimeId: "runtime-1",
       cliVersion: "0.155.1",
       historyMode: "paginated",
     }), new RegExp(field));
   }
+});
+
+test("accepts Codex session metadata without a runtime_id", () => {
+  const events = completeRunEvents();
+
+  assert.doesNotThrow(() => measureRun(events, {
+    rootTurnId: "root-1",
+    sessionId: "session-1",
+    model: "gpt-6.1-sol",
+    startOrdinal: 1,
+    cliVersion: "0.155.1",
+    historyMode: "paginated",
+  }));
+});
+
+test("fails closed when an executor attestation receipt is missing", () => {
+  const fresh = runOption("fresh-session");
+  const resume = runOption("resume-session");
+  fresh.logBytes = logBytes(fresh);
+  resume.logBytes = logBytes(resume);
+  assert.throws(() => measurePair(testPlan(), {
+    fresh,
+    resume,
+  }), /fresh executor receipt is required/);
+});
+
+test("fails closed when an executor receipt does not match its log and runtime", () => {
+  const plan = testPlan();
+  const fresh = artifactOption(plan, "fresh", "fresh-session", {
+    runtimeId: "different-runtime",
+  });
+  const resume = artifactOption(plan, "resume", "resume-session");
+
+  assert.throws(() => measurePair(plan, { fresh, resume }), /fresh executor receipt runtimeId/);
+
+  const changedLog = artifactOption(plan, "fresh", "changed-log-session");
+  changedLog.logBytes = Buffer.concat([changedLog.logBytes, Buffer.from("\n")]);
+  assert.throws(() => measurePair(plan, {
+    fresh: changedLog,
+    resume: artifactOption(plan, "resume", "resume-session-2"),
+  }), /fresh executor receipt logSha256/);
+});
+
+test("fails closed when the native task readback disagrees with the receipt", () => {
+  const plan = testPlan();
+  const fresh = artifactOption(plan, "fresh", "fresh-session");
+  fresh.runtimeReadbackBytes = Buffer.from(JSON.stringify([{
+    id: "task-fresh",
+    status: "completed",
+    runtime_id: "different-runtime",
+  }]));
+  const receipt = JSON.parse(fresh.receiptBytes.toString("utf8"));
+  receipt.runtimeReadbackSha256 = sha256(fresh.runtimeReadbackBytes);
+  fresh.receiptBytes = Buffer.from(JSON.stringify(receipt));
+
+  assert.throws(() => measurePair(plan, {
+    fresh,
+    resume: artifactOption(plan, "resume", "resume-session"),
+  }), /does not match a completed native task readback/);
+});
+
+test("fails closed when receipt prefix or threshold differs from the plan", () => {
+  const plan = testPlan();
+  const fresh = artifactOption(plan, "fresh", "fresh-session", {
+    inputPrefixSha256: "e".repeat(64),
+  });
+  const resume = artifactOption(plan, "resume", "resume-session");
+  assert.throws(() => measurePair(plan, { fresh, resume }), /fresh executor receipt inputPrefixSha256/);
+
+  const matchingFresh = artifactOption(plan, "fresh", "fresh-session-2");
+  const mismatchedResume = artifactOption(plan, "resume", "resume-session-2", { threshold: 80001 });
+  assert.throws(() => measurePair(plan, {
+    fresh: matchingFresh,
+    resume: mismatchedResume,
+  }), /resume executor receipt threshold/);
+});
+
+test("reports prefix and resume-threshold binding as not verified when absent", () => {
+  const plan = testPlan();
+  const fresh = artifactOption(plan, "fresh", "fresh-session", {
+    inputPrefixSha256: undefined,
+  });
+  const resume = artifactOption(plan, "resume", "resume-session", {
+    inputPrefixSha256: undefined,
+    threshold: undefined,
+  });
+  const result = measurePair(plan, { fresh, resume });
+
+  assert.equal(result.binding.status, "NOT-VERIFIED");
+  assert.equal(result.resumeContextCap, "NOT-VERIFIED");
+  assert.equal(result.pairedEquivalence, "NOT-CLAIMED");
+});
+
+test("reports recomputed artifact digests and gates the resume cap on binding", () => {
+  const plan = testPlan();
+  const fresh = artifactOption(plan, "fresh", "fresh-session");
+  const resume = artifactOption(plan, "resume", "resume-session");
+  const result = measurePair(plan, { fresh, resume });
+
+  assert.equal(result.binding.status, "EXECUTOR-ATTESTED");
+  assert.equal(result.resumeContextCap, "PASS");
+  assert.equal(result.pairedEquivalence, "NOT-CLAIMED");
+  assert.equal(result.evidence.fresh.logSha256, sha256(fresh.logBytes));
+  assert.equal(result.evidence.fresh.executorReceiptSha256, sha256(fresh.receiptBytes));
+  assert.equal(result.evidence.fresh.runtimeReadbackSha256, sha256(fresh.runtimeReadbackBytes));
 });
 
 test("binds both strategies to one fixture and readback set", () => {

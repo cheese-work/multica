@@ -146,7 +146,6 @@ export function measureRun(events, {
   sessionId,
   model,
   startOrdinal,
-  runtimeId,
   cliVersion,
   historyMode,
 }) {
@@ -174,13 +173,9 @@ export function measureRun(events, {
   if (sessionIds.length === 0 || sessionIds.some((id) => id !== sessionId)) {
     fail("session metadata does not match the run session_id");
   }
-  for (const [field, expected] of [
-    ["runtime_id", runtimeId],
-    ["cli_version", cliVersion],
-    ["history_mode", historyMode],
-  ]) {
+  for (const [field, expected] of [["cli_version", cliVersion], ["history_mode", historyMode]]) {
     if (!isNonEmptyString(expected) || sessionMetadata.some((metadata) => metadata?.[field] !== expected)) {
-      fail(`session metadata ${field} does not match the qualified runtime`);
+      fail(`session metadata ${field} does not match the qualified session`);
     }
   }
   const runModels = new Set(
@@ -341,18 +336,137 @@ export function measurePair(plan, pair = {}) {
     fail("fresh and resume options require distinct session IDs");
   }
 
-  const measureOption = (option) => measureRun(option.events, {
-    rootTurnId: option.rootTurnId,
-    sessionId: option.sessionId,
-    model: plan.shared.model,
-    startOrdinal: option.startOrdinal,
-    runtimeId: plan.shared.runtimeId,
-    cliVersion: plan.shared.cliVersion,
-    historyMode: plan.shared.historyMode,
-  });
+  const measureOption = (optionName, option) => {
+    const logBytes = option.logBytes;
+    if (!Buffer.isBuffer(logBytes) && !(logBytes instanceof Uint8Array)) {
+      fail(`${optionName} log bytes are required`);
+    }
+    const receiptBytes = option.receiptBytes;
+    if (!Buffer.isBuffer(receiptBytes) && !(receiptBytes instanceof Uint8Array)) {
+      fail(`${optionName} executor receipt is required`);
+    }
+    const runtimeReadbackBytes = option.runtimeReadbackBytes;
+    if (!Buffer.isBuffer(runtimeReadbackBytes) && !(runtimeReadbackBytes instanceof Uint8Array)) {
+      fail(`${optionName} native runtime/task readback is required`);
+    }
+
+    let receipt;
+    try {
+      receipt = JSON.parse(Buffer.from(receiptBytes).toString("utf8"));
+    } catch {
+      fail(`${optionName} executor receipt is invalid JSON`);
+    }
+    const logSha256 = sha256(logBytes);
+    const receiptSha256 = sha256(receiptBytes);
+    const runtimeReadbackSha256 = sha256(runtimeReadbackBytes);
+    if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) {
+      fail(`${optionName} executor receipt must be an object`);
+    }
+    for (const [field, expected] of [
+      ["schemaVersion", 1],
+      ["planSha256", plan.planSha256],
+      ["option", optionName],
+      ["strategy", plan.options[optionName].strategy],
+      ["sessionId", option.sessionId],
+      ["logSha256", logSha256],
+      ["runtimeId", plan.shared.runtimeId],
+      ["runtimeSource", "executor-attested"],
+      ["runtimeReadbackSha256", runtimeReadbackSha256],
+    ]) {
+      if (receipt[field] !== expected) {
+        fail(`${optionName} executor receipt ${field} does not match the plan or artifact`);
+      }
+    }
+    if (!isNonEmptyString(receipt.taskId)) {
+      fail(`${optionName} executor receipt taskId is missing`);
+    }
+    let runtimeReadback;
+    try {
+      runtimeReadback = JSON.parse(Buffer.from(runtimeReadbackBytes).toString("utf8"));
+    } catch {
+      fail(`${optionName} native runtime/task readback is invalid JSON`);
+    }
+    const taskRecords = Array.isArray(runtimeReadback) ? runtimeReadback : [runtimeReadback];
+    const matchingTaskRecords = taskRecords.filter((record) => record?.id === receipt.taskId);
+    const taskRecord = matchingTaskRecords[0];
+    if (
+      matchingTaskRecords.length !== 1 ||
+      taskRecord.status !== "completed" ||
+      taskRecord.runtime_id !== plan.shared.runtimeId
+    ) {
+      fail(`${optionName} executor receipt taskId/runtimeId does not match a completed native task readback`);
+    }
+
+    const prefixBound = receipt.inputPrefixSha256 !== undefined;
+    if (prefixBound) {
+      if (!/^[a-f0-9]{64}$/i.test(receipt.inputPrefixSha256)) {
+        fail(`${optionName} executor receipt inputPrefixSha256 is invalid`);
+      }
+      if (receipt.inputPrefixSha256 !== plan.shared.inputPrefixSha256) {
+        fail(`${optionName} executor receipt inputPrefixSha256 does not match the plan`);
+      }
+    }
+    const thresholdBound = receipt.threshold !== undefined;
+    if (thresholdBound) {
+      if (!Number.isSafeInteger(receipt.threshold) || receipt.threshold < 1) {
+        fail(`${optionName} executor receipt threshold is invalid`);
+      }
+      if (receipt.threshold !== plan.threshold) {
+        fail(`${optionName} executor receipt threshold does not match the plan`);
+      }
+    }
+
+    const events = Buffer.from(logBytes).toString("utf8").split(/\r?\n/).filter(Boolean).map((line, index) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        fail(`${optionName} log contains invalid JSON on line ${index + 1}`);
+      }
+    });
+    return {
+      result: measureRun(events, {
+        rootTurnId: option.rootTurnId,
+        sessionId: option.sessionId,
+        model: plan.shared.model,
+        startOrdinal: option.startOrdinal,
+        cliVersion: plan.shared.cliVersion,
+        historyMode: plan.shared.historyMode,
+      }),
+      prefixBound,
+      thresholdBound,
+      evidence: {
+        logSha256,
+        executorReceiptSha256: receiptSha256,
+        runtimeReadbackSha256,
+        taskId: receipt.taskId,
+        runtimeSource: receipt.runtimeSource,
+      },
+    };
+  };
+
+  const freshMeasurement = measureOption("fresh", fresh);
+  const resumeMeasurement = measureOption("resume", resume);
+  const prefixBound = freshMeasurement.prefixBound && resumeMeasurement.prefixBound;
+  const resumeThresholdAttested = resumeMeasurement.thresholdBound;
+  const bindingAttested = prefixBound && resumeThresholdAttested;
   return {
-    fresh: measureOption(fresh),
-    resume: measureOption(resume),
+    fresh: freshMeasurement.result,
+    resume: resumeMeasurement.result,
+    binding: {
+      status: bindingAttested ? "EXECUTOR-ATTESTED" : "NOT-VERIFIED",
+      inputPrefix: prefixBound ? "EXECUTOR-ATTESTED" : "NOT-VERIFIED",
+      resumeThreshold: resumeThresholdAttested ? "EXECUTOR-ATTESTED" : "NOT-VERIFIED",
+      inputPrefixSha256: plan.shared.inputPrefixSha256,
+      threshold: plan.threshold,
+    },
+    resumeContextCap: bindingAttested
+      ? (resumeMeasurement.result.maxContextTokens <= plan.threshold ? "PASS" : "FAIL")
+      : "NOT-VERIFIED",
+    pairedEquivalence: "NOT-CLAIMED",
+    evidence: {
+      fresh: freshMeasurement.evidence,
+      resume: resumeMeasurement.evidence,
+    },
   };
 }
 
@@ -448,17 +562,6 @@ function integerFlag(flags, name, minimum) {
   return value;
 }
 
-async function readEvents(filePath) {
-  const text = await readFile(filePath, "utf8");
-  return text.split(/\r?\n/).filter(Boolean).map((line, index) => {
-    try {
-      return JSON.parse(line);
-    } catch {
-      fail(`${filePath}: invalid JSON on line ${index + 1}`);
-    }
-  });
-}
-
 function assertOutputIsNotInput(outputPath, inputPaths) {
   const output = path.resolve(outputPath);
   if (inputPaths.some((inputPath) => path.resolve(inputPath) === output)) {
@@ -486,19 +589,35 @@ async function runCli(args) {
   if (command === "measure") {
     const planPath = requiredFlag(flags, "--plan");
     const freshPath = requiredFlag(flags, "--fresh-log");
+    const freshReceiptPath = requiredFlag(flags, "--fresh-receipt");
+    const freshReadbackPath = requiredFlag(flags, "--fresh-runtime-readback");
     const resumePath = requiredFlag(flags, "--resume-log");
+    const resumeReceiptPath = requiredFlag(flags, "--resume-receipt");
+    const resumeReadbackPath = requiredFlag(flags, "--resume-runtime-readback");
     const outputPath = requiredFlag(flags, "--output");
-    assertOutputIsNotInput(outputPath, [planPath, freshPath, resumePath]);
+    assertOutputIsNotInput(outputPath, [
+      planPath,
+      freshPath,
+      freshReceiptPath,
+      freshReadbackPath,
+      resumePath,
+      resumeReceiptPath,
+      resumeReadbackPath,
+    ]);
     const plan = JSON.parse(await readFile(planPath, "utf8"));
     const afterValues = measurePair(plan, {
       fresh: {
-        events: await readEvents(freshPath),
+        logBytes: await readFile(freshPath),
+        receiptBytes: await readFile(freshReceiptPath),
+        runtimeReadbackBytes: await readFile(freshReadbackPath),
         sessionId: requiredFlag(flags, "--fresh-session-id"),
         rootTurnId: requiredFlag(flags, "--fresh-root-turn-id"),
         startOrdinal: integerFlag(flags, "--fresh-start-ordinal", -1),
       },
       resume: {
-        events: await readEvents(resumePath),
+        logBytes: await readFile(resumePath),
+        receiptBytes: await readFile(resumeReceiptPath),
+        runtimeReadbackBytes: await readFile(resumeReadbackPath),
         sessionId: requiredFlag(flags, "--resume-session-id"),
         rootTurnId: requiredFlag(flags, "--resume-root-turn-id"),
         startOrdinal: integerFlag(flags, "--resume-start-ordinal", -1),
@@ -508,9 +627,10 @@ async function runCli(args) {
       schemaVersion: 1,
       sampleId: plan.sampleId,
       planSha256: plan.planSha256,
-      provenance: plan.shared,
+      provenance: { ...plan.shared, runtimeSource: "executor-attested" },
       threshold: plan.threshold,
       afterValues,
+      digestSemantics: "SHA-256 digests provide integrity, not authenticity",
       acceptance: "NOT-RUN: offline instrumentation does not accept CHE-1931",
     };
     await writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, { flag: "wx" });
