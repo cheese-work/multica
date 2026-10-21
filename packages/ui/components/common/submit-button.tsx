@@ -37,6 +37,8 @@ interface SubmitButtonProps {
   stopTooltip?: ReactNode;
   /** Accessible name for the icon-only stop button. */
   stopAriaLabel?: string;
+  /** `data-testid` of the send button, for review packs and E2E. */
+  testId?: string;
 }
 
 /** Keep the composer focused so Send and Stop do not dismiss Android's keyboard. */
@@ -55,6 +57,7 @@ function SubmitButton({
   ariaLabel,
   stopTooltip,
   stopAriaLabel,
+  testId,
 }: SubmitButtonProps) {
   if (running) {
     const stopButton = (
@@ -88,6 +91,7 @@ function SubmitButton({
       onMouseDown={keepFocusInComposer}
       onClick={onClick}
       aria-label={ariaLabel}
+      data-testid={testId}
     >
       {loading || busy ? (
         // `busy` spins too, not just greys out: an upload can be running with

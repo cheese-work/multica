@@ -89,10 +89,15 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 			handler.publish(protocol.EventInboxNew, workspaceID, "agent", agentID, map[string]any{"item": response})
 		}
 	}
-	handler.publish(protocol.EventCommentCreated, workspaceID, "agent", agentID, map[string]any{
-		"comment": commentToResponse(result.Comment, nil, nil), "issue_title": issue.Title, "issue_status": issue.Status,
-		"decision_intent_targets": []string{uuidToString(result.Request.HumanUserID)},
-	})
+	if result.AttachedToIntent {
+		// The intent comment was already announced as created; only its decision fields changed.
+		handler.publish(protocol.EventCommentUpdated, workspaceID, "agent", agentID, map[string]any{"comment": commentToResponse(result.Comment, nil, nil)})
+	} else {
+		handler.publish(protocol.EventCommentCreated, workspaceID, "agent", agentID, map[string]any{
+			"comment": commentToResponse(result.Comment, nil, nil), "issue_title": issue.Title, "issue_status": issue.Status,
+			"decision_intent_targets": []string{uuidToString(result.Request.HumanUserID)},
+		})
+	}
 	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
 	handler.publishChat(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(result.Message.ChatSessionID), protocol.ChatMessagePayload{
 		ChatSessionID: uuidToString(result.Message.ChatSessionID), MessageID: uuidToString(result.Message.ID),

@@ -29,11 +29,12 @@ type decisionRequestInput struct {
 }
 
 type decisionRequestResult struct {
-	Request         db.DecisionRequest
-	Comment         db.Comment
-	Message         db.ChatMessage
-	ClearedComments []db.Comment
-	CreatedSession  *db.ChatSession
+	Request          db.DecisionRequest
+	Comment          db.Comment
+	AttachedToIntent bool
+	Message          db.ChatMessage
+	ClearedComments  []db.Comment
+	CreatedSession   *db.ChatSession
 	// PingItem is set only when the ping was recorded inside the request
 	// transaction (single-call path); PingRecorded distinguishes "recorded,
 	// no item for a departed recipient" from "not yet recorded".
@@ -294,7 +295,7 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 		}
 		createdSession = &session
 	}
-	result, err := insertDecisionAsk(ctx, queries, issue, input, intent, session, createdSession != nil, root, intent.CommentID, dbid.NewV7(), false)
+	result, err := insertDecisionAsk(ctx, queries, issue, input, intent, session, createdSession != nil, root, intent.CommentID, dbid.NewV7(), &tag)
 	if err != nil {
 		return empty, err
 	}
@@ -316,10 +317,17 @@ func createDecisionDM(ctx context.Context, queries *db.Queries, issue db.Issue, 
 }
 
 // insertDecisionAsk writes the request, ask comment, DM message and consumes
-// the intent target; the caller commits. The ask comment is stamped with the
-// intent only when it is the intent's own anchor (single-call path).
-func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue, input decisionRequestInput, intent db.DecisionIntent, session db.ChatSession, newSession bool, root *db.Comment, parentID, commentID pgtype.UUID, anchorsIntent bool) (decisionRequestResult, error) {
+// the intent target; the caller commits. With tag set (two-step path) an ask
+// identical to the intent comment is that comment: it is reused instead of
+// posting a second copy, unless a footer must be added. A comment carries one
+// request, so later targets of a group intent get their own ask comment. With
+// tag nil (single-call path) the ask comment is the intent's own anchor.
+func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue, input decisionRequestInput, intent db.DecisionIntent, session db.ChatSession, newSession bool, root *db.Comment, parentID, commentID pgtype.UUID, tag *db.Comment) (decisionRequestResult, error) {
 	empty := decisionRequestResult{}
+	attach := tag != nil && !tag.DecisionRequestID.Valid && strings.TrimSpace(input.Footer) == "" && strings.TrimSpace(tag.Content) == strings.TrimSpace(input.Ask)
+	if attach {
+		commentID = tag.ID
+	}
 	messageID := dbid.NewV7()
 	created, err := queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: intent.AgentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, PingMessageID: messageID, IssueCommentID: commentID, Ask: input.Ask, EscalationClass: input.EscalationClass, Origin: "asked", DecisionIntentID: intent.ID})
 	if err != nil {
@@ -332,11 +340,18 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 			return empty, err
 		}
 	}
-	commentParams := db.CreateCommentParams{ID: commentID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "agent", AuthorID: intent.AgentID, SourceTaskID: intent.TaskID, ParentID: parentID, Content: decisionAskContent(input), Type: "comment", DecisionRequestID: created.ID, DecisionCommentKind: pgtype.Text{String: "ask", Valid: true}}
-	if anchorsIntent {
-		commentParams.DecisionIntentID = intent.ID
+	var comment db.Comment
+	if attach {
+		comment, err = queries.AttachDecisionAskToComment(ctx, db.AttachDecisionAskToCommentParams{WorkspaceID: issue.WorkspaceID, CommentID: tag.ID, DecisionRequestID: created.ID})
+	} else {
+		commentParams := db.CreateCommentParams{ID: commentID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "agent", AuthorID: intent.AgentID, SourceTaskID: intent.TaskID, ParentID: parentID, Content: decisionAskContent(input), Type: "comment", DecisionRequestID: created.ID, DecisionCommentKind: pgtype.Text{String: "ask", Valid: true}}
+		if tag == nil {
+			commentParams.DecisionIntentID = intent.ID
+		}
+		var row db.CreateCommentRow
+		row, err = queries.CreateComment(ctx, commentParams)
+		comment = row.Comment()
 	}
-	comment, err := queries.CreateComment(ctx, commentParams)
 	if err != nil {
 		return empty, err
 	}
@@ -362,7 +377,7 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 	if err := queries.CompleteDecisionIntent(ctx, db.CompleteDecisionIntentParams{WorkspaceID: issue.WorkspaceID, ID: intent.ID, RequestID: created.ID}); err != nil {
 		return empty, err
 	}
-	return decisionRequestResult{Request: created, Comment: comment.Comment(), Message: message, ClearedComments: cleared}, nil
+	return decisionRequestResult{Request: created, Comment: comment, AttachedToIntent: attach, Message: message, ClearedComments: cleared}, nil
 }
 
 // createSingleCallDecisionTx is the request path without an intent comment: it
@@ -441,7 +456,7 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 	if _, err := queries.CreateDecisionIntentTarget(ctx, db.CreateDecisionIntentTargetParams{DecisionIntentID: intent.ID, HumanUserID: input.HumanUserID}); err != nil {
 		return empty, err
 	}
-	result, err := insertDecisionAsk(ctx, queries, issue, input, intent, session, createdSession != nil, root, input.ParentID, commentID, true)
+	result, err := insertDecisionAsk(ctx, queries, issue, input, intent, session, createdSession != nil, root, input.ParentID, commentID, nil)
 	if err != nil {
 		return empty, err
 	}

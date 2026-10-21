@@ -565,3 +565,48 @@ func TestDecisionRequestCorePingWins(test *testing.T) {
 		})
 	}
 }
+
+func TestDecisionRequestAttachesToIntentCommentWhenAskMatches(test *testing.T) {
+	fixture := newRequestCoreFixture(test, false)
+	input := fixture.input()
+	input.Ask = fixture.mention()
+	before := dbfx.Count(test, `SELECT count(*) FROM comment WHERE issue_id = $1`, fixture.issueID)
+	result, err := testHandler.createDecisionRequest(fixture.request(), fixture.issue, input)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if after := dbfx.Count(test, `SELECT count(*) FROM comment WHERE issue_id = $1`, fixture.issueID); after != before {
+		test.Fatalf("comments = %d, want %d (no second ask comment)", after, before)
+	}
+	fixture.assertCounts(test, 1)
+	if result.Comment.ID != parseUUID(fixture.tagID) || result.Request.IssueCommentID != result.Comment.ID || result.Comment.DecisionRequestID != result.Request.ID || result.Comment.DecisionCommentKind.String != "ask" || result.Comment.DecisionIntentID != parseUUID(fixture.intentID) {
+		test.Fatalf("ask did not attach to the intent comment: %+v", result.Comment)
+	}
+}
+
+func TestDecisionRequestMatchingAskKeepsEachTargetsAskComment(test *testing.T) {
+	fixture := newRequestCoreFixture(test, true)
+	var content string
+	dbfx.QueryRow(test, `SELECT content FROM comment WHERE id = $1`, fixture.tagID).Scan(&content)
+	input := fixture.input()
+	input.Ask = content
+	first, err := testHandler.createDecisionRequest(fixture.request(), fixture.issue, input)
+	if err != nil {
+		test.Fatal(err)
+	}
+	input.SessionID = parseUUID(dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": testUserID, "title": "Owner lane"}))
+	second, err := testHandler.createDecisionRequest(fixture.request(), fixture.issue, input)
+	if err != nil {
+		test.Fatal(err)
+	}
+	fixture.assertCounts(test, 2)
+	for _, result := range []decisionRequestResult{first, second} {
+		stored, err := testHandler.Queries.GetDecisionRequest(context.Background(), db.GetDecisionRequestParams{WorkspaceID: fixture.issue.WorkspaceID, ID: result.Request.ID})
+		if err != nil {
+			test.Fatal(err)
+		}
+		if dbfx.Count(test, `SELECT count(*) FROM comment WHERE id = $1 AND decision_request_id = $2 AND decision_comment_kind = 'ask'`, uuidToString(stored.IssueCommentID), uuidToString(stored.ID)) != 1 {
+			test.Fatalf("request %s lost its ask comment link", uuidToString(stored.ID))
+		}
+	}
+}
