@@ -13,6 +13,12 @@ import type { SuggestionOptions } from "@tiptap/suggestion";
 import { PluginKey } from "@tiptap/pm/state";
 import { useAuthStore } from "@multica/core/auth";
 import { useChatStore } from "@multica/core/chat";
+import {
+  CHAT_COMMANDS,
+  getChatCommand,
+  matchesChatCommandQuery,
+  type ChatCommandId,
+} from "@multica/core/chat/commands";
 import { getCurrentWsId } from "@multica/core/platform";
 import { canAssignAgentToIssue } from "@multica/core/permissions";
 import { isImeComposing } from "@multica/core/utils";
@@ -31,19 +37,13 @@ import { isTriggerArmedAt } from "./suggestion-trigger-arming";
 const MAX_ITEMS = 20;
 
 /** Known built-in command ids — the keys under editor `slash_command.commands`. */
-export type BuiltinCommandKey =
-  | "note"
-  | "compact"
-  | "rename"
-  | "fork"
-  | "statistic"
-  | "archive"
-  | "pin"
-  | "unarchive";
+export type BuiltinCommandKey = "note" | ChatCommandId;
 
 /** DM commands a surface switches on one by one; compact is gated separately. */
 export type DmClientCommand = "statistic" | "archive" | "pin" | "unarchive";
-const DM_CLIENT_COMMANDS: readonly DmClientCommand[] = ["statistic", "archive", "pin", "unarchive"];
+const DM_CLIENT_COMMANDS: readonly DmClientCommand[] = CHAT_COMMANDS
+  .filter((cmd): cmd is typeof cmd & { id: DmClientCommand } => cmd.args === "none")
+  .map((cmd) => cmd.id);
 
 export interface SlashCommandItem {
   id: string;
@@ -184,9 +184,9 @@ export const SlashCommandList = forwardRef<
                   /{item.label}{" "}
                   {isNoArgumentCommand(item) ? null : (
                     <span className="text-muted-foreground">
-                      {item.descriptionKey === "rename"
+                      {getChatCommand(item.descriptionKey ?? "")?.argumentHintKey === "title_hint"
                         ? t(($) => $.slash_command.title_hint)
-                        : item.descriptionKey === "fork"
+                        : getChatCommand(item.descriptionKey ?? "")?.argumentHintKey === "message_hint"
                           ? t(($) => $.slash_command.message_hint)
                           : t(($) => $.slash_command.focus_hint)}
                     </span>
@@ -208,6 +208,11 @@ export const SlashCommandList = forwardRef<
                 {description}
               </span>
             )}
+            {getChatCommand(item.descriptionKey ?? "")?.kind === "prompt" && (
+              <span className="text-[11px] text-muted-foreground/80">
+                {t(($) => $.slash_command.runs_the_agent)}
+              </span>
+            )}
           </button>
         );
       })}
@@ -217,14 +222,11 @@ export const SlashCommandList = forwardRef<
 
 /** Built-ins handled by the Multica client/server rather than the agent. */
 const isClientCommand = (item: SlashCommandItem) =>
-  item.descriptionKey === "compact" ||
-  item.descriptionKey === "rename" ||
-  item.descriptionKey === "fork" ||
-  isNoArgumentCommand(item);
+  item.descriptionKey !== undefined && getChatCommand(item.descriptionKey) !== undefined;
 
 /** The DM commands that take no argument, so the menu shows no hint after them. */
 const isNoArgumentCommand = (item: SlashCommandItem) =>
-  DM_CLIENT_COMMANDS.some((command) => command === item.descriptionKey);
+  item.descriptionKey !== undefined && getChatCommand(item.descriptionKey)?.args === "none";
 
 const NO_MATCH = 4;
 
@@ -289,14 +291,17 @@ function buildItems(
   const skills = rankSkillMatches(activeAgent?.skills ?? [], q)
     .map((s) => ({ id: s.id, label: s.name, description: s.description ?? "" }));
   const commands: SlashCommandItem[] = firstWord
-    ? ([...DM_CLIENT_COMMANDS, "compact", "rename", "fork"] as const)
-        .filter((command) =>
-          (command !== "rename" || canRename) &&
-          (command !== "fork" || canFork) &&
-          (command !== "compact" || canCompact) &&
-          (!isDmClientCommand(command) || canUse(command)) &&
-          command.startsWith(q))
-        .map((command) => ({ id: command, label: command, descriptionKey: command }))
+    ? CHAT_COMMANDS.filter((command) =>
+        (command.id !== "rename" || canRename) &&
+        (command.id !== "fork" || canFork) &&
+        (command.id !== "compact" || canCompact) &&
+        (!isDmClientCommand(command.id) || canUse(command.id)) &&
+        matchesChatCommandQuery(command, q),
+      ).map((command) => ({
+        id: command.id,
+        label: command.id,
+        descriptionKey: command.descriptionKey,
+      }))
     : [];
   return [...commands, ...skills].slice(0, MAX_ITEMS);
 }
