@@ -336,5 +336,14 @@
     "retry": "Retry",
     "close": "Close",
     "less_than_a_minute": "<1m"
+  },
+  "archived_send": {
+    "title": "This DM is archived",
+    "question": "Unarchive it and send?",
+    "kept": "Your message is kept. It sends after the DM is unarchived.",
+    "newer": "A newer DM continues this conversation: {{title}}.",
+    "confirm": "Unarchive and send",
+    "cancel": "Cancel",
+    "open_newer": "Open the newer DM"
   }
 }
