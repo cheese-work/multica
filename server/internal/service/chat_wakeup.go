@@ -93,7 +93,9 @@ type ChatWakeupCommenter struct {
 // per pull request: Baseline is each linked pull request's "head:state:check-run identity" at
 // creation (finished checks that already existed belong to an older push), and
 // Armed lists the pull requests seen with checks still running since, so a
-// same-head rerun counts when it finishes.
+// same-head rerun counts when it finishes. Both are keyed by pullRequestKey,
+// because pull request numbers repeat across repositories. State written before
+// that holds the bare number; checksFinished reads it as described there.
 type chatWakeupCondition struct {
 	IssueID    string               `json:"issue_id"`
 	Identifier string               `json:"identifier"`
@@ -101,6 +103,13 @@ type chatWakeupCondition struct {
 	CommentBy  *ChatWakeupCommenter `json:"comment_by,omitempty"`
 	Baseline   map[string]string    `json:"baseline,omitempty"`
 	Armed      []string             `json:"armed,omitempty"`
+}
+
+// pullRequestKey names a linked pull request by repository and number. The
+// number alone is not unique: two repositories linked to one issue can each have
+// a pull request #12, and one's baseline must not stand in for the other's.
+func pullRequestKey(owner, repo string, number int32) string {
+	return owner + "/" + repo + "#" + strconv.Itoa(int(number))
 }
 
 // Create validates and stores a wakeup for the DM, under the session lock so
@@ -210,7 +219,7 @@ func (s *ChatWakeupService) buildCondition(ctx context.Context, workspaceID pgty
 			stored.Baseline = map[string]string{}
 			var notReady ChecksNotReadyError
 			for _, row := range rows {
-				key := strconv.Itoa(int(row.PrNumber))
+				key := pullRequestKey(row.RepoOwner, row.RepoName, row.PrNumber)
 				address := PullRequestAddress{InstallationID: row.InstallationID, Owner: row.RepoOwner, Repo: row.RepoName, Number: row.PrNumber}
 				switch {
 				case !row.Snapshotted:
@@ -326,13 +335,30 @@ func (s *ChatWakeupService) checksFinished(ctx context.Context, w db.ChatWakeup,
 	for _, key := range c.Armed {
 		armed[key] = true
 	}
-	armedBefore := len(armed)
+	// State written when the keys were bare numbers names a pull request by
+	// number only. It is read as that pull request's state when exactly one linked
+	// pull request has the number, and is then rewritten under the full key. When
+	// two linked pull requests share the number, the old state cannot say which it
+	// belonged to, so neither is guessed at: that pull request is skipped, and the
+	// deadline still ends the wait.
+	sameNumber := map[int32]int{}
+	for _, row := range rows {
+		sameNumber[row.PrNumber]++
+	}
+	dirty := false
 	var fresh []map[string]any
 	for _, row := range rows {
-		key := strconv.Itoa(int(row.PrNumber))
+		key := pullRequestKey(row.RepoOwner, row.RepoName, row.PrNumber)
+		legacy := strconv.Itoa(int(row.PrNumber))
+		if sameNumber[row.PrNumber] == 1 && armed[legacy] {
+			delete(armed, legacy)
+			armed[key] = true
+			dirty = true
+		}
 		if !checksTerminal(row.HeadSha, row.Checks) {
-			if row.HeadSha != "" {
+			if row.HeadSha != "" && !armed[key] {
 				armed[key] = true
+				dirty = true
 			}
 			continue
 		}
@@ -340,6 +366,15 @@ func (s *ChatWakeupService) checksFinished(ctx context.Context, w db.ChatWakeup,
 			continue // data without node ids cannot name a result; wait for the next refresh
 		}
 		base, known := c.Baseline[key]
+		if legacyBase, old := c.Baseline[legacy]; !known && old {
+			if sameNumber[row.PrNumber] > 1 {
+				continue
+			}
+			base, known = legacyBase, true
+			c.Baseline[key] = legacyBase
+			delete(c.Baseline, legacy)
+			dirty = true
+		}
 		if !known || base != checksResultKey(row.HeadSha, row.Checks, row.ChecksIdentity) || armed[key] {
 			fresh = append(fresh, map[string]any{"number": row.PrNumber, "head_sha": row.HeadSha, "checks": strings.ToLower(row.Checks)})
 		}
@@ -348,7 +383,7 @@ func (s *ChatWakeupService) checksFinished(ctx context.Context, w db.ChatWakeup,
 		facts, _ := json.Marshal(map[string]any{"pull_requests": fresh})
 		return true, string(facts), nil
 	}
-	if len(armed) != armedBefore {
+	if dirty {
 		c.Armed = c.Armed[:0]
 		for key := range armed {
 			c.Armed = append(c.Armed, key)
