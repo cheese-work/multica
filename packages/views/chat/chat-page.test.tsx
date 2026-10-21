@@ -199,7 +199,6 @@ vi.mock("./components/use-chat-controller", async () => {
       // Like the real controller: selecting publishes the session to the store.
       handleSelectSession: (session: { id: string }) => mockSetActiveSession(session.id),
       advanceSelectionAfterArchive: vi.fn(),
-      archiveSession: vi.fn(),
       setActiveSession: mockSetActiveSession,
       setSelectedAgentId: vi.fn(),
       };

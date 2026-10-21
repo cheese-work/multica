@@ -165,7 +165,6 @@ vi.mock("./components/use-chat-controller", async () => {
         handleStartNewChat: vi.fn(),
         handleSelectSession: (s: { id: string }) => store.getState().setActiveSession(s.id),
         advanceSelectionAfterArchive: controller.advanceSelectionAfterArchive,
-        archiveSession: vi.fn(),
         setActiveSession: controller.setActiveSession,
         setSelectedAgentId: vi.fn(),
       };

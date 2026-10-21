@@ -534,7 +534,10 @@ export function ChatInput({
       // These states disable the SubmitButton, but Mod+Enter bypasses it — so a
       // read-only or busy composer must still refuse the keyboard path.
       const fork = onFork ? parseForkCommand(content) : null;
-      const typedDmCommand = parseDmClientCommand(editorRef.current?.getText() ?? "");
+      const hasDmCommandHandler = !!(onStatistic || onArchive || onPin || onUnarchive);
+      const typedDmCommand = hasDmCommandHandler
+        ? parseDmClientCommand(editorRef.current?.getText() ?? "")
+        : null;
       const dmCommandHandler = typedDmCommand ? dmCommandHandlers[typedDmCommand] : undefined;
       if (disabled || noAgent || (isRunning && !allowSubmitWhileRunning && !fork && !dmCommandHandler)) {
         logger.debug("input.send skipped", {
