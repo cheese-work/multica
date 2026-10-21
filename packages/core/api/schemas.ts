@@ -977,6 +977,8 @@ const DecisionCardSchema = z.object({
   state: DecisionStateSchema.catch("pending"),
   effective_at: z.string().default(""),
   disclaimed_at: z.string().nullable().optional().catch(undefined),
+  // A card on a forked copy is read-only provenance; clients show no Disclaim.
+  inherited: z.boolean().catch(false).default(false),
 }).loose();
 
 export const ChatMessageSchema = z.object({

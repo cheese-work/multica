@@ -12,6 +12,8 @@ export interface DecisionCard {
   state: DecisionState;
   effective_at: string;
   disclaimed_at?: string | null;
+  /** Shown on a forked copy: read-only provenance, no Disclaim. */
+  inherited: boolean;
 }
 
 /**

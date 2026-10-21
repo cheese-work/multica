@@ -320,3 +320,78 @@ func TestDecisionPointersReachOnlyHumanActorSources(test *testing.T) {
 		})
 	}
 }
+
+func (fixture recordedCardFixture) forkAsHuman(test *testing.T, sessionID, key string) ChatForkResponse {
+	test.Helper()
+	request := forkChatRequest(test, sessionID, key)
+	request.Header.Set("X-User-ID", fixture.humanID)
+	var forked ChatForkResponse
+	testutil.Call(test, testHandler.ForkChatSession, request).Want(http.StatusCreated).JSON(&forked)
+	cleanupChatFork(test, forked.Session.ID)
+	return forked
+}
+
+func (fixture recordedCardFixture) messagesOf(test *testing.T, sessionID string) []map[string]any {
+	test.Helper()
+	request := withURLParam(httptest.NewRequest(http.MethodGet, "/api/chat/sessions/"+sessionID+"/messages/page", nil), "sessionId", sessionID)
+	request.Header.Set("X-User-ID", fixture.humanID)
+	request = withChatTestWorkspaceCtx(test, request)
+	var page struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	testutil.Call(test, testHandler.ListChatMessagesPage, request).Want(http.StatusOK).JSON(&page)
+	return page.Messages
+}
+
+// Fork lineage A: a fork shows the quote card as read-only provenance. It points
+// at the original issue comment, and the decision's original pointers do not move.
+func TestForkInheritsDecisionCardsAsReadOnlyProvenance(test *testing.T) {
+	fixture := newRecordedCardFixture(test)
+	first := fixture.forkAsHuman(test, fixture.sessionID, "cards-fork-1")
+	second := fixture.forkAsHuman(test, first.Session.ID, "cards-fork-2") // a fork of a fork keeps the lineage
+
+	for name, sessionID := range map[string]string{"fork": first.Session.ID, "fork of fork": second.Session.ID} {
+		var bubble, reference map[string]any
+		for _, message := range fixture.messagesOf(test, sessionID) {
+			switch {
+			case message["role"] == "user" && message["content"] == "  Yes.\nKeep the exact words.  ":
+				bubble = message
+			case message["message_kind"] == "decision_reference":
+				reference = message
+			}
+		}
+		if bubble == nil || reference == nil {
+			test.Fatalf("%s: copied rows missing (bubble %v, reference %v)", name, bubble != nil, reference != nil)
+		}
+		quotes, _ := bubble["decision_quotes"].([]any)
+		if len(quotes) != 1 {
+			test.Fatalf("%s: copied bubble decision_quotes = %v, want the inherited card", name, bubble["decision_quotes"])
+		}
+		card := quotes[0].(map[string]any)
+		if card["answer_id"] != fixture.answerID || card["issue_comment_id"] != fixture.commentID || card["inherited"] != true {
+			test.Errorf("%s: inherited card = %v, want answer %s, original comment %s, inherited true", name, card, fixture.answerID, fixture.commentID)
+		}
+		ref, _ := reference["decision_ref"].(map[string]any)
+		if ref["answer_id"] != fixture.answerID || ref["inherited"] != true {
+			test.Errorf("%s: copied reference card = %v", name, reference["decision_ref"])
+		}
+	}
+
+	// The original DM is unchanged: its card is not marked inherited.
+	for _, message := range fixture.messagesOf(test, fixture.sessionID) {
+		if quotes, _ := message["decision_quotes"].([]any); len(quotes) > 0 && quotes[0].(map[string]any)["inherited"] == true {
+			test.Fatal("the original bubble's card is marked inherited")
+		}
+	}
+
+	// The decision keeps its original pointers and its issue comment.
+	var sessionID, messageID, commentID string
+	dbfx.QueryRow(test, `SELECT source_chat_session_id::text, chat_message_ids[1]::text, issue_comment_id::text FROM decision_answer WHERE id = $1`, fixture.answerID).Scan(&sessionID, &messageID, &commentID)
+	if sessionID != fixture.sessionID || messageID != fixture.messageID || commentID != fixture.commentID {
+		test.Fatalf("decision pointers moved: session %s message %s comment %s", sessionID, messageID, commentID)
+	}
+	owner := fixture.timelineAs(test, fixture.humanID)
+	if owner["decision_source_session_id"] != fixture.sessionID || owner["decision_source_message_id"] != fixture.messageID {
+		test.Fatalf("timeline pointers moved: %v %v", owner["decision_source_session_id"], owner["decision_source_message_id"])
+	}
+}

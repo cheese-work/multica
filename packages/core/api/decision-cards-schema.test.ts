@@ -57,6 +57,11 @@ describe("DM decision cards", () => {
     expect(parsed.decision_quotes?.[0]?.state).toBe("pending");
   });
 
+  it("keeps the inherited flag of a forked card and defaults it to false", () => {
+    const parsed = ChatMessageSchema.parse({ ...bubble, decision_quotes: [{ ...card, inherited: true }, card] });
+    expect(parsed.decision_quotes?.map((c) => c.inherited)).toEqual([true, false]);
+  });
+
   it("reads has_newer on an anchored page", () => {
     expect(ChatMessagesPageSchema.parse({ messages: [], has_newer: true }).has_newer).toBe(true);
     expect(ChatMessagesPageSchema.parse({ messages: [] }).has_newer).toBeUndefined();

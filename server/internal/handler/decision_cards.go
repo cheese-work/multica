@@ -30,6 +30,9 @@ type DecisionCard struct {
 	State           string  `json:"state"`
 	EffectiveAt     string  `json:"effective_at"`
 	DisclaimedAt    *string `json:"disclaimed_at,omitempty"`
+	// Inherited marks a card shown on a forked copy: read-only provenance that
+	// still points at the original issue comment. Clients show no Disclaim on it.
+	Inherited bool `json:"inherited,omitempty"`
 }
 
 // DecisionCommentFields is the display state a decision-stamped issue comment
@@ -156,24 +159,30 @@ func (handler *Handler) decisionCardsForMessages(ctx context.Context, workspaceI
 		return nil, nil
 	}
 	var answerIDs, messageIDs []pgtype.UUID
+	// A forked copy is matched through the message it was copied from, because
+	// the decision's source ids are the original DM's.
+	pageByLookup := make(map[pgtype.UUID][]db.ChatMessage, len(messages))
 	for _, message := range messages {
-		messageIDs = append(messageIDs, message.ID)
+		lookup := message.ID
+		if message.LineageMessageID.Valid {
+			lookup = message.LineageMessageID
+		}
+		messageIDs = append(messageIDs, lookup)
+		pageByLookup[lookup] = append(pageByLookup[lookup], message)
 		if message.DecisionAnswerID.Valid {
 			answerIDs = append(answerIDs, message.DecisionAnswerID)
 		}
 	}
 	quotes, refs = map[string][]DecisionCard{}, map[string]DecisionCard{}
 	rows := handler.listDecisionCards(ctx, workspaceUUID, answerIDs, messageIDs)
-	onPage := make(map[pgtype.UUID]bool, len(messages))
-	for _, message := range messages {
-		onPage[message.ID] = true
-	}
 	for _, row := range rows {
 		card := decisionCardFromRow(row)
 		refs[card.AnswerID] = card
-		for _, messageID := range row.ChatMessageIds {
-			if onPage[messageID] {
-				quotes[uuidToString(messageID)] = append(quotes[uuidToString(messageID)], card)
+		for _, sourceID := range row.ChatMessageIds {
+			for _, message := range pageByLookup[sourceID] {
+				shown := card
+				shown.Inherited = message.LineageMessageID.Valid
+				quotes[uuidToString(message.ID)] = append(quotes[uuidToString(message.ID)], shown)
 			}
 		}
 	}
