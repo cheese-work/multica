@@ -1075,6 +1075,7 @@ export function ChatWindow() {
        *  no agent (the EmptyState above carries the CTA). */}
       <ChatInput
         {...dm.inputProps}
+        testId="floating-chat-composer"
         restoreDraftRequest={restoreDraftRequest}
         conversationStarterRequest={conversationStarterRequest}
         onConversationStarterApplied={handleConversationStarterApplied}
@@ -1687,7 +1688,10 @@ export function SessionDropdown({
     <>
       <Popover open={isHistoryOpen} onOpenChange={setIsHistoryOpen}>
         <div className="flex min-w-0 items-center gap-1">
-          <PopoverTrigger className="flex max-w-96 min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 transition-colors hover:bg-accent data-[popup-open]:bg-accent data-open:bg-accent">
+          <PopoverTrigger
+            data-testid="floating-chat-session-dropdown"
+            className="flex max-w-96 min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 transition-colors hover:bg-accent data-[popup-open]:bg-accent data-open:bg-accent"
+          >
             {triggerAgent && (
               <ActorAvatar
                 actorType="agent"

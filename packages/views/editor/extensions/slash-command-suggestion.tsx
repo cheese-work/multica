@@ -169,6 +169,7 @@ export const SlashCommandList = forwardRef<
         return (
           <button
             key={item.id}
+            data-testid={isClientCommand(item) ? `chat-command-${item.id}` : undefined}
             ref={(el) => {
               itemRefs.current[index] = el;
             }}

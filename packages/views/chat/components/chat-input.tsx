@@ -83,6 +83,8 @@ interface ChatInputProps {
   onUnarchive?: () => void | boolean | Promise<void | boolean>;
   /** The open DM is archived: a send asks to unarchive first. Turns `/compact` off. */
   sessionArchived?: boolean;
+  /** Identifies the composer for UI checks; the floating window overrides it. */
+  testId?: string;
   onSend: (
     content: string,
     attachmentIds: string[] | undefined,
@@ -202,6 +204,7 @@ export function ChatInput({
   onPin,
   onUnarchive,
   sessionArchived,
+  testId = "chat-composer",
   restoreDraftRequest,
   conversationStarterRequest,
   onConversationStarterApplied,
@@ -755,6 +758,7 @@ export function ChatInput({
   return (
     <div
       ref={composerRef}
+      data-testid={testId}
       className={cn(
         // The composer grows with the draft up to half the surface it sits on
         // — a fixed 160px cap made long drafts unreadable in a five-line

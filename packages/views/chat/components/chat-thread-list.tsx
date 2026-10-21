@@ -325,6 +325,7 @@ export function ChatThreadList({
     return (
       <div
         key={session.id}
+        data-testid="chat-thread-row"
         aria-current={isCurrent ? "true" : undefined}
         tabIndex={0}
         onClick={(e) => {
@@ -474,6 +475,7 @@ export function ChatThreadList({
                 label={action.label}
                 danger={action.danger}
                 onClick={action.onSelect}
+                testId={`chat-thread-row-${action.key}-item`}
               />
             ))}
           </div>
@@ -498,7 +500,9 @@ export function ChatThreadList({
             {archivedSessions.length}
           </span>
         </button>
-        {archivedSessions.map(renderRow)}
+        <div className="contents" data-testid="chat-thread-group-archived">
+          {archivedSessions.map(renderRow)}
+        </div>
       </>
     );
   }
@@ -532,7 +536,9 @@ export function ChatThreadList({
 
   return (
     <>
-      {historySessions.map(renderRow)}
+      <div className="contents" data-testid="chat-thread-group-recent">
+        {historySessions.map(renderRow)}
+      </div>
       {archivedEntry}
     </>
   );
@@ -543,15 +549,18 @@ function RowAction({
   label,
   onClick,
   danger,
+  testId,
 }: {
   icon: React.ReactNode;
   label: string;
   onClick: () => void;
   danger?: boolean;
+  testId?: string;
 }) {
   return (
     <button
       type="button"
+      data-testid={testId}
       aria-label={label}
       title={label}
       onPointerDown={(e) => {
