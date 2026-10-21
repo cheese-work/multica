@@ -72,10 +72,20 @@ func (handler *Handler) CancelDecisionLifecycle(ctx context.Context, workspaceID
 	if root != nil {
 		parentID = current.IssueCommentID
 	}
-	content := "Decision request cancelled: " + reason + "."
-	if reason == "human_removed" {
-		content += " The person asked is no longer a workspace member. Ask again with a new decision request."
+	issue, err := queries.GetIssue(ctx, current.IssueID)
+	if err != nil {
+		return result, err
 	}
+	workspace, err := queries.GetWorkspace(ctx, workspaceID)
+	if err != nil {
+		return result, err
+	}
+	closedAt, err := queries.DecisionIssueClosedAt(ctx, db.DecisionIssueClosedAtParams{WorkspaceID: workspaceID, ID: current.IssueID})
+	if err != nil {
+		return result, err
+	}
+	cancelled := decisionCancelIssueFor(issue, workspace, closedAt.Time)
+	content := decisionCancelComment(reason, cancelled, current)
 	created, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: dbid.NewV7(), WorkspaceID: workspaceID, IssueID: current.IssueID, ParentID: parentID, AuthorType: "agent", AuthorID: current.AskingAgentID, Type: "comment", Content: content, DecisionRequestID: current.ID, DecisionCommentKind: pgtype.Text{String: "cancel", Valid: true}})
 	if err != nil {
 		return result, err
@@ -87,12 +97,18 @@ func (handler *Handler) CancelDecisionLifecycle(ctx context.Context, workspaceID
 		return result, err
 	}
 	if err == nil && session.Status != "archived" {
-		note, err = queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: dbid.NewV7(), ChatSessionID: session.ID, Role: "assistant", Content: content, MessageKind: pgtype.Text{String: "decision_reference", Valid: true}, SentVia: pgtype.Text{String: "task_token", Valid: true}})
+		noteRequests, err := decisionCancelNoteRequests(ctx, queries, reason, current, closedAt)
 		if err != nil {
 			return result, err
 		}
-		if err := queries.TouchChatSession(ctx, session.ID); err != nil {
-			return result, err
+		if len(noteRequests) > 0 {
+			note, err = queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: dbid.NewV7(), ChatSessionID: session.ID, Role: "assistant", Content: decisionCancelNote(reason, cancelled, noteRequests), MessageKind: pgtype.Text{String: "decision_reference", Valid: true}, SentVia: pgtype.Text{String: "task_token", Valid: true}})
+			if err != nil {
+				return result, err
+			}
+			if err := queries.TouchChatSession(ctx, session.ID); err != nil {
+				return result, err
+			}
 		}
 	}
 	if answer.ID.Valid && !answer.WokenAt.Valid {
@@ -121,4 +137,19 @@ func (handler *Handler) CancelDecisionLifecycle(ctx context.Context, workspaceID
 		handler.publishChat(protocol.EventChatMessage, uuidToString(workspaceID), "agent", uuidToString(current.AskingAgentID), uuidToString(session.ID), protocol.ChatMessagePayload{ChatSessionID: uuidToString(session.ID), MessageID: uuidToString(note.ID), Role: note.Role, Content: note.Content, CreatedAt: note.CreatedAt.Time.Format(time.RFC3339Nano)})
 	}
 	return result, nil
+}
+
+// decisionCancelNoteRequests returns the requests the DM note covers. A close ends every request of
+// the session at once, so the first request cancelled by that close writes one note for all of them
+// and later ones write none. Other reasons stay one note per request.
+func decisionCancelNoteRequests(ctx context.Context, queries *db.Queries, reason string, current db.DecisionRequest, closedAt pgtype.Timestamptz) ([]db.DecisionRequest, error) {
+	if reason != "issue_closed" {
+		return []db.DecisionRequest{current}, nil
+	}
+	params := db.HasDecisionCancelNoticeSinceCloseParams{WorkspaceID: current.WorkspaceID, IssueID: current.IssueID, ChatSessionID: current.ChatSessionID, ID: current.ID, ClosedAt: closedAt}
+	posted, err := queries.HasDecisionCancelNoticeSinceClose(ctx, params)
+	if err != nil || posted {
+		return nil, err
+	}
+	return queries.ListDecisionCancelSiblings(ctx, db.ListDecisionCancelSiblingsParams{WorkspaceID: current.WorkspaceID, IssueID: current.IssueID, ChatSessionID: current.ChatSessionID})
 }
