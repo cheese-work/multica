@@ -220,7 +220,8 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 		createdSession = &session
 	}
 	// An ask identical to the intent comment is that comment: reuse it instead of posting a second copy.
-	attach := strings.TrimSpace(tag.Content) == strings.TrimSpace(input.Ask)
+	// A comment carries one request, so later targets of a group intent get their own ask comment.
+	attach := !tag.DecisionRequestID.Valid && strings.TrimSpace(tag.Content) == strings.TrimSpace(input.Ask)
 	commentID, messageID := dbid.NewV7(), dbid.NewV7()
 	if attach {
 		commentID = tag.ID
