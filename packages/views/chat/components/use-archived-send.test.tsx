@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { I18nProvider } from "@multica/core/i18n/react";
 import type { ChatSession } from "@multica/core/types";
 import enChat from "../../locales/en/chat.json";
@@ -23,9 +23,9 @@ const activeSession = { id: "live", status: "active", title: "Live" } as ChatSes
 type Harness = {
   session: ChatSession;
   sessions?: ChatSession[];
-  send: ReturnType<typeof vi.fn>;
-  unarchive: ReturnType<typeof vi.fn>;
-  onOpenSession: ReturnType<typeof vi.fn>;
+  send: Mock<(...args: unknown[]) => Promise<boolean>>;
+  unarchive: Mock<(session: ChatSession) => Promise<boolean>>;
+  onOpenSession: Mock<(session: ChatSession) => void>;
 };
 
 function Probe({ session, sessions = [], send, unarchive, onOpenSession }: Harness) {
@@ -45,8 +45,8 @@ function Probe({ session, sessions = [], send, unarchive, onOpenSession }: Harne
 
 function setup(over: Partial<Harness> & { session: ChatSession }) {
   const props: Harness = {
-    send: vi.fn().mockResolvedValue(true),
-    unarchive: vi.fn().mockResolvedValue(true),
+    send: vi.fn(async () => true),
+    unarchive: vi.fn(async () => true),
     onOpenSession: vi.fn(),
     ...over,
   };
@@ -117,7 +117,7 @@ describe("useArchivedSend", () => {
   });
 
   it("sends nothing when the unarchive fails", async () => {
-    const unarchive = vi.fn().mockResolvedValue(false);
+    const unarchive = vi.fn(async () => false);
     const { send } = setup({ session: archivedSession, unarchive });
     fireEvent.click(screen.getByText("send"));
 
