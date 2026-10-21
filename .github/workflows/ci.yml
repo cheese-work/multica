@@ -703,18 +703,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          fetch-depth: 1
-
-      - name: Fetch comparison base
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          # The merge commit and both of its parents: the first parent is the
+          # base the merge was made with (see check-image-budget.mjs).
+          fetch-depth: 2
 
       - name: Check image budget
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: node scripts/check-image-budget.mjs --base "$BASE_SHA"
+        run: node scripts/check-image-budget.mjs --base merge-parent
 
   installer:
     # Stub-driven shell tests for scripts/install.sh. Kept off the heavy
