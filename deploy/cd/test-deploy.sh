@@ -1214,10 +1214,21 @@ fi
 
 # Workflow-level outer shell and always() cleanup of multica-docker-config.*
 # when the cutover subshell (bash -s) terminates via SIGKILL before its own
-# bash EXIT trap can fire, serialized under $C00_CUTOVER_STATE_DIR/deploy.lock
-# so neither cleanup site deletes a concurrent manual invocation's active
-# DOCKER_CONFIG.
-expect_contains "$workflow_text" 'ghcr_cleanup_stale_configs "${C00_CUTOVER_STATE_DIR:-}" "${RUNNER_TEMP:-}" "${C00_CUTOVER_STATE_DIR:-}"' workflow-runner-temp-docker-config-cleanup
+# bash EXIT trap can fire, serialized under BOTH $C00_STATE_DIR/deploy.lock
+# and $C00_CUTOVER_STATE_DIR/deploy.lock in canonical order so neither cleanup
+# site deletes a concurrent manual invocation's active DOCKER_CONFIG even when
+# deployment and cutover state roots differ.
+expect_contains "$workflow_text" '--lock-dir "${C00_STATE_DIR:-}"' workflow-runner-temp-docker-config-cleanup
+expect_contains "$workflow_text" '--lock-dir "${C00_CUTOVER_STATE_DIR:-}"' workflow-runner-temp-docker-config-cleanup
+expect_contains "$workflow_text" '-- "${RUNNER_TEMP:-}" "${C00_STATE_DIR:-}" "${C00_CUTOVER_STATE_DIR:-}"' workflow-runner-temp-docker-config-cleanup
+
+record_outcome_env_lines="$(awk '
+  /- name: Record outcome/ { in_step=1; next }
+  in_step && /shell: bash/ { exit }
+  in_step { print }
+' "$root_dir/.github/workflows/cd-deploy.yml")"
+expect_contains "$record_outcome_env_lines" 'C00_STATE_DIR: ${{ secrets.C00_STATE_DIR }}' workflow-record-outcome-c00-state-dir-env
+expect_contains "$record_outcome_env_lines" 'C00_CUTOVER_STATE_DIR: ${{ secrets.C00_CUTOVER_STATE_DIR }}' workflow-record-outcome-c00-cutover-state-dir-env
 
 post_pipe_cleanup_lines="$(awk '
   /deploy_status=\$\?/ { capture=1; next }
@@ -1278,10 +1289,10 @@ for cleanup_site in post-pipe record-outcome; do
   fi
 
   if [ "$cleanup_site" = "post-pipe" ]; then
-    MULTICA_CLEANUP_LOCK_WAIT_SECONDS=0 RUNNER_TEMP="$race_runner_temp" C00_CUTOVER_STATE_DIR="$state_dir" \
+    MULTICA_CLEANUP_LOCK_WAIT_SECONDS=0 RUNNER_TEMP="$race_runner_temp" C00_STATE_DIR="$state_dir" C00_CUTOVER_STATE_DIR="$state_dir" \
       bash -c "set -euo pipefail; deploy_status=7; $post_pipe_cleanup_lines; [ \"\$deploy_status\" -eq 7 ]"
   else
-    MULTICA_CLEANUP_LOCK_WAIT_SECONDS=0 RUNNER_TEMP="$race_runner_temp" C00_CUTOVER_STATE_DIR="$state_dir" \
+    MULTICA_CLEANUP_LOCK_WAIT_SECONDS=0 RUNNER_TEMP="$race_runner_temp" C00_STATE_DIR="$state_dir" C00_CUTOVER_STATE_DIR="$state_dir" \
       bash -c "set -euo pipefail; $record_outcome_cleanup_lines"
   fi
 
@@ -1303,12 +1314,157 @@ for cleanup_site in post-pipe record-outcome; do
   fi
 done
 
+# Distinct-root interleaving race (CHE-1924 / CHE-1927 P2): C00_STATE_DIR and
+# C00_CUTOVER_STATE_DIR are separate durable roots on C00 while RUNNER_TEMP is
+# shared on the local runner. When a manual deploy.sh (locking
+# $C00_STATE_DIR/deploy.lock) or manual cutover.sh (locking
+# $C00_CUTOVER_STATE_DIR/deploy.lock) runs with shared RUNNER_TEMP and holds its
+# own state-root lock paused mid-pull, neither extracted workflow cleanup site
+# (post-pipe or Record outcome) may delete that active DOCKER_CONFIG under
+# RUNNER_TEMP or under the active invocation's state_dir. Once the manual
+# invocation releases its lock, workflow cleanup removes genuinely stale
+# residue across RUNNER_TEMP and the locked state roots.
+distinct_root_dir="$(fresh_scenario_dir workflow-cleanup-distinct-state-roots)"
+distinct_deploy_state="$distinct_root_dir/c00-state-dir"
+distinct_cutover_state="$distinct_root_dir/c00-cutover-state-dir"
+distinct_runner_temp="$distinct_root_dir/runner-temp"
+distinct_home="$distinct_root_dir/home"
+distinct_control="$distinct_deploy_state/control"
+mkdir -p "$distinct_control" "$distinct_cutover_state" "$distinct_runner_temp" "$distinct_home/.docker"
+printf '{"auths":{"existing.registry.internal":{}}}\n' >"$distinct_home/.docker/config.json"
+touch "$distinct_control/inspect-resolves" "$distinct_control/pause-on-pull"
+
+for cleanup_site in post-pipe record-outcome; do
+  rm -f "$distinct_control/pull-ready" "$distinct_control/release-pull"
+  (
+    HOME="$distinct_home" RUNNER_TEMP="$distinct_runner_temp" GHCR_PULL_TOKEN=manual-distinct-pat \
+      run_deploy "$distinct_deploy_state" >"$distinct_root_dir/manual-deploy-$cleanup_site.out" 2>&1
+  ) &
+  manual_pid=$!
+
+  for _ in $(seq 1 100); do
+    [ -f "$distinct_control/pull-ready" ] && break
+    /bin/sleep 0.05
+  done
+  if [ ! -f "$distinct_control/pull-ready" ]; then
+    kill "$manual_pid" 2>/dev/null || true
+    wait "$manual_pid" 2>/dev/null || true
+    echo "scenario workflow-cleanup-distinct-state-roots ($cleanup_site): manual deploy never reached pull-ready: $(cat "$distinct_root_dir/manual-deploy-$cleanup_site.out" 2>/dev/null)" >&2
+    exit 1
+  fi
+  active_manual_config="$(cat "$distinct_control/pull-ready")"
+  if [ -z "$active_manual_config" ] || [ ! -f "$active_manual_config/config.json" ]; then
+    kill "$manual_pid" 2>/dev/null || true
+    wait "$manual_pid" 2>/dev/null || true
+    echo "scenario workflow-cleanup-distinct-state-roots ($cleanup_site): expected active config.json at '$active_manual_config'" >&2
+    exit 1
+  fi
+
+  if [ "$cleanup_site" = "post-pipe" ]; then
+    MULTICA_CLEANUP_LOCK_WAIT_SECONDS=0 RUNNER_TEMP="$distinct_runner_temp" \
+      C00_STATE_DIR="$distinct_deploy_state" C00_CUTOVER_STATE_DIR="$distinct_cutover_state" \
+      bash -c "set -euo pipefail; deploy_status=7; $post_pipe_cleanup_lines; [ \"\$deploy_status\" -eq 7 ]"
+  else
+    MULTICA_CLEANUP_LOCK_WAIT_SECONDS=0 RUNNER_TEMP="$distinct_runner_temp" \
+      C00_STATE_DIR="$distinct_deploy_state" C00_CUTOVER_STATE_DIR="$distinct_cutover_state" \
+      bash -c "set -euo pipefail; $record_outcome_cleanup_lines"
+  fi
+
+  if [ ! -f "$active_manual_config/config.json" ]; then
+    touch "$distinct_control/release-pull"
+    wait "$manual_pid" 2>/dev/null || true
+    echo "scenario workflow-cleanup-distinct-state-roots ($cleanup_site): workflow cleanup deleted active manual DOCKER_CONFIG '$active_manual_config' while C00_STATE_DIR/deploy.lock was held (distinct from C00_CUTOVER_STATE_DIR)" >&2
+    exit 1
+  fi
+
+  touch "$distinct_control/release-pull"
+  set +e
+  wait "$manual_pid"
+  manual_status=$?
+  set -e
+  if [ "$manual_status" -ne 0 ]; then
+    echo "scenario workflow-cleanup-distinct-state-roots ($cleanup_site): manual deploy failed with exit $manual_status: $(cat "$distinct_root_dir/manual-deploy-$cleanup_site.out")" >&2
+    exit 1
+  fi
+done
+
+# Concurrent producer sweep safety: if one credential producer holds an active
+# locked multica-docker-config.* under shared RUNNER_TEMP with a distinct
+# state_dir, a second producer's ghcr_login sweep of RUNNER_TEMP must sweep
+# unlocked stale residue while preserving the first producer's active
+# DOCKER_CONFIG.
+rm -f "$distinct_control/pull-ready" "$distinct_control/release-pull"
+mkdir -p "$distinct_runner_temp/multica-docker-config.stale-before-second-producer"
+(
+  HOME="$distinct_home" RUNNER_TEMP="$distinct_runner_temp" GHCR_PULL_TOKEN=manual-distinct-pat \
+    run_deploy "$distinct_deploy_state" >"$distinct_root_dir/manual-deploy-concurrent-producer.out" 2>&1
+) &
+manual_pid=$!
+
+for _ in $(seq 1 100); do
+  [ -f "$distinct_control/pull-ready" ] && break
+  /bin/sleep 0.05
+done
+if [ ! -f "$distinct_control/pull-ready" ]; then
+  kill "$manual_pid" 2>/dev/null || true
+  wait "$manual_pid" 2>/dev/null || true
+  echo "scenario workflow-cleanup-distinct-state-roots (concurrent-producer): manual deploy never reached pull-ready" >&2
+  exit 1
+fi
+active_manual_config="$(cat "$distinct_control/pull-ready")"
+(
+  export DEPLOY_TEST_CONTROL_DIR="$distinct_cutover_state/control"
+  mkdir -p "$DEPLOY_TEST_CONTROL_DIR"
+  state_dir="$distinct_cutover_state"
+  HOME="$distinct_home" RUNNER_TEMP="$distinct_runner_temp" GHCR_PULL_TOKEN=second-producer-pat \
+    bash -c "set -euo pipefail; . '$root_dir/deploy/cd/deploy-lib.sh'; trap ghcr_logout EXIT; ghcr_login" >/dev/null
+)
+if [ ! -f "$active_manual_config/config.json" ]; then
+  touch "$distinct_control/release-pull"
+  wait "$manual_pid" 2>/dev/null || true
+  echo "scenario workflow-cleanup-distinct-state-roots (concurrent-producer): second producer's ghcr_login deleted active DOCKER_CONFIG '$active_manual_config'" >&2
+  exit 1
+fi
+if [ -e "$distinct_runner_temp/multica-docker-config.stale-before-second-producer" ]; then
+  touch "$distinct_control/release-pull"
+  wait "$manual_pid" 2>/dev/null || true
+  echo "scenario workflow-cleanup-distinct-state-roots (concurrent-producer): second producer's ghcr_login did not sweep unlocked stale directory" >&2
+  exit 1
+fi
+touch "$distinct_control/release-pull"
+wait "$manual_pid"
+
+# Once neither distinct state root holds deploy.lock, both workflow cleanup
+# sites must sweep genuinely stale residue across RUNNER_TEMP, C00_STATE_DIR,
+# and C00_CUTOVER_STATE_DIR.
+for cleanup_site in post-pipe record-outcome; do
+  mkdir -p "$distinct_runner_temp/multica-docker-config.stale-$cleanup_site" \
+    "$distinct_deploy_state/multica-docker-config.stale-$cleanup_site" \
+    "$distinct_cutover_state/multica-docker-config.stale-$cleanup_site"
+  if [ "$cleanup_site" = "post-pipe" ]; then
+    MULTICA_CLEANUP_LOCK_WAIT_SECONDS=0 RUNNER_TEMP="$distinct_runner_temp" \
+      C00_STATE_DIR="$distinct_deploy_state" C00_CUTOVER_STATE_DIR="$distinct_cutover_state" \
+      bash -c "set -euo pipefail; deploy_status=7; $post_pipe_cleanup_lines; [ \"\$deploy_status\" -eq 7 ]"
+  else
+    MULTICA_CLEANUP_LOCK_WAIT_SECONDS=0 RUNNER_TEMP="$distinct_runner_temp" \
+      C00_STATE_DIR="$distinct_deploy_state" C00_CUTOVER_STATE_DIR="$distinct_cutover_state" \
+      bash -c "set -euo pipefail; $record_outcome_cleanup_lines"
+  fi
+  if [ -e "$distinct_runner_temp/multica-docker-config.stale-$cleanup_site" ] ||
+    [ -e "$distinct_deploy_state/multica-docker-config.stale-$cleanup_site" ] ||
+    [ -e "$distinct_cutover_state/multica-docker-config.stale-$cleanup_site" ]; then
+    echo "scenario workflow-cleanup-distinct-state-roots ($cleanup_site): stale residue was not swept once both locks were free" >&2
+    exit 1
+  fi
+done
+
 state_dir="$(fresh_scenario_dir workflow-sigkill-parent-cleanup)"
 control_dir="$state_dir/control"
 sigkill_home="$state_dir/home"
 sigkill_runner_temp="$state_dir/runner-temp"
+sigkill_deploy_state="$state_dir/deploy-state"
 sigkill_cutover_state="$state_dir/cutover-state"
-mkdir -p "$control_dir" "$sigkill_home/.docker" "$sigkill_runner_temp" "$sigkill_cutover_state/multica-docker-config.stale88"
+mkdir -p "$control_dir" "$sigkill_home/.docker" "$sigkill_runner_temp" "$sigkill_deploy_state" "$sigkill_cutover_state/multica-docker-config.stale88"
 ln -s "$protected_target" "$sigkill_runner_temp/multica-docker-config.symlink"
 printf 'not-a-dir\n' >"$sigkill_cutover_state/multica-docker-config.regularfile"
 printf '{"auths":{"existing.registry.internal":{}}}\n' >"$sigkill_home/.docker/config.json"
@@ -1328,7 +1484,7 @@ if ! compgen -G "$sigkill_runner_temp/multica-docker-config.*" >/dev/null; then
   echo "scenario workflow-sigkill-parent-cleanup: expected SIGKILL to bypass child EXIT trap and leave temp dir in $sigkill_runner_temp before parent cleanup" >&2
   exit 1
 fi
-RUNNER_TEMP="$sigkill_runner_temp" C00_CUTOVER_STATE_DIR="$sigkill_cutover_state" bash -c "set -euo pipefail; $post_pipe_cleanup_lines"
+RUNNER_TEMP="$sigkill_runner_temp" C00_STATE_DIR="$sigkill_deploy_state" C00_CUTOVER_STATE_DIR="$sigkill_cutover_state" bash -c "set -euo pipefail; $post_pipe_cleanup_lines"
 if [ -d "$sigkill_cutover_state/multica-docker-config.stale88" ]; then
   echo "scenario workflow-sigkill-parent-cleanup: post-pipe cleanup did not remove stale88 directory" >&2
   exit 1
@@ -1346,9 +1502,9 @@ if [ ! -f "$protected_target/keep.txt" ] || [ ! -L "$sigkill_runner_temp/multica
 fi
 rm -f "$sigkill_runner_temp/multica-docker-config.symlink" "$sigkill_cutover_state/multica-docker-config.regularfile"
 
-mkdir -p "$sigkill_runner_temp/multica-docker-config.stale90" "$sigkill_cutover_state/multica-docker-config.stale91"
-RUNNER_TEMP="$sigkill_runner_temp" C00_CUTOVER_STATE_DIR="$sigkill_cutover_state" bash -c "set -euo pipefail; $record_outcome_cleanup_lines"
-if [ -n "$(ls -A "$sigkill_runner_temp")" ] || [ -e "$sigkill_cutover_state/multica-docker-config.stale91" ]; then
+mkdir -p "$sigkill_runner_temp/multica-docker-config.stale90" "$sigkill_deploy_state/multica-docker-config.stale90b" "$sigkill_cutover_state/multica-docker-config.stale91"
+RUNNER_TEMP="$sigkill_runner_temp" C00_STATE_DIR="$sigkill_deploy_state" C00_CUTOVER_STATE_DIR="$sigkill_cutover_state" bash -c "set -euo pipefail; $record_outcome_cleanup_lines"
+if [ -n "$(ls -A "$sigkill_runner_temp")" ] || [ -e "$sigkill_deploy_state/multica-docker-config.stale90b" ] || [ -e "$sigkill_cutover_state/multica-docker-config.stale91" ]; then
   echo "scenario workflow-sigkill-parent-cleanup: Record outcome cleanup did not remove stale residue" >&2
   exit 1
 fi
@@ -1360,18 +1516,23 @@ fi
 mkdir -p "$sigkill_runner_temp/multica-docker-config.keep92"
 ln -s "$sigkill_runner_temp" "$state_dir/symlink-runner-temp"
 ln -s "$sigkill_cutover_state" "$state_dir/symlink-cutover-state"
-RUNNER_TEMP="$state_dir/symlink-runner-temp" C00_CUTOVER_STATE_DIR="$sigkill_cutover_state" bash -c "set -euo pipefail; $post_pipe_cleanup_lines"
-RUNNER_TEMP="$sigkill_runner_temp" C00_CUTOVER_STATE_DIR="$state_dir/symlink-cutover-state" bash -c "set -euo pipefail; $post_pipe_cleanup_lines"
-RUNNER_TEMP="$sigkill_runner_temp" C00_CUTOVER_STATE_DIR="relative/cutover-state" bash -c "set -euo pipefail; $post_pipe_cleanup_lines"
+RUNNER_TEMP="$state_dir/symlink-runner-temp" C00_STATE_DIR="$sigkill_deploy_state" C00_CUTOVER_STATE_DIR="$sigkill_cutover_state" bash -c "set -euo pipefail; $post_pipe_cleanup_lines"
+RUNNER_TEMP="$sigkill_runner_temp" C00_STATE_DIR="$sigkill_deploy_state" C00_CUTOVER_STATE_DIR="$state_dir/symlink-cutover-state" bash -c "set -euo pipefail; $post_pipe_cleanup_lines"
+RUNNER_TEMP="$sigkill_runner_temp" C00_STATE_DIR="$state_dir/symlink-cutover-state" C00_CUTOVER_STATE_DIR="$sigkill_cutover_state" bash -c "set -euo pipefail; $post_pipe_cleanup_lines"
+RUNNER_TEMP="$sigkill_runner_temp" C00_STATE_DIR="$sigkill_deploy_state" C00_CUTOVER_STATE_DIR="relative/cutover-state" bash -c "set -euo pipefail; $post_pipe_cleanup_lines"
+RUNNER_TEMP="$sigkill_runner_temp" C00_STATE_DIR="relative/deploy-state" C00_CUTOVER_STATE_DIR="$sigkill_cutover_state" bash -c "set -euo pipefail; $post_pipe_cleanup_lines"
 rm -f "$sigkill_cutover_state/deploy.lock"
 ln -s "$state_dir/fake.lock" "$sigkill_cutover_state/deploy.lock"
-RUNNER_TEMP="$sigkill_runner_temp" C00_CUTOVER_STATE_DIR="$sigkill_cutover_state" bash -c "set -euo pipefail; $post_pipe_cleanup_lines"
+RUNNER_TEMP="$sigkill_runner_temp" C00_STATE_DIR="$sigkill_deploy_state" C00_CUTOVER_STATE_DIR="$sigkill_cutover_state" bash -c "set -euo pipefail; $post_pipe_cleanup_lines"
+rm -f "$sigkill_cutover_state/deploy.lock" "$sigkill_deploy_state/deploy.lock"
+ln -s "$state_dir/fake.lock" "$sigkill_deploy_state/deploy.lock"
+RUNNER_TEMP="$sigkill_runner_temp" C00_STATE_DIR="$sigkill_deploy_state" C00_CUTOVER_STATE_DIR="$sigkill_cutover_state" bash -c "set -euo pipefail; $post_pipe_cleanup_lines"
 if [ ! -d "$sigkill_runner_temp/multica-docker-config.keep92" ]; then
   echo "scenario workflow-sigkill-parent-cleanup: unsafe root/lock validation failed to preserve keep92" >&2
   exit 1
 fi
-rm -f "$sigkill_cutover_state/deploy.lock"
-RUNNER_TEMP="$sigkill_runner_temp" C00_CUTOVER_STATE_DIR="$sigkill_cutover_state" bash -c "set -euo pipefail; $post_pipe_cleanup_lines"
+rm -f "$sigkill_deploy_state/deploy.lock" "$sigkill_cutover_state/deploy.lock"
+RUNNER_TEMP="$sigkill_runner_temp" C00_STATE_DIR="$sigkill_deploy_state" C00_CUTOVER_STATE_DIR="$sigkill_cutover_state" bash -c "set -euo pipefail; $post_pipe_cleanup_lines"
 if [ -d "$sigkill_runner_temp/multica-docker-config.keep92" ]; then
   echo "scenario workflow-sigkill-parent-cleanup: valid cleanup after restoring lock failed to remove keep92" >&2
   exit 1

@@ -500,7 +500,10 @@ jobs:
           set -e
           (
             . deploy/cd/deploy-lib.sh
-            ghcr_cleanup_stale_configs "${C00_CUTOVER_STATE_DIR:-}" "${RUNNER_TEMP:-}" "${C00_CUTOVER_STATE_DIR:-}"
+            ghcr_cleanup_stale_configs \
+              --lock-dir "${C00_STATE_DIR:-}" \
+              --lock-dir "${C00_CUTOVER_STATE_DIR:-}" \
+              -- "${RUNNER_TEMP:-}" "${C00_STATE_DIR:-}" "${C00_CUTOVER_STATE_DIR:-}"
           ) || true
 
           # CHE-773: bounded post-deploy observation — the public route and
@@ -524,13 +527,17 @@ jobs:
       - name: Record outcome
         if: always()
         env:
+          C00_STATE_DIR: ${{ secrets.C00_STATE_DIR }}
           C00_CUTOVER_STATE_DIR: ${{ secrets.C00_CUTOVER_STATE_DIR }}
         shell: bash
         run: |
           if [ -f deploy/cd/deploy-lib.sh ]; then
             (
               . deploy/cd/deploy-lib.sh
-              ghcr_cleanup_stale_configs "${C00_CUTOVER_STATE_DIR:-}" "${RUNNER_TEMP:-}" "${C00_CUTOVER_STATE_DIR:-}"
+              ghcr_cleanup_stale_configs \
+                --lock-dir "${C00_STATE_DIR:-}" \
+                --lock-dir "${C00_CUTOVER_STATE_DIR:-}" \
+                -- "${RUNNER_TEMP:-}" "${C00_STATE_DIR:-}" "${C00_CUTOVER_STATE_DIR:-}"
             ) || true
           fi
           if [ "${{ job.status }}" = "success" ]; then

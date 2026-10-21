@@ -734,32 +734,43 @@ immediately before the pull step using an isolated run-scoped `0700`
 `DOCKER_CONFIG` temporary directory allocated under `RUNNER_TEMP` (or
 `$state_dir` when `RUNNER_TEMP` is unset during a manual `--state-dir`
 invocation, falling back to `TMPDIR` or `/tmp` only when neither is set). Under
-the `deploy.lock` `flock`, `ghcr_login` first sweeps any stale
+the `deploy.lock` `flock`, `ghcr_login` first sweeps any unlocked stale
 `multica-docker-config.*` directories left behind in the temporary base or
-`$state_dir` by an earlier interrupted run before allocating its new directory.
+`$state_dir` by an earlier interrupted run before allocating and holding a
+non-blocking `flock` on its new `multica-docker-config.XXXXXX` directory for the
+duration of the login/pull window (released by `ghcr_logout` or automatically by
+the kernel if the process terminates via `SIGKILL`).
 If the configured temporary base is empty/invalid or `mktemp -d`, `chmod 700`,
-or `cli-plugins` symlink creation fails, `ghcr_login` fails closed (returns
-nonzero before `docker login` runs) without exporting `DOCKER_CONFIG` and
-without writing or deleting the runner user's shared `~/.docker/config.json`.
+directory `flock`, or `cli-plugins` symlink creation fails, `ghcr_login` fails
+closed (returns nonzero before `docker login` runs) without exporting
+`DOCKER_CONFIG` and without writing or deleting the runner user's shared
+`~/.docker/config.json`.
 Immediately after `compose pull` completes (and on any pull or login failure
 branch, as well as on bash's `EXIT` trap), `ghcr_logout` logs out against that
-isolated `DOCKER_CONFIG` directory, removes the directory, and unsets
-`DOCKER_CONFIG` and `GHCR_PULL_TOKEN` before any post-pull step (digest
-verification, pre-drain checks, incumbent drain, quiescence final-gate,
-one-shot migration, container startup, health checks, or router switch) runs;
-when `GHCR_PULL_TOKEN` is unset, both steps are skipped (local `--dry-run`
-runs, or a host with its own credential store). In addition, `cd-deploy.yml`
-invokes `ghcr_cleanup_stale_configs` (from `deploy/cd/deploy-lib.sh`) both
-immediately after the `env -i ... bash -s` cutover pipeline returns and in the
-`if: always()` step (`Record outcome`). `ghcr_cleanup_stale_configs` acquires a
-non-blocking (or bounded `MULTICA_CLEANUP_LOCK_WAIT_SECONDS`) `flock` on
-`${C00_CUTOVER_STATE_DIR%/}/deploy.lock` before sweeping
-`${RUNNER_TEMP%/}/multica-docker-config.*` and
+isolated `DOCKER_CONFIG` directory, removes the directory, releases the
+per-directory `flock`, and unsets `DOCKER_CONFIG` and `GHCR_PULL_TOKEN` before
+any post-pull step (digest verification, pre-drain checks, incumbent drain,
+quiescence final-gate, one-shot migration, container startup, health checks, or
+router switch) runs; when `GHCR_PULL_TOKEN` is unset, both steps are skipped
+(local `--dry-run` runs, or a host with its own credential store). In addition,
+`cd-deploy.yml` invokes `ghcr_cleanup_stale_configs` (from
+`deploy/cd/deploy-lib.sh`) both immediately after the `env -i ... bash -s`
+cutover pipeline returns and in the `if: always()` step (`Record outcome`).
+`ghcr_cleanup_stale_configs` validates all configured state-root lock
+directories (`--lock-dir "${C00_STATE_DIR:-}" --lock-dir
+"${C00_CUTOVER_STATE_DIR:-}"`), acquires non-blocking (or bounded
+`MULTICA_CLEANUP_LOCK_WAIT_SECONDS`) `flock`s on both
+`${C00_STATE_DIR%/}/deploy.lock` and `${C00_CUTOVER_STATE_DIR%/}/deploy.lock`
+in canonical sorted order before sweeping
+`${RUNNER_TEMP%/}/multica-docker-config.*`,
+`${C00_STATE_DIR%/}/multica-docker-config.*`, and
 `${C00_CUTOVER_STATE_DIR%/}/multica-docker-config.*` (validating absolute
-non-symlink roots and removing only user-owned non-symlink directories), and
-skips without clobbering `deploy_status` if another invocation currently holds
-`deploy.lock` so workflow cleanup never deletes a concurrent manual invocation's
-active `DOCKER_CONFIG`. Remaining limitation (Option B containment; actual C00
+non-symlink roots and removing only unlocked user-owned non-symlink
+directories), and skips without clobbering `deploy_status` if any required
+`deploy.lock` is held by another active invocation so workflow cleanup never
+deletes a concurrent manual `deploy.sh` or `cutover.sh` invocation's active
+`DOCKER_CONFIG` even when `C00_STATE_DIR` and `C00_CUTOVER_STATE_DIR` are
+distinct roots sharing `RUNNER_TEMP`. Remaining limitation (Option B containment; actual C00
 host/runner cleanup remains `NOT-VERIFIED` and requires operational verification
 on C00 before activation): `SIGKILL` (or an abrupt host/runner crash) bypasses
 bash `EXIT` traps. While post-pull steps no longer have a live `config.json` on
@@ -785,11 +796,13 @@ Covered by `deploy/cd/test-deploy.sh`'s `ghcr-login-happy-path`,
 `ghcr-login-cutover-env-i-empty-runner-temp`,
 `ghcr-logout-before-migrate-and-stale-sweep`,
 `ghcr-manual-no-runner-temp-uses-state-dir`,
-`workflow-cleanup-concurrent-manual-lock`, and
+`workflow-cleanup-concurrent-manual-lock`,
+`workflow-cleanup-distinct-state-roots`, and
 `workflow-sigkill-parent-cleanup` scenarios and
 `deploy/cd/test-cutover.sh`'s `ghcr-login-happy-path`, `ghcr-login-fails`,
 `ghcr-login-mktemp-fails`, `ghcr-logout-before-drain-and-stale-sweep`,
-`ghcr-cutover-manual-no-runner-temp-uses-state-dir`, and
-`ghcr-cutover-workflow-cleanup-concurrent-manual-lock` scenarios (mocked `docker
+`ghcr-cutover-manual-no-runner-temp-uses-state-dir`,
+`ghcr-cutover-workflow-cleanup-concurrent-manual-lock`, and
+`ghcr-cutover-distinct-roots` scenarios (mocked `docker
 login`/`logout`; a real end-to-end pull against GHCR is still pending the
 runner above).

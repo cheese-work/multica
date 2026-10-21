@@ -1105,10 +1105,10 @@ for cleanup_site in post-pipe record-outcome; do
   fi
 
   if [ "$cleanup_site" = "post-pipe" ]; then
-    MULTICA_CLEANUP_LOCK_WAIT_SECONDS=0 RUNNER_TEMP="$race_runner_temp" C00_CUTOVER_STATE_DIR="$state_dir" \
+    MULTICA_CLEANUP_LOCK_WAIT_SECONDS=0 RUNNER_TEMP="$race_runner_temp" C00_STATE_DIR="$state_dir" C00_CUTOVER_STATE_DIR="$state_dir" \
       bash -c "set -euo pipefail; deploy_status=9; $post_pipe_cleanup_lines; [ \"\$deploy_status\" -eq 9 ]"
   else
-    MULTICA_CLEANUP_LOCK_WAIT_SECONDS=0 RUNNER_TEMP="$race_runner_temp" C00_CUTOVER_STATE_DIR="$state_dir" \
+    MULTICA_CLEANUP_LOCK_WAIT_SECONDS=0 RUNNER_TEMP="$race_runner_temp" C00_STATE_DIR="$state_dir" C00_CUTOVER_STATE_DIR="$state_dir" \
       bash -c "set -euo pipefail; $record_outcome_cleanup_lines"
   fi
 
@@ -1128,6 +1128,98 @@ for cleanup_site in post-pipe record-outcome; do
     echo "scenario ghcr-cutover-workflow-cleanup-concurrent-manual-lock ($cleanup_site): manual cutover failed with exit $manual_status: $(cat "$state_dir/manual-cutover.out")" >&2
     exit 1
   fi
+done
+
+# Distinct-root interleaving in cutover.sh: while a concurrent invocation holds
+# C00_STATE_DIR/deploy.lock (distinct from C00_CUTOVER_STATE_DIR) with an
+# active DOCKER_CONFIG under shared RUNNER_TEMP, neither workflow cleanup site
+# may delete that active DOCKER_CONFIG; and while manual cutover.sh holds
+# C00_CUTOVER_STATE_DIR/deploy.lock with shared RUNNER_TEMP and a distinct
+# C00_STATE_DIR, neither workflow cleanup site may delete its active
+# DOCKER_CONFIG.
+for cleanup_site in post-pipe record-outcome; do
+  state_dir="$(fresh_scenario_dir "ghcr-cutover-distinct-roots-$cleanup_site")"
+  distinct_deploy_state="$state_dir/c00-state-dir"
+  distinct_cutover_state="$state_dir/c00-cutover-state-dir"
+  race_runner_temp="$state_dir/runner-temp"
+  mkdir -p "$distinct_deploy_state" "$distinct_cutover_state/control" "$race_runner_temp"
+  touch "$distinct_cutover_state/control/pause-on-pull"
+
+  # Case A: manual cutover holds C00_CUTOVER_STATE_DIR/deploy.lock while
+  # allocating under shared RUNNER_TEMP and C00_STATE_DIR is distinct.
+  (
+    RUNNER_TEMP="$race_runner_temp" GHCR_PULL_TOKEN=manual-cutover-distinct-pat \
+      run_cutover "$distinct_cutover_state" >"$state_dir/manual-cutover.out" 2>&1
+  ) &
+  manual_pid=$!
+
+  for _ in $(seq 1 100); do
+    [ -f "$distinct_cutover_state/control/pull-ready" ] && break
+    /bin/sleep 0.05
+  done
+  if [ ! -f "$distinct_cutover_state/control/pull-ready" ]; then
+    kill "$manual_pid" 2>/dev/null || true
+    wait "$manual_pid" 2>/dev/null || true
+    echo "scenario ghcr-cutover-distinct-roots ($cleanup_site): manual cutover never reached pull-ready: $(cat "$state_dir/manual-cutover.out" 2>/dev/null)" >&2
+    exit 1
+  fi
+  active_manual_config="$(cat "$distinct_cutover_state/control/pull-ready")"
+  if [ -z "$active_manual_config" ] || [ ! -f "$active_manual_config/config.json" ]; then
+    kill "$manual_pid" 2>/dev/null || true
+    wait "$manual_pid" 2>/dev/null || true
+    echo "scenario ghcr-cutover-distinct-roots ($cleanup_site): expected active config.json at '$active_manual_config'" >&2
+    exit 1
+  fi
+
+  if [ "$cleanup_site" = "post-pipe" ]; then
+    MULTICA_CLEANUP_LOCK_WAIT_SECONDS=0 RUNNER_TEMP="$race_runner_temp" \
+      C00_STATE_DIR="$distinct_deploy_state" C00_CUTOVER_STATE_DIR="$distinct_cutover_state" \
+      bash -c "set -euo pipefail; deploy_status=9; $post_pipe_cleanup_lines; [ \"\$deploy_status\" -eq 9 ]"
+  else
+    MULTICA_CLEANUP_LOCK_WAIT_SECONDS=0 RUNNER_TEMP="$race_runner_temp" \
+      C00_STATE_DIR="$distinct_deploy_state" C00_CUTOVER_STATE_DIR="$distinct_cutover_state" \
+      bash -c "set -euo pipefail; $record_outcome_cleanup_lines"
+  fi
+
+  if [ ! -f "$active_manual_config/config.json" ]; then
+    touch "$distinct_cutover_state/control/release-pull"
+    wait "$manual_pid" 2>/dev/null || true
+    echo "scenario ghcr-cutover-distinct-roots ($cleanup_site): workflow cleanup deleted active cutover DOCKER_CONFIG '$active_manual_config' while C00_CUTOVER_STATE_DIR/deploy.lock was held" >&2
+    exit 1
+  fi
+
+  touch "$distinct_cutover_state/control/release-pull"
+  set +e
+  wait "$manual_pid"
+  manual_status=$?
+  set -e
+  if [ "$manual_status" -ne 0 ]; then
+    echo "scenario ghcr-cutover-distinct-roots ($cleanup_site): manual cutover failed with exit $manual_status: $(cat "$state_dir/manual-cutover.out")" >&2
+    exit 1
+  fi
+
+  # Case B: concurrent process holds C00_STATE_DIR/deploy.lock (distinct from
+  # C00_CUTOVER_STATE_DIR) with an active DOCKER_CONFIG in shared RUNNER_TEMP.
+  active_deploy_config="$race_runner_temp/multica-docker-config.active-deploy-$cleanup_site"
+  mkdir -p "$active_deploy_config"
+  printf '{"auths":{"ghcr.io":{}}}\n' >"$active_deploy_config/config.json"
+  exec 8>"$distinct_deploy_state/deploy.lock"
+  flock 8
+  if [ "$cleanup_site" = "post-pipe" ]; then
+    MULTICA_CLEANUP_LOCK_WAIT_SECONDS=0 RUNNER_TEMP="$race_runner_temp" \
+      C00_STATE_DIR="$distinct_deploy_state" C00_CUTOVER_STATE_DIR="$distinct_cutover_state" \
+      bash -c "set -euo pipefail; deploy_status=9; $post_pipe_cleanup_lines; [ \"\$deploy_status\" -eq 9 ]"
+  else
+    MULTICA_CLEANUP_LOCK_WAIT_SECONDS=0 RUNNER_TEMP="$race_runner_temp" \
+      C00_STATE_DIR="$distinct_deploy_state" C00_CUTOVER_STATE_DIR="$distinct_cutover_state" \
+      bash -c "set -euo pipefail; $record_outcome_cleanup_lines"
+  fi
+  exec 8>&-
+  if [ ! -f "$active_deploy_config/config.json" ]; then
+    echo "scenario ghcr-cutover-distinct-roots ($cleanup_site): workflow cleanup deleted active deploy DOCKER_CONFIG '$active_deploy_config' while C00_STATE_DIR/deploy.lock was held (distinct from C00_CUTOVER_STATE_DIR)" >&2
+    exit 1
+  fi
+  rm -rf "$active_deploy_config"
 done
 
 # ---------------------------------------------------------------------------
