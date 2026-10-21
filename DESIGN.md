@@ -43,6 +43,7 @@ Every page shows: loading, empty, error with a retry, offline or disconnected, r
 
 - `SettingsViewTabs` is not a full tab pattern (no panel link, 28 px). A new tabbed Settings page needs `Tabs` or a fix to that component first.
 - Phone page title and navigation are owned by `settings-page.tsx`, not by each tab. A tab design must not hide them.
+- DM follow-up strip (`dm-wakeup-chip` rev-2 A): the strip has no visible group label, so a user can overlook it (UX verdict `01a158ba-682c-71b3-a029-92ea70549b96`). Desktop Cancel is 24 px. Live focus order and screen-reader output were not tested. The build slice settles the label and the target size.
 
 ## Repository rules (from main)
 
@@ -70,6 +71,7 @@ Use semantic tokens from `packages/ui/styles/tokens.css`: surface, border, muted
 - Admin-only controls stay visible to members, disabled, with a one-line reason.
 - Mobile notification settings (`apps/mobile`, `dm-notifications-mobile` rev-1 A): one section per source (Inbox notifications, Direct messages), each led by an In-app switch row. With Inbox In-app off, the event rows are dimmed and locked. While disconnected, the switches are locked under a warning banner.
 - Mobile Inbox DM rows (same revision): the issue-row layout with a chat glyph where the status icon sits, a "New reply" / "N new replies" / "Decision needed" second line, and filter chips under the header (All, Unread, Direct messages).
+- DM follow-up strip (`dm-wakeup-chip` rev-2 A, web and desktop): a quiet bordered strip tucked behind the composer, the same layer as the chat queue (`packages/views/chat/components/chat-queue.tsx`). One row per pending follow-up: clock icon, "<agent> checks back 11:40 ICT" (or "when CHE-1812 is done, or by 11:40 ICT" for a condition), the agent's instruction on a second line (two lines at phone width), and a Cancel button at the row's end. At most 3 rows; the strip is 168 px high at most and scrolls. Nothing renders when none is pending. Times are in ICT. Cancel is natively disabled while cancelling and while offline, with the reason in a visible banner.
 
 ## Approved revisions
 
@@ -79,6 +81,7 @@ Use semantic tokens from `packages/ui/styles/tokens.css`: surface, border, muted
 | jev-governance-tab | 4 | C | 268 | `a32ec00a3ee38cbdf9336c3c953f7cf840ace38b` |
 | dm-notifications-mobile | 1 | A | 277 | `a768e4532ac3f193ece7b552308a95eabe97619b` |
 | bare-key-chip-stability | 1 | B | 294 | `849203d51f285ed2807d1f75cf0890d32e5448a4` |
+| dm-wakeup-chip | 2 | A | 323 | `89d22f879ac88d4ce2276702f7bdaef5524736ce` |
 
 Each row is written before its merge, as the standard requires. A design is approved when Cheese merges its PR: PR 255 for `wakeups-pause`, PR 268 for `jev-governance-tab`, PR 277 for `dm-notifications-mobile`. The merge commit is read from GitHub and is not written here.
 
@@ -87,3 +90,4 @@ The `jev-governance-tab` row records a selection only. Cheese chose direction C 
 The `dm-notifications-mobile` row records a selection only. Cheese chose direction A on CHE-1811 (comment `01a14243-3674-7796-aaf2-b9354a94065e`). The commit in that row is the `rev-1` revision commit. No approval exists until PR 277 merges.
 
 The `bare-key-chip-stability` row records a selection only. Cheese chose direction B (14 rem, 224 px) in the native quote on CHE-1827, comment `01a15750-f3e6-74f1-9675-771347dc32f2`, item 2. The commit in that row is the scored `rev-1` revision commit, not the commit that records the selection. No approval exists until PR 294 merges.
+The `dm-wakeup-chip` row records a selection only. Cheese chose direction A in the native reply "A" on CHE-1874, comment `01a15952-f42e-7b9c-8b91-f8662101ff1a`. The commit in that row is the scored `rev-2` revision commit, not the commit that records the selection. The UX verdict for that commit is comment `01a158ba-682c-71b3-a029-92ea70549b96`. No approval exists until PR 323 merges.
