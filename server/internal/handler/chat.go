@@ -217,6 +217,7 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 				ContinuedFromSessionID: uuidToPtr(s.ContinuedFromSessionID),
 				ForkedFromSessionID:    uuidToPtr(s.ForkedFromSessionID),
 				ForkLastMessageID:      uuidToPtr(s.ForkLastMessageID),
+				ForkSourceMessageID:    uuidToPtr(s.ForkSourceMessageID),
 				ForkMessageCount:       int4ToPtr(s.ForkMessageCount),
 				WorkspaceID:            uuidToString(s.WorkspaceID),
 				AgentID:                uuidToString(s.AgentID),
@@ -252,6 +253,7 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 				ContinuedFromSessionID: uuidToPtr(s.ContinuedFromSessionID),
 				ForkedFromSessionID:    uuidToPtr(s.ForkedFromSessionID),
 				ForkLastMessageID:      uuidToPtr(s.ForkLastMessageID),
+				ForkSourceMessageID:    uuidToPtr(s.ForkSourceMessageID),
 				ForkMessageCount:       int4ToPtr(s.ForkMessageCount),
 				WorkspaceID:            uuidToString(s.WorkspaceID),
 				AgentID:                uuidToString(s.AgentID),
@@ -2040,6 +2042,7 @@ type ChatSessionResponse struct {
 	ContinuedFromSessionID *string `json:"continued_from_session_id,omitempty"`
 	ForkedFromSessionID    *string `json:"forked_from_session_id,omitempty"`
 	ForkLastMessageID      *string `json:"fork_last_message_id,omitempty"`
+	ForkSourceMessageID    *string `json:"fork_source_message_id,omitempty"`
 	ForkMessageCount       *int32  `json:"fork_message_count,omitempty"`
 	WorkspaceID            string  `json:"workspace_id"`
 	AgentID                string  `json:"agent_id"`
@@ -2210,6 +2213,7 @@ func chatSessionToResponse(s db.ChatSession) ChatSessionResponse {
 		ContinuedFromSessionID: uuidToPtr(s.ContinuedFromSessionID),
 		ForkedFromSessionID:    uuidToPtr(s.ForkedFromSessionID),
 		ForkLastMessageID:      uuidToPtr(s.ForkLastMessageID),
+		ForkSourceMessageID:    uuidToPtr(s.ForkSourceMessageID),
 		ForkMessageCount:       int4ToPtr(s.ForkMessageCount),
 		WorkspaceID:            uuidToString(s.WorkspaceID),
 		AgentID:                uuidToString(s.AgentID),

@@ -134,13 +134,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          upstream_version="$(tr -d '[:space:]' < UPSTREAM_VERSION)"
+          if [[ ! "$upstream_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid UPSTREAM_VERSION: '$upstream_version'."
+            exit 1
+          fi
+          build_date="$(git show -s --format=%cI "$GITHUB_SHA")"
+          build_stamp="$(sh scripts/release-stamp.sh "$build_date")"
           docker buildx build \
             --platform linux/amd64 \
             --provenance=mode=max \
             --sbom=true \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-            --build-arg "VERSION=sha-${GITHUB_SHA}" \
+            --build-arg "VERSION=${upstream_version}" \
+            --build-arg "BUILD=${build_stamp}" \
             --build-arg "COMMIT=${GITHUB_SHA}" \
             --metadata-file backend-metadata.json \
             --push \
@@ -152,14 +160,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          upstream_version="$(tr -d '[:space:]' < UPSTREAM_VERSION)"
+          if [[ ! "$upstream_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid UPSTREAM_VERSION: '$upstream_version'."
+            exit 1
+          fi
           build_date="$(git show -s --format=%cI "$GITHUB_SHA")"
+          build_stamp="$(sh scripts/release-stamp.sh "$build_date")"
           docker buildx build \
             --platform linux/amd64 \
             --provenance=mode=max \
             --sbom=true \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-            --build-arg "NEXT_PUBLIC_APP_VERSION=sha-${GITHUB_SHA}" \
+            --build-arg "NEXT_PUBLIC_APP_VERSION=${upstream_version}" \
+            --build-arg "NEXT_PUBLIC_APP_BUILD=${build_stamp}" \
+            --build-arg "NEXT_PUBLIC_APP_COMMIT=${GITHUB_SHA}" \
             --build-arg "NEXT_PUBLIC_BUILD_DATE=${build_date}" \
             --metadata-file web-metadata.json \
             --push \
