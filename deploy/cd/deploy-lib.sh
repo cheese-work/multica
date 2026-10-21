@@ -397,6 +397,66 @@ ledger_at_or_after() {
 # pull without an extra existence check of its own.
 _multica_temp_docker_config=""
 
+_ghcr_sweep_config_root() {
+  local root="${1:-}"
+  case "$root" in
+    "" | "/" | "." | "..") return 0 ;;
+    /*) ;;
+    *) return 0 ;;
+  esac
+  local clean_root="${root%/}"
+  if [ -z "$clean_root" ] || [ "$clean_root" = "/" ] || [ -L "$clean_root" ] || [ ! -d "$clean_root" ] || [ ! -O "$clean_root" ]; then
+    return 0
+  fi
+  local entry
+  for entry in "$clean_root"/multica-docker-config.*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    if [ ! -L "$entry" ] && [ -d "$entry" ] && [ -O "$entry" ]; then
+      rm -rf -- "$entry" 2>/dev/null || true
+    fi
+  done
+}
+
+# ghcr_cleanup_stale_configs: sweep residual multica-docker-config.* directories
+# across one or more candidate roots ONLY while holding the shared deploy.lock
+# under $lock_state_dir. Called by cd-deploy.yml's post-cutover and always()
+# cleanup steps so a workflow cleanup never races a concurrent manual
+# deploy.sh / cutover.sh invocation that acquired deploy.lock and allocated an
+# active state-root DOCKER_CONFIG after the workflow's own cutover exited.
+# If lock_state_dir is invalid/missing or the non-blocking/bounded flock is
+# currently held by another invocation, skips cleanup and returns 0 so that
+# neither the active invocation's credentials nor the workflow's recorded
+# deploy_status is clobbered.
+ghcr_cleanup_stale_configs() {
+  local lock_state_dir="${1:-}"
+  shift || true
+  case "$lock_state_dir" in
+    "" | "/" | "." | "..") return 0 ;;
+    /*) ;;
+    *) return 0 ;;
+  esac
+  local clean_lock_dir="${lock_state_dir%/}"
+  if [ -z "$clean_lock_dir" ] || [ "$clean_lock_dir" = "/" ] || [ -L "$clean_lock_dir" ] || [ ! -d "$clean_lock_dir" ] || [ ! -O "$clean_lock_dir" ]; then
+    return 0
+  fi
+  local lock_file="$clean_lock_dir/deploy.lock"
+  if [ -L "$lock_file" ] || { [ -e "$lock_file" ] && { [ ! -f "$lock_file" ] || [ ! -O "$lock_file" ]; }; }; then
+    return 0
+  fi
+  local wait_secs="${MULTICA_CLEANUP_LOCK_WAIT_SECONDS:-0}"
+  (
+    exec 9>"$lock_file" || exit 0
+    if ! flock -w "$wait_secs" 9; then
+      echo "==> skipping multica-docker-config cleanup: deploy lock ${lock_file} is held by another active invocation" >&2
+      exit 0
+    fi
+    local root
+    for root in "$@"; do
+      _ghcr_sweep_config_root "$root"
+    done
+  ) || true
+}
+
 ghcr_login() {
   if [ -z "${GHCR_PULL_TOKEN:-}" ]; then
     return 0
@@ -416,11 +476,9 @@ ghcr_login() {
       echo "!! ghcr_login: temporary directory base '${tmp_base}' is invalid" >&2
       return 1
     fi
-    if [ -d "$tmp_base" ]; then
-      rm -rf "${tmp_base%/}"/multica-docker-config.* 2>/dev/null || true
-    fi
+    _ghcr_sweep_config_root "$tmp_base"
     if [ -n "${state_dir:-}" ] && [ -d "$state_dir" ] && [ "${state_dir%/}" != "${tmp_base%/}" ]; then
-      rm -rf "${state_dir%/}"/multica-docker-config.* 2>/dev/null || true
+      _ghcr_sweep_config_root "$state_dir"
     fi
     local tmp_dir=""
     if ! tmp_dir="$(mktemp -d "${tmp_base%/}/multica-docker-config.XXXXXX")" || [ -z "$tmp_dir" ] || [ ! -d "$tmp_dir" ]; then

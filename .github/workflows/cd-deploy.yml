@@ -498,12 +498,10 @@ jobs:
             | env -i HOME="$HOME" PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" bash -s
           deploy_status=$?
           set -e
-          if [ -n "${RUNNER_TEMP:-}" ] && [ "${RUNNER_TEMP}" != "/" ]; then
-            rm -rf "${RUNNER_TEMP%/}"/multica-docker-config.* || true
-          fi
-          if [ -n "${C00_CUTOVER_STATE_DIR:-}" ] && [ "${C00_CUTOVER_STATE_DIR}" != "/" ]; then
-            rm -rf "${C00_CUTOVER_STATE_DIR%/}"/multica-docker-config.* || true
-          fi
+          (
+            . deploy/cd/deploy-lib.sh
+            ghcr_cleanup_stale_configs "${C00_CUTOVER_STATE_DIR:-}" "${RUNNER_TEMP:-}" "${C00_CUTOVER_STATE_DIR:-}"
+          ) || true
 
           # CHE-773: bounded post-deploy observation — the public route and
           # the router-selected upstream must stay healthy for 120s. Runs on
@@ -529,11 +527,11 @@ jobs:
           C00_CUTOVER_STATE_DIR: ${{ secrets.C00_CUTOVER_STATE_DIR }}
         shell: bash
         run: |
-          if [ -n "${RUNNER_TEMP:-}" ] && [ "${RUNNER_TEMP}" != "/" ]; then
-            rm -rf "${RUNNER_TEMP%/}"/multica-docker-config.* || true
-          fi
-          if [ -n "${C00_CUTOVER_STATE_DIR:-}" ] && [ "${C00_CUTOVER_STATE_DIR}" != "/" ]; then
-            rm -rf "${C00_CUTOVER_STATE_DIR%/}"/multica-docker-config.* || true
+          if [ -f deploy/cd/deploy-lib.sh ]; then
+            (
+              . deploy/cd/deploy-lib.sh
+              ghcr_cleanup_stale_configs "${C00_CUTOVER_STATE_DIR:-}" "${RUNNER_TEMP:-}" "${C00_CUTOVER_STATE_DIR:-}"
+            ) || true
           fi
           if [ "${{ job.status }}" = "success" ]; then
             echo "Deployed ${{ needs.admission.outputs.source_sha }} to C00."

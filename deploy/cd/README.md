@@ -749,17 +749,24 @@ verification, pre-drain checks, incumbent drain, quiescence final-gate,
 one-shot migration, container startup, health checks, or router switch) runs;
 when `GHCR_PULL_TOKEN` is unset, both steps are skipped (local `--dry-run`
 runs, or a host with its own credential store). In addition, `cd-deploy.yml`
-removes `${RUNNER_TEMP%/}/multica-docker-config.*` and
-`${C00_CUTOVER_STATE_DIR%/}/multica-docker-config.*` both immediately after the
-`env -i ... bash -s` cutover pipeline returns and in the `if: always()` step
-(`Record outcome`). Remaining limitation (Option B containment; actual C00
+invokes `ghcr_cleanup_stale_configs` (from `deploy/cd/deploy-lib.sh`) both
+immediately after the `env -i ... bash -s` cutover pipeline returns and in the
+`if: always()` step (`Record outcome`). `ghcr_cleanup_stale_configs` acquires a
+non-blocking (or bounded `MULTICA_CLEANUP_LOCK_WAIT_SECONDS`) `flock` on
+`${C00_CUTOVER_STATE_DIR%/}/deploy.lock` before sweeping
+`${RUNNER_TEMP%/}/multica-docker-config.*` and
+`${C00_CUTOVER_STATE_DIR%/}/multica-docker-config.*` (validating absolute
+non-symlink roots and removing only user-owned non-symlink directories), and
+skips without clobbering `deploy_status` if another invocation currently holds
+`deploy.lock` so workflow cleanup never deletes a concurrent manual invocation's
+active `DOCKER_CONFIG`. Remaining limitation (Option B containment; actual C00
 host/runner cleanup remains `NOT-VERIFIED` and requires operational verification
 on C00 before activation): `SIGKILL` (or an abrupt host/runner crash) bypasses
 bash `EXIT` traps. While post-pull steps no longer have a live `config.json` on
-disk and the parent workflow step, `if: always()` step, and next `flock`-gated
-`ghcr_login` sweep `multica-docker-config.*`, a `SIGKILL` during the narrow
-`docker login` / `docker compose pull` window combined with simultaneous
-termination of the parent runner job leaves the `0700`
+disk and the lock-serialized parent workflow step, `if: always()` step, and next
+`flock`-gated `ghcr_login` sweep `multica-docker-config.*`, a `SIGKILL` during
+the narrow `docker login` / `docker compose pull` window combined with
+simultaneous termination of the parent runner job leaves the `0700`
 `multica-docker-config.XXXXXX/config.json` credential file under `RUNNER_TEMP`
 (or `$state_dir` for manual runs without `RUNNER_TEMP`) until the GitHub
 Actions runner service cleans `_work/_temp`, the next deploy/cutover runs, or
@@ -776,10 +783,13 @@ Covered by `deploy/cd/test-deploy.sh`'s `ghcr-login-happy-path`,
 `ghcr-login-mktemp-fails`, `ghcr-login-chmod-fails`, `ghcr-login-ln-fails`,
 `ghcr-login-cutover-env-i-runner-temp`,
 `ghcr-login-cutover-env-i-empty-runner-temp`,
-`ghcr-logout-before-migrate-and-stale-sweep`, and
-`ghcr-manual-no-runner-temp-uses-state-dir` scenarios and
+`ghcr-logout-before-migrate-and-stale-sweep`,
+`ghcr-manual-no-runner-temp-uses-state-dir`,
+`workflow-cleanup-concurrent-manual-lock`, and
+`workflow-sigkill-parent-cleanup` scenarios and
 `deploy/cd/test-cutover.sh`'s `ghcr-login-happy-path`, `ghcr-login-fails`,
-`ghcr-login-mktemp-fails`, `ghcr-logout-before-drain-and-stale-sweep`, and
-`ghcr-cutover-manual-no-runner-temp-uses-state-dir` scenarios (mocked `docker
+`ghcr-login-mktemp-fails`, `ghcr-logout-before-drain-and-stale-sweep`,
+`ghcr-cutover-manual-no-runner-temp-uses-state-dir`, and
+`ghcr-cutover-workflow-cleanup-concurrent-manual-lock` scenarios (mocked `docker
 login`/`logout`; a real end-to-end pull against GHCR is still pending the
 runner above).

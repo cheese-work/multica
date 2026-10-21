@@ -195,6 +195,17 @@ if [ "\$1" = "compose" ]; then
           exit 1
         fi
       fi
+      if [ -f "\$control_dir/pause-on-pull" ]; then
+        printf '%s\n' "\${DOCKER_CONFIG:-}" >"\$control_dir/pull-ready"
+        for _ in \$(seq 1 100); do
+          [ -f "\$control_dir/release-pull" ] && break
+          /bin/sleep 0.05
+        done
+      fi
+      if [ -n "\${GHCR_PULL_TOKEN:-}" ] && { [ -z "\${DOCKER_CONFIG:-}" ] || [ ! -f "\${DOCKER_CONFIG}/config.json" ]; }; then
+        echo "mock docker: active DOCKER_CONFIG \${DOCKER_CONFIG:-<unset>}/config.json missing during pull" >&2
+        exit 1
+      fi
       exit 0
       ;;
     run)
@@ -1043,6 +1054,81 @@ if [ -e "$state_dir/multica-docker-config.stale77" ]; then
   echo "scenario ghcr-cutover-manual-no-runner-temp-uses-state-dir: stale directory under state_dir was not swept" >&2
   exit 1
 fi
+
+# Interleaving race: a concurrent manual cutover.sh acquires $state_dir/deploy.lock
+# and creates an active state-root DOCKER_CONFIG while paused mid-pull.
+# Neither workflow cleanup site in cd-deploy.yml may delete that active
+# configuration while deploy.lock is held; once the manual cutover finishes
+# and releases deploy.lock, workflow cleanup removes eligible stale residue.
+post_pipe_cleanup_lines="$(awk '
+  /deploy_status=\$\?/ { capture=1; next }
+  capture && /cp deploy\/cd\/ab-health-check\.sh/ { exit }
+  capture { print }
+' "$root_dir/.github/workflows/cd-deploy.yml")"
+[ -n "$post_pipe_cleanup_lines" ] || { echo "scenario ghcr-cutover-workflow-cleanup-concurrent-manual-lock: could not extract post-pipe cleanup from cd-deploy.yml" >&2; exit 1; }
+
+record_outcome_cleanup_lines="$(awk '
+  /- name: Record outcome/ { in_step=1; next }
+  in_step && /run: \|/ { capture=1; next }
+  capture && /if \[ "\$\{\{ job\.status \}\}" = "success" \]; then/ { exit }
+  capture { print }
+' "$root_dir/.github/workflows/cd-deploy.yml")"
+[ -n "$record_outcome_cleanup_lines" ] || { echo "scenario ghcr-cutover-workflow-cleanup-concurrent-manual-lock: could not extract Record outcome cleanup from cd-deploy.yml" >&2; exit 1; }
+
+for cleanup_site in post-pipe record-outcome; do
+  state_dir="$(fresh_scenario_dir "ghcr-cutover-workflow-cleanup-race-$cleanup_site")"
+  race_runner_temp="$state_dir/runner-temp"
+  mkdir -p "$state_dir/control" "$race_runner_temp"
+  touch "$state_dir/control/pause-on-pull"
+  (
+    unset RUNNER_TEMP
+    GHCR_PULL_TOKEN=manual-cutover-pat run_cutover "$state_dir" >"$state_dir/manual-cutover.out" 2>&1
+  ) &
+  manual_pid=$!
+
+  for _ in $(seq 1 100); do
+    [ -f "$state_dir/control/pull-ready" ] && break
+    /bin/sleep 0.05
+  done
+  if [ ! -f "$state_dir/control/pull-ready" ]; then
+    kill "$manual_pid" 2>/dev/null || true
+    wait "$manual_pid" 2>/dev/null || true
+    echo "scenario ghcr-cutover-workflow-cleanup-concurrent-manual-lock ($cleanup_site): manual cutover never reached pull-ready: $(cat "$state_dir/manual-cutover.out" 2>/dev/null)" >&2
+    exit 1
+  fi
+  active_manual_config="$(cat "$state_dir/control/pull-ready")"
+  if [ -z "$active_manual_config" ] || [ ! -f "$active_manual_config/config.json" ]; then
+    kill "$manual_pid" 2>/dev/null || true
+    wait "$manual_pid" 2>/dev/null || true
+    echo "scenario ghcr-cutover-workflow-cleanup-concurrent-manual-lock ($cleanup_site): expected active config.json at '$active_manual_config'" >&2
+    exit 1
+  fi
+
+  if [ "$cleanup_site" = "post-pipe" ]; then
+    MULTICA_CLEANUP_LOCK_WAIT_SECONDS=0 RUNNER_TEMP="$race_runner_temp" C00_CUTOVER_STATE_DIR="$state_dir" \
+      bash -c "set -euo pipefail; deploy_status=9; $post_pipe_cleanup_lines; [ \"\$deploy_status\" -eq 9 ]"
+  else
+    MULTICA_CLEANUP_LOCK_WAIT_SECONDS=0 RUNNER_TEMP="$race_runner_temp" C00_CUTOVER_STATE_DIR="$state_dir" \
+      bash -c "set -euo pipefail; $record_outcome_cleanup_lines"
+  fi
+
+  if [ ! -f "$active_manual_config/config.json" ]; then
+    touch "$state_dir/control/release-pull"
+    wait "$manual_pid" 2>/dev/null || true
+    echo "scenario ghcr-cutover-workflow-cleanup-concurrent-manual-lock ($cleanup_site): workflow cleanup deleted active manual DOCKER_CONFIG '$active_manual_config' while deploy.lock was held" >&2
+    exit 1
+  fi
+
+  touch "$state_dir/control/release-pull"
+  set +e
+  wait "$manual_pid"
+  manual_status=$?
+  set -e
+  if [ "$manual_status" -ne 0 ]; then
+    echo "scenario ghcr-cutover-workflow-cleanup-concurrent-manual-lock ($cleanup_site): manual cutover failed with exit $manual_status: $(cat "$state_dir/manual-cutover.out")" >&2
+    exit 1
+  fi
+done
 
 # ---------------------------------------------------------------------------
 # Scenario 14: the reviewed controller runs from a disposable relocated
