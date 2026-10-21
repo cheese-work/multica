@@ -15,6 +15,7 @@ import {
 } from "../../editor";
 import { PASTE_AS_FILE_THRESHOLD } from "../../editor/paste-as-file";
 import { parseForkCommand } from "../../editor/extensions/parse-fork-command";
+import { parseDmClientCommand } from "../../editor/extensions/parse-dm-client-command";
 import type { ForkResult } from "./use-chat-fork";
 import {
   useCoordinatedUploads,
@@ -70,6 +71,18 @@ interface ChatInputProps {
    * message. Resolves with the outcome so the composer can show one error line.
    */
   onFork?: (message: string, attachmentIds: string[]) => Promise<ForkResult>;
+  /**
+   * DM commands the owner answers itself; nothing is sent to the agent. Pass a
+   * handler only when the command applies to the open DM: `/archive` and `/pin`
+   * on an active DM, `/unarchive` on an archived one. A handler that resolves
+   * `false` keeps the command in the box.
+   */
+  onStatistic?: () => void | boolean | Promise<void | boolean>;
+  onArchive?: () => void | boolean | Promise<void | boolean>;
+  onPin?: () => void | boolean | Promise<void | boolean>;
+  onUnarchive?: () => void | boolean | Promise<void | boolean>;
+  /** The open DM is archived: a send asks to unarchive first. Turns `/compact` off. */
+  sessionArchived?: boolean;
   onSend: (
     content: string,
     attachmentIds: string[] | undefined,
@@ -184,6 +197,11 @@ export function ChatInput({
   onSend,
   onRename,
   onFork,
+  onStatistic,
+  onArchive,
+  onPin,
+  onUnarchive,
+  sessionArchived,
   restoreDraftRequest,
   conversationStarterRequest,
   onConversationStarterApplied,
@@ -261,7 +279,12 @@ export function ChatInput({
   }, [draftKey]);
   // A fork input keeps the Send action even while a turn runs: a fork never
   // joins the agent's queue, so it is not gated by queue support.
-  const isForkInput = !!onFork && parseForkCommand(inputDraft) !== null;
+  const dmCommandHandlers = { statistic: onStatistic, archive: onArchive, pin: onPin, unarchive: onUnarchive };
+  const draftDmCommand = parseDmClientCommand(inputDraft);
+  // A DM command is answered locally and never joins the agent's queue either.
+  const isForkInput =
+    (!!onFork && parseForkCommand(inputDraft) !== null) ||
+    (!!draftDmCommand && !!dmCommandHandlers[draftDmCommand]);
   // `isEmpty` tracks the LIVE editor, which the persisted draft lags by a
   // debounce, so the send affordance cannot be derived from `inputDraft` alone.
   // But `isEmpty` is never re-derived when the composer switches draft slots
@@ -511,7 +534,9 @@ export function ChatInput({
       // These states disable the SubmitButton, but Mod+Enter bypasses it — so a
       // read-only or busy composer must still refuse the keyboard path.
       const fork = onFork ? parseForkCommand(content) : null;
-      if (disabled || noAgent || (isRunning && !allowSubmitWhileRunning && !fork)) {
+      const typedDmCommand = parseDmClientCommand(editorRef.current?.getText() ?? "");
+      const dmCommandHandler = typedDmCommand ? dmCommandHandlers[typedDmCommand] : undefined;
+      if (disabled || noAgent || (isRunning && !allowSubmitWhileRunning && !fork && !dmCommandHandler)) {
         logger.debug("input.send skipped", {
           disabled,
           noAgent,
@@ -608,6 +633,11 @@ export function ChatInput({
         commitInput({ clearEditor: editorDraftKeyRef.current === keyAtSend });
         return true;
       }
+      if (dmCommandHandler) {
+        if ((await dmCommandHandler()) === false) return false;
+        commitInput({ clearEditor: editorDraftKeyRef.current === keyAtSend });
+        return true;
+      }
       const command = onRename ? editorRef.current?.getText().trim() ?? "" : "";
       if (onRename && /^\/rename(?:\s|$)/.test(command)) {
         const title = command.slice("/rename".length).replace(/\s*[\r\n]+\s*/g, " ").trim();
@@ -695,6 +725,8 @@ export function ChatInput({
     ? t(($) => $.input.placeholder_no_agent)
     : compacting
     ? t(($) => $.input.placeholder_compacting)
+    : sessionArchived && !disabled
+    ? t(($) => $.input.placeholder_archived_send)
     : disabled
       ? agentArchived
         ? t(($) => $.input.placeholder_archived_agent)
@@ -835,6 +867,11 @@ export function ChatInput({
             enableSlashCommands
             enableRenameCommand={!!onRename}
             enableForkCommand={!!onFork}
+            enableStatisticCommand={!!onStatistic}
+            enableArchiveCommand={!!onArchive}
+            enablePinCommand={!!onPin}
+            enableUnarchiveCommand={!!onUnarchive}
+            enableCompactCommand={!sessionArchived}
             // The bubble menu carries the only affordance that can strip
             // formatting — "Normal text" (setParagraph) plus the mark/list
             // toggles. Once a `# ` input rule or a Markdown/HTML paste turns a
