@@ -35,6 +35,12 @@ const DOWNLOAD_URL = "https://multica.ai/download";
 export function HelpLauncher() {
   const { t, i18n } = useT("layout");
   const serverVersion = useConfigStore((state) => state.serverVersion);
+  const serverBuild = useConfigStore((state) => state.serverBuild);
+  const displayVersion = serverVersion
+    ? serverBuild
+      ? `${serverVersion}-${serverBuild}`
+      : serverVersion
+    : "";
   // Web-only: offering "download the desktop app" inside the desktop app is
   // nonsense, and this sidebar is shared — apps/desktop renders the same
   // AppSidebar as the web dashboard, so the entry has to be gated here.
@@ -119,7 +125,7 @@ export function HelpLauncher() {
           <MessageCircle className="h-3.5 w-3.5" />
           {t(($) => $.help.feedback)}
         </DropdownMenuItem>
-        {serverVersion && (
+        {displayVersion && (
           <>
             <DropdownMenuSeparator />
             {/* DropdownMenuLabel renders Base UI's Menu.GroupLabel, which reads
@@ -129,7 +135,7 @@ export function HelpLauncher() {
                 above the sidebar). */}
             <DropdownMenuGroup>
               <DropdownMenuLabel className="font-normal break-words">
-                {t(($) => $.help.server_version, { version: serverVersion })}
+                {t(($) => $.help.server_version, { version: displayVersion })}
               </DropdownMenuLabel>
             </DropdownMenuGroup>
           </>

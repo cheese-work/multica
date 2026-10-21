@@ -1,0 +1,84 @@
+# L2 of the DM archive, statistics and back-stack work (CHE-1755): web and desktop. The
+# statistics dialog, the /archive, /statistic, /pin and /unarchive commands, the archived-DM send
+# confirmation and the pin rules for archived DMs. Session-only statistics: the whole-conversation
+# chain total belongs to CHE-1782 and is not in this sheet. Slash commands /compact and /agent are
+# unchanged here; /agent is L6.
+#
+# Predecessor sources, verified on main at 70c7a33835b65108dd4cbd7e26ba3b60551617e3:
+#   L1  PR 266, merge 6d857ef388251af34b78c225116be3e37ff3b781 (GET /api/chat/sessions/{id}/usage).
+#       Final head c3843ade8e74b44850d7fb48db3be425a4e7fe73 equals the merged file contents.
+#       Signed PASS and OCR receipt: CHE-1757 comment 01a1410e-4987-7a25-b2ba-14b7e456a782.
+#   L1c PR 275, merge 74f406fca427ddeb6a757bee70127f3f667a670a (archived DMs are unpinned).
+#       Reviewed head a55221e86f43a8546dfbb4d7c8d7465fe4f41783; the merged head c6c76a452c86dc88761c68694f6e7f5e5dd6b8ec
+#       adds one merge-only commit of main (same 8 files, 217 insertions, 9 deletions).
+#       APPROVE: CHE-1801 comment 01a1418f-9920-7ea5-8c33-a5c27622cee5. OCR: 01a14188-c5ed-7944-90e9-2cb2301f25d0.
+#       Disposition: 01a1423c-4ca6-7e38-a466-c058d9467474.
+#   Usability on main: the 8 TestChatSessionUsage tests and the 6 archived-unpinned tests pass on a
+#   throwaway Postgres 17 migrated through 668. Merge is not review; this sheet claims no new PASS.
+issue: CHE-1759
+design: design/dm-stats-archive-menu/rev-2/C.html @ 70c7a33835b65108dd4cbd7e26ba3b60551617e3
+pages:
+  - id: chat-page-header-menu
+    url: /<workspace-slug>/chat?session=<id>   # desktop mounts the same ChatPage; same path on base and preview
+    keep:
+      - chat-more-menu-rename
+      - chat-more-menu-view-profile
+      - chat-more-menu-compact
+      - chat-more-menu-delete
+    change:
+      - chat-more-menu-statistics: "new first item with an (i) icon; opens the statistics dialog"
+      - chat-more-menu-pin: "new Pin or Unpin item for active DMs only; hidden on archived DMs"
+      - chat-more-menu-archive: "Archive on an active DM and Unarchive on an archived DM; awaits the server before navigating; shows a 5 s undo toast and a toast with the server error on failure, keeping the session open"
+    remove: []
+  - id: chat-statistics-dialog
+    url: /<workspace-slug>/chat?session=<id>   # new dialog; absent on base
+    keep: []
+    change:
+      - chat-stats-dialog: "new dialog: this DM's cost labelled Estimated (Partial when usage is missing), tokens, runs, agent run time, messages, by-model table, related DMs, Close"
+      - chat-stats-state-loading: "new skeleton in the final layout"
+      - chat-stats-state-empty: "new: cost shows a dash, never $0; messages and links still show"
+      - chat-stats-state-error: "new: 'Statistics could not be loaded. Nothing was recorded as zero.' with Retry; a malformed response shows this and never zeros"
+      - chat-stats-state-offline: "new: last numbers stay visible and dimmed, with the time in ICT and Retry"
+      - chat-stats-close: "new Close button; Esc closes and focus returns to the More menu button, or to the composer when opened with /statistic"
+    remove: []
+  - id: chat-composer-commands
+    url: /<workspace-slug>/chat?session=<id>
+    keep:
+      - chat-command-compact
+      - chat-command-rename
+      - chat-command-fork
+    change:
+      - chat-command-statistic: "new /statistic, client-only; opens the dialog and sends nothing to the agent"
+      - chat-command-archive: "new /archive, offered on active DMs only; client-only; awaits the server"
+      - chat-command-pin: "new /pin, offered on active DMs only; toggles the pin; client-only"
+      - chat-command-unarchive: "new /unarchive, offered on archived DMs only; unarchives at once with no dialog; sends nothing to the agent"
+    remove: []
+  - id: chat-archived-send-confirmation
+    url: /<workspace-slug>/chat?session=<id>   # archived DM
+    keep: []
+    change:
+      - chat-composer: "stays available on an archived DM; Send opens the confirmation instead of failing with a 409"
+      - chat-archived-send-dialog: "new: 'This DM is archived. Unarchive it and send?' with Unarchive and send, and Cancel. Confirm awaits the unarchive, then sends once. Cancel keeps the draft and changes nothing. A failed unarchive keeps the draft and shows the error"
+      - chat-open-newer-dm: "new primary action when the DM was continued: Open the newer DM pushes the newer DM; Unarchive and send stays secondary"
+    remove: []
+  - id: chat-thread-list
+    url: /<workspace-slug>/chat   # list and sidebar
+    keep:
+      - chat-thread-row
+      - chat-thread-group-recent
+    change:
+      - chat-thread-group-pinned: "unchanged group for active pinned DMs; archived DMs never appear in it"
+      - chat-thread-group-archived: "Archived group sorted by last activity only; no pin group and no pin icon"
+      - chat-thread-row-pin-item: "Pin and Unpin row action hidden for archived DMs"
+    remove: []
+  - id: floating-chat-window
+    url: /<workspace-slug>/issues/<issue-id>   # any workspace page with the floating chat open
+    keep:
+      - floating-chat-composer
+      - floating-chat-session-dropdown
+    change:
+      - chat-more-menu-statistics: "same item, order and dialog as the page header menu"
+      - chat-more-menu-archive: "same await-then-navigate, undo toast and failure toast as the page"
+      - chat-archived-send-dialog: "same confirmation component and the same Open the newer DM rule"
+      - chat-command-statistic: "same /statistic, /archive, /pin and /unarchive rules as the page composer"
+    remove: []
