@@ -969,6 +969,122 @@ if [ -e "$logged_docker_config" ]; then
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# CHE-1924 B1: mktemp / chmod failure inside `if ! ghcr_login` must fail
+# closed (return nonzero before `docker login`), never export an empty
+# DOCKER_CONFIG, and never write or delete the runner user's shared
+# ~/.docker/config.json.
+# ---------------------------------------------------------------------------
+state_dir="$(fresh_scenario_dir ghcr-login-mktemp-fails)"
+control_dir="$state_dir/control"
+mkdir -p "$control_dir"
+touch "$control_dir/inspect-resolves"
+mktemp_fail_home="$state_dir/home"
+mkdir -p "$mktemp_fail_home/.docker"
+printf '{"auths":{"existing.registry.internal":{}}}\n' >"$mktemp_fail_home/.docker/config.json"
+set +e
+output="$(HOME="$mktemp_fail_home" RUNNER_TEMP="$state_dir/nonexistent-runner-temp" GHCR_PULL_TOKEN=super-secret-pat run_deploy "$state_dir" 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" ghcr-login-mktemp-fails
+expect_contains "$output" "ghcr.io login failed" ghcr-login-mktemp-fails
+expect_not_contains "$output" "logging in to ghcr.io" ghcr-login-mktemp-fails
+if [ -f "$control_dir/registry-auth.log" ]; then
+  echo "scenario ghcr-login-mktemp-fails: registry-auth.log should not exist when mktemp fails, got: $(cat "$control_dir/registry-auth.log")" >&2
+  exit 1
+fi
+expect_contains "$(cat "$mktemp_fail_home/.docker/config.json")" "existing.registry.internal" ghcr-login-mktemp-fails
+expect_not_contains "$(cat "$mktemp_fail_home/.docker/config.json")" "ghcr.io" ghcr-login-mktemp-fails
+
+state_dir="$(fresh_scenario_dir ghcr-login-chmod-fails)"
+control_dir="$state_dir/control"
+chmod_fail_home="$state_dir/home"
+chmod_fail_runner_temp="$state_dir/runner-temp"
+chmod_fail_bin="$state_dir/chmod-fail-bin"
+mkdir -p "$control_dir" "$chmod_fail_home/.docker" "$chmod_fail_runner_temp" "$chmod_fail_bin"
+touch "$control_dir/inspect-resolves"
+printf '{"auths":{"existing.registry.internal":{}}}\n' >"$chmod_fail_home/.docker/config.json"
+real_chmod="$(command -v chmod)"
+cat >"$chmod_fail_bin/chmod" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = "700" ] && [[ "\${2:-}" == *multica-docker-config.* ]]; then
+  echo "mock chmod: forced permission failure on \$2" >&2
+  exit 1
+fi
+exec "$real_chmod" "\$@"
+EOF
+"$real_chmod" +x "$chmod_fail_bin/chmod"
+set +e
+output="$(PATH="$chmod_fail_bin:$PATH" HOME="$chmod_fail_home" RUNNER_TEMP="$chmod_fail_runner_temp" GHCR_PULL_TOKEN=super-secret-pat run_deploy "$state_dir" 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" ghcr-login-chmod-fails
+expect_contains "$output" "ghcr.io login failed" ghcr-login-chmod-fails
+expect_not_contains "$output" "logging in to ghcr.io" ghcr-login-chmod-fails
+if [ -f "$control_dir/registry-auth.log" ]; then
+  echo "scenario ghcr-login-chmod-fails: registry-auth.log should not exist when chmod fails, got: $(cat "$control_dir/registry-auth.log")" >&2
+  exit 1
+fi
+expect_contains "$(cat "$chmod_fail_home/.docker/config.json")" "existing.registry.internal" ghcr-login-chmod-fails
+expect_not_contains "$(cat "$chmod_fail_home/.docker/config.json")" "ghcr.io" ghcr-login-chmod-fails
+if [ -n "$(ls -A "$chmod_fail_runner_temp")" ]; then
+  echo "scenario ghcr-login-chmod-fails: failed chmod left residual temp directory in $chmod_fail_runner_temp" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# CHE-1924 B2: cd-deploy.yml's clean cutover shell (`env -i ... bash -s`) must
+# preserve RUNNER_TEMP across the `env -i` boundary so ghcr_login places its
+# 0700 credential directory under the controlled runner temp rather than
+# silently falling back to host /tmp, while dropping unrelated ambient env
+# (such as TMPDIR) and failing closed if RUNNER_TEMP is empty or missing.
+# ---------------------------------------------------------------------------
+cutover_env_i_line="$(grep -E '\| env -i .* bash -s$' "$root_dir/.github/workflows/cd-deploy.yml" | sed 's/^[[:space:]]*|[[:space:]]*//')"
+[ -n "$cutover_env_i_line" ] || { echo "scenario ghcr-login-cutover-env-i-runner-temp: could not extract env -i pipe target from cd-deploy.yml" >&2; exit 1; }
+
+state_dir="$(fresh_scenario_dir ghcr-login-cutover-env-i-runner-temp)"
+control_dir="$state_dir/control"
+env_i_home="$state_dir/home"
+env_i_runner_temp="$state_dir/runner-temp"
+env_i_ambient_tmpdir="$state_dir/ambient-tmpdir"
+mkdir -p "$control_dir" "$env_i_home/.docker" "$env_i_runner_temp" "$env_i_ambient_tmpdir"
+printf '{"auths":{"existing.registry.internal":{}}}\n' >"$env_i_home/.docker/config.json"
+
+env_i_probe_cmd="export DEPLOY_TEST_CONTROL_DIR='$control_dir'; . '$root_dir/deploy/cd/deploy-lib.sh'; trap ghcr_logout EXIT; if ! ghcr_login; then exit 1; fi; printf 'cutover_docker_config=%s|cutover_tmpdir=%s\n' \"\$DOCKER_CONFIG\" \"\${TMPDIR:-}\""
+env_i_rendered_script="$(GHCR_PULL_TOKEN=super-secret-pat bash deploy/cd/render-cutover-remote-script.sh --router-state-dir "$state_dir/router" -- bash -c "$env_i_probe_cmd")"
+set +e
+env_i_output="$(HOME="$env_i_home" PATH="$mock_bin:$PATH" RUNNER_TEMP="$env_i_runner_temp" TMPDIR="$env_i_ambient_tmpdir" eval "$cutover_env_i_line" <<<"$env_i_rendered_script" 2>&1)"
+env_i_status=$?
+set -e
+expect_exit 0 "$env_i_status" ghcr-login-cutover-env-i-runner-temp
+expect_contains "$env_i_output" "cutover_docker_config=$env_i_runner_temp/multica-docker-config." ghcr-login-cutover-env-i-runner-temp
+expect_contains "$env_i_output" "|cutover_tmpdir=" ghcr-login-cutover-env-i-runner-temp
+expect_not_contains "$env_i_output" "$env_i_ambient_tmpdir" ghcr-login-cutover-env-i-runner-temp
+env_i_auth_log="$(cat "$control_dir/registry-auth.log")"
+expect_contains "$env_i_auth_log" "docker_config=$env_i_runner_temp/multica-docker-config." ghcr-login-cutover-env-i-runner-temp
+expect_contains "$env_i_auth_log" "mode=700" ghcr-login-cutover-env-i-runner-temp
+expect_contains "$(cat "$env_i_home/.docker/config.json")" "existing.registry.internal" ghcr-login-cutover-env-i-runner-temp
+expect_not_contains "$(cat "$env_i_home/.docker/config.json")" "ghcr.io" ghcr-login-cutover-env-i-runner-temp
+if [ -n "$(ls -A "$env_i_runner_temp")" ]; then
+  echo "scenario ghcr-login-cutover-env-i-runner-temp: temp directory in $env_i_runner_temp was not removed on exit" >&2
+  exit 1
+fi
+
+# Empty or missing RUNNER_TEMP across the cutover env -i boundary must fail
+# closed rather than falling back to host /tmp.
+rm -f "$control_dir/registry-auth.log"
+set +e
+env_i_empty_output="$(HOME="$env_i_home" PATH="$mock_bin:$PATH" RUNNER_TEMP="" TMPDIR="$env_i_ambient_tmpdir" eval "$cutover_env_i_line" <<<"$env_i_rendered_script" 2>&1)"
+env_i_empty_status=$?
+set -e
+expect_exit 1 "$env_i_empty_status" ghcr-login-cutover-env-i-empty-runner-temp
+if [ -f "$control_dir/registry-auth.log" ]; then
+  echo "scenario ghcr-login-cutover-env-i-empty-runner-temp: registry-auth.log should not exist when RUNNER_TEMP is empty" >&2
+  exit 1
+fi
+expect_contains "$(cat "$env_i_home/.docker/config.json")" "existing.registry.internal" ghcr-login-cutover-env-i-empty-runner-temp
+expect_not_contains "$(cat "$env_i_home/.docker/config.json")" "ghcr.io" ghcr-login-cutover-env-i-empty-runner-temp
+
 expect_contains "$workflow_text" 'runs-on: [self-hosted, linux, x64, cheese-c00-deploy]' workflow-local-runner-no-ssh
 expect_contains "$workflow_text" 'environment: c00-production' workflow-local-runner-no-ssh
 expect_not_contains "$workflow_text" 'C00_SSH_HOST' workflow-local-runner-no-ssh
@@ -979,6 +1095,6 @@ expect_not_contains "$workflow_text" 'ssh-keyscan' workflow-local-runner-no-ssh
 expect_not_contains "$workflow_text" 'ssh -i' workflow-local-runner-no-ssh
 expect_not_contains "$workflow_text" 'scp -i' workflow-local-runner-no-ssh
 expect_not_contains "$workflow_text" '${ssh_cmd[@]}' workflow-local-runner-no-ssh
-expect_contains "$workflow_text" 'env -i HOME="$HOME" PATH="$PATH"' workflow-local-runner-no-ssh
+expect_contains "$workflow_text" 'env -i HOME="$HOME" PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" bash -s' workflow-local-runner-no-ssh
 
 echo "deploy.sh control-flow fixtures passed"

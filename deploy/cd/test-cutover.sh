@@ -967,6 +967,29 @@ if [ -f "$state_dir/control/docker-calls.log" ] && grep -q "^compose pull" "$sta
 fi
 
 # ---------------------------------------------------------------------------
+# Scenario 13b (CHE-1924 B1): mktemp / chmod failure inside cutover.sh's
+# `if ! ghcr_login` must also fail closed before `docker login` or any image
+# pull, keep blue active, and leave the shared ~/.docker/config.json untouched.
+# ---------------------------------------------------------------------------
+state_dir="$(fresh_scenario_dir ghcr-login-mktemp-fails)"
+mkdir -p "$state_dir/control" "$state_dir/home/.docker"
+printf '{"auths":{"existing.registry.internal":{}}}\n' >"$state_dir/home/.docker/config.json"
+set +e
+output="$(HOME="$state_dir/home" RUNNER_TEMP="$state_dir/nonexistent-runner-temp" GHCR_PULL_TOKEN=super-secret-pat run_cutover "$state_dir" 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" ghcr-login-mktemp-fails
+expect_contains "$output" "ghcr.io login failed" ghcr-login-mktemp-fails
+expect_contains "$output" "blue remains active" ghcr-login-mktemp-fails
+expect_not_contains "$output" "logging in to ghcr.io" ghcr-login-mktemp-fails
+if [ -f "$state_dir/control/registry-auth.log" ] && grep -q "^login " "$state_dir/control/registry-auth.log"; then
+  echo "scenario ghcr-login-mktemp-fails: docker login was invoked despite mktemp failing" >&2
+  exit 1
+fi
+expect_contains "$(cat "$state_dir/home/.docker/config.json")" "existing.registry.internal" ghcr-login-mktemp-fails
+expect_not_contains "$(cat "$state_dir/home/.docker/config.json")" "ghcr.io" ghcr-login-mktemp-fails
+
+# ---------------------------------------------------------------------------
 # Scenario 14: the reviewed controller runs from a disposable relocated
 # bundle, but router activation must land in the durable directory mounted
 # by the already-running router. Removing the bundle afterwards must neither

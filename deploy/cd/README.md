@@ -731,20 +731,39 @@ permission change: a `read:packages`-only classic PAT, stored as the
 as a repo secret, so D1's `cd-qualification.yml` stays credential-free).
 `deploy.sh` and `cutover.sh` (`deploy-lib.sh`) log in to `ghcr.io` with it
 immediately before the pull step using an isolated run-scoped `0700`
-`DOCKER_CONFIG` temporary directory (never writing to the runner user's shared
-`~/.docker/config.json`) and log out and remove that temporary directory
-unconditionally on exit — success, rollback, or an early argument/file-check
-failure — via a single EXIT trap; unset, both steps are skipped (local
-`--dry-run` runs, or a host with its own credential store). If the runner kills
-the step with `SIGKILL` before the `EXIT` trap runs, `~/.docker/config.json`
-remains untouched; only the `0700` run-scoped `DOCKER_CONFIG` directory under
-`RUNNER_TEMP`/`TMPDIR` can remain until runner temp cleanup.
+`DOCKER_CONFIG` temporary directory allocated under `RUNNER_TEMP` (or `TMPDIR`,
+or `/tmp` only when both variables are unset). If the configured temporary base
+is empty/invalid or `mktemp -d`, `chmod 700`, or `cli-plugins` symlink creation
+fails, `ghcr_login` fails closed (returns nonzero before `docker login` runs)
+without exporting `DOCKER_CONFIG` and without writing or deleting the runner
+user's shared `~/.docker/config.json`. On normal exit, rollback, or any failure
+path that runs bash's `EXIT` trap, `ghcr_logout` logs out against that isolated
+`DOCKER_CONFIG` directory and removes the directory; when `GHCR_PULL_TOKEN` is
+unset, both steps are skipped (local `--dry-run` runs, or a host with its own
+credential store). Remaining limitation (reported explicitly for independent
+disposition; not self-accepted or waived): `SIGKILL` (or an abrupt host/process
+crash) bypasses bash `EXIT` traps, so shell-trap cleanup is not guaranteed. If
+a process is terminated with `SIGKILL` after `docker login` writes
+`config.json` and before `ghcr_logout` runs, the runner user's shared
+`~/.docker/config.json` remains untouched, but the `0700`
+`multica-docker-config.XXXXXX/config.json` credential file remains on disk in
+the allocated temporary directory (`$RUNNER_TEMP` for `cd-deploy.yml` workflow
+runs until the GitHub Actions runner cleans its temp directory, or
+`${TMPDIR:-/tmp}` for direct manual invocations outside GitHub Actions where
+`RUNNER_TEMP` is unset and C00's `PrivateTmp=no` leaves `/tmp` on the host
+filesystem until OS `/tmp` cleanup or manual removal).
 `cd-deploy.yml`'s `deploy` job forwards the secret to the isolated cutover
-shell (`env -i HOME="$HOME" PATH="$PATH" bash -s`) by exporting it inside the
-script piped from `render-cutover-remote-script.sh` over stdin, never as a
-command-line argument or a persistent file on C00, so it is not visible to `ps`
-and ambient step environment variables do not leak into the cutover shell.
+shell (`env -i HOME="$HOME" PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" bash -s`)
+by exporting it inside the script piped from `render-cutover-remote-script.sh`
+over stdin, never as a command-line argument, while preserving `RUNNER_TEMP`
+across `env -i` so the cutover shell's temporary `DOCKER_CONFIG` directory is
+created under the runner temp path rather than falling back to host `/tmp`, and
+unrelated ambient step environment variables do not leak into the cutover shell.
 Covered by `deploy/cd/test-deploy.sh`'s `ghcr-login-happy-path`,
-`ghcr-login-fails`, and `ghcr-login-isolated-docker-config` scenarios (mocked
-`docker login`/`logout`; a real end-to-end pull against GHCR is still pending
-the runner above).
+`ghcr-login-fails`, `ghcr-login-isolated-docker-config`,
+`ghcr-login-mktemp-fails`, `ghcr-login-chmod-fails`,
+`ghcr-login-cutover-env-i-runner-temp`, and
+`ghcr-login-cutover-env-i-empty-runner-temp` scenarios and
+`deploy/cd/test-cutover.sh`'s `ghcr-login-happy-path`, `ghcr-login-fails`, and
+`ghcr-login-mktemp-fails` scenarios (mocked `docker login`/`logout`; a real
+end-to-end pull against GHCR is still pending the runner above).

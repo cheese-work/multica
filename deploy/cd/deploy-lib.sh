@@ -401,16 +401,44 @@ ghcr_login() {
   if [ -z "${GHCR_PULL_TOKEN:-}" ]; then
     return 0
   fi
-  if [ -z "${DOCKER_CONFIG:-}" ] || [ "${DOCKER_CONFIG%/}" = "${HOME:-}/.docker" ]; then
-    _multica_temp_docker_config="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/multica-docker-config.XXXXXX")"
-    chmod 700 "$_multica_temp_docker_config"
-    if [ -n "${HOME:-}" ] && [ -d "$HOME/.docker/cli-plugins" ]; then
-      ln -s "$HOME/.docker/cli-plugins" "$_multica_temp_docker_config/cli-plugins"
+  if [ -z "${_multica_temp_docker_config:-}" ] || [ ! -d "$_multica_temp_docker_config" ]; then
+    local tmp_base
+    if [ -n "${RUNNER_TEMP+x}" ]; then
+      tmp_base="$RUNNER_TEMP"
+    elif [ -n "${TMPDIR+x}" ]; then
+      tmp_base="$TMPDIR"
+    else
+      tmp_base="/tmp"
     fi
-    export DOCKER_CONFIG="$_multica_temp_docker_config"
+    if [ -z "$tmp_base" ] || [ "$tmp_base" = "/" ]; then
+      echo "!! ghcr_login: temporary directory base '${tmp_base}' is invalid" >&2
+      return 1
+    fi
+    local tmp_dir=""
+    if ! tmp_dir="$(mktemp -d "${tmp_base%/}/multica-docker-config.XXXXXX")" || [ -z "$tmp_dir" ] || [ ! -d "$tmp_dir" ]; then
+      echo "!! ghcr_login: failed to allocate temporary DOCKER_CONFIG directory under '${tmp_base}'" >&2
+      return 1
+    fi
+    if ! chmod 700 "$tmp_dir"; then
+      echo "!! ghcr_login: failed to set mode 0700 on temporary DOCKER_CONFIG directory '${tmp_dir}'" >&2
+      rm -rf "$tmp_dir" || true
+      return 1
+    fi
+    if [ -n "${HOME:-}" ] && [ -d "$HOME/.docker/cli-plugins" ]; then
+      if ! ln -s "$HOME/.docker/cli-plugins" "$tmp_dir/cli-plugins"; then
+        echo "!! ghcr_login: failed to link docker cli-plugins into '${tmp_dir}'" >&2
+        rm -rf "$tmp_dir" || true
+        return 1
+      fi
+    fi
+    _multica_temp_docker_config="$tmp_dir"
   else
-    install -d -m 700 "$DOCKER_CONFIG"
+    if ! chmod 700 "$_multica_temp_docker_config"; then
+      echo "!! ghcr_login: failed to set mode 0700 on temporary DOCKER_CONFIG directory '${_multica_temp_docker_config}'" >&2
+      return 1
+    fi
   fi
+  export DOCKER_CONFIG="$_multica_temp_docker_config"
   echo "==> logging in to ghcr.io"
   printf '%s' "$GHCR_PULL_TOKEN" | docker login ghcr.io -u token --password-stdin >/dev/null
 }
@@ -421,11 +449,13 @@ ghcr_login() {
 # ghcr_login ever runs, so it fires on every exit path — success, an early
 # `require`/file-check `exit`, or a failure branch — not just the happy path.
 ghcr_logout() {
-  if [ -n "${GHCR_PULL_TOKEN:-}" ]; then
-    docker logout ghcr.io >/dev/null 2>&1 || true
-  fi
-  if [ -n "${_multica_temp_docker_config:-}" ] && [ -d "$_multica_temp_docker_config" ]; then
-    rm -rf "$_multica_temp_docker_config" || true
+  if [ -n "${_multica_temp_docker_config:-}" ]; then
+    if [ -n "${GHCR_PULL_TOKEN:-}" ]; then
+      DOCKER_CONFIG="$_multica_temp_docker_config" docker logout ghcr.io >/dev/null 2>&1 || true
+    fi
+    if [ -d "$_multica_temp_docker_config" ]; then
+      rm -rf "$_multica_temp_docker_config" || true
+    fi
     _multica_temp_docker_config=""
   fi
 }
