@@ -565,3 +565,21 @@ func TestDecisionRequestCorePingWins(test *testing.T) {
 		})
 	}
 }
+
+func TestDecisionRequestAttachesToIntentCommentWhenAskMatches(test *testing.T) {
+	fixture := newRequestCoreFixture(test, false)
+	input := fixture.input()
+	input.Ask = fixture.mention()
+	before := dbfx.Count(test, `SELECT count(*) FROM comment WHERE issue_id = $1`, fixture.issueID)
+	result, err := testHandler.createDecisionRequest(fixture.request(), fixture.issue, input)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if after := dbfx.Count(test, `SELECT count(*) FROM comment WHERE issue_id = $1`, fixture.issueID); after != before {
+		test.Fatalf("comments = %d, want %d (no second ask comment)", after, before)
+	}
+	fixture.assertCounts(test, 1)
+	if result.Comment.ID != parseUUID(fixture.tagID) || result.Request.IssueCommentID != result.Comment.ID || result.Comment.DecisionRequestID != result.Request.ID || result.Comment.DecisionCommentKind.String != "ask" || result.Comment.DecisionIntentID != parseUUID(fixture.intentID) {
+		test.Fatalf("ask did not attach to the intent comment: %+v", result.Comment)
+	}
+}

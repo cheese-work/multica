@@ -26,11 +26,12 @@ type decisionRequestInput struct {
 }
 
 type decisionRequestResult struct {
-	Request         db.DecisionRequest
-	Comment         db.Comment
-	Message         db.ChatMessage
-	ClearedComments []db.Comment
-	CreatedSession  *db.ChatSession
+	Request          db.DecisionRequest
+	Comment          db.Comment
+	AttachedToIntent bool
+	Message          db.ChatMessage
+	ClearedComments  []db.Comment
+	CreatedSession   *db.ChatSession
 }
 
 func (handler *Handler) createDecisionRequest(request *http.Request, issue db.Issue, input decisionRequestInput) (decisionRequestResult, error) {
@@ -218,7 +219,12 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 		}
 		createdSession = &session
 	}
+	// An ask identical to the intent comment is that comment: reuse it instead of posting a second copy.
+	attach := strings.TrimSpace(tag.Content) == strings.TrimSpace(input.Ask)
 	commentID, messageID := dbid.NewV7(), dbid.NewV7()
+	if attach {
+		commentID = tag.ID
+	}
 	created, err := queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: intent.AgentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, PingMessageID: messageID, IssueCommentID: commentID, Ask: input.Ask, EscalationClass: input.EscalationClass, Origin: "asked", DecisionIntentID: intent.ID})
 	if err != nil {
 		return empty, err
@@ -227,7 +233,14 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 	if err != nil {
 		return empty, err
 	}
-	comment, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: commentID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "agent", AuthorID: intent.AgentID, SourceTaskID: intent.TaskID, ParentID: intent.CommentID, Content: input.Ask, Type: "comment", DecisionRequestID: created.ID, DecisionCommentKind: pgtype.Text{String: "ask", Valid: true}})
+	var comment db.Comment
+	if attach {
+		comment, err = queries.AttachDecisionAskToComment(ctx, db.AttachDecisionAskToCommentParams{WorkspaceID: issue.WorkspaceID, CommentID: tag.ID, DecisionRequestID: created.ID})
+	} else {
+		var row db.CreateCommentRow
+		row, err = queries.CreateComment(ctx, db.CreateCommentParams{ID: commentID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "agent", AuthorID: intent.AgentID, SourceTaskID: intent.TaskID, ParentID: intent.CommentID, Content: input.Ask, Type: "comment", DecisionRequestID: created.ID, DecisionCommentKind: pgtype.Text{String: "ask", Valid: true}})
+		comment = row.Comment()
+	}
 	if err != nil {
 		return empty, err
 	}
@@ -257,5 +270,5 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 		return empty, err
 	}
 	handler.DecisionWorker.Notify()
-	return decisionRequestResult{Request: created, Comment: comment.Comment(), Message: message, ClearedComments: cleared, CreatedSession: createdSession}, nil
+	return decisionRequestResult{Request: created, Comment: comment, AttachedToIntent: attach, Message: message, ClearedComments: cleared, CreatedSession: createdSession}, nil
 }
