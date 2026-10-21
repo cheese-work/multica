@@ -779,6 +779,19 @@ test.describe("Durable thread fold state through row unmount/remount", () => {
     await page.keyboard.press("ControlOrMeta+Enter");
     await posted;
 
+    // The draft is cleared after the response lands. A reload before that
+    // restores it, and a restored draft is an active reason that rightly keeps
+    // the thread open, which is not what this test is about.
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          Object.entries(localStorage)
+            .filter(([key]) => key.startsWith("multica_comment_drafts"))
+            .some(([, value]) => value.includes("still typing")),
+        ),
+      )
+      .toBe(false);
+
     await page.reload({ waitUntil: "domcontentloaded" });
     await waitForPageText(page, issueTitle);
     await waitForPageText(page, "Root comment for thread fold test");
@@ -790,6 +803,12 @@ test.describe("Durable thread fold state through row unmount/remount", () => {
     // to "expanded" while the draft was active, and every reply would show
     // immediately on reload with no "Show more" click needed. With the fix,
     // Fold All's reset stuck: the thread reloads compact.
+    //
+    // Manual collapse (Fold All's other effect) does persist here, so the
+    // thread reloads as its folded summary. That is the higher-priority gate
+    // (01-DESIGN "Effective order"); open it to see which length preference
+    // sits underneath, which is what CHE-479's option 2 protects.
+    await page.getByRole("button", { name: "Expand thread" }).first().click();
     await expect(page.getByRole("button", { name: /Show \d+ more repl/ })).toBeVisible({ timeout: 10000 });
     await expect(page.getByText("Reply number 1")).not.toBeVisible();
   });

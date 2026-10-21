@@ -212,7 +212,13 @@ test.describe("Issue Table server grouping", () => {
     const todoChildrenPromise = page.waitForResponse((response) => {
       if (apiPath(response.request()) !== "/api/issues/table/rows") return false;
       const body = tableBody(response.request());
-      return body.parent_id === parent.id && response.status() === 200;
+      // The ungrouped table fetches the parent's children too, just before
+      // grouping applies; the assertion below is about the todo group's branch.
+      return (
+        body.parent_id === parent.id &&
+        body.group_key === "status:todo" &&
+        response.status() === 200
+      );
     });
     const doneRootPromise = page.waitForResponse((response) => {
       if (apiPath(response.request()) !== "/api/issues/table/rows") return false;
@@ -224,19 +230,33 @@ test.describe("Issue Table server grouping", () => {
       );
     });
 
+    // Grouped row pages carry no query-wide total: the rows API computes one
+    // only for the ungrouped root head, and takes group totals from /groups
+    // (issue_table_rows.go). The total of 3 seeded issues is therefore read
+    // from the groups response, which is where the contract puts it.
+    const groupsPromise = page.waitForResponse(
+      (response) =>
+        apiPath(response.request()) === "/api/issues/table/groups" &&
+        response.status() === 200,
+    );
     await groupByStatus(page);
-    const [todoRootResponse, todoChildrenResponse, doneRootResponse] =
+    const [groupsResponse, todoRootResponse, todoChildrenResponse, doneRootResponse] =
       await Promise.all([
+        groupsPromise,
         todoRootPromise,
         todoChildrenPromise,
         doneRootPromise,
       ]);
+    const groups = (await groupsResponse.json()) as TableGroupsResponse;
     const todoRoot = (await todoRootResponse.json()) as TableRowsResponse;
     const todoChildren =
       (await todoChildrenResponse.json()) as TableRowsResponse;
     const doneRoot = (await doneRootResponse.json()) as TableRowsResponse;
 
-    expect(todoRoot.total).toBe(3);
+    expect(groups.total).toBe(3);
+    expect(
+      Object.fromEntries(groups.groups.map((group) => [group.key, group.count])),
+    ).toEqual({ "status:todo": 2, "status:done": 1 });
     expect(todoRoot.rows).toEqual([
       expect.objectContaining({
         issue: expect.objectContaining({ id: parent.id, title: parentTitle }),
