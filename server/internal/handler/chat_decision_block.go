@@ -24,7 +24,11 @@ func (h *Handler) decisionContextBlock(ctx context.Context, session db.ChatSessi
 	requests, err := h.Queries.ListChatDecisionContext(ctx, db.ListChatDecisionContextParams{
 		WorkspaceID: session.WorkspaceID, ChatSessionID: session.ID, RowLimit: decisionBlockMaxAsks,
 	})
-	if err != nil || len(requests) == 0 {
+	if err != nil {
+		return "", err
+	}
+	notes, err := h.Queries.ListChatDecisionReferences(ctx, db.ListChatDecisionReferencesParams{ChatSessionID: session.ID, RowLimit: decisionBlockMaxAsks})
+	if err != nil || len(requests) == 0 && len(notes) == 0 {
 		return "", err
 	}
 	messageIDs := make([]string, 0, len(input))
@@ -39,6 +43,9 @@ func (h *Handler) decisionContextBlock(ctx context.Context, session db.ChatSessi
 			uuidToString(request.ID), request.Status, request.IssuePrefix, request.IssueNumber, cutUTF8(escapeDecisionBlock(request.IssueTitle), decisionBlockTitleSize),
 			uuidToString(request.IssueID), uuidToString(request.IssueCommentID), uuidToString(request.PingMessageID), strings.Join(messageIDs, ", "),
 			cutUTF8(escapeDecisionBlock(request.Ask), decisionBlockAskBytes))
+	}
+	for index := len(notes) - 1; index >= 0; index-- {
+		fmt.Fprintf(&block, "\n[decision note]\n%s\n", cutUTF8(escapeDecisionBlock(notes[index]), decisionBlockAskBytes))
 	}
 	block.WriteString("\nIf the user's message answers one, record it: `multica issue comment add <issue-uuid> --decision-record --message <user message id> --parent <ask comment id>`.\n")
 	block.WriteString(decisionBlockClose)

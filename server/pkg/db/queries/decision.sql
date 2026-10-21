@@ -379,3 +379,13 @@ WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.chat_session_i
       AND ping.created_at > COALESCE((SELECT max(turn.created_at) FROM chat_message turn WHERE turn.chat_session_id = request.chat_session_id AND turn.role = 'assistant' AND turn.task_id IS NOT NULL), '-infinity')))
 ORDER BY request.created_at DESC, request.id DESC
 LIMIT sqlc.arg('row_limit');
+
+-- name: ListChatDecisionReferences :many
+-- Server-authored decision notes (cancellations, recorded answers) posted after
+-- the agent's last turn. They reference a request by text, not by id, so they
+-- are read by message rather than through decision_request.
+SELECT message.content FROM chat_message message
+WHERE message.chat_session_id = sqlc.arg('chat_session_id') AND message.message_kind = 'decision_reference'
+  AND message.created_at > COALESCE((SELECT max(turn.created_at) FROM chat_message turn WHERE turn.chat_session_id = message.chat_session_id AND turn.role = 'assistant' AND turn.task_id IS NOT NULL), '-infinity')
+ORDER BY message.created_at DESC, message.id DESC
+LIMIT sqlc.arg('row_limit');

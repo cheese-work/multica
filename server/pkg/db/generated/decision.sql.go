@@ -714,6 +714,42 @@ func (q *Queries) ListChatDecisionContext(ctx context.Context, arg ListChatDecis
 	return items, nil
 }
 
+const listChatDecisionReferences = `-- name: ListChatDecisionReferences :many
+SELECT message.content FROM chat_message message
+WHERE message.chat_session_id = $1 AND message.message_kind = 'decision_reference'
+  AND message.created_at > COALESCE((SELECT max(turn.created_at) FROM chat_message turn WHERE turn.chat_session_id = message.chat_session_id AND turn.role = 'assistant' AND turn.task_id IS NOT NULL), '-infinity')
+ORDER BY message.created_at DESC, message.id DESC
+LIMIT $2
+`
+
+type ListChatDecisionReferencesParams struct {
+	ChatSessionID pgtype.UUID `json:"chat_session_id"`
+	RowLimit      int32       `json:"row_limit"`
+}
+
+// Server-authored decision notes (cancellations, recorded answers) posted after
+// the agent's last turn. They reference a request by text, not by id, so they
+// are read by message rather than through decision_request.
+func (q *Queries) ListChatDecisionReferences(ctx context.Context, arg ListChatDecisionReferencesParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listChatDecisionReferences, arg.ChatSessionID, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var content string
+		if err := rows.Scan(&content); err != nil {
+			return nil, err
+		}
+		items = append(items, content)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDecisionIntentTargets = `-- name: ListDecisionIntentTargets :many
 SELECT target.decision_intent_id, target.human_user_id, target.consumed_at, target.consumed_by_request_id FROM decision_intent_target target
 JOIN decision_intent intent ON intent.id = target.decision_intent_id
