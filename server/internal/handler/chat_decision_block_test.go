@@ -70,7 +70,7 @@ func TestChatClaimSkipsDecisionAnsweredBeforeLastAgentTurn(test *testing.T) {
 	ctx := context.Background()
 	agentID, sessionID, runtimeID, daemonID := setupDirectChatSession(test, ctx, "Decision DM")
 	seedDMDecision(test, agentID, sessionID, "Old answered question", "answered", "3 hours")
-	doneTask := dbfx.Task(test, agentID, testutil.Cols{"chat_session_id": sessionID, "status": "completed", "runtime_id": handlerTestRuntimeID(test)})
+	doneTask := dbfx.Task(test, agentID, testutil.Cols{"chat_session_id": sessionID, "status": "completed", "runtime_id": handlerTestRuntimeID(test), "dispatched_at": testutil.Raw("now() - interval '2 hours 30 minutes'")})
 	dbfx.Insert(test, "chat_message", testutil.Cols{
 		"chat_session_id": sessionID, "role": "assistant", "content": "Recorded.", "task_id": doneTask,
 		"created_at": testutil.Raw("now() - interval '2 hours'"),
@@ -112,7 +112,7 @@ func TestChatClaimCarriesRecentDecisionReferences(test *testing.T) {
 	// A cancelled request: its ping is old, but the cancel note is newer than
 	// the agent's last turn and must reach the agent.
 	seedDMDecision(test, agentID, sessionID, "Cancelled ask", "cancelled", "5 hours")
-	doneTask := dbfx.Task(test, agentID, testutil.Cols{"chat_session_id": sessionID, "status": "completed", "runtime_id": handlerTestRuntimeID(test)})
+	doneTask := dbfx.Task(test, agentID, testutil.Cols{"chat_session_id": sessionID, "status": "completed", "runtime_id": handlerTestRuntimeID(test), "dispatched_at": testutil.Raw("now() - interval '2 hours'")})
 	dbfx.Insert(test, "chat_message", testutil.Cols{"chat_session_id": sessionID, "role": "assistant", "content": "Earlier reply", "task_id": doneTask, "created_at": testutil.Raw("now() - interval '4 hours'")})
 	dbfx.Insert(test, "chat_message", testutil.Cols{
 		"chat_session_id": sessionID, "role": "assistant", "content": "Old note: recorded long ago", "message_kind": "decision_reference", "sent_via": "task_token",
@@ -133,5 +133,72 @@ func TestChatClaimCarriesRecentDecisionReferences(test *testing.T) {
 	}
 	if strings.Count(message, "</decision_requests>") != 1 || strings.Index(message, "</decision_requests>") > strings.Index(message, "what happened?") {
 		test.Fatalf("reference note is not fenced as data:\n%s", message)
+	}
+}
+
+// A note written after a task claims its input but before that task completes
+// was not in the task's prompt. The task's own completion row is newer than the
+// note, so the boundary is the claim, not the last assistant turn.
+func TestChatClaimCarriesDecisionNoteWrittenBetweenClaimAndCompletion(test *testing.T) {
+	ctx := context.Background()
+	agentID, sessionID, runtimeID, daemonID := setupDirectChatSession(test, ctx, "Decision DM")
+	first := sendDirectChat(test, ctx, agentID, sessionID, "first turn")
+	claimedFirst := claimForkTask(test, runtimeID, daemonID)
+	if claimedFirst.ID != first {
+		test.Fatalf("claimed %s, want %s", claimedFirst.ID, first)
+	}
+	dbfx.Insert(test, "chat_message", testutil.Cols{
+		"chat_session_id": sessionID, "role": "assistant", "content": "Decision request cancelled: lane_archived. Raced the claim.", "message_kind": "decision_reference", "sent_via": "task_token",
+	})
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1`, first)
+	if _, err := testHandler.TaskService.CompleteTask(ctx, parseUUID(first), completeResult(test, "first reply"), "", "", "", false, "", ""); err != nil {
+		test.Fatal(err)
+	}
+	sendDirectChat(test, ctx, agentID, sessionID, "second turn")
+	second := claimForkTask(test, runtimeID, daemonID)
+	if !strings.Contains(second.ChatMessage, "Raced the claim.") {
+		test.Fatalf("note written after the first claim was lost:\n%s", second.ChatMessage)
+	}
+
+	// The second claim delivered it; the third must not repeat it.
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1`, second.ID)
+	if _, err := testHandler.TaskService.CompleteTask(ctx, parseUUID(second.ID), completeResult(test, "second reply"), "", "", "", false, "", ""); err != nil {
+		test.Fatal(err)
+	}
+	sendDirectChat(test, ctx, agentID, sessionID, "third turn")
+	if third := claimForkTask(test, runtimeID, daemonID); strings.Contains(third.ChatMessage, "Raced the claim.") {
+		test.Fatalf("delivered note repeated:\n%s", third.ChatMessage)
+	}
+}
+
+// Legacy (channel-shaped) tasks take every user message after the last
+// assistant row, with no count cap, so the block must bound itself: the most
+// requests and notes at their largest, plus hundreds of input messages.
+func TestChatClaimBoundsWholeDecisionBlockForLegacyInput(test *testing.T) {
+	ctx := context.Background()
+	agentID, sessionID, runtimeID, daemonID := setupDirectChatSession(test, ctx, "Decision DM")
+	huge := strings.Repeat("a", 10<<10)
+	for index := 0; index < 4; index++ {
+		_, _, issueID := seedDMDecision(test, agentID, sessionID, huge, "open", string(rune('4'-index))+" hours")
+		dbfx.Exec(test, `UPDATE issue SET title = $2 WHERE id = $1`, issueID, strings.Repeat("t", 1<<10))
+		dbfx.Insert(test, "chat_message", testutil.Cols{
+			"chat_session_id": sessionID, "role": "assistant", "content": huge, "message_kind": "decision_reference", "sent_via": "task_token",
+		})
+	}
+	for index := 0; index < 300; index++ {
+		dbfx.Insert(test, "chat_message", testutil.Cols{"chat_session_id": sessionID, "role": "user", "content": fmt.Sprintf("legacy %d", index)})
+	}
+	dbfx.Task(test, agentID, testutil.Cols{"chat_session_id": sessionID, "status": "queued", "runtime_id": runtimeID})
+
+	message := claimForkTask(test, runtimeID, daemonID).ChatMessage
+	end := strings.Index(message, "</decision_requests>")
+	if end < 0 {
+		test.Fatalf("no decision block:\n%.400s", message)
+	}
+	if size := end + len("</decision_requests>"); size > 32<<10 {
+		test.Fatalf("decision block is %d bytes, want at most 32768", size)
+	}
+	if !strings.Contains(message, "legacy 299") {
+		test.Fatalf("the legacy input itself must stay whole")
 	}
 }

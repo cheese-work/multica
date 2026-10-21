@@ -3431,7 +3431,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			if strings.TrimSpace(resp.ThreadName) == "" && resp.ChatMessage != "" {
 				resp.ThreadName = resp.ChatMessage
 			}
-			decisions, err := h.decisionContextBlock(r.Context(), cs, unanswered)
+			decisions, err := h.decisionContextBlock(r.Context(), cs, task.ID, unanswered)
 			if err != nil {
 				slog.Error("chat claim: build decision context failed; preserving task for redelivery",
 					"task_id", uuidToString(task.ID), "chat_session_id", uuidToString(cs.ID), "error", err)

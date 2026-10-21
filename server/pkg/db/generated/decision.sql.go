@@ -656,14 +656,15 @@ WHERE request.workspace_id = $1 AND request.chat_session_id = $2 AND request.ori
   AND (request.status = 'open' OR EXISTS (
     SELECT 1 FROM chat_message ping
     WHERE ping.id = request.ping_message_id
-      AND ping.created_at > COALESCE((SELECT max(turn.created_at) FROM chat_message turn WHERE turn.chat_session_id = request.chat_session_id AND turn.role = 'assistant' AND turn.task_id IS NOT NULL), '-infinity')))
+      AND ping.created_at > COALESCE((SELECT max(prior.dispatched_at) FROM agent_task_queue prior WHERE prior.chat_session_id = request.chat_session_id AND prior.id <> $3), '-infinity')))
 ORDER BY request.created_at DESC, request.id DESC
-LIMIT $3
+LIMIT $4
 `
 
 type ListChatDecisionContextParams struct {
 	WorkspaceID   pgtype.UUID `json:"workspace_id"`
 	ChatSessionID pgtype.UUID `json:"chat_session_id"`
+	TaskID        pgtype.UUID `json:"task_id"`
 	RowLimit      int32       `json:"row_limit"`
 }
 
@@ -681,10 +682,18 @@ type ListChatDecisionContextRow struct {
 }
 
 // The asked requests a DM agent has not seen: still open, or pinged after the
-// agent's last turn. The ping is an assistant row no task produced, so it is
-// in neither the resumed provider session nor the user-only prompt input.
+// session's previous task claimed its input. The ping is an assistant row no
+// task produced, so it is in neither the resumed provider session nor the
+// user-only prompt input. The boundary is the previous claim, not the last
+// assistant turn: a ping written between a claim and that task's completion was
+// not in its prompt, and the completion row is newer than the ping.
 func (q *Queries) ListChatDecisionContext(ctx context.Context, arg ListChatDecisionContextParams) ([]ListChatDecisionContextRow, error) {
-	rows, err := q.db.Query(ctx, listChatDecisionContext, arg.WorkspaceID, arg.ChatSessionID, arg.RowLimit)
+	rows, err := q.db.Query(ctx, listChatDecisionContext,
+		arg.WorkspaceID,
+		arg.ChatSessionID,
+		arg.TaskID,
+		arg.RowLimit,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -717,21 +726,23 @@ func (q *Queries) ListChatDecisionContext(ctx context.Context, arg ListChatDecis
 const listChatDecisionReferences = `-- name: ListChatDecisionReferences :many
 SELECT message.content FROM chat_message message
 WHERE message.chat_session_id = $1 AND message.message_kind = 'decision_reference'
-  AND message.created_at > COALESCE((SELECT max(turn.created_at) FROM chat_message turn WHERE turn.chat_session_id = message.chat_session_id AND turn.role = 'assistant' AND turn.task_id IS NOT NULL), '-infinity')
+  AND message.created_at > COALESCE((SELECT max(prior.dispatched_at) FROM agent_task_queue prior WHERE prior.chat_session_id = message.chat_session_id AND prior.id <> $2), '-infinity')
 ORDER BY message.created_at DESC, message.id DESC
-LIMIT $2
+LIMIT $3
 `
 
 type ListChatDecisionReferencesParams struct {
 	ChatSessionID pgtype.UUID `json:"chat_session_id"`
+	TaskID        pgtype.UUID `json:"task_id"`
 	RowLimit      int32       `json:"row_limit"`
 }
 
 // Server-authored decision notes (cancellations, recorded answers) posted after
-// the agent's last turn. They reference a request by text, not by id, so they
-// are read by message rather than through decision_request.
+// the session's previous task claimed its input; see ListChatDecisionContext
+// for why the boundary is the claim. They reference a request by text, not by
+// id, so they are read by message rather than through decision_request.
 func (q *Queries) ListChatDecisionReferences(ctx context.Context, arg ListChatDecisionReferencesParams) ([]string, error) {
-	rows, err := q.db.Query(ctx, listChatDecisionReferences, arg.ChatSessionID, arg.RowLimit)
+	rows, err := q.db.Query(ctx, listChatDecisionReferences, arg.ChatSessionID, arg.TaskID, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}
