@@ -11,18 +11,57 @@ import { useT } from "../../i18n";
 import { annotationRange, captureCommentSelection, findAnnotationSource } from "./comment-annotation-selection";
 import { CommentSelectionBubble } from "./comment-selection-bubble";
 
+/** Text overrides for a surface that is not an issue thread (the DM). */
+export interface AnnotationLabels {
+  selectionFailed: string;
+  quoteLimit: (count: number) => string;
+  countLimit: (count: number) => string;
+  add: string;
+  confirmAdd: string;
+  save: string;
+  noteLabel: (number: number) => string;
+  notePlaceholder: string;
+  edit: (number: number, note: string) => string;
+  remove: (number: number) => string;
+}
+
+/** A chat message renders its markers in its own slot so Tab reaches them in reading order. */
+function overlaySlot(root: HTMLElement): HTMLElement | undefined {
+  return root.closest("[data-annotation-overlay-host]")?.querySelector<HTMLElement>(":scope > [data-annotation-overlay-slot]") ?? undefined;
+}
+
 type CapturedSelection = NonNullable<ReturnType<typeof captureCommentSelection>>;
 type SourceAnchor = { id: string; range: Range; root: HTMLElement };
 
-export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, editable = false }: {
+export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, editable = false, surface = "issue", labels }: {
   draftKey: CommentDraftKey;
   sources: { id: string; name: string; revision?: number }[];
   enabled: boolean;
   onAdded?: () => void;
   /** Editable descriptions use their existing toolbar to call addSelection. */
   editable?: boolean;
+  /** `chat` renders markers inside the message (reading order) and returns focus to them. */
+  surface?: "issue" | "chat";
+  labels?: AnnotationLabels;
 }) {
   const { t } = useT("issues");
+  const chat = surface === "chat";
+  const L: AnnotationLabels = labels ?? {
+    selectionFailed: t(($) => $.reply.annotations.selection_failed),
+    quoteLimit: (count) => t(($) => $.reply.annotations.quote_limit, { count }),
+    countLimit: (count) => t(($) => $.reply.annotations.count_limit, { count }),
+    add: t(($) => editable ? $.reply.annotations.add_comment : $.reply.annotations.add),
+    confirmAdd: t(($) => $.reply.annotations.confirm_add),
+    save: t(($) => $.reply.annotations.save),
+    noteLabel: () => t(($) => $.reply.annotations.note_label),
+    notePlaceholder: t(($) => $.reply.annotations.note_placeholder),
+    edit: (number) => t(($) => $.reply.annotations.edit, { number }),
+    remove: (number) => t(($) => $.reply.annotations.remove, { number }),
+  };
+  const Lref = useRef(L);
+  Lref.current = L;
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const pendingMarkerFocus = useRef<string | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const pendingFocusId = useRef<string | null>(null);
@@ -54,8 +93,12 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
   const anchorKey = annotations.map((a) => a.id).join(",");
   const highlightName = `reply-annotation-${useId().replace(/[^a-zA-Z0-9-]/g, "")}`;
 
+  const markerFor = (id: string) =>
+    cardRef.current?.querySelector<HTMLElement>(`[data-annotation-marker="${id}"]`) ?? null;
   const close = (restoreFocus = false) => {
-    if (restoreFocus && selection?.root.isConnected) {
+    const marker = restoreFocus && chat && editingId ? markerFor(editingId) : null;
+    if (marker) marker.focus({ preventScroll: true });
+    else if (restoreFocus && selection?.root.isConnected) {
       const target = editable ? selection.root.querySelector<HTMLElement>("[contenteditable=true]") ?? selection.root : selection.root;
       target.focus({ preventScroll: true });
     }
@@ -181,7 +224,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
   const add = useCallback((captured: CapturedSelection | null) => {
     const source = captured && sourcesRef.current.find((e) => e.id === captured.sourceCommentId);
     if (!captured || !source) {
-      toast.error(t(($) => $.reply.annotations.selection_failed));
+      toast.error(Lref.current.selectionFailed);
       return false;
     }
     const { quote, start, prefix, suffix, sourceCommentId } = captured;
@@ -190,8 +233,8 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
     if (quote.length > MAX_ANNOTATION_QUOTE_LENGTH || (!duplicate && annotationsRef.current.length >= MAX_REPLY_ANNOTATIONS)) {
       setError(true);
       toast.error(quote.length > MAX_ANNOTATION_QUOTE_LENGTH
-        ? t(($) => $.reply.annotations.quote_limit, { count: MAX_ANNOTATION_QUOTE_LENGTH })
-        : t(($) => $.reply.annotations.count_limit, { count: MAX_REPLY_ANNOTATIONS }));
+        ? Lref.current.quoteLimit(MAX_ANNOTATION_QUOTE_LENGTH)
+        : Lref.current.countLimit(MAX_REPLY_ANNOTATIONS));
       return false;
     }
     setSelection(captured);
@@ -204,7 +247,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
     setError(false);
     window.getSelection()?.removeAllRanges();
     return true;
-  }, [t]);
+  }, []);
   const addSelection = useCallback(() => add(readSelection()), [add, readSelection]);
 
   const confirmNote = () => {
@@ -215,7 +258,8 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
       setError(true);
       return;
     }
-    close(true);
+    if (chat && !editingExisting) { pendingMarkerFocus.current = editing.id; close(false); }
+    else close(true);
     if (!editingExisting) onAddedRef.current?.();
   };
 
@@ -227,11 +271,23 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
     CSS.highlights.set(name, new Highlight(selection.range));
     return () => { CSS.highlights.delete(name); };
   }, [enabled, selection, editingId, highlightName]);
-  const confirmLabel = t(($) => editor?.existing ? $.reply.annotations.save : $.reply.annotations.confirm_add);
+  const editingNumber = editing ? annotations.findIndex((a) => a.id === editing.id) + 1 || annotations.length + 1 : 1;
+  // The pending quote and the active comment (hovered or focused marker, a lit list row, or the open editor).
+  useEffect(() => {
+    if (!enabled || typeof Highlight === "undefined" || typeof CSS === "undefined" || !CSS.highlights) return;
+    const name = `${highlightName}-active`;
+    const anchor = anchors.find((a) => a.id === (activeId ?? editingId));
+    if (!anchor) { CSS.highlights.delete(name); return; }
+    CSS.highlights.set(name, new Highlight(anchor.range));
+    return () => { CSS.highlights.delete(name); };
+  }, [enabled, anchors, activeId, editingId, highlightName]);
+  const confirmLabel = editor?.existing ? L.save : L.confirmAdd;
 
   return {
     cardRef,
     editAnnotation,
+    activeId,
+    setActiveId,
     addSelection,
     captureProps: {
       "data-annotation-thread": draftKey,
@@ -250,23 +306,34 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
       },
     },
     popup: <>
-      {(annotations.length > 0 || editing) && <style>{`::highlight(${highlightName}), ::highlight(${highlightName}-selection) { background: color-mix(in srgb, var(--brand) 20%, transparent); }`}</style>}
+      {(annotations.length > 0 || editing) && <style>{`::highlight(${highlightName}), ::highlight(${highlightName}-selection) { background: color-mix(in srgb, var(--brand) 20%, transparent); } ::highlight(${highlightName}-active) { background: color-mix(in srgb, var(--brand) 38%, transparent); }`}</style>}
       {enabled && anchors.map((anchor) => {
         const index = annotations.findIndex((a) => a.id === anchor.id);
         if (index < 0) return null;
         return <CommentSelectionBubble key={anchor.id} range={anchor.range} source={anchor.root} owner={draftKey}
-          markerRanges={markerRanges.get(anchor.root)}>
-          <Button variant="brandSubtle" size="icon-sm" className="size-6 rounded-full text-caption tabular-nums aria-expanded:ring-2 aria-expanded:ring-brand"
+          markerRanges={markerRanges.get(anchor.root)}
+          portalTarget={chat ? overlaySlot(anchor.root) : undefined}
+          onPositioned={() => {
+            if (pendingMarkerFocus.current !== anchor.id) return;
+            pendingMarkerFocus.current = null;
+            markerFor(anchor.id)?.focus({ preventScroll: true });
+          }}>
+          <Button variant="brandSubtle" size="icon-sm"
             aria-expanded={editingId === anchor.id}
-            aria-label={t(($) => $.reply.annotations.edit, { number: index + 1 })}
+            aria-label={L.edit(index + 1, annotations[index]?.note ?? "")}
+            data-testid="annotation-marker" data-annotation-marker={anchor.id} data-active={activeId === anchor.id || editingId === anchor.id}
+            className="size-6 rounded-full text-caption tabular-nums aria-expanded:ring-2 aria-expanded:ring-brand data-[active=true]:ring-2 data-[active=true]:ring-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+            onMouseEnter={() => setActiveId(anchor.id)} onMouseLeave={() => setActiveId((id) => id === anchor.id ? null : id)}
+            onFocus={() => setActiveId(anchor.id)} onBlur={() => setActiveId((id) => id === anchor.id ? null : id)}
             onClick={() => editAnnotation(anchor.id)}>{index + 1}</Button>
         </CommentSelectionBubble>;
       })}
       {enabled && selection && <CommentSelectionBubble range={selection.range} source={selection.root} owner={draftKey} onPositioned={focusNote}>
         <div className="bubble-menu max-w-[calc(100vw-16px)] focus-within:outline-1 focus-within:outline-ring">
-          {editing ? <div className="flex w-80 max-w-[calc(100vw-26px)] flex-col gap-1"><textarea ref={inputRef} value={editing.note} rows={Math.min(4, Math.max(1, editing.note.split("\n").length))}
-            aria-label={t(($) => $.reply.annotations.note_label)}
-            placeholder={t(($) => $.reply.annotations.note_placeholder)}
+          {editing ? <div className="flex w-80 max-w-[calc(100vw-26px)] flex-col gap-1">{chat && editingExisting && <p className="px-2 pt-1 text-caption text-muted-foreground">{L.noteLabel(editingNumber)}</p>}<textarea ref={inputRef} value={editing.note} rows={Math.min(4, Math.max(1, editing.note.split("\n").length))}
+            aria-label={L.noteLabel(editingNumber)}
+            data-testid="annotation-note"
+            placeholder={L.notePlaceholder}
             className="min-h-8 max-h-[calc(4lh+0.75rem)] w-full min-w-0 resize-none field-sizing-content rounded-sm bg-transparent px-2 py-1.5 text-body outline-none placeholder:text-muted-foreground"
             onChange={(event) => {
               setEditor({ annotation: { ...editing, note: event.target.value }, existing: editingExisting });
@@ -282,8 +349,8 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
             }} />
             <div className="flex items-center justify-end gap-1 px-1 pb-1">
               {editingExisting && <Button variant="ghost" size="icon-sm" className="mr-auto text-muted-foreground hover:text-destructive"
-                aria-label={t(($) => $.reply.annotations.remove, { number: annotations.findIndex((a) => a.id === editing.id) + 1 })}
-                title={t(($) => $.reply.annotations.remove, { number: annotations.findIndex((a) => a.id === editing.id) + 1 })}
+                aria-label={L.remove(editingNumber)}
+                title={L.remove(editingNumber)}
                 onClick={() => {
                   useCommentDraftStore.getState().removeAnnotation(draftKey, editing.id);
                   close(true);
@@ -292,15 +359,15 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
                 aria-label={confirmLabel} title={confirmLabel} aria-keyshortcuts="Enter"
                 onClick={confirmNote}>{confirmLabel}</Button>
             </div>
-            </div> : <Button ref={actionRef} variant="ghost" size="sm"
+            </div> : <Button ref={actionRef} variant="ghost" size="sm" data-testid="annotation-add"
               onMouseDown={(event) => event.preventDefault()} onClick={() => add(selection)}>
-              <MessageSquarePlus />{t(($) => editable ? $.reply.annotations.add_comment : $.reply.annotations.add)}
+              <MessageSquarePlus />{L.add}
             </Button>}
         </div>
         {error && <p role="alert" className="mt-1 max-w-72 rounded-lg bg-popover p-2 text-caption text-destructive shadow-[var(--menu-shadow)]">
           {selection.quote.length > MAX_ANNOTATION_QUOTE_LENGTH
-            ? t(($) => $.reply.annotations.quote_limit, { count: MAX_ANNOTATION_QUOTE_LENGTH })
-            : t(($) => $.reply.annotations.count_limit, { count: MAX_REPLY_ANNOTATIONS })}
+            ? L.quoteLimit(MAX_ANNOTATION_QUOTE_LENGTH)
+            : L.countLimit(MAX_REPLY_ANNOTATIONS)}
         </p>}
       </CommentSelectionBubble>}
     </>,

@@ -40,7 +40,9 @@ describe("build-time changelog page seam", () => {
 
   it("shows English fork categories, duplicate notes and build stamp in a non-English locale", async () => {
     localeState.locale = "ja";
-    vi.stubEnv("NEXT_PUBLIC_APP_VERSION", "sha-98fea199475b");
+    vi.stubEnv("NEXT_PUBLIC_APP_VERSION", "0.6.3");
+    vi.stubEnv("NEXT_PUBLIC_APP_BUILD", "20261014-0200");
+    vi.stubEnv("NEXT_PUBLIC_APP_COMMIT", "98fea199475b");
     vi.stubEnv("NEXT_PUBLIC_BUILD_DATE", "2026-10-13T19:00:00Z");
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify({ entries: [1, 2].map((number) => ({
       id: `fork-pr-${number}`, number, date: "2026-10-14", mergedAt: "2026-10-13T19:00:00Z",

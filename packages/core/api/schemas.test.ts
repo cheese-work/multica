@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AppConfigSchema,
+  JevCredentialPresenceSchema,
   WecomInstallationSchema,
   ListWecomInstallationsResponseSchema,
   RedeemWecomBindingTokenResponseSchema,
@@ -1395,14 +1396,26 @@ describe("AppConfigSchema cdn_signed drift", () => {
     expect(AppConfigSchema.parse({}).server_version).toBeUndefined();
   });
 
-  it("preserves plain version and build fields while rejecting malformed values", () => {
-    const parsed = AppConfigSchema.parse({ version: "0.6.0", build: "20261008-1331" });
-    expect(parsed.version).toBe("0.6.0");
-    expect(parsed.build).toBe("20261008-1331");
-    const malformed = AppConfigSchema.parse({ version: 123, build: { stamp: "bad" } });
-    expect(malformed.version).toBeUndefined();
-    expect(malformed.build).toBeUndefined();
-    expect(AppConfigSchema.parse({}).build).toBeUndefined();
+  it("preserves server_version, server_build, and server_commit fields while rejecting malformed values", () => {
+    const parsed = AppConfigSchema.parse({
+      server_version: "0.6.3",
+      server_build: "20261021-0856",
+      server_commit: "1de8883",
+    });
+    expect(parsed.server_version).toBe("0.6.3");
+    expect(parsed.server_build).toBe("20261021-0856");
+    expect(parsed.server_commit).toBe("1de8883");
+    const malformed = AppConfigSchema.parse({
+      server_version: 123,
+      server_build: { stamp: "bad" },
+      server_commit: ["bad"],
+    });
+    expect(malformed.server_version).toBeUndefined();
+    expect(malformed.server_build).toBeUndefined();
+    expect(malformed.server_commit).toBeUndefined();
+    const empty = AppConfigSchema.parse({});
+    expect(empty.server_build).toBeUndefined();
+    expect(empty.server_commit).toBeUndefined();
   });
 });
 
@@ -2422,5 +2435,26 @@ describe("AgentActivityBucketListSchema duration", () => {
     expect(parsed[0]?.task_count).toBe(201);
     expect(parsed[0]?.duration_ms).toBeUndefined();
     expect(parsed[0]?.duration_count).toBeUndefined();
+  });
+});
+
+describe("JevCredentialPresenceSchema", () => {
+  it("carries the storage capability the server reports", () => {
+    expect(JevCredentialPresenceSchema.parse({ present: false, configurable: false })).toEqual({
+      present: false,
+      configurable: false,
+    });
+    expect(JevCredentialPresenceSchema.parse({ present: true, configurable: true })).toEqual({
+      present: true,
+      configurable: true,
+    });
+  });
+
+  it("assumes a server that omits the capability can store a key", () => {
+    expect(JevCredentialPresenceSchema.parse({ present: false })).toEqual({ present: false, configurable: true });
+  });
+
+  it("rejects a response without the presence flag", () => {
+    expect(JevCredentialPresenceSchema.safeParse({ configurable: true }).success).toBe(false);
   });
 });

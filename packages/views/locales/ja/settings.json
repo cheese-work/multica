@@ -157,6 +157,18 @@
     "tab_history": "履歴 {{count}}",
     "key_set": "キー設定済み",
     "key_not_set": "キー未設定",
+    "api_url": {
+      "label": "API URL",
+      "hint": "空の場合は {{default}} を使用します。ブラウザ専用の Tailscale URL ではなく、バックエンドコンテナから到達できる必要があります。例: http://sub2api:8080/v1",
+      "invalid": "ホストを含む http:// または https:// の URL を入力してください。",
+      "save": "URL を保存",
+      "clear": "URL を消去",
+      "default_value": "{{url}}（デフォルト）",
+      "save_failed": "URL を保存できませんでした。変更はありません。",
+      "conflict": "設定が別の場所で変更されました。ページを再読み込みして、もう一度お試しください。",
+      "saved": "URL を保存しました",
+      "cleared": "URL を消去しました"
+    },
     "credential": {
       "title": "プロバイダーキー",
       "set": "設定済み",

@@ -184,6 +184,7 @@ type AgentTaskQueue struct {
 	CompactReason             pgtype.Text `json:"compact_reason"`
 	CompactTriggerTokens      pgtype.Int8 `json:"compact_trigger_tokens"`
 	WorkflowStep              pgtype.Text `json:"workflow_step"`
+	ClaimedModel              pgtype.Text `json:"claimed_model"`
 }
 
 type AgentToLabel struct {
@@ -576,6 +577,7 @@ type ChatSession struct {
 	ForkIdempotencyKey     pgtype.Text        `json:"fork_idempotency_key"`
 	ForkLastMessageID      pgtype.UUID        `json:"fork_last_message_id"`
 	ForkMessageCount       pgtype.Int4        `json:"fork_message_count"`
+	ForkSourceMessageID    pgtype.UUID        `json:"fork_source_message_id"`
 }
 
 type ClientUsageDaily struct {
@@ -1140,6 +1142,18 @@ type GovernanceWorkspaceConfigAudit struct {
 	ControlEpoch      int64              `json:"control_epoch"`
 	RollbackOfVersion pgtype.Int8        `json:"rollback_of_version"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+}
+
+type GovernedVoteRecord struct {
+	IssueID         pgtype.UUID        `json:"issue_id"`
+	CommentID       pgtype.UUID        `json:"comment_id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	AuthorType      string             `json:"author_type"`
+	AuthorID        pgtype.UUID        `json:"author_id"`
+	VoteLines       string             `json:"vote_lines"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	RuntimeProvider string             `json:"runtime_provider"`
+	Model           string             `json:"model"`
 }
 
 type InboxItem struct {
@@ -1832,6 +1846,39 @@ type QuickAction struct {
 	CreatedByID   pgtype.UUID        `json:"created_by_id"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
+type RunGateEvent struct {
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	IssueID             pgtype.UUID        `json:"issue_id"`
+	Source              string             `json:"source"`
+	EventKey            string             `json:"event_key"`
+	CandidateKey        string             `json:"candidate_key"`
+	Origin              string             `json:"origin"`
+	AuthorType          pgtype.Text        `json:"author_type"`
+	NonLeaderAgentReply bool               `json:"non_leader_agent_reply"`
+	TriggerCommentID    pgtype.UUID        `json:"trigger_comment_id"`
+	SystemRule          pgtype.Text        `json:"system_rule"`
+	WakeupID            pgtype.UUID        `json:"wakeup_id"`
+	WakeupRevision      pgtype.Int8        `json:"wakeup_revision"`
+	ReceiptID           pgtype.UUID        `json:"receipt_id"`
+	AgentID             pgtype.UUID        `json:"agent_id"`
+	SquadID             pgtype.UUID        `json:"squad_id"`
+	IssueRevision       int64              `json:"issue_revision"`
+	IssueStatus         string             `json:"issue_status"`
+	PrHeadSha           pgtype.Text        `json:"pr_head_sha"`
+	EventTime           pgtype.Timestamptz `json:"event_time"`
+	NativeFoldEligible  bool               `json:"native_fold_eligible"`
+	NativeFoldTaskID    pgtype.UUID        `json:"native_fold_task_id"`
+	QueueSnapshot       []byte             `json:"queue_snapshot"`
+	ActiveTaskID        pgtype.UUID        `json:"active_task_id"`
+	AdmissionStatus     pgtype.Text        `json:"admission_status"`
+	AdmissionReason     pgtype.Text        `json:"admission_reason"`
+	AdmissionAt         pgtype.Timestamptz `json:"admission_at"`
+	SeenCount           int32              `json:"seen_count"`
+	FirstSeenAt         pgtype.Timestamptz `json:"first_seen_at"`
+	LastSeenAt          pgtype.Timestamptz `json:"last_seen_at"`
 }
 
 type RuntimeProfile struct {

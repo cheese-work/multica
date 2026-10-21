@@ -894,8 +894,8 @@ export interface AppConfigResponse {
    * too, so absent must be treated as false (#8296). */
   comment_delete_keep_replies_supported?: boolean;
   server_version?: string;
-  version?: string;
-  build?: string;
+  server_build?: string;
+  server_commit?: string;
 }
 
 // Schemas for the highest-risk API endpoints — those whose responses drive
@@ -1156,8 +1156,8 @@ export const AppConfigSchema = z.object({
   issue_create_properties_supported: BooleanWithDefaultSchema(false),
   comment_delete_keep_replies_supported: BooleanWithDefaultSchema(false),
   server_version: OptionalStringSchema,
-  version: OptionalStringSchema,
-  build: OptionalStringSchema,
+  server_build: OptionalStringSchema,
+  server_commit: OptionalStringSchema,
 }).loose();
 
 export const EMPTY_APP_CONFIG: AppConfigResponse = {
@@ -2186,6 +2186,7 @@ const ChatChannelSourceSchema = z.object({
 export const ChatSessionSchema: z.ZodType<ChatSession> = z.object({
   forked_from_session_id: z.string().uuid().nullable().optional().catch(undefined),
   fork_last_message_id: z.string().uuid().nullable().optional().catch(undefined),
+  fork_source_message_id: z.string().uuid().nullable().optional().catch(undefined),
   fork_message_count: z.number().int().nonnegative().nullable().optional().catch(undefined),
   id: z.string(),
   continued_into_session_id: z.string().uuid().nullable().optional().catch(undefined),
@@ -2237,6 +2238,7 @@ export const ChatForkResponseSchema = z.object({
   previous_session_id: z.string().default(""),
   url: z.string().default(""),
   message: ChatMessageSchema.nullable().optional().catch(undefined),
+  attachment_ids: z.array(z.string()).optional().catch(undefined),
 }).loose();
 
 export const ChatSessionUpdatedPayloadSchema = z.object({
@@ -3864,6 +3866,7 @@ export const WorkspaceGovernanceConfigSchema = z.object({
     jev_squad_routing_mode: z.string().nullish(),
     jev_squad_routing_enabled: z.boolean().nullish(),
     jev_min_confidence: z.number().nullish(),
+    jev_api_url: z.string().nullish(),
   }),
   // Strict like the rest: a rollback offered from a history that did not parse
   // would be a guess about what it restores.
@@ -3872,7 +3875,12 @@ export const WorkspaceGovernanceConfigSchema = z.object({
 
 // CHE-1853: whether a Jev provider key is stored. Strict: "Not set" must never
 // be what a malformed response turns into.
-export const JevCredentialPresenceSchema = z.object({ present: z.boolean() });
+// `configurable` is absent from older servers; they are assumed able to store a
+// key, and the 403 on save remains the fallback signal.
+export const JevCredentialPresenceSchema = z.object({
+  present: z.boolean(),
+  configurable: z.boolean().default(true),
+});
 
 export const WakeupConditionSchema = z.union([
   z.object({ type: z.literal("issue_field"), field: z.literal("status"), value: z.string() }),
