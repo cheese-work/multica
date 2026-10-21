@@ -287,12 +287,12 @@ next free number on 2026-10-17. Production deployment remains gated on Cheese.
 Upstream v0.6.4 ships two migrations whose prefixes (583, 584) collide with
 fork migrations already applied on deployed databases. The fork files keep their
 names. The two upstream files are new to this fork, so no database has recorded
-them, and they take the next free numbers after `main`'s `668` (CHE-1900):
+them, and they take the next free numbers after `main`'s `669` (CHE-1900; they were 669 and 670 until main took 669 for `chat_fork_source_message` on 21 Oct 2026):
 
-- `583_runtime_profile_add_muse` is now `669_runtime_profile_add_muse`
-- `584_quick_action_optional_target` is now `670_quick_action_optional_target`
+- `583_runtime_profile_add_muse` is now `670_runtime_profile_add_muse`
+- `584_quick_action_optional_target` is now `671_quick_action_optional_target`
 
 The SQL bytes are unchanged. `allowedForkCollisions` gains no entry. A later
 upstream sync must delete these two upstream filenames when it re-adds them, or
 the `muse` runtime profile and the optional quick-action target would be applied
-twice. Open pull requests that claim 669 or later renumber after this one merges.
+twice. Open pull requests that claim 670 or later renumber after this one merges.

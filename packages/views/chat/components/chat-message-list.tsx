@@ -130,7 +130,6 @@ interface ChatListContext {
   isFetchingOlderMessages: boolean;
   continuedFromSessionId?: string | null;
   continuedIntoSessionId?: string | null;
-  forkChildren: ChatSession[];
   showForkHint: boolean;
   showStatusPill: boolean;
   pendingTask: ChatPendingTask | null | undefined;
@@ -197,9 +196,6 @@ function ChatListFooter({ context }: { context?: ChatListContext }) {
       {context?.continuedIntoSessionId && (
         <ContinuationAnnouncement sessionId={context.continuedIntoSessionId} direction="into" />
       )}
-      {context?.forkChildren.map((child) => (
-        <ForkedIntoAnnouncement key={child.id} child={child} />
-      ))}
       {context?.showForkHint && (
         <p className="text-caption text-muted-foreground">{t(($) => $.message_list.fork_hint)}</p>
       )}
@@ -290,6 +286,30 @@ function ForkedIntoAnnouncement({ child }: { child: ChatSession }) {
       </AppLink>
     </p>
   );
+}
+
+/**
+ * Groups fork children under the source message they copied up to, oldest
+ * first. A child whose source message is not in `messages` (older page, or a
+ * fork made before the pointer existed) goes under the last message created at
+ * or before it, or in `before` — rendered above the first message — when it
+ * predates them all.
+ */
+function forkChildrenByMessage(messages: ChatMessage[], children: ChatSession[]) {
+  const after = new Map<string, ChatSession[]>();
+  const before: ChatSession[] = [];
+  if (messages.length === 0) return { before, after };
+  const loaded = new Set(messages.map((m) => m.id));
+  const sorted = [...children].sort((a, b) => a.created_at.localeCompare(b.created_at));
+  for (const child of sorted) {
+    const pointed = child.fork_source_message_id;
+    const anchor = pointed && loaded.has(pointed)
+      ? pointed
+      : messages.findLast((m) => m.created_at <= child.created_at)?.id;
+    if (anchor) after.set(anchor, [...(after.get(anchor) ?? []), child]);
+    else before.push(child);
+  }
+  return { before, after };
 }
 
 const LIST_COMPONENTS: Components<ChatRenderItem, ChatListContext> = {
@@ -411,19 +431,18 @@ export function ChatMessageList({
 
   const firstIndex = renderItems.length > 0 ? firstItemIndex : 0;
   const liveEndKey = renderItems[renderItems.length - 1]?.key ?? null;
+  const firstItem = renderItems[0];
+  const firstMessageId = firstItem?.kind === "message" ? firstItem.message.id : null;
 
   const forkSource = forkedFromSessionId && sessions
     ? sessions.find((s) => s.id === forkedFromSessionId) ?? null
     : undefined;
-  // Oldest first, so a new branch lands under the earlier ones.
-  const forkChildren = useMemo(
-    () =>
-      sessionId && sessions
-        ? sessions
-            .filter((s) => s.forked_from_session_id === sessionId)
-            .sort((a, b) => a.created_at.localeCompare(b.created_at))
-        : [],
-    [sessionId, sessions],
+  const { before: forksBeforeFirst, after: forksByMessageId } = useMemo(
+    () => forkChildrenByMessage(
+      messages.filter((m) => m.message_kind !== "onboarding_kickoff"),
+      sessionId && sessions ? sessions.filter((s) => s.forked_from_session_id === sessionId) : [],
+    ),
+    [messages, sessionId, sessions],
   );
   // Idle hint until a user message follows the fork point. A fork point that
   // is not loaded sits above everything loaded, so all loaded rows follow it.
@@ -435,7 +454,6 @@ export function ChatMessageList({
     isFetchingOlderMessages,
     continuedFromSessionId: hasOlderMessages ? null : continuedFromSessionId,
     continuedIntoSessionId,
-    forkChildren,
     showForkHint,
     showStatusPill,
     pendingTask,
@@ -532,6 +550,9 @@ export function ChatMessageList({
             className={cn(CHAT_COLUMN, "py-2")}
             {...(item.key === liveEndKey ? { [LIVE_END_ROW_ATTR]: "" } : {})}
           >
+            {item.kind === "message" && item.message.id === firstMessageId && forksBeforeFirst.map((child) => (
+              <ForkedIntoAnnouncement key={child.id} child={child} />
+            ))}
             {item.kind === "message" && item.dayStart && (
               <div data-day-separator="" className="mb-3 flex justify-center">
                 <span className="rounded-full bg-muted px-2.5 py-0.5 text-caption text-muted-foreground">
@@ -553,6 +574,9 @@ export function ChatMessageList({
             {forkedFromSessionId && item.kind === "message" && item.message.id === forkLastMessageId && (
               <ForkDivider sourceId={forkedFromSessionId} source={forkSource} copiedCount={forkMessageCount} />
             )}
+            {item.kind === "message" && forksByMessageId.get(item.message.id)?.map((child) => (
+              <ForkedIntoAnnouncement key={child.id} child={child} />
+            ))}
           </div>
         )}
       />

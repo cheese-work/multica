@@ -29,7 +29,7 @@ func TestQuickActionOptionalTargetRollback(t *testing.T) {
 			defer cancel()
 			schema := createScratchSchema(t, ctx, base, "quick_action_rollback_")
 			pool := openTestPoolWithSearchPath(t, schema)
-			const version = "670_quick_action_optional_target"
+			const version = "671_quick_action_optional_target"
 			lockKey := int64(rand.Uint64()&0x7fffffffffffffff) | 1
 			migrate := func(direction string, versions ...string) error {
 				return runMigrations(ctx, pool, runOptions{
