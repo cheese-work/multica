@@ -121,7 +121,7 @@ export function createPairPlan({
     cliVersion: sample.cliVersion,
     historyMode: sample.historyMode,
   };
-  return {
+  const plan = {
     schemaVersion: 1,
     sampleId: sample.sampleId,
     createdBy: "scripts/paired-replay.mjs",
@@ -137,9 +137,19 @@ export function createPairPlan({
       execution: "not-run",
     },
   };
+  plan.planSha256 = digestPlan(plan);
+  return plan;
 }
 
-export function measureRun(events, { rootTurnId, sessionId, model, startOrdinal }) {
+export function measureRun(events, {
+  rootTurnId,
+  sessionId,
+  model,
+  startOrdinal,
+  runtimeId,
+  cliVersion,
+  historyMode,
+}) {
   if (!Array.isArray(events)) fail("events must be an array");
   if (!isNonEmptyString(rootTurnId) || !isNonEmptyString(sessionId) || !isNonEmptyString(model)) {
     fail("rootTurnId, sessionId, and model are required");
@@ -157,11 +167,21 @@ export function measureRun(events, { rootTurnId, sessionId, model, startOrdinal 
     ordinals.add(event.ordinal);
   }
 
-  const sessionIds = events
+  const sessionMetadata = events
     .filter((event) => event.type === "session_meta")
-    .map((event) => event.payload?.session_id);
+    .map((event) => event.payload);
+  const sessionIds = sessionMetadata.map((metadata) => metadata?.session_id);
   if (sessionIds.length === 0 || sessionIds.some((id) => id !== sessionId)) {
     fail("session metadata does not match the run session_id");
+  }
+  for (const [field, expected] of [
+    ["runtime_id", runtimeId],
+    ["cli_version", cliVersion],
+    ["history_mode", historyMode],
+  ]) {
+    if (!isNonEmptyString(expected) || sessionMetadata.some((metadata) => metadata?.[field] !== expected)) {
+      fail(`session metadata ${field} does not match the qualified runtime`);
+    }
   }
   const runModels = new Set(
     events
@@ -189,6 +209,16 @@ export function measureRun(events, { rootTurnId, sessionId, model, startOrdinal 
     ? usageSnapshot(baselineEvent, "baseline token_count")
     : Object.fromEntries(usageFields.map((field) => [field, 0]));
   const after = usageSnapshot(afterEvent, "final token_count");
+  let previousSnapshot = baseline;
+  for (const event of heartbeatEvents.filter((item) => item.ordinal > startOrdinal)) {
+    const currentSnapshot = usageSnapshot(event, "token_count");
+    for (const field of usageFields) {
+      if (currentSnapshot[field] < previousSnapshot[field]) {
+        fail(`token_count counter reset for ${field}; measurement fails closed`);
+      }
+    }
+    previousSnapshot = currentSnapshot;
+  }
   const newRecords = events
     .filter((event) => event.type === "token_usage_record" && event.ordinal > startOrdinal)
     .sort((left, right) => left.ordinal - right.ordinal);
@@ -240,6 +270,90 @@ export function measureRun(events, { rootTurnId, sessionId, model, startOrdinal 
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+function digestPlan(plan) {
+  const payload = { ...plan };
+  delete payload.planSha256;
+  return sha256(Buffer.from(JSON.stringify(payload)));
+}
+
+export function validatePairPlan(plan) {
+  if (!plan || typeof plan !== "object" || Array.isArray(plan) || plan.schemaVersion !== 1) {
+    fail("plan schema is invalid");
+  }
+  if (!/^[a-f0-9]{64}$/i.test(plan.planSha256 ?? "") || digestPlan(plan) !== plan.planSha256) {
+    fail("plan SHA-256 does not match its contents");
+  }
+  if (
+    plan.sampleId !== sample.sampleId ||
+    plan.createdBy !== "scripts/paired-replay.mjs" ||
+    !Number.isSafeInteger(plan.threshold) ||
+    plan.threshold < 1 ||
+    plan.policy?.platformWrites !== "denied" ||
+    plan.policy?.productionSessionMutations !== "denied" ||
+    plan.policy?.execution !== "not-run"
+  ) {
+    fail("plan identity, threshold, or execution policy is invalid");
+  }
+
+  const qualified = {
+    fixtureSha256: sample.fixtureSha256,
+    inputPrefixSha256: sample.inputPrefixSha256,
+    promptId: sample.promptId,
+    cutoffOrdinal: sample.cutoffOrdinal,
+    model: sample.model,
+    runtimeId: sample.runtimeId,
+    cliVersion: sample.cliVersion,
+    historyMode: sample.historyMode,
+  };
+  for (const [field, expected] of Object.entries(qualified)) {
+    if (plan.shared?.[field] !== expected) fail(`plan ${field} does not match the qualified sample`);
+  }
+  if (!/^[a-f0-9]{64}$/i.test(plan.shared?.readbacksSha256 ?? "")) {
+    fail("plan readbacksSha256 must be a SHA-256 digest");
+  }
+
+  const optionFields = [...Object.keys(qualified), "readbacksSha256"];
+  for (const optionName of ["fresh", "resume"]) {
+    const option = plan.options?.[optionName];
+    if (!option || optionFields.some((field) => option[field] !== plan.shared[field])) {
+      fail(`plan ${optionName} option does not match shared provenance`);
+    }
+  }
+  if (
+    plan.options.fresh.strategy !== "fresh-session-reconstruction" ||
+    plan.options.resume.strategy !== "resume-and-compact" ||
+    plan.options.resume.threshold !== plan.threshold
+  ) {
+    fail("plan option strategy or threshold is invalid");
+  }
+  return true;
+}
+
+export function measurePair(plan, pair = {}) {
+  if (!pair || typeof pair !== "object" || Array.isArray(pair)) {
+    fail("fresh and resume options are required");
+  }
+  const { fresh, resume } = pair;
+  validatePairPlan(plan);
+  if (!fresh || !resume || fresh.sessionId === resume.sessionId) {
+    fail("fresh and resume options require distinct session IDs");
+  }
+
+  const measureOption = (option) => measureRun(option.events, {
+    rootTurnId: option.rootTurnId,
+    sessionId: option.sessionId,
+    model: plan.shared.model,
+    startOrdinal: option.startOrdinal,
+    runtimeId: plan.shared.runtimeId,
+    cliVersion: plan.shared.cliVersion,
+    historyMode: plan.shared.historyMode,
+  });
+  return {
+    fresh: measureOption(fresh),
+    resume: measureOption(resume),
+  };
 }
 
 function prefixAtOrdinal(bytes, cutoffOrdinal) {
@@ -376,35 +490,27 @@ async function runCli(args) {
     const outputPath = requiredFlag(flags, "--output");
     assertOutputIsNotInput(outputPath, [planPath, freshPath, resumePath]);
     const plan = JSON.parse(await readFile(planPath, "utf8"));
-    if (plan.schemaVersion !== 1 || plan.policy?.execution !== "not-run") {
-      fail("plan schema or execution state is invalid");
-    }
-    const fresh = measureRun(await readEvents(freshPath), {
-      sessionId: requiredFlag(flags, "--fresh-session-id"),
-      rootTurnId: requiredFlag(flags, "--fresh-root-turn-id"),
-      model: plan.shared.model,
-      startOrdinal: integerFlag(flags, "--fresh-start-ordinal", -1),
+    const afterValues = measurePair(plan, {
+      fresh: {
+        events: await readEvents(freshPath),
+        sessionId: requiredFlag(flags, "--fresh-session-id"),
+        rootTurnId: requiredFlag(flags, "--fresh-root-turn-id"),
+        startOrdinal: integerFlag(flags, "--fresh-start-ordinal", -1),
+      },
+      resume: {
+        events: await readEvents(resumePath),
+        sessionId: requiredFlag(flags, "--resume-session-id"),
+        rootTurnId: requiredFlag(flags, "--resume-root-turn-id"),
+        startOrdinal: integerFlag(flags, "--resume-start-ordinal", -1),
+      },
     });
-    const resume = measureRun(await readEvents(resumePath), {
-      sessionId: requiredFlag(flags, "--resume-session-id"),
-      rootTurnId: requiredFlag(flags, "--resume-root-turn-id"),
-      model: plan.shared.model,
-      startOrdinal: integerFlag(flags, "--resume-start-ordinal", -1),
-    });
-    for (const [label, run] of [["fresh", fresh], ["resume", resume]]) {
-      const actualRuntime = requiredFlag(flags, `--${label}-runtime-id`);
-      const actualModel = requiredFlag(flags, `--${label}-model`);
-      if (actualRuntime !== plan.shared.runtimeId || actualModel !== plan.shared.model) {
-        fail(`${label} model/runtime does not match the qualified plan`);
-      }
-      if (run.responseCount === 0) fail(`${label} has no per-response usage`);
-    }
     const report = {
       schemaVersion: 1,
       sampleId: plan.sampleId,
+      planSha256: plan.planSha256,
       provenance: plan.shared,
       threshold: plan.threshold,
-      afterValues: { fresh, resume },
+      afterValues,
       acceptance: "NOT-RUN: offline instrumentation does not accept CHE-1931",
     };
     await writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, { flag: "wx" });
