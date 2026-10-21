@@ -274,7 +274,10 @@
     "rename": "Rename chat",
     "archive": "Archive chat",
     "unarchive": "Unarchive chat",
-    "delete": "Delete chat"
+    "delete": "Delete chat",
+    "statistics": "Statistics",
+    "pin": "Pin chat",
+    "unpin": "Unpin chat"
   },
   "annotations": {
     "source_label": "Message from {{name}}",
@@ -295,5 +298,37 @@
     "selection_failed": "Could not capture the selection. Select text inside one reply and try again.",
     "source_changed": "The source changed or is unavailable. Your saved quote is kept.",
     "removed": "Comment {{number}} removed"
+  },
+  "stats": {
+    "title": "Statistics",
+    "scope": "This DM only",
+    "estimated": "Estimated",
+    "partial": "Partial",
+    "tokens": "{{tokens}} tokens",
+    "usage_missing_one": "Usage missing for {{count}} finished run",
+    "usage_missing_other": "Usage missing for {{count}} finished runs",
+    "in_progress_one": "{{count}} run in progress — totals update when it finishes",
+    "in_progress_other": "{{count}} runs in progress — totals update when they finish",
+    "runs": "Runs",
+    "runs_value": "{{completed}} completed · {{failed}} failed",
+    "runs_cancelled": " · {{cancelled}} cancelled",
+    "run_time": "Agent run time",
+    "messages": "Messages",
+    "messages_value": "You {{user}} · Agent {{agent}}",
+    "by_model": "By model",
+    "col_model": "Model",
+    "col_tokens": "Tokens",
+    "col_cost": "Cost",
+    "no_value": "—",
+    "no_cost": "No cost reported",
+    "no_runs": "No runs yet.",
+    "related": "Related DMs",
+    "continued_from": "Continued from",
+    "forked_from": "Forked from",
+    "error": "Statistics could not be loaded. Nothing was recorded as zero.",
+    "offline": "You're offline. These numbers are from when you opened Statistics at {{time}}. Reconnect to refresh.",
+    "retry": "Retry",
+    "close": "Close",
+    "less_than_a_minute": "<1m"
   }
 }
