@@ -101,7 +101,10 @@ func legacyKeys(t *testing.T, wakeupID string, number int64, baseline string, ar
 	dbfx.Exec(t, `UPDATE chat_wakeup SET condition = $2 WHERE id = $1`, wakeupID, string(legacy))
 }
 
-func TestChatWakeupChecksReadAnUnambiguousLegacyBaselineByNumber(t *testing.T) {
+// Bare-number state cannot say which repository it described, and the pull
+// requests linked now do not say which were linked when it was written, so it is
+// never attributed: not even when exactly one linked pull request has the number.
+func TestChatWakeupChecksNeverAttributeLegacyNumberKeyedState(t *testing.T) {
 	dm := newWakeupDM(t)
 	testHandler.TaskService.PRSnapshotsEnabled = true
 	t.Cleanup(func() { testHandler.TaskService.PRSnapshotsEnabled = false })
@@ -114,18 +117,24 @@ func TestChatWakeupChecksReadAnUnambiguousLegacyBaselineByNumber(t *testing.T) {
 
 	dm.tick(t)
 	if got := dm.wakeupTasks(t, dm.sessionID); len(got) != 0 {
-		t.Fatalf("a legacy baseline for the only pull request with that number fired: %v", got)
+		t.Fatalf("a legacy baseline fired: %v", got)
 	}
 	var raw []byte
 	dbfx.QueryRow(t, `SELECT condition FROM chat_wakeup WHERE id = $1`, w.ID).Scan(&raw)
-	if !json.Valid(raw) || !containsKey(raw, "multica-ai/repo-a#"+strconv.FormatInt(number, 10)) {
-		t.Fatalf("the legacy baseline was not rewritten to the full address: %s", raw)
+	if containsKey(raw, "multica-ai/repo-a#"+strconv.FormatInt(number, 10)) {
+		t.Fatalf("legacy state was attributed to a repository by its link count: %s", raw)
 	}
 
 	dbfx.Exec(t, `UPDATE github_pull_request SET snapshot_head_sha = 'bbb', checks_rollup_state = 'FAILURE' WHERE id = $1`, pr)
 	dm.tick(t)
+	if got := dm.wakeupTasks(t, dm.sessionID); len(got) != 0 {
+		t.Fatalf("legacy state decided a checks result: %v", got)
+	}
+	// The deadline still ends the wait.
+	dm.makeDue(t, w.ID)
+	dm.tick(t)
 	if got := dm.wakeupTasks(t, dm.sessionID); len(got) != 1 {
-		t.Fatalf("%d wakeup tasks after a new result, want 1", len(got))
+		t.Fatalf("%d wakeup tasks at the deadline, want 1", len(got))
 	}
 }
 

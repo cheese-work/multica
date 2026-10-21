@@ -58,6 +58,22 @@ func forkAttachment(test *testing.T, sessionID, messageID, name string) string {
 
 // seedForkHistory writes one sentence per row kind a fork must copy or skip,
 // and returns the source rows the fork copies, in list order.
+// forkSourceOnWire is the fork's source-side boundary as the client sees it: the
+// last source message the fork copied. fork_last_message_id names the child's
+// own copy of it instead.
+func forkSourceOnWire(test *testing.T, session ChatSessionResponse) any {
+	test.Helper()
+	encoded, err := json.Marshal(session)
+	if err != nil {
+		test.Fatal(err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		test.Fatal(err)
+	}
+	return wire["fork_source_message_id"]
+}
+
 func seedForkHistory(test *testing.T, agentID, sourceID string) (copied []string, attachmentID string) {
 	test.Helper()
 	at := func(ago string) testutil.Cols {
@@ -211,6 +227,9 @@ func TestForkChatSessionCopiesVisibleHistory(test *testing.T) {
 		int(*result.Session.ForkMessageCount) != len(copied) || result.Session.ForkedFromSessionID == nil || *result.Session.ForkedFromSessionID != sourceID {
 		test.Fatalf("response fork fields = %+v", result.Session)
 	}
+	if got := forkSourceOnWire(test, result.Session); got != copied[len(copied)-1] {
+		test.Fatalf("response fork_source_message_id = %v, want the last copied source message %s", got, copied[len(copied)-1])
+	}
 	if count := dbfx.Count(test, `SELECT count(*) FROM chat_session WHERE id = $1 AND last_read_at = (SELECT max(created_at) FROM chat_message WHERE chat_session_id = $1)`, result.Session.ID); count != 1 {
 		test.Fatal("last_read_at is not the newest copied time")
 	}
@@ -251,7 +270,8 @@ func TestForkChatSessionCopiesVisibleHistory(test *testing.T) {
 		for _, session := range sessions {
 			if session.ID == result.Session.ID {
 				found = true
-				if session.UnreadCount != 0 || session.ForkMessageCount == nil || session.ForkLastMessageID == nil {
+				if session.UnreadCount != 0 || session.ForkMessageCount == nil || session.ForkLastMessageID == nil ||
+					forkSourceOnWire(test, session) != copied[len(copied)-1] {
 					test.Fatalf("%s list shows the fork wrong: %+v", status, session)
 				}
 			}
@@ -751,6 +771,25 @@ func TestForkChatSessionRejectsBodyPaddedPastTheCap(test *testing.T) {
 	testutil.Call(test, testHandler.ForkChatSession, request).Want(http.StatusBadRequest)
 	if count := dbfx.Count(test, `SELECT count(*) FROM chat_session WHERE forked_from_session_id = $1`, sourceID); count != 0 {
 		test.Fatalf("a padded body created %d children", count)
+	}
+}
+
+func TestForkTitleStripsMarkdown(test *testing.T) {
+	cases := map[string]string{
+		"[/office-hours](slash://skill/x) try":    "Src (fork: /office-hours try)",
+		"> docker pull x":                         "Src (fork: docker pull x)",
+		"# Heading text":                          "Src (fork: Heading text)",
+		"- item one":                              "Src (fork: item one)",
+		"1. first":                                "Src (fork: first)",
+		"```sh\ndocker pull x\n```":               "Src (fork: docker pull x)",
+		"> ```sh\n> docker pull x\n> ```":         "Src (fork: docker pull x)",
+		"see [docs](https://example.com/a_b) now": "Src (fork: see docs now)",
+		"": "Src (fork)",
+	}
+	for in, want := range cases {
+		if got := forkTitle("Src", in); got != want {
+			test.Errorf("forkTitle(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 
