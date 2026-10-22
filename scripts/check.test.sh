@@ -50,6 +50,8 @@ cat >"$TEST_DIR/bin/fake-server" <<'FAKE'
 #!/usr/bin/env bash
 [ -n "${NEXT_EXIT:-}" ] && exit 1
 echo $$ >"$CHECK_TEST_DIR/server.pid"
+# Lost the bind race to a foreign listener: alive at first, then exits.
+[ -n "${NEXT_LATE_EXIT:-}" ] && { sleep 1; exit 1; }
 while [ -d "$CHECK_TEST_DIR/bin" ]; do sleep 0.1; done
 FAKE
 mkdir -p "$TEST_DIR/apps/web/node_modules/.bin"
@@ -65,6 +67,7 @@ FAKE
 # The listener's owner: the fake server, or a foreign PID outside its tree.
 cat >"$TEST_DIR/bin/lsof" <<'FAKE'
 #!/usr/bin/env bash
+if [ -n "${NO_LISTENER_PID:-}" ]; then exit 0; fi
 if [ -n "${FOREIGN_OWNER:-}" ]; then echo 1; else cat "$CHECK_TEST_DIR/server.pid" 2>/dev/null; fi
 FAKE
 cat >"$TEST_DIR/bin/go" <<'FAKE'
@@ -125,7 +128,7 @@ run_case() {
     cd "$TEST_DIR"
     env -u BASH_ENV ENV_FILE=.env PATH="$TEST_DIR/bin:$PATH" \
       PREREQUISITE_STATUS=0 FAIL_PHASE= START_SERVICES= CLEANUP_STATUS=0 \
-      FOREIGN_FRONTEND= FOREIGN_OWNER= NEXT_EXIT= BUILD_STATUS=0 E2E_WEB_MODE= \
+      FOREIGN_FRONTEND= FOREIGN_OWNER= NEXT_EXIT= NEXT_LATE_EXIT= NO_LISTENER_PID= BUILD_STATUS=0 E2E_WEB_MODE= \
       "$@" bash scripts/check.sh
   ) >"$TEST_DIR/output" 2>&1
   status=$?
@@ -154,6 +157,13 @@ run_case 'launched frontend that exits before ready fails' 1 '' NEXT_EXIT=1
 grep -q 'exited' "$TEST_DIR/output" || fail 'did not report the exited frontend'
 run_case 'ready listener owned by a foreign process fails' 1 frontend FOREIGN_OWNER=1
 grep -q 'not owned' "$TEST_DIR/output" || fail 'did not report the foreign owner'
+# A foreign listener that appears during the build wins the bind: the launched
+# frontend is alive at first, then exits, and the probe answers from the
+# foreign listener. With no tool able to name the listener's PID, ownership is
+# unprovable, so the run fails instead of trusting that the process is alive.
+run_case 'unprovable ownership after losing the bind race fails' 1 frontend NEXT_LATE_EXIT=1 NO_LISTENER_PID=1
+grep -q 'cannot establish' "$TEST_DIR/output" || fail 'did not report the unprovable owner'
+run_case 'unprovable ownership fails even when the frontend stays alive' 1 frontend NO_LISTENER_PID=1
 run_case 'production build failure stops before E2E' 1 '' BUILD_STATUS=1
 grep -q 'production build failed' "$TEST_DIR/output" || fail 'did not report the build failure'
 ! grep -q 'exec playwright test' "$TEST_DIR/pnpm-calls" || fail 'ran E2E after a failed build'

@@ -105,14 +105,15 @@ require_owned_frontend() {
     exit 1
   fi
   local listeners listener cur
-  # `ss` names the listener on Linux; `lsof` covers macOS. When neither can
-  # name one (no tool, or a listener hidden from this user), only the liveness
-  # check above applies.
+  # `ss` names the listener on Linux; `lsof` covers macOS. Liveness alone proves
+  # nothing: a server that lost the bind race to a foreign listener is alive
+  # until it exits. With no listener PID the run fails closed.
   listeners=$(ss -ltnpH "sport = :$FRONTEND_PORT" 2> /dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 || true)
   [ -n "$listeners" ] || listeners=$(lsof -nP -iTCP:"$FRONTEND_PORT" -sTCP:LISTEN -t 2> /dev/null || true)
   if [ -z "$listeners" ]; then
-    echo "    WARNING: cannot identify the listener on :$FRONTEND_PORT; checked only that the frontend is alive"
-    return 0
+    echo "    ERROR: cannot establish which process listens on :$FRONTEND_PORT (neither ss nor lsof named one); refusing to trust the readiness probe"
+    EXIT_CODE=1
+    exit 1
   fi
   for listener in $listeners; do
     cur=$listener
