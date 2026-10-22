@@ -9,7 +9,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-const WORKFLOWS = ["ci.yml", "pr-changelog-check.yml", "pr-close-target-check.yml"];
+// pr-changelog-check.yml is GitHub-hosted (fresh VM), so it has no reused workspace.
+const WORKFLOWS = ["ci.yml", "pr-close-target-check.yml"];
 const STEP = "- name: Clear stale sparse-checkout state";
 const read = (name) => readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), "utf8");
 
@@ -115,7 +116,7 @@ for (const name of WORKFLOWS) {
   });
 }
 
-for (const name of ["pr-changelog-check.yml", "pr-close-target-check.yml"]) {
+for (const name of ["pr-close-target-check.yml"]) {
   test(`${name} resets the workspace after its narrow checkout, even on failure`, () => {
     const lines = read(name).split("\n").filter((l) => l.trim() !== "");
     const last = lines.findLastIndex((l) => l.trim() === STEP);

@@ -5,7 +5,8 @@ import test from "node:test";
 const read = (name) => readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), "utf8");
 const runsOn = (text) => text.split("\n").filter((line) => /^\s+runs-on:/.test(line));
 
-for (const name of ["ci.yml", "pr-changelog-check.yml"]) {
+// pr-changelog-check.yml stays GitHub-hosted on purpose: fork-changelog.test.mjs pins it.
+for (const name of ["ci.yml"]) {
   test(`${name} jobs run on the X99 runners`, () => {
     const lines = runsOn(read(name));
     assert.ok(lines.length > 0);
@@ -18,7 +19,3 @@ for (const name of ["ci.yml", "pr-changelog-check.yml"]) {
     }
   });
 }
-
-test("pr-changelog-check.yml sparse-checks a file in non-cone mode", () => {
-  assert.match(read("pr-changelog-check.yml"), /sparse-checkout-cone-mode: false/);
-});
