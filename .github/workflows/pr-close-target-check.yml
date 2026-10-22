@@ -1,0 +1,31 @@
+name: PR Close Target Check
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-close-target-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  close-target:
+    if: github.event.pull_request.state != 'closed'
+    runs-on: [self-hosted, Linux, X64, cheese-x99]
+    timeout-minutes: 5
+    steps:
+      - name: Checkout trusted workflow checker
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          sparse-checkout: scripts/pr-close-target-check.mjs
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Validate intended issue close target
+        run: node scripts/pr-close-target-check.mjs --event "$GITHUB_EVENT_PATH"

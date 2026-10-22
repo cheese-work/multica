@@ -1453,6 +1453,201 @@ func TestRunIssuePullRequestsListsLinkedPRsAsJSON(t *testing.T) {
 	}
 }
 
+func TestIssuePullRequestsCommandRoutingAndUnlink(t *testing.T) {
+	const (
+		issueID  = "01a15d58-4fa3-7216-b8c4-a8494ede9612"
+		prUUID42 = "11111111-2222-3333-4444-555555555542"
+		prUUID99 = "11111111-2222-3333-4444-555555555599"
+	)
+
+	t.Run("rootCmd routes list and unlink subcommands", func(t *testing.T) {
+		listCmd, listArgs, err := rootCmd.Find([]string{"issue", "pull-requests", "CHE-1933"})
+		if err != nil {
+			t.Fatalf("rootCmd.Find list: %v", err)
+		}
+		if listCmd != issuePullRequestsCmd || fmt.Sprint(listArgs) != "[CHE-1933]" {
+			t.Fatalf("listCmd = %v args = %v", listCmd.CommandPath(), listArgs)
+		}
+
+		unlinkCmd, unlinkArgs, err := rootCmd.Find([]string{"issue", "pull-requests", "unlink", "CHE-1933", "42"})
+		if err != nil {
+			t.Fatalf("rootCmd.Find unlink: %v", err)
+		}
+		if unlinkCmd.Name() != "unlink" || fmt.Sprint(unlinkArgs) != "[CHE-1933 42]" {
+			t.Fatalf("unlinkCmd = %v args = %v, want unlink [CHE-1933 42]", unlinkCmd.CommandPath(), unlinkArgs)
+		}
+	})
+
+	for _, tc := range []struct {
+		name      string
+		prRef     string
+		linkedPRs []map[string]any
+		wantCalls []string
+		wantErr   string
+	}{
+		{
+			name:      "by PR UUID skips list lookup and deletes directly",
+			prRef:     prUUID42,
+			wantCalls: []string{"GET /api/issues/CHE-1933", "DELETE /api/issues/" + issueID + "/pull-requests/" + prUUID42},
+		},
+		{
+			name:  "by PR number resolves linked PR UUID and deletes",
+			prRef: "42",
+			linkedPRs: []map[string]any{
+				{
+					"id":         prUUID42,
+					"number":     float64(42),
+					"repo_owner": "cheese-work",
+					"repo_name":  "multica",
+					"html_url":   "https://github.com/cheese-work/multica/pull/42",
+					"state":      "open",
+					"title":      "fix: wrong parent link",
+				},
+			},
+			wantCalls: []string{
+				"GET /api/issues/CHE-1933",
+				"GET /api/issues/" + issueID + "/pull-requests",
+				"DELETE /api/issues/" + issueID + "/pull-requests/" + prUUID42,
+			},
+		},
+		{
+			name:  "by owner/repo#number disambiguates same PR number across repos",
+			prRef: "cheese-work/multica#42",
+			linkedPRs: []map[string]any{
+				{
+					"id":         prUUID99,
+					"number":     float64(42),
+					"repo_owner": "cheese-work",
+					"repo_name":  "multica-dotfiles",
+					"html_url":   "https://github.com/cheese-work/multica-dotfiles/pull/42",
+				},
+				{
+					"id":         prUUID42,
+					"number":     float64(42),
+					"repo_owner": "cheese-work",
+					"repo_name":  "multica",
+					"html_url":   "https://github.com/cheese-work/multica/pull/42",
+				},
+			},
+			wantCalls: []string{
+				"GET /api/issues/CHE-1933",
+				"GET /api/issues/" + issueID + "/pull-requests",
+				"DELETE /api/issues/" + issueID + "/pull-requests/" + prUUID42,
+			},
+		},
+		{
+			name:  "by PR URL strips trailing path and query",
+			prRef: "https://github.com/Cheese-Work/multica/pull/42/files?w=1",
+			linkedPRs: []map[string]any{
+				{
+					"id":         prUUID42,
+					"number":     float64(42),
+					"repo_owner": "cheese-work",
+					"repo_name":  "multica",
+					"html_url":   "https://github.com/cheese-work/multica/pull/42",
+				},
+			},
+			wantCalls: []string{
+				"GET /api/issues/CHE-1933",
+				"GET /api/issues/" + issueID + "/pull-requests",
+				"DELETE /api/issues/" + issueID + "/pull-requests/" + prUUID42,
+			},
+		},
+		{
+			name:  "ambiguous bare number fails closed without deleting",
+			prRef: "#42",
+			linkedPRs: []map[string]any{
+				{
+					"id":         prUUID99,
+					"number":     float64(42),
+					"repo_owner": "cheese-work",
+					"repo_name":  "multica-dotfiles",
+					"html_url":   "https://github.com/cheese-work/multica-dotfiles/pull/42",
+				},
+				{
+					"id":         prUUID42,
+					"number":     float64(42),
+					"repo_owner": "cheese-work",
+					"repo_name":  "multica",
+					"html_url":   "https://github.com/cheese-work/multica/pull/42",
+				},
+			},
+			wantCalls: []string{
+				"GET /api/issues/CHE-1933",
+				"GET /api/issues/" + issueID + "/pull-requests",
+			},
+			wantErr: "ambiguous pull request",
+		},
+		{
+			name:      "missing PR fails closed without deleting",
+			prRef:     "999",
+			linkedPRs: nil,
+			wantCalls: []string{
+				"GET /api/issues/CHE-1933",
+				"GET /api/issues/" + issueID + "/pull-requests",
+			},
+			wantErr: "no linked pull request matching",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotCalls []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotCalls = append(gotCalls, r.Method+" "+r.URL.Path)
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/api/issues/CHE-1933":
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"id":         issueID,
+						"identifier": "CHE-1933",
+						"title":      "Repair wrong merge-close links",
+					})
+				case r.Method == http.MethodGet && r.URL.Path == "/api/issues/"+issueID+"/pull-requests":
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"pull_requests": tc.linkedPRs,
+					})
+				case r.Method == http.MethodDelete && r.URL.Path == "/api/issues/"+issueID+"/pull-requests/"+prUUID42:
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"pull_requests": []map[string]any{},
+						"auto_complete": map[string]any{"state": "no_prs"},
+					})
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+
+			t.Setenv("MULTICA_SERVER_URL", srv.URL)
+			t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+			t.Setenv("MULTICA_TOKEN", "mat_test-token")
+
+			cmd := &cobra.Command{Use: "unlink"}
+			cmd.Flags().String("output", "json", "")
+			out, err := captureStdout(t, func() error {
+				return runIssuePullRequestsUnlink(cmd, []string{"CHE-1933", tc.prRef})
+			})
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want substring %q", err, tc.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("runIssuePullRequestsUnlink: %v", err)
+			}
+			if fmt.Sprint(gotCalls) != fmt.Sprint(tc.wantCalls) {
+				t.Fatalf("calls = %v, want %v", gotCalls, tc.wantCalls)
+			}
+			if tc.wantErr == "" {
+				var payload map[string]any
+				if err := json.Unmarshal([]byte(out), &payload); err != nil {
+					t.Fatalf("decode JSON output: %v\n%s", err, out)
+				}
+				prs, _ := payload["pull_requests"].([]any)
+				if len(prs) != 0 {
+					t.Fatalf("pull_requests after unlink = %v, want empty", prs)
+				}
+			}
+		})
+	}
+}
+
 func newIssueUsageTestCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "usage"}
 	cmd.Flags().String("output", "table", "")
