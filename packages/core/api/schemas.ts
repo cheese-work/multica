@@ -894,8 +894,8 @@ export interface AppConfigResponse {
    * too, so absent must be treated as false (#8296). */
   comment_delete_keep_replies_supported?: boolean;
   server_version?: string;
-  version?: string;
-  build?: string;
+  server_build?: string;
+  server_commit?: string;
 }
 
 // Schemas for the highest-risk API endpoints — those whose responses drive
@@ -1156,8 +1156,8 @@ export const AppConfigSchema = z.object({
   issue_create_properties_supported: BooleanWithDefaultSchema(false),
   comment_delete_keep_replies_supported: BooleanWithDefaultSchema(false),
   server_version: OptionalStringSchema,
-  version: OptionalStringSchema,
-  build: OptionalStringSchema,
+  server_build: OptionalStringSchema,
+  server_commit: OptionalStringSchema,
 }).loose();
 
 export const EMPTY_APP_CONFIG: AppConfigResponse = {
