@@ -218,6 +218,8 @@ test("the workflow runs the trusted workflow checker on X99 without PR code", ()
   assert.match(content, /ref: \$\{\{ github\.workflow_sha \}\}/);
   assert.doesNotMatch(content, /github\.event\.pull_request\.base\.sha/);
   assert.match(content, /persist-credentials: false/);
+  // Cone mode rejects a file path (git 2.43 on the X99 runners exits 128).
+  assert.match(content, /sparse-checkout-cone-mode: false/);
   assert.match(content, /node scripts\/pr-close-target-check\.mjs --event "\$GITHUB_EVENT_PATH"/);
   assert.doesNotMatch(content, /pull_request:\s*$/m);
 });
