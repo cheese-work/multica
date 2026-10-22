@@ -68,7 +68,9 @@ jobs:
     # This label is reserved for the separate cheese-work runner set on X99;
     # it cannot match the unrelated tevo-web runners labeled tevo-cicd.
     runs-on: [self-hosted, linux, x64, cheese-x99]
-    timeout-minutes: 45
+    # 60, not 45: a busy X99 stretched the two image builds to 44+ minutes
+    # (run 39791027247, attempt 1) and the cancel skipped the C00 deploy.
+    timeout-minutes: 60
     env:
       REGISTRY: ghcr.io
       BACKEND_IMAGE: ghcr.io/${{ github.repository_owner }}/multica-backend
