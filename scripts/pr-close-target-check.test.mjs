@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 
@@ -222,4 +224,26 @@ test("the workflow runs the trusted workflow checker on X99 without PR code", ()
   assert.match(content, /sparse-checkout-cone-mode: false/);
   assert.match(content, /node scripts\/pr-close-target-check\.mjs --event "\$GITHUB_EVENT_PATH"/);
   assert.doesNotMatch(content, /pull_request:\s*$/m);
+});
+
+test("the workflow's sparse-checkout input materializes the checker file", () => {
+  const content = readFileSync(workflow, "utf8");
+  const path = content.match(/^\s*sparse-checkout: (\S+)$/m)[1];
+  // actions/checkout defaults sparse-checkout-cone-mode to true; cone mode rejects a file path.
+  const cone = !/^\s*sparse-checkout-cone-mode: false$/m.test(content);
+  const dir = mkdtempSync(join(tmpdir(), "sparse-"));
+  try {
+    const git = (...args) => spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+    git("init", "-q");
+    writeFileSync(join(dir, ".gitignore"), "");
+    mkdirSync(join(dir, "scripts"));
+    writeFileSync(join(dir, path), "// checker\n");
+    git("add", "-A");
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x");
+    const set = git("sparse-checkout", "set", cone ? "--cone" : "--no-cone", path);
+    assert.equal(set.status, 0, set.stderr);
+    assert.ok(existsSync(join(dir, path)), `${path} missing after sparse checkout`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
