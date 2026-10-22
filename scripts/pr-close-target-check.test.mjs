@@ -257,3 +257,60 @@ test("the workflow's checkout leaves no sparse state for a later full checkout o
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+const ciWorkflow = new URL("../.github/workflows/ci.yml", import.meta.url).pathname;
+const healName = "Reset leaked sparse-checkout state";
+const healRun = (content) =>
+  content.match(new RegExp(`- name: ${healName}\\n\\s+run: \\|\\n((?:\\s{10,}.*\\n)+)`))?.[1];
+
+test("every X99 full-checkout job heals leaked sparse state before checkout", () => {
+  const ci = readFileSync(ciWorkflow, "utf8");
+  const jobs = [
+    ["close-target", readFileSync(workflow, "utf8")],
+    ["script-checks", ci],
+    ["frontend-quality", ci],
+  ];
+  for (const [job, content] of jobs) {
+    const body = content.split(new RegExp(`^  ${job}:\\n`, "m"))[1].split(/^  \S/m)[0];
+    const heal = body.indexOf(`name: ${healName}`);
+    assert.ok(heal >= 0, `${job}: missing "${healName}" step`);
+    assert.ok(heal < body.indexOf("actions/checkout@v6"), `${job}: heal must precede checkout`);
+  }
+});
+
+test("a workspace already contaminated by sparse state gets a full tree on the next checkout", () => {
+  const run = healRun(readFileSync(workflow, "utf8"));
+  const dir = mkdtempSync(join(tmpdir(), "sparse-"));
+  try {
+    const git = (...args) => {
+      const r = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+      assert.equal(r.status, 0, `git ${args.join(" ")}: ${r.stderr}`);
+    };
+    git("init", "-q");
+    for (const f of ["scripts/pr-close-target-check.mjs", "server/main.go"]) {
+      mkdirSync(join(dir, f, ".."), { recursive: true });
+      writeFileSync(join(dir, f), "x\n");
+    }
+    git("add", "-A");
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x");
+    // State a prior non-cone sparse checkout left on the runner (observed on cheese-x99-repo-1/3/4/5/6/7).
+    git("config", "core.sparseCheckout", "true");
+    writeFileSync(join(dir, ".git/info/sparse-checkout"), "\nscripts/pr-close-target-check.mjs\n");
+    git("read-tree", "-mu", "HEAD");
+    assert.ok(!existsSync(join(dir, "server/main.go")), "fixture must start contaminated");
+    if (run) {
+      const r = spawnSync("bash", ["-e", "-c", run], {
+        encoding: "utf8",
+        env: { ...process.env, GITHUB_WORKSPACE: dir },
+      });
+      assert.equal(r.status, 0, r.stderr);
+    }
+    // actions/checkout@v6 without a sparse input: disable, unset extensions.worktreeConfig, checkout.
+    git("sparse-checkout", "disable");
+    git("config", "--unset", "extensions.worktreeConfig");
+    git("checkout", "-qf", "HEAD");
+    assert.ok(existsSync(join(dir, "server/main.go")), "server/ missing after checkout on contaminated workspace");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
