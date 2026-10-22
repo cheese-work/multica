@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -79,5 +81,66 @@ func TestRunBatchPollerIgnoresDuplicateDeliveryOfInflightTask(t *testing.T) {
 	}
 	if got := sawGeneration.Load(); got != "gen-2" {
 		t.Fatalf("running execution sees claim generation %v, want the redelivered gen-2 so its start is not rejected as stale", got)
+	}
+}
+
+// The server refreshes dispatched_at when it re-delivers, and rejects a start
+// that presents the old value. A duplicate delivery landing while the start is
+// in flight must make the execution retry with the refreshed claim.
+func TestStartTaskRetriesWithClaimRefreshedDuringStart(t *testing.T) {
+	t.Parallel()
+
+	var d *Daemon
+	var starts atomic.Int64
+	var secondClaim atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			DispatchedAt string `json:"dispatched_at"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		if starts.Add(1) == 1 {
+			d.inflight.begin("t1", "gen-2") // duplicate delivery arrives mid-start
+			http.Error(w, `{"error":"task claim is stale"}`, http.StatusConflict)
+			return
+		}
+		secondClaim.Store(body.DispatchedAt)
+		w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	d = New(Config{ServerBaseURL: srv.URL, HeartbeatInterval: time.Hour},
+		slog.New(slog.NewTextHandler(noopWriter{}, nil)))
+	task := Task{ID: "t1", RuntimeID: "rt-1", DispatchedAt: "gen-1", StartClaimSupported: true}
+	d.inflight.begin(task.ID, task.DispatchedAt)
+
+	if _, err := d.startTaskWithCurrentClaim(context.Background(), task); err != nil {
+		t.Fatalf("start failed: %v; want a retry with the refreshed claim", err)
+	}
+	if got := secondClaim.Load(); got != "gen-2" {
+		t.Fatalf("retry presented claim %v, want gen-2", got)
+	}
+}
+
+// A rejected start with no newer claim ends this execution. A duplicate that
+// arrives afterwards must start a fresh one rather than be ignored, or the task
+// would have no execution at all.
+func TestRejectedStartReleasesTaskForRedelivery(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"task claim is stale"}`, http.StatusConflict)
+	}))
+	defer srv.Close()
+
+	d := New(Config{ServerBaseURL: srv.URL, HeartbeatInterval: time.Hour},
+		slog.New(slog.NewTextHandler(noopWriter{}, nil)))
+	task := Task{ID: "t1", RuntimeID: "rt-1", DispatchedAt: "gen-1", StartClaimSupported: true}
+	d.inflight.begin(task.ID, task.DispatchedAt)
+
+	if _, err := d.startTaskWithCurrentClaim(context.Background(), task); !errors.Is(err, errStartClaimRejected) {
+		t.Fatalf("err = %v, want errStartClaimRejected", err)
+	}
+	if d.inflight.begin(task.ID, "gen-2") == nil {
+		t.Fatal("redelivery after a rejected start was ignored; nothing would execute the task")
 	}
 }
