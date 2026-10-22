@@ -33,11 +33,11 @@ jobs:
   cursor-background-lifecycle:
     needs: changes
     if: ${{ needs.changes.outputs.backend == 'true' }}
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ github.repository_owner == 'cheese-work' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest] # macOS leg halted (CHE-1012): no free macOS runners
+        os: [ubuntu-latest] # label only; runs-on picks the runner. macOS leg halted (CHE-1012)
     steps:
       - name: Clear stale sparse-checkout state
         # X99 runner workspaces are reused. A narrow checkout leaves
@@ -76,7 +76,7 @@ jobs:
   # a `go test -race` run. The outputs are consumed by the focused jobs
   # below.
   changes:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'cheese-work' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     permissions:
       contents: read
       pull-requests: read
@@ -114,7 +114,7 @@ jobs:
           node-version: 22
 
       - name: Test CI selection and gates
-        run: node --test scripts/ci-scope.test.mjs scripts/check-image-budget.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/pr-changelog-line.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs deploy/cd/release-manifest.test.mjs
+        run: node --test scripts/ci-scope.test.mjs scripts/check-image-budget.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/pr-changelog-line.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/ci-runners.test.mjs deploy/cd/release-manifest.test.mjs
 
       - name: Filter paths
         id: filter
@@ -139,7 +139,7 @@ jobs:
 
   sqlc-check:
     needs: changes
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'cheese-work' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
       - name: Clear stale sparse-checkout state
         # X99 runner workspaces are reused. A narrow checkout leaves
@@ -184,7 +184,7 @@ jobs:
   # increases total runner-minutes but reduces wall-clock feedback time.
   frontend-build:
     needs: changes
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'cheese-work' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     env:
       # Pin turbo's filesystem cache somewhere actions/cache can address.
       TURBO_CACHE_DIR: .turbo/cache
@@ -258,7 +258,7 @@ jobs:
 
   frontend-test:
     needs: changes
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'cheese-work' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     env:
       TURBO_CACHE_DIR: .turbo/cache
     steps:
@@ -327,7 +327,7 @@ jobs:
             total: 2
           - index: 2
             total: 2
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'cheese-work' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     env:
       TURBO_CACHE_DIR: .turbo/cache
     steps:
@@ -382,7 +382,7 @@ jobs:
   frontend:
     needs: [changes, frontend-build, frontend-test, frontend-views-test, frontend-quality]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'cheese-work' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
       - name: Clear stale sparse-checkout state
         # X99 runner workspaces are reused. A narrow checkout leaves
@@ -449,26 +449,12 @@ jobs:
   # a cached "ok" from an untouched package could mask a real failure.
   backend-tests:
     needs: changes
-    # Stays off cheese-x99 (CHE-748): this is the only job in the repo that
-    # uses `services`, and the self-hosted runners talk to a nested Docker
-    # daemon (`DOCKER_HOST=tcp://dind-N:2376`) living in a *different*
-    # network namespace from the runner itself. Service-container ports are
-    # published by that nested daemon, so they bind inside the dind
-    # container's namespace and never appear on the runner's 127.0.0.1 — the
-    # job's `postgres://...@localhost:5432` is unreachable by construction,
-    # not merely slow to come up. Docker's own health check still reports
-    # `healthy` (it runs inside the dind namespace), so the job proceeds and
-    # then burns its whole migration retry window on `connection refused`.
-    # A live rerun on cheese-x99-repo-4 still failed with this exact
-    # class of failure (see PR #92, run 35701219643) — the runner/dind
-    # namespace split has not actually been closed. Moved to GitHub-hosted
-    # ubuntu-latest rather than back to Blacksmith or X99: the repo is
-    # public so standard hosted minutes are free, and hosted `services:`
-    # containers publish on the runner's own loopback with no nested-daemon
-    # namespace split. Making this job work on cheese-x99 still needs the
-    # runner and dind to share a namespace, which is a runner-fleet change,
-    # not a workflow change.
-    runs-on: ubuntu-latest
+    # Runs on cheese-x99 again (CHE-1676): the CHE-701 services smoke
+    # (che701-services-smoke.yml) passes, so `services` ports published by the
+    # nested Docker daemon now reach the runner's 127.0.0.1. CHE-748 moved this
+    # job off X99 while that was broken. Re-run the smoke after any change to
+    # the runner/dind stack.
+    runs-on: ${{ github.repository_owner == 'cheese-work' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     # `services` cannot be conditional, so the Postgres and Redis containers
     # still start on a filtered PR. That is ~1 minute of runner time against
     # the several minutes the gated steps below cost; job-level `if` would
@@ -628,7 +614,7 @@ jobs:
   backend-agent-tests:
     needs: changes
     if: ${{ needs.changes.outputs.backend == 'true' }}
-    runs-on: ubuntu-latest  # CHE-522: do NOT move to Blacksmith.
+    runs-on: ${{ github.repository_owner == 'cheese-work' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}  # CHE-522: do NOT move to Blacksmith.
     env:
       # Same policy as backend-tests: CI always executes the tests it reports.
       GOFLAGS: -count=1
@@ -682,7 +668,7 @@ jobs:
   # The aggregate backend job below still treats both jobs as one merge gate.
   go-vulnerability-scan:
     needs: changes
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'cheese-work' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
       - name: Clear stale sparse-checkout state
         # X99 runner workspaces are reused. A narrow checkout leaves
@@ -724,7 +710,7 @@ jobs:
     needs: changes
     # GitHub-hosted (CHE-748): no service containers, no X99-only
     # dependency — plain checkout + golangci-lint.
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'cheese-work' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
       - name: Clear stale sparse-checkout state
         # X99 runner workspaces are reused. A narrow checkout leaves
@@ -772,7 +758,7 @@ jobs:
   backend:
     needs: [changes, backend-tests, backend-agent-tests, sqlc-check, go-vulnerability-scan, go-lint, script-checks, installer, deploy-cd]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'cheese-work' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
       - name: Clear stale sparse-checkout state
         # X99 runner workspaces are reused. A narrow checkout leaves
@@ -810,7 +796,7 @@ jobs:
   # so macOS updates report "unavailable" instead of installing anything.
   daemon-artifact:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'cheese-work' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -867,7 +853,7 @@ jobs:
     # and the branch it came from was already checked.
     needs: changes
     if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.images == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'cheese-work' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
       - name: Clear stale sparse-checkout state
         # X99 runner workspaces are reused. A narrow checkout leaves
@@ -917,7 +903,7 @@ jobs:
           # no X99-only dependency — plain checkout + shell tests.
           - ubuntu-latest
           # macOS leg halted (CHE-1012): no free macOS runners.
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ github.repository_owner == 'cheese-work' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
       - name: Clear stale sparse-checkout state
         # X99 runner workspaces are reused. A narrow checkout leaves
@@ -1029,7 +1015,7 @@ jobs:
     # D1 does not exercise.
     needs: changes
     if: ${{ needs.changes.outputs.deploy_cd == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'cheese-work' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
       - name: Clear stale sparse-checkout state
         # X99 runner workspaces are reused. A narrow checkout leaves
