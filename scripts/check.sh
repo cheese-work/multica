@@ -113,7 +113,7 @@ echo "==> Running database migrations..."
 bash scripts/test-go.sh || { EXIT_CODE=1; exit 1; }
 
 # --------------------------------------------------------------------------
-# Step 4: Start services for E2E (only if not already running)
+# Step 4: Start services for E2E (backend reused if running; frontend always started here)
 # --------------------------------------------------------------------------
 echo ""
 echo "==> [4/5] Starting services for E2E..."
@@ -128,11 +128,31 @@ else
   wait_for_port "$PORT" "Backend" 90 "/health"
 fi
 
+# E2E runs against a production build: `next dev` compiles each route on first
+# visit, and the specs' 5 to 10s waits time out on that compile and on the slow
+# dev client bundle. The script owns this server: a listener already on the port
+# could be a dev server, so refuse it. `E2E_WEB_MODE=dev` is the dev smoke run.
+E2E_WEB_MODE="${E2E_WEB_MODE:-prod}"
 if curl -sf "http://localhost:${FRONTEND_PORT}" > /dev/null 2>&1; then
-  echo "    Frontend already running on :$FRONTEND_PORT"
-else
-  echo "    Starting frontend..."
+  echo "    ERROR: something already listens on :$FRONTEND_PORT; stop it so check.sh starts its own frontend"
+  EXIT_CODE=1
+  exit 1
+fi
+if [ "$E2E_WEB_MODE" = "dev" ]; then
+  echo "    Starting frontend (next dev)..."
   pnpm dev:web > /tmp/multica-check-frontend.log 2>&1 &
+  FRONTEND_PID=$!
+  STARTED_FRONTEND=true
+  wait_for_port "$FRONTEND_PORT" "Frontend" 120 "/"
+else
+  echo "    Building frontend (production)..."
+  (cd apps/web && ./node_modules/.bin/next build --webpack) > /tmp/multica-check-frontend-build.log 2>&1 || {
+    echo "    ERROR: production build failed; see /tmp/multica-check-frontend-build.log"
+    EXIT_CODE=1
+    exit 1
+  }
+  echo "    Starting frontend (next start)..."
+  (cd apps/web && exec ./node_modules/.bin/next start --port "$FRONTEND_PORT") > /tmp/multica-check-frontend.log 2>&1 &
   FRONTEND_PID=$!
   STARTED_FRONTEND=true
   wait_for_port "$FRONTEND_PORT" "Frontend" 120 "/"
