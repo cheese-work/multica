@@ -114,7 +114,7 @@ export function IssueActionsMenuItems({
   const wsId = useWorkspaceId();
   // Only the statuses the issue's workflow allows; entering a step that hands
   // the issue off confirms first, as in the status picker. (MUL-7420)
-  const { options: statusOptions, workflow, resolved: workflowResolved, retry: retryCatalog } = useIssueStatusOptions(wsId, issue.project_id);
+  const { options: statusOptions, workflow, resolved: workflowResolved, retry: retryCatalog } = useIssueStatusOptions(wsId, issue.project_id, issue.status);
   const notifyCatalogUnresolved = useNotifyCatalogUnresolved();
   const openModal = useModalStore((s) => s.open);
   const setStatus = (status: string) => {
