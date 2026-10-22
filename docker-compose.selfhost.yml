@@ -54,6 +54,12 @@ services:
 
   backend:
     image: ${MULTICA_BACKEND_IMAGE:-ghcr.io/multica-ai/multica-backend}:${MULTICA_IMAGE_TAG:-latest}
+    # Operator-owned, optional and literal. Inherited by both A/B slots.
+    # Missing file preserves the fail-closed default; never bundle its values.
+    env_file:
+      - path: ./.env.vote-gate
+        required: false
+        format: raw
     depends_on:
       postgres:
         condition: service_healthy
