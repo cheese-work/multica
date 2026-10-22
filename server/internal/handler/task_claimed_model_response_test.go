@@ -143,10 +143,46 @@ func TestTaskReadsClaimedModelKeepAuthorizationBoundaries(t *testing.T) {
 		VALUES ($1, 'foreign', 'todo', 'medium', $2, 'member', 1, 0) RETURNING id`, foreignWS, outsiderID).Scan(&foreignIssue)
 	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, foreignIssue) })
 
+	dbfx.Task(t, agentID, testutil.Cols{
+		"runtime_id":    handlerTestRuntimeID(t),
+		"issue_id":      foreignIssue,
+		"status":        "completed",
+		"claimed_model": secretModel,
+	})
+
 	req := withURLParam(newRequestAs(testUserID, http.MethodGet, "/api/issues/"+foreignIssue+"/task-runs", nil), "id", foreignIssue)
 	w := httptest.NewRecorder()
 	testHandler.ListTasksByIssue(w, req)
 	if w.Code != http.StatusNotFound && w.Code != http.StatusForbidden {
 		t.Fatalf("foreign issue runs: status = %d, want 403/404: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), secretModel) {
+		t.Fatalf("foreign issue runs leaked claimed model: %s", w.Body.String())
+	}
+}
+
+// The daemon claim response is built before the claim writes claimed_model, so
+// it must report the value this claim stores, not the pre-claim null.
+func TestClaimResponseReportsStoredClaimedModel(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	for name, model := range map[string]string{"model set": "claim-response-model", "agent model empty": ""} {
+		t.Run(name, func(t *testing.T) {
+			agentID, sessionID, runtimeID, daemonID := setupDirectChatSession(t, ctx, "CHE-1962 claim response")
+			dbfx.Exec(t, `UPDATE agent SET model = $1 WHERE id = $2`, model, agentID)
+			sendDirectChat(t, ctx, agentID, sessionID, "hello")
+			claimed := claimForkTask(t, runtimeID, daemonID)
+
+			var stored *string
+			dbfx.QueryRow(t, `SELECT claimed_model FROM agent_task_queue WHERE id = $1`, claimed.ID).Scan(&stored)
+			if stored == nil || *stored != model {
+				t.Fatalf("stored claimed_model = %v, want %q", stored, model)
+			}
+			if claimed.ClaimedModel == nil || *claimed.ClaimedModel != model {
+				t.Fatalf("claim response claimed_model = %v, want the stored %q", claimed.ClaimedModel, model)
+			}
+		})
 	}
 }
