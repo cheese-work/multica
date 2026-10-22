@@ -350,7 +350,7 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 			}
 		}
 		vcsRows.Close()
-		if err = vcsRows.Err(); err != nil {
+		if err := vcsRows.Err(); err != nil {
 			return false, "", nil, err
 		}
 		// Any matching PR satisfies the rule; diagnostics only explain a wait.

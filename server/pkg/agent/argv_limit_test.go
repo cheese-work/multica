@@ -31,7 +31,7 @@ func TestWrapArgvLimitErrorPassesOtherErrorsThrough(t *testing.T) {
 	t.Parallel()
 
 	raw := fmt.Errorf("start: %w", syscall.ENOENT)
-	if got := wrapArgvLimitError(raw); got != raw {
+	if got := wrapArgvLimitError(raw); !errors.Is(got, raw) || got.Error() != raw.Error() {
 		t.Fatalf("unrelated error was rewritten: %v", got)
 	}
 	if wrapArgvLimitError(nil) != nil {
