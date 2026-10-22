@@ -25,24 +25,16 @@ jobs:
     runs-on: ${{ github.repository_owner == 'cheese-work' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 5
     steps:
-      - name: Clear stale sparse-checkout state
-        # X99 runner workspaces are reused. A narrow checkout leaves
-        # core.sparseCheckout=true in .git/config, which actions/checkout's
-        # sparse disable then hides (CHE-1676). Reset it before checking out.
+      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
+      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
+      - name: Reset leaked sparse-checkout state
         run: |
-          [ -e "$GITHUB_WORKSPACE/.git" ] || exit 0
-          cd "$GITHUB_WORKSPACE"
-          g() { git -c safe.directory="$GITHUB_WORKSPACE" "$@"; }
-          g config --local --unset-all core.sparseCheckout || true
-          g config --local --unset-all core.sparseCheckoutCone || true
-          g config --local --unset-all extensions.worktreeConfig || true
-          rm -f .git/info/sparse-checkout .git/config.worktree
-          g read-tree -mu HEAD || true
+          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
+          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
+      # Full checkout on purpose: a sparse input would leak the same state again.
       - name: Checkout the check script
         uses: actions/checkout@v6
         with:
-          sparse-checkout: scripts/fork-changelog.mjs
-          sparse-checkout-cone-mode: false
           persist-credentials: false
 
       - name: Setup Node.js
@@ -52,17 +44,3 @@ jobs:
 
       - name: Compute the changelog entry
         run: node scripts/fork-changelog.mjs --event "$GITHUB_EVENT_PATH"
-      - name: Clear stale sparse-checkout state
-        if: always()
-        # X99 runner workspaces are reused. A narrow checkout leaves
-        # core.sparseCheckout=true in .git/config, which actions/checkout's
-        # sparse disable then hides (CHE-1676). Reset it before checking out.
-        run: |
-          [ -e "$GITHUB_WORKSPACE/.git" ] || exit 0
-          cd "$GITHUB_WORKSPACE"
-          g() { git -c safe.directory="$GITHUB_WORKSPACE" "$@"; }
-          g config --local --unset-all core.sparseCheckout || true
-          g config --local --unset-all core.sparseCheckoutCone || true
-          g config --local --unset-all extensions.worktreeConfig || true
-          rm -f .git/info/sparse-checkout .git/config.worktree
-          g read-tree -mu HEAD || true

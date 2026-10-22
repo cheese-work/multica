@@ -47,7 +47,3 @@ for (const name of WORKFLOWS) {
     }
   });
 }
-
-test("pr-changelog-check.yml sparse-checks its script in non-cone mode", () => {
-  assert.match(read("pr-changelog-check.yml"), /sparse-checkout-cone-mode: false/);
-});
