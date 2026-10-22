@@ -21,7 +21,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/realtime"
-	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -51,11 +50,11 @@ func TestMain(m *testing.M) {
 
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
-		testutil.ExitWithoutDatabase(err)
+		exitIntegrationTestsWithoutDatabase(err)
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		testutil.ExitWithoutDatabase(err)
+		exitIntegrationTestsWithoutDatabase(err)
 	}
 
 	testPool = pool
@@ -97,6 +96,15 @@ func TestMain(m *testing.M) {
 	testServer.Close()
 	pool.Close()
 	os.Exit(code)
+}
+
+func exitIntegrationTestsWithoutDatabase(err error) {
+	if os.Getenv("CI") == "true" {
+		fmt.Fprintf(os.Stderr, "ERROR: integration suite did not run: database is required in CI: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "WARNING: integration suite did not run: database unavailable: %v\n", err)
+	os.Exit(0)
 }
 
 func setupIntegrationTestFixture(ctx context.Context, pool *pgxpool.Pool) (string, string, error) {
