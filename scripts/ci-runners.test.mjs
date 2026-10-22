@@ -3,7 +3,19 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const read = (name) => readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), "utf8");
-const runsOn = (text) => text.split("\n").filter((line) => /^\s+runs-on:/.test(line));
+// backend-tests stays GitHub-hosted: its Postgres `services` reach X99 jobs with latency that
+// breaks the 50ms-budget receipt tests under -race (CHE-1676 evidence in ci.yml).
+const HOSTED_ONLY = ["backend-tests"];
+function jobRunsOn(text) {
+  const jobs = {};
+  let job = null;
+  for (const line of text.split("\n")) {
+    const header = line.match(/^  ([\w-]+):\s*$/);
+    if (header) job = header[1];
+    else if (job && /^\s+runs-on:/.test(line)) jobs[job] = line;
+  }
+  return jobs;
+}
 const WORKFLOWS = ["ci.yml", "pr-changelog-check.yml"];
 
 // Evaluates a `runs-on: ${{ ... }}` expression for one event, as GitHub would.
@@ -32,13 +44,16 @@ const SCENARIOS = [
 
 for (const name of WORKFLOWS) {
   test(`${name} jobs run on the X99 runners`, () => {
-    const lines = runsOn(read(name));
-    assert.ok(lines.length > 0);
-    for (const line of lines) assert.match(line, /cheese-x99/, line.trim());
+    const jobs = Object.entries(jobRunsOn(read(name)));
+    assert.ok(jobs.length > 0);
+    for (const [job, line] of jobs) {
+      if (HOSTED_ONLY.includes(job)) assert.doesNotMatch(line, /cheese-x99/, job);
+      else assert.match(line, /cheese-x99/, job);
+    }
   });
 
   test(`${name} sends only trusted same-repository events to X99`, () => {
-    for (const line of runsOn(read(name))) {
+    for (const [job, line] of Object.entries(jobRunsOn(read(name))).filter(([j]) => !HOSTED_ONLY.includes(j))) {
       for (const [what, patch, onX99] of SCENARIOS) {
         const got = labels(line, { ...base, ...patch });
         assert.equal(got.includes("cheese-x99"), onX99, `${what}: ${line.trim()}`);
