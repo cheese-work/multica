@@ -27,6 +27,6 @@ func chatDecisionContext(ctx context.Context, queries *db.Queries, workspaceID, 
 		issueID, askID := uuidToString(r.IssueID), uuidToString(r.IssueCommentID)
 		fmt.Fprintf(&b, "- Request %s on %s (issue %s), ask comment %s: %q\n  Record the answer: `multica issue comment add %s --decision-record --message <id> --parent %s`\n", uuidToString(r.ID), r.IssueKey, issueID, askID, r.Ask, issueID, askID)
 	}
-	b.WriteString("<id> is the reply's DM message id from `multica chat history --output json`.\n")
+	b.WriteString("<id> is the reply's message id given below.\n")
 	return b.String(), nil
 }

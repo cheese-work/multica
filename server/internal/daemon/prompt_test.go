@@ -2291,3 +2291,21 @@ func TestBuildChatPromptCarriesDecisionContext(t *testing.T) {
 		t.Fatalf("decision context must precede the user message:\n%s", out)
 	}
 }
+
+// A web DM run records a decision from ids in its prompt, with no lookup
+// command (CHE-1958). Built from the wire form: the server/daemon contract.
+func TestBuildChatPromptCarriesDecisionRecordIDs(t *testing.T) {
+	var task Task
+	if err := json.Unmarshal([]byte(`{"chat_session_id":"s","chat_message":"1","chat_message_ids":["m-reply"],"chat_prior_reply_id":"m-options"}`), &task); err != nil {
+		t.Fatal(err)
+	}
+	out := buildChatPrompt(task)
+	for _, want := range []string{"--message m-reply", "--context-message m-options"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("prompt lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(buildChatPrompt(Task{ChatSessionID: "s", ChatMessage: "hi"}), "--decision-record") {
+		t.Error("prompt without message ids mentions decision records")
+	}
+}

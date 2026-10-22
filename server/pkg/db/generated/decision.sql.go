@@ -599,6 +599,28 @@ func (q *Queries) GetDecisionRequest(ctx context.Context, arg GetDecisionRequest
 	return i, err
 }
 
+const getLastAssistantMessageBefore = `-- name: GetLastAssistantMessageBefore :one
+SELECT id FROM chat_message
+WHERE chat_session_id = $1 AND role = 'assistant' AND message_kind = 'message'
+  AND created_at < $2
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+type GetLastAssistantMessageBeforeParams struct {
+	SessionID pgtype.UUID        `json:"session_id"`
+	Before    pgtype.Timestamptz `json:"before"`
+}
+
+// The agent's own last reply before a message: the options a bare reply chose
+// between, attestable with --context-message.
+func (q *Queries) GetLastAssistantMessageBefore(ctx context.Context, arg GetLastAssistantMessageBeforeParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getLastAssistantMessageBefore, arg.SessionID, arg.Before)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const holdDecisionAnswerForClass = `-- name: HoldDecisionAnswerForClass :one
 WITH hold AS (SELECT clock_timestamp() + interval '10 minutes' AS held_until)
 UPDATE decision_answer answer SET

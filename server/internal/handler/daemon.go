@@ -3389,6 +3389,21 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				}
 			}
 			resp.ChatDecisionContext = decisionContext
+			resp.ChatMessageIDs = make([]string, len(unanswered))
+			for i, m := range unanswered {
+				resp.ChatMessageIDs[i] = uuidToString(m.ID)
+			}
+			prior, err := h.Queries.GetLastAssistantMessageBefore(r.Context(), db.GetLastAssistantMessageBeforeParams{SessionID: cs.ID, Before: unanswered[0].CreatedAt})
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				slog.Error("chat claim: load prior assistant message failed; preserving task for redelivery",
+					"task_id", uuidToString(task.ID), "chat_session_id", uuidToString(cs.ID), "error", err)
+				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+					outcome: "error_chat_prior_message", status: http.StatusInternalServerError, message: "failed to load prior message",
+				}
+			}
+			if err == nil {
+				resp.ChatPriorReplyID = uuidToString(prior)
+			}
 		}
 		if autoCompact {
 			resp.ChatMessage = "/compact"
