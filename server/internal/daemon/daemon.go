@@ -663,6 +663,7 @@ type Daemon struct {
 	// counts tasks blocked on a local_directory path mutex. Both are diagnostic
 	// /health dimensions and must never replace activeTasks in safety barriers.
 	runningTasks      atomic.Int64
+	inflight          inflightClaims
 	resourceWaitTasks atomic.Int64
 	ready             atomic.Bool // false until preflight completes; gates /health status (starting -> running)
 	// reloadPendingReason explains why a confirmed multica version change hasn't
@@ -5456,7 +5457,12 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 				break
 			}
 			t := *tasks[i]
-			slot := slots[i]
+			claim := d.inflight.begin(t.ID, t.DispatchedAt)
+			if claim == nil {
+				d.logger.Info("task already executing on this daemon; ignoring repeat delivery", "task", t.ID)
+				continue
+			}
+			slot := slots[dispatched]
 			taskTarget := t.IssueID
 			if taskTarget == "" && t.ChatSessionID != "" {
 				taskTarget = "chat:" + t.ChatSessionID
@@ -5471,9 +5477,10 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 				// direct Git operations cannot overlap it.
 				cache.CancelMaintenance()
 			}
-			go func(t Task, slot int) {
+			go func(t Task, slot int, claim *inflightClaim) {
 				defer taskWG.Done()
 				defer d.activeTasks.Add(-1)
+				defer d.inflight.end(t.ID, claim)
 				defer func() {
 					// Release local capacity before waking the poller. The task's
 					// terminal callback and local cleanup have both finished at this
@@ -5484,7 +5491,7 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 					signalPollerWakeup(wakeup)
 				}()
 				d.handleTask(parentCtx, t, slot)
-			}(t, slot)
+			}(t, slot, claim)
 			dispatched++
 		}
 		d.exitClaim()
@@ -8457,7 +8464,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if supplementSupported {
 		taskCapabilities = append(taskCapabilities, protocol.DaemonCapabilityTaskSupplementV1)
 	}
-	taskSupplementNegotiated, err := d.client.StartTask(prepareCtx, task, taskCapabilities...)
+	taskSupplementNegotiated, err := d.startTaskWithCurrentClaim(prepareCtx, task, taskCapabilities...)
 	if err != nil {
 		stopPrepareLease()
 		return TaskResult{}, fmt.Errorf("start task failed: %w", err)
