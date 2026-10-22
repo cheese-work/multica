@@ -70,6 +70,38 @@ async function groupByStatus(page: Page) {
   await expect(statusOption).toBeHidden();
 }
 
+/**
+ * What the rows API has returned, read from its responses. The table shows no
+ * "Loaded N of M" text, so this is the signal: the loaded rows and the first
+ * title of each group. `reset()` drops everything seen so far, so a check made
+ * afterwards can only be satisfied by responses that arrive after it. The Board
+ * that mounts first fetches through the same endpoint.
+ */
+function collectTableRows(page: Page) {
+  const loadedRows = new Map<string, string>();
+  const firstTitleOfGroup = new Map<string, string>();
+  const handler = async (response: Response) => {
+    if (apiPath(response.request()) !== "/api/issues/table/rows" || response.status() !== 200) return;
+    const key = tableBody(response.request()).group_key ?? "";
+    const payload = (await response.json()) as TableRowsResponse;
+    for (const row of payload.rows) loadedRows.set(row.issue.id, row.issue.title);
+    const first = payload.rows[0];
+    if (first && !firstTitleOfGroup.has(key)) firstTitleOfGroup.set(key, first.issue.title);
+  };
+  page.on("response", handler);
+  return {
+    loadedRows,
+    firstTitleOfGroup,
+    reset() {
+      loadedRows.clear();
+      firstTitleOfGroup.clear();
+    },
+    stop() {
+      page.off("response", handler);
+    },
+  };
+}
+
 test.describe("Issue Table server grouping", () => {
   test.describe.configure({ timeout: 120000 });
 
@@ -111,20 +143,7 @@ test.describe("Issue Table server grouping", () => {
       }
     };
 
-    // "Loaded N of M": N is what the rows API has returned for the groups, M is
-    // the exact total from /groups. The table shows no such text any more, so
-    // the same facts are read from the responses and from the rendered rows.
-    const loadedRows = new Map<string, string>();
-    const firstTitleOfGroup = new Map<string, string>();
-    const collectRows = async (response: Response) => {
-      if (apiPath(response.request()) !== "/api/issues/table/rows" || response.status() !== 200) return;
-      const key = tableBody(response.request()).group_key ?? "";
-      const payload = (await response.json()) as TableRowsResponse;
-      for (const row of payload.rows) loadedRows.set(row.issue.id, row.issue.title);
-      const first = payload.rows[0];
-      if (first && !firstTitleOfGroup.has(key)) firstTitleOfGroup.set(key, first.issue.title);
-    };
-    page.on("response", collectRows);
+    const table = collectTableRows(page);
     page.on("request", collectRequest);
     // The page initially mounts Board, whose seven status buckets may still
     // be finishing when the header becomes interactive. Observe that startup
@@ -139,6 +158,8 @@ test.describe("Issue Table server grouping", () => {
     tableRowRequests.length = 0;
     legacyMembershipRequests.length = 0;
     lastObservedRequestAt = Date.now();
+    // Whatever the Board loaded does not count towards the Table's progress.
+    table.reset();
     await switchToTable(page);
     const groupsResponsePromise = page.waitForResponse(
       (response) =>
@@ -163,16 +184,16 @@ test.describe("Issue Table server grouping", () => {
       .filter({ hasText: "Backlog" })
       .first();
     await expect(backlogGroup).toContainText("501");
-    // Completion: the backlog group's first page has been returned and its
-    // first row is on screen.
-    await expect.poll(() => firstTitleOfGroup.get("status:backlog")).toBeTruthy();
+    // Completion: the Table's own backlog request has returned its first page
+    // and that page's first row is on screen.
+    await expect.poll(() => table.firstTitleOfGroup.get("status:backlog")).toBeTruthy();
     await expect(
-      page.getByRole("row").filter({ hasText: firstTitleOfGroup.get("status:backlog")! }),
+      page.getByRole("row").filter({ hasText: table.firstTitleOfGroup.get("status:backlog")! }),
     ).toBeVisible();
     // Loaded of total: some rows, never the whole result, of exactly 1001.
-    expect(loadedRows.size).toBeGreaterThan(0);
-    expect(loadedRows.size).toBeLessThan(groups.total);
-    page.off("response", collectRows);
+    expect(table.loadedRows.size).toBeGreaterThan(0);
+    expect(table.loadedRows.size).toBeLessThan(groups.total);
+    table.stop();
     await expect(
       page.getByText(/Grouping and hierarchy are paused/),
     ).toHaveCount(0);
@@ -194,6 +215,46 @@ test.describe("Issue Table server grouping", () => {
           (body.page?.cursor === null || body.page?.cursor === undefined),
       ),
     ).toBe(true);
+  });
+
+  // Negative control for the Table progress signal above: with the Board's
+  // data present and the Table's rows withheld, the signal must stay false.
+  // Without the reset, the Board's responses alone would satisfy it.
+  test("the Table progress signal ignores the Board's rows when the Table's rows are withheld", async ({
+    page,
+  }) => {
+    const run = Date.now();
+    await api.seedTableIssues(
+      Array.from({ length: 60 }, (_, index) => ({
+        title: `E2E Table Control ${run} ${index.toString().padStart(2, "0")}`,
+        status: "todo" as const,
+        position: index + 1,
+      })),
+    );
+    await reloadAppPage(page);
+
+    const table = collectTableRows(page);
+    let lastRowsResponseAt = Date.now();
+    page.on("response", (response) => {
+      if (apiPath(response.request()) === "/api/issues/table/rows") lastRowsResponseAt = Date.now();
+    });
+    await expect
+      .poll(() => Date.now() - lastRowsResponseAt, { timeout: 8000, intervals: [100, 200, 300] })
+      .toBeGreaterThan(1000);
+    // The Board is up and has loaded rows through the same endpoint.
+    const boardRows = table.loadedRows.size;
+    expect(boardRows).toBeGreaterThan(0);
+
+    // From here the Table's rows are withheld.
+    await page.route("**/api/issues/table/rows", (route) => route.abort());
+    table.reset();
+    await switchToTable(page);
+    await groupByStatus(page);
+    await page.waitForTimeout(3000);
+
+    expect(table.loadedRows.size).toBe(0);
+    expect(table.firstTitleOfGroup.size).toBe(0);
+    table.stop();
   });
 
   test("keeps same-group children nested and cross-group children at the group root", async ({
