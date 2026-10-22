@@ -220,29 +220,39 @@ test("the workflow runs the trusted workflow checker on X99 without PR code", ()
   assert.match(content, /ref: \$\{\{ github\.workflow_sha \}\}/);
   assert.doesNotMatch(content, /github\.event\.pull_request\.base\.sha/);
   assert.match(content, /persist-credentials: false/);
-  // Cone mode rejects a file path (git 2.43 on the X99 runners exits 128).
-  assert.match(content, /sparse-checkout-cone-mode: false/);
   assert.match(content, /node scripts\/pr-close-target-check\.mjs --event "\$GITHUB_EVENT_PATH"/);
   assert.doesNotMatch(content, /pull_request:\s*$/m);
 });
 
-test("the workflow's sparse-checkout input materializes the checker file", () => {
+test("the workflow's checkout leaves no sparse state for a later full checkout on a reused workspace", () => {
   const content = readFileSync(workflow, "utf8");
-  const path = content.match(/^\s*sparse-checkout: (\S+)$/m)[1];
-  // actions/checkout defaults sparse-checkout-cone-mode to true; cone mode rejects a file path.
-  const cone = !/^\s*sparse-checkout-cone-mode: false$/m.test(content);
+  const sparse = content.match(/^\s*sparse-checkout: (\S+)$/m)?.[1];
   const dir = mkdtempSync(join(tmpdir(), "sparse-"));
   try {
-    const git = (...args) => spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+    const git = (...args) => {
+      const r = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+      assert.equal(r.status, 0, `git ${args.join(" ")}: ${r.stderr}`);
+      return r;
+    };
     git("init", "-q");
-    writeFileSync(join(dir, ".gitignore"), "");
-    mkdirSync(join(dir, "scripts"));
-    writeFileSync(join(dir, path), "// checker\n");
+    for (const f of ["scripts/pr-close-target-check.mjs", "server/main.go"]) {
+      mkdirSync(join(dir, f, ".."), { recursive: true });
+      writeFileSync(join(dir, f), "x\n");
+    }
     git("add", "-A");
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x");
-    const set = git("sparse-checkout", "set", cone ? "--cone" : "--no-cone", path);
-    assert.equal(set.status, 0, set.stderr);
-    assert.ok(existsSync(join(dir, path)), `${path} missing after sparse checkout`);
+    // Replay actions/checkout@v6 non-cone sparse input: core.sparseCheckout=true in local config.
+    if (sparse) {
+      git("config", "core.sparseCheckout", "true");
+      writeFileSync(join(dir, ".git/info/sparse-checkout"), `\n${sparse}\n`);
+    }
+    git("checkout", "-qf", "HEAD");
+    // Replay a later full checkout on the same path: it disables sparse via worktree
+    // config, then unsets extensions.worktreeConfig, exposing any leftover local true.
+    git("sparse-checkout", "disable");
+    git("config", "--unset", "extensions.worktreeConfig");
+    git("checkout", "-qf", "HEAD");
+    assert.ok(existsSync(join(dir, "server/main.go")), "server/ missing after reused full checkout");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

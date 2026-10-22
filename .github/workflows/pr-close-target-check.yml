@@ -17,12 +17,12 @@ jobs:
     runs-on: [self-hosted, Linux, X64, cheese-x99]
     timeout-minutes: 5
     steps:
+      # Full checkout on purpose: a sparse input leaves core.sparseCheckout=true in the
+      # shared runner repo's local config, and later full checkouts keep only scripts/ (CHE-1961).
       - name: Checkout trusted workflow checker
         uses: actions/checkout@v6
         with:
           ref: ${{ github.workflow_sha }}
-          sparse-checkout: scripts/pr-close-target-check.mjs
-          sparse-checkout-cone-mode: false
           persist-credentials: false
       - name: Setup Node.js
         uses: actions/setup-node@v6
