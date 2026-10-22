@@ -9,8 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-// pr-changelog-check.yml is GitHub-hosted (fresh VM), so it has no reused workspace.
-const WORKFLOWS = ["ci.yml", "pr-close-target-check.yml"];
+const WORKFLOWS = ["ci.yml", "release.yml", "cd-qualification.yml", "pr-close-target-check.yml", "pr-changelog-check.yml"];
 const STEP = "- name: Clear stale sparse-checkout state";
 const read = (name) => readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), "utf8");
 
@@ -103,20 +102,37 @@ test("heal leaves no sparse setting behind to poison the next checkout", () => {
   rmSync(dir, { recursive: true });
 });
 
+// Jobs of a workflow as [name, lines]; comments dropped so prose about X99 does not count.
+function jobs(name) {
+  const lines = read(name).split("\n").filter((l) => !/^\s*#/.test(l));
+  const out = [];
+  let inJobs = false;
+  for (const l of lines) {
+    if (/^jobs:/.test(l)) inJobs = true;
+    else if (inJobs && /^  [\w-]+:\s*$/.test(l)) out.push([l.trim().slice(0, -1), []]);
+    if (inJobs && out.length) out.at(-1)[1].push(l);
+  }
+  return out;
+}
+
 for (const name of WORKFLOWS) {
-  test(`${name} runs the heal step before every checkout`, () => {
-    const lines = read(name).split("\n");
-    const checkouts = lines.flatMap((l, i) => (l.includes("uses: actions/checkout@") ? [i] : []));
-    assert.ok(checkouts.length > 0);
-    for (const i of checkouts) {
-      const stepStart = lines.slice(0, i + 1).findLastIndex((l) => /^\s+- /.test(l));
-      const before = lines.slice(0, stepStart).findLastIndex((l) => /^\s+- /.test(l));
-      assert.equal(lines[before]?.trim(), STEP, `checkout at line ${i + 1}`);
+  test(`${name} heals before every checkout of a job that can run on X99`, () => {
+    let checked = 0;
+    for (const [job, lines] of jobs(name)) {
+      if (!lines.some((l) => l.includes("cheese-x99"))) continue;
+      lines.forEach((l, i) => {
+        if (!l.includes("uses: actions/checkout@")) return;
+        const stepStart = lines.slice(0, i + 1).findLastIndex((x) => /^\s+- /.test(x));
+        const before = lines.slice(0, stepStart).findLastIndex((x) => /^\s+- /.test(x));
+        assert.equal(lines[before]?.trim(), STEP, `${name} job ${job}: checkout ${i + 1}`);
+        checked++;
+      });
     }
+    assert.ok(checked > 0, name);
   });
 }
 
-for (const name of ["pr-close-target-check.yml"]) {
+for (const name of WORKFLOWS.filter((n) => read(n).includes("sparse-checkout:"))) {
   test(`${name} resets the workspace after its narrow checkout, even on failure`, () => {
     const lines = read(name).split("\n").filter((l) => l.trim() !== "");
     const last = lines.findLastIndex((l) => l.trim() === STEP);
