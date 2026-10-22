@@ -14,6 +14,11 @@ RETURNING *;
 UPDATE comment SET decision_intent_id = sqlc.arg('decision_intent_id')
 WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('comment_id');
 
+-- name: AttachDecisionAskToComment :one
+UPDATE comment SET decision_request_id = sqlc.arg('decision_request_id'), decision_comment_kind = 'ask'
+WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('comment_id')
+RETURNING *;
+
 -- name: CloseDecisionIntent :exec
 UPDATE decision_intent
 SET closed_at = COALESCE(closed_at, clock_timestamp()), close_reason = sqlc.arg('close_reason'),
