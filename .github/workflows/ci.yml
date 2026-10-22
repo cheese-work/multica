@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   # Linux stays on GitHub-hosted ubuntu-latest: root cause confirmed (CHE-522)
-  # via a live kernel-version probe, not inference — blacksmith-2vcpu-ubuntu-2404
+  # via a live kernel-version probe, not inference — the retired paid runner
   # runs Linux 6.6.141, GitHub-hosted ubuntu-latest runs 6.17.0. The
   # process-group retain code (cursor_background_process_linux.go) requires
   # PIDFD_SIGNAL_PROCESS_GROUP, added in Linux 6.9 with no earlier equivalent;
@@ -519,7 +519,7 @@ jobs:
   # Linux stays on GitHub-hosted ubuntu-latest rather than Blacksmith: `--only
   # agent` runs the whole pkg/agent package, which includes the Cursor
   # process-group tests. They need PIDFD_SIGNAL_PROCESS_GROUP (Linux 6.9+);
-  # blacksmith-2vcpu-ubuntu-2404 runs 6.6.141 and fails them with EINVAL,
+  # The retired paid runner runs 6.6.141 and fails them with EINVAL,
   # confirmed by a live kernel probe in CHE-522.
   backend-agent-tests:
     needs: changes
@@ -770,12 +770,21 @@ jobs:
     # X99 job: the sync-head exclusion lives here, not only in candidate-controlled
     # scripts/ci-scope.mjs (CHE-1381).
     if: ${{ needs.changes.outputs.scripts == 'true' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') }}
-    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
+      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
+      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
+      - name: Reset leaked sparse-checkout state
+        run: |
+          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
+          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
           node-version: 22
+
+      - name: Check runner routing
+        run: python3 .github/tests/test_runner_routing.py
 
       - name: Test self-host env derivation
         run: bash scripts/selfhost-config.test.sh
@@ -848,8 +857,14 @@ jobs:
     # X99 job: the sync-head exclusion lives here, not only in candidate-controlled
     # scripts/ci-scope.mjs (CHE-1381).
     if: ${{ needs.changes.outputs.quality_only == 'true' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') }}
-    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
+      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
+      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
+      - name: Reset leaked sparse-checkout state
+        run: |
+          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
+          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v6
