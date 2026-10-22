@@ -640,6 +640,7 @@ type Daemon struct {
 	// counts tasks blocked on a local_directory path mutex. Both are diagnostic
 	// /health dimensions and must never replace activeTasks in safety barriers.
 	runningTasks      atomic.Int64
+	inflight          inflightClaims
 	resourceWaitTasks atomic.Int64
 	ready             atomic.Bool // false until preflight completes; gates /health status (starting -> running)
 	// reloadPendingReason explains why a confirmed multica version change hasn't
@@ -5447,7 +5448,11 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 				break
 			}
 			t := *tasks[i]
-			slot := slots[i]
+			if !d.inflight.begin(t.ID, t.DispatchedAt) {
+				d.logger.Info("task already executing on this daemon; ignoring repeat delivery", "task", t.ID)
+				continue
+			}
+			slot := slots[dispatched]
 			taskTarget := t.IssueID
 			if taskTarget == "" && t.ChatSessionID != "" {
 				taskTarget = "chat:" + t.ChatSessionID
@@ -5465,6 +5470,7 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 			go func(t Task, slot int) {
 				defer taskWG.Done()
 				defer d.activeTasks.Add(-1)
+				defer d.inflight.end(t.ID)
 				defer func() {
 					// Release local capacity before waking the poller. The task's
 					// terminal callback and local cleanup have both finished at this
@@ -8422,6 +8428,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if agent.SupportsTaskSupplement(provider, resolvedVersion) && task.IssueID != "" {
 		taskCapabilities = append(taskCapabilities, protocol.DaemonCapabilityTaskSupplementV1)
 	}
+	task.DispatchedAt = d.latestClaimGeneration(task)
 	taskSupplementNegotiated, err := d.client.StartTask(prepareCtx, task, taskCapabilities...)
 	if err != nil {
 		stopPrepareLease()
