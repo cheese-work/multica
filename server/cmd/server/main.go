@@ -39,6 +39,7 @@ import (
 
 var (
 	version = "dev"
+	build   = ""
 	commit  = "unknown"
 )
 
