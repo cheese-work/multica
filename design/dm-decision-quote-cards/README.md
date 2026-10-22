@@ -10,4 +10,4 @@ Cheese, in a DM (20 October 2026), recorded as decision quotes on CHE-1870:
 - Issue: [CHE-1870](mention://issue/01a15793-484c-7f2b-80ea-3b120169de04)
 - Pages in scope: issue detail timeline (`packages/views/issues/components/comment-card.tsx`), DM message list (`packages/views/chat/components/chat-message-list.tsx`)
 - Tokens: `packages/ui/styles/tokens.css`.
-- Status: selected rev-5 direction B — approved when PR 316 merges. Selection: Cheese, CHE-1870 comments `01a160f2-1c1d-702e-b019-083e356949f4` and `01a160f2-9379-7720-80c3-8eec261036fe`. rev-4 UX scores: comment `01a1603d-6c50-7c36-a806-f5a07d151c79`. rev-5 is not yet scored.
+- Status: selected rev-6 direction B — approved when PR 316 merges. Selection: Cheese, CHE-1870 comments `01a160f2-1c1d-702e-b019-083e356949f4` and `01a160f2-9379-7720-80c3-8eec261036fe`. rev-5 UX scores: comment `01a16132-4c22-787a-8a97-4eb7fbc869f3`. rev-6 is not yet scored.
