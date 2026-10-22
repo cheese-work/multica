@@ -33,9 +33,7 @@ func TestDaemonArtifactVersionPassesCapabilityGates(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(pair[1], data, 0o755); err != nil {
-			t.Fatal(err)
-		}
+		writeTestExecutable(t, pair[1], data)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "UPSTREAM_VERSION"), []byte("0.6.3\n"), 0o644); err != nil {
 		t.Fatal(err)
