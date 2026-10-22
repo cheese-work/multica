@@ -22,7 +22,7 @@ func stubFork(t *testing.T, u *cli.ForkUpdate, resolveErr error) *int {
 	applied := new(int)
 	forkUpdateSource = func() bool { return true }
 	currentCommit = func() string { return forkTestCommit }
-	resolveForkUpdate = func(_ context.Context, _, _, cur string) (*cli.ForkUpdate, error) {
+	resolveForkUpdate = func(_ context.Context, _, _, _, _, cur string) (*cli.ForkUpdate, error) {
 		if cur != forkTestCommit {
 			t.Errorf("resolver got current commit %q", cur)
 		}
@@ -38,7 +38,7 @@ func stubFork(t *testing.T, u *cli.ForkUpdate, resolveErr error) *int {
 	return applied
 }
 
-var forkCandidate = &cli.ForkUpdate{RunID: 7, HeadSHA: strings.Repeat("a", 40), ArtifactID: 9, Name: "multica-daemon-linux-amd64", Digest: strings.Repeat("0", 64)}
+var forkCandidate = &cli.ForkUpdate{HeadSHA: strings.Repeat("a", 40), Name: "linux-amd64", Digest: strings.Repeat("0", 64)}
 
 func TestTryAutoUpdate_ForkSourceUpdatesToArtifactCommit(t *testing.T) {
 	d, restartCalls := newAutoUpdateTestDaemon(t, "v0.1.13-235-gabcdef0") // dev-describe version: fork source must not care
@@ -111,8 +111,7 @@ func TestTryAutoUpdate_ForkSourceInstallsWhileBusyAndReloadsWhenIdle(t *testing.
 func TestTryAutoUpdate_ForkSourceKeepsDaemonWithoutEligibleBuild(t *testing.T) {
 	for name, err := range map[string]error{
 		"up to date":         cli.ErrForkUpToDate,
-		"not newer":          cli.ErrForkNotNewer,
-		"macOS CI paused":    fmt.Errorf("%w: macOS daemon CI is paused", cli.ErrForkNoArtifact),
+		"no platform build":  fmt.Errorf("%w: server has no darwin-arm64 build", cli.ErrForkNoArtifact),
 		"integrity or other": errors.New("boom"),
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -153,7 +152,7 @@ func TestRunUpdate_ForkSourceFailureReportsAndKeepsInstalled(t *testing.T) {
 	}
 	d, _ := newAutoUpdateTestDaemon(t, "v0.1.13")
 	d.runUpdateFn = d.runUpdate
-	applied := stubFork(t, nil, fmt.Errorf("%w: macOS daemon CI is paused", cli.ErrForkNoArtifact))
+	applied := stubFork(t, nil, fmt.Errorf("%w: server has no darwin-arm64 build", cli.ErrForkNoArtifact))
 	forkUpdateSource = func() bool { return true }
 
 	out, err := d.runUpdate("v9.9.9")
