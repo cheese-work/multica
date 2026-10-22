@@ -1,6 +1,7 @@
 """Offline behavior of optional operator-owned vote-gate env file."""
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -11,6 +12,14 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class VoteGateEnvTest(unittest.TestCase):
+    def test_packet_registry_excludes_unattested_hermes_route(self):
+        packet = (ROOT / 'deploy/cd/c00-vote-gate-draft.md').read_text()
+        registry = json.loads(re.search(r'```json\n(.*?)\n```', packet, re.S).group(1))
+        self.assertEqual(registry, {
+            'claude/claude-sonnet-5-5[1m]': 'anthropic',
+            'codex/gpt-6.1-sol': 'openai',
+        })
+
     def render(self, content=None):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
