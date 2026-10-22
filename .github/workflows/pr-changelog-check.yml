@@ -21,13 +21,14 @@ jobs:
   changelog-line:
     name: Changelog line
     if: github.event.pull_request.state != 'closed'
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'cheese-work' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 5
     steps:
       - name: Checkout the check script
         uses: actions/checkout@v6
         with:
           sparse-checkout: scripts/fork-changelog.mjs
+          sparse-checkout-cone-mode: false
           persist-credentials: false
 
       - name: Setup Node.js
