@@ -13,9 +13,15 @@ if [ ! -f "$ENV_FILE" ]; then
   exit 1
 fi
 
+# A bare name would make `.` search PATH before the working directory.
+case "$ENV_FILE" in
+  */*) ENV_SOURCE="$ENV_FILE" ;;
+  *) ENV_SOURCE="./$ENV_FILE" ;;
+esac
+
 set -a
 # shellcheck disable=SC1090
-. "$ENV_FILE"
+. "$ENV_SOURCE"
 set +a
 
 # shellcheck disable=SC1091
@@ -31,6 +37,11 @@ EXIT_CODE=0
 # Cleanup: kill only services this script started
 # --------------------------------------------------------------------------
 cleanup() {
+  local status=$?
+  # Preserve failures from unguarded commands that trigger errexit.
+  if [ "$status" -ne 0 ]; then
+    EXIT_CODE=$status
+  fi
   echo ""
   if [ "$STARTED_BACKEND" = true ] && [ -n "$BACKEND_PID" ]; then
     kill "$BACKEND_PID" 2>/dev/null && wait "$BACKEND_PID" 2>/dev/null || true

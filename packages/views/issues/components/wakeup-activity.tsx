@@ -128,7 +128,9 @@ function triggerOf(details: WakeupDetails, preview: WakeupPreview | null, t: Iss
   if (event === "issue.status_changed") {
     return name ? t(($) => $.activity.trigger_status_by, { name }) : t(($) => $.activity.trigger_status);
   }
-  if (event) return text.eventName(event);
+  // "condition.met" is the scheduler's own event for a condition rule, not
+  // something that happened on the issue: read it as the rule's condition.
+  if (event && event !== "condition.met") return text.eventName(event);
   const named = preview && (preview.condition || preview.kind !== "event" || preview.event_types[0]);
   return named ? text.trigger(preview) : t(($) => $.activity.trigger_unknown);
 }

@@ -88,7 +88,7 @@ jobs:
           node-version: 22
 
       - name: Test CI selection and gates
-        run: node --test scripts/ci-scope.test.mjs scripts/check-image-budget.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/pr-changelog-line.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs deploy/cd/release-manifest.test.mjs
+        run: node --test scripts/ci-scope.test.mjs scripts/check-image-budget.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/pr-changelog-line.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs deploy/cd/release-manifest.test.mjs
 
       - name: Filter paths
         id: filter
@@ -703,18 +703,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          fetch-depth: 1
-
-      - name: Fetch comparison base
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          # The merge commit and both of its parents: the first parent is the
+          # base the merge was made with (see check-image-budget.mjs).
+          fetch-depth: 2
 
       - name: Check image budget
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: node scripts/check-image-budget.mjs --base "$BASE_SHA"
+        run: node scripts/check-image-budget.mjs --base merge-parent
 
   installer:
     # Stub-driven shell tests for scripts/install.sh. Kept off the heavy
@@ -788,6 +784,9 @@ jobs:
 
       - name: Test self-host env derivation
         run: bash scripts/selfhost-config.test.sh
+
+      - name: Test check script
+        run: bash scripts/check.test.sh
 
       - name: Test worktree database cleanup
         run: bash scripts/worktree-db.test.sh
