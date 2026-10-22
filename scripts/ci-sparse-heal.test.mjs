@@ -103,15 +103,23 @@ test("heal leaves no sparse setting behind to poison the next checkout", () => {
 });
 
 for (const name of WORKFLOWS) {
-  test(`${name} runs the heal step before every checkout and sparse-checks nothing`, () => {
+  test(`${name} runs the heal step before every checkout`, () => {
     const lines = read(name).split("\n");
     const checkouts = lines.flatMap((l, i) => (l.includes("uses: actions/checkout@") ? [i] : []));
     assert.ok(checkouts.length > 0);
     for (const i of checkouts) {
-      const stepStart = lines.slice(0, i).findLastIndex((l) => /^\s+- /.test(l));
+      const stepStart = lines.slice(0, i + 1).findLastIndex((l) => /^\s+- /.test(l));
       const before = lines.slice(0, stepStart).findLastIndex((l) => /^\s+- /.test(l));
       assert.equal(lines[before]?.trim(), STEP, `checkout at line ${i + 1}`);
     }
-    assert.doesNotMatch(read(name), /sparse-checkout/);
+  });
+}
+
+for (const name of ["pr-changelog-check.yml", "pr-close-target-check.yml"]) {
+  test(`${name} resets the workspace after its narrow checkout, even on failure`, () => {
+    const lines = read(name).split("\n").filter((l) => l.trim() !== "");
+    const last = lines.findLastIndex((l) => l.trim() === STEP);
+    assert.match(lines[last + 1], /if: always\(\)/);
+    assert.equal(lines.findLastIndex((l) => /^\s+- /.test(l)), last);
   });
 }
