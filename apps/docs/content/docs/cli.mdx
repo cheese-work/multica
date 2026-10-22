@@ -181,6 +181,34 @@ Cursors preserve `(created_at, id)` order, including timestamp precision.
 Invalid limits or cursors return HTTP 400; limits above 200 are capped.
 Clients that do not follow the cursor receive only the newest 200 runs.
 
+#### Task claim provenance
+
+`multica agent tasks <agent-id> --output json` and
+`multica issue runs <issue-id> --output json` (full execution log, not
+`--siblings`) return `claimed_model` on every run, beside `id`, `agent_id`,
+`issue_id`, `workspace_id`, `status` and `dispatched_at` (claim time). Both
+reads keep their existing workspace-membership and private-agent checks.
+
+```bash
+multica issue runs CHE-1962 --output json \
+  | jq '.[] | {id, agent_id, issue_id, workspace_id, status, dispatched_at, claimed_model}'
+multica agent tasks <agent-id> --output json | jq '.[] | {id, claimed_model}'
+```
+
+`claimed_model` is the model the daemon was told to run at claim, as stored on
+the task. It is not derived from the agent's current model.
+
+| Value | Meaning |
+| --- | --- |
+| a string | Exact stored value |
+| `null` | Nothing stored: not yet claimed, or the claim could not record it |
+| `""` | An empty string was stored |
+| key absent | Server predates this field; nothing can be concluded |
+
+It attests the claim only. It does not show which upstream model or provider
+served the run; that stays unverified. Task prompts, provider environment and
+tokens are not part of this field.
+
 
 ## Daemon and runtimes
 
