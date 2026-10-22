@@ -400,12 +400,15 @@ jobs:
   # a cached "ok" from an untouched package could mask a real failure.
   backend-tests:
     needs: changes
-    # Runs on cheese-x99 again (CHE-1676): the CHE-701 services smoke
-    # (che701-services-smoke.yml) passes, so `services` ports published by the
-    # nested Docker daemon now reach the runner's 127.0.0.1. CHE-748 moved this
-    # job off X99 while that was broken. Re-run the smoke after any change to
-    # the runner/dind stack.
-    runs-on: ${{ github.repository_owner == 'cheese-work' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    # Stays on GitHub-hosted ubuntu-latest (CHE-748, re-measured in CHE-1676).
+    # The CHE-701 smoke now shows `services` ports reaching X99's localhost, but
+    # the receipt tests give the Postgres budget service a 50ms bound and shed
+    # with budget_exceeded when the database sits behind the runner's nested
+    # Docker daemon: on X99, `go test -race ./internal/governance/receipt`
+    # failed 11 of 12 runs against a fresh pgvector container, and the full job
+    # failed in CI runs 39746318400 (twice). The same package passes on hosted
+    # runners. Move this job only after the X99 database path meets that bound.
+    runs-on: ubuntu-latest
     # `services` cannot be conditional, so the Postgres and Redis containers
     # still start on a filtered PR. That is ~1 minute of runner time against
     # the several minutes the gated steps below cost; job-level `if` would
@@ -445,12 +448,6 @@ jobs:
       REDIS_TEST_URL: redis://localhost:6379/1
       GOFLAGS: -count=1
     steps:
-      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
-      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
-      - name: Reset leaked sparse-checkout state
-        run: |
-          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
-          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - name: Checkout
         uses: actions/checkout@v6
 
