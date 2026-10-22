@@ -52,35 +52,45 @@ func TestTryAutoUpdate_SkipsWhenUpdating(t *testing.T) {
 	}
 }
 
-func TestTryAutoUpdate_SkipsWhenTasksRunning(t *testing.T) {
+func TestTryAutoUpdate_InstallsWhenTasksRunning(t *testing.T) {
 	d, restartCalls := newAutoUpdateTestDaemon(t, "v0.1.13")
 	d.activeTasks.Store(1)
 	withStubRelease(t, &cli.GitHubRelease{TagName: "v0.1.14"}, nil)
+	var upgradedTo string
+	d.runUpdateFn = func(target string) (string, error) {
+		upgradedTo = target
+		return "upgraded", nil
+	}
 
 	d.tryAutoUpdate(context.Background())
 
+	if upgradedTo != "v0.1.14" {
+		t.Fatalf("runUpdateFn called with %q, want v0.1.14 while tasks are running", upgradedTo)
+	}
 	if restartCalls.Load() != 0 {
 		t.Fatalf("triggerRestart fired with active tasks; auto-update must defer")
 	}
 	if d.updating.Load() {
-		t.Fatalf("updating flag should not have been claimed while tasks were running")
+		t.Fatalf("updating flag must be released after installing while tasks are running")
 	}
 }
 
-// TestTryAutoUpdate_DefersWhenClaimInFlightAtBarrier covers the race the
-// review flagged: cheap pre-fetch idle check passes (activeTasks == 0), then
-// during the release fetch a poller decides to claim and bumps
-// claimsInFlight. trySetClaimBarrier must observe that and defer rather than
-// proceed into runUpdate (which would lead to a triggerRestart cancelling
-// the just-claimed task mid-run).
 func TestTryAutoUpdate_DefersWhenClaimInFlightAtBarrier(t *testing.T) {
 	d, restartCalls := newAutoUpdateTestDaemon(t, "v0.1.13")
 	withStubRelease(t, &cli.GitHubRelease{TagName: "v0.1.14"}, nil)
+	var upgradedTo string
+	d.runUpdateFn = func(target string) (string, error) {
+		upgradedTo = target
+		return "upgraded", nil
+	}
 
 	d.claimsInFlight = 1 // poller is mid-ClaimTask while activeTasks is still 0
 
 	d.tryAutoUpdate(context.Background())
 
+	if upgradedTo != "v0.1.14" {
+		t.Fatalf("runUpdateFn called with %q, want v0.1.14 while a claim is in flight", upgradedTo)
+	}
 	if restartCalls.Load() != 0 {
 		t.Fatalf("triggerRestart fired despite a claim being in flight at the barrier")
 	}
