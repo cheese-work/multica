@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -258,24 +258,37 @@ test("the workflow's checkout leaves no sparse state for a later full checkout o
   }
 });
 
-const ciWorkflow = new URL("../.github/workflows/ci.yml", import.meta.url).pathname;
 const healName = "Reset leaked sparse-checkout state";
 const healRun = (content) =>
   content.match(new RegExp(`- name: ${healName}\\n\\s+run: \\|\\n((?:\\s{10,}.*\\n)+)`))?.[1];
 
-test("every X99 full-checkout job heals leaked sparse state before checkout", () => {
-  const ci = readFileSync(ciWorkflow, "utf8");
-  const jobs = [
-    ["close-target", readFileSync(workflow, "utf8")],
-    ["script-checks", ci],
-    ["frontend-quality", ci],
-  ];
-  for (const [job, content] of jobs) {
-    const body = content.split(new RegExp(`^  ${job}:\\n`, "m"))[1].split(/^  \S/m)[0];
-    const heal = body.indexOf(`name: ${healName}`);
-    assert.ok(heal >= 0, `${job}: missing "${healName}" step`);
-    assert.ok(heal < body.indexOf("actions/checkout@v6"), `${job}: heal must precede checkout`);
-  }
+const workflowsDir = new URL("../.github/workflows/", import.meta.url).pathname;
+
+// Every job whose runs-on (or matrix runs-on) names cheese-x99 and that uses actions/checkout.
+const x99CheckoutJobs = () =>
+  readdirSync(workflowsDir)
+    .filter((file) => file.endsWith(".yml"))
+    .flatMap((file) => {
+      const [, jobs = ""] = readFileSync(join(workflowsDir, file), "utf8").split(/^jobs:\n/m);
+      return jobs
+        .split(/^  (?=[\w-]+:\s*$)/m)
+        .slice(1)
+        .filter((body) => /^\s*runs-on:.*cheese-x99/m.test(body) && /uses: actions\/checkout@/.test(body))
+        .map((body) => ({ id: `${file}:${body.split(":")[0]}`, body }));
+    });
+
+test("every X99 job that checks out heals leaked sparse state before its first checkout", () => {
+  const jobs = x99CheckoutJobs();
+  assert.ok(jobs.length >= 3, `discovery found only ${jobs.map((j) => j.id)}`);
+  const missing = jobs
+    .filter(({ body }) => {
+      const heal = body.indexOf(`name: ${healName}`);
+      return heal < 0 || heal > body.search(/uses: actions\/checkout@/);
+    })
+    .map((j) => j.id);
+  assert.deepEqual(missing, [], "jobs without the heal step before checkout");
+  const runs = new Set(jobs.map(({ body }) => healRun(body)));
+  assert.equal(runs.size, 1, "heal step text must be identical in every job");
 });
 
 test("a workspace already contaminated by sparse state gets a full tree on the next checkout", () => {

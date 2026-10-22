@@ -31,6 +31,12 @@ jobs:
       build_stamp: ${{ steps.build_meta.outputs.build_stamp }}
       display_version: ${{ steps.build_meta.outputs.display_version }}
     steps:
+      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
+      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
+      - name: Reset leaked sparse-checkout state
+        run: |
+          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
+          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -179,6 +185,12 @@ jobs:
           platform=${{ matrix.platform }}
           echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
 
+      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
+      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
+      - name: Reset leaked sparse-checkout state
+        run: |
+          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
+          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -320,6 +332,12 @@ jobs:
           platform=${{ matrix.platform }}
           echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
 
+      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
+      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
+      - name: Reset leaked sparse-checkout state
+        run: |
+          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
+          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - name: Checkout
         uses: actions/checkout@v4
 
