@@ -53,6 +53,61 @@ func TestTryAutoUpdate_ForkSourceUpdatesToArtifactCommit(t *testing.T) {
 	}
 }
 
+func TestTryAutoUpdate_ForkSourceInstallsWhileBusyAndReloadsWhenIdle(t *testing.T) {
+	if !cli.ForkUpdateSupported(runtime.GOOS) {
+		t.Skip("fork source is Linux/macOS only")
+	}
+	for _, busy := range []string{"task running", "claim in flight", "task starts during install"} {
+		t.Run(busy, func(t *testing.T) {
+			testDaemon, restartCalls := newSelfReloadTestDaemon(t, "v0.1.13")
+			applied := stubFork(t, forkCandidate, nil)
+			stubSelfVersion(t, "v0.1.14", nil)
+			switch busy {
+			case "task running":
+				testDaemon.activeTasks.Store(1)
+			case "claim in flight":
+				testDaemon.claimsInFlight = 1
+			}
+			testDaemon.runUpdateFn = func(target string) (string, error) {
+				if target != forkCandidate.HeadSHA {
+					t.Fatalf("update target = %q, want %q", target, forkCandidate.HeadSHA)
+				}
+				if testDaemon.pauseClaims || !testDaemon.updating.Load() {
+					t.Fatalf("install must hold update ownership without pausing claims: pause=%v updating=%v", testDaemon.pauseClaims, testDaemon.updating.Load())
+				}
+				if busy == "task starts during install" {
+					testDaemon.activeTasks.Store(1)
+				}
+				return testDaemon.runUpdate(target)
+			}
+
+			testDaemon.tryAutoUpdate(context.Background())
+
+			if *applied != 1 {
+				t.Fatalf("fork installs = %d, want 1 while %s", *applied, busy)
+			}
+			if restartCalls.Load() != 0 || testDaemon.RestartBinary() != "" || testDaemon.pauseClaims || testDaemon.updating.Load() {
+				t.Fatalf("restart must defer without holding claims or update ownership: restarts=%d binary=%q pause=%v updating=%v", restartCalls.Load(), testDaemon.RestartBinary(), testDaemon.pauseClaims, testDaemon.updating.Load())
+			}
+
+			testDaemon.trySelfReload(context.Background())
+			if restartCalls.Load() != 0 || testDaemon.pauseClaims || testDaemon.updating.Load() {
+				t.Fatalf("auto-reload must also defer while busy: restarts=%d pause=%v updating=%v", restartCalls.Load(), testDaemon.pauseClaims, testDaemon.updating.Load())
+			}
+
+			testDaemon.activeTasks.Store(0)
+			testDaemon.claimsInFlight = 0
+			testDaemon.trySelfReload(context.Background())
+			if restartCalls.Load() != 1 || testDaemon.RestartBinary() == "" || !testDaemon.pauseClaims || !testDaemon.updating.Load() {
+				t.Fatalf("idle auto-reload must restart with the barrier held: restarts=%d binary=%q pause=%v updating=%v", restartCalls.Load(), testDaemon.RestartBinary(), testDaemon.pauseClaims, testDaemon.updating.Load())
+			}
+			if *applied != 1 {
+				t.Fatalf("auto-reload reinstalled the binary: installs=%d", *applied)
+			}
+		})
+	}
+}
+
 func TestTryAutoUpdate_ForkSourceKeepsDaemonWithoutEligibleBuild(t *testing.T) {
 	for name, err := range map[string]error{
 		"up to date":         cli.ErrForkUpToDate,
