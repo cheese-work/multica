@@ -1,0 +1,9 @@
+{
+  "pull_request": {
+    "number": 400,
+    "state": "open",
+    "title": "fix(x): change (CHE-1926) [squash]",
+    "body": "Changelog: none",
+    "head": { "ref": "upstream-sync/che-1-che-2" }
+  }
+}
