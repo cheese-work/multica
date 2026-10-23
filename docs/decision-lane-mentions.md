@@ -21,6 +21,16 @@ count. Missing issues and foreign-workspace issues do not appear. Mentions are
 computed on read using existing message/session indexes; no agent-maintained
 summary or write-time mention table is required.
 
+One call needs no window. `multica decision request --issue <issue> --for <person-id>
+--class reversible --ask-file ./ask.md [--footer-file ./footer.md]` runs the
+window checks inline for the named person, then writes one issue comment, one
+DM message and one ping. The server picks the lane: the person's lane with this
+agent that holds the latest request on this issue, else the newest listed lane
+that mentions this issue, else a new `Decisions: <agent name>` DM. Briefs and
+channel DMs are never listed lanes. `--session` and `--new-dm` still override.
+
+With an open decision-intent comment the two-step flow below is unchanged.
+
 Send the ask to an explicitly selected lane:
 
 ```sh
@@ -33,9 +43,10 @@ If no listed lane suits, explicitly request a new DM:
 multica decision request --issue <issue> --new-dm --for <person-id> --class reversible --ask-file ./ask.md
 ```
 
-The API equivalents use `session_id`, or `new_dm: true` with `for`.
-Omitting a choice, combining choices or creating a DM without a named person
-is rejected. The chosen existing DM must remain in the scoped listing.
+The API equivalents use `session_id`, or `new_dm: true` with `for`. The
+one-call form sends `for` alone; `footer` and `parent_id` are optional.
+Combining `session_id` with `new_dm`, creating a DM without a named person,
+or sending none of `session_id`, `new_dm` and `for` is rejected. The chosen existing DM must remain in the scoped listing.
 An authorized new-DM ping creates `Decisions: <agent name>` in the same
 transaction as the request. Refusals roll back creation. Existing window,
 membership, authorization and one-ping-per-person checks still apply.

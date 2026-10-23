@@ -382,3 +382,10 @@ WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.chat_session_i
   AND ping.created_at < sqlc.arg('before')
 ORDER BY ping.created_at, request.id
 LIMIT 5;
+
+-- name: LatestDecisionRequestLane :one
+SELECT chat_session_id FROM decision_request
+WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')
+  AND asking_agent_id = sqlc.arg('asking_agent_id') AND human_user_id = sqlc.arg('human_user_id')
+ORDER BY created_at DESC, id DESC
+LIMIT 1;

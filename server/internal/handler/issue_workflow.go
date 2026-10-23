@@ -71,6 +71,9 @@ type IssueWorkflowStepPayload struct {
 	Instructions  string                      `json:"instructions"`
 	NextStatusKey string                      `json:"next_status_key,omitempty"`
 	BackStatusKey string                      `json:"back_status_key,omitempty"`
+	// AdvanceOnCIGreen moves an issue on this step to its next status when a
+	// linked PR's checks pass on the current head.
+	AdvanceOnCIGreen bool `json:"advance_on_ci_green,omitempty"`
 }
 
 type IssueWorkflowResponse struct {
@@ -118,6 +121,8 @@ func stepToPayload(s issueworkflow.Step) IssueWorkflowStepPayload {
 		Instructions:  s.Instructions,
 		NextStatusKey: s.NextStatusKey,
 		BackStatusKey: s.BackStatusKey,
+
+		AdvanceOnCIGreen: s.AdvanceOnCIGreen,
 	}
 }
 
@@ -128,6 +133,8 @@ func payloadToStep(statusKey string, in IssueWorkflowStepPayload) issueworkflow.
 		Instructions:  in.Instructions,
 		NextStatusKey: in.NextStatusKey,
 		BackStatusKey: in.BackStatusKey,
+
+		AdvanceOnCIGreen: in.AdvanceOnCIGreen,
 	}
 }
 
@@ -314,6 +321,8 @@ type IssueWorkflowStepInput struct {
 	Instructions  string                       `json:"instructions,omitempty"`
 	NextStatusKey string                       `json:"next_status_key,omitempty"`
 	BackStatusKey string                       `json:"back_status_key,omitempty"`
+	// AdvanceOnCIGreen: see IssueWorkflowStepPayload.
+	AdvanceOnCIGreen bool `json:"advance_on_ci_green,omitempty"`
 }
 
 type IssueWorkflowWriteRequest struct {
@@ -355,6 +364,8 @@ func resolveStepInputs(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID,
 			Instructions:  in.Instructions,
 			NextStatusKey: in.NextStatusKey,
 			BackStatusKey: in.BackStatusKey,
+
+			AdvanceOnCIGreen: in.AdvanceOnCIGreen,
 		}
 		if in.Handler != nil {
 			step.Handler = issueworkflow.Handler{Type: in.Handler.Type, ID: in.Handler.ID}

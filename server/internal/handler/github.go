@@ -1407,6 +1407,23 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 			}
 		}
 	}
+	if pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha && pr.ChecksRollupState.String == "SUCCESS" &&
+		(pr.State == "open" || pr.State == "draft") {
+		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
+		for _, issueID := range issueIDs {
+			// A move that already started the next handler is the wake.
+			if h.advanceIssueOnCIGreen(ctx, issueID, pr.SnapshotHeadSha) {
+				continue
+			}
+			if err := wakeup.TriggerPullRequestWakeup(ctx, issueID, service.PullRequestWakeupInput{
+				Rule: service.SystemRulePRChecksPassed, RepoOwner: pr.RepoOwner, RepoName: pr.RepoName,
+				Number: pr.PrNumber, URL: pr.HtmlUrl, HeadSHA: pr.SnapshotHeadSha, Conclusion: pr.ChecksRollupState.String,
+				HeadBranch: pr.Branch.String,
+			}); err != nil {
+				slog.Warn("github: failed to dispatch pull request green checks wakeup", "err", err, "pr_id", uuidToString(pr.ID), "issue_id", uuidToString(issueID))
+			}
+		}
+	}
 	h.publish(protocol.EventPullRequestUpdated, uuidToString(pr.WorkspaceID), "system", "", map[string]any{
 		"pull_request":     githubPullRequestToResponse(pr, h.PRRefresh.Enabled()),
 		"linked_issue_ids": linked,
