@@ -5106,7 +5106,7 @@ func (d *Daemon) tryBeginServerUpdate(ctx context.Context) serverUpdateAcquireRe
 func (d *Daemon) runUpdate(targetVersion string) (string, error) {
 	if cli.ForkUpdateSupported(runtime.GOOS) {
 		// targetVersion is an upstream release tag from the server or poller; the
-		// fork source ignores it and re-resolves the newest eligible main build.
+		// fork source ignores it and takes the build its own server carries.
 		return d.runForkUpdate()
 	}
 	if cli.IsBrewInstall() {
@@ -5207,9 +5207,8 @@ func (d *Daemon) exitClaim() {
 // fully idle (no claims in flight, no tasks running). Returns true if the
 // caller now holds the barrier and must release it with releaseClaimBarrier
 // on every non-restart exit path; false if the daemon is busy and the caller
-// should defer to the next tick. Used by tryAutoUpdate to close the race
-// where a task slips in between the cheap pre-fetch idle check and the
-// actual upgrade kick-off.
+// should defer to the next tick. Used by tryAutoUpdate and trySelfReload to
+// keep restart from interrupting a task admitted during binary replacement.
 func (d *Daemon) trySetClaimBarrier() bool {
 	d.claimMu.Lock()
 	defer d.claimMu.Unlock()

@@ -222,6 +222,11 @@ func (c *Client) SetToken(token string) {
 	c.token = token
 }
 
+// BaseURL returns the server's HTTP base URL.
+func (c *Client) BaseURL() string {
+	return c.baseURL
+}
+
 // Token returns the current auth token.
 func (c *Client) Token() string {
 	return c.token

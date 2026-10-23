@@ -699,14 +699,11 @@ jobs:
   # artifact is built. cursor_background_process_darwin.go is therefore not
   # built or tested in CI until a macOS runner is provisioned by its owner.
 
-  # Fork daemon update source (CHE-1012). `multica update` and the daemon
-  # self-update on Linux take their binary from the artifact this job uploads
-  # on a push to main, and only when this whole CI run later concludes
-  # successfully (the updater filters on run conclusion, event, branch, path and
-  # repository). Artifact name and single-file layout are the contract with
-  # server/internal/cli/update_fork.go: `multica-daemon-<goos>-<goarch>`
-  # holding one file named `multica`. No macOS job: macOS daemon CI is halted,
-  # so macOS updates report "unavailable" instead of installing anything.
+  # Bootstrap only (CHE-1980). Daemons update from their own Multica server
+  # now, but a daemon still on the earlier GitHub-based updater reaches its
+  # first server-built version through this artifact: `multica-daemon-<goos>-<goarch>`
+  # holding one file named `multica`. Delete this job once every host runs a
+  # server-only build.
   daemon-artifact:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ${{ github.repository_owner == 'cheese-work' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
