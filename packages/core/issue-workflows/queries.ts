@@ -174,6 +174,9 @@ export function sharedWorkflowStatusKeys(
   let shared = null as Set<string> | null;
   for (const issue of issues) {
     const project = issue.project_id ? projects?.find((p) => p.id === issue.project_id) : undefined;
+    // An override the list lacks is unknown, never the project's: no status is
+    // safe to offer, since the server judges the write against that workflow.
+    if (issue.workflow_id && !workflows?.some((w) => w.id === issue.workflow_id)) return new Set();
     const workflow = issue.workflow_id
       ? workflows?.find((w) => w.id === issue.workflow_id)
       : resolveProjectWorkflow(workflows, project);

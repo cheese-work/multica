@@ -126,6 +126,12 @@ describe("per-issue workflow override", () => {
     expect(resolveIssueWorkflow(workflows, [project], "p1", "gone")).toMatchObject({ resolved: false, workflow: null });
   });
 
+  it("offers no status for an override the workflow list lacks, instead of the project's", () => {
+    const keys = sharedWorkflowStatusKeys(workflows, [project], [{ project_id: "p1", workflow_id: "gone" }]);
+    expect(keys).not.toBeNull();
+    expect(keys?.size).toBe(0);
+  });
+
   it("intersects statuses per issue, so two issues of one project can differ", () => {
     const issues = [
       { project_id: "p1", workflow_id: null },

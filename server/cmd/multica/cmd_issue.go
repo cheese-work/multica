@@ -1828,7 +1828,7 @@ func runIssueCreate(cmd *cobra.Command, _ []string) error {
 		}
 		body["project_id"] = project.ID
 	}
-	if v, _ := cmd.Flags().GetString("workflow"); v != "" {
+	if v, _ := cmd.Flags().GetString("workflow"); v != "" && v != "none" {
 		body["workflow_id"] = v
 	}
 	if cmd.Flags().Changed("stage") {

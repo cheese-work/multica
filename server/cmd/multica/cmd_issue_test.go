@@ -841,6 +841,7 @@ func newIssueCreateTestCmd() *cobra.Command {
 	cmd.Flags().String("assignee-id", "", "")
 	cmd.Flags().String("parent", "", "")
 	cmd.Flags().String("project", "", "")
+	cmd.Flags().String("workflow", "", "")
 	cmd.Flags().String("due-date", "", "")
 	cmd.Flags().Bool("allow-duplicate", false, "")
 	cmd.Flags().String("output", "json", "")
@@ -4379,6 +4380,44 @@ func TestRunIssueUpdateSetsAndClearsTheWorkflowOverride(t *testing.T) {
 	}
 	if len(got) != 2 || got[0]["workflow_id"] != "wf-1" || got[1]["workflow_id"] != nil {
 		t.Fatalf("bodies = %#v, want workflow_id wf-1 then null", got)
+	}
+}
+
+// issue create --workflow takes an id, and "none" means no override, so the
+// body carries no workflow_id for it.
+func TestRunIssueCreateSendsTheWorkflowOverrideAndTreatsNoneAsInheritance(t *testing.T) {
+	clearAmbientDaemonTaskEnv(t)
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/issues" {
+			http.NotFound(w, r)
+			return
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		bodies = append(bodies, body)
+		json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "title": "t", "status": "todo", "priority": "none"})
+	}))
+	defer srv.Close()
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	for _, value := range []string{"wf-1", "none"} {
+		cmd := newIssueCreateTestCmd()
+		_ = cmd.Flags().Set("title", "t")
+		_ = cmd.Flags().Set("workflow", value)
+		if err := runIssueCreate(cmd, nil); err != nil {
+			t.Fatalf("runIssueCreate --workflow %s: %v", value, err)
+		}
+	}
+	if len(bodies) != 2 || bodies[0]["workflow_id"] != "wf-1" {
+		t.Fatalf("bodies = %#v, want workflow_id wf-1 first", bodies)
+	}
+	if _, sent := bodies[1]["workflow_id"]; sent {
+		t.Fatalf("--workflow none sent workflow_id %#v, want it omitted", bodies[1]["workflow_id"])
 	}
 }
 
