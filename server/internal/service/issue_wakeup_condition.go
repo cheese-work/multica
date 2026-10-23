@@ -492,7 +492,7 @@ func (s *IssueWakeupService) pollCondition(ctx context.Context, tx pgx.Tx, q *db
 			return w.NextFireAt, err
 		}
 		state = fingerprint
-	} else {
+	} else if !met {
 		state = ""
 	}
 	next := pgtype.Timestamptz{Time: now.Add(conditionPollInterval), Valid: true}

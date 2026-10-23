@@ -204,8 +204,8 @@ func TestClaimRerun_DoesNotReviveRetiredSession(t *testing.T) {
 		"failure_reason": "agent_error.provider_server_error",
 		"error":          "dispatch failure",
 		"work_dir":       "/tmp/mul8188-existing-workdir",
-		"started_at":     testutil.Raw("now() - interval '10 minutes'"),
-		"completed_at":   testutil.Raw("now() - interval '9 minutes'"),
+		"started_at":     testutil.Raw("now() - interval '20 minutes'"),
+		"completed_at":   testutil.Raw("now() - interval '19 minutes'"),
 	})
 	cancelledID := dbfx.Task(t, agentID, testutil.Cols{
 		"runtime_id":   runtimeID,
@@ -259,8 +259,8 @@ func TestClaimRerun_ResumesHealthySourceSession(t *testing.T) {
 		"session_id":     "ses_healthy",
 		"failure_reason": "agent_error.provider_server_error",
 		"error":          "dispatch failure",
-		"started_at":     testutil.Raw("now() - interval '10 minutes'"),
-		"completed_at":   testutil.Raw("now() - interval '9 minutes'"),
+		"started_at":     testutil.Raw("now() - interval '20 minutes'"),
+		"completed_at":   testutil.Raw("now() - interval '19 minutes'"),
 	})
 	dbfx.Task(t, agentID, testutil.Cols{
 		"runtime_id":          runtimeID,

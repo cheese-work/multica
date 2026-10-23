@@ -60,6 +60,7 @@ func (f *fakeTaskTokenDB) QueryRow(_ context.Context, sql string, args ...interf
 			*dest[3].(*pgtype.UUID) = util.MustParseUUID(ttAgentID)
 			*dest[4].(*pgtype.UUID) = util.MustParseUUID(ttWorkspaceA)
 			*dest[5].(*pgtype.UUID) = util.MustParseUUID(ttUserID)
+			*dest[8].(*string) = "agent_task"
 		}}
 	case strings.Contains(sql, "name: GetWorkspaceBySlug"):
 		var id string
