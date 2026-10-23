@@ -27,11 +27,13 @@ import (
 
 // Project workflow API (MUL-7420).
 //
-// Reading workflows is open to any member: every client needs them to render
-// a project's board and to filter status choices. Creating, editing and
-// deleting workflows, handoffs included, is owner/admin only: a workflow's
-// handoffs apply to every project using it. Which workflow a project uses is
-// open to owners/admins and to the project's lead.
+// Reading and creating workflows is open to any member: every client needs
+// them to render a project's board, and a new workflow affects no project
+// until someone switches one to it. Editing and deleting a workflow, handoffs
+// included, is open to its owner (the member who created it) and to workspace
+// owners/admins (MUL-8120). The Default workflow has no owner, so only
+// owners/admins change it. Which workflow a project uses is open to
+// owners/admins and to the project's lead.
 
 // requireProjectWorkflowsV1 gates adopting workflows behind the
 // project_workflows_v1 flag. Reads, edits of existing workflows and switching
@@ -47,6 +49,15 @@ func (h *Handler) requireProjectWorkflowsV1(w http.ResponseWriter, r *http.Reque
 
 func isWorkspaceAdmin(member db.Member) bool {
 	return roleAllowed(member.Role, "owner", "admin")
+}
+
+// canEditIssueWorkflow reports whether member may edit or delete workflow:
+// workspace owners and admins, and the member who owns it.
+func canEditIssueWorkflow(member db.Member, workflow db.IssueWorkflow) bool {
+	if isWorkspaceAdmin(member) {
+		return true
+	}
+	return workflow.OwnerID.Valid && workflow.OwnerID == member.UserID
 }
 
 // canManageProjectWorkflow reports whether member may change a project's own
@@ -82,6 +93,7 @@ type IssueWorkflowResponse struct {
 	Name        string                     `json:"name"`
 	Description string                     `json:"description"`
 	IsDefault   bool                       `json:"is_default"`
+	OwnerID     *string                    `json:"owner_id"`
 	Steps       []IssueWorkflowStepPayload `json:"steps"`
 	ProjectIDs  []string                   `json:"project_ids"`
 	CreatedAt   string                     `json:"created_at"`
@@ -152,6 +164,7 @@ func issueWorkflowToResponse(row db.IssueWorkflow, def issueworkflow.Definition,
 		Name:        row.Name,
 		Description: row.Description,
 		IsDefault:   row.IsDefault,
+		OwnerID:     uuidToPtr(row.OwnerID),
 		Steps:       steps,
 		ProjectIDs:  projectIDs,
 		CreatedAt:   timestampToString(row.CreatedAt),
@@ -355,7 +368,17 @@ var newStatusDefaultColor = map[string]string{
 // resolveStepInputs turns step inputs into steps, creating the new statuses
 // they name. The caller holds the exclusive catalog lock. A non-empty message
 // is a caller error.
-func resolveStepInputs(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID, inputs []IssueWorkflowStepInput) ([]issueworkflow.Step, []db.IssueStatus, string, error) {
+// errStatusCreateForbidden reports a workflow write that would add a status
+// to the workspace catalog for a caller who may not: statuses are shared by
+// every board, so only owners/admins create them (MUL-8120). Reusing an
+// existing status, by key or by name, stays open.
+var errStatusCreateForbidden = errors.New("only workspace admins can create statuses")
+
+// resolveStepInputs turns the request's steps into workflow steps, creating
+// the new statuses they name. allowCreate is false for callers who may not
+// add statuses; a step naming one that does not exist yet then fails with
+// errStatusCreateForbidden.
+func resolveStepInputs(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID, inputs []IssueWorkflowStepInput, allowCreate bool) ([]issueworkflow.Step, []db.IssueStatus, string, error) {
 	steps := make([]issueworkflow.Step, 0, len(inputs))
 	var created []db.IssueStatus
 	for _, in := range inputs {
@@ -371,11 +394,13 @@ func resolveStepInputs(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID,
 			step.Handler = issueworkflow.Handler{Type: in.Handler.Type, ID: in.Handler.ID}
 		}
 		if in.NewStatus != nil {
-			entry, msg, err := createWorkflowStatus(ctx, qtx, wsUUID, *in.NewStatus)
+			entry, isNew, msg, err := createWorkflowStatus(ctx, qtx, wsUUID, *in.NewStatus, allowCreate)
 			if msg != "" || err != nil {
 				return nil, nil, msg, err
 			}
-			created = append(created, entry)
+			if isNew {
+				created = append(created, entry)
+			}
 			step.StatusKey = entry.Key
 		}
 		steps = append(steps, step)
@@ -383,10 +408,10 @@ func resolveStepInputs(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID,
 	return steps, created, "", nil
 }
 
-func createWorkflowStatus(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID, in NewWorkflowStatus) (db.IssueStatus, string, error) {
+func createWorkflowStatus(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID, in NewWorkflowStatus, allowCreate bool) (db.IssueStatus, bool, string, error) {
 	name := strings.TrimSpace(in.Name)
 	if name == "" || utf8.RuneCountInString(name) > 64 {
-		return db.IssueStatus{}, "status name must be 1-64 characters", nil
+		return db.IssueStatus{}, false, "status name must be 1-64 characters", nil
 	}
 	category, ok := issuestatus.ParseCategory(in.Category)
 	if !ok {
@@ -396,7 +421,7 @@ func createWorkflowStatus(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UU
 	if strings.TrimSpace(in.Color) != "" {
 		c, err := normalizeColor(in.Color)
 		if err != nil {
-			return db.IssueStatus{}, err.Error(), nil
+			return db.IssueStatus{}, false, err.Error(), nil
 		}
 		color = c
 	}
@@ -404,12 +429,15 @@ func createWorkflowStatus(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UU
 	// so the same template applied twice lands on the same statuses.
 	entries, err := qtx.ListIssueStatusEntries(ctx, db.ListIssueStatusEntriesParams{WorkspaceID: wsUUID, IncludeArchived: false})
 	if err != nil {
-		return db.IssueStatus{}, "", err
+		return db.IssueStatus{}, false, "", err
 	}
 	for _, e := range entries {
 		if strings.EqualFold(e.Name, name) {
-			return e, "", nil
+			return e, false, "", nil
 		}
+	}
+	if !allowCreate {
+		return db.IssueStatus{}, false, "", errStatusCreateForbidden
 	}
 	entry, msg, err := createIssueStatusEntryLocked(ctx, qtx, wsUUID, category, db.CreateIssueStatusEntryParams{
 		WorkspaceID: wsUUID,
@@ -418,9 +446,9 @@ func createWorkflowStatus(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UU
 		Color:       color,
 	})
 	if err != nil && isUniqueViolation(err) {
-		return db.IssueStatus{}, fmt.Sprintf("a status named %q already exists", name), nil
+		return db.IssueStatus{}, false, fmt.Sprintf("a status named %q already exists", name), nil
 	}
-	return entry, msg, err
+	return entry, err == nil && msg == "", msg, err
 }
 
 // validateHandoffHandlers checks that each concrete handler exists in the
@@ -483,10 +511,6 @@ func (h *Handler) CreateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if !isWorkspaceAdmin(member) {
-		writeError(w, http.StatusForbidden, "insufficient permissions")
-		return
-	}
 	var name, description string
 	if req.Name != nil {
 		name = *req.Name
@@ -517,9 +541,13 @@ func (h *Handler) CreateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to save workflow")
 		return
 	}
-	steps, createdStatuses, msg, err := resolveStepInputs(ctx, qtx, wsUUID, inputs)
+	steps, createdStatuses, msg, err := resolveStepInputs(ctx, qtx, wsUUID, inputs, isWorkspaceAdmin(member))
 	if msg != "" {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", msg)
+		return
+	}
+	if errors.Is(err, errStatusCreateForbidden) {
+		writeErrorCode(w, http.StatusForbidden, "status_create_forbidden", err.Error())
 		return
 	}
 	if err != nil {
@@ -552,6 +580,7 @@ func (h *Handler) CreateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		Description:      description,
 		InitialStatusKey: issueworkflow.StartStatus,
 		Steps:            raw,
+		OwnerID:          member.UserID,
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -652,7 +681,7 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	member, ok := h.requireWorkspaceRole(w, r, workspaceID, "workspace not found", "owner", "admin")
+	member, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found")
 	if !ok {
 		return
 	}
@@ -692,6 +721,10 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeErrorCode(w, http.StatusConflict, "workflow_changed_elsewhere", "the workflow was changed by someone else since you opened it")
 		return
 	}
+	if !canEditIssueWorkflow(member, current) {
+		writeError(w, http.StatusForbidden, "only the workflow owner and workspace admins can change this workflow")
+		return
+	}
 	var projects []db.Project
 	if current.IsDefault {
 		projects, err = qtx.ListProjectsUsingDefaultIssueWorkflow(ctx, wsUUID)
@@ -717,9 +750,13 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	var createdStatuses []db.IssueStatus
 	if req.Steps != nil {
 		var msg string
-		steps, createdStatuses, msg, err = resolveStepInputs(ctx, qtx, wsUUID, *req.Steps)
+		steps, createdStatuses, msg, err = resolveStepInputs(ctx, qtx, wsUUID, *req.Steps, isWorkspaceAdmin(member))
 		if msg != "" {
 			writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", msg)
+			return
+		}
+		if errors.Is(err, errStatusCreateForbidden) {
+			writeErrorCode(w, http.StatusForbidden, "status_create_forbidden", err.Error())
 			return
 		}
 		if err != nil {
@@ -837,7 +874,7 @@ func (h *Handler) DeleteIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	member, ok := h.requireWorkspaceRole(w, r, workspaceID, "workspace not found", "owner", "admin")
+	member, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found")
 	if !ok {
 		return
 	}
@@ -860,6 +897,10 @@ func (h *Handler) DeleteIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	row, err := qtx.GetIssueWorkflow(ctx, db.GetIssueWorkflowParams{ID: idUUID, WorkspaceID: wsUUID})
 	if err != nil {
 		writeError(w, http.StatusNotFound, "workflow not found")
+		return
+	}
+	if !canEditIssueWorkflow(member, row) {
+		writeError(w, http.StatusForbidden, "only the workflow owner and workspace admins can change this workflow")
 		return
 	}
 	if row.IsDefault {
@@ -1115,7 +1156,7 @@ func (h *Handler) SetIssueWorkflowHandoff(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	member, ok := h.requireWorkspaceRole(w, r, workspaceID, "workspace not found", "owner", "admin")
+	member, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found")
 	if !ok {
 		return
 	}
@@ -1154,6 +1195,10 @@ func (h *Handler) SetIssueWorkflowHandoff(w http.ResponseWriter, r *http.Request
 	current, err := qtx.GetIssueWorkflow(ctx, db.GetIssueWorkflowParams{ID: idUUID, WorkspaceID: wsUUID})
 	if err != nil {
 		writeError(w, http.StatusNotFound, "workflow not found")
+		return
+	}
+	if !canEditIssueWorkflow(member, current) {
+		writeError(w, http.StatusForbidden, "only the workflow owner and workspace admins can change this workflow")
 		return
 	}
 	def, err := issueworkflow.Decode(current)
@@ -1221,6 +1266,12 @@ func (h *Handler) saveHandoffOnProjectCopy(w http.ResponseWriter, r *http.Reques
 		writeErrorCode(w, http.StatusConflict, "invalid_handoff", "the project does not use this workflow")
 		return
 	}
+	// The copy switches the project's workflow, which only admins and the
+	// project's lead may do.
+	if !canManageProjectWorkflow(member, project) {
+		writeError(w, http.StatusForbidden, "only workspace admins and the project lead can change this project's workflow")
+		return
+	}
 	existing, err := qtx.ListIssueWorkflows(ctx, source.WorkspaceID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save handoff")
@@ -1236,6 +1287,7 @@ func (h *Handler) saveHandoffOnProjectCopy(w http.ResponseWriter, r *http.Reques
 		Description:      source.Description,
 		InitialStatusKey: issueworkflow.StartStatus,
 		Steps:            steps,
+		OwnerID:          member.UserID,
 	})
 	if err != nil {
 		slog.Warn("SetIssueWorkflowHandoff copy failed", append(logger.RequestAttrs(r), "error", err)...)

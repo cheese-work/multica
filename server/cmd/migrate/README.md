@@ -296,3 +296,23 @@ The SQL bytes are unchanged. `allowedForkCollisions` gains no entry. A later
 upstream sync must delete these two upstream filenames when it re-adds them, or
 the `muse` runtime profile and the optional quick-action target would be applied
 twice. Open pull requests that claim 671 or later renumber after this one merges.
+
+## Upstream v0.7.0 migration renumbering
+
+Upstream v0.7.0 adds eight migrations with prefixes 585 through 592. Those
+prefixes already belong to shipped fork migrations. The fork files retain
+their names. The upstream migrations take 678 through 685, after the fork's
+677, in their original order (CHE-2005):
+
+- `585_issue_workflow_owner` is now `678_issue_workflow_owner`
+- `586_cloud_agent_connection` is now `679_cloud_agent_connection`
+- `587_cloud_agent_connection_provider_index` is now `680_cloud_agent_connection_provider_index`
+- `588_daemon_token_owner` is now `681_daemon_token_owner`
+- `589_member_delegation_day` is now `682_member_delegation_day`
+- `590_member_delegation_day_unique_index` is now `683_member_delegation_day_unique_index`
+- `591_member_delegation_day_primary_key` is now `684_member_delegation_day_primary_key`
+- `592_runtime_shared_with` is now `685_runtime_shared_with`
+
+The up and down SQL bytes are unchanged. The runner's concurrent-index name
+map uses the new prefixes. No collision exception is added. A later sync
+must not reintroduce these upstream filenames under their original prefixes.
