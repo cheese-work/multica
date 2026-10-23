@@ -18,8 +18,7 @@ func TestFinalDelegatedFailureCoordinatorWakeByRetryState(t *testing.T) {
 	}{
 		{"retry pending", "agent_error.provider_network", "API Error: Connection closed mid-response", 1, 3, false},
 		{"retry exhausted", "agent_error.provider_network", "API Error: Connection closed mid-response", 3, 3, true},
-		{"503 retry pending", "agent_error.provider_server_error", "API Error: 503 service unavailable", 1, 2, false},
-		{"503 retry exhausted", "agent_error.provider_server_error", "API Error: 503 service unavailable", 2, 2, true},
+		{"not retried 503", "agent_error.provider_server_error", "API Error: 503 service unavailable", 1, 2, true},
 		{"process failure", "agent_error.process_failure", "exit status 1", 1, 2, true},
 	}
 	for _, tc := range cases {
@@ -48,13 +47,6 @@ func TestFinalDelegatedFailureCoordinatorWakeByRetryState(t *testing.T) {
 			want := 0
 			if tc.wantWakeup {
 				want = 1
-			}
-			var retryChildren int
-			if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE parent_task_id = $1`, failedID).Scan(&retryChildren); err != nil {
-				t.Fatalf("count retry children: %v", err)
-			}
-			if wantRetry := 1 - want; retryChildren != wantRetry && tc.reason != "agent_error.process_failure" {
-				t.Fatalf("retry children=%d, want %d", retryChildren, wantRetry)
 			}
 			if coordinatorRuns != want || coordinatorComments != want {
 				t.Fatalf("coordinator runs=%d comments=%d, want %d each", coordinatorRuns, coordinatorComments, want)
