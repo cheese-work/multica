@@ -33,6 +33,8 @@ export interface IssueWorkflowStep {
   next_status_key?: string;
   /** Status to send the issue back to when it needs changes. */
   back_status_key?: string;
+  /** Move an issue on this step to its next status when a linked PR's checks pass. */
+  advance_on_ci_green?: boolean;
 }
 
 export interface IssueWorkflow {
@@ -151,4 +153,5 @@ export interface SetWorkflowHandoffRequest {
   instructions?: string;
   next_status_key?: string;
   back_status_key?: string;
+  advance_on_ci_green?: boolean;
 }

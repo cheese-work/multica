@@ -88,7 +88,7 @@ jobs:
           node-version: 22
 
       - name: Test CI selection and gates
-        run: node --test scripts/ci-scope.test.mjs scripts/check-image-budget.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/pr-changelog-line.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs deploy/cd/release-manifest.test.mjs
+        run: node --test scripts/ci-scope.test.mjs scripts/check-image-budget.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/pr-changelog-line.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/ci-runners.test.mjs deploy/cd/release-manifest.test.mjs
 
       - name: Filter paths
         id: filter
@@ -644,14 +644,11 @@ jobs:
   # artifact is built. cursor_background_process_darwin.go is therefore not
   # built or tested in CI until a macOS runner is provisioned by its owner.
 
-  # Fork daemon update source (CHE-1012). `multica update` and the daemon
-  # self-update on Linux take their binary from the artifact this job uploads
-  # on a push to main, and only when this whole CI run later concludes
-  # successfully (the updater filters on run conclusion, event, branch, path and
-  # repository). Artifact name and single-file layout are the contract with
-  # server/internal/cli/update_fork.go: `multica-daemon-<goos>-<goarch>`
-  # holding one file named `multica`. No macOS job: macOS daemon CI is halted,
-  # so macOS updates report "unavailable" instead of installing anything.
+  # Bootstrap only (CHE-1980). Daemons update from their own Multica server
+  # now, but a daemon still on the earlier GitHub-based updater reaches its
+  # first server-built version through this artifact: `multica-daemon-<goos>-<goarch>`
+  # holding one file named `multica`. Delete this job once every host runs a
+  # server-only build.
   daemon-artifact:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
@@ -703,18 +700,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          fetch-depth: 1
-
-      - name: Fetch comparison base
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          # The merge commit and both of its parents: the first parent is the
+          # base the merge was made with (see check-image-budget.mjs).
+          fetch-depth: 2
 
       - name: Check image budget
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: node scripts/check-image-budget.mjs --base "$BASE_SHA"
+        run: node scripts/check-image-budget.mjs --base merge-parent
 
   installer:
     # Stub-driven shell tests for scripts/install.sh. Kept off the heavy
@@ -767,17 +760,11 @@ jobs:
 
   script-checks:
     needs: changes
-    # X99 job: the sync-head exclusion lives here, not only in candidate-controlled
+    # Sync-head exclusion lives here, not only in candidate-controlled
     # scripts/ci-scope.mjs (CHE-1381).
     if: ${{ needs.changes.outputs.scripts == 'true' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') }}
-    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ubuntu-latest
     steps:
-      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
-      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
-      - name: Reset leaked sparse-checkout state
-        run: |
-          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
-          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
@@ -788,6 +775,9 @@ jobs:
 
       - name: Test self-host env derivation
         run: bash scripts/selfhost-config.test.sh
+
+      - name: Test check script
+        run: bash scripts/check.test.sh
 
       - name: Test worktree database cleanup
         run: bash scripts/worktree-db.test.sh
@@ -854,17 +844,11 @@ jobs:
 
   frontend-quality:
     needs: changes
-    # X99 job: the sync-head exclusion lives here, not only in candidate-controlled
+    # Sync-head exclusion lives here, not only in candidate-controlled
     # scripts/ci-scope.mjs (CHE-1381).
     if: ${{ needs.changes.outputs.quality_only == 'true' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') }}
-    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ubuntu-latest
     steps:
-      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
-      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
-      - name: Reset leaked sparse-checkout state
-        run: |
-          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
-          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v6

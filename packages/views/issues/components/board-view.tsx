@@ -504,7 +504,7 @@ function BoardViewImpl({
   // is as unresolved as one still loading.
   const resolveIssue = useCallback(
     (issue: Issue | null | undefined) =>
-      resolveIssueWorkflow(workflowsLoaded ? workflows : undefined, workspaceProjects, issue?.project_id),
+      resolveIssueWorkflow(workflowsLoaded ? workflows : undefined, workspaceProjects, issue?.project_id, issue?.workflow_id),
     [workflows, workflowsLoaded, workspaceProjects],
   );
   const workflowOfIssue = useCallback((issue: Issue | null | undefined) => resolveIssue(issue).workflow, [resolveIssue]);
