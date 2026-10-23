@@ -2153,8 +2153,22 @@ func runIssueUpdate(cmd *cobra.Command, args []string) error {
 		if v == "" || v == "none" {
 			workflowID = nil
 		}
-		if err := client.PutJSON(ctx, "/api/issues/"+issueRef.ID+"/workflow", map[string]any{"workflow_id": workflowID}, &result); err != nil {
+		switchBody := map[string]any{"workflow_id": workflowID}
+		if cmd.Flags().Changed("expected-revision") {
+			switchBody["expected_revision"], _ = cmd.Flags().GetInt64("expected-revision")
+		}
+		if err := client.PutJSON(ctx, "/api/issues/"+issueRef.ID+"/workflow", switchBody, &result); err != nil {
+			if msg, ok := revisionConflictMessage(err); ok {
+				return errors.New(msg)
+			}
 			return fmt.Errorf("set issue workflow: %w", err)
+		}
+		// The switch advanced the revision; the update that follows chains on
+		// it, and a switch with nothing else to write sends no second request.
+		if len(body) == 1 && body["expected_revision"] != nil {
+			delete(body, "expected_revision")
+		} else if revision, ok := result["revision"].(float64); ok && body["expected_revision"] != nil {
+			body["expected_revision"] = int64(revision)
 		}
 	}
 	if len(body) == 0 && len(attachmentPaths) == 0 {

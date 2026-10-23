@@ -293,3 +293,56 @@ func TestEditWorkflowKeepsStatusesHeldByOverriddenIssues(t *testing.T) {
 		t.Fatalf("code = %v, want workflow_in_use", code)
 	}
 }
+
+// Only an explicit null resets the override: a body without the field is a
+// malformed request and leaves the issue as it was.
+func TestSwitchRequiresTheWorkflowIDField(t *testing.T) {
+	seedTestCatalog(t)
+	withFeatureFlag(t, testHandler, featureflags.ProjectWorkflowsV1, true)
+	wf := createTestWorkflow(t, "Switch field "+workflowTestSuffix())
+	issueID := dbfx.Issue(t, "keeps override", testutil.Cols{"status": "todo"})
+	setIssueOverride(t, issueID, wf.ID)
+
+	for name, body := range map[string]map[string]any{"empty body": {}, "other fields only": {"title": "x"}} {
+		t.Run(name, func(t *testing.T) {
+			req := withURLParam(newRequest("PUT", "/api/issues/"+issueID+"/workflow", body), "id", issueID)
+			testutil.Call(t, testHandler.SetIssueWorkflow, req).Want(http.StatusBadRequest)
+			if got := issueOverride(t, issueID); got != wf.ID {
+				t.Fatalf("override = %q after a body without workflow_id, want it kept", got)
+			}
+		})
+	}
+	putIssueWorkflow(t, issueID, "").Want(http.StatusOK)
+	if got := issueOverride(t, issueID); got != "" {
+		t.Fatalf("override = %q after explicit null, want none", got)
+	}
+}
+
+// A switch bumps the issue revision, so it honours the caller's expected
+// revision like any other issue write.
+func TestSwitchHonoursExpectedRevision(t *testing.T) {
+	seedTestCatalog(t)
+	wf := createTestWorkflow(t, "Switch revision "+workflowTestSuffix())
+	issueID := dbfx.Issue(t, "revision", testutil.Cols{"status": "todo"})
+	var revision int64
+	dbfx.QueryRow(t, `SELECT revision FROM issue WHERE id = $1`, issueID).Scan(&revision)
+	put := func(expected int64) *testutil.Response {
+		req := withURLParam(newRequest("PUT", "/api/issues/"+issueID+"/workflow",
+			map[string]any{"workflow_id": wf.ID, "expected_revision": expected}), "id", issueID)
+		return testutil.Call(t, testHandler.SetIssueWorkflow, req)
+	}
+
+	if code := put(revision + 7).Want(http.StatusConflict).Map()["code"]; code != "revision_conflict" {
+		t.Fatalf("code = %v, want revision_conflict", code)
+	}
+	if got := issueOverride(t, issueID); got != "" {
+		t.Fatalf("override = %q after a stale revision, want none", got)
+	}
+	var got struct {
+		Revision int64 `json:"revision"`
+	}
+	put(revision).Want(http.StatusOK).JSON(&got)
+	if got.Revision != revision+1 {
+		t.Fatalf("response revision = %d, want %d: the caller chains the next write on it", got.Revision, revision+1)
+	}
+}

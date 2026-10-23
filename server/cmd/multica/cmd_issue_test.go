@@ -4382,6 +4382,46 @@ func TestRunIssueUpdateSetsAndClearsTheWorkflowOverride(t *testing.T) {
 	}
 }
 
+// A combined --workflow and --expected-revision call sends the caller's
+// revision with the switch, then chains the update on the revision the switch
+// produced instead of the one it replaced.
+func TestRunIssueUpdateChainsExpectedRevisionAcrossTheWorkflowSwitch(t *testing.T) {
+	clearAmbientDaemonTaskEnv(t)
+	var switchBody, updateBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/MUL-1":
+			json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "status": "todo"})
+		case r.Method == http.MethodPut && r.URL.Path == "/api/issues/issue-1/workflow":
+			_ = json.NewDecoder(r.Body).Decode(&switchBody)
+			json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "status": "todo", "revision": 6})
+		case r.Method == http.MethodPut && r.URL.Path == "/api/issues/issue-1":
+			_ = json.NewDecoder(r.Body).Decode(&updateBody)
+			json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "status": "in_progress", "revision": 7})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	cmd := newIssueUpdateTestCmd()
+	_ = cmd.Flags().Set("workflow", "wf-1")
+	_ = cmd.Flags().Set("status", "in_progress")
+	_ = cmd.Flags().Set("expected-revision", "5")
+	if err := runIssueUpdate(cmd, []string{"MUL-1"}); err != nil {
+		t.Fatalf("runIssueUpdate: %v", err)
+	}
+	if switchBody["expected_revision"] != float64(5) {
+		t.Fatalf("switch body = %#v, want expected_revision 5", switchBody)
+	}
+	if updateBody["expected_revision"] != float64(6) {
+		t.Fatalf("update body = %#v, want expected_revision 6 (the revision after the switch)", updateBody)
+	}
+}
+
 // clearAmbientDaemonTaskEnv blanks the daemon-task identity signals
 // (inAgentExecutionContext / inDaemonManagedExecutionContext in cmd_agent.go)
 // so a test asserting on a plain member token is not accidentally routed

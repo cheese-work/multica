@@ -21,9 +21,25 @@ import (
 
 // SetIssueWorkflowRequest sets or clears an issue's workflow override.
 type SetIssueWorkflowRequest struct {
-	// WorkflowID is the workflow the issue follows; null returns it to its
-	// project's workflow.
+	// WorkflowID is the workflow the issue follows; an explicit null returns
+	// it to its project's workflow. A body without the field is rejected.
 	WorkflowID *string `json:"workflow_id"`
+	// ExpectedRevision, when set, refuses the switch if the issue moved on.
+	ExpectedRevision *int64 `json:"expected_revision,omitempty"`
+}
+
+// UnmarshalJSON tells an omitted workflow_id from an explicit null, which
+// both decode to a nil pointer.
+func (r *SetIssueWorkflowRequest) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	if _, ok := fields["workflow_id"]; !ok {
+		return errors.New("workflow_id is required; send null to follow the project's workflow")
+	}
+	type plain SetIssueWorkflowRequest
+	return json.Unmarshal(data, (*plain)(r))
 }
 
 // requireIssueWorkflowManager admits workspace owners and admins, and the lead
@@ -53,7 +69,7 @@ func (h *Handler) SetIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	var req SetIssueWorkflowRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
 	var target pgtype.UUID
@@ -105,6 +121,10 @@ func (h *Handler) SetIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	if issue.ProjectID != loaded.ProjectID {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": errWorkflowChanged.Error() + "; retry", "code": "workflow_changed"})
+		return
+	}
+	if req.ExpectedRevision != nil && issue.Revision != *req.ExpectedRevision {
+		writeRevisionConflict(w, "issue", issue.ID, *req.ExpectedRevision, issue.Revision)
 		return
 	}
 	if issue.WorkflowID == target {
