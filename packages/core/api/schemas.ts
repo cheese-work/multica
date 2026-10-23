@@ -894,8 +894,8 @@ export interface AppConfigResponse {
    * too, so absent must be treated as false (#8296). */
   comment_delete_keep_replies_supported?: boolean;
   server_version?: string;
-  version?: string;
-  build?: string;
+  server_build?: string;
+  server_commit?: string;
 }
 
 // Schemas for the highest-risk API endpoints — those whose responses drive
@@ -1156,8 +1156,8 @@ export const AppConfigSchema = z.object({
   issue_create_properties_supported: BooleanWithDefaultSchema(false),
   comment_delete_keep_replies_supported: BooleanWithDefaultSchema(false),
   server_version: OptionalStringSchema,
-  version: OptionalStringSchema,
-  build: OptionalStringSchema,
+  server_build: OptionalStringSchema,
+  server_commit: OptionalStringSchema,
 }).loose();
 
 export const EMPTY_APP_CONFIG: AppConfigResponse = {
@@ -2592,6 +2592,17 @@ export const DuplicateIssueErrorBodySchema = z.object({
     title: z.string(),
   }).loose(),
 }).loose();
+
+// A destructive confirmation must fail closed on an incomplete plan. Do not
+// default missing arrays to empty or silently discard malformed entries.
+export const RuntimeAccessRevocationPlanSchema = z.object({
+  code: z.enum(["runtime_has_nonowner_dependents", "runtime_access_revocation_plan_changed"]),
+  nonowner_agents: z.array(z.object({ id: z.string().uuid(), name: z.string() })),
+  active_task_ids: z.array(z.string().uuid()),
+}).refine((body) =>
+  new Set(body.nonowner_agents.map((agent) => agent.id)).size === body.nonowner_agents.length &&
+  new Set(body.active_task_ids).size === body.active_task_ids.length,
+).transform((body) => ({ agents: body.nonowner_agents, activeTaskIds: body.active_task_ids }));
 
 export interface DuplicateIssueErrorBody {
   code: "active_duplicate_issue";

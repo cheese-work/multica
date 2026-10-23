@@ -27,9 +27,16 @@ jobs:
     outputs:
       tag_name: ${{ steps.release_meta.outputs.tag_name }}
       is_stable: ${{ steps.release_meta.outputs.is_stable }}
+      upstream_version: ${{ steps.build_meta.outputs.upstream_version }}
       build_stamp: ${{ steps.build_meta.outputs.build_stamp }}
       display_version: ${{ steps.build_meta.outputs.display_version }}
     steps:
+      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
+      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
+      - name: Reset leaked sparse-checkout state
+        run: |
+          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
+          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -60,8 +67,24 @@ jobs:
         id: build_meta
         shell: bash
         run: |
-          stamp=$(sh scripts/release-stamp.sh)
-          upstream_version="${GITHUB_REF_NAME#v}"
+          upstream_version="$(tr -d '[:space:]' < UPSTREAM_VERSION)"
+          if [[ ! "$upstream_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid UPSTREAM_VERSION: '$upstream_version'."
+            exit 1
+          fi
+          tag="${GITHUB_REF_NAME}"
+          tag_core="${tag#v}"
+          tag_core="${tag_core%%-*}"
+          if [[ "$tag_core" != "$upstream_version" ]]; then
+            echo "::error::Release tag '$tag' core '$tag_core' does not match UPSTREAM_VERSION '$upstream_version'."
+            exit 1
+          fi
+          if [[ "$tag" == *-* ]]; then
+            echo "::warning::Prerelease tag '$tag' stamps UPSTREAM_VERSION '$upstream_version' (suffix stripped)."
+          fi
+          commit_time="$(git show -s --format=%cI "$GITHUB_SHA")"
+          stamp="$(sh scripts/release-stamp.sh "$commit_time")"
+          echo "upstream_version=$upstream_version" >> "$GITHUB_OUTPUT"
           echo "build_stamp=$stamp" >> "$GITHUB_OUTPUT"
           echo "display_version=$upstream_version-$stamp" >> "$GITHUB_OUTPUT"
 
@@ -129,6 +152,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          UPSTREAM_VERSION: ${{ needs.verify.outputs.upstream_version }}
           RELEASE_BUILD_STAMP: ${{ needs.verify.outputs.build_stamp }}
 
   # The fork builds images on isolated X99 runners. Upstream keeps its native
@@ -140,9 +164,9 @@ jobs:
       matrix:
         include:
           - platform: linux/amd64
-            runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
+            runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
           - platform: linux/arm64
-            runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404-arm"]') }}
+            runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-24.04-arm"]') }}
     runs-on: ${{ matrix.runs-on }}
     steps:
       - name: Enforce X99 free-space floor
@@ -161,6 +185,12 @@ jobs:
           platform=${{ matrix.platform }}
           echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
 
+      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
+      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
+      - name: Reset leaked sparse-checkout state
+        run: |
+          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
+          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -195,7 +225,8 @@ jobs:
           cache-from: type=gha,scope=release-backend-${{ env.PLATFORM_PAIR }}
           cache-to: type=gha,mode=max,scope=release-backend-${{ env.PLATFORM_PAIR }}
           build-args: |
-            VERSION=${{ needs.verify.outputs.display_version }}
+            VERSION=${{ needs.verify.outputs.upstream_version }}
+            BUILD=${{ needs.verify.outputs.build_stamp }}
             COMMIT=${{ github.sha }}
           outputs: type=image,name=ghcr.io/${{ github.repository_owner }}/multica-backend,push-by-digest=true,name-canonical=true,push=true
 
@@ -215,7 +246,7 @@ jobs:
 
   docker-backend-merge:
     needs: [verify, docker-backend-build]
-    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     concurrency:
       group: release-docker-backend-${{ github.ref }}
       cancel-in-progress: true
@@ -280,9 +311,9 @@ jobs:
       matrix:
         include:
           - platform: linux/amd64
-            runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
+            runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
           - platform: linux/arm64
-            runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404-arm"]') }}
+            runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-24.04-arm"]') }}
     runs-on: ${{ matrix.runs-on }}
     steps:
       - name: Enforce X99 free-space floor
@@ -301,6 +332,12 @@ jobs:
           platform=${{ matrix.platform }}
           echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
 
+      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
+      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
+      - name: Reset leaked sparse-checkout state
+        run: |
+          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
+          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -336,7 +373,9 @@ jobs:
           cache-to: type=gha,mode=max,scope=release-web-${{ env.PLATFORM_PAIR }}
           build-args: |
             REMOTE_API_URL=http://backend:8080
-            NEXT_PUBLIC_APP_VERSION=${{ needs.verify.outputs.display_version }}
+            NEXT_PUBLIC_APP_VERSION=${{ needs.verify.outputs.upstream_version }}
+            NEXT_PUBLIC_APP_BUILD=${{ needs.verify.outputs.build_stamp }}
+            NEXT_PUBLIC_APP_COMMIT=${{ github.sha }}
           outputs: type=image,name=ghcr.io/${{ github.repository_owner }}/multica-web,push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest
@@ -355,7 +394,7 @@ jobs:
 
   docker-web-merge:
     needs: [verify, docker-web-build]
-    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["blacksmith-2vcpu-ubuntu-2404"]') }}
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     concurrency:
       group: release-docker-web-${{ github.ref }}
       cancel-in-progress: true
