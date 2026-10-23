@@ -25,6 +25,7 @@ import { daemonStatusAlive } from "../shared/daemon-types";
 import { ensureManagedCli, managedCliPath } from "./cli-bootstrap";
 import { decideVersionAction } from "./version-decision";
 import {
+  DAEMON_STOP_EXEC_TIMEOUT_MS,
   deriveProfileName,
   profileArgs,
   profileConfigPath,
@@ -1066,7 +1067,7 @@ async function stopDaemon(): Promise<{ success: boolean; error?: string }> {
   const args = ["daemon", "stop", ...profileArgs(active.name)];
 
   return new Promise((resolve) => {
-    execFile(bin, args, { timeout: 15_000 }, (err) => {
+    execFile(bin, args, { timeout: DAEMON_STOP_EXEC_TIMEOUT_MS }, (err) => {
       if (err) {
         resolve({ success: false, error: err.message });
       } else {
