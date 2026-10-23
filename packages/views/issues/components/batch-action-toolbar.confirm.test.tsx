@@ -188,6 +188,14 @@ describe("BatchActionToolbar selection after apply (MUL-8179)", () => {
     await waitFor(() => expect(selection.clear).toHaveBeenCalledTimes(1));
   });
 
+  it("clears opted-in selection after a successful member assignment", async () => {
+    render(<BatchActionToolbar issues={[makeIssue()]} clearSelectionOnApply />);
+    fireEvent.click(screen.getByTestId("assign-member"));
+    await waitFor(() => expect(toast.success).toHaveBeenCalled());
+    expect(selection.clear).toHaveBeenCalledTimes(1);
+    expect(openModal).not.toHaveBeenCalled();
+  });
+
   it("keeps the selection after a partial update so it can be retried", async () => {
     selection.selectedIds = new Set(["a", "b"]);
     batchUpdate.mockResolvedValueOnce({ updated: 1 });

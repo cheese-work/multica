@@ -173,6 +173,7 @@ export function BatchActionToolbar({
     updates: Partial<UpdateIssueRequest>,
   ) => {
     if (written >= requested.length) {
+      if (clearSelectionOnApply) clear();
       toast.success(t(($) => $.batch.update_success, { count: requested.length }));
       return;
     }

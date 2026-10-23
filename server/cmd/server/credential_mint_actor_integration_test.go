@@ -104,7 +104,7 @@ func TestCredentialRoutesRejectTaskToken(t *testing.T) {
 
 	// Human credentials keep working through the same chain.
 	t.Run("jwt cli-token", func(t *testing.T) {
-		resp := do(t, http.MethodPost, "/api/cli-token", testToken, nil)
+		resp := do(t, http.MethodPost, "/api/cli-token", interactiveToken(t), nil)
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("status = %d, want 200", resp.StatusCode)

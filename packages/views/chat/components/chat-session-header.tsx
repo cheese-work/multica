@@ -62,7 +62,6 @@ export function ChatSessionHeader({
   onCompact?: () => void;
 }) {
   const { t } = useT("chat");
-  const { t: tCommon } = useT("common");
   const wsPaths = useWorkspacePaths();
   const updateSession = useUpdateChatSession();
   const deleteSession = useDeleteChatSession();
@@ -238,7 +237,7 @@ export function ChatSessionHeader({
         <DropdownMenuTrigger
           render={
             <IconButton
-              label={tCommon(($) => $.more_actions)}
+              label={t(($) => $.header.more_actions)}
               tooltipSide="bottom"
               className="text-muted-foreground"
             />

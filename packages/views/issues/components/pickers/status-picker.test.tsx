@@ -316,7 +316,7 @@ describe("StatusPicker confirmed handoff", () => {
   it("sends the previewed binding with the status change", () => {
     catalogEntries = [IN_REVIEW];
     projectWorkflow = {
-      id: "wf", workspace_id: "workspace-1", name: "Delivery", description: "", is_default: false, project_ids: [],
+      id: "wf", workspace_id: "workspace-1", name: "Delivery", description: "", is_default: false, owner_id: null, project_ids: [],
       created_at: "", updated_at: "",
       steps: [
         { status_key: "todo", handler: { type: "none" }, instructions: "" },
