@@ -73,6 +73,7 @@ func TestCredentialMintHandlers_AllowHumanActors(t *testing.T) {
 	})
 
 	req = newRequest("POST", "/api/cli-token", nil)
+	req.Header.Set("X-Actor-Source", "interactive_jwt")
 	w = httptest.NewRecorder()
 	testHandler.IssueCliToken(w, req)
 	if w.Code != http.StatusOK {

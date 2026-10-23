@@ -439,7 +439,7 @@ func TestConflictWatchedGitHubPRQueries(t *testing.T) {
 	if got := queued(); fmt.Sprint(got) != "[1 3]" && fmt.Sprint(got) != "[3 1]" {
 		t.Fatalf("merge refreshed %v, want PRs 1 and 3 once each", got)
 	}
-	m.sweepOnce(ctx)
+	m.sweepConflictWatched(ctx)
 	if got := queued(); fmt.Sprint(got) != "[1 2]" && fmt.Sprint(got) != "[2 1]" {
 		t.Fatalf("sweep refreshed %v, want stale watched PRs 1 and 2", got)
 	}

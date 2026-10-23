@@ -1580,6 +1580,7 @@ function CommentCardImpl({
                 <AgentRunComment
                   key={run.task.id}
                   run={run}
+                  highlightedId={highlightedCommentId}
                   entering={enteringRunIds?.has(run.task.id)}
                   commentProps={reply ? {
                     issueId, entry: reply, replies: [], currentUserId, canModerate, onReply, onEdit, onDelete,
@@ -1670,6 +1671,7 @@ function CommentCardImpl({
               {threadRows.map((row, rowIndex) => {
                 if ("run" in row) return (
                   <AgentRunComment key={row.run.task.id} run={row.run} entering={enteringRunIds?.has(row.run.task.id)}
+                    highlightedId={highlightedCommentId}
                     replyTo={row.replyTo && <ReplyToQuote entry={row.replyTo} onJump={onJumpToComment} />}
                     commentProps={row.reply ? {
                       issueId, entry: row.reply, replies: [], currentUserId, canModerate, onReply, onEdit, onDelete,
@@ -1689,6 +1691,7 @@ function CommentCardImpl({
                   <AgentRunComment
                     key={failureNoticeRun.task.id}
                     run={failureNoticeRun}
+                    highlightedId={highlightedCommentId}
                     entering={enteringRunIds?.has(failureNoticeRun.task.id)}
                     replyTo={replyTarget && <ReplyToQuote entry={replyTarget} onJump={onJumpToComment} />}
                     commentProps={{
