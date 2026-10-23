@@ -470,6 +470,8 @@
     "thread_nav_label": "스레드로 이동",
     "thread_nav_resolved_label": "{{title}} (해결됨)",
     "thread_nav_reply_label": "{{author}}: {{title}}",
+    "thread_nav_show_replies_other": "답글 {{count}}개 펼치기",
+    "thread_nav_hide_replies": "답글 접기",
     "sidebar_tooltip": "오른쪽 사이드바 열기/닫기",
     "find": {
       "placeholder": "태스크에서 찾기...",
@@ -850,6 +852,7 @@
     "updated_ago": "{{time}} 수정됨"
   },
   "actions": {
+    "rename_issue": "태스크 이름 변경",
     "status": "상태",
     "priority": "우선순위",
     "assignee": "담당자",
@@ -1544,6 +1547,7 @@
       "target_squad": "스쿼드 · 리더가 배분",
       "target_member": "멤버",
       "instructions_hint": "이번 실행의 지침으로 처리자에게 전달되며, 태스크 설명·댓글과 함께 맥락이 됩니다.",
+      "advance_on_ci_green": "연결된 PR의 검사가 통과하면 다음 열로 이동",
       "next_hint": "처리자가 받는 설명에 적혀 다음에 어떤 상태로 바꿀지 알려 줍니다. 실행이 끝나도 시스템이 상태를 자동으로 넘기지 않습니다.",
       "preview_brief": "에이전트가 받는 설명 미리 보기",
       "preview_title": "“{{status}}” 단계 설명",
@@ -1565,8 +1569,7 @@
       "step_off": "꺼짐: 이 워크플로는 이 상태를 쓰지 않습니다. 왼쪽 목록에서 켜면 사용할 수 있습니다.",
       "status_new_hint": "새 상태입니다. 저장할 때 상태 라이브러리에 추가됩니다.",
       "no_other_status": "모든 상태가 이미 단계입니다.",
-      "no_handoff_step": "이 단계는 인계하지 않습니다. 들어와도 담당자는 그대로이고 실행도 시작되지 않습니다.",
-      "new_step_handoff": "먼저 워크플로를 저장하세요. 저장한 뒤 새 상태의 인계를 설정할 수 있습니다."
+      "no_handoff_step": "이 단계는 인계하지 않습니다. 들어와도 담당자는 그대로이고 실행도 시작되지 않습니다."
     },
     "mapping": {
       "title": "{{name}}(으)로 태스크 이동",
@@ -1602,6 +1605,7 @@
     },
     "picker": {
       "header": "{{workflow}} · 프로젝트 “{{project}}” 기준",
+      "header_no_project": "{{workflow}} 상태 · 프로젝트 없음",
       "footer": "이 태스크 워크플로의 상태만 표시합니다. 오른쪽은 해당 상태에 들어갈 때의 처리자입니다."
     },
     "confirm": {
@@ -1722,5 +1726,8 @@
         }
       }
     }
+  },
+  "hover_card": {
+    "created_updated": "{{created}} 생성 · {{updated}} 수정됨"
   }
 }

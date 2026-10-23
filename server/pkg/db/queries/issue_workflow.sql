@@ -163,3 +163,13 @@ UPDATE project SET
 WHERE id = sqlc.arg('id')::uuid
   AND workspace_id = sqlc.arg('workspace_id')::uuid
 RETURNING *;
+
+-- name: ClaimIssueCIAdvance :execrows
+-- One green head advances an issue once. Zero rows means this head already did.
+INSERT INTO issue_ci_advance (issue_id, head_sha)
+VALUES (sqlc.arg('issue_id')::uuid, sqlc.arg('head_sha')::text)
+ON CONFLICT (issue_id, head_sha) DO NOTHING;
+
+-- name: ReleaseIssueCIAdvance :exec
+DELETE FROM issue_ci_advance
+WHERE issue_id = sqlc.arg('issue_id')::uuid AND head_sha = sqlc.arg('head_sha')::text;
