@@ -13,9 +13,15 @@ if [ ! -f "$ENV_FILE" ]; then
   exit 1
 fi
 
+# A bare name would make `.` search PATH before the working directory.
+case "$ENV_FILE" in
+  */*) ENV_SOURCE="$ENV_FILE" ;;
+  *) ENV_SOURCE="./$ENV_FILE" ;;
+esac
+
 set -a
 # shellcheck disable=SC1090
-. "$ENV_FILE"
+. "$ENV_SOURCE"
 set +a
 
 # shellcheck disable=SC1091
@@ -31,6 +37,11 @@ EXIT_CODE=0
 # Cleanup: kill only services this script started
 # --------------------------------------------------------------------------
 cleanup() {
+  local status=$?
+  # Preserve failures from unguarded commands that trigger errexit.
+  if [ "$status" -ne 0 ]; then
+    EXIT_CODE=$status
+  fi
   echo ""
   if [ "$STARTED_BACKEND" = true ] && [ -n "$BACKEND_PID" ]; then
     kill "$BACKEND_PID" 2>/dev/null && wait "$BACKEND_PID" 2>/dev/null || true
@@ -54,10 +65,16 @@ trap cleanup EXIT
 # Utility: wait until a port responds
 # --------------------------------------------------------------------------
 wait_for_port() {
-  local port=$1 name=$2 max_wait=${3:-60} path=${4:-/}
+  local port=$1 name=$2 max_wait=${3:-60} path=${4:-/} pid=${5:-}
   local elapsed=0
   echo "    Waiting for $name on :$port..."
   while ! curl -sf "http://localhost:${port}${path}" > /dev/null 2>&1; do
+    if [ -n "$pid" ] && ! ps -p "$pid" > /dev/null 2>&1; then
+      echo "    ERROR: $name process exited before it was ready"
+      STARTED_FRONTEND=false # a dead PID may be reused: never signal it
+      EXIT_CODE=1
+      exit 1
+    fi
     sleep 1
     elapsed=$((elapsed + 1))
     if [ "$elapsed" -ge "$max_wait" ]; then
@@ -67,6 +84,47 @@ wait_for_port() {
     fi
   done
   echo "    $name ready (${elapsed}s)"
+}
+
+# True when anything accepts connections on the port, whatever HTTP status it
+# answers: curl exits 7 only when the connection is refused.
+port_in_use() {
+  local status=0
+  curl -s -o /dev/null --max-time 3 "http://localhost:$1" || status=$?
+  [ "$status" -ne 7 ]
+}
+
+# After the readiness probe: the launched frontend is still alive and a process
+# in its tree owns the listener. A server that lost the bind race exits, and the
+# probe would otherwise pass on the foreign listener that won it.
+require_owned_frontend() {
+  if ! ps -p "$FRONTEND_PID" > /dev/null 2>&1; then
+    STARTED_FRONTEND=false
+    echo "    ERROR: frontend process exited after the readiness probe; :$FRONTEND_PORT is not ours"
+    EXIT_CODE=1
+    exit 1
+  fi
+  local listeners listener cur
+  # `ss` names the listener on Linux; `lsof` covers macOS. Liveness alone proves
+  # nothing: a server that lost the bind race to a foreign listener is alive
+  # until it exits. With no listener PID the run fails closed.
+  listeners=$(ss -ltnpH "sport = :$FRONTEND_PORT" 2> /dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 || true)
+  [ -n "$listeners" ] || listeners=$(lsof -nP -iTCP:"$FRONTEND_PORT" -sTCP:LISTEN -t 2> /dev/null || true)
+  if [ -z "$listeners" ]; then
+    echo "    ERROR: cannot establish which process listens on :$FRONTEND_PORT (neither ss nor lsof named one); refusing to trust the readiness probe"
+    EXIT_CODE=1
+    exit 1
+  fi
+  for listener in $listeners; do
+    cur=$listener
+    while [ -n "$cur" ] && [ "$cur" -gt 1 ]; do
+      [ "$cur" = "$FRONTEND_PID" ] && return 0
+      cur=$(ps -o ppid= -p "$cur" 2> /dev/null | tr -d ' ' || true)
+    done
+  done
+  echo "    ERROR: the listener on :$FRONTEND_PORT is not owned by the frontend this script started"
+  EXIT_CODE=1
+  exit 1
 }
 
 # --------------------------------------------------------------------------
@@ -102,7 +160,7 @@ echo "==> Running database migrations..."
 bash scripts/test-go.sh || { EXIT_CODE=1; exit 1; }
 
 # --------------------------------------------------------------------------
-# Step 4: Start services for E2E (only if not already running)
+# Step 4: Start services for E2E (backend reused if running; frontend always started here)
 # --------------------------------------------------------------------------
 echo ""
 echo "==> [4/5] Starting services for E2E..."
@@ -117,14 +175,37 @@ else
   wait_for_port "$PORT" "Backend" 90 "/health"
 fi
 
-if curl -sf "http://localhost:${FRONTEND_PORT}" > /dev/null 2>&1; then
-  echo "    Frontend already running on :$FRONTEND_PORT"
-else
-  echo "    Starting frontend..."
+# E2E runs against a production build: `next dev` compiles each route on first
+# visit, and the specs' 5 to 10s waits time out on that compile and on the slow
+# dev client bundle. The script owns this server: a listener already on the port
+# could be a dev server or anything else, so refuse it whatever status it
+# answers and never kill or adopt it. `E2E_WEB_MODE=dev` is the dev smoke run.
+E2E_WEB_MODE="${E2E_WEB_MODE:-prod}"
+if port_in_use "$FRONTEND_PORT"; then
+  echo "    ERROR: something already listens on :$FRONTEND_PORT; stop it so check.sh starts its own frontend"
+  EXIT_CODE=1
+  exit 1
+fi
+if [ "$E2E_WEB_MODE" = "dev" ]; then
+  echo "    Starting frontend (next dev)..."
   pnpm dev:web > /tmp/multica-check-frontend.log 2>&1 &
   FRONTEND_PID=$!
   STARTED_FRONTEND=true
-  wait_for_port "$FRONTEND_PORT" "Frontend" 120 "/"
+  wait_for_port "$FRONTEND_PORT" "Frontend" 120 "/" "$FRONTEND_PID"
+  require_owned_frontend
+else
+  echo "    Building frontend (production)..."
+  (cd apps/web && ./node_modules/.bin/next build --webpack) > /tmp/multica-check-frontend-build.log 2>&1 || {
+    echo "    ERROR: production build failed; see /tmp/multica-check-frontend-build.log"
+    EXIT_CODE=1
+    exit 1
+  }
+  echo "    Starting frontend (next start)..."
+  (cd apps/web && exec ./node_modules/.bin/next start --port "$FRONTEND_PORT") > /tmp/multica-check-frontend.log 2>&1 &
+  FRONTEND_PID=$!
+  STARTED_FRONTEND=true
+  wait_for_port "$FRONTEND_PORT" "Frontend" 120 "/" "$FRONTEND_PID"
+  require_owned_frontend
 fi
 
 # --------------------------------------------------------------------------

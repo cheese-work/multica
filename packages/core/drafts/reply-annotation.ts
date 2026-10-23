@@ -41,9 +41,11 @@ export function hasReplyIntent(content: string, annotations: readonly ReplyAnnot
  * Entity-encoding punctuation keeps snapshots inert without changing their
  * rendered text. Escape ampersands first so source entities remain literal.
  */
-function quoteText(text: string): string {
-  return text.replace(/&/g, "&amp;").replace(/[<>\\`*_[\]{}()#!|~:$+.=-]/g,
-    (char) => `&#${char.charCodeAt(0)};`)
+function quoteText(text: string, plain = false): string {
+  // A DM quote stays readable to the agent. Only mention links are made inert.
+  return (plain ? text.replace(/mention:\/\//gi, "mention:&#47;&#47;")
+    : text.replace(/&/g, "&amp;").replace(/[<>\\`*_[\]{}()#!|~:$+.=-]/g,
+      (char) => `&#${char.charCodeAt(0)};`))
     // Leading spaces must survive HTML whitespace collapsing and must not
     // become Markdown list nesting or an indented code block. Tabs use 4 stops.
     .replace(/^[ \t]+/, (indent) => {
@@ -53,7 +55,7 @@ function quoteText(text: string): string {
     });
 }
 
-export function composeAnnotatedReply(content: string, annotations: readonly ReplyAnnotation[]): string {
+export function composeAnnotatedReply(content: string, annotations: readonly ReplyAnnotation[], options: { plainQuotes?: boolean } = {}): string {
   const body = content.trim();
   const saved = annotations.filter((a) => a.note.trim());
   if (!saved.length) return body;
@@ -61,7 +63,7 @@ export function composeAnnotatedReply(content: string, annotations: readonly Rep
   const command = body.match(/^\/note(?=\s|$)/i)?.[0];
   const reply = command ? body.slice(command.length).trim() : body;
   const quotes = saved.map((a) =>
-    a.quote.split(/\r?\n/).map((line) => `> ${quoteText(line)}`).join("\n") +
+    a.quote.split(/\r?\n/).map((line) => `> ${quoteText(line, options.plainQuotes)}`).join("\n") +
       `\n\n${a.note.trim()}`,
   );
   // Markdown collapses extra newlines. A blank paragraph keeps one visible

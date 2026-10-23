@@ -64,6 +64,11 @@ go 1.21
 EOF
 
 write_fixture_main "$fixture_repo/server/cmd/multica/main.go" "unknown"
+# The script derives main.version from the checked-out source's own
+# daemon-artifact-version.sh, so the fixture carries real copies of it.
+mkdir -p "$fixture_repo/scripts"
+cp "$root_dir/scripts/daemon-artifact-version.sh" "$root_dir/scripts/release-stamp.sh" "$fixture_repo/scripts/"
+echo "0.6.5" >"$fixture_repo/UPSTREAM_VERSION"
 git -C "$fixture_repo" add -A
 git -C "$fixture_repo" commit --quiet -m "fixture commit"
 fixture_sha="$(git -C "$fixture_repo" rev-parse HEAD)"
@@ -90,6 +95,14 @@ fi
 if [[ "$output" != *"${fixture_sha:0:9}"* ]]; then
   echo "scenario happy-path: expected output to report commit ${fixture_sha:0:9}, got:" >&2
   echo "$output" >&2
+  exit 1
+fi
+
+# CHE-1985: main.version must be <upstream>-YYYYMMDD-hhmm (CHE-1910), never the
+# bare SHA. The fixture's version file is 0.6.5, stamped from its commit time.
+installed_version="$("$bin_dir/multica" version --output json | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.parse(d).version))')"
+if ! [[ "$installed_version" =~ ^0\.6\.5-[0-9]{8}-[0-9]{4}$ ]]; then
+  echo "scenario happy-path: expected version 0.6.5-YYYYMMDD-hhmm, got: $installed_version" >&2
   exit 1
 fi
 

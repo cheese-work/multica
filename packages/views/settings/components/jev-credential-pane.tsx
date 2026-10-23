@@ -6,7 +6,7 @@ import { Check, Minus } from "lucide-react";
 import { ApiError } from "@multica/core/api";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useRemoveJevCredential, useSetJevCredential } from "@multica/core/workspace/mutations";
-import type { JevCredentialPresence } from "@multica/core/types";
+import type { JevCredentialPresence, WorkspaceJevGovernance } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
 import {
   AlertDialog,
@@ -30,6 +30,7 @@ import { Input } from "@multica/ui/components/ui/input";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { useT } from "../../i18n";
 import { SettingsCard, SettingsRow, SettingsSection } from "./settings-layout";
+import { JevApiUrlRow } from "./jev-api-url-row";
 import { problemOf } from "./jev-problem";
 
 const NOT_CONFIGURED = "jev_credential_configuration_required";
@@ -42,20 +43,22 @@ const NOT_CONFIGURED = "jev_credential_configuration_required";
  */
 export function JevCredentialPane({
   credential,
+  config,
   canManage,
   online,
   onNotice,
 }: {
   credential: UseQueryResult<JevCredentialPresence>;
+  config: WorkspaceJevGovernance;
   canManage: boolean;
   online: boolean;
-  onNotice: (notice: "key_saved" | "key_removed") => void;
+  onNotice: (notice: "key_saved" | "key_removed" | "url_saved" | "url_cleared") => void;
 }) {
   const { t } = useT("settings");
   const [keyDialog, setKeyDialog] = useState(false);
   const [removeDialog, setRemoveDialog] = useState(false);
-  // The server said it cannot store keys at all: stop offering to.
-  const [unconfigured, setUnconfigured] = useState(false);
+  // Set once a save is refused with 403; the load-time capability covers the rest.
+  const [refused, setRefused] = useState(false);
 
   if (credential.isError && !credential.data) {
     return (
@@ -79,6 +82,8 @@ export function JevCredentialPane({
   }
 
   const present = credential.data.present;
+  // The server said it cannot store keys at all: stop offering to.
+  const unconfigured = refused || credential.data.configurable === false;
   const editable = canManage && online;
   return (
     <SettingsSection anchor="credential">
@@ -124,9 +129,10 @@ export function JevCredentialPane({
             </div>
           ) : null}
         </SettingsRow>
+        <JevApiUrlRow config={config} canManage={canManage} online={online} onNotice={onNotice} />
       </SettingsCard>
       {unconfigured ? (
-        <p role="note" className="text-caption text-muted-foreground">
+        <p data-testid="jev-credential-unconfigured" role="note" className="text-caption text-muted-foreground">
           {t(($) => $.jev_governance.credential.unconfigured)}
         </p>
       ) : null}
@@ -142,7 +148,7 @@ export function JevCredentialPane({
         }}
         onUnconfigured={() => {
           setKeyDialog(false);
-          setUnconfigured(true);
+          setRefused(true);
         }}
       />
       <RemoveDialog

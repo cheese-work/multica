@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { useQuery } from "@tanstack/react-query";
 import { Virtuoso, type Components, type VirtuosoHandle } from "react-virtuoso";
@@ -58,13 +58,17 @@ import {
   splitTimeline,
 } from "../lib/copy-text";
 import { stripChatQuickActionsProtocol } from "../lib/quick-actions";
+import { dayKey, formatDayLabel, formatMessageDateTime, formatMessageTime } from "./message-time";
 import { useT } from "../../i18n";
+import { useChatAnnotationScope } from "./chat-annotation-context";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { AppLink } from "../../navigation";
 
 // ─── Public component ────────────────────────────────────────────────────
 
 interface ChatMessageListProps {
+  /** Pause bottom-stick effects while a closing floating window fades out. */
+  active?: boolean;
   messages: ChatMessage[];
   continuedFromSessionId?: string | null;
   continuedIntoSessionId?: string | null;
@@ -126,7 +130,6 @@ interface ChatListContext {
   isFetchingOlderMessages: boolean;
   continuedFromSessionId?: string | null;
   continuedIntoSessionId?: string | null;
-  forkChildren: ChatSession[];
   showForkHint: boolean;
   showStatusPill: boolean;
   pendingTask: ChatPendingTask | null | undefined;
@@ -142,7 +145,14 @@ interface ChatListContext {
  * Mermaid diagram or HTML iframe mounted across task completion.
  */
 type ChatRenderItem =
-  | { key: string; kind: "message"; message: ChatMessage; taskId: string | null }
+  | {
+      key: string;
+      kind: "message";
+      message: ChatMessage;
+      taskId: string | null;
+      /** First message of its (local) calendar day — gets a day separator. */
+      dayStart: boolean;
+    }
   | { key: string; kind: "live"; taskId: string };
 
 /**
@@ -186,9 +196,6 @@ function ChatListFooter({ context }: { context?: ChatListContext }) {
       {context?.continuedIntoSessionId && (
         <ContinuationAnnouncement sessionId={context.continuedIntoSessionId} direction="into" />
       )}
-      {context?.forkChildren.map((child) => (
-        <ForkedIntoAnnouncement key={child.id} child={child} />
-      ))}
       {context?.showForkHint && (
         <p className="text-caption text-muted-foreground">{t(($) => $.message_list.fork_hint)}</p>
       )}
@@ -281,12 +288,37 @@ function ForkedIntoAnnouncement({ child }: { child: ChatSession }) {
   );
 }
 
+/**
+ * Groups fork children under the source message they copied up to, oldest
+ * first. A child whose source message is not in `messages` (older page, or a
+ * fork made before the pointer existed) goes under the last message created at
+ * or before it, or in `before` — rendered above the first message — when it
+ * predates them all.
+ */
+function forkChildrenByMessage(messages: ChatMessage[], children: ChatSession[]) {
+  const after = new Map<string, ChatSession[]>();
+  const before: ChatSession[] = [];
+  if (messages.length === 0) return { before, after };
+  const loaded = new Set(messages.map((m) => m.id));
+  const sorted = [...children].sort((a, b) => a.created_at.localeCompare(b.created_at));
+  for (const child of sorted) {
+    const pointed = child.fork_source_message_id;
+    const anchor = pointed && loaded.has(pointed)
+      ? pointed
+      : messages.findLast((m) => m.created_at <= child.created_at)?.id;
+    if (anchor) after.set(anchor, [...(after.get(anchor) ?? []), child]);
+    else before.push(child);
+  }
+  return { before, after };
+}
+
 const LIST_COMPONENTS: Components<ChatRenderItem, ChatListContext> = {
   Header: ChatListHeader,
   Footer: ChatListFooter,
 };
 
 export function ChatMessageList({
+  active = true,
   messages,
   continuedFromSessionId,
   continuedIntoSessionId,
@@ -323,6 +355,7 @@ export function ChatMessageList({
   const { isFollowing, onContentHeightChanged, hasReachedLiveEnd } = useStickToBottom(
     scrollContainerEl,
     pinToLiveEnd,
+    active,
   );
   // Soft edge fade hinting more content above/below. Kept small so it barely
   // grazes full-bleed previews (image / HTML) at the edges.
@@ -383,11 +416,12 @@ export function ChatMessageList({
   const renderItems: ChatRenderItem[] = useMemo(() => {
     const items: ChatRenderItem[] = messages
       .filter((message) => message.message_kind !== "onboarding_kickoff")
-      .map((message) => ({
+      .map((message, i, visible) => ({
         key: messageRowKey(message),
         kind: "message" as const,
         message,
         taskId: message.task_id ?? null,
+        dayStart: i === 0 || dayKey(message.created_at) !== dayKey(visible[i - 1]!.created_at),
       }));
     if (hasLive && pendingTaskId) {
       items.push({ key: `task:${pendingTaskId}`, kind: "live", taskId: pendingTaskId });
@@ -397,19 +431,18 @@ export function ChatMessageList({
 
   const firstIndex = renderItems.length > 0 ? firstItemIndex : 0;
   const liveEndKey = renderItems[renderItems.length - 1]?.key ?? null;
+  const firstItem = renderItems[0];
+  const firstMessageId = firstItem?.kind === "message" ? firstItem.message.id : null;
 
   const forkSource = forkedFromSessionId && sessions
     ? sessions.find((s) => s.id === forkedFromSessionId) ?? null
     : undefined;
-  // Oldest first, so a new branch lands under the earlier ones.
-  const forkChildren = useMemo(
-    () =>
-      sessionId && sessions
-        ? sessions
-            .filter((s) => s.forked_from_session_id === sessionId)
-            .sort((a, b) => a.created_at.localeCompare(b.created_at))
-        : [],
-    [sessionId, sessions],
+  const { before: forksBeforeFirst, after: forksByMessageId } = useMemo(
+    () => forkChildrenByMessage(
+      messages.filter((m) => m.message_kind !== "onboarding_kickoff"),
+      sessionId && sessions ? sessions.filter((s) => s.forked_from_session_id === sessionId) : [],
+    ),
+    [messages, sessionId, sessions],
   );
   // Idle hint until a user message follows the fork point. A fork point that
   // is not loaded sits above everything loaded, so all loaded rows follow it.
@@ -421,7 +454,6 @@ export function ChatMessageList({
     isFetchingOlderMessages,
     continuedFromSessionId: hasOlderMessages ? null : continuedFromSessionId,
     continuedIntoSessionId,
-    forkChildren,
     showForkHint,
     showStatusPill,
     pendingTask,
@@ -518,6 +550,16 @@ export function ChatMessageList({
             className={cn(CHAT_COLUMN, "py-2")}
             {...(item.key === liveEndKey ? { [LIVE_END_ROW_ATTR]: "" } : {})}
           >
+            {item.kind === "message" && item.message.id === firstMessageId && forksBeforeFirst.map((child) => (
+              <ForkedIntoAnnouncement key={child.id} child={child} />
+            ))}
+            {item.kind === "message" && item.dayStart && (
+              <div data-day-separator="" className="mb-3 flex justify-center">
+                <span className="rounded-full bg-muted px-2.5 py-0.5 text-caption text-muted-foreground">
+                  {formatDayLabel(item.message.created_at)}
+                </span>
+              </div>
+            )}
             <MessageBubble
               item={item}
               isPending={!!pendingTaskId && item.taskId === pendingTaskId}
@@ -532,6 +574,9 @@ export function ChatMessageList({
             {forkedFromSessionId && item.kind === "message" && item.message.id === forkLastMessageId && (
               <ForkDivider sourceId={forkedFromSessionId} source={forkSource} copiedCount={forkMessageCount} />
             )}
+            {item.kind === "message" && forksByMessageId.get(item.message.id)?.map((child) => (
+              <ForkedIntoAnnouncement key={child.id} child={child} />
+            ))}
           </div>
         )}
       />
@@ -640,8 +685,8 @@ const MessageBubble = memo(function MessageBubble({
 
   if (message.role === "user") {
     return (
-      <div className="flex justify-end">
-        <div className="rounded-2xl bg-muted px-3.5 py-2 text-body max-w-[80%] break-words">
+      <div className="flex flex-col items-end">
+        <div data-testid="chat-user-message" className="rounded-2xl bg-muted px-3.5 py-2 text-body max-w-[80%] break-words">
           {/* User messages are authored as markdown in ContentEditor, so they
            * render through the SAME RichContent as assistant replies and as
            * Issue/Comment — a Mermaid fence a user pastes is a diagram here
@@ -659,6 +704,7 @@ const MessageBubble = memo(function MessageBubble({
             className="mt-1.5"
           />
         </div>
+        <MessageTime iso={message.created_at} className="mt-0.5 block text-right" />
       </div>
     );
   }
@@ -712,6 +758,34 @@ function ContinuationSummary({ message }: { message: ChatMessage }) {
  * the same cache entry useRealtimeSync seeds during execution — so no refetch
  * and no data discontinuity happens at the handoff either.
  */
+/**
+ * The answer text of an agent reply. Once the reply is persisted (`messageId`)
+ * it is a named tab stop that readers can select from, and markers for saved
+ * comments render in the slot right after it, so Tab reaches them before the
+ * footer (reading order). While the reply streams the same wrapper renders
+ * without the selection attributes, so the answer node keeps its identity at
+ * the live to settled handoff.
+ */
+function AnnotatableAnswer({ messageId, children }: { messageId?: string; children: ReactNode }) {
+  const { t } = useT("chat");
+  const { enabled, agentName } = useChatAnnotationScope();
+  if (!enabled) return <>{children}</>;
+  return (
+    <div data-annotation-overlay-host>
+      <div
+        data-comment-content={messageId}
+        tabIndex={messageId ? 0 : undefined}
+        role={messageId ? "group" : undefined}
+        aria-label={messageId ? t(($) => $.annotations.source_label, { name: agentName ?? "" }) : undefined}
+        className="rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+      >
+        {children}
+      </div>
+      <div data-annotation-overlay-slot />
+    </div>
+  );
+}
+
 function AssistantMessage({
   taskId,
   message,
@@ -795,18 +869,21 @@ function AssistantMessage({
           phase={phase}
           isStreaming={!message}
           settledContent={canonicalAnswer}
+          annotateMessageId={message?.id}
         />
       )}
       {isNoResponse ? (
         <NoResponseNotice />
       ) : message && timeline.length === 0 ? (
-        <RichContent
-          content={settledContent ?? message.content}
-          attachments={message.attachments}
-          density="compact"
-          phase="settled"
-          className="leading-relaxed"
-        />
+        <AnnotatableAnswer messageId={message.id}>
+          <RichContent
+            content={settledContent ?? message.content}
+            attachments={message.attachments}
+            density="compact"
+            phase="settled"
+            className="leading-relaxed"
+          />
+        </AnnotatableAnswer>
       ) : null}
       {message && (
         <>
@@ -1053,7 +1130,6 @@ function MessageFooter({
   const isNoResponse = message.message_kind === "no_response";
   const copyContent = extractCopyText(message, timeline, transformContent);
   const showCopy = !isPending && !isNoResponse && copyContent.trim().length > 0;
-  if (message.elapsed_ms == null && !showCopy) return null;
   return (
     <div className="flex items-center gap-1.5">
       {message.elapsed_ms != null && (
@@ -1062,10 +1138,26 @@ function MessageFooter({
           elapsedMs={message.elapsed_ms}
         />
       )}
+      <MessageTime iso={message.created_at} />
       {showCopy && (
         <MessageCopyButton content={copyContent} />
       )}
     </div>
+  );
+}
+
+// Send time in the browser's locale/zone; the full date + time is the native
+// hover title.
+function MessageTime({ iso, className }: { iso: string; className?: string }) {
+  return (
+    <time
+      data-message-time=""
+      dateTime={iso}
+      title={formatMessageDateTime(iso)}
+      className={cn("text-caption text-muted-foreground", className)}
+    >
+      {formatMessageTime(iso)}
+    </time>
   );
 }
 
@@ -1090,6 +1182,7 @@ function MessageCopyButton({
             variant="ghost"
             size="icon-xs"
             className="text-faint-foreground hover:text-foreground"
+            data-testid="assistant-message-copy"
             onClick={handleCopy}
             aria-label={t(($) => $.message_list.copy_action)}
           />
@@ -1170,6 +1263,7 @@ function FailureBubble({
     codex_semantic_inactivity: t(($) => $.message_list.failure.codex_semantic_inactivity),
     runtime_offline: t(($) => $.message_list.failure.runtime_offline),
     runtime_access_denied: t(($) => $.message_list.failure.runtime_access_denied),
+    runtime_access_revoked: t(($) => $.message_list.failure.runtime_access_revoked),
     runtime_recovery: t(($) => $.message_list.failure.runtime_recovery),
     manual: t(($) => $.message_list.failure.manual),
     cancelled: t(($) => $.message_list.failure.manual),
@@ -1252,12 +1346,15 @@ function TimelineView({
   attachments,
   phase = "settled",
   settledContent,
+  annotateMessageId,
 }: {
   items: ChatTimelineItem[];
   isStreaming?: boolean;
   attachments?: import("@multica/core/types").Attachment[];
   phase?: "streaming" | "settled";
   settledContent?: string;
+  /** Persisted message whose settled answer readers can annotate. */
+  annotateMessageId?: string;
 }) {
   if (phase === "settled" && settledContent !== undefined) {
     const { preface, middle } = splitTimeline(items);
@@ -1274,14 +1371,15 @@ function TimelineView({
             stepCount={middle.length}
           />
         )}
-        <RichContent
-          key="answer"
-          content={settledContent}
-          attachments={attachments}
-          density="compact"
-          phase="settled"
-          className="leading-relaxed"
-        />
+        <AnnotatableAnswer key="answer" messageId={annotateMessageId}>
+          <RichContent
+            content={settledContent}
+            attachments={attachments}
+            density="compact"
+            phase="settled"
+            className="leading-relaxed"
+          />
+        </AnnotatableAnswer>
       </>
     );
   }
@@ -1310,14 +1408,15 @@ function TimelineView({
         />
       )}
       {final.length > 0 && (
-        <RichContent
-          key="answer"
-          content={final.map((t) => t.content ?? "").join("")}
-          attachments={attachments}
-          density="compact"
-          phase={phase}
-          className="leading-relaxed"
-        />
+        <AnnotatableAnswer key="answer">
+          <RichContent
+            content={final.map((t) => t.content ?? "").join("")}
+            attachments={attachments}
+            density="compact"
+            phase={phase}
+            className="leading-relaxed"
+          />
+        </AnnotatableAnswer>
       )}
     </>
   );

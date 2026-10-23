@@ -157,6 +157,18 @@
     "tab_history": "기록 {{count}}",
     "key_set": "키 설정됨",
     "key_not_set": "키 설정 안 됨",
+    "api_url": {
+      "label": "API 주소",
+      "hint": "비워 두면 {{default}}을(를) 사용합니다. 브라우저 전용 Tailscale 주소가 아니라 백엔드 컨테이너에서 접근할 수 있어야 합니다. 예: http://sub2api:8080/v1",
+      "invalid": "호스트가 있는 http:// 또는 https:// 주소를 입력하세요.",
+      "save": "주소 저장",
+      "clear": "주소 지우기",
+      "default_value": "{{url}} (기본값)",
+      "save_failed": "주소를 저장하지 못했습니다. 변경된 내용이 없습니다.",
+      "conflict": "다른 곳에서 설정이 변경되었습니다. 페이지를 새로 고친 뒤 다시 시도하세요.",
+      "saved": "주소 저장됨",
+      "cleared": "주소 지워짐"
+    },
     "credential": {
       "title": "공급자 키",
       "set": "설정됨",
@@ -267,6 +279,8 @@
     "field_name": "이름",
     "field_name_placeholder": "코드 리뷰",
     "field_target": "실행자",
+    "no_target": "대상 없음",
+    "no_target_hint": "아무도 멘션하지 않고 메시지를 게시합니다.",
     "field_prompt": "프롬프트",
     "field_prompt_placeholder": "이 태스크에 연결된 코드를 검토하고 정확성과 예외 상황을 중점적으로 확인하세요.",
     "prompt_hint": "작성한 그대로 전달됩니다. 에이전트는 태스크를 이미 읽을 수 있습니다.",
@@ -1121,6 +1135,15 @@
   "desktop": {
     "tabs": {
       "updates": "업데이트"
+    },
+    "tab_bar": {
+      "pin": "탭 고정",
+      "unpin": "탭 고정 해제",
+      "close": "탭 닫기",
+      "close_others": "다른 탭 닫기",
+      "open_window": "새 창에서 열기",
+      "new": "새 탭",
+      "pinned_name": "{{title}} (고정됨)"
     },
     "updates": {
       "title": "업데이트",

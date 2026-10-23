@@ -28,6 +28,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
+	"github.com/multica-ai/multica/server/internal/gitca"
 	"github.com/multica-ai/multica/server/internal/governance"
 	"github.com/multica-ai/multica/server/internal/governance/credential"
 	"github.com/multica-ai/multica/server/internal/governance/receipt"
@@ -48,6 +49,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
+	"github.com/multica-ai/multica/server/pkg/buildinfo"
 	composiosdk "github.com/multica-ai/multica/server/pkg/composio"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
@@ -210,6 +212,25 @@ func normalizeServerVersion(v string) string {
 		return ""
 	}
 	return v
+}
+
+func normalizeServerBuildInfo(v, b, c string) (string, string, string) {
+	v = normalizeServerVersion(strings.TrimSpace(v))
+	if v == "" {
+		return "", "", ""
+	}
+	plainVersion, splitBuild := buildinfo.Split(v)
+	b = strings.TrimSpace(b)
+	if b == "" {
+		b = splitBuild
+	}
+	c = strings.TrimSpace(c)
+	if c == "unknown" || c == "dev" {
+		c = ""
+	} else if len(c) > 7 {
+		c = c[:7]
+	}
+	return plainVersion, b, c
 }
 
 // NewRouter creates the fully-configured Chi router with all middleware and routes.
@@ -432,6 +453,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 	cfSigner := auth.NewCloudFrontSignerFromEnv()
 	origins := allowedOrigins()
+	serverVersion, serverBuild, serverCommit := normalizeServerBuildInfo(version, build, commit)
 
 	signupConfig := handler.Config{
 		AllowSignup:              os.Getenv("ALLOW_SIGNUP") != "false",
@@ -454,7 +476,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		LLMMaxRetries:            opts.LLMMaxRetries,
 		LLMDisableThinking:       opts.LLMDisableThinking,
 		ProviderRecoveryBaseURL:  strings.TrimSpace(os.Getenv("MULTICA_PROVIDER_RECOVERY_BASE_URL")),
-		ServerVersion:            normalizeServerVersion(version),
+		ServerVersion:            serverVersion,
+		ServerBuild:              serverBuild,
+		ServerCommit:             serverCommit,
+		GitExtraCACerts:          gitca.Load(slog.Default()),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
 	invitationRateLimits := handler.DefaultInvitationRateLimits()
@@ -1624,6 +1649,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// the browsers above; the other four composio endpoints stay session-gated.
 	r.Get("/api/integrations/composio/callback", h.ComposioCallback)
 
+	daemonUpdate := loadDaemonUpdateSource()
+
 	// Daemon API routes (require daemon token or valid user token)
 	r.Route("/api/daemon", func(r chi.Router) {
 		r.Use(middleware.DaemonAuth(queries, patCache, daemonTokenCache, cloudPATVerifier))
@@ -1633,6 +1660,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/heartbeat", h.DaemonHeartbeat)
 		r.Get("/ws", h.DaemonWebSocket)
 		r.Get("/workspaces", h.ListDaemonWorkspaces)
+		r.Get("/update", daemonUpdate.Metadata)
+		r.Get("/update/binary", daemonUpdate.Binary)
 		r.Get("/workspaces/{workspaceId}/repos", h.GetDaemonWorkspaceRepos)
 		r.Get("/workspaces/{workspaceId}/runtime-profiles", h.DaemonListRuntimeProfiles)
 
@@ -2485,6 +2514,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// the strict DELETE refused with
 					// `runtime_has_active_agents` and the user confirmed.
 					r.Post("/unbind-agents-and-delete", h.UnbindAgentsAndDeleteRuntime)
+					// Confirmed public-to-private transition. The normal PATCH
+					// returns a structured plan when teammates still have agents
+					// or active work on the runtime; this route applies that plan
+					// atomically after the owner reviews it.
+					r.Post("/revoke-workspace-access", h.RevokeRuntimeWorkspaceAccess)
 					// Legacy path for installed clients built against the
 					// archive-and-delete contract (MUL-5559 renamed the
 					// behaviour, not just the route). Same handler.

@@ -41,6 +41,16 @@ describe("annotated reply serialization", () => {
     expect(content).toContain(mention);
   });
 
+  it("DM quotes keep punctuation readable and still neutralize mention links", () => {
+    const mention = "[@Agent](mention://agent/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa)";
+    const quote = `Start at 1 s (not 5 s). Tags: <b>x</b> & ${mention}`;
+    const content = composeAnnotatedReply("Go", [{ ...annotation, quote, note: mention }], { plainQuotes: true });
+    expect(content).toContain("> Start at 1 s (not 5 s). Tags: <b>x</b> & [@Agent](mention:&#47;&#47;agent/");
+    expect(parseMentions(content)).toHaveLength(1);
+    expect(content.match(/mention:\/\//g)).toHaveLength(1);
+    expect(content.endsWith("---\n\nGo")).toBe(true);
+  });
+
   it("retains /note behavior and does not send quotes alone", () => {
     expect(composeAnnotatedReply("/note Private", [annotation])).toBe("/note\n\n> first\n> second\n\nPlease revise.\n\n---\n\nPrivate");
     expect(hasReplyIntent("  ", [{ ...annotation, note: " " }])).toBe(false);

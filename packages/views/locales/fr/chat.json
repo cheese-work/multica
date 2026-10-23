@@ -28,7 +28,6 @@
     "compacting_toast": "Ce message privé est en cours de compactage. Renvoyez-le une fois terminé.",
     "rename_failed_toast": "Impossible de renommer la conversation",
     "fork_unconfirmed": "La dérivation n’a pas pu être confirmée. Vérifiez les liens « Dérivée vers » avant de réessayer.",
-    "fork_attachments_blocked": "Les pièces jointes ne peuvent pas être envoyées avec /fork.",
     "rename_title_too_long_toast": "Le titre ne doit pas dépasser 200 caractères",
     "rename_session_required_toast": "Démarrez une conversation avant de la renommer",
     "send_blocked_toast": "Message non envoyé — vous n'avez plus la permission d'utiliser cet agent",
@@ -82,6 +81,7 @@
       "runtime_offline": "L'agent est actuellement hors ligne et n'a donc pas pu répondre. Veuillez réessayer dès son retour en ligne.",
       "runtime_access_denied": "Cet agent ne peut pas s'exécuter sur son runtime privé et n'a donc pas pu répondre. Passez le runtime en public, ou réassociez/copiez l'agent vers un runtime que son propriétaire peut utiliser.",
       "runtime_recovery": "L'agent a redémarré avant d'avoir pu terminer. Veuillez réessayer.",
+      "runtime_access_revoked": "L'accès au runtime a été révoqué. Associez l'agent à un runtime accessible avant de lancer une nouvelle exécution.",
       "manual": "Cette réponse a été annulée.",
       "skill_bundle_unavailable": "Les skills de l'agent n'ont pas pu être téléchargés : il n'a donc jamais démarré. C'est généralement un problème de connexion — veuillez réessayer.",
       "runtime_cli_timeout": "L'outil OpenClaw local n'a pas répondu à temps, l'exécution n'a donc jamais démarré. C'est un délai de démarrage local, pas un problème de réseau — réessayer ne servira à rien tant que l'outil ne démarrera pas plus vite ou que le délai ne sera pas allongé (MULTICA_OPENCLAW_CLI_TIMEOUT).",
@@ -276,5 +276,25 @@
     "archive": "Archiver la discussion",
     "unarchive": "Désarchiver la discussion",
     "delete": "Supprimer la discussion"
+  },
+  "annotations": {
+    "source_label": "Message de {{name}}",
+    "add": "Ajouter un commentaire",
+    "confirm_add": "Ajouter",
+    "save": "Enregistrer",
+    "note_label": "Commentaire {{number}}",
+    "note_placeholder": "Ajouter un commentaire…",
+    "edit": "Modifier le commentaire {{number}} : {{note}}",
+    "edit_row": "Modifier le commentaire {{number}}",
+    "remove": "Supprimer le commentaire {{number}}",
+    "count_one": "{{count}} commentaire",
+    "count_other": "{{count}} commentaires",
+    "list_label": "Commentaires",
+    "range": "Commentaires {{from}}–{{to}} sur {{total}}",
+    "quote_limit": "Sélectionnez au maximum {{count}} caractères à la fois.",
+    "count_limit": "Un message peut contenir jusqu'à {{count}} commentaires.",
+    "selection_failed": "Impossible de capturer la sélection. Sélectionnez du texte dans une seule réponse, puis réessayez.",
+    "source_changed": "La source a changé ou est indisponible. Votre citation enregistrée est conservée.",
+    "removed": "Commentaire {{number}} supprimé"
   }
 }
