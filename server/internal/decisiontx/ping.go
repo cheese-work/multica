@@ -12,22 +12,36 @@ import (
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
+// NotifyPing records the ping in its own transaction; the worker and the
+// legacy request path use it after the request has committed.
 func NotifyPing(ctx context.Context, starter interface {
 	Begin(context.Context) (pgx.Tx, error)
 }, queries *db.Queries, workspaceID, requestID pgtype.UUID) (*db.InboxItem, error) {
-	located, err := queries.GetDecisionRequest(ctx, db.GetDecisionRequestParams{WorkspaceID: workspaceID, ID: requestID})
+	transaction, err := starter.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer transaction.Rollback(ctx)
+	item, err := NotifyPingTx(ctx, queries.WithTx(transaction), workspaceID, requestID)
+	if err != nil {
+		return nil, err
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return item, nil
+}
+
+// NotifyPingTx creates the ping inbox item and its receipt inside the caller's
+// transaction, so a request path can commit the request and its ping together.
+func NotifyPingTx(ctx context.Context, locked *db.Queries, workspaceID, requestID pgtype.UUID) (*db.InboxItem, error) {
+	located, err := locked.GetDecisionRequest(ctx, db.GetDecisionRequestParams{WorkspaceID: workspaceID, ID: requestID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	transaction, err := starter.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer transaction.Rollback(ctx)
-	locked := queries.WithTx(transaction)
 	if _, err := locked.LockWorkspaceForChatSessionCreate(ctx, workspaceID); err != nil {
 		return nil, err
 	}
@@ -72,9 +86,6 @@ func NotifyPing(ctx context.Context, starter interface {
 		}
 	}
 	if _, err := locked.MarkDecisionPingNotified(ctx, db.MarkDecisionPingNotifiedParams{WorkspaceID: workspaceID, ID: requestID}); err != nil {
-		return nil, err
-	}
-	if err := transaction.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return item, nil
