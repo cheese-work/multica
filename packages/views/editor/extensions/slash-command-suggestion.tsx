@@ -31,7 +31,19 @@ import { isTriggerArmedAt } from "./suggestion-trigger-arming";
 const MAX_ITEMS = 20;
 
 /** Known built-in command ids — the keys under editor `slash_command.commands`. */
-export type BuiltinCommandKey = "note" | "compact" | "rename" | "fork";
+export type BuiltinCommandKey =
+  | "note"
+  | "compact"
+  | "rename"
+  | "fork"
+  | "statistic"
+  | "archive"
+  | "pin"
+  | "unarchive";
+
+/** DM commands a surface switches on one by one; compact is gated separately. */
+export type DmClientCommand = "statistic" | "archive" | "pin" | "unarchive";
+const DM_CLIENT_COMMANDS: readonly DmClientCommand[] = ["statistic", "archive", "pin", "unarchive"];
 
 export interface SlashCommandItem {
   id: string;
@@ -136,7 +148,15 @@ export const SlashCommandList = forwardRef<
           ? t(($) => $.slash_command.commands.rename)
           : item.descriptionKey === "fork"
             ? t(($) => $.slash_command.commands.fork)
-            : item.description;
+            : item.descriptionKey === "statistic"
+              ? t(($) => $.slash_command.commands.statistic)
+              : item.descriptionKey === "archive"
+                ? t(($) => $.slash_command.commands.archive)
+                : item.descriptionKey === "pin"
+                  ? t(($) => $.slash_command.commands.pin)
+                  : item.descriptionKey === "unarchive"
+                    ? t(($) => $.slash_command.commands.unarchive)
+                    : item.description;
 
   return (
     // Height budget clamps to min(design max, viewport-aware
@@ -149,6 +169,7 @@ export const SlashCommandList = forwardRef<
         return (
           <button
             key={item.id}
+            data-testid={isClientCommand(item) ? `chat-command-${item.id}` : undefined}
             ref={(el) => {
               itemRefs.current[index] = el;
             }}
@@ -161,13 +182,15 @@ export const SlashCommandList = forwardRef<
               <span className="flex w-full items-center justify-between gap-2 font-medium">
                 <span className="font-mono">
                   /{item.label}{" "}
-                  <span className="text-muted-foreground">
-                    {item.descriptionKey === "rename"
-                      ? t(($) => $.slash_command.title_hint)
-                      : item.descriptionKey === "fork"
-                        ? t(($) => $.slash_command.message_hint)
-                        : t(($) => $.slash_command.focus_hint)}
-                  </span>
+                  {isNoArgumentCommand(item) ? null : (
+                    <span className="text-muted-foreground">
+                      {item.descriptionKey === "rename"
+                        ? t(($) => $.slash_command.title_hint)
+                        : item.descriptionKey === "fork"
+                          ? t(($) => $.slash_command.message_hint)
+                          : t(($) => $.slash_command.focus_hint)}
+                    </span>
+                  )}
                 </span>
                 <span className="shrink-0 rounded-sm border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-primary">
                   {t(($) => $.slash_command.client_command)}
@@ -194,7 +217,14 @@ export const SlashCommandList = forwardRef<
 
 /** Built-ins handled by the Multica client/server rather than the agent. */
 const isClientCommand = (item: SlashCommandItem) =>
-  item.descriptionKey === "compact" || item.descriptionKey === "rename" || item.descriptionKey === "fork";
+  item.descriptionKey === "compact" ||
+  item.descriptionKey === "rename" ||
+  item.descriptionKey === "fork" ||
+  isNoArgumentCommand(item);
+
+/** The DM commands that take no argument, so the menu shows no hint after them. */
+const isNoArgumentCommand = (item: SlashCommandItem) =>
+  DM_CLIENT_COMMANDS.some((command) => command === item.descriptionKey);
 
 const NO_MATCH = 4;
 
@@ -230,6 +260,8 @@ function buildItems(
   firstWord: boolean,
   canRename: boolean,
   canFork: boolean,
+  canUse: (command: DmClientCommand) => boolean,
+  canCompact: boolean,
 ): SlashCommandItem[] {
   const wsId = getCurrentWsId();
   if (!wsId) return [];
@@ -257,18 +289,27 @@ function buildItems(
   const skills = rankSkillMatches(activeAgent?.skills ?? [], q)
     .map((s) => ({ id: s.id, label: s.name, description: s.description ?? "" }));
   const commands: SlashCommandItem[] = firstWord
-    ? (["compact", "rename", "fork"] as const)
+    ? ([...DM_CLIENT_COMMANDS, "compact", "rename", "fork"] as const)
         .filter((command) =>
-          (command !== "rename" || canRename) && (command !== "fork" || canFork) && command.startsWith(q))
+          (command !== "rename" || canRename) &&
+          (command !== "fork" || canFork) &&
+          (command !== "compact" || canCompact) &&
+          (!isDmClientCommand(command) || canUse(command)) &&
+          command.startsWith(q))
         .map((command) => ({ id: command, label: command, descriptionKey: command }))
     : [];
   return [...commands, ...skills].slice(0, MAX_ITEMS);
 }
 
+const isDmClientCommand = (command: string): command is DmClientCommand =>
+  DM_CLIENT_COMMANDS.some((candidate) => candidate === command);
+
 export function createSlashCommandSuggestion(
   qc: QueryClient,
   canRename = () => false,
   canFork = () => false,
+  canUse: (command: DmClientCommand) => boolean = () => false,
+  canCompact = () => true,
 ): Omit<
   SuggestionOptions<SlashCommandItem>,
   "editor"
@@ -290,7 +331,7 @@ export function createSlashCommandSuggestion(
       const firstWord = before.trim() === ""
         && position.depth === 1
         && position.parent.type.name === "paragraph";
-      return buildItems(qc, query, firstWord, canRename(), canFork());
+      return buildItems(qc, query, firstWord, canRename(), canFork(), canUse, canCompact());
     },
     command: ({ editor, range, props }) => {
       const nodeAfter = editor.view.state.selection.$to.nodeAfter;

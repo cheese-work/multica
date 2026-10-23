@@ -1,11 +1,13 @@
 import type { AgentTask } from "@multica/core/types";
 import {
-  estimateCost,
-  estimateCostBreakdown,
   summarizeTaskUsage,
-  type CostBreakdown,
   type TaskUsageSummary,
 } from "../../runtimes/utils";
+import {
+  estimateCost,
+  estimateCostBreakdown,
+  type CostBreakdown,
+} from "@multica/core/runtimes/pricing";
 import { taskDurationMs } from "./task-run-labels";
 
 // Pure data for the issue's run timeline: the sidebar's per-run cost bars and

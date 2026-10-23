@@ -32,7 +32,6 @@ import {
   useCreateChatSession,
   useMarkChatSessionRead,
   useSetChatSessionProject,
-  useSetChatSessionArchived,
 } from "@multica/core/chat/mutations";
 import { useChatStore } from "@multica/core/chat";
 import { upsertChatMessageToCaches } from "@multica/core/chat/message-cache";
@@ -328,7 +327,6 @@ export function useChatController(opts?: { isActive?: boolean }) {
   const createSession = useCreateChatSession();
   const markRead = useMarkChatSessionRead();
   const setSessionProject = useSetChatSessionProject();
-  const setArchived = useSetChatSessionArchived();
 
   const currentMember = members.find((m) => m.user_id === user?.id);
   const memberRole = currentMember?.role;
@@ -826,11 +824,6 @@ export function useChatController(opts?: { isActive?: boolean }) {
     [activeSessionId, sessions, handleSelectSession, setActiveSession],
   );
 
-  const archiveSession = useCallback(
-    (sessionId: string) => setArchived.mutate({ sessionId, archived: true }),
-    [setArchived],
-  );
-
   const hasMessages = messages.length > 0 || !!pendingTaskId;
 
   return {
@@ -893,7 +886,6 @@ export function useChatController(opts?: { isActive?: boolean }) {
     handleSelectSession,
     handleProjectChange,
     advanceSelectionAfterArchive,
-    archiveSession,
     // store setters (for surfaces that sync selection to the URL, etc.)
     setActiveSession,
     setSelectedAgentId,

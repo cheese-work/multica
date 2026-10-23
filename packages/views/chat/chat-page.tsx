@@ -35,6 +35,7 @@ import { ChatThreadList } from "./components/chat-thread-list";
 import { ChatSessionHeader } from "./components/chat-session-header";
 import { useChatRename } from "./components/use-chat-rename";
 import { useChatFork } from "./components/use-chat-fork";
+import { useDmSessionSurface } from "./components/use-dm-session-surface";
 import { canForkSession } from "./lib/can-fork-session";
 import { EmptyState } from "./components/chat-empty-state";
 import { NewChatButton } from "./components/new-chat-button";
@@ -120,9 +121,6 @@ export function ChatPage() {
   // agree with the pane. At compact widths it decides list-vs-conversation;
   // on desktop the conversation pane is always mounted.
   const composingNew = urlNew;
-  // handleArchive (L2) still calls this. Composing is the URL now, so there is
-  // nothing to set; L2 deletes this and its two calls.
-  const setComposingNew = (composing: boolean) => void composing;
   const { handleRename, renameRequest } = useChatRename(c.currentSession);
 
   // Two-way sync between the URL (`?session=`) and the chat store's
@@ -216,21 +214,26 @@ export function ChatPage() {
   const { handleFork } = useChatFork(c.currentSession, handleSelect);
 
   // Single archive path for both entry points (thread-list row + conversation
-  // header). When the archived chat is the one in view, move the pane off it:
-  // on desktop advance to the next chat (Inbox-style); when compact drop back to
-  // the list, which reads more naturally than being thrown into an unrelated
-  // conversation full-screen. Archiving any other chat leaves the view put.
+  // header). The server accepts the archive first; a failure keeps the session
+  // open. Then, when the archived chat is the one in view, move the pane off
+  // it: on desktop advance to the next chat (Inbox-style); when compact go back
+  // through history. Archiving any other chat leaves the view put.
+  const dm = useDmSessionSurface({
+    session: c.currentSession,
+    sessions: c.sessions,
+    send: c.handleSend,
+    onOpenSession: handleSelect,
+    onArchived: (session) => {
+      if (session.id !== useChatStore.getState().activeSessionId) return;
+      if (isCompact) backOrReplace(wsPaths.chat());
+      else c.advanceSelectionAfterArchive(session);
+    },
+    onRename: handleRename,
+    onFork: canForkSession(c.currentSession) ? handleFork : undefined,
+  });
   const handleArchive = (session: ChatSession) => {
     supersedeAgentIntent();
-    if (session.id === c.activeSessionId) {
-      if (isCompact) {
-        c.setActiveSession(null);
-        setComposingNew(false);
-      } else {
-        c.advanceSelectionAfterArchive(session);
-      }
-    }
-    c.archiveSession(session.id);
+    return dm.archive(session);
   };
 
   const startNewChat = (agent: Agent | null, { fromIntent = false } = {}) => {
@@ -348,6 +351,9 @@ export function ChatPage() {
           session={c.currentSession}
           agent={c.activeAgent}
           onArchive={handleArchive}
+          onUnarchive={dm.unarchive}
+          onTogglePin={dm.togglePin}
+          onOpenStatistics={() => dm.openStatistics(c.currentSession?.id ?? "")}
           renameRequest={renameRequest}
           autoCompactThresholdPct={autoCompactThresholdPct}
           onCompact={() => void c.handleSend("/compact")}
@@ -426,9 +432,7 @@ export function ChatPage() {
       />
 
       <ChatInput
-        onSend={c.handleSend}
-        onRename={handleRename}
-        onFork={canForkSession(c.currentSession) ? handleFork : undefined}
+        {...dm.inputProps}
         restoreDraftRequest={c.restoreDraftRequest}
         conversationStarterRequest={c.conversationStarterRequest}
         onConversationStarterApplied={c.handleConversationStarterApplied}
@@ -438,7 +442,6 @@ export function ChatPage() {
         isRunning={!!c.pendingTaskId}
         allowSubmitWhileRunning={c.pendingTask?.supports_queue === true}
         disabled={
-          c.isSessionArchived ||
           c.isAgentArchived ||
           c.isAgentAccessRevoked ||
           !c.isAgentRuntimeBound ||
@@ -459,6 +462,7 @@ export function ChatPage() {
         annotationScope={annotation.input}
       />
     </div>
+    {dm.dialogs}
     </ChatAnnotationContext.Provider>
   );
 
@@ -476,7 +480,6 @@ export function ChatPage() {
               onClick={() => {
                 // Back follows real history; the list is only the fallback.
                 if (c.activeSessionId || urlNew) backOrReplace(wsPaths.chat());
-                setComposingNew(false);
               }}
               className="gap-1.5 text-muted-foreground"
             >
