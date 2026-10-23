@@ -18,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/attribution"
 	"github.com/multica-ai/multica/server/internal/commentguard"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/governance/receipt"
@@ -2597,7 +2598,7 @@ func commentMergeTerminalOutcome(result commentMergeResult) (status DispatchStat
 func (h *Handler) mergeCommentIntoPendingTask(ctx context.Context, issue db.Issue, trigger commentAgentTrigger, newTriggerCommentID pgtype.UUID, headSha pgtype.Text) commentMergeResult {
 	// Re-attribute the coalescing run to the new comment's human atomically: the
 	// whole attribution snapshot moves, not just the person columns (MUL-4302).
-	params, err := h.commentMergeParams(ctx, issue, trigger, newTriggerCommentID, headSha)
+	params, attr, err := h.commentMergeParamsWithAttribution(ctx, issue, trigger, newTriggerCommentID, headSha)
 	if err != nil {
 		// The new comment cannot be re-attributed. REFUSE the merge — keep the
 		// existing queued task on its original (precise) snapshot rather than
@@ -2637,6 +2638,9 @@ func (h *Handler) mergeCommentIntoPendingTask(ctx context.Context, issue db.Issu
 		"agent_id", uuidToString(trigger.Agent.ID),
 		"new_trigger_comment_id", uuidToString(newTriggerCommentID),
 		"coalesced_count", len(row.CoalescedCommentIds))
+	// The fold re-attributes the queued run to this comment's author; record that
+	// human's action now, since the run row keeps no history of who acted.
+	h.TaskService.RecordHumanDelegation(ctx, attr)
 	return commentMergeSucceeded
 }
 
@@ -2644,10 +2648,17 @@ func (h *Handler) mergeCommentIntoPendingTask(ctx context.Context, issue db.Issu
 // issue-assignee reaction is comment_source; a mention / thread-parent /
 // conversation hop is delegation (MUL-4302).
 func (h *Handler) commentMergeParams(ctx context.Context, issue db.Issue, trigger commentAgentTrigger, newTriggerCommentID pgtype.UUID, headSha pgtype.Text) (db.MergeCommentIntoPendingTaskParams, error) {
+	params, _, err := h.commentMergeParamsWithAttribution(ctx, issue, trigger, newTriggerCommentID, headSha)
+	return params, err
+}
+
+// commentMergeParamsWithAttribution is commentMergeParams that also returns the
+// attribution the fold stamps, for callers that record the human's action.
+func (h *Handler) commentMergeParamsWithAttribution(ctx context.Context, issue db.Issue, trigger commentAgentTrigger, newTriggerCommentID pgtype.UUID, headSha pgtype.Text) (db.MergeCommentIntoPendingTaskParams, attribution.Result, error) {
 	isMention := trigger.Source != commentTriggerSourceIssueAssignee
 	attr, err := h.TaskService.AttributionForMergedComment(ctx, issue.WorkspaceID, newTriggerCommentID, isMention, trigger.Agent)
 	if err != nil {
-		return db.MergeCommentIntoPendingTaskParams{}, err
+		return db.MergeCommentIntoPendingTaskParams{}, attr, err
 	}
 	overlay, connectedApps := h.TaskService.BuildRuntimeMCPOverlayForMerge(ctx, attr.UserID, trigger.Agent)
 	return db.MergeCommentIntoPendingTaskParams{
@@ -2665,7 +2676,7 @@ func (h *Handler) commentMergeParams(ctx context.Context, issue db.Issue, trigge
 		NewRuntimeMcpOverlay:    overlay,
 		NewRuntimeConnectedApps: connectedApps,
 		HeadSha:                 headSha,
-	}, nil
+	}, attr, nil
 }
 
 // foldCommentIntoQueuedIssueTask folds the comment into the agent's queued run

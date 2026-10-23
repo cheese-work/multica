@@ -1737,6 +1737,9 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) error
 			errs = append(errs, err)
 		}
 	}
+	if p.Action == "closed" && p.PullRequest.Merged {
+		h.PRRefresh.RefreshConflictWatchers(ctx, p.Installation.ID, p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number)
+	}
 	if len(errs) > 0 {
 		return errors.Join(errs...)
 	}

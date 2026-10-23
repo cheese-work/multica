@@ -310,7 +310,7 @@ func TestGovernanceProposalTokenBindingAndResultReplay(t *testing.T) {
 		req.Header.Set("Authorization", "Bearer "+rawToken)
 		req.Header.Set("X-Actor-Source", "member")
 		req.Header.Set("X-Task-Token-Purpose", "agent_task")
-		req.Header.Set("X-Workspace-ID", uuid.NewString())
+		req.Header.Set("X-Workspace-ID", fixture.workspaceID) // an explicit selector must match the token binding; the other spoofed headers must still be overwritten
 		req.Header.Set("X-Agent-ID", uuid.NewString())
 		req.Header.Set("X-Task-ID", uuid.NewString())
 		req.Header.Set("X-Governance-Case-ID", uuid.NewString())
