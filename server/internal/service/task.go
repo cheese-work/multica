@@ -6876,6 +6876,15 @@ func delegatedFailureRecoveryContent(failed, source db.AgentTaskQueue) string {
 	return content
 }
 
+// transientGatewayFailure reports provider 5xx and capacity failures. The
+// coordinator would only inspect the same dead gateway, and the claim-time
+// gateway cooldown already holds new work for the agent, so a coordinator
+// LLM run adds load, not recovery. The failed issue keeps its own failure notice.
+func transientGatewayFailure(reason string) bool {
+	return reason == string(taskfailure.ReasonAgentProviderServerError) ||
+		reason == string(taskfailure.ReasonAgentProviderCapacityOrRateLimit)
+}
+
 // loadDelegatedFailureRecoveryTarget resolves and validates the backward edge
 // from a failed delegated task to its source coordinator. Returning nil is an
 // intentional no-op: non-terminal rows, retry-pending rows, autopilot work,
@@ -6886,6 +6895,9 @@ func delegatedFailureRecoveryContent(failed, source db.AgentTaskQueue) string {
 func loadDelegatedFailureRecoveryTarget(ctx context.Context, q *db.Queries, failed db.AgentTaskQueue) (*delegatedFailureRecoveryTarget, error) {
 	if failed.Status != "failed" || !failed.DelegatedFromTaskID.Valid || failed.AutopilotRunID.Valid ||
 		(failed.TriggerEvidenceKind.Valid && failed.TriggerEvidenceKind.String == string(attribution.EvidenceDelegatedFailure)) {
+		return nil, nil
+	}
+	if transientGatewayFailure(failed.FailureReason.String) {
 		return nil, nil
 	}
 	hasRetry, err := q.HasRetryTaskForParent(ctx, failed.ID)
