@@ -4256,6 +4256,7 @@ type claimCommentTaskResp struct {
 	Task *struct {
 		ID               string `json:"id"`
 		PriorSessionID   string `json:"prior_session_id"`
+		PriorWorkDir     string `json:"prior_work_dir"`
 		TriggerCommentID string `json:"trigger_comment_id"`
 		NewCommentCount  int    `json:"new_comment_count"`
 		NewCommentsSince string `json:"new_comments_since"`
