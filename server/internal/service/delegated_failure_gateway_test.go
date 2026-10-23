@@ -5,24 +5,27 @@ import (
 	"testing"
 )
 
-// A transient gateway failure (provider 5xx, capacity) must not wake the
-// coordinator with an LLM run; any other final failure still does.
-func TestFinalDelegatedFailureCoordinatorWakeByReason(t *testing.T) {
+// A transient gateway failure the platform will retry must not wake the
+// coordinator with an LLM run; a failure with no retry pending still does.
+func TestFinalDelegatedFailureCoordinatorWakeByRetryState(t *testing.T) {
 	cases := []struct {
-		name       string
-		reason     string
-		errMsg     string
-		wantWakeup bool
+		name        string
+		reason      string
+		errMsg      string
+		attempt     int32
+		maxAttempts int32
+		wantWakeup  bool
 	}{
-		{"provider 503", "agent_error.provider_server_error", "API Error: 503 service unavailable", false},
-		{"provider capacity", "agent_error.provider_capacity_or_rate_limit", "429 rate limit exceeded", false},
-		{"process failure", "agent_error.process_failure", "exit status 1", true},
+		{"retry pending", "agent_error.provider_network", "API Error: Connection closed mid-response", 1, 3, false},
+		{"retry exhausted", "agent_error.provider_network", "API Error: Connection closed mid-response", 3, 3, true},
+		{"not retried 503", "agent_error.provider_server_error", "API Error: 503 service unavailable", 1, 2, true},
+		{"process failure", "agent_error.process_failure", "exit status 1", 1, 2, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f, svc := seedDelegatedFailureFixture(t)
 			ctx := context.Background()
-			failedID := f.insertWorkerTask(t, "running", "comment", 1, 2)
+			failedID := f.insertWorkerTask(t, "running", "comment", tc.attempt, tc.maxAttempts)
 
 			if _, err := svc.FailTask(ctx, failedID, tc.errMsg, "", "", "", tc.reason, false, "", ""); err != nil {
 				t.Fatalf("FailTask: %v", err)
