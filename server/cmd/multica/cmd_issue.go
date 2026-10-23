@@ -654,6 +654,7 @@ func init() {
 	issueCreateCmd.Flags().String("parent", "", "Parent issue ID")
 	issueCreateCmd.Flags().Int("stage", 0, "Stage ordinal (>=1) grouping this sub-issue into an ordered barrier group under its parent; omit for unstaged. The parent assignee is woken only when every sub-issue in a stage finishes.")
 	issueCreateCmd.Flags().String("project", "", "Project ID")
+	issueCreateCmd.Flags().String("workflow", "", "Workflow ID this issue follows instead of its project's (workspace admins and the project lead)")
 	issueCreateCmd.Flags().String("start-date", "", "Start date (calendar day, YYYY-MM-DD)")
 	issueCreateCmd.Flags().String("due-date", "", "Due date (calendar day, YYYY-MM-DD)")
 	issueCreateCmd.Flags().Bool("allow-duplicate", false, "Allow creating an issue even when an active duplicate exists")
@@ -674,6 +675,7 @@ func init() {
 	issueUpdateCmd.Flags().String("assignee", "", "New assignee name (member, agent, or squad; fuzzy match)")
 	issueUpdateCmd.Flags().String("assignee-id", "", "New assignee UUID — member, agent, or squad (mutually exclusive with --assignee)")
 	issueUpdateCmd.Flags().String("project", "", "Project ID")
+	issueUpdateCmd.Flags().String("workflow", "", "Workflow ID this issue follows instead of its project's; \"none\" returns it to the project's (admins and the project lead; refused while the issue has a live task)")
 	issueUpdateCmd.Flags().String("start-date", "", "New start date (calendar day, YYYY-MM-DD; pass empty string to clear)")
 	issueUpdateCmd.Flags().String("due-date", "", "New due date (calendar day, YYYY-MM-DD)")
 	issueUpdateCmd.Flags().String("parent", "", "Parent issue ID (use --parent \"\" to clear)")
@@ -1826,6 +1828,9 @@ func runIssueCreate(cmd *cobra.Command, _ []string) error {
 		}
 		body["project_id"] = project.ID
 	}
+	if v, _ := cmd.Flags().GetString("workflow"); v != "" {
+		body["workflow_id"] = v
+	}
 	if cmd.Flags().Changed("stage") {
 		stage, _ := cmd.Flags().GetInt("stage")
 		if stage < 1 {
@@ -2138,7 +2143,24 @@ func runIssueUpdate(cmd *cobra.Command, args []string) error {
 		body["expected_revision"] = v
 	}
 
+	// The override has its own endpoint and goes first, so a status in the same
+	// call is judged against the workflow the issue will follow.
+	workflowChanged := cmd.Flags().Changed("workflow")
+	var result map[string]any
+	if workflowChanged {
+		v, _ := cmd.Flags().GetString("workflow")
+		var workflowID any = v
+		if v == "" || v == "none" {
+			workflowID = nil
+		}
+		if err := client.PutJSON(ctx, "/api/issues/"+issueRef.ID+"/workflow", map[string]any{"workflow_id": workflowID}, &result); err != nil {
+			return fmt.Errorf("set issue workflow: %w", err)
+		}
+	}
 	if len(body) == 0 && len(attachmentPaths) == 0 {
+		if workflowChanged {
+			return printIssueUpdateResult(cmd, result)
+		}
 		return fmt.Errorf("no fields to update; use flags like --title, --status, --priority, --assignee, etc.")
 	}
 	// Validate every path before any upload so an invalid later path cannot
@@ -2181,7 +2203,6 @@ func runIssueUpdate(cmd *cobra.Command, args []string) error {
 		body["suppress_run"] = true
 	}
 
-	var result map[string]any
 	if err := client.PutJSON(ctx, "/api/issues/"+issueRef.ID, body, &result); err != nil {
 		if msg, ok := revisionConflictMessage(err); ok {
 			return errors.New(msg)
@@ -2197,6 +2218,10 @@ func runIssueUpdate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	return printIssueUpdateResult(cmd, result)
+}
+
+func printIssueUpdateResult(cmd *cobra.Command, result map[string]any) error {
 	output, _ := cmd.Flags().GetString("output")
 	if output == "table" {
 		headers := []string{"KEY", "TITLE", "STATUS", "PRIORITY"}

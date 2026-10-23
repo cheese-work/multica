@@ -4157,6 +4157,7 @@ func newIssueUpdateTestCmd() *cobra.Command {
 	cmd.Flags().String("assignee", "", "")
 	cmd.Flags().String("assignee-id", "", "")
 	cmd.Flags().String("project", "", "")
+	cmd.Flags().String("workflow", "", "")
 	cmd.Flags().String("start-date", "", "")
 	cmd.Flags().String("due-date", "", "")
 	cmd.Flags().String("parent", "", "")
@@ -4342,6 +4343,42 @@ func TestRunIssueUpdateSendsPosition(t *testing.T) {
 	}
 	if got := body["position"]; got != float64(7.5) {
 		t.Fatalf("position = %#v, want 7.5 in request body", got)
+	}
+}
+
+// --workflow has its own endpoint: an id sets the override, "none" sends null.
+func TestRunIssueUpdateSetsAndClearsTheWorkflowOverride(t *testing.T) {
+	clearAmbientDaemonTaskEnv(t)
+	var got []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/MUL-1":
+			json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "status": "todo"})
+		case r.Method == http.MethodPut && r.URL.Path == "/api/issues/issue-1/workflow":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode body: %v", err)
+			}
+			got = append(got, body)
+			json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "status": "todo"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	for _, value := range []string{"wf-1", "none"} {
+		cmd := newIssueUpdateTestCmd()
+		_ = cmd.Flags().Set("workflow", value)
+		if err := runIssueUpdate(cmd, []string{"MUL-1"}); err != nil {
+			t.Fatalf("runIssueUpdate --workflow %s: %v", value, err)
+		}
+	}
+	if len(got) != 2 || got[0]["workflow_id"] != "wf-1" || got[1]["workflow_id"] != nil {
+		t.Fatalf("bodies = %#v, want workflow_id wf-1 then null", got)
 	}
 }
 
