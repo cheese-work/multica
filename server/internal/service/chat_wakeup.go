@@ -55,7 +55,7 @@ type PullRequestAddress struct {
 }
 
 // ChecksNotReadyError refuses a checks condition while a linked pull request's
-// finished check data has no node ids (rows written before the ids were stored),
+// finished check data has no GitHub ids (rows written before the ids were stored),
 // or has no API snapshot at all. A baseline taken from such data could later fire
 // on a result that finished before the wakeup, on a metadata-only backfill, or
 // swallow a real change. The caller refreshes the listed pull requests and the
@@ -304,7 +304,7 @@ func (s *ChatWakeupService) conditionMet(ctx context.Context, w db.ChatWakeup) (
 }
 
 // checksResultKey names one finished result of a pull request: its head, its
-// rollup state and the digest of its check runs including their node ids.
+// rollup state and the digest of its check runs including their GitHub ids.
 func checksResultKey(head, state, identity string) string {
 	return head + ":" + state + ":" + identity
 }
@@ -317,11 +317,11 @@ func checksTerminal(head, state string) bool {
 // new since the wakeup was set: a different head, result or check-run identity
 // than the baseline, a pull request linked since, or a rerun seen running and
 // now finished. The check-run identity digests the names, states, details URLs
-// and GraphQL node ids of every check run. Every rerun creates new check runs
+// and GitHub ids of every check run. Every rerun creates new check runs
 // and every status posted creates a new status object, so the identity changes
 // with each result, also when a rerun starts and finishes between two ticks and
 // also when name, state, URL and timestamp match. Removing a link is never a new
-// result. A pull request whose check data lacks node ids (rows written before
+// result. A pull request whose check data lacks GitHub ids (rows written before
 // they were stored) is skipped until the next snapshot refresh.
 func (s *ChatWakeupService) checksFinished(ctx context.Context, w db.ChatWakeup, c chatWakeupCondition, issueID pgtype.UUID) (bool, string, error) {
 	if !s.Tasks.PRSnapshotsEnabled {
@@ -356,7 +356,7 @@ func (s *ChatWakeupService) checksFinished(ctx context.Context, w db.ChatWakeup,
 			continue
 		}
 		if row.ChecksIdentityPartial {
-			continue // data without node ids cannot name a result; wait for the next refresh
+			continue // data without GitHub ids cannot name a result; wait for the next refresh
 		}
 		base, known := c.Baseline[key]
 		if !known || base != checksResultKey(row.HeadSha, row.Checks, row.ChecksIdentity) || armed[key] {

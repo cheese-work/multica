@@ -3641,6 +3641,7 @@ func (s *TaskService) FinalizeDeferredCancelledChat(ctx context.Context, taskID 
 			Content:       "Stopped.",
 			TaskID:        claimed.ID,
 			ElapsedMs:     computeChatElapsedMs(claimed),
+			FailureReason: claimed.FailureReason,
 		})
 		if err != nil {
 			return fmt.Errorf("create cancelled chat message: %w", err)

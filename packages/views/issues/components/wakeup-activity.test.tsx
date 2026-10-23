@@ -39,6 +39,13 @@ describe("wakeup timeline entries", () => {
     expect(read(entry("wakeup_triggered", { wakeup: { ...reply, condition: { type: "pull_request", event: "checks_finished" } } }))).toBe(
       "当关联 PR 的 CI 结束时，唤醒了 Emacs",
     );
+    // A condition rule is woken by the scheduler's internal "condition.met"
+    // event. The entry reads as the rule's own condition, never as that name.
+    const conditionRule = { ...reply, event_types: ["issue.status_changed"], condition: { type: "issue_field", field: "status", value: "in_review" } };
+    const conditionMet = read(entry("wakeup_triggered", { wakeup: conditionRule, events: ["condition.met"] }));
+    expect(conditionMet).not.toContain("condition.met");
+    expect(conditionMet).toContain("in_review");
+    expect(conditionMet).toContain("Emacs");
     expect(read(entry("wakeup_triggered", { wakeup: reply, events: ["wakeup.manual"], actor_type: "member", actor_id: "u" }))).toBe(
       "Jiayuan 立即唤醒了 Emacs",
     );
