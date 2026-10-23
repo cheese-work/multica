@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import { useDefaultLayout } from "react-resizable-panels";
 import { ArrowLeft, MessageSquare } from "lucide-react";
 import { toast } from "sonner";
@@ -13,7 +13,11 @@ import {
 import { useIsCompact } from "@multica/ui/hooks/use-mobile";
 import { useCurrentWorkspace, useRequiredWorkspaceSlug, useWorkspacePaths } from "@multica/core/paths";
 import { resolveAutoCompact } from "@multica/core/workspace/auto-compact";
-import { getCurrentSlug } from "@multica/core/platform";
+import {
+  getCurrentSlug,
+  getWorkspaceRehydrationGeneration,
+  subscribeToWorkspaceRehydration,
+} from "@multica/core/platform";
 import { useChatStore } from "@multica/core/chat";
 import { chatQuickActionsPendingOptions } from "@multica/core/chat/queries";
 import { useRegenerateChatQuickActions } from "@multica/core/chat/mutations";
@@ -41,6 +45,8 @@ import { ArchivedAgentBanner } from "./components/archived-agent-banner";
 import { AgentAccessRevokedBanner } from "./components/agent-access-revoked-banner";
 import { RuntimeRequiredBanner } from "./components/runtime-required-banner";
 import { InteractiveLoginBanner } from "./components/interactive-login-banner";
+import { ChatAnnotationContext } from "./components/chat-annotation-context";
+import { useChatAnnotations } from "./components/use-chat-annotations";
 
 /**
  * Chat tab — the first-class two-pane surface (thread list on the left,
@@ -138,6 +144,27 @@ export function ChatPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reconcile URL/route changes, not store updates
   }, [isCurrentChatRoute, workspaceSlug, urlSession, urlNew]);
+
+  // The workspace layout publishes the workspace in an effect, and the chat
+  // store rehydrates from that workspace one microtask later. A page that
+  // mounts in the same commit syncs the URL before either has happened (or is
+  // skipped by the guard above), and the rehydration then replaces the
+  // selection the URL names; the store → URL effect would write that back and
+  // strip a deep link. The URL stays authoritative when it names a thread, so
+  // re-apply it after every rehydration. A URL without a thread leaves the
+  // workspace's persisted selection to the store → URL effect as before.
+  const rehydrations = useSyncExternalStore(
+    subscribeToWorkspaceRehydration,
+    getWorkspaceRehydrationGeneration,
+    () => 0,
+  );
+  useEffect(() => {
+    if (!isCurrentChatRoute || getCurrentSlug() !== workspaceSlug) return;
+    if (urlSession && urlSession !== useChatStore.getState().activeSessionId) {
+      c.setActiveSession(urlSession);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-apply the URL after a rehydration, not on every URL change
+  }, [rehydrations]);
 
   // store → URL: the single URL writer. A user selection or new chat arrives
   // with a `push` intent; a session created by sending, archive advancing the
@@ -297,8 +324,25 @@ export function ChatPage() {
   const queuedTasks = c.pendingTask?.queued_tasks ?? [];
   const autoCompact = resolveAutoCompact(workspace?.settings, c.activeAgent?.runtime_config);
   const autoCompactThresholdPct = autoCompact.enabled ? autoCompact.threshold_pct : null;
+  const annotation = useChatAnnotations({
+    sessionId: c.activeSessionId,
+    messages: c.messages,
+    agentName: c.activeAgent?.name,
+    enabled:
+      !c.isSessionArchived &&
+      !c.isAgentArchived &&
+      !c.isAgentAccessRevoked &&
+      c.isAgentRuntimeBound &&
+      !c.noAgent,
+  });
   const conversation = (
-    <div className="flex flex-1 flex-col min-h-0 @container">
+    <ChatAnnotationContext.Provider value={annotation.scope}>
+    <div
+      ref={annotation.cardRef}
+      {...annotation.captureProps}
+      className="flex flex-1 flex-col min-h-0 @container"
+    >
+      {annotation.popup}
       {c.currentSession && (
         <ChatSessionHeader
           session={c.currentSession}
@@ -412,8 +456,10 @@ export function ChatPage() {
         onProjectChange={changeProjectContext}
         isProjectUpdating={c.isProjectUpdating}
         focusRequest={c.focusInputRequest}
+        annotationScope={annotation.input}
       />
     </div>
+    </ChatAnnotationContext.Provider>
   );
 
   if (c.interactiveLoginRequired) return <InteractiveLoginBanner />;

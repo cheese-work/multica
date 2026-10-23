@@ -159,6 +159,18 @@
     "tab_history": "History {{count}}",
     "key_set": "key set",
     "key_not_set": "key not set",
+    "api_url": {
+      "label": "API URL",
+      "hint": "Empty uses {{default}}. Must be reachable from the backend container, for example http://sub2api:8080/v1, not a browser-only Tailscale URL.",
+      "invalid": "Enter an http:// or https:// URL with a host.",
+      "save": "Save URL",
+      "clear": "Clear URL",
+      "default_value": "{{url}} (default)",
+      "save_failed": "Couldn't save the URL. Nothing was changed.",
+      "conflict": "Settings changed elsewhere. Reload the page, then try again.",
+      "saved": "URL saved",
+      "cleared": "URL cleared"
+    },
     "credential": {
       "title": "Provider key",
       "set": "Set",
@@ -270,6 +282,8 @@
     "field_name": "Name",
     "field_name_placeholder": "Code Review",
     "field_target": "Runs as",
+    "no_target": "No target",
+    "no_target_hint": "Posts a message without mentioning anyone.",
     "field_prompt": "Prompt",
     "field_prompt_placeholder": "Review the code linked to this issue. Focus on correctness and edge cases.",
     "prompt_hint": "Sent as written. The agent already sees the issue.",
@@ -1388,6 +1402,15 @@
   "desktop": {
     "tabs": {
       "updates": "Updates"
+    },
+    "tab_bar": {
+      "pin": "Pin tab",
+      "unpin": "Unpin tab",
+      "close": "Close tab",
+      "close_others": "Close other tabs",
+      "open_window": "Open as new window",
+      "new": "New tab",
+      "pinned_name": "{{title}} (pinned)"
     },
     "updates": {
       "title": "Updates",

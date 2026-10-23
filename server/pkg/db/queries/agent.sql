@@ -280,6 +280,25 @@ WHERE runtime_id = $1 AND kind = 'user'
 ORDER BY id
 FOR UPDATE;
 
+-- name: ListNonOwnerAgentsByRuntime :many
+-- Returns every agent bound to a runtime whose owner differs from its owner,
+-- including hidden Builder execution carriers. This is the dependency plan shown before a public
+-- runtime is made private: owner-owned agents keep their binding, while every
+-- teammate-owned agent loses machine access.
+SELECT * FROM agent
+WHERE runtime_id = @runtime_id
+  AND owner_id IS DISTINCT FROM @runtime_owner_id
+ORDER BY name ASC;
+
+-- name: ListNonOwnerAgentsByRuntimeForUpdate :many
+-- Runtime access-change locking serializes new bindings. NOWAIT avoids waiting
+-- behind a writer that already holds an agent and needs the runtime row.
+SELECT * FROM agent
+WHERE runtime_id = @runtime_id
+  AND owner_id IS DISTINCT FROM @runtime_owner_id
+ORDER BY id
+FOR UPDATE NOWAIT;
+
 -- name: RestoreAgent :one
 UPDATE agent SET archived_at = NULL, archived_by = NULL, updated_at = now()
 WHERE id = $1
@@ -2961,3 +2980,10 @@ RETURNING *;
 
 -- name: GetCommentThreadRootID :one
 SELECT comment_thread_root_id(@comment_id::uuid)::uuid AS id;
+
+-- name: SetTaskClaimedModel :exec
+-- CHE-1862: the model the daemon is told to run for this claim. The vote gate
+-- reads it as the task's lab identity, so an edit of the agent row after the
+-- claim cannot change what a running task is counted as.
+UPDATE agent_task_queue SET claimed_model = @claimed_model
+WHERE id = @id AND status = 'dispatched';

@@ -159,6 +159,18 @@
     "tab_history": "Historique {{count}}",
     "key_set": "clé définie",
     "key_not_set": "clé non définie",
+    "api_url": {
+      "label": "URL de l'API",
+      "hint": "Vide, {{default}} est utilisé. Doit être joignable depuis le conteneur du backend, par exemple http://sub2api:8080/v1, et non une URL Tailscale réservée au navigateur.",
+      "invalid": "Saisissez une URL http:// ou https:// avec un hôte.",
+      "save": "Enregistrer l'URL",
+      "clear": "Effacer l'URL",
+      "default_value": "{{url}} (par défaut)",
+      "save_failed": "Impossible d'enregistrer l'URL. Rien n'a été modifié.",
+      "conflict": "Les paramètres ont changé ailleurs. Rechargez la page, puis réessayez.",
+      "saved": "URL enregistrée",
+      "cleared": "URL effacée"
+    },
     "credential": {
       "title": "Clé du fournisseur",
       "set": "Définie",
@@ -270,6 +282,8 @@
     "field_name": "Nom",
     "field_name_placeholder": "Relecture de code",
     "field_target": "S'exécute en tant que",
+    "no_target": "Aucune cible",
+    "no_target_hint": "Publie un message sans mentionner personne.",
     "field_prompt": "Invite",
     "field_prompt_placeholder": "Relire le code lié à cette tâche. Se concentrer sur la justesse et les cas limites.",
     "prompt_hint": "Envoyée telle quelle. L'agent voit déjà la tâche.",
@@ -1388,6 +1402,15 @@
   "desktop": {
     "tabs": {
       "updates": "Mises à jour"
+    },
+    "tab_bar": {
+      "pin": "Épingler l'onglet",
+      "unpin": "Désépingler l'onglet",
+      "close": "Fermer l'onglet",
+      "close_others": "Fermer les autres onglets",
+      "open_window": "Ouvrir dans une nouvelle fenêtre",
+      "new": "Nouvel onglet",
+      "pinned_name": "{{title}} (épinglé)"
     },
     "updates": {
       "title": "Mises à jour",

@@ -297,6 +297,7 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		}
 	}
 	if tag.RowsAffected() == 0 {
+		s.captureRunGatePR(ctx, tx, q, issue, w, config, in, eventKey, pgtype.UUID{})
 		if err := tx.Commit(ctx); err != nil {
 			return err
 		}
@@ -354,16 +355,40 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 	if err != nil {
 		return err
 	}
-	if _, err = q.RecordWakeupReceipt(ctx, db.RecordWakeupReceiptParams{
+	receipt, err := q.RecordWakeupReceipt(ctx, db.RecordWakeupReceiptParams{
 		ID: dbid.NewV7(), WakeupID: w.ID, Revision: w.Revision, EventKey: eventKey, EventType: eventType, Payload: encoded,
-	}); err != nil {
+	})
+	if err != nil {
 		return err
 	}
+	s.captureRunGatePR(ctx, tx, q, issue, w, config, in, eventKey, receipt.ID)
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 	announceWithdrawn()
 	return s.dispatchSystem(ctx, w)
+}
+
+// captureRunGatePR writes the shadow ledger row for a pr_merged or
+// pr_checks_failed input (CHE-1918). It shares the input's transaction behind a
+// savepoint: the row exists exactly when the receipt does, and a failure to
+// write it never touches the receipt. The queue it snapshots is the target's
+// before dispatch acts.
+func (s *IssueWakeupService) captureRunGatePR(ctx context.Context, tx pgx.Tx, q *db.Queries, issue db.Issue, w db.IssueWakeup, config *builtinWakeup, in PullRequestWakeupInput, eventKey string, receiptID pgtype.UUID) {
+	source, ok := RunGateSourceForRule(in.Rule)
+	if !ok {
+		return
+	}
+	CaptureRunGateEventInTx(ctx, tx, q, func(sq *db.Queries) RunGateEvent {
+		ev := RunGateEvent{
+			Issue: issue, Source: source, EventKey: eventKey, CandidateKey: util.UUIDToString(w.ID), Origin: RunGateOriginSystemWakeup,
+			EventTime: time.Now(), PRHeadSHA: in.HeadSHA, SystemRule: in.Rule, Wakeup: w, ReceiptID: receiptID,
+		}
+		if target, err := builtinTarget(ctx, s, sq, issue, config); err == nil && target.Agent.ID.Valid {
+			ev.AgentID, ev.SquadID = target.Agent.ID, target.SquadID
+		}
+		return ev
+	})
 }
 
 // ChildDoneDefaultInstruction is what the woken assignee is asked to do when
@@ -909,6 +934,11 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	}
 	if w.Revision != prev.Revision {
 		return tx.Commit(ctx)
+	}
+	// Every commit below, including those that evaluate nothing, means this
+	// pass got the locks an earlier failed pass did not; an error rolls it back.
+	if _, err = tx.Exec(ctx, "UPDATE issue_wakeup SET last_error=NULL WHERE id=$1 AND last_error IS NOT NULL", w.ID); err != nil {
+		return err
 	}
 	if pauseState.Paused {
 		held, err := settlePaused(ctx, tx, q, w)
