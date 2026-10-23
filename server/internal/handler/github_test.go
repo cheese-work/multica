@@ -128,6 +128,21 @@ func TestExtractClosingIdentifiers(t *testing.T) {
 			want: []string{},
 		},
 		{
+			name: "refs_links",
+			in:   []string{"", "Refs CHE-1988"},
+			want: []string{"CHE-1988"},
+		},
+		{
+			name: "part_of_links",
+			in:   []string{"", "Part of CHE-1988\nPart of: che-7"},
+			want: []string{"CHE-1988", "CHE-7"},
+		},
+		{
+			name: "refs_must_be_adjacent_and_whole_word",
+			in:   []string{"", "Prefs CHE-1 and Refs to CHE-2 and Apart of CHE-3"},
+			want: []string{},
+		},
+		{
 			name: "dedupe_across_fields",
 			in:   []string{"Closes MUL-1", "fixes mul-1"},
 			want: []string{"MUL-1"},
