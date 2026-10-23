@@ -184,16 +184,13 @@ func (h *Handler) decidePRAutoComplete(ctx context.Context, ws db.Workspace, iss
 		d.State = prAutoCompleteNone
 		return d, nil
 	}
-	// Terminal is the built-in done, or cancelled (a custom closed-category
-	// status resolves to it). A custom done-category status (agent_accepted,
-	// approved) still awaits the merge, so Effective's done is not used for it
-	// (CHE-1990). An unresolvable custom key is returned unchanged and treated as
-	// not terminal.
-	effective := resolver.Effective(ctx, h.issueStatusCatalog(), issue.Status)
+	// Only the literal built-in done and cancelled are terminal. Custom
+	// statuses, whatever their category (agent_accepted, approved), still move
+	// on merge; Effective would fold them into done or cancelled (CHE-1990).
 	// The guards that make a merge change nothing come first, so the issue page
 	// only speaks when a merge would move the issue.
 	switch {
-	case issue.Status == issuestatus.Done || effective == issuestatus.Cancelled:
+	case issue.Status == issuestatus.Done || issue.Status == issuestatus.Cancelled:
 		d.State = prAutoCompleteTerminal
 		return d, nil
 	case issue.TriageState.Valid:

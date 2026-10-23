@@ -1757,10 +1757,11 @@ func TestPRAutoComplete_TargetStatus(t *testing.T) {
 	}
 }
 
-// TestWebhook_MergedPR_MovesAgentAccepted (CHE-1990): custom done-category
-// statuses (agent_accepted, approved) are folded into done by Effective, so the
-// merge skipped them as terminal. A merge must still move them to the workspace
-// target; only the built-in done and cancelled stay put.
+// TestWebhook_MergedPR_MovesAgentAccepted (CHE-1990): custom statuses
+// (agent_accepted, approved, a closed-category dropped) are folded into done or
+// cancelled by Effective, so the merge skipped them as terminal. A merge must
+// still move them to the workspace target; only the literal built-in done and
+// cancelled stay put.
 func TestWebhook_MergedPR_MovesAgentAccepted(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("handler test fixture not initialized (no DB?)")
@@ -1770,11 +1771,13 @@ func TestWebhook_MergedPR_MovesAgentAccepted(t *testing.T) {
 	const installationID int64 = 30264014
 	ensureDoneStatus(t, "agent_accepted")
 	ensureDoneStatus(t, "approved")
+	createTestCustomStatus(t, "dropped", "closed")
 	merged := createTestCustomStatus(t, "merged", "started")
 	setWorkspacePRMergeStatusForTest(t, merged.Key)
 
 	accepted := prAutoCompleteTestIssue(t, "accepted by review", installationID)
 	approved := prAutoCompleteTestIssue(t, "approved by human", 0)
+	dropped := prAutoCompleteTestIssue(t, "custom closed status", 0)
 	done := prAutoCompleteTestIssue(t, "already done", 0)
 	cancelled := prAutoCompleteTestIssue(t, "already cancelled", 0)
 	for i, tc := range []struct {
@@ -1784,6 +1787,7 @@ func TestWebhook_MergedPR_MovesAgentAccepted(t *testing.T) {
 	}{
 		{accepted, "agent_accepted", merged.Key},
 		{approved, "approved", merged.Key},
+		{dropped, "dropped", merged.Key},
 		{done, "done", "done"},
 		{cancelled, "cancelled", "cancelled"},
 	} {
