@@ -225,9 +225,7 @@ func TestCredentialExclusiveProductionAdapters(test *testing.T) {
 			if err != nil {
 				test.Fatal(err)
 			}
-			if err := os.WriteFile(executable, binary, 0700); err != nil {
-				test.Fatal(err)
-			}
+			writeTestExecutable(test, executable, binary)
 			unmanaged := filepath.Join(root, "unmanaged")
 			if err := os.Mkdir(unmanaged, 0700); err != nil {
 				test.Fatal(err)
@@ -413,9 +411,7 @@ func TestCredentialFixtureDescriptorProbeDoesNotBlock(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	if err := os.WriteFile(executable, binary, 0700); err != nil {
-		test.Fatal(err)
-	}
+	writeTestExecutable(test, executable, binary)
 	reader, writer, err := os.Pipe()
 	if err != nil {
 		test.Fatal(err)
