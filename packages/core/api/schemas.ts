@@ -1483,6 +1483,8 @@ export const IssueSchema = z.object({
     .optional()
     .catch(undefined),
   project_id: z.string().nullable(),
+  // Older backends predate the per-issue workflow override.
+  workflow_id: z.string().nullable().optional().catch(null),
   position: z.number(),
   // Older backends predate `stage`; default to null so a missing field parses
   // cleanly into the non-optional Issue.stage (number | null).

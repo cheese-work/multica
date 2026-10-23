@@ -1719,6 +1719,11 @@
     },
     "detail": {
       "follows_project": "(from project)",
+      "follows_override": "(set on this issue)",
+      "override_title": "Workflow for this issue",
+      "override_follow_project": "Follow the project’s workflow",
+      "override_error": "Couldn’t change the workflow",
+      "no_workflow": "No workflow",
       "card_title": "{{workflow}} · from {{project}}",
       "card_hint": "The project’s workflow decides these columns and handoffs."
     },
