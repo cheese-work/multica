@@ -2453,6 +2453,7 @@ func (s *TaskService) SendDirectChatMessage(
 			"error", err)
 		return nil, err
 	}
+	s.RecordHumanDelegation(ctx, plan.Attribution)
 	s.NotifyDirectChatSent(ctx, out.Task)
 	return &out, nil
 }
@@ -2461,7 +2462,7 @@ func (s *TaskService) SendDirectChatMessage(
 // resolved before a transaction opens.
 type DirectChatSendPlan struct {
 	overlay          runtimeMCPOverlayData
-	attr             attribution.Result
+	Attribution      attribution.Result
 	attrSource       pgtype.Text
 	attrEvidenceKind pgtype.Text
 	attrEvidenceRef  pgtype.UUID
@@ -2483,7 +2484,7 @@ func (s *TaskService) PlanDirectChatSend(ctx context.Context, sessionID pgtype.U
 	if err != nil {
 		return plan, err
 	}
-	plan.attr = attr
+	plan.Attribution = attr
 	plan.attrSource, _, plan.attrEvidenceKind, plan.attrEvidenceRef = attributionCreateParams(attr)
 	return plan, nil
 }
@@ -2502,7 +2503,7 @@ func (s *TaskService) SendDirectChatMessageTx(
 	uploaderID pgtype.UUID,
 	sentVia string,
 ) (DirectChatSendResult, error) {
-	overlay, attr := plan.overlay, plan.attr
+	overlay, attr := plan.overlay, plan.Attribution
 	attrSource, attrEvidenceKind, attrEvidenceRef := plan.attrSource, plan.attrEvidenceKind, plan.attrEvidenceRef
 	var out DirectChatSendResult
 	err := func() error {

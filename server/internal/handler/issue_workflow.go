@@ -365,9 +365,6 @@ var newStatusDefaultColor = map[string]string{
 	"closed":    "#64748b",
 }
 
-// resolveStepInputs turns step inputs into steps, creating the new statuses
-// they name. The caller holds the exclusive catalog lock. A non-empty message
-// is a caller error.
 // errStatusCreateForbidden reports a workflow write that would add a status
 // to the workspace catalog for a caller who may not: statuses are shared by
 // every board, so only owners/admins create them (MUL-8120). Reusing an

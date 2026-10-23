@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -55,6 +56,71 @@ func cleanupDelegationDays(t *testing.T, f principalFixture, userIDs ...string) 
 }
 
 func utcDate(at time.Time) string { return at.UTC().Format(time.DateOnly) }
+
+func TestSelfHostTelemetryAutopilotRecoveryRecordsOnlyAfterCommit(test *testing.T) {
+	for _, outcome := range []string{"committed", "rollback", "automatic"} {
+		test.Run(outcome, func(test *testing.T) {
+			ctx := context.Background()
+			fixture, ownerID := newPrincipalFixture(test)
+			fixture.svc.TaskSvc.RecordMemberActivity = true
+			cleanupDelegationDays(test, fixture, ownerID)
+			agentID := fixture.privateAgentOwnedBy(test, ownerID, "recovery telemetry")
+			autopilotID, triggerID := fixture.autopilotWithTrigger(test, agentID, ownerID, ownerID)
+			failedRunID := fixture.Insert(test, "autopilot_run", testutil.Cols{
+				"autopilot_id": autopilotID, "trigger_id": triggerID, "source": "schedule", "status": "failed",
+			})
+			failedAt := time.Now().UTC().Add(-time.Hour)
+			failedTaskID := fixture.Task(test, agentID, testutil.Cols{
+				"autopilot_run_id": failedRunID, "status": "failed", "failure_reason": "agent_error.provider_server_error", "completed_at": failedAt,
+			})
+			runID := fixture.Insert(test, "autopilot_run", testutil.Cols{
+				"autopilot_id": autopilotID, "trigger_id": triggerID, "source": "schedule", "status": "running",
+			})
+			fixture.Cleanup(test, "DELETE FROM agent_task_queue WHERE autopilot_run_id=$1", runID)
+			fixture.Cleanup(test, "DELETE FROM provider_failure_recovery WHERE failed_task_id=$1", failedTaskID)
+			attempt := &providerFailureRecoveryAttempt{
+				FailedTaskID: parseTestUUID(test, failedTaskID), FailedAt: failedAt, ProbeAt: time.Now().UTC(), ProbeStatus: http.StatusUnauthorized,
+				Scope: providerFailureRecoveryScope{Kind: "autopilot_schedule", TriggerID: parseTestUUID(test, triggerID)},
+			}
+			autopilot, err := fixture.q.GetAutopilot(ctx, parseTestUUID(test, autopilotID))
+			if err != nil {
+				test.Fatal(err)
+			}
+			run, err := fixture.q.GetAutopilotRun(ctx, parseTestUUID(test, runID))
+			if err != nil {
+				test.Fatal(err)
+			}
+			commitErr := errors.New("recovery commit failed")
+			if outcome == "rollback" {
+				fixture.svc.TxStarter = wakeupCommitFailureStarter{TxStarter: fixture.Pool, err: commitErr}
+			}
+			actorID := parseTestUUID(test, ownerID)
+			if outcome == "automatic" {
+				actorID = pgtype.UUID{}
+			}
+			err = fixture.svc.dispatchRunOnly(ctx, autopilot, &run, actorID, attempt)
+			wantTasks := 1
+			if outcome == "rollback" {
+				wantTasks = 0
+				if !errors.Is(err, commitErr) {
+					test.Fatalf("dispatch error = %v, want %v", err, commitErr)
+				}
+			} else if err != nil {
+				test.Fatal(err)
+			}
+			if count := fixture.Count(test, "SELECT count(*) FROM agent_task_queue WHERE autopilot_run_id=$1", runID); count != wantTasks {
+				test.Fatalf("recovery tasks = %d, want %d", count, wantTasks)
+			}
+			wantDays := 0
+			if outcome == "committed" {
+				wantDays = 1
+			}
+			if days := delegationDays(test, fixture, ownerID); len(days) != wantDays {
+				test.Fatalf("%s recovery delegation days = %v, want %d days", outcome, days, wantDays)
+			}
+		})
+	}
+}
 
 func assignIssueToAgent(t *testing.T, f principalFixture, issue pgtype.UUID, agent string) db.Issue {
 	t.Helper()
