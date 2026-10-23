@@ -1606,6 +1606,7 @@
       "target_squad": "Squad · leader dispatches",
       "target_member": "Member",
       "instructions_hint": "Sent to the handler with this run, alongside the issue description and comments.",
+      "advance_on_ci_green": "When a linked PR's checks pass, move to the next column",
       "next_hint": "Written into the handler’s brief so it knows which status comes next. The system never advances the status when a run ends.",
       "preview_brief": "Preview the agent’s brief",
       "preview_title": "Brief for the “{{status}}” step",

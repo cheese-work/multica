@@ -484,6 +484,9 @@ WITH target AS (
 cleared_wakeup_pr_events AS (
  DELETE FROM issue_wakeup_pr_event WHERE wakeup_id IN (SELECT id FROM issue_wakeup WHERE issue_id IN (SELECT target.id FROM target))
 ),
+cleared_ci_advances AS (
+ DELETE FROM issue_ci_advance WHERE issue_id IN (SELECT target.id FROM target)
+),
 cleared_wakeup_receipts AS (
  DELETE FROM issue_wakeup_receipt WHERE wakeup_id IN (SELECT id FROM issue_wakeup WHERE issue_id IN (SELECT target.id FROM target))
 ),

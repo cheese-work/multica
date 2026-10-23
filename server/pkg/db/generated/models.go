@@ -1253,6 +1253,12 @@ type IssueChildEvent struct {
 	ProcessedAt  pgtype.Timestamptz `json:"processed_at"`
 }
 
+type IssueCiAdvance struct {
+	IssueID   pgtype.UUID        `json:"issue_id"`
+	HeadSha   string             `json:"head_sha"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
 type IssueDependency struct {
 	ID               pgtype.UUID `json:"id"`
 	IssueID          pgtype.UUID `json:"issue_id"`
