@@ -30,13 +30,11 @@ func TestMain(m *testing.M) {
 
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
-		fmt.Printf("Skipping tests: could not connect to database: %v\n", err)
-		os.Exit(0)
+		testutil.ExitWithoutDatabase(err)
 	}
 	if err := pool.Ping(ctx); err != nil {
-		fmt.Printf("Skipping tests: database not reachable: %v\n", err)
 		pool.Close()
-		os.Exit(0)
+		testutil.ExitWithoutDatabase(err)
 	}
 	testPool = pool
 	testQueries = db.New(pool)
