@@ -1757,6 +1757,41 @@ func TestPRAutoComplete_TargetStatus(t *testing.T) {
 	}
 }
 
+// TestWebhook_MergedPR_MovesAgentAccepted (CHE-1990): agent_accepted is a
+// custom done-category status, so Effective folds it into done and the merge
+// skipped it as terminal. A merge must still move it to the workspace target;
+// done and cancelled stay put.
+func TestWebhook_MergedPR_MovesAgentAccepted(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	secret := "agent-accepted-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+	const installationID int64 = 30264014
+	ensureDoneStatus(t, "agent_accepted")
+	merged := createTestCustomStatus(t, "merged", "started")
+	setWorkspacePRMergeStatusForTest(t, merged.Key)
+
+	accepted := prAutoCompleteTestIssue(t, "accepted by review", installationID)
+	done := prAutoCompleteTestIssue(t, "already done", 0)
+	cancelled := prAutoCompleteTestIssue(t, "already cancelled", 0)
+	for i, tc := range []struct {
+		issue  IssueResponse
+		status string
+		want   string
+	}{
+		{accepted, "agent_accepted", merged.Key},
+		{done, "done", "done"},
+		{cancelled, "cancelled", "cancelled"},
+	} {
+		dbfx.Exec(t, `UPDATE issue SET status = $2 WHERE id = $1`, tc.issue.ID, tc.status)
+		firePRWebhook(t, secret, installationID, int32(i+1), tc.issue.Identifier+": fix", "", "fix/accepted", "merged")
+		if got := issueStatusForTest(t, tc.issue.ID); got != tc.want {
+			t.Errorf("%s + merged PR: status = %q, want %q", tc.status, got, tc.want)
+		}
+	}
+}
+
 func TestPRMergeStatusSetting(t *testing.T) {
 	for _, tc := range []struct {
 		settings string

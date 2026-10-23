@@ -190,7 +190,9 @@ func (h *Handler) decidePRAutoComplete(ctx context.Context, ws db.Workspace, iss
 	// The guards that make a merge change nothing come first, so the issue page
 	// only speaks when a merge would move the issue.
 	switch {
-	case effective == issuestatus.Done || effective == issuestatus.Cancelled:
+	// agent_accepted (CHE-1990) is a custom done-category status that Effective
+	// folds into done, but it still awaits the merge, so it is not terminal here.
+	case issue.Status != "agent_accepted" && (effective == issuestatus.Done || effective == issuestatus.Cancelled):
 		d.State = prAutoCompleteTerminal
 		return d, nil
 	case issue.TriageState.Valid:
