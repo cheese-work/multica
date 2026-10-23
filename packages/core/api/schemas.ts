@@ -563,6 +563,7 @@ const IssueWorkflowStepSchema = z.object({
   instructions: z.string().default(""),
   next_status_key: z.string().optional(),
   back_status_key: z.string().optional(),
+  advance_on_ci_green: z.boolean().optional(),
 }).loose();
 
 export const IssueWorkflowSchema = z.object({

@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -169,10 +168,4 @@ func (h *Handler) SetIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	h.publishIssueSnapshots(ctx, []db.Issue{updated}, "member", uuidToString(member.UserID))
 	writeJSON(w, http.StatusOK, h.issueResponseWithCategory(ctx, updated))
-}
-
-func (h *Handler) issueResponseWithCategory(ctx context.Context, issue db.Issue) IssueResponse {
-	resp := issueToResponse(issue, h.getIssuePrefix(ctx, issue.WorkspaceID))
-	h.fillStatusCategory(ctx, issue.WorkspaceID, &resp)
-	return resp
 }

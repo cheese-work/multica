@@ -11,6 +11,26 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const claimIssueCIAdvance = `-- name: ClaimIssueCIAdvance :execrows
+INSERT INTO issue_ci_advance (issue_id, head_sha)
+VALUES ($1::uuid, $2::text)
+ON CONFLICT (issue_id, head_sha) DO NOTHING
+`
+
+type ClaimIssueCIAdvanceParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	HeadSha string      `json:"head_sha"`
+}
+
+// One green head advances an issue once. Zero rows means this head already did.
+func (q *Queries) ClaimIssueCIAdvance(ctx context.Context, arg ClaimIssueCIAdvanceParams) (int64, error) {
+	result, err := q.db.Exec(ctx, claimIssueCIAdvance, arg.IssueID, arg.HeadSha)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countIssuesOverridingToIssueWorkflow = `-- name: CountIssuesOverridingToIssueWorkflow :one
 SELECT COUNT(*)::bigint FROM issue
 WHERE workspace_id = $1::uuid
@@ -547,6 +567,21 @@ func (q *Queries) LockProjectForWorkflowChange(ctx context.Context, arg LockProj
 		&i.WorkflowID,
 	)
 	return i, err
+}
+
+const releaseIssueCIAdvance = `-- name: ReleaseIssueCIAdvance :exec
+DELETE FROM issue_ci_advance
+WHERE issue_id = $1::uuid AND head_sha = $2::text
+`
+
+type ReleaseIssueCIAdvanceParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	HeadSha string      `json:"head_sha"`
+}
+
+func (q *Queries) ReleaseIssueCIAdvance(ctx context.Context, arg ReleaseIssueCIAdvanceParams) error {
+	_, err := q.db.Exec(ctx, releaseIssueCIAdvance, arg.IssueID, arg.HeadSha)
+	return err
 }
 
 const remapProjectIssueStatus = `-- name: RemapProjectIssueStatus :many

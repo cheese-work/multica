@@ -346,3 +346,33 @@ func TestSwitchHonoursExpectedRevision(t *testing.T) {
 		t.Fatalf("response revision = %d, want %d: the caller chains the next write on it", got.Revision, revision+1)
 	}
 }
+
+// A green CI head advances an issue by the workflow the issue follows, so an
+// override with the flag moves an issue whose project's workflow has none.
+func TestCIGreenAdvancesByTheIssuesOverrideWorkflow(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	seedTestCatalog(t)
+	const installationID int64 = 1986001
+	const prNumber int32 = 198601
+	fx := newPRMergeWebhookFixture(t, installationID)
+	wf := createTestWorkflowSteps(t, "CI override "+workflowTestSuffix(), []map[string]any{
+		{"status_key": "backlog"},
+		{"status_key": "in_progress", "advance_on_ci_green": true},
+		{"status_key": "in_review"},
+		{"status_key": "blocked"},
+	})
+	projectID := createWorkflowTestProject(t, "CI override project")
+	if _, err := testPool.Exec(context.Background(), `UPDATE issue SET project_id=$2, workflow_id=$3, status='in_progress', assignee_type=NULL, assignee_id=NULL WHERE id=$1`, fx.child.ID, projectID, wf.ID); err != nil {
+		t.Fatal(err)
+	}
+	linkedPRForWakeup(t, fx, installationID, prNumber, "green-ovr-a")
+	setWorkspacePRWakeSetting(t, "github_enabled", true)
+	snap := newGreenSnapshot("green-ovr-a")
+	refresh := startSnapshotRefresh(t, installationID, prNumber, snap.get)
+
+	snap.set(t, prNumber, "green-ovr-a", "SUCCESS")
+	refresh()
+	wantIssueStatus(t, fx.child.ID, "in_review")
+}

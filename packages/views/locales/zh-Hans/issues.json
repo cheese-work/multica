@@ -1547,6 +1547,7 @@
       "target_squad": "小队 · 由 leader 分派",
       "target_member": "成员",
       "instructions_hint": "作为这次运行的说明发给处理人，和任务描述、评论一起作为上下文。",
+      "advance_on_ci_green": "关联 PR 的检查通过后，自动移到下一列",
       "next_hint": "写进处理人收到的说明里，告诉它下一步该把状态改成什么。系统不会在运行结束后自动推进状态。",
       "preview_brief": "预览智能体收到的说明",
       "preview_title": "「{{status}}」这一步的说明",

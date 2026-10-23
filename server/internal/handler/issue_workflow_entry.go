@@ -127,10 +127,29 @@ func (h *Handler) createHandoffResolver(r *http.Request, workspaceID, creatorTyp
 	}
 }
 
+// handoffRunReasonTargetDiffers records that a handoff run started although the
+// caller asked for no run: the step's handler is not the caller.
+const handoffRunReasonTargetDiffers = "handoff_target_differs"
+
+// suppressRunForWrite is the write's suppress_run after the handoff rule:
+// --no-start says the caller's own work is already underway, which holds only
+// when the caller is the agent the handoff goes to. A handoff to anyone else
+// keeps its run, or nobody starts it. The reason is set when the flag was
+// overridden.
+func (h *Handler) suppressRunForWrite(ctx context.Context, actorType, actorID string, prev db.Issue, params db.UpdateIssueParams, handoff *workflowHandoff, suppressRun bool) (suppress bool, reason string) {
+	if !suppressRun || handoff == nil {
+		return suppressRun, ""
+	}
+	if actorType == "agent" && h.handedToAgent(ctx, prev, params, true) == actorID {
+		return true, ""
+	}
+	return false, handoffRunReasonTargetDiffers
+}
+
 // workflowHandoffPayload describes a handoff on the issue:updated event, so
 // the activity log can record the status change and the handoff as one
 // timeline entry.
-func workflowHandoffPayload(issue db.Issue, hand *workflowHandoff, note string, runStarted bool) map[string]string {
+func workflowHandoffPayload(issue db.Issue, hand *workflowHandoff, note string, runStarted bool, runReason string) map[string]string {
 	out := map[string]string{
 		"workflow": hand.def.Name,
 		"to_type":  issue.AssigneeType.String,
@@ -139,6 +158,9 @@ func workflowHandoffPayload(issue db.Issue, hand *workflowHandoff, note string, 
 	}
 	if runStarted && note != "" {
 		out["note"] = note
+	}
+	if runStarted && runReason != "" {
+		out["run_reason"] = runReason
 	}
 	return out
 }

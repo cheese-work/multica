@@ -1606,6 +1606,7 @@
       "target_squad": "Squad · le leader répartit",
       "target_member": "Membre",
       "instructions_hint": "Envoyées au responsable avec cette exécution, avec la description et les commentaires de la tâche.",
+      "advance_on_ci_green": "Quand les contrôles d’une PR liée réussissent, passer à la colonne suivante",
       "next_hint": "Inscrit dans les consignes du responsable pour qu’il sache quel état vient ensuite. Le système n’avance jamais l’état à la fin d’une exécution.",
       "preview_brief": "Aperçu des consignes de l’agent",
       "preview_title": "Consignes de l’étape « {{status}} »",
