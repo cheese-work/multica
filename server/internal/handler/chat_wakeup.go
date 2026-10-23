@@ -98,6 +98,9 @@ func (h *Handler) CreateChatWakeup(w http.ResponseWriter, r *http.Request) {
 		return
 	case request.At != nil:
 		fireAt = *request.At
+	case request.AfterSeconds > int64(service.ChatWakeupMaxAhead/time.Second):
+		writeError(w, http.StatusBadRequest, "the wakeup time must be within 24 hours")
+		return
 	default:
 		fireAt = now.Add(time.Duration(request.AfterSeconds) * time.Second)
 	}
