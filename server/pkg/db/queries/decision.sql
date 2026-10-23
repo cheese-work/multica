@@ -384,6 +384,30 @@ WHERE request.workspace_id = sqlc.arg('workspace_id')
   AND (answer.id = ANY(sqlc.arg('answer_ids')::uuid[]) OR answer.chat_message_ids && sqlc.arg('message_ids')::uuid[])
 ORDER BY answer.created_at, answer.id;
 
+-- name: ListOpenDecisionRequestsBeforeMessage :many
+-- Open asked requests in a DM whose ping precedes the given message: what a
+-- bare reply in that DM is answering.
+SELECT request.id, request.issue_id, request.issue_comment_id, request.ask,
+    COALESCE(workspace.issue_prefix || '-' || issue.number::text, request.issue_id::text)::text AS issue_key
+FROM decision_request request
+JOIN chat_message ping ON ping.id = request.ping_message_id AND ping.chat_session_id = request.chat_session_id
+LEFT JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
+LEFT JOIN workspace ON workspace.id = request.workspace_id
+WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.chat_session_id = sqlc.arg('session_id')
+  AND request.status = 'open' AND request.origin = 'asked'
+  AND ping.created_at < sqlc.arg('before')
+ORDER BY ping.created_at, request.id
+LIMIT 5;
+
+-- name: GetLastAssistantMessageBefore :one
+-- The agent's own last reply before a message: the options a bare reply chose
+-- between, attestable with --context-message.
+SELECT id FROM chat_message
+WHERE chat_session_id = sqlc.arg('session_id') AND role = 'assistant' AND message_kind = 'message'
+  AND created_at < sqlc.arg('before')
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
+
 -- name: LatestDecisionRequestLane :one
 SELECT chat_session_id FROM decision_request
 WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')

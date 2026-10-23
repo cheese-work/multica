@@ -20,10 +20,13 @@ import (
 )
 
 type decisionRecordInput struct {
-	ParentID        pgtype.UUID
-	MessageIDs      []pgtype.UUID
-	Content         string
-	EscalationClass string
+	ParentID   pgtype.UUID
+	MessageIDs []pgtype.UUID
+	// ContextMessageID is an earlier assistant message of the same DM, quoted
+	// as the options the human's reply chose between.
+	ContextMessageID pgtype.UUID
+	Content          string
+	EscalationClass  string
 }
 
 type decisionRecordResult struct {
@@ -249,6 +252,7 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 	}
 	seen := make(map[pgtype.UUID]bool)
 	contents := make([]string, 0, len(input.MessageIDs))
+	earliestSource := task.StartedAt.Time
 	for _, messageID := range input.MessageIDs {
 		if !messageID.Valid || seen[messageID] {
 			return empty, decisionIntentRefusal{http.StatusBadRequest, "source messages must be distinct"}
@@ -262,9 +266,22 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 			return empty, decisionIntentRefusal{http.StatusBadRequest, "source messages are not eligible for this answering turn"}
 		}
 		contents = append(contents, message.Content)
+		if message.CreatedAt.Time.Before(earliestSource) {
+			earliestSource = message.CreatedAt.Time
+		}
 	}
 	snapshot := strings.Join(contents, "\n\n")
-	quote := "> " + strings.ReplaceAll(snapshot, "\n", "\n> ")
+	quote := blockQuote(snapshot)
+	if input.ContextMessageID.Valid {
+		offered, err := queries.GetChatMessage(ctx, input.ContextMessageID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return empty, err
+		}
+		if err != nil || offered.ChatSessionID != session.ID || offered.Role != "assistant" || offered.MessageKind != "message" || !offered.CreatedAt.Time.Before(earliestSource) {
+			return empty, decisionIntentRefusal{http.StatusBadRequest, "context message is not an earlier assistant message of this DM"}
+		}
+		quote = "Options offered:\n" + blockQuote(offered.Content) + "\n\nReply:\n" + quote
+	}
 	if input.Content != "" {
 		quote = input.Content + "\n\n" + quote
 	}
@@ -315,4 +332,8 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 	}
 	handler.DecisionWorker.Notify()
 	return decisionRecordResult{Request: decision, Answer: answer, Comment: comment.Comment(), Message: message, ClearedComments: cleared}, nil
+}
+
+func blockQuote(text string) string {
+	return "> " + strings.ReplaceAll(text, "\n", "\n> ")
 }

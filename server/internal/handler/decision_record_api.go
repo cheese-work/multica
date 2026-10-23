@@ -17,6 +17,13 @@ func (handler *Handler) createDecisionRecordComment(writer http.ResponseWriter, 
 	if !ok {
 		return
 	}
+	var contextMessageID pgtype.UUID
+	if input.ContextMessageID != "" {
+		contextMessageID, ok = parseUUIDOrBadRequest(writer, input.ContextMessageID, "context_message_id")
+		if !ok {
+			return
+		}
+	}
 	var parentID pgtype.UUID
 	if input.ParentID != nil {
 		parentID, ok = parseUUIDOrBadRequest(writer, *input.ParentID, "parent_id")
@@ -27,7 +34,7 @@ func (handler *Handler) createDecisionRecordComment(writer http.ResponseWriter, 
 	if handler.rejectMissingRequiredSourceLink(writer, request, "agent", true, issue, input.Content, "content") {
 		return
 	}
-	result, err := handler.createAskedDecisionRecord(request, issue, decisionRecordInput{ParentID: parentID, MessageIDs: messageIDs, Content: input.Content, EscalationClass: input.EscalationClass})
+	result, err := handler.createAskedDecisionRecord(request, issue, decisionRecordInput{ParentID: parentID, MessageIDs: messageIDs, ContextMessageID: contextMessageID, Content: input.Content, EscalationClass: input.EscalationClass})
 	if err != nil {
 		writeDecisionError(writer, err, "decision record")
 		return
