@@ -25,7 +25,6 @@ import { daemonStatusAlive } from "../shared/daemon-types";
 import { ensureManagedCli, managedCliPath } from "./cli-bootstrap";
 import { decideVersionAction } from "./version-decision";
 import {
-  DAEMON_STOP_EXEC_TIMEOUT_MS,
   deriveProfileName,
   profileArgs,
   profileConfigPath,
@@ -35,6 +34,7 @@ import {
   profileUserIdPath,
 } from "./daemon-profile";
 import { probeProfileHealth } from "./daemon-port";
+import { execDaemonStop, restartAfterStop } from "./daemon-stop";
 import {
   DaemonOperationGate,
   DaemonRecoveryPolicy,
@@ -1066,17 +1066,10 @@ async function stopDaemon(): Promise<{ success: boolean; error?: string }> {
 
   const args = ["daemon", "stop", ...profileArgs(active.name)];
 
-  return new Promise((resolve) => {
-    execFile(bin, args, { timeout: DAEMON_STOP_EXEC_TIMEOUT_MS }, (err) => {
-      if (err) {
-        resolve({ success: false, error: err.message });
-      } else {
-        resolve({ success: true });
-      }
-      currentState = "stopped";
-      sendStatus({ state: "stopped" });
-    });
-  });
+  const result = await execDaemonStop(bin, args);
+  currentState = "stopped";
+  sendStatus({ state: "stopped" });
+  return result;
 }
 
 async function restartDaemon(): Promise<{ success: boolean; error?: string }> {
@@ -1085,9 +1078,7 @@ async function restartDaemon(): Promise<{ success: boolean; error?: string }> {
   // first-workspace, and any future restart caller all route through here).
   // #3916.
   if (await lifecycleBlockedByForeignDaemon()) return { success: true };
-  const stopResult = await stopDaemon();
-  if (!stopResult.success) return stopResult;
-  return startDaemon();
+  return restartAfterStop(stopDaemon, startDaemon);
 }
 
 async function daemonPidIsConfirmedAbsent(profile: string): Promise<boolean> {
