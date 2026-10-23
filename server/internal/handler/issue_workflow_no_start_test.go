@@ -33,6 +33,7 @@ func TestNoStartKeepsHandoffRunForADifferentHandler(t *testing.T) {
 		{"handoff, member, no-start", asMember, true, true, true},
 		{"handoff, member, start", asMember, true, false, true},
 		{"handoff, actor is handler, no-start", asHandler, true, true, false},
+		{"handoff, actor is handler, start", asHandler, true, false, true},
 		{"no handoff, member, no-start", asMember, false, true, false},
 		{"no handoff, member, start", asMember, false, false, true},
 	}
