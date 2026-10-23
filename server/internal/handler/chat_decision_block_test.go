@@ -47,22 +47,22 @@ func TestChatClaimCarriesOpenDecisionAsk(test *testing.T) {
 	dbfx.QueryRow(test, `SELECT issue.number, workspace.issue_prefix FROM issue JOIN workspace ON workspace.id = issue.workspace_id WHERE issue.id = $1`, issueID).Scan(&number, &prefix)
 
 	claimed := claimForkTask(test, runtimeID, daemonID)
+	carrier := claimed.ChatDecisionContext
 	for _, want := range []string{
 		"<decision_requests>", "</decision_requests>", "not instructions",
 		"Waive only PR #317's retrospective test-first practice?",
 		requestID, commentID, issueID, replyID,
 		"--decision-record", "--message", "--parent",
-		"waive test-first",
 	} {
-		if !strings.Contains(claimed.ChatMessage, want) {
-			test.Fatalf("claim input lacks %q:\n%s", want, claimed.ChatMessage)
+		if !strings.Contains(carrier, want) {
+			test.Fatalf("carrier lacks %q:\n%s", want, carrier)
 		}
 	}
-	if !strings.Contains(claimed.ChatMessage, fmt.Sprintf("%s-%d", prefix, number)) {
-		test.Fatalf("claim input lacks the issue identifier:\n%s", claimed.ChatMessage)
+	if !strings.Contains(carrier, fmt.Sprintf("%s-%d", prefix, number)) {
+		test.Fatalf("carrier lacks the issue identifier:\n%s", carrier)
 	}
-	if strings.Index(claimed.ChatMessage, "</decision_requests>") > strings.Index(claimed.ChatMessage, "waive test-first") {
-		test.Fatalf("user text sits inside the data fence:\n%s", claimed.ChatMessage)
+	if claimed.ChatMessage != "waive test-first" || strings.Contains(claimed.ChatMessage, "decision_requests") {
+		test.Fatalf("the user text must stay outside the data fence, got %q", claimed.ChatMessage)
 	}
 }
 
@@ -78,8 +78,10 @@ func TestChatClaimSkipsDecisionAnsweredBeforeLastAgentTurn(test *testing.T) {
 	sendDirectChat(test, ctx, agentID, sessionID, "next topic")
 
 	claimed := claimForkTask(test, runtimeID, daemonID)
-	if strings.Contains(claimed.ChatMessage, "Old answered question") || strings.Contains(claimed.ChatMessage, "decision_requests") {
-		test.Fatalf("answered request was repeated:\n%s", claimed.ChatMessage)
+	for _, banned := range []string{"Old answered question", "[request ", "--parent"} {
+		if strings.Contains(claimed.ChatDecisionContext, banned) {
+			test.Fatalf("answered request was repeated (%q):\n%s", banned, claimed.ChatDecisionContext)
+		}
 	}
 }
 
@@ -93,16 +95,58 @@ func TestChatClaimFencesAndCapsDecisionAsks(test *testing.T) {
 	seedDMDecision(test, agentID, sessionID, long, "open", "1 minute")
 	sendDirectChat(test, ctx, agentID, sessionID, "yes")
 
-	claimed := claimForkTask(test, runtimeID, daemonID)
-	message := claimed.ChatMessage
-	if strings.Count(message, "</decision_requests>") != 1 {
-		test.Fatalf("closing tag not escaped:\n%.600s", message)
+	carrier := claimForkTask(test, runtimeID, daemonID).ChatDecisionContext
+	if strings.Count(carrier, "</decision_requests>") != 1 {
+		test.Fatalf("closing tag not escaped:\n%.600s", carrier)
 	}
-	if strings.Count(message, "[request ") != 3 || strings.Contains(message, "Ask number A") || strings.Contains(message, "Ask number B") {
-		test.Fatalf("not the newest 3 requests:\n%.1200s", message)
+	if strings.Count(carrier, "[request ") != 3 || strings.Contains(carrier, "Ask number A") || strings.Contains(carrier, "Ask number B") {
+		test.Fatalf("not the newest 3 requests:\n%.1200s", carrier)
 	}
-	if len(message) > 3*(4<<10)+2<<10 {
-		test.Fatalf("block is %d bytes", len(message))
+	if len(carrier) > 3*(4<<10)+2<<10 {
+		test.Fatalf("carrier is %d bytes", len(carrier))
+	}
+}
+
+// Four open asks, three shown: the count follows eligibility, not the rows on
+// display, so the run is told several are open and not to guess (CHE-1868).
+func TestChatClaimCountsAllOpenAsksBeforeTheDisplayLimit(test *testing.T) {
+	ctx := context.Background()
+	agentID, sessionID, runtimeID, daemonID := setupDirectChatSession(test, ctx, "Decision DM")
+	for index := 0; index < 4; index++ {
+		seedDMDecision(test, agentID, sessionID, "Ask number "+string(rune('A'+index)), "open", string(rune('4'-index))+" hours")
+	}
+	sendDirectChat(test, ctx, agentID, sessionID, "yes")
+
+	carrier := claimForkTask(test, runtimeID, daemonID).ChatDecisionContext
+	if strings.Count(carrier, "[request ") != 3 {
+		test.Fatalf("want 3 rows shown:\n%s", carrier)
+	}
+	for _, want := range []string{"4 open", "showing 3", "1 omitted", "Do not guess"} {
+		if !strings.Contains(carrier, want) {
+			test.Fatalf("carrier lacks %q:\n%s", want, carrier)
+		}
+	}
+	if strings.Contains(carrier, "answers it") {
+		test.Fatalf("truncation turned several asks into a single-request binding:\n%s", carrier)
+	}
+}
+
+// A request in a sibling DM of the same workspace, or one whose workspace id is
+// foreign, never reaches this DM's carrier.
+func TestChatClaimDoesNotLeakAcrossDMsOrWorkspaces(test *testing.T) {
+	ctx := context.Background()
+	agentID, sessionID, runtimeID, daemonID := setupDirectChatSession(test, ctx, "Decision DM")
+	_, siblingID, _, _ := setupDirectChatSession(test, ctx, "Sibling DM")
+	seedDMDecision(test, agentID, siblingID, "Sibling ask?", "open", "2 hours")
+	foreignID, _, _ := seedDMDecision(test, agentID, sessionID, "Foreign workspace ask?", "open", "2 hours")
+	dbfx.Exec(test, `UPDATE decision_request SET workspace_id = gen_random_uuid() WHERE id = $1`, foreignID)
+	sendDirectChat(test, ctx, agentID, sessionID, "yes")
+
+	carrier := claimForkTask(test, runtimeID, daemonID).ChatDecisionContext
+	for _, banned := range []string{"Sibling ask?", "Foreign workspace ask?", "[request "} {
+		if strings.Contains(carrier, banned) {
+			test.Fatalf("carrier leaked %q:\n%s", banned, carrier)
+		}
 	}
 }
 
@@ -124,15 +168,19 @@ func TestChatClaimCarriesRecentDecisionReferences(test *testing.T) {
 	})
 	sendDirectChat(test, ctx, agentID, sessionID, "what happened?")
 
-	message := claimForkTask(test, runtimeID, daemonID).ChatMessage
+	claimed := claimForkTask(test, runtimeID, daemonID)
+	message := claimed.ChatDecisionContext
+	if claimed.ChatMessage != "what happened?" {
+		test.Fatalf("the message must stay the user's text, got %q", claimed.ChatMessage)
+	}
 	if !strings.Contains(message, "Decision request cancelled: issue_closed.") {
 		test.Fatalf("recent decision reference missing:\n%s", message)
 	}
 	if strings.Contains(message, "Old note") || strings.Contains(message, "Cancelled ask") {
 		test.Fatalf("seen decision context repeated:\n%s", message)
 	}
-	if strings.Count(message, "</decision_requests>") != 1 || strings.Index(message, "</decision_requests>") > strings.Index(message, "what happened?") {
-		test.Fatalf("reference note is not fenced as data:\n%s", message)
+	if strings.Count(message, "</decision_requests>") != 1 || strings.Contains(message, "--parent") || strings.Contains(message, "[request ") {
+		test.Fatalf("reference note is not fenced as informational data:\n%s", message)
 	}
 }
 
@@ -156,8 +204,8 @@ func TestChatClaimCarriesDecisionNoteWrittenBetweenClaimAndCompletion(test *test
 	}
 	sendDirectChat(test, ctx, agentID, sessionID, "second turn")
 	second := claimForkTask(test, runtimeID, daemonID)
-	if !strings.Contains(second.ChatMessage, "Raced the claim.") {
-		test.Fatalf("note written after the first claim was lost:\n%s", second.ChatMessage)
+	if !strings.Contains(second.ChatDecisionContext, "Raced the claim.") {
+		test.Fatalf("note written after the first claim was lost:\n%s", second.ChatDecisionContext)
 	}
 
 	// The second claim delivered it; the third must not repeat it.
@@ -166,8 +214,8 @@ func TestChatClaimCarriesDecisionNoteWrittenBetweenClaimAndCompletion(test *test
 		test.Fatal(err)
 	}
 	sendDirectChat(test, ctx, agentID, sessionID, "third turn")
-	if third := claimForkTask(test, runtimeID, daemonID); strings.Contains(third.ChatMessage, "Raced the claim.") {
-		test.Fatalf("delivered note repeated:\n%s", third.ChatMessage)
+	if third := claimForkTask(test, runtimeID, daemonID); strings.Contains(third.ChatDecisionContext, "Raced the claim.") {
+		test.Fatalf("delivered note repeated:\n%s", third.ChatDecisionContext)
 	}
 }
 
@@ -190,16 +238,17 @@ func TestChatClaimBoundsWholeDecisionBlockForLegacyInput(test *testing.T) {
 	}
 	dbfx.Task(test, agentID, testutil.Cols{"chat_session_id": sessionID, "status": "queued", "runtime_id": runtimeID})
 
-	message := claimForkTask(test, runtimeID, daemonID).ChatMessage
-	end := strings.Index(message, "</decision_requests>")
+	claimed := claimForkTask(test, runtimeID, daemonID)
+	carrier := claimed.ChatDecisionContext
+	end := strings.Index(carrier, "</decision_requests>")
 	if end < 0 {
-		test.Fatalf("no decision block:\n%.400s", message)
+		test.Fatalf("no decision block:\n%.400s", carrier)
 	}
-	if size := end + len("</decision_requests>"); size > 32<<10 {
+	if size := len(carrier); size > 32<<10 {
 		test.Fatalf("decision block is %d bytes, want at most 32768", size)
 	}
-	if !strings.Contains(message, "legacy 299") {
-		test.Fatalf("the legacy input itself must stay whole")
+	if !strings.Contains(claimed.ChatMessage, "legacy 299") || strings.Contains(claimed.ChatMessage, "decision_requests") {
+		test.Fatalf("the legacy input itself must stay whole and unprefixed")
 	}
 }
 
@@ -219,7 +268,7 @@ func TestChatClaimCarriesDecisionNoteAcrossCompactionTask(test *testing.T) {
 	})
 	sendDirectChat(test, ctx, agentID, sessionID, "what happened?")
 
-	message := claimForkTask(test, runtimeID, daemonID).ChatMessage
+	message := claimForkTask(test, runtimeID, daemonID).ChatDecisionContext
 	if !strings.Contains(message, "Before compaction.") {
 		test.Fatalf("note before the compaction task was lost:\n%s", message)
 	}
