@@ -202,3 +202,25 @@ func TestChatClaimBoundsWholeDecisionBlockForLegacyInput(test *testing.T) {
 		test.Fatalf("the legacy input itself must stay whole")
 	}
 }
+
+// An automatic compaction claims its own task but its prompt is just /compact,
+// with no decision block. It must not advance the seen boundary, or a note
+// written before it is lost from the next normal claim.
+func TestChatClaimCarriesDecisionNoteAcrossCompactionTask(test *testing.T) {
+	ctx := context.Background()
+	agentID, sessionID, runtimeID, daemonID := setupDirectChatSession(test, ctx, "Decision DM")
+	dbfx.Insert(test, "chat_message", testutil.Cols{
+		"chat_session_id": sessionID, "role": "assistant", "content": "Decision request cancelled: lane_archived. Before compaction.", "message_kind": "decision_reference", "sent_via": "task_token",
+		"created_at": testutil.Raw("now() - interval '2 hours'"),
+	})
+	dbfx.Task(test, agentID, testutil.Cols{
+		"chat_session_id": sessionID, "status": "failed", "runtime_id": runtimeID,
+		"task_kind": "compact", "compact_reason": "context_window", "dispatched_at": testutil.Raw("now() - interval '1 hour'"),
+	})
+	sendDirectChat(test, ctx, agentID, sessionID, "what happened?")
+
+	message := claimForkTask(test, runtimeID, daemonID).ChatMessage
+	if !strings.Contains(message, "Before compaction.") {
+		test.Fatalf("note before the compaction task was lost:\n%s", message)
+	}
+}

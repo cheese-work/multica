@@ -727,7 +727,7 @@ WHERE request.workspace_id = $1 AND request.chat_session_id = $2 AND request.ori
   AND (request.status = 'open' OR EXISTS (
     SELECT 1 FROM chat_message ping
     WHERE ping.id = request.ping_message_id
-      AND ping.created_at > COALESCE((SELECT max(prior.dispatched_at) FROM agent_task_queue prior WHERE prior.chat_session_id = request.chat_session_id AND prior.id <> $3), '-infinity')))
+      AND ping.created_at > COALESCE((SELECT max(prior.dispatched_at) FROM agent_task_queue prior WHERE prior.chat_session_id = request.chat_session_id AND prior.id <> $3 AND NOT (prior.task_kind = 'compact' AND prior.compact_reason IS NOT NULL)), '-infinity')))
 ORDER BY request.created_at DESC, request.id DESC
 LIMIT $4
 `
@@ -757,7 +757,8 @@ type ListChatDecisionContextRow struct {
 // task produced, so it is in neither the resumed provider session nor the
 // user-only prompt input. The boundary is the previous claim, not the last
 // assistant turn: a ping written between a claim and that task's completion was
-// not in its prompt, and the completion row is newer than the ping.
+// not in its prompt, and the completion row is newer than the ping. An automatic
+// compaction claim is not a boundary: its prompt is /compact with no block.
 func (q *Queries) ListChatDecisionContext(ctx context.Context, arg ListChatDecisionContextParams) ([]ListChatDecisionContextRow, error) {
 	rows, err := q.db.Query(ctx, listChatDecisionContext,
 		arg.WorkspaceID,
@@ -797,7 +798,7 @@ func (q *Queries) ListChatDecisionContext(ctx context.Context, arg ListChatDecis
 const listChatDecisionReferences = `-- name: ListChatDecisionReferences :many
 SELECT message.content FROM chat_message message
 WHERE message.chat_session_id = $1 AND message.message_kind = 'decision_reference'
-  AND message.created_at > COALESCE((SELECT max(prior.dispatched_at) FROM agent_task_queue prior WHERE prior.chat_session_id = message.chat_session_id AND prior.id <> $2), '-infinity')
+  AND message.created_at > COALESCE((SELECT max(prior.dispatched_at) FROM agent_task_queue prior WHERE prior.chat_session_id = message.chat_session_id AND prior.id <> $2 AND NOT (prior.task_kind = 'compact' AND prior.compact_reason IS NOT NULL)), '-infinity')
 ORDER BY message.created_at DESC, message.id DESC
 LIMIT $3
 `

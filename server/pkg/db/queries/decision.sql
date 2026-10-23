@@ -374,7 +374,8 @@ LIMIT LEAST(GREATEST(sqlc.arg('batch_size')::int, 0), 100);
 -- task produced, so it is in neither the resumed provider session nor the
 -- user-only prompt input. The boundary is the previous claim, not the last
 -- assistant turn: a ping written between a claim and that task's completion was
--- not in its prompt, and the completion row is newer than the ping.
+-- not in its prompt, and the completion row is newer than the ping. An automatic
+-- compaction claim is not a boundary: its prompt is /compact with no block.
 SELECT request.id, request.issue_id, request.issue_comment_id, request.ping_message_id, request.ask, request.status, request.created_at,
        issue.number AS issue_number, issue.title AS issue_title, workspace.issue_prefix
 FROM decision_request request
@@ -384,7 +385,7 @@ WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.chat_session_i
   AND (request.status = 'open' OR EXISTS (
     SELECT 1 FROM chat_message ping
     WHERE ping.id = request.ping_message_id
-      AND ping.created_at > COALESCE((SELECT max(prior.dispatched_at) FROM agent_task_queue prior WHERE prior.chat_session_id = request.chat_session_id AND prior.id <> sqlc.arg('task_id')), '-infinity')))
+      AND ping.created_at > COALESCE((SELECT max(prior.dispatched_at) FROM agent_task_queue prior WHERE prior.chat_session_id = request.chat_session_id AND prior.id <> sqlc.arg('task_id') AND NOT (prior.task_kind = 'compact' AND prior.compact_reason IS NOT NULL)), '-infinity')))
 ORDER BY request.created_at DESC, request.id DESC
 LIMIT sqlc.arg('row_limit');
 
@@ -395,7 +396,7 @@ LIMIT sqlc.arg('row_limit');
 -- id, so they are read by message rather than through decision_request.
 SELECT message.content FROM chat_message message
 WHERE message.chat_session_id = sqlc.arg('chat_session_id') AND message.message_kind = 'decision_reference'
-  AND message.created_at > COALESCE((SELECT max(prior.dispatched_at) FROM agent_task_queue prior WHERE prior.chat_session_id = message.chat_session_id AND prior.id <> sqlc.arg('task_id')), '-infinity')
+  AND message.created_at > COALESCE((SELECT max(prior.dispatched_at) FROM agent_task_queue prior WHERE prior.chat_session_id = message.chat_session_id AND prior.id <> sqlc.arg('task_id') AND NOT (prior.task_kind = 'compact' AND prior.compact_reason IS NOT NULL)), '-infinity')
 ORDER BY message.created_at DESC, message.id DESC
 LIMIT sqlc.arg('row_limit');
 
