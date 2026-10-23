@@ -497,13 +497,12 @@ test("PR check: warnings are annotated, a closed PR is skipped, a sync head pass
   assert.match(sync.summary, /Hidden: upstream-sync/);
 });
 
-test("PR check workflow: X99 only for trusted same-repository events, permissions: {}, no secrets, skips closed PRs", () => {
+test("PR check workflow: GitHub-hosted, permissions: {}, no secrets, skips closed PRs", () => {
   const raw = readFileSync(new URL("../.github/workflows/pr-changelog-check.yml", import.meta.url), "utf8");
   const wf = raw.replace(/^\s*#.*$/gm, "");
   assert.match(wf, /^permissions: \{\}$/m);
-  assert.match(wf, /runs-on: .*cheese-x99.*ubuntu-latest/);
-  assert.match(wf, /head\.repo\.full_name == github\.repository/);
-  assert.doesNotMatch(wf, /secrets\./);
+  assert.match(wf, /runs-on: ubuntu-latest/);
+  assert.doesNotMatch(wf, /self-hosted|secrets\./);
   for (const type of ["opened", "edited", "synchronize", "reopened"]) assert.match(wf, new RegExp(type));
   assert.match(wf, /pull_request:/);
   assert.doesNotMatch(wf, /pull_request_target/);

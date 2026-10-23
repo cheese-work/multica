@@ -33,18 +33,12 @@ jobs:
   cursor-background-lifecycle:
     needs: changes
     if: ${{ needs.changes.outputs.backend == 'true' }}
-    runs-on: ${{ github.repository_owner == 'cheese-work' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest] # label only; runs-on picks the runner. macOS leg halted (CHE-1012)
+        os: [ubuntu-latest] # macOS leg halted (CHE-1012): no free macOS runners
     steps:
-      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
-      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
-      - name: Reset leaked sparse-checkout state
-        run: |
-          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
-          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v5
         with:
@@ -69,7 +63,7 @@ jobs:
   # a `go test -race` run. The outputs are consumed by the focused jobs
   # below.
   changes:
-    runs-on: ${{ github.repository_owner == 'cheese-work' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: read
@@ -85,12 +79,6 @@ jobs:
       images: ${{ steps.decide.outputs.images }}
       full: ${{ steps.decide.outputs.full }}
     steps:
-      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
-      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
-      - name: Reset leaked sparse-checkout state
-        run: |
-          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
-          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - name: Checkout
         uses: actions/checkout@v6
 
@@ -125,14 +113,8 @@ jobs:
 
   sqlc-check:
     needs: changes
-    runs-on: ${{ github.repository_owner == 'cheese-work' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ubuntu-latest
     steps:
-      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
-      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
-      - name: Reset leaked sparse-checkout state
-        run: |
-          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
-          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - name: Checkout
         uses: actions/checkout@v6
 
@@ -163,17 +145,11 @@ jobs:
   # increases total runner-minutes but reduces wall-clock feedback time.
   frontend-build:
     needs: changes
-    runs-on: ${{ github.repository_owner == 'cheese-work' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ubuntu-latest
     env:
       # Pin turbo's filesystem cache somewhere actions/cache can address.
       TURBO_CACHE_DIR: .turbo/cache
     steps:
-      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
-      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
-      - name: Reset leaked sparse-checkout state
-        run: |
-          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
-          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - name: Checkout
         uses: actions/checkout@v6
 
@@ -230,16 +206,10 @@ jobs:
 
   frontend-test:
     needs: changes
-    runs-on: ${{ github.repository_owner == 'cheese-work' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ubuntu-latest
     env:
       TURBO_CACHE_DIR: .turbo/cache
     steps:
-      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
-      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
-      - name: Reset leaked sparse-checkout state
-        run: |
-          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
-          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - name: Checkout
         uses: actions/checkout@v6
 
@@ -292,16 +262,10 @@ jobs:
             total: 2
           - index: 2
             total: 2
-    runs-on: ${{ github.repository_owner == 'cheese-work' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ubuntu-latest
     env:
       TURBO_CACHE_DIR: .turbo/cache
     steps:
-      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
-      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
-      - name: Reset leaked sparse-checkout state
-        run: |
-          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
-          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - name: Checkout
         uses: actions/checkout@v6
 
@@ -340,14 +304,8 @@ jobs:
   frontend:
     needs: [changes, frontend-build, frontend-test, frontend-views-test, frontend-quality]
     if: ${{ !cancelled() }}
-    runs-on: ${{ github.repository_owner == 'cheese-work' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ubuntu-latest
     steps:
-      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
-      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
-      - name: Reset leaked sparse-checkout state
-        run: |
-          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
-          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - uses: actions/checkout@v6
       - name: Check frontend job results
         env:
@@ -400,14 +358,25 @@ jobs:
   # a cached "ok" from an untouched package could mask a real failure.
   backend-tests:
     needs: changes
-    # Stays on GitHub-hosted ubuntu-latest (CHE-748, re-measured in CHE-1676).
-    # The CHE-701 smoke now shows `services` ports reaching X99's localhost, but
-    # the receipt tests give the Postgres budget service a 50ms bound and shed
-    # with budget_exceeded when the database sits behind the runner's nested
-    # Docker daemon: on X99, `go test -race ./internal/governance/receipt`
-    # failed 11 of 12 runs against a fresh pgvector container, and the full job
-    # failed in CI runs 39746318400 (twice). The same package passes on hosted
-    # runners. Move this job only after the X99 database path meets that bound.
+    # Stays off cheese-x99 (CHE-748): this is the only job in the repo that
+    # uses `services`, and the self-hosted runners talk to a nested Docker
+    # daemon (`DOCKER_HOST=tcp://dind-N:2376`) living in a *different*
+    # network namespace from the runner itself. Service-container ports are
+    # published by that nested daemon, so they bind inside the dind
+    # container's namespace and never appear on the runner's 127.0.0.1 — the
+    # job's `postgres://...@localhost:5432` is unreachable by construction,
+    # not merely slow to come up. Docker's own health check still reports
+    # `healthy` (it runs inside the dind namespace), so the job proceeds and
+    # then burns its whole migration retry window on `connection refused`.
+    # A live rerun on cheese-x99-repo-4 still failed with this exact
+    # class of failure (see PR #92, run 35701219643) — the runner/dind
+    # namespace split has not actually been closed. Moved to GitHub-hosted
+    # ubuntu-latest rather than back to Blacksmith or X99: the repo is
+    # public so standard hosted minutes are free, and hosted `services:`
+    # containers publish on the runner's own loopback with no nested-daemon
+    # namespace split. Making this job work on cheese-x99 still needs the
+    # runner and dind to share a namespace, which is a runner-fleet change,
+    # not a workflow change.
     runs-on: ubuntu-latest
     # `services` cannot be conditional, so the Postgres and Redis containers
     # still start on a filtered PR. That is ~1 minute of runner time against
@@ -555,17 +524,11 @@ jobs:
   backend-agent-tests:
     needs: changes
     if: ${{ needs.changes.outputs.backend == 'true' }}
-    runs-on: ${{ github.repository_owner == 'cheese-work' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}  # CHE-522: do NOT move to Blacksmith.
+    runs-on: ubuntu-latest  # CHE-522: do NOT move to Blacksmith.
     env:
       # Same policy as backend-tests: CI always executes the tests it reports.
       GOFLAGS: -count=1
     steps:
-      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
-      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
-      - name: Reset leaked sparse-checkout state
-        run: |
-          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
-          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - name: Checkout
         uses: actions/checkout@v6
 
@@ -602,14 +565,8 @@ jobs:
   # The aggregate backend job below still treats both jobs as one merge gate.
   go-vulnerability-scan:
     needs: changes
-    runs-on: ${{ github.repository_owner == 'cheese-work' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ubuntu-latest
     steps:
-      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
-      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
-      - name: Reset leaked sparse-checkout state
-        run: |
-          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
-          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - name: Checkout
         uses: actions/checkout@v6
 
@@ -637,14 +594,8 @@ jobs:
     needs: changes
     # GitHub-hosted (CHE-748): no service containers, no X99-only
     # dependency — plain checkout + golangci-lint.
-    runs-on: ${{ github.repository_owner == 'cheese-work' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ubuntu-latest
     steps:
-      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
-      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
-      - name: Reset leaked sparse-checkout state
-        run: |
-          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
-          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - name: Checkout
         if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' }}
         uses: actions/checkout@v6
@@ -678,14 +629,8 @@ jobs:
   backend:
     needs: [changes, backend-tests, backend-agent-tests, sqlc-check, go-vulnerability-scan, go-lint, script-checks, installer, deploy-cd]
     if: ${{ !cancelled() }}
-    runs-on: ${{ github.repository_owner == 'cheese-work' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ubuntu-latest
     steps:
-      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
-      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
-      - name: Reset leaked sparse-checkout state
-        run: |
-          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
-          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - uses: actions/checkout@v6
       - name: Check backend job results
         env:
@@ -706,18 +651,12 @@ jobs:
   # server-only build.
   daemon-artifact:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    runs-on: ${{ github.repository_owner == 'cheese-work' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         goarch: [amd64, arm64]
     steps:
-      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
-      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
-      - name: Reset leaked sparse-checkout state
-        run: |
-          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
-          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0 # commit history for version/commit stamping
@@ -756,14 +695,8 @@ jobs:
     # and the branch it came from was already checked.
     needs: changes
     if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.images == 'true' }}
-    runs-on: ${{ github.repository_owner == 'cheese-work' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ubuntu-latest
     steps:
-      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
-      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
-      - name: Reset leaked sparse-checkout state
-        run: |
-          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
-          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - name: Checkout
         uses: actions/checkout@v6
         with:
@@ -795,14 +728,8 @@ jobs:
           # no X99-only dependency — plain checkout + shell tests.
           - ubuntu-latest
           # macOS leg halted (CHE-1012): no free macOS runners.
-    runs-on: ${{ github.repository_owner == 'cheese-work' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ${{ matrix.os }}
     steps:
-      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
-      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
-      - name: Reset leaked sparse-checkout state
-        run: |
-          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
-          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - name: Checkout
         uses: actions/checkout@v6
 
@@ -833,17 +760,11 @@ jobs:
 
   script-checks:
     needs: changes
-    # X99 job: the sync-head exclusion lives here, not only in candidate-controlled
+    # Sync-head exclusion lives here, not only in candidate-controlled
     # scripts/ci-scope.mjs (CHE-1381).
     if: ${{ needs.changes.outputs.scripts == 'true' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') }}
-    runs-on: ${{ github.repository_owner == 'cheese-work' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ubuntu-latest
     steps:
-      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
-      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
-      - name: Reset leaked sparse-checkout state
-        run: |
-          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
-          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
@@ -899,14 +820,8 @@ jobs:
     # D1 does not exercise.
     needs: changes
     if: ${{ needs.changes.outputs.deploy_cd == 'true' }}
-    runs-on: ${{ github.repository_owner == 'cheese-work' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ubuntu-latest
     steps:
-      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
-      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
-      - name: Reset leaked sparse-checkout state
-        run: |
-          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
-          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - name: Checkout
         uses: actions/checkout@v6
 
@@ -929,17 +844,11 @@ jobs:
 
   frontend-quality:
     needs: changes
-    # X99 job: the sync-head exclusion lives here, not only in candidate-controlled
+    # Sync-head exclusion lives here, not only in candidate-controlled
     # scripts/ci-scope.mjs (CHE-1381).
     if: ${{ needs.changes.outputs.quality_only == 'true' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') }}
-    runs-on: ${{ github.repository_owner == 'cheese-work' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ubuntu-latest
     steps:
-      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
-      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
-      - name: Reset leaked sparse-checkout state
-        run: |
-          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
-          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v6
