@@ -104,6 +104,11 @@ func runWorkflowList(cmd *cobra.Command, _ []string) error {
 		})
 	}
 	cli.PrintTable(os.Stdout, []string{"ID", "NAME", "DEFAULT", "STEPS", "PROJECTS"}, rows)
+	for _, raw := range workflows {
+		wf, _ := raw.(map[string]any)
+		fmt.Println()
+		printWorkflowTable(wf)
+	}
 	return nil
 }
 
@@ -224,6 +229,11 @@ func printWorkflow(cmd *cobra.Command, wf map[string]any) error {
 	if output, _ := cmd.Flags().GetString("output"); output == "json" {
 		return cli.PrintJSON(os.Stdout, wf)
 	}
+	printWorkflowTable(wf)
+	return nil
+}
+
+func printWorkflowTable(wf map[string]any) {
 	fmt.Printf("%s  %s (version %s)\n", strVal(wf, "id"), strVal(wf, "name"), strVal(wf, "version"))
 	steps, _ := wf["steps"].([]any)
 	rows := make([][]string, 0, len(steps))
@@ -242,5 +252,4 @@ func printWorkflow(cmd *cobra.Command, wf map[string]any) error {
 	}
 	cli.PrintTable(os.Stdout, []string{"STATUS", "HANDLER", "NEXT", "BACK"}, rows)
 	fmt.Print(instructions.String())
-	return nil
 }

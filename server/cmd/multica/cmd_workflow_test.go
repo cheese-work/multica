@@ -99,8 +99,10 @@ func TestWorkflowListPrintsWorkflows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "Delivery pilot") {
-		t.Fatalf("list output missing name:\n%s", out)
+	for _, want := range []string{"Delivery pilot", "in_progress", "agent:a1", "S1 text", "S2 text\nline two"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("list table missing %q:\n%s", want, out)
+		}
 	}
 }
 
