@@ -732,6 +732,7 @@ type WorktreeParams struct {
 	Ref                 string // optional branch, tag, or commit to base the worktree on
 	AgentName           string // for branch naming
 	TaskID              string // for branch naming uniqueness
+	IssueIdentifier     string // issue key (e.g. CHE-1988) carried in the branch name so the PR links; empty for non-issue tasks
 	CoAuthoredByEnabled bool   // install prepare-commit-msg hook for Co-authored-by trailer
 	// LockWaitTimeout bounds only the wait for another same-repository
 	// operation. Zero preserves the historical unbounded wait for internal and
@@ -870,8 +871,7 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 		return nil, fmt.Errorf("cannot resolve default branch for %s: bare cache at %s has no usable refs (origin/* is empty or ambiguous and bare HEAD has no match). The cache may be corrupted; delete it and retry", params.RepoURL, barePath)
 	}
 
-	// Build branch name: agent/{sanitized-name}/{task-id}
-	branchName := fmt.Sprintf("agent/%s/%s", sanitizeName(params.AgentName), taskKey(params.TaskID))
+	branchName := newTaskBranchName(params.AgentName, params.IssueIdentifier, params.TaskID)
 
 	// Derive directory name from repo URL.
 	dirName := repoNameFromURL(params.RepoURL)
@@ -1549,7 +1549,9 @@ func updateExistingCheckoutContext(ctx context.Context, path, branchName, baseRe
 // holds uncommitted changes, untracked files, or unpushed commits.
 func keepReason(state *WorktreeResult, branchName string) string {
 	switch {
-	case isTaskBranch(state.BranchName, branchName):
+	case isTaskBranch(state.BranchName, branchName),
+		// A checkout made before branches carried the identifier is not renamed.
+		isTaskBranch(state.BranchName, withoutIssueSegment(branchName)):
 		return KeptTaskBranch
 	case state.UncommittedFiles > 0 || state.UnpushedCommits > 0:
 		return KeptLocalWork
@@ -1596,6 +1598,29 @@ func countUnpushedCommitsContext(ctx context.Context, repoPath, ref string) (int
 		return 0, fmt.Errorf("count unpushed commits on %s: %w", ref, err)
 	}
 	return count, nil
+}
+
+// newTaskBranchName is agent/{name}/{issue-}{task-key}. The PR webhook links a PR
+// to an issue from the identifiers in its branch, so an issue task carries its
+// identifier there and every PR it opens links whatever the title says.
+func newTaskBranchName(agentName, issueIdentifier, taskID string) string {
+	key := taskKey(taskID)
+	if strings.TrimSpace(issueIdentifier) != "" {
+		key = sanitizeName(issueIdentifier) + "-" + key
+	}
+	return fmt.Sprintf("agent/%s/%s", sanitizeName(agentName), key)
+}
+
+// withoutIssueSegment is the name taskBranchName gave the same task before it
+// carried the identifier. A task key holds no "-", so everything after the last
+// one in the final segment is the key.
+func withoutIssueSegment(branchName string) string {
+	slash := strings.LastIndex(branchName, "/")
+	dash := strings.LastIndex(branchName, "-")
+	if dash < slash {
+		return branchName
+	}
+	return branchName[:slash+1] + branchName[dash+1:]
 }
 
 // isTaskBranch reports whether branch is the one CreateWorktree gives the task
