@@ -143,6 +143,9 @@ type Task struct {
 	ChatType                      string                 `json:"chat_type,omitempty"`                        // "group" when the channel conversation is a shared room, "p2p" for a 1:1 with the bot. Empty for a web chat or an old server; the per-turn prompt then reports unknown rather than guessing 1:1
 	ChatInThread                  bool                   `json:"chat_in_thread,omitempty"`                   // true when the latest @mention was a thread reply; selects which read command the prompt tells the agent to start with
 	ChatMessage                   string                 `json:"chat_message,omitempty"`                     // user message content for chat tasks
+	ChatDecisionContext           string                 `json:"chat_decision_context,omitempty"`            // open decision request(s) this DM reply may answer; the server wrote their ping, so no resumed session holds it
+	ChatMessageIDs                []string               `json:"chat_message_ids,omitempty"`                 // web DM only: ids of the user messages in ChatMessage
+	ChatPriorReplyID              string                 `json:"chat_prior_reply_id,omitempty"`              // web DM only: the agent's last reply before ChatMessage, the options a bare reply chose between
 	ChatMessageAttachments        []ChatAttachmentMeta   `json:"chat_message_attachments,omitempty"`         // attachments linked to the chat message; agent uses these to `multica attachment download <id>`
 	ChatIntro                     bool                   `json:"chat_intro,omitempty"`                       // legacy compatibility for historical is_agent_intro sessions; new agent creation no longer creates these chats
 	RegenerateQuickActionsFor     string                 `json:"regenerate_quick_actions_for,omitempty"`     // set only by servers predating server-side quick-actions generation (MUL-5573). Read as a REFUSAL marker, never executed: see the guard in runTask

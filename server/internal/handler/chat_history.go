@@ -210,15 +210,20 @@ func (h *Handler) GetChatThread(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// A session with no Slack thread to read (a web DM) serves its stored
-	// transcript, as GetChatChannelHistory does, instead of a dead-end note.
+	threadID := r.URL.Query().Get("id")
 	var page channel.HistoryPage
 	var err error
-	if h.SlackHistory == nil {
+	switch {
+	case h.SlackHistory == nil && threadID != "":
+		h.writeNoChannelIntegration(w)
+		return
+	case h.SlackHistory == nil:
 		page, err = h.chatMessageHistory(r, scope)
-	} else {
-		page, err = h.SlackHistory.Thread(r.Context(), scope.sessionID, r.URL.Query().Get("id"), scope.historyOptions(r))
-		if errors.Is(err, slack.ErrNoSlackSession) {
+	default:
+		page, err = h.SlackHistory.Thread(r.Context(), scope.sessionID, threadID, scope.historyOptions(r))
+		if threadID == "" && errors.Is(err, slack.ErrNoSlackSession) {
+			// A web DM has one flat transcript, so "the thread I am in" is
+			// that transcript, exactly what `chat history` serves.
 			page, err = h.chatMessageHistory(r, scope)
 		}
 	}
